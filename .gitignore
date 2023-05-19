@@ -1,0 +1,31 @@
+# Byte-compiled / optimized / DLL files
+experimental_notebooks/
+__pycache__/
+.coverage
+*.ipynb
+*.py[cod]
+*$py.class
+*.cpython
+*.pyc
+*.egg-info/
+*.egg
+*.out
+
+# C extensions
+*.so
+
+data/*
+sbi-logs
+.vscode
+test.ipynb
+outputs
+single_slurm_job.sh 
+start_all_single_jobs.sh
+multirun
+*.pyc
+slurm-*
+pyloric_simulations
+build
+.eggs
+__pycache__
+.coverage
