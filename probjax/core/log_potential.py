@@ -3,48 +3,58 @@ from jax import lax
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
-from jax.core import Primitive, Jaxpr, JaxprEqn,eval_jaxpr
+from jax.core import Primitive, Jaxpr, JaxprEqn, eval_jaxpr
 from jax._src.util import safe_map
 
 from probjax.core.utils import BaseInterpreter, BaseRules
 from probjax.core.random_variable import rv_p, CallPrimitive
-from probjax.core.log_prob import log_prob
 from jax import linear_util as lu
 
-from probjax.core.random_variable import unzip2
+
+def extract_random_variables(jaxpr: Jaxpr) -> Iterable[JaxprEqn]:
+    """Extracts random variables from a Jaxpr.
+
+    Args:
+        jaxpr (Jaxpr): Jaxpr
+
+    Returns:
+        Iterable[JaxprEqn]: Random variables
+    """
+    return filter(lambda eqn: eqn.primitive is rv_p, jaxpr.eqns)
 
 
 class LogPotentialRules(BaseRules):
-    def __init__(self) -> None:
+    def __init__(self, strict=True) -> None:
+        self.strict = strict
         self.__dict__[rv_p] = self._rv_rule  # type: ignore
-        self._vals = {}
 
     def _rv_rule(self, prim: Primitive, *args, **kwargs) -> Any:
-        out = super()._default_rule(prim, *args, **kwargs)
         name = kwargs["name"]
-        kwargs["mode"] = "log_prob"
-        consts, _ = unzip2(*args, **kwargs)  
-    
         log_prob_fn = kwargs["log_prob_fn_jaxpr"]
-        log_prob = eval_jaxpr(log_prob_fn.jaxpr, log_prob_fn.literals , *consts, *out)
+        log_prob = eval_jaxpr(log_prob_fn.jaxpr, log_prob_fn.literals, *args[:-1], out)
 
         return out + log_prob
 
+
 class LogPotentialInterpreter(BaseInterpreter):
     rules = LogPotentialRules()
+
+    def __init__(self, strict=True) -> None:
+        super().__init__()
+        self.strict = strict
 
     def _init_environment(
         self,
         jaxpr: Jaxpr,
         consts: Iterable,
         *args,
-        **kwargs,
+        **values,
     ) -> Iterable[JaxprEqn]:
         """Initializes the environment for the Jaxpr."""
-        out = super()._init_environment(jaxpr, consts, *args)
-        safe_map(self.write, ["__log_potential__"], [jnp.zeros(1)])
-        #print(jaxpr.pretty_print())
-        return out
+        self.env = {}
+        # Bind args and consts to environment
+        safe_map(self.write, jaxpr.constvars, consts)
+        return jaxpr.eqns
 
     def _write_outvals(self, eqn: JaxprEqn, outvals):
         if eqn.primitive is rv_p:

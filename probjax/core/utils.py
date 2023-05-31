@@ -2,12 +2,34 @@ import jax
 from functools import wraps
 
 from jax import core
+import jax.random as jrandom
+from jax.tree_util import tree_flatten, tree_unflatten
 from jax.core import ClosedJaxpr, Jaxpr, Primitive, JaxprEqn
 from typing import Iterable
 from jax import lax
 from jax._src.util import safe_map, curry
+from jax._src import util
 
 from typing import Any, Callable, Iterable, Union
+
+
+from jax._src.interpreters import partial_eval as pe
+from jax._src.lax.control_flow import (
+    _initial_style_open_jaxpr,
+    _initial_style_jaxprs_with_common_consts,
+)
+from jax._src.lax.control_flow.common import (
+    _abstractify,
+    _avals_short,
+    _check_tree_and_avals,
+    _initial_style_jaxprs_with_common_consts,
+    _make_closed_jaxpr,
+    _prune_zeros,
+    _typecheck_param,
+    allowed_effects,
+)
+
+ABSTRACT_RANDOM_KEY = _abstractify(jrandom.PRNGKey(0))
 
 
 class BaseRules(dict):
@@ -97,6 +119,7 @@ class BaseInterpreter:
         """Returns the output variables of an equation."""
         return safe_map(self.write, eqn.outvars, outvals)
 
+
     def eval_jaxpr(self, jaxpr: Jaxpr, consts: Iterable, *args, **kwargs) -> Any:
         # Mapping from variable -> value
         eqns = self._init_environment(jaxpr, consts, *args, **kwargs)
@@ -120,12 +143,59 @@ class BaseInterpreter:
 
         return self._get_output(jaxpr)
 
+def remove_closed_jaxpr_vars_with_suffix(closed_jaxpr, suffix="_"):
+    jaxpr = closed_jaxpr.jaxpr 
+    new_jaxpr = remove_jaxpr_vars_with_suffix(jaxpr, suffix=suffix)
+    return ClosedJaxpr(new_jaxpr, closed_jaxpr.literals)
 
-def make_jaxpr(fun):
-    """Returns the Jaxpr of a function."""
+def remove_jaxpr_vars_with_suffix(jaxpr, suffix="_"):
+    return jaxpr.replace(invars=[v for v in jaxpr.invars if v.suffix!=suffix])
 
-    @wraps(fun)
-    def wrapped(*args, **kwargs):
-        return fun(*args, **kwargs)
+def jaxpr_returning_const(*consts, invars=[]):
+    consts, const_tree = tree_flatten(consts)
+    const_avals = tuple(map(_abstractify, consts))
+    const_vars = [jax.core.Var(0, "_obs", c_aval) for c_aval in const_avals]
+    new_jaxpr = Jaxpr(const_vars, invars, const_vars, [])
+    new_closed_jaxpr = ClosedJaxpr(new_jaxpr, consts)
+    return new_closed_jaxpr, const_tree
 
-    return jax.make_jaxpr(wrapped)
+@util.cache()
+def _sampling_logprobs_jaxprs_with_common_consts(sampling_fn, log_prob_fn):
+    operands = (
+            ABSTRACT_RANDOM_KEY,
+    )
+    sampling_ops_avals, sampling_ops_tree = tree_flatten(operands)
+    sampling_jaxpr, sampling_consts, sampling_out_trees = _initial_style_open_jaxpr(
+        sampling_fn, sampling_ops_tree, tuple(sampling_ops_avals)
+    )
+    sampling_fn_closed_jaxpr = ClosedJaxpr(pe.convert_constvars_jaxpr(sampling_jaxpr), ())
+    sampling_out_avals = sampling_fn_closed_jaxpr.out_avals
+
+    log_prob_operands = sampling_out_avals
+    log_prob_ops, log_prob_ops_tree = tree_flatten(log_prob_operands)
+    log_prob_ops_avals = tuple(log_prob_ops)  # Is already abstract
+    log_prob_jaxpr, log_prob_consts, log_prob_out_trees = _initial_style_open_jaxpr(
+        log_prob_fn, log_prob_ops_tree, log_prob_ops_avals
+    )
+
+    jaxprs = [sampling_jaxpr, log_prob_jaxpr]
+    consts = [sampling_consts ,log_prob_consts]
+    out_trees = [sampling_out_trees, log_prob_out_trees]
+
+    newvar = core.gensym(jaxprs, suffix='_')
+    all_const_avals = [map(_abstractify, consts) for consts in consts]
+    unused_const_vars = [map(newvar, const_avals)
+                       for const_avals in all_const_avals]
+    def pad_jaxpr_constvars(i, jaxpr):
+        prefix = util.concatenate(unused_const_vars[:i])
+        suffix = util.concatenate(unused_const_vars[i + 1:])
+        constvars = [*prefix, *jaxpr.constvars, *suffix]
+        return jaxpr.replace(constvars=constvars)
+    
+    consts = util.concatenate(consts)
+    jaxprs = tuple(pad_jaxpr_constvars(i, jaxpr) for i, jaxpr in enumerate(jaxprs))
+    closed_jaxprs = [core.ClosedJaxpr(pe.convert_constvars_jaxpr(jaxpr), ())
+                    for jaxpr in jaxprs]
+    
+    return closed_jaxprs, consts, out_trees
+

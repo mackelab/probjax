@@ -112,14 +112,13 @@ def log_potential(fun: Callable) -> Callable:
         Callable: Log potential function.
     """
     interpreter = LogPotentialInterpreter()
-    
+    closed_jaxpr = jax.make_jaxpr(fun)(jrandom.PRNGKey(0))
     @wraps(fun)
-    def wrapped(*args, **kwargs):
+    def wrapped(**kwargs):
         # We may need to flatten and unflatten args...
         
-        closed_jaxpr = jax.make_jaxpr(fun)(*args)
         out, log_potential = interpreter.eval_jaxpr(
-            closed_jaxpr.jaxpr, closed_jaxpr.literals, *args, **kwargs
+            closed_jaxpr.jaxpr, closed_jaxpr.literals, **kwargs
         )
 
         return out, log_potential

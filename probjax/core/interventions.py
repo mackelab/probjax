@@ -5,27 +5,13 @@ import jax.random as jrandom
 from jax.core import Primitive, Jaxpr, JaxprEqn, ClosedJaxpr
 from jax._src.util import safe_map
 
-from probjax.core.utils import BaseInterpreter, BaseRules
+from probjax.core.utils import BaseInterpreter, BaseRules, jaxpr_returning_const, remove_closed_jaxpr_vars_with_suffix
 from probjax.core.random_variable import rv_p
 from jax import linear_util as lu
 from jax import tree_util
 from jax import api_util
 
-from jax._src.interpreters import partial_eval as pe
-from jax._src.lax.control_flow import (
-    _initial_style_open_jaxpr,
-    _initial_style_jaxprs_with_common_consts,
-)
-from jax._src.lax.control_flow.common import (
-    _abstractify,
-    _avals_short,
-    _check_tree_and_avals,
-    _initial_style_jaxprs_with_common_consts,
-    _make_closed_jaxpr,
-    _prune_zeros,
-    _typecheck_param,
-    allowed_effects,
-)
+
 
 
 
@@ -37,29 +23,26 @@ class InterventionRules(BaseRules):
 
     def _rv_rule(self, prim: Primitive, *args, **kwargs) -> Any:
         name = kwargs["name"]
-
         if name in self.interventions:
-
-            def sample(*args, **kwargs):
-                val = self.interventions[name]
-                #val_broadcasted = jnp.broadcast_to(val, args[-1].shape[:-1])
-                return val
             
-            operands = [
-                jrandom.PRNGKey(0),
-            ]
-            sampling_ops, sampling_ops_tree = tree_util.tree_flatten(operands)
-            sampling_ops_avals = tuple(map(_abstractify, sampling_ops))
-            sampling_jaxpr, sampling_consts, sampling_out_trees = _initial_style_open_jaxpr(
-                sample, sampling_ops_tree, sampling_ops_avals
-            )
-            sampling_fn_jaxpr = ClosedJaxpr(pe.convert_constvars_jaxpr(sampling_jaxpr), ())
-            num_sampling_consts = kwargs["num_sampling_consts"]
-            kwargs["sampling_fn_jaxpr"] = sampling_fn_jaxpr
-            kwargs["num_sampling_consts"] = len(sampling_consts)
+            sampling_fn_jaxpr = kwargs.pop("sampling_fn_jaxpr")
+            log_prob_fn_jaxpr = kwargs.pop("log_prob_fn_jaxpr")
+            
+            
+            out_aval = sampling_fn_jaxpr.out_avals[0]
+            out_const  = self.interventions[name]
+            assert out_aval.shape == out_const.shape, f"Shape mismatch: {out_aval.shape} != {out_const.shape}. Intervention must have same shape as random variable."
+            assert out_aval.dtype == out_const.dtype, f"Dtype mismatch: {out_aval.dtype} != {out_const.dtype}. Intervention must have same dtype as random variable."
+
+            new_sampling_fn_jaxpr, out_tree = jaxpr_returning_const(out_const, invars=sampling_fn_jaxpr.jaxpr.invars)
+            # Maybe remove unnecessary variables from jaxpr in future
+            #new_log_prob_fn_jaxpr = remove_closed_jaxpr_vars_with_suffix(log_prob_fn_jaxpr)
  
-            out = rv_p.bind(*sampling_consts, *args[num_sampling_consts:],  **kwargs)
-            return tree_util.tree_unflatten(sampling_out_trees, out)
+            kwargs["sampling_fn_jaxpr"] = new_sampling_fn_jaxpr
+            kwargs["log_prob_fn_jaxpr"] = log_prob_fn_jaxpr 
+            out = rv_p.bind(*args,  **kwargs)
+
+            return tree_util.tree_unflatten(out_tree, out)
         else:
             return prim.bind(*args, **kwargs)
 

@@ -152,6 +152,7 @@ class Distribution:
 
     # JAX jit requires this
     def tree_flatten(self):
+        print("Distribution flattened")
         return tuple(getattr(self, param) for param in self.arg_constraints.keys()), None
 
 
