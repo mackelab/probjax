@@ -6,10 +6,13 @@ from jax.scipy.special import erfinv, erf
 from jaxtyping import Array
 
 from .distribution import Distribution
+from .constraints import real, positive, unit_interval
 
 __all__ = ["Normal"]
 
+from jax.tree_util import register_pytree_node_class
 
+@register_pytree_node_class
 class Normal(Distribution):
     r"""
     Creates a normal (also called Gaussian) distribution parameterized by
@@ -27,7 +30,7 @@ class Normal(Distribution):
             (often referred to as sigma)
     """
 
-    arg_constraints = {"loc": None, "scale": None}
+    arg_constraints = {"loc": real, "scale": positive}
 
     def __init__(self, loc: Array, scale: Array):
 

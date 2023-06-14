@@ -10,7 +10,6 @@ from jax.tree_util import register_pytree_node_class
 __all__ = ["Distribution"]
 
 
-@register_pytree_node_class
 class Distribution:
     r"""
     Distribution is the abstract base class for probability distributions.
