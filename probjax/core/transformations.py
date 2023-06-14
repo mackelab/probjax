@@ -13,6 +13,7 @@ from probjax.core.inverse import InverseInterpreter
 from probjax.core.joint_sample import JointSampleInterpreter
 from probjax.core.interventions import InterventionInterpreter
 from probjax.core.log_potential import LogPotentialInterpreter
+from probjax.core.domains import DomainInterpreter 
 
 inverse_interpreter = InverseInterpreter()
 
@@ -40,6 +41,28 @@ def inverse(fun: Callable) -> Callable:
             out = out[0]
         else:
             out = tuple(out)
+
+        return out
+
+    return wrapped
+
+
+def domains(fun: Callable) -> Callable:
+    """Returns the domains of the random variables in the probabilistic function.
+
+    Args:
+        fun (Callable): Probabilistic function
+
+    Returns:
+        Callable: Function that returns the domains of the random variables in the probabilistic function.
+    """
+    interpreter = DomainInterpreter()
+
+    @wraps(fun)
+    def wrapped(*args, **kwargs):
+        # We may need to flatten and unflatten args...
+        closed_jaxpr = jax.make_jaxpr(fun)(*args, **kwargs)
+        out = interpreter.eval_jaxpr(closed_jaxpr.jaxpr, closed_jaxpr.literals, *args)
 
         return out
 
