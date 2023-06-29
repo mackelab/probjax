@@ -5,7 +5,7 @@ from jax.core import Primitive, Jaxpr, JaxprEqn
 from jax._src.util import safe_map
 
 from probjax.core.utils import BaseInterpreter, BaseRules
-from probjax.core.random_variable import rv_p
+from probjax.core.custom_primitives.random_variable import rv_p
 
 
 class JointSampleInterpreter(BaseInterpreter):

@@ -14,9 +14,22 @@ from probjax.core.joint_sample import JointSampleInterpreter
 from probjax.core.interventions import InterventionInterpreter
 from probjax.core.log_potential import LogPotentialInterpreter
 from probjax.core.domains import DomainInterpreter 
+from probjax.core.trace_all import TraceAllInterpreter
 
 inverse_interpreter = InverseInterpreter()
+tace_all = TraceAllInterpreter()
 
+def trace_all(fun: Callable) -> Callable:
+
+    @wraps(fun)
+    def wrapped(*args, **kwargs):
+        closed_jaxpr = jax.make_jaxpr(fun)(*args, **kwargs)
+        out = tace_all.eval_jaxpr(
+            closed_jaxpr.jaxpr, closed_jaxpr.literals, *args
+        )
+    
+        return dict((str(key), val) for key, val in out.items())
+    return wrapped
 
 def inverse(fun: Callable) -> Callable:
     """If a invertible function is given as input, it returns the inverse of the function.

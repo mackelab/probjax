@@ -78,6 +78,6 @@ def inverse_matrix_vector_multiplication(A):
     return sample_solution
 
 
-def get_nugget(x):
-    info = jnp.finfo(x.dtype)
-    return info.eps
+
+def inverse_add(c, in_constraints, out_constraints):
+    pass

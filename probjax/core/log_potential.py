@@ -7,7 +7,7 @@ from jax.core import Primitive, Jaxpr, JaxprEqn, eval_jaxpr
 from jax._src.util import safe_map
 
 from probjax.core.utils import BaseInterpreter, BaseRules
-from probjax.core.random_variable import rv_p, CallPrimitive
+from probjax.core.custom_primitives.random_variable import rv_p, CallPrimitive
 from jax import linear_util as lu
 
 
