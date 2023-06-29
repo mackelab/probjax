@@ -5,15 +5,17 @@ from jax.scipy.special import erfinv, erf
 
 from jaxtyping import Array
 
-from .distribution import Distribution
+from .exponential_family import ExponentialFamily
 from .constraints import real, positive, unit_interval
 
 __all__ = ["Normal"]
 
 from jax.tree_util import register_pytree_node_class
+from jax.scipy.stats import norm
+
 
 @register_pytree_node_class
-class Normal(Distribution):
+class Normal(ExponentialFamily):
     r"""
     Creates a normal (also called Gaussian) distribution parameterized by
 
@@ -31,9 +33,9 @@ class Normal(Distribution):
     """
 
     arg_constraints = {"loc": real, "scale": positive}
+    support = real
 
     def __init__(self, loc: Array, scale: Array):
-
         loc = jnp.asarray(loc)
         scale = jnp.asarray(scale)
         self.loc, self.scale = jnp.broadcast_arrays(loc, scale)
@@ -57,27 +59,18 @@ class Normal(Distribution):
         return jnp.power(self.stddev, 2)
 
     def rsample(self, key, sample_shape: tuple = ()):
-        shape = sample_shape + self.loc.shape
+        shape = sample_shape + self.batch_shape + self.event_shape
         eps = random.normal(key, shape)
         return self.loc + eps * self.scale
 
     def log_prob(self, value):
-        # compute the variance
-        var = self.scale**2
-        log_scale = jnp.log(self.scale)
-        return (
-            -((value - self.loc) ** 2) / (2 * var)
-            - log_scale
-            - jnp.log(jnp.sqrt(2 * jnp.pi))
-        )
+        return norm.logpdf(value, self.loc, self.scale)
 
     def cdf(self, value):
-        return 0.5 * (
-            1 + erf((value - self.loc) * self.scale.reciprocal() / jnp.sqrt(2))
-        )
+        return norm.cdf(value, self.loc, self.scale)
 
     def icdf(self, value):
-        return self.loc + self.scale * erfinv(2 * value - 1) * jnp.sqrt(2)
+        return norm.ppf(value, self.loc, self.scale)
 
     def entropy(self):
         return 0.5 + 0.5 * jnp.log(2 * jnp.pi) + jnp.log(self.scale)

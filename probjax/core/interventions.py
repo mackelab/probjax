@@ -6,7 +6,7 @@ from jax.core import Primitive, Jaxpr, JaxprEqn, ClosedJaxpr
 from jax._src.util import safe_map
 
 from probjax.core.utils import BaseInterpreter, BaseRules, jaxpr_returning_const, remove_closed_jaxpr_vars_with_suffix
-from probjax.core.random_variable import rv_p
+from probjax.core.custom_primitives.random_variable import rv_p
 from jax import linear_util as lu
 from jax import tree_util
 from jax import api_util

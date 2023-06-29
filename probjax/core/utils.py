@@ -159,6 +159,21 @@ def jaxpr_returning_const(*consts, invars=[]):
     new_closed_jaxpr = ClosedJaxpr(new_jaxpr, consts)
     return new_closed_jaxpr, const_tree
 
+def _fun_jaxprs_with_inv_fun(fun, inv_fun, *args):
+    flat_args, in_tree = tree_flatten(args)
+    fun_jaxpr, consts, out_tree = _initial_style_open_jaxpr(fun, in_tree, tuple(flat_args))
+    closed_fun_jaxpr = ClosedJaxpr(fun_jaxpr, consts)
+
+    out_avals = closed_fun_jaxpr.out_avals
+    flat_out_avals, in_tree2 = tree_flatten(out_avals)
+    assert in_tree == in_tree2, "Output of the inverse function must have the same structure as the input to the forward function."
+    inv_fun_jaxpr, inv_consts, inv_out_tree = _initial_style_open_jaxpr(inv_fun, out_tree, tuple(flat_out_avals))
+    closed_inv_fun_jaxpr = ClosedJaxpr(inv_fun_jaxpr, inv_consts)
+
+    return closed_fun_jaxpr, closed_inv_fun_jaxpr, in_tree, out_tree
+
+
+
 @util.cache()
 def _sampling_logprobs_jaxprs_with_common_consts(sampling_fn, log_prob_fn):
     operands = (

@@ -5,17 +5,24 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 
-from jax.tree_util import register_pytree_node_class
+from chex import Numeric, PRNGKey, Array
+
+
+from probjax.distributions.constraints import Constraint
 
 __all__ = ["Distribution"]
 
+from jax.tree_util import register_pytree_node_class
 
+
+@register_pytree_node_class
 class Distribution:
     r"""
     Distribution is the abstract base class for probability distributions.
     """
 
-    arg_constraints: Dict[str, Any] = {}
+    arg_constraints: Dict[str, Constraint] = {}
+    support: Constraint = Constraint()
     has_rsample = False
 
     def __init__(
@@ -43,49 +50,56 @@ class Distribution:
         return self._event_shape
 
     @property
-    def mean(self) -> jnp.array:
+    def mean(self) -> Array:
         """
         Returns the mean of the distribution.
         """
-        raise NotImplementedError
+        raise NotImplementedError(f"{self.__class__} does not implement mean")
 
     @property
-    def mode(self) -> jnp.array:
+    def median(self) -> Array:
+        """
+        Returns the mean of the distribution.
+        """
+        raise NotImplementedError(f"{self.__class__} does not implement median")
+
+    @property
+    def mode(self) -> Array:
         """
         Returns the mode of the distribution.
         """
         raise NotImplementedError(f"{self.__class__} does not implement mode")
 
     @property
-    def variance(self) -> jnp.array:
+    def variance(self) -> Array:
         """
         Returns the variance of the distribution.
         """
-        raise NotImplementedError
+        raise NotImplementedError(f"{self.__class__} does not implement variance")
 
     @property
-    def stddev(self) -> jnp.array:
+    def stddev(self) -> Array:
         """
         Returns the standard deviation of the distribution.
         """
-        return self.variance.sqrt()
+        return jnp.sqrt(self.variance)
 
-    def sample(self, key, sample_shape: tuple = tuple()) -> jnp.array:
+    def sample(self, key, sample_shape: tuple = tuple()) -> Array:
         """
         Generates a sample_shape shaped sample or sample_shape shaped batch of
         samples if the distribution parameters are batched.
         """
         return self.rsample(key, sample_shape)
 
-    def rsample(self, key, sample_shape: tuple = tuple()) -> jnp.array:
+    def rsample(self, key, sample_shape: tuple = tuple()) -> Array:
         """
         Generates a sample_shape shaped reparameterized sample or sample_shape
         shaped batch of reparameterized samples if the distribution parameters
         are batched.
         """
-        raise NotImplementedError
+        raise NotImplementedError(f"{self.__class__} does not implement rsample")
 
-    def log_prob(self, value: jnp.array) -> jnp.array:
+    def log_prob(self, value: Array) -> Array:
         """
         Returns the log of the probability density/mass function evaluated at
         `value`.
@@ -93,9 +107,19 @@ class Distribution:
         Args:
             value (array):
         """
-        raise NotImplementedError
+        raise NotImplementedError(f"{self.__class__} does not implement log_prob")
 
-    def cdf(self, value: jnp.array) -> jnp.array:
+    def prob(self, value: Array) -> Array:
+        """
+        Returns the probability density/mass function evaluated at
+        `value`.
+
+        Args:
+            value (array):
+        """
+        return jnp.exp(self.log_prob(value))
+
+    def cdf(self, value: Array) -> Array:
         """
         Returns the cumulative density/mass function evaluated at
         `value`.
@@ -103,9 +127,9 @@ class Distribution:
         Args:
             value (array):
         """
-        raise NotImplementedError
+        raise NotImplementedError(f"{self.__class__} does not implement cdf")
 
-    def icdf(self, value: jnp.array) -> jnp.array:
+    def icdf(self, value: Array) -> Array:
         """
         Returns the inverse cumulative density/mass function evaluated at
         `value`.
@@ -113,18 +137,27 @@ class Distribution:
         Args:
             value (array):
         """
-        raise NotImplementedError
+        raise NotImplementedError(f"{self.__class__} does not implement icdf")
 
-    def entropy(self) -> jnp.array:
+    def moment(self, n: int) -> Array:
+        """
+        Returns the nth non-central moment of the distribution, batched over batch_shape.
+
+        Args:
+            n (int): order of moment.
+        """
+        raise NotImplementedError(f"{self.__class__} does not implement moment")
+
+    def entropy(self) -> Array:
         """
         Returns entropy of distribution, batched over batch_shape.
 
         Returns:
             array of shape batch_shape.
         """
-        raise NotImplementedError
+        raise NotImplementedError(f"{self.__class__} does not implement entropy")
 
-    def perplexity(self) -> jnp.array:
+    def perplexity(self) -> Array:
         """
         Returns perplexity of distribution, batched over batch_shape.
 
@@ -148,12 +181,12 @@ class Distribution:
         )
         return self.__class__.__name__ + "(" + args_string + ")"
 
-
-    # JAX jit requires this
+    # Each distribution will be registered as a PyTree
     def tree_flatten(self):
-        print("Distribution flattened")
-        return tuple(getattr(self, param) for param in self.arg_constraints.keys()), None
-
+        return (
+            tuple(getattr(self, param) for param in self.arg_constraints.keys()),
+            None,
+        )
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):

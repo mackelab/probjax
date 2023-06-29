@@ -1,5 +1,5 @@
 
-
+import jax
 from jax import lax
 
 from jax.core import Primitive, Jaxpr, JaxprEqn
@@ -9,56 +9,47 @@ import jax.numpy as jnp
 
 
 
-class InverseRegistry:
-
-    def __init__(self) -> None:
-        self._registry = {}
-        super().__init__()
-
-    def register(self, prim: Primitive, factory: Optional[Callable] = None):
-        
-        # Decorator support
-        if factory is None:
-            return lambda factory: self.register(prim, factory)
-
-        self._registry[prim] = factory
-
-    
-    def __call__(self, prim: Primitive) -> Any:
-        try:
-            return self._registry[prim]
-        except KeyError:
-            raise NotImplementedError(f"Inverse for {prim} not implemented")
 
 
+_UNIVARITAE_INVERSE_REGISTRY = {
+    jax.lax.tanh_p: jax.lax.atanh_p,
+    jax.lax.atanh_p: jax.lax.tanh_p,
+    jax.lax.sinh_p: jax.lax.asinh_p,
+    jax.lax.asinh_p: jax.lax.sinh_p,
+    jax.lax.cosh_p: jax.lax.acosh_p,
+    jax.lax.acosh_p: jax.lax.cosh_p,
+    jax.lax.exp_p: jax.lax.log_p,
+    jax.lax.log_p: jax.lax.exp_p,
+    jax.lax.sqrt_p: lambda x: jax.lax.pow_p.bind(x, 2.0),
+    jax.lax.rsqrt_p: lambda x: 1.0 / jax.lax.pow_p.bind(x, 2.0),
+    jax.lax.neg_p: jax.lax.neg_p,
+    jax.lax.log1p_p: jax.lax.expm1_p,
+    jax.lax.expm1_p: jax.lax.log1p_p,
+    jax.lax.erf_p: jax.lax.erf_inv_p,
+    jax.lax.erf_inv_p: jax.lax.erf_p,
+    jax.lax.conj_p: jax.lax.conj_p,
+}
 
-invert = InverseRegistry()
+_BIVARIATE_INVERSE_REGISTRY = {
+    jax.lax.mul_p: (jax.lax.div_p.bind, lambda x, y: jax.lax.div_p.bind(y, x)),
+    jax.lax.div_p: (jax.lax.mul_p.bind, jax.lax.div_p.bind),
+    jax.lax.add_p: (jax.lax.sub_p.bind, lambda x, y: jax.lax.sub_p.bind(y, x)),
+    jax.lax.sub_p: (jax.lax.add_p.bind, jax.lax.sub_p.bind),
+    jax.lax.pow_p: lambda x, y: jax.lax.pow_p.bind(x, 1.0/y),
+    jax.lax.integer_pow_p: lambda x, y: jax.lax.pow_p.bind(x, 1.0/y)
+}
 
-def _check_univariate(in_known, out_known):
-    assert len(in_known) == 1, "More than one input"
-    assert len(out_known) == 1, "Mire than one output"
+def is_univariate(eqn) -> bool:
+    return len(eqn.invars) == 1 and len(eqn.outvars) == 1
 
-def _check_bivariate_reduction(in_known, out_known):
-    assert len(in_known) == 2, "More than two inputs"
-    assert len(out_known) == 1, "Mire than one output"
+def is_bivariate(eqn) -> bool:
+    return len(eqn.invars) == 2 and len(eqn.outvars) == 1
 
+class InverseProcessingRules:
 
-@invert.register(lax.exp_p)
-def invert_exp(prim: Primitive, in_known, out_known):
-    _check_univariate(in_known, out_known)
-    if all(in_known):
-        return jnp.exp
-    elif all(out_known):
-        return jnp.log
-
-invert.register(lax.log_p, lambda prim, in_known, out_known: invert_exp(prim, out_known, in_known))
-
+    def __call__(self, eqn, known_invars, known_outvars):
+        pass 
 
 
-@invert.register(lax.add_p)
-def invert_add(prim: Primitive, in_known, out_known):
-    _check_bivariate_reduction(in_known, out_known)
-    if all(in_known):
-        return lambda a, b: x+y
-    elif all(out_known):
-        return lambda x, y: x - y
+    def _default_forward_processing(self, eqn, known_invars, known_outvars):
+        return eqn

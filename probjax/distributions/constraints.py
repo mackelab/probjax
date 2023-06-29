@@ -17,10 +17,6 @@ from functools import total_ordering
 class Constraint:
     """A constraint checks if a value satisfies the constraint."""
 
-    def __call__(self, val: PyTree[Array]) -> PyTree[Array]:
-        # Should transform the value to satisfy the constraint.
-        return jax.tree_map(self._call, val)
-
     def __contains__(self, val: PyTree[Union[Array, "Constraint"]]) -> bool:
         # Should transform the value to satisfy the constraint.
         val_flatten, _ = tree_flatten(val)
@@ -30,15 +26,17 @@ class Constraint:
         return self.__class__ == __value.__class__
 
     def __lt__(self, __value: object) -> bool:
-        return issubclass(__value.__class__, self.__class__)
-
-    @abstractmethod
-    def _call(self, x: Array) -> Array:
-        pass
+        return issubclass(self.__class__, __value.__class__)
 
     @abstractmethod
     def _is_contained(self, x: Union[Array, "Constraint"]) -> bool:
         pass
+
+    def __repr__(self) -> str:
+        return type(self).__name__.lower()
+
+    def __str__(self) -> str:
+        return self.__repr__()
 
 
 class Real(Constraint):
@@ -47,18 +45,10 @@ class Real(Constraint):
     def _is_contained(self, x: Union[Array, "Constraint"]) -> bool:
         if isinstance(x, Array):
             return jnp.isreal(x).all()
+        elif isinstance(x, Constraint):
+            return x == self
         else:
-            return (
-                isinstance(x, Real) or isinstance(x, Integer) or isinstance(x, Boolean)
-            )
-
-    def _call(self, x: Array) -> Array:
-        return jnp.real(x)
-
-    def __repr__(self) -> str:
-        return type(self).__name__.lower()
-
-    __str__ = __repr__
+            raise TypeError(f"Cannot check if {x} of type {type(x)} is real.")
 
 
 class Integer(Real):
@@ -70,9 +60,6 @@ class Integer(Real):
         else:
             return isinstance(x, Integer) or isinstance(x, Boolean)
 
-    def _call(self, x: Array) -> Array:
-        return jnp.round(x)
-
 
 class Boolean(Integer):
     """A constraint that checks if a value is boolean."""
@@ -82,9 +69,6 @@ class Boolean(Integer):
             return jnp.issubdtype(x.dtype, jnp.bool_)
         else:
             return isinstance(x, Boolean)
-
-    def _call(self, x: Array) -> Array:
-        return jnp.round(jnp.clip(x, 0, 1)).astype(jnp.bool_)
 
 
 class Interval(Real):
@@ -98,8 +82,8 @@ class Interval(Real):
         if isinstance(x, Array):
             return (
                 super()._is_contained(x)
-                and (x > self.lower).all()
-                and (x < self.upper).all()
+                and all(x > self.lower)
+                and all(x < self.upper)
             )
         else:
             is_real = super()._is_contained(x)
@@ -110,9 +94,33 @@ class Interval(Real):
                 and x.lower >= self.lower
                 and x.upper <= self.upper
             )
+        
+    
+class UnitInterval(Interval):
+    def __init__(self) -> None:
+        super().__init__(0, 1)
 
-    def _call(self, x: Array) -> Array:
-        return jnp.clip(x, self.lower, self.upper)
+
+class Simplex(UnitInterval):
+
+    def _is_contained(self, x: Array) -> bool:
+        return super()._is_contained(x) and jnp.sum(x) == 1
+
+
+class UnitSquare(Interval):
+    def __init__(self) -> None:
+        super().__init__(-1, 1)
+    
+
+class Positive(Interval):
+    def __init__(self) -> None:
+        super().__init__(0, jnp.inf)
+
+
+
+class Negative(Interval):
+    def __init__(self) -> None:
+        super().__init__(-jnp.inf, 0)
 
 
 class IntegerInterval(Integer, Interval):
@@ -126,8 +134,8 @@ class IntegerInterval(Integer, Interval):
         if isinstance(x, Array):
             return (
                 super()._is_contained(x)
-                and (x > self.lower).all()
-                and (x < self.upper).all()
+                and all(x > self.lower)
+                and all(x < self.upper)
             )
         else:
             is_integer = super()._is_contained(x)
@@ -139,24 +147,10 @@ class IntegerInterval(Integer, Interval):
                 and x.upper <= self.upper
             )
 
-    def _call(self, x: Array) -> Array:
-        return jnp.clip(x, self.lower, self.upper)
 
 
-class Positive(Interval):
-    def __init__(self) -> None:
-        super().__init__(0, jnp.inf)
-
-    def _call(self, x: Array) -> Array:
-        return super()._call(x)
 
 
-class Negative(Interval):
-    def __init__(self) -> None:
-        super().__init__(-jnp.inf, 0)
-
-    def _call(self, x: Array) -> Array:
-        return super()._call(x)
 
 
 real = Real()
@@ -165,8 +159,10 @@ boolean = Boolean()
 positive = Positive()
 negative = Negative()
 interval = Interval
-unit_interval = Interval(0, 1)
-unit_square = Interval(-1, 1)
+unit_interval = UnitInterval()
+unit_square = UnitSquare()
+unit_integer_interval = IntegerInterval(0, 1)
+simplex = Simplex()
 
 
 __all__ = [
@@ -178,4 +174,6 @@ __all__ = [
     "interval",
     "unit_interval",
     "unit_square",
+    "unit_integer_interval",
+    "simplex",
 ]

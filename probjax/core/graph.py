@@ -7,7 +7,7 @@ import networkx as nx
 import jax.numpy as jnp
 
 from jax.core import Literal
-from probjax.core.random_variable import rv_p
+from probjax.core.custom_primitives.random_variable import rv_p
 
 
 NODE_STYLES = {
@@ -367,7 +367,6 @@ def inverse_process_fn(known_parents,node, known_children):
 
 
 def default_cost_fn(known_parents, known_children, node):
-    print(known_parents, known_children, node)
     if all(known_parents):
         return 0
     else:
