@@ -2,7 +2,6 @@
 experimental_notebooks/
 __pycache__/
 .coverage
-*.ipynb
 *.py[cod]
 *$py.class
 *.cpython
@@ -17,7 +16,6 @@ __pycache__/
 data/*
 sbi-logs
 .vscode
-test.ipynb
 outputs
 single_slurm_job.sh 
 start_all_single_jobs.sh
