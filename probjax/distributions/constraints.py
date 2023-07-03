@@ -81,9 +81,7 @@ class Interval(Real):
     def _is_contained(self, x: Array) -> bool:
         if isinstance(x, Array):
             return (
-                super()._is_contained(x)
-                and all(x > self.lower)
-                and all(x < self.upper)
+                super()._is_contained(x) and all(x > self.lower) and all(x < self.upper)
             )
         else:
             is_real = super()._is_contained(x)
@@ -94,15 +92,34 @@ class Interval(Real):
                 and x.lower >= self.lower
                 and x.upper <= self.upper
             )
-        
-    
+
+
+class FiniteSet(Constraint):
+    """A constraint that checks if a value is in a finite set."""
+
+    def __init__(self, values: Array) -> None:
+        self.values = values
+
+    def _is_contained(self, x: Array) -> bool:
+        if isinstance(x, Array):
+            return x in self.values
+        else:
+            if isinstance(x, FiniteSet):
+                return all([v in self.values for v in x.values])
+            elif isinstance(x, Interval):
+                min = jnp.min(self.values)
+                max = jnp.max(self.values)
+                return x.lower >= min and x.upper <= max
+            else:
+                return False
+
+
 class UnitInterval(Interval):
     def __init__(self) -> None:
         super().__init__(0, 1)
 
 
 class Simplex(UnitInterval):
-
     def _is_contained(self, x: Array) -> bool:
         return super()._is_contained(x) and jnp.sum(x) == 1
 
@@ -110,12 +127,11 @@ class Simplex(UnitInterval):
 class UnitSquare(Interval):
     def __init__(self) -> None:
         super().__init__(-1, 1)
-    
+
 
 class Positive(Interval):
     def __init__(self) -> None:
         super().__init__(0, jnp.inf)
-
 
 
 class Negative(Interval):
@@ -133,9 +149,7 @@ class IntegerInterval(Integer, Interval):
     def _is_contained(self, x: Array) -> bool:
         if isinstance(x, Array):
             return (
-                super()._is_contained(x)
-                and all(x > self.lower)
-                and all(x < self.upper)
+                super()._is_contained(x) and all(x > self.lower) and all(x < self.upper)
             )
         else:
             is_integer = super()._is_contained(x)
@@ -148,17 +162,13 @@ class IntegerInterval(Integer, Interval):
             )
 
 
-
-
-
-
-
 real = Real()
 integer = Integer()
 boolean = Boolean()
 positive = Positive()
 negative = Negative()
 interval = Interval
+finit_set = FiniteSet
 unit_interval = UnitInterval()
 unit_square = UnitSquare()
 unit_integer_interval = IntegerInterval(0, 1)
