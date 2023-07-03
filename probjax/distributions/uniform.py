@@ -6,13 +6,18 @@ from jax.scipy.special import erfinv, erf
 from jaxtyping import Array
 
 from .distribution import Distribution
+from .constraints import real, positive, unit_interval
 
-__all__ = ["Normal"]
+
+from jax.tree_util import register_pytree_node_class
+
+__all__ = ["Uniform"]
 
 
+@register_pytree_node_class
 class Uniform(Distribution):
+    arg_constraints = {"low": real, "high": real}
 
-    arg_constraints = {"low": None, "high": None}
     def __init__(self, low: float, high: float):
         self.low = low
         self.high = high

@@ -16,6 +16,7 @@ from jax.scipy.stats import bernoulli
 
 @register_pytree_node_class
 class Bernoulli(ExponentialFamily):
+    
     arg_constraints = {"probs": unit_interval}
     support = unit_integer_interval
 
