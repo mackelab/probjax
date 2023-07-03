@@ -13,7 +13,7 @@ from ..distributions.constraints import real, integer, boolean, interval, positi
 
 from jax.core import Primitive
 from jax.lax import tanh_p, exp_p, log_p, add_p, sub_p, mul_p, div_p
-from .utils import BaseRules, BaseInterpreter
+from .jaxpr_propagation.interpret import BaseRules, BaseInterpreter
 
 class DomainRules(BaseRules):
 

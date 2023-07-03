@@ -69,7 +69,7 @@ def eqn_pretty_print(eqn):
     name = eqn.primitive.name
     if name == "integer_pow":
         y = eqn.params["y"]
-        return f"pow(2)"
+        return f"pow({y})"
     elif name == "convert_element_type":
         return str(eqn.params["new_dtype"])
     elif name == "broadcast_in_dim":

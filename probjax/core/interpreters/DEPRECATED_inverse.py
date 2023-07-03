@@ -4,7 +4,7 @@ import jax.numpy as jnp
 from jax.core import Primitive, Jaxpr, JaxprEqn
 from jax._src.util import safe_map
 
-from probjax.core.utils import BaseInterpreter, BaseRules
+from probjax.core.jaxpr_propagation.utils import BaseInterpreter, BaseRules
 
 
 # Inverse rules base class
