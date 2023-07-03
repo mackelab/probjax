@@ -5,7 +5,7 @@ import jax.random as jrandom
 from jax.core import Primitive, Jaxpr, JaxprEqn, ClosedJaxpr
 from jax._src.util import safe_map
 
-from probjax.core.utils import (
+from probjax.core.jaxpr_propagation.interpret import (
     BaseInterpreter,
     BaseRules,
     jaxpr_returning_const,

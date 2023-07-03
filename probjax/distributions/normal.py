@@ -64,7 +64,7 @@ class Normal(ExponentialFamily):
         return self.loc + eps * self.scale
 
     def log_prob(self, value):
-        return norm.logpdf(value, self.loc, self.scale)
+        return jnp.squeeze(norm.logpdf(value, self.loc, self.scale))
 
     def cdf(self, value):
         return norm.cdf(value, self.loc, self.scale)

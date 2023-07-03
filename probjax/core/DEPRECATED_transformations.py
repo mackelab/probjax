@@ -10,9 +10,9 @@ from jax._src.util import safe_map
 from typing import Callable, Optional, Iterable
 
 from probjax.core.inverse import InverseInterpreter
-from probjax.core.joint_sample import JointSampleInterpreter
-from probjax.core.interventions import InterventionInterpreter
-from probjax.core.log_potential import LogPotentialInterpreter
+from probjax.core.ppl_interpreters.joint_sample import JointSampleInterpreter
+from probjax.core.ppl_interpreters.interventions import InterventionInterpreter
+from probjax.core.ppl_interpreters.log_potential import LogPotentialInterpreter
 from probjax.core.domains import DomainInterpreter 
 from probjax.core.trace_all import TraceAllInterpreter
 

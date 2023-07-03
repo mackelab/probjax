@@ -11,7 +11,6 @@ from .constraints import real, positive, unit_interval
 __all__ = ["Independent"]
 
 
-
 class Independent(Distribution):
     """
     Creates an independent distribution by treating the provided distribution as
@@ -30,7 +29,6 @@ class Independent(Distribution):
         self.base_dist = base_dist
         self.reinterpreted_batch_ndims = reinterpreted_batch_ndims
 
-
         batch_shape = base_dist.batch_shape[:reinterpreted_batch_ndims]
         event_shape = (
             base_dist.batch_shape[reinterpreted_batch_ndims:] + base_dist.event_shape
@@ -45,7 +43,7 @@ class Independent(Distribution):
     @property
     def support(self):
         return self.base_dist.support
-    
+
     @property
     def has_rsample(self):
         return self.base_dist.has_rsample
