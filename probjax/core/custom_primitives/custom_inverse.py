@@ -20,7 +20,7 @@ from typing import Any, Callable
 from jax._src.util import safe_map
 from jax._src.api_util import (
     flatten_fun_nokwargs,
-    argnums_partial_except,
+    argnums_partial,
     flatten_fun_nokwargs,
     shaped_abstractify,
 )
@@ -174,8 +174,8 @@ class custom_inverse:
         inv_name = getattr(self.inv_fun, "__name__", str(self.inv_fun))
 
         f = lu.wrap_init(self.fun)
-        f, dyn_args = argnums_partial_except(
-            f, self.static_argnums, args, allow_invalid=False
+        f, dyn_args = argnums_partial(
+            f, self.static_argnums, args, require_static_args_hashable=False
         )
         args_flat, in_tree = tree_flatten(dyn_args)
         jax_tree_fun, out_tree = flatten_fun_nokwargs(f, in_tree)  # type: ignore
@@ -188,8 +188,8 @@ class custom_inverse:
         out_tree = out_tree()
 
         f_inv = lu.wrap_init(self.inv_fun_and_log_det)
-        f_inv, _ = argnums_partial_except(
-            f_inv, self.static_argnums, args, allow_invalid=False
+        f_inv, _ = argnums_partial(
+            f_inv, self.static_argnums, args, require_static_args_hashable=False
         )
         jax_tree_inv_fun, out_tree_inv = flatten_fun_nokwargs(f_inv, in_tree)  # type: ignore
         debug = pe.debug_info(
@@ -205,5 +205,4 @@ class custom_inverse:
             in_tree=in_tree,
         )
 
-        
         return tree_unflatten(out_tree, out_flat)

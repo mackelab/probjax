@@ -126,15 +126,3 @@ def construct_affine_autoregressive(d, hidden_units=[50, 50, 50]):
     return InvertibleTransformer(ann, f, f_inv)
 
 
-@hk.without_apply_rng
-@hk.transform
-def forward(x):
-    nn = construct_affine_autoregressive(5)
-    return nn(x)
-
-
-@hk.without_apply_rng
-@hk.transform
-def inverse(x):
-    nn = construct_affine_autoregressive(5)
-    return nn.inverse(x)

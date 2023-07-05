@@ -180,6 +180,8 @@ def propagate(
                 if val is None:
                     ouput_vars.append(v)
 
+            process_eqn(eqn, known_invars, ouput_vars)
+
         else:
             # This processes the computation
             ouput_vars, output_vals = process_eqn(eqn, known_invars, known_outvars)

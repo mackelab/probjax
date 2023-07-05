@@ -37,10 +37,3 @@ class CouplingMLP(hk.Module):
         return y
 
 
-class Flip(hk.Module):
-    def __init__(self, axis: int = -1, name: str = "reverse"):
-        super().__init__(name=name)
-        self.axis = axis
-
-    def __call__(self, x: Array) -> Array:
-        return jnp.flip(x, axis=self.axis)
