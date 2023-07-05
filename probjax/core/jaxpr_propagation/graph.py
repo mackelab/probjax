@@ -54,8 +54,17 @@ COMPUTE_GRAPH_NODE_STYLES = {
         width=0.2,
         height=0.2,
     ),
-    "random_variable": dict(shape="circle", style="bold", width=0.2, height=0.2),
-    "latent": dict(
+    "intermediate": dict(
+        style="filled",
+        color="lightgrey",
+        shape="circle",
+        width=0.2,
+        height=0.2,
+        fontsize=8,
+        margin=0.01,
+        regular=True,
+    ),
+    "random_variable": dict(
         style="filled",
         color="cornflowerblue",
         shape="circle",

@@ -6,6 +6,7 @@ from jax.scipy.special import erfinv, erf
 
 from jaxtyping import Array
 
+from .distribution import Distribution
 from .constraints import finit_set, simplex, real
 
 __all__ = ["Discrete"]
@@ -14,7 +15,7 @@ from jax.tree_util import register_pytree_node_class
 
 
 @register_pytree_node_class
-class Discrete:
+class Discrete(Distribution):
     arg_constraints = {"values": real, "probs": simplex}
 
     def __init__(self, values: Array, probs: Array | None = None):

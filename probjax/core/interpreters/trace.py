@@ -27,9 +27,20 @@ class TraceProcessingRule(ForwardProcessingRule):
             if self.traced_vars is None or str(o) in self.traced_vars:
                 self.traced_samples[o] = v
         return outvars, outvals
+    
+# TODO propagate constraints
+
 
 
 class ConstraintTraceProcessingRule(TraceProcessingRule):
-    def __init__(self, invar_constraints, traced_vars: Iterable | None = None) -> None:
+    def __init__(self, init_constraints, traced_vars: Iterable | None = None) -> None:
         super().__init__(traced_vars)
-        self.invart_constraints = invar_constraints
+        self.invar_constraints = init_constraints
+
+    def __call__(
+        self, eqn: JaxprEqn, known_inputs: Sequence[Any | None], _: Sequence[Any | None]
+    ) -> Tuple[Sequence[Any | None], Sequence[Any | None]]:
+        
+
+        outvars, outvals = super().__call__(eqn, known_inputs, _)
+        return outvars, outvals

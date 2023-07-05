@@ -17,6 +17,7 @@ from probjax.core.interpreters.inverse import (
     inverse_cost_fn,
     InverseAndLogAbsDetProcessingRule,
 )
+from probjax.core.interpreters.trace import TraceProcessingRule
 
 
 def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
@@ -76,6 +77,26 @@ def log_potential_fn(fun: Callable, *args, **kwargs):
         return processing_rule.log_prob
 
     return log_potential
+
+def trace(fun: Callable, traced_vars=None):
+    jaxpr_maker = jax.make_jaxpr(fun)
+    processing_rule = TraceProcessingRule(traced_vars=traced_vars)
+
+    @wraps(fun)
+    def wrapped(*args, **kwargs):
+        jaxpr = jaxpr_maker(*args, **kwargs)
+        _ = interpret(
+            jaxpr.jaxpr,
+            jaxpr.consts,
+            jaxpr.jaxpr.invars,
+            args,
+            jaxpr.jaxpr.outvars,
+            process_eqn=processing_rule,
+        )
+
+        return processing_rule.traced_samples
+
+    return wrapped
 
 
 def inverse(fun: Callable, invertible_arg=None):

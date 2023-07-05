@@ -182,6 +182,7 @@ __all__ = [
     "positive",
     "negative",
     "interval",
+    "finit_set",
     "unit_interval",
     "unit_square",
     "unit_integer_interval",

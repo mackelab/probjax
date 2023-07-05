@@ -348,7 +348,11 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         is_known_invars = safe_map(lambda x: x is not None, known_invars)
         is_known_outvars = safe_map(lambda x: x is not None, known_outvars)
 
-        if all(is_known_outvars) and eqn.primitive in _CUSTOM_INVERSE_PROCESSING_RULES:
+        if eqn.primitive is jax.experimental.pjit.pjit_p:
+            return self._default_pjit(eqn, known_invars, known_outvars)
+        elif (
+            all(is_known_outvars) and eqn.primitive in _CUSTOM_INVERSE_PROCESSING_RULES
+        ):
             return self._default_custom_rule_apply(eqn, known_invars, known_outvars)
         elif is_univariate(eqn) and all(is_known_outvars):
             return self._default_univariate_inverse(eqn, known_invars, known_outvars)
@@ -433,6 +437,24 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
             self.log_dets[eqn.invars[1]] = log_det_previous + log_abs_det
             return [eqn.invars[1]], [invars]
 
+    def _default_pjit(self, eqn, known_invars, outvars):
+        jaxpr = eqn.params["jaxpr"]
+        sub_invars = jaxpr.jaxpr.invars
+        sub_outvars = jaxpr.jaxpr.outvars
+
+        subvars = sub_invars + sub_outvars
+        vars = eqn.invars + eqn.outvars
+
+        for v_sub, v in zip(subvars, vars):
+            if v_sub in self.log_dets:
+                self.log_dets[v] = self.log_dets[v_sub]
+
+        log_det_previous = sum([self.log_dets.get(v, 0.0) for v in eqn.outvars])
+        for v in outvars:
+            self.log_dets[v] = log_det_previous
+
+        # Pass logdet to outer scope
+
     def _default_custom_rule_apply(self, eqn, known_invars, known_outvars):
         primitive = eqn.primitive
         if primitive not in _CUSTOM_INVERSE_PROCESSING_RULES:
@@ -442,9 +464,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
             eqn, known_invars, known_outvars
         )
         vars = eqn.invars + eqn.outvars
-        log_det_previous = sum(
-            [self.log_dets.get(v, 0.0) for v in vars if v not in outvars]
-        )
+        log_det_previous = sum([self.log_dets.get(v, 0.0) for v in eqn.outvars])
         for v in outvars:
             self.log_dets[v] = log_det_previous
 
