@@ -142,7 +142,7 @@ ad.primitive_jvps[custom_inverse_call_p] = custom_inverse_jvp
 
 
 class custom_inverse:
-    def __init__(self, fun: Callable, static_argnums=()) -> None:
+    def __init__(self, fun: Callable, static_argnums=None) -> None:
         update_wrapper(self, fun)
         self.fun = fun
         self.static_argnums = static_argnums
@@ -157,26 +157,30 @@ class custom_inverse:
 
     def definv_and_logdet(self, inv_fun_and_log_det: Callable) -> Callable:
         self.inv_fun_and_log_det = inv_fun_and_log_det
-        self.inv_fun = lambda *args: inv_fun_and_log_det(*args)[0]
+        self.inv_fun = lambda *args, **kwargs: inv_fun_and_log_det(*args, **kwargs)[0]
         return inv_fun_and_log_det
 
-    def inv(self, *args):
-        return self.inv_fun(*args)
+    def inv(self, *args, **kwargs):
+        return self.inv_fun(*args, **kwargs)
 
-    def inv_and_logdet(self, *args):
-        return self.inv_fun_and_log_det(*args)
+    def inv_and_logdet(self, *args, **kwargs):
+        return self.inv_fun_and_log_det(*args, **kwargs)
 
-    def __call__(self, *args) -> Any:
+    def __call__(self, *args, **params) -> Any:
         name = getattr(self.fun, "__name__", str(self.fun))
         if not self.inv_fun:
             msg = f"No inverse defined for custom_inverse function {name} using definv."
             raise AttributeError(msg)
         inv_name = getattr(self.inv_fun, "__name__", str(self.inv_fun))
 
-        f = lu.wrap_init(self.fun)
-        f, dyn_args = argnums_partial(
-            f, self.static_argnums, args, require_static_args_hashable=False
-        )
+        f = lu.wrap_init(self.fun, params=params)
+        if self.static_argnums is None:
+            dyn_args = args
+        else:
+            f, dyn_args = argnums_partial(
+                f, self.static_argnums, args, require_static_args_hashable=False
+            )
+
         args_flat, in_tree = tree_flatten(dyn_args)
         jax_tree_fun, out_tree = flatten_fun_nokwargs(f, in_tree)  # type: ignore
         in_avals = tuple(safe_map(shaped_abstractify, args_flat))
@@ -187,13 +191,20 @@ class custom_inverse:
         forward_jaxpr = core.ClosedJaxpr(jaxpr, consts)
         out_tree = out_tree()
 
-        f_inv = lu.wrap_init(self.inv_fun_and_log_det)
-        f_inv, _ = argnums_partial(
-            f_inv, self.static_argnums, args, require_static_args_hashable=False
-        )
+        f_inv = lu.wrap_init(self.inv_fun_and_log_det, params=params)
+        if self.static_argnums is None:
+            dyn_args = args
+        else:
+            f_inv, dyn_args = argnums_partial(
+                f_inv, self.static_argnums, args, require_static_args_hashable=False
+            )
         jax_tree_inv_fun, out_tree_inv = flatten_fun_nokwargs(f_inv, in_tree)  # type: ignore
         debug = pe.debug_info(
-            self.inv_fun, in_tree, out_tree_inv, False, inv_name or "<unknown>"
+            self.inv_fun_and_log_det,
+            in_tree,
+            out_tree_inv,
+            False,
+            inv_name or "<unknown>",
         )
         jaxpr, _, consts = pe.trace_to_jaxpr_dynamic(jax_tree_inv_fun, in_avals, debug)
         inverse_jaxpr = core.ClosedJaxpr(jaxpr, consts)

@@ -161,15 +161,18 @@ def invert_convert_element_type(eqn, known_invars, known_outvars):
 @register_inverse_rule(jax.lax.slice_p)
 def invert_slice(eqn, known_invars, known_outvars):
     input = known_invars[0]
-    start_index = eqn.params["start_indices"][0]
+    start_index = eqn.params["start_indices"]
     limit_index = eqn.params["limit_indices"]
     invar = eqn.invars[0]
     in_aval = invar.aval
     if input is None:
         input = jnp.zeros(in_aval.shape, in_aval.dtype)
-    out1 = known_outvars[0]
-
-    new_input = jax.lax.dynamic_update_slice(input, out1, (jnp.asarray(start_index),))
+    out1 = known_outvars[0
+                         ]
+    while out1.ndim < input.ndim:
+        out1 = jnp.expand_dims(out1, axis=-1)
+    # print(input.shape, out1.shape, start_index, limit_index)
+    new_input = jax.lax.dynamic_update_slice(input, out1, start_index )
     return [invar], [new_input]
 
 
@@ -191,6 +194,7 @@ def has_registered_inverse(eqn) -> bool:
         primitive in _UNIVARITAE_INVERSE_REGISTRY
         or primitive in _BIVARIATE_INVERSE_REGISTRY
         or primitive in _CUSTOM_INVERSE_PROCESSING_RULES
+        or primitive is custom_inverse_call_p
     )
 
 
@@ -219,9 +223,8 @@ def value_and_log_det_diagonal(f):
     def log_det_fn(*args, **kwargs):
         args_at_least1d = [jnp.atleast_1d(arg) for arg in args]
         value, det = grad_fn(*args_at_least1d, **kwargs)
-        log_det = jnp.log(jnp.abs(det))
-
-        return value, log_det.sum()
+        log_det = jnp.log(jnp.abs(det)).reshape(value.shape)
+        return value, log_det
 
     return log_det_fn
 
@@ -258,11 +261,7 @@ class InverseProcessingRule(ProcessingRule):
 
         # print(is_known_invars, is_known_outvars)
 
-        if (
-            eqn.primitive is custom_inverse_call_p
-            and not any(is_known_invars)
-            and all(is_known_outvars)
-        ):
+        if eqn.primitive is custom_inverse_call_p and all(is_known_outvars):
             return self._default_custom_inverse_call_apply(
                 eqn, known_invars, known_outvars
             )
@@ -272,6 +271,8 @@ class InverseProcessingRule(ProcessingRule):
             return _CUSTOM_INVERSE_PROCESSING_RULES[eqn.primitive](
                 eqn, known_invars, known_outvars
             )
+        elif eqn.primitive is jax.experimental.pjit.pjit_p:
+            return None
         elif is_univariate(eqn) and all(is_known_outvars):
             return self._default_univariate_inverse(eqn, known_invars, known_outvars)
         elif is_bivariate(eqn) and all(is_known_outvars) and any(is_known_invars):
@@ -337,8 +338,12 @@ class InverseProcessingRule(ProcessingRule):
         inverse_jaxpr = eqn.params["inverse_jaxpr"]
         jaxpr = inverse_jaxpr.jaxpr
         consts = inverse_jaxpr.literals
-        out = jax.core.eval_jaxpr(jaxpr, *consts, *known_outvars)
-        return eqn.invars, out[:-1]
+        known_invals = [v for v in known_invars if v is not None]
+        out = jax.core.eval_jaxpr(jaxpr, consts, *known_invals, *known_outvars)
+        invars = [
+            eqn.invars[i] for i in range(len(eqn.invars)) if known_invars[i] is None
+        ]
+        return invars, out[:-1]
 
 
 class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
@@ -348,7 +353,11 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         is_known_invars = safe_map(lambda x: x is not None, known_invars)
         is_known_outvars = safe_map(lambda x: x is not None, known_outvars)
 
-        if eqn.primitive is jax.experimental.pjit.pjit_p:
+        if eqn.primitive is custom_inverse_call_p and all(is_known_outvars):
+            return self._default_custom_inverse_call_apply(
+                eqn, known_invars, known_outvars
+            )
+        elif eqn.primitive is jax.experimental.pjit.pjit_p:
             return self._default_pjit(eqn, known_invars, known_outvars)
         elif (
             all(is_known_outvars) and eqn.primitive in _CUSTOM_INVERSE_PROCESSING_RULES
@@ -474,12 +483,14 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         inverse_jaxpr = eqn.params["inverse_jaxpr"]
         jaxpr = inverse_jaxpr.jaxpr
         consts = inverse_jaxpr.literals
-        out = jax.core.eval_jaxpr(jaxpr, *consts, *known_outvars)
+        known_invals = [v for v in known_invars if v is not None]
+        known_invars = [
+            eqn.invars[i] for i in range(len(eqn.invars)) if known_invars[i] is None
+        ]
+        out = jax.core.eval_jaxpr(jaxpr, consts, *known_invals, *known_outvars)
         log_abs_det = out[-1]
-        log_det_previous = sum(
-            [self.log_dets.get(v, 0.0) for v in vars if v not in outvars]
-        )
-        for v in eqn.outvars:
+        log_det_previous = sum([self.log_dets.get(v, 0.0) for v in eqn.outvars])
+        for v in eqn.invars:
             self.log_dets[v] = log_det_previous + log_abs_det
         out = out[:-1]
-        return eqn.invars, out
+        return known_invars, out

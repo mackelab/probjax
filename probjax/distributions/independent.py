@@ -29,9 +29,9 @@ class Independent(Distribution):
         self.base_dist = base_dist
         self.reinterpreted_batch_ndims = reinterpreted_batch_ndims
 
-        batch_shape = base_dist.batch_shape[:reinterpreted_batch_ndims]
+        batch_shape = base_dist.batch_shape[:-reinterpreted_batch_ndims]
         event_shape = (
-            base_dist.batch_shape[reinterpreted_batch_ndims:] + base_dist.event_shape
+            base_dist.batch_shape[-reinterpreted_batch_ndims:] + base_dist.event_shape
         )
 
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)

@@ -78,6 +78,7 @@ def log_potential_fn(fun: Callable, *args, **kwargs):
 
     return log_potential
 
+
 def trace(fun: Callable, traced_vars=None):
     jaxpr_maker = jax.make_jaxpr(fun)
     processing_rule = TraceProcessingRule(traced_vars=traced_vars)
@@ -115,11 +116,13 @@ def inverse(fun: Callable, invertible_arg=None):
                 adjusted_invertible_arg = invertible_arg
             out_arg = [flatten_args[adjusted_invertible_arg]]
             flat_args = (
-                flatten_args[:adjusted_invertible_arg] + flatten_args[adjusted_invertible_arg + 1:] + out_arg
+                flatten_args[:adjusted_invertible_arg]
+                + flatten_args[adjusted_invertible_arg + 1 :]
+                + out_arg
             )
             const_invars = (
                 jaxpr.jaxpr.invars[:adjusted_invertible_arg]
-                + jaxpr.jaxpr.invars[adjusted_invertible_arg+1:]
+                + jaxpr.jaxpr.invars[adjusted_invertible_arg + 1 :]
             )
             out_invar = [jaxpr.jaxpr.invars[adjusted_invertible_arg]]
             print(const_invars)

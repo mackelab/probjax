@@ -67,6 +67,11 @@ class EqnEnvironment:
             eqns_index = self.G[v]
             map(self.write, eqns_index)
 
+        for i,eqn in enumerate(self.eqns):
+            if all(map(self.env.known, eqn.invars)):
+                self.write(i)
+
+
     def write(self, index: int):
         if index in self.processed_eqns:
             # Do not write processed equations
@@ -88,6 +93,7 @@ class EqnEnvironment:
 
     def pop(self) -> JaxprEqn:
         index = self.eqn_queue.pop()
+        # print(index)
         eqn = self.eqns[index]
         self.processed_eqns.add(index)
         return eqn

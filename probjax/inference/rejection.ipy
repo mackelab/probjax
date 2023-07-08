@@ -1,0 +1,56 @@
+import jax
+import jax.numpy as jnp
+
+from jax.scipy.special import logsumexp
+from jax.scipy.minimize import minimize
+
+from typing import Callable, Any, List
+from jaxtyping import Array, PyTree
+
+from probjax.distributions import Normal, Distribution
+
+
+def estimate_ratio_bound(
+    log_ratio_fn: Callable, trial_samples: Array, tol=1e-4
+) -> Array:
+    """
+    Estimate the bound for the log density ratio function.
+
+    Args:
+        log_ratio_fn: A function that takes in a sample
+
+    Returns:
+        The estimated bound.
+    """
+
+    @jax.vmap
+    def f_min(x):
+        return minimize(lambda x: -jnp.sum(log_ratio_fn(x)), x, method="BFGS", tol=tol)
+
+    result = f_min(trial_samples)
+    succes = jnp.any(result.success)
+    if not succes:
+        raise ValueError(
+            "Minimization failed, density ratio seems to be unbounded! Please choose a proposal with a larger support i.e. increase variance."
+        )
+    else:
+        return jnp.max(-result.fun)
+    
+
+
+
+class RejectionSampler:
+    def __init__(self, potential_fn: Callable, proposal: Distribution) -> None:
+        self._potential_fn = potential_fn
+        self._proposal = proposal
+        self._log_density_ratio_fn = lambda x: self._potential_fn(
+            x
+        ) - self._proposal.log_prob(x)
+
+    def sample(self, key, num_samples: int = 1, **kwargs) -> Array:
+        key, subkey = jax.random.split(key)
+        x = self._proposal.sample(subkey, num_samples, **kwargs)
+        logp = self._potential_fn(x)
+        logq = self._proposal.log_prob(x)
+        accept = logp - logq > jax.random.uniform(key, shape=logp.shape)
+        return x[accept]

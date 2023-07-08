@@ -135,7 +135,7 @@ def to_networkx(
         for n in out_vars:
             graph.add_edge(f"f{i}", var_name_fn(n))
             if eqn.primitive is rv_p:
-                graph.nodes[var_name_fn(n)]["tag"] = "latent"
+                graph.nodes[var_name_fn(n)]["tag"] = "random_variable"
 
     return graph
 
@@ -150,7 +150,9 @@ def moralize_dag(dag: nx.DiGraph) -> nx.Graph:
     return moral_graph
 
 
-def subgraph(graph: nx.DiGraph | nx.Graph, nodes: Sequence[str]) -> nx.DiGraph | nx.Graph:
+def subgraph(
+    graph: nx.DiGraph | nx.Graph, nodes: Sequence[str]
+) -> nx.DiGraph | nx.Graph:
     subgraph = graph.__class__()
     for node in nodes:
         subgraph.add_node(node, **graph.nodes[node])
@@ -159,13 +161,18 @@ def subgraph(graph: nx.DiGraph | nx.Graph, nodes: Sequence[str]) -> nx.DiGraph |
                 subgraph.add_edge(node, node2)
     return subgraph
 
+def var_name_fn(n) -> str:
+    if isinstance(n, Literal):
+        return str(n)[:3]
+    else:
+        return str(n)
 
 class JaxprGraph:
     def __init__(self, jaxpr: Jaxpr, graph: nx.DiGraph | None = None) -> None:
         self._jaxpr = jaxpr
         if graph is None:
             self._graph = to_networkx(
-                jaxpr, lambda x: str(x), lambda x: str(x.primitive.name)
+                jaxpr,var_name_fn, lambda x: str(x.primitive.name)
             )
 
     @property
@@ -185,7 +192,9 @@ class JaxprGraph:
         nodes = AGraph.nodes()
         for n in nodes:
             attributes = dict(n.attr)
-            n.attr.update(COMPUTE_GRAPH_NODE_STYLES[attributes.get("tag", "latent")])
+            n.attr.update(
+                COMPUTE_GRAPH_NODE_STYLES[attributes.get("tag", "intermediate")]
+            )
 
         # Left to right in topological order
         AGraph.graph_attr["rankdir"] = "LR"
@@ -219,7 +228,7 @@ class DirectedGraphicalModel(DirectedVariableGraph):
         super(DirectedGraphicalModel, self).__init__(jaxpr, graph)
         random_vars = []
         for n, tag in nx.get_node_attributes(self._graph, "tag").items():
-            if tag == "latent" or tag == "invar" or tag == "outvar":
+            if tag == "random_variable" or tag == "invar" or tag == "outvar":
                 random_vars.append(n)
         self._graph = subgraph(self._graph, random_vars)
 
@@ -229,6 +238,6 @@ class UndirectedGraphicalModel(UndirectedVariableGraph):
         super(UndirectedGraphicalModel, self).__init__(jaxpr, graph)
         random_vars = []
         for n, tag in nx.get_node_attributes(self._graph, "tag").items():
-            if tag == "latent" or tag == "invar" or tag == "outvar":
+            if tag == "random_variable" or tag == "invar" or tag == "outvar":
                 random_vars.append(n)
         self._graph = subgraph(self._graph, random_vars)
