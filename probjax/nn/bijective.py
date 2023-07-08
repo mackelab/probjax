@@ -5,6 +5,9 @@ import jax.numpy as jnp
 
 from jax import Array
 
+from probjax.core.custom_primitives.custom_inverse import custom_inverse
+from functools import partial
+
 
 def _normalize_bin_sizes(
     unnormalized_bin_sizes: Array, total_size: float, min_bin_size: float
@@ -226,5 +229,55 @@ def _rational_quadratic_spline_inv(
     return x, logdet
 
 
-def rational_quadratic_spline(params: Array, x: Array, range_min=-5., range_max=5., boundary_slopes: str = 'unconstrained',min_bin_size: float = 1e-4,min_knot_slope: float = 1e-4):
-    pass
+@partial(custom_inverse)
+def rational_quadratic_spline(
+    params: Array,
+    x: Array,
+    range_min_x: float = -1.0,
+    range_max_x: float = 1.0,
+    range_min_y: float = -1.0,
+    range_max_y: float = 1.0,
+    min_bin_size: float = 1e-4,
+    min_knot_slope: float = 1e-4,
+):
+    x_pos, y_pos, knot_slopes = jnp.split(params, 3, axis=-1)
+    num_bins = x_pos.shape[-1] - 1
+    knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
+    # knot_slopes = jnp.exp(knot_slopes)
+    x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
+        range_max_x - range_min_x
+    ) + range_min_x
+    y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
+        range_max_y - range_min_y
+    ) + range_min_y
+
+    #print(x.shape, x_pos.shape, y_pos.shape, knot_slopes.shape)
+    y, _ = _rational_quadratic_spline_fwd(x, x_pos, y_pos, knot_slopes)
+    return y
+
+
+def inv_rational_quadratic_spline(
+    params: Array,
+    x: Array,
+    range_min_x=-1.0,
+    range_max_x=1.0,
+    range_min_y=-1.0,
+    range_max_y=1.0,
+    min_bin_size=1e-4,
+    min_knot_slope: float = 1e-4,
+):
+    x_pos, y_pos, knot_slopes = jnp.split(params, 3, axis=-1)
+    num_bins = x_pos.shape[-1] - 1
+    knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
+    # knot_slopes = jnp.exp(knot_slopes)
+    x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
+        range_max_x - range_min_x
+    ) + range_min_x
+    y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
+        range_max_y - range_min_y
+    ) + range_min_y
+    y, log_det = _rational_quadratic_spline_inv(x, x_pos, y_pos, knot_slopes)
+    return y, jnp.squeeze(log_det)
+
+
+rational_quadratic_spline.definv_and_logdet(inv_rational_quadratic_spline)

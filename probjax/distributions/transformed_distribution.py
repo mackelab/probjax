@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+import numpy as np
 
 from jax.scipy.special import logsumexp
 from jax.scipy.stats import norm
@@ -43,7 +44,8 @@ class TransformedDistribution(Distribution):
         event_shape = base_dist.event_shape
 
         self._transformation = transformation
-        self._inv_and_logdet = jax.vmap(inverse_and_logabsdet(transformation))
+        # We vmap as we want the individual log dets!
+        self._inv_and_logdet = inverse_and_logabsdet(transformation)
 
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)
 
@@ -55,14 +57,22 @@ class TransformedDistribution(Distribution):
     def support(self):
         return self.base_dist.support
 
+    def transform(self, x):
+        return self._transformation(x)
+
     def rsample(self, key, sample_shape=()):
-        samples = self.base_dist.rsample(key, sample_shape)
-        return self._transformation(samples)
+        num_samples = np.prod(sample_shape)
+        samples = self.base_dist.rsample(key, (num_samples,))
+        return self.transform(samples).reshape(sample_shape + self.event_shape)
 
     def log_prob(self, value):
+        shape = value.shape
+        value = jnp.asarray(value).reshape(-1, *self.event_shape)
         inv_value, log_det = self._inv_and_logdet(value)
-        log_prob = self.base_dist.log_prob(inv_value)
-        return log_prob + log_det
+        #print(log_det, inv_value)
+        log_prob = self.base_dist.log_prob(inv_value) + log_det
+        log_prob = log_prob.reshape(shape[:-len(self.event_shape)])
+        return log_prob
 
     # def cdf(self, value):
     #     transformed_value = self.transformation.inv(value)

@@ -25,7 +25,7 @@ class TraceProcessingRule(ForwardProcessingRule):
         outvars, outvals = super().__call__(eqn, known_inputs, _)
         for o, v in zip(outvars, outvals):
             if self.traced_vars is None or str(o) in self.traced_vars:
-                self.traced_samples[o] = v
+                self.traced_samples[str(o)] = v
         return outvars, outvals
     
 # TODO propagate constraints

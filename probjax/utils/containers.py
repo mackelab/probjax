@@ -56,9 +56,9 @@ class PriorityQueue:
         """
         if element in self.entry_finder:
             entry = self.entry_finder[element]
-            self.heap.remove(entry)
-            heapq.heappush(self.heap, [new_cost, entry[1], element])
-
+            entry[0] = new_cost  # Update the cost in the entry
+            heapq.heapify(self.heap)  # Reorder the heap based on the updated cost
+            self.entry_finder[element] = entry  # Update the entry in the dictionary
     def is_empty(self):
         """This function checks if the priority queue is empty."""
         return len(self.entry_finder) == 0
