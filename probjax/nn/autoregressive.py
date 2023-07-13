@@ -7,6 +7,9 @@ from jaxtyping import Array, PyTree
 
 from typing import Callable, Any
 
+from probjax.core.custom_primitives.custom_inverse import custom_inverse
+from probjax.core.transformation import inverse_and_logabsdet, inverse
+
 
 def autoregressive_mask_getter(d: int, first_layer: bool = False):
     """Custom getter for autoregressive masks.
@@ -49,7 +52,7 @@ class MaskedMLP(MLP):
         self.custom_mask_getter = custom_mask_getter
         self.context_layer = hk.Linear(output_sizes[0])
 
-    def __call__(self, inputs: Array, context: Array | None, rng=None) -> Array:
+    def __call__(self, inputs: Array, context: Array | None = None, rng=None) -> Array:
         num_layers = len(self.layers)
         in_dim = inputs.shape[-1]
         out = inputs
@@ -58,7 +61,7 @@ class MaskedMLP(MLP):
             with hk.custom_getter(
                 self.custom_mask_getter(
                     in_dim,
-                    last_layer=i == 0,
+                    first_layer=i == 0,
                 )
             ):
                 out = layer(out)
@@ -71,13 +74,54 @@ class MaskedMLP(MLP):
         return out
 
 
-class AutoregressiveMLP(MaskedMLP):
+def autoregressive_transform(bijector, input_dim, output_sizes, **kwargs):
+    @hk.without_apply_rng
+    @hk.transform
+    def forward(x):
+        conditionor = MaskedMLP(autoregressive_mask_getter, output_sizes, **kwargs)
+        params = conditionor(x)
+        y = bijector(params, x)
+        return y
+
+    @hk.without_apply_rng
+    @hk.transform
+    def inv(y):
+        conditionor = MaskedMLP(autoregressive_mask_getter, output_sizes, **kwargs)
+        x = jnp.ones(y.shape[:-1] + (input_dim,))
+        for i in range(input_dim):
+            params = conditionor(x)
+            bijective_inv = inverse_and_logabsdet(lambda x: bijector(params, x))
+            x, log_det = bijective_inv(y)
+        return x, log_det
+
+    init_fn, apply_fn = forward.init, forward.apply
+    _, apply_inv = inv.init, inv.apply
+
+    fun = custom_inverse(apply_fn)
+    fun.definv_and_logdet(apply_inv)
+
+    return init_fn, fun
+
+
+class AutoregressiveMLP:
     def __init__(self, bijector, num_bijector_params, hidden_dims=[50, 50], **kwargs):
-        output_sizes = hidden_dims + [num_bijector_params]
-        super().__init__(autoregressive_mask_getter, output_sizes, **kwargs)
+        self.output_sizes = hidden_dims + [num_bijector_params]
+        self.conditionor = MaskedMLP(
+            autoregressive_mask_getter, self.output_sizes, **kwargs
+        )
         self.bijector = bijector
         self.num_bijector_params = num_bijector_params
 
-    def __call__(self, inputs: Array, context: Array | None, rng=None) -> Array:
-        params = super().__call__(inputs, context, rng)
-        return self.bijector(params, inputs)
+    def __call__(self, inputs: Array, context: Array | None = None, rng=None) -> Array:
+        init_rng = hk.next_rng_keys(1)[0] if hk.running_init() else None
+        input_dim = inputs.shape[-1]
+        init_fn, apply_fn = autoregressive_transform(
+            self.bijector, input_dim, self.output_sizes
+        )
+        init = hk.lift(init_fn)
+
+        def f(x):
+            params = init(init_rng, x)
+            return apply_fn(params, x)
+
+        return f(inputs)

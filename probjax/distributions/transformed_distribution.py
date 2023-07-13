@@ -69,7 +69,6 @@ class TransformedDistribution(Distribution):
         shape = value.shape
         value = jnp.asarray(value).reshape(-1, *self.event_shape)
         inv_value, log_det = self._inv_and_logdet(value)
-        #print(log_det, inv_value)
         log_prob = self.base_dist.log_prob(inv_value) + log_det
         log_prob = log_prob.reshape(shape[:-len(self.event_shape)])
         return log_prob
