@@ -12,7 +12,7 @@ class CouplingMLP(hk.Module):
         split_index: int,
         bijector: Callable[[Array, Array], Array],
         num_bijector_params: int,
-        context_size: int = 0,
+        context: Array | None = None,
         hidden_dims: List[int] = [
             50,
         ],
@@ -21,13 +21,14 @@ class CouplingMLP(hk.Module):
     ):
         super().__init__(name=name)
         self.split_index = split_index
-        self.context_size = context_size
+        self.context = context
+        self.context_size = self.context.shape[-1] if self.context is not None else 0
         self.bijector = bijector
         self.num_bijector_params = num_bijector_params
         self._hidden_dims = hidden_dims
         self._mlp_params = kwargs
 
-    def __call__(self, x: Array, context: Array | None = None, *kwargs) -> Array:
+    def __call__(self, x: Array) -> Array:
         conditionor = hk.nets.MLP(
             [self.split_index + self.context_size]
             + self._hidden_dims
@@ -36,10 +37,10 @@ class CouplingMLP(hk.Module):
         )
         x1, x2 = jnp.split(x, [self.split_index], axis=-1)
         y1 = x1
-        if context is not None:
-            x1 = jnp.concatenate([x1, context], axis=-1)
+        if self.context is not None:
+            x1 = jnp.concatenate([x1, self.context], axis=-1)
         params = conditionor(x1)
         y2 = self.bijector(params, x2)
-  
+
         y = jnp.concatenate([y1, y2], axis=-1)
         return y

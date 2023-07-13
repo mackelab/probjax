@@ -35,7 +35,7 @@ class Normal(ExponentialFamily):
     arg_constraints = {"loc": real, "scale": positive}
     support = real
 
-    def __init__(self, loc: Array, scale: Array):
+    def __init__(self, loc: Array | float, scale: Array | float):
         loc = jnp.asarray(loc)
         scale = jnp.asarray(scale)
         self.loc, self.scale = jnp.broadcast_arrays(loc, scale)

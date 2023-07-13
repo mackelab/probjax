@@ -79,7 +79,7 @@ class MCMCKernel:
         pass
 
     # Only required if not symmetric
-    def log_potential(self, x, **params):
+    def log_potential(self, x, x_new, **params):
         pass
 
     def init_params(self) -> dict:
@@ -101,6 +101,9 @@ class GaussianKernel(MCMCKernel):
 
     def _sample(self, key, x, step_size=0.1):
         return x + jrandom.normal(key, shape=x.shape) * self.step_size
+
+    def log_potential(self, x, x_new, **params):
+        return -0.5/self.step_size**2 * jnp.sum((x_new - x) ** 2, axis=-1) + jnp.log(self.step_size)
 
 
 class UniformKernel(MCMCKernel):
@@ -169,9 +172,9 @@ class HMCKernel(GradientBasedMCMCKernel):
     def _sample(self, key, x):
         # Sample random momentum
         momentum = jrandom.normal(key, shape=x.shape)
-        kinetic_energey = 0.5 * jnp.sum(momentum ** 2, axis=-1)
+        kinetic_energey = 0.5 * jnp.sum(momentum**2, axis=-1)
 
-        def body_fn(i,carry):
+        def body_fn(i, carry):
             x, momentum = carry
             _, grad = self._potential_value_and_grad_fn(x)
             momentum += 0.5 * self.step_size * grad
@@ -179,14 +182,13 @@ class HMCKernel(GradientBasedMCMCKernel):
             _, grad = self._potential_value_and_grad_fn(x)
             momentum += 0.5 * self.step_size * grad
             return (x, momentum)
-        
-        (x_new, momentum) = jax.lax.fori_loop(0, self.num_steps,body_fn, (x, momentum))
-        new_kinetic_energy = 0.5 * jnp.sum(momentum ** 2, axis=-1)
-        return x_new 
-    
+
+        (x_new, momentum) = jax.lax.fori_loop(0, self.num_steps, body_fn, (x, momentum))
+        new_kinetic_energy = 0.5 * jnp.sum(momentum**2, axis=-1)
+        return x_new
+
 
 class SliceKernel(PotentialBasedMCMCKernel):
-
     def __init__(self, bracket_step_size=0.1, slice_direction="axis") -> None:
         super().__init__()
         self.bracket_step_size = bracket_step_size
@@ -206,20 +208,19 @@ class SliceKernel(PotentialBasedMCMCKernel):
         else:
             raise ValueError("Invalid slice direction")
         return direction
-    
+
     def _sample(self, key, x):
-        key_direction, key_bracket, key_shrinkage = jrandom.split(key,3)
+        key_direction, key_bracket, key_shrinkage = jrandom.split(key, 3)
         direction = self._sample_slice_direction(key_direction, x)
         u = jrandom.uniform(key_bracket, shape=x.shape)
         potential = self.potential_fn(x)
         y = jnp.log(u) + potential
-    
 
         # Bracket expansion phase
         def cond_fn(carry):
             x, y, direction, mask = carry
             return jnp.any(mask)
-        
+
         def body_fn(carry):
             x, y, direction, mask = carry
 
@@ -229,34 +230,40 @@ class SliceKernel(PotentialBasedMCMCKernel):
                 potential = self.potential_fn(x)
                 mask = potential > y
                 return x, mask
-            
+
             # If we don't need to evaluate the potential, just return the current x
             def finished_x(x, y, direction):
                 return x, False
-            
-            x, mask = jax.vmap(jax.lax.cond, in_axes=(0, None, None, 0,0,0))(mask, update_x, finished_x, x, y, direction)
+
+            x, mask = jax.vmap(jax.lax.cond, in_axes=(0, None, None, 0, 0, 0))(
+                mask, update_x, finished_x, x, y, direction
+            )
 
             return (x, y, direction, mask)
-        
-        x_upper, _, _, _ = jax.lax.while_loop(cond_fn, body_fn, (x, y, direction, jnp.ones_like(y, dtype=bool)))
-        x_lower, _, _, _ = jax.lax.while_loop(cond_fn, body_fn, (x, y, -direction, jnp.ones_like(y, dtype=bool)))
 
+        x_upper, _, _, _ = jax.lax.while_loop(
+            cond_fn, body_fn, (x, y, direction, jnp.ones_like(y, dtype=bool))
+        )
+        x_lower, _, _, _ = jax.lax.while_loop(
+            cond_fn, body_fn, (x, y, -direction, jnp.ones_like(y, dtype=bool))
+        )
 
         # Shrinkage phase requires rejection!
         key_shrinkage, key_rejections = jrandom.split(key_shrinkage)
-        x_new = jrandom.uniform(key_shrinkage, shape=x.shape) * (x_upper - x_lower) + x_lower
+        x_new = (
+            jrandom.uniform(key_shrinkage, shape=x.shape) * (x_upper - x_lower)
+            + x_lower
+        )
         # potential_new = self.potential_fn(x_new)
         # rejection_mask = potential_new < y
 
         # def cond_fn2(carry):
         #     x_new,x_lower, x_upper, y, mask = carry
         #     return jnp.any(mask)
-        
+
         # def body_fn2(carry):
         #     x_new,x_lower, x_upper, y, mask = carry
 
         #     def update_x(x_lower, x_upper, y):
-        #         x_lower 
+        #         x_lower
         return x_new
-
-

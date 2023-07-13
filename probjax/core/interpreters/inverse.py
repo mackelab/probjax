@@ -112,6 +112,7 @@ def invert_concat(eqn, known_invars, known_outvars):
     split_dimensions = safe_map(lambda x: x.shape[dim], in_avals)
     # Do not trace this with Jax -> Use numpy
     split_indices = np.cumsum(split_dimensions)[:-1].tolist()
+
     in_vars = jnp.split(
         out,
         split_indices,
@@ -132,8 +133,14 @@ def invert_gather(eqn, known_invars, known_outvars):
     if input is None:
         input_aval = eqn.invars[0].aval
         input = jnp.zeros(input_aval.shape, input_aval.dtype)
+    primitive = eqn.primitive
+    params = eqn.params
+    subfuns, bind_params = primitive.get_bind_params(params)
+    new_index = jnp.argsort(index, axis=0)
+    out = primitive.bind(out, new_index, *subfuns, **bind_params)
+    out = out.reshape(input.shape)
 
-    return [eqn.invars[0]], [input.at[index].set(out.reshape(index.shape))]
+    return [eqn.invars[0]], [out]
 
 
 @register_inverse_rule(jax.lax.reshape_p)
@@ -167,12 +174,11 @@ def invert_slice(eqn, known_invars, known_outvars):
     in_aval = invar.aval
     if input is None:
         input = jnp.zeros(in_aval.shape, in_aval.dtype)
-    out1 = known_outvars[0
-                         ]
+    out1 = known_outvars[0]
     while out1.ndim < input.ndim:
         out1 = jnp.expand_dims(out1, axis=-1)
     # print(input.shape, out1.shape, start_index, limit_index)
-    new_input = jax.lax.dynamic_update_slice(input, out1, start_index )
+    new_input = jax.lax.dynamic_update_slice(input, out1, start_index)
     return [invar], [new_input]
 
 
@@ -204,6 +210,7 @@ def inverse_cost_fn(eqn, known_invars, known_outvars):
         return 0
     elif (
         eqn.primitive is jax.lax.gather_p
+        and all(known_outvars)
         or eqn.primitive is jax.lax.slice_p
         or eqn.primitive is jax.experimental.pjit.pjit_p
     ):
@@ -217,13 +224,21 @@ def inverse_cost_fn(eqn, known_invars, known_outvars):
 
 def value_and_log_det_diagonal(f):
     # This assumes that the jacobian is diagonal!
-    f_sum = lambda *args, **kwargs: jnp.sum(f(*args, **kwargs))
-    grad_fn = jax.vmap(jax.value_and_grad(f_sum))
+    # f_sum = lambda *args, **kwargs: jnp.sum(f(*args, **kwargs))
+    grad_fn = jax.value_and_grad(f)
 
     def log_det_fn(*args, **kwargs):
         args_at_least1d = [jnp.atleast_1d(arg) for arg in args]
-        value, det = grad_fn(*args_at_least1d, **kwargs)
-        log_det = jnp.log(jnp.abs(det)).reshape(value.shape)
+        args_at_least1d = jnp.broadcast_arrays(*args_at_least1d)
+        n_dim = args_at_least1d[0].ndim
+        vmaped_grad_fn = grad_fn
+        for _ in range(n_dim):
+            vmaped_grad_fn = jax.vmap(vmaped_grad_fn)  #
+        value, det = vmaped_grad_fn(*args_at_least1d, **kwargs)
+
+        log_det = jnp.log(jnp.abs(det))
+        while log_det.ndim > 1:
+            log_det = jnp.sum(log_det, axis=-1)
         return value, log_det
 
     return log_det_fn
@@ -350,6 +365,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
     log_dets = {}
 
     def __call__(self, eqn, known_invars, known_outvars):
+        # print(self.log_dets)
         is_known_invars = safe_map(lambda x: x is not None, known_invars)
         is_known_outvars = safe_map(lambda x: x is not None, known_outvars)
 
@@ -357,12 +373,13 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
             return self._default_custom_inverse_call_apply(
                 eqn, known_invars, known_outvars
             )
-        elif eqn.primitive is jax.experimental.pjit.pjit_p:
-            return self._default_pjit(eqn, known_invars, known_outvars)
         elif (
             all(is_known_outvars) and eqn.primitive in _CUSTOM_INVERSE_PROCESSING_RULES
         ):
             return self._default_custom_rule_apply(eqn, known_invars, known_outvars)
+        elif eqn.primitive is jax.experimental.pjit.pjit_p:
+            return self._default_pjit(eqn, known_invars, known_outvars)
+
         elif is_univariate(eqn) and all(is_known_outvars):
             return self._default_univariate_inverse(eqn, known_invars, known_outvars)
         elif is_bivariate(eqn) and all(is_known_outvars) and any(is_known_invars):
@@ -428,8 +445,8 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
                 subfuns, bind_params = inv_primitive.get_bind_params(eqn.params)
                 invars = inv_primitive.bind(*subfuns, *args, **bind_params)
 
-                return jnp.sum(invars)
-
+                return invars
+        
             eval_fn = value_and_log_det_diagonal(f)
             invars, log_abs_det = eval_fn(input1, input2)
         else:
