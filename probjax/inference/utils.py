@@ -1,48 +1,65 @@
+from typing import Callable, Union, Tuple
+from jaxtyping import PyTree, Array
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+from functools import wraps, partial
 
 
-# def flatten_potential_fn(potential_fn: Callable, in_vals: PyTree):
-#     """Process the potential function to return a function that takes in a single argument."""
-#     leaves, in_tree = jax.tree_util.tree_flatten(in_vals)
+def flatten_fun(fun: Callable, in_tree: PyTree) -> Callable:
+    """Flattens a function and its input tree."""
 
-#     # Casting to tuple to make them hashable -> static_argnums
-#     shapes = tuple(jax.tree_map(lambda x: jnp.shape(x), leaves))
-#     lengths = jax.tree_map(lambda x: jnp.size(x), leaves)
-#     cum_lengths = tuple(accumulate(lengths))[:-1]
+    @wraps(fun)
+    def flat_fun(*args):
+        input = jax.tree_util.tree_unflatten(in_tree, args)
+        return fun(input)
 
-#     def _flatten(x):
-#         leaves, _ = jax.tree_util.tree_flatten(x)
-#         flatten_leaves = jax.tree_map(lambda x: jnp.ravel(x), leaves)
-#         return jnp.concatenate(flatten_leaves)
-
-#     @partial(jax.jit, static_argnums=(1, 2))
-#     def _unflatten(x, cum_lengths, shapes):
-#         flattened_leaves = jnp.split(x, cum_lengths)
-#         leaves = jax.tree_map(
-#             lambda x, s: jnp.reshape(x, s), tuple(flattened_leaves), shapes
-#         )
-#         return jax.tree_util.tree_unflatten(in_tree, leaves)
-
-#     def _potential_fn(x):
-#         x = _unflatten(x, cum_lengths, shapes)
-#         print(x)
-#         return potential_fn(*x)
-
-#     return _flatten, _unflatten, _potential_fn
+    return flat_fun
 
 
-# def sliced_potential_fn(flatten_potential_fn, loc, direction):
-#     """Returns a function that slices the potential function in a given direction."""
+def flatten_and_concat_fun(fun: Callable, in_vals: PyTree):
+    """Process the potential function to return a function that takes in a single argument."""
+    leaves, in_tree = jax.tree_util.tree_flatten(in_vals)
 
-#     def _sliced_potential_fn(t):
-#         return flatten_potential_fn(loc + t * direction)
+    # Casting to tuple to make them hashable -> static_argnums
+    shapes = jax.tree_map(lambda x: jnp.shape(x), leaves)
+    lengths = jax.tree_map(lambda x: jnp.size(x), leaves)
+    cum_lengths = tuple(np.cumsum(lengths))[:-1]
 
-#     return _sliced_potential_fn
+    # Has only a single argument!
+    def _flatten(*args):
+        leaves, _ = jax.tree_util.tree_flatten(args)
+        flatten_leaves = jax.tree_map(lambda x: jnp.ravel(x), leaves)
+        return jnp.concatenate(flatten_leaves)
+
+    def _unflatten(x):
+        flattened_leaves = jnp.split(x, cum_lengths)
+        leaves = jax.tree_map(
+            lambda x, s: jnp.reshape(x, s), tuple(flattened_leaves), shapes
+        )
+        return jax.tree_util.tree_unflatten(in_tree, leaves)
+
+    def _flatten_fun(x):
+        x = _unflatten(x)
+        return fun(*x)
+
+    return _flatten, _unflatten, _flatten_fun
 
 
-# def conditional_potential_fn(flatten_potential_fn, x, indices):
-#     """Returns a function that slices the potential function in a given direction."""
+def sliced_potential_fn(flatten_potential_fn, loc, direction):
+    """Returns a function that slices the potential function in a given direction."""
 
-#     def _conditional_potential_fn(sub_x):
-#         return flatten_potential_fn(x.at[indices].set(sub_x))
+    def _sliced_potential_fn(t):
+        return flatten_potential_fn(loc + t * direction)
 
-#     return _conditional_potential_fn
+    return _sliced_potential_fn
+
+
+def conditional_potential_fn(flatten_potential_fn, x, indices):
+    """Returns a function that slices the potential function in a given direction."""
+
+    def _conditional_potential_fn(sub_x):
+        return flatten_potential_fn(x.at[indices].set(sub_x))
+
+    return _conditional_potential_fn

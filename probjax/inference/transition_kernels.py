@@ -53,7 +53,14 @@ class MCMCState:
         return cls(*children)
 
 
+def unzip_vals(states: PyTree[MCMCState] | MCMCState) -> PyTree[Array] | Array:
+    """Unzips the states into a tuple of (x, key)"""
+    x = jax.tree_map(lambda x: x.x, states, is_leaf=lambda x: isinstance(x, MCMCState))
+    return x
+
+
 class MCMCKernel:
+
     requires_mh: bool = True
     requires_potential: bool = False
     symmetric: bool = True
@@ -95,29 +102,6 @@ class MCMCKernel:
         return stats
 
 
-class GaussianKernel(MCMCKernel):
-    def __init__(self, step_size: float = 0.1) -> None:
-        self.step_size = step_size
-
-    def _sample(self, key, x, step_size=0.1):
-        return x + jrandom.normal(key, shape=x.shape) * self.step_size
-
-    def log_potential(self, x, x_new, **params):
-        return -0.5/self.step_size**2 * jnp.sum((x_new - x) ** 2, axis=-1) + jnp.log(self.step_size)
-
-
-class UniformKernel(MCMCKernel):
-    def __init__(self, step_size: float = 0.1) -> None:
-        self.step_size = step_size
-
-    def _sample(self, key, x, step_size=0.1):
-        return (
-            x
-            + jrandom.uniform(key, shape=x.shape) * 2 * self.step_size
-            - self.step_size
-        )
-
-
 class PotentialBasedMCMCKernel(MCMCKernel):
     requires_potential: bool = True
     _potential_fn: Callable
@@ -135,6 +119,7 @@ class PotentialBasedMCMCKernel(MCMCKernel):
         return self
 
 
+
 class GradientBasedMCMCKernel(PotentialBasedMCMCKernel):
     def set_potential_fn(self, potential_fn: Callable[..., Any]):
         def _potential_fn(x):
@@ -143,6 +128,87 @@ class GradientBasedMCMCKernel(PotentialBasedMCMCKernel):
         self._potential_value_and_grad_fn = jax.vmap(jax.value_and_grad(_potential_fn))
         return super().set_potential_fn(potential_fn)
 
+
+class MetropolisHastingsKernel(PotentialBasedMCMCKernel):
+    requires_potential: bool = True
+    requires_mh: bool = False
+    symmetric: bool = True
+
+    def __init__(self, inner_kernel: PyTree[MCMCKernel] | MCMCKernel) -> None:
+        super().__init__()
+        self.inner_kernel = inner_kernel
+
+    def __call__(
+        self, state: PyTree[MCMCState] | MCMCState
+    ) -> PyTree[MCMCState] | MCMCState:
+        new_state = self.inner_kernel(state)
+        key, key_accept = jnp.split(new_state.key)
+        val_old, val_new = unzip_vals((state, new_state))
+        # First also check if we cached evaluations in the state!
+        logratio = self._mh_hastings_logratio(val_old, val_new)
+        accept = jnp.log(jrandom.uniform(key, logratio.shape)) < logratio
+        # Update the state
+        val = jax.tree_map(
+            lambda v_new, v_old: jnp.where(accept, v_new, v_old),
+            val_new,
+            val_old,
+        )
+        new_state = jax.tree_map(
+            lambda s, v: s.set_x(v),
+            new_state,
+            val,
+            is_leaf=lambda x: isinstance(x, MCMCState),
+        )
+
+
+        return new_state
+
+    def _mh_hastings_logratio(
+        self,
+        val_old: PyTree[Array] | Array,
+        val_new: PyTree[Array] | Array,
+    ) -> Array:
+        logratio = self.potential_fn(*val_new) - self.potential_fn(*val_old)
+
+        # Proposal ratio
+        def f(k, x_old, x_new):
+            if k.symmetric:
+                return 0.0
+            else:
+                return k.log_potential(x_old, x_new) - k.log_potential(x_new, x_old)
+
+        logratio += jax.tree_util.tree_reduce(
+            lambda x, y: x + y,
+            jax.tree_util.tree_map(f, self.inner_kernel, val_old, val_new),
+        )
+
+        return jnp.clip(logratio, a_max=0)
+
+
+
+class GaussianKernel(MCMCKernel):
+    def __init__(self, step_size: float = 0.1) -> None:
+        self.step_size = step_size
+
+    def _sample(self, key, x, step_size=0.1):
+        return x + jrandom.normal(key, shape=x.shape) * self.step_size
+
+    def log_potential(self, x, x_new, **params):
+        return -0.5 / self.step_size**2 * jnp.sum(
+            (x_new - x) ** 2, axis=-1
+        ) + jnp.log(self.step_size)
+
+
+class UniformKernel(MCMCKernel):
+    def __init__(self, step_size: float = 0.1) -> None:
+        self.step_size = step_size
+
+    def _sample(self, key, x, step_size=0.1):
+        return (
+            x
+            + jrandom.uniform(key, shape=x.shape) * 2 * self.step_size
+            - self.step_size
+        )
 
 class LangevinDynKernel(GradientBasedMCMCKernel):
     requires_mh: bool = False

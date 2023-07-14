@@ -10,7 +10,7 @@ from jaxtyping import Array
 
 
 class IntervenedProcessingRule(ForwardProcessingRule):
-    joint_samples: dict = {}
+    interventions: dict = {}
 
     def __init__(self, interventions: dict[str, Array]) -> None:
         """Subset of random variables to be sampled jointly. By default all are sampled!
@@ -26,10 +26,13 @@ class IntervenedProcessingRule(ForwardProcessingRule):
         if eqn.primitive is rv_p:
             name = eqn.params["name"]
             if name in self.interventions:
-                outvars = eqn.outvars
-                outvals = [self.interventions[name]]
-            else:
-                outvars, outvals = super().__call__(eqn, known_inputs, _)
+                new_sampling_jaxpr = jax.make_jaxpr(
+                    lambda *args: self.interventions[name]
+                )(*known_inputs)
+                eqn.params["sampling_fn_jaxpr"] = new_sampling_jaxpr
+                eqn.params["intervened"] = True
+
+            outvars, outvals = super().__call__(eqn, known_inputs, _)
         else:
             outvars, outvals = super().__call__(eqn, known_inputs, _)
         return outvars, outvals

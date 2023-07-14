@@ -25,6 +25,7 @@ class JointSampleProcessingRule(ForwardProcessingRule):
         outvars, outvals = super().__call__(eqn, known_inputs, _)
         if eqn.primitive is rv_p:
             name = eqn.params["name"]
-            if self.rvs is None or name in self.rvs:
+            intervened = eqn.params.get("intervened", False)
+            if not intervened and (self.rvs is None or name in self.rvs):
                 self.joint_samples[name] = outvals[0]
         return outvars, outvals

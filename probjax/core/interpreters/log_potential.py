@@ -31,8 +31,10 @@ def extract_random_vars_values(jaxpr: Jaxpr, joint_samples: Dict[str, Array]):
     for eqn in jaxpr.eqns:
         if eqn.primitive is rv_p:
             name = eqn.params["name"]
-            vars.append(eqn.outvars[0])
-            values.append(joint_samples[name])
+            intervened = eqn.params.get("intervened", False)
+            if not intervened:
+                vars.append(eqn.outvars[0])
+                values.append(joint_samples[name])
 
     return vars, values
 
@@ -54,8 +56,17 @@ class LogPotentialProcessingRule(ForwardProcessingRule):
         if eqn.primitive is rv_p:
             # We do not have to sample -> Already given
             name = eqn.params["name"]
-            outvars = eqn.outvars
-            outvals = [self.joint_samples[name]]
+            intervened = eqn.params.get("intervened", False)
+            if not intervened:
+                outvars = eqn.outvars
+                outvals = [self.joint_samples[name]]
+            else:
+                eqn_invars = eqn.invars
+                eqn_inavals = [
+                    jax.numpy.zeros(shape=v.aval.shape, dtype=v.aval.dtype)  # type: ignore TODO this is a bit hacky in an intervened rv the input is not used so we just put a dummy value
+                    for v in eqn_invars
+                ]
+                outvars, outvals = super().__call__(eqn, eqn_inavals, out_known)
             # But we still have to compute the log_prob
             in_known = list(in_known)
             in_known[-1] = outvals[0]

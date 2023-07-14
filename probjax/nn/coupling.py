@@ -1,6 +1,7 @@
-import haiku as hk
 import jax
 import jax.numpy as jnp
+
+import haiku as hk
 
 from typing import Callable, Any, List
 from jaxtyping import Array, PyTree

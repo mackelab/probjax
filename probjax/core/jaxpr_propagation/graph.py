@@ -80,6 +80,16 @@ COMPUTE_GRAPH_NODE_STYLES = {
 def to_networkx(
     jaxpr: Jaxpr, var_name_fn: Callable, compute_name_fn: Callable
 ) -> nx.DiGraph:
+    """Converts a Jaxpr to a networkx graph.
+
+    Args:
+        jaxpr (Jaxpr): Jaxpr object.
+        var_name_fn (Callable): Function to name the variables.
+        compute_name_fn (Callable): Function to name the compute nodes.
+
+    Returns:
+        nx.DiGraph: Graph object.
+    """
     graph = nx.DiGraph()
     constvars = jaxpr.constvars
     invars = jaxpr.invars
@@ -141,6 +151,7 @@ def to_networkx(
 
 
 def moralize_dag(dag: nx.DiGraph) -> nx.Graph:
+    # Moralize DAG
     moral_graph = dag.to_undirected()
     for node in dag.nodes():
         parents = list(dag.predecessors(node))
@@ -153,6 +164,7 @@ def moralize_dag(dag: nx.DiGraph) -> nx.Graph:
 def subgraph(
     graph: nx.DiGraph | nx.Graph, nodes: Sequence[str]
 ) -> nx.DiGraph | nx.Graph:
+    # Edge preserving subgraph, with subnodes.
     subgraph = graph.__class__()
     for node in nodes:
         subgraph.add_node(node, **graph.nodes[node])
@@ -161,18 +173,20 @@ def subgraph(
                 subgraph.add_edge(node, node2)
     return subgraph
 
-def var_name_fn(n) -> str:
+
+def var_name_fn(n: str) -> str:
     if isinstance(n, Literal):
         return str(n)[:3]
     else:
         return str(n)
+
 
 class JaxprGraph:
     def __init__(self, jaxpr: Jaxpr, graph: nx.DiGraph | None = None) -> None:
         self._jaxpr = jaxpr
         if graph is None:
             self._graph = to_networkx(
-                jaxpr,var_name_fn, lambda x: str(x.primitive.name)
+                jaxpr, var_name_fn, lambda x: str(x.primitive.name)
             )
 
     @property

@@ -2,6 +2,7 @@ from functools import wraps
 from typing import Callable, Iterable, Optional
 
 import jax
+from jaxtyping import Array
 
 from probjax.core.jaxpr_propagation.interpret import interpret
 from probjax.core.jaxpr_propagation.propagate import propagate
@@ -18,6 +19,7 @@ from probjax.core.interpreters.inverse import (
     InverseAndLogAbsDetProcessingRule,
 )
 from probjax.core.interpreters.trace import TraceProcessingRule
+from probjax.core.interpreters.interventions import IntervenedProcessingRule
 
 
 def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
@@ -50,6 +52,40 @@ def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
     return wrapped
 
 
+def intervene(fun: Callable, rvs: dict[str, Array]):
+    """Fix the value of random variables in the probabilistic function.
+    This does not sample the random variables, but fixes them to the given values.
+
+    It preserves the random_variable primitive, but changes the sampling function to a constant function.
+    Hence it still works with the log_potential_fn, an computes the correct log potential (up to a constant).
+
+    Args:
+        fun (Callable): A function to transform.
+        rvs (dict[str, Array]): A dictionary of random variable names and values to intervene.
+
+    Returns:
+        _type_: _description_
+    """
+    jaxpr_maker = jax.make_jaxpr(fun)
+    processing_rule = IntervenedProcessingRule(interventions=rvs)
+
+    @wraps(fun)
+    def wrapped(*args, **kwargs):
+        jaxpr = jaxpr_maker(*args, **kwargs)
+        out = interpret(
+            jaxpr.jaxpr,
+            jaxpr.consts,
+            jaxpr.jaxpr.invars,
+            args,
+            jaxpr.jaxpr.outvars,
+            process_eqn=processing_rule,
+        )
+
+        return out
+
+    return wrapped
+
+
 def log_potential_fn(fun: Callable, *args, **kwargs):
     """Computes the log potential of the probabilistic function.
     This does not about normalizing constant.
@@ -68,12 +104,14 @@ def log_potential_fn(fun: Callable, *args, **kwargs):
         _ = propagate(
             jaxpr.jaxpr,
             jaxpr.consts,
-            [],
-            [],
+            rv_vars,
+            rv_values,
             rv_vars,
             process_eqn=processing_rule,
             cost_fn=potential_cost_fn,
+            process_all_eqns=True,
         )
+
         return processing_rule.log_prob
 
     return log_potential

@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from haiku.nets import MLP
 from jaxtyping import Array, PyTree
 
-from typing import Callable, Any
+from typing import Callable, Any, List
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.core.transformation import inverse_and_logabsdet, inverse
@@ -47,7 +47,17 @@ def autoregressive_mask_getter(d: int, first_layer: bool = False):
 
 
 class MaskedMLP(MLP):
-    def __init__(self, custom_mask_getter, output_sizes, *args, **kwargs):
+    def __init__(
+        self, custom_mask_getter: Callable, output_sizes: List[int], *args, **kwargs
+    ):
+        """Haiku MLP, but weights are masked by a custom getter.
+
+        Args:
+            custom_mask_getter (Callable): Custom getter
+            output_sizes (List[int]): Output sizes of the MLP
+            args: args for MLP
+            kwargs: kwargs for MLP
+        """
         super().__init__(output_sizes, *args, **kwargs)
         self.custom_mask_getter = custom_mask_getter
         self.context_layer = hk.Linear(output_sizes[0])
@@ -74,22 +84,31 @@ class MaskedMLP(MLP):
         return out
 
 
-def autoregressive_transform(bijector, input_dim, output_sizes, **kwargs):
+def autoregressive_transform(
+    bijector: Callable, input_dim: int, output_sizes: List[int], *args, **kwargs
+):
+    # Autoregressive transformation accelerated by MADE
     @hk.without_apply_rng
     @hk.transform
-    def forward(x):
-        conditionor = MaskedMLP(autoregressive_mask_getter, output_sizes, **kwargs)
-        params = conditionor(x)
+    def forward(x, context: Array | None = None):
+        conditionor = MaskedMLP(
+            autoregressive_mask_getter, output_sizes, *args, **kwargs
+        )
+        params = conditionor(x, context)
         y = bijector(params, x)
         return y
 
+    # The inverse now however must be done sequentially, and is provided through a custom_inverse primitive
     @hk.without_apply_rng
     @hk.transform
-    def inv(y):
-        conditionor = MaskedMLP(autoregressive_mask_getter, output_sizes, **kwargs)
+    def inv(y, context: Array | None = None):
+        conditionor = MaskedMLP(
+            autoregressive_mask_getter, output_sizes, *args, **kwargs
+        )
         x = jnp.ones(y.shape[:-1] + (input_dim,))
-        for i in range(input_dim):
-            params = conditionor(x)
+        log_det = 0.0
+        for _ in range(input_dim):
+            params = conditionor(x, context)  # type: ignore
             bijective_inv = inverse_and_logabsdet(lambda x: bijector(params, x))
             x, log_det = bijective_inv(y)
         return x, log_det
@@ -97,6 +116,7 @@ def autoregressive_transform(bijector, input_dim, output_sizes, **kwargs):
     init_fn, apply_fn = forward.init, forward.apply
     _, apply_inv = inv.init, inv.apply
 
+    # Defining the custom inverse primitive
     fun = custom_inverse(apply_fn)
     fun.definv_and_logdet(apply_inv)
 
@@ -104,7 +124,13 @@ def autoregressive_transform(bijector, input_dim, output_sizes, **kwargs):
 
 
 class AutoregressiveMLP:
-    def __init__(self, bijector, num_bijector_params, hidden_dims=[50, 50], **kwargs):
+    def __init__(
+        self,
+        bijector: Callable,
+        num_bijector_params: int,
+        hidden_dims: List[int] = [50, 50],
+        **kwargs
+    ):
         self.output_sizes = hidden_dims + [num_bijector_params]
         self.conditionor = MaskedMLP(
             autoregressive_mask_getter, self.output_sizes, **kwargs
@@ -115,13 +141,17 @@ class AutoregressiveMLP:
     def __call__(self, inputs: Array, context: Array | None = None, rng=None) -> Array:
         init_rng = hk.next_rng_keys(1)[0] if hk.running_init() else None
         input_dim = inputs.shape[-1]
+        # Autoregressive transformation accelerated by MADE
         init_fn, apply_fn = autoregressive_transform(
             self.bijector, input_dim, self.output_sizes
         )
+        # We have to lift it as it has its own init function
+        # Doing this within here will cause an error, as jax primitives will then be called inside the hk.transform which transforms this module later on.
         init = hk.lift(init_fn)
 
-        def f(x):
-            params = init(init_rng, x)
-            return apply_fn(params, x)
+        # After initialization we can savely call the function
+        def f(x: Array, context: Array | None = None):
+            params = init(init_rng, x, context)
+            return apply_fn(params, x, context)
 
-        return f(inputs)
+        return f(inputs, context)
