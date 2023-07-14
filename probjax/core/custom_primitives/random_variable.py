@@ -122,6 +122,7 @@ def rv(dist: Distribution, name: Hashable) -> Callable:
             sampling_fn_jaxpr=sampling_fn_jaxpr,
             log_prob_fn_jaxpr=log_prob_fn_jaxpr,
             dist=type(dist),
+            intervened=False,
             **kwargs
         )
 
