@@ -36,3 +36,34 @@ class Permute(hk.Module):
 
     def __call__(self, x: Array, *args) -> Array:
         return jnp.take(x, self.permutation, axis=self.axis)
+
+
+
+class SinusoidalEmbedding(hk.Module):
+    def __init__(self, dim=32, name=None):
+        super().__init__(name=name)
+        self.dim = dim
+
+    def __call__(self, inputs):
+        half_dim = self.dim // 2
+        emb = jnp.log(10000) / (half_dim - 1)
+        emb = jnp.exp(jnp.arange(half_dim) * -emb)
+        emb = inputs[:, None] * emb[None, :]
+        emb = jnp.concatenate([jnp.sin(emb), jnp.cos(emb)], -1)
+        return jnp.squeeze(emb, axis=-2)
+
+
+class TimeEmbedding(hk.Module):
+    def __init__(self, dim=32, name=None):
+        super().__init__(name=name)
+        self.dim = dim
+
+    def __call__(self, inputs):
+        se = SinusoidalEmbedding(self.dim)(inputs)
+
+        # Projecting the embedding into a 128 dimensional space
+        x = hk.Linear(self.dim)(se)
+        x = jax.nn.gelu(x)
+        x = hk.Linear(self.dim)(x)
+
+        return x

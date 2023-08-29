@@ -164,7 +164,7 @@ class custom_inverse:
         return self.inv_fun(*args, **kwargs)
 
     def inv_and_logdet(self, *args, **kwargs):
-        return self.inv_fun_and_log_det(*args, **kwargs)
+        return self.inv_fun_and_log_det( *args, **kwargs)
 
     def __call__(self, *args, **params) -> Any:
         name = getattr(self.fun, "__name__", str(self.fun))
@@ -177,8 +177,9 @@ class custom_inverse:
         if self.static_argnums is None:
             dyn_args = args
         else:
+            dyn_args = (i for i in range(len(args)) if i not in self.static_argnums)
             f, dyn_args = argnums_partial(
-                f, self.static_argnums, args, require_static_args_hashable=False
+                f, dyn_args, args, require_static_args_hashable=False
             )
 
         args_flat, in_tree = tree_flatten(dyn_args)
@@ -195,8 +196,9 @@ class custom_inverse:
         if self.static_argnums is None:
             dyn_args = args
         else:
+            dyn_args = (i for i in range(len(args)) if i not in self.static_argnums)
             f_inv, dyn_args = argnums_partial(
-                f_inv, self.static_argnums, args, require_static_args_hashable=False
+                f_inv, dyn_args, args, require_static_args_hashable=False
             )
         jax_tree_inv_fun, out_tree_inv = flatten_fun_nokwargs(f_inv, in_tree)  # type: ignore
         debug = pe.debug_info(

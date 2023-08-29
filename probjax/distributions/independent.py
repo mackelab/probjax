@@ -36,18 +36,6 @@ class Independent(Distribution):
 
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)
 
-    @property
-    def arg_constraints(self):
-        return self.base_dist.arg_constraints
-
-    @property
-    def support(self):
-        return self.base_dist.support
-
-    @property
-    def has_rsample(self):
-        return self.base_dist.has_rsample
-
     def rsample(self, key, sample_shape=()):
         return self.base_dist.rsample(key, sample_shape)
 
