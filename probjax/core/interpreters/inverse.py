@@ -16,7 +16,7 @@ from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
 
 def integer_pow_inverse(x, **params):
     y = params.pop("y")
-    return jax.lax.pow_p.bind(x, y, **params)
+    return jax.lax.pow_p.bind(x, 1 / y, **params)
 
 
 def logit(x, **params):
@@ -121,6 +121,13 @@ def invert_concat(eqn, known_invars, known_outvars):
     return eqn.invars, in_vars
 
 
+@register_inverse_rule(jax.lax.squeeze_p)
+def invert_squeeze(eqn, known_invars, known_outvars):
+    in_shape = eqn.invars[0].aval.shape
+    out = known_outvars[0]
+    return [eqn.invars[0]], [out.reshape(in_shape)]
+
+
 @register_inverse_rule(jax.lax.rev_p)
 def invert_rev(eqn, known_invars, known_outvars):
     return eqn.invars, [eqn.primitive.bind(*known_outvars, **eqn.params)]
@@ -180,6 +187,21 @@ def invert_slice(eqn, known_invars, known_outvars):
     # print(input.shape, out1.shape, start_index, limit_index)
     new_input = jax.lax.dynamic_update_slice(input, out1, start_index)
     return [invar], [new_input]
+
+
+# @register_inverse_rule(jax.lax.dynamic_slice_p)
+# def invert_dynamic_slice(eqn, known_invars, known_outvars):
+#     invar = eqn.invars[0]
+#     slice_sizes = eqn.params["slice_sizes"]
+#     out = known_outvars[0]
+#     out_shape = eqn.invars[0].aval.shape
+#     input = jnp.full(out_shape, jnp.nan)
+#     print(input.shape)
+#     print(out.shape)
+
+
+#     new_input = jax.lax.dynamic_update_slice(input, out, known_invars[1])
+#     return [invar], [new_input]
 
 
 def is_univariate(eqn) -> bool:
@@ -446,7 +468,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
                 invars = inv_primitive.bind(*subfuns, *args, **bind_params)
 
                 return invars
-        
+
             eval_fn = value_and_log_det_diagonal(f)
             invars, log_abs_det = eval_fn(input1, input2)
         else:

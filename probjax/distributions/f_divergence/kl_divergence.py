@@ -1,6 +1,8 @@
 from probjax.distributions.utils import Match
 from probjax.distributions import Distribution
 from probjax import distributions as dist
+
+import jax
 import warnings
 
 __all__ = ["register_kl", "kl_divergence"]
@@ -80,7 +82,9 @@ def _dispatch_kl(type_p, type_q):
     return left_fun
 
 
-def kl_divergence(p: Distribution, q: Distribution) -> torch.Tensor:
+def kl_divergence(
+    p: Distribution, q: Distribution, mc_samples=0, key=None
+) -> jax.Array:
     r"""
     Compute Kullback-Leibler divergence :math:`KL(p \| q)` between two distributions.
 
@@ -91,6 +95,8 @@ def kl_divergence(p: Distribution, q: Distribution) -> torch.Tensor:
     Args:
         p (Distribution): A :class:`~torch.distributions.Distribution` object.
         q (Distribution): A :class:`~torch.distributions.Distribution` object.
+        mc_samples (int): Number of samples to use for Monte Carlo approximation of KL divergence. Defaults to 0. Then only analytic expressions.
+        key (jax.random.PRNGKey): Key for random number generation. Defaults to None. Only required if mc_samples > 0.
 
     Returns:
         Tensor: A batch of KL divergences of shape `batch_shape`.
@@ -113,17 +119,38 @@ def kl_divergence(p: Distribution, q: Distribution) -> torch.Tensor:
     return fun(p, q)
 
 
+@register_kl(Distribution, Distribution)
+def _kl_generic(p, q, mc_samples=0, key=None):
+    if p.event_shape != q.event_shape:
+        raise ValueError(
+            "KL divergence between distributions with different event shapes not supported"
+        )
 
-@register_kl(dist.Bernoulli, dist.Bernoulli):
-def _kl_bernoulli_bernoulli(p, q):
+    assert (
+        mc_samples >= 0
+    ), "For general distirbutions we require mc_samples >= 0, to evaluate a Monte Carlo approximation of the KL divergence."
+    assert key is not None, "Key must be provided if mc_samples > 0"
+
+    if p.has_rsample:
+        samples = p.rsample(key, (mc_samples,))
+    else:
+        samples = p.sample(key, (mc_samples,))
+    log_prob_p = p.log_prob(samples)
+    log_prob_q = q.log_prob(samples)
+    return (log_prob_p - log_prob_q).mean(0)
+
+
+@register_kl(dist.Bernoulli, dist.Bernoulli)
+def _kl_bernoulli_bernoulli(p, q, mc_samples=0, key=None):
     probs_p = p.probs
     probs_q = q.probs
     t1 = probs_p * (probs_p / probs_q).log()
     t2 = (1 - probs_p) * ((1 - probs_p) / (1 - probs_q)).log()
     return t1 + t2
 
+
 @register_kl(dist.Normal, dist.Normal)
-def _kl_normal_normal(p, q):
+def _kl_normal_normal(p, q, mc_samples=0, key=None):
     loc_p, scale_p = p.loc, p.scale
     loc_q, scale_q = q.loc, q.scale
     t1 = (scale_p / scale_q).log()

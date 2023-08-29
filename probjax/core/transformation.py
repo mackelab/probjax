@@ -138,8 +138,8 @@ def trace(fun: Callable, traced_vars=None):
     return wrapped
 
 
-def inverse(fun: Callable, invertible_arg=None):
-    jaxpr_maker = jax.make_jaxpr(fun)
+def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
+    jaxpr_maker = jax.make_jaxpr(fun, static_argnums=static_argnums)
     processing_rule = InverseProcessingRule()
 
     @wraps(fun)
@@ -185,8 +185,8 @@ def inverse(fun: Callable, invertible_arg=None):
     return wrapped
 
 
-def inverse_and_logabsdet(fun: Callable):
-    jaxpr_maker = jax.make_jaxpr(fun)
+def inverse_and_logabsdet(fun: Callable, static_argnums=()):
+    jaxpr_maker = jax.make_jaxpr(fun, static_argnums=static_argnums)
     processing_rule = InverseAndLogAbsDetProcessingRule()
 
     @wraps(fun)

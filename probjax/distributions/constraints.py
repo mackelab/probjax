@@ -37,6 +37,7 @@ class Constraint:
 
     def __str__(self) -> str:
         return self.__repr__()
+    
 
 
 class Real(Constraint):
@@ -161,6 +162,23 @@ class IntegerInterval(Integer, Interval):
                 and x.upper <= self.upper
             )
 
+class Matrix(Real):
+    def _is_contained(self, x: Any | Constraint) -> bool:
+        return super()._is_contained(x) and len(x.shape) >= 2
+    
+class SquareMatrix(Matrix):
+    def _is_contained(self, x: Any | Constraint) -> bool:
+        return super()._is_contained(x) and x.shape[-1] == x.shape[-2]
+    
+class SymmetricMatrix(SquareMatrix):
+    def _is_contained(self, x: Any | Constraint) -> bool:
+        return super()._is_contained(x) and jnp.allclose(x, jnp.transpose(x, (-2, -1)))
+    
+class PositiveDefiniteMatrix(SymmetricMatrix):
+    def _is_contained(self, x: Any | Constraint) -> bool:
+        return super()._is_contained(x) and jnp.all(jnp.linalg.eigvals(x) > 0)
+    
+
 
 real = Real()
 integer = Integer()
@@ -173,6 +191,10 @@ unit_interval = UnitInterval()
 unit_square = UnitSquare()
 unit_integer_interval = IntegerInterval(0, 1)
 simplex = Simplex()
+matrix = Matrix()
+square_matrix = SquareMatrix()
+symmetric_matrix = SymmetricMatrix()
+positive_definite_matrix = PositiveDefiniteMatrix()
 
 
 __all__ = [
@@ -187,4 +209,6 @@ __all__ = [
     "unit_square",
     "unit_integer_interval",
     "simplex",
+    "matrix",
+    "square_matrix",
 ]

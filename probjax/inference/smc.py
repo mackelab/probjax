@@ -11,12 +11,26 @@ from functools import partial
 from itertools import accumulate
 
 
-def uniform_geometric_path(initial_potential_fn, final_potential_fn, num_steps):
+def geometric_tempering(initial_potential_fn, final_potential_fn, num_steps):
     def potential_fn(t, x):
         alpha = t / (num_steps - 1)
         return (1 - alpha) * initial_potential_fn(x) + alpha * final_potential_fn(x)
 
     return potential_fn
+
+def no_tempering(initial_potential_fn, final_potential_fn, num_steps):
+    def potential_fn(t, x):
+        return final_potential_fn(x)
+
+    return potential_fn
+
+def get_tempering_fn(tempering):
+    if tempering == "geo":
+        return geometric_tempering
+    elif tempering == "none":
+        return no_tempering
+    else:
+        raise ValueError("tempering must be one of 'geometric' or 'no'")
 
 
 # class SMCState:
@@ -28,11 +42,11 @@ def uniform_geometric_path(initial_potential_fn, final_potential_fn, num_steps):
 
 class SMC:
     def __init__(
-        self, initial_distribution, potential_fn, path_fn, marcov_kernel
+        self, initial_distribution, potential_fn, marcov_kernel, tempering="geo",
     ) -> None:
         self.initial_distribution = initial_distribution
         self.potential_fn = potential_fn
-        self.path_fn = path_fn
+        self.tempering_fn = get_tempering_fn(tempering)
         self.marcov_kernel = marcov_kernel
 
     @partial(jax.jit, static_argnums=(0,))

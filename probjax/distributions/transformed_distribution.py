@@ -17,7 +17,11 @@ from probjax.core import inverse_and_logabsdet
 
 __all__ = ["TransformedDistribution"]
 
+from jax.tree_util import register_pytree_node_class
+from jax.scipy.stats import norm
 
+
+@register_pytree_node_class
 class TransformedDistribution(Distribution):
     """
     Creates a transformed distribution by applying an arbitrary callable transformation
@@ -28,6 +32,7 @@ class TransformedDistribution(Distribution):
         transformation: Callable transformation that takes samples from the base distribution
             and returns transformed samples.
     """
+
 
     def __init__(
         self,
@@ -43,19 +48,13 @@ class TransformedDistribution(Distribution):
         batch_shape = base_dist.batch_shape
         event_shape = base_dist.event_shape
 
+        self.arg_constraints["base_dist"] = None
+        self.support = base_dist.support
         self._transformation = transformation
         # We vmap as we want the individual log dets!
         self._inv_and_logdet = inverse_and_logabsdet(transformation)
 
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)
-
-    @property
-    def arg_constraints(self):
-        return self.base_dist.arg_constraints
-
-    @property
-    def support(self):
-        return self.base_dist.support
 
     def transform(self, x):
         return self._transformation(x)
@@ -70,17 +69,48 @@ class TransformedDistribution(Distribution):
         value = jnp.asarray(value).reshape(-1, *self.event_shape)
         inv_value, log_det = self._inv_and_logdet(value)
         log_prob = self.base_dist.log_prob(inv_value) + log_det
-        log_prob = log_prob.reshape(shape[:-len(self.event_shape)])
+        if len(self.event_shape) > 0:
+            log_prob = log_prob.reshape(shape[: -len(self.event_shape)])
         return log_prob
 
-    # def cdf(self, value):
-    #     transformed_value = self.transformation.inv(value)
-    #     return self.base_dist.cdf(transformed_value)
+    def tree_flatten(self):
+        return super().tree_flatten()[0], [self._transformation]
 
-    # def icdf(self, value):
-    #     transformed_value = self.base_dist.icdf(value)
-    #     return self.transformation(transformed_value)
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        return cls(
+            **dict(zip(cls.arg_constraints.keys(), children)),
+            transformation=aux_data[0]
+        )
 
-    # def entropy(self):
-    #     transformed_entropy = self.base_dist.entropy()
-    #     return transformed_entropy - jnp.sum(jnp.log(jnp.abs(self.transformation.log_abs_det_jacobian(self.transformation.inv(self.base_dist.mean)))), axis=-1)
+    def __repr__(self) -> str:
+        return (
+            self.__class__.__name__
+            + "("
+            + "base_dist="
+            + self.base_dist.__repr__()
+            + ", transformation="
+            + self._transformation.__repr__()
+            + ")"
+        )
+
+    def cdf(self, value):
+        transformed_value = self.transformation.inv(value)
+        return self.base_dist.cdf(transformed_value)
+
+    def icdf(self, value):
+        transformed_value = self.base_dist.icdf(value)
+        return self.transformation(transformed_value)
+
+    def entropy(self):
+        transformed_entropy = self.base_dist.entropy()
+        return transformed_entropy - jnp.sum(
+            jnp.log(
+                jnp.abs(
+                    self.transformation.log_abs_det_jacobian(
+                        self.transformation.inv(self.base_dist.mean)
+                    )
+                )
+            ),
+            axis=-1,
+        )

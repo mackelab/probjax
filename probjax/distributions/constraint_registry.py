@@ -13,6 +13,8 @@ from .constraints import (
     negative,
     unit_integer_interval,
     simplex,
+    matrix,
+    square_matrix
 )
 
 __all__ = [
@@ -62,7 +64,11 @@ class ConstraintRegistry:
             )
 
         def factory_wrapper(*args):
-            return jax.tree_util.tree_map(factory, args)
+            out =  jax.tree_util.tree_map(factory, args)
+            if len(out) == 1:
+                return out[0]
+            else:
+                return out
 
         self._registry[constraint] = factory_wrapper
 
@@ -94,7 +100,7 @@ class ConstraintRegistry:
             raise NotImplementedError(
                 f"Cannot transform {type(constraint).__name__} constraints"
             ) from None
-        return factory(constraint)
+        return factory
 
 
 biject_to = ConstraintRegistry()
@@ -104,12 +110,18 @@ transform_to = ConstraintRegistry()
 def identity(x):
     return x
 
+def generate_matrix(x):
+    x = x[..., None]
+    return x.T@x
+
 
 biject_to.register(real)(identity)
 transform_to.register(real)(identity)
 
 
 transform_to.register(integer)(lax.round)
+
+transform_to.register(positive)(lax.exp)
 biject_to.register(positive)(lax.exp)
 
 transform_to.register(unit_interval)(jax.nn.sigmoid)
@@ -118,6 +130,8 @@ transform_to.register(unit_square)(lax.tanh)
 biject_to.register(unit_square)(lax.tanh)
 
 transform_to.register(simplex)(jax.nn.softmax)
+transform_to.register(matrix)(generate_matrix)
+transform_to.register(square_matrix)(generate_matrix)
 
 
 
