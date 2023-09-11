@@ -28,6 +28,9 @@ from jax._src.api_util import (
 from jax.interpreters import mlir
 from jax.interpreters import partial_eval as pe
 
+# This is a custom primitive that allows us to define custom inverse functions
+# While most stuff can be inverted by inverting all primitives for some functions it is necessary or more efficient to define a custom inverse function
+
 custom_inverse_call_p = Primitive("custom_inverse_call_p")
 custom_inverse_call_p.multiple_results = True
 
@@ -148,8 +151,8 @@ class custom_inverse:
         self.static_argnums = static_argnums
 
     def definv(self, inv_fun: Callable) -> Callable:
-        def wrapped_inv(*args):
-            return inv_fun(*args), jnp.nan
+        def wrapped_inv(*args, **kwargs):
+            return inv_fun(*args, **kwargs), jnp.nan
 
         self.inv_fun = inv_fun
         self.inv_fun_and_log_det = wrapped_inv
@@ -157,14 +160,17 @@ class custom_inverse:
 
     def definv_and_logdet(self, inv_fun_and_log_det: Callable) -> Callable:
         self.inv_fun_and_log_det = inv_fun_and_log_det
-        self.inv_fun = lambda *args, **kwargs: inv_fun_and_log_det(*args, **kwargs)[0]
+        if not hasattr(self, "inv_fun"):
+            self.inv_fun = lambda *args, **kwargs: inv_fun_and_log_det(*args, **kwargs)[
+                0
+            ]
         return inv_fun_and_log_det
 
     def inv(self, *args, **kwargs):
         return self.inv_fun(*args, **kwargs)
 
     def inv_and_logdet(self, *args, **kwargs):
-        return self.inv_fun_and_log_det( *args, **kwargs)
+        return self.inv_fun_and_log_det(*args, **kwargs)
 
     def __call__(self, *args, **params) -> Any:
         name = getattr(self.fun, "__name__", str(self.fun))
