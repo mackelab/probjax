@@ -8,6 +8,40 @@ from typing import Tuple
 from jax.scipy.linalg import expm
 
 
+def is_matrix(A: Array) -> bool:
+    """Check if input is a matrix
+
+    Args:
+        A (Array): Input array
+
+    Returns:
+        bool: True if A is a matrix, or a batch of matrices
+    """
+    return len(A.shape) >= 2
+
+def is_diagonal_matrix(A: Array,axis1=-2, axis2=-1) -> bool:
+    """Check if input is a diagonal matrix
+
+    Args:
+        A (Array): Input array
+
+    Returns:
+        bool: True if A is a diagonal matrix, or a batch of diagonal matrices
+    """
+    return is_matrix(A) and jnp.all(A == jnp.diag(jnp.diagonal(A, axis1=axis1, axis2=axis2)), axis=(axis1, axis2))
+
+def is_triangular_matrix(A: Array, lower: bool = True) -> bool:
+    """Check if input is a triangular matrix
+
+    Args:
+        A (Array): Input array
+        lower (bool, optional): True if lower triangular. Defaults to True.
+
+    Returns:
+        bool: True if A is a triangular matrix, or a batch of triangular matrices
+    """
+    return is_matrix(A) and jnp.all(A == jnp.tril(A) if lower else jnp.triu(A), axis=(-2, -1))
+
 def batch_mv(bmat: Array, bvec: Array) -> Array:
     """
     Performs a batched matrix-vector product, with compatible but different batch shapes.
