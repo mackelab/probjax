@@ -64,19 +64,24 @@ def register_runge_kutta_method(
     Returns:
         Callable: The step_fn of the method.
     """
-    order = len(c)
+    stages = len(c)
+    if stages >= 5:
+        order = stages - 1
+    else:
+        order = stages
 
     assert jnp.all(c >= 0) and jnp.all(c <= 1), "c must be between 0 and 1"
+    assert jnp.allclose(jnp.sum(b_sol), 1.0), "b_sol must sum to 1"
 
     assert A.shape == (
-        order,
-        order,
-    ), f"Expected A.shape == ({order}, {order}), got {A.shape}"
+        stages,
+        stages,
+    ), f"Expected A.shape == ({stages}, {stages}), got {A.shape}"
     assert b_sol.shape == (
-        order,
-    ), f"Expected b_sol.shape == ({order},), got {b_sol.shape}"
+        stages  ,
+    ), f"Expected b_sol.shape == ({stages},), got {b_sol.shape}"
 
-    if jnp.allclose(A[-1],b_sol) and c[-1] == 1.0:
+    if jnp.allclose(A[-1], b_sol) and c[-1] == 1.0:
         last_equals_next = True
     else:
         last_equals_next = False
@@ -127,6 +132,23 @@ def register_runge_kutta_method(
     return step_fn
 
 
+# def register_adams_bashforth_method(
+#     name: str,
+#     a: Array,
+#     b: Array,
+#     order: int,
+#     info: Optional[str] = None,
+# ) -> Callable:
+#     stages = len(b)
+
+#     assert a[-1] = 1., "a[-1] must be 1."
+#     assert jnp.sum(b) == 1., "b must sum to 1."
+
+#     explicit = b[-1] == 0.0
+
+#     # TODO
+
+
 def get_step_fn(method: str, dtype: Optional[Float] = None):
     """Returns the step function for a given method.
 
@@ -154,6 +176,19 @@ def get_method_info(method: str):
 def get_methods():
     """Returns a list of all registered methods."""
     return list(METHOD_STEP_FN.keys())
+
+
+# def explicit_adam_beth_method(
+#     drift: Callable,
+#     t0: Array,
+#     ys: Array,
+#     fs: Array,
+#     dt: Array,
+#     a: Array,
+#     b: Array,
+#     order: int,
+# ):
+#     s = len(a)
 
 
 @partial(jax.jit, static_argnums=(0, 9, 10))
@@ -461,6 +496,24 @@ register_runge_kutta_method(
 
 # 5th order
 
+# Runge-Kutta method of order 5
+c = jnp.array([0, 1 / 4, 1 / 4, 1 / 2, 3 / 4, 1])
+A = jnp.array(
+    [
+        [0, 0, 0, 0, 0, 0],
+        [1 / 4, 0, 0, 0, 0, 0],
+        [1 / 8, 1 / 8, 0, 0, 0, 0],
+        [0, 0, 1 / 2, 0, 0, 0],
+        [3 / 16, -3 / 8, 3 / 8, 9 / 16, 0, 0],
+        [-3 / 7, 8 / 7, 6 / 7, -12 / 7, 8 / 7, 0],
+    ]
+)
+b_sol = jnp.array([7 / 90, 0, 32 / 90, 12 / 90, 32 / 90, 7 / 90])
+b_error = None
+register_runge_kutta_method(
+    "rk5", c, A, b_sol, b_error, "Runge-Kutta method of order 5"
+)
+
 # Fehlberg's RK5(4) method (explicit) (adaptive)
 c = jnp.array([0, 1 / 4, 3 / 8, 12 / 13, 1, 1 / 2])
 A = jnp.array(
@@ -478,6 +531,26 @@ b_error = jnp.array([25 / 216, 0, 1408 / 2565, 2197 / 4104, -1 / 5, 0])
 register_runge_kutta_method("rk5(4)", c, A, b_sol, b_error, "RK5(4)")
 
 # 6th order
+# Runge-Kutta method of order 6
+c = jnp.array([0, 1 / 6, 1 / 3, 1 / 2, 2 / 3, 5 / 6, 1])
+A = jnp.array(
+    [
+        [0, 0, 0, 0, 0, 0, 0],
+        [1 / 6, 0, 0, 0, 0, 0, 0],
+        [1 / 12, 1 / 12, 0, 0, 0, 0, 0],
+        [1 / 8, 0, 3 / 8, 0, 0, 0, 0],
+        [91 / 500, -27 / 100, 78 / 125, 8 / 125, 0, 0, 0],
+        [-11 / 20, 27 / 20, 12 / 5, -36 / 5, 5 / 2, 0, 0],
+        [1 / 12, 0, 27 / 32, -4 / 3, 125 / 96, 5 / 48, 0],
+    ]
+)
+b_sol = jnp.array([1 / 12, 0, 27 / 32, -4 / 3, 125 / 96, 5 / 48, 0])
+b_error = None
+register_runge_kutta_method(
+    "rk6", c, A, b_sol, b_error, "Runge-Kutta method of order 6"
+)
+
+
 # Dormand-Prince method
 c = jnp.array([0, 1 / 5, 3 / 10, 4 / 5, 8 / 9, 1, 1])
 A = jnp.array(
@@ -538,41 +611,6 @@ def _implicit_euler_step(
 
 register_method("implicit_euler", _implicit_euler_step, info)
 
-
-# Implicit midpoint method
-c = jnp.array([1 / 2])
-A = jnp.array([[1 / 2]])
-b_sol = jnp.array([1.0])
-b_error = None
-info = {
-    "explicit": False,
-    "order": 1,
-    "c": c,
-    "A": A,
-    "b_sol": b_sol,
-    "b_error": None,
-    "info": "Implicit midpoint method",
-    "adaptive": False,
-}
-
-
-@partial(jax.jit, static_argnums=(0,))
-def _implicit_midpoint_step(
-    drift: Callable,
-    t0: Array,
-    y0: Array,
-    f0: Array,
-    dt: Array,
-):
-    def f(y1):
-        return y1 - y0 - dt * drift((y0 + y1) / 2, t0 + dt / 2)
-
-    y1 = root(f, y0)
-    f1 = f0  # Not used, so we don't compute it
-    return y1, f1, None
-
-
-register_method("implicit_midpoint", _implicit_midpoint_step, info)
 
 # 2nd order
 # Implicit trapezoidal rule
@@ -635,7 +673,7 @@ def _odeint_adaptive(
     ts: Array,
     step_fn: Callable,
     rtol: float = 1e-3,
-    atol: float = 1e-4,
+    atol: float = 1e-5,
     mxstep: int = jnp.inf,
     order: int = 2,
     dtinit: Optional[float] = None,
@@ -652,16 +690,15 @@ def _odeint_adaptive(
 
         def cond_fun(state):
             i, t0, _, _, _ = state
-            return (i < mxstep) & (t0 <= t1)
+            print(t0, t1)
+            return (i < mxstep) & (t0 < t1)
 
         def body_fn(state):
             i, t0, y0, f0, dt = state
 
-            # Ensure dt is not going over t1
-            dt = jnp.minimum(dt, t1 - t0)
-
             y1, f1, (error, k) = step_fn(drift, t0, y0, f0, dt)
             error = mean_error_ratio(error, rtol, atol, y0, y1)
+            print(error)
             dt = step_size_adaption(
                 dt,
                 error,
@@ -672,10 +709,12 @@ def _odeint_adaptive(
                 dtmin=dtmin,
                 dtmax=dtmax,
             )
+            dt = lax.cond(t0 + dt < t1, lambda _: dt, lambda _: t1 - t0, None)
 
             # This rejects the step if the error is too large
             # Maybe we should still accept the step, but with a smaller step size?
             # This would accoumulate error, but would be more efficient
+
             new = [i + 1, t0 + dt, y1, f1, dt]
             old = [i + 1, t0, y0, f0, dt]
             return tuple(map(partial(jnp.where, error <= maxerror), new, old))
@@ -693,7 +732,7 @@ def _odeint_adaptive(
         dt = dtinit
 
     init_carry = (t0, y0, f0, dt)
-    final_carry, ys = lax.scan(scan_fn, init_carry, ts[1:])
+    _, ys = lax.scan(scan_fn, init_carry, ts[1:])
 
     return jnp.concatenate((y0[None], ys))
 
@@ -705,15 +744,15 @@ def _odeint(
     *args,
     method="rk4",
     dt: Optional[Float] = None,
-    rtol: float = 1e-3,
-    atol: float = 1e-3,
+    rtol: float = 1e-4,
+    atol: float = 1e-5,
     mxstep: int = jnp.inf,
     dtmin: float = 0.0,
     dtmax: float = jnp.inf,
     maxerror: float = 1.2,
     safety: float = 0.95,
-    ifactor: float = 50.0,
-    dfactor: float = 0.05,
+    ifactor: float = 10.0,
+    dfactor: float = 0.1,
 ):
     """Solve an ordinary differential equation.
 
@@ -790,8 +829,8 @@ def _odeint(
             ifactor=ifactor,
             dfactor=dfactor,
         )
-        f_sol = jax.vmap(linear_interpolation(ts, ys))
-        return f_sol(ts)
+        # f_sol = jax.vmap(linear_interpolation(ts, ys))
+        return ys
 
 
 def _inv_odeint(drift, y0: Array, ts: Array, *args, **kwargs):

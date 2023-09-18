@@ -85,15 +85,15 @@ def transition_matrix(A: Array, t0: Float, t1: Float) -> Array:
 
 
 def matrix_fraction_decomposition(
-    t: Float, t0: Float, A: Array, B: Array
+    t0: Float, t1: Float, A: Array, B: Array
 ) -> Tuple[Array, Array]:
     """Matrix fraction decomposition
 
     Returns the transition matrix and covariance. Is exact A and B are truely time independent
 
     Args:
-        t (float): New time point
-        t0 (float): Old time point
+        t0 (float): New time point
+        t1 (float): Old time point
         A (Array): Drift matrix
         B (Array): Diffusion matrix
 
@@ -101,8 +101,8 @@ def matrix_fraction_decomposition(
         Tuple[Array]: Transition matrix and covariance
     """
     d = A.shape[-1]
-    blockmatrix = jnp.block([[jnp.zeros((d, d)), A], [-A.T, jnp.dot(B, B.T)]])
-    M = expm(blockmatrix * (t - t0))
+    blockmatrix = jnp.block([[A, jnp.dot(B, B.T)], [jnp.zeros((d, d)), -A.T]])
+    M = expm(blockmatrix * (t1 - t0))
     Phi = M[:d, :d]
     Q = jnp.dot(M[:d, d:], Phi.T)
     return Phi, Q

@@ -51,7 +51,7 @@ def interpret(
             sub_invar_vals = []
             sub_outvars = []
             for v, val in zip(
-                sub_jaxpr.invars + sub_jaxpr.outvars, known_invars + known_outvars
+                sub_jaxpr.jaxpr.invars + sub_jaxpr.jaxpr.outvars, known_invars + known_outvars
             ):
                 if val is None:
                     sub_outvars.append(v)

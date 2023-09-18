@@ -7,7 +7,12 @@ from typing import Callable, Union, Optional
 from jaxtyping import Array
 
 from probjax.distributions import Distribution
-from probjax.utils.linalg import is_matrix, is_diagonal_matrix, transition_matrix
+from probjax.utils.linalg import (
+    is_matrix,
+    is_diagonal_matrix,
+    transition_matrix,
+    matrix_fraction_decomposition,
+)
 from probjax.utils.sdeint import sdeint
 from probjax.utils.odeint import odeint
 
@@ -30,28 +35,23 @@ class BaseSDE(Distribution):
         measurement_projection: Optional[Array] = None,
         measurement_noise: float = 0.5,
     ) -> Distribution:
+        self.t_o = t_o
+        self.x_o = x_o
         raise NotImplementedError
 
     def mean(self, ts: Array, **kwargs) -> Array:
         assert jnp.all(ts >= 0), "t must be positive"
+        raise NotImplementedError
 
-        # In general we just have to solve the ODE for the mean i.e. ignore the diffusion term.
-        # TODO This may not be true for non-linear SDEs ...
-        _odeint = partial(odeint, **kwargs)
-        if self.batch_shape != ():
-            _odeint = jax.vmap(_odeint, in_axes=(None, 0, None))
-        mu0 = self.p0.mean
-        mus = _odeint(self.drift, mu0, ts)
-
-        return mus
-
-    @property
     def var(self, t: Array) -> Array:
         assert jnp.all(t >= 0), "t must be positive"
         raise NotImplementedError
 
-    @property
-    def cross_cov(self, t1: Array, t2: Array) -> Array:
+    def covariance_matrix(self, t: Array) -> Array:
+        assert jnp.all(t >= 0), "t must be positive"
+        raise NotImplementedError
+
+    def cross_covariance(self, t1: Array, t2: Array) -> Array:
         assert jnp.all(t1 >= 0), "t1 must be positive"
         assert jnp.all(t2 >= 0), "t2 must be positive"
         raise NotImplementedError
@@ -85,43 +85,22 @@ class BaseSDE(Distribution):
         raise NotImplementedError
 
 
-class LinearSDE(BaseSDE):
+class LinearTimeInvariantSDE(BaseSDE):
     def __init__(
         self,
-        drift_matrix: Union[Callable, Array],
-        diffusion_matrix: Union[Callable, Array],
+        drift_matrix: Array,
+        diffusion_matrix: Array,
         p0: Distribution,
     ) -> None:
-        # If drift and diffusion are independent of time, then the transition matrix is also independent of time (only depends on the time difference)
-        self._time_dependent = callable(drift_matrix) or callable(diffusion_matrix)
-        self._independent = (
-            not callable(drift_matrix)
-            and is_diagonal_matrix(drift_matrix)
-            and not callable(diffusion_matrix)
-            and is_diagonal_matrix(diffusion_matrix)
-        )
+        assert (
+            drift_matrix.ndim == 1 or drift_matrix.shape[1] == p0.event_shape[0]
+        ), "Drift matrix must be compatible with initial distribution"
+        assert (
+            drift_matrix.ndim == 1 or diffusion_matrix.shape[0] == p0.event_shape[0]
+        ), "Diffusion matrix must be compatible with initial distribution"
 
-        # Time dependent or independent drift matrix
-        if not callable(drift_matrix):
-
-            def drift(t, x):
-                return jnp.matmul(drift_matrix, x)
-
-        else:
-
-            def drift(t, x):
-                return jnp.matmul(drift_matrix(t), x)
-
-        # Time dependent or independent diffusion matrix
-        if not callable(diffusion_matrix):
-
-            def diffusion(t, x):
-                return jnp.matmul(diffusion_matrix, x)
-
-        else:
-
-            def diffusion(t, x):
-                return jnp.matmul(diffusion_matrix(t), x)
+        drift = lambda t, x: jnp.matmul(drift_matrix, x)
+        diffusion = lambda t, x: diffusion_matrix
 
         super().__init__(drift, diffusion, p0)
 
@@ -130,16 +109,90 @@ class LinearSDE(BaseSDE):
         self.drift_matrix = drift_matrix
 
     def mean(self, t: Array) -> Array:
-        if callable(self.drift_matrix):
-            A = self.drift_matrix(t)
-        else:
-            A = self.drift_matrix
-
+        assert jnp.all(t >= 0), "t must be positive"
         mu0 = self.p0.mean
-        if t == 0:
-            return mu0
+        t = jnp.atleast_1d(t)
+
+        P = jax.vmap(transition_matrix, in_axes=(None, None, 0))(
+            self.drift_matrix, 0.0, t
+        )
+
+        if P.ndim == 3:
+            return jnp.einsum("...ij,...j->...i", P, mu0)
         else:
-            if not self._time_dependent:
-                return jnp.matmul(transition_matrix(A, 0, t), mu0)
-            else:
-                raise NotImplementedError()
+            return P * mu0
+
+    def covariance_matrix(self, t: Array) -> Array:
+        assert jnp.all(t >= 0), "t must be positive"
+        assert (
+            self.p0.event_shape != ()
+        ), "Initial distribution must not be scalar, use var instead"
+        Phi, Q = jax.vmap(matrix_fraction_decomposition, in_axes=(0, None, None, None))(
+            t, 0.0, self.drift_matrix, self.diffusion_matrix
+        )
+
+        cov0 = self.p0.covariance_matrix
+
+        return jnp.matmul(Phi, jnp.matmul(cov0, Phi.T)) + Q
+
+    def variance(self, t: Array) -> Array:
+        assert jnp.all(t >= 0), "t must be positive"
+        t = jnp.atleast_1d(t)
+        Phi, Q = jax.vmap(matrix_fraction_decomposition, in_axes=(None, 0, None, None))(
+            0.0, t, self.drift_matrix, self.diffusion_matrix
+        )
+        var0 = self.p0.variance
+        var = Phi**2 * var0 + Q
+        return jnp.squeeze(var, axis=-1)
+
+    def std(self, t: Array):
+        return jnp.sqrt(self.variance(t))
+
+
+class LinearTimeVariantSDE(BaseSDE):
+    def mean(self, ts: Array, **kwargs) -> Array:
+        assert jnp.all(ts >= 0), "t must be positive"
+
+        _odeint = partial(odeint, **kwargs)
+        if self.batch_shape != ():
+            _odeint = jax.vmap(_odeint, in_axes=(None, 0, None))
+        mu0 = self.p0.mean
+        mus = _odeint(self.drift, mu0, ts)
+
+        return mus
+
+    def var(self, t: Array, **kwargs) -> Array:
+        assert jnp.all(t >= 0), "t must be positive"
+        if self.p0.event_shape != ():
+            cov = self.covariance_matrix(t, **kwargs)
+            return jnp.sum(jnp.diagonal(cov, axis1=-2, axis2=-1))
+        else:
+            var0 = self.p0.var
+            _odeint = partial(odeint, **kwargs)
+            if self.batch_shape != ():
+                _odeint = jax.vmap(_odeint, in_axes=(None, 0, None))
+
+            def f(t, var):
+                return self.drift(t) ** 2 * var + self.diffusion(t) ** 2
+
+            vars = _odeint(f, var0, t)
+            return vars
+
+    def covariance_matrix(self, t: Array, **kwargs) -> Array:
+        assert jnp.all(t >= 0), "t must be positive"
+        assert (
+            self.p0.event_shape != ()
+        ), "Initial distribution must not be scalar, use var instead"
+        _odeint = partial(odeint, **kwargs)
+        if self.batch_shape != ():
+            _odeint = jax.vmap(_odeint, in_axes=(None, 0, None))
+        cov0 = self.p0.covariance_matrix
+
+        def f(t, cov):
+            term1 = jnp.matmul(self.drift(t), cov)
+            term2 = jnp.matmul(cov, self.drift(t).T)
+            term3 = jnp.matmul(self.diffusion(t), self.diffusion(t).T)
+            return term1 + term2 + term3
+
+        covs = _odeint(f, cov0, t)
+        return covs
