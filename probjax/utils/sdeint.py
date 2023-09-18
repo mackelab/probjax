@@ -368,6 +368,7 @@ def sdeint(
     ts: Array,
     *args,
     method: str = "euler_maruyama",
+    type: str = "ito",
     diagonal_noise: bool = False,
     dt: Optional[Float] = None,
     rtol: Float = 1e-6,
