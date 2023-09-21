@@ -15,6 +15,7 @@ from probjax.core import custom_inverse
 from probjax.utils.interpolation import linear_interpolation
 from probjax.utils.solver import root
 from probjax.utils.linalg import is_triangular_matrix
+from probjax.utils.jaxutils import flatten1d
 
 
 METHOD_STEP_FN = {}
@@ -78,7 +79,7 @@ def register_runge_kutta_method(
         stages,
     ), f"Expected A.shape == ({stages}, {stages}), got {A.shape}"
     assert b_sol.shape == (
-        stages  ,
+        stages,
     ), f"Expected b_sol.shape == ({stages},), got {b_sol.shape}"
 
     if jnp.allclose(A[-1], b_sol) and c[-1] == 1.0:
@@ -114,7 +115,7 @@ def register_runge_kutta_method(
             A=A,
             b_sol=b_sol,
             b_error=b_error,
-            order=order,
+            stages=stages,
             last_equals_next=last_equals_next,
         )
     else:
@@ -124,7 +125,7 @@ def register_runge_kutta_method(
             A=A,
             b_sol=b_sol,
             b_error=b_error,
-            order=order,
+            stages=order,
             last_equals_next=last_equals_next,
         )
 
@@ -202,7 +203,7 @@ def explicit_runge_kutta_step(
     A: Array,
     b_sol: Array,
     b_error: Array,
-    order: int,
+    stages: int,
     last_equals_next: bool,
 ):
     def body_fun(i, k):
@@ -211,8 +212,8 @@ def explicit_runge_kutta_step(
         ft = drift(ti, yi)
         return k.at[i, :].set(ft)
 
-    k = jnp.zeros((order, f0.shape[0]), f0.dtype).at[0, :].set(f0)
-    k = lax.fori_loop(1, order, body_fun, k)
+    k = jnp.zeros((stages, f0.shape[0]), f0.dtype).at[0, :].set(f0)
+    k = lax.fori_loop(1, stages, body_fun, k)
 
     y1 = dt * jnp.dot(b_sol, k) + y0
     if last_equals_next:
@@ -238,7 +239,7 @@ def implicit_runge_kutta_step(
     A: Array,
     b_sol: Array,
     b_error: Array,
-    order: int = 2,
+    stages: int = 2,
 ):
     ts = t0 + dt * c
     ts = ts.reshape(-1, 1)
@@ -248,7 +249,7 @@ def implicit_runge_kutta_step(
         return k - dt * drift(y0 + jnp.dot(A, k), ts)
 
     # Uses root finding to solve implicit equation
-    k0 = jnp.ones((order, f0.shape[0]), f0.dtype) * f0
+    k0 = jnp.ones((stages, f0.shape[0]), f0.dtype) * f0
     k = root(f, k0)
 
     # Compute solution
@@ -726,6 +727,7 @@ def _odeint_adaptive(
 
     t0 = ts[0]
     f0 = drift(t0, y0)
+    print(f0)
     if dtinit is None:
         dt = initial_step_size(drift, t0, y0, order, rtol, atol, f0)
     else:
@@ -739,7 +741,7 @@ def _odeint_adaptive(
 
 def _odeint(
     drift,
-    y0: Array,
+    y0: PyTree[Array],
     ts: Array,
     *args,
     method="rk4",
@@ -781,14 +783,18 @@ def _odeint(
     Returns:
         Array: Solution of the ODE.
     """
+    # Flatten the initial value and time grid
+    _flatten, _unflatten = flatten1d(y0)
 
-    y0 = jnp.atleast_1d(y0)
+    y0 = jnp.atleast_1d(_flatten(y0))
     ts = jnp.atleast_1d(ts)
 
     # Consistent dtype, based on the initial value.
     dtype = y0.dtype
     ts = ts.astype(dtype)
-    _f = lambda t, y: jnp.atleast_1d(drift(t, y, *args)).astype(dtype)
+    _f = lambda t, y: jnp.atleast_1d(_flatten(drift(t, _unflatten(y), *args))).astype(
+        dtype
+    )
     step_fn = get_step_fn(method, dtype=dtype)
     method_info = get_method_info(method)
 
@@ -802,13 +808,13 @@ def _odeint(
         if dt is None:
             # Use the provided time grid
             time_grid = ts
-            return _odeint_on_grid(_f, y0, time_grid, step_fn)
+            ys = _odeint_on_grid(_f, y0, time_grid, step_fn)
         else:
             # Use uniform time grid, with specified step size
             time_grid = jnp.arange(ts[0], ts[-1] + dt, dt)
             ys = _odeint_on_grid(_f, y0, time_grid, step_fn)
             f_sol = jax.vmap(linear_interpolation(time_grid, ys))
-            return f_sol(ts)
+            ys = f_sol(ts)
     else:
         # Solvers with adaptive step size.
         order = method_info["order"]
@@ -829,40 +835,38 @@ def _odeint(
             ifactor=ifactor,
             dfactor=dfactor,
         )
-        # f_sol = jax.vmap(linear_interpolation(ts, ys))
-        return ys
+
+    # Unflatten the solution
+    ys = jax.vmap(_unflatten)(ys)
+    return ys
 
 
-def _inv_odeint(drift, y0: Array, ts: Array, *args, **kwargs):
-    ys = _odeint(drift, y0, ts[::-1], *args, **kwargs)
-    return ys[-1]
+def _inv_odeint(drift, ys: Array, ts: Array, *args, **kwargs):
+    y0 = ys[-1]
+    print(ys.shape)
+    xs = _odeint(drift, y0, ts[::-1], *args, **kwargs)
+    return xs[-1]
 
 
-def _inv_logdet_odeint(drift, y0: Array, ts: Array, *args, **kwargs):
-    drift_jac = jax.jacobian(drift, argnums=1)
+def _inv_logdet_odeint(drift, ys, ts, *args, **kwargs):
+    _jac = jax.jacfwd(drift, argnums=1)
+    jac = lambda t, x: jnp.atleast_2d(_jac(t, x))
 
-    def aug_drift(t, x):
-        x = x[:-1]
-        x_new = drift(t, x, *args)
-        jac = drift_jac(t, x, *args)
+    def aug_drift(t, state, *args):
+        x, logdet = state
+        dx = jnp.atleast_1d(drift(t, x,*args))
+        dlogdet = jnp.atleast_1d(jnp.trace(jac(t, x)))
+        return dx, dlogdet
 
-        if jac.ndim > 2:
-            logdet_new = jnp.diagonal(jac, axis1=-2, axis2=-1).sum().reshape((1,))
-        else:
-            logdet_new = jac.sum().reshape((1,))
+    y0 = ys[-1]
+    logdet0 = jnp.zeros(y0.shape[:-1])
+    ys, logdets = _odeint(aug_drift, (y0, logdet0), ts[::-1], *args, **kwargs)
 
-        return jnp.concatenate([x_new, logdet_new])
-
-    y0_extended = jnp.concatenate([y0, jnp.zeros((1,))])
-    ys_extended = _odeint(aug_drift, y0_extended, ts[::-1], **kwargs)
-    ys = ys_extended[-1, :-1]
-    logdet = ys_extended[-1, -1]
-
-    return ys, logdet
+    return ys[-1], logdets[-1]
 
 
 # ODEs are invertible, so we can define the inverse of the ODE solver
 odeint = _odeint
-# odeint = custom_inverse(_odeint, static_argnums=[0, 2])
-# odeint.definv(_inv_odeint)
-# odeint.definv_and_logdet(_inv_logdet_odeint)
+odeint = custom_inverse(_odeint, static_argnums=[0, 2])
+odeint.definv(_inv_odeint)
+odeint.definv_and_logdet(_inv_logdet_odeint)

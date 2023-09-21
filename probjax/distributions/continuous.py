@@ -10,15 +10,57 @@ from warnings import warn
 
 from .exponential_family import ExponentialFamily
 from .distribution import Distribution
-from .constraints import real, positive, unit_interval, square_matrix
+from .constraints import (
+    real,
+    positive,
+    unit_interval,
+    square_matrix,
+    positive_definite_matrix,
+    positive_integer,
+    interval,
+)
 from .utils import _precision_to_scale_tril
 
 from probjax.utils.linalg import batch_mv, batch_mahalanobis
 
-__all__ = ["Normal", "MultivariateNormal", "Gamma", "Beta", "Uniform"]
+__all__ = [
+    "Normal",
+    "MultivariateNormal",
+    "Gamma",
+    "Beta",
+    "Uniform",
+    "Cauchy",
+    "Chi2",
+    "Dirichlet",
+    "Exp",
+    "Laplace",
+    "Logistic",
+    "Pareto",
+    "T",
+    "TruncatedNormal",
+    #    "GaussianKDE",
+]
 
 from jax.tree_util import register_pytree_node_class
-from jax.scipy.stats import norm, gamma, beta
+from jax.scipy.stats import (
+    norm,
+    gamma,
+    beta,
+    expon,
+    dirichlet,
+    chi2,
+    cauchy,
+    gennorm,
+    geom,
+    laplace,
+    logistic,
+    pareto,
+    t,
+    truncnorm,
+    uniform,
+    vonmises,
+    gaussian_kde,
+)
 
 
 @register_pytree_node_class
@@ -104,10 +146,11 @@ class MultivariateNormal(ExponentialFamily):
 
     arg_constraints = {
         "loc": real,
-        "covariance_matrix": square_matrix,
+        "covariance_matrix": positive_definite_matrix,
         # "precision_matrix": square_matrix,
         # "scale_tril": square_matrix,
     }
+    multivariate = True
 
     def __init__(
         self,
@@ -193,7 +236,7 @@ class MultivariateNormal(ExponentialFamily):
 
     @property
     def variance(self) -> jnp.array:
-        return jnp.sum(jnp.diagonal(self.scale_tril, axis1=-2, axis2=-1)**2, axis=-1)
+        return jnp.diagonal(self.scale_tril, axis1=-2, axis2=-1) ** 2
 
     def rsample(self, key, sample_shape=tuple):
         shape = sample_shape + self.batch_shape + self.event_shape
@@ -255,6 +298,13 @@ class Gamma(ExponentialFamily):
     def cdf(self, value):
         return gamma.cdf(value * self.beta, self.alpha)
 
+    def icdf(self, value):
+        return gamma.ppf(value * self.beta, self.alpha)
+
+    def entropy(self):
+        alpha, beta = self.alpha, self.beta
+        return alpha - jnp.log(beta) + gammaln(alpha) + (1 - alpha) * digamma(alpha)
+
 
 @register_pytree_node_class
 class Beta(ExponentialFamily):
@@ -296,6 +346,10 @@ class Beta(ExponentialFamily):
         return random.beta(key, self.alpha, self.beta, shape)
 
     def log_prob(self, value):
+        # Numerical stability!
+        value = jnp.clip(
+            value, jnp.finfo(value.dtype).eps, 1.0 - jnp.finfo(value.dtype).eps
+        )
         return beta.logpdf(value, self.alpha, self.beta)
 
     def cdf(self, value):
@@ -322,9 +376,10 @@ class Uniform(Distribution):
         self.high = high
 
         if not jnp.all(low < high):
-            warn("Some elements of low are not less than corresponding elements of high, we will switch them.")
+            warn(
+                "Some elements of low are not less than corresponding elements of high, we will switch them."
+            )
             self.low = jnp.where(low < high, low, high) - 1e-6
-
 
         super().__init__(batch_shape=jnp.shape(low), event_shape=())
 
@@ -350,3 +405,375 @@ class Uniform(Distribution):
 
     def icdf(self, q: Array) -> Array:
         return self.low + q * (self.high - self.low)
+
+    def entropy(self) -> Array:
+        return jnp.log(self.high - self.low)
+
+
+@register_pytree_node_class
+class Cauchy(Distribution):
+    arg_constraints = {"loc": real, "scale": positive}
+
+    def __init__(self, loc: float, scale: float):
+        self.loc = loc
+        self.scale = scale
+
+        super().__init__(batch_shape=jnp.shape(loc), event_shape=())
+
+    def sample(self, key: Array, sample_shape: tuple = ()) -> Array:
+        shape = sample_shape + self.batch_shape + self.event_shape
+        return random.cauchy(key, shape) * self.scale + self.loc
+
+    def log_prob(self, value: Array) -> Array:
+        return cauchy.logpdf(value, self.loc, self.scale)
+
+    def cdf(self, x: Array) -> Array:
+        return cauchy.cdf(x, self.loc, self.scale)
+
+    def icdf(self, q: Array) -> Array:
+        return cauchy.ppf(q, self.loc, self.scale)
+
+    def entropy(self) -> Array:
+        return jnp.log(4 * jnp.pi * self.scale)
+
+
+@register_pytree_node_class
+class Chi2(Distribution):
+    arg_constraints = {"df": positive_integer, "loc": real, "scale": positive}
+
+    def __init__(self, df: float, loc: float, scale: float):
+        self.df = df
+        self.loc = loc
+        self.scale = scale
+
+        super().__init__(batch_shape=jnp.shape(df), event_shape=())
+
+    def sample(self, key: Array, sample_shape: tuple = ()) -> Array:
+        shape = sample_shape + self.batch_shape + self.event_shape
+        return random.chisquare(key, self.df, shape) * self.scale + self.loc
+
+    def log_prob(self, value: Array) -> Array:
+        return chi2.logpdf(value, self.df, self.loc, self.scale)
+
+    def cdf(self, x: Array) -> Array:
+        return chi2.cdf(x, self.df, self.loc, self.scale)
+
+    def icdf(self, q: Array) -> Array:
+        return chi2.ppf(q, self.df, self.loc, self.scale)
+
+    def entropy(self) -> Array:
+        return jnp.log(0.5 * self.scale) + 0.5 * (1 + jnp.log(2 * jnp.pi * self.df))
+
+
+@register_pytree_node_class
+class Dirichlet(Distribution):
+    arg_constraints = {"alpha": positive}
+    multivariate = True
+
+    def __init__(self, alpha: Array):
+        assert jnp.ndim(alpha) >= 1, "alpha must be at least one-dimensional."
+        assert jnp.all(alpha > 0), "alpha must be positive."
+
+        self.alpha = alpha
+        self.alpha_sum = jnp.sum(alpha, axis=-1, keepdims=True)
+
+        batch_shape = jnp.shape(alpha)[:-1]
+        event_shape = jnp.shape(alpha)[-1:]
+        super().__init__(batch_shape=batch_shape, event_shape=event_shape)
+
+    @property
+    def mean(self) -> Array:
+        return self.alpha / self.alpha_sum
+
+    @property
+    def mode(self) -> Array:
+        return (self.alpha - 1) / (self.alpha_sum - self.event_shape[0])
+
+    @property
+    def variance(self) -> Array:
+        alpha_sum = self.alpha_sum
+        return (
+            self.alpha * (alpha_sum - self.alpha) / (alpha_sum**2 * (alpha_sum + 1))
+        )
+
+    def sample(self, key: Array, sample_shape: tuple = ()) -> Array:
+        shape = sample_shape + self.batch_shape  # Event shape is included in alpha
+        return random.dirichlet(key, self.alpha, shape)
+
+    def log_prob(self, value: Array) -> Array:
+        if value.ndim > 1:
+            return jax.vmap(dirichlet.logpdf, in_axes=(0, None))(value, self.alpha)
+        else:
+            return dirichlet.logpdf(value, self.alpha)
+
+    def entropy(self) -> Array:
+        return dirichlet.entropy(self.alpha)
+
+
+@register_pytree_node_class
+class Exp(ExponentialFamily):
+    arg_constraints = {"rate": positive}
+    support = positive
+
+    def __init__(self, rate: Array):
+        self.rate = rate
+
+        super().__init__(batch_shape=jnp.shape(rate), event_shape=())
+
+    @property
+    def mean(self) -> Array:
+        return 1 / self.rate
+
+    @property
+    def variance(self) -> Array:
+        return 1 / jnp.power(self.rate, 2)
+
+    def rsample(self, key, sample_shape: tuple = ()):
+        shape = sample_shape + self.batch_shape + self.event_shape
+        return random.exponential(key, shape) * 1 / self.rate
+
+    def log_prob(self, value):
+        return expon.logpdf(value, 0.0, 1 / self.rate)
+
+    def cdf(self, value):
+        return expon.cdf(value, 0.0, 1 / self.rate)
+
+    def icdf(self, value):
+        return expon.ppf(value, 0.0, 1 / self.rate)
+
+    def entropy(self):
+        return 1 - jnp.log(self.rate)
+
+
+@register_pytree_node_class
+class Laplace(ExponentialFamily):
+    arg_constraints = {"loc": real, "scale": positive}
+    support = real
+
+    def __init__(self, loc: Array, scale: Array):
+        self.loc = loc
+        self.scale = scale
+
+        super().__init__(batch_shape=jnp.shape(loc), event_shape=())
+
+    @property
+    def mean(self) -> Array:
+        return self.loc
+
+    @property
+    def variance(self) -> Array:
+        return 2 * jnp.power(self.scale, 2)
+
+    def rsample(self, key, sample_shape: tuple = ()):
+        shape = sample_shape + self.batch_shape + self.event_shape
+        return random.laplace(key, shape) * self.scale + self.loc
+
+    def log_prob(self, value):
+        return laplace.logpdf(value, self.loc, self.scale)
+
+    def cdf(self, value):
+        return laplace.cdf(value, self.loc, self.scale)
+
+    def icdf(self, value):
+        return laplace.ppf(value, self.loc, self.scale)
+
+    def entropy(self):
+        return 1 + jnp.log(2 * self.scale)
+
+
+@register_pytree_node_class
+class Logistic(ExponentialFamily):
+    arg_constraints = {"loc": real, "scale": positive}
+    support = real
+
+    def __init__(self, loc: Array, scale: Array):
+        self.loc = loc
+        self.scale = scale
+
+        super().__init__(batch_shape=jnp.shape(loc), event_shape=())
+
+    @property
+    def mean(self) -> Array:
+        return self.loc
+
+    @property
+    def variance(self) -> Array:
+        return jnp.power(self.scale * jnp.pi, 2) / 3
+
+    def rsample(self, key, sample_shape: tuple = ()):
+        shape = sample_shape + self.batch_shape + self.event_shape
+        return random.logistic(key, shape) * self.scale + self.loc
+
+    def log_prob(self, value):
+        return logistic.logpdf(value, self.loc, self.scale)
+
+    def cdf(self, value):
+        return logistic.cdf(value, self.loc, self.scale)
+
+    def icdf(self, value):
+        return logistic.ppf(value, self.loc, self.scale)
+
+    def entropy(self):
+        return jnp.log(self.scale) + 2
+
+
+@register_pytree_node_class
+class Pareto(Distribution):
+    arg_constraints = {"alpha": positive, "scale": positive}
+    support = interval(1.0, jnp.inf)
+
+    def __init__(self, alpha: Array, scale: Array):
+        self.alpha = alpha
+        self.scale = scale
+
+        super().__init__(batch_shape=jnp.shape(alpha), event_shape=())
+
+    def sample(self, key: Array, sample_shape: tuple = ()) -> Array:
+        shape = sample_shape + self.batch_shape + self.event_shape
+        return random.pareto(key, self.alpha, shape) * self.scale
+
+    def log_prob(self, value: Array) -> Array:
+        return pareto.logpdf(value, self.alpha, 0.0, self.scale)
+
+    def cdf(self, x: Array) -> Array:
+        return pareto.cdf(x, self.alpha, 0.0, self.scale)
+
+    def icdf(self, q: Array) -> Array:
+        return pareto.ppf(q, self.alpha, 0.0, self.scale)
+
+    def entropy(self) -> Array:
+        return jnp.log(self.scale) + 1 + 1 / self.alpha
+
+
+@register_pytree_node_class
+class T(Distribution):
+    arg_constraints = {"df": positive_integer, "loc": real, "scale": positive}
+
+    def __init__(self, df: Array, loc: Array, scale: Array):
+        self.df = df
+        self.loc = loc
+        self.scale = scale
+
+        super().__init__(batch_shape=jnp.shape(df), event_shape=())
+
+    def sample(self, key: Array, sample_shape: tuple = ()) -> Array:
+        shape = sample_shape + self.batch_shape + self.event_shape
+        return random.t(key, self.df, shape) * self.scale + self.loc
+
+    def log_prob(self, value: Array) -> Array:
+        return t.logpdf(value, self.df, self.loc, self.scale)
+
+    def cdf(self, x: Array) -> Array:
+        return t.cdf(x, self.df, self.loc, self.scale)
+
+    def icdf(self, q: Array) -> Array:
+        return t.ppf(q, self.df, self.loc, self.scale)
+
+    def entropy(self) -> Array:
+        return (
+            jnp.log(self.scale)
+            + 0.5 * (1 + jnp.log(self.df))
+            + gammaln(0.5 * (self.df + 1))
+            - gammaln(0.5 * self.df)
+        )
+
+
+class TruncatedNormal(Distribution):
+    arg_constraints = {"loc": real, "scale": positive, "low": real, "high": real}
+
+    def __init__(self, loc: Array, scale: Array, low: Array, high: Array):
+        self.loc = loc
+        self.scale = scale
+        self.low = jnp.minimum(low, high)
+        self.high = jnp.maximum(low, high)
+
+        super().__init__(batch_shape=jnp.shape(loc), event_shape=())
+
+    def sample(self, key: Array, sample_shape: tuple = ()) -> Array:
+        shape = sample_shape + self.batch_shape + self.event_shape
+        return (
+            random.truncated_normal(key, self.low, self.high, shape) * self.scale
+            + self.loc
+        )
+
+    def log_prob(self, value: Array) -> Array:
+        return truncnorm.logpdf(value, self.low, self.high, self.loc, self.scale)
+
+    def cdf(self, x: Array) -> Array:
+        return truncnorm.cdf(x, self.low, self.high, self.loc, self.scale)
+
+    def icdf(self, q: Array) -> Array:
+        return truncnorm.ppf(q, self.low, self.high, self.loc, self.scale)
+
+    def entropy(self) -> Array:
+        return (
+            jnp.log(self.scale)
+            + 0.5 * (1 + jnp.log(self.df))
+            + gammaln(0.5 * (self.df + 1))
+            - gammaln(0.5 * self.df)
+        )
+
+
+# @register_pytree_node_class
+# class GaussianKDE(Distribution):
+#     arg_constraints = {"values": real}
+
+#     def __init__(self, values: Array):
+#         self.data = values
+#         self.kde = gaussian_kde(values)
+
+#         super().__init__(batch_shape=(), event_shape=())
+
+#     def sample(self, key: Array, sample_shape: tuple = ()) -> Array:
+#         shape = sample_shape + self.batch_shape + self.event_shape
+#         return self.kde.resample(key, shape)
+
+#     def log_prob(self, value: Array) -> Array:
+#         return self.kde.logpdf(value)
+
+#     def cdf(self, x: Array) -> Array:
+#         return self.kde.cdf(x)
+
+#     def icdf(self, q: Array) -> Array:
+#         return self.kde.ppf(q)
+
+
+# @register_pytree_node_class
+# class VonMises(Distribution):
+#     arg_constraints = {"loc": real, "concentration": positive}
+
+#     def __init__(self, loc: Array, concentration: Array):
+#         self.loc = loc
+#         self.concentration = concentration
+
+#         super().__init__(batch_shape=jnp.shape(loc), event_shape=())
+
+#     def sample(self, key: Array, sample_shape: tuple = ()) -> Array:
+#         shape = sample_shape + self.batch_shape + self.event_shape
+#         return random.vonmises(key, shape, self.loc, self.concentration)
+
+#     def log_prob(self, value: Array) -> Array:
+#         return vonmises.logpdf(value, self.loc, self.concentration)
+
+#     def entropy(self) -> Array:
+#         return vonmises.entropy(self.concentration)
+
+
+# @register_pytree_node_class
+# class Geometric(Distribution):
+#     arg_constraints = {"p": unit_interval}
+
+#     def __init__(self, p: Array):
+#         self.p = p
+
+#         super().__init__(batch_shape=jnp.shape(p), event_shape=())
+
+#     def sample(self, key: Array, sample_shape: tuple = ()) -> Array:
+#         shape = sample_shape + self.batch_shape + self.event_shape
+#         return random.geometric(key, self.p, shape)
+
+#     def log_prob(self, value: Array) -> Array:
+#         return geom.logpmf(value, self.p)
+
+#     def entropy(self) -> Array:
+#         return geom.entropy(self.p)

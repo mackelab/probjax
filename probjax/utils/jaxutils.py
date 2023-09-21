@@ -18,13 +18,12 @@ def flatten_fun(fun: Callable, in_tree: PyTree) -> Callable:
     return flat_fun
 
 
-def flatten_and_concat_fun(fun: Callable, in_vals: PyTree):
-    """Process the potential function to return a function that takes in a single argument."""
+def flatten1d(in_vals: PyTree):
     leaves, in_tree = jax.tree_util.tree_flatten(in_vals)
 
     # Casting to tuple to make them hashable -> static_argnums
-    shapes = jax.tree_map(lambda x: jnp.shape(x), leaves)
-    lengths = jax.tree_map(lambda x: jnp.size(x), leaves)
+    shapes = tuple(jax.tree_map(lambda x: jnp.shape(x), leaves))
+    lengths = tuple(jax.tree_map(lambda x: jnp.size(x), leaves))
     cum_lengths = tuple(np.cumsum(lengths))[:-1]
 
     # Has only a single argument!
@@ -39,6 +38,13 @@ def flatten_and_concat_fun(fun: Callable, in_vals: PyTree):
             lambda x, s: jnp.reshape(x, s), tuple(flattened_leaves), shapes
         )
         return jax.tree_util.tree_unflatten(in_tree, leaves)
+
+    return _flatten, _unflatten
+
+
+def flatten_and_concat_fun(fun: Callable, in_vals: PyTree):
+    """Process the potential function to return a function that takes in a single argument."""
+    _flatten, _unflatten = flatten1d(in_vals)
 
     def _flatten_fun(x):
         x = _unflatten(x)

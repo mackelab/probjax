@@ -9,6 +9,7 @@ from jax import random
 from jax.lax import scan
 
 from .distribution import Distribution
+from .constraints import distribution
 
 from typing import Callable, Any, List
 from jaxtyping import Array, PyTree
@@ -33,22 +34,18 @@ class TransformedDistribution(Distribution):
             and returns transformed samples.
     """
 
+    arg_constraints = {"base_dist": distribution}
 
     def __init__(
         self,
         base_dist: Distribution,
-        transformation: Callable[[PyTree, Array], Array]
-        | Callable[
-            [Array],
-            Array,
-        ],
+        transformation: Callable,
     ):
         self.base_dist = base_dist
 
         batch_shape = base_dist.batch_shape
         event_shape = base_dist.event_shape
 
-        self.arg_constraints["base_dist"] = None
         self.support = base_dist.support
         self._transformation = transformation
         # We vmap as we want the individual log dets!

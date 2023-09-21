@@ -11,10 +11,13 @@ from .constraints import (
     unit_interval,
     positive,
     negative,
+    positive_integer,
+    negative_integer,
     unit_integer_interval,
     simplex,
     matrix,
-    square_matrix
+    square_matrix,
+    positive_definite_matrix,
 )
 
 __all__ = [
@@ -64,7 +67,7 @@ class ConstraintRegistry:
             )
 
         def factory_wrapper(*args):
-            out =  jax.tree_util.tree_map(factory, args)
+            out = jax.tree_util.tree_map(factory, args)
             if len(out) == 1:
                 return out[0]
             else:
@@ -106,13 +109,20 @@ class ConstraintRegistry:
 biject_to = ConstraintRegistry()
 transform_to = ConstraintRegistry()
 
+
 # Register constraints.
 def identity(x):
     return x
 
+
 def generate_matrix(x):
     x = x[..., None]
-    return x.T@x
+    return x @ x.T
+
+
+def generate_pdm(x):
+    x = x[..., None]
+    return x @ x.T + jax.numpy.eye(x.shape[-1])
 
 
 biject_to.register(real)(identity)
@@ -120,6 +130,8 @@ transform_to.register(real)(identity)
 
 
 transform_to.register(integer)(lax.round)
+transform_to.register(positive_integer)(lambda x: lax.abs(lax.round(x)))
+transform_to.register(negative_integer)(lambda x: -lax.abs(lax.round(x)))
 
 transform_to.register(positive)(lax.exp)
 biject_to.register(positive)(lax.exp)
@@ -132,6 +144,4 @@ biject_to.register(unit_square)(lax.tanh)
 transform_to.register(simplex)(jax.nn.softmax)
 transform_to.register(matrix)(generate_matrix)
 transform_to.register(square_matrix)(generate_matrix)
-
-
-
+transform_to.register(positive_definite_matrix)(generate_pdm)
