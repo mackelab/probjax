@@ -150,6 +150,17 @@ class LinearTimeInvariantSDE(BaseSDE):
 
 
 class LinearTimeVariantSDE(BaseSDE):
+    def __init__(
+        self, drift_matrix: Callable, diffusion_matrix: Callable, p0: Distribution
+    ) -> None:
+        self.drift_matrix = drift_matrix
+        self.diffusion_matrix = diffusion_matrix
+
+        drift = lambda t, x: jnp.matmul(drift_matrix(t), jnp.atleast_1d(x))
+        diffusion = lambda t, x: diffusion_matrix(t)
+
+        super().__init__(drift, diffusion, p0)
+
     def mean(self, ts: Array, **kwargs) -> Array:
         assert jnp.all(ts >= 0), "t must be positive"
 
@@ -161,13 +172,13 @@ class LinearTimeVariantSDE(BaseSDE):
 
         return mus
 
-    def var(self, t: Array, **kwargs) -> Array:
+    def variance(self, t: Array, **kwargs) -> Array:
         assert jnp.all(t >= 0), "t must be positive"
         if self.p0.event_shape != ():
             cov = self.covariance_matrix(t, **kwargs)
             return jnp.sum(jnp.diagonal(cov, axis1=-2, axis2=-1))
         else:
-            var0 = self.p0.var
+            var0 = self.p0.variance
             _odeint = partial(odeint, **kwargs)
             if self.batch_shape != ():
                 _odeint = jax.vmap(_odeint, in_axes=(None, 0, None))
@@ -196,3 +207,34 @@ class LinearTimeVariantSDE(BaseSDE):
 
         covs = _odeint(f, cov0, t)
         return covs
+
+
+class VESDE(LinearTimeVariantSDE):
+    def __init__(
+        self, p0: Distribution, sigma_max: float = 10.0, sigma_min: float = 1e-5
+    ) -> None:
+        shape = p0.event_shape
+        d = shape[0] if len(shape) > 0 else 1
+        _const = jnp.sqrt(2 * jnp.log(sigma_max / sigma_min))
+        drift_matrix = lambda t: jnp.zeros((d, d))
+        diffusion_matrix = (
+            lambda t: jnp.eye(d) * sigma_min * (sigma_max / sigma_min) ** t * _const
+        )
+
+        super().__init__(drift_matrix, diffusion_matrix, p0)
+
+
+class VPSDE(LinearTimeVariantSDE):
+    def __init__(
+        self, p0: Distribution, beta_max: float = 10.0, beta_min: float = 1e-5
+    ) -> None:
+        shape = p0.event_shape
+        d = shape[0] if len(shape) > 0 else 1
+        drift_matrix = lambda t: jnp.eye(d) * (
+            -0.5 * (beta_min + t * (beta_max - beta_min))
+        )
+        diffusion_matrix = lambda t: jnp.eye(d) * jnp.sqrt(
+            beta_min + t * (beta_max - beta_min)
+        )
+
+        super().__init__(drift_matrix, diffusion_matrix, p0)

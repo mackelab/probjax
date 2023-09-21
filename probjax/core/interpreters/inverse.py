@@ -189,6 +189,25 @@ def invert_slice(eqn, known_invars, known_outvars):
     return [invar], [new_input]
 
 
+@register_inverse_rule(jax.lax.dynamic_slice_p)
+def invert_dynamic_slice(eqn, known_invars, known_outvars):
+    slice_size = eqn.params["slice_sizes"]
+    input = known_invars[0]
+    start_index = known_invars[1]
+    invar = eqn.invars[0]
+    in_aval = invar.aval
+
+    if input is None:
+        input = jnp.full(in_aval.shape, jnp.nan, dtype=in_aval.dtype)
+    out1 = known_outvars[0]
+    while out1.ndim < input.ndim:
+        out1 = jnp.expand_dims(out1, axis=-1)
+
+    new_input = jax.lax.dynamic_update_slice(input, out1, (start_index,))
+
+    return [invar], [new_input]
+
+
 # @register_inverse_rule(jax.lax.dynamic_slice_p)
 # def invert_dynamic_slice(eqn, known_invars, known_outvars):
 #     invar = eqn.invars[0]
@@ -522,6 +541,8 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         inverse_jaxpr = eqn.params["inverse_jaxpr"]
         jaxpr = inverse_jaxpr.jaxpr
         consts = inverse_jaxpr.literals
+        # print(known_invars)
+        # print(known_outvars)
         known_invals = [v for v in known_invars if v is not None]
         known_invars = [
             eqn.invars[i] for i in range(len(eqn.invars)) if known_invars[i] is None

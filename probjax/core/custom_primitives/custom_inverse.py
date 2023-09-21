@@ -179,6 +179,7 @@ class custom_inverse:
             raise AttributeError(msg)
         inv_name = getattr(self.inv_fun, "__name__", str(self.inv_fun))
 
+        # We can only invert with respect to specific dynamic arguments. All others are assumed to be static!
         f = lu.wrap_init(self.fun, params=params)
         if self.static_argnums is None:
             dyn_args = args
@@ -187,7 +188,7 @@ class custom_inverse:
             f, dyn_args = argnums_partial(
                 f, dyn_args, args, require_static_args_hashable=False
             )
-
+        # Flatt stuff for tracing
         args_flat, in_tree = tree_flatten(dyn_args)
         jax_tree_fun, out_tree = flatten_fun_nokwargs(f, in_tree)  # type: ignore
         in_avals = tuple(safe_map(shaped_abstractify, args_flat))
@@ -198,23 +199,21 @@ class custom_inverse:
         forward_jaxpr = core.ClosedJaxpr(jaxpr, consts)
         out_tree = out_tree()
 
+        # Inverse has same params!
         f_inv = lu.wrap_init(self.inv_fun_and_log_det, params=params)
-        if self.static_argnums is None:
-            dyn_args = args
-        else:
+        if self.static_argnums is not None:
             dyn_args = (i for i in range(len(args)) if i not in self.static_argnums)
             f_inv, dyn_args = argnums_partial(
                 f_inv, dyn_args, args, require_static_args_hashable=False
             )
-        jax_tree_inv_fun, out_tree_inv = flatten_fun_nokwargs(f_inv, in_tree)  # type: ignore
         debug = pe.debug_info(
             self.inv_fun_and_log_det,
+            out_tree,
             in_tree,
-            out_tree_inv,
             False,
             inv_name or "<unknown>",
         )
-        jaxpr, _, consts = pe.trace_to_jaxpr_dynamic(jax_tree_inv_fun, in_avals, debug)
+        jaxpr, _, consts = pe.trace_to_jaxpr_dynamic(f_inv, out_avals, debug)
         inverse_jaxpr = core.ClosedJaxpr(jaxpr, consts)
 
         out_flat = custom_inverse_call_p.bind(

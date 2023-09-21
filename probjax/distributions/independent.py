@@ -10,6 +10,8 @@ from .constraints import real, positive, unit_interval
 
 __all__ = ["Independent"]
 
+# Transforms a batch of independent distributions into a single mulitvariate product distribution.
+
 
 class Independent(Distribution):
     """

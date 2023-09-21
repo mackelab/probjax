@@ -37,7 +37,13 @@ class Constraint:
 
     def __str__(self) -> str:
         return self.__repr__()
-    
+
+
+class Distribution(Constraint):
+    """A constraint that checks if a value is a distribution."""
+
+    def _is_contained(self, x: Union[Array, "Constraint"]) -> bool:
+        return isinstance(x, Distribution)
 
 
 class Real(Constraint):
@@ -162,28 +168,44 @@ class IntegerInterval(Integer, Interval):
                 and x.upper <= self.upper
             )
 
+
+class PositiveInteger(Integer):
+    def _is_contained(self, x: Array) -> bool:
+        return super()._is_contained(x) and jnp.all(x > 0)
+
+
+class NegativeInteger(Integer):
+    def _is_contained(self, x: Array) -> bool:
+        return super()._is_contained(x) and jnp.all(x < 0)
+
+
 class Matrix(Real):
     def _is_contained(self, x: Any | Constraint) -> bool:
         return super()._is_contained(x) and len(x.shape) >= 2
-    
+
+
 class SquareMatrix(Matrix):
     def _is_contained(self, x: Any | Constraint) -> bool:
         return super()._is_contained(x) and x.shape[-1] == x.shape[-2]
-    
+
+
 class SymmetricMatrix(SquareMatrix):
     def _is_contained(self, x: Any | Constraint) -> bool:
         return super()._is_contained(x) and jnp.allclose(x, jnp.transpose(x, (-2, -1)))
-    
+
+
 class PositiveDefiniteMatrix(SymmetricMatrix):
     def _is_contained(self, x: Any | Constraint) -> bool:
         return super()._is_contained(x) and jnp.all(jnp.linalg.eigvals(x) > 0)
-    
 
 
+# Numerical constraints
 real = Real()
 integer = Integer()
 boolean = Boolean()
 positive = Positive()
+positive_integer = PositiveInteger()
+negative_integer = NegativeInteger()
 negative = Negative()
 interval = Interval
 finit_set = FiniteSet
@@ -196,13 +218,18 @@ square_matrix = SquareMatrix()
 symmetric_matrix = SymmetricMatrix()
 positive_definite_matrix = PositiveDefiniteMatrix()
 
+# Other constraints
+distribution = Distribution()
+
 
 __all__ = [
     "real",
     "integer",
     "boolean",
     "positive",
+    "positive_integer",
     "negative",
+    "negative_integer",
     "interval",
     "finit_set",
     "unit_interval",
@@ -211,4 +238,5 @@ __all__ = [
     "simplex",
     "matrix",
     "square_matrix",
+    "distribution",
 ]

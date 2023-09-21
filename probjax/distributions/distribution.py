@@ -15,6 +15,8 @@ __all__ = ["Distribution"]
 from jax.tree_util import register_pytree_node_class
 
 
+# Abstract base class for distributions
+
 @register_pytree_node_class
 class Distribution:
     r"""
@@ -24,6 +26,7 @@ class Distribution:
     arg_constraints: Dict[str, Constraint] = {}
     support: Constraint = Constraint()
     has_rsample = False
+    multivariate = False
 
     def __init__(
         self,

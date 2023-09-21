@@ -37,6 +37,8 @@ class Mixture(Distribution):
         self.support = components[
             0
         ].support  # Pick the component with the largest support TODO
+
+        
         for i, component in enumerate(components):
             assert (
                 component.batch_shape == batch_shape
@@ -53,7 +55,9 @@ class Mixture(Distribution):
     def sample(self, key, sample_shape=()):
         key_comp, key_sample, key_permute = random.split(key, 3)
         shape = sample_shape + self.batch_shape + self.event_shape
-        mixture_idx = random.categorical(key_comp, self.mixing_probs, shape=shape[:-1] if len(shape) > 1 else shape)
+        mixture_idx = random.categorical(
+            key_comp, self.mixing_probs, shape=shape[:-1] if len(shape) > 1 else shape
+        )
         components, num_samples = jnp.unique(mixture_idx, return_counts=True)
 
         total_samples = []
@@ -69,9 +73,11 @@ class Mixture(Distribution):
             random.permutation(key_permute, jnp.arange(shape[0]))
         ]
         return total_samples
-    
+
     def rsample(self, key, sample_shape: tuple = ...) -> Array:
-        raise NotImplementedError("Mixture does not support reparameterized sampling, can be done -> implicit reparam.")
+        raise NotImplementedError(
+            "Mixture does not support reparameterized sampling, can be done -> implicit reparam."
+        )
 
     def log_prob(self, value):
         log_probs = []
@@ -87,7 +93,7 @@ class Mixture(Distribution):
             cdf_components.append(cdf_component)
         cdf_components = jnp.stack(cdf_components, axis=-1)
         return jnp.sum(cdf_components * self.mixing_distribution.probs, axis=-1)
-    
+
     def icdf(self, value):
         icdf_components = []
         for i, component in enumerate(self.components):
@@ -95,7 +101,7 @@ class Mixture(Distribution):
             icdf_components.append(icdf_component)
         icdf_components = jnp.stack(icdf_components, axis=-1)
         return jnp.sum(icdf_components * self.mixing_distribution.probs, axis=-1)
-    
+
     def mean(self):
         mean_components = []
         for i, component in enumerate(self.components):
@@ -103,7 +109,7 @@ class Mixture(Distribution):
             mean_components.append(mean_component)
         mean_components = jnp.stack(mean_components, axis=-1)
         return jnp.sum(mean_components * self.mixing_distribution.probs, axis=-1)
-    
+
     def variance(self):
         variance_components = []
         for i, component in enumerate(self.components):
@@ -111,7 +117,7 @@ class Mixture(Distribution):
             variance_components.append(variance_component)
         variance_components = jnp.stack(variance_components, axis=-1)
         return jnp.sum(variance_components * self.mixing_distribution.probs, axis=-1)
-    
+
     # Each distribution will be registered as a PyTree
     def tree_flatten(self):
         flat_components, tree_components = jax.tree_util.tree_flatten(self.components)
@@ -123,14 +129,23 @@ class Mixture(Distribution):
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         tree_components = aux_data[0]
-        return cls(children[0], jax.tree_util.tree_unflatten(tree_components, children[1:]))
-    
+        return cls(
+            children[0], jax.tree_util.tree_unflatten(tree_components, children[1:])
+        )
+
     def __repr__(self) -> str:
-        return "Mixture" + "(" + "mixing_probs=" + self.mixing_probs.__repr__() + ", components=" + self.components.__repr__() + ")"
+        return (
+            "Mixture"
+            + "("
+            + "mixing_probs="
+            + self.mixing_probs.__repr__()
+            + ", components="
+            + self.components.__repr__()
+            + ")"
+        )
 
 
 class MixtureSameFamily(Distribution):
-
     def __init__(self, mixing_probs: Array, components: Distribution):
         self.mixing_probs = mixing_probs
         self.components = components
@@ -139,11 +154,12 @@ class MixtureSameFamily(Distribution):
         num_components = mixing_probs.shape[-1]
         batch_shape = mixing_probs.shape[:-1]
         event_shape = components.event_shape
-        assert num_components == components.batch_shape[-1], "Batchdim of components must match number of mixing probabilities"
+        assert (
+            num_components == components.batch_shape[-1]
+        ), "Batchdim of components must match number of mixing probabilities"
 
         self.support = components.support
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)
-
 
     def sample(self, key, sample_shape=()):
         pass
