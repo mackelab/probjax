@@ -1,4 +1,5 @@
-from probjax.utils.odeint import odeint, get_method_info, get_methods
+from probjax.utils.odeint import get_method_info, get_methods
+from probjax.utils.odeint import _odeint as odeint
 
 import pytest
 

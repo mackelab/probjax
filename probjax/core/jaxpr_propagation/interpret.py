@@ -68,6 +68,7 @@ def interpret(
                 process_eqn,
             )
             outvars = eqn.outvars
+            process_eqn(eqn, known_invars, known_outvars)
         else:
             # We process the equation
             outvars, outvals = process_eqn(eqn, known_invars, known_outvars)  # type: ignore

@@ -150,6 +150,21 @@ def invert_gather(eqn, known_invars, known_outvars):
     return [eqn.invars[0]], [out]
 
 
+@register_inverse_rule(jax.lax.select_n_p)
+def invert_select_n(eqn, known_invars, known_outvars):
+    print(known_invars, known_outvars)
+    which = known_invars[0]
+    cases = known_invars[1:]
+
+    return (
+        eqn.invars,
+        [
+            which,
+        ]
+        + cases,
+    )
+
+
 @register_inverse_rule(jax.lax.reshape_p)
 def invert_reshape(eqn, _, known_outvars):
     out = known_outvars[0]
@@ -406,7 +421,6 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
     log_dets = {}
 
     def __call__(self, eqn, known_invars, known_outvars):
-        # print(self.log_dets)
         is_known_invars = safe_map(lambda x: x is not None, known_invars)
         is_known_outvars = safe_map(lambda x: x is not None, known_outvars)
 
@@ -516,8 +530,8 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
             if v_sub in self.log_dets:
                 self.log_dets[v] = self.log_dets[v_sub]
 
-        log_det_previous = sum([self.log_dets.get(v, 0.0) for v in eqn.outvars])
-        for v in outvars:
+        log_det_previous = sum([self.log_dets.get(v, 0.0) for v in eqn.invars])
+        for v in eqn.invars:
             self.log_dets[v] = log_det_previous
 
         # Pass logdet to outer scope

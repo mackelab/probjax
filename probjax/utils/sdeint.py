@@ -172,7 +172,7 @@ def explicit_stochastic_runge_kutta_step(
     order: int,
     diagonal_diffusion_matrix: bool = False,
 ):
-    dtsqrt = jnp.sqrt(dt)
+    dtsqrt = jnp.sqrt(jnp.abs(dt))
     dtsqrt_vec = jnp.ones_like(dWt) * dtsqrt
     if diagonal_diffusion_matrix:
         reduction1 = "i, ij -> j"
@@ -255,7 +255,7 @@ def _euler_maruyama_step_fn(
     else:
         reduction = "ij, j -> i"
 
-    y1 = y0 + dt * f0 + jnp.einsum(reduction, g0, dWt)
+    y1 = y0 + dt * f0 + g0 * dWt #jnp.einsum(reduction, g0, dWt)
     f1 = drift(t0 + dt, y1)
     g1 = diffusion(t0 + dt, y1)
     return y1, f1, g1, None
@@ -324,7 +324,7 @@ def _sdeint_on_grid(
 
         # Generate brownian increments
         key, subkey = jrandom.split(key)
-        dWt = jrandom.normal(subkey, (noise_dim,)) * jnp.sqrt(dt)
+        dWt = jrandom.normal(subkey, (noise_dim,)) * jnp.sqrt(jnp.abs(dt))
         # TODO Iterated Brownian increments ...
 
         y1, f1, g1, _ = step_fn(
@@ -347,11 +347,13 @@ def _sdeint_on_grid(
     g0 = diffusion(t0, y0)
 
     if g0.ndim < 2:
-        noise_dim = 1
+        noise_dim = y0.shape[0]
+        print(noise_dim)
         diagonal_diffusion_matrix = True
     elif g0.ndim == 2:
         noise_dim = g0.shape[1]
         diagonal_diffusion_matrix = False
+        print(noise_dim, "non diag")
     else:
         raise ValueError("Diffusion function must return a vector or matrix")
 
@@ -402,6 +404,9 @@ def sdeint(
     Returns:
         ys: Solution path of the SDE.
     """
+
+    
+
     y0 = jnp.atleast_1d(y0)
     ts = jnp.atleast_1d(ts)
 
@@ -412,7 +417,7 @@ def sdeint(
     # Make sure drift is consistent and is a function _f: R x R^d -> R^d where d >= 1
     # Make sure diffusion is consistent and is a function _g: R x R^d -> R^d (independent noise) where d >= 1 or _g: R x R^d -> R^{d x d} where d >= 1 (correlated noise)
     _f = lambda t, y: jnp.atleast_1d(drift(t, y, *args)).astype(dtype)
-    _g = lambda t, y: jnp.atleast_1d(diffusion(t, y, *args)).astype(dtype)
+    _g = lambda t, y: diffusion(t, y, *args).astype(dtype)
 
     # Get step_fn
     step_fn = get_step_fn(method, dtype=dtype)

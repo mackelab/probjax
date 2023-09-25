@@ -1,6 +1,7 @@
 import jax
 from jax.core import Jaxpr, JaxprEqn, Literal, Var, Atom
 from jax.experimental.pjit import pjit_p
+from jax.custom_derivatives import custom_jvp_call_p
 from jax._src.util import safe_map as map
 from typing import Callable, Sequence, Tuple, Sequence, Optional, Any
 from jaxtyping import Array
@@ -67,10 +68,9 @@ class EqnEnvironment:
             eqns_index = self.G[v]
             map(self.write, eqns_index)
 
-        for i,eqn in enumerate(self.eqns):
+        for i, eqn in enumerate(self.eqns):
             if all(map(self.env.known, eqn.invars)):
                 self.write(i)
-
 
     def write(self, index: int):
         if index in self.processed_eqns:
@@ -146,16 +146,19 @@ def propagate(
     eqn_env = EqnEnvironment(G, env, jaxpr.eqns, cost_fn)
 
     while not eqn_env.is_empty():
-        # print(list(env.keys()))
-        # print(eqn_env.eqn_queue)
+        print(list(env.keys()))
+        print(eqn_env.eqn_queue)
         eqn = eqn_env.pop()  # Equation to process
 
         # Read known invars and outvars
         known_invars = map(env.read, eqn.invars)
         known_outvars = map(env.read, eqn.outvars)
 
-        if eqn.primitive is pjit_p:
-            closed_sub_jaxpr = eqn.params["jaxpr"]
+        if eqn.primitive is pjit_p or eqn.primitive is custom_jvp_call_p:
+            if eqn.primitive is pjit_p:
+                closed_sub_jaxpr = eqn.params["jaxpr"]
+            else:
+                closed_sub_jaxpr = eqn.params["call_jaxpr"]
             sub_jaxpr = closed_sub_jaxpr.jaxpr
             sub_consts = closed_sub_jaxpr.consts
 
