@@ -239,11 +239,11 @@ class Dirac(Distribution):
 
     @property
     def variance(self) -> Array:
-        return 0.0
+        return jnp.zeros(self.batch_shape)
 
     @property
     def entropy(self) -> Array:
-        return 0.0
+        return jnp.zeros(self.batch_shape)
 
     def cdf(self, value: Array) -> Array:
         true_value = jnp.broadcast_to(self.value, value.shape)

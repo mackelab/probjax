@@ -6,7 +6,7 @@ from functools import partial
 from typing import Callable, Union, Optional
 from jaxtyping import Array
 
-from probjax.distributions import Distribution
+from probjax.distributions import Distribution, Normal
 from probjax.utils.linalg import (
     is_matrix,
     is_diagonal_matrix,
@@ -77,7 +77,8 @@ class BaseSDE(Distribution):
         keys_flat = jax.random.split(key2, x0_flat.shape[0])
         __sdeint = jax.vmap(_sdeint, in_axes=(0, None, None, 0, None))
         ys = __sdeint(keys_flat, self.drift, self.diffusion, x0_flat, ts)
-        ys = ys.reshape(*shape)
+        ys = ys.reshape(sample_shape + self.batch_shape + self.event_shape + ts.shape)
+        ys = jnp.moveaxis(ys, 1, -1)
         return ys
 
     def log_prob(self, x: Array, t: Array) -> Array:
@@ -184,7 +185,7 @@ class LinearTimeVariantSDE(BaseSDE):
                 _odeint = jax.vmap(_odeint, in_axes=(None, 0, None))
 
             def f(t, var):
-                return self.drift(t) ** 2 * var + self.diffusion(t) ** 2
+                return self.drift_matrix(t) ** 2 * var + self.diffusion_matrix(t) ** 2
 
             vars = _odeint(f, var0, t)
             return vars
@@ -211,8 +212,11 @@ class LinearTimeVariantSDE(BaseSDE):
 
 class VESDE(LinearTimeVariantSDE):
     def __init__(
-        self, p0: Distribution, sigma_max: float = 10.0, sigma_min: float = 1e-5
+        self, p0: Distribution, sigma_max: float = 10.0, sigma_min: float = 0.01
     ) -> None:
+        self.sigma_max = sigma_max
+        self.sigma_min = sigma_min
+
         shape = p0.event_shape
         d = shape[0] if len(shape) > 0 else 1
         _const = jnp.sqrt(2 * jnp.log(sigma_max / sigma_min))
@@ -223,11 +227,42 @@ class VESDE(LinearTimeVariantSDE):
 
         super().__init__(drift_matrix, diffusion_matrix, p0)
 
+    def mean(self, ts: Array, x0=None,**kwargs) -> Array:
+        if x0 is None:
+            mu0 = self.p0.mean
+        else:
+            mu0 = x0
+        mu = jnp.broadcast_to(mu0, ts.shape + mu0.shape)
+        return mu
+
+    def variance(self, ts: Array,x0 = None, **kwargs) -> Array:
+        if x0 is None:
+            var0 = self.p0.variance
+        else:
+            var0 = jnp.zeros(1)
+        vart = self.sigma_min**2 * (self.sigma_max / self.sigma_min) ** (2 * ts)
+        var0 = var0[None, ...]
+        vart = vart[..., None]
+        var = var0 + vart
+        return var
+
+    def std(self, ts: Array, **kwargs):
+        return jnp.sqrt(self.variance(ts, **kwargs))
+
+    def log_prob(self, x: Array, t: Array, x0=None) -> Array:
+        mu = self.mean(t,x0=x0)
+        std = self.std(t,x0=x0)
+
+        return jax.scipy.stats.norm.logpdf(x, mu, std)
+
 
 class VPSDE(LinearTimeVariantSDE):
     def __init__(
-        self, p0: Distribution, beta_max: float = 10.0, beta_min: float = 1e-5
+        self, p0: Distribution, beta_max: float = 10.0, beta_min: float = 0.1
     ) -> None:
+        self.beta_max = beta_max
+        self.beta_min = beta_min
+
         shape = p0.event_shape
         d = shape[0] if len(shape) > 0 else 1
         drift_matrix = lambda t: jnp.eye(d) * (
@@ -238,3 +273,40 @@ class VPSDE(LinearTimeVariantSDE):
         )
 
         super().__init__(drift_matrix, diffusion_matrix, p0)
+
+    def mean(self, ts: Array, x0=None, **kwargs) -> Array:
+        if x0 is None:
+            mu0 = self.p0.mean
+        else:
+            mu0 = x0
+
+        phi = jnp.exp(
+            -0.25 * ts**2 * (self.beta_max - self.beta_min) - 0.5 * ts * self.beta_min
+        )
+        phi = phi[..., None]
+        phi = jnp.broadcast_to(phi, ts.shape + mu0.shape)
+        mu = phi * mu0
+        return mu
+
+    def std(self, ts: Array, **kwargs):
+        return jnp.sqrt(self.variance(ts, **kwargs))
+
+    def variance(self, ts: Array, x0=None, **kwargs) -> Array:
+        if x0 is None:
+            var0 = self.p0.variance
+        else:
+            var0 = jnp.zeros(x0.shape)
+        phi = jnp.exp(
+            -0.5 * ts**2 * (self.beta_max - self.beta_min) - ts * self.beta_min
+        )
+        phi = phi[..., None]
+        phi = jnp.broadcast_to(phi, ts.shape + var0.shape)
+
+        var = 1 + phi * (var0 - 1)
+        return var
+
+    def log_prob(self, x: Array, t: Array, x0 = None) -> Array:
+        mu = self.mean(t, x0=x0)
+        std = self.std(t, x0=x0)
+
+        return jax.scipy.stats.norm.logpdf(x, mu, std)
