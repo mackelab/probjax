@@ -10,7 +10,7 @@ from jaxtyping import PyTree, Array
 from functools import partial
 from itertools import accumulate
 
-from probjax.inference.jaxutils import flatten_fun
+from probjax.utils.jaxutils import flatten_fun
 
 
 # Track statistics of the chain

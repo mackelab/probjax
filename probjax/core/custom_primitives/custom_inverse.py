@@ -200,12 +200,14 @@ class custom_inverse:
         out_tree = out_tree()
 
         # Inverse has same params!
+
         f_inv = lu.wrap_init(self.inv_fun_and_log_det, params=params)
         if self.static_argnums is not None:
-            dyn_args = (i for i in range(len(args)) if i not in self.static_argnums)
-            f_inv, dyn_args = argnums_partial(
-                f_inv, dyn_args, args, require_static_args_hashable=False
-            )
+            inv_args = [
+                args[i] if i in self.static_argnums else out_avals[0]
+                for i in range(len(args))
+            ]
+            in_avals = tuple(safe_map(shaped_abstractify, inv_args))
         debug = pe.debug_info(
             self.inv_fun_and_log_det,
             out_tree,
@@ -213,7 +215,7 @@ class custom_inverse:
             False,
             inv_name or "<unknown>",
         )
-        jaxpr, _, consts = pe.trace_to_jaxpr_dynamic(f_inv, out_avals, debug)
+        jaxpr, _, consts = pe.trace_to_jaxpr_dynamic(f_inv, in_avals, debug)
         inverse_jaxpr = core.ClosedJaxpr(jaxpr, consts)
 
         out_flat = custom_inverse_call_p.bind(

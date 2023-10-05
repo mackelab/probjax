@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from typing import Callable, Any, List
 from jaxtyping import Array, PyTree
 
-
+from probjax.core.custom_primitives.custom_inverse import custom_inverse
 
 
 class Flip(hk.Module):
@@ -38,6 +38,30 @@ class Permute(hk.Module):
 
     def __call__(self, x: Array, *args) -> Array:
         return jnp.take(x, self.permutation, axis=self.axis)
+
+
+@custom_inverse
+def rotate(R, x):
+    return jnp.matmul(R, x.T).T
+
+
+rotate.definv_and_logdet(lambda R, x: (jnp.matmul(R.T, x.T).T, 0.0))
+
+
+class Rotate(hk.Module):
+    def __init__(self, key: Array, output_dim: int, name: str = "rotate"):
+        """Rotate the array.
+
+        Args:
+            rotation_matrix (Array): Rotation matrix.
+            name (str, optional): Name of the module. Defaults to "rotate".
+        """
+        super().__init__(name=name)
+        self.rotation_matrix = jax.random.orthogonal(key, output_dim)
+
+    def __call__(self, x: Array, *args) -> Array:
+        return rotate(self.rotation_matrix, x)
+
 
 
 

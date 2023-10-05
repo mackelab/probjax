@@ -3,6 +3,7 @@ from typing import Callable, Iterable, Optional
 
 import jax
 from jaxtyping import Array
+from jax import numpy as jnp
 
 from probjax.core.jaxpr_propagation.interpret import interpret
 from probjax.core.jaxpr_propagation.propagate import propagate
@@ -203,6 +204,8 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=()):
             process_all_eqns=True,
         )
         log_det = sum([processing_rule.log_dets[v] for v in jaxpr.jaxpr.invars])
+        if log_det.ndim == out[0].ndim:
+            log_det = jnp.sum(log_det, axis=-1)
         return out[0], log_det
 
     return wrapped

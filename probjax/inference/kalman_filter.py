@@ -190,7 +190,7 @@ def kalman_filter(
     index_array = mask_array.at[index].set(1).cumsum()
     _identity = lambda mu0, cov0, t, y: (mu0, cov0)
 
-    predict = get_prediction_step(_drift, _diffusion)
+    predict = get_prediction_step(_drift, _diffusion, method="mfd_linearized")
     update = get_update_step(C_o, R_o)
 
     def scan_fun(carry, data):

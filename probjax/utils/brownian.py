@@ -5,17 +5,103 @@ from jax import core
 import jax.random as jrandom
 
 from jaxtyping import Array, Float, PyTree
-from jax.random import PRNGKeyArray
+from jax.random import PRNGKey
 
+from functools import partial
+
+# Iterated integrals
+
+@jax.jit
+def iterated_ito_integral_general(key: PRNGKey, dW: Array, dt: Array, n: int = 5):
+    """Matrix I approximating repeated Ito integrals based on the method of Kloeden, Platen and Wright (1992).
+
+    Args:
+        key (PRNGKey): PRNGKey
+        dW (Array): Wiener increments
+        dt (Array): Time step size
+        n (int, optional): Truncation of Fourier series. Defaults to 5.
+
+    Returns:
+        (Array, Array): Matrix of Ito integrals and Levy areas.
+
+
+    NOTE: Based on https://github.com/mattja/sdeint/blob/master/sdeint/wiener.py#L102
+    """
+
+    dW = jnp.atleast_1d(dW)
+    m = dW.shape[0]
+
+    sqrt2h = jnp.sqrt(2.0 / dt)
+
+    def body_fun(i, val):
+        key, A0 = val
+        next_key, key1, key2 = jax.random.split(key, 3)
+        Xk = jax.random.normal(key1, shape=(m,))
+        Yk = jax.random.normal(key2, shape=(m,))
+        term1 = jnp.outer(Xk, (Yk + sqrt2h * dW))
+        term2 = jnp.outer(Yk + sqrt2h * dW, Xk)
+        A1 = A0 + (term1 - term2) / i
+
+        return (next_key, A1)
+
+    A0 = jnp.zeros((m, m))
+    n = jax.lax.cond(m == 1, lambda _: 0, lambda _: n, None) # No iteration for 1D
+    init_val = (key, A0)
+    _, A1 = jax.lax.fori_loop(1, n + 1, body_fun, init_val)
+
+    A1 = (dt / (2.0 * jnp.pi)) * A1
+    I = 0.5 * (jnp.outer(dW, dW) - dt * jnp.eye(m)) + A1
+
+    return I, A1
+
+
+def iterated_stratowich_integral_general(
+    key: PRNGKey, dW: Array, dt: Array, n: int = 5
+):
+    """Matrix I approximating repeated Stratonovich integrals based on the method of Kloeden, Platen and Wright (1992)."""
+    I, A = iterated_ito_integral_general(key, dW, dt, n)
+    J = I + 0.5 * dt * jnp.eye(dW.shape[0])
+    return J, A
+
+
+def iterated_stochastic_integral_diagonal(key: PRNGKey, dW: Array, dt: Array, **kwargs):
+    I_diag = 0.5 * (jnp.square(dW) - dt)
+    return I_diag
+
+
+def iterated_stochastic_integral_commutative_noise(
+    key: PRNGKey, dW: Array, dt: Array, **kwargs
+):
+    I = jnp.outer(dW, dW) - dt * jnp.eye(dW.shape[0])
+    return I
+
+def get_iterated_integrals_fn(noise_type: str, sde_type: str):
+    """Returns the iterated integrals function for a given noise type and sde type."""
+    if noise_type == "diagonal":
+        return iterated_stochastic_integral_diagonal
+    elif noise_type == "commutative":
+        return iterated_stochastic_integral_commutative_noise
+    elif noise_type == "general":
+        if sde_type == "ito":
+            return lambda *args, **kwargs : iterated_ito_integral_general(*args, **kwargs)[0]
+        elif sde_type == "stratonovich":
+            return lambda *args, **kwargs : iterated_stratowich_integral_general(*args, **kwargs)[0]
+        else:
+            raise NotImplementedError
+    else:
+        raise NotImplementedError
+
+
+# Brownian bridge and tree
 
 @jax.jit
 def brownian_bridge(
-    key: PRNGKeyArray, t: Float, t0: Float, t1: Float, w0: Array, w1: Array
+    key: PRNGKey, t: Float, t0: Float, t1: Float, w0: Array, w1: Array
 ) -> Array:
     """Brownian bridge between two points.
 
     Args:
-        key (PRNGKeyArray): Random generator key.
+        key (PRNGKey): Random generator key.
         t (Float): Time at which to sample.
         t0 (Float): Time at which the bridge starts.
         t1 (Float): Time at which the bridge ends.
@@ -36,15 +122,8 @@ def brownian_bridge(
 
 
 @jax.jit
-def brownian_path(key, ts):
-    diffs = ts[1:] - ts[:-1]
-
-    ws = jrandom.normal(key, (len(ts) - 1,)) * jnp.sqrt(diffs)
-    return jnp.cumsum(jnp.concatenate([jnp.zeros(1), ws], axis=0), axis=0)
-
-@jax.jit
 def brownian_tree(
-    key: PRNGKeyArray, t: Float, t0: Float, t1: Float, w0: Array, tol: Float
+    key: PRNGKey, t: Float, t0: Float, t1: Float, w0: Array, tol: Float
 ) -> Array:
     """Brownian motion between two points using a tree. This allows to evaluate it at any time, without having to save the whole trajectory.
 
@@ -94,3 +173,5 @@ def brownian_tree(
     A = jnp.array([[2, -4, 2], [-3, 4, -1], [1, 0, 0]])
     coeffs = jnp.tensordot(A, jnp.stack([w0, w_half, w1]), axes=1)
     return jnp.polyval(coeffs, rescale_t)
+
+# Estimate weak and strong error

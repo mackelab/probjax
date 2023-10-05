@@ -6,6 +6,7 @@ import networkx as nx
 
 
 import jax.numpy as jnp
+from jax.experimental.pjit import pjit_p
 
 from jax.core import Literal, Jaxpr
 import re
@@ -78,7 +79,11 @@ COMPUTE_GRAPH_NODE_STYLES = {
 
 
 def to_networkx(
-    jaxpr: Jaxpr, var_name_fn: Callable, compute_name_fn: Callable
+    jaxpr: Jaxpr,
+    var_name_fn: Callable,
+    compute_name_fn: Callable,
+    level=0,
+    maxlevel: int = jnp.inf,
 ) -> nx.DiGraph:
     """Converts a Jaxpr to a networkx graph.
 
@@ -99,53 +104,135 @@ def to_networkx(
     # Adding constants
     for n in constvars:
         graph.add_node(
-            var_name_fn(n),
+            var_name_fn(n, level=level),
             tag="const",
             val=n,
         )
 
     # Adding invars
+
     for n in invars:
-        graph.add_node(var_name_fn(n), tag="invar", val=n)
+        graph.add_node(
+            var_name_fn(n, level=level),
+            tag="invar",
+            val=n,
+            level=level,
+        )
 
     # Adding outvars
     for n in outvars:
-        graph.add_node(var_name_fn(n), tag="outvar", val=n)
+        graph.add_node(
+            var_name_fn(n, level=level),
+            tag="outvar",
+            val=n,
+            level=level,
+        )
+
+    scopes = 0
 
     # Adding equations
     for i, eqn in enumerate(eqns):
         # Add function node
+        if level < maxlevel and eqn.primitive is pjit_p:
+            scopes += 1
+            # Different naming scope
+            invars = eqn.invars
+            outvars = eqn.outvars
+
+            for n in outvars:
+                name = var_name_fn(n, level=level)
+
+                if name not in graph.nodes or graph.nodes[name] == {}:
+                    if isinstance(n, Literal):
+                        val = n.val
+                        graph.add_node(name, tag="const", val=val, level=level)
+                    else:
+                        graph.add_node(
+                            name,
+                            tag="intermediate",
+                            level=level,
+                            val=n,
+                        )
+
+            sub_jaxpr = eqn.params["jaxpr"].jaxpr
+
+            sub_graph = to_networkx(
+                sub_jaxpr, var_name_fn, compute_name_fn, level=level + scopes
+            )
+
+            # Connect to outer scope vars
+            invar_names = [
+                node
+                for node, data in sub_graph.nodes(data=True)
+                if data.get("tag") == "invar"
+            ]
+            outvar_names = [
+                node
+                for node, data in sub_graph.nodes(data=True)
+                if data.get("tag") == "outvar"
+            ]
+
+            outer_invar_names = [var_name_fn(n, level=level) for n in invars]
+            outer_outvar_names = [var_name_fn(n, level=level) for n in outvars]
+
+            rename_dict = dict(
+                list(zip(invar_names, outer_invar_names))
+                + list(zip(outvar_names, outer_outvar_names))
+            )
+            sub_graph = nx.relabel_nodes(sub_graph, rename_dict)
+
+            graph = nx.compose(sub_graph, graph)
+            continue
+
         graph.add_node(
-            f"f{i}",
+            eqn_name_fn(i, level=level),
             tag="operation",
             index=i,
+            level=level,
             xlabel=compute_name_fn(eqn),
         )
 
         # Add invars
         in_vars = eqn.invars
         for n in in_vars:
-            name = var_name_fn(n)
+            name = var_name_fn(n, level=level)
 
             if name not in graph.nodes or graph.nodes[name] == {}:
                 if isinstance(n, Literal):
                     val = n.val
-                    graph.add_node(name, tag="const", val=val)
+                    graph.add_node(name, tag="const", val=val, level=level)
                 else:
                     graph.add_node(
                         name,
                         tag="intermediate",
+                        level=level,
                         val=n,
                     )
 
-            graph.add_edge(name, f"f{i}")
+            graph.add_edge(name, eqn_name_fn(i, level=level), level=level)
 
         # Add outvars edges
         out_vars = eqn.outvars
         for n in out_vars:
-            graph.add_edge(f"f{i}", var_name_fn(n))
+            name = var_name_fn(n, level=level)
+
+            if name not in graph.nodes or graph.nodes[name] == {}:
+                if isinstance(n, Literal):
+                    val = n.val
+                    graph.add_node(name, tag="const", val=val, level=level)
+                else:
+                    graph.add_node(
+                        name,
+                        tag="intermediate",
+                        level=level,
+                        val=n,
+                    )
+
+            graph.add_edge(
+                eqn_name_fn(i, level=level), var_name_fn(n, level=level), level=level
+            )
             if eqn.primitive is rv_p:
-                graph.nodes[var_name_fn(n)]["tag"] = "random_variable"
+                graph.nodes[var_name_fn(n, level=level)]["tag"] = "random_variable"
 
     return graph
 
@@ -174,19 +261,36 @@ def subgraph(
     return subgraph
 
 
-def var_name_fn(n: str) -> str:
-    if isinstance(n, Literal):
-        return str(n)[:3]
+def eqn_name_fn(i: int, level=0) -> str:
+    if level == 0:
+        return f"f{i}"
     else:
-        return str(n)
+        return f"f{i}_{level}"
+
+
+def var_name_fn(n: str, level=0) -> str:
+    if isinstance(n, Literal):
+        name = str(n)[:3]
+    else:
+        name = str(n)
+
+    if level == 0:
+        return name
+    else:
+        return name + str(level)
 
 
 class JaxprGraph:
-    def __init__(self, jaxpr: Jaxpr, graph: nx.DiGraph | None = None) -> None:
+    def __init__(
+        self,
+        jaxpr: Jaxpr,
+        maxlevel: int = jnp.inf,
+        graph: nx.DiGraph | None = None,
+    ) -> None:
         self._jaxpr = jaxpr
         if graph is None:
             self._graph = to_networkx(
-                jaxpr, var_name_fn, lambda x: str(x.primitive.name)
+                jaxpr, var_name_fn, lambda x: str(x.primitive.name), maxlevel=maxlevel
             )
 
     @property
@@ -204,10 +308,19 @@ class JaxprGraph:
         AGraph = nx.nx_agraph.to_agraph(self._graph)
         # Node styles by tag
         nodes = AGraph.nodes()
+        max_level = 0
         for n in nodes:
             attributes = dict(n.attr)
+            level = attributes.get("level", "0")
+            if int(level) > max_level:
+                max_level = int(level)
             n.attr.update(
                 COMPUTE_GRAPH_NODE_STYLES[attributes.get("tag", "intermediate")]
+            )
+        # Cluster by "level"
+        for i in range(max_level + 1):
+            AGraph.add_subgraph(
+                [n for n in nodes if n.attr["level"] == str(i)], name=f"cluster_{i}"
             )
 
         # Left to right in topological order
