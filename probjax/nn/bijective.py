@@ -229,7 +229,7 @@ def _rational_quadratic_spline_inv(
     return x, logdet
 
 
-@partial(custom_inverse)
+@custom_inverse
 def rational_quadratic_spline(
     params: Array,
     x: Array,
@@ -251,7 +251,7 @@ def rational_quadratic_spline(
         range_max_y - range_min_y
     ) + range_min_y
 
-    #print(x.shape, x_pos.shape, y_pos.shape, knot_slopes.shape)
+    # print(x.shape, x_pos.shape, y_pos.shape, knot_slopes.shape)
     y, _ = _rational_quadratic_spline_fwd(x, x_pos, y_pos, knot_slopes)
     return y
 

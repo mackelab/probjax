@@ -207,13 +207,13 @@ def explicit_runge_kutta_step(
     last_equals_next: bool,
 ):
     def body_fun(i, k):
-        ti = t0 + dt * c[i - 1]
-        yi = y0 + dt * jnp.dot(A[i - 1, :], k)
+        ti = t0 + dt * c[i]
+        yi = y0 + dt * jnp.dot(A[i, :], k)
         ft = drift(ti, yi)
         return k.at[i, :].set(ft)
 
     k = jnp.zeros((stages, f0.shape[0]), f0.dtype).at[0, :].set(f0)
-    k = lax.fori_loop(1, stages, body_fun, k)
+    k = lax.fori_loop(1, stages + 1, body_fun, k)
 
     y1 = dt * jnp.dot(b_sol, k) + y0
     if last_equals_next:

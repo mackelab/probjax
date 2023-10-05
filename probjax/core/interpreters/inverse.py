@@ -9,6 +9,8 @@ from typing import Any, Callable, Optional
 import numpy as np
 import jax.numpy as jnp
 from jax._src.util import safe_map
+from jax.custom_derivatives import custom_jvp_call_p
+from jax.experimental.pjit import pjit_p
 
 from probjax.core.jaxpr_propagation.utils import ProcessingRule
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
@@ -152,16 +154,27 @@ def invert_gather(eqn, known_invars, known_outvars):
 
 @register_inverse_rule(jax.lax.select_n_p)
 def invert_select_n(eqn, known_invars, known_outvars):
-    print(known_invars, known_outvars)
-    which = known_invars[0]
+    # print(eqn)
+    # print(known_invars, known_outvars)
+    out = known_outvars[0]
+    which = known_invars[:1]
     cases = known_invars[1:]
+
+    in_avals = safe_map(lambda x: x.aval, eqn.invars[1:])
+
+    # Heursitcally propagate out to all cases!
+    # We can resolve conflicts later
+
+    new_cases = []
+    for c, aval in zip(cases, in_avals):
+        if c is None:
+            new_cases.append(out.astype(aval.dtype))
+        else:
+            new_cases.append(c)
 
     return (
         eqn.invars,
-        [
-            which,
-        ]
-        + cases,
+        which + new_cases,
     )
 
 
@@ -183,7 +196,7 @@ def invert_convert_element_type(eqn, known_invars, known_outvars):
     primitive = eqn.primitive
     params = eqn.params
     subfuns, bind_params = primitive.get_bind_params(params)
-    bind_params["new_sizes"] = in_aval.shape
+    bind_params["new_dtype"] = in_aval.dtype
     return [eqn.invars[0]], [primitive.bind(out, *subfuns, **bind_params)]
 
 
@@ -264,14 +277,13 @@ def inverse_cost_fn(eqn, known_invars, known_outvars):
     # Forward computation
     if all(known_invars):
         return 0
-    elif (
-        eqn.primitive is jax.lax.gather_p
-        and all(known_outvars)
-        or eqn.primitive is jax.lax.slice_p
-        or eqn.primitive is jax.experimental.pjit.pjit_p
+    elif all(known_outvars) and (
+        eqn.primitive is jax.lax.gather_p or eqn.primitive is jax.lax.slice_p
     ):
         # Block gather till the end
         return 1.0
+    elif eqn.primitive is pjit_p and all(known_outvars):
+        return 1.5
     elif all(known_outvars) and has_registered_inverse(eqn):
         return 0.5
     else:
@@ -319,7 +331,7 @@ def log_det_multivariate(f):
     def log_det_fn(*args, **kwargs):
         args = [jnp.atleast_1d(arg) for arg in args]
         value, jac = value_and_jacfwd(f, *args)
-        log_det = jnp.log(jnp.abs(jnp.linalg.det(jac)))
+        sign, log_det = jnp.linalg.slogdet(jac)
         return value, log_det
 
     return log_det_fn
@@ -342,8 +354,16 @@ class InverseProcessingRule(ProcessingRule):
             return _CUSTOM_INVERSE_PROCESSING_RULES[eqn.primitive](
                 eqn, known_invars, known_outvars
             )
-        elif eqn.primitive is jax.experimental.pjit.pjit_p:
+        elif (
+            eqn.primitive
+            is jax.experimental.pjit.pjit_p
+            #      or eqn.primitive is custom_jvp_call_p
+        ):
             return None
+        elif all(is_known_invars) and all(is_known_outvars):
+            # We already computed all the values -> No need to do anything
+            # But we can use these cases to resolve conflicts!
+            return self._default_resolve_conflicts(eqn, known_invars, known_outvars)
         elif is_univariate(eqn) and all(is_known_outvars):
             return self._default_univariate_inverse(eqn, known_invars, known_outvars)
         elif is_bivariate(eqn) and all(is_known_outvars) and any(is_known_invars):
@@ -397,6 +417,16 @@ class InverseProcessingRule(ProcessingRule):
         else:
             return [eqn.invars[1]], [missing_invar]
 
+    def _default_resolve_conflicts(self, eqn, known_invars, known_outvars):
+        # We already computed all the values -> No need to do anything
+        # But we can use these cases to resolve conflicts!
+
+        outvars, outvals = self._default_forward_processing(
+            eqn, known_invars, known_outvars
+        )
+
+        return outvars, outvals
+
     def _default_forward_processing(self, eqn, known_invars, known_outvars):
         primitive = eqn.primitive
         subfuns, bind_params = primitive.get_bind_params(eqn.params)
@@ -421,6 +451,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
     log_dets = {}
 
     def __call__(self, eqn, known_invars, known_outvars):
+        # print(self.log_dets)
         is_known_invars = safe_map(lambda x: x is not None, known_invars)
         is_known_outvars = safe_map(lambda x: x is not None, known_outvars)
 
@@ -432,7 +463,9 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
             all(is_known_outvars) and eqn.primitive in _CUSTOM_INVERSE_PROCESSING_RULES
         ):
             return self._default_custom_rule_apply(eqn, known_invars, known_outvars)
-        elif eqn.primitive is jax.experimental.pjit.pjit_p:
+        elif (
+            eqn.primitive is jax.experimental.pjit.pjit_p
+        ):  # or eqn.primitive is custom_jvp_call_p:
             return self._default_pjit(eqn, known_invars, known_outvars)
 
         elif is_univariate(eqn) and all(is_known_outvars):
@@ -519,20 +552,35 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
             return [eqn.invars[1]], [invars]
 
     def _default_pjit(self, eqn, known_invars, outvars):
-        jaxpr = eqn.params["jaxpr"]
+        if "jaxpr" in eqn.params:
+            jaxpr = eqn.params["jaxpr"]
+        else:
+            jaxpr = eqn.params["call_jaxpr"]
+
         sub_invars = jaxpr.jaxpr.invars
         sub_outvars = jaxpr.jaxpr.outvars
 
         subvars = sub_invars + sub_outvars
         vars = eqn.invars + eqn.outvars
 
+        # print(subvars)
+        # print(vars)
         for v_sub, v in zip(subvars, vars):
             if v_sub in self.log_dets:
-                self.log_dets[v] = self.log_dets[v_sub]
+                if not isinstance(v, jax.core.Literal):
+                    self.log_dets[v] = self.log_dets[v_sub]
 
-        log_det_previous = sum([self.log_dets.get(v, 0.0) for v in eqn.invars])
+        log_det_previous = sum(
+            [
+                self.log_dets.get(v, 0.0)
+                for v in eqn.outvars
+                if not isinstance(v, jax.core.Literal)
+            ]
+        )
+
         for v in eqn.invars:
-            self.log_dets[v] = log_det_previous
+            if not isinstance(v, jax.core.Literal):
+                self.log_dets[v] = log_det_previous
 
         # Pass logdet to outer scope
 
