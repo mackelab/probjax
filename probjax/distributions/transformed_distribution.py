@@ -59,7 +59,7 @@ class TransformedDistribution(Distribution):
     def rsample(self, key, sample_shape=()):
         num_samples = np.prod(sample_shape)
         samples = self.base_dist.rsample(key, (num_samples,))
-        return self.transform(samples).reshape(sample_shape + self.event_shape)
+        return self.transform(samples).reshape(sample_shape + self.batch_shape +  self.event_shape)
 
     def log_prob(self, value):
         shape = value.shape

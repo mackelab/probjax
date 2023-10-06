@@ -13,6 +13,7 @@ from jax.custom_derivatives import custom_jvp_call_p
 from jax.experimental.pjit import pjit_p
 
 from probjax.core.jaxpr_propagation.utils import ProcessingRule
+from probjax.core.jaxpr_propagation.propagate import propagate
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
 
 
@@ -130,6 +131,13 @@ def invert_squeeze(eqn, known_invars, known_outvars):
     return [eqn.invars[0]], [out.reshape(in_shape)]
 
 
+@register_inverse_rule(jax.lax.broadcast_in_dim_p)
+def invert_broadcast_in_dim(eqn, known_invars, known_outvars):
+    in_shape = eqn.invars[0].aval.shape
+    out = known_outvars[0]
+    return [eqn.invars[0]], [out.reshape(in_shape)]
+
+
 @register_inverse_rule(jax.lax.rev_p)
 def invert_rev(eqn, known_invars, known_outvars):
     return eqn.invars, [eqn.primitive.bind(*known_outvars, **eqn.params)]
@@ -139,6 +147,7 @@ def invert_rev(eqn, known_invars, known_outvars):
 def invert_gather(eqn, known_invars, known_outvars):
     input, index = known_invars
     out = known_outvars[0]
+
     if input is None:
         input_aval = eqn.invars[0].aval
         input = jnp.zeros(input_aval.shape, input_aval.dtype)
@@ -146,8 +155,8 @@ def invert_gather(eqn, known_invars, known_outvars):
     params = eqn.params
     subfuns, bind_params = primitive.get_bind_params(params)
     new_index = jnp.argsort(index, axis=0)
+    #out = out.reshape(input.shape)
     out = primitive.bind(out, new_index, *subfuns, **bind_params)
-    out = out.reshape(input.shape)
 
     return [eqn.invars[0]], [out]
 
@@ -162,15 +171,16 @@ def invert_select_n(eqn, known_invars, known_outvars):
 
     in_avals = safe_map(lambda x: x.aval, eqn.invars[1:])
 
-    # Heursitcally propagate out to all cases!
-    # We can resolve conflicts later
-
     new_cases = []
     for c, aval in zip(cases, in_avals):
         if c is None:
             new_cases.append(out.astype(aval.dtype))
         else:
             new_cases.append(c)
+    # If we do not know which we cannot decide.
+    # But we might can reconstruct it!
+    if which[0] is None:
+        which_var = eqn.invars[0]
 
     return (
         eqn.invars,
@@ -205,6 +215,7 @@ def invert_slice(eqn, known_invars, known_outvars):
     input = known_invars[0]
     start_index = eqn.params["start_indices"]
     limit_index = eqn.params["limit_indices"]
+    # print(eqn.params)
     invar = eqn.invars[0]
     in_aval = invar.aval
     if input is None:
@@ -219,19 +230,22 @@ def invert_slice(eqn, known_invars, known_outvars):
 
 @register_inverse_rule(jax.lax.dynamic_slice_p)
 def invert_dynamic_slice(eqn, known_invars, known_outvars):
-    slice_size = eqn.params["slice_sizes"]
     input = known_invars[0]
-    start_index = known_invars[1]
+    start_indices = known_invars[1:]
+
     invar = eqn.invars[0]
     in_aval = invar.aval
 
     if input is None:
         input = jnp.full(in_aval.shape, jnp.nan, dtype=in_aval.dtype)
-    out1 = known_outvars[0]
-    while out1.ndim < input.ndim:
-        out1 = jnp.expand_dims(out1, axis=-1)
 
-    new_input = jax.lax.dynamic_update_slice(input, out1, (start_index,))
+    out1 = known_outvars[0]
+    # print(out1)
+    # while out1.ndim < in_aval.ndim:
+    #     out1 = jnp.expand_dims(out1, axis=-1)
+    # print(input.shape, out1.shape, start_index, axis, axis)
+    new_input = jax.lax.dynamic_update_slice(input, out1, start_indices)
+
 
     return [invar], [new_input]
 
@@ -339,6 +353,8 @@ def log_det_multivariate(f):
 
 class InverseProcessingRule(ProcessingRule):
     def __call__(self, eqn, known_invars, known_outvars):
+        # print(eqn.primitive, known_invars, known_outvars)
+
         is_known_invars = safe_map(lambda x: x is not None, known_invars)
         is_known_outvars = safe_map(lambda x: x is not None, known_outvars)
 
@@ -355,8 +371,8 @@ class InverseProcessingRule(ProcessingRule):
                 eqn, known_invars, known_outvars
             )
         elif (
-            eqn.primitive
-            is jax.experimental.pjit.pjit_p
+            not all(is_known_invars)
+            and eqn.primitive is jax.experimental.pjit.pjit_p
             #      or eqn.primitive is custom_jvp_call_p
         ):
             return None
@@ -464,7 +480,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         ):
             return self._default_custom_rule_apply(eqn, known_invars, known_outvars)
         elif (
-            eqn.primitive is jax.experimental.pjit.pjit_p
+            not all(is_known_invars) and eqn.primitive is jax.experimental.pjit.pjit_p
         ):  # or eqn.primitive is custom_jvp_call_p:
             return self._default_pjit(eqn, known_invars, known_outvars)
 

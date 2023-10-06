@@ -691,7 +691,6 @@ def _odeint_adaptive(
 
         def cond_fun(state):
             i, t0, _, _, _ = state
-            print(t0, t1)
             return (i < mxstep) & (t0 < t1)
 
         def body_fn(state):
@@ -699,7 +698,7 @@ def _odeint_adaptive(
 
             y1, f1, (error, k) = step_fn(drift, t0, y0, f0, dt)
             error = mean_error_ratio(error, rtol, atol, y0, y1)
-            print(error)
+            #print(error)
             dt = step_size_adaption(
                 dt,
                 error,
@@ -727,7 +726,7 @@ def _odeint_adaptive(
 
     t0 = ts[0]
     f0 = drift(t0, y0)
-    print(f0)
+
     if dtinit is None:
         dt = initial_step_size(drift, t0, y0, order, rtol, atol, f0)
     else:
@@ -843,7 +842,6 @@ def _odeint(
 
 def _inv_odeint(drift, ys: Array, ts: Array, *args, **kwargs):
     y0 = ys[-1]
-    print(ys.shape)
     xs = _odeint(drift, y0, ts[::-1], *args, **kwargs)
     return xs[-1]
 
@@ -860,13 +858,13 @@ def _inv_logdet_odeint(drift, ys, ts, *args, **kwargs):
 
     y0 = ys[-1]
     logdet0 = jnp.zeros(y0.shape[:-1])
-    ys, logdets = _odeint(aug_drift, (y0, logdet0), ts[::-1], *args, **kwargs)
+    xs, logdets = _odeint(aug_drift, (y0, logdet0), ts[::-1], *args, **kwargs)
 
-    return ys[-1], logdets[-1]
+    return xs[-1], logdets[-1]
 
 
 # ODEs are invertible, so we can define the inverse of the ODE solver
 odeint = _odeint
-odeint = custom_inverse(_odeint, static_argnums=[0, 2])
+odeint = custom_inverse(_odeint, static_argnums=[0,2])
 odeint.definv(_inv_odeint)
 odeint.definv_and_logdet(_inv_logdet_odeint)
