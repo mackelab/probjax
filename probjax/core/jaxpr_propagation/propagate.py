@@ -76,6 +76,7 @@ class EqnEnvironment:
         if index in self.processed_eqns:
             # Do not write processed equations
             return
+        
         if index in self.eqn_queue:
             # Remove equation from the queue if it is already present
             eqn = self.eqns[index]
@@ -146,15 +147,18 @@ def propagate(
     eqn_env = EqnEnvironment(G, env, jaxpr.eqns, cost_fn)
 
     while not eqn_env.is_empty():
+
         # print(list(env.keys()))
         # print(eqn_env.eqn_queue)
+
+
         eqn = eqn_env.pop()  # Equation to process
 
         # Read known invars and outvars
         known_invars = map(env.read, eqn.invars)
         known_outvars = map(env.read, eqn.outvars)
 
-        if eqn.primitive is pjit_p:
+        if not all([v is not None for v in known_invars]) and eqn.primitive is pjit_p:
             if eqn.primitive is pjit_p:
                 closed_sub_jaxpr = eqn.params["jaxpr"]
             else:

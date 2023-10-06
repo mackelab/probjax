@@ -141,6 +141,14 @@ ad.primitive_transposes[custom_inverse_call_p] = custom_inverse_transpose
 ad.primitive_jvps[custom_inverse_call_p] = custom_inverse_jvp
 
 
+def is_hashable(obj):
+    try:
+        hash(obj)
+        return True
+    except TypeError:
+        return False
+
+
 # TODO: Add support other tracer support!
 
 
@@ -184,9 +192,14 @@ class custom_inverse:
         if self.static_argnums is None:
             dyn_args = args
         else:
-            dyn_args = (i for i in range(len(args)) if i not in self.static_argnums)
+            dyn_args_index = [
+                i
+                for i in range(len(args))
+                if i not in self.static_argnums #or not is_hashable(args[i])
+            ]
+
             f, dyn_args = argnums_partial(
-                f, dyn_args, args, require_static_args_hashable=False
+                f, dyn_args_index, args, require_static_args_hashable=False
             )
         # Flatt stuff for tracing
         args_flat, in_tree = tree_flatten(dyn_args)
@@ -203,11 +216,17 @@ class custom_inverse:
 
         f_inv = lu.wrap_init(self.inv_fun_and_log_det, params=params)
         if self.static_argnums is not None:
+            f_inv, dyn_args = argnums_partial(
+                f_inv, dyn_args_index, args, require_static_args_hashable=False
+            )
+
             inv_args = [
                 args[i] if i in self.static_argnums else out_avals[0]
-                for i in range(len(args))
+                for i in dyn_args_index
             ]
+            # print(inv_args)
             in_avals = tuple(safe_map(shaped_abstractify, inv_args))
+
         debug = pe.debug_info(
             self.inv_fun_and_log_det,
             out_tree,
