@@ -4,7 +4,7 @@ import jax.numpy as jnp
 from jax import lax
 from jax.random import PRNGKeyArray
 
-from typing import Callable, Tuple
+from typing import Callable, Tuple, Optional
 from jaxtyping import Array, Float
 
 from probjax.utils.linalg import matrix_fraction_decomposition, transition_matrix
@@ -58,10 +58,15 @@ def update(
         Tuple[Array, Array]: Updated mean and covariance
     """
 
+    if C_o is None:
+        C_o = jnp.eye(mu0.shape[0])
+
     y = y_o
     m = C_o @ mu0
     r = y - m
-    S = C_o @ cov0 @ C_o.T + R_o
+    S = C_o @ cov0 @ C_o.T
+    if R_o is not None:
+        S = S + R_o
     K = cov0 @ jnp.linalg.solve(S, C_o).T
 
     mu1 = mu0 + K @ r
@@ -131,21 +136,23 @@ def get_update_step(C_o, R_o, method="kalman"):
         Callable: Update function
     """
     if method == "kalman":
-        return update
+        return partial(update, C_o=C_o, R_o=R_o)
     else:
         raise NotImplementedError(f"Method {method} not implemented.")
 
 
-def kalman_filter(
+@partial(jax.jit, static_argnums=(0,1, 8,9))
+def filter(
     drift: Callable,
     diffusion: Callable,
     ts: Array,
     mu0: Array,
     cov0: Array,
-    t_o: Array,
-    y_o: Array,
-    C_o: Array,
-    R_o: Array,
+    t_o: Optional[Array] = None,
+    y_o: Optional[Array] = None,
+    C_o: Optional[Array] = None,
+    R_o: Optional[Array] = None,
+    return_mu_cov_cache: bool = False,
     prediction_method="mfd_linearized",
 ) -> Tuple[Array, Array, Array, Array]:
     """Kalman filter for a discrete time model on time grid ts.
@@ -168,6 +175,7 @@ def kalman_filter(
     mu0 = jnp.atleast_1d(mu0)
     cov0 = jnp.atleast_2d(cov0)
     ts = jnp.atleast_1d(ts)
+    d = mu0.shape[0]
     dtype = mu0.dtype
     # Check consistent shapes
     assert (
@@ -180,42 +188,56 @@ def kalman_filter(
     _drift = lambda t, x: jnp.atleast_1d(drift(t, x)).astype(dtype)
     _diffusion = lambda t, x: jnp.atleast_2d(diffusion(t, x)).astype(dtype)
 
-    
-    # Merge observation times with time grid
-    index = jnp.searchsorted(ts, t_o)
-    ts_merged = jnp.insert(ts, index, t_o)
-    index = jnp.searchsorted(ts_merged, t_o)
+    if t_o is not None and y_o is not None:
+        # Merge observation times with time grid
+        index = jnp.searchsorted(ts, t_o)
+        ts_merged = jnp.insert(ts, index, t_o)
+        index = jnp.searchsorted(ts_merged, t_o)
 
-    mask_array = jnp.zeros(len(ts_merged), dtype=jnp.int32)
-    index_array = mask_array.at[index].set(1).cumsum()
-    _identity = lambda mu0, cov0, t, y: (mu0, cov0)
+        mask_array = jnp.zeros(len(ts_merged), dtype=jnp.int32)
+        index_array = mask_array.at[index].set(1).cumsum()
+        num_obs = len(t_o)
+    else:
+        ts_merged = ts
+        index_array = jnp.zeros(len(ts), dtype=jnp.int32)
+        t_o = jnp.zeros((1,)) * jnp.nan
+        y_o = jnp.zeros((1,)) * jnp.nan
+        num_obs = 0
+
 
     predict = get_prediction_step(_drift, _diffusion, method="mfd_linearized")
-    update = get_update_step(C_o, R_o)
+    update = get_update_step(C_o, R_o) 
+
+    _identity = lambda mu, cov, *args:  (mu, cov)
 
     def scan_fun(carry, data):
-        mu0, cov0, t0 = carry
+        mu0, cov0, t0, mu_cache, cov_cache = carry
         t1, j = data
         mu1_, cov1_ = predict(t0, t1, mu0, cov0)
+        is_update = t_o[j] == t1
         mu1, cov1 = lax.cond(
-            (t_o[j] == t1), update, _identity, mu1_, cov1_, t_o[j], y_o[j]
+            is_update, update, _identity, mu1_, cov1_, t_o[j], y_o[j]
         )
-        return (mu1, cov1, t1), (mu1_, cov1_, mu1, cov1)
+        if return_mu_cov_cache:
+            mu_cache, cov_cache = lax.cond(is_update, lambda m,c,j: (m.at[j].set(mu1_), c.at[j].set(cov1_)), lambda m,c,j: (m,c), mu_cache, cov_cache, j)
 
-    init_carry = (mu0, cov0, ts[0])
-    _, (mus_, covs_, mus, covs) = lax.scan(
+        return (mu1, cov1, t1, mu_cache, cov_cache), (mu1, cov1)
+
+    init_carry = (mu0, cov0, ts[0], jnp.zeros((num_obs,  d)), jnp.zeros((num_obs, d, d)))
+    final_carry, (mus, covs) = lax.scan(
         scan_fun, init_carry, (ts_merged[1:], index_array[:-1])
     )
 
     mus = jnp.concatenate([mu0[None], mus])
     covs = jnp.concatenate([cov0[None], covs])
-    mus_ = jnp.concatenate([mu0[None], mus_])
-    covs_ = jnp.concatenate([cov0[None], covs_])
 
-    return mus, covs, mus_, covs_
+    if return_mu_cov_cache:
+        return mus, covs, final_carry[-2], final_carry[-1]
+    else:
+        return mus, covs
 
 
-def rauch_tung_striebel_smoother(
+def smooth(
     ts: Array, mus: Array, covs: Array, mus_: Array, covs_: Array, smooth: Callable
 ) -> Tuple[Array, Array]:
     """Smooths the state given a Kalman filter output.

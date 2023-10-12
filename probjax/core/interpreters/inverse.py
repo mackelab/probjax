@@ -145,20 +145,69 @@ def invert_rev(eqn, known_invars, known_outvars):
 
 @register_inverse_rule(jax.lax.gather_p)
 def invert_gather(eqn, known_invars, known_outvars):
+    # print(known_invars, known_outvars)
     input, index = known_invars
     out = known_outvars[0]
+
+    # print(known_invars, known_outvars)
 
     if input is None:
         input_aval = eqn.invars[0].aval
         input = jnp.zeros(input_aval.shape, input_aval.dtype)
+        # print(input.shape)
+
     primitive = eqn.primitive
     params = eqn.params
     subfuns, bind_params = primitive.get_bind_params(params)
-    new_index = jnp.argsort(index, axis=0)
-    #out = out.reshape(input.shape)
-    out = primitive.bind(out, new_index, *subfuns, **bind_params)
 
-    return [eqn.invars[0]], [out]
+    # TODO CHECH THIS!
+    gather_numdim = bind_params["dimension_numbers"]
+    scatter_numdim = jax.lax.ScatterDimensionNumbers(
+        gather_numdim.offset_dims,
+        gather_numdim.collapsed_slice_dims,
+        gather_numdim.collapsed_slice_dims,
+    )
+
+    # print(subfuns, bind_params)
+    # print(eqn.invars[0].aval.shape, input.shape)
+    # print(eqn.outvars[0].aval.shape, out.shape)
+    # print(index.shape)
+
+    # print(input, index, out, scatter_numdim)
+    out = out.reshape(eqn.outvars[0].aval.shape)
+    input = jax.lax.scatter(input, index, out, scatter_numdim)
+
+    # input = input.at[index].set(out)
+
+    return [eqn.invars[0]], [input]
+
+
+@register_inverse_rule(jax.lax.scatter_p)
+def invert_scatter(eqn, known_invars, known_outvars):
+    index = known_invars[1]
+    assert index is not None, "Cannot invert scatter without index!"
+
+    out = known_outvars[0]
+
+    scatter_numdim = eqn.params["dimension_numbers"]
+    gather_numdim = jax.lax.GatherDimensionNumbers(
+        scatter_numdim.update_window_dims,
+        scatter_numdim.inserted_window_dims,
+        scatter_numdim.scatter_dims_to_operand_dims,
+    )
+
+    slice_sizes = eqn.invars[2].aval.shape
+    while len(slice_sizes) < out.ndim:
+        slice_sizes = slice_sizes + (1,)
+    update_val = jax.lax.gather(out, index, gather_numdim,slice_sizes )
+
+
+
+    # print(eqn.params)
+    # print(eqn.invars[0].aval.shape, out.shape)
+    # print(eqn.invars[2].aval.shape, update_val.shape)
+
+    return [eqn.invars[0], eqn.invars[2]], [out, update_val]
 
 
 @register_inverse_rule(jax.lax.select_n_p)
@@ -246,7 +295,6 @@ def invert_dynamic_slice(eqn, known_invars, known_outvars):
     # print(input.shape, out1.shape, start_index, axis, axis)
     new_input = jax.lax.dynamic_update_slice(input, out1, start_indices)
 
-
     return [invar], [new_input]
 
 
@@ -277,11 +325,11 @@ def is_bivariate(eqn) -> bool:
     )
 
 
-def has_registered_inverse(eqn) -> bool:
+def has_registered_inverse(eqn, known_invers, known_outvars) -> bool:
     primitive = eqn.primitive
     return (
         primitive in _UNIVARITAE_INVERSE_REGISTRY
-        or primitive in _BIVARIATE_INVERSE_REGISTRY
+        or (primitive in _BIVARIATE_INVERSE_REGISTRY and any(known_invers))
         or primitive in _CUSTOM_INVERSE_PROCESSING_RULES
         or primitive is custom_inverse_call_p
     )
@@ -289,16 +337,19 @@ def has_registered_inverse(eqn) -> bool:
 
 def inverse_cost_fn(eqn, known_invars, known_outvars):
     # Forward computation
-    if all(known_invars):
-        return 0
-    elif all(known_outvars) and (
-        eqn.primitive is jax.lax.gather_p or eqn.primitive is jax.lax.slice_p
-    ):
-        # Block gather till the end
+
+    if eqn.primitive is jax.lax.gather_p or eqn.primitive is jax.lax.slice_p:
+        # Block gather till necessary!
         return 1.0
     elif eqn.primitive is pjit_p and all(known_outvars):
+        # Pjit is a special case
         return 1.5
-    elif all(known_outvars) and has_registered_inverse(eqn):
+    if all(known_invars) and not any(known_outvars):
+        return 0
+    elif all(known_outvars) and has_registered_inverse(
+        eqn, known_invars, known_outvars
+    ):
+        # If I know all the outputs and the primitive has a registered inverse -> Invert!
         return 0.5
     else:
         return jnp.inf
@@ -358,7 +409,7 @@ class InverseProcessingRule(ProcessingRule):
         is_known_invars = safe_map(lambda x: x is not None, known_invars)
         is_known_outvars = safe_map(lambda x: x is not None, known_outvars)
 
-        # print(is_known_invars, is_known_outvars)
+        print(eqn.primitive, is_known_invars, is_known_outvars)
 
         if eqn.primitive is custom_inverse_call_p and all(is_known_outvars):
             return self._default_custom_inverse_call_apply(
@@ -470,6 +521,8 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         # print(self.log_dets)
         is_known_invars = safe_map(lambda x: x is not None, known_invars)
         is_known_outvars = safe_map(lambda x: x is not None, known_outvars)
+
+        # print(eqn.primitive, is_known_invars, is_known_outvars)
 
         if eqn.primitive is custom_inverse_call_p and all(is_known_outvars):
             return self._default_custom_inverse_call_apply(
