@@ -59,13 +59,27 @@ class TransformedDistribution(Distribution):
     def rsample(self, key, sample_shape=()):
         num_samples = np.prod(sample_shape)
         samples = self.base_dist.rsample(key, (num_samples,))
-        return self.transform(samples).reshape(sample_shape + self.batch_shape +  self.event_shape)
+        if num_samples > 1:
+            transform = jax.vmap(self.transform)
+        else:
+            transform = self.transform
+        return transform(samples).reshape(
+            sample_shape + self.batch_shape + self.event_shape
+        )
 
     def log_prob(self, value):
         shape = value.shape
-        value = jnp.asarray(value).reshape(-1, *self.event_shape)
-        inv_value, log_det = self._inv_and_logdet(value)
+        value = jnp.asarray(value)
+        if value.shape[0] > 1:
+            inv_and_logdet = jax.vmap(self._inv_and_logdet)
+        else:
+            inv_and_logdet = self._inv_and_logdet
+
+        inv_value, log_det = inv_and_logdet(value)
+
+        inv_value = inv_value.reshape(shape)    
         log_prob = self.base_dist.log_prob(inv_value) + log_det
+
         if len(self.event_shape) > 0:
             log_prob = log_prob.reshape(shape[: -len(self.event_shape)])
         return log_prob

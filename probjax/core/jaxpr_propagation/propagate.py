@@ -76,7 +76,7 @@ class EqnEnvironment:
         if index in self.processed_eqns:
             # Do not write processed equations
             return
-        
+
         if index in self.eqn_queue:
             # Remove equation from the queue if it is already present
             eqn = self.eqns[index]
@@ -147,11 +147,6 @@ def propagate(
     eqn_env = EqnEnvironment(G, env, jaxpr.eqns, cost_fn)
 
     while not eqn_env.is_empty():
-
-        # print(list(env.keys()))
-        # print(eqn_env.eqn_queue)
-
-
         eqn = eqn_env.pop()  # Equation to process
 
         # Read known invars and outvars
@@ -209,6 +204,9 @@ def propagate(
 
         if not process_all_eqns and all(map(env.known, outvars)):
             break
+
+        # print(list(env.items()))
+        # print(eqn_env.eqn_queue)
 
     # Gather target values
     out = map(env.read, outvars)

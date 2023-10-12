@@ -9,21 +9,6 @@ from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from functools import partial
 
 
-def _normalize_bin_sizes(
-    unnormalized_bin_sizes: Array, total_size: float, min_bin_size: float
-) -> Array:
-    """Make bin sizes sum to `total_size` and be no less than `min_bin_size`."""
-    num_bins = unnormalized_bin_sizes.shape[-1]
-    if num_bins * min_bin_size > total_size:
-        raise ValueError(
-            f"The number of bins ({num_bins}) times the minimum bin size"
-            f" ({min_bin_size}) cannot be greater than the total bin size"
-            f" ({total_size})."
-        )
-    bin_sizes = jax.nn.softmax(unnormalized_bin_sizes, axis=-1)
-    return bin_sizes * (total_size - num_bins * min_bin_size) + min_bin_size
-
-
 def _normalize_knot_slopes(
     unnormalized_knot_slopes: Array, min_knot_slope: float
 ) -> Array:
@@ -241,9 +226,10 @@ def rational_quadratic_spline(
     min_knot_slope: float = 1e-4,
 ):
     x_pos, y_pos, knot_slopes = jnp.split(params, 3, axis=-1)
-    num_bins = x_pos.shape[-1] - 1
+
+    # Normalize slopes and bins
     knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
-    # knot_slopes = jnp.exp(knot_slopes)
+
     x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
         range_max_x - range_min_x
     ) + range_min_x
@@ -251,7 +237,6 @@ def rational_quadratic_spline(
         range_max_y - range_min_y
     ) + range_min_y
 
-    # print(x.shape, x_pos.shape, y_pos.shape, knot_slopes.shape)
     y, _ = _rational_quadratic_spline_fwd(x, x_pos, y_pos, knot_slopes)
     return y
 
@@ -267,9 +252,9 @@ def inv_rational_quadratic_spline(
     min_knot_slope: float = 1e-4,
 ):
     x_pos, y_pos, knot_slopes = jnp.split(params, 3, axis=-1)
-    num_bins = x_pos.shape[-1] - 1
+
     knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
-    # knot_slopes = jnp.exp(knot_slopes)
+    
     x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
         range_max_x - range_min_x
     ) + range_min_x

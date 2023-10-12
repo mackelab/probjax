@@ -14,7 +14,7 @@ from jax._src import ad_util
 
 from jax.core import Primitive, CallPrimitive
 from jax._src.util import weakref_lru_cache, cache
-
+from jax._src import util
 
 from typing import Any, Callable
 from jax._src.util import safe_map
@@ -150,6 +150,9 @@ def is_hashable(obj):
 
 
 # TODO: Add support other tracer support!
+# TODO: Add support for caching! -> Otherwise we will have to retrace every time!
+
+
 
 
 class custom_inverse:
@@ -195,7 +198,7 @@ class custom_inverse:
             dyn_args_index = [
                 i
                 for i in range(len(args))
-                if i not in self.static_argnums #or not is_hashable(args[i])
+                if i not in self.static_argnums  # or not is_hashable(args[i])
             ]
 
             f, dyn_args = argnums_partial(
