@@ -72,6 +72,7 @@ class Bernoulli(ExponentialFamily):
         return bernoulli.ppf(value, self.probs)
 
 
+@register_pytree_node_class
 class Categorical(ExponentialFamily):
     arg_constraints = {"probs": simplex}
 
@@ -93,9 +94,9 @@ class Categorical(ExponentialFamily):
 
     def log_prob(self, value: Array) -> Array:
         value = jnp.asarray(value).astype(jnp.int32)
-        value = value[..., None]
-        probs, value = jnp.broadcast_arrays(self.probs, value)
-        return jnp.squeeze(jnp.log(jnp.take_along_axis(probs, value, axis=-1)), -1)
+        value = jax.nn.one_hot(value, self.probs.shape[-1])
+        log_probs = jax.scipy.special.xlogy(value, self.probs).sum(axis=-1)
+        return log_probs
 
     @property
     def mean(self) -> Array:
@@ -263,32 +264,54 @@ class Empirical(Distribution):
         self.values = jnp.asarray(values)
         self.support = finit_set(self.values)
 
+        # Reinterpret the values as a batch of independent distributions
         self.num_values = self.values.shape[0]
-        batch_shape = ()
-        event_shape = self.values.shape[1:]
+        # Rest is interpreted as batch shape
+        if values.ndim == 1:
+            batch_shape = ()
+            event_shape = ()
+        else:
+            batch_shape = self.values.shape[1:]
+            event_shape = ()
 
         if probs is None:
             self.probs = None
         else:
-            assert probs.shape == values.shape
+            #assert probs.shape == values.shape, "probs shape mismatch"
             self.probs = jnp.asarray(probs)
 
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)
 
     def sample(self, key, sample_shape=()):
-        shape = sample_shape + self.batch_shape + self.event_shape
-        return random.choice(key, self.values, shape=shape, p=self.probs)
+        shape = sample_shape + self.batch_shape
+        base_index = jnp.arange(0, self.num_values)
+        base_index = jnp.broadcast_to(base_index, self.probs.shape)
+        index = random.choice(
+            key, base_index, shape=shape, p=self.probs
+        )
+        samples = jnp.take_along_axis(self.values, index, axis=0)
+        return samples
 
     def log_prob(self, value: Array) -> Array:
         value = jnp.asarray(value)
-        value = value[..., None]
-        mask = jnp.equal(value, self.values)
-        log_probs = jnp.where(mask, jnp.log(self.probs), -jnp.inf)
-        return jnp.sum(log_probs, axis=-1)
+        mask = jnp.equal(value[:, None], self.values)
+        indices = jnp.argmax(mask, axis=-self.values.ndim)
+        valid = jnp.any(mask, axis=-self.values.ndim)
+        if self.probs is not None:
+            probs, indices = jnp.broadcast_arrays(self.probs, indices)
+            log_probs = jnp.take_along_axis(jnp.log(probs), indices, axis=-1)
+            log_probs = jnp.where(valid, log_probs, -jnp.inf)
+        else:
+            log_probs = jnp.where(valid, -jnp.log(self.num_values), -jnp.inf)
+        return log_probs
 
     @property
     def mean(self) -> Array:
         return jnp.sum(self.values * self.probs)
+    
+    @property
+    def mode(self) -> Array:
+        return self.values[jnp.argmax(self.probs)]
 
     @property
     def variance(self) -> Array:

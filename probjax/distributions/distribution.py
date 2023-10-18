@@ -17,6 +17,7 @@ from jax.tree_util import register_pytree_node_class
 
 # Abstract base class for distributions
 
+
 @register_pytree_node_class
 class Distribution:
     r"""
@@ -79,6 +80,20 @@ class Distribution:
         Returns the variance of the distribution.
         """
         raise NotImplementedError(f"{self.__class__} does not implement variance")
+
+    @property
+    def covariance_matrix(self) -> Array:
+        """
+        Returns the covariance of the distribution.
+        """
+        raise NotImplementedError(f"{self.__class__} does not implement covariance")
+
+    @property
+    def fim(self) -> Array:
+        """
+        Returns the Fisher information matrix of the distribution.
+        """
+        raise NotImplementedError(f"{self.__class__} does not implement fim")
 
     @property
     def stddev(self) -> Array:

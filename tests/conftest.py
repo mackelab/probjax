@@ -32,6 +32,7 @@ def reshape_and_revert(x):
     y = x.reshape((1, 1, 1, 1, 1) + x.shape)
     return y.reshape(x.shape)
 
+
 def broad_cast_and_revert(x):
     y = x[..., None, None, None, None]
     return y[..., 0, 0, 0, 0]
@@ -62,6 +63,44 @@ INVERTIBLE_FUNCTIONS_1d = [
 
 @pytest.fixture(params=INVERTIBLE_FUNCTIONS_1d)
 def invertible_function_1d(request):
+    return request.param
+
+
+# Flows fixtures ---------------------------------------------------------
+from config_flows import (
+    target_samples,
+    base_dist,
+    affine_coupling_transform,
+    spline_coupling_transform,
+    spline_gaussianization_transform,
+    continous_transform,
+)
+
+
+@pytest.fixture(
+    params=[
+        affine_coupling_transform,
+        spline_coupling_transform,
+        spline_gaussianization_transform,
+        continous_transform,
+    ]
+)
+def transform(request):
+    return request.param
+
+
+@pytest.fixture()
+def target_xs():
+    return target_samples
+
+
+@pytest.fixture()
+def base_distribution():
+    return base_dist
+
+
+@pytest.fixture(params=[2, 8])
+def input_dim(request):
     return request.param
 
 

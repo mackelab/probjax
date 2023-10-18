@@ -698,7 +698,7 @@ def _odeint_adaptive(
 
             y1, f1, (error, k) = step_fn(drift, t0, y0, f0, dt)
             error = mean_error_ratio(error, rtol, atol, y0, y1)
-            #print(error)
+            # print(error)
             dt = step_size_adaption(
                 dt,
                 error,
@@ -852,7 +852,7 @@ def _inv_logdet_odeint(drift, ys, ts, *args, **kwargs):
 
     def aug_drift(t, state, *args):
         x, logdet = state
-        dx = jnp.atleast_1d(drift(t, x,*args))
+        dx = jnp.atleast_1d(drift(t, x, *args))
         dlogdet = jnp.atleast_1d(jnp.trace(jac(t, x)))
         return dx, dlogdet
 
@@ -865,6 +865,6 @@ def _inv_logdet_odeint(drift, ys, ts, *args, **kwargs):
 
 # ODEs are invertible, so we can define the inverse of the ODE solver
 odeint = _odeint
-odeint = custom_inverse(_odeint, static_argnums=[0,2])
+odeint = custom_inverse(_odeint, static_argnums=(0,), inv_argnum=1)
 odeint.definv(_inv_odeint)
 odeint.definv_and_logdet(_inv_logdet_odeint)

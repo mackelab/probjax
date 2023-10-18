@@ -5,13 +5,13 @@ from probjax import distributions as dist
 import jax
 import warnings
 
-__all__ = ["register_kl", "kl_divergence"]
+__all__ = ["register_divergence", "divergence"]
 
-_KL_REGISTRY = {}
-_KL_MEMOIZE = {}
+_DIV_REGISTRY = {}
+_DIV_MEMOIZE = {}
 
 
-def register_kl(type_p, type_q):
+def register_divergence(name, type_p, type_q):
     """
     Decorator to register a pairwise function with :meth:`kl_divergence`.
     Usage::
@@ -46,21 +46,25 @@ def register_kl(type_p, type_q):
             "Expected type_q to be a Distribution subclass but got {}".format(type_q)
         )
 
+    if name not in _DIV_REGISTRY:
+        _DIV_REGISTRY[name] = {}
+        _DIV_MEMOIZE[name] = {}
+
     def decorator(fun):
-        _KL_REGISTRY[type_p, type_q] = fun
-        _KL_MEMOIZE.clear()  # reset since lookup order may have changed
+        _DIV_REGISTRY[name][type_p, type_q] = fun
+        _DIV_MEMOIZE[name].clear()  # reset since lookup order may have changed
         return fun
 
     return decorator
 
 
-def _dispatch_kl(type_p, type_q):
+def _dispatch(name, type_p, type_q):
     """
     Find the most specific approximate match, assuming single inheritance.
     """
     matches = [
         (super_p, super_q)
-        for super_p, super_q in _KL_REGISTRY
+        for super_p, super_q in _DIV_REGISTRY[name]
         if issubclass(type_p, super_p) and issubclass(type_q, super_q)
     ]
     if not matches:
@@ -70,8 +74,8 @@ def _dispatch_kl(type_p, type_q):
     # see: https://github.com/python/typing/issues/760#issuecomment-710670503
     left_p, left_q = min(Match(*m) for m in matches).types  # type: ignore[type-var]
     right_q, right_p = min(Match(*reversed(m)) for m in matches).types  # type: ignore[type-var]
-    left_fun = _KL_REGISTRY[left_p, left_q]
-    right_fun = _KL_REGISTRY[right_p, right_q]
+    left_fun = _DIV_REGISTRY[name][left_p, left_q]
+    right_fun = _DIV_REGISTRY[name][right_p, right_q]
     if left_fun is not right_fun:
         warnings.warn(
             "Ambiguous kl_divergence({}, {}). Please register_kl({}, {})".format(
@@ -82,8 +86,8 @@ def _dispatch_kl(type_p, type_q):
     return left_fun
 
 
-def kl_divergence(
-    p: Distribution, q: Distribution, mc_samples=0, key=None
+def divergence(
+    name: str, p: Distribution, q: Distribution, mc_samples=0, key=None
 ) -> jax.Array:
     r"""
     Compute Kullback-Leibler divergence :math:`KL(p \| q)` between two distributions.
@@ -106,10 +110,10 @@ def kl_divergence(
             :meth:`register_kl`.
     """
     try:
-        fun = _KL_MEMOIZE[type(p), type(q)]
+        fun = _DIV_MEMOIZE[name][type(p), type(q)]
     except KeyError:
-        fun = _dispatch_kl(type(p), type(q))
-        _KL_MEMOIZE[type(p), type(q)] = fun
+        fun = _dispatch(name,type(p), type(q))
+        _DIV_MEMOIZE[name][type(p), type(q)] = fun
     if fun is NotImplemented:
         raise NotImplementedError(
             "No KL(p || q) is implemented for p type {} and q type {}".format(
@@ -117,42 +121,3 @@ def kl_divergence(
             )
         )
     return fun(p, q)
-
-
-@register_kl(Distribution, Distribution)
-def _kl_generic(p, q, mc_samples=0, key=None):
-    if p.event_shape != q.event_shape:
-        raise ValueError(
-            "KL divergence between distributions with different event shapes not supported"
-        )
-
-    assert (
-        mc_samples >= 0
-    ), "For general distirbutions we require mc_samples >= 0, to evaluate a Monte Carlo approximation of the KL divergence."
-    assert key is not None, "Key must be provided if mc_samples > 0"
-
-    if p.has_rsample:
-        samples = p.rsample(key, (mc_samples,))
-    else:
-        samples = p.sample(key, (mc_samples,))
-    log_prob_p = p.log_prob(samples)
-    log_prob_q = q.log_prob(samples)
-    return (log_prob_p - log_prob_q).mean(0)
-
-
-@register_kl(dist.Bernoulli, dist.Bernoulli)
-def _kl_bernoulli_bernoulli(p, q, mc_samples=0, key=None):
-    probs_p = p.probs
-    probs_q = q.probs
-    t1 = probs_p * (probs_p / probs_q).log()
-    t2 = (1 - probs_p) * ((1 - probs_p) / (1 - probs_q)).log()
-    return t1 + t2
-
-
-@register_kl(dist.Normal, dist.Normal)
-def _kl_normal_normal(p, q, mc_samples=0, key=None):
-    loc_p, scale_p = p.loc, p.scale
-    loc_q, scale_q = q.loc, q.scale
-    t1 = (scale_p / scale_q).log()
-    t2 = ((scale_p / scale_q) ** 2 + ((loc_p - loc_q) / scale_q) ** 2 - 1) / 2
-    return t1 + t2

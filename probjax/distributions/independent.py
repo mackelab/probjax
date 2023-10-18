@@ -38,6 +38,26 @@ class Independent(Distribution):
 
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)
 
+    @property
+    def mean(self):
+        return self.base_dist.mean
+
+    @property
+    def median(self):
+        return self.base_dist.median
+
+    @property
+    def mode(self):
+        return self.base_dist.mode
+
+    @property
+    def variance(self):
+        return self.base_dist.variance
+
+    @property
+    def stddev(self):
+        return self.base_dist.stddev
+
     def rsample(self, key, sample_shape=()):
         return self.base_dist.rsample(key, sample_shape)
 

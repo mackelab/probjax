@@ -3,6 +3,7 @@ import jax
 import jax.numpy as jnp
 
 from typing import Callable, Any, List
+from functools import partial
 from jaxtyping import Array, PyTree
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
@@ -40,7 +41,7 @@ class Permute(hk.Module):
         return jnp.take(x, self.permutation, axis=self.axis)
 
 
-@custom_inverse
+@partial(custom_inverse, inv_argnum=1)
 def rotate(R, x):
     return jnp.matmul(R, x.T).T
 
@@ -63,8 +64,6 @@ class Rotate(hk.Module):
         return rotate(self.rotation_matrix, x)
 
 
-
-
 class SinusoidalEmbedding(hk.Module):
     def __init__(self, dim=32, name=None):
         super().__init__(name=name)
@@ -74,9 +73,21 @@ class SinusoidalEmbedding(hk.Module):
         half_dim = self.dim // 2
         emb = jnp.log(10000) / (half_dim - 1)
         emb = jnp.exp(jnp.arange(half_dim) * -emb)
-        emb = inputs[:, None] * emb[None, :]
+        emb = inputs[..., None] * emb[None, ...]
         emb = jnp.concatenate([jnp.sin(emb), jnp.cos(emb)], -1)
         return jnp.squeeze(emb, axis=-2)
+
+
+class GaussianFourierEmbedding(hk.Module):
+    def __init__(self, dim=128, name=None):
+        super().__init__(name=name)
+        self.dim = dim // 2
+        self.W = hk.initializers.RandomNormal(30.0)
+
+    def __call__(self, inputs):
+        emb = self.W[None, ...] * inputs[..., None] * jnp.pi * 2
+        emb = jnp.concatenate([jnp.sin(emb), jnp.cos(emb)], -1)
+        return emb
 
 
 class TimeEmbedding(hk.Module):
