@@ -214,7 +214,7 @@ def _rational_quadratic_spline_inv(
     return x, logdet
 
 
-@custom_inverse
+@partial(custom_inverse, inv_argnum=1)
 def rational_quadratic_spline(
     params: Array,
     x: Array,
@@ -254,7 +254,7 @@ def inv_rational_quadratic_spline(
     x_pos, y_pos, knot_slopes = jnp.split(params, 3, axis=-1)
 
     knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
-    
+
     x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
         range_max_x - range_min_x
     ) + range_min_x
@@ -266,3 +266,49 @@ def inv_rational_quadratic_spline(
 
 
 rational_quadratic_spline.definv_and_logdet(inv_rational_quadratic_spline)
+
+from probjax.utils.solver import root_scalar
+
+
+@partial(custom_inverse, inv_argnum=1)
+def learnable_mixture_cdf(
+    params: Array,
+    y: Array,
+    min_value=-10.0,
+    max_value=10.0,
+    **kwargs,
+):
+    def f(x):
+        return _inv_learnable_mixture_cdf(params, x) - y
+
+    x = root_scalar(
+        f,
+        bracket=(min_value * jnp.ones_like(y), max_value * jnp.ones_like(y)),
+        **kwargs,
+    )
+
+    return x
+
+
+def _inv_learnable_mixture_cdf(
+    params: Array,
+    x: Array,
+    **kwargs,
+):
+    x = jnp.asarray(x)
+    loc, scale = jnp.split(params, 2, axis=-1)
+    scale = jnp.exp(scale)
+    x_ks = (x[..., None] - loc) / scale
+    cdf = jnp.mean(jax.nn.sigmoid(x_ks), -1)
+    out = jax.scipy.stats.norm.ppf(cdf)
+    return out
+
+
+def _inv_and_logdet_learnable_mixture_cdf(params, x, **kwargs):
+    _f = jax.vmap(jax.value_and_grad(_inv_learnable_mixture_cdf, argnums=1))
+    value, grad = _f(params, x)
+    return value, jnp.log(jnp.abs(grad))
+
+
+learnable_mixture_cdf.definv(_inv_learnable_mixture_cdf)
+learnable_mixture_cdf.definv_and_logdet(_inv_and_logdet_learnable_mixture_cdf)

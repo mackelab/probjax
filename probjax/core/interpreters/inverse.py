@@ -199,9 +199,7 @@ def invert_scatter(eqn, known_invars, known_outvars):
     slice_sizes = eqn.invars[2].aval.shape
     while len(slice_sizes) < out.ndim:
         slice_sizes = slice_sizes + (1,)
-    update_val = jax.lax.gather(out, index, gather_numdim,slice_sizes )
-
-
+    update_val = jax.lax.gather(out, index, gather_numdim, slice_sizes)
 
     # print(eqn.params)
     # print(eqn.invars[0].aval.shape, out.shape)
@@ -325,14 +323,21 @@ def is_bivariate(eqn) -> bool:
     )
 
 
-def has_registered_inverse(eqn, known_invers, known_outvars) -> bool:
+def has_registered_inverse(eqn, known_invars, known_outvars) -> bool:
     primitive = eqn.primitive
-    return (
-        primitive in _UNIVARITAE_INVERSE_REGISTRY
-        or (primitive in _BIVARIATE_INVERSE_REGISTRY and any(known_invers))
-        or primitive in _CUSTOM_INVERSE_PROCESSING_RULES
-        or primitive is custom_inverse_call_p
-    )
+
+    if primitive is custom_inverse_call_p:
+        inv_argnum = eqn.params["inv_argnum"]
+        cond1 = known_invars[inv_argnum] is False
+        cond2 = all(known_invars[:inv_argnum]) and all(known_invars[inv_argnum + 1 :])
+        # print(known_invars, known_outvars, inv_argnum)
+        return cond1 and cond2
+    else:
+        return (
+            primitive in _UNIVARITAE_INVERSE_REGISTRY
+            or (primitive in _BIVARIATE_INVERSE_REGISTRY and any(known_invars))
+            or primitive in _CUSTOM_INVERSE_PROCESSING_RULES
+        )
 
 
 def inverse_cost_fn(eqn, known_invars, known_outvars):
@@ -344,7 +349,7 @@ def inverse_cost_fn(eqn, known_invars, known_outvars):
     elif eqn.primitive is pjit_p and all(known_outvars):
         # Pjit is a special case
         return 1.5
-    if all(known_invars) and not any(known_outvars):
+    elif all(known_invars) and not any(known_outvars):
         return 0
     elif all(known_outvars) and has_registered_inverse(
         eqn, known_invars, known_outvars
@@ -506,12 +511,17 @@ class InverseProcessingRule(ProcessingRule):
         inverse_jaxpr = eqn.params["inverse_jaxpr"]
         jaxpr = inverse_jaxpr.jaxpr
         consts = inverse_jaxpr.literals
-        known_invals = [v for v in known_invars if v is not None]
-        out = jax.core.eval_jaxpr(jaxpr, consts, *known_invals, *known_outvars)
+        inputs = [v if v is not None else known_outvars[0] for v in known_invars]
+        out = jax.core.eval_jaxpr(
+            jaxpr,
+            consts,
+            *inputs,
+        )
         invars = [
             eqn.invars[i] for i in range(len(eqn.invars)) if known_invars[i] is None
         ]
-        return invars, out[:-1]
+        inputs = [out[0] for i in range(len(eqn.invars)) if known_invars[i] is None]
+        return invars, inputs
 
 
 class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
@@ -672,16 +682,19 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         inverse_jaxpr = eqn.params["inverse_jaxpr"]
         jaxpr = inverse_jaxpr.jaxpr
         consts = inverse_jaxpr.literals
-        # print(known_invars)
-        # print(known_outvars)
-        known_invals = [v for v in known_invars if v is not None]
-        known_invars = [
+        inputs = [v if v is not None else known_outvars[0] for v in known_invars]
+        out = jax.core.eval_jaxpr(
+            jaxpr,
+            consts,
+            *inputs,
+        )
+        invars = [
             eqn.invars[i] for i in range(len(eqn.invars)) if known_invars[i] is None
         ]
-        out = jax.core.eval_jaxpr(jaxpr, consts, *known_invals, *known_outvars)
+        inputs = [out[0] for i in range(len(eqn.invars)) if known_invars[i] is None]
         log_abs_det = out[-1]
         log_det_previous = sum([self.log_dets.get(v, 0.0) for v in eqn.outvars])
         for v in eqn.invars:
             self.log_dets[v] = log_det_previous + log_abs_det
         out = out[:-1]
-        return known_invars, out
+        return invars, out

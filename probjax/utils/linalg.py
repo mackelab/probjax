@@ -19,7 +19,8 @@ def is_matrix(A: Array) -> bool:
     """
     return len(A.shape) >= 2
 
-def is_diagonal_matrix(A: Array,axis1=-2, axis2=-1) -> bool:
+
+def is_diagonal_matrix(A: Array, axis1=-2, axis2=-1) -> bool:
     """Check if input is a diagonal matrix
 
     Args:
@@ -28,7 +29,10 @@ def is_diagonal_matrix(A: Array,axis1=-2, axis2=-1) -> bool:
     Returns:
         bool: True if A is a diagonal matrix, or a batch of diagonal matrices
     """
-    return is_matrix(A) and jnp.all(A == jnp.diag(jnp.diagonal(A, axis1=axis1, axis2=axis2)), axis=(axis1, axis2))
+    return is_matrix(A) and jnp.all(
+        A == jnp.diag(jnp.diagonal(A, axis1=axis1, axis2=axis2)), axis=(axis1, axis2)
+    )
+
 
 def is_triangular_matrix(A: Array, lower: bool = True) -> bool:
     """Check if input is a triangular matrix
@@ -40,7 +44,10 @@ def is_triangular_matrix(A: Array, lower: bool = True) -> bool:
     Returns:
         bool: True if A is a triangular matrix, or a batch of triangular matrices
     """
-    return is_matrix(A) and jnp.all(A == jnp.tril(A) if lower else jnp.triu(A), axis=(-2, -1))
+    return is_matrix(A) and jnp.all(
+        A == jnp.tril(A) if lower else jnp.triu(A), axis=(-2, -1)
+    )
+
 
 def batch_mv(bmat: Array, bvec: Array) -> Array:
     """
@@ -66,7 +73,7 @@ def batch_mahalanobis(bL: Array, bx: Array) -> Array:
     sol = lax.linalg.triangular_solve(bL, bx)
     return jnp.sum(sol**2, axis=-1)
 
-    
+
 def transition_matrix(A: Array, t0: Float, t1: Float) -> Array:
     """Transition matrix
 
@@ -79,9 +86,9 @@ def transition_matrix(A: Array, t0: Float, t1: Float) -> Array:
         Array: Transition matrix
     """
     if A.shape[-1] == 1:
-        return jnp.exp(A*(t1-t0))
+        return jnp.exp(A * (t1 - t0))
     else:
-        return expm(A*(t1-t0))
+        return expm(A * (t1 - t0))
 
 
 def matrix_fraction_decomposition(
@@ -89,7 +96,7 @@ def matrix_fraction_decomposition(
 ) -> Tuple[Array, Array]:
     """Matrix fraction decomposition
 
-    Returns the transition matrix and covariance. Is exact A and B are truely time independent
+    Returns the transition matrix and covariance. Is exact if A and B are truely time independent
 
     Args:
         t0 (float): New time point

@@ -11,6 +11,7 @@ from functools import partial
 
 # Iterated integrals
 
+
 @jax.jit
 def iterated_ito_integral_general(key: PRNGKey, dW: Array, dt: Array, n: int = 5):
     """Matrix I approximating repeated Ito integrals based on the method of Kloeden, Platen and Wright (1992).
@@ -45,7 +46,7 @@ def iterated_ito_integral_general(key: PRNGKey, dW: Array, dt: Array, n: int = 5
         return (next_key, A1)
 
     A0 = jnp.zeros((m, m))
-    n = jax.lax.cond(m == 1, lambda _: 0, lambda _: n, None) # No iteration for 1D
+    n = jax.lax.cond(m == 1, lambda _: 0, lambda _: n, None)  # No iteration for 1D
     init_val = (key, A0)
     _, A1 = jax.lax.fori_loop(1, n + 1, body_fun, init_val)
 
@@ -75,6 +76,7 @@ def iterated_stochastic_integral_commutative_noise(
     I = jnp.outer(dW, dW) - dt * jnp.eye(dW.shape[0])
     return I
 
+
 def get_iterated_integrals_fn(noise_type: str, sde_type: str):
     """Returns the iterated integrals function for a given noise type and sde type."""
     if noise_type == "diagonal":
@@ -83,9 +85,13 @@ def get_iterated_integrals_fn(noise_type: str, sde_type: str):
         return iterated_stochastic_integral_commutative_noise
     elif noise_type == "general":
         if sde_type == "ito":
-            return lambda *args, **kwargs : iterated_ito_integral_general(*args, **kwargs)[0]
+            return lambda *args, **kwargs: iterated_ito_integral_general(
+                *args, **kwargs
+            )[0]
         elif sde_type == "stratonovich":
-            return lambda *args, **kwargs : iterated_stratowich_integral_general(*args, **kwargs)[0]
+            return lambda *args, **kwargs: iterated_stratowich_integral_general(
+                *args, **kwargs
+            )[0]
         else:
             raise NotImplementedError
     else:
@@ -93,6 +99,15 @@ def get_iterated_integrals_fn(noise_type: str, sde_type: str):
 
 
 # Brownian bridge and tree
+
+
+def brownian_path(key, x0, ts):
+    shape = (ts.shape[0] - 1,) + x0.shape
+    xs = x0[None, :] + jnp.cumsum(
+        jnp.sqrt(ts[1] - ts[0]) * jax.random.normal(key, shape), axis=0
+    )
+    return jnp.concatenate([x0[None, :], xs], axis=0)
+
 
 @jax.jit
 def brownian_bridge(
@@ -173,5 +188,6 @@ def brownian_tree(
     A = jnp.array([[2, -4, 2], [-3, 4, -1], [1, 0, 0]])
     coeffs = jnp.tensordot(A, jnp.stack([w0, w_half, w1]), axes=1)
     return jnp.polyval(coeffs, rescale_t)
+
 
 # Estimate weak and strong error

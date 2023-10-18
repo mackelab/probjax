@@ -42,6 +42,8 @@ __all__ = [
 ]
 
 from jax.tree_util import register_pytree_node_class
+
+# Implementations of distributions
 from jax.scipy.stats import (
     norm,
     gamma,
@@ -51,7 +53,6 @@ from jax.scipy.stats import (
     chi2,
     cauchy,
     gennorm,
-    geom,
     laplace,
     logistic,
     pareto,
@@ -100,6 +101,10 @@ class Normal(ExponentialFamily):
         return self.loc
 
     @property
+    def median(self) -> Array:
+        return self.loc
+
+    @property
     def stddev(self) -> Array:
         return self.scale
 
@@ -107,21 +112,32 @@ class Normal(ExponentialFamily):
     def variance(self) -> Array:
         return jnp.power(self.stddev, 2)
 
-    def rsample(self, key, sample_shape: tuple = ()):
+    @property
+    def moment(self, n: int) -> Array:
+        return self.scale * jnp.sqrt(2) * jnp.inverf(2 * n - 1)
+
+    @property
+    def fim(self) -> Array:
+        mu = 1 / self.variance
+        scale = 2 / self.variance
+        mu_scale = jnp.stack([mu[..., None], scale[..., None]], axis=-1)
+        return jnp.diag(mu_scale)
+
+    def rsample(self, key, sample_shape: tuple = ()) -> Array:
         shape = sample_shape + self.batch_shape + self.event_shape
         eps = random.normal(key, shape)
         return self.loc + eps * self.scale
 
-    def log_prob(self, value):
+    def log_prob(self, value) -> Array:
         return norm.logpdf(value, self.loc, self.scale)
 
-    def cdf(self, value):
+    def cdf(self, value) -> Array:
         return norm.cdf(value, self.loc, self.scale)
 
-    def icdf(self, value):
+    def icdf(self, value) -> Array:
         return norm.ppf(value, self.loc, self.scale)
 
-    def entropy(self):
+    def entropy(self) -> Array:
         return 0.5 + 0.5 * jnp.log(2 * jnp.pi) + jnp.log(self.scale)
 
 
@@ -181,7 +197,7 @@ class MultivariateNormal(ExponentialFamily):
             self.scale_tril = jnp.broadcast_to(
                 scale_tril, batch_shape + scale_tril.shape[-2:]
             )
-            self.covariance_matrix = None
+            self._covariance_matrix = None
             self.precision_matrix = None
         elif covariance_matrix is not None:
             if covariance_matrix.ndim < 2:
@@ -193,7 +209,7 @@ class MultivariateNormal(ExponentialFamily):
                 covariance_matrix.shape[:-2], loc.shape[:-1]
             )
 
-            self.covariance_matrix = jnp.broadcast_to(
+            self._covariance_matrix = jnp.broadcast_to(
                 covariance_matrix, batch_shape + covariance_matrix.shape[-2:]
             )
             self.scale_tril = None
@@ -211,7 +227,7 @@ class MultivariateNormal(ExponentialFamily):
                 precision_matrix,
                 batch_shape + precision_matrix.shape[-2:],
             )
-            self.covariance_matrix = None
+            self._covariance_matrix = None
             self.scale_tril = None
 
         self.loc = jnp.broadcast_to(loc, batch_shape + loc.shape[-1:])
@@ -227,23 +243,34 @@ class MultivariateNormal(ExponentialFamily):
         super().__init__(batch_shape, event_shape)
 
     @property
-    def mean(self) -> jnp.array:
+    def mean(self) -> Array:
         return self.loc
 
     @property
-    def mode(self) -> jnp.array:
+    def mode(self) -> Array:
         return self.loc
 
     @property
-    def variance(self) -> jnp.array:
+    def median(self) -> Array:
+        return self.loc
+
+    @property
+    def variance(self) -> Array:
         return jnp.diagonal(self.scale_tril, axis1=-2, axis2=-1) ** 2
 
-    def rsample(self, key, sample_shape=tuple):
+    @property
+    def covariance_matrix(self) -> Array:
+        if self._covariance_matrix is not None:
+            return self._covariance_matrix
+        else:
+            return self.scale_tril @ self.scale_tril.T
+
+    def rsample(self, key, sample_shape=tuple) -> Array:
         shape = sample_shape + self.batch_shape + self.event_shape
         eps = random.normal(key, shape=shape, dtype=self.loc.dtype)
         return self.loc + batch_mv(self.scale_tril, eps)
 
-    def log_prob(self, value: jnp.array):
+    def log_prob(self, value: jnp.array) -> Array:
         diff = value - self.loc
         M = batch_mahalanobis(self.scale_tril, diff)
         half_log_det = jnp.sum(
@@ -281,12 +308,35 @@ class Gamma(ExponentialFamily):
         super().__init__(batch_shape=alpha.shape, event_shape=())
 
     @property
-    def concentration(self) -> Array:
-        return self.alpha
+    def mean(self) -> Array:
+        return self.alpha / self.beta
 
     @property
-    def rate(self) -> Array:
-        return self.beta
+    def mode(self) -> Array:
+        return (self.alpha - 1) / self.beta
+
+    @property
+    def variance(self) -> Array:
+        return self.alpha / self.beta**2
+
+    @property
+    def moment(self, n: int) -> Array:
+        assert all(n < self.beta), "n must be less than beta"
+        return (1 - n / self.beta) ** (-self.alpha)
+
+    @property
+    def fim(self) -> Array:
+        off_diag = -1 / self.beta
+        diag11 = jnp.digamma(self.alpha)
+        diag22 = self.alpha / self.beta**2
+
+        fim = jnp.block(
+            [
+                [diag11[..., None], off_diag[..., None]],
+                [off_diag[..., None], diag22[..., None]],
+            ]
+        )
+        return fim
 
     def rsample(self, key, sample_shape: tuple = ()):
         shape = sample_shape + self.batch_shape + self.event_shape
@@ -420,6 +470,14 @@ class Cauchy(Distribution):
 
         super().__init__(batch_shape=jnp.shape(loc), event_shape=())
 
+    @property
+    def mode(self) -> Array:
+        return self.loc
+
+    @property
+    def median(self) -> Array:
+        return self.loc
+
     def sample(self, key: Array, sample_shape: tuple = ()) -> Array:
         shape = sample_shape + self.batch_shape + self.event_shape
         return random.cauchy(key, shape) * self.scale + self.loc
@@ -495,6 +553,13 @@ class Dirichlet(Distribution):
         return (
             self.alpha * (alpha_sum - self.alpha) / (alpha_sum**2 * (alpha_sum + 1))
         )
+
+    @property
+    def covariance_matrix(self) -> Array:
+        alpha_sum = self.alpha_sum
+        alpha_tilde = self.alpha / alpha_sum
+        cov = jnp.diag(alpha_tilde) - alpha_tilde[..., None] * alpha_tilde[..., None, :]
+        return cov / (alpha_sum[..., None, None] + 1)
 
     def sample(self, key: Array, sample_shape: tuple = ()) -> Array:
         shape = sample_shape + self.batch_shape  # Event shape is included in alpha
@@ -599,6 +664,14 @@ class Logistic(ExponentialFamily):
     @property
     def variance(self) -> Array:
         return jnp.power(self.scale * jnp.pi, 2) / 3
+
+    @property
+    def mode(self) -> Array:
+        return self.loc
+
+    @property
+    def median(self) -> Array:
+        return self.loc
 
     def rsample(self, key, sample_shape: tuple = ()):
         shape = sample_shape + self.batch_shape + self.event_shape
