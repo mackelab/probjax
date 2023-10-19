@@ -63,11 +63,14 @@ def mean_and_var(p: Distribution, key: jax.random.PRNGKey):
         pass
 
 
-def init_dist(dist: type[Distribution], key):
+def init_dist(dist: type[Distribution], key, shape=(1,)):
     if dist.multivariate:
-        event_shape = (2,)
+        if shape[0] == 1:
+            event_shape = (2,)
+        else:
+            event_shape = shape
     else:
-        event_shape = (1,)
+        event_shape = shape
 
     keys = jax.random.split(key, len(dist.arg_constraints))
     kwargs = dict(
@@ -118,6 +121,20 @@ def test_base_distribution(dist: type[Distribution], shape=(1,), seed=0):
 
     key = jax.random.PRNGKey(seed)
     p = init_dist(dist, key)
+
+    # Check sample and log_prob
+    sample_and_log_prob(p, key, shape)
+    mean_and_var(p, key)
+    mode_correct(p, key)
+
+
+@pytest.mark.parametrize("dist", CONTINOUS_DIST + DISCRETE_DIST)
+def test_independent_distribution(dist: type[Distribution], shape=(1,), seed=0):
+    # Initialize distributions
+
+    key = jax.random.PRNGKey(seed)
+    p = init_dist(dist, key, (3,))
+    p = Independent(p, 1)
 
     # Check sample and log_prob
     sample_and_log_prob(p, key, shape)
