@@ -5,6 +5,8 @@ import jax
 from jax import random
 from jax.lax import scan
 
+from typing import Sequence, Union
+
 from .distribution import Distribution
 from .constraints import real, positive, unit_interval
 
@@ -24,56 +26,72 @@ class Independent(Distribution):
             be considered as event dimensions.
     """
 
-    def __init__(self, base_dist: Distribution, reinterpreted_batch_ndims: int):
-        if not isinstance(base_dist, Distribution):
-            raise ValueError("base_dist must be an instance of ExponentialFamily")
+    def __init__(
+        self,
+        base_dist: Union[Distribution, Sequence[Distribution]],
+        reinterpreted_batch_ndims: int,
+    ):
+        if isinstance(base_dist, Distribution):
+            self.base_dist = [base_dist]
+            self.reinterpreted_batch_ndims = reinterpreted_batch_ndims
 
-        self.base_dist = base_dist
-        self.reinterpreted_batch_ndims = reinterpreted_batch_ndims
+            batch_shape = base_dist.batch_shape[:-reinterpreted_batch_ndims]
+            event_shape = (
+                base_dist.batch_shape[-reinterpreted_batch_ndims:]
+                + base_dist.event_shape
+            )
+        else:
+            batch_shapes = [b.batch_shape for b in base_dist]
+            event_shapes = [b.event_shape for b in base_dist]
+            assert all(
+                b == batch_shapes[0] for b in batch_shapes
+            ), "Batch shapes must be equal"
+            assert all(
+                e == event_shapes[0] for e in event_shapes
+            ), "Event shapes must be equl"
 
-        batch_shape = base_dist.batch_shape[:-reinterpreted_batch_ndims]
-        event_shape = (
-            base_dist.batch_shape[-reinterpreted_batch_ndims:] + base_dist.event_shape
-        )
+            batch_shape = batch_shapes[0][:-reinterpreted_batch_ndims]
+            event_shape = batch_shapes[0][-reinterpreted_batch_ndims:] + event_shapes[0]
+
+        self.reduce_axis = tuple(range(-self.reinterpreted_batch_ndims, 0))
 
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)
 
     @property
     def mean(self):
-        return self.base_dist.mean
+        return jnp.concatenate([b.mean for b in self.base_dist], axis=-1)
 
     @property
     def median(self):
-        return self.base_dist.median
+        return jnp.concatenate([b.median for b in self.base_dist], axis=-1)
 
     @property
     def mode(self):
-        return self.base_dist.mode
+        return jnp.concatenate([b.mode for b in self.base_dist], axis=-1)
 
     @property
     def variance(self):
-        return self.base_dist.variance
-
-    @property
-    def stddev(self):
-        return self.base_dist.stddev
+        return jnp.concatenate([b.variance for b in self.base_dist], axis=-1)
 
     def rsample(self, key, sample_shape=()):
-        return self.base_dist.rsample(key, sample_shape)
+        return jnp.concatenate(
+            [b.rsample(key, sample_shape) for b in self.base_dist],
+            axis=-1,
+        )
 
     def sample(self, key, sample_shape=()):
-        return self.base_dist.sample(key, sample_shape)
+        return jnp.concatenate(
+            [b.sample(key, sample_shape) for b in self.base_dist], axis=-1
+        )
 
     def log_prob(self, value):
-        log_prob = self.base_dist.log_prob(value)
+        log_prob = jnp.concatenate([b.log_prob(value) for b in self.base_dist], axis=-1)
 
         # Sum the log probabilities along the event dimensions
-        axis = tuple(range(-self.reinterpreted_batch_ndims, 0))
-        return jnp.sum(log_prob, axis=axis)
+        return jnp.sum(log_prob, axis=self.reduce_axis)
 
     def entropy(self):
-        entropy = self.base_dist.entropy()
+        entropy = jnp.concatenate([b.entropy() for b in self.base_dist], axis=-1)
 
         # Sum the entropies along the event dimensions
-        axis = tuple(range(-self.reinterpreted_batch_ndims, 0))
-        return jnp.sum(entropy, axis=axis)
+        return jnp.sum(entropy, axis=self.reduce_axis)
