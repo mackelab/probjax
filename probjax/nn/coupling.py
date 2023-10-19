@@ -20,6 +20,16 @@ class CouplingMLP(hk.Module):
         name: str = "coupling_mlp",
         **kwargs,
     ):
+        """This is a invertible MLP that splits the input into two parts and applies a bijector to the second part. The parameters of the bijector are conditioned on the first part of the input.
+
+        Args:
+            split_index (int): Where to split the array into two parts.
+            bijector (Callable[[Array, Array], Array]): A bijector f: params, x -> y that takes in the parameters and the input and returns the transformed input.
+            num_bijector_params (int): The number of paramters the bijector takes in.
+            context (Array | None, optional): The context. Defaults to None.
+            hidden_dims (List[int], optional): Hidden dimensions. Defaults to [ 50, ].
+            name (str, optional): Name. Defaults to "coupling_mlp".
+        """
         super().__init__(name=name)
         self.split_index = split_index
         self.context = context

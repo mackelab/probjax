@@ -8,142 +8,6 @@ from jaxtyping import Array
 from haiku._src.conv import compute_adjusted_padding
 
 
-class SinusoidalEmbedding(hk.Module):
-    def __init__(self, dim: int = 32):
-        super().__init__()
-        self.dim = dim
-
-    def __call__(self, inputs: Array) -> Array:
-        half_dim = self.dim // 2
-        emb = jnp.log(10000) / (half_dim - 1)
-        emb = jnp.exp(jnp.arange(half_dim) * -emb)
-        emb = inputs[..., None] * emb[None, :]
-        emb = jnp.concatenate([jnp.sin(emb), jnp.cos(emb)], -1)
-        return jnp.squeeze(emb, axis=-2)
-
-
-class ConvNDBlock(hk.Module):
-    def __init__(
-        self,
-        num_spatial_dims: int,
-        output_channels: int,
-        kernel_shape: Union[int, Sequence[int]] = 3,
-        stride: Union[int, Sequence[int]] = 1,
-        num_groups: Optional[int] = 8,
-        act: Callable = jax.nn.silu,
-    ):
-        """This simple block consists of a convolutional layer, a normalization layer and an activation function.
-
-        The input to this function should be of shape [*batch_sizes, *spatial_dims, channels_in], where len(spatial_dims) == num_spatial_dims
-        The output of this function will be of shape [*batch_sizes, *spatial_dims, channels_out], where len(spatial_dims) == num_spatial_dims
-
-        Args:
-            num_spatial_dims (int): Spatial dimensionality of the input.
-            output_channels (int): Output channels of the convolutional layer.
-            kernel_shape (Sequence[int], optional): Shape of the kernel . Defaults to (3,).
-            stride (Union[int, Sequence[int]], optional): Stride of the convolutional layer. Defaults to 1.
-            num_groups (Optional[int], optional): Number of groups for GroupNormalization, if None then no normalization is performed. Defaults to 8.
-            act (Callable, optional): Activation function. Defaults to jax.nn.silu.
-            act (Callable, optional): Activation function. Defaults to jax.nn.silu.
-        """
-        super().__init__()
-        self.num_spatial_dims = num_spatial_dims
-        self.output_channels = output_channels
-        self.kernel_shape = kernel_shape
-        self.stride = stride
-        self.num_groups = num_groups
-        self.act = act
-
-    def __call__(self, inputs):
-        conv = hk.ConvND(
-            self.num_spatial_dims,
-            self.output_channels,
-            kernel_shape=self.kernel_shape,
-            stride=self.stride,
-            padding="SAME",
-        )(inputs)
-
-        if self.num_groups is not None:
-            norm = hk.GroupNorm(self.num_groups)(conv)
-        activation = self.act(norm)
-        return activation
-
-
-class ResnetBlock(hk.Module):
-    def __init__(
-        self,
-        num_spatial_dims: int,
-        output_channels: int,
-        kernel_shape: Union[int, Sequence[int]] = 3,
-        stride: Union[int, Sequence[int]] = 1,
-        num_groups: Optional[int] = 8,
-        act=jax.nn.silu,
-    ):
-        """This block consists of two convolutional layers with a residual connection. If a context is provided, it is added to the output of the first convolutional layer.
-
-        The input to this function should be of shape [*batch_sizes, *spatial_dims, channels_in], where len(spatial_dims) == num_spatial_dims
-        The optional context should be of shape [batch_size, context_dim]
-        The output of this function will be of shape [*batch_sizes, *spatial_dims, channels_out], where len(spatial_dims) == num_spatial_dims
-
-        Args:
-            num_spatial_dims (int): _description_
-            output_channels (int): _description_
-            kernel_shape (Union[int, Sequence[int]], optional): _description_. Defaults to 3.
-            stride (Union[int, Sequence[int]], optional): _description_. Defaults to 1.
-            num_groups (Optional[int], optional): _description_. Defaults to 8.
-            act (_type_, optional): _description_. Defaults to jax.nn.silu.
-        """
-        super().__init__()
-        self.num_spatial_dims = num_spatial_dims
-        self.output_channels = output_channels
-        self.kernel_shape = kernel_shape
-        self.stride = stride
-        self.num_groups = num_groups
-        self.act = act
-
-    def __call__(self, inputs: Array, context: Optional[Array] = None):
-        # First convolutional layer
-        x = ConvNDBlock(
-            self.num_spatial_dims,
-            self.output_channels,
-            self.kernel_shape,
-            self.stride,
-            self.num_groups,
-            self.act,
-        )(inputs)
-
-        # Add context if provided
-        if context is not None:
-            context = hk.Linear(self.output_channels)(context)
-            context = self.act(context)
-            while context.ndim < x.ndim:
-                context = context[..., None, :]
-            x = x + context
-
-        # Second convolutional layer
-        x = ConvNDBlock(
-            self.num_spatial_dims,
-            self.output_channels,
-            self.kernel_shape,
-            self.stride,
-            self.num_groups,
-            self.act,
-        )(x)
-
-        # Residual connection
-        skip_connection = hk.ConvND(
-            self.num_spatial_dims,
-            self.output_channels,
-            (1, 1),
-            padding="SAME",
-            with_bias=False,
-        )(
-            inputs
-        )  # This is required to match output_channels
-        out = x + skip_connection
-        return out
-
-
 class UNetND(hk.Module):
     def __init__(
         self,
@@ -394,3 +258,125 @@ class UNet2D(UNetND):
             with_attention,
             act,
         )
+
+
+class ConvNDBlock(hk.Module):
+    def __init__(
+        self,
+        num_spatial_dims: int,
+        output_channels: int,
+        kernel_shape: Union[int, Sequence[int]] = 3,
+        stride: Union[int, Sequence[int]] = 1,
+        num_groups: Optional[int] = 8,
+        act: Callable = jax.nn.silu,
+    ):
+        """This simple block consists of a convolutional layer, a normalization layer and an activation function.
+
+        The input to this function should be of shape [*batch_sizes, *spatial_dims, channels_in], where len(spatial_dims) == num_spatial_dims
+        The output of this function will be of shape [*batch_sizes, *spatial_dims, channels_out], where len(spatial_dims) == num_spatial_dims
+
+        Args:
+            num_spatial_dims (int): Spatial dimensionality of the input.
+            output_channels (int): Output channels of the convolutional layer.
+            kernel_shape (Sequence[int], optional): Shape of the kernel . Defaults to (3,).
+            stride (Union[int, Sequence[int]], optional): Stride of the convolutional layer. Defaults to 1.
+            num_groups (Optional[int], optional): Number of groups for GroupNormalization, if None then no normalization is performed. Defaults to 8.
+            act (Callable, optional): Activation function. Defaults to jax.nn.silu.
+            act (Callable, optional): Activation function. Defaults to jax.nn.silu.
+        """
+        super().__init__()
+        self.num_spatial_dims = num_spatial_dims
+        self.output_channels = output_channels
+        self.kernel_shape = kernel_shape
+        self.stride = stride
+        self.num_groups = num_groups
+        self.act = act
+
+    def __call__(self, inputs):
+        conv = hk.ConvND(
+            self.num_spatial_dims,
+            self.output_channels,
+            kernel_shape=self.kernel_shape,
+            stride=self.stride,
+            padding="SAME",
+        )(inputs)
+
+        if self.num_groups is not None:
+            norm = hk.GroupNorm(self.num_groups)(conv)
+        activation = self.act(norm)
+        return activation
+
+
+class ResnetBlock(hk.Module):
+    def __init__(
+        self,
+        num_spatial_dims: int,
+        output_channels: int,
+        kernel_shape: Union[int, Sequence[int]] = 3,
+        stride: Union[int, Sequence[int]] = 1,
+        num_groups: Optional[int] = 8,
+        act=jax.nn.silu,
+    ):
+        """This block consists of two convolutional layers with a residual connection. If a context is provided, it is added to the output of the first convolutional layer.
+
+        The input to this function should be of shape [*batch_sizes, *spatial_dims, channels_in], where len(spatial_dims) == num_spatial_dims
+        The optional context should be of shape [batch_size, context_dim]
+        The output of this function will be of shape [*batch_sizes, *spatial_dims, channels_out], where len(spatial_dims) == num_spatial_dims
+
+        Args:
+            num_spatial_dims (int): _description_
+            output_channels (int): _description_
+            kernel_shape (Union[int, Sequence[int]], optional): _description_. Defaults to 3.
+            stride (Union[int, Sequence[int]], optional): _description_. Defaults to 1.
+            num_groups (Optional[int], optional): _description_. Defaults to 8.
+            act (_type_, optional): _description_. Defaults to jax.nn.silu.
+        """
+        super().__init__()
+        self.num_spatial_dims = num_spatial_dims
+        self.output_channels = output_channels
+        self.kernel_shape = kernel_shape
+        self.stride = stride
+        self.num_groups = num_groups
+        self.act = act
+
+    def __call__(self, inputs: Array, context: Optional[Array] = None):
+        # First convolutional layer
+        x = ConvNDBlock(
+            self.num_spatial_dims,
+            self.output_channels,
+            self.kernel_shape,
+            self.stride,
+            self.num_groups,
+            self.act,
+        )(inputs)
+
+        # Add context if provided
+        if context is not None:
+            context = hk.Linear(self.output_channels)(context)
+            context = self.act(context)
+            while context.ndim < x.ndim:
+                context = context[..., None, :]
+            x = x + context
+
+        # Second convolutional layer
+        x = ConvNDBlock(
+            self.num_spatial_dims,
+            self.output_channels,
+            self.kernel_shape,
+            self.stride,
+            self.num_groups,
+            self.act,
+        )(x)
+
+        # Residual connection
+        skip_connection = hk.ConvND(
+            self.num_spatial_dims,
+            self.output_channels,
+            (1, 1),
+            padding="SAME",
+            with_bias=False,
+        )(
+            inputs
+        )  # This is required to match output_channels
+        out = x + skip_connection
+        return out

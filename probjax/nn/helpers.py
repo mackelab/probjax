@@ -65,12 +65,18 @@ class Rotate(hk.Module):
 
 
 class SinusoidalEmbedding(hk.Module):
-    def __init__(self, dim=32, name=None):
+    def __init__(self, output_dim: int = 128, name: str = "sinusoidal_embedding"):
+        """Sinusoidal embedding module. Mostly used to embed time.
+
+        Args:
+            output_dim (int, optional): Output dimesion. Defaults to 128.
+            name (str, optional): Name of the module. Defaults to "sinusoidal_embedding".
+        """
         super().__init__(name=name)
-        self.dim = dim
+        self.output_dim = output_dim
 
     def __call__(self, inputs):
-        half_dim = self.dim // 2
+        half_dim = self.output_dim // 2
         emb = jnp.log(10000) / (half_dim - 1)
         emb = jnp.exp(jnp.arange(half_dim) * -emb)
         emb = inputs[..., None] * emb[None, ...]
@@ -78,29 +84,80 @@ class SinusoidalEmbedding(hk.Module):
         return jnp.squeeze(emb, axis=-2)
 
 
-class GaussianFourierEmbedding(hk.Module):
-    def __init__(self, dim=128, name=None):
+class OneHot(hk.Module):
+    """One hot encoding module."""
+
+    num_tokens: int  # Size of the vocabulary.
+    name: str | None = None  # Optional identifier for the module.
+
+    def __init__(self, num_tokens: int, name: str | None = "one_hot_embed"):
+        """_summary_
+
+        Args:
+            num_tokens (int): Number of distinct tokens.
+            name (str | None, optional): Name of the module. Defaults to "one_hot_embed".
+        """
         super().__init__(name=name)
-        self.dim = dim // 2
-        self.W = hk.initializers.RandomNormal(30.0)
+        self.num_tokens = num_tokens
 
-    def __call__(self, inputs):
-        emb = self.W[None, ...] * inputs[..., None] * jnp.pi * 2
-        emb = jnp.concatenate([jnp.sin(emb), jnp.cos(emb)], -1)
-        return emb
+    def __call__(self, x: Array, rng=None) -> Array:
+        """One hot encodes the input.
+
+        Args:
+            x (jax.Array): Input array of shape [B, T]
+        """
+        return jax.nn.one_hot(x, self.num_tokens)
 
 
-class TimeEmbedding(hk.Module):
-    def __init__(self, dim=32, name=None):
-        super().__init__(name=name)
-        self.dim = dim
+class PosEmbed(hk.Module):
+    def __init__(self, token_dim: int, max_seq_len: int = 500):
+        """Positional embedding module.
 
-    def __call__(self, inputs):
-        se = SinusoidalEmbedding(self.dim)(inputs)
+        Args:
+            token_dim (int): Dimension of the token embedding.
+            max_seq_len (int, optional): Maximal length of the sequence. Defaults to 500.
+        """
+        super().__init__()
+        position = jnp.arange(max_seq_len).reshape(-1, 1)
+        div_term = jnp.exp(
+            jnp.arange(0, token_dim, 2) * (-jnp.log(10000.0) / token_dim)
+        )
+        pe = jnp.zeros((1, max_seq_len, token_dim))
+        pe = pe.at[..., 0::2].set(jnp.sin(position * div_term))
+        pe = pe.at[..., 1::2].set(jnp.cos(position * div_term))
+        self.pe = pe
 
-        # Projecting the embedding into a 128 dimensional space
-        x = hk.Linear(self.dim)(se)
-        x = jax.nn.gelu(x)
-        x = hk.Linear(self.dim)(x)
-
+    def __call__(self, x: Array, rng=None) -> Array:
+        """
+        Arguments:
+            x: jnp.ndarray, shape ``[seq_len, batch_size, embedding_dim]``
+        """
+        x = x + self.pe[:, : x.shape[1]]
         return x
+
+
+class LearnedPosEmbed(hk.Module):
+    def __init__(self, max_seq_len: int, name: str = "learned_pos_embed"):
+        super().__init__(name=name)
+        self.max_seq_len = max_seq_len
+        self.embed_init = hk.initializers.TruncatedNormal(stddev=0.02)
+
+    def __call__(self, x: Array, rng=None) -> Array:
+        """Embeds the input with learned positional embeddings.
+
+        Args:
+            x (Array): Input array of shape [B, T, D]
+            max_len (int, optional): Maximum length of the sequence. Defaults to 512.
+
+        Returns:
+            Array: Output array of shape [B, T, D]
+        """
+        _, seq_len, embed_dim = x.shape
+        assert (
+            seq_len <= self.max_seq_len
+        ), "Sequence length cannot be greater than max_len"
+        positional_embeddings = hk.get_parameter(
+            "positional_embeddings", [self.max_seq_len, embed_dim], init=self.embed_init
+        )
+        positional_embeddings = positional_embeddings[:seq_len, :]
+        return x + positional_embeddings[None, :, :]

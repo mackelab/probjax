@@ -11,230 +11,6 @@ from typing import Callable, Sequence, Optional, Union, Any, Tuple, Iterable
 import warnings
 
 
-class MultiHeadAttention(hk.Module):
-    """Only differenze to hk implemntation is that we mask the attention weights after the softmax."""
-
-    def __init__(
-        self,
-        num_heads: int,
-        key_size: int,
-        # TODO(b/240019186): Remove `w_init_scale`.
-        w_init_scale: Optional[float] = None,
-        *,
-        w_init: Optional[hk.initializers.Initializer] = None,
-        with_bias: bool = True,
-        b_init: Optional[hk.initializers.Initializer] = None,
-        value_size: Optional[int] = None,
-        model_size: Optional[int] = None,
-        name: Optional[str] = None,
-    ):
-        super().__init__(name=name)
-        self.num_heads = num_heads
-        self.key_size = key_size
-        self.value_size = value_size or key_size
-        self.model_size = model_size or key_size * num_heads
-
-        # Backwards-compatibility for w_init_scale.
-        if w_init_scale is not None:
-            warnings.warn(
-                "w_init_scale is deprecated; please pass an explicit weight "
-                "initialiser instead.",
-                DeprecationWarning,
-            )
-        if w_init and w_init_scale:
-            raise ValueError("Please provide only `w_init`, not `w_init_scale`.")
-        if w_init is None and w_init_scale is None:
-            raise ValueError(
-                "Please provide a weight initializer: `w_init`. "
-                "`w_init` will become mandatory once `w_init_scale` is "
-                "fully deprecated."
-            )
-        if w_init is None:
-            w_init = hk.initializers.VarianceScaling(w_init_scale)
-        self.w_init = w_init
-        self.with_bias = with_bias
-        self.b_init = b_init
-
-    def __call__(
-        self,
-        query: jax.Array,
-        key: jax.Array,
-        value: jax.Array,
-        mask: Optional[jax.Array] = None,
-    ) -> jax.Array:
-        # In shape hints below, we suppress the leading dims [...] for brevity.
-        # Hence e.g. [A, B] should be read in every case as [..., A, B].
-        *leading_dims, sequence_length, _ = query.shape
-        projection = self._linear_projection
-
-        # Compute key/query/values (overload K/Q/V to denote the respective sizes).
-        query_heads = projection(query, self.key_size, "query")  # [T', H, Q=K]
-        key_heads = projection(key, self.key_size, "key")  # [T, H, K]
-        value_heads = projection(value, self.value_size, "value")  # [T, H, V]
-
-        # Compute attention weights.
-        attn_logits = jnp.einsum("...thd,...Thd->...htT", query_heads, key_heads)
-        attn_logits = attn_logits / np.sqrt(self.key_size).astype(key.dtype)
-
-        attn_weights = jax.nn.softmax(attn_logits)  # [H, T', T]
-
-        if mask is not None:
-            if mask.ndim != attn_logits.ndim:
-                raise ValueError(
-                    f"Mask dimensionality {mask.ndim} must match logits dimensionality "
-                    f"{attn_logits.ndim}."
-                )
-            attn_weights = jnp.where(mask, attn_weights, 0.0)
-
-        # Weight the values by the attention and flatten the head vectors.
-        attn = jnp.einsum("...htT,...Thd->...thd", attn_weights, value_heads)
-        attn = jnp.reshape(attn, (*leading_dims, sequence_length, -1))  # [T', H*V]
-
-        # Apply another projection to get the final embeddings.
-        final_projection = hk.Linear(
-            self.model_size,
-            w_init=self.w_init,
-            with_bias=self.with_bias,
-            b_init=self.b_init,
-        )
-        return final_projection(attn)  # [T', D']
-
-    @hk.transparent
-    def _linear_projection(
-        self,
-        x: jax.Array,
-        head_size: int,
-        name: Optional[str] = None,
-    ) -> jax.Array:
-        y = hk.Linear(
-            self.num_heads * head_size,
-            w_init=self.w_init,
-            with_bias=self.with_bias,
-            b_init=self.b_init,
-            name=name,
-        )(x)
-        *leading_dims, _ = x.shape
-        return y.reshape((*leading_dims, self.num_heads, head_size))
-
-
-def _query_chunk_attention(
-    query_idx,
-    query,
-    key,
-    value,
-    mask,
-    bias,
-    precision,
-    key_chunk_size=4096,
-    mask_calc_fn=None,
-    bias_calc_fn=None,
-    weights_calc_fn=None,
-    calc_fn_data=None,
-):
-    """Efficient dot-product attention for a single query chunk.
-
-    Based on https://arxiv.org/pdf/2112.05682v2.pdf .
-
-    """
-
-    num_kv, num_heads, k_features = key.shape[-3:]
-    v_features = value.shape[-1]
-    num_q = query.shape[-3]
-    key_chunk_size = min(key_chunk_size, num_kv)
-    query = query / jnp.sqrt(k_features)
-
-    @functools.partial(jax.checkpoint, prevent_cse=False)
-    def summarize_chunk(chunk_idx, query, key, value, mask, bias):
-        attn_weights = jnp.einsum(
-            "...qhd,...khd->...qhk", query, key, precision=precision
-        )
-        if bias_calc_fn is not None:
-            bias = bias_calc_fn(query_idx, chunk_idx, bias, attn_weights, calc_fn_data)
-        if bias is not None:
-            bias = jnp.einsum("...hqk->...qhk", bias)
-            attn_weights = attn_weights + bias
-        if mask_calc_fn is not None:
-            mask = mask_calc_fn(query_idx, chunk_idx, mask, attn_weights, calc_fn_data)
-        if mask is not None:
-            big_neg = jnp.finfo(attn_weights.dtype).min
-            mask = jnp.einsum("...hqk->...qhk", mask)
-            attn_weights = jnp.where(mask, attn_weights, big_neg)
-        if weights_calc_fn is not None:
-            attn_weights = weights_calc_fn(
-                query_idx, chunk_idx, attn_weights, calc_fn_data
-            )
-        max_score = jnp.max(attn_weights, axis=-1, keepdims=True)
-        max_score = jax.lax.stop_gradient(max_score)
-        exp_weights = jnp.exp(attn_weights - max_score)
-        exp_values = jnp.einsum(
-            "...vhf,...qhv->...qhf", value, exp_weights, precision=precision
-        )
-        max_score = jnp.einsum("...qhk->...qh", max_score)
-        return exp_values, exp_weights.sum(axis=-1), max_score
-
-    def chunk_scanner(chunk_idx):
-        key_chunk = jax.lax.dynamic_slice(
-            key,
-            tuple([0] * (key.ndim - 3)) + (chunk_idx, 0, 0),
-            slice_sizes=tuple(key.shape[:-3]) + (key_chunk_size, num_heads, k_features),
-        )
-        value_chunk = jax.lax.dynamic_slice(
-            value,
-            tuple([0] * (value.ndim - 3)) + (chunk_idx, 0, 0),
-            slice_sizes=tuple(value.shape[:-3])
-            + (key_chunk_size, num_heads, v_features),
-        )
-
-        if bias is None:
-            bias_chunk = None
-        elif bias.shape[-1] == 1:
-            bias_chunk = bias
-        elif bias.shape[-1] == num_kv:
-            bias_chunk = jax.lax.dynamic_slice(
-                bias,
-                tuple([0] * (bias.ndim - 3)) + (0, 0, chunk_idx),
-                slice_sizes=tuple(bias.shape[:-3])
-                + (bias.shape[-3], bias.shape[-2], key_chunk_size),
-            )
-        else:
-            raise TypeError(
-                f"bias.shape[-1] == {bias.shape[-1]} must broadcast with key.shape[-3] == {num_kv}"
-            )
-
-        if mask is None:
-            mask_chunk = None
-        elif bias.shape[-1] == 1:
-            mask_chunk = mask
-        elif mask.shape[-1] == num_kv:
-            mask_chunk = jax.lax.dynamic_slice(
-                mask,
-                tuple([0] * (mask.ndim - 3)) + (0, 0, chunk_idx),
-                slice_sizes=tuple(mask.shape[:-3])
-                + (mask.shape[-3], mask.shape[-2], key_chunk_size),
-            )
-        else:
-            raise TypeError(
-                f"mask.shape[-1] == {mask.shape[-1]} must broadcast with key.shape[-3] == {num_kv}"
-            )
-
-        return summarize_chunk(
-            chunk_idx, query, key_chunk, value_chunk, mask_chunk, bias_chunk
-        )
-
-    chunk_values, chunk_weights, chunk_max = jax.lax.map(
-        chunk_scanner, xs=jnp.arange(0, num_kv, key_chunk_size)
-    )
-
-    global_max = jnp.max(chunk_max, axis=0, keepdims=True)
-    max_diffs = jnp.exp(chunk_max - global_max)
-    chunk_values *= jnp.expand_dims(max_diffs, axis=-1)
-    chunk_weights *= max_diffs
-
-    all_values = chunk_values.sum(axis=0)
-    all_weights = jnp.expand_dims(chunk_weights, -1).sum(axis=0)
-    return all_values / all_weights
-
-
 def efficient_dot_product_attention(
     query,
     key,
@@ -356,3 +132,121 @@ def efficient_dot_product_attention(
         chunk_scanner, init=0, xs=None, length=math.ceil(num_q / query_chunk_size)
     )
     return jnp.concatenate(res, axis=-3)
+
+
+def _query_chunk_attention(
+    query_idx,
+    query,
+    key,
+    value,
+    mask,
+    bias,
+    precision,
+    key_chunk_size=4096,
+    mask_calc_fn=None,
+    bias_calc_fn=None,
+    weights_calc_fn=None,
+    calc_fn_data=None,
+):
+    """Efficient dot-product attention for a single query chunk.
+
+    Based on https://arxiv.org/pdf/2112.05682v2.pdf .
+
+    """
+
+    num_kv, num_heads, k_features = key.shape[-3:]
+    v_features = value.shape[-1]
+    num_q = query.shape[-3]
+    key_chunk_size = min(key_chunk_size, num_kv)
+    query = query / jnp.sqrt(k_features)
+
+    @functools.partial(jax.checkpoint, prevent_cse=False)
+    def summarize_chunk(chunk_idx, query, key, value, mask, bias):
+        attn_weights = jnp.einsum(
+            "...qhd,...khd->...qhk", query, key, precision=precision
+        )
+        if bias_calc_fn is not None:
+            bias = bias_calc_fn(query_idx, chunk_idx, bias, attn_weights, calc_fn_data)
+        if bias is not None:
+            bias = jnp.einsum("...hqk->...qhk", bias)
+            attn_weights = attn_weights + bias
+        if mask_calc_fn is not None:
+            mask = mask_calc_fn(query_idx, chunk_idx, mask, attn_weights, calc_fn_data)
+        if mask is not None:
+            big_neg = jnp.finfo(attn_weights.dtype).min
+            mask = jnp.einsum("...hqk->...qhk", mask)
+            attn_weights = jnp.where(mask, attn_weights, big_neg)
+        if weights_calc_fn is not None:
+            attn_weights = weights_calc_fn(
+                query_idx, chunk_idx, attn_weights, calc_fn_data
+            )
+        max_score = jnp.max(attn_weights, axis=-1, keepdims=True)
+        max_score = jax.lax.stop_gradient(max_score)
+        exp_weights = jnp.exp(attn_weights - max_score)
+        exp_values = jnp.einsum(
+            "...vhf,...qhv->...qhf", value, exp_weights, precision=precision
+        )
+        max_score = jnp.einsum("...qhk->...qh", max_score)
+        return exp_values, exp_weights.sum(axis=-1), max_score
+
+    def chunk_scanner(chunk_idx):
+        key_chunk = jax.lax.dynamic_slice(
+            key,
+            tuple([0] * (key.ndim - 3)) + (chunk_idx, 0, 0),
+            slice_sizes=tuple(key.shape[:-3]) + (key_chunk_size, num_heads, k_features),
+        )
+        value_chunk = jax.lax.dynamic_slice(
+            value,
+            tuple([0] * (value.ndim - 3)) + (chunk_idx, 0, 0),
+            slice_sizes=tuple(value.shape[:-3])
+            + (key_chunk_size, num_heads, v_features),
+        )
+
+        if bias is None:
+            bias_chunk = None
+        elif bias.shape[-1] == 1:
+            bias_chunk = bias
+        elif bias.shape[-1] == num_kv:
+            bias_chunk = jax.lax.dynamic_slice(
+                bias,
+                tuple([0] * (bias.ndim - 3)) + (0, 0, chunk_idx),
+                slice_sizes=tuple(bias.shape[:-3])
+                + (bias.shape[-3], bias.shape[-2], key_chunk_size),
+            )
+        else:
+            raise TypeError(
+                f"bias.shape[-1] == {bias.shape[-1]} must broadcast with key.shape[-3] == {num_kv}"
+            )
+
+        if mask is None:
+            mask_chunk = None
+        elif bias.shape[-1] == 1:
+            mask_chunk = mask
+        elif mask.shape[-1] == num_kv:
+            mask_chunk = jax.lax.dynamic_slice(
+                mask,
+                tuple([0] * (mask.ndim - 3)) + (0, 0, chunk_idx),
+                slice_sizes=tuple(mask.shape[:-3])
+                + (mask.shape[-3], mask.shape[-2], key_chunk_size),
+            )
+        else:
+            raise TypeError(
+                f"mask.shape[-1] == {mask.shape[-1]} must broadcast with key.shape[-3] == {num_kv}"
+            )
+
+        return summarize_chunk(
+            chunk_idx, query, key_chunk, value_chunk, mask_chunk, bias_chunk
+        )
+
+    chunk_values, chunk_weights, chunk_max = jax.lax.map(
+        chunk_scanner, xs=jnp.arange(0, num_kv, key_chunk_size)
+    )
+
+    global_max = jnp.max(chunk_max, axis=0, keepdims=True)
+    max_diffs = jnp.exp(chunk_max - global_max)
+    chunk_values *= jnp.expand_dims(max_diffs, axis=-1)
+    chunk_weights *= max_diffs
+
+    all_values = chunk_values.sum(axis=0)
+    all_weights = jnp.expand_dims(chunk_weights, -1).sum(axis=0)
+    return all_values / all_weights
