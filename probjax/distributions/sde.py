@@ -18,6 +18,8 @@ from probjax.utils.odeint import odeint
 
 
 class BaseSDE(Distribution):
+    noise_type: str = "general"
+
     def __init__(self, drift: Callable, diffusion: Callable, p0: Distribution) -> None:
         """A base class for SDEs. We assume that the SDE is of the form:
 
@@ -50,27 +52,38 @@ class BaseSDE(Distribution):
         self.x_o = x_o
         raise NotImplementedError
 
-    def mean(self, ts: Array, **kwargs) -> Array:
-        assert jnp.all(ts >= 0), "t must be positive"
+    def mean(self, t: Array, **kwargs) -> Array:
+        """This function computes the mean of the SDE at time points t. Time t can be given in batched form i.e. [batch_shape, n_t] or in unbatched form i.e. [n_t]. The output will be of shape [batch_shape, n_t, event_shape]
+
+        Args:
+            t (Array): Time
+
+        Raises:
+            NotImplementedError: Not implemented
+
+        Returns:
+            Array: Mean of the SDE at time t
+        """
+        assert jnp.all(t >= 0), "t must be positive"
         raise NotImplementedError
 
     def variance(self, t: Array) -> Array:
         assert jnp.all(t >= 0), "t must be positive"
         raise NotImplementedError
 
-    def stddev(self, t: Array) -> Array:
+    def stddev(self, t: Array, x0=None, **kwargs) -> Array:
         return jnp.sqrt(self.variance(t))
 
-    def covariance_matrix(self, t: Array) -> Array:
+    def covariance_matrix(self, t: Array, x0=None, **kwargs) -> Array:
         assert jnp.all(t >= 0), "t must be positive"
         raise NotImplementedError
 
-    def cross_covariance(self, t1: Array, t2: Array) -> Array:
+    def cross_covariance(self, t1: Array, t2: Array, x0=None, **kwargs) -> Array:
         assert jnp.all(t1 >= 0), "t1 must be positive"
         assert jnp.all(t2 >= 0), "t2 must be positive"
         raise NotImplementedError
 
-    def cross_covariance_matrix(self, t1: Array, t2: Array) -> Array:
+    def cross_covariance_matrix(self, t1: Array, t2: Array, x0=None, **kwargs) -> Array:
         assert jnp.all(t1 >= 0), "t1 must be positive"
         assert jnp.all(t2 >= 0), "t2 must be positive"
         raise NotImplementedError
@@ -120,20 +133,42 @@ class BaseSDE(Distribution):
 
 
 class LinearTimeInvariantSDE(BaseSDE):
+    noise_type: str = "general"
+
     def __init__(
         self,
         drift_matrix: Array,
         diffusion_matrix: Array,
         p0: Distribution,
     ) -> None:
+        """This class represents a linear time invariant SDE of the form:
+
+        dX_t = A X_t dt + B dW_t
+
+        where A and B are matrices and W_t is a Wiener process. The initial distribution is given by p0 at time t=0.
+
+        Args:
+            drift_matrix (Array): The drift matrix A
+            diffusion_matrix (Array): The diffusion matrix B
+            p0 (Distribution): The initial distribution
+        """
+
+        batch_shape = p0.batch_shape
+        drift_matrix_format = drift_matrix[len(batch_shape) :].ndim
+
         assert (
-            drift_matrix.ndim == 1 or drift_matrix.shape[1] == p0.event_shape[0]
+            drift_matrix_format <= 2 or drift_matrix.shape[1] == p0.event_shape[0]
         ), "Drift matrix must be compatible with initial distribution"
         assert (
-            drift_matrix.ndim == 1 or diffusion_matrix.shape[0] == p0.event_shape[0]
+            drift_matrix_format <= 2 or diffusion_matrix.shape[0] == p0.event_shape[0]
         ), "Diffusion matrix must be compatible with initial distribution"
 
-        drift = lambda t, x: jnp.matmul(drift_matrix, x)
+        def drift(t, x):
+            if drift_matrix_format == 1:
+                return drift_matrix * x
+            elif drift_matrix_format == 2:
+                return jnp.matmul(drift_matrix, x)
+
         diffusion = lambda t, x: diffusion_matrix
 
         super().__init__(drift, diffusion, p0)
@@ -142,12 +177,12 @@ class LinearTimeInvariantSDE(BaseSDE):
         self.diffusion_matrix = diffusion_matrix
         self.drift_matrix = drift_matrix
 
-        # Check if the matrices are diagonal
-
     def mean(self, t: Array) -> Array:
         assert jnp.all(t >= 0), "t must be positive"
         mu0 = self.p0.mean
         t = jnp.atleast_1d(t)
+        seq_len = t.shape[-1]
+        batch_shape = t.shape[:-1]
 
         P = jax.vmap(transition_matrix, in_axes=(None, None, 0))(
             self.drift_matrix, 0.0, t
@@ -189,7 +224,15 @@ class LinearTimeVariantSDE(BaseSDE):
         self.drift_matrix = drift_matrix
         self.diffusion_matrix = diffusion_matrix
 
-        drift = lambda t, x: jnp.matmul(drift_matrix(t), jnp.atleast_1d(x))
+        batch_shape = p0.batch_shape
+        drift_matrix_format = drift_matrix(0)[len(batch_shape) :].ndim
+
+        def drift(t, x):
+            if drift_matrix_format == 1:
+                return drift_matrix(t) * x
+            elif drift_matrix_format == 2:
+                return jnp.matmul(drift_matrix(t), x)
+
         diffusion = lambda t, x: diffusion_matrix(t)
 
         super().__init__(drift, diffusion, p0)
@@ -285,6 +328,10 @@ class VESDE(LinearTimeVariantSDE):
         return jax.scipy.stats.norm.logpdf(x, mu, std)
 
 
+def is_sorted_along_axis(arr, axis=-1):
+    return jnp.all(jnp.diff(arr, axis=axis) >= 0)
+
+
 class VPSDE(LinearTimeVariantSDE):
     def __init__(
         self, p0: Distribution, beta_max: float = 10.0, beta_min: float = 0.1
@@ -313,9 +360,7 @@ class VPSDE(LinearTimeVariantSDE):
             -0.25 * ts**2 * (self.beta_max - self.beta_min) - 0.5 * ts * self.beta_min
         )
 
-        # TODO Interpret time differently for batched distributions!
         phi = phi[..., None]
-        phi = jnp.broadcast_to(phi, ts.shape + mu0.shape)
         mu = phi * mu0
         return mu
 
@@ -328,13 +373,11 @@ class VPSDE(LinearTimeVariantSDE):
             -0.5 * ts**2 * (self.beta_max - self.beta_min) - ts * self.beta_min
         )
         phi = phi[..., None]
-        phi = jnp.broadcast_to(phi, ts.shape + var0.shape)
-
         var = 1 + phi * (var0 - 1)
         return var
 
     def log_prob(self, x: Array, t: Array, x0=None) -> Array:
         mu = self.mean(t, x0=x0)
-        std = self.std(t, x0=x0)
+        std = self.stddev(t, x0=x0)
 
         return jax.scipy.stats.norm.logpdf(x, mu, std)

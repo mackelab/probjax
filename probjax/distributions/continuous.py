@@ -13,8 +13,12 @@ from .distribution import Distribution
 from .constraints import (
     real,
     positive,
+    strict_positive,
+    strict_negative,
     unit_interval,
+    simplex,
     square_matrix,
+    strict_positive_integer,
     positive_definite_matrix,
     positive_integer,
     interval,
@@ -82,7 +86,7 @@ class Normal(ExponentialFamily):
             (often referred to as sigma)
     """
 
-    arg_constraints = {"loc": real, "scale": positive}
+    arg_constraints = {"loc": real, "scale": strict_positive}
     support = real
 
     def __init__(self, loc: Array | float, scale: Array | float):
@@ -162,7 +166,7 @@ class MultivariateNormal(ExponentialFamily):
 
     arg_constraints = {
         "loc": real,
-        "covariance_matrix": positive_definite_matrix,
+        "cov": positive_definite_matrix,
         # "precision_matrix": square_matrix,
         # "scale_tril": square_matrix,
     }
@@ -171,14 +175,14 @@ class MultivariateNormal(ExponentialFamily):
     def __init__(
         self,
         loc: jnp.array,
-        covariance_matrix: Optional[jnp.array] = None,
+        cov: Optional[jnp.array] = None,
         precision_matrix: Optional[jnp.array] = None,
         scale_tril: Optional[jnp.array] = None,
     ):
         if loc.ndim < 1:
             raise ValueError("loc must be at least one-dimensional.")
 
-        if (covariance_matrix is not None) + (scale_tril is not None) + (
+        if (cov is not None) + (scale_tril is not None) + (
             precision_matrix is not None
         ) != 1:
             raise ValueError(
@@ -197,21 +201,17 @@ class MultivariateNormal(ExponentialFamily):
             self.scale_tril = jnp.broadcast_to(
                 scale_tril, batch_shape + scale_tril.shape[-2:]
             )
-            self._covariance_matrix = None
+            self.cov = None
             self.precision_matrix = None
-        elif covariance_matrix is not None:
-            if covariance_matrix.ndim < 2:
+        elif cov is not None:
+            if cov.ndim < 2:
                 raise ValueError(
                     "covariance_matrix must be at least two-dimensional, "
                     "with optional leading batch dimensions"
                 )
-            batch_shape = jax.lax.broadcast_shapes(
-                covariance_matrix.shape[:-2], loc.shape[:-1]
-            )
+            batch_shape = jax.lax.broadcast_shapes(cov.shape[:-2], loc.shape[:-1])
 
-            self._covariance_matrix = jnp.broadcast_to(
-                covariance_matrix, batch_shape + covariance_matrix.shape[-2:]
-            )
+            self.cov = jnp.broadcast_to(cov, batch_shape + cov.shape[-2:])
             self.scale_tril = None
             self.precision_matrix = None
         else:
@@ -227,7 +227,7 @@ class MultivariateNormal(ExponentialFamily):
                 precision_matrix,
                 batch_shape + precision_matrix.shape[-2:],
             )
-            self._covariance_matrix = None
+            self.cov = None
             self.scale_tril = None
 
         self.loc = jnp.broadcast_to(loc, batch_shape + loc.shape[-1:])
@@ -235,7 +235,7 @@ class MultivariateNormal(ExponentialFamily):
         event_shape = self.loc.shape[-1:]
         batch_shape = batch_shape
 
-        if covariance_matrix is not None:
+        if cov is not None:
             self.scale_tril = jnp.linalg.cholesky(self.covariance_matrix)
         else:  # precision_matrix is not None
             self.scale_tril = _precision_to_scale_tril(self.precision_matrix)
@@ -256,16 +256,16 @@ class MultivariateNormal(ExponentialFamily):
 
     @property
     def variance(self) -> Array:
-        return jnp.diagonal(self.scale_tril, axis1=-2, axis2=-1) ** 2
+        return jnp.diagonal(self.covariance_matrix, axis1=-2, axis2=-1) 
 
     @property
     def covariance_matrix(self) -> Array:
-        if self._covariance_matrix is not None:
-            return self._covariance_matrix
+        if self.cov is not None:
+            return self.cov
         else:
             return self.scale_tril @ self.scale_tril.T
 
-    def rsample(self, key, sample_shape=tuple) -> Array:
+    def rsample(self, key, sample_shape=()) -> Array:
         shape = sample_shape + self.batch_shape + self.event_shape
         eps = random.normal(key, shape=shape, dtype=self.loc.dtype)
         return self.loc + batch_mv(self.scale_tril, eps)
@@ -297,7 +297,7 @@ class Gamma(ExponentialFamily):
         beta (float or ndarray): rate parameter beta
     """
 
-    arg_constraints = {"alpha": positive, "beta": positive}
+    arg_constraints = {"alpha": strict_positive, "beta": strict_positive}
     support = positive
 
     def __init__(self, alpha: Array, beta: Array):
@@ -313,7 +313,10 @@ class Gamma(ExponentialFamily):
 
     @property
     def mode(self) -> Array:
-        return (self.alpha - 1) / self.beta
+        valid = self.alpha > 1
+        return jnp.where(
+            valid, (self.alpha - 1) / self.beta, jnp.zeros_like(self.alpha)
+        )
 
     @property
     def variance(self) -> Array:
@@ -349,7 +352,7 @@ class Gamma(ExponentialFamily):
         return gamma.cdf(value * self.beta, self.alpha)
 
     def icdf(self, value):
-        return gamma.ppf(value * self.beta, self.alpha)
+        return jax.scipy.special.gammaincinv(self.alpha, value) / self.beta
 
     def entropy(self):
         alpha, beta = self.alpha, self.beta
@@ -373,7 +376,7 @@ class Beta(ExponentialFamily):
         beta (float or ndarray): concentration parameter beta
     """
 
-    arg_constraints = {"alpha": positive, "beta": positive}
+    arg_constraints = {"alpha": strict_positive, "beta": strict_positive}
     support = unit_interval
 
     def __init__(self, alpha: Array, beta: Array):
@@ -462,7 +465,7 @@ class Uniform(Distribution):
 
 @register_pytree_node_class
 class Cauchy(Distribution):
-    arg_constraints = {"loc": real, "scale": positive}
+    arg_constraints = {"loc": real, "scale": strict_positive}
 
     def __init__(self, loc: float, scale: float):
         self.loc = loc
@@ -497,14 +500,20 @@ class Cauchy(Distribution):
 
 @register_pytree_node_class
 class Chi2(Distribution):
-    arg_constraints = {"df": positive_integer, "loc": real, "scale": positive}
+    arg_constraints = {
+        "df": strict_positive_integer,
+        "loc": real,
+        "scale": strict_positive,
+    }
 
     def __init__(self, df: float, loc: float, scale: float):
+        df, loc, scale = jnp.broadcast_arrays(df, loc, scale)
+
         self.df = df
         self.loc = loc
         self.scale = scale
 
-        super().__init__(batch_shape=jnp.shape(df), event_shape=())
+        super().__init__(batch_shape=jnp.shape(loc), event_shape=())
 
     def sample(self, key: Array, sample_shape: tuple = ()) -> Array:
         shape = sample_shape + self.batch_shape + self.event_shape
@@ -535,8 +544,12 @@ class Dirichlet(Distribution):
         self.alpha = alpha
         self.alpha_sum = jnp.sum(alpha, axis=-1, keepdims=True)
 
-        batch_shape = jnp.shape(alpha)[:-1]
-        event_shape = jnp.shape(alpha)[-1:]
+        if alpha.ndim > 1:
+            batch_shape = jnp.shape(alpha)[:-1]
+            event_shape = jnp.shape(alpha)[-1:]
+        else:
+            batch_shape = ()
+            event_shape = jnp.shape(alpha)
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)
 
     @property
@@ -545,7 +558,10 @@ class Dirichlet(Distribution):
 
     @property
     def mode(self) -> Array:
-        return (self.alpha - 1) / (self.alpha_sum - self.event_shape[0])
+        valid = self.alpha > 1
+        return jnp.where(
+            valid, (self.alpha - 1) / (self.alpha_sum - self.event_shape[0]), 0
+        )
 
     @property
     def variance(self) -> Array:
@@ -577,7 +593,7 @@ class Dirichlet(Distribution):
 
 @register_pytree_node_class
 class Exp(ExponentialFamily):
-    arg_constraints = {"rate": positive}
+    arg_constraints = {"rate": strict_positive}
     support = positive
 
     def __init__(self, rate: Array):
@@ -612,10 +628,12 @@ class Exp(ExponentialFamily):
 
 @register_pytree_node_class
 class Laplace(ExponentialFamily):
-    arg_constraints = {"loc": real, "scale": positive}
+    arg_constraints = {"loc": real, "scale": strict_positive}
     support = real
 
     def __init__(self, loc: Array, scale: Array):
+        loc, scale = jnp.broadcast_arrays(loc, scale)
+
         self.loc = loc
         self.scale = scale
 
@@ -648,10 +666,12 @@ class Laplace(ExponentialFamily):
 
 @register_pytree_node_class
 class Logistic(ExponentialFamily):
-    arg_constraints = {"loc": real, "scale": positive}
+    arg_constraints = {"loc": real, "scale": strict_positive}
     support = real
 
     def __init__(self, loc: Array, scale: Array):
+        loc, scale = jnp.broadcast_arrays(loc, scale)
+
         self.loc = loc
         self.scale = scale
 
@@ -692,14 +712,36 @@ class Logistic(ExponentialFamily):
 
 @register_pytree_node_class
 class Pareto(Distribution):
-    arg_constraints = {"alpha": positive, "scale": positive}
+    arg_constraints = {"alpha": strict_positive, "scale": strict_positive}
     support = interval(1.0, jnp.inf)
 
     def __init__(self, alpha: Array, scale: Array):
+        alpha, scale = jnp.broadcast_arrays(alpha, scale)
+
         self.alpha = alpha
         self.scale = scale
 
         super().__init__(batch_shape=jnp.shape(alpha), event_shape=())
+
+    @property
+    def mean(self) -> Array:
+        return jnp.where(self.alpha > 1, self.scale / (self.alpha - 1), jnp.inf)
+
+    @property
+    def variance(self) -> Array:
+        return jnp.where(
+            self.alpha > 2,
+            jnp.power(self.scale, 2) / ((self.alpha - 1) ** 2 * (self.alpha - 2)),
+            jnp.inf,
+        )
+
+    @property
+    def mode(self) -> Array:
+        return self.scale
+
+    @property
+    def median(self) -> Array:
+        return self.scale * 2 ** (1 / self.alpha)
 
     def sample(self, key: Array, sample_shape: tuple = ()) -> Array:
         shape = sample_shape + self.batch_shape + self.event_shape
@@ -720,9 +762,15 @@ class Pareto(Distribution):
 
 @register_pytree_node_class
 class T(Distribution):
-    arg_constraints = {"df": positive_integer, "loc": real, "scale": positive}
+    arg_constraints = {
+        "df": strict_positive_integer,
+        "loc": real,
+        "scale": strict_positive,
+    }
 
     def __init__(self, df: Array, loc: Array, scale: Array):
+        df, loc, scale = jnp.broadcast_arrays(df, loc, scale)
+
         self.df = df
         self.loc = loc
         self.scale = scale
@@ -750,11 +798,13 @@ class T(Distribution):
             - gammaln(0.5 * self.df)
         )
 
-
+@register_pytree_node_class
 class TruncatedNormal(Distribution):
-    arg_constraints = {"loc": real, "scale": positive, "low": real, "high": real}
+    arg_constraints = {"loc": real, "scale": strict_positive, "low": real, "high": real}
 
     def __init__(self, loc: Array, scale: Array, low: Array, high: Array):
+        loc, scale, low, high = jnp.broadcast_arrays(loc, scale, low, high)
+
         self.loc = loc
         self.scale = scale
         self.low = jnp.minimum(low, high)

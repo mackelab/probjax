@@ -21,6 +21,12 @@ __all__ = ["TransformedDistribution"]
 from jax.tree_util import register_pytree_node_class
 from jax.scipy.stats import norm
 
+# TODO: Add support for discrete distributions
+# Discrete transformed distributions do not need log_abs_det_jacobian !
+# But then we do not need a bijective transformation, just a injective one.
+# Bijection do only shuffle the atoms, but do not change the probability mass.
+
+
 
 @register_pytree_node_class
 class TransformedDistribution(Distribution):

@@ -1,7 +1,7 @@
 from probjax.distributions import Distribution, Normal, Independent
 from probjax.nn.coupling import CouplingMLP
 from probjax.nn.bijective import rational_quadratic_spline
-from probjax.nn.helpers import Rotate, TimeEmbedding, Flip
+from probjax.nn.helpers import Rotate, Flip, SinusoidalEmbedding
 from probjax.utils.odeint import odeint
 
 import jax
@@ -160,7 +160,7 @@ def continous_transform(input_dim):
     def net(t, x):
         # print("Net", t,x)
         t = jnp.array(t).reshape(-1)
-        t = TimeEmbedding(4)(t)
+        t = SinusoidalEmbedding(8)(t)
         return hk.nets.MLP([50, 50, input_dim], activation=jnp.tanh)(
             jnp.concatenate([t, x], axis=-1)
         )
