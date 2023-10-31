@@ -36,7 +36,21 @@ def _kl_generic(p, q, mc_samples=0, key=None):
 
 @register_divergence(NAME, dist.Independent, dist.Independent)
 def _kl_independent_independent(p, q, mc_samples=0, key=None):
-    kl_base = kl_divergence(p.base_dist, q.base_dist, mc_samples=mc_samples, key=key)
+    base_dist_p = p.base_dist
+    base_dist_q = q.base_dist
+    if len(base_dist_p) == len(base_dist_q):
+        kl_base = jnp.stack(
+            [
+                kl_divergence(p, q, mc_samples=mc_samples, key=key)
+                for p, q in zip(base_dist_p, base_dist_q)
+            ],
+            axis=-1,
+        )
+    else:
+        raise ValueError(
+            "KL divergence between distributions with different event shapes not supported"
+        )
+   
     return kl_base.sum(-1)
 
 
@@ -181,3 +195,68 @@ def _kl_bernoulli_poisson(p, q, mc_samples=0, key=None):
     t1 = probs_p * jnp.log(probs_p / rate_q)
     t2 = (1 - probs_p) * jnp.log((1 - probs_p) / rate_q)
     return t1 + t2
+
+@register_divergence(NAME, dist.Bernoulli, dist.Beta)
+def _kl_bernoulli_beta(p, q, mc_samples=0, key=None):
+    probs_p = p.probs
+    alpha_q, beta_q = q.concentration1, q.concentration0
+    t1 = (alpha_q - 1) * jnp.log(probs_p)
+    t2 = (beta_q - 1) * jnp.log(1 - probs_p)
+    t3 = (
+        jax.scipy.special.gammaln(alpha_q)
+        + jax.scipy.special.gammaln(beta_q)
+        - jax.scipy.special.gammaln(alpha_q + beta_q)
+    )
+    return t1 + t2 + t3
+
+@register_divergence(NAME, dist.Bernoulli, dist.Gamma)
+def _kl_bernoulli_gamma(p, q, mc_samples=0, key=None):
+    probs_p = p.probs
+    alpha_q, beta_q = q.concentration, q.rate
+    t1 = (alpha_q - 1) * jnp.log(probs_p)
+    t2 = -beta_q * probs_p
+    t3 = jax.scipy.special.gammaln(alpha_q) - alpha_q * jnp.log(beta_q)
+    return t1 + t2 + t3
+
+@register_divergence(NAME, dist.Bernoulli, dist.Dirichlet)
+def _kl_bernoulli_dirichlet(p, q, mc_samples=0, key=None):
+    probs_p = p.probs
+    alpha_q = q.concentration
+    t1 = (alpha_q - 1) * jnp.log(probs_p)
+    t2 = jax.scipy.special.gammaln(alpha_q.sum(-1)) - jax.scipy.special.gammaln(
+        alpha_q
+    ).sum(-1)
+    return t1 + t2
+
+@register_divergence(NAME, dist.Bernoulli, dist.Exp)
+def _kl_bernoulli_exponential(p, q, mc_samples=0, key=None):
+    probs_p = p.probs
+    rate_q = q.rate
+    t1 = jnp.log(probs_p / rate_q)
+    t2 = (1 - probs_p) / rate_q
+    return t1 + t2
+
+@register_divergence(NAME, dist.Bernoulli, dist.Laplace)
+def _kl_bernoulli_laplace(p, q, mc_samples=0, key=None):
+    probs_p = p.probs
+    loc_q, scale_q = q.loc, q.scale
+    t1 = jnp.log(probs_p / (1 - probs_p))
+    t2 = (1 - probs_p) * (loc_q - scale_q) / scale_q
+    return t1 + t2
+
+@register_divergence(NAME, dist.Bernoulli, dist.Cauchy)
+def _kl_bernoulli_cauchy(p, q, mc_samples=0, key=None):
+    probs_p = p.probs
+    loc_q, scale_q = q.loc, q.scale
+    t1 = jnp.log(probs_p / (1 - probs_p))
+    t2 = (1 - probs_p) * (loc_q - scale_q) / scale_q
+    return t1 + t2
+
+@register_divergence(NAME, dist.Bernoulli, dist.Pareto)
+def _kl_bernoulli_pareto(p, q, mc_samples=0, key=None):
+    probs_p = p.probs
+    scale_q, alpha_q = q.scale, q.alpha
+    t1 = jnp.log(probs_p / (1 - probs_p))
+    t2 = (1 - probs_p) * (alpha_q / (alpha_q - 1)) / scale_q
+    return t1 + t2
+

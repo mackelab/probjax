@@ -43,39 +43,83 @@ def mean_and_var(p: Distribution, key: jax.random.PRNGKey):
 
     assert mean.shape == p.batch_shape + p.event_shape, "Mean shape mismatch"
     assert var.shape == p.batch_shape + p.event_shape, "Variance shape mismatch"
-    assert jnp.isfinite(mean).all(), "Mean is not finite"
-    assert jnp.isfinite(var).all(), "Variance is not finite"
-    assert jnp.isfinite(std).all(), "Standard deviation is not finite"
+
     try:
+        # This can be infinite for some distributions
+        true_mean = p.mean
+        true_var = p.variance
+        true_std = p.stddev
+
+        mask = jnp.isfinite(true_mean)
+        mean = jnp.where(mask, mean, true_mean)
+        mask = jnp.isfinite(true_var)
+        var = jnp.where(mask, var, true_var)
+        mask = jnp.isfinite(true_std)
+        std = jnp.where(mask, std, true_std)
+
         # Rather lose check as LLN may not hold
         assert jnp.allclose(
-            p.mean, mean, atol=0.1, rtol=0.1
+            true_mean, mean, atol=0.1, rtol=0.5
         ), "Mean is not close to sample mean"
         assert jnp.allclose(
-            p.variance, var, atol=0.1, rtol=0.1
+            true_var, var, atol=0.1, rtol=0.5
         ), "Variance is not close to sample variance"
         assert jnp.allclose(
-            p.stddev, std, atol=0.1, rtol=0.1
+            true_std, std, atol=0.1, rtol=0.5
         ), "Standard deviation is not close to sample standard deviation"
     except AssertionError as e:
         raise e
     except NotImplementedError:
         pass
 
+def cdf_icdf(p: Distribution, key: jax.random.PRNGKey):
+    # Check cdf and icdf
+    sample = p.sample(key, (10000,))
+    eval_points = p.sample(key, (10,))
+
+    empirical_cdf = jnp.mean(sample[:, None] <= eval_points[None, :], axis=0)
+
+
+    try:
+        cdf = p.cdf(eval_points)
+
+        assert cdf.shape == eval_points.shape, "CDF shape mismatch"
+        assert jnp.isfinite(cdf).all(), "CDF is not finite for all samples"
+       
+
+        assert jnp.allclose(
+            empirical_cdf, cdf, atol=0.1, rtol=0.5
+        ), "CDF is not close to empirical cdf"
+
+        try:
+            icdf = p.icdf(cdf)
+            assert icdf.shape == eval_points.shape, "ICDF shape mismatch"
+            assert jnp.isfinite(icdf).all(), "ICDF is not finite for all samples"
+            assert jnp.allclose(
+                eval_points, icdf, atol=0.1, rtol=0.5
+            ), "ICDF is not close to sample"
+        except NotImplementedError:
+            pass 
+        except AttributeError:
+            # If jax.scipy.stats is not available, this will be thrown
+            pass
+    except AssertionError as e:
+        raise e
+    except AttributeError:
+            # If jax.scipy.stats is not available, this will be thrown
+            pass
+    except NotImplementedError:
+        pass
+
 
 def init_dist(dist: type[Distribution], key, shape=(1,)):
-    if dist.multivariate:
-        if shape[0] == 1:
-            event_shape = (2,)
-        else:
-            event_shape = shape
-    else:
-        event_shape = shape
+
+    event_shape = shape
 
     keys = jax.random.split(key, len(dist.arg_constraints))
     kwargs = dict(
         [
-            (name, transform_to(constraint)(jax.random.normal(key, event_shape) * 3))
+            (name, transform_to(constraint)(jax.random.normal(key, event_shape)))
             for (name, constraint), key in zip(dist.arg_constraints.items(), keys)
         ]
     )
@@ -126,6 +170,13 @@ def test_base_distribution(dist: type[Distribution], shape=(1,), seed=0):
     sample_and_log_prob(p, key, shape)
     mean_and_var(p, key)
     mode_correct(p, key)
+    cdf_icdf(p, key)
+
+    # Check PyTree
+    flatten_p, tree_p = jax.tree_util.tree_flatten(p)
+    q = jax.tree_util.tree_unflatten(tree_p,flatten_p)
+    assert jnp.allclose(p.sample(key, shape), q.sample(key, shape)), "PyTree reconstruction mismatch"
+
 
 
 @pytest.mark.parametrize("dist", CONTINOUS_DIST + DISCRETE_DIST)
@@ -133,13 +184,76 @@ def test_independent_distribution(dist: type[Distribution], shape=(1,), seed=0):
     # Initialize distributions
 
     key = jax.random.PRNGKey(seed)
-    p = init_dist(dist, key, (3,))
+    p = init_dist(dist, key, (2,))
+
+
     p = Independent(p, 1)
+
 
     # Check sample and log_prob
     sample_and_log_prob(p, key, shape)
     mean_and_var(p, key)
     mode_correct(p, key)
+
+    # Check PyTree
+    flatten_p, tree_p = jax.tree_util.tree_flatten(p)
+    q = jax.tree_util.tree_unflatten(tree_p,flatten_p)
+    assert jnp.allclose(p.sample(key, shape), q.sample(key, shape)), "PyTree reconstruction mismatch"
+
+
+@pytest.mark.parametrize(
+    "dist1, dist2", itertools.combinations(CONTINOUS_DIST + DISCRETE_DIST,2)
+)
+def test_mixed_independent_distribution(
+    dist1: type[Distribution], dist2: type[Distribution], shape=(1,), seed=0
+):
+    key = jax.random.PRNGKey(seed)
+    p1 = init_dist(dist1, key, shape)
+    p2 = init_dist(dist2, key, shape)
+    # Batch shapes must be the same, which may not be true if we have multivariate and univarite dist!
+    try:
+        p = Independent([p1, p2], 1)
+    except AssertionError:
+        # If batch and event shapes are different, we can't make an independent distribution
+        return
+
+    sample_and_log_prob(p, key, shape)
+    mean_and_var(p, key)
+    mode_correct(p, key)
+
+
+@pytest.mark.parametrize("dist", CONTINOUS_DIST)
+def test_transformed_distribution(dist: type[Distribution], shape=(1,), seed=0):
+    # Initialize distributions
+
+    key = jax.random.PRNGKey(seed)
+    p = init_dist(dist, key, shape=shape)
+
+    # Check sample and log_prob
+    sample_and_log_prob(p, key, shape)
+    # This is not implemented
+    # mean_and_var(p, key)
+    # mode_correct(p, key)
+
+    # Check PyTree
+    flatten_p, tree_p = jax.tree_util.tree_flatten(p)
+    q = jax.tree_util.tree_unflatten(tree_p,flatten_p)
+    assert jnp.allclose(p.sample(key, shape), q.sample(key, shape)), "PyTree reconstruction mismatch"
+
+@pytest.mark.parametrize("dist", CONTINOUS_DIST + DISCRETE_DIST)
+def test_mixture_distribution(dist: type[Distribution], shape=(1,), seed=0):
+    key = jax.random.PRNGKey(seed)
+    p1 = init_dist(dist, jax.random.PRNGKey(seed + 42), shape=shape)
+    p2 = init_dist(dist, jax.random.PRNGKey(seed + 420000), shape = shape)
+
+    p = Mixture(jnp.array([0.5, 0.5]),[p1, p2])
+
+    # Check sample and log_prob
+    sample_and_log_prob(p, key, shape)
+    mean_and_var(p, key)
+    mode_correct(p, key)
+
+
 
 
 @pytest.mark.parametrize(

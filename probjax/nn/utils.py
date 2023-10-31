@@ -11,6 +11,15 @@ from typing import Callable, Sequence, Optional, Union, Any, Tuple, Iterable
 import warnings
 
 
+def efficient_masked_dot_product_attention(
+    query,
+    key,
+    value,
+    mask=None,
+):
+    pass
+
+
 def efficient_dot_product_attention(
     query,
     key,

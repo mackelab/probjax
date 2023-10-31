@@ -70,6 +70,8 @@ def batch_mahalanobis(bL: Array, bx: Array) -> Array:
     Accepts batches for both bL and bx. They are not necessarily assumed to have the same batch
     shape, but `bL` one should be able to broadcasted to `bx` one.
     """
+    bL = jnp.broadcast_to(bL, bx.shape[:-1] + bL.shape[-2:])
+    
     sol = lax.linalg.triangular_solve(bL, bx)
     return jnp.sum(sol**2, axis=-1)
 

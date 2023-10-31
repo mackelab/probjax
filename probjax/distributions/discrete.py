@@ -16,6 +16,7 @@ from .constraints import (
     unit_interval,
     unit_integer_interval,
     positive_integer,
+    strict_positive_integer,
 )
 
 from jax.scipy.stats import bernoulli, binom, poisson, geom, multinomial
@@ -73,6 +74,67 @@ class Bernoulli(ExponentialFamily):
 
 
 @register_pytree_node_class
+class Binomial(ExponentialFamily):
+    arg_constraints = {"n": strict_positive_integer, "probs": unit_interval}
+
+    def __init__(self, n: Array, probs: Array):
+        n, probs = jnp.broadcast_arrays(n, probs)
+
+        self.n = n.astype(jnp.int32)
+        self.probs = probs
+        super().__init__(batch_shape=probs.shape, event_shape=())
+
+    def sample(self, key, sample_shape=()):
+        max_n = jnp.max(self.n)
+        shape = sample_shape + (max_n,) + self.batch_shape + self.event_shape
+
+        trials = random.bernoulli(key, self.probs, shape=shape)
+        ax = -len(self.batch_shape) - len(self.event_shape) - 1
+        sumed_trials = jnp.cumsum(trials, axis=ax)
+
+        ns = jnp.expand_dims(self.n, axis=tuple(range(len(shape) - 1)))
+        _take = jax.vmap(lambda x, y: jnp.take(x, y, axis=-1), in_axes=(-1, -1))
+        final = _take(sumed_trials, ns - 1)
+        final = jnp.transpose(final).reshape(
+            sample_shape + self.batch_shape + self.event_shape
+        )
+        return final
+
+    def log_prob(self, value: Array) -> Array:
+        return binom.logpmf(value, self.n, self.probs)
+
+    def cdf(self, value: Array) -> Array:
+        return binom.cdf(value, self.n, self.probs)
+
+    def icdf(self, value: Array) -> Array:
+        return binom.ppf(value, self.n, self.probs)
+
+    @property
+    def mean(self) -> Array:
+        return self.n * self.probs
+
+    @property
+    def median(self) -> Array:
+        return jnp.floor(self.n * self.probs)
+
+    @property
+    def mode(self) -> Array:
+        return jnp.floor((self.n + 1) * self.probs)
+
+    @property
+    def variance(self) -> Array:
+        return self.n * self.probs * (1 - self.probs)
+
+    @property
+    def entropy(self) -> Array:
+        return (
+            jnp.log(2)
+            - self.probs * jnp.log(self.probs)
+            - (1 - self.probs) * jnp.log(1 - self.probs)
+        )
+
+
+@register_pytree_node_class
 class Categorical(ExponentialFamily):
     arg_constraints = {"probs": simplex}
 
@@ -111,39 +173,6 @@ class Categorical(ExponentialFamily):
     @property
     def entropy(self) -> Array:
         return -jnp.sum(self.probs * jnp.log(self.probs), axis=-1)
-
-
-@register_pytree_node_class
-class Binomial(ExponentialFamily):
-    arg_constraints = {"n": positive_integer, "probs": unit_interval}
-
-    def __init__(self, n: int, probs: Array):
-        self.n = int(n)
-        self.probs = probs
-        super().__init__(batch_shape=probs.shape, event_shape=())
-
-    def sample(self, key, sample_shape=()):
-        shape = sample_shape + self.batch_shape + self.event_shape + (self.n,)
-        return random.bernoulli(key, self.probs, shape=shape).sum(axis=-1)
-
-    def log_prob(self, value: Array) -> Array:
-        return binom.logpmf(value, self.n, self.probs)
-
-    @property
-    def mean(self) -> Array:
-        return self.n * self.probs
-
-    @property
-    def variance(self) -> Array:
-        return self.n * self.probs * (1 - self.probs)
-
-    @property
-    def entropy(self) -> Array:
-        return (
-            jnp.log(2)
-            - self.probs * jnp.log(self.probs)
-            - (1 - self.probs) * jnp.log(1 - self.probs)
-        )
 
 
 @register_pytree_node_class
@@ -197,7 +226,11 @@ class Geometric(ExponentialFamily):
 
     @property
     def mean(self) -> Array:
-        return (1 - self.probs) / self.probs
+        return 1 / self.probs
+
+    @property
+    def median(self) -> Array:
+        return jnp.ceil(-jnp.log(2) / jnp.log(1 - self.probs))
 
     @property
     def variance(self) -> Array:
@@ -261,7 +294,7 @@ class Empirical(Distribution):
     arg_constraints = {"values": real, "probs": simplex}
 
     def __init__(self, values: Array, probs: Array | None = None):
-        self.values = jnp.asarray(values)
+        self.values = jnp.atleast_1d(values)
         self.support = finit_set(self.values)
 
         # Reinterpret the values as a batch of independent distributions
@@ -277,28 +310,32 @@ class Empirical(Distribution):
         if probs is None:
             self.probs = None
         else:
-            #assert probs.shape == values.shape, "probs shape mismatch"
-            self.probs = jnp.asarray(probs)
+            # assert probs.shape == values.shape, "probs shape mismatch"
+            self.probs = jnp.atleast_1d(probs)
 
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)
 
     def sample(self, key, sample_shape=()):
         shape = sample_shape + self.batch_shape
         base_index = jnp.arange(0, self.num_values)
-        base_index = jnp.broadcast_to(base_index, self.probs.shape)
-        index = random.choice(
-            key, base_index, shape=shape, p=self.probs
-        )
+        if self.probs is not None:
+            base_index = jnp.broadcast_to(base_index, self.probs.shape)
+        index = random.choice(key, base_index, shape=shape, p=self.probs)
         samples = jnp.take_along_axis(self.values, index, axis=0)
         return samples
 
     def log_prob(self, value: Array) -> Array:
         value = jnp.asarray(value)
-        mask = jnp.equal(value[:, None], self.values)
+        mask = jnp.equal(value[..., None], self.values)
         indices = jnp.argmax(mask, axis=-self.values.ndim)
         valid = jnp.any(mask, axis=-self.values.ndim)
         if self.probs is not None:
-            probs, indices = jnp.broadcast_arrays(self.probs, indices)
+            probs = self.probs
+            while probs.ndim < indices.ndim:
+                probs = probs[None, ...]
+            while indices.ndim < probs.ndim:
+                indices = indices[None, ...]
+
             log_probs = jnp.take_along_axis(jnp.log(probs), indices, axis=-1)
             log_probs = jnp.where(valid, log_probs, -jnp.inf)
         else:
@@ -307,23 +344,43 @@ class Empirical(Distribution):
 
     @property
     def mean(self) -> Array:
-        return jnp.sum(self.values * self.probs)
-    
+        if self.probs is None:
+            return jnp.mean(self.values, axis=0)
+        else:
+            return jnp.sum(self.values * self.probs, axis=0)
+
     @property
     def mode(self) -> Array:
-        return self.values[jnp.argmax(self.probs)]
+        if self.probs is None:
+            return jnp.bincount(self.values).argmax(axis=0)
+        else:
+            return self.values[jnp.argmax(self.probs)]
 
     @property
     def variance(self) -> Array:
-        m = self.mean
-        return jnp.sum((self.values - m) ** 2 * self.probs)
+        if self.probs is None:
+            return jnp.var(self.values, axis=0)
+        else:
+            return jnp.sum((self.values - self.mean) ** 2 * self.probs)
 
     @property
     def entropy(self) -> Array:
-        return -jnp.sum(self.probs * jnp.log(self.probs))
+        if self.probs is None:
+            return -jnp.log(self.num_values)
+        else:
+            return -jnp.sum(self.probs * jnp.log(self.probs), axis=0)
 
     def cdf(self, value: Array) -> Array:
-        return jnp.cumsum(self.probs)
+        raise NotImplementedError()
+        if self.probs is None:
+            index = jnp.searchsorted(self.values, value)
+            cumprobs = jnp.cumsum(self.probs)
+            return cumprobs[index]
+        else:
+            return jnp.sum(self.probs * (self.values <= value[..., None]), axis=0)
 
     def icdf(self, value: Array) -> Array:
-        return jnp.searchsorted(self.cdf(self.values), value)
+        if self.probs is None:
+            return jnp.take_along_axis(self.values, value[..., None], axis=0)
+        else:
+            raise NotImplementedError()
