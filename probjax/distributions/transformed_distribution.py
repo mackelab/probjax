@@ -54,8 +54,11 @@ class TransformedDistribution(Distribution):
 
         self.support = base_dist.support
         self._transformation = transformation
-        # We vmap as we want the individual log dets!
         self._inv_and_logdet = inverse_and_logabsdet(transformation)
+        
+        for _ in range(len(batch_shape)):
+            self._transformation = jax.vmap(self._transformation)
+            self._inv_and_logdet = jax.vmap(self._inv_and_logdet)
 
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)
 

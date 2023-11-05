@@ -4,6 +4,10 @@ import jax.numpy as jnp
 from probjax.distributions.divergences.divergence import register_divergence, divergence
 from probjax import distributions as dist
 
+from ott.geometry import costs, pointcloud
+from ott.problems.linear import linear_problem
+from ott.solvers.linear import sinkhorn
+
 __all__ = ["wasserstein_distance"]
 
 NAME = "wasserstein"
@@ -28,7 +32,23 @@ def _1d_wasserstein_without_cdf(p, q, mc_samples=0, key=None, order=2):
     dist = jnp.abs(sorted_samples_p - sorted_samples_q) ** order
     return jnp.mean(dist)
 
+@jax.jit
+def _ot_cost(x, y, order:int=2):
+    geom = pointcloud.PointCloud(x, y, cost_fn = costs.PNormP(order))
+    ot_prob = linear_problem.LinearProblem(geom)
+    solver = sinkhorn.Sinkhorn()
+    ot = solver(ot_prob)
+    return ot.reg_ot_cost
 
+def _wasserstein_generic(p, q, mc_samples=0, key=None, order=2):
+    samples1 = p.sample(key, (mc_samples,))
+    samples2 = q.sample(key, (mc_samples,))
+    
+    cost = _ot_cost(samples1, samples2, order=order)
+    return (cost * order)**(1/order)
+
+
+@register_divergence(NAME, dist.Distribution, dist.Distribution)
 def _wasserstein_generic(p, q, mc_samples=0, key=None, order=2):
     if p.event_shape != q.event_shape:
         raise ValueError(
@@ -40,9 +60,7 @@ def _wasserstein_generic(p, q, mc_samples=0, key=None, order=2):
     ), "For general distirbutions we require mc_samples >= 0, to evaluate a Monte Carlo approximation of the Wasserstein distance."
 
     if sum(p.event_shape) > 1:
-        raise ValueError(
-            "Wasserstein distance between multivariate distributions not supported"
-        )
+        return _wasserstein_generic(p, q, mc_samples=mc_samples, key=key, order=order)
     else:
         return _1d_wasserstein(p, q, mc_samples=mc_samples, key=key, order=order)
 
