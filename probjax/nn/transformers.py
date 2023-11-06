@@ -53,7 +53,12 @@ class Transformer(hk.Module):
         """Transforms input embedding sequences to output embedding sequences."""
 
         if mask is not None:
-            mask = mask[None, None, :, :]
+            if mask.ndim == 2:
+                mask = mask[None, None, :, :]
+            elif mask.ndim == 3:
+                mask = mask[:,None, :, :]
+            else:
+                raise ValueError(f"Mask must have ndim 2 or 3, got {mask.ndim}.")
 
         h = inputs
 
