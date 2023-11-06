@@ -11,6 +11,62 @@ from typing import Callable, Sequence, Optional, Union, Any, Tuple, Iterable
 import warnings
 
 
+class MultiHeadAttention(hk.MultiHeadAttention):
+    def __init__(self, *args, save_attention_weights: bool = False, **kwargs):
+        self.save_attention_weights = save_attention_weights
+        super().__init__(*args, **kwargs)
+
+    def __call__(
+        self,
+        query: jax.Array,
+        key: jax.Array,
+        value: jax.Array,
+        mask: Optional[jax.Array] = None,
+    ) -> jax.Array:
+        # In shape hints below, we suppress the leading dims [...] for brevity.
+        # Hence e.g. [A, B] should be read in every case as [..., A, B].
+        *leading_dims, sequence_length, _ = query.shape
+        projection = self._linear_projection
+
+        # Compute key/query/values (overload K/Q/V to denote the respective sizes).
+        query_heads = projection(query, self.key_size, "query")  # [T', H, Q=K]
+        key_heads = projection(key, self.key_size, "key")  # [T, H, K]
+        value_heads = projection(value, self.value_size, "value")  # [T, H, V]
+
+        # Compute attention weights.
+        attn_logits = jnp.einsum("...thd,...Thd->...htT", query_heads, key_heads)
+        attn_logits = attn_logits / np.sqrt(self.key_size).astype(key.dtype)
+        if mask is not None:
+            if mask.ndim != attn_logits.ndim:
+                raise ValueError(
+                    f"Mask dimensionality {mask.ndim} must match logits dimensionality "
+                    f"{attn_logits.ndim}."
+                )
+            attn_logits = jnp.where(mask, attn_logits, -1e30)
+        attn_weights = jax.nn.softmax(attn_logits)  # [H, T', T]
+        if self.save_attention_weights:
+            _ = hk.get_state(
+                "attn_weights",
+                shape=attn_weights.shape,
+                dtype=attn_weights.dtype,
+                init=hk.initializers.Constant(0.0),
+            )
+            hk.set_state("attn_weights", attn_weights)
+
+        # Weight the values by the attention and flatten the head vectors.
+        attn = jnp.einsum("...htT,...Thd->...thd", attn_weights, value_heads)
+        attn = jnp.reshape(attn, (*leading_dims, sequence_length, -1))  # [T', H*V]
+
+        # Apply another projection to get the final embeddings.
+        final_projection = hk.Linear(
+            self.model_size,
+            w_init=self.w_init,
+            with_bias=self.with_bias,
+            b_init=self.b_init,
+        )
+        return final_projection(attn)  # [T', D']
+
+
 def efficient_masked_dot_product_attention(
     query,
     key,
