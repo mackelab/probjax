@@ -6,6 +6,8 @@ import haiku as hk
 from jaxtyping import Array, PyTree
 from typing import Callable, Optional
 
+from .utils import MultiHeadAttention
+
 
 # B -> batch size
 # T -> sequence length
@@ -31,6 +33,7 @@ class Transformer(hk.Module):
         widening_factor: int = 4,
         act: Callable = jax.nn.gelu,
         initializer: Optional[hk.initializers.Initializer] = None,
+        save_attention_weights: bool = False,
         name: str | None = "transformer",
     ):
         super().__init__(name=name)
@@ -43,6 +46,7 @@ class Transformer(hk.Module):
             initializer = hk.initializers.VarianceScaling(2 / self.num_layers)
         self.initializer = initializer
         self.act = act
+        self.save_attention_weights = save_attention_weights
 
     def __call__(
         self,
@@ -56,9 +60,10 @@ class Transformer(hk.Module):
             if mask.ndim == 2:
                 mask = mask[None, None, :, :]
             elif mask.ndim == 3:
-                mask = mask[:,None, :, :]
+                mask = mask[:, None, :, :]
             else:
                 raise ValueError(f"Mask must have ndim 2 or 3, got {mask.ndim}.")
+            mask = mask[None, None, :, :]
 
         h = inputs
 
@@ -87,11 +92,13 @@ class Transformer(hk.Module):
 
     @hk.transparent
     def attention_block(self, x: Array, mask: Array | None = None) -> Array:
-        attn_block = hk.MultiHeadAttention(
+        """Applies a multi-head attention block to `x` with default settings."""
+        attn_block = MultiHeadAttention(
             num_heads=self.num_heads,
             key_size=self.attn_size,
             model_size=x.shape[-1],
             w_init=self.initializer,
+            save_attention_weights=self.save_attention_weights,
         )
         attn = attn_block(x, x, x, mask=mask)
 

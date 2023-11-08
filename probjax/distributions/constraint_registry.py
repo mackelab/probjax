@@ -1,6 +1,8 @@
 import jax
 from jax import lax
 
+import jax.numpy as jnp
+
 from .constraints import (
     Constraint,
     real,
@@ -10,9 +12,13 @@ from .constraints import (
     unit_square,
     unit_interval,
     positive,
+    strict_positive,
     negative,
+    strict_negative,
     positive_integer,
     negative_integer,
+    strict_positive_integer,
+    strict_negative_integer,
     unit_integer_interval,
     simplex,
     matrix,
@@ -132,9 +138,28 @@ transform_to.register(real)(identity)
 transform_to.register(integer)(lax.round)
 transform_to.register(positive_integer)(lambda x: lax.abs(lax.round(x)))
 transform_to.register(negative_integer)(lambda x: -lax.abs(lax.round(x)))
+transform_to.register(strict_positive_integer)(
+    lambda x: jnp.maximum(lax.abs(lax.round(x)), 1)
+)
+transform_to.register(strict_negative_integer)(
+    lambda x: -jnp.maximum(lax.abs(lax.round(x)), 1)
+)
 
-transform_to.register(positive)(lax.exp)
+transform_to.register(positive)(lax.abs)
 biject_to.register(positive)(lax.exp)
+
+transform_to.register(strict_positive)(
+    lambda x: jnp.maximum(lax.abs(x), jnp.finfo(x.dtype).eps)
+)
+biject_to.register(strict_positive)(lambda x: lax.exp(x) + jnp.finfo(x.dtype).eps)
+
+transform_to.register(negative)(lambda x: -lax.abs(x))
+biject_to.register(negative)(lambda x: -lax.exp(x))
+
+transform_to.register(strict_negative)(
+    lambda x: -jnp.maximum(lax.abs(x), jnp.finfo(x.dtype).eps)
+)
+biject_to.register(strict_negative)(lambda x: -lax.exp(x) - jnp.finfo(x.dtype).eps)
 
 transform_to.register(unit_interval)(jax.nn.sigmoid)
 biject_to.register(unit_interval)(jax.nn.sigmoid)

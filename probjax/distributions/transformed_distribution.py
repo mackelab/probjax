@@ -21,6 +21,12 @@ __all__ = ["TransformedDistribution"]
 from jax.tree_util import register_pytree_node_class
 from jax.scipy.stats import norm
 
+# TODO: Add support for discrete distributions
+# Discrete transformed distributions do not need log_abs_det_jacobian !
+# But then we do not need a bijective transformation, just a injective one.
+# Bijection do only shuffle the atoms, but do not change the probability mass.
+
+
 
 @register_pytree_node_class
 class TransformedDistribution(Distribution):
@@ -48,8 +54,11 @@ class TransformedDistribution(Distribution):
 
         self.support = base_dist.support
         self._transformation = transformation
-        # We vmap as we want the individual log dets!
         self._inv_and_logdet = inverse_and_logabsdet(transformation)
+        
+        for _ in range(len(batch_shape)):
+            self._transformation = jax.vmap(self._transformation)
+            self._inv_and_logdet = jax.vmap(self._inv_and_logdet)
 
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)
 
