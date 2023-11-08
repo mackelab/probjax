@@ -57,6 +57,12 @@ class Transformer(hk.Module):
         """Transforms input embedding sequences to output embedding sequences."""
 
         if mask is not None:
+            if mask.ndim == 2:
+                mask = mask[None, None, :, :]
+            elif mask.ndim == 3:
+                mask = mask[:, None, :, :]
+            else:
+                raise ValueError(f"Mask must have ndim 2 or 3, got {mask.ndim}.")
             mask = mask[None, None, :, :]
 
         h = inputs
@@ -86,6 +92,7 @@ class Transformer(hk.Module):
 
     @hk.transparent
     def attention_block(self, x: Array, mask: Array | None = None) -> Array:
+        """Applies a multi-head attention block to `x` with default settings."""
         attn_block = MultiHeadAttention(
             num_heads=self.num_heads,
             key_size=self.attn_size,
