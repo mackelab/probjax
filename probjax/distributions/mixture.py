@@ -47,7 +47,7 @@ class Mixture(Distribution):
         key_sample, key_cluster_membership = random.split(key, 2)
         shape = sample_shape + self.batch_shape + self.event_shape
         component_samples = self.component_distributions.sample(key_sample, sample_shape)
-        cluster_membership = random.categorical(key_cluster_membership, self.mixing_probs, shape=sample_shape)
+        cluster_membership = random.categorical(key_cluster_membership, self.mixing_probs, shape= sample_shape + self.batch_shape)
         n_expand = len(self.event_shape) + 1
         cluster_membership = jnp.expand_dims(cluster_membership, axis=tuple(range(-n_expand, 0)))
         samples = jnp.take_along_axis(component_samples, cluster_membership, axis=-len(self.event_shape) - 1)
