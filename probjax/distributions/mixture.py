@@ -1,126 +1,98 @@
 import jax
 import jax.numpy as jnp
 from jax import random
-from jax import lax
-from jax.scipy.special import erfinv, erf
-
-from jaxtyping import Array
-from typing import Sequence
-
-from probjax.distributions.exponential_family import Distribution
-
-from .exponential_family import Distribution
-from .constraints import real, positive, simplex
-
-__all__ = ["Mixture"]
+from jax.scipy.special import logsumexp
 
 from jax.tree_util import register_pytree_node_class
-from jax.scipy.stats import norm
+from jaxtyping import Array
+from typing import Union, Sequence
 
+from probjax.distributions.exponential_family import Distribution
+from probjax.distributions.independent import Independent
+from probjax.distributions.constraints import simplex
 
 @register_pytree_node_class
 class Mixture(Distribution):
     arg_constraints = {"mixing_probs": simplex}
 
-    def __init__(self, mixing_probs: Array, components: Sequence[Distribution]):
+    def __init__(self, mixing_probs: Array, component_distributions: Union[Distribution, Sequence[Distribution]]):
+        """Initialize a Mixture distribution.
+
+        Args:
+            mixing_probs (Array): Mixing probabilities of the components.
+            component_distributions (Union[Distribution, Sequence[Distribution]]): Component distributions of the mixture.
+
+        Raises:
+            ValueError: If the number of components does not match the number of mixing probabilities.
+        """
+
+
+        component_distributions = Independent(component_distributions, 0)
+
+        num_components = component_distributions.batch_shape[-1]
+        batch_shape = component_distributions.batch_shape[:-1]
+        event_shape = component_distributions.event_shape
+
+        if mixing_probs.shape[-1] != num_components:
+            raise ValueError("Number of components does not match mixing probs")
+
+        mixing_probs = jnp.broadcast_to(mixing_probs, batch_shape + (num_components,))
         self.mixing_probs = mixing_probs
-        self.components = components
-
-        self.arg_constraints["components"] = None
-        num_components = mixing_probs.shape[-1]
-        assert num_components == len(
-            components
-        ), "Number of components must match number of mixing probabilities"
-        batch_shape = mixing_probs.shape[:-1]
-        event_shape = components[0].event_shape
-
-        self.support = components[
-            0
-        ].support  # Pick the component with the largest support TODO
-
-        
-        for i, component in enumerate(components):
-            assert (
-                component.batch_shape == batch_shape
-            ), "Batch shape of components must match"
-            assert (
-                component.event_shape == event_shape
-            ), "Event shape of components must match"
-            component_args = component.arg_constraints
-            for arg in component_args:
-                self.arg_constraints[arg + f"_{i}"] = component_args[arg]
+        self.component_distributions = component_distributions
+        self.num_components = num_components
 
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)
 
     def sample(self, key, sample_shape=()):
-        key_comp, key_sample, key_permute = random.split(key, 3)
+        key_sample, key_cluster_membership = random.split(key, 2)
         shape = sample_shape + self.batch_shape + self.event_shape
-        mixture_idx = random.categorical(
-            key_comp, self.mixing_probs, shape=shape[:-1] if len(shape) > 1 else shape
-        )
-        components, num_samples = jnp.unique(mixture_idx, return_counts=True)
+        component_samples = self.component_distributions.sample(key_sample, sample_shape)
+        cluster_membership = random.categorical(key_cluster_membership, self.mixing_probs, shape= sample_shape + self.batch_shape)
+        n_expand = len(self.event_shape) + 1
+        cluster_membership = jnp.expand_dims(cluster_membership, axis=tuple(range(-n_expand, 0)))
+        samples = jnp.take_along_axis(component_samples, cluster_membership, axis=-len(self.event_shape) - 1)
+        return jnp.reshape(samples, shape)
 
-        total_samples = []
-        for i in range(len(self.components)):
-            component_idx = components[i]
-            component = self.components[component_idx]
-            component_sample = component.sample(
-                key_sample, sample_shape=(num_samples[i],)
-            )
-            total_samples.append(component_sample)
-
-        total_samples = jnp.concatenate(total_samples, axis=0)[
-            random.permutation(key_permute, jnp.arange(shape[0]))
-        ]
-        return total_samples
-
-    def rsample(self, key, sample_shape: tuple = ...) -> Array:
-        raise NotImplementedError(
-            "Mixture does not support reparameterized sampling, can be done -> implicit reparam."
-        )
+    def rsample(self, key, sample_shape: tuple = ...):
+        raise NotImplementedError("Mixture does not support reparameterized sampling, can be done -> implicit reparam.")
 
     def log_prob(self, value):
-        log_probs = []
-        for i, component in enumerate(self.components):
-            log_prob = component.log_prob(value)
-            log_probs.append(log_prob + jnp.log(self.mixing_probs[..., i]))
-        return jax.scipy.special.logsumexp(jnp.stack(log_probs, axis=-1), axis=-1)
+
+        value = jnp.expand_dims(value, axis=-len(self.event_shape) - 1)
+        value = jnp.repeat(value, self.num_components, axis=0)
+        value = jnp.reshape(value, (-1,) + self.batch_shape + (self.num_components,) + self.event_shape)
+        log_component_probs = self.component_distributions.log_prob(value)
+        log_mixing_probs = jnp.log(self.mixing_probs)
+
+        log_probs = log_component_probs + log_mixing_probs
+        log_probs = logsumexp(log_probs, axis=-1)
+        return log_probs
 
     def cdf(self, value):
-        cdf_components = []
-        for i, component in enumerate(self.components):
-            cdf_component = component.cdf(value)
-            cdf_components.append(cdf_component)
-        cdf_components = jnp.stack(cdf_components, axis=-1)
-        return jnp.sum(cdf_components * self.mixing_distribution.probs, axis=-1)
+        cdf_comp = self.component_distributions.cdf(value)
+        return jnp.sum(cdf_comp * self.mixing_probs, axis=-len(self.event_shape) - 1)
 
     def icdf(self, value):
-        icdf_components = []
-        for i, component in enumerate(self.components):
-            icdf_component = component.icdf(value)
-            icdf_components.append(icdf_component)
-        icdf_components = jnp.stack(icdf_components, axis=-1)
-        return jnp.sum(icdf_components * self.mixing_distribution.probs, axis=-1)
+        icdf_comp = self.component_distributions.icdf(value)
+        return jnp.sum(icdf_comp * self.mixing_probs, axis=-len(self.event_shape) - 1)
 
+    @property
     def mean(self):
-        mean_components = []
-        for i, component in enumerate(self.components):
-            mean_component = component.mean()
-            mean_components.append(mean_component)
-        mean_components = jnp.stack(mean_components, axis=-1)
-        return jnp.sum(mean_components * self.mixing_distribution.probs, axis=-1)
+        mean_comp = self.component_distributions.mean
+        return jnp.sum(mean_comp * self.mixing_probs, axis=-len(self.event_shape) - 1)
 
+    @property
     def variance(self):
-        variance_components = []
-        for i, component in enumerate(self.components):
-            variance_component = component.variance()
-            variance_components.append(variance_component)
-        variance_components = jnp.stack(variance_components, axis=-1)
-        return jnp.sum(variance_components * self.mixing_distribution.probs, axis=-1)
+        variance_comp = self.component_distributions.variance
+        t1 = jnp.sum(variance_comp * self.mixing_probs, axis=-len(self.event_shape) - 1)
+        t2 = jnp.sum(self.mixing_probs * self.component_distributions.mean ** 2, axis=-len(self.event_shape) - 1)
+        t3 = self.mean ** 2
+        result = t1 + t2 - t3
+        return jnp.where(jnp.isfinite(result), result, jnp.inf)
 
     # Each distribution will be registered as a PyTree
     def tree_flatten(self):
-        flat_components, tree_components = jax.tree_util.tree_flatten(self.components)
+        flat_components, tree_components = jax.tree_util.tree_flatten(self.component_distributions)
         return (
             (self.mixing_probs,) + tuple(flat_components),
             [tree_components],
@@ -135,31 +107,5 @@ class Mixture(Distribution):
 
     def __repr__(self) -> str:
         return (
-            "Mixture"
-            + "("
-            + "mixing_probs="
-            + self.mixing_probs.__repr__()
-            + ", components="
-            + self.components.__repr__()
-            + ")"
+            f"Mixture(mixing_probs={self.mixing_probs.__repr__()}, components={self.component_distributions.__repr__()})"
         )
-
-
-class MixtureSameFamily(Distribution):
-    def __init__(self, mixing_probs: Array, components: Distribution):
-        self.mixing_probs = mixing_probs
-        self.components = components
-
-        self.arg_constraints["components"] = None
-        num_components = mixing_probs.shape[-1]
-        batch_shape = mixing_probs.shape[:-1]
-        event_shape = components.event_shape
-        assert (
-            num_components == components.batch_shape[-1]
-        ), "Batchdim of components must match number of mixing probabilities"
-
-        self.support = components.support
-        super().__init__(batch_shape=batch_shape, event_shape=event_shape)
-
-    def sample(self, key, sample_shape=()):
-        pass

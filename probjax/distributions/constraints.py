@@ -81,24 +81,30 @@ class Boolean(Integer):
 class Interval(Real):
     """A constraint that checks if a value is in an interval."""
 
-    def __init__(self, lower: float, upper: float) -> None:
+    def __init__(
+        self,
+        lower: float,
+        upper: float,
+        closed_left: bool = True,
+        closed_right: bool = True,
+    ) -> None:
         self.lower = lower
         self.upper = upper
+        self.closed_left = closed_left
+        self.closed_right = closed_right
 
     def _is_contained(self, x: Array) -> bool:
         if isinstance(x, Array):
-            return (
-                super()._is_contained(x) and all(x > self.lower) and all(x < self.upper)
-            )
+            term1 = x >= self.lower if self.closed_left else x > self.lower
+            term2 = x <= self.upper if self.closed_right else x < self.upper
+
+            return super()._is_contained(x) and all(term1) and all(term2)
         else:
             is_real = super()._is_contained(x)
             is_interval = isinstance(x, Interval)
-            return (
-                is_real
-                and is_interval
-                and x.lower >= self.lower
-                and x.upper <= self.upper
-            )
+            term1 = x.lower >= self.lower if self.closed_left else x.lower > self.lower
+            term2 = x.upper <= self.upper if self.closed_right else x.upper < self.upper
+            return is_real and is_interval and term1 and term2
 
 
 class FiniteSet(Constraint):
@@ -141,9 +147,19 @@ class Positive(Interval):
         super().__init__(0, jnp.inf)
 
 
+class StrictPositive(Interval):
+    def __init__(self) -> None:
+        super().__init__(0, jnp.inf, closed_left=False)
+
+
 class Negative(Interval):
     def __init__(self) -> None:
         super().__init__(-jnp.inf, 0)
+
+
+class StrictNegative(Interval):
+    def __init__(self) -> None:
+        super().__init__(-jnp.inf, 0, closed_right=False)
 
 
 class IntegerInterval(Integer, Interval):
@@ -169,14 +185,24 @@ class IntegerInterval(Integer, Interval):
             )
 
 
-class PositiveInteger(Integer):
-    def _is_contained(self, x: Array) -> bool:
-        return super()._is_contained(x) and jnp.all(x > 0)
+class PositiveInteger(IntegerInterval):
+    def __init__(self) -> None:
+        super().__init__(0, jnp.inf)
 
 
-class NegativeInteger(Integer):
-    def _is_contained(self, x: Array) -> bool:
-        return super()._is_contained(x) and jnp.all(x < 0)
+class NegativeInteger(IntegerInterval):
+    def __init__(self) -> None:
+        super().__init__(-jnp.inf, 0)
+
+
+class StrictPositiveInteger(IntegerInterval):
+    def __init__(self) -> None:
+        super().__init__(1, jnp.inf)
+
+
+class StrictNegativeInteger(IntegerInterval):
+    def __init__(self) -> None:
+        super().__init__(-jnp.inf, -1)
 
 
 class Matrix(Real):
@@ -206,6 +232,10 @@ boolean = Boolean()
 positive = Positive()
 positive_integer = PositiveInteger()
 negative_integer = NegativeInteger()
+strict_positive = StrictPositive()
+strict_negative = StrictNegative()
+strict_positive_integer = StrictPositiveInteger()
+strict_negative_integer = StrictNegativeInteger()
 negative = Negative()
 interval = Interval
 finit_set = FiniteSet
@@ -228,8 +258,10 @@ __all__ = [
     "boolean",
     "positive",
     "positive_integer",
+    "strict_positive_integer",
     "negative",
     "negative_integer",
+    "strict_negative_integer",
     "interval",
     "finit_set",
     "unit_interval",
