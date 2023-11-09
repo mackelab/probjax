@@ -63,7 +63,6 @@ class Transformer(hk.Module):
                 mask = mask[:, None, :, :]
             else:
                 raise ValueError(f"Mask must have ndim 2 or 3, got {mask.ndim}.")
-            mask = mask[None, None, :, :]
 
         h = inputs
 
