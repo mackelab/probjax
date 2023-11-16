@@ -5,7 +5,7 @@ import jax.random as jrandom
 from jax import lax
 from jax import core
 from jax.tree_util import tree_leaves
-
+from jax.util import safe_map as map
 from functools import partial
 from jaxtyping import Array, Float, PyTree, Int
 from typing import Callable, Optional
@@ -45,7 +45,9 @@ def register_runge_kutta_method(
     A: Array,
     b_sol: Array,
     b_error: Optional[Array] = None,
+    b_mid: Optional[Array] = None,
     info: Optional[str] = None,
+    order: Optional[int] = None,
 ) -> Callable:
     """Register a Runge-Kutta method. This function will create a step function for the method and register it. A Runge-Kutta method is defined by the following equations:
 
@@ -66,10 +68,12 @@ def register_runge_kutta_method(
         Callable: The step_fn of the method.
     """
     stages = len(c)
-    if stages >= 5:
-        order = stages - 1
-    else:
-        order = stages
+    if order is None:
+        if stages >= 5:
+            # Heuristic
+            order = stages - 1
+        else:
+            order = stages
 
     assert jnp.all(c >= 0) and jnp.all(c <= 1), "c must be between 0 and 1"
     assert jnp.allclose(jnp.sum(b_sol), 1.0), "b_sol must sum to 1"
@@ -104,6 +108,8 @@ def register_runge_kutta_method(
         "A": A,
         "b_sol": b_sol,
         "b_error": b_error,
+        "b_mid": b_mid,
+        "interpolation_order": 4 if b_mid is not None else 3,
         "adaptive": adaptive,
         "info": info,
     }
@@ -115,6 +121,7 @@ def register_runge_kutta_method(
             A=A,
             b_sol=b_sol,
             b_error=b_error,
+            b_mid=b_mid,
             stages=stages,
             last_equals_next=last_equals_next,
         )
@@ -125,6 +132,7 @@ def register_runge_kutta_method(
             A=A,
             b_sol=b_sol,
             b_error=b_error,
+            b_mid=b_mid,
             stages=order,
             last_equals_next=last_equals_next,
         )
@@ -192,7 +200,7 @@ def get_methods():
 #     s = len(a)
 
 
-@partial(jax.jit, static_argnums=(0, 9, 10))
+@partial(jax.jit, static_argnums=(0, 10, 11))
 def explicit_runge_kutta_step(
     drift: Callable,
     t0: Array,
@@ -203,6 +211,7 @@ def explicit_runge_kutta_step(
     A: Array,
     b_sol: Array,
     b_error: Array,
+    b_mid: Array,
     stages: int,
     last_equals_next: bool,
 ):
@@ -226,7 +235,12 @@ def explicit_runge_kutta_step(
     else:
         y1_error = dt * jnp.dot(b_error, k)
 
-    return y1, f1, (y1_error, k)
+    if b_mid is None:
+        y1_mid = None
+    else:
+        y1_mid = dt * jnp.dot(b_mid, k) + y0
+
+    return y1, f1, (y1_error, k, y1_mid)
 
 
 def implicit_runge_kutta_step(
@@ -239,7 +253,9 @@ def implicit_runge_kutta_step(
     A: Array,
     b_sol: Array,
     b_error: Array,
+    b_mid: Optional[Array],
     stages: int = 2,
+    **kwargs,
 ):
     ts = t0 + dt * c
     ts = ts.reshape(-1, 1)
@@ -261,7 +277,12 @@ def implicit_runge_kutta_step(
     else:
         y1_error = dt.astype(f0.dtype) * jnp.dot(b_error, k)
 
-    return y1, f1, (y1_error, k)
+    if b_mid is None:
+        y1_mid = None
+    else:
+        y1_mid = dt.astype(f0.dtype) * jnp.dot(b_mid, k) + y0
+
+    return y1, f1, (y1_error, k, y1_mid)
 
 
 def initial_step_size(
@@ -296,32 +317,28 @@ def initial_step_size(
     return jnp.minimum(100.0 * h0, h1)
 
 
-def mean_error_ratio(
-    error_estimate: Array, rtol: float, atol: float, y0: Array, y1: Array
-):
+def mean_error_ratio(error_estimate, rtol, atol, y0, y1, norm: float = 2):
     err_tol = atol + rtol * jnp.maximum(jnp.abs(y0), jnp.abs(y1))
     err_ratio = error_estimate / err_tol.astype(error_estimate.dtype)
-    return jnp.sqrt(jnp.mean(jnp.abs(err_ratio)))
+    return jnp.linalg.norm(err_ratio, ord=norm) / jnp.sqrt(len(err_ratio))
 
 
-def step_size_adaption(
-    last_step: Array,
-    mean_error_ratio: Array,
-    dtmin: float = -jnp.inf,
-    dtmax: float = jnp.inf,
-    safety: float = 0.9,
-    ifactor: float = 10.0,
-    dfactor: float = 0.1,
-    order: int = 5,
+def optimal_step_size(
+    last_step,
+    mean_error_ratio,
+    maxerror=1.0,
+    safety=0.9,
+    ifactor=10.0,
+    dfactor=0.2,
+    order=5.0,
 ):
     """Compute optimal Runge-Kutta stepsize."""
-    dfactor = jnp.where(mean_error_ratio < 1, 1.0, dfactor)
+    dfactor = jnp.where(mean_error_ratio < maxerror, 1.0, dfactor)
 
     factor = jnp.minimum(
         ifactor, jnp.maximum(mean_error_ratio ** (-1.0 / order) * safety, dfactor)
     )
-    dt = jnp.where(mean_error_ratio == 0, last_step * ifactor, last_step * factor)
-    return jnp.clip(dt, dtmin, dtmax)
+    return jnp.where(mean_error_ratio == 0, last_step * ifactor, last_step * factor)
 
 
 # Explicit Runge-Kutta methods
@@ -367,7 +384,7 @@ c = jnp.array([0, 1])
 A = jnp.array([[0, 0], [1, 0]])
 b_sol = jnp.array([1 / 2, 1 / 2])
 b_error = None
-register_runge_kutta_method("heun", c, A, b_sol, b_error, "Heun's method")
+register_runge_kutta_method("heun", c, A, b_sol, b_error, info="Heun's method")
 
 # Adaptive Heun's method
 c = jnp.array([0, 1])
@@ -375,7 +392,7 @@ A = jnp.array([[0, 0], [1, 0]])
 b_sol = jnp.array([1 / 2, 1 / 2])
 b_error = jnp.array([1.0, 0.0])
 register_runge_kutta_method(
-    "heun_euler", c, A, b_sol, b_error, "Heun's Euler adaptive method"
+    "heun_euler", c, A, b_sol, b_error, info="Heun's Euler adaptive method"
 )
 
 # Midpoint method
@@ -383,14 +400,14 @@ c = jnp.array([0, 1 / 2])
 A = jnp.array([[0, 0], [1 / 2, 0]])
 b_sol = jnp.array([0, 1])
 b_error = None
-register_runge_kutta_method("midpoint", c, A, b_sol, b_error, "Midpoint method")
+register_runge_kutta_method("midpoint", c, A, b_sol, b_error, info="Midpoint method")
 
 # Ralston's method
 c = jnp.array([0, 2 / 3])
 A = jnp.array([[0, 0], [2 / 3, 0]])
 b_sol = jnp.array([1 / 4, 3 / 4])
 b_error = None
-register_runge_kutta_method("ralston", c, A, b_sol, b_error, "Ralston's method")
+register_runge_kutta_method("ralston", c, A, b_sol, b_error, info="Ralston's method")
 
 
 # 3rd order
@@ -399,28 +416,34 @@ c = jnp.array([0, 1 / 2, 1])
 A = jnp.array([[0, 0, 0], [1 / 2, 0, 0], [-1, 2, 0]])
 b_sol = jnp.array([1 / 6, 2 / 3, 1 / 6])
 b_error = None
-register_runge_kutta_method("rk3", c, A, b_sol, b_error, "Kutta's third-order method")
+register_runge_kutta_method(
+    "rk3", c, A, b_sol, b_error, info="Kutta's third-order method"
+)
 
 # Fehlberg's RK3(2) method (explicit) (adaptive)
 c = jnp.array([0, 1 / 2, 1])
 A = jnp.array([[0, 0, 0], [1 / 2, 0, 0], [1 / 256, 255 / 256, 0]])
 b_sol = jnp.array([1 / 512, 255 / 256, 1 / 512])
 b_error = jnp.array([1 / 256, 255 / 256, 0])
-register_runge_kutta_method("rk3(2)", c, A, b_sol, b_error, "Fehlberg's RK3(2) method")
+register_runge_kutta_method(
+    "rk3(2)", c, A, b_sol, b_error, info="Fehlberg's RK3(2) method"
+)
 
 # Bosh3 method
 c = jnp.array([0, 1 / 2, 3 / 4])
 A = jnp.array([[0, 0, 0], [1 / 2, 0, 0], [0, 3 / 4, 0]])
 b_sol = jnp.array([2 / 9, 1 / 3, 4 / 9])
 b_error = None
-register_runge_kutta_method("bosh3", c, A, b_sol, b_error, "Bosh3 method")
+register_runge_kutta_method("bosh3", c, A, b_sol, b_error, info="Bosh3 method")
 
 # Heun's third-order method
 c = jnp.array([0, 1 / 3, 2 / 3])
 A = jnp.array([[0, 0, 0], [1 / 3, 0, 0], [0, 2 / 3, 0]])
 b_sol = jnp.array([1 / 4, 0, 3 / 4])
 b_error = None
-register_runge_kutta_method("heun3", c, A, b_sol, b_error, "Heun's third-order method")
+register_runge_kutta_method(
+    "heun3", c, A, b_sol, b_error, info="Heun's third-order method"
+)
 
 # Van der Houwen's/Wray's method
 c = jnp.array([0, 8 / 15, 2 / 3])
@@ -428,7 +451,7 @@ A = jnp.array([[0, 0, 0], [8 / 15, 0, 0], [1 / 4, 5 / 12, 0]])
 b_sol = jnp.array([1 / 4, 0, 3 / 4])
 b_error = None
 register_runge_kutta_method(
-    "vanderhouwen", c, A, b_sol, b_error, "Van der Houwen's/Wray's method"
+    "vanderhouwen", c, A, b_sol, b_error, info="Van der Houwen's/Wray's method"
 )
 
 # Ralston's third-order method
@@ -437,7 +460,7 @@ A = jnp.array([[0, 0, 0], [1 / 2, 0, 0], [0, 3 / 4, 0]])
 b_sol = jnp.array([2 / 9, 1 / 3, 4 / 9])
 b_error = None
 register_runge_kutta_method(
-    "ralston3", c, A, b_sol, b_error, "Ralston's third-order method"
+    "ralston3", c, A, b_sol, b_error, info="Ralston's third-order method"
 )
 
 # Strong stability preserving Runge-Kutta methods of order 3
@@ -451,7 +474,7 @@ register_runge_kutta_method(
     A,
     b_sol,
     b_error,
-    "Strong stability preserving Runge-Kutta methods of order 3",
+    info="Strong stability preserving Runge-Kutta methods of order 3",
 )
 
 
@@ -461,7 +484,9 @@ c = jnp.array([0, 1 / 2, 1 / 2, 1])
 A = jnp.array([[0, 0, 0, 0], [1 / 2, 0, 0, 0], [0, 1 / 2, 0, 0], [0, 0, 1, 0]])
 b_sol = jnp.array([1 / 6, 1 / 3, 1 / 3, 1 / 6])
 b_error = None
-register_runge_kutta_method("rk4", c, A, b_sol, b_error, "Classic Runge-Kutta method")
+register_runge_kutta_method(
+    "rk4", c, A, b_sol, b_error, info="Classic Runge-Kutta method"
+)
 
 # Bogacki-Shampine method, RK4(3) (explicit) (adaptive)
 c = jnp.array([0, 1 / 2, 3 / 4, 1])
@@ -470,14 +495,16 @@ A = jnp.array(
 )
 b_sol = jnp.array([2 / 9, 1 / 3, 4 / 9, 0])
 b_error = jnp.array([7 / 24, 1 / 4, 1 / 3, 1 / 8])
-register_runge_kutta_method("rk4(5)", c, A, b_sol, b_error, "Bogacki-Shampine method")
+register_runge_kutta_method(
+    "rk4(3)", c, A, b_sol, b_error, info="Bogacki-Shampine method"
+)
 
 # 3/8 rule
 c = jnp.array([0, 1 / 3, 2 / 3, 1])
 A = jnp.array([[0, 0, 0, 0], [1 / 3, 0, 0, 0], [-1 / 3, 1, 0, 0], [1, -1, 1, 0]])
 b_sol = jnp.array([1 / 8, 3 / 8, 3 / 8, 1 / 8])
 b_error = None
-register_runge_kutta_method("3/8", c, A, b_sol, b_error, "3/8 rule")
+register_runge_kutta_method("3/8", c, A, b_sol, b_error, info="3/8 rule")
 
 # Ralston's method of order 4
 c = jnp.array([0.0, 0.4, 0.45573725, 1.0])
@@ -492,7 +519,7 @@ A = jnp.array(
 b_sol = jnp.array([0.17476028, -0.55148066, 1.20553560, 0.17118478])
 b_error = None
 register_runge_kutta_method(
-    "ralston4", c, A, b_sol, b_error, "Ralston's method of order 4"
+    "ralston4", c, A, b_sol, b_error, info="Ralston's method of order 4"
 )
 
 # 5th order
@@ -512,7 +539,7 @@ A = jnp.array(
 b_sol = jnp.array([7 / 90, 0, 32 / 90, 12 / 90, 32 / 90, 7 / 90])
 b_error = None
 register_runge_kutta_method(
-    "rk5", c, A, b_sol, b_error, "Runge-Kutta method of order 5"
+    "rk5", c, A, b_sol, b_error, info="Runge-Kutta method of order 5"
 )
 
 # Fehlberg's RK5(4) method (explicit) (adaptive)
@@ -529,7 +556,23 @@ A = jnp.array(
 )
 b_sol = jnp.array([16 / 135, 0, 6656 / 12825, 28561 / 56430, -9 / 50, 2 / 55])
 b_error = jnp.array([25 / 216, 0, 1408 / 2565, 2197 / 4104, -1 / 5, 0])
-register_runge_kutta_method("rk5(4)", c, A, b_sol, b_error, "RK5(4)")
+register_runge_kutta_method("rk5(4)", c, A, b_sol, b_error, info="RK5(4)")
+
+# Cash-Karp method (explicit) (adaptive)
+c = jnp.array([0, 1 / 5, 3 / 10, 3 / 5, 1, 7 / 8])
+A = jnp.array(
+    [
+        [0, 0, 0, 0, 0, 0],
+        [1 / 5, 0, 0, 0, 0, 0],
+        [3 / 40, 9 / 40, 0, 0, 0, 0],
+        [3 / 10, -9 / 10, 6 / 5, 0, 0, 0],
+        [-11 / 54, 5 / 2, -70 / 27, 35 / 27, 0, 0],
+        [1631 / 55296, 175 / 512, 575 / 13824, 44275 / 110592, 253 / 4096, 0],
+    ]
+)
+b_sol = jnp.array([37 / 378, 0, 250 / 621, 125 / 594, 0, 512 / 1771])
+b_error = jnp.array([2825 / 27648, 0, 18575 / 48384, 13525 / 55296, 277 / 14336, 1 / 4])
+register_runge_kutta_method("cash-karp", c, A, b_sol, b_error, info="Cash-Karp method")
 
 # 6th order
 # Runge-Kutta method of order 6
@@ -548,7 +591,7 @@ A = jnp.array(
 b_sol = jnp.array([1 / 12, 0, 27 / 32, -4 / 3, 125 / 96, 5 / 48, 0])
 b_error = None
 register_runge_kutta_method(
-    "rk6", c, A, b_sol, b_error, "Runge-Kutta method of order 6"
+    "rk6", c, A, b_sol, b_error, info="Runge-Kutta method of order 6"
 )
 
 
@@ -567,9 +610,37 @@ A = jnp.array(
 )
 b_sol = jnp.array([35 / 384, 0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84, 0])
 b_error = jnp.array(
-    [5179 / 57600, 0, 7571 / 16695, 393 / 640, -92097 / 339200, 187 / 2100, 1 / 40]
+    [
+        35 / 384 - 1951 / 21600,
+        0,
+        500 / 1113 - 22642 / 50085,
+        125 / 192 - 451 / 720,
+        -2187 / 6784 - -12231 / 42400,
+        11 / 84 - 649 / 6300,
+        -1.0 / 60.0,
+    ]
 )
-register_runge_kutta_method("dopri5", c, A, b_sol, b_error, "Dormand-Prince method")
+b_mid = jnp.array(
+    [
+        6025192743 / 30085553152 / 2,
+        0,
+        51252292925 / 65400821598 / 2,
+        -2691868925 / 45128329728 / 2,
+        187940372067 / 1594534317056 / 2,
+        -1776094331 / 19743644256 / 2,
+        11237099 / 235043384 / 2,
+    ],
+)
+register_runge_kutta_method(
+    "dopri5",
+    c,
+    A,
+    b_sol,
+    b_error,
+    b_mid,
+    info="Dormand-Prince method",
+    order=5,
+)
 
 
 # Implicit Runge-Kutta methods
@@ -632,15 +703,6 @@ register_runge_kutta_method(
     "implicit_crank_nicolson", c, A, b_sol, b_error, "Implicit Crank-Nicolson method"
 )
 
-# TODO This seems to be wrong...
-
-# Gauss-Legendre method
-# c = jnp.array([1 / 2 - jnp.sqrt(3) / 6, 1 / 2 + jnp.sqrt(3) / 6])
-# A = jnp.array([[1 / 4, 1 / 4 - jnp.sqrt(3) / 6], [1 / 4 + jnp.sqrt(3) / 6, 1 / 4]])
-# b_sol = jnp.array([1 / 2, 1 / 2])
-# b_error = None
-# register_runge_kutta_method("gauss_legendre", c, A, b_sol, b_error, "Gauss-Legendre")
-
 
 def _odeint_on_grid(drift: Callable, y0: Array, ts: Array, step_fn: Callable):
     """Solve an ordinary differential equation discretized on a grid i.e. with fixed step size.
@@ -668,6 +730,52 @@ def _odeint_on_grid(drift: Callable, y0: Array, ts: Array, step_fn: Callable):
     return jnp.concatenate((y0[None], ys))
 
 
+def fit_1rd_order_polynomial(y0, y1, dy0, dy1, dt):
+    a = (y1 - y0) * dt
+    b = y0
+    return a, b
+
+
+def fit_3rd_order_polynomial(y0, y1, dy0, dy1, dt):
+    """Be f(t) = a * t**3 + b * t**2 + c * t + d, then this function returns the coefficients a, b, c, d, which solve the system of equations:
+    f(0) = y0
+    f(1) = y1
+    f'(0) = dy0
+    f'(1) = dy1
+    """
+    d = y0
+    c = dy0 * dt
+    b = (-2 / 3 * c - d / dt + y1 / dt - dy1 / 3) * dt**2
+    a = (y1 - b * dt**2 - c * dt - d) * dt**3
+
+    return a, b, c, d
+
+
+def fit_4th_order_polynomial(y0, y1, y_mid, dy0, dy1, dt):
+    """Be f(t) = a * t**4 + b * t**3 + c * t**2 + d * t + e, then this function returns the coefficients a, b, c, d, e, which solve the system of equations:
+    f(0) = y0
+    f(1) = y1
+    f(1/2) = y_mid
+    f'(0) = dy0
+    f'(1) = dy1
+    """
+    a = -2.0 * dt * dy0 + 2.0 * dt * dy1 - 8.0 * y0 - 8.0 * y1 + 16.0 * y_mid
+    b = 5.0 * dt * dy0 - 3.0 * dt * dy1 + 18.0 * y0 + 14.0 * y1 - 32.0 * y_mid
+    c = -4.0 * dt * dy0 + dt * dy1 - 11.0 * y0 - 5.0 * y1 + 16.0 * y_mid
+    d = dt * dy0
+    e = y0
+    return a, b, c, d, e
+
+
+def interp_fit(y0, y1, f0, f1, dt, y_mid=None):
+    if y_mid is not None:
+        # We can use a 4th order polynomial (3 points and 2 gradients)
+        return jnp.asarray(fit_4th_order_polynomial(y0, y1, y_mid, f0, f1, dt))
+    else:
+        # We can only use a 3rd order polynomial (2 points and 2 gradients)
+        return jnp.asarray(fit_3rd_order_polynomial(y0, y1, f0, f1, dt))
+
+
 def _odeint_adaptive(
     drift: Callable,
     y0: Array,
@@ -676,66 +784,73 @@ def _odeint_adaptive(
     rtol: float = 1e-3,
     atol: float = 1e-5,
     mxstep: int = jnp.inf,
-    order: int = 2,
+    order: int = 5,
     dtinit: Optional[float] = None,
-    dtmin: float = -jnp.inf,
+    dtmin: float = 0.0,
     dtmax: float = jnp.inf,
-    maxerror: float = 1.2,
+    maxerror: float = 1.0,
     safety: float = 0.9,
     ifactor: float = 10.0,
-    dfactor: float = 0.1,
+    dfactor: float = 0.2,
+    error_norm: float = 2,
+    interpolation_order: int = 4,
 ):
-    def scan_fn(carry, data):
-        t0, y0, f0, dt = carry
-        t1 = data
-
+    def scan_fun(carry, target_t):
         def cond_fun(state):
-            i, t0, _, _, _ = state
-            return (i < mxstep) & (t0 < t1)
+            i, _, _, t, dt, _, _ = state
+            return (t < target_t) & (i < mxstep) & (dt > 0)
 
-        def body_fn(state):
-            i, t0, y0, f0, dt = state
-
-            y1, f1, (error, k) = step_fn(drift, t0, y0, f0, dt)
-            error = mean_error_ratio(error, rtol, atol, y0, y1)
-            # print(error)
-            dt = step_size_adaption(
-                dt,
-                error,
-                order=order,
-                safety=safety,
-                ifactor=ifactor,
-                dfactor=dfactor,
-                dtmin=dtmin,
-                dtmax=dtmax,
+        def body_fun(state):
+            i, y, f, t, dt, last_t, interp_coeff = state
+            # Predicts the next step
+            next_y, next_f, (next_y_error, k, y_mid) = step_fn(drift, t, y, f, dt)
+            next_t = t + dt
+            # Error estimation and step size control
+            error_ratio = mean_error_ratio(
+                next_y_error, rtol, atol, y, next_y, error_norm
             )
-            dt = lax.cond(t0 + dt < t1, lambda _: dt, lambda _: t1 - t0, None)
+            new_interp_coeff = interp_fit(y, next_y, f, next_f, dt, y_mid=y_mid)
+            dt = jnp.clip(
+                optimal_step_size(
+                    dt,
+                    error_ratio,
+                    maxerror=maxerror,
+                    safety=safety,
+                    ifactor=ifactor,
+                    dfactor=dfactor,
+                    order=order,
+                ),
+                dtmin,
+                dtmax,
+            )
 
-            # This rejects the step if the error is too large
-            # Maybe we should still accept the step, but with a smaller step size?
-            # This would accoumulate error, but would be more efficient
+            new = [i + 1, next_y, next_f, next_t, dt, t, new_interp_coeff]
+            old = [i + 1, y, f, t, dt, last_t, interp_coeff]
+            return map(partial(jnp.where, error_ratio <= maxerror), new, old)
 
-            new = [i + 1, t0 + dt, y1, f1, dt]
-            old = [i + 1, t0, y0, f0, dt]
-            return tuple(map(partial(jnp.where, error <= maxerror), new, old))
+        _, *carry = lax.while_loop(cond_fun, body_fun, [0] + carry)
+        _, _, t, _, last_t, interp_coeff = carry
+        relative_output_time = (target_t - last_t) / (t - last_t)
+        y_target = jnp.polyval(
+            interp_coeff, relative_output_time.astype(interp_coeff.dtype)
+        )
+        return carry, y_target
 
-        init_state = (0, t0, y0, f0, dt)
-        iter, _, y1, f1, dt = lax.while_loop(cond_fun, body_fn, init_state)
-
-        return (t1, y1, f1, dt), y1
-
-    t0 = ts[0]
-    f0 = drift(t0, y0)
-
+    f0 = drift(ts[0], y0)
     if dtinit is None:
-        dt = initial_step_size(drift, t0, y0, order, rtol, atol, f0)
+        dt = jnp.clip(
+            initial_step_size(drift, ts[0], y0, 4, rtol, atol, f0),
+            a_min=0.0,
+            a_max=jnp.inf,
+        )
     else:
         dt = dtinit
-
-    init_carry = (t0, y0, f0, dt)
-    _, ys = lax.scan(scan_fn, init_carry, ts[1:])
-
+    interp_coeff = jnp.array([y0] * (interpolation_order + 1))
+    init_carry = [y0, f0, ts[0], dt, ts[0], interp_coeff]
+    _, ys = lax.scan(scan_fun, init_carry, ts[1:])
     return jnp.concatenate((y0[None], ys))
+
+
 
 
 def _odeint(
@@ -754,13 +869,12 @@ def _odeint(
     safety: float = 0.95,
     ifactor: float = 10.0,
     dfactor: float = 0.1,
+    error_norm: float = 2,
 ):
     """Solve an ordinary differential equation.
 
     This function assumes that y0 is a single initial value, and that ts is a single time grid, with a single set of parameters.
     If you want to solve multiple ODEs, or multiple time grids, use vmap!
-
-    NOTE: You need to use partial(odeint, keywords) to vmap this function with keywords i.e. method="rk4".
 
     Args:
         drift (Callable): Drift function.
@@ -799,7 +913,6 @@ def _odeint(
 
     # Minimum step size, based on the dtype
     adaptive = method_info["adaptive"]
-    dtmin = jnp.maximum(dtmin, jnp.finfo(dtype).eps)
 
     # Solve the ODE
     if not adaptive:
@@ -817,6 +930,7 @@ def _odeint(
     else:
         # Solvers with adaptive step size.
         order = method_info["order"]
+        interpolation_order = method_info["interpolation_order"]
         ys = _odeint_adaptive(
             _f,
             y0,
@@ -833,6 +947,8 @@ def _odeint(
             safety=safety,
             ifactor=ifactor,
             dfactor=dfactor,
+            error_norm=error_norm,
+            interpolation_order=interpolation_order,
         )
 
     # Unflatten the solution
@@ -840,12 +956,14 @@ def _odeint(
     return ys
 
 
+# Inverse odeint
 def _inv_odeint(drift, ys: Array, ts: Array, *args, **kwargs):
     y0 = ys[-1]
     xs = _odeint(drift, y0, ts[::-1], *args, **kwargs)
     return xs[-1]
 
 
+# Ode and logabsdet
 def _inv_logdet_odeint(drift, ys, ts, *args, **kwargs):
     _jac = jax.jacfwd(drift, argnums=1)
     jac = lambda t, x: jnp.atleast_2d(_jac(t, x))
