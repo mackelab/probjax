@@ -47,6 +47,26 @@ class MultiHeadAttention(hk.MultiHeadAttention):
                 self.key_size,
                 self.save_attention_weights,
             )
+        elif self.attention_method == "mem_eff":
+            attn = efficient_masked_dot_product_attention(
+                query_heads,
+                key_heads,
+                value_heads,
+                mask,
+                self.save_attention_weights,
+            )
+            attn_weights = None
+            return attn
+        elif self.attention_method == "sparse":
+            attn = efficient_dot_product_attention(
+                query_heads,
+                key_heads,
+                value_heads,
+                mask,
+                self.save_attention_weights,
+            )
+            attn_weights = None
+            return attn
         else:
             raise NotImplementedError("Unimplemented attention method")
 
@@ -142,8 +162,6 @@ def efficient_masked_dot_product_attention(
         return attn, attention_weight
     else:
         return attn
-
-
 
 
 def _query_chunk_attention(
@@ -244,9 +262,12 @@ def _query_chunk_attention(
             chunk_idx, query, key_chunk, value_chunk, mask_chunk, bias_chunk
         )
 
+    l = math.ceil(num_kv / key_chunk_size)
     chunk_values, chunk_weights, chunk_max = jax.lax.map(
-        chunk_scanner, xs=jnp.arange(0, num_kv, key_chunk_size)
+        chunk_scanner, xs=jnp.arange(0, l, key_chunk_size)
     )
+    # l = math.ceil(num_kv / key_chunk_size)
+    # overhang = l - num_kv // key_chunk_size
 
     global_max = jnp.max(chunk_max, axis=0, keepdims=True)
     max_diffs = jnp.exp(chunk_max - global_max)
@@ -314,14 +335,16 @@ def efficient_dot_product_attention(
     Returns:
       Output of shape `[batch..., q_length, num_heads, v_depth_per_head]`.
     """
-    num_q, num_heads, q_features = query.shape[-3:]
+    *leading_dims, num_q, num_heads, q_features = query.shape
     num_kv = key.shape[-3]
+    l = math.ceil(num_q / query_chunk_size)
+    overhang = l - num_q // query_chunk_size
 
     def chunk_scanner(chunk_idx, _):
         query_chunk = jax.lax.dynamic_slice(
             query,
             tuple([0] * (query.ndim - 3)) + (chunk_idx, 0, 0),
-            slice_sizes=tuple(query.shape[:-3])
+            slice_sizes=tuple(leading_dims)
             + (min(query_chunk_size, num_q), num_heads, q_features),
         )
 
@@ -333,7 +356,7 @@ def efficient_dot_product_attention(
             mask_chunk = jax.lax.dynamic_slice(
                 mask,
                 tuple([0] * (mask.ndim - 3)) + (0, chunk_idx, 0),
-                slice_sizes=tuple(mask.shape[:-3])
+                slice_sizes=tuple(leading_dims)
                 + (mask.shape[-3], min(query_chunk_size, num_q), mask.shape[-1]),
             )
         else:
@@ -349,7 +372,7 @@ def efficient_dot_product_attention(
             bias_chunk = jax.lax.dynamic_slice(
                 bias,
                 tuple([0] * (bias.ndim - 3)) + (0, chunk_idx, 0),
-                slice_sizes=tuple(bias.shape[:-3])
+                slice_sizes=tuple(leading_dims)
                 + (bias.shape[-3], min(query_chunk_size, num_q), bias.shape[-1]),
             )
         else:
@@ -375,7 +398,18 @@ def efficient_dot_product_attention(
             ),
         )
 
-    _, res = jax.lax.scan(
-        chunk_scanner, init=0, xs=None, length=math.ceil(num_q / query_chunk_size)
-    )
-    return jnp.concatenate(res, axis=-3)
+    _, res = jax.lax.scan(chunk_scanner, init=0, xs=None, length=l)
+
+    if overhang == 0 or l == 1:
+        res = jnp.concatenate(res, axis=-3)
+        res = jnp.reshape(res, (*leading_dims, num_q, -1))
+        return res
+    else:
+        res_except_last = res[:-1, ..., :, :].reshape(
+            (*leading_dims, -1, value.shape[-1])
+        )
+        res_last = res[-1, ..., overhang:, :, :].reshape(
+            (*leading_dims, -1, value.shape[-1])
+        )
+        res = jnp.concatenate((res_except_last, res_last), axis=-2)
+        return res

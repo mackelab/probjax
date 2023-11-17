@@ -70,7 +70,7 @@ def register_runge_kutta_method(
     stages = len(c)
     if order is None:
         if stages >= 5:
-            # Heuristic
+            # Heuristic, should be provided on implementation.
             order = stages - 1
         else:
             order = stages
@@ -141,22 +141,6 @@ def register_runge_kutta_method(
     return step_fn
 
 
-# def register_adams_bashforth_method(
-#     name: str,
-#     a: Array,
-#     b: Array,
-#     order: int,
-#     info: Optional[str] = None,
-# ) -> Callable:
-#     stages = len(b)
-
-#     assert a[-1] = 1., "a[-1] must be 1."
-#     assert jnp.sum(b) == 1., "b must sum to 1."
-
-#     explicit = b[-1] == 0.0
-
-#     # TODO
-
 
 def get_step_fn(method: str, dtype: Optional[Float] = None):
     """Returns the step function for a given method.
@@ -185,19 +169,6 @@ def get_method_info(method: str):
 def get_methods():
     """Returns a list of all registered methods."""
     return list(METHOD_STEP_FN.keys())
-
-
-# def explicit_adam_beth_method(
-#     drift: Callable,
-#     t0: Array,
-#     ys: Array,
-#     fs: Array,
-#     dt: Array,
-#     a: Array,
-#     b: Array,
-#     order: int,
-# ):
-#     s = len(a)
 
 
 @partial(jax.jit, static_argnums=(0, 10, 11))
@@ -681,7 +652,7 @@ def _implicit_euler_step(
     return y1, f1, None
 
 
-register_method("implicit_euler", _implicit_euler_step, info)
+register_method("implicit_euler", _implicit_euler_step, info=info)
 
 
 # 2nd order
@@ -691,7 +662,7 @@ A = jnp.array([[0, 0], [1, 0]])
 b_sol = jnp.array([1 / 2, 1 / 2])
 b_error = None
 register_runge_kutta_method(
-    "implicit_trapezoidal", c, A, b_sol, b_error, "Implicit trapezoidal rule"
+    "implicit_trapezoidal", c, A, b_sol, b_error, info="Implicit trapezoidal rule"
 )
 
 # Implicit Crank-Nicolson method
@@ -700,8 +671,39 @@ A = jnp.array([[0, 0], [1 / 2, 0]])
 b_sol = jnp.array([1 / 2, 1 / 2])
 b_error = None
 register_runge_kutta_method(
-    "implicit_crank_nicolson", c, A, b_sol, b_error, "Implicit Crank-Nicolson method"
+    "implicit_crank_nicolson", c, A, b_sol, b_error, info="Implicit Crank-Nicolson method"
 )
+
+
+# Exponential methods
+
+
+def exponential_euler(drift, t0, y0, f0, dt):
+    jacobian_fn = jax.jacfwd(drift, argnums=1)
+    
+    A = jacobian_fn(t0, y0)
+    B = jnp.zeros_like(A)
+    C = jnp.eye(A.shape[0])
+    H = jnp.block([[A, C], [B, B]])
+    eHdt = jax.scipy.linalg.expm(H * dt)
+    phi0 = eHdt[0:A.shape[0], 0:A.shape[1]]
+    phi1 = eHdt[0:A.shape[0], A.shape[1]:]
+    
+    y1 = phi0@y0 + dt * phi1 @ (f0 - A@y0)
+    f1 = drift(t0 + dt, y1)
+
+    return y1, f1, None
+
+
+info = {
+    "explicit": False,
+    "order": 2,
+    "info": "Exponential Euler method",
+    "adaptive": False,
+}
+
+register_method("exp_euler", exponential_euler, info=info)
+    
 
 
 def _odeint_on_grid(drift: Callable, y0: Array, ts: Array, step_fn: Callable):
