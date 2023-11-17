@@ -2,7 +2,7 @@ import haiku as hk
 import jax
 import jax.numpy as jnp
 
-from typing import Callable, Any, List
+from typing import Callable, Any, List, Optional
 from functools import partial
 from jaxtyping import Array, PyTree
 
@@ -82,6 +82,35 @@ class SinusoidalEmbedding(hk.Module):
         emb = inputs[..., None] * emb[None, ...]
         emb = jnp.concatenate([jnp.sin(emb), jnp.cos(emb)], -1)
         return jnp.squeeze(emb, axis=-2)
+
+
+class GaussianFourierEmbedding(hk.Module):
+    def __init__(
+        self,
+        output_dim: int = 128,
+        learnable=False,
+        name: str = "gaussian_fourier_embedding",
+    ):
+        """Gaussian Fourier embedding module. Mostly used to embed time.
+
+        Args:
+            output_dim (int, optional): Output dimesion. Defaults to 128.
+            name (str, optional): Name of the module. Defaults to "gaussian_fourier_embedding".
+        """
+        super().__init__(name=name)
+        self.output_dim = output_dim
+        self.learnable = learnable
+
+    def __call__(self, inputs):
+        half_dim = self.output_dim // 2
+        B = hk.get_parameter(
+            "B", [half_dim, inputs.shape[-1]], init=hk.initializers.RandomNormal()
+        )
+        if not self.learnable:
+            B = jax.lax.stop_gradient(B)
+        term1 = jnp.cos(2 * jnp.pi * jnp.dot(inputs, B.T))
+        term2 = jnp.sin(2 * jnp.pi * jnp.dot(inputs, B.T))
+        return jnp.concatenate([term1, term2], axis=-1)
 
 
 class OneHot(hk.Module):

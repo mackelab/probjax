@@ -6,7 +6,7 @@ import haiku as hk
 from jaxtyping import Array, PyTree
 from typing import Callable, Optional
 
-from .utils import MultiHeadAttention
+from .attention import MultiHeadAttention
 
 
 # B -> batch size
@@ -34,6 +34,7 @@ class Transformer(hk.Module):
         act: Callable = jax.nn.gelu,
         initializer: Optional[hk.initializers.Initializer] = None,
         save_attention_weights: bool = False,
+        attention_method: str = "dense",
         name: str | None = "transformer",
     ):
         super().__init__(name=name)
@@ -47,6 +48,7 @@ class Transformer(hk.Module):
         self.initializer = initializer
         self.act = act
         self.save_attention_weights = save_attention_weights
+        self.attention_method = attention_method
 
     def __call__(
         self,
@@ -98,6 +100,7 @@ class Transformer(hk.Module):
             model_size=x.shape[-1],
             w_init=self.initializer,
             save_attention_weights=self.save_attention_weights,
+            attention_method=self.attention_method,
         )
         attn = attn_block(x, x, x, mask=mask)
 
