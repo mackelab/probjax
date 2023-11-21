@@ -141,7 +141,6 @@ def register_runge_kutta_method(
     return step_fn
 
 
-
 def get_step_fn(method: str, dtype: Optional[Float] = None):
     """Returns the step function for a given method.
 
@@ -671,7 +670,12 @@ A = jnp.array([[0, 0], [1 / 2, 0]])
 b_sol = jnp.array([1 / 2, 1 / 2])
 b_error = None
 register_runge_kutta_method(
-    "implicit_crank_nicolson", c, A, b_sol, b_error, info="Implicit Crank-Nicolson method"
+    "implicit_crank_nicolson",
+    c,
+    A,
+    b_sol,
+    b_error,
+    info="Implicit Crank-Nicolson method",
 )
 
 
@@ -680,16 +684,16 @@ register_runge_kutta_method(
 
 def exponential_euler(drift, t0, y0, f0, dt):
     jacobian_fn = jax.jacfwd(drift, argnums=1)
-    
+
     A = jacobian_fn(t0, y0)
     B = jnp.zeros_like(A)
     C = jnp.eye(A.shape[0])
     H = jnp.block([[A, C], [B, B]])
     eHdt = jax.scipy.linalg.expm(H * dt)
-    phi0 = eHdt[0:A.shape[0], 0:A.shape[1]]
-    phi1 = eHdt[0:A.shape[0], A.shape[1]:]
-    
-    y1 = phi0@y0 + dt * phi1 @ (f0 - A@y0)
+    phi0 = eHdt[0 : A.shape[0], 0 : A.shape[1]]
+    phi1 = eHdt[0 : A.shape[0], A.shape[1] :]
+
+    y1 = phi0 @ y0 + dt * phi1 @ (f0 - A @ y0)
     f1 = drift(t0 + dt, y1)
 
     return y1, f1, None
@@ -703,7 +707,6 @@ info = {
 }
 
 register_method("exp_euler", exponential_euler, info=info)
-    
 
 
 def _odeint_on_grid(drift: Callable, y0: Array, ts: Array, step_fn: Callable):
@@ -851,8 +854,6 @@ def _odeint_adaptive(
     init_carry = [y0, f0, ts[0], dt, ts[0], interp_coeff]
     _, ys = lax.scan(scan_fun, init_carry, ts[1:])
     return jnp.concatenate((y0[None], ys))
-
-
 
 
 def _odeint(

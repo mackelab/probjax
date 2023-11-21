@@ -45,6 +45,7 @@ class MultiHeadAttention(hk.MultiHeadAttention):
                 key_heads,
                 value_heads,
                 self.key_size,
+                mask,
                 self.save_attention_weights,
             )
         elif self.attention_method == "mem_eff":
@@ -116,7 +117,7 @@ def dense_dot_product_attention(
     if return_attention_weights:
         return attn, attn_weights
     else:
-        return attn
+        return attn, None
 
 
 def efficient_masked_dot_product_attention(
@@ -161,7 +162,7 @@ def efficient_masked_dot_product_attention(
     if return_attention_weights:
         return attn, attention_weight
     else:
-        return attn
+        return attn, None
 
 
 def _query_chunk_attention(

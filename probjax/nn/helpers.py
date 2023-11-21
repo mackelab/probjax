@@ -6,6 +6,8 @@ from typing import Callable, Any, List, Optional
 from functools import partial
 from jaxtyping import Array, PyTree
 
+import math
+
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
 
 
@@ -76,12 +78,13 @@ class SinusoidalEmbedding(hk.Module):
         self.output_dim = output_dim
 
     def __call__(self, inputs):
-        half_dim = self.output_dim // 2
+        half_dim = self.output_dim // 2 + 1
         emb = jnp.log(10000) / (half_dim - 1)
         emb = jnp.exp(jnp.arange(half_dim) * -emb)
         emb = inputs[..., None] * emb[None, ...]
         emb = jnp.concatenate([jnp.sin(emb), jnp.cos(emb)], -1)
-        return jnp.squeeze(emb, axis=-2)
+        out = jnp.squeeze(emb, axis=-2)
+        return out[..., : self.output_dim]
 
 
 class GaussianFourierEmbedding(hk.Module):
@@ -102,7 +105,7 @@ class GaussianFourierEmbedding(hk.Module):
         self.learnable = learnable
 
     def __call__(self, inputs):
-        half_dim = self.output_dim // 2
+        half_dim = self.output_dim // 2 + 1
         B = hk.get_parameter(
             "B", [half_dim, inputs.shape[-1]], init=hk.initializers.RandomNormal()
         )
@@ -110,7 +113,8 @@ class GaussianFourierEmbedding(hk.Module):
             B = jax.lax.stop_gradient(B)
         term1 = jnp.cos(2 * jnp.pi * jnp.dot(inputs, B.T))
         term2 = jnp.sin(2 * jnp.pi * jnp.dot(inputs, B.T))
-        return jnp.concatenate([term1, term2], axis=-1)
+        out = jnp.concatenate([term1, term2], axis=-1)
+        return out[..., : self.output_dim]
 
 
 class OneHot(hk.Module):

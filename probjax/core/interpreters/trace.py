@@ -27,4 +27,9 @@ class TraceProcessingRule(ForwardProcessingRule):
             if self.traced_vars is None or str(o) in self.traced_vars:
                 self.traced_samples[str(o)] = v
         return outvars, outvals
-    
+
+class TraceRandomRule(TraceProcessingRule):
+    traced_rvs: dict = {}
+    # Trace all random variables
+    def __init__(self, traced_vars: Iterable | None = None) -> None:
+        super().__init__(traced_vars)
