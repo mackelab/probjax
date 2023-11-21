@@ -122,13 +122,13 @@ def identity(x):
 
 
 def generate_matrix(x):
-    x = x[..., None]
-    return x @ x.T
+    m = jnp.broadcast_to(jnp.eye(x.shape[-1]), x.shape + (x.shape[-1],))
+    return m
 
 
 def generate_pdm(x):
-    x = x[..., None]
-    return x @ x.T + jax.numpy.eye(x.shape[-1])
+    m = jnp.broadcast_to(jnp.eye(x.shape[-1]), x.shape + (x.shape[-1],))
+    return m
 
 
 biject_to.register(real)(identity)

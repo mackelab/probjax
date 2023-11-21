@@ -256,7 +256,7 @@ class MultivariateNormal(ExponentialFamily):
 
     @property
     def variance(self) -> Array:
-        return jnp.diagonal(self.covariance_matrix, axis1=-2, axis2=-1) 
+        return jnp.diagonal(self.covariance_matrix, axis1=-2, axis2=-1)
 
     @property
     def covariance_matrix(self) -> Array:
@@ -550,6 +550,7 @@ class Dirichlet(Distribution):
         else:
             batch_shape = ()
             event_shape = jnp.shape(alpha)
+
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)
 
     @property
@@ -582,10 +583,11 @@ class Dirichlet(Distribution):
         return random.dirichlet(key, self.alpha, shape)
 
     def log_prob(self, value: Array) -> Array:
-        if value.ndim > 1:
-            return jax.vmap(dirichlet.logpdf, in_axes=(0, None))(value, self.alpha)
-        else:
-            return dirichlet.logpdf(value, self.alpha)
+        alpha, value = jnp.broadcast_arrays(self.alpha, value)
+        log_prob_fn = dirichlet.logpdf
+        for _ in range(value.ndim - 1):
+            log_prob_fn = jax.vmap(log_prob_fn)
+        return log_prob_fn(value, alpha)
 
     def entropy(self) -> Array:
         return dirichlet.entropy(self.alpha)
@@ -797,6 +799,7 @@ class T(Distribution):
             + gammaln(0.5 * (self.df + 1))
             - gammaln(0.5 * self.df)
         )
+
 
 @register_pytree_node_class
 class TruncatedNormal(Distribution):
