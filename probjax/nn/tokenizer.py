@@ -66,6 +66,19 @@ class ScalarTokenizer(Tokenizer):
         distributor: Optional[Callable] = None,
         name: str | None = "scalar_tokenizer",
     ):
+        """This tokenizer will treat each scalar as a seperate variable and will hence create a token for each scalar.
+        
+
+        Args:
+            output_dim (int): _description_
+            max_sequence_length (int): _description_
+            node_embeding_builder (Optional[Callable], optional): _description_. Defaults to None.
+            value_embeding_builder (Optional[Callable], optional): _description_. Defaults to None.
+            node_meta_data_embeding_builder (Optional[Callable], optional): _description_. Defaults to None.
+            accummulator (Optional[Union[Callable, str]], optional): _description_. Defaults to "concat".
+            distributor (Optional[Callable], optional): _description_. Defaults to None.
+            name (str | None, optional): _description_. Defaults to "scalar_tokenizer".
+        """
         self.max_sequence_length = max_sequence_length
         super().__init__(
             output_dim,
