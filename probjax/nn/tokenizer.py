@@ -94,12 +94,14 @@ class ScalarTokenizer(Tokenizer):
 
         data_id_embeding = self.node_embeding(data_id, output_dim1)
         data_embeding = self.value_embeding(data, output_dim2)
+        
         if meta_data is not None:
             meta_data_embeding = self.meta_data_embeding(meta_data, output_dim3)
         else:
             meta_data_embeding = None
 
         tokens = self.accumulate(data_id_embeding, data_embeding, meta_data_embeding)
+
         return tokens.reshape(*leading_dims, sequence_length, self.output_dim)
 
     @hk.transparent
@@ -108,7 +110,7 @@ class ScalarTokenizer(Tokenizer):
             out = [data_id_embedding, data_embedding]
             if meta_data_embedding is not None:
                 out.append(meta_data_embedding)
-            return jnp.concatenate(out, axis=-2)
+            return jnp.concatenate(out, axis=-1)
         elif self.accummulator == "sum":
             out = data_id_embedding + data_embedding
             if meta_data_embedding is not None:
@@ -145,11 +147,13 @@ class ScalarTokenizer(Tokenizer):
     @hk.transparent
     def value_embeding(self, value, output_dim):
         if self.value_embeding_builder is None:
-            value_embeding_fn = hk.Conv1D(output_dim, 1)
+            value_embeding_fn = hk.Conv1D(output_dim, 1, w_init=hk.initializers.Constant(1.0))
         else:
             value_embeding_fn = self.value_embeding_builder(output_dim)
 
-        return value_embeding_fn(value).reshape(-1, value.shape[-2], output_dim)
+        out = value_embeding_fn(value).reshape(-1, value.shape[-2], output_dim)
+        out = jax.lax.stop_gradient(out)
+        return out
 
     @hk.transparent
     def node_embeding(self, node, output_dim):
@@ -157,7 +161,7 @@ class ScalarTokenizer(Tokenizer):
             node_embeding_fn = hk.Embed(
                 self.max_sequence_length,
                 output_dim,
-                w_init=hk.initializers.Orthogonal(),
+                w_init=hk.initializers.Orthogonal(scale=0.5),
             )
         else:
             node_embeding_fn = self.node_embeding_builder(self.output_dim)

@@ -124,20 +124,18 @@ def denoising_score_matching_loss(
     xs_t = mean_t + std_t * eps
 
     if mask is not None:
-        xs_t = jnp.where(mask, xs_t, xs_target)
+        mask = mask.reshape(xs_target.shape)
+        xs_t = jnp.where(mask, xs_target, xs_t)
     
     score_pred = model_fn(params, times, xs_t, *args)
     score_target = -eps / std_t
-    
-    print(score_pred.shape, score_target.shape)
-    print(weight_fn(times).shape)
 
-    loss = weight_fn(times) * jnp.sum((score_pred - score_target) ** 2, axis=-2, keepdims=True)
-    
+    loss = (score_pred - score_target) ** 2
     if mask is not None:
-        loss = jnp.mean(jnp.where(mask, loss, 0.0))
-    else:
-        loss = jnp.mean(loss)
+        loss = jnp.where(mask, 0.0,loss)
+    
+    loss = weight_fn(times) * jnp.sum(loss, axis=-2, keepdims=True)
+    loss = jnp.mean(loss)
 
     return loss
 
