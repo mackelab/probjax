@@ -12,7 +12,7 @@ from shutil import rmtree
 from setuptools import Command, find_packages, setup
 
 NAME = "probjax"
-DESCRIPTION = "Tensors are random variables..."
+DESCRIPTION = "Jax library for probabilistic computations"
 URL = "TODO"
 EMAIL = "TODO"
 AUTHOR = "Manuel Gloeckler"
@@ -22,7 +22,6 @@ REQUIRED = [
     "numpy",
     "matplotlib",
     "jax",
-    "tqdm",
 ]
 
 EXTRAS = {
@@ -103,7 +102,6 @@ setup(
     python_requires=REQUIRES_PYTHON,
     url=URL,
     packages=find_packages(exclude=["tests", "*.tests", "*.tests.*", "tests.*"]),
-    entry_points={},
     install_requires=REQUIRED,
     extras_require=EXTRAS,
     include_package_data=True,
