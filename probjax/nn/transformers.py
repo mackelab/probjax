@@ -53,8 +53,8 @@ class Transformer(hk.Module):
     def __call__(
         self,
         inputs: Array,  # [B, T, D]
-        context: Array,  # [B, D_context]
-        mask: Array | None = None,  # [B, T]
+        context: Optional[Array] = None,  # [B, D_context]
+        mask: Array | None = None,  # [T, T] or [B, T, T]
     ) -> jax.Array:  # [B, T, D]
         """Transforms input embedding sequences to output embedding sequences."""
 
@@ -111,8 +111,8 @@ class Transformer(hk.Module):
 
     @hk.transparent
     def dense_block(self, x: Array, context: Optional[Array] = None) -> Array:
+        
         model_size = x.shape[-1]
-
         dense_block = hk.Sequential(
             [
                 hk.Linear(self.widening_factor * model_size, w_init=self.initializer),

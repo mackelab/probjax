@@ -1,0 +1,5 @@
+
+defaults:
+   - metric:
+      - c2st
+      - mmd

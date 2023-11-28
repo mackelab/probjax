@@ -49,7 +49,8 @@ class CouplingMLP(hk.Module):
         x1, x2 = jnp.split(x, [self.split_index], axis=-1)
         y1 = x1
         if self.context is not None:
-            x1 = jnp.concatenate([x1, self.context], axis=-1)
+            print(x1.shape, self.context.shape)
+            x1 = jnp.hstack([x1, self.context])
         params = conditionor(x1)
         y2 = self.bijector(params, x2)
 

@@ -263,7 +263,12 @@ class LinearTimeVariantSDE(BaseSDE):
             elif drift_matrix_format == 2:
                 return jnp.matmul(drift_matrix(t), x)
 
-        diffusion = lambda t, x: diffusion_matrix(t)
+        def diffusion(t, x):
+            B = diffusion_matrix(t)
+            if B.ndim == 1:
+                return B * jnp.ones_like(x)
+            else:
+                return B
 
         super().__init__(drift, diffusion, p0)
 
@@ -389,6 +394,7 @@ class OrnsteinUhlenbeck(BaseSDE):
 
 
 class VPSDE(LinearTimeVariantSDE):
+    
     def __init__(
         self,
         p0: Distribution,
@@ -480,29 +486,61 @@ class VESDE(LinearTimeVariantSDE):
         shape = p0.event_shape
         d = shape[0] if len(shape) > 0 else 1
         _const = jnp.sqrt(2 * jnp.log(sigma_max / sigma_min))
-        drift_matrix = lambda t: jnp.zeros((d,))
+        drift_matrix = lambda t: jnp.zeros(1)
         diffusion_matrix = lambda t: jnp.atleast_1d(
             sigma_min * (sigma_max / sigma_min) ** t * _const
         )
 
         super().__init__(drift_matrix, diffusion_matrix, p0)
-
-    def mean(self, ts: Array, x0=None, **kwargs) -> Array:
+        
+    def marginal_mean(self, ts: Array, x0=None, **kwargs) -> Array:
         if x0 is None:
             mu0 = self.p0.mean
         else:
             mu0 = x0
-        mu = jnp.broadcast_to(mu0, ts.shape + mu0.shape)
-        return mu
+        
+        while ts.ndim < mu0.ndim:
+            ts = jnp.expand_dims(ts, axis=-1)
+            
+        ts, mu0 = jnp.broadcast_arrays(ts, mu0)
+        
+        return mu0
 
+    def mean(self, ts: Array, x0=None, **kwargs) -> Array:
+        shape = ts.shape
+        ts = jnp.expand_dims(
+            ts,
+            axis=(
+                -i for i in range(1, len(self.batch_shape) + len(self.event_shape) + 1)
+            ),
+        )
+        mu = self.marginal_mean(ts)
+        return mu.reshape(shape + self.batch_shape + self.event_shape)
+    
     def variance(self, ts: Array, x0=None, **kwargs) -> Array:
+        shape = ts.shape
+        ts = jnp.expand_dims(
+            ts,
+            axis=(
+                -i for i in range(1, len(self.batch_shape) + len(self.event_shape) + 1)
+            ),
+        )
+        var = self.marginal_variance(ts)
+        return var.reshape(shape + self.batch_shape + self.event_shape)
+    
+
+    def marginal_variance(self, ts: Array, x0=None, **kwargs) -> Array:
         if x0 is None:
             var0 = self.p0.variance
         else:
-            var0 = jnp.zeros(1)
+            var0 = jnp.zeros_like(x0)
+            
+        while ts.ndim < var0.ndim:
+            ts = jnp.expand_dims(ts, axis=-1)
+            
+        ts, var0 = jnp.broadcast_arrays(ts, var0)
+            
         vart = self.sigma_min**2 * (self.sigma_max / self.sigma_min) ** (2 * ts)
-        var0 = var0[None, ...]
-        vart = vart[..., None]
         var = var0 + vart
         return var
 

@@ -43,14 +43,21 @@ class Tokenizer(hk.Module):
         node_meta_data_embeding_builder: Optional[Callable] = None,
         distributor: Optional[Union[Callable, str]] = "equal",
         accummulator: Optional[Union[Callable, str]] = "concat",
+        learn_node_embeding: bool = True,
+        learn_value_embeding: bool = False,
+        learn_meta_data_embeding: bool = False,
         name: str | None = "tokenizer",
     ):
+        """ Base class for tokenizers."""
         self.output_dim = output_dim
         self.value_embeding_builder = value_embeding_builder
         self.node_embeding_builder = node_embeding_builder
         self.meta_data_embeding_builder = node_meta_data_embeding_builder
         self.distibutor = distributor
         self.accummulator = accummulator
+        self.learn_node_embeding = learn_node_embeding
+        self.learn_value_embeding = learn_value_embeding
+        self.learn_meta_data_embeding = learn_meta_data_embeding
         super().__init__(name)
 
 
@@ -64,8 +71,23 @@ class ScalarTokenizer(Tokenizer):
         node_meta_data_embeding_builder: Optional[Callable] = None,
         accummulator: Optional[Union[Callable, str]] = "concat",
         distributor: Optional[Callable] = None,
+        learn_node_embeding: bool = True,
+        learn_value_embeding: bool = False,
+        learn_meta_data_embeding: bool = False,
         name: str | None = "scalar_tokenizer",
     ):
+        """Tokenize a scalar data into a vector, by concatenating the node id, value and additional meta data.
+
+        Args:
+            output_dim (int): Output dimension of the tokenized data.
+            max_sequence_length (int): Maximum number of nodes in the graph (used for node id embeding).
+            node_embeding_builder (Optional[Callable], optional): Should be a function f: (id (int32), out_dim1 (int)) -> embeding (float32) . Defaults to None. Which uses a learnable embedding vector for each node.
+            value_embeding_builder (Optional[Callable], optional): Should get a function f: (val (float32), out_dim2 (int)) -> embeding (float32). Defaults to None. Which will duplicate the value of each node out_dim2 times.
+            node_meta_data_embeding_builder (Optional[Callable], optional): Should get a function f: (meta_data (abstract), out_dim3 (int)) -> embeding (float32). Defaults to None. Which will use a Gaussian Fourier Embedding for each meta data.
+            accummulator (Optional[Union[Callable, str]], optional): Either a string ("concat" or "add") or a function f:(embed_id, embed_val, embeding_meta) -> embedding. Defaults to "concat".
+            distributor (Optional[Callable], optional): A function f: out_dim (int) -> (out_dim1, out_dim2, out_dim3). Defaults to None.
+            name (str | None, optional): Name of the module. Defaults to "scalar_tokenizer".
+        """
         self.max_sequence_length = max_sequence_length
         super().__init__(
             output_dim,
@@ -74,6 +96,9 @@ class ScalarTokenizer(Tokenizer):
             node_meta_data_embeding_builder,
             distributor,
             accummulator,
+            learn_node_embeding,
+            learn_value_embeding,
+            learn_meta_data_embeding,
             name,
         )
 
@@ -147,12 +172,13 @@ class ScalarTokenizer(Tokenizer):
     @hk.transparent
     def value_embeding(self, value, output_dim):
         if self.value_embeding_builder is None:
-            value_embeding_fn = hk.Conv1D(output_dim, 1, w_init=hk.initializers.Constant(1.0))
+            value_embeding_fn = lambda x: jnp.repeat(x, output_dim, axis=-1)
         else:
             value_embeding_fn = self.value_embeding_builder(output_dim)
 
         out = value_embeding_fn(value).reshape(-1, value.shape[-2], output_dim)
-        out = jax.lax.stop_gradient(out)
+        if self.learn_value_embeding:
+            out = jax.lax.stop_gradient(out)
         return out
 
     @hk.transparent
@@ -166,7 +192,10 @@ class ScalarTokenizer(Tokenizer):
         else:
             node_embeding_fn = self.node_embeding_builder(self.output_dim)
 
-        return node_embeding_fn(node).reshape(-1, node.shape[-2], output_dim)
+        out = node_embeding_fn(node).reshape(-1, node.shape[-2], output_dim)
+        if self.learn_node_embeding:
+            out = jax.lax.stop_gradient(out)
+        return out
 
     @hk.transparent
     def meta_data_embeding(self, meta_data, output_dim):
@@ -175,9 +204,12 @@ class ScalarTokenizer(Tokenizer):
         else:
             meta_data_embeding_fn = self.meta_data_embeding_builder(self.output_dim)
 
-        return meta_data_embeding_fn(meta_data).reshape(
+        out = meta_data_embeding_fn(meta_data).reshape(
             -1, meta_data.shape[-2], output_dim
         )
+        if self.learn_meta_data_embeding:
+            out = jax.lax.stop_gradient(out)
+        return out
 
 
 class StructuredTokenizer(Tokenizer):

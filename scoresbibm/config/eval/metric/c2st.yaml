@@ -1,0 +1,4 @@
+c2st:
+    n_folds: 5
+    metric: "accuracy"
+    classifier: "rf"
