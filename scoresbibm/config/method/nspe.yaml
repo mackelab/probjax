@@ -1,0 +1,21 @@
+
+name: nspe 
+backend: jax
+device: gpu
+params_train:
+  max_num_epochs: 10000
+  total_number_steps_scaling: 5.
+  training_batch_size: 5000
+  learning_rate: 5e-4
+  clip_max_norm: 5.
+sde_params: # TODO: Make this a config subgroup
+  name: 'vpsde'
+  beta_max: 10.
+  beta_min: 0.01
+  T_max: 1.
+  T_min: 1e-5
+model_params:
+  hidden_dim: 100
+  num_hidden: 6
+  use_output_scale_fn: True
+
