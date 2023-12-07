@@ -95,12 +95,14 @@ def denoising_score_matching_loss(
     key: PRNGKey,
     times: Array,
     xs_target: Array,
-    mask: Optional[Array],
+    loss_mask: Optional[Array],
     *args,
     model_fn: Callable,
     mean_fn: Callable,
     std_fn: Callable,
     weight_fn: Callable,
+    axis: int = -2,
+    **kwargs,
 ) -> Array:
     """This function computes the denoising score matching loss. Which can be used to train diffusion models.
 
@@ -109,11 +111,13 @@ def denoising_score_matching_loss(
         key (PRNGKey): Random generator key.
         times (Array): Time points, should be broadcastable to shape (batch_size, 1).
         xs_target (Array): Target distribution.
-        mask (Optional[Array]): Mask for the target distribution. If None, no mask is applied, should be broadcastable to shape (batch_size, 1).
+        loss_mask (Optional[Array]): Mask for the target distribution. If None, no mask is applied, should be broadcastable to shape (batch_size, 1).
         model_fn (Callable): Score model that takes parameters, times, and samples as input and returns the score. Should be a function of the form model_fn(params, times, xs_t, *args) -> s_t.
         mean_fn (Callable): Mean function of the SDE.
         std_fn (Callable): Std function of the SDE.
         weight_fn (Callable): Weight function for the loss.
+        axis (int, optional): Axis to sum over. Defaults to -2.
+        
 
     Returns:
         Array: Loss
@@ -123,18 +127,17 @@ def denoising_score_matching_loss(
     std_t = std_fn(times, xs_target)
     xs_t = mean_t + std_t * eps
 
-    if mask is not None:
-        mask = mask.reshape(xs_target.shape)
-        xs_t = jnp.where(mask, xs_target, xs_t)
+    if loss_mask is not None:
+        loss_mask = loss_mask.reshape(xs_target.shape)
+        xs_t = jnp.where(loss_mask, xs_target, xs_t)
     
-    score_pred = model_fn(params, times, xs_t, *args)
+    score_pred = model_fn(params, times, xs_t, *args, **kwargs)
     score_target = -eps / std_t
 
     loss = (score_pred - score_target) ** 2
-    if mask is not None:
-        loss = jnp.where(mask, 0.0,loss)
-    
-    loss = weight_fn(times) * jnp.sum(loss, axis=-2, keepdims=True)
+    if loss_mask is not None:
+        loss = jnp.where(loss_mask, 0.0,loss)
+    loss = weight_fn(times) * jnp.sum(loss, axis=axis, keepdims=True)
     loss = jnp.mean(loss)
 
     return loss

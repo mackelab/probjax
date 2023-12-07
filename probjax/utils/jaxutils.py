@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 from functools import wraps, partial
 
-
+# That is equivalent to pytree_unravel ... so we can just use that
 def flatten_fun(fun: Callable, in_tree: PyTree) -> Callable:
     """Flattens a function and its input tree."""
 

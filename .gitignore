@@ -1,5 +1,6 @@
 # Byte-compiled / optimized / DLL files
 experimental_notebooks/
+results/
 __pycache__/
 .coverage
 *.py[cod]

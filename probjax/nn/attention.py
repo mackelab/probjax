@@ -85,7 +85,7 @@ class MultiHeadAttention(hk.MultiHeadAttention):
             self.model_size,
             w_init=self.w_init,
             with_bias=self.with_bias,
-            b_init=self.b_init,
+            b_init=self.b_init
         )
         return final_projection(attn)  # [T', D']
 
