@@ -3,7 +3,7 @@ import sbi
 from sbi.utils import posterior_nn, likelihood_nn, classifier_nn
 from sbi.inference import SNPE, SNLE, SNRE
 
-from main.score_based_sbi import train_conditional_score_model
+from main.score_based_sbi import train_conditional_score_model, train_transformer_model
 
 
 class ModelWrapper:
@@ -75,6 +75,10 @@ def run_nre_default(task, thetas, xs, method_cfg, rng=None):
 def run_nspe(task, thetas, xs, method_cfg, rng=None):
     model = train_conditional_score_model(task, thetas, xs, method_cfg, rng)
     return model
+
+def run_score_transformer(task, thetas, xs, method_cfg, rng=None):
+    model = train_transformer_model(task, thetas, xs, method_cfg, rng)
+    return model
     
 
 
@@ -89,5 +93,9 @@ def get_method(name:str):
         return run_nre_default
     elif name == "nspe":
         return run_nspe
+    elif name == "score_transformer":
+        return run_score_transformer
+    elif name == "score_transformer_posterior":
+        return run_score_transformer
     else:
         raise NotImplementedError()
