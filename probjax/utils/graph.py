@@ -52,7 +52,7 @@ def find_ancestors_jax(mask, node):
 
 
 @jax.jit
-def faithfull_mask(base_mask, condition_mask):
+def faithfull_mask(base_mask, condition_mask, condition_node_value=True):
     """ Faithfull mask update for conditioning"""
     
     graph = base_mask.astype(jnp.bool_).copy()
@@ -73,7 +73,7 @@ def faithfull_mask(base_mask, condition_mask):
             # They will now depend on each other!
             base_mask = base_mask | (is_ancestor[:,None] & is_ancestor[None,:])
             # Zero out row of conditioned index
-            base_mask = base_mask.at[i,:].set(False)
+            base_mask = base_mask.at[i,:].set(condition_node_value)
             return base_mask, condition_mask
         
         def uncondition_case(base_mask, condition_mask):
