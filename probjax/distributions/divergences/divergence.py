@@ -87,7 +87,7 @@ def _dispatch(name, type_p, type_q):
 
 
 def divergence(
-    name: str, p: Distribution, q: Distribution, mc_samples=0, key=None
+    name: str, p: Distribution, q: Distribution, mc_samples=0, key=None, **kwargs
 ) -> jax.Array:
     r"""
     Compute Kullback-Leibler divergence :math:`KL(p \| q)` between two distributions.
@@ -120,4 +120,4 @@ def divergence(
                 p.__class__.__name__, q.__class__.__name__
             )
         )
-    return fun(p, q)
+    return fun(p, q, mc_samples=mc_samples, key=key, **kwargs)

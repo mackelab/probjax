@@ -32,6 +32,8 @@ class Transformer(hk.Module):
         dropout_rate: Optional[float] = None,
         widening_factor: int = 4,
         act: Callable = jax.nn.gelu,
+        skip_connection_attn: bool = True,
+        skip_connection_mlp: bool = True,
         initializer: Optional[hk.initializers.Initializer] = None,
         save_attention_weights: bool = False,
         attention_method: str = "dense",
@@ -49,12 +51,14 @@ class Transformer(hk.Module):
         self.act = act
         self.save_attention_weights = save_attention_weights
         self.attention_method = attention_method
+        self.skip_connection_attn = skip_connection_attn
+        self.skip_connection_mlp = skip_connection_mlp
 
     def __call__(
         self,
         inputs: Array,  # [B, T, D]
-        context: Array,  # [B, D_context]
-        mask: Array | None = None,  # [B, T]
+        context: Optional[Array] = None,  # [B, D_context]
+        mask: Array | None = None,  # [T, T] or [B, T, T]
     ) -> jax.Array:  # [B, T, D]
         """Transforms input embedding sequences to output embedding sequences."""
 
@@ -74,12 +78,19 @@ class Transformer(hk.Module):
             h = self.layer_norm(h)
             h_attn = self.attention_block(h, mask=mask)
 
-            h = h + h_attn
+            if self.skip_connection_attn:
+                h = h + h_attn
+            else:
+                h = h_attn
 
             # Then the dense block.
             h = self.layer_norm(h)
             h_dense = self.dense_block(h, context)
-            h = h + h_dense
+            
+            if self.skip_connection_mlp:
+                h = h + h_dense
+            else:
+                h = h_dense
 
         out = self.layer_norm(h)
 
@@ -111,8 +122,8 @@ class Transformer(hk.Module):
 
     @hk.transparent
     def dense_block(self, x: Array, context: Optional[Array] = None) -> Array:
+        
         model_size = x.shape[-1]
-
         dense_block = hk.Sequential(
             [
                 hk.Linear(self.widening_factor * model_size, w_init=self.initializer),
