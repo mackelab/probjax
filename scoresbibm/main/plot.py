@@ -89,6 +89,10 @@ def get_method_plot_name(method):
         return "NRE"
     elif method == "nspe":
         return "NSPE"
+    elif method == "score_transformer":
+        return "NACST"
+    elif method == "score_transformer_posterior":
+        return "NACST (posterior only)"
     else:
         return method
 
@@ -153,8 +157,10 @@ def get_sorting_key_fn(name):
                 return 1
             elif method == "nre":
                 return 2
-            else:
+            elif method == "score_transformer":
                 return 3
+            else:
+                return 4
     elif name == "task":
         def key_fn(task):
             if task == "gaussian_linear":

@@ -73,7 +73,7 @@ class ScalarTokenizer(Tokenizer):
         distributor: Optional[Callable] = None,
         learn_node_embeding: bool = True,
         learn_value_embeding: bool = False,
-        learn_meta_data_embeding: bool = False,
+        learn_meta_data_embeding: bool = True,
         name: str | None = "scalar_tokenizer",
     ):
         """Tokenize a scalar data into a vector, by concatenating the node id, value and additional meta data.
@@ -200,13 +200,15 @@ class ScalarTokenizer(Tokenizer):
     @hk.transparent
     def meta_data_embeding(self, meta_data, output_dim):
         if self.meta_data_embeding_builder is None:
-            meta_data_embeding_fn = GaussianFourierEmbedding(output_dim)
+            meta_data_embeding_fn = hk.Sequential([GaussianFourierEmbedding(128), hk.Linear(output_dim)])
+            #meta_data_embeding_fn = lambda x: jnp.repeat(x, output_dim, axis=-1)
         else:
             meta_data_embeding_fn = self.meta_data_embeding_builder(self.output_dim)
 
         out = meta_data_embeding_fn(meta_data).reshape(
             -1, meta_data.shape[-2], output_dim
         )
+        out = jnp.nan_to_num(out, nan=0.0)
         if self.learn_meta_data_embeding:
             out = jax.lax.stop_gradient(out)
         return out

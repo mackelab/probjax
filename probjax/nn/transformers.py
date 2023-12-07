@@ -32,6 +32,8 @@ class Transformer(hk.Module):
         dropout_rate: Optional[float] = None,
         widening_factor: int = 4,
         act: Callable = jax.nn.gelu,
+        skip_connection_attn: bool = True,
+        skip_connection_mlp: bool = True,
         initializer: Optional[hk.initializers.Initializer] = None,
         save_attention_weights: bool = False,
         attention_method: str = "dense",
@@ -49,6 +51,8 @@ class Transformer(hk.Module):
         self.act = act
         self.save_attention_weights = save_attention_weights
         self.attention_method = attention_method
+        self.skip_connection_attn = skip_connection_attn
+        self.skip_connection_mlp = skip_connection_mlp
 
     def __call__(
         self,
@@ -74,12 +78,19 @@ class Transformer(hk.Module):
             h = self.layer_norm(h)
             h_attn = self.attention_block(h, mask=mask)
 
-            h = h + h_attn
+            if self.skip_connection_attn:
+                h = h + h_attn
+            else:
+                h = h_attn
 
             # Then the dense block.
             h = self.layer_norm(h)
             h_dense = self.dense_block(h, context)
-            h = h + h_dense
+            
+            if self.skip_connection_mlp:
+                h = h + h_dense
+            else:
+                h = h_dense
 
         out = self.layer_norm(h)
 
