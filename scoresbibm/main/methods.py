@@ -79,6 +79,8 @@ def run_nspe(task, thetas, xs, method_cfg, rng=None):
 def run_score_transformer(task, thetas, xs, method_cfg, rng=None):
     model = train_transformer_model(task, thetas, xs, method_cfg, rng)
     return model
+
+
     
 
 
@@ -96,6 +98,10 @@ def get_method(name:str):
     elif name == "score_transformer":
         return run_score_transformer
     elif name == "score_transformer_posterior":
+        return run_score_transformer
+    elif name == "score_transformer_graph":
+        return run_score_transformer
+    elif name == "score_transformer_min_graph":
         return run_score_transformer
     else:
         raise NotImplementedError()
