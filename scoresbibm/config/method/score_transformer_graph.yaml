@@ -3,7 +3,10 @@
 
 
 
-name: score_transformer
+
+
+
+name: score_transformer_graph
 backend: jax
 device: gpu
 params_train:
@@ -17,7 +20,7 @@ params_train:
   val_repeat: 5
   val_every: 1000
   condition_mask_fn: structured
-  edge_mask_fn: none
+  edge_mask_fn: faithfull
   condition_mask_fn_kwargs:
     p_joint: 0.2
     p_posterior: 0.2
