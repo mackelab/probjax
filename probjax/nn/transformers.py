@@ -31,6 +31,7 @@ class Transformer(hk.Module):
         attn_size: int,
         dropout_rate: Optional[float] = None,
         widening_factor: int = 4,
+        num_hidden_layers: int = 1,
         act: Callable = jax.nn.gelu,
         skip_connection_attn: bool = True,
         skip_connection_mlp: bool = True,
@@ -45,6 +46,7 @@ class Transformer(hk.Module):
         self.attn_size = attn_size
         self.dropout_rate = dropout_rate
         self.widening_factor = widening_factor
+        self.num_hidden_layers = num_hidden_layers
         if initializer is None:
             initializer = hk.initializers.VarianceScaling(2 / self.num_layers)
         self.initializer = initializer
@@ -124,10 +126,14 @@ class Transformer(hk.Module):
     def dense_block(self, x: Array, context: Optional[Array] = None) -> Array:
         
         model_size = x.shape[-1]
+        hidden_block = []
+        for _ in range(self.num_hidden_layers):
+            hidden_block.append(hk.Linear(self.widening_factor * model_size, w_init=self.initializer))
+            hidden_block.append(self.act)
         dense_block = hk.Sequential(
+            hidden_block
+            +
             [
-                hk.Linear(self.widening_factor * model_size, w_init=self.initializer),
-                self.act,
                 hk.Linear(model_size, w_init=self.initializer),
             ]
         )
