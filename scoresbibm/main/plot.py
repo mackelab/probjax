@@ -93,6 +93,8 @@ def get_method_plot_name(method):
         return "NACST"
     elif method == "score_transformer_posterior":
         return "NACST (posterior only)"
+    elif method == "score_transformer_graph":
+        return "NACST (graph)"
     else:
         return method
 
