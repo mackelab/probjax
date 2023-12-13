@@ -87,9 +87,9 @@ def score_sbi(cfg: DictConfig):
             true_posterior_samples = task.get_reference_posterior_samples(i)
             est_posterior_samples = model.sample(num_samples=true_posterior_samples.shape[0], x_o=x_o, rng=rng_metric_i)
             val = metric_fn(true_posterior_samples, est_posterior_samples, **metric_params)
+            log.info(f"Metric value: {val}")
             metric_values.append(val)
             
-        log.info(f"Metric values: {metric_values}")
         metrics_results[m] = metric_values
             
             
