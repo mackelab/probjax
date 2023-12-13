@@ -60,7 +60,6 @@ def unzip_vals(states: PyTree[MCMCState] | MCMCState) -> PyTree[Array] | Array:
 
 
 class MCMCKernel:
-
     requires_mh: bool = True
     requires_potential: bool = False
     symmetric: bool = True
@@ -119,13 +118,12 @@ class PotentialBasedMCMCKernel(MCMCKernel):
         return self
 
 
-
 class GradientBasedMCMCKernel(PotentialBasedMCMCKernel):
     def set_potential_fn(self, potential_fn: Callable[..., Any]):
         def _potential_fn(x):
             return jnp.sum(potential_fn(x))
 
-        self._potential_value_and_grad_fn = jax.vmap(jax.value_and_grad(_potential_fn))
+        self._potential_value_and_grad_fn = jax.value_and_grad(_potential_fn)
         return super().set_potential_fn(potential_fn)
 
 
@@ -160,7 +158,6 @@ class MetropolisHastingsKernel(PotentialBasedMCMCKernel):
             is_leaf=lambda x: isinstance(x, MCMCState),
         )
 
-
         return new_state
 
     def _mh_hastings_logratio(
@@ -183,7 +180,6 @@ class MetropolisHastingsKernel(PotentialBasedMCMCKernel):
         )
 
         return jnp.clip(logratio, a_max=0)
-
 
 
 class GaussianKernel(MCMCKernel):
@@ -210,8 +206,9 @@ class UniformKernel(MCMCKernel):
             - self.step_size
         )
 
+
 class LangevinDynKernel(GradientBasedMCMCKernel):
-    requires_mh: bool = False
+    requires_mh: bool = True
     symmetric: bool = False
     _potential_fn: Callable
     _potential_value_and_grad_fn: Callable
@@ -229,17 +226,22 @@ class LangevinDynKernel(GradientBasedMCMCKernel):
         )
 
 
+
 class HMCKernel(GradientBasedMCMCKernel):
+    requires_mh: bool = True
+
     def __init__(self, step_size=0.1, num_steps=10) -> None:
         super().__init__()
         self.step_size = step_size
         self.num_steps = num_steps
+        self.energies = (0.5, 0.5)
+        self.x_cache = None
 
     def _sample(self, key, x):
         # Sample random momentum
         momentum = jrandom.normal(key, shape=x.shape)
-        kinetic_energey = 0.5 * jnp.sum(momentum**2, axis=-1)
-
+        kinetic_energey = 0.5 * jnp.sum(momentum**2)
+        self.x_cache = x
         def body_fn(i, carry):
             x, momentum = carry
             _, grad = self._potential_value_and_grad_fn(x)
@@ -250,8 +252,16 @@ class HMCKernel(GradientBasedMCMCKernel):
             return (x, momentum)
 
         (x_new, momentum) = jax.lax.fori_loop(0, self.num_steps, body_fn, (x, momentum))
-        new_kinetic_energy = 0.5 * jnp.sum(momentum**2, axis=-1)
+
+        new_kinetic_energy = 0.5 * jnp.sum(momentum**2)
+        self.energies = (kinetic_energey, new_kinetic_energy)
         return x_new
+    
+    def log_potential(self, x, x_new, **params):
+        mask1 = jnp.allclose(x, self.x_cache)
+        mask2 = jnp.allclose(x_new, self.x_cache)
+
+        return -mask1 * self.energies[0] - mask2 * self.energies[1]
 
 
 class SliceKernel(PotentialBasedMCMCKernel):
