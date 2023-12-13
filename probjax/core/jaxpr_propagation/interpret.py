@@ -67,14 +67,14 @@ def interpret(
                 sub_outvars,
                 process_eqn,
             )
-            outvars = eqn.outvars
+            outvar = eqn.outvars
             process_eqn(eqn, known_invars, known_outvars)
         else:
             # We process the equation
-            outvars, outvals = process_eqn(eqn, known_invars, known_outvars)  # type: ignore
+            outvar, outvals = process_eqn(eqn, known_invars, known_outvars)  # type: ignore
 
         # Write outvars
-        map(env.write, outvars, outvals)
+        map(env.write, outvar, outvals)
 
         # TODO Maybe clean up environments!
 

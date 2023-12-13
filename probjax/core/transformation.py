@@ -23,7 +23,7 @@ from probjax.core.interpreters.trace import TraceProcessingRule
 from probjax.core.interpreters.interventions import IntervenedProcessingRule
 
 
-def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
+def joint_sample(fun: Callable, rvs: Optional[Iterable] = None, *args, **kwargs) -> Callable:
     """Samples all random variables called in the probabilstic function. If rvs is given, it only samples the random variables in rvs.
 
     Args:
@@ -33,12 +33,11 @@ def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
     Returns:
         Callable: Sampling function
     """
-    jaxpr_maker = jax.make_jaxpr(fun)
+    jaxpr = jax.make_jaxpr(fun)(jax.random.PRNGKey(0),*args, **kwargs)
     processing_rule = JointSampleProcessingRule(rvs=rvs)
 
     @wraps(fun)
     def wrapped(*args, **kwargs):
-        jaxpr = jaxpr_maker(*args, **kwargs)
         _ = interpret(
             jaxpr.jaxpr,
             jaxpr.consts,
@@ -53,7 +52,7 @@ def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
     return wrapped
 
 
-def intervene(fun: Callable, rvs: dict[str, Array]):
+def intervene(fun: Callable, rvs: dict[str, Array], *args, **kwargs):
     """Fix the value of random variables in the probabilistic function.
     This does not sample the random variables, but fixes them to the given values.
 
@@ -67,12 +66,13 @@ def intervene(fun: Callable, rvs: dict[str, Array]):
     Returns:
         _type_: _description_
     """
-    jaxpr_maker = jax.make_jaxpr(fun)
+
+    jaxpr = jax.make_jaxpr(fun)(jax.random.PRNGKey(0), *args, **kwargs)
+    tree_out = jax.tree_structure(fun(jax.random.PRNGKey(0), *args, **kwargs))
     processing_rule = IntervenedProcessingRule(interventions=rvs)
 
     @wraps(fun)
     def wrapped(*args, **kwargs):
-        jaxpr = jaxpr_maker(*args, **kwargs)
         out = interpret(
             jaxpr.jaxpr,
             jaxpr.consts,
@@ -82,7 +82,7 @@ def intervene(fun: Callable, rvs: dict[str, Array]):
             process_eqn=processing_rule,
         )
 
-        return out
+        return jax.tree_unflatten(tree_out, out)
 
     return wrapped
 
@@ -97,21 +97,30 @@ def log_potential_fn(fun: Callable, *args, **kwargs):
     Returns:
         Callable: Log potential function
     """
-    jaxpr = jax.make_jaxpr(fun)(*args, **kwargs)
+    jaxpr = jax.make_jaxpr(fun)(jax.random.PRNGKey(0), *args, **kwargs)
 
-    def log_potential(joint_samples):
+    def log_potential(**joint_samples): 
         processing_rule = LogPotentialProcessingRule(joint_samples=joint_samples)
-        rv_vars, rv_values = extract_random_vars_values(jaxpr.jaxpr, joint_samples)
-        _ = propagate(
+        # rv_vars, rv_values = extract_random_vars_values(jaxpr, joint_samples)
+        # print(rv_vars, rv_values)
+        _ = interpret(
             jaxpr.jaxpr,
             jaxpr.consts,
-            rv_vars,
-            rv_values,
-            rv_vars,
+            jaxpr.jaxpr.invars,
+            [jax.random.PRNGKey(0)],
+            jaxpr.jaxpr.outvars,
             process_eqn=processing_rule,
-            cost_fn=potential_cost_fn,
-            process_all_eqns=True,
         )
+        # _ = propagate(
+        #     jaxpr.jaxpr,
+        #     jaxpr.consts,
+        #     rv_vars,
+        #     rv_values,
+        #     rv_vars,
+        #     process_eqn=processing_rule,
+        #     cost_fn=potential_cost_fn,
+        #     process_all_eqns=True,
+        # )
 
         return processing_rule.log_prob
 
@@ -164,7 +173,6 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
                 + jaxpr.jaxpr.invars[adjusted_invertible_arg + 1 :]
             )
             out_invar = [jaxpr.jaxpr.invars[adjusted_invertible_arg]]
-            print(const_invars)
 
         else:
             const_invars = []
@@ -203,7 +211,9 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=()):
             cost_fn=inverse_cost_fn,
             process_all_eqns=True,
         )
-        log_det = jnp.asarray(sum([processing_rule.log_dets[v] for v in jaxpr.jaxpr.invars]))
+        log_det = jnp.asarray(
+            sum([processing_rule.log_dets[v] for v in jaxpr.jaxpr.invars])
+        )
         if log_det.ndim == out[0].ndim:
             log_det = jnp.sum(log_det, axis=-1)
         return out[0], log_det
