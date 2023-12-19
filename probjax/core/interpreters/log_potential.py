@@ -15,10 +15,13 @@ def potential_cost_fn(
 ):
     if eqn.primitive is rv_p and all(in_known):
         # Process random variables first (if there are only random variables we can skip the rest)
-        return 0
+        return 2
     elif all(in_known):
         # If one random variable is parameterized by a previous, then we must process the "inbetween" computations
         return 1
+    elif eqn.primitive is rv_p and eqn.params.get("intervened", False):
+        # If the random variable is intervened, we must process it
+        return 0
     else:
         # This should never happen
         return math.inf
@@ -31,10 +34,15 @@ def extract_random_vars_values(jaxpr: Jaxpr, joint_samples: Dict[str, Array]):
     for eqn in jaxpr.eqns:
         if eqn.primitive is rv_p:
             name = eqn.params["name"]
-            intervened = eqn.params.get("intervened", False)
+            intervened = eqn.params["intervened"]
             if not intervened:
                 vars.append(eqn.outvars[0])
                 values.append(joint_samples[name])
+            else:
+                vars.extend(eqn.invars)
+                values.extend([jax.numpy.zeros(shape=v.aval.shape, dtype=v.aval.dtype) for v in eqn.invars])
+            
+            
 
     return vars, values
 
