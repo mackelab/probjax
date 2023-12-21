@@ -190,7 +190,7 @@ class ScalarTokenizer(Tokenizer):
                 w_init=hk.initializers.Orthogonal(scale=0.5),
             )
         else:
-            node_embeding_fn = self.node_embeding_builder(self.output_dim)
+            node_embeding_fn = self.node_embeding_builder(output_dim)
 
         out = node_embeding_fn(node).reshape(-1, node.shape[-2], output_dim)
         if self.learn_node_embeding:
@@ -200,12 +200,9 @@ class ScalarTokenizer(Tokenizer):
     @hk.transparent
     def meta_data_embeding(self, meta_data, output_dim):
         if self.meta_data_embeding_builder is None:
-            meta_data_embeding_fn = hk.Sequential(
-                [GaussianFourierEmbedding(128), hk.Linear(output_dim)]
-            )
-            # meta_data_embeding_fn = lambda x: jnp.repeat(x, output_dim, axis=-1)
+            meta_data_embeding_fn = hk.Sequential([GaussianFourierEmbedding(256), hk.Linear(output_dim)])
         else:
-            meta_data_embeding_fn = self.meta_data_embeding_builder(self.output_dim)
+            meta_data_embeding_fn = self.meta_data_embeding_builder(output_dim)
 
         out = meta_data_embeding_fn(meta_data).reshape(
             -1, meta_data.shape[-2], output_dim
