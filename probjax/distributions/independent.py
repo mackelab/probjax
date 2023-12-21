@@ -38,6 +38,7 @@ class Independent(Distribution):
         batch_shape, event_shape, event_ndims, reinterpreted_batch_ndims = determine_shapes(
             base_dist, reinterpreted_batch_ndims
         )
+        
 
         if isinstance(base_dist, Distribution):
             # Single distribution case
@@ -47,6 +48,10 @@ class Independent(Distribution):
 
         self.event_ndims = event_ndims
         self.reinterpreted_batch_ndims = reinterpreted_batch_ndims
+        
+        for p in self.base_dist:
+            p._batch_shape = batch_shape
+            p._event_shape = event_shape
 
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)
 
