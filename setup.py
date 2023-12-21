@@ -21,11 +21,12 @@ REQUIRES_PYTHON = ">=3.7.0"
 REQUIRED = [
     "numpy",
     "matplotlib",
-    "jax[cuda11_pip] == 0.4.16"
-    "jaxlib[cuda11_pip] == 0.4.16",
-    "dm-haiku == 0.0.4",
-    "optax == 0.0.9",
-    "ott-jax==0.4.4"
+    "jax",
+    "jaxlib",
+    "dm-haiku",
+    "optax",
+    "ott-jax",
+    "networkx",
 ]
 
 EXTRAS = {
