@@ -26,6 +26,8 @@ def init_dir(dir_path: str):
                 "model_id",
                 "metric",
                 "value",
+                "time_train",
+                "time_eval",
                 "cfg",
             ]
         )
@@ -158,6 +160,8 @@ def save_summary(
     metric: str,
     value: float,
     seed: int,
+    time_train: float,
+    time_eval: float,
     cfg: dict,
 ):
     """Saves a summary to the summary.csv file."""
@@ -171,6 +175,8 @@ def save_summary(
             "model_id": model_id,
             "metric": metric,
             "value": str(value),
+            "time_train": str(time_train),
+            "time_eval": str(time_eval),
             "cfg": str(cfg),
         },
         index=[len(summary_df)],

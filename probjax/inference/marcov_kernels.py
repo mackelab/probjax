@@ -1,6 +1,6 @@
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional,Sequence
 from jax.random import PRNGKey
-from jaxtyping import PyTree, Array,Sequence
+from jaxtyping import PyTree, Array
 
 import jax
 from jax.tree_util import register_pytree_node_class
@@ -169,7 +169,7 @@ class GradientBasedMCMCKernel(PotentialBasedMCMCKernel):
         grad_fn: Optional[Callable[..., Any]] = None,
     ):
         def _potential_fn(x):
-            return jnp.mean(
+            return jnp.sum(
                 potential_fn(x)
             )  # We choose to average, but could also sum this does not matter
 
@@ -321,6 +321,7 @@ class HMCKernel(MetropolisHastingKernel, GradientBasedMCMCKernel):
         momentum = jrandom.normal(key, shape=x.shape)
         kinetic_energy = 0.5 * jnp.sum(momentum**2)
         self.x_cache = x
+        
 
         def body_fn(i, carry):
             x, momentum = carry
@@ -369,7 +370,7 @@ class SliceKernel(PotentialBasedMCMCKernel):
         direction = self._sample_slice_direction(key_direction, x)
         potential = self.potential_fn(x)
         u = jrandom.uniform(key_bracket, shape=potential.shape)
-        y = jnp.log(u) + potential
+        y = jnp.squeeze(jnp.log(u) + potential)
 
         # Bracket expansion phase
         def cond_fn(carry):
@@ -390,7 +391,12 @@ class SliceKernel(PotentialBasedMCMCKernel):
             def finished_x(x, y, direction):
                 return x, jnp.zeros_like(y, dtype=jnp.bool_)
 
-            x, mask = jax.vmap(jax.lax.cond, in_axes=(0, None, None, 0, 0, 0))(
+            if mask.ndim > 0:
+                _cond = jax.vmap(jax.lax.cond, in_axes=(None, None, None, 0, 0, 0))
+            else:
+                _cond = jax.lax.cond
+            
+            x, mask = _cond(
                 mask, update_x, finished_x, x, y, direction
             )
 
@@ -413,13 +419,14 @@ class SliceKernel(PotentialBasedMCMCKernel):
         potential_new = self.potential_fn(x_new)
         mask_reject = potential_new <= y
 
+
         def cond_fn_reject(carry):
-            _, _, _, _, _, mask_reject = carry
-            return jnp.any(mask_reject)
+            i,_, _, _, _, _, mask_reject = carry
+            return jnp.any(mask_reject) & (i < self.num_steps)
 
         def body_fn_reject(carry):
-            key, x_new, x_lower, x_upper, y, mask_reject = carry
-            mask_reject = jnp.expand_dims(mask_reject, axis=-1)
+            i,key, x_new, x_lower, x_upper, y, mask_reject = carry
+            #mask_reject = jnp.expand_dims(mask_reject, axis=-1)
             sign = jnp.sign(direction)
             mask_lower = (x_new * sign <= x * sign) & mask_reject
             mask_upper = (x_new * sign > x * sign) & mask_reject
@@ -437,12 +444,12 @@ class SliceKernel(PotentialBasedMCMCKernel):
             # This can be done more efficiently...
             mask_reject = self.potential_fn(x_new) <= y
             # print(self.potential_fn(x_new)[mask_reject], y[mask_reject])
-            return (key, x_new, x_lower, x_upper, y, mask_reject)
+            return (i+1,key, x_new, x_lower, x_upper, y, mask_reject)
 
-        _, x_new, _, _, _, _ = jax.lax.while_loop(
+        _,_, x_new, _, _, _, _ = jax.lax.while_loop(
             cond_fn_reject,
             body_fn_reject,
-            (key_rejections, x_new, x_lower, x_upper, y, mask_reject),
+            (0, key_rejections, x_new, x_lower, x_upper, y, mask_reject),
         )
 
         return x_new

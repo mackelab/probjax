@@ -36,7 +36,7 @@ def joint_sample(fun: Callable, rvs: Optional[Iterable] = None, *args, **kwargs)
     jaxpr = jax.make_jaxpr(fun)(jax.random.PRNGKey(0),*args, **kwargs)
     processing_rule = JointSampleProcessingRule(rvs=rvs)
 
-    @wraps(fun)
+    print(processing_rule.joint_samples)
     def wrapped(*args, **kwargs):
         _ = interpret(
             jaxpr.jaxpr,
