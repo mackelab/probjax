@@ -1,5 +1,8 @@
 # @package _global_
 
+defaults:
+  - _self_
+  - override /hydra/launcher: submitit_local
 
 hydra:
   launcher:
@@ -9,6 +12,6 @@ hydra:
     cpus_per_task: 4
     gpus_per_node: 0
     tasks_per_node: 1
-    mem_gb: 16
+    mem_gb: 32
     nodes: 1
     name: ${hydra.job.name}

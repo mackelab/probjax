@@ -21,6 +21,7 @@ class MultiHeadAttention(hk.MultiHeadAttention):
     ):
         self.save_attention_weights = save_attention_weights
         self.attention_method = attention_method
+
         super().__init__(*args, **kwargs)
 
     def __call__(
@@ -49,7 +50,7 @@ class MultiHeadAttention(hk.MultiHeadAttention):
                 self.save_attention_weights,
             )
         elif self.attention_method == "mem_eff":
-            attn = sparse_dot_product_attention(
+            attn = memory_efficient_dot_product_attention(
                 query_heads,
                 key_heads,
                 value_heads,
@@ -59,7 +60,7 @@ class MultiHeadAttention(hk.MultiHeadAttention):
             attn_weights = None
             return attn
         elif self.attention_method == "sparse":
-            attn = memory_efficient_dot_product_attention(
+            attn = sparse_dot_product_attention(
                 query_heads,
                 key_heads,
                 value_heads,

@@ -1,0 +1,12 @@
+# @package _global_
+name: benchmark
+
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      method: score_transformer,score_transformer_graphical,score_transformer_posterior
+      task: gaussian_linear,gaussian_mixture,two_moons,slcp
+      task.num_simulations: 1000,10000,100000
+      partition: cuda
+      device: cuda
