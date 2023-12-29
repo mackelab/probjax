@@ -18,6 +18,7 @@ class JointSampleProcessingRule(ForwardProcessingRule):
             rvs (Optional[Iterable], optional): Subset of random variable names. Defaults to None.
         """
         self.rvs = rvs
+        self.joint_samples = {}
 
     def __call__(
         self, eqn: JaxprEqn, known_inputs: Sequence[Any | None], _: Sequence[Any | None]
