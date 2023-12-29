@@ -2,15 +2,6 @@
 name: nle 
 backend: torch
 device: cpu
-params_likelihood_nn: 
-  model: "nsf"
-  z_score_theta: 'independent'
-  z_score_x: 'independent'
-  hidden_features: 50
-  hidden_layers: 2
-  num_transforms: 5
-  num_bins: 10
-  num_components: 10
 params_train:
   training_batch_size: 1000
   learning_rate: 1e-3
@@ -23,3 +14,9 @@ params_build_posterior:
   mcmc_method: 'slice_np_vectorized'
   mcmc_parameters:
     num_chains: 100
+
+
+defaults:
+  - model: likelihood_nn
+  - train: train_sbi
+  - posterior: slice_multi_chain_sbi
