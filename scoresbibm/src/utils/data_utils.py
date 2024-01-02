@@ -187,7 +187,7 @@ def save_summary(
 
 def load_model(dir_path, model_id):
     """Loads a model from a file."""
-    file_name = dir_path + os.sep + "models" + os.sep + f"{model_id}.pkl"
+    file_name = dir_path + os.sep + "models" + os.sep + f"model_{model_id}.pkl"
     with open(file_name, "rb") as file:
         return pickle.load(file)
 
