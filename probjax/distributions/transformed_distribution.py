@@ -65,8 +65,8 @@ class TransformedDistribution(Distribution):
     def transform(self, x):
         return self._transformation(x)
     
-    def sample(self, key, sample_shape: tuple = ...) -> Array:
-        num_samples = int(np.prod(sample_shape))
+    def sample(self, key, sample_shape: tuple = ()) -> Array:
+        num_samples = max(int(np.prod(sample_shape)), 1)
         samples = self.base_dist.sample(key, (num_samples,))
         if num_samples > 1:
             transform = jax.vmap(self.transform)
@@ -77,7 +77,7 @@ class TransformedDistribution(Distribution):
         )
 
     def rsample(self, key, sample_shape=()):
-        num_samples = int(np.prod(sample_shape))
+        num_samples = max(int(np.prod(sample_shape)), 1)
         samples = self.base_dist.rsample(key, (num_samples,))
         if num_samples > 1:
             transform = jax.vmap(self.transform)
@@ -90,7 +90,7 @@ class TransformedDistribution(Distribution):
     def log_prob(self, value):
         shape = value.shape
         value = jnp.asarray(value)
-        if value.shape[0] > 1:
+        if value.ndim > 1:
             inv_and_logdet = jax.vmap(self._inv_and_logdet)
         else:
             inv_and_logdet = self._inv_and_logdet

@@ -15,6 +15,7 @@ def conditional_mlp(
     activation=jax.nn.gelu,
     layer_norm: bool = True,
     output_scale_fn=None,
+    **kwargs,
 ):
     """Just builds a conditional score model with MLPs. As the score is typically grows proportional to the variance of the marginal sde, it is useful to scale the output."""
 
@@ -62,6 +63,7 @@ def scalar_transformer_model(
     layer_norm: bool=True,
     output_scale_fn=None,
     base_mask=None,
+    **kwargs,
 ):
     if output_scale_fn is None:
         output_scale_fn = lambda t, x: x
@@ -71,6 +73,9 @@ def scalar_transformer_model(
     elif condition_mode == "add":
         token_dim = token_dim + condition_token_dim
         condition_token_dim = token_dim
+    elif condition_mode == "none":
+        token_dim = token_dim + condition_token_dim
+        condition_token_dim = 0
 
     def model(t, data, data_id, condition_mask, meta_data=None, edge_mask=base_mask):
         _, current_nodes, _ = data.shape  # (batch, nodes, 1)
@@ -85,22 +90,23 @@ def scalar_transformer_model(
         time = time_embeder(t[..., None])
 
         # Conditioning
-        condition_token = hk.get_parameter(
-            "condition_token",
-            shape=[1, 1, condition_token_dim],
-            init=hk.initializers.RandomNormal(
-                condition_token_init_scale, condition_token_init_mean
-            ),
-        )
-        condition_mask = condition_mask.reshape(-1, current_nodes, 1)
-        condition_token = condition_mask * condition_token
-        if condition_mode == "add":
-            tokens = tokens + condition_token
-        elif condition_mode == "concat":
-            condition_token = jnp.broadcast_to(
-                condition_token, tokens.shape[:-1] + (condition_token_dim,)
+        if condition_mode != "none":
+            condition_token = hk.get_parameter(
+                "condition_token",
+                shape=[1, 1, condition_token_dim],
+                init=hk.initializers.RandomNormal(
+                    condition_token_init_scale, condition_token_init_mean
+                ),
             )
-            tokens = jnp.concatenate([tokens, condition_token], -1)
+            condition_mask = condition_mask.reshape(-1, current_nodes, 1)
+            condition_token = condition_mask * condition_token
+            if condition_mode == "add":
+                tokens = tokens + condition_token
+            elif condition_mode == "concat":
+                condition_token = jnp.broadcast_to(
+                    condition_token, tokens.shape[:-1] + (condition_token_dim,)
+                )
+                tokens = jnp.concatenate([tokens, condition_token], -1)
 
         # Forward pass
 
