@@ -313,6 +313,7 @@ class Empirical(Distribution):
             # assert probs.shape == values.shape, "probs shape mismatch"
             self.probs = jnp.atleast_1d(probs)
 
+
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)
 
     def sample(self, key, sample_shape=()):
@@ -320,7 +321,10 @@ class Empirical(Distribution):
         base_index = jnp.arange(0, self.num_values)
         if self.probs is not None:
             base_index = jnp.broadcast_to(base_index, self.probs.shape)
-        index = random.choice(key, base_index, shape=shape, p=self.probs)
+        index = random.choice(
+            key, base_index, shape=shape + (1,) * len(self._event_shape), p=self.probs
+        )
+
         samples = jnp.take_along_axis(self.values, index, axis=0)
         return samples
 

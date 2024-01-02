@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 from jax._src.util import safe_map as map
-from .transition_kernels import MCMCKernel, MCMCState
+from .marcov_kernels import MCMCKernel, MCMCState, unzip_vals
 
 from typing import Any, Callable, Tuple, Union, Sequence
 from jaxtyping import PyTree, Array
@@ -10,25 +10,7 @@ from jaxtyping import PyTree, Array
 from functools import partial
 from itertools import accumulate
 
-from probjax.utils.jaxutils import flatten_fun
-
-
-# Track statistics of the chain
-def unzip_vals(states: PyTree[MCMCState] | MCMCState) -> PyTree[Array] | Array:
-    """Unzips the states into a tuple of (x, key)"""
-    x = jax.tree_map(lambda x: x.x, states, is_leaf=lambda x: isinstance(x, MCMCState))
-    return x
-
-
-def init_state(
-    key, vars: Sequence[PyTree[Array] | Array]
-) -> PyTree[MCMCState] | MCMCState:
-    children, tree = jax.tree_util.tree_flatten(vars)
-    num_keys = len(children)
-    keys = jrandom.split(key, num_keys)
-
-    state = jax.tree_map(lambda x, k: MCMCState(k, x), vars, tree.unflatten(keys))
-    return state
+from probjax.utils.jaxutils import flatten_fun, ravel_fun
 
 
 class MCMC:
@@ -36,103 +18,52 @@ class MCMC:
         self,
         kernel: PyTree[MCMCKernel] | MCMCKernel,
         potential_fn: Callable[[PyTree[Array] | Array], Array],
-        init_vals: Sequence[PyTree[Array] | Array],
     ) -> None:
         self.kernel = kernel
         self.potential_fn = potential_fn
-        self.init_vals = init_vals
 
-        # Todo also check if kernel PyTree is identical to init_vals PyTree
+    def _check_potential_fn(self, x: PyTree[Array] | Array) -> Array:
         try:
-            self.potential_fn(init_vals)
+            self.potential_fn(x)
         except:
             assert (
                 False
             ), "Potential function must evaluatable given init_vals as input."
 
-        # Process kernels and init vals
-        flatten_kernels, in_tree_kernels = jax.tree_util.tree_flatten(self.kernel)
-        flatten_init_vals, in_tree_init_vals = jax.tree_util.tree_flatten(
-            self.init_vals
-        )
+    def _check_kernel_tree(self, in_tree) -> None:
         # Should have the same PyTree structure
+        flat_kernel, kernel_tree = jax.tree_flatten(self.kernel)
         assert (
-            in_tree_kernels.num_leaves == 1 or in_tree_kernels == in_tree_init_vals
-        ), "The kernel must only have a single leave or andthe same PyTree structure as init_vals!"
+            kernel_tree.num_leaves == 1 or in_tree == kernel_tree
+        ), "The kernel must only have a single leave or the same PyTree structure as init_vals!"
 
-        # Flatten the potential function
-        self._flatten_potential_fn = flatten_fun(self.potential_fn, in_tree_init_vals)
-        self._flatten_init_vals = flatten_init_vals
-        self._flatten_kernel = flatten_kernels
-        self._in_tree = in_tree_init_vals
-
-    def _requires_metropolis_hastings(self) -> bool:
-        flatten_kernels, _ = jax.tree_util.tree_flatten(self.kernel)
-        out = map(lambda x: x.requires_mh, flatten_kernels)
-        return any(out)
-
-    def _is_symmetric(self) -> bool:
-        flatten_kernels, _ = jax.tree_util.tree_flatten(self.kernel)
-        out = map(lambda x: x.symmetric, flatten_kernels)
-        return all(out)
-
-    def _set_potentail_if_required(self):
-        flatten_kernels, _ = jax.tree_util.tree_flatten(self.kernel)
-        for kernel in flatten_kernels:
-            if kernel.requires_potential:
-                kernel.set_potential_fn(self._flatten_potential_fn)
-
-    def _mh_hastings_logratio(
-        self,
-        val_old: PyTree[Array] | Array,
-        val_new: PyTree[Array] | Array,
-        is_symmetric: bool,
-    ) -> Array:
-        logratio = self._flatten_potential_fn(*val_new) - self._flatten_potential_fn(
-            *val_old
-        )
-        if is_symmetric:
-            return jnp.clip(logratio, a_max=0)
+        if kernel_tree.num_leaves == 1:
+            return flat_kernel[0]
         else:
-            pass
+            return flat_kernel
+
 
     @partial(jax.jit, static_argnums=(0,))
-    def run(self, key, num_steps: int):
-        # Initialize the state
-        key_accept, key_state = jrandom.split(key)
-        state = init_state(key_state, self._flatten_init_vals)
+    def run(self, state: PyTree[MCMCState] | MCMCState, num_steps: int):
+        # Flat the state
+        flat_state, in_tree = jax.tree_flatten(
+            state, is_leaf=lambda x: isinstance(x, MCMCState)
+        )
+        # MCMC kernel flatten and check compatibility
+        flat_kernel = self._check_kernel_tree(in_tree)
 
-        # MCMC kernel requirements
-        requires_mh = self._requires_metropolis_hastings()
-        is_symmetric = self._is_symmetric()
-        self._set_potentail_if_required()
+        # Flatten the potential function, give it to all kernels (that might need it)
+        flatten_potential_fn = flatten_fun(self.potential_fn, in_tree)
+        flat_kernel = jax.tree_map(
+            lambda x: x.set_potential_fn(flatten_potential_fn), flat_kernel
+        )
 
         def body_fn(i, carry):
-            state, key_accept = carry
-            new_state = jax.tree_map(lambda kernel, x: kernel(x), self.kernel, state)
-            if requires_mh:
-                # Unzip the states
-                val_old, val_new = unzip_vals((state, new_state))
-                # Metropolis Hastings
-                logratio = self._mh_hastings_logratio(val_old, val_new, is_symmetric)
-                key, key_accept = jrandom.split(key_accept)
-                accept = jnp.log(jrandom.uniform(key, logratio.shape)) < logratio
-                # Update the state
-                val = jax.tree_map(
-                    lambda v_new, v_old: jnp.where(accept, v_new, v_old),
-                    val_new,
-                    val_old,
-                )
-                new_state = jax.tree_map(
-                    lambda s, v: s.set_x(v),
-                    new_state,
-                    val,
-                    is_leaf=lambda x: isinstance(x, MCMCState),
-                )
+            state = carry
+            new_state = jax.tree_map(lambda kernel, x: kernel(x), flat_kernel, state)
+            return new_state
 
-            return new_state, key_accept
-
-        out_state, key = jax.lax.fori_loop(0, num_steps, body_fn, (state, key_accept))
+        out_state = jax.lax.fori_loop(0, num_steps, body_fn, flat_state)
+        out_state = jax.tree_util.tree_unflatten(in_tree, out_state)
         vals = unzip_vals(out_state)
-        vals = jax.tree_util.tree_unflatten(self._in_tree, vals)
-        return vals
+        return vals, out_state

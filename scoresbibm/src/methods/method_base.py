@@ -1,0 +1,82 @@
+
+import sbi 
+from sbi.utils import posterior_nn, likelihood_nn, classifier_nn
+from sbi.inference import SNPE, SNLE, SNRE
+from scoresbibm.src.methods.models import SBIPosteriorModel
+
+from scoresbibm.src.methods.score_sbi import train_conditional_score_model
+from scoresbibm.src.methods.score_transformer import train_transformer_model
+
+
+def run_npe_default(task,thetas, xs, method_cfg, rng=None):
+    """ Train a default SBI model"""
+    device = method_cfg.device
+    density_estimator = posterior_nn(**method_cfg.model)
+    inference = SNPE(density_estimator=density_estimator, device=device)
+    _ = inference.append_simulations(thetas, xs)
+    
+    # Train
+    density_estimator = inference.train(**method_cfg.train)
+    
+    # Output is sampling_fn
+    posterior = inference.build_posterior(**method_cfg.posterior)
+    
+    model = SBIPosteriorModel(posterior, method="npe")
+    return model
+
+
+def run_nle_default(task, thetas, xs, method_cfg, rng=None):
+    device = method_cfg.device
+    density_estimator = likelihood_nn(**method_cfg.model)
+    inference = SNLE(prior = task.get_prior(),density_estimator=density_estimator, device=device)
+    _ = inference.append_simulations(thetas, xs)
+    
+    # Train
+    density_estimator = inference.train(**method_cfg.train)
+    
+    posterior = inference.build_posterior(**method_cfg.posterior)
+    model = SBIPosteriorModel(posterior, method="nle")
+    return model
+
+
+def run_nre_default(task, thetas, xs, method_cfg, rng=None):
+    device = method_cfg.device
+    classifier = classifier_nn(**method_cfg.model)
+    inference = SNRE(prior = task.get_prior(), classifier=classifier, device=device)
+    _ = inference.append_simulations(thetas, xs)
+    
+    # Train
+    density_estimator = inference.train(**method_cfg.train)
+    
+    posterior = inference.build_posterior(**method_cfg.posterior)
+    model = SBIPosteriorModel(posterior, method="nre")
+    return model
+
+def run_nspe(task, thetas, xs, method_cfg, rng=None):
+    model = train_conditional_score_model(task, thetas, xs, method_cfg, rng)
+    return model
+
+def run_score_transformer(task, thetas, xs, method_cfg, rng=None):
+    model = train_transformer_model(task, thetas, xs, method_cfg, rng)
+    return model
+
+
+
+def get_method(name:str):
+    """ Get a method"""
+    if name == "npe":
+        return run_npe_default
+    elif name == "nle":
+        return run_nle_default
+    elif name == "nre":
+        return run_nre_default
+    elif name == "nspe":
+        return run_nspe
+    elif name == "score_transformer":
+        return run_score_transformer
+    elif name == "score_transformer_posterior":
+        return run_score_transformer
+    elif name == "score_transformer_graphical":
+        return run_score_transformer
+    else:
+        raise NotImplementedError()

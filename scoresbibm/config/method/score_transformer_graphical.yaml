@@ -1,0 +1,23 @@
+
+
+
+
+
+
+
+
+name: score_transformer_graphical
+backend: jax
+device: gpu
+
+
+defaults:
+  - model: score_transformer
+  - train: train_score_transformer
+  - sde: vpsde
+  - override train/edge_mask_fn: min_faithfull
+
+
+
+
+

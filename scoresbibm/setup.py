@@ -2,10 +2,13 @@ from setuptools import Command, find_packages, setup
 import os
 
 NAME = "scoresbibm"
+VERSION = "0.0.1"
+DESCRIPTION = "Score-based inference benchmark"
+AUTHOR = "Anonymous"
 
 entry_points={
     'console_scripts': [
-        'scoresbi = main.script:main',
+        'scoresbi = src.scripts:main',
     ],
 }
 
@@ -22,6 +25,10 @@ REQUIRED = [
     "omegaconf",
     "sbi",
     "optuna",
+    "tueplots",
+    "seaborn",
 ]
 
-setup(name=NAME,install_requires=REQUIRED,packages=find_packages("main"), entry_points=entry_points)
+
+
+setup(name=NAME,version=VERSION, description=DESCRIPTION, author=AUTHOR,package_dir={"scoresbibm": "src"}, install_requires=REQUIRED, entry_points=entry_points)
