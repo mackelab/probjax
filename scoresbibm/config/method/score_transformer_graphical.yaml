@@ -15,6 +15,7 @@ defaults:
   - model: score_transformer
   - train: train_score_transformer
   - sde: vpsde
+  - posterior: backward_sde
   - override train/edge_mask_fn: min_faithfull
 
 

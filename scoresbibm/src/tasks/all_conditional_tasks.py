@@ -369,10 +369,10 @@ class SLCPAllConditionalTask(AllConditionalBMTask):
             )
 
             kernel1 = SliceKernel()
-            kernel2 = GaussianMHKernel(step_size=0.01)
+            kernel2 = GaussianMHKernel(step_size=0.1)
             state = kernel1.init_state(key_mcmc, init_vals_flat)
             mcmc = MCMC(kernel1, potential_fn_wrapper)
-            samples, state = mcmc.run(state, 500)
+            samples, state = mcmc.run(state, 600)
             mcmc2 = MCMC(kernel2, potential_fn_wrapper)
             samples, state = mcmc2.run(state, 2000)
 

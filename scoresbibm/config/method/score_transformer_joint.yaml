@@ -5,8 +5,9 @@ device: gpu
 
 
 defaults:
-  - model: score_transformer
+  - model: score_transformer_unconditional
   - train: train_score_transformer
   - sde: vpsde
+  - posterior: backward_sde
   - override train/condition_mask_fn: joint
 

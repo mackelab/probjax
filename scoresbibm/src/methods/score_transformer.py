@@ -6,7 +6,7 @@ import optax
 from functools import partial
 from probjax.nn.loss_fn import denoising_score_matching_loss
 from probjax.utils.graph import faithfull_mask, min_faithfull_mask
-from probjax.distributions.sde import init_sde_related
+from scoresbibm.src.methods.sde import init_sde_related
 from scoresbibm.src.methods.models import AllConditionalScoreModel
 from scoresbibm.src.methods.neural_nets import scalar_transformer_model
 
@@ -350,8 +350,8 @@ def train_transformer_model(task, thetas, xs, method_cfg, rng):
         val_repeat=train_params["val_repeat"],
     )
 
-    sde_init_params = {"data": data, **sde_params}
-    model_init_params = {"output_dim": theta_dim + x_dim, **model_params}
+    sde_init_params = {"data": data, **dict(method_cfg.sde)}
+    model_init_params = {"num_nodes": theta_dim + x_dim, **dict(method_cfg.model)}
     model = AllConditionalScoreModel(
         params,
         model_fn,
@@ -359,7 +359,7 @@ def train_transformer_model(task, thetas, xs, method_cfg, rng):
         sde_init_params=sde_init_params,
         model_init_params=model_init_params,
     )
-
+    # Posterior as default
     default_conditon_mask = jnp.array([0] * theta_dim + [1] * x_dim, dtype=jnp.bool_)
     model.set_default_condition_mask(default_conditon_mask)
     model.set_default_node_id(node_id)

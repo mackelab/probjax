@@ -15,7 +15,7 @@ from probjax.core import custom_inverse
 from probjax.utils.interpolation import linear_interpolation
 from probjax.utils.solver import root
 from probjax.utils.linalg import is_triangular_matrix
-from probjax.utils.jaxutils import ravel_args
+from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
 
 
 METHOD_STEP_FN = {}
@@ -900,15 +900,17 @@ def _odeint(
         Array: Solution of the ODE.
     """
     # Flatten the initial value and time grid
-    _flatten, _unflatten = ravel_args(y0)
 
-    y0 = jnp.atleast_1d(_flatten(y0))
+    flat_y0, unravel = ravel_args(y0)
+
+    y0 = jnp.atleast_1d(flat_y0)
     ts = jnp.atleast_1d(ts)
 
     # Consistent dtype, based on the initial value.
     dtype = y0.dtype
     ts = ts.astype(dtype)
-    _f = lambda t, y: jnp.atleast_1d(_flatten(drift(t, _unflatten(y), *args))).astype(
+    f = ravel_arg_fun(drift, unravel, 1)
+    _f = lambda t, y: jnp.atleast_1d(f(t, y, *args)).astype(
         dtype
     )
     step_fn = get_step_fn(method, dtype=dtype)
@@ -955,7 +957,7 @@ def _odeint(
         )
 
     # Unflatten the solution
-    ys = jax.vmap(_unflatten)(ys)
+    ys = jax.vmap(unravel)(ys)
     return ys
 
 

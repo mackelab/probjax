@@ -18,6 +18,15 @@ def ravel_first_arg_(unravel, y_flat, *args):
     ans = yield (y,) + args, {}
     ans_flat, _ = ravel_pytree(ans)
     yield ans_flat
+    
+@lu.transformation
+def ravel_arg_(unravel, index, *args):
+    flat_arg_i = args[index]
+    arg_i = unravel(flat_arg_i)
+    args = args[:index] + (arg_i,) + args[index+1:]
+    ans = yield args, {}
+    ans_flat, _ = ravel_pytree(ans)
+    yield ans_flat      
 
 
 @lu.transformation
@@ -68,12 +77,15 @@ def ravel_args(in_vals: PyTree) -> Tuple[Array, Callable]:
     return flat_vals, unflatten
 
 
-def ravel_fun(fun: Callable, in_tree: PyTree) -> Callable:
-    return ravel_args_(lu.wrap_init(fun), in_tree).call_wrapped
+def ravel_fun(fun: Callable, unravel) -> Callable:
+    return ravel_args_(lu.wrap_init(fun), unravel).call_wrapped
+
+def ravel_arg_fun(fun: Callable, unravel, index: int) -> Callable:
+    return ravel_arg_(lu.wrap_init(fun), unravel, index).call_wrapped
 
 
-def ravel_first_arg_fun(fun: Callable, in_tree: PyTree) -> Callable:
-    return ravel_first_arg_(lu.wrap_init(fun), in_tree).call_wrapped
+def ravel_first_arg_fun(fun: Callable, unravel) -> Callable:
+    return ravel_first_arg_(lu.wrap_init(fun), unravel).call_wrapped
 
 
 # def sliced_potential_fn(flatten_potential_fn, loc, direction):

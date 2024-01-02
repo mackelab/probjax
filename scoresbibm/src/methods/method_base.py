@@ -54,10 +54,12 @@ def run_nre_default(task, thetas, xs, method_cfg, rng=None):
 
 def run_nspe(task, thetas, xs, method_cfg, rng=None):
     model = train_conditional_score_model(task, thetas, xs, method_cfg, rng)
+    model.set_default_sampling_kwargs(**method_cfg.posterior)
     return model
 
 def run_score_transformer(task, thetas, xs, method_cfg, rng=None):
     model = train_transformer_model(task, thetas, xs, method_cfg, rng)
+    model.set_default_sampling_kwargs(**method_cfg.posterior)
     return model
 
 
@@ -77,6 +79,8 @@ def get_method(name:str):
     elif name == "score_transformer_posterior":
         return run_score_transformer
     elif name == "score_transformer_graphical":
+        return run_score_transformer
+    elif name == "score_transformer_joint":
         return run_score_transformer
     else:
         raise NotImplementedError()
