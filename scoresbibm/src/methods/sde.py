@@ -31,11 +31,13 @@ def init_sde_related(data, name="vpsde", **kwargs):
         sigma_min = kwargs.get("sigma_min", 0.01)
         sigma_max = kwargs.get("sigma_max", 10.)
         sde = VESDE(p0, sigma_min=sigma_min, sigma_max=sigma_max)
+        T_max = kwargs.get("T_max", 1.)
+        T_min = kwargs.get("T_min", 1e-5)
 
         # Train weight function
         def weight_fn(t):
             t = t.reshape(-1, 1)
-            return sde.diffusion(t, jnp.ones((1,)))
+            return sde.diffusion(t, jnp.ones((1,)))**2
 
         # Model output scale function
         def output_scale_fn(t, x):

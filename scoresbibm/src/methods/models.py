@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from probjax.distributions.sde import init_sde_related
 
 from probjax.utils.sdeint import sdeint
+from probjax.utils.odeint import odeint, _odeint
 from scoresbibm.src.methods.neural_nets import conditional_mlp, scalar_transformer_model
 from scoresbibm.src.methods.sde import init_sde_related
 
@@ -299,31 +300,47 @@ class ScorePosteriorModel(PosteriorModel):
         # For pickle
         self.model_init_params = model_init_params
         self.sde_init_params = sde_init_params
+        self.sampling_kwargs = {"num_steps": 500, "sampling_method": "sde"}
 
         super().__init__("npse", backend="jax")
+        
+    def set_default_sampling_kwargs(self, **kwargs):
+        self.sampling_kwargs = kwargs
 
-    def _sample(self, num_samples, x_o, num_steps=500, rng=None, **kwargs):
+    def _sample(self, num_samples, x_o, num_steps=None, rng=None, **kwargs):
         assert rng is not None, "Please provide a rng key"
         key1, key2 = jax.random.split(rng, 2)
-        drift, diffusion = self._init_backward_sde(x_o)
+        sampling_kwargs = {**self.sampling_kwargs, **kwargs}
+        if num_steps is None:
+            num_steps = sampling_kwargs.pop("num_steps")
+        
         x_T = (
             jax.random.normal(key1, (num_samples,) + self.sde.event_shape)
             * self.marginal_end_std
             + self.marginal_end_mean
         )
-        keys = jax.random.split(key2, (num_samples,))
-        ys = jax.vmap(
-            lambda *args: sdeint(*args, noise_type="diagonal", **kwargs),
-            in_axes=(0, None, None, 0, None),
-            out_axes=0,
-        )(
-            keys,
-            drift,
-            diffusion,
-            x_T,
-            jnp.linspace(0.0, self.T_max - self.T_min, num_steps),
-        )
-        return ys[:, -1, ...]
+        sampling_method = sampling_kwargs.pop("sampling_method")
+        
+        if sampling_method == "sde":
+            drift, diffusion = self._init_backward_sde(x_o)
+            keys = jax.random.split(key2, (num_samples,))
+            ys = jax.vmap(
+                lambda *args: sdeint(*args, noise_type="diagonal", **sampling_kwargs),
+                in_axes=(0, None, None, 0, None),
+                out_axes=0,
+            )(
+                keys,
+                drift,
+                diffusion,
+                x_T,
+                jnp.linspace(0.0, self.T_max - self.T_min, num_steps),
+            )
+            return ys[:, -1, ...]
+        elif sampling_method == "ode":
+            drift = self._init_backward_ode(x_o)
+            ys = jax.vmap(lambda *args:_odeint(*args, **kwargs), in_axes=(None, 0, None))(drift, x_T, jnp.linspace(0.0, self.T_max - self.T_min, num_steps))
+            return ys[:, -1, ...]
+                
 
     def _log_prob(self, val, x_o, **kwargs):
         # Add backward ode to compute log_prob
@@ -341,6 +358,15 @@ class ScorePosteriorModel(PosteriorModel):
             return self.sde.diffusion(t, x).reshape(x.shape)
 
         return drift_backward, diffusion_backward
+    
+    def _init_backward_ode(self, x_o):
+        def drift_backward(t, x):
+            t = self.T_max - t
+            score = self.model_fn(self.params, jnp.atleast_1d(t), x, jnp.squeeze(x_o))
+            dx = self.sde.drift(t,x) - 0.5 * self.sde.diffusion(t, x) ** 2 * score
+            return -dx.reshape(x.shape)
+
+        return drift_backward
 
     def __getstate__(self) -> object:
         state = self.__dict__.copy()
@@ -391,6 +417,7 @@ class AllConditionalScoreModel(AllConditionalModel):
         self.edge_mask = None
         self.edge_mask_fn = None
         self.score_fn = self.model_fn  # For score modifcations ...
+        self.sampling_kwargs = {"num_steps": 500, "sampling_method": "sde"}
 
         # For pickle
         self.model_init_params = model_init_params
@@ -408,7 +435,7 @@ class AllConditionalScoreModel(AllConditionalModel):
         self,
         num_samples,
         x_o,
-        num_steps=500,
+        num_steps=None,
         node_id=None,
         condition_mask=None,
         edge_mask=None,
@@ -416,8 +443,10 @@ class AllConditionalScoreModel(AllConditionalModel):
         **kwargs
     ):
         edge_mask = self._check_edge_mask(edge_mask, node_id, condition_mask)
+        sampling_kwargs = {**self.sampling_kwargs, **kwargs}
+        if num_steps is None:
+            num_steps = sampling_kwargs.pop("num_steps")
         key1, key2 = jax.random.split(rng, 2)
-        drift, diffusion = self._init_backward_sde(node_id, condition_mask, edge_mask)
         x_T = (
             jax.random.normal(
                 key1,
@@ -426,26 +455,38 @@ class AllConditionalScoreModel(AllConditionalModel):
                     node_id.shape[-1],
                 ),
             )
-            * self.marginal_end_std
-            + self.marginal_end_mean
+            * self.marginal_end_std[node_id]
+            + self.marginal_end_mean[node_id]
         )
         condition_mask = condition_mask.reshape(x_T.shape[-1])
         x_T = x_T.at[..., condition_mask].set(x_o.reshape(-1))
-        keys = jax.random.split(key2, (num_samples,))
-        ys = jax.vmap(
-            lambda *args: sdeint(*args, noise_type="diagonal", **kwargs),
-            in_axes=(0, None, None, 0, None),
-            out_axes=0,
-        )(
-            keys,
-            drift,
-            diffusion,
-            x_T,
-            jnp.linspace(0.0, self.T_max - self.T_min, num_steps),
-        )
-        final_samples = ys[:, -1, ...][:, ~condition_mask]
-        final_samples = final_samples.reshape((num_samples, -1))
-        return final_samples
+        
+        sampling_method = sampling_kwargs.pop("sampling_method")
+        if sampling_method == "sde":
+            drift, diffusion = self._init_backward_sde(node_id, condition_mask, edge_mask)
+            keys = jax.random.split(key2, (num_samples,))
+            ys = jax.vmap(
+                lambda *args: sdeint(*args, noise_type="diagonal", **sampling_kwargs),
+                in_axes=(0, None, None, 0, None),
+                out_axes=0,
+            )(
+                keys,
+                drift,
+                diffusion,
+                x_T,
+                jnp.linspace(0.0, self.T_max - self.T_min, num_steps),
+            )
+            final_samples = ys[:, -1, ...][:, ~condition_mask]
+            final_samples = final_samples.reshape((num_samples, -1))
+            return final_samples
+        elif sampling_method == "ode":
+            drift = self._init_backward_ode(node_id, condition_mask, edge_mask)
+            ys = jax.vmap(lambda *args:_odeint(*args, **sampling_kwargs), in_axes=(None, 0, None))(drift, x_T, jnp.linspace(0.0, self.T_max - self.T_min, num_steps))
+            final_samples = ys[:, -1, ...][:, ~condition_mask]
+            final_samples = final_samples.reshape((num_samples, -1))
+            return final_samples
+        else:
+            raise NotImplementedError()
 
     def _log_prob(self, val, x_o, **kwargs):
         # Add backward ode to compute log_prob
@@ -456,6 +497,9 @@ class AllConditionalScoreModel(AllConditionalModel):
 
     def set_default_score_fn(self, score_fn):
         self.score_fn = score_fn
+        
+    def set_default_sampling_kwargs(self, **kwargs):
+        self.sampling_kwargs = kwargs
 
     def _init_backward_sde(self, node_id=None, condition_mask=None, edge_mask=None):
         def drift_backward(t, x):
@@ -478,6 +522,22 @@ class AllConditionalScoreModel(AllConditionalModel):
             )
 
         return drift_backward, diffusion_backward
+    
+    def _init_backward_ode(self, node_id=None, condition_mask=None, edge_mask=None):
+        def drift_backward(t, x):
+            t = self.T_max - t
+            score = self.score_fn(
+                self.params,
+                jnp.atleast_1d(t),
+                x.reshape(-1, x.shape[-1], 1),
+                node_id,
+                condition_mask,
+                edge_mask=edge_mask,
+            ).reshape(x.shape)
+            dx = self.sde.drift(t,x) - 0.5 * self.sde.diffusion(t, x) ** 2 * score
+            return -dx.reshape(x.shape)
+
+        return drift_backward
 
     def __getstate__(self) -> object:
         state = self.__dict__.copy()

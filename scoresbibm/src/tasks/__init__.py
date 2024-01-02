@@ -1,7 +1,7 @@
 
 
 from src.tasks.sbibm_tasks import LinearGaussian, MixtureGaussian, TwoMoons, SLCP
-from src.tasks.multi_task import TwoMoonsAllConditionalTask, SLCPAllConditionalTask, NonlinearGaussianTreeAllConditionalTask, NonlinearMarcovChainAllConditionalTask
+from scoresbibm.src.tasks.all_conditional_tasks import TwoMoonsAllConditionalTask, SLCPAllConditionalTask, NonlinearGaussianTreeAllConditionalTask, NonlinearMarcovChainAllConditionalTask
 
 
 def get_task(name: str, backend: str = "torch"):

@@ -23,7 +23,7 @@ from probjax.core.interpreters.trace import TraceProcessingRule
 from probjax.core.interpreters.interventions import IntervenedProcessingRule
 
 
-def joint_sample(fun: Callable, rvs: Optional[Iterable] = None, *args, **kwargs) -> Callable:
+def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
     """Samples all random variables called in the probabilstic function. If rvs is given, it only samples the random variables in rvs.
 
     Args:
@@ -33,11 +33,11 @@ def joint_sample(fun: Callable, rvs: Optional[Iterable] = None, *args, **kwargs)
     Returns:
         Callable: Sampling function
     """
-    jaxpr = jax.make_jaxpr(fun)(jax.random.PRNGKey(0),*args, **kwargs)
+    jaxpr_maker = jax.make_jaxpr(fun)
     processing_rule = JointSampleProcessingRule(rvs=rvs)
 
-    print(processing_rule.joint_samples)
     def wrapped(*args, **kwargs):
+        jaxpr = jaxpr_maker(*args, **kwargs)
         _ = interpret(
             jaxpr.jaxpr,
             jaxpr.consts,
@@ -101,13 +101,12 @@ def log_potential_fn(fun: Callable, *args, **kwargs):
 
     def log_potential(**joint_samples): 
         processing_rule = LogPotentialProcessingRule(joint_samples=joint_samples)
-        # rv_vars, rv_values = extract_random_vars_values(jaxpr, joint_samples)
-        # print(rv_vars, rv_values)
+
         _ = interpret(
             jaxpr.jaxpr,
             jaxpr.consts,
             jaxpr.jaxpr.invars,
-            [jax.random.PRNGKey(0)],
+            (jax.random.PRNGKey(0),) + args,
             jaxpr.jaxpr.outvars,
             process_eqn=processing_rule,
         )
@@ -121,8 +120,8 @@ def log_potential_fn(fun: Callable, *args, **kwargs):
         #     cost_fn=potential_cost_fn,
         #     process_all_eqns=True,
         # )
-
-        return processing_rule.log_prob
+       
+        return jnp.nan_to_num(processing_rule.log_prob, nan=-jnp.inf, posinf=jnp.inf, neginf=-jnp.inf)
 
     return log_potential
 

@@ -8,5 +8,6 @@ defaults:
   - model: score_transformer
   - train: train_score_transformer
   - sde: vpsde
+  - posterior: backward_sde
   - override train/condition_mask_fn: posterior
 
