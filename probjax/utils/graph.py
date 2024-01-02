@@ -53,7 +53,7 @@ def find_ancestors_jax(mask, node):
 
 
 @jax.jit
-def faithfull_mask(base_mask, condition_mask):
+def faithfull_mask(base_mask, condition_mask, conditioned_nodes="unchanged"):
     """ Faithfull mask update for conditioning"""
     
     graph = base_mask.astype(jnp.bool_).copy()
@@ -96,7 +96,7 @@ def faithfull_mask(base_mask, condition_mask):
 
 
 @jax.jit
-def min_faithfull_mask(mask, condition_mask, top_mode=0):
+def min_faithfull_mask(mask, condition_mask, top_mode=0, conditioned_nodes="unchanged"):
     """ Minimally faithfull mask update for conditioning"""
     num_nodes = mask.shape[0]
     I = moralize(mask)
@@ -149,7 +149,12 @@ def min_faithfull_mask(mask, condition_mask, top_mode=0):
     H = H | jnp.eye(num_nodes, dtype=jnp.bool_)
     
     # Conditioned nodes will keep the unconditional edges, hence each row of H where condition_mask is true should be equal to "mask"
-    H = H & ~condition_mask[:, None] | mask & condition_mask[:, None]
+    if conditioned_nodes == "unchanged":
+        H = H & ~condition_mask[:, None] | mask & condition_mask[:, None]
+    elif conditioned_nodes == "removed":
+        H = H & ~condition_mask[:, None]
+    elif conditioned_nodes == "added":
+        H = H | condition_mask[:, None]
     
     return H
     

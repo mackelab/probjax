@@ -11,11 +11,13 @@ import random
 import os 
 import sys
 import socket
+import time
 
-from main.tasks import get_task
-from main.methods import get_method
-from main.eval import get_metric
-from main.utils import init_dir, generate_unique_model_id, save_model, save_summary
+from scoresbibm.src.tasks import get_task
+from scoresbibm.src.methods.method_base import get_method
+from scoresbibm.src.evaluation import get_metric, eval_inference_task, eval_all_conditional_task
+from scoresbibm.src.tasks.base_task import AllConditionalTask, InferenceTask
+from scoresbibm.src.utils.data_utils import init_dir, generate_unique_model_id, save_model, save_summary
 
 
 
@@ -39,7 +41,7 @@ def main():
     score_sbi()
     
     
-@hydra.main(version_base=None, config_path="../config", config_name="config.yaml")
+@hydra.main(version_base=None, config_path="../../config", config_name="config.yaml")
 def score_sbi(cfg: DictConfig):
     """Evaluate score based inference"""
     log = logging.getLogger(__name__)
@@ -64,31 +66,31 @@ def score_sbi(cfg: DictConfig):
     # Set up the task
     log.info(f"Task: {cfg.task.name}")
     task = get_task(cfg.task.name, backend=backend)
-    thetas, xs = task.get_thetas_xs(cfg.task.num_simulations)
+    thetas, xs = task.get_thetas_xs(cfg.task.num_simulations, rng=rng)
 
     # Run method
     log.info(f"Running method: {cfg.method.name}")
     method_run = get_method(cfg.method.name)
     rng, rng_train = jax.random.split(rng)
+    start_time = time.time()
     model = method_run(task,thetas, xs, cfg.method, rng=rng_train)
-    
+    time_train = time.time() - start_time
+
     # Evaluate
     log.info(f"Evaluating method: {cfg.method.name}")
     metrics = cfg.eval["metric"]
     metrics_results = {}
     for m, metric_params in metrics.items():
         log.info(f"Evaluating metric: {m}")
-        rng, rng_metric = jax.random.split(rng)
+        rng, rng_eval = jax.random.split(rng)
         metric_fn = get_metric(str(m))
-        metric_values = []
-        for i in task.observations:
-            rng_metric, rng_metric_i = jax.random.split(rng_metric)
-            x_o = task.get_observation(i)
-            true_posterior_samples = task.get_reference_posterior_samples(i)
-            est_posterior_samples = model.sample(num_samples=true_posterior_samples.shape[0], x_o=x_o, rng=rng_metric_i)
-            val = metric_fn(true_posterior_samples, est_posterior_samples, **metric_params)
-            log.info(f"Metric value: {val}")
-            metric_values.append(val)
+        
+        if issubclass(type(task), InferenceTask):
+            metric_values, eval_time = eval_inference_task(task, model, metric_fn, metric_params, rng_eval)
+        elif issubclass(task.__class__, AllConditionalTask):
+            metric_values, eval_time = eval_all_conditional_task(task, model, metric_fn, metric_params, rng_eval)
+        else:
+            raise ValueError("Task not recognized.")
             
         metrics_results[m] = metric_values
             
@@ -101,8 +103,9 @@ def score_sbi(cfg: DictConfig):
         try:
             save_model(model, output_super_dir, model_id)
             log.info(f"Model saved with id: {model_id}")
-        except:
+        except Exception as e:
             log.info("Tried to save model, but failed.")
+            log.info(e)
         
     # Save summary
     is_save_summary = cfg.save_summary
@@ -111,9 +114,10 @@ def score_sbi(cfg: DictConfig):
         model_id = generate_unique_model_id(output_super_dir)
         try:
             for m, vals in metrics_results.items():
-                save_summary(output_super_dir, cfg.method.name, cfg.task.name, cfg.task.num_simulations, model_id, m, vals, seed, cfg)
-        except:
+                save_summary(output_super_dir, cfg.method.name, cfg.task.name, cfg.task.num_simulations, model_id, m, vals, seed, time_train, eval_time, cfg)
+        except Exception as e:
             log.info("Tried to save summary, but failed.")
+            log.info(e)
         log.info(f"Summary saved with id: {model_id}")
         
         

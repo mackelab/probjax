@@ -271,6 +271,7 @@ class MultivariateNormal(ExponentialFamily):
         return self.loc + batch_mv(self.scale_tril, eps)
 
     def log_prob(self, value: jnp.array) -> Array:
+
         diff = value - self.loc
         M = batch_mahalanobis(self.scale_tril, diff)
         half_log_det = jnp.sum(
@@ -428,11 +429,7 @@ class Uniform(Distribution):
         self.low = low
         self.high = high
 
-        if not jnp.all(low < high):
-            warn(
-                "Some elements of low are not less than corresponding elements of high, we will switch them."
-            )
-            self.low = jnp.where(low < high, low, high) - 1e-6
+        self.low = jnp.where(low < high, low, high) - 1e-6
 
         super().__init__(batch_shape=jnp.shape(low), event_shape=())
 

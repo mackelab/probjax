@@ -54,7 +54,7 @@ class LogPotentialProcessingRule(ForwardProcessingRule):
 
     def __init__(self, joint_samples: Dict[str, Array]):
         self.joint_samples = joint_samples
-
+        #print(self.joint_samples)
     def __call__(
         self,
         eqn: JaxprEqn,
@@ -69,15 +69,11 @@ class LogPotentialProcessingRule(ForwardProcessingRule):
                 outvars = eqn.outvars
                 outvals = [self.joint_samples[name]]
             else:
-                eqn_invars = eqn.invars
-                eqn_inavals = [
-                    jax.numpy.zeros(shape=v.aval.shape, dtype=v.aval.dtype)  # type: ignore TODO this is a bit hacky in an intervened rv the input is not used so we just put a dummy value
-                    for v in eqn_invars
-                ]
-                outvars, outvals = super().__call__(eqn, eqn_inavals, out_known)
+                outvars, outvals = super().__call__(eqn, in_known, out_known)
             # But we still have to compute the log_prob
             in_known = list(in_known)
-            in_known[-1] = outvals[0]
+            #print(name, outvals)
+            in_known[-1] = outvals[0] # From where do I know this?
             log_prob_fn = eqn.params["log_prob_fn_jaxpr"]
             self.log_prob += eval_jaxpr(
                 log_prob_fn.jaxpr, log_prob_fn.consts, *in_known

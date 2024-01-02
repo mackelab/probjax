@@ -15,7 +15,7 @@ from probjax.core import custom_inverse
 from probjax.utils.interpolation import linear_interpolation
 from probjax.utils.solver import root
 from probjax.utils.linalg import is_triangular_matrix
-from probjax.utils.jaxutils import flatten1d
+from probjax.utils.jaxutils import ravel_args
 
 
 METHOD_STEP_FN = {}
@@ -900,7 +900,7 @@ def _odeint(
         Array: Solution of the ODE.
     """
     # Flatten the initial value and time grid
-    _flatten, _unflatten = flatten1d(y0)
+    _flatten, _unflatten = ravel_args(y0)
 
     y0 = jnp.atleast_1d(_flatten(y0))
     ts = jnp.atleast_1d(ts)

@@ -72,7 +72,7 @@ def batch_mahalanobis(bL: Array, bx: Array) -> Array:
     """
     bL = jnp.broadcast_to(bL, bx.shape[:-1] + bL.shape[-2:])
     
-    sol = lax.linalg.triangular_solve(bL, bx)
+    sol = lax.linalg.triangular_solve(bL, bx, lower=True, transpose_a=True)
     return jnp.sum(sol**2, axis=-1)
 
 

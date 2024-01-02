@@ -6,66 +6,89 @@ import jax.numpy as jnp
 import numpy as np
 from functools import wraps, partial
 
-# That is equivalent to pytree_unravel ... so we can just use that
+from jax._src.flatten_util import ravel_pytree
+from jax._src.api_util import flatten_fun_nokwargs as flatten_fun_nokwargs_
+
+from jax import linear_util as lu
+
+
+@lu.transformation
+def ravel_first_arg_(unravel, y_flat, *args):
+    y = unravel(y_flat)
+    ans = yield (y,) + args, {}
+    ans_flat, _ = ravel_pytree(ans)
+    yield ans_flat
+
+
+@lu.transformation
+def ravel_args_(unravel, args_flat):
+    args = unravel(args_flat)
+    ans = yield args, {}
+    ans_flat, _ = ravel_pytree(ans)
+    yield ans_flat
+
+
+@lu.transformation_with_aux
+def flatten_args_(in_tree, *flat_args):
+    args = jax.tree_util.tree_unflatten(in_tree, flat_args)
+    ans = yield (args,), {}
+    ans_flat = jax.tree_util.tree_flatten(ans)
+    yield ans_flat
+
+
 def flatten_fun(fun: Callable, in_tree: PyTree) -> Callable:
-    """Flattens a function and its input tree."""
+    """Flattens the input arguments of a function. Meaning than all abstract inputs are flattened into a list of arrays.
 
-    @wraps(fun)
-    def flat_fun(*args):
-        input = jax.tree_util.tree_unflatten(in_tree, args)
-        return fun(input)
+    Args:
+        fun (Callable): Function to be flattened
+        in_tree (PyTree): In tree of the functions input arguments
 
-    return flat_fun
+    Returns:
+        Tuple[Callable]: The flattened function
+    """
 
+    def fun_new(*args):
+        f_flat, out_tree = flatten_args_(lu.wrap_init(fun), in_tree)
+        out = f_flat.call_wrapped(*args)
+        return jax.tree_util.tree_unflatten(out_tree(), out)
 
-def flatten1d(in_vals: PyTree):
-    leaves, in_tree = jax.tree_util.tree_flatten(in_vals)
-
-    # Casting to tuple to make them hashable -> static_argnums
-    shapes = tuple(jax.tree_map(lambda x: jnp.shape(x), leaves))
-    lengths = tuple(jax.tree_map(lambda x: jnp.size(x), leaves))
-    cum_lengths = tuple(np.cumsum(lengths))[:-1]
-
-    # Has only a single argument!
-    def _flatten(*args):
-        leaves, _ = jax.tree_util.tree_flatten(args)
-        flatten_leaves = jax.tree_map(lambda x: jnp.ravel(x), leaves)
-        return jnp.concatenate(flatten_leaves)
-
-    def _unflatten(x):
-        flattened_leaves = jnp.split(x, cum_lengths)
-        leaves = jax.tree_map(
-            lambda x, s: jnp.reshape(x, s), tuple(flattened_leaves), shapes
-        )
-        return jax.tree_util.tree_unflatten(in_tree, leaves)
-
-    return _flatten, _unflatten
+    return fun_new
 
 
-def flatten_and_concat_fun(fun: Callable, in_vals: PyTree):
-    """Process the potential function to return a function that takes in a single argument."""
-    _flatten, _unflatten = flatten1d(in_vals)
+def ravel_args(in_vals: PyTree) -> Tuple[Array, Callable]:
+    """_summary_
 
-    def _flatten_fun(x):
-        x = _unflatten(x)
-        return fun(*x)
+    Args:
+        in_vals (PyTree): _description_
 
-    return _flatten, _unflatten, _flatten_fun
-
-
-def sliced_potential_fn(flatten_potential_fn, loc, direction):
-    """Returns a function that slices the potential function in a given direction."""
-
-    def _sliced_potential_fn(t):
-        return flatten_potential_fn(loc + t * direction)
-
-    return _sliced_potential_fn
+    Returns:
+        Tuple[Array, Callable]: _description_
+    """
+    flat_vals, unflatten = ravel_pytree(in_vals)
+    return flat_vals, unflatten
 
 
-def conditional_potential_fn(flatten_potential_fn, x, indices):
-    """Returns a function that slices the potential function in a given direction."""
+def ravel_fun(fun: Callable, in_tree: PyTree) -> Callable:
+    return ravel_args_(lu.wrap_init(fun), in_tree).call_wrapped
 
-    def _conditional_potential_fn(sub_x):
-        return flatten_potential_fn(x.at[indices].set(sub_x))
 
-    return _conditional_potential_fn
+def ravel_first_arg_fun(fun: Callable, in_tree: PyTree) -> Callable:
+    return ravel_first_arg_(lu.wrap_init(fun), in_tree).call_wrapped
+
+
+# def sliced_potential_fn(flatten_potential_fn, loc, direction):
+#     """Returns a function that slices the potential function in a given direction."""
+
+#     def _sliced_potential_fn(t):
+#         return flatten_potential_fn(loc + t * direction)
+
+#     return _sliced_potential_fn
+
+
+# def conditional_potential_fn(flatten_potential_fn, x, indices):
+#     """Returns a function that slices the potential function in a given direction."""
+
+#     def _conditional_potential_fn(sub_x):
+#         return flatten_potential_fn(x.at[indices].set(sub_x))
+
+#     return _conditional_potential_fn

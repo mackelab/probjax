@@ -1,6 +1,6 @@
 
 
-from scoresbibm.main.utils import query
+from scoresbibm.src.utils.data_utils import query
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt

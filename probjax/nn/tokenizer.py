@@ -48,7 +48,7 @@ class Tokenizer(hk.Module):
         learn_meta_data_embeding: bool = False,
         name: str | None = "tokenizer",
     ):
-        """ Base class for tokenizers."""
+        """Base class for tokenizers."""
         self.output_dim = output_dim
         self.value_embeding_builder = value_embeding_builder
         self.node_embeding_builder = node_embeding_builder
@@ -119,7 +119,7 @@ class ScalarTokenizer(Tokenizer):
 
         data_id_embeding = self.node_embeding(data_id, output_dim1)
         data_embeding = self.value_embeding(data, output_dim2)
-        
+
         if meta_data is not None:
             meta_data_embeding = self.meta_data_embeding(meta_data, output_dim3)
         else:
