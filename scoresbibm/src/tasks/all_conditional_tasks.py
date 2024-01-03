@@ -203,7 +203,7 @@ class AllConditionalBMTask(AllConditionalTask):
             while True:
                 key, key_sample, key_condition_mask = jax.random.split(key,3)
                 condition_mask = jax.random.bernoulli(
-                    key_condition_mask, 0.5, shape=(len(self.var_names),)
+                    key_condition_mask, 0.3, shape=(len(self.var_names),)
                 ).astype(jnp.bool_)
                 condition_mask = jax.lax.cond(condition_mask.all(), lambda x: jnp.zeros_like(x), lambda x: x, condition_mask)
                 samples = self.joint_sampler(key_sample)
@@ -321,12 +321,12 @@ class TwoMoonsAllConditionalTask(AllConditionalBMTask):
             )
 
             kernel1 = SliceKernel()
-            kernel2 = GaussianMHKernel(step_size=0.1)
+            kernel2 = GaussianMHKernel(step_size=0.01)
             state = kernel1.init_state(key_mcmc, init_vals_flat)
             mcmc = MCMC(kernel1, potential_fn_wrapper)
-            samples, state = mcmc.run(state, 300)
+            samples, state = mcmc.run(state, 1000)
             mcmc2 = MCMC(kernel2, potential_fn_wrapper)
-            samples, state = mcmc2.run(state, 2000)
+            samples, state = mcmc2.run(state, 3000)
 
             return samples
 
@@ -334,8 +334,8 @@ class TwoMoonsAllConditionalTask(AllConditionalBMTask):
 
 
 class SLCPAllConditionalTask(AllConditionalBMTask):
-    def __init__(self) -> None:
-        super().__init__("slcp", slcp)
+    def __init__(self, backand="jax") -> None:
+        super().__init__("slcp", slcp, backend=backand)
 
     def get_base_mask_fn(self):
         theta_dim = 5
@@ -382,8 +382,8 @@ class SLCPAllConditionalTask(AllConditionalBMTask):
 
 
 class NonlinearGaussianTreeAllConditionalTask(AllConditionalBMTask):
-    def __init__(self) -> None:
-        super().__init__("nonlinear_gaussian_tree", nonlinear_gaussian_tree_task)
+    def __init__(self, backend="jax") -> None:
+        super().__init__("nonlinear_gaussian_tree", nonlinear_gaussian_tree_task, backend=backend)
 
     def _get_conditional_sample_fn(self):
         @partial(jax.vmap, in_axes=[0, None, None])
@@ -422,8 +422,8 @@ class NonlinearGaussianTreeAllConditionalTask(AllConditionalBMTask):
 
 
 class NonlinearMarcovChainAllConditionalTask(AllConditionalBMTask):
-    def __init__(self) -> None:
-        super().__init__("nonlinear_marcov_chain", nonlinear_marcov_chain)
+    def __init__(self, backend="jax") -> None:
+        super().__init__("nonlinear_marcov_chain", nonlinear_marcov_chain, backend=backend)
 
     def get_base_mask_fn(self):
         # Marcovian structure

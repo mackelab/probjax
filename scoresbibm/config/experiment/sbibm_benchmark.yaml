@@ -1,5 +1,5 @@
 # @package _global_
-name: benchmark
+name: benchmark_test
 
 hydra:
   mode: MULTIRUN
@@ -8,5 +8,13 @@ hydra:
       method: score_transformer,score_transformer_graphical,score_transformer_posterior
       task: gaussian_linear,gaussian_mixture,two_moons,slcp
       task.num_simulations: 1000,10000,100000
-      partition: cuda
-      device: cuda
+  run:
+    dir: results/${name}/${now:%Y-%m-%d_%H-%M-%S}/local
+  sweep:
+    dir: results/${name}/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.override_dirname}
+
+
+defaults:
+  - _self_
+  - override /partition: gpu

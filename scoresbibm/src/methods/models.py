@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 
 import jax
 import jax.numpy as jnp
-from probjax.distributions.sde import init_sde_related
+
 
 from probjax.utils.sdeint import sdeint
 from probjax.utils.odeint import odeint, _odeint
@@ -446,6 +446,8 @@ class AllConditionalScoreModel(AllConditionalModel):
         sampling_kwargs = {**self.sampling_kwargs, **kwargs}
         if num_steps is None:
             num_steps = sampling_kwargs.pop("num_steps")
+        else:
+            sampling_kwargs.pop("num_steps")
         key1, key2 = jax.random.split(rng, 2)
         x_T = (
             jax.random.normal(
