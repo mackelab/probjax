@@ -53,6 +53,8 @@ def score_sbi(cfg: DictConfig):
     log.info(f"Working directory : {os.getcwd()}")
     log.info(f"Output directory  : {output_dir}")
     log.info(f"Hostname: {socket.gethostname()}")
+    log.info(f"Jax devices: {jax.devices()}")
+    log.info(f"Torch devices: {torch.cuda.device_count()}")
     
     seed = cfg.seed
     rng = set_seed(seed)    
@@ -75,6 +77,9 @@ def score_sbi(cfg: DictConfig):
     start_time = time.time()
     model = method_run(task,thetas, xs, cfg.method, rng=rng_train)
     time_train = time.time() - start_time
+    
+    del thetas 
+    del xs
 
     # Evaluate
     log.info(f"Evaluating method: {cfg.method.name}")

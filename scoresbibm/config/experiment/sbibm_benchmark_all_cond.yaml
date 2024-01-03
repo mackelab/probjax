@@ -1,12 +1,13 @@
 # @package _global_
-name: benchmark
+name: benchmark_vesde_all_cond
 
 hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      method: npe,nle,nre,nspe
-      task: gaussian_linear,gaussian_mixture,two_moons,slcp
+      method: score_transformer,score_transformer_graphical,score_transformer_posterior
+      method/model: score_transformer_small
+      task: two_moons_all_cond,slcp_all_cond,tree_all_cond,marcov_chain_all_cond
       task.num_simulations: 1000,10000,100000
 
   run:
