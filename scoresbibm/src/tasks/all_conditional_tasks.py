@@ -143,8 +143,8 @@ def two_moons():
 
         p = rv(Normal(jnp.array([0.1]), 0.01), "r")
         u = rv(Uniform(-0.5 * jnp.pi, 0.5 * jnp.pi), "alpha")
-        r = p(key1)
-        alpha = u(key2)
+        r = p(key3)
+        alpha = u(key4)
         rhs1 = rv(
             Dirac((r * jnp.cos(alpha) + 0.25) + (-jnp.abs(theta0 + theta1) / sqrt2)),
             "x0",
@@ -190,6 +190,8 @@ class AllConditionalBMTask(AllConditionalTask):
         )
         self.joint_sampler = joint_sampler
         self.potential_fn = potential_fn
+        self.ravel_condition_mask = lambda x: x
+        self.unravel_condition_mask = lambda x: x
 
     def get_joint_sampler(self):
         return self.joint_sampler
@@ -206,6 +208,8 @@ class AllConditionalBMTask(AllConditionalTask):
             while True:
                 key, key_sample, key_condition_mask = jax.random.split(key,3)
                 condition_mask = condition_mask_fn(key_condition_mask, 1, self.get_theta_dim(), self.get_x_dim())[0]
+                condition_mask = self.ravel_condition_mask(condition_mask)
+                
                 samples = self.joint_sampler(key_sample)
                 conditioned_names = [
                     self.var_names[i]
@@ -223,6 +227,7 @@ class AllConditionalBMTask(AllConditionalTask):
                 )
                 x_o = x_o.flatten()
                 theta_o = theta_o.flatten()
+                condition_mask = self.unravel_condition_mask(condition_mask)
                 
                 yield (condition_mask, x_o, theta_o)
                 
@@ -240,6 +245,7 @@ class AllConditionalBMTask(AllConditionalTask):
         return {"theta":thetas, "x":xs}
 
     def _prepare_for_mcmc(self, key, condition_mask, x_o):
+        condition_mask = self.ravel_condition_mask(condition_mask)
         conditioned_names = [
             self.var_names[i] for i in range(len(self.var_names)) if condition_mask[i]
         ]
@@ -336,6 +342,24 @@ class TwoMoonsAllConditionalTask(AllConditionalBMTask):
 class SLCPAllConditionalTask(AllConditionalBMTask):
     def __init__(self, backend="jax") -> None:
         super().__init__("slcp_all_cond", slcp, backend=backend)
+        
+        def ravel_condition_mask(condition_mask):
+            thetas_cond, x1_cond, x2_cond, x3_cond, x4_cond = jnp.split(condition_mask, [5,7,9,11], axis=-1)
+            x1_cond = jnp.any(x1_cond, axis=-1)[None]
+            x2_cond = jnp.any(x2_cond, axis=-1)[None]
+            x3_cond = jnp.any(x3_cond, axis=-1)[None]
+            x4_cond = jnp.any(x4_cond, axis=-1)[None]
+            return jnp.hstack([thetas_cond, x1_cond, x2_cond, x3_cond, x4_cond])
+        def unravel_condition_mask(condition_mask):
+            thetas_cond, x1_cond, x2_cond, x3_cond, x4_cond = jnp.split(condition_mask, [5,6,7,8], axis=-1)
+            x1_cond = jnp.repeat(x1_cond, 2, axis=-1)
+            x2_cond = jnp.repeat(x2_cond, 2, axis=-1)
+            x3_cond = jnp.repeat(x3_cond, 2, axis=-1)
+            x4_cond = jnp.repeat(x4_cond, 2, axis=-1)
+            return jnp.hstack([thetas_cond, x1_cond, x2_cond, x3_cond, x4_cond])
+        
+        self.ravel_condition_mask = ravel_condition_mask
+        self.unravel_condition_mask = unravel_condition_mask
 
     def get_base_mask_fn(self):
         theta_dim = 5

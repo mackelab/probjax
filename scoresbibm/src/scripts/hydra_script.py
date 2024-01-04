@@ -78,8 +78,7 @@ def score_sbi(cfg: DictConfig):
     model = method_run(task,data, cfg.method, rng=rng_train)
     time_train = time.time() - start_time
     
-    del thetas 
-    del xs
+    del data 
 
     # Evaluate
     log.info(f"Evaluating method: {cfg.method.name}")
