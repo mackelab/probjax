@@ -74,13 +74,7 @@ def get_method(name:str):
         return run_nre_default
     elif name == "nspe":
         return run_nspe
-    elif name == "score_transformer":
-        return run_score_transformer
-    elif name == "score_transformer_posterior":
-        return run_score_transformer
-    elif name == "score_transformer_graphical":
-        return run_score_transformer
-    elif name == "score_transformer_joint":
+    elif "score_transformer" in name:
         return run_score_transformer
     else:
         raise NotImplementedError()

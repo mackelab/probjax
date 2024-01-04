@@ -79,24 +79,5 @@ class AllConditionalTask(Task):
         raise NotImplementedError()
     
     
-class UnstructuredTask(AllConditionalTask):
-    
-    def __init__(self, name: str, backend: str = "jax") -> None:
-        super().__init__(name, backend)
-        
-    def get_joint_sampler(self):
-        raise NotImplementedError()
-    
-    def get_thetas_xs(self, num_samples: int, rng=None):
-        raise NotImplementedError()
-    
-    def get_observation_generator(self):
-        raise NotImplementedError()
-    
-    def get_base_mask_fn(self):
-        raise NotImplementedError()
-        
-    def get_reference_sampler(self):
-        raise NotImplementedError()
     
     
