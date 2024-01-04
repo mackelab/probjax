@@ -35,12 +35,12 @@ def eval_all_conditional_task(task: AllConditionalTask, model, metric_fn, metric
     for i in range(num_evaluations):
         rng, rng_metric, rng_sample_ref, rng_sample_model = jax.random.split(rng,4)
         condition_mask, x_o, theta_o = next(observation_stream)
-        true_posterior_samples = reference_sampler.sample(num_samples, condition_mask=condition_mask, x_o = x_o, rng=rng_sample_ref)
+        print("Conditional: ", condition_mask,x_o)
         start_time = time.time()
-        est_posterior_samples = model.sample(num_samples=true_posterior_samples.shape[0], condition_mask=condition_mask, x_o=x_o, rng=rng_sample_model)
+        est_posterior_samples = model.sample(num_samples, x_o= x_o,condition_mask=condition_mask, rng=rng_sample_model)
         sampling_time = time.time() - start_time
-        metric_value = metric_fn(true_posterior_samples, est_posterior_samples, rng=rng_metric, **metric_params)
-        print("Conditional: ", condition_mask)
+        true_posterior_samples = reference_sampler.sample(num_samples, x_o= x_o,condition_mask=condition_mask,rng=rng_sample_ref)  
+        metric_value = metric_fn(est_posterior_samples, true_posterior_samples, rng=rng_metric, **metric_params)
         print("Metric value: ", metric_value)
         metric_values.append(metric_value)
         average_sampling_time += sampling_time / num_evaluations

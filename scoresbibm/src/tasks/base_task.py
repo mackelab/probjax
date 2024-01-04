@@ -43,7 +43,7 @@ class InferenceTask(Task):
     def get_simulator(self):
         raise NotImplementedError()
     
-    def get_thetas_xs(self, num_samples: int, rng=None):
+    def get_data(self, num_samples: int, rng=None):
         raise NotImplementedError()
     
     def get_observation(self, index: int):
@@ -66,7 +66,7 @@ class AllConditionalTask(Task):
     def get_joint_sampler(self):
         raise NotImplementedError()
     
-    def get_thetas_xs(self, num_samples: int, rng=None):
+    def get_data(self, num_samples: int, rng=None):
         raise NotImplementedError()
     
     def get_observation_generator(self):
