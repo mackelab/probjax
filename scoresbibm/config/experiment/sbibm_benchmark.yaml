@@ -1,5 +1,5 @@
 # @package _global_
-name: benchmark_test
+name: benchmark_main
 
 hydra:
   mode: MULTIRUN
@@ -9,9 +9,9 @@ hydra:
       task: gaussian_linear,gaussian_mixture,two_moons,slcp
       task.num_simulations: 1000,10000,100000
   run:
-    dir: results/${name}/${now:%Y-%m-%d_%H-%M-%S}/local
+    dir: results/${name}
   sweep:
-    dir: results/${name}/${now:%Y-%m-%d_%H-%M-%S}
+    dir: results/${name}
     subdir: ${hydra.job.override_dirname}
 
 
