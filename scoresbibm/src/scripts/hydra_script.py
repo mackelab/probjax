@@ -68,14 +68,14 @@ def score_sbi(cfg: DictConfig):
     # Set up the task
     log.info(f"Task: {cfg.task.name}")
     task = get_task(cfg.task.name, backend=backend)
-    thetas, xs = task.get_thetas_xs(cfg.task.num_simulations, rng=rng)
+    data = task.get_data(cfg.task.num_simulations, rng=rng)
 
     # Run method
     log.info(f"Running method: {cfg.method.name}")
     method_run = get_method(cfg.method.name)
     rng, rng_train = jax.random.split(rng)
     start_time = time.time()
-    model = method_run(task,thetas, xs, cfg.method, rng=rng_train)
+    model = method_run(task,data, cfg.method, rng=rng_train)
     time_train = time.time() - start_time
     
     del thetas 
