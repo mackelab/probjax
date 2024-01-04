@@ -10,9 +10,9 @@ hydra:
       task.num_simulations: 1000,10000,100000
 
   run:
-    dir: results/${name}/${now:%Y-%m-%d_%H-%M-%S}/local
+    dir: results/${name}
   sweep:
-    dir: results/${name}/${now:%Y-%m-%d_%H-%M-%S}
+    dir: results/${name}
     subdir: ${hydra.job.override_dirname}
 
 

@@ -5,16 +5,16 @@ hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      method: score_transformer,score_transformer_graphical,score_transformer_posterior
+      method: score_transformer,score_transformer_graphical
       method/sde: vesde
       method/model: score_transformer_small
       task: two_moons_all_cond,slcp_all_cond,tree_all_cond,marcov_chain_all_cond
       task.num_simulations: 1000,10000,100000
 
   run:
-    dir: results/${name}/${now:%Y-%m-%d_%H-%M-%S}/local
+    dir: results/${name}
   sweep:
-    dir: results/${name}/${now:%Y-%m-%d_%H-%M-%S}
+    dir: results/${name}
     subdir: ${hydra.job.override_dirname}
 
 
