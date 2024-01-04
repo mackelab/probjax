@@ -1,11 +1,12 @@
 # @package _global_
-name: benchmark
+name: benchmark_small_transformer
 
 hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      method: npe,nle,nre,nspe
+      method: score_transformer,score_transformer_graphical,score_transformer_posterior
+      method/model: score_transformer_small
       task: gaussian_linear,gaussian_mixture,two_moons,slcp
       task.num_simulations: 1000,10000,100000
 

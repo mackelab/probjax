@@ -27,6 +27,7 @@ REQUIRED = [
     "optuna",
     "tueplots",
     "seaborn",
+    "pandas",
 ]
 
 

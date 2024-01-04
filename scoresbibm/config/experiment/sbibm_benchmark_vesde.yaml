@@ -1,14 +1,15 @@
 # @package _global_
-name: benchmark
+name: benchmark_vesde
 
 hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      method: npe,nle,nre,nspe
+      method: score_transformer,score_transformer_graphical,score_transformer_posterior
+      method/sde: vesde
       task: gaussian_linear,gaussian_mixture,two_moons,slcp
       task.num_simulations: 1000,10000,100000
-
+    
   run:
     dir: results/${name}/${now:%Y-%m-%d_%H-%M-%S}/local
   sweep:

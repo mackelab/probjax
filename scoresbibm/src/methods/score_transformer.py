@@ -103,6 +103,10 @@ def run_train_transformer_model(
 
     params = jax.tree_map(lambda x: x[0], replicated_params)
     opt_state = jax.tree_map(lambda x: x[0], replicated_opt_state)
+    
+    del replicated_opt_state
+    del replicated_params
+    
     return params, opt_state
 
 
@@ -275,7 +279,7 @@ def train_transformer_model(task, thetas, xs, method_cfg, rng):
     val_every = total_number_steps // train_params["val_every"]
     learning_rate = train_params["learning_rate"]
     schedule = optax.linear_schedule(
-        learning_rate, 0.0, total_number_steps // 2, total_number_steps // 2
+        learning_rate, train_params["min_learning_rate"], total_number_steps // 2, total_number_steps // 2
     )
     optimizer = optax.chain(
         optax.adaptive_grad_clip(train_params["clip_max_norm"]), optax.adam(schedule)
@@ -350,7 +354,7 @@ def train_transformer_model(task, thetas, xs, method_cfg, rng):
         val_repeat=train_params["val_repeat"],
     )
 
-    sde_init_params = {"data": data, **dict(method_cfg.sde)}
+    sde_init_params = {"data": jax.device_put(data, jax.devices("cpu")[0]) , **dict(method_cfg.sde)}
     model_init_params = {"num_nodes": theta_dim + x_dim, **dict(method_cfg.model)}
     model = AllConditionalScoreModel(
         params,
