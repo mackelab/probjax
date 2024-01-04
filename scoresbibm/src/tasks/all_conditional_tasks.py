@@ -1,5 +1,6 @@
 from scoresbibm.src.tasks.base_task import AllConditionalTask
 from scoresbibm.src.methods.models import AllConditionalReferenceModel
+from scoresbibm.src.utils.condition_masks import get_condition_mask_fn
 
 import jax
 import jax.numpy as jnp
@@ -12,6 +13,7 @@ from probjax.inference.mcmc import MCMC
 from probjax.inference.marcov_kernels import HMCKernel, GaussianMHKernel, SliceKernel
 from probjax.distributions import Normal, Uniform, MultivariateNormal, Dirac
 from probjax.utils.jaxutils import ravel_args
+
 
 
 def nonlinear_gaussian_tree_task():
@@ -199,13 +201,11 @@ class AllConditionalBMTask(AllConditionalTask):
         return sum([self.var_sizes[var] for var in self.var_names if "x" in var])
 
     def get_observation_generator(self):
+        condition_mask_fn = get_condition_mask_fn("structured_random")
         def observation_generator(key):
             while True:
                 key, key_sample, key_condition_mask = jax.random.split(key,3)
-                condition_mask = jax.random.bernoulli(
-                    key_condition_mask, 0.3, shape=(len(self.var_names),)
-                ).astype(jnp.bool_)
-                condition_mask = jax.lax.cond(condition_mask.all(), lambda x: jnp.zeros_like(x), lambda x: x, condition_mask)
+                condition_mask = condition_mask_fn(key_condition_mask, 1, self.get_theta_dim(), self.get_x_dim())[0]
                 samples = self.joint_sampler(key_sample)
                 conditioned_names = [
                     self.var_names[i]
@@ -228,7 +228,7 @@ class AllConditionalBMTask(AllConditionalTask):
                 
         return observation_generator
 
-    def get_thetas_xs(self, num_samples: int, rng=None):
+    def get_data(self, num_samples: int, rng=None):
         keys = jax.random.split(rng, (num_samples,))
         samples = jax.vmap(self.joint_sampler)(keys)
         thetas = jnp.concatenate(
@@ -237,7 +237,7 @@ class AllConditionalBMTask(AllConditionalTask):
         xs = jnp.concatenate(
             [samples[var] for var in self.var_names if "x" in var], axis=-1
         )
-        return thetas, xs
+        return {"theta":thetas, "x":xs}
 
     def _prepare_for_mcmc(self, key, condition_mask, x_o):
         conditioned_names = [
@@ -282,7 +282,7 @@ class AllConditionalBMTask(AllConditionalTask):
         conditional_sample_fn = self._get_conditional_sample_fn()
         joint_sample_fn = self._get_joint_sample_fn()
 
-        def sample_fn_wrapper(num_samples, x_o, rng, condition_mask, **kwargs):
+        def sample_fn_wrapper(num_samples, x_o, rng=None, condition_mask=None, **kwargs):
             rngs = jax.random.split(rng, (num_samples,))
             if jnp.any(condition_mask):
                 samples = conditional_sample_fn(rngs, condition_mask, x_o)

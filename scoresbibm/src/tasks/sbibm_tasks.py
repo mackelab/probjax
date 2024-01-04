@@ -32,13 +32,13 @@ class SBIBMTask(InferenceTask):
             raise NotImplementedError()
     
 
-    def get_thetas_xs(self, num_samples: int, **kwargs):
+    def get_data(self, num_samples: int, **kwargs):
         try:
             prior = self.get_prior()
             simulator = self.get_simulator()
             thetas = prior.sample((num_samples,))
             xs = simulator(thetas)
-            return thetas, xs
+            return {"theta":thetas, "x":xs}
         except:
             # If not implemented in JAX, use PyTorch
             old_backed = self.backend
@@ -54,7 +54,7 @@ class SBIBMTask(InferenceTask):
             elif self.backend == "jax":
                 thetas = jnp.array(thetas)
                 xs = jnp.array(xs)
-            return thetas, xs
+            return {"theta":thetas, "x":xs}
 
     def get_observation(self, index: int):
         if self.backend == "torch":
