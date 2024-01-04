@@ -52,7 +52,7 @@ def find_ancestors_jax(mask, node):
 
 
 
-@jax.jit
+@partial(jax.jit, static_argnums=(2,))
 def faithfull_mask(base_mask, condition_mask, conditioned_nodes="unchanged"):
     """ Faithfull mask update for conditioning"""
     
@@ -95,7 +95,7 @@ def faithfull_mask(base_mask, condition_mask, conditioned_nodes="unchanged"):
 
 
 
-@jax.jit
+@partial(jax.jit, static_argnums=(2,3))
 def min_faithfull_mask(mask, condition_mask, top_mode=0, conditioned_nodes="unchanged"):
     """ Minimally faithfull mask update for conditioning"""
     num_nodes = mask.shape[0]
@@ -108,17 +108,19 @@ def min_faithfull_mask(mask, condition_mask, top_mode=0, conditioned_nodes="unch
     #print(num_parents_or_childs)
     S = (num_parents_or_childs == 1) & (~condition_mask) # Frontier set
     M = jnp.zeros((num_nodes), dtype=jnp.bool_) # Marked nodes
-    
+
     def cond_fn(val):
         S, _, _, _ = val
         return jnp.any(S) 
     
     def body_fn(val):
         S, M, I, H = val
-        
         #print(S)
         # Find the node with the fewest edges added
-        v = min_fill_heuristic(mask, I, S, top_mode)
+        v = min_fill_heuristic(mask, I, S,M, top_mode)
+        # print("Frontal set: ",S)
+        # print("Marked: ", M)
+        # print("Selected: ",v)
         # Add edge in I between unmarked neighbours in I 
         neighbours_v = I[v,:] & (~M)
         I = I | (neighbours_v[:,None] & neighbours_v[None,:])
@@ -147,6 +149,7 @@ def min_faithfull_mask(mask, condition_mask, top_mode=0, conditioned_nodes="unch
     
     _,_,_, H = jax.lax.while_loop(cond_fn, body_fn, (S, M, I, H))
     H = H | jnp.eye(num_nodes, dtype=jnp.bool_)
+    H = jax.lax.cond(jnp.any(condition_mask), lambda x: x, lambda x: mask, H)
     
     # Conditioned nodes will keep the unconditional edges, hence each row of H where condition_mask is true should be equal to "mask"
     if conditioned_nodes == "unchanged":
@@ -162,8 +165,8 @@ def min_faithfull_mask(mask, condition_mask, top_mode=0, conditioned_nodes="unch
         
     
     
-@partial(jax.jit, static_argnums=(3,))
-def min_fill_heuristic(G, I, S, top_mode=0):
+@partial(jax.jit, static_argnums=(4,))
+def min_fill_heuristic(G, I, S, M, top_mode=0):
     """ Min-fill heuristic for finding a node to eliminate"""
     
     # 0 is child, 1 is parent
@@ -174,11 +177,17 @@ def min_fill_heuristic(G, I, S, top_mode=0):
     num_edges_added = I.sum(axis=DOWNSTREAM)
     num_edges_added = S * num_edges_added + (~S) * (I.shape[0] + 1)
     # Find the node that would add the fewest edges
-    # Additional constraint: Given the above, find the node with the fewest parents
+    # Additional constraint: Prefer marked parents
+    #print(num_edges_added)
     min_val = jnp.min(num_edges_added)
-    num_parents = G.sum(axis=UPSTREAM) * (num_edges_added == min_val) + (I.shape[0] + 1) * (num_edges_added != min_val)
-    #print(num_edges_added + num_parents)
-    node_to_eliminate = jnp.argmin(num_edges_added + num_parents)
+    marked_parents = -jnp.sum(M[None,:] & G, axis=DOWNSTREAM)
+    num_parents= marked_parents * (num_edges_added == min_val) + (I.shape[0] + 1) * (num_edges_added != min_val)
+    #node_to_eliminate = jnp.argmin(num_edges_added + num_parents)
+    #print(num_parents)
+    reversed_array = (num_parents)[::-1]
+    index = jnp.argmin(reversed_array)
+    node_to_eliminate = len(reversed_array) - 1 - index
+    
 
     return node_to_eliminate 
 
