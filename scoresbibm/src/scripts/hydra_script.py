@@ -17,6 +17,7 @@ from scoresbibm.src.tasks import get_task
 from scoresbibm.src.methods.method_base import get_method
 from scoresbibm.src.evaluation import get_metric, eval_inference_task, eval_all_conditional_task
 from scoresbibm.src.tasks.base_task import AllConditionalTask, InferenceTask
+from scoresbibm.src.tasks.unstructured_tasks import UnstructuredTask
 from scoresbibm.src.utils.data_utils import init_dir, generate_unique_model_id, save_model, save_summary
 
 
@@ -91,6 +92,9 @@ def score_sbi(cfg: DictConfig):
         
         if issubclass(type(task), InferenceTask):
             metric_values, eval_time = eval_inference_task(task, model, metric_fn, metric_params, rng_eval)
+        elif issubclass(task.__class__, UnstructuredTask):
+            metric_values = None 
+            eval_time = None
         elif issubclass(task.__class__, AllConditionalTask):
             metric_values, eval_time = eval_all_conditional_task(task, model, metric_fn, metric_params, rng_eval)
         else:

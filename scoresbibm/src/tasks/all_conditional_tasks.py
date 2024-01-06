@@ -201,6 +201,10 @@ class AllConditionalBMTask(AllConditionalTask):
 
     def get_x_dim(self):
         return sum([self.var_sizes[var] for var in self.var_names if "x" in var])
+    
+    def get_node_id(self):
+        dim = self.get_theta_dim() + self.get_x_dim()
+        return jnp.arange(dim)
 
     def get_observation_generator(self):
         condition_mask_fn = get_condition_mask_fn("structured_random")
