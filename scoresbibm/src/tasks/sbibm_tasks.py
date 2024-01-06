@@ -1,5 +1,6 @@
 from sbibm import get_task as _get_torch_task
 
+import torch
 import jax
 import jax.numpy as jnp
 
@@ -31,6 +32,12 @@ class SBIBMTask(InferenceTask):
         else:
             raise NotImplementedError()
     
+    def get_node_id(self):
+        dim = self.get_theta_dim() + self.get_x_dim()
+        if self.backend == "torch":
+            return torch.arange(dim)
+        else:
+            return jnp.arange(dim)
 
     def get_data(self, num_samples: int, **kwargs):
         try:

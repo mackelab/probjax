@@ -1,3 +1,4 @@
+from probjax.distributions.discrete import Dirac
 from scoresbibm.src.methods.models import AllConditionalReferenceModel
 from scoresbibm.src.tasks.all_conditional_tasks import AllConditionalTask
 import jax
@@ -7,12 +8,14 @@ import jax.random as jrandom
 from probjax.utils.odeint import _odeint
 from probjax.utils.jaxutils import ravel_args
 from probjax.core import joint_sample, log_potential_fn,rv 
-from probjax.distributions import Normal, Uniform, Independent
+from probjax.distributions import Normal, Uniform, Independent, MultivariateNormal
 from probjax.distributions.transformed_distribution import TransformedDistribution
 from probjax.inference.mcmc import MCMC 
 from probjax.inference.marcov_kernels import HMCKernel, GaussianMHKernel, SliceKernel, LangevianMHKernel
 
 from functools import partial
+
+from scoresbibm.src.utils.condition_masks import get_condition_mask_fn
 
 def drift_lotka_volterra(t, data, alpha,beta, gamma, delta):
     predator, prey = data
@@ -20,7 +23,53 @@ def drift_lotka_volterra(t, data, alpha,beta, gamma, delta):
     d_prey = -gamma * prey + delta * predator * prey
     return d_predator, d_prey
 
-def lotka_volterra(time_start = 0,time_end = 20, eval_time_points=200):
+
+def rbf_kernel(x1, x2, l = 6., sigma_f=3.):
+    dists = (x1[None, :]- x2[:, None])**2
+    return sigma_f**2 * jnp.exp(-0.5 * dists / l**2) + 1e-5 * jnp.eye(x1.shape[0])
+
+def betas_gp(key, t, kernel_fn=rbf_kernel):
+    K = kernel_fn(t,t)
+    p0 = MultivariateNormal(jnp.zeros_like(t), K)
+    p = TransformedDistribution(p0, lambda x: jax.nn.sigmoid(x))
+    return rv(p, name="theta2")(key)
+
+def beta_fn(t,ts, betas):
+    y = jnp.interp(t, ts, betas)
+    return y
+
+def sir_model(t, y, gamma, delta, betas, ts_betas):
+    S, I, R,D = y
+    dSdt = -beta_fn(t, ts_betas,betas) * S * I
+    dIdt = beta_fn(t, ts_betas,betas) * S * I - (gamma + delta) * I
+    dRdt = gamma * I
+    dDdt = delta * I
+    return dSdt, dIdt, dRdt,dDdt
+
+def lotka_volterra(time_start = 0,time_end = 20, eval_time_points=150, num_timepoints=30):
+    
+    
+        def subsample_data(key, data_batch, node_id, meta_data):
+            num_devices = data_batch.shape[0]
+            batch_size = data_batch.shape[1]
+            data_batch = data_batch.reshape((num_devices * batch_size, -1, 1))
+            n = num_devices * batch_size
+            key_t1, key_t2 = jrandom.split(key, 2)
+            ts_dense = jnp.linspace(time_start, time_end, eval_time_points) 
+            # Random time points 
+            ts1 = jrandom.uniform(key_t1, (n , num_timepoints), minval=time_start, maxval=time_end)
+            ts2 = jrandom.uniform(key_t2, (n , num_timepoints), minval=time_start, maxval=time_end)
+            predator = data_batch[:, 4:4+eval_time_points,0]
+            prey = data_batch[:, 4+eval_time_points:,0]
+            predator = jax.vmap(lambda *args: jnp.interp(*args), in_axes=(0, None, 0))(ts1, ts_dense, predator)
+            prey = jax.vmap(lambda *args: jnp.interp(*args), in_axes=(0, None, 0))(ts2, ts_dense, prey)
+
+            node_ids = jnp.array([0, 1, 2, 3] + [4] * num_timepoints + [5] * num_timepoints)
+            node_ids = jnp.repeat(node_ids[None, ...], num_devices, axis=0)
+            node_metadata = jnp.concatenate([jnp.full((n, 4), jnp.nan),ts1, ts2], axis=1).reshape((num_devices, batch_size, -1, 1))
+            full_data = jnp.concatenate([data_batch[:, :4,0], predator, prey], axis=1).reshape((num_devices, batch_size, -1, 1))
+            return full_data, node_ids, node_metadata
+
 
         def dense_meta_data():
             ts_dense = jnp.linspace(time_start, time_end, eval_time_points)
@@ -43,24 +92,74 @@ def lotka_volterra(time_start = 0,time_end = 20, eval_time_points=200):
             
             x0 = rv(Independent(Normal(predator_observed_mean, 0.01),1), name="x0")(key_predator)
             x1 = rv(Independent(Normal(prey_observed_mean, 0.01),1), name="x1")(key_prey)
+            
+            # x0_dense = rv(Dirac(predator), name="x0_dense")(key_predator)
+            # x1_dense = rv(Dirac(prey), name="x1_dense")(key_prey)
         
         
         var_names = ["theta0", "theta1", "theta2", "theta3", "x0", "x1"]
         
-        return model, dense_meta_data, var_names
+        return model, dense_meta_data, subsample_data, var_names
         
     
 
 class UnstructuredTask(AllConditionalTask):
     
-    def __init__(self, name: str, builder, backend: str = "jax") -> None:
-        model, meta_data, var_names = builder()
+    def __init__(self, name: str, builder, backend: str = "jax", **kwargs) -> None:
+        model, meta_data, subsampler, var_names = builder(**kwargs)
         self.var_names = var_names
         self.model = model
+        self.subsampler = subsampler
         self.dense_meta_data = meta_data()
-        self.joint_sampler = joint_sample(model)
+        self.joint_sampler = joint_sample(model, rvs=self.var_names)
+        
+        self.ravel_condition_mask = lambda x: x
+        self.unravel_condition_mask = lambda x: x
+        
+        self.ravel_meta_data = lambda x: x
+        self.unravel_meta_data = lambda x: x
         
         super().__init__(name, backend)
+        
+    def sample_meta_data(self, key):
+        raise NotImplementedError()
+        
+    def get_observation_generator(self):
+        condition_mask_fn = get_condition_mask_fn("structured_random")
+        def observation_generator(key):
+            while True:
+                key, key_sample, key_condition_mask, key_meta_data = jax.random.split(key,4)
+                condition_mask = condition_mask_fn(key_condition_mask, 1, self.get_theta_dim(), self.get_x_dim())[0]
+                condition_mask = self.ravel_condition_mask(condition_mask)
+                condition_mask = jax.lax.cond(jnp.all(condition_mask), lambda x: jnp.zeros_like(x), lambda x: x, condition_mask)
+                meta_data = self.sample_meta_data(key_meta_data)
+                
+                samples = self.joint_sampler(key_sample, *meta_data)
+                conditioned_names = [
+                    self.var_names[i]
+                    for i in range(len(self.var_names))
+                    if condition_mask[i]
+                ]
+                try:
+                    x_o = jnp.concatenate(
+                        [samples[var] for var in conditioned_names], axis=-1
+                    )
+                except:
+                    x_o = jnp.array([])
+                theta_o = jnp.concatenate(
+                    [samples[var] for var in self.var_names if var not in conditioned_names], axis=-1
+                )
+                x_o = x_o.flatten()
+                theta_o = theta_o.flatten()
+                condition_mask = self.unravel_condition_mask(condition_mask)
+                meta_data = self.ravel_meta_data(*meta_data)
+                node_id = jnp.array([0, 1, 2, 3] + [4] * self.num_timepoints + [5] * self.num_timepoints)
+                
+                
+                yield (condition_mask, x_o, theta_o, meta_data, node_id)
+                
+        return observation_generator
+        
         
     def get_data(self, num_samples: int, rng=None):
         rngs = jax.random.split(rng, (num_samples,))
@@ -69,47 +168,69 @@ class UnstructuredTask(AllConditionalTask):
         thetas = jnp.concatenate([samples[var] for var in self.var_names if var.startswith("theta")], axis=-1)
         xs = jnp.concatenate([samples[var] for var in self.var_names if var.startswith("x")], axis=-1)
         dense_meta_data = jnp.concatenate([self.dense_meta_data[var] for var in self.var_names], axis=-1)
-        data = {"thetas": thetas, "xs": xs, "metadata":dense_meta_data}
+        data = {"theta": thetas, "x": xs, "metadata":dense_meta_data}
 
         return data
+    
+    def get_base_mask_fn(self):
+        return lambda node_ids, node_meta_data: None
+    
+    def get_batch_sampler(self):
+        base_batch_sampler = super().get_batch_sampler()
+        
+        @partial(jax.jit, static_argnums=(1, 5))
+        def batch_sampler(key, batch_size, data, node_id, meta_data=None, num_devices=1):
+            data, node_id, meta_data = base_batch_sampler(key, batch_size, data, node_id, meta_data, num_devices)
+            return self.subsampler(key, data, node_id, meta_data)
+        return batch_sampler
+    
         
     
-    def _prepare_for_mcmc(self, key, condition_mask, x_o, *x_meta_data):
-        conditioned_names = [self.var_names[i] for i in range(len(self.var_names)) if condition_mask[i]]
-        conditioned_nodes = {var: val for var, val in zip(conditioned_names, x_o)}
-        
+    def _prepare_for_mcmc(self, key, condition_mask, x_o, meta_data):
+        condition_mask = self.unravel_condition_mask(condition_mask)
+        meta_data = self.unravel_meta_data(meta_data)
 
-        init_vals = self.joint_sampler(key, *x_meta_data)
+    
+        init_vals = self.joint_sampler(key, *meta_data)
+
+
+        conditioned_names = [self.var_names[i] for i in range(len(self.var_names)) if condition_mask[i]]
+        varsizes = jnp.array([init_vals[var].shape[-1] for var in conditioned_names])
+        x_o_split = jnp.split(x_o, jnp.cumsum(varsizes)[:-1], axis=-1)
+        
+        conditioned_nodes = {var: x_o_split[i] for i, var in enumerate(conditioned_names)}
 
         for var in conditioned_nodes:
             del init_vals[var]
 
         init_vals_flat, unravel = ravel_args(init_vals)
-        potential_fn = log_potential_fn(self.model, *x_meta_data)
+        potential_fn = log_potential_fn(self.model, *meta_data)
+        
+        print(init_vals.keys(), conditioned_nodes.keys())
+        
+        @jax.jit
+        def potential_fn_wrapper(vals):
+            vals = unravel(vals)
+            return potential_fn(**vals, **conditioned_nodes) 
 
-        return init_vals_flat, potential_fn, unravel
+        return init_vals_flat, potential_fn_wrapper
         
     def _get_conditional_sample_fn(self):
         raise NotImplementedError
 
     def _get_joint_sample_fn(self):
-        @partial(jax.vmap, in_axes = [0, None, None])
-        def sample_fn(key, ts1, ts2, *args, **kwargs):
-            samples = self.joint_sampler(key)
-            return jnp.concatenate([samples[var] for var in self.var_names], axis=-1)
-
-        return sample_fn
+        raise NotImplementedError
 
     def get_reference_sampler(self):
         conditional_sample_fn = self._get_conditional_sample_fn()
         joint_sample_fn = self._get_joint_sample_fn()
 
-        def sample_fn_wrapper(num_samples, x_o, rng=None, condition_mask=None, **kwargs):
+        def sample_fn_wrapper(num_samples, x_o, rng=None, condition_mask=None, meta_data=None, **kwargs):
             rngs = jax.random.split(rng, (num_samples,))
             if jnp.any(condition_mask):
-                samples = conditional_sample_fn(rngs, condition_mask, x_o)
+                samples = conditional_sample_fn(rngs, condition_mask, x_o, meta_data)
             else:
-                samples = joint_sample_fn(rngs)
+                samples = joint_sample_fn(rngs, meta_data)
             return samples
 
         model = AllConditionalReferenceModel(sample_fn_wrapper)
@@ -117,28 +238,83 @@ class UnstructuredTask(AllConditionalTask):
         return model
         
     
-    
 class LotkaVolterraTask(UnstructuredTask):
     
-    def __init__(self, backend: str = "jax") -> None:
-        super().__init__("lotka_volterra", lotka_volterra, backend)
+    def __init__(self, time_start = 0,time_end = 20, eval_time_points=150, num_timepoints=20, backend: str = "jax") -> None:
+        self.time_start = time_start
+        self.time_end = time_end
+        self.eval_time_points = eval_time_points
+        self.num_timepoints = num_timepoints
+        super().__init__("lotka_volterra", lotka_volterra,backend= backend, time_start = time_start,time_end = time_end, eval_time_points=eval_time_points, num_timepoints=num_timepoints)
         
+        def ravel_meta_data(*meta_data):
+            return jnp.concatenate((jnp.full((4,), jnp.nan), *meta_data))
+        
+        def unravel_meta_data(meta_data):
+            return jnp.split(meta_data[4:], 2, axis=-1)
+        
+        def ravel_condition_mask(condition_mask):
+            mask_theta, mask_x0, mask_x1 = jnp.split(condition_mask, [4, 4 + self.num_timepoints], axis=-1)
+            mask_x0 = jnp.any(mask_x0)[None]
+            mask_x1 = jnp.any(mask_x1)[None]
+            return jnp.concatenate((mask_theta, mask_x0, mask_x1))
+        
+        def unravel_condition_mask(condition_mask):
+            mask_theta, mask_x0, mask_x1 = jnp.split(condition_mask, [4, 5], axis=-1)
+            mask_x0 = jnp.repeat(mask_x0, self.num_timepoints, axis=-1)
+            mask_x1 = jnp.repeat(mask_x1, self.num_timepoints, axis=-1)
+            return jnp.concatenate((mask_theta, mask_x0, mask_x1))
+            
+        self.ravel_meta_data = ravel_meta_data
+        self.unravel_meta_data = unravel_meta_data
+        self.ravel_condition_mask = ravel_condition_mask
+        self.unravel_condition_mask = unravel_condition_mask
+        
+    def get_node_id(self):
+        num_timepoints = self.dense_meta_data["x0"].shape[0]
+        return jnp.array([0, 1, 2, 3] + [4] * num_timepoints + [5] * num_timepoints)
+    
+    def get_x_dim(self):
+        return 2* self.num_timepoints
+    
+    def get_theta_dim(self):
+        return 4
+    
+    def sample_meta_data(self, key):
+        ts1 = jrandom.uniform(key, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
+        ts2 = jrandom.uniform(key, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
+        ts1 = jnp.sort(ts1)
+        ts2 = jnp.sort(ts2)
+        return (ts1, ts2)    
+    
     def _get_conditional_sample_fn(self):
         
-        @partial(jax.vmap, in_axes = [0, None, None, None, None])
-        def sample_fn(key, condition_mask, x_o, x_meta_data):
+        @partial(jax.vmap, in_axes = [0, None, None, None])
+        def sample_fn(key, condition_mask, x_o, meta_data, **kwargs):
+            key_init, key_sample = jax.random.split(key, 2)
+            init_vals_flat, potential_fn_wrapper = self._prepare_for_mcmc(key_init, condition_mask, x_o, meta_data)
 
-            init_vals_flat, potential_fn_wrapper, unravel = self._prepare_for_mcmc(key, condition_mask, x_o, *x_meta_data)
-
-            kernel = HMCKernel(step_size=1e-8)
+            kernel = HMCKernel(step_size=1e-5)
             kernel2 = GaussianMHKernel(step_size=0.5)
-            state = kernel.init_state(key,init_vals_flat)
+            kernel3 = SliceKernel(step_size=0.1)
+            state = kernel.init_state(key_sample,init_vals_flat)
             mcmc = MCMC(kernel, potential_fn_wrapper)
             mcmc2 = MCMC(kernel2, potential_fn_wrapper)
-            samples, state = mcmc.run(state, 200)
+            mcmc3 = MCMC(kernel3, potential_fn_wrapper)
+            samples, state = mcmc.run(state, 1000)
             samples, state = mcmc2.run(state, 2000)
+            samples, state = mcmc3.run(state, 1000)
             return samples
         
+        return sample_fn
+    
+    def _get_joint_sample_fn(self):
+        @partial(jax.vmap, in_axes = [0, None])
+        def sample_fn(key, meta_data, **kwargs):
+            ts1, ts2 = self.unravel_meta_data(meta_data)
+            samples = self.joint_sampler(key, ts1, ts2)
+            return jnp.concatenate([samples[var] for var in self.var_names], axis=-1)
+
         return sample_fn
         
         
