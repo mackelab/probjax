@@ -206,8 +206,8 @@ class AllConditionalBMTask(AllConditionalTask):
         dim = self.get_theta_dim() + self.get_x_dim()
         return jnp.arange(dim)
 
-    def get_observation_generator(self):
-        condition_mask_fn = get_condition_mask_fn("structured_random")
+    def get_observation_generator(self, condition_mask_fn="structured_random"):
+        condition_mask_fn = get_condition_mask_fn(condition_mask_fn)
         def observation_generator(key):
             while True:
                 key, key_sample, key_condition_mask = jax.random.split(key,3)

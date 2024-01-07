@@ -4,4 +4,3 @@
 defaults:
    - metric:
       - c2st
-   - condition_mask_fn: structured_random

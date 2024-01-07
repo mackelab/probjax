@@ -9,6 +9,10 @@ import time
 
 def eval_inference_task(task: InferenceTask, model, metric_fn, metric_params, rng):
     metric_values = []
+    metric_params = dict(metric_params)
+    condition_mask_fn = metric_params.pop("condition_mask_fn", "structured_random")
+    if condition_mask_fn != "posterior":
+        return None, None
     average_sampling_time = 0
     for i in task.observations:
         rng_metric, rng_metric_i = jax.random.split(rng)
@@ -27,8 +31,10 @@ def eval_inference_task(task: InferenceTask, model, metric_fn, metric_params, rn
 def eval_all_conditional_task(task: AllConditionalTask, model, metric_fn, metric_params, rng, num_samples=2000, num_evaluations=100):
     metric_values = []
     average_sampling_time = 0
+    metric_params = dict(metric_params)
+    condition_mask_fn = metric_params.pop("condition_mask_fn", "structured_random")
     reference_sampler = task.get_reference_sampler()
-    observation_generator = task.get_observation_generator()
+    observation_generator = task.get_observation_generator(condition_mask_fn=condition_mask_fn)
     
     rng, rng_obs = jax.random.split(rng)
     observation_stream = observation_generator(rng_obs)
