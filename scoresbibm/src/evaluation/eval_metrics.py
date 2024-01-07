@@ -27,7 +27,7 @@ def wasserstein2(x, y, rng=None, mc_samples=None, **kwargs):
 
 
 def get_metric(name:str):
-    if name == "c2st":
+    if "c2st" in name:
         return c2st
     elif name == "wasserstein2":
         return wasserstein2

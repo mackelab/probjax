@@ -2,7 +2,7 @@
 
 from src.tasks.sbibm_tasks import LinearGaussian, MixtureGaussian, TwoMoons, SLCP
 from scoresbibm.src.tasks.all_conditional_tasks import TwoMoonsAllConditionalTask, SLCPAllConditionalTask, NonlinearGaussianTreeAllConditionalTask, NonlinearMarcovChainAllConditionalTask
-from scoresbibm.src.tasks.unstructured_tasks import LotkaVolterraTask
+from scoresbibm.src.tasks.unstructured_tasks import LotkaVolterraTask, SIRTask
 
 
 def get_task(name: str, backend: str = "jax"):
@@ -24,5 +24,7 @@ def get_task(name: str, backend: str = "jax"):
         return NonlinearMarcovChainAllConditionalTask(backend=backend)
     elif name == "lotka_volterra":
         return LotkaVolterraTask(backend=backend)
+    elif name == "sir":
+        return SIRTask(backend=backend)
     else:
         raise NotImplementedError()

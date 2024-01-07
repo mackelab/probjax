@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from probjax.utils.sdeint import sdeint
 from probjax.utils.odeint import odeint, _odeint
 
+from scoresbibm.src.methods.guidance import register_classifier_free_guidance, register_generalized_guidance, register_naive_inpaint_guidance, register_repaint_step_fn
 
 class Model(ABC):
     """
@@ -475,11 +476,53 @@ class AllConditionalScoreModel(AllConditionalModel):
             + mean_end_per_node[node_id]
         )
         condition_mask = condition_mask.reshape(x_T.shape[-1])
-        x_T = x_T.at[..., condition_mask].set(x_o.reshape(-1))
         
         sampling_method = sampling_kwargs.pop("sampling_method")
         if sampling_method == "sde":
+            x_T = x_T.at[..., condition_mask].set(x_o.reshape(-1))
             drift, diffusion = self._init_backward_sde(node_id, condition_mask, edge_mask, meta_data=meta_data)
+            keys = jax.random.split(key2, (num_samples,))
+            ys = jax.vmap(
+                lambda *args: sdeint(*args, noise_type="diagonal",  **sampling_kwargs),
+                in_axes=(0, None, None, 0, None),
+                out_axes=0,
+            )(
+                keys,
+                drift,
+                diffusion,
+                x_T,
+                jnp.linspace(0.0, self.T_max - self.T_min, num_steps),
+            )
+            final_samples = ys[:, -1, ...][:, ~condition_mask]
+            final_samples = final_samples.reshape((num_samples, -1))
+            return final_samples
+        elif sampling_method == "ode":
+            x_T = x_T.at[..., condition_mask].set(x_o.reshape(-1))
+            drift = self._init_backward_ode(node_id, condition_mask, edge_mask, meta_data=meta_data)
+            ys = jax.vmap(lambda *args:_odeint(*args, **sampling_kwargs), in_axes=(None, 0, None))(drift, x_T, jnp.linspace(0.0, self.T_max - self.T_min, num_steps))
+            final_samples = ys[:, -1, ...][:, ~condition_mask]
+            final_samples = final_samples.reshape((num_samples, -1))
+            return final_samples
+        elif sampling_method in ["repaint", "classifier_free_guidance", "naive_inpaint_guidance","generalized_guidance"]:
+            if sampling_method == "repaint":
+                register_repaint_step_fn(self, condition_mask, x_o)
+                sampling_kwargs["method"] = "repaint"
+                drift, diffusion = self._init_backward_sde(node_id, jnp.zeros_like(condition_mask), edge_mask, meta_data=meta_data)
+            elif sampling_method == "classifier_free_guidance":
+                register_classifier_free_guidance(self, condition_mask, x_o)
+                drift, diffusion = self._init_backward_sde(node_id, jnp.zeros_like(condition_mask), edge_mask, meta_data=meta_data)
+            elif sampling_method == "naive_inpaint_guidance":
+                register_naive_inpaint_guidance(self, condition_mask, x_o)
+                x_T = x_T.at[..., condition_mask].set(x_o.reshape(-1))
+                drift, diffusion = self._init_backward_sde(node_id, condition_mask, edge_mask, meta_data=meta_data)
+            elif sampling_method == "generalized_guidance":
+                score_manipulator = sampling_kwargs.pop("score_manipulator")
+                score_manipulator_kwargs = sampling_kwargs.pop("score_manipulator_kwargs")
+                register_generalized_guidance(self, condition_mask, x_o, score_manipulator=score_manipulator, **score_manipulator_kwargs)
+                drift, diffusion = self._init_backward_sde(node_id, jnp.zeros_like(condition_mask), edge_mask, meta_data=meta_data)
+            else:
+                raise NotImplementedError()
+                
             keys = jax.random.split(key2, (num_samples,))
             ys = jax.vmap(
                 lambda *args: sdeint(*args, noise_type="diagonal", **sampling_kwargs),
@@ -494,12 +537,8 @@ class AllConditionalScoreModel(AllConditionalModel):
             )
             final_samples = ys[:, -1, ...][:, ~condition_mask]
             final_samples = final_samples.reshape((num_samples, -1))
-            return final_samples
-        elif sampling_method == "ode":
-            drift = self._init_backward_ode(node_id, condition_mask, edge_mask, meta_data=meta_data)
-            ys = jax.vmap(lambda *args:_odeint(*args, **sampling_kwargs), in_axes=(None, 0, None))(drift, x_T, jnp.linspace(0.0, self.T_max - self.T_min, num_steps))
-            final_samples = ys[:, -1, ...][:, ~condition_mask]
-            final_samples = final_samples.reshape((num_samples, -1))
+            self.score_fn = self.model_fn
+            #return ys
             return final_samples
         else:
             raise NotImplementedError()
