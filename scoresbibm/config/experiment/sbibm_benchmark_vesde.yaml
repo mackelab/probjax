@@ -1,12 +1,13 @@
 # @package _global_
-name: benchmark_vesde
+name: benchmark_vesde2
 
 hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      method: score_transformer,score_transformer_graphical,score_transformer_posterior
+      method: score_transformer,score_transformer_posterior,score_transformer_min_graphical
       method/sde: vesde
+      method/model: score_transformer_small
       task: gaussian_linear,gaussian_mixture,two_moons,slcp
       task.num_simulations: 1000,10000,100000
     
