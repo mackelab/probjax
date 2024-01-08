@@ -5,11 +5,12 @@ import optax
 
 from functools import partial
 from probjax.nn.loss_fn import denoising_score_matching_loss
-from probjax.utils.graph import faithfull_mask, min_faithfull_mask
 from scoresbibm.src.methods.sde import init_sde_related
 from scoresbibm.src.methods.models import AllConditionalScoreModel
 from scoresbibm.src.methods.neural_nets import scalar_transformer_model
+from scoresbibm.src.tasks.base_task import base_batch_sampler
 from scoresbibm.src.utils.condition_masks import get_condition_mask_fn
+from scoresbibm.src.utils.edge_masks import get_edge_mask_fn
 
 
 def run_train_transformer_model(
@@ -18,6 +19,7 @@ def run_train_transformer_model(
     opt_state,
     data,
     node_id,
+    meta_data,
     total_number_steps,
     batch_size,
     update,
@@ -36,13 +38,24 @@ def run_train_transformer_model(
 
     # Validation loss
     data_val, data_train = jnp.split(
-        data, [max(int(validation_fraction * data.shape[0]), 1)], axis=0
+        data, [max(int(validation_fraction * data.shape[0]), 0)], axis=0
     )
     data_val = jnp.repeat(
         data_val, val_repeat, axis=0
     )  # Multiple Monte Carlo samples for validation loss
+    if meta_data is not None and meta_data.ndim > 2:
+        meta_data_val, meta_data_train = jnp.split(
+            meta_data, [max(int(validation_fraction * data.shape[0]), 1)], axis=0
+        )
+        meta_data_val = jnp.repeat(
+            meta_data_val, val_repeat, axis=0
+        )  # Multiple Monte Carlo samples for validation loss
+    else:
+        meta_data_val = meta_data
+        meta_data_train = meta_data
+    
     sampler = partial(
-        batch_sampler, data=data_train, node_id=node_id, num_devices=num_devices
+        batch_sampler, data=data_train, node_id=node_id, meta_data=meta_data_train, num_devices=num_devices
     )
 
     # Replicated for multiple devices
@@ -60,13 +73,14 @@ def run_train_transformer_model(
 
     for j in range(total_number_steps):
         key, key_batch, key_update, key_val = jax.random.split(key, 4)
-        data_batch, node_id_batch = sampler(key_batch, batch_size_per_device)
+        data_batch, node_id_batch, meta_data_batch = sampler(key_batch, batch_size_per_device)
         loss, replicated_params, replicated_opt_state = update(
             replicated_params,
             replicated_opt_state,
             jax.random.split(key_update, (num_devices,)),
             data_batch,
             node_id_batch,
+            meta_data_batch,
         )
         # Train loss
         if j == 0:
@@ -81,6 +95,7 @@ def run_train_transformer_model(
                 key_val,
                 data_val,
                 node_id,
+                meta_data_val,
             )
 
             if l_val / l_train > val_error_ratio:
@@ -105,53 +120,11 @@ def run_train_transformer_model(
 
     params = jax.tree_map(lambda x: x[0], replicated_params)
     opt_state = jax.tree_map(lambda x: x[0], replicated_opt_state)
-    
+
     del replicated_opt_state
     del replicated_params
-    
+
     return params, opt_state
-
-
-partial(jax.jit, static_argnums=(1, 4))
-def base_batch_sampler(key, batch_size, data, node_id, num_devices=1):
-    assert data.ndim == 3, "Data must be 3D, (num_samples, num_nodes, dim)"
-    assert (
-        node_id.ndim == 2 or node_id.ndim == 1
-    ), "Node id must be 2D or 1D, (num_nodes, dim) or (num_nodes,)"
-
-    data_batch = jax.random.choice(key, data, shape=(num_devices, batch_size), axis=0)
-    node_id_batch = jnp.repeat(node_id[None, ...], num_devices, axis=0).astype(
-        jnp.int32
-    )
-
-    return data_batch, node_id_batch
-
-
-def get_edge_mask_fn(name, task):
-    base_mask_fn = task.get_base_mask_fn()
-    if name.lower() == "faithfull":
-
-        def faithfull_edge_mask(node_id, condition_mask):
-            base_mask = base_mask_fn(node_id, None)
-            return jax.vmap(faithfull_mask, in_axes=(None, 0))(
-                base_mask, condition_mask
-            )
-
-        return faithfull_edge_mask
-    elif name.lower() == "min_faithfull":
-        def min_faithfull_edge_mask(node_id, condition_mask):
-            base_mask = base_mask_fn(node_id, None)
-    
-            return jax.vmap(min_faithfull_mask, in_axes=(None, 0))(
-                base_mask, condition_mask
-            )
-
-        return min_faithfull_edge_mask
-    elif name.lower() == "none":
-        return lambda node_id, condition_mask, *args: None
-    else:
-        raise NotImplementedError()
-
 
 
 def train_transformer_model(task, data, method_cfg, rng):
@@ -162,10 +135,14 @@ def train_transformer_model(task, data, method_cfg, rng):
 
     # Data
     thetas, xs = data["theta"], data["x"]
+    metadata = data.get("metadata", None)
     data = jnp.hstack([thetas, xs])
-    theta_dim = thetas.shape[-1]
-    x_dim = xs.shape[-1]
+    node_id = task.get_node_id()
+    theta_dim = task.get_theta_dim()
+    x_dim = task.get_x_dim()
     data = data[..., None]
+    if metadata is not None:
+        metadata = metadata[..., None]
 
     # Initialize stuff
     sde, T_min, T_max, _weight_fn, output_scale_fn = init_sde_related(
@@ -179,9 +156,13 @@ def train_transformer_model(task, data, method_cfg, rng):
     )
 
     rng, rng_init = jax.random.split(rng)
-    node_id = jnp.arange(theta_dim + x_dim)
     params = init_fn(
-        rng_init, jnp.ones((10,)), data[:10], node_id, jnp.zeros_like(data[:10])
+        rng_init,
+        jnp.ones((10,)),
+        data[:10],
+        node_id,
+        jnp.zeros_like(data[:10]),
+        meta_data=metadata,
     )
 
     # Training params
@@ -200,7 +181,10 @@ def train_transformer_model(task, data, method_cfg, rng):
     val_every = total_number_steps // train_params["val_every"]
     learning_rate = train_params["learning_rate"]
     schedule = optax.linear_schedule(
-        learning_rate, train_params["min_learning_rate"], total_number_steps // 2, total_number_steps // 2
+        learning_rate,
+        train_params["min_learning_rate"],
+        total_number_steps // 2,
+        total_number_steps // 2,
     )
     optimizer = optax.chain(
         optax.adaptive_grad_clip(train_params["clip_max_norm"]), optax.adam(schedule)
@@ -209,15 +193,16 @@ def train_transformer_model(task, data, method_cfg, rng):
 
     condition_mask_params = dict(train_params["condition_mask_fn"])
     edge_mask_params = dict(train_params["edge_mask_fn"])
-    
+
     # Get possible condition and edge mask functions
     condition_mask_fn = get_condition_mask_fn(
         condition_mask_params.pop("name", "structured"), **condition_mask_params
     )
-    edge_mask_fn = get_edge_mask_fn(edge_mask_params.pop("name"), task)
+    edge_mask_fn = get_edge_mask_fn(edge_mask_params["name"], task)
 
     # Training loop
-    def loss_fn(params, key, data, node_id):
+    @jax.jit
+    def loss_fn(params, key, data, node_id, meta_data=None):
         key_times, key_loss, key_condition = jax.random.split(key, 3)
         times = jax.random.uniform(
             key_times, (data.shape[0],), minval=T_min, maxval=T_max
@@ -241,13 +226,14 @@ def train_transformer_model(task, data, method_cfg, rng):
             weight_fn=weight_fn,
             data_id=node_id,
             condition_mask=condition_mask,
+            meta_data=meta_data,
             edge_mask=edge_mask,
         )
         return loss
 
     @partial(jax.pmap, axis_name="num_devices")
-    def update(params, opt_state, key, data, node_id):
-        loss, grads = jax.value_and_grad(loss_fn)(params, key, data, node_id)
+    def update(params, opt_state, key, data, node_id, meta_data):
+        loss, grads = jax.value_and_grad(loss_fn)(params, key, data, node_id, meta_data)
 
         loss = jax.lax.pmean(loss, axis_name="num_devices")
         grads = jax.lax.pmean(grads, axis_name="num_devices")
@@ -257,13 +243,14 @@ def train_transformer_model(task, data, method_cfg, rng):
         return loss, params, opt_state
 
     rng, rng_train = jax.random.split(rng)
-    batch_sampler = partial(base_batch_sampler, data=data, node_id=node_id)
+    batch_sampler = task.get_batch_sampler()
     params, opt_state = run_train_transformer_model(
         rng_train,
         params,
         opt_state,
         data,
         node_id,
+        metadata,
         total_number_steps,
         batch_size,
         update,
@@ -276,14 +263,19 @@ def train_transformer_model(task, data, method_cfg, rng):
         stop_early_count=train_params["stop_early_count"],
     )
 
-    sde_init_params = {"data": jax.device_put(data, jax.devices("cpu")[0]) , **dict(method_cfg.sde)}
+    sde_init_params = {
+        "data": jax.device_put(data, jax.devices("cpu")[0]),
+        **dict(method_cfg.sde),
+    }
     model_init_params = {"num_nodes": theta_dim + x_dim, **dict(method_cfg.model)}
+    edge_mask_params["task"] = task.name
     model = AllConditionalScoreModel(
         params,
         model_fn,
         sde,
         sde_init_params=sde_init_params,
         model_init_params=model_init_params,
+        edge_mask_fn_params=edge_mask_params,
     )
     # Posterior as default
     default_conditon_mask = jnp.array([0] * theta_dim + [1] * x_dim, dtype=jnp.bool_)
