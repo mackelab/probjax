@@ -6,9 +6,8 @@ import jax.numpy as jnp
 
 from probjax.utils.sdeint import sdeint
 from probjax.utils.odeint import odeint, _odeint
-from scoresbibm.src.methods.neural_nets import conditional_mlp, scalar_transformer_model
-from scoresbibm.src.methods.sde import init_sde_related
 
+from scoresbibm.src.methods.guidance import register_classifier_free_guidance, register_generalized_guidance, register_naive_inpaint_guidance, register_repaint_step_fn
 
 class Model(ABC):
     """
@@ -375,6 +374,8 @@ class ScorePosteriorModel(PosteriorModel):
         return state
 
     def __setstate__(self, state):
+        from scoresbibm.src.methods.neural_nets import conditional_mlp
+        from scoresbibm.src.methods.sde import init_sde_related
         self.__dict__.update(state)
         self.sde, self.T_min, self.T_max, _, output_scale_fn = init_sde_related(
             **self.sde_init_params
@@ -399,11 +400,12 @@ class AllConditionalReferenceModel(AllConditionalModel):
 
 class AllConditionalScoreModel(AllConditionalModel):
     def __init__(
-        self, params, model_fn, sde, sde_init_params, model_init_params
+        self, params, model_fn, sde, sde_init_params, model_init_params, edge_mask_fn_params
     ) -> None:
         self.params = params
         self.model_fn = model_fn
         self.sde = sde
+        self.edge_mask_fn_params = edge_mask_fn_params
 
         self.T_min = sde_init_params["T_min"]
         self.T_max = sde_init_params["T_max"]
@@ -416,6 +418,7 @@ class AllConditionalScoreModel(AllConditionalModel):
         # For sampling
         self.edge_mask = None
         self.edge_mask_fn = None
+        self.meta_data = None
         self.score_fn = self.model_fn  # For score modifcations ...
         self.sampling_kwargs = {"num_steps": 500, "sampling_method": "sde"}
 
@@ -430,6 +433,12 @@ class AllConditionalScoreModel(AllConditionalModel):
             if self.edge_mask_fn is not None:
                 edge_mask = self.edge_mask_fn(node_id, condition_mask[None, ...])
         return edge_mask
+    
+    def _check_for_meta_data(self, meta_data):
+        if meta_data is None:
+            if self.meta_data is not None:
+                meta_data = self.meta_data
+        return meta_data
 
     def _sample(
         self,
@@ -438,17 +447,23 @@ class AllConditionalScoreModel(AllConditionalModel):
         num_steps=None,
         node_id=None,
         condition_mask=None,
+        meta_data=None,
         edge_mask=None,
         rng=None,
         **kwargs
     ):
         edge_mask = self._check_edge_mask(edge_mask, node_id, condition_mask)
+        meta_data = self._check_for_meta_data(meta_data)
         sampling_kwargs = {**self.sampling_kwargs, **kwargs}
         if num_steps is None:
             num_steps = sampling_kwargs.pop("num_steps")
         else:
             sampling_kwargs.pop("num_steps")
         key1, key2 = jax.random.split(rng, 2)
+        unique_node_id = jnp.unique(node_id)
+        mean_end_per_node = jnp.array([jnp.mean(self.marginal_end_std[self.node_id ==i]) for i in unique_node_id])
+        std_end_per_node = jnp.array([jnp.mean(self.marginal_end_std[self.node_id ==i]) for i in unique_node_id])
+        
         x_T = (
             jax.random.normal(
                 key1,
@@ -457,15 +472,57 @@ class AllConditionalScoreModel(AllConditionalModel):
                     node_id.shape[-1],
                 ),
             )
-            * self.marginal_end_std[node_id]
-            + self.marginal_end_mean[node_id]
+            * std_end_per_node[node_id]
+            + mean_end_per_node[node_id]
         )
         condition_mask = condition_mask.reshape(x_T.shape[-1])
-        x_T = x_T.at[..., condition_mask].set(x_o.reshape(-1))
         
         sampling_method = sampling_kwargs.pop("sampling_method")
         if sampling_method == "sde":
-            drift, diffusion = self._init_backward_sde(node_id, condition_mask, edge_mask)
+            x_T = x_T.at[..., condition_mask].set(x_o.reshape(-1))
+            drift, diffusion = self._init_backward_sde(node_id, condition_mask, edge_mask, meta_data=meta_data)
+            keys = jax.random.split(key2, (num_samples,))
+            ys = jax.vmap(
+                lambda *args: sdeint(*args, noise_type="diagonal",  **sampling_kwargs),
+                in_axes=(0, None, None, 0, None),
+                out_axes=0,
+            )(
+                keys,
+                drift,
+                diffusion,
+                x_T,
+                jnp.linspace(0.0, self.T_max - self.T_min, num_steps),
+            )
+            final_samples = ys[:, -1, ...][:, ~condition_mask]
+            final_samples = final_samples.reshape((num_samples, -1))
+            return final_samples
+        elif sampling_method == "ode":
+            x_T = x_T.at[..., condition_mask].set(x_o.reshape(-1))
+            drift = self._init_backward_ode(node_id, condition_mask, edge_mask, meta_data=meta_data)
+            ys = jax.vmap(lambda *args:_odeint(*args, **sampling_kwargs), in_axes=(None, 0, None))(drift, x_T, jnp.linspace(0.0, self.T_max - self.T_min, num_steps))
+            final_samples = ys[:, -1, ...][:, ~condition_mask]
+            final_samples = final_samples.reshape((num_samples, -1))
+            return final_samples
+        elif sampling_method in ["repaint", "classifier_free_guidance", "naive_inpaint_guidance","generalized_guidance"]:
+            if sampling_method == "repaint":
+                register_repaint_step_fn(self, condition_mask, x_o)
+                sampling_kwargs["method"] = "repaint"
+                drift, diffusion = self._init_backward_sde(node_id, jnp.zeros_like(condition_mask), edge_mask, meta_data=meta_data)
+            elif sampling_method == "classifier_free_guidance":
+                register_classifier_free_guidance(self, condition_mask, x_o)
+                drift, diffusion = self._init_backward_sde(node_id, jnp.zeros_like(condition_mask), edge_mask, meta_data=meta_data)
+            elif sampling_method == "naive_inpaint_guidance":
+                register_naive_inpaint_guidance(self, condition_mask, x_o)
+                x_T = x_T.at[..., condition_mask].set(x_o.reshape(-1))
+                drift, diffusion = self._init_backward_sde(node_id, condition_mask, edge_mask, meta_data=meta_data)
+            elif sampling_method == "generalized_guidance":
+                score_manipulator = sampling_kwargs.pop("score_manipulator")
+                score_manipulator_kwargs = sampling_kwargs.pop("score_manipulator_kwargs")
+                register_generalized_guidance(self, condition_mask, x_o, score_manipulator=score_manipulator, **score_manipulator_kwargs)
+                drift, diffusion = self._init_backward_sde(node_id, jnp.zeros_like(condition_mask), edge_mask, meta_data=meta_data)
+            else:
+                raise NotImplementedError()
+                
             keys = jax.random.split(key2, (num_samples,))
             ys = jax.vmap(
                 lambda *args: sdeint(*args, noise_type="diagonal", **sampling_kwargs),
@@ -480,12 +537,8 @@ class AllConditionalScoreModel(AllConditionalModel):
             )
             final_samples = ys[:, -1, ...][:, ~condition_mask]
             final_samples = final_samples.reshape((num_samples, -1))
-            return final_samples
-        elif sampling_method == "ode":
-            drift = self._init_backward_ode(node_id, condition_mask, edge_mask)
-            ys = jax.vmap(lambda *args:_odeint(*args, **sampling_kwargs), in_axes=(None, 0, None))(drift, x_T, jnp.linspace(0.0, self.T_max - self.T_min, num_steps))
-            final_samples = ys[:, -1, ...][:, ~condition_mask]
-            final_samples = final_samples.reshape((num_samples, -1))
+            self.score_fn = self.model_fn
+            #return ys
             return final_samples
         else:
             raise NotImplementedError()
@@ -502,16 +555,21 @@ class AllConditionalScoreModel(AllConditionalModel):
         
     def set_default_sampling_kwargs(self, **kwargs):
         self.sampling_kwargs = kwargs
+        
+    def set_default_meta_data(self, meta_data):
+        self.meta_data = meta_data
 
-    def _init_backward_sde(self, node_id=None, condition_mask=None, edge_mask=None):
+    def _init_backward_sde(self, node_id=None, condition_mask=None, edge_mask=None, meta_data=None):
         def drift_backward(t, x):
             t = self.T_max - t
+
             score = self.score_fn(
                 self.params,
                 jnp.atleast_1d(t),
                 x.reshape(-1, x.shape[-1], 1),
                 node_id,
                 condition_mask,
+                meta_data=meta_data.reshape(-1, meta_data.shape[-1], 1) if meta_data is not None else None,
                 edge_mask=edge_mask,
             ).reshape(x.shape)
             drift = self.sde.drift(t, x) - self.sde.diffusion(t, x) ** 2 * score
@@ -525,7 +583,7 @@ class AllConditionalScoreModel(AllConditionalModel):
 
         return drift_backward, diffusion_backward
     
-    def _init_backward_ode(self, node_id=None, condition_mask=None, edge_mask=None):
+    def _init_backward_ode(self, node_id=None, condition_mask=None, edge_mask=None, meta_data=None):
         def drift_backward(t, x):
             t = self.T_max - t
             score = self.score_fn(
@@ -535,6 +593,7 @@ class AllConditionalScoreModel(AllConditionalModel):
                 node_id,
                 condition_mask,
                 edge_mask=edge_mask,
+                meta_data=meta_data.reshape(-1, meta_data.shape[-1], 1) if meta_data is not None else None,
             ).reshape(x.shape)
             dx = self.sde.drift(t,x) - 0.5 * self.sde.diffusion(t, x) ** 2 * score
             return -dx.reshape(x.shape)
@@ -550,6 +609,10 @@ class AllConditionalScoreModel(AllConditionalModel):
         return state
 
     def __setstate__(self, state):
+        from scoresbibm.src.methods.neural_nets import scalar_transformer_model
+        from scoresbibm.src.methods.sde import init_sde_related
+        from scoresbibm.src.utils.edge_masks import get_edge_mask_fn
+        from scoresbibm.src.tasks import get_task
         self.__dict__.update(state)
         self.sde, self.T_min, self.T_max, _, output_scale_fn = init_sde_related(
             **self.sde_init_params
@@ -558,3 +621,8 @@ class AllConditionalScoreModel(AllConditionalModel):
             output_scale_fn=output_scale_fn, **self.model_init_params
         )
         self.score_fn = self.model_fn
+        task_name = self.edge_mask_fn_params.get("task")
+        task = get_task(task_name)
+        self.edge_mask_fn = get_edge_mask_fn(
+            self.edge_mask_fn_params["name"], task
+        )

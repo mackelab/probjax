@@ -1,6 +1,5 @@
-
-c2st:
+c2st_posterior:
     n_folds: 5
     metric: "accuracy"
     classifier: "rf"
-    condition_mask_fn: structured_random
+    condition_mask_fn: posterior
