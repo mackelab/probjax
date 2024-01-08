@@ -28,6 +28,7 @@ def run_train_transformer_model(
     validation_fraction=0.05,
     val_repeat=2,
     val_error_ratio=1.1,
+    stop_early_count=5,
 ):
     # Set up stuff for multi-device training
     num_devices = jax.device_count()
@@ -91,7 +92,7 @@ def run_train_transformer_model(
                 min_l_val = l_val
                 early_stopping_params = jax.tree_map(lambda x: x[0], replicated_params)
 
-        if early_stopping_counter > 5:
+        if early_stopping_counter > stop_early_count:
             return early_stopping_params, jax.tree_map(
                 lambda x: x[0], replicated_opt_state
             )
@@ -272,6 +273,7 @@ def train_transformer_model(task, data, method_cfg, rng):
         val_every=val_every,
         validation_fraction=train_params["validation_fraction"],
         val_repeat=train_params["val_repeat"],
+        stop_early_count=train_params["stop_early_count"],
     )
 
     sde_init_params = {"data": jax.device_put(data, jax.devices("cpu")[0]) , **dict(method_cfg.sde)}

@@ -1,18 +1,18 @@
 # @package _global_
-name: benchmark_main4
+name: bm_base
 
 hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      method: score_transformer,score_transformer_min_graphical,score_transformer_posterior
+      method: npe,nre,nle,nspe
       task: gaussian_linear,gaussian_mixture,two_moons,slcp
-      method/model: score_transformer_small
       task.num_simulations: 1000,10000,100000
   run:
     dir: results/${name}
   sweep:
     dir: results/${name}
+    subdir: ${hydra.job.override_dirname}
 
 
 defaults:

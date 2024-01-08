@@ -48,10 +48,14 @@ def score_sbi(cfg: DictConfig):
     log.info(OmegaConf.to_yaml(cfg))
     
     output_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
-    output_super_dir = os.path.dirname(os.path.dirname(output_dir))
+    # Go back to the folder named "cfg.name"
+    output_super_dir = os.path.dirname(output_dir)
+    while os.path.basename(output_super_dir) != cfg.name:
+        output_super_dir = os.path.dirname(output_super_dir)
 
     log.info(f"Working directory : {os.getcwd()}")
     log.info(f"Output directory  : {output_dir}")
+    log.info("Output super directory: {}".format(output_super_dir))
     log.info(f"Hostname: {socket.gethostname()}")
     log.info(f"Jax devices: {jax.devices()}")
     log.info(f"Torch devices: {torch.cuda.device_count()}")
