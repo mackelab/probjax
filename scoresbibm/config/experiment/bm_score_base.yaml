@@ -1,17 +1,15 @@
 # @package _global_
-name: main_benchmark_all_cond
+name: main_benchmark
 
 hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      method: score_transformer,score_transformer_directed,score_transformer_undirected
-      method/model: score_transformer_small
+      method: nspe
       method/sde: vesde,vpsde
-      eval: all
-      task: two_moons_all_cond,slcp_all_cond,tree_all_cond,marcov_chain_all_cond
+      task: gaussian_linear,gaussian_mixture,two_moons,slcp
       task.num_simulations: 1000,10000,100000
-
+    
   run:
     dir: results/${name}
   sweep:

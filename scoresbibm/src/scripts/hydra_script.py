@@ -103,8 +103,9 @@ def score_sbi(cfg: DictConfig):
             metric_values, eval_time = eval_all_conditional_task(task, model, metric_fn, metric_params, rng_eval)
         else:
             raise ValueError("Task not recognized.")
-            
-        metrics_results[m] = metric_values
+        
+        if metric_values is not None:
+            metrics_results[m] = metric_values
             
             
     # Saving results

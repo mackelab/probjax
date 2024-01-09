@@ -1,14 +1,16 @@
 # @package _global_
-name: bm_vpsde
+name: main_benchmark
 
 hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      method: score_transformer,score_transformer_posterior,score_transformer_min_graphical
-      task: gaussian_linear,gaussian_mixture,two_moons,slcp
+      method: score_transformer,score_transformer_posterior,score_transformer_directed,score_transformer_undirected
+      method/sde: vesde,vpsde
       method/model: score_transformer_small
+      task: gaussian_linear,gaussian_mixture,two_moons,slcp
       task.num_simulations: 1000,10000,100000
+    
   run:
     dir: results/${name}
   sweep:

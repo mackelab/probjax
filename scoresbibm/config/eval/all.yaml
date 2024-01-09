@@ -3,4 +3,4 @@ defaults:
    - metric:
       - c2st
       - c2st_posterior
-      - c2st_likelihood
+      - c2st_joint
