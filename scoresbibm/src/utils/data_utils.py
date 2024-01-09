@@ -51,25 +51,36 @@ def query(
         if query != "":
             query += "&"
         query += to_query_string("num_simulations", num_simulations)
-    elif seed is not None:
+    if seed is not None:
         if query != "":
             query += "&"
         query += to_query_string("seed", seed)
-    elif task is not None:
+    if task is not None:
         if query != "":
             query += "&"
         query += to_query_string("task", task)
-    elif metric is not None:
+    if metric is not None:
         if query != "":
             query += "&"
         query += to_query_string("metric", metric)
-
-    print(query)
 
     if query == "":
         df_q = summary_df
     else:
         df_q = summary_df.query(query)
+    
+    # Consistent with kwargs
+    cfgs = df_q["cfg"].values
+    cfgs = [eval(cfg) for cfg in cfgs]
+    mask_include = []
+    for cfg in cfgs:
+        include = True
+        for k, v in kwargs.items():
+            include = include and check_query_cfg(cfg, k, v)
+        mask_include.append(include)
+        
+    df_q = df_q[np.array(mask_include, dtype=bool)]
+    
 
     # Evaluate value, which is a string
     df_q["value"] = df_q["value"].apply(lambda x: np.array(eval(x)))
@@ -85,6 +96,20 @@ def query(
     else:
         raise NotImplementedError()
     return df_q
+
+def check_query_cfg(cfg, query_str, query_value):
+    levels = query_str.split("_")
+    for level in levels:
+        if level not in cfg:
+            return True
+        if isinstance(cfg, dict):
+            cfg = cfg[level]
+        else:
+            return True
+    
+    return cfg == query_value
+
+
 
 
 def to_query_string(name: str, var) -> str:

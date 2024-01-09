@@ -1,15 +1,18 @@
 # @package _global_
-name: benchmark_small_transformer
+name: bm_vpsde3
 
 hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      method: score_transformer,score_transformer_graphical,score_transformer_posterior
-      method/model: score_transformer_small
+      method: score_transformer,score_transformer_posterior,score_transformer_directed,score_transformer_undirected
       task: gaussian_linear,gaussian_mixture,two_moons,slcp
+      method/model: score_transformer_small
+      method.train.learning_rate: 5e-4
+      val_every: 100
+      total_number_steps_scaling: 5
+      min_number_steps: 10000
       task.num_simulations: 1000,10000,100000
-
   run:
     dir: results/${name}
   sweep:

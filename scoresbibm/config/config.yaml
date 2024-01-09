@@ -16,7 +16,7 @@ defaults:
   - _self_
   - method: npe
   - task: two_moons
-  - eval: c2st
+  - eval: c2st_posterior
   - launcher: slurm
   - partition: none
   - sweeper: none

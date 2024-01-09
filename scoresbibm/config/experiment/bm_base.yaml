@@ -1,14 +1,13 @@
 # @package _global_
-name: benchmark
+name: main_benchmark
 
 hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      method: npe,nle,nre,nspe
+      method: npe,nre,nle
       task: gaussian_linear,gaussian_mixture,two_moons,slcp
       task.num_simulations: 1000,10000,100000
-
   run:
     dir: results/${name}
   sweep:
