@@ -411,16 +411,16 @@ class LotkaVolterraTask(UnstructuredTask):
             key_init, key_sample = jax.random.split(key, 2)
             init_vals_flat, potential_fn_wrapper = self._prepare_for_mcmc(key_init, condition_mask, x_o, meta_data)
 
-            kernel = HMCKernel(step_size=1e-5)
-            kernel2 = GaussianMHKernel(step_size=0.5)
+            kernel = GaussianMHKernel(step_size=0.5)
+            kernel2 = GaussianMHKernel(step_size=0.01)
             kernel3 = SliceKernel(step_size=0.1)
-            state = kernel.init_state(key_sample,init_vals_flat)
+            state = kernel.init_state(key,init_vals_flat)
             mcmc = MCMC(kernel, potential_fn_wrapper)
             mcmc2 = MCMC(kernel2, potential_fn_wrapper)
             mcmc3 = MCMC(kernel3, potential_fn_wrapper)
-            samples, state = mcmc.run(state, 1000)
-            samples, state = mcmc2.run(state, 2000)
-            samples, state = mcmc3.run(state, 1000)
+            samples, state = mcmc.run(state, 5000)
+            samples, state = mcmc2.run(state, 5000)
+            samples, state = mcmc3.run(state, 100)
             return samples
         
         return sample_fn

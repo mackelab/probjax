@@ -454,6 +454,7 @@ class AllConditionalScoreModel(AllConditionalModel):
     ):
         edge_mask = self._check_edge_mask(edge_mask, node_id, condition_mask)
         meta_data = self._check_for_meta_data(meta_data)
+        return_conditioned_samples = kwargs.pop("return_conditioned_samples", False)
         sampling_kwargs = {**self.sampling_kwargs, **kwargs}
         if num_steps is None:
             num_steps = sampling_kwargs.pop("num_steps")
@@ -493,14 +494,20 @@ class AllConditionalScoreModel(AllConditionalModel):
                 x_T,
                 jnp.linspace(0.0, self.T_max - self.T_min, num_steps),
             )
-            final_samples = ys[:, -1, ...][:, ~condition_mask]
+            if not return_conditioned_samples:
+                final_samples = ys[:, -1, ...][:, ~condition_mask]
+            else:
+                final_samples = ys[:, -1, ...]
             final_samples = final_samples.reshape((num_samples, -1))
             return final_samples
         elif sampling_method == "ode":
             x_T = x_T.at[..., condition_mask].set(x_o.reshape(-1))
             drift = self._init_backward_ode(node_id, condition_mask, edge_mask, meta_data=meta_data)
             ys = jax.vmap(lambda *args:_odeint(*args, **sampling_kwargs), in_axes=(None, 0, None))(drift, x_T, jnp.linspace(0.0, self.T_max - self.T_min, num_steps))
-            final_samples = ys[:, -1, ...][:, ~condition_mask]
+            if not return_conditioned_samples:
+                final_samples = ys[:, -1, ...][:, ~condition_mask]
+            else:
+                final_samples = ys[:, -1, ...]
             final_samples = final_samples.reshape((num_samples, -1))
             return final_samples
         elif sampling_method in ["repaint", "classifier_free_guidance", "naive_inpaint_guidance","generalized_guidance"]:
@@ -535,7 +542,10 @@ class AllConditionalScoreModel(AllConditionalModel):
                 x_T,
                 jnp.linspace(0.0, self.T_max - self.T_min, num_steps),
             )
-            final_samples = ys[:, -1, ...][:, ~condition_mask]
+            if not return_conditioned_samples:
+                final_samples = ys[:, -1, ...][:, ~condition_mask]
+            else:
+                final_samples = ys[:, -1, ...]
             final_samples = final_samples.reshape((num_samples, -1))
             self.score_fn = self.model_fn
             #return ys

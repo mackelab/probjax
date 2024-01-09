@@ -6,7 +6,7 @@
 
 
 
-name: score_transformer_min_graphical
+name: score_transformer_undirected
 backend: jax
 device: gpu
 
@@ -16,7 +16,7 @@ defaults:
   - train: train_score_transformer
   - sde: vpsde
   - posterior: backward_sde
-  - override train/edge_mask_fn: min_faithfull
+  - override train/edge_mask_fn: undirected
 
 
 

@@ -213,6 +213,8 @@ class AllConditionalBMTask(AllConditionalTask):
                 key, key_sample, key_condition_mask = jax.random.split(key,3)
                 condition_mask = condition_mask_fn(key_condition_mask, 1, self.get_theta_dim(), self.get_x_dim())[0]
                 condition_mask = self.ravel_condition_mask(condition_mask)
+                if jnp.all(condition_mask):
+                    continue
                 
                 samples = self.joint_sampler(key_sample)
                 conditioned_names = [
