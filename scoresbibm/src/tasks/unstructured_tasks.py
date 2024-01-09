@@ -257,7 +257,39 @@ class UnstructuredTask(AllConditionalTask):
         return data
     
     def get_base_mask_fn(self):
-        return lambda node_ids, node_meta_data: None
+        
+        def base_mask_fn(node_id, meta_data):
+            num_timepoints1 = int(jnp.sum(node_id == 4))
+            num_timepoints2 = int(jnp.sum(node_id == 5))
+            
+            ts1 = meta_data[4:4+num_timepoints1]
+            ts2 = meta_data[4+num_timepoints1:4+num_timepoints1+num_timepoints2]
+            index1 = jnp.argsort(ts1)
+            index2 = jnp.argsort(ts2)
+            index_x = jnp.concatenate([index1, index2 + num_timepoints1])
+            
+            mask_theta = jnp.eye(self.get_theta_dim())
+            mask_theta_x0 = jnp.concatenate([jnp.ones((2, num_timepoints1)), jnp.zeros((2, num_timepoints1))] , axis=1)
+            mask_theta_x1 = jnp.concatenate([jnp.zeros((2, num_timepoints2)), jnp.ones((2, num_timepoints2))] , axis=1)
+            mask_theta_x = jnp.concatenate([mask_theta_x0, mask_theta_x1], axis=0)
+            
+            mask_x0 = jnp.eye(num_timepoints1, dtype=bool) | jnp.eye(num_timepoints1, k=-1, dtype=bool)
+            mask_x1 = jnp.eye(num_timepoints2, dtype=bool) | jnp.eye(num_timepoints2, k=-1, dtype=bool)
+            mask_x0_x1 = jnp.eye(num_timepoints1, num_timepoints2, k=-1)
+            mask_x1_x0 = jnp.eye(num_timepoints2, num_timepoints1, k=-1)
+            mask_x = jnp.block([[mask_x0, mask_x0_x1], [mask_x1_x0, mask_x1]])
+            mask_x = mask_x[index_x, :][:, index_x]
+            
+            #print(mask_theta.shape, mask_theta_x.shape, mask_x.shape)
+            full_mask = jnp.block([[mask_theta, jnp.zeros_like(mask_theta_x)], [mask_theta_x.T, mask_x]])
+            
+            return full_mask.astype(bool)     
+            
+
+            
+            
+        
+        return base_mask_fn
     
     def get_batch_sampler(self):
         base_batch_sampler = super().get_batch_sampler()
