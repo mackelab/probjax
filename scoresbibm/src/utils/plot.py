@@ -17,6 +17,7 @@ _mpl_styles = list(plt.style.available)
 
 PATH = os.path.dirname(os.path.abspath(__file__))
 
+DEFAULT_COLORS = {"npe": "#154c79", "nle": "#1e81b0", "nre": "#76b5c5", "nspe": "#fdae61", "score_transformer": "#d73027", "score_transformer_posterior": "#8b27d7", "score_transformer_directed": "#d74127","score_transformer_min_graphical": "#d74127", "score_transformer_undirected": "#911c1c"}
 
 def get_style(style, **kwargs):
     if style in _mpl_styles:
@@ -54,14 +55,14 @@ class use_style:
 
 def get_ylim_by_metric(metric):
     """ Get ylim by metric"""
-    if metric == "c2st":
+    if "c2st" in metric:
         return (0.5, 1.0)
     else:
         return None
     
 def get_metric_plot_name(metric):
     """ Get metric plot name"""
-    if metric == "c2st":
+    if "c2st" in metric:
         return "C2ST"
     else:
         return metric
@@ -76,6 +77,18 @@ def get_task_plot_name(task):
         return "Two Moons"
     elif task == "slcp":
         return "SLCP"
+    elif task == "two_moons_all_cond":
+        return "Two Moons (all cond.)"
+    elif task == "slcp_all_cond":
+        return "SLCP (all cond.)"
+    elif task == "tree_all_cond":
+        return "Tree (all cond.)"
+    elif task == "marcov_chain_all_cond":
+        return "HMM (all cond.)"
+    elif task == "lotka_volterra":
+        return "Lotka Volterra"
+    elif task == "sir":
+        return "SIR"
     else:
         return task
 
@@ -90,13 +103,16 @@ def get_method_plot_name(method):
     elif method == "nspe":
         return "NSPE"
     elif method == "score_transformer":
-        return "NACST"
+        return "NSCE"
     elif method == "score_transformer_posterior":
-        return "NACST (posterior only)"
-    elif method == "score_transformer_graph":
-        return "NACST (graph)"
+        return "NSCE (posterior only)"
+    elif method == "score_transformer_directed" or method == "score_transformer_min_graphical":  # Legacy support
+        return "NSCE (directed graph)"
+    elif method == "score_transformer_undirected" or method == "score_transformer_graphical":
+        return "NSCE (undirected graph)"
     else:
         return method
+    
 
 def get_plot_name_fn(name):
     """ Get plot name fn"""
@@ -123,7 +139,7 @@ def float_to_power_of_ten(val: float):
 def plot_metric_by_num_simulations(name, method = None, task = None, num_simulations = None, seed = None, metric="c2st", value_statistic="mean", ax=None, figsize=(3, 2), color_map=None, hue=None, **kwargs):
     """ Plot the metric"""
     
-    df = query(name, task=task, method=method, num_simulations=num_simulations, seed=seed, **kwargs)
+    df = query(name, task=task, method=method, num_simulations=num_simulations, metric=metric, seed=seed, **kwargs)
     
     
     ylims = get_ylim_by_metric(metric)
@@ -135,7 +151,7 @@ def plot_metric_by_num_simulations(name, method = None, task = None, num_simulat
     else:
         fig = None
         
-    sns.pointplot(x="num_simulations", y="value", data=df, ax=ax, marker="o", dodge=False, hue=hue, palette=color_map)
+    sns.pointplot(x="num_simulations", y="value", data=df, ax=ax, marker=".", dodge=False, hue=hue, palette=color_map, alpha=0.8)
     ax.set_xlabel("Number of simulations")
 
     ax.set_xticks(range(len(df["num_simulations"].unique())))
@@ -163,18 +179,20 @@ def get_sorting_key_fn(name):
                 return 3
             else:
                 return 4
+        return np.vectorize(key_fn)
     elif name == "task":
         def key_fn(task):
-            if task == "gaussian_linear":
+            if task == "gaussian_linear" or "tree" in task:
                 return 0
-            elif task == "gaussian_mixture":
+            elif task == "gaussian_mixture" or "marcov" in task:
                 return 1
-            elif task == "two_moons":
+            elif task == "two_moons" or task == "two_moons_all_cond":
                 return 2
-            elif task == "slcp":
+            elif task == "slcp" or task == "two_moons_all_cond":
                 return 3
             else:
                 return 4
+        return np.vectorize(key_fn)
     else:
         return lambda x:x 
     
@@ -286,6 +304,7 @@ def multi_plot(
 
             plot_dict = {cols: cols_vals[j], rows: rows_vals[i]}
             plot_kwargs = {**kwargs, **plot_dict}
+
             if verbose:
                 print(plot_kwargs)
             try:
