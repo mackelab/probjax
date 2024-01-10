@@ -208,8 +208,8 @@ class UnstructuredTask(AllConditionalTask):
     def gat_eval_node_id(self):
         raise NotImplementedError()
         
-    def get_observation_generator(self):
-        condition_mask_fn = get_condition_mask_fn("structured_random")
+    def get_observation_generator(self, condition_mask_fn="structured_random"):
+        condition_mask_fn = get_condition_mask_fn(condition_mask_fn)
         def observation_generator(key):
             while True:
                 key, key_sample, key_condition_mask, key_meta_data = jax.random.split(key,4)
@@ -259,26 +259,31 @@ class UnstructuredTask(AllConditionalTask):
     def get_base_mask_fn(self):
         
         def base_mask_fn(node_id, meta_data):
-            num_timepoints1 = int(jnp.sum(node_id == 4))
-            num_timepoints2 = int(jnp.sum(node_id == 5))
+            # JITABLE
+            time_points = node_id.shape[0] - 4
             
-            ts1 = meta_data[4:4+num_timepoints1]
-            ts2 = meta_data[4+num_timepoints1:4+num_timepoints1+num_timepoints2]
-            index1 = jnp.argsort(ts1)
-            index2 = jnp.argsort(ts2)
-            index_x = jnp.concatenate([index1, index2 + num_timepoints1])
+            #ts1 = jnp.where(node_id == 4, meta_data, jnp.nan)[4:]
+            #ts2 = jnp.where(node_id == 5, meta_data, jnp.nan)[4:]
             
-            mask_theta = jnp.eye(self.get_theta_dim())
-            mask_theta_x0 = jnp.concatenate([jnp.ones((2, num_timepoints1)), jnp.zeros((2, num_timepoints1))] , axis=1)
-            mask_theta_x1 = jnp.concatenate([jnp.zeros((2, num_timepoints2)), jnp.ones((2, num_timepoints2))] , axis=1)
-            mask_theta_x = jnp.concatenate([mask_theta_x0, mask_theta_x1], axis=0)
+            #index1 = jnp.argsort(ts1)
+            #index2 = jnp.argsort(ts2)
+            #index_x = jnp.concatenate([index1, index2 + num_timepoints1])
             
-            mask_x0 = jnp.eye(num_timepoints1, dtype=bool) | jnp.eye(num_timepoints1, k=-1, dtype=bool)
-            mask_x1 = jnp.eye(num_timepoints2, dtype=bool) | jnp.eye(num_timepoints2, k=-1, dtype=bool)
-            mask_x0_x1 = jnp.eye(num_timepoints1, num_timepoints2, k=-1)
-            mask_x1_x0 = jnp.eye(num_timepoints2, num_timepoints1, k=-1)
-            mask_x = jnp.block([[mask_x0, mask_x0_x1], [mask_x1_x0, mask_x1]])
-            mask_x = mask_x[index_x, :][:, index_x]
+            id_mask1 = node_id[4:] == 4
+            id_mask2 = node_id[4:] == 5
+            
+            mask_theta = jnp.eye(4)
+            mask_theta_x0 = jnp.concatenate([jnp.ones((2, time_points)), jnp.zeros((2, time_points))] , axis=0)
+            mask_theta_x1 = jnp.concatenate([jnp.zeros((2, time_points)), jnp.ones((2, time_points))] , axis=0)
+            mask_theta_x = mask_theta_x0 * id_mask1[None, :] + mask_theta_x1 * id_mask2[None, :]
+
+            index1 = jnp.where(id_mask1, size=time_points)[0]
+            index2 = jnp.where(id_mask2, size=time_points)[0]
+            mask_x = jnp.zeros((time_points, time_points), dtype=bool)
+            mask_x = mask_x.at[index2+1, index1].set(True)
+            mask_x = mask_x.at[index1+1, index2].set(True)
+            mask_x01 = jnp.tril(id_mask1[:,None] != id_mask2[None,:]) & ~jnp.tril(id_mask1[:,None] != id_mask2[None,:], k=-2)
+            mask_x = mask_x | mask_x01
             
             #print(mask_theta.shape, mask_theta_x.shape, mask_x.shape)
             full_mask = jnp.block([[mask_theta, jnp.zeros_like(mask_theta_x)], [mask_theta_x.T, mask_x]])
