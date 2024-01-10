@@ -208,8 +208,8 @@ class UnstructuredTask(AllConditionalTask):
     def gat_eval_node_id(self):
         raise NotImplementedError()
         
-    def get_observation_generator(self):
-        condition_mask_fn = get_condition_mask_fn("structured_random")
+    def get_observation_generator(self, condition_mask_fn="structured_random"):
+        condition_mask_fn = get_condition_mask_fn(condition_mask_fn)
         def observation_generator(key):
             while True:
                 key, key_sample, key_condition_mask, key_meta_data = jax.random.split(key,4)
@@ -257,7 +257,44 @@ class UnstructuredTask(AllConditionalTask):
         return data
     
     def get_base_mask_fn(self):
-        return lambda node_ids, node_meta_data: None
+        
+        def base_mask_fn(node_id, meta_data):
+            # JITABLE
+            time_points = node_id.shape[0] - 4
+            
+            #ts1 = jnp.where(node_id == 4, meta_data, jnp.nan)[4:]
+            #ts2 = jnp.where(node_id == 5, meta_data, jnp.nan)[4:]
+            
+            #index1 = jnp.argsort(ts1)
+            #index2 = jnp.argsort(ts2)
+            #index_x = jnp.concatenate([index1, index2 + num_timepoints1])
+            
+            id_mask1 = node_id[4:] == 4
+            id_mask2 = node_id[4:] == 5
+            
+            mask_theta = jnp.eye(4)
+            mask_theta_x0 = jnp.concatenate([jnp.ones((2, time_points)), jnp.zeros((2, time_points))] , axis=0)
+            mask_theta_x1 = jnp.concatenate([jnp.zeros((2, time_points)), jnp.ones((2, time_points))] , axis=0)
+            mask_theta_x = mask_theta_x0 * id_mask1[None, :] + mask_theta_x1 * id_mask2[None, :]
+
+            index1 = jnp.where(id_mask1, size=time_points)[0]
+            index2 = jnp.where(id_mask2, size=time_points)[0]
+            mask_x = jnp.zeros((time_points, time_points), dtype=bool)
+            mask_x = mask_x.at[index2+1, index1].set(True)
+            mask_x = mask_x.at[index1+1, index2].set(True)
+            mask_x01 = jnp.tril(id_mask1[:,None] != id_mask2[None,:]) & ~jnp.tril(id_mask1[:,None] != id_mask2[None,:], k=-2)
+            mask_x = mask_x | mask_x01
+            
+            #print(mask_theta.shape, mask_theta_x.shape, mask_x.shape)
+            full_mask = jnp.block([[mask_theta, jnp.zeros_like(mask_theta_x)], [mask_theta_x.T, mask_x]])
+            
+            return full_mask.astype(bool)     
+            
+
+            
+            
+        
+        return base_mask_fn
     
     def get_batch_sampler(self):
         base_batch_sampler = super().get_batch_sampler()
