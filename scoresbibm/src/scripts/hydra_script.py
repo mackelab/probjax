@@ -12,6 +12,7 @@ import os
 import sys
 import socket
 import time
+from scoresbibm.src.evaluation.eval_task import eval_unstructured_task
 
 from scoresbibm.src.tasks import get_task
 from scoresbibm.src.methods.method_base import get_method
@@ -97,8 +98,9 @@ def score_sbi(cfg: DictConfig):
         if issubclass(type(task), InferenceTask):
             metric_values, eval_time = eval_inference_task(task, model, metric_fn, metric_params, rng_eval)
         elif issubclass(task.__class__, UnstructuredTask):
-            metric_values = None 
-            eval_time = None
+            metric_values, eval_time = eval_unstructured_task(task, model, metric_fn, metric_params, rng_eval)
+            # metric_values = None 
+            # eval_time = None
         elif issubclass(task.__class__, AllConditionalTask):
             metric_values, eval_time = eval_all_conditional_task(task, model, metric_fn, metric_params, rng_eval)
         else:
