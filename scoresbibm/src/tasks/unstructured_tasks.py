@@ -407,7 +407,7 @@ class LotkaVolterraTask(UnstructuredTask):
         
 class SIRTask(UnstructuredTask):
     
-    def __init__(self, time_start = 0,time_end = 50, eval_time_points=100, num_timepoints=50, backend: str = "jax") -> None:
+    def __init__(self, time_start = 0,time_end = 40, eval_time_points=100, num_timepoints=20, backend: str = "jax") -> None:
         self.time_start = time_start
         self.time_end = time_end
         self.eval_time_points = eval_time_points
