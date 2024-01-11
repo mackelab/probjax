@@ -110,6 +110,7 @@ def score_sbi(cfg: DictConfig):
     if len(metrics_results) == 0:
         # To get a summary entry for the model
         metrics_results["none"] = None
+        eval_time = None
             
     # Saving results
     is_save_model = cfg.save_model
