@@ -212,7 +212,7 @@ def train_transformer_model(task, data, method_cfg, rng):
         condition_mask = condition_mask_fn(
             key_condition, data.shape[0], theta_dim, x_dim
         )
-        edge_mask = edge_mask_fn(node_id, condition_mask)
+        edge_mask = edge_mask_fn(node_id, condition_mask, meta_data=meta_data)
 
         loss = denoising_score_matching_loss(
             params,

@@ -258,43 +258,7 @@ class UnstructuredTask(AllConditionalTask):
     
     def get_base_mask_fn(self):
         
-        def base_mask_fn(node_id, meta_data):
-            # JITABLE
-            time_points = node_id.shape[0] - 4
-            
-            #ts1 = jnp.where(node_id == 4, meta_data, jnp.nan)[4:]
-            #ts2 = jnp.where(node_id == 5, meta_data, jnp.nan)[4:]
-            
-            #index1 = jnp.argsort(ts1)
-            #index2 = jnp.argsort(ts2)
-            #index_x = jnp.concatenate([index1, index2 + num_timepoints1])
-            
-            id_mask1 = node_id[4:] == 4
-            id_mask2 = node_id[4:] == 5
-            
-            mask_theta = jnp.eye(4)
-            mask_theta_x0 = jnp.concatenate([jnp.ones((2, time_points)), jnp.zeros((2, time_points))] , axis=0)
-            mask_theta_x1 = jnp.concatenate([jnp.zeros((2, time_points)), jnp.ones((2, time_points))] , axis=0)
-            mask_theta_x = mask_theta_x0 * id_mask1[None, :] + mask_theta_x1 * id_mask2[None, :]
-
-            index1 = jnp.where(id_mask1, size=time_points)[0]
-            index2 = jnp.where(id_mask2, size=time_points)[0]
-            mask_x = jnp.zeros((time_points, time_points), dtype=bool)
-            mask_x = mask_x.at[index2+1, index1].set(True)
-            mask_x = mask_x.at[index1+1, index2].set(True)
-            mask_x01 = jnp.tril(id_mask1[:,None] != id_mask2[None,:]) & ~jnp.tril(id_mask1[:,None] != id_mask2[None,:], k=-2)
-            mask_x = mask_x | mask_x01
-            
-            #print(mask_theta.shape, mask_theta_x.shape, mask_x.shape)
-            full_mask = jnp.block([[mask_theta, jnp.zeros_like(mask_theta_x)], [mask_theta_x.T, mask_x]])
-            
-            return full_mask.astype(bool)     
-            
-
-            
-            
-        
-        return base_mask_fn
+        return lambda *args, **kwargs: None   
     
     def get_batch_sampler(self):
         base_batch_sampler = super().get_batch_sampler()
@@ -438,6 +402,36 @@ class LotkaVolterraTask(UnstructuredTask):
             return jnp.concatenate([samples[var] for var in self.var_names], axis=-1)
 
         return sample_fn
+    
+    def get_base_mask_fn(self):
+        
+        def base_mask_fn(node_id, meta_data):
+            id_params1 = (node_id == 0) | (node_id == 1)
+            id_params2 = (node_id == 2) | (node_id == 3)
+            id_mask1 = node_id == 4
+            id_mask2 = node_id == 5
+
+            max_points = node_id.shape[0]
+            indices1 = jnp.where(id_mask1, size=max_points)[0]
+            indices2 = jnp.where(id_mask2, size=max_points)[0]
+
+            mask = jnp.eye(node_id.shape[0], dtype=bool)
+
+            distances = jnp.abs(meta_data[None,:] - meta_data[:, None])
+            cross_distances = distances * (id_mask1[None, :] & id_mask2[:, None]) + ~(id_mask1[None, :] & id_mask2[:, None]) * jnp.inf
+            closest_value = jnp.argmin(cross_distances, axis=1)
+
+            mask = mask.at[indices1[1:], indices1[:-1]].set(True)
+            mask = mask.at[indices2[1:], indices2[:-1]].set(True)
+            mask = mask.at[jnp.arange(mask.shape[0]), closest_value].set(True)
+            mask = mask.at[0, :].set(False)
+            mask = mask.at[:, 0].set(False)
+            mask = mask.at[0, 0].set(True)
+            mask = mask | id_params1[None,:] & id_mask1[:, None]
+            mask = mask | id_params2[None,:] & id_mask2[:, None]
+            return mask.astype(bool)
+        
+        return base_mask_fn
         
         
         
@@ -533,7 +527,7 @@ class SIRTask(UnstructuredTask):
         
         def base_mask_fn(node_id, meta_data):
             max_size = node_id.shape[0]
-                        
+            
             theta0_mask = node_id[:] == 0
             theta1_mask = node_id[:] == 1
             beta_mask = node_id[:] == 2
@@ -541,14 +535,26 @@ class SIRTask(UnstructuredTask):
             R_mask = node_id[:] == 4
             D_mask = node_id[:] == 5
 
+            distances = jnp.abs(meta_data[None,:] - meta_data[:, None])
+            cross_distances_I_R = distances * (I_mask[None, :] & R_mask[:, None]) + ~(I_mask[None, :] & R_mask[:, None]) * jnp.inf
+            cross_distances_I_D = distances * (I_mask[None, :] & D_mask[:, None]) + ~(I_mask[None, :] & D_mask[:, None]) * jnp.inf
+            cross_distances_b_I = distances * (beta_mask[None, :] & I_mask[:, None]) + ~(beta_mask[None, :] & I_mask[:, None]) * jnp.inf
+            cross_distances_I_R = jnp.argmin(cross_distances_I_R, axis=1)
+            cross_distances_I_D = jnp.argmin(cross_distances_I_D, axis=1)
+            cross_distances_b_I = jnp.argmin(cross_distances_b_I, axis=1)
+
             index1 = jnp.where(I_mask, size=max_size)[0]
             index2 = jnp.where(R_mask, size=max_size)[0]
             index3 = jnp.where(D_mask, size=max_size)[0]
 
-            meta_data_mask = meta_data[: , None] >= meta_data[None, :]
-            mask_beta_I = jnp.nan_to_num(meta_data_mask,False)
 
             mask_x = jnp.zeros((max_size, max_size), dtype=bool)
+            mask_x = mask_x.at[jnp.arange(max_size), cross_distances_I_R].set(True)
+            mask_x = mask_x.at[jnp.arange(max_size), cross_distances_I_D].set(True)
+            mask_x = mask_x.at[jnp.arange(max_size), cross_distances_b_I].set(True)
+            mask_x = mask_x.at[:, 0].set(False)
+            mask_x = mask_x.at[0,:].set(False)
+            mask_x = mask_x.at[0, 0].set(True)
             mask_x = mask_x | (jnp.tril(jnp.ones_like(mask_x)) & (beta_mask[None,:] & beta_mask[:,None]))
             mask_x = mask_x.at[index1, index1].set(True)
             mask_x = mask_x.at[index1[1:], index1[:-1]].set(True)
@@ -556,7 +562,6 @@ class SIRTask(UnstructuredTask):
             mask_x = mask_x.at[index2[1:], index2[:-1]].set(True)
             mask_x = mask_x.at[index3, index3].set(True)
             mask_x = mask_x.at[index3[1:], index3[:-1]].set(True)
-            
             mask_x = mask_x.at[0,:].set(False)
             mask_x  = mask_x | (jnp.eye(max_size, dtype=bool) * theta0_mask[None,:])
             mask_x  = mask_x | (jnp.eye(max_size, dtype=bool) * theta1_mask[None,:])
@@ -564,7 +569,7 @@ class SIRTask(UnstructuredTask):
             mask_x = mask_x | (jnp.ones_like(mask_x) & (theta1_mask[None,:] & D_mask[:,None]))
             mask_x = mask_x | (jnp.ones_like(mask_x) & (theta0_mask[None,:] & I_mask[:,None]))
             mask_x = mask_x | (jnp.ones_like(mask_x) & (theta1_mask[None,:] & I_mask[:,None]))
-            mask_x = mask_x | (mask_beta_I & (beta_mask[None,:] & I_mask[:,None]))
+
             return mask_x.astype(bool)
         
         return base_mask_fn
