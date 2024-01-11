@@ -403,8 +403,9 @@ class LotkaVolterraTask(UnstructuredTask):
         return 4
     
     def sample_meta_data(self, key):
-        ts1 = jrandom.uniform(key, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
-        ts2 = jrandom.uniform(key, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
+        key1, key2 = jrandom.split(key, 2)
+        ts1 = jrandom.uniform(key1, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
+        ts2 = jrandom.uniform(key2, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
         ts1 = jnp.sort(ts1)
         ts2 = jnp.sort(ts2)
         return (ts1, ts2)    
@@ -492,10 +493,11 @@ class SIRTask(UnstructuredTask):
         return 2 + self.num_timepoints
     
     def sample_meta_data(self, key):
-        ts1 = jrandom.uniform(key, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
-        ts2 = jrandom.uniform(key, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
-        ts3 = jrandom.uniform(key, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
-        ts4 = jrandom.uniform(key, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
+        key1, key2, key3, key4 = jrandom.split(key, 4)
+        ts1 = jrandom.uniform(key1, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
+        ts2 = jrandom.uniform(key2, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
+        ts3 = jrandom.uniform(key3, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
+        ts4 = jrandom.uniform(key4, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
         ts1 = jnp.sort(ts1)
         ts2 = jnp.sort(ts2)
         ts3 = jnp.sort(ts3)
@@ -527,4 +529,44 @@ class SIRTask(UnstructuredTask):
 
         return sample_fn
     
+    
+    def get_base_mask_fn(self):
+        
+        def base_mask_fn(node_id, meta_data):
+            max_size = node_id.shape[0]
+                        
+            theta0_mask = node_id[:] == 0
+            theta1_mask = node_id[:] == 1
+            beta_mask = node_id[:] == 2
+            I_mask = node_id[:] == 3
+            R_mask = node_id[:] == 4
+            D_mask = node_id[:] == 5
+
+            index1 = jnp.where(I_mask, size=max_size)[0]
+            index2 = jnp.where(R_mask, size=max_size)[0]
+            index3 = jnp.where(D_mask, size=max_size)[0]
+
+            meta_data_mask = meta_data[: , None] >= meta_data[None, :]
+            mask_beta_I = jnp.nan_to_num(meta_data_mask,False)
+
+            mask_x = jnp.zeros((max_size, max_size), dtype=bool)
+            mask_x = mask_x | (jnp.tril(jnp.ones_like(mask_x)) & (beta_mask[None,:] & beta_mask[:,None]))
+            mask_x = mask_x.at[index1, index1].set(True)
+            mask_x = mask_x.at[index1[1:], index1[:-1]].set(True)
+            mask_x = mask_x.at[index2, index2].set(True)
+            mask_x = mask_x.at[index2[1:], index2[:-1]].set(True)
+            mask_x = mask_x.at[index3, index3].set(True)
+            mask_x = mask_x.at[index3[1:], index3[:-1]].set(True)
+            
+            mask_x = mask_x.at[0,:].set(False)
+            mask_x  = mask_x | (jnp.eye(max_size, dtype=bool) * theta0_mask[None,:])
+            mask_x  = mask_x | (jnp.eye(max_size, dtype=bool) * theta1_mask[None,:])
+            mask_x = mask_x | (jnp.ones_like(mask_x) & (theta0_mask[None,:] & R_mask[:,None]))
+            mask_x = mask_x | (jnp.ones_like(mask_x) & (theta1_mask[None,:] & D_mask[:,None]))
+            mask_x = mask_x | (jnp.ones_like(mask_x) & (theta0_mask[None,:] & I_mask[:,None]))
+            mask_x = mask_x | (jnp.ones_like(mask_x) & (theta1_mask[None,:] & I_mask[:,None]))
+            mask_x = mask_x | (mask_beta_I & (beta_mask[None,:] & I_mask[:,None]))
+            return mask_x.astype(bool)
+        
+        return base_mask_fn
     
