@@ -623,16 +623,19 @@ class AllConditionalScoreModel(AllConditionalModel):
         from scoresbibm.src.methods.sde import init_sde_related
         from scoresbibm.src.utils.edge_masks import get_edge_mask_fn
         from scoresbibm.src.tasks import get_task
-        self.__dict__.update(state)
-        self.sde, self.T_min, self.T_max, _, output_scale_fn = init_sde_related(
-            **self.sde_init_params
-        )
-        _, self.model_fn = scalar_transformer_model(
-            output_scale_fn=output_scale_fn, **self.model_init_params
-        )
-        self.score_fn = self.model_fn
-        task_name = self.edge_mask_fn_params.get("task")
-        task = get_task(task_name)
-        self.edge_mask_fn = get_edge_mask_fn(
-            self.edge_mask_fn_params["name"], task
-        )
+        
+        
+        with jax.default_device(jax.devices("cpu")[0]):
+            self.__dict__.update(state)
+            self.sde, self.T_min, self.T_max, _, output_scale_fn = init_sde_related(
+                **self.sde_init_params
+            )
+            _, self.model_fn = scalar_transformer_model(
+                output_scale_fn=output_scale_fn, **self.model_init_params
+            )
+            self.score_fn = self.model_fn
+            task_name = self.edge_mask_fn_params.get("task")
+            task = get_task(task_name)
+            self.edge_mask_fn = get_edge_mask_fn(
+                self.edge_mask_fn_params["name"], task
+            )

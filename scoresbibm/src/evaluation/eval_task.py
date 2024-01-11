@@ -52,7 +52,7 @@ def eval_all_conditional_task(task: AllConditionalTask, model, metric_fn, metric
         average_sampling_time += sampling_time / num_evaluations
     return metric_values, average_sampling_time
 
-def eval_unstructured_task(task, model, metric_fn, metric_params, rng, num_samples=50, num_evaluations=100):
+def eval_unstructured_task(task, model, metric_fn, metric_params, rng, num_samples=500, num_evaluations=20):
     metric_values = []
     average_sampling_time = 0
     metric_params = dict(metric_params)

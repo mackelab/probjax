@@ -24,7 +24,7 @@ def drift_lotka_volterra(t, data, alpha,beta, gamma, delta):
     return d_predator, d_prey
 
 
-def rbf_kernel(x1, x2, l = 6., sigma_f=3.):
+def rbf_kernel(x1, x2, l = 7., sigma_f=2.5):
     dists = (x1[None, :]- x2[:, None])**2
     return sigma_f**2 * jnp.exp(-0.5 * dists / l**2) + 1e-5 * jnp.eye(x1.shape[0])
 
@@ -46,7 +46,7 @@ def sir_model(t, y, gamma, delta, betas, ts_betas):
     dDdt = delta * I
     return dSdt, dIdt, dRdt,dDdt
 
-def lotka_volterra(time_start = 0,time_end = 20, eval_time_points=150, num_timepoints=30):
+def lotka_volterra(time_start = 0,time_end = 15, eval_time_points=150, num_timepoints=30):
     
     
         def subsample_data(key, data_batch, node_id, meta_data):
@@ -94,8 +94,8 @@ def lotka_volterra(time_start = 0,time_end = 20, eval_time_points=150, num_timep
             predator_observed_mean = jnp.interp(ts1, ode_ts_grid, predator)
             prey_observed_mean = jnp.interp(ts2, ode_ts_grid, prey)
             
-            x0 = rv(Independent(Normal(predator_observed_mean, 0.01),1), name="x0")(key_predator)
-            x1 = rv(Independent(Normal(prey_observed_mean, 0.01),1), name="x1")(key_prey)
+            x0 = rv(Independent(Normal(predator_observed_mean, 0.1),1), name="x0")(key_predator)
+            x1 = rv(Independent(Normal(prey_observed_mean, 0.1),1), name="x1")(key_prey)
             
             # x0_dense = rv(Dirac(predator), name="x0_dense")(key_predator)
             # x1_dense = rv(Dirac(prey), name="x1_dense")(key_prey)
@@ -359,7 +359,7 @@ class UnstructuredTask(AllConditionalTask):
     
 class LotkaVolterraTask(UnstructuredTask):
     
-    def __init__(self, time_start = 0,time_end = 20, eval_time_points=150, num_timepoints=20, backend: str = "jax") -> None:
+    def __init__(self, time_start = 0,time_end = 15, eval_time_points=150, num_timepoints=20, backend: str = "jax") -> None:
         self.time_start = time_start
         self.time_end = time_end
         self.eval_time_points = eval_time_points
@@ -403,8 +403,9 @@ class LotkaVolterraTask(UnstructuredTask):
         return 4
     
     def sample_meta_data(self, key):
-        ts1 = jrandom.uniform(key, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
-        ts2 = jrandom.uniform(key, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
+        key1, key2 = jrandom.split(key, 2)
+        ts1 = jrandom.uniform(key1, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
+        ts2 = jrandom.uniform(key2, (self.num_timepoints,), minval=self.time_start, maxval=self.time_end)
         ts1 = jnp.sort(ts1)
         ts2 = jnp.sort(ts2)
         return (ts1, ts2)    
@@ -416,16 +417,15 @@ class LotkaVolterraTask(UnstructuredTask):
             key_init, key_sample = jax.random.split(key, 2)
             init_vals_flat, potential_fn_wrapper = self._prepare_for_mcmc(key_init, condition_mask, x_o, meta_data)
 
+            
+            
             kernel = GaussianMHKernel(step_size=0.5)
-            kernel2 = GaussianMHKernel(step_size=0.01)
-            kernel3 = SliceKernel(step_size=0.1)
+            kernel2 = SliceKernel(step_size=0.01)
             state = kernel.init_state(key,init_vals_flat)
             mcmc = MCMC(kernel, potential_fn_wrapper)
             mcmc2 = MCMC(kernel2, potential_fn_wrapper)
-            mcmc3 = MCMC(kernel3, potential_fn_wrapper)
-            samples, state = mcmc.run(state, 5000)
-            samples, state = mcmc2.run(state, 5000)
-            samples, state = mcmc3.run(state, 100)
+            samples, state = mcmc.run(state, 10000)
+            samples, state = mcmc2.run(state, 500)
             return samples
         
         return sample_fn
@@ -444,7 +444,7 @@ class LotkaVolterraTask(UnstructuredTask):
         
 class SIRTask(UnstructuredTask):
     
-    def __init__(self, time_start = 0,time_end = 40, eval_time_points=100, num_timepoints=20, backend: str = "jax") -> None:
+    def __init__(self, time_start = 0,time_end = 50, eval_time_points=100, num_timepoints=20, backend: str = "jax") -> None:
         self.time_start = time_start
         self.time_end = time_end
         self.eval_time_points = eval_time_points
