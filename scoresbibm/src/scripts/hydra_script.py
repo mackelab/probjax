@@ -67,11 +67,9 @@ def score_sbi(cfg: DictConfig):
     backend = cfg.method.backend
     log.info(f"Seed: {seed}")
     
-    
-    
     init_dir(output_super_dir)
     
-    # Set up the task
+    # Set up the task # TODO: maybe add data_device
     log.info(f"Task: {cfg.task.name}")
     task = get_task(cfg.task.name, backend=backend)
     data = task.get_data(cfg.task.num_simulations, rng=rng)
@@ -93,14 +91,14 @@ def score_sbi(cfg: DictConfig):
     for m, metric_params in metrics.items():
         log.info(f"Evaluating metric: {m}")
         rng, rng_eval = jax.random.split(rng)
+        if m == "none":
+            continue
         metric_fn = get_metric(str(m))
         
         if issubclass(type(task), InferenceTask):
             metric_values, eval_time = eval_inference_task(task, model, metric_fn, metric_params, rng_eval)
         elif issubclass(task.__class__, UnstructuredTask):
             metric_values, eval_time = eval_unstructured_task(task, model, metric_fn, metric_params, rng_eval)
-            # metric_values = None 
-            # eval_time = None
         elif issubclass(task.__class__, AllConditionalTask):
             metric_values, eval_time = eval_all_conditional_task(task, model, metric_fn, metric_params, rng_eval)
         else:
@@ -108,7 +106,10 @@ def score_sbi(cfg: DictConfig):
         
         if metric_values is not None:
             metrics_results[m] = metric_values
-            
+        
+    if len(metrics_results) == 0:
+        # To get a summary entry for the model
+        metrics_results["none"] = None
             
     # Saving results
     is_save_model = cfg.save_model
