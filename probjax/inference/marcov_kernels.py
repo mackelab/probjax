@@ -240,6 +240,7 @@ class MetropolisHastingKernel(PotentialBasedMCMCKernel):
             lambda x, y: x + y,
             potential_kernel,
         )
+        logratio = jnp.nan_to_num(logratio, nan=-jnp.inf)
 
         return jnp.clip(logratio, a_max=0)
 
