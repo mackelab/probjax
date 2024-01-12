@@ -31,6 +31,6 @@ def get_edge_mask_fn(name, task):
         
         return undirected_edge_mask
     elif name.lower() == "none":
-        return lambda node_id, condition_mask, *args: None
+        return lambda node_id, condition_mask, *args, **kwargs: None
     else:
         raise NotImplementedError()

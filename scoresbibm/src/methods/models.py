@@ -428,10 +428,10 @@ class AllConditionalScoreModel(AllConditionalModel):
 
         super().__init__("score_transformer", backend="jax")
 
-    def _check_edge_mask(self, edge_mask, node_id, condition_mask):
+    def _check_edge_mask(self, edge_mask, node_id, condition_mask, meta_data):
         if edge_mask is None:
             if self.edge_mask_fn is not None:
-                edge_mask = self.edge_mask_fn(node_id, condition_mask[None, ...])
+                edge_mask = self.edge_mask_fn(node_id, condition_mask[None, ...], meta_data=meta_data)
         return edge_mask
     
     def _check_for_meta_data(self, meta_data):
@@ -452,7 +452,7 @@ class AllConditionalScoreModel(AllConditionalModel):
         rng=None,
         **kwargs
     ):
-        edge_mask = self._check_edge_mask(edge_mask, node_id, condition_mask)
+        edge_mask = self._check_edge_mask(edge_mask, node_id, condition_mask, meta_data)
         meta_data = self._check_for_meta_data(meta_data)
         return_conditioned_samples = kwargs.pop("return_conditioned_samples", False)
         sampling_kwargs = {**self.sampling_kwargs, **kwargs}
