@@ -201,8 +201,8 @@ def train_transformer_model(task, data, method_cfg, rng):
     edge_mask_fn = get_edge_mask_fn(edge_mask_params["name"], task)
 
     # Training loop
-    @jax.jit
-    def loss_fn(params, key, data, node_id, meta_data=None):
+    #@jax.jit
+    def loss_fn(params, key, data, node_id, meta_data):
         key_times, key_loss, key_condition = jax.random.split(key, 3)
         times = jax.random.uniform(
             key_times, (data.shape[0],), minval=T_min, maxval=T_max
@@ -212,7 +212,11 @@ def train_transformer_model(task, data, method_cfg, rng):
         condition_mask = condition_mask_fn(
             key_condition, data.shape[0], theta_dim, x_dim
         )
-        edge_mask = edge_mask_fn(node_id, condition_mask, meta_data=meta_data)
+        if meta_data is None:
+            edge_mask = edge_mask_fn(node_id, condition_mask)
+        else:
+            edge_mask = jax.vmap(edge_mask_fn, in_axes=(None, None, 0))(node_id, condition_mask, meta_data)
+
 
         loss = denoising_score_matching_loss(
             params,

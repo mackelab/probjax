@@ -19,6 +19,7 @@ from scoresbibm.src.utils.condition_masks import get_condition_mask_fn
 
 def drift_lotka_volterra(t, data, alpha,beta, gamma, delta):
     predator, prey = data
+    # predator and prey are swapped
     d_predator = alpha * predator - beta * predator * prey
     d_prey = -gamma * prey + delta * predator * prey
     return d_predator, d_prey
@@ -385,7 +386,7 @@ class LotkaVolterraTask(UnstructuredTask):
             
             kernel = GaussianMHKernel(step_size=0.5)
             kernel2 = SliceKernel(step_size=0.01)
-            state = kernel.init_state(key,init_vals_flat)
+            state = kernel.init_state(key_sample,init_vals_flat)
             mcmc = MCMC(kernel, potential_fn_wrapper)
             mcmc2 = MCMC(kernel2, potential_fn_wrapper)
             samples, state = mcmc.run(state, 10000)
@@ -403,9 +404,10 @@ class LotkaVolterraTask(UnstructuredTask):
 
         return sample_fn
     
-    def get_base_mask_fn(self):
+    def get_base_mask_fn(self, meta_data_dependent=True):
         
         def base_mask_fn(node_id, meta_data):
+            meta_data = meta_data.reshape(node_id.shape)
             id_params1 = (node_id == 0) | (node_id == 1)
             id_params2 = (node_id == 2) | (node_id == 3)
             id_mask1 = node_id == 4
@@ -416,14 +418,32 @@ class LotkaVolterraTask(UnstructuredTask):
             indices2 = jnp.where(id_mask2, size=max_points)[0]
 
             mask = jnp.eye(node_id.shape[0], dtype=bool)
-
-            distances = jnp.abs(meta_data[None,:] - meta_data[:, None])
-            cross_distances = distances * (id_mask1[None, :] & id_mask2[:, None]) + ~(id_mask1[None, :] & id_mask2[:, None]) * jnp.inf
-            closest_value = jnp.argmin(cross_distances, axis=1)
+            if meta_data_dependent:
+                in_past = meta_data[None,:] < meta_data[:, None]
+                in_past2 = meta_data[None,:] < meta_data[:, None]
+                # distances = jnp.abs(meta_data[None,:] - meta_data[:, None])
+                # distances = distances / in_past
+                # cross_distances = distances * (id_mask1[None, :] & id_mask2[:, None]) + ~(id_mask1[None, :] & id_mask2[:, None]) * jnp.inf
+                # corss_distances2 = distances * (id_mask2[None, :] & id_mask1[:, None]) + ~(id_mask2[None, :] & id_mask1[:, None]) * jnp.inf
+                # closest_value = jnp.argsort(cross_distances, axis=1)
+                # closest_value2 = jnp.argsort(corss_distances2, axis=1)
+                # mask = mask.at[jnp.arange(mask.shape[0]), closest_value[:,0]].set(True)
+                # mask = mask.at[jnp.arange(mask.shape[0]),closest_value2[:,0]].set(True)
+                # mask = mask.at[jnp.arange(mask.shape[0]), closest_value[:,1]].set(True)
+                # mask = mask.at[jnp.arange(mask.shape[0]),closest_value2[:,1]].set(True)
+                # mask = mask.at[1, :].set(False)
+                # mask = mask.at[:,1].set(False)
+                # mask = mask.at[1, 1].set(True)
+                in_past1 = in_past & (id_mask1[None, :] & id_mask2[:, None])
+                in_past2 = in_past2 & (id_mask2[None, :] & id_mask1[:, None])
+                mask = mask | in_past1
+                mask = mask | in_past2
+            else:
+                mask = mask | (id_mask1[None, :] & id_mask2[:, None])
+                #mask = mask | (id_mask2[None, :] & id_mask1[:, None])
 
             mask = mask.at[indices1[1:], indices1[:-1]].set(True)
             mask = mask.at[indices2[1:], indices2[:-1]].set(True)
-            mask = mask.at[jnp.arange(mask.shape[0]), closest_value].set(True)
             mask = mask.at[0, :].set(False)
             mask = mask.at[:, 0].set(False)
             mask = mask.at[0, 0].set(True)
@@ -526,6 +546,7 @@ class SIRTask(UnstructuredTask):
     def get_base_mask_fn(self):
         
         def base_mask_fn(node_id, meta_data):
+            meta_data = meta_data.reshape(node_id.shape)
             max_size = node_id.shape[0]
             
             theta0_mask = node_id[:] == 0
@@ -535,13 +556,19 @@ class SIRTask(UnstructuredTask):
             R_mask = node_id[:] == 4
             D_mask = node_id[:] == 5
 
-            distances = jnp.abs(meta_data[None,:] - meta_data[:, None])
-            cross_distances_I_R = distances * (I_mask[None, :] & R_mask[:, None]) + ~(I_mask[None, :] & R_mask[:, None]) * jnp.inf
-            cross_distances_I_D = distances * (I_mask[None, :] & D_mask[:, None]) + ~(I_mask[None, :] & D_mask[:, None]) * jnp.inf
-            cross_distances_b_I = distances * (beta_mask[None, :] & I_mask[:, None]) + ~(beta_mask[None, :] & I_mask[:, None]) * jnp.inf
-            cross_distances_I_R = jnp.argmin(cross_distances_I_R, axis=1)
-            cross_distances_I_D = jnp.argmin(cross_distances_I_D, axis=1)
-            cross_distances_b_I = jnp.argmin(cross_distances_b_I, axis=1)
+
+            in_past = meta_data[None,:] < meta_data[:, None]
+            in_past_I_R = in_past & (I_mask[None, :] & R_mask[:, None])
+            in_past_I_D = in_past & (I_mask[None, :] & D_mask[:, None])
+            in_past_b_I = in_past & (beta_mask[None, :] & I_mask[:, None])
+            # distances = jnp.abs(meta_data[None,:] - meta_data[:, None])
+            # distances = distances / in_past
+            # cross_distances_I_R = distances * (I_mask[None, :] & R_mask[:, None]) + ~(I_mask[None, :] & R_mask[:, None]) * jnp.inf
+            # cross_distances_I_D = distances * (I_mask[None, :] & D_mask[:, None]) + ~(I_mask[None, :] & D_mask[:, None]) * jnp.inf
+            # cross_distances_b_I = distances * (beta_mask[None, :] & I_mask[:, None]) + ~(beta_mask[None, :] & I_mask[:, None]) * jnp.inf
+            # cross_distances_I_R = jnp.argmin(cross_distances_I_R, axis=1)
+            # cross_distances_I_D = jnp.argmin(cross_distances_I_D, axis=1)
+            # cross_distances_b_I = jnp.argmin(cross_distances_b_I, axis=1)
 
             index1 = jnp.where(I_mask, size=max_size)[0]
             index2 = jnp.where(R_mask, size=max_size)[0]
@@ -549,9 +576,12 @@ class SIRTask(UnstructuredTask):
 
 
             mask_x = jnp.zeros((max_size, max_size), dtype=bool)
-            mask_x = mask_x.at[jnp.arange(max_size), cross_distances_I_R].set(True)
-            mask_x = mask_x.at[jnp.arange(max_size), cross_distances_I_D].set(True)
-            mask_x = mask_x.at[jnp.arange(max_size), cross_distances_b_I].set(True)
+            # mask_x = mask_x.at[jnp.arange(max_size), cross_distances_I_R].set(True)
+            # mask_x = mask_x.at[jnp.arange(max_size), cross_distances_I_D].set(True)
+            # mask_x = mask_x.at[jnp.arange(max_size), cross_distances_b_I].set(True)
+            mask_x = mask_x | in_past_I_R
+            mask_x = mask_x | in_past_I_D
+            mask_x = mask_x | in_past_b_I
             mask_x = mask_x.at[:, 0].set(False)
             mask_x = mask_x.at[0,:].set(False)
             mask_x = mask_x.at[0, 0].set(True)
