@@ -1,5 +1,5 @@
 # @package _global_
-name: bm_lotka_volterra
+name: bm_lv
 
 hydra:
   mode: MULTIRUN

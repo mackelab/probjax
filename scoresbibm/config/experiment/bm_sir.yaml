@@ -5,7 +5,7 @@ hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      method: score_transformer
+      method: score_transformer,score_transformer_directed,score_transformer_undirected
       method/model: score_transformer_large
       method/sde: vesde,vpsde
       method.train.validation_fraction: 0.
