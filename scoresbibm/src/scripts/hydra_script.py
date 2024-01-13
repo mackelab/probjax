@@ -111,7 +111,7 @@ def score_sbi(cfg: DictConfig):
         # To get a summary entry for the model
         metrics_results["none"] = None
         eval_time = None
-            
+        
     # Saving results
     is_save_model = cfg.save_model
     if is_save_model:
@@ -123,6 +123,7 @@ def score_sbi(cfg: DictConfig):
         except Exception as e:
             log.info("Tried to save model, but failed.")
             log.info(e)
+            
         
     # Save summary
     is_save_summary = cfg.save_summary
