@@ -5,7 +5,7 @@ device: gpu
 
 
 defaults:
-  - model: score_transformer
+  - model: score_transformer_small
   - train: train_score_transformer
   - sde: vpsde
   - posterior: backward_sde
