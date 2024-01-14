@@ -12,6 +12,32 @@ from scoresbibm.src.tasks.base_task import base_batch_sampler
 from scoresbibm.src.utils.condition_masks import get_condition_mask_fn
 from scoresbibm.src.utils.edge_masks import get_edge_mask_fn
 
+def mean_std_per_node_id(data, node_ids):
+    node_ids = node_ids.reshape(-1)
+    mean = []
+    std = []
+    for i in range(node_ids.max()+1):
+        index = jnp.where(node_ids == i)
+        mean.append(jnp.mean(data[:,index]))
+        std.append(jnp.std(data[:,index]))
+    mean, std=  jnp.stack(mean), jnp.clip(jnp.stack(std), a_min=1e-2, a_max=None)
+    mean = mean.reshape(-1,1)
+    std = std.reshape(-1,1)
+    return mean, std
+
+def get_z_score_fn(data_mean_per_node_id, data_std_per_node_id):
+
+    def z_score(data, node_id):
+        shape = data.shape
+        data = data.reshape(-1, len(node_id),  1)
+        return ((data - data_mean_per_node_id[node_id])/data_std_per_node_id[node_id]).reshape(shape)
+
+    def un_z_score(data, node_id):
+        shape = data.shape
+        data = data.reshape(-1, len(node_id),  1)
+        return (data*data_std_per_node_id[node_id] + data_mean_per_node_id[node_id]).reshape(shape)
+    return z_score, un_z_score
+
 
 def run_train_transformer_model(
     key,
@@ -143,6 +169,14 @@ def train_transformer_model(task, data, method_cfg, rng):
     data = data[..., None]
     if metadata is not None:
         metadata = metadata[..., None]
+        
+    # Z score 
+    if method_cfg.train.z_score_data:
+        mean_per_node_id, std_per_node_id = mean_std_per_node_id(data, node_id)
+        z_score_fn, un_z_score_fn = get_z_score_fn(mean_per_node_id, std_per_node_id)
+        print(data.shape)
+        data = z_score_fn(data, node_id)
+        print(data.shape)
 
     # Initialize stuff
     sde, T_min, T_max, _weight_fn, output_scale_fn = init_sde_related(
@@ -273,6 +307,7 @@ def train_transformer_model(task, data, method_cfg, rng):
     }
     model_init_params = {"num_nodes": theta_dim + x_dim, **dict(method_cfg.model)}
     edge_mask_params["task"] = task.name
+    z_score_params = {"mean_per_node_id": mean_per_node_id, "std_per_node_id": std_per_node_id, "z_score_fn": z_score_fn, "un_z_score_fn": un_z_score_fn}
     model = AllConditionalScoreModel(
         params,
         model_fn,
@@ -280,6 +315,7 @@ def train_transformer_model(task, data, method_cfg, rng):
         sde_init_params=sde_init_params,
         model_init_params=model_init_params,
         edge_mask_fn_params=edge_mask_params,
+        z_score_params=z_score_params,
     )
     # Posterior as default
     default_conditon_mask = jnp.array([0] * theta_dim + [1] * x_dim, dtype=jnp.bool_)

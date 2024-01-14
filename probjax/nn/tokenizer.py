@@ -59,6 +59,46 @@ class Tokenizer(hk.Module):
         self.learn_value_embeding = learn_value_embeding
         self.learn_meta_data_embeding = learn_meta_data_embeding
         super().__init__(name)
+        
+    @hk.transparent
+    def distribute_output_dim(self, with_meta_data: bool = False):
+        if isinstance(self.distibutor, Callable):
+            return self.distibutor(self.output_dim)
+        else:
+            if self.accummulator == "concat":
+                if with_meta_data:
+                    output_dim1 = self.output_dim // 3
+                    output_dim2 = self.output_dim // 3
+                    output_dim3 = self.output_dim - (output_dim1 + output_dim2)
+                    return output_dim1, output_dim2, output_dim3
+                else:
+                    output_dim1 = self.output_dim // 2
+                    output_dim2 = self.output_dim - output_dim1
+                    return output_dim1, output_dim2, 0
+            elif self.accummulator == "sum":
+                return self.output_dim, self.output_dim, self.output_dim
+            else:
+                raise ValueError(
+                    f"Unknown accummulator: {self.accummulator}, Please specify a custom distributor function, that returns a tuple of output dimensions for each input type."
+                )
+                
+    @hk.transparent
+    def accumulate(self, data_id_embedding, data_embedding, meta_data_embedding):
+        if self.accummulator == "concat":
+            out = [data_id_embedding, data_embedding]
+            if meta_data_embedding is not None:
+                out.append(meta_data_embedding)
+            return jnp.concatenate(out, axis=-1)
+        elif self.accummulator == "sum":
+            out = data_id_embedding + data_embedding
+            if meta_data_embedding is not None:
+                out += meta_data_embedding
+            return out
+
+        else:
+            raise ValueError(
+                f"Unknown accummulator: {self.accummulator}, Please specify a custom distributor function, that returns a tuple of output dimensions for each input type."
+            )
 
 
 class ScalarTokenizer(Tokenizer):
@@ -129,45 +169,6 @@ class ScalarTokenizer(Tokenizer):
 
         return tokens.reshape(*leading_dims, sequence_length, self.output_dim)
 
-    @hk.transparent
-    def accumulate(self, data_id_embedding, data_embedding, meta_data_embedding):
-        if self.accummulator == "concat":
-            out = [data_id_embedding, data_embedding]
-            if meta_data_embedding is not None:
-                out.append(meta_data_embedding)
-            return jnp.concatenate(out, axis=-1)
-        elif self.accummulator == "sum":
-            out = data_id_embedding + data_embedding
-            if meta_data_embedding is not None:
-                out += meta_data_embedding
-            return out
-
-        else:
-            raise ValueError(
-                f"Unknown accummulator: {self.accummulator}, Please specify a custom distributor function, that returns a tuple of output dimensions for each input type."
-            )
-
-    @hk.transparent
-    def distribute_output_dim(self, with_meta_data: bool = False):
-        if isinstance(self.distibutor, Callable):
-            return self.distibutor(self.output_dim)
-        else:
-            if self.accummulator == "concat":
-                if with_meta_data:
-                    output_dim1 = self.output_dim // 3
-                    output_dim2 = self.output_dim // 3
-                    output_dim3 = self.output_dim - (output_dim1 + output_dim2)
-                    return output_dim1, output_dim2, output_dim3
-                else:
-                    output_dim1 = self.output_dim // 2
-                    output_dim2 = self.output_dim - output_dim1
-                    return output_dim1, output_dim2, 0
-            elif self.accummulator == "sum":
-                return self.output_dim, self.output_dim, self.output_dim
-            else:
-                raise ValueError(
-                    f"Unknown accummulator: {self.accummulator}, Please specify a custom distributor function, that returns a tuple of output dimensions for each input type."
-                )
 
     @hk.transparent
     def value_embeding(self, value, output_dim):
@@ -216,13 +217,16 @@ class ScalarTokenizer(Tokenizer):
 class StructuredTokenizer(Tokenizer):
     def __init__(
         self,
+        input_dims: tuple[int],
         output_dim: int,
-        node_embeding_builder: Optional[Callable] = None,
         value_embeding_builder: Optional[Callable] = None,
+        node_embeding_builder: Optional[Callable] = None,
         node_meta_data_embeding_builder: Optional[Callable] = None,
         accummulator: Optional[Union[Callable, str]] = "concat",
         name: str | None = "tokenizer",
     ):
+        
+        self.input_dims = input_dims
         super().__init__(
             output_dim,
             node_embeding_builder,
@@ -232,15 +236,36 @@ class StructuredTokenizer(Tokenizer):
             name,
         )
 
-    def __call__(self, data, meta_data=None):
-        pass
+    def __call__(self, data_id:Array, data: tuple[Array], meta_data: Optional[PyTree] = None):
+        output_dim1, output_dim2, output_dim3 = self.distribute_output_dim(
+            with_meta_data=meta_data is not None
+        )
 
-    @hk.transparent
-    def value_embeding(self, value):
-        if self.value_embeding_builder is None:
-            value_embeding_fn = hk.Conv1D(self.output_dim, 1)
+        data_id_embeding = self.node_embeding(data_id, output_dim1)
+        value_embeding = self.value_embeding(data, output_dim2)
+        if meta_data is not None:
+            meta_data_embeding = self.meta_data_embeding(meta_data, output_dim3)
         else:
-            value_embeding_fn = self.value_embeding_builder(self.output_dim)
+            meta_data_embeding = None
+            
+        data_id_embeding, value_embeding, meta_data_embeding = jnp.broadcast_arrays(
+            data_id_embeding, value_embeding, meta_data_embeding
+        )
+        
+        tokens = self.accumulate(data_id_embeding, value_embeding, meta_data_embeding)
+        
+        return tokens
+        
+        
+    @hk.transparent
+    def value_embeding(self, id, value, output_dim):
+        if self.value_embeding_builder is None:
+            for i,v in zip(id,value):
+                pass
+                
+                    
+        else:
+            value_embeding_fn = self.value_embeding_builder(output_dim)
 
         return value_embeding_fn(value)
 
