@@ -28,7 +28,7 @@ def eval_inference_task(task: InferenceTask, model, metric_fn, metric_params, rn
     return metric_values, average_sampling_time
 
 
-def eval_all_conditional_task(task: AllConditionalTask, model, metric_fn, metric_params, rng, num_samples=2000, num_evaluations=100):
+def eval_all_conditional_task(task: AllConditionalTask, model, metric_fn, metric_params, rng, num_samples=2000, num_evaluations=2):
     metric_values = []
     average_sampling_time = 0
     metric_params = dict(metric_params)
