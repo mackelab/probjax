@@ -9,6 +9,7 @@ validation_fraction: 0.05
 val_repeat: 5
 val_every: 50
 stop_early_count: 5
+z_score_data: False
 
 defaults:
   - condition_mask_fn: structured_random
