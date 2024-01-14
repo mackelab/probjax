@@ -9,7 +9,7 @@ hydra:
       method/model: score_transformer_large
       method/sde: vesde,vpsde
       method.train.validation_fraction: 0.
-      eval: none
+      eval: c2st_joint
       task: sir
       task.num_simulations: 1000,10000,100000
 
