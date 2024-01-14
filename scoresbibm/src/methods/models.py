@@ -400,12 +400,13 @@ class AllConditionalReferenceModel(AllConditionalModel):
 
 class AllConditionalScoreModel(AllConditionalModel):
     def __init__(
-        self, params, model_fn, sde, sde_init_params, model_init_params, edge_mask_fn_params
+        self, params, model_fn, sde, sde_init_params, model_init_params, edge_mask_fn_params, z_score_params=None
     ) -> None:
         self.params = params
         self.model_fn = model_fn
         self.sde = sde
         self.edge_mask_fn_params = edge_mask_fn_params
+        self.z_score_params = z_score_params
 
         self.T_min = sde_init_params["T_min"]
         self.T_max = sde_init_params["T_max"]
@@ -439,6 +440,18 @@ class AllConditionalScoreModel(AllConditionalModel):
             if self.meta_data is not None:
                 meta_data = self.meta_data
         return meta_data
+    
+    def _z_score_if_needed(self, x_o, node_id, condition_mask):
+        if self.z_score_params is not None:
+            z_score_fn = self.z_score_params["z_score_fn"]
+            x_o = z_score_fn(x_o, node_id[condition_mask])
+        return x_o
+    
+    def _un_z_score_if_needed(self, theta, node_id, condition_mask):
+        if self.z_score_params is not None:
+            un_z_score_fn = self.z_score_params["un_z_score_fn"]
+            theta = un_z_score_fn(theta, node_id[~condition_mask])
+        return theta
 
     def _sample(
         self,
@@ -454,6 +467,8 @@ class AllConditionalScoreModel(AllConditionalModel):
     ):
         meta_data = self._check_for_meta_data(meta_data)
         edge_mask = self._check_edge_mask(edge_mask, node_id, condition_mask, meta_data)
+        if x_o.shape[0] > 0:
+            x_o = self._z_score_if_needed(x_o, node_id, condition_mask)
         
         return_conditioned_samples = kwargs.pop("return_conditioned_samples", False)
         sampling_kwargs = {**self.sampling_kwargs, **kwargs}
@@ -500,7 +515,7 @@ class AllConditionalScoreModel(AllConditionalModel):
             else:
                 final_samples = ys[:, -1, ...]
             final_samples = final_samples.reshape((num_samples, -1))
-            return final_samples
+
         elif sampling_method == "ode":
             x_T = x_T.at[..., condition_mask].set(x_o.reshape(-1))
             drift = self._init_backward_ode(node_id, condition_mask, edge_mask, meta_data=meta_data)
@@ -510,7 +525,7 @@ class AllConditionalScoreModel(AllConditionalModel):
             else:
                 final_samples = ys[:, -1, ...]
             final_samples = final_samples.reshape((num_samples, -1))
-            return final_samples
+
         elif sampling_method in ["repaint", "classifier_free_guidance", "naive_inpaint_guidance","generalized_guidance"]:
             if sampling_method == "repaint":
                 register_repaint_step_fn(self, condition_mask, x_o)
@@ -550,9 +565,11 @@ class AllConditionalScoreModel(AllConditionalModel):
             final_samples = final_samples.reshape((num_samples, -1))
             self.score_fn = self.model_fn
             #return ys
-            return final_samples
         else:
             raise NotImplementedError()
+        
+        final_samples = self._un_z_score_if_needed(final_samples, node_id, condition_mask)
+        return final_samples
 
     def _log_prob(self, val, x_o, **kwargs):
         # Add backward ode to compute log_prob
@@ -619,10 +636,13 @@ class AllConditionalScoreModel(AllConditionalModel):
         state["sde"] = None
         state["score_fn"] = None
         state["edge_mask_fn"] = None
+        state["z_score_params"]["z_score_fn"] = None
+        state["z_score_params"]["un_z_score_fn"] = None
         return state
 
     def __setstate__(self, state):
         from scoresbibm.src.methods.neural_nets import scalar_transformer_model
+        from scoresbibm.src.methods.score_transformer import get_z_score_fn
         from scoresbibm.src.methods.sde import init_sde_related
         from scoresbibm.src.utils.edge_masks import get_edge_mask_fn
         from scoresbibm.src.tasks import get_task
@@ -642,3 +662,6 @@ class AllConditionalScoreModel(AllConditionalModel):
             self.edge_mask_fn = get_edge_mask_fn(
                 self.edge_mask_fn_params["name"], task
             )
+            z_score_fn, un_z_score_fn = get_z_score_fn(self.z_score_params["mean_per_node_id"], self.z_score_params["std_per_node_id"])
+            self.z_score_params["z_score_fn"] = z_score_fn
+            self.z_score_params["un_z_score_fn"] = un_z_score_fn
