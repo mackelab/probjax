@@ -7,6 +7,8 @@ from probjax.utils.sdeint import sdeint
 from scoresbibm.src.tasks.all_conditional_tasks import AllConditionalBMTask
 
 
+
+
 ts = jnp.linspace(0, 3, 100)
 
 
@@ -77,8 +79,9 @@ diffusion_fn = lambda t, state, *args: jnp.array([0.05, 0., 0., 0., 0.]) # Volta
 
 def compute_summary_statistics(V, ts_dense, t_val):
     V_mod = jnp.where(V < -10, -10, V)
-    V_mod = jnp.where(jnp.diff(V, prepend=jnp.array([-10.])) < 0, -10, V_mod)
-
+    V_mod = jnp.where(jnp.diff(V, prepend=jnp.array([-10.])) < 5., 0, 1)
+    V_mod = jnp.convolve(V_mod, jnp.ones(20), mode='same')
+    V_mod = jnp.where(V_mod > 1, 1, 0)
     spike_occured = jnp.where(jnp.diff(V_mod, prepend=jnp.array([-10.])) < 0, 1., 0.)
     spike_count = jnp.sum(spike_occured, keepdims=True)
 
@@ -115,7 +118,6 @@ def hh_model(t_min=0., t_max=200., t_val=jnp.array([50., 150.]), Vt_val=jnp.arra
     h0 = alpha_h_fn(V0) / (alpha_h_fn(V0) + beta_h_fn(V0))
     n0 = alpha_m_fn(V0) / (alpha_m_fn(V0) + beta_m_fn(V0))
     H0 = jnp.zeros_like(V0)
-    drift = lambda state, t, *args: hodgkin_huxley(t, state, *args, t_val, Vt_val)
 
     var_names = ["theta0", "theta1", "theta2", "theta3", "theta4", "theta5", "theta6", "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"]
 
@@ -147,8 +149,36 @@ def hh_model(t_min=0., t_max=200., t_val=jnp.array([50., 150.]), Vt_val=jnp.arra
 
 class HHTask(AllConditionalBMTask):
     
-    def __init__(self, backend: str = "jax") -> None:
+    def __init__(self, backend: str = "jax", t_min=0., t_max=200., t_val=jnp.array([50., 150.]), Vt_val=jnp.array([4., 0.]), V0 = -65.0, return_voltage=False, voltage_based_energy=False) -> None:
+        self.t_min = t_min
+        self.t_max = t_max
+        self.t_val = t_val
+        self.Vt_val = Vt_val
+        self.V0 = V0
+        self.return_voltage = return_voltage
+        self.voltage_based_energy = voltage_based_energy
         super().__init__("hh", hh_model, backend)
+        
+    
+    def get_simulator(self):
+        def simulator(key, theta):
+            ts = jnp.linspace(self.t_min, self.t_max, 5000)
+            Cm, g_Na, g_K, g_L, E_Na, E_K, E_V = theta
+            m0 = alpha_n_fn(self.V0) / (alpha_n_fn(self.V0) + beta_n_fn(self.V0))
+            h0 = alpha_h_fn(self.V0) / (alpha_h_fn(self.V0) + beta_h_fn(self.V0))
+            n0 = alpha_m_fn(self.V0) / (alpha_m_fn(self.V0) + beta_m_fn(self.V0))
+            H0 = jnp.zeros_like(self.V0)
+            params = (Cm, g_Na, g_K, g_L, E_Na, E_K, E_V)
+            vals = sdeint(key,hodgkin_huxley, diffusion_fn, (self.V0, m0, h0, n0, H0), ts, *params, self.t_val, self.Vt_val, noise_type="diagonal")
+            V = vals[...,0]
+            H = vals[...,-1]
+            V = jnp.nan_to_num(V, nan=self.V0, posinf=self.V0, neginf=self.V0)
+            V = jnp.clip(V, -100, 100)
+            summary_stats = compute_summary_statistics(V, ts, self.t_val)
+            total_energy = H[-1][...,None]
+            return V, total_energy, jnp.concatenate(summary_stats, axis=-1)
+        return simulator
+                
         
     def get_data(self, num_samples: int, rng=None, batch_size=5000):
         rounds = num_samples // batch_size + 1
@@ -187,4 +217,3 @@ class HHTask(AllConditionalBMTask):
             raise NotImplementedError()
         return sample_fn
     
-
