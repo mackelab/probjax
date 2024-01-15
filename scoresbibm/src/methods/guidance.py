@@ -56,7 +56,7 @@ def register_generalized_guidance(model, condition_mask, x_o, score_manipulator=
     score_manipulator = get_score_manipulator_fn(score_manipulator, **score_manipulator_kwargs)
     def additive_score_fn(params ,t ,x ,node_id ,local_condition_mask ,meta_data=None,edge_mask=None):
         # Zero out condition_mask
-        joint_score = model.model_fn(params,t,x,node_id,local_condition_mask,meta_data=meta_data,edge_mask=edge_mask)
+        joint_score = model.model_fn(params,t,x,node_id,local_condition_mask | condition_mask,meta_data=meta_data,edge_mask=edge_mask)
         manipulation_score = score_manipulator(t,x,condition_mask,x_o)
         manipulation_score = manipulation_score.reshape(joint_score.shape)
         #print(joint_score, manipulation_score)  

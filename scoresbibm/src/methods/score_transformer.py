@@ -27,6 +27,7 @@ def mean_std_per_node_id(data, node_ids):
 
 def get_z_score_fn(data_mean_per_node_id, data_std_per_node_id):
 
+
     def z_score(data, node_id):
         shape = data.shape
         data = data.reshape(-1, len(node_id),  1)
@@ -174,9 +175,7 @@ def train_transformer_model(task, data, method_cfg, rng):
     if method_cfg.train.z_score_data:
         mean_per_node_id, std_per_node_id = mean_std_per_node_id(data, node_id)
         z_score_fn, un_z_score_fn = get_z_score_fn(mean_per_node_id, std_per_node_id)
-        print(data.shape)
         data = z_score_fn(data, node_id)
-        print(data.shape)
 
     # Initialize stuff
     sde, T_min, T_max, _weight_fn, output_scale_fn = init_sde_related(
@@ -307,7 +306,10 @@ def train_transformer_model(task, data, method_cfg, rng):
     }
     model_init_params = {"num_nodes": theta_dim + x_dim, **dict(method_cfg.model)}
     edge_mask_params["task"] = task.name
-    z_score_params = {"mean_per_node_id": mean_per_node_id, "std_per_node_id": std_per_node_id, "z_score_fn": z_score_fn, "un_z_score_fn": un_z_score_fn}
+    if method_cfg.train.z_score_data:
+        z_score_params = {"mean_per_node_id": mean_per_node_id, "std_per_node_id": std_per_node_id, "z_score_fn": z_score_fn, "un_z_score_fn": un_z_score_fn}
+    else:
+        z_score_params = None
     model = AllConditionalScoreModel(
         params,
         model_fn,
