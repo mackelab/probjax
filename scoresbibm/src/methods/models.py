@@ -530,19 +530,24 @@ class AllConditionalScoreModel(AllConditionalModel):
             if sampling_method == "repaint":
                 register_repaint_step_fn(self, condition_mask, x_o)
                 sampling_kwargs["method"] = "repaint"
+                constraint_mask = sampling_kwargs.pop("constraint_mask", condition_mask)
                 drift, diffusion = self._init_backward_sde(node_id, jnp.zeros_like(condition_mask), edge_mask, meta_data=meta_data)
             elif sampling_method == "classifier_free_guidance":
                 register_classifier_free_guidance(self, condition_mask, x_o)
+                constraint_mask = sampling_kwargs.pop("constraint_mask", condition_mask)
                 drift, diffusion = self._init_backward_sde(node_id, jnp.zeros_like(condition_mask), edge_mask, meta_data=meta_data)
             elif sampling_method == "naive_inpaint_guidance":
                 register_naive_inpaint_guidance(self, condition_mask, x_o)
+                constraint_mask = sampling_kwargs.pop("constraint_mask", condition_mask)
                 x_T = x_T.at[..., condition_mask].set(x_o.reshape(-1))
                 drift, diffusion = self._init_backward_sde(node_id, condition_mask, edge_mask, meta_data=meta_data)
             elif sampling_method == "generalized_guidance":
                 score_manipulator = sampling_kwargs.pop("score_manipulator")
                 score_manipulator_kwargs = sampling_kwargs.pop("score_manipulator_kwargs")
-                register_generalized_guidance(self, condition_mask, x_o, score_manipulator=score_manipulator, **score_manipulator_kwargs)
-                drift, diffusion = self._init_backward_sde(node_id, jnp.zeros_like(condition_mask), edge_mask, meta_data=meta_data)
+                constraint_mask = sampling_kwargs.pop("constraint_mask", condition_mask)
+                x_T = x_T.at[..., condition_mask & ~constraint_mask].set(x_o.reshape(-1)[:jnp.sum(condition_mask & ~constraint_mask)])
+                register_generalized_guidance(self, constraint_mask, x_o, score_manipulator=score_manipulator, **score_manipulator_kwargs)
+                drift, diffusion = self._init_backward_sde(node_id, condition_mask & ~constraint_mask, edge_mask, meta_data=meta_data)
             else:
                 raise NotImplementedError()
                 
@@ -636,8 +641,9 @@ class AllConditionalScoreModel(AllConditionalModel):
         state["sde"] = None
         state["score_fn"] = None
         state["edge_mask_fn"] = None
-        state["z_score_params"]["z_score_fn"] = None
-        state["z_score_params"]["un_z_score_fn"] = None
+        if self.z_score_params is not None:
+            state["z_score_params"]["z_score_fn"] = None
+            state["z_score_params"]["un_z_score_fn"] = None
         return state
 
     def __setstate__(self, state):
@@ -662,6 +668,7 @@ class AllConditionalScoreModel(AllConditionalModel):
             self.edge_mask_fn = get_edge_mask_fn(
                 self.edge_mask_fn_params["name"], task
             )
-            z_score_fn, un_z_score_fn = get_z_score_fn(self.z_score_params["mean_per_node_id"], self.z_score_params["std_per_node_id"])
-            self.z_score_params["z_score_fn"] = z_score_fn
-            self.z_score_params["un_z_score_fn"] = un_z_score_fn
+            if self.z_score_params is not None:
+                z_score_fn, un_z_score_fn = get_z_score_fn(self.z_score_params["mean_per_node_id"], self.z_score_params["std_per_node_id"])
+                self.z_score_params["z_score_fn"] = z_score_fn
+                self.z_score_params["un_z_score_fn"] = un_z_score_fn
