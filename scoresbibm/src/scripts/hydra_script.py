@@ -157,14 +157,20 @@ def score_sbi(cfg: DictConfig):
         log.info(f"Saving summary")
         if cfg.model_id is None:
             model_id = generate_unique_model_id(output_super_dir)
+            try:
+                for m, vals in metrics_results.items():
+                    save_summary(output_super_dir, cfg.method.name, cfg.task.name, cfg.task.num_simulations, model_id, m, vals, seed, time_train, eval_time, cfg)
+            except Exception as e:
+                log.info("Tried to save summary, but failed.")
+                log.info(e)
         else:
             model_id = cfg.model_id
-        try:
-            for m, vals in metrics_results.items():
-                save_summary(output_super_dir, cfg.method.name, cfg.task.name, cfg.task.num_simulations, model_id, m, vals, seed, time_train, eval_time, cfg)
-        except Exception as e:
-            log.info("Tried to save summary, but failed.")
-            log.info(e)
+            try:
+                for m, vals in metrics_results.items():
+                    save_summary(output_super_dir, _cfg["method"]["name"], _cfg["task"]["name"], cfg["task"]["num_simulations"], model_id, m, vals, seed, time_train, eval_time, cfg)
+            except Exception as e:
+                log.info("Tried to save summary, but failed.")
+                log.info(e)
         log.info(f"Summary saved with id: {model_id}")
         
         
