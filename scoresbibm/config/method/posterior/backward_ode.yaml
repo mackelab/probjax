@@ -1,4 +1,4 @@
 
 sampling_method: "ode"
-num_steps: 1000
-method: rk4
+num_steps: 500
+method: heun
