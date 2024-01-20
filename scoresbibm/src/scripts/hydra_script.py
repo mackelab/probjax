@@ -81,6 +81,7 @@ def score_sbi(cfg: DictConfig):
     start_time = time.time()
     model = method_run(task,data, cfg.method, rng=rng_train)
     time_train = time.time() - start_time
+    log.info(f"Training time: {time_train}")
     
     del data 
 

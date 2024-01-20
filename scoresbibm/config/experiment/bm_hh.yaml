@@ -1,17 +1,18 @@
 # @package _global_
-name: main_benchmark_lv2
+name: bm_hh2
 
 hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      method: score_transformer,score_transformer_directed,score_transformer_undirected
+      method: score_transformer
       method/model: score_transformer_large
-      method/sde: vesde
+      method/sde: vesde,vpsde
       method.train.validation_fraction: 0.
-      eval: c2st
-      task: lotka_volterra
-      task.num_simulations: 1000,10000,100000
+      method.train.z_score_data: True
+      eval: c2st_joint
+      task: hh
+      task.num_simulations: 100000
 
   run:
     dir: results/${name}
@@ -22,4 +23,4 @@ hydra:
 
 defaults:
   - _self_
-  - override /partition: gpu_long 
+  - override /partition: gpu
