@@ -126,7 +126,7 @@ def denoising_score_matching_loss(
     mean_t = mean_fn(times, xs_target)
     std_t = std_fn(times, xs_target)
     xs_t = mean_t + std_t * eps
-
+    
     if loss_mask is not None:
         loss_mask = loss_mask.reshape(xs_target.shape)
         xs_t = jnp.where(loss_mask, xs_target, xs_t)

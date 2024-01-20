@@ -3,3 +3,5 @@ c2st_likelihood:
     metric: "accuracy"
     classifier: "rf"
     condition_mask_fn: likelihood
+    num_samples: 2000
+    num_evaluations: 50

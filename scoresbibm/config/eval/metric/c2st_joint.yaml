@@ -3,3 +3,5 @@ c2st_joint:
     metric: "accuracy"
     classifier: "rf"
     condition_mask_fn: joint
+    num_samples: 3000
+    num_evaluations: 50

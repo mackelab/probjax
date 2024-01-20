@@ -1,6 +1,7 @@
 name: benchmark
 seed: 0
 
+model_id: null
 save_model: true
 save_summary: true
 

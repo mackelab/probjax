@@ -3,8 +3,10 @@ import jax.numpy as jnp
 
 import haiku as hk
 
+from typing import Callable, Optional
+
 from probjax.nn.helpers import GaussianFourierEmbedding
-from probjax.nn.tokenizer import ScalarTokenizer
+from probjax.nn.tokenizer import ScalarTokenizer, StructuredTokenizer
 from probjax.nn.transformers import Transformer
 
 
@@ -124,6 +126,98 @@ def scalar_transformer_model(
 
         h = model(tokens, context=time, mask=edge_mask)
         out = hk.Linear(1)(h)
+        out = output_scale_fn(t, out)
+        return out
+
+    init_fn, model_fn = hk.without_apply_rng(hk.transform(model))
+    return init_fn, model_fn
+
+
+def structured_transformer_model(
+    num_nodes: int,
+    token_dim: int =40,
+    condition_token_dim: int =10,
+    condition_token_init_scale: int =0.01,
+    condition_token_init_mean: int=0.0,
+    condition_mode: str="concat",
+    time_embedding_dim: int=128,
+    num_heads: int=4,
+    num_layers: int=6,
+    attn_size: int=5,
+    widening_factor: int=4,
+    num_hidden_layers: int=1,
+    act=jax.nn.gelu,
+    value_embeding_builder: Optional[Callable] = None,
+    node_embeding_builder: Optional[Callable] = None,
+    node_meta_data_embeding_builder: Optional[Callable] = None,
+    skip_connection_attn: bool=True,
+    skip_connection_mlp: bool=True,
+    layer_norm: bool=True,
+    output_scale_fn=None,
+    base_mask=None,
+    **kwargs,
+):
+    if output_scale_fn is None:
+        output_scale_fn = lambda t, x: x
+
+    if condition_mode == "concat":
+        condition_token_dim = condition_token_dim
+    elif condition_mode == "add":
+        token_dim = token_dim + condition_token_dim
+        condition_token_dim = token_dim
+    elif condition_mode == "none":
+        token_dim = token_dim + condition_token_dim
+        condition_token_dim = 0
+
+    def model(t, data, data_id, condition_mask, meta_data=None, edge_mask=base_mask):
+        current_nodes = len(data)
+        data_dim = jax.tree_map(lambda x: x.shape[-1], data)
+        data_id = data_id.reshape(current_nodes)
+        condition_mask = condition_mask.reshape(-1, current_nodes)
+
+        tokenizer = StructuredTokenizer(token_dim, num_nodes, value_embeding_builder, node_embeding_builder, node_meta_data_embeding_builder)
+        time_embeder = GaussianFourierEmbedding(time_embedding_dim)
+
+        # Embedding
+        tokens = tokenizer(data_id, data, meta_data)
+        time = time_embeder(t[..., None])
+
+        # Conditioning
+        if condition_mode != "none":
+            condition_token = hk.get_parameter(
+                "condition_token",
+                shape=[1, 1, condition_token_dim],
+                init=hk.initializers.RandomNormal(
+                    condition_token_init_scale, condition_token_init_mean
+                ),
+            )
+            condition_mask = condition_mask.reshape(-1, current_nodes, 1)
+            condition_token = condition_mask * condition_token
+            if condition_mode == "add":
+                tokens = tokens + condition_token
+            elif condition_mode == "concat":
+                condition_token = jnp.broadcast_to(
+                    condition_token, tokens.shape[:-1] + (condition_token_dim,)
+                )
+                tokens = jnp.concatenate([tokens, condition_token], -1)
+
+        # Forward pass
+
+        model = Transformer(
+            num_heads=num_heads,
+            num_layers=num_layers,
+            attn_size=attn_size,
+            widening_factor=widening_factor,
+            num_hidden_layers=num_hidden_layers,
+            act=act,
+            skip_connection_attn=skip_connection_attn,
+            skip_connection_mlp=skip_connection_mlp,
+ #           layer_norm=layer_norm,
+        )
+
+        h = model(tokens, context=time, mask=edge_mask)
+        output_fn = [hk.Linear(d) for d in data_dim]
+        out = jnp.concatenate([output_fn[i](h[..., i, :]) for i in range(len(data_dim))], axis=-1)
         out = output_scale_fn(t, out)
         return out
 

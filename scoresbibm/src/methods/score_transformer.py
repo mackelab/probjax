@@ -246,9 +246,9 @@ def train_transformer_model(task, data, method_cfg, rng):
             key_condition, data.shape[0], theta_dim, x_dim
         )
         if meta_data is None:
-            edge_mask = edge_mask_fn(node_id, condition_mask)
+            edge_mask = jax.vmap(edge_mask_fn, in_axes=(None,0))(node_id, condition_mask)
         else:
-            edge_mask = jax.vmap(edge_mask_fn, in_axes=(None, None, 0))(node_id, condition_mask, meta_data)
+            edge_mask = jax.vmap(edge_mask_fn, in_axes=(None, 0, 0))(node_id, condition_mask, meta_data)
 
 
         loss = denoising_score_matching_loss(
