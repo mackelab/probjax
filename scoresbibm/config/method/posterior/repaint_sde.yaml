@@ -1,4 +1,4 @@
 
 sampling_method: "repaint"
 num_steps: 500
-method: euler_maruyama
+resampling_steps: 0

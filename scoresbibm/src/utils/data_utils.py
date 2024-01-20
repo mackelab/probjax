@@ -41,6 +41,7 @@ def query(
     num_simulations=None,
     metric=None,
     seed=None,
+    model_id=None,
     value_statistic="mean",
     **kwargs,
 ):
@@ -63,6 +64,10 @@ def query(
         if query != "":
             query += "&"
         query += to_query_string("metric", metric)
+    if model_id is not None:
+        if query != "":
+            query += "&"
+        query += to_query_string("model_id", model_id)
 
     if query == "":
         df_q = summary_df
@@ -83,13 +88,13 @@ def query(
     
 
     # Evaluate value, which is a string
-    df_q["value"] = df_q["value"].apply(lambda x: np.array(eval(x)))
+    df_q["value"] = df_q["value"].apply(lambda x: np.array(eval(x)) if isinstance(x, str) else np.array(x))
     if value_statistic == "mean":
-        df_q["value"] = df_q["value"].apply(lambda x: np.mean(x))
+        df_q["value"] = df_q["value"].apply(lambda x: np.mean(x) if x is not None else None)
     elif value_statistic == "median":
-        df_q["value"] = df_q["value"].apply(lambda x: np.median(x))
+        df_q["value"] = df_q["value"].apply(lambda x: np.median(x) if x is not None else None)
     elif value_statistic == "std":
-        df_q["value"] = df_q["value"].apply(lambda x: np.std(x))
+        df_q["value"] = df_q["value"].apply(lambda x: np.std(x) if x is not None else None)
     elif "quantile" in value_statistic:
         val = float(value_statistic.split("_")[1])
         df_q["value"] = df_q["value"].apply(lambda x: np.quantile(x, val))

@@ -7,7 +7,7 @@ import time
 
 
 
-def eval_inference_task(task: InferenceTask, model, metric_fn, metric_params, rng):
+def eval_inference_task(task: InferenceTask, model, metric_fn, metric_params, rng, **kwargs):
     metric_values = []
     metric_params = dict(metric_params)
     condition_mask_fn = metric_params.pop("condition_mask_fn", "structured_random")
