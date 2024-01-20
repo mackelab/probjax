@@ -175,8 +175,7 @@ class HHTask(AllConditionalBMTask):
             V = jnp.nan_to_num(V, nan=self.V0, posinf=self.V0, neginf=self.V0)
             V = jnp.clip(V, -100, 100)
             summary_stats = compute_summary_statistics(V, ts, self.t_val)
-            total_energy = H[-1][...,None]
-            return V, total_energy, jnp.concatenate(summary_stats, axis=-1)
+            return V, H, jnp.concatenate(summary_stats, axis=-1)
         return simulator
                 
         

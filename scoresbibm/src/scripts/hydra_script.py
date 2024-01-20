@@ -19,7 +19,7 @@ from scoresbibm.src.methods.method_base import get_method
 from scoresbibm.src.evaluation import get_metric, eval_inference_task, eval_all_conditional_task
 from scoresbibm.src.tasks.base_task import AllConditionalTask, InferenceTask
 from scoresbibm.src.tasks.unstructured_tasks import UnstructuredTask
-from scoresbibm.src.utils.data_utils import init_dir, generate_unique_model_id, save_model, save_summary
+from scoresbibm.src.utils.data_utils import init_dir, generate_unique_model_id, save_model, save_summary, load_model, query
 
 
 
@@ -70,19 +70,39 @@ def score_sbi(cfg: DictConfig):
     init_dir(output_super_dir)
     
     # Set up the task # TODO: maybe add data_device
-    log.info(f"Task: {cfg.task.name}")
-    task = get_task(cfg.task.name, backend=backend)
-    data = task.get_data(cfg.task.num_simulations, rng=rng)
+    if cfg.model_id is None:
+        log.info(f"Task: {cfg.task.name}")
+        task = get_task(cfg.task.name, backend=backend)
+        data = task.get_data(cfg.task.num_simulations, rng=rng)
+    else:
+        log.info(f"Loading task for model with id: {cfg.model_id}")
+        df = query(str(output_super_dir), model_id=int(cfg.model_id))
+        task_name = df["task"].iloc[0]
+        _cfg = eval(df["cfg"].iloc[0])
+        # Convert to DictConfig
+        backend = _cfg["method"]["backend"]  
+        log.info(f"Task: {task_name}")
+        task = get_task(task_name, backend=backend)
+        data = None
 
-    # Run method
-    log.info(f"Running method: {cfg.method.name}")
-    method_run = get_method(cfg.method.name)
-    rng, rng_train = jax.random.split(rng)
-    start_time = time.time()
-    model = method_run(task,data, cfg.method, rng=rng_train)
-    time_train = time.time() - start_time
-    log.info(f"Training time: {time_train}")
-    
+
+    if cfg.model_id is None:
+        # Run method
+        log.info(f"Running method: {cfg.method.name}")
+        method_run = get_method(cfg.method.name)
+        rng, rng_train = jax.random.split(rng)
+        start_time = time.time()
+        model = method_run(task,data, cfg.method, rng=rng_train)
+        time_train = time.time() - start_time
+    else:
+        # Load model
+        log.info(f"Loading model with id: {cfg.model_id}")
+        rng, rng_train = jax.random.split(rng) # To preserve the same seed as when training
+        model_id = cfg.model_id
+        model = load_model(output_super_dir, model_id)
+        model.set_default_sampling_kwargs(**dict(cfg.method.posterior))
+        time_train = None
+        log.info(f"Model loaded")
     del data 
 
     # Evaluate
@@ -92,16 +112,21 @@ def score_sbi(cfg: DictConfig):
     for m, metric_params in metrics.items():
         log.info(f"Evaluating metric: {m}")
         rng, rng_eval = jax.random.split(rng)
+        
         if m == "none":
             continue
+        metric_params = dict(metric_params)
         metric_fn = get_metric(str(m))
+        num_samples = metric_params.pop("num_samples", 1000)
+        num_evaluations = metric_params.pop("num_evaluations", 50)
+        
         
         if issubclass(type(task), InferenceTask):
-            metric_values, eval_time = eval_inference_task(task, model, metric_fn, metric_params, rng_eval)
+            metric_values, eval_time = eval_inference_task(task, model, metric_fn, metric_params, rng_eval, num_samples=num_samples, num_evaluations=num_evaluations)
         elif issubclass(task.__class__, UnstructuredTask):
-            metric_values, eval_time = eval_unstructured_task(task, model, metric_fn, metric_params, rng_eval)
+            metric_values, eval_time = eval_unstructured_task(task, model, metric_fn, metric_params, rng_eval, num_samples=num_samples, num_evaluations=num_evaluations)
         elif issubclass(task.__class__, AllConditionalTask):
-            metric_values, eval_time = eval_all_conditional_task(task, model, metric_fn, metric_params, rng_eval)
+            metric_values, eval_time = eval_all_conditional_task(task, model, metric_fn, metric_params, rng_eval, num_samples=num_samples, num_evaluations=num_evaluations)
         else:
             raise ValueError("Task not recognized.")
         
@@ -115,7 +140,7 @@ def score_sbi(cfg: DictConfig):
         
     # Saving results
     is_save_model = cfg.save_model
-    if is_save_model:
+    if is_save_model and cfg.model_id is None:
         log.info(f"Saving model")
         model_id = generate_unique_model_id(output_super_dir)
         try:
@@ -130,7 +155,10 @@ def score_sbi(cfg: DictConfig):
     is_save_summary = cfg.save_summary
     if is_save_summary:
         log.info(f"Saving summary")
-        model_id = generate_unique_model_id(output_super_dir)
+        if cfg.model_id is None:
+            model_id = generate_unique_model_id(output_super_dir)
+        else:
+            model_id = cfg.model_id
         try:
             for m, vals in metrics_results.items():
                 save_summary(output_super_dir, cfg.method.name, cfg.task.name, cfg.task.num_simulations, model_id, m, vals, seed, time_train, eval_time, cfg)

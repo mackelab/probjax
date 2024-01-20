@@ -3,3 +3,5 @@ c2st_posterior:
     metric: "accuracy"
     classifier: "rf"
     condition_mask_fn: posterior
+    num_samples: 2000
+    num_evaluations: 50
