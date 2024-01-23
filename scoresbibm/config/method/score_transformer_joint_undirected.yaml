@@ -1,25 +1,13 @@
 
-
-
-
-
-
-
-
-name: score_transformer_undirected
+name: score_transformer_joint_undirected
 backend: jax
 device: gpu
 
 
 defaults:
-  - model: score_transformer_small
+  - model: score_transformer_unconditional
   - train: train_score_transformer
   - sde: vpsde
   - posterior: backward_sde
+  - override train/condition_mask_fn: joint
   - override train/edge_mask_fn: undirected
-  
-
-
-
-
-

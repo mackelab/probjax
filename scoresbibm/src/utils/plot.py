@@ -103,13 +103,13 @@ def get_method_plot_name(method):
     elif method == "nspe":
         return "NSPE"
     elif method == "score_transformer":
-        return "NSCE"
+        return "FlexBI"
     elif method == "score_transformer_posterior":
-        return "NSCE (posterior only)"
+        return "FlexBI (posterior only)"
     elif method == "score_transformer_directed" or method == "score_transformer_min_graphical":  # Legacy support
-        return "NSCE (directed graph)"
+        return "FlexBI (directed graph)"
     elif method == "score_transformer_undirected" or method == "score_transformer_graphical":
-        return "NSCE (undirected graph)"
+        return "FlexBI (undirected graph)"
     else:
         return method
     
@@ -136,10 +136,13 @@ def float_to_power_of_ten(val: float):
     return rf"$10^{exp}$"
 
 
-def plot_metric_by_num_simulations(name, method = None, task = None, num_simulations = None, seed = None, metric="c2st", value_statistic="mean", ax=None, figsize=(3, 2), color_map=None, hue=None, **kwargs):
+def plot_metric_by_num_simulations(name, method = None, task = None, num_simulations = None, seed = None, metric="c2st", value_statistic="mean", ax=None, figsize=(3, 2), color_map=None, hue=None,  df=None,**kwargs):
     """ Plot the metric"""
     
-    df = query(name, task=task, method=method, num_simulations=num_simulations, metric=metric, seed=seed, **kwargs)
+    if df is None:
+        df = query(name, task=task, method=method, num_simulations=num_simulations, metric=metric, seed=seed, **kwargs)
+    else:
+        df = df.copy()
     
     
     ylims = get_ylim_by_metric(metric)
@@ -175,7 +178,7 @@ def get_sorting_key_fn(name):
                 return 1
             elif method == "nre":
                 return 2
-            elif method == "score_transformer":
+            elif  "score_transformer" in method:
                 return 3
             else:
                 return 4
@@ -216,10 +219,14 @@ def multi_plot(
     legend_ncol=10,
     legend_kwargs={},
     fig_legend=True,
+    df = None,
     verbose=False,
     **kwargs,
 ):
-    df = query(name, **kwargs)
+    if df is None:
+        df = query(name, **kwargs)
+    else:
+        df = df.copy()
 
     df = df.sort_values(cols, na_position="first", key=get_sorting_key_fn(cols))
     cols_vals = df[cols].dropna().unique()
@@ -308,7 +315,7 @@ def multi_plot(
             if verbose:
                 print(plot_kwargs)
             try:
-                plot_fn(name, ax=axes[i, j], color_map=color_map, **plot_kwargs)
+                plot_fn(name, ax=axes[i, j], color_map=color_map, df=df, **plot_kwargs)
             except Exception as e:
                 if verbose:
                     print(str(e))

@@ -165,9 +165,13 @@ def score_sbi(cfg: DictConfig):
                 log.info(e)
         else:
             model_id = cfg.model_id
+            local_cfg = dict(cfg)
+            # The only stuff that can change is:
+            _cfg["method"]["posterior"] = local_cfg["method"]["posterior"]
+            _cfg["eval"] = local_cfg["eval"]
             try:
                 for m, vals in metrics_results.items():
-                    save_summary(output_super_dir, _cfg["method"]["name"], _cfg["task"]["name"], cfg["task"]["num_simulations"], model_id, m, vals, seed, time_train, eval_time, cfg)
+                    save_summary(output_super_dir, _cfg["method"]["name"], _cfg["task"]["name"], _cfg["task"]["num_simulations"], model_id, m, vals, seed, time_train, eval_time, _cfg)
             except Exception as e:
                 log.info("Tried to save summary, but failed.")
                 log.info(e)
