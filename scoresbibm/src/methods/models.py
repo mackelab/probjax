@@ -719,6 +719,10 @@ class AllConditionalScoreModel(AllConditionalModel):
             self.edge_mask_fn = get_edge_mask_fn(
                 self.edge_mask_fn_params["name"], task
             )
+            
+            if not hasattr(self, "z_score_params"):
+                self.z_score_params = None
+            
             if self.z_score_params is not None:
                 z_score_fn, un_z_score_fn = get_z_score_fn(self.z_score_params["mean_per_node_id"], self.z_score_params["std_per_node_id"])
                 self.z_score_params["z_score_fn"] = z_score_fn
