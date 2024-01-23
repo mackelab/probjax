@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="385.337109pt" height="42.12pt" viewBox="0 0 385.337109 42.12" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2024-01-23T13:33:43.361493</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.8.2, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 42.12 
+L 385.337109 42.12 
+L 385.337109 0 
+L 0 0 
+L 0 42.12 
+z
+" style="fill: none"/>
+  </g>
+  <g id="axes_1"/>
+  <g id="legend_1">
+   <g id="line2d_1">
+    <path d="M 10.8 20.951016 
+L 19.8 20.951016 
+L 28.8 20.951016 
+" style="fill: none; stroke: #d73027; stroke-opacity: 0.8; stroke-width: 2.7; stroke-linecap: square"/>
+    <defs>
+     <path id="m6d7eb4d107" d="M 0 1.691974 
+C 0.448717 1.691974 0.879116 1.513697 1.196406 1.196406 
+C 1.513697 0.879116 1.691974 0.448717 1.691974 0 
+C 1.691974 -0.448717 1.513697 -0.879116 1.196406 -1.196406 
+C 0.879116 -1.513697 0.448717 -1.691974 0 -1.691974 
+C -0.448717 -1.691974 -0.879116 -1.513697 -1.196406 -1.196406 
+C -1.513697 -0.879116 -1.691974 -0.448717 -1.691974 0 
+C -1.691974 0.448717 -1.513697 0.879116 -1.196406 1.196406 
+C -0.879116 1.513697 -0.448717 1.691974 0 1.691974 
+z
+" style="stroke: #d73027; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </defs>
+    <g>
+     <use xlink:href="#m6d7eb4d107" x="19.8" y="20.951016" style="fill: #d73027; fill-opacity: 0.8; stroke: #d73027; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </g>
+   </g>
+   <g id="text_1">
+    <text style="font: 9px 'Arial', sans-serif; text-anchor: start" x="36" y="24.101016" transform="rotate(-0 36 24.101016)">  FlexBI</text>
+   </g>
+   <g id="line2d_2">
+    <path d="M 84.505781 20.951016 
+L 93.505781 20.951016 
+L 102.505781 20.951016 
+" style="fill: none; stroke: #f25d1d; stroke-opacity: 0.8; stroke-width: 2.7; stroke-linecap: square"/>
+    <defs>
+     <path id="m6699f0b2e8" d="M 0 1.691974 
+C 0.448717 1.691974 0.879116 1.513697 1.196406 1.196406 
+C 1.513697 0.879116 1.691974 0.448717 1.691974 0 
+C 1.691974 -0.448717 1.513697 -0.879116 1.196406 -1.196406 
+C 0.879116 -1.513697 0.448717 -1.691974 0 -1.691974 
+C -0.448717 -1.691974 -0.879116 -1.513697 -1.196406 -1.196406 
+C -1.513697 -0.879116 -1.691974 -0.448717 -1.691974 0 
+C -1.691974 0.448717 -1.513697 0.879116 -1.196406 1.196406 
+C -0.879116 1.513697 -0.448717 1.691974 0 1.691974 
+z
+" style="stroke: #f25d1d; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </defs>
+    <g>
+     <use xlink:href="#m6699f0b2e8" x="93.505781" y="20.951016" style="fill: #f25d1d; fill-opacity: 0.8; stroke: #f25d1d; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </g>
+   </g>
+   <g id="text_2">
+    <text style="font: 9px 'Arial', sans-serif" transform="translate(109.705781 18.3285)">  FlexBI</text>
+    <text style="font: 9px 'Arial', sans-serif" transform="translate(109.705781 27.979312)"> (directed graph)</text>
+   </g>
+   <g id="line2d_3">
+    <path d="M 193.732031 20.951016 
+L 202.732031 20.951016 
+L 211.732031 20.951016 
+" style="fill: none; stroke: #911c1c; stroke-opacity: 0.8; stroke-width: 2.7; stroke-linecap: square"/>
+    <defs>
+     <path id="m61a9530684" d="M 0 1.691974 
+C 0.448717 1.691974 0.879116 1.513697 1.196406 1.196406 
+C 1.513697 0.879116 1.691974 0.448717 1.691974 0 
+C 1.691974 -0.448717 1.513697 -0.879116 1.196406 -1.196406 
+C 0.879116 -1.513697 0.448717 -1.691974 0 -1.691974 
+C -0.448717 -1.691974 -0.879116 -1.513697 -1.196406 -1.196406 
+C -1.513697 -0.879116 -1.691974 -0.448717 -1.691974 0 
+C -1.691974 0.448717 -1.513697 0.879116 -1.196406 1.196406 
+C -0.879116 1.513697 -0.448717 1.691974 0 1.691974 
+z
+" style="stroke: #911c1c; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </defs>
+    <g>
+     <use xlink:href="#m61a9530684" x="202.732031" y="20.951016" style="fill: #911c1c; fill-opacity: 0.8; stroke: #911c1c; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </g>
+   </g>
+   <g id="text_3">
+    <text style="font: 9px 'Arial', sans-serif" transform="translate(218.932031 18.3285)">  FlexBI</text>
+    <text style="font: 9px 'Arial', sans-serif" transform="translate(218.932031 27.979312)"> (undirected graph)</text>
+   </g>
+   <g id="line2d_4">
+    <path d="M 312.967969 20.951016 
+L 321.967969 20.951016 
+L 330.967969 20.951016 
+" style="fill: none; stroke: #154c79; stroke-opacity: 0.8; stroke-width: 2.7; stroke-linecap: square"/>
+    <defs>
+     <path id="md5b8bafe19" d="M 0 1.691974 
+C 0.448717 1.691974 0.879116 1.513697 1.196406 1.196406 
+C 1.513697 0.879116 1.691974 0.448717 1.691974 0 
+C 1.691974 -0.448717 1.513697 -0.879116 1.196406 -1.196406 
+C 0.879116 -1.513697 0.448717 -1.691974 0 -1.691974 
+C -0.448717 -1.691974 -0.879116 -1.513697 -1.196406 -1.196406 
+C -1.513697 -0.879116 -1.691974 -0.448717 -1.691974 0 
+C -1.691974 0.448717 -1.513697 0.879116 -1.196406 1.196406 
+C -0.879116 1.513697 -0.448717 1.691974 0 1.691974 
+z
+" style="stroke: #154c79; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </defs>
+    <g>
+     <use xlink:href="#md5b8bafe19" x="321.967969" y="20.951016" style="fill: #154c79; fill-opacity: 0.8; stroke: #154c79; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </g>
+   </g>
+   <g id="text_4">
+    <text style="font: 9px 'Arial', sans-serif; text-anchor: start" x="338.167969" y="24.101016" transform="rotate(-0 338.167969 24.101016)">NPE</text>
+   </g>
+  </g>
+ </g>
+</svg>
