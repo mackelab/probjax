@@ -71,14 +71,14 @@ def generalized_guidance(model,constraint_fn,key, condition_mask, x_T, num_steps
         x_tweedy_estimator = (x1 + model.sde.marginal_stddev(t1, jnp.array([1.]))**2 * score)/model.sde.marginal_mean(t1, jnp.array([1.])) # Predict x0
         constraint_score = constraint_score_fn(x_tweedy_estimator, t1)
         score = score + constraint_score
-        drift_backward = (1-condition_mask)*model.sde.drift(t1, x1) - model.sde.diffusion(t1, x1)**2 * score
-        diffusion_backward = (1-condition_mask)*model.sde.diffusion(t1, x1) 
+        drift_backward = (1-condition_mask)*(model.sde.drift(t1, x1) - model.sde.diffusion(t1, x1)**2 * score)
+        diffusion_backward = (1-condition_mask)*(model.sde.diffusion(t1, x1) )
         x0 = x1 + drift_backward * dt + diffusion_backward * jnp.sqrt(jnp.abs(dt)) * jax.random.normal(subkey, shape=x1.shape)
         
         for _ in range(resampling_steps):
             # Forward sample from the SDE
             key, subkey = jax.random.split(key)
-            x1 = x0 - model.sde.drift(t0, x0) * dt - model.sde.diffusion(t0, x0) * jnp.sqrt(jnp.abs(dt)) * jax.random.normal(subkey, shape=x1.shape)
+            x1 = x0 -  (1-condition_mask)*(model.sde.drift(t0, x0) * dt - model.sde.diffusion(t0, x0) * jnp.sqrt(jnp.abs(dt)) * jax.random.normal(subkey, shape=x1.shape))
             
             # Update again
             key, subkey = jax.random.split(key)
@@ -87,7 +87,7 @@ def generalized_guidance(model,constraint_fn,key, condition_mask, x_T, num_steps
             constraint_score = constraint_score_fn(x_tweedy_estimator,t1)
             score = score + constraint_score
             drift_backward = (1-condition_mask)*(model.sde.drift(t1, x1) -  model.sde.diffusion(t1, x1)**2 * score)
-            diffusion_backward = (1-condition_mask) * model.sde.diffusion(t1, x1) 
+            diffusion_backward = (1-condition_mask)*model.sde.diffusion(t1, x1) 
             x0 = x1 + drift_backward * dt + diffusion_backward * jnp.sqrt(jnp.abs(dt)) * jax.random.normal(subkey, shape=x1.shape)
             
         return (key, t0, x0), x0
@@ -151,18 +151,25 @@ def get_constraint_fn(name, **kwargs):
 
 
 # Numerical stability! (Sigmoid is numerically unstable for large values) -> Use log_sigmoid
-def log_step_fn(x,t,constraint_mask, x_o,a,b, scaling_fn):
+def log_step_fn(x,t,constraint_mask, x_o,a=None,b=None, scaling_fn=lambda x: 1/x):
     scale = scaling_fn(t)
     x = x.reshape(x.shape[0],-1)
-    x1 = jax.nn.log_sigmoid(scale * (x - a)*constraint_mask)
-    x2 = jax.nn.log_sigmoid(scale * (b- x)*constraint_mask)
+    constraint_mask = constraint_mask.reshape(x.shape)
+    if a is None:
+        x1 = 0.
+    else:
+        x1 = jax.nn.log_sigmoid(scale * (x - a))*constraint_mask
+    if b is None:
+        x2 = 0.
+    else:
+        x2 = jax.nn.log_sigmoid(scale * (b- x))*constraint_mask
     return jnp.sum(x1 + x2)
 
 def log_linear_fn_approximation(x,t,constraint_mask, x_o, a , scaling_fn):
     scale = scaling_fn(t)
-    x = x.reshape(x.shape[0],-1)
-    x1 = jax.nn.log_sigmoid(scale * (jnp.sum(x * a, axis=1)))
-    x2 = jax.nn.log_sigmoid(-scale * (jnp.sum(x * a, axis=1)))
+    x = x.reshape(-1)
+    x1 = jax.nn.log_sigmoid(scale * (jnp.sum(x * a)))
+    x2 = jax.nn.log_sigmoid(-scale * (jnp.sum(x * a)))
     return jnp.sum(x1 + x2)
 
 def log_conditional_fn(x,t, constraint_mask, x_o, scaling_fn):
