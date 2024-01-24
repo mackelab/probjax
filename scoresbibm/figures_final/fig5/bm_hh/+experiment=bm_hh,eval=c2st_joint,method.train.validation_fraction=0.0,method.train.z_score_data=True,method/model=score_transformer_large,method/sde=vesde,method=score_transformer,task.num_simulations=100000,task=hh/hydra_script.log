@@ -1,0 +1,88 @@
+[2024-01-14 14:39:09,555][src.scripts.hydra_script][INFO] - name: bm_hh
+seed: 0
+save_model: true
+save_summary: true
+method:
+  model:
+    token_dim: 40
+    condition_token_dim: 10
+    condition_token_init_scale: 0.01
+    condition_token_init_mean: 0.0
+    condition_mode: concat
+    time_embedding_dim: 128
+    num_heads: 4
+    num_layers: 8
+    attn_size: 10
+    widening_factor: 4
+    num_hidden_layers: 1
+    skip_connection_attn: true
+    skip_connection_mlp: true
+    layer_norm: true
+  train:
+    condition_mask_fn:
+      name: structured_random
+      p_joint: 0.2
+      p_posterior: 0.2
+      p_likelihood: 0.2
+      p_rnd1: 0.2
+      p_rnd2: 0.2
+      rnd1_prob: 0.3
+      rnd2_prob: 0.7
+    edge_mask_fn:
+      name: none
+    max_number_steps: 100000
+    min_number_steps: 5000
+    total_number_steps_scaling: 3
+    training_batch_size: 1000
+    learning_rate: 0.001
+    min_learning_rate: 1.0e-06
+    clip_max_norm: 10.0
+    validation_fraction: 0.0
+    val_repeat: 5
+    val_every: 50
+    stop_early_count: 5
+    z_score_data: true
+  sde:
+    name: vesde
+    sigma_max: 15.0
+    sigma_min: 0.0001
+    T_max: 1.0
+    T_min: 1.0e-05
+  posterior:
+    sampling_method: sde
+    num_steps: 500
+    method: euler_maruyama
+  name: score_transformer
+  backend: jax
+  device: gpu
+task:
+  name: hh
+  num_simulations: 100000
+eval:
+  metric:
+    c2st_joint:
+      n_folds: 5
+      metric: accuracy
+      classifier: rf
+      condition_mask_fn: joint
+sweeper:
+  name: null
+  objective: null
+
+[2024-01-14 14:39:09,556][src.scripts.hydra_script][INFO] - Working directory : /mnt/qb/work/macke/mgloeckler90/probjax
+[2024-01-14 14:39:09,556][src.scripts.hydra_script][INFO] - Output directory  : /mnt/qb/work/macke/mgloeckler90/probjax/results/bm_hh/+experiment=bm_hh,eval=c2st_joint,method.train.validation_fraction=0.0,method.train.z_score_data=True,method/model=score_transformer_large,method/sde=vesde,method=score_transformer,task.num_simulations=100000,task=hh
+[2024-01-14 14:39:09,556][src.scripts.hydra_script][INFO] - Output super directory: /mnt/qb/work/macke/mgloeckler90/probjax/results/bm_hh
+[2024-01-14 14:39:09,557][src.scripts.hydra_script][INFO] - Hostname: slurm-bm-58.novalocal
+[2024-01-14 14:39:09,557][src.scripts.hydra_script][INFO] - Jax devices: [cuda(id=0)]
+[2024-01-14 14:39:09,557][src.scripts.hydra_script][INFO] - Torch devices: 0
+[2024-01-14 14:39:09,604][src.scripts.hydra_script][INFO] - Seed: 0
+[2024-01-14 14:39:09,620][src.scripts.hydra_script][INFO] - Task: hh
+[2024-01-14 14:39:55,959][src.scripts.hydra_script][INFO] - Running method: score_transformer
+[2024-01-14 15:08:36,477][src.scripts.hydra_script][INFO] - Evaluating method: score_transformer
+[2024-01-14 15:08:36,481][src.scripts.hydra_script][INFO] - Evaluating metric: c2st_joint
+[2024-01-14 15:09:29,035][src.scripts.hydra_script][INFO] - Saving model
+[2024-01-14 15:09:29,090][src.scripts.hydra_script][INFO] - Model saved with id: 0
+[2024-01-14 15:09:29,090][src.scripts.hydra_script][INFO] - Saving summary
+[2024-01-14 15:09:29,106][src.scripts.hydra_script][INFO] - Summary saved with id: 0
+[2024-01-14 15:09:29,107][submitit][INFO] - Job completed successfully
+[2024-01-14 15:09:29,116][submitit][INFO] - Exiting after successful completion
