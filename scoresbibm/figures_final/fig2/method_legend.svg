@@ -1,0 +1,236 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="572.4pt" height="61.407875pt" viewBox="0 0 572.4 61.407875" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2024-01-23T14:01:12.116968</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.8.2, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 61.407875 
+L 572.4 61.407875 
+L 572.4 0 
+L 0 0 
+L 0 61.407875 
+z
+" style="fill: none"/>
+  </g>
+  <g id="axes_1"/>
+  <g id="legend_1">
+   <g id="line2d_1">
+    <path d="M 102.062656 19.817719 
+L 111.062656 19.817719 
+L 120.062656 19.817719 
+" style="fill: none; stroke: #d73027; stroke-opacity: 0.8; stroke-width: 2.7; stroke-linecap: square"/>
+    <defs>
+     <path id="m98263e8c82" d="M 0 1.691974 
+C 0.448717 1.691974 0.879116 1.513697 1.196406 1.196406 
+C 1.513697 0.879116 1.691974 0.448717 1.691974 0 
+C 1.691974 -0.448717 1.513697 -0.879116 1.196406 -1.196406 
+C 0.879116 -1.513697 0.448717 -1.691974 0 -1.691974 
+C -0.448717 -1.691974 -0.879116 -1.513697 -1.196406 -1.196406 
+C -1.513697 -0.879116 -1.691974 -0.448717 -1.691974 0 
+C -1.691974 0.448717 -1.513697 0.879116 -1.196406 1.196406 
+C -0.879116 1.513697 -0.448717 1.691974 0 1.691974 
+z
+" style="stroke: #d73027; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </defs>
+    <g>
+     <use xlink:href="#m98263e8c82" x="111.062656" y="19.817719" style="fill: #d73027; fill-opacity: 0.8; stroke: #d73027; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </g>
+   </g>
+   <g id="text_1">
+    <text style="font: 9px 'Arial', sans-serif; text-anchor: start" x="127.262656" y="22.967719" transform="rotate(-0 127.262656 22.967719)">FlexBI</text>
+   </g>
+   <g id="line2d_2">
+    <path d="M 102.062656 32.658187 
+L 111.062656 32.658187 
+L 120.062656 32.658187 
+" style="fill: none; stroke: #8b27d7; stroke-opacity: 0.8; stroke-width: 2.7; stroke-linecap: square"/>
+    <defs>
+     <path id="m2df7af9072" d="M 0 1.691974 
+C 0.448717 1.691974 0.879116 1.513697 1.196406 1.196406 
+C 1.513697 0.879116 1.691974 0.448717 1.691974 0 
+C 1.691974 -0.448717 1.513697 -0.879116 1.196406 -1.196406 
+C 0.879116 -1.513697 0.448717 -1.691974 0 -1.691974 
+C -0.448717 -1.691974 -0.879116 -1.513697 -1.196406 -1.196406 
+C -1.513697 -0.879116 -1.691974 -0.448717 -1.691974 0 
+C -1.691974 0.448717 -1.513697 0.879116 -1.196406 1.196406 
+C -0.879116 1.513697 -0.448717 1.691974 0 1.691974 
+z
+" style="stroke: #8b27d7; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </defs>
+    <g>
+     <use xlink:href="#m2df7af9072" x="111.062656" y="32.658187" style="fill: #8b27d7; fill-opacity: 0.8; stroke: #8b27d7; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </g>
+   </g>
+   <g id="text_2">
+    <text style="font: 9px 'Arial', sans-serif; text-anchor: start" x="127.262656" y="35.808187" transform="rotate(-0 127.262656 35.808187)">FlexBI (posterior only)</text>
+   </g>
+   <g id="line2d_3">
+    <path d="M 233.284063 19.817719 
+L 242.284063 19.817719 
+L 251.284063 19.817719 
+" style="fill: none; stroke: #f25d1d; stroke-opacity: 0.8; stroke-width: 2.7; stroke-linecap: square"/>
+    <defs>
+     <path id="m1008d62355" d="M 0 1.691974 
+C 0.448717 1.691974 0.879116 1.513697 1.196406 1.196406 
+C 1.513697 0.879116 1.691974 0.448717 1.691974 0 
+C 1.691974 -0.448717 1.513697 -0.879116 1.196406 -1.196406 
+C 0.879116 -1.513697 0.448717 -1.691974 0 -1.691974 
+C -0.448717 -1.691974 -0.879116 -1.513697 -1.196406 -1.196406 
+C -1.513697 -0.879116 -1.691974 -0.448717 -1.691974 0 
+C -1.691974 0.448717 -1.513697 0.879116 -1.196406 1.196406 
+C -0.879116 1.513697 -0.448717 1.691974 0 1.691974 
+z
+" style="stroke: #f25d1d; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </defs>
+    <g>
+     <use xlink:href="#m1008d62355" x="242.284063" y="19.817719" style="fill: #f25d1d; fill-opacity: 0.8; stroke: #f25d1d; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </g>
+   </g>
+   <g id="text_3">
+    <text style="font: 9px 'Arial', sans-serif; text-anchor: start" x="258.484062" y="22.967719" transform="rotate(-0 258.484062 22.967719)">FlexBI (directed graph)</text>
+   </g>
+   <g id="line2d_4">
+    <path d="M 233.284063 32.763656 
+L 242.284063 32.763656 
+L 251.284063 32.763656 
+" style="fill: none; stroke: #911c1c; stroke-opacity: 0.8; stroke-width: 2.7; stroke-linecap: square"/>
+    <defs>
+     <path id="mad58c70deb" d="M 0 1.691974 
+C 0.448717 1.691974 0.879116 1.513697 1.196406 1.196406 
+C 1.513697 0.879116 1.691974 0.448717 1.691974 0 
+C 1.691974 -0.448717 1.513697 -0.879116 1.196406 -1.196406 
+C 0.879116 -1.513697 0.448717 -1.691974 0 -1.691974 
+C -0.448717 -1.691974 -0.879116 -1.513697 -1.196406 -1.196406 
+C -1.513697 -0.879116 -1.691974 -0.448717 -1.691974 0 
+C -1.691974 0.448717 -1.513697 0.879116 -1.196406 1.196406 
+C -0.879116 1.513697 -0.448717 1.691974 0 1.691974 
+z
+" style="stroke: #911c1c; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </defs>
+    <g>
+     <use xlink:href="#mad58c70deb" x="242.284063" y="32.763656" style="fill: #911c1c; fill-opacity: 0.8; stroke: #911c1c; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </g>
+   </g>
+   <g id="text_4">
+    <text style="font: 9px 'Arial', sans-serif; text-anchor: start" x="258.484062" y="35.913656" transform="rotate(-0 258.484062 35.913656)">FlexBI (undirected graph)</text>
+   </g>
+   <g id="line2d_5">
+    <path d="M 378.025156 19.817719 
+L 387.025156 19.817719 
+L 396.025156 19.817719 
+" style="fill: none; stroke: #154c79; stroke-opacity: 0.8; stroke-width: 2.7; stroke-linecap: square"/>
+    <defs>
+     <path id="m72f087a7ca" d="M 0 1.691974 
+C 0.448717 1.691974 0.879116 1.513697 1.196406 1.196406 
+C 1.513697 0.879116 1.691974 0.448717 1.691974 0 
+C 1.691974 -0.448717 1.513697 -0.879116 1.196406 -1.196406 
+C 0.879116 -1.513697 0.448717 -1.691974 0 -1.691974 
+C -0.448717 -1.691974 -0.879116 -1.513697 -1.196406 -1.196406 
+C -1.513697 -0.879116 -1.691974 -0.448717 -1.691974 0 
+C -1.691974 0.448717 -1.513697 0.879116 -1.196406 1.196406 
+C -0.879116 1.513697 -0.448717 1.691974 0 1.691974 
+z
+" style="stroke: #154c79; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </defs>
+    <g>
+     <use xlink:href="#m72f087a7ca" x="387.025156" y="19.817719" style="fill: #154c79; fill-opacity: 0.8; stroke: #154c79; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </g>
+   </g>
+   <g id="text_5">
+    <text style="font: 9px 'Arial', sans-serif; text-anchor: start" x="403.225156" y="22.967719" transform="rotate(-0 403.225156 22.967719)">NPE</text>
+   </g>
+   <g id="line2d_6">
+    <path d="M 378.025156 32.5485 
+L 387.025156 32.5485 
+L 396.025156 32.5485 
+" style="fill: none; stroke: #fdae61; stroke-opacity: 0.8; stroke-width: 2.7; stroke-linecap: square"/>
+    <defs>
+     <path id="m2ae436fe63" d="M 0 1.691974 
+C 0.448717 1.691974 0.879116 1.513697 1.196406 1.196406 
+C 1.513697 0.879116 1.691974 0.448717 1.691974 0 
+C 1.691974 -0.448717 1.513697 -0.879116 1.196406 -1.196406 
+C 0.879116 -1.513697 0.448717 -1.691974 0 -1.691974 
+C -0.448717 -1.691974 -0.879116 -1.513697 -1.196406 -1.196406 
+C -1.513697 -0.879116 -1.691974 -0.448717 -1.691974 0 
+C -1.691974 0.448717 -1.513697 0.879116 -1.196406 1.196406 
+C -0.879116 1.513697 -0.448717 1.691974 0 1.691974 
+z
+" style="stroke: #fdae61; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </defs>
+    <g>
+     <use xlink:href="#m2ae436fe63" x="387.025156" y="32.5485" style="fill: #fdae61; fill-opacity: 0.8; stroke: #fdae61; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </g>
+   </g>
+   <g id="text_6">
+    <text style="font: 9px 'Arial', sans-serif; text-anchor: start" x="403.225156" y="35.6985" transform="rotate(-0 403.225156 35.6985)">NSPE</text>
+   </g>
+   <g id="line2d_7">
+    <path d="M 445.734687 19.817719 
+L 454.734687 19.817719 
+L 463.734687 19.817719 
+" style="fill: none; stroke: #76b5c5; stroke-opacity: 0.8; stroke-width: 2.7; stroke-linecap: square"/>
+    <defs>
+     <path id="me022fdff1b" d="M 0 1.691974 
+C 0.448717 1.691974 0.879116 1.513697 1.196406 1.196406 
+C 1.513697 0.879116 1.691974 0.448717 1.691974 0 
+C 1.691974 -0.448717 1.513697 -0.879116 1.196406 -1.196406 
+C 0.879116 -1.513697 0.448717 -1.691974 0 -1.691974 
+C -0.448717 -1.691974 -0.879116 -1.513697 -1.196406 -1.196406 
+C -1.513697 -0.879116 -1.691974 -0.448717 -1.691974 0 
+C -1.691974 0.448717 -1.513697 0.879116 -1.196406 1.196406 
+C -0.879116 1.513697 -0.448717 1.691974 0 1.691974 
+z
+" style="stroke: #76b5c5; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </defs>
+    <g>
+     <use xlink:href="#me022fdff1b" x="454.734687" y="19.817719" style="fill: #76b5c5; fill-opacity: 0.8; stroke: #76b5c5; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </g>
+   </g>
+   <g id="text_7">
+    <text style="font: 9px 'Arial', sans-serif; text-anchor: start" x="470.934687" y="22.967719" transform="rotate(-0 470.934687 22.967719)">NRE</text>
+   </g>
+   <g id="line2d_8">
+    <path d="M 445.734687 32.5485 
+L 454.734687 32.5485 
+L 463.734687 32.5485 
+" style="fill: none; stroke: #1e81b0; stroke-opacity: 0.8; stroke-width: 2.7; stroke-linecap: square"/>
+    <defs>
+     <path id="m770ab87b88" d="M 0 1.691974 
+C 0.448717 1.691974 0.879116 1.513697 1.196406 1.196406 
+C 1.513697 0.879116 1.691974 0.448717 1.691974 0 
+C 1.691974 -0.448717 1.513697 -0.879116 1.196406 -1.196406 
+C 0.879116 -1.513697 0.448717 -1.691974 0 -1.691974 
+C -0.448717 -1.691974 -0.879116 -1.513697 -1.196406 -1.196406 
+C -1.513697 -0.879116 -1.691974 -0.448717 -1.691974 0 
+C -1.691974 0.448717 -1.513697 0.879116 -1.196406 1.196406 
+C -0.879116 1.513697 -0.448717 1.691974 0 1.691974 
+z
+" style="stroke: #1e81b0; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </defs>
+    <g>
+     <use xlink:href="#m770ab87b88" x="454.734687" y="32.5485" style="fill: #1e81b0; fill-opacity: 0.8; stroke: #1e81b0; stroke-opacity: 0.8; stroke-width: 2.025"/>
+    </g>
+   </g>
+   <g id="text_8">
+    <text style="font: 9px 'Arial', sans-serif; text-anchor: start" x="470.934687" y="35.6985" transform="rotate(-0 470.934687 35.6985)">NLE</text>
+   </g>
+  </g>
+ </g>
+</svg>
