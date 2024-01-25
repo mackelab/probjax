@@ -135,6 +135,7 @@ def scalar_transformer_model(
 
 def structured_transformer_model(
     num_nodes: int,
+    data_name_to_id: dict,
     token_dim: int =40,
     condition_token_dim: int =10,
     condition_token_init_scale: int =0.01,
@@ -169,17 +170,18 @@ def structured_transformer_model(
         token_dim = token_dim + condition_token_dim
         condition_token_dim = 0
 
-    def model(t, data, data_id, condition_mask, meta_data=None, edge_mask=base_mask):
+    def model(t, data, condition_mask, meta_data=None, edge_mask=base_mask):
         current_nodes = len(data)
         data_dim = jax.tree_map(lambda x: x.shape[-1], data)
-        data_id = data_id.reshape(current_nodes)
         condition_mask = condition_mask.reshape(-1, current_nodes)
+        
 
-        tokenizer = StructuredTokenizer(token_dim, num_nodes, value_embeding_builder, node_embeding_builder, node_meta_data_embeding_builder)
+        tokenizer = StructuredTokenizer(token_dim, num_nodes, data_name_to_id,value_embeding_builder, node_embeding_builder, node_meta_data_embeding_builder)
         time_embeder = GaussianFourierEmbedding(time_embedding_dim)
+        output_layers = jax.tree_map(lambda x: hk.Linear(x), data_dim)
 
         # Embedding
-        tokens = tokenizer(data_id, data, meta_data)
+        tokens = tokenizer(data, meta_data)
         time = time_embeder(t[..., None])
 
         # Conditioning
@@ -216,8 +218,12 @@ def structured_transformer_model(
         )
 
         h = model(tokens, context=time, mask=edge_mask)
-        output_fn = [hk.Linear(d) for d in data_dim]
-        out = jnp.concatenate([output_fn[i](h[..., i, :]) for i in range(len(data_dim))], axis=-1)
+        outs = []
+        for i,key in enumerate(data):
+            h_i = h[..., i, :]
+            out = output_layers[key](h_i)
+            outs.append(out)
+        out = jnp.concatenate(outs,axis=-1)
         out = output_scale_fn(t, out)
         return out
 

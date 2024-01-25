@@ -545,15 +545,13 @@ class AllConditionalScoreModel(AllConditionalModel):
                 return (1/(std**2 + default_scaling_fn_bias)) 
             
             scaling_fn = sampling_kwargs.pop("scaling_fn", scaling_fn)
-            x_o_padded = x_T.at[..., condition_mask].set(x_o.reshape(-1))
             resampling_steps = sampling_kwargs.pop("resampling_steps",0)
             constraint_name = sampling_kwargs.pop("constraint_name")
             constraints_kwargs = sampling_kwargs.pop("constraint_kwargs", {})
             constraint_mask = sampling_kwargs.pop("constraint_mask", condition_mask)
             condition_mask = condition_mask & ~constraint_mask # If constrained we can't condition on it
+            x_T = x_T.at[..., condition_mask].set(x_o.reshape(-1))
 
-            x_T = (1-condition_mask)*x_T + condition_mask*x_o_padded
-            
             constraint_fn = get_constraint_fn(constraint_name, scaling_fn =scaling_fn, constraint_mask=constraint_mask,x_o=x_o, **constraints_kwargs)
 
             @jax.vmap
@@ -563,13 +561,11 @@ class AllConditionalScoreModel(AllConditionalModel):
             keys = jax.random.split(key2, (num_samples,))
             final_samples = sample_fn(keys, x_T)
             
-            print(condition_mask, constraint_mask)
 
             if not return_conditioned_samples:
-                final_samples = final_samples[:,~condition_mask & ~constraint_mask]
+                final_samples = final_samples[:,~condition_mask]
             else:
                 final_samples = final_samples
-            
             
         elif sampling_method in ["repaint", "classifier_free_guidance", "naive_inpaint_guidance","generalized_guidance"]:
             if sampling_method == "classifier_free_guidance":
