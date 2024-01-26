@@ -538,10 +538,11 @@ class AllConditionalScoreModel(AllConditionalModel):
             final_samples = final_samples[:,~condition_mask]
         elif sampling_method == "generalized_guidance":
             # Default scaling as inverse marginal variance
+            default_scaling_fn_bias = sampling_kwargs.pop("default_scaling_fn_bias", 0.)
             def scaling_fn(t):
                 t = jnp.atleast_1d(t)
                 std = self.sde.marginal_stddev(t, jnp.array([1.]))
-                return (1/std**2) 
+                return (1/(std**2 + default_scaling_fn_bias)) 
             
             scaling_fn = sampling_kwargs.pop("scaling_fn", scaling_fn)
             x_o_padded = x_T.at[..., condition_mask].set(x_o.reshape(-1))
@@ -550,6 +551,7 @@ class AllConditionalScoreModel(AllConditionalModel):
             constraints_kwargs = sampling_kwargs.pop("constraint_kwargs", {})
             constraint_mask = sampling_kwargs.pop("constraint_mask", condition_mask)
             condition_mask = condition_mask & ~constraint_mask # If constrained we can't condition on it
+
             x_T = (1-condition_mask)*x_T + condition_mask*x_o_padded
             
             constraint_fn = get_constraint_fn(constraint_name, scaling_fn =scaling_fn, constraint_mask=constraint_mask,x_o=x_o, **constraints_kwargs)
@@ -560,6 +562,9 @@ class AllConditionalScoreModel(AllConditionalModel):
             
             keys = jax.random.split(key2, (num_samples,))
             final_samples = sample_fn(keys, x_T)
+            
+            print(condition_mask, constraint_mask)
+
             if not return_conditioned_samples:
                 final_samples = final_samples[:,~condition_mask & ~constraint_mask]
             else:
@@ -576,13 +581,13 @@ class AllConditionalScoreModel(AllConditionalModel):
                 constraint_mask = sampling_kwargs.pop("constraint_mask", condition_mask)
                 x_T = x_T.at[..., condition_mask].set(x_o.reshape(-1))
                 drift, diffusion = self._init_backward_sde(node_id, condition_mask, edge_mask, meta_data=meta_data)
-            elif sampling_method == "generalized_guidance":
-                score_manipulator = sampling_kwargs.pop("score_manipulator")
-                score_manipulator_kwargs = sampling_kwargs.pop("score_manipulator_kwargs", {})
-                constraint_mask = sampling_kwargs.pop("constraint_mask", condition_mask)
-                x_T = x_T.at[..., condition_mask & ~constraint_mask].set(x_o.reshape(-1)[:jnp.sum(condition_mask & ~constraint_mask)])
-                register_generalized_guidance(self, constraint_mask, x_o, score_manipulator=score_manipulator, **score_manipulator_kwargs)
-                drift, diffusion = self._init_backward_sde(node_id, condition_mask & ~constraint_mask, edge_mask, meta_data=meta_data)
+            # elif sampling_method == "generalized_guidance":
+            #     score_manipulator = sampling_kwargs.pop("score_manipulator")
+            #     score_manipulator_kwargs = sampling_kwargs.pop("score_manipulator_kwargs", {})
+            #     constraint_mask = sampling_kwargs.pop("constraint_mask", condition_mask)
+            #     x_T = x_T.at[..., condition_mask & ~constraint_mask].set(x_o.reshape(-1)[:jnp.sum(condition_mask & ~constraint_mask)])
+            #     register_generalized_guidance(self, constraint_mask, x_o, score_manipulator=score_manipulator, **score_manipulator_kwargs)
+            #     drift, diffusion = self._init_backward_sde(node_id, condition_mask & ~constraint_mask, edge_mask, meta_data=meta_data)
             else:
                 raise NotImplementedError()
                 
@@ -598,6 +603,7 @@ class AllConditionalScoreModel(AllConditionalModel):
                 x_T,
                 jnp.linspace(0.0, self.T_max - self.T_min, num_steps),
             )
+       
             if not return_conditioned_samples:
                 final_samples = ys[:, -1, ...][:, ~condition_mask]
             else:
