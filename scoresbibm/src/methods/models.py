@@ -551,8 +551,11 @@ class AllConditionalScoreModel(AllConditionalModel):
             constraint_mask = sampling_kwargs.pop("constraint_mask", condition_mask)
             condition_mask = condition_mask & ~constraint_mask # If constrained we can't condition on it
             x_T = x_T.at[..., condition_mask].set(x_o.reshape(-1))
-
-            constraint_fn = get_constraint_fn(constraint_name, scaling_fn =scaling_fn, constraint_mask=constraint_mask,x_o=x_o, **constraints_kwargs)
+            if "constraint_fn" in sampling_kwargs:
+                constraint_fn = sampling_kwargs.pop("constraint_fn")
+            else:
+                constraint_fn = get_constraint_fn(constraint_name, scaling_fn =scaling_fn, constraint_mask=constraint_mask,x_o=x_o, **constraints_kwargs)
+            
 
             @jax.vmap
             def sample_fn(key, x_T):
