@@ -1,3 +1,0 @@
-
-
-scoresbi -m sweeper=tpe task.num_simulations=10000 method=score_transformer method/sde=vesde "method.sde.sigma_max=interval(1.,100.)" "method.sde.sigma_min=interval(0.0000001, 1.)" task=slcp method.model.num_heads=1,2,4,6,8 method.model.attn_size=5,10,20,30 method.model.token_dim=5,10,40,60 method.model.condition_token_dim=1,10,20 method.model.num_layers=1,2,4,6,8 method.model.widening_factor=1,2,3,4 method.model.num_hidden_layers=1,2 name=sweep_best_slcp_model
