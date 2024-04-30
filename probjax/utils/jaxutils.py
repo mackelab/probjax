@@ -9,7 +9,10 @@ from functools import wraps, partial
 from jax._src.flatten_util import ravel_pytree
 from jax._src.api_util import flatten_fun_nokwargs as flatten_fun_nokwargs_
 
-from jax import linear_util as lu
+from jax.core import eval_jaxpr
+from jax.interpreters.partial_eval import partial_eval_jaxpr_nounits
+
+from jax._src import linear_util as lu
 
 
 @lu.transformation
@@ -43,6 +46,37 @@ def flatten_args_(in_tree, *flat_args):
     ans = yield (args,), {}
     ans_flat = jax.tree_util.tree_flatten(ans)
     yield ans_flat
+    
+    
+
+
+
+def precompute(func: Callable, arg_list: list, known_argnums: list) -> Callable:
+    """ Precomputes all computations that can be done with all known arguments.
+
+    Args:
+        func (Callable): Function to be precomputed
+        arg_list (list): List of arguments to be precomputed (with dummies for unknowns)
+        known_argnums (list): List of indices of known arguments
+
+    Returns:
+        Callable: Function that inputs all unknown arguments and returns the result of the function
+    """
+    jaxpr = jax.make_jaxpr(func)(*arg_list)
+    unknowns = [False if k in known_argnums else True for k in range(len(arg_list))]
+    instantiate = False
+
+    (known_jaxpr, unknown_jaxpr, _, _) = partial_eval_jaxpr_nounits(jaxpr, unknowns, instantiate)
+
+    known_values = [arg_k for (k, arg_k) in enumerate(arg_list) if k in known_argnums]
+    precomputed_values = eval_jaxpr(known_jaxpr.jaxpr, known_jaxpr.consts, *known_values)
+
+
+    def inner(*args):
+        values = eval_jaxpr(unknown_jaxpr.jaxpr, unknown_jaxpr.consts, *precomputed_values, *args, propagate_source_info=False)
+        return values if len(values) > 1 else values[0]
+    
+    return inner
 
 
 def flatten_fun(fun: Callable, in_tree: PyTree) -> Callable:
