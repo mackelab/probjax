@@ -9,7 +9,7 @@ from jax.tree_util import tree_leaves
 from functools import partial
 from jaxtyping import Array, Float, PyTree, Int
 from typing import Callable, Optional, Union
-from jax.random import PRNGKeyArray
+from jax.random import PRNGKey
 
 
 from probjax.utils.brownian import get_iterated_integrals_fn
@@ -420,7 +420,7 @@ register_stochastic_runge_kutta_method(
 
 @partial(jax.jit, static_argnums=(1, 2, 5, 6, 7, 8, 9))
 def _sdeint_on_grid(
-    key: PRNGKeyArray,
+    key: PRNGKey,
     drift: Callable,
     diffusion: Callable,
     y0: Array,
@@ -506,7 +506,7 @@ def _sdeint_on_grid(
 
 
 def sdeint(
-    key: PRNGKeyArray,
+    key: PRNGKey,
     drift: Callable,
     diffusion: Callable,
     y0: Array,
@@ -526,7 +526,7 @@ def sdeint(
     """Solve a stochastic differential equation.
 
     Args:
-        key: (PRNGKeyArray): Random generator key.
+        key: (PRNGKey): Random generator key.
         drift (Callable): Drift function.
         diffusion (Callable): Diffusion function.
         y0 (Array): Initial value.

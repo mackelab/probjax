@@ -7,6 +7,42 @@ from typing import Tuple
 
 from jax.scipy.linalg import expm
 
+def cholesky_update(L, u):
+    """
+    Update the Cholesky decomposition of a matrix after a rank-1 update i.e.
+    
+    C = L @ L.T + multiplier * u @ u.T
+
+    Args:
+    L: A [D, D] lower triangular matrix, the Cholesky factor of the original matrix.
+    u: A [D,] vector, the update vector.
+
+    Returns:
+    The updated [D, D] lower triangular matrix.
+    """
+    D = L.shape[0]
+    indices = jnp.arange(D)
+    
+    def body_fun(i, vals):
+        L, u = vals
+        r = jnp.sqrt(L[i, i]**2 + u[i]**2)
+        c = r / L[i, i]
+        s = u[i] / L[i, i]
+        L = L.at[i, i].set(r)
+
+        mask = indices > i
+        col_update = (L[:, i] + s * u) / c
+        col_update = jnp.where(mask, col_update, L[:,i])
+        L = L.at[:, i].set(col_update)
+        u_update = c * u - s * L[:, i]
+        u = jnp.where(mask, u_update, u)
+
+        return (L, u)
+    
+    L,u = jax.lax.fori_loop(0, D, body_fun, (L,u))        
+    
+    return L
+
 
 def is_matrix(A: Array) -> bool:
     """Check if input is a matrix
