@@ -1,3 +1,4 @@
+import numpy as np
 import jax.numpy as jnp
 from jax.scipy.special import logsumexp
 
@@ -35,7 +36,7 @@ class Independent(Distribution):
         reinterpreted_batch_ndims: int,
     ):
         # Determine batch_shape and event_shape using the helper function
-        batch_shape, event_shape, event_ndims, reinterpreted_batch_ndims = determine_shapes(
+        batch_shape, event_shape, split_dims = determine_shapes(
             base_dist, reinterpreted_batch_ndims
         )
         
@@ -46,12 +47,12 @@ class Independent(Distribution):
         else:
             self.base_dist = base_dist
 
-        self.event_ndims = event_ndims
+        self.split_dims = split_dims
         self.reinterpreted_batch_ndims = reinterpreted_batch_ndims
         
-        for p in self.base_dist:
-            p._batch_shape = batch_shape
-            p._event_shape = event_shape
+        # for p in self.base_dist:
+        #     p._batch_shape = batch_shape
+            #p._event_shape = event_shape // len(self.base_dist)
 
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)
 
@@ -80,60 +81,55 @@ class Independent(Distribution):
 
     def rsample(self, key, sample_shape=()):
         keys = random.split(key, len(self.base_dist))
-        samples = jnp.stack(
-            [p.rsample(k, sample_shape) for k, p in zip(keys, self.base_dist)],
-            axis=-1,
+        concat_dim = -max(len(self.event_shape), 1) if self.reinterpreted_batch_ndims > 0 else -(len(self.event_shape) + len(self.batch_shape))
+        samples = jnp.concatenate(
+            [p.rsample(k, sample_shape) for k, p in zip(keys, self.base_dist)], axis=concat_dim
         )
         return jnp.reshape(samples, sample_shape + self.batch_shape + self.event_shape)
 
     def sample(self, key, sample_shape=()):
         keys = random.split(key, len(self.base_dist))
-        if self.reinterpreted_batch_ndims > 0:
-            samples = jnp.hstack(
-                [p.sample(k, sample_shape) for k, p in zip(keys, self.base_dist)],
-            )
-        else:
-            samples = jnp.stack(
-                [p.sample(k, sample_shape) for k, p in zip(keys, self.base_dist)],
-                axis=-len(self.event_shape) - 1,
-            )
+        
+        concat_dim = -max(len(self.event_shape), 1) if self.reinterpreted_batch_ndims > 0 else -(len(self.event_shape) + len(self.batch_shape))
+        samples = jnp.concatenate(
+            [p.sample(k, sample_shape) for k, p in zip(keys, self.base_dist)], axis=concat_dim
+        )
+
         return jnp.reshape(samples, sample_shape + self.batch_shape + self.event_shape)
 
     def log_prob(self, value):
         if len(self.base_dist) == 1:
             log_prob = self.base_dist[0].log_prob(value)
         else:
-            if self.reinterpreted_batch_ndims > 0:
-                split_value = jnp.split(value,self.event_ndims, axis=-1)[1:]
-                log_prob = jnp.stack(
-                    [
-                        b.log_prob(v.reshape((-1,) + b.batch_shape + b.event_shape))
-                        for b, v in zip(self.base_dist, split_value)
-                    ], axis=-1
-                )
-                log_prob = jnp.reshape(
-                    log_prob, value.shape[:-1] + self.batch_shape + (len(self.base_dist),)
-                )
-            else:
-                split_value = jnp.split(
-                    value, self.event_ndims, axis=-len(self.event_shape) - 1
-                )[1:]
-                log_prob = jnp.stack(
-                    [b.log_prob(v) for b, v in zip(self.base_dist, split_value)],
-                    axis=-len(self.event_shape) - 1,
-                )
-                log_prob = jnp.reshape(
-                    log_prob,
-                    value.shape[: -len(self.event_shape) - 1] + self.batch_shape,
-                )
-
+            split_dim = -max(len(self.event_shape), 1) if self.reinterpreted_batch_ndims > 0 else -(len(self.event_shape) + len(self.batch_shape))
+            split_value = jnp.split(value,self.split_dims[:-1], axis=split_dim)
+            log_prob = jnp.concatenate(
+                [
+                    jnp.expand_dims(b.log_prob(v), axis=split_dim)
+                    for b, v in zip(self.base_dist, split_value)
+                ], axis=split_dim
+            )
+            print(jax.tree_util.tree_map(lambda x: x.shape, [
+                    jnp.expand_dims(b.log_prob(v), axis=split_dim)
+                    for b, v in zip(self.base_dist, split_value)
+                ]))
         # Sum the log probabilities along the event dimensions
         if self.reinterpreted_batch_ndims > 0:
-            return jnp.sum(
-                log_prob, axis=tuple(range(-self.reinterpreted_batch_ndims, 0))
+            sum_dim = tuple(range(-self.reinterpreted_batch_ndims, 0))
+            log_prob = jnp.sum(
+                log_prob, axis=sum_dim
             )
+            
+            if len(self.event_shape) > 0:
+                return log_prob.reshape(value.shape[: -(len(self.event_shape) + len(self.batch_shape))] + self.batch_shape)
+            else:
+                return log_prob.reshape(value.shape + self.batch_shape)
         else:
-            return log_prob
+            if len(self.event_shape) > 0:
+                return log_prob.reshape(value.shape[:-len(self.event_shape)])
+            else:
+                return log_prob.reshape(value.shape)
+            
 
     def entropy(self):
         entropy = jnp.stack([b.entropy() for b in self.base_dist], axis=-1)
@@ -141,7 +137,7 @@ class Independent(Distribution):
         # Sum the entropies along the event dimensions
         if self.reinterpreted_batch_ndims > 0:
             return jnp.sum(
-                entropy, axis=tuple(range(-self.reinterpreted_batch_ndims, 0))
+                entropy, axis=tuple(range(-self.reinterpreted_batch_ndims, -len(self.event_shape)))
             )
         else:
             return entropy
@@ -166,6 +162,11 @@ class Independent(Distribution):
             reinterpreted_batch_ndims,
         )
 
+# Should behave as follows
+# If reinterpreted_batch_ndims = 0, then:
+# - (b1, e) x (b2, e) = (b1+b2, e)
+# If reinterpreted_batch_ndims = 1, then:
+
 
 def determine_shapes(
     base_dist: Union[Distribution, Sequence[Distribution]],
@@ -179,59 +180,55 @@ def determine_shapes(
     batch_shapes = [b.batch_shape for b in base_dist]
     event_shapes = [b.event_shape for b in base_dist]
     
+    batch_ndims = [len(b) for b in batch_shapes]
+    event_ndims = [len(e) for e in event_shapes]
+    
+    assert reinterpreted_batch_ndims >= 0, "reinterpreted_batch_ndims must be non-negative."
+    assert all([b == batch_ndims[0] for b in batch_ndims]), "Batch dimensions and event dimensions must be equal for all base distributions."
+    assert all([e == event_ndims[0] for e in event_ndims]), "Batch dimensions and event dimensions must be equal for all base distributions."
     assert all(reinterpreted_batch_ndims <= len(b) for b in batch_shapes) or all(reinterpreted_batch_ndims <= len(e) for e in event_shapes), "reinterpreted_batch_ndims must be greater than or equal to the batch shape of the base distribution."
 
-    # Ensure that batch shapes are equal and calculate event_shape
-    batch_shape, event_shape, event_ndims = calculate_shapes(
-        batch_shapes, event_shapes, reinterpreted_batch_ndims
-    )
+    
+    split_dims_batch = [b[0] if len(b) > 0 else 0 for b in batch_shapes]
+    split_dims_event = [e[0] if len(e) > 0 else 0 for e in event_shapes]
+    first_batch_shape_sum = sum(split_dims_batch)
+    first_event_shape_sum = sum(split_dims_event)
 
-    return tuple(batch_shape), tuple(event_shape), tuple(event_ndims), reinterpreted_batch_ndims
-
-
-def calculate_shapes(batch_shapes, event_shapes, reinterpreted_batch_ndims):
-    event_shape = list(event_shapes[0])
-    if reinterpreted_batch_ndims > 0:
-        new_event_shape = list(batch_shapes[0][-reinterpreted_batch_ndims:])
-        if len(new_event_shape) > 0:
-            for b in batch_shapes[1:]:
-                if len(b) > 0:
-                    new_event_shape[-1] += b[- 1]
-                else:
-                    new_event_shape[-1] += 1
-
-        if len(event_shape) > 0:
-            for e in event_shapes[1:]:
-                if len(e) > 0:
-                    event_shape[-1] += e[-1]
-                else:
-                    event_shape[-1] += 1
-
-        batch_shape = tuple(batch_shapes[0][:-reinterpreted_batch_ndims])
-        event_shape = tuple(new_event_shape) + tuple(event_shape)
-        event_ndims = [0]
-        for e in event_shapes:
-            if len(e) == 0:
-                event_ndims.append(event_ndims[-1] + 1)
-            else:
-                event_ndims.append(event_ndims[-1] + e[-1])
+    
+    other_batch_shapes = [b[1:] for b in batch_shapes]
+    other_event_shapes = [e[1:] for e in event_shapes]
+    
+    # other batch shapes must be equal to the other batch shapes
+    assert all([other_batch_shapes[0] == b for b in other_batch_shapes]), "All batch shapes at index larger than 0 must be equal to the other batch shapes"
+    assert all([other_event_shapes[0] == e for e in other_event_shapes]), "All event shapes at index larger than 0 must be equal to the other event shapes"
+    
+    # Joint batch_shape and event_shape
+    if first_batch_shape_sum > 0:
+        batch_shape = [first_batch_shape_sum] + list(other_batch_shapes[0])
     else:
-        new_batch_shape = list(batch_shapes[0])
-        if len(new_batch_shape) > 0:
-            for b in batch_shapes[1:]:
-                if len(b) > 0:
-                    new_batch_shape[-1] += b[-1]
-                else:
-                    new_batch_shape[-1] += 1
+        if reinterpreted_batch_ndims == 0:
+            batch_shape = [len(batch_shapes)] 
         else:
-            new_batch_shape = (len(batch_shapes),)
-        batch_shape = tuple(new_batch_shape)
-        event_shape = tuple(event_shape)
-        event_ndims = [0]
-        for b in batch_shapes:
-            if len(b) == 0:
-                event_ndims.append(event_ndims[-1] + 1)
-            else:
-                event_ndims.append(event_ndims[-1] + b[-1])
+            batch_shape = []
+    
+    if first_event_shape_sum > 0:
+        event_shape = [first_event_shape_sum] + list(other_event_shapes[0])
+    else:
+        event_shape = list(other_event_shapes[0])
+    
+    print(batch_shape, event_shape)
+    
+    # Reinterpreted batch dimensions
+    if reinterpreted_batch_ndims > 0:
+        event_shape = batch_shape[-reinterpreted_batch_ndims:] + list(event_shape)
+        batch_shape = batch_shape[:-reinterpreted_batch_ndims]
+        split_dims = [max(s,1) for s in split_dims_event]
+    else:
+        event_shape = event_shapes[0]
+        split_dims = [max(s,1) for s in split_dims_batch]
 
-    return batch_shape, event_shape, event_ndims
+    # Cummulatively sum the split_dims
+    split_dims = list(np.cumsum(split_dims))
+    
+    return tuple(batch_shape), tuple(event_shape), tuple(split_dims)
+

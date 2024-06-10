@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from jax.random import PRNGKeyArray
+from jax.random import PRNGKey
 
 from functools import partial
 from typing import Callable, Union, Optional
@@ -14,6 +14,7 @@ from probjax.utils.linalg import (
     transition_matrix,
     matrix_fraction_decomposition,
 )
+from probjax.inference.kalman_filter import filter
 from probjax.utils.sdeint import sdeint
 from probjax.utils.odeint import odeint
 
@@ -41,8 +42,9 @@ class BaseSDE(Distribution):
 
     def mean(self, t: Array) -> Array:
         assert jnp.all(t >= 0), "t must be positive"
-        # TODO: Implement through linearization
-        raise NotImplementedError
+        mean, _ = filter(self.drift, self.diffusion, t,self.p0.mean, self.p0.variance)
+        
+        return mean
 
     def marginal_mean(self, t: Array, x0=None, **kwargs) -> Array:
         assert jnp.all(t >= 0), "t must be positive"
@@ -50,8 +52,11 @@ class BaseSDE(Distribution):
 
     def variance(self, t: Array) -> Array:
         assert jnp.all(t >= 0), "t must be positive"
-        # TODO: Implement through linearization
-        raise NotImplementedError
+        _, cov = filter(self.drift, self.diffusion, t,self.p0.mean, self.p0.variance)
+        if cov.shape[-1] == 1:
+            return jnp.squeeze(cov, axis=-1)
+        else:
+            return cov
 
     def marginal_variance(self, t: Array, x0=None, **kwargs) -> Array:
         assert jnp.all(t >= 0), "t must be positive"
@@ -96,18 +101,18 @@ class BaseSDE(Distribution):
         raise NotImplementedError
 
     def marginal_rsample(
-        self, key: PRNGKeyArray, t: Array, sample_shape=(), x0=None, **kwargs
+        self, key: PRNGKey, t: Array, sample_shape=(), x0=None, **kwargs
     ) -> Array:
         raise NotImplementedError
 
-    def marginal_sample(self, key: PRNGKeyArray, t: Array, sample_shape=(), **kwargs):
+    def marginal_sample(self, key: PRNGKey, t: Array, sample_shape=(), **kwargs):
         return self.marginal_rsample(key, t, sample_shape, **kwargs)
 
-    def rsample(self, key: PRNGKeyArray, ts: Array, sample_shape=(), **kwargs) -> Array:
+    def rsample(self, key: PRNGKey, ts: Array, sample_shape=(), **kwargs) -> Array:
         """Samples from the SDE
 
         Args:
-            key (PRNGKeyArray): Random key
+            key (PRNGKey): Random key
             ts (Array): Number of time points to evaluate the SDE
             sample_shape (tuple, optional): Number of samples. Defaults to ().
             **kwargs: Additional arguments to pass to the solver i.e. see sdeint in probjax/utils/sdeint.py for more details
@@ -139,7 +144,7 @@ class BaseSDE(Distribution):
         ys = ys.reshape(sample_shape + self.batch_shape + ts.shape + self.event_shape)
         return ys
 
-    def sample(self, key: PRNGKeyArray, ts: Array, sample_shape=(), **kwargs) -> Array:
+    def sample(self, key: PRNGKey, ts: Array, sample_shape=(), **kwargs) -> Array:
         return self.rsample(key, ts, sample_shape, **kwargs)
 
     def log_prob(self, x: Array, t: Array) -> Array:
@@ -238,7 +243,7 @@ class LinearTimeInvariantSDE(BaseSDE):
         return jnp.squeeze(var, axis=-1)
 
     def sample_marginal(
-        self, key: PRNGKeyArray, t: Array, sample_shape=(), x0=None, **kwargs
+        self, key: PRNGKey, t: Array, sample_shape=(), x0=None, **kwargs
     ) -> Array:
         mean = self.mean(t, x0)
         cov = self.covariance_matrix(t, x0)
@@ -362,14 +367,14 @@ class OrnsteinUhlenbeck(BaseSDE):
         ) + v0 * jnp.exp(-2 * self.theta * t)
 
     def sample_marginal(
-        self, key: PRNGKeyArray, t: Array, sample_shape=(), x0=None, **kwargs
+        self, key: PRNGKey, t: Array, sample_shape=(), x0=None, **kwargs
     ) -> Array:
         mean = self.mean(t, x0)
         std = self.stddev(t, x0)
         eps = jax.random.normal(key, sample_shape + mean.shape)
         return mean + std * eps
 
-    def sample(self, key: PRNGKeyArray, ts: Array, sample_shape=(), **kwargs) -> Array:
+    def sample(self, key: PRNGKey, ts: Array, sample_shape=(), **kwargs) -> Array:
         key_p0, key_Wt = jax.random.split(key)
         seq_len = ts.shape[-1]
 
@@ -417,6 +422,7 @@ class VPSDE(LinearTimeVariantSDE):
         super().__init__(drift_matrix, diffusion_matrix, p0)
 
     def mean(self, ts: Array) -> Array:
+        ts = jnp.atleast_1d(ts)
         shape = ts.shape
         ts = jnp.expand_dims(
             ts,
@@ -428,6 +434,7 @@ class VPSDE(LinearTimeVariantSDE):
         return mu.reshape(shape + self.batch_shape + self.event_shape)
 
     def marginal_mean(self, ts: Array, x0=None, **kwargs) -> Array:
+        ts = jnp.atleast_1d(ts)
         if x0 is None:
             mu0 = self.p0.mean
         else:
@@ -445,6 +452,7 @@ class VPSDE(LinearTimeVariantSDE):
         return mu
 
     def variance(self, ts: Array) -> Array:
+        ts = jnp.atleast_1d(ts)
         shape = ts.shape
         ts = jnp.expand_dims(
             ts,
@@ -456,6 +464,7 @@ class VPSDE(LinearTimeVariantSDE):
         return var.reshape(shape + self.batch_shape + self.event_shape)
 
     def marginal_variance(self, ts: Array, x0=None, **kwargs) -> Array:
+        ts = jnp.atleast_1d(ts)
         if x0 is None:
             var0 = self.p0.variance
         else:
@@ -495,6 +504,7 @@ class VESDE(LinearTimeVariantSDE):
         super().__init__(drift_matrix, diffusion_matrix, p0)
         
     def marginal_mean(self, ts: Array, x0=None, **kwargs) -> Array:
+        ts = jnp.atleast_1d(ts)
         if x0 is None:
             mu0 = self.p0.mean
         else:
@@ -508,6 +518,7 @@ class VESDE(LinearTimeVariantSDE):
         return mu0
 
     def mean(self, ts: Array, x0=None, **kwargs) -> Array:
+        ts = jnp.atleast_1d(ts)
         shape = ts.shape
         ts = jnp.expand_dims(
             ts,
@@ -519,6 +530,7 @@ class VESDE(LinearTimeVariantSDE):
         return mu.reshape(shape + self.batch_shape + self.event_shape)
     
     def variance(self, ts: Array, x0=None, **kwargs) -> Array:
+        ts = jnp.atleast_1d(ts)
         shape = ts.shape
         ts = jnp.expand_dims(
             ts,
@@ -531,6 +543,7 @@ class VESDE(LinearTimeVariantSDE):
     
 
     def marginal_variance(self, ts: Array, x0=None, **kwargs) -> Array:
+        ts = jnp.atleast_1d(ts)
         if x0 is None:
             var0 = self.p0.variance
         else:
@@ -546,7 +559,7 @@ class VESDE(LinearTimeVariantSDE):
         return var
 
     def sample_marginal(
-        self, key: PRNGKeyArray, t: Array, sample_shape=(), x0=None, **kwargs
+        self, key: PRNGKey, t: Array, sample_shape=(), x0=None, **kwargs
     ) -> Array:
         mean = self.mean(t, x0)
         std = self.stddev(t, x0)

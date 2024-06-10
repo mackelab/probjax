@@ -68,21 +68,16 @@ class TransformedDistribution(Distribution):
     def sample(self, key, sample_shape: tuple = ()) -> Array:
         num_samples = max(int(np.prod(sample_shape)), 1)
         samples = self.base_dist.sample(key, (num_samples,))
-        if num_samples > 1:
-            transform = jax.vmap(self.transform)
-        else:
-            transform = self.transform
-        return transform(samples).reshape(
+        transform = jax.vmap(self.transform)
+        samples = transform(samples)
+        return samples.reshape(
             sample_shape + self.batch_shape + self.event_shape
         )
 
     def rsample(self, key, sample_shape=()):
         num_samples = max(int(np.prod(sample_shape)), 1)
         samples = self.base_dist.rsample(key, (num_samples,))
-        if num_samples > 1:
-            transform = jax.vmap(self.transform)
-        else:
-            transform = self.transform
+        transform = jax.vmap(self.transform)
         return transform(samples).reshape(
             sample_shape + self.batch_shape + self.event_shape
         )
