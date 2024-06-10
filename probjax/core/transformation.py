@@ -2,7 +2,7 @@ from functools import wraps
 from typing import Callable, Iterable, Optional
 
 import jax
-from jaxtyping import Array
+from jaxtyping import ArrayLike, Array
 from jax import numpy as jnp
 
 from probjax.core.jaxpr_propagation.interpret import interpret
@@ -21,6 +21,46 @@ from probjax.core.interpreters.inverse import (
 )
 from probjax.core.interpreters.trace import TraceProcessingRule
 from probjax.core.interpreters.interventions import IntervenedProcessingRule
+from probjax.core.interpreters.symbolic import SymbolicProcessingRule, as_symbolic_var
+
+
+import sympy
+
+
+
+
+def symbolify(fun: Callable):
+    
+    jaxpr_maker = jax.make_jaxpr(fun)
+    procecessing_rule = SymbolicProcessingRule()
+    
+    def wrapped(*args, **kwargs):
+        jaxpr = jaxpr_maker(*args, **kwargs)
+        args = list(map(as_symbolic_var, args))
+        out = interpret(
+            jaxpr.jaxpr,
+            jaxpr.consts,
+            jaxpr.jaxpr.invars,
+            args,
+            jaxpr.jaxpr.outvars,
+            process_eqn=procecessing_rule,
+        )
+        
+        return out[0]
+    
+    return wrapped
+
+
+def lambdaify(expr: sympy.Expr, static_symbols: Optional[dict] = None):
+    if static_symbols is not None:
+        expr = expr.subs(**static_symbols)
+        
+    def wrapped(*args):
+        return sympy.lambdify(expr.free_symbols, expr, module="jax")(*args)
+    
+    return wrapped
+    
+    
 
 
 def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:

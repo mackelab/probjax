@@ -40,6 +40,8 @@ def autoregressive_mask_getter(d: int, first_layer: bool = False):
                 return next_getter(value * mask)
             else:
                 return next_getter(value)
+        elif isinstance(module, hk.ConvND):
+            raise NotImplementedError("Convolutional layers are not supported, currently")
         else:
             raise NotImplementedError("Only Linear layers are supported, currently")
 

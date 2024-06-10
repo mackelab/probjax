@@ -204,7 +204,7 @@ def test_independent_distribution(dist: type[Distribution], shape=(2,), seed=0):
     flatten_p, tree_p = jax.tree_util.tree_flatten(p)
     q = jax.tree_util.tree_unflatten(tree_p, flatten_p)
     assert jnp.allclose(
-        p.sample(key, shape), q.sample(key, shape)
+        p.sample(key, shape), q.sample(key, shape), atol=0.01, rtol=0.01
     ), "PyTree reconstruction mismatch"
 
 

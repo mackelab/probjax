@@ -32,6 +32,9 @@ def scalarize(data: PyTree) -> PyTree:
         return tuple(jnp.split(flat_concat, len(tree_data), axis=-2))
     else:
         raise ValueError(f"Unknown tree type: {tree_type}")
+    
+
+        
 
 
 class Tokenizer(hk.Module):
@@ -266,8 +269,7 @@ class StructuredTokenizer(Tokenizer):
         output_dim1, output_dim2, output_dim3 = self.distribute_output_dim(
             with_meta_data=meta_data is not None
         )
-        
-        data_id = jnp.array([self.data_name_to_id[k] for k in data.keys()])
+        data_id = jnp.array([self.data_name_to_id[k] for k in data.keys()], dtype=jnp.int32)
         data_id_embeding = self.node_embeding(data_id, output_dim1)
         value_embeding = self.value_embeding(data, output_dim2)
         if meta_data is not None:
@@ -292,22 +294,14 @@ class StructuredTokenizer(Tokenizer):
     @hk.transparent
     def value_embeding(self, value, output_dim):
         if self.value_embeding_builder is None:
-            value_embeding_fns = {}
-            for k in value:
-                value_embeding_fns[k] = hk.Linear(
-                    output_dim,
-                )
+            value_embeding_fns = jax.tree_map(lambda _: hk.Linear(output_dim), value)
         else:
-            value_embeding_fns = self.value_embeding_builder(id, value, output_dim)
+            value_embeding_fns = self.value_embeding_builder(value, output_dim)
 
-        tokens = []
-        for k in value:
-            out = value_embeding_fns[k](value[k])
-            if self.learn_value_embeding:
-                out = jax.lax.stop_gradient(out)
-            tokens.append(out[:, None, :])
-            
-        tokens = jnp.concatenate(tokens, axis=-2)
+        tokens_dict = jax.tree_map(lambda f, v: jnp.expand_dims(f(v), -2), value_embeding_fns, value)
+        tokens_flat = jax.tree_leaves(tokens_dict)
+        tokens = jnp.concatenate(tokens_flat, axis=-2)
+        
         return tokens
 
     @hk.transparent

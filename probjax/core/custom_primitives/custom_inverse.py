@@ -5,7 +5,7 @@ import jax.numpy as jnp
 jax.numpy.set_printoptions(precision=3, suppress=True)
 from jax import core
 
-from jax import linear_util as lu
+from jax._src import linear_util as lu
 from functools import partial, update_wrapper
 
 from jax.tree_util import tree_flatten, tree_unflatten, tree_leaves, tree_map

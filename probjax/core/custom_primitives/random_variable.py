@@ -9,7 +9,7 @@ from jax.core import (
 import jax
 import jax.random as jrandom
 from jax import tree_util
-from jax import linear_util as lu
+from jax._src import linear_util as lu
 from jax._src import api_util
 from jax._src import ad_util
 from jax._src import util
