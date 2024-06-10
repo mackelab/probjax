@@ -7,7 +7,7 @@ import numpy as np
 
 import haiku as hk
 from typing import Callable, Sequence, Optional, Union, Any, Tuple, Iterable
-
+from functools import partial
 import warnings
 
 
@@ -17,10 +17,12 @@ class MultiHeadAttention(hk.MultiHeadAttention):
         *args,
         save_attention_weights: bool = False,
         attention_method="dense",
+        attention_kwargs: Optional[dict] = None,
         **kwargs,
     ):
         self.save_attention_weights = save_attention_weights
         self.attention_method = attention_method
+        self.attention_kwargs = attention_kwargs
 
         super().__init__(*args, **kwargs)
 
@@ -40,35 +42,50 @@ class MultiHeadAttention(hk.MultiHeadAttention):
         key_heads = projection(key, self.key_size, "key")  # [T, H, K]
         value_heads = projection(value, self.value_size, "value")  # [T, H, V]
 
+        if self.attention_kwargs is not None:
+            kwargs = self.attention_kwargs
+        else:
+            kwargs = {}
+
         if self.attention_method == "dense":
-            attn, attn_weights = dense_dot_product_attention(
-                query_heads,
-                key_heads,
-                value_heads,
-                self.key_size,
-                mask,
-                self.save_attention_weights,
-            )
-        elif self.attention_method == "mem_eff":
+            if self.save_attention_weights:  
+                attn, attn_weights = dense_dot_product_attention(
+                    query_heads,
+                    key_heads,
+                    value_heads,
+                    mask,
+                    return_attention_weights=self.save_attention_weights,
+                    **kwargs,
+                )
+            else:
+                attn = dense_dot_product_attention(
+                    query_heads,
+                    key_heads,
+                    value_heads,
+                    mask,
+                    **kwargs,
+                )
+                attn_weights = None
+        elif self.attention_method == "chunked":
             attn = memory_efficient_dot_product_attention(
                 query_heads,
                 key_heads,
                 value_heads,
                 mask,
-                self.save_attention_weights,
+                **kwargs,
             )
             attn_weights = None
-            return attn
+    
         elif self.attention_method == "sparse":
             attn = sparse_dot_product_attention(
                 query_heads,
                 key_heads,
                 value_heads,
                 mask,
-                self.save_attention_weights,
+                **kwargs,
             )
             attn_weights = None
-            return attn
+
         else:
             raise NotImplementedError("Unimplemented attention method")
 
@@ -91,46 +108,99 @@ class MultiHeadAttention(hk.MultiHeadAttention):
         return final_projection(attn)  # [T', D']
 
 
+@functools.partial(jax.jit, static_argnames=("precision", "return_attention_weights"))
 def dense_dot_product_attention(
     query_heads,  # [...,T', H, K]
     key_heads,  # [...,T', H, K]
     value_heads,  # [T, H, V]
-    key_size: int,
     mask=None,  # [..., T,T]
+    precision=jax.lax.Precision.DEFAULT,
     return_attention_weights: bool = False,
 ):
-    *leading_dims, sequence_length, _, _ = query_heads.shape
-    attn_logits = jnp.einsum("...thd,...Thd->...htT", query_heads, key_heads)
-    attn_logits = attn_logits / np.sqrt(key_size).astype(key_heads.dtype)
+    """Normal dense dot-product attention. 
+    """
+    *leading_dims, sequence_length, _, dim = query_heads.shape
+    attn_logits = jnp.einsum("...thd,...Thd->...htT", query_heads, key_heads, precision=precision)
+    attn_logits = attn_logits / np.sqrt(dim).astype(key_heads.dtype)
 
     if mask is not None:
-        if mask.ndim != attn_logits.ndim:
-            raise ValueError(
-                f"Mask dimensionality {mask.ndim} must match logits dimensionality "
-                f"{attn_logits.ndim}."
-            )
+        mask = jnp.expand_dims(mask, axis=-3)  # [...,1,T,T]
         attn_logits = jnp.where(mask, attn_logits, -1e30)
     attn_weights = jax.nn.softmax(attn_logits)  # [H, T', T]
 
-    attn = jnp.einsum("...htT,...Thd->...thd", attn_weights, value_heads)
+    attn = jnp.einsum("...htT,...Thd->...thd", attn_weights, value_heads, precision=precision)
     attn = jnp.reshape(attn, (*leading_dims, sequence_length, -1))  # [T', H*V]
 
     if return_attention_weights:
         return attn, attn_weights
     else:
-        return attn, None
-
-
-def memory_efficient_dot_product_attention(
-    query,
-    key,
-    value,
-    mask=None,
-    precision=jax.lax.Precision.HIGHEST,
-    query_chunk_size=512,
-    key_chunk_size=2048,
+        return attn
+    
+    
+@partial(jax.jit, static_argnums=(3,4,))
+def sparse_dot_product_attention(
+    query_heads,  # [...,T', H, K]
+    key_heads,  # [...,T', H, K]
+    value_heads,  # [T, H, V]
+    mask=None,  # [T', T]
 ):
-    """Computes efficient dot-product attention given query, key, and value.
+    """Attention with sparse static mask.
+    
+    Note: Only efficient for very sparse masks, otherwise use dense_dot_product_attention.
+    """
+    
+    assert isinstance(mask, Callable), "Sparse attention requires a (at best sparse) mask, wrapped in a callable"
+    assert mask is not None, "Sparse attention requires a (at best sparse) mask"
+    
+    
+    *leading_dims, sequence_length, _, dim = query_heads.shape
+    
+    indices1, indices2 = np.where(mask())
+    query_heads = jnp.take(
+        query_heads, indices1, axis=-3, indices_are_sorted=True
+    )  # [..., E, H, K] Where E is the number of edges
+    key_heads = jnp.take(key_heads, indices2, axis=-3, indices_are_sorted=True)  # [..., E, H, K]
+    value_heads = jnp.take(value_heads, indices2, axis=-3, indices_are_sorted=True)  # [..., E, H, V] 
+
+    
+
+    # Attention logits
+    attention_logits = jnp.einsum(
+        "...ehd,...ehd->...eh", query_heads, key_heads
+    ) / jnp.sqrt(dim).astype(key_heads.dtype)
+    attention_logits = attention_logits - jnp.max(
+        attention_logits, axis=-2, keepdims=True
+    )
+    attention_weight = jnp.exp(attention_logits)
+    attention_normalizer = jax.ops.segment_sum(
+        attention_weight,
+        indices1,
+        num_segments=sequence_length,
+        indices_are_sorted=True,
+    )
+    attention_normalizer = jnp.take(attention_normalizer, indices1, axis=-2)
+    attention_weight = attention_weight / attention_normalizer  # [..., eh]
+
+    # Attention weighted values
+    attn = attention_weight[..., None] * value_heads
+    attn = jax.ops.segment_sum(
+        attn, indices1, num_segments=sequence_length, indices_are_sorted=True
+    )
+    attn = jnp.reshape(attn, (*leading_dims, sequence_length, -1))  # [T', H*V]
+
+    return attn
+
+@functools.partial(jax.jit, static_argnums=(4,5,6))
+def memory_efficient_dot_product_attention(
+    query, # [..., T', H, K]
+    key, # [..., T, H, K]
+    value, # [..., T, H, V]
+    mask=None, # [..., T', T]
+    precision=jax.lax.Precision.DEFAULT,
+    query_chunk_size:int=2048,
+    key_chunk_size:int=2048,
+):
+    """Computes memory efficient dot-product attention given query, key, and value.
     
     Args:
         query: The query tensor of shape (..., num_q, num_heads, q_features).
@@ -145,8 +215,12 @@ def memory_efficient_dot_product_attention(
         The attention output tensor of shape (..., num_q, -1).
     """
     *leading_dims, num_q, num_heads, q_features = query.shape
+    
+    if mask is not None and mask.ndim != query.ndim:
+        while mask.ndim < query.ndim:
+            mask = mask[None, ...]
 
-    query_chunk_size = num_q // math.gcd(num_q, query_chunk_size)
+    query_chunk_size = greatest_divisor(num_q, query_chunk_size)
 
     def chunk_scanner(chunk_idx, _):
         query_chunk = jax.lax.dynamic_slice(
@@ -163,9 +237,9 @@ def memory_efficient_dot_product_attention(
         elif mask.shape[-2] == num_q:
             mask_chunk = jax.lax.dynamic_slice(
                 mask,
-                tuple([0] * (mask.ndim - 3)) + (0, chunk_idx, 0),
-                slice_sizes=tuple(leading_dims)
-                + (mask.shape[-3], min(query_chunk_size, num_q), mask.shape[-1]),
+                tuple([0] * (mask.ndim - 2)) + (chunk_idx, 0),
+                slice_sizes=tuple(mask.shape[:-2])
+                + (min(query_chunk_size, num_q), mask.shape[-1]),
             )
         else:
             raise TypeError(
@@ -194,53 +268,6 @@ def memory_efficient_dot_product_attention(
     return res
 
 
-
-def sparse_dot_product_attention(
-    query_heads,  # [...,T', H, K]
-    key_heads,  # [...,T', H, K]
-    value_heads,  # [T, H, V]
-    indices1,  # Should be the indices where the mask is true
-    indices2,
-    return_attention_weights: bool = False,
-):
-    *leading_dims, sequence_length, _, dim = query_heads.shape
-    query_heads = jnp.take(
-        query_heads, indices1, axis=-3
-    )  # [..., E, H, K] Where E is the number of edges
-    key_heads = jnp.take(key_heads, indices2, axis=-3)  # [..., E, H, K]
-    value_heads = jnp.take(value_heads, indices2, axis=-3)  # [..., E, H, V]
-
-    # Attention logits
-    attention_logits = jnp.einsum(
-        "...ehd,...ehd->...eh", query_heads, key_heads
-    ) / jnp.sqrt(dim).astype(key_heads.dtype)
-    attention_logits = attention_logits - jnp.max(
-        attention_logits, axis=-2, keepdims=True
-    )
-    attention_weight = jnp.exp(attention_logits)
-    attention_normalizer = jax.ops.segment_sum(
-        attention_weight,
-        indices1,
-        num_segments=sequence_length,
-        indices_are_sorted=True,
-    )
-    attention_normalizer = jnp.take(attention_normalizer, indices1, axis=-2)
-    attention_weight = attention_weight / attention_normalizer  # [..., eh]
-
-    # Attention weighted values
-    attn = attention_weight[..., None] * value_heads
-    attn = jax.ops.segment_sum(
-        attn, indices1, num_segments=sequence_length, indices_are_sorted=True
-    )
-    attn = jnp.reshape(attn, (*leading_dims, sequence_length, -1))  # [T', H*V]
-
-    if return_attention_weights:
-        return attn, attention_weight
-    else:
-        return attn, None
-
-   
-
 def _query_chunk_attention(
     query_idx,
     query,
@@ -257,13 +284,17 @@ def _query_chunk_attention(
     query = query / jnp.sqrt(k_features)
     
     # NOTE: num_kv must be divisible by key_chunk_size
-    key_chunk_size = num_kv // math.gcd(num_kv, key_chunk_size)
+    key_chunk_size = greatest_divisor(num_kv, key_chunk_size)
 
     @functools.partial(jax.checkpoint, prevent_cse=False)
     def summarize_chunk(chunk_idx, query, key, value, mask):
         attn_weights = jnp.einsum(
             "...qhd,...khd->...qhk", query, key, precision=precision
         )
+        
+        if mask is not None:
+            mask = jnp.expand_dims(mask, axis=-2) # [..., T', 1, T]
+            attn_weights = jnp.where(mask, attn_weights, -1e30)
 
         max_score = jnp.max(attn_weights, axis=-1, keepdims=True)
         max_score = jax.lax.stop_gradient(max_score)
@@ -294,9 +325,9 @@ def _query_chunk_attention(
         elif mask.shape[-1] == num_kv:
             mask_chunk = jax.lax.dynamic_slice(
                 mask,
-                tuple([0] * (mask.ndim - 3)) + (0, 0, chunk_idx),
-                slice_sizes=tuple(mask.shape[:-3])
-                + (mask.shape[-3], mask.shape[-2], key_chunk_size),
+                tuple([0] * (mask.ndim - 2)) + (0, chunk_idx),
+                slice_sizes=tuple(mask.shape[:-2])
+                + (mask.shape[-2], key_chunk_size),
             )
         else:
             raise TypeError(
@@ -320,3 +351,10 @@ def _query_chunk_attention(
     all_values = chunk_values.sum(axis=0)
     all_weights = jnp.expand_dims(chunk_weights, -1).sum(axis=0)
     return all_values / all_weights
+
+
+def greatest_divisor(n, limit):
+    for i in range(min(n, limit), 0, -1):
+        if n % i == 0:
+            return i
+    return 1

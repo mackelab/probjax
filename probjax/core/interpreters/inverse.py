@@ -34,6 +34,7 @@ _UNIVARITAE_INVERSE_REGISTRY = {
     jax.lax.cosh_p: jax.lax.acosh_p,
     jax.lax.acosh_p: jax.lax.cosh_p,
     jax.lax.exp_p: jax.lax.log_p,
+    jax.lax.exp2_p: jnp.log2,
     jax.lax.log_p: jax.lax.exp_p,
     jax.lax.sqrt_p: lambda x, **params: jax.lax.pow_p.bind(x, 2.0, **params),
     jax.lax.rsqrt_p: lambda x, **params: 1.0 / jax.lax.pow_p.bind(x, 2.0, **params),

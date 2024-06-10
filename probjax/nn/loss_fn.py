@@ -137,7 +137,11 @@ def denoising_score_matching_loss(
     loss = (score_pred - score_target) ** 2
     if loss_mask is not None:
         loss = jnp.where(loss_mask, 0.0,loss)
-    loss = weight_fn(times) * jnp.sum(loss, axis=axis, keepdims=True)
+    weight = weight_fn(times)
+    for _ in range(xs_target.ndim - 1):
+        weight = weight[..., None]
+    loss =  weight * jnp.sum(loss, axis=axis, keepdims=True)
+
     loss = jnp.mean(loss)
 
     return loss

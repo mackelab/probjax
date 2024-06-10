@@ -6,7 +6,6 @@ import jax
 from jax.tree_util import register_pytree_node_class
 import jax.numpy as jnp
 import jax.random as jrandom
-from jax.random import KeyArray
 
 from abc import abstractmethod
 from functools import partial
@@ -22,12 +21,12 @@ class MCMCState:
     """MCMC state object."""
 
     def __init__(
-        self, key: KeyArray, x: Array, stats: dict = {}, params: dict = {}
+        self, key: PRNGKey, x: Array, stats: dict = {}, params: dict = {}
     ) -> None:
         """This class represents the state of the MCMC chain.
 
         Args:
-            key (KeyArray): A random number generator key.
+            key (PRNGKey): A random number generator key.
             x (Array): Current value of the chain.
             stats (dict, optional): Statistics that are tracked for the chain. Defaults to {}.
             params (dict, optional): Adaptive parameters for the MCMCKernel. Defaults to {}.
@@ -49,7 +48,7 @@ class MCMCState:
         self.stats = stats
         return self
 
-    def set_key(self, key: KeyArray):
+    def set_key(self, key: PRNGKey):
         self.key = key
         return self
 
