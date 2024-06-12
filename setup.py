@@ -27,6 +27,7 @@ REQUIRED = [
     "optax",
     "ott-jax",
     "networkx",
+    "sympy",
 ]
 
 EXTRAS = {
