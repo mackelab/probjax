@@ -137,7 +137,7 @@ def dense_dot_product_attention(
         return attn
     
     
-@partial(jax.jit, static_argnums=(3,4,))
+@partial(jax.jit, static_argnums=(3,))
 def sparse_dot_product_attention(
     query_heads,  # [...,T', H, K]
     key_heads,  # [...,T', H, K]
