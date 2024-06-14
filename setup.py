@@ -18,6 +18,9 @@ EMAIL = "TODO"
 AUTHOR = "Manuel Gloeckler"
 REQUIRES_PYTHON = ">=3.7.0"
 
+
+FILTERS_FOR_GIT = "git config filter.strip-notebook-output.clean 'jupyter nbconvert --ClearOutputPreprocessor.enabled=True --to=notebook --stdin --stdout --log-level=ERROR'  "
+
 REQUIRED = [
     "numpy",
     "matplotlib",
