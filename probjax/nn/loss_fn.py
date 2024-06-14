@@ -8,8 +8,6 @@ from typing import Optional, Sequence, Union, Callable
 from jaxtyping import PyTree, Array
 
 
-# Score matching objectives
-
 
 # Flow matching objectives
 
@@ -151,9 +149,12 @@ def score_matching_loss(
     params: PyTree,
     times: Array,
     xs_target: Array,
-    mask: Optional[Array],
-    *args,
     model_fn: Callable,
+    *args,
+    loss_mask: Optional[Array] = None,
+    tikhonov: float = 0.0,
+    jac_fn: Callable = jax.jacfwd,
+    
 ):
     """Score matching loss. Minimizing the Fisher divergence between the model and the target distribution, using partial integration trick.
 
@@ -163,18 +164,33 @@ def score_matching_loss(
         params (PyTree): Parameters of the model_fn given as a PyTree.
         times (Array): Time points, should be broadcastable to shape (batch_size, 1).
         xs_target (Array): Target distribution.
-        mask (Optional[Array]): _description_
         model_fn (Callable): _description_
+        args: Additional arguments to the model_fn.
+        loss_mask (Optional[Array], optional): Mask for the target distribution. If None, no mask is applied, should be broadcastable to shape (batch_size, 1). Defaults to None.
+        tikhonov (float, optional): Tikhonov regularization. Defaults to 0.0.
+        jac_fn (Callable, optional): Jacobian function. Defaults to jax.jacfwd.
 
     Returns:
-        _type_: _description_
+        Array: Loss
     """
-    jac_model_fn = jax.jacfwd(model_fn, argnums=2)
+    batch_dims = len(xs_target.shape[:-1])
+    jac_model_fn = jac_fn(model_fn, argnums=2)
+    for _ in range(batch_dims):
+        jac_model_fn = jax.vmap(jac_model_fn, in_axes=(None, 0, 0) + (None,)*len(args)) 
+    
     score = model_fn(params, times, xs_target, *args)
     jac_score = jac_model_fn(params, times, xs_target, *args)
-    loss = jnp.trace(jac_score) + jnp.sum(score**2, axis=-1)
-    loss = jnp.mean(jnp.where(mask, loss, 0.0))
-    return loss
+
+    
+    loss = 0.5*jnp.sum(score**2, axis=-1) +  jnp.trace(jac_score, axis1=-2, axis2=-1)
+    if loss_mask is not None:
+        loss = jnp.mean(jnp.where(loss_mask, loss, 0.0))
+        
+    if tikhonov > 0.0:
+        diag_jac = jnp.diagonal(jac_score, axis1=-2, axis2=-1)
+        loss += tikhonov*jnp.sum(diag_jac**2, axis=-1)
+        
+    return jnp.mean(loss)
 
 
 def sliced_score_matching(
@@ -182,23 +198,32 @@ def sliced_score_matching(
     key: PRNGKey,
     times: Array,
     xs_target: Array,
-    mask: Optional[Array],
-    *args,
     model_fn: Callable,
+    *args,
+    loss_mask: Optional[Array] = None,
     num_slices: int = 1,
+    sliced_dist: str = "normal",
 ):
-    def _f(x, v):
-        val, grad = jax.value_and_grad(
-            lambda x, v: jnp.sum(model_fn(params, times, xs_target, *args) * v)
-        )(x, v)
-        grad = jnp.sum(grad * v)
-        return val, grad
-
-    _f = jax.vmap(jax.vmap(_f, in_axes=(None, 0)), in_axes=(0, None))
+    
+    def value_and_jvp(x, v):
+        value, jvp = jax.jvp(lambda x: model_fn(params, times, x, *args), (x,), (v,))
+        sliced_value = jnp.sum(value * v, -1)
+        sliced_jvp = jnp.sum(jvp * v, -1)
+        return sliced_value, sliced_jvp
 
     # Slice directions
-    v = jax.random.normal(key, shape=(num_slices, xs_target.shape[-1]))
-    sliced_score, jac_trace = _f(xs_target, v)
-    loss = jnp.sum(sliced_score**2, -1) + jnp.mean(jac_trace, -1)
-    loss = jnp.mean(jnp.where(mask, loss, 0.0))
-    return loss
+    if sliced_dist == "normal":
+        v = jax.random.normal(key, shape=(num_slices, *xs_target.shape))
+    elif sliced_dist == "rademacher":
+        v = jax.random.rademacher(key, shape=(num_slices, *xs_target.shape))
+        v = v.astype(jnp.float32)
+    elif sliced_dist == "ball":
+        v = jax.random.ball(key, xs_target.shape[-1],shape=(num_slices, *xs_target.shape[:-1]))
+    else:
+        raise ValueError("Invalid sliced_dist")    
+    
+    sliced_score, jac_trace = jax.vmap(value_and_jvp, in_axes=(None,0))(xs_target, v)
+    loss = 0.5*sliced_score**2 + jac_trace
+    if loss_mask is not None:
+        loss = jnp.mean(jnp.where(loss_mask, loss, 0.0))
+    return jnp.mean(loss)
