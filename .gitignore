@@ -1,6 +1,5 @@
 # Project specific
-.sbi_env/
-*sbi-logs/
+
 /docs/docs/tutorial/*
 /docs/docs/examples/*
 /docs/site/*
@@ -99,3 +98,4 @@ target/
 *.pyns
 
 *experimental_notebooks/
+*.ipynb filter=strip-notebook-output  # Strip notebook output
