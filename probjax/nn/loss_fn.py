@@ -203,13 +203,18 @@ def sliced_score_matching(
     loss_mask: Optional[Array] = None,
     num_slices: int = 1,
     sliced_dist: str = "normal",
+    tikhonov: float = 0.0,
 ):
     
     def value_and_jvp(x, v):
         value, jvp = jax.jvp(lambda x: model_fn(params, times, x, *args), (x,), (v,))
         sliced_value = jnp.sum(value * v, -1)
         sliced_jvp = jnp.sum(jvp * v, -1)
-        return sliced_value, sliced_jvp
+        if tikhonov > 0.0:
+            reg = tikhonov*jnp.sum((jvp * v)**2, -1)
+        else:
+            reg = jnp.zeros_like(sliced_value)
+        return sliced_value, sliced_jvp, reg
 
     # Slice directions
     if sliced_dist == "normal":
@@ -222,8 +227,8 @@ def sliced_score_matching(
     else:
         raise ValueError("Invalid sliced_dist")    
     
-    sliced_score, jac_trace = jax.vmap(value_and_jvp, in_axes=(None,0))(xs_target, v)
-    loss = 0.5*sliced_score**2 + jac_trace
+    sliced_score, jac_trace, reg = jax.vmap(value_and_jvp, in_axes=(None,0))(xs_target, v)
+    loss = 0.5*sliced_score**2 + jac_trace + reg
     if loss_mask is not None:
         loss = jnp.mean(jnp.where(loss_mask, loss, 0.0))
     return jnp.mean(loss)
