@@ -14,7 +14,7 @@ from probjax.utils.linalg import (
     transition_matrix,
     matrix_fraction_decomposition,
 )
-from probjax.inference.filtering.kalman_filter import filter
+from probjax.inference.filtering.kalman_filter_old import filter
 from probjax.utils.sdeint import sdeint
 from probjax.utils.odeint import odeint
 

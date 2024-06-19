@@ -13,20 +13,16 @@ from probjax.inference.smc.resampling import resample_systematic, resample_multi
 from blackjax.smc.ess import ess
 
 
-
-
 class ParticleFilterState(NamedTuple):
     particles: ArrayLike
     log_weights: ArrayLike
-    
+
 class ParticleFilterInfo(NamedTuple):
     ancestors: ArrayLike
     logZ: ArrayLike
     ess: ArrayLike
     t: int | float | ArrayLike
     is_observed: bool
-
-
 
 
 def init(particles: ArrayLike) -> ParticleFilterState:
@@ -62,26 +58,27 @@ def build_kernel(
         resample_fn (Callable, optional): _description_. Defaults to systematic.
         unbiased_gradients (bool, optional): _description_. Defaults to True.
     """
-    
+
     def kernel(
-        rng_key,
         state: ParticleFilterState,
         t: Optional[float | int] = None,
         observed: Optional[ArrayLike] = None,
+        rng_key: Optional[ArrayLike] = None,
     ):
+        assert rng_key is not None, "You must provide a random key for the particle filter kernel."
         # Unpack state
         particles = state.particles
         log_weights = state.log_weights
         rng_key, rng_key_predict, rng_key_resample = jax.random.split(rng_key, 3)
         log_num_particles = jnp.log(particles.shape[0])
-        
+
         # Predict new particles
         if proposal_logdensity_fn is None:
             new_particles = transition_fn(rng_key_predict, particles, t)
         else:
             new_particles = proposal_transition_fn(rng_key_predict, particles, t)
-            
-        # Update weights 
+
+        # Update weights
         is_observed = observed is not None
         if is_observed:
             # Update step
@@ -91,7 +88,7 @@ def build_kernel(
             log_normalizer = jax.scipy.special.logsumexp(log_weights)
             log_weights = log_weights - log_normalizer
             logZ = log_normalizer - log_num_particles
-            
+
         else:
             if transition_logdensity_fn is not None and proposal_logdensity_fn is not None:
                 log_weights += (transition_logdensity_fn(new_particles, particles,t) - proposal_logdensity_fn(new_particles, particles,t))
@@ -104,25 +101,24 @@ def build_kernel(
         # Resample if necessary
         effective_samples_size = ess(log_weights)
         do_resample = resample_criterion(effective_samples_size/log_weights.shape[0])
-        
+
         def resample(key, log_weights, particles):
             new_particles, new_log_weights, idx = resample_fn(key, log_weights, particles)
             if unbiased_gradients:
                 new_log_weights += (log_weights[idx] - jax.lax.stop_gradient(log_weights[idx]))
 
             return new_particles, new_log_weights, idx
-        
+
         def no_resample(key, log_weights, particles):
             return particles, log_weights, jnp.arange(particles.shape[0])
-        
+
         new_particles, new_log_weights, ancestors = jax.lax.cond(do_resample, resample, no_resample, rng_key_resample, log_weights, new_particles)
-            
-        
+
         new_state = ParticleFilterState(new_particles, new_log_weights)
         info = ParticleFilterInfo(ancestors, logZ, effective_samples_size, t, is_observed)
-        
+
         return new_state, info
-    
+
     return kernel
 
 
@@ -142,7 +138,3 @@ class ParticleFilter(FilterKernel):
             resample_fn,
             unbiased_gradients
         )
-
-
-
-

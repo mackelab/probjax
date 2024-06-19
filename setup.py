@@ -30,6 +30,7 @@ REQUIRED = [
     "optax",
     "ott-jax",
     "networkx",
+    "blackjax",
     "sympy",
 ]
 

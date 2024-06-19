@@ -9,16 +9,6 @@ import math
 
 
 
-
-
-
-
-
-
-
-
-
-
 # Estimate the differential entropy of a continuous random variable.
 
 def differential_entropy(values, window_length=None, base=None, axis=0, method="auto"):
