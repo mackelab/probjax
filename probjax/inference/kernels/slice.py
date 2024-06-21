@@ -63,7 +63,7 @@ class SliceKernel(MCMCKernel):
 
 class SliceState(NamedTuple):
     position: Array
-    log_density: Array
+    logdensity: Array
     random_arg_slice: Array
 
 
@@ -136,7 +136,7 @@ def build_kernel(
     ):
         rng_key, key_slice, key_rejections = jax.random.split(rng_key, 3)
         direction = slice_fn_arg(key_slice, state.position, **kwargs)
-        log_density = state.log_density
+        log_density = state.logdensity
         u = jax.random.uniform(key_rejections, shape=())
         y = jnp.squeeze(jnp.log(u) + log_density)
 
