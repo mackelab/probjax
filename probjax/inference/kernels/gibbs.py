@@ -36,6 +36,7 @@ def init(
     position: Dict[str, ArrayLike],
     logdensity_fn: Callable,
     inner_kernel: Dict,
+    rng_key: Optional[PRNGKey] = None,
 ) -> GibbsState:
 
     inner_state = {}
@@ -43,13 +44,14 @@ def init(
 
         def logdensity_k(value):
             kwargs = position.copy()
-            kwargs[k] = position[k]
+            kwargs[k] = value
             return logdensity_fn(**kwargs)
 
-        inner_state[k] = inner_kernel[k].init(
-            position=position[k],
-            logdensity_fn=logdensity_k,
-        )
+        # inspect for keyword argument "rng_key"
+        if "rng_key" in inner_kernel[k].init.__code__.co_varnames:
+            inner_state[k] = inner_kernel[k].init(position[k], logdensity_k, rng_key=rng_key)
+        else:
+            inner_state[k] = inner_kernel[k].init(position[k],logdensity_k)
 
     return GibbsState(position=position, inner_state=inner_state)
 
@@ -82,7 +84,7 @@ def build_kernel(
             rng_key, *rng_keys = jax.random.split(rng_key, num_steps + 1)
 
             def logdensity_k(value):
-                kwargs = state.position.copy()
+                kwargs = new_position.copy()
                 kwargs[k] = value
                 return logdensity_fn(**kwargs)
 
@@ -99,7 +101,6 @@ def build_kernel(
                 carry = (new_inner_state, new_inner_info)
 
                 def one_step(carry, key):
-                    print(key)
                     state, info = carry
                     state, info = _kernels[k](key, state, logdensity_k, **kwargs)
                     return (state, info), None
@@ -135,11 +136,11 @@ class gibbs:
         kernel = cls.build_kernel(inner_kernel, inner_kernel_kwargs, inner_kernel_steps)
 
         def init_fn(position: Array, rng_key=None):
-            del rng_key
             return cls.init(
                 position,
                 logdensity_fn,
                 inner_kernel,
+                rng_key=rng_key,
             )
 
         def step_fn(rng_key: PRNGKey, state):

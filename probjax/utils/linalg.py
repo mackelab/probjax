@@ -1,3 +1,4 @@
+from functools import partial
 import jax
 import jax.numpy as jnp
 from jax import lax
@@ -22,7 +23,7 @@ def cholesky_update(L, u):
     """
     D = L.shape[0]
     indices = jnp.arange(D)
-    
+
     def body_fun(i, vals):
         L, u = vals
         r = jnp.sqrt(L[i, i]**2 + u[i]**2)
@@ -38,10 +39,37 @@ def cholesky_update(L, u):
         u = jnp.where(mask, u_update, u)
 
         return (L, u)
-    
+
     L,u = jax.lax.fori_loop(0, D, body_fun, (L,u))        
-    
+
     return L
+
+
+@partial(jax.jit, static_argnames=("precission",), inline=True)
+def mv_diag_or_dense(
+    A_diag_or_dense: Array, b: Array, precission=jax.lax.Precision.DEFAULT
+) -> Array:
+    """Dot product of a diagonal matrix and a dense matrix
+
+    Args:
+        A (Array): Diagonal matrix
+        B (Array): Dense matrix
+
+    Returns:
+        Array: Dot product
+    """
+    A_diag_or_dense = jnp.asarray(A_diag_or_dense)
+    dtype = jnp.result_type(A_diag_or_dense.dtype, b.dtype)
+    A_diag_or_dense = A_diag_or_dense.astype(dtype)
+    b = b.astype(dtype)
+    ndim = A_diag_or_dense.ndim
+
+    if ndim == 1:
+        return jax.lax.mul(A_diag_or_dense, b)
+    else:
+        return jax.lax.dot(
+            A_diag_or_dense, b, precision=precission, preferred_element_type=dtype
+        )
 
 
 def is_matrix(A: Array) -> bool:
