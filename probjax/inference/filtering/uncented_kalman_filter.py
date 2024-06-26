@@ -1,10 +1,10 @@
 import jax
 import jax.numpy as jnp
 
-from jax.typing import ArrayLike, NDArray
+from jax.typing import ArrayLike
 from typing import Callable, NamedTuple, Optional, Tuple
 
-from probjax.inference.filtering.base import FilterState, FilterInfo, FilterKernel
+from probjax.inference.filtering.base import FilterState, FilterInfo, FilterAPI
 from probjax.inference.smc.resampling import (
     resample_systematic,
     resample_multinomial,
@@ -17,11 +17,13 @@ from blackjax.smc.ess import ess
 class UncentedKalmanFilterState(NamedTuple):
     mean: ArrayLike
     cov: ArrayLike
+    t: Optional[ArrayLike]
 
 
 class UncentedKalmanFilterInfo(NamedTuple):
     mean_pred: ArrayLike
     cov_pred: ArrayLike
+    log_likelihood: Optional[ArrayLike]
 
 
 def merwe_sigma_point(
@@ -30,7 +32,7 @@ def merwe_sigma_point(
     alpha: ArrayLike = 1.0,
     beta: ArrayLike = 2.0,
     kappa: ArrayLike = 0.0,
-) -> Tuple[NDArray, NDArray, NDArray]:
+) -> Tuple[ArrayLike, ArrayLike, ArrayLike]:
     """Generate sigma points for unscented Kalman filter, see [1].
 
     Args:
@@ -79,7 +81,7 @@ def unscented_transform(
     noise_cov: Optional[ArrayLike] = None,
     mean_fn: Optional[Callable] = None,
     cov_fn: Optional[Callable] = None,
-) -> Tuple[NDArray, NDArray]:
+) -> Tuple[ArrayLike, ArrayLike]:
     """Unscented transform
 
     Args:
@@ -110,6 +112,22 @@ def unscented_transform(
     return mean, cov
 
 
+def init(
+    mu0: ArrayLike, cov0: ArrayLike, t: Optional[float | int] = None
+) -> UncentedKalmanFilterState:
+    """Initialize the unscented Kalman filter.
+
+    Args:
+        mu0 (ArrayLike): Initial mean of the state
+        cov0 (ArrayLike): Initial covariance of the state
+        t (Optional[float | int], optional): Time. Defaults to None.
+
+    Returns:
+        UncentedKalmanFilterState: Initial state of the unscented Kalman filter
+    """
+    return UncentedKalmanFilterState(mu0, cov0, t)
+
+
 def build_kernel(
     transition_fn: Callable,
     transition_covariance_matrix: Callable | ArrayLike,
@@ -120,8 +138,8 @@ def build_kernel(
     """Build an unscented Kalman filter kernel.
 
     Args:
-        transition_fn (Callable): General transition function f(x_t, t) -> x_{t+1}
-        transition_covariance_matrix (Callable | ArrayLike): Transition covariance matrix Q(t) or Q
+        transition_fn (Callable): General transition function f(x_t, t, t+1) -> x_{t+1}
+        transition_covariance_matrix (Callable | ArrayLike): Transition covariance matrix Q(t, t+1) or Q
         observation_fn (Callable): General observation function h(x_t, t) -> y_t
         observation_covariance (Callable | ArrayLike): Observation covariance matrix R(t) or R
         sigma_point_fn (Callable, optional): How to generate sigma points. Defaults to merwe_sigma_point.
@@ -150,14 +168,15 @@ def build_kernel(
 
         mu0 = state.mean
         cov0 = state.cov
+        t_old = state.t
         is_observed = observed is not None
 
         sigma_points, weights_mean, weights_cov = sigma_point_fn(mu0, cov0)
-        predicted_sigma_points = jax.vmap(transition_fn, in_axes=(0, None))(
-            sigma_points, t
+        predicted_sigma_points = jax.vmap(transition_fn, in_axes=(0, None,None))(
+            sigma_points, t_old, t
         )
         if isinstance(transition_covariance_matrix, Callable):
-            Q = transition_covariance_matrix(t)
+            Q = transition_covariance_matrix(t_old, t)
         else:
             Q = transition_covariance_matrix
 
@@ -191,12 +210,35 @@ def build_kernel(
             mu1 = mu1_ + jnp.dot(K, r)
             cov1 = cov1_ - jnp.dot(K, jnp.dot(cov_y, K.T))
 
-            return UncentedKalmanFilterState(mu1, cov1), UncentedKalmanFilterInfo(
-                mu1_, cov1_
+            log_likelihood = -0.5 * (
+                jnp.linalg.slogdet(cov_y)[1] + r.T @ jnp.linalg.solve(cov_y, r)
+            )
+
+            return UncentedKalmanFilterState(mu1, cov1, t), UncentedKalmanFilterInfo(
+                mu1_, cov1_, log_likelihood
             )
         else:
-            return UncentedKalmanFilterState(mu1_, cov1_), UncentedKalmanFilterInfo(
-                mu1_, cov1_
+            log_likelihood = jnp.array(0.0)
+            return UncentedKalmanFilterState(mu1_, cov1_,t), UncentedKalmanFilterInfo(
+                mu1_, cov1_, log_likelihood
             )
 
     return kernel
+
+
+class ukf(FilterAPI):
+    """Unscented Kalman filter inference algorithm.
+
+    This class implements the unscented Kalman filter algorithm. The unscented Kalman filter is a
+    generalization of the Kalman filter to non-linear and non-Gaussian models.
+
+    To build an unscented Kalman filter, you need to provide the following functions:
+    Args:
+        transition_fn (Callable): Transition function f(x_t, t) -> x_{t+1}
+        transition_covariance_matrix (Callable | ArrayLike): Transition covariance matrix Q(t) or Q
+        observation_fn (Callable): Observation function h(x_t, t) -> y_t
+        observation_covariance (Callable | ArrayLike): Observation covariance matrix R(t) or R
+    """
+
+    init = init
+    build_kernel = build_kernel

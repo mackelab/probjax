@@ -8,7 +8,6 @@ from typing import Optional, Sequence, Union, Callable
 from jaxtyping import PyTree, Array
 
 
-
 # Flow matching objectives
 
 
@@ -90,16 +89,18 @@ def conditional_flow_and_score_matching_loss(
 
 def denoising_score_matching_loss(
     params: PyTree,
-    key: PRNGKey,
     times: Array,
     xs_target: Array,
-    loss_mask: Optional[Array],
-    *args,
     model_fn: Callable,
+    *args,
     mean_fn: Callable,
     std_fn: Callable,
-    weight_fn: Callable,
-    axis: int = -2,
+    weight_fn: Optional[Callable] = None,
+    loss_mask: Optional[Array] = None,
+    rng_key: Optional[PRNGKey] = None,
+    rebalance_loss: bool = False,
+    control_variate: bool = True,
+    axis: int = -1,
     **kwargs,
 ) -> Array:
     """This function computes the denoising score matching loss. Which can be used to train diffusion models.
@@ -120,28 +121,177 @@ def denoising_score_matching_loss(
     Returns:
         Array: Loss
     """
-    eps = jax.random.normal(key, shape=xs_target.shape)
+    assert (
+        rng_key is not None
+    ), "rng_key must be provided for denoising score matching loss."
+
+    eps = jax.random.normal(rng_key, shape=xs_target.shape)
     mean_t = mean_fn(times, xs_target)
     std_t = std_fn(times, xs_target)
     xs_t = mean_t + std_t * eps
-    
+
     if loss_mask is not None:
         loss_mask = loss_mask.reshape(xs_target.shape)
         xs_t = jnp.where(loss_mask, xs_target, xs_t)
-    
+
     score_pred = model_fn(params, times, xs_t, *args, **kwargs)
+    score_pred = score_pred.reshape(xs_t.shape)
     score_target = -eps / std_t
 
-    loss = (score_pred - score_target) ** 2
+
+    loss = jnp.sum((score_pred - score_target) ** 2, axis=axis)
+
+    if control_variate:
+        # Adds a control variate to the loss, which is efficient for small std_t
+        s = model_fn(params, times, mean_t, *args, **kwargs)
+        s = s.reshape(xs_target.shape)
+       
+        term1 = 2 / std_t * jnp.sum(eps * s, axis=axis, keepdims=True)
+        term2 = jnp.sum(eps**2, axis=axis, keepdims=True) / std_t**2
+        term3 = xs_target.shape[axis] / std_t**2
+       
+        cv = jnp.mean(-term1 - term2 + term3, axis=axis)
+
+        loss = loss + cv
+
     if loss_mask is not None:
         loss = jnp.where(loss_mask, 0.0,loss)
-    weight = weight_fn(times)
-    for _ in range(xs_target.ndim - 1):
-        weight = weight[..., None]
-    loss =  weight * jnp.sum(loss, axis=axis, keepdims=True)
+
+    if weight_fn is not None:
+        weight = weight_fn(times)
+        for _ in range(xs_target.ndim - 1):
+            weight = weight[..., None]
+
+        loss = weight * loss
+
+    if rebalance_loss:
+        num_elements = jnp.sum(~loss_mask, axis=axis, keepdims=True)
+        loss = jnp.where(num_elements > 0, loss / num_elements, 0.0)
 
     loss = jnp.mean(loss)
 
+    return loss
+
+
+def high_order_denosing_score_matching_loss(
+    params: PyTree,
+    times: Array,
+    xs_target: Array,
+    model_fn: Callable,
+    *args,
+    mean_fn: Callable,
+    std_fn: Callable,
+    weight_fn: Optional[Callable] = None,
+    loss_mask: Optional[Array] = None,
+    rng_key: Optional[PRNGKey] = None,
+    rebalance_loss: bool = False,
+    diagonal_2nd_order: bool = False,
+    c: float = 0.1,
+    stop_gradient_2nd_order: bool = True,
+    control_variate1: bool = False,
+    control_variate2: bool = False,
+    axis: int = -1,
+    **kwargs,
+) -> Array:
+
+    assert (
+        rng_key is not None
+    ), "rng_key must be provided for denoising score matching loss."
+
+    eps = jax.random.normal(rng_key, shape=xs_target.shape)
+    mean_t = mean_fn(times, xs_target)
+    std_t = std_fn(times, xs_target)
+    xs_t = mean_t + std_t * eps
+
+    if loss_mask is not None:
+        loss_mask = loss_mask.reshape(xs_target.shape)
+        xs_t = jnp.where(loss_mask, xs_target, xs_t)
+
+    score_pred, second_order_score_pred = model_fn(params, times, xs_t, *args, **kwargs)
+    score_pred = score_pred.reshape(xs_t.shape)
+    score_target = -eps / std_t
+
+    loss1 = jnp.sum((score_pred - score_target) ** 2, axis=axis, keepdims=True)
+    
+    
+    if control_variate1:
+        # Adds a control variate to the loss, which is efficient for small std_t
+        s,_ = model_fn(params, times, mean_t, *args, **kwargs)
+        s = s.reshape(xs_target.shape)
+       
+        term1 = 2 / std_t * jnp.sum(eps * s, axis=axis, keepdims=True)
+        term2 = jnp.sum(eps**2, axis=axis, keepdims=True) / std_t**2
+        term3 = xs_target.shape[axis] / std_t**2
+       
+        cv = jnp.mean(-term1 - term2 + term3, axis=axis, keepdims=True)
+        loss1 = loss1 + cv
+
+    if not control_variate2:
+        if not diagonal_2nd_order:
+            s2_target = jnp.einsum("...i,...j->...ij", eps, eps)
+            s1_2 = jnp.einsum("...i,...j->...ij", score_pred, score_pred)
+            if stop_gradient_2nd_order:
+                s1_2 = jax.lax.stop_gradient(s1_2)
+            I = jnp.eye(xs_target.shape[-1])
+            loss2 = (second_order_score_pred + s1_2 + (I - s2_target) / std_t**2) ** 2
+            loss2 = jnp.sum(loss2, axis=axis)
+            loss2 = jnp.sum(loss2, axis=axis - 1, keepdims=True)
+        else:
+            s2_target = eps**2
+            s1_2 = score_pred**2
+            if stop_gradient_2nd_order:
+                s1_2 = jax.lax.stop_gradient(s1_2)
+            loss2 = (second_order_score_pred + s1_2 + (1 - s2_target) / std_t**2) ** 2
+            loss2 = jnp.sum(loss2, axis=axis, keepdims=True)
+    else:
+        x_t_plus = mean_t + std_t * eps
+        x_t_minus = mean_t - std_t * eps
+        s_plus, s2_plus = model_fn(params, times, x_t_plus, *args, **kwargs)
+        s_minus, s2_minus = model_fn(params, times, x_t_minus, *args, **kwargs)
+        s_clean, s2_clean = model_fn(params, times, mean_t, *args, **kwargs)
+        s_plus = s_plus.reshape(xs_target.shape)
+        s_minus = s_minus.reshape(xs_target.shape)
+        s_clean = s_clean.reshape(xs_target.shape)
+        s2_plus = s2_plus.reshape(xs_target.shape + (xs_target.shape[-1],))
+        s2_minus = s2_minus.reshape(xs_target.shape + (xs_target.shape[-1],))
+        s2_clean = s2_clean.reshape(xs_target.shape + (xs_target.shape[-1],))
+        
+        s2_target = jnp.einsum("...i,...j->...ij", eps, eps)
+        s1_2_plus = jnp.einsum("...i,...j->...ij", s_plus, s_plus)
+        s1_2_minus = jnp.einsum("...i,...j->...ij", s_minus, s_minus)
+        s1_2_clean = jnp.einsum("...i,...j->...ij", s_clean, s_clean)
+        if stop_gradient_2nd_order:
+            s1_2_plus = jax.lax.stop_gradient(s1_2_plus)
+            s1_2_minus = jax.lax.stop_gradient(s1_2_minus)
+            s1_2_clean = jax.lax.stop_gradient(s1_2_clean)
+
+        
+        phi_plus = s2_plus + s1_2_plus
+        phi_minus = s2_minus + s1_2_minus
+        phi_clean = s2_clean + s1_2_clean
+        print(phi_plus.shape, phi_minus.shape, phi_clean.shape)
+        
+        loss2 = phi_plus**2 + phi_minus**2 + 2*(jnp.eye(xs_target.shape[-1]) - s2_target) / std_t * (phi_plus + phi_minus - 2*phi_clean)
+        loss2 = jnp.sum(loss2, axis=axis)
+
+    print(loss1.shape, loss2.shape)
+    loss = c * loss1 + (1 - c) * loss2
+
+    if loss_mask is not None:
+        loss = jnp.where(loss_mask, 0.0, loss)
+
+    if weight_fn is not None:
+        weight = weight_fn(times)
+        for _ in range(xs_target.ndim - 1):
+            weight = weight[..., None]
+
+        loss = weight * loss
+
+    if rebalance_loss:
+        num_elements = jnp.sum(~loss_mask, axis=axis, keepdims=True)
+        loss = jnp.where(num_elements > 0, loss / num_elements, 0.0)
+
+    loss = jnp.mean(loss)
     return loss
 
 
@@ -151,10 +301,17 @@ def score_matching_loss(
     xs_target: Array,
     model_fn: Callable,
     *args,
+    mean_fn: Optional[Callable] = None,
+    std_fn: Optional[Callable] = None,
+    weight_fn: Optional[Callable] = None,
     loss_mask: Optional[Array] = None,
-    tikhonov: float = 0.0,
+    rebalance_loss: bool = False,
+    rng_key: Optional[PRNGKey] = None,
+    tikhonov: Optional[float] = None,
     jac_fn: Callable = jax.jacfwd,
-    
+    vmap_args: Optional[Sequence[int]] = None,
+    axis: int = -1,
+    **kwargs,
 ):
     """Score matching loss. Minimizing the Fisher divergence between the model and the target distribution, using partial integration trick.
 
@@ -173,62 +330,142 @@ def score_matching_loss(
     Returns:
         Array: Loss
     """
-    batch_dims = len(xs_target.shape[:-1])
-    jac_model_fn = jac_fn(model_fn, argnums=2)
-    for _ in range(batch_dims):
-        jac_model_fn = jax.vmap(jac_model_fn, in_axes=(None, 0, 0) + (None,)*len(args)) 
-    
-    score = model_fn(params, times, xs_target, *args)
-    jac_score = jac_model_fn(params, times, xs_target, *args)
 
-    
-    loss = 0.5*jnp.sum(score**2, axis=-1) +  jnp.trace(jac_score, axis1=-2, axis2=-1)
+    if mean_fn is not None and std_fn is not None:
+        assert (
+            rng_key is not None
+        ), "rng_key must be when mean_fn and std_fn are provided."
+        eps = jax.random.normal(rng_key, shape=xs_target.shape)
+        mean_t = mean_fn(times, xs_target)
+        std_t = std_fn(times, xs_target)
+        xs_t = mean_t + std_t * eps
+    else:
+        xs_t = xs_target
+
     if loss_mask is not None:
-        loss = jnp.mean(jnp.where(loss_mask, loss, 0.0))
-        
-    if tikhonov > 0.0:
-        diag_jac = jnp.diagonal(jac_score, axis1=-2, axis2=-1)
-        loss += tikhonov*jnp.sum(diag_jac**2, axis=-1)
-        
+        loss_mask = loss_mask.reshape(xs_target.shape)
+        xs_t = jnp.where(loss_mask, xs_target, xs_t)
+
+    _model_fn = partial(model_fn, **kwargs)
+    args_vmap = (0,) * len(args) if vmap_args is None else vmap_args
+    jac_model_fn = jax.vmap(
+        jac_fn(_model_fn, argnums=2), in_axes=(None, 0, 0) + args_vmap
+    )
+    score = _model_fn(params, times, xs_t, *args)
+    jac_score = jac_model_fn(params, times, xs_t, *args)
+
+    loss = 0.5 * jnp.sum(score**2, axis=axis) + jnp.trace(
+        jac_score, axis1=axis - 1, axis2=axis
+    )
+
+    if tikhonov:
+        diag_jac = jnp.diagonal(jac_score, axis1=axis - 1, axis2=axis)
+        loss += tikhonov * jnp.sum(diag_jac**2, axis=axis, keepdims=True)
+
+    if loss_mask is not None:
+        loss = jnp.where(loss_mask, loss, 0.0)
+
+    if weight_fn is not None:
+        weight = weight_fn(times)
+        for _ in range(loss.ndim - 1):
+            weight = weight[..., None]
+        loss = weight * loss
+
+    if rebalance_loss:
+        num_elements = jnp.sum(~loss_mask, axis=axis)
+        loss = jnp.where(num_elements > 0, loss / num_elements, 0.0)
+
     return jnp.mean(loss)
 
 
 def sliced_score_matching(
     params: PyTree,
-    key: PRNGKey,
     times: Array,
     xs_target: Array,
     model_fn: Callable,
     *args,
+    mean_fn: Optional[Callable] = None,
+    std_fn: Optional[Callable] = None,
+    weight_fn: Optional[Callable] = None,
     loss_mask: Optional[Array] = None,
+    rebalance_loss: bool = False,
+    rng_key: Optional[PRNGKey] = None,
     num_slices: int = 1,
     sliced_dist: str = "normal",
-    tikhonov: float = 0.0,
+    tikhonov: Optional[float] = None,
+    vmap_args: Optional[Sequence[int]] = None,
+    axis: int = -1,
+    **kwargs,
 ):
-    
-    def value_and_jvp(x, v):
-        value, jvp = jax.jvp(lambda x: model_fn(params, times, x, *args), (x,), (v,))
-        sliced_value = jnp.sum(value * v, -1)
-        sliced_jvp = jnp.sum(jvp * v, -1)
-        if tikhonov > 0.0:
-            reg = tikhonov*jnp.sum((jvp * v)**2, -1)
+    assert (
+        rng_key is not None
+    ), "rng_key must be provided for sliced score matching loss."
+
+    rng_key_sample, rng_key_slice = jax.random.split(rng_key)
+
+    if mean_fn is not None and std_fn is not None:
+        assert (
+            rng_key is not None
+        ), "rng_key must be when mean_fn and std_fn are provided."
+        eps = jax.random.normal(rng_key_sample, shape=xs_target.shape)
+        mean_t = mean_fn(times, xs_target)
+        std_t = std_fn(times, xs_target)
+        xs_t = mean_t + std_t * eps
+    else:
+        xs_t = xs_target
+
+    def value_and_jvp(t, x, v, *args):
+
+        value, jvp = jax.jvp(
+            lambda x: model_fn(params, t, x, *args, **kwargs), (x,), (v,)
+        )
+
+        sliced_value = jnp.sum(value * v, axis)
+        sliced_jvp = jnp.sum(jvp * v, axis)
+
+        if tikhonov is not None:
+            reg = tikhonov * jnp.sum((jvp * v) ** 2, axis)
         else:
             reg = jnp.zeros_like(sliced_value)
         return sliced_value, sliced_jvp, reg
 
     # Slice directions
     if sliced_dist == "normal":
-        v = jax.random.normal(key, shape=(num_slices, *xs_target.shape))
+        v = jax.random.normal(rng_key_slice, shape=(num_slices, *xs_t.shape))
     elif sliced_dist == "rademacher":
-        v = jax.random.rademacher(key, shape=(num_slices, *xs_target.shape))
+        v = jax.random.rademacher(rng_key_slice, shape=(num_slices, *xs_t.shape))
         v = v.astype(jnp.float32)
     elif sliced_dist == "ball":
-        v = jax.random.ball(key, xs_target.shape[-1],shape=(num_slices, *xs_target.shape[:-1]))
+        v = jax.random.ball(
+            rng_key_slice,
+            xs_t.shape[-1],
+            shape=(num_slices, *xs_t.shape[:-1]),
+        )
     else:
         raise ValueError("Invalid sliced_dist")    
-    
-    sliced_score, jac_trace, reg = jax.vmap(value_and_jvp, in_axes=(None,0))(xs_target, v)
+
+    args_vmap = (0,) * len(args) if vmap_args is None else vmap_args
+    _value_and_jvp = jax.vmap(value_and_jvp, in_axes=(0, 0, 0) + args_vmap)
+    sliced_score, jac_trace, reg = jax.vmap(
+        _value_and_jvp, in_axes=(None, None, 0) + (None,) * len(args)
+    )(times, xs_t, v, *args)
+
     loss = 0.5*sliced_score**2 + jac_trace + reg
+
+    # Average over slices
+    loss = jnp.mean(loss, axis=0)
+
+    if weight_fn is not None:
+        weight = weight_fn(times)
+        for _ in range(loss.ndim - 1):
+            weight = weight[..., None]
+        loss = weight * loss
+
     if loss_mask is not None:
         loss = jnp.mean(jnp.where(loss_mask, loss, 0.0))
+
+    if rebalance_loss:
+        num_elements = jnp.sum(~loss_mask, axis=axis)
+        loss = jnp.where(num_elements > 0, loss / num_elements, 0.0)
+
     return jnp.mean(loss)

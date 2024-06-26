@@ -70,13 +70,12 @@ class SliceState(NamedTuple):
 class SliceInfo(NamedTuple):
     num_evals: int
     proposal: SliceState
-    
-    
+
+
 def sample_random_direction(key: PRNGKey, position: Array):
     direction = jax.random.normal(key, shape=position.shape)
     direction = direction / jnp.linalg.norm(direction, axis=-1, keepdims=True)
     return direction
-
 
 
 def linear_slice_fn(position: Array, theta: Array):
@@ -116,9 +115,9 @@ def axis_slice_fn(position: Array, theta: Array):
     return axis_slice_fn
 
 
-def init(position: Array, log_density_fn, random_arg_slice: Array):
-    log_density = log_density_fn(position)
-    return SliceState(position, log_density, random_arg_slice)
+def init(position: Array, logdensity_fn, rng_key: Array):
+    log_density = logdensity_fn(position)
+    return SliceState(position, log_density, rng_key)
 
 
 def build_kernel(
@@ -159,10 +158,10 @@ def build_kernel(
 class slice:
     """ Implement a generalized slice sampler.
     """
-    
+
     init = staticmethod(init)
     build_kernel = staticmethod(build_kernel)
-    
+
     def __new__(  # type: ignore[misc]
         cls,
         logdensity_fn: Callable,
@@ -172,8 +171,7 @@ class slice:
         kernel = cls.build_kernel()
 
         def init_fn(position: Array, rng_key=None):
-            del rng_key
-            return cls.init(position, logdensity_fn,random_arg_slice=rng_key)
+            return cls.init(position, logdensity_fn, rng_key=rng_key)
 
         def step_fn(rng_key: PRNGKey, state):
             return kernel(rng_key, state, logdensity_fn, max_steps,step_size)
@@ -257,4 +255,3 @@ def accept_reject_slice(
     )
 
     return x_new, h,evals
-

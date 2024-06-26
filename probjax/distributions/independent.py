@@ -109,10 +109,7 @@ class Independent(Distribution):
                     for b, v in zip(self.base_dist, split_value)
                 ], axis=split_dim
             )
-            print(jax.tree_util.tree_map(lambda x: x.shape, [
-                    jnp.expand_dims(b.log_prob(v), axis=split_dim)
-                    for b, v in zip(self.base_dist, split_value)
-                ]))
+         
         # Sum the log probabilities along the event dimensions
         if self.reinterpreted_batch_ndims > 0:
             sum_dim = tuple(range(-self.reinterpreted_batch_ndims, 0))
@@ -216,7 +213,6 @@ def determine_shapes(
     else:
         event_shape = list(other_event_shapes[0])
     
-    print(batch_shape, event_shape)
     
     # Reinterpreted batch dimensions
     if reinterpreted_batch_ndims > 0:

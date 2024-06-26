@@ -16,13 +16,25 @@ from jax.interpreters.partial_eval import partial_eval_jaxpr_nounits
 from jax._src import linear_util as lu
 
 
+class API(type):
+    """API class for algorithms"""
+    
+
+    def __str__(self):
+        return self.__doc__
+
+    def __repr__(self):
+        text = self.__doc__
+        return text
+
+
 @lu.transformation
 def ravel_first_arg_(unravel, y_flat, *args):
     y = unravel(y_flat)
     ans = yield (y,) + args, {}
     ans_flat, _ = ravel_pytree(ans)
     yield ans_flat
-    
+
 @lu.transformation
 def ravel_arg_(unravel, index, *args):
     flat_arg_i = args[index]
@@ -47,9 +59,6 @@ def flatten_args_(in_tree, *flat_args):
     ans = yield (args,), {}
     ans_flat = jax.tree_util.tree_flatten(ans)
     yield ans_flat
-    
-    
-
 
 
 def precompute(func: Callable, arg_list: list, known_argnums: list) -> Callable:
@@ -121,7 +130,6 @@ def ravel_arg_fun(fun: Callable, unravel, index: int) -> Callable:
 
 def ravel_first_arg_fun(fun: Callable, unravel) -> Callable:
     return ravel_first_arg_(lu.wrap_init(fun), unravel).call_wrapped
-
 
 
 def nested_checkpoint_scan(
