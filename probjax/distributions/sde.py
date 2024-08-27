@@ -583,7 +583,7 @@ class subVPSDE(VPSDE):
             * (1 - jnp.exp(2 * (beta_min * t + 0.5 * (beta_max - beta_min) * t**2)))
         )
 
-        super().__init__(drift_matrix, diffusion_matrix, p0)
+        super().__init__(p0, drift_matrix, diffusion_matrix)
 
     def variance(self, ts: Array, x0=None, **kwargs) -> Array:
         if x0 is None:
@@ -599,4 +599,3 @@ class subVPSDE(VPSDE):
         phi = phi[..., None]
         var = 1 + phi * (var0 - 2.0) + phi2
         return var
-
