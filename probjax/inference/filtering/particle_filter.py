@@ -27,8 +27,8 @@ class ParticleFilterInfo(NamedTuple):
 
 def init(
     particles: ArrayLike,
-    log_weights: Optional[ArrayLike] = None,
     t: Optional[ArrayLike] = None,
+    log_weights: Optional[ArrayLike] = None,
 ) -> ParticleFilterState:
 
     # Initialize state for a particle filter
@@ -125,9 +125,9 @@ def build_kernel(
 
         new_particles, new_log_weights, ancestors = jax.lax.cond(do_resample, resample, no_resample, rng_key_resample, log_weights, new_particles)
 
-        new_state = ParticleFilterState(new_particles, new_log_weights)
+        new_state = ParticleFilterState(new_particles, new_log_weights, t)
         info = ParticleFilterInfo(
-            ancestors, log_likelihood, effective_samples_size, t, is_observed
+            ancestors, log_likelihood, effective_samples_size,  is_observed
         )
 
         return new_state, info
