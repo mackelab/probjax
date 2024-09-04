@@ -100,6 +100,7 @@ def denoising_score_matching_loss(
     rng_key: Optional[PRNGKey] = None,
     rebalance_loss: bool = False,
     control_variate: bool = True,
+    control_variate_cutoff: Optional[float] = None,
     axis: int = -1,
     **kwargs,
 ) -> Array:
@@ -128,6 +129,7 @@ def denoising_score_matching_loss(
     eps = jax.random.normal(rng_key, shape=xs_target.shape)
     mean_t = mean_fn(times, xs_target)
     std_t = std_fn(times, xs_target)
+
     xs_t = mean_t + std_t * eps
 
     if loss_mask is not None:
@@ -152,6 +154,9 @@ def denoising_score_matching_loss(
        
         cv = jnp.mean(-term1 - term2 + term3, axis=axis)
 
+        if control_variate_cutoff is not None:
+            cv = jnp.where(std_t < control_variate_cutoff, cv, 0.0)
+        
         loss = loss + cv
 
     if loss_mask is not None:
