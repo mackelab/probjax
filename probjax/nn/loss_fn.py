@@ -101,6 +101,7 @@ def denoising_score_matching_loss(
     rebalance_loss: bool = False,
     control_variate: bool = True,
     control_variate_cutoff: Optional[float] = None,
+    control_variate_optimal_scaling: bool = False,
     axis: int = -1,
     **kwargs,
 ) -> Array:
@@ -117,7 +118,7 @@ def denoising_score_matching_loss(
         std_fn (Callable): Std function of the SDE.
         weight_fn (Callable): Weight function for the loss.
         axis (int, optional): Axis to sum over. Defaults to -2.
-        
+
 
     Returns:
         Array: Loss
@@ -140,27 +141,34 @@ def denoising_score_matching_loss(
     score_pred = score_pred.reshape(xs_t.shape)
     score_target = -eps / std_t
 
-
     loss = jnp.sum((score_pred - score_target) ** 2, axis=axis)
 
     if control_variate:
         # Adds a control variate to the loss, which is efficient for small std_t
         s = model_fn(params, times, mean_t, *args, **kwargs)
         s = s.reshape(xs_target.shape)
-       
+
         term1 = 2 / std_t * jnp.sum(eps * s, axis=axis, keepdims=True)
         term2 = jnp.sum(eps**2, axis=axis, keepdims=True) / std_t**2
         term3 = xs_target.shape[axis] / std_t**2
-       
-        cv = jnp.mean(-term1 - term2 + term3, axis=axis)
+
+        cv = jnp.mean(term3 - term1 - term2, axis=axis)
 
         if control_variate_cutoff is not None:
             cv = jnp.where(std_t < control_variate_cutoff, cv, 0.0)
-        
+
+        # if control_variate_optimal_scaling:
+        #     cv_var = jnp.var(cv)
+        #     cv_loss_covar = jnp.mean((cv - jnp.mean(cv)) * (loss - jnp.mean(loss)))
+
+        #     beta = cv_loss_covar / cv_var
+        #     # jax.debug.print("{beta}", beta=beta)
+        #     cv = -beta * cv
+
         loss = loss + cv
 
     if loss_mask is not None:
-        loss = jnp.where(loss_mask, 0.0,loss)
+        loss = jnp.where(loss_mask, 0.0, loss)
 
     if weight_fn is not None:
         weight = weight_fn(times)
@@ -217,17 +225,16 @@ def high_order_denosing_score_matching_loss(
     score_target = -eps / std_t
 
     loss1 = jnp.sum((score_pred - score_target) ** 2, axis=axis, keepdims=True)
-    
-    
+
     if control_variate1:
         # Adds a control variate to the loss, which is efficient for small std_t
-        s,_ = model_fn(params, times, mean_t, *args, **kwargs)
+        s, _ = model_fn(params, times, mean_t, *args, **kwargs)
         s = s.reshape(xs_target.shape)
-       
+
         term1 = 2 / std_t * jnp.sum(eps * s, axis=axis, keepdims=True)
         term2 = jnp.sum(eps**2, axis=axis, keepdims=True) / std_t**2
         term3 = xs_target.shape[axis] / std_t**2
-       
+
         cv = jnp.mean(-term1 - term2 + term3, axis=axis, keepdims=True)
         loss1 = loss1 + cv
 
@@ -260,7 +267,7 @@ def high_order_denosing_score_matching_loss(
         s2_plus = s2_plus.reshape(xs_target.shape + (xs_target.shape[-1],))
         s2_minus = s2_minus.reshape(xs_target.shape + (xs_target.shape[-1],))
         s2_clean = s2_clean.reshape(xs_target.shape + (xs_target.shape[-1],))
-        
+
         s2_target = jnp.einsum("...i,...j->...ij", eps, eps)
         s1_2_plus = jnp.einsum("...i,...j->...ij", s_plus, s_plus)
         s1_2_minus = jnp.einsum("...i,...j->...ij", s_minus, s_minus)
@@ -270,13 +277,19 @@ def high_order_denosing_score_matching_loss(
             s1_2_minus = jax.lax.stop_gradient(s1_2_minus)
             s1_2_clean = jax.lax.stop_gradient(s1_2_clean)
 
-        
         phi_plus = s2_plus + s1_2_plus
         phi_minus = s2_minus + s1_2_minus
         phi_clean = s2_clean + s1_2_clean
         print(phi_plus.shape, phi_minus.shape, phi_clean.shape)
-        
-        loss2 = phi_plus**2 + phi_minus**2 + 2*(jnp.eye(xs_target.shape[-1]) - s2_target) / std_t * (phi_plus + phi_minus - 2*phi_clean)
+
+        loss2 = (
+            phi_plus**2
+            + phi_minus**2
+            + 2
+            * (jnp.eye(xs_target.shape[-1]) - s2_target)
+            / std_t
+            * (phi_plus + phi_minus - 2 * phi_clean)
+        )
         loss2 = jnp.sum(loss2, axis=axis)
 
     print(loss1.shape, loss2.shape)
@@ -447,7 +460,7 @@ def sliced_score_matching(
             shape=(num_slices, *xs_t.shape[:-1]),
         )
     else:
-        raise ValueError("Invalid sliced_dist")    
+        raise ValueError("Invalid sliced_dist")
 
     args_vmap = (0,) * len(args) if vmap_args is None else vmap_args
     _value_and_jvp = jax.vmap(value_and_jvp, in_axes=(0, 0, 0) + args_vmap)
@@ -455,7 +468,7 @@ def sliced_score_matching(
         _value_and_jvp, in_axes=(None, None, 0) + (None,) * len(args)
     )(times, xs_t, v, *args)
 
-    loss = 0.5*sliced_score**2 + jac_trace + reg
+    loss = 0.5 * sliced_score**2 + jac_trace + reg
 
     # Average over slices
     loss = jnp.mean(loss, axis=0)
