@@ -1,7 +1,7 @@
 from typing import Callable, Sequence
+
 import jax
 import jax.numpy as jnp
-
 from jax.typing import ArrayLike
 
 
@@ -107,10 +107,9 @@ def pdeint(
     f: Callable,
     ts: ArrayLike,
     x0: ArrayLike,
-    spatial_grid: Sequence[ArrayLike],
     boundary_conditions: Callable,
     *args,
-    **kwargs
+    **kwargs,
 ):
     """
     Solves a PDE using the Method of Lines.
@@ -124,15 +123,20 @@ def pdeint(
         *args: additional arguments to pass to the PDE function
         **kwargs: additional keyword arguments to pass to the PDE function
     """
-    
+
     x0_flat, unflatten = jax.flatten_util.ravel_pytree(x0)
     x0_flat = jnp.array(x0_flat)
-    
-    def ode_fn(x, t, *args):
-        x = unflatten(x)
+
+    def ode_fn(x_flat, t, *args):
+        x = unflatten(x_flat)
         x = boundary_conditions(x)
-        dxdt = f(x, t, *args)
+        dxdt = f(x, t, *args, **kwargs)
         return jax.flatten_util.ravel_pytree(dxdt)[0]
-    
-    
-    
+
+    def solve_ode(x0_flat, t):
+        result = odeint(ode_fn, x0_flat, t, *args)
+        return result
+
+    odeint = jax.jit(jax.experimental.ode.odeint)
+    result = solve_ode(x0_flat, ts)
+    return unflatten(result)

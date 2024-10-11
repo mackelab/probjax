@@ -1,36 +1,35 @@
 from functools import partial
+from typing import Callable, NamedTuple
+
 import jax
 import jax.numpy as jnp
-from jax import random as jrandom
+from blackjax.base import SamplingAlgorithm
+from jax import Array
 from jax.random import PRNGKey
 
-from jax import Array
-from blackjax.base import SamplingAlgorithm
-
-from typing import NamedTuple, Callable
-
 from probjax.inference.kernels.base import MCMCKernel
+
 
 class SliceParams(NamedTuple):
     pass
 
+
 class SliceKernel(MCMCKernel):
-    
-    params : SliceParams
-    
+    params: SliceParams
+
     def __init__(
         self,
         log_density_fn: Callable,
         step_size: float = 0.5,
         max_steps: int = 100,
-        slice_fn = "linear",
-        slice_param_fn = None,
-        slice_fn_kwargs = {},
+        slice_fn="linear",
+        slice_param_fn=None,
+        slice_fn_kwargs={},
     ) -> None:
         self.log_density_fn = log_density_fn
         self.step_size = step_size
         self.max_steps = max_steps
-        
+
         if slice_fn == "linear":
             slice_fn = linear_slice_fn
             slice_param_fn = sample_random_direction
@@ -41,12 +40,16 @@ class SliceKernel(MCMCKernel):
             slice_fn = axis_slice_fn
             slice_param_fn = sample_random_index
         elif slice_fn == "none":
-            slice_fn = lambda pos,theta: lambda t: pos + t
+            slice_fn = lambda pos, theta: lambda t: pos + t
             slice_param_fn = lambda key, pos: None
         else:
-            assert isinstance(slice_fn, Callable), "Default not supported, please provide a callabel"
-            assert isinstance(slice_param_fn, Callable), "For non defaults a slice param function must be provided"
-            
+            assert isinstance(
+                slice_fn, Callable
+            ), "Default not supported, please provide a callabel"
+            assert isinstance(
+                slice_param_fn, Callable
+            ), "For non defaults a slice param function must be provided"
+
         self.init_fn = slice.init
         self.update_fn = slice.build_kernel(slice_fn, slice_param_fn)
 
@@ -58,7 +61,9 @@ class SliceKernel(MCMCKernel):
         return self.init_fn(position, self.log_density_fn, rng_key)
 
     def __call__(self, rng_key: PRNGKey, state):
-        return self.update_fn(rng_key, state, self.log_density_fn, self.max_steps, self.step_size)
+        return self.update_fn(
+            rng_key, state, self.log_density_fn, self.max_steps, self.step_size
+        )
 
 
 class SliceState(NamedTuple):
@@ -79,39 +84,42 @@ def sample_random_direction(key: PRNGKey, position: Array):
 
 
 def linear_slice_fn(position: Array, theta: Array):
-
     def linear_slice(t: float):
         return position + t * theta
 
     return linear_slice
 
+
 def sample_random_polynomial(key: PRNGKey, position: Array, degree: int = 3):
-    a = jax.random.normal(key, (degree,)+position.shape)
+    a = jax.random.normal(key, (degree,) + position.shape)
     a = a / jnp.linalg.norm(a, axis=-1, keepdims=True)
     return a
 
+
 def polynomial_slice_fn(position: Array, theta: Array, degree: int = 3):
-    degrees = jnp.arange(1,degree+ 1)
+    degrees = jnp.arange(1, degree + 1)
     # Factorial of degrees
     factorial = jnp.cumprod(degrees)
     # Factors
-    factors = 1. / factorial
-    
-    def polynomial_slice_fn(t:float):
+    factors = 1.0 / factorial
+
+    def polynomial_slice_fn(t: float):
         t_powers = jnp.power(t, degrees) * factors
         return position + jnp.sum(theta * t_powers[:, None], axis=0)
-    
+
     return polynomial_slice_fn
 
 
 def sample_random_index(key: PRNGKey, position: Array):
     idx = jax.random.randint(key, (), minval=0, maxval=position.shape[0])
-    return idx 
+    return idx
+
 
 def axis_slice_fn(position: Array, theta: Array):
     def axis_slice_fn(t: float):
         new_position = position.at[theta].add(t)
         return new_position
+
     return axis_slice_fn
 
 
@@ -124,14 +132,13 @@ def build_kernel(
     slice_fn_builder: Callable = linear_slice_fn,
     slice_fn_arg: Callable = sample_random_direction,
 ):
-
     def kernel(
         rng_key: PRNGKey,
         state: SliceState,
         log_density_fn: Callable,
         max_steps: int = 100,
         step_size: float = 0.5,
-        **kwargs
+        **kwargs,
     ):
         rng_key, key_slice, key_rejections = jax.random.split(rng_key, 3)
         direction = slice_fn_arg(key_slice, state.position, **kwargs)
@@ -145,19 +152,19 @@ def build_kernel(
             log_density_fn, slice_fn, y, step_size, max_steps
         )
 
-        x_new, log_density,evals_reject = accept_reject_slice(
+        x_new, log_density, evals_reject = accept_reject_slice(
             log_density_fn, slice_fn, key_rejections, t_lower, t_upper, y, max_steps
         )
 
-        new_state = SliceState(x_new,log_density, rng_key)
+        new_state = SliceState(x_new, log_density, rng_key)
         info = SliceInfo(evals + evals_reject, state)
         return new_state, info
 
     return kernel
 
+
 class slice:
-    """ Implement a generalized slice sampler.
-    """
+    """Implement a generalized slice sampler."""
 
     init = staticmethod(init)
     build_kernel = staticmethod(build_kernel)
@@ -174,7 +181,7 @@ class slice:
             return cls.init(position, logdensity_fn, rng_key=rng_key)
 
         def step_fn(rng_key: PRNGKey, state):
-            return kernel(rng_key, state, logdensity_fn, max_steps,step_size)
+            return kernel(rng_key, state, logdensity_fn, max_steps, step_size)
 
         return SamplingAlgorithm(init_fn, step_fn)
 
@@ -222,11 +229,11 @@ def accept_reject_slice(
     max_steps: int,
 ):
     def cond_fn_reject(carry):
-        i, _, _, _, _,_, mask_reject = carry
+        i, _, _, _, _, _, mask_reject = carry
         return jnp.any(mask_reject) & (i < max_steps)
 
     def body_fn_reject(carry):
-        i, key, t_lower, t_upper, _,h, mask_reject = carry
+        i, key, t_lower, t_upper, _, h, mask_reject = carry
 
         key, key_reject = jax.random.split(key)
         t_new = jax.random.uniform(key_reject, shape=(), minval=t_lower, maxval=t_upper)
@@ -238,7 +245,7 @@ def accept_reject_slice(
         new_t_lower = jax.lax.cond(t_new < 0, lambda: t_new, lambda: t_lower)
         new_t_upper = jax.lax.cond(t_new > 0, lambda: t_new, lambda: t_upper)
 
-        return (i + 1, key, new_t_lower, new_t_upper, x_new,h, mask_reject)
+        return (i + 1, key, new_t_lower, new_t_upper, x_new, h, mask_reject)
 
     key, key_reject = jax.random.split(key)
     t_new = jax.random.uniform(key_reject, shape=(), minval=t_lower, maxval=t_upper)
@@ -251,7 +258,7 @@ def accept_reject_slice(
     evals, _, _, _, x_new, h, _ = jax.lax.while_loop(
         cond_fn_reject,
         body_fn_reject,
-        (1, key, new_t_lower, new_t_upper, x_new,h, mask_reject),
+        (1, key, new_t_lower, new_t_upper, x_new, h, mask_reject),
     )
 
-    return x_new, h,evals
+    return x_new, h, evals

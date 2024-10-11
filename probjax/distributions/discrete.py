@@ -1,25 +1,20 @@
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax import random
-from jax import lax
-from jax.scipy.special import erfinv, erf
-
+from jax.scipy.stats import bernoulli, binom, geom, poisson
 from jaxtyping import Array
 
-from .distribution import Distribution
-from .exponential_family import ExponentialFamily
 from .constraints import (
     finit_set,
-    simplex,
-    real,
-    unit_interval,
-    unit_integer_interval,
     positive_integer,
+    real,
+    simplex,
     strict_positive_integer,
+    unit_integer_interval,
+    unit_interval,
 )
-
-from jax.scipy.stats import bernoulli, binom, poisson, geom, multinomial
+from .distribution import Distribution
+from .exponential_family import ExponentialFamily
 
 __all__ = [
     "Empirical",
@@ -312,7 +307,6 @@ class Empirical(Distribution):
         else:
             # assert probs.shape == values.shape, "probs shape mismatch"
             self.probs = jnp.atleast_1d(probs)
-
 
         super().__init__(batch_shape=batch_shape, event_shape=event_shape)
 

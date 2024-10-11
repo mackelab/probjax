@@ -1,10 +1,7 @@
-import pytest
-
 import jax
 import jax.numpy as jnp
+import pytest
 from jax import random
-
-import haiku as hk
 
 key = random.PRNGKey(0)
 
@@ -68,12 +65,12 @@ def invertible_function_1d(request):
 
 # Flows fixtures ---------------------------------------------------------
 from config_flows import (
-    target_samples,
-    base_dist,
     affine_coupling_transform,
+    base_dist,
+    continous_transform,
     spline_coupling_transform,
     spline_gaussianization_transform,
-    continous_transform,
+    target_samples,
 )
 
 

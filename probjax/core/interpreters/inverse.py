@@ -1,20 +1,14 @@
-import jax
-
-from jax import lax
-
-from jax.core import Primitive, Jaxpr, JaxprEqn
 import functools
 
-from typing import Any, Callable, Optional
-import numpy as np
+import jax
 import jax.numpy as jnp
+import numpy as np
 from jax._src.util import safe_map
-from jax.custom_derivatives import custom_jvp_call_p
+from jax.core import Primitive
 from jax.experimental.pjit import pjit_p
 
-from probjax.core.jaxpr_propagation.utils import ProcessingRule
-from probjax.core.jaxpr_propagation.propagate import propagate
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
+from probjax.core.jaxpr_propagation.utils import ProcessingRule
 
 
 def integer_pow_inverse(x, **params):
@@ -428,8 +422,7 @@ class InverseProcessingRule(ProcessingRule):
                 eqn, known_invars, known_outvars
             )
         elif (
-            not all(is_known_invars)
-            and eqn.primitive is jax.experimental.pjit.pjit_p
+            not all(is_known_invars) and eqn.primitive is jax.experimental.pjit.pjit_p
             #      or eqn.primitive is custom_jvp_call_p
         ):
             return None
@@ -650,13 +643,11 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
                 if not isinstance(v, jax.core.Literal):
                     self.log_dets[v] = self.log_dets[v_sub]
 
-        log_det_previous = sum(
-            [
-                self.log_dets.get(v, 0.0)
-                for v in eqn.outvars
-                if not isinstance(v, jax.core.Literal)
-            ]
-        )
+        log_det_previous = sum([
+            self.log_dets.get(v, 0.0)
+            for v in eqn.outvars
+            if not isinstance(v, jax.core.Literal)
+        ])
 
         for v in eqn.invars:
             if not isinstance(v, jax.core.Literal):

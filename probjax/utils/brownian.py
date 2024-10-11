@@ -1,13 +1,10 @@
+
 import jax
 import jax.numpy as jnp
-from jax import lax
-from jax import core
 import jax.random as jrandom
-
-from jaxtyping import Array, Float, PyTree
+from jax import lax
 from jax.random import PRNGKey
-
-from functools import partial
+from jaxtyping import Array, Float
 
 # Iterated integrals
 

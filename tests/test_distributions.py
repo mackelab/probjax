@@ -1,20 +1,16 @@
-import pytest
-import jax
-import jax.numpy as jnp
-
 import itertools
 
-from probjax.distributions import continuous
-from probjax.distributions import discrete
+import jax
+import jax.numpy as jnp
+import pytest
+
+from probjax.distributions import Distribution, continuous, discrete
+from probjax.distributions.constraint_registry import transform_to
+from probjax.distributions.constraints import Constraint
+from probjax.distributions.divergences.kl import _kl_generic, kl_divergence
 from probjax.distributions.independent import Independent
 from probjax.distributions.mixture import Mixture
 from probjax.distributions.transformed_distribution import TransformedDistribution
-from probjax.distributions import Distribution
-from probjax.distributions.constraints import Constraint
-from probjax.distributions.divergences.kl import kl_divergence, _kl_generic
-
-from probjax.distributions.constraint_registry import transform_to
-
 
 CONTINOUS_DIST = [getattr(continuous, name) for name in continuous.__all__]
 DISCRETE_DIST = [getattr(discrete, name) for name in discrete.__all__]

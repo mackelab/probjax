@@ -1,21 +1,18 @@
-import jax
-from jax.core import Jaxpr, JaxprEqn, Literal, Var, Atom
-from jax.experimental.pjit import pjit_p
-from jax.custom_derivatives import custom_jvp_call_p
+import math
+from typing import Any, Callable, Optional, Sequence, Tuple
+
 from jax._src.util import safe_map as map
-from typing import Callable, Sequence, Tuple, Sequence, Optional, Any
+from jax.core import Jaxpr, JaxprEqn, Var
+from jax.experimental.pjit import pjit_p
 from jaxtyping import Array
 
-import math
-
-from probjax.utils.containers import PriorityQueue
 from probjax.core.jaxpr_propagation.utils import (
     Environment,
-    construct_jaxpr_graph,
     ForwardProcessingRule,
     ProcessingRule,
+    construct_jaxpr_graph,
 )
-
+from probjax.utils.containers import PriorityQueue
 
 # Jaxpr are usually processed in a topological order. But we need to process it in a custom order.
 # Hence this gives use a general propagation algorithm!

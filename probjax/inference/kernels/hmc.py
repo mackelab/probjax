@@ -1,20 +1,14 @@
-from functools import partial
-from chex import PRNGKey
-from jaxtyping import Array, PyTree
-
-
-import jax
-from typing import Any, Callable, NamedTuple, Optional, Tuple
-
-
-import jax.numpy as jnp
-from jax.flatten_util import ravel_pytree
-
-from probjax.inference.kernels.base import MCMCKernel
+from typing import Callable, NamedTuple, Optional, Tuple
 
 import blackjax
-from blackjax.mcmc.hmc import HMCState, HMCInfo
+import jax
+import jax.numpy as jnp
+from blackjax.mcmc.hmc import HMCInfo, HMCState
+from chex import PRNGKey
+from jax.flatten_util import ravel_pytree
+from jaxtyping import Array, PyTree
 
+from probjax.inference.kernels.base import MCMCKernel
 
 
 class HMCParams(NamedTuple):
@@ -23,7 +17,6 @@ class HMCParams(NamedTuple):
 
 
 class HMCKernel(MCMCKernel):
-
     params: HMCParams
 
     def __init__(
@@ -71,9 +64,8 @@ class HMCKernel(MCMCKernel):
         position: Array,
         num_steps: int = 100,
         target_acceptance_rate: float = 0.8,
-        method:str="window",
+        method: str = "window",
     ):
-
         if method == "window":
             adaption_alg = blackjax.window_adaptation(
                 blackjax.hmc,
@@ -94,7 +86,9 @@ class HMCKernel(MCMCKernel):
         else:
             raise ValueError(f"Adaption method {method} not supported")
 
-        results, info = jax.jit(adaption_alg.run, static_argnums=(2,))(key, position, num_steps)
+        results, info = jax.jit(adaption_alg.run, static_argnums=(2,))(
+            key, position, num_steps
+        )
         self.params = HMCParams(
             step_size=results.parameters["step_size"],
             inverse_mass_matrix=results.parameters["inverse_mass_matrix"],
@@ -118,9 +112,7 @@ class HMCKernel(MCMCKernel):
         return new_state, info
 
 
-
 class NUTSKernel(HMCKernel):
-
     def __init__(
         self,
         logdensity_fn: Callable,
@@ -150,7 +142,7 @@ class NUTSKernel(HMCKernel):
             key,
             state,
             self.logdensity_fn,
-            #max_treedepth=self.max_treedepth,
+            # max_treedepth=self.max_treedepth,
             *self.params,
         )
         return new_state, info

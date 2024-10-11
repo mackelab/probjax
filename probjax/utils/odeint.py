@@ -1,22 +1,17 @@
-import jax
-import jax.numpy as jnp
-import jax.random as jrandom
-
-from jax import lax
-from jax import core
-from jax.tree_util import tree_leaves
-from jax.util import safe_map as map
 from functools import partial
-from jaxtyping import Array, Float, PyTree, Int
 from typing import Callable, Optional
 
+import jax
+import jax.numpy as jnp
+from jax import lax
+from jax.util import safe_map as map
+from jaxtyping import Array, Float, PyTree
 
 from probjax.core import custom_inverse
 from probjax.utils.interpolation import linear_interpolation
-from probjax.utils.solver import root
-from probjax.utils.linalg import is_triangular_matrix
 from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
-
+from probjax.utils.linalg import is_triangular_matrix
+from probjax.utils.solver import root
 
 METHOD_STEP_FN = {}
 METHOD_INFO = {}
@@ -460,9 +455,12 @@ register_runge_kutta_method(
 
 # Bogacki-Shampine method, RK4(3) (explicit) (adaptive)
 c = jnp.array([0, 1 / 2, 3 / 4, 1])
-A = jnp.array(
-    [[0, 0, 0, 0], [1 / 2, 0, 0, 0], [0, 3 / 4, 0, 0], [2 / 9, 1 / 3, 4 / 9, 0]]
-)
+A = jnp.array([
+    [0, 0, 0, 0],
+    [1 / 2, 0, 0, 0],
+    [0, 3 / 4, 0, 0],
+    [2 / 9, 1 / 3, 4 / 9, 0],
+])
 b_sol = jnp.array([2 / 9, 1 / 3, 4 / 9, 0])
 b_error = jnp.array([7 / 24, 1 / 4, 1 / 3, 1 / 8])
 register_runge_kutta_method(
@@ -478,14 +476,12 @@ register_runge_kutta_method("3/8", c, A, b_sol, b_error, info="3/8 rule")
 
 # Ralston's method of order 4
 c = jnp.array([0.0, 0.4, 0.45573725, 1.0])
-A = jnp.array(
-    [
-        [0, 0, 0, 0],
-        [0.4, 0, 0, 0],
-        [0.29697761, 0.15875964, 0, 0],
-        [0.21810040, -3.05096516, 3.83286476, 0],
-    ]
-)
+A = jnp.array([
+    [0, 0, 0, 0],
+    [0.4, 0, 0, 0],
+    [0.29697761, 0.15875964, 0, 0],
+    [0.21810040, -3.05096516, 3.83286476, 0],
+])
 b_sol = jnp.array([0.17476028, -0.55148066, 1.20553560, 0.17118478])
 b_error = None
 register_runge_kutta_method(
@@ -496,16 +492,14 @@ register_runge_kutta_method(
 
 # Runge-Kutta method of order 5
 c = jnp.array([0, 1 / 4, 1 / 4, 1 / 2, 3 / 4, 1])
-A = jnp.array(
-    [
-        [0, 0, 0, 0, 0, 0],
-        [1 / 4, 0, 0, 0, 0, 0],
-        [1 / 8, 1 / 8, 0, 0, 0, 0],
-        [0, 0, 1 / 2, 0, 0, 0],
-        [3 / 16, -3 / 8, 3 / 8, 9 / 16, 0, 0],
-        [-3 / 7, 8 / 7, 6 / 7, -12 / 7, 8 / 7, 0],
-    ]
-)
+A = jnp.array([
+    [0, 0, 0, 0, 0, 0],
+    [1 / 4, 0, 0, 0, 0, 0],
+    [1 / 8, 1 / 8, 0, 0, 0, 0],
+    [0, 0, 1 / 2, 0, 0, 0],
+    [3 / 16, -3 / 8, 3 / 8, 9 / 16, 0, 0],
+    [-3 / 7, 8 / 7, 6 / 7, -12 / 7, 8 / 7, 0],
+])
 b_sol = jnp.array([7 / 90, 0, 32 / 90, 12 / 90, 32 / 90, 7 / 90])
 b_error = None
 register_runge_kutta_method(
@@ -514,32 +508,28 @@ register_runge_kutta_method(
 
 # Fehlberg's RK5(4) method (explicit) (adaptive)
 c = jnp.array([0, 1 / 4, 3 / 8, 12 / 13, 1, 1 / 2])
-A = jnp.array(
-    [
-        [0, 0, 0, 0, 0, 0],
-        [1 / 4, 0, 0, 0, 0, 0],
-        [3 / 32, 9 / 32, 0, 0, 0, 0],
-        [1932 / 2197, -7200 / 2197, 7296 / 2197, 0, 0, 0],
-        [439 / 216, -8, 3680 / 513, -845 / 4104, 0, 0],
-        [-8 / 27, 2, -3544 / 2565, 1859 / 4104, -11 / 40, 0],
-    ]
-)
+A = jnp.array([
+    [0, 0, 0, 0, 0, 0],
+    [1 / 4, 0, 0, 0, 0, 0],
+    [3 / 32, 9 / 32, 0, 0, 0, 0],
+    [1932 / 2197, -7200 / 2197, 7296 / 2197, 0, 0, 0],
+    [439 / 216, -8, 3680 / 513, -845 / 4104, 0, 0],
+    [-8 / 27, 2, -3544 / 2565, 1859 / 4104, -11 / 40, 0],
+])
 b_sol = jnp.array([16 / 135, 0, 6656 / 12825, 28561 / 56430, -9 / 50, 2 / 55])
 b_error = jnp.array([25 / 216, 0, 1408 / 2565, 2197 / 4104, -1 / 5, 0])
 register_runge_kutta_method("rk5(4)", c, A, b_sol, b_error, info="RK5(4)")
 
 # Cash-Karp method (explicit) (adaptive)
 c = jnp.array([0, 1 / 5, 3 / 10, 3 / 5, 1, 7 / 8])
-A = jnp.array(
-    [
-        [0, 0, 0, 0, 0, 0],
-        [1 / 5, 0, 0, 0, 0, 0],
-        [3 / 40, 9 / 40, 0, 0, 0, 0],
-        [3 / 10, -9 / 10, 6 / 5, 0, 0, 0],
-        [-11 / 54, 5 / 2, -70 / 27, 35 / 27, 0, 0],
-        [1631 / 55296, 175 / 512, 575 / 13824, 44275 / 110592, 253 / 4096, 0],
-    ]
-)
+A = jnp.array([
+    [0, 0, 0, 0, 0, 0],
+    [1 / 5, 0, 0, 0, 0, 0],
+    [3 / 40, 9 / 40, 0, 0, 0, 0],
+    [3 / 10, -9 / 10, 6 / 5, 0, 0, 0],
+    [-11 / 54, 5 / 2, -70 / 27, 35 / 27, 0, 0],
+    [1631 / 55296, 175 / 512, 575 / 13824, 44275 / 110592, 253 / 4096, 0],
+])
 b_sol = jnp.array([37 / 378, 0, 250 / 621, 125 / 594, 0, 512 / 1771])
 b_error = jnp.array([2825 / 27648, 0, 18575 / 48384, 13525 / 55296, 277 / 14336, 1 / 4])
 register_runge_kutta_method("cash-karp", c, A, b_sol, b_error, info="Cash-Karp method")
@@ -547,17 +537,15 @@ register_runge_kutta_method("cash-karp", c, A, b_sol, b_error, info="Cash-Karp m
 # 6th order
 # Runge-Kutta method of order 6
 c = jnp.array([0, 1 / 6, 1 / 3, 1 / 2, 2 / 3, 5 / 6, 1])
-A = jnp.array(
-    [
-        [0, 0, 0, 0, 0, 0, 0],
-        [1 / 6, 0, 0, 0, 0, 0, 0],
-        [1 / 12, 1 / 12, 0, 0, 0, 0, 0],
-        [1 / 8, 0, 3 / 8, 0, 0, 0, 0],
-        [91 / 500, -27 / 100, 78 / 125, 8 / 125, 0, 0, 0],
-        [-11 / 20, 27 / 20, 12 / 5, -36 / 5, 5 / 2, 0, 0],
-        [1 / 12, 0, 27 / 32, -4 / 3, 125 / 96, 5 / 48, 0],
-    ]
-)
+A = jnp.array([
+    [0, 0, 0, 0, 0, 0, 0],
+    [1 / 6, 0, 0, 0, 0, 0, 0],
+    [1 / 12, 1 / 12, 0, 0, 0, 0, 0],
+    [1 / 8, 0, 3 / 8, 0, 0, 0, 0],
+    [91 / 500, -27 / 100, 78 / 125, 8 / 125, 0, 0, 0],
+    [-11 / 20, 27 / 20, 12 / 5, -36 / 5, 5 / 2, 0, 0],
+    [1 / 12, 0, 27 / 32, -4 / 3, 125 / 96, 5 / 48, 0],
+])
 b_sol = jnp.array([1 / 12, 0, 27 / 32, -4 / 3, 125 / 96, 5 / 48, 0])
 b_error = None
 register_runge_kutta_method(
@@ -567,29 +555,25 @@ register_runge_kutta_method(
 
 # Dormand-Prince method
 c = jnp.array([0, 1 / 5, 3 / 10, 4 / 5, 8 / 9, 1, 1])
-A = jnp.array(
-    [
-        [0, 0, 0, 0, 0, 0, 0],
-        [1 / 5, 0, 0, 0, 0, 0, 0],
-        [3 / 40, 9 / 40, 0, 0, 0, 0, 0],
-        [44 / 45, -56 / 15, 32 / 9, 0, 0, 0, 0],
-        [19372 / 6561, -25360 / 2187, 64448 / 6561, -212 / 729, 0, 0, 0],
-        [9017 / 3168, -355 / 33, 46732 / 5247, 49 / 176, -5103 / 18656, 0, 0],
-        [35 / 384, 0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84, 0],
-    ]
-)
+A = jnp.array([
+    [0, 0, 0, 0, 0, 0, 0],
+    [1 / 5, 0, 0, 0, 0, 0, 0],
+    [3 / 40, 9 / 40, 0, 0, 0, 0, 0],
+    [44 / 45, -56 / 15, 32 / 9, 0, 0, 0, 0],
+    [19372 / 6561, -25360 / 2187, 64448 / 6561, -212 / 729, 0, 0, 0],
+    [9017 / 3168, -355 / 33, 46732 / 5247, 49 / 176, -5103 / 18656, 0, 0],
+    [35 / 384, 0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84, 0],
+])
 b_sol = jnp.array([35 / 384, 0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84, 0])
-b_error = jnp.array(
-    [
-        35 / 384 - 1951 / 21600,
-        0,
-        500 / 1113 - 22642 / 50085,
-        125 / 192 - 451 / 720,
-        -2187 / 6784 - -12231 / 42400,
-        11 / 84 - 649 / 6300,
-        -1.0 / 60.0,
-    ]
-)
+b_error = jnp.array([
+    35 / 384 - 1951 / 21600,
+    0,
+    500 / 1113 - 22642 / 50085,
+    125 / 192 - 451 / 720,
+    -2187 / 6784 - -12231 / 42400,
+    11 / 84 - 649 / 6300,
+    -1.0 / 60.0,
+])
 b_mid = jnp.array(
     [
         6025192743 / 30085553152 / 2,
@@ -910,9 +894,7 @@ def _odeint(
     dtype = y0.dtype
     ts = ts.astype(dtype)
     f = ravel_arg_fun(drift, unravel, 1)
-    _f = lambda t, y: jnp.atleast_1d(f(t, y, *args)).astype(
-        dtype
-    )
+    _f = lambda t, y: jnp.atleast_1d(f(t, y, *args)).astype(dtype)
     step_fn = get_step_fn(method, dtype=dtype)
     method_info = get_method_info(method)
 

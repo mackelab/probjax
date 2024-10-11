@@ -1,26 +1,10 @@
-from chex import PRNGKey
-from jaxtyping import Array, ArrayLike, PyTree
-
-
 from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
-from jax.tree_util import register_pytree_node_class
 
 import jax
 import jax.numpy as jnp
-from jax.flatten_util import ravel_pytree
-import jax.scipy.stats as stats
-import numpy as np
-
-from functools import partial
-import matplotlib.pyplot as plt
-
-
-import blackjax
-
-from blackjax.base import State, Info
-
-from probjax.inference.kernels.base import MCMCKernel
-from blackjax.base import SamplingAlgorithm
+from blackjax.base import Info, SamplingAlgorithm, State
+from chex import PRNGKey
+from jaxtyping import Array, ArrayLike
 
 
 class GibbsState(NamedTuple):
@@ -38,9 +22,8 @@ def init(
     inner_kernel: Dict,
     rng_key: Optional[PRNGKey] = None,
 ) -> GibbsState:
-
     inner_state = {}
-    for k in position.keys():
+    for k in position:
 
         def logdensity_k(value):
             kwargs = position.copy()
@@ -49,9 +32,11 @@ def init(
 
         # inspect for keyword argument "rng_key"
         if "rng_key" in inner_kernel[k].init.__code__.co_varnames:
-            inner_state[k] = inner_kernel[k].init(position[k], logdensity_k, rng_key=rng_key)
+            inner_state[k] = inner_kernel[k].init(
+                position[k], logdensity_k, rng_key=rng_key
+            )
         else:
-            inner_state[k] = inner_kernel[k].init(position[k],logdensity_k)
+            inner_state[k] = inner_kernel[k].init(position[k], logdensity_k)
 
     return GibbsState(position=position, inner_state=inner_state)
 
@@ -61,8 +46,7 @@ def build_kernel(
     inner_kernel_kwargs: Optional[Dict[str, Any]] = None,
     inner_kernel_steps: Optional[Dict[str, int]] = None,
 ) -> Callable:
-
-    _kernels = {k: inner_kernel[k].build_kernel() for k in inner_kernel.keys()}
+    _kernels = {k: inner_kernel[k].build_kernel() for k in inner_kernel}
 
     def kernel(
         rng_key: PRNGKey,
@@ -70,7 +54,6 @@ def build_kernel(
         logdensity_fn: Callable,
         **kwargs,
     ) -> Tuple[GibbsState, GibbsInfo]:
-
         inner_info = {}
         inner_state = {}
         new_position = state.position.copy()

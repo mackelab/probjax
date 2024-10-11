@@ -1,11 +1,9 @@
-import jax
-from jax.core import JaxprEqn, ClosedJaxpr
+from typing import Any, Iterable, Optional, Sequence, Tuple
 
-from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
+from jax.core import JaxprEqn
+
 from probjax.core.custom_primitives.random_variable import rv_p
-from probjax.core.jaxpr_propagation.interpret import interpret
-
-from typing import Any, Iterable, Sequence, Optional, Tuple
+from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
 
 
 class JointSampleProcessingRule(ForwardProcessingRule):

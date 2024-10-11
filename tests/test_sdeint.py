@@ -1,12 +1,9 @@
 
-import pytest
 
 import jax
 import jax.numpy as jnp
 
 from probjax.utils.sdeint import sdeint
-
-
 
 # Scalar sde with ground truth solution
 

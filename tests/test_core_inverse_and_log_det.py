@@ -1,9 +1,8 @@
-from probjax.core import inverse_and_logabsdet, inverse
-from typing import Callable, Sequence
 
-import pytest
 import jax
 import jax.numpy as jnp
+
+from probjax.core import inverse, inverse_and_logabsdet
 
 
 def test_inverse_1d(invertible_function_1d):

@@ -1,12 +1,9 @@
+from functools import partial
+
 import haiku as hk
 import jax
 import jax.numpy as jnp
-
-from typing import Callable, Any, List, Optional
-from functools import partial
-from jaxtyping import Array, PyTree
-
-import math
+from jaxtyping import Array
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
 

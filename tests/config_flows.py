@@ -1,18 +1,12 @@
-from probjax.distributions import Distribution, Normal, Independent
-from probjax.nn.coupling import CouplingMLP
-from probjax.nn.bijective import rational_quadratic_spline
-from probjax.nn.helpers import Rotate, Flip, SinusoidalEmbedding
-from probjax.utils.odeint import odeint
-
+import haiku as hk
 import jax
 import jax.numpy as jnp
 
-from functools import partial
-
-import haiku as hk
-
-import pytest
-
+from probjax.distributions import Independent, Normal
+from probjax.nn.bijective import rational_quadratic_spline
+from probjax.nn.coupling import CouplingMLP
+from probjax.nn.helpers import Flip, Rotate, SinusoidalEmbedding
+from probjax.utils.odeint import odeint
 
 input_dim = 2
 p = Independent(Normal(jnp.zeros(input_dim), jnp.ones(input_dim)), 1)
@@ -177,6 +171,7 @@ def continous_transform(input_dim):
 
 import optax
 from optax import adam
+
 from probjax.distributions.transformed_distribution import TransformedDistribution
 
 

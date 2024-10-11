@@ -1,12 +1,10 @@
+from functools import partial
+from typing import Callable, Optional, Sequence
+
 import jax
 import jax.numpy as jnp
 from jax.random import PRNGKey
-
-from functools import partial
-
-from typing import Optional, Sequence, Union, Callable
-from jaxtyping import PyTree, Array
-
+from jaxtyping import Array, PyTree
 
 # Flow matching objectives
 
@@ -206,7 +204,6 @@ def high_order_denosing_score_matching_loss(
     axis: int = -1,
     **kwargs,
 ) -> Array:
-
     assert (
         rng_key is not None
     ), "rng_key must be provided for denoising score matching loss."
@@ -433,7 +430,6 @@ def sliced_score_matching(
         xs_t = xs_target
 
     def value_and_jvp(t, x, v, *args):
-
         value, jvp = jax.jvp(
             lambda x: model_fn(params, t, x, *args, **kwargs), (x,), (v,)
         )

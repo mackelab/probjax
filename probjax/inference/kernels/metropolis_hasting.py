@@ -1,18 +1,18 @@
-from chex import PRNGKey
-from jaxtyping import Array, PyTree
-
-
 from typing import Any, Callable, NamedTuple, Optional, Tuple
 
+import blackjax
 import jax
 import jax.numpy as jnp
+from blackjax.mcmc.random_walk import RWInfo, RWState
+from chex import PRNGKey
 from jax.flatten_util import ravel_pytree
+from jaxtyping import Array, PyTree
 
+from probjax.inference.kernels.adaptation import (
+    step_size_adaption,
+    step_size_and_scale_adaption,
+)
 from probjax.inference.kernels.base import MCMCKernel
-from probjax.inference.kernels.adaptation import step_size_adaption, step_size_and_scale_adaption
-
-import blackjax
-from blackjax.mcmc.random_walk import RWState, RWInfo
 
 
 class MetropolisHastingParams(NamedTuple):
@@ -20,7 +20,6 @@ class MetropolisHastingParams(NamedTuple):
 
 
 class MetropolisHastingKernel(MCMCKernel):
-
     params: MetropolisHastingParams
 
     def __init__(
@@ -76,14 +75,14 @@ def gaussian_transition_proposal(key, position, params: GaussianMHParameters):
     elif len(params.scale.shape) == 1:
         new_position = flat_position + params.step_size * params.scale * eps
     elif len(params.scale.shape) == 2:
-        new_position =  flat_position + params.step_size * jnp.dot(params.scale, eps)
+        new_position = flat_position + params.step_size * jnp.dot(params.scale, eps)
     else:
         raise ValueError("Invalid scale shape")
-    
+
     return unflatten(new_position)
 
-class GaussianMHKernel(MetropolisHastingKernel):
 
+class GaussianMHKernel(MetropolisHastingKernel):
     params: GaussianMHParameters
 
     def __init__(
@@ -104,9 +103,7 @@ class GaussianMHKernel(MetropolisHastingKernel):
         self.step_size = step_size
 
         self.params = GaussianMHParameters(step_size=step_size, scale=scale)
-        super().__init__(
-            logdensity_fn, gaussian_transition_proposal, None
-        )
+        super().__init__(logdensity_fn, gaussian_transition_proposal, None)
 
     def init_params(self, position: PyTree):
         flat_position, _ = ravel_pytree(position)
@@ -118,15 +115,21 @@ class GaussianMHKernel(MetropolisHastingKernel):
                 scale = jnp.eye(dim)
         else:
             scale = self.scale
-            
+
         step_size = self.step_size / jnp.sqrt(dim)
 
         self.params = GaussianMHParameters(step_size=step_size, scale=scale)
-        
+
         return self.params
-    
+
     def adapt_params(
-        self, key: PRNGKey, position: PyTree, num_steps: int = 100, method="step_size_and_scale", target_acceptance_rate=0.234,**kwargs: Any
+        self,
+        key: PRNGKey,
+        position: PyTree,
+        num_steps: int = 100,
+        method="step_size_and_scale",
+        target_acceptance_rate=0.234,
+        **kwargs: Any,
     ) -> Tuple[RWState, RWInfo]:
         if method == "step_size":
             adaption_alg = step_size_adaption(
@@ -135,12 +138,14 @@ class GaussianMHKernel(MetropolisHastingKernel):
                 self.params,
                 gaussian_transition_proposal,
                 target_acceptance_rate=target_acceptance_rate,
-                **kwargs
+                **kwargs,
             )
-                    
+
             results, info = adaption_alg.run(key, position, num_steps)
             step_size = results.parameters["step_size"]
-            self.params = GaussianMHParameters(step_size=step_size, scale=self.params.scale)
+            self.params = GaussianMHParameters(
+                step_size=step_size, scale=self.params.scale
+            )
         elif method == "step_size_and_scale":
             adaption_alg = step_size_and_scale_adaption(
                 blackjax.rmh,
@@ -148,7 +153,7 @@ class GaussianMHKernel(MetropolisHastingKernel):
                 self.params,
                 gaussian_transition_proposal,
                 target_acceptance_rate=target_acceptance_rate,
-                **kwargs
+                **kwargs,
             )
             results, info = adaption_alg.run(key, position, num_steps)
             step_size = results.parameters["step_size"]
@@ -158,4 +163,3 @@ class GaussianMHKernel(MetropolisHastingKernel):
             raise ValueError("Invalid method")
 
         return results.state, info
-    

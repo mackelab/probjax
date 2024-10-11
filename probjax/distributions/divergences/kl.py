@@ -1,8 +1,8 @@
 import jax
 import jax.numpy as jnp
 
-from probjax.distributions.divergences.divergence import register_divergence, divergence
 from probjax import distributions as dist
+from probjax.distributions.divergences.divergence import divergence, register_divergence
 
 __all__ = ["kl_divergence"]
 
@@ -50,7 +50,7 @@ def _kl_independent_independent(p, q, mc_samples=0, key=None):
         raise ValueError(
             "KL divergence between distributions with different event shapes not supported"
         )
-   
+
     return kl_base.sum(-1)
 
 
@@ -196,6 +196,7 @@ def _kl_bernoulli_poisson(p, q, mc_samples=0, key=None):
     t2 = (1 - probs_p) * jnp.log((1 - probs_p) / rate_q)
     return t1 + t2
 
+
 @register_divergence(NAME, dist.Bernoulli, dist.Beta)
 def _kl_bernoulli_beta(p, q, mc_samples=0, key=None):
     probs_p = p.probs
@@ -209,6 +210,7 @@ def _kl_bernoulli_beta(p, q, mc_samples=0, key=None):
     )
     return t1 + t2 + t3
 
+
 @register_divergence(NAME, dist.Bernoulli, dist.Gamma)
 def _kl_bernoulli_gamma(p, q, mc_samples=0, key=None):
     probs_p = p.probs
@@ -217,6 +219,7 @@ def _kl_bernoulli_gamma(p, q, mc_samples=0, key=None):
     t2 = -beta_q * probs_p
     t3 = jax.scipy.special.gammaln(alpha_q) - alpha_q * jnp.log(beta_q)
     return t1 + t2 + t3
+
 
 @register_divergence(NAME, dist.Bernoulli, dist.Dirichlet)
 def _kl_bernoulli_dirichlet(p, q, mc_samples=0, key=None):
@@ -228,6 +231,7 @@ def _kl_bernoulli_dirichlet(p, q, mc_samples=0, key=None):
     ).sum(-1)
     return t1 + t2
 
+
 @register_divergence(NAME, dist.Bernoulli, dist.Exp)
 def _kl_bernoulli_exponential(p, q, mc_samples=0, key=None):
     probs_p = p.probs
@@ -235,6 +239,7 @@ def _kl_bernoulli_exponential(p, q, mc_samples=0, key=None):
     t1 = jnp.log(probs_p / rate_q)
     t2 = (1 - probs_p) / rate_q
     return t1 + t2
+
 
 @register_divergence(NAME, dist.Bernoulli, dist.Laplace)
 def _kl_bernoulli_laplace(p, q, mc_samples=0, key=None):
@@ -244,6 +249,7 @@ def _kl_bernoulli_laplace(p, q, mc_samples=0, key=None):
     t2 = (1 - probs_p) * (loc_q - scale_q) / scale_q
     return t1 + t2
 
+
 @register_divergence(NAME, dist.Bernoulli, dist.Cauchy)
 def _kl_bernoulli_cauchy(p, q, mc_samples=0, key=None):
     probs_p = p.probs
@@ -252,6 +258,7 @@ def _kl_bernoulli_cauchy(p, q, mc_samples=0, key=None):
     t2 = (1 - probs_p) * (loc_q - scale_q) / scale_q
     return t1 + t2
 
+
 @register_divergence(NAME, dist.Bernoulli, dist.Pareto)
 def _kl_bernoulli_pareto(p, q, mc_samples=0, key=None):
     probs_p = p.probs
@@ -259,4 +266,3 @@ def _kl_bernoulli_pareto(p, q, mc_samples=0, key=None):
     t1 = jnp.log(probs_p / (1 - probs_p))
     t2 = (1 - probs_p) * (alpha_q / (alpha_q - 1)) / scale_q
     return t1 + t2
-

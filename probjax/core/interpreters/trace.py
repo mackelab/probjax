@@ -1,11 +1,8 @@
-import jax
-from jax.core import JaxprEqn, ClosedJaxpr
+from typing import Any, Iterable, Optional, Sequence, Tuple
+
+from jax.core import JaxprEqn
 
 from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
-from probjax.core.custom_primitives.random_variable import rv_p
-from probjax.core.jaxpr_propagation.interpret import interpret
-
-from typing import Any, Iterable, Sequence, Optional, Tuple
 
 
 class TraceProcessingRule(ForwardProcessingRule):
@@ -28,8 +25,10 @@ class TraceProcessingRule(ForwardProcessingRule):
                 self.traced_samples[str(o)] = v
         return outvars, outvals
 
+
 class TraceRandomRule(TraceProcessingRule):
     traced_rvs: dict = {}
+
     # Trace all random variables
     def __init__(self, traced_vars: Iterable | None = None) -> None:
         super().__init__(traced_vars)

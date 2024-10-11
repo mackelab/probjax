@@ -1,16 +1,12 @@
-
 from __future__ import annotations
-from typing import Any
-import jax
-import jax.numpy as jnp
-from jax.tree_util import tree_flatten, tree_unflatten
-
-from jaxtyping import PyTree, Array, Float, Int, Bool
-from typing import Union
 
 from abc import abstractmethod
 from functools import total_ordering
+from typing import Any, Union
 
+import jax.numpy as jnp
+from jax.tree_util import tree_flatten
+from jaxtyping import Array, PyTree
 
 # TODO Maybe add differentiable _call methods
 

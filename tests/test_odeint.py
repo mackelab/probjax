@@ -1,10 +1,7 @@
-from probjax.utils.odeint import get_method_info, get_methods
-from probjax.utils.odeint import _odeint as odeint
-
-import pytest
-
-import jax
 import jax.numpy as jnp
+
+from probjax.utils.odeint import _odeint as odeint
+from probjax.utils.odeint import get_methods
 
 METHODS = get_methods()
 
@@ -19,4 +16,4 @@ def test_odeint_basic_linear_ode(linear_ode_problem, ode_method):
     error = jnp.mean((f_approx - f_true) ** 2)
     assert error < 1e-1, "Solver failed on dense grid to match true solution"
 
-    
+

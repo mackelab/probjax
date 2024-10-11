@@ -1,21 +1,16 @@
-import jax
-import jax.numpy as jnp
 
-
-from typing import List, Tuple
-
-import jax
-import jax.numpy as jnp
 import haiku as hk
-
+import jax
+import jax.numpy as jnp
 
 # rmsnorm
+
 
 class RMSNorm(hk.Module):
     def __init__(self, dim, eps=1e-5):
         super().__init__()
         self.eps = eps
-        self.scale = dim ** 0.5
+        self.scale = dim**0.5
 
     def __call__(self, x):
         gamma = hk.get_parameter("gamma", shape=(x.shape[-1],), init=jnp.ones)
@@ -23,10 +18,12 @@ class RMSNorm(hk.Module):
         inv_norm = jax.lax.rsqrt(mean_squared + self.eps)
         return self.scale * gamma * x * inv_norm
 
+
 # gate loop layer
 
+
 def gate_loop_operator(k, v, q, a):
-    kv = k * v + 0.j
+    kv = k * v + 0.0j
 
     def binary_operator(e_i, e_j):
         a_i, kv_i = e_i
@@ -35,6 +32,7 @@ def gate_loop_operator(k, v, q, a):
 
     _, y = jax.lax.associative_scan(binary_operator, (a, kv), axis=1)
     return q * jnp.real(y)
+
 
 class GateLoop(hk.Module):
     def __init__(self, dim):
@@ -46,7 +44,7 @@ class GateLoop(hk.Module):
         x = norm(x)
 
         w_init = hk.initializers.VarianceScaling(scale=2.0)
-        
+
         wq = hk.get_parameter("wq", (self.dim, self.dim), init=w_init)
         wk = hk.get_parameter("wk", (self.dim, self.dim), init=w_init)
         wv = hk.get_parameter("wv", (self.dim, self.dim), init=w_init)
@@ -71,7 +69,9 @@ class GateLoop(hk.Module):
         o = jnp.dot(y, wo)
         return o
 
+
 # basic feedforward with pre-rmsnorm
+
 
 class GateLoopLayer(hk.Module):
     def __init__(self, dim, mult=4):
@@ -88,5 +88,3 @@ class GateLoopLayer(hk.Module):
         x = jax.nn.gelu(x)
         x = proj_out(x)
         return x
-
-

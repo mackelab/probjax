@@ -1,22 +1,16 @@
 # TODO propagate constraints
-import jax
-from jax.core import JaxprEqn, ClosedJaxpr
-from jax import lax
+from typing import Any, Iterable, Sequence, Tuple
 
-from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
-from probjax.core.custom_primitives.random_variable import rv_p
+from jax import lax
+from jax.core import JaxprEqn
+
 from probjax.core.interpreters.trace import TraceProcessingRule
-from probjax.core.jaxpr_propagation.interpret import interpret
 from probjax.distributions.constraints import (
-    real,
     positive,
-    integer,
-    unit_integer_interval,
+    real,
     unit_interval,
     unit_square,
 )
-
-from typing import Any, Iterable, Sequence, Optional, Tuple
 
 _UNIVARIATE_CONSTRAINTS = {
     lax.tanh_p: (real, unit_square),
@@ -44,8 +38,6 @@ class ConstraintTraceProcessingRule(TraceProcessingRule):
             if self.traced_vars is None or str(o) in self.traced_vars:
                 self.traced_samples[str(o)] = v
         return outvars, outvals
-    
-    def _default_processing_rule(primitive, in_constraint, outvars):
-        
-        
 
+    def _default_processing_rule(primitive, in_constraint, outvars):
+        pass

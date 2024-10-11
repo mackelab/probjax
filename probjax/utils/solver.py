@@ -1,7 +1,7 @@
+from functools import partial
+
 import jax
 import jax.numpy as jnp
-
-from functools import partial
 
 
 # General root-finding algorithm
@@ -100,7 +100,6 @@ def root_scalar(
         return bisection_method(_f, bracket, tol=tol, max_iter=max_iter)
 
 
-from functools import partial
 
 
 @partial(jax.jit, static_argnums=(0, 2, 3))

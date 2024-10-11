@@ -1,31 +1,23 @@
-import jax.numpy as jnp
-import numpy as np
-
-from jax.scipy.special import logsumexp
-from jax.scipy.stats import norm
+from typing import Callable
 
 import jax
-from jax import random
-from jax.lax import scan
-
-from .distribution import Distribution
-from .constraints import distribution
-
-from typing import Callable, Any, List
-from jaxtyping import Array, PyTree
+import jax.numpy as jnp
+import numpy as np
+from jaxtyping import Array
 
 from probjax.core import inverse_and_logabsdet
+
+from .constraints import distribution
+from .distribution import Distribution
 
 __all__ = ["TransformedDistribution"]
 
 from jax.tree_util import register_pytree_node_class
-from jax.scipy.stats import norm
 
 # TODO: Add support for discrete distributions
 # Discrete transformed distributions do not need log_abs_det_jacobian !
 # But then we do not need a bijective transformation, just a injective one.
 # Bijection do only shuffle the atoms, but do not change the probability mass.
-
 
 
 @register_pytree_node_class
@@ -55,7 +47,7 @@ class TransformedDistribution(Distribution):
         self.support = base_dist.support
         self._transformation = transformation
         self._inv_and_logdet = inverse_and_logabsdet(transformation)
-        
+
         for _ in range(len(batch_shape)):
             self._transformation = jax.vmap(self._transformation)
             self._inv_and_logdet = jax.vmap(self._inv_and_logdet)
@@ -64,15 +56,13 @@ class TransformedDistribution(Distribution):
 
     def transform(self, x):
         return self._transformation(x)
-    
+
     def sample(self, key, sample_shape: tuple = ()) -> Array:
         num_samples = max(int(np.prod(sample_shape)), 1)
         samples = self.base_dist.sample(key, (num_samples,))
         transform = jax.vmap(self.transform)
         samples = transform(samples)
-        return samples.reshape(
-            sample_shape + self.batch_shape + self.event_shape
-        )
+        return samples.reshape(sample_shape + self.batch_shape + self.event_shape)
 
     def rsample(self, key, sample_shape=()):
         num_samples = max(int(np.prod(sample_shape)), 1)
@@ -92,7 +82,7 @@ class TransformedDistribution(Distribution):
 
         inv_value, log_det = inv_and_logdet(value)
 
-        inv_value = inv_value.reshape(shape)    
+        inv_value = inv_value.reshape(shape)
         log_prob = self.base_dist.log_prob(inv_value) + log_det
 
         if len(self.event_shape) > 0:
@@ -106,7 +96,7 @@ class TransformedDistribution(Distribution):
     def tree_unflatten(cls, aux_data, children):
         return cls(
             **dict(zip(cls.arg_constraints.keys(), children)),
-            transformation=aux_data[0]
+            transformation=aux_data[0],
         )
 
     def __repr__(self) -> str:
