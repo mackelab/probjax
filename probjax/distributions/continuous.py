@@ -1,31 +1,25 @@
+from typing import Optional
+
 import jax
 import jax.numpy as jnp
 from jax import random
-from jax import lax
-from jax.scipy.special import erfinv, erf, gammaln, digamma
-
+from jax.scipy.special import digamma, gammaln
 from jaxtyping import Array
-from typing import Optional
-from warnings import warn
 
-from .exponential_family import ExponentialFamily
-from .distribution import Distribution
+from probjax.utils.linalg import batch_mahalanobis, batch_mv
+
 from .constraints import (
-    real,
-    positive,
-    strict_positive,
-    strict_negative,
-    unit_interval,
-    simplex,
-    square_matrix,
-    strict_positive_integer,
-    positive_definite_matrix,
-    positive_integer,
     interval,
+    positive,
+    positive_definite_matrix,
+    real,
+    strict_positive,
+    strict_positive_integer,
+    unit_interval,
 )
+from .distribution import Distribution
+from .exponential_family import ExponentialFamily
 from .utils import _precision_to_scale_tril
-
-from probjax.utils.linalg import batch_mv, batch_mahalanobis
 
 __all__ = [
     "Normal",
@@ -45,27 +39,22 @@ __all__ = [
     #    "GaussianKDE",
 ]
 
-from jax.tree_util import register_pytree_node_class
-
 # Implementations of distributions
 from jax.scipy.stats import (
-    norm,
-    gamma,
     beta,
-    expon,
-    dirichlet,
-    chi2,
     cauchy,
-    gennorm,
+    chi2,
+    dirichlet,
+    expon,
+    gamma,
     laplace,
     logistic,
+    norm,
     pareto,
     t,
     truncnorm,
-    uniform,
-    vonmises,
-    gaussian_kde,
 )
+from jax.tree_util import register_pytree_node_class
 
 
 @register_pytree_node_class
@@ -271,7 +260,6 @@ class MultivariateNormal(ExponentialFamily):
         return self.loc + batch_mv(self.scale_tril, eps)
 
     def log_prob(self, value: jnp.array) -> Array:
-
         diff = value - self.loc
         M = batch_mahalanobis(self.scale_tril, diff)
         half_log_det = jnp.sum(
@@ -334,12 +322,10 @@ class Gamma(ExponentialFamily):
         diag11 = jnp.digamma(self.alpha)
         diag22 = self.alpha / self.beta**2
 
-        fim = jnp.block(
-            [
-                [diag11[..., None], off_diag[..., None]],
-                [off_diag[..., None], diag22[..., None]],
-            ]
-        )
+        fim = jnp.block([
+            [diag11[..., None], off_diag[..., None]],
+            [off_diag[..., None], diag22[..., None]],
+        ])
         return fim
 
     def rsample(self, key, sample_shape: tuple = ()):
@@ -564,9 +550,7 @@ class Dirichlet(Distribution):
     @property
     def variance(self) -> Array:
         alpha_sum = self.alpha_sum
-        return (
-            self.alpha * (alpha_sum - self.alpha) / (alpha_sum**2 * (alpha_sum + 1))
-        )
+        return self.alpha * (alpha_sum - self.alpha) / (alpha_sum**2 * (alpha_sum + 1))
 
     @property
     def covariance_matrix(self) -> Array:

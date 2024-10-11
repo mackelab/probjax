@@ -1,9 +1,9 @@
-import jax
-from jax import numpy as jnp
-from jax import lax
+from typing import Callable
 
+import jax
+from jax import lax
+from jax import numpy as jnp
 from jaxtyping import Array, Float, Int
-from typing import Callable, Optional
 
 
 def linear_interpolation(ts: Array, ys: Array) -> Callable[[Float], Array]:

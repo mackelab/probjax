@@ -1,24 +1,18 @@
-from typing import Callable, Optional, Sequence, Union, Tuple
-from jaxtyping import PyTree, Array
+import math
+from functools import partial
+from typing import Callable, Optional, Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
-import numpy as np
-import math
-from functools import wraps, partial
-
+from jax._src import linear_util as lu
 from jax._src.flatten_util import ravel_pytree
-from jax._src.api_util import flatten_fun_nokwargs as flatten_fun_nokwargs_
-
 from jax.core import eval_jaxpr
 from jax.interpreters.partial_eval import partial_eval_jaxpr_nounits
-
-from jax._src import linear_util as lu
+from jaxtyping import Array, PyTree
 
 
 class API(type):
     """API class for algorithms"""
-    
 
     def __str__(self):
         return self.__doc__
@@ -35,14 +29,15 @@ def ravel_first_arg_(unravel, y_flat, *args):
     ans_flat, _ = ravel_pytree(ans)
     yield ans_flat
 
+
 @lu.transformation
 def ravel_arg_(unravel, index, *args):
     flat_arg_i = args[index]
     arg_i = unravel(flat_arg_i)
-    args = args[:index] + (arg_i,) + args[index+1:]
+    args = args[:index] + (arg_i,) + args[index + 1 :]
     ans = yield args, {}
     ans_flat, _ = ravel_pytree(ans)
-    yield ans_flat      
+    yield ans_flat
 
 
 @lu.transformation
@@ -62,7 +57,7 @@ def flatten_args_(in_tree, *flat_args):
 
 
 def precompute(func: Callable, arg_list: list, known_argnums: list) -> Callable:
-    """ Precomputes all computations that can be done with all known arguments.
+    """Precomputes all computations that can be done with all known arguments.
 
     Args:
         func (Callable): Function to be precomputed
@@ -76,16 +71,25 @@ def precompute(func: Callable, arg_list: list, known_argnums: list) -> Callable:
     unknowns = [False if k in known_argnums else True for k in range(len(arg_list))]
     instantiate = False
 
-    (known_jaxpr, unknown_jaxpr, _, _) = partial_eval_jaxpr_nounits(jaxpr, unknowns, instantiate)
+    (known_jaxpr, unknown_jaxpr, _, _) = partial_eval_jaxpr_nounits(
+        jaxpr, unknowns, instantiate
+    )
 
     known_values = [arg_k for (k, arg_k) in enumerate(arg_list) if k in known_argnums]
-    precomputed_values = eval_jaxpr(known_jaxpr.jaxpr, known_jaxpr.consts, *known_values)
-
+    precomputed_values = eval_jaxpr(
+        known_jaxpr.jaxpr, known_jaxpr.consts, *known_values
+    )
 
     def inner(*args):
-        values = eval_jaxpr(unknown_jaxpr.jaxpr, unknown_jaxpr.consts, *precomputed_values, *args, propagate_source_info=False)
+        values = eval_jaxpr(
+            unknown_jaxpr.jaxpr,
+            unknown_jaxpr.consts,
+            *precomputed_values,
+            *args,
+            propagate_source_info=False,
+        )
         return values if len(values) > 1 else values[0]
-    
+
     return inner
 
 
@@ -123,6 +127,7 @@ def ravel_args(in_vals: PyTree) -> Tuple[Array, Callable]:
 
 def ravel_fun(fun: Callable, unravel) -> Callable:
     return ravel_args_(lu.wrap_init(fun), unravel).call_wrapped
+
 
 def ravel_arg_fun(fun: Callable, unravel, index: int) -> Callable:
     return ravel_arg_(lu.wrap_init(fun), unravel, index).call_wrapped
@@ -179,7 +184,7 @@ def nested_checkpoint_scan(
         x = jnp.asarray(x)
         new_shape = tuple(nested_lengths) + x.shape[1:]
         return x.reshape(new_shape)
-    
+
     _scan_fn = partial(scan_fn, unroll=unroll)
 
     sub_xs = jax.tree_map(nested_reshape, xs)

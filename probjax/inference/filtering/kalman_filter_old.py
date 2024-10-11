@@ -1,14 +1,12 @@
-from ast import Call
+from functools import partial
+from typing import Callable, Optional, Tuple
+
 import jax
 import jax.numpy as jnp
 from jax import lax
-
-from typing import Callable, Tuple, Optional
 from jaxtyping import Array, Float
 
 from probjax.utils.linalg import matrix_fraction_decomposition, transition_matrix
-
-from functools import partial
 
 
 def predict_discrete(
@@ -140,7 +138,7 @@ def get_update_step(C_o, R_o, method="kalman"):
         raise NotImplementedError(f"Method {method} not implemented.")
 
 
-@partial(jax.jit, static_argnums=(0,1, 8,9))
+@partial(jax.jit, static_argnums=(0, 1, 8, 9))
 def filter(
     drift: Callable,
     diffusion: Callable,
@@ -203,26 +201,30 @@ def filter(
         y_o = jnp.zeros((1,)) * jnp.nan
         num_obs = 0
 
-
     predict = get_prediction_step(_drift, _diffusion, method="mfd_linearized")
-    update = get_update_step(C_o, R_o) 
+    update = get_update_step(C_o, R_o)
 
-    _identity = lambda mu, cov, *args:  (mu, cov)
+    _identity = lambda mu, cov, *args: (mu, cov)
 
     def scan_fun(carry, data):
         mu0, cov0, t0, mu_cache, cov_cache = carry
         t1, j = data
         mu1_, cov1_ = predict(t0, t1, mu0, cov0)
         is_update = t_o[j] == t1
-        mu1, cov1 = lax.cond(
-            is_update, update, _identity, mu1_, cov1_, t_o[j], y_o[j]
-        )
+        mu1, cov1 = lax.cond(is_update, update, _identity, mu1_, cov1_, t_o[j], y_o[j])
         if return_mu_cov_cache:
-            mu_cache, cov_cache = lax.cond(is_update, lambda m,c,j: (m.at[j].set(mu1_), c.at[j].set(cov1_)), lambda m,c,j: (m,c), mu_cache, cov_cache, j)
+            mu_cache, cov_cache = lax.cond(
+                is_update,
+                lambda m, c, j: (m.at[j].set(mu1_), c.at[j].set(cov1_)),
+                lambda m, c, j: (m, c),
+                mu_cache,
+                cov_cache,
+                j,
+            )
 
         return (mu1, cov1, t1, mu_cache, cov_cache), (mu1, cov1)
 
-    init_carry = (mu0, cov0, ts[0], jnp.zeros((num_obs,  d)), jnp.zeros((num_obs, d, d)))
+    init_carry = (mu0, cov0, ts[0], jnp.zeros((num_obs, d)), jnp.zeros((num_obs, d, d)))
     final_carry, (mus, covs) = lax.scan(
         scan_fun, init_carry, (ts_merged[1:], index_array[:-1])
     )

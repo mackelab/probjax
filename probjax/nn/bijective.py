@@ -1,12 +1,11 @@
+from functools import partial
 from typing import Tuple
 
 import jax
 import jax.numpy as jnp
-
 from jax import Array
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
-from functools import partial
 
 
 def _normalize_knot_slopes(
@@ -48,9 +47,10 @@ def _rational_quadratic_spline_fwd(
     above_range = x >= x_pos[-1]
     correct_bin = jnp.logical_and(x >= x_pos[:-1], x < x_pos[1:])
     any_bin_in_range = jnp.any(correct_bin)
-    first_bin = jnp.concatenate(
-        [jnp.array([1]), jnp.zeros(len(correct_bin) - 1)]
-    ).astype(bool)
+    first_bin = jnp.concatenate([
+        jnp.array([1]),
+        jnp.zeros(len(correct_bin) - 1),
+    ]).astype(bool)
     # If y does not fall into any bin, we use the first spline in the following
     # computations to avoid numerical issues.
     correct_bin = jnp.where(any_bin_in_range, correct_bin, first_bin)
@@ -159,9 +159,10 @@ def _rational_quadratic_spline_inv(
     above_range = y >= y_pos[-1]
     correct_bin = jnp.logical_and(y >= y_pos[:-1], y < y_pos[1:])
     any_bin_in_range = jnp.any(correct_bin)
-    first_bin = jnp.concatenate(
-        [jnp.array([1]), jnp.zeros(len(correct_bin) - 1)]
-    ).astype(bool)
+    first_bin = jnp.concatenate([
+        jnp.array([1]),
+        jnp.zeros(len(correct_bin) - 1),
+    ]).astype(bool)
     # If y does not fall into any bin, we use the first spline in the following
     # computations to avoid numerical issues.
     correct_bin = jnp.where(any_bin_in_range, correct_bin, first_bin)

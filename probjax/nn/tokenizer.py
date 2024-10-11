@@ -1,13 +1,11 @@
-from typing import Optional, Type
-import jax
-import jax.numpy as jnp
-
-from typing import Callable, Union, Tuple
-from jaxtyping import Array, PyTree
+from typing import Callable, Optional, Union
 
 import haiku as hk
+import jax
+import jax.numpy as jnp
+from jaxtyping import Array, PyTree
 
-from probjax.nn.helpers import GaussianFourierEmbedding, SinusoidalEmbedding
+from probjax.nn.helpers import GaussianFourierEmbedding
 
 
 def scalarize(data: PyTree) -> PyTree:
@@ -32,9 +30,6 @@ def scalarize(data: PyTree) -> PyTree:
         return tuple(jnp.split(flat_concat, len(tree_data), axis=-2))
     else:
         raise ValueError(f"Unknown tree type: {tree_type}")
-    
-
-        
 
 
 class Tokenizer(hk.Module):
@@ -62,7 +57,7 @@ class Tokenizer(hk.Module):
         self.learn_value_embeding = learn_value_embeding
         self.learn_meta_data_embeding = learn_meta_data_embeding
         super().__init__(name)
-        
+
     @hk.transparent
     def distribute_output_dim(self, with_meta_data: bool = False):
         if isinstance(self.distibutor, Callable):
@@ -84,7 +79,7 @@ class Tokenizer(hk.Module):
                 raise ValueError(
                     f"Unknown accummulator: {self.accummulator}, Please specify a custom distributor function, that returns a tuple of output dimensions for each input type."
                 )
-                
+
     @hk.transparent
     def accumulate(self, data_id_embedding, data_embedding, meta_data_embedding):
         if self.accummulator == "concat":
@@ -172,7 +167,6 @@ class ScalarTokenizer(Tokenizer):
 
         return tokens.reshape(*leading_dims, sequence_length, self.output_dim)
 
-
     @hk.transparent
     def value_embeding(self, value, output_dim):
         if self.value_embeding_builder is None:
@@ -204,7 +198,10 @@ class ScalarTokenizer(Tokenizer):
     @hk.transparent
     def meta_data_embeding(self, meta_data, output_dim):
         if self.meta_data_embeding_builder is None:
-            meta_data_embeding_fn = hk.Sequential([GaussianFourierEmbedding(256), hk.Linear(output_dim)])
+            meta_data_embeding_fn = hk.Sequential([
+                GaussianFourierEmbedding(256),
+                hk.Linear(output_dim),
+            ])
         else:
             meta_data_embeding_fn = self.meta_data_embeding_builder(output_dim)
 
@@ -215,23 +212,22 @@ class ScalarTokenizer(Tokenizer):
         if self.learn_meta_data_embeding:
             out = jax.lax.stop_gradient(out)
         return out
-    
-    
+
+
 def value_embeding_functions(output_dim, max_sequence_length):
-    def f(index,x):
+    def f(index, x):
         experts = [hk.Linear(output_dim) for _ in range(max_sequence_length)]
         if hk.running_init():
-        # During init unconditionally create params/state for all experts.
+            # During init unconditionally create params/state for all experts.
             for expert in experts:
                 out = expert(x)
         else:
             # During apply conditionally apply (and update) only one expert.
             out = hk.switch(index, experts, x)
         return out
-    
+
     init_fn, apply_fn = hk.without_apply_rng(hk.transform(f))
     return init_fn, apply_fn
-
 
 
 class StructuredTokenizer(Tokenizer):
@@ -265,19 +261,21 @@ class StructuredTokenizer(Tokenizer):
             name,
         )
 
-    def __call__(self, data: dict[str,Array], meta_data: Optional[PyTree] = None):
+    def __call__(self, data: dict[str, Array], meta_data: Optional[PyTree] = None):
         output_dim1, output_dim2, output_dim3 = self.distribute_output_dim(
             with_meta_data=meta_data is not None
         )
-        data_id = jnp.array([self.data_name_to_id[k] for k in data.keys()], dtype=jnp.int32)
+        data_id = jnp.array(
+            [self.data_name_to_id[k] for k in data], dtype=jnp.int32
+        )
         data_id_embeding = self.node_embeding(data_id, output_dim1)
         value_embeding = self.value_embeding(data, output_dim2)
         if meta_data is not None:
             meta_data_embeding = self.meta_data_embeding(meta_data, output_dim3)
         else:
             meta_data_embeding = None
-        
-        if meta_data_embeding is  None:
+
+        if meta_data_embeding is None:
             data_id_embeding, value_embeding = jnp.broadcast_arrays(
                 data_id_embeding, value_embeding
             )
@@ -285,12 +283,11 @@ class StructuredTokenizer(Tokenizer):
             data_id_embeding, value_embeding, meta_data_embeding = jnp.broadcast_arrays(
                 data_id_embeding, value_embeding, meta_data_embeding
             )
-        
+
         tokens = self.accumulate(data_id_embeding, value_embeding, meta_data_embeding)
-        
+
         return tokens
-        
-        
+
     @hk.transparent
     def value_embeding(self, value, output_dim):
         if self.value_embeding_builder is None:
@@ -298,10 +295,12 @@ class StructuredTokenizer(Tokenizer):
         else:
             value_embeding_fns = self.value_embeding_builder(value, output_dim)
 
-        tokens_dict = jax.tree_map(lambda f, v: jnp.expand_dims(f(v), -2), value_embeding_fns, value)
+        tokens_dict = jax.tree_map(
+            lambda f, v: jnp.expand_dims(f(v), -2), value_embeding_fns, value
+        )
         tokens_flat = jax.tree_leaves(tokens_dict)
         tokens = jnp.concatenate(tokens_flat, axis=-2)
-        
+
         return tokens
 
     @hk.transparent
@@ -319,4 +318,3 @@ class StructuredTokenizer(Tokenizer):
         if self.learn_node_embeding:
             out = jax.lax.stop_gradient(out)
         return out
-

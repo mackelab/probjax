@@ -1,11 +1,10 @@
-import haiku as hk
-import jax.numpy as jnp
-import jax
-
 from typing import Any, Callable, Optional, Sequence, Union
-from jaxtyping import Array
 
+import haiku as hk
+import jax
+import jax.numpy as jnp
 from haiku._src.conv import compute_adjusted_padding
+from jaxtyping import Array
 
 
 class UNetND(hk.Module):
@@ -375,8 +374,6 @@ class ResnetBlock(hk.Module):
             (1, 1),
             padding="SAME",
             with_bias=False,
-        )(
-            inputs
-        )  # This is required to match output_channels
+        )(inputs)  # This is required to match output_channels
         out = x + skip_connection
         return out

@@ -1,15 +1,11 @@
+from typing import Callable
+
 import jax
 import jax.numpy as jnp
-
-from jax.scipy.special import logsumexp
 from jax.scipy.optimize import minimize
+from jaxtyping import Array
 
-from typing import Callable, Any, List
-from jaxtyping import Array, PyTree
-
-from functools import partial
-
-from probjax.distributions import Normal, Distribution
+from probjax.distributions import Distribution
 
 
 def estimate_ratio_bound(

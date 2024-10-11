@@ -1,16 +1,14 @@
-import jax
-import jax.numpy as jnp
-
-from probjax.distributions.divergences.divergence import register_divergence, divergence
-from probjax import distributions as dist
-
 from functools import partial
 
+import jax
+import jax.numpy as jnp
 from jax.scipy.optimize import minimize
-
 from ott.geometry import costs, pointcloud
 from ott.problems.linear import linear_problem
 from ott.solvers.linear import sinkhorn
+
+from probjax import distributions as dist
+from probjax.distributions.divergences.divergence import divergence, register_divergence
 
 __all__ = ["wasserstein_distance"]
 
@@ -34,7 +32,7 @@ def sliced_wasserstein_distance(
         num_slices=num_slices,
         key=key,
         order=order,
-        **kwargs
+        **kwargs,
     )
 
 
@@ -49,7 +47,7 @@ def max_slice_wasserstein_distance(
         num_slices=num_slices,
         key=key,
         order=order,
-        **kwargs
+        **kwargs,
     )
 
 

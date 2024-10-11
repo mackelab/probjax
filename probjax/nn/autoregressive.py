@@ -1,14 +1,12 @@
-import haiku as hk
-import jax
-import jax.numpy as jnp
+from typing import Callable, List
 
+import haiku as hk
+import jax.numpy as jnp
 from haiku.nets import MLP
 from jaxtyping import Array, PyTree
 
-from typing import Callable, Any, List
-
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
-from probjax.core.transformation import inverse_and_logabsdet, inverse
+from probjax.core.transformation import inverse_and_logabsdet
 
 
 def autoregressive_mask_getter(d: int, first_layer: bool = False):
@@ -41,7 +39,9 @@ def autoregressive_mask_getter(d: int, first_layer: bool = False):
             else:
                 return next_getter(value)
         elif isinstance(module, hk.ConvND):
-            raise NotImplementedError("Convolutional layers are not supported, currently")
+            raise NotImplementedError(
+                "Convolutional layers are not supported, currently"
+            )
         else:
             raise NotImplementedError("Only Linear layers are supported, currently")
 
@@ -131,7 +131,7 @@ class AutoregressiveMLP:
         bijector: Callable,
         num_bijector_params: int,
         hidden_dims: List[int] = [50, 50],
-        **kwargs
+        **kwargs,
     ):
         self.output_sizes = hidden_dims + [num_bijector_params]
         self.conditionor = MaskedMLP(

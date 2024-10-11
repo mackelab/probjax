@@ -1,13 +1,10 @@
-import jax
-import jax.numpy as jnp
-
-import haiku as hk
-
-from jaxtyping import Array, PyTree
 from typing import Callable, Optional
 
-from .attention import MultiHeadAttention
+import haiku as hk
+import jax
+from jaxtyping import Array
 
+from .attention import MultiHeadAttention
 
 # B -> batch size
 # T -> sequence length
@@ -88,7 +85,7 @@ class Transformer(hk.Module):
             # Then the dense block.
             h = self.layer_norm(h)
             h_dense = self.dense_block(h, context)
-            
+
             if self.skip_connection_mlp:
                 h = h + h_dense
             else:
@@ -124,16 +121,16 @@ class Transformer(hk.Module):
 
     @hk.transparent
     def dense_block(self, x: Array, context: Optional[Array] = None) -> Array:
-        
         model_size = x.shape[-1]
         hidden_block = []
         for _ in range(self.num_hidden_layers):
-            hidden_block.append(hk.Linear(self.widening_factor * model_size, w_init=self.initializer))
+            hidden_block.append(
+                hk.Linear(self.widening_factor * model_size, w_init=self.initializer)
+            )
             hidden_block.append(self.act)
         dense_block = hk.Sequential(
             hidden_block
-            +
-            [
+            + [
                 hk.Linear(model_size, w_init=self.initializer),
             ]
         )

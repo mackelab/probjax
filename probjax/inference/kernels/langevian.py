@@ -1,28 +1,19 @@
-from functools import partial
+from typing import Any, Callable, NamedTuple, Tuple
+
+import blackjax
+import jax
+from blackjax.mcmc.mala import MALAInfo, MALAState
 from chex import PRNGKey
 from jaxtyping import Array, PyTree
 
-
-import jax
-from typing import Any, Callable, NamedTuple, Optional, Tuple
-
-
-import jax.numpy as jnp
-from jax.flatten_util import ravel_pytree
-
 from probjax.inference.kernels.base import MCMCKernel
-
-import blackjax
-from blackjax.mcmc.mala import MALAState, MALAInfo
-
 
 
 class MALAParams(NamedTuple):
     step_size: float
-    
-    
-class MALAKernel(MCMCKernel):
 
+
+class MALAKernel(MCMCKernel):
     params: MALAParams
 
     def __init__(
@@ -51,6 +42,7 @@ class MALAKernel(MCMCKernel):
 
     def __call__(self, key: PRNGKey, state: MALAState) -> Tuple[MALAState, MALAInfo]:
         return self.update_fn(key, state, self.logdensity_fn, *self.params)
+
 
 # TODO ULA kernel
 

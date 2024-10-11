@@ -1,8 +1,5 @@
 import numpy as np
 from torch.utils import data
-from torchvision.datasets import MNIST
-
-from jax import numpy as jnp
 
 
 def numpy_collate(batch):
@@ -42,5 +39,3 @@ class NumpyLoader(data.DataLoader):
             timeout=timeout,
             worker_init_fn=worker_init_fn,
         )
-
-

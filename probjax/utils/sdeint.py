@@ -1,20 +1,15 @@
+from functools import partial
+from typing import Callable, Optional, Union
+
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
-
 from jax import lax
-from jax import core
-from jax.tree_util import tree_leaves
-
-from functools import partial
-from jaxtyping import Array, Float, PyTree, Int
-from typing import Callable, Optional, Union
 from jax.random import PRNGKey
-
+from jaxtyping import Array, Float, Int
 
 from probjax.utils.brownian import get_iterated_integrals_fn
-from probjax.utils.linalg import is_matrix, is_triangular_matrix
-
+from probjax.utils.linalg import is_triangular_matrix
 
 METHOD_STEP_FN = {}
 METHOD_INFO = {}
@@ -238,22 +233,18 @@ def explicit_stochastic_runge_kutta_step(
         yi1 = (
             y0
             + jnp.dot(A0[i, :], k1) * dt
-            + 1/d * jnp.einsum(reduction_dWt, B0[i, :], k2, dWt)
+            + 1 / d * jnp.einsum(reduction_dWt, B0[i, :], k2, dWt)
         )
 
         yi2 = y0 + jnp.dot(A1[i, :], k1) * dt
 
         yi2 = jnp.broadcast_to(yi2, (m,) + yi2.shape)
 
-    
-
         for k in range(m):
-            
             res = jnp.einsum(
                 reduction_dWt, B1[i, :], k2, jnp.atleast_1d(dWtdWs[k, ...])
             ) / jnp.sqrt(dt)
             yi2 = yi2.at[k, ...].add(res)
-
 
         ft = drift(ti1, yi1)
         gt = diffusion_vec(ti2, yi2)
@@ -271,8 +262,8 @@ def explicit_stochastic_runge_kutta_step(
     y1 = (
         y0
         + jnp.dot(b_sol, k1) * dt
-        + 1/d*jnp.einsum(reduction_dWt, gamma0, k2, dWt)
-        + 1/d*jnp.einsum(reduction_dWt, gamma1, k2, dtsqrt_vec)
+        + 1 / d * jnp.einsum(reduction_dWt, gamma0, k2, dWt)
+        + 1 / d * jnp.einsum(reduction_dWt, gamma1, k2, dtsqrt_vec)
     )
 
     f1 = drift(t0 + dt, y1)

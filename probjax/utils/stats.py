@@ -1,15 +1,11 @@
+
 import jax.numpy as jnp
-import jax
-import math
-
-
-
 
 # Scipy stats implementation missing in JAX
 
 
-
 # Estimate the differential entropy of a continuous random variable.
+
 
 def differential_entropy(values, window_length=None, base=None, axis=0, method="auto"):
     values = jnp.asarray(values)

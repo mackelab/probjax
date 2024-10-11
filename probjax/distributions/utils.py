@@ -1,9 +1,8 @@
+from functools import total_ordering
+
 import jax
 import jax.numpy as jnp
 
-from jax.tree_util import tree_flatten, tree_unflatten
-
-from functools import total_ordering
 
 def _precision_to_scale_tril(P):
     Lf = jax.lax.cholesky(jnp.flip(P, (-2, -1)))

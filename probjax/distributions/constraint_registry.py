@@ -1,29 +1,25 @@
 import jax
-from jax import lax
-
 import jax.numpy as jnp
+from jax import lax
 
 from .constraints import (
     Constraint,
-    real,
     integer,
-    boolean,
-    interval,
-    unit_square,
-    unit_interval,
-    positive,
-    strict_positive,
-    negative,
-    strict_negative,
-    positive_integer,
-    negative_integer,
-    strict_positive_integer,
-    strict_negative_integer,
-    unit_integer_interval,
-    simplex,
     matrix,
-    square_matrix,
+    negative,
+    negative_integer,
+    positive,
     positive_definite_matrix,
+    positive_integer,
+    real,
+    simplex,
+    square_matrix,
+    strict_negative,
+    strict_negative_integer,
+    strict_positive,
+    strict_positive_integer,
+    unit_interval,
+    unit_square,
 )
 
 __all__ = [

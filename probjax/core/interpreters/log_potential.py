@@ -1,13 +1,12 @@
 import math
+from typing import Dict, Sequence
 
 import jax
-from jax.core import JaxprEqn, Jaxpr, eval_jaxpr
+from jax.core import Jaxpr, JaxprEqn, eval_jaxpr
 from jaxtyping import Array
 
-from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
 from probjax.core.custom_primitives.random_variable import rv_p
-
-from typing import Callable, Sequence, Optional, Dict
+from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
 
 
 def potential_cost_fn(
@@ -40,9 +39,10 @@ def extract_random_vars_values(jaxpr: Jaxpr, joint_samples: Dict[str, Array]):
                 values.append(joint_samples[name])
             else:
                 vars.extend(eqn.invars)
-                values.extend([jax.numpy.zeros(shape=v.aval.shape, dtype=v.aval.dtype) for v in eqn.invars])
-            
-            
+                values.extend([
+                    jax.numpy.zeros(shape=v.aval.shape, dtype=v.aval.dtype)
+                    for v in eqn.invars
+                ])
 
     return vars, values
 
@@ -54,7 +54,8 @@ class LogPotentialProcessingRule(ForwardProcessingRule):
 
     def __init__(self, joint_samples: Dict[str, Array]):
         self.joint_samples = joint_samples
-        #print(self.joint_samples)
+        # print(self.joint_samples)
+
     def __call__(
         self,
         eqn: JaxprEqn,
@@ -72,10 +73,12 @@ class LogPotentialProcessingRule(ForwardProcessingRule):
                 outvars, outvals = super().__call__(eqn, in_known, out_known)
             # But we still have to compute the log_prob
             in_known = list(in_known)
-            #print(name, outvals)
+            # print(name, outvals)
             for i in range(len(in_known)):
-                if hasattr(in_known[i],"dtype") and jax._src.dtypes.issubdtype(in_known[i].dtype, jax._src.dtypes.prng_key):
-                    in_known[i] = outvals[0] # From where do I know this?
+                if hasattr(in_known[i], "dtype") and jax._src.dtypes.issubdtype(
+                    in_known[i].dtype, jax._src.dtypes.prng_key
+                ):
+                    in_known[i] = outvals[0]  # From where do I know this?
             log_prob_fn = eqn.params["log_prob_fn_jaxpr"]
             self.log_prob += eval_jaxpr(
                 log_prob_fn.jaxpr, log_prob_fn.consts, *in_known

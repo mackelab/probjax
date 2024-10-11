@@ -1,17 +1,17 @@
 from functools import partial
+from typing import Tuple
+
 import jax
 import jax.numpy as jnp
 from jax import lax
-
-from jaxtyping import Array, Float
-from typing import Tuple
-
 from jax.scipy.linalg import expm
+from jaxtyping import Array, Float
+
 
 def cholesky_update(L, u):
     """
     Update the Cholesky decomposition of a matrix after a rank-1 update i.e.
-    
+
     C = L @ L.T + multiplier * u @ u.T
 
     Args:
@@ -26,21 +26,21 @@ def cholesky_update(L, u):
 
     def body_fun(i, vals):
         L, u = vals
-        r = jnp.sqrt(L[i, i]**2 + u[i]**2)
+        r = jnp.sqrt(L[i, i] ** 2 + u[i] ** 2)
         c = r / L[i, i]
         s = u[i] / L[i, i]
         L = L.at[i, i].set(r)
 
         mask = indices > i
         col_update = (L[:, i] + s * u) / c
-        col_update = jnp.where(mask, col_update, L[:,i])
+        col_update = jnp.where(mask, col_update, L[:, i])
         L = L.at[:, i].set(col_update)
         u_update = c * u - s * L[:, i]
         u = jnp.where(mask, u_update, u)
 
         return (L, u)
 
-    L,u = jax.lax.fori_loop(0, D, body_fun, (L,u))        
+    L, u = jax.lax.fori_loop(0, D, body_fun, (L, u))
 
     return L
 
@@ -94,7 +94,7 @@ def is_diagonal_matrix(A: Array, axis1=-2, axis2=-1) -> bool:
         bool: True if A is a diagonal matrix, or a batch of diagonal matrices
     """
     return is_matrix(A) and jnp.all(
-        A == jnp.diag(jnp.diagonal(A, axis1=axis1, axis2=axis2)), axis=(axis1, axis2)
+        jnp.diag(jnp.diagonal(A, axis1=axis1, axis2=axis2)) == A, axis=(axis1, axis2)
     )
 
 
@@ -109,7 +109,7 @@ def is_triangular_matrix(A: Array, lower: bool = True) -> bool:
         bool: True if A is a triangular matrix, or a batch of triangular matrices
     """
     return is_matrix(A) and jnp.all(
-        A == jnp.tril(A) if lower else jnp.triu(A), axis=(-2, -1)
+        jnp.tril(A) == A if lower else jnp.triu(A), axis=(-2, -1)
     )
 
 
@@ -135,7 +135,7 @@ def batch_mahalanobis(bL: Array, bx: Array) -> Array:
     shape, but `bL` one should be able to broadcasted to `bx` one.
     """
     bL = jnp.broadcast_to(bL, bx.shape[:-1] + bL.shape[-2:])
-    
+
     sol = lax.linalg.triangular_solve(bL, bx, lower=True, transpose_a=True)
     return jnp.sum(sol**2, axis=-1)
 

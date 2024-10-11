@@ -1,9 +1,9 @@
-from probjax.distributions.utils import Match
-from probjax.distributions import Distribution
-from probjax import distributions as dist
+import warnings
 
 import jax
-import warnings
+
+from probjax.distributions import Distribution
+from probjax.distributions.utils import Match
 
 __all__ = ["register_divergence", "divergence"]
 
@@ -112,7 +112,7 @@ def divergence(
     try:
         fun = _DIV_MEMOIZE[name][type(p), type(q)]
     except KeyError:
-        fun = _dispatch(name,type(p), type(q))
+        fun = _dispatch(name, type(p), type(q))
         _DIV_MEMOIZE[name][type(p), type(q)] = fun
     if fun is NotImplemented:
         raise NotImplementedError(

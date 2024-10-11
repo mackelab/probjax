@@ -1,17 +1,10 @@
-import jax
-import jax.numpy as jnp
-
-from jax.typing import ArrayLike
 from typing import Callable, NamedTuple, Optional, Tuple
 
-from probjax.inference.filtering.base import FilterState, FilterInfo, FilterAPI
-from probjax.inference.smc.resampling import (
-    resample_systematic,
-    resample_multinomial,
-    resample_residual,
-    resample_ot,
-)
-from blackjax.smc.ess import ess
+import jax
+import jax.numpy as jnp
+from jax.typing import ArrayLike
+
+from probjax.inference.filtering.base import FilterAPI
 
 
 class UncentedKalmanFilterState(NamedTuple):
@@ -154,7 +147,7 @@ def build_kernel(
         observed: Optional[ArrayLike] = None,
         rng_key: Optional[jnp.ndarray] = None,
     ) -> Tuple[UncentedKalmanFilterState, UncentedKalmanFilterInfo]:
-        """ One step of the unscented Kalman filter.
+        """One step of the unscented Kalman filter.
 
         Args:
             state (UncentedKalmanFilterState): Mean and covariance of the state
@@ -172,7 +165,7 @@ def build_kernel(
         is_observed = observed is not None
 
         sigma_points, weights_mean, weights_cov = sigma_point_fn(mu0, cov0)
-        predicted_sigma_points = jax.vmap(transition_fn, in_axes=(0, None,None))(
+        predicted_sigma_points = jax.vmap(transition_fn, in_axes=(0, None, None))(
             sigma_points, t_old, t
         )
         if isinstance(transition_covariance_matrix, Callable):
@@ -219,7 +212,7 @@ def build_kernel(
             )
         else:
             log_likelihood = jnp.array(0.0)
-            return UncentedKalmanFilterState(mu1_, cov1_,t), UncentedKalmanFilterInfo(
+            return UncentedKalmanFilterState(mu1_, cov1_, t), UncentedKalmanFilterInfo(
                 mu1_, cov1_, log_likelihood
             )
 

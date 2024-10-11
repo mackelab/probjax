@@ -1,32 +1,23 @@
 import jax
-
 import jax.numpy as jnp
 
 jax.numpy.set_printoptions(precision=3, suppress=True)
-from jax import core
-
-from jax._src import linear_util as lu
 from functools import partial, update_wrapper
-
-from jax.tree_util import tree_flatten, tree_unflatten, tree_leaves, tree_map
-from jax.interpreters import ad, batching
-from jax._src import ad_util
-
-from jax.core import Primitive, CallPrimitive
-from jax._src.util import weakref_lru_cache, cache
-from jax._src import util
-
 from typing import Any, Callable
-from jax._src.util import safe_map
+
+from jax import core
+from jax._src import ad_util
+from jax._src import linear_util as lu
 from jax._src.api_util import (
-    flatten_fun_nokwargs,
     argnums_partial,
     flatten_fun_nokwargs,
     shaped_abstractify,
 )
-
-from jax.interpreters import mlir
+from jax._src.util import safe_map
+from jax.core import Primitive
+from jax.interpreters import ad, batching, mlir
 from jax.interpreters import partial_eval as pe
+from jax.tree_util import tree_flatten, tree_unflatten
 
 # This is a custom primitive that allows us to define custom inverse functions
 # While most stuff can be inverted by inverting all primitives for some functions it is necessary or more efficient to define a custom inverse function
@@ -238,13 +229,11 @@ class custom_inverse:
             dyn_args = args
             dyn_args_index = tuple(i for i in range(len(args)))
         else:
-            dyn_args_index = tuple(
-                [
-                    i
-                    for i in range(len(args))
-                    if i not in self.static_argnums  # or not is_hashable(args[i])
-                ]
-            )
+            dyn_args_index = tuple([
+                i
+                for i in range(len(args))
+                if i not in self.static_argnums  # or not is_hashable(args[i])
+            ])
 
             f, dyn_args = argnums_partial(
                 f, dyn_args_index, args, require_static_args_hashable=True
@@ -258,7 +247,6 @@ class custom_inverse:
         # Flatt stuff for tracing
         args_flat, in_tree = tree_flatten(dyn_args)
         in_avals = tuple(safe_map(shaped_abstractify, args_flat))
-
 
         forward_jaxpr, inverse_jaxpr, out_tree = trace_forward_inverse(
             f,
