@@ -1,148 +1,148 @@
 from typing import Callable, NamedTuple, Optional, Tuple
 
 import blackjax
-import jax
 import jax.numpy as jnp
 from blackjax.mcmc.hmc import HMCInfo, HMCState
 from chex import PRNGKey
 from jax.flatten_util import ravel_pytree
+from jax.typing import ArrayLike
 from jaxtyping import Array, PyTree
 
-from probjax.inference.kernels.base import MCMCKernel
+from probjax.inference.kernels.base import MarkovKernelAPI
 
 
 class HMCParams(NamedTuple):
-    step_size: float
-    inverse_mass_matrix: Array
+    step_size: ArrayLike
+    inverse_mass_matrix: ArrayLike
 
 
-class HMCKernel(MCMCKernel):
-    params: HMCParams
+def init_params(
+    position: PyTree,
+    step_size: float = 0.5,
+    inverse_mass_matrix: Optional[Array] = None,
+) -> HMCParams:
+    """Initialize the parameters for the HMC kernel.
 
-    def __init__(
-        self,
-        logdensity_fn: Callable,
-        step_size: float = 1e-2,
-        num_integration_steps: int = 10,
-        inverse_mass_matrix: Optional[Array] = None,
-        is_mass_matrix_diagonal: bool = True,
-    ) -> None:
-        self.logdensity_fn = logdensity_fn
-        self.num_integration_steps = num_integration_steps
+    Args:
+        position (PyTree): Position of the chain.
+        step_size (float): Default step size for the HMC kernel. Defaults to 0.5.
+        inverse_mass_matrix (Optional[Array], optional): Inverse mass matrix.
+            Defaults to None i.e. identity matrix (as diagonal!).
 
-        self._inital_step_size = step_size
-        self._inital_inverse_mass_matrix = inverse_mass_matrix
-        if inverse_mass_matrix is not None:
-            if len(inverse_mass_matrix.shape) == 1:
-                self.is_mass_matrix_diagonal = True
-            else:
-                self.is_mass_matrix_diagonal = False
-        else:
-            self.is_mass_matrix_diagonal = is_mass_matrix_diagonal
+    Raises:
+        ValueError: If the dimension of the inverse mass matrix does not match
+            the dimension of the position.
 
-        self.init_fn = blackjax.hmc.init
-        self.update_fn = blackjax.hmc.build_kernel()
+    Returns:
+        HMCParams: Parameters for the HMC kernel.
+    """
+    flat_position, _ = ravel_pytree(position)
+    dim = flat_position.shape[0]
+    if inverse_mass_matrix is None:
+        inverse_mass_matrix = jnp.ones((dim,))
+    else:
+        if inverse_mass_matrix.shap[0] != dim:
+            raise ValueError(
+                "The dimension of the inverse mass matrix must match the dimension"
+                " of the position."
+            )
+    return HMCParams(
+        step_size=step_size,
+        inverse_mass_matrix=inverse_mass_matrix,
+    )
 
-    def init_params(self, position: PyTree):
-        flat_position, _ = ravel_pytree(position)
-        dim = flat_position.shape[0]
-        if self._inital_inverse_mass_matrix is None:
-            if self.is_mass_matrix_diagonal:
-                inverse_mass_matrix = jnp.ones((dim,))
-            else:
-                inverse_mass_matrix = jnp.eye(dim)
-        else:
-            inverse_mass_matrix = self.inverse_mass_matrix
 
-        self.params = HMCParams(
-            step_size=self._inital_step_size, inverse_mass_matrix=inverse_mass_matrix
+def build_kernel(
+    logdensity_fn: Callable,
+    num_integration_steps: int = 10,
+    integrator: Callable = blackjax.mcmc.integrators.velocity_verlet,
+    divergence_threshold: float = 1000.0,
+):
+    """Build the HMC kernel.
+
+    Args:
+        logdensity_fn (Callable): The log density function.
+        num_integration_steps (int, optional): Number of integration steps.
+            Defaults to 10.
+        integrator (Callable, optional): The integrator to use. Defaults to
+            blackjax.integrators.velocity_verlet.
+        divergence_threshold (float, optional): The threshold for the divergence
+            check. Defaults to 1000.0.
+
+    """
+    kernel = blackjax.hmc.build_kernel(integrator, divergence_threshold)
+
+    def step(
+        key: PRNGKey,
+        state: HMCState,
+        params: HMCParams,
+    ) -> Tuple[HMCState, HMCInfo]:
+        return kernel(
+            key,
+            state,
+            logdensity_fn,
+            step_size=params.step_size,
+            inverse_mass_matrix=params.inverse_mass_matrix,
+            num_integration_steps=num_integration_steps,
         )
 
+    return step
+
+
+def build_adaption(
+    logdensity_fn: Callable,
+    num_integration_steps: int = 10,
+    integrator: Callable = blackjax.mcmc.integrators.velocity_verlet,
+    divergence_threshold: float = 1000.0,
+):
+    """Build parameter adaption method for the HMC kernel."""
+
     def adapt_params(
-        self,
         key: PRNGKey,
         position: Array,
-        num_steps: int = 100,
-        target_acceptance_rate: float = 0.8,
+        init_params,
+        num_steps: int,
         method: str = "window",
+        target_acceptance_rate: float = 0.8,
     ):
         if method == "window":
             adaption_alg = blackjax.window_adaptation(
                 blackjax.hmc,
-                self.logdensity_fn,
-                initial_step_size=self._inital_step_size,
-                num_integration_steps=self.num_integration_steps,
-                is_mass_matrix_diagonal=self.is_mass_matrix_diagonal,
+                logdensity_fn,
+                initial_step_size=init_params.step_size,
+                num_integration_steps=num_integration_steps,
                 target_acceptance_rate=target_acceptance_rate,
+                adaptation_info_fn=lambda *args, **kwargs: None,
+                integrator=integrator,
+                divergence_threshold=divergence_threshold,
             )
         elif method == "pathfinder":
             adaption_alg = blackjax.pathfinder_adaptation(
                 blackjax.hmc,
-                self.logdensity_fn,
-                initial_step_size=self._inital_step_size,
-                num_integration_steps=self.num_integration_steps,
+                logdensity_fn,
+                initial_step_size=init_params.step_size,
+                num_integration_steps=num_integration_steps,
                 target_acceptance_rate=target_acceptance_rate,
+                adaptation_info_fn=lambda *args, **kwargs: None,
+                integrator=integrator,
+                divergence_threshold=divergence_threshold,
             )
         else:
             raise ValueError(f"Adaption method {method} not supported")
 
-        results, info = jax.jit(adaption_alg.run, static_argnums=(2,))(
-            key, position, num_steps
+        adaption_state, _ = adaption_alg.run(key, position, num_steps)
+        state = adaption_state.state
+        params = HMCParams(
+            step_size=adaption_state.parameters["step_size"],
+            inverse_mass_matrix=adaption_state.parameters["inverse_mass_matrix"],
         )
-        self.params = HMCParams(
-            step_size=results.parameters["step_size"],
-            inverse_mass_matrix=results.parameters["inverse_mass_matrix"],
-        )
-        state = results.state
-        return state, info
+        return state, params
 
-    def init_state(self, position: Array) -> HMCState:
-        self.init_params(position)
-        state = self.init_fn(position, self.logdensity_fn)
-        return state
-
-    def __call__(self, key: PRNGKey, state: HMCState) -> Tuple[HMCState, HMCInfo]:
-        new_state, info = self.update_fn(
-            key,
-            state,
-            self.logdensity_fn,
-            num_integration_steps=self.num_integration_steps,
-            *self.params,
-        )
-        return new_state, info
+    return adapt_params
 
 
-class NUTSKernel(HMCKernel):
-    def __init__(
-        self,
-        logdensity_fn: Callable,
-        step_size: float = 1e-2,
-        max_treedepth: int = 10,
-        inverse_mass_matrix: Optional[Array] = None,
-        is_mass_matrix_diagonal: bool = True,
-    ) -> None:
-        super().__init__(
-            logdensity_fn,
-            step_size,
-            num_integration_steps=1,
-            inverse_mass_matrix=inverse_mass_matrix,
-            is_mass_matrix_diagonal=is_mass_matrix_diagonal,
-        )
-        self.max_treedepth = max_treedepth
-        self.init_fn = blackjax.nuts.init
-        self.update_fn = blackjax.nuts.build_kernel()
-
-    def init_state(self, position: Array) -> HMCState:
-        self.init_params(position)
-        state = self.init_fn(position, self.logdensity_fn)
-        return state
-
-    def __call__(self, key: PRNGKey, state: HMCState) -> Tuple[HMCState, HMCInfo]:
-        new_state, info = self.update_fn(
-            key,
-            state,
-            self.logdensity_fn,
-            # max_treedepth=self.max_treedepth,
-            *self.params,
-        )
-        return new_state, info
+class HMC(MarkovKernelAPI):
+    init = blackjax.hmc.init
+    init_params = init_params
+    build_kernel = build_kernel
+    build_adaptation = build_adaption

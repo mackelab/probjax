@@ -43,7 +43,7 @@ def symbolify(fun: Callable):
     return wrapped
 
 
-def lambdaify(expr: sympy.Expr, static_symbols: Optional[dict] = None):
+def lambdafy(expr: sympy.Expr, static_symbols: Optional[dict] = None):
     if static_symbols is not None:
         expr = expr.subs(**static_symbols)
 
