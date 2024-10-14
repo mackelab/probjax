@@ -1,77 +1,66 @@
-from typing import Any, Callable, NamedTuple, Tuple
+from typing import Callable, NamedTuple, Tuple
 
 import blackjax
-import jax
 from blackjax.mcmc.mala import MALAInfo, MALAState
 from chex import PRNGKey
-from jaxtyping import Array, PyTree
+from jaxtyping import PyTree
 
-from probjax.inference.kernels.base import MCMCKernel
+from probjax.inference.kernels.adaptation import step_size_adaption
+from probjax.inference.kernels.base import MarkovKernelAPI
 
 
 class MALAParams(NamedTuple):
     step_size: float
 
 
-class MALAKernel(MCMCKernel):
-    params: MALAParams
+def build_kernel(logdensity_fn: Callable) -> Callable:
+    kernel = blackjax.mala.build_kernel()
 
-    def __init__(
-        self,
-        logdensity_fn: Callable,
-        step_size: float = 1e-3,
-    ) -> None:
-        self.logdensity_fn = logdensity_fn
-        self.step_size = step_size
-        self.init_fn = blackjax.mala.init
-        self.update_fn = blackjax.mala.build_kernel()
-
-    def init_params(self, position: PyTree):
-        params = MALAParams(step_size=self.step_size)
-        self.params = params
-        return params
-
-    def init_state(self, position: PyTree) -> MALAState:
-        self.init_params(position)
-        return self.init_fn(position, self.logdensity_fn)
-
-    def adapt_params(
-        self, key: PRNGKey, position: PyTree, num_steps: int = 100, **kwargs: Any
+    def step(
+        key: PRNGKey, state: MALAState, params: MALAParams
     ) -> Tuple[MALAState, MALAInfo]:
-        raise NotImplementedError("adapt_params method must be implemented")
+        return kernel(
+            key, state, logdensity_fn=logdensity_fn, step_size=params.step_size
+        )
 
-    def __call__(self, key: PRNGKey, state: MALAState) -> Tuple[MALAState, MALAInfo]:
-        return self.update_fn(key, state, self.logdensity_fn, *self.params)
-
-
-# TODO ULA kernel
+    return step
 
 
-def init(position: Array, logdensity_fn: Callable) -> MALAState:
-    grad_fn = jax.value_and_grad(logdensity_fn)
-    logdensity, logdensity_grad = grad_fn(position)
-    return MALAState(position, logdensity, logdensity_grad)
+def build_adaptation(
+    logdensity_fn: Callable,
+) -> Callable:
+    def adapt_parms(
+        key: PRNGKey,
+        position: PyTree,
+        params: MALAParams,
+        num_steps: int = 100,
+        target_acceptance_rate: float = 0.65,
+        t0: int = 10,
+        gamma: float = 0.05,
+        kappa: float = 0.75,
+    ) -> Tuple[MALAState, MALAInfo]:
+        adaption_alg = step_size_adaption(
+            MALA,
+            logdensity_fn,
+            params,
+            target_acceptance_rate=target_acceptance_rate,
+            t0=t0,
+            gamma=gamma,
+            kappa=kappa,
+        )
+
+        out, _ = adaption_alg.run(key, position, num_steps)
+        return out.state, out.parameters
+
+    return adapt_parms
 
 
-def build_kernel() -> Callable:
-    def kernel(
-        rng_key: PRNGKey, state: MALAState, logdensity_fn: Callable, step_size: float
-    ) -> tuple[MALAState, MALAInfo]:
-        """Generate a new sample with the MALA kernel."""
-        grad_fn = jax.value_and_grad(logdensity_fn)
-        integrator = diffusions.overdamped_langevin(grad_fn)
+def init_params(position: PyTree, step_size: float = 1e-2) -> MALAParams:
+    return MALAParams(step_size=step_size)
 
-        key_integrator, key_rmh = jax.random.split(rng_key)
 
-        new_state = integrator(key_integrator, state, step_size)
-        new_state = MALAState(*new_state)
-
-        log_p_accept = compute_acceptance_ratio(state, new_state, step_size=step_size)
-        accepted_state, info = sample_proposal(key_rmh, log_p_accept, state, new_state)
-        do_accept, p_accept, _ = info
-
-        info = MALAInfo(p_accept, do_accept)
-
-        return accepted_state, info
-
-    return kernel
+class MALA(MarkovKernelAPI):
+    init = blackjax.mala.init
+    build_kernel = build_kernel
+    init_params = init_params
+    build_adaptation = build_adaptation

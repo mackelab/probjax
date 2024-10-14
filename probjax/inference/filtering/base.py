@@ -35,9 +35,9 @@ class FilterKernel(NamedTuple):
         state: FilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng_key: Optional[ArrayLike] = None,
+        rng: Optional[ArrayLike] = None,
     ) -> Tuple[FilterState, FilterInfo]:
-        return self.step(state, t, observed, rng_key)
+        return self.step(state, t, observed, rng)
 
 
 class FilterAPI(metaclass=API):
