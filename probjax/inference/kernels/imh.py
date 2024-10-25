@@ -24,7 +24,7 @@ def wrap_logpdf(logpdf: Callable) -> Callable:
     return wrapped_logpdf
 
 
-def build_imh_kernel(
+def build_imh_step(
     logdensity_fn: Callable,
     proposal_fn: Callable,
     proposal_logpdf: Callable,
@@ -57,7 +57,7 @@ def build_imh_kernel(
     return step
 
 
-def init_imh_params(position: PyTree) -> IMHParams:
+def init_imh_params(position: PyTree, rng_key=None) -> IMHParams:
     """Generally, there are no parameters to initialize for the IMH kernel."""
     return IMHParams()
 
@@ -65,7 +65,7 @@ def init_imh_params(position: PyTree) -> IMHParams:
 class IMH(MarkovKernelAPI):
     init = blackjax.irmh.init
     init_params = init_imh_params
-    build_kernel = build_imh_kernel
+    build_step = build_imh_step
 
 
 class GaussianIMHParams(NamedTuple):
@@ -114,8 +114,8 @@ def proposal_gaussian_logpdf(state, *, params: GaussianIMHParams):
 
 class GaussianIMH(IMH):
     init_params = init_gaussian_imh_params
-    build_kernel = partial(
-        build_imh_kernel,
+    build_step = partial(
+        build_imh_step,
         proposal_fn=proposal_gaussian,
         proposal_logpdf=proposal_gaussian_logpdf,
     )

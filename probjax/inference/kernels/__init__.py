@@ -1,7 +1,8 @@
-# from probjax.inference.kernels.dynamic_hmc import DynamicHMCKernel
-# from probjax.inference.kernels.elliptical_slice import EllipticalSliceKernel
-# from probjax.inference.kernels.gibbs import gibbs
-# from probjax.inference.kernels.hmc import HMCKernel, NUTSKernel
-# from probjax.inference.kernels.independent_mh import GaussianIMHKernel
-# from probjax.inference.kernels.langevian import MALAKernel
-# from probjax.inference.kernels.metropolis_hasting import GaussianMHKernel
+from probjax.inference.kernels.hmc import HMC, NUTS 
+from probjax.inference.kernels.dynamic_hmc import dHMC
+from probjax.inference.kernels.mh import MH, GaussRWMH
+from probjax.inference.kernels.imh import IMH, GaussianIMH
+from probjax.inference.kernels.mala import MALA
+from probjax.inference.kernels.slice import Slice
+from probjax.inference.kernels.elliptical_slice import EllipticalSlice
+from probjax.inference.kernels.latent_slice import LatentSlice

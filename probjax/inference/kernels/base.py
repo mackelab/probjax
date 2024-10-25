@@ -6,7 +6,14 @@ from jaxtyping import PyTree, Key
 
 from probjax.utils.jaxutils import API
 
-# We will mostly use that of BlackJAX, but we will do some convenience changes
+
+def ignore_kwargs(fn: Callable, *keys) -> Callable:
+    def wrapped_fn(*args, **kwargs):
+        for key in keys:
+            del kwargs[key]
+        return fn(*args, **kwargs)
+
+    return wrapped_fn
 
 
 class Params(NamedTuple):
@@ -38,27 +45,27 @@ class MarkovKernel(NamedTuple):
 
 class MarkovKernelAPI(metaclass=API):
     @staticmethod
-    def init(*args, **kwargs) -> State:
+    def init(position, rng_key: Optional[Key] = None, **kwargs) -> State:
         raise NotImplementedError("init method must be implemented")
 
     @staticmethod
-    def init_params(*args, **kwargs) -> Params:
+    def init_params(position, *args, **kwargs) -> Params:
         raise NotImplementedError("init_params method must be implemented")
 
     @staticmethod
-    def build_kernel(*args, **kwargs) -> Callable:
+    def build_step(*args, **kwargs) -> Callable:
         raise NotImplementedError("build_kernel method must be implemented")
 
     @staticmethod
     def build_adaptation(*args, **kwargs) -> Callable:
         def no_adaptation(*args, **kwargs) -> Tuple[State, Info]:
-            raise NotImplementedError("No adaption method must has been implemented")
+            raise NotImplementedError("No adaption method has been implemented")
 
         return no_adaptation
 
     def __new__(cls, logdensity_fn: Callable, **kwargs) -> MarkovKernel:
         init = partial(cls.init, logdensity_fn=logdensity_fn)
-        step = cls.build_kernel(logdensity_fn, **kwargs)
+        step = cls.build_step(logdensity_fn, **kwargs)
         adapt_params = cls.build_adaptation(logdensity_fn, **kwargs)
 
         return MarkovKernel(logdensity_fn, init, step, cls.init_params, adapt_params)

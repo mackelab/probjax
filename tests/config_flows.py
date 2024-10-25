@@ -4,8 +4,8 @@ import jax.numpy as jnp
 
 from probjax.distributions import Independent, Normal
 from probjax.nn.bijective import rational_quadratic_spline
-from probjax.nn.coupling import CouplingMLP
-from probjax.nn.helpers import Flip, Rotate, SinusoidalEmbedding
+from probjax.nn.nets.coupling import CouplingMLP
+from probjax.nn.utils import Flip, Rotate, SinusoidalEmbedding
 from probjax.utils.odeint import odeint
 
 input_dim = 2

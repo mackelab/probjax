@@ -1,4 +1,4 @@
-from typing import Callable, NamedTuple
+from typing import Callable, NamedTuple, Optional
 
 import blackjax
 import jax
@@ -18,20 +18,23 @@ from probjax.utils.linalg import cholesky_update
 
 def step_size_adaption(
     algorithm,
-    logdensity_fn,
+    logdensity_fn: Callable,
     params,
-    target_acceptance_rate: float = 0.23,
+    target: float,
     adaptation_info_fn=lambda *args, **kwargs: None,
+    target_from_info_fn=lambda info: info.acceptance_rate,
     t0=10,
     gamma=0.05,
     kappa=0.75,
+    init_kwargs: Optional[dict] = None,
+    algorithm_kwargs: Optional[dict] = None,
 ):
     if not hasattr(params, "step_size"):
         raise ValueError("The params object must have a step_size attribute")
 
-    mcmc_step = algorithm(logdensity_fn)
+    mcmc_step = algorithm(logdensity_fn, **algorithm_kwargs if algorithm_kwargs else {})
     adapt_init, adapt_step, adapt_final = dual_averaging_adaptation(
-        target_acceptance_rate,
+        target,
         t0=t0,
         gamma=gamma,
         kappa=kappa,
@@ -40,7 +43,6 @@ def step_size_adaption(
     def one_step(carry, key):
         state, adaption_state = carry
         step_size = jnp.exp(adaption_state.log_step_size)
-        jax.debug.print("{step_size}", step_size=step_size)
         new_params = params._replace(step_size=step_size)
 
         state, info = mcmc_step(
@@ -48,15 +50,17 @@ def step_size_adaption(
             state,
             new_params,
         )
-        adaption_state = adapt_step(adaption_state, info.acceptance_rate)
+        target = target_from_info_fn(info)
+        adaption_state = adapt_step(adaption_state, target)
         adaption_info = adaptation_info_fn(state, info, adaption_state)
         return (state, adaption_state), adaption_info
 
     def run(rng_key, position, num_steps):
-        initial_state = algorithm.init(position, logdensity_fn)
+        initial_state = algorithm.init(
+            position, logdensity_fn, **init_kwargs if init_kwargs else {}
+        )
         initial_step_size = params.step_size
         init_adaptiation_state = adapt_init(initial_step_size)
-        print(init_adaptiation_state)
 
         keys = jax.random.split(rng_key, num_steps)
         init_carry = (initial_state, init_adaptiation_state)
@@ -72,23 +76,20 @@ def step_size_adaption(
 
 
 def step_size_and_scale_adaption(
-    algorithm: blackjax.rmh,
+    algorithm,
     logdensity_fn,
     params,
-    transition_generator_fn,
-    transition_logdensity_fn=None,
     target_acceptance_rate: float = 0.23,
-    inital_step_size: float = 2.34,
     is_diagonal_matrix: bool = True,
+    adaptation_info_fn=lambda *args, **kwargs: None,
     t0=10,
     gamma=0.05,
     kappa=0.75,
-    **kwargs,
 ):
     if not hasattr(params, "step_size") or not hasattr(params, "scale"):
         raise ValueError("The params object must have a step_size and scale attribute")
 
-    mcmc_kernel = algorithm.build_kernel()
+    mcmc_step = algorithm(logdensity_fn)
     adapt_init, adapt_step, adapt_final = dual_averaging_adaptation(
         target_acceptance_rate,
         t0=t0,
@@ -103,36 +104,24 @@ def step_size_and_scale_adaption(
         state, ss_state, sr_state = carry
         step_size = jnp.exp(ss_state.log_step_size)
         scale, _, _ = adapt_final_scale(sr_state)
-        params_dict = params._asdict()
-        params_dict["step_size"] = step_size
-        params_dict["scale"] = scale
-        updated_params = params.__class__(**params_dict)
-        transition_generator = lambda k, x: transition_generator_fn(
-            k, x, updated_params
-        )
-        if transition_logdensity_fn is not None:
-            proposal_logdensity = lambda x, y: transition_logdensity_fn(
-                x, y, updated_params
-            )
-        else:
-            proposal_logdensity = None
-        state, info = mcmc_kernel(
+
+        new_params = params._replace(step_size=step_size, scale=scale)
+
+        state, info = mcmc_step(
             key,
             state,
-            logdensity_fn,
-            transition_generator=transition_generator,
-            proposal_logdensity_fn=proposal_logdensity,
-            **kwargs,
+            new_params,
         )
+
         ss_state = adapt_step(ss_state, info.acceptance_rate)
         sr_state = adapt_step_scale(sr_state, jnp.array(state.position))
-        return (state, ss_state, sr_state), AdaptationInfo(
-            state, info, (ss_state, sr_state)
-        )
+        info = adaptation_info_fn(state, info, (ss_state, sr_state))
+        return (state, ss_state, sr_state), info
 
     def run(rng_key, position, num_steps):
         initial_state = algorithm.init(position, logdensity_fn)
-        ss_state = adapt_init(jnp.log(inital_step_size))
+        initial_step_size = params.step_size
+        ss_state = adapt_init(initial_step_size)
         sr_state = adapt_init_scale(position.shape[0])
 
         keys = jax.random.split(rng_key, num_steps)
@@ -143,7 +132,7 @@ def step_size_and_scale_adaption(
         step_size = adapt_final(final_ss_state)
         scale, _, _ = adapt_final_scale(final_sr_state)
 
-        parameters = {"step_size": step_size, "scale": scale}
+        parameters = params._replace(step_size=step_size, scale=scale)
         result = AdaptationResults(final_state, parameters)
         return result, info
 
@@ -174,10 +163,7 @@ def square_root_algorithm(
         """
         sample_size = 0
         mean = jnp.zeros((n_dims,))
-        if is_diagonal_matrix:
-            L = jnp.ones((n_dims,))
-        else:
-            L = jnp.eye(n_dims)
+        L = jnp.ones((n_dims,)) if is_diagonal_matrix else jnp.eye(n_dims)
         return SquareRootState(mean, L, sample_size)
 
     def update(sq_state: SquareRootState, value: Array) -> SquareRootState:
@@ -208,3 +194,4 @@ def square_root_algorithm(
         return L, sample_size, mean
 
     return init, update, final
+

@@ -13,7 +13,7 @@ class MALAParams(NamedTuple):
     step_size: float
 
 
-def build_kernel(logdensity_fn: Callable) -> Callable:
+def build_step(logdensity_fn: Callable) -> Callable:
     kernel = blackjax.mala.build_kernel()
 
     def step(
@@ -43,7 +43,7 @@ def build_adaptation(
             MALA,
             logdensity_fn,
             params,
-            target_acceptance_rate=target_acceptance_rate,
+            target=target_acceptance_rate,
             t0=t0,
             gamma=gamma,
             kappa=kappa,
@@ -61,6 +61,6 @@ def init_params(position: PyTree, step_size: float = 1e-2) -> MALAParams:
 
 class MALA(MarkovKernelAPI):
     init = blackjax.mala.init
-    build_kernel = build_kernel
+    build_step = build_step
     init_params = init_params
     build_adaptation = build_adaptation
