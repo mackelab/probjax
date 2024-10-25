@@ -1,4 +1,4 @@
-from typing import Any, Callable, NamedTuple, Optional, Tuple
+from typing import Callable, Tuple
 
 import blackjax
 import jax
@@ -6,16 +6,18 @@ import jax.numpy as jnp
 from blackjax.mcmc.dynamic_hmc import DynamicHMCState, halton_trajectory_length
 from blackjax.mcmc.hmc import HMCInfo
 from chex import PRNGKey
-from jax.flatten_util import ravel_pytree
-from jaxtyping import Array, PyTree
+from jaxtyping import Array
 
-from probjax.inference.kernels.base import MCMCKernel
+from probjax.inference.kernels.hmc import (
+    HMC,
+    HMCParams,
+    build_hmc_family_adaption,
+    init_params,
+)
+from probjax.inference.kernels.base import ignore_kwargs
 
 
 def halton_trajectory_length_fns(average_trajectory_length: float):
-    def halton_init_random_arg_fn():
-        return jnp.array(0, dtype=jnp.int32)
-
     def halton_next_random_arg_fn(index: Array):
         return jnp.array(index + 1, dtype=jnp.int32)
 
@@ -23,16 +25,12 @@ def halton_trajectory_length_fns(average_trajectory_length: float):
         return halton_trajectory_length(random_arg, average_trajectory_length)
 
     return (
-        halton_init_random_arg_fn,
         halton_next_random_arg_fn,
         halton_next_integration_steps_fn,
     )
 
 
 def random_trajectory_length_fns(average_trajectory_length: int):
-    def random_init_random_arg_fn():
-        return jax.random.PRNGKey(0)
-
     def random_next_random_arg_fn(random_arg: Array):
         return jax.random.split(random_arg)[1]
 
@@ -42,99 +40,90 @@ def random_trajectory_length_fns(average_trajectory_length: int):
         )
 
     return (
-        random_init_random_arg_fn,
         random_next_random_arg_fn,
         random_next_integration_steps_fn,
     )
 
 
-class DynamicHMCParams(NamedTuple):
-    step_size: float
-    inverse_mass_matrix: Array
-
-
-class DynamicHMCKernel(MCMCKernel):
-    params: DynamicHMCParams
-
-    def __init__(
-        self,
-        logdensity_fn: Callable,
-        step_size: float = 1e-2,
-        average_integration_steps: int = 20,
-        integration_steps_sequence: str = "halton",
-        inverse_mass_matrix: Optional[Array] = None,
-        is_mass_matrix_diagonal: bool = True,
-        init_random_arg_fn: Optional[Callable] = None,
-        next_random_arg_fn: Optional[Callable] = None,
-        integration_steps_fn: Optional[Callable] = None,
-    ) -> None:
-        self.logdensity_fn = logdensity_fn
-        self.num_integration_steps = average_integration_steps
-
-        self._inital_step_size = step_size
-        self._inital_inverse_mass_matrix = inverse_mass_matrix
-        if inverse_mass_matrix is not None:
-            if len(inverse_mass_matrix.shape) == 1:
-                self.is_mass_matrix_diagonal = True
-            else:
-                self.is_mass_matrix_diagonal = False
-        else:
-            self.is_mass_matrix_diagonal = is_mass_matrix_diagonal
-
+def get_dynamic_stepping(integration_steps_sequence, average_integration_steps):
+    if isinstance(integration_steps_sequence, str):
         if integration_steps_sequence == "halton":
-            random_arg_init_fn, random_arg_next_fn, integration_steps_fn = (
-                halton_trajectory_length_fns(average_integration_steps)
+            random_arg_next_fn, integration_steps_fn = halton_trajectory_length_fns(
+                average_integration_steps
             )
         elif integration_steps_sequence == "random":
-            random_arg_init_fn, random_arg_next_fn, integration_steps_fn = (
-                random_trajectory_length_fns(average_integration_steps)
+            random_arg_next_fn, integration_steps_fn = random_trajectory_length_fns(
+                average_integration_steps
             )
-        else:
-            raise ValueError(
-                "Invalid integration_steps_sequence, specify specific functions for init, next and integration_steps_fn"
-            )
+    else:
+        random_arg_next_fn, integration_steps_fn = integration_steps_sequence
 
-        if init_random_arg_fn is not None:
-            random_arg_init_fn = init_random_arg_fn
-        if next_random_arg_fn is not None:
-            random_arg_next_fn = next_random_arg_fn
-        if integration_steps_fn is not None:
-            integration_steps_fn = integration_steps_fn
+    return random_arg_next_fn, integration_steps_fn
 
-        self.random_arg_init_fn = random_arg_init_fn
-        self.random_arg_next_fn = random_arg_next_fn
-        self.integration_steps_fn = integration_steps_fn
 
-        self.init_fn = blackjax.dynamic_hmc.init
-        self.update_fn = blackjax.dynamic_hmc.build_kernel(
-            next_random_arg_fn=self.random_arg_next_fn,
-            integration_steps_fn=self.integration_steps_fn,
+def build_dynamic_hmc_step(
+    logdensity_fn: Callable,
+    average_integration_steps: int = 10,
+    integration_steps_sequence: str = "halton",
+    divergence_threshold: float = 1000.0,
+    integrator: Callable = blackjax.mcmc.integrators.velocity_verlet,
+) -> Callable:
+    random_arg_next_fn, integration_steps_fn = get_dynamic_stepping(
+        integration_steps_sequence, average_integration_steps
+    )
+
+    kernel = blackjax.dynamic_hmc.build_kernel(
+        next_random_arg_fn=random_arg_next_fn,
+        integration_steps_fn=integration_steps_fn,
+        integrator=integrator,
+        divergence_threshold=divergence_threshold,
+    )
+
+    def step(
+        key: PRNGKey,
+        state: DynamicHMCState,
+        params: HMCParams,
+    ) -> Tuple[DynamicHMCState, HMCInfo]:
+        return kernel(
+            key,
+            state,
+            logdensity_fn,
+            step_size=params.step_size,
+            inverse_mass_matrix=params.inverse_mass_matrix,
         )
 
-    def init_params(self, position: PyTree):
-        flat_position, _ = ravel_pytree(position)
-        dim = flat_position.shape[0]
-        if self._inital_inverse_mass_matrix is None:
-            if self.is_mass_matrix_diagonal:
-                inverse_mass_matrix = jnp.ones((dim,))
-            else:
-                inverse_mass_matrix = jnp.eye(dim)
-        self.params = DynamicHMCParams(
-            step_size=self._inital_step_size, inverse_mass_matrix=inverse_mass_matrix
-        )
-        return self.params
+    return step
 
-    def init_state(self, position: PyTree) -> DynamicHMCState:
-        params = self.init_params(position)
-        random_arg = self.random_arg_init_fn()
-        return self.init_fn(position, self.logdensity_fn, random_arg)
 
-    def adapt_params(
-        self, key: PRNGKey, position: PyTree, num_steps: int = 100, **kwargs: Any
-    ) -> Tuple[DynamicHMCState, HMCInfo]:
-        raise NotImplementedError("adapt_params method must be implemented")
+def build_adaption(
+    logdensity_fn: Callable,
+    average_integration_steps: int = 10,
+    integration_steps_sequence: str = "halton",
+    integrator: Callable = blackjax.mcmc.integrators.velocity_verlet,
+) -> Callable:
+    random_arg_next_fn, integration_steps_fn = get_dynamic_stepping(
+        integration_steps_sequence, average_integration_steps
+    )
 
-    def __call__(
-        self, key: PRNGKey, state: DynamicHMCState
-    ) -> Tuple[DynamicHMCState, HMCInfo]:
-        return self.update_fn(key, state, self.logdensity_fn, *self.params)
+    _object = blackjax.dynamic_hmc.copy()
+    _object.build_kernel = lambda integrator: blackjax.dynamic_hmc.build_kernel(
+        next_random_arg_fn=random_arg_next_fn,
+        integration_steps_fn=integration_steps_fn,
+        integrator=integrator,
+    )
+
+    return build_hmc_family_adaption(
+        _object,
+        logdensity_fn,
+        average_integration_steps=average_integration_steps,
+        next_random_arg_fn=random_arg_next_fn,
+        integration_steps_fn=integration_steps_fn,
+        integrator=integrator,
+    )
+
+
+class dHMC(HMC):
+    init = blackjax.dynamic_hmc.init
+    init_params = init_params
+    build_step = build_dynamic_hmc_step
+    build_adaption = build_adaption

@@ -3,6 +3,7 @@ from typing import Callable, NamedTuple, Optional, Tuple
 import blackjax
 import jax.numpy as jnp
 from blackjax.mcmc.hmc import HMCInfo, HMCState
+from blackjax.mcmc.nuts import NUTSInfo
 from chex import PRNGKey
 from jax.flatten_util import ravel_pytree
 from jax.typing import ArrayLike
@@ -52,7 +53,7 @@ def init_params(
     )
 
 
-def build_kernel(
+def build_step(
     logdensity_fn: Callable,
     num_integration_steps: int = 10,
     integrator: Callable = blackjax.mcmc.integrators.velocity_verlet,
@@ -89,11 +90,11 @@ def build_kernel(
     return step
 
 
-def build_adaption(
+def build_hmc_family_adaption(
+    algorithm,
     logdensity_fn: Callable,
-    num_integration_steps: int = 10,
     integrator: Callable = blackjax.mcmc.integrators.velocity_verlet,
-    divergence_threshold: float = 1000.0,
+    **kwargs,
 ):
     """Build parameter adaption method for the HMC kernel."""
 
@@ -107,25 +108,23 @@ def build_adaption(
     ):
         if method == "window":
             adaption_alg = blackjax.window_adaptation(
-                blackjax.hmc,
+                algorithm,
                 logdensity_fn,
                 initial_step_size=init_params.step_size,
-                num_integration_steps=num_integration_steps,
                 target_acceptance_rate=target_acceptance_rate,
                 adaptation_info_fn=lambda *args, **kwargs: None,
                 integrator=integrator,
-                divergence_threshold=divergence_threshold,
+                **kwargs,
             )
         elif method == "pathfinder":
             adaption_alg = blackjax.pathfinder_adaptation(
-                blackjax.hmc,
+                algorithm,
                 logdensity_fn,
                 initial_step_size=init_params.step_size,
-                num_integration_steps=num_integration_steps,
                 target_acceptance_rate=target_acceptance_rate,
                 adaptation_info_fn=lambda *args, **kwargs: None,
                 integrator=integrator,
-                divergence_threshold=divergence_threshold,
+                **kwargs,
             )
         else:
             raise ValueError(f"Adaption method {method} not supported")
@@ -144,5 +143,41 @@ def build_adaption(
 class HMC(MarkovKernelAPI):
     init = blackjax.hmc.init
     init_params = init_params
-    build_kernel = build_kernel
-    build_adaptation = build_adaption
+    build_step = build_step
+    build_adaptation = lambda *args, **kwargs: build_hmc_family_adaption(
+        blackjax.hmc, *args, **kwargs
+    )
+
+
+def build_kernel_nuts(
+    logdensity_fn: Callable,
+    max_num_doublings: int = 10,
+    divergence_threshold: float = 1000.0,
+    integrator: Callable = blackjax.mcmc.integrators.velocity_verlet,
+):
+    kernel = blackjax.nuts.build_kernel(
+        divergence_threshold=divergence_threshold, integrator=integrator
+    )
+
+    def step(
+        key: PRNGKey,
+        state: HMCState,
+        params: HMCParams,
+    ) -> Tuple[HMCState, HMCInfo]:
+        return kernel(
+            key,
+            state,
+            logdensity_fn,
+            step_size=params.step_size,
+            inverse_mass_matrix=params.inverse_mass_matrix,
+            max_num_doublings=max_num_doublings,
+        )
+
+    return step
+
+
+class NUTS(HMC):
+    build_step = build_kernel_nuts
+    build_adaptation = lambda *args, **kwargs: build_hmc_family_adaption(
+        blackjax.nuts, *args, **kwargs
+    )

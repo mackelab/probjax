@@ -3,6 +3,7 @@ from functools import partial
 from typing import Callable, Optional, Sequence, Tuple
 
 import jax
+import jax.experimental
 import jax.numpy as jnp
 from jax._src import linear_util as lu
 from jax._src.flatten_util import ravel_pytree
@@ -20,6 +21,35 @@ class API(type):
     def __repr__(self):
         text = self.__doc__
         return text
+
+
+class WithProgressBarAPI:
+    _print_rate: int = 1000
+    _print_length: int = 50
+    _running_stats = ()
+
+    @staticmethod
+    def _print_progress(cls, iteration, total, stats):
+        print_rate = total // cls._print_rate + 1
+        percent = 100 * ((iteration + print_rate) / float(total))
+
+        percent = min(percent, 100)
+
+        percent = ("{0:." + str(2) + "f}").format(percent)
+
+        filled_length = int(cls._print_length * iteration // total + 1)
+        bar = '█' * filled_length + '-' * (cls._print_length - filled_length)
+
+        progress_bar = f'\rProgress: |{bar}| {percent}%'
+
+        progress_bar += " ".join(
+            f" {name}: {stat:.2f}" for name, stat in zip(cls._running_stats, stats)
+        )
+
+        print(progress_bar, end="\r")
+
+        if iteration == total:
+            print()
 
 
 @lu.transformation
@@ -203,3 +233,49 @@ def _inner_nested_scan(f, init, xs, lengths, scan_fn, checkpoint_fn):
     carry, out = scan_fn(sub_scans, init, xs, lengths[0])
     stacked_out = jax.tree_map(jnp.concatenate, out)
     return carry, stacked_out
+
+
+def print_scan(
+    f,
+    init,
+    init_stats,
+    xs: Optional[Array] = None,
+    length: Optional[int] = None,
+    *,
+    unroll: int = 1,
+    update_stats: Callable = None,
+    print_rate: Optional[int] = None,
+    print_fn: Callable = print,
+):
+    """A version of lax.scan that supports printing the progress of the scan.
+
+    The interface of `print_scan` exactly matches lax.scan, except for
+    the print_rate argument.
+
+    """
+    if length is None:
+        length = xs.shape[0]
+
+    if print_rate is None:
+        print_rate = length // 50 + 1
+
+    num_stats = len(init_stats)
+
+    def scan_fn(carry, x):
+        i, *carry = carry
+        stats, carry = carry[:num_stats], carry[num_stats:]
+        carry, y = f(carry, x)
+        stats = update_stats(stats, carry, y)
+        jax.lax.cond(
+            i % print_rate == 0,
+            lambda: jax.experimental.io_callback(print_fn, None, i, length, stats),
+            lambda: None,
+        )
+        i += 1
+        return (i,) + stats + carry, y
+
+    carry, y = jax.lax.scan(
+        scan_fn, (0,) + init_stats + init, xs, length, unroll=unroll
+    )
+    carry = carry[1 + num_stats :]
+    return carry, y
