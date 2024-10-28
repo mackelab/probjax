@@ -12,7 +12,7 @@ class MLP(nnx.Module, experimental_pytree=True):
         *,
         linear: nnx.Linear | nnx.LoRALinear | nnx.Module = nnx.Linear,
         norm: Optional[nnx.LayerNorm | nnx.BatchNorm | nnx.Module] = None,
-        activation=jax.nn.relu,
+        activation=jax.nn.gelu,
         activate_final: bool = False,
         **kwargs,
     ):

@@ -12,13 +12,13 @@ class MaskedLinear(nnx.Linear):
         super().__init__(in_features, out_features, rngs=rngs, **kwargs)
         if mask.shape != (in_features, out_features):
             raise ValueError("Mask shape must be (in_features, out_features)")
-        self.mask = mask
+        self.mask = nnx.Variable(mask)
 
     def __call__(self, inputs):
-        kernel = self.kernel.value * self.mask
+        kernel = self.kernel.value * self.mask.value
         bias = self.bias.value
 
-        inputs, kernel, bias = nnx.nnx.nn.dtypes.promote_dtype(
+        inputs, kernel, bias = nnx.nn.dtypes.promote_dtype(
             (inputs, kernel, bias), dtype=self.dtype
         )
         y = self.dot_general(

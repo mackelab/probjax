@@ -5,6 +5,8 @@ import flax.nnx as nnx
 import jax.numpy as jnp
 import jax
 
+from probjax.nn.nets.mlp import MLP
+
 
 @jax.vmap
 def binary_operator_diag(q_i, q_j):
@@ -145,7 +147,7 @@ class LRULayer(nnx.Module, experimental_pytree=True):
 
     def __call__(self, inputs):
         x = self.norm(inputs)
-        x = self.lru(x)
+        x = jax.vmap(self.lru)(x)
         x = self.activation(x)
         if self.dropout is not None:
             raise NotImplementedError("Dropout not implemented yet")
@@ -153,3 +155,53 @@ class LRULayer(nnx.Module, experimental_pytree=True):
         if self.dropout is not None:
             raise NotImplementedError("Dropout not implemented yet")
         return x
+
+
+class LRUModel(nnx.Module, experimental_pytree=True):
+    def __init__(
+        self,
+        input_dim: int,
+        model_dim: int,
+        output_dim: int,
+        n_layers: int,
+        rngs,
+        *,
+        bidirectional: bool = True,
+        dropout: Optional[float] = None,
+        norm: nnx.Module = nnx.LayerNorm,
+        activation: Callable = jax.nn.gelu,
+    ):
+        self.bidirectional = bidirectional
+
+        self.in_layer = nnx.Linear(input_dim, model_dim, rngs=rngs)
+        self.out_layer = nnx.Linear(model_dim, output_dim, rngs=rngs)
+        lru_fn = partial(LRU, model_dim, model_dim, model_dim)
+        self.layers = [
+            LRULayer(
+                lru_fn(rngs),
+                model_dim,
+                rngs,
+                dropout=dropout,
+                norm=norm,
+                activation=activation,
+            )
+            for _ in range(n_layers)
+        ]
+        self.mlp_layers = [
+            MLP([model_dim, 2 * model_dim, model_dim], rngs=rngs)
+            for _ in range(n_layers)
+        ]
+
+    def __call__(self, inputs, *args, **kwargs):
+        h = self.in_layer(inputs)
+        for i, (layer, mlp) in enumerate(zip(self.layers, self.mlp_layers)):
+            if self.bidirectional:
+                # Alternate between forward and backward layers
+                h = layer(h) if i % 2 == 0 else layer(h[:, ::-1])[:, ::-1]
+            else:
+                h = layer(h)
+            h_new = mlp(h)
+            h = h + h_new
+
+        out = self.out_layer(h)
+        return out

@@ -11,6 +11,7 @@ from probjax.utils.jaxutils import WithProgressBarAPI, print_scan
 
 class MCMC(WithProgressBarAPI):
     _running_stats = ("acceptance_rate",)
+    _state_gamma = 0.9
 
     def __init__(
         self,
@@ -46,12 +47,17 @@ class MCMC(WithProgressBarAPI):
             return out_state
         else:
             # We need the info, so we need to keep track of the stats
-            info_filter = lambda x: (getattr(x, stat) for stat in self._running_stats)
-            update_stats = lambda stats, _, y: ((0.6 * stats[0] + 0.4 * y[0],),)
+            info_filter = lambda x: tuple([
+                getattr(x, stat) for stat in self._running_stats
+            ])
+            update_stats = lambda stats, _, y: tuple([
+                self._state_gamma * stats[i] + (1 - self._state_gamma) * y[i]
+                for i in range(len(stats))
+            ])
             print_fn = lambda i, total, state: self._print_progress(
                 type(self), i, total, state
             )
-            init_stats = (0.0,)
+            init_stats = tuple([0.0 for _ in self._running_stats])
             (_, out_state), _ = print_scan(
                 scan_fn,
                 carry,

@@ -2,7 +2,7 @@ import functools
 from functools import partial
 from typing import Callable, Optional
 
-import haiku as hk
+
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike

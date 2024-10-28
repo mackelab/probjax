@@ -266,6 +266,7 @@ def print_scan(
         stats, carry = carry[:num_stats], carry[num_stats:]
         carry, y = f(carry, x)
         stats = update_stats(stats, carry, y)
+        
         jax.lax.cond(
             i % print_rate == 0,
             lambda: jax.experimental.io_callback(print_fn, None, i, length, stats),
