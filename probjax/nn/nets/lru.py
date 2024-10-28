@@ -2,8 +2,8 @@ from functools import partial
 from typing import Callable, Optional
 
 import flax.nnx as nnx
-import jax.numpy as jnp
 import jax
+import jax.numpy as jnp
 
 from probjax.nn.nets.mlp import MLP
 

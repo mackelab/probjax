@@ -1,13 +1,13 @@
 from functools import partial
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional
 
 import jax
-from jax import Array
 import jax.numpy as jnp
 from flax import nnx
-from jax.typing import ArrayLike
-from probjax.nn.nets.mlp import MLP
+from jax import Array
+
 from probjax.nn.attention import MultiHeadAttention
+from probjax.nn.nets.mlp import MLP
 
 
 class PosEmbed(nnx.Module, experimental_pytree=True):

@@ -1,4 +1,3 @@
-
 from typing import Callable, NamedTuple, Optional
 
 import jax

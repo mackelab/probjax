@@ -1,9 +1,9 @@
 from probjax.utils.sdeutil.base import (
-    get_method,
-    get_methods,
+    SDEInfo,
     SDESolver,
     SDEState,
-    SDEInfo,
+    get_method,
+    get_methods,
 )
 from probjax.utils.sdeutil.em import euler_maruyama
 from probjax.utils.sdeutil.milstein import milstein

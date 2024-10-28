@@ -62,5 +62,6 @@ def register_method(name: str, step_fn: SDESolverAPI, info: Optional[dict] = Non
 def get_method(name: str):
     return METHOD_STEP_FN[name], METHOD_INFO[name]
 
+
 def get_methods():
     return list(METHOD_STEP_FN.keys())

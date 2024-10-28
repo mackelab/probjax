@@ -114,7 +114,8 @@ def _odeint_adaptive(
         new_state, dt, last_t, interp_coeff = carry
         relative_output_time = (target_t - last_t) / (new_state.t0 - last_t)
         # jax.debug.print(
-        #     "t_target={t_target}, t_last={t_last}, t_next={t_next}, t_rel = {t_rel}, dt={dt}",
+        #     "t_target={t_target}, t_last={t_last}, t_next={t_next}, t_rel = {t_rel},"
+        #     "dt={dt}",
         #     t_target=target_t,
         #     t_last=last_t,
         #     t_next=new_state.t0,

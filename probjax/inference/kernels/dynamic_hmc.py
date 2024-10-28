@@ -14,7 +14,6 @@ from probjax.inference.kernels.hmc import (
     build_hmc_family_adaption,
     init_params,
 )
-from probjax.inference.kernels.base import ignore_kwargs
 
 
 def halton_trajectory_length_fns(average_trajectory_length: float):

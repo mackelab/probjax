@@ -1,13 +1,7 @@
-from functools import partial
 from typing import Callable, Optional, Sequence, Union
 
-import jax
-from jax import Array
-import jax.numpy as jnp
 from flax import nnx
-from jax.typing import ArrayLike
-from probjax.nn.nets.mlp import MLP
-from probjax.nn.attention import MultiHeadAttention
+from jax import Array
 
 
 class ConvNDBlock(nnx.Module, experimental_pytree=True):

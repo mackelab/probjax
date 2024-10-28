@@ -3,7 +3,6 @@ from typing import Callable, NamedTuple, Optional, Tuple
 import blackjax
 import jax.numpy as jnp
 from blackjax.mcmc.hmc import HMCInfo, HMCState
-from blackjax.mcmc.nuts import NUTSInfo
 from chex import PRNGKey
 from jax.flatten_util import ravel_pytree
 from jax.typing import ArrayLike
