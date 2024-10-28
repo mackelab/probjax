@@ -1,15 +1,14 @@
 from functools import partial
-from typing import Callable, Optional, Tuple
+from typing import Callable
 
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jax.typing import ArrayLike
 from jaxtyping import Key
 
-from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
-from probjax.utils.odeutil.rk_explicit import RKState, RKInfo, heun
 from probjax.utils.linalg import mv_diag_or_dense
+from probjax.utils.odeutil.rk_explicit import RKInfo, RKState, heun
+from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
 
 
 class EulerMaruyamaInfo(SDEInfo):

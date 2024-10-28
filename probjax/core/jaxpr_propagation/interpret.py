@@ -1,4 +1,3 @@
-
 from typing import Any, Callable, Optional, Sequence, Tuple
 
 from jax._src.util import safe_map as map

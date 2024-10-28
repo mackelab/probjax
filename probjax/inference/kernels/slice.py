@@ -3,15 +3,13 @@ from typing import Callable, NamedTuple, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import PyTree
-from blackjax.base import SamplingAlgorithm
 from jax import Array
 from jax.random import PRNGKey
 from jax.typing import ArrayLike
+from jaxtyping import PyTree
 
 from probjax.inference.kernels.adaptation import step_size_adaption
 from probjax.inference.kernels.base import MarkovKernelAPI
-
 
 # Some utility functions for creating 1D slices through an N-dimensional space
 

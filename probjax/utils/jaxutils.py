@@ -95,10 +95,11 @@ def precompute(func: Callable, arg_list: list, known_argnums: list) -> Callable:
         known_argnums (list): List of indices of known arguments
 
     Returns:
-        Callable: Function that inputs all unknown arguments and returns the result of the function
+        Callable: Function that inputs all unknown arguments and returns the result of
+        the function
     """
     jaxpr = jax.make_jaxpr(func)(*arg_list)
-    unknowns = [False if k in known_argnums else True for k in range(len(arg_list))]
+    unknowns = [k not in known_argnums for k in range(len(arg_list))]
     instantiate = False
 
     (known_jaxpr, unknown_jaxpr, _, _) = partial_eval_jaxpr_nounits(
@@ -124,7 +125,8 @@ def precompute(func: Callable, arg_list: list, known_argnums: list) -> Callable:
 
 
 def flatten_fun(fun: Callable, in_tree: PyTree) -> Callable:
-    """Flattens the input arguments of a function. Meaning than all abstract inputs are flattened into a list of arrays.
+    """Flattens the input arguments of a function. Meaning than all abstract inputs are
+    flattened into a list of arrays.
 
     Args:
         fun (Callable): Function to be flattened
@@ -266,7 +268,7 @@ def print_scan(
         stats, carry = carry[:num_stats], carry[num_stats:]
         carry, y = f(carry, x)
         stats = update_stats(stats, carry, y)
-        
+
         jax.lax.cond(
             i % print_rate == 0,
             lambda: jax.experimental.io_callback(print_fn, None, i, length, stats),

@@ -4,7 +4,6 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 from jax.typing import ArrayLike
-from probjax.nn.nets.mlp import MLP
 
 
 class MaskedLinear(nnx.Linear):

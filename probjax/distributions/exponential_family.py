@@ -1,7 +1,3 @@
-
-
-
-
 from chex import Array
 
 from probjax.distributions.distribution import Distribution

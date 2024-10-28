@@ -111,12 +111,10 @@ def init_dist(dist: type[Distribution], key, shape=(1,)):
     event_shape = shape
 
     keys = jax.random.split(key, len(dist.arg_constraints))
-    kwargs = dict(
-        [
-            (name, transform_to(constraint)(jax.random.normal(key, event_shape)))
-            for (name, constraint), key in zip(dist.arg_constraints.items(), keys)
-        ]
-    )
+    kwargs = dict([
+        (name, transform_to(constraint)(jax.random.normal(key, event_shape)))
+        for (name, constraint), key in zip(dist.arg_constraints.items(), keys)
+    ])
 
     p = dist(**kwargs)
     print(kwargs, p)

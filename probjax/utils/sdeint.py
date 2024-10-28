@@ -1,14 +1,14 @@
 from functools import partial
-from jaxtyping import Key
 from typing import Callable, Optional, Sequence
 
 import jax
 import jax.numpy as jnp
 from jax import Array
+from jaxtyping import Key
 
 from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
-from probjax.utils.sdeutil.integrate_on_grid import _sdeint_on_grid
 from probjax.utils.sdeutil.base import get_method
+from probjax.utils.sdeutil.integrate_on_grid import _sdeint_on_grid
 
 STATIC_NAMES = [
     "drift",
@@ -65,7 +65,8 @@ def sdeint(
         diffusion (Callable): Diffusion function.
         y0 (Array): Initial value.
         ts (Array): Time points.
-        *args: Other arguments, that are passed both to the drift and diffusion functions i.e. parameters!
+        *args: Other arguments, that are passed both to the drift and diffusion
+            functions i.e. parameters!
         method (str, optional): Methods to use. Defaults to "euler_maruyama".
         noise_type (bool, optional): Whether the noise is diagonal. Defaults to False.
         sde_type: asdfasdf

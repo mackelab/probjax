@@ -1,4 +1,3 @@
-
 import jax.numpy as jnp
 
 # Scipy stats implementation missing in JAX
@@ -39,7 +38,7 @@ def differential_entropy(values, window_length=None, base=None, axis=0, method="
         else:
             method = "vasicek"
 
-    res = methods[method](sorted_data, window_length)
+    res = methods[method](sorted_data, window_length, n)
 
     if base is not None:
         res /= jnp.log(base)
@@ -55,14 +54,14 @@ def _pad_along_last_axis(X, m):
     return jnp.concatenate((Xl, X, Xr), axis=-1)
 
 
-def _vasicek_entropy(X, m):
+def _vasicek_entropy(X, m, n):
     X = _pad_along_last_axis(X, m)
     differences = X[..., 2 * m :] - X[..., : -2 * m :]
     logs = jnp.log(n / (2 * m) * differences)
     return jnp.mean(logs, axis=-1)
 
 
-def _van_es_entropy(X, m):
+def _van_es_entropy(X, m, n):
     n = X.shape[-1]
     difference = X[..., m:] - X[..., :-m]
     term1 = 1 / (n - m) * jnp.sum(jnp.log((n + 1) / m * difference), axis=-1)
@@ -70,7 +69,7 @@ def _van_es_entropy(X, m):
     return term1 + jnp.sum(1 / k) + jnp.log(m) - jnp.log(n + 1)
 
 
-def _ebrahimi_entropy(X, m):
+def _ebrahimi_entropy(X, m, n):
     X = _pad_along_last_axis(X, m)
     differences = X[..., 2 * m :] - X[..., : -2 * m :]
     i = jnp.arange(1, n + 1, dtype=jnp.float32)
@@ -79,7 +78,7 @@ def _ebrahimi_entropy(X, m):
     return jnp.mean(logs, axis=-1)
 
 
-def _correa_entropy(X, m):
+def _correa_entropy(X, m, n):
     i = jnp.arange(1, n + 1, dtype=jnp.int32)
     dj = jnp.arange(-m, m + 1)[:, None]
     j = i + dj

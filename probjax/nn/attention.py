@@ -2,14 +2,11 @@ import functools
 from functools import partial
 from typing import Callable, Optional
 
-
 import jax
 import jax.numpy as jnp
-from jax.typing import ArrayLike
 import numpy as np
-
-
 from flax.nnx import MultiHeadAttention as FlaxMultiHeadAttention
+from jax.typing import ArrayLike
 
 
 class MultiHeadAttention(FlaxMultiHeadAttention):

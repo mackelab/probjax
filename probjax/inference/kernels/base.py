@@ -1,8 +1,8 @@
 from functools import partial
-from typing import Any, Callable, NamedTuple, Optional, Tuple
+from typing import Callable, NamedTuple, Optional, Tuple
 
 from blackjax.base import Info, State
-from jaxtyping import PyTree, Key
+from jaxtyping import Key
 
 from probjax.utils.jaxutils import API
 

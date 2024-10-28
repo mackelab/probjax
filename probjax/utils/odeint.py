@@ -6,12 +6,10 @@ import jax.numpy as jnp
 from jax import Array
 from jaxtyping import PyTree
 
-from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
-from probjax.utils.odeutil import get_method, get_methods
-from probjax.utils.odeutil.integrate_on_grid import _odeint_on_grid
+from probjax.utils.odeutil import get_method
 from probjax.utils.odeutil.integrate_adaptive import odeint_adaptive
-
+from probjax.utils.odeutil.integrate_on_grid import _odeint_on_grid
 
 STATIC_NAMES = (
     "drift",

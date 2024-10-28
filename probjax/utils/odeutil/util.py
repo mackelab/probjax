@@ -103,7 +103,8 @@ def fit_4th_order_polynomial(y0, y1, y_mid, dy0, dy1, dt):
 
 
 def fit_3rd_order_polynomial(y0, y1, dy0, dy1, dt):
-    """Be f(t) = a * t**3 + b * t**2 + c * t + d, then this function returns the coefficients a, b, c, d, which solve the system of equations:
+    """Be f(t) = a * t**3 + b * t**2 + c * t + d, then this function returns
+    the coefficients a, b, c, d, which solve the system of equations:
     f(0) = y0
     f(1) = y1
     f'(0) = dy0

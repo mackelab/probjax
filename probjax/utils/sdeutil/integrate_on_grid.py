@@ -56,6 +56,4 @@ def _sdeint_on_grid(
             ),
         )
 
-    
-
     return state, traced

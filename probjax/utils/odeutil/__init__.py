@@ -1,9 +1,9 @@
 from probjax.utils.odeutil.base import (
-    get_method,
-    get_methods,
+    ODEInfo,
     ODESolver,
     ODEState,
-    ODEInfo,
+    get_method,
+    get_methods,
 )
 from probjax.utils.odeutil.rk_explicit import euler
 from probjax.utils.odeutil.rk_implicit import implicit_euler

@@ -115,7 +115,8 @@ def is_triangular_matrix(A: Array, lower: bool = True) -> bool:
 
 def batch_mv(bmat: Array, bvec: Array) -> Array:
     """
-    Performs a batched matrix-vector product, with compatible but different batch shapes.
+    Performs a batched matrix-vector product, with compatible but different batch
+    shapes.
 
     This function takes as input `bmat`, containing n x n matrices, and
     `bvec`, containing length n vectors.
@@ -131,8 +132,8 @@ def batch_mahalanobis(bL: Array, bx: Array) -> Array:
     """
     Computes the squared Mahalanobis distance x^T M^-1 x for a factored M = LL^T.
 
-    Accepts batches for both bL and bx. They are not necessarily assumed to have the same batch
-    shape, but `bL` one should be able to broadcasted to `bx` one.
+    Accepts batches for both bL and bx. They are not necessarily assumed to have the
+    same batch shape, but `bL` one should be able to broadcasted to `bx` one.
     """
     bL = jnp.broadcast_to(bL, bx.shape[:-1] + bL.shape[-2:])
 
@@ -162,7 +163,8 @@ def matrix_fraction_decomposition(
 ) -> Tuple[Array, Array]:
     """Matrix fraction decomposition
 
-    Returns the transition matrix and covariance. Is exact if A and B are truely time independent
+    Returns the transition matrix and covariance. Is exact if A and B are truely
+    time independent
 
     Args:
         t0 (float): New time point

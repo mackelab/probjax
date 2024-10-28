@@ -1,9 +1,8 @@
 from typing import Callable, NamedTuple, Optional
 
-import blackjax
 import jax
 import jax.numpy as jnp
-from blackjax.adaptation.base import AdaptationInfo, AdaptationResults
+from blackjax.adaptation.base import AdaptationResults
 from blackjax.adaptation.step_size import dual_averaging_adaptation
 from blackjax.base import AdaptationAlgorithm
 from jaxtyping import Array
@@ -194,4 +193,3 @@ def square_root_algorithm(
         return L, sample_size, mean
 
     return init, update, final
-

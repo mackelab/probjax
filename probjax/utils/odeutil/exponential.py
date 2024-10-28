@@ -1,4 +1,3 @@
-import jax
 
 
 # def exponential_euler(drift, t0, y0, f0, dt):
