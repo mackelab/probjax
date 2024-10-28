@@ -34,7 +34,6 @@ dependencies = [
     "matplotlib",
     "jax >= 0.4.34",
     "jaxlib >= 0.4.34",
-    "dm-haiku",
     "optax",
     "ott-jax",
     "networkx",
