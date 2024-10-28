@@ -79,7 +79,7 @@ def sde_method(request):
 
 # ODE problems fixtures ---------------------------------------------------------
 
-from probjax.utils.odeint import get_methods
+from probjax.utils.odeutil.base import get_methods
 
 METHODS = get_methods()
 
