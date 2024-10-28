@@ -1,9 +1,11 @@
+from functools import partial
 from typing import Callable, Optional, Sequence
 
 import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
 
+from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.core.transformation import inverse_and_logabsdet
 from probjax.nn.nets.masked import MaskedMLP
 
@@ -51,9 +53,7 @@ class AutoregressiveMLP(nnx.Module, experimental_pytree=True):
         )
 
     def __call__(self, x: jax.Array, context=None):
-        # TODO Add custom inverse
-        bij_params = self.masked_mlp(x, context)
-        y = self.bijector(bij_params, x)
+        y = autoregressive_transform(x, self, context)
         return y
 
     def inverse(self, y: jax.Array, context=None):
@@ -66,3 +66,18 @@ class AutoregressiveMLP(nnx.Module, experimental_pytree=True):
             )
             x, log_det = bijective_inv(y)
         return x, log_det
+
+
+@custom_inverse
+def autoregressive_transform(x, model, context=None):
+    bij_params = model.masked_mlp(x, context)
+    y = model.bijector(bij_params, x)
+    return y
+
+
+def autoregressive_inv(y, model, context=None):
+    return model.inverse(y, context=context)
+
+
+# Register inverse
+autoregressive_transform.definv_and_logdet(autoregressive_inv)

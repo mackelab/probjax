@@ -52,19 +52,17 @@ def affine_coupling_transform(input_dim):
     @hk.without_apply_rng
     @hk.transform
     def forward(x):
-        nn = hk.Sequential(
-            [
-                CouplingMLP(split_dim, affine_bijector, bijector_dim),
-                Flip(),
-                CouplingMLP(split_dim, affine_bijector, bijector_dim),
-                Flip(),
-                CouplingMLP(split_dim, affine_bijector, bijector_dim),
-                Flip(),
-                CouplingMLP(split_dim, affine_bijector, bijector_dim),
-                Flip(),
-                CouplingMLP(split_dim, affine_bijector, bijector_dim),
-            ]
-        )
+        nn = hk.Sequential([
+            CouplingMLP(split_dim, affine_bijector, bijector_dim),
+            Flip(),
+            CouplingMLP(split_dim, affine_bijector, bijector_dim),
+            Flip(),
+            CouplingMLP(split_dim, affine_bijector, bijector_dim),
+            Flip(),
+            CouplingMLP(split_dim, affine_bijector, bijector_dim),
+            Flip(),
+            CouplingMLP(split_dim, affine_bijector, bijector_dim),
+        ])
         return nn(x)
 
     params = forward.init(jax.random.PRNGKey(0), jnp.zeros((input_dim)))
@@ -83,14 +81,12 @@ def spline_coupling_transform(input_dim):
     @hk.without_apply_rng
     @hk.transform
     def forward(x):
-        nn = hk.Sequential(
-            [
-                CouplingMLP(split_dim, spline, bijector_dim),
-                Flip(),
-                CouplingMLP(split_dim, spline, bijector_dim),
-                Flip(),
-            ]
-        )
+        nn = hk.Sequential([
+            CouplingMLP(split_dim, spline, bijector_dim),
+            Flip(),
+            CouplingMLP(split_dim, spline, bijector_dim),
+            Flip(),
+        ])
         return nn(x)
 
     init, apply = forward.init, forward.apply

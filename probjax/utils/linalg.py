@@ -64,7 +64,7 @@ def mv_diag_or_dense(
     b = b.astype(dtype)
     ndim = A_diag_or_dense.ndim
 
-    if ndim == 1:
+    if ndim <= 1:
         return jax.lax.mul(A_diag_or_dense, b)
     else:
         return jax.lax.dot(
