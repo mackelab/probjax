@@ -48,8 +48,8 @@ def build_milstein_step(
         f0 = jnp.asarray(drift(t0, y0))
         g0 = jnp.asarray(diffusion(t0, y0))
         g0_jac = g_jac(t0, y0)
-        dWt = jax.random.normal(rng1, y0.shape) * jnp.sqrt(dt)
-        dWtdWs = iterated_integrals_fn(rng2, dWt, dt)
+        dWt = jax.random.normal(rng1, y0.shape) * jnp.sqrt(jnp.abs(dt))
+        dWtdWs = iterated_integrals_fn(rng2, dWt, jnp.abs(dt))
 
         drift_term = dt * f0
         diffusion_term1 = mv_diag_or_dense(g0, dWt)
