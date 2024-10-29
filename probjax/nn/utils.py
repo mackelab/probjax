@@ -9,6 +9,21 @@ from jaxtyping import Array
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
 
 
+class Sequential(nnx.Module, experimental_pytree=True):
+    def __init__(self, *layers):
+        """Sequential module.
+
+        Args:
+            layers (nnx.Module): List of layers.
+        """
+        self.layers = layers
+
+    def __call__(self, x, *args, **kwargs) -> Array:
+        for layer in self.layers:
+            x = layer(x, *args, **kwargs)
+        return x
+
+
 class Flip(nnx.Module, experimental_pytree=True):
     def __init__(self, axis: int = -1, rngs=None):
         """Flip the array along an axis.
