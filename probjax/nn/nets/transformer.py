@@ -11,7 +11,7 @@ from probjax.nn.nets.mlp import MLP
 
 
 class PosEmbed(nnx.Module, experimental_pytree=True):
-    def __init__(self, token_dim: int, max_seq_len: int = 500, rngs=None):
+    def __init__(self, token_dim: int, max_seq_len: int = 10_000, rngs=None):
         """Positional embedding module.
 
         Args:
@@ -19,22 +19,26 @@ class PosEmbed(nnx.Module, experimental_pytree=True):
             max_seq_len (int, optional): Maximal length of the sequence. Defaults to 500.
         """
         super().__init__()
-        position = jnp.arange(max_seq_len).reshape(-1, 1)
-        div_term = jnp.exp(
-            jnp.arange(0, token_dim, 2) * (-jnp.log(10000.0) / token_dim)
-        )
-        pe = jnp.zeros((1, max_seq_len, token_dim))
-        pe = pe.at[..., 0::2].set(jnp.sin(position * div_term))
-        pe = pe.at[..., 1::2].set(jnp.cos(position * div_term))
-        self.pe = nnx.Variable(pe)
+        self.max_seq_len = max_seq_len
 
-    def __call__(self, x: Array) -> Array:
+    def __call__(self, x: Array, idx: Optional[Array] = None, **kwargs) -> Array:
         """
         Arguments:
             x: jnp.ndarray, shape ``[seq_len, batch_size, embedding_dim]``
         """
-        x = x + self.pe.value[:, : x.shape[1]]
-        return x
+        if idx is None:
+            idx = jnp.arange(x.shape[-2]).reshape(-1, 1)
+
+        token_dim = x.shape[-1]
+        div_term = jnp.exp(
+            jnp.arange(0, token_dim, 2) * (-jnp.log(self.max_seq_len) / token_dim)
+        )
+
+        pe = jnp.zeros((1, x.shape[-2], token_dim))
+        pe = pe.at[..., 0::2].set(jnp.sin(idx * div_term))
+        pe = pe.at[..., 1::2].set(jnp.cos(idx * div_term))
+
+        return x + pe
 
 
 class LearnedPosEmbed(nnx.Module, experimental_pytree=True):
@@ -166,6 +170,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
         context: Optional[Array] = None,  # [B, D_context]
         mask: Array | None = None,  # [T, T] or [B, T, T]
         deterministic: bool = False,
+        decode: bool = False,
     ) -> jax.Array:  # [B, T, D]
         """Transforms input embedding sequences to output embedding sequences."""
 
@@ -174,28 +179,33 @@ class Transformer(nnx.Module, experimental_pytree=True):
                 mask = mask[None, None, :, :]
             elif mask.ndim == 3:
                 mask = mask[:, None, :, :]
+            elif mask.ndim == 4:
+                mask = mask
             else:
                 raise ValueError(f"Mask must have ndim 2 or 3, got {mask.ndim}.")
 
         h = inputs
 
         for i in range(self.num_layers):
+            if self.context_blocks is not None:
+                # Sequence independent context.
+                h = h + self.context_blocks[i](context)[:, None, :]
             # First the attention block.
             h = self.layer_norms1[i](h)
-            h_attn = self.attention_blocks[i](h, mask=mask, deterministic=deterministic)
+            h_attn = self.attention_blocks[i](
+                h, mask=mask, deterministic=deterministic, decode=decode
+            )
 
             h = h + h_attn if self.skip_connection_attn else h_attn
 
             # Then the dense block.
             h = self.layer_norms2[i](h)
             h_dense = self.dense_blocks[i](h)
-            if self.context_dim is not None and context is not None:
-                h_dense = h_dense + self.context_blocks[i](context)
             if self.dropout_dense is not None:
                 h_dense = self.dropout_dense[i](h_dense, deterministic=deterministic)
 
             h = h + h_dense if self.skip_connection_mlp else h_dense
 
-        out = self.out_layer_norm(h)
+        h = self.out_layer_norm(h)
 
-        return out
+        return h
