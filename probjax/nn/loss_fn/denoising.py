@@ -17,6 +17,7 @@ def base_denoising_loss(
     eps: ArrayLike,
     std: ArrayLike,
     weight: Optional[ArrayLike],
+    loss_mask: Optional[ArrayLike],
     axis: int,
     argnums: int,
     control_variate: bool,
@@ -25,16 +26,21 @@ def base_denoising_loss(
 ):
     x = args[argnums]
     x_noisy = x + std * eps
+    if loss_mask is not None:
+        x_noisy = jnp.where(loss_mask, x, x_noisy)
 
     new_args = args[:argnums] + (x_noisy,) + args[argnums + 1 :]
     x_pred = model(*new_args, **kwargs)
-
-    loss = jnp.sum((x_pred - x) ** 2, axis=axis)
+    
+    loss = (x_pred - x) ** 2
+    if loss_mask is not None:
+        loss = jnp.where(~loss_mask, loss, jnp.zeros_like(loss))
+    loss = jnp.sum(loss, axis=axis)
 
     if control_variate:
         raise NotImplementedError("Control variate is not implemented yet.")
 
-    loss = loss * jnp.squeeze(weight) if weight is not None else loss
+    loss = loss * weight.reshape(loss.shape) if weight is not None else loss
 
     return loss
 
@@ -49,7 +55,7 @@ def build_denoising_loss(
     update_params: Callable = nnx.update,
     reduction_fn: Callable = jnp.mean,
 ):
-    def loss_fn(params, *args, rng=None, **kwargs):
+    def loss_fn(params, *args, rng=None, loss_mask=None, **kwargs):
         assert (
             rng is not None
         ), "loss_fn does require rngs, pass them to function kwargs."
@@ -58,7 +64,16 @@ def build_denoising_loss(
         eps = jax.random.normal(rng, shape=shape)
 
         loss = base_denoising_loss(
-            model, eps, std, weight, axis, argnums, control_variate, *args, **kwargs
+            model,
+            eps,
+            std,
+            weight,
+            loss_mask,
+            axis,
+            argnums,
+            control_variate,
+            *args,
+            **kwargs,
         )
 
         return reduction_fn(loss)
@@ -77,7 +92,7 @@ def build_time_dependent_denoising_loss(
     update_params: Callable = nnx.update,
     reduction_fn: Callable = jnp.mean,
 ):
-    def loss_fn(params, t, *args, rng=None, **kwargs):
+    def loss_fn(params, t, *args, rng=None, loss_mask=None, **kwargs):
         assert (
             rng is not None
         ), "loss_fn does require rngs, pass them to function kwargs."
@@ -94,6 +109,7 @@ def build_time_dependent_denoising_loss(
             eps,
             std_t,
             weight,
+            loss_mask,
             axis,
             argnums + 1,
             control_variate,

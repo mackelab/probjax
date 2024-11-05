@@ -68,7 +68,7 @@ class LearnedPosEmbed(nnx.Module, experimental_pytree=True):
 class Transformer(nnx.Module, experimental_pytree=True):
     """A transformer stack."""
 
-    in_out_dim: int  # Dimensionality of the embedding vectors.
+    model_dim: int  # Dimensionality of the embedding vectors.
     num_heads: int  # Number of attention heads.
     num_layers: int  # Number of transformer (attention + MLP) layers to stack.
     attn_size: int  # Size of the attention (key, query, value) vectors.
@@ -77,7 +77,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
 
     def __init__(
         self,
-        in_out_dim: int,
+        model_dim: int,
         num_heads: int,
         num_layers: int,
         attn_size: int,
@@ -93,8 +93,35 @@ class Transformer(nnx.Module, experimental_pytree=True):
         initializer: Optional[nnx.initializers.Initializer] = None,
         attention_fn: Optional[Callable] = None,
     ):
+        """Initialize a Transformer model.
+        Args:
+            model_dim (int): The dimension of the model's hidden states.
+            num_heads (int): Number of attention heads.
+            num_layers (int): Number of transformer layers.
+            attn_size (int): Size of each attention head.
+            rngs (nnx.Rngs): Random number generator state.
+            context_dim (Optional[int], optional): Dimension of additional context to be
+                concatenated with transformer output. If None, no context is used.
+                Defaults to None.
+            dropout_rate (Optional[float], optional): Dropout rate. If None, no dropout
+                is applied. Defaults to None.
+            widening_factor (int, optional): Factor by which to increase the dimension
+                in the MLP. Defaults to 4.
+            num_hidden_layers (int, optional): Number of hidden layers in the MLP block.
+                Defaults to 1.
+            act (Callable, optional): Activation function. Defaults to jax.nn.gelu.
+            skip_connection_attn (bool, optional): Whether to use skip connections in
+                attention blocks. Defaults to True.
+            skip_connection_mlp (bool, optional): Whether to use skip connections in
+                MLP blocks. Defaults to True.
+            initializer (Optional[nnx.initializers.Initializer], optional): Weight
+                initializer. If None, uses truncated normal with variance scaling.
+                Defaults to None.
+            attention_fn (Optional[Callable], optional): Custom attention function.
+                If None, uses dot product attention. Defaults to None.
+        """
         super().__init__()
-        self.in_out_dim = in_out_dim
+        self.model_dim = model_dim
         self.context_dim = context_dim
         self.num_heads = num_heads
         self.num_layers = num_layers
@@ -113,29 +140,38 @@ class Transformer(nnx.Module, experimental_pytree=True):
 
         # Layer norms for the attention and dense blocks.
         self.layer_norms1 = [
-            nnx.LayerNorm(in_out_dim, rngs=rngs) for _ in range(num_layers)
+            nnx.LayerNorm(model_dim, rngs=rngs) for _ in range(num_layers)
         ]
         self.layer_norms2 = [
-            nnx.LayerNorm(in_out_dim, rngs=rngs) for _ in range(num_layers)
+            nnx.LayerNorm(model_dim, rngs=rngs) for _ in range(num_layers)
         ]
-        self.out_layer_norm = nnx.LayerNorm(in_out_dim, rngs=rngs)
+        self.out_layer_norm = nnx.LayerNorm(model_dim, rngs=rngs)
 
         # Attention block.
+        attention_fn = (
+            attention_fn if attention_fn is not None else nnx.dot_product_attention
+        )
         self.attention_blocks = [
             MultiHeadAttention(
                 num_heads,
-                in_out_dim,
+                model_dim,
                 attn_size * num_heads,
-                in_out_dim,
+                model_dim,
                 rngs=rngs,
                 kernel_init=self.initializer,
                 dropout_rate=dropout_rate if dropout_rate is not None else 0.0,
+                attention_fn=attention_fn,
             )
             for _ in range(num_layers)
         ]
 
         # Dense block.
-        dims = [in_out_dim] + [widening_factor] * num_hidden_layers + [in_out_dim]
+        context_dim = context_dim if context_dim is not None else 0
+        dims = (
+            [model_dim + context_dim]
+            + [widening_factor * model_dim] * num_hidden_layers
+            + [model_dim]
+        )
         linear = partial(nnx.Linear, kernel_init=self.initializer)
         self.dense_blocks = [
             MLP(
@@ -143,19 +179,10 @@ class Transformer(nnx.Module, experimental_pytree=True):
                 rngs=rngs,
                 linear=linear,
                 activation=act,
-                activate_final=False,
+                activate_final=True,
             )
-            for i in range(num_layers)
+            for _ in range(num_layers)
         ]
-        if context_dim is not None:
-            self.context_blocks = [
-                nnx.Linear(
-                    context_dim, in_out_dim, rngs=rngs, kernel_init=self.initializer
-                )
-                for _ in range(num_layers)
-            ]
-        else:
-            self.context_blocks = None
 
         if dropout_rate is not None:
             self.dropout_dense = [
@@ -171,12 +198,12 @@ class Transformer(nnx.Module, experimental_pytree=True):
         mask: Array | None = None,  # [T, T] or [B, T, T]
         deterministic: bool = False,
         decode: bool = False,
-    ) -> jax.Array:  # [B, T, D]
+    ) -> Array:  # [B, T, D]
         """Transforms input embedding sequences to output embedding sequences."""
 
         if mask is not None:
             if mask.ndim == 2:
-                mask = mask[None, None, :, :]
+                mask = mask[None, :, :]
             elif mask.ndim == 3:
                 mask = mask[:, None, :, :]
             elif mask.ndim == 4:
@@ -186,24 +213,28 @@ class Transformer(nnx.Module, experimental_pytree=True):
 
         h = inputs
 
+        # Same context for each token in the sequence.
+        if context is not None:
+            context = context.reshape(h.shape[:-2] + (1, self.context_dim))
+            context = jnp.repeat(context, h.shape[-2], axis=-2)
+
         for i in range(self.num_layers):
-            if self.context_blocks is not None:
-                # Sequence independent context.
-                h = h + self.context_blocks[i](context)[:, None, :]
             # First the attention block.
             h = self.layer_norms1[i](h)
             h_attn = self.attention_blocks[i](
                 h, mask=mask, deterministic=deterministic, decode=decode
             )
-
             h = h + h_attn if self.skip_connection_attn else h_attn
 
             # Then the dense block.
             h = self.layer_norms2[i](h)
-            h_dense = self.dense_blocks[i](h)
+            if context is not None and self.context_dim is not None:
+                h_context = jnp.concatenate([h, context], axis=-1)
+            else:
+                h_context = h
+            h_dense = self.dense_blocks[i](h_context)
             if self.dropout_dense is not None:
                 h_dense = self.dropout_dense[i](h_dense, deterministic=deterministic)
-
             h = h + h_dense if self.skip_connection_mlp else h_dense
 
         h = self.out_layer_norm(h)

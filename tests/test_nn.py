@@ -111,3 +111,36 @@ def test_gaussian_fourier_embedding(gaussian_fourier_embedding, batch_shape):
 
     # Can be flattened
     _, _ = jax.tree_util.tree_flatten(model)
+
+
+def test_transformer(transformer, seq_len, batch_shape):
+    model_dim, model = transformer
+    x = jnp.ones(batch_shape + (seq_len, model_dim))
+    y = model(x)
+    assert y.shape == batch_shape + (seq_len, model_dim)
+
+    def loss_fn(model):
+        return jnp.sum(model(x))
+
+    # Can be differentiated
+    _ = jax.grad(loss_fn)
+
+    # Can be flattened
+    _, _ = jax.tree_util.tree_flatten(model)
+
+
+def test_lru(lru, seq_len):
+    in_dim, out_dim, model = lru
+    batch_shape = ()  # Needs vmap
+    x = jnp.ones(batch_shape + (seq_len, in_dim))
+    y = model(x)
+    assert y.shape == batch_shape + (seq_len, out_dim)
+
+    def loss_fn(model):
+        return jnp.sum(model(x))
+
+    # Can be differentiated
+    _ = jax.grad(loss_fn)
+
+    # Can be flattened
+    _, _ = jax.tree_util.tree_flatten(model)

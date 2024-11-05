@@ -39,15 +39,42 @@ def gamma_log_init(key, lamb):
 class LRU(nnx.Module, experimental_pytree=True):
     def __init__(
         self,
-        in_dim,
-        out_dim,
-        hidden_dim,
+        in_dim: int,
+        out_dim: int,
+        hidden_dim: int,
         rngs,
         *,
         r_min: float = 0.0,
         r_max: float = 1.0,
         max_phase: float = 6.28,
     ):
+        """Initialize the Linear Recurrent Unit (LRU) layer.
+        This layer implements a Linear Recurrent Unit, which is a type of recurrent
+        neural network hat uses complex-valued representations of linear dynamics.
+
+        NOTE: Expressivity is limited to linear dynamics. But recurrent dynamics can be
+        parallelized!!!
+        NOTE: Presumes an initial state of zero.
+
+        Args:
+            in_dim (int): Input dimension.
+            out_dim (int): Output dimension.
+            hidden_dim (int): Hidden state dimension.
+            rngs: Random number generator keys for parameter initialization.
+            r_min (float, optional): Minimum value for the decay rate. Defaults to 0.0.
+            r_max (float, optional): Maximum value for the decay rate. Defaults to 1.0.
+            max_phase (float, optional): Maximum phase value for theta initialization. Defaults to 6.28.
+        Attributes:
+            theta_log (nnx.Param): Log of theta parameters controlling the phase.
+            nu_log (nnx.Param): Log of nu parameters controlling the decay rate.
+            gamma_log (nnx.Param): Log of gamma parameters for scaling.
+            B_re (nnx.Param): Real part of the input projection matrix.
+            B_im (nnx.Param): Imaginary part of the input projection matrix.
+            C_re (nnx.Param): Real part of the output projection matrix.
+            C_im (nnx.Param): Imaginary part of the output projection matrix.
+            D (nnx.Param): Direct input-to-output connection matrix.
+        """
+
         self.in_dim = in_dim
         self.out_dim = out_dim
         self.hidden_dim = hidden_dim
@@ -89,7 +116,7 @@ class LRU(nnx.Module, experimental_pytree=True):
             normalization=jnp.sqrt(self.hidden_dim),
         )
         self.C_im = nnx.Param(C_im)
-        self.D = nnx.Param(matrix_init(rngs.params(), (out_dim,)))
+        self.D = nnx.Param(matrix_init(rngs.params(), (out_dim, in_dim)))
 
     def __call__(self, inputs):
         # Fetch parameters
@@ -113,7 +140,7 @@ class LRU(nnx.Module, experimental_pytree=True):
         # Output projection
         C = C_re + 1j * C_im
 
-        Lambda_elements = jnp.repeat(diag_lambda[None, ...], inputs.shape[0], axis=0)
+        Lambda_elements = jnp.repeat(diag_lambda[None, ...], inputs.shape[-2], axis=-2)
         Bu_elements = jnp.einsum("ih,ti->th", B_norm, inputs)
 
         # Compute hidden states
@@ -121,39 +148,45 @@ class LRU(nnx.Module, experimental_pytree=True):
             binary_operator_diag, (Lambda_elements, Bu_elements)
         )
         # Use them to compute the output of the module
-        outputs = jnp.real(jnp.einsum("th,ih->ti", hidden_states, C)) + D * inputs
+        outputs = jnp.real(jnp.einsum("th,ih->ti", hidden_states, C))
+        outputs += jnp.einsum("ti,io->to", inputs, D)
 
         return outputs
 
 
-class LRULayer(nnx.Module, experimental_pytree=True):
+class LRUBlock(nnx.Module, experimental_pytree=True):
     def __init__(
         self,
-        lru: LRU,
-        output_dim: int,
+        model_dim: int,
         rngs,
         *,
         dropout: Optional[float] = None,
         norm: nnx.Module = nnx.LayerNorm,
         activation: Callable = jax.nn.gelu,
     ):
-        self.lru = lru
-        self.norm = norm(lru.in_dim, rngs=rngs)
+        """Initialize a Linear Recurrent Unit (LRU) block.
+        This is a stackable bloc of LRUs with a residual connection and a
+        Gated Linear Unit (GLU) output.
+        """
+        self.lru = LRU(model_dim, model_dim, model_dim, rngs)
+        self.norm = norm(model_dim, rngs=rngs)
         self.activation = activation
         self.dropout = dropout
-        input_dim = lru.out_dim
-        self.out1 = nnx.Linear(input_dim, output_dim, rngs=rngs)
-        self.out2 = nnx.Linear(input_dim, output_dim, rngs=rngs)
+        if dropout is not None:
+            self.dropout1 = nnx.Dropout(dropout, rngs=rngs)
+            self.dropout2 = nnx.Dropout(dropout, rngs=rngs)
+        self.out1 = nnx.Linear(model_dim, model_dim, rngs=rngs)
+        self.out2 = nnx.Linear(model_dim, model_dim, rngs=rngs)
 
-    def __call__(self, inputs):
+    def __call__(self, inputs, deterministic=False):
         x = self.norm(inputs)
         x = jax.vmap(self.lru)(x)
         x = self.activation(x)
         if self.dropout is not None:
-            raise NotImplementedError("Dropout not implemented yet")
+            x = self.dropout1(x, deterministic=deterministic)
         x = self.out1(x) * jax.nn.sigmoid(self.out2(x))  # GLU
         if self.dropout is not None:
-            raise NotImplementedError("Dropout not implemented yet")
+            x = self.dropout2(x, deterministic=deterministic)
         return x
 
 
@@ -175,10 +208,8 @@ class LRUModel(nnx.Module, experimental_pytree=True):
 
         self.in_layer = nnx.Linear(input_dim, model_dim, rngs=rngs)
         self.out_layer = nnx.Linear(model_dim, output_dim, rngs=rngs)
-        lru_fn = partial(LRU, model_dim, model_dim, model_dim)
         self.layers = [
-            LRULayer(
-                lru_fn(rngs),
+            LRUBlock(
                 model_dim,
                 rngs,
                 dropout=dropout,

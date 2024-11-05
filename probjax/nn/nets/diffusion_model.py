@@ -49,27 +49,27 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
     def __call__(self, t, x, *args, **kwargs):
         # With preconditioning
         noise_embed = self.c_t(t)
-        x_normed = self.c_in(t) * x
+        x_normed = jax.tree_util.tree_map(lambda x: x * self.c_in(t), x)
 
         x_pred = self.net(noise_embed, x_normed, *args, **kwargs)
 
         scale_out = self.c_out(t)
         scale_skip = self.c_skip(t)
 
-        out = scale_out * x_pred
+        out = jax.tree_util.tree_map(lambda x: x * scale_out, x_pred)
         if scale_skip is not None:
-            out += scale_skip * x
+            out += jax.tree_util.tree_map(lambda x: x * scale_skip, x)
         return out
 
     def score(self, t, x, *args, **kwargs):
+        x = x / self.scale_fn(t)
         mean = self.__call__(t, x, *args, **kwargs)
 
         # Score by Tweedie's formula
         # mean = x + std**2 * score
         # score = (mean - x) / std**2
-        scale = self.scale_fn(t)
         std = self.std_fn(t)
-        score = (mean - x) / (std**2 * scale)
+        score = (mean - x) / (std**2 * self.scale_fn(t))
 
         return score
 
@@ -81,7 +81,7 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
     def drift(self, t, x, *args, **kwargs):
         scale = self.scale_fn(t)
         scale_dt = jax.grad(lambda t: jnp.sum(self.scale_fn(t)))(t)
-        return scale_dt / scale
+        return (scale_dt / scale) * x
 
     def diffusion(self, t, x, *args, **kwargs):
         scale = self.scale_fn(t)
@@ -95,6 +95,9 @@ class EDM(DiffusionDenoiser):
     std_fn = lambda _, t: jnp.atleast_1d(t)
     drift: lambda _, t, x: jnp.array([0.0])
     diffusion: lambda _, t, x: jnp.atleast_1d(jnp.sqrt(2 * t))
+    lognoise_mean: float = 1.2
+    lognoise_scale: float = 1.2
+    min_noise: float = 0.0002
 
     def __init__(
         self,
@@ -120,7 +123,14 @@ class EDM(DiffusionDenoiser):
 
     def weight_fn(self, t):
         out_weight = self.c_out(t)
-        return jnp.squeeze(1.0 / out_weight**2)
+        return jnp.sum(1.0 / out_weight**2, axis=-1)
+
+    def noise_schedule(self, rng, shape):
+        logt = (
+            jax.random.normal(rng, shape=shape) * self.lognoise_scale
+            + self.lognoise_mean
+        )
+        return jnp.exp(logt) + self.min_noise
 
 
 class VE(EDM):
@@ -134,7 +144,7 @@ class VP(EDM):
     def __init__(
         self,
         net: nnx.Module,
-        beta_min: float = 0.0,
+        beta_min: float = 0.1,
         beta_max: float = 20.0,
         std0: ArrayLike = 1.0,
         rngs=None,
@@ -158,3 +168,10 @@ class VP(EDM):
         integral = 0.5 * dbeta * t**2 + beta_min * t
         term = jnp.exp(integral)
         return 1 / jnp.atleast_1d(jnp.sqrt(term))
+
+    def noise_schedule(self, rng, shape):
+        logt = (
+            jax.random.normal(rng, shape=shape) * self.lognoise_scale
+            + self.lognoise_mean
+        )
+        return jax.nn.sigmoid(logt) + self.min_noise
