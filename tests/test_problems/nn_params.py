@@ -8,6 +8,8 @@ from probjax.nn import (
     CouplingMLP,
     AutoregressiveMLP,
     GaussianFourierEmbedding,
+    Transformer,
+    LRU,
 )
 from flax import nnx
 import jax
@@ -26,6 +28,7 @@ def seq_len(request):
 
 @pytest.fixture(
     params=[
+        (),
         (1,),
         (2,),
         (1, 1),
@@ -162,4 +165,42 @@ def gaussian_fourier_embedding(request):
     model = GaussianFourierEmbedding(
         in_dim, out_dim, rngs=nnx.Rngs(0), learnable=learnable
     )
+    return in_dim, out_dim, model
+
+
+@pytest.fixture(
+    params=[
+        (1, 1, 1, 1),
+        (2, 1, 1, 2),
+        (1, 2, 1, 5),
+        (2, 2, 2, 10),
+        (1, 3, 1, 3),
+        (3, 2, 3, 2),
+    ]
+)
+def transformer(request):
+    model_dim, num_heads, num_layers, attn_size = request.param
+    model = Transformer(
+        model_dim,
+        num_heads,
+        num_layers,
+        attn_size,
+        rngs=nnx.Rngs(0),
+    )
+    return model_dim, model
+
+
+@pytest.fixture(
+    params=[
+        (1, 1, 1),
+        (2, 1, 2),
+        (1, 2, 1),
+        (2, 2, 2),
+        (1, 3, 1),
+        (3, 1, 3),
+    ]
+)
+def lru(request):
+    in_dim, out_dim, hidden_dim = request.param
+    model = LRU(in_dim, out_dim, hidden_dim, rngs=nnx.Rngs(0))
     return in_dim, out_dim, model
