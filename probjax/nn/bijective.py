@@ -6,6 +6,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
+from probjax.utils.solver import root_scalar
 
 
 def _normalize_knot_slopes(
@@ -268,8 +269,6 @@ def inv_rational_quadratic_spline(
 
 rational_quadratic_spline.definv_and_logdet(inv_rational_quadratic_spline)
 
-from probjax.utils.solver import root_scalar
-
 
 @partial(custom_inverse, inv_argnum=1)
 def learnable_mixture_cdf(
@@ -313,3 +312,13 @@ def _inv_and_logdet_learnable_mixture_cdf(params, x, **kwargs):
 
 learnable_mixture_cdf.definv(_inv_learnable_mixture_cdf)
 learnable_mixture_cdf.definv_and_logdet(_inv_and_logdet_learnable_mixture_cdf)
+
+
+def affine_bijector(params: Array, x: Array, min_scale=1e-1, max_scale=10.0, **kwargs):
+    loc, scale = jnp.split(params, 2, axis=-1)
+    scale = jax.nn.sigmoid(scale) * (max_scale - min_scale) + min_scale
+    return loc + jax.nn.softplus(scale) * x
+
+
+def additive_bijector(params: Array, x: Array, **kwargs):
+    return x + params
