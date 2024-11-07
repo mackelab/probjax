@@ -1,9 +1,9 @@
-import jax
-from jax import numpy as jnp
-from jax import lax
+from typing import Callable
 
+import jax
+from jax import lax
+from jax import numpy as jnp
 from jaxtyping import Array, Float, Int
-from typing import Callable, Optional
 
 
 def linear_interpolation(ts: Array, ys: Array) -> Callable[[Float], Array]:
@@ -33,10 +33,15 @@ def linear_interpolation(ts: Array, ys: Array) -> Callable[[Float], Array]:
 def polynomial_interpolation(
     ts: Array, ys: Array, degree: Int = 3, window: Int = None
 ) -> Callable[[Float], Array]:
-    """Polynomial interpolation function for a given set of points (ts, ys). Here ts must be a one dimensional sorted array and ys can be any array with the same length as ts on axis 0.
-        The interpolation is done using a polynomial of degree 'degree'. The window parameter can be used to limit the range of data points used for interpolation. If window is None, the interpolation is done using all the data points.
+    """Polynomial interpolation function for a given set of points (ts, ys). Here ts
+    must be a one dimensional sorted array and ys can be any array with the same length
+    as ts on axis 0.
 
-        Note: Outside of the data range, the function does return the value of the interpolant.
+    The interpolation is done using a polynomial of degree 'degree'. The window
+    parameter can be used to limit the range of data points used for interpolation.
+    If window is None, the interpolation is done using all the data points.
+
+    Note: Outside of the data range, the function does return the value of the interpolant.
 
     Args:
         ts (Array): _description_
@@ -51,10 +56,7 @@ def polynomial_interpolation(
     event_shape = ys.shape[1:]
     ys = ys.reshape(shape[0], -1)
 
-    if window is None:
-        window = degree // 2
-    else:
-        window = window
+    window = degree // 2 if window is None else window
 
     def interpolate(t: Float) -> Array:
         index = jnp.searchsorted(ts, t)

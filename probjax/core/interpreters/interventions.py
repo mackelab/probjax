@@ -1,12 +1,11 @@
+from typing import Any, Sequence, Tuple
+
 import jax
-from jax.core import JaxprEqn, ClosedJaxpr
-
-from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
-from probjax.core.custom_primitives.random_variable import rv_p
-from probjax.core.jaxpr_propagation.interpret import interpret
-
-from typing import Any, Iterable, Sequence, Optional, Tuple
+from jax.core import JaxprEqn
 from jaxtyping import Array
+
+from probjax.core.custom_primitives.random_variable import rv_p
+from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
 
 
 class IntervenedProcessingRule(ForwardProcessingRule):

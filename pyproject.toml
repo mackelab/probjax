@@ -1,0 +1,86 @@
+[build-system]
+requires = [
+    "setuptools>=65",
+    "wheel"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "probjax"
+description = "Jax library for probabilistic computations"
+version = "0.1.0"  # Update to match your version
+requires-python = ">=3.9"
+authors = [
+    { name = "Manuel Gloeckler", email = "manuel.gloeckler@uni-tuebingen.de" }
+]
+readme = "README.md"
+license = { text = "MIT" }
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+]
+keywords = ["probabilistic", "jax", "computation"]
+dependencies = [
+    "numpy >= 2.1.2",
+    "matplotlib",
+    "jax >= 0.4.34",
+    "jaxlib >= 0.4.34",
+    "optax",
+    "ott-jax",
+    "networkx",
+    "blackjax",
+    "sympy"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "pytest-xdist",
+]
+
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests", "*.tests", "*.tests.*", "tests.*"]
+
+[tool.ruff]
+extend-include = ["*.ipynb"]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "SIM", "I"]
+ignore = [
+    "E731",  # allow naming lambda functions.
+    "B008"  # allow function calls in default args.
+]
+
+[tool.ruff.lint.extend-per-file-ignores]
+"__init__.py" = ["E402", "F401", "F403"]  # allow unused imports and undefined names
+"test_*.py" = ["F403", "F405"]
+
+[tool.ruff.lint.isort]
+case-sensitive = true
+lines-between-types = 0  # like isort default.
+relative-imports-order = "furthest-to-closest"  # like isort default.
+known-first-party = ["sbi", "tests", "tutorials"]
+
+[tool.ruff.format]
+exclude = ["*.ipynb"]
+preview = true
+quote-style = "preserve"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

@@ -1,42 +1,71 @@
-from chex import PRNGKey
-from jaxtyping import Array, PyTree
-
-
-from typing import Any, Callable, NamedTuple, Optional, Tuple
-from jax.tree_util import register_pytree_node_class
-
-import jax
-import jax.numpy as jnp
-from jax.flatten_util import ravel_pytree
-import jax.scipy.stats as stats
-import numpy as np
-
 from functools import partial
-import matplotlib.pyplot as plt
+from typing import Callable, NamedTuple, Optional, Tuple
 
-import blackjax
+from blackjax.base import Info, State
+from jaxtyping import Key
 
-from blackjax.base import State, Info
+from probjax.utils.jaxutils import API
+
+
+def ignore_kwargs(fn: Callable, *keys) -> Callable:
+    def wrapped_fn(*args, **kwargs):
+        for key in keys:
+            del kwargs[key]
+        return fn(*args, **kwargs)
+
+    return wrapped_fn
 
 
 class Params(NamedTuple):
+    """BlackJAX only distinguishes between State and Info, but we will add Params for
+    convenience.
+
+    This should contain all the parameters that can be optimized in the kernel.
+    """
+
     pass
 
 
-class MCMCKernel:
+class MarkovKernel(NamedTuple):
+    """This is a NamedTuple that represents a Markov kernel with a stationary distribution.
+    given by the logdensity_fn.
+    """
 
-    params: Params
+    logdensity_fn: Callable
+    init: Callable
+    step: Callable
+    init_params: Callable
+    adapt_params: Callable
 
-    def init_state(self, position: PyTree) -> State:
-        raise NotImplementedError("init_state method must be implemented")
+    def __call__(
+        self, key: Key, state: State, params: Optional[Params] = None
+    ) -> Tuple[State, Info]:
+        return self.step(key, state, params)
 
-    def init_params(self, position: PyTree):
+
+class MarkovKernelAPI(metaclass=API):
+    @staticmethod
+    def init(position, rng_key: Optional[Key] = None, **kwargs) -> State:
+        raise NotImplementedError("init method must be implemented")
+
+    @staticmethod
+    def init_params(position, *args, **kwargs) -> Params:
         raise NotImplementedError("init_params method must be implemented")
 
-    def adapt_params(
-        self, key: PRNGKey, position: PyTree, num_steps: int = 100, **kwargs: Any
-    ) -> Tuple[State, Info]:
-        raise NotImplementedError("adapt_params method must be implemented")
+    @staticmethod
+    def build_step(*args, **kwargs) -> Callable:
+        raise NotImplementedError("build_kernel method must be implemented")
 
-    def __call__(self, key: PRNGKey, state: State) -> Tuple[State, Info]:
-        raise NotImplementedError("__call__ method must be implemented")
+    @staticmethod
+    def build_adaptation(*args, **kwargs) -> Callable:
+        def no_adaptation(*args, **kwargs) -> Tuple[State, Info]:
+            raise NotImplementedError("No adaption method has been implemented")
+
+        return no_adaptation
+
+    def __new__(cls, logdensity_fn: Callable, **kwargs) -> MarkovKernel:
+        init = partial(cls.init, logdensity_fn=logdensity_fn)
+        step = cls.build_step(logdensity_fn, **kwargs)
+        adapt_params = cls.build_adaptation(logdensity_fn, **kwargs)
+
+        return MarkovKernel(logdensity_fn, init, step, cls.init_params, adapt_params)

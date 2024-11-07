@@ -1,9 +1,8 @@
-from abc import ABC, abstractmethod
-from typing import Any, Optional, Tuple, NamedTuple, Callable
+from typing import Any, Callable, NamedTuple, Optional, Tuple
+
 from jax.typing import ArrayLike
 
 from probjax.utils.jaxutils import API
-import inspect
 
 
 class FilterState(NamedTuple):
@@ -11,7 +10,9 @@ class FilterState(NamedTuple):
 
     It contains all the information **required** to run the filter.
     """
+
     pass
+
 
 class FilterInfo(NamedTuple):
     """This is a NamedTuple that represents the information returned by a filter.
@@ -19,6 +20,7 @@ class FilterInfo(NamedTuple):
     It contains all useful information that can be extracted from the filter.
 
     """
+
     pass
 
 
@@ -33,13 +35,12 @@ class FilterKernel(NamedTuple):
         state: FilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng_key: Optional[ArrayLike] = None,
+        rng: Optional[ArrayLike] = None,
     ) -> Tuple[FilterState, FilterInfo]:
-        return self.step(state, t, observed, rng_key)
+        return self.step(state, t, observed, rng)
 
 
 class FilterAPI(metaclass=API):
-
     @staticmethod
     def init(*args, **kwargs) -> Any:
         raise NotImplementedError("init method must be implemented")

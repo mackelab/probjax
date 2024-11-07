@@ -1,19 +1,13 @@
-from typing import Dict, Optional, Any, Tuple
+from typing import Dict
 
-
-import jax
 import jax.numpy as jnp
-import jax.random as jrandom
-
-from chex import Numeric, PRNGKey, Array
-
+from chex import Array
 
 from probjax.distributions.constraints import Constraint
 
 __all__ = ["Distribution"]
 
 from jax.tree_util import register_pytree_node_class
-
 
 # Abstract base class for distributions
 
@@ -186,17 +180,15 @@ class Distribution:
 
     def __repr__(self) -> str:
         param_names = [k for k, _ in self.arg_constraints.items() if k in self.__dict__]
-        args_string = ", ".join(
-            [
-                "{}: {}".format(
-                    p,
-                    self.__dict__[p]
-                    if self.__dict__[p].size == 1
-                    else self.__dict__[p].size,
-                )
-                for p in param_names
-            ]
-        )
+        args_string = ", ".join([
+            "{}: {}".format(
+                p,
+                self.__dict__[p]
+                if self.__dict__[p].size == 1
+                else self.__dict__[p].size,
+            )
+            for p in param_names
+        ])
         return self.__class__.__name__ + "(" + args_string + ")"
 
     # Each distribution will be registered as a PyTree

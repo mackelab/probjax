@@ -1,22 +1,19 @@
+from functools import partial
+from typing import Callable, Union
+
 import jax
 import jax.numpy as jnp
 from jax.random import PRNGKey
-
-from functools import partial
-from typing import Callable, Union, Optional
 from jaxtyping import Array
 
-from probjax.distributions import Distribution, Independent, Normal
-from probjax.distributions.discrete import Empirical
-from probjax.utils.linalg import (
-    is_matrix,
-    is_diagonal_matrix,
-    transition_matrix,
-    matrix_fraction_decomposition,
-)
+from probjax.distributions import Distribution, Normal
 from probjax.inference.filtering.kalman_filter_old import filter
-from probjax.utils.sdeint import sdeint
+from probjax.utils.linalg import (
+    matrix_fraction_decomposition,
+    transition_matrix,
+)
 from probjax.utils.odeint import odeint
+from probjax.utils.sdeint import sdeint
 
 
 class BaseSDE(Distribution):
@@ -42,8 +39,8 @@ class BaseSDE(Distribution):
 
     def mean(self, t: Array) -> Array:
         assert jnp.all(t >= 0), "t must be positive"
-        mean, _ = filter(self.drift, self.diffusion, t,self.p0.mean, self.p0.variance)
-        
+        mean, _ = filter(self.drift, self.diffusion, t, self.p0.mean, self.p0.variance)
+
         return mean
 
     def marginal_mean(self, t: Array, x0=None, **kwargs) -> Array:
@@ -52,7 +49,7 @@ class BaseSDE(Distribution):
 
     def variance(self, t: Array) -> Array:
         assert jnp.all(t >= 0), "t must be positive"
-        _, cov = filter(self.drift, self.diffusion, t,self.p0.mean, self.p0.variance)
+        _, cov = filter(self.drift, self.diffusion, t, self.p0.mean, self.p0.variance)
         if cov.shape[-1] == 1:
             return jnp.squeeze(cov, axis=-1)
         else:
@@ -400,7 +397,6 @@ class OrnsteinUhlenbeck(BaseSDE):
 
 
 class VPSDE(LinearTimeVariantSDE):
-    
     def __init__(
         self,
         p0: Distribution,
@@ -502,19 +498,19 @@ class VESDE(LinearTimeVariantSDE):
         )
 
         super().__init__(drift_matrix, diffusion_matrix, p0)
-        
+
     def marginal_mean(self, ts: Array, x0=None, **kwargs) -> Array:
         ts = jnp.atleast_1d(ts)
         if x0 is None:
             mu0 = self.p0.mean
         else:
             mu0 = x0
-        
+
         while ts.ndim < mu0.ndim:
             ts = jnp.expand_dims(ts, axis=-1)
-            
+
         ts, mu0 = jnp.broadcast_arrays(ts, mu0)
-        
+
         return mu0
 
     def mean(self, ts: Array, x0=None, **kwargs) -> Array:
@@ -528,7 +524,7 @@ class VESDE(LinearTimeVariantSDE):
         )
         mu = self.marginal_mean(ts)
         return mu.reshape(shape + self.batch_shape + self.event_shape)
-    
+
     def variance(self, ts: Array, x0=None, **kwargs) -> Array:
         ts = jnp.atleast_1d(ts)
         shape = ts.shape
@@ -540,7 +536,6 @@ class VESDE(LinearTimeVariantSDE):
         )
         var = self.marginal_variance(ts)
         return var.reshape(shape + self.batch_shape + self.event_shape)
-    
 
     def marginal_variance(self, ts: Array, x0=None, **kwargs) -> Array:
         ts = jnp.atleast_1d(ts)
@@ -548,12 +543,12 @@ class VESDE(LinearTimeVariantSDE):
             var0 = self.p0.variance
         else:
             var0 = jnp.zeros_like(x0)
-            
+
         while ts.ndim < var0.ndim:
             ts = jnp.expand_dims(ts, axis=-1)
-            
+
         ts, var0 = jnp.broadcast_arrays(ts, var0)
-            
+
         vart = self.sigma_min**2 * (self.sigma_max / self.sigma_min) ** (2 * ts)
         var = var0 + vart
         return var
@@ -583,7 +578,7 @@ class subVPSDE(VPSDE):
             * (1 - jnp.exp(2 * (beta_min * t + 0.5 * (beta_max - beta_min) * t**2)))
         )
 
-        super().__init__(p0, drift_matrix, diffusion_matrix)
+        super(LinearTimeInvariantSDE, self).__init__(drift_matrix, diffusion_matrix, p0)
 
     def variance(self, ts: Array, x0=None, **kwargs) -> Array:
         if x0 is None:

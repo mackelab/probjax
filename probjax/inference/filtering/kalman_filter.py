@@ -1,21 +1,10 @@
-import blackjax
-
 from typing import Callable, NamedTuple, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
-from jax.flatten_util import ravel_pytree
-
 
 from probjax.inference.filtering.base import FilterAPI
-from probjax.inference.smc.resampling import (
-    resample_systematic,
-    resample_multinomial,
-    resample_residual,
-    resample_ot,
-)
-from blackjax.smc.ess import ess
 
 
 class KalmanFilterState(NamedTuple):
@@ -54,14 +43,12 @@ def build_discrete_kernel(
     observation_matrix: Callable[[float | ArrayLike], ArrayLike] | ArrayLike,
     observation_covariance: Callable[[float | ArrayLike], ArrayLike] | ArrayLike,
 ) -> Callable:
-
     def kernel(
         state: KalmanFilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng_key: Optional[jnp.ndarray] = None,
+        rng: Optional[jnp.ndarray] = None,
     ) -> Tuple[KalmanFilterState, KalmanFilterInfo]:
-
         mu0 = state.mean
         cov0 = state.cov
         t_old = state.t

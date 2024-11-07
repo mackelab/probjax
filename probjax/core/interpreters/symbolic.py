@@ -1,20 +1,15 @@
+from typing import Any, Sequence, Tuple
+
 import jax
 import jax.numpy as jnp
-from jaxtyping import ArrayLike
 import numpy as np
-
-from jax.core import JaxprEqn, ClosedJaxpr
-
-from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
-from probjax.core.custom_primitives.random_variable import rv_p
-from probjax.core.jaxpr_propagation.interpret import interpret
-
-from typing import Any, Iterable, Sequence, Optional, Tuple
-
 import sympy as sp
-from sympy import Symbol, MatrixSymbol
+from jax.core import JaxprEqn
+from jaxtyping import ArrayLike
+from sympy import MatrixSymbol, Symbol
 from sympy.tensor.array.expressions import ArraySymbol
 
+from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
 
 _lookup = {
     jax.lax.mul_p: sp.Mul,
@@ -63,12 +58,14 @@ _constant_lookup = {
     1j: sp.I,
 }
 
+
 def process_constant(val: Any) -> Any:
     # Check if val is a "special" constant
     for k, v in _constant_lookup.items():
         if np.isclose(val, k):
             return v[k]
     return val
+
 
 def as_symbolic_var(var: ArrayLike, name="x") -> Symbol:
     var = jnp.asarray(var)
@@ -94,28 +91,24 @@ def as_symbolic_var(var: ArrayLike, name="x") -> Symbol:
         else:
             raise ValueError(f"Unsupported dtype {dtype}")
     else:
-        return ArraySymbol(name, shape) 
-
-   
-
+        return ArraySymbol(name, shape)
 
 
 class SymbolicProcessingRule(ForwardProcessingRule):
-
     def __call__(
         self, eqn: JaxprEqn, known_inputs: Sequence[Any | None], _: Sequence[Any | None]
     ) -> Tuple[Sequence[Any | None], Sequence[Any | None]]:
-        sympy_eq = _lookup[eqn.primitive] 
+        sympy_eq = _lookup[eqn.primitive]
         print(known_inputs)
         print(eqn.params)
         params = list(map(process_constant, list(eqn.params.values())))
         print(params)
-        sym_eq = sympy_eq(*known_inputs,*params)
-        
+        sym_eq = sympy_eq(*known_inputs, *params)
+
         outvars = eqn.outvars
         if isinstance(sym_eq, Sequence):
             outvals = sym_eq
         else:
             outvals = [sym_eq]
-            
+
         return outvars, outvals

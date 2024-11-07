@@ -1,15 +1,6 @@
-from typing import Dict, Optional, Any, Tuple
+from chex import Array
 
-
-import jax
-import jax.numpy as jnp
-import jax.random as jrandom
-
-
-from probjax.distributions.constraints import Constraint
 from probjax.distributions.distribution import Distribution
-
-from chex import Numeric, PRNGKey, Array
 
 __all__ = ["ExponentialFamily"]
 

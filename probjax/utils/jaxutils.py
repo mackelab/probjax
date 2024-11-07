@@ -1,24 +1,19 @@
-from typing import Callable, Optional, Sequence, Union, Tuple
-from jaxtyping import PyTree, Array
+import math
+from functools import partial
+from typing import Callable, Optional, Sequence, Tuple
 
 import jax
+import jax.experimental
 import jax.numpy as jnp
-import numpy as np
-import math
-from functools import wraps, partial
-
+from jax._src import linear_util as lu
 from jax._src.flatten_util import ravel_pytree
-from jax._src.api_util import flatten_fun_nokwargs as flatten_fun_nokwargs_
-
 from jax.core import eval_jaxpr
 from jax.interpreters.partial_eval import partial_eval_jaxpr_nounits
-
-from jax._src import linear_util as lu
+from jaxtyping import Array, PyTree
 
 
 class API(type):
     """API class for algorithms"""
-    
 
     def __str__(self):
         return self.__doc__
@@ -28,6 +23,35 @@ class API(type):
         return text
 
 
+class WithProgressBarAPI:
+    _print_rate: int = 1000
+    _print_length: int = 50
+    _running_stats = ()
+
+    @staticmethod
+    def _print_progress(cls, iteration, total, stats):
+        print_rate = total // cls._print_rate + 1
+        percent = 100 * ((iteration + print_rate) / float(total))
+
+        percent = min(percent, 100)
+
+        percent = ("{0:." + str(2) + "f}").format(percent)
+
+        filled_length = int(cls._print_length * iteration // total + 1)
+        bar = '█' * filled_length + '-' * (cls._print_length - filled_length)
+
+        progress_bar = f'\rProgress: |{bar}| {percent}%'
+
+        progress_bar += " ".join(
+            f" {name}: {stat:.2f}" for name, stat in zip(cls._running_stats, stats)
+        )
+
+        print(progress_bar, end="\r")
+
+        if iteration == total:
+            print()
+
+
 @lu.transformation
 def ravel_first_arg_(unravel, y_flat, *args):
     y = unravel(y_flat)
@@ -35,14 +59,15 @@ def ravel_first_arg_(unravel, y_flat, *args):
     ans_flat, _ = ravel_pytree(ans)
     yield ans_flat
 
+
 @lu.transformation
 def ravel_arg_(unravel, index, *args):
     flat_arg_i = args[index]
     arg_i = unravel(flat_arg_i)
-    args = args[:index] + (arg_i,) + args[index+1:]
+    args = args[:index] + (arg_i,) + args[index + 1 :]
     ans = yield args, {}
     ans_flat, _ = ravel_pytree(ans)
-    yield ans_flat      
+    yield ans_flat
 
 
 @lu.transformation
@@ -62,7 +87,7 @@ def flatten_args_(in_tree, *flat_args):
 
 
 def precompute(func: Callable, arg_list: list, known_argnums: list) -> Callable:
-    """ Precomputes all computations that can be done with all known arguments.
+    """Precomputes all computations that can be done with all known arguments.
 
     Args:
         func (Callable): Function to be precomputed
@@ -70,27 +95,38 @@ def precompute(func: Callable, arg_list: list, known_argnums: list) -> Callable:
         known_argnums (list): List of indices of known arguments
 
     Returns:
-        Callable: Function that inputs all unknown arguments and returns the result of the function
+        Callable: Function that inputs all unknown arguments and returns the result of
+        the function
     """
     jaxpr = jax.make_jaxpr(func)(*arg_list)
-    unknowns = [False if k in known_argnums else True for k in range(len(arg_list))]
+    unknowns = [k not in known_argnums for k in range(len(arg_list))]
     instantiate = False
 
-    (known_jaxpr, unknown_jaxpr, _, _) = partial_eval_jaxpr_nounits(jaxpr, unknowns, instantiate)
+    (known_jaxpr, unknown_jaxpr, _, _) = partial_eval_jaxpr_nounits(
+        jaxpr, unknowns, instantiate
+    )
 
     known_values = [arg_k for (k, arg_k) in enumerate(arg_list) if k in known_argnums]
-    precomputed_values = eval_jaxpr(known_jaxpr.jaxpr, known_jaxpr.consts, *known_values)
-
+    precomputed_values = eval_jaxpr(
+        known_jaxpr.jaxpr, known_jaxpr.consts, *known_values
+    )
 
     def inner(*args):
-        values = eval_jaxpr(unknown_jaxpr.jaxpr, unknown_jaxpr.consts, *precomputed_values, *args, propagate_source_info=False)
+        values = eval_jaxpr(
+            unknown_jaxpr.jaxpr,
+            unknown_jaxpr.consts,
+            *precomputed_values,
+            *args,
+            propagate_source_info=False,
+        )
         return values if len(values) > 1 else values[0]
-    
+
     return inner
 
 
 def flatten_fun(fun: Callable, in_tree: PyTree) -> Callable:
-    """Flattens the input arguments of a function. Meaning than all abstract inputs are flattened into a list of arrays.
+    """Flattens the input arguments of a function. Meaning than all abstract inputs are
+    flattened into a list of arrays.
 
     Args:
         fun (Callable): Function to be flattened
@@ -123,6 +159,7 @@ def ravel_args(in_vals: PyTree) -> Tuple[Array, Callable]:
 
 def ravel_fun(fun: Callable, unravel) -> Callable:
     return ravel_args_(lu.wrap_init(fun), unravel).call_wrapped
+
 
 def ravel_arg_fun(fun: Callable, unravel, index: int) -> Callable:
     return ravel_arg_(lu.wrap_init(fun), unravel, index).call_wrapped
@@ -179,7 +216,7 @@ def nested_checkpoint_scan(
         x = jnp.asarray(x)
         new_shape = tuple(nested_lengths) + x.shape[1:]
         return x.reshape(new_shape)
-    
+
     _scan_fn = partial(scan_fn, unroll=unroll)
 
     sub_xs = jax.tree_map(nested_reshape, xs)
@@ -198,3 +235,50 @@ def _inner_nested_scan(f, init, xs, lengths, scan_fn, checkpoint_fn):
     carry, out = scan_fn(sub_scans, init, xs, lengths[0])
     stacked_out = jax.tree_map(jnp.concatenate, out)
     return carry, stacked_out
+
+
+def print_scan(
+    f,
+    init,
+    init_stats,
+    xs: Optional[Array] = None,
+    length: Optional[int] = None,
+    *,
+    unroll: int = 1,
+    update_stats: Callable = None,
+    print_rate: Optional[int] = None,
+    print_fn: Callable = print,
+):
+    """A version of lax.scan that supports printing the progress of the scan.
+
+    The interface of `print_scan` exactly matches lax.scan, except for
+    the print_rate argument.
+
+    """
+    if length is None:
+        length = xs.shape[0]
+
+    if print_rate is None:
+        print_rate = length // 50 + 1
+
+    num_stats = len(init_stats)
+
+    def scan_fn(carry, x):
+        i, *carry = carry
+        stats, carry = carry[:num_stats], carry[num_stats:]
+        carry, y = f(carry, x)
+        stats = update_stats(stats, carry, y)
+
+        jax.lax.cond(
+            i % print_rate == 0,
+            lambda: jax.experimental.io_callback(print_fn, None, i, length, stats),
+            lambda: None,
+        )
+        i += 1
+        return (i,) + stats + carry, y
+
+    carry, y = jax.lax.scan(
+        scan_fn, (0,) + init_stats + init, xs, length, unroll=unroll
+    )
+    carry = carry[1 + num_stats :]
+    return carry, y

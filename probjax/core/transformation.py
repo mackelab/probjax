@@ -2,38 +2,30 @@ from functools import wraps
 from typing import Callable, Iterable, Optional
 
 import jax
-from jaxtyping import ArrayLike, Array
+import sympy
 from jax import numpy as jnp
+from jaxtyping import Array
 
-from probjax.core.jaxpr_propagation.interpret import interpret
-from probjax.core.jaxpr_propagation.propagate import propagate
-
+from probjax.core.interpreters.interventions import IntervenedProcessingRule
+from probjax.core.interpreters.inverse import (
+    InverseAndLogAbsDetProcessingRule,
+    InverseProcessingRule,
+    inverse_cost_fn,
+)
 from probjax.core.interpreters.joint_sample import JointSampleProcessingRule
 from probjax.core.interpreters.log_potential import (
     LogPotentialProcessingRule,
-    potential_cost_fn,
-    extract_random_vars_values,
 )
-from probjax.core.interpreters.inverse import (
-    InverseProcessingRule,
-    inverse_cost_fn,
-    InverseAndLogAbsDetProcessingRule,
-)
-from probjax.core.interpreters.trace import TraceProcessingRule
-from probjax.core.interpreters.interventions import IntervenedProcessingRule
 from probjax.core.interpreters.symbolic import SymbolicProcessingRule, as_symbolic_var
-
-
-import sympy
-
-
+from probjax.core.interpreters.trace import TraceProcessingRule
+from probjax.core.jaxpr_propagation.interpret import interpret
+from probjax.core.jaxpr_propagation.propagate import propagate
 
 
 def symbolify(fun: Callable):
-    
     jaxpr_maker = jax.make_jaxpr(fun)
     procecessing_rule = SymbolicProcessingRule()
-    
+
     def wrapped(*args, **kwargs):
         jaxpr = jaxpr_maker(*args, **kwargs)
         args = list(map(as_symbolic_var, args))
@@ -45,22 +37,20 @@ def symbolify(fun: Callable):
             jaxpr.jaxpr.outvars,
             process_eqn=procecessing_rule,
         )
-        
+
         return out[0]
-    
+
     return wrapped
 
 
-def lambdaify(expr: sympy.Expr, static_symbols: Optional[dict] = None):
+def lambdafy(expr: sympy.Expr, static_symbols: Optional[dict] = None):
     if static_symbols is not None:
         expr = expr.subs(**static_symbols)
-        
+
     def wrapped(*args):
         return sympy.lambdify(expr.free_symbols, expr, module="jax")(*args)
-    
+
     return wrapped
-    
-    
 
 
 def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
@@ -139,7 +129,7 @@ def log_potential_fn(fun: Callable, *args, **kwargs):
     """
     jaxpr = jax.make_jaxpr(fun)(jax.random.PRNGKey(0), *args, **kwargs)
 
-    def log_potential(**joint_samples): 
+    def log_potential(**joint_samples):
         processing_rule = LogPotentialProcessingRule(joint_samples=joint_samples)
 
         _ = interpret(
@@ -160,8 +150,10 @@ def log_potential_fn(fun: Callable, *args, **kwargs):
         #     cost_fn=potential_cost_fn,
         #     process_all_eqns=True,
         # )
-       
-        return jnp.nan_to_num(processing_rule.log_prob, nan=-jnp.inf, posinf=jnp.inf, neginf=-jnp.inf)
+
+        return jnp.nan_to_num(
+            processing_rule.log_prob, nan=-jnp.inf, posinf=jnp.inf, neginf=-jnp.inf
+        )
 
     return log_potential
 

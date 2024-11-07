@@ -1,18 +1,14 @@
-from string import digits
-from IPython.display import display, SVG  # type: ignore
 import io
-import matplotlib.pyplot as plt
-import networkx as nx
-
+import re
+from typing import Callable, Sequence
 
 import jax.numpy as jnp
+import networkx as nx
+from IPython.display import SVG, display  # type: ignore
+from jax.core import Jaxpr, Literal
 from jax.experimental.pjit import pjit_p
 
-from jax.core import Literal, Jaxpr
-import re
-from typing import Callable, Any, Union, Tuple, Optional, Sequence, Dict
 from probjax.core.custom_primitives.random_variable import rv_p
-
 
 COMPUTE_GRAPH_NODE_STYLES = {
     "const": dict(
@@ -321,7 +317,8 @@ class JaxprGraph:
         # TODO : Name clusters by pjit name
         for i in range(max_level + 1):
             AGraph.add_subgraph(
-                [n for n in nodes if n.attr["level"] == str(i)], name=f"cluster_{i}", 
+                [n for n in nodes if n.attr["level"] == str(i)],
+                name=f"cluster_{i}",
             )
 
         # Left to right in topological order
@@ -346,14 +343,14 @@ class DirectedVariableGraph(JaxprGraph):
 
 
 class UndirectedVariableGraph(DirectedVariableGraph):
-    def __init__(self, jaxpr, maxlevel=jnp.inf,graph=None) -> None:
-        super(UndirectedVariableGraph, self).__init__(jaxpr,maxlevel, graph)
+    def __init__(self, jaxpr, maxlevel=jnp.inf, graph=None) -> None:
+        super(UndirectedVariableGraph, self).__init__(jaxpr, maxlevel, graph)
         self._graph = moralize_dag(self._graph.to_directed())
 
 
 class DirectedGraphicalModel(DirectedVariableGraph):
     def __init__(self, jaxpr, maxlevel=jnp.inf, graph=None) -> None:
-        super(DirectedGraphicalModel, self).__init__(jaxpr,maxlevel, graph)
+        super(DirectedGraphicalModel, self).__init__(jaxpr, maxlevel, graph)
         random_vars = []
         for n, tag in nx.get_node_attributes(self._graph, "tag").items():
             if tag == "random_variable" or tag == "invar" or tag == "outvar":
@@ -363,7 +360,7 @@ class DirectedGraphicalModel(DirectedVariableGraph):
 
 class UndirectedGraphicalModel(UndirectedVariableGraph):
     def __init__(self, jaxpr, maxlevel=jnp.inf, graph=None) -> None:
-        super(UndirectedGraphicalModel, self).__init__(jaxpr,maxlevel, graph)
+        super(UndirectedGraphicalModel, self).__init__(jaxpr, maxlevel, graph)
         random_vars = []
         for n, tag in nx.get_node_attributes(self._graph, "tag").items():
             if tag == "random_variable" or tag == "invar" or tag == "outvar":

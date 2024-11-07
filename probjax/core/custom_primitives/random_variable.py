@@ -1,30 +1,21 @@
-from jax.core import (
-    Primitive,
-    ClosedJaxpr,
-    new_sublevel,
-    eval_jaxpr,
-    ShapedArray,
-)
+from functools import partial
+from typing import Callable, Hashable
 
 import jax
-import jax.random as jrandom
 from jax import tree_util
+from jax._src import ad_util, api_util, util
 from jax._src import linear_util as lu
-from jax._src import api_util
-from jax._src import ad_util
-from jax._src import util
-from typing import Hashable, Callable
-from jax._src import effects
-from jax.interpreters import ad
-from jax.interpreters import batching
-from jax.interpreters import mlir
-from jax.interpreters.batching import batch_jaxpr
-from jax.interpreters import partial_eval as pe
-
 from jax._src.util import safe_map as map
-
-from functools import partial
-
+from jax.core import (
+    ClosedJaxpr,
+    Primitive,
+    ShapedArray,
+    eval_jaxpr,
+    new_sublevel,
+)
+from jax.interpreters import ad, batching, mlir
+from jax.interpreters import partial_eval as pe
+from jax.interpreters.batching import batch_jaxpr
 
 from probjax.distributions.distribution import Distribution
 
@@ -123,7 +114,7 @@ def rv(dist: Distribution, name: Hashable) -> Callable:
             log_prob_fn_jaxpr=log_prob_fn_jaxpr,
             dist=type(dist),
             intervened=False,
-            **kwargs
+            **kwargs,
         )
 
         return out[0]
@@ -201,7 +192,7 @@ def _rv_batching_rule(
         *args,
         sampling_fn_jaxpr=batched_sampling_fn,
         log_prob_fn_jaxpr=batched_log_prob_fn,
-        **params
+        **params,
     )
 
     # Outdim
@@ -211,7 +202,7 @@ def _rv_batching_rule(
 
 
 def custom_inverse_jvp(primals, tangents, sampling_fn_jaxpr, **params):
-    nonzeros =  [type(t) is not ad_util.Zero for t in tangents]
+    nonzeros = [type(t) is not ad_util.Zero for t in tangents]
     forward_jvp_jaxpr, forward_out_nz = ad.jvp_jaxpr(
         sampling_fn_jaxpr, nonzeros, instantiate=False
     )

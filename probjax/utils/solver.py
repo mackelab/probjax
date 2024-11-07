@@ -1,7 +1,7 @@
+from functools import partial
+
 import jax
 import jax.numpy as jnp
-
-from functools import partial
 
 
 # General root-finding algorithm
@@ -48,11 +48,11 @@ def newton_raphson(f, x0, tol=1e-6, max_iter=50):
         return (tol_reached, x), x
 
     tol_reached = False
-    _, x = jax.lax.scan(scan_fn, (tol_reached, x), jnp.arange(max_iter))
-    return x[-1].reshape(shape)
+    converged, x = jax.lax.scan(scan_fn, (tol_reached, x), jnp.arange(max_iter))
+    return x[-1].reshape(shape), converged[-1]
 
 
-def root(fun, x0, args=(), method="newton-raphson", tol=1e-3, max_iter=100):
+def root(fun, x0, args=(), method="newton-raphson", tol=1e-3, max_iter=20):
     """Find a root of a function, using a fixed point iteration.
 
     Args:
@@ -98,9 +98,6 @@ def root_scalar(
     if method == "bisection":
         assert bracket is not None, "Bracket must be provided for bisection method."
         return bisection_method(_f, bracket, tol=tol, max_iter=max_iter)
-
-
-from functools import partial
 
 
 @partial(jax.jit, static_argnums=(0, 2, 3))

@@ -1,22 +1,16 @@
 import jax.numpy as jnp
 from jax import random
-from jax import lax
-from jax.scipy.special import erfinv, erf
 
-from jaxtyping import Array
-
+from .constraints import distribution, real
 from .distribution import Distribution
-from .constraints import real, positive, unit_interval, interval, distribution
 
 __all__ = ["TruncatedNormal"]
 
 from jax.tree_util import register_pytree_node_class
-from jax.scipy.stats import truncnorm
 
 
 @register_pytree_node_class
 class TruncatedDistribution(Distribution):
-    
     arg_constraints = {"base_dist": distribution, "a": real, "b": real}
 
     def __init__(self, base_dist, a, b):

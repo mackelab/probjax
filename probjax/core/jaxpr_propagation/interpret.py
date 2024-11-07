@@ -1,19 +1,14 @@
-import jax
+from typing import Any, Callable, Optional, Sequence, Tuple
 
-from jax.core import Jaxpr, JaxprEqn, Literal, Var, Atom
-from jax.experimental.pjit import pjit_p
 from jax._src.util import safe_map as map
-from typing import Callable, Sequence, Tuple, Union, Optional, Any
+from jax.core import Jaxpr, JaxprEqn, Var
+from jax.experimental.pjit import pjit_p
 from jaxtyping import Array
 
-import math
-
-from probjax.utils.containers import PriorityQueue
 from probjax.core.jaxpr_propagation.utils import (
     Environment,
-    construct_jaxpr_graph,
-    ProcessingRule,
     ForwardProcessingRule,
+    ProcessingRule,
 )
 
 # Simple base interpreter
@@ -51,7 +46,8 @@ def interpret(
             sub_invar_vals = []
             sub_outvars = []
             for v, val in zip(
-                sub_jaxpr.jaxpr.invars + sub_jaxpr.jaxpr.outvars, known_invars + known_outvars
+                sub_jaxpr.jaxpr.invars + sub_jaxpr.jaxpr.outvars,
+                known_invars + known_outvars,
             ):
                 if val is None:
                     sub_outvars.append(v)

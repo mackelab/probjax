@@ -1,5 +1,4 @@
 import heapq
-
 from typing import Any, List, Union
 
 
@@ -13,9 +12,9 @@ class PriorityQueue:
         self.entry_finder = {}
         self.counter = 0
 
-    __repr__ = __str__ = lambda self: str(
-        [(x[-1], x[0]) for x in self.heap if x[-1] is not None]
-    )
+    __repr__ = __str__ = lambda self: str([
+        (x[-1], x[0]) for x in self.heap if x[-1] is not None
+    ])
 
     def __contains__(self, element) -> bool:
         return element in self.entry_finder
@@ -59,6 +58,7 @@ class PriorityQueue:
             entry[0] = new_cost  # Update the cost in the entry
             heapq.heapify(self.heap)  # Reorder the heap based on the updated cost
             self.entry_finder[element] = entry  # Update the entry in the dictionary
+
     def is_empty(self):
         """This function checks if the priority queue is empty."""
         return len(self.entry_finder) == 0

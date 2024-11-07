@@ -1,22 +1,21 @@
-import blackjax
-
 from typing import Callable, NamedTuple, Optional
 
 import jax
 import jax.numpy as jnp
-from jax.typing import ArrayLike
-from jax.flatten_util import ravel_pytree
-
-
-from probjax.inference.filtering.base import FilterState, FilterInfo, FilterAPI
-from probjax.inference.smc.resampling import resample_systematic, resample_multinomial, resample_residual, resample_ot
 from blackjax.smc.ess import ess
+from jax.typing import ArrayLike
+
+from probjax.inference.filtering.base import FilterAPI
+from probjax.inference.smc.resampling import (
+    resample_systematic,
+)
 
 
 class ParticleFilterState(NamedTuple):
     particles: ArrayLike
     log_weights: ArrayLike
     t: Optional[ArrayLike]
+
 
 class ParticleFilterInfo(NamedTuple):
     ancestors: ArrayLike
@@ -30,7 +29,6 @@ def init(
     t: Optional[ArrayLike] = None,
     log_weights: Optional[ArrayLike] = None,
 ) -> ParticleFilterState:
-
     # Initialize state for a particle filter
     num_particles = particles.shape[0]
     if log_weights is None:
@@ -43,7 +41,7 @@ def init(
     return ParticleFilterState(particles, log_weights, t)
 
 
-def resample_when_ess_below(ess: float,ess_threshold: float= 0.5):
+def resample_when_ess_below(ess: float, ess_threshold: float = 0.5):
     return ess < ess_threshold
 
 
@@ -56,8 +54,8 @@ def build_kernel(
     resample_criterion: Callable = resample_when_ess_below,
     resample_fn: Callable = resample_systematic,
     unbiased_gradients: bool = False,
-    ):
-    """ Build a particle filter kernel.
+):
+    """Build a particle filter kernel.
 
     Args:
         log_likelihood_fn (Callable): Log likelihood function of the model.
@@ -76,7 +74,9 @@ def build_kernel(
         observed: Optional[ArrayLike] = None,
         rng_key: Optional[ArrayLike] = None,
     ):
-        assert rng_key is not None, "You must provide a random key for the particle filter kernel."
+        assert (
+            rng_key is not None
+        ), "You must provide a random key for the particle filter kernel."
         # Unpack state
         particles = state.particles
         log_weights = state.log_weights
@@ -94,15 +94,26 @@ def build_kernel(
         if is_observed:
             # Update step
             log_weights = log_likelihood_fn(new_particles, observed, t) + log_weights
-            if transition_logdensity_fn is not None and proposal_logdensity_fn is not None:
-                log_weights = log_weights + (transition_logdensity_fn(new_particles, particles, t) - proposal_logdensity_fn(new_particles, particles,t))
+            if (
+                transition_logdensity_fn is not None
+                and proposal_logdensity_fn is not None
+            ):
+                log_weights = log_weights + (
+                    transition_logdensity_fn(new_particles, particles, t)
+                    - proposal_logdensity_fn(new_particles, particles, t)
+                )
             log_normalizer = jax.scipy.special.logsumexp(log_weights)
             log_weights = log_weights - log_normalizer
             log_likelihood = log_normalizer - log_num_particles
 
         else:
-            if transition_logdensity_fn is not None and proposal_logdensity_fn is not None:
-                log_weights += (transition_logdensity_fn(new_particles, particles,t) - proposal_logdensity_fn(new_particles, particles,t))
+            if (
+                transition_logdensity_fn is not None
+                and proposal_logdensity_fn is not None
+            ):
+                log_weights += transition_logdensity_fn(
+                    new_particles, particles, t
+                ) - proposal_logdensity_fn(new_particles, particles, t)
                 log_normalizer = jax.scipy.special.logsumexp(log_weights)
                 log_weights = log_weights - log_normalizer
             else:
@@ -111,23 +122,34 @@ def build_kernel(
 
         # Resample if necessary
         effective_samples_size = ess(log_weights)
-        do_resample = resample_criterion(effective_samples_size/log_weights.shape[0])
+        do_resample = resample_criterion(effective_samples_size / log_weights.shape[0])
 
         def resample(key, log_weights, particles):
-            new_particles, new_log_weights, idx = resample_fn(key, log_weights, particles)
+            new_particles, new_log_weights, idx = resample_fn(
+                key, log_weights, particles
+            )
             if unbiased_gradients:
-                new_log_weights += (log_weights[idx] - jax.lax.stop_gradient(log_weights[idx]))
+                new_log_weights += log_weights[idx] - jax.lax.stop_gradient(
+                    log_weights[idx]
+                )
 
             return new_particles, new_log_weights, idx
 
         def no_resample(key, log_weights, particles):
             return particles, log_weights, jnp.arange(particles.shape[0])
 
-        new_particles, new_log_weights, ancestors = jax.lax.cond(do_resample, resample, no_resample, rng_key_resample, log_weights, new_particles)
+        new_particles, new_log_weights, ancestors = jax.lax.cond(
+            do_resample,
+            resample,
+            no_resample,
+            rng_key_resample,
+            log_weights,
+            new_particles,
+        )
 
         new_state = ParticleFilterState(new_particles, new_log_weights, t)
         info = ParticleFilterInfo(
-            ancestors, log_likelihood, effective_samples_size,  is_observed
+            ancestors, log_likelihood, effective_samples_size, is_observed
         )
 
         return new_state, info
