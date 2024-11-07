@@ -58,7 +58,7 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
 
         out = jax.tree_util.tree_map(lambda x: x * scale_out, x_pred)
         if scale_skip is not None:
-            out += jax.tree_util.tree_map(lambda x: x * scale_skip, x)
+            out = jax.tree_util.tree_map(lambda x, o: x * scale_skip + o, x, out)
         return out
 
     def score(self, t, x, *args, **kwargs):
