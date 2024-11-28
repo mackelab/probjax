@@ -28,8 +28,6 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
             self.std_fn = std_fn
         self.std0 = nnx.Variable(std0)
 
-    def c_mu(self, t):
-        return 1.0
 
     def c_in(self, t):
         return 1.0
@@ -88,7 +86,61 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
         std = self.std_fn(t)
         std_dt = jax.grad(lambda t: jnp.sum(self.std_fn(t)))(t)
         return scale * jnp.sqrt(2 * std_dt * std)
+    
 
+class DiffusionScoreMatcher(DiffusionDenoiser):
+    def __init__(
+        self,
+        net: nnx.Module,
+        std0: ArrayLike = 1.0,
+        scale_fn: Optional[Callable] = None,
+        std_fn: Optional[Callable] = None,
+        rngs=None,
+    ):
+        super().__init__(net, std0=std0, scale_fn=scale_fn, std_fn=std_fn, rngs=rngs)
+
+    def __call__(self, t, x, *args, **kwargs):
+        # With preconditioning
+        noise_embed = self.c_t(t)
+        x_normed = jax.tree_util.tree_map(lambda x: x * self.c_in(t), x)
+
+        x_pred = self.net(noise_embed, x_normed, *args, **kwargs)
+
+        scale_out = self.c_out(t)
+        scale_skip = self.c_skip(t)
+
+        out = jax.tree_util.tree_map(lambda x: x * scale_out, x_pred)
+        if scale_skip is not None:
+            out = jax.tree_util.tree_map(lambda x, o: x * scale_skip + o, x, out)
+        return out
+
+    def score(self, t, x, *args, **kwargs):
+        x = x / self.scale_fn(t)
+        mean = self.__call__(t, x, *args, **kwargs)
+
+        # Score by Tweedie's formula
+        # mean = x + std**2 * score
+        # score = (mean - x) / std**2
+        std = self.std_fn(t)
+        score = (mean - x) / (std**2 * self.scale_fn(t))
+
+        return score
+
+    def marginal_std(self, t):
+        return jnp.sqrt(
+            self.scale_fn(t) ** 2 * (self.std_fn(t) ** 2 + self.std0.value**2)
+        )
+
+    def drift(self, t, x, *args, **kwargs):
+        scale = self.scale_fn(t)
+        scale_dt = jax.grad(lambda t: jnp.sum(self.scale_fn(t)))(t)
+        return (scale_dt / scale) * x
+
+    def diffusion(self, t, x, *args, **kwargs):
+        scale = self.scale_fn(t)
+        std = self.std_fn(t)
+        std_dt = jax.grad(lambda t: jnp.sum(self.std_fn(t)))(t)
+        return scale
 
 class EDM(DiffusionDenoiser):
     scale_fn = lambda _, t: jnp.array([1.0])

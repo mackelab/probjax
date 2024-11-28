@@ -56,6 +56,7 @@ class AutoregressiveMLP(nnx.Module, experimental_pytree=True):
         return y
 
     def inverse(self, y: jax.Array, context=None):
+        # TODO: Implement with scan for large dimensions
         x = y
         log_det = 0.0
         for _ in range(self.in_out_dim):

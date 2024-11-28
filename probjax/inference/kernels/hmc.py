@@ -41,7 +41,7 @@ def init_params(
     if inverse_mass_matrix is None:
         inverse_mass_matrix = jnp.ones((dim,))
     else:
-        if inverse_mass_matrix.shap[0] != dim:
+        if inverse_mass_matrix.shape[0] != dim:
             raise ValueError(
                 "The dimension of the inverse mass matrix must match the dimension"
                 " of the position."

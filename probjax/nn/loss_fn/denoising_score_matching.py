@@ -80,7 +80,9 @@ def build_denoising_score_matching_loss(
     reduction_fn: Callable = jnp.mean,
 ):
     def loss_fn(params, *args, rng=None, **kwargs):
-        assert rng is not None, "loss_fn does require rngs, pass them to function kwargs."
+        assert (
+            rng is not None
+        ), "loss_fn does require rngs, pass them to function kwargs."
         update_params(model, params)
         shape = args[argnums].shape
         eps = jax.random.normal(rng, shape=shape)
@@ -98,23 +100,35 @@ def build_time_dependent_denoising_score_matching_loss(
     model: nnx.Module | Callable,
     mean_fn: Callable,
     std_fn: Callable,
-    argnums: int = 1,
+    weight_fn: Optional[Callable] = None,
+    argnums: int = 0,
     axis: int = -1,
     control_variate: bool = False,
     update_params: Callable = nnx.update,
     reduction_fn: Callable = jnp.mean,
 ):
     def loss_fn(params, times, *args, rng=None, **kwargs):
-        assert rng is not None, "loss_fn does require rngs, pass them to function kwargs."
+        assert (
+            rng is not None
+        ), "loss_fn does require rngs, pass them to function kwargs."
         update_params(model, params)
         x = args[argnums]
         mean = mean_fn(times, x)
         std_t = std_fn(times, x)
         eps = jax.random.normal(rng, shape=x.shape)
-        new_args = args[:argnums] + (mean,) + args[argnums + 1 :]
+        new_args = (times,) + args[:argnums] + (mean,) + args[argnums + 1 :]
+        weight = weight_fn(times) if weight_fn is not None else None
 
         loss = base_denoising_score_matching_loss(
-            model, eps, std_t, axis, argnums, control_variate, *new_args, **kwargs
+            model,
+            eps,
+            std_t,
+            weight,
+            axis,
+            argnums + 1,
+            control_variate,
+            *new_args,
+            **kwargs,
         )
 
         return reduction_fn(loss)
