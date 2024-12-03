@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Optional
+from typing import Callable, Optional
 
 import flax.nnx as nnx
 import jax
@@ -22,6 +22,25 @@ class Sequential(nnx.Module, experimental_pytree=True):
         for layer in self.layers:
             x = layer(x, *args, **kwargs)
         return x
+
+
+class Affine(nnx.Module, experimental_pytree=True):
+    def __init__(self, in_out_dim: int, rngs):
+        """This module applies an affine transformation to the input.
+
+        Args:
+            in_out_dim (int): Input and output dimension.
+            rngs (rngs): Random generator stream.
+        """
+        self.scale = nnx.Variable(
+            nnx.initializers.normal(1.0)(rngs.next(), shape=(in_out_dim,))
+        )
+        self.bias = nnx.Variable(
+            nnx.initializers.normal(1.0)(rngs.next(), shape=(in_out_dim,))
+        )
+
+    def __call__(self, x: Array, *args) -> Array:
+        return x * self.scale.value + self.bias.value
 
 
 class Flip(nnx.Module, experimental_pytree=True):
@@ -83,7 +102,7 @@ class Rotate(nnx.Module, experimental_pytree=True):
             raise NotImplementedError(
                 "Learnable rotation matrix is not implemented yet."
             )
-            # TODO: Matrix exponetial of any ske symetric matrix is orthogonal
+            # TODO: Matrix exponetial of any skew symetric matrix is orthogonal
             # Use for reparameterization
 
     def __call__(self, x: Array, *args) -> Array:
@@ -156,3 +175,46 @@ class OneHot(nnx.Module, experimental_pytree=True):
             x (jax.Array): Input array of shape [B, T]
         """
         return jax.nn.one_hot(x, self.num_tokens)
+
+
+class AdditiveFuse(nnx.Module, experimental_pytree=True):
+    def __init__(self, input_dim: int, context_dim: int, rngs):
+        """This module applies an additive transformation to the input.
+
+        Args:
+            in_out_dim (int): Input and output dimension.
+            rngs (rngs): Random generator stream.
+        """
+        self.linear = nnx.Linear(context_dim, input_dim, rngs=rngs)
+
+    def __call__(self, x: Array, context: Array) -> Array:
+        return x + self.linear(context)
+
+
+class AffineFuse(nnx.Module, experimental_pytree=True):
+    def __init__(
+        self,
+        input_dim: int,
+        context_dim: int,
+        rngs,
+        scale_activation: Callable = jax.nn.sigmoid,
+        use_bias: bool = False,
+    ):
+        """This module applies an affine transformation to the input.
+
+        Args:
+            in_out_dim (int): Input and output dimension.
+            rngs (rngs): Random generator stream.
+        """
+        self.linear_scale = nnx.Linear(
+            context_dim, input_dim, rngs=rngs, use_bias=use_bias
+        )
+        self.linear_bias = nnx.Linear(
+            context_dim, input_dim, rngs=rngs, use_bias=use_bias
+        )
+        self.scale_activation = scale_activation
+
+    def __call__(self, x: Array, context: Array) -> Array:
+        scale = self.scale_activation(self.linear_scale(context))
+        bias = self.linear_bias(context)
+        return x * scale + bias

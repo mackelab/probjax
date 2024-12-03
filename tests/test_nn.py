@@ -4,11 +4,27 @@ import jax.numpy as jnp
 import jax
 from probjax.core import inverse, inverse_and_logabsdet
 
-pytest_plugins = ["test_problems.nn_params"]
+pytest_plugins = ["test_problems.nns"]
 
 
 def test_mlp(mlp, batch_shape):
     in_dim, out_dim, model = mlp
+    x = jnp.ones(batch_shape + (in_dim,))
+    y = model(x)
+    assert y.shape == batch_shape + (out_dim,)
+
+    def loss_fn(model):
+        return jnp.sum(model(x))
+
+    # Can be differentiated
+    _ = jax.grad(loss_fn)
+
+    # Can be flattened
+    _, _ = jax.tree_util.tree_flatten(model)
+
+
+def test_resnet(resnet, batch_shape):
+    in_dim, out_dim, model = resnet
     x = jnp.ones(batch_shape + (in_dim,))
     y = model(x)
     assert y.shape == batch_shape + (out_dim,)
@@ -134,6 +150,7 @@ def test_lru(lru, seq_len):
     batch_shape = ()  # Needs vmap
     x = jnp.ones(batch_shape + (seq_len, in_dim))
     y = model(x)
+    print(in_dim, out_dim)
     assert y.shape == batch_shape + (seq_len, out_dim)
 
     def loss_fn(model):
@@ -144,3 +161,35 @@ def test_lru(lru, seq_len):
 
     # Can be flattened
     _, _ = jax.tree_util.tree_flatten(model)
+
+
+def test_flows(flow):
+    input_dim, model = flow
+    x = jnp.ones((input_dim,))
+    y = model.transform(x)
+
+    def loss_fn(model):
+        return jnp.sum(model.log_prob(x))
+
+    # Can be differentiated
+    _ = jax.grad(loss_fn)
+
+    # Can be flattened
+    _, _ = jax.tree_util.tree_flatten(model)
+
+    # # Test inverse
+    # model_inv = inverse(model)
+    # y_inv = model_inv(y)
+    # assert jnp.allclose(x, y_inv), "Inverse is not correct"
+
+    # # Test inverse and logabsdet
+    # model_inv_logabsdet = inverse_and_logabsdet(model)
+    # y_inv, logabsdet = model_inv_logabsdet(y)
+    # assert jnp.allclose(x, y_inv), "Inverse is not correct"
+
+    # # Sampling
+    # samples = model.sample(jax.random.PRNGKey(0), (10,))
+    # assert samples.shape == (10, input_dim)
+    # # Log probability
+    # logprob = model.log_prob(samples)
+    # assert logprob.shape == (10,)

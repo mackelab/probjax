@@ -1,4 +1,4 @@
-from typing import Callable, Optional, Sequence
+from typing import Callable, NamedTuple, Optional, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -7,6 +7,7 @@ from jax.typing import ArrayLike
 
 from probjax.inference.filtering.base import FilterInfo, FilterKernel, FilterState
 from probjax.inference.filtering.particle_filter import ParticleFilter
+from probjax.inference.filtering.kalman_filter import kalman_filter
 from probjax.utils.jaxutils import nested_checkpoint_scan
 
 
@@ -33,11 +34,11 @@ def filter(
         is_observed = t == t_o[i]
 
         def update_fn(subkey, state, i):
-            state, info = kernel(state, t=t_o[i], observed=x_o[i], rng_key=subkey)
+            state, info = kernel(state, t=t_o[i], observed=x_o[i], rng=subkey)
             return state, info, i + 1
 
         def predict_fn(subkey, state, i):
-            state, info = kernel(state, t=t_o[i], rng_key=subkey)
+            state, info = kernel(state, t=t_o[i], rng=subkey)
             return state, info, i
 
         state, info, i = jax.lax.cond(
@@ -55,12 +56,16 @@ def filter(
         _, output = nested_checkpoint_scan(
             scan_fn, carry, ts[1:], nested_lengths=checkpoint_lengths, unroll=unroll
         )
-        output = jax.tree_map(lambda x: jnp.concatenate([inital_output, x]), output)
+        # output = jax.tree_map(lambda x: jnp.concatenate([inital_output, x]), output)
 
-    inital_output = unpack_fn(inital_state, None)
-    output = jax.tree_map(
-        lambda init_x, x: jnp.concatenate([init_x[None, ...], x]), inital_output, output
-    )
+    # inital_output = unpack_fn(inital_state, NamedTuple())
+    # output = jax.tree_map(
+    #     lambda x, init_x: jnp.concatenate([init_x[None, ...], x])
+    #     if init_x is not None
+    #     else x,
+    #     output,
+    #     inital_output,
+    # )
     return output
 
 
@@ -86,6 +91,8 @@ def filter_log_likelihood(
 def get_default_unpack_fn(kernel: FilterKernel):
     if isinstance(kernel, ParticleFilter):
         return lambda state, info: state.particles
+    elif type(kernel) is kalman_filter:
+        return lambda state, info: (state.mean, state.cov)
     else:
         return lambda state, info: (state, info)
 

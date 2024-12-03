@@ -31,8 +31,10 @@ class AdditiveCouplingFlow(Flow):
         input_dim: int,
         num_transforms: int,
         rngs,
+        *,
         last_transform: Optional[Callable] = None,
         coupling_class: nnx.Module = CouplingMLP,
+        mixing_class: nnx.Module = Flip,
     ) -> None:
         self.input_dim = input_dim
         split_dim = input_dim // 2
@@ -44,7 +46,7 @@ class AdditiveCouplingFlow(Flow):
         for i in range(num_transforms):
             transforms += [coupling_net(rngs=rngs)]
             if i < num_transforms - 1:
-                transforms += [Flip()]
+                transforms += [mixing_class(rngs=rngs)]
         transforms += [last_transform] if last_transform is not None else []
 
         transform = Sequential(*transforms)
@@ -64,8 +66,10 @@ class AffineCouplingFlow(Flow):
         input_dim: int,
         num_transforms: int,
         rngs,
+        *,
         last_transform: Optional[Callable] = None,
         coupling_class: nnx.Module = CouplingMLP,
+        mixing_class: nnx.Module = Flip,
     ) -> None:
         self.input_dim = input_dim
         split_dim = input_dim // 2
@@ -77,7 +81,7 @@ class AffineCouplingFlow(Flow):
         for i in range(num_transforms):
             transforms += [coupling_net(rngs=rngs)]
             if i < num_transforms - 1:
-                transforms += [Flip()]
+                transforms += [mixing_class(rngs=rngs)]
         transforms += [last_transform] if last_transform is not None else []
 
         transform = Sequential(*transforms)
@@ -97,9 +101,11 @@ class SplineCouplingFlow(TransformedDistribution, nnx.Module, experimental_pytre
         input_dim: int,
         num_transforms: int,
         rngs,
+        *,
         num_bins: int = 10,
         last_transform: Optional[Callable] = None,
         coupling_class: nnx.Module = CouplingMLP,
+        mixing_class: nnx.Module = Flip,
     ) -> None:
         self.input_dim = input_dim
         split_dim = input_dim // 2
@@ -124,7 +130,7 @@ class SplineCouplingFlow(TransformedDistribution, nnx.Module, experimental_pytre
         for i in range(num_transforms):
             transforms += [coupling_net(rngs=rngs)]
             if i < num_transforms - 1:
-                transforms += [Flip()]
+                transforms += [mixing_class(rngs=rngs)]
         transforms += [last_transform] if last_transform is not None else []
 
         transform = Sequential(*transforms)
@@ -144,8 +150,10 @@ class AdditiveAutoregressiveFlow(Flow):
         input_dim: int,
         num_transforms: int,
         rngs,
+        *,
         last_transform: Optional[Callable] = None,
         autoregressive_class: nnx.Module = AutoregressiveMLP,
+        mixing_class: nnx.Module = Flip,
     ) -> None:
         self.input_dim = input_dim
         params_per_dim = 1
@@ -158,7 +166,7 @@ class AdditiveAutoregressiveFlow(Flow):
         for i in range(num_transforms):
             transforms += [autoregressive(rngs=rngs)]
             if i < num_transforms - 1:
-                transforms += [Flip()]
+                transforms += [mixing_class(rngs=rngs)]
         transforms += [last_transform] if last_transform is not None else []
 
         transform = Sequential(*transforms)
@@ -178,8 +186,10 @@ class AffineAutoregressiveFlow(Flow):
         input_dim: int,
         num_transforms: int,
         rngs,
+        *,
         last_transform: Optional[Callable] = None,
         autoregressive_class: nnx.Module = AutoregressiveMLP,
+        mixing_class: nnx.Module = Flip,
     ) -> None:
         self.input_dim = input_dim
         params_per_dim = 2
@@ -192,7 +202,7 @@ class AffineAutoregressiveFlow(Flow):
         for i in range(num_transforms):
             transforms += [autoregressive(rngs=rngs)]
             if i < num_transforms - 1:
-                transforms += [Flip()]
+                transforms += [mixing_class(rngs=rngs)]
         transforms += [last_transform] if last_transform is not None else []
 
         transform = Sequential(*transforms)
@@ -212,9 +222,11 @@ class SplineAutoregressiveFlow(Flow):
         input_dim: int,
         num_transforms: int,
         rngs,
+        *,
         num_bins: int = 10,
         last_transform: Optional[Callable] = None,
         autoregressive_class: nnx.Module = AutoregressiveMLP,
+        mixing_class: nnx.Module = Flip,
     ) -> None:
         self.input_dim = input_dim
         params_per_dim = 3 * num_bins
@@ -239,7 +251,7 @@ class SplineAutoregressiveFlow(Flow):
         for i in range(num_transforms):
             transforms += [autoregressive(rngs=rngs)]
             if i < num_transforms - 1:
-                transforms += [Flip()]
+                transforms += [mixing_class(rngs=rngs)]
         transforms += [last_transform] if last_transform is not None else []
 
         transform = Sequential(*transforms)

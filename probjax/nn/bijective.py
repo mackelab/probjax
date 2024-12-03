@@ -314,10 +314,11 @@ learnable_mixture_cdf.definv(_inv_learnable_mixture_cdf)
 learnable_mixture_cdf.definv_and_logdet(_inv_and_logdet_learnable_mixture_cdf)
 
 
-def affine_bijector(params: Array, x: Array, min_scale=1e-1, max_scale=10.0, **kwargs):
+def affine_bijector(params: Array, x: Array, min_scale=5e-1, max_scale=5.0, **kwargs):
     loc, scale = jnp.split(params, 2, axis=-1)
     scale = jax.nn.sigmoid(scale) * (max_scale - min_scale) + min_scale
-    return loc + jax.nn.softplus(scale) * x
+
+    return loc + scale * x
 
 
 def additive_bijector(params: Array, x: Array, **kwargs):

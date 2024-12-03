@@ -3,7 +3,7 @@ from typing import Callable, Optional, Sequence
 import flax.nnx as nnx
 import jax.numpy as jnp
 
-from probjax.nn.nets.mlp import MLP
+from probjax.nn.nets.simple import MLP
 
 
 class CouplingMLP(nnx.Module, experimental_pytree=True):

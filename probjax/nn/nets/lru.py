@@ -5,7 +5,7 @@ import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
 
-from probjax.nn.nets.mlp import MLP
+from probjax.nn.nets.simple import MLP
 
 
 @jax.vmap
@@ -136,7 +136,7 @@ class LRU(nnx.Module, experimental_pytree=True):
 
         # Input projection
         B_norm = B_re + 1j * B_im
-        B_norm = B_norm * jnp.expand_dims(jnp.exp(gamma_log), axis=-1)
+        B_norm = B_norm * jnp.expand_dims(jnp.exp(gamma_log), axis=-2)
         # Output projection
         C = C_re + 1j * C_im
 
@@ -148,8 +148,8 @@ class LRU(nnx.Module, experimental_pytree=True):
             binary_operator_diag, (Lambda_elements, Bu_elements)
         )
         # Use them to compute the output of the module
-        outputs = jnp.real(jnp.einsum("th,ih->ti", hidden_states, C))
-        outputs += jnp.einsum("ti,io->to", inputs, D)
+        outputs = jnp.real(jnp.einsum("th,oh->to", hidden_states, C))
+        outputs += jnp.einsum("ti,oi->to", inputs, D)
 
         return outputs
 

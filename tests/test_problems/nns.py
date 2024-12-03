@@ -1,3 +1,12 @@
+from probjax.nn.nets.flows import (
+    AdditiveCouplingFlow,
+    AffineCouplingFlow,
+    SplineCouplingFlow,
+    AdditiveAutoregressiveFlow,
+    AffineAutoregressiveFlow,
+    SplineAutoregressiveFlow,
+)
+
 import pytest
 import jax.numpy as jnp
 
@@ -11,6 +20,7 @@ from probjax.nn import (
     Transformer,
     LRU,
 )
+from probjax.nn.nets.simple import ResNet
 from flax import nnx
 import jax
 
@@ -43,9 +53,9 @@ def batch_shape(request):
 @pytest.fixture(
     params=[
         (1, 1, [1, 2], jnp.tanh, True),
-        (1, 1, [10, 3], nnx.relu, False),
-        (1, 1, [1, 2, 1, 2], lambda x: x, False),
-        (1, 1, [5, 1], jax.nn.gelu, True),
+        (2, 1, [10, 3], nnx.relu, False),
+        (1, 2, [1, 2, 1, 2], lambda x: x, False),
+        (2, 2, [5, 1], jax.nn.gelu, True),
     ]
 )
 def mlp(request):
@@ -53,6 +63,25 @@ def mlp(request):
     dims = [in_dim] + hidden_units + [out_dim]
     model = MLP(
         dims, rngs=nnx.Rngs(0), activation=activation, activate_final=activation_final
+    )
+    return in_dim, out_dim, model
+
+
+@pytest.fixture(
+    params=[
+        (1, 1, 10),
+        (1, 2, 2),
+        (2, 1, 5),
+        (3, 3, 4),
+    ]
+)
+def resnet(request):
+    in_dim, out_dim, hidden_units = request.param
+    model = ResNet(
+        in_dim,
+        out_dim,
+        rngs=nnx.Rngs(0),
+        hidden_dim=hidden_units,
     )
     return in_dim, out_dim, model
 
@@ -204,3 +233,39 @@ def lru(request):
     in_dim, out_dim, hidden_dim = request.param
     model = LRU(in_dim, out_dim, hidden_dim, rngs=nnx.Rngs(0))
     return in_dim, out_dim, model
+
+
+@pytest.fixture(
+    params=[
+        ("coupling", "additive", 2),
+        ("coupling", "affine", 2),
+        ("coupling", "spline", 2),
+        ("autoregressive", "additive", 2),
+        ("autoregressive", "affine", 2),
+        ("autoregressive", "spline", 2),
+        ("coupling", "additive", 3),
+        ("coupling", "affine", 3),
+        ("coupling", "spline", 3),
+        ("autoregressive", "additive", 3),
+        ("autoregressive", "affine", 3),
+        ("autoregressive", "spline", 3),
+    ]
+)
+def flow(request):
+    kind, bij, input_dim = request.param
+    if bij == "affine":
+        if kind == "coupling":
+            model = AffineCouplingFlow(input_dim, 1, rngs=nnx.Rngs(0))
+        elif kind == "autoregressive":
+            model = AffineAutoregressiveFlow(input_dim, 1, rngs=nnx.Rngs(0))
+    elif bij == "spline":
+        if kind == "coupling":
+            model = SplineCouplingFlow(input_dim, 1, rngs=nnx.Rngs(0))
+        elif kind == "autoregressive":
+            model = SplineAutoregressiveFlow(input_dim, 1, rngs=nnx.Rngs(0))
+    elif bij == "additive":
+        if kind == "coupling":
+            model = AdditiveCouplingFlow(input_dim, 1, rngs=nnx.Rngs(0))
+        elif kind == "autoregressive":
+            model = AdditiveAutoregressiveFlow(input_dim, 1, rngs=nnx.Rngs(0))
+    return input_dim, model

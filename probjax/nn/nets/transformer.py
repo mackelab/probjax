@@ -7,7 +7,7 @@ from flax import nnx
 from jax import Array
 
 from probjax.nn.attention import MultiHeadAttention
-from probjax.nn.nets.mlp import MLP
+from probjax.nn.nets.simple import MLP
 
 
 class PosEmbed(nnx.Module, experimental_pytree=True):

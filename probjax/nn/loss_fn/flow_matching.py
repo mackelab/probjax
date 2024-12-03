@@ -3,10 +3,26 @@ from typing import Callable, Optional, Sequence
 
 import jax
 import jax.numpy as jnp
+
+from jax.typing import ArrayLike
 from jax.random import PRNGKey
 from jaxtyping import Array, PyTree
 
 # Flow matching objectives
+
+
+def base_flow_matching_loss(
+    model_fn: Callable,
+    eps: Array,
+    std: ArrayLike,
+    weight: Optional[ArrayLike],
+    axis: int,
+    argnums: int,
+    control_variate: bool,
+    *args,
+    **kwargs,
+):
+    pass
 
 
 @partial(jax.jit, static_argnames=("model_fn", "mean_fn", "std_fn"))
