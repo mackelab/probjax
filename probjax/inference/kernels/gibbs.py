@@ -58,11 +58,8 @@ def build_kernel(
         inner_state = {}
         new_position = state.position.copy()
 
-        for k in state.position.keys():
-            if inner_kernel_steps is None:
-                num_steps = 1
-            else:
-                num_steps = inner_kernel_steps[k] or 1
+        for k in state.position:
+            num_steps = 1 if inner_kernel_steps is None else inner_kernel_steps[k] or 1
 
             rng_key, *rng_keys = jax.random.split(rng_key, num_steps + 1)
 
@@ -71,10 +68,7 @@ def build_kernel(
                 kwargs[k] = value
                 return logdensity_fn(**kwargs)
 
-            if inner_kernel_kwargs is None:
-                kwargs = {}
-            else:
-                kwargs = inner_kernel_kwargs[k] or {}
+            kwargs = {} if inner_kernel_kwargs is None else inner_kernel_kwargs[k] or {}
 
             new_inner_state, new_inner_info = _kernels[k](
                 rng_keys[0], state.inner_state[k], logdensity_k, **kwargs

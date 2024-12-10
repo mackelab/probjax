@@ -1,18 +1,17 @@
-from typing import NamedTuple
-import pytest
-
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
+
 from probjax.inference.kernels import (
     HMC,
-    NUTS,
-    GaussianIMH,
-    GaussRWMH,
     MALA,
-    dHMC,
-    Slice,
+    NUTS,
+    GaussRWMH,
+    GaussianIMH,
     LatentSlice,
+    Slice,
+    dHMC,
 )
 
 KERNELS = [HMC, NUTS, GaussianIMH, GaussRWMH, MALA, dHMC, Slice, LatentSlice]

@@ -67,6 +67,101 @@ def merwe_sigma_point(
     return sigma_points, weights_mean, weights_cov
 
 
+def julier_uhlmann_sigma_points(
+    mu0: jnp.ndarray,
+    cov0: jnp.ndarray,
+    kappa: float = 0.0,
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Generate Julier-Uhlmann sigma points.
+
+    Args:
+        mu0 (jnp.ndarray): Mean of the state (D, )
+        cov0 (jnp.ndarray): Covariance of the state (D, D)
+        kappa (float): Spread parameter.
+            Often chosen as kappa = 3 - D for state dimension D.
+
+    Returns:
+        Tuple[sigma_points, weights_mean, weights_cov]:
+            sigma_points: (2D+1, D)
+            weights_mean: (2D+1,)
+            weights_cov: (2D+1,)
+    """
+    D = mu0.shape[0]
+    lambda_ = D + kappa
+    # Compute sqrt of scaled covariance
+    sqrt_cov = jnp.linalg.cholesky(lambda_ * cov0)
+
+    # Sigma points
+    sigma_points_0 = mu0[None, :]
+    sigma_points_pos = mu0 + sqrt_cov
+    sigma_points_neg = mu0 - sqrt_cov
+    sigma_points = jnp.concatenate(
+        [sigma_points_0, sigma_points_pos, sigma_points_neg], axis=0
+    )
+
+    # Weights
+    w0 = kappa / (D + kappa)
+    wi = 1.0 / (2.0 * (D + kappa)) * jnp.ones(2 * D)
+    weights_mean = jnp.concatenate([jnp.array([w0]), wi], axis=0)
+    weights_cov = jnp.concatenate([jnp.array([w0]), wi], axis=0)
+
+    return sigma_points, weights_mean, weights_cov
+
+
+def spherical_simplex_sigma_points(
+    mu0: jnp.ndarray, cov0: jnp.ndarray
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Generate spherical simplex sigma points without explicit Python loops.
+
+    This creates a (D+1) x D array of points that form a regular simplex.
+    The steps are:
+    1. Construct an initial (D+1, D) array corresponding to a simplex.
+    2. Center the points so they have zero mean.
+    3. Scale the points to achieve unit covariance.
+    4. Apply the square root of the covariance (via Cholesky) and then add mu0.
+
+    Args:
+        mu0 (jnp.ndarray): Mean of the state, shape (D,)
+        cov0 (jnp.ndarray): Covariance of the state, shape (D,D)
+
+    Returns:
+        sigma_points (jnp.ndarray): (D+1, D)
+        weights_mean (jnp.ndarray): (D+1,)
+        weights_cov (jnp.ndarray): (D+1,)
+    """
+    D = mu0.shape[0]
+    sqrt_val = jnp.sqrt(D + 1)
+
+    # Create a (D+1, D) array filled with -√(D+1)
+    base_points = jnp.full((D + 1, D), -sqrt_val)
+
+    # Create row and column indices
+    rows = jnp.arange(D + 1)[:, None]  # Shape (D+1,1)
+    cols = jnp.arange(D)[None, :]  # Shape (1,D)
+
+    # Set a diagonal pattern: for (i+1, i), set to +√(D+1)
+    mask = (rows - 1) == cols
+    base_points = jnp.where(mask, sqrt_val, base_points)
+
+    # Ensure the points have zero mean
+    base_points = base_points - jnp.mean(base_points, axis=0, keepdims=True)
+
+    # Scale to achieve unit covariance before transforming by cov0
+    scale = jnp.sqrt(D / (2 * (D + 1)))
+    base_points = base_points * scale
+
+    # Apply the covariance transformation
+    A = jnp.linalg.cholesky(cov0)
+    sigma_points = mu0[None, :] + base_points @ A
+
+    # Equal weights for mean and covariance
+    weights_mean = jnp.ones(D + 1) / (D + 1)
+    weights_cov = jnp.ones(D + 1) / (D + 1)
+
+    return sigma_points, weights_mean, weights_cov
+
+
 def unscented_transform(
     sigma_points: ArrayLike,
     weights_mean: ArrayLike,
@@ -203,6 +298,7 @@ def build_kernel(
             mu1 = mu1_ + jnp.dot(K, r)
             cov1 = cov1_ - jnp.dot(K, jnp.dot(cov_y, K.T))
 
+            # Compute the log-likelihood
             log_likelihood = -0.5 * (
                 jnp.linalg.slogdet(cov_y)[1] + r.T @ jnp.linalg.solve(cov_y, r)
             )

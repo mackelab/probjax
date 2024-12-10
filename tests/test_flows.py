@@ -1,7 +1,4 @@
-import jax
-import jax.numpy as jnp
 
-from probjax.core import inverse, inverse_and_logabsdet
 
 
 # def test_transform_inv_and_lodet(input_dim, transform):

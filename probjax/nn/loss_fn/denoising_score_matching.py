@@ -1,13 +1,10 @@
-from functools import partial
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
-from jax.random import PRNGKey
-from jaxtyping import Array, PyTree
-from jax.typing import ArrayLike
-
 from flax import nnx
+from jax.typing import ArrayLike
+from jaxtyping import Array
 
 __all__ = [
     "build_denoising_score_matching_loss",

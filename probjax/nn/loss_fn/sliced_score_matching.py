@@ -3,10 +3,8 @@ from typing import Callable, Optional, Sequence
 
 import jax
 import jax.numpy as jnp
-from jax.random import PRNGKey
-from jaxtyping import Array, PyTree
-
 from flax import nnx
+from jaxtyping import Array, PyTree
 
 __all__ = [
     "build_sliced_score_matching_loss",

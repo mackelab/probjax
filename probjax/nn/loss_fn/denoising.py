@@ -1,13 +1,9 @@
-from functools import partial
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
-from jax.random import PRNGKey
-from jaxtyping import Array, PyTree
-from jax.typing import ArrayLike
-
 from flax import nnx
+from jax.typing import ArrayLike
 
 __all__ = ["build_denoising_loss", "build_time_dependent_denoising_loss"]
 
@@ -31,7 +27,7 @@ def base_denoising_loss(
 
     new_args = args[:argnums] + (x_noisy,) + args[argnums + 1 :]
     x_pred = model(*new_args, **kwargs)
-    
+
     loss = (x_pred - x) ** 2
     if loss_mask is not None:
         loss = jnp.where(~loss_mask, loss, jnp.zeros_like(loss))

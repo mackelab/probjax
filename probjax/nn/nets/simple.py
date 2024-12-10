@@ -3,7 +3,7 @@ from typing import Optional, Sequence
 import jax
 from flax import nnx
 
-from probjax.nn.utils import AdditiveFuse, Affine, AffineFuse
+from probjax.nn.utils import AdditiveFuse, AffineFuse
 
 
 class MLP(nnx.Module, experimental_pytree=True):

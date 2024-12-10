@@ -1,4 +1,3 @@
-from functools import partial
 from typing import Callable, Optional
 
 import flax.nnx as nnx

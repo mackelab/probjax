@@ -212,11 +212,13 @@ def test_mixed_independent_distribution(
 
     p1 = init_dist(dist1, key, shape)
     p2 = init_dist(dist2, key, shape)
-    # Batch shapes must be the same, which may not be true if we have multivariate and univarite dist!
+    # Batch shapes must be the same, which may not be true if we have multivariate and
+    # univarite dist!
     try:
         p = Independent([p1, p2], 1)
     except AssertionError:
-        # If batch and event shapes are different, we can't make an independent distribution
+        # If batch and event shapes are different, we can't make an independent
+        # distribution
         return
 
     sample_and_log_prob(p, key, shape)

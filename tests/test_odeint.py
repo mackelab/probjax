@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 import pytest
+
 from probjax.utils.odeint import _odeint
 
 pytest_plugins = ["test_problems.ode_problems"]

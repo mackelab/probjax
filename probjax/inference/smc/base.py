@@ -1,6 +1,5 @@
 from functools import partial
-from typing import Any, Callable, NamedTuple, Optional, Tuple
-
+from typing import Any, Callable, NamedTuple, Optional
 
 from jaxtyping import Key
 

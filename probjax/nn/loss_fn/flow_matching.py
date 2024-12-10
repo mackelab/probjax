@@ -1,11 +1,10 @@
 from functools import partial
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
-
-from jax.typing import ArrayLike
 from jax.random import PRNGKey
+from jax.typing import ArrayLike
 from jaxtyping import Array, PyTree
 
 # Flow matching objectives

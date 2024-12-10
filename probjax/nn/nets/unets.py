@@ -1,9 +1,9 @@
 from functools import partial
 from typing import Callable, Optional, Sequence, Union
 
+import jax.numpy as jnp
 from flax import nnx
 from jax import Array
-import jax.numpy as jnp
 
 
 class ConvBlock(nnx.Module, experimental_pytree=True):

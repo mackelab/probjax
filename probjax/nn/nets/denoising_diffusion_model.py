@@ -1,9 +1,10 @@
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
-from jax.typing import ArrayLike
 from flax import nnx
+from jax.typing import ArrayLike
+
 from probjax.nn.loss_fn.denoising import build_time_dependent_denoising_loss
 
 

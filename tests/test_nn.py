@@ -1,7 +1,6 @@
-from flax import nnx
+import jax
 import jax.numpy as jnp
 
-import jax
 from probjax.core import inverse, inverse_and_logabsdet
 
 pytest_plugins = ["test_problems.nns"]
@@ -177,19 +176,20 @@ def test_flows(flow):
     # Can be flattened
     _, _ = jax.tree_util.tree_flatten(model)
 
-    # # Test inverse
-    # model_inv = inverse(model)
-    # y_inv = model_inv(y)
-    # assert jnp.allclose(x, y_inv), "Inverse is not correct"
+    # Test inverse
+    model_inv = inverse(model.transform)
+    y_inv = model_inv(y)
+    assert jnp.allclose(x, y_inv, atol=1e-2, rtol=1e-1), "Inverse is not correct"
 
-    # # Test inverse and logabsdet
-    # model_inv_logabsdet = inverse_and_logabsdet(model)
-    # y_inv, logabsdet = model_inv_logabsdet(y)
-    # assert jnp.allclose(x, y_inv), "Inverse is not correct"
+    # Test inverse and logabsdet
+    model_inv_logabsdet = inverse_and_logabsdet(model.transform)
+    y_inv, logabsdet = model_inv_logabsdet(y)
+    assert jnp.allclose(x, y_inv, atol=1e-2, rtol=1e-1), "Inverse is not correct"
+    assert logabsdet.shape == ()
 
-    # # Sampling
-    # samples = model.sample(jax.random.PRNGKey(0), (10,))
-    # assert samples.shape == (10, input_dim)
-    # # Log probability
-    # logprob = model.log_prob(samples)
-    # assert logprob.shape == (10,)
+    # Sampling
+    samples = model.sample(jax.random.PRNGKey(0), (10,))
+    assert samples.shape == (10, input_dim)
+    # Log probability
+    logprob = model.log_prob(samples)
+    assert logprob.shape == (10,)

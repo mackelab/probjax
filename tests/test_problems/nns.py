@@ -1,28 +1,27 @@
-from probjax.nn.nets.flows import (
-    AdditiveCouplingFlow,
-    AffineCouplingFlow,
-    SplineCouplingFlow,
-    AdditiveAutoregressiveFlow,
-    AffineAutoregressiveFlow,
-    SplineAutoregressiveFlow,
-)
-
-import pytest
+import jax
 import jax.numpy as jnp
+import pytest
+from flax import nnx
 
 from probjax.nn import (
-    MLP,
-    DeepSet,
-    MultiHeadAttention,
-    CouplingMLP,
-    AutoregressiveMLP,
-    GaussianFourierEmbedding,
-    Transformer,
     LRU,
+    MLP,
+    AutoregressiveMLP,
+    CouplingMLP,
+    DeepSet,
+    GaussianFourierEmbedding,
+    MultiHeadAttention,
+    Transformer,
+)
+from probjax.nn.nets.flows import (
+    AdditiveAutoregressiveFlow,
+    AdditiveCouplingFlow,
+    AffineAutoregressiveFlow,
+    AffineCouplingFlow,
+    SplineAutoregressiveFlow,
+    SplineCouplingFlow,
 )
 from probjax.nn.nets.simple import ResNet
-from flax import nnx
-import jax
 
 
 @pytest.fixture(

@@ -1,22 +1,21 @@
 from functools import partial
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Optional
 
 import jax
 import jax.numpy as jnp
-from jax.typing import ArrayLike
 from flax import nnx
 
-from probjax.distributions.distribution import Distribution
 from probjax.distributions import Normal
+from probjax.distributions.distribution import Distribution
 from probjax.distributions.independent import Independent
 from probjax.distributions.transformed_distribution import TransformedDistribution
 from probjax.nn.bijective import (
-    affine_bijector,
     additive_bijector,
+    affine_bijector,
     rational_quadratic_spline,
 )
-from probjax.nn.nets.coupling import CouplingMLP
 from probjax.nn.nets.autoregressive import AutoregressiveMLP
+from probjax.nn.nets.coupling import CouplingMLP
 from probjax.nn.utils import Flip, Sequential
 
 

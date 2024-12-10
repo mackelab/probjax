@@ -1,6 +1,5 @@
 from typing import Callable, NamedTuple, Optional, Tuple
 
-import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
@@ -37,7 +36,7 @@ def unpack_matrix(A: ArrayLike, t_old: ArrayLike, t: Optional[ArrayLike] = None)
 
 # This is the discrete time Kalman filter for a linear Gaussian model of the form:
 # x_t = A_t x_{t-1} + C**1/2 @ w_t
-def build_discrete_kernel(
+def build_kernel(
     transition_matrix: Callable[[float | ArrayLike], ArrayLike] | ArrayLike,
     transition_covariance_matrix: Callable[[float | ArrayLike], ArrayLike] | ArrayLike,
     observation_matrix: Callable[[float | ArrayLike], ArrayLike] | ArrayLike,
@@ -81,7 +80,10 @@ def build_discrete_kernel(
             # log_likelihood = -0.5 * (
             #     jnp.linalg.slogdet(S)[1] + r.T @ jnp.linalg.solve(S, r)
             # )
-            log_likelihood = jax.scipy.stats.multivariate_normal.logpdf(y, y_, S)
+            # log_likelihood = jax.scipy.stats.multivariate_normal.logpdf(y, y_, S)
+            log_likelihood = -0.5 * (
+                jnp.linalg.slogdet(S)[1] + r.T @ jnp.linalg.solve(S, r)
+            )
 
             return KalmanFilterState(mu1, cov1, t), KalmanFilterInfo(
                 mu1_, cov1_, log_likelihood
@@ -113,4 +115,4 @@ class kalman_filter(FilterAPI):
     """
 
     init = init
-    build_kernel = build_discrete_kernel
+    build_kernel = build_kernel

@@ -1,8 +1,6 @@
-import jax.numpy as jnp
 import jax
-
+import jax.numpy as jnp
 import numpy as np
-
 import pytest
 
 A1 = jnp.array([[0.0, 1.0], [-1.0, 0.0]])  # Peridoic
