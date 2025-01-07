@@ -5,8 +5,8 @@ from typing import Callable, Sequence
 import jax.numpy as jnp
 import networkx as nx
 from IPython.display import SVG, display  # type: ignore
-from jax.core import Jaxpr, Literal
 from jax.experimental.pjit import pjit_p
+from jax.extend.core import Jaxpr, Literal
 
 from probjax.core.custom_primitives.random_variable import rv_p
 

@@ -2,7 +2,8 @@ import math
 from typing import Dict, Sequence
 
 import jax
-from jax.core import Jaxpr, JaxprEqn, eval_jaxpr
+from jax._src.core import eval_jaxpr
+from jax.extend.core import Jaxpr, JaxprEqn
 from jaxtyping import Array
 
 from probjax.core.custom_primitives.random_variable import rv_p

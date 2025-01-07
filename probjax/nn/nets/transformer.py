@@ -8,6 +8,7 @@ from jax import Array
 
 from probjax.nn.attention import MultiHeadAttention
 from probjax.nn.nets.simple import MLP
+from probjax.nn.utils import AffineFuse, ConcatFuse
 
 
 class PosEmbed(nnx.Module, experimental_pytree=True):
@@ -91,6 +92,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
         skip_connection_attn: bool = True,
         skip_connection_mlp: bool = True,
         initializer: Optional[nnx.initializers.Initializer] = None,
+        context_fusion: type = AffineFuse,
         attention_fn: Optional[Callable] = None,
     ):
         """Initialize a Transformer model.
@@ -165,10 +167,20 @@ class Transformer(nnx.Module, experimental_pytree=True):
             for _ in range(num_layers)
         ]
 
+        # Context fusion if context is provided.
+        first_dim = model_dim
+        if context_dim is not None:
+            self.context_layers = [
+                context_fusion(model_dim, context_dim, rngs) for _ in range(num_layers)
+            ]
+            if context_fusion == ConcatFuse:
+                first_dim += context_dim
+
         # Dense block.
         context_dim = context_dim if context_dim is not None else 0
+
         dims = (
-            [model_dim + context_dim]
+            [first_dim]
             + [widening_factor * model_dim] * num_hidden_layers
             + [model_dim]
         )
@@ -229,7 +241,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
             # Then the dense block.
             h = self.layer_norms2[i](h)
             if context is not None and self.context_dim is not None:
-                h_context = jnp.concatenate([h, context], axis=-1)
+                h_context = self.context_layers[i](h, context)
             else:
                 h_context = h
             h_dense = self.dense_blocks[i](h_context)

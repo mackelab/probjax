@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import sympy as sp
-from jax.core import JaxprEqn
+from jax.extend.core import JaxprEqn
 from jaxtyping import ArrayLike
 from sympy import MatrixSymbol, Symbol
 from sympy.tensor.array.expressions import ArraySymbol

@@ -1,6 +1,6 @@
 from typing import Any, Iterable, Optional, Sequence, Tuple
 
-from jax.core import JaxprEqn
+from jax.extend.core import JaxprEqn
 
 from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
 

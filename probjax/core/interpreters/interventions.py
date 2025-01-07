@@ -1,7 +1,7 @@
 from typing import Any, Sequence, Tuple
 
 import jax
-from jax.core import JaxprEqn
+from jax.extend.core import JaxprEqn
 from jaxtyping import Array
 
 from probjax.core.custom_primitives.random_variable import rv_p

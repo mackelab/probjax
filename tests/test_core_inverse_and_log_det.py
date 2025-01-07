@@ -40,3 +40,18 @@ def test_inverse_and_logabsdet_1d(invertible_function_1d):
     assert jnp.allclose(
         logabsdet[mask], logabsdet_true[mask], atol=1e-3, rtol=1e-3
     ), "Logabsdet is not correct."
+
+
+def test_inverse_split():
+    x = jnp.ones((10, 2))
+
+    def f(x):
+        x1, x2 = jnp.split(x, 2, axis=-1)
+        return jnp.concatenate([x2, x1], axis=-1)
+
+    inv_f = inverse(f)
+    inv_x = inv_f(x)
+
+    assert jnp.allclose(
+        x, inv_x, atol=1e-3, rtol=1e-3
+    ), "Inverse function value is not correct."

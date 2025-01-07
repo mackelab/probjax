@@ -1,8 +1,8 @@
 from typing import Any, Callable, Optional, Sequence, Tuple
 
 from jax._src.util import safe_map as map
-from jax.core import Jaxpr, JaxprEqn, Var
 from jax.experimental.pjit import pjit_p
+from jax.extend.core import Jaxpr, JaxprEqn, Var
 from jaxtyping import Array
 
 from probjax.core.jaxpr_propagation.utils import (

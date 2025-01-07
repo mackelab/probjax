@@ -2,7 +2,7 @@
 from typing import Any, Iterable, Sequence, Tuple
 
 from jax import lax
-from jax.core import JaxprEqn
+from jax.extend.core import JaxprEqn
 
 from probjax.core.interpreters.trace import TraceProcessingRule
 from probjax.distributions.constraints import (

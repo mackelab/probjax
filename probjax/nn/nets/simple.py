@@ -71,7 +71,9 @@ class ResNet(nnx.Module, experimental_pytree=True):
         ]
         self.norm = norm
         if norm is not None:
-            self.norm_layers = [norm(hidden_dim, rngs=rngs) for _ in range(num_hidden_layers)]
+            self.norm_layers = [
+                norm(hidden_dim, rngs=rngs) for _ in range(num_hidden_layers)
+            ]
         self.activation = activation
         self.activate_final = activate_final
 

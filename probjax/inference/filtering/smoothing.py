@@ -52,3 +52,46 @@ def particle_smoother(
     **kwargs,
 ) -> Tuple[Array, Array]:
     pass
+
+
+def smooth(
+    ts: Array, mus: Array, covs: Array, mus_: Array, covs_: Array, smooth: Callable
+) -> Tuple[Array, Array]:
+    """Smooths the state given a Kalman filter output.
+
+    Args:
+        ts (Array): Time grid
+        mus (Array): Means
+        covs (Array): Covs
+        mus_ (Array): Predicted means
+        covs_ (Array): Predicted covs
+        smooth (Callable): Smoothing function
+
+    Returns:
+        Tuple[Array, Array]: _description_
+    """
+
+    idx_last = jnp.where((mus != mus_).all(-1))[-1][-1]
+    mus_needed_ = jnp.flip(mus_[1 : idx_last + 1])
+    covs_needed_ = jnp.flip(covs_[1 : idx_last + 1])
+    mus_needed = jnp.flip(mus[:idx_last])
+    covs_needed = jnp.flip(covs[:idx_last])
+    ts_needed = jnp.flip(ts[:idx_last])
+
+    def scan_fun(carry, data):
+        (mu0_s, cov0_s, t1) = carry
+        t0, mu0, cov0, mu0_, cov0_ = data
+        mu1, cov1 = smooth(t0, t1, mu0_s, cov0_s, mu0, cov0, mu0_, cov0_)
+        return (mu1, cov1, t0), (mu1, cov1)
+
+    init_carry = (mus[idx_last], covs[idx_last], ts[idx_last])
+    _, (mus_s, covs_s) = lax.scan(
+        scan_fun,
+        init_carry,
+        (ts_needed, mus_needed, covs_needed, mus_needed_, covs_needed_),
+    )
+
+    mus = jnp.concatenate([mus_s[::-1], mus[idx_last:]])
+    covs = jnp.concatenate([covs_s[::-1], covs[idx_last:]])
+
+    return mus, covs

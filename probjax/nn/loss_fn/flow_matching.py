@@ -1,12 +1,7 @@
-from functools import partial
 from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
-from jax.random import PRNGKey
-from jax.typing import ArrayLike
-from jaxtyping import Array, PyTree
-
 from flax import nnx
 
 # Flow matching objectives

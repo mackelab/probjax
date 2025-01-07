@@ -4,8 +4,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax._src.util import safe_map
-from jax.core import Primitive
 from jax.experimental.pjit import pjit_p
+from jax.extend.core import Primitive
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
 from probjax.core.jaxpr_propagation.utils import ProcessingRule
@@ -291,19 +291,21 @@ def invert_dynamic_slice(eqn, known_invars, known_outvars):
     return [invar], [new_input]
 
 
-# @register_inverse_rule(jax.lax.dynamic_slice_p)
-# def invert_dynamic_slice(eqn, known_invars, known_outvars):
-#     invar = eqn.invars[0]
-#     slice_sizes = eqn.params["slice_sizes"]
-#     out = known_outvars[0]
-#     out_shape = eqn.invars[0].aval.shape
-#     input = jnp.full(out_shape, jnp.nan)
-#     print(input.shape)
-#     print(out.shape)
+@register_inverse_rule(jax.lax.split_p)
+def invert_split(eqn, known_invars, known_outvars):
+    params = eqn.params
+    invar = eqn.invars[0]
+    assert len(known_outvars) == len(
+        eqn.outvars
+    ), "Cannot invert split without all outputs!"
+    axis = params["axis"]
+    sizes = params["sizes"]
 
+    assert all(
+        o.shape[axis] == s for o, s in zip(known_outvars, sizes)
+    ), "Output shapes do not match the sizes!"
 
-#     new_input = jax.lax.dynamic_update_slice(input, out, known_invars[1])
-#     return [invar], [new_input]
+    return [invar], [jnp.concatenate(known_outvars, axis=axis)]
 
 
 def is_univariate(eqn) -> bool:
@@ -462,12 +464,8 @@ class InverseProcessingRule(ProcessingRule):
         primitive = eqn.primitive
         input1 = known_outvars[0]
         left_inverse = known_invars[0] is None
-        if left_inverse:
-            # Left inverse
-            input2 = known_invars[1]
-        else:
-            # Right inverse
-            input2 = known_invars[0]
+        # Left or right inverse
+        input2 = known_invars[1] if left_inverse else known_invars[0]
 
         (left_inverse_fn, right_inverse_fn) = _BIVARIATE_INVERSE_REGISTRY[primitive]
         inv_primitive = left_inverse_fn if left_inverse else right_inverse_fn
@@ -507,7 +505,7 @@ class InverseProcessingRule(ProcessingRule):
         jaxpr = inverse_jaxpr.jaxpr
         consts = inverse_jaxpr.literals
         inputs = [v if v is not None else known_outvars[0] for v in known_invars]
-        out = jax.core.eval_jaxpr(
+        out = jax._src.core.eval_jaxpr(
             jaxpr,
             consts,
             *inputs,

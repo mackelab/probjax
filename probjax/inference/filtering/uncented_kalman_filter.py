@@ -43,7 +43,7 @@ def merwe_sigma_point(
 
     References:
         [1] R. Van der Merwe "Sigma-Point Kalman Filters for Probabilitic
-           Inference in Dynamic State-Space Models" (Doctoral dissertation)
+            Inference in Dynamic State-Space Models" (Doctoral dissertation)
     """
 
     with jax.ensure_compile_time_eval():

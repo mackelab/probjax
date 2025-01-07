@@ -5,17 +5,14 @@ import jax
 from jax import tree_util
 from jax._src import ad_util, api_util, util
 from jax._src import linear_util as lu
+from jax._src.core import ShapedArray, eval_jaxpr
 from jax._src.util import safe_map as map
-from jax.core import (
+from jax.extend.core import (
     ClosedJaxpr,
     Primitive,
-    ShapedArray,
-    eval_jaxpr,
-    new_sublevel,
 )
 from jax.interpreters import ad, batching, mlir
 from jax.interpreters import partial_eval as pe
-from jax.interpreters.batching import batch_jaxpr
 
 from probjax.distributions.distribution import Distribution
 
@@ -123,15 +120,13 @@ def rv(dist: Distribution, name: Hashable) -> Callable:
 
 
 def _rv_impl(*args, **params):
-    with new_sublevel():
-        call_jaxpr = params["sampling_fn_jaxpr"]
-        return eval_jaxpr(call_jaxpr.jaxpr, call_jaxpr.literals, *args)
+    call_jaxpr = params["sampling_fn_jaxpr"]
+    return eval_jaxpr(call_jaxpr.jaxpr, call_jaxpr.literals, *args)
 
 
 def _rv_abstract_eval(*args, **params):
-    with new_sublevel():
-        call_jaxpr = params["sampling_fn_jaxpr"]
-        return call_jaxpr.out_avals
+    call_jaxpr = params["sampling_fn_jaxpr"]
+    return call_jaxpr.out_avals
 
 
 # JIT support
@@ -144,47 +139,34 @@ def _rv_transpose_rule(*args, **kwargs):
     return ad.call_transpose(rv_p, *args, **kwargs)
 
 
-def _rv_batching_rule(
-    spmd_axis_name, axis_size, axis_name, main_type, args, dims, **params
-):
+def _rv_batching_rule(axis_data, args, dims, **params):
     sampling_fn_jaxpr = params.pop("sampling_fn_jaxpr")
     log_prob_fn_jaxpr = params.pop("log_prob_fn_jaxpr")
+    # # We have to batch the jaxprs. For that lets first get the invals and outvals
+    # in_avals1 = forward_jaxpr.in_avals
 
-    # We have to batch the jaxprs. For that lets first get the invals and outvals
-    in_avals1 = sampling_fn_jaxpr.in_avals
-    out_avals1 = sampling_fn_jaxpr.out_avals
-
-    in_avals2 = log_prob_fn_jaxpr.in_avals
-    out_avals2 = log_prob_fn_jaxpr.out_avals
+    # in_avals2 = inverse_jaxpr.in_avals
 
     # We will batch all the inputs and outputs  (maybe do not batch consts ... )
-    in_batched1 = [True] * len(in_avals1)
-    out_batched1 = [True] * len(out_avals1)
+    args = [
+        batching.moveaxis(x, d, 0) if d is not batching.not_mapped and d != 0 else x
+        for x, d in zip(args, in_dims)
+    ]
 
-    in_batched2 = [True] * len(in_avals2)
-    out_batched2 = [True] * len(out_avals2)
-
-    # Applies the batching for the jaxprs
-    args = [batching.bdim_at_front(x, d, axis_size) for x, d in zip(args, dims)]
+    in_batched = [d is not batching.not_mapped for d in in_dims]
 
     # Batched jaxprs
-    batched_sampling_fn, out_size1 = batch_jaxpr(
+    batched_sampling_fn, out_size1 = batching.batch_jaxpr(
         sampling_fn_jaxpr,
-        axis_size,
-        in_batched1,
-        out_batched1,
-        axis_name,
-        spmd_axis_name,
-        main_type,
+        axis_data,
+        in_batched,
+        False,
     )
-    batched_log_prob_fn, _ = batch_jaxpr(
+    batched_log_prob_fn, _ = batching.batch_jaxpr(
         log_prob_fn_jaxpr,
-        axis_size,
-        in_batched2,
-        out_batched2,
-        axis_name,
-        spmd_axis_name,
-        main_type,
+        axis_data,
+        in_batched,
+        False,
     )
 
     # Update jaxprs with batched ones
@@ -220,7 +202,7 @@ rv_p = Primitive("random_variable")
 rv_p.multiple_results = True
 rv_p.def_impl(_rv_impl)
 rv_p.def_abstract_eval(_rv_abstract_eval)
-batching.spmd_axis_primitive_batchers[rv_p] = _rv_batching_rule
+# batching.spmd_axis_primitive_batchers[rv_p] = _rv_batching_rule
 batching.axis_primitive_batchers[rv_p] = partial(_rv_batching_rule, None)
 mlir.register_lowering(rv_p, _rv_lowering)
 ad.primitive_transposes[rv_p] = _rv_transpose_rule

@@ -24,8 +24,6 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
     # Can be overwritten
     scale_fn: Callable
     std_fn: Callable
-    drift: Callable
-    diffusion: Callable
 
     def __init__(
         self,

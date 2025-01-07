@@ -6,8 +6,8 @@ import jax
 import jax.experimental
 import jax.numpy as jnp
 from jax._src import linear_util as lu
+from jax._src.core import eval_jaxpr
 from jax._src.flatten_util import ravel_pytree
-from jax.core import eval_jaxpr
 from jax.interpreters.partial_eval import partial_eval_jaxpr_nounits
 from jaxtyping import Array, PyTree
 

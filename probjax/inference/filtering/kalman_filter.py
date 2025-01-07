@@ -1,9 +1,11 @@
 from typing import Callable, NamedTuple, Optional, Tuple
 
+import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
 from probjax.inference.filtering.base import FilterAPI
+from probjax.utils.linear_operator import LinearOperator
 
 
 class KalmanFilterState(NamedTuple):
@@ -24,23 +26,19 @@ def init(
     return KalmanFilterState(mean, cov, t)
 
 
-def unpack_matrix(A: ArrayLike, t_old: ArrayLike, t: Optional[ArrayLike] = None):
-    if isinstance(A, Callable):
-        if t is not None:
-            return A(t_old, t)
-        else:
-            return A(t_old)
-    else:
-        return A
+def default_solve(S, res):
+    # If given as a matrix -> dense solve
+    S = jnp.asarray(S)
+    res = jnp.asarray(res)
+    return jax.scipy.linalg.solve(S, res.T, assume_a="pos").T
 
 
 # This is the discrete time Kalman filter for a linear Gaussian model of the form:
 # x_t = A_t x_{t-1} + C**1/2 @ w_t
 def build_kernel(
-    transition_matrix: Callable[[float | ArrayLike], ArrayLike] | ArrayLike,
-    transition_covariance_matrix: Callable[[float | ArrayLike], ArrayLike] | ArrayLike,
-    observation_matrix: Callable[[float | ArrayLike], ArrayLike] | ArrayLike,
-    observation_covariance: Callable[[float | ArrayLike], ArrayLike] | ArrayLike,
+    transition_model_fns: Callable,
+    observation_model_fns: Callable,
+    linear_solve: Optional[Callable] = None,
 ) -> Callable:
     def kernel(
         state: KalmanFilterState,
@@ -53,42 +51,56 @@ def build_kernel(
         t_old = state.t
         is_observed = observed is not None
 
-        Phi = unpack_matrix(transition_matrix, t_old, t)
-        Q = unpack_matrix(transition_covariance_matrix, t_old, t)
+        # Phi - promised to be a linear
+        # Q a positive definite matrix
+        Phi, Q = transition_model_fns(t_old, t)
+
+        assert isinstance(Q, (ArrayLike, LinearOperator)), "Q must be and Array"
+        assert isinstance(Phi, (ArrayLike, LinearOperator)), "Phi must be and Array or\
+                                                            LinearOperator"
 
         # Predict
-        mu1_ = jnp.dot(Phi, mu0)
-        cov1_ = jnp.dot(Phi, jnp.dot(cov0, Phi.T)) + Q
+        mu1_ = Phi @ mu0
+        cov1_ = Phi @ cov0 @ Phi.T + Q
 
         if is_observed:
-            C = unpack_matrix(observation_matrix, t)
-            R = unpack_matrix(observation_covariance, t)
+            C, R = observation_model_fns(t)
+
+            assert (
+                isinstance(R, (ArrayLike, LinearOperator)) or R is None
+            ), "R must be and Array or None"
+            assert isinstance(C, (ArrayLike, LinearOperator)), "C must be and Array or\
+                                                            LinearOperator"
 
             # Kalman gain
             y = observed
             y_ = C @ mu1_
             r = y - y_
             S = C @ cov1_ @ C.T
-            S = S + R
-            K = jnp.linalg.solve(S.T, (cov1_ @ C.T).T).T
+            S = S + R if R else S
+            res = cov1_ @ C.T
+
+            solve = default_solve if linear_solve is None else linear_solve
+
+            K = solve(S, res)
 
             # Update mean and covariance
             mu1 = mu1_ + K @ r
             cov1 = cov1_ - K @ C @ cov1_
-            cov1 = 0.5 * (cov1 + cov1.T)  # Ensure symmetry
+            # Update log likelihood
+            logdet = jnp.linalg.slogdet(jnp.asarray(S))[1]
+            log_likelihood = -0.5 * (logdet + r.T @ solve(S, r))
 
-            # log_likelihood = -0.5 * (
-            #     jnp.linalg.slogdet(S)[1] + r.T @ jnp.linalg.solve(S, r)
-            # )
-            # log_likelihood = jax.scipy.stats.multivariate_normal.logpdf(y, y_, S)
-            log_likelihood = -0.5 * (
-                jnp.linalg.slogdet(S)[1] + r.T @ jnp.linalg.solve(S, r)
-            )
-
+            mu1 = jnp.asarray(mu1)
+            cov1 = jnp.asarray(cov1)
+            mu1_ = jnp.asarray(mu1_)
+            cov1_ = jnp.asarray(cov1_)
             return KalmanFilterState(mu1, cov1, t), KalmanFilterInfo(
                 mu1_, cov1_, log_likelihood
             )
         else:
+            mu1_ = jnp.asarray(mu1_)
+            cov1_ = jnp.asarray(cov1_)
             return KalmanFilterState(mu1_, cov1_, t), KalmanFilterInfo(
                 mu1_, cov1_, jnp.array(0.0)
             )

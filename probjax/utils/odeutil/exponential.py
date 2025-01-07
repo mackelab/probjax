@@ -1,5 +1,3 @@
-
-
 # def exponential_euler(drift, t0, y0, f0, dt):
 #     jacobian_fn = jax.jacfwd(drift, argnums=1)
 

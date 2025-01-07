@@ -218,3 +218,17 @@ class AffineFuse(nnx.Module, experimental_pytree=True):
         scale = self.scale_activation(self.linear_scale(context))
         bias = self.linear_bias(context)
         return x * scale + bias
+
+
+class ConcatFuse(nnx.Module, experimental_pytree=True):
+    def __init__(self, input_dim: int, context_dim: int, rngs):
+        """This module applies an additive transformation to the input.
+
+        Args:
+            in_out_dim (int): Input and output dimension.
+            rngs (rngs): Random generator stream.
+        """
+        self.linear = nnx.Linear(context_dim, input_dim, rngs=rngs)
+
+    def __call__(self, x: Array, context: Array) -> Array:
+        return jnp.concatenate([x, self.linear(context)], axis=-1)

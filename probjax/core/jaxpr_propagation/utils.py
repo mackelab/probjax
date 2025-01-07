@@ -5,7 +5,7 @@ from jax._src.api_util import (
     shaped_abstractify,
 )
 from jax._src.util import safe_map as map
-from jax.core import Atom, ClosedJaxpr, Jaxpr, JaxprEqn, Literal, Var
+from jax.extend.core import ClosedJaxpr, Jaxpr, JaxprEqn, Literal, Var
 from jax.tree_util import tree_flatten
 from jaxtyping import Array
 
@@ -15,7 +15,7 @@ from jaxtyping import Array
 class Environment(dict):
     """A compute environment that stores intermediate computations."""
 
-    def __getitem__(self, var: Atom | None) -> Optional[Array]:
+    def __getitem__(self, var: Var | None) -> Optional[Array]:
         if isinstance(var, Literal):
             return var.val
         elif var in self:
@@ -23,17 +23,17 @@ class Environment(dict):
         else:
             return None
 
-    def __setitem__(self, var: Atom | None, val: Array | None) -> None:
+    def __setitem__(self, var: Var | None, val: Array | None) -> None:
         if not isinstance(var, Literal):
             super().__setitem__(var, val)
 
-    def read(self, var: Atom | None) -> Array | None:
+    def read(self, var: Var | None) -> Array | None:
         return self[var]
 
-    def write(self, var: Atom | None, val: Array | None) -> None:
+    def write(self, var: Var | None, val: Array | None) -> None:
         self[var] = val
 
-    def known(self, var: Atom | None) -> bool:
+    def known(self, var: Var | None) -> bool:
         return isinstance(var, Literal) or var in self
 
 
@@ -56,7 +56,7 @@ class ForwardProcessingRule(ProcessingRule):
         eqn: JaxprEqn,
         known_inputs: Sequence[Array | None],
         _: Sequence[Array | None],
-    ) -> Tuple[Sequence[Atom | None], Sequence[Array | None]]:
+    ) -> Tuple[Sequence[Var | None], Sequence[Array | None]]:
         # assert (
         #     (known_inputs != None) and (None not in known_inputs)
         # ), "All inputs must be known for the forward pass."

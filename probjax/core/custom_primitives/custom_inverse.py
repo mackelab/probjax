@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 
 jax.numpy.set_printoptions(precision=3, suppress=True)
-from functools import partial, update_wrapper
+from functools import update_wrapper
 from typing import Any, Callable
 
 from jax import core
@@ -14,7 +14,7 @@ from jax._src.api_util import (
     shaped_abstractify,
 )
 from jax._src.util import safe_map
-from jax.core import Primitive
+from jax.extend.core import ClosedJaxpr, Primitive
 from jax.interpreters import ad, batching, mlir
 from jax.interpreters import partial_eval as pe
 from jax.tree_util import tree_flatten, tree_unflatten
@@ -28,15 +28,13 @@ custom_inverse_call_p.multiple_results = True
 
 @custom_inverse_call_p.def_impl
 def custom_inverse_call_impl(*args, forward_jaxpr, inverse_jaxpr, **params):
-    with core.new_sublevel():
-        ans = core.eval_jaxpr(forward_jaxpr.jaxpr, forward_jaxpr.literals, *args)
+    ans = core.eval_jaxpr(forward_jaxpr.jaxpr, forward_jaxpr.literals, *args)
     return ans
 
 
 @custom_inverse_call_p.def_abstract_eval
 def custom_inverse_call_abstract_eval(*args, forward_jaxpr, inverse_jaxpr, **params):
-    with core.new_sublevel():
-        return forward_jaxpr.out_avals
+    return forward_jaxpr.out_avals
 
 
 def custom_inverse_call_lowering(ctx, *args, forward_jaxpr, inverse_jaxpr, **params):
@@ -73,47 +71,34 @@ def custom_inverse_jvp(primals, tangents, forward_jaxpr, inverse_jaxpr, **params
     ]
 
 
-def batch_custom_inverse_call(
-    spmd_axis_name, axis_size, axis_name, main_type, args, dims, **params
-):
+def batch_custom_inverse_call(axis_data, args, in_dims, **params):
     forward_jaxpr = params.pop("forward_jaxpr")
     inverse_jaxpr = params.pop("inverse_jaxpr")
+    # # We have to batch the jaxprs. For that lets first get the invals and outvals
+    # in_avals1 = forward_jaxpr.in_avals
 
-    # We have to batch the jaxprs. For that lets first get the invals and outvals
-    in_avals1 = forward_jaxpr.in_avals
-    out_avals1 = forward_jaxpr.out_avals
-
-    in_avals2 = inverse_jaxpr.in_avals
-    out_avals2 = inverse_jaxpr.out_avals
+    # in_avals2 = inverse_jaxpr.in_avals
 
     # We will batch all the inputs and outputs  (maybe do not batch consts ... )
-    in_batched1 = [True] * len(in_avals1)
-    out_batched1 = [True] * len(out_avals1)
+    args = [
+        batching.moveaxis(x, d, 0) if d is not batching.not_mapped and d != 0 else x
+        for x, d in zip(args, in_dims)
+    ]
 
-    in_batched2 = [True] * len(in_avals2)
-    out_batched2 = [True] * len(out_avals2)
-
-    # Applies the batching for the jaxprs
-    args = [batching.bdim_at_front(x, d, axis_size) for x, d in zip(args, dims)]
+    in_batched = [d is not batching.not_mapped for d in in_dims]
 
     # Batched jaxprs
     batched_forward_fn, out_size1 = batching.batch_jaxpr(
         forward_jaxpr,
-        axis_size,
-        in_batched1,
-        out_batched1,
-        axis_name,
-        spmd_axis_name,
-        main_type,
+        axis_data,
+        in_batched,
+        False,
     )
     batched_inverse_fn, _ = batching.batch_jaxpr(
         inverse_jaxpr,
-        axis_size,
-        in_batched2,
-        out_batched2,
-        axis_name,
-        spmd_axis_name,
-        main_type,
+        axis_data,
+        in_batched,
+        False,
     )
 
     # Update jaxprs with batched ones
@@ -134,10 +119,7 @@ def custom_inverse_transpose(*args, **kwargs):
     return ad.call_transpose(custom_inverse_call_p, *args, **kwargs)
 
 
-batching.spmd_axis_primitive_batchers[custom_inverse_call_p] = batch_custom_inverse_call
-batching.axis_primitive_batchers[custom_inverse_call_p] = partial(
-    batch_custom_inverse_call, None
-)
+batching.fancy_primitive_batchers[custom_inverse_call_p] = batch_custom_inverse_call
 ad.primitive_transposes[custom_inverse_call_p] = custom_inverse_transpose
 ad.primitive_jvps[custom_inverse_call_p] = custom_inverse_jvp
 
@@ -168,7 +150,7 @@ def trace_forward_inverse(
     f, out_tree = flatten_fun_nokwargs(f, in_tree)  # type: ignore
     debug = pe.debug_info(f.f, in_tree, out_tree, False, name or "<unknown>")
     jaxpr, out_avals, consts = pe.trace_to_jaxpr_dynamic(f, in_avals, debug)
-    forward_jaxpr = core.ClosedJaxpr(jaxpr, consts)
+    forward_jaxpr = ClosedJaxpr(jaxpr, consts)
     out_tree = out_tree()
 
     # Inverse

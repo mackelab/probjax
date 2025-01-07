@@ -73,18 +73,16 @@ class FlowMatcher(nnx.Module, experimental_pytree=True):
         mu1 = self.mu1.value
         std1 = self.std1.value
 
-        mut = self.interpolation_fn(mu0, mu1, t)
-        stdt = jnp.sqrt(t**2 * std1**2 + (1 - t) ** 2 * std0**2)
+        approx_mut = self.interpolation_fn(mu0, mu1, t)
+        approx_stdt = jnp.sqrt(t**2 * std1**2 + (1 - t) ** 2 * std0**2)
 
-        x_normed = (x - mut) / stdt
+        x_normed = (x - approx_mut) / approx_stdt
 
-        pred_mu1 = self.net(t, x_normed, *args, **kwargs)
-        pred_mu_t = self.interpolation_fn(mu0, pred_mu1, t)
+        pred_mut = self.net(t, x_normed, *args, **kwargs)
+        scale = (t * std1**2) / ((1 - t) ** 2 * std0**2 + t**2 * std1**2)
 
-        scale = ((1 - t) * std0**2 - t * std1**2) / (
-            (1 - t) ** 2 * std0**2 + t**2 * std1**2
-        )
-        return (mu0 - mu1) + scale * (x - pred_mu_t)
+        term1 = mu0 + scale * (x - pred_mut)
+        return term1
 
     def score(self, t, x, *args, **kwargs):
         """Score function for the model."""
@@ -150,15 +148,21 @@ class RectifiedFlow(FlowMatcher):
         v = self.__call__(t, x)
         return (-t * v + mu0 - x) / ((1 - t) * std0**2)
 
-    def noise_schedule(self, rng, shape):
-        return jax.nn.sigmoid(jax.random.normal(rng, shape=shape + (1,)) + 0.5)
+    def noise_schedule(self, rng, shape, mu=0.2, scale=1.0):
+        return jax.nn.sigmoid(jax.random.normal(rng, shape=shape + (1,)) * scale + mu)
 
     def solve_schedule(self, num_steps=50):
-        return jnp.linspace(0, 1, num_steps)
+        ts = jnp.linspace(0, 1, num_steps)
+        return ts
 
     def loss(self, params, rng, data, *args, **kwargs):
         rng_source, rng_times = jax.random.split(rng, 2)
-        x0 = jax.random.normal(rng_source, shape=data.shape)
+        x0 = (
+            jax.random.normal(rng_source, shape=data.shape) * self.std0.value
+            + self.mu0.value
+        )
+        # Optionally to OT coupling
+
         times = self.noise_schedule(rng_times, (data.shape[0],))
         loss = self._loss(params, times, x0, data, *args, **kwargs)
         return loss
