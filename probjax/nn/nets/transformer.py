@@ -58,7 +58,7 @@ class LearnedPosEmbed(nnx.Module, experimental_pytree=True):
         Returns:
             Array: Output array of shape [B, T, D]
         """
-        _, seq_len, embed_dim = x.shape
+        _, seq_len, _ = x.shape
         assert (
             seq_len <= self.max_seq_len
         ), "Sequence length cannot be greater than max_len"
@@ -174,12 +174,11 @@ class Transformer(nnx.Module, experimental_pytree=True):
             self.context_layers = [
                 context_fusion(model_dim, context_dim, rngs) for _ in range(num_layers)
             ]
-            if context_fusion == ConcatFuse:
-                first_dim += context_dim
+            if issubclass(context_fusion, ConcatFuse):
+                first_dim += model_dim
 
         # Dense block.
-        context_dim = context_dim if context_dim is not None else 0
-
+        print(first_dim)
         dims = (
             [first_dim]
             + [widening_factor * model_dim] * num_hidden_layers
@@ -245,6 +244,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
                 h_context = self.context_layers[i](h, context)
             else:
                 h_context = h
+            print(h_context.shape)
             h_dense = self.dense_blocks[i](h_context)
             if self.dropout_dense is not None:
                 h_dense = self.dropout_dense[i](h_dense, deterministic=deterministic)

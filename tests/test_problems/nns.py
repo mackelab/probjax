@@ -13,6 +13,7 @@ from probjax.nn import (
     MultiHeadAttention,
     Transformer,
 )
+from probjax.nn.utils import AffineFuse, AdditiveFuse, ConcatFuse
 from probjax.nn.nets.flows import (
     AdditiveAutoregressiveFlow,
     AdditiveCouplingFlow,
@@ -216,6 +217,42 @@ def transformer(request):
         rngs=nnx.Rngs(0),
     )
     return model_dim, model
+
+
+@pytest.fixture(
+    params=[
+        (1, AffineFuse),
+        (2, AdditiveFuse),
+        (1, ConcatFuse),
+        (2, AffineFuse),
+        (1, AdditiveFuse),
+        (2, ConcatFuse),
+    ],
+    ids=[
+        "AffineFuse",
+        "AdditiveFuse",
+        "ConcatFuse",
+        "AffineFuse",
+        "AdditiveFuse",
+        "ConcatFuse",
+    ],
+)
+def transformer_with_context(request):
+    context_dim, fussion_method = request.param
+    model_dim = 2
+    num_heads = 1
+    num_layers = 1
+    attn_size = 2
+    model = Transformer(
+        model_dim,
+        num_heads,
+        num_layers,
+        attn_size,
+        context_dim=context_dim,
+        context_fusion=fussion_method,
+        rngs=nnx.Rngs(0),
+    )
+    return model_dim, context_dim, model
 
 
 @pytest.fixture(

@@ -57,9 +57,9 @@ def _odeint(
     """Solve an ordinary differential equation."""
     if dtype is not None:
         ts = ts.astype(dtype)
-        y0 = jax.tree_map(lambda x: x.astype(dtype), y0)
+        y0 = jax.tree_util.tree_map(lambda x: x.astype(dtype), y0)
 
-    y0 = jax.tree_map(jnp.atleast_1d, y0)
+    y0 = jax.tree_util.tree_map(jnp.atleast_1d, y0)
     ts = jnp.atleast_1d(ts)
 
     flat_y0, unravel = ravel_args(y0)
@@ -86,7 +86,9 @@ def _odeint(
             filter_output=filter_unravel,
             check_points=check_points,
         )
-        ys = jax.tree_map(lambda x, y: jnp.concatenate([x[None], y], axis=0), y0, ys)
+        ys = jax.tree_util.tree_map(
+            lambda x, y: jnp.concatenate([x[None], y], axis=0), y0, ys
+        )
     else:
         if filter_state is not None:
 
@@ -126,7 +128,9 @@ def _odeint(
         )
         if filter_state is None:
             ys = jax.vmap(unravel)(ys)
-        ys = jax.tree_map(lambda x, y: jnp.concatenate([x[None], y], axis=0), y0, ys)
+        ys = jax.tree_util.tree_map(
+            lambda x, y: jnp.concatenate([x[None], y], axis=0), y0, ys
+        )
 
     return ys
 
@@ -136,9 +140,9 @@ def _odeint(
 
 # Inverse odeint
 def _inv_odeint(drift, ys: Array, ts: Array, *args, **kwargs):
-    y0 = jax.tree_map(lambda x: jnp.atleast_1d(x)[-1], ys)
+    y0 = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], ys)
     xs = _odeint(drift, y0, ts[::-1], *args, **kwargs)
-    yT = jax.tree_map(lambda x: jnp.atleast_1d(x)[-1], xs)
+    yT = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], xs)
     return yT
 
 
@@ -153,12 +157,14 @@ def _inv_logdet_odeint(drift, ys, ts, *args, **kwargs):
         dlogdet = jnp.atleast_1d(jnp.trace(jac(t, x)))
         return dx, dlogdet
 
-    y0 = jax.tree_map(lambda x: jnp.atleast_1d(x)[-1], ys)
-    logdet0 = jax.tree_map(lambda x: jnp.zeros_like(jnp.atleast_1d(x)[-1]), ys)
+    y0 = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], ys)
+    logdet0 = jax.tree_util.tree_map(
+        lambda x: jnp.zeros_like(jnp.atleast_1d(x)[-1]), ys
+    )
     xs, logdets = _odeint(aug_drift, (y0, logdet0), ts[::-1], *args, **kwargs)
 
-    yT = jax.tree_map(lambda x: jnp.atleast_1d(x)[-1], xs)
-    logdetsT = jax.tree_map(lambda x: jnp.atleast_1d(x)[-1], logdets)
+    yT = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], xs)
+    logdetsT = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], logdets)
 
     return yT, logdetsT
 
