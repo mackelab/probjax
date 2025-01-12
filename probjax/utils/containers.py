@@ -38,7 +38,8 @@ class PriorityQueue:
         self.insert(element, cost)
 
     def pop(self):
-        """This function will pop the element with the lowest cost or which is longest in the queue (if costs are equal)."""
+        """This function will pop the element with the lowest cost or which is longest
+        in the queue (if costs are equal)."""
         while self.heap:
             _, _, element = heapq.heappop(self.heap)
             if element is not None:

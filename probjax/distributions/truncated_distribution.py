@@ -4,7 +4,7 @@ from jax import random
 from .constraints import distribution, real
 from .distribution import Distribution
 
-__all__ = ["TruncatedNormal"]
+__all__ = ["TruncatedDistribution"]
 
 from jax.tree_util import register_pytree_node_class
 

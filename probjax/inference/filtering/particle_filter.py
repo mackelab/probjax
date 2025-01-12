@@ -60,12 +60,17 @@ def build_kernel(
     Args:
         log_likelihood_fn (Callable): Log likelihood function of the model.
         transition_fn (Callable): Transition function p(x_t|x_{t-1}) of the model.
-        transition_logdensity_fn (Optional[Callable], optional): Computes logdensity function of the transition function. Defaults to None.
-        proposal_transition_fn (Optional[Callable], optional): Transition based on a proposal. Defaults to None.
-        proposal_logdensity_fn (Optional[Callable], optional): Proposal density_fn. Defaults to None.
-        resample_criterion (Callable, optional): _description_. Defaults to resample_when_ess_below.
-        resample_fn (Callable, optional): _description_. Defaults to systematic.
-        unbiased_gradients (bool, optional): _description_. Defaults to True.
+        transition_logdensity_fn (Optional[Callable]): Computes logdensity function of
+            the transition function. Defaults to None.
+        proposal_transition_fn (Optional[Callable]): Transition based on a proposal.
+            Defaults to None.
+        proposal_logdensity_fn (Optional[Callable]): Proposal density function.
+            Defaults to None.
+        resample_criterion (Callable): Criterion to decide when to resample. Defaults
+            to resample_when_ess_below.
+        resample_fn (Callable): Resampling function. Defaults to resample_systematic.
+        unbiased_gradients (bool): Whether to use unbiased gradients. Defaults to
+            False.
     """
 
     def kernel(
@@ -160,19 +165,26 @@ def build_kernel(
 class ParticleFilter(FilterAPI):
     """Particle filter inference algorithm.
 
-    This class implements the particle filter algorithm. The particle filter is a sequential Monte Carlo method that approximates the filtering distribution of a state-space model.
-    The particle filter is a generalization of the Kalman filter to non-linear and non-Gaussian models.
+    This class implements the particle filter algorithm. The particle filter is a
+    sequential Monte Carlo method that approximates the filtering distribution of a
+    state-space model. The particle filter is a generalization of the Kalman filter
+    to non-linear and non-Gaussian models.
 
     To build a particle filter, you need to provide the following functions:
     Args:
-        log_likelihood_fn (Callable): Log likelihood function of the model $p(y_t|x_t).
-        transition_fn (Callable): Transition function $p(x_t|x_{t-1})$ of the model.
-        transition_logdensity_fn (Optional[Callable], optional): Computes logdensity function of the transition function. Defaults to None.
-        proposal_transition_fn (Optional[Callable], optional): Transition based on a proposal. Defaults to None.
-        proposal_logdensity_fn (Optional[Callable], optional): Proposal density_fn. Defaults to None.
-        resample_criterion (Callable, optional): _description_. Defaults to resample_when_ess_below.
-        resample_fn (Callable, optional): _description_. Defaults to systematic.
-        unbiased_gradients (bool, optional): _description_. Defaults to True.
+        log_likelihood_fn (Callable): Log likelihood function of the model p(y_t|x_t).
+        transition_fn (Callable): Transition function p(x_t|x_{t-1}) of the model.
+        transition_logdensity_fn (Optional[Callable]): Computes logdensity function of
+            the transition function. Defaults to None.
+        proposal_transition_fn (Optional[Callable]): Transition based on a proposal.
+            Defaults to None.
+        proposal_logdensity_fn (Optional[Callable]): Proposal density function.
+            Defaults to None.
+        resample_criterion (Callable): Criterion to decide when to resample. Defaults
+            to resample_when_ess_below.
+        resample_fn (Callable): Resampling function. Defaults to resample_systematic.
+        unbiased_gradients (bool): Whether to use unbiased gradients. Defaults to
+            False.
     """
 
     init = init

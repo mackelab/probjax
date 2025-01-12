@@ -18,12 +18,39 @@ NAME_MAX_SLICE = "max_slice_wasserstein"
 
 
 def wasserstein_distance(p, q, mc_samples=0, key=None, order=2, **kwargs):
+    """Compute the Wasserstein distance between two distributions.
+
+    Args:
+        p: The first distribution.
+        q: The second distribution.
+        mc_samples: Number of Monte Carlo samples.
+        key: JAX random key.
+        order: The order of the Wasserstein distance.
+        **kwargs: Additional keyword arguments.
+
+    Returns:
+        The Wasserstein distance between the two distributions.
+    """
     return divergence(NAME, p, q, mc_samples=mc_samples, key=key, order=order, **kwargs)
 
 
 def sliced_wasserstein_distance(
     p, q, num_slices=100, mc_samples=0, key=None, order=2, **kwargs
 ):
+    """Compute the Sliced Wasserstein distance between two distributions.
+
+    Args:
+        p: The first distribution.
+        q: The second distribution.
+        num_slices: Number of slices.
+        mc_samples: Number of Monte Carlo samples.
+        key: JAX random key.
+        order: The order of the Wasserstein distance.
+        **kwargs: Additional keyword arguments.
+
+    Returns:
+        The Sliced Wasserstein distance between the two distributions.
+    """
     return divergence(
         NAME_SLICED,
         p,
@@ -39,6 +66,20 @@ def sliced_wasserstein_distance(
 def max_slice_wasserstein_distance(
     p, q, num_slices=100, mc_samples=0, key=None, order=2, **kwargs
 ):
+    """Compute the Max Sliced Wasserstein distance between two distributions.
+
+    Args:
+        p: The first distribution.
+        q: The second distribution.
+        num_slices: Number of slices.
+        mc_samples: Number of Monte Carlo samples.
+        key: JAX random key.
+        order: The order of the Wasserstein distance.
+        **kwargs: Additional keyword arguments.
+
+    Returns:
+        The Max Sliced Wasserstein distance between the two distributions.
+    """
     return divergence(
         NAME_MAX_SLICE,
         p,
@@ -152,14 +193,29 @@ def _max_sliced_wasserstein(p, q, mc_samples=0, key=None, order=2, **kwargs):
 
 @register_divergence(NAME, dist.Distribution, dist.Distribution)
 def _wasserstein_generic(p, q, mc_samples=0, key=None, order=2, **kwargs):
+    """Compute the Wasserstein distance between two generic distributions.
+
+    Args:
+        p: The first distribution.
+        q: The second distribution.
+        mc_samples: Number of Monte Carlo samples.
+        key: JAX random key.
+        order: The order of the Wasserstein distance.
+        **kwargs: Additional keyword arguments.
+
+    Returns:
+        The Wasserstein distance between the two distributions.
+    """
     if p.event_shape != q.event_shape:
         raise ValueError(
-            "Wasserstein distance between distributions with different event shapes not supported"
+            "Wasserstein distance between distributions with different event shapes "
+            "not supported"
         )
 
-    assert (
-        mc_samples >= 0
-    ), "For general distirbutions we require mc_samples >= 0, to evaluate a Monte Carlo approximation of the Wasserstein distance."
+    assert mc_samples >= 0, (
+        "For general distributions we require mc_samples >= 0, to evaluate a Monte"
+        "Carlo approximation of the Wasserstein distance."
+    )
 
     if sum(p.event_shape) > 1:
         return __wasserstein_generic(

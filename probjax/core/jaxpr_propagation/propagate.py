@@ -14,7 +14,8 @@ from probjax.core.jaxpr_propagation.utils import (
 )
 from probjax.utils.containers import PriorityQueue
 
-# Jaxpr are usually processed in a topological order. But we need to process it in a custom order.
+# Jaxpr are usually processed in a topological order. But we need to process it in
+# a custom order.
 # Hence this gives use a general propagation algorithm!
 
 
@@ -22,12 +23,15 @@ def naive_cost_fn(
     eqn: JaxprEqn, is_known_invars: Sequence[bool], is_known_outvars: Sequence[bool]
 ) -> float:
     """A naive cost function that returns 0 if all inputs are known and inf otherwise.
-    This cost function is used for the forward pass. We can only compute the equation if all inputs are known.
+    This cost function is used for the forward pass. We can only compute the equation
+    if all inputs are known.
 
     Args:
         eqn (JaxprEqn): JaxprEqn object.
-        is_known_invars (Sequence[bool]): Sequence of booleans indicating whether the input variables are known.
-        is_known_outvars (Sequence[bool]): Sequence of booleans indicating whether the output variables are known.
+        is_known_invars (Sequence[bool]): Sequence of booleans indicating whether the
+            input variables are known.
+        is_known_outvars (Sequence[bool]): Sequence of booleans indicating whether the
+            output variables are known.
 
     Returns:
         float: Cost of the equation.
@@ -39,7 +43,8 @@ def naive_cost_fn(
 
 
 class EqnEnvironment:
-    """This class implements a priority queue for equations. The priority is determined by the cost function."""
+    """This class implements a priority queue for equations. The priority is
+    determined by the cost function."""
 
     env: Environment
     eqn_queue: PriorityQueue
@@ -125,8 +130,9 @@ def propagate(
         invars (Sequence[Var]): Input variables.
         inputs (Sequence[Array]): Input data.
         outvars (Sequence[Var]): Output variables.
-        process_eqn (Callable[ [JaxprEqn, Sequence[Optional[Array]], Sequence[Optional[Array]]], Tuple[Sequence[Var], Sequence[Array]], ]): Function that processes the equation.
-        cost_fn (Callable, optional): Cost function to prioritize the evaluation order!. Defaults to naive_cost_fn.
+        process_eqn: Function that processes the equation.
+        cost_fn (Callable, optional): Cost function to prioritize the evaluation
+            order!. Defaults to naive_cost_fn.
 
     Returns:
         Sequence[Optional[Array]]: _description_

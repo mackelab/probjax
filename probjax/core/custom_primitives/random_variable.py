@@ -24,7 +24,7 @@ def _sample_distribution(dist: Distribution, key, *args, shape=(), **kwargs):
 
 
 def _log_prob_distribution(dist: Distribution, value, *args, **kwargs):
-    return dist.log_prob(value=value, *args, **kwargs)
+    return dist.log_prob(value, *args, **kwargs)
 
 
 # This maybe should be refactored
@@ -80,7 +80,8 @@ def _sampling_logprobs_jaxprs_with_common_consts(sampling_fn, log_prob_fn):
 
 
 def rv(dist: Distribution, name: Hashable) -> Callable:
-    """This takes a distribution and returns a function that samples from that distribution.
+    """This takes a distribution and returns a function that samples from that
+    distribution.
 
 
     Args:
@@ -139,7 +140,7 @@ def _rv_transpose_rule(*args, **kwargs):
     return ad.call_transpose(rv_p, *args, **kwargs)
 
 
-def _rv_batching_rule(axis_data, args, dims, **params):
+def _rv_batching_rule(axis_data, args, in_dims, **params):
     sampling_fn_jaxpr = params.pop("sampling_fn_jaxpr")
     log_prob_fn_jaxpr = params.pop("log_prob_fn_jaxpr")
     # # We have to batch the jaxprs. For that lets first get the invals and outvals

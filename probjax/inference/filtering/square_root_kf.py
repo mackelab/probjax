@@ -165,10 +165,17 @@ class sq_kalman_filter(FilterAPI):
     To build a Kalman filter kernel, we require the following components:
 
     Args:
-        transition_matrix (Callable[[float | ArrayLike], ArrayLike] | ArrayLike): Transition matrix A_t
-        transition_covariance_matrix_sqrt (Callable[[float | ArrayLike], ArrayLike] | ArrayLike): Transition covariance matrix Q_t
-        observation_matrix (Callable[[float | ArrayLike], ArrayLike] | ArrayLike): Observation matrix C_t
-        observation_covariance (Callable[[float | ArrayLike], ArrayLike] | ArrayLike): Observation covariance matrix R_t
+        transition_matrix (Callable[[float | ArrayLike], ArrayLike] | ArrayLike):
+            Transition matrix A_t
+        transition_covariance_matrix_sqrt
+            (Callable[[float | ArrayLike], ArrayLike] | ArrayLike): Transition
+                covariance matrix Q_t
+        observation_matrix
+            (Callable[[float | ArrayLike], ArrayLike] | ArrayLike): Observation matrix
+            C_t
+        observation_covariance
+            (Callable[[float | ArrayLike], ArrayLike] | ArrayLike): Observation
+            covariance matrix R_t
     """
 
     init = init

@@ -1,10 +1,8 @@
-import jax
-import jax.numpy as jnp
-
-jax.numpy.set_printoptions(precision=3, suppress=True)
 from functools import update_wrapper
 from typing import Any, Callable
 
+import jax
+import jax.numpy as jnp
 from jax import core
 from jax._src import ad_util
 from jax._src import linear_util as lu
@@ -13,14 +11,17 @@ from jax._src.api_util import (
     flatten_fun_nokwargs,
     shaped_abstractify,
 )
-from jax._src.util import safe_map
+from jax._src.util import cache, safe_map
 from jax.extend.core import ClosedJaxpr, Primitive
 from jax.interpreters import ad, batching, mlir
 from jax.interpreters import partial_eval as pe
 from jax.tree_util import tree_flatten, tree_unflatten
 
+jax.numpy.set_printoptions(precision=3, suppress=True)
+
 # This is a custom primitive that allows us to define custom inverse functions
-# While most stuff can be inverted by inverting all primitives for some functions it is necessary or more efficient to define a custom inverse function
+# While most stuff can be inverted by inverting all primitives for some functions it is
+# necessary or more efficient to define a custom inverse function
 
 custom_inverse_call_p = Primitive("custom_inverse_call_p")
 custom_inverse_call_p.multiple_results = True
@@ -135,7 +136,7 @@ def is_hashable(obj):
 # TODO: Add support other tracer support!
 
 
-@jax._src.util.cache()
+@cache()
 def trace_forward_inverse(
     f,
     f_inv,
@@ -200,9 +201,10 @@ class custom_inverse:
         if not self.inv_fun:
             msg = f"No inverse defined for custom_inverse function {name} using definv."
             raise AttributeError(msg)
-        inv_name = getattr(self.inv_fun, "__name__", str(self.inv_fun))
+        # inv_name = getattr(self.inv_fun, "__name__", str(self.inv_fun))
 
-        # We can only invert with respect to specific dynamic arguments. All others are assumed to be static!
+        # We can only invert with respect to specific dynamic arguments. All others are
+        # assumed to be static!
         f = lu.wrap_init(self.fun, params=params)
         f_inv = lu.wrap_init(self.inv_fun_and_log_det, params=params)
 

@@ -1,3 +1,4 @@
+from functools import partial
 from typing import Callable, Optional, Sequence
 
 import flax.nnx as nnx
@@ -61,9 +62,7 @@ class AutoregressiveMLP(nnx.Module, experimental_pytree=True):
         log_det = 0.0
         for _ in range(self.in_out_dim):
             bij_params = self.masked_mlp(x, context)  # type: ignore
-            bijective_inv = inverse_and_logabsdet(
-                lambda x: self.bijector(bij_params, x)
-            )
+            bijective_inv = inverse_and_logabsdet(partial(self.bijector, bij_params))
             x, log_det = bijective_inv(y)
         return x, log_det
 

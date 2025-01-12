@@ -13,7 +13,7 @@ from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
 
 _lookup = {
     jax.lax.mul_p: sp.Mul,
-    jax.lax.add_p: sp.MatAdd,  # Note: jax.lax.add was originally mapped to both sp.Add and sp.MatAdd, keeping one
+    jax.lax.add_p: sp.MatAdd,
     jax.lax.div_p: sp.div,
     jax.lax.abs_p: sp.Abs,
     jax.lax.sign_p: sp.sign,
@@ -106,9 +106,6 @@ class SymbolicProcessingRule(ForwardProcessingRule):
         sym_eq = sympy_eq(*known_inputs, *params)
 
         outvars = eqn.outvars
-        if isinstance(sym_eq, Sequence):
-            outvals = sym_eq
-        else:
-            outvals = [sym_eq]
+        outvals = sym_eq if isinstance(sym_eq, Sequence) else [sym_eq]
 
         return outvars, outvals

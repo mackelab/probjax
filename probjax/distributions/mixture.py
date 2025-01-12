@@ -25,10 +25,12 @@ class Mixture(Distribution):
 
         Args:
             mixing_probs (Array): Mixing probabilities of the components.
-            component_distributions (Union[Distribution, Sequence[Distribution]]): Component distributions of the mixture.
+            component_distributions (Union[Distribution, Sequence[Distribution]]):
+                Component distributions of the mixture.
 
         Raises:
-            ValueError: If the number of components does not match the number of mixing probabilities.
+            ValueError: If the number of components does not match the number of
+                mixing probabilities.
         """
 
         component_distributions = Independent(component_distributions, 0)
@@ -69,7 +71,8 @@ class Mixture(Distribution):
 
     def rsample(self, key, sample_shape: tuple = ...):
         raise NotImplementedError(
-            "Mixture does not support reparameterized sampling, can be done -> implicit reparam."
+            "Mixture does not support reparameterized sampling, can be done"
+            " -> implicit reparam."
         )
 
     def log_prob(self, value):
@@ -128,4 +131,7 @@ class Mixture(Distribution):
         )
 
     def __repr__(self) -> str:
-        return f"Mixture(mixing_probs={self.mixing_probs.__repr__()}, components={self.component_distributions.__repr__()})"
+        return (
+            f"Mixture(mixing_probs={self.mixing_probs.__repr__()},"
+            f"components={self.component_distributions.__repr__()})"
+        )

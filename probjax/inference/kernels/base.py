@@ -27,8 +27,8 @@ class Params(NamedTuple):
 
 
 class MarkovKernel(NamedTuple):
-    """This is a NamedTuple that represents a Markov kernel with a stationary distribution.
-    given by the logdensity_fn.
+    """This is a NamedTuple that represents a Markov kernel with a stationary
+    distribution given by the logdensity_fn.
     """
 
     logdensity_fn: Callable

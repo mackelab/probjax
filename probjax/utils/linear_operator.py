@@ -1,4 +1,3 @@
-
 from typing import Any, Callable, Tuple
 
 import jax
@@ -61,8 +60,8 @@ class LinearOperator:
             return LinearOperator(sum_fn, self.in_dim, self.out_dim, self.dtype)
         elif isinstance(other, ArrayLike) and other.ndim == 2:
             other = jnp.asarray(other)
-            l = LinearOperator.from_array(other)
-            return self + l
+            operator = LinearOperator.from_array(other)
+            return self + operator
         else:
             raise NotImplementedError(f"Addition with {type(other)} not implemented")
 
@@ -96,8 +95,8 @@ class LinearOperator:
             if other.ndim == 1:
                 return self.operator(other)
             else:
-                l = LinearOperator.from_array(other)
-                return self @ l
+                operator = LinearOperator.from_array(other)
+                return self @ operator
         else:
             raise NotImplementedError(
                 f"Multiplication with {type(other)} not implemented"
@@ -111,8 +110,8 @@ class LinearOperator:
             if other.ndim == 1:
                 return self.operator(other)
             else:
-                l = LinearOperator.from_array(other)
-                return l @ self
+                operator = LinearOperator.from_array(other)
+                return operator @ self
         else:
             raise NotImplementedError(
                 f"Multiplication with {type(other)} not implemented"
@@ -139,6 +138,8 @@ class LinearOperator:
 
     @staticmethod
     def from_array(matrix: ArrayLike) -> 'LinearOperator':
+        matrix = jnp.atleast_2d(matrix)
+
         def operator(x: ArrayLike) -> ArrayLike:
             return jnp.dot(matrix, x)
 

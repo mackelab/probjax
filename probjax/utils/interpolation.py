@@ -7,15 +7,18 @@ from jaxtyping import Array, Float, Int
 
 
 def linear_interpolation(ts: Array, ys: Array) -> Callable[[Float], Array]:
-    """Linear interpolation function for a given set of points (ts, ys). Here ts must be a one dimensional sorted array and ys can be any array with the same length as ts on axis 0.
-        Outside of the data range, the function returns the value of the nearest data point.
+    """Linear interpolation function for a given set of points (ts, ys). Here ts must be
+    a one dimensional sorted array and ys can be any array with the same length as ts on
+    axis 0. Outside of the data range, the function returns the value of the nearest
+    data point.
 
     Args:
         ts (Array): Time points
         ys (Array): Values at time points
 
     Returns:
-        Callable[[Float], Array]: Interpolation function that can be evaluated at any time point.
+        Callable[[Float], Array]: Interpolation function that can be evaluated at any
+        time point.
     """
 
     shape = ys.shape
@@ -41,7 +44,8 @@ def polynomial_interpolation(
     parameter can be used to limit the range of data points used for interpolation.
     If window is None, the interpolation is done using all the data points.
 
-    Note: Outside of the data range, the function does return the value of the interpolant.
+    Note: Outside of the data range, the function does return the value of the
+        interpolant.
 
     Args:
         ts (Array): _description_

@@ -153,7 +153,8 @@ class Distribution:
 
     def moment(self, n: int) -> Array:
         """
-        Returns the nth non-central moment of the distribution, batched over batch_shape.
+        Returns the nth non-central moment of the distribution, batched over
+        batch_shape.
 
         Args:
             n (int): order of moment.
@@ -194,7 +195,7 @@ class Distribution:
     # Each distribution will be registered as a PyTree
     def tree_flatten(self):
         return (
-            tuple(getattr(self, param) for param in self.arg_constraints.keys()),
+            tuple(getattr(self, param) for param in self.arg_constraints),
             None,
         )
 

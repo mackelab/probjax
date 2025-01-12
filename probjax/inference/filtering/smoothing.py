@@ -1,5 +1,6 @@
 from typing import Callable, Float, Tuple
 
+import jax
 import jax.numpy as jnp
 from jax import Array
 
@@ -85,7 +86,7 @@ def smooth(
         return (mu1, cov1, t0), (mu1, cov1)
 
     init_carry = (mus[idx_last], covs[idx_last], ts[idx_last])
-    _, (mus_s, covs_s) = lax.scan(
+    _, (mus_s, covs_s) = jax.lax.scan(
         scan_fun,
         init_carry,
         (ts_needed, mus_needed, covs_needed, mus_needed_, covs_needed_),

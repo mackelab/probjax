@@ -1,3 +1,4 @@
+from functools import partial
 from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
 import jax
@@ -23,12 +24,14 @@ def init(
     rng_key: Optional[PRNGKey] = None,
 ) -> GibbsState:
     inner_state = {}
-    for k in position:
 
-        def logdensity_k(value):
-            kwargs = position.copy()
-            kwargs[k] = value
-            return logdensity_fn(**kwargs)
+    def logdensity_condtional(k, value):
+        kwargs = position.copy()
+        kwargs[k] = value
+        return logdensity_fn(**kwargs)
+
+    for k in position:
+        logdensity_k = partial(logdensity_condtional, k)
 
         # inspect for keyword argument "rng_key"
         if "rng_key" in inner_kernel[k].init.__code__.co_varnames:
@@ -58,16 +61,17 @@ def build_kernel(
         inner_state = {}
         new_position = state.position.copy()
 
+        def logdensity_conditional(k, value):
+            kwargs = new_position.copy()
+            kwargs[k] = value
+            return logdensity_fn(**kwargs)
+
         for k in state.position:
             num_steps = 1 if inner_kernel_steps is None else inner_kernel_steps[k] or 1
 
             rng_key, *rng_keys = jax.random.split(rng_key, num_steps + 1)
 
-            def logdensity_k(value):
-                kwargs = new_position.copy()
-                kwargs[k] = value
-                return logdensity_fn(**kwargs)
-
+            logdensity_k = partial(logdensity_conditional, k)
             kwargs = {} if inner_kernel_kwargs is None else inner_kernel_kwargs[k] or {}
 
             new_inner_state, new_inner_info = _kernels[k](
@@ -79,7 +83,7 @@ def build_kernel(
 
                 def one_step(carry, key):
                     state, info = carry
-                    state, info = _kernels[k](key, state, logdensity_k, **kwargs)
+                    state, info = _kernels[k](key, state, logdensity_k, **kwargs)  # noqa: B023
                     return (state, info), None
 
                 (new_inner_state, new_inner_info), _ = jax.lax.scan(

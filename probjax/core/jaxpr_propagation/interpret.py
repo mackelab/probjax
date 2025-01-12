@@ -32,7 +32,8 @@ def interpret(
     map(env.write, jaxpr.constvars, consts)
     map(env.write, invars, inputs)
 
-    # We iterate in one (of many other) topological ordering of the graph. The topological sort is already done by JAX.
+    # We iterate in one (of many other) topological ordering of the graph.
+    # The topological sort is already done by JAX.
     for eqn in jaxpr.eqns:
         # First we get the known inputs and outputs of the equation
         known_invars = map(env.read, eqn.invars)

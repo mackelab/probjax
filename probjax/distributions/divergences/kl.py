@@ -17,12 +17,14 @@ def kl_divergence(p, q, mc_samples=0, key=None):
 def _kl_generic(p, q, mc_samples=0, key=None):
     if p.event_shape != q.event_shape:
         raise ValueError(
-            "KL divergence between distributions with different event shapes not supported"
+            "KL divergence between distributions with different event shapes not"
+            "supported"
         )
 
-    assert (
-        mc_samples >= 0
-    ), "For general distirbutions we require mc_samples >= 0, to evaluate a Monte Carlo approximation of the KL divergence."
+    assert mc_samples >= 0, (
+        "For general distirbutions we require mc_samples >= 0, to evaluate a Monte "
+        "Carlo approximation of the KL divergence."
+    )
     assert key is not None, "Key must be provided if mc_samples > 0"
 
     if p.has_rsample:
@@ -48,7 +50,8 @@ def _kl_independent_independent(p, q, mc_samples=0, key=None):
         )
     else:
         raise ValueError(
-            "KL divergence between distributions with different event shapes not supported"
+            "KL divergence between distributions with different event shapes not "
+            "supported"
         )
 
     return kl_base.sum(-1)

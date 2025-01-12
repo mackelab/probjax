@@ -32,8 +32,8 @@ class ConstraintTraceProcessingRule(TraceProcessingRule):
         self, eqn: JaxprEqn, known_inputs: Sequence[Any | None], _: Sequence[Any | None]
     ) -> Tuple[Sequence[Any | None], Sequence[Any | None]]:
         outvars, outvals = super().__call__(eqn, known_inputs, _)
-        primitive = eqn.primitive
-        in_constraints = [self.traced_samples[str(i)] for i in eqn.invars]
+        # primitive = eqn.primitive
+        # in_constraints = [self.traced_samples[str(i)] for i in eqn.invars]
         for o, v in zip(outvars, outvals):
             if self.traced_vars is None or str(o) in self.traced_vars:
                 self.traced_samples[str(o)] = v

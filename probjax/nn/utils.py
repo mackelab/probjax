@@ -132,7 +132,8 @@ class GaussianFourierEmbedding(nnx.Module, experimental_pytree=True):
 
         Args:
             output_dim (int, optional): Output dimesion. Defaults to 128.
-            name (str, optional): Name of the module. Defaults to "gaussian_fourier_embedding".
+            name (str, optional): Name of the module. Defaults to
+            "gaussian_fourier_embedding".
         """
         self.input_dim = input_dim
         self.output_dim = output_dim

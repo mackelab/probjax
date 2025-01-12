@@ -6,7 +6,8 @@ __all__ = ["ExponentialFamily"]
 
 from jax.tree_util import register_pytree_node_class
 
-# Abstract base class for exponential family distributions -> https://en.wikipedia.org/wiki/Exponential_family
+# Abstract base class for exponential family distributions
+# -> https://en.wikipedia.org/wiki/Exponential_family
 # TODO: Add stuff, this currently does nothing.
 
 
@@ -22,12 +23,12 @@ class ExponentialFamily(Distribution):
         Computes the sufficient statistics of the distribution.
 
         Args:
-          value: A JAX array representing the value(s) at which to compute the sufficient statistics.
+          value: A JAX array representing the value(s) at which to compute the
+              sufficient statistics.
 
         Returns:
           A JAX array representing the sufficient statistics of the distribution.
         """
-
         raise NotImplementedError(
             f"{cls.__class__} does not implement sufficient_statistic"
         )
@@ -38,13 +39,15 @@ class ExponentialFamily(Distribution):
         Computes the natural parameters of the distribution.
 
         Args:
-          stats: A JAX array representing the sufficient statistics of the distribution.
+          stats: A JAX array representing the sufficient statistics of the
+              distribution.
 
         Returns:
           A JAX array representing the natural parameters of the distribution.
         """
         raise NotImplementedError(
-            "Natural parameters are not implemented for this exponential family distribution."
+            "Natural parameters are not implemented for this exponential family "
+            "distribution."
         )
 
     @classmethod
@@ -53,13 +56,15 @@ class ExponentialFamily(Distribution):
         Computes the log normalizer of the distribution.
 
         Args:
-          params: A JAX array representing the natural parameters of the distribution.
+          params: A JAX array representing the natural parameters of the
+              distribution.
 
         Returns:
           A JAX array representing the log normalizer of the distribution.
         """
         raise NotImplementedError(
-            "Log normalizer is not implemented for this exponential family distribution."
+            "Log normalizer is not implemented for this exponential family "
+            "distribution."
         )
 
     @classmethod
@@ -68,11 +73,13 @@ class ExponentialFamily(Distribution):
         Computes the base measure of the distribution.
 
         Args:
-          params: A JAX array representing the natural parameters of the distribution.
+          params: A JAX array representing the natural parameters of the
+              distribution.
 
         Returns:
           A JAX array representing the base measure of the distribution.
         """
         raise NotImplementedError(
-            "Base measure is not implemented for this exponential family distribution."
+            "Base measure is not implemented for this exponential family "
+            "distribution."
         )

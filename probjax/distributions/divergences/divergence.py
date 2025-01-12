@@ -82,6 +82,7 @@ def _dispatch(name, type_p, type_q):
                 type_p.__name__, type_q.__name__, left_p.__name__, right_q.__name__
             ),
             RuntimeWarning,
+            stacklevel=2,
         )
     return left_fun
 
@@ -99,8 +100,10 @@ def divergence(
     Args:
         p (Distribution): A :class:`~torch.distributions.Distribution` object.
         q (Distribution): A :class:`~torch.distributions.Distribution` object.
-        mc_samples (int): Number of samples to use for Monte Carlo approximation of KL divergence. Defaults to 0. Then only analytic expressions.
-        key (jax.random.PRNGKey): Key for random number generation. Defaults to None. Only required if mc_samples > 0.
+        mc_samples (int): Number of samples to use for Monte Carlo approximation of
+            KL divergence. Defaults to 0. Then only analytic expressions.
+        key (jax.random.PRNGKey): Key for random number generation.
+            Defaults to None. Only required if mc_samples > 0.
 
     Returns:
         Tensor: A batch of KL divergences of shape `batch_shape`.

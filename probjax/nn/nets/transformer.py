@@ -17,7 +17,8 @@ class PosEmbed(nnx.Module, experimental_pytree=True):
 
         Args:
             token_dim (int): Dimension of the token embedding.
-            max_seq_len (int, optional): Maximal length of the sequence. Defaults to 500.
+            max_seq_len (int, optional): Maximal length of the sequence.
+                Defaults to 500.
         """
         super().__init__()
         self.max_seq_len = max_seq_len

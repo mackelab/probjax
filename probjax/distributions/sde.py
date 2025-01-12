@@ -24,7 +24,8 @@ class BaseSDE(Distribution):
 
         dX_t = f(t, X_t)dt + g(t, X_t)dW_t
 
-        where f and g are the drift and diffusion functions respectively. We assume that the initial distribution is given by p0 at time t=0.
+        where f and g are the drift and diffusion functions respectively. We assume
+        that the initial distribution is given by p0 at time t=0.
 
         Args:
             drift (Callable): Drift function
@@ -112,10 +113,12 @@ class BaseSDE(Distribution):
             key (PRNGKey): Random key
             ts (Array): Number of time points to evaluate the SDE
             sample_shape (tuple, optional): Number of samples. Defaults to ().
-            **kwargs: Additional arguments to pass to the solver i.e. see sdeint in probjax/utils/sdeint.py for more details
+            **kwargs: Additional arguments to pass to the solver i.e. see sdeint in
+                probjax/utils/sdeint.py for more details
 
         Returns:
-            Array: Samples from the SDE of shape (sample_shape, batch_shape, event_shape)
+            Array: Samples from the SDE of shape
+                (sample_shape, batch_shape, event_shape)
         """
         assert jnp.all(ts >= 0), "t must be positive"
         key1, key2 = jax.random.split(key)
@@ -165,7 +168,8 @@ class LinearTimeInvariantSDE(BaseSDE):
 
         dX_t = A X_t dt + B dW_t
 
-        where A and B are matrices and W_t is a Wiener process. The initial distribution is given by p0 at time t=0.
+        where A and B are matrices and W_t is a Wiener process. The initial
+        distribution is given by p0 at time t=0.
 
         Args:
             drift_matrix (Array): The drift matrix A
@@ -346,18 +350,12 @@ class OrnsteinUhlenbeck(BaseSDE):
         super().__init__(drift_fn, diffusion_fn, p0)
 
     def mean(self, t: Array, x0=None, **kwargs) -> Array:
-        if x0 is None:
-            m0 = self.p0.mean
-        else:
-            m0 = x0
+        m0 = self.p0.mean if x0 is None else x0
 
         return jnp.exp(-self.theta * t) * m0 + self.mu * (1 - jnp.exp(-self.theta * t))
 
     def variance(self, t: Array, x0=None, **kwargs) -> Array:
-        if x0 is None:
-            v0 = self.p0.variance
-        else:
-            v0 = 0.0
+        v0 = self.p0.variance if x0 is None else 0.0
 
         return self.sigma**2 / (2 * self.theta) * (
             1 - jnp.exp(-2 * self.theta * t)
@@ -406,8 +404,8 @@ class VPSDE(LinearTimeVariantSDE):
         self.beta_max = beta_max
         self.beta_min = beta_min
 
-        shape = p0.event_shape
-        d = shape[0] if len(shape) > 0 else 1
+        # shape = p0.event_shape
+        # d = shape[0] if len(shape) > 0 else 1
         drift_matrix = lambda t: jnp.atleast_1d(
             -0.5 * (beta_min + t * (beta_max - beta_min))
         )
@@ -431,10 +429,7 @@ class VPSDE(LinearTimeVariantSDE):
 
     def marginal_mean(self, ts: Array, x0=None, **kwargs) -> Array:
         ts = jnp.atleast_1d(ts)
-        if x0 is None:
-            mu0 = self.p0.mean
-        else:
-            mu0 = x0
+        mu0 = self.p0.mean if x0 is None else x0
 
         while ts.ndim < mu0.ndim:
             ts = jnp.expand_dims(ts, axis=-1)
@@ -461,10 +456,7 @@ class VPSDE(LinearTimeVariantSDE):
 
     def marginal_variance(self, ts: Array, x0=None, **kwargs) -> Array:
         ts = jnp.atleast_1d(ts)
-        if x0 is None:
-            var0 = self.p0.variance
-        else:
-            var0 = jnp.zeros(x0.shape)
+        var0 = self.p0.variance if x0 is None else jnp.zeros(x0.shape)
 
         while ts.ndim < var0.ndim:
             ts = jnp.expand_dims(ts, axis=-1)
@@ -489,8 +481,8 @@ class VESDE(LinearTimeVariantSDE):
         self.sigma_max = sigma_max
         self.sigma_min = sigma_min
 
-        shape = p0.event_shape
-        d = shape[0] if len(shape) > 0 else 1
+        # shape = p0.event_shape
+        # d = shape[0] if len(shape) > 0 else 1
         _const = jnp.sqrt(2 * jnp.log(sigma_max / sigma_min))
         drift_matrix = lambda t: jnp.zeros(1)
         diffusion_matrix = lambda t: jnp.atleast_1d(
@@ -501,10 +493,7 @@ class VESDE(LinearTimeVariantSDE):
 
     def marginal_mean(self, ts: Array, x0=None, **kwargs) -> Array:
         ts = jnp.atleast_1d(ts)
-        if x0 is None:
-            mu0 = self.p0.mean
-        else:
-            mu0 = x0
+        mu0 = self.p0.mean if x0 is None else x0
 
         while ts.ndim < mu0.ndim:
             ts = jnp.expand_dims(ts, axis=-1)
@@ -539,10 +528,7 @@ class VESDE(LinearTimeVariantSDE):
 
     def marginal_variance(self, ts: Array, x0=None, **kwargs) -> Array:
         ts = jnp.atleast_1d(ts)
-        if x0 is None:
-            var0 = self.p0.variance
-        else:
-            var0 = jnp.zeros_like(x0)
+        var0 = self.p0.variance if x0 is None else jnp.zeros_like(x0)
 
         while ts.ndim < var0.ndim:
             ts = jnp.expand_dims(ts, axis=-1)
@@ -581,10 +567,7 @@ class subVPSDE(VPSDE):
         super(LinearTimeInvariantSDE, self).__init__(drift_matrix, diffusion_matrix, p0)
 
     def variance(self, ts: Array, x0=None, **kwargs) -> Array:
-        if x0 is None:
-            var0 = self.p0.variance
-        else:
-            var0 = jnp.zeros(x0.shape)
+        var0 = self.p0.variance if x0 is None else jnp.zeros(x0.shape)
         phi = jnp.exp(
             -0.5 * ts**2 * (self.beta_max - self.beta_min) - ts * self.beta_min
         )

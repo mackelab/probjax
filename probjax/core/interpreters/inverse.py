@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax._src.util import safe_map
 from jax.experimental.pjit import pjit_p
-from jax.extend.core import Primitive
+from jax.extend.core import Literal, Primitive
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
 from probjax.core.jaxpr_propagation.utils import ProcessingRule
@@ -46,7 +46,8 @@ _UNIVARITAE_INVERSE_REGISTRY = {
 }
 
 
-# a * b = c | Lets say that the left and right inverse always gets c as first input and a/b as second!
+# a * b = c | Lets say that the left and right inverse always gets c as first input and
+# a/b as second!
 _BIVARIATE_INVERSE_REGISTRY = {
     jax.lax.mul_p: (
         jax.lax.div_p,
@@ -221,8 +222,8 @@ def invert_select_n(eqn, known_invars, known_outvars):
             new_cases.append(c)
     # If we do not know which we cannot decide.
     # But we might can reconstruct it!
-    if which[0] is None:
-        which_var = eqn.invars[0]
+    # if which[0] is None:
+    #     which_var = eqn.invars[0]
 
     return (
         eqn.invars,
@@ -256,7 +257,7 @@ def invert_convert_element_type(eqn, known_invars, known_outvars):
 def invert_slice(eqn, known_invars, known_outvars):
     input = known_invars[0]
     start_index = eqn.params["start_indices"]
-    limit_index = eqn.params["limit_indices"]
+    # limit_index = eqn.params["limit_indices"]
     # print(eqn.params)
     invar = eqn.invars[0]
     in_aval = invar.aval
@@ -351,7 +352,8 @@ def inverse_cost_fn(eqn, known_invars, known_outvars):
     elif all(known_outvars) and has_registered_inverse(
         eqn, known_invars, known_outvars
     ):
-        # If I know all the outputs and the primitive has a registered inverse -> Invert!
+        # If I know all the outputs and the primitive has a registered inverse
+        # -> Invert!
         return 0.5
     else:
         return jnp.inf
@@ -585,19 +587,12 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         primitive = eqn.primitive
         input1 = known_outvars[0]
         left_inverse = known_invars[0] is None
-        if left_inverse:
-            # Left inverse
-            input2 = known_invars[1]
-        else:
-            # Right inverse
-            input2 = known_invars[0]
+        # Left or right inverses
+        input2 = known_invars[1] if left_inverse else known_invars[0]
 
         (left_inverse_fn, right_inverse_fn) = _BIVARIATE_INVERSE_REGISTRY[primitive]
 
-        if left_inverse:
-            inv_primitive = left_inverse_fn
-        else:
-            inv_primitive = right_inverse_fn
+        inv_primitive = left_inverse_fn if left_inverse else right_inverse_fn
 
         if isinstance(inv_primitive, Primitive):
 
@@ -638,18 +633,15 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         # print(subvars)
         # print(vars)
         for v_sub, v in zip(subvars, vars):
-            if v_sub in self.log_dets:
-                if not isinstance(v, jax.core.Literal):
-                    self.log_dets[v] = self.log_dets[v_sub]
+            if v_sub in self.log_dets and not isinstance(v, Literal):
+                self.log_dets[v] = self.log_dets[v_sub]
 
         log_det_previous = sum([
-            self.log_dets.get(v, 0.0)
-            for v in eqn.outvars
-            if not isinstance(v, jax.core.Literal)
+            self.log_dets.get(v, 0.0) for v in eqn.outvars if not isinstance(v, Literal)
         ])
 
         for v in eqn.invars:
-            if not isinstance(v, jax.core.Literal):
+            if not isinstance(v, Literal):
                 self.log_dets[v] = log_det_previous
 
         # Pass logdet to outer scope
@@ -662,7 +654,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         outvars, outs = _CUSTOM_INVERSE_PROCESSING_RULES[primitive](
             eqn, known_invars, known_outvars
         )
-        vars = eqn.invars + eqn.outvars
+        # vars = eqn.invars + eqn.outvars
         log_det_previous = sum([self.log_dets.get(v, 0.0) for v in eqn.outvars])
         for v in outvars:
             self.log_dets[v] = log_det_previous

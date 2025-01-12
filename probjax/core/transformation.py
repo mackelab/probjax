@@ -54,11 +54,13 @@ def lambdafy(expr: sympy.Expr, static_symbols: Optional[dict] = None):
 
 
 def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
-    """Samples all random variables called in the probabilstic function. If rvs is given, it only samples the random variables in rvs.
+    """Samples all random variables called in the probabilistic function. If rvs is
+    given, it only samples the random variables in rvs.
 
     Args:
         fun (Callable): Probabilistic function
-        rvs (Optional[Iterable], optional): Subset of random variables in the probabilistic program. Defaults to None.
+        rvs (Optional[Iterable], optional): Subset of random variables in the
+            probabilistic program. Defaults to None.
 
     Returns:
         Callable: Sampling function
@@ -86,12 +88,14 @@ def intervene(fun: Callable, rvs: dict[str, Array], *args, **kwargs):
     """Fix the value of random variables in the probabilistic function.
     This does not sample the random variables, but fixes them to the given values.
 
-    It preserves the random_variable primitive, but changes the sampling function to a constant function.
-    Hence it still works with the log_potential_fn, an computes the correct log potential (up to a constant).
+    It preserves the random_variable primitive, but changes the sampling function to
+    a constant function. Hence it still works with the log_potential_fn, and computes
+    the correct log potential (up to a constant).
 
     Args:
         fun (Callable): A function to transform.
-        rvs (dict[str, Array]): A dictionary of random variable names and values to intervene.
+        rvs (dict[str, Array]): A dictionary of random variable names and values to
+            intervene.
 
     Returns:
         _type_: _description_

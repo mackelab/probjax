@@ -99,7 +99,8 @@ def remove_jaxpr_vars_with_suffix(jaxpr, suffix="_"):
     return jaxpr.replace(invars=[v for v in jaxpr.invars if v.suffix != suffix])
 
 
-def jaxpr_returning_const(*consts, invars=[]):
+def jaxpr_returning_const(*consts, invars=None):
+    invars = invars or []
     consts, const_tree = tree_flatten(consts)
     const_avals = tuple(map(shaped_abstractify, consts))
     const_vars = [Var(0, "_obs", c_aval) for c_aval in const_avals]

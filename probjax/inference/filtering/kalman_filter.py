@@ -51,13 +51,14 @@ def build_kernel(
         t_old = state.t
         is_observed = observed is not None
 
-        # Phi - promised to be a linear
+        # Phi - promised to be a linear mapping
         # Q a positive definite matrix
         Phi, Q = transition_model_fns(t_old, t)
 
         assert isinstance(Q, (ArrayLike, LinearOperator)), "Q must be and Array"
-        assert isinstance(Phi, (ArrayLike, LinearOperator)), "Phi must be and Array or\
-                                                            LinearOperator"
+        assert isinstance(
+            Phi, (ArrayLike, LinearOperator)
+        ), "Phi must be an Array or LinearOperator"
 
         # Predict
         mu1_ = Phi @ mu0
@@ -68,9 +69,10 @@ def build_kernel(
 
             assert (
                 isinstance(R, (ArrayLike, LinearOperator)) or R is None
-            ), "R must be and Array or None"
-            assert isinstance(C, (ArrayLike, LinearOperator)), "C must be and Array or\
-                                                            LinearOperator"
+            ), "R must be an Array or None"
+            assert isinstance(
+                C, (ArrayLike, LinearOperator)
+            ), "C must be an Array or LinearOperator"
 
             # Kalman gain
             y = observed
@@ -120,10 +122,14 @@ class kalman_filter(FilterAPI):
     To build a Kalman filter kernel, we require the following components:
 
     Args:
-        transition_matrix (Callable[[float | ArrayLike], ArrayLike] | ArrayLike): Transition matrix A_t
-        transition_covariance_matrix (Callable[[float | ArrayLike], ArrayLike] | ArrayLike): Transition covariance matrix Q_t
-        observation_matrix (Callable[[float | ArrayLike], ArrayLike] | ArrayLike): Observation matrix C_t
-        observation_covariance (Callable[[float | ArrayLike], ArrayLike] | ArrayLike): Observation covariance matrix R_t
+        transition_matrix (Callable[[float | ArrayLike], ArrayLike] | ArrayLike):
+            Transition matrix A_t
+        transition_covariance_matrix (Callable[[float | ArrayLike], ArrayLike] |
+            ArrayLike): Transition covariance matrix Q_t
+        observation_matrix (Callable[[float | ArrayLike], ArrayLike] | ArrayLike):
+            Observation matrix C_t
+        observation_covariance (Callable[[float | ArrayLike], ArrayLike] | ArrayLike):
+            Observation covariance matrix R_t
     """
 
     init = init

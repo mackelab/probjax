@@ -11,7 +11,8 @@ __all__ = ["Independent"]
 
 from jax.tree_util import register_pytree_node_class
 
-# Transforms a batch of independent distributions into a single mulitvariate product distribution.
+# Transforms a batch of independent distributions into a single mulitvariate
+# product distribution.
 
 
 @register_pytree_node_class
@@ -153,7 +154,10 @@ class Independent(Distribution):
             return entropy
 
     def __repr__(self) -> str:
-        return f"Independent({self.base_dist}, reinterpreted_batch_ndims={self.reinterpreted_batch_ndims})"
+        return (
+            f"Independent({self.base_dist},"
+            f"reinterpreted_batch_ndims={self.reinterpreted_batch_ndims})"
+        )
 
         # Each distribution will be registered as a PyTree
 
@@ -203,10 +207,12 @@ def determine_shapes(
     assert (
         all([e == event_ndims[0] for e in event_ndims])
     ), "Batch dimensions and event dimensions must be equal for all base distributions."
-    assert (
-        all(reinterpreted_batch_ndims <= len(b) for b in batch_shapes)
-        or all(reinterpreted_batch_ndims <= len(e) for e in event_shapes)
-    ), "reinterpreted_batch_ndims must be greater than or equal to the batch shape of the base distribution."
+    assert all(reinterpreted_batch_ndims <= len(b) for b in batch_shapes) or all(
+        reinterpreted_batch_ndims <= len(e) for e in event_shapes
+    ), (
+        "reinterpreted_batch_ndims must be greater than or equal to the batch shape of"
+        "the base distribution."
+    )
 
     split_dims_batch = [b[0] if len(b) > 0 else 0 for b in batch_shapes]
     split_dims_event = [e[0] if len(e) > 0 else 0 for e in event_shapes]
@@ -228,10 +234,7 @@ def determine_shapes(
     if first_batch_shape_sum > 0:
         batch_shape = [first_batch_shape_sum] + list(other_batch_shapes[0])
     else:
-        if reinterpreted_batch_ndims == 0:
-            batch_shape = [len(batch_shapes)]
-        else:
-            batch_shape = []
+        batch_shape = [len(batch_shapes)] if reinterpreted_batch_ndims == 0 else []
 
     if first_event_shape_sum > 0:
         event_shape = [first_event_shape_sum] + list(other_event_shapes[0])

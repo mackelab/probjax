@@ -48,7 +48,7 @@ class ConstraintRegistry:
                 return MyTransform(constraint.arg_constraints)
 
         Args:
-            constraint (subclass of :class:`~torch.distributions.constraints.Constraint`):
+            constraint:
                 A subclass of :class:`~torch.distributions.constraints.Constraint`, or
                 a singleton object of the desired class.
             factory (Callable): A callable that inputs a constraint object and returns

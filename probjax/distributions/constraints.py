@@ -63,7 +63,7 @@ class Integer(Real):
         if isinstance(x, Array):
             return jnp.issubdtype(x.dtype, jnp.integer)
         else:
-            return isinstance(x, Integer) or isinstance(x, Boolean)
+            return isinstance(x, (Integer, Boolean))
 
 
 class Boolean(Integer):

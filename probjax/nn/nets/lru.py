@@ -62,7 +62,9 @@ class LRU(nnx.Module, experimental_pytree=True):
             rngs: Random number generator keys for parameter initialization.
             r_min (float, optional): Minimum value for the decay rate. Defaults to 0.0.
             r_max (float, optional): Maximum value for the decay rate. Defaults to 1.0.
-            max_phase (float, optional): Maximum phase value for theta initialization. Defaults to 6.28.
+            max_phase (float, optional): Maximum phase value for theta initialization.
+                Defaults to 6.28.
+
         Attributes:
             theta_log (nnx.Param): Log of theta parameters controlling the phase.
             nu_log (nnx.Param): Log of nu parameters controlling the decay rate.

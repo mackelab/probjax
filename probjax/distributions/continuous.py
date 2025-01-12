@@ -171,11 +171,10 @@ class MultivariateNormal(ExponentialFamily):
         if loc.ndim < 1:
             raise ValueError("loc must be at least one-dimensional.")
 
-        if (cov is not None) + (scale_tril is not None) + (
-            precision_matrix is not None
-        ) != 1:
+        if sum(x is not None for x in [cov, scale_tril, precision_matrix]) != 1:
             raise ValueError(
-                "Exactly one of covariance_matrix or precision_matrix or scale_tril may be specified."
+                "Exactly one of covariance_matrix or precision_matrix or scale_tril"
+                "may be specified."
             )
 
         if scale_tril is not None:
@@ -349,7 +348,8 @@ class Gamma(ExponentialFamily):
 @register_pytree_node_class
 class Beta(ExponentialFamily):
     r"""
-    Creates a beta distribution parameterized by concentration parameters `alpha` and `beta`.
+    Creates a beta distribution parameterized by concentration parameters `alpha` and
+    `beta`.
 
     Example::
 
@@ -409,6 +409,13 @@ class Beta(ExponentialFamily):
 
 @register_pytree_node_class
 class Uniform(Distribution):
+    """Creates a uniform distribution parameterized by `low` and `high`.
+
+    Args:
+        low (float): Lower bound of the distribution.
+        high (float): Upper bound of the distribution.
+    """
+
     arg_constraints = {"low": real, "high": real}
 
     def __init__(self, low: float, high: float):
@@ -448,6 +455,13 @@ class Uniform(Distribution):
 
 @register_pytree_node_class
 class Cauchy(Distribution):
+    """Creates a Cauchy distribution parameterized by `loc` and `scale`.
+
+    Args:
+        loc (float): Location parameter of the distribution.
+        scale (float): Scale parameter of the distribution.
+    """
+
     arg_constraints = {"loc": real, "scale": strict_positive}
 
     def __init__(self, loc: float, scale: float):
@@ -483,6 +497,14 @@ class Cauchy(Distribution):
 
 @register_pytree_node_class
 class Chi2(Distribution):
+    """Creates a Chi-squared distribution parameterized by `df`, `loc`, and `scale`.
+
+    Args:
+        df (float): Degrees of freedom.
+        loc (float): Location parameter.
+        scale (float): Scale parameter.
+    """
+
     arg_constraints = {
         "df": strict_positive_integer,
         "loc": real,
@@ -517,6 +539,12 @@ class Chi2(Distribution):
 
 @register_pytree_node_class
 class Dirichlet(Distribution):
+    """Creates a Dirichlet distribution parameterized by `alpha`.
+
+    Args:
+        alpha (Array): Concentration parameters.
+    """
+
     arg_constraints = {"alpha": positive}
     multivariate = True
 
@@ -576,6 +604,12 @@ class Dirichlet(Distribution):
 
 @register_pytree_node_class
 class Exp(ExponentialFamily):
+    """Creates an Exponential distribution parameterized by `rate`.
+
+    Args:
+        rate (Array): Rate parameter.
+    """
+
     arg_constraints = {"rate": strict_positive}
     support = positive
 
@@ -611,6 +645,13 @@ class Exp(ExponentialFamily):
 
 @register_pytree_node_class
 class Laplace(ExponentialFamily):
+    """Creates a Laplace distribution parameterized by `loc` and `scale`.
+
+    Args:
+        loc (Array): Location parameter.
+        scale (Array): Scale parameter.
+    """
+
     arg_constraints = {"loc": real, "scale": strict_positive}
     support = real
 
@@ -649,6 +690,13 @@ class Laplace(ExponentialFamily):
 
 @register_pytree_node_class
 class Logistic(ExponentialFamily):
+    """Creates a Logistic distribution parameterized by `loc` and `scale`.
+
+    Args:
+        loc (Array): Location parameter.
+        scale (Array): Scale parameter.
+    """
+
     arg_constraints = {"loc": real, "scale": strict_positive}
     support = real
 
@@ -695,6 +743,13 @@ class Logistic(ExponentialFamily):
 
 @register_pytree_node_class
 class Pareto(Distribution):
+    """Creates a Pareto distribution parameterized by `alpha` and `scale`.
+
+    Args:
+        alpha (Array): Shape parameter.
+        scale (Array): Scale parameter.
+    """
+
     arg_constraints = {"alpha": strict_positive, "scale": strict_positive}
     support = interval(1.0, jnp.inf)
 
@@ -745,6 +800,14 @@ class Pareto(Distribution):
 
 @register_pytree_node_class
 class T(Distribution):
+    """Creates a Student's t-distribution parameterized by `df`, `loc`, and `scale`.
+
+    Args:
+        df (Array): Degrees of freedom.
+        loc (Array): Location parameter.
+        scale (Array): Scale parameter.
+    """
+
     arg_constraints = {
         "df": strict_positive_integer,
         "loc": real,
@@ -784,6 +847,16 @@ class T(Distribution):
 
 @register_pytree_node_class
 class TruncatedNormal(Distribution):
+    """Creates a Truncated Normal distribution parameterized by `loc`, `scale`, `low`,
+    and `high`.
+
+    Args:
+        loc (Array): Location parameter.
+        scale (Array): Scale parameter.
+        low (Array): Lower bound.
+        high (Array): Upper bound.
+    """
+
     arg_constraints = {"loc": real, "scale": strict_positive, "low": real, "high": real}
 
     def __init__(self, loc: Array, scale: Array, low: Array, high: Array):

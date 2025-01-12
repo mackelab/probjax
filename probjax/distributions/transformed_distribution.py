@@ -23,13 +23,13 @@ from jax.tree_util import register_pytree_node_class
 @register_pytree_node_class
 class TransformedDistribution(Distribution):
     """
-    Creates a transformed distribution by applying an arbitrary callable transformation
-    to a base distribution.
+    Creates a transformed distribution by applying an arbitrary callable
+    transformation to a base distribution.
 
     Args:
         base_dist: Base distribution object.
-        transformation: Callable transformation that takes samples from the base distribution
-            and returns transformed samples.
+        transformation: Callable transformation that takes samples from the
+            base distribution and returns transformed samples.
     """
 
     arg_constraints = {"base_dist": distribution}

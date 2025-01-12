@@ -12,7 +12,8 @@ class TraceProcessingRule(ForwardProcessingRule):
         """Subset of random variables to be sampled jointly. By default all are sampled!
 
         Args:
-            rvs (Optional[Iterable], optional): Subset of random variable names. Defaults to None.
+            rvs (Optional[Iterable], optional): Subset of random variable names.
+                Defaults to None.
         """
         self.traced_vars = traced_vars
 

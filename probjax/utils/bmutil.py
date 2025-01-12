@@ -21,7 +21,8 @@ def benchmark(
     track_disk=False,
     **kwargs,
 ):
-    """Benchmark the time taken by a function to execute, and return the result of the function."""
+    """Benchmark the time taken by a function to execute, and return the result of the
+    function."""
     result = func(*args, **kwargs)  # Pre-run to ensure that the function is compiled
     start = time.time()
     count = 0
@@ -143,7 +144,12 @@ class GPUUtilizationTracker(Tracker):
         nvmlShutdown()
 
     def get_summary(self):
-        return f"GPU Utilization: {int(self.gpu_utilization.get_mean())}% +/- {int(self.gpu_utilization.get_std())}%, GPU Memory Utilization: {int(self.memory_utilization.get_mean())}% +/- {int(self.memory_utilization.get_std())}% "
+        return (
+            f"GPU Utilization: {int(self.gpu_utilization.get_mean())}% "
+            f"+/- {int(self.gpu_utilization.get_std())}%,"
+            f"GPU Memory Utilization: {int(self.memory_utilization.get_mean())}% "
+            f"+/- {int(self.memory_utilization.get_std())}% "
+        )
 
 
 class CPUUtilizationTracker(Tracker):
@@ -158,6 +164,7 @@ class CPUUtilizationTracker(Tracker):
     def _track_quantity(self):
         process = psutil.Process(self.pid)
         cpu_count = psutil.cpu_count()
+        cpu_count = cpu_count if cpu_count is not None else 1
         while self.running:
             cpu_utilization = process.cpu_percent() / cpu_count
             self.cpu_utilization.update(cpu_utilization)
@@ -167,7 +174,10 @@ class CPUUtilizationTracker(Tracker):
         print(self.get_summary())
 
     def get_summary(self):
-        return f"CPU Utilization: {int(self.cpu_utilization.get_mean())}% +/- {int(self.cpu_utilization.get_std())}%"
+        return (
+            f"CPU Utilization: {int(self.cpu_utilization.get_mean())}% "
+            "+/- {int(self.cpu_utilization.get_std())}%"
+        )
 
 
 class MemoryUtilizationTracker(Tracker):
@@ -190,7 +200,10 @@ class MemoryUtilizationTracker(Tracker):
         print(self.get_summary())
 
     def get_summary(self):
-        return f"Memory Utilization: {int(self.memory_utilization.get_mean())}% +/- {int(self.memory_utilization.get_std())}%"
+        return (
+            f"Memory Utilization: {int(self.memory_utilization.get_mean())}% "
+            f"+/- {int(self.memory_utilization.get_std())}%"
+        )
 
 
 class DiskUtilizationTracker(Tracker):
@@ -212,4 +225,7 @@ class DiskUtilizationTracker(Tracker):
         print(self.get_summary())
 
     def get_summary(self):
-        return f"Disk Utilization: {int(self.disk_utilization.get_mean())}% +/- {int(self.disk_utilization.get_std())}%"
+        return (
+            f"Disk Utilization: {int(self.disk_utilization.get_mean())}% +/-"
+            f"{int(self.disk_utilization.get_std())}%"
+        )

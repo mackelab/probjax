@@ -31,10 +31,12 @@ def merwe_sigma_point(
     Args:
         mu0 (ArrayLike): Mean of the state
         cov0 (ArrayLike): Covariance of the state
-        alpha (ArrayLike, optional): Determines the spread around the mean (small values lead to large weight which
-            require high precission (64 bit)). Large values will spread the sigma points further, typically letting
-            to an overestimation of the covariance, small values will lead to an underestimation. Literature suggests
-            1e-3 but this requires 64 bit precision to work at all... . Defaults to 1..
+        alpha (ArrayLike, optional): Determines the spread around the mean
+            (small values lead to large weight which require high precission (64 bit)).
+            Large values will spread the sigma points further, typically letting
+            to an overestimation of the covariance, small values will lead to an
+            underestimation. Literature suggests 1e-3 but this requires 64 bit
+            precision to work at all... . Defaults to 1..
         beta (ArrayLike, optional): Prior on covariance. Defaults to 2..
         kappa (ArrayLike, optional): Additional parameter. Defaults to 0..
 
@@ -176,9 +178,12 @@ def unscented_transform(
         sigma_points (ArrayLike): (Transformed) sigma points (2D+1, D)
         weights_mean (ArrayLike): Weights for the mean (2D+1,)
         weights_cov (ArrayLike): Weights for the covariance (2D+1,)
-        noise_cov (Optional[ArrayLike], optional): Additive noise covariance (D,D). Defaults to None.
-        mean_fn (Optional[Callable], optional): Custom mean_fn predictor mean_fn(simga_point, weight_mean). Defaults to None.
-        cov_fn (Optional[Callable], optional): Custom cov_fn predict cov_fn(sigma_points, mean, weights_cov). Defaults to None.
+        noise_cov (Optional[ArrayLike], optional): Additive noise covariance (D,D).
+            Defaults to None.
+        mean_fn (Optional[Callable], optional): Custom mean_fn predictor
+            mean_fn(simga_point, weight_mean). Defaults to None.
+        cov_fn (Optional[Callable], optional): Custom cov_fn predict
+            cov_fn(sigma_points, mean, weights_cov). Defaults to None.
 
     Returns:
         Tuple[NDArray, NDArray]: _description_
@@ -227,10 +232,12 @@ def build_kernel(
 
     Args:
         transition_fn (Callable): General transition function f(x_t, t, t+1) -> x_{t+1}
-        transition_covariance_matrix (Callable | ArrayLike): Transition covariance matrix Q(t, t+1) or Q
-        observation_fn (Callable): General observation function h(x_t, t) -> y_t
-        observation_covariance (Callable | ArrayLike): Observation covariance matrix R(t) or R
-        sigma_point_fn (Callable, optional): How to generate sigma points. Defaults to merwe_sigma_point.
+        transition_covariance_matrix (Callable | ArrayLike): Transition covariance
+        matrix Q(t, t+1) or Q observation_fn (Callable): General observation function
+        h(x_t, t) -> y_t  observation_covariance (Callable | ArrayLike): Observation
+        covariance matrix R(t) or R
+        sigma_point_fn (Callable, optional): How to generate sigma points. Defaults to
+        merwe_sigma_point.
 
     Returns:
         Callable: Unscented Kalman filter step
@@ -248,7 +255,8 @@ def build_kernel(
             state (UncentedKalmanFilterState): Mean and covariance of the state
             t (Optional[float  |  int], optional): Time. Defaults to None.
             observed (Optional[ArrayLike], optional): Observation. Defaults to None.
-            rng_key (Optional[jnp.ndarray], optional): Random generator key. Defaults to None.
+            rng_key (Optional[jnp.ndarray], optional): Random generator key.
+                Defaults to None.
 
         Returns:
             Tuple[UncentedKalmanFilterState, UncentedKalmanFilterInfo]: _description_
@@ -318,15 +326,18 @@ def build_kernel(
 class ukf(FilterAPI):
     """Unscented Kalman filter inference algorithm.
 
-    This class implements the unscented Kalman filter algorithm. The unscented Kalman filter is a
-    generalization of the Kalman filter to non-linear and non-Gaussian models.
+    This class implements the unscented Kalman filter algorithm. The unscented Kalman
+    filter is a generalization of the Kalman filter to non-linear and non-Gaussian
+    models.
 
     To build an unscented Kalman filter, you need to provide the following functions:
     Args:
         transition_fn (Callable): Transition function f(x_t, t) -> x_{t+1}
-        transition_covariance_matrix (Callable | ArrayLike): Transition covariance matrix Q(t) or Q
+        transition_covariance_matrix (Callable | ArrayLike): Transition covariance
+            matrix Q(t) or Q
         observation_fn (Callable): Observation function h(x_t, t) -> y_t
-        observation_covariance (Callable | ArrayLike): Observation covariance matrix R(t) or R
+        observation_covariance (Callable | ArrayLike): Observation covariance matrix
+            R(t) or R
     """
 
     init = init

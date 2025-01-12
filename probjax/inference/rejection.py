@@ -29,7 +29,8 @@ def estimate_ratio_bound(
     succes = jnp.any(result.success)
     if not succes:
         raise ValueError(
-            "Minimization failed, density ratio seems to be unbounded! Please choose a proposal with a larger support i.e. increase variance."
+            "Minimization failed, density ratio seems to be unbounded! Please choose a"
+            "proposal with a larger support i.e. increase variance."
         )
     else:
         return jnp.max(-result.fun).squeeze()

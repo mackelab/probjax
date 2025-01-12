@@ -110,11 +110,11 @@ def faithfull_mask(base_mask, condition_mask, conditioned_nodes="unchanged"):
 def min_faithfull_mask(mask, condition_mask, top_mode=0, conditioned_nodes="unchanged"):
     """Minimally faithfull mask update for conditioning"""
     num_nodes = mask.shape[0]
-    I = moralize(mask)
+    I = moralize(mask)  # noqa: E741
     H = jnp.zeros_like(mask, dtype=jnp.bool_)
     # 0 is child, 1 is parent
     UPSTREAM = top_mode
-    DOWNSTREAM = 1 - top_mode
+    # DOWNSTREAM = 1 - top_mode
     num_parents_or_childs = jnp.sum(
         mask & (~condition_mask[None, :] & ~condition_mask[:, None]), axis=UPSTREAM
     )
@@ -127,7 +127,7 @@ def min_faithfull_mask(mask, condition_mask, top_mode=0, conditioned_nodes="unch
         return jnp.any(S)
 
     def body_fn(val):
-        S, M, I, H = val
+        S, M, I, H = val  # noqa: E741
         # print(S)
         # Find the node with the fewest edges added
         v = min_fill_heuristic(mask, I, S, M, top_mode)
@@ -136,7 +136,7 @@ def min_faithfull_mask(mask, condition_mask, top_mode=0, conditioned_nodes="unch
         # print("Selected: ",v)
         # Add edge in I between unmarked neighbours in I
         neighbours_v = I[v, :] & (~M)
-        I = I | (neighbours_v[:, None] & neighbours_v[None, :])
+        I = I | (neighbours_v[:, None] & neighbours_v[None, :])  # noqa: E741
         # Make unmarked neighbours of v, the parents of v in H
         H = H.at[v, :].set(neighbours_v)
         # Remove v from S and mark it
@@ -165,7 +165,8 @@ def min_faithfull_mask(mask, condition_mask, top_mode=0, conditioned_nodes="unch
     H = H | jnp.eye(num_nodes, dtype=jnp.bool_)
     H = jax.lax.cond(jnp.any(condition_mask), lambda x: x, lambda x: mask, H)
 
-    # Conditioned nodes will keep the unconditional edges, hence each row of H where condition_mask is true should be equal to "mask"
+    # Conditioned nodes will keep the unconditional edges, hence each row of H where
+    # condition_mask is true should be equal to "mask"
     if conditioned_nodes == "unchanged":
         H = H & ~condition_mask[:, None] | mask & condition_mask[:, None]
     elif conditioned_nodes == "removed":
@@ -177,11 +178,11 @@ def min_faithfull_mask(mask, condition_mask, top_mode=0, conditioned_nodes="unch
 
 
 @partial(jax.jit, static_argnums=(4,))
-def min_fill_heuristic(G, I, S, M, top_mode=0):
+def min_fill_heuristic(G, I, S, M, top_mode=0):  # noqa: E741
     """Min-fill heuristic for finding a node to eliminate"""
 
     # 0 is child, 1 is parent
-    UPSTREAM = top_mode
+    # UPSTREAM = top_mode
     DOWNSTREAM = 1 - top_mode
 
     # Find the number of edges that would be added if we eliminated each node
@@ -226,9 +227,3 @@ def moralize(adj_matrix):
 
 def moralize_networkx(adj_matrix):
     return nx.to_numpy_array(nx.moral_graph(convert_to_networkx(adj_matrix))) != 0
-
-
-def minimally_faithfull_mask(mask, condition_mask):
-    """Minimally faithfull mask update for conditioning"""
-    I = moralize(mask)
-    H = jnp.zeros_like(mask, dtype=jnp.bool_)

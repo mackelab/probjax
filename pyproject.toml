@@ -54,8 +54,8 @@ where = ["."]
 exclude = ["tests", "*.tests", "*.tests.*", "tests.*"]
 
 [tool.ruff]
-extend-include = ["*.ipynb"]
 line-length = 88
+exclude = ["*.ipynb"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "B", "SIM", "I"]

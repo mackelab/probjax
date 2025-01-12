@@ -10,7 +10,8 @@ from jaxtyping import Array, Float
 
 @jax.jit
 def iterated_ito_integral_general(key: PRNGKey, dW: Array, dt: Array, n: int = 5):
-    """Matrix I approximating repeated Ito integrals based on the method of Kloeden, Platen and Wright (1992).
+    """Matrix I approximating repeated Ito integrals based on the method of Kloeden,
+    Platen and Wright (1992).
 
     Args:
         key (PRNGKey): PRNGKey
@@ -47,7 +48,7 @@ def iterated_ito_integral_general(key: PRNGKey, dW: Array, dt: Array, n: int = 5
     _, A1 = jax.lax.fori_loop(1, n + 1, body_fun, init_val)
 
     A1 = (dt / (2.0 * jnp.pi)) * A1
-    I = 0.5 * (jnp.outer(dW, dW) - dt * jnp.eye(m)) + A1
+    I = 0.5 * (jnp.outer(dW, dW) - dt * jnp.eye(m)) + A1  # noqa: E741
 
     return I, A1
 
@@ -55,8 +56,9 @@ def iterated_ito_integral_general(key: PRNGKey, dW: Array, dt: Array, n: int = 5
 def iterated_stratowich_integral_general(
     key: PRNGKey, dW: Array, dt: Array, n: int = 5
 ):
-    """Matrix I approximating repeated Stratonovich integrals based on the method of Kloeden, Platen and Wright (1992)."""
-    I, A = iterated_ito_integral_general(key, dW, dt, n)
+    """Matrix I approximating repeated Stratonovich integrals based on the method of
+    Kloeden, Platen and Wright (1992)."""
+    I, A = iterated_ito_integral_general(key, dW, dt, n)  # noqa: E741
     J = I + 0.5 * dt * jnp.eye(dW.shape[0])
     return J, A
 
@@ -69,7 +71,7 @@ def iterated_stochastic_integral_diagonal(key: PRNGKey, dW: Array, dt: Array, **
 def iterated_stochastic_integral_commutative_noise(
     key: PRNGKey, dW: Array, dt: Array, **kwargs
 ):
-    I = jnp.outer(dW, dW) - dt * jnp.eye(dW.shape[0])
+    I = jnp.outer(dW, dW) - dt * jnp.eye(dW.shape[0])  # noqa: E741
     return I
 
 
@@ -136,7 +138,8 @@ def brownian_bridge(
 def brownian_tree(
     key: PRNGKey, t: Float, t0: Float, t1: Float, w0: Array, tol: Float
 ) -> Array:
-    """Brownian motion between two points using a tree. This allows to evaluate it at any time, without having to save the whole trajectory.
+    """Brownian motion between two points using a tree. This allows to evaluate it at
+    any time, without having to save the whole trajectory.
 
     Args:
         key (PRNGKeyArray): Random generator key.

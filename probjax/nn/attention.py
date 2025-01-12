@@ -78,7 +78,8 @@ def sparse_dot_product_attention(
 ):
     """Attention with sparse static mask.
 
-    Note: Only efficient for very sparse masks, otherwise use dense_dot_product_attention.
+    NOTE: Only efficient for very sparse masks, otherwise use
+        dense_dot_product_attention.
     """
 
     assert isinstance(
@@ -143,7 +144,8 @@ def memory_efficient_dot_product_attention(
         key: The key tensor of shape (..., num_k, num_heads, k_features).
         value: The value tensor of shape (..., num_k, num_heads, v_features).
         mask: Optional mask tensor of shape (..., num_q, num_k) or (..., num_q, 1).
-        precision: The precision level for computation. Defaults to jax.lax.Precision.HIGHEST.
+        precision: The precision level for computation. Defaults to
+            jax.lax.Precision.HIGHEST.
         query_chunk_size: The chunk size for query tensor. Defaults to 512.
         key_chunk_size: The chunk size for key tensor. Defaults to 2048.
 
@@ -179,7 +181,8 @@ def memory_efficient_dot_product_attention(
             )
         else:
             raise TypeError(
-                f"mask.shape[-2] == {mask.shape[-2]} must broadcast with query.shape[-3] == {num_q}"
+                f"mask.shape[-2] == {mask.shape[-2]} must broadcast with "
+                f"query.shape[-3] == {num_q}"
             )
 
         return (
@@ -195,7 +198,7 @@ def memory_efficient_dot_product_attention(
             ),
         )
 
-    l = num_q // query_chunk_size
+    l = num_q // query_chunk_size  # noqa: E741
     _, res = jax.lax.scan(chunk_scanner, init=0, xs=None, length=l)
 
     res = jnp.concatenate(res, axis=-3)
@@ -265,7 +268,8 @@ def _query_chunk_attention(
             )
         else:
             raise TypeError(
-                f"mask.shape[-1] == {mask.shape[-1]} must broadcast with key.shape[-3] == {num_kv}"
+                f"mask.shape[-1] == {mask.shape[-1]} must broadcast with key.shape[-3]"
+                f"== {num_kv}"
             )
 
         return summarize_chunk(chunk_idx, query, key_chunk, value_chunk, mask_chunk)

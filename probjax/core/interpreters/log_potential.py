@@ -14,10 +14,12 @@ def potential_cost_fn(
     eqn: JaxprEqn, in_known: Sequence[bool], out_known: Sequence[bool]
 ):
     if eqn.primitive is rv_p and all(in_known):
-        # Process random variables first (if there are only random variables we can skip the rest)
+        # Process random variables first (if there are only random variables we can
+        # skip the rest)
         return 2
     elif all(in_known):
-        # If one random variable is parameterized by a previous, then we must process the "inbetween" computations
+        # If one random variable is parameterized by a previous, then we must process
+        # the "inbetween" computations
         return 1
     elif eqn.primitive is rv_p and eqn.params.get("intervened", False):
         # If the random variable is intervened, we must process it

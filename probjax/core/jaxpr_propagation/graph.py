@@ -265,10 +265,7 @@ def eqn_name_fn(i: int, level=0) -> str:
 
 
 def var_name_fn(n: str, level=0) -> str:
-    if isinstance(n, Literal):
-        name = str(n)[:3]
-    else:
-        name = str(n)
+    name = str(n)[:3] if isinstance(n, Literal) else str(n)
 
     if level == 0:
         return name
