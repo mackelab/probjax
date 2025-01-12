@@ -16,7 +16,7 @@ class ConvBlock(nnx.Module, experimental_pytree=True):
         kernel_size: Union[int, Sequence[int]] = 3,
         padding: str = "SAME",
         strides: Union[int, Sequence[int]] = 1,
-        num_groups: Optional[int] = 8,
+        num_groups: Optional[int] = 4,
         activation: Callable = nnx.silu,
         **kwargs,
     ):
@@ -59,9 +59,11 @@ class ResnetBlock(nnx.Module, experimental_pytree=True):
         activation: Callable = nnx.silu,
         **kwargs,
     ):
+        self.activation=activation
         self.context_features = context_features
+        self.out_features=out_features
         if context_features is not None:
-            self.context_linear = nnx.Linear(context_features, rngs=rngs)
+            self.context_linear = nnx.Linear(context_features, out_features, rngs=rngs)
 
         _conv_block = partial(
             ConvBlock,
@@ -93,7 +95,7 @@ class ResnetBlock(nnx.Module, experimental_pytree=True):
         # Add context if provided
         if context is not None:
             context = self.context_linear(context)
-            context = self.act(context)
+            context = self.activation(context)
             x = x + context
 
         # Second convolutional layer
@@ -114,7 +116,7 @@ class UNet(nnx.Module, experimental_pytree=True):
         *,
         kernel_size: Union[int, Sequence[int]] = 4,
         strides: Union[int, Sequence[int]] = 2,
-        num_groups: int = 4,
+        num_groups: int = 16,
         kernel_size_resnet: Union[int, Sequence[int]] = 3,
         strides_resnet: Union[int, Sequence[int]] = 1,
         use_bias: bool = True,
@@ -144,13 +146,12 @@ class UNet(nnx.Module, experimental_pytree=True):
         self.conv_initial = nnx.Conv(
             in_features=in_features,
             out_features=out_features[0],
-            kernel_size=kernel_size + 3
+            kernel_size=kernel_size + 1
             if isinstance(kernel_size, int)
-            else [k + 3 for k in kernel_size],
+            else [k + 1 for k in kernel_size],
             padding="SAME",
             use_bias=use_bias,
             rngs=rngs,
-            **kwargs,
         )
 
         _resnet_block = partial(
@@ -160,6 +161,7 @@ class UNet(nnx.Module, experimental_pytree=True):
             num_groups=num_groups,
             activation=activation,
             rngs=rngs,
+            use_bias=use_bias,
             **kwargs,
         )
 
@@ -228,10 +230,9 @@ class UNet(nnx.Module, experimental_pytree=True):
 
         # Downsampling phase
         for i in range(self.num_stages):
-            print(x.shape)
             # ResNet blocks
+            print(x.shape)
             x = self.resnet_blocks_down[i](x, context)
-
             # Attention layer
             if self.use_attention:
                 att = self.attention(x)
@@ -254,7 +255,9 @@ class UNet(nnx.Module, experimental_pytree=True):
         for index in range(self.num_stages - 1):
             print(x.shape)
             # Concatenate with output from downsampling phase
-            x = jnp.concatenate([pre_downsampling.pop(), x], -1)
+            down = pre_downsampling.pop()
+            slices = tuple([slice(0, d) for d in down.shape])
+            x = jnp.concatenate([down, x[slices]], -1)
 
             # ResNet blocks
             x = self.resnet_blocks_up[index](x, context)
