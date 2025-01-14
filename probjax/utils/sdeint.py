@@ -53,6 +53,7 @@ def sdeint(
     dtype=jnp.float32,
     sde_type: str = "ito",
     return_brownian: bool = False,
+    return_state: bool = False,
     noise_type: Optional[str] = None,
     filter_output: Optional[Callable] = None,
     check_points: Optional[Sequence[int]] = None,
@@ -100,7 +101,7 @@ def sdeint(
 
     if not return_brownian:
         filter_unravel = build_default_filter(filter_output, unravel)
-        _, ys = _sdeint_on_grid(
+        state, ys = _sdeint_on_grid(
             method,
             drift,
             diffusion,
@@ -115,7 +116,10 @@ def sdeint(
         ys = jax.tree_map(
             lambda x, y: jnp.concatenate([x[None], y], axis=0), y0_filtered, ys
         )
-        return ys
+        if return_state:
+            return state, ys
+        else:
+            return ys
     else:
         filter_unravel = build_default_and_brownian_filter(filter_output, unravel)
         _, (ys, dWt) = _sdeint_on_grid(
@@ -137,4 +141,7 @@ def sdeint(
         dWt = jax.tree_map(
             lambda x, y: jnp.concatenate([x[None], y], axis=0), dWt0, dWt
         )
-        return ys, dWt
+        if return_state:
+            return state, ys, dWt
+        else:
+            return ys, dWt

@@ -21,6 +21,7 @@ def base_denoising_loss(
     **kwargs,
 ):
     x = args[argnums]
+    
     x_noisy = x + std * eps
     if loss_mask is not None:
         x_noisy = jnp.where(loss_mask, x, x_noisy)
@@ -58,6 +59,8 @@ def build_denoising_loss(
         update_params(model, params)
         shape = args[argnums].shape
         eps = jax.random.normal(rng, shape=shape)
+        
+        _axis = kwargs.pop("axis", axis)
 
         loss = base_denoising_loss(
             model,
@@ -65,7 +68,7 @@ def build_denoising_loss(
             std,
             weight,
             loss_mask,
-            axis,
+            _axis,
             argnums,
             control_variate,
             *args,
@@ -99,6 +102,8 @@ def build_time_dependent_denoising_loss(
         eps = jax.random.normal(rng, shape=x.shape)
         new_args = (t,) + args[:argnums] + (mean,) + args[argnums + 1 :]
         weight = weight_fn(t)
+        
+        _axis = kwargs.pop("axis", axis)
 
         loss = base_denoising_loss(
             model,
@@ -106,7 +111,7 @@ def build_time_dependent_denoising_loss(
             std_t,
             weight,
             loss_mask,
-            axis,
+            _axis,
             argnums + 1,
             control_variate,
             *new_args,

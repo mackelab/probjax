@@ -57,6 +57,7 @@ def _odeint_adaptive(
     dfactor: float = 0.2,
     error_norm: float = 2,
     interpolation_order: int = 3,
+    return_state: bool = False,
     filter_output: Optional[Callable] = None,
 ):
     y0 = jnp.asarray(y0)
@@ -150,9 +151,13 @@ def _odeint_adaptive(
     state = solver.init(t0, y0, *args)
     interp_coeff = jnp.array([y0] * (interpolation_order + 1))
     init_carry = [state, dt, t0, interp_coeff]
-    _, ys = jax.lax.scan(scan_fun, init_carry, ts[1:])
+    final_carry, ys = jax.lax.scan(scan_fun, init_carry, ts[1:])
+    state = final_carry[0]
 
-    return ys
+    if return_state:
+        return state, ys
+    else:
+        return ys
 
 
 def _odeint_adaptive_wrapper(

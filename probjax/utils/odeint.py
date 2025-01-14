@@ -41,6 +41,7 @@ def _odeint(
     *args,
     method: str = "rk4",
     dtype=jnp.float32,
+    return_state: bool = False,
     filter_state: Optional[Callable] = None,
     check_points: Optional[Sequence[int]] = None,
     rtol: float = 1e-4,
@@ -77,7 +78,7 @@ def _odeint(
             else:
                 return filter_state(unravel(state.y0))
 
-        _, ys = _odeint_on_grid(
+        state, ys = _odeint_on_grid(
             method,
             drift,
             flat_y0,
@@ -118,13 +119,14 @@ def _odeint(
             "interpolation_order": interpolation_order,
             "filter_output": filter_unravel,
         }
-        ys = odeint_adaptive(
+        state, ys = odeint_adaptive(
             method,
             drift,
             params,
             flat_y0,
             ts,
             *args,
+            return_state=return_state,
         )
         if filter_state is None:
             ys = jax.vmap(unravel)(ys)
@@ -132,7 +134,10 @@ def _odeint(
             lambda x, y: jnp.concatenate([x[None], y], axis=0), y0, ys
         )
 
-    return ys
+    if return_state:
+        return state, ys
+    else:
+        return ys
 
 
 # Register inverse

@@ -163,6 +163,7 @@ class RectifiedFlow(FlowMatcher):
         )
         # Optionally to OT coupling
 
-        times = self.noise_schedule(rng_times, (data.shape[0],))
+        ndims = data.ndim - 2
+        times = self.noise_schedule(rng_times, (data.shape[0],) + (1,) * ndims)
         loss = self._loss(params, times, x0, data, *args, **kwargs)
         return loss

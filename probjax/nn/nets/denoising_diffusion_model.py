@@ -175,7 +175,7 @@ class EDM(DiffusionDenoiser):
 
     def weight_fn(self, t):
         out_weight = self.c_out(t)
-        return jnp.sum(1.0 / out_weight**2, axis=-1)
+        return 1.0 / out_weight**2
 
     def noise_schedule(self, rng, shape):
         logt = (
@@ -193,8 +193,11 @@ class EDM(DiffusionDenoiser):
     def loss(self, params, rng, data, *args, **kwargs):
         nnx.update(self, params)
         rng_times, rng_loss = jax.random.split(rng, 2)
-        times = self.noise_schedule(rng_times, (data.shape[0],))
-        loss = self._loss(params, times, data, *args, rng=rng_loss, **kwargs)
+        ndims = data.ndim - 2
+        times = self.noise_schedule(rng_times, (data.shape[0],) + (1,) * ndims)
+
+        axis = tuple(range(1, data.ndim))
+        loss = self._loss(params, times, data, *args, rng=rng_loss,axis=axis, **kwargs)
         return loss
 
 
