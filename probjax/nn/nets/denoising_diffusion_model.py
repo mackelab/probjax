@@ -97,7 +97,7 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
 
         if self.last_layer:
             out = jax.tree_util.tree_map(self.last_layer, out)
-        
+
         return out
 
     def score(self, t, x, *args, **kwargs):
@@ -197,7 +197,7 @@ class EDM(DiffusionDenoiser):
         times = self.noise_schedule(rng_times, (data.shape[0],) + (1,) * ndims)
 
         axis = tuple(range(1, data.ndim))
-        loss = self._loss(params, times, data, *args, rng=rng_loss,axis=axis, **kwargs)
+        loss = self._loss(params, times, data, *args, rng=rng_loss, axis=axis, **kwargs)
         return loss
 
 

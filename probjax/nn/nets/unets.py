@@ -61,9 +61,9 @@ class ResnetBlock(nnx.Module, experimental_pytree=True):
         activation: Callable = nnx.silu,
         **kwargs,
     ):
-        self.activation=activation
+        self.activation = activation
         self.context_features = context_features
-        self.out_features=out_features
+        self.out_features = out_features
         if context_features is not None:
             self.context_linear = nnx.Linear(context_features, out_features, rngs=rngs)
 
@@ -107,7 +107,6 @@ class ResnetBlock(nnx.Module, experimental_pytree=True):
         skip_connection = self.skip_connection(inputs)
         out = x + skip_connection
         return out
-    
 
 
 class UNet(nnx.Module, experimental_pytree=True):
@@ -154,8 +153,9 @@ class UNet(nnx.Module, experimental_pytree=True):
         self.conv_initial = nnx.Conv(
             in_features=in_features,
             out_features=out_features[0],
-            kernel_size=kernel_size + 1 \
-                if isinstance(kernel_size, int) else [k + 1 for k in kernel_size],
+            kernel_size=kernel_size + 1
+            if isinstance(kernel_size, int)
+            else [k + 1 for k in kernel_size],
             padding="SAME",
             use_bias=use_bias,
             rngs=rngs,
@@ -192,8 +192,6 @@ class UNet(nnx.Module, experimental_pytree=True):
             use_bias=use_bias,
             rngs=rngs,
         )
-        
-        
 
         # ---------------------------------------------------------------------
         # Optional attention blocks
@@ -203,13 +201,13 @@ class UNet(nnx.Module, experimental_pytree=True):
                 len(out_features), 'fan_in', 'truncated_normal'
             )
             _attention = lambda o: MultiHeadAttention(
-                    num_heads=num_heads,
-                    in_features=o,
-                    qkv_features=num_features_qkv*num_heads,
-                    out_features=o,
-                    kernel_init=initializer,
-                    rngs=rngs,
-                )
+                num_heads=num_heads,
+                in_features=o,
+                qkv_features=num_features_qkv * num_heads,
+                out_features=o,
+                kernel_init=initializer,
+                rngs=rngs,
+            )
             # We define separate lists for down- and up-path attention
             self.attention_layers_down = []
             self.attention_layers_up = []
@@ -223,12 +221,14 @@ class UNet(nnx.Module, experimental_pytree=True):
         self.downsampling_layers = []
         for i in range(self.num_stages):
             # ResNet block
-            self.resnet_blocks_down.append(_resnet_block(out_features[i], out_features[i]))
+            self.resnet_blocks_down.append(
+                _resnet_block(out_features[i], out_features[i])
+            )
             # Attention block (down)
             if use_attention:
                 o = out_features[i]
                 self.attention_layers_down.append(_attention(o))
-                self.layer_norms_down.append(nnx.LayerNorm(out_features[i],rngs=rngs))
+                self.layer_norms_down.append(nnx.LayerNorm(out_features[i], rngs=rngs))
             # Down-sample layer (except for the last stage)
             if i > 0:
                 self.downsampling_layers.append(
@@ -243,7 +243,7 @@ class UNet(nnx.Module, experimental_pytree=True):
         if use_attention:
             # single attention for the middle
             self.attention_middle = _attention(out_features[-1])
-            self.layer_norm_middle = nnx.LayerNorm(out_features[-1],rngs=rngs)
+            self.layer_norm_middle = nnx.LayerNorm(out_features[-1], rngs=rngs)
 
         # ---------------------------------------------------------------------
         # Up path
@@ -259,7 +259,7 @@ class UNet(nnx.Module, experimental_pytree=True):
             # Up attention
             if use_attention:
                 self.attention_layers_up.append(_attention(out_features[i]))
-                self.layer_norms_up.append(nnx.LayerNorm(out_features[i],rngs=rngs))
+                self.layer_norms_up.append(nnx.LayerNorm(out_features[i], rngs=rngs))
 
         # Upsampling conv-transpose
         for i in reversed(range(1, self.num_stages)):
@@ -317,7 +317,7 @@ class UNet(nnx.Module, experimental_pytree=True):
             _x = x.reshape(x.shape[0], -1, x.shape[-1])
             att = self.attention_middle(_x)
             att = att.reshape(x.shape)
-            x = att + x 
+            x = att + x
             x = self.layer_norm_middle(x)
         x = self.middle_block2(x, context)
 
