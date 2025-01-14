@@ -173,6 +173,8 @@ def min_faithfull_mask(mask, condition_mask, top_mode=0, conditioned_nodes="unch
         H = H & ~condition_mask[:, None]
     elif conditioned_nodes == "added":
         H = H | condition_mask[:, None]
+    elif conditioned_nodes == "raw":
+        return H
 
     return H
 
