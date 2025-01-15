@@ -72,8 +72,6 @@ tests/.mypy_cache
 # Django stuff:
 *.log
 
-# All hidden files
-.*
 
 # Sphinx documentation
 docs/_build/
