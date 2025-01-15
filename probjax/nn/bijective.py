@@ -386,6 +386,37 @@ def _rational_quadratic_spline_inv(
     return x, logdet
 
 
+def rational_quadratic_spline_and_logdets(
+    params: Array,
+    x: Array,
+    range_min_x: float = -1.0,
+    range_max_x: float = 1.0,
+    range_min_y: float = -1.0,
+    range_max_y: float = 1.0,
+    min_bin_size: float = 1e-4,
+    min_knot_slope: float = 1e-4,
+    bounded: bool = False,
+):
+    x_pos, y_pos, knot_slopes = jnp.split(params, 3, axis=-1)
+
+    # Normalize slopes and bins
+    knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
+
+    x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1)  + min_bin_size) * (
+        ((range_max_x - min_bin_size) - range_min_x ) + (range_min_x))
+    y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1)  + min_bin_size) * (
+        (range_max_y - min_bin_size) - range_min_y
+    ) + range_min_y
+
+    if not bounded:
+        # Real support
+        y, logdet = _rational_quadratic_spline_fwd(x, x_pos, y_pos, knot_slopes)
+    else:
+        # Bounded support on range
+        y, logdet = _rational_quadratic_spline_fwd(x, x_pos, y_pos, knot_slopes, range_min_x, range_max_x, range_min_y, range_max_y)
+    return y, logdet
+
+
 @partial(custom_inverse, inv_argnum=1)
 def rational_quadratic_spline(
     params: Array,
