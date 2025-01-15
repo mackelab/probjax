@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from jax.scipy.special import betainc, logsumexp
+from jax.scipy.special import betainc, logsumexp, digamma
 
 # Scipy stats implementation missing in JAX
 
@@ -327,3 +327,52 @@ methods = {
     "correa": _correa_entropy,
     "ebrahimi": _ebrahimi_entropy,
 }
+
+
+def mutual_information(x, y, method="kraskov", **kwargs):
+    """
+    Compute the mutual information between two continuous random variables.
+
+    Args:
+        x (array-like): First variable.
+        y (array-like): Second variable.
+        method (str, optional): Estimation method ('knn' or 'kraskov'). Defaults to
+            'knn'.
+
+    Returns:
+        float: Estimated mutual information.
+    """
+    x, y = jnp.asarray(x), jnp.asarray(y)
+    n = x.shape[0]
+
+    if method == "kraskov":
+        return mutual_information_knn_jax(x, y)
+    else:
+        raise ValueError(f"Unknown method '{method}'.")
+
+
+# Function to compute the mutual information using k-NN
+def mutual_information_knn_jax(x, y, k=3):
+    # Reshape if needed
+    x = jnp.atleast_2d(x).T if x.ndim == 1 else x
+    y = jnp.atleast_2d(y).T if y.ndim == 1 else y
+
+    # Combine x and y into joint space
+    xy = jnp.concatenate([x, y], axis=1)
+
+    # Compute pairwise distances in the joint space
+    d_xy = jax.vmap(lambda row: jnp.linalg.norm(xy - row, axis=1))(xy)
+    kth_distance = jnp.sort(d_xy, axis=1)[:, k]
+
+    # Compute marginal distances
+    d_x = jax.vmap(lambda row: jnp.linalg.norm(x - row, axis=1))(x)
+    d_y = jax.vmap(lambda row: jnp.linalg.norm(y - row, axis=1))(y)
+
+    # Count neighbors within the k-th distance
+    nx = jnp.sum(d_x < kth_distance[:, None], axis=1)
+    ny = jnp.sum(d_y < kth_distance[:, None], axis=1)
+
+    # Kraskov's MI estimator
+    n = x.shape[0]
+    mi = digamma(k) + digamma(n) - (1 / n) * jnp.sum(digamma(nx) + digamma(ny))
+    return mi
