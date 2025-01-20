@@ -6,23 +6,19 @@ from scipy.special import betaincinv as scipy_betaincinv
 from probjax.distributions.continuous import Gamma, Normal, Uniform
 
 # Import your betaincinv function here
-from probjax.utils.stats import betaincinv, differential_entropy
+from probjax.utils.stats import betaincinv, differential_entropy, gammaincinv
+from jax.scipy.special import gammainc, betainc
+from scipy.special import gammaincinv as scipy_gammaincinv
 
-
+import numpy as np
 @pytest.mark.parametrize(
     "a, b",
-    [
-        (0.5, 0.5),
-        (1.0, 1.0),
-        (2.0, 2.0),
-        (2.0, 5.0),
-        (5.0, 2.0),
-        (0.1, 0.1),
-        (10.0, 10.0),
-        (0.5, 5.0),
-        (5.0, 0.5),
-        (1.0, 3.0),
-    ],
+    list(
+        zip(
+            np.random.uniform(0.001, 50.0, size=(100,)),
+            np.random.uniform(0.001, 50.0, size=(100,)),
+        )
+    ),
 )
 def test_betaincinv(a, b):
     """
@@ -32,14 +28,33 @@ def test_betaincinv(a, b):
 
     a_ = jnp.array(a)
     b_ = jnp.array(b)
-    p = jnp.linspace(0, 1, 100)
-
+    x = jnp.linspace(0.01, 0.99, 1000)
+    p = betainc(a_, b_, x)
     # Calculate x-values using your betaincinv function
     x = betaincinv(a_, b_, p)
     x_scipy = scipy_betaincinv(a, b, p)
 
     # Should be close to the original p
-    assert jnp.allclose(x, x_scipy, atol=1e-1, rtol=1e-1)
+    assert jnp.allclose(x, x_scipy, atol=1e-3)
+
+
+@pytest.mark.parametrize("a", np.random.uniform(0.001, 20.0, size=(100,)))
+def test_gammaincinv(a):
+    """
+    Tests that gammaincinv(a, p) produces an x-value such that
+    gammainc(a, x) is approximately p.
+    """
+
+    a_ = jnp.array(a)
+    x = jnp.linspace(0, a + 3 * jnp.sqrt(a), 1000)
+    p = gammainc(a_, x)
+
+    # Calculate x-values using your gammaincinv function
+    x = gammaincinv(a_, p)
+    x_scipy = scipy_gammaincinv(a, p)
+
+    # Should be close to the original p
+    assert jnp.allclose(x, x_scipy, atol=1e-3)
 
 
 @pytest.mark.parametrize(
