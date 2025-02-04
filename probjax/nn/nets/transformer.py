@@ -178,7 +178,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
                 first_dim += model_dim
 
         # Dense block.
-        print(first_dim)
+        #print(first_dim)
         dims = (
             [first_dim]
             + [widening_factor * model_dim] * num_hidden_layers
@@ -244,7 +244,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
                 h_context = self.context_layers[i](h, context)
             else:
                 h_context = h
-            print(h_context.shape)
+            #print(h_context.shape)
             h_dense = self.dense_blocks[i](h_context)
             if self.dropout_dense is not None:
                 h_dense = self.dropout_dense[i](h_dense, deterministic=deterministic)

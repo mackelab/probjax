@@ -30,8 +30,8 @@ def betaincinv(a, b, p):
     """
     # Clip p to [0,1] and handle trivial cases
     p = jnp.clip(p, 0.0, 1.0)
-    x0_or_1 = jnp.where(p <= 0.0, 0.0, 1.0)
-    trivial = (p == 0.0) | (p == 1.0)
+    x0_or_1 = jnp.where((p <= 0.0) | (a <= 0.0), 0.0, 1.0)
+    trivial = (p == 0.0) | (p == 1.0) | (a == 0)
 
     # Reflect if p > 0.5
     reflect = p > 0.5
@@ -147,6 +147,7 @@ def _safe_betaincinv_solve(a, b, p, x_init, max_halley_steps=4, max_bisection_st
 
     return x
 
+
 # -------------------------------------------------------------------
 # Initial Guess Functions
 # -------------------------------------------------------------------
@@ -188,6 +189,7 @@ def bracket_x(a, b, p):
     upper_bound = jnp.clip(upper_bound, 1e-10, 1.0 - 1e-7)
 
     return lower_bound, upper_bound
+
 
 # ---------------------------------------------
 # Method 1: Small a or b (Edge Cases)
@@ -541,6 +543,8 @@ def _initial_guess_large_a(a, p):
     z = jax.scipy.stats.norm.ppf(p)
     x_approx = a + jnp.sqrt(a) * z
     return jnp.clip(x_approx, 1e-20, a + 6 * jnp.sqrt(a))
+
+
 # Estimate the differential entropy of a continuous random variable. -------------------
 # Main function to compute differential entropy using various methods
 

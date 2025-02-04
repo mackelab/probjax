@@ -1,12 +1,15 @@
 import functools
 from functools import partial
+import math
 from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from flax.nnx import MultiHeadAttention as FlaxMultiHeadAttention
+from flax.nnx import MultiHeadAttention as FlaxMultiHeadAttention, dot_product_attention
 from jax.typing import ArrayLike
+
+from probjax.nn.kernels.attention import BlockSizes, mha, ScoreModFn, MaskModFn
 
 
 class MultiHeadAttention(FlaxMultiHeadAttention):
@@ -34,11 +37,139 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         )
 
 
+def pad_to_power_of_2(arr: jnp.ndarray, min_size: int = 16) -> jnp.ndarray:
+    """Pad the array to the next power of 2 greater than min_size."""
+
+    def next_power_of_2(x):
+        return 1 << (x - 1).bit_length()
+
+    target_shape = list(arr.shape)
+    for i in range(-3, 0):
+        if target_shape[i] < min_size:
+            target_shape[i] = min_size
+        else:
+            target_shape[i] = next_power_of_2(target_shape[i])
+
+    pad_width = [
+        (0, target - current) for current, target in zip(arr.shape, target_shape)
+    ]
+    return jnp.pad(arr, pad_width)
+
+
+def flex_attention_fn(
+    query: ArrayLike,
+    key: ArrayLike,
+    value: ArrayLike,
+    mask=None,
+    bias=None,
+    dropout_rng=None,
+    dropout_rate: float = 0.0,
+    broadcast_dropout=None,
+    deterministic=True,
+    dtype=None,
+    precision=None,
+    module=None,  # Required arguments by Flax
+    score_mod_fn: ScoreModFn | None = None,
+    mask_mod_fn: MaskModFn | None = None,
+    sm_scale: Optional[bool] = None,
+    enable_gqa: bool = False,
+    causal: bool = False,
+    block_sizes: BlockSizes = BlockSizes.get_default(),
+    backward_pass_impl: str = "triton",
+    num_warps: int | None = None,
+    num_stages: int = 2,
+    grid: tuple[int, ...] | None = None,
+    interpret: bool = False,
+    debug: bool = False,
+):
+    # These can not be used by the pallas backend
+    del (
+        module,
+        dtype,
+        precision,
+        broadcast_dropout,
+        dropout_rate,
+        deterministic,
+        dropout_rng,
+    )
+    # Masks must be passed as functions
+    if isinstance(mask, Callable):
+        mask_mod_fn = mask
+
+    if isinstance(bias, Callable):
+        score_mod_fn = bias
+
+    if (query.dtype != key.dtype) or (query.dtype != value.dtype):
+        raise ValueError(
+            f"Expected query, key, and value to have the same dtype, "
+            f"but got query.dtype: {query.dtype}, key.dtype: {key.dtype}, "
+            f"and value.dtype: {value.dtype} instead."
+        )
+
+    if (query.ndim < 3) or (key.ndim < 3) or (value.ndim < 3):
+        raise ValueError(
+            f"Expected query, key, and value to all be at least 3 dimensional, but got query.ndim: "
+            f"{query.ndim}, key.ndim: {key.ndim}, and value.ndim: {value.ndim} instead."
+        )
+
+    if (not enable_gqa) and query.shape[-2] != key.shape[-2]:
+        raise ValueError(
+            f"Expect query and key/value to have the same number of heads "
+            f"but got Hq={query.shape[-2]} and Hkv={key.shape[-2]}. "
+            f"Try setting enable_gqa=True for GQA."
+        )
+
+    if enable_gqa:
+        Hq = query.shape[2]
+        Hkv = key.shape[2]
+        if Hq % Hkv != 0:
+            raise ValueError(
+                f"Expect number of query heads to be a multiple of kv heads for GQA "
+                f"but got Hq={Hq} and Hkv={Hkv}."
+            )
+
+    if sm_scale is None:
+        sm_scale = 1 / math.sqrt(query.shape[-1])
+
+    query = query[None] if query.ndim == 3 else query
+
+    _, l_q, h, n = query.shape
+
+    query = pad_to_power_of_2(query)
+    key = pad_to_power_of_2(key)
+    value = pad_to_power_of_2(value)
+
+    score_mod_fn_grad = None if score_mod_fn is None else jax.grad(score_mod_fn)
+
+    output = mha(
+        q=query,
+        k=key,
+        v=value,
+        segment_ids=None,
+        sm_scale=sm_scale,
+        causal=causal,
+        score_mod=score_mod_fn,
+        mask_mod=mask_mod_fn,
+        score_mod_grad=score_mod_fn_grad,
+        block_sizes=block_sizes,
+        backward_pass_impl=backward_pass_impl,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        grid=grid,
+        interpret=interpret,
+        debug=debug,
+    )
+
+    output = output[:, :l_q, :h, :n]
+
+    return output
+
+
 def attention_fn_jax(
     query,
     key,
     value,
-    mask,
+    mask=None,
     dtype=None,
     precision=None,
     bias=None,
@@ -72,9 +203,10 @@ def attention_fn_jax(
 @partial(jax.jit, static_argnums=(3,))
 def sparse_dot_product_attention(
     query_heads,  # [...,T', H, K]
-    key_heads,  # [...,T', H, K]
+    key_heads,  # [...,T, H, K]
     value_heads,  # [T, H, V]
     mask=None,  # [T', T]
+    **kwargs,
 ):
     """Attention with sparse static mask.
 
@@ -136,8 +268,11 @@ def memory_efficient_dot_product_attention(
     precision=jax.lax.Precision.DEFAULT,
     query_chunk_size: int = 2048,
     key_chunk_size: int = 2048,
+    **kwargs,
 ):
     """Computes memory efficient dot-product attention given query, key, and value.
+
+    NOTE: Flexattention is way faster then this XLA based implementation.
 
     Args:
         query: The query tensor of shape (..., num_q, num_heads, q_features).
@@ -202,7 +337,7 @@ def memory_efficient_dot_product_attention(
     _, res = jax.lax.scan(chunk_scanner, init=0, xs=None, length=l)
 
     res = jnp.concatenate(res, axis=-3)
-    res = jnp.reshape(res, (*leading_dims, num_q, -1))
+    res = jnp.reshape(res, (*leading_dims, num_q, num_heads, -1))
     return res
 
 

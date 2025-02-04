@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -22,11 +22,6 @@ def _normalize_knot_slopes(
     min_knot_slope = jnp.array(min_knot_slope, dtype=unnormalized_knot_slopes.dtype)
     offset = jnp.log(jnp.exp(1.0 - min_knot_slope) - 1.0)
     return jax.nn.softplus(unnormalized_knot_slopes + offset) + min_knot_slope
-
-
-import jax.numpy as jnp
-from typing import Optional, Tuple
-
 
 def _rational_quadratic_spline_fwd(
     x: jnp.ndarray,
@@ -402,9 +397,10 @@ def rational_quadratic_spline_and_logdets(
     # Normalize slopes and bins
     knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
 
-    x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1)  + min_bin_size) * (
-        ((range_max_x - min_bin_size) - range_min_x ) + (range_min_x))
-    y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1)  + min_bin_size) * (
+    x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
+        ((range_max_x - min_bin_size) - range_min_x) + (range_min_x)
+    )
+    y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
         (range_max_y - min_bin_size) - range_min_y
     ) + range_min_y
 
@@ -413,7 +409,16 @@ def rational_quadratic_spline_and_logdets(
         y, logdet = _rational_quadratic_spline_fwd(x, x_pos, y_pos, knot_slopes)
     else:
         # Bounded support on range
-        y, logdet = _rational_quadratic_spline_fwd(x, x_pos, y_pos, knot_slopes, range_min_x, range_max_x, range_min_y, range_max_y)
+        y, logdet = _rational_quadratic_spline_fwd(
+            x,
+            x_pos,
+            y_pos,
+            knot_slopes,
+            range_min_x,
+            range_max_x,
+            range_min_y,
+            range_max_y,
+        )
     return y, logdet
 
 

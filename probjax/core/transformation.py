@@ -229,7 +229,7 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
     return wrapped
 
 
-def inverse_and_logabsdet(fun: Callable, static_argnums=()):
+def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None):
     jaxpr_maker = jax.make_jaxpr(fun, static_argnums=static_argnums)
     processing_rule = InverseAndLogAbsDetProcessingRule()
 

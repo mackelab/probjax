@@ -32,6 +32,7 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
         scale_fn: Optional[Callable] = None,
         std_fn: Optional[Callable] = None,
         last_layer: Optional[Callable] = None,
+        loss_kwargs=None,
         rngs=None,
     ):
         """Base class for diffusion denoising models.
@@ -58,6 +59,7 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
             mean_fn=lambda t, x: x,
             std_fn=lambda t, x: self.std_fn(t),
             weight_fn=self.weight_fn,
+            **(loss_kwargs or {}),
         )
 
     def c_in(self, t):
@@ -155,9 +157,12 @@ class EDM(DiffusionDenoiser):
         net: nnx.Module,
         std0: ArrayLike = 1.0,
         last_layer: Optional[Callable] = None,
+        loss_kwargs=None,
         rngs=None,
     ):
-        super().__init__(net, std0=std0, rngs=rngs, last_layer=last_layer)
+        super().__init__(
+            net, std0=std0, rngs=rngs, last_layer=last_layer, loss_kwargs=loss_kwargs
+        )
 
     def c_in(self, t):
         total_std = jnp.sqrt(self.std0.value**2 + self.std_fn(t) ** 2)

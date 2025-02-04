@@ -7,7 +7,7 @@ from probjax.utils.odeutil.base import get_methods as get_methods_ode
 from probjax.utils.sdeutil import get_methods as get_methods_sde
 
 # Test on CPU by default
-jax.config.update("jax_platform_name", "cpu")
+# jax.config.update("jax_platform_name", "cpu")
 
 key = random.PRNGKey(0)
 

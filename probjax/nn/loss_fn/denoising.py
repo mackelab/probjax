@@ -17,10 +17,14 @@ def base_denoising_loss(
     axis: int,
     argnums: int,
     control_variate: bool,
+    copula: Optional[Callable],
     *args,
     **kwargs,
 ):
     x = args[argnums]
+
+    if copula is not None:
+        x, eps = copula(x, eps)
 
     x_noisy = x + std * eps
     if loss_mask is not None:
@@ -49,6 +53,7 @@ def build_denoising_loss(
     argnums: int = 0,
     axis: int = -1,
     control_variate: bool = False,
+    copula: Optional[Callable] = None,
     update_params: Callable = nnx.update,
     reduction_fn: Callable = jnp.mean,
 ):
@@ -71,6 +76,7 @@ def build_denoising_loss(
             _axis,
             argnums,
             control_variate,
+            copula,
             *args,
             **kwargs,
         )
@@ -88,6 +94,7 @@ def build_time_dependent_denoising_loss(
     argnums: int = 0,
     axis: int = -1,
     control_variate: bool = False,
+    copula: Optional[Callable] = None,
     update_params: Callable = nnx.update,
     reduction_fn: Callable = jnp.mean,
 ):
@@ -114,6 +121,7 @@ def build_time_dependent_denoising_loss(
             _axis,
             argnums + 1,
             control_variate,
+            copula,
             *new_args,
             **kwargs,
         )
