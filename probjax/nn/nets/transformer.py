@@ -85,6 +85,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
         attn_size: int,
         rngs: nnx.Rngs,
         *,
+        enable_cross_attention: bool = False,
         context_dim: Optional[int] = None,
         dropout_rate: Optional[float] = None,
         widening_factor: int = 4,
@@ -138,16 +139,23 @@ class Transformer(nnx.Module, experimental_pytree=True):
             else initializer
         )
         self.act = act
+        self.enable_cross_attention = enable_cross_attention
         self.skip_connection_attn = skip_connection_attn
         self.skip_connection_mlp = skip_connection_mlp
 
         # Layer norms for the attention and dense blocks.
-        self.layer_norms1 = [
+        self.layer_norms_attn = [
             nnx.LayerNorm(model_dim, rngs=rngs) for _ in range(num_layers)
         ]
-        self.layer_norms2 = [
+        self.layer_norms_dense = [
             nnx.LayerNorm(model_dim, rngs=rngs) for _ in range(num_layers)
         ]
+
+        if self.enable_cross_attention:
+            self.layer_norms_cross_attn = [
+                nnx.LayerNorm(model_dim, rngs=rngs) for _ in range(num_layers)
+            ]
+
         self.out_layer_norm = nnx.LayerNorm(model_dim, rngs=rngs)
 
         # Attention block.
@@ -168,6 +176,21 @@ class Transformer(nnx.Module, experimental_pytree=True):
             for _ in range(num_layers)
         ]
 
+        if self.enable_cross_attention:
+            self.cross_attention_blocks = [
+                MultiHeadAttention(
+                    num_heads,
+                    model_dim,
+                    attn_size * num_heads,
+                    model_dim,
+                    rngs=rngs,
+                    kernel_init=self.initializer,
+                    dropout_rate=dropout_rate if dropout_rate is not None else 0.0,
+                    attention_fn=attention_fn,
+                )
+                for _ in range(num_layers)
+            ]
+
         # Context fusion if context is provided.
         first_dim = model_dim
         if context_dim is not None:
@@ -178,7 +201,6 @@ class Transformer(nnx.Module, experimental_pytree=True):
                 first_dim += model_dim
 
         # Dense block.
-        #print(first_dim)
         dims = (
             [first_dim]
             + [widening_factor * model_dim] * num_hidden_layers
@@ -205,9 +227,12 @@ class Transformer(nnx.Module, experimental_pytree=True):
 
     def __call__(
         self,
-        inputs: Array,  # [B, T, D]
+        q: Array,  # [B, T, D]
+        k: Optional[Array] = None,  # [B, T', D]
+        v: Optional[Array] = None,  # [B, T', D]
         context: Optional[Array] = None,  # [B, D_context]
         mask: Array | None = None,  # [T, T] or [B, T, T]
+        mask_cross: Array | None = None,  # [T, T'] or [B, T, T']
         deterministic: bool = False,
         decode: bool = False,
     ) -> Array:  # [B, T, D]
@@ -223,33 +248,49 @@ class Transformer(nnx.Module, experimental_pytree=True):
             else:
                 raise ValueError(f"Mask must have ndim 2 or 3, got {mask.ndim}.")
 
-        h = inputs
+        if k is not None and not self.enable_cross_attention:
+            raise ValueError("Cross attention is disabled, but k is provided.")
+        if v is not None and not self.enable_cross_attention:
+            raise ValueError("Cross attention is disabled, but v is provided.")
 
         # Same context for each token in the sequence.
         if context is not None:
-            context = context.reshape(h.shape[:-2] + (1, self.context_dim))
-            context = jnp.repeat(context, h.shape[-2], axis=-2)
+            context = context.reshape(q.shape[:-2] + (1, self.context_dim))
+            context = jnp.repeat(context, q.shape[-2], axis=-2)
 
         for i in range(self.num_layers):
             # First the attention block.
-            h = self.layer_norms1[i](h)
+            q = self.layer_norms_attn[i](q)
             h_attn = self.attention_blocks[i](
-                h, mask=mask, deterministic=deterministic, decode=decode
+                q, mask=mask, deterministic=deterministic, decode=decode
             )
-            h = h + h_attn if self.skip_connection_attn else h_attn
+            q = q + h_attn if self.skip_connection_attn else h_attn
 
-            # Then the dense block.
-            h = self.layer_norms2[i](h)
+            # Then cross attention if wanted
+            if self.enable_cross_attention:
+                q = self.layer_norms_cross_attn[i](q)
+                h_cross_attn = self.cross_attention_blocks[i](
+                    q,
+                    k,
+                    v,
+                    mask=mask_cross,
+                    deterministic=deterministic,
+                    decode=False,
+                )
+                q = q + h_cross_attn
+
+            # Then the dense block and global context.
+            q = self.layer_norms_dense[i](q)
             if context is not None and self.context_dim is not None:
-                h_context = self.context_layers[i](h, context)
+                h_context = self.context_layers[i](q, context)
             else:
-                h_context = h
-            #print(h_context.shape)
+                h_context = q
+
             h_dense = self.dense_blocks[i](h_context)
             if self.dropout_dense is not None:
                 h_dense = self.dropout_dense[i](h_dense, deterministic=deterministic)
-            h = h + h_dense if self.skip_connection_mlp else h_dense
+            q = q + h_dense if self.skip_connection_mlp else h_dense
 
-        h = self.out_layer_norm(h)
+        q = self.out_layer_norm(q)
 
-        return h
+        return q
