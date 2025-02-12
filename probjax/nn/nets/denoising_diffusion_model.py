@@ -196,7 +196,7 @@ class EDM(DiffusionDenoiser):
         return (term1 + length) ** rho
 
     def loss(self, params, rng, data, *args, **kwargs):
-        nnx.update(self, params)
+        # nnx.update(self, params)
         rng_times, rng_loss = jax.random.split(rng, 2)
         ndims = data.ndim - 2
         times = self.noise_schedule(rng_times, (data.shape[0],) + (1,) * ndims)
@@ -226,7 +226,7 @@ class VE(EDM):
         return (term1 + length) ** rho
 
     def loss(self, params, rng, data, *args, **kwargs):
-        nnx.update(self, params)
+        #nnx.update(self, params)
         rng_times, rng_loss = jax.random.split(rng, 2)
         times = self.noise_schedule(rng_times, (data.shape[0],))
         loss = self._loss(params, times, data, *args, rng=rng_loss, **kwargs)
@@ -279,7 +279,7 @@ class VP(EDM):
         return ts
 
     def loss(self, params, rng, data, *args, **kwargs):
-        nnx.update(self, params)
+        #nnx.update(self, params)
         rng_times, rng_loss = jax.random.split(rng, 2)
         times = self.noise_schedule(rng_times, (data.shape[0],))
         loss = self._loss(params, times, data, *args, rng=rng_loss, **kwargs)
