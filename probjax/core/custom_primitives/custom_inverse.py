@@ -162,7 +162,7 @@ def trace_forward_inverse(
     # print(inv_in_avals)
 
     jaxpr, _, consts = pe.trace_to_jaxpr_dynamic(f_inv, inv_in_avals, debug)
-    inverse_jaxpr = core.ClosedJaxpr(jaxpr, consts)
+    inverse_jaxpr = ClosedJaxpr(jaxpr, consts)
 
     return forward_jaxpr, inverse_jaxpr, out_tree
 

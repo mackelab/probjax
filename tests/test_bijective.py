@@ -4,16 +4,52 @@ import numpy as np
 import pytest
 
 from probjax.core import inverse, inverse_and_logabsdet
-
 from probjax.nn.bijective import (
-    rational_quadratic_spline,
-    inv_rational_quadratic_spline,
-    piecwise_linear_spline,
     _pieceswise_linear_spline_inv,
-    learnable_mixture_cdf,
-    affine_bijector,
     additive_bijector,
+    affine_bijector,
+    inv_rational_quadratic_spline,
+    learnable_mixture_cdf,
+    linear_spline,
+    rational_quadratic_spline,
 )
+
+
+@pytest.mark.parametrize("seed", np.random.randint(0, 1000, 2))
+@pytest.mark.parametrize("scale", [1.0, 2.0, 3.0, 4.0])
+@pytest.mark.parametrize("num_bins", [4, 16, 64])
+def test_rational_quadratic_spline(seed, scale, num_bins):
+    rng = jax.random.PRNGKey(seed)
+    rng1, rng2 = jax.random.split(rng)
+    x = jax.random.normal(rng1)
+    params = jax.random.normal(rng2, (3 * num_bins)) * scale
+
+    y = rational_quadratic_spline(params, x)
+    x_rec, logdet = rational_quadratic_spline.inv_and_logdet(params, y)
+
+    assert y.shape == x.shape
+    assert jnp.allclose(x, x_rec, atol=1e-1)
+    assert jnp.isfinite(logdet).all()
+    assert jnp.isfinite(y).all()
+    assert jnp.isfinite(x_rec).all()
+
+
+@pytest.mark.xfail(reason="Bug in the implementation")
+@pytest.mark.parametrize("seed", np.random.randint(0, 1000, 2))
+@pytest.mark.parametrize("scale", [1.0, 2.0, 3.0, 4.0])
+@pytest.mark.parametrize("num_bins", [4, 16, 64, 128])
+def test_linear_spline(seed, scale, num_bins):
+    rng = jax.random.PRNGKey(seed)
+    rng1, rng2 = jax.random.split(rng)
+    x = jax.random.normal(rng1)
+    params = jax.random.normal(rng2, (2 * num_bins)) * scale
+
+    y = linear_spline(params, x)
+    x_rec, logdet = linear_spline.inv_and_logdet(params, y)
+
+    assert y.shape == x.shape
+    assert jnp.allclose(x, x_rec, atol=1e-2)
+    assert jnp.allclose(logdet, 0.0, atol=1e-2)
 
 
 def test_affine_bijector():

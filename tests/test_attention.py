@@ -10,6 +10,7 @@ from probjax.nn.attention import (
 )
 
 
+@pytest.mark.gpu
 @pytest.mark.parametrize(
     "attention_fn",
     [
@@ -36,6 +37,7 @@ def test_attention_functions(attention_fn, batch_size, seq_len, num_heads, qkv_d
     assert out.shape == (batch_size, seq_len, num_heads, qkv_dim)
 
 
+@pytest.mark.gpu
 def test_attention_function_outputs_are_same():
     q = k = v = jax.random.normal(jax.random.PRNGKey(0), (2, 16, 4, 16))
     outputs = []
@@ -54,6 +56,7 @@ def test_attention_function_outputs_are_same():
         ), f"Outputs are not same for {attention_fns[i]}"
 
 
+@pytest.mark.gpu
 def test_attention_function_gradients_are_same():
     q = k = v = jax.random.normal(jax.random.PRNGKey(0), (2, 16, 4, 16))
     attention_fns = [
@@ -76,6 +79,7 @@ def test_attention_function_gradients_are_same():
             ), f"Gradients are not same for {attention_fns[i]}"
 
 
+@pytest.mark.gpu
 @pytest.mark.parametrize(
     "mask_fn",
     [

@@ -37,7 +37,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         )
 
 
-def pad_to_power_of_2(arr: jnp.ndarray, min_size: int = 16) -> jnp.ndarray:
+def pad_to_power_of_2(arr: ArrayLike, min_size: int = 16) -> ArrayLike:
     """Pad the array to the next power of 2 greater than min_size."""
 
     def next_power_of_2(x):
