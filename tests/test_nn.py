@@ -1,8 +1,7 @@
 import jax
 import jax.numpy as jnp
-
-
 from flax import nnx
+
 from probjax.core import inverse, inverse_and_logabsdet
 
 pytest_plugins = ["test_problems.nns"]

@@ -16,18 +16,16 @@
 
 from __future__ import annotations
 
+import dataclasses
 import functools
-import math
 from typing import Any, Callable
 
 import jax
-from jax import lax
-from jax.experimental import pallas as pl
-from jax.experimental.pallas import triton as plgpu
-from jax import Array
 import jax.numpy as jnp
 import numpy as np
-import dataclasses
+from jax import Array, lax
+from jax.experimental import pallas as pl
+from jax.experimental.pallas import triton as plgpu
 
 ScoreModFn = Callable[[Array, Array, Array, Array, Array], Array]
 MaskModFn = Callable[[Array, Array, Array, Array], Array]

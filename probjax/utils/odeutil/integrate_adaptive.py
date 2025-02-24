@@ -191,6 +191,7 @@ def _odeint_fwd(
     ts: Array,
     *args,
 ):
+
     ys = _odeint_adaptive(method, drift, y0, ts, *args, **kwargs)
     return ys, (ys, ts, args)
 
@@ -205,6 +206,7 @@ def _odeint_rev(
     ys, ts, args = res
 
     filter_output = kwargs.pop("filter_output", None)
+    return_state = kwargs.pop("return_state", False)
 
     def aug_dynamics(t, augmented_state):
         y, y_bar, *_ = augmented_state

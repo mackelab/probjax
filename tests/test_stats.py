@@ -1,16 +1,15 @@
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
+from jax.scipy.special import betainc, gammainc
 from scipy.special import betaincinv as scipy_betaincinv
+from scipy.special import gammaincinv as scipy_gammaincinv
 
 from probjax.distributions.continuous import Gamma, Normal, Uniform
 
 # Import your betaincinv function here
 from probjax.utils.stats import betaincinv, differential_entropy, gammaincinv
-from jax.scipy.special import gammainc, betainc
-from scipy.special import gammaincinv as scipy_gammaincinv
-
-import numpy as np
 
 
 @pytest.mark.parametrize(

@@ -1,12 +1,12 @@
-import numpy as np
 import jax
 import jax.numpy as jnp
 import pytest
+
 from probjax.nn.attention import (
+    dot_product_attention_jax,
     dot_product_attention,
-    flex_attention_fn,
+    flex_attention,
     memory_efficient_dot_product_attention,
-    attention_fn_jax,
 )
 
 
@@ -15,9 +15,9 @@ from probjax.nn.attention import (
     "attention_fn",
     [
         dot_product_attention,
-        flex_attention_fn,
+        flex_attention,
         memory_efficient_dot_product_attention,
-        attention_fn_jax,
+        dot_product_attention_jax,
     ],
 )
 @pytest.mark.parametrize(
@@ -43,9 +43,9 @@ def test_attention_function_outputs_are_same():
     outputs = []
     attention_fns = [
         dot_product_attention,
-        flex_attention_fn,
+        flex_attention,
         memory_efficient_dot_product_attention,
-        attention_fn_jax,
+        dot_product_attention_jax,
     ]
     for attention_fn in attention_fns:
         outputs.append(attention_fn(q, k, v))
@@ -61,9 +61,9 @@ def test_attention_function_gradients_are_same():
     q = k = v = jax.random.normal(jax.random.PRNGKey(0), (2, 16, 4, 16))
     attention_fns = [
         dot_product_attention,
-        flex_attention_fn,
+        flex_attention,
         memory_efficient_dot_product_attention,
-        attention_fn_jax,
+        dot_product_attention_jax,
     ]
     grads = []
     for attention_fn in attention_fns:
@@ -92,7 +92,7 @@ def test_flex_attention_masking(mask_fn):
     q = k = v = jax.random.normal(jax.random.PRNGKey(0), (2, 16, 4, 16))
     mask_initiated = mask_fn(2, 4, jnp.arange(16), jnp.arange(16))
 
-    out = flex_attention_fn(q, k, v, mask=mask_fn)
+    out = flex_attention(q, k, v, mask=mask_fn)
     out2 = dot_product_attention(q, k, v, mask=mask_initiated)
 
     assert jnp.allclose(out, out2, atol=1e-2)

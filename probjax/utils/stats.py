@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from jax.scipy.special import betainc, logsumexp, digamma, gammaln
+from jax.scipy.special import betainc, digamma, gammaln, logsumexp
 
 # Scipy stats implementation missing in JAX
 

@@ -8,7 +8,6 @@ from flax import nnx
 from probjax.distributions import Normal
 from probjax.distributions.distribution import Distribution
 from probjax.distributions.independent import Independent
-from probjax.distributions import Normal
 from probjax.distributions.transformed_distribution import TransformedDistribution
 from probjax.nn.bijective import (
     additive_bijector,

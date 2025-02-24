@@ -1,14 +1,15 @@
-from typing import Callable, Optional, Tuple, Any
+from typing import Any, Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
+from jax import Array
+from jax.random import PRNGKey
 from jax.typing import ArrayLike
 
 from probjax.nn.loss_fn.denoising import build_time_dependent_denoising_loss
 
-from jax import Array
-from jax.random import PRNGKey
+
 class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
     r"""This serves as a base class for diffusion denoising models.
 

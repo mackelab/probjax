@@ -13,7 +13,7 @@ from probjax.nn import (
     MultiHeadAttention,
     Transformer,
 )
-from probjax.nn.utils import AffineFuse, AdditiveFuse, ConcatFuse
+from probjax.nn.nets.denoising_diffusion_model import EDM, VE, VP
 from probjax.nn.nets.flows import (
     AdditiveAutoregressiveFlow,
     AdditiveCouplingFlow,
@@ -23,7 +23,7 @@ from probjax.nn.nets.flows import (
     SplineCouplingFlow,
 )
 from probjax.nn.nets.simple import ResNet
-from probjax.nn.nets.denoising_diffusion_model import EDM, VE, VP
+from probjax.nn.utils import AdditiveFuse, AffineFuse, ConcatFuse
 
 
 @pytest.fixture(
