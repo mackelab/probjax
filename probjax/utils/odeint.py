@@ -87,9 +87,10 @@ def _odeint(
             filter_output=filter_unravel,
             check_points=check_points,
         )
-        ys = jax.tree_util.tree_map(
-            lambda x, y: jnp.concatenate([x[None], y], axis=0), y0, ys
-        )
+        if filter_state is None:
+            ys = jax.tree_util.tree_map(
+                lambda x, y: jnp.concatenate([x[None], y], axis=0), y0, ys
+            )
     else:
         if filter_state is not None:
 
