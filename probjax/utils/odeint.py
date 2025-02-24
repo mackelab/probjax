@@ -27,6 +27,7 @@ STATIC_NAMES = (
     "ifactor",
     "dfactor",
     "error_norm",
+    "return_state",
 )
 
 
