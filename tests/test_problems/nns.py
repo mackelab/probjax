@@ -13,7 +13,7 @@ from probjax.nn import (
     MultiHeadAttention,
     Transformer,
 )
-from probjax.nn.utils import AffineFuse, AdditiveFuse, ConcatFuse
+from probjax.nn.nets.denoising_diffusion_model import EDM, VE, VP
 from probjax.nn.nets.flows import (
     AdditiveAutoregressiveFlow,
     AdditiveCouplingFlow,
@@ -23,6 +23,7 @@ from probjax.nn.nets.flows import (
     SplineCouplingFlow,
 )
 from probjax.nn.nets.simple import ResNet
+from probjax.nn.utils import AdditiveFuse, AffineFuse, ConcatFuse
 
 
 @pytest.fixture(
@@ -255,6 +256,25 @@ def transformer_with_context(request):
     return model_dim, context_dim, model
 
 
+@pytest.fixture
+def transformer_with_cross_attention_and_context():
+    model_dim = 2
+    num_heads = 1
+    num_layers = 1
+    attn_size = 2
+    context_dim = 1
+    model = Transformer(
+        model_dim,
+        num_heads,
+        num_layers,
+        attn_size,
+        context_dim=context_dim,
+        enable_cross_attention=True,
+        rngs=nnx.Rngs(0),
+    )
+    return model_dim, context_dim, model
+
+
 @pytest.fixture(
     params=[
         (1, 1, 1),
@@ -304,4 +324,28 @@ def flow(request):
             model = AdditiveCouplingFlow(input_dim, 1, rngs=nnx.Rngs(0))
         elif kind == "autoregressive":
             model = AdditiveAutoregressiveFlow(input_dim, 1, rngs=nnx.Rngs(0))
+    return input_dim, model
+
+@pytest.fixture(
+    params=[
+        (EDM, 1),
+        (VE, 1),
+        (VP, 2),
+        (EDM, 2),
+        (VE, 3),
+        (EDM, 1),
+    ]
+)
+def denoising_diffusion(request):
+    sde_type, input_dim = request.param
+
+    class BaseNet(nnx.Module, experimental_pytree=True):
+        def __init__(self):
+            self.linear = nnx.Linear(input_dim, input_dim, rngs=nnx.Rngs(0))
+            super().__init__()
+
+        def __call__(self, t, x):
+            return x
+
+    model = sde_type(BaseNet())
     return input_dim, model

@@ -9,9 +9,16 @@ import numpy as np
 from flax.nnx import MultiHeadAttention as FlaxMultiHeadAttention, dot_product_attention
 from jax.typing import ArrayLike
 
-from probjax.nn.kernels.attention import BlockSizes, mha, ScoreModFn, MaskModFn
+from probjax.nn.pallas_kernels.attention import BlockSizes, mha, ScoreModFn, MaskModFn
 
-
+__all__ = [
+    "MultiHeadAttention",
+    "dot_product_attention_jax",
+    "dot_product_attention",
+    "memory_efficient_dot_product_attention",
+    "sparse_dot_product_attention",
+    "flex_attention",
+]
 class MultiHeadAttention(FlaxMultiHeadAttention):
     def __call__(
         self,
@@ -37,7 +44,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         )
 
 
-def pad_to_power_of_2(arr: jnp.ndarray, min_size: int = 16) -> jnp.ndarray:
+def pad_to_power_of_2(arr: ArrayLike, min_size: int = 16) -> ArrayLike:
     """Pad the array to the next power of 2 greater than min_size."""
 
     def next_power_of_2(x):
@@ -56,7 +63,7 @@ def pad_to_power_of_2(arr: jnp.ndarray, min_size: int = 16) -> jnp.ndarray:
     return jnp.pad(arr, pad_width)
 
 
-def flex_attention_fn(
+def flex_attention(
     query: ArrayLike,
     key: ArrayLike,
     value: ArrayLike,
@@ -165,7 +172,7 @@ def flex_attention_fn(
     return output
 
 
-def attention_fn_jax(
+def dot_product_attention_jax(
     query,
     key,
     value,

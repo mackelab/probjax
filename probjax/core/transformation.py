@@ -8,9 +8,11 @@ from jaxtyping import Array
 
 from probjax.core.interpreters.interventions import IntervenedProcessingRule
 from probjax.core.interpreters.inverse import (
-    InverseAndLogAbsDetProcessingRule,
     InverseProcessingRule,
     inverse_cost_fn,
+)
+from probjax.core.interpreters.inverse_and_logabsdet import (
+    InverseAndLogAbsDetProcessingRule,
 )
 from probjax.core.interpreters.joint_sample import JointSampleProcessingRule
 from probjax.core.interpreters.log_potential import (

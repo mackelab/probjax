@@ -32,8 +32,8 @@ keywords = ["probabilistic", "jax", "computation"]
 dependencies = [
     "numpy >= 2.1.2",
     "matplotlib",
-    "jax >= 0.4.34, < 0.5.0",
-    "jaxlib >= 0.4.34, < 0.5.0",
+    "jax >= 0.4.34",
+    "jaxlib >= 0.4.34",
     "optax",
     "flax",
     "ott-jax",

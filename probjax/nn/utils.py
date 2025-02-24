@@ -4,19 +4,14 @@ from typing import Callable, Optional
 import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
+from jax import lax
+from jax.ops import segment_max  # segment reduction (available in JAX)
 from jaxtyping import Array
-
-from probjax.core.custom_primitives.custom_inverse import custom_inverse
-
 from ott.geometry import costs, pointcloud
 from ott.problems.linear import linear_problem
 from ott.solvers.linear import sinkhorn
 
-
-import jax
-import jax.numpy as jnp
-from jax import lax
-from jax.ops import segment_max  # segment reduction (available in JAX)
+from probjax.core.custom_primitives.custom_inverse import custom_inverse
 
 
 def extract_permutation(M: jnp.ndarray) -> jnp.ndarray:

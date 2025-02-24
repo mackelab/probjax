@@ -119,21 +119,21 @@ def _odeint(
             "order": order,
             "interpolation_order": interpolation_order,
             "filter_output": filter_unravel,
+            "return_state": return_state,
         }
-        state, ys = odeint_adaptive(
+        ys = odeint_adaptive(
             method,
             drift,
             params,
             flat_y0,
             ts,
             *args,
-            return_state=return_state,
         )
         if filter_state is None:
             ys = jax.vmap(unravel)(ys)
-        ys = jax.tree_util.tree_map(
-            lambda x, y: jnp.concatenate([x[None], y], axis=0), y0, ys
-        )
+            ys = jax.tree_util.tree_map(
+                lambda x, y: jnp.concatenate([x[None], y], axis=0), y0, ys
+            )
 
     if return_state:
         return state, ys
