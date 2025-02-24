@@ -5,7 +5,7 @@ import jax
 from jax import tree_util
 from jax._src import ad_util, api_util, util
 from jax._src import linear_util as lu
-from jax._src.core import ShapedArray, eval_jaxpr
+from jax._src.core import ShapedArray, eval_jaxpr, shaped_abstractify
 from jax._src.util import safe_map as map
 from jax.extend.core import (
     ClosedJaxpr,
@@ -61,7 +61,7 @@ def _sampling_logprobs_jaxprs_with_common_consts(sampling_fn, log_prob_fn):
     # out_trees = [sampling_out_trees, log_prob_out_trees]
 
     newvar = jax._src.core.gensym(jaxprs, suffix="_")  # type: ignore
-    all_const_avals = [map(api_util.shaped_abstractify, consts) for consts in consts]
+    all_const_avals = [map(shaped_abstractify, consts) for consts in consts]
     unused_const_vars = [map(newvar, const_avals) for const_avals in all_const_avals]
 
     def pad_jaxpr_constvars(i, jaxpr):

@@ -6,12 +6,9 @@ import jax.numpy as jnp
 from jax import core
 from jax._src import ad_util
 from jax._src import linear_util as lu
-from jax._src.api_util import (
-    argnums_partial,
-    flatten_fun_nokwargs,
-    shaped_abstractify,
-)
+from jax._src.api_util import argnums_partial, flatten_fun_nokwargs, debug_info
 from jax._src.util import cache, safe_map
+from jax._src.core import shaped_abstractify
 from jax.extend.core import ClosedJaxpr, Primitive
 from jax.interpreters import ad, batching, mlir
 from jax.interpreters import partial_eval as pe
@@ -149,7 +146,10 @@ def trace_forward_inverse(
     # print(in_avals)
     # Forward
     f, out_tree = flatten_fun_nokwargs(f, in_tree)  # type: ignore
-    debug = pe.debug_info(f.f, in_tree, out_tree, False, name or "<unknown>")
+    debug = None
+    # debug = debug_info(
+    #     "inverse", f.f, (in_avals,), {}
+    # )  # , sourceinfo=name or "<unknown>")
     jaxpr, out_avals, consts = pe.trace_to_jaxpr_dynamic(f, in_avals, debug)
     forward_jaxpr = ClosedJaxpr(jaxpr, consts)
     out_tree = out_tree()
