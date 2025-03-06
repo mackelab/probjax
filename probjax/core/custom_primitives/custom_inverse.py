@@ -104,7 +104,7 @@ class custom_inverse:
             i = dyn_args_index.index(self.inv_argnum)
             inv_in_avals[i] = out_avals[0]
             jaxpr_inv, _, consts_inv = pe.trace_to_jaxpr_dynamic(
-                f_inv_flat, inv_in_avals, debug
+                f_inv_flat, inv_in_avals
             )
             return ClosedJaxpr(jaxpr_inv, consts_inv)
 

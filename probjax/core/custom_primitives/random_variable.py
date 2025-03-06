@@ -42,7 +42,7 @@ def _sampling_logprobs_jaxprs_with_common_consts(sampling_fn, log_prob_fn):
     )
     debug = pe.debug_info(sampling_fn, in_tree, out_tree, False, "sampling_fn")
     sampling_jaxpr, sampling_out_avals, sampling_consts = pe.trace_to_jaxpr_dynamic(
-        flat_wrapped_sampling_fn, in_avals, debug
+        flat_wrapped_sampling_fn, in_avals
     )
     info = debug_info("Traced for RV log_prob", log_prob_fn, (), {})
     wrapped_log_prob_fn = lu.wrap_init(log_prob_fn, debug_info=info)
@@ -55,7 +55,7 @@ def _sampling_logprobs_jaxprs_with_common_consts(sampling_fn, log_prob_fn):
         log_prob_fn, log_prob_in_tree, log_prob_out_tree, False, "log_prob_fn"
     )
     log_prob_jaxpr, log_prob_out_avals, log_prob_consts = pe.trace_to_jaxpr_dynamic(
-        flat_wrapped_log_prob_fn, flat_log_prob_operands, debug
+        flat_wrapped_log_prob_fn, flat_log_prob_operands
     )
 
     jaxprs = [sampling_jaxpr, log_prob_jaxpr]
