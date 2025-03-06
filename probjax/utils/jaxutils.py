@@ -7,6 +7,7 @@ import jax.experimental
 import jax.numpy as jnp
 from jax._src import linear_util as lu
 from jax._src.core import eval_jaxpr
+from jax._src.api_util import debug_info
 from jax._src.flatten_util import ravel_pytree
 from jax.interpreters.partial_eval import partial_eval_jaxpr_nounits
 from jaxtyping import Array, PyTree
@@ -137,7 +138,8 @@ def flatten_fun(fun: Callable, in_tree: PyTree) -> Callable:
     """
 
     def fun_new(*args):
-        f_flat, out_tree = flatten_args_(lu.wrap_init(fun), in_tree)
+        info = debug_info("Flattened function", fun, (), {})
+        f_flat, out_tree = flatten_args_(lu.wrap_init(fun, debug_info=info), in_tree)
         out = f_flat.call_wrapped(*args)
         return jax.tree_util.tree_unflatten(out_tree(), out)
 
@@ -158,15 +160,18 @@ def ravel_args(in_vals: PyTree) -> Tuple[Array, Callable]:
 
 
 def ravel_fun(fun: Callable, unravel) -> Callable:
-    return ravel_args_(lu.wrap_init(fun), unravel).call_wrapped
+    info = debug_info("Raveled function", fun, (), {})
+    return ravel_args_(lu.wrap_init(fun, debug_info=info), unravel).call_wrapped
 
 
 def ravel_arg_fun(fun: Callable, unravel, index: int) -> Callable:
-    return ravel_arg_(lu.wrap_init(fun), unravel, index).call_wrapped
+    info = debug_info("Raveled arg function", fun, (), {})
+    return ravel_arg_(lu.wrap_init(fun, debug_info=info), unravel, index).call_wrapped
 
 
 def ravel_first_arg_fun(fun: Callable, unravel) -> Callable:
-    return ravel_first_arg_(lu.wrap_init(fun), unravel).call_wrapped
+    info = debug_info("Ravel first arg function", fun, (), {})
+    return ravel_first_arg_(lu.wrap_init(fun, debug_info=info), unravel).call_wrapped
 
 
 def nested_checkpoint_scan(

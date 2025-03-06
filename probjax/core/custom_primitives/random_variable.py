@@ -5,6 +5,7 @@ import jax
 from jax import tree_util
 from jax._src import ad_util, api_util, util
 from jax._src import linear_util as lu
+from jax._src.api_util import debug_info
 from jax._src.core import ShapedArray, eval_jaxpr, shaped_abstractify
 from jax._src.util import safe_map as map
 from jax.extend.core import (
@@ -30,7 +31,8 @@ def _log_prob_distribution(dist: Distribution, value, *args, **kwargs):
 # This maybe should be refactored
 @util.cache()
 def _sampling_logprobs_jaxprs_with_common_consts(sampling_fn, log_prob_fn):
-    wrapped_sampling_fn = lu.wrap_init(sampling_fn)
+    info = debug_info("Traced for RV sampling", sampling_fn, (), {})
+    wrapped_sampling_fn = lu.wrap_init(sampling_fn, debug_info=info)
     in_avals = [
         ShapedArray((2,), jax.numpy.uint32),
     ]  # The PRNG Key!
@@ -42,8 +44,8 @@ def _sampling_logprobs_jaxprs_with_common_consts(sampling_fn, log_prob_fn):
     sampling_jaxpr, sampling_out_avals, sampling_consts = pe.trace_to_jaxpr_dynamic(
         flat_wrapped_sampling_fn, in_avals, debug
     )
-
-    wrapped_log_prob_fn = lu.wrap_init(log_prob_fn)
+    info = debug_info("Traced for RV log_prob", log_prob_fn, (), {})
+    wrapped_log_prob_fn = lu.wrap_init(log_prob_fn, debug_info=info)
     log_prob_operands = sampling_out_avals
     flat_log_prob_operands, log_prob_in_tree = tree_util.tree_flatten(log_prob_operands)
     flat_wrapped_log_prob_fn, log_prob_out_tree = api_util.flatten_fun_nokwargs(  # type: ignore
