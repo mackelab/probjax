@@ -179,7 +179,7 @@ class LRUBlock(nnx.Module, experimental_pytree=True):
         self.out1 = nnx.Linear(model_dim, model_dim, rngs=rngs)
         self.out2 = nnx.Linear(model_dim, model_dim, rngs=rngs)
 
-    def __call__(self, inputs, deterministic=False):
+    def __call__(self, inputs, deterministic: bool | None =None):
         x = self.norm(inputs)
         x = jax.vmap(self.lru)(x)
         x = self.activation(x)

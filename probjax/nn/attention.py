@@ -27,7 +27,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         inputs_v: Optional[ArrayLike] = None,
         *,
         mask: Optional[ArrayLike] = None,
-        deterministic: bool = False,
+        deterministic: bool | None = None,
         rngs=None,
         sow_weights: bool = False,
         decode: bool = False,  # This is different from the original implementation

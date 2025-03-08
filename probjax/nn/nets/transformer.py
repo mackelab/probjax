@@ -233,7 +233,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
         context: Optional[Array] = None,  # [B, D_context]
         mask: Array | None = None,  # [T, T] or [B, T, T]
         mask_cross: Array | None = None,  # [T, T'] or [B, T, T']
-        deterministic: bool = False,
+        deterministic: bool | None = None,
         decode: bool = False,
     ) -> Array:  # [B, T, D]
         """Transforms input embedding sequences to output embedding sequences."""
