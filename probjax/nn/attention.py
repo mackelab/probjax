@@ -19,6 +19,8 @@ __all__ = [
     "sparse_dot_product_attention",
     "flex_attention",
 ]
+
+
 class MultiHeadAttention(FlaxMultiHeadAttention):
     def __call__(
         self,

@@ -1,10 +1,18 @@
-from typing import Callable, Optional
+from typing import Callable, Optional, Protocol
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 from jax.typing import ArrayLike
 from jaxtyping import Array
+
+from probjax.nn.loss_fn.protocols import (
+    LossFn,
+    ReductionFn,
+    ScoreModelFn,
+    TimeDependentFn,
+    WeightFn,
+)
 
 __all__ = [
     "build_denoising_score_matching_loss",
@@ -13,7 +21,7 @@ __all__ = [
 
 
 def base_denoising_score_matching_loss(
-    model_fn: Callable,
+    model_fn: ScoreModelFn,
     eps: Array,
     std: ArrayLike,
     weight: Optional[ArrayLike],
@@ -40,8 +48,10 @@ def base_denoising_score_matching_loss(
 
 
 def control_variate_taylor(
-    model_fn: Callable, eps, std, axis, argnums, *args, **kwargs
+    model_fn: ScoreModelFn, eps, std, axis, argnums, *args, **kwargs
 ):
+    # NOTE: maybe new jax.experimental.jet can be used for efficient higher order
+    # control variate computation
     s = model_fn(*args, **kwargs)
 
     term1 = 2 / std * jnp.sum(eps * s, axis=axis, keepdims=True)
@@ -67,20 +77,18 @@ def control_variate_scaling(
 
 
 def build_denoising_score_matching_loss(
-    model: nnx.Module | Callable,
+    model: nnx.Module | ScoreModelFn,
     std: ArrayLike,
     weight: Optional[ArrayLike] = None,
     argnums: int = 0,
     axis: int = -1,
     control_variate: bool = False,
-    update_params: Callable = nnx.update,
-    reduction_fn: Callable = jnp.mean,
-):
-    def loss_fn(params, *args, rng=None, **kwargs):
+    reduction_fn: ReductionFn = jnp.mean,
+) -> LossFn:
+    def loss_fn(*args, rng=None, **kwargs):
         assert (
             rng is not None
         ), "loss_fn does require rngs, pass them to function kwargs."
-        update_params(model, params)
         shape = args[argnums].shape
         eps = jax.random.normal(rng, shape=shape)
 
@@ -94,21 +102,19 @@ def build_denoising_score_matching_loss(
 
 
 def build_time_dependent_denoising_score_matching_loss(
-    model: nnx.Module | Callable,
-    mean_fn: Callable,
-    std_fn: Callable,
-    weight_fn: Optional[Callable] = None,
+    model: ScoreModelFn,
+    mean_fn: TimeDependentFn,
+    std_fn: TimeDependentFn,
+    weight_fn: Optional[WeightFn] = None,
     argnums: int = 0,
     axis: int = -1,
     control_variate: bool = False,
-    update_params: Callable = nnx.update,
-    reduction_fn: Callable = jnp.mean,
-):
-    def loss_fn(params, times, *args, rng=None, **kwargs):
+    reduction_fn: ReductionFn = jnp.mean,
+) -> LossFn:
+    def loss_fn(times, *args, rng=None, **kwargs):
         assert (
             rng is not None
         ), "loss_fn does require rngs, pass them to function kwargs."
-        update_params(model, params)
         x = args[argnums]
         mean = mean_fn(times, x)
         std_t = std_fn(times, x)

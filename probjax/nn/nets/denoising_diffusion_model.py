@@ -213,9 +213,9 @@ class EDM(DiffusionDenoiser):
         return (term1 + length) ** rho
 
 
-
 class VE(EDM):
     """Variance Exploding (VE) SDE variant."""
+
     scale_fn = lambda _, t: jnp.array([1.0])
     std_fn = lambda _, t: jnp.atleast_1d(jnp.sqrt(t))
     drift: lambda _, t, x: jnp.array([0.0])
@@ -237,9 +237,9 @@ class VE(EDM):
         return (term1 + length) ** rho
 
 
-
 class VP(EDM):
     """Variance Preserving (VP) SDE variant."""
+
     min_noise: float = 0.002
     max_noise: float = 1.0
     lognoise_mean: float = -0.5

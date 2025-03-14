@@ -4,12 +4,50 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 from jax.typing import ArrayLike
+from jaxtyping import Array
+
+from probjax.nn.loss_fn.protocols import (
+    LossFn,
+    ReductionFn,
+    TimeDependentFn,
+    WeightFn,
+)
 
 __all__ = ["build_denoising_loss", "build_time_dependent_denoising_loss"]
 
 
+class ModelFn(Protocol):
+    """Protocol for model functions."""
+
+    def __call__(self, *args, **kwargs) -> Array:
+        """
+        A function that predicts the denoised output from noisy input.
+
+        Returns:
+            Denoised prediction
+        """
+        ...
+
+
+class CopulaFn(Protocol):
+    """Protocol for copula transformation functions."""
+
+    def __call__(self, x: Array, eps: Array) -> tuple[Array, Array]:
+        """
+        A function that transforms data and noise using a copula.
+
+        Args:
+            x: Input data
+            eps: Random noise
+
+        Returns:
+            Transformed data and noise
+        """
+        ...
+
+
 def base_denoising_loss(
-    model: nnx.Module | Callable,
+    model: ModelFn,
     eps: ArrayLike,
     std: ArrayLike,
     weight: Optional[ArrayLike],
@@ -17,7 +55,7 @@ def base_denoising_loss(
     axis: int,
     argnums: int,
     control_variate: bool,
-    copula: Optional[Callable],
+    copula: Optional[CopulaFn],
     *args,
     **kwargs,
 ):
@@ -47,21 +85,19 @@ def base_denoising_loss(
 
 
 def build_denoising_loss(
-    model: nnx.Module | Callable,
+    model: ModelFn,
     std: ArrayLike,
     weight: Optional[ArrayLike] = None,
     argnums: int = 0,
     axis: int = -1,
     control_variate: bool = False,
-    copula: Optional[Callable] = None,
-    update_params: Callable = nnx.update,
-    reduction_fn: Callable = jnp.mean,
-):
-    def loss_fn(params, *args, rng=None, loss_mask=None, **kwargs):
+    copula: Optional[CopulaFn] = None,
+    reduction_fn: ReductionFn = jnp.mean,
+) -> LossFn:
+    def loss_fn(*args, rng=None, loss_mask=None, **kwargs):
         assert (
             rng is not None
         ), "loss_fn does require rngs, pass them to function kwargs."
-        update_params(model, params)
         shape = args[argnums].shape
         eps = jax.random.normal(rng, shape=shape)
 
@@ -87,22 +123,20 @@ def build_denoising_loss(
 
 
 def build_time_dependent_denoising_loss(
-    model: nnx.Module | Callable,
-    mean_fn: Callable,
-    std_fn: Callable,
-    weight_fn: Callable,
+    model: ModelFn,
+    mean_fn: TimeDependentFn,
+    std_fn: TimeDependentFn,
+    weight_fn: WeightFn,
     argnums: int = 0,
     axis: int = -1,
     control_variate: bool = False,
-    copula: Optional[Callable] = None,
-    update_params: Callable = nnx.update,
-    reduction_fn: Callable = jnp.mean,
-):
-    def loss_fn(params, t, *args, rng=None, loss_mask=None, **kwargs):
+    copula: Optional[CopulaFn] = None,
+    reduction_fn: ReductionFn = jnp.mean,
+) -> LossFn:
+    def loss_fn(t, *args, rng=None, loss_mask=None, **kwargs):
         assert (
             rng is not None
         ), "loss_fn does require rngs, pass them to function kwargs."
-        update_params(model, params)
         x = args[argnums]
         mean = mean_fn(t, x)
         std_t = std_fn(t, x)

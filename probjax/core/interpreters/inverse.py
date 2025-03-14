@@ -349,7 +349,6 @@ def inverse_cost_fn(eqn, known_invars, known_outvars):
         return jnp.inf
 
 
-
 class InverseProcessingRule(ProcessingRule):
     def __call__(self, eqn, known_invars, known_outvars):
         # print(eqn.primitive, known_invars, known_outvars)

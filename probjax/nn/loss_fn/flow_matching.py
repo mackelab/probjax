@@ -1,21 +1,29 @@
-from typing import Callable, Optional
+from typing import Callable, Optional, Protocol
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
+from jaxtyping import Array
+
+from probjax.nn.loss_fn.protocols import (
+    InterpolationFn,
+    InterpolationNoiseFn,
+    LossFn,
+    ReductionFn,
+    VelocityModelFn,
+    WeightFn,
+)
+
 
 # Flow matching objectives
-
-
 def build_flow_matching_loss(
-    model: nnx.Module | Callable,
-    interpolation_fn: Callable = lambda t, x0, x1: (1 - t) * x0 + t * x1,
-    interpolation_noise_fn: Optional[Callable] = None,
-    weight_fn: Optional[Callable] = None,
+    model: VelocityModelFn,
+    interpolation_fn: InterpolationFn = lambda t, x0, x1: (1 - t) * x0 + t * x1,
+    interpolation_noise_fn: Optional[InterpolationNoiseFn] = None,
+    weight_fn: Optional[WeightFn] = None,
     axis: int = -1,
-    update_params: Callable = nnx.update,
-    reduction_fn: Callable = jnp.mean,
-):
+    reduction_fn: ReductionFn = jnp.mean,
+) -> LossFn:
     if interpolation_noise_fn:
         interpolation_noise_grad = jax.grad(
             lambda x_s, x_t, t: interpolation_noise_fn(x_s, x_t, t).sum(), argnums=2
@@ -28,8 +36,7 @@ def build_flow_matching_loss(
         lambda x_s, x_t, t: interpolation_fn(x_s, x_t, t).sum(), argnums=2
     )
 
-    def loss_fn(params, t, x0, x1, *args, rng=None, loss_mask=None, **kwargs):
-        update_params(model, params)
+    def loss_fn(t, x0, x1, *args, rng=None, loss_mask=None, **kwargs):
         xt = interpolation_fn(x0, x1, t)
         if interpolation_noise_fn:
             assert (

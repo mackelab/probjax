@@ -125,6 +125,7 @@ def custom_inverse_call_impl(*args, forward_jaxpr, inverse_jaxpr, **params):
     ans = core.eval_jaxpr(forward_jaxpr.jaxpr, forward_jaxpr.literals, *args)
     return ans
 
+
 def custom_inverse_call_abstract_eval(*args, forward_jaxpr, inverse_jaxpr, **params):
     return forward_jaxpr.out_avals
 
@@ -136,7 +137,6 @@ def custom_inverse_call_lowering(ctx, *args, forward_jaxpr, inverse_jaxpr, **par
     return mlir.core_call_lowering(
         ctx, *args, name="forward_call", call_jaxpr=forward_jaxpr
     )
-
 
 
 def process_jvp(forward_jaxpr, tangents):
@@ -187,6 +187,7 @@ def batch_custom_inverse_call(axis_data, args, in_dims, **params):
     )
     out_dims = [0 if b else batching.not_mapped for b in out_size1]
     return out, out_dims
+
 
 def custom_inverse_transpose(*args, **kwargs):
     return ad.call_transpose(custom_inverse_call_p, *args, **kwargs)
