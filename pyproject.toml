@@ -30,7 +30,7 @@ classifiers = [
 ]
 keywords = ["probabilistic", "jax", "computation"]
 dependencies = [
-    "numpy >= 2.1.2",
+    "numpy >= 2.0.0",
     "matplotlib",
     "jax >= 0.4.34",
     "jaxlib >= 0.4.34",
