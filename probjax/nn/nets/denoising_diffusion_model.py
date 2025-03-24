@@ -1,4 +1,4 @@
-from typing import Any, Callable, Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -155,7 +155,6 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
 
     def loss(
         self,
-        params: Any,
         rng: PRNGKey,
         data: ArrayLike,
         *args,
@@ -167,7 +166,7 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
         times = self.noise_schedule(rng_times, (data.shape[0],) + (1,) * ndims)
 
         axis = tuple(range(1, data.ndim))
-        loss = self._loss(params, times, data, *args, rng=rng_loss, axis=axis, **kwargs)
+        loss = self._loss(times, data, *args, rng=rng_loss, axis=axis, **kwargs)
         return loss
 
 

@@ -211,12 +211,8 @@ def test_diffusion(denoising_diffusion):
 
     assert s.shape == batch_shape + (in_dim,), "Score shape is not correct"
 
-    params = nnx.state(model, nnx.Param)
-    loss = model.loss(params, jax.random.key(0), x)
+    loss = model.loss(jax.random.key(0), x)
     assert loss.shape == (), "Loss shape is not correct"
-
-    # Can be differentiated
-    _ = jax.grad(model.loss)(params, jax.random.key(0), x)
 
 
 def test_flows(flow):

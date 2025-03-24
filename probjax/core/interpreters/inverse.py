@@ -1,11 +1,10 @@
-import functools
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax._src.util import safe_map
 from jax.experimental.pjit import pjit_p
-from jax.extend.core import Literal, Primitive
+from jax.extend.core import Primitive
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
 from probjax.core.jaxpr_propagation.utils import ProcessingRule

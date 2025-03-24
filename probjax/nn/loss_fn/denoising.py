@@ -2,63 +2,52 @@ from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
-from flax import nnx
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
-from probjax.nn.loss_fn.protocols import (
+from probjax.utils.protocols import (
     LossFn,
+    ModelFn,
     ReductionFn,
     TimeDependentFn,
+    TimeDependentModelFn,
     WeightFn,
 )
 
 __all__ = ["build_denoising_loss", "build_time_dependent_denoising_loss"]
 
 
-class ModelFn(Protocol):
-    """Protocol for model functions."""
-
-    def __call__(self, *args, **kwargs) -> Array:
-        """
-        A function that predicts the denoised output from noisy input.
-
-        Returns:
-            Denoised prediction
-        """
-        ...
-
-
-class CopulaFn(Protocol):
-    """Protocol for copula transformation functions."""
-
-    def __call__(self, x: Array, eps: Array) -> tuple[Array, Array]:
-        """
-        A function that transforms data and noise using a copula.
-
-        Args:
-            x: Input data
-            eps: Random noise
-
-        Returns:
-            Transformed data and noise
-        """
-        ...
-
-
 def base_denoising_loss(
-    model: ModelFn,
-    eps: ArrayLike,
+    model_fn: ModelFn | TimeDependentModelFn,
+    eps: Array,
     std: ArrayLike,
     weight: Optional[ArrayLike],
     loss_mask: Optional[ArrayLike],
     axis: int,
     argnums: int,
     control_variate: bool,
-    copula: Optional[CopulaFn],
+    copula: Optional[Callable],
     *args,
     **kwargs,
-):
+) -> Array:
+    """Base function for denoising loss.
+
+    Args:
+        model_fn: Function that predicts the denoised output
+        eps: Noise samples
+        std: Standard deviation of the noise
+        weight: Optional weight for the loss
+        loss_mask: Optional mask for the loss
+        axis: Axis along which to sum the loss
+        argnums: Index of the input argument to add noise to
+        control_variate: Whether to use control variate for variance reduction
+        copula: Optional copula function for noise generation
+        *args: Additional arguments passed to model_fn
+        **kwargs: Additional keyword arguments passed to model_fn
+
+    Returns:
+        Array of loss values
+    """
     x = args[argnums]
 
     if copula is not None:
@@ -69,7 +58,7 @@ def base_denoising_loss(
         x_noisy = jnp.where(loss_mask, x, x_noisy)
 
     new_args = args[:argnums] + (x_noisy,) + args[argnums + 1 :]
-    x_pred = model(*new_args, **kwargs)
+    x_pred = model_fn(*new_args, **kwargs)
 
     loss = (x_pred - x) ** 2
     if loss_mask is not None:
@@ -85,15 +74,31 @@ def base_denoising_loss(
 
 
 def build_denoising_loss(
-    model: ModelFn,
+    model_fn: ModelFn,
     std: ArrayLike,
     weight: Optional[ArrayLike] = None,
     argnums: int = 0,
     axis: int = -1,
     control_variate: bool = False,
-    copula: Optional[CopulaFn] = None,
+    copula: Optional[Callable] = None,
     reduction_fn: ReductionFn = jnp.mean,
 ) -> LossFn:
+    """Build a denoising loss function.
+
+    Args:
+        model_fn: Function that predicts the denoised output
+        std: Standard deviation of the noise
+        weight: Optional weight for the loss
+        argnums: Index of the input argument to add noise to
+        axis: Axis along which to sum the loss
+        control_variate: Whether to use control variate for variance reduction
+        copula: Optional copula function for noise generation
+        reduction_fn: Function to reduce the loss to a scalar
+
+    Returns:
+        A loss function that takes inputs and returns a scalar loss value
+    """
+
     def loss_fn(*args, rng=None, loss_mask=None, **kwargs):
         assert (
             rng is not None
@@ -104,7 +109,7 @@ def build_denoising_loss(
         _axis = kwargs.pop("axis", axis)
 
         loss = base_denoising_loss(
-            model,
+            model_fn,
             eps,
             std,
             weight,
@@ -123,16 +128,33 @@ def build_denoising_loss(
 
 
 def build_time_dependent_denoising_loss(
-    model: ModelFn,
+    model_fn: TimeDependentModelFn,
     mean_fn: TimeDependentFn,
     std_fn: TimeDependentFn,
     weight_fn: WeightFn,
     argnums: int = 0,
     axis: int = -1,
     control_variate: bool = False,
-    copula: Optional[CopulaFn] = None,
+    copula: Optional[Callable] = None,
     reduction_fn: ReductionFn = jnp.mean,
 ) -> LossFn:
+    """Build a time-dependent denoising loss function.
+
+    Args:
+        model_fn: Function that predicts the denoised output at time t
+        mean_fn: Function that computes the mean at time t
+        std_fn: Function that computes the standard deviation at time t
+        weight_fn: Function that computes weights based on time
+        argnums: Index of the input argument to add noise to
+        axis: Axis along which to sum the loss
+        control_variate: Whether to use control variate for variance reduction
+        copula: Optional copula function for noise generation
+        reduction_fn: Function to reduce the loss to a scalar
+
+    Returns:
+        A loss function that takes time and inputs and returns a scalar loss value
+    """
+
     def loss_fn(t, *args, rng=None, loss_mask=None, **kwargs):
         assert (
             rng is not None
@@ -147,7 +169,7 @@ def build_time_dependent_denoising_loss(
         _axis = kwargs.pop("axis", axis)
 
         loss = base_denoising_loss(
-            model,
+            model_fn,
             eps,
             std_t,
             weight,

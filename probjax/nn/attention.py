@@ -1,15 +1,16 @@
 import functools
-from functools import partial
 import math
+from functools import partial
 from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from flax.nnx import MultiHeadAttention as FlaxMultiHeadAttention, dot_product_attention
+from flax.nnx import MultiHeadAttention as FlaxMultiHeadAttention
+from flax.nnx import dot_product_attention
 from jax.typing import ArrayLike
 
-from probjax.nn.pallas_kernels.attention import BlockSizes, mha, ScoreModFn, MaskModFn
+from probjax.nn.pallas_kernels.attention import BlockSizes, MaskModFn, ScoreModFn, mha
 
 __all__ = [
     "MultiHeadAttention",
@@ -34,6 +35,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         sow_weights: bool = False,
         decode: bool = False,  # This is different from the original implementation
     ):
+
         return super().__call__(
             inputs_q,
             inputs_k,

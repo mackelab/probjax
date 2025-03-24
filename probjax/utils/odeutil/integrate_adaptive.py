@@ -191,7 +191,6 @@ def _odeint_fwd(
     ts: Array,
     *args,
 ):
-
     ys = _odeint_adaptive(method, drift, y0, ts, *args, **kwargs)
     return ys, (ys, ts, args)
 
