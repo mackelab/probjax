@@ -10,7 +10,7 @@ from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
 from probjax.utils.odeutil.solvers import get_method
 from probjax.utils.odeutil.integrate_adaptive import odeint_adaptive
 from probjax.utils.odeutil.integrate_on_grid import _odeint_on_grid
-from probjax.utils.odeutil.params import AdaptiveParams
+from probjax.utils.odeutil.adaptive import AdaptiveParams
 
 
 STATIC_NAMES = (
