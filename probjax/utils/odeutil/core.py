@@ -109,30 +109,19 @@ def _odeint(
 
         order = info["order"]
         interpolation_order = info.get("interpolation_order", 3)
-        params = {
-            "rtol": adaptive_params.rtol,
-            "atol": adaptive_params.atol,
-            "mxstep": adaptive_params.mxstep,
-            "dtmin": adaptive_params.dtmin,
-            "dtmax": adaptive_params.dtmax,
-            "maxerror": adaptive_params.maxerror,
-            "safety": adaptive_params.safety,
-            "ifactor": adaptive_params.ifactor,
-            "dfactor": adaptive_params.dfactor,
-            "error_norm": adaptive_params.error_norm,
-            "order": order,
+
+        # Create new AdaptiveParams with the method's order
+        adaptive_params = adaptive_params._replace(order=order)
+
+        # Pass AdaptiveParams through kwargs
+        kwargs = {
+            "adaptive_params": adaptive_params,
             "interpolation_order": interpolation_order,
             "filter_output": filter_unravel,
             "return_state": return_state,
         }
-        ys = odeint_adaptive(
-            method,
-            drift,
-            params,
-            flat_y0,
-            ts,
-            *args,
-        )
+
+        ys = odeint_adaptive(method, drift, kwargs, flat_y0, ts, *args)
         if filter_state is None:
             ys = jax.vmap(unravel)(ys)
             ys = jax.tree_util.tree_map(
