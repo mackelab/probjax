@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional, Sequence, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -11,22 +11,28 @@ from probjax.utils.odeutil import get_method
 from probjax.utils.odeutil.integrate_adaptive import odeint_adaptive
 from probjax.utils.odeutil.integrate_on_grid import _odeint_on_grid
 
+class AdaptiveParams(NamedTuple):
+    """Parameters for adaptive ODE integration."""
+
+    rtol: float = 1e-4
+    atol: float = 1e-5
+    mxstep: int = jnp.inf
+    dtmin: float = 0.0
+    dtmax: float = jnp.inf
+    maxerror: float = 1.2
+    safety: float = 0.95
+    ifactor: float = 10.0
+    dfactor: float = 0.1
+    error_norm: float = 2
+
+
 STATIC_NAMES = (
     "drift",
     "method",
     "dtype",
     "filter_state",
     "check_points",
-    "rtol",
-    "atol",
-    "mxstep",
-    "dtmin",
-    "dtmax",
-    "maxerror",
-    "safety",
-    "ifactor",
-    "dfactor",
-    "error_norm",
+    "adaptive_params",
     "return_state",
 )
 
@@ -45,18 +51,12 @@ def _odeint(
     return_state: bool = False,
     filter_state: Optional[Callable] = None,
     check_points: Optional[Sequence[int]] = None,
-    rtol: float = 1e-4,
-    atol: float = 1e-5,
-    mxstep: int = jnp.inf,
-    dtmin: float = 0.0,
-    dtmax: float = jnp.inf,
-    maxerror: float = 1.2,
-    safety: float = 0.95,
-    ifactor: float = 10.0,
-    dfactor: float = 0.1,
-    error_norm: float = 2,
+    adaptive_params: Optional[AdaptiveParams] = None,
 ):
     """Solve an ordinary differential equation."""
+    if adaptive_params is None:
+        adaptive_params = AdaptiveParams()
+
     if dtype is not None:
         ts = ts.astype(dtype)
         y0 = jax.tree_util.tree_map(lambda x: x.astype(dtype), y0)
@@ -107,16 +107,16 @@ def _odeint(
         order = info["order"]
         interpolation_order = info.get("interpolation_order", 3)
         params = {
-            "rtol": rtol,
-            "atol": atol,
-            "mxstep": mxstep,
-            "dtmin": dtmin,
-            "dtmax": dtmax,
-            "maxerror": maxerror,
-            "safety": safety,
-            "ifactor": ifactor,
-            "dfactor": dfactor,
-            "error_norm": error_norm,
+            "rtol": adaptive_params.rtol,
+            "atol": adaptive_params.atol,
+            "mxstep": adaptive_params.mxstep,
+            "dtmin": adaptive_params.dtmin,
+            "dtmax": adaptive_params.dtmax,
+            "maxerror": adaptive_params.maxerror,
+            "safety": adaptive_params.safety,
+            "ifactor": adaptive_params.ifactor,
+            "dfactor": adaptive_params.dfactor,
+            "error_norm": adaptive_params.error_norm,
             "order": order,
             "interpolation_order": interpolation_order,
             "filter_output": filter_unravel,
