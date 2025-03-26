@@ -7,7 +7,7 @@ from jax import Array
 from jaxtyping import Key
 
 from probjax.utils.linalg import mv_diag_or_dense
-from probjax.utils.odeutil.rk_explicit import RKInfo, RKState, heun
+from probjax.utils.odeutil.solvers.rk_explicit import RKInfo, RKState, heun
 from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
 
 

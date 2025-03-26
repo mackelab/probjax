@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import pytest
 from jax import random
 
-from probjax.utils.odeutil.base import get_methods as get_methods_ode
+from probjax.utils.odeutil.solvers.base import get_methods as get_methods_ode
 from probjax.utils.sdeutil import get_methods as get_methods_sde
 
 # Test on CPU by default

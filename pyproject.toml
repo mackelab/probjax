@@ -47,6 +47,10 @@ dev = [
     "ruff",
     "pytest-xdist",
 ]
+cuda12 = [
+    "jax[cuda12]>=0.4.34",
+    "jaxlib[cuda12]>=0.4.34",
+]
 
 
 [tool.setuptools.packages.find]
