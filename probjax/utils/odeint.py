@@ -1,183 +1,96 @@
-from functools import partial
-from typing import Callable, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence, Union, Tuple
 
-import jax
 import jax.numpy as jnp
 from jax import Array
 from jaxtyping import PyTree
 
-from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
-from probjax.utils.odeutil import get_method
-from probjax.utils.odeutil.integrate_adaptive import odeint_adaptive
-from probjax.utils.odeutil.integrate_on_grid import _odeint_on_grid
-
-STATIC_NAMES = (
-    "drift",
-    "method",
-    "dtype",
-    "filter_state",
-    "check_points",
-    "rtol",
-    "atol",
-    "mxstep",
-    "dtmin",
-    "dtmax",
-    "maxerror",
-    "safety",
-    "ifactor",
-    "dfactor",
-    "error_norm",
-    "return_state",
-)
+from probjax.utils.odeutil import _odeint, AdaptiveParams
 
 
-@partial(
-    jax.jit,
-    static_argnames=STATIC_NAMES,
-)
-def _odeint(
-    drift,
+def odeint(
+    drift: Callable[[Array, PyTree[Array], ...], PyTree[Array]],
     y0: PyTree[Array],
     ts: Array,
     *args,
     method: str = "rk4",
-    dtype=jnp.float32,
+    dtype: Optional[jnp.dtype] = jnp.float32,
     return_state: bool = False,
-    filter_state: Optional[Callable] = None,
+    filter_state: Optional[Callable[[PyTree[Array]], PyTree[Array]]] = None,
     check_points: Optional[Sequence[int]] = None,
-    rtol: float = 1e-4,
-    atol: float = 1e-5,
-    mxstep: int = jnp.inf,
-    dtmin: float = 0.0,
-    dtmax: float = jnp.inf,
-    maxerror: float = 1.2,
-    safety: float = 0.95,
-    ifactor: float = 10.0,
-    dfactor: float = 0.1,
-    error_norm: float = 2,
-):
-    """Solve an ordinary differential equation."""
-    if dtype is not None:
-        ts = ts.astype(dtype)
-        y0 = jax.tree_util.tree_map(lambda x: x.astype(dtype), y0)
+    adaptive_params: Optional[AdaptiveParams] = None,
+) -> Union[PyTree[Array], Tuple[Any, PyTree[Array]]]:
+    """Solve an ordinary differential equation.
 
-    y0 = jax.tree_util.tree_map(jnp.atleast_1d, y0)
-    ts = jnp.atleast_1d(ts)
+    This is a high-level interface for solving ODEs using various numerical methods.
+    It supports both fixed-step and adaptive-step integration, with a focus on
+    performance through JAX transformations.
 
-    flat_y0, unravel = ravel_args(y0)
-    drift = ravel_arg_fun(drift, unravel, 1)
+    Args:
+        drift: The drift function f(t, y, *args) that defines the ODE dy/dt = f(t, y, *args).
+            The function should take time t as first argument, state y as second argument,
+            and any additional arguments specified in *args.
+        y0: Initial state. Can be a single array or a PyTree of arrays.
+        ts: Time points at which to evaluate the solution. Must be a 1D array of increasing values.
+        *args: Additional arguments for the drift function.
+        method: Integration method to use. Available methods include:
+            Fixed-step methods:
+                - "euler": Forward Euler method (order 1)
+                - "rk4": 4th order Runge-Kutta method (order 4)
 
-    method, info = get_method(method)
+            Adaptive-step methods:
+                - "dopri5": Dormand-Prince 5th order method (order 5)
+                - "tsit5": Tsitouras 5th order method (order 5)
+                - "dopri8": Dormand-Prince 8th order method (order 8)
+                - "tsit8": Tsitouras 8th order method (order 8)
+                - "bogacki_shampine": Bogacki-Shampine 3rd order method (order 3)
+        dtype: Data type for computation. Defaults to float32.
+        return_state: Whether to return solver state along with the solution.
+        filter_state: Optional function to filter the state during integration.
+            Useful for tracking specific components of the state.
+        check_points: Optional sequence of indices for grid integration.
+            Only used with fixed-step methods.
+        adaptive_params: Parameters for adaptive integration methods.
+            Controls error tolerances and step size adaptation.
 
-    is_adaptive = info["adaptive"]
+    Returns:
+        If return_state is False:
+            PyTree[Array]: Solution trajectory evaluated at time points ts.
+        If return_state is True:
+            Tuple[Any, PyTree[Array]]: Tuple containing (solver_state, solution_trajectory).
 
-    if not is_adaptive:
+    Notes:
+        - The solution includes the initial condition y0 as the first point.
+        - All computations are performed in the specified dtype.
+        - The function is JIT-compiled for improved performance.
 
-        def filter_unravel(state, _):
-            if filter_state is None:
-                return unravel(state.y0)
-            else:
-                return filter_state(unravel(state.y0))
-
-        state, ys = _odeint_on_grid(
-            method,
-            drift,
-            flat_y0,
-            ts,
-            *args,
-            filter_output=filter_unravel,
-            check_points=check_points,
-        )
-        if filter_state is None:
-            ys = jax.tree_util.tree_map(
-                lambda x, y: jnp.concatenate([x[None], y], axis=0), y0, ys
-            )
-    else:
-        if filter_state is not None:
-
-            def filter_unravel(y):
-                if filter_state is None:
-                    return unravel(y)
-                else:
-                    return filter_state(unravel(y))
-
-        else:
-            filter_unravel = None
-
-        order = info["order"]
-        interpolation_order = info.get("interpolation_order", 3)
-        params = {
-            "rtol": rtol,
-            "atol": atol,
-            "mxstep": mxstep,
-            "dtmin": dtmin,
-            "dtmax": dtmax,
-            "maxerror": maxerror,
-            "safety": safety,
-            "ifactor": ifactor,
-            "dfactor": dfactor,
-            "error_norm": error_norm,
-            "order": order,
-            "interpolation_order": interpolation_order,
-            "filter_output": filter_unravel,
-            "return_state": return_state,
-        }
-        ys = odeint_adaptive(
-            method,
-            drift,
-            params,
-            flat_y0,
-            ts,
-            *args,
-        )
-        if filter_state is None:
-            ys = jax.vmap(unravel)(ys)
-            ys = jax.tree_util.tree_map(
-                lambda x, y: jnp.concatenate([x[None], y], axis=0), y0, ys
-            )
-
-    if return_state:
-        return state, ys
-    else:
-        return ys
-
-
-# Register inverse
-
-
-# Inverse odeint
-def _inv_odeint(drift, ys: Array, ts: Array, *args, **kwargs):
-    y0 = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], ys)
-    xs = _odeint(drift, y0, ts[::-1], *args, **kwargs)
-    yT = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], xs)
-    return yT
-
-
-# Ode and logabsdet
-def _inv_logdet_odeint(drift, ys, ts, *args, **kwargs):
-    _jac = jax.jacfwd(drift, argnums=1)
-    jac = lambda t, x: jnp.atleast_2d(_jac(t, x))
-
-    def aug_drift(t, state, *args):
-        x, logdet = state
-        dx = jnp.atleast_1d(drift(t, x, *args))
-        dlogdet = jnp.atleast_1d(jnp.trace(jac(t, x)))
-        return dx, dlogdet
-
-    y0 = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], ys)
-    logdet0 = jax.tree_util.tree_map(
-        lambda x: jnp.zeros_like(jnp.atleast_1d(x)[-1]), ys
+    Example:
+        >>> import jax.numpy as jnp
+        >>> from probjax.utils.odeint import odeint
+        >>>
+        >>> # Lotka-Volterra predator-prey model
+        >>> def lotka_volterra(t, y, alpha, beta, delta, gamma):
+        ...     prey, predator = y
+        ...     dprey = alpha * prey - beta * prey * predator
+        ...     dpredator = delta * prey * predator - gamma * predator
+        ...     return jnp.array([dprey, dpredator])
+        >>>
+        >>> # Initial conditions and parameters
+        >>> y0 = jnp.array([40.0, 9.0])  # prey, predator
+        >>> ts = jnp.linspace(0, 10, 100)
+        >>> params = (1.0, 0.1, 0.075, 0.5)  # alpha, beta, delta, gamma
+        >>>
+        >>> # Solve using adaptive integration
+        >>> ys = odeint(lotka_volterra, y0, ts, *params, method="dopri5")
+    """
+    return _odeint(
+        drift,
+        y0,
+        ts,
+        *args,
+        method=method,
+        dtype=dtype,
+        return_state=return_state,
+        filter_state=filter_state,
+        check_points=check_points,
+        adaptive_params=adaptive_params,
     )
-    xs, logdets = _odeint(aug_drift, (y0, logdet0), ts[::-1], *args, **kwargs)
-
-    yT = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], xs)
-    logdetsT = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], logdets)
-
-    return yT, logdetsT
-
-
-# ODEs are invertible, so we can define the inverse of the ODE solver
-odeint = _odeint
-# odeint = custom_inverse(_odeint, static_argnums=(0,), inv_argnum=1)
-# odeint.definv(_inv_odeint)
-# odeint.definv_and_logdet(_inv_logdet_odeint)

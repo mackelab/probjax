@@ -7,3 +7,4 @@ from probjax.utils.sdeutil.base import (
 )
 from probjax.utils.sdeutil.em import euler_maruyama
 from probjax.utils.sdeutil.milstein import milstein
+from probjax.utils.sdeutil.srk_explicit import sri1, sri2

@@ -2,23 +2,18 @@ import functools
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax._src.util import safe_map
-from jax.experimental.pjit import pjit_p
 from jax.extend.core import Literal, Primitive
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
-from probjax.core.jaxpr_propagation.utils import ProcessingRule
 from probjax.core.interpreters.inverse import (
-    InverseProcessingRule,
-    has_registered_inverse,
     _BIVARIATE_INVERSE_REGISTRY,
-    _UNIVARITAE_INVERSE_REGISTRY,
     _CUSTOM_INVERSE_PROCESSING_RULES,
-    is_univariate,
+    _UNIVARITAE_INVERSE_REGISTRY,
+    InverseProcessingRule,
     is_bivariate,
+    is_univariate,
 )
-
 
 _CUSTOM_INVErSE_AND_LOG_DET_RULES = {}
 
