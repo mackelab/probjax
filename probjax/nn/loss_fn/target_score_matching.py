@@ -7,8 +7,8 @@ from flax import nnx
 from jaxtyping import Array, ArrayLike, PyTree
 
 __all__ = [
-    "build_sliced_score_matching_loss",
-    "build_time_dependent_sliced_score_matching_loss",
+    "build_target_score_matching_loss",
+    "build_time_dependent_target_score_matching_loss",
 ]
 
 
@@ -41,14 +41,12 @@ def build_target_score_matching_loss(
     weight: Optional[ArrayLike] = None,
     argnums: int = 0,
     axis: int = -1,
-    update_params: Callable = nnx.update,
     reduction_fn: Callable = jnp.mean,
 ):
-    def loss_fn(params, *args, rng=None, **kwargs):
-        assert (
-            rng is not None
-        ), "loss_fn does require rngs, pass them to function kwargs."
-        update_params(model, params)
+    def loss_fn(*args, rng=None, **kwargs):
+        assert rng is not None, (
+            "loss_fn does require rngs, pass them to function kwargs."
+        )
         shape = args[argnums].shape
         eps = jax.random.normal(rng, shape=shape)
 
@@ -77,14 +75,12 @@ def build_time_dependent_target_score_matching_loss(
     weight_fn: Optional[Callable] = None,
     argnums: int = 0,
     axis: int = -1,
-    update_params: Callable = nnx.update,
     reduction_fn: Callable = jnp.mean,
 ) -> Callable:
-    def loss_fn(params, times, *args, rng=None, **kwargs):
-        assert (
-            rng is not None
-        ), "loss_fn does require rngs, pass them to function kwargs."
-        update_params(model, params)
+    def loss_fn(times, *args, rng=None, **kwargs):
+        assert rng is not None, (
+            "loss_fn does require rngs, pass them to function kwargs."
+        )
         x = args[argnums]
         mean = mean_fn(times, x)
         std_t = std_fn(times, x)
