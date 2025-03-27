@@ -119,35 +119,15 @@ def _odeint_adaptive(
 
             return jax.lax.cond(cond, accept, reject)
 
-        # old_state = carry[0]
         i, *carry = jax.lax.while_loop(cond_fun, body_fun, [0] + carry)
-        # jax.debug.print(
-        #     "i={i}",
-        #     i=i,
-        # )
         new_state, dt, last_t, interp_coeff = carry
         relative_output_time = (target_t - last_t) / (new_state.t0 - last_t)
-        # jax.debug.print(
-        #     "t_target={t_target}, t_last={t_last}, t_next={t_next}, t_rel = {t_rel},"
-        #     "dt={dt}",
-        #     t_target=target_t,
-        #     t_last=last_t,
-        #     t_next=new_state.t0,
-        #     t_rel=relative_output_time,
-        #     dt=dt,
-        # )
 
         y_target = jnp.polyval(interp_coeff, relative_output_time)
-        # Test polynomial
-        # jax.debug.print(
-        #     "y={y}, y_new={y_new}, y_est={y_est}, y_est_new={y_est_new}",
-        #     y=old_state.y0,
-        #     y_new=new_state.y0,
-        #     y_est=jnp.polyval(interp_coeff, 0.0),
-        #     y_est_new=jnp.polyval(interp_coeff, new_state.t0 - last_t),
-        # )
+
         if filter_output is not None:
-            y_target = filter_output(y_target)
+            y_target = filter_output(y_target, new_state)
+
         return carry, y_target
 
     t0 = ts[0]

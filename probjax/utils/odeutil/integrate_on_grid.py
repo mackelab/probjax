@@ -6,7 +6,6 @@ import jax.numpy as jnp
 from jax import Array
 
 from probjax.utils.odeutil.solvers import ODESolver, ODEState
-from probjax.utils.odeutil.util import mean_error_ratio
 from probjax.utils.jaxutils import nested_checkpoint_scan
 
 
@@ -30,7 +29,7 @@ def _odeint_on_grid(
         if filter_output is None:
             return state, state.y0
         else:
-            return state, filter_output(state, info)
+            return state, filter_output(state.y0, (state, info))
 
     t0 = ts[0]
     state = solver.init(t0, y0, *args)
