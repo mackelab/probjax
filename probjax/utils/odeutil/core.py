@@ -77,11 +77,17 @@ def _odeint(
             flat_y0_indices = np.arange(len(flat_y0))
             y0_indices = unravel(flat_y0_indices)
             filtered_indices = filter_state(y0_indices)
-            flat_filtered_indices, _ = ravel_args(filtered_indices)
+            if filtered_indices is None:
+                flat_filtered_indices = None
+            else:
+                flat_filtered_indices, _ = ravel_args(filtered_indices)
 
             def raveled_filter(yi, info):
                 del info
-                return yi[flat_filtered_indices]
+                if flat_filtered_indices is not None:
+                    return yi[flat_filtered_indices]
+                else:
+                    return None
 
     else:
         raveled_filter = None
@@ -125,12 +131,13 @@ def _odeint(
     else:
         y0_filtered = filter_state(y0)
         # Unravel the filtered state
-        _, unravel_filtered = ravel_args(y0_filtered)
-        ys = jax.tree_util.tree_map(jnp.atleast_1d, ys)
-        ys = jax.vmap(unravel_filtered)(ys)
-        ys = jax.tree_util.tree_map(
-            lambda x, y: jnp.concatenate([x[None], y], axis=0), y0_filtered, ys
-        )
+        if y0_filtered is not None:
+            _, unravel_filtered = ravel_args(y0_filtered)
+            ys = jax.tree_util.tree_map(jnp.atleast_1d, ys)
+            ys = jax.vmap(unravel_filtered)(ys)
+            ys = jax.tree_util.tree_map(
+                lambda x, y: jnp.concatenate([x[None], y], axis=0), y0_filtered, ys
+            )
 
     if return_state:
         return state, ys
