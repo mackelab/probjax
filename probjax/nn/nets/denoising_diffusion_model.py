@@ -1,4 +1,4 @@
-from typing import Any, Callable, Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -155,7 +155,6 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
 
     def loss(
         self,
-        params: Any,
         rng: PRNGKey,
         data: ArrayLike,
         *args,
@@ -167,7 +166,7 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
         times = self.noise_schedule(rng_times, (data.shape[0],) + (1,) * ndims)
 
         axis = tuple(range(1, data.ndim))
-        loss = self._loss(params, times, data, *args, rng=rng_loss, axis=axis, **kwargs)
+        loss = self._loss(times, data, *args, rng=rng_loss, axis=axis, **kwargs)
         return loss
 
 
@@ -213,9 +212,9 @@ class EDM(DiffusionDenoiser):
         return (term1 + length) ** rho
 
 
-
 class VE(EDM):
     """Variance Exploding (VE) SDE variant."""
+
     scale_fn = lambda _, t: jnp.array([1.0])
     std_fn = lambda _, t: jnp.atleast_1d(jnp.sqrt(t))
     drift: lambda _, t, x: jnp.array([0.0])
@@ -237,9 +236,9 @@ class VE(EDM):
         return (term1 + length) ** rho
 
 
-
 class VP(EDM):
     """Variance Preserving (VP) SDE variant."""
+
     min_noise: float = 0.002
     max_noise: float = 1.0
     lognoise_mean: float = -0.5

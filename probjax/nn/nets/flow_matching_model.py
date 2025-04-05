@@ -155,7 +155,7 @@ class RectifiedFlow(FlowMatcher):
         ts = jnp.linspace(0, 1, num_steps)
         return ts
 
-    def loss(self, params, rng, data, *args, **kwargs):
+    def loss(self, rng, data, *args, **kwargs):
         rng_source, rng_times = jax.random.split(rng, 2)
         x0 = (
             jax.random.normal(rng_source, shape=data.shape) * self.std0.value
@@ -165,5 +165,5 @@ class RectifiedFlow(FlowMatcher):
 
         ndims = data.ndim - 2
         times = self.noise_schedule(rng_times, (data.shape[0],) + (1,) * ndims)
-        loss = self._loss(params, times, x0, data, *args, **kwargs)
+        loss = self._loss(times, x0, data, *args, **kwargs)
         return loss

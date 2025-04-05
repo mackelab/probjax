@@ -2,17 +2,18 @@ from functools import partial
 from typing import Any, Callable, Optional, Sequence, Tuple
 
 import jax
-from jax.typing import ArrayLike
+import jax.numpy as jnp
+from jax import Array
 
+from probjax.utils.odeutil.solvers import ODESolver, ODEState
 from probjax.utils.jaxutils import nested_checkpoint_scan
-from probjax.utils.odeutil import ODESolver, ODEState
 
 
 def _odeint_on_grid(
     method: ODESolver,
     drift: Callable,
-    y0: ArrayLike,
-    ts: ArrayLike,
+    y0: Array,
+    ts: Array,
     *args,
     filter_output: Optional[Callable] = None,
     check_points: Optional[Sequence[int]] = None,
@@ -28,7 +29,7 @@ def _odeint_on_grid(
         if filter_output is None:
             return state, state.y0
         else:
-            return state, filter_output(state, info)
+            return state, filter_output(state.y0, (state, info))
 
     t0 = ts[0]
     state = solver.init(t0, y0, *args)
