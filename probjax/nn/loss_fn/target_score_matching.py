@@ -6,14 +6,16 @@ import jax.numpy as jnp
 from flax import nnx
 from jaxtyping import Array, ArrayLike, PyTree
 
+from probjax.utils.protocols import ModelFn, LossFn, ReductionFn, TimeDependentModelFn
+
 __all__ = [
-    "build_sliced_score_matching_loss",
-    "build_time_dependent_sliced_score_matching_loss",
+    "build_target_score_matching_loss",
+    "build_time_dependent_target_score_matching_loss",
 ]
 
 
 def base_target_score_matching_loss(
-    model_fn: Callable,
+    model_fn: ModelFn | TimeDependentModelFn,
     score_fn: Callable,
     eps: Array,
     std: ArrayLike,
@@ -35,25 +37,23 @@ def base_target_score_matching_loss(
 
 
 def build_target_score_matching_loss(
-    model: nnx.Module | Callable,
+    model_fn: ModelFn,
     score_fn: Callable,
     std: ArrayLike,
     weight: Optional[ArrayLike] = None,
     argnums: int = 0,
     axis: int = -1,
-    update_params: Callable = nnx.update,
     reduction_fn: Callable = jnp.mean,
 ):
-    def loss_fn(params, *args, rng=None, **kwargs):
+    def loss_fn(*args, rng=None, **kwargs):
         assert (
             rng is not None
         ), "loss_fn does require rngs, pass them to function kwargs."
-        update_params(model, params)
         shape = args[argnums].shape
         eps = jax.random.normal(rng, shape=shape)
 
         loss = base_target_score_matching_loss(
-            model,
+            model_fn,
             score_fn,
             eps,
             std,
@@ -70,21 +70,19 @@ def build_target_score_matching_loss(
 
 
 def build_time_dependent_target_score_matching_loss(
-    model: nnx.Module | Callable,
+    model_fn: TimeDependentModelFn,
     score_fn: Callable,
     mean_fn: Callable,
     std_fn: Callable,
     weight_fn: Optional[Callable] = None,
     argnums: int = 0,
     axis: int = -1,
-    update_params: Callable = nnx.update,
     reduction_fn: Callable = jnp.mean,
 ) -> Callable:
-    def loss_fn(params, times, *args, rng=None, **kwargs):
+    def loss_fn(times, *args, rng=None, **kwargs):
         assert (
             rng is not None
         ), "loss_fn does require rngs, pass them to function kwargs."
-        update_params(model, params)
         x = args[argnums]
         mean = mean_fn(times, x)
         std_t = std_fn(times, x)
@@ -93,7 +91,7 @@ def build_time_dependent_target_score_matching_loss(
         weight = weight_fn(times) if weight_fn is not None else None
 
         loss = base_target_score_matching_loss(
-            model,
+            model_fn,
             score_fn,
             eps,
             std_t,

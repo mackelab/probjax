@@ -6,9 +6,8 @@ from jax import random
 from probjax.utils.odeutil.base import get_methods as get_methods_ode
 from probjax.utils.sdeutil import get_methods as get_methods_sde
 
-# Test on CPU by default
-# TODO: Use pytest mark to mark tests that need GPU
-jax.config.update("jax_platform_name", "cpu")
+# Remove the hardcoded CPU configuration
+# jax.config.update("jax_platform_name", "cpu")
 
 key = random.PRNGKey(0)
 
@@ -96,16 +95,27 @@ def pytest_addoption(parser):
     parser.addoption(
         "--gpu", action="store_true", default=False, help="run tests requiring GPU"
     )
+    parser.addoption(
+        "--device",
+        action="store",
+        default="cpu",
+        choices=["cpu", "gpu"],
+        help="device to run tests on (cpu or gpu)",
+    )
 
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "gpu: requires GPU to run")
+    # Set JAX platform based on device option
+    device = config.getoption("--device")
+    jax.config.update("jax_platform_name", device)
 
 
 def pytest_collection_modifyitems(config, items):
-    if config.getoption("--gpu"):
+    device = config.getoption("--device")
+    if device == "gpu":
         return
-    skip_gpu = pytest.mark.skip(reason="need --gpu option to run")
+    skip_gpu = pytest.mark.skip(reason="need --device gpu option to run")
     for item in items:
         if "gpu" in item.keywords:
             item.add_marker(skip_gpu)

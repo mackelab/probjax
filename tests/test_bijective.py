@@ -31,7 +31,7 @@ def test_rational_quadratic_spline(seed, scale, num_bins):
     assert jnp.isfinite(x_rec).all()
 
 
-@pytest.mark.xfail(reason="Bug in the implementation")
+@pytest.mark.xfail(reason="Bug in the implementation", strict=True)
 @pytest.mark.parametrize("seed", np.random.randint(0, 1000, 2))
 @pytest.mark.parametrize("scale", [1.0, 2.0, 3.0, 4.0])
 @pytest.mark.parametrize("num_bins", [4, 16, 64, 128])

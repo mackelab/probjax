@@ -545,10 +545,13 @@ def _piecewise_linear_spline_fwd(
     correct_bin = jnp.logical_and(x >= x_pos[:-1], x < x_pos[1:])
     any_bin_in_range = jnp.any(correct_bin)
     # Fallback to the first bin if none matched
-    first_bin = jnp.full_like(correct_bin, False)
-    first_bin = first_bin.at[0].set(True)
+    first_bin = jnp.concatenate([
+        jnp.array([True]),
+        jnp.zeros(len(correct_bin) - 1, dtype=bool),
+    ])
     correct_bin = jnp.where(any_bin_in_range, correct_bin, first_bin)
 
+    # Extract bin endpoints
     x_left = jnp.sum(correct_bin * x_pos[:-1])
     x_right = jnp.sum(correct_bin * x_pos[1:])
     y_left = jnp.sum(correct_bin * y_pos[:-1])
@@ -567,9 +570,8 @@ def _piecewise_linear_spline_fwd(
     # Below-range interpolation
     ############################
     # Unbounded slope below the first knot
-    slope_below_unbounded = (y_pos[1] - y_pos[0]) / jnp.maximum(
-        x_pos[1] - x_pos[0], eps
-    )
+    first_bin_width = jnp.maximum(x_pos[1] - x_pos[0], eps)
+    slope_below_unbounded = (y_pos[1] - y_pos[0]) / first_bin_width
     y_below_unbounded = y_pos[0] + slope_below_unbounded * (x - x_pos[0])
     logdet_below_unbounded = jnp.log(jnp.maximum(jnp.abs(slope_below_unbounded), eps))
 
@@ -597,9 +599,8 @@ def _piecewise_linear_spline_fwd(
     # Above-range interpolation
     ############################
     # Unbounded slope above the last knot
-    slope_above_unbounded = (y_pos[-1] - y_pos[-2]) / jnp.maximum(
-        x_pos[-1] - x_pos[-2], eps
-    )
+    last_bin_width = jnp.maximum(x_pos[-1] - x_pos[-2], eps)
+    slope_above_unbounded = (y_pos[-1] - y_pos[-2]) / last_bin_width
     y_above_unbounded = y_pos[-1] + slope_above_unbounded * (x - x_pos[-1])
     logdet_above_unbounded = jnp.log(jnp.maximum(jnp.abs(slope_above_unbounded), eps))
 
@@ -633,7 +634,7 @@ def _piecewise_linear_spline_fwd(
 ############################
 # Inverse transform
 ############################
-def _piecewise_linear_spline_inv(
+def _piecewise_linear_spline_inv_internal(
     y: jnp.ndarray,
     x_pos: jnp.ndarray,
     y_pos: jnp.ndarray,
@@ -643,7 +644,7 @@ def _piecewise_linear_spline_inv(
     y_max: Optional[float] = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
-    Piecewise linear spline inverse transform.
+    Internal implementation of piecewise linear spline inverse transform.
 
     Args:
         y: Scalar or array for input.
@@ -665,10 +666,13 @@ def _piecewise_linear_spline_inv(
     # Identify bin in which y lies
     correct_bin = jnp.logical_and(y >= y_pos[:-1], y < y_pos[1:])
     any_bin_in_range = jnp.any(correct_bin)
-    first_bin = jnp.full_like(correct_bin, False)
-    first_bin = first_bin.at[0].set(True)
+    first_bin = jnp.concatenate([
+        jnp.array([True]),
+        jnp.zeros(len(correct_bin) - 1, dtype=bool),
+    ])
     correct_bin = jnp.where(any_bin_in_range, correct_bin, first_bin)
 
+    # Extract bin endpoints
     y_left = jnp.sum(correct_bin * y_pos[:-1])
     y_right = jnp.sum(correct_bin * y_pos[1:])
     x_left = jnp.sum(correct_bin * x_pos[:-1])
@@ -688,9 +692,8 @@ def _piecewise_linear_spline_inv(
     # Below-range interpolation
     ############################
     # Unbounded slope from the first segment
-    slope_below_unbounded = (x_pos[1] - x_pos[0]) / jnp.maximum(
-        y_pos[1] - y_pos[0], eps
-    )
+    first_bin_height = jnp.maximum(y_pos[1] - y_pos[0], eps)
+    slope_below_unbounded = (x_pos[1] - x_pos[0]) / first_bin_height
     x_below_unbounded = x_pos[0] + slope_below_unbounded * (y - y_pos[0])
     logdet_below_unbounded = jnp.log(jnp.maximum(jnp.abs(slope_below_unbounded), eps))
 
@@ -715,9 +718,8 @@ def _piecewise_linear_spline_inv(
     # Above-range interpolation
     ############################
     # Unbounded slope from the last segment
-    slope_above_unbounded = (x_pos[-1] - x_pos[-2]) / jnp.maximum(
-        y_pos[-1] - y_pos[-2], eps
-    )
+    last_bin_height = jnp.maximum(y_pos[-1] - y_pos[-2], eps)
+    slope_above_unbounded = (x_pos[-1] - x_pos[-2]) / last_bin_height
     x_above_unbounded = x_pos[-1] + slope_above_unbounded * (y - y_pos[-1])
     logdet_above_unbounded = jnp.log(jnp.maximum(jnp.abs(slope_above_unbounded), eps))
 
@@ -748,6 +750,55 @@ def _piecewise_linear_spline_inv(
     logdet = jnp.where(above_range, logdet_above, logdet)
 
     return x, logdet
+
+
+def _piecewise_linear_spline_inv(
+    params: ArrayLike,
+    y: ArrayLike,
+    range_min_x: float = -10.0,
+    range_max_x: float = 10.0,
+    range_min_y: float = -10.0,
+    range_max_y: float = 10.0,
+    min_bin_size: float = 1e-4,
+    bounded: bool = False,
+):
+    """Inverse of the piecewise linear spline.
+
+    Args:
+        params: The parameters of the spline, shape (2 * num_bins,).
+        y: The input to invert.
+        range_min_x, range_max_x: Range for x coordinates.
+        range_min_y, range_max_y: Range for y coordinates.
+        min_bin_size: Minimum size of each bin.
+        bounded: Whether to use bounded interpolation.
+
+    Returns:
+        Tuple of (x, logdet) where x is the inverse and logdet is the log determinant.
+    """
+    # Split parameters into x and y positions
+    num_bins = len(params) // 2
+    x_pos = params[:num_bins]
+    y_pos = params[num_bins:]
+
+    # To avoid numerical issues we will bound x_pos and y_pos to be in the range
+    # that is stable for the softmax function.
+    x_pos = x_pos - jnp.mean(x_pos)
+    y_pos = y_pos - jnp.mean(y_pos)
+
+    x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
+        ((range_max_x - min_bin_size) - range_min_x) + (range_min_x)
+    )
+    y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
+        (range_max_y - min_bin_size) - range_min_y
+    ) + range_min_y
+
+    if not bounded:
+        x, log_det = _piecewise_linear_spline_inv_internal(y, x_pos, y_pos)
+    else:
+        x, log_det = _piecewise_linear_spline_inv_internal(
+            y, x_pos, y_pos, range_min_x, range_max_x, range_min_y, range_max_y
+        )
+    return x, jnp.squeeze(log_det)
 
 
 @partial(custom_inverse, inv_argnum=1)
@@ -784,40 +835,7 @@ def linear_spline(
     return y
 
 
-def _pieceswise_linear_spline_inv(
-    params: ArrayLike,
-    x: ArrayLike,
-    range_min_x=-1.0,
-    range_max_x=1.0,
-    range_min_y=-1.0,
-    range_max_y=1.0,
-    min_bin_size=1e-4,
-    bounded=False,
-):
-    x_pos, y_pos = jnp.split(params, 2, axis=-1)
-
-    # To avoid numerical issues we will bound x_pos and y_pos to be in the range
-    # that is stable for the softmax function.
-    x_pos = x_pos - jnp.mean(x_pos)
-    y_pos = y_pos - jnp.mean(y_pos)
-
-    x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
-        ((range_max_x - min_bin_size) - range_min_x) + (range_min_x)
-    )
-    y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
-        (range_max_y - min_bin_size) - range_min_y
-    ) + range_min_y
-
-    if not bounded:
-        y, log_det = _piecewise_linear_spline_inv(x, x_pos, y_pos)
-    else:
-        y, log_det = _piecewise_linear_spline_inv(
-            x, x_pos, y_pos, range_min_x, range_max_x, range_min_y, range_max_y
-        )
-    return y, jnp.squeeze(log_det)
-
-
-linear_spline.definv_and_logdet(_pieceswise_linear_spline_inv)
+linear_spline.definv_and_logdet(_piecewise_linear_spline_inv)
 
 
 @partial(custom_inverse, inv_argnum=1)
