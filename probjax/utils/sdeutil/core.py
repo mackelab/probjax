@@ -153,14 +153,15 @@ def _sdeint(
             drift,
             diffusion,
             rng,
-            y0,
+            flat_y0,
             ts,
             *args,
             filter_output=filter_unravel,
             check_points=check_points,
         )
         if filter_output is None:
-            ys = jax.vmap(unravel)(ys)
+            #print(ys)
+            #ys = jax.vmap(unravel)(ys)
             ys = jax.tree_map(
                 lambda x, y: jnp.concatenate([x[None], y], axis=0), y0, ys
             )
@@ -183,13 +184,14 @@ def _sdeint(
             drift,
             diffusion,
             rng,
-            y0,
+            flat_y0,
             ts,
             *args,
             filter_output=filter_unravel,
             check_points=check_points,
         )
         if filter_output is None:
+            print(ys)
             ys = jax.vmap(unravel)(ys)
             ys = jax.tree_map(
                 lambda x, y: jnp.concatenate([x[None], y], axis=0), y0, ys

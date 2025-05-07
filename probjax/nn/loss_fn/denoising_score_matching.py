@@ -81,10 +81,13 @@ def control_variate_taylor(
         Array of control variate values
     """
     s = model_fn(*args, **kwargs)
-
     term1 = 2 / std * jnp.sum(eps * s, axis=axis, keepdims=True)
     term2 = jnp.sum(eps**2, axis=axis, keepdims=True) / std**2
-    term3 = args[argnums].shape[axis] / std**2
+    # Multiply dimension of axis to get total number of elements
+    # in the batch
+    shape = args[argnums].shape
+    d = jnp.prod(jnp.array([shape[a] for a in axis]))
+    term3 = d / std**2
 
     cv = jnp.mean(term3 - term1 - term2, axis=axis)
 
@@ -141,8 +144,10 @@ def build_denoising_score_matching_loss(
         shape = args[argnums].shape
         eps = jax.random.normal(rng, shape=shape)
 
+        _axis = kwargs.pop("axis", axis)
+
         loss = base_denoising_score_matching_loss(
-            model_fn, eps, std, weight, axis, argnums, control_variate, *args, **kwargs
+            model_fn, eps, std, weight, _axis, argnums, control_variate, *args, **kwargs
         )
 
         return reduction_fn(loss)
@@ -187,12 +192,14 @@ def build_time_dependent_denoising_score_matching_loss(
         new_args = (times,) + args[:argnums] + (mean,) + args[argnums + 1 :]
         weight = weight_fn(times) if weight_fn is not None else None
 
+        _axis = kwargs.pop("axis", axis)
+
         loss = base_denoising_score_matching_loss(
             model_fn,
             eps,
             std_t,
             weight,
-            axis,
+            _axis,
             argnums + 1,
             control_variate,
             *new_args,

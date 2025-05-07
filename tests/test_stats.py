@@ -16,8 +16,8 @@ from probjax.utils.stats import betaincinv, differential_entropy, gammaincinv
     "a, b",
     list(
         zip(
-            np.random.uniform(0.001, 50.0, size=(100,)),
-            np.random.uniform(0.001, 50.0, size=(100,)),
+            np.random.uniform(0.0001, 10.0, size=(100,)),
+            np.random.uniform(0.0001, 10.0, size=(100,)),
         )
     ),
 )
@@ -29,14 +29,14 @@ def test_betaincinv(a, b):
 
     a_ = jnp.array(a)
     b_ = jnp.array(b)
-    x = jnp.linspace(0.01, 0.99, 1000)
+    x = jnp.linspace(0.005, 0.995, 1000)
     p = betainc(a_, b_, x)
     # Calculate x-values using your betaincinv function
     x = betaincinv(a_, b_, p)
     x_scipy = scipy_betaincinv(a, b, p)
 
     # Should be close to the original p
-    assert jnp.allclose(x, x_scipy, atol=1e-3)
+    assert jnp.allclose(x, x_scipy, atol=1e-4, rtol=1e-4), "Avg absolute error: {}".format(jnp.mean(jnp.abs(x - x_scipy)))
 
 
 @pytest.mark.parametrize("a", np.random.uniform(0.001, 20.0, size=(100,)))

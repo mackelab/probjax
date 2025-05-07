@@ -177,8 +177,8 @@ class EDM(DiffusionDenoiser):
     diffusion: lambda _, t, x: jnp.atleast_1d(jnp.sqrt(2 * t))
     lognoise_mean: float = -1.2
     lognoise_scale: float = 1.2
-    min_noise: float = 0.0002
-    max_noise: float = 80.0
+    min_noise: float = 0.001
+    max_noise: float = 20.0
 
     def c_in(self, t: ArrayLike) -> float:
         total_std = jnp.sqrt(self.std0.value**2 + self.std_fn(t) ** 2)

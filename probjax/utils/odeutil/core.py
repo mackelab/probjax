@@ -74,7 +74,7 @@ def _odeint(
 
     if filter_state is not None:
         with jax.ensure_compile_time_eval():
-            flat_y0_indices = np.arange(len(flat_y0))
+            flat_y0_indices = np.arange(len(flat_y0), dtype=np.int32)
             y0_indices = unravel(flat_y0_indices)
             filtered_indices = filter_state(y0_indices)
             if filtered_indices is None:

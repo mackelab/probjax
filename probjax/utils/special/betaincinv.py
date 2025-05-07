@@ -114,7 +114,7 @@ betaincinv = jax.jit(betaincinv)
 # -------------------------------------------------------------------
 # Newton + Bisection Solver
 # -------------------------------------------------------------------
-def _safe_betaincinv_solve(a, b, p, x_init, max_halley_steps=4, max_bisection_steps=12):
+def _safe_betaincinv_solve(a, b, p, x_init, max_halley_steps=6, max_bisection_steps=15):
     """
     Safe solver using Halley's method with bracket tracking and fallback bisection.
     """

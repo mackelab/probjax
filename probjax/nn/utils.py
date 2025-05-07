@@ -285,7 +285,7 @@ class AffineFuse(nnx.Module, experimental_pytree=True):
         input_dim: int,
         context_dim: int,
         rngs,
-        scale_activation: Callable = jax.nn.sigmoid,
+        scale_activation: Callable | None = None,
         use_bias: bool = False,
     ):
         """This module applies an affine transformation to the input.
@@ -295,15 +295,17 @@ class AffineFuse(nnx.Module, experimental_pytree=True):
             rngs (rngs): Random generator stream.
         """
         self.linear_scale = nnx.Linear(
-            context_dim, input_dim, rngs=rngs, use_bias=use_bias
+            context_dim, input_dim, rngs=rngs, use_bias=use_bias, kernel_init=nnx.initializers.zeros,
         )
         self.linear_bias = nnx.Linear(
-            context_dim, input_dim, rngs=rngs, use_bias=use_bias
+            context_dim, input_dim, rngs=rngs, use_bias=use_bias, kernel_init=nnx.initializers.zeros,
         )
         self.scale_activation = scale_activation
 
     def __call__(self, x: Array, context: Array) -> Array:
-        scale = self.scale_activation(self.linear_scale(context))
+        scale = 1 + self.linear_scale(context)
+        if self.scale_activation is not None:
+            scale = self.scale_activation(scale)
         bias = self.linear_bias(context)
         return x * scale + bias
 
