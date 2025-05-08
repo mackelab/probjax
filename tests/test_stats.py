@@ -2,14 +2,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jax.scipy.special import betainc, gammainc
+from jax.scipy.special import betainc, gammainc, digamma
 from scipy.special import betaincinv as scipy_betaincinv
 from scipy.special import gammaincinv as scipy_gammaincinv
 
 from probjax.distributions.continuous import Gamma, Normal, Uniform
 
 # Import your betaincinv function here
-from probjax.utils.stats import betaincinv, differential_entropy, gammaincinv
+from probjax.utils.stats import betaincinv, differential_entropy, gammaincinv, digammainv, mle_dirichlet
 
 
 @pytest.mark.parametrize(
@@ -81,3 +81,17 @@ def test_differential_entropy(dist, num_samples):
 
     # Should be close to the true entropy
     assert jnp.allclose(h, h_true, atol=1e-1, rtol=2e-1)
+
+
+def test_digammainv():
+    x = jnp.linspace(0., 100.0, 1000)
+    y = digamma(x)
+    x_recovered = jax.vmap(digammainv)(y)
+
+    assert jnp.allclose(x, x_recovered, atol=1e-3), "Avg absolute error: {}".format(jnp.mean(jnp.abs(x - x_recovered)))
+
+@pytest.mark.parametrize("alpha", [jnp.ones(4), jnp.ones(4) * 0.1, np.random.uniform(0.0001, 10.0, size=(4,))])
+def test_mle_dirichlet(alpha):
+    xs = jax.random.dirichlet(jax.random.key(0), alpha, (10000,))
+    alpha_mle = mle_dirichlet(xs)
+    assert jnp.allclose(alpha, alpha_mle, atol=1e-2, rtol=1e-2), "Avg absolute error: {}".format(jnp.mean(jnp.abs(alpha - alpha_mle)))

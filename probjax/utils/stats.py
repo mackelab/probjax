@@ -2,8 +2,25 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.special import digamma, logsumexp
 
-from probjax.utils.special import betaincinv, gammaincinv
+from probjax.utils.special import betaincinv, gammaincinv, digammainv
 
+
+# MLE for dirichlet distribution
+
+def mle_dirichlet(xs, alpha0=None, maxiter=500):
+    if alpha0 is None:
+        alpha0 = jnp.ones(xs.shape[1])
+
+    suff_stat = jnp.log(xs).mean(axis=0)
+
+    def fixed_point_iteration(alpha, _):
+        dialpha = digamma(alpha.sum())
+        new_dialpha = dialpha + suff_stat
+        new_alpha = digammainv(new_dialpha)
+        return new_alpha, None
+
+
+    return jax.lax.scan(fixed_point_iteration, alpha0, None, length=maxiter)[0]
 
 
 # Estimate the differential entropy of a continuous random variable. -------------------
