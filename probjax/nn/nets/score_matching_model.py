@@ -154,12 +154,15 @@ class DiffusionScoreMatcher(nnx.Module, experimental_pytree=True):
         noise_embed = self.c_t(t)
         x_normed = jax.tree_util.tree_map(lambda x: x * self.c_in(t), x)
 
-        x_pred = self.net(noise_embed, x_normed, *args, **kwargs)
+        # Network directly predicts the score (epsilon)
+        score_pred = self.net(noise_embed, x_normed, *args, **kwargs)
 
+        # Scale the output score
         scale_out = self.c_out(t)
-        scale_skip = self.c_skip(t)
+        out = jax.tree_util.tree_map(lambda x: x * scale_out, score_pred)
 
-        out = jax.tree_util.tree_map(lambda x: x * scale_out, x_pred)
+        # Add skip connection for asymptotic behavior (score ~ -x/t^2 for large t)
+        scale_skip = self.c_skip(t)
         if scale_skip is not None:
             out = jax.tree_util.tree_map(lambda x, o: x * scale_skip + o, x, out)
 
@@ -167,6 +170,23 @@ class DiffusionScoreMatcher(nnx.Module, experimental_pytree=True):
             out = jax.tree_util.tree_map(self.last_layer, out)
 
         return out
+
+    def drift(self, t: ArrayLike, x: ArrayLike, *args, **kwargs) -> ArrayLike:
+        """Compute SDE drift term."""
+        scale = self.scale_fn(t)
+        scale_dt = jax.grad(lambda t: jnp.sum(self.scale_fn(t)))(t)
+        return (scale_dt / scale) * x
+
+    def diffusion(self, t: ArrayLike, x: ArrayLike, *args, **kwargs) -> ArrayLike:
+        """Compute SDE diffusion term."""
+        scale = self.scale_fn(t)
+        std = self.std_fn(t)
+        std_dt = jax.grad(lambda t: jnp.sum(self.std_fn(t)))(t)
+        return scale * jnp.sqrt(2 * std_dt * std)
+
+    def score(self, t: ArrayLike, x: ArrayLike, *args, **kwargs) -> ArrayLike:
+        """Compute score of the data distribution."""
+        return self(t, x, *args, **kwargs)
 
     def marginal_std(self, t: ArrayLike) -> ArrayLike:
         """Compute marginal standard deviation."""
@@ -202,28 +222,34 @@ class EDMScoreMatcher(DiffusionScoreMatcher):
 
     scale_fn = lambda _, t: jnp.array([1.0])
     std_fn = lambda _, t: jnp.atleast_1d(t)
-    lognoise_mean: float = -1.2
+    lognoise_mean: float =  0.
     lognoise_scale: float = 1.2
-    min_noise: float = 0.0002
-    max_noise: float = 80.0
+    min_noise: float = 0.01
+    max_noise: float = 15.0
 
     def c_in(self, t: ArrayLike) -> float:
         total_std = jnp.sqrt(self.std0.value**2 + self.std_fn(t) ** 2)
         return 1.0 / total_std
 
     def c_out(self, t: ArrayLike) -> float:
-        std = self.std_fn(t)
-        return std * self.std0.value / jnp.sqrt(self.std0.value**2 + std**2)
+        # For score models, scale proportional to inverse variance
+        # since score ~ -ε/σ
+        return jnp.maximum(1.0 / self.std_fn(t), 100.0)
 
     def c_t(self, t: ArrayLike) -> Array:
         return 0.25 * jnp.log(self.std_fn(t))
 
     def c_skip(self, t: ArrayLike) -> Optional[float]:
-        return self.std0.value / (self.std0.value**2 + self.std_fn(t) ** 2)
+        # For large t, score ~ -x/t^2
+        # This directly encodes the asymptotic behavior of score functions
+        # as noise level increases
+        total_std = jnp.sqrt(self.std0.value**2 + self.std_fn(t) ** 2)
+        return -1.0 / total_std**2
 
     def weight_fn(self, t: ArrayLike) -> float:
-        out_weight = self.c_out(t)
-        return 1.0 / out_weight**2
+        # Weight by variance (std^2) to balance the loss across noise levels
+        # This counters the effect of c_out scaling
+        return self.diffusion(t, 1.0) ** 2
 
     def noise_schedule(self, rng: PRNGKey, shape: Tuple[int, ...]) -> Array:
         logt = (
@@ -244,6 +270,16 @@ class VEScoreMatcher(EDMScoreMatcher):
 
     scale_fn = lambda _, t: jnp.array([1.0])
     std_fn = lambda _, t: jnp.atleast_1d(jnp.sqrt(t))
+
+    def c_out(self, t: ArrayLike) -> float:
+        # For VE score models, scale proportional to inverse variance
+        # since score ~ -ε/t
+        return 1.0 / t
+
+    def c_skip(self, t: ArrayLike) -> Optional[float]:
+        # For VE SDE, std(t) = sqrt(t), so score ~ -x/t
+        # Skip connection directly encodes this asymptotic behavior
+        return -1.0 / t
 
     def noise_schedule(self, rng: PRNGKey, shape: Tuple[int, ...]) -> Array:
         """Compute noise schedule for VE."""
@@ -300,6 +336,24 @@ class VPScoreMatcher(EDMScoreMatcher):
         integral = 0.5 * dbeta * t**2 + beta_min * t
         term = jnp.exp(integral)
         return 1 / jnp.atleast_1d(jnp.sqrt(term))
+
+    def c_out(self, t: ArrayLike) -> float:
+        # For VP score models, scale proportional to inverse of (1-exp(-integral))
+        # This matches the theoretical score scaling for VP SDE
+        beta_min = self.beta_min
+        beta_max = self.beta_max
+        dbeta = beta_max - beta_min
+        integral = 0.5 * dbeta * t**2 + beta_min * t
+        return 1.0 / (1.0 - jnp.exp(-integral))
+
+    def c_skip(self, t: ArrayLike) -> Optional[float]:
+        # For VP SDE, the score asymptotically behaves as -x/(1-exp(-integral))
+        # This skip connection directly encodes this theoretical behavior
+        beta_min = self.beta_min
+        beta_max = self.beta_max
+        dbeta = beta_max - beta_min
+        integral = 0.5 * dbeta * t**2 + beta_min * t
+        return -1.0 / (1.0 - jnp.exp(-integral))
 
     def noise_schedule(self, rng: PRNGKey, shape: Tuple[int, ...]) -> Array:
         """Compute noise schedule for VP."""

@@ -13,6 +13,8 @@ def digammainv(y: Union[float, jnp.ndarray],
     For Ψ(x) = y, use Newton's method with the update:
     x_new = x_old - (Ψ(x) - y) / Ψ'(x)
 
+    NOTE: Digamm is only invertible for x > 0. and this function assumes that y is in the domain of invertibility.
+
     Args:
         y: The value to find the inverse digamma for
         maxiter: Maximum number of Newton iterations (5 iterations typically sufficient for 14 digits)

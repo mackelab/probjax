@@ -169,9 +169,6 @@ def mha_forward_kernel(
         if mask_mod or causal or (segment_ids_ref is not None):
             mask = None
             # Segmend ID and causal can be absorbed into mask_mod
-            if segment_ids_ref is not None:
-                kv_segment_ids = pl.load(segment_ids_ref, (curr_k_slice,))
-                mask = segment_mask(q_segment_ids, kv_segment_ids)
             if causal:
                 span_q = start_q * block_q + jnp.arange(block_q)
                 span_k = start_k * block_k + jnp.arange(block_k)
@@ -180,11 +177,15 @@ def mha_forward_kernel(
                     causal_mask if mask is None else jnp.logical_and(mask, causal_mask)
                 )
             if mask_mod:
+                if segment_ids_ref is not None:
+                    kv_segment_ids = pl.load(segment_ids_ref, (curr_k_slice,))
+                else:
+                    kv_segment_ids = None
                 mask = (
-                    mask_mod(start_b, start_h, span_q, span_k)
+                    mask_mod(start_b, start_h, span_q, span_k, q_segment_ids, kv_segment_ids)
                     if mask is None
                     else jnp.logical_and(
-                        mask, mask_mod(start_b, start_h, span_q, span_k)
+                        mask, mask_mod(start_b, start_h, span_q, span_k, q_segment_ids, kv_segment_ids)
                     )
                 )
             # Apply mask to qk.
@@ -235,31 +236,6 @@ def mha_forward_kernel(
         lse_ref[...] = m_i + jnp.log2(l_i)
     # Write output to dram.
     o_ref[...] = o.astype(o_ref.dtype)
-
-
-# TODO: Adapt this to mask_mod!
-def segment_mask(
-    q_segment_ids: jax.Array,
-    kv_segment_ids: jax.Array,
-):
-    """
-    Creates a mask for segment-based attention.
-
-    Args:
-        q_segment_ids: Segment IDs for the query.
-        kv_segment_ids: Segment IDs for the key/value.
-
-    Returns:
-        A boolean mask indicating valid segments.
-    """
-    # [B, T, 1] or [T, 1]
-    q_segment_ids = jnp.expand_dims(q_segment_ids, axis=-1)
-    # [B, 1, S] or [1, S]
-    if kv_segment_ids.ndim == 1:
-        kv_segment_ids = jnp.expand_dims(kv_segment_ids, axis=0)
-    else:
-        kv_segment_ids = jnp.expand_dims(kv_segment_ids, axis=1)
-    return jnp.equal(q_segment_ids, kv_segment_ids).astype(jnp.bool_)
 
 
 @functools.partial(
@@ -622,16 +598,16 @@ def mha_backward_kernel(
             if score_mod:
                 qk = score_mod(qk, start_b, start_h, span_q, span_k)
             if mask_mod:
+                if segment_ids_ref is not None:
+                    q_segment_ids = pl.load(segment_ids_ref, (curr_q_slice,))
+                else:
+                    q_segment_ids = None
                 qk = jnp.where(
-                    mask_mod(start_b, start_h, span_q, span_k), qk, DEFAULT_MASK_VALUE
+                    mask_mod(start_b, start_h, span_q, span_k, q_segment_ids, kv_segment_ids), qk, DEFAULT_MASK_VALUE
                 )
 
-        if causal or segment_ids_ref is not None:
+        if causal:
             mask = None
-            if segment_ids_ref is not None:
-                q_segment_ids = pl.load(segment_ids_ref, (curr_q_slice,))
-                mask = segment_mask(q_segment_ids, kv_segment_ids)
-
             if causal:
                 span_q = start_q * block_q_dkv + jnp.arange(block_q_dkv)
                 causal_mask = span_q[:, None] >= span_k[None, :]
@@ -706,16 +682,16 @@ def mha_backward_kernel(
             if score_mod:
                 qk = score_mod(qk, start_b, start_h, span_q, span_k)
             if mask_mod:
+                if segment_ids_ref is not None:
+                    q_segment_ids = pl.load(segment_ids_ref, (curr_q_slice,))
+                else:
+                    q_segment_ids = None
                 qk = jnp.where(
-                    mask_mod(start_b, start_h, span_q, span_k), qk, DEFAULT_MASK_VALUE
+                    mask_mod(start_b, start_h, span_q, span_k, q_segment_ids, kv_segment_ids), qk, DEFAULT_MASK_VALUE
                 )
 
-        if causal or segment_ids_ref is not None:
+        if causal:
             mask = None
-            if segment_ids_ref is not None:
-                kv_segment_ids = pl.load(segment_ids_ref, (curr_k_slice,))
-                mask = segment_mask(q_segment_ids, kv_segment_ids)
-
             if causal:
                 span_k = start_k * block_kv_dq + jnp.arange(block_kv_dq)
                 causal_mask = span_q[:, None] >= span_k[None, :]

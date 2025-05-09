@@ -86,6 +86,8 @@ class Transformer(nnx.Module, experimental_pytree=True):
         rngs: nnx.Rngs,
         *,
         enable_cross_attention: bool = False,
+        normalize_qk_attn: bool = False,
+        normalize_qk_cross_attn: bool = False,
         context_dim: Optional[int] = None,
         dropout_rate: Optional[float] = None,
         widening_factor: int = 4,
@@ -172,6 +174,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
                 kernel_init=self.initializer,
                 dropout_rate=dropout_rate if dropout_rate is not None else 0.0,
                 attention_fn=attention_fn,
+                normalize_qk=normalize_qk_attn,
             )
             for _ in range(num_layers)
         ]
@@ -187,6 +190,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
                     kernel_init=self.initializer,
                     dropout_rate=dropout_rate if dropout_rate is not None else 0.0,
                     attention_fn=attention_fn,
+                    normalize_qk=normalize_qk_cross_attn,
                 )
                 for _ in range(num_layers)
             ]
