@@ -142,10 +142,6 @@ def _rv_transpose_rule(*args, **kwargs):
 def _rv_batching_rule(axis_data, args, in_dims, **params):
     sampling_fn_jaxpr = params.pop("sampling_fn_jaxpr")
     log_prob_fn_jaxpr = params.pop("log_prob_fn_jaxpr")
-    # # We have to batch the jaxprs. For that lets first get the invals and outvals
-    # in_avals1 = forward_jaxpr.in_avals
-
-    # in_avals2 = inverse_jaxpr.in_avals
 
     # We will batch all the inputs and outputs  (maybe do not batch consts ... )
     args = [
@@ -183,7 +179,7 @@ def _rv_batching_rule(axis_data, args, in_dims, **params):
     return out, out_dims
 
 
-def custom_inverse_jvp(primals, tangents, sampling_fn_jaxpr, **params):
+def custom_rv_jvp(primals, tangents, sampling_fn_jaxpr, **params):
     nonzeros = [type(t) is not ad_util.Zero for t in tangents]
     forward_jvp_jaxpr, forward_out_nz = ad.jvp_jaxpr(
         sampling_fn_jaxpr, nonzeros, instantiate=False
@@ -206,4 +202,4 @@ rv_p.def_abstract_eval(_rv_abstract_eval)
 batching.axis_primitive_batchers[rv_p] = partial(_rv_batching_rule, None)
 mlir.register_lowering(rv_p, _rv_lowering)
 ad.primitive_transposes[rv_p] = _rv_transpose_rule
-ad.primitive_jvps[rv_p] = custom_inverse_jvp
+ad.primitive_jvps[rv_p] = custom_rv_jvp
