@@ -5,15 +5,14 @@ Wrapped Cauchy Distribution (:mod:`probjax.stats.wrapcauchy`)
 This module contains the Wrapped Cauchy distribution.
 """
 
+from typing import Tuple
+
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray
-from typing import Tuple, Dict, Optional
+from jaxtyping import PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
-
-import jax
 
 __all__ = ["wrapcauchy"]
 
@@ -25,9 +24,9 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
     It is the circular analogue of the Cauchy distribution. The probability density function is:
 
     .. math::
-        f(x; \mu, \gamma) = \frac{1}{2\pi} \frac{1-\gamma^2}{1+\gamma^2-2\gamma\cos(x-\mu)}
+        f(x; \\mu, \\gamma) = \frac{1}{2\\pi} \frac{1-\\gamma^2}{1+\\gamma^2-2\\gamma\\cos(x-\\mu)}
 
-    where :math:`\mu` is the location parameter and :math:`\gamma` is the concentration parameter.
+    where :math:`\\mu` is the location parameter and :math:`\\gamma` is the concentration parameter.
 
     Parameters
     ----------

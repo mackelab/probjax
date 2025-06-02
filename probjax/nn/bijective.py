@@ -18,7 +18,7 @@ def _normalize_knot_slopes(
     # whenever the unnormalized knot slope is equal to 0.
     if min_knot_slope >= 1.0:
         raise ValueError(
-            f"The minimum knot slope must be less than 1; got" f" {min_knot_slope}."
+            f"The minimum knot slope must be less than 1; got {min_knot_slope}."
         )
     min_knot_slope = jnp.array(min_knot_slope, dtype=unnormalized_knot_slopes.dtype)
     offset = jnp.log(jnp.exp(1.0 - min_knot_slope) - 1.0)

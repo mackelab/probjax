@@ -5,7 +5,7 @@ Dirichlet Distribution (:mod:`probjax.stats.dirichlet`)
 This module contains the Dirichlet distribution.
 """
 
-from typing import Optional, Tuple
+from typing import Tuple
 
 import jax
 import jax.numpy as jnp
@@ -160,7 +160,9 @@ class dirichlet_gen(rv_continuous, rv_exponential_family):
         """
         alpha_sum = jnp.sum(alpha, axis=-1, keepdims=True)
         valid = alpha > 1
-        return jnp.where(valid, (alpha - 1) / (alpha_sum - alpha.shape[-1]), 0)
+        mode = jnp.where(valid, (alpha - 1) / (alpha_sum - alpha.shape[-1]), 1e-20)
+        # Mode must sum to 1
+        return mode / jnp.sum(mode, axis=-1, keepdims=True)
 
     @classmethod
     def var(cls, alpha: Array, **kwargs):
@@ -305,5 +307,6 @@ class dirichlet_gen(rv_continuous, rv_exponential_family):
         rv._batch_shape = alpha.shape[:-1]
         rv._event_shape = alpha.shape[-1:]
         return rv
+
 
 dirichlet = dirichlet_gen(name="dirichlet")

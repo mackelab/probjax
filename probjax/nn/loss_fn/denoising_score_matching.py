@@ -138,9 +138,9 @@ def build_denoising_score_matching_loss(
     """
 
     def loss_fn(*args, rng=None, **kwargs):
-        assert (
-            rng is not None
-        ), "loss_fn does require rngs, pass them to function kwargs."
+        assert rng is not None, (
+            "loss_fn does require rngs, pass them to function kwargs."
+        )
         shape = args[argnums].shape
         eps = jax.random.normal(rng, shape=shape)
 
@@ -182,9 +182,9 @@ def build_time_dependent_denoising_score_matching_loss(
     """
 
     def loss_fn(times, *args, rng=None, **kwargs):
-        assert (
-            rng is not None
-        ), "loss_fn does require rngs, pass them to function kwargs."
+        assert rng is not None, (
+            "loss_fn does require rngs, pass them to function kwargs."
+        )
         x = args[argnums]
         mean = mean_fn(times, x)
         std_t = std_fn(times, x)

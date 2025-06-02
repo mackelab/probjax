@@ -119,9 +119,9 @@ def build_sliced_score_matching_loss(
         Returns:
             Scalar loss value
         """
-        assert (
-            rng is not None
-        ), "loss_fn does require rngs, pass them to function kwargs."
+        assert rng is not None, (
+            "loss_fn does require rngs, pass them to function kwargs."
+        )
         vmap_in_args = (0,) * len(args)
         losses = base_sliced_score_matching_loss(
             value_and_jvp,
@@ -182,9 +182,9 @@ def build_time_dependent_sliced_score_matching_loss(
         Returns:
             Scalar loss value
         """
-        assert (
-            rng is not None
-        ), "loss_fn does require rngs, pass them to function kwargs."
+        assert rng is not None, (
+            "loss_fn does require rngs, pass them to function kwargs."
+        )
         rng_samples, rng_slices = jax.random.split(rng)
         mean_t = mean_fn(times, xs_target)
         std_t = std_fn(times, xs_target)

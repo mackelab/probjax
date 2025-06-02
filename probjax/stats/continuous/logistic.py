@@ -5,16 +5,14 @@ Logistic Distribution (:mod:`probjax.stats.logistic`)
 This module contains the Logistic distribution.
 """
 
+from typing import Tuple
+
 import jax.numpy as jnp
-from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray
-from typing import Tuple, Dict, Optional
+from jax.scipy.stats import logistic as _logistic
+from jaxtyping import PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
-
-import jax
-from jax.scipy.stats import logistic as _logistic
 
 __all__ = ["logistic"]
 
@@ -27,7 +25,7 @@ class logistic_gen(rv_continuous, rv_exponential_family):
     density function is:
 
     .. math::
-        f(x; \mu, s) = \frac{e^{-(x-\mu)/s}}{s(1+e^{-(x-\mu)/s})^2}
+        f(x; \\mu, s) = \frac{e^{-(x-\\mu)/s}}{s(1+e^{-(x-\\mu)/s})^2}
 
     Parameters
     ----------

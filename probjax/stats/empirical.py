@@ -5,12 +5,11 @@ Empirical Distribution (:mod:`probjax.stats.empirical`)
 This module implements the Empirical distribution, which puts probability mass on observed data points.
 """
 
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Optional, Tuple
 
-import jax
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Array, Float, Int, PRNGKeyArray, ArrayLike
+from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_discrete, rv_discrete_frozen
 from probjax.stats.constraints import simplex

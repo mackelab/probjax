@@ -5,16 +5,14 @@ Pareto Distribution (:mod:`probjax.stats.pareto`)
 This module contains the Pareto distribution.
 """
 
+from typing import Tuple
+
 import jax.numpy as jnp
-from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray, ArrayLike
-from typing import Tuple, Dict, Optional
+from jax.scipy.stats import pareto as _pareto
+from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
-
-import jax
-from jax.scipy.stats import pareto as _pareto
 
 __all__ = ["pareto"]
 
@@ -29,7 +27,7 @@ class pareto_gen(rv_continuous, rv_exponential_family):
     .. math::
         f(x; b, \alpha) = \frac{\alpha b^\alpha}{x^{\alpha+1}}
 
-    for :math:`x \geq b` and :math:`\alpha > 0`.
+    for :math:`x \\geq b` and :math:`\alpha > 0`.
 
     Parameters
     ----------

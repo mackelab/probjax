@@ -6,15 +6,15 @@ This module implements mixture distributions that combine multiple component dis
 with mixing probabilities.
 """
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Array, Float, Int, PRNGKeyArray, ArrayLike
+from jaxtyping import ArrayLike, PRNGKeyArray
 
-from probjax.stats.base import rv_generic, rv_continuous_frozen, rv_discrete_frozen
-from probjax.stats.constraints import simplex, distribution
+from probjax.stats.base import rv_continuous_frozen, rv_discrete_frozen, rv_generic
+from probjax.stats.constraints import distribution, simplex
 
 __all__ = ["mixture"]
 
@@ -145,24 +145,39 @@ class mixture_gen(rv_generic):
 
     @classmethod
     def mode(cls, mixing_probs, components, **kwds):
-        """Mode of the mixture distribution."""
-        modes = [comp.mode() for comp in components]
-        logpdfs = jnp.stack(
-            [comp.logpdf(mode) for mode, comp in zip(modes, components)], axis=-1
-        )
-        modes = jnp.stack(modes, axis=-1)
-        scaled_logpdfs = logpdfs + jnp.log(mixing_probs)
-        idx = jnp.argmax(scaled_logpdfs, axis=-1)
-        while idx.ndim < modes.ndim:
-            idx = idx[..., None]
-        mode = jnp.take_along_axis(modes, idx, axis=-1)
-        return jnp.squeeze(mode, axis=-1)
+        """Mode of the mixture distribution.
+
+        For a mixture distribution with unimodal components, the true mode lies within
+        the convex hull of the component modes. We use this fact to constrain our
+        optimization search space.
+        """
+        # Actually not that straightforward to compute the mode of a mixture distribution
+        raise NotImplementedError("Mode not implemented for mixture distribution")
+        # Get component modes as vertices of the convex hull
+        # modes = jnp.stack([comp.mode() for comp in components], axis=0)
+
+        # # Define objective function (negative log probability)
+        # def objective(x):
+        #     return -cls.logpdf(x, mixing_probs, components).sum()
+
+        # # Use BFGS optimization to find the mode
+        # minimize_fn = partial(
+        #     minimize, objective, method='BFGS', options={'maxiter': 10}
+        # )
+        # result = jax.vmap(minimize_fn)(modes)
+        # modes = result.x
+        # logpdfs = result.fun
+        # idxs = jnp.argmax(logpdfs, axis=0)
+        # while idxs.ndim < modes.ndim:
+        #     idxs = idxs[..., None]
+        # mode = jnp.take_along_axis(modes, idxs, axis=0)
+
+        # return jnp.squeeze(mode, axis=-1)
 
     @classmethod
     def entropy(cls, mixing_probs, components, **kwds):
         """Entropy of the mixture distribution."""
-        samples = cls.rvs(jax.random.PRNGKey(0), (10000,), mixing_probs, components)
-        return -jnp.mean(cls.logpdf(samples, mixing_probs, components))
+        raise NotImplementedError("Entropy not implemented for mixture distribution")
 
     @classmethod
     def fit(

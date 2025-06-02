@@ -1,14 +1,13 @@
+from typing import Tuple
+
+import jax
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray, ArrayLike
-from typing import Tuple
+from jax.scipy.stats import chi2 as _chi2
+from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous
 from probjax.stats.constraints import real, strict_positive, strict_positive_integer
-
-import jax
-from jax.scipy.stats import chi2 as _chi2
-import jax.scipy.special as jss
 
 __all__ = ["chi2"]
 

@@ -5,16 +5,14 @@ Truncated Normal Distribution (:mod:`probjax.stats.truncnorm`)
 This module contains the Truncated Normal distribution.
 """
 
+from typing import Tuple
+
 import jax.numpy as jnp
-from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray
-from typing import Tuple, Dict, Optional
+from jax.scipy.stats import truncnorm as _truncnorm
+from jaxtyping import PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
-
-import jax
-from jax.scipy.stats import truncnorm as _truncnorm
 
 __all__ = ["truncnorm"]
 
@@ -26,10 +24,10 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
     on both sides. The probability density function is:
 
     .. math::
-        f(x; \mu, \sigma, a, b) = \frac{\phi(\frac{x-\mu}{\sigma})}
-        {\sigma(\Phi(\frac{b-\mu}{\sigma}) - \Phi(\frac{a-\mu}{\sigma}))}
+        f(x; \\mu, \\sigma, a, b) = \frac{\\phi(\frac{x-\\mu}{\\sigma})}
+        {\\sigma(\\Phi(\frac{b-\\mu}{\\sigma}) - \\Phi(\frac{a-\\mu}{\\sigma}))}
 
-    where :math:`\phi` is the standard normal PDF and :math:`\Phi` is the standard
+    where :math:`\\phi` is the standard normal PDF and :math:`\\Phi` is the standard
     normal CDF.
 
     Parameters

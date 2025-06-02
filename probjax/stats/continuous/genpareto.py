@@ -5,16 +5,14 @@ Generalized Pareto Distribution (:mod:`probjax.stats.genpareto`)
 This module contains the Generalized Pareto distribution.
 """
 
+from typing import Tuple
+
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray
-from typing import Tuple, Dict, Optional
+from jaxtyping import PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
-
-import jax
-from jax.scipy.special import gamma, gammainc, gammaincc
 
 __all__ = ["genpareto"]
 

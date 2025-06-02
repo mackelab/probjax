@@ -3,9 +3,9 @@ from typing import Any, Callable, Optional, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jaxtyping import Key, PyTree
-import numpy as np
 
 from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
 from probjax.utils.sdeutil.base import get_method
@@ -115,9 +115,9 @@ def _sdeint(
     """
     if dtype is not None:
         ts = ts.astype(dtype)
-        y0 = jax.tree_map(lambda x: x.astype(dtype), y0)
+        y0 = jax.tree_util.tree_map(lambda x: x.astype(dtype), y0)
 
-    y0 = jax.tree_map(jnp.atleast_1d, y0)
+    y0 = jax.tree_util.tree_map(jnp.atleast_1d, y0)
     ts = jnp.atleast_1d(ts)
 
     flat_y0, unravel = ravel_args(y0)
@@ -160,17 +160,17 @@ def _sdeint(
             check_points=check_points,
         )
         if filter_output is None:
-            #print(ys)
-            #ys = jax.vmap(unravel)(ys)
-            ys = jax.tree_map(
+            # print(ys)
+            # ys = jax.vmap(unravel)(ys)
+            ys = jax.tree_util.tree_map(
                 lambda x, y: jnp.concatenate([x[None], y], axis=0), y0, ys
             )
         else:
             y0_filtered = filter_output(y0)
             _, unravel_filtered = ravel_args(y0_filtered)
-            ys = jax.tree_map(jnp.atleast_1d, ys)
+            ys = jax.tree_util.tree_map(jnp.atleast_1d, ys)
             ys = jax.vmap(unravel_filtered)(ys)
-            ys = jax.tree_map(
+            ys = jax.tree_util.tree_map(
                 lambda x, y: jnp.concatenate([x[None], y], axis=0), y0_filtered, ys
             )
         if return_state:
@@ -193,26 +193,26 @@ def _sdeint(
         if filter_output is None:
             print(ys)
             ys = jax.vmap(unravel)(ys)
-            ys = jax.tree_map(
+            ys = jax.tree_util.tree_map(
                 lambda x, y: jnp.concatenate([x[None], y], axis=0), y0, ys
             )
             dWt = jax.vmap(unravel)(dWt)
-            dWt0 = jax.tree_map(jnp.zeros_like, y0)
-            dWt = jax.tree_map(
+            dWt0 = jax.tree_util.tree_map(jnp.zeros_like, y0)
+            dWt = jax.tree_util.tree_map(
                 lambda x, y: jnp.concatenate([x[None], y], axis=0), dWt0, dWt
             )
         else:
             y0_filtered = filter_output(y0)
             _, unravel_filtered = ravel_args(y0_filtered)
-            ys = jax.tree_map(jnp.atleast_1d, ys)
+            ys = jax.tree_util.tree_map(jnp.atleast_1d, ys)
             ys = jax.vmap(unravel_filtered)(ys)
-            ys = jax.tree_map(
+            ys = jax.tree_util.tree_map(
                 lambda x, y: jnp.concatenate([x[None], y], axis=0), y0_filtered, ys
             )
-            dWt = jax.tree_map(jnp.atleast_1d, dWt)
+            dWt = jax.tree_util.tree_map(jnp.atleast_1d, dWt)
             dWt = jax.vmap(unravel_filtered)(dWt)
-            dWt0 = jax.tree_map(jnp.zeros_like, y0_filtered)
-            dWt = jax.tree_map(
+            dWt0 = jax.tree_util.tree_map(jnp.zeros_like, y0_filtered)
+            dWt = jax.tree_util.tree_map(
                 lambda x, y: jnp.concatenate([x[None], y], axis=0), dWt0, dWt
             )
         if return_state:

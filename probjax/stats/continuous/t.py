@@ -5,7 +5,7 @@ Student's t-Distribution (:mod:`probjax.stats.t`)
 This module contains the Student's t-distribution.
 """
 
-from typing import Optional, Tuple
+from typing import Tuple
 
 import jax
 import jax.numpy as jnp
@@ -264,12 +264,16 @@ class t_gen(rv_continuous, rv_exponential_family):
             Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
+        scale : float, optional
+            Scale parameter. Default is 1.
 
         Returns
         -------
         mode : float
             Mode of the distribution
         """
+        # The mode of a t-distribution is always at its location parameter
+        # This is because the PDF is symmetric around loc and has a single maximum
         return jnp.asarray(loc)
 
     @classmethod

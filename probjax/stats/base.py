@@ -6,15 +6,13 @@ This module contains the base classes for continuous and discrete random variabl
 that provide a SciPy-like API. This closely follows the structure of scipy.stats._distn_infrastructure.
 """
 
-from typing import Any, Dict, Optional, Sequence, Tuple, Union, Callable
-import functools
-import numpy as np
+from abc import ABC, abstractmethod
+from typing import Dict, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-from jax import random
-from jaxtyping import Array, Float, Int, PRNGKeyArray, ArrayLike
-from abc import ABC, abstractmethod
+import numpy as np
+from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.constraints import Constraint
 
@@ -353,7 +351,6 @@ class rv_continuous(rv_generic):
         """Log of the probability density function at x of the given RV."""
         raise NotImplementedError("Logpdf is not implemented for this distribution.")
 
-
     @classmethod
     def fit(cls, data: ArrayLike, **kwds):
         """Maximum likelihood estimation of distribution parameters.
@@ -469,8 +466,8 @@ class FrozenDistributionMeta(type):
             if hasattr(impl_class, 'name'):
                 namespace['name'] = impl_class.name
 
-
         return super().__new__(mcs, name, bases, namespace)
+
 
 class rv_frozen(metaclass=FrozenDistributionMeta):
     def __init__(
@@ -713,7 +710,6 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
     def support(self):
         """Support of the frozen distribution."""
         return self.dist.support(*self.args, **self.kwds)
-
 
 
 class rv_discrete_frozen(rv_frozen):

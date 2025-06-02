@@ -5,17 +5,17 @@ Beta Distribution (:mod:`probjax.stats.beta`)
 This module contains the Beta distribution.
 """
 
-import jax.numpy as jnp
-from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray, ArrayLike
-from typing import Tuple, Dict, Optional
-
-from probjax.stats.base import rv_continuous, rv_exponential_family
-from probjax.stats.constraints import real, strict_positive, unit_interval
+from typing import Tuple
 
 import jax
-from jax.scipy.stats import beta as _beta
+import jax.numpy as jnp
+from jax import random
 from jax.scipy.special import digamma, gammaln
+from jax.scipy.stats import beta as _beta
+from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
+
+from probjax.stats.base import rv_continuous, rv_exponential_family
+from probjax.stats.constraints import strict_positive, unit_interval
 from probjax.utils.special import betaincinv
 
 __all__ = ["beta"]

@@ -5,16 +5,16 @@ Skew Normal Distribution (:mod:`probjax.stats.skewnorm`)
 This module contains the Skew Normal distribution.
 """
 
+from typing import Tuple
+
+import jax
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray
-from typing import Tuple, Dict, Optional
+from jax.scipy.special import erf
+from jaxtyping import PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
-
-import jax
-from jax.scipy.special import erf, erfc
 
 __all__ = ["skewnorm"]
 
@@ -27,8 +27,8 @@ class skewnorm_gen(rv_continuous, rv_exponential_family):
     The probability density function is:
 
     .. math::
-        f(x; xi, omega, alpha) = \frac{2}{\omega} \phi(\frac{x-xi}{\omega})
-        \Phi(\alpha \frac{x-xi}{\omega})
+        f(x; xi, omega, alpha) = \frac{2}{\\omega} \\phi(\frac{x-xi}{\\omega})
+        \\Phi(\alpha \frac{x-xi}{\\omega})
 
     where phi is the standard normal PDF, Phi is the standard normal CDF,
     xi is the location parameter, omega is the scale parameter, and alpha

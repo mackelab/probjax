@@ -100,9 +100,9 @@ def build_denoising_loss(
     """
 
     def loss_fn(*args, rng=None, loss_mask=None, **kwargs):
-        assert (
-            rng is not None
-        ), "loss_fn does require rngs, pass them to function kwargs."
+        assert rng is not None, (
+            "loss_fn does require rngs, pass them to function kwargs."
+        )
         shape = args[argnums].shape
         eps = jax.random.normal(rng, shape=shape)
 
@@ -156,9 +156,9 @@ def build_time_dependent_denoising_loss(
     """
 
     def loss_fn(t, *args, rng=None, loss_mask=None, **kwargs):
-        assert (
-            rng is not None
-        ), "loss_fn does require rngs, pass them to function kwargs."
+        assert rng is not None, (
+            "loss_fn does require rngs, pass them to function kwargs."
+        )
         x = args[argnums]
         mean = mean_fn(t, x)
         std_t = std_fn(t, x)

@@ -5,16 +5,15 @@ Von Mises Distribution (:mod:`probjax.stats.vonmises`)
 This module contains the Von Mises distribution.
 """
 
+from typing import Tuple
+
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray
-from typing import Tuple, Dict, Optional
+from jax.scipy.special import i0, i1
+from jaxtyping import PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
-
-import jax
-from jax.scipy.special import i0, i1
 
 __all__ = ["vonmises"]
 
@@ -27,9 +26,9 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
     circular analogue of the normal distribution. The probability density function is:
 
     .. math::
-        f(x; \mu, \kappa) = \frac{e^{\kappa\cos(x-\mu)}}{2\pi I_0(\kappa)}
+        f(x; \\mu, \\kappa) = \frac{e^{\\kappa\\cos(x-\\mu)}}{2\\pi I_0(\\kappa)}
 
-    where :math:`\mu` is the location parameter and :math:`\kappa` is the concentration
+    where :math:`\\mu` is the location parameter and :math:`\\kappa` is the concentration
     parameter, and :math:`I_0` is the modified Bessel function of order 0.
 
     Parameters

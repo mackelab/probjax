@@ -5,16 +5,15 @@ Cauchy Distribution (:mod:`probjax.stats.cauchy`)
 This module contains the Cauchy distribution.
 """
 
-import jax
+from typing import Tuple
+
 import jax.numpy as jnp
+import jax.scipy.stats.cauchy as _cauchy
 from jax import random
 from jaxtyping import Array, Float, PRNGKeyArray
-from typing import Tuple, Dict, Optional
 
 from probjax.stats.base import rv_continuous
 from probjax.stats.constraints import real, strict_positive
-
-import jax.scipy.stats.cauchy as _cauchy
 
 __all__ = ["cauchy"]
 

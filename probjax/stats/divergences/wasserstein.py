@@ -1,3 +1,7 @@
+"""
+Wasserstein distance implementations.
+"""
+
 from functools import partial
 
 import jax
@@ -7,10 +11,20 @@ from ott.geometry import costs, pointcloud
 from ott.problems.linear import linear_problem
 from ott.solvers.linear import sinkhorn
 
-from probjax import distributions as dist
-from probjax.distributions.divergences.divergence import divergence, register_divergence
+from probjax.stats import (
+    # Discrete distributions
+    multivariate_normal,
+    # Continuous distributions
+    norm,
+    rv_generic,
+)
+from probjax.stats.divergences.base import divergence, register_divergence
 
-__all__ = ["wasserstein_distance"]
+__all__ = [
+    "wasserstein_distance",
+    "sliced_wasserstein_distance",
+    "max_slice_wasserstein_distance",
+]
 
 NAME = "wasserstein"
 NAME_SLICED = "sliced_wasserstein"
@@ -21,15 +35,15 @@ def wasserstein_distance(p, q, mc_samples=0, key=None, order=2, **kwargs):
     """Compute the Wasserstein distance between two distributions.
 
     Args:
-        p: The first distribution.
-        q: The second distribution.
-        mc_samples: Number of Monte Carlo samples.
-        key: JAX random key.
-        order: The order of the Wasserstein distance.
-        **kwargs: Additional keyword arguments.
+        p (rv_generic): First distribution
+        q (rv_generic): Second distribution
+        mc_samples (int): Number of Monte Carlo samples
+        key (jax.Array): JAX random key
+        order (int): The order of the Wasserstein distance
+        **kwargs: Additional keyword arguments
 
     Returns:
-        The Wasserstein distance between the two distributions.
+        jax.Array: The Wasserstein distance between the two distributions
     """
     return divergence(NAME, p, q, mc_samples=mc_samples, key=key, order=order, **kwargs)
 
@@ -40,16 +54,16 @@ def sliced_wasserstein_distance(
     """Compute the Sliced Wasserstein distance between two distributions.
 
     Args:
-        p: The first distribution.
-        q: The second distribution.
-        num_slices: Number of slices.
-        mc_samples: Number of Monte Carlo samples.
-        key: JAX random key.
-        order: The order of the Wasserstein distance.
-        **kwargs: Additional keyword arguments.
+        p (rv_generic): First distribution
+        q (rv_generic): Second distribution
+        num_slices (int): Number of slices
+        mc_samples (int): Number of Monte Carlo samples
+        key (jax.Array): JAX random key
+        order (int): The order of the Wasserstein distance
+        **kwargs: Additional keyword arguments
 
     Returns:
-        The Sliced Wasserstein distance between the two distributions.
+        jax.Array: The Sliced Wasserstein distance between the two distributions
     """
     return divergence(
         NAME_SLICED,
@@ -69,16 +83,16 @@ def max_slice_wasserstein_distance(
     """Compute the Max Sliced Wasserstein distance between two distributions.
 
     Args:
-        p: The first distribution.
-        q: The second distribution.
-        num_slices: Number of slices.
-        mc_samples: Number of Monte Carlo samples.
-        key: JAX random key.
-        order: The order of the Wasserstein distance.
-        **kwargs: Additional keyword arguments.
+        p (rv_generic): First distribution
+        q (rv_generic): Second distribution
+        num_slices (int): Number of slices
+        mc_samples (int): Number of Monte Carlo samples
+        key (jax.Array): JAX random key
+        order (int): The order of the Wasserstein distance
+        **kwargs: Additional keyword arguments
 
     Returns:
-        The Max Sliced Wasserstein distance between the two distributions.
+        jax.Array: The Max Sliced Wasserstein distance between the two distributions
     """
     return divergence(
         NAME_MAX_SLICE,
@@ -94,8 +108,8 @@ def max_slice_wasserstein_distance(
 
 def _1d_wasserstein(p, q, mc_samples=0, key=None, order=2):
     eval_points = jnp.linspace(0, 1, mc_samples)
-    f1 = p.icdf(eval_points)
-    f2 = q.icdf(eval_points)
+    f1 = p.ppf(eval_points)
+    f2 = q.ppf(eval_points)
     dist = jnp.abs(f1 - f2) ** order
     return jnp.trapz(dist, eval_points)
 
@@ -159,52 +173,52 @@ def __max_slice_wasserstein_generic(
 
 def __wasserstein_generic(p, q, mc_samples=0, key=None, order=2, **kwargs):
     key1, key2 = jax.random.split(key, 2)
-    samples1 = p.sample(key1, (mc_samples,))
-    samples2 = q.sample(key2, (mc_samples,))
+    samples1 = p.rvs(key1, (mc_samples,))
+    samples2 = q.rvs(key2, (mc_samples,))
 
     epsilon = kwargs.get("epsilon", 0.1)
     cost = _ot_cost(samples1, samples2, order=order, epsilon=epsilon)
     return (cost * order) ** (1 / order)
 
 
-@register_divergence(NAME_SLICED, dist.Distribution, dist.Distribution)
+@register_divergence(NAME_SLICED, rv_generic, rv_generic)
 def _sliced_wasserstein_generic(
     p, q, num_slices=100, mc_samples=0, key=None, order=2, **kwargs
 ):
     key1, key2 = jax.random.split(key, 2)
-    samples1 = p.sample(key1, (mc_samples,))
-    samples2 = q.sample(key2, (mc_samples,))
+    samples1 = p.rvs(key1, (mc_samples,))
+    samples2 = q.rvs(key2, (mc_samples,))
 
     return __sliced_wasserstein_generic(
         samples1, samples2, num_slices, order=order, key=key, **kwargs
     )
 
 
-@register_divergence(NAME_MAX_SLICE, dist.Distribution, dist.Distribution)
+@register_divergence(NAME_MAX_SLICE, rv_generic, rv_generic)
 def _max_sliced_wasserstein(p, q, mc_samples=0, key=None, order=2, **kwargs):
     key1, key2, key3 = jax.random.split(key, 3)
-    samples1 = p.sample(key1, (mc_samples,))
-    samples2 = q.sample(key2, (mc_samples,))
+    samples1 = p.rvs(key1, (mc_samples,))
+    samples2 = q.rvs(key2, (mc_samples,))
 
     return __max_slice_wasserstein_generic(
         samples1, samples2, order=order, key=key3, **kwargs
     )
 
 
-@register_divergence(NAME, dist.Distribution, dist.Distribution)
+@register_divergence(NAME, rv_generic, rv_generic)
 def _wasserstein_generic(p, q, mc_samples=0, key=None, order=2, **kwargs):
     """Compute the Wasserstein distance between two generic distributions.
 
     Args:
-        p: The first distribution.
-        q: The second distribution.
-        mc_samples: Number of Monte Carlo samples.
-        key: JAX random key.
-        order: The order of the Wasserstein distance.
-        **kwargs: Additional keyword arguments.
+        p (rv_generic): First distribution
+        q (rv_generic): Second distribution
+        mc_samples (int): Number of Monte Carlo samples
+        key (jax.Array): JAX random key
+        order (int): The order of the Wasserstein distance
+        **kwargs: Additional keyword arguments
 
     Returns:
-        The Wasserstein distance between the two distributions.
+        jax.Array: The Wasserstein distance between the two distributions
     """
     if p.event_shape != q.event_shape:
         raise ValueError(
@@ -227,7 +241,7 @@ def _wasserstein_generic(p, q, mc_samples=0, key=None, order=2, **kwargs):
         )
 
 
-@register_divergence(NAME, dist.Normal, dist.Normal)
+@register_divergence(NAME, norm, norm)
 def _wasserstein_normal_normal(p, q, mc_samples=0, key=None, order=2):
     if order == 2:
         t1 = (p.mean - q.mean) ** 2
@@ -237,7 +251,7 @@ def _wasserstein_normal_normal(p, q, mc_samples=0, key=None, order=2):
         return __wasserstein_generic(p, q, mc_samples=mc_samples, key=key, order=order)
 
 
-@register_divergence(NAME, dist.MultivariateNormal, dist.MultivariateNormal)
+@register_divergence(NAME, multivariate_normal, multivariate_normal)
 def _wasserstein_multivariate_normal_multivariate_normal(
     p, q, mc_samples=0, key=None, order=2
 ):
@@ -250,4 +264,4 @@ def _wasserstein_multivariate_normal_multivariate_normal(
         t2 = jnp.linalg.trace(t2)
         return t1 + t2
     else:
-        return _wasserstein_generic(p, q, mc_samples=mc_samples, key=key, order=order)
+        return __wasserstein_generic(p, q, mc_samples=mc_samples, key=key, order=order)

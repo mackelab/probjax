@@ -5,17 +5,16 @@ Binomial Distribution (:mod:`probjax.stats.binomial`)
 This module implements the Binomial distribution.
 """
 
-from typing import Any, Dict, Optional, Tuple
-import functools
+from typing import Tuple
 
 import jax
 import jax.numpy as jnp
 from jax import random
 from jax.scipy.stats import binom
-from jaxtyping import Array, Float, Int, PRNGKeyArray, ArrayLike
+from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_discrete, rv_exponential_family
-from probjax.stats.constraints import unit_interval, strict_positive_integer
+from probjax.stats.constraints import strict_positive_integer, unit_interval
 
 __all__ = ["binomial"]
 

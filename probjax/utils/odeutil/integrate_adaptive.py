@@ -12,8 +12,6 @@ from probjax.utils.odeutil.adaptive import AdaptiveParams, StepSizeAdapter
 from probjax.utils.odeutil.util import (
     initial_step_size,
     interp_fit,
-    mean_error_ratio,
-    optimal_step_size,
 )
 
 map = safe_map

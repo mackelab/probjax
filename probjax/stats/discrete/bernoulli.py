@@ -5,12 +5,11 @@ Bernoulli Distribution (:mod:`probjax.stats.bernoulli`)
 This module implements the Bernoulli distribution.
 """
 
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Tuple
 
-import jax
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Array, Float, Int, PRNGKeyArray, ArrayLike
+from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_discrete, rv_exponential_family
 from probjax.stats.constraints import unit_interval

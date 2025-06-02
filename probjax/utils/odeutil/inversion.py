@@ -1,10 +1,8 @@
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jaxtyping import PyTree
 
 from probjax.utils.odeutil.core import _odeint
-from probjax.utils.odeutil.adaptive import AdaptiveParams
 
 
 def _inv_odeint(drift, ys: Array, ts: Array, *args, **kwargs):

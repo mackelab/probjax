@@ -182,10 +182,20 @@ def mha_forward_kernel(
                 else:
                     kv_segment_ids = None
                 mask = (
-                    mask_mod(start_b, start_h, span_q, span_k, q_segment_ids, kv_segment_ids)
+                    mask_mod(
+                        start_b, start_h, span_q, span_k, q_segment_ids, kv_segment_ids
+                    )
                     if mask is None
                     else jnp.logical_and(
-                        mask, mask_mod(start_b, start_h, span_q, span_k, q_segment_ids, kv_segment_ids)
+                        mask,
+                        mask_mod(
+                            start_b,
+                            start_h,
+                            span_q,
+                            span_k,
+                            q_segment_ids,
+                            kv_segment_ids,
+                        ),
                     )
                 )
             # Apply mask to qk.
@@ -603,7 +613,11 @@ def mha_backward_kernel(
                 else:
                     q_segment_ids = None
                 qk = jnp.where(
-                    mask_mod(start_b, start_h, span_q, span_k, q_segment_ids, kv_segment_ids), qk, DEFAULT_MASK_VALUE
+                    mask_mod(
+                        start_b, start_h, span_q, span_k, q_segment_ids, kv_segment_ids
+                    ),
+                    qk,
+                    DEFAULT_MASK_VALUE,
                 )
 
         if causal:
@@ -687,7 +701,11 @@ def mha_backward_kernel(
                 else:
                     q_segment_ids = None
                 qk = jnp.where(
-                    mask_mod(start_b, start_h, span_q, span_k, q_segment_ids, kv_segment_ids), qk, DEFAULT_MASK_VALUE
+                    mask_mod(
+                        start_b, start_h, span_q, span_k, q_segment_ids, kv_segment_ids
+                    ),
+                    qk,
+                    DEFAULT_MASK_VALUE,
                 )
 
         if causal:

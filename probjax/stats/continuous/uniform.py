@@ -5,16 +5,15 @@ Uniform Distribution (:mod:`probjax.stats.uniform`)
 This module contains the Uniform distribution.
 """
 
+from typing import Tuple
+
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray, ArrayLike
-from typing import Tuple, Dict, Optional
+from jax.scipy.stats import uniform as _uniform
+from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous
-from probjax.stats.constraints import real, interval
-
-import jax
-from jax.scipy.stats import uniform as _uniform
+from probjax.stats.constraints import interval, real
 
 __all__ = ["uniform"]
 

@@ -1,13 +1,13 @@
-from probjax.utils.odeutil.core import _odeint
-from probjax.utils.odeutil.inversion import _inv_odeint, _inv_logdet_odeint
 from probjax.utils.odeutil.adaptive import AdaptiveParams
+from probjax.utils.odeutil.core import _odeint
+from probjax.utils.odeutil.inversion import _inv_logdet_odeint, _inv_odeint
 from probjax.utils.odeutil.solvers import (
     ODEInfo,
     ODESolver,
     ODEState,
+    euler,
     get_method,
     get_methods,
-    euler,
     implicit_euler,
 )
 

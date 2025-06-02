@@ -295,10 +295,18 @@ class AffineFuse(nnx.Module, experimental_pytree=True):
             rngs (rngs): Random generator stream.
         """
         self.linear_scale = nnx.Linear(
-            context_dim, input_dim, rngs=rngs, use_bias=use_bias, kernel_init=nnx.initializers.zeros,
+            context_dim,
+            input_dim,
+            rngs=rngs,
+            use_bias=use_bias,
+            kernel_init=nnx.initializers.zeros,
         )
         self.linear_bias = nnx.Linear(
-            context_dim, input_dim, rngs=rngs, use_bias=use_bias, kernel_init=nnx.initializers.zeros,
+            context_dim,
+            input_dim,
+            rngs=rngs,
+            use_bias=use_bias,
+            kernel_init=nnx.initializers.zeros,
         )
         self.scale_activation = scale_activation
 

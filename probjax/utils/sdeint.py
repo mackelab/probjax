@@ -3,7 +3,6 @@ from typing import Any, Callable, Optional, Sequence, Tuple, Union
 import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Key, PyTree
-from jax import random
 
 from probjax.utils.sdeutil.core import _sdeint
 

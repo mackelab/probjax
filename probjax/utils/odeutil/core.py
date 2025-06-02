@@ -1,18 +1,17 @@
 from functools import partial
-from typing import Callable, Optional, Sequence, Tuple
+from typing import Callable, Optional, Sequence
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jaxtyping import PyTree
-import numpy as np
 
 from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
-from probjax.utils.odeutil.solvers import get_method, ODESolver
+from probjax.utils.odeutil.adaptive import AdaptiveParams
 from probjax.utils.odeutil.integrate_adaptive import odeint_adaptive
 from probjax.utils.odeutil.integrate_on_grid import _odeint_on_grid
-from probjax.utils.odeutil.adaptive import AdaptiveParams
-
+from probjax.utils.odeutil.solvers import ODESolver, get_method
 
 STATIC_NAMES = (
     "drift",
@@ -23,7 +22,6 @@ STATIC_NAMES = (
     "adaptive_params",
     "return_state",
 )
-
 
 
 @partial(

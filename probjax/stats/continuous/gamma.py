@@ -5,17 +5,17 @@ Gamma Distribution (:mod:`probjax.stats.gamma`)
 This module contains the Gamma distribution.
 """
 
-import jax.numpy as jnp
-from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray, ArrayLike
-from typing import Tuple, Dict, Optional
-
-from probjax.stats.base import rv_continuous, rv_exponential_family
-from probjax.stats.constraints import real, strict_positive
+from typing import Tuple
 
 import jax
-from jax.scipy.stats import gamma as _gamma
+import jax.numpy as jnp
+from jax import random
 from jax.scipy.special import digamma, gammaln
+from jax.scipy.stats import gamma as _gamma
+from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
+
+from probjax.stats.base import rv_continuous, rv_exponential_family
+from probjax.stats.constraints import strict_positive
 from probjax.utils.special import gammaincinv
 
 __all__ = ["gamma"]
@@ -255,7 +255,7 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         mode : float
             Mode of the distribution
         """
-        valid = alpha > 1
+        valid = alpha >= 1
         return jnp.where(valid, (alpha - 1) / beta, jnp.zeros_like(alpha))
 
     @classmethod

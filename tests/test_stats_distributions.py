@@ -37,6 +37,17 @@ from probjax.stats import (
 )
 
 from probjax.stats.constraint_registry import transform_to
+from probjax.stats.divergences import (
+    kl_divergence,
+    wasserstein_distance,
+    sliced_wasserstein_distance,
+    max_slice_wasserstein_distance,
+)
+from probjax.stats.divergences.wasserstein import (
+    _1d_wasserstein_without_cdf,
+    __sliced_wasserstein_generic,
+    __max_slice_wasserstein_generic,
+)
 
 CONTINUOUS_DIST = [
     norm,
@@ -87,32 +98,26 @@ def check_mean_and_var(dist, key, *args, **kwds):
         finite_true_std = jnp.isfinite(true_std)
         std_to_compare = jnp.where(finite_true_std, std, true_std)
 
-        if jnp.all(finite_true_mean):
-            assert jnp.allclose(true_mean, mean_to_compare, atol=0.2, rtol=1.0), (
-                "Mean is not close to sample mean"
-            )
-        else:  # If true_mean is not finite, ensure sample mean is also not finite (or close to it)
-            assert jnp.allclose(true_mean, mean_to_compare, equal_nan=True), (
-                "Mean is not close to sample mean (non-finite case)"
-            )
+        assert jnp.allclose(
+            true_mean[finite_true_mean],
+            mean_to_compare[finite_true_mean],
+            atol=0.2,
+            rtol=1.0,
+        ), "Mean is not close to sample mean"
 
-        if jnp.all(finite_true_var):
-            assert jnp.allclose(true_var, var_to_compare, atol=0.2, rtol=1.0), (
-                "Variance is not close to sample variance"
-            )
-        else:  # If true_var is not finite, ensure sample var is also not finite (or close to it)
-            assert jnp.allclose(true_var, var_to_compare, equal_nan=True), (
-                "Variance is not close to sample variance (non-finite case)"
-            )
+        assert jnp.allclose(
+            true_var[finite_true_var],
+            var_to_compare[finite_true_var],
+            atol=0.2,
+            rtol=1.0,
+        ), "Variance is not close to sample variance"
 
-        if jnp.all(finite_true_std):
-            assert jnp.allclose(true_std, std_to_compare, atol=0.3, rtol=1.0), (
-                "Standard deviation is not close to sample standard deviation"
-            )
-        else:  # If true_std is not finite, ensure sample std is also not finite (or close to it)
-            assert jnp.allclose(true_std, std_to_compare, equal_nan=True), (
-                "Standard deviation is not close to sample standard deviation (non-finite case)"
-            )
+        assert jnp.allclose(
+            true_std[finite_true_std],
+            std_to_compare[finite_true_std],
+            atol=0.3,
+            rtol=1.0,
+        ), "Standard deviation is not close to sample standard deviation"
 
     except NotImplementedError:
         pass
@@ -156,9 +161,9 @@ def check_mode(dist, key, *args, **kwds):
         assert mode.shape == dist.batch_shape + dist.event_shape, "Mode shape mismatch"
         assert jnp.isfinite(mode).all(), "Mode is not finite"
 
-        assert jnp.all(mode_log_prob <= est_mode_log_prob + 1e-3) | jnp.allclose(
+        assert jnp.all(mode_log_prob <= est_mode_log_prob) | jnp.allclose(
             dist.mode(*args, **kwds), mode, atol=0.1, rtol=0.1
-        ), "Mode is not close to sample mode"
+        ), "Mode is not close to sample mode or has a higher log_prob"
         assert mode_log_prob <= dist.logpdf(dist.mode(*args, **kwds), *args, **kwds), (
             "Mode log_prob is not maximum"
         )
@@ -187,7 +192,9 @@ def init_dist(dist, key, shape=(1,)):
     return dist
 
 @pytest.mark.parametrize(
-    "dist", CONTINUOUS_DIST + DISCRETE_DIST + SPECIAL_DIST, ids=lambda x: x.name
+    "dist",
+    CONTINUOUS_DIST + DISCRETE_DIST + SPECIAL_DIST,
+    ids=lambda x: getattr(x, 'name', x.__class__.__name__),
 )
 def test_distribution_class_attributes(dist):
     """Test that all distributions have required class attributes."""
@@ -250,27 +257,31 @@ def test_independent_distribution(dist, shape=(2,), seed=0):
         "PyTree reconstruction mismatch"
     )
 
+@pytest.mark.parametrize(
+    "dist1, dist2",
+    list(itertools.combinations(CONTINUOUS_DIST + DISCRETE_DIST, 2)),
+    ids=lambda x: f"{x.name}",
+)
+def test_mixed_independent_distribution(dist1, dist2, shape=(1,), seed=0):
+    """Test mixed independent distribution functionality."""
+    if dist1 == multivariate_normal or dist1 == dirichlet or dist1 == categorical:
+        return
+    if dist2 == multivariate_normal or dist2 == dirichlet or dist2 == categorical:
+        return
 
-# @pytest.mark.parametrize(
-#     "dist1, dist2",
-#     list(itertools.combinations(CONTINUOUS_DIST + DISCRETE_DIST, 2)),
-#     ids=lambda x: f"{x[0].name}-{x[1].name}",
-# )
-# def test_mixed_independent_distribution(dist1, dist2, shape=(1,), seed=0):
-#     """Test mixed independent distribution functionality."""
-#     key = jax.random.PRNGKey(seed)
+    key = jax.random.PRNGKey(seed)
 
-#     p1 = init_dist(dist1, key, shape)
-#     p2 = init_dist(dist2, key, shape)
+    p1 = init_dist(dist1, key, shape)
+    p2 = init_dist(dist2, key, shape)
 
-#     try:
-#         p = independent(p1, p2)
-#     except AssertionError:
-#         return
+    try:
+        p = independent(p1, p2)
+    except AssertionError:
+        return
 
-#     sample_and_check_shape(p, key, shape)
-#     check_mean_and_var(p, key)
-#     check_mode(p, key)
+    sample_and_check_shape(p, key, shape)
+    check_mean_and_var(p, key)
+    check_mode(p, key)
 
 
 @pytest.mark.parametrize("dist", CONTINUOUS_DIST + DISCRETE_DIST, ids=lambda x: x.name)
@@ -303,27 +314,112 @@ def test_transformed_distribution(dist, shape=(1,), seed=0):
     )
 
 
-# @pytest.mark.parametrize(
-#     "dist1, dist2", itertools.combinations(CONTINUOUS_DIST + DISCRETE_DIST, 2)
-# )
-# def test_kl_divergence(dist1, dist2, shape=(1,), seed=0):
-#     """Test KL divergence computation."""
-#     key1 = jax.random.PRNGKey(seed)
-#     key2 = jax.random.PRNGKey(seed + 420000)
-#     p = init_dist(dist1, key1)
-#     q = init_dist(dist2, key2)
+@pytest.mark.parametrize(
+    "dist1, dist2",
+    itertools.combinations(CONTINUOUS_DIST + DISCRETE_DIST, 2),
+    ids=lambda x: f"{x.name}",
+)
+def test_kl_divergence(dist1, dist2, shape=(1,), seed=0):
+    """Test KL divergence computation."""
+    key1 = jax.random.PRNGKey(seed)
+    key2 = jax.random.PRNGKey(seed + 420000)
+    p = init_dist(dist1, key1)
+    q = init_dist(dist2, key2)
 
-#     try:
-#         dist = kl_divergence(p, q)
-#     except (AssertionError, ValueError):
-#         return
+    try:
+        dist = kl_divergence(p, q, mc_samples=10000, key=key1)
+    except (AssertionError, ValueError, NotImplementedError):
+        return
 
-#     # Monte Carlo estimation of KL divergence
-#     samples = p.rvs(key1, (10000,))
-#     log_ratio = p.logpdf(samples) - q.logpdf(samples)
-#     dist_mc = jnp.mean(log_ratio)
+    # Monte Carlo estimation of KL divergence
+    samples = p.rvs(key1, (10000,))
+    if isinstance(p, rv_discrete):
+        log_ratio = p.logpmf(samples) - q.logpmf(samples)
+    else:
+        log_ratio = p.logpdf(samples) - q.logpdf(samples)
+    dist_mc = jnp.mean(log_ratio)
 
-#     assert dist.shape == p.batch_shape, "KL divergence shape mismatch"
-#     assert jnp.allclose(dist, dist_mc, atol=0.1, rtol=0.1), (
-#         "MC KL divergence is not close to analytic KL divergence"
-#     )
+    assert dist.shape == p.batch_shape, "KL divergence shape mismatch"
+    assert jnp.allclose(dist, dist_mc, atol=0.1, rtol=0.1), (
+        "MC KL divergence is not close to analytic KL divergence"
+    )
+
+
+@pytest.mark.parametrize(
+    "dist1, dist2", itertools.combinations(CONTINUOUS_DIST + DISCRETE_DIST, 2)
+)
+def test_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
+    """Test Wasserstein distance computation."""
+    key1 = jax.random.PRNGKey(seed)
+    key2 = jax.random.PRNGKey(seed + 420000)
+    p = init_dist(dist1, key1)
+    q = init_dist(dist2, key2)
+
+    try:
+        dist = wasserstein_distance(p, q, mc_samples=1000, key=key1)
+    except (AssertionError, ValueError, NotImplementedError):
+        return
+
+    # Monte Carlo estimation of Wasserstein distance
+    samples_p = p.rvs(key1, (1000,))
+    samples_q = q.rvs(key2, (1000,))
+    dist_mc = _1d_wasserstein_without_cdf(samples_p, samples_q)
+
+    assert dist.shape == p.batch_shape, "Wasserstein distance shape mismatch"
+    assert jnp.allclose(dist, dist_mc, atol=0.1, rtol=0.1), (
+        "MC Wasserstein distance is not close to analytic Wasserstein distance"
+    )
+
+
+@pytest.mark.parametrize(
+    "dist1, dist2", itertools.combinations(CONTINUOUS_DIST + DISCRETE_DIST, 2)
+)
+def test_sliced_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
+    """Test Sliced Wasserstein distance computation."""
+    key1 = jax.random.PRNGKey(seed)
+    key2 = jax.random.PRNGKey(seed + 420000)
+    p = init_dist(dist1, key1)
+    q = init_dist(dist2, key2)
+
+    try:
+        dist = sliced_wasserstein_distance(p, q, mc_samples=1000, key=key1)
+    except (AssertionError, ValueError, NotImplementedError):
+        return
+
+    # Monte Carlo estimation of Sliced Wasserstein distance
+    samples_p = p.rvs(key1, (1000,))
+    samples_q = q.rvs(key2, (1000,))
+    dist_mc = __sliced_wasserstein_generic(
+        samples_p, samples_q, num_slices=100, key=key1
+    )
+
+    assert dist.shape == p.batch_shape, "Sliced Wasserstein distance shape mismatch"
+    assert jnp.allclose(dist, dist_mc, atol=0.1, rtol=0.1), (
+        "MC Sliced Wasserstein distance is not close to analytic Sliced Wasserstein distance"
+    )
+
+
+@pytest.mark.parametrize(
+    "dist1, dist2", itertools.combinations(CONTINUOUS_DIST + DISCRETE_DIST, 2)
+)
+def test_max_slice_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
+    """Test Max Sliced Wasserstein distance computation."""
+    key1 = jax.random.PRNGKey(seed)
+    key2 = jax.random.PRNGKey(seed + 420000)
+    p = init_dist(dist1, key1)
+    q = init_dist(dist2, key2)
+
+    try:
+        dist = max_slice_wasserstein_distance(p, q, mc_samples=1000, key=key1)
+    except (AssertionError, ValueError, NotImplementedError):
+        return
+
+    # Monte Carlo estimation of Max Sliced Wasserstein distance
+    samples_p = p.rvs(key1, (1000,))
+    samples_q = q.rvs(key2, (1000,))
+    dist_mc = __max_slice_wasserstein_generic(samples_p, samples_q, key=key1)
+
+    assert dist.shape == p.batch_shape, "Max Sliced Wasserstein distance shape mismatch"
+    assert jnp.allclose(dist, dist_mc, atol=0.1, rtol=0.1), (
+        "MC Max Sliced Wasserstein distance is not close to analytic Max Sliced Wasserstein distance"
+    )

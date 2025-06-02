@@ -1,11 +1,13 @@
-from jax.scipy.special import digamma, polygamma
-import jax.numpy as jnp
-from jax import jit, vmap, lax
 from typing import Union
 
-def digammainv(y: Union[float, jnp.ndarray],
-               maxiter: int = 5,
-               tol: float = 1e-14) -> Union[float, jnp.ndarray]:
+import jax.numpy as jnp
+from jax import jit, lax, vmap
+from jax.scipy.special import digamma, polygamma
+import jax
+
+def digammainv(
+    y: Union[float, jnp.ndarray], maxiter: int = 5, tol: float = 1e-14
+) -> Union[float, jnp.ndarray]:
     """
     Inverse of the digamma function using Newton's method with asymptotic approximations.
 
@@ -23,6 +25,7 @@ def digammainv(y: Union[float, jnp.ndarray],
     Returns:
         x such that digamma(x) = y
     """
+
     # Initial guess based on asymptotic formulas (eq. 149 in the paper)
     def initial_guess(y):
         gamma = jnp.euler_gamma  # Euler-Mascheroni constant
@@ -30,9 +33,7 @@ def digammainv(y: Union[float, jnp.ndarray],
         # Use asymptotic approximations
         # For y ≥ -2.22: x ≈ exp(y) + 1/2
         # For y < -2.22: x ≈ -1/(y + γ)
-        x_init = jnp.where(y >= -2.22,
-                          jnp.exp(y) + 0.5,
-                          -1.0 / (y + gamma))
+        x_init = jnp.where(y >= -2.22, jnp.exp(y) + 0.5, -1.0 / (y + gamma))
 
         return x_init
 
@@ -57,8 +58,8 @@ def digammainv(y: Union[float, jnp.ndarray],
     # The paper states 5 iterations are sufficient for 14 digits of precision
     x = lax.fori_loop(0, maxiter, body_fun, x)
 
-
     return jnp.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
 
 # Vectorized version for array inputs
 @jit

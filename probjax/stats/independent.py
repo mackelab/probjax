@@ -5,17 +5,14 @@ Independent Distribution (:mod:`probjax.stats.independent`)
 This module contains the Independent distribution, which treats a distribution as a batch of independent distributions.
 """
 
-from typing import Sequence, Union, Tuple, Optional, List
-from functools import lru_cache
+from typing import Optional, Sequence, Tuple, Union
 
-import jax
 import jax.numpy as jnp
-import numpy as np
 from jax import random
-from jaxtyping import Array, PRNGKeyArray, ArrayLike
+from jaxtyping import PRNGKeyArray
 
-from .base import rv_generic, rv_continuous_frozen
-from .constraints import Constraint, distribution, non_negative_integer
+from .base import rv_continuous_frozen, rv_generic
+from .constraints import distribution
 
 __all__ = ["independent"]
 
@@ -237,11 +234,11 @@ class independent_gen(rv_generic):
         batch_shape, event_shape, split_dims, split_indices = determine_shapes(
             base_dists, reinterpreted_batch_ndims
         )
-        variances = jnp.stack([d.var() for d in base_dists], axis=-1)
-        # Sum up to be of shape reinterpreted_batch_ndims
-        for _ in range(reinterpreted_batch_ndims):
-            variances = jnp.sum(variances, axis=-1)
-        return variances
+        if len(base_dists) == 1:
+            return base_dists[0].var(*kwargs)
+        else:
+            variances = jnp.stack([d.var(*kwargs) for d in base_dists], axis=-1)
+            return variances.reshape(batch_shape + event_shape)
 
     @classmethod
     def entropy(cls, base_dists, reinterpreted_batch_ndims=1, **kwargs):
@@ -249,11 +246,11 @@ class independent_gen(rv_generic):
         batch_shape, event_shape, split_dims, split_indices = determine_shapes(
             base_dists, reinterpreted_batch_ndims
         )
-        entropies = jnp.stack([d.entropy() for d in base_dists], axis=-1)
-        # Sum up to be of shape reinterpreted_batch_ndims
-        for _ in range(reinterpreted_batch_ndims):
-            entropies = jnp.sum(entropies, axis=-1)
-        return entropies
+        if len(base_dists) == 1:
+            return base_dists[0].entropy(*kwargs)
+        else:
+            entropies = jnp.stack([d.entropy(*kwargs) for d in base_dists], axis=-1)
+            return entropies.reshape(batch_shape + event_shape)
 
     @classmethod
     def mode(cls, base_dists, reinterpreted_batch_ndims=1, **kwargs):
@@ -261,11 +258,11 @@ class independent_gen(rv_generic):
         batch_shape, event_shape, split_dims, split_indices = determine_shapes(
             base_dists, reinterpreted_batch_ndims
         )
-        modes = jnp.stack([d.mode() for d in base_dists], axis=-1)
-        # Sum up to be of shape reinterpreted_batch_ndims
-        for _ in range(reinterpreted_batch_ndims):
-            modes = jnp.sum(modes, axis=-1)
-        return modes
+        if len(base_dists) == 1:
+            return base_dists[0].mode(*kwargs)
+        else:
+            modes = jnp.stack([d.mode(*kwargs) for d in base_dists], axis=-1)
+            return modes.reshape(batch_shape + event_shape)
 
     @classmethod
     def fit(cls, data, base_dists, reinterpreted_batch_ndims=1, **kwargs):

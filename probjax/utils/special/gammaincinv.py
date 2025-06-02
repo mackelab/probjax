@@ -1,7 +1,6 @@
 import jax
 import jax.numpy as jnp
 
-
 # Inverse gamma cdf
 
 

@@ -5,16 +5,15 @@ Laplace Distribution (:mod:`probjax.stats.laplace`)
 This module contains the Laplace distribution.
 """
 
+from typing import Tuple
+
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray, ArrayLike
-from typing import Tuple, Dict, Optional
+from jax.scipy.stats import laplace as _laplace
+from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
-
-import jax
-from jax.scipy.stats import laplace as _laplace
 
 __all__ = ["laplace"]
 

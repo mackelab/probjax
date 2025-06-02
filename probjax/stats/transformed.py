@@ -6,13 +6,11 @@ This module implements transformed distributions that apply a bijective transfor
 to a base distribution.
 """
 
-from typing import Any, Callable, Dict, Optional, Tuple, Union
-import functools
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-from jax import random
-from jaxtyping import Array, Float, Int, PRNGKeyArray, ArrayLike
+from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.core import inverse_and_logabsdet
 from probjax.stats.base import rv_continuous, rv_continuous_frozen

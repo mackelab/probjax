@@ -5,16 +5,16 @@ Generalized Normal Distribution (:mod:`probjax.stats.gennorm`)
 This module contains the Generalized Normal distribution.
 """
 
+from typing import Tuple
+
+import jax
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray
-from typing import Tuple, Dict, Optional
+from jax.scipy.special import gamma, gammainc
+from jaxtyping import PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
-
-import jax
-from jax.scipy.special import gamma, gammainc, gammaincc
 
 __all__ = ["gennorm"]
 
@@ -26,10 +26,10 @@ class gennorm_gen(rv_continuous, rv_exponential_family):
     that generalizes the normal distribution. The probability density function is:
 
     .. math::
-        f(x; \mu, \alpha, \beta) = \frac{\beta}{2\alpha\Gamma(1/\beta)}
-        \exp(-|x-\mu|^\beta/\alpha^\beta)
+        f(x; \\mu, \alpha, \beta) = \frac{\beta}{2\alpha\\Gamma(1/\beta)}
+        \\exp(-|x-\\mu|^\beta/\alpha^\beta)
 
-    where :math:`\mu` is the location parameter, :math:`\alpha` is the scale parameter,
+    where :math:`\\mu` is the location parameter, :math:`\alpha` is the scale parameter,
     and :math:`\beta` is the shape parameter.
 
     Parameters

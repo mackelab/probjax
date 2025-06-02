@@ -34,9 +34,9 @@ def init(
     if log_weights is None:
         log_weights = jnp.full((num_particles,), fill_value=-jnp.log(num_particles))
     else:
-        assert (
-            log_weights.shape[0] == num_particles
-        ), "The number of particles and log weights must be the same."
+        assert log_weights.shape[0] == num_particles, (
+            "The number of particles and log weights must be the same."
+        )
         log_weights = log_weights - jax.scipy.special.logsumexp(log_weights)
     return ParticleFilterState(particles, log_weights, t)
 
@@ -79,9 +79,9 @@ def build_kernel(
         observed: Optional[ArrayLike] = None,
         rng_key: Optional[ArrayLike] = None,
     ):
-        assert (
-            rng_key is not None
-        ), "You must provide a random key for the particle filter kernel."
+        assert rng_key is not None, (
+            "You must provide a random key for the particle filter kernel."
+        )
         # Unpack state
         particles = state.particles
         log_weights = state.log_weights

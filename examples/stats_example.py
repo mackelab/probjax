@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 # Import the base classes and distribution functions
 from probjax.stats import rv_continuous, rv_discrete
 from probjax.stats import norm, gamma, beta, bernoulli, binom, poisson
+from probjax.stats.continuous import Normal
 
 # Set a random seed for reproducibility
 key = jax.random.PRNGKey(0)
@@ -130,8 +131,6 @@ class _custom_normal_gen(rv_continuous):
         This demonstrates how to create a custom distribution with different
         parameter names than the underlying implementation.
         """
-        from probjax.distributions import Normal
-
         return Normal(loc=mean, scale=jnp.sqrt(variance))
 
 

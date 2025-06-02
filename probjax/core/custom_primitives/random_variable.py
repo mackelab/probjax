@@ -15,7 +15,7 @@ from jax.extend.core import (
 from jax.interpreters import ad, batching, mlir
 from jax.interpreters import partial_eval as pe
 
-from probjax.distributions.distribution import Distribution
+from probjax.stats.base import rv_generic as Distribution
 
 __all__ = ["rv", "rv_p"]
 

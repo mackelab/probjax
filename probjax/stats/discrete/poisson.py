@@ -5,14 +5,13 @@ Poisson Distribution (:mod:`probjax.stats.poisson`)
 This module implements the Poisson distribution.
 """
 
-from typing import Any, Dict, Optional, Tuple
-import functools
+from typing import Tuple
 
 import jax
 import jax.numpy as jnp
 from jax import random
 from jax.scipy.stats import poisson as jax_poisson
-from jaxtyping import Array, Float, Int, PRNGKeyArray, ArrayLike
+from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_discrete, rv_exponential_family
 from probjax.stats.constraints import positive_integer

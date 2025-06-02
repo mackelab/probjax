@@ -5,13 +5,12 @@ Categorical Distribution (:mod:`probjax.stats.categorical`)
 This module implements the Categorical distribution.
 """
 
-from typing import Any, Dict, Optional, Tuple
-import functools
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Array, Float, Int, PRNGKeyArray, ArrayLike
+from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_discrete, rv_discrete_frozen, rv_exponential_family
 from probjax.stats.constraints import simplex
