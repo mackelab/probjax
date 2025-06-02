@@ -7,7 +7,7 @@ This module contains the Uniform distribution.
 
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Float, PRNGKeyArray, ArrayLike
 from typing import Tuple, Dict, Optional
 
 from probjax.stats.base import rv_continuous
@@ -237,6 +237,8 @@ class uniform_gen(rv_continuous):
         mean : float
             Mean of the distribution
         """
+        low = jnp.asarray(low)
+        high = jnp.asarray(high)
         return (low + high) / 2.0
 
     @classmethod
@@ -370,7 +372,32 @@ class uniform_gen(rv_continuous):
         kurtosis : float
             Excess kurtosis of the distribution
         """
-        return -6 / 5 * jnp.ones_like(jnp.asarray(low))  # Kurtosis is always -6/5
+        return -1.2 * jnp.ones_like(low)
+
+    @classmethod
+    def fit(cls, data: ArrayLike, **kwds):
+        """Maximum likelihood estimation of uniform distribution parameters.
+
+        The MLE for the uniform distribution has a closed-form solution:
+        - low = min(data)
+        - high = max(data)
+
+        Parameters
+        ----------
+        data : array_like
+            Data to fit the distribution to
+        **kwds : dict, optional
+            Additional parameters (ignored)
+
+        Returns
+        -------
+        params : tuple
+            The fitted parameters (low, high)
+        """
+        data = jnp.asarray(data)
+        low = jnp.min(data)
+        high = jnp.max(data)
+        return (low, high)
 
 
 uniform = uniform_gen(name="uniform")

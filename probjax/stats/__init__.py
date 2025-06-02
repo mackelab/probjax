@@ -16,20 +16,25 @@ from probjax.stats.base import (
 )
 
 # Import all implemented distributions
-from probjax.stats.norm import norm
-from probjax.stats.gamma import gamma
-from probjax.stats.beta import beta
-from probjax.stats.expon import expon
-from probjax.stats.laplace import laplace
-from probjax.stats.uniform import uniform
+from probjax.stats.continuous.norm import norm
+from probjax.stats.continuous.gamma import gamma
+from probjax.stats.continuous.beta import beta
+from probjax.stats.continuous.expon import expon
+from probjax.stats.continuous.laplace import laplace
+from probjax.stats.continuous.uniform import uniform
+from probjax.stats.continuous.chi2 import chi2
+from probjax.stats.continuous.t import t
+from probjax.stats.continuous.cauchy import cauchy
+from probjax.stats.continuous.dirichlet import dirichlet
+from probjax.stats.continuous.multivariate_normal import multivariate_normal
 
 # Import discrete distributions
-from probjax.stats.bernoulli import bernoulli
-from probjax.stats.binomial import binomial
-from probjax.stats.categorical import categorical
-from probjax.stats.poisson import poisson
-from probjax.stats.geometric import geometric
-from probjax.stats.dirac import dirac
+from probjax.stats.discrete.bernoulli import bernoulli
+from probjax.stats.discrete.binomial import binomial
+from probjax.stats.discrete.categorical import categorical
+from probjax.stats.discrete.poisson import poisson
+from probjax.stats.discrete.geometric import geometric
+from probjax.stats.discrete.dirac import dirac
 from probjax.stats.empirical import empirical
 
 # Import higher-order distributions
@@ -52,6 +57,11 @@ __all__ = [
     'expon',
     'laplace',
     'uniform',
+    'chi2',
+    't',
+    'cauchy',
+    'dirichlet',
+    'multivariate_normal',
     # Discrete distributions
     'bernoulli',
     'binomial',

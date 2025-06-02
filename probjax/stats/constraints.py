@@ -251,9 +251,54 @@ class SymmetricMatrix(SquareMatrix):
         return super()._is_contained(x) and jnp.allclose(x, jnp.transpose(x, (-2, -1)))
 
 
-class PositiveDefiniteMatrix(SymmetricMatrix):
+class SymmetricPositiveDefiniteMatrix(SymmetricMatrix):
+    """A constraint that checks if a value is a symmetric positive definite matrix."""
+
     def _is_contained(self, x: Any | Constraint) -> bool:
         return super()._is_contained(x) and jnp.all(jnp.linalg.eigvals(x) > 0)
+
+
+class Spherical(Constraint):
+    """A constraint that checks if a value lies on a unit sphere."""
+
+    def _is_contained(self, x: Array) -> bool:
+        if isinstance(x, Array):
+            return jnp.allclose(jnp.sum(x**2, axis=-1), 1.0)
+        else:
+            return isinstance(x, Spherical)
+
+
+class Stiefel(Constraint):
+    """A constraint that checks if a value is a Stiefel matrix (orthogonal matrix)."""
+
+    def _is_contained(self, x: Array) -> bool:
+        if isinstance(x, Array):
+            # Check if columns are orthonormal
+            return jnp.allclose(x.T @ x, jnp.eye(x.shape[1]))
+        else:
+            return isinstance(x, Stiefel)
+
+
+class Grassmannian(Constraint):
+    """A constraint that checks if a value is a Grassmannian matrix (subspace)."""
+
+    def _is_contained(self, x: Array) -> bool:
+        if isinstance(x, Array):
+            # Check if columns are orthonormal
+            return jnp.allclose(x.T @ x, jnp.eye(x.shape[1]))
+        else:
+            return isinstance(x, Grassmannian)
+
+
+class Lorentz(Constraint):
+    """A constraint that checks if a value lies on the Lorentz manifold."""
+
+    def _is_contained(self, x: Array) -> bool:
+        if isinstance(x, Array):
+            # Check if x satisfies the Lorentz condition: x[0]^2 - sum(x[1:]**2) = 1
+            return jnp.allclose(x[0] ** 2 - jnp.sum(x[1:] ** 2), 1.0)
+        else:
+            return isinstance(x, Lorentz)
 
 
 # Numerical constraints
@@ -278,11 +323,17 @@ simplex = Simplex()
 matrix = Matrix()
 square_matrix = SquareMatrix()
 symmetric_matrix = SymmetricMatrix()
-positive_definite_matrix = PositiveDefiniteMatrix()
+symmetric_positive_definite_matrix = SymmetricPositiveDefiniteMatrix()
+
 
 # Other constraints
 distribution = Distribution()
 
+# Create singleton instances
+spherical = Spherical()
+stiefel = Stiefel()
+grassmannian = Grassmannian()
+lorentz = Lorentz()
 
 __all__ = [
     "real",
@@ -302,5 +353,11 @@ __all__ = [
     "simplex",
     "matrix",
     "square_matrix",
+    "symmetric_matrix",
+    "symmetric_positive_definite_matrix",
     "distribution",
+    "spherical",
+    "stiefel",
+    "grassmannian",
+    "lorentz",
 ]

@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 from jax import lax
+from jax.scipy.linalg import sqrtm
 
 from .constraints import (
     Constraint,
@@ -9,7 +10,7 @@ from .constraints import (
     negative,
     negative_integer,
     positive,
-    positive_definite_matrix,
+    symmetric_positive_definite_matrix,
     positive_integer,
     real,
     simplex,
@@ -20,11 +21,16 @@ from .constraints import (
     strict_positive_integer,
     unit_interval,
     unit_square,
+    spherical,
+    stiefel,
+    grassmannian,
+    lorentz,
 )
 
 __all__ = [
     "biject_to",
     "transform_to",
+    "manifold_registry",
 ]
 
 
@@ -165,4 +171,152 @@ biject_to.register(unit_square)(lax.tanh)
 transform_to.register(simplex)(jax.nn.softmax)
 transform_to.register(matrix)(generate_matrix)
 transform_to.register(square_matrix)(generate_matrix)
-transform_to.register(positive_definite_matrix)(generate_pdm)
+transform_to.register(symmetric_positive_definite_matrix)(generate_pdm)
+
+
+# Spherical manifold transformations
+def spherical_exp_map(x, v):
+    """Exponential map for spherical manifold."""
+    norm_v = jnp.linalg.norm(v, axis=-1, keepdims=True)
+    return x * jnp.cos(norm_v) + v * jnp.sin(norm_v) / (norm_v + 1e-8)
+
+
+def spherical_log_map(x, y):
+    """Logarithmic map for spherical manifold."""
+    dot_xy = jnp.sum(x * y, axis=-1, keepdims=True)
+    dot_xy = jnp.clip(dot_xy, -1.0, 1.0)  # Ensure numerical stability
+    theta = jnp.arccos(dot_xy)
+    return theta * (y - x * dot_xy) / (jnp.sin(theta) + 1e-8)
+
+
+def spherical_transform(x):
+    """Transform to spherical manifold."""
+    norm = jnp.linalg.norm(x, axis=-1, keepdims=True)
+    return x / (norm + 1e-8)
+
+
+# Stiefel manifold transformations
+def stiefel_exp_map(x, v):
+    """Exponential map for Stiefel manifold."""
+    # QR decomposition of the tangent vector
+    q, r = jnp.linalg.qr(v)
+    # Compute the exponential map
+    return x @ jnp.linalg.expm(r)
+
+
+def stiefel_log_map(x, y):
+    """Logarithmic map for Stiefel manifold."""
+    # Compute the tangent vector
+    v = y - x @ (x.T @ y)
+    return v
+
+
+def stiefel_transform(x):
+    """Transform to Stiefel manifold using QR decomposition."""
+    q, _ = jnp.linalg.qr(x)
+    return q
+
+
+# SPD manifold transformations
+def spd_exp_map(x, v):
+    """Exponential map for SPD manifold."""
+    x_sqrt = sqrtm(x)
+    x_sqrt_inv = jnp.linalg.inv(x_sqrt)
+    return x_sqrt @ jnp.linalg.expm(x_sqrt_inv @ v @ x_sqrt_inv) @ x_sqrt
+
+
+def spd_log_map(x, y):
+    """Logarithmic map for SPD manifold."""
+    x_sqrt = sqrtm(x)
+    x_sqrt_inv = jnp.linalg.inv(x_sqrt)
+    return x_sqrt @ jnp.logm(x_sqrt_inv @ y @ x_sqrt_inv) @ x_sqrt
+
+
+def spd_transform(x):
+    """Transform to SPD manifold."""
+    # Ensure symmetry
+    x = (x + x.T) / 2
+    # Add small diagonal term to ensure positive definiteness
+    x = x + jnp.eye(x.shape[0]) * 1e-6
+    return x
+
+
+# Lorentz manifold transformations
+def lorentz_exp_map(x, v):
+    """Exponential map for Lorentz manifold."""
+    norm_v = jnp.sqrt(jnp.sum(v[1:] ** 2, axis=-1))
+    return jnp.concatenate([
+        x[0] * jnp.cosh(norm_v) + v[0] * jnp.sinh(norm_v) / (norm_v + 1e-8),
+        x[1:] * jnp.cosh(norm_v) + v[1:] * jnp.sinh(norm_v) / (norm_v + 1e-8),
+    ])
+
+
+def lorentz_log_map(x, y):
+    """Logarithmic map for Lorentz manifold."""
+    dot_xy = x[0] * y[0] - jnp.sum(x[1:] * y[1:], axis=-1)
+    dot_xy = jnp.clip(dot_xy, 1.0, None)  # Ensure numerical stability
+    theta = jnp.arccosh(dot_xy)
+    return theta * (y - x * dot_xy) / (jnp.sqrt(dot_xy**2 - 1) + 1e-8)
+
+
+def lorentz_transform(x):
+    """Transform to Lorentz manifold."""
+    norm = jnp.sqrt(jnp.sum(x[1:] ** 2, axis=-1))
+    return jnp.concatenate([jnp.sqrt(1 + norm**2), x[1:]])
+
+
+# Register the new transformations
+transform_to.register(spherical)(spherical_transform)
+biject_to.register(spherical)(spherical_transform)
+
+transform_to.register(stiefel)(stiefel_transform)
+biject_to.register(stiefel)(stiefel_transform)
+
+transform_to.register(symmetric_positive_definite_matrix)(spd_transform)
+biject_to.register(symmetric_positive_definite_matrix)(spd_transform)
+
+transform_to.register(lorentz)(lorentz_transform)
+biject_to.register(lorentz)(lorentz_transform)
+
+
+# Add exponential and log maps to the registry
+class ManifoldRegistry:
+    """Registry for manifold exponential and logarithmic maps."""
+
+    def __init__(self):
+        self._exp_maps = {}
+        self._log_maps = {}
+
+    def register_exp_map(self, constraint, exp_map):
+        """Register an exponential map for a constraint."""
+        self._exp_maps[type(constraint)] = exp_map
+        return exp_map
+
+    def register_log_map(self, constraint, log_map):
+        """Register a logarithmic map for a constraint."""
+        self._log_maps[type(constraint)] = log_map
+        return log_map
+
+    def get_exp_map(self, constraint):
+        """Get the exponential map for a constraint."""
+        return self._exp_maps.get(type(constraint))
+
+    def get_log_map(self, constraint):
+        """Get the logarithmic map for a constraint."""
+        return self._log_maps.get(type(constraint))
+
+
+manifold_registry = ManifoldRegistry()
+
+# Register the exponential and logarithmic maps
+manifold_registry.register_exp_map(spherical, spherical_exp_map)
+manifold_registry.register_log_map(spherical, spherical_log_map)
+
+manifold_registry.register_exp_map(stiefel, stiefel_exp_map)
+manifold_registry.register_log_map(stiefel, stiefel_log_map)
+
+manifold_registry.register_exp_map(symmetric_positive_definite_matrix, spd_exp_map)
+manifold_registry.register_log_map(symmetric_positive_definite_matrix, spd_log_map)
+
+manifold_registry.register_exp_map(lorentz, lorentz_exp_map)
+manifold_registry.register_log_map(lorentz, lorentz_log_map)

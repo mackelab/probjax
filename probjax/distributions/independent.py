@@ -33,7 +33,7 @@ class Independent(Distribution):
         reinterpreted_batch_ndims: int,
     ):
         # Determine batch_shape and event_shape using the helper function
-        batch_shape, event_shape, split_dims = determine_shapes(
+        batch_shape, event_shape, split_dims, split_indices = determine_shapes(
             base_dist, reinterpreted_batch_ndims
         )
 
@@ -44,6 +44,7 @@ class Independent(Distribution):
             self.base_dist = base_dist
 
         self.split_dims = split_dims
+        self.split_indices = split_indices
         self.reinterpreted_batch_ndims = reinterpreted_batch_ndims
 
         # for p in self.base_dist:
@@ -66,8 +67,12 @@ class Independent(Distribution):
 
     @property
     def mode(self):
-        # The mode does change and is not equal to the mode of the base distribution
-        raise NotImplementedError()
+        """Mode of the independent distribution."""
+        if len(self.base_dist) == 1:
+            return self.base_dist[0].mode
+        else:
+            modes = jnp.stack([d.mode for d in self.base_dist], axis=-1)
+            return modes.reshape(self.batch_shape + self.event_shape)
 
     @property
     def variance(self):
@@ -112,10 +117,17 @@ class Independent(Distribution):
                 if self.reinterpreted_batch_ndims > 0
                 else -(len(self.event_shape) + len(self.batch_shape))
             )
-            split_value = jnp.split(value, self.split_dims[:-1], axis=split_dim)
+            # Reshape value to merge all event dims into one for splitting
+            value_flat = jnp.reshape(value, value.shape[:split_dim] + (-1,))
+            # Split value_flat into pieces for each base distribution
+            split_value = jnp.split(value_flat, self.split_indices[:-1], axis=split_dim)
+            # Now reshape each split back to its event shape and compute log_prob
             log_prob = jnp.concatenate(
                 [
-                    jnp.expand_dims(b.log_prob(v), axis=split_dim)
+                    jnp.expand_dims(
+                        b.log_prob(v.reshape(v.shape[:split_dim] + b.event_shape)),
+                        axis=split_dim,
+                    )
                     for b, v in zip(self.base_dist, split_value)
                 ],
                 axis=split_dim,
@@ -165,12 +177,17 @@ class Independent(Distribution):
         flat_components, tree_components = jax.tree_util.tree_flatten(self.base_dist)
         return (
             tuple(flat_components),
-            [tree_components, self.reinterpreted_batch_ndims],
+            [
+                tree_components,
+                self.reinterpreted_batch_ndims,
+                self.split_dims,
+                self.split_indices,
+            ],
         )
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        tree_components, reinterpreted_batch_ndims = aux_data
+        tree_components, reinterpreted_batch_ndims, split_dims, split_indices = aux_data
         return cls(
             jax.tree_util.tree_unflatten(tree_components, children),
             reinterpreted_batch_ndims,
@@ -250,7 +267,16 @@ def determine_shapes(
         event_shape = event_shapes[0]
         split_dims = [max(s, 1) for s in split_dims_batch]
 
+    # For splitting: use the product of event_shape dims for each base distribution
+    split_sizes = [int(np.prod(e)) for e in event_shapes]
+    split_indices = list(np.cumsum(split_sizes))
+
     # Cummulatively sum the split_dims
     split_dims = list(np.cumsum(split_dims))
 
-    return tuple(batch_shape), tuple(event_shape), tuple(split_dims)
+    return (
+        tuple(batch_shape),
+        tuple(event_shape),
+        tuple(split_dims),
+        tuple(split_indices),
+    )

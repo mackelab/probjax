@@ -13,13 +13,38 @@ import jax.numpy as jnp
 from jax import random
 from jaxtyping import Array, Float, Int, PRNGKeyArray, ArrayLike
 
-from probjax.stats.base import rv_continuous, rv_continuous_frozen
+from probjax.stats.base import rv_generic, rv_continuous_frozen, rv_discrete_frozen
 from probjax.stats.constraints import simplex, distribution
 
-__all__ = ["mixture", "mixture_frozen"]
+__all__ = ["mixture"]
 
 
-class mixture(rv_continuous):
+class mixture_frozen(rv_continuous_frozen, rv_discrete_frozen):
+    """Frozen mixture distribution."""
+
+    def __init__(self, dist, mixing_probs, components, **kwds):
+        super().__init__(dist, mixing_probs=mixing_probs, components=components, **kwds)
+
+    def _compute_batch_and_event_shape(self, mixing_probs, components, **kwds):
+        """Compute the batch and event shape of the distribution."""
+        batch_shape1 = mixing_probs.shape[:-1]
+        num_components = mixing_probs.shape[-1]
+        assert len(components) == num_components, (
+            "Number of components must match number of mixing probabilities"
+        )
+        event_shape = components[0].event_shape
+        assert all(comp.event_shape == event_shape for comp in components), (
+            "All components must have the same event shape"
+        )
+        batch_shape2 = components[0].batch_shape
+        assert all(comp.batch_shape == batch_shape2 for comp in components), (
+            "All components must have the same batch shape"
+        )
+        batch_shape = jnp.broadcast_shapes(batch_shape1, batch_shape2)
+        return batch_shape, event_shape
+
+
+class mixture_gen(rv_generic):
     """A mixture distribution that combines multiple component distributions."""
 
     parameters = {
@@ -30,35 +55,25 @@ class mixture(rv_continuous):
     def __init__(self, name: Optional[str] = None):
         super().__init__(name=name)
 
-    @classmethod
-    def _parse_args(cls, mixing_probs, components, **kwds):
-        """Parse arguments for the mixture distribution."""
-        return (mixing_probs, components), kwds
+    def __call__(self, mixing_probs, components, **kwargs):
+        """Create a frozen mixture distribution."""
+        return self.freeze(mixing_probs=mixing_probs, components=components, **kwargs)
+
+    def freeze(self, mixing_probs, components, **kwargs):
+        """Freeze the mixture distribution with the given parameters."""
+        return mixture_frozen(
+            self, mixing_probs=mixing_probs, components=components, **kwargs
+        )
 
     @classmethod
-    def _get_support(cls, mixing_probs, components, **kwds):
+    def support(cls, mixing_probs, components, **kwds):
         """Get the support of the mixture distribution."""
-        # The support of a mixture is the union of the supports of its components.
-        # Since we can't easily compute this in general, we return the full real line
-        # as a conservative estimate.
-        return (-jnp.inf, jnp.inf)
-
-    @classmethod
-    def _get_batch_shape(cls, mixing_probs, components, **kwds):
-        """Get the batch shape of the mixture distribution."""
-        return mixing_probs.shape[:-1]
-
-    @classmethod
-    def _get_event_shape(cls, mixing_probs, components, **kwds):
-        """Get the event shape of the mixture distribution."""
-        return components[0].event_shape
-
-    @classmethod
-    def pdf(cls, x: ArrayLike, mixing_probs, components, **kwds):
-        """Probability density function of the mixture distribution."""
-        x = jnp.asarray(x)
-        pdfs = jnp.stack([comp.pdf(x) for comp in components], axis=-1)
-        return jnp.sum(mixing_probs * pdfs, axis=-1)
+        supports = [comp.support() for comp in components]
+        if all(isinstance(s, tuple) and len(s) == 2 for s in supports):
+            return (min(s[0] for s in supports), max(s[1] for s in supports))
+        return tuple(
+            set().union(*[s if isinstance(s, tuple) else (s,) for s in supports])
+        )
 
     @classmethod
     def logpdf(cls, x: ArrayLike, mixing_probs, components, **kwds):
@@ -77,8 +92,6 @@ class mixture(rv_continuous):
     @classmethod
     def ppf(cls, q: ArrayLike, mixing_probs, components, **kwds):
         """Percent point function of the mixture distribution."""
-        # For mixtures, the PPF is not easily computable in general.
-        # We use a numerical approximation by finding the root of CDF(x) - q = 0.
         q = jnp.asarray(q)
         x0 = jnp.mean([comp.ppf(q) for comp in components], axis=0)
         return jax.scipy.optimize.root(
@@ -96,70 +109,139 @@ class mixture(rv_continuous):
         **kwds,
     ):
         """Random variates of the mixture distribution."""
-        # First sample the component index
-        component_idx = random.categorical(rng, mixing_probs, shape=shape)
-        # Then sample from the selected component
-        samples = []
-        for i, comp in enumerate(components):
-            mask = component_idx == i
-            if jnp.any(mask):
-                comp_samples = comp.rvs(rng, shape=mask.shape)
-                samples.append(jnp.where(mask[..., None], comp_samples, 0))
-        return jnp.sum(jnp.stack(samples), axis=0)
+        key_sample, key_cluster_membership = random.split(rng, 2)
+
+        # Sample from all components at once
+        component_samples = jnp.stack(
+            [comp.rvs(key_sample, shape=shape) for comp in components], axis=-1
+        )
+
+        # Sample cluster membership
+        cluster_membership = random.categorical(
+            key_cluster_membership,
+            mixing_probs,
+            shape=shape,
+        )
+        while cluster_membership.ndim < component_samples.ndim:
+            cluster_membership = jnp.expand_dims(cluster_membership, axis=-1)
+        # Select samples based on cluster membership
+        samples = jnp.take_along_axis(component_samples, cluster_membership, axis=-1)
+
+        return jnp.squeeze(samples, axis=-1)
 
     @classmethod
     def mean(cls, mixing_probs, components, **kwds):
         """Mean of the mixture distribution."""
-        means = jnp.stack([comp.mean() for comp in components], axis=-1)
+        means = jnp.stack([jnp.asarray(comp.mean()) for comp in components], axis=-1)
         return jnp.sum(mixing_probs * means, axis=-1)
 
     @classmethod
     def var(cls, mixing_probs, components, **kwds):
         """Variance of the mixture distribution."""
-        means = jnp.stack([comp.mean() for comp in components], axis=-1)
-        vars = jnp.stack([comp.var() for comp in components], axis=-1)
+        means = jnp.stack([jnp.asarray(comp.mean()) for comp in components], axis=-1)
+        vars = jnp.stack([jnp.asarray(comp.var()) for comp in components], axis=-1)
         mean = jnp.sum(mixing_probs * means, axis=-1)
         return jnp.sum(mixing_probs * (vars + (means - mean[..., None]) ** 2), axis=-1)
 
-    def freeze(self, mixing_probs, components, **kwds):
-        """Freeze the mixture distribution with the given parameters."""
-        return mixture_frozen(self, mixing_probs, components, **kwds)
-
-
-class mixture_frozen(rv_continuous_frozen):
-    """Frozen mixture distribution."""
-
-    def __init__(self, dist, mixing_probs, components, **kwds):
-        super().__init__(dist, mixing_probs=mixing_probs, components=components, **kwds)
-        self.mixing_probs = mixing_probs
-        self.components = components
-
-    def pdf(self, x: ArrayLike):
-        """Probability density function of the frozen mixture distribution."""
-        return self.dist.pdf(x, self.mixing_probs, self.components, **self.kwds)
-
-    def logpdf(self, x: ArrayLike):
-        """Log probability density function of the frozen mixture distribution."""
-        return self.dist.logpdf(x, self.mixing_probs, self.components, **self.kwds)
-
-    def cdf(self, x: ArrayLike):
-        """Cumulative distribution function of the frozen mixture distribution."""
-        return self.dist.cdf(x, self.mixing_probs, self.components, **self.kwds)
-
-    def ppf(self, q: ArrayLike):
-        """Percent point function of the frozen mixture distribution."""
-        return self.dist.ppf(q, self.mixing_probs, self.components, **self.kwds)
-
-    def rvs(self, rng: PRNGKeyArray, shape: Tuple[int, ...] = ()):
-        """Random variates of the frozen mixture distribution."""
-        return self.dist.rvs(
-            rng, shape, self.mixing_probs, self.components, **self.kwds
+    @classmethod
+    def mode(cls, mixing_probs, components, **kwds):
+        """Mode of the mixture distribution."""
+        modes = [comp.mode() for comp in components]
+        logpdfs = jnp.stack(
+            [comp.logpdf(mode) for mode, comp in zip(modes, components)], axis=-1
         )
+        modes = jnp.stack(modes, axis=-1)
+        scaled_logpdfs = logpdfs + jnp.log(mixing_probs)
+        idx = jnp.argmax(scaled_logpdfs, axis=-1)
+        while idx.ndim < modes.ndim:
+            idx = idx[..., None]
+        mode = jnp.take_along_axis(modes, idx, axis=-1)
+        return jnp.squeeze(mode, axis=-1)
 
-    def mean(self):
-        """Mean of the frozen mixture distribution."""
-        return self.dist.mean(self.mixing_probs, self.components, **self.kwds)
+    @classmethod
+    def entropy(cls, mixing_probs, components, **kwds):
+        """Entropy of the mixture distribution."""
+        samples = cls.rvs(jax.random.PRNGKey(0), (10000,), mixing_probs, components)
+        return -jnp.mean(cls.logpdf(samples, mixing_probs, components))
 
-    def var(self):
-        """Variance of the frozen mixture distribution."""
-        return self.dist.var(self.mixing_probs, self.components, **self.kwds)
+    @classmethod
+    def fit(
+        cls,
+        x: ArrayLike,
+        components,
+        max_iter: int = 100,
+        tol: float = 1e-4,
+        rng_key: Optional[PRNGKeyArray] = None,
+    ):
+        """Fit the mixture distribution to data using the EM algorithm.
+
+        Args:
+            x: Array of observations
+            components: List of component distributions to fit
+            max_iter: Maximum number of EM iterations
+            tol: Convergence tolerance for log-likelihood
+            rng_key: Random key for initialization
+
+        Returns:
+            Tuple of (mixing_probs, fitted_components)
+        """
+        x = jnp.asarray(x)
+        n_samples = x.shape[0]
+        n_components = len(components)
+
+        # Initialize mixing probabilities uniformly
+        mixing_probs = jnp.ones(n_components) / n_components
+
+        # Initialize component parameters using their fit methods
+        fitted_components = [comp.fit(x) for comp in components]
+
+        # Initialize log-likelihood
+        prev_log_likelihood = -jnp.inf
+
+        def em_step(state):
+            mixing_probs, fitted_components, prev_log_likelihood = state
+
+            # E-step: Compute responsibilities
+            log_pdfs = jnp.stack(
+                [comp.logpdf(x) for comp in fitted_components], axis=-1
+            )
+            log_responsibilities = jnp.log(mixing_probs) + log_pdfs
+            responsibilities = jnp.exp(
+                log_responsibilities
+                - jax.scipy.special.logsumexp(
+                    log_responsibilities, axis=-1, keepdims=True
+                )
+            )
+
+            # M-step: Update mixing probabilities
+            mixing_probs = jnp.mean(responsibilities, axis=0)
+
+            # M-step: Update component parameters
+            fitted_components = [
+                comp.fit(x, weights=responsibilities[:, i])
+                for i, comp in enumerate(components)
+            ]
+
+            # Compute log-likelihood
+            log_likelihood = jnp.mean(
+                jax.scipy.special.logsumexp(log_responsibilities, axis=-1)
+            )
+
+            return (mixing_probs, fitted_components, log_likelihood)
+
+        def convergence_check(state):
+            mixing_probs, fitted_components, log_likelihood = state
+            return jnp.abs(log_likelihood - prev_log_likelihood) > tol
+
+        # Run EM algorithm
+        state = (mixing_probs, fitted_components, prev_log_likelihood)
+        for _ in range(max_iter):
+            state = em_step(state)
+            if not convergence_check(state):
+                break
+
+        mixing_probs, fitted_components, _ = state
+        return mixing_probs, fitted_components
+
+
+mixture = mixture_gen(name="mixture")

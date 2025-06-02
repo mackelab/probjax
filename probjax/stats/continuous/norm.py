@@ -7,7 +7,7 @@ This module contains the Normal (Gaussian) distribution.
 
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Float, PRNGKeyArray, ArrayLike
 from typing import Tuple, Dict, Optional
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
@@ -425,8 +425,32 @@ class norm_gen(rv_continuous, rv_exponential_family):
         log_partition : float
             Log partition function of the distribution
         """
-        var = scale**2
-        return 0.5 * jnp.log(2 * jnp.pi * var) + (loc**2) / (2 * var)
+        return 0.5 * (loc**2 / scale**2 + jnp.log(2 * jnp.pi * scale**2))
+
+    @classmethod
+    def fit(cls, data: ArrayLike, **kwds):
+        """Maximum likelihood estimation of normal distribution parameters.
+
+        The MLE for the normal distribution has a closed-form solution:
+        - loc = mean(data)
+        - scale = std(data)
+
+        Parameters
+        ----------
+        data : array_like
+            Data to fit the distribution to
+        **kwds : dict, optional
+            Additional parameters (ignored)
+
+        Returns
+        -------
+        params : tuple
+            The fitted parameters (loc, scale)
+        """
+        data = jnp.asarray(data)
+        loc = jnp.mean(data)
+        scale = jnp.std(data)
+        return loc, scale
 
 
 norm = norm_gen(name="norm")

@@ -1,53 +1,61 @@
 """
-Laplace Distribution (:mod:`probjax.stats.laplace`)
+Student's t-Distribution (:mod:`probjax.stats.t`)
 ==================================================
 
-This module contains the Laplace distribution.
+This module contains the Student's t-distribution.
 """
 
-import jax.numpy as jnp
-from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray
-from typing import Tuple, Dict, Optional
-
-from probjax.stats.base import rv_continuous, rv_exponential_family
-from probjax.stats.constraints import real, strict_positive
+from typing import Optional, Tuple
 
 import jax
-from jax.scipy.stats import laplace as _laplace
+import jax.numpy as jnp
+from jax import random
+from jax.scipy.special import gammaln
+from jaxtyping import Array, Float, PRNGKeyArray
 
-__all__ = ["laplace"]
+from probjax.stats.base import rv_continuous, rv_exponential_family
+from probjax.stats.constraints import real, strict_positive, strict_positive_integer
+
+__all__ = ["t"]
 
 
-class laplace_gen(rv_continuous, rv_exponential_family):
-    """Laplace continuous random variable.
+class t_gen(rv_continuous, rv_exponential_family):
+    """Student's t-Distribution parameterized by `df`, `loc`, and `scale`.
 
-    The Laplace distribution with location parameter `loc` and scale parameter `scale`.
+    The Student's t-distribution with degrees of freedom `df`, location `loc`, and scale `scale`.
 
     Parameters
     ----------
+    df : float
+        Degrees of freedom.
     loc : float, optional
         Location parameter. Default is 0.
     scale : float, optional
         Scale parameter. Default is 1.
     """
 
-    # Define parameter constraints
-    parameters = {'loc': real, 'scale': strict_positive}
+    name = "t"
+    parameters = {
+        "df": strict_positive_integer,
+        "loc": real,
+        "scale": strict_positive,
+    }
 
     @classmethod
-    def support(cls, loc=0.0, scale=1.0, **kwargs):
-        """Support of the Laplace distribution."""
+    def support(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
+        """Support of the distribution."""
         return real
 
     @classmethod
-    def pdf(cls, x, loc=0.0, scale=1.0, **kwargs):
-        """Probability density function of the Laplace distribution.
+    def pdf(cls, x, df=1.0, loc=0.0, scale=1.0, **kwargs):
+        """Probability density function of the Student's t-distribution.
 
         Parameters
         ----------
         x : array_like
             quantiles
+        df : float
+            Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
         scale : float, optional
@@ -58,16 +66,18 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         pdf : ndarray
             Probability density function evaluated at x
         """
-        return jnp.exp(cls.logpdf(x, loc, scale, **kwargs))
+        return jax.scipy.stats.t.pdf(x, df, loc, scale)
 
     @classmethod
-    def logpdf(cls, x, loc=0.0, scale=1.0, **kwargs):
-        """Log of the probability density function of the Laplace distribution.
+    def logpdf(cls, x, df=1.0, loc=0.0, scale=1.0, **kwargs):
+        """Log of the probability density function of the Student's t-distribution.
 
         Parameters
         ----------
         x : array_like
             quantiles
+        df : float
+            Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
         scale : float, optional
@@ -78,16 +88,18 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         logpdf : ndarray
             Log of the probability density function evaluated at x
         """
-        return _laplace.logpdf(x, loc, scale)
+        return jax.scipy.stats.t.logpdf(x, df, loc, scale)
 
     @classmethod
-    def cdf(cls, x, loc=0.0, scale=1.0, **kwargs):
-        """Cumulative distribution function of the Laplace distribution.
+    def cdf(cls, x, df=1.0, loc=0.0, scale=1.0, **kwargs):
+        """Cumulative distribution function of the Student's t-distribution.
 
         Parameters
         ----------
         x : array_like
             quantiles
+        df : float
+            Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
         scale : float, optional
@@ -98,36 +110,18 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         cdf : ndarray
             Cumulative distribution function evaluated at x
         """
-        return _laplace.cdf(x, loc, scale)
+        raise NotImplementedError("CDF not implemented for t distribution")
 
     @classmethod
-    def logcdf(cls, x, loc=0.0, scale=1.0, **kwargs):
-        """Log of the cumulative distribution function of the Laplace distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        logcdf : ndarray
-            Log of the cumulative distribution function evaluated at x
-        """
-        return jnp.log(_laplace.cdf(x, loc, scale))
-
-    @classmethod
-    def ppf(cls, q, loc=0.0, scale=1.0, **kwargs):
-        """Percent point function (inverse of cdf) of the Laplace distribution.
+    def ppf(cls, q, df=1.0, loc=0.0, scale=1.0, **kwargs):
+        """Percent point function (inverse of cdf) of the Student's t-distribution.
 
         Parameters
         ----------
         q : array_like
             lower tail probability
+        df : float
+            Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
         scale : float, optional
@@ -138,25 +132,28 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         ppf : ndarray
             Quantile corresponding to the lower tail probability q
         """
-        return _laplace.ppf(q, loc, scale)
+        raise NotImplementedError("PPF not implemented for t distribution")
 
     @classmethod
     def rvs(
         cls,
         rng: PRNGKeyArray,
         shape: Tuple[int, ...] = (),
+        df=1.0,
         loc=0.0,
         scale=1.0,
         **kwargs,
     ) -> Float[Array, "..."]:
-        """Random variates of the Laplace distribution.
+        """Random variates of the Student's t-distribution.
 
         Parameters
         ----------
         rng : PRNGKeyArray
-            JAX PRNG key for random number generation
+            JAX PRNG key for random number generation.
         shape : tuple of ints, optional
-            Output shape. Default is (), meaning a single value.
+            Output shape. Default is ().
+        df : float
+            Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
         scale : float, optional
@@ -167,19 +164,22 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         rvs : ndarray or scalar
             Random variates of given shape
         """
+        df = jnp.asarray(df)
         loc = jnp.asarray(loc)
         scale = jnp.asarray(scale)
-        event_shape = jnp.broadcast_shapes(loc.shape, scale.shape)
-        return random.laplace(rng, shape=shape + event_shape) * scale + loc
+        event_shape = jnp.broadcast_shapes(df.shape, loc.shape, scale.shape)
+        return random.t(rng, df, shape=shape + event_shape) * scale + loc
 
     @classmethod
-    def sf(cls, x, loc=0.0, scale=1.0, **kwargs):
-        """Survival function (1 - cdf) of the Laplace distribution.
+    def sf(cls, x, df=1.0, loc=0.0, scale=1.0, **kwargs):
+        """Survival function (1 - cdf) of the Student's t-distribution.
 
         Parameters
         ----------
         x : array_like
             quantiles
+        df : float
+            Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
         scale : float, optional
@@ -190,16 +190,18 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         sf : ndarray
             Survival function evaluated at x
         """
-        return _laplace.sf(x, loc, scale)
+        return jax.scipy.stats.t.sf(x, df, loc, scale)
 
     @classmethod
-    def isf(cls, q, loc=0.0, scale=1.0, **kwargs):
-        """Inverse survival function (inverse of sf) of the Laplace distribution.
+    def isf(cls, q, df=1.0, loc=0.0, scale=1.0, **kwargs):
+        """Inverse survival function (inverse of sf) of the Student's t-distribution.
 
         Parameters
         ----------
         q : array_like
             upper tail probability
+        df : float
+            Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
         scale : float, optional
@@ -210,14 +212,18 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         isf : ndarray
             Quantile corresponding to the upper tail probability q
         """
-        return _laplace.isf(q, loc, scale)
+        return jax.scipy.stats.t.isf(q, df, loc, scale)
 
     @classmethod
-    def mean(cls, loc=0.0, scale=1.0, **kwargs):
-        """Mean of the Laplace distribution.
+    def logcdf(cls, x, df=1.0, loc=0.0, scale=1.0, **kwargs):
+        """Log of the cumulative distribution function of the Student's t-distribution.
 
         Parameters
         ----------
+        x : array_like
+            quantiles
+        df : float
+            Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
         scale : float, optional
@@ -225,21 +231,39 @@ class laplace_gen(rv_continuous, rv_exponential_family):
 
         Returns
         -------
-        mean : float
-            Mean of the distribution
+        logcdf : ndarray
+            Log of the cumulative distribution function evaluated at x
         """
-        return jnp.asarray(loc)
+        return jax.scipy.stats.t.logcdf(x, df, loc, scale)
 
     @classmethod
-    def mode(cls, loc=0.0, scale=1.0, **kwargs):
-        """Mode of the Laplace distribution.
+    def mean(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
+        """Mean of the Student's t-distribution.
 
         Parameters
         ----------
+        df : float
+            Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
+
+        Returns
+        -------
+        mean : float
+            Mean of the distribution
+        """
+        return jnp.where(df > 1, loc, jnp.nan)
+
+    @classmethod
+    def mode(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
+        """Mode of the Student's t-distribution.
+
+        Parameters
+        ----------
+        df : float
+            Degrees of freedom.
+        loc : float, optional
+            Location parameter. Default is 0.
 
         Returns
         -------
@@ -249,11 +273,13 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         return jnp.asarray(loc)
 
     @classmethod
-    def var(cls, loc=0.0, scale=1.0, **kwargs):
-        """Variance of the Laplace distribution.
+    def var(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
+        """Variance of the Student's t-distribution.
 
         Parameters
         ----------
+        df : float
+            Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
         scale : float, optional
@@ -264,14 +290,20 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         var : float
             Variance of the distribution
         """
-        return 2.0 * scale**2
+        return jnp.where(
+            df > 2,
+            scale**2 * df / (df - 2),
+            jnp.where(df > 1, jnp.inf, jnp.nan),
+        )
 
     @classmethod
-    def entropy(cls, loc=0.0, scale=1.0, **kwargs):
-        """Entropy of the Laplace distribution.
+    def entropy(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
+        """Entropy of the Student's t-distribution.
 
         Parameters
         ----------
+        df : float
+            Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
         scale : float, optional
@@ -282,16 +314,23 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         entropy : float
             Entropy of the distribution
         """
-        return 1.0 + jnp.log(2.0 * scale)
+        return (
+            jnp.log(scale)
+            + 0.5 * (1 + jnp.log(df))
+            + gammaln(0.5 * (df + 1))
+            - gammaln(0.5 * df)
+        )
 
     @classmethod
-    def moment(cls, n, loc=0.0, scale=1.0, **kwargs):
-        """n-th non-central moment of the Laplace distribution.
+    def moment(cls, n, df=1.0, loc=0.0, scale=1.0, **kwargs):
+        """n-th non-central moment of the Student's t-distribution.
 
         Parameters
         ----------
         n : int
             Order of the moment
+        df : float
+            Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
         scale : float, optional
@@ -302,41 +341,26 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         moment : float
             n-th non-central moment
         """
-        n = jnp.asarray(n)
-        # For odd n, central moment is 0
-        # For even n, central moment is n! * scale^n
-        # Convert to non-central moment by adding loc
-
-        # Central moments
-        even_central = jnp.exp(
-            jnp.log(jnp.prod(jnp.arange(1, n + 1))) + n * jnp.log(scale)
-        )
-        central_moment = jnp.where(n % 2 == 0, even_central, 0.0)
-
-        # Use binomial expansion to compute non-central moments
-        k = jnp.arange(n + 1)
-        binomial_coef = jnp.exp(jnp.log(jnp.math.comb(n, k)))
-        loc_powers = loc ** (n - k)
-
-        # Get central moments for each k (which are 0 for odd k)
-        k_central_moments = jnp.where(
-            k % 2 == 0,
-            jnp.exp(
-                jnp.log(jnp.prod(jnp.where(k >= 1, jnp.arange(1, k + 1), 1)))
-                + k * jnp.log(scale)
-            ),
-            0.0,
-        )
-
-        # Combine using binomial expansion
-        return jnp.sum(binomial_coef * loc_powers * k_central_moments)
+        if n == 0:
+            return jnp.ones_like(loc)
+        elif n == 1:
+            return cls.mean(df=df, loc=loc)
+        elif n == 2:
+            return cls.var(df=df, loc=loc, scale=scale) + loc**2
+        else:
+            # For higher moments, we need to use numerical integration
+            # This is a placeholder - in practice, you might want to implement
+            # a more efficient method or use numerical integration
+            return jnp.nan
 
     @classmethod
-    def skew(cls, loc=0.0, scale=1.0, **kwargs):
-        """Skewness of the Laplace distribution.
+    def skew(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
+        """Skewness of the Student's t-distribution.
 
         Parameters
         ----------
+        df : float
+            Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
         scale : float, optional
@@ -347,14 +371,16 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         skew : float
             Skewness of the distribution
         """
-        return jnp.zeros_like(loc)  # Skewness is always 0 (symmetric distribution)
+        return jnp.where(df > 3, 0.0, jnp.nan)
 
     @classmethod
-    def kurtosis(cls, loc=0.0, scale=1.0, **kwargs):
-        """Excess kurtosis of the Laplace distribution.
+    def kurtosis(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
+        """Excess kurtosis of the Student's t-distribution.
 
         Parameters
         ----------
+        df : float
+            Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
         scale : float, optional
@@ -365,14 +391,16 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         kurtosis : float
             Excess kurtosis of the distribution
         """
-        return 3.0 * jnp.ones_like(loc)  # Excess kurtosis is always 3
+        return jnp.where(df > 4, 6.0 / (df - 4), jnp.nan)
 
     @classmethod
-    def natural_parameters(cls, loc=0.0, scale=1.0, **kwargs):
-        """Natural parameters of the Laplace distribution.
+    def natural_parameters(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
+        """Natural parameters of the Student's t-distribution.
 
         Parameters
         ----------
+        df : float
+            Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
         scale : float, optional
@@ -383,11 +411,13 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         natural_parameters : tuple
             Natural parameters of the distribution
         """
-        return jnp.array([loc, -1.0 / scale])
+        # The t-distribution is not a member of the exponential family
+        # This is a placeholder that returns None
+        return None
 
     @classmethod
     def sufficient_statistics(cls, x, **kwargs):
-        """Sufficient statistics of the Laplace distribution.
+        """Sufficient statistics of the Student's t-distribution.
 
         Parameters
         ----------
@@ -399,14 +429,18 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         sufficient_statistics : tuple
             Sufficient statistics of the distribution
         """
-        return jnp.array([x, jnp.abs(x)])
+        # The t-distribution is not a member of the exponential family
+        # This is a placeholder that returns None
+        return None
 
     @classmethod
-    def log_partition(cls, loc=0.0, scale=1.0, **kwargs):
-        """Log partition function of the Laplace distribution.
+    def log_partition(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
+        """Log partition function of the Student's t-distribution.
 
         Parameters
         ----------
+        df : float
+            Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
         scale : float, optional
@@ -417,7 +451,9 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         log_partition : float
             Log partition function of the distribution
         """
-        return jnp.log(2.0 * scale) + jnp.abs(loc) / scale
+        # The t-distribution is not a member of the exponential family
+        # This is a placeholder that returns None
+        return None
 
 
-laplace = laplace_gen(name="laplace")
+t = t_gen(name="t")

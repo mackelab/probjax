@@ -46,11 +46,6 @@ class transformed(rv_continuous):
         return (-jnp.inf, jnp.inf)
 
     @classmethod
-    def support(cls, base_dist, bijector, **kwds):
-        """Get the support of the transformed distribution."""
-        return cls._get_support(base_dist, bijector, **kwds)
-
-    @classmethod
     def _get_batch_shape(cls, base_dist, bijector, **kwds):
         """Get the batch shape of the transformed distribution."""
         return base_dist.batch_shape
@@ -61,11 +56,9 @@ class transformed(rv_continuous):
         return base_dist.event_shape
 
     @classmethod
-    def pdf(cls, x: ArrayLike, base_dist, bijector, **kwds):
-        """Probability density function of the transformed distribution."""
-        inv_and_logdet = inverse_and_logabsdet(bijector)
-        inv_value, log_det = inv_and_logdet(x)
-        return jnp.exp(base_dist.logpdf(inv_value) + log_det)
+    def support(cls, base_dist, bijector, **kwds):
+        """Get the support of the transformed distribution."""
+        return cls._get_support(base_dist, bijector, **kwds)
 
     @classmethod
     def logpdf(cls, x: ArrayLike, base_dist, bijector, **kwds):
@@ -99,6 +92,23 @@ class transformed(rv_continuous):
         """Random variates of the transformed distribution."""
         samples = base_dist.rvs(rng, shape)
         return bijector(samples)
+
+    @classmethod
+    def mean(cls, base_dist, bijector, **kwds):
+        """Mean of the transformed distribution."""
+        # For a bijective transformation, the mean is the image of the base distribution's mean
+        # under the transformation.
+        base_mean = base_dist.mean()
+        return bijector(base_mean)
+
+    @classmethod
+    def var(cls, base_dist, bijector, **kwds):
+        """Variance of the transformed distribution."""
+        # For a bijective transformation, we need to compute the variance numerically
+        # since it's not easily computable in general.
+        samples = base_dist.rvs(jax.random.PRNGKey(0), (10000,))
+        transformed_samples = bijector(samples)
+        return jnp.var(transformed_samples, axis=0)
 
     @classmethod
     def entropy(cls, base_dist, bijector, **kwds):
@@ -148,6 +158,14 @@ class transformed_frozen(rv_continuous_frozen):
     def rvs(self, rng: PRNGKeyArray, shape: Tuple[int, ...] = ()):
         """Random variates of the frozen transformed distribution."""
         return self.dist.rvs(rng, shape, self.base_dist, self.bijector, **self.kwds)
+
+    def mean(self):
+        """Mean of the frozen transformed distribution."""
+        return self.dist.mean(self.base_dist, self.bijector, **self.kwds)
+
+    def var(self):
+        """Variance of the frozen transformed distribution."""
+        return self.dist.var(self.base_dist, self.bijector, **self.kwds)
 
     def entropy(self):
         """Entropy of the frozen transformed distribution."""

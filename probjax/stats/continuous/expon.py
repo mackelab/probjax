@@ -7,7 +7,7 @@ This module contains the Exponential distribution.
 
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Float, PRNGKeyArray, ArrayLike
 from typing import Tuple, Dict, Optional
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
@@ -358,6 +358,29 @@ class expon_gen(rv_continuous, rv_exponential_family):
             Log partition function of the distribution
         """
         return -jnp.log(rate)
+
+    @classmethod
+    def fit(cls, data: ArrayLike, **kwds):
+        """Maximum likelihood estimation of exponential distribution parameters.
+
+        The MLE for the exponential distribution has a closed-form solution:
+        - rate = 1 / mean(data)
+
+        Parameters
+        ----------
+        data : array_like
+            Data to fit the distribution to
+        **kwds : dict, optional
+            Additional parameters (ignored)
+
+        Returns
+        -------
+        params : tuple
+            The fitted parameters (rate,)
+        """
+        data = jnp.asarray(data)
+        rate = 1.0 / jnp.mean(data)
+        return (rate,)
 
 
 expon = expon_gen(name="expon")
