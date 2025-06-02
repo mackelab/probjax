@@ -25,6 +25,10 @@ from .constraints import (
     stiefel,
     grassmannian,
     lorentz,
+    symmetric_positive_definite_matrix,
+    symmetric_matrix,
+    boolean,
+    non_negative_integer,
 )
 
 __all__ = [
@@ -146,6 +150,8 @@ transform_to.register(strict_positive_integer)(
 transform_to.register(strict_negative_integer)(
     lambda x: -jnp.maximum(lax.abs(lax.round(x)), 1)
 )
+transform_to.register(non_negative_integer)(lambda x: lax.abs(lax.round(x)))
+transform_to.register(boolean)(lambda x: lax.round(jax.nn.sigmoid(x)))
 
 transform_to.register(positive)(lax.abs)
 biject_to.register(positive)(lax.exp)
@@ -171,7 +177,8 @@ biject_to.register(unit_square)(lax.tanh)
 transform_to.register(simplex)(jax.nn.softmax)
 transform_to.register(matrix)(generate_matrix)
 transform_to.register(square_matrix)(generate_matrix)
-transform_to.register(symmetric_positive_matrix)(generate_pdm)
+transform_to.register(symmetric_matrix)(lambda x: (x + x.T) / 2)
+transform_to.register(symmetric_positive_definite_matrix)(generate_pdm)
 
 
 # Spherical manifold transformations
@@ -272,8 +279,8 @@ biject_to.register(spherical)(spherical_transform)
 transform_to.register(stiefel)(stiefel_transform)
 biject_to.register(stiefel)(stiefel_transform)
 
-transform_to.register(symmetric_positive_matrix)(spd_transform)
-biject_to.register(symmetric_positive_matrix)(spd_transform)
+transform_to.register(symmetric_positive_definite_matrix)(spd_transform)
+biject_to.register(symmetric_positive_definite_matrix)(spd_transform)
 
 transform_to.register(lorentz)(lorentz_transform)
 biject_to.register(lorentz)(lorentz_transform)
@@ -311,8 +318,8 @@ manifold_registry.register_log_map(spherical, spherical_log_map)
 manifold_registry.register_exp_map(stiefel, stiefel_exp_map)
 manifold_registry.register_log_map(stiefel, stiefel_log_map)
 
-manifold_registry.register_exp_map(symmetric_positive_matrix, spd_exp_map)
-manifold_registry.register_log_map(symmetric_positive_matrix, spd_log_map)
+manifold_registry.register_exp_map(symmetric_positive_definite_matrix, spd_exp_map)
+manifold_registry.register_log_map(symmetric_positive_definite_matrix, spd_log_map)
 
 manifold_registry.register_exp_map(lorentz, lorentz_exp_map)
 manifold_registry.register_log_map(lorentz, lorentz_log_map)
