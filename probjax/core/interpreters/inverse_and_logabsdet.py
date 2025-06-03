@@ -34,7 +34,7 @@ def value_and_log_det_diagonal(f):
     def log_det_fn(*args, **kwargs):
         # Handle scalar inputs by wrapping them in arrays
         args_arrays = [jnp.array(arg) if jnp.ndim(arg) == 0 else arg for arg in args]
-        # args_arrays = jnp.broadcast_arrays(*args_arrays)
+        args_arrays = jnp.broadcast_arrays(*args_arrays)
         n_dim = args_arrays[0].ndim
         vmaped_grad_fn = grad_fn
         for _ in range(n_dim):
