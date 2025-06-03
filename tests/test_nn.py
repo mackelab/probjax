@@ -220,8 +220,11 @@ def test_flows(flow):
     x = jnp.ones((input_dim,))
     y = model.transform(x)
 
+    # Freeze the model to get a distribution object
+    frozen_model = model
+
     def loss_fn(model):
-        return jnp.sum(model.log_prob(x))
+        return jnp.sum(frozen_model.logpdf(x))
 
     # Can be differentiated
     _ = jax.grad(loss_fn)
@@ -241,8 +244,8 @@ def test_flows(flow):
     assert logabsdet.shape == ()
 
     # Sampling
-    samples = model.sample(jax.random.PRNGKey(0), (10,))
+    samples = frozen_model.sample(rng=jax.random.PRNGKey(0), shape=(10,))
     assert samples.shape == (10, input_dim)
     # Log probability
-    logprob = model.log_prob(samples)
+    logprob = frozen_model.logpdf(samples)
     assert logprob.shape == (10,)
