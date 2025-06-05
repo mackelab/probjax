@@ -29,20 +29,20 @@ def register_inverse_and_log_det_rule(key):
 
 def value_and_log_det_diagonal(f):
     # This assumes that the jacobian is diagonal!
-    # f_sum = lambda *args, **kwargs: jnp.sum(f(*args, **kwargs))
     grad_fn = jax.value_and_grad(f)
 
     def log_det_fn(*args, **kwargs):
-        args_at_least1d = [jnp.atleast_1d(arg) for arg in args]
-        args_at_least1d = jnp.broadcast_arrays(*args_at_least1d)
-        n_dim = args_at_least1d[0].ndim
+        # Handle scalar inputs by wrapping them in arrays
+        args_arrays = [jnp.array(arg) if jnp.ndim(arg) == 0 else arg for arg in args]
+        args_arrays = jnp.broadcast_arrays(*args_arrays)
+        n_dim = args_arrays[0].ndim
         vmaped_grad_fn = grad_fn
         for _ in range(n_dim):
-            vmaped_grad_fn = jax.vmap(vmaped_grad_fn)  #
-        value, det = vmaped_grad_fn(*args_at_least1d, **kwargs)
+            vmaped_grad_fn = jax.vmap(vmaped_grad_fn)
+        value, det = vmaped_grad_fn(*args_arrays, **kwargs)
 
         log_det = jnp.log(jnp.abs(det))
-        while log_det.ndim > 1:
+        while log_det.ndim > 0:
             log_det = jnp.sum(log_det, axis=-1)
         return value, log_det
 
@@ -233,6 +233,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         ]
         inputs = [out[0] for i in range(len(eqn.invars)) if known_invars[i] is None]
         log_abs_det = out[-1]
+        log_abs_det = jnp.sum(log_abs_det)
         log_det_previous = sum([self.log_dets.get(v, 0.0) for v in eqn.outvars])
         for v in eqn.invars:
             self.log_dets[v] = log_det_previous + log_abs_det

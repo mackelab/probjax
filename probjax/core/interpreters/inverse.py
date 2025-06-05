@@ -1,4 +1,3 @@
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -27,7 +26,7 @@ _UNIVARITAE_INVERSE_REGISTRY = {
     jax.lax.cosh_p: jax.lax.acosh_p,
     jax.lax.acosh_p: jax.lax.cosh_p,
     jax.lax.exp_p: jax.lax.log_p,
-    jax.lax.exp2_p: jnp.log2,
+    jax.lax.exp2_p: lambda x, accuracy: jnp.log2(x),
     jax.lax.log_p: jax.lax.exp_p,
     jax.lax.sqrt_p: lambda x, **params: jax.lax.pow_p.bind(x, 2.0, **params),
     jax.lax.rsqrt_p: lambda x, **params: 1.0 / jax.lax.pow_p.bind(x, 2.0, **params),
@@ -285,15 +284,15 @@ def invert_dynamic_slice(eqn, known_invars, known_outvars):
 def invert_split(eqn, known_invars, known_outvars):
     params = eqn.params
     invar = eqn.invars[0]
-    assert len(known_outvars) == len(
-        eqn.outvars
-    ), "Cannot invert split without all outputs!"
+    assert len(known_outvars) == len(eqn.outvars), (
+        "Cannot invert split without all outputs!"
+    )
     axis = params["axis"]
     sizes = params["sizes"]
 
-    assert all(
-        o.shape[axis] == s for o, s in zip(known_outvars, sizes)
-    ), "Output shapes do not match the sizes!"
+    assert all(o.shape[axis] == s for o, s in zip(known_outvars, sizes)), (
+        "Output shapes do not match the sizes!"
+    )
 
     return [invar], [jnp.concatenate(known_outvars, axis=axis)]
 

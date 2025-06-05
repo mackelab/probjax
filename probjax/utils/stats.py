@@ -2,23 +2,26 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.special import digamma, logsumexp
 
-from probjax.utils.special import betaincinv, gammaincinv, digammainv
-
+from probjax.utils.special import digammainv
 
 # MLE for dirichlet distribution
 
-def mle_dirichlet(xs, alpha0=None, maxiter=500):
+
+def mle_dirichlet(xs, alpha0=None, maxiter=100):
     if alpha0 is None:
         alpha0 = jnp.ones(xs.shape[1])
 
-    suff_stat = jnp.log(xs).mean(axis=0)
+    # Ensure that log(xs) is finite
+    log_xs = jnp.log(xs)
+    log_xs_is_finite = jnp.isfinite(log_xs)
+    log_xs = jnp.where(log_xs_is_finite, log_xs, 0.0)
+    suff_stat = jnp.sum(log_xs, axis=0) / jnp.sum(log_xs_is_finite, axis=0)
 
     def fixed_point_iteration(alpha, _):
         dialpha = digamma(alpha.sum())
         new_dialpha = dialpha + suff_stat
         new_alpha = digammainv(new_dialpha)
         return new_alpha, None
-
 
     return jax.lax.scan(fixed_point_iteration, alpha0, None, length=maxiter)[0]
 

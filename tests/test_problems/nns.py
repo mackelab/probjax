@@ -305,6 +305,20 @@ def lru(request):
         ("autoregressive", "additive", 3),
         ("autoregressive", "affine", 3),
         ("autoregressive", "spline", 3),
+    ],
+    ids=[
+        "coupling_additive_2",
+        "coupling_affine_2",
+        "coupling_spline_2",
+        "autoregressive_additive_2",
+        "autoregressive_affine_2",
+        "autoregressive_spline_2",
+        "coupling_additive_3",
+        "coupling_affine_3",
+        "coupling_spline_3",
+        "autoregressive_additive_3",
+        "autoregressive_affine_3",
+        "autoregressive_spline_3",
     ]
 )
 def flow(request):

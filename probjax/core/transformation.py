@@ -251,8 +251,9 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
         log_det = jnp.asarray(
             sum([processing_rule.log_dets[v] for v in jaxpr.jaxpr.invars])
         )
-        if log_det.ndim == out[0].ndim:
-            log_det = jnp.sum(log_det, axis=-1)
+        # if log_det.ndim == out[0].ndim and log_det.ndim > 0:
+        #     # Hacky bug fix TODO: Fix this
+        #     log_det = jnp.sum(log_det, axis=-1, keepdims=True)
         return out[0], log_det
 
     return wrapped

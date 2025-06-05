@@ -1,12 +1,10 @@
-from functools import partial
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
-from flax import nnx
-from jaxtyping import Array, ArrayLike, PyTree
+from jaxtyping import Array, ArrayLike
 
-from probjax.utils.protocols import ModelFn, LossFn, ReductionFn, TimeDependentModelFn
+from probjax.utils.protocols import ModelFn, TimeDependentModelFn
 
 __all__ = [
     "build_target_score_matching_loss",
@@ -46,9 +44,9 @@ def build_target_score_matching_loss(
     reduction_fn: Callable = jnp.mean,
 ):
     def loss_fn(*args, rng=None, **kwargs):
-        assert (
-            rng is not None
-        ), "loss_fn does require rngs, pass them to function kwargs."
+        assert rng is not None, (
+            "loss_fn does require rngs, pass them to function kwargs."
+        )
         shape = args[argnums].shape
         eps = jax.random.normal(rng, shape=shape)
 
@@ -80,9 +78,9 @@ def build_time_dependent_target_score_matching_loss(
     reduction_fn: Callable = jnp.mean,
 ) -> Callable:
     def loss_fn(times, *args, rng=None, **kwargs):
-        assert (
-            rng is not None
-        ), "loss_fn does require rngs, pass them to function kwargs."
+        assert rng is not None, (
+            "loss_fn does require rngs, pass them to function kwargs."
+        )
         x = args[argnums]
         mean = mean_fn(times, x)
         std_t = std_fn(times, x)

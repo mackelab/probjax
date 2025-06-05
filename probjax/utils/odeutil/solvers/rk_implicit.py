@@ -5,7 +5,12 @@ import jax.numpy as jnp
 from jax import Array
 from jax.typing import ArrayLike
 
-from probjax.utils.odeutil.solvers.base import ODEInfo, ODESolverAPI, ODEState, register_method
+from probjax.utils.odeutil.solvers.base import (
+    ODEInfo,
+    ODESolverAPI,
+    ODEState,
+    register_method,
+)
 from probjax.utils.solver import root
 
 info = {

@@ -59,9 +59,9 @@ class LearnedPosEmbed(nnx.Module, experimental_pytree=True):
             Array: Output array of shape [B, T, D]
         """
         _, seq_len, _ = x.shape
-        assert (
-            seq_len <= self.max_seq_len
-        ), "Sequence length cannot be greater than max_len"
+        assert seq_len <= self.max_seq_len, (
+            "Sequence length cannot be greater than max_len"
+        )
         idx = jnp.arange(seq_len) if idx is None else idx
         pos_emb = self.embed(idx)
         return x + pos_emb[None, :, :]

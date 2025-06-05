@@ -35,7 +35,6 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         sow_weights: bool = False,
         decode: bool = False,  # This is different from the original implementation
     ):
-
         return super().__call__(
             inputs_q,
             inputs_k,
@@ -153,6 +152,10 @@ def flex_attention(
 
     score_mod_fn_grad = None if score_mod_fn is None else jax.grad(score_mod_fn)
 
+    # If compiling for CPU, enforce interpret mode
+    if jax.default_backend() == "cpu" or query.device.platform == "cpu":
+        interpret = True
+
     output = mha(
         q=query,
         k=key,
@@ -226,9 +229,9 @@ def sparse_dot_product_attention(
         dense_dot_product_attention.
     """
 
-    assert isinstance(
-        mask, Callable
-    ), "Sparse attention requires a (at best sparse) mask, wrapped in a callable"
+    assert isinstance(mask, Callable), (
+        "Sparse attention requires a (at best sparse) mask, wrapped in a callable"
+    )
     assert mask is not None, "Sparse attention requires a (at best sparse) mask"
 
     *leading_dims, sequence_length, _, dim = query_heads.shape

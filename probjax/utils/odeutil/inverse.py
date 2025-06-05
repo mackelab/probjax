@@ -1,7 +1,6 @@
 """Automated inversion support for ODE solvers."""
 
-from functools import partial
-from typing import Any, Callable, Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -9,9 +8,8 @@ from jax import Array
 from jax.typing import ArrayLike
 
 from probjax.core.transformation import inverse, inverse_and_logabsdet
-from probjax.utils.odeutil import odeint_adaptive, _odeint_on_grid
+from probjax.utils.odeutil import odeint_adaptive
 from probjax.utils.odeutil.adaptive import AdaptiveParams
-from probjax.utils.odeutil.solvers.base import ODESolver
 
 
 def _inv_odeint(

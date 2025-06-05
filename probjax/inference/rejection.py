@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from jax.scipy.optimize import minimize
 from jaxtyping import Array
 
-from probjax.distributions import Distribution
+from probjax.stats.base import rv_generic as Distribution
 
 
 def estimate_ratio_bound(

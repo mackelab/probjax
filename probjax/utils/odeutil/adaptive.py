@@ -1,8 +1,6 @@
-from typing import NamedTuple, Callable, Optional
+from typing import NamedTuple
 
-import jax
 import jax.numpy as jnp
-from jax import Array
 
 from probjax.utils.odeutil.util import mean_error_ratio, optimal_step_size
 

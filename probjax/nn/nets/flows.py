@@ -5,10 +5,6 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.distributions import Normal
-from probjax.distributions.distribution import Distribution
-from probjax.distributions.independent import Independent
-from probjax.distributions.transformed_distribution import TransformedDistribution
 from probjax.nn.bijective import (
     additive_bijector,
     affine_bijector,
@@ -17,11 +13,32 @@ from probjax.nn.bijective import (
 from probjax.nn.nets.autoregressive import AutoregressiveMLP
 from probjax.nn.nets.coupling import CouplingMLP
 from probjax.nn.utils import Flip, Sequential
+from probjax.stats.continuous import norm
+from probjax.stats.transformed import transformed
+from probjax.stats.independent import independent
 
 
-class Flow(TransformedDistribution, nnx.Module, experimental_pytree=True):
-    def __init__(self, base_dist: Distribution, transformation: Callable[..., Any]):
-        super().__init__(base_dist, transformation)
+class Flow(nnx.Module, experimental_pytree=True):
+    def __init__(
+        self, base_dist, transformation: Callable[..., Any], name: Optional[str] = None
+    ):
+        super().__init__()
+        self._transformed_dist = transformed(base_dist, transformation)
+        self.base_dist = base_dist
+        self.transformation = transformation
+
+    def transform(self, x):
+        return self.transformation(x)
+
+    def __call__(self, x):
+        return self.transform(x)
+
+    def sample(self, rng, shape=()):
+        """Sample from the flow distribution."""
+        return self._transformed_dist.rvs(rng, shape)
+
+    def logpdf(self, x):
+        return self._transformed_dist.logpdf(x)
 
 
 class AdditiveCouplingFlow(Flow):
@@ -34,6 +51,7 @@ class AdditiveCouplingFlow(Flow):
         last_transform: Optional[Callable] = None,
         coupling_class: nnx.Module = CouplingMLP,
         mixing_class: nnx.Module = Flip,
+        name: Optional[str] = None,
     ) -> None:
         self.input_dim = input_dim
         split_dim = input_dim // 2
@@ -53,10 +71,9 @@ class AdditiveCouplingFlow(Flow):
         # Build the base distribution
         mu0 = jnp.zeros((input_dim,))
         std0 = jnp.ones((input_dim,))
-        q0 = Independent(Normal(mu0, std0), 1)
-        base_dist = nnx.Variable(q0)
+        q0 = independent(norm(mu0, std0))
 
-        super().__init__(base_dist, transform)
+        super().__init__(q0, transform, name=name)
 
 
 class AffineCouplingFlow(Flow):
@@ -69,6 +86,7 @@ class AffineCouplingFlow(Flow):
         last_transform: Optional[Callable] = None,
         coupling_class: nnx.Module = CouplingMLP,
         mixing_class: nnx.Module = Flip,
+        name: Optional[str] = None,
     ) -> None:
         self.input_dim = input_dim
         split_dim = input_dim // 2
@@ -88,13 +106,12 @@ class AffineCouplingFlow(Flow):
         # Build the base distribution
         mu0 = jnp.zeros((input_dim,))
         std0 = jnp.ones((input_dim,))
-        q0 = Independent(Normal(mu0, std0), 1)
-        base_dist = nnx.Variable(q0)
+        q0 = independent(norm(mu0, std0))
 
-        super().__init__(base_dist, transform)
+        super().__init__(q0, transform, name=name)
 
 
-class SplineCouplingFlow(TransformedDistribution, nnx.Module, experimental_pytree=True):
+class SplineCouplingFlow(Flow):
     def __init__(
         self,
         input_dim: int,
@@ -105,6 +122,7 @@ class SplineCouplingFlow(TransformedDistribution, nnx.Module, experimental_pytre
         last_transform: Optional[Callable] = None,
         coupling_class: nnx.Module = CouplingMLP,
         mixing_class: nnx.Module = Flip,
+        name: Optional[str] = None,
     ) -> None:
         self.input_dim = input_dim
         split_dim = input_dim // 2
@@ -137,10 +155,9 @@ class SplineCouplingFlow(TransformedDistribution, nnx.Module, experimental_pytre
         # Build the base distribution
         mu0 = jnp.zeros((input_dim,))
         std0 = jnp.ones((input_dim,))
-        q0 = Independent(Normal(mu0, std0), 1)
-        base_dist = nnx.Variable(q0)
+        q0 = independent(norm(mu0, std0))
 
-        super().__init__(base_dist, transform)
+        super().__init__(q0, transform, name=name)
 
 
 class AdditiveAutoregressiveFlow(Flow):
@@ -153,6 +170,7 @@ class AdditiveAutoregressiveFlow(Flow):
         last_transform: Optional[Callable] = None,
         autoregressive_class: nnx.Module = AutoregressiveMLP,
         mixing_class: nnx.Module = Flip,
+        name: Optional[str] = None,
     ) -> None:
         self.input_dim = input_dim
         params_per_dim = 1
@@ -173,10 +191,9 @@ class AdditiveAutoregressiveFlow(Flow):
         # Build the base distribution
         mu0 = jnp.zeros((input_dim,))
         std0 = jnp.ones((input_dim,))
-        q0 = Independent(Normal(mu0, std0), 1)
-        base_dist = nnx.Variable(q0)
+        q0 = independent(norm(mu0, std0))
 
-        super().__init__(base_dist, transform)
+        super().__init__(q0, transform, name=name)
 
 
 class AffineAutoregressiveFlow(Flow):
@@ -189,6 +206,7 @@ class AffineAutoregressiveFlow(Flow):
         last_transform: Optional[Callable] = None,
         autoregressive_class: nnx.Module = AutoregressiveMLP,
         mixing_class: nnx.Module = Flip,
+        name: Optional[str] = None,
     ) -> None:
         self.input_dim = input_dim
         params_per_dim = 2
@@ -209,10 +227,9 @@ class AffineAutoregressiveFlow(Flow):
         # Build the base distribution
         mu0 = jnp.zeros((input_dim,))
         std0 = jnp.ones((input_dim,))
-        q0 = Independent(Normal(mu0, std0), 1)
-        base_dist = nnx.Variable(q0)
+        q0 = independent(norm(mu0, std0))
 
-        super().__init__(base_dist, transform)
+        super().__init__(q0, transform, name=name)
 
 
 class SplineAutoregressiveFlow(Flow):
@@ -226,6 +243,7 @@ class SplineAutoregressiveFlow(Flow):
         last_transform: Optional[Callable] = None,
         autoregressive_class: nnx.Module = AutoregressiveMLP,
         mixing_class: nnx.Module = Flip,
+        name: Optional[str] = None,
     ) -> None:
         self.input_dim = input_dim
         params_per_dim = 3 * num_bins
@@ -258,7 +276,6 @@ class SplineAutoregressiveFlow(Flow):
         # Build the base distribution
         mu0 = jnp.zeros((input_dim,))
         std0 = jnp.ones((input_dim,))
-        q0 = Independent(Normal(mu0, std0), 1)
-        base_dist = nnx.Variable(q0)
+        q0 = independent(norm(mu0, std0))
 
-        super().__init__(base_dist, transform)
+        super().__init__(q0, transform, name=name)

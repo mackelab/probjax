@@ -155,9 +155,9 @@ def build_time_dependent_score_matching_loss(
         Returns:
             Scalar loss value
         """
-        assert (
-            rng is not None
-        ), "loss_fn does require rngs, pass them to function kwargs."
+        assert rng is not None, (
+            "loss_fn does require rngs, pass them to function kwargs."
+        )
         mean_t = mean_fn(times, xs_target)
         std_t = std_fn(times, xs_target)
         eps = jax.random.normal(rng, shape=xs_target.shape)

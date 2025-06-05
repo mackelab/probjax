@@ -1,10 +1,10 @@
-from typing import Any, Callable, Optional, Sequence, Union, Tuple
+from typing import Any, Callable, Optional, Sequence, Tuple, Union
 
 import jax.numpy as jnp
 from jax import Array
 from jaxtyping import PyTree
 
-from probjax.utils.odeutil import _odeint, AdaptiveParams
+from probjax.utils.odeutil import AdaptiveParams, _odeint
 
 
 def odeint(

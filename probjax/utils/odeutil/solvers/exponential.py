@@ -2,9 +2,9 @@ from typing import Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
+import jax.scipy.linalg
 from jax import Array
 from jax.typing import ArrayLike
-import jax.scipy.linalg
 
 from probjax.utils.odeutil.solvers.base import (
     ODEInfo,
@@ -193,13 +193,16 @@ class exp_euler(ODESolverAPI):
     init = init_exp
     build_step = build_exp_euler_step
 
+
 class exp_midpoint(ODESolverAPI):
     init = init_exp
     build_step = build_exp_midpoint_step
 
+
 class exp_rk4(ODESolverAPI):
     init = init_exp
     build_step = build_exp_rk4_step
+
 
 # Register methods
 exp_euler_info = {

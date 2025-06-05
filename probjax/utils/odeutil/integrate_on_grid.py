@@ -2,11 +2,10 @@ from functools import partial
 from typing import Any, Callable, Optional, Sequence, Tuple
 
 import jax
-import jax.numpy as jnp
 from jax import Array
 
-from probjax.utils.odeutil.solvers import ODESolver, ODEState
 from probjax.utils.jaxutils import nested_checkpoint_scan
+from probjax.utils.odeutil.solvers import ODESolver, ODEState
 
 
 def _odeint_on_grid(
