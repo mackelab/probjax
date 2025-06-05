@@ -144,12 +144,12 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
             If "v", it's the direct prediction of v.
         """
         noise_embed = self.c_t(t)
-        x_embed = self.c_in(t) * x
+        x_embed = jax.tree_util.tree_map(lambda x: self.c_in(t) * x, x)
 
         out = self.net(noise_embed, x_embed, *args, **kwargs)
 
         if self.last_layer is not None:
-            out = self.last_layer(out)
+            out = jax.tree_util.tree_map(self.last_layer, out)
 
         return out
 
@@ -162,7 +162,9 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
         c_out = self.c_out(t)
         c_skip = self.c_skip(t)
 
-        return c_skip * x_t + c_out * model_output
+        return jax.tree_util.tree_map(
+            lambda x, o: c_skip * x + c_out * o, x_t, model_output
+        )
 
     def epsilon(self, t: ArrayLike, x_t: ArrayLike, *args, **kwargs) -> ArrayLike:
         """Predict noise epsilon from noisy x_t at time t.
@@ -171,7 +173,9 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
         sigma_t = self.std_fn(t)
         x0_pred = self.denoise(t, x_t, *args, **kwargs)
 
-        return (x_t - x0_pred) / sigma_t
+        return jax.tree_util.tree_map(
+            lambda x, o: (x - o) / sigma_t, x_t, x0_pred
+        )
 
     def score(self, t: ArrayLike, x_t: ArrayLike, *args, **kwargs) -> ArrayLike:
         """Compute score (nabla_x_t log p(x_t|x0)) from noisy x_t at time t.
@@ -180,7 +184,9 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
         """
         epsilon_pred = self.epsilon(t, x_t, *args, **kwargs)
         sigma_t = self.std_fn(t)
-        return -epsilon_pred / sigma_t
+        return jax.tree_util.tree_map(
+            lambda x, o: -o / sigma_t, epsilon_pred, sigma_t
+        )
 
     def v(self, t: ArrayLike, x_t: ArrayLike, *args, **kwargs) -> ArrayLike:
         """Predict v (velocity or related quantity) from noisy x_t at time t.
@@ -205,7 +211,13 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
         normalized_alpha = alpha_t / total_variance
         normalized_sigma = sigma_t / total_variance
 
-        return normalized_alpha * epsilon_pred - normalized_sigma * x0_pred
+        return jax.tree_util.tree_map(
+            lambda a, e, s, x: a * e - s * x,
+            normalized_alpha,
+            epsilon_pred,
+            normalized_sigma,
+            x0_pred,
+        )
 
     def marginal_std(self, t: ArrayLike) -> ArrayLike:
         """Compute marginal standard deviation."""
