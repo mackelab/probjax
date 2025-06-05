@@ -8,7 +8,7 @@ from jax.flatten_util import ravel_pytree
 from jax.typing import ArrayLike
 from jaxtyping import Array, PyTree
 
-from probjax.inference.kernels.base import MarkovKernelAPI
+from probjax.inference.mcmc.base import MarkovKernelAPI
 
 
 class HMCParams(NamedTuple):

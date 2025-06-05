@@ -8,7 +8,7 @@ from blackjax.mcmc.random_walk import RWInfo, RWState
 from chex import PRNGKey
 from jaxtyping import Array, PyTree
 
-from probjax.inference.kernels.base import MarkovKernelAPI
+from probjax.inference.mcmc.base import MarkovKernelAPI
 
 
 class IMHParams(NamedTuple):

@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Key
 
-from probjax.inference.kernels.base import MarkovKernel, Params, State
+from probjax.inference.mcmc.base import MarkovKernel, Params, State
 from probjax.utils.jaxutils import WithProgressBarAPI, print_scan
 
 

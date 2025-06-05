@@ -5,7 +5,7 @@ from blackjax.mcmc.elliptical_slice import EllipSliceInfo, EllipSliceState
 from chex import PRNGKey
 from jaxtyping import Array, PyTree
 
-from probjax.inference.kernels.base import MarkovKernelAPI
+from probjax.inference.mcmc.base import MarkovKernelAPI
 
 
 class EllipticalSliceParams(NamedTuple):

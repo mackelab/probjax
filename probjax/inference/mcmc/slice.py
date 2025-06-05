@@ -8,8 +8,8 @@ from jax.random import PRNGKey
 from jax.typing import ArrayLike
 from jaxtyping import PyTree
 
-from probjax.inference.kernels.adaptation import step_size_adaption
-from probjax.inference.kernels.base import MarkovKernelAPI
+from probjax.inference.mcmc.adaptation import step_size_adaption
+from probjax.inference.mcmc.base import MarkovKernelAPI
 
 # Some utility functions for creating 1D slices through an N-dimensional space
 

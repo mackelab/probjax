@@ -6,8 +6,8 @@ from jax import Array
 from jax.random import PRNGKey
 from jaxtyping import PyTree
 
-from probjax.inference.kernels.adaptation import step_size_adaption
-from probjax.inference.kernels.base import MarkovKernelAPI
+from probjax.inference.mcmc.adaptation import step_size_adaption
+from probjax.inference.mcmc.base import MarkovKernelAPI
 
 
 class LatentSliceParams(NamedTuple):

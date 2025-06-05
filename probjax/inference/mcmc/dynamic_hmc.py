@@ -8,7 +8,7 @@ from blackjax.mcmc.hmc import HMCInfo
 from chex import PRNGKey
 from jaxtyping import Array
 
-from probjax.inference.kernels.hmc import (
+from probjax.inference.mcmc.hmc import (
     HMC,
     HMCParams,
     build_hmc_family_adaption,

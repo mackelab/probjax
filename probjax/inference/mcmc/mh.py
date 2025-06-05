@@ -10,11 +10,11 @@ from jax.flatten_util import ravel_pytree
 from jax.typing import ArrayLike
 from jaxtyping import Array, PyTree
 
-from probjax.inference.kernels.adaptation import (
+from probjax.inference.mcmc.adaptation import (
     step_size_adaption,
     step_size_and_scale_adaption,
 )
-from probjax.inference.kernels.base import MarkovKernelAPI
+from probjax.inference.mcmc.base import MarkovKernelAPI
 
 
 class RWParams(NamedTuple):
