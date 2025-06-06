@@ -185,7 +185,8 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
         epsilon_pred = self.epsilon(t, x_t, *args, **kwargs)
         sigma_t = self.std_fn(t)
         return jax.tree_util.tree_map(
-            lambda x, o: -o / sigma_t, epsilon_pred, sigma_t
+            lambda x: -x / sigma_t,
+            epsilon_pred,
         )
 
     def v(self, t: ArrayLike, x_t: ArrayLike, *args, **kwargs) -> ArrayLike:
