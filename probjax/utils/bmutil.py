@@ -9,6 +9,7 @@ from pynvml import (
     nvmlInit,
     nvmlShutdown,
 )
+import jax
 
 
 def benchmark(
@@ -46,7 +47,8 @@ def benchmark(
         tracker.start()
 
     while time.time() - start < max_time:
-        _ = func(*args, **kwargs)
+        out = func(*args, **kwargs)
+        jax.block_until_ready(out)
         count += 1
 
     for tracker in trackers:
@@ -176,7 +178,7 @@ class CPUUtilizationTracker(Tracker):
     def get_summary(self):
         return (
             f"CPU Utilization: {int(self.cpu_utilization.get_mean())}% "
-            "+/- {int(self.cpu_utilization.get_std())}%"
+            f"+/- {int(self.cpu_utilization.get_std())}%"
         )
 
 

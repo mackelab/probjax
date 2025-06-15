@@ -91,6 +91,7 @@ def mha_forward_kernel(
     *residual_refs: Any,  # Residual outputs
     sm_scale: float,
     causal: bool,
+    window_size=None,
     score_mod: ScoreModFn | None = None,
     mask_mod: MaskModFn | None = None,
     block_q: int,
@@ -227,13 +228,27 @@ def mha_forward_kernel(
         return o_next, m_next, l_next
 
     # This will avoid iterating over blocks that are not needed.
-    # TODO: Extend this to general masks.
+    lower_bound = 0
     if causal:
         # Ceildiv (`pl.cdiv` and `//` do not work due to type of start_q)
         upper_bound = lax.div(block_q * (start_q + 1) + block_k - 1, block_k)
     else:
         upper_bound = pl.cdiv(seq_len, block_k)
-    o, m_i, l_i = lax.fori_loop(0, upper_bound, body, (o, m_i, l_i))
+
+    if window_size:
+        # Should compute lower and upper bounds for local attention.
+        # Given as tupel i.e. (2,2) means each token should only attent to neightboring
+        # 2 tokens.
+
+        left_window, right_window = window_size
+        lower_bound = lax.max(
+            lower_bound, lax.div(block_q * start_q - left_window, block_q)
+        )
+        upper_bound = lax.min(
+            upper_bound, lax.div(block_q * (start_q + 1) + right_window, block_q)
+        )
+
+    o, m_i, l_i = lax.fori_loop(lower_bound, upper_bound, body, (o, m_i, l_i))
 
     # We keep an unscaled version of o during the scan over seq_len. Scaling it
     # by the last l_i gives us the correct final output. See section 3.1.1 in the
@@ -249,13 +264,14 @@ def mha_forward_kernel(
 
 
 @functools.partial(
-    jax.custom_vjp, nondiff_argnums=[4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    jax.custom_vjp, nondiff_argnums=[4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,16]
 )
 @functools.partial(
     jax.jit,
     static_argnames=[
         "sm_scale",
         "causal",
+        "window_size",
         "score_mod",
         "mask_mod",
         "score_mod_grad",
@@ -275,6 +291,7 @@ def mha(
     segment_ids: jnp.ndarray | None,
     sm_scale: float = 1.0,
     causal: bool = False,
+    window_size: tuple[int, int] | None = None,
     score_mod: ScoreModFn | None = None,
     mask_mod: MaskModFn | None = None,
     score_mod_grad: ScoreModFn | None = None,
@@ -329,6 +346,7 @@ def mha(
         block_k=block_k,
         block_d=head_dim,
         causal=causal,
+        window_size=window_size,
         score_mod=score_mod,
         mask_mod=mask_mod,
     )
@@ -368,6 +386,7 @@ def _mha_forward(
     segment_ids: jax.Array | None,
     sm_scale: float,
     causal: bool,
+    window_size: tuple[int, int] | None,
     score_mod: ScoreModFn | None,
     mask_mod: MaskModFn | None,
     score_mod_grad: ScoreModFn | None,
@@ -420,6 +439,7 @@ def _mha_forward(
         mha_forward_kernel,
         sm_scale=sm_scale,
         causal=causal,
+        window_size=window_size,
         block_q=block_q,
         block_k=block_k,
         block_d=head_dim,
@@ -535,6 +555,7 @@ def mha_backward_kernel(
     *,
     sm_scale: float,
     causal: bool,
+    window_size: tuple[int, int] | None,
     block_q_dkv: int,
     block_kv_dkv: int,
     block_q_dq: int,
@@ -751,6 +772,7 @@ def mha_backward_kernel(
 def _mha_backward(
     sm_scale: float,
     causal: bool,
+    window_size: tuple[int, int] | None,
     score_mod: ScoreModFn | None,
     mask_mod: MaskModFn | None,
     score_mod_grad: ScoreModFn | None,

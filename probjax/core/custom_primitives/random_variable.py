@@ -21,11 +21,11 @@ __all__ = ["rv", "rv_p"]
 
 
 def _sample_distribution(dist: Distribution, key, *args, shape=(), **kwargs):
-    return dist.sample(key, *args, sample_shape=shape, **kwargs)
+    return dist.rvs(key, *args, shape=shape, **kwargs)
 
 
 def _log_prob_distribution(dist: Distribution, value, *args, **kwargs):
-    return dist.log_prob(value, *args, **kwargs)
+    return dist.pdf(value, *args, **kwargs)
 
 
 # This maybe should be refactored
@@ -59,7 +59,7 @@ def _sampling_logprobs_jaxprs_with_common_consts(sampling_fn, log_prob_fn):
     consts = [sampling_consts, log_prob_consts]
     # out_trees = [sampling_out_trees, log_prob_out_trees]
 
-    newvar = jax._src.core.gensym(jaxprs, suffix="_")  # type: ignore
+    newvar = jax._src.core.gensym(suffix="_")  # type: ignore
     all_const_avals = [map(shaped_abstractify, consts) for consts in consts]
     unused_const_vars = [map(newvar, const_avals) for const_avals in all_const_avals]
 

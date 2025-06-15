@@ -85,6 +85,7 @@ def flex_attention(
     sm_scale: Optional[bool] = None,
     enable_gqa: bool = False,
     causal: bool = False,
+    window_size: tuple[int, int] | None = None,
     block_sizes: BlockSizes = BlockSizes.get_default(),
     backward_pass_impl: str = "triton",
     num_warps: int | None = None,
@@ -153,7 +154,7 @@ def flex_attention(
     score_mod_fn_grad = None if score_mod_fn is None else jax.grad(score_mod_fn)
 
     # If compiling for CPU, enforce interpret mode
-    if jax.default_backend() == "cpu" or query.device.platform == "cpu":
+    if jax.default_backend() == "cpu":
         interpret = True
 
     output = mha(
@@ -163,6 +164,7 @@ def flex_attention(
         segment_ids=segment_ids,
         sm_scale=sm_scale,
         causal=causal,
+        window_size=window_size,
         score_mod=score_mod_fn,
         mask_mod=mask_mod_fn,
         score_mod_grad=score_mod_fn_grad,

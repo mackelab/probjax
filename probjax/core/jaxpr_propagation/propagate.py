@@ -150,8 +150,6 @@ def propagate(
     eqn_env = EqnEnvironment(G, env, jaxpr.eqns, cost_fn)
 
     while not eqn_env.is_empty():
-        # print(list(env.keys()))
-        # print(eqn_env.eqn_queue)
 
         eqn = eqn_env.pop()  # Equation to process
 

@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Optional, Sequence, Tuple
+from typing import Any, Callable, Optional, Sequence, Tuple
 
 from jax._src.core import (
     shaped_abstractify,
@@ -40,6 +40,9 @@ class Environment(dict):
 class ProcessingRule(ABC):
     """A processing rule for equations."""
 
+    def __init__(self, propagator: Callable | None = None):
+        self.propagator = propagator
+
     @abstractmethod
     def __call__(
         self,
@@ -48,6 +51,7 @@ class ProcessingRule(ABC):
         known_outputs: Sequence[Any | None] | None,
     ) -> Tuple[Sequence[Any | None], Sequence[Any | None]]:
         pass
+
 
 
 class ForwardProcessingRule(ProcessingRule):
