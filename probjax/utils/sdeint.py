@@ -1,147 +1,112 @@
-from functools import partial
-from typing import Callable, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence, Tuple, Union
 
-import jax
 import jax.numpy as jnp
 from jax import Array
-from jaxtyping import Key
+from jaxtyping import Key, PyTree
 
-from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
-from probjax.utils.sdeutil.base import get_method
-from probjax.utils.sdeutil.integrate_on_grid import _sdeint_on_grid
-
-STATIC_NAMES = [
-    "drift",
-    "diffusion",
-    "method",
-    "dtype",
-    "sde_type",
-    "noise_type",
-    "return_brownian",
-    "filter_output",
-    "check_points",
-]
+from probjax.utils.sdeutil.core import _sdeint
 
 
-def build_default_filter(filter_out, unravel):
-    def filter_output(state, info):
-        if filter_out is None:
-            return unravel(state.y0)
-        return filter_out(unravel(state.y0))
-
-    return filter_output
-
-
-def build_default_and_brownian_filter(filter_out, unravel):
-    def filter_output(state, info):
-        if filter_out is None:
-            return unravel(state.y0), unravel(info.dWt)
-        return filter_out(unravel(state.y0), filter_out(unravel(info.dWt)))
-
-    return filter_output
-
-
-@partial(jax.jit, static_argnames=STATIC_NAMES)
 def sdeint(
     rng: Key,
-    drift: Callable,
-    diffusion: Callable,
-    y0: Array,
+    drift: Callable[[Array, PyTree[Array], ...], PyTree[Array]],
+    diffusion: Callable[[Array, PyTree[Array], ...], PyTree[Array]],
+    y0: PyTree[Array],
     ts: Array,
     *args,
     method: str = "euler_maruyama",
-    dtype=jnp.float32,
+    dtype: Optional[jnp.dtype] = jnp.float32,
     sde_type: str = "ito",
     return_brownian: bool = False,
     return_state: bool = False,
     noise_type: Optional[str] = None,
-    filter_output: Optional[Callable] = None,
+    filter_state: Optional[Callable[[PyTree[Array]], PyTree[Array]]] = None,
     check_points: Optional[Sequence[int]] = None,
-) -> Array:
+) -> Union[
+    PyTree[Array], Tuple[Any, PyTree[Array]], Tuple[Any, PyTree[Array], PyTree[Array]]
+]:
     """Solve a stochastic differential equation.
 
-    Args:
-        key: (PRNGKey): Random generator key.
-        drift (Callable): Drift function.
-        diffusion (Callable): Diffusion function.
-        y0 (Array): Initial value.
-        ts (Array): Time points.
-        *args: Other arguments, that are passed both to the drift and diffusion
-            functions i.e. parameters!
-        method (str, optional): Methods to use. Defaults to "euler_maruyama".
-        noise_type (bool, optional): Whether the noise is diagonal. Defaults to False.
-        sde_type: asdfasdf
+    This is a high-level interface for solving SDEs using various numerical methods.
+    It supports both Ito and Stratonovich SDEs, with options for different integration
+    methods and noise types.
 
-    Raises:
-        TypeError: The arguments passed not jax types.
-        TypeError: The arguments passed not jax types.
+    Args:
+        rng: Random number generator key
+        drift: The drift function f(t, y, *args) that defines the deterministic part
+            of the SDE dy = f(t, y, *args)dt + g(t, y, *args)dWt.
+            The function should take time t as first argument, state y as second argument,
+            and any additional arguments specified in *args.
+        diffusion: The diffusion function g(t, y, *args) that defines the stochastic part
+            of the SDE dy = f(t, y, *args)dt + g(t, y, *args)dWt.
+            The function should take time t as first argument, state y as second argument,
+            and any additional arguments specified in *args.
+        y0: Initial state. Can be a single array or a PyTree of arrays.
+        ts: Time points at which to evaluate the solution. Must be a 1D array of increasing values.
+        *args: Additional arguments for the drift and diffusion functions.
+        method: Integration method to use. Available methods include:
+            - "euler_maruyama": Euler-Maruyama method (order 0.5)
+            - "milstein": Milstein method (order 1.0)
+            - "srk": Stochastic Runge-Kutta methods
+        dtype: Data type for computation. Defaults to float32.
+        sde_type: Type of SDE interpretation:
+            - "ito": Ito interpretation (default)
+            - "stratonovich": Stratonovich interpretation
+        return_brownian: Whether to return Brownian motion paths along with the solution.
+        return_state: Whether to return solver state along with the solution.
+        noise_type: Type of noise in the diffusion term:
+            - "diagonal": Diagonal noise (default for scalar diffusion)
+            - "general": General noise matrix
+        filter_state: Optional function to filter the state during integration.
+            Useful for tracking specific components of the state.
+        check_points: Optional sequence of indices for grid integration.
 
     Returns:
-        ys: Solution path of the SDE.
+        Depending on return_brownian and return_state:
+        - If return_brownian=False, return_state=False: solution trajectory
+        - If return_brownian=False, return_state=True: (state, solution)
+        - If return_brownian=True, return_state=False: (solution, brownian_paths)
+        - If return_brownian=True, return_state=True: (state, solution, brownian_paths)
+
+    Notes:
+        - The solution includes the initial condition y0 as the first point.
+        - All computations are performed in the specified dtype.
+        - The function is JIT-compiled for improved performance.
+        - The state can be a PyTree of arrays, allowing for complex state structures.
+
+    Example:
+        >>> import jax.numpy as jnp
+        >>> from probjax.utils.sdeint import sdeint
+        >>> from jax import random
+        >>>
+        >>> # Geometric Brownian motion with PyTree state
+        >>> def drift(t, state, mu, sigma):
+        ...     return {"price": mu * state["price"]}
+        >>> def diffusion(t, state, mu, sigma):
+        ...     return {"price": sigma * state["price"]}
+        >>>
+        >>> # Initial conditions and parameters
+        >>> rng = random.PRNGKey(0)
+        >>> y0 = {"price": jnp.array([1.0])}
+        >>> ts = jnp.linspace(0, 1, 100)
+        >>> params = (0.1, 0.2)  # mu, sigma
+        >>>
+        >>> # Solve using Euler-Maruyama method
+        >>> ys = sdeint(rng, drift, diffusion, y0, ts, *params)
     """
-
-    if dtype is not None:
-        ts = ts.astype(dtype)
-        y0 = jax.tree_map(lambda x: x.astype(dtype), y0)
-
-    y0 = jax.tree_map(jnp.atleast_1d, y0)
-    ts = jnp.atleast_1d(ts)
-
-    flat_y0, unravel = ravel_args(y0)
-    drift = ravel_arg_fun(drift, unravel, 1)
-    diffusion = ravel_arg_fun(diffusion, unravel, 1)
-
-    method, _ = get_method(method)
-
-    if noise_type is None:
-        g0 = jnp.asarray(diffusion(ts[0], flat_y0))
-        noise_type = "diagonal" if g0.ndim <= 1 else "general"
-
-    method = partial(method, sde_type=sde_type, noise_type=noise_type)
-
-    if not return_brownian:
-        filter_unravel = build_default_filter(filter_output, unravel)
-        state, ys = _sdeint_on_grid(
-            method,
-            drift,
-            diffusion,
-            rng,
-            y0,
-            ts,
-            *args,
-            filter_output=filter_unravel,
-            check_points=check_points,
-        )
-        y0_filtered = filter_output(y0) if filter_output else y0
-        ys = jax.tree_map(
-            lambda x, y: jnp.concatenate([x[None], y], axis=0), y0_filtered, ys
-        )
-        if return_state:
-            return state, ys
-        else:
-            return ys
-    else:
-        filter_unravel = build_default_and_brownian_filter(filter_output, unravel)
-        _, (ys, dWt) = _sdeint_on_grid(
-            method,
-            drift,
-            diffusion,
-            rng,
-            y0,
-            ts,
-            *args,
-            filter_output=filter_unravel,
-            check_points=check_points,
-        )
-        y0_filtered = filter_output(y0) if filter_output else y0
-        ys = jax.tree_map(
-            lambda x, y: jnp.concatenate([x[None], y], axis=0), y0_filtered, ys
-        )
-        dWt0 = jax.tree_map(jnp.zeros_like, y0)
-        dWt = jax.tree_map(
-            lambda x, y: jnp.concatenate([x[None], y], axis=0), dWt0, dWt
-        )
-        if return_state:
-            return state, ys, dWt
-        else:
-            return ys, dWt
+    return _sdeint(
+        rng,
+        drift,
+        diffusion,
+        y0,
+        ts,
+        *args,
+        method=method,
+        dtype=dtype,
+        sde_type=sde_type,
+        return_brownian=return_brownian,
+        return_state=return_state,
+        noise_type=noise_type,
+        filter_output=filter_state,
+        check_points=check_points,
+    )

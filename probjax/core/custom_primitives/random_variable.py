@@ -5,7 +5,8 @@ import jax
 from jax import tree_util
 from jax._src import ad_util, api_util, util
 from jax._src import linear_util as lu
-from jax._src.core import ShapedArray, eval_jaxpr
+from jax._src.api_util import debug_info
+from jax._src.core import ShapedArray, eval_jaxpr, shaped_abstractify
 from jax._src.util import safe_map as map
 from jax.extend.core import (
     ClosedJaxpr,
@@ -14,7 +15,7 @@ from jax.extend.core import (
 from jax.interpreters import ad, batching, mlir
 from jax.interpreters import partial_eval as pe
 
-from probjax.distributions.distribution import Distribution
+from probjax.stats.base import rv_generic as Distribution
 
 __all__ = ["rv", "rv_p"]
 
@@ -30,7 +31,8 @@ def _log_prob_distribution(dist: Distribution, value, *args, **kwargs):
 # This maybe should be refactored
 @util.cache()
 def _sampling_logprobs_jaxprs_with_common_consts(sampling_fn, log_prob_fn):
-    wrapped_sampling_fn = lu.wrap_init(sampling_fn)
+    info = debug_info("Traced for RV sampling", sampling_fn, (), {})
+    wrapped_sampling_fn = lu.wrap_init(sampling_fn, debug_info=info)
     in_avals = [
         ShapedArray((2,), jax.numpy.uint32),
     ]  # The PRNG Key!
@@ -38,22 +40,19 @@ def _sampling_logprobs_jaxprs_with_common_consts(sampling_fn, log_prob_fn):
     flat_wrapped_sampling_fn, out_tree = api_util.flatten_fun_nokwargs(  # type: ignore
         wrapped_sampling_fn, in_tree
     )
-    debug = pe.debug_info(sampling_fn, in_tree, out_tree, False, "sampling_fn")
     sampling_jaxpr, sampling_out_avals, sampling_consts = pe.trace_to_jaxpr_dynamic(
-        flat_wrapped_sampling_fn, in_avals, debug
+        flat_wrapped_sampling_fn, in_avals
     )
-
-    wrapped_log_prob_fn = lu.wrap_init(log_prob_fn)
+    info = debug_info("Traced for RV log_prob", log_prob_fn, (), {})
+    wrapped_log_prob_fn = lu.wrap_init(log_prob_fn, debug_info=info)
     log_prob_operands = sampling_out_avals
     flat_log_prob_operands, log_prob_in_tree = tree_util.tree_flatten(log_prob_operands)
     flat_wrapped_log_prob_fn, log_prob_out_tree = api_util.flatten_fun_nokwargs(  # type: ignore
         wrapped_log_prob_fn, log_prob_in_tree
     )
-    debug = pe.debug_info(
-        log_prob_fn, log_prob_in_tree, log_prob_out_tree, False, "log_prob_fn"
-    )
+
     log_prob_jaxpr, log_prob_out_avals, log_prob_consts = pe.trace_to_jaxpr_dynamic(
-        flat_wrapped_log_prob_fn, flat_log_prob_operands, debug
+        flat_wrapped_log_prob_fn, flat_log_prob_operands
     )
 
     jaxprs = [sampling_jaxpr, log_prob_jaxpr]
@@ -61,7 +60,7 @@ def _sampling_logprobs_jaxprs_with_common_consts(sampling_fn, log_prob_fn):
     # out_trees = [sampling_out_trees, log_prob_out_trees]
 
     newvar = jax._src.core.gensym(jaxprs, suffix="_")  # type: ignore
-    all_const_avals = [map(api_util.shaped_abstractify, consts) for consts in consts]
+    all_const_avals = [map(shaped_abstractify, consts) for consts in consts]
     unused_const_vars = [map(newvar, const_avals) for const_avals in all_const_avals]
 
     def pad_jaxpr_constvars(i, jaxpr):
@@ -143,10 +142,6 @@ def _rv_transpose_rule(*args, **kwargs):
 def _rv_batching_rule(axis_data, args, in_dims, **params):
     sampling_fn_jaxpr = params.pop("sampling_fn_jaxpr")
     log_prob_fn_jaxpr = params.pop("log_prob_fn_jaxpr")
-    # # We have to batch the jaxprs. For that lets first get the invals and outvals
-    # in_avals1 = forward_jaxpr.in_avals
-
-    # in_avals2 = inverse_jaxpr.in_avals
 
     # We will batch all the inputs and outputs  (maybe do not batch consts ... )
     args = [
@@ -184,7 +179,7 @@ def _rv_batching_rule(axis_data, args, in_dims, **params):
     return out, out_dims
 
 
-def custom_inverse_jvp(primals, tangents, sampling_fn_jaxpr, **params):
+def custom_rv_jvp(primals, tangents, sampling_fn_jaxpr, **params):
     nonzeros = [type(t) is not ad_util.Zero for t in tangents]
     forward_jvp_jaxpr, forward_out_nz = ad.jvp_jaxpr(
         sampling_fn_jaxpr, nonzeros, instantiate=False
@@ -207,4 +202,4 @@ rv_p.def_abstract_eval(_rv_abstract_eval)
 batching.axis_primitive_batchers[rv_p] = partial(_rv_batching_rule, None)
 mlir.register_lowering(rv_p, _rv_lowering)
 ad.primitive_transposes[rv_p] = _rv_transpose_rule
-ad.primitive_jvps[rv_p] = custom_inverse_jvp
+ad.primitive_jvps[rv_p] = custom_rv_jvp

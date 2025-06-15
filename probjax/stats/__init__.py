@@ -1,0 +1,77 @@
+"""
+Statistical Distributions (:mod:`probjax.stats`)
+===============================================
+
+This module contains various probability distributions implemented
+in JAX with a SciPy-like API.
+"""
+
+from probjax.stats.base import (
+    rv_continuous,
+    rv_continuous_frozen,
+    rv_discrete,
+    rv_discrete_frozen,
+    rv_exponential_family,
+    rv_generic,
+)
+from probjax.stats.continuous.beta import beta
+from probjax.stats.continuous.cauchy import cauchy
+from probjax.stats.continuous.chi2 import chi2
+from probjax.stats.continuous.dirichlet import dirichlet
+from probjax.stats.continuous.expon import expon
+from probjax.stats.continuous.gamma import gamma
+from probjax.stats.continuous.laplace import laplace
+from probjax.stats.continuous.multivariate_normal import multivariate_normal
+
+# Import all implemented distributions
+from probjax.stats.continuous.norm import norm
+from probjax.stats.continuous.t import t
+from probjax.stats.continuous.uniform import uniform
+
+# Import discrete distributions
+from probjax.stats.discrete.bernoulli import bernoulli
+from probjax.stats.discrete.binomial import binomial
+from probjax.stats.discrete.categorical import categorical
+from probjax.stats.discrete.dirac import dirac
+from probjax.stats.discrete.geometric import geometric
+from probjax.stats.discrete.poisson import poisson
+from probjax.stats.empirical import empirical
+
+# Import higher-order distributions
+from probjax.stats.independent import independent
+from probjax.stats.mixture import mixture
+#from probjax.stats.transformed import transformed
+
+__all__ = [
+    # Base classes
+    'rv_generic',
+    'rv_continuous',
+    'rv_discrete',
+    'rv_exponential_family',
+    'rv_continuous_frozen',
+    'rv_discrete_frozen',
+    # Continuous distributions
+    'norm',
+    'gamma',
+    'beta',
+    'expon',
+    'laplace',
+    'uniform',
+    'chi2',
+    't',
+    'cauchy',
+    'dirichlet',
+    'multivariate_normal',
+    # Discrete distributions
+    'bernoulli',
+    'binomial',
+    'categorical',
+    'poisson',
+    'geometric',
+    'dirac',
+    'empirical',
+    # Higher-order distributions
+    'independent',
+    'transformed',
+    'mixture',
+]

@@ -142,7 +142,7 @@ def brownian_tree(
     any time, without having to save the whole trajectory.
 
     Args:
-        key (PRNGKeyArray): Random generator key.
+        key (PRNGKey): Random generator key.
         t (Float): Time at which to sample.
         t0 (Float): Start time.
         t1 (Float): End time.

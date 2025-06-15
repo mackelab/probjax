@@ -1,201 +1,29 @@
 import jax
 import jax.numpy as jnp
-from jax.scipy.special import betainc, logsumexp, digamma
+from jax.scipy.special import digamma, logsumexp
 
-# Scipy stats implementation missing in JAX
+from probjax.utils.special import digammainv
 
-
-# Inverse beta cdf
-
-
-# -------------------------------------------------------------------
-# Core betaincinv function with reflection and fallback
-# -------------------------------------------------------------------
+# MLE for dirichlet distribution
 
 
-@jax.jit
-def betaincinv(a, b, p):
-    """
-    Inverse of the regularized incomplete beta function (betainc).
-    Returns x in (0,1) such that betainc(a, b, x) = p.
+def mle_dirichlet(xs, alpha0=None, maxiter=100):
+    if alpha0 is None:
+        alpha0 = jnp.ones(xs.shape[1])
 
-    Args:
-        a (jnp.ndarray): Shape parameter (a > 0).
-        b (jnp.ndarray): Shape parameter (b > 0).
-        p (jnp.ndarray): Probability in [0, 1].
+    # Ensure that log(xs) is finite
+    log_xs = jnp.log(xs)
+    log_xs_is_finite = jnp.isfinite(log_xs)
+    log_xs = jnp.where(log_xs_is_finite, log_xs, 0.0)
+    suff_stat = jnp.sum(log_xs, axis=0) / jnp.sum(log_xs_is_finite, axis=0)
 
-    Returns:
-        jnp.ndarray: The value x in [0, 1] which satisfies
-                     betainc(a, b, x) = p.
-    """
-    # Clip p to [0,1] and handle trivial cases
-    p = jnp.clip(p, 0.0, 1.0)
-    x0_or_1 = jnp.where(p <= 0.0, 0.0, 1.0)
-    trivial = (p == 0.0) | (p == 1.0)
+    def fixed_point_iteration(alpha, _):
+        dialpha = digamma(alpha.sum())
+        new_dialpha = dialpha + suff_stat
+        new_alpha = digammainv(new_dialpha)
+        return new_alpha, None
 
-    # Reflect if p > 0.5
-    reflect = p > 0.5
-    p_ = jnp.where(reflect, 1.0 - p, p)
-    a_, b_ = jnp.where(reflect, b, a), jnp.where(reflect, a, b)
-
-    # Initial guess
-    x_init = _compute_initial_guess(p_, a_, b_)
-    x_init = jnp.where(trivial, x0_or_1, x_init)
-
-    # Safe solve (Newton + bisection)
-    x_solved = _safe_betaincinv_solve(a_, b_, p_, x_init)
-
-    # Reflect back if needed
-    x_final = jnp.where(reflect, 1.0 - x_solved, x_solved)
-
-    # Return x0_or_1 if p is exactly 0 or 1
-    return jnp.where(trivial, x0_or_1, x_final)
-
-
-# -------------------------------------------------------------------
-# Newton + Bisection Solver
-# -------------------------------------------------------------------
-
-
-def _safe_betaincinv_solve(a, b, p, x_init, max_newton_steps=12, max_bisect_steps=6):
-    """
-    Safe solver using Newton iteration with bracket tracking and fallback bisection.
-    """
-
-    def newton_step(carry, _):
-        x, lo, hi, f_x = carry
-        err = f_x - p
-        deriv = jnp.exp(
-            (a - 1) * jnp.log(x)
-            + (b - 1) * jnp.log1p(-x)
-            - jax.scipy.special.betaln(a, b)
-        )
-        step = jnp.where(jnp.abs(deriv) > 1e-8, err / (deriv + 1e-30), 0.0)
-
-        x_new = jnp.clip(x - step, jnp.maximum(lo, 0.0), jnp.minimum(hi, 1.0))
-        f_x_new = betainc(a, b, x_new)
-
-        # Update bounds
-        lo = jnp.where(f_x_new < p, x_new, lo)
-        hi = jnp.where(f_x_new >= p, x_new, hi)
-
-        return (x_new, lo, hi, f_x_new), None
-
-    def bisection_step(carry, _):
-        lo, hi, mid, mid_cdf = carry
-        mid = 0.5 * (lo + hi)
-        mid_cdf = betainc(a, b, mid)
-        lo = jnp.where(mid_cdf < p, mid, lo)
-        hi = jnp.where(mid_cdf >= p, mid, hi)
-        return (lo, hi, mid, mid_cdf), None
-
-    # Ensure initial bounds bracket the root
-    lo = jnp.zeros_like(x_init)
-    hi = jnp.ones_like(x_init)
-
-    # Initial function value
-    f_x_init = betainc(a, b, x_init)
-
-    # Run Newton's method using scan
-    (x, lo, hi, f_x), _ = jax.lax.scan(
-        newton_step,
-        (x_init, lo, hi, f_x_init),
-        None,
-        length=max_newton_steps // 2,
-        unroll=2,
-    )
-
-    # Initial mid and mid_cdf for bisection
-    mid = x
-    mid_cdf = f_x
-
-    # Run bisection refinement using scan
-    (lo, hi, mid, _), _ = jax.lax.scan(
-        bisection_step, (lo, hi, mid, mid_cdf), None, length=max_bisect_steps
-    )
-
-    # Final Newton refinement
-    (x, _, _, _), _ = jax.lax.scan(
-        newton_step,
-        (mid, lo, hi, mid_cdf),
-        None,
-        length=max_newton_steps // 2,
-        unroll=2,
-    )
-
-    return x
-
-
-# -------------------------------------------------------------------
-# Initial Guess Functions
-# -------------------------------------------------------------------
-
-
-def _compute_initial_guess(p, a, b):
-    """
-    Computes an initial guess for betaincinv using different strategies
-    depending on the size of a and b.
-    """
-    small_ab = (a < 1.0) | (b < 1.0)
-    large_ab = (a >= 10.0) & (b >= 10.0)
-
-    return jnp.where(
-        small_ab,
-        _initial_guess_small_ab(a, b, p),
-        jnp.where(
-            large_ab,
-            _initial_guess_large_ab(a, b, p),
-            _initial_guess_balanced(a, b, p),
-        ),
-    )
-
-
-# ---------------------------------------------
-# Method 1: Small a or b (Edge Cases)
-# ---------------------------------------------
-def _initial_guess_small_ab(a, b, p):
-    """
-    Initial guess when a or b is small (e.g., < 1.0).
-    """
-    ln_p = jnp.log(p + 1e-10)  # Avoid log(0)
-    ln_1mp = jnp.log1p(-p)
-
-    return jnp.where(
-        p < 0.5,
-        jnp.exp(ln_p / a),
-        1.0 - jnp.exp(ln_1mp / b),
-    )
-
-
-# ---------------------------------------------
-# Method 2: Balanced a ≈ b (Symmetrical Case)
-# ---------------------------------------------
-def _initial_guess_balanced(a, b, p):
-    """
-    Initial guess for balanced a and b (when a ≈ b).
-    """
-    logit_p = jnp.log(p) - jnp.log1p(-p)  # Logit transformation
-    correction = (a - b) / (a + b) / 6.0  # Correction term for skew
-
-    return 1 / (1 + jnp.exp(-(logit_p + correction)))
-
-
-# ---------------------------------------------
-# Method 3: Large a, b (Asymptotic Case)
-# ---------------------------------------------
-def _initial_guess_large_ab(a, b, p):
-    """
-    Initial guess using asymptotic expansion when a and b are large.
-    """
-    mu = a / (a + b)
-    sigma = jnp.sqrt(a * b / ((a + b) ** 2 * (a + b + 1)))
-
-    # Approximate the quantile using the normal distribution
-    z = jax.scipy.stats.norm.ppf(p)
-    x_approx = mu + sigma * z
-
-    # Clip to [0, 1] to avoid overflow
-    return jnp.clip(x_approx, 1e-10, 1 - 1e-10)
+    return jax.lax.scan(fixed_point_iteration, alpha0, None, length=maxiter)[0]
 
 
 # Estimate the differential entropy of a continuous random variable. -------------------

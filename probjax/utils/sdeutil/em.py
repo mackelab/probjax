@@ -7,7 +7,7 @@ from jax import Array
 from jaxtyping import Key
 
 from probjax.utils.linalg import mv_diag_or_dense
-from probjax.utils.odeutil.rk_explicit import RKInfo, RKState, heun
+from probjax.utils.odeutil.solvers.rk_explicit import RKInfo, RKState, heun
 from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
 
 
@@ -29,9 +29,9 @@ def init_state(t0: Array, y0: Array, **kwargs):
 def build_em_step(drift: Callable, diffusion: Callable, **kwargs):
     def step_fn(rng: Key, state: EulerMaruyamaState, dt: float):
         t0, y0 = state.t0, state.y0
-        dWt = jax.random.normal(rng, y0.shape) * jnp.sqrt(jnp.abs(dt))
         f0 = drift(t0, y0)
         g0 = diffusion(t0, y0)
+        dWt = jax.random.normal(rng, y0.shape) * jnp.sqrt(jnp.abs(dt))
         y1 = y0 + dt * f0 + mv_diag_or_dense(g0, dWt)
         new_state = EulerMaruyamaState(t0 + dt, y1)
         info = EulerMaruyamaInfo(dWt=dWt)

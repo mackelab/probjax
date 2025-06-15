@@ -56,9 +56,9 @@ def build_kernel(
         Phi, Q = transition_model_fns(t_old, t)
 
         assert isinstance(Q, (ArrayLike, LinearOperator)), "Q must be and Array"
-        assert isinstance(
-            Phi, (ArrayLike, LinearOperator)
-        ), "Phi must be an Array or LinearOperator"
+        assert isinstance(Phi, (ArrayLike, LinearOperator)), (
+            "Phi must be an Array or LinearOperator"
+        )
 
         # Predict
         mu1_ = Phi @ mu0
@@ -67,12 +67,12 @@ def build_kernel(
         if is_observed:
             C, R = observation_model_fns(t)
 
-            assert (
-                isinstance(R, (ArrayLike, LinearOperator)) or R is None
-            ), "R must be an Array or None"
-            assert isinstance(
-                C, (ArrayLike, LinearOperator)
-            ), "C must be an Array or LinearOperator"
+            assert isinstance(R, (ArrayLike, LinearOperator)) or R is None, (
+                "R must be an Array or None"
+            )
+            assert isinstance(C, (ArrayLike, LinearOperator)), (
+                "C must be an Array or LinearOperator"
+            )
 
             # Kalman gain
             y = observed

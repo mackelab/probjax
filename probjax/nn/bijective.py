@@ -1,9 +1,10 @@
 from functools import partial
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 from jax import Array
+from jax.typing import ArrayLike
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.utils.solver import root_scalar
@@ -17,27 +18,23 @@ def _normalize_knot_slopes(
     # whenever the unnormalized knot slope is equal to 0.
     if min_knot_slope >= 1.0:
         raise ValueError(
-            f"The minimum knot slope must be less than 1; got" f" {min_knot_slope}."
+            f"The minimum knot slope must be less than 1; got {min_knot_slope}."
         )
     min_knot_slope = jnp.array(min_knot_slope, dtype=unnormalized_knot_slopes.dtype)
     offset = jnp.log(jnp.exp(1.0 - min_knot_slope) - 1.0)
     return jax.nn.softplus(unnormalized_knot_slopes + offset) + min_knot_slope
 
 
-import jax.numpy as jnp
-from typing import Optional, Tuple
-
-
 def _rational_quadratic_spline_fwd(
-    x: jnp.ndarray,
-    x_pos: jnp.ndarray,
-    y_pos: jnp.ndarray,
-    knot_slopes: jnp.ndarray,
+    x: ArrayLike,
+    x_pos: ArrayLike,
+    y_pos: ArrayLike,
+    knot_slopes: ArrayLike,
     x_min: Optional[float] = None,
     x_max: Optional[float] = None,
     y_min: Optional[float] = None,
     y_max: Optional[float] = None,
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
+) -> Tuple[ArrayLike, ArrayLike]:
     """Applies a rational-quadratic spline to a scalar, with optional bounded
     linear interpolation outside [x_pos[0], x_pos[-1]].
 
@@ -122,7 +119,7 @@ def _rational_quadratic_spline_fwd(
         # Slope from (x_min -> y_min) to (x_pos[0] -> y_pos[0])
         denom_below = x_pos[0] - x_min
         # Avoid division by zero if x_min == x_pos[0]
-        denom_below = jnp.where(denom_below == 0.0, 1e-12, denom_below)
+        denom_below = jnp.where(denom_below == 0.0, 1e-6, denom_below)
         slope_below_bounded = (y_pos[0] - y_min) / denom_below
         y_below_bounded = y_min + slope_below_bounded * (x - x_min)
         logdet_below_bounded = jnp.log(jnp.abs(slope_below_bounded))
@@ -156,7 +153,7 @@ def _rational_quadratic_spline_fwd(
     if x_max is not None and y_max is not None:
         # Slope from (x_pos[-1] -> y_pos[-1]) to (x_max -> y_max)
         denom_above = x_max - x_pos[-1]
-        denom_above = jnp.where(denom_above == 0.0, 1e-12, denom_above)
+        denom_above = jnp.where(denom_above == 0.0, 1e-6, denom_above)
         slope_above_bounded = (y_max - y_pos[-1]) / denom_above
         y_above_bounded = y_pos[-1] + slope_above_bounded * (x - x_pos[-1])
         logdet_above_bounded = jnp.log(jnp.abs(slope_above_bounded))
@@ -216,15 +213,15 @@ def _safe_quadratic_root(a: Array, b: Array, c: Array) -> Array:
 
 
 def _rational_quadratic_spline_inv(
-    y: jnp.ndarray,
-    x_pos: jnp.ndarray,
-    y_pos: jnp.ndarray,
-    knot_slopes: jnp.ndarray,
+    y: ArrayLike,
+    x_pos: ArrayLike,
+    y_pos: ArrayLike,
+    knot_slopes: ArrayLike,
     x_min: Optional[float] = None,
     x_max: Optional[float] = None,
     y_min: Optional[float] = None,
     y_max: Optional[float] = None,
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
+) -> Tuple[ArrayLike, ArrayLike]:
     """
     Applies the inverse of a rational-quadratic spline to a scalar, with optional
     bounded linear interpolation outside [y_pos[0], y_pos[-1]].
@@ -322,7 +319,7 @@ def _rational_quadratic_spline_inv(
     # (y_min -> x_min) to (y_pos[0] -> x_pos[0]), and clamp at y <= y_min.
     if y_min is not None and x_min is not None:
         denom_below = y_pos[0] - y_min
-        denom_below = jnp.where(denom_below == 0.0, 1e-12, denom_below)
+        denom_below = jnp.where(denom_below == 0.0, 1e-6, denom_below)
         slope_below_bounded = (x_pos[0] - x_min) / denom_below
         x_below_bounded = x_min + slope_below_bounded * (y - y_min)
         # Clamp x if y <= y_min
@@ -387,8 +384,8 @@ def _rational_quadratic_spline_inv(
 
 
 def rational_quadratic_spline_and_logdets(
-    params: Array,
-    x: Array,
+    params: ArrayLike,
+    x: ArrayLike,
     range_min_x: float = -1.0,
     range_max_x: float = 1.0,
     range_min_y: float = -1.0,
@@ -402,9 +399,10 @@ def rational_quadratic_spline_and_logdets(
     # Normalize slopes and bins
     knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
 
-    x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1)  + min_bin_size) * (
-        ((range_max_x - min_bin_size) - range_min_x ) + (range_min_x))
-    y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1)  + min_bin_size) * (
+    x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
+        ((range_max_x - min_bin_size) - range_min_x) + (range_min_x)
+    )
+    y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
         (range_max_y - min_bin_size) - range_min_y
     ) + range_min_y
 
@@ -413,26 +411,37 @@ def rational_quadratic_spline_and_logdets(
         y, logdet = _rational_quadratic_spline_fwd(x, x_pos, y_pos, knot_slopes)
     else:
         # Bounded support on range
-        y, logdet = _rational_quadratic_spline_fwd(x, x_pos, y_pos, knot_slopes, range_min_x, range_max_x, range_min_y, range_max_y)
+        y, logdet = _rational_quadratic_spline_fwd(
+            x,
+            x_pos,
+            y_pos,
+            knot_slopes,
+            range_min_x,
+            range_max_x,
+            range_min_y,
+            range_max_y,
+        )
     return y, logdet
 
 
 @partial(custom_inverse, inv_argnum=1)
 def rational_quadratic_spline(
-    params: Array,
-    x: Array,
-    range_min_x: float = -1.0,
-    range_max_x: float = 1.0,
-    range_min_y: float = -1.0,
-    range_max_y: float = 1.0,
+    params: ArrayLike,
+    x: ArrayLike,
+    range_min_x: float = -10.0,
+    range_max_x: float = 10.0,
+    range_min_y: float = -10.0,
+    range_max_y: float = 10.0,
     min_bin_size: float = 1e-4,
     min_knot_slope: float = 1e-4,
     bounded: bool = False,
 ):
     x_pos, y_pos, knot_slopes = jnp.split(params, 3, axis=-1)
-
     # Normalize slopes and bins
     knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
+    # Stay within numerical limits
+    x_pos = jnp.clip(x_pos, -6, 6)
+    y_pos = jnp.clip(y_pos, -6, 6)
 
     x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
         ((range_max_x - min_bin_size) - range_min_x) + (range_min_x)
@@ -460,19 +469,22 @@ def rational_quadratic_spline(
 
 
 def inv_rational_quadratic_spline(
-    params: Array,
-    x: Array,
-    range_min_x=-1.0,
-    range_max_x=1.0,
-    range_min_y=-1.0,
-    range_max_y=1.0,
+    params: ArrayLike,
+    x: ArrayLike,
+    range_min_x=-10.0,
+    range_max_x=10.0,
+    range_min_y=-10.0,
+    range_max_y=10.0,
     min_bin_size=1e-4,
     min_knot_slope: float = 1e-4,
     bounded: bool = False,
 ):
     x_pos, y_pos, knot_slopes = jnp.split(params, 3, axis=-1)
-
+    # Normalize slopes and bins
     knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
+    # Stay within numerical limits
+    x_pos = jnp.clip(x_pos, -6, 6)
+    y_pos = jnp.clip(y_pos, -6, 6)
 
     x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
         ((range_max_x - min_bin_size) - range_min_x) + (range_min_x)
@@ -510,121 +522,106 @@ def _piecewise_linear_spline_fwd(
     y_max: Optional[float] = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
-    Piecewise-linear transform y(x). Outside [x_pos[0], x_pos[-1]], optionally
-    bounded by (x_min, y_min) and (x_max, y_max).
+    Piecewise linear spline forward transform.
 
     Args:
-      x: a scalar (0-dimensional array). The input to transform.
-      x_pos: 1D array of shape [num_bins+1], the x-coordinates of the knots
-        (strictly increasing).
-      y_pos: 1D array of shape [num_bins+1], the y-coordinates of the knots.
-      x_min, x_max, y_min, y_max: optional bounds for clamping/linear extrapolation
-        outside the main spline interval.
+        x: Scalar or array for input.
+        x_pos: The x-coordinates of knots, shape (num_bins+1,).
+        y_pos: The y-coordinates of knots, shape (num_bins+1,).
+        x_min, x_max, y_min, y_max: Optional bounding values.
 
     Returns:
-      A tuple (y, logdet):
-        y       = piecewise-linear output,
-        logdet  = log |dy/dx| at `x`.
+        (y, logdet) where
+            y: The output of the spline.
+            logdet: log|dy/dx|.
     """
-    # --------------------------------------------------
-    # Identify whether x is below, above, or inside [x_pos[0], x_pos[-1]]
-    # --------------------------------------------------
+    eps = jnp.finfo(x.dtype).eps
+
+    # Identify if x is below/above the main spline range
     below_range = x <= x_pos[0]
     above_range = x >= x_pos[-1]
 
-    # --------------------------------------------------
-    # Identify the correct bin for x
-    # --------------------------------------------------
-    # For each interval [x_pos[i], x_pos[i+1]), check if x is in it
+    # Identify the bin in which x lies
     correct_bin = jnp.logical_and(x >= x_pos[:-1], x < x_pos[1:])
     any_bin_in_range = jnp.any(correct_bin)
-    # If x not in any bin, default to the first bin to avoid NaNs
+    # Fallback to the first bin if none matched
     first_bin = jnp.concatenate([
         jnp.array([True]),
         jnp.zeros(len(correct_bin) - 1, dtype=bool),
     ])
     correct_bin = jnp.where(any_bin_in_range, correct_bin, first_bin)
 
-    # Use a dot-product mask to pick out x_pos, y_pos for the bin
-    # Left knot: i, right knot: i+1
+    # Extract bin endpoints
     x_left = jnp.sum(correct_bin * x_pos[:-1])
     x_right = jnp.sum(correct_bin * x_pos[1:])
     y_left = jnp.sum(correct_bin * y_pos[:-1])
     y_right = jnp.sum(correct_bin * y_pos[1:])
 
-    # Compute slope in that bin
-    bin_width = x_right - x_left
-    bin_width = jnp.where(bin_width == 0.0, 1e-12, bin_width)  # avoid /0
+    # Compute slope for the chosen bin
+    bin_width = jnp.maximum(x_right - x_left, eps)
     slope_in = (y_right - y_left) / bin_width
 
-    # Piecewise linear interpolation inside that bin
+    # Within-bin interpolation
     y_unclamped = y_left + slope_in * (x - x_left)
-    logdet_unclamped = jnp.log(jnp.abs(slope_in))
+    # log|dy/dx| = log|slope_in|
+    logdet_unclamped = jnp.log(jnp.maximum(jnp.abs(slope_in), eps))
 
-    # --------------------------------------------------
-    # Below-range: bounded or unbounded?
-    # --------------------------------------------------
-    # Unbounded slope below: slope_below_unbounded = slope_in at bin=0
-    #   but simpler to define from the first knot directly:
-    slope_below_unbounded = (y_pos[1] - y_pos[0]) / (x_pos[1] - x_pos[0] + 1e-12)
+    ############################
+    # Below-range interpolation
+    ############################
+    # Unbounded slope below the first knot
+    first_bin_width = jnp.maximum(x_pos[1] - x_pos[0], eps)
+    slope_below_unbounded = (y_pos[1] - y_pos[0]) / first_bin_width
     y_below_unbounded = y_pos[0] + slope_below_unbounded * (x - x_pos[0])
-    logdet_below_unbounded = jnp.log(jnp.abs(slope_below_unbounded))
+    logdet_below_unbounded = jnp.log(jnp.maximum(jnp.abs(slope_below_unbounded), eps))
 
-    # If (x_min, y_min) are given, do a bounded linear mapping from
-    # (x_min, y_min) -> (x_pos[0], y_pos[0])
     if (x_min is not None) and (y_min is not None):
-        denom_below = x_pos[0] - x_min
-        denom_below = jnp.where(denom_below == 0.0, 1e-12, denom_below)
+        # Bounded slope from (x_min, y_min) to (x_pos[0], y_pos[0])
+        denom_below = jnp.maximum(x_pos[0] - x_min, eps)
         slope_below_bounded = (y_pos[0] - y_min) / denom_below
         y_below_bounded = y_min + slope_below_bounded * (x - x_min)
-        # Clamp if x <= x_min
+        # clamp if x <= x_min
         y_below_bounded = jnp.where(x <= x_min, y_min, y_below_bounded)
-        logdet_below_bounded = jnp.log(jnp.abs(slope_below_bounded))
+        logdet_below_bounded = jnp.log(jnp.maximum(jnp.abs(slope_below_bounded), eps))
 
-        y_below = jnp.where(
-            jnp.isnan(slope_below_bounded), y_below_unbounded, y_below_bounded
-        )
+        # If slope_below_bounded is NaN, fallback to unbounded
+        is_nan_below = jnp.isnan(slope_below_bounded)
+        y_below = jnp.where(is_nan_below, y_below_unbounded, y_below_bounded)
         logdet_below = jnp.where(
-            jnp.isnan(slope_below_bounded), logdet_below_unbounded, logdet_below_bounded
+            is_nan_below, logdet_below_unbounded, logdet_below_bounded
         )
     else:
-        # Fallback to unbounded behavior
+        # Unbounded fallback
         y_below = y_below_unbounded
         logdet_below = logdet_below_unbounded
 
-    # --------------------------------------------------
-    # Above-range: bounded or unbounded?
-    # --------------------------------------------------
-    # Unbounded slope above: from the last knot
-    slope_above_unbounded = (y_pos[-1] - y_pos[-2]) / (x_pos[-1] - x_pos[-2] + 1e-12)
+    ############################
+    # Above-range interpolation
+    ############################
+    # Unbounded slope above the last knot
+    last_bin_width = jnp.maximum(x_pos[-1] - x_pos[-2], eps)
+    slope_above_unbounded = (y_pos[-1] - y_pos[-2]) / last_bin_width
     y_above_unbounded = y_pos[-1] + slope_above_unbounded * (x - x_pos[-1])
-    logdet_above_unbounded = jnp.log(jnp.abs(slope_above_unbounded))
+    logdet_above_unbounded = jnp.log(jnp.maximum(jnp.abs(slope_above_unbounded), eps))
 
-    # If (x_max, y_max) are given, do a bounded linear mapping from
-    # (x_pos[-1], y_pos[-1]) -> (x_max, y_max)
     if (x_max is not None) and (y_max is not None):
-        denom_above = x_max - x_pos[-1]
-        denom_above = jnp.where(denom_above == 0.0, 1e-12, denom_above)
+        denom_above = jnp.maximum(x_max - x_pos[-1], eps)
         slope_above_bounded = (y_max - y_pos[-1]) / denom_above
         y_above_bounded = y_pos[-1] + slope_above_bounded * (x - x_pos[-1])
-        # Clamp if x >= x_max
+        # clamp if x >= x_max
         y_above_bounded = jnp.where(x >= x_max, y_max, y_above_bounded)
-        logdet_above_bounded = jnp.log(jnp.abs(slope_above_bounded))
+        logdet_above_bounded = jnp.log(jnp.maximum(jnp.abs(slope_above_bounded), eps))
 
-        y_above = jnp.where(
-            jnp.isnan(slope_above_bounded), y_above_unbounded, y_above_bounded
-        )
+        is_nan_above = jnp.isnan(slope_above_bounded)
+        y_above = jnp.where(is_nan_above, y_above_unbounded, y_above_bounded)
         logdet_above = jnp.where(
-            jnp.isnan(slope_above_bounded), logdet_above_unbounded, logdet_above_bounded
+            is_nan_above, logdet_above_unbounded, logdet_above_bounded
         )
     else:
-        # Fallback to unbounded behavior
         y_above = y_above_unbounded
         logdet_above = logdet_above_unbounded
 
-    # --------------------------------------------------
-    # Merge piecewise: below_range, inside, above_range
-    # --------------------------------------------------
+    # Merge piecewise
     y = jnp.where(below_range, y_below, y_unclamped)
     y = jnp.where(above_range, y_above, y)
 
@@ -634,7 +631,10 @@ def _piecewise_linear_spline_fwd(
     return y, logdet
 
 
-def _piecewise_linear_spline_inv(
+############################
+# Inverse transform
+############################
+def _piecewise_linear_spline_inv_internal(
     y: jnp.ndarray,
     x_pos: jnp.ndarray,
     y_pos: jnp.ndarray,
@@ -644,148 +644,186 @@ def _piecewise_linear_spline_inv(
     y_max: Optional[float] = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
-    Inverse of the piecewise-linear transform x(y). Outside [y_pos[0], y_pos[-1]],
-    optionally bounded by (y_min, x_min) and (y_max, x_max).
+    Internal implementation of piecewise linear spline inverse transform.
 
     Args:
-      y: a scalar (0-dimensional array). The input to invert.
-      x_pos: 1D array of shape [num_bins+1], the x-coordinates of the knots.
-      y_pos: 1D array of shape [num_bins+1], the y-coordinates of the knots
-        (strictly increasing).
-      x_min, x_max, y_min, y_max: optional bounds for clamping/linear extrapolation
-        outside the main spline interval.
+        y: Scalar or array for input.
+        x_pos: The x-coordinates of knots, shape (num_bins+1,).
+        y_pos: The y-coordinates of knots, shape (num_bins+1,).
+        x_min, x_max, y_min, y_max: Optional bounding values.
 
     Returns:
-      A tuple (x, logdet):
-        x       = piecewise-linear inverse output,
-        logdet  = log |dx/dy| at `y`.
+        (x, logdet) where
+            x: The inverse transform output.
+            logdet: log|dx/dy|.
     """
-    # --------------------------------------------------
-    # Identify whether y is below, above, or inside [y_pos[0], y_pos[-1]]
-    # --------------------------------------------------
+    eps = jnp.finfo(y.dtype).eps
+
+    # Identify below/above range in terms of y
     below_range = y <= y_pos[0]
     above_range = y >= y_pos[-1]
 
-    # --------------------------------------------------
-    # Identify the correct bin for y
-    # --------------------------------------------------
+    # Identify bin in which y lies
     correct_bin = jnp.logical_and(y >= y_pos[:-1], y < y_pos[1:])
     any_bin_in_range = jnp.any(correct_bin)
-    # Default to the first bin if none match
     first_bin = jnp.concatenate([
         jnp.array([True]),
         jnp.zeros(len(correct_bin) - 1, dtype=bool),
     ])
     correct_bin = jnp.where(any_bin_in_range, correct_bin, first_bin)
 
-    # Extract the bin's x and y positions
-    x_left = jnp.sum(correct_bin * x_pos[:-1])
-    x_right = jnp.sum(correct_bin * x_pos[1:])
+    # Extract bin endpoints
     y_left = jnp.sum(correct_bin * y_pos[:-1])
     y_right = jnp.sum(correct_bin * y_pos[1:])
+    x_left = jnp.sum(correct_bin * x_pos[:-1])
+    x_right = jnp.sum(correct_bin * x_pos[1:])
 
-    # Compute slope in that bin
-    bin_height = y_right - y_left
-    bin_height = jnp.where(bin_height == 0.0, 1e-12, bin_height)
+    # dx/dy slope in the chosen bin
+    bin_height = jnp.maximum(y_right - y_left, eps)
     slope_in = (x_right - x_left) / bin_height
 
-    # Linear inverse interpolation inside that bin
+    # Inside-range interpolation: x = x_left + slope_in*(y - y_left)
     x_unclamped = x_left + slope_in * (y - y_left)
-    # dx/dy = slope_in, so logdet = log|slope_in|
-    logdet_unclamped = jnp.log(jnp.abs(slope_in))
 
-    # --------------------------------------------------
-    # Below-range: bounded or unbounded?
-    # --------------------------------------------------
-    # Unbounded slope: from the first segment
-    slope_below_unbounded = (x_pos[1] - x_pos[0]) / (y_pos[1] - y_pos[0] + 1e-12)
+    # Because slope_in = dx/dy, log|dx/dy| = log|slope_in|
+    logdet_unclamped = jnp.log(jnp.maximum(jnp.abs(slope_in), eps))
+
+    ############################
+    # Below-range interpolation
+    ############################
+    # Unbounded slope from the first segment
+    first_bin_height = jnp.maximum(y_pos[1] - y_pos[0], eps)
+    slope_below_unbounded = (x_pos[1] - x_pos[0]) / first_bin_height
     x_below_unbounded = x_pos[0] + slope_below_unbounded * (y - y_pos[0])
-    logdet_below_unbounded = jnp.log(jnp.abs(slope_below_unbounded))
+    logdet_below_unbounded = jnp.log(jnp.maximum(jnp.abs(slope_below_unbounded), eps))
 
-    # If (y_min, x_min) is given, do a bounded linear mapping from
-    # (y_min, x_min) -> (y_pos[0], x_pos[0])
     if (y_min is not None) and (x_min is not None):
-        denom_below = y_pos[0] - y_min
-        denom_below = jnp.where(denom_below == 0.0, 1e-12, denom_below)
+        denom_below = jnp.maximum(y_pos[0] - y_min, eps)
         slope_below_bounded = (x_pos[0] - x_min) / denom_below
         x_below_bounded = x_min + slope_below_bounded * (y - y_min)
-        # Clamp if y <= y_min
+        # clamp if y <= y_min
         x_below_bounded = jnp.where(y <= y_min, x_min, x_below_bounded)
+        logdet_below_bounded = jnp.log(jnp.maximum(jnp.abs(slope_below_bounded), eps))
 
-        logdet_below_bounded = jnp.log(jnp.abs(slope_below_bounded))
-
-        x_below = jnp.where(
-            jnp.isnan(slope_below_bounded), x_below_unbounded, x_below_bounded
-        )
+        is_nan_below = jnp.isnan(slope_below_bounded)
+        x_below = jnp.where(is_nan_below, x_below_unbounded, x_below_bounded)
         logdet_below = jnp.where(
-            jnp.isnan(slope_below_bounded), logdet_below_unbounded, logdet_below_bounded
+            is_nan_below, logdet_below_unbounded, logdet_below_bounded
         )
     else:
-        # Unbounded fallback
         x_below = x_below_unbounded
         logdet_below = logdet_below_unbounded
 
-    # --------------------------------------------------
-    # Above-range: bounded or unbounded?
-    # --------------------------------------------------
-    # Unbounded slope: from the last segment
-    slope_above_unbounded = (x_pos[-1] - x_pos[-2]) / (y_pos[-1] - y_pos[-2] + 1e-12)
+    ############################
+    # Above-range interpolation
+    ############################
+    # Unbounded slope from the last segment
+    last_bin_height = jnp.maximum(y_pos[-1] - y_pos[-2], eps)
+    slope_above_unbounded = (x_pos[-1] - x_pos[-2]) / last_bin_height
     x_above_unbounded = x_pos[-1] + slope_above_unbounded * (y - y_pos[-1])
-    logdet_above_unbounded = jnp.log(jnp.abs(slope_above_unbounded))
+    logdet_above_unbounded = jnp.log(jnp.maximum(jnp.abs(slope_above_unbounded), eps))
 
-    # If (y_max, x_max) is given, do a bounded linear mapping from
-    # (y_pos[-1], x_pos[-1]) -> (y_max, x_max)
     if (y_max is not None) and (x_max is not None):
-        denom_above = y_max - y_pos[-1]
-        denom_above = jnp.where(denom_above == 0.0, 1e-12, denom_above)
+        denom_above = jnp.maximum(y_max - y_pos[-1], eps)
         slope_above_bounded = (x_max - x_pos[-1]) / denom_above
         x_above_bounded = x_pos[-1] + slope_above_bounded * (y - y_pos[-1])
-        # Clamp if y >= y_max
+        # clamp if y >= y_max
         x_above_bounded = jnp.where(y >= y_max, x_max, x_above_bounded)
+        logdet_above_bounded = jnp.log(jnp.maximum(jnp.abs(slope_above_bounded), eps))
 
-        logdet_above_bounded = jnp.log(jnp.abs(slope_above_bounded))
-
-        x_above = jnp.where(
-            jnp.isnan(slope_above_bounded), x_above_unbounded, x_above_bounded
-        )
+        is_nan_above = jnp.isnan(slope_above_bounded)
+        x_above = jnp.where(is_nan_above, x_above_unbounded, x_above_bounded)
         logdet_above = jnp.where(
-            jnp.isnan(slope_above_bounded), logdet_above_unbounded, logdet_above_bounded
+            is_nan_above, logdet_above_unbounded, logdet_above_bounded
         )
     else:
-        # Unbounded fallback
         x_above = x_above_unbounded
         logdet_above = logdet_above_unbounded
 
-    # --------------------------------------------------
-    # Merge piecewise: below_range, inside, above_range
-    # --------------------------------------------------
+    # Merge piecewise
     x = jnp.where(below_range, x_below, x_unclamped)
     x = jnp.where(above_range, x_above, x)
 
+    # Combine the final logdet, using slope_in = dx/dy
+    # => logdet = log|dx/dy|
     logdet = jnp.where(below_range, logdet_below, logdet_unclamped)
     logdet = jnp.where(above_range, logdet_above, logdet)
 
     return x, logdet
 
 
+def _piecewise_linear_spline_inv(
+    params: ArrayLike,
+    y: ArrayLike,
+    range_min_x: float = -10.0,
+    range_max_x: float = 10.0,
+    range_min_y: float = -10.0,
+    range_max_y: float = 10.0,
+    min_bin_size: float = 1e-4,
+    bounded: bool = False,
+):
+    """Inverse of the piecewise linear spline.
+
+    Args:
+        params: The parameters of the spline, shape (2 * num_bins,).
+        y: The input to invert.
+        range_min_x, range_max_x: Range for x coordinates.
+        range_min_y, range_max_y: Range for y coordinates.
+        min_bin_size: Minimum size of each bin.
+        bounded: Whether to use bounded interpolation.
+
+    Returns:
+        Tuple of (x, logdet) where x is the inverse and logdet is the log determinant.
+    """
+    # Split parameters into x and y positions
+    num_bins = len(params) // 2
+    x_pos = params[:num_bins]
+    y_pos = params[num_bins:]
+
+    # To avoid numerical issues we will bound x_pos and y_pos to be in the range
+    # that is stable for the softmax function.
+    x_pos = x_pos - jnp.mean(x_pos)
+    y_pos = y_pos - jnp.mean(y_pos)
+
+    x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
+        ((range_max_x - min_bin_size) - range_min_x) + (range_min_x)
+    )
+    y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
+        (range_max_y - min_bin_size) - range_min_y
+    ) + range_min_y
+
+    if not bounded:
+        x, log_det = _piecewise_linear_spline_inv_internal(y, x_pos, y_pos)
+    else:
+        x, log_det = _piecewise_linear_spline_inv_internal(
+            y, x_pos, y_pos, range_min_x, range_max_x, range_min_y, range_max_y
+        )
+    return x, jnp.squeeze(log_det)
+
+
 @partial(custom_inverse, inv_argnum=1)
-def piecwise_linear_spline(
-    params: Array,
-    x: Array,
-    range_min_x: float = -1.0,
-    range_max_x: float = 1.0,
-    range_min_y: float = -1.0,
-    range_max_y: float = 1.0,
+def linear_spline(
+    params: ArrayLike,
+    x: ArrayLike,
+    range_min_x: float = -10.0,
+    range_max_x: float = 10.0,
+    range_min_y: float = -10.0,
+    range_max_y: float = 10.0,
     min_bin_size: float = 1e-4,
     bounded: bool = False,
 ):
     x_pos, y_pos = jnp.split(params, 2, axis=-1)
 
+    # To avoid numerical issues we will bound x_pos and y_pos to be in the range
+    # that is stable for the softmax function.
+    x_pos = x_pos - jnp.mean(x_pos)
+    y_pos = y_pos - jnp.mean(y_pos)
+
     x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
-        range_max_x - range_min_x
-    ) + range_min_x
+        ((range_max_x - min_bin_size) - range_min_x) + (range_min_x)
+    )
     y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
-        range_max_y - range_min_y
+        (range_max_y - min_bin_size) - range_min_y
     ) + range_min_y
 
     if not bounded:
@@ -797,41 +835,13 @@ def piecwise_linear_spline(
     return y
 
 
-def _pieceswise_linear_spline_inv(
-    params: Array,
-    x: Array,
-    range_min_x=-1.0,
-    range_max_x=1.0,
-    range_min_y=-1.0,
-    range_max_y=1.0,
-    min_bin_size=1e-4,
-    bounded=False,
-):
-    x_pos, y_pos = jnp.split(params, 2, axis=-1)
-
-    x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
-        range_max_x - range_min_x
-    ) + range_min_x
-    y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
-        range_max_y - range_min_y
-    ) + range_min_y
-
-    if not bounded:
-        y, log_det = _piecewise_linear_spline_inv(x, x_pos, y_pos)
-    else:
-        y, log_det = _piecewise_linear_spline_inv(
-            x, x_pos, y_pos, range_min_x, range_max_x, range_min_y, range_max_y
-        )
-    return y, jnp.squeeze(log_det)
-
-
-piecwise_linear_spline.definv_and_logdet(_pieceswise_linear_spline_inv)
+linear_spline.definv_and_logdet(_piecewise_linear_spline_inv)
 
 
 @partial(custom_inverse, inv_argnum=1)
 def learnable_mixture_cdf(
-    params: Array,
-    y: Array,
+    params: ArrayLike,
+    y: ArrayLike,
     min_value=-10.0,
     max_value=10.0,
     **kwargs,
@@ -849,8 +859,8 @@ def learnable_mixture_cdf(
 
 
 def _inv_learnable_mixture_cdf(
-    params: Array,
-    x: Array,
+    params: ArrayLike,
+    x: ArrayLike,
     **kwargs,
 ):
     x = jnp.asarray(x)
@@ -872,12 +882,14 @@ learnable_mixture_cdf.definv(_inv_learnable_mixture_cdf)
 learnable_mixture_cdf.definv_and_logdet(_inv_and_logdet_learnable_mixture_cdf)
 
 
-def affine_bijector(params: Array, x: Array, min_scale=5e-1, max_scale=5.0, **kwargs):
+def affine_bijector(
+    params: ArrayLike, x: ArrayLike, min_scale=5e-1, max_scale=5.0, **kwargs
+):
     loc, scale = jnp.split(params, 2, axis=-1)
     scale = jax.nn.sigmoid(scale) * (max_scale - min_scale) + min_scale
 
     return loc + scale * x
 
 
-def additive_bijector(params: Array, x: Array, **kwargs):
+def additive_bijector(params: ArrayLike, x: ArrayLike, **kwargs):
     return x + params

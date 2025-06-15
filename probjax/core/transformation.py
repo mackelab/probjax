@@ -8,9 +8,11 @@ from jaxtyping import Array
 
 from probjax.core.interpreters.interventions import IntervenedProcessingRule
 from probjax.core.interpreters.inverse import (
-    InverseAndLogAbsDetProcessingRule,
     InverseProcessingRule,
     inverse_cost_fn,
+)
+from probjax.core.interpreters.inverse_and_logabsdet import (
+    InverseAndLogAbsDetProcessingRule,
 )
 from probjax.core.interpreters.joint_sample import JointSampleProcessingRule
 from probjax.core.interpreters.log_potential import (
@@ -229,7 +231,7 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
     return wrapped
 
 
-def inverse_and_logabsdet(fun: Callable, static_argnums=()):
+def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None):
     jaxpr_maker = jax.make_jaxpr(fun, static_argnums=static_argnums)
     processing_rule = InverseAndLogAbsDetProcessingRule()
 
@@ -249,8 +251,9 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=()):
         log_det = jnp.asarray(
             sum([processing_rule.log_dets[v] for v in jaxpr.jaxpr.invars])
         )
-        if log_det.ndim == out[0].ndim:
-            log_det = jnp.sum(log_det, axis=-1)
+        # if log_det.ndim == out[0].ndim and log_det.ndim > 0:
+        #     # Hacky bug fix TODO: Fix this
+        #     log_det = jnp.sum(log_det, axis=-1, keepdims=True)
         return out[0], log_det
 
     return wrapped

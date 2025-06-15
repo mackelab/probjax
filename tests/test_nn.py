@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+from flax import nnx
 
 from probjax.core import inverse, inverse_and_logabsdet
 
@@ -148,7 +149,26 @@ def test_transformer_with_context(transformer_with_context, seq_len, batch_shape
     model_dim, context_dim, model = transformer_with_context
     x = jnp.ones(batch_shape + (seq_len, model_dim))
     context = jnp.ones(batch_shape + (context_dim,))
-    y = model(x, context)
+    y = model(x, context=context)
+    assert y.shape == batch_shape + (seq_len, model_dim)
+
+    def loss_fn(model):
+        return jnp.sum(model(x, context))
+
+    # Can be differentiated
+    _ = jax.grad(loss_fn)
+
+    # Can be flattened
+    _, _ = jax.tree_util.tree_flatten(model)
+
+
+def test_transformer_with_context_and_cross_attention(
+    transformer_with_cross_attention_and_context, seq_len, batch_shape
+):
+    model_dim, context_dim, model = transformer_with_cross_attention_and_context
+    x = jnp.ones(batch_shape + (seq_len, model_dim))
+    context = jnp.ones(batch_shape + (context_dim,))
+    y = model(x, x + 1, x + 1, context=context)
     assert y.shape == batch_shape + (seq_len, model_dim)
 
     def loss_fn(model):
@@ -179,13 +199,32 @@ def test_lru(lru, seq_len):
     _, _ = jax.tree_util.tree_flatten(model)
 
 
+def test_diffusion(denoising_diffusion):
+    in_dim, model = denoising_diffusion
+    batch_shape = (10,)  # Only support one batch dimension
+    x = jnp.ones(batch_shape + (in_dim,))
+    t = jnp.ones(batch_shape + (1,))
+    y = model(t, x)
+    assert y.shape == batch_shape + (in_dim,), "Denosing shape is not correct"
+
+    s = model.score(t, x)
+
+    assert s.shape == batch_shape + (in_dim,), "Score shape is not correct"
+
+    loss = model.loss(jax.random.key(0), x)
+    assert loss.shape == (), "Loss shape is not correct"
+
+
 def test_flows(flow):
     input_dim, model = flow
     x = jnp.ones((input_dim,))
     y = model.transform(x)
 
+    # Freeze the model to get a distribution object
+    frozen_model = model
+
     def loss_fn(model):
-        return jnp.sum(model.log_prob(x))
+        return jnp.sum(frozen_model.logpdf(x))
 
     # Can be differentiated
     _ = jax.grad(loss_fn)
@@ -205,8 +244,8 @@ def test_flows(flow):
     assert logabsdet.shape == ()
 
     # Sampling
-    samples = model.sample(jax.random.PRNGKey(0), (10,))
+    samples = frozen_model.sample(rng=jax.random.PRNGKey(0), shape=(10,))
     assert samples.shape == (10, input_dim)
     # Log probability
-    logprob = model.log_prob(samples)
+    logprob = frozen_model.logpdf(samples)
     assert logprob.shape == (10,)

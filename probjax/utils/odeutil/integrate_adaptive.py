@@ -8,11 +8,10 @@ from jax import Array
 from jax.util import safe_map, safe_zip
 
 from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
+from probjax.utils.odeutil.adaptive import AdaptiveParams, StepSizeAdapter
 from probjax.utils.odeutil.util import (
     initial_step_size,
     interp_fit,
-    mean_error_ratio,
-    optimal_step_size,
 )
 
 map = safe_map
@@ -35,7 +34,39 @@ def odeint_adaptive(
     ts: Array,
     *args,
 ):
-    return _odeint_adaptive(method, drift, y0, ts, *args, **kwargs)
+    # Extract AdaptiveParams if present, or create default one
+    adaptive_params = kwargs.pop("adaptive_params", None)
+    if adaptive_params is None:
+        # Create default params using any rtol, atol, etc. from kwargs
+        rtol = kwargs.pop("rtol", 1e-3)
+        atol = kwargs.pop("atol", 1e-5)
+        mxstep = kwargs.pop("mxstep", jnp.inf)
+        dtmin = kwargs.pop("dtmin", 0.0)
+        dtmax = kwargs.pop("dtmax", jnp.inf)
+        maxerror = kwargs.pop("maxerror", 1.0)
+        safety = kwargs.pop("safety", 0.9)
+        ifactor = kwargs.pop("ifactor", 10.0)
+        dfactor = kwargs.pop("dfactor", 0.2)
+        error_norm = kwargs.pop("error_norm", 2)
+        order = kwargs.pop("order", 5)
+
+        adaptive_params = AdaptiveParams(
+            rtol=rtol,
+            atol=atol,
+            mxstep=mxstep,
+            dtmin=dtmin,
+            dtmax=dtmax,
+            maxerror=maxerror,
+            safety=safety,
+            ifactor=ifactor,
+            dfactor=dfactor,
+            error_norm=error_norm,
+            order=order,
+        )
+
+    return _odeint_adaptive(
+        method, drift, y0, ts, *args, adaptive_params=adaptive_params, **kwargs
+    )
 
 
 def _odeint_adaptive(
@@ -44,30 +75,24 @@ def _odeint_adaptive(
     y0: Array,
     ts: Array,
     *args,
+    adaptive_params: AdaptiveParams,
     dtinit: Optional[float] = None,
-    rtol: float = 1e-3,
-    atol: float = 1e-5,
-    mxstep: int = jnp.inf,
-    order: int = 5,
-    dtmin: float = 0.0,
-    dtmax: float = jnp.inf,
-    maxerror: float = 1.0,
-    safety: float = 0.9,
-    ifactor: float = 10.0,
-    dfactor: float = 0.2,
-    error_norm: float = 2,
     interpolation_order: int = 3,
     return_state: bool = False,
     filter_output: Optional[Callable] = None,
+    **kwargs,
 ):
     y0 = jnp.asarray(y0)
     solver = method(drift)
+
+    # Create adapter for step size control
+    adapter = StepSizeAdapter(adaptive_params)
 
     def scan_fun(carry, target_t):
         def cond_fun(state):
             i, state, dt, _, _ = state
             t = state.t0
-            return (t < target_t) & (i < mxstep) & (dt > 0)
+            return (t < target_t) & (i < adaptive_params.mxstep) & (dt > 0)
 
         def body_fun(carry):
             i, state, dt, last_t, interp_coeff = carry
@@ -77,26 +102,12 @@ def _odeint_adaptive(
             next_y_error = info.y1_error
             y_mid = info.y1_mid
             next_y, next_f = next_state.y0, next_state.f0
-            # Error estimation and step size control
-            error_ratio = mean_error_ratio(
-                next_y_error, y, next_y, rtol, atol, error_norm
-            )
-            new_interp_coeff = interp_fit(y, next_y, f, next_f, dt=dt, y_mid=y_mid)
-            dt = jnp.clip(
-                optimal_step_size(
-                    dt,
-                    error_ratio,
-                    maxerror=maxerror,
-                    safety=safety,
-                    ifactor=ifactor,
-                    dfactor=dfactor,
-                    order=order,
-                ),
-                dtmin,
-                dtmax,
-            )
 
-            cond = (error_ratio <= maxerror) | (dt == dtmin) | (dt == dtmax)
+            # Use adapter for error estimation and step size control
+            error_ratio = adapter.error_ratio(next_y_error, y, next_y)
+            new_interp_coeff = interp_fit(y, next_y, f, next_f, dt=dt, y_mid=y_mid)
+            dt = adapter.next_step_size(dt, error_ratio)
+            cond = adapter.accept_step(error_ratio, dt)
 
             def accept():
                 return [i + 1, next_state, dt, t, new_interp_coeff]
@@ -106,42 +117,31 @@ def _odeint_adaptive(
 
             return jax.lax.cond(cond, accept, reject)
 
-        # old_state = carry[0]
         i, *carry = jax.lax.while_loop(cond_fun, body_fun, [0] + carry)
-        # jax.debug.print(
-        #     "i={i}",
-        #     i=i,
-        # )
         new_state, dt, last_t, interp_coeff = carry
         relative_output_time = (target_t - last_t) / (new_state.t0 - last_t)
-        # jax.debug.print(
-        #     "t_target={t_target}, t_last={t_last}, t_next={t_next}, t_rel = {t_rel},"
-        #     "dt={dt}",
-        #     t_target=target_t,
-        #     t_last=last_t,
-        #     t_next=new_state.t0,
-        #     t_rel=relative_output_time,
-        #     dt=dt,
-        # )
 
         y_target = jnp.polyval(interp_coeff, relative_output_time)
-        # Test polynomial
-        # jax.debug.print(
-        #     "y={y}, y_new={y_new}, y_est={y_est}, y_est_new={y_est_new}",
-        #     y=old_state.y0,
-        #     y_new=new_state.y0,
-        #     y_est=jnp.polyval(interp_coeff, 0.0),
-        #     y_est_new=jnp.polyval(interp_coeff, new_state.t0 - last_t),
-        # )
+
         if filter_output is not None:
-            y_target = filter_output(y_target)
+            y_target = filter_output(y_target, new_state)
+
         return carry, y_target
 
     t0 = ts[0]
     if dtinit is None:
         f0 = drift(t0, y0, *args)
         dt = jnp.clip(
-            initial_step_size(drift, args, t0, y0, f0, order, rtol, atol),
+            initial_step_size(
+                drift,
+                args,
+                t0,
+                y0,
+                f0,
+                adaptive_params.order,
+                adaptive_params.rtol,
+                adaptive_params.atol,
+            ),
             min=0.0,
             max=jnp.inf,
         )
@@ -166,9 +166,9 @@ def _odeint_adaptive_wrapper(
     y0: Array,
     ts: Array,
     *args,
+    adaptive_params: AdaptiveParams,
     **kwargs,
 ):
-    print(y0)
     flat_y0, unravel = ravel_args(y0)
     drift_flat = ravel_arg_fun(drift, unravel, 1)
     ys = _odeint_adaptive(
@@ -177,6 +177,7 @@ def _odeint_adaptive_wrapper(
         flat_y0,
         ts,
         *args,
+        adaptive_params=adaptive_params,
         **kwargs,
     )
 
@@ -191,8 +192,40 @@ def _odeint_fwd(
     ts: Array,
     *args,
 ):
-    ys = _odeint_adaptive(method, drift, y0, ts, *args, **kwargs)
-    return ys, (ys, ts, args)
+    # Extract or create AdaptiveParams
+    adaptive_params = kwargs.pop("adaptive_params", None)
+    if adaptive_params is None:
+        # Create default params using any rtol, atol, etc. from kwargs
+        rtol = kwargs.pop("rtol", 1e-3)
+        atol = kwargs.pop("atol", 1e-5)
+        mxstep = kwargs.pop("mxstep", jnp.inf)
+        dtmin = kwargs.pop("dtmin", 0.0)
+        dtmax = kwargs.pop("dtmax", jnp.inf)
+        maxerror = kwargs.pop("maxerror", 1.0)
+        safety = kwargs.pop("safety", 0.9)
+        ifactor = kwargs.pop("ifactor", 10.0)
+        dfactor = kwargs.pop("dfactor", 0.2)
+        error_norm = kwargs.pop("error_norm", 2)
+        order = kwargs.pop("order", 5)
+
+        adaptive_params = AdaptiveParams(
+            rtol=rtol,
+            atol=atol,
+            mxstep=mxstep,
+            dtmin=dtmin,
+            dtmax=dtmax,
+            maxerror=maxerror,
+            safety=safety,
+            ifactor=ifactor,
+            dfactor=dfactor,
+            error_norm=error_norm,
+            order=order,
+        )
+
+    ys = _odeint_adaptive(
+        method, drift, y0, ts, *args, adaptive_params=adaptive_params, **kwargs
+    )
+    return ys, (ys, ts, args, adaptive_params, kwargs)
 
 
 def _odeint_rev(
@@ -202,9 +235,10 @@ def _odeint_rev(
     res,
     g,
 ):
-    ys, ts, args = res
+    ys, ts, args, adaptive_params, kwargs = res
 
     filter_output = kwargs.pop("filter_output", None)
+    return_state = kwargs.pop("return_state", False)
 
     def aug_dynamics(t, augmented_state):
         y, y_bar, *_ = augmented_state
@@ -232,6 +266,7 @@ def _odeint_rev(
             aug_dynamics,
             augmented_state,
             jnp.array([-ts[i], -ts[i - 1]]),
+            adaptive_params=adaptive_params,
             **kwargs,
         )
         y_bar, t0_bar, args_bar = jax.tree_util.tree_map(

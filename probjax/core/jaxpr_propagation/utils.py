@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Sequence, Tuple
 
-from jax._src.api_util import (
+from jax._src.core import (
     shaped_abstractify,
 )
 from jax._src.util import safe_map as map

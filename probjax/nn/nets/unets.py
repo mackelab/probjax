@@ -143,9 +143,9 @@ class UNet(nnx.Module, experimental_pytree=True):
         self.kwargs = kwargs
 
         assert len(out_features) >= 2, "Must have at least 2 output channels"
-        assert all(
-            o % num_groups == 0 for o in out_features
-        ), "Output channels must be divisible by num_groups!"
+        assert all(o % num_groups == 0 for o in out_features), (
+            "Output channels must be divisible by num_groups!"
+        )
 
         # ---------------------------------------------------------------------
         # Initial large kernel conv

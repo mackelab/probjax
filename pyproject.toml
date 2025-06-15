@@ -30,15 +30,15 @@ classifiers = [
 ]
 keywords = ["probabilistic", "jax", "computation"]
 dependencies = [
-    "numpy >= 2.1.2",
+    "numpy >= 2.0.0",
     "matplotlib",
     "jax >= 0.4.34",
     "jaxlib >= 0.4.34",
     "optax",
+    "flax",
     "ott-jax",
     "networkx",
     "blackjax",
-    "sympy"
 ]
 
 [project.optional-dependencies]
@@ -46,6 +46,10 @@ dev = [
     "pytest",
     "ruff",
     "pytest-xdist",
+]
+cuda12 = [
+    "jax[cuda12]>=0.4.34",
+    "jaxlib[cuda12]>=0.4.34",
 ]
 
 

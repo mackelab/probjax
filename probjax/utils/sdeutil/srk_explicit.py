@@ -1,11 +1,81 @@
 from functools import partial
-from typing import Callable
+from typing import Callable, Tuple
 
 import jax
 import jax.numpy as jnp
 from jax import Array
+from jaxtyping import Key
 
-# TODO Refactor
+from probjax.utils.brownian import get_iterated_integrals_fn
+from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
+
+
+class SRKInfo(SDEInfo):
+    dWt: Array
+    dWtdWs: Array
+    k1: Array
+    k2: Array
+
+
+class SRKState(SDEState):
+    t0: Array
+    y0: Array
+
+
+def init_state(t0: Array, y0: Array, **kwargs):
+    t0 = jnp.asarray(t0)
+    y0 = jnp.asarray(y0)
+    return SRKState(t0, y0)
+
+
+def build_sri1_coefficients(
+    dtype: jnp.dtype = jnp.float32,
+) -> Tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array]:
+    """Build the Butcher tableau coefficients for the SRI1 method.
+
+    Args:
+        dtype (jnp.dtype, optional): Data type for the coefficients. Defaults to jnp.float32.
+
+    Returns:
+        Tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array]:
+            (c0, c1, A0, A1, B0, B1, b_sol, gamma0, gamma1, b_error)
+    """
+    c0 = jnp.zeros((3,), dtype=dtype)
+    c1 = jnp.zeros((3,), dtype=dtype)
+    A0 = jnp.zeros((3, 3), dtype=dtype)
+    A1 = jnp.zeros((3, 3), dtype=dtype)
+    B0 = jnp.zeros((3, 3), dtype=dtype)
+    B1 = jnp.array([[0, 0, 0], [1, 0, 0], [-1, 0, 0]], dtype=dtype)
+    b_sol = jnp.array([1, 0, 0], dtype=dtype)
+    gamma0 = jnp.array([1, 0, 0], dtype=dtype)
+    gamma1 = jnp.array([0, 0.5, -0.5], dtype=dtype)
+    b_error = None
+    return c0, c1, A0, A1, B0, B1, b_sol, gamma0, gamma1, b_error
+
+
+def build_sri2_coefficients(
+    dtype: jnp.dtype = jnp.float32,
+) -> Tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array]:
+    """Build the Butcher tableau coefficients for the SRI2 method.
+
+    Args:
+        dtype (jnp.dtype, optional): Data type for the coefficients. Defaults to jnp.float32.
+
+    Returns:
+        Tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array]:
+            (c0, c1, A0, A1, B0, B1, b_sol, gamma0, gamma1, b_error)
+    """
+    c0 = jnp.array([0, 1, 0.0], dtype=dtype)
+    c1 = jnp.array([0, 1, 1.0], dtype=dtype)
+    A0 = jnp.array([[0, 0, 0], [1, 0, 0], [0, 0, 0]], dtype=dtype)
+    A1 = jnp.array([[0, 0, 0], [1, 0, 0], [1, 0, 0]], dtype=dtype)
+    B0 = jnp.zeros((3, 3), dtype=dtype)
+    B1 = jnp.array([[0, 0, 0], [1, 0, 0], [-1, 0, 0]], dtype=dtype)
+    b_sol = jnp.array([0.5, 0.5, 0], dtype=dtype)
+    gamma0 = jnp.array([1.0, 0, 0], dtype=dtype)
+    gamma1 = jnp.array([0, 0.5, -0.5], dtype=dtype)
+    b_error = None
+    return c0, c1, A0, A1, B0, B1, b_sol, gamma0, gamma1, b_error
 
 
 @partial(jax.jit, static_argnums=(0, 1, 19, 20))
@@ -38,43 +108,40 @@ def explicit_stochastic_runge_kutta_step(
     Paper: https://preprint.math.uni-hamburg.de/public/papers/prst/prst2010-02.pdf
 
     Args:
-        drift (Callable): _description_
-        diffusion (Callable): _description_
-        t0 (Array): _description_
-        y0 (Array): _description_
-        f0 (Array): _description_
-        g0 (Array): _description_
-        dt (Array): _description_
-        dWt (Array): _description_
-        dWtdWs (Array): _description_
-        c0 (Array): _description_
-        c1 (Array): _description_
-        A0 (Array): _description_
-        A1 (Array): _description_
-        B0 (Array): _description_
-        B1 (Array): _description_
-        b_sol (Array): _description_
-        gamma0 (Array): _description_
-        gamma1 (Array): _description_
-        b_error (Array): _description_
-        order (int): _description_
-        is_diagonal (bool, optional): _description_. Defaults to False.
-
-    Raises:
-        NotImplementedError: _description_
+        drift (Callable): Drift function f(t, y)
+        diffusion (Callable): Diffusion function g(t, y)
+        t0 (Array): Initial time
+        y0 (Array): Initial state
+        f0 (Array): Initial drift evaluation
+        g0 (Array): Initial diffusion evaluation
+        dt (Array): Time step
+        dWt (Array): Brownian increments
+        dWtdWs (Array): Iterated integrals
+        c0 (Array): Time coefficients for drift stages
+        c1 (Array): Time coefficients for diffusion stages
+        A0 (Array): Butcher tableau for drift
+        A1 (Array): Butcher tableau for diffusion
+        B0 (Array): Butcher tableau for drift-diffusion coupling
+        B1 (Array): Butcher tableau for diffusion-diffusion coupling
+        b_sol (Array): Solution weights for drift
+        gamma0 (Array): Solution weights for diffusion
+        gamma1 (Array): Solution weights for diffusion
+        b_error (Array): Error weights (optional)
+        stages (int): Number of stages
+        is_diagonal (bool): Whether the noise is diagonal
+        *kwargs: Additional arguments
 
     Returns:
-        _type_: _description_
+        Tuple[Array, Array, Array, Tuple]: (y1, f1, g1, (y1_error, k1, k2))
     """
     dtsqrt = jnp.sqrt(jnp.abs(dt))
     dtsqrt_vec = jnp.ones_like(dWt) * dtsqrt
     m = dWt.shape[0]
     d = y0.shape[0]
 
-    if is_diagonal:  # noqa: SIM108
+    if is_diagonal:
         reduction_dWt = "s, smi, j -> i"
     else:
-        # General case not working yet ...
         reduction_dWt = (
             "s, smij, j -> i"  # Average drift evaluation over s, then matmul with dWt
         )
@@ -92,7 +159,6 @@ def explicit_stochastic_runge_kutta_step(
         )
 
         yi2 = y0 + jnp.dot(A1[i, :], k1) * dt
-
         yi2 = jnp.broadcast_to(yi2, (m,) + yi2.shape)
 
         for k in range(m):
@@ -108,9 +174,7 @@ def explicit_stochastic_runge_kutta_step(
     # Drift evaluations at support points
     k1 = jnp.zeros((stages,) + f0.shape, f0.dtype).at[0, :].set(f0)
     # Diffusion evaluations at support points
-    k2 = (
-        jnp.zeros((stages, m) + g0.shape, g0.dtype).at[0, :].set(g0)
-    )  # Diffusion evaluations at support points
+    k2 = jnp.zeros((stages, m) + g0.shape, g0.dtype).at[0, :].set(g0)
 
     k1, k2 = jax.lax.fori_loop(1, stages + 1, body_fun, (k1, k2))
 
@@ -132,34 +196,100 @@ def explicit_stochastic_runge_kutta_step(
     return y1, f1, g1, (y1_error, k1, k2)
 
 
-# Strong order 1.0 methods
+def build_srk_step(
+    drift: Callable,
+    diffusion: Callable,
+    noise_type="diagonal",
+    sde_type="ito",
+    iterated_integrals_fn=get_iterated_integrals_fn,
+    stages: int = 3,
+    build_coefficients: Callable = None,
+):
+    """Build a step function for the explicit stochastic Runge-Kutta method.
 
-# # SRI1
-# c0 = jnp.zeros((3,))
-# c1 = jnp.zeros((3,))
-# A0 = jnp.zeros((3, 3))
-# A1 = jnp.zeros((3, 3))
-# B0 = jnp.zeros((3, 3))
-# B1 = jnp.array([[0, 0, 0], [1, 0, 0], [-1, 0, 0]])
-# b_sol = jnp.array([1, 0, 0])
-# gamma0 = jnp.array([1, 0, 0])
-# gamma1 = jnp.array([0, 0.5, -0.5])
-# b_error = None
-# register_stochastic_runge_kutta_method(
-#     "sri1", c0, c1, A0, A1, B0, B1, b_sol, gamma0, gamma1, b_error
-# )
+    Args:
+        drift (Callable): Drift function
+        diffusion (Callable): Diffusion function
+        noise_type (str, optional): Type of noise. Defaults to "diagonal".
+        sde_type (str, optional): Type of SDE. Defaults to "ito".
+        iterated_integrals_fn (Callable, optional): Function to compute iterated integrals. Defaults to get_iterated_integrals_fn.
+        stages (int, optional): Number of stages. Defaults to 3.
+        build_coefficients (Callable): Function that builds the Butcher tableau coefficients.
 
-# # SRI2
-# c0 = jnp.array([0, 1, 0.0])
-# c1 = jnp.array([0, 1, 1.0])
-# A0 = jnp.array([[0, 0, 0], [1, 0, 0], [0, 0, 0]])
-# A1 = jnp.array([[0, 0, 0], [1, 0, 0], [1, 0, 0]])
-# B0 = jnp.zeros((3, 3))
-# B1 = jnp.array([[0, 0, 0], [1, 0, 0], [-1, 0, 0]])
-# b_sol = jnp.array([0.5, 0.5, 0])
-# gamma0 = jnp.array([1.0, 0, 0])
-# gamma1 = jnp.array([0, 0.5, -0.5])
-# b_error = None
-# register_stochastic_runge_kutta_method(
-#     "sri2", c0, c1, A0, A1, B0, B1, b_sol, gamma0, gamma1, b_error
-# )
+    Returns:
+        Callable: Step function for the SRK method
+    """
+    iterated_integrals_fn = iterated_integrals_fn(noise_type, sde_type)
+    is_diagonal = noise_type == "diagonal"
+
+    # Get coefficients from builder function
+    c0, c1, A0, A1, B0, B1, b_sol, gamma0, gamma1, b_error = build_coefficients()
+
+    def step_fn(rng: Key, state: SRKState, dt: float):
+        dt = jnp.asarray(dt)
+        t0, y0 = state.t0, state.y0
+        rng1, rng2 = jax.random.split(rng, 2)
+
+        f0 = jnp.asarray(drift(t0, y0))
+        g0 = jnp.asarray(diffusion(t0, y0))
+        dWt = jax.random.normal(rng1, y0.shape) * jnp.sqrt(jnp.abs(dt))
+        dWtdWs = iterated_integrals_fn(rng2, dWt, jnp.abs(dt))
+
+        y1, f1, g1, (y1_error, k1, k2) = explicit_stochastic_runge_kutta_step(
+            drift,
+            diffusion,
+            t0,
+            y0,
+            f0,
+            g0,
+            dt,
+            dWt,
+            dWtdWs,
+            c0,
+            c1,
+            A0,
+            A1,
+            B0,
+            B1,
+            b_sol,
+            gamma0,
+            gamma1,
+            b_error,
+            stages,
+            is_diagonal,
+        )
+
+        new_state = SRKState(t0 + dt, y1)
+        info = SRKInfo(dWt=dWt, dWtdWs=dWtdWs, k1=k1, k2=k2)
+        return new_state, info
+
+    return step_fn
+
+
+class sri1(SDESolverAPI):
+    """SRI1 method - Strong order 1.0 stochastic Runge-Kutta method."""
+
+    init = init_state
+    build_step = partial(build_srk_step, build_coefficients=build_sri1_coefficients)
+
+
+class sri2(SDESolverAPI):
+    """SRI2 method - Strong order 1.0 stochastic Runge-Kutta method."""
+
+    init = init_state
+    build_step = partial(build_srk_step, build_coefficients=build_sri2_coefficients)
+
+
+# Register the SRI1 method
+register_method(
+    "sri1",
+    sri1,
+    info={"order": 1, "strong_order": 1.0, "weak_order": 1.0, "adaptive": False},
+)
+
+# Register the SRI2 method
+register_method(
+    "sri2",
+    sri2,
+    info={"order": 1, "strong_order": 1.0, "weak_order": 1.0, "adaptive": False},
+)
