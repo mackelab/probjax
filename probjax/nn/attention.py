@@ -2,13 +2,15 @@ import functools
 import math
 from functools import partial
 from typing import Callable, Optional
-
 import jax
 import jax.numpy as jnp
 import numpy as np
+from flax.nnx.module import  first_from
 from flax.nnx import MultiHeadAttention as FlaxMultiHeadAttention
+from flax.nnx import combine_masks
 from flax.nnx import dot_product_attention
 from jax.typing import ArrayLike
+from jax import lax
 
 from probjax.nn.pallas_kernels.attention import BlockSizes, MaskModFn, ScoreModFn, mha
 
@@ -20,6 +22,16 @@ __all__ = [
     "sparse_dot_product_attention",
     "flex_attention",
 ]
+
+
+def first_from(*args, error_msg=None):
+    """Returns the first non-None value from the arguments."""
+    for arg in args:
+        if arg is not None:
+            return arg
+    if error_msg is not None:
+        raise ValueError(error_msg)
+    return None
 
 
 class MultiHeadAttention(FlaxMultiHeadAttention):
@@ -34,7 +46,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         deterministic: bool | None = None,
         rngs = None,
         sow_weights: bool = False,
-        decode: bool | None = None,
+        decode: bool | None = False,
     ):
         """Applies multi-head dot product attention on the input data.
 
