@@ -6,7 +6,7 @@ from flax import nnx
 from jax import Array
 from jax.random import PRNGKey
 from jax.typing import ArrayLike
-from jax.tree_util import PyTree
+from jaxtyping import PyTree
 
 from probjax.nn.loss_fn.denoising import build_time_dependent_denoising_loss
 
