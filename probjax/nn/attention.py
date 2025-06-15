@@ -44,7 +44,6 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
             inputs_k,
             inputs_v,
             mask=mask,
-            bias=bias,
             deterministic=deterministic,
             rngs=rngs,
             sow_weights=sow_weights,
