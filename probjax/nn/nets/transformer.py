@@ -237,6 +237,8 @@ class Transformer(nnx.Module, experimental_pytree=True):
         context: Optional[Array] = None,  # [B, D_context]
         mask: Array | None = None,  # [T, T] or [B, T, T]
         mask_cross: Array | None = None,  # [T, T'] or [B, T, T']
+        bias: Array | None = None,  # [B, T, D]
+        bias_cross: Array | None = None,  # [B, T', D]
         deterministic: bool | None = None,
         decode: bool = False,
     ) -> Array:  # [B, T, D]
@@ -266,7 +268,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
             # First the attention block.
             q = self.layer_norms_attn[i](q)
             h_attn = self.attention_blocks[i](
-                q, mask=mask, deterministic=deterministic, decode=decode
+                q, mask=mask, bias=bias, deterministic=deterministic, decode=decode
             )
             q = q + h_attn if self.skip_connection_attn else h_attn
 
@@ -278,6 +280,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
                     k,
                     v,
                     mask=mask_cross,
+                    bias=bias_cross,
                     deterministic=deterministic,
                     decode=False,
                 )
