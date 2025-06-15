@@ -1,4 +1,4 @@
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional, Tuple, Any
 
 import jax
 import jax.numpy as jnp
@@ -6,6 +6,7 @@ from flax import nnx
 from jax import Array
 from jax.random import PRNGKey
 from jax.typing import ArrayLike
+from jax.tree_util import PyTree
 
 from probjax.nn.loss_fn.denoising import build_time_dependent_denoising_loss
 
@@ -129,7 +130,9 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
         s_t_weight = self.weight_fn(t) * s_t**2
         return 0.5 * (a_t_weight + s_t_weight)
 
-    def __call__(self, t: ArrayLike, x: ArrayLike, *args, **kwargs) -> ArrayLike:
+    def __call__(
+        self, t: ArrayLike, x_t: PyTree[ArrayLike], *args, **kwargs
+    ) -> PyTree[ArrayLike]:
         """
         Forward pass of the model.
 
@@ -144,7 +147,7 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
             If "v", it's the direct prediction of v.
         """
         noise_embed = self.c_t(t)
-        x_embed = jax.tree_util.tree_map(lambda x: self.c_in(t) * x, x)
+        x_embed = jax.tree_util.tree_map(lambda x: self.c_in(t) * x, x_t)
 
         out = self.net(noise_embed, x_embed, *args, **kwargs)
 
@@ -153,7 +156,9 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
 
         return out
 
-    def denoise(self, t: ArrayLike, x_t: ArrayLike, *args, **kwargs) -> ArrayLike:
+    def denoise(
+        self, t: ArrayLike, x_t: PyTree[ArrayLike], *args, **kwargs
+    ) -> PyTree[ArrayLike]:
         """Predict denoised x0 from noisy x_t at time t.
         The actual prediction depends on self.prediction_type.
         """
@@ -163,10 +168,14 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
         c_skip = self.c_skip(t)
 
         return jax.tree_util.tree_map(
-            lambda x, o: c_skip * x + c_out * o, x_t, model_output
+            lambda x, o: c_skip * x + c_out * o,
+            x_t,
+            model_output,
         )
 
-    def epsilon(self, t: ArrayLike, x_t: ArrayLike, *args, **kwargs) -> ArrayLike:
+    def epsilon(
+        self, t: ArrayLike, x_t: PyTree[ArrayLike], *args, **kwargs
+    ) -> PyTree[ArrayLike]:
         """Predict noise epsilon from noisy x_t at time t.
         The actual prediction depends on self.prediction_type.
         """
@@ -174,10 +183,14 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
         x0_pred = self.denoise(t, x_t, *args, **kwargs)
 
         return jax.tree_util.tree_map(
-            lambda x, o: (x - o) / sigma_t, x_t, x0_pred
+            lambda x, o: (x - o) / sigma_t,
+            x_t,
+            x0_pred,
         )
 
-    def score(self, t: ArrayLike, x_t: ArrayLike, *args, **kwargs) -> ArrayLike:
+    def score(
+        self, t: ArrayLike, x_t: PyTree[ArrayLike], *args, **kwargs
+    ) -> PyTree[ArrayLike]:
         """Compute score (nabla_x_t log p(x_t|x0)) from noisy x_t at time t.
         Defined as -epsilon_pred / sigma_t.
         The epsilon_pred is derived based on self.prediction_type.
@@ -189,7 +202,9 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
             epsilon_pred,
         )
 
-    def v(self, t: ArrayLike, x_t: ArrayLike, *args, **kwargs) -> ArrayLike:
+    def v(
+        self, t: ArrayLike, x_t: PyTree[ArrayLike], *args, **kwargs
+    ) -> PyTree[ArrayLike]:
         """Predict v (velocity or related quantity) from noisy x_t at time t.
         Here, v is defined as v_target = alpha_t * epsilon - sigma_t * x0.
         The actual prediction depends on self.prediction_type.
@@ -199,7 +214,9 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
 
         # Get noise prediction (epsilon)
         # Compute from x0_pred and x_t
-        epsilon_pred = (x_t - x0_pred) / self.std_fn(t)
+        epsilon_pred = jax.tree_util.tree_map(
+            lambda x, x0: (x - x0) / self.std_fn(t), x_t, x0_pred
+        )
 
         # Calculate v using the formula: alpha_t * epsilon - sigma_t * x0
         # alpha_t is the signal scaling factor related to scale_fn
@@ -212,13 +229,14 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
         normalized_alpha = alpha_t / total_variance
         normalized_sigma = sigma_t / total_variance
 
-        return jax.tree_util.tree_map(
-            lambda a, e, s, x: a * e - s * x,
-            normalized_alpha,
+        # Apply the formula using tree_map for each operation
+        v = jax.tree_util.tree_map(
+            lambda eps, x0: normalized_alpha * eps - normalized_sigma * x0,
             epsilon_pred,
-            normalized_sigma,
             x0_pred,
         )
+
+        return v
 
     def marginal_std(self, t: ArrayLike) -> ArrayLike:
         """Compute marginal standard deviation."""
@@ -226,18 +244,28 @@ class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
             self.scale_fn(t) ** 2 * (self.std_fn(t) ** 2 + self.std0.value**2)
         )
 
-    def drift(self, t: ArrayLike, x: ArrayLike, *args, **kwargs) -> ArrayLike:
+    def drift(
+        self, t: ArrayLike, x: PyTree[ArrayLike], *args, **kwargs
+    ) -> PyTree[ArrayLike]:
         """Compute SDE drift term."""
         scale = self.scale_fn(t)
         scale_dt = jax.grad(lambda t: jnp.sum(self.scale_fn(t)))(t)
-        return (scale_dt / scale) * x
+        return jax.tree_util.tree_map(
+            lambda x_i: (scale_dt / scale) * x_i,
+            x,
+        )
 
-    def diffusion(self, t: ArrayLike, x: ArrayLike, *args, **kwargs) -> ArrayLike:
+    def diffusion(
+        self, t: ArrayLike, x: PyTree[ArrayLike], *args, **kwargs
+    ) -> PyTree[ArrayLike]:
         """Compute SDE diffusion term."""
         scale = self.scale_fn(t)
         std = self.std_fn(t)
         std_dt = jax.grad(lambda t: jnp.sum(self.std_fn(t)))(t)
-        return scale * jnp.sqrt(2 * std_dt * std)
+        return jax.tree_util.tree_map(
+            lambda x_i: scale * jnp.sqrt(2 * std_dt * std),
+            x,
+        )
 
     def noise_schedule(self, rng: PRNGKey, shape: Tuple[int, ...]) -> Array:
         """Compute noise levels for given shape and RNG."""
