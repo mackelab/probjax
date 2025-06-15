@@ -186,6 +186,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
             dropout_rng = None
 
         # apply attention
+        
         x = self.attention_fn(
             query,
             key,

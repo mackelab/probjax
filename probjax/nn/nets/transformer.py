@@ -254,6 +254,14 @@ class Transformer(nnx.Module, experimental_pytree=True):
             else:
                 raise ValueError(f"Mask must have ndim 2 or 3, got {mask.ndim}.")
 
+        if bias is not None:
+            if bias.ndim == 2:
+                bias = bias[None, :, :]
+            elif bias.ndim == 3:
+                bias = bias[:, None, :, :]
+            elif bias.ndim == 4:
+                bias = bias
+
         if k is not None and not self.enable_cross_attention:
             raise ValueError("Cross attention is disabled, but k is provided.")
         if v is not None and not self.enable_cross_attention:
