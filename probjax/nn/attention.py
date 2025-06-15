@@ -30,16 +30,21 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         inputs_v: Optional[ArrayLike] = None,
         *,
         mask: Optional[ArrayLike] = None,
+        bias: Optional[ArrayLike] = None,
         deterministic: bool | None = None,
         rngs=None,
         sow_weights: bool = False,
         decode: bool = False,  # This is different from the original implementation
     ):
+        if bias is not None:
+            self.attention_fn = partial(self.attention_fn, bias=bias)
+
         return super().__call__(
             inputs_q,
             inputs_k,
             inputs_v,
             mask=mask,
+            bias=bias,
             deterministic=deterministic,
             rngs=rngs,
             sow_weights=sow_weights,
