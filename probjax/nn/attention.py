@@ -24,16 +24,6 @@ __all__ = [
 ]
 
 
-def first_from(*args, error_msg=None):
-    """Returns the first non-None value from the arguments."""
-    for arg in args:
-        if arg is not None:
-            return arg
-    if error_msg is not None:
-        raise ValueError(error_msg)
-    return None
-
-
 class MultiHeadAttention(FlaxMultiHeadAttention):
     def __call__(
         self,
@@ -186,7 +176,6 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
             dropout_rng = None
 
         # apply attention
-        
         x = self.attention_fn(
             query,
             key,
@@ -255,13 +244,18 @@ def flex_attention(
     # These can not be used by the pallas backend
     del (
         module,
-        dtype,
         precision,
         broadcast_dropout,
         dropout_rate,
         deterministic,
         dropout_rng,
     )
+
+    if dtype is not None:
+        query = query.astype(dtype)
+        key = key.astype(dtype)
+        value = value.astype(dtype)
+
     # Masks must be passed as functions
     if isinstance(mask, Callable):
         mask_mod_fn = mask
@@ -312,7 +306,9 @@ def flex_attention(
     score_mod_fn_grad = None if score_mod_fn is None else jax.grad(score_mod_fn)
 
     # If compiling for CPU, enforce interpret mode
-    if jax.default_backend() == "cpu" or query.device.platform == "cpu":
+    if jax.default_backend() == "cpu" or (
+        not isinstance(query, jax.Array) and query.device.platform == "cpu"
+    ):
         interpret = True
 
     output = mha(
