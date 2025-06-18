@@ -98,6 +98,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
         initializer: Optional[nnx.initializers.Initializer] = None,
         context_fusion: type = AffineFuse,
         attention_fn: Optional[Callable] = None,
+        cross_attention_fn: Optional[Callable] = None,
     ):
         """Initialize a Transformer model.
         Args:
@@ -180,6 +181,9 @@ class Transformer(nnx.Module, experimental_pytree=True):
         ]
 
         if self.enable_cross_attention:
+            cross_attention_fn = (
+                cross_attention_fn if cross_attention_fn is not None else nnx.dot_product_attention
+            )
             self.cross_attention_blocks = [
                 MultiHeadAttention(
                     num_heads,
@@ -189,7 +193,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
                     rngs=rngs,
                     kernel_init=self.initializer,
                     dropout_rate=dropout_rate if dropout_rate is not None else 0.0,
-                    attention_fn=attention_fn,
+                    attention_fn=cross_attention_fn,
                     normalize_qk=normalize_qk_cross_attn,
                 )
                 for _ in range(num_layers)
