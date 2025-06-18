@@ -15,16 +15,15 @@ from jax.extend.core import (
 from jax.interpreters import ad, batching, mlir
 from jax.interpreters import partial_eval as pe
 
-from probjax.stats.base import rv_generic as Distribution
 
 __all__ = ["rv", "rv_p"]
 
 
-def _sample_distribution(dist: Distribution, key, *args, shape=(), **kwargs):
+def _sample_distribution(dist: "Distribution", key, *args, shape=(), **kwargs):
     return dist.sample(key, *args, sample_shape=shape, **kwargs)
 
 
-def _log_prob_distribution(dist: Distribution, value, *args, **kwargs):
+def _log_prob_distribution(dist: "Distribution", value, *args, **kwargs):
     return dist.log_prob(value, *args, **kwargs)
 
 
@@ -78,7 +77,7 @@ def _sampling_logprobs_jaxprs_with_common_consts(sampling_fn, log_prob_fn):
     return closed_jaxprs, consts
 
 
-def rv(dist: Distribution, name: Hashable) -> Callable:
+def rv(dist: "Distribution", name: Hashable) -> Callable:
     """This takes a distribution and returns a function that samples from that
     distribution.
 
