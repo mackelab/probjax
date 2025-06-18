@@ -91,6 +91,7 @@ class AutoregressiveTransformer(nnx.Module, experimental_pytree=True):
         num_heads: int = 4,
         num_layers: int = 2,
         attn_size: int = 8,
+        widening_factor: int = 2,
         context_dim: Optional[int] = None,
     ):
         super().__init__()
@@ -104,6 +105,7 @@ class AutoregressiveTransformer(nnx.Module, experimental_pytree=True):
                 num_heads=num_heads,
                 num_layers=num_layers,
                 attn_size=attn_size,
+                widening_factor=widening_factor,
                 attention_fn=partial(flex_attention, causal=True),
                 rngs=rngs,
                 context_dim=context_dim,
@@ -112,9 +114,9 @@ class AutoregressiveTransformer(nnx.Module, experimental_pytree=True):
         self.start_token = nnx.Param(jnp.zeros((self.transformer.model_dim,)))
 
         if encoder is None:
-            encoder = nnx.Linear(in_out_dim, self.transformer.model_dim, rngs=rngs)
+            encoder = nnx.Linear(in_out_dim, self.transformer.model_dim, rngs=rngs, use_bias=False)
         if decoder is None:
-            decoder = nnx.Linear(self.transformer.model_dim, bijector_dim, rngs=rngs)
+            decoder = nnx.Linear(self.transformer.model_dim, bijector_dim, rngs=rngs, kernel_init=nnx.initializers.zeros, use_bias=False)
         self.encoder = encoder
         self.decoder = decoder
 

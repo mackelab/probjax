@@ -262,6 +262,15 @@ class Transformer(nnx.Module, experimental_pytree=True):
         #     elif bias.ndim == 4:
         #         bias = bias
 
+        shape = q.shape
+        q = q.reshape(-1, q.shape[-2], q.shape[-1])
+        if k is not None:
+            k = k.reshape(-1, k.shape[-2], k.shape[-1])
+        if v is not None:
+            v = v.reshape(-1, v.shape[-2], v.shape[-1])
+        if context is not None:
+            context = context.reshape(-1, context.shape[-2], context.shape[-1])
+
         if k is not None and not self.enable_cross_attention:
             raise ValueError("Cross attention is disabled, but k is provided.")
         if v is not None and not self.enable_cross_attention:
@@ -308,4 +317,4 @@ class Transformer(nnx.Module, experimental_pytree=True):
 
         q = self.out_layer_norm(q)
 
-        return q
+        return q.reshape(shape)
