@@ -160,7 +160,7 @@ class AutoregressiveTransformer(nnx.Module, experimental_pytree=True):
             raise ValueError(f"Invalid inverse implementation: {inverse_impl}")
 
 
-@custom_inverse
+@partial(custom_inverse, static_argnums=(1,))
 def autoregressive_transform(x, model, *args, **kwargs):
     bij_params = model.predict_bij_params(x, *args, **kwargs)
     y = model.bijector(bij_params, x)

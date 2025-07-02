@@ -275,6 +275,16 @@ class Transformer(nnx.Module, experimental_pytree=True):
         if context is not None:
             context = context.reshape(-1, context.shape[-2], context.shape[-1])
 
+        if context is not None:
+            # Ensure context has shape [batch, context_dim] or [batch, 1, context_dim]
+            if context.ndim == 1:
+                # Single context vector, expand to [1, 1, context_dim]
+                context = context[None, None, :]
+            elif context.ndim == 2:
+                # [batch, context_dim] -> [batch, 1, context_dim]
+                context = context[:, None, :]
+            # else: assume already [batch, time, context_dim] or similar
+
         if k is not None and not self.enable_cross_attention:
             raise ValueError("Cross attention is disabled, but k is provided.")
         if v is not None and not self.enable_cross_attention:
@@ -282,7 +292,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
 
         # Same context for each token in the sequence.
         if context is not None:
-            context = context.reshape(q.shape[:-2] + (1, self.context_dim))
+            # context: [batch, 1, context_dim] -> repeat along time axis
             context = jnp.repeat(context, q.shape[-2], axis=-2)
 
         for i in range(self.num_layers):
