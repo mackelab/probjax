@@ -39,6 +39,7 @@ dependencies = [
     "ott-jax",
     "networkx",
     "blackjax",
+    "sympy",
 ]
 
 [project.optional-dependencies]
