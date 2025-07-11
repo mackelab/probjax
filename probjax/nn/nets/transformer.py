@@ -98,6 +98,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
         initializer: Optional[nnx.initializers.Initializer] = None,
         context_fusion: type = AffineFuse,
         attention_fn: Optional[Callable] = None,
+        cross_attention_fn: Optional[Callable] = None,
     ):
         """Initialize a Transformer model.
         Args:
@@ -180,6 +181,9 @@ class Transformer(nnx.Module, experimental_pytree=True):
         ]
 
         if self.enable_cross_attention:
+            cross_attention_fn = (
+                cross_attention_fn if cross_attention_fn is not None else nnx.dot_product_attention
+            )
             self.cross_attention_blocks = [
                 MultiHeadAttention(
                     num_heads,
@@ -189,7 +193,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
                     rngs=rngs,
                     kernel_init=self.initializer,
                     dropout_rate=dropout_rate if dropout_rate is not None else 0.0,
-                    attention_fn=attention_fn,
+                    attention_fn=cross_attention_fn,
                     normalize_qk=normalize_qk_cross_attn,
                 )
                 for _ in range(num_layers)
@@ -237,6 +241,8 @@ class Transformer(nnx.Module, experimental_pytree=True):
         context: Optional[Array] = None,  # [B, D_context]
         mask: Array | None = None,  # [T, T] or [B, T, T]
         mask_cross: Array | None = None,  # [T, T'] or [B, T, T']
+        bias: Array | None = None,  # [B, T, D]
+        bias_cross: Array | None = None,  # [B, T', D]
         deterministic: bool | None = None,
         decode: bool = False,
     ) -> Array:  # [B, T, D]
@@ -252,6 +258,23 @@ class Transformer(nnx.Module, experimental_pytree=True):
             else:
                 raise ValueError(f"Mask must have ndim 2 or 3, got {mask.ndim}.")
 
+        # if bias is not None:
+        #     if bias.ndim == 2:
+        #         bias = bias[None, :, :]
+        #     elif bias.ndim == 3:
+        #         bias = bias[:, None, :, :]
+        #     elif bias.ndim == 4:
+        #         bias = bias
+
+        shape = q.shape
+        q = q.reshape(-1, q.shape[-2], q.shape[-1])
+        if k is not None:
+            k = k.reshape(-1, k.shape[-2], k.shape[-1])
+        if v is not None:
+            v = v.reshape(-1, v.shape[-2], v.shape[-1])
+        if context is not None:
+            context = context.reshape(-1, context.shape[-2], context.shape[-1])
+
         if k is not None and not self.enable_cross_attention:
             raise ValueError("Cross attention is disabled, but k is provided.")
         if v is not None and not self.enable_cross_attention:
@@ -266,7 +289,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
             # First the attention block.
             q = self.layer_norms_attn[i](q)
             h_attn = self.attention_blocks[i](
-                q, mask=mask, deterministic=deterministic, decode=decode
+                q, mask=mask, bias=bias, deterministic=deterministic, decode=decode
             )
             q = q + h_attn if self.skip_connection_attn else h_attn
 
@@ -278,6 +301,7 @@ class Transformer(nnx.Module, experimental_pytree=True):
                     k,
                     v,
                     mask=mask_cross,
+                    bias=bias_cross,
                     deterministic=deterministic,
                     decode=False,
                 )
@@ -297,4 +321,4 @@ class Transformer(nnx.Module, experimental_pytree=True):
 
         q = self.out_layer_norm(q)
 
-        return q
+        return q.reshape(shape)

@@ -22,10 +22,9 @@ class Flow(nnx.Module, experimental_pytree=True):
     def __init__(
         self, base_dist, transformation: Callable[..., Any], name: Optional[str] = None
     ):
-        super().__init__()
-        self._transformed_dist = transformed(base_dist, transformation)
         self.base_dist = base_dist
         self.transformation = transformation
+        super().__init__()
 
     def transform(self, x):
         return self.transformation(x)
@@ -35,10 +34,14 @@ class Flow(nnx.Module, experimental_pytree=True):
 
     def sample(self, rng, shape=()):
         """Sample from the flow distribution."""
-        return self._transformed_dist.rvs(rng, shape)
+        return transformed.rvs(
+            rng, shape, base_dist=self.base_dist, bijector=self.transformation
+        )
 
     def logpdf(self, x):
-        return self._transformed_dist.logpdf(x)
+        return transformed.logpdf(
+            x, base_dist=self.base_dist, bijector=self.transformation
+        )
 
 
 class AdditiveCouplingFlow(Flow):

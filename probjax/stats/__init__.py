@@ -40,7 +40,7 @@ from probjax.stats.empirical import empirical
 # Import higher-order distributions
 from probjax.stats.independent import independent
 from probjax.stats.mixture import mixture
-#from probjax.stats.transformed import transformed
+from probjax.stats.transformed import transformed
 
 __all__ = [
     # Base classes
