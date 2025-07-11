@@ -198,7 +198,7 @@ def _interpret_transform(
     cj_maker = _make_closed_jaxpr_cached(
         fun,
         static_argnums=static_argnums,
-        polymorphic_shapes=polymorphic_shapes,
+        abstracted_axes=polymorphic_shapes,
         max_cache_size=max_cache_size,
     )
 
@@ -215,33 +215,6 @@ def _interpret_transform(
 # -----------------------------------------------------------------------------
 # Public transformations (unchanged interface, lower overhead)
 # -----------------------------------------------------------------------------
-
-
-def symbolify(fun: Callable[..., Any], *, max_cache_size: Optional[int] = None):
-    """Symbolically evaluate *fun* replacing numeric inputs with SymPy vars."""
-
-    def _result(rule: SymbolicProcessingRule, outs, _):
-        return outs[0]
-
-    return _interpret_transform(
-        fun,
-        rule_ctor=SymbolicProcessingRule,
-        result_fn=_result,
-        max_cache_size=max_cache_size,
-    )
-
-
-def lambdafy(
-    expr: sympy.Expr,
-    static_symbols: Optional[Mapping[sympy.Symbol, Any]] = None,
-) -> Callable[..., Any]:
-    """Convert a SymPy expression to a JAX‑compatible Python callable."""
-
-    if static_symbols:
-        expr = expr.subs(**static_symbols)
-    f = sympy.lambdify(tuple(expr.free_symbols), expr, modules="jax")
-    return wraps(f)(f)  # type: ignore
-
 
 def joint_sample(
     fun: Callable[..., Any],
@@ -273,7 +246,7 @@ def intervene(
     cj_maker = _make_closed_jaxpr_cached(
         fun,
         static_argnums=static_argnums,
-        polymorphic_shapes=polymorphic_shapes,
+        abstracted_axes=polymorphic_shapes,
         max_cache_size=max_cache_size,
     )
 
@@ -310,7 +283,7 @@ def log_potential_fn(
     cj_maker = _make_closed_jaxpr_cached(
         fun,
         static_argnums=None,
-        polymorphic_shapes=None,
+        abstracted_axes=None,
         max_cache_size=max_cache_size,
     )
 
@@ -360,7 +333,7 @@ def inverse(
     cj_maker = _make_closed_jaxpr_cached(
         fun,
         static_argnums=static_argnums,
-        polymorphic_shapes=None,
+        abstracted_axes=None,
         max_cache_size=max_cache_size,
     )
 
@@ -384,7 +357,7 @@ def inverse(
         outs = _run_propagate(
             cj,
             in_vals,
-            const_vars + cj.jaxpr.outvars,
+            const_vars + tuple(cj.jaxpr.outvars),
             rule,
             cost_fn=inverse_cost_fn,
         )
@@ -405,7 +378,7 @@ def inverse_and_logabsdet(
     cj_maker = _make_closed_jaxpr_cached(
         fun,
         static_argnums=static_argnums,
-        polymorphic_shapes=None,
+        abstracted_axes=None,
         max_cache_size=max_cache_size,
     )
 
@@ -420,7 +393,9 @@ def inverse_and_logabsdet(
             rule,
             cost_fn=inverse_cost_fn,
         )
-        log_det = jnp.asarray(sum(rule.log_dets[var] for var in cj.jaxpr.invars))
+        log_det = jnp.asarray(
+            sum(rule.log_dets.get(var, 0.0) for var in cj.jaxpr.invars)
+        )
         return outs[0], log_det
 
     return wrapped
