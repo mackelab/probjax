@@ -151,9 +151,9 @@ class gamma_gen(rv_continuous, rv_exponential_family):
     def rvs(
         cls,
         rng: PRNGKeyArray,
-        shape: Tuple[int, ...] = (),
         alpha=1.0,
         beta=1.0,
+        shape: Tuple[int, ...] = (),
         **kwargs,
     ) -> Float[Array, "..."]:
         """Random variates of the gamma distribution.
@@ -162,12 +162,12 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         ----------
         rng : PRNGKeyArray
             JAX PRNG key for random number generation
-        shape : tuple of ints, optional
-            Output shape. Default is (), meaning a single value.
         alpha : float, optional
             Shape parameter. Default is 1.
         beta : float, optional
             Rate parameter. Default is 1.
+        shape : tuple of ints, optional
+            Output shape. Default is (), meaning a single value.
 
         Returns
         -------

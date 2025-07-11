@@ -71,7 +71,13 @@ class bernoulli_gen(rv_discrete, rv_exponential_family):
         return jnp.where(q <= 1 - p, 0, 1)
 
     @classmethod
-    def rvs(cls, rng: PRNGKeyArray, shape: Tuple[int, ...] = (), p=None, **kwds):
+    def rvs(
+        cls,
+        rng: PRNGKeyArray,
+        p=None,
+        shape: Tuple[int, ...] = (),
+        **kwargs,
+    ):
         """Random variates of the Bernoulli distribution."""
         p = jnp.asarray(p)
         event_shape = p.shape

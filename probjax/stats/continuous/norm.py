@@ -123,9 +123,9 @@ class norm_gen(rv_continuous, rv_exponential_family):
     def rvs(
         cls,
         rng: PRNGKeyArray,
-        shape: Tuple[int, ...] = (),
         loc=0.0,
         scale=1.0,
+        shape: Tuple[int, ...] = (),
         **kwargs,
     ) -> Float[Array, "..."]:
         """Random variates of the normal distribution.
@@ -136,7 +136,7 @@ class norm_gen(rv_continuous, rv_exponential_family):
             Mean of the distribution. Default is 0.
         scale : float, optional
             Standard deviation of the distribution. Default is 1.
-        size : int or tuple of ints, optional
+        shape : int or tuple of ints, optional
             Output shape. Default is None, in which case a single value is returned.
         key : PRNGKeyArray, optional
             JAX PRNG key for random number generation.

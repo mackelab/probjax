@@ -86,10 +86,10 @@ class gennorm_gen(rv_continuous, rv_exponential_family):
     def rvs(
         cls,
         rng: PRNGKeyArray,
-        shape: Tuple[int, ...] = (),
         loc=0.0,
         scale=1.0,
         beta=2.0,
+        shape: Tuple[int, ...] = (),
         **kwargs,
     ):
         """Random variates of the generalized normal distribution."""

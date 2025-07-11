@@ -138,10 +138,10 @@ class t_gen(rv_continuous, rv_exponential_family):
     def rvs(
         cls,
         rng: PRNGKeyArray,
-        shape: Tuple[int, ...] = (),
         df=1.0,
         loc=0.0,
         scale=1.0,
+        shape: Tuple[int, ...] = (),
         **kwargs,
     ) -> Float[Array, "..."]:
         """Random variates of the Student's t-distribution.
@@ -150,14 +150,14 @@ class t_gen(rv_continuous, rv_exponential_family):
         ----------
         rng : PRNGKeyArray
             JAX PRNG key for random number generation.
-        shape : tuple of ints, optional
-            Output shape. Default is ().
         df : float
             Degrees of freedom.
         loc : float, optional
             Location parameter. Default is 0.
         scale : float, optional
             Scale parameter. Default is 1.
+        shape : tuple of ints, optional
+            Output shape. Default is ().
 
         Returns
         -------

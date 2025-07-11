@@ -94,8 +94,8 @@ class dirichlet_gen(rv_continuous, rv_exponential_family):
     def rvs(
         cls,
         rng: PRNGKeyArray,
-        shape: Tuple[int, ...] = (),
         alpha: Array = None,
+        shape: Tuple[int, ...] = (),
         **kwargs,
     ):
         """Random variates of the Dirichlet distribution.
@@ -104,10 +104,10 @@ class dirichlet_gen(rv_continuous, rv_exponential_family):
         ----------
         rng : jax.random.PRNGKey
             The random key used for sampling
-        shape : tuple of ints, optional
-            The shape of the samples to draw. Default is ().
         alpha : array_like
             Concentration parameters
+        shape : tuple of ints, optional
+            The shape of the samples to draw. Default is ().
 
         Returns
         -------

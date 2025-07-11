@@ -93,10 +93,10 @@ class empirical(rv_discrete):
     def rvs(
         cls,
         rng: PRNGKeyArray,
-        shape: Tuple[int, ...] = (),
         values=None,
         weights=None,
-        **kwds,
+        shape: Tuple[int, ...] = (),
+        **kwargs,
     ):
         """Random variates of the Empirical distribution."""
         if weights is None:
@@ -162,9 +162,9 @@ class empirical_frozen(rv_discrete_frozen):
         """Percent point function of the frozen Empirical distribution."""
         return self.dist.ppf(q, self.values, self.weights, **self.kwds)
 
-    def rvs(self, rng: PRNGKeyArray, shape: Tuple[int, ...] = ()):
+    def rvs(self, rng: PRNGKeyArray, shape: Tuple[int, ...] = (), **kwargs):
         """Random variates of the frozen Empirical distribution."""
-        return self.dist.rvs(rng, shape, self.values, self.weights, **self.kwds)
+        return self.dist.rvs(rng, self.values, self.weights, shape=shape, **self.kwds, **kwargs)
 
     def mean(self):
         """Mean of the frozen Empirical distribution."""

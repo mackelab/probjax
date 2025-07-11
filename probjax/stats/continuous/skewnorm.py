@@ -98,10 +98,10 @@ class skewnorm_gen(rv_continuous, rv_exponential_family):
     def rvs(
         cls,
         rng: PRNGKeyArray,
-        shape: Tuple[int, ...] = (),
         a=0.0,
         loc=0.0,
         scale=1.0,
+        shape: Tuple[int, ...] = (),
         **kwargs,
     ):
         """Random variates of the skew normal distribution."""

@@ -104,16 +104,16 @@ class transformed_gen(rv_continuous):
     def rvs(
         cls,
         rng: PRNGKeyArray,
-        shape: Tuple[int, ...] = (),
         base_dist=None,
         bijector=None,
-        **kwds,
+        shape: Tuple[int, ...] = (),
+        **kwargs,
     ):
         """Random variates of the transformed distribution."""
         batch_shape = base_dist.batch_shape
         batch_shape = shape + batch_shape
         bijector = cls._get_vmapped_bijector(batch_shape, bijector)
-        samples = base_dist.rvs(rng, shape)
+        samples = base_dist.rvs(rng, shape=shape)
         return bijector(samples)
 
     @classmethod

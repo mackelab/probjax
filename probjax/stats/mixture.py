@@ -103,10 +103,10 @@ class mixture_gen(rv_generic):
     def rvs(
         cls,
         rng: PRNGKeyArray,
-        shape: Tuple[int, ...] = (),
         mixing_probs=None,
         components=None,
-        **kwds,
+        shape: Tuple[int, ...] = (),
+        **kwargs,
     ):
         """Random variates of the mixture distribution."""
         key_sample, key_cluster_membership = random.split(rng, 2)

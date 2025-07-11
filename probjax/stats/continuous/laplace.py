@@ -151,9 +151,9 @@ class laplace_gen(rv_continuous, rv_exponential_family):
     def rvs(
         cls,
         rng: PRNGKeyArray,
-        shape: Tuple[int, ...] = (),
         loc=0.0,
         scale=1.0,
+        shape: Tuple[int, ...] = (),
         **kwargs,
     ) -> Float[Array, "..."]:
         """Random variates of the Laplace distribution.
@@ -162,12 +162,12 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         ----------
         rng : PRNGKeyArray
             JAX PRNG key for random number generation
-        shape : tuple of ints, optional
-            Output shape. Default is (), meaning a single value.
         loc : float, optional
             Location parameter. Default is 0.
         scale : float, optional
             Scale parameter. Default is 1.
+        shape : tuple of ints, optional
+            Output shape. Default is (), meaning a single value.
 
         Returns
         -------

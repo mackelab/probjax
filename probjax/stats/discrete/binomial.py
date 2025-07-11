@@ -141,26 +141,14 @@ class binomial_gen(rv_discrete, rv_exponential_family):
 
     @classmethod
     def rvs(
-        cls, rng: PRNGKeyArray, shape: Tuple[int, ...] = (), n=None, probs=None, **kwds
+        cls,
+        rng: PRNGKeyArray,
+        n=None,
+        probs=None,
+        shape: Tuple[int, ...] = (),
+        **kwargs,
     ):
-        """Random variates of the Binomial distribution.
-
-        Parameters
-        ----------
-        rng : PRNGKeyArray
-            Random number generator key
-        shape : Tuple[int, ...]
-            Shape of the output array
-        n : int or array_like
-            Number of trials
-        probs : float or array_like
-            Probability of success
-
-        Returns
-        -------
-        rvs : ndarray
-            Random variates from the Binomial distribution
-        """
+        """Random variates of the Binomial distribution."""
         n = jnp.asarray(n)
         probs = jnp.asarray(probs)
         event_shape = jnp.broadcast_shapes(n.shape, probs.shape)

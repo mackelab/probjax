@@ -58,10 +58,10 @@ class chi2_gen(rv_continuous):
     def rvs(
         cls,
         rng: PRNGKeyArray,
-        shape: Tuple[int, ...] = (),
         df=1.0,
         loc=0.0,
         scale=1.0,
+        shape: Tuple[int, ...] = (),
         **kwargs,
     ) -> Float[Array, "..."]:
         """Random variates of the chi-squared distribution."""

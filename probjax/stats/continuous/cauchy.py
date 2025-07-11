@@ -123,9 +123,9 @@ class cauchy_gen(rv_continuous):
     def rvs(
         cls,
         rng: PRNGKeyArray,
-        shape: Tuple[int, ...] = (),
         loc=0.0,
         scale=1.0,
+        shape: Tuple[int, ...] = (),
         **kwargs,
     ) -> Float[Array, "..."]:
         """Random variates of the Cauchy distribution.
@@ -134,12 +134,12 @@ class cauchy_gen(rv_continuous):
         ----------
         rng : PRNGKeyArray
             JAX PRNG key for random number generation
-        shape : tuple of ints, optional
-            Output shape. Default is (), in which case a single value is returned.
         loc : float, optional
             Location parameter of the distribution. Default is 0.
         scale : float, optional
             Scale parameter of the distribution. Default is 1.
+        shape : tuple of ints, optional
+            Output shape. Default is (), in which case a single value is returned.
 
         Returns
         -------

@@ -76,10 +76,10 @@ from probjax.core.interpreters.inverse_and_logabsdet import (
 )
 from probjax.core.interpreters.joint_sample import JointSampleProcessingRule
 from probjax.core.interpreters.log_potential import LogPotentialProcessingRule
-from probjax.core.interpreters.symbolic import (
-    SymbolicProcessingRule,
-    as_symbolic_var,
-)
+# from probjax.core.interpreters.symbolic import (
+#     SymbolicProcessingRule,
+#     as_symbolic_var,
+# )
 from probjax.core.interpreters.trace import TraceProcessingRule
 from probjax.core.jaxpr_propagation.interpret import interpret
 from probjax.core.jaxpr_propagation.propagate import propagate
@@ -111,14 +111,14 @@ def _pytree_signature(
 def _make_closed_jaxpr_cached(
     fun: Callable[..., Any],
     static_argnums: Sequence[int] | int | None,
-    polymorphic_shapes: Optional[Sequence[str | None]],
+    abstracted_axes: Optional[Sequence[str | None]],
     *,
     max_cache_size: Optional[int] = None,
 ) -> Callable[..., jax.core.ClosedJaxpr]:
     """Return a *cached* jaxpr‑making function tied to *fun* & its options."""
 
     make = jax.make_jaxpr(
-        fun, static_argnums=static_argnums, abstracted_axes=polymorphic_shapes
+        fun, static_argnums=static_argnums, abstracted_axes=abstracted_axes
     )
 
     # NOTE: We cannot directly apply lru_cache to `make` because its args are

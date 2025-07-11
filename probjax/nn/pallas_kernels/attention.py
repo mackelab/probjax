@@ -876,6 +876,7 @@ def _mha_backward(
                 score_mod=score_mod,
                 mask_mod=mask_mod,
                 score_mod_grad=score_mod_grad,
+                window_size=window_size,
                 block_q_dkv=block_q_dkv,
                 block_kv_dkv=block_kv_dkv,
                 block_q_dq=block_q_dq,

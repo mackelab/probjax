@@ -96,11 +96,11 @@ class multivariate_normal_gen(rv_continuous):
     def rvs(
         cls,
         rng: PRNGKeyArray,
-        shape: Tuple[int, ...] = (),
         loc: Array = None,
         cov: Array = None,
         precision_matrix: Array = None,
         scale_tril: Array = None,
+        shape: Tuple[int, ...] = (),
         **kwargs,
     ):
         """Random variates of the multivariate normal distribution.
@@ -109,8 +109,6 @@ class multivariate_normal_gen(rv_continuous):
         ----------
         rng : jax.random.PRNGKey
             The random key used for sampling
-        shape : tuple of ints, optional
-            The shape of the samples to draw. Default is ().
         loc : array_like
             Mean of the distribution
         cov : array_like, optional
@@ -119,6 +117,8 @@ class multivariate_normal_gen(rv_continuous):
             Precision matrix
         scale_tril : array_like, optional
             Lower triangular matrix with positive diagonal
+        shape : tuple of ints, optional
+            The shape of the samples to draw. Default is ().
 
         Returns
         -------

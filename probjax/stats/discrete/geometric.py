@@ -41,7 +41,13 @@ class geometric_gen(rv_discrete, rv_exponential_family):
         return k * jnp.log(1 - p) + jnp.log(p)
 
     @classmethod
-    def rvs(cls, rng: PRNGKeyArray, shape: Tuple[int, ...] = (), p=None, **kwds):
+    def rvs(
+        cls,
+        rng: PRNGKeyArray,
+        p=None,
+        shape: Tuple[int, ...] = (),
+        **kwargs,
+    ):
         """Random variates of the Geometric distribution."""
         p = jnp.asarray(p)
         event_shape = p.shape

@@ -134,24 +134,13 @@ class expon_gen(rv_continuous, rv_exponential_family):
 
     @classmethod
     def rvs(
-        cls, rng: PRNGKeyArray, shape: Tuple[int, ...] = (), rate=1.0, **kwargs
+        cls,
+        rng: PRNGKeyArray,
+        rate=1.0,
+        shape: Tuple[int, ...] = (),
+        **kwargs,
     ) -> Float[Array, "..."]:
-        """Random variates of the exponential distribution.
-
-        Parameters
-        ----------
-        rng : PRNGKeyArray
-            JAX PRNG key for random number generation
-        shape : tuple of ints, optional
-            Output shape. Default is (), meaning a single value.
-        rate : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        rvs : ndarray or scalar
-            Random variates of given shape
-        """
+        """Random variates of the exponential distribution."""
         rate = jnp.asarray(rate)
         event_shape = rate.shape
         return random.exponential(rng, shape=shape + event_shape) / rate

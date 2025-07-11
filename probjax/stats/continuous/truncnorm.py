@@ -82,11 +82,11 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
     def rvs(
         cls,
         rng: PRNGKeyArray,
-        shape: Tuple[int, ...] = (),
         loc=0.0,
         scale=1.0,
         a=-jnp.inf,
         b=jnp.inf,
+        shape: Tuple[int, ...] = (),
         **kwargs,
     ):
         """Random variates of the truncated normal distribution."""

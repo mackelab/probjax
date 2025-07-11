@@ -198,9 +198,9 @@ class independent_gen(rv_generic):
     def rvs(
         cls,
         rng: PRNGKeyArray,
-        shape: Tuple[int, ...] = (),
         base_dists=None,
         reinterpreted_batch_ndims=1,
+        shape: Tuple[int, ...] = (),
         **kwargs,
     ):
         """Random variates of the independent distribution."""
@@ -211,7 +211,7 @@ class independent_gen(rv_generic):
 
         # Generate samples for each base distribution
         samples = jnp.concatenate(
-            [d.rvs(k, shape) for k, d in zip(keys, base_dists)],
+            [d.rvs(k, shape=shape) for k, d in zip(keys, base_dists)],
             axis=-1,
         )
         return samples

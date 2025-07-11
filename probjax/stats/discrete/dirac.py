@@ -39,7 +39,13 @@ class dirac_gen(rv_discrete, rv_exponential_family):
         return jnp.where(k == loc, 0.0, -jnp.inf)
 
     @classmethod
-    def rvs(cls, rng: PRNGKeyArray, shape: Tuple[int, ...] = (), loc=None, **kwds):
+    def rvs(
+        cls,
+        rng: PRNGKeyArray,
+        loc=None,
+        shape: Tuple[int, ...] = (),
+        **kwargs,
+    ):
         """Random variates of the Dirac distribution."""
         loc = jnp.asarray(loc)
         event_shape = loc.shape

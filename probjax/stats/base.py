@@ -38,6 +38,14 @@ class rv_generic(ABC):
         """Call the distribution with the given arguments."""
         return self.freeze(*args, **kwds)
 
+    def _parse_args(cls, *args, **kwds):
+        """Parse arguments for the distribution."""
+        # Move important kwds to args
+        for param_name in cls.parameters:
+            if param_name in kwds:
+                args = args + (kwds.pop(param_name),)
+        return args, kwds
+
     def freeze(self, *args, **kwds):
         """Freeze the distribution for the given arguments."""
         # Create the frozen class
@@ -52,18 +60,18 @@ class rv_generic(ABC):
 
     @classmethod
     @abstractmethod
-    def rvs(cls, rng: PRNGKeyArray, shape: Tuple[int, ...] = (), *args, **kwds):
+    def rvs(cls, rng: PRNGKeyArray, *args, shape: Tuple[int, ...] = (), **kwargs):
         """Random variates of given shape.
 
         Parameters
         ----------
         rng : jax.random.PRNGKey
             The random key used for sampling
-        shape : tuple of ints
-            The shape of the samples to draw
         *args : array_like
             Shape parameters for the distribution
-        **kwds : dict, optional
+        shape : tuple of ints, optional
+            The shape of the samples to draw
+        **kwargs : dict, optional
             Additional parameters (loc, scale, etc.)
 
         Returns
@@ -331,6 +339,7 @@ class rv_exponential_family(rv_generic):
 
 class rv_continuous(rv_generic):
     """Base class for continuous random variables."""
+
 
     def freeze(self, *args, **kwds):
         """Freeze the distribution for the given arguments."""
@@ -629,7 +638,7 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
         """Inverse survival function (1 - ppf) of the frozen distribution."""
         return self.dist.isf(q, *self.args, **self.kwds)
 
-    def rvs(self, rng: PRNGKeyArray, shape: Tuple[int, ...] = ()):
+    def rvs(self, rng: PRNGKeyArray, shape: Tuple[int, ...] = (), **kwargs):
         """Random variates of the frozen distribution.
 
         Parameters
@@ -644,7 +653,7 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
         rvs : ndarray or scalar
             Random variates of given shape
         """
-        return self.dist.rvs(rng, shape, *self.args, **self.kwds)
+        return self.dist.rvs(rng, *self.args, shape=shape, **self.kwds)
 
     def sf(self, x: ArrayLike):
         """Survival function (1 - cdf)."""
@@ -833,7 +842,7 @@ class rv_continuous_frozen(rv_frozen):
         """
         return self.dist.ppf(q, *self.args, **self.kwds)
 
-    def rvs(self, rng: PRNGKeyArray, shape: Tuple[int, ...] = ()):
+    def rvs(self, rng: PRNGKeyArray, *args, shape: Tuple[int, ...] = (), **kwargs):
         """Random variates of the distribution.
 
         Parameters
@@ -848,7 +857,7 @@ class rv_continuous_frozen(rv_frozen):
         rvs : ndarray or scalar
             Random variates of given shape
         """
-        return self.dist.rvs(rng, shape, *self.args, **self.kwds)
+        return self.dist.rvs(rng, *self.args, shape=shape, **self.kwds)
 
 
 # Register frozen classes as JAX PyTrees

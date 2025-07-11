@@ -66,17 +66,17 @@ DISCRETE_DIST = [bernoulli, binomial, categorical, poisson, geometric, dirac]
 SPECIAL_DIST = [independent, transformed, mixture]
 
 # Helper functions
-def sample_and_check_shape(dist, key, sample_shape, *args, **kwds):
+def sample_and_check_shape(dist, key, sample_shape, *args, **kwargs):
     """Check if sampling and shape handling works correctly."""
-    sample = dist.rvs(key, sample_shape, *args, **kwds)
+    sample = dist.rvs(key, *args, shape=sample_shape, **kwargs)
     assert sample.shape == sample_shape + dist.batch_shape + dist.event_shape, (
         "Sample shape mismatch"
     )
     return sample
 
-def check_mean_and_var(dist, key, *args, **kwds):
+def check_mean_and_var(dist, key, *args, **kwargs):
     """Check if mean and variance are computed correctly."""
-    sample = dist.rvs(key, (50000,), *args, **kwds)
+    sample = dist.rvs(key, *args, shape=(50000,), **kwargs)
     mean = jnp.mean(sample, axis=0)
     var = jnp.var(sample, axis=0)
     std = jnp.sqrt(var)
@@ -85,9 +85,9 @@ def check_mean_and_var(dist, key, *args, **kwds):
     assert var.shape == dist.batch_shape + dist.event_shape, "Variance shape mismatch"
 
     try:
-        true_mean = dist.mean(*args, **kwds)
-        true_var = dist.var(*args, **kwds)
-        true_std = dist.std(*args, **kwds)
+        true_mean = dist.mean(*args, **kwargs)
+        true_var = dist.var(*args, **kwargs)
+        true_std = dist.std(*args, **kwargs)
 
         finite_true_mean = jnp.isfinite(true_mean)
         mean_to_compare = jnp.where(finite_true_mean, mean, true_mean)
@@ -122,15 +122,15 @@ def check_mean_and_var(dist, key, *args, **kwds):
     except NotImplementedError:
         pass
 
-def check_cdf_icdf(dist, key, *args, **kwds):
+def check_cdf_icdf(dist, key, *args, **kwargs):
     """Check if CDF and ICDF (PPF) are computed correctly."""
-    sample = dist.rvs(key, (10000,), *args, **kwds)
-    eval_points = dist.rvs(key, (10,), *args, **kwds)
+    sample = dist.rvs(key, *args, shape=(10000,), **kwargs)
+    eval_points = dist.rvs(key, *args, shape=(10,), **kwargs)
 
     empirical_cdf = jnp.mean(sample[:, None] <= eval_points[None, :], axis=0)
 
     try:
-        cdf = dist.cdf(eval_points, *args, **kwds)
+        cdf = dist.cdf(eval_points, *args, **kwargs)
         assert cdf.shape == eval_points.shape, "CDF shape mismatch"
         assert jnp.isfinite(cdf).all(), "CDF is not finite for all samples"
         assert jnp.allclose(empirical_cdf, cdf, atol=0.1, rtol=0.5), (
@@ -138,7 +138,7 @@ def check_cdf_icdf(dist, key, *args, **kwds):
         )
 
         try:
-            icdf = dist.ppf(cdf, *args, **kwds)
+            icdf = dist.ppf(cdf, *args, **kwargs)
             assert icdf.shape == eval_points.shape, "ICDF shape mismatch"
             assert jnp.isfinite(icdf).all(), "ICDF is not finite for all samples"
             assert jnp.allclose(eval_points, icdf, atol=0.1, rtol=0.5), (
@@ -149,24 +149,24 @@ def check_cdf_icdf(dist, key, *args, **kwds):
     except NotImplementedError:
         pass
 
-def check_mode(dist, key, *args, **kwds):
+def check_mode(dist, key, *args, **kwargs):
     """Check if mode is computed correctly."""
-    sample = dist.rvs(key, (1000,), *args, **kwds)
+    sample = dist.rvs(key, *args, shape=(1000,), **kwargs)
     try:
-        log_prob = dist.logpdf(sample, *args, **kwds)
+        log_prob = dist.logpdf(sample, *args, **kwargs)
         mode = sample[jnp.argmax(log_prob)]
-        mode_log_prob = dist.logpdf(mode, *args, **kwds)
-        est_mode_log_prob = dist.logpdf(dist.mode(*args, **kwds), *args, **kwds)
+        mode_log_prob = dist.logpdf(mode, *args, **kwargs)
+        est_mode_log_prob = dist.logpdf(dist.mode(*args, **kwargs), *args, **kwargs)
 
         assert mode.shape == dist.batch_shape + dist.event_shape, "Mode shape mismatch"
         assert jnp.isfinite(mode).all(), "Mode is not finite"
 
         assert jnp.all(mode_log_prob <= est_mode_log_prob) | jnp.allclose(
-            dist.mode(*args, **kwds), mode, atol=0.1, rtol=0.1
+            dist.mode(*args, **kwargs), mode, atol=0.1, rtol=0.1
         ), "Mode is not close to sample mode or has a higher log_prob"
-        assert mode_log_prob <= dist.logpdf(dist.mode(*args, **kwds), *args, **kwds), (
-            "Mode log_prob is not maximum"
-        )
+        assert mode_log_prob <= dist.logpdf(
+            dist.mode(*args, **kwargs), *args, **kwargs
+        ), "Mode log_prob is not maximum"
     except NotImplementedError:
         pass
 
@@ -225,7 +225,7 @@ def test_base_distribution(dist, shape=(1,), seed=0):
     # Test PyTree functionality
     flatten_p, tree_p = jax.tree_util.tree_flatten(p)
     q = jax.tree_util.tree_unflatten(tree_p, flatten_p)
-    assert jnp.allclose(p.rvs(key, shape), q.rvs(key, shape)), (
+    assert jnp.allclose(p.rvs(key, shape=shape), q.rvs(key, shape=shape)), (
         "PyTree reconstruction mismatch"
     )
 
@@ -253,9 +253,9 @@ def test_independent_distribution(dist, shape=(2,), seed=0):
     # Test PyTree functionality
     flatten_p, tree_p = jax.tree_util.tree_flatten(p)
     q = jax.tree_util.tree_unflatten(tree_p, flatten_p)
-    assert jnp.allclose(p.rvs(key, shape), q.rvs(key, shape), atol=0.01, rtol=0.01), (
-        "PyTree reconstruction mismatch"
-    )
+    assert jnp.allclose(
+        p.rvs(key, shape=shape), q.rvs(key, shape=shape), atol=0.01, rtol=0.01
+    ), "PyTree reconstruction mismatch"
 
 @pytest.mark.parametrize(
     "dist1, dist2",
@@ -309,7 +309,7 @@ def test_transformed_distribution(dist, shape=(1,), seed=0):
     # Test PyTree functionality
     flatten_p, tree_p = jax.tree_util.tree_flatten(p)
     q = jax.tree_util.tree_unflatten(tree_p, flatten_p)
-    assert jnp.allclose(p.rvs(key, shape), q.rvs(key, shape)), (
+    assert jnp.allclose(p.rvs(key, shape=shape), q.rvs(key, shape=shape)), (
         "PyTree reconstruction mismatch"
     )
 
@@ -332,7 +332,7 @@ def test_kl_divergence(dist1, dist2, shape=(1,), seed=0):
         return
 
     # Monte Carlo estimation of KL divergence
-    samples = p.rvs(key1, (10000,))
+    samples = p.rvs(key1, shape=(10000,))
     if isinstance(p, rv_discrete):
         log_ratio = p.logpmf(samples) - q.logpmf(samples)
     else:
@@ -361,8 +361,8 @@ def test_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
         return
 
     # Monte Carlo estimation of Wasserstein distance
-    samples_p = p.rvs(key1, (1000,))
-    samples_q = q.rvs(key2, (1000,))
+    samples_p = p.rvs(key1, shape=(1000,))
+    samples_q = q.rvs(key2, shape=(1000,))
     dist_mc = _1d_wasserstein_without_cdf(samples_p, samples_q)
 
     assert dist.shape == p.batch_shape, "Wasserstein distance shape mismatch"
@@ -387,8 +387,8 @@ def test_sliced_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
         return
 
     # Monte Carlo estimation of Sliced Wasserstein distance
-    samples_p = p.rvs(key1, (1000,))
-    samples_q = q.rvs(key2, (1000,))
+    samples_p = p.rvs(key1, shape=(1000,))
+    samples_q = q.rvs(key2, shape=(1000,))
     dist_mc = __sliced_wasserstein_generic(
         samples_p, samples_q, num_slices=100, key=key1
     )
@@ -415,8 +415,8 @@ def test_max_slice_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
         return
 
     # Monte Carlo estimation of Max Sliced Wasserstein distance
-    samples_p = p.rvs(key1, (1000,))
-    samples_q = q.rvs(key2, (1000,))
+    samples_p = p.rvs(key1, shape=(1000,))
+    samples_q = q.rvs(key2, shape=(1000,))
     dist_mc = __max_slice_wasserstein_generic(samples_p, samples_q, key=key1)
 
     assert dist.shape == p.batch_shape, "Max Sliced Wasserstein distance shape mismatch"
