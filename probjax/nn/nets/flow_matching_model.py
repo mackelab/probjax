@@ -2,8 +2,10 @@ from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
+import jax.tree_util
 from flax import nnx
 from jax.typing import ArrayLike
+from jaxtyping import PyTree
 
 from probjax.nn.loss_fn.flow_matching import build_flow_matching_loss
 
@@ -65,7 +67,7 @@ class FlowMatcher(nnx.Module, experimental_pytree=True):
         self.mu1 = nnx.Variable(mu1)
         self.std1 = nnx.Variable(std1)
 
-    def __call__(self, t, x, *args, **kwargs):
+    def __call__(self, t, x: PyTree[ArrayLike], *args, **kwargs) -> PyTree[ArrayLike]:
         """Forward pass of the model - denosing x at time t."""
         # With preconditioning
         mu0 = self.mu0.value
@@ -76,13 +78,15 @@ class FlowMatcher(nnx.Module, experimental_pytree=True):
         approx_mut = self.interpolation_fn(mu0, mu1, t)
         approx_stdt = jnp.sqrt(t**2 * std1**2 + (1 - t) ** 2 * std0**2)
 
-        x_normed = (x - approx_mut) / approx_stdt
-
-        pred_mut = self.net(t, x_normed, *args, **kwargs)
+        x_normed = jax.tree_util.tree_map(lambda x: (x - approx_mut) / approx_stdt, x)
         scale = (t * std1**2) / ((1 - t) ** 2 * std0**2 + t**2 * std1**2)
+        pred_mut = self.net(t, x_normed, *args, **kwargs)
 
-        term1 = mu0 + scale * (x - pred_mut)
-        return term1
+        def process_leaf(leaf_x, pred_mut):
+            term1 = mu0 + scale * (leaf_x - pred_mut)
+            return term1
+
+        return jax.tree_util.tree_map(process_leaf, x, pred_mut)
 
     def score(self, t, x, *args, **kwargs):
         """Score function for the model."""
@@ -97,7 +101,7 @@ class FlowMatcher(nnx.Module, experimental_pytree=True):
         )
 
 
-class RectifiedFlow(FlowMatcher):
+class LinearFlow(FlowMatcher):
     std_fn = None
 
     def __init__(self, net, mu0=0, std0=1, mu1=0.0, std1=1.0, rngs=None):
@@ -120,7 +124,7 @@ class RectifiedFlow(FlowMatcher):
             weight_fn=None,
         )
 
-    def denoise(self, t, x):
+    def denoise(self, t, x: PyTree[ArrayLike]) -> PyTree[ArrayLike]:
         # x0 is noise
         # x1 is data
         # xt = (1 - t) * x0 + t * x1
@@ -130,9 +134,13 @@ class RectifiedFlow(FlowMatcher):
         # So we can recover the denoiser by
         # E[x1|xt] = xt - (1-t)*E[x1-x0|xt]
         v = self.__call__(t, x)
-        return x - (1 - t) * v
 
-    def score(self, t, x, max_t=1 - 1e-3):
+        def denoise_leaf(leaf_x, leaf_v):
+            return leaf_x - (1 - t) * leaf_v
+
+        return jax.tree_util.tree_map(denoise_leaf, x, v)
+
+    def score(self, t, x: PyTree[ArrayLike], max_t=1 - 1e-3) -> PyTree[ArrayLike]:
         # We can recover a "denoiser" so we can use it to get the score
         # using Tweedie's formula
         # Pertubration kernel is given by
@@ -146,7 +154,11 @@ class RectifiedFlow(FlowMatcher):
         std0 = self.std0.value
         t = jnp.clip(t, 0, max_t)
         v = self.__call__(t, x)
-        return (-t * v + mu0 - x) / ((1 - t) * std0**2)
+
+        def score_leaf(leaf_x, leaf_v):
+            return (-t * leaf_v + mu0 - leaf_x) / ((1 - t) * std0**2)
+
+        return jax.tree_util.tree_map(score_leaf, x, v)
 
     def noise_schedule(self, rng, shape, mu=0.2, scale=1.0):
         return jax.nn.sigmoid(jax.random.normal(rng, shape=shape + (1,)) * scale + mu)
@@ -155,15 +167,21 @@ class RectifiedFlow(FlowMatcher):
         ts = jnp.linspace(0, 1, num_steps)
         return ts
 
-    def loss(self, rng, data, *args, **kwargs):
+    def loss(self, rng, data: PyTree[ArrayLike], *args, **kwargs):
         rng_source, rng_times = jax.random.split(rng, 2)
-        x0 = (
-            jax.random.normal(rng_source, shape=data.shape) * self.std0.value
-            + self.mu0.value
-        )
-        # Optionally to OT coupling
 
-        ndims = data.ndim - 2
-        times = self.noise_schedule(rng_times, (data.shape[0],) + (1,) * ndims)
+        # Flatten the data
+        data_flat = jax.tree_util.tree_flatten(data)[0]
+        x0 = jax.tree_util.tree_map(
+            lambda x: jax.random.normal(rng_source, shape=x.shape) * self.std0.value
+            + self.mu0.value,
+            data_flat,
+        )
+
+        # Get shape from the first leaf of data for time scheduling
+        data_shape = jax.tree_util.tree_leaves(data)[0].shape
+        ndims = data_shape.ndim - 2
+        times = self.noise_schedule(rng_times, (data_shape[0],) + (1,) * ndims)
+
         loss = self._loss(times, x0, data, *args, **kwargs)
         return loss
