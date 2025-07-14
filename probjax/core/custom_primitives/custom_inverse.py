@@ -33,6 +33,10 @@ class custom_inverse:
         self.inv_fun = None  # Will be set via definv / definv_and_logdet
         self.inv_fun_and_log_det = None  # Will be set via definv_and_logdet
 
+        # If we want to invert a function, then it should also be able to compute the
+        # value and the logdet
+        self.value_and_logdet_fun = None  # Will be set via defvalue_and_logdet
+
     def definv(self, inv_fun: Callable) -> Callable:
         """Define an inverse function without returning a log-determinant."""
 
@@ -43,6 +47,14 @@ class custom_inverse:
         self.inv_fun = inv_fun
         self.inv_fun_and_log_det = _wrapped_inv
         return _wrapped_inv
+
+    def defvalue_and_logdet(self, value_and_logdet_fun: Callable) -> Callable:
+        self.value_and_logdet_fun = value_and_logdet_fun
+        if not hasattr(self, "value_and_logdet_fun"):
+            self.value_and_logdet_fun = lambda *args, **kwargs: value_and_logdet_fun(
+                *args, **kwargs
+            )[0]
+        return value_and_logdet_fun
 
     def definv_and_logdet(self, inv_fun_and_log_det: Callable) -> Callable:
         self.inv_fun_and_log_det = inv_fun_and_log_det
@@ -57,6 +69,9 @@ class custom_inverse:
 
     def inv_and_logdet(self, *args, **kwargs):
         return self.inv_fun_and_log_det(*args, **kwargs)
+
+    def value_and_logdet(self, *args, **kwargs):
+        return self.value_and_logdet_fun(*args, **kwargs)
 
     def __call__(self, *args, **params) -> Any:
         name = getattr(self.fun, "__name__", str(self.fun))

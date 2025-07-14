@@ -43,6 +43,8 @@ class AutoregressiveMLP(nnx.Module, experimental_pytree=True):
         masks = get_autoregressive_masks(dims)
         self.in_out_dim = in_out_dim
         self.bijector = bijector
+        self.bijector_inv = inverse_and_logabsdet(bijector, invertible_arg=1)
+
         self.masked_mlp = MaskedMLP(
             dims,
             masks,
@@ -61,19 +63,25 @@ class AutoregressiveMLP(nnx.Module, experimental_pytree=True):
         y = autoregressive_transform(x, self, context)
         return y
 
-    def inverse(self, y: jax.Array, context=None):
-        def scan_fn(carry, _):
-            x, _ = carry
+    def forward(self, x: jax.Array, context=None):
+        def scan_fn(carry, i):
+            x = carry
             bij_params = self.masked_mlp(x, context)  # type: ignore
-            bijective_inv = inverse_and_logabsdet(partial(self.bijector, bij_params))
-            x, log_det = bijective_inv(y)
-            return (x, log_det), None
+            x_new = self.bijector(bij_params, x)
+            x = x.at[..., i].set(x_new[i])
+            return x, None
 
-        init_carry = (y, 0.0)
-        (x, log_det), _ = jax.lax.scan(
-            scan_fn, init_carry, None, length=self.in_out_dim
-        )
-        return x, log_det
+        Tx = x
+        Tx, _ = jax.lax.scan(scan_fn, Tx, jnp.arange(self.in_out_dim))
+        return Tx
+
+    def inverse_and_logdet(self, Tx: jax.Array, context=None):
+        bij_params = self.masked_mlp(Tx, context)
+        return self.bijector_inv(bij_params, Tx)
+
+    def inverse(self, Tx: jax.Array, context=None):
+        bij_params = self.masked_mlp(Tx, context)
+        return self.bijector_inv(bij_params, Tx)[0]
 
 
 class AutoregressiveTransformer(nnx.Module, experimental_pytree=True):
@@ -98,6 +106,7 @@ class AutoregressiveTransformer(nnx.Module, experimental_pytree=True):
         self.in_out_dim = in_out_dim
         self.bijector_dim = bijector_dim
         self.bijector = bijector
+        self.bijector_inv = inverse_and_logabsdet(bijector, invertible_arg=1)
 
         if transformer is None:
             transformer = Transformer(
@@ -114,9 +123,17 @@ class AutoregressiveTransformer(nnx.Module, experimental_pytree=True):
         self.start_token = nnx.Param(jnp.zeros((self.transformer.model_dim,)))
 
         if encoder is None:
-            encoder = nnx.Linear(in_out_dim, self.transformer.model_dim, rngs=rngs, use_bias=False)
+            encoder = nnx.Linear(
+                in_out_dim, self.transformer.model_dim, rngs=rngs, use_bias=False
+            )
         if decoder is None:
-            decoder = nnx.Linear(self.transformer.model_dim, bijector_dim, rngs=rngs, kernel_init=nnx.initializers.zeros, use_bias=False)
+            decoder = nnx.Linear(
+                self.transformer.model_dim,
+                bijector_dim,
+                rngs=rngs,
+                kernel_init=nnx.initializers.zeros,
+                use_bias=False,
+            )
         self.encoder = encoder
         self.decoder = decoder
 
@@ -135,41 +152,46 @@ class AutoregressiveTransformer(nnx.Module, experimental_pytree=True):
         y = autoregressive_transform(x, self, k, v, context, **kwargs)
         return y
 
-    def inverse(
-        self, y: jax.Array, context=None, k=None, v=None, inverse_impl="naive", **kwargs
+    def forward(
+        self, x: jax.Array, context=None, k=None, v=None, inverse_impl="naive", **kwargs
     ):
         if inverse_impl == "naive":
-
-            def scan_fn(carry, _):
-                x, log_det = carry
+            def scan_fn(carry, i):
+                x = carry
+                print(x.shape)
                 bij_params = self.predict_bij_params(x, context, k, v, **kwargs)
-                bijective_inv = inverse_and_logabsdet(
-                    partial(self.bijector, bij_params)
-                )
-                x, logdet = bijective_inv(y)
-                return (x, logdet), None
+                x_new = self.bijector(bij_params, x)
+                x = x.at[..., i, :].set(x_new[...,i,:])
+                return x, None
 
-            init_carry = (jnp.zeros_like(y), 0.0)
-            (x, log_det), _ = jax.lax.scan(
-                scan_fn, init_carry, None, length=y.shape[-2]
-            )
-            return x, log_det
+            Tx = x
+            Tx, _ = jax.lax.scan(scan_fn, Tx, jnp.arange(x.shape[-2]))
+            return Tx
         elif inverse_impl == "kv_cache":
             pass
         else:
             raise ValueError(f"Invalid inverse implementation: {inverse_impl}")
 
+    def inverse_and_logdet(self, Tx: jax.Array, context=None, k=None, v=None, **kwargs):
+        bij_params = self.predict_bij_params(Tx, context, k, v, **kwargs)
+        return self.bijector_inv(bij_params, Tx)
+
+    def inverse(self, Tx: jax.Array, context=None, k=None, v=None, **kwargs):
+        return self.inverse_and_logdet(Tx, context, k, v, **kwargs)[0]
 
 @custom_inverse
 def autoregressive_transform(x, model, *args, **kwargs):
-    bij_params = model.predict_bij_params(x, *args, **kwargs)
-    y = model.bijector(bij_params, x)
-    return y
+    Tx = model.forward(x, *args, **kwargs)
+    return Tx
 
 
-def autoregressive_inv(y, model, *args, **kwargs):
-    return model.inverse(y, *args, **kwargs)
+def autoregressive_inv_and_logdet(Tx, model, *args, **kwargs):
+    return model.inverse_and_logdet(Tx, *args, **kwargs)
+
+def autoregressive_inv(Tx, model, *args, **kwargs):
+    return model.inverse(Tx, *args, **kwargs)
 
 
 # Register inverse
-autoregressive_transform.definv_and_logdet(autoregressive_inv)
+autoregressive_transform.definv(autoregressive_inv)
+autoregressive_transform.definv_and_logdet(autoregressive_inv_and_logdet)
