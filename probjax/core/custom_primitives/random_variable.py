@@ -202,8 +202,8 @@ class RandomVariable(Primitive):
             dist=dist,
             name=name,
             rvs_fn=rvs_fn,
-            logpdf_fn=logpdf_fn,
             rvs_jaxpr_thunk=rvs_jaxpr_thunk,
+            logpdf_fn=logpdf_fn,
             logpdf_jaxpr_thunk=logpdf_jaxpr_thunk,
         )
 

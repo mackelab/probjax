@@ -71,7 +71,7 @@ def test_differential_entropy(dist, num_samples):
     # NOTE only tests vasicek, the =1000 fails
     p = dist
     key = jax.random.PRNGKey(0)
-    samples = p.rvs(key, (num_samples,))
+    samples = p.rvs(key, shape=(num_samples,))
 
     # Calculate the differential entropy
     h = differential_entropy(samples)

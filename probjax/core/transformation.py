@@ -18,6 +18,9 @@ from probjax.core.interpreters.log_potential import (
     LogPotentialProcessingRule,
 )
 from probjax.core.interpreters.trace import TraceProcessingRule
+from probjax.core.interpreters.value_and_logabsdet import (
+    ValueAndLogAbsDetProcessingRule,
+)
 from probjax.core.jaxpr_propagation.interpret import interpret
 from probjax.core.jaxpr_propagation.propagate import propagate
 
@@ -218,5 +221,50 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
             sum([processing_rule.log_dets[v] for v in jaxpr.jaxpr.invars])
         )
         return out[0], log_det
+
+    return wrapped
+
+
+def value_and_logabsdet(fun: Callable, static_argnums=()):
+    """Return `(value, log_abs_det)` where `log_abs_det` is the log absolute
+    determinant of the Jacobian of *fun* under a diagonal Jacobian assumption.
+
+    The implementation interprets the underlying JAXpr once (instead of calling
+    automatic differentiation on the full function) and accumulates the
+    logarithm of the absolute determinant along the way.  This is cheap for
+    element‐wise transformations and matches the assumptions made by
+    `inverse_and_logabsdet`.
+    """
+
+    jaxpr_maker = jax.make_jaxpr(fun, static_argnums=static_argnums)
+
+    @wraps(fun)
+    def wrapped(*args, **kwargs):
+        # Compute the actual function value first – this also gives us the output
+        # tree structure so that we can reconstruct it after the flat
+        # interpretation.
+        value = fun(*args, **kwargs)
+        # The tree structure is not required further; we only need the value.
+
+        # Prepare processing rule and initialise log‐det entries for inputs.
+        processing_rule = ValueAndLogAbsDetProcessingRule()
+        jaxpr = jaxpr_maker(*args, **kwargs)
+        for v in jaxpr.jaxpr.invars:
+            processing_rule.log_dets[v] = 0.0
+
+        # Forward interpretation to accumulate log|det|.
+        _ = interpret(
+            jaxpr.jaxpr,
+            jaxpr.consts,
+            jaxpr.jaxpr.invars,
+            args,
+            jaxpr.jaxpr.outvars,
+            process_eqn=processing_rule,
+        )
+
+        log_det = jnp.asarray(
+            sum(processing_rule.log_dets[v] for v in jaxpr.jaxpr.outvars)
+        )
+        return value, log_det
 
     return wrapped

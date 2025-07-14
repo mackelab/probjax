@@ -48,7 +48,18 @@ def differential_entropy(values, window_length=None, base=None, axis=0, method="
         float: Estimated differential entropy.
     """
     values = jnp.asarray(values)
-    values = jnp.moveaxis(values, axis, -1)
+
+    # Ensure values has at least 1 dimension
+    if values.ndim == 0:
+        values = values.reshape(1)
+
+    # Only move axis if the array has enough dimensions
+    if values.ndim > 1:
+        values = jnp.moveaxis(values, axis, -1)
+    elif axis != 0:
+        # If it's 1D and axis != 0, raise an error
+        raise ValueError(f"Cannot move axis {axis} in 1D array")
+
     n = values.shape[-1]
 
     if window_length is None:

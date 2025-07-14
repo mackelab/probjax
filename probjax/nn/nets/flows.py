@@ -35,7 +35,7 @@ class Flow(nnx.Module, experimental_pytree=True):
     def sample(self, rng, shape=()):
         """Sample from the flow distribution."""
         return transformed.rvs(
-            rng, shape, base_dist=self.base_dist, bijector=self.transformation
+            rng, shape=shape, base_dist=self.base_dist, bijector=self.transformation
         )
 
     def logpdf(self, x):
