@@ -67,7 +67,7 @@ class FlowMatcher(nnx.Module, experimental_pytree=True):
         self.mu1 = nnx.Variable(mu1)
         self.std1 = nnx.Variable(std1)
 
-    def __call__(self, t, x: PyTree[ArrayLike], *args, **kwargs) -> PyTree[ArrayLike]:
+    def __call__(self, t, x: ArrayLike, *args, **kwargs) -> ArrayLike:
         """Forward pass of the model - denosing x at time t."""
         # With preconditioning
         mu0 = self.mu0.value
@@ -167,19 +167,17 @@ class LinearFlow(FlowMatcher):
         ts = jnp.linspace(0, 1, num_steps)
         return ts
 
-    def loss(self, rng, data: PyTree[ArrayLike], *args, **kwargs):
+    def loss(self, rng, data: ArrayLike, *args, **kwargs):
         rng_source, rng_times = jax.random.split(rng, 2)
 
-        # Flatten the data
-        data_flat = jax.tree_util.tree_flatten(data)[0]
-        x0 = jax.tree_util.tree_map(
-            lambda x: jax.random.normal(rng_source, shape=x.shape) * self.std0.value
-            + self.mu0.value,
-            data_flat,
+        # Generate noise for x0
+        x0 = (
+            jax.random.normal(rng_source, shape=data.shape) * self.std0.value
+            + self.mu0.value
         )
 
-        # Get shape from the first leaf of data for time scheduling
-        data_shape = jax.tree_util.tree_leaves(data)[0].shape
+        # Get shape from data for time scheduling
+        data_shape = data.shape
         ndims = data_shape.ndim - 2
         times = self.noise_schedule(rng_times, (data_shape[0],) + (1,) * ndims)
 

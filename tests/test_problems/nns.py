@@ -353,10 +353,9 @@ def flow(request):
 def denoising_diffusion(request):
     sde_type, input_dim = request.param
 
-    class BaseNet(nnx.Module, experimental_pytree=True):
+    class BaseNet(nnx.Module):
         def __init__(self):
             self.linear = nnx.Linear(input_dim, input_dim, rngs=nnx.Rngs(0))
-            super().__init__()
 
         def __call__(self, t, x):
             return x

@@ -440,12 +440,12 @@ def rational_quadratic_spline(
     # Normalize slopes and bins
     knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
     # Stay within numerical limits
-    x_pos = jnp.clip(x_pos, -6, 6)
-    y_pos = jnp.clip(y_pos, -6, 6)
+    # x_pos = jnp.clip(x_pos, -6, 6)
+    # y_pos = jnp.clip(y_pos, -6, 6)
 
     x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
-        ((range_max_x - min_bin_size) - range_min_x) + (range_min_x)
-    )
+        (range_max_x - min_bin_size) - range_min_x
+    ) + range_min_x
     y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
         (range_max_y - min_bin_size) - range_min_y
     ) + range_min_y
@@ -487,8 +487,8 @@ def inv_rational_quadratic_spline(
     y_pos = jnp.clip(y_pos, -6, 6)
 
     x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
-        ((range_max_x - min_bin_size) - range_min_x) + (range_min_x)
-    )
+        (range_max_x - min_bin_size) - range_min_x
+    ) + range_min_x
     y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
         (range_max_y - min_bin_size) - range_min_y
     ) + range_min_y

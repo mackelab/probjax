@@ -41,7 +41,7 @@ def value_and_log_det_diagonal(f):
             vmaped_grad_fn = jax.vmap(vmaped_grad_fn)
         value, det = vmaped_grad_fn(*args_arrays, **kwargs)
 
-        log_det = jnp.log(jnp.abs(det))
+        log_det = jnp.log(jnp.abs(det) + 1e-10)
         while log_det.ndim > 0:
             log_det = jnp.sum(log_det, axis=-1)
         return value, log_det

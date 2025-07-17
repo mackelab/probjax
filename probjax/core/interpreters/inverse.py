@@ -41,6 +41,8 @@ _UNIVARITAE_INVERSE_REGISTRY = {
     # jax.lax.rev_p: jax.lax.rev_p,
     jax.lax.logistic_p: logit,
     jax.lax.integer_pow_p: integer_pow_inverse,
+    jax.lax.erf_p: jax.lax.erf_inv,
+    jax.lax.erf_inv_p: jax.lax.erf,
 }
 
 

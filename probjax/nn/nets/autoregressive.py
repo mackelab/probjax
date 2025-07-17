@@ -9,7 +9,7 @@ from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.core.transformation import inverse_and_logabsdet
 from probjax.nn.attention import flex_attention
 from probjax.nn.nets.masked import MaskedMLP
-from probjax.nn.nets.transformer import Transformer
+from probjax.nn.nets.transformer import Transformer, PosEmbed
 
 
 def get_autoregressive_masks(dims: Sequence[int]):
@@ -97,10 +97,12 @@ class AutoregressiveTransformer(nnx.Module, experimental_pytree=True):
         decoder: Optional[nnx.Module] = None,
         model_dim: int = 64,
         num_heads: int = 4,
-        num_layers: int = 2,
+        num_layers: int = 4,
         attn_size: int = 8,
         widening_factor: int = 2,
+        pos_embed: Optional[nnx.Module] = None,
         context_dim: Optional[int] = None,
+        **kwargs,
     ):
         super().__init__()
         self.in_out_dim = in_out_dim
@@ -118,6 +120,7 @@ class AutoregressiveTransformer(nnx.Module, experimental_pytree=True):
                 attention_fn=partial(flex_attention, causal=True),
                 rngs=rngs,
                 context_dim=context_dim,
+                **kwargs,
             )
         self.transformer = transformer
         self.start_token = nnx.Param(jnp.zeros((self.transformer.model_dim,)))
@@ -136,6 +139,9 @@ class AutoregressiveTransformer(nnx.Module, experimental_pytree=True):
             )
         self.encoder = encoder
         self.decoder = decoder
+        if pos_embed is None:
+            pos_embed = PosEmbed(model_dim, rngs=rngs)
+        self.pos_embed = pos_embed
 
     def predict_bij_params(self, x: jax.Array, context=None, k=None, v=None, **kwargs):
         start_token = self.start_token.reshape((1,) * (x.ndim - 1) + (-1,))
@@ -144,6 +150,7 @@ class AutoregressiveTransformer(nnx.Module, experimental_pytree=True):
         )
         x = self.encoder(x)
         x = jnp.concatenate([start_token, x], axis=-2)
+        x = self.pos_embed(x)
         h = self.transformer(x, k, v, context=context, **kwargs)[..., :-1, :]
         bij_params = self.decoder(h)
         return bij_params

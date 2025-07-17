@@ -26,17 +26,26 @@ class PosEmbed(nnx.Module, experimental_pytree=True):
     def __call__(self, x: Array, idx: Optional[Array] = None, **kwargs) -> Array:
         """
         Arguments:
-            x: jnp.ndarray, shape ``[seq_len, batch_size, embedding_dim]``
+            x: jnp.ndarray, shape ``[..., seq_len, embedding_dim]``
         """
         if idx is None:
-            idx = jnp.arange(x.shape[-2]).reshape(-1, 1)
+            seq_len = x.shape[-2]
+            idx = jnp.arange(seq_len).reshape(-1, 1)
+        else:
+            seq_len = idx.shape[0]
 
         token_dim = x.shape[-1]
         div_term = jnp.exp(
             jnp.arange(0, token_dim, 2) * (-jnp.log(self.max_seq_len) / token_dim)
         )
 
-        pe = jnp.zeros((1, x.shape[-2], token_dim))
+        # Create positional encoding with shape [1,...,1, seq_len, token_dim]
+        batch_ndims = x.ndim - 2
+        pe_shape = (1,) * batch_ndims + (seq_len, token_dim)
+        pe = jnp.zeros(pe_shape)
+        # Broadcast idx to [1,...,1, seq_len, 1] if needed
+        idx_broadcast_shape = (1,) * batch_ndims + (seq_len, 1)
+        idx = idx.reshape(idx_broadcast_shape)
         pe = pe.at[..., 0::2].set(jnp.sin(idx * div_term))
         pe = pe.at[..., 1::2].set(jnp.cos(idx * div_term))
 
@@ -58,13 +67,17 @@ class LearnedPosEmbed(nnx.Module, experimental_pytree=True):
         Returns:
             Array: Output array of shape [B, T, D]
         """
-        _, seq_len, _ = x.shape
+        seq_len = x.shape[-2]
         assert seq_len <= self.max_seq_len, (
             "Sequence length cannot be greater than max_len"
         )
         idx = jnp.arange(seq_len) if idx is None else idx
         pos_emb = self.embed(idx)
-        return x + pos_emb[None, :, :]
+        # Unsqueeze to match the shape of x
+        batch_ndims = x.ndim - 2
+        for _ in range(batch_ndims):
+            pos_emb = pos_emb[None, :, :]
+        return x + pos_emb
 
 
 class Transformer(nnx.Module, experimental_pytree=True):
