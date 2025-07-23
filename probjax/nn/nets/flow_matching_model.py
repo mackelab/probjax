@@ -7,7 +7,7 @@ from flax import nnx
 from jax.typing import ArrayLike
 from jaxtyping import PyTree
 
-from probjax.nn.loss_fn.flow_matching import build_flow_matching_loss
+from probjax.nn.loss_fn.flow_matching import build_flow_matching_loss, build_mean_flow_matching_loss
 
 
 class FlowMatcher(nnx.Module, experimental_pytree=True):
@@ -67,6 +67,13 @@ class FlowMatcher(nnx.Module, experimental_pytree=True):
         self.mu1 = nnx.Variable(mu1)
         self.std1 = nnx.Variable(std1)
 
+        self._loss = build_flow_matching_loss(
+            self,
+            interpolation_fn=self.interpolation_fn,
+            interpolation_noise_fn=self.interpolation_std_fn,
+            weight_fn=None,
+        )
+
     def __call__(self, t, x: ArrayLike, *args, **kwargs) -> ArrayLike:
         """Forward pass of the model - denosing x at time t."""
         # With preconditioning
@@ -101,6 +108,68 @@ class FlowMatcher(nnx.Module, experimental_pytree=True):
         )
 
 
+    def loss(self, rng, data: ArrayLike, *args, **kwargs):
+        rng_source, rng_times = jax.random.split(rng, 2)
+
+        # Generate noise for x0
+        x0 = (
+            jax.random.normal(rng_source, shape=data.shape) * self.std0.value
+            + self.mu0.value
+        )
+
+        # Get shape from data for time scheduling
+        data_shape = data.shape
+        ndims = data_shape.ndim - 2
+        times = self.noise_schedule(rng_times, (data_shape[0],) + (1,) * ndims)
+
+        loss = self._loss(times, x0, data, *args, **kwargs)
+        return loss
+
+class MeanFlowMatcher():
+    def __init__(self, net, mu0=0, std0=1, mu1=0.0, std1=1.0, rngs=None):
+        self.net = net
+        self.mu0 = nnx.Variable(mu0)
+        self.std0 = nnx.Variable(std0)
+        self.mu1 = nnx.Variable(mu1)
+        self.std1 = nnx.Variable(std1)
+        self.interpolation_fn = lambda x0, x1, t: (1 - t) * x0 + t * x1
+        self.interpolation_std_fn = None
+        self.rngs = rngs
+        self._loss = build_mean_flow_matching_loss(
+            self,
+            interpolation_fn=self.interpolation_fn,
+            interpolation_noise_fn=self.interpolation_std_fn,
+            weight_fn=None,
+        )
+
+    def __call__(self,r, t, x: ArrayLike, *args, **kwargs) -> ArrayLike:
+        mu0 = self.mu0.value
+        std0 = self.std0.value
+        mu1 = self.mu1.value
+        std1 = self.std1.value
+
+        approx_mut = self.interpolation_fn(mu0, mu1, t)
+        approx_stdt = jnp.sqrt(t**2 * std1**2 + (1 - t) ** 2 * std0**2)
+
+        x_normed = jax.tree_util.tree_map(lambda x: (x - approx_mut) / approx_stdt, x)
+        #scale = (t * std1**2) / ((1 - t) ** 2 * std0**2 + t**2 * std1**2)
+        pred_mut = self.net(r, t, x_normed, *args, **kwargs)
+
+        return pred_mut
+
+    def loss(self, rng, data: ArrayLike, *args, **kwargs):
+        rng_source, rng_times_t, rng_times_r = jax.random.split(rng, 2)
+        times_t = self.noise_schedule(rng_times_t, (data.shape[0],) + (1,) * (data.ndim - 2))
+        times_r = self.noise_schedule(rng_times_r, (data.shape[0],) + (1,) * (data.ndim - 2)) * times_t
+
+        x0 = (
+            jax.random.normal(rng_source, shape=data.shape) * self.std0.value
+            + self.mu0.value
+        )
+        loss = self._loss(times_r, times_t, x0, data, *args, **kwargs)
+        return loss
+
+
 class LinearFlow(FlowMatcher):
     std_fn = None
 
@@ -117,12 +186,6 @@ class LinearFlow(FlowMatcher):
             rngs=rngs,
         )
 
-        self._loss = build_flow_matching_loss(
-            self,
-            interpolation_fn=mean_fn,
-            interpolation_noise_fn=None,
-            weight_fn=None,
-        )
 
     def denoise(self, t, x: PyTree[ArrayLike]) -> PyTree[ArrayLike]:
         # x0 is noise
@@ -167,19 +230,18 @@ class LinearFlow(FlowMatcher):
         ts = jnp.linspace(0, 1, num_steps)
         return ts
 
-    def loss(self, rng, data: ArrayLike, *args, **kwargs):
-        rng_source, rng_times = jax.random.split(rng, 2)
 
-        # Generate noise for x0
-        x0 = (
-            jax.random.normal(rng_source, shape=data.shape) * self.std0.value
-            + self.mu0.value
-        )
+class LinearMeanFlow(MeanFlowMatcher):
+    def __init__(self, net, mu0=0, std0=1, mu1=0.0, std1=1.0, rngs=None):
+        mean_fn = lambda x0, x1, t: (1 - t) * x0 + t * x1
+        super().__init__(net, mu0, std0, mu1, std1, rngs, interpolation_fn=mean_fn)
 
-        # Get shape from data for time scheduling
-        data_shape = data.shape
-        ndims = data_shape.ndim - 2
-        times = self.noise_schedule(rng_times, (data_shape[0],) + (1,) * ndims)
+    def noise_schedule(self, rng, shape, mu=0.2, scale=1.0):
+        return jax.nn.sigmoid(jax.random.normal(rng, shape=shape + (1,)) * scale + mu)
 
-        loss = self._loss(times, x0, data, *args, **kwargs)
-        return loss
+    def solve_schedule(self, num_steps=50):
+        ts = jnp.linspace(0, 1, num_steps)
+        return ts
+
+
+
