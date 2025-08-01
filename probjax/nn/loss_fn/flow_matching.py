@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 
-import partial
+from functools import partial
 
 from probjax.utils.protocols import (
     InterpolationFn,
@@ -21,8 +21,8 @@ def base_flow_matching_loss(
     model_fn: TimeDependentModelFn,
     interpolation_fn: InterpolationFn,
     interpolation_noise_fn: InterpolationNoiseFn | None,
-    interpolation_grad: InterpolationNoiseFn,
-    interpolation_noise_grad: InterpolationNoiseFn | None,
+    interpolation_grad_fn: InterpolationNoiseFn,
+    interpolation_noise_grad_fn: InterpolationNoiseFn | None,
     weight_fn: WeightFn | None,
     metric_fn: Callable[[Array, Array], Array] | None,
     axis: int,
@@ -62,11 +62,12 @@ def base_flow_matching_loss(
         eps = jax.random.normal(rng, shape=xt.shape)
         xt += interpolation_noise_fn(x0, x1, t) * eps
 
+
     v_t = model_fn(t, xt, *args, **kwargs)
-    u_t = interpolation_grad(x0, x1, t)
+    u_t = jax.vmap(interpolation_grad_fn)(x0, x1, t).squeeze(-1)
 
     if interpolation_noise_fn:
-        u_t += interpolation_noise_grad(x0, x1, t) * eps
+        u_t += interpolation_noise_grad_fn(x0, x1, t).squeeze(-1) * eps
 
     # Compute loss using the metric if provided
     if metric_fn is not None:
@@ -81,8 +82,9 @@ def base_flow_matching_loss(
         # Compute (v-u)^T M (v-u) for each point
         loss = jnp.sum(diff * jnp.einsum('...ij,...j->...i', metric, diff), axis=axis)
     else:
+        diff = v_t - u_t
         # Euclidean (L2) metric
-        loss = jnp.sum((v_t - u_t) ** 2, axis=axis)
+        loss = jnp.sum(diff ** 2, axis=axis)
 
     if loss_mask is not None:
         loss = jnp.where(~loss_mask, loss, 0.0)
@@ -94,16 +96,18 @@ def base_flow_matching_loss(
 
 
 def base_mean_flow_matching_loss(
-    model_fn: ModelFn | TimeDependentModelFn,
+    model_fn: TimeDependentModelFn,
     interpolation_fn: InterpolationFn,
-    interpolation_noise_fn: Optional[InterpolationNoiseFn],
-    interpolation_noise_grad: Optional[Callable],
-    interpolation_grad: Callable,
-    weight_fn: Optional[WeightFn],
-    metric_fn: Optional[Callable[[Array, Array], Array]],
+    interpolation_noise_fn: InterpolationNoiseFn | None,
+    interpolation_grad_fn: InterpolationNoiseFn,
+    interpolation_noise_grad_fn: InterpolationNoiseFn | None,
+    weight_fn: WeightFn | None,
+    adaptive_weight_p: float,
+    adaptive_weight_eps: float,
+    metric_fn: Callable[[Array, Array], Array] | None,
     axis: int,
-    t: Array,
     r: Array,
+    t: Array,
     x0: Array,
     x1: Array,
     *args,
@@ -140,16 +144,17 @@ def base_mean_flow_matching_loss(
         eps = jax.random.normal(rng, shape=xt.shape)
         xt += interpolation_noise_fn(x0, x1, t) * eps
 
-    v_t = interpolation_grad(x0, x1, t)
+    u_t = jax.vmap(interpolation_grad_fn)(x0, x1, t).squeeze(-1)
 
     if interpolation_noise_fn:
-        v_t += interpolation_noise_grad(x0, x1, t) * eps
+        u_t += interpolation_noise_grad_fn(x0, x1, t) * eps
 
-    u_fn = partial(model_fn, *args, **kwargs)
-    u_t, du_dt = jax.jvp(u_fn, (r,t, xt), (0.0, 1.0, v_t))
+    def v_fn(r,t,x):
+        return model_fn(t, x, r=r, *args, **kwargs)
+    v_t, dv_dt = jax.jvp(v_fn, (r,t, xt), (jnp.zeros_like(r), jnp.ones_like(t), u_t))
 
-    v_t = v_t - (t-r) * du_dt
-    v_t = jax.lax.stop_gradient(v_t)
+    u_t = u_t - (t-r) * dv_dt
+    u_t = jax.lax.stop_gradient(u_t)
 
     # Compute loss using the metric if provided
     if metric_fn is not None:
@@ -164,8 +169,13 @@ def base_mean_flow_matching_loss(
         # Compute (v-u)^T M (v-u) for each point
         loss = jnp.sum(diff * jnp.einsum('...ij,...j->...i', metric, diff), axis=axis)
     else:
+        diff = v_t - u_t
         # Euclidean (L2) metric
-        loss = jnp.sum((v_t - u_t) ** 2, axis=axis)
+        loss = jnp.sum(diff ** 2, axis=axis)
+
+    if adaptive_weight_p > 0:
+        weight = jax.lax.stop_gradient(1/(jnp.sum(diff**2, axis=axis) + adaptive_weight_eps)**adaptive_weight_p)
+        loss = loss * weight
 
     if loss_mask is not None:
         loss = jnp.where(~loss_mask, loss, 0.0)
@@ -176,9 +186,11 @@ def base_mean_flow_matching_loss(
     return loss
 
 def build_flow_matching_loss(
-    model_fn: ModelFn | TimeDependentModelFn,
-    interpolation_fn: InterpolationFn = lambda t, x0, x1: (1 - t) * x0 + t * x1,
+    model_fn: TimeDependentModelFn,
+    interpolation_fn: InterpolationFn,
     interpolation_noise_fn: Optional[InterpolationNoiseFn] = None,
+    interpolation_noise_grad_fn: Optional[Callable] = None,
+    interpolation_grad_fn: Optional[Callable] = None,
     weight_fn: Optional[WeightFn] = None,
     axis: int = -1,
     reduction_fn: ReductionFn = jnp.mean,
@@ -196,19 +208,21 @@ def build_flow_matching_loss(
     Returns:
         A loss function that takes time, x0, x1 and returns a scalar loss value
     """
-    if interpolation_noise_fn:
-        interpolation_noise_grad = jax.grad(
-            lambda x_s, x_t, t: interpolation_noise_fn(x_s, x_t, t).sum(), argnums=2
-        )
-    else:
-        interpolation_noise_grad = None
 
     # For default this is just x1-x0 !
-    interpolation_grad = jax.grad(
-        lambda x_s, x_t, t: interpolation_fn(x_s, x_t, t).sum(), argnums=2
-    )
+    if interpolation_grad_fn is None:
+        interpolation_grad_fn = jax.jacfwd(
+            lambda x_s, x_t, t: interpolation_fn(x_s, x_t, t), argnums=2
+        )
 
-    def loss_fn(t, x0, x1, *args, rng=None, loss_mask=None, **kwargs):
+    if interpolation_noise_fn:
+        if interpolation_noise_grad_fn is None:
+            interpolation_noise_grad_fn = jax.jacfwd(
+                lambda x_s, x_t, t: interpolation_noise_fn(x_s, x_t, t), argnums=2
+            )
+
+
+    def loss_fn(t: Array, x0: Array, x1: Array, *args, rng: Optional[Array] = None, loss_mask: Optional[Array] = None, **kwargs):
         """Compute Euclidean flow matching loss.
 
         Args:
@@ -223,12 +237,18 @@ def build_flow_matching_loss(
         Returns:
             Scalar loss value
         """
+        event_dims = 1 if isinstance(axis, int) else len(axis)
+        # Flatten the batch dimension
+        x0 = jnp.reshape(x0, (-1, *x0.shape[event_dims:]))
+        x1 = jnp.reshape(x1, (-1, *x1.shape[event_dims:]))
+        t = jnp.reshape(t, (-1, *t.shape[event_dims:]))
+        # Compute the loss
         loss = base_flow_matching_loss(
             model_fn=model_fn,
             interpolation_fn=interpolation_fn,
             interpolation_noise_fn=interpolation_noise_fn,
-            interpolation_noise_grad=interpolation_noise_grad,
-            interpolation_grad=interpolation_grad,
+            interpolation_noise_grad_fn=interpolation_noise_grad_fn,
+            interpolation_grad_fn=interpolation_grad_fn,
             weight_fn=weight_fn,
             metric_fn=None,
             axis=axis,
@@ -249,6 +269,8 @@ def build_mean_flow_matching_loss(
     model_fn: TimeDependentModelFn,
     interpolation_fn: InterpolationFn = lambda t, x0, x1: (1 - t) * x0 + t * x1,
     interpolation_noise_fn: InterpolationNoiseFn | None = None,
+    interpolation_grad_fn: InterpolationFn | None = None,
+    interpolation_noise_grad_fn: InterpolationNoiseFn | None = None,
     weight_fn: WeightFn | None = None,
     axis: int = -1,
     reduction_fn: ReductionFn = jnp.mean,
@@ -266,18 +288,21 @@ def build_mean_flow_matching_loss(
     Returns:
         A loss function that takes time, x0, x1 and returns a scalar loss value
     """
-    if interpolation_noise_fn:
-        interpolation_noise_grad = jax.grad(
-            lambda x_s, x_t, t: interpolation_noise_fn(x_s, x_t, t).sum(), argnums=2
-        )
-    else:
-        interpolation_noise_grad = None
     
-    interpolation_grad = jax.grad(
-        lambda x_s, x_t, t: interpolation_fn(x_s, x_t, t).sum(), argnums=2
-    )
+    # For default this is just x1-x0 !
+    if interpolation_grad_fn is None:
+        interpolation_grad_fn = jax.jacfwd(
+            lambda x_s, x_t, t: interpolation_fn(x_s, x_t, t), argnums=2
+        )
 
-    def loss_fn(r,t, x0, x1, *args, rng=None, loss_mask=None, **kwargs):
+    if interpolation_noise_fn:
+        if interpolation_noise_grad_fn is None:
+            interpolation_noise_grad_fn = jax.jacfwd(
+                lambda x_s, x_t, t: interpolation_noise_fn(x_s, x_t, t), argnums=2
+            )
+
+
+    def loss_fn(r,t, x0, x1, *args, rng=None, loss_mask=None, adaptive_weight_p: float = 0.0, adaptive_weight_eps: float = 1e-3, **kwargs):
         """Compute mean flow matching loss.
 
         Args:
@@ -292,17 +317,27 @@ def build_mean_flow_matching_loss(
         Returns:
             Scalar loss value
         """
+
+        event_dims = 1 if isinstance(axis, int) else len(axis)
+        # Flatten the batch dimension
+        x0 = jnp.reshape(x0, (-1, *x0.shape[event_dims:]))
+        x1 = jnp.reshape(x1, (-1, *x1.shape[event_dims:]))
+        t = jnp.reshape(t, (-1, *t.shape[event_dims:]))
+        r = jnp.reshape(r, (-1, *r.shape[event_dims:]))
+
         loss = base_mean_flow_matching_loss(
             model_fn=model_fn,
             interpolation_fn=interpolation_fn,
             interpolation_noise_fn=interpolation_noise_fn,
-            interpolation_noise_grad=interpolation_noise_grad,
-            interpolation_grad=interpolation_grad,
+            interpolation_noise_grad_fn=interpolation_noise_grad_fn,
+            interpolation_grad_fn=interpolation_grad_fn,
             weight_fn=weight_fn,
+            adaptive_weight_p=adaptive_weight_p,
+            adaptive_weight_eps=adaptive_weight_eps,
             metric_fn=None,
             axis=axis,
-            t=t,
             r=r,
+            t=t,
             x0=x0,
             x1=x1,
             *args,
@@ -315,10 +350,12 @@ def build_mean_flow_matching_loss(
     return loss_fn
 
 def build_riemannian_flow_matching_loss(
-    model_fn: ModelFn | TimeDependentModelFn,
+    model_fn: TimeDependentModelFn,
     metric_fn: Callable[[Array, Array], Array],
     interpolation_fn: InterpolationFn = lambda t, x0, x1: (1 - t) * x0 + t * x1,
     interpolation_noise_fn: Optional[InterpolationNoiseFn] = None,
+    interpolation_noise_grad_fn: Optional[Callable] = None,
+    interpolation_grad_fn: Optional[Callable] = None,
     weight_fn: Optional[WeightFn] = None,
     axis: int = -1,
     reduction_fn: ReductionFn = jnp.mean,
@@ -331,6 +368,8 @@ def build_riemannian_flow_matching_loss(
             The function should take (x, t) as input and return a positive definite matrix.
         interpolation_fn: Function that interpolates between x0 and x1 at time t
         interpolation_noise_fn: Optional function that provides noise scale for interpolation
+        interpolation_noise_grad_fn: Optional function that computes gradient of noise scale
+        interpolation_grad_fn: Optional function that computes gradient of interpolation
         weight_fn: Optional function that computes weights based on time
         axis: Axis along which to sum the loss
         reduction_fn: Function to reduce the loss to a scalar
@@ -338,19 +377,20 @@ def build_riemannian_flow_matching_loss(
     Returns:
         A loss function that takes time, x0, x1 and returns a scalar loss value
     """
-    if interpolation_noise_fn:
-        interpolation_noise_grad = jax.grad(
-            lambda x_s, x_t, t: interpolation_noise_fn(x_s, x_t, t).sum(), argnums=2
-        )
-    else:
-        interpolation_noise_grad = None
-
+    
     # For default this is just x1-x0 !
-    interpolation_grad = jax.grad(
-        lambda x_s, x_t, t: interpolation_fn(x_s, x_t, t).sum(), argnums=2
-    )
+    if interpolation_grad_fn is None:
+        interpolation_grad_fn = jax.jacfwd(
+            lambda x_s, x_t, t: interpolation_fn(x_s, x_t, t), argnums=2
+        )
 
-    def loss_fn(t, x0, x1, *args, rng=None, loss_mask=None, **kwargs):
+    if interpolation_noise_fn:
+        if interpolation_noise_grad_fn is None:
+            interpolation_noise_grad_fn = jax.jacfwd(
+                lambda x_s, x_t, t: interpolation_noise_fn(x_s, x_t, t), argnums=2
+            )
+
+    def loss_fn(t: Array, x0: Array, x1: Array, *args, rng: Optional[Array] = None, loss_mask: Optional[Array] = None, **kwargs):
         """Compute Riemannian flow matching loss.
 
         Args:
@@ -365,12 +405,18 @@ def build_riemannian_flow_matching_loss(
         Returns:
             Scalar loss value
         """
+        event_dims = 1 if isinstance(axis, int) else len(axis)
+        # Flatten the batch dimension
+        x0 = jnp.reshape(x0, (-1, *x0.shape[event_dims:]))
+        x1 = jnp.reshape(x1, (-1, *x1.shape[event_dims:]))
+        t = jnp.reshape(t, (-1, *t.shape[event_dims:]))
+        
         loss = base_flow_matching_loss(
             model_fn=model_fn,
             interpolation_fn=interpolation_fn,
             interpolation_noise_fn=interpolation_noise_fn,
-            interpolation_noise_grad=interpolation_noise_grad,
-            interpolation_grad=interpolation_grad,
+            interpolation_noise_grad_fn=interpolation_noise_grad_fn,
+            interpolation_grad_fn=interpolation_grad_fn,
             weight_fn=weight_fn,
             metric_fn=metric_fn,
             axis=axis,
