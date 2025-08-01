@@ -5,7 +5,7 @@ from typing import Callable, Optional
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jax.util import safe_map, safe_zip
+from jax._src.util import safe_map, safe_zip
 
 from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
 from probjax.utils.odeutil.adaptive import AdaptiveParams, StepSizeAdapter

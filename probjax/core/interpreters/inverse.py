@@ -2,7 +2,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax._src.util import safe_map
-from jax.experimental.pjit import pjit_p
+try:
+    from jax.experimental.pjit import pjit_p
+except ImportError:
+    # JaX 0.7
+    from jax._src.pjit import jit_p as pjit_p
 from jax.extend.core import Primitive
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
@@ -26,7 +30,7 @@ _UNIVARITAE_INVERSE_REGISTRY = {
     jax.lax.cosh_p: jax.lax.acosh_p,
     jax.lax.acosh_p: jax.lax.cosh_p,
     jax.lax.exp_p: jax.lax.log_p,
-    jax.lax.exp2_p: jnp.log2,
+    jax.lax.exp2_p: lambda x, **params: jnp.log2(x),
     jax.lax.log_p: jax.lax.exp_p,
     jax.lax.sqrt_p: lambda x, **params: jax.lax.pow_p.bind(x, 2.0, **params),
     jax.lax.rsqrt_p: lambda x, **params: 1.0 / jax.lax.pow_p.bind(x, 2.0, **params),
@@ -367,7 +371,7 @@ class InverseProcessingRule(ProcessingRule):
                 eqn, known_invars, known_outvars
             )
         elif (
-            not all(is_known_invars) and eqn.primitive is jax.experimental.pjit.pjit_p
+            not all(is_known_invars) and eqn.primitive is pjit_p
             #      or eqn.primitive is custom_jvp_call_p
         ):
             return None
