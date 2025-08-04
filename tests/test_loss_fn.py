@@ -21,7 +21,7 @@ def model_fn(x):
 @pytest.mark.parametrize(
     "builder, kwargs",
     [
-        (build_denoising_loss, {"std": 1.0}),
+        (build_denoising_loss, {"std": 1.0, "scale": 1.0}),
         (build_denoising_score_matching_loss, {"std": 1.0}),
         (build_score_matching_loss,{}),
         (build_sliced_score_matching_loss,{"num_slices":1}),

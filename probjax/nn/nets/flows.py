@@ -249,7 +249,7 @@ class SplineAutoregressiveFlow(Flow):
         name: Optional[str] = None,
     ) -> None:
         self.input_dim = input_dim
-        params_per_dim = 3 * num_bins
+        params_per_dim = 3 * num_bins * input_dim
         spline = partial(
             rational_quadratic_spline,
             range_min_x=-10.0,

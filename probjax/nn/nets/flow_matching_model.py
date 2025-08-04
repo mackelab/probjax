@@ -38,6 +38,7 @@ class FlowMatcher(nnx.Module):
         std1: ArrayLike = 1.0,
         interpolation_fn: Optional[Callable] = None,
         interpolation_std_fn: Optional[Callable] = None,
+        loss_kwargs: Optional[dict] = None,
         rngs=None,
     ):
         """Base class for flow matching models.
@@ -70,11 +71,15 @@ class FlowMatcher(nnx.Module):
         self.mu1 = nnx.Variable(mu1)
         self.std1 = nnx.Variable(std1)
 
+        if loss_kwargs is None:
+            loss_kwargs = {}
+
         self._loss = build_flow_matching_loss(
             self,
             interpolation_fn=self.interpolation_fn,
             interpolation_noise_fn=self.interpolation_std_fn,
             weight_fn=None,
+            **loss_kwargs
         )
 
     def __call__(self, t, x: ArrayLike, *args, **kwargs) -> ArrayLike:
@@ -227,7 +232,7 @@ class MeanFlowMatcher(nnx.Module):
 
 class LinearFlow(FlowMatcher):
 
-    def __init__(self, net, mu0=0, std0=1, mu1=0.0, std1=1.0, rngs=None):
+    def __init__(self, net, mu0=0, std0=1, mu1=0.0, std1=1.0, rngs=None, loss_kwargs=None):
 
         super().__init__(
             net,
@@ -237,6 +242,7 @@ class LinearFlow(FlowMatcher):
             std1=std1,
             rngs=rngs,
             interpolation_fn=lambda x0, x1, t: (1 - t) * x0 + t * x1,
+            loss_kwargs=loss_kwargs
         )
 
 

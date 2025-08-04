@@ -24,6 +24,8 @@ def base_flow_matching_loss(
     interpolation_grad_fn: InterpolationNoiseFn,
     interpolation_noise_grad_fn: InterpolationNoiseFn | None,
     weight_fn: WeightFn | None,
+    adaptive_weight_p: float,
+    adaptive_weight_eps: float,
     metric_fn: Callable[[Array, Array], Array] | None,
     axis: int,
     t: Array,
@@ -57,6 +59,7 @@ def base_flow_matching_loss(
         Array of loss values
     """
     xt = interpolation_fn(x0, x1, t)
+
     if interpolation_noise_fn:
         assert rng is not None, "rng is required when using interpolation_noise_fn"
         eps = jax.random.normal(rng, shape=xt.shape)
@@ -64,10 +67,10 @@ def base_flow_matching_loss(
 
 
     v_t = model_fn(t, xt, *args, **kwargs)
-    u_t = jax.vmap(interpolation_grad_fn)(x0, x1, t).squeeze(-1)
+    u_t = jax.vmap(interpolation_grad_fn)(x0, x1, t).reshape(v_t.shape)
 
     if interpolation_noise_fn:
-        u_t += interpolation_noise_grad_fn(x0, x1, t).squeeze(-1) * eps
+        u_t += interpolation_noise_grad_fn(x0, x1, t).reshape(v_t.shape) * eps
 
     # Compute loss using the metric if provided
     if metric_fn is not None:
@@ -85,6 +88,10 @@ def base_flow_matching_loss(
         diff = v_t - u_t
         # Euclidean (L2) metric
         loss = jnp.sum(diff ** 2, axis=axis)
+
+    if adaptive_weight_p > 0:
+        weight = jax.lax.stop_gradient(1/(jnp.sum(diff**2, axis=axis) + adaptive_weight_eps)**adaptive_weight_p)
+        loss = loss * weight
 
     if loss_mask is not None:
         loss = jnp.where(~loss_mask, loss, 0.0)
@@ -192,7 +199,6 @@ def build_flow_matching_loss(
     interpolation_noise_grad_fn: Optional[Callable] = None,
     interpolation_grad_fn: Optional[Callable] = None,
     weight_fn: Optional[WeightFn] = None,
-    axis: int = -1,
     reduction_fn: ReductionFn = jnp.mean,
 ) -> LossFn:
     """Build a Euclidean flow matching loss function.
@@ -222,7 +228,7 @@ def build_flow_matching_loss(
             )
 
 
-    def loss_fn(t: Array, x0: Array, x1: Array, *args, rng: Optional[Array] = None, loss_mask: Optional[Array] = None, **kwargs):
+    def loss_fn(t: Array, x0: Array, x1: Array, *args, rng: Optional[Array] = None, loss_mask: Optional[Array] = None, axis: int | tuple[int, ...] = -1, adaptive_weight_p: float = 0.0, adaptive_weight_eps: float = 1e-3, **kwargs):
         """Compute Euclidean flow matching loss.
 
         Args:
@@ -238,10 +244,15 @@ def build_flow_matching_loss(
             Scalar loss value
         """
         event_dims = 1 if isinstance(axis, int) else len(axis)
-        # Flatten the batch dimension
-        x0 = jnp.reshape(x0, (-1, *x0.shape[event_dims:]))
-        x1 = jnp.reshape(x1, (-1, *x1.shape[event_dims:]))
-        t = jnp.reshape(t, (-1, *t.shape[event_dims:]))
+        if x0.ndim > 1 + event_dims:
+            raise ValueError("x0 must have at most 1 batch dim + event_dims (len(axis)) dimensions")
+        if x1.ndim > 1 + event_dims:
+            raise ValueError("x1 must have at most 1 batch dim + event_dims (len(axis)) dimensions")
+        if t.ndim > 1 + event_dims and all(t.shape[i] == 1 for i in range(1, t.ndim)):
+            raise ValueError("t must have at most 1 batch dim + event_dims (len(axis)) dimensions")
+
+
+        
         # Compute the loss
         loss = base_flow_matching_loss(
             model_fn=model_fn,
@@ -250,6 +261,8 @@ def build_flow_matching_loss(
             interpolation_noise_grad_fn=interpolation_noise_grad_fn,
             interpolation_grad_fn=interpolation_grad_fn,
             weight_fn=weight_fn,
+            adaptive_weight_p=adaptive_weight_p,
+            adaptive_weight_eps=adaptive_weight_eps,
             metric_fn=None,
             axis=axis,
             t=t,
