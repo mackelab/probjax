@@ -67,8 +67,15 @@ class AutoregressiveMLP(nnx.Module):
         def scan_fn(carry, i):
             x = carry
             bij_params = self.masked_mlp(x, context)  # type: ignore
-            x_new = self.bijector(bij_params, x)
-            x = x.at[..., i].set(x_new[i])
+            # Reshape parameters to (batch_dims..., in_out_dim, bijector_dim)
+            bij_params = bij_params.reshape(bij_params.shape[:-1] + (self.in_out_dim, -1))
+            # Get parameters for the i-th dimension using dynamic indexing
+            bij_params_i = jax.lax.dynamic_slice(bij_params, (0,) * (bij_params.ndim - 2) + (i, 0), (1,) * (bij_params.ndim - 2) + (1, bij_params.shape[-1]))
+            bij_params_i = bij_params_i.reshape(bij_params_i.shape[:-2] + (-1,))
+            # Apply bijector to the i-th dimension only
+            x_i = jax.lax.dynamic_slice(x, (0,) * (x.ndim - 1) + (i,), (1,) * (x.ndim - 1) + (1,))
+            x_new_i = self.bijector(bij_params_i, x_i)
+            x = x.at[..., i].set(x_new_i[..., 0])
             return x, None
 
         Tx = x
@@ -165,10 +172,16 @@ class AutoregressiveTransformer(nnx.Module):
         if inverse_impl == "naive":
             def scan_fn(carry, i):
                 x = carry
-                print(x.shape)
                 bij_params = self.predict_bij_params(x, context, k, v, **kwargs)
-                x_new = self.bijector(bij_params, x)
-                x = x.at[..., i, :].set(x_new[...,i,:])
+                # Reshape parameters to (batch_dims..., seq_len, bijector_dim)
+                bij_params = bij_params.reshape(bij_params.shape[:-1] + (x.shape[-2], -1))
+                # Get parameters for the i-th dimension using dynamic indexing
+                bij_params_i = jax.lax.dynamic_slice(bij_params, (0,) * (bij_params.ndim - 2) + (i, 0), (1,) * (bij_params.ndim - 2) + (1, bij_params.shape[-1]))
+                bij_params_i = bij_params_i.reshape(bij_params_i.shape[:-2] + (-1,))
+                # Apply bijector to the i-th dimension only
+                x_i = jax.lax.dynamic_slice(x, (0,) * (x.ndim - 2) + (i, 0), (1,) * (x.ndim - 2) + (1, x.shape[-1]))
+                x_new_i = self.bijector(bij_params_i, x_i)
+                x = x.at[..., i, :].set(x_new_i[..., 0, :])
                 return x, None
 
             Tx = x
