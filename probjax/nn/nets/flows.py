@@ -18,7 +18,7 @@ from probjax.stats.transformed import transformed
 from probjax.stats.independent import independent
 
 
-class Flow(nnx.Module, experimental_pytree=True):
+class Flow(nnx.Module):
     def __init__(
         self, base_dist, transformation: Callable[..., Any], name: Optional[str] = None
     ):

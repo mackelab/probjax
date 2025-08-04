@@ -6,7 +6,7 @@ import jax.numpy as jnp
 from probjax.nn.nets.simple import MLP
 
 
-class CouplingMLP(nnx.Module, experimental_pytree=True):
+class CouplingMLP(nnx.Module):
     def __init__(
         self,
         split_index: int,

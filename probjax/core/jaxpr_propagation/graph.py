@@ -4,7 +4,12 @@ from typing import Callable, Sequence
 
 import jax.numpy as jnp
 import networkx as nx
-from IPython.display import SVG, display  # type: ignore
+
+try:
+    from IPython.display import SVG, display  # type: ignore
+except ImportError:
+    pass
+
 try:
     from jax.experimental.pjit import pjit_p
 except ImportError:

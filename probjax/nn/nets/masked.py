@@ -31,7 +31,7 @@ class MaskedLinear(nnx.Linear):
         return y
 
 
-class MaskedMLP(nnx.Module, experimental_pytree=True):
+class MaskedMLP(nnx.Module):
     def __init__(
         self,
         dims: Sequence[int],

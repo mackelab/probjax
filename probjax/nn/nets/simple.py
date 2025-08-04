@@ -6,7 +6,7 @@ from flax import nnx
 from probjax.nn.utils import AdditiveFuse, AffineFuse
 
 
-class MLP(nnx.Module, experimental_pytree=True):
+class MLP(nnx.Module):
     def __init__(
         self,
         dims: Sequence[int],
@@ -46,7 +46,7 @@ class MLP(nnx.Module, experimental_pytree=True):
         return out
 
 
-class ResNet(nnx.Module, experimental_pytree=True):
+class ResNet(nnx.Module):
     def __init__(
         self,
         in_dim: int,

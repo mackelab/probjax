@@ -8,7 +8,7 @@ from jax import Array
 from probjax.nn.attention import MultiHeadAttention
 
 
-class ConvBlock(nnx.Module, experimental_pytree=True):
+class ConvBlock(nnx.Module):
     def __init__(
         self,
         in_features: int,
@@ -46,7 +46,7 @@ class ConvBlock(nnx.Module, experimental_pytree=True):
         return x
 
 
-class ResnetBlock(nnx.Module, experimental_pytree=True):
+class ResnetBlock(nnx.Module):
     def __init__(
         self,
         in_features: int,
@@ -109,7 +109,7 @@ class ResnetBlock(nnx.Module, experimental_pytree=True):
         return out
 
 
-class UNet(nnx.Module, experimental_pytree=True):
+class UNet(nnx.Module):
     def __init__(
         self,
         in_features: int,

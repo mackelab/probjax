@@ -21,7 +21,7 @@ from probjax.nn.loss_fn.target_score_matching import (
 )
 
 
-class DiffusionScoreMatcher(nnx.Module, experimental_pytree=True):
+class DiffusionScoreMatcher(nnx.Module):
     r"""Base class for score matching based diffusion models.
 
     This class implements score matching based diffusion models that can be trained

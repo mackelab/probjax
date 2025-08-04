@@ -10,7 +10,7 @@ from jaxtyping import PyTree
 from probjax.nn.loss_fn.flow_matching import build_flow_matching_loss, build_mean_flow_matching_loss
 
 
-class FlowMatcher(nnx.Module, experimental_pytree=True):
+class FlowMatcher(nnx.Module):
     r"""This serves as a base class for diffusion denoising models.
 
     Specifically this implementation will minimize a denoising network
@@ -142,7 +142,7 @@ class FlowMatcher(nnx.Module, experimental_pytree=True):
         loss = self._loss(times, x0, data, *args, **kwargs)
         return loss
 
-class MeanFlowMatcher(nnx.Module, experimental_pytree=True):
+class MeanFlowMatcher(nnx.Module):
     def __init__(self, net, interpolation_fn, interpolation_std_fn=None, interpolation_grad_fn=None, interpolation_noise_grad_fn=None, mu0=0, std0=1, mu1=0.0, std1=1.0, rngs=None):
         self.net = net
         self.mu0 = nnx.Variable(mu0)

@@ -4,7 +4,7 @@ import flax.nnx as nnx
 import jax.numpy as jnp
 
 
-class DeepSet(nnx.Module, experimental_pytree=True):
+class DeepSet(nnx.Module):
     def __init__(
         self,
         phi: nnx.Module | Callable,

@@ -24,7 +24,7 @@ def get_autoregressive_masks(dims: Sequence[int]):
     return masks
 
 
-class AutoregressiveMLP(nnx.Module, experimental_pytree=True):
+class AutoregressiveMLP(nnx.Module):
     def __init__(
         self,
         in_out_dim: int,
@@ -84,7 +84,7 @@ class AutoregressiveMLP(nnx.Module, experimental_pytree=True):
         return self.bijector_inv(bij_params, Tx)[0]
 
 
-class AutoregressiveTransformer(nnx.Module, experimental_pytree=True):
+class AutoregressiveTransformer(nnx.Module):
     def __init__(
         self,
         in_out_dim: int,

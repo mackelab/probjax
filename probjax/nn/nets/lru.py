@@ -35,7 +35,7 @@ def gamma_log_init(key, lamb):
     return jnp.log(jnp.sqrt(1 - jnp.abs(diag_lambda) ** 2))
 
 
-class LRU(nnx.Module, experimental_pytree=True):
+class LRU(nnx.Module):
     def __init__(
         self,
         in_dim: int,
@@ -155,7 +155,7 @@ class LRU(nnx.Module, experimental_pytree=True):
         return outputs
 
 
-class LRUBlock(nnx.Module, experimental_pytree=True):
+class LRUBlock(nnx.Module):
     def __init__(
         self,
         model_dim: int,
@@ -191,7 +191,7 @@ class LRUBlock(nnx.Module, experimental_pytree=True):
         return x
 
 
-class LRUModel(nnx.Module, experimental_pytree=True):
+class LRUModel(nnx.Module):
     def __init__(
         self,
         input_dim: int,

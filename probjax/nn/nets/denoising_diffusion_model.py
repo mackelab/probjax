@@ -11,7 +11,7 @@ from jaxtyping import PyTree
 from probjax.nn.loss_fn.denoising import build_time_dependent_denoising_loss
 
 
-class DiffusionDenoiser(nnx.Module, experimental_pytree=True):
+class DiffusionDenoiser(nnx.Module):
     r"""This serves as a base class for diffusion denoising models.
 
     Specifically this implementation will minimize a denoising network

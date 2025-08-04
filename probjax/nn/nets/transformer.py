@@ -11,7 +11,7 @@ from probjax.nn.nets.simple import MLP
 from probjax.nn.utils import AffineFuse, ConcatFuse
 
 
-class PosEmbed(nnx.Module, experimental_pytree=True):
+class PosEmbed(nnx.Module):
     def __init__(self, token_dim: int, max_seq_len: int = 10_000, rngs=None):
         """Positional embedding module.
 
@@ -52,7 +52,7 @@ class PosEmbed(nnx.Module, experimental_pytree=True):
         return x + pe
 
 
-class LearnedPosEmbed(nnx.Module, experimental_pytree=True):
+class LearnedPosEmbed(nnx.Module):
     def __init__(self, dim: int, max_seq_len: int, rngs):
         self.max_seq_len = max_seq_len
         self.embed = nnx.Embed(max_seq_len, dim, rngs=rngs)
@@ -80,7 +80,7 @@ class LearnedPosEmbed(nnx.Module, experimental_pytree=True):
         return x + pos_emb
 
 
-class Transformer(nnx.Module, experimental_pytree=True):
+class Transformer(nnx.Module):
     """A transformer stack."""
 
     model_dim: int  # Dimensionality of the embedding vectors.

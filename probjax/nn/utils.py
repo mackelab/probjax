@@ -96,7 +96,7 @@ def ot_copula(
     return x, y_permuted
 
 
-class Sequential(nnx.Module, experimental_pytree=True):
+class Sequential(nnx.Module):
     def __init__(self, *layers):
         """Sequential module.
 
@@ -111,7 +111,7 @@ class Sequential(nnx.Module, experimental_pytree=True):
         return x
 
 
-class Affine(nnx.Module, experimental_pytree=True):
+class Affine(nnx.Module):
     def __init__(self, in_out_dim: int, rngs):
         """This module applies an affine transformation to the input.
 
@@ -130,7 +130,7 @@ class Affine(nnx.Module, experimental_pytree=True):
         return x * self.scale.value + self.bias.value
 
 
-class Flip(nnx.Module, experimental_pytree=True):
+class Flip(nnx.Module):
     def __init__(self, axis: int = -1, rngs=None):
         """Flip the array along an axis.
 
@@ -143,7 +143,7 @@ class Flip(nnx.Module, experimental_pytree=True):
         return jnp.flip(x, axis=self.axis)
 
 
-class Permute(nnx.Module, experimental_pytree=True):
+class Permute(nnx.Module):
     def __init__(self, permutation: Array, axis: int = -1, rngs=None):
         """Permutes the array along an axis.
 
@@ -158,7 +158,7 @@ class Permute(nnx.Module, experimental_pytree=True):
         return jnp.take(x, self.permutation, axis=self.axis)
 
 
-class Rotate(nnx.Module, experimental_pytree=True):
+class Rotate(nnx.Module):
     def __init__(
         self,
         in_out_dim: int,
@@ -206,7 +206,7 @@ def rotate(R, x):
 rotate.definv_and_logdet(lambda R, x: (jnp.matmul(R.T, x.T).T, 0.0))
 
 
-class GaussianFourierEmbedding(nnx.Module, experimental_pytree=True):
+class GaussianFourierEmbedding(nnx.Module):
     def __init__(
         self,
         input_dim: int,
@@ -245,7 +245,7 @@ class GaussianFourierEmbedding(nnx.Module, experimental_pytree=True):
         return out[..., : self.output_dim]
 
 
-class OneHot(nnx.Module, experimental_pytree=True):
+class OneHot(nnx.Module):
     """One hot encoding module."""
 
     def __init__(self, num_tokens: int, rngs=None):
@@ -265,7 +265,7 @@ class OneHot(nnx.Module, experimental_pytree=True):
         return jax.nn.one_hot(x, self.num_tokens)
 
 
-class AdditiveFuse(nnx.Module, experimental_pytree=True):
+class AdditiveFuse(nnx.Module):
     def __init__(self, input_dim: int, context_dim: int, rngs):
         """This module applies an additive transformation to the input.
 
@@ -279,7 +279,7 @@ class AdditiveFuse(nnx.Module, experimental_pytree=True):
         return x + self.linear(context)
 
 
-class AffineFuse(nnx.Module, experimental_pytree=True):
+class AffineFuse(nnx.Module):
     def __init__(
         self,
         input_dim: int,
@@ -318,7 +318,7 @@ class AffineFuse(nnx.Module, experimental_pytree=True):
         return x * scale + bias
 
 
-class ConcatFuse(nnx.Module, experimental_pytree=True):
+class ConcatFuse(nnx.Module):
     def __init__(self, input_dim: int, context_dim: int, rngs):
         """This module applies an additive transformation to the input.
 
