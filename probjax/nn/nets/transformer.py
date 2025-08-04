@@ -271,32 +271,23 @@ class Transformer(nnx.Module):
             else:
                 raise ValueError(f"Mask must have ndim 2 or 3, got {mask.ndim}.")
 
-        # if bias is not None:
-        #     if bias.ndim == 2:
-        #         bias = bias[None, :, :]
-        #     elif bias.ndim == 3:
-        #         bias = bias[:, None, :, :]
-        #     elif bias.ndim == 4:
-        #         bias = bias
-
         shape = q.shape
         q = q.reshape(-1, q.shape[-2], q.shape[-1])
         if k is not None:
             k = k.reshape(-1, k.shape[-2], k.shape[-1])
         if v is not None:
             v = v.reshape(-1, v.shape[-2], v.shape[-1])
+
+
         if context is not None:
-            context = context.reshape(-1, context.shape[-2], context.shape[-1])
+            # Ensure context has shape [batch, context_dim] or [batch, 1, context_dim]
+            context = context.reshape(-1, 1, context.shape[-1])
+            # else: assume already [batch, time, context_dim] or similar
 
         if k is not None and not self.enable_cross_attention:
             raise ValueError("Cross attention is disabled, but k is provided.")
         if v is not None and not self.enable_cross_attention:
             raise ValueError("Cross attention is disabled, but v is provided.")
-
-        # Same context for each token in the sequence.
-        if context is not None:
-            context = context.reshape(q.shape[:-2] + (1, self.context_dim))
-            context = jnp.repeat(context, q.shape[-2], axis=-2)
 
         for i in range(self.num_layers):
             # First the attention block.

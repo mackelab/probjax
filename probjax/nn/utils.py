@@ -329,4 +329,7 @@ class ConcatFuse(nnx.Module):
         self.linear = nnx.Linear(context_dim, input_dim, rngs=rngs)
 
     def __call__(self, x: Array, context: Array) -> Array:
-        return jnp.concatenate([x, self.linear(context)], axis=-1)
+        context = self.linear(context)
+        # Ensure same leading dimensions as x
+        context = jnp.broadcast_to(context, x.shape[:-1] + (context.shape[-1],))
+        return jnp.concatenate([x, context], axis=-1)

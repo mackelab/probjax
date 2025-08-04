@@ -186,7 +186,7 @@ class AutoregressiveTransformer(nnx.Module):
     def inverse(self, Tx: jax.Array, context=None, k=None, v=None, **kwargs):
         return self.inverse_and_logdet(Tx, context, k, v, **kwargs)[0]
 
-@custom_inverse
+@partial(custom_inverse, static_argnums=(1,))
 def autoregressive_transform(x, model, *args, **kwargs):
     Tx = model.forward(x, *args, **kwargs)
     return Tx

@@ -285,7 +285,7 @@ class UNet(nnx.Module):
         # ---------------------------------------------------------------------
         x = self.conv_initial(inputs)
 
-        # We’ll keep a list of features before each down-sample for use in the up path.
+        # We'll keep a list of features before each down-sample for use in the up path.
         pre_downsampling = [x]
 
         # ---------------------------------------------------------------------
@@ -326,7 +326,7 @@ class UNet(nnx.Module):
         # ---------------------------------------------------------------------
         # We traverse from top to bottom of the up-sampling path
         for idx in range(self.num_stages - 1):
-            # Index of the "top" resnet block we’re in
+            # Index of the "top" resnet block we're in
             up_idx = idx
 
             # Concatenate with output from downsampling phase
