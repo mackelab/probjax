@@ -197,7 +197,7 @@ class RandomVariable(Primitive):
         return super().bind(
             key,
             *args,
-            kwds=kwds,
+            kwds=None,
             shape=shape,
             dist=dist,
             name=name,

@@ -49,7 +49,7 @@ class DiffusionDenoiser(nnx.Module):
             std_fn: Std schedule function.
             last_layer: Optional last transformation layer.
             rngs: Random number streams.
-            prediction_type: Type of prediction target: "x0", "epsilon", or "v".
+            loss_type: Type of prediction target: "x0", "epsilon", or "v".
         """
         self.rngs = rngs
         self.net = net
@@ -160,7 +160,6 @@ class DiffusionDenoiser(nnx.Module):
         self, t: ArrayLike, x_t: PyTree[ArrayLike], *args, **kwargs
     ) -> PyTree[ArrayLike]:
         """Predict denoised x0 from noisy x_t at time t.
-        The actual prediction depends on self.prediction_type.
         """
         model_output = self.__call__(t, x_t, *args, **kwargs)
         # Karras-preconditioned x0 prediction
@@ -177,7 +176,6 @@ class DiffusionDenoiser(nnx.Module):
         self, t: ArrayLike, x_t: PyTree[ArrayLike], *args, **kwargs
     ) -> PyTree[ArrayLike]:
         """Predict noise epsilon from noisy x_t at time t.
-        The actual prediction depends on self.prediction_type.
         """
         sigma_t = self.std_fn(t)
         x0_pred = self.denoise(t, x_t, *args, **kwargs)
@@ -193,7 +191,6 @@ class DiffusionDenoiser(nnx.Module):
     ) -> PyTree[ArrayLike]:
         """Compute score (nabla_x_t log p(x_t|x0)) from noisy x_t at time t.
         Defined as -epsilon_pred / sigma_t.
-        The epsilon_pred is derived based on self.prediction_type.
         """
         epsilon_pred = self.epsilon(t, x_t, *args, **kwargs)
         sigma_t = self.std_fn(t)
@@ -207,7 +204,6 @@ class DiffusionDenoiser(nnx.Module):
     ) -> PyTree[ArrayLike]:
         """Predict v (velocity or related quantity) from noisy x_t at time t.
         Here, v is defined as v_target = alpha_t * epsilon - sigma_t * x0.
-        The actual prediction depends on self.prediction_type.
         """
         # Get denoised prediction (x0)
         x0_pred = self.denoise(t, x_t, *args, **kwargs)
@@ -371,10 +367,10 @@ class VP(EDM):
         beta_max: float = 10.0,
         std0: ArrayLike = 1.0,
         rngs: nnx.RngStream = None,
-        prediction_type: str = "x0",
+        loss_type: str = "x0",
     ) -> None:
         """VP variant with beta range for SDE."""
-        super().__init__(net, std0=std0, rngs=rngs, prediction_type=prediction_type)
+        super().__init__(net, std0=std0, rngs=rngs, loss_type=loss_type)
         self.beta_min = beta_min
         self.beta_max = beta_max
 
@@ -408,96 +404,3 @@ class VP(EDM):
         """Compute solving schedule for VP."""
         ts = jnp.linspace(self.min_noise, 1.0 + 1 / num_steps, num_steps)[::-1]
         return ts
-
-    def loss(
-        self,
-        rng: PRNGKey,
-        data: ArrayLike,  # This is x0 (clean data)
-        *args,  # Passed to self.__call__ and consequently to self.net
-        **kwargs,  # Passed to self.__call__ and consequently to self.net
-    ) -> Array:
-        """Compute diffusion denoising loss based on prediction_type."""
-        rng_times, rng_noise, rng_net = jax.random.split(rng, 3)
-
-        # Determine shape for time steps and noise (batch_size, ...spatial_dims...)
-        # data.shape[0] is batch_size. For times, we need (batch_size, 1, ..., 1) to match data.ndim
-        time_shape = (data.shape[0],) + (1,) * (data.ndim - 1)
-        times = self.noise_schedule(
-            rng_times, time_shape
-        )  # Ensure noise_schedule handles this shape
-
-        # Get diffusion coefficients alpha_t and sigma_t for the sampled times
-        # These are typically defined such that x_t = alpha_t * x0 + sigma_t * epsilon
-        alpha_t = self.scale_fn(times)
-        sigma_t = self.std_fn(times)
-
-        # Sample noise epsilon_true from a standard normal distribution
-        noise_sample = jax.random.normal(rng_noise, data.shape)
-
-        # Construct noisy data x_t
-        # x_t = alpha_t * data + sigma_t * noise_sample
-        x_t = jax.tree_util.tree_map(
-            lambda d, n: alpha_t * d + sigma_t * n, data, noise_sample
-        )
-
-        # Get model prediction. *args and **kwargs are passed through.
-        # The rng_net can be passed if the network itself is stochastic during training (e.g. dropout)
-        # For now, assuming self.net uses self.rngs if needed internally, or args/kwargs convey RNGs.
-        model_output = self.__call__(times, x_t, *args, **kwargs)
-
-        # Compute loss based on prediction_type
-        if self.prediction_type == "x0":
-            target = data
-            # For EDM, self.weight_fn(times) is 1.0 / self.c_out(times)**2
-            # For base class, self.weight_fn(times) is 1.0
-            loss_weights = self.weight_fn(times)
-        elif self.prediction_type == "epsilon":
-            target = noise_sample
-            loss_weights = 1.0  # Standard epsilon prediction loss weight
-        elif self.prediction_type == "v":
-            # v_target = alpha_t * epsilon_true - sigma_t * x0
-            target = jax.tree_util.tree_map(
-                lambda d, n: alpha_t * n - sigma_t * d, data, noise_sample
-            )
-            loss_weights = 1.0  # Standard v-prediction loss weight
-        else:
-            raise ValueError(f"Unsupported prediction_type: {self.prediction_type}")
-
-        # Compute squared error
-        squared_error = jax.tree_util.tree_map(
-            lambda m, tgt: (m - tgt) ** 2, model_output, target
-        )
-
-        # Apply weights and reduce loss (sum over non-batch dimensions, mean over batch)
-        # axis for sum should be all dimensions except the first (batch dimension)
-        reduce_axis = tuple(range(1, data.ndim))
-        weighted_error = jax.tree_util.tree_map(
-            lambda sq_err: loss_weights * sq_err, squared_error
-        )
-
-        # Sum over feature/spatial dimensions
-        loss_per_sample = jax.tree_util.tree_map(
-            lambda w_err: jnp.sum(w_err, axis=reduce_axis), weighted_error
-        )
-
-        # Mean over batch dimension
-        loss = jnp.mean(
-            jax.tree_util.tree_map(lambda lps: lps, loss_per_sample)
-        )  # tree_map might be overkill if structure is simple
-
-        # If loss_per_sample is a flat array after sum, jnp.mean(loss_per_sample) is enough.
-        # Assuming model_output and target are simple arrays or compatible trees for simplicity here.
-        # If they are complex Pytrees, the jax.tree_util.tree_map for mean might need adjustment or
-        # ensure that loss_per_sample is aggregated into a single array first.
-        # For a single array output from jnp.sum, this simplifies to:
-        if isinstance(loss_per_sample, Array) or isinstance(
-            loss_per_sample, jnp.ndarray
-        ):
-            loss = jnp.mean(loss_per_sample)
-        else:  # If it's a pytree of losses (e.g. multiple output heads), average them.
-            # This part might need refinement based on actual model_output structure.
-            # For now, assuming a single loss value is expected.
-            loss_values = jax.tree_util.tree_leaves(loss_per_sample)
-            loss = jnp.mean(jnp.array([jnp.mean(l) for l in loss_values]))
-
-        return loss
