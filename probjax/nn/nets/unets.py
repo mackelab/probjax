@@ -107,6 +107,37 @@ class ResnetBlock(nnx.Module):
         skip_connection = self.skip_connection(inputs)
         out = x + skip_connection
         return out
+    
+
+class SpatialSelfAttention(nnx.Module):
+    """Full-image self-attention for (B, H, W, C) tensors,
+    implemented with the supplied `MultiHeadAttention`."""
+    def __init__(self,
+                 channels: int,
+                 rngs,
+                 *,
+                 num_heads: int = 4,
+                 qkv_mult: int = 2,               # multiplier for qkv_features
+                 groupnorm_groups: int | None = 32,
+                 **mha_kw):
+        g = channels if groupnorm_groups is None else min(groupnorm_groups, channels)
+        self.norm = nnx.GroupNorm(channels, g, rngs=rngs)
+
+        self.attn = MultiHeadAttention(
+            num_heads      = num_heads,
+            in_features    = channels,
+            qkv_features   = qkv_mult * channels,   # ← still easy to tune
+            out_features   = channels,
+            rngs           = rngs,
+            **mha_kw,                                # keep any extra kwargs
+        )
+
+    def __call__(self, x: Array) -> Array:
+        b, h, w, c = x.shape                            # (B, H, W, C)
+        y = self.norm(x).reshape(b, h * w, c)           # →  (B, N, C)  with N = H·W
+        y = self.attn(y)                                # MultiHeadAttention
+        y = y.reshape(b, h, w, c)
+        return x + y       
 
 
 class UNet(nnx.Module):
@@ -122,9 +153,9 @@ class UNet(nnx.Module):
         kernel_size_resnet: Union[int, Sequence[int]] = 3,
         strides_resnet: Union[int, Sequence[int]] = 1,
         use_bias: bool = True,
-        use_attention: bool = False,
+        use_attention: bool | Sequence[bool] = False,
         num_heads: int = 4,
-        num_features_qkv: int = 10,
+        qkv_mult: int = 2,
         activation: Callable = nnx.silu,
         **kwargs,
     ):
@@ -196,23 +227,30 @@ class UNet(nnx.Module):
         # ---------------------------------------------------------------------
         # Optional attention blocks
         # ---------------------------------------------------------------------
-        if use_attention:
+        if isinstance(use_attention, Sequence):
+            assert len(use_attention) == self.num_stages, \
+                "`use_attention` list must match number of down stages"
+            self.attn_mask = list(use_attention)                 # stage-wise mask
+            self.use_attention = any(self.attn_mask)             # global flag
+        else:
+            self.attn_mask = [bool(use_attention)] * self.num_stages
+            self.use_attention = bool(use_attention)
+
+        if self.use_attention:                                   # builder for a single block
             initializer = nnx.initializers.variance_scaling(
-                len(out_features), 'fan_in', 'truncated_normal'
+                len(out_features), "fan_in", "truncated_normal"
             )
-            _attention = lambda o: MultiHeadAttention(
-                num_heads=num_heads,
-                in_features=o,
-                qkv_features=num_features_qkv * num_heads,
-                out_features=o,
-                kernel_init=initializer,
+            _attention = lambda ch: SpatialSelfAttention(
+                ch,
                 rngs=rngs,
+                num_heads=num_heads,
+                qkv_mult=qkv_mult,
+                kernel_init=initializer,
             )
-            # We define separate lists for down- and up-path attention
-            self.attention_layers_down = []
-            self.attention_layers_up = []
-            self.layer_norms_down = []
-            self.layer_norms_up = []
+
+        # prepare empty lists (None where not used, to keep the indexing simple)
+        self.attention_layers_down: list[Optional[nnx.Module]] = []
+        self.attention_layers_up:   list[Optional[nnx.Module]] = []
 
         # ---------------------------------------------------------------------
         # Down path
@@ -225,10 +263,10 @@ class UNet(nnx.Module):
                 _resnet_block(out_features[i], out_features[i])
             )
             # Attention block (down)
-            if use_attention:
-                o = out_features[i]
-                self.attention_layers_down.append(_attention(o))
-                self.layer_norms_down.append(nnx.LayerNorm(out_features[i], rngs=rngs))
+            if self.attn_mask[i]:
+                self.attention_layers_down.append(_attention(out_features[i]))
+            else:
+                self.attention_layers_down.append(None)
             # Down-sample layer (except for the last stage)
             if i > 0:
                 self.downsampling_layers.append(
@@ -240,10 +278,9 @@ class UNet(nnx.Module):
         # ---------------------------------------------------------------------
         self.middle_block1 = _resnet_block(out_features[-1], out_features[-1])
         self.middle_block2 = _resnet_block(out_features[-1], out_features[-1])
-        if use_attention:
+        if self.attn_mask[-1]:
             # single attention for the middle
             self.attention_middle = _attention(out_features[-1])
-            self.layer_norm_middle = nnx.LayerNorm(out_features[-1], rngs=rngs)
 
         # ---------------------------------------------------------------------
         # Up path
@@ -257,9 +294,10 @@ class UNet(nnx.Module):
                 _resnet_block(out_features[i] * 2, out_features[i])
             )
             # Up attention
-            if use_attention:
+            if self.attn_mask[self.num_stages - i - 1]:                                # mirror of down mask
                 self.attention_layers_up.append(_attention(out_features[i]))
-                self.layer_norms_up.append(nnx.LayerNorm(out_features[i], rngs=rngs))
+            else:
+                self.attention_layers_up.append(None)
 
         # Upsampling conv-transpose
         for i in reversed(range(1, self.num_stages)):
@@ -276,6 +314,7 @@ class UNet(nnx.Module):
             kernel_size=1,
             padding="SAME",
             use_bias=use_bias,
+            kernel_init=nnx.initializers.zeros,
             rngs=rngs,
         )
 
@@ -294,14 +333,9 @@ class UNet(nnx.Module):
         for i in range(self.num_stages):
             # ResNet block
             x = self.resnet_blocks_down[i](x, context)
-            print(x.shape)
             # Attention
-            if self.use_attention:
-                _x = x.reshape(x.shape[0], -1, x.shape[-1])
-                att = self.attention_layers_down[i](_x)
-                att = att.reshape(x.shape)
-                x = att + x
-                x = self.layer_norms_down[i](x)
+            if self.use_attention and self.attention_layers_down[i] is not None:
+                x = self.attention_layers_down[i](x)
 
             # Save for skip connection
             if i < self.num_stages - 1:
@@ -313,12 +347,8 @@ class UNet(nnx.Module):
         # 3) Middle block
         # ---------------------------------------------------------------------
         x = self.middle_block1(x, context)
-        if self.use_attention:
-            _x = x.reshape(x.shape[0], -1, x.shape[-1])
-            att = self.attention_middle(_x)
-            att = att.reshape(x.shape)
-            x = att + x
-            x = self.layer_norm_middle(x)
+        if self.attn_mask[-1]:
+            x = self.attention_middle(x)
         x = self.middle_block2(x, context)
 
         # ---------------------------------------------------------------------
@@ -338,12 +368,8 @@ class UNet(nnx.Module):
             x = self.resnet_blocks_up[up_idx](x, context)
 
             # Attention
-            if self.use_attention:
-                _x = x.reshape(x.shape[0], -1, x.shape[-1])
-                att = self.attention_layers_up[up_idx](_x)
-                att = att.reshape(x.shape)
-                x = att + x
-                x = self.layer_norms_up[up_idx](x)
+            if self.use_attention and self.attention_layers_up[up_idx] is not None:
+                x = self.attention_layers_up[up_idx](x)
 
             # Upsample (except for the very last iteration)
             if up_idx < len(self.upsampling_layers):
