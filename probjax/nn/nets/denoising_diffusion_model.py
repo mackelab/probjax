@@ -128,7 +128,7 @@ class DiffusionDenoiser(nnx.Module):
 
         a_t_weight = self.weight_fn_eps(t) * a_t**2
         s_t_weight = self.weight_fn(t) * s_t**2
-        return 0.5 * (a_t_weight + s_t_weight)
+        return 0.5 * (a_t_weight + s_t_weight)  # This normally comes down to just 1.0
 
     def __call__(
         self, t: ArrayLike, x_t: PyTree[ArrayLike], *args, **kwargs
@@ -159,15 +159,14 @@ class DiffusionDenoiser(nnx.Module):
     def denoise(
         self, t: ArrayLike, x_t: PyTree[ArrayLike], *args, **kwargs
     ) -> PyTree[ArrayLike]:
-        """Predict denoised x0 from noisy x_t at time t.
-        """
+        """Predict denoised x0 from noisy x_t at time t."""
         model_output = self.__call__(t, x_t, *args, **kwargs)
         # Karras-preconditioned x0 prediction
         c_out = self.c_out(t)
         c_skip = self.c_skip(t)
 
         return jax.tree_util.tree_map(
-            lambda x, o: c_skip * x + c_out * o,
+            lambda x, o: c_skip * jnp.nan_to_num(x) + c_out * o,
             x_t,
             model_output,
         )
@@ -175,13 +174,12 @@ class DiffusionDenoiser(nnx.Module):
     def epsilon(
         self, t: ArrayLike, x_t: PyTree[ArrayLike], *args, **kwargs
     ) -> PyTree[ArrayLike]:
-        """Predict noise epsilon from noisy x_t at time t.
-        """
+        """Predict noise epsilon from noisy x_t at time t."""
         sigma_t = self.std_fn(t)
         x0_pred = self.denoise(t, x_t, *args, **kwargs)
 
         return jax.tree_util.tree_map(
-            lambda x, o: (x - o) / sigma_t,
+            lambda x, o: (jnp.nan_to_num(x) - o) / sigma_t,
             x_t,
             x0_pred,
         )
@@ -195,7 +193,7 @@ class DiffusionDenoiser(nnx.Module):
         epsilon_pred = self.epsilon(t, x_t, *args, **kwargs)
         sigma_t = self.std_fn(t)
         return jax.tree_util.tree_map(
-            lambda x: -x / sigma_t,
+            lambda x: -jnp.nan_to_num(x) / sigma_t,
             epsilon_pred,
         )
 
@@ -211,7 +209,7 @@ class DiffusionDenoiser(nnx.Module):
         # Get noise prediction (epsilon)
         # Compute from x0_pred and x_t
         epsilon_pred = jax.tree_util.tree_map(
-            lambda x, x0: (x - x0) / self.std_fn(t), x_t, x0_pred
+            lambda x, x0: (jnp.nan_to_num(x) - x0) / self.std_fn(t), x_t, x0_pred
         )
 
         # Calculate v using the formula: alpha_t * epsilon - sigma_t * x0

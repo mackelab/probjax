@@ -63,7 +63,7 @@ class DataLoader:
         num_prefetch_host: int = 16,
         min_fill: float = 0.5,
         num_prefetch_device: int = 2,
-        shard: bool = True,
+        shard: bool = False,
         devices: Optional[Sequence[jax.Device]] = None,
         num_async_workers: int = 1,
     ):
@@ -108,6 +108,7 @@ class DataLoader:
 
     # ---------------- epoch index generator --------------------------- #
     def _index_batches(self):
+        # This can be overwritten for more complicated indexing
         while True:
             idx = np.arange(self._N, dtype=np.int64)
             if self._rng is not None:
@@ -119,6 +120,11 @@ class DataLoader:
             if not self._loop:
                 break
 
+    def _fetch_batch(self, idxs):
+        # This can be overwritten for more complicated dataset indexing
+        batch = self._ds[idxs]
+        return batch
+
     # ---------------- background producer ----------------------------- #
     def _producer_main(self):
         asyncio.run(self._fill_queue())
@@ -129,7 +135,7 @@ class DataLoader:
                 if self._stop_event.is_set():
                     break
                 fut = asyncio.get_running_loop().run_in_executor(
-                    self._executor, self._fetch_batch, idxs
+                    self._executor, self._process_batch, idxs
                 )
                 batch = await fut
                 self._q.put(batch)  # blocks if queue full
@@ -138,8 +144,8 @@ class DataLoader:
             self._q.put(None)
             raise
 
-    def _fetch_batch(self, idxs):
-        batch = self._ds[idxs]
+    def _process_batch(self, idxs):
+        batch = self._fetch_batch(idxs)
         for fn in self._host_tfns:
             batch = fn(batch)
         batch = _tree_to_jnp(batch)

@@ -299,10 +299,22 @@ def flex_attention(
     query = query[None] if query.ndim == 3 else query
 
     _, l_q, h, n = query.shape
+    _, l_kv, _,_ = key.shape
 
     query = pad_to_power_of_2(query)
     key = pad_to_power_of_2(key)
     value = pad_to_power_of_2(value)
+
+    # Currentlly the backward pass requires some conditons:
+    # TODO: Move to BlockSizes
+    if l_kv != l_q: 
+        q_seq_len = query.shape[-3]
+        kv_seq_len = key.shape[-3]
+        n_blocks =  max(q_seq_len// block_sizes.block_q_dq, 1)
+        block_kv_dkv_new = kv_seq_len // n_blocks
+        block_q_dq_new = q_seq_len // n_blocks
+        block_sizes = BlockSizes(block_sizes.block_q, block_sizes.block_k, block_sizes.block_q_dkv, block_kv_dkv_new, block_q_dq_new, block_sizes.block_kv_dq)
+        print(q_seq_len// block_sizes.block_q_dq, kv_seq_len// block_kv_dkv_new)
 
     score_mod_fn_grad = None if score_mod_fn is None else jax.grad(score_mod_fn)
 

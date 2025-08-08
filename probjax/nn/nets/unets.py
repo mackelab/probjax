@@ -1,14 +1,19 @@
 from functools import partial
 from typing import Callable, Optional, Sequence, Union
 
+import jax
 import jax.numpy as jnp
 from flax import nnx
+from flax.nnx import Conv, ConvTranspose
 from jax import Array
 
 from probjax.nn.attention import MultiHeadAttention
+from probjax.nn.utils import AdditiveFuse, AffineFuse, Sequential
 
 
 class ConvBlock(nnx.Module):
+    """A convolutional block with optional normalization and activation."""
+
     def __init__(
         self,
         in_features: int,
@@ -18,7 +23,7 @@ class ConvBlock(nnx.Module):
         kernel_size: Union[int, Sequence[int]] = 3,
         padding: str = "SAME",
         strides: Union[int, Sequence[int]] = 1,
-        num_groups: Optional[int] = 4,
+        norm: type[nnx.LayerNorm] | type[nnx.GroupNorm] | None = nnx.GroupNorm,
         activation: Callable = nnx.silu,
         **kwargs,
     ):
@@ -32,54 +37,141 @@ class ConvBlock(nnx.Module):
             **kwargs,
         )
 
-        if num_groups is not None:
-            self.group_norm = nnx.GroupNorm(out_features, num_groups, rngs=rngs)
-        else:
-            self.group_norm = None
+        self.norm = (
+            norm(
+                in_features,
+                rngs=rngs,
+            )
+            if norm is not None
+            else None
+        )
         self.activation = activation
 
     def __call__(self, x: Array) -> Array:
-        x = self.conv(x)
-        if self.group_norm is not None:
-            x = self.group_norm(x)
+        """Applies normalization, activation, and convolution."""
+        if self.norm is not None:
+            x = self.norm(x)
         x = self.activation(x)
+        x = self.conv(x)
+        return x
+
+
+class ResizeConv(nnx.Module):
+    """Resize input spatially, then apply a convolution."""
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        spatial_shape: Sequence[int],
+        rngs,
+        *,
+        resize_method: str = "bilinear",
+        kernel_size: Union[int, Sequence[int]] = 3,
+        padding: str = "SAME",
+        strides: Union[int, Sequence[int]] = 1,
+        **kwargs,
+    ):
+        self.resize_method = resize_method
+        self.spatial_shape = spatial_shape
+        self.conv = nnx.Conv(
+            in_features=in_features,
+            out_features=out_features,
+            kernel_size=kernel_size,
+            strides=strides,
+            padding=padding,
+            rngs=rngs,
+            **kwargs,
+        )
+
+    def __call__(self, x: Array) -> Array:
+        """Resizes input and applies convolution."""
+        shape = x.shape
+        if shape[-1] != self.conv.in_features:
+            raise ValueError(
+                f"Input shape {shape} does not match expected in_features"
+                f" {self.conv.in_features}"
+            )
+        if len(shape) > len(self.spatial_shape) + 1:
+            raise ValueError(
+                f"Input shape {shape} does not match expected spatial shape"
+                f" {self.spatial_shape}"
+            )
+        new_shape = shape[: -len(self.spatial_shape) - 1] + tuple(self.spatial_shape)
+
+        x = jax.image.resize(
+            x,
+            shape=new_shape,
+            method=self.resize_method,
+        )
+        x = self.conv(x)
         return x
 
 
 class ResnetBlock(nnx.Module):
+    """A residual block with two convolutional layers and optional context."""
+
     def __init__(
         self,
         in_features: int,
         out_features: int,
         rngs,
         *,
+        conv_block: type[ConvBlock] | type[nnx.Module] = ConvBlock,
         context_features: Optional[int] = None,
+        context_fuse: type[AffineFuse] | type[AdditiveFuse] = AffineFuse,
         kernel_size: Union[int, Sequence[int]] = 3,
         padding: str = "SAME",
         strides: Union[int, Sequence[int]] = 1,
-        num_groups: Optional[int] = 8,
-        activation: Callable = nnx.silu,
         **kwargs,
     ):
-        self.activation = activation
-        self.context_features = context_features
+        """Initializes the ResNet block with two convolutional layers.
+
+        Args:
+            in_features: Number of input features.
+            out_features: Number of output features.
+            rngs: Random number generators for initialization.
+            conv_block: Type of convolutional block to use, needs to be a subclass of `nnx.Module`.
+                and should accept `kernel_size`, `padding`, and `strides` as keyword arguments.
+            context_features: Optional number of context features for context fusion.
+            context_fuse: Type of context fusion to use, either `AffineFuse` or `AdditiveFuse`.
+            kernel_size: Size of the convolutional kernel.
+            padding: Padding type for the convolution.
+            strides: Strides for the convolution.
+            **kwargs: Additional keyword arguments for the convolutional block.
+        """
+        self.in_features = in_features
         self.out_features = out_features
+        self.context_features = context_features
+
         if context_features is not None:
-            self.context_linear = nnx.Linear(context_features, out_features, rngs=rngs)
+            self.context_fuse = context_fuse(out_features, context_features, rngs=rngs)
 
         _conv_block = partial(
-            ConvBlock,
+            conv_block,
             rngs=rngs,
             kernel_size=kernel_size,
             padding=padding,
             strides=strides,
-            num_groups=num_groups,
-            activation=activation,
             **kwargs,
         )
 
         self.conv1 = _conv_block(in_features, out_features)
-        self.conv2 = _conv_block(out_features, out_features)
+        self.conv2 = _conv_block(
+            out_features, out_features, kernel_init=nnx.initializers.zeros
+        )
+
+        def identity_1x1(_, shape, dtype=jnp.float32):
+            """Kernel init for a 1×1 Conv that starts as identity.
+
+            Works for (1, 1, C_in, C_out).  If C_in ≠ C_out the extra
+            channels are zero-filled.
+            """
+            k = jnp.zeros(shape, dtype)
+            diag = jnp.arange(min(shape[2], shape[3]))
+            # set W[0, 0, i, i] = 1
+            k = k.at[0, 0, diag, diag].set(1.0)
+            return k
 
         self.skip_connection = nnx.Conv(
             in_features=in_features,
@@ -87,19 +179,17 @@ class ResnetBlock(nnx.Module):
             kernel_size=1 if isinstance(kernel_size, int) else [1] * len(kernel_size),
             padding="SAME",
             use_bias=False,
+            kernel_init=identity_1x1,
             rngs=rngs,
         )
 
     def __call__(self, inputs: Array, context: Optional[Array] = None):
+        """Forward pass with optional context fusion and skip connection."""
         # First convolutional layer
         x = self.conv1(inputs)
-
-        # Add context if provided
+        # Fuse context if provided
         if context is not None:
-            context = self.context_linear(context)
-            context = self.activation(context)
-            x = x + context
-
+            x = self.context_fuse(x, context)
         # Second convolutional layer
         x = self.conv2(x)
 
@@ -107,56 +197,61 @@ class ResnetBlock(nnx.Module):
         skip_connection = self.skip_connection(inputs)
         out = x + skip_connection
         return out
-    
+
 
 class SpatialSelfAttention(nnx.Module):
-    """Full-image self-attention for (B, H, W, C) tensors,
-    implemented with the supplied `MultiHeadAttention`."""
-    def __init__(self,
-                 channels: int,
-                 rngs,
-                 *,
-                 num_heads: int = 4,
-                 qkv_mult: int = 2,               # multiplier for qkv_features
-                 groupnorm_groups: int | None = 32,
-                 **mha_kw):
-        g = channels if groupnorm_groups is None else min(groupnorm_groups, channels)
+    """Full-image self-attention for (B, H, W, C) tensors."""
+
+    def __init__(
+        self,
+        channels: int,
+        rngs,
+        *,
+        num_heads: int = 4,
+        qkv_mult: int = 2,  # multiplier for qkv_features
+        num_groups: int | None = 32,
+        **mha_kw,
+    ):
+        g = channels if num_groups is None else min(num_groups, channels)
         self.norm = nnx.GroupNorm(channels, g, rngs=rngs)
 
         self.attn = MultiHeadAttention(
-            num_heads      = num_heads,
-            in_features    = channels,
-            qkv_features   = qkv_mult * channels,   # ← still easy to tune
-            out_features   = channels,
-            rngs           = rngs,
-            **mha_kw,                                # keep any extra kwargs
+            num_heads=num_heads,
+            in_features=channels,
+            qkv_features=qkv_mult * channels,  # ← still easy to tune
+            out_features=channels,
+            rngs=rngs,
+            **mha_kw,  # keep any extra kwargs
         )
 
     def __call__(self, x: Array) -> Array:
-        b, h, w, c = x.shape                            # (B, H, W, C)
-        y = self.norm(x).reshape(b, h * w, c)           # →  (B, N, C)  with N = H·W
-        y = self.attn(y)                                # MultiHeadAttention
-        y = y.reshape(b, h, w, c)
-        return x + y       
+        """Applies group normalization and multi-head self-attention."""
+        *b, h, w, c = x.shape  # (B, H, W, C)
+        y = self.norm(x).reshape(*b, h * w, c)  # →  (B, N, C)  with N = H·W
+        y = self.attn(y)  # MultiHeadAttention
+        y = y.reshape(*b, h, w, c)
+        return x + y
 
 
 class UNet(nnx.Module):
+    """A configurable U-Net architecture with optional attention."""
+
     def __init__(
         self,
         in_features: int,
+        out_features: Sequence[int],
         rngs,
-        out_features: Sequence[int] = (32, 64, 128),
         *,
         kernel_size: Union[int, Sequence[int]] = 4,
         strides: Union[int, Sequence[int]] = 2,
-        num_groups: int = 16,
         kernel_size_resnet: Union[int, Sequence[int]] = 3,
         strides_resnet: Union[int, Sequence[int]] = 1,
-        use_bias: bool = True,
+        num_layer_final: int = 0,
         use_attention: bool | Sequence[bool] = False,
-        num_heads: int = 4,
-        qkv_mult: int = 2,
+        attn_kwargs: Optional[dict] = None,
         activation: Callable = nnx.silu,
+        resize_method="bilinear",
+        norm: type[nnx.LayerNorm] | type[nnx.GroupNorm] | None = nnx.GroupNorm,
         **kwargs,
     ):
         self.in_features = in_features
@@ -164,33 +259,15 @@ class UNet(nnx.Module):
         self.out_features = out_features
         self.kernel_size = kernel_size
         self.strides = strides
-        self.num_groups = num_groups
         self.kernel_size_resnet = kernel_size_resnet
         self.strides_resnet = strides_resnet
-        self.use_bias = use_bias
         self.use_attention = use_attention
         self.activation = activation
+        self.resize_method = resize_method
         self.rngs = rngs
         self.kwargs = kwargs
 
         assert len(out_features) >= 2, "Must have at least 2 output channels"
-        assert all(o % num_groups == 0 for o in out_features), (
-            "Output channels must be divisible by num_groups!"
-        )
-
-        # ---------------------------------------------------------------------
-        # Initial large kernel conv
-        # ---------------------------------------------------------------------
-        self.conv_initial = nnx.Conv(
-            in_features=in_features,
-            out_features=out_features[0],
-            kernel_size=kernel_size + 1
-            if isinstance(kernel_size, int)
-            else [k + 1 for k in kernel_size],
-            padding="SAME",
-            use_bias=use_bias,
-            rngs=rngs,
-        )
 
         # ---------------------------------------------------------------------
         # Building blocks
@@ -199,10 +276,9 @@ class UNet(nnx.Module):
             ResnetBlock,
             kernel_size=kernel_size_resnet,
             strides=strides_resnet,
-            num_groups=num_groups,
             activation=activation,
             rngs=rngs,
-            use_bias=use_bias,
+            norm=norm,
             **kwargs,
         )
 
@@ -211,7 +287,6 @@ class UNet(nnx.Module):
             kernel_size=kernel_size,
             strides=strides,
             padding="SAME",
-            use_bias=use_bias,
             rngs=rngs,
         )
 
@@ -220,7 +295,6 @@ class UNet(nnx.Module):
             kernel_size=kernel_size,
             strides=strides,
             padding="SAME",
-            use_bias=use_bias,
             rngs=rngs,
         )
 
@@ -228,29 +302,27 @@ class UNet(nnx.Module):
         # Optional attention blocks
         # ---------------------------------------------------------------------
         if isinstance(use_attention, Sequence):
-            assert len(use_attention) == self.num_stages, \
+            assert len(use_attention) == self.num_stages, (
                 "`use_attention` list must match number of down stages"
-            self.attn_mask = list(use_attention)                 # stage-wise mask
-            self.use_attention = any(self.attn_mask)             # global flag
+            )
+            self.attn_mask = list(use_attention)  # stage-wise mask
+            self.use_attention = any(self.attn_mask)  # global flag
         else:
             self.attn_mask = [bool(use_attention)] * self.num_stages
             self.use_attention = bool(use_attention)
 
-        if self.use_attention:                                   # builder for a single block
+        if self.use_attention:  # builder for a single block
             initializer = nnx.initializers.variance_scaling(
                 len(out_features), "fan_in", "truncated_normal"
             )
+            attn_kwargs = {} if attn_kwargs is None else attn_kwargs
             _attention = lambda ch: SpatialSelfAttention(
-                ch,
-                rngs=rngs,
-                num_heads=num_heads,
-                qkv_mult=qkv_mult,
-                kernel_init=initializer,
+                ch, rngs=rngs, kernel_init=initializer, **attn_kwargs
             )
 
         # prepare empty lists (None where not used, to keep the indexing simple)
         self.attention_layers_down: list[Optional[nnx.Module]] = []
-        self.attention_layers_up:   list[Optional[nnx.Module]] = []
+        self.attention_layers_up: list[Optional[nnx.Module]] = []
 
         # ---------------------------------------------------------------------
         # Down path
@@ -287,14 +359,14 @@ class UNet(nnx.Module):
         # ---------------------------------------------------------------------
         self.resnet_blocks_up = []
         self.upsampling_layers = []
-        for i in range(self.num_stages - 1, 0, -1):
+        for i in range(self.num_stages - 1, -1, -1):
             # Each up block processes (out_features[i]*2) -> out_features[i]
             # because we concatenate skip connections
             self.resnet_blocks_up.append(
                 _resnet_block(out_features[i] * 2, out_features[i])
             )
             # Up attention
-            if self.attn_mask[self.num_stages - i - 1]:                                # mirror of down mask
+            if self.attn_mask[self.num_stages - i - 1]:
                 self.attention_layers_up.append(_attention(out_features[i]))
             else:
                 self.attention_layers_up.append(None)
@@ -305,20 +377,44 @@ class UNet(nnx.Module):
                 _conv_upsampling(out_features[i], out_features[i - 1])
             )
 
-        # ---------------------------------------------------------------------
-        # Final conv
-        # ---------------------------------------------------------------------
+        # Final and initial conv
+        self.conv_initial = nnx.Conv(
+            in_features=in_features,
+            out_features=out_features[0],
+            kernel_size=1,
+            padding="SAME",
+            use_bias=False,
+            rngs=rngs,
+        )
         self.conv_final = nnx.Conv(
-            in_features=out_features[0],
+            in_features=out_features[0] * 2,
             out_features=in_features,
             kernel_size=1,
             padding="SAME",
-            use_bias=use_bias,
+            use_bias=False,
             kernel_init=nnx.initializers.zeros,
             rngs=rngs,
         )
 
+        # Final deep layer (if specified)
+        if num_layer_final > 0:
+            self.net_final = Sequential(*[
+                _resnet_block(
+                    in_features=in_features,
+                    out_features=in_features,
+                    norm=nnx.LayerNorm,
+                )
+                for _ in range(num_layer_final)
+            ])
+        else:
+            self.net_final = None
+
+    def get_default_block():
+        """Returns the default block type (not implemented)."""
+        pass
+
     def __call__(self, inputs: Array, context: Optional[Array] = None):
+        """Forward pass through the U-Net with optional context and attention."""
         # ---------------------------------------------------------------------
         # 1) Initial projection
         # ---------------------------------------------------------------------
@@ -337,11 +433,10 @@ class UNet(nnx.Module):
             if self.use_attention and self.attention_layers_down[i] is not None:
                 x = self.attention_layers_down[i](x)
 
-            # Save for skip connection
+            pre_downsampling.append(x)
+            # Down sample
             if i < self.num_stages - 1:
-                # Down sample
                 x = self.downsampling_layers[i](x)
-                pre_downsampling.append(x)
 
         # ---------------------------------------------------------------------
         # 3) Middle block
@@ -355,28 +450,31 @@ class UNet(nnx.Module):
         # 4) Up path
         # ---------------------------------------------------------------------
         # We traverse from top to bottom of the up-sampling path
-        for idx in range(self.num_stages - 1):
-            # Index of the "top" resnet block we're in
-            up_idx = idx
-
+        for idx in range(self.num_stages):
             # Concatenate with output from downsampling phase
             down = pre_downsampling.pop()
-            slices = tuple([slice(0, d) for d in down.shape])
-            x = jnp.concatenate([down, x[slices]], -1)
-
+            # Depending on strides and input dimension the shapes can slightly
+            # mismatch, hence we will ensure that both will have the same dim.
+            x = jax.image.resize(x, down.shape, self.resize_method)
+            x = jnp.concatenate([down, x], -1)
             # ResNet block
-            x = self.resnet_blocks_up[up_idx](x, context)
+            x = self.resnet_blocks_up[idx](x, context)
 
             # Attention
-            if self.use_attention and self.attention_layers_up[up_idx] is not None:
-                x = self.attention_layers_up[up_idx](x)
+            if self.use_attention and self.attention_layers_up[idx] is not None:
+                x = self.attention_layers_up[idx](x)
 
             # Upsample (except for the very last iteration)
-            if up_idx < len(self.upsampling_layers):
-                x = self.upsampling_layers[up_idx](x)
+            if idx < self.num_stages - 1:
+                x = self.upsampling_layers[idx](x)
 
         # ---------------------------------------------------------------------
         # 5) Final projection
         # ---------------------------------------------------------------------
+        pre_in = pre_downsampling.pop()
+        x = jnp.concatenate([pre_in, x], axis=-1)
         x = self.conv_final(x)
+
+        if self.net_final is not None:
+            x = self.net_final(x, context)
         return x

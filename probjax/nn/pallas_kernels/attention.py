@@ -819,6 +819,8 @@ def _mha_backward(
         block_kv_dkv = min(block_sizes.block_kv_dkv, kv_seq_len)
         block_q_dq = min(block_sizes.block_q_dq, q_seq_len)
         block_kv_dq = min(block_sizes.block_kv_dq, kv_seq_len)
+        print("Kernel", q_seq_len, kv_seq_len)
+        print(block_sizes.block_q_dq, block_sizes.block_kv_dkv)
 
         if q_seq_len // block_q_dq != kv_seq_len // block_kv_dkv:
             raise ValueError(

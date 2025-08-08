@@ -7,7 +7,10 @@ from flax import nnx
 from jax.typing import ArrayLike
 from jaxtyping import PyTree
 
-from probjax.nn.loss_fn.flow_matching import build_flow_matching_loss, build_mean_flow_matching_loss
+from probjax.nn.loss_fn.flow_matching import (
+    build_flow_matching_loss,
+    build_mean_flow_matching_loss,
+)
 
 
 class FlowMatcher(nnx.Module):
@@ -79,12 +82,12 @@ class FlowMatcher(nnx.Module):
             interpolation_fn=self.interpolation_fn,
             interpolation_noise_fn=self.interpolation_std_fn,
             weight_fn=None,
-            **loss_kwargs
+            **loss_kwargs,
         )
 
     def __call__(self, t, x: ArrayLike, *args, **kwargs) -> ArrayLike:
-        """ Forward pass of the model - v-prediction.
-        
+        """Forward pass of the model - v-prediction.
+
         We do a Gaussian closed-form preconditioning scheme. We know that
         p0(x) = N(x; mu0, std0**2) and let's assume that p1(x) = N(x; mu1, std1**2).
         Then the optimal v-prediction target is tractable and given by:
@@ -95,7 +98,7 @@ class FlowMatcher(nnx.Module):
         we have that s(t) = (t * std1**2) / ((1 - t) ** 2 * std0**2 + t**2 * std1**2)
 
         We can plug in all the values for this but predict mu_t by the model.
-        
+
         """
         # With preconditioning
         mu0 = self.mu0.value
@@ -108,7 +111,9 @@ class FlowMatcher(nnx.Module):
         approx_stdt = jnp.sqrt(t**2 * std1**2 + (1 - t) ** 2 * std0**2)
 
         x_normed = jax.tree_util.tree_map(lambda x: (x - approx_mut) / approx_stdt, x)
-        scale = ((t * std1**2) - (1-t) * std0**2) / ((1 - t) ** 2 * std0**2 + t**2 * std1**2)
+        scale = ((t * std1**2) - (1 - t) * std0**2) / (
+            (1 - t) ** 2 * std0**2 + t**2 * std1**2
+        )
         pred_mu1 = self.net(t, x_normed, *args, **kwargs)
 
         def process_leaf(leaf_x, pred_mu1):
@@ -129,7 +134,6 @@ class FlowMatcher(nnx.Module):
             "Implemented only for specific implementation of this base class"
         )
 
-
     def loss(self, rng, data: ArrayLike, *args, **kwargs):
         rng_source, rng_times = jax.random.split(rng, 2)
 
@@ -147,8 +151,21 @@ class FlowMatcher(nnx.Module):
         loss = self._loss(times, x0, data, *args, **kwargs)
         return loss
 
+
 class MeanFlowMatcher(nnx.Module):
-    def __init__(self, net, interpolation_fn, interpolation_std_fn=None, interpolation_grad_fn=None, interpolation_noise_grad_fn=None, mu0=0, std0=1, mu1=0.0, std1=1.0, rngs=None):
+    def __init__(
+        self,
+        net,
+        interpolation_fn,
+        interpolation_std_fn=None,
+        interpolation_grad_fn=None,
+        interpolation_noise_grad_fn=None,
+        mu0=0,
+        std0=1,
+        mu1=0.0,
+        std1=1.0,
+        rngs=None,
+    ):
         self.net = net
         self.mu0 = nnx.Variable(mu0)
         self.std0 = nnx.Variable(std0)
@@ -168,7 +185,9 @@ class MeanFlowMatcher(nnx.Module):
             weight_fn=None,
         )
 
-    def __call__(self, t: ArrayLike, x: ArrayLike, r: Optional[ArrayLike] = None,  *args,**kwargs) -> ArrayLike:
+    def __call__(
+        self, t: ArrayLike, x: ArrayLike, r: Optional[ArrayLike] = None, *args, **kwargs
+    ) -> ArrayLike:
         """
         Args:
             t: Current time t.
@@ -192,48 +211,91 @@ class MeanFlowMatcher(nnx.Module):
         x_normed = jax.tree_util.tree_map(lambda x: (x - approx_mu_t) / approx_std_t, x)
         std_t = jnp.sqrt(t**2 * std1**2 + (1 - t) ** 2 * std0**2)
         std_r = jnp.sqrt(r**2 * std1**2 + (1 - r) ** 2 * std0**2)
-        scale_rt = (std_r - std_t) / ((r-t) * std_r)
-        scale_t = ((t * std1**2) - (1-t) * std0**2) / ((1 - t) ** 2 * std0**2 + t**2 * std1**2)
+        scale_rt = (std_r - std_t) / ((r - t) * std_r)
+        scale_t = ((t * std1**2) - (1 - t) * std0**2) / (
+            (1 - t) ** 2 * std0**2 + t**2 * std1**2
+        )
         scale = jnp.where(r > t, scale_rt, scale_t)
 
         pred_mu1 = self.net(t, x_normed, *args, r=r, **kwargs)
 
         return pred_mu1 - mu0 + scale * (x - approx_mu_t)
 
-    def noise_schedule(self, rng, shape, percent_rt=0.25, mu_rt=-0.4, scale_rt=1.0, mu_t=0.4, scale_t=1.0):
+    def noise_schedule(
+        self,
+        rng,
+        shape,
+        percent_rt=0.25,
+        mu_rt=-0.4,
+        scale_rt=1.0,
+        mu_t=0.4,
+        scale_t=1.0,
+    ):
         batch_size = shape[0]
         batch_size_different = int(batch_size * percent_rt)
         batch_size_same = batch_size - batch_size_different
 
         rng_t, rng_r, rng_tr = jax.random.split(rng, 3)
 
-        t1 = jax.nn.sigmoid(jax.random.normal(rng_t, (batch_size_different,1))*scale_rt - mu_rt)
-        r1 = jax.nn.sigmoid(jax.random.normal(rng_r, (batch_size_different,1))*scale_rt - mu_rt)
-        r1 = jnp.clip(t1+r1, a_min=0., a_max=1.)
+        t1 = jax.nn.sigmoid(
+            jax.random.normal(rng_t, (batch_size_different, 1)) * scale_rt - mu_rt
+        )
+        r1 = jax.nn.sigmoid(
+            jax.random.normal(rng_r, (batch_size_different, 1)) * scale_rt - mu_rt
+        )
+        r1 = jnp.clip(t1 + r1, a_min=0.0, a_max=1.0)
 
-        t2 = r2 =  jax.nn.sigmoid(jax.random.normal(rng_tr, (batch_size_same,1))*scale_t - mu_t)
+        t2 = r2 = jax.nn.sigmoid(
+            jax.random.normal(rng_tr, (batch_size_same, 1)) * scale_t - mu_t
+        )
 
         t = jnp.concatenate([t1, t2], axis=0)
         r = jnp.concatenate([r1, r2], axis=0)
 
         return t, r
 
-    def loss(self, rng, data: ArrayLike, *args, adaptive_weight_p: float = 0.3, adaptive_weight_eps: float = 1e-3, **kwargs):
+    def loss(
+        self,
+        rng,
+        data: ArrayLike,
+        *args,
+        adaptive_weight_p: float = 0.3,
+        adaptive_weight_eps: float = 1e-3,
+        **kwargs,
+    ):
         rng_source, rng_times = jax.random.split(rng, 2)
-        times_t, times_r = self.noise_schedule( rng_times, (data.shape[0],) + (1,) * (data.ndim - 2))
+        times_t, times_r = self.noise_schedule(
+            rng_times, (data.shape[0],) + (1,) * (data.ndim - 2)
+        )
 
         x0 = (
             jax.random.normal(rng_source, shape=data.shape) * self.std0.value
             + self.mu0.value
         )
-        loss = self._loss(times_r, times_t, x0, data, *args, adaptive_weight_p=adaptive_weight_p, adaptive_weight_eps=adaptive_weight_eps, **kwargs)
+        loss = self._loss(
+            times_r,
+            times_t,
+            x0,
+            data,
+            *args,
+            adaptive_weight_p=adaptive_weight_p,
+            adaptive_weight_eps=adaptive_weight_eps,
+            **kwargs,
+        )
         return loss
 
 
 class LinearFlow(FlowMatcher):
-
-    def __init__(self, net, mu0=0, std0=1, mu1=0.0, std1=1.0, rngs=None, loss_kwargs=None):
-
+    def __init__(
+        self,
+        net: nnx.Module,
+        mu0: ArrayLike = 0.0,
+        std0: ArrayLike = 1.0,
+        mu1: ArrayLike = 0.0,
+        std1: ArrayLike = 1.0,
+        rngs=None,
+        loss_kwargs=None,
+    ):
         super().__init__(
             net,
             mu0=mu0,
@@ -242,9 +304,8 @@ class LinearFlow(FlowMatcher):
             std1=std1,
             rngs=rngs,
             interpolation_fn=lambda x0, x1, t: (1 - t) * x0 + t * x1,
-            loss_kwargs=loss_kwargs
+            loss_kwargs=loss_kwargs,
         )
-
 
     def denoise(self, t, x: PyTree[ArrayLike]) -> PyTree[ArrayLike]:
         # x0 is noise
@@ -282,7 +343,7 @@ class LinearFlow(FlowMatcher):
 
         return jax.tree_util.tree_map(score_leaf, x, v)
 
-    def noise_schedule(self, rng, shape, mu=0.2, scale=1.0):
+    def noise_schedule(self, rng, shape, mu=-0.4, scale=1.0):
         return jax.nn.sigmoid(jax.random.normal(rng, shape=shape + (1,)) * scale + mu)
 
     def solve_schedule(self, num_steps=50):
@@ -291,13 +352,29 @@ class LinearFlow(FlowMatcher):
 
 
 class LinearMeanFlow(MeanFlowMatcher):
-    def __init__(self, net, interpolation_std_fn=None, interpolation_grad_fn=None, interpolation_noise_grad_fn=None, mu0=0, std0=1, mu1=0.0, std1=1.0, rngs=None):
+    def __init__(
+        self,
+        net,
+        mu0=0,
+        std0=1,
+        mu1=0.0,
+        std1=1.0,
+        rngs=None,
+    ):
         interpolation_fn = lambda x0, x1, t: (1 - t) * x0 + t * x1
-        super().__init__(net, interpolation_fn, interpolation_std_fn, interpolation_grad_fn, interpolation_noise_grad_fn, mu0=mu0, std0=std0, mu1=mu1, std1=std1, rngs=rngs)
+        super().__init__(
+            net,
+            interpolation_fn,
+            None,
+            None,
+            None,
+            mu0=mu0,
+            std0=std0,
+            mu1=mu1,
+            std1=std1,
+            rngs=rngs,
+        )
 
     def solve_schedule(self, num_steps=50):
         ts = jnp.linspace(0, 1, num_steps)
         return ts
-
-
-
