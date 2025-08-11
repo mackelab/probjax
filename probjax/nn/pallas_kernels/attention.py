@@ -83,9 +83,9 @@ class BlockSizes:
 
 
 def mha_forward_kernel(
-    q_ref,
-    k_ref,
-    v_ref,  # Input arrays
+    q_ref: jax.Array,  # Query tensor
+    k_ref: jax.Array,  # Key tensor
+    v_ref: jax.Array,  # Input arrays
     segment_ids_ref: jax.Array | None,  # segment_id arrays
     o_ref: Any,  # Output
     *residual_refs: Any,  # Residual outputs
@@ -264,7 +264,7 @@ def mha_forward_kernel(
 
 
 @functools.partial(
-    jax.custom_vjp, nondiff_argnums=[4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,16]
+    jax.custom_vjp, nondiff_argnums=[4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 )
 @functools.partial(
     jax.jit,

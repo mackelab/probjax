@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Callable
 
 
-class Mask(ABC):
+class AttentionMask(ABC):
     def __init__(self, q_N=None, kv_N=None):
         self.q_N = q_N
         self.kv_N = kv_N
@@ -17,7 +17,7 @@ class Mask(ABC):
         return self.mask_mod_fn(1, 1, self.q_N, self.kv_N).squeeze()
 
     def __and__(self, other):
-        if not isinstance(other, Mask):
+        if not isinstance(other, AttentionMask):
             return NotImplemented
 
         return GeneralMask(
@@ -28,7 +28,7 @@ class Mask(ABC):
         )
 
     def __or__(self, other):
-        if not isinstance(other, Mask):
+        if not isinstance(other, AttentionMask):
             return NotImplemented
 
         return GeneralMask(
@@ -39,7 +39,7 @@ class Mask(ABC):
         )
 
     def __xor__(self, other):
-        if not isinstance(other, Mask):
+        if not isinstance(other, AttentionMask):
             return NotImplemented
 
         return GeneralMask(
@@ -57,7 +57,7 @@ class Mask(ABC):
         )
 
 
-class GeneralMask(Mask):
+class GeneralMask(AttentionMask):
     def __init__(self, mask_mod: Callable, q_N=None, kv_N=None):
         super().__init__(q_N, kv_N)
         self.mask_mod_fn = mask_mod
@@ -66,7 +66,7 @@ class GeneralMask(Mask):
         return self.mask_mod_fn(b, h, q_idx, kv_idx)
 
 
-class FullMask(Mask):
+class FullMask(AttentionMask):
     def __init__(self, q_N=None, kv_N=None):
         super().__init__(q_N, kv_N)
 
@@ -74,7 +74,7 @@ class FullMask(Mask):
         return True
 
 
-class NoMask(Mask):
+class NoMask(AttentionMask):
     def __init__(self, q_N=None, kv_N=None):
         super().__init__(q_N, kv_N)
 
@@ -82,7 +82,7 @@ class NoMask(Mask):
         return False
 
 
-class DiagonalMask(Mask):
+class DiagonalMask(AttentionMask):
     def __init__(self, q_N=None, kv_N=None):
         super().__init__(q_N, kv_N)
 
@@ -90,7 +90,7 @@ class DiagonalMask(Mask):
         return q_idx[:, None] == kv_idx[None, :]
 
 
-class CausalMask(Mask):
+class CausalMask(AttentionMask):
     def __init__(self, q_N=None, kv_N=None):
         super().__init__(q_N, kv_N)
 
@@ -98,7 +98,7 @@ class CausalMask(Mask):
         return q_idx[:, None] >= kv_idx[None, :]
 
 
-class SlidingWindowMask(Mask):
+class SlidingWindowMask(AttentionMask):
     def __init__(self, window_size, q_N=None, kv_N=None):
         super().__init__(q_N, kv_N)
         self.window_size = window_size
@@ -107,7 +107,7 @@ class SlidingWindowMask(Mask):
         return q_idx - kv_idx <= self.window_size
 
 
-class BlockMask(Mask):
+class BlockMask(AttentionMask):
     def __init__(self, block_specs, q_N=None, kv_N=None):
         super().__init__(q_N, kv_N)
         self.block_specs = block_specs
