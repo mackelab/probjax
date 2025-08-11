@@ -428,10 +428,10 @@ def rational_quadratic_spline_and_logdets(
 def rational_quadratic_spline(
     params: ArrayLike,
     x: ArrayLike,
-    range_min_x: float = -10.0,
-    range_max_x: float = 10.0,
-    range_min_y: float = -10.0,
-    range_max_y: float = 10.0,
+    x_min: float = -10.0,
+    x_max: float = 10.0,
+    y_min: float = -10.0,
+    y_max: float = 10.0,
     min_bin_size: float = 1e-4,
     min_knot_slope: float = 1e-4,
     bounded: bool = False,
@@ -439,16 +439,14 @@ def rational_quadratic_spline(
     x_pos, y_pos, knot_slopes = jnp.split(params, 3, axis=-1)
     # Normalize slopes and bins
     knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
-    # Stay within numerical limits
-    # x_pos = jnp.clip(x_pos, -6, 6)
-    # y_pos = jnp.clip(y_pos, -6, 6)
+
 
     x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
-        (range_max_x - min_bin_size) - range_min_x
-    ) + range_min_x
+        (x_max - min_bin_size) - x_min
+    ) + x_min
     y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
-        (range_max_y - min_bin_size) - range_min_y
-    ) + range_min_y
+        (y_max - min_bin_size) - y_min
+    ) + y_min
 
     if not bounded:
         # Real support
@@ -460,10 +458,10 @@ def rational_quadratic_spline(
             x_pos,
             y_pos,
             knot_slopes,
-            range_min_x,
-            range_max_x,
-            range_min_y,
-            range_max_y,
+            x_min,
+            x_max,
+            y_min,
+            y_max,
         )
     return y
 
@@ -471,10 +469,10 @@ def rational_quadratic_spline(
 def inv_rational_quadratic_spline(
     params: ArrayLike,
     x: ArrayLike,
-    range_min_x=-10.0,
-    range_max_x=10.0,
-    range_min_y=-10.0,
-    range_max_y=10.0,
+    x_min=-10.0,
+    x_max=10.0,
+    y_min=-10.0,
+    y_max=10.0,
     min_bin_size=1e-4,
     min_knot_slope: float = 1e-4,
     bounded: bool = False,
@@ -487,11 +485,11 @@ def inv_rational_quadratic_spline(
     y_pos = jnp.clip(y_pos, -6, 6)
 
     x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
-        (range_max_x - min_bin_size) - range_min_x
-    ) + range_min_x
+        (x_max - min_bin_size) - x_min
+    ) + x_min
     y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
-        (range_max_y - min_bin_size) - range_min_y
-    ) + range_min_y
+        (y_max - min_bin_size) - y_min
+    ) + y_min
 
     if not bounded:
         y, log_det = _rational_quadratic_spline_inv(x, x_pos, y_pos, knot_slopes)
@@ -501,10 +499,10 @@ def inv_rational_quadratic_spline(
             x_pos,
             y_pos,
             knot_slopes,
-            range_min_x,
-            range_max_x,
-            range_min_y,
-            range_max_y,
+            x_min,
+            x_max,
+            y_min,
+            y_max,
         )
     return y, jnp.squeeze(log_det)
 
@@ -985,57 +983,47 @@ def _piecewise_affine_spline_inv(
 def piecewise_affine_spline(
     params: ArrayLike,
     x: ArrayLike,
-    range_min_x: float = -10.0,
-    range_max_x: float = 10.0,
-    range_min_y: float = -10.0,
-    range_max_y: float = 10.0,
+    x_min: float = -10.0,
+    x_max: float = 10.0,
+    y_min: float = -10.0,
+    y_max: float = 10.0,
     min_bin_size: float = 1e-4,
     bounded: bool = False,
 ):
     x_pos, y_pos = jnp.split(params, 2, axis=-1)
 
-    # To avoid numerical issues we will bound x_pos and y_pos to be in the range
-    # that is stable for the softmax function.
-    x_pos = x_pos - jnp.mean(x_pos)
-    y_pos = y_pos - jnp.mean(y_pos)
-
     x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
-        ((range_max_x - min_bin_size) - range_min_x) + (range_min_x)
-    )
+        ((x_max - min_bin_size) - x_min)
+    ) + x_min + 1e-6
     y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
-        (range_max_y - min_bin_size) - range_min_y
-    ) + range_min_y
+        (y_max - min_bin_size) - y_min
+    ) + y_min + 1e-6
 
     if not bounded:
         y, _ = _piecewise_affine_spline_fwd(x, x_pos, y_pos)
     else:
         y, _ = _piecewise_affine_spline_fwd(
-            x, x_pos, y_pos, range_min_x, range_max_x, range_min_y, range_max_y
+            x, x_pos, y_pos, x_min, x_max, y_min, y_max
         )
     return y
 
-def piecewise_affine_spline_inv(params, y, range_min_x=-10.0, range_max_x=10.0, range_min_y=-10.0, range_max_y=10.0, min_bin_size=1e-4, bounded=False):
+def piecewise_affine_spline_inv(params, y, x_min=-10.0, x_max=10.0, y_min=-10.0, y_max=10.0, min_bin_size=1e-4, bounded=False):
     x_pos, y_pos = jnp.split(params, 2, axis=-1)
 
-    # To avoid numerical issues we will bound x_pos and y_pos to be in the range
-    # that is stable for the softmax function.
-    x_pos = x_pos - jnp.mean(x_pos)
-    y_pos = y_pos - jnp.mean(y_pos)
-
     x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
-        ((range_max_x - min_bin_size) - range_min_x) + (range_min_x)
-    )
+        ((x_max - min_bin_size) - x_min)
+    ) + x_min + 1e-6
     y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
-        (range_max_y - min_bin_size) - range_min_y
-    ) + range_min_y
+        (y_max - min_bin_size) - y_min
+    ) + y_min + 1e-6
 
     if not bounded:
         x, logdet = _piecewise_affine_spline_inv(y, x_pos, y_pos)
     else:
         x, logdet = _piecewise_affine_spline_inv(
-            x, x_pos, y_pos, range_min_x, range_max_x, range_min_y, range_max_y
+            y, x_pos, y_pos, x_min, x_max, y_min, y_max
         )
-    return x, logdet
+    return x, jnp.squeeze(logdet)
 
 
 piecewise_affine_spline.definv_and_logdet(piecewise_affine_spline_inv)
@@ -1249,7 +1237,7 @@ def _monotone_hermite_cubic_spline_inv(
 
         z_init = jnp.clip(w, 0.0, 1.0)  # linear guess
         (z_final, _, _), _ = jax.lax.scan(lambda c, i: body(c, i),
-                                          (z_init, jnp.array(0.0), jnp.array(1.0)),
+                                          (z_init, jnp.array([0.0]), jnp.array([1.0])),
                                           jnp.arange(newton_iters))
         return z_final
 
