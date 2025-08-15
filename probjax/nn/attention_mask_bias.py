@@ -3,18 +3,18 @@ from typing import Callable
 
 
 class AttentionMask(ABC):
-    def __init__(self, q_N=None, kv_N=None):
-        self.q_N = q_N
-        self.kv_N = kv_N
+    def __init__(self, q_seq_len=None, kv_seq_len=None):
+        self.q_seq_len = q_seq_len
+        self.kv_seq_len = kv_seq_len
 
     @abstractmethod
     def mask_mod_fn(self, b, h, q_idx, kv_idx):
         pass
 
     def __jax_array__(self):
-        if self.q_N is None or self.kv_N is None:
+        if self.q_seq_len is None or self.kv_seq_len is None:
             raise ValueError("Mask not initialized with q_N and kv_N")
-        return self.mask_mod_fn(1, 1, self.q_N, self.kv_N).squeeze()
+        return self.mask_mod_fn(1, 1, self.q_seq_len, self.kv_seq_len).squeeze()
 
     def __and__(self, other):
         if not isinstance(other, AttentionMask):
@@ -23,8 +23,8 @@ class AttentionMask(ABC):
         return GeneralMask(
             lambda b, h, q_idx, kv_idx: self.mask_mod_fn(b, h, q_idx, kv_idx)
             & other.mask_mod_fn(b, h, q_idx, kv_idx),
-            self.q_N,
-            self.kv_N,
+            self.q_seq_len,
+            self.kv_seq_len,
         )
 
     def __or__(self, other):
@@ -34,8 +34,8 @@ class AttentionMask(ABC):
         return GeneralMask(
             lambda b, h, q_idx, kv_idx: self.mask_mod_fn(b, h, q_idx, kv_idx)
             | other.mask_mod_fn(b, h, q_idx, kv_idx),
-            self.q_N,
-            self.kv_N,
+            self.q_seq_len,
+            self.kv_seq_len,
         )
 
     def __xor__(self, other):
@@ -45,15 +45,15 @@ class AttentionMask(ABC):
         return GeneralMask(
             lambda b, h, q_idx, kv_idx: self.mask_mod_fn(b, h, q_idx, kv_idx)
             ^ other.mask_mod_fn(b, h, q_idx, kv_idx),
-            self.q_N,
-            self.kv_N,
+            self.q_seq_len,
+            self.kv_seq_len,
         )
 
     def __invert__(self):
         return GeneralMask(
             lambda b, h, q_idx, kv_idx: ~self.mask_mod_fn(b, h, q_idx, kv_idx),
-            self.q_N,
-            self.kv_N,
+            self.q_seq_len,
+            self.kv_seq_len,
         )
 
 

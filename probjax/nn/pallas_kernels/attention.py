@@ -170,6 +170,8 @@ def mha_forward_kernel(
         if mask_mod or causal or (segment_ids_ref is not None):
             mask = None
             # Segmend ID and causal can be absorbed into mask_mod
+            span_q = start_q * block_q + jnp.arange(block_q)
+            span_k = start_k * block_k + jnp.arange(block_k)
             if causal:
                 span_q = start_q * block_q + jnp.arange(block_q)
                 span_k = start_k * block_k + jnp.arange(block_k)
@@ -241,11 +243,16 @@ def mha_forward_kernel(
         # 2 tokens.
 
         left_window, right_window = window_size
+
+        # Compute the lower bound (start index for keys/values for this query)
         lower_bound = lax.max(
-            lower_bound, lax.div(block_q * start_q - left_window, block_q)
+            lower_bound, lax.div(block_q * start_q + block_k - 1 - left_window, block_k)
         )
+
+        # Compute the upper bound (end index for keys/values for this query)
         upper_bound = lax.min(
-            upper_bound, lax.div(block_q * (start_q + 1) + right_window, block_q)
+            upper_bound,
+            lax.div(block_q * (start_q + 1) + block_k - 1 + right_window, block_k),
         )
 
     o, m_i, l_i = lax.fori_loop(lower_bound, upper_bound, body, (o, m_i, l_i))
@@ -676,6 +683,7 @@ def mha_backward_kernel(
         return dv, dk
 
     lower_bound = lax.div(start_k * block_kv_dkv, block_q_dkv) if causal else 0
+
     dv, dk = lax.fori_loop(
         lower_bound, pl.cdiv(q_seq_len, block_q_dkv), inner_loop_dkdv, (dv, dk)
     )
