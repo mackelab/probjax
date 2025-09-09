@@ -7,8 +7,17 @@ from jax.typing import ArrayLike
 
 
 class MaskedLinear(nnx.Linear):
-    def __init__(self, in_features, out_features, mask, rngs, **kwargs):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        mask: ArrayLike,
+        *,
+        rngs: nnx.Rngs,
+        **kwargs,
+    ):
         super().__init__(in_features, out_features, rngs=rngs, **kwargs)
+        mask = jnp.asarray(mask, dtype=jnp.bool_)
         if mask.shape != (in_features, out_features):
             raise ValueError("Mask shape must be (in_features, out_features)")
         self.mask = nnx.Variable(mask)
@@ -44,23 +53,23 @@ class MaskedMLP(nnx.Module):
         activate_final: bool = False,
         **kwargs,
     ):
-        self.layers = [
+        self.layers = nnx.List([
             MaskedLinear(dims[i], dims[i + 1], masks[i], rngs=rngs, **kwargs)
             for i in range(len(dims) - 1)
-        ]
+        ])
         self.norm = norm
         if norm is not None:
-            self.norm_layers = [
+            self.norm_layers = nnx.List([
                 norm(dims[i + 1], rngs=rngs) for i in range(len(dims) - 2)
-            ]
+            ])
         self.activation = activation
         self.activate_final = activate_final
         self.context_dim = context_dim
         if context_dim is not None:
-            self.context_blocks = [
+            self.context_blocks = nnx.List([
                 nnx.Linear(context_dim, dims[i], rngs=rngs, **kwargs)
                 for i in range(1, len(dims) - 1)
-            ]
+            ])
 
     def __call__(self, x, context=None):
         h = self.layers[0](x)

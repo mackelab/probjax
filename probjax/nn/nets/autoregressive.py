@@ -7,9 +7,10 @@ import jax.numpy as jnp
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.core.transformation import inverse_and_logabsdet
-from probjax.nn.attention import flex_attention
+from probjax.nn.layers.attention import flex_attention
 from probjax.nn.nets.masked import MaskedMLP
-from probjax.nn.nets.transformer import Transformer, PosEmbed
+from probjax.nn.nets.transformer import Transformer
+from probjax.nn.layers.encoding import PosEncode
 
 
 def get_autoregressive_masks(dims: Sequence[int]):
@@ -68,12 +69,20 @@ class AutoregressiveMLP(nnx.Module):
             x = carry
             bij_params = self.masked_mlp(x, context)  # type: ignore
             # Reshape parameters to (batch_dims..., in_out_dim, bijector_dim)
-            bij_params = bij_params.reshape(bij_params.shape[:-1] + (self.in_out_dim, -1))
+            bij_params = bij_params.reshape(
+                bij_params.shape[:-1] + (self.in_out_dim, -1)
+            )
             # Get parameters for the i-th dimension using dynamic indexing
-            bij_params_i = jax.lax.dynamic_slice(bij_params, (0,) * (bij_params.ndim - 2) + (i, 0), (1,) * (bij_params.ndim - 2) + (1, bij_params.shape[-1]))
+            bij_params_i = jax.lax.dynamic_slice(
+                bij_params,
+                (0,) * (bij_params.ndim - 2) + (i, 0),
+                (1,) * (bij_params.ndim - 2) + (1, bij_params.shape[-1]),
+            )
             bij_params_i = bij_params_i.reshape(bij_params_i.shape[:-2] + (-1,))
             # Apply bijector to the i-th dimension only
-            x_i = jax.lax.dynamic_slice(x, (0,) * (x.ndim - 1) + (i,), (1,) * (x.ndim - 1) + (1,))
+            x_i = jax.lax.dynamic_slice(
+                x, (0,) * (x.ndim - 1) + (i,), (1,) * (x.ndim - 1) + (1,)
+            )
             x_new_i = self.bijector(bij_params_i, x_i)
             x = x.at[..., i].set(x_new_i[..., 0])
             return x, None
@@ -170,16 +179,27 @@ class AutoregressiveTransformer(nnx.Module):
         self, x: jax.Array, context=None, k=None, v=None, inverse_impl="naive", **kwargs
     ):
         if inverse_impl == "naive":
+
             def scan_fn(carry, i):
                 x = carry
                 bij_params = self.predict_bij_params(x, context, k, v, **kwargs)
                 # Reshape parameters to (batch_dims..., seq_len, bijector_dim)
-                bij_params = bij_params.reshape(bij_params.shape[:-1] + (x.shape[-2], -1))
+                bij_params = bij_params.reshape(
+                    bij_params.shape[:-1] + (x.shape[-2], -1)
+                )
                 # Get parameters for the i-th dimension using dynamic indexing
-                bij_params_i = jax.lax.dynamic_slice(bij_params, (0,) * (bij_params.ndim - 2) + (i, 0), (1,) * (bij_params.ndim - 2) + (1, bij_params.shape[-1]))
+                bij_params_i = jax.lax.dynamic_slice(
+                    bij_params,
+                    (0,) * (bij_params.ndim - 2) + (i, 0),
+                    (1,) * (bij_params.ndim - 2) + (1, bij_params.shape[-1]),
+                )
                 bij_params_i = bij_params_i.reshape(bij_params_i.shape[:-2] + (-1,))
                 # Apply bijector to the i-th dimension only
-                x_i = jax.lax.dynamic_slice(x, (0,) * (x.ndim - 2) + (i, 0), (1,) * (x.ndim - 2) + (1, x.shape[-1]))
+                x_i = jax.lax.dynamic_slice(
+                    x,
+                    (0,) * (x.ndim - 2) + (i, 0),
+                    (1,) * (x.ndim - 2) + (1, x.shape[-1]),
+                )
                 x_new_i = self.bijector(bij_params_i, x_i)
                 x = x.at[..., i, :].set(x_new_i[..., 0, :])
                 return x, None
@@ -199,6 +219,7 @@ class AutoregressiveTransformer(nnx.Module):
     def inverse(self, Tx: jax.Array, context=None, k=None, v=None, **kwargs):
         return self.inverse_and_logdet(Tx, context, k, v, **kwargs)[0]
 
+
 @partial(custom_inverse, static_argnums=(1,))
 def autoregressive_transform(x, model, *args, **kwargs):
     Tx = model.forward(x, *args, **kwargs)
@@ -207,6 +228,7 @@ def autoregressive_transform(x, model, *args, **kwargs):
 
 def autoregressive_inv_and_logdet(Tx, model, *args, **kwargs):
     return model.inverse_and_logdet(Tx, *args, **kwargs)
+
 
 def autoregressive_inv(Tx, model, *args, **kwargs):
     return model.inverse(Tx, *args, **kwargs)

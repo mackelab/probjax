@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from probjax.nn.attention import (
+from probjax.nn.layers.attention import (
     dot_product_attention_jax,
     dot_product_attention,
     flex_attention,
@@ -10,7 +10,7 @@ from probjax.nn.attention import (
 )
 
 
-#@pytest.mark.gpu
+# @pytest.mark.gpu
 @pytest.mark.parametrize(
     "attention_fn",
     [
@@ -51,9 +51,9 @@ def test_attention_function_outputs_are_same():
         outputs.append(attention_fn(q, k, v))
 
     for i in range(1, len(outputs)):
-        assert jnp.allclose(
-            outputs[0], outputs[i], atol=1e-2
-        ), f"Outputs are not same for {attention_fns[i]}"
+        assert jnp.allclose(outputs[0], outputs[i], atol=1e-2), (
+            f"Outputs are not same for {attention_fns[i]}"
+        )
 
 
 def test_attention_function_gradients_are_same():
@@ -73,9 +73,9 @@ def test_attention_function_gradients_are_same():
 
     for i in range(1, len(grads)):
         for g1, g2 in zip(grads[0], grads[i]):
-            assert jnp.allclose(
-                g1, g2, atol=1e-2
-            ), f"Gradients are not same for {attention_fns[i]}"
+            assert jnp.allclose(g1, g2, atol=1e-2), (
+                f"Gradients are not same for {attention_fns[i]}"
+            )
 
 
 @pytest.mark.parametrize(
@@ -83,7 +83,8 @@ def test_attention_function_gradients_are_same():
     [
         lambda b, h, q_idx, k_idx, seg_q, seg_k: q_idx[None, :] >= k_idx[:, None],
         lambda b, h, q_idx, k_idx, seg_q, seg_k: q_idx[None, :] <= k_idx[:, None],
-        lambda b, h, q_idx, k_idx, seg_q, seg_k: (q_idx[None, :] + k_idx[:, None]) % 2 == 0,
+        lambda b, h, q_idx, k_idx, seg_q, seg_k: (q_idx[None, :] + k_idx[:, None]) % 2
+        == 0,
     ],
 )
 def test_flex_attention_masking(mask_fn):
@@ -98,6 +99,8 @@ def test_flex_attention_masking(mask_fn):
     # Test gradient
     grad_fn = jax.grad(lambda q: jnp.sum(flex_attention(q, q, q, mask=mask_fn)))
     grads = grad_fn(q)
-    grads2 = jax.grad(lambda q: jnp.sum(dot_product_attention(q, q, q, mask=mask_initiated)))
+    grads2 = jax.grad(
+        lambda q: jnp.sum(dot_product_attention(q, q, q, mask=mask_initiated))
+    )
     grads2 = grads2(q)
     assert jnp.allclose(grads, grads2, atol=1e-2)

@@ -2,15 +2,15 @@ import functools
 import math
 from functools import partial
 from typing import Callable, Optional
+
 import jax
 import jax.numpy as jnp
 import numpy as np
-from flax.nnx.module import  first_from
 from flax.nnx import MultiHeadAttention as FlaxMultiHeadAttention
-from flax.nnx import combine_masks
-from flax.nnx import dot_product_attention
-from jax.typing import ArrayLike
+from flax.nnx import combine_masks, dot_product_attention
+from flax.nnx.module import first_from
 from jax import lax
+from jax.typing import ArrayLike
 
 from probjax.nn.pallas_kernels.attention import BlockSizes, MaskModFn, ScoreModFn, mha
 
@@ -34,7 +34,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         mask: ArrayLike | None = None,
         bias: ArrayLike | None = None,
         deterministic: bool | None = None,
-        rngs = None,
+        rngs=None,
         sow_weights: bool = False,
         decode: bool | None = False,
     ):
@@ -299,7 +299,7 @@ def flex_attention(
     query = query[None] if query.ndim == 3 else query
 
     _, l_q, h, n = query.shape
-    _, l_kv, _,_ = key.shape
+    _, l_kv, _, _ = key.shape
 
     query = pad_to_power_of_2(query)
     key = pad_to_power_of_2(key)
@@ -307,14 +307,21 @@ def flex_attention(
 
     # Currentlly the backward pass requires some conditons:
     # TODO: Move to BlockSizes
-    if l_kv != l_q: 
+    if l_kv != l_q:
         q_seq_len = query.shape[-3]
         kv_seq_len = key.shape[-3]
-        n_blocks =  max(q_seq_len// block_sizes.block_q_dq, 1)
+        n_blocks = max(q_seq_len // block_sizes.block_q_dq, 1)
         block_kv_dkv_new = kv_seq_len // n_blocks
         block_q_dq_new = q_seq_len // n_blocks
-        block_sizes = BlockSizes(block_sizes.block_q, block_sizes.block_k, block_sizes.block_q_dkv, block_kv_dkv_new, block_q_dq_new, block_sizes.block_kv_dq)
-        print(q_seq_len// block_sizes.block_q_dq, kv_seq_len// block_kv_dkv_new)
+        block_sizes = BlockSizes(
+            block_sizes.block_q,
+            block_sizes.block_k,
+            block_sizes.block_q_dkv,
+            block_kv_dkv_new,
+            block_q_dq_new,
+            block_sizes.block_kv_dq,
+        )
+        print(q_seq_len // block_sizes.block_q_dq, kv_seq_len // block_kv_dkv_new)
 
     score_mod_fn_grad = None if score_mod_fn is None else jax.grad(score_mod_fn)
 

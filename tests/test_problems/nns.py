@@ -4,26 +4,28 @@ import pytest
 from flax import nnx
 
 from probjax.nn import (
+    EDM,
     LRU,
     MLP,
+    VE,
+    VP,
+    AdditiveAutoregressiveFlow,
+    AdditiveCouplingFlow,
+    AdditiveFuse,
+    AffineAutoregressiveFlow,
+    AffineCouplingFlow,
+    AffineFuse,
     AutoregressiveMLP,
+    ConcatFuse,
     CouplingMLP,
     DeepSet,
     GaussianFourierEmbedding,
     MultiHeadAttention,
-    Transformer,
-)
-from probjax.nn.nets.denoising_diffusion_model import EDM, VE, VP
-from probjax.nn.nets.flows import (
-    AdditiveAutoregressiveFlow,
-    AdditiveCouplingFlow,
-    AffineAutoregressiveFlow,
-    AffineCouplingFlow,
+    ResNet,
     SplineAutoregressiveFlow,
     SplineCouplingFlow,
+    Transformer,
 )
-from probjax.nn.nets.simple import ResNet
-from probjax.nn.utils import AdditiveFuse, AffineFuse, ConcatFuse
 
 
 @pytest.fixture(
@@ -105,11 +107,11 @@ def deepset(request):
     )
     rho = MLP(
         [latent_dim] + hidden_units + [out_dim],
-        rngs=nnx.Rngs(0),
+        rngs=nnx.Rngs(1),
         activation=jax.nn.relu,
         activate_final=True,
     )
-    model = DeepSet(phi, rho)
+    model = DeepSet(phi, rho, rngs=nnx.Rngs(2))
     return in_dim, out_dim, model
 
 
@@ -319,7 +321,7 @@ def lru(request):
         "autoregressive_additive_3",
         "autoregressive_affine_3",
         "autoregressive_spline_3",
-    ]
+    ],
 )
 def flow(request):
     kind, bij, input_dim = request.param
@@ -339,6 +341,7 @@ def flow(request):
         elif kind == "autoregressive":
             model = AdditiveAutoregressiveFlow(input_dim, 1, rngs=nnx.Rngs(0))
     return input_dim, model
+
 
 @pytest.fixture(
     params=[

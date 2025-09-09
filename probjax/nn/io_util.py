@@ -12,22 +12,30 @@ from flax.jax_utils import prefetch_to_device
 def _tree_to_jnp(batch):
     return jax.tree_util.tree_map(jnp.asarray, batch)
 
+
 def _shard(batch, n_dev):
     def split(x):
         b = x.shape[0]
         if b % n_dev:
             raise ValueError(f"Batch {b} not divisible by {n_dev}")
         return x.reshape((n_dev, b // n_dev) + x.shape[1:])
+
     return jax.tree_util.tree_map(split, batch)
+
 
 def _prefetch_single(iterator, size, device):
     dq = collections.deque()
     _put = lambda x: jax.device_put(x, device)
-    _fill = lambda n: [dq.append(jax.tree_util.tree_map(_put, d)) for d in itertools.islice(iterator, n)]
+    _fill = lambda n: [
+        dq.append(jax.tree_util.tree_map(_put, d))
+        for d in itertools.islice(iterator, n)
+    ]
     _fill(size)
     while dq:
         yield dq.popleft()
         _fill(1)
+
+
 # --------------------------------------------------------------------- #
 
 
@@ -51,7 +59,7 @@ class DataLoader:
     # ------------------------- init ----------------------------------- #
     def __init__(
         self,
-        dataset: Iterable[Any],
+        dataset: Any,
         *,
         batch_size: int,
         drop_last: bool = False,
@@ -75,17 +83,17 @@ class DataLoader:
         self._ds, self._N, self._bsz = dataset, len(dataset), batch_size
         self._drop_last, self._loop = drop_last, loop
 
-        self._rng = (
-            np.random.default_rng(seed) if shuffle else None
-        )
+        self._rng = np.random.default_rng(seed) if shuffle else None
 
         # -------- transforms ---------- #
         self._host_tfns = (
-            list(host_transforms) if isinstance(host_transforms, (list, tuple))
+            list(host_transforms)
+            if isinstance(host_transforms, (list, tuple))
             else ([host_transforms] if host_transforms else [])
         )
         self._device_tfns = (
-            list(device_transforms) if isinstance(device_transforms, (list, tuple))
+            list(device_transforms)
+            if isinstance(device_transforms, (list, tuple))
             else ([device_transforms] if device_transforms else [])
         )
 
@@ -159,8 +167,10 @@ class DataLoader:
             if batch is None:
                 raise StopIteration
             while self._q.qsize() < min_size and not self._q.full():
-                try: self._q.put_nowait(batch)
-                except queue.Full: break
+                try:
+                    self._q.put_nowait(batch)
+                except queue.Full:
+                    break
             yield batch
 
     # ---------------- main iterator API ------------------------------- #
@@ -183,11 +193,16 @@ class DataLoader:
         return batch
 
     def __len__(self):
-        return (self._N // self._bsz) if self._drop_last else (self._N + self._bsz - 1) // self._bsz
+        return (
+            (self._N // self._bsz)
+            if self._drop_last
+            else (self._N + self._bsz - 1) // self._bsz
+        )
 
     # ---------------- clean-up / context manager ----------------------- #
     def close(self):
-        if self._closed: return
+        if self._closed:
+            return
         self._closed = True
         self._stop_event.set()
         self._q.put(None)
@@ -196,9 +211,17 @@ class DataLoader:
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _finalizer(self):
-        try: self.close()
-        except Exception: pass
+        try:
+            self.close()
+        except Exception:
+            pass
 
-    def __del__(self): self._finalizer()
-    def __enter__(self): return self
-    def __exit__(self, *exc): self.close(); return False
+    def __del__(self):
+        self._finalizer()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False

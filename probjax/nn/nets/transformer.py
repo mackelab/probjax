@@ -4,80 +4,11 @@ from typing import Callable, Optional
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from jax import Array
+from jax import Array, nn
 
-from probjax.nn.attention import MultiHeadAttention
+from probjax.nn.layers.attention import MultiHeadAttention
 from probjax.nn.nets.simple import MLP
-from probjax.nn.utils import AffineFuse, ConcatFuse
-
-
-class PosEmbed(nnx.Module):
-    def __init__(self, token_dim: int, max_seq_len: int = 10_000, rngs=None):
-        """Positional embedding module.
-
-        Args:
-            token_dim (int): Dimension of the token embedding.
-            max_seq_len (int, optional): Maximal length of the sequence.
-                Defaults to 500.
-        """
-        super().__init__()
-        self.max_seq_len = max_seq_len
-
-    def __call__(self, x: Array, idx: Optional[Array] = None, **kwargs) -> Array:
-        """
-        Arguments:
-            x: jnp.ndarray, shape ``[..., seq_len, embedding_dim]``
-        """
-        if idx is None:
-            seq_len = x.shape[-2]
-            idx = jnp.arange(seq_len).reshape(-1, 1)
-        else:
-            seq_len = idx.shape[0]
-
-        token_dim = x.shape[-1]
-        div_term = jnp.exp(
-            jnp.arange(0, token_dim, 2) * (-jnp.log(self.max_seq_len) / token_dim)
-        )
-
-        # Create positional encoding with shape [1,...,1, seq_len, token_dim]
-        batch_ndims = x.ndim - 2
-        pe_shape = (1,) * batch_ndims + (seq_len, token_dim)
-        pe = jnp.zeros(pe_shape)
-        # Broadcast idx to [1,...,1, seq_len, 1] if needed
-        idx_broadcast_shape = (1,) * batch_ndims + (seq_len, 1)
-        idx = idx.reshape(idx_broadcast_shape)
-        pe = pe.at[..., 0::2].set(jnp.sin(idx * div_term))
-        pe = pe.at[..., 1::2].set(jnp.cos(idx * div_term))
-
-        return x + pe
-
-
-class LearnedPosEmbed(nnx.Module):
-    def __init__(self, dim: int, max_seq_len: int, rngs):
-        self.max_seq_len = max_seq_len
-        self.embed = nnx.Embed(max_seq_len, dim, rngs=rngs)
-
-    def __call__(self, x: Array, idx=None, rng=None) -> Array:
-        """Embeds the input with learned positional embeddings.
-
-        Args:
-            x (Array): Input array of shape [B, T, D]
-            max_len (int, optional): Maximum length of the sequence. Defaults to 512.
-
-        Returns:
-            Array: Output array of shape [B, T, D]
-        """
-        seq_len = x.shape[-2]
-        assert seq_len <= self.max_seq_len, (
-            "Sequence length cannot be greater than max_len"
-        )
-        idx = jnp.arange(seq_len) if idx is None else idx
-        pos_emb = self.embed(idx)
-        # Unsqueeze to match the shape of x
-        batch_ndims = x.ndim - 2
-        for _ in range(batch_ndims):
-            pos_emb = pos_emb[None, :, :]
-        return x + pos_emb
+from probjax.nn.layers.fuse import AffineFuse, Fuse
 
 
 class Transformer(nnx.Module):
@@ -87,7 +18,7 @@ class Transformer(nnx.Module):
     num_heads: int  # Number of attention heads.
     num_layers: int  # Number of transformer (attention + MLP) layers to stack.
     attn_size: int  # Size of the attention (key, query, value) vectors.
-    dropout_rate: float  # Probability with which to apply dropout.
+    dropout_rate: float | None  # Probability with which to apply dropout.
     widening_factor: int = 4  # Factor by which the MLP hidden layer widens.
 
     def __init__(
@@ -109,7 +40,8 @@ class Transformer(nnx.Module):
         skip_connection_attn: bool = True,
         skip_connection_mlp: bool = True,
         initializer: Optional[nnx.initializers.Initializer] = None,
-        context_fusion: type = AffineFuse,
+        norm_cls: type[nnx.Module] = nnx.LayerNorm,
+        context_fusion: type[Fuse] = AffineFuse,
         attention_fn: Optional[Callable] = None,
         cross_attention_fn: Optional[Callable] = None,
     ):
@@ -160,25 +92,25 @@ class Transformer(nnx.Module):
         self.skip_connection_mlp = skip_connection_mlp
 
         # Layer norms for the attention and dense blocks.
-        self.layer_norms_attn = [
-            nnx.LayerNorm(model_dim, rngs=rngs) for _ in range(num_layers)
-        ]
-        self.layer_norms_dense = [
-            nnx.LayerNorm(model_dim, rngs=rngs) for _ in range(num_layers)
-        ]
+        self.layer_norms_attn = nnx.List([
+            norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
+        ])
+        self.layer_norms_dense = nnx.List([
+            norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
+        ])
 
         if self.enable_cross_attention:
-            self.layer_norms_cross_attn = [
-                nnx.LayerNorm(model_dim, rngs=rngs) for _ in range(num_layers)
-            ]
+            self.layer_norms_cross_attn = nnx.List([
+                norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
+            ])
 
-        self.out_layer_norm = nnx.LayerNorm(model_dim, rngs=rngs)
+        self.out_layer_norm = norm_cls(model_dim, rngs=rngs)
 
         # Attention block.
         attention_fn = (
             attention_fn if attention_fn is not None else nnx.dot_product_attention
         )
-        self.attention_blocks = [
+        self.attention_blocks = nnx.List([
             MultiHeadAttention(
                 num_heads,
                 model_dim,
@@ -191,13 +123,15 @@ class Transformer(nnx.Module):
                 normalize_qk=normalize_qk_attn,
             )
             for _ in range(num_layers)
-        ]
+        ])
 
         if self.enable_cross_attention:
             cross_attention_fn = (
-                cross_attention_fn if cross_attention_fn is not None else nnx.dot_product_attention
+                cross_attention_fn
+                if cross_attention_fn is not None
+                else nnx.dot_product_attention
             )
-            self.cross_attention_blocks = [
+            self.cross_attention_blocks = nnx.List([
                 MultiHeadAttention(
                     num_heads,
                     model_dim,
@@ -210,39 +144,37 @@ class Transformer(nnx.Module):
                     normalize_qk=normalize_qk_cross_attn,
                 )
                 for _ in range(num_layers)
-            ]
+            ])
 
         # Context fusion if context is provided.
-        first_dim = model_dim
         if context_dim is not None:
-            self.context_layers = [
-                context_fusion(model_dim, context_dim, rngs) for _ in range(num_layers)
-            ]
-            if issubclass(context_fusion, ConcatFuse):
-                first_dim += model_dim
+            self.context_layers = nnx.List([
+                context_fusion(model_dim, context_dim, rngs=rngs)
+                for _ in range(num_layers)
+            ])
 
         # Dense block.
         dims = (
-            [first_dim]
+            [model_dim]
             + [widening_factor * model_dim] * num_hidden_layers
             + [model_dim]
         )
         linear = partial(nnx.Linear, kernel_init=self.initializer)
-        self.dense_blocks = [
+        self.dense_blocks = nnx.List([
             MLP(
                 dims,
                 rngs=rngs,
-                linear=linear,
+                linear_cls=linear,
                 activation=act,
                 activate_final=True,
             )
             for _ in range(num_layers)
-        ]
+        ])
 
         if dropout_rate is not None:
-            self.dropout_dense = [
+            self.dropout_dense = nnx.List([
                 nnx.Dropout(rate=dropout_rate, rngs=rngs) for _ in range(num_layers)
-            ]
+            ])
         else:
             self.dropout_dense = None
 
@@ -278,11 +210,9 @@ class Transformer(nnx.Module):
         if v is not None:
             v = v.reshape(-1, v.shape[-2], v.shape[-1])
 
-
         if context is not None:
             # Ensure context has shape [batch, context_dim] or [batch, 1, context_dim]
             context = context.reshape(-1, 1, context.shape[-1])
-            # else: assume already [batch, time, context_dim] or similar
 
         if k is not None and not self.enable_cross_attention:
             raise ValueError("Cross attention is disabled, but k is provided.")

@@ -10,15 +10,16 @@ from probjax.nn.bijective import (
     affine_bijector,
     rational_quadratic_spline,
 )
+from probjax.nn.layers.bijective import Flip
 from probjax.nn.nets.autoregressive import AutoregressiveMLP
 from probjax.nn.nets.coupling import CouplingMLP
-from probjax.nn.utils import Flip, Sequential
+from probjax.nn.nets.simple import Sequential
 from probjax.stats.continuous import norm
-from probjax.stats.transformed import transformed
 from probjax.stats.independent import independent
+from probjax.stats.transformed import transformed
 
 
-class Flow(nnx.Module):
+class NormalizingFlow(nnx.Module):
     def __init__(
         self, base_dist, transformation: Callable[..., Any], name: Optional[str] = None
     ):
@@ -44,7 +45,7 @@ class Flow(nnx.Module):
         )
 
 
-class AdditiveCouplingFlow(Flow):
+class AdditiveCouplingFlow(NormalizingFlow):
     def __init__(
         self,
         input_dim: int,
@@ -79,7 +80,7 @@ class AdditiveCouplingFlow(Flow):
         super().__init__(q0, transform, name=name)
 
 
-class AffineCouplingFlow(Flow):
+class AffineCouplingFlow(NormalizingFlow):
     def __init__(
         self,
         input_dim: int,
@@ -114,7 +115,7 @@ class AffineCouplingFlow(Flow):
         super().__init__(q0, transform, name=name)
 
 
-class SplineCouplingFlow(Flow):
+class SplineCouplingFlow(NormalizingFlow):
     def __init__(
         self,
         input_dim: int,
@@ -163,7 +164,7 @@ class SplineCouplingFlow(Flow):
         super().__init__(q0, transform, name=name)
 
 
-class AdditiveAutoregressiveFlow(Flow):
+class AdditiveAutoregressiveFlow(NormalizingFlow):
     def __init__(
         self,
         input_dim: int,
@@ -199,7 +200,7 @@ class AdditiveAutoregressiveFlow(Flow):
         super().__init__(q0, transform, name=name)
 
 
-class AffineAutoregressiveFlow(Flow):
+class AffineAutoregressiveFlow(NormalizingFlow):
     def __init__(
         self,
         input_dim: int,
@@ -235,7 +236,7 @@ class AffineAutoregressiveFlow(Flow):
         super().__init__(q0, transform, name=name)
 
 
-class SplineAutoregressiveFlow(Flow):
+class SplineAutoregressiveFlow(NormalizingFlow):
     def __init__(
         self,
         input_dim: int,

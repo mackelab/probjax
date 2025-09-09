@@ -117,7 +117,7 @@ class FlowMatcher(nnx.Module):
         pred_mu1 = self.net(t, x_normed, *args, **kwargs)
 
         def process_leaf(leaf_x, pred_mu1):
-            term1 = (pred_mu1 - mu0) + scale * (leaf_x - approx_mut)
+            term1 = (pred_mu1 + mu1 - mu0) + scale * (leaf_x - approx_mut)
             return term1
 
         return jax.tree_util.tree_map(process_leaf, x, pred_mu1)
@@ -343,8 +343,9 @@ class LinearFlow(FlowMatcher):
 
         return jax.tree_util.tree_map(score_leaf, x, v)
 
-    def noise_schedule(self, rng, shape, mu=-0.4, scale=1.0):
+    def noise_schedule(self, rng, shape, mu=0.0, scale=1.0):
         return jax.nn.sigmoid(jax.random.normal(rng, shape=shape + (1,)) * scale + mu)
+        return jax.random.uniform(rng, shape=shape + (1,), minval=0.0, maxval=1.0)
 
     def solve_schedule(self, num_steps=50):
         ts = jnp.linspace(0, 1, num_steps)

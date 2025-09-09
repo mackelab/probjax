@@ -35,7 +35,7 @@ dependencies = [
     "jax >= 0.4.34",
     "jaxlib >= 0.4.34",
     "optax",
-    "flax >= 0.11.0",
+    "flax >= 0.11.2",
     "ott-jax",
     "networkx",
     "blackjax",

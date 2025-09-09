@@ -1,4 +1,27 @@
-from probjax.nn.attention import MultiHeadAttention
+# Import all from flax.nnx
+from flax.nnx.nn import *  # type: ignore
+
+# Override specific imports with probjax implementations
+from probjax.nn.layers import (
+    LRU,
+    AdditiveFuse,
+    Affine,
+    AffineFuse,
+    ConcatFuse,
+    ConvBlock,
+    Flip,
+    GaussianFourierEmbedding,
+    LearnablePosEncode,
+    MultiHeadAttention,
+    OneHot,
+    Permute,
+    PosEncode,
+    RescaleConv,
+    ResizeConv,
+    ResnetBlock,
+    Rotate,
+    SpatialSelfAttention,
+)
 from probjax.nn.loss_fn import (
     build_denoising_loss,
     build_denoising_score_matching_loss,
@@ -10,19 +33,28 @@ from probjax.nn.loss_fn import (
     build_time_dependent_sliced_score_matching_loss,
 )
 from probjax.nn.nets import (
-    LRU,
+    EDM,
     MLP,
+    VE,
+    VP,
+    AdditiveAutoregressiveFlow,
+    AdditiveCouplingFlow,
+    AffineAutoregressiveFlow,
+    AffineCouplingFlow,
     AutoregressiveMLP,
+    AutoregressiveTransformer,
     CouplingMLP,
     DeepSet,
+    DiffusionDenoiser,
+    FlowMatcher,
     LRUModel,
-    Transformer,
-)
-from probjax.nn.utils import (
-    Flip,
-    GaussianFourierEmbedding,
-    OneHot,
-    Permute,
-    Rotate,
+    LinearFlow,
+    LinearMeanFlow,
+    MeanFlowMatcher,
+    ResNet,
     Sequential,
+    SplineAutoregressiveFlow,
+    SplineCouplingFlow,
+    Transformer,
+    UNet,
 )
