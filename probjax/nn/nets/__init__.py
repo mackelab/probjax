@@ -1,7 +1,6 @@
 from probjax.nn.nets.autoregressive import AutoregressiveMLP, AutoregressiveTransformer
 from probjax.nn.nets.coupling import CouplingMLP
 from probjax.nn.nets.lru import LRUModel
-from probjax.nn.nets.masked import MaskedMLP
 from probjax.nn.nets.normalizing_flows import (
     AdditiveAutoregressiveFlow,
     AdditiveCouplingFlow,

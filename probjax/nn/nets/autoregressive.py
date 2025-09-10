@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.core.transformation import inverse_and_logabsdet
 from probjax.nn.layers.attention import flex_attention
-from probjax.nn.nets.masked import MaskedMLP
+from probjax.nn.layers.masked import MaskedMLP
 from probjax.nn.nets.transformer import Transformer
 from probjax.nn.layers.encoding import PosEncode
 

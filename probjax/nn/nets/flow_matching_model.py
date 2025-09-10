@@ -1,3 +1,4 @@
+from datetime import time
 from typing import Callable, Optional
 
 import jax
@@ -202,8 +203,7 @@ class MeanFlowMatcher(nnx.Module):
         mu1 = self.mu1.value
         std1 = self.std1.value
 
-        if r is None:
-            r = t
+        r: ArrayLike = t if r is None else jnp.clip(r, a_min=t, a_max=1.0)
 
         approx_mu_t = self.interpolation_fn(mu0, mu1, t)
         approx_std_t = jnp.sqrt(t**2 * std1**2 + (1 - t) ** 2 * std0**2)
@@ -219,7 +219,7 @@ class MeanFlowMatcher(nnx.Module):
 
         pred_mu1 = self.net(t, x_normed, *args, r=r, **kwargs)
 
-        return pred_mu1 - mu0 + scale * (x - approx_mu_t)
+        return pred_mu1 + mu1 - mu0 + scale * (x - approx_mu_t)
 
     def noise_schedule(
         self,
@@ -238,15 +238,20 @@ class MeanFlowMatcher(nnx.Module):
         rng_t, rng_r, rng_tr = jax.random.split(rng, 3)
 
         t1 = jax.nn.sigmoid(
-            jax.random.normal(rng_t, (batch_size_different, 1)) * scale_rt - mu_rt
+            jax.random.normal(rng_t, (batch_size_different,) + shape[1:] + (1,))
+            * scale_rt
+            - mu_rt
         )
         r1 = jax.nn.sigmoid(
-            jax.random.normal(rng_r, (batch_size_different, 1)) * scale_rt - mu_rt
+            jax.random.normal(rng_r, (batch_size_different,) + shape[1:] + (1,))
+            * scale_rt
+            - mu_rt
         )
         r1 = jnp.clip(t1 + r1, a_min=0.0, a_max=1.0)
 
         t2 = r2 = jax.nn.sigmoid(
-            jax.random.normal(rng_tr, (batch_size_same, 1)) * scale_t - mu_t
+            jax.random.normal(rng_tr, (batch_size_same,) + shape[1:] + (1,)) * scale_t
+            - mu_t
         )
 
         t = jnp.concatenate([t1, t2], axis=0)
@@ -264,8 +269,9 @@ class MeanFlowMatcher(nnx.Module):
         **kwargs,
     ):
         rng_source, rng_times = jax.random.split(rng, 2)
+        ndims = data.ndim - 2
         times_t, times_r = self.noise_schedule(
-            rng_times, (data.shape[0],) + (1,) * (data.ndim - 2)
+            rng_times, (data.shape[0],) + (1,) * ndims
         )
 
         x0 = (
@@ -345,7 +351,6 @@ class LinearFlow(FlowMatcher):
 
     def noise_schedule(self, rng, shape, mu=0.0, scale=1.0):
         return jax.nn.sigmoid(jax.random.normal(rng, shape=shape + (1,)) * scale + mu)
-        return jax.random.uniform(rng, shape=shape + (1,), minval=0.0, maxval=1.0)
 
     def solve_schedule(self, num_steps=50):
         ts = jnp.linspace(0, 1, num_steps)

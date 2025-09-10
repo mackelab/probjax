@@ -50,7 +50,7 @@ def filter_precision_kwargs(cls: type[nnx.Module], **kwargs):
     return {key: kwargs[key] for key in kwargs if key in param_names}
 
 
-def get_active_precision_kwargs(dtype, precision, param_dtype, preferred_element_type):
+def get_active_precision_kwargs(dtype, precision, param_dtype, preferred_element_type) -> dict:
     """Utility function to get the active precision kwargs."""
     precision_kwargs = {}
     if dtype is not None:
@@ -144,4 +144,3 @@ def ot_copula(
     permutation = extract_permutation(ot.matrix)
     y_permuted = y[permutation]
     return x, y_permuted
-

@@ -9,6 +9,8 @@ from jax import Array, nn
 from probjax.nn.layers.attention import MultiHeadAttention
 from probjax.nn.nets.simple import MLP
 from probjax.nn.layers.fuse import AffineFuse, Fuse
+from probjax.utils.typing import ArrayLike, DTypeLike, PrecisionLike
+from probjax.nn.utils import get_active_precision_kwargs, filter_precision_kwargs
 
 
 class Transformer(nnx.Module):
@@ -27,7 +29,6 @@ class Transformer(nnx.Module):
         num_heads: int,
         num_layers: int,
         attn_size: int,
-        rngs: nnx.Rngs,
         *,
         enable_cross_attention: bool = False,
         normalize_qk_attn: bool = False,
@@ -40,10 +41,17 @@ class Transformer(nnx.Module):
         skip_connection_attn: bool = True,
         skip_connection_mlp: bool = True,
         initializer: Optional[nnx.initializers.Initializer] = None,
+        dtype: DTypeLike | None = None,
+        param_dtype: DTypeLike | None = None,
+        precision: PrecisionLike | None = None,
+        preferred_element_type: DTypeLike | None = None,
         norm_cls: type[nnx.Module] = nnx.LayerNorm,
         context_fusion: type[Fuse] = AffineFuse,
         attention_fn: Optional[Callable] = None,
         cross_attention_fn: Optional[Callable] = None,
+        mlp_cls: type[nnx.Module] = MLP,
+        mha_cls: type[nnx.Module] = MultiHeadAttention,
+        rngs: nnx.Rngs,
     ):
         """Initialize a Transformer model.
         Args:
@@ -91,6 +99,15 @@ class Transformer(nnx.Module):
         self.skip_connection_attn = skip_connection_attn
         self.skip_connection_mlp = skip_connection_mlp
 
+        # Precision and dtype settings.
+        precision_kwargs = get_active_precision_kwargs(
+            dtype,
+            param_dtype,
+            precision,
+            preferred_element_type,
+        )
+
+
         # Layer norms for the attention and dense blocks.
         self.layer_norms_attn = nnx.List([
             norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
@@ -111,7 +128,7 @@ class Transformer(nnx.Module):
             attention_fn if attention_fn is not None else nnx.dot_product_attention
         )
         self.attention_blocks = nnx.List([
-            MultiHeadAttention(
+            mha_cls(
                 num_heads,
                 model_dim,
                 attn_size * num_heads,
@@ -121,6 +138,7 @@ class Transformer(nnx.Module):
                 dropout_rate=dropout_rate if dropout_rate is not None else 0.0,
                 attention_fn=attention_fn,
                 normalize_qk=normalize_qk_attn,
+                **filter_precision_kwargs(mha_cls, **precision_kwargs),
             )
             for _ in range(num_layers)
         ])
@@ -132,7 +150,7 @@ class Transformer(nnx.Module):
                 else nnx.dot_product_attention
             )
             self.cross_attention_blocks = nnx.List([
-                MultiHeadAttention(
+                mha_cls(
                     num_heads,
                     model_dim,
                     attn_size * num_heads,
@@ -142,6 +160,7 @@ class Transformer(nnx.Module):
                     dropout_rate=dropout_rate if dropout_rate is not None else 0.0,
                     attention_fn=cross_attention_fn,
                     normalize_qk=normalize_qk_cross_attn,
+                    **filter_precision_kwargs(mha_cls, **precision_kwargs),
                 )
                 for _ in range(num_layers)
             ])
@@ -161,12 +180,13 @@ class Transformer(nnx.Module):
         )
         linear = partial(nnx.Linear, kernel_init=self.initializer)
         self.dense_blocks = nnx.List([
-            MLP(
+            mlp_cls(
                 dims,
                 rngs=rngs,
                 linear_cls=linear,
                 activation=act,
                 activate_final=True,
+                **filter_precision_kwargs(mlp_cls, **precision_kwargs),
             )
             for _ in range(num_layers)
         ])
@@ -180,8 +200,8 @@ class Transformer(nnx.Module):
 
     def __call__(
         self,
-        q: Array,  # [B, T, D]
-        k: Optional[Array] = None,  # [B, T', D]
+        q: ArrayLike,  # [B, T, D]
+        k: Optional[ArrayLike] = None,  # [B, T', D]
         v: Optional[Array] = None,  # [B, T', D]
         context: Optional[Array] = None,  # [B, D_context]
         mask: Array | None = None,  # [T, T] or [B, T, T]
@@ -192,6 +212,13 @@ class Transformer(nnx.Module):
         decode: bool = False,
     ) -> Array:  # [B, T, D]
         """Transforms input embedding sequences to output embedding sequences."""
+        q = jnp.asarray(q)
+        if k is not None:
+            k = jnp.asarray(k)
+        if v is not None:
+            v = jnp.asarray(v)
+        if context is not None:
+            context = jnp.asarray(context)
 
         if mask is not None:
             if mask.ndim == 2:
