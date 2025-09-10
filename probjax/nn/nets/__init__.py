@@ -10,7 +10,7 @@ from probjax.nn.nets.normalizing_flows import (
     SplineAutoregressiveFlow,
     SplineCouplingFlow,
 )
-from probjax.nn.nets.simple import MLP, DeepSet, ResNet, Sequential
+from probjax.nn.nets.simple import MLP, DeepSet, ResNet, Sequential, MaskedMLP
 from probjax.nn.nets.transformer import Transformer
 from probjax.nn.nets.unets import UNet
 from probjax.nn.nets.denoising_diffusion_model import EDM, VE, VP, DiffusionDenoiser

@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.core.transformation import inverse_and_logabsdet
 from probjax.nn.layers.attention import flex_attention
-from probjax.nn.layers.masked import MaskedMLP
+from probjax.nn.nets.simple import MaskedMLP
 from probjax.nn.nets.transformer import Transformer
 from probjax.nn.layers.encoding import PosEncode
 
@@ -28,21 +28,21 @@ def get_autoregressive_masks(dims: Sequence[int]):
 class AutoregressiveMLP(nnx.Module):
     def __init__(
         self,
-        in_out_dim: int,
+        in_out_features: int,
         bijector_dim: int,
         bijector: Callable,
         rngs: nnx.Rngs,
         *,
-        context_dim: Optional[int] = None,
+        context_features: Optional[int] = None,
         hidden_dims: Sequence[int] = [50, 50],
-        norm: Optional[nnx.LayerNorm | nnx.BatchNorm | nnx.Module] = None,
+        norm_cls: Optional[nnx.LayerNorm | nnx.BatchNorm | nnx.Module] = None,
         activation=jax.nn.gelu,
         activate_final: bool = False,
         **kwargs,
     ):
-        dims = [in_out_dim] + list(hidden_dims) + [in_out_dim * bijector_dim]
+        dims = [in_out_features] + list(hidden_dims) + [in_out_features * bijector_dim]
         masks = get_autoregressive_masks(dims)
-        self.in_out_dim = in_out_dim
+        self.in_out_features = in_out_features
         self.bijector = bijector
         self.bijector_inv = inverse_and_logabsdet(bijector, invertible_arg=1)
 
@@ -50,8 +50,8 @@ class AutoregressiveMLP(nnx.Module):
             dims,
             masks,
             rngs=rngs,
-            context_dim=context_dim,
-            norm=norm,
+            context_features=context_features,
+            norm_cls=norm_cls,
             activation=activation,
             activate_final=activate_final,
             **kwargs,
@@ -70,7 +70,7 @@ class AutoregressiveMLP(nnx.Module):
             bij_params = self.masked_mlp(x, context)  # type: ignore
             # Reshape parameters to (batch_dims..., in_out_dim, bijector_dim)
             bij_params = bij_params.reshape(
-                bij_params.shape[:-1] + (self.in_out_dim, -1)
+                bij_params.shape[:-1] + (self.in_out_features, -1)
             )
             # Get parameters for the i-th dimension using dynamic indexing
             bij_params_i = jax.lax.dynamic_slice(
@@ -88,7 +88,7 @@ class AutoregressiveMLP(nnx.Module):
             return x, None
 
         Tx = x
-        Tx, _ = jax.lax.scan(scan_fn, Tx, jnp.arange(self.in_out_dim))
+        Tx, _ = jax.lax.scan(scan_fn, Tx, jnp.arange(self.in_out_features))
         return Tx
 
     def inverse_and_logdet(self, Tx: jax.Array, context=None):

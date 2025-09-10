@@ -100,11 +100,15 @@ class MLP(nnx.Module):
                 norm_cls(feature_dims[i + 1], rngs=rngs)
                 for i in range(len(feature_dims) - 2)
             ])
+        else:
+            self.norm_layers = None
         if context_dim is not None:
             self.context_fuses = nnx.List([
                 context_fuse_cls(feature_dims[i + 1], context_dim, rngs=rngs)
                 for i in range(len(feature_dims) - 1)
             ])
+        else:
+            self.context_fuses = None
         self.activation = activation
         self.activate_final = activate_final
 
@@ -121,10 +125,10 @@ class MLP(nnx.Module):
         h = self.activation(h)
         for i in range(1, len(self.layers) - 1):
             h = self.layers[i](h)
-            if self.norm is not None:
+            if self.norm_layers is not None:
                 h = self.norm_layers[i - 1](h)
             h = self.activation(h)
-            if self.context_dim is not None:
+            if self.context_fuses is not None:
                 h = self.context_fuses[i - 1](h, context)
 
         out = self.layers[-1](h) if len(self.layers) > 1 else h
@@ -149,8 +153,9 @@ class MaskedMLP(MLP):
             **kwargs,
         )
         # Override layers with masked layers
+        # TODO: make this different from MLP in a cleaner way
         self.layers = nnx.List([
-            MaskedLinear(dims[i], dims[i + 1], masks[i], rngs=rngs, **kwargs)
+            MaskedLinear(dims[i], dims[i + 1], masks[i], rngs=rngs)
             for i in range(len(dims) - 1)
         ])
 
@@ -241,6 +246,8 @@ class ResNet(nnx.Module):
             self.norm_layers = nnx.List([
                 norm_cls(hidden_dim, rngs=rngs) for _ in range(num_hidden_layers)
             ])
+        else:
+            self.norm_layers = None
         self.activation = activation
         self.activate_final = activate_final
 
@@ -252,6 +259,8 @@ class ResNet(nnx.Module):
                 context_fuse_cls(hidden_dim, context_dim, rngs=rngs)
                 for _ in range(num_hidden_layers)
             ])
+        else:
+            self.context_layers = None
 
     def __call__(self, x: ArrayLike, context: Optional[ArrayLike] = None) -> Array:
         """Forward pass through the ResNet.
@@ -278,10 +287,10 @@ class ResNet(nnx.Module):
         for i in range(len(self.hidden_layers)):
             h_old = h
             h = self.hidden_layers[i](h)
-            if self.norm is not None:
+            if self.norm_layers is not None:
                 h = self.norm_layers[i](h)
             h = self.activation(h)
-            if context is not None:
+            if self.context_layers is not None:
                 h = self.context_layers[i](h, context)
 
             h = h + h_old
