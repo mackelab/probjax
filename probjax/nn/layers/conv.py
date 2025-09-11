@@ -9,7 +9,7 @@ from flax.typing import Initializer
 
 from probjax.nn.layers.attention import MultiHeadAttention
 from probjax.nn.layers.encoding import PosEncode
-from probjax.nn.layers.fuse import AdditiveFuse, AffineFuse, ConcatFuse
+from probjax.nn.layers.fuse import AdditiveFuse, AffineFuse, ConcatFuse, GatedFuse
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
@@ -416,7 +416,8 @@ class SpatialSelfAttention(nnx.Module):
         rngs,
         *,
         num_spatial_dims: int = 2,
-        num_heads: int = 4,
+        context_features: int | None = None,
+        num_heads: int = 8,
         attn_size: int | None = None,
         dropout_rate: float = 0.0,
         pos_emb: nnx.Module | None = None,
@@ -428,7 +429,6 @@ class SpatialSelfAttention(nnx.Module):
         | type[nnx.GroupNorm]
         | type[nnx.Module] = nnx.GroupNorm,
         mha: type[MultiHeadAttention] | type[nnx.Module] = MultiHeadAttention,
-        gamma_init: Initializer = nnx.initializers.zeros,
     ):
         self.preferred_element_type = preferred_element_type
         self.num_spatial_dims = num_spatial_dims
@@ -454,11 +454,15 @@ class SpatialSelfAttention(nnx.Module):
             self.pos_emb = PosEncode(rngs=rngs)
         else:
             self.pos_emb = pos_emb
-        self.gamma = nnx.Param(
-            gamma_init(rngs.next(), (in_features,), dtype=param_dtype)
-        )
 
-    def __call__(self, x: ArrayLike, deterministic: bool = True) -> Array:
+        if context_features is not None:
+            self.context_fuse = GatedFuse(in_features, context_features, rngs=rngs)
+        else:
+            self.context_fuse = None
+
+    def __call__(
+        self, x: ArrayLike, context: ArrayLike | None = None, deterministic: bool = True
+    ) -> Array:
         """Applies group normalization and multi-head self-attention."""
         x = jnp.asarray(x)
         b = x.shape[: -self.num_spatial_dims - 1]
@@ -470,6 +474,8 @@ class SpatialSelfAttention(nnx.Module):
         y = self.attn(y, deterministic=deterministic)  # MultiHeadAttention
         y = y.reshape(*b, *spatial_dims, c)
         y = y.astype(self.preferred_element_type)
-        gamma = jax.nn.tanh(self.gamma.value)
-        y = gamma.reshape((1,) * (y.ndim - 1) + (c,)) * y
-        return x + y
+        if self.context_fuse is not None and context is not None:
+            y = self.context_fuse(x, y, context)
+        else:
+            y = x + y
+        return y

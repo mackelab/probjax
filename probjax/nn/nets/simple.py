@@ -254,7 +254,6 @@ class ResNet(nnx.Module):
         if context_dim is not None:
             if context_dim <= 0:
                 raise ValueError(f"context_dim must be positive, got {context_dim}")
-            self.context_init = context_fuse_cls(hidden_dim, context_dim, rngs=rngs)
             self.context_layers = nnx.List([
                 context_fuse_cls(hidden_dim, context_dim, rngs=rngs)
                 for _ in range(num_hidden_layers)
@@ -281,14 +280,12 @@ class ResNet(nnx.Module):
             raise ValueError("context provided but context_dim is None")
 
         h = self.in_layer(x)
-        if context is not None:
-            h = self.context_init(h, context)
         h = self.activation(h)
         for i in range(len(self.hidden_layers)):
             h_old = h
-            h = self.hidden_layers[i](h)
             if self.norm_layers is not None:
                 h = self.norm_layers[i](h)
+            h = self.hidden_layers[i](h)
             h = self.activation(h)
             if self.context_layers is not None:
                 h = self.context_layers[i](h, context)

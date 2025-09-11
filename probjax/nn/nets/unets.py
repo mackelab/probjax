@@ -150,7 +150,7 @@ class UNet(nnx.Module):
         # ---------------------------------------------------------------------
         self.resnet_blocks_down = nnx.List()
         self.downsampling_layers = nnx.List()
-        self.attention_layers_down = nnx.List()
+        self.att_layers_down = nnx.List()
 
         for i in range(self.num_stages):
             # ResNet in each stage works on out_features[i]
@@ -159,9 +159,9 @@ class UNet(nnx.Module):
             )
             # Optional attention for this stage
             if self.attn_mask[i]:
-                self.attention_layers_down.append(_attn_block(self.out_features[i]))
+                self.att_layers_down.append(_attn_block(self.out_features[i]))
             else:
-                self.attention_layers_down.append(None)
+                self.att_layers_down.append(None)
 
             # Insert a downsample conv between stages (0->1, 1->2, ...)
             if i > 0:
@@ -175,7 +175,7 @@ class UNet(nnx.Module):
         top_ch = self.out_features[-1]
         self.middle_block1 = _resnet_block(top_ch, top_ch)
         self.middle_block2 = _resnet_block(top_ch, top_ch)
-        self.attention_middle = _attn_block(top_ch) if self.attn_mask[-1] else None
+        self.att_middle = _attn_block(top_ch) if self.attn_mask[-1] else None
 
         # ---------------------------------------------------------------------
         # Up path (mirror of down)
@@ -183,7 +183,7 @@ class UNet(nnx.Module):
         # Attention order mirrors the down path order.
         # ---------------------------------------------------------------------
         self.resnet_blocks_up = nnx.List()
-        self.attention_layers_up = nnx.List()
+        self.att_layers_up = nnx.List()
         self.upsampling_layers = nnx.List()
 
         for i in reversed(range(self.num_stages)):
@@ -194,9 +194,9 @@ class UNet(nnx.Module):
 
             # Attention layer (mirroring down path)
             if self.attn_mask[self.num_stages - i - 1]:
-                self.attention_layers_up.append(_attn_block(ch))
+                self.att_layers_up.append(_attn_block(ch))
             else:
-                self.attention_layers_up.append(None)
+                self.att_layers_up.append(None)
 
             # Upsample conv (skip for bottom-most stage)
             if i > 0:
@@ -226,8 +226,8 @@ class UNet(nnx.Module):
         # 2) Down path
         for i in range(self.num_stages):
             x = self.resnet_blocks_down[i](x, context, deterministic=deterministic)
-            if self.attention_layers_down[i] is not None:
-                x = self.attention_layers_down[i](x)
+            if self.att_layers_down[i] is not None:
+                x = self.att_layers_down[i](x, context, deterministic=deterministic)
             pre_downsampling.append(x)
             if i < self.num_stages - 1:
                 if verbose:
@@ -236,8 +236,8 @@ class UNet(nnx.Module):
 
         # 3) Middle
         x = self.middle_block1(x, context, deterministic=deterministic)
-        if self.attention_middle is not None:
-            x = self.attention_middle(x)
+        if self.att_middle is not None:
+            x = self.att_middle(x, context, deterministic=deterministic)
         x = self.middle_block2(x, context, deterministic=deterministic)
         if verbose:
             print("Mid:", x.shape)
@@ -251,8 +251,8 @@ class UNet(nnx.Module):
             x = jnp.concatenate([down, x], axis=-1)
 
             x = self.resnet_blocks_up[idx](x, context, deterministic=deterministic)
-            if self.attention_layers_up[idx] is not None:
-                x = self.attention_layers_up[idx](x)
+            if self.att_layers_up[idx] is not None:
+                x = self.att_layers_up[idx](x, context, deterministic=deterministic)
 
             if idx < self.num_stages - 1:
                 x = self.upsampling_layers[idx](x).astype(self.preferred_element_type)

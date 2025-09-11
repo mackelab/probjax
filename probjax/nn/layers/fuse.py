@@ -1,5 +1,6 @@
 from typing import Callable
 
+import jax
 import jax.numpy as jnp
 from flax import nnx
 
@@ -238,3 +239,68 @@ class ConcatFuse(Fuse):
         x_ctx = jnp.concatenate([x, context], axis=-1)
         x = self.merge_layer(x_ctx)
         return x
+
+class GatedFuse(Fuse):
+    """Gated fusion module that combines input and context features."""
+
+    def __init__(
+        self,
+        in_features: int,
+        context_features: int,
+        *,
+        dtype: DTypeLike | None = None,
+        param_dtype: DTypeLike | None = None,
+        precision: PrecisionLike | None = None,
+        preferred_element_type: DTypeLike | None = None,
+        layer_cls: type[nnx.Module] = nnx.Linear,
+        rngs: nnx.Rngs,
+    ):
+        """Gated fusion module that linearly transforms context
+        and combines it with the input using a gating mechanism.
+
+        Args:
+            in_features (int): Dimension of the input features.
+            context_features (int): Dimension of the context features.
+            dtype: Computation dtype (optional).
+            param_dtype: Parameter dtype (optional).
+            precision: Computation precision (optional).
+            preferred_element_type: Preferred element type (optional).
+            rngs (nnx.Rngs): Random number generators.
+
+        Raises:
+            ValueError: If in_features or context_features are not positive.
+        """
+        if in_features <= 0:
+            raise ValueError("in_features must be positive")
+        if context_features <= 0:
+            raise ValueError("context_features must be positive")
+
+        super().__init__()
+
+        self.gate_layer = layer_cls(
+            context_features,
+            in_features,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            precision=precision,
+            preferred_element_type=preferred_element_type,
+            rngs=rngs,
+        )
+
+    def __call__(self, x: ArrayLike, y: ArrayLike, context: ArrayLike) -> ArrayLike:
+        """Apply gated fusion to input and context.
+
+        Args:
+            x: Input array of shape [..., input_dim]
+            context: Context array of shape [..., context_dim]
+
+        Returns:
+            Array of shape [..., input_dim] with gated combination of input
+            and transformed context.
+        """
+        x = jnp.asarray(x)
+        context = jnp.asarray(context)
+        # Ensure same leading dimensions as x
+        context = jnp.broadcast_to(context, x.shape[:-1] + (context.shape[-1],))
+        gate = jax.nn.sigmoid(self.gate_layer(context))
+        return x * gate + y * (1 - gate)

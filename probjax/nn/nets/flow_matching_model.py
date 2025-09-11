@@ -212,15 +212,17 @@ class MeanFlowMatcher(nnx.Module):
         x_normed = jax.tree_util.tree_map(lambda x: (x - approx_mu_t) / approx_std_t, x)
         std_t = jnp.sqrt(t**2 * std1**2 + (1 - t) ** 2 * std0**2)
         std_r = jnp.sqrt(r**2 * std1**2 + (1 - r) ** 2 * std0**2)
-        scale_rt = (std_r - std_t) / ((r - t) * std_r)
-        scale_t = ((t * std1**2) - (1 - t) * std0**2) / (
+        scale = ((t * std1**2) - (1 - t) * std0**2) / (
             (1 - t) ** 2 * std0**2 + t**2 * std1**2
         )
-        scale = jnp.where(r > t, scale_rt, scale_t)
+        def g(h):
+            return 1. + jnp.tanh(h/0.1)
+        geo_std = jnp.sqrt(std_r * std_t)
+        scale_residual = geo_std * g(r - t)
 
         pred_mu1 = self.net(t, x_normed, *args, r=r, **kwargs)
 
-        return pred_mu1 + mu1 - mu0 + scale * (x - approx_mu_t)
+        return mu1 - mu0 + scale * (x - approx_mu_t) + scale_residual * pred_mu1
 
     def noise_schedule(
         self,
