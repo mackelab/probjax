@@ -454,7 +454,9 @@ class SpatialSelfAttention(nnx.Module):
             self.pos_emb = PosEncode(rngs=rngs)
         else:
             self.pos_emb = pos_emb
-        self.gamma = nnx.Param(gamma_init(rngs.next(), (1,), dtype=param_dtype))
+        self.gamma = nnx.Param(
+            gamma_init(rngs.next(), (in_features,), dtype=param_dtype)
+        )
 
     def __call__(self, x: ArrayLike, deterministic: bool = True) -> Array:
         """Applies group normalization and multi-head self-attention."""
@@ -468,5 +470,6 @@ class SpatialSelfAttention(nnx.Module):
         y = self.attn(y, deterministic=deterministic)  # MultiHeadAttention
         y = y.reshape(*b, *spatial_dims, c)
         y = y.astype(self.preferred_element_type)
-        y = self.gamma.value * y
+        gamma = jax.nn.tanh(self.gamma.value)
+        y = gamma.reshape((1,) * (y.ndim - 1) + (c,)) * y
         return x + y

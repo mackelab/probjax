@@ -115,13 +115,13 @@ class FlowMatcher(nnx.Module):
         scale = ((t * std1**2) - (1 - t) * std0**2) / (
             (1 - t) ** 2 * std0**2 + t**2 * std1**2
         )
-        pred_mu1 = self.net(t, x_normed, *args, **kwargs)
+        residual_correction = approx_stdt * self.net(t, x_normed, *args, **kwargs)
 
-        def process_leaf(leaf_x, pred_mu1):
-            term1 = (pred_mu1 + mu1 - mu0) + scale * (leaf_x - approx_mut)
+        def process_leaf(leaf_x, residual_correction):
+            term1 = residual_correction + (mu1 - mu0) + scale * (leaf_x - approx_mut)
             return term1
 
-        return jax.tree_util.tree_map(process_leaf, x, pred_mu1)
+        return jax.tree_util.tree_map(process_leaf, x, residual_correction)
 
     def score(self, t, x, *args, **kwargs):
         """Score function for the model."""
@@ -204,6 +204,7 @@ class MeanFlowMatcher(nnx.Module):
         std1 = self.std1.value
 
         r: ArrayLike = t if r is None else jnp.clip(r, a_min=t, a_max=1.0)
+
 
         approx_mu_t = self.interpolation_fn(mu0, mu1, t)
         approx_std_t = jnp.sqrt(t**2 * std1**2 + (1 - t) ** 2 * std0**2)
