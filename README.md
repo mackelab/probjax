@@ -41,6 +41,12 @@ Built on top of [Haiku](https://github.com/deepmind/dm-haiku), featuring:
 pip install -e probjax
 ```
 
+### Installing with uv
+You can use [uv](https://github.com/astral-sh/uv) for faster and more reliable Python package management:
+```bash
+uv pip install -e probjax
+```
+
 For CUDA 12 support with GPU acceleration:
 ```bash
 pip install -e "probjax[cuda12]"

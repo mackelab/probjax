@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 name = "probjax"
 description = "Jax library for probabilistic computations"
 version = "0.1.0"  # Update to match your version
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 authors = [
     { name = "Manuel Gloeckler", email = "manuel.gloeckler@uni-tuebingen.de" }
 ]
