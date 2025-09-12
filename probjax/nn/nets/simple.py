@@ -11,11 +11,7 @@ from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
 )
-from probjax.utils.typing import (
-    Array,
-    ArrayLike,
-    PyTree,
-)
+from probjax.utils.typing import Array, ArrayLike, ModuleLikeType, PyTree
 
 
 class Sequential(nnx.Module):
@@ -43,12 +39,15 @@ class MLP(nnx.Module):
         activation=jax.nn.gelu,
         activate_final: bool = False,
         context_dim: Optional[int] = None,
+        # Accept alias used elsewhere in the codebase
+        context_features: Optional[int] = None,
         precision: Optional[jax.lax.Precision] = None,
         dtype: Optional[jax.numpy.dtype] = None,
         param_dtype: Optional[jax.numpy.dtype] = None,
         preferred_element_dtype: Optional[jax.numpy.dtype] = None,
         norm_cls: type[nnx.Module] | None = None,
-        linear_cls: nnx.Linear | nnx.LoRALinear | nnx.Module = nnx.Linear,
+        # Allow a single linear class or a per-layer sequence
+        linear_cls: ModuleLikeType | Sequence[ModuleLikeType] = nnx.Linear,
         context_fuse_cls: type[Fuse] = AffineFuse,
         rngs: nnx.Rngs,
         **kwargs,
@@ -82,19 +81,42 @@ class MLP(nnx.Module):
             raise ValueError(f"All dimensions must be positive, got {feature_dims}")
 
         self.feature_dims = feature_dims
-        self.context_dim = context_dim
+        # Prefer explicit context_dim, fallback to alias if provided
+        self.context_dim = context_dim if context_dim is not None else context_features
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_dtype
         )
-        precision_kwargs = filter_precision_kwargs(linear_cls, **precision_kwargs)
-        _linear = partial(linear_cls, rngs=rngs, **precision_kwargs, **kwargs)
-        self.layers = nnx.List([
-            _linear(
-                feature_dims[i],
-                feature_dims[i + 1],
-            )
-            for i in range(len(feature_dims) - 1)
-        ])
+        # Build per-layer linear constructors (support sequence of linear classes)
+        num_layers = len(feature_dims) - 1
+        if isinstance(linear_cls, Sequence) and not isinstance(linear_cls, type):
+            if len(linear_cls) != num_layers:
+                raise ValueError(
+                    f"linear_cls sequence must have length {num_layers}, got {len(linear_cls)}"
+                )
+            linears = [
+                partial(
+                    lcls,
+                    rngs=rngs,
+                    **filter_precision_kwargs(lcls, **precision_kwargs),
+                    **kwargs,
+                )
+                for lcls in linear_cls
+            ]
+        else:
+            # Single class applied to all layers
+            filtered = filter_precision_kwargs(linear_cls, **precision_kwargs)
+            ctor = partial(linear_cls, rngs=rngs, **filtered, **kwargs)
+            linears = [ctor for _ in range(num_layers)]
+
+        self.layers = nnx.List(
+            [
+                linears[i](
+                    feature_dims[i],
+                    feature_dims[i + 1],
+                )
+                for i in range(num_layers)
+            ]
+        )
         if norm_cls is not None:
             self.norm_layers = nnx.List([
                 norm_cls(feature_dims[i + 1], rngs=rngs)
@@ -102,9 +124,11 @@ class MLP(nnx.Module):
             ])
         else:
             self.norm_layers = None
-        if context_dim is not None:
+        # Build context fuses if an effective context dimension is provided
+        _ctx_dim = self.context_dim
+        if _ctx_dim is not None:
             self.context_fuses = nnx.List([
-                context_fuse_cls(feature_dims[i + 1], context_dim, rngs=rngs)
+                context_fuse_cls(feature_dims[i + 1], _ctx_dim, rngs=rngs)
                 for i in range(len(feature_dims) - 1)
             ])
         else:
@@ -146,18 +170,14 @@ class MaskedMLP(MLP):
         rngs: nnx.Rngs,
         **kwargs,
     ):
-        # Call MLP constructor for shared logic
-        super().__init__(
-            feature_dims=dims,
-            rngs=rngs,
-            **kwargs,
-        )
-        # Override layers with masked layers
-        # TODO: make this different from MLP in a cleaner way
-        self.layers = nnx.List([
-            MaskedLinear(dims[i], dims[i + 1], masks[i], rngs=rngs)
-            for i in range(len(dims) - 1)
-        ])
+        if len(masks) != len(dims) - 1:
+            raise ValueError(
+                f"Expected {len(dims) - 1} masks, got {len(masks)}"
+            )
+        # Build per-layer masked linear constructors via partial so MLP can handle them
+        masked_linears = [partial(MaskedLinear, mask=masks[i]) for i in range(len(dims) - 1)]
+        # Delegate to MLP with a sequence of constructors
+        super().__init__(feature_dims=dims, linear_cls=masked_linears, rngs=rngs, **kwargs)
 
 class ResNet(nnx.Module):
     """Residual neural network with optional context conditioning."""

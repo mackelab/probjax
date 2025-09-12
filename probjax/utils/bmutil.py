@@ -24,6 +24,10 @@ def benchmark(
 ):
     """Benchmark the time taken by a function to execute, and return the result of the
     function."""
+
+    if jax.devices()[0].platform != "gpu":
+        track_gpu = False
+
     result = func(*args, **kwargs)  # Pre-run to ensure that the function is compiled
     start = time.time()
     count = 0

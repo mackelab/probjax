@@ -9,6 +9,7 @@ from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.core.transformation import inverse_and_logabsdet
 from probjax.nn.layers.attention import flex_attention
 from probjax.nn.nets.simple import MaskedMLP
+from probjax.utils.typing import ModuleLikeType
 from probjax.nn.nets.transformer import Transformer
 from probjax.nn.layers.encoding import PosEncode
 
@@ -38,6 +39,7 @@ class AutoregressiveMLP(nnx.Module):
         norm_cls: Optional[nnx.LayerNorm | nnx.BatchNorm | nnx.Module] = None,
         activation=jax.nn.gelu,
         activate_final: bool = False,
+        mlp_cls: ModuleLikeType = MaskedMLP,
         **kwargs,
     ):
         dims = [in_out_features] + list(hidden_dims) + [in_out_features * bijector_dim]
@@ -46,7 +48,7 @@ class AutoregressiveMLP(nnx.Module):
         self.bijector = bijector
         self.bijector_inv = inverse_and_logabsdet(bijector, invertible_arg=1)
 
-        self.masked_mlp = MaskedMLP(
+        self.masked_mlp = mlp_cls(
             dims,
             masks,
             rngs=rngs,

@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.nets.simple import MLP
+from probjax.utils.typing import ModuleLikeType
 from probjax.nn.utils import filter_precision_kwargs, get_active_precision_kwargs
 from probjax.utils.typing import Array, ArrayLike, DTypeLike, PrecisionLike
 
@@ -25,6 +26,7 @@ class CouplingMLP(nnx.Module):
         rngs: nnx.Rngs,
         *,
         context_dim: Optional[int] = None,
+        context_features: Optional[int] = None,
         hidden_dims: Sequence[int] = (50, 50),
         activation: Callable = jax.nn.gelu,
         activate_final: bool = False,
@@ -32,7 +34,7 @@ class CouplingMLP(nnx.Module):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        mlp_cls: type[nnx.Module] = MLP,
+        mlp_cls: ModuleLikeType = MLP,
         **kwargs,
     ):
         """Initialize the CouplingMLP module.
@@ -90,19 +92,20 @@ class CouplingMLP(nnx.Module):
 
         self.split_index = split_index
         self.bij_params_dim = bij_params_dim
-        self.context_dim = context_dim
+        # Prefer explicit context_dim; fallback to alias for consistency
+        self.context_dim = context_dim if context_dim is not None else context_features
         self.bijector = bijector
 
         # Precision and dtype settings
         precision_kwargs = get_active_precision_kwargs(
             dtype,
-            param_dtype,
             precision,
+            param_dtype,
             preferred_element_type,
         )
 
         # Build MLP dimensions
-        in_dim = split_index + (context_dim if context_dim is not None else 0)
+        in_dim = split_index + (self.context_dim if self.context_dim is not None else 0)
         feature_dims = [in_dim] + list(hidden_dims) + [bij_params_dim]
 
         # Create MLP conditioner

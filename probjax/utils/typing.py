@@ -12,6 +12,8 @@ from typing import (
     TypeVar,
     Union,
 )
+from typing import Protocol, runtime_checkable
+import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
 
@@ -28,6 +30,8 @@ __all__ = [
     "is_legacy_key",
     "is_key",
     "assert_key",
+    # Modules
+    "ModuleLikeType",
     # Standard typing
     "Callable",
     "Iterable",
@@ -92,3 +96,19 @@ def assert_key(x: Array) -> RngKey:
             f"Expected PRNG key; got shape={tuple(x.shape)}, dtype={x.dtype}"
         )
     return x
+
+
+# ---------------- Module typing ----------------
+@runtime_checkable
+class _ModuleFactory(Protocol):
+    """A callable that returns an nnx.Module.
+
+    Accepts both classes (e.g., nnx.Linear) and callables/partials that
+    construct and return an nnx.Module instance when invoked.
+    """
+
+    def __call__(self, *args: Any, **kwargs: Any) -> nnx.Module: ...
+
+
+# Public alias for module-like constructors (classes or partials)
+ModuleLikeType: TypeAlias = _ModuleFactory

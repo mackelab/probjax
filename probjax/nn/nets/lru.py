@@ -7,7 +7,7 @@ from flax import nnx
 from probjax.nn.layers.lru import LRUBlock
 from probjax.nn.nets.simple import MLP
 from probjax.nn.utils import filter_precision_kwargs, get_active_precision_kwargs
-from probjax.utils.typing import Array, ArrayLike, DTypeLike, PrecisionLike
+from probjax.utils.typing import Array, ArrayLike, DTypeLike, PrecisionLike, ModuleLikeType
 
 
 class LRUModel(nnx.Module):
@@ -38,7 +38,7 @@ class LRUModel(nnx.Module):
         mlp_widening_factor: int = 2,
         activation: Callable = jax.nn.gelu,
         norm_cls: type[nnx.Module] = nnx.LayerNorm,
-        mlp_cls: type[nnx.Module] = MLP,
+        mlp_cls: ModuleLikeType = MLP,
         initializer: Optional[nnx.initializers.Initializer] = None,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
@@ -98,8 +98,8 @@ class LRUModel(nnx.Module):
         # Precision and dtype settings
         precision_kwargs = get_active_precision_kwargs(
             dtype,
-            param_dtype,
             precision,
+            param_dtype,
             preferred_element_type,
         )
 

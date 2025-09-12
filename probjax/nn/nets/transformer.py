@@ -9,7 +9,7 @@ from jax import Array, nn
 from probjax.nn.layers.attention import MultiHeadAttention
 from probjax.nn.nets.simple import MLP
 from probjax.nn.layers.fuse import AffineFuse, Fuse
-from probjax.utils.typing import ArrayLike, DTypeLike, PrecisionLike
+from probjax.utils.typing import ArrayLike, DTypeLike, PrecisionLike, ModuleLikeType
 from probjax.nn.utils import get_active_precision_kwargs, filter_precision_kwargs
 
 
@@ -49,8 +49,8 @@ class Transformer(nnx.Module):
         context_fusion: type[Fuse] = AffineFuse,
         attention_fn: Optional[Callable] = None,
         cross_attention_fn: Optional[Callable] = None,
-        mlp_cls: type[nnx.Module] = MLP,
-        mha_cls: type[nnx.Module] = MultiHeadAttention,
+        mlp_cls: ModuleLikeType = MLP,
+        mha_cls: ModuleLikeType = MultiHeadAttention,
         rngs: nnx.Rngs,
     ):
         """Initialize a Transformer model.
@@ -102,8 +102,8 @@ class Transformer(nnx.Module):
         # Precision and dtype settings.
         precision_kwargs = get_active_precision_kwargs(
             dtype,
-            param_dtype,
             precision,
+            param_dtype,
             preferred_element_type,
         )
 
