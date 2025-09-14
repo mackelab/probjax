@@ -12,7 +12,10 @@ from flax.nnx.module import first_from
 from jax import lax
 
 from probjax.nn.pallas_kernels.attention import BlockSizes, mha
-from probjax.nn.pallas_kernels.attention_mask_bias import AttentionMaskBase, AttentionBiasBase
+from probjax.nn.pallas_kernels.attention_mask_bias import (
+    AttentionMask,
+    AttentionBias,
+)
 from probjax.utils.typing import Array, ArrayLike
 
 __all__ = [
@@ -203,11 +206,16 @@ def pad_to_power_of_2(arr: Array, min_size: int = 16) -> Array:
         return 1 << (x - 1).bit_length()
 
     target_shape = list(arr.shape)
-    for i in range(-3, 0):
-        if target_shape[i] < min_size:
-            target_shape[i] = min_size
-        else:
-            target_shape[i] = next_power_of_2(target_shape[i])
+    seq_len = arr.shape[-3]
+    dim = arr.shape[-1]
+    if seq_len < min_size:
+        target_shape[-3] = min_size
+    else:
+        target_shape[-3] = next_power_of_2(seq_len)
+    if dim < min_size:
+        target_shape[-1] = min_size
+    else:
+        target_shape[-1] = next_power_of_2(dim)
 
     pad_width = [
         (0, target - current) for current, target in zip(arr.shape, target_shape)
@@ -219,8 +227,8 @@ def flex_attention(
     query: Array,
     key: Array,
     value: Array,
-    mask : AttentionMaskBase | None =None,
-    bias: AttentionBiasBase | None =None,
+    mask: AttentionMask | None = None,
+    bias: AttentionBias | None = None,
     dropout_rng=None,
     dropout_rate: float = 0.0,
     deterministic=True,
@@ -287,10 +295,11 @@ def flex_attention(
 
     _, l_q, h, n = query.shape
     _, l_kv, _, _ = key.shape
-
+    print(query.shape, key.shape, value.shape)
     query = pad_to_power_of_2(query)
     key = pad_to_power_of_2(key)
     value = pad_to_power_of_2(value)
+    print(query.shape, key.shape, value.shape)
 
     # Currentlly the backward pass requires some conditons:
     # TODO: Move to BlockSizes
@@ -322,9 +331,9 @@ def flex_attention(
         q=query,
         k=key,
         v=value,
-        mask=mask,               # AttentionMaskBase or None
+        mask=mask,  # AttentionMaskBase or None
         sm_scale=sm_scale,
-        bias_mod=bias,                # AttentionBiasBase or None
+        bias_mod=bias,  # AttentionBiasBase or None
         block_sizes=block_sizes,
         backward_pass_impl=backward_pass_impl,
         num_warps=num_warps,

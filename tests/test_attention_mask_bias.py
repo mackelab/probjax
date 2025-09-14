@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import pytest
 
 from probjax.nn.pallas_kernels.attention_mask_bias import (
-    AttentionMaskBase,
+    AttentionMask,
     NoMask,
     CausalMask,
     LocalWindowMask,
@@ -25,7 +25,11 @@ from probjax.nn.pallas_kernels.attention_mask_bias import (
     compute_block_iterators,
     compute_kv_iterators,
 )
-from probjax.nn.pallas_kernels.utils import DEFAULT_MASK_VALUE, materialize_mask, materialize_bias
+from probjax.nn.pallas_kernels.utils import (
+    DEFAULT_MASK_VALUE,
+    materialize_mask,
+    materialize_bias,
+)
 
 
 def test_nomask_and_causal_composition():
@@ -69,7 +73,10 @@ def test_key_padding_mask_lengths_and_bool(as_bool):
     B, K = 2, 5
     valid = jnp.array([3, 4], dtype=jnp.int32)
     if as_bool:
-        bool_mask = jnp.array([[True, True, True, False, False], [True, True, True, True, False]])
+        bool_mask = jnp.array([
+            [True, True, True, False, False],
+            [True, True, True, True, False],
+        ])
         mask = KeyPaddingMask(bool_mask)
     else:
         mask = KeyPaddingMask(valid)
@@ -180,6 +187,7 @@ def test_logit_bias_layers_shapes_and_semantics():
         SymmetricALiBiAttentionLogitBiasLayer,
         make_segment_bias,
     )
+
     B, L, H = 2, 6, 3
     seg = jnp.array([[1, 1, 1, 0, 2, 2], [1, 0, 0, 2, 2, 2]])
     pos = jnp.arange(L)[None, :].repeat(B, axis=0)
@@ -195,8 +203,9 @@ def test_logit_bias_layers_shapes_and_semantics():
     k_idx = jnp.arange(L)[None, None, :]  # [1, 1, K]
     not_future = q_idx >= k_idx  # [1, Q, K]
     same_nonzero = (
-        (seg[:, :, None] == seg[:, None, :]) &
-        (seg[:, :, None] != 0) & (seg[:, None, :] != 0)
+        (seg[:, :, None] == seg[:, None, :])
+        & (seg[:, :, None] != 0)
+        & (seg[:, None, :] != 0)
     )  # [B, Q, K]
     allowed = same_nonzero & not_future
     # Where allowed, causal bias must be zero
@@ -206,14 +215,22 @@ def test_logit_bias_layers_shapes_and_semantics():
 
     full = FullAttentionLogitBiasLayer().forward(segment_ids=seg, positions=pos)
     assert full.shape == (B, 1, L, L)
-    allowed_full = (seg[:, :, None] == seg[:, None, :]) & (seg[:, :, None] != 0) & (seg[:, None, :] != 0)
+    allowed_full = (
+        (seg[:, :, None] == seg[:, None, :])
+        & (seg[:, :, None] != 0)
+        & (seg[:, None, :] != 0)
+    )
     assert jnp.all(full[:, 0][allowed_full] == 0)
     assert jnp.all(full[:, 0][~allowed_full] == DEFAULT_MASK_VALUE)
 
-    alibi = ALiBiAttentionLogitBiasLayer(num_heads=H).forward(segment_ids=seg, positions=pos)
+    alibi = ALiBiAttentionLogitBiasLayer(num_heads=H).forward(
+        segment_ids=seg, positions=pos
+    )
     assert alibi.shape == (B, H, L, L)
 
-    salibi = SymmetricALiBiAttentionLogitBiasLayer(num_heads=H).forward(segment_ids=seg, positions=pos)
+    salibi = SymmetricALiBiAttentionLogitBiasLayer(num_heads=H).forward(
+        segment_ids=seg, positions=pos
+    )
     assert salibi.shape == (B, H, L, L)
 
 
@@ -230,7 +247,9 @@ def test_compose_mask_ops_and_sum_bias():
     s = jnp.zeros((3, 3))
     b = ConstantBias(0.3) + FromMaskBias(CausalMask())
     out_b = b(s, 0, 0, jnp.arange(3), jnp.arange(3))
-    expected = ConstantBias(0.3)(s, 0, 0, jnp.arange(3), jnp.arange(3)) + FromMaskBias(CausalMask())(s, 0, 0, jnp.arange(3), jnp.arange(3))
+    expected = ConstantBias(0.3)(s, 0, 0, jnp.arange(3), jnp.arange(3)) + FromMaskBias(
+        CausalMask()
+    )(s, 0, 0, jnp.arange(3), jnp.arange(3))
     assert jnp.allclose(out_b, expected)
 
 

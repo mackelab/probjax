@@ -355,8 +355,6 @@ def get_cpu_dot_precision(dtype) -> jax.lax.DotAlgorithmPreset:
 
 def get_gpu_dot_precision(dtype) -> jax.lax.DotAlgorithmPreset:
     """DotAlgorithmPreset for accelerators; accumulates in FP32 and uses TensorCores."""
-    if jax.default_backend() == "cpu":
-        return get_cpu_dot_precision(dtype)
     if dtype == jnp.float32:
         return jax.lax.DotAlgorithmPreset.TF32_TF32_F32
     if dtype == jnp.float16:
@@ -364,6 +362,24 @@ def get_gpu_dot_precision(dtype) -> jax.lax.DotAlgorithmPreset:
     if dtype == jnp.bfloat16:
         return jax.lax.DotAlgorithmPreset.BF16_BF16_F32
     raise ValueError(f"Unsupported dtype {dtype}")
+
+def get_tpu_dot_precision(dtype) -> jax.lax.DotAlgorithmPreset:
+    """DotAlgorithmPreset for TPU backend; accumulates in FP32."""
+    if dtype == jnp.float32:
+        return jax.lax.DotAlgorithmPreset.F32_F32_F32
+    if dtype == jnp.float16:
+        return jax.lax.DotAlgorithmPreset.F16_F16_F32
+    if dtype == jnp.bfloat16:
+        return jax.lax.DotAlgorithmPreset.BF16_BF16_F32
+    raise ValueError(f"Unsupported dtype {dtype}")
+
+def get_dot_precision(device, dtype) -> jax.lax.DotAlgorithmPreset:
+    """DotAlgorithmPreset for current backend; accumulates in FP32."""
+    if device == "cpu":
+        return get_cpu_dot_precision(dtype)
+    if device == "tpu":
+        return get_tpu_dot_precision(dtype)
+    return get_gpu_dot_precision(dtype)
 
 
 def build_mask(

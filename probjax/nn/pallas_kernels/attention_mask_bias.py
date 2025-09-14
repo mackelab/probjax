@@ -29,8 +29,8 @@ from .utils import (
 )
 
 __all__ = [
-    "AttentionMaskBase",
-    "AttentionBiasBase",
+    "AttentionMask",
+    "AttentionBias",
     "MaskModFn",
     "ScoreModFn",
     "CausalMask",
@@ -88,8 +88,9 @@ ScoreModFn = Callable[[Array, Array, Array, Array, Array], Array]
 
 # ------------------------ Block Sparsity Helpers -----------------------------
 
+
 def compute_block_mask(
-    mask: AttentionMaskBase | MaskModFn,
+    mask: AttentionMask,
     *,
     batch_size: int,
     num_heads: int,
@@ -97,7 +98,6 @@ def compute_block_mask(
     kv_len: int,
     block_q: int,
     block_k: int,
-    segment_ids: Optional[Tuple[Array, Array] | Array] = None,
 ) -> Array:
     """Compute per-(B,H) block masks of shape [B, H, nQB, nKB].
 
@@ -106,72 +106,32 @@ def compute_block_mask(
     """
     num_q_blocks = ceil_div(q_len, block_q)
     num_kv_blocks = ceil_div(kv_len, block_k)
-    seg_q, seg_k = ensure_tuple_segment_ids(segment_ids)
-
-    if isinstance(mask, AttentionMaskBase):
-        def per_head(bh: Array) -> Array:
-            b_idx, h_idx = bh
-            sq = None if seg_q is None else seg_q[b_idx]
-            sk = None if seg_k is None else seg_k[b_idx]
-            return mask.block_mask(
-                b_idx,
-                h_idx,
-                q_len=q_len,
-                kv_len=kv_len,
-                block_q=block_q,
-                block_k=block_k,
-                seg_q=sq,
-                seg_k=sk,
-            )
-
-        bh = jnp.stack(
-            jnp.meshgrid(jnp.arange(batch_size), jnp.arange(num_heads), indexing="ij"),
-            axis=-1,
-        ).reshape(-1, 2)
-        bm = jax.vmap(per_head)(bh).reshape(batch_size, num_heads, num_q_blocks, num_kv_blocks)
-        return bm
-
-    # Generic callable path (MaskModFn)
-    q_starts = jnp.arange(0, q_len, block_q)
-    k_starts = jnp.arange(0, kv_len, block_k)
 
     def per_head(bh: Array) -> Array:
         b_idx, h_idx = bh
-        sq = None if seg_q is None else seg_q[b_idx]
-        sk = None if seg_k is None else seg_k[b_idx]
-
-        def per_q(q_start):
-            def per_k(k_start):
-                return block_pair_has_any(
-                    mask,  # type: ignore[arg-type]
-                    b_idx,
-                    h_idx,
-                    q_start,
-                    k_start,
-                    q_len,
-                    kv_len,
-                    block_q,
-                    block_k,
-                    sq,
-                    sk,
-                )
-
-            return jax.vmap(per_k)(k_starts)
-
-        return jax.vmap(per_q)(q_starts)
+        return mask.block_mask(
+            b_idx,
+            h_idx,
+            q_len=q_len,
+            kv_len=kv_len,
+            block_q=block_q,
+            block_k=block_k,
+        )
 
     bh = jnp.stack(
         jnp.meshgrid(jnp.arange(batch_size), jnp.arange(num_heads), indexing="ij"),
         axis=-1,
     ).reshape(-1, 2)
-    bm = jax.vmap(per_head)(bh).reshape(batch_size, num_heads, num_q_blocks, num_kv_blocks)
+    bm = jax.vmap(per_head)(bh).reshape(
+        batch_size, num_heads, num_q_blocks, num_kv_blocks
+    )
     return bm
 
 
 # ---------------------------- Base Classes -----------------------------------
 
 
-class AttentionMaskBase(ABC):
+class AttentionMask(ABC):
     """Base class for attention masks.
 
     Subclasses implement __call__(b_idx, h_idx, q_idx, k_idx, seg_q, seg_k) -> [Q, K] bool.
@@ -197,22 +157,22 @@ class AttentionMaskBase(ABC):
         return None
 
     # Logical combinators return composed masks.
-    def __and__(self, other: "AttentionMaskBase") -> "AttentionMaskBase":
-        if not isinstance(other, AttentionMaskBase):
+    def __and__(self, other: "AttentionMask") -> "AttentionMask":
+        if not isinstance(other, AttentionMask):
             return NotImplemented
         return ComposeMask("and", self, other)
 
-    def __or__(self, other: "AttentionMaskBase") -> "AttentionMaskBase":
-        if not isinstance(other, AttentionMaskBase):
+    def __or__(self, other: "AttentionMask") -> "AttentionMask":
+        if not isinstance(other, AttentionMask):
             return NotImplemented
         return ComposeMask("or", self, other)
 
-    def __xor__(self, other: "AttentionMaskBase") -> "AttentionMaskBase":
-        if not isinstance(other, AttentionMaskBase):
+    def __xor__(self, other: "AttentionMask") -> "AttentionMask":
+        if not isinstance(other, AttentionMask):
             return NotImplemented
         return ComposeMask("xor", self, other)
 
-    def __invert__(self) -> "AttentionMaskBase":
+    def __invert__(self) -> "AttentionMask":
         return NotMask(self)
 
     # (pallas_q_data_spec / pallas_k_data_spec defined above)
@@ -254,7 +214,9 @@ class AttentionMaskBase(ABC):
         def per_q(q_start):
             def per_k(k_start):
                 return block_pair_has_any(
-                    lambda b, h, q_idx, k_idx, sqa, ska: self(b, h, q_idx, k_idx, sqa, ska),
+                    lambda b, h, q_idx, k_idx, sqa, ska: self(
+                        b, h, q_idx, k_idx, sqa, ska
+                    ),
                     b_idx,
                     h_idx,
                     q_start,
@@ -331,9 +293,7 @@ class AttentionMaskBase(ABC):
         return idx, sz
 
 
-
-
-class AttentionBiasBase(ABC):
+class AttentionBias(ABC):
     """Base class for attention score biases.
 
     Subclasses implement __call__(scores, b_idx, h_idx, q_idx, k_idx) -> [Q, K] scores.
@@ -354,24 +314,30 @@ class AttentionBiasBase(ABC):
         raise NotImplementedError
 
     # Optional: Pallas bias spec for dense tensor bias.
-    def pallas_bias_spec(self, *, block_q: int, kv_seq_len: int):  # pragma: no cover - API
+    def pallas_bias_spec(
+        self, *, block_q: int, kv_seq_len: int
+    ):  # pragma: no cover - API
         return None
 
     # Allow additive composition of biases.
-    def __add__(self, other: "AttentionBiasBase") -> "AttentionBiasBase":
-        if not isinstance(other, AttentionBiasBase):
+    def __add__(self, other: "AttentionBias") -> "AttentionBias":
+        if not isinstance(other, AttentionBias):
             return NotImplemented
         return SumBias(self, other)
 
-    def __radd__(self, other: "AttentionBiasBase") -> "AttentionBiasBase":
-        if not isinstance(other, AttentionBiasBase):
+    def __radd__(self, other: "AttentionBias") -> "AttentionBias":
+        if not isinstance(other, AttentionBias):
             return NotImplemented
         return SumBias(other, self)
 
     # (pallas_bias_spec defined above)
 
     # Optional: returns tuple of arrays to be provided to the kernel (e.g., a dense bias tensor)
-    def get_data(self) -> tuple[Optional[Array], Optional[Array] | Array]:  # pragma: no cover - API surface
+    def get_data(
+        self,
+    ) -> tuple[
+        Optional[Array], Optional[Array] | Array
+    ]:  # pragma: no cover - API surface
         return ()
 
     # Optional: gradient of the bias modifier w.r.t. input scores.
@@ -395,10 +361,10 @@ class AttentionBiasBase(ABC):
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
-class ComposeMask(AttentionMaskBase):
+class ComposeMask(AttentionMask):
     op: str  # one of: 'and', 'or', 'xor'
-    lhs: AttentionMaskBase
-    rhs: AttentionMaskBase
+    lhs: AttentionMask
+    rhs: AttentionMask
 
     def __call__(
         self,
@@ -432,8 +398,8 @@ class ComposeMask(AttentionMaskBase):
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
-class NotMask(AttentionMaskBase):
-    inner: AttentionMaskBase
+class NotMask(AttentionMask):
+    inner: AttentionMask
 
     def __call__(
         self,
@@ -457,9 +423,9 @@ class NotMask(AttentionMaskBase):
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
-class SumBias(AttentionBiasBase):
-    lhs: AttentionBiasBase
-    rhs: AttentionBiasBase
+class SumBias(AttentionBias):
+    lhs: AttentionBias
+    rhs: AttentionBias
 
     def __call__(
         self,
@@ -489,10 +455,18 @@ class SumBias(AttentionBiasBase):
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
-class NoMask(AttentionMaskBase):
+class NoMask(AttentionMask):
     """Allows all attention (i.e., returns all True)."""
 
-    def __call__(self, b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array, seg_q: Optional[Array] = None, seg_k: Optional[Array] = None) -> Array:
+    def __call__(
+        self,
+        b_idx: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> Array:
         return jnp.ones((q_idx.shape[0], k_idx.shape[0]), dtype=bool)
 
     def block_mask(
@@ -521,10 +495,18 @@ class NoMask(AttentionMaskBase):
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
-class CausalMask(AttentionMaskBase):
+class CausalMask(AttentionMask):
     """Standard autoregressive mask: allow attending to past and self only."""
 
-    def __call__(self, b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array, seg_q: Optional[Array] = None, seg_k: Optional[Array] = None) -> Array:
+    def __call__(
+        self,
+        b_idx: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> Array:
         return q_idx[:, None] >= k_idx[None, :]
 
     def block_mask(
@@ -539,7 +521,9 @@ class CausalMask(AttentionMaskBase):
         seg_q: Optional[Array] = None,
         seg_k: Optional[Array] = None,
     ) -> Array:
-        return fast_blockmask_causal(q_len=q_len, kv_len=kv_len, block_q=block_q, block_k=block_k)
+        return fast_blockmask_causal(
+            q_len=q_len, kv_len=kv_len, block_q=block_q, block_k=block_k
+        )
 
     def tree_flatten(self):
         return ((), {})
@@ -551,7 +535,7 @@ class CausalMask(AttentionMaskBase):
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
-class LocalWindowMask(AttentionMaskBase):
+class LocalWindowMask(AttentionMask):
     """Local banded mask allowing attention within a window around each query.
 
     Args:
@@ -568,7 +552,15 @@ class LocalWindowMask(AttentionMaskBase):
         object.__setattr__(self, "left_window", int(self.left_window))
         object.__setattr__(self, "right_window", rw)
 
-    def __call__(self, b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array, seg_q: Optional[Array] = None, seg_k: Optional[Array] = None) -> Array:
+    def __call__(
+        self,
+        b_idx: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> Array:
         dqk = q_idx[:, None] - k_idx[None, :]
         return jnp.logical_and(dqk >= -self.right_window, dqk <= self.left_window)
 
@@ -595,7 +587,10 @@ class LocalWindowMask(AttentionMaskBase):
 
     def tree_flatten(self):
         # Treat window sizes as static metadata; no array children.
-        return ((), {"left_window": self.left_window, "right_window": self.right_window})
+        return (
+            (),
+            {"left_window": self.left_window, "right_window": self.right_window},
+        )
 
     @classmethod
     def tree_unflatten(cls, aux, children):
@@ -606,19 +601,30 @@ class LocalWindowMask(AttentionMaskBase):
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
-class KeyPaddingMask(AttentionMaskBase):
+class KeyPaddingMask(AttentionMask):
     """Masks out padded key positions based on key lengths or boolean mask.
 
     Args:
         key_lengths: int array [B] giving number of valid KV tokens per batch; or
             boolean array [B, K] where True indicates a valid KV position.
     """
+
     # Mark array field as non-comparable/non-hashable to allow static hashing of the mask object
     key_lengths: Optional[Array] = field(compare=False, hash=False, repr=False)
 
-    def __call__(self, b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array, seg_q: Optional[Array] = None, seg_k: Optional[Array] = None) -> Array:
+    def __call__(
+        self,
+        b_idx: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> Array:
         if seg_k is None and self.key_lengths is None:
-            raise ValueError("KeyPaddingMask requires key_lengths provided either at construction or call time")
+            raise ValueError(
+                "KeyPaddingMask requires key_lengths provided either at construction or call time"
+            )
         kl = seg_k if seg_k is not None else self.key_lengths
         if (seg_k is not None) and (seg_k.ndim == 1):
             # Per-tile boolean vector [K_tile] provided via kernel load
@@ -662,7 +668,9 @@ class KeyPaddingMask(AttentionMaskBase):
         return None, bools
 
     # Optional helper to prepare per-sequence data.
-    def get_data_with_seq(self, q_seq_len: int, kv_seq_len: int) -> tuple[Optional[Array], Optional[Array]]:
+    def get_data_with_seq(
+        self, q_seq_len: int, kv_seq_len: int
+    ) -> tuple[Optional[Array], Optional[Array]]:
         del q_seq_len
         if self.key_lengths is None:
             return None, None
@@ -692,13 +700,17 @@ class KeyPaddingMask(AttentionMaskBase):
         # Determine validity per KV block
         if seg_k is not None and seg_k.dtype == jnp.bool_:
             kb = seg_k[b_idx]
+
             def any_in_block(k_start):
                 end = jnp.minimum(k_start + block_k, kv_len)
                 return jnp.any(kb[k_start:end])
+
             allowed = jax.vmap(any_in_block)(k_starts)
         else:
             # lengths vector required either from seg_k (1D) or stored
-            lengths = seg_k if (seg_k is not None and seg_k.ndim == 1) else self.key_lengths
+            lengths = (
+                seg_k if (seg_k is not None and seg_k.ndim == 1) else self.key_lengths
+            )
             if lengths is None:
                 raise ValueError("KeyPaddingMask requires key_lengths")
             len_b = lengths[b_idx]
@@ -709,14 +721,26 @@ class KeyPaddingMask(AttentionMaskBase):
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
-class SameSegmentMask(AttentionMaskBase):
+class SameSegmentMask(AttentionMask):
     """Allow attention only within the same segment (uses segment_ids)."""
 
     # Exclude arrays from hashing/comparison to keep mask instances hashable
-    query_segment_ids: Optional[Array] = field(default=None, compare=False, hash=False, repr=False)
-    key_segment_ids: Optional[Array] = field(default=None, compare=False, hash=False, repr=False)
+    query_segment_ids: Optional[Array] = field(
+        default=None, compare=False, hash=False, repr=False
+    )
+    key_segment_ids: Optional[Array] = field(
+        default=None, compare=False, hash=False, repr=False
+    )
 
-    def __call__(self, b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array, seg_q: Optional[Array] = None, seg_k: Optional[Array] = None) -> Array:
+    def __call__(
+        self,
+        b_idx: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> Array:
         # Prefer explicitly provided seg_q/seg_k at call time; else fallback to stored ids.
         s_q = seg_q if seg_q is not None else self.query_segment_ids
         s_k = seg_k if seg_k is not None else self.key_segment_ids
@@ -764,17 +788,26 @@ class SameSegmentMask(AttentionMaskBase):
 
 
 @jax.tree_util.register_pytree_node_class
-class FromMaskBias(AttentionBiasBase):
+class FromMaskBias(AttentionBias):
     """Converts a mask into additive bias using a large negative value.
 
     Positions where mask is False receive `mask_value` (e.g., -1e9), others get 0.
     """
 
-    def __init__(self, mask: AttentionMaskBase, mask_value: float = DEFAULT_MASK_VALUE):
+    def __init__(self, mask: AttentionMask, mask_value: float = DEFAULT_MASK_VALUE):
         self.mask = mask
         self.mask_value = mask_value
 
-    def __call__(self, scores: Array, b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array, data_q: Optional[Array] = None, data_k: Optional[Array] = None) -> Array:
+    def __call__(
+        self,
+        scores: Array,
+        b_idx: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        data_q: Optional[Array] = None,
+        data_k: Optional[Array] = None,
+    ) -> Array:
         mk = self.mask(b_idx, h_idx, q_idx, k_idx, None, None)
         return jnp.where(mk, scores, scores + self.mask_value)
 
@@ -789,13 +822,22 @@ class FromMaskBias(AttentionBiasBase):
 
 
 @jax.tree_util.register_pytree_node_class
-class ConstantBias(AttentionBiasBase):
+class ConstantBias(AttentionBias):
     """Adds a constant bias to all logits."""
 
     def __init__(self, value: float):
         self.value = float(value)
 
-    def __call__(self, scores: Array, b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array, data_q: Optional[Array] = None, data_k: Optional[Array] = None) -> Array:
+    def __call__(
+        self,
+        scores: Array,
+        b_idx: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        data_q: Optional[Array] = None,
+        data_k: Optional[Array] = None,
+    ) -> Array:
         return scores + self.value
 
     def tree_flatten(self):
@@ -808,7 +850,7 @@ class ConstantBias(AttentionBiasBase):
 
 
 @jax.tree_util.register_pytree_node_class
-class DenseBias(AttentionBiasBase):
+class DenseBias(AttentionBias):
     """Adds a precomputed dense bias tensor to the logits.
 
     Accepts a bias tensor of shape [B|1, H|1, Q, K] and supports broadcasting
@@ -819,7 +861,16 @@ class DenseBias(AttentionBiasBase):
         assert bias.ndim == 4, "bias must have shape [B|1, H|1, Q, K]"
         self.bias = bias
 
-    def __call__(self, scores: Array, b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array, data_q: Optional[Array] = None, data_k: Optional[Array] = None) -> Array:
+    def __call__(
+        self,
+        scores: Array,
+        b_idx: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        data_q: Optional[Array] = None,
+        data_k: Optional[Array] = None,
+    ) -> Array:
         B, H, Q, K = self.bias.shape
         bsel = 0 if B == 1 else int(b_idx)
         hsel = 0 if H == 1 else int(h_idx)
@@ -857,7 +908,7 @@ class DenseBias(AttentionBiasBase):
 
 
 @jax.tree_util.register_pytree_node_class
-class IdentityBias(AttentionBiasBase):
+class IdentityBias(AttentionBias):
     """No-op bias that returns scores unchanged."""
 
     def __call__(
@@ -882,7 +933,7 @@ class IdentityBias(AttentionBiasBase):
 
 
 @jax.tree_util.register_pytree_node_class
-class CausalBias(AttentionBiasBase):
+class CausalBias(AttentionBias):
     """Causal masking expressed as an additive bias."""
 
     def __init__(self, mask_value: float = DEFAULT_MASK_VALUE):
@@ -918,7 +969,7 @@ def _alibi_slope_for_head(h_idx: Array) -> Array:
 
 
 @jax.tree_util.register_pytree_node_class
-class ALiBiBias(AttentionBiasBase):
+class ALiBiBias(AttentionBias):
     """ALiBi-like linear position bias with head-dependent slope.
 
     bias = -slope(h) * relu(i - j)
@@ -948,7 +999,7 @@ class ALiBiBias(AttentionBiasBase):
 
 
 @jax.tree_util.register_pytree_node_class
-class DistanceDecayBias(AttentionBiasBase):
+class DistanceDecayBias(AttentionBias):
     """Symmetric distance penalty independent of direction.
 
     Adds a negative penalty proportional to absolute distance |i - j|.
@@ -982,37 +1033,43 @@ class DistanceDecayBias(AttentionBiasBase):
 
 # ------------------------- Bias Grad Utilities -------------------------------
 
-def get_bias_grad(bias: AttentionBiasBase | Callable) -> Optional[Callable]:
+
+def get_bias_grad(bias: AttentionBias | Callable) -> Optional[Callable]:
     """Return a JAX-compatible grad function for a bias modifier.
 
     If `bias` is an AttentionBiasBase instance, return its `.grad` method if
     present; otherwise return None.
     """
-    if isinstance(bias, AttentionBiasBase):
+    if isinstance(bias, AttentionBias):
         return getattr(bias, "grad", None)
     # Callable support removed; only classes should be used.
     return None
 
 
 # Helper adapters to apply masks/biases with optional data tuples
-def apply_mask(mask: AttentionMaskBase,
-               b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array,
-               data_q: Optional[Tuple[Array, ...]] = None,
-               data_k: Optional[Tuple[Array, ...]] = None) -> Array:
-    # Accept either tuple or single array (legacy) for per-side data
-    sq = None if data_q is None else data_q[0]
-    sk = None if data_k is None else data_k[0]
-    return mask(b_idx, h_idx, q_idx, k_idx, sq, sk)
+def apply_mask(
+    mask: AttentionMask,
+    b_idx: Array,
+    h_idx: Array,
+    q_idx: Array,
+    k_idx: Array,
+    data_q: Optional[Array] = None,
+    data_k: Optional[Array] = None,
+) -> Array:
+    return mask(b_idx, h_idx, q_idx, k_idx, data_q, data_k)
 
 
-def apply_bias(bias: AttentionBiasBase,
-               scores: Array,
-               b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array,
-               data_q: Optional[Tuple[Array, ...]] = None,
-               data_k: Optional[Tuple[Array, ...]] = None) -> Array:
-    sq = None if data_q is None else data_q[0]
-    sk = None if data_k is None else data_k[0]
-    return bias(scores, b_idx, h_idx, q_idx, k_idx, sq, sk)
+def apply_bias(
+    bias: AttentionBias,
+    scores: Array,
+    b_idx: Array,
+    h_idx: Array,
+    q_idx: Array,
+    k_idx: Array,
+    data_q: Optional[Array] = None,
+    data_k: Optional[Array] = None,
+) -> Array:
+    return bias(scores, b_idx, h_idx, q_idx, k_idx, data_q, data_k)
 
 
 ## CallableBias removed; only class-based biases are supported.
@@ -1021,22 +1078,30 @@ def apply_bias(bias: AttentionBiasBase,
 # --------------------------- Stateless Bias Fns -------------------------------
 
 
-def bias_identity(scores: Array, b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array) -> Array:
+def bias_identity(
+    scores: Array, b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array
+) -> Array:
     """No-op bias (wrapper around IdentityBias class)."""
     return IdentityBias()(scores, b_idx, h_idx, q_idx, k_idx)
 
 
-def bias_causal(scores: Array, b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array) -> Array:
+def bias_causal(
+    scores: Array, b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array
+) -> Array:
     """Causal masking as additive bias (wrapper around CausalBias)."""
     return CausalBias()(scores, b_idx, h_idx, q_idx, k_idx)
 
 
-def bias_alibi(scores: Array, b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array) -> Array:
+def bias_alibi(
+    scores: Array, b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array
+) -> Array:
     """ALiBi-like position bias (wrapper around ALiBiBias)."""
     return ALiBiBias()(scores, b_idx, h_idx, q_idx, k_idx)
 
 
-def bias_distance_decay(scores: Array, b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array) -> Array:
+def bias_distance_decay(
+    scores: Array, b_idx: Array, h_idx: Array, q_idx: Array, k_idx: Array
+) -> Array:
     """Symmetric distance penalty (wrapper around DistanceDecayBias)."""
     return DistanceDecayBias()(scores, b_idx, h_idx, q_idx, k_idx)
 
@@ -1050,7 +1115,9 @@ class AttentionLogitBiasLayer:
     forward should produce attention logit biases of shape [B, 1|H, L, L].
     """
 
-    def forward(self, *, segment_ids: Array, positions: Array) -> Array:  # pragma: no cover - API
+    def forward(
+        self, *, segment_ids: Array, positions: Array
+    ) -> Array:  # pragma: no cover - API
         raise NotImplementedError(type(self))
 
 
