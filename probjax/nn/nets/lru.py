@@ -1,10 +1,10 @@
-from typing import Callable, Optional
+from typing import Callable, Optional, Literal, Mapping
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.nn.layers.lru import LRUBlock
+from probjax.nn.layers.lru import LRUBlock, LRUCell
 from probjax.nn.nets.simple import MLP
 from probjax.nn.utils import filter_precision_kwargs, get_active_precision_kwargs
 from probjax.utils.typing import Array, ArrayLike, DTypeLike, PrecisionLike, ModuleLikeType
@@ -36,6 +36,9 @@ class LRUModel(nnx.Module):
         bidirectional: bool = True,
         dropout_rate: Optional[float] = None,
         mlp_widening_factor: int = 2,
+        mlp_num_hidden_layers: int = 1,
+        skip_connection_lru: bool = True,
+        skip_connection_mlp: bool = True,
         activation: Callable = jax.nn.gelu,
         norm_cls: type[nnx.Module] = nnx.LayerNorm,
         mlp_cls: ModuleLikeType = MLP,
@@ -44,6 +47,9 @@ class LRUModel(nnx.Module):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
+        # Recurrent cell choice and kwargs
+        recurrent_cls: ModuleLikeType = LRUCell,
+        recurrent_kwargs: Optional[Mapping] = None,
         rngs: nnx.Rngs,
     ):
         """Initialize an LRU model.
@@ -94,6 +100,10 @@ class LRUModel(nnx.Module):
         self.num_layers = num_layers
         self.bidirectional = bidirectional
         self.dropout_rate = dropout_rate
+        self.recurrent_cls = recurrent_cls
+        self.recurrent_kwargs = dict(recurrent_kwargs or {})
+        self.skip_connection_lru = skip_connection_lru
+        self.skip_connection_mlp = skip_connection_mlp
 
         # Precision and dtype settings
         precision_kwargs = get_active_precision_kwargs(
@@ -104,9 +114,12 @@ class LRUModel(nnx.Module):
         )
 
         # Initialize linear layers with precision kwargs
+        init_default = (
+            nnx.initializers.variance_scaling(2 / max(num_layers, 1), 'fan_in', 'truncated_normal')
+            if initializer is None else initializer
+        )
         linear_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
-        if initializer is not None:
-            linear_kwargs['kernel_init'] = initializer
+        linear_kwargs['kernel_init'] = init_default
 
         self.in_layer = nnx.Linear(input_dim, model_dim, rngs=rngs, **linear_kwargs)
         self.out_layer = nnx.Linear(model_dim, output_dim, rngs=rngs, **linear_kwargs)
@@ -122,26 +135,42 @@ class LRUModel(nnx.Module):
         # Final output layer norm
         self.out_layer_norm = norm_cls(model_dim, rngs=rngs)
 
-        # LRU layers
-        self.lru_layers = nnx.List([
-            LRUBlock(
-                model_dim,
-                rngs=rngs,
-                dropout=dropout_rate,
-                norm=norm_cls,
-                activation=activation,
-            )
+        # Recurrent cell stack (each cell maps [B, T, D] -> [B, T, D])
+        self.recurrent_layers = nnx.List([
+            self.recurrent_cls(model_dim, rngs=rngs, **self.recurrent_kwargs)
             for _ in range(num_layers)
         ])
+        # Heads for block post-processing (norm, activation, GLU, dropout)
+        self.block_norms = nnx.List([
+            norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
+        ])
+        if dropout_rate is not None:
+            self.block_dropout1 = nnx.List([
+                nnx.Dropout(dropout_rate, rngs=rngs) for _ in range(num_layers)
+            ])
+            self.block_dropout2 = nnx.List([
+                nnx.Dropout(dropout_rate, rngs=rngs) for _ in range(num_layers)
+            ])
+        else:
+            self.block_dropout1 = None
+            self.block_dropout2 = None
+        self.block_out1 = nnx.List([
+            nnx.Linear(model_dim, model_dim, rngs=rngs, **linear_kwargs) for _ in range(num_layers)
+        ])
+        self.block_out2 = nnx.List([
+            nnx.Linear(model_dim, model_dim, rngs=rngs, **linear_kwargs) for _ in range(num_layers)
+        ])
+        self.block_activation = activation
 
         # MLP layers for processing between LRU blocks
-        mlp_dims = [model_dim, mlp_widening_factor * model_dim, model_dim]
+        mlp_dims = [model_dim] + [mlp_widening_factor * model_dim] * mlp_num_hidden_layers + [model_dim]
         mlp_kwargs = filter_precision_kwargs(mlp_cls, **precision_kwargs)
         self.mlp_layers = nnx.List([
             mlp_cls(
                 mlp_dims,
                 rngs=rngs,
                 activation=activation,
+                activate_final=True,
                 **mlp_kwargs,
             )
             for _ in range(num_layers)
@@ -163,11 +192,12 @@ class LRUModel(nnx.Module):
             Output array of shape [..., seq_len, output_dim].
         """
         inputs = jnp.asarray(inputs)
-        h = self.in_layer(inputs)
+        shape = inputs.shape
+        # Flatten leading batch dims to [-1, T, D]
+        x = inputs.reshape(-1, inputs.shape[-2], inputs.shape[-1])
+        h = self.in_layer(x)
 
-        for i, (lru_layer, mlp_layer) in enumerate(
-            zip(self.lru_layers, self.mlp_layers)
-        ):
+        for i, mlp_layer in enumerate(self.mlp_layers):
             # Apply layer norm before LRU layer
             h_normed = self.layer_norms_lru[i](h)
 
@@ -175,17 +205,27 @@ class LRUModel(nnx.Module):
             if self.bidirectional:
                 # Alternate between forward and backward processing
                 if i % 2 == 0:
-                    h_lru = lru_layer(h_normed, deterministic=deterministic)
+                    h_cell_in = self.block_norms[i](h_normed)
+                    h_cell = self.recurrent_layers[i](h_cell_in)
                 else:
                     # Reverse sequence, apply LRU, then reverse back
                     h_reversed = h_normed[..., ::-1, :]
-                    h_lru = lru_layer(h_reversed, deterministic=deterministic)
-                    h_lru = h_lru[..., ::-1, :]
+                    h_cell_in = self.block_norms[i](h_reversed)
+                    h_cell = self.recurrent_layers[i](h_cell_in)
+                    h_cell = h_cell[..., ::-1, :]
             else:
-                h_lru = lru_layer(h_normed, deterministic=deterministic)
+                h_cell_in = self.block_norms[i](h_normed)
+                h_cell = self.recurrent_layers[i](h_cell_in)
 
             # Residual connection for LRU
-            h = h + h_lru
+            # GLU head: activation + optional dropout + gated linear
+            x = self.block_activation(h_cell)
+            if self.block_dropout1 is not None:
+                x = self.block_dropout1[i](x, deterministic=deterministic)
+            x = self.block_out1[i](x) * jax.nn.sigmoid(self.block_out2[i](x))
+            if self.block_dropout2 is not None:
+                x = self.block_dropout2[i](x, deterministic=deterministic)
+            h = h + x if self.skip_connection_lru else x
 
             # Apply layer norm before MLP layer
             h_normed = self.layer_norms_mlp[i](h)
@@ -194,8 +234,12 @@ class LRUModel(nnx.Module):
             h_mlp = mlp_layer(h_normed)
 
             # Residual connection for MLP
-            h = h + h_mlp
+            h = h + h_mlp if self.skip_connection_mlp else h_mlp
 
         # Apply final layer norm and output projection
         h = self.out_layer_norm(h)
-        return self.out_layer(h)
+        h = self.out_layer(h)
+        return h.reshape(shape[:-2] + (shape[-2], self.output_dim))
+
+
+    

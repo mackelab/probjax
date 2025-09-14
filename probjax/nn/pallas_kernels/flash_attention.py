@@ -29,14 +29,12 @@ Compared to the implementation in the JAX repo, we made the following enhancemen
 * Support arbitrary mask function like Pytorch FlexAttention.
 """
 
-from concurrent.futures import ThreadPoolExecutor
 import functools
 from collections.abc import Sequence
-from typing import Any, Callable, NamedTuple, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from absl import logging
 from jax import lax
 from jax._src.cudnn.fused_attention_stablehlo import MaskType
@@ -45,205 +43,26 @@ from jax._src.cudnn.fused_attention_stablehlo import (
 )
 from jax.ad_checkpoint import checkpoint_name
 from jax.experimental import pallas as pl
+
+from .utils import (
+    NEG_INF,
+    FlashMaskFn as MaskFn,
+    get_gpu_dot_precision,
+    get_cpu_dot_precision,
+    build_mask,
+    KVOffsetInfo,
+    query_iterator_indices,
+    key_value_iterator_indices,
+    build_sliding_window_mask,
+    get_dropout_mask,
+    segment_mask,
+)
 from jax.experimental.pallas.triton import TritonCompilerParams
 
 
-NEG_INF = -1e15
 FLASH_ATTN_RESIDUAL_NAME = "flash_residuals"
-MaskFn = Callable[[jax.Array, jax.Array], jax.Array]
 
 
-def get_cpu_dot_precision(dtype) -> jax.lax.DotAlgorithmPreset:
-    """Get the suitable DotAlgorithmPreset for the given dtype for CPU backend.
-
-    CPU doesn't support different compute and accumulation precision. This should only be used
-    for CPU emulation and unit tests.
-    """
-    if dtype == jnp.float32:
-        return jax.lax.DotAlgorithmPreset.F32_F32_F32
-    if dtype == jnp.float16:
-        return jax.lax.DotAlgorithmPreset.F16_F16_F16
-    if dtype == jnp.bfloat16:
-        return jax.lax.DotAlgorithmPreset.BF16_BF16_BF16
-    raise ValueError(f"Unsupported dtype {dtype}")
-
-
-# See https://docs.jax.dev/en/latest/jax.lax.html#jax.lax.DotAlgorithm for information.
-def get_gpu_dot_precision(dtype) -> jax.lax.DotAlgorithmPreset:
-    """Get the suitable DotAlgorithmPreset for the given dtype."""
-    # General rules:
-    # 1. Must accumulate in FP32 precision.
-    # 2. Must use TensorCore.
-    if jax.default_backend() == "cpu":
-        return get_cpu_dot_precision(dtype)
-    if dtype == jnp.float32:
-        # We can use F32_F32_F32, but it disables the use of TensorCore and makes it more than 10x
-        # slower on H100, as matmul fallbacks to using CUDA cores.
-        return jax.lax.DotAlgorithmPreset.TF32_TF32_F32
-    if dtype == jnp.float16:
-        return jax.lax.DotAlgorithmPreset.F16_F16_F32
-    if dtype == jnp.bfloat16:
-        return jax.lax.DotAlgorithmPreset.BF16_BF16_F32
-    raise ValueError(f"Unsupported dtype {dtype}")
-
-
-def build_mask(
-    mask_fn, *, q_seq_len: int, kv_seq_len: int, block_q: int, block_k: int
-) -> np.ndarray:
-    """Builds the block map where True means the block is not fully masked.
-
-    Args:
-        mask_fn: The attention mask function.
-        q_seq_len: Query sequence length.
-        kv_seq_len: Key/Value sequence length.
-        block_q: Query block size.
-        block_k: Key/Value block size.
-
-    Returns:
-        A boolean array of shape (num_q_blocks, num_kv_blocks) where True means the block is not
-        fully masked. num_q_blocks * block_q will be larger than q_seq_len if q_seq_len is not
-        divisible by block_q. The same holds true for kv blocks.
-    """
-
-    def worker():
-        num_q_blocks = pl.cdiv(q_seq_len, block_q)
-        num_kv_blocks = pl.cdiv(kv_seq_len, block_k)
-        block_mask_map = np.ones(shape=(num_q_blocks, num_kv_blocks), dtype=np.bool_)
-        # Run a compile-time evaluation to get the mask array.
-        for i in range(0, q_seq_len, block_q):
-            for j in range(0, kv_seq_len, block_k):
-                rows = np.arange(i, i + block_q, dtype=np.int32)
-                cols = np.arange(j, j + block_k, dtype=np.int32)
-                with jax.ensure_compile_time_eval():
-                    # All empty means skipping.
-                    if not mask_fn(rows[:, None], cols[None, :]).any():
-                        block_mask_map[i // block_q, j // block_k] = False
-        return block_mask_map
-
-    # Since the block mask computation runs within shard_map, it may inherit sharding and mesh
-    # information from the shard_map context, causing some sharding/partition mismatch problem
-    # when we use jnp to compute the mask within `mask_fn`:
-    #
-    # File "/usr/local/lib/python3.10/dist-packages/jax/_src/sharding.py", line 61, in
-    # _common_shard_shape
-    # assert len(partitions) == len(global_shape), (len(partitions), len(global_shape))
-    # AssertionError: (1, 2)
-    #
-    # It's not possible to simply use numpy in `mask_fn` and avoid jnp, because `mask_fn` is also
-    # used in Pallas kernels. To workaround this, we create a new thread, which doesn't have any
-    # exisitng thread local context, so jax has the illusion that we're running at the outer-scope
-    # and we can safely perform any compile time evaluations.
-    with ThreadPoolExecutor(1) as pool:
-        return pool.submit(worker).result()
-
-
-class KVOffsetInfo(NamedTuple):
-    """Records the block index of non-empty KV blocks.
-
-    Attributes:
-        kv_block_offset: A (num_q_blocks, num_kv_blocks) tensor where `kv_block_offset[i][j]`
-            stores the index of the jth non-empty KV block index for the ith query block.
-            This tensor may be padded at the end.
-        kv_block_offset_size: A (num_q_blocks,) tensor that stores the number of valid entries
-            for each row of `kv_block_offset`, i.e. the number of entries before padding.
-    """
-
-    kv_block_offset: jax.Array
-    kv_block_offset_size: jax.Array
-
-
-def query_iterator_indices(
-    block_mask_map: np.ndarray, *, padding: int = 0
-) -> KVOffsetInfo:
-    """Builds `KVOffsetInfo` for block-sparse attention computation in the forward pass.
-
-    Returns:
-        A `KVOffsetInfo`. See the attributes of `KVOffsetInfo` for more info.
-    """
-    num_q_blocks, num_kv_blocks = block_mask_map.shape
-    index_offset = np.full((num_q_blocks, num_kv_blocks), padding, dtype=np.int32)
-    index_offset_size = np.zeros(shape=(num_q_blocks), dtype=np.int32)
-    for i in range(num_q_blocks):
-        k = 0
-        for j in range(num_kv_blocks):
-            if block_mask_map[i, j]:
-                index_offset[i, k] = j
-                k += 1
-        index_offset_size[i] = k
-    return KVOffsetInfo(
-        kv_block_offset=jnp.asarray(index_offset),
-        kv_block_offset_size=jnp.asarray(index_offset_size),
-    )
-
-
-def build_sliding_window_mask(
-    *,
-    q_seq_len: int,
-    kv_seq_len: int,
-    block_q: int,
-    block_k: int,
-    sliding_window_size: int,
-) -> np.ndarray:
-    """Same as build_mask(sliding_window_causal_mask(sliding_window_size), **kwargs).
-
-    This function is much faster than `build_mask` for sliding window mask, because it doesn't need
-    to compute `mask_fn` on each block_q x block_k tile. Therefore, the speed up is proportional to
-    block_q x block_k.
-    """
-    num_q_blocks = pl.cdiv(q_seq_len, block_q)
-    num_kv_blocks = pl.cdiv(kv_seq_len, block_k)
-    block_mask_map = np.tri(num_q_blocks, num_kv_blocks, dtype=np.bool_)
-    for i in range(0, q_seq_len, block_q):
-        for j in range(0, kv_seq_len, block_k):
-            if i - (j + block_k - 1) > sliding_window_size:
-                block_mask_map[i // block_q, j // block_k] = False
-    return block_mask_map
-
-
-def get_dropout_mask(shape: tuple[int, ...], *, prng_key: jax.Array, rate: float):
-    """Returns a bool dropout mask for the specified jax.Array shape where True indicates dropout."""
-    return jax.random.bernoulli(prng_key, rate, shape)
-
-
-def _segment_mask(
-    q_segment_ids: jax.Array,
-    kv_segment_ids: jax.Array,
-):
-    """Build the segment mask for the given query and key bias ids.
-
-    If mask[..., i, j] == True, query position i and key position j
-    are in the same segment.
-    """
-    # [B, T, 1] or [T, 1]
-    q_segment_ids = jnp.expand_dims(q_segment_ids, axis=-1)
-    # [B, 1, S] or [1, S]
-    kv_segment_ids = jnp.expand_dims(kv_segment_ids, axis=-2)
-    return jnp.equal(q_segment_ids, kv_segment_ids).astype(jnp.bool_)
-
-
-def _key_value_iterator_indices(
-    block_mask_map: np.ndarray,
-) -> Tuple[jax.Array, jax.Array]:
-    """build the iteration begin/end indices for the key/value dimension.
-
-    Returns:
-        Index_offset (num_kv_blocks, num_q_blocks) jax.Array where index_offset[i][j]
-    to store the first jth available block index for ith kv block, and the unused
-    blocks are padded with 0 at the very end.
-        Index_offset_size (num_kv_blocks) jax.Array to store the number of valid blocks
-    for each iteration.
-    """
-    num_q_blocks, num_kv_blocks = block_mask_map.shape
-    index_offset = np.zeros(shape=(num_kv_blocks, num_q_blocks), dtype=np.int32)
-    index_offset_size = np.zeros(shape=(num_kv_blocks), dtype=np.int32)
-    for i in range(num_kv_blocks):
-        k = 0
-        for j in range(num_q_blocks):
-            if block_mask_map[j, i]:
-                index_offset[i, k] = j
-                k += 1
-        index_offset_size[i] = k
-    return jnp.asarray(index_offset), jnp.asarray(index_offset_size)
 
 
 def _mha_forward_kernel(
@@ -339,11 +158,11 @@ def _mha_forward_kernel(
             )
             if s_ref is not None:
                 kv_segment_ids = pl.load(s_ref, (curr_k_slice,))
-                segment_mask = _segment_mask(q_segment_ids, kv_segment_ids)
+                segmask = segment_mask(q_segment_ids, kv_segment_ids)
                 mask = (
-                    segment_mask
+                    segmask
                     if mask is None
-                    else jnp.logical_and(mask, segment_mask)
+                    else jnp.logical_and(mask, segmask)
                 )
             # Apply mask to qk.
             qk = jnp.where(mask, qk, NEG_INF)
@@ -665,11 +484,11 @@ def _mha_backward_kernel_dkdv(
             )
             if s_ref is not None:
                 q_segment_ids = pl.load(s_ref, (curr_q_slice,))
-                segment_mask = _segment_mask(q_segment_ids, kv_segment_ids)
+                segmask = segment_mask(q_segment_ids, kv_segment_ids)
                 mask = (
-                    segment_mask
+                    segmask
                     if mask is None
-                    else jnp.logical_and(mask, segment_mask)
+                    else jnp.logical_and(mask, segmask)
                 )
             qk = jnp.where(mask, qk, NEG_INF)
 
@@ -767,11 +586,11 @@ def _mha_backward_kernel_dq(
             )
             if s_ref is not None:
                 kv_segment_ids = pl.load(s_ref, (curr_k_slice,))
-                segment_mask = _segment_mask(q_segment_ids, kv_segment_ids)
+                segmask = segment_mask(q_segment_ids, kv_segment_ids)
                 mask = (
-                    segment_mask
+                    segmask
                     if mask is None
-                    else jnp.logical_and(mask, segment_mask)
+                    else jnp.logical_and(mask, segmask)
                 )
             qk = jnp.where(mask, qk, NEG_INF)
 
@@ -873,7 +692,7 @@ def _mha_backward(
             index_map=(lambda i, _, k: (k)), block_shape=((None,))
         )
         # Compute the dynamic indices for the key-value for dkdv.
-        kv_index_offset, kv_index_offset_size = _key_value_iterator_indices(
+        kv_index_offset, kv_index_offset_size = key_value_iterator_indices(
             block_mask_array
         )
         kv_index_offset_spec = pl.BlockSpec(

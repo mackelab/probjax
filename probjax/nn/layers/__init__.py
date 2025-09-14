@@ -23,4 +23,13 @@ from probjax.nn.layers.fuse import (
     AffineFuse,
     ConcatFuse,
 )
-from probjax.nn.layers.lru import LRU
+from probjax.nn.layers.lru import (
+    LRU,
+    MambaLRU,
+    SSDLRU,
+    LRUCell,
+    MambaCell,
+    SSDCell,
+    mamba_scan,
+    ssd,
+)

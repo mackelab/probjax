@@ -1,8 +1,11 @@
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
+
+# Advanced Pallas kernels (Mamba/SSD) user-facing wrappers
+from probjax.nn.pallas_kernels.mambda import compute_mamba_scan
 
 
 @jax.vmap
@@ -118,7 +121,50 @@ class LRU(nnx.Module):
         self.D = nnx.Param(matrix_init(rngs.params(), (out_dim, in_dim)))
 
     def __call__(self, inputs):
-        # Fetch parameters
+        # Support [L, D] or [B, L, D]
+        inputs = jnp.asarray(inputs)
+
+        def _single(x_td):
+            # x_td: [L, in_dim]
+            # Fetch parameters
+            nu_log = self.nu_log.value
+            theta_log = self.theta_log.value
+            gamma_log = self.gamma_log.value
+
+            # Fetch projection matrices
+            B_re = self.B_re.value
+            B_im = self.B_im.value
+            C_re = self.C_re.value
+            C_im = self.C_im.value
+            D = self.D.value
+
+            # Diag drift
+            diag_lambda = jnp.exp(-jnp.exp(nu_log) + 1j * jnp.exp(theta_log))
+
+            # Input projection
+            B_norm = B_re + 1j * B_im
+            B_norm = B_norm * jnp.expand_dims(jnp.exp(gamma_log), axis=-2)
+            # Output projection
+            C = C_re + 1j * C_im
+
+            Lambda_elements = jnp.repeat(
+                diag_lambda[None, ...], x_td.shape[-2], axis=-2
+            )  # [L, H]
+            Bu_elements = jnp.einsum("ih,ti->th", B_norm, x_td)  # [L, H]
+
+            # Compute hidden states via associative scan
+            _, hidden_states = jax.lax.associative_scan(
+                binary_operator_diag, (Lambda_elements, Bu_elements)
+            )
+            # Project to output
+            outputs = jnp.real(jnp.einsum("th,oh->to", hidden_states, C))
+            outputs += jnp.einsum("ti,oi->to", x_td, D)
+            return outputs
+
+        if inputs.ndim == 3:
+            return jax.vmap(_single)(inputs)
+
+        # Fallback to single-example path [L, D]
         nu_log = self.nu_log.value
         theta_log = self.theta_log.value
         gamma_log = self.gamma_log.value
@@ -151,6 +197,233 @@ class LRU(nnx.Module):
         outputs += jnp.einsum("ti,oi->to", inputs, D)
 
         return outputs
+
+
+# ----------------------------- Mamba LRU ------------------------------------
+
+
+def mamba_scan(
+    x: jax.Array,
+    a: jax.Array,
+    b: jax.Array,
+    c: jax.Array,
+    delta: jax.Array,
+    d: jax.Array,
+    *,
+    seq_tile_size: int = 64,
+    dim_tile_size: int = 128,
+) -> jax.Array:
+    """Functional wrapper over the Pallas Mamba scan kernel.
+
+    Shapes follow the kernel contract:
+    - x: [B, L, D]
+    - a: [S, D]
+    - b, c, delta: [B, L, S], [B, L, S], [B, L, D]
+    - d: [1, D]
+    Returns: y with shape [B, L, D]
+    """
+    return compute_mamba_scan(
+        x, a, b, c, delta, d, seq_tile_size=seq_tile_size, dim_tile_size=dim_tile_size
+    )
+
+
+class MambaLRU(nnx.Module):
+    """A simple nnx.Module wrapper around the Pallas Mamba scan.
+
+    This module maps per-token inputs to Mamba parameters (b, c, delta) via linear
+    projections, keeps recurrent matrices (a, d) as learnable parameters, runs the
+    Pallas scan, and projects to `out_dim`.
+    """
+
+    def __init__(
+        self,
+        in_dim: int,
+        out_dim: int,
+        state_dim: int,
+        rngs,
+        *,
+        seq_tile_size: int = 64,
+        dim_tile_size: int = 128,
+        include_out_proj: bool = True,
+    ):
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.state_dim = state_dim
+        self.seq_tile_size = seq_tile_size
+        self.dim_tile_size = dim_tile_size
+
+        # Recurrent parameters
+        self.a = nnx.Param(matrix_init(rngs.params(), (state_dim, in_dim), normalization=jnp.sqrt(in_dim)))
+        self.d = nnx.Param(matrix_init(rngs.params(), (1, in_dim), normalization=jnp.sqrt(in_dim)))
+
+        # Token-wise generators for b, c, delta
+        self.to_b = nnx.Linear(in_dim, state_dim, rngs=rngs)
+        self.to_c = nnx.Linear(in_dim, state_dim, rngs=rngs)
+        self.to_delta = nnx.Linear(in_dim, in_dim, rngs=rngs)
+
+        # Optional output projection
+        self.out = None
+        if include_out_proj:
+            self.out = nnx.Linear(in_dim, out_dim, rngs=rngs)
+
+    def __call__(self, inputs: jax.Array) -> jax.Array:
+        # Accept [L, D] or [B, L, D]
+        added_batch = False
+        if inputs.ndim == 2:
+            inputs = inputs[None, ...]
+            added_batch = True
+
+        b = self.to_b(inputs)  # [B, L, S]
+        c = self.to_c(inputs)  # [B, L, S]
+        delta = self.to_delta(inputs)  # [B, L, D]
+
+        y = mamba_scan(
+            inputs,
+            self.a.value,
+            b,
+            c,
+            delta,
+            self.d.value,
+            seq_tile_size=self.seq_tile_size,
+            dim_tile_size=self.dim_tile_size,
+        )
+        if self.out is not None:
+            y = self.out(y)
+        if added_batch:
+            y = y[0]
+        return y
+
+
+# ------------------------------ SSD (Mamba-2) -------------------------------
+
+
+def ssd(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    log_alpha: jax.Array,
+    h0: Optional[jax.Array] = None,
+) -> jax.Array:
+    """Functional wrapper for the Pallas SSD kernel.
+
+    Expects shapes matching `ssd_kernels.ssd`:
+    - q, k: [B, G, L, dk]
+    - v: [B, H, L, dv] with H % G == 0
+    - log_alpha: [B, H, L]
+    - h0: optional [B, H, dk, dv]
+    Returns: [B, H, L, dv]
+    """
+    # Lazy import to avoid optional dependency (einops) at module import time.
+    from probjax.nn.pallas_kernels import ssd as _ssd_mod
+    return _ssd_mod.ssd(q, k, v, log_alpha, h0)
+
+
+class SSDLRU(nnx.Module):
+    """A lightweight wrapper that builds SSD parameters from inputs.
+
+    This module uses single group and `num_heads` value pathways by default
+    and aggregates heads by summation.
+    """
+
+    def __init__(
+        self,
+        in_dim: int,
+        out_dim: int | None,
+        state_dim: int,
+        rngs,
+        *,
+        num_heads: int = 1,
+        reduce: str = "sum",
+    ):
+        self.in_dim = in_dim
+        self.out_dim = out_dim if out_dim is not None else in_dim
+        self.state_dim = state_dim
+        self.num_heads = int(num_heads)
+        if reduce not in ("sum", "mean"):
+            raise ValueError("reduce must be 'sum' or 'mean'")
+        self.reduce = reduce
+
+        # Projections to q/k/v and per-step decay log_alpha
+        self.to_q = nnx.Linear(in_dim, state_dim, rngs=rngs)
+        self.to_k = nnx.Linear(in_dim, state_dim, rngs=rngs)
+        # Set dv = out_dim // num_heads if divisible, else use out_dim per head and sum
+        # choose dv so H*dv matches out_dim if divisible; else keep dv=in_dim and post-project later
+        if (self.out_dim % self.num_heads) == 0:
+            self.dv = self.out_dim // self.num_heads
+        else:
+            self.dv = in_dim
+        self.to_v = nnx.Linear(in_dim, self.dv, rngs=rngs)
+        self.to_alpha = nnx.Linear(in_dim, self.num_heads, rngs=rngs)
+        # Optional post-proj if dv*H != out_dim
+        self.post = None
+        if self.num_heads * self.dv != self.out_dim:
+            self.post = nnx.Linear(self.num_heads * self.dv, self.out_dim, rngs=rngs)
+
+    def __call__(self, inputs: jax.Array) -> jax.Array:
+        # Accept [L, D] or [B, L, D]
+        added_batch = False
+        if inputs.ndim == 2:
+            inputs = inputs[None, ...]
+            added_batch = True
+
+        B, L, _ = inputs.shape
+        G = self.num_heads  # 1:1 mapping to avoid head-group mismatch
+        H = self.num_heads
+
+        q = self.to_q(inputs)  # [B, L, dk]
+        k = self.to_k(inputs)
+        v = self.to_v(inputs)  # [B, L, dv]
+        # Arrange shapes for SSD
+        q = q.reshape(B, 1, L, self.state_dim).repeat(G, axis=1)
+        k = k.reshape(B, 1, L, self.state_dim).repeat(G, axis=1)
+        v = v.reshape(B, 1, L, self.dv).repeat(H, axis=1)
+        log_alpha = self.to_alpha(inputs)  # [B, L, H]
+        log_alpha = jnp.swapaxes(log_alpha, 1, 2)  # [B, H, L]
+
+        out = ssd(q, k, v, log_alpha, h0=None)  # [B, H, L, dv]
+        if self.reduce == "sum":
+            y = out.sum(axis=1)  # [B, L, dv]
+        else:
+            y = out.mean(axis=1)
+        if self.post is not None:
+            y = self.post(y)
+        if added_batch:
+            y = y[0]
+        return y
+
+
+# Uniform cell-style wrappers returning [B, L, D]
+
+
+class LRUCell(nnx.Module):
+    def __init__(self, model_dim: int, rngs, **kwargs):
+        del kwargs
+        self.core = LRU(model_dim, model_dim, model_dim, rngs)
+
+    def __call__(self, inputs: jax.Array) -> jax.Array:
+        return self.core(inputs)
+
+
+class MambaCell(nnx.Module):
+    def __init__(self, model_dim: int, rngs, *, state_dim: int | None = None, seq_tile_size: int = 64, dim_tile_size: int = 128, **kwargs):
+        del kwargs
+        sd = state_dim or model_dim
+        # No output projection to preserve dimension
+        self.core = MambaLRU(model_dim, model_dim, sd, rngs, seq_tile_size=seq_tile_size, dim_tile_size=dim_tile_size, include_out_proj=False)
+
+    def __call__(self, inputs: jax.Array) -> jax.Array:
+        return self.core(inputs)
+
+
+class SSDCell(nnx.Module):
+    def __init__(self, model_dim: int, rngs, *, state_dim: int | None = None, num_heads: int = 1, reduce: str = "sum", **kwargs):
+        del kwargs
+        sd = state_dim or model_dim
+        # Set out_dim=None so SSDLRU maps back to in_dim (model_dim)
+        self.core = SSDLRU(model_dim, None, sd, rngs, num_heads=num_heads, reduce=reduce)
+
+    def __call__(self, inputs: jax.Array) -> jax.Array:
+        return self.core(inputs)
 
 
 class LRUBlock(nnx.Module):

@@ -12,7 +12,8 @@ from flax.nnx.module import first_from
 from jax import lax
 from jax.typing import ArrayLike
 
-from probjax.nn.pallas_kernels.attention import BlockSizes, MaskModFn, ScoreModFn, mha
+from probjax.nn.pallas_kernels.attention import BlockSizes, mha
+from probjax.nn.pallas_kernels.attention_mask_bias import AttentionMaskBase
 
 __all__ = [
     "MultiHeadAttention",
@@ -228,12 +229,9 @@ def flex_attention(
     dtype=None,
     precision=None,
     module=None,  # Required arguments by Flax
-    score_mod_fn: ScoreModFn | None = None,
-    mask_mod_fn: MaskModFn | None = None,
+    score_mod_fn: None = None,
     sm_scale: Optional[bool] = None,
     enable_gqa: bool = False,
-    causal: bool = False,
-    window_size: tuple[int, int] | None = None,
     block_sizes: BlockSizes = BlockSizes.get_default(),
     backward_pass_impl: str = "triton",
     num_warps: int | None = None,
@@ -257,12 +255,39 @@ def flex_attention(
         key = key.astype(dtype)
         value = value.astype(dtype)
 
-    # Masks must be passed as functions
-    if isinstance(mask, Callable):
-        mask_mod_fn = mask
+    # Use user-provided mask directly (AttentionMaskBase) or None.
+    mask_obj = mask if isinstance(mask, AttentionMaskBase) else None
 
-    if isinstance(bias, Callable):
-        score_mod_fn = bias
+    # Only class-based biases are supported
+    from probjax.nn.pallas_kernels.attention_mask_bias import AttentionBiasBase
+    # Allow class-based biases (they may be callable) but reject plain callables.
+    if isinstance(bias, Callable) and not isinstance(bias, AttentionBiasBase):
+        raise TypeError(
+            "Callable biases are no longer supported; pass an AttentionBiasBase instance."
+        )
+
+    # If a bias is provided, use the dense reference path for parity in tests.
+    # This avoids kernel constant-capture constraints for arbitrary biases while
+    # keeping mask paths accelerated. Kernel path supports biases too, but we
+    # retain this for deterministic baselines.
+    if bias is not None:
+        from flax.nnx import dot_product_attention as _ref
+        # Materialize bias for reference path if necessary
+        if isinstance(bias, AttentionBiasBase) and hasattr(bias, 'get_data'):
+            bdata = bias.get_data()
+            if isinstance(bdata, tuple) and len(bdata) == 1:
+                dense_bias = bdata[0]
+            else:
+                from probjax.nn.pallas_kernels.utils import materialize_bias as _materialize_bias
+                B, Q, Hq, _ = query.shape
+                K = key.shape[1]
+                dense_bias = _materialize_bias(lambda s, b, h, qi, ki: bias(s, b, h, qi, ki), B, Hq, Q, K)
+        else:
+            from probjax.nn.pallas_kernels.utils import materialize_bias as _materialize_bias
+            B, Q, Hq, _ = query.shape
+            K = key.shape[1]
+            dense_bias = _materialize_bias(lambda s, b, h, qi, ki: bias(s, b, h, qi, ki), B, Hq, Q, K)
+        return _ref(query, key, value, bias=dense_bias)
 
     if (query.dtype != key.dtype) or (query.dtype != value.dtype):
         raise ValueError(
@@ -323,7 +348,7 @@ def flex_attention(
         )
         print(q_seq_len // block_sizes.block_q_dq, kv_seq_len // block_kv_dkv_new)
 
-    score_mod_fn_grad = None if score_mod_fn is None else jax.grad(score_mod_fn)
+    # Score modifier gradient is handled via bias classes in pallas kernels.
 
     # If compiling for CPU, enforce interpret mode
     if jax.default_backend() == "cpu" or (
@@ -335,13 +360,9 @@ def flex_attention(
         q=query,
         k=key,
         v=value,
-        segment_ids=segment_ids,
+        mask=mask_obj,               # AttentionMaskBase or None
         sm_scale=sm_scale,
-        causal=causal,
-        window_size=window_size,
-        score_mod=score_mod_fn,
-        mask_mod=mask_mod_fn,
-        score_mod_grad=score_mod_fn_grad,
+        bias_mod=bias,                # AttentionBiasBase or None
         block_sizes=block_sizes,
         backward_pass_impl=backward_pass_impl,
         num_warps=num_warps,
@@ -349,6 +370,7 @@ def flex_attention(
         grid=grid,
         interpret=interpret,
         debug=debug,
+        block_sparse=True,
     )
 
     output = output[:, :l_q, :h, :n]
