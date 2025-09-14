@@ -37,8 +37,8 @@ from probjax.nn.pallas_kernels.attention import mha, BlockSizes
     "batch_size, seq_len, num_heads, qkv_dim",
     [
         (2, 16, 4, 16),
-        (4, 32, 8, 32),
-        (1, 16, 2, 8),
+        (4, 128, 8, 32),
+        (1, 256, 2, 8),
         (3, 50, 8, 32),
     ],
 )
@@ -52,7 +52,7 @@ def test_attention_functions(attention_fn, batch_size, seq_len, num_heads, qkv_d
 
 # @pytest.mark.gpu
 def test_attention_function_outputs_are_same():
-    q = k = v = jax.random.normal(jax.random.PRNGKey(0), (2, 16, 4, 16))
+    q = k = v = jax.random.normal(jax.random.PRNGKey(0), (2, 256, 4, 16))
     outputs = []
     attention_fns = [
         dot_product_attention,

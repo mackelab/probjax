@@ -10,10 +10,10 @@ from flax.nnx import MultiHeadAttention as FlaxMultiHeadAttention
 from flax.nnx import combine_masks, dot_product_attention
 from flax.nnx.module import first_from
 from jax import lax
-from jax.typing import ArrayLike
 
 from probjax.nn.pallas_kernels.attention import BlockSizes, mha
-from probjax.nn.pallas_kernels.attention_mask_bias import AttentionMaskBase
+from probjax.nn.pallas_kernels.attention_mask_bias import AttentionMaskBase, AttentionBiasBase
+from probjax.utils.typing import Array, ArrayLike
 
 __all__ = [
     "MultiHeadAttention",
@@ -196,7 +196,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         return out
 
 
-def pad_to_power_of_2(arr: ArrayLike, min_size: int = 16) -> ArrayLike:
+def pad_to_power_of_2(arr: Array, min_size: int = 16) -> Array:
     """Pad the array to the next power of 2 greater than min_size."""
 
     def next_power_of_2(x):
@@ -216,20 +216,17 @@ def pad_to_power_of_2(arr: ArrayLike, min_size: int = 16) -> ArrayLike:
 
 
 def flex_attention(
-    query: ArrayLike,
-    key: ArrayLike,
-    value: ArrayLike,
-    mask=None,
-    bias=None,
-    segment_ids=None,
+    query: Array,
+    key: Array,
+    value: Array,
+    mask : AttentionMaskBase | None =None,
+    bias: AttentionBiasBase | None =None,
     dropout_rng=None,
     dropout_rate: float = 0.0,
-    broadcast_dropout=None,
     deterministic=True,
     dtype=None,
     precision=None,
     module=None,  # Required arguments by Flax
-    score_mod_fn: None = None,
     sm_scale: Optional[bool] = None,
     enable_gqa: bool = False,
     block_sizes: BlockSizes = BlockSizes.get_default(),
@@ -244,7 +241,6 @@ def flex_attention(
     del (
         module,
         precision,
-        broadcast_dropout,
         dropout_rate,
         deterministic,
         dropout_rng,
@@ -254,40 +250,6 @@ def flex_attention(
         query = query.astype(dtype)
         key = key.astype(dtype)
         value = value.astype(dtype)
-
-    # Use user-provided mask directly (AttentionMaskBase) or None.
-    mask_obj = mask if isinstance(mask, AttentionMaskBase) else None
-
-    # Only class-based biases are supported
-    from probjax.nn.pallas_kernels.attention_mask_bias import AttentionBiasBase
-    # Allow class-based biases (they may be callable) but reject plain callables.
-    if isinstance(bias, Callable) and not isinstance(bias, AttentionBiasBase):
-        raise TypeError(
-            "Callable biases are no longer supported; pass an AttentionBiasBase instance."
-        )
-
-    # If a bias is provided, use the dense reference path for parity in tests.
-    # This avoids kernel constant-capture constraints for arbitrary biases while
-    # keeping mask paths accelerated. Kernel path supports biases too, but we
-    # retain this for deterministic baselines.
-    if bias is not None:
-        from flax.nnx import dot_product_attention as _ref
-        # Materialize bias for reference path if necessary
-        if isinstance(bias, AttentionBiasBase) and hasattr(bias, 'get_data'):
-            bdata = bias.get_data()
-            if isinstance(bdata, tuple) and len(bdata) == 1:
-                dense_bias = bdata[0]
-            else:
-                from probjax.nn.pallas_kernels.utils import materialize_bias as _materialize_bias
-                B, Q, Hq, _ = query.shape
-                K = key.shape[1]
-                dense_bias = _materialize_bias(lambda s, b, h, qi, ki: bias(s, b, h, qi, ki), B, Hq, Q, K)
-        else:
-            from probjax.nn.pallas_kernels.utils import materialize_bias as _materialize_bias
-            B, Q, Hq, _ = query.shape
-            K = key.shape[1]
-            dense_bias = _materialize_bias(lambda s, b, h, qi, ki: bias(s, b, h, qi, ki), B, Hq, Q, K)
-        return _ref(query, key, value, bias=dense_bias)
 
     if (query.dtype != key.dtype) or (query.dtype != value.dtype):
         raise ValueError(
@@ -360,7 +322,7 @@ def flex_attention(
         q=query,
         k=key,
         v=value,
-        mask=mask_obj,               # AttentionMaskBase or None
+        mask=mask,               # AttentionMaskBase or None
         sm_scale=sm_scale,
         bias_mod=bias,                # AttentionBiasBase or None
         block_sizes=block_sizes,

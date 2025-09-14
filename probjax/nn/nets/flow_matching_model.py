@@ -231,7 +231,7 @@ class MeanFlowMatcher(nnx.Module):
         percent_rt=0.25,
         mu_rt=-0.4,
         scale_rt=1.0,
-        mu_t=0.4,
+        mu_t=0.,
         scale_t=1.0,
     ):
         batch_size = shape[0]
