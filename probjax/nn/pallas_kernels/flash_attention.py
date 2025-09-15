@@ -49,7 +49,7 @@ from .utils import (
     FlashMaskFn as MaskFn,
     get_gpu_dot_precision,
     get_cpu_dot_precision,
-    build_mask,
+    build_block_mask,
     KVOffsetInfo,
     query_iterator_indices,
     key_value_iterator_indices,
@@ -61,8 +61,6 @@ from jax.experimental.pallas.triton import TritonCompilerParams
 
 
 FLASH_ATTN_RESIDUAL_NAME = "flash_residuals"
-
-
 
 
 def _mha_forward_kernel(
@@ -159,11 +157,7 @@ def _mha_forward_kernel(
             if s_ref is not None:
                 kv_segment_ids = pl.load(s_ref, (curr_k_slice,))
                 segmask = segment_mask(q_segment_ids, kv_segment_ids)
-                mask = (
-                    segmask
-                    if mask is None
-                    else jnp.logical_and(mask, segmask)
-                )
+                mask = segmask if mask is None else jnp.logical_and(mask, segmask)
             # Apply mask to qk.
             qk = jnp.where(mask, qk, NEG_INF)
 
@@ -187,6 +181,7 @@ def _mha_forward_kernel(
         return o_next, m_next, l_next
 
     if index_offset_size_ref is not None:
+        jax.debug.print("iters={i}", i=index_offset_size_ref[...])
         o, m_i, l_i = lax.fori_loop(0, index_offset_size_ref[...], body, (o, m_i, l_i))
     else:
         o, m_i, l_i = lax.fori_loop(
@@ -352,14 +347,17 @@ def _flash_attention_impl(
         in_specs.append(None)
     index_offset = index_offset_spec = index_offset_size = index_offset_size_spec = None
     if mask_fn is not None:
-        block_mask_array = build_mask(
+        block_mask_array = build_block_mask(
             mask_fn,
             q_seq_len=q_seq_len,
             kv_seq_len=kv_seq_len,
             block_q=block_q,
             block_k=block_k,
         )
+        print("block_mask_array", block_mask_array)
         index_offset, index_offset_size = query_iterator_indices(block_mask_array)
+        print("index_offset", index_offset)
+        print("index_offset_size", index_offset_size)
         num_kv_blocks = pl.cdiv(kv_seq_len, block_k)
         index_offset_spec = pl.BlockSpec(
             index_map=(lambda i, _, k: (i, 0)), block_shape=((None, num_kv_blocks))
@@ -485,11 +483,7 @@ def _mha_backward_kernel_dkdv(
             if s_ref is not None:
                 q_segment_ids = pl.load(s_ref, (curr_q_slice,))
                 segmask = segment_mask(q_segment_ids, kv_segment_ids)
-                mask = (
-                    segmask
-                    if mask is None
-                    else jnp.logical_and(mask, segmask)
-                )
+                mask = segmask if mask is None else jnp.logical_and(mask, segmask)
             qk = jnp.where(mask, qk, NEG_INF)
 
         lse = pl.load(lse_ref, (curr_q_slice,))
@@ -587,11 +581,7 @@ def _mha_backward_kernel_dq(
             if s_ref is not None:
                 kv_segment_ids = pl.load(s_ref, (curr_k_slice,))
                 segmask = segment_mask(q_segment_ids, kv_segment_ids)
-                mask = (
-                    segmask
-                    if mask is None
-                    else jnp.logical_and(mask, segmask)
-                )
+                mask = segmask if mask is None else jnp.logical_and(mask, segmask)
             qk = jnp.where(mask, qk, NEG_INF)
 
         p = jnp.exp(qk - lse[:, None])
@@ -676,7 +666,7 @@ def _mha_backward(
         kv_index_offset_size_spec
     ) = None
     if mask_fn is not None:
-        block_mask_array = build_mask(
+        block_mask_array = build_block_mask(
             mask_fn,
             q_seq_len=q_seq_len,
             kv_seq_len=kv_seq_len,

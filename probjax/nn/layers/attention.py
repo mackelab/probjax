@@ -249,9 +249,6 @@ def flex_attention(
     del (
         module,
         precision,
-        dropout_rate,
-        deterministic,
-        dropout_rng,
     )
 
     if dtype is not None:
@@ -327,21 +324,26 @@ def flex_attention(
     ):
         interpret = True
 
+    if deterministic:
+        dropout_rate = 0.0
+        dropout_rng = None
+
     output = mha(
         q=query,
         k=key,
         v=value,
         mask=mask,  # AttentionMaskBase or None
+        bias=bias,  # AttentionBiasBase or None
+        rng=dropout_rng,
         sm_scale=sm_scale,
-        bias_mod=bias,  # AttentionBiasBase or None
         block_sizes=block_sizes,
         backward_pass_impl=backward_pass_impl,
+        dropout_rate=dropout_rate,
         num_warps=num_warps,
         num_stages=num_stages,
         grid=grid,
         interpret=interpret,
         debug=debug,
-        block_sparse=True,
     )
 
     output = output[:, :l_q, :h, :n]

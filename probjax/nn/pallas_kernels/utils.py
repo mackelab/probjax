@@ -42,7 +42,7 @@ __all__ = [
     # Flash attention utilities
     "get_cpu_dot_precision",
     "get_gpu_dot_precision",
-    "build_mask",
+    "build_block_mask",
     "KVOffsetInfo",
     "query_iterator_indices",
     "key_value_iterator_indices",
@@ -117,7 +117,13 @@ def block_pair_has_any(
 
 
 def fast_blockmask_local_window(
-    *, q_len: int, kv_len: int, block_q: int, block_k: int, left_window: int, right_window: int
+    *,
+    q_len: int,
+    kv_len: int,
+    block_q: int,
+    block_k: int,
+    left_window: int,
+    right_window: int,
 ) -> Array:
     """Fast block mask construction for local window masks.
 
@@ -164,19 +170,15 @@ def row_iterators(mask_row: Array) -> tuple[Array, Array]:
 
 
 def compute_block_iterators(block_mask: Array) -> tuple[Array, Array]:
-    """Per-(B,H,QB) iterators over non-empty KV blocks.
+    """Per-(QB) iterators over non-empty KV blocks.
 
     Returns:
         kv_block_offset: int32 [B, H, nQB, nKB]
         kv_block_offset_size: int32 [B, H, nQB]
     """
-    def per_bh(bh_mask):
-        idx, sz = jax.vmap(row_iterators)(bh_mask)
-        return idx, sz
 
-    idx, sz = jax.vmap(jax.vmap(per_bh, in_axes=0), in_axes=0)(block_mask)
+    idx, sz = jax.vmap(row_iterators)(block_mask)
     return idx, sz
-
 
 def compute_kv_iterators(block_mask: Array) -> tuple[Array, Array]:
     """Per-(B,H,KB) iterators over non-empty Q blocks.
@@ -185,11 +187,8 @@ def compute_kv_iterators(block_mask: Array) -> tuple[Array, Array]:
         q_block_offset: int32 [B, H, nKB, nQB]
         q_block_offset_size: int32 [B, H, nKB]
     """
-    bm_t = jnp.swapaxes(block_mask, -1, -2)
-    def per_bh(bh_mask):
-        idx, sz = jax.vmap(row_iterators)(bh_mask)
-        return idx, sz
-    idx, sz = jax.vmap(jax.vmap(per_bh, in_axes=0), in_axes=0)(bm_t)
+    block_mask_T = jnp.swapaxes(block_mask, -1, -2)
+    idx, sz = jax.vmap(row_iterators)(block_mask_T)
     return idx, sz
 
 
@@ -227,7 +226,7 @@ def materialize_mask(
         b_idx, h_idx = bh
         sq = None if seg_q is None else seg_q[b_idx]
         sk = None if seg_k is None else seg_k[b_idx]
-        return mask_mod_fn(b_idx, h_idx, q_idx, k_idx, sq, sk)
+        return mask_mod_fn(h_idx, q_idx, k_idx, sq, sk)
 
     bh = jnp.stack(
         jnp.meshgrid(jnp.arange(batch_size), jnp.arange(num_heads), indexing="ij"),
@@ -276,7 +275,7 @@ def make_segment_bias(source_segments: Array, target_segments: Array) -> Array:
 
     Returns bias Array [B, 1, L, L].
     """
-    same = (source_segments[:, None, :] == target_segments[:, :, None])
+    same = source_segments[:, None, :] == target_segments[:, :, None]
     nonzero = (source_segments[:, None, :] != 0) & (target_segments[:, :, None] != 0)
     allowed = same & nonzero
     bias = jnp.where(allowed, 0.0, NEG_INF).astype(jnp.float32)
@@ -327,7 +326,9 @@ def flash_causal_mask_fn() -> FlashMaskFn:
     return fn
 
 
-def flash_local_window_mask_fn(left_window: int, right_window: Optional[int] = None) -> FlashMaskFn:
+def flash_local_window_mask_fn(
+    left_window: int, right_window: Optional[int] = None
+) -> FlashMaskFn:
     """Returns a FlashAttention-compatible local window mask function."""
     lw = int(left_window)
     rw = int(left_window if right_window is None else right_window)
@@ -363,6 +364,7 @@ def get_gpu_dot_precision(dtype) -> jax.lax.DotAlgorithmPreset:
         return jax.lax.DotAlgorithmPreset.BF16_BF16_F32
     raise ValueError(f"Unsupported dtype {dtype}")
 
+
 def get_tpu_dot_precision(dtype) -> jax.lax.DotAlgorithmPreset:
     """DotAlgorithmPreset for TPU backend; accumulates in FP32."""
     if dtype == jnp.float32:
@@ -373,6 +375,7 @@ def get_tpu_dot_precision(dtype) -> jax.lax.DotAlgorithmPreset:
         return jax.lax.DotAlgorithmPreset.BF16_BF16_F32
     raise ValueError(f"Unsupported dtype {dtype}")
 
+
 def get_dot_precision(device, dtype) -> jax.lax.DotAlgorithmPreset:
     """DotAlgorithmPreset for current backend; accumulates in FP32."""
     if device == "cpu":
@@ -382,7 +385,7 @@ def get_dot_precision(device, dtype) -> jax.lax.DotAlgorithmPreset:
     return get_gpu_dot_precision(dtype)
 
 
-def build_mask(
+def build_block_mask(
     mask_fn: FlashMaskFn,
     *,
     q_seq_len: int,
@@ -417,7 +420,9 @@ class KVOffsetInfo(NamedTuple):
     kv_block_offset_size: jax.Array
 
 
-def query_iterator_indices(block_mask_map: np.ndarray, *, padding: int = 0) -> KVOffsetInfo:
+def query_iterator_indices(
+    block_mask_map: np.ndarray, *, padding: int = 0
+) -> KVOffsetInfo:
     """Per-QBlock iterators over non-empty KV blocks for forward pass."""
     num_q_blocks, num_kv_blocks = block_mask_map.shape
     index_offset = np.full((num_q_blocks, num_kv_blocks), padding, dtype=np.int32)
@@ -435,7 +440,9 @@ def query_iterator_indices(block_mask_map: np.ndarray, *, padding: int = 0) -> K
     )
 
 
-def key_value_iterator_indices(block_mask_map: np.ndarray) -> Tuple[jax.Array, jax.Array]:
+def key_value_iterator_indices(
+    block_mask_map: np.ndarray,
+) -> Tuple[jax.Array, jax.Array]:
     """Per-KVBlock iterators over non-empty Q blocks for backward pass."""
     num_q_blocks, num_kv_blocks = block_mask_map.shape
     index_offset = np.zeros(shape=(num_kv_blocks, num_q_blocks), dtype=np.int32)

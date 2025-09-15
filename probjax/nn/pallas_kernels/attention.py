@@ -30,13 +30,11 @@ from .utils import (
     NEG_INF,
     get_dropout_mask,
     get_dot_precision,
+    key_value_iterator_indices,
 )
 from .attention_mask_bias import (
     AttentionMask,
     AttentionBias,
-    MaskModFn,
-    ScoreModFn,
-    compute_block_mask,
     compute_block_iterators,
     compute_kv_iterators,
     DenseBias,
@@ -200,7 +198,7 @@ def mha_forward_kernel(
             )
         if mask_fn is not None:
             id_k = None if id_k_ref is None else pl.load(id_k_ref, (curr_k_slice,))
-            mask = mask_fn(start_b, start_h, span_q, span_k, id_q, id_k)
+            mask = mask_fn(start_h, span_q, span_k, id_q, id_k)
             # Apply mask to qk.
             qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
 
@@ -239,7 +237,7 @@ def mha_forward_kernel(
     # We keep an unscaled version of o during the scan over seq_len. Scaling it
     # by the last l_i gives us the correct final output. See section 3.1.1 in the
     # FlashAttention-2 paper: https://arxiv.org/pdf/2307.08691.
-    # l_i = jnp.where(l_i == 0.0, 1, l_i)
+    l_i = jnp.where(l_i == 0.0, 1, l_i)
     o /= l_i[:, None]
 
     if residual_refs:
@@ -247,246 +245,6 @@ def mha_forward_kernel(
         lse_ref[...] = m_i + jnp.log2(l_i)
     # Write output to dram.
     pl.store(o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask)
-
-
-def _mha_impl(
-    q: jax.Array,
-    k: jax.Array,
-    v: jax.Array,
-    mask: AttentionMask | None,
-    bias: AttentionBias | None,
-    sm_scale: float,
-    block_sizes: BlockSizes,
-    backward_pass_impl: str,
-    num_warps: int | None,
-    num_stages: int,
-    grid: Any,
-    interpret: bool,
-    debug: bool,
-    prng_key: jax.Array | None,
-    dropout_rate: float,
-    *,
-    output_activations: bool = False,
-):
-    """Shared implementation for MHA forward.
-
-    If output_activations=True returns (out, (q,k,v,mask,bias_mod,out,lse)).
-    Otherwise returns out only. Mirrors flash_attention.py structure.
-    """
-    del backward_pass_impl  # Only one impl at the moment.
-    batch_size, q_seq_len, num_heads, head_dim = q.shape
-    kv_seq_len = k.shape[1]
-    block_q = min(block_sizes.block_q, q_seq_len)
-    block_k = min(block_sizes.block_k, kv_seq_len)
-    block_d = pl.next_power_of_2(head_dim)
-    grid_ = grid or (pl.cdiv(q_seq_len, block_q), batch_size, num_heads)
-    num_warps_ = num_warps or (4 if block_d <= 64 else 8)
-
-    # Determine callable impls
-    mask_impl = mask.__call__ if mask is not None else None
-    score_impl = bias.__call__ if bias is not None else None
-
-    # Optional block-sparse iterators
-    index_offset = index_offset_size = None
-    if mask:
-        bm = compute_block_mask(
-            mask,
-            batch_size=batch_size,
-            num_heads=num_heads,
-            q_len=q_seq_len,
-            kv_len=kv_seq_len,
-            block_q=block_q,
-            block_k=block_k,
-        )
-        index_offset, index_offset_size = compute_block_iterators(bm)
-
-    # Bias tensor (dense) extracted if available
-    bias = None
-    if isinstance(bias, AttentionBias):
-        bdata = bias.get_data()
-        if bdata:
-            bias = bdata[0]
-
-    # Mask data arrays
-    if mask:
-        q_id, k_id = mask.get_data(q_seq_len=q_seq_len, kv_seq_len=kv_seq_len)
-    else:
-        q_id = k_id = None
-
-    # Dropout mask
-    if dropout_rate > 0:
-        assert prng_key is not None, "prng_key must be provided when dropout_rate>0"
-        dropout_mask = get_dropout_mask(
-            (batch_size, num_heads, q_seq_len, kv_seq_len),
-            prng_key=prng_key,
-            rate=dropout_rate,
-        )
-    else:
-        dropout_mask = None
-
-    # Build kernel
-    kernel = functools.partial(
-        mha_forward_kernel,
-        sm_scale=sm_scale,
-        head_dim=head_dim,
-        block_q=block_q,
-        block_k=block_k,
-        block_d=block_d,
-        mask_fn=mask_impl,
-        bias_fn=score_impl,
-        dropout_rate=dropout_rate,
-    )
-
-    # Input specs (q,k,v)
-    in_specs = [
-        pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
-        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
-        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
-    ]
-
-    # Bias spec
-    if bias is not None:
-        spec = (
-            bias.pallas_bias_spec(block_q=block_q, kv_seq_len=kv_seq_len)
-            if isinstance(bias, AttentionBias)
-            else None
-        )
-        if spec is None:
-            spec = pl.BlockSpec(
-                index_map=lambda i, j, k_: (
-                    j if bias.shape[0] != 1 else 0,
-                    k_ if bias.shape[1] != 1 else 0,
-                    i,
-                    0,
-                ),
-                block_shape=(None, None, block_q, kv_seq_len),
-            )
-        in_specs.append(spec)
-    else:
-        in_specs.append(None)
-
-    # q/k mask data specs
-    in_specs.append(
-        mask.pallas_q_data_spec(q_seq_len) if (q_id is not None) else None
-    )
-    in_specs.append(
-        mask.pallas_k_data_spec(kv_seq_len)
-        if (isinstance(mask_impl, AttentionMask) and k_id   is not None)
-        else None
-    )
-
-    # Dropout mask spec
-    if dropout_mask is not None:
-        in_specs.append(
-            pl.BlockSpec(
-                (None, None, block_q, kv_seq_len), lambda i, j, k_: (j, k_, i, 0)
-            )
-        )
-    else:
-        in_specs.append(None)
-
-    # Dynamic iterator specs (kv)
-    if index_offset is not None and index_offset_size is not None:
-        num_kv_blocks = pl.cdiv(kv_seq_len, block_k)
-        in_specs.append(
-            pl.BlockSpec((None, None, 1, num_kv_blocks), lambda i, j, k_: (j, k_, i, 0))
-        )
-        in_specs.append(pl.BlockSpec((None, None, 1), lambda i, j, k_: (j, k_, i)))
-    else:
-        in_specs.append(None)
-        in_specs.append(None)
-
-    # Output specs & shapes
-    if output_activations:
-        out_shape = [
-            jax.ShapeDtypeStruct(shape=q.shape, dtype=q.dtype),
-            jax.ShapeDtypeStruct(
-                shape=(batch_size, num_heads, q_seq_len), dtype=jnp.float32
-            ),
-        ]
-        out_specs = [
-            pl.BlockSpec(
-                (None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)
-            ),
-            pl.BlockSpec((None, None, block_q), lambda i, j, k_: (j, k_, i)),
-        ]
-    else:
-        out_shape = jax.ShapeDtypeStruct(shape=q.shape, dtype=q.dtype)
-        out_specs = pl.BlockSpec(
-            (None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)
-        )
-
-    pallas_out = pl.pallas_call(
-        kernel,
-        grid=grid_,
-        in_specs=in_specs,
-        out_specs=out_specs,
-        compiler_params=plgpu.TritonCompilerParams(
-            num_warps=num_warps_, num_stages=num_stages
-        ),
-        out_shape=out_shape,
-        debug=debug,
-        interpret=interpret,
-        name="mha_forward",
-    )(q, k, v, bias, q_id, k_id, dropout_mask, index_offset, index_offset_size)
-
-    if output_activations:
-        out, lse = pallas_out
-        return out, (q, k, v, mask, bias, out, lse)
-    return pallas_out
-
-
-@functools.partial(
-    jax.custom_vjp,
-    nondiff_argnums=[3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
-)
-def mha(
-    q,
-    k,
-    v,
-    mask: AttentionMask | None = None,
-    bias: AttentionBias | None = None,
-    sm_scale: float = 1.0,
-    block_sizes: BlockSizes = BlockSizes.get_default(),
-    backward_pass_impl: str = "triton",
-    num_warps: int | None = None,
-    num_stages: int = 2,
-    grid: tuple[int, ...] | None = None,
-    interpret: bool = False,
-    debug: bool = False,
-    prng_key: jax.Array | None = None,
-    dropout_rate: float = 0.0,
-):
-    """Multi-Head Attention public API (forward only in primal eval)."""
-    return _mha_impl(
-        **locals(),
-        output_activations=False,
-    )
-
-
-def _mha_forward(
-    q,
-    k,
-    v,
-    mask: AttentionMask | None,
-    sm_scale: float,
-    bias_mod: AttentionBias | None,
-    block_sizes: BlockSizes,
-    backward_pass_impl: str,
-    num_warps: int | None,
-    num_stages: int,
-    grid: Any,
-    interpret: bool,
-    debug: bool,
-    prng_key: jax.Array | None = None,
-    dropout_rate: float = 0.0,
-):
-    """Forward wrapper for custom VJP using shared impl."""
-    out, residuals = _mha_impl(
-        **locals(),
-        output_activations=True,
-    )
-    return out, residuals
 
 
 def _preprocess_backward_kernel(out_ref, dout_ref, delta_ref):
@@ -574,8 +332,8 @@ def mha_backward_kernel(
     block_q_dq: int,
     block_kv_dq: int,
     block_d: int,
-    score_mod: ScoreModFn | None = None,
-    mask_mod: MaskModFn | None = None,
+    score_mod: None = None,
+    mask_mod: None = None,
     score_mod_grad: ScoreModFn | None = None,
     dropout_rate: float = 0.0,
 ):
@@ -816,9 +574,13 @@ def mha_backward_kernel(
     dq_ref[...] = dq.astype(dq_ref.dtype)
 
 
-def _mha_backward(
+def _mha_impl(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
     mask: AttentionMask | None,
     bias: AttentionBias | None,
+    rng: jax.Array | None,
     sm_scale: float,
     block_sizes: BlockSizes,
     backward_pass_impl: str,
@@ -827,7 +589,224 @@ def _mha_backward(
     grid: Any,
     interpret: bool,
     debug: bool,
-    prng_key: jax.Array | None,
+    dropout_rate: float,
+    *,
+    output_activations: bool = False,
+):
+    """Shared implementation for MHA forward.
+
+    If output_activations=True returns (out, (q,k,v,mask,bias_mod,out,lse)).
+    Otherwise returns out only. Mirrors flash_attention.py structure.
+    """
+    del backward_pass_impl  # Only one impl at the moment.
+    batch_size, q_seq_len, num_heads, head_dim = q.shape
+    kv_seq_len = k.shape[1]
+    block_q = min(block_sizes.block_q, q_seq_len)
+    block_k = min(block_sizes.block_k, kv_seq_len)
+    block_d = pl.next_power_of_2(head_dim)
+    grid_ = grid or (pl.cdiv(q_seq_len, block_q), batch_size, num_heads)
+    num_warps_ = num_warps or (4 if block_d <= 64 else 8)
+
+    # Determine callable impls
+    mask_impl = mask.__call__ if mask is not None else None
+    score_impl = bias.__call__ if bias is not None else None
+
+    # Optional block-sparse iterators
+    index_offset = index_offset_size = None
+    if mask:
+        bm = mask.block_mask(
+            q_len=q_seq_len, kv_len=kv_seq_len, block_q=block_q, block_k=block_k
+        )
+        if bm is not None:
+            index_offset, index_offset_size = compute_block_iterators(
+                bm
+            )
+
+    # Bias tensor (dense) extracted if available
+    bias = None
+    if isinstance(bias, AttentionBias):
+        bdata = bias.get_data()
+        if bdata:
+            bias = bdata[0]
+
+    # Mask data arrays
+    if mask:
+        q_id, k_id = mask.get_data(q_seq_len=q_seq_len, kv_seq_len=kv_seq_len)
+    else:
+        q_id = k_id = None
+
+    # Dropout mask
+    if dropout_rate > 0:
+        assert rng is not None, "prng_key must be provided when dropout_rate>0"
+        dropout_mask = get_dropout_mask(
+            (batch_size, num_heads, q_seq_len, kv_seq_len),
+            prng_key=rng,
+            rate=dropout_rate,
+        )
+    else:
+        dropout_mask = None
+
+    # Build kernel
+    kernel = functools.partial(
+        mha_forward_kernel,
+        sm_scale=sm_scale,
+        head_dim=head_dim,
+        block_q=block_q,
+        block_k=block_k,
+        block_d=block_d,
+        mask_fn=mask_impl,
+        bias_fn=score_impl,
+        dropout_rate=dropout_rate,
+    )
+
+    # Input specs (q,k,v)
+    in_specs = [
+        pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
+        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
+        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
+    ]
+
+    # Bias spec
+    if bias is not None:
+        spec = (
+            bias.pallas_bias_spec(block_q=block_q, kv_seq_len=kv_seq_len)
+            if isinstance(bias, AttentionBias)
+            else None
+        )
+        if spec is None:
+            spec = pl.BlockSpec(
+                index_map=lambda i, j, k_: (
+                    j if bias.shape[0] != 1 else 0,
+                    k_ if bias.shape[1] != 1 else 0,
+                    i,
+                    0,
+                ),
+                block_shape=(None, None, block_q, kv_seq_len),
+            )
+        in_specs.append(spec)
+    else:
+        in_specs.append(None)
+    # q/k mask data specs
+    if q_id is not None:
+        block_spec = mask.pallas_q_data_spec(q_seq_len=q_seq_len)
+        in_specs.append(block_spec)
+    else:
+        in_specs.append(None)
+    if k_id is not None:
+        block_spec = mask.pallas_k_data_spec(kv_seq_len=kv_seq_len)
+        in_specs.append(block_spec)
+    else:
+        in_specs.append(None)
+    # Dropout mask spec
+    if dropout_mask is not None:
+        in_specs.append(
+            pl.BlockSpec(
+                (None, None, block_q, kv_seq_len), lambda i, j, k_: (j, k_, i, 0)
+            )
+        )
+    else:
+        in_specs.append(None)
+
+    # Dynamic iterator specs (kv)
+    if index_offset is not None and index_offset_size is not None:
+        index_offset_spec = pl.BlockSpec(
+            index_map=(lambda i, _, k: (i, 0)), block_shape=((None, block_k))
+        )
+        index_offset_size_spec = pl.BlockSpec(
+            index_map=(lambda i, _, k: (i)), block_shape=((None,))
+        )
+        in_specs.append(index_offset_spec)
+        in_specs.append(index_offset_size_spec)
+    else:
+        in_specs.append(None)
+        in_specs.append(None)
+
+    # Output specs & shapes
+    if output_activations:
+        out_shape = [
+            jax.ShapeDtypeStruct(shape=q.shape, dtype=q.dtype),
+            jax.ShapeDtypeStruct(
+                shape=(batch_size, num_heads, q_seq_len), dtype=jnp.float32
+            ),
+        ]
+        out_specs = [
+            pl.BlockSpec(
+                (None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)
+            ),
+            pl.BlockSpec((None, None, block_q), lambda i, j, k_: (j, k_, i)),
+        ]
+    else:
+        out_shape = jax.ShapeDtypeStruct(shape=q.shape, dtype=q.dtype)
+        out_specs = pl.BlockSpec(
+            (None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)
+        )
+
+    pallas_out = pl.pallas_call(
+        kernel,
+        grid=grid_,
+        in_specs=in_specs,
+        out_specs=out_specs,
+        compiler_params=plgpu.TritonCompilerParams(
+            num_warps=num_warps_, num_stages=num_stages
+        ),
+        out_shape=out_shape,
+        debug=debug,
+        interpret=interpret,
+        name="mha_forward",
+    )(q, k, v, bias, q_id, k_id, dropout_mask, index_offset, index_offset_size)
+
+    if output_activations:
+        out, lse = pallas_out
+        return out, (q, k, v, mask, bias, rng, out, lse)
+    return pallas_out
+
+
+@functools.partial(
+    jax.custom_vjp,
+    nondiff_argnums=[6, 7, 8, 9, 10, 11, 12, 13, 14],
+)
+def mha(
+    q,
+    k,
+    v,
+    mask: AttentionMask | None = None,
+    bias: AttentionBias | None = None,
+    rng: jax.Array | None = None,
+    sm_scale: float = 1.0,
+    block_sizes: BlockSizes = BlockSizes.get_default(),
+    backward_pass_impl: str = "triton",
+    num_warps: int | None = None,
+    num_stages: int = 2,
+    grid: tuple[int, ...] | None = None,
+    interpret: bool = False,
+    debug: bool = False,
+    dropout_rate: float = 0.0,
+):
+    """Multi-Head Attention public API (forward only in primal eval)."""
+    return _mha_impl(
+        **locals(),
+        output_activations=False,
+    )
+
+
+def _mha_forward(*args, **kwargs):
+    """Forward wrapper for custom VJP using shared impl."""
+    out, residuals = _mha_impl(
+        **locals(),
+        output_activations=True,
+    )
+    return out, residuals
+
+
+def _mha_backward(
+    sm_scale: float,
+    block_sizes: BlockSizes,
+    backward_pass_impl: str,
+    num_warps: int | None,
+    num_stages: int,
+    grid: Any,
+    interpret: bool,
+    debug: bool,
     dropout_rate: float,
     res,
     do,
@@ -851,7 +830,7 @@ def _mha_backward(
         Gradients of the query, key, and value tensors.
     """
     del num_stages, grid
-    q, k, v, mask_res, bias_res, out, lse = res
+    q, k, v, mask_res, bias_res, rng, out, lse = res
     mask = mask if mask is not None else mask_res
     bias_mod = bias_mod if bias_mod is not None else bias_res
 
