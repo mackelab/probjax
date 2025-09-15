@@ -200,6 +200,7 @@ def mha_forward_kernel(
             if id_k_ref is not None:
                 id_k = None if id_k_ref is None else pl.load(id_k_ref, (curr_k_slice,))
             elif id_q is not None:
+                # Otherwise reuse id_q if available
                 id_k = None if id_q_ref is None else pl.load(id_q_ref, (curr_k_slice,))
             #jax.debug.print("id_q: {id_q}", id_q=id_q==id_k)
             mask = mask_fn(span_q, span_k, id_q, id_k)
@@ -312,8 +313,8 @@ def mha_backward_kernel(
     q_ref,
     k_ref,
     v_ref,
-    data_q_ref: jax.Array | None,
-    data_k_ref: jax.Array | None,
+    id_q_ref: jax.Array | None,
+    id_k_ref: jax.Array | None,
     b_ref: jax.Array | None,
     dropout_mask_ref: jax.Array | None,
     out_ref,
@@ -336,10 +337,11 @@ def mha_backward_kernel(
     block_q_dq: int,
     block_kv_dq: int,
     block_d: int,
-    score_mod: None = None,
-    mask_mod: None = None,
-    score_mod_grad: ScoreModFn | None = None,
+    bias_fn: None = None,
+    mask_fn: None = None,
+    bias_fn_grad = None,
     dropout_rate: float = 0.0,
+    head_dim: int,
 ):
     """
     Multi-Head Attention backward kernel.
@@ -378,11 +380,18 @@ def mha_backward_kernel(
 
     dv = jnp.zeros([block_kv_dkv, block_d], dtype=jnp.float32)
     dk = jnp.zeros([block_kv_dkv, block_d], dtype=jnp.float32)
+    mask_d = jnp.arange(block_d)[None] < head_dim
 
-    v = pl.load(v_ref, (curr_k_slice, slice(None)))
-    k = pl.load(k_ref, (curr_k_slice, slice(None)))
+    v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=mask_d, other=0.0)
+    k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=mask_d, other=0.0)
     span_k = start_k * block_kv_dkv + jnp.arange(block_kv_dkv)
-    kv_data = None if data_k_ref is None else pl.load(data_k_ref, (curr_k_slice,))
+    if id_k_ref is not None:
+        id_k = pl.load(id_k_ref, (curr_k_slice,))
+    elif id_q_ref is not None:
+        # Otherwise reuse id_q if available
+        id_k = pl.load(id_q_ref, (curr_k_slice,))
+    else:
+        id_k = None
 
     LOG2E = 1.4426950408889634  # log2(e)
 
@@ -390,37 +399,34 @@ def mha_backward_kernel(
         dv, dk = carry
         curr_q_slice = pl.dslice(start_q * block_q_dkv, block_q_dkv)
 
-        q = pl.load(q_ref, (curr_q_slice, slice(None)))
+        q = pl.load(q_ref, (curr_q_slice, slice(None)), mask=mask_d, other=0.0)
         qk = pl.dot(q, k.T)
         if sm_scale != 1.0:
             qk *= sm_scale
         qk_pre_mod = qk
 
-        if (score_mod is not None) or (mask_mod is not None) or (b_ref is not None):
+        if (bias_fn is not None) or (mask_fn is not None) or (b_ref is not None):
             span_q = start_q * block_q_dkv + jnp.arange(block_q_dkv)
             # boolean mask for the current qk slice
-            if score_mod is not None:
+            if bias_fn is not None:
                 q_tup = (
                     None
-                    if (data_q_ref is None)
-                    else (pl.load(data_q_ref, (curr_q_slice,)),)
+                    if (id_q_ref is None)
+                    else (pl.load(id_q_ref, (curr_q_slice,)),)
                 )
-                k_tup = None if kv_data is None else (kv_data,)
+                k_tup = None if id_k is None else (id_k,)
+                # TODO refactor
                 qk = apply_bias(
-                    score_mod, qk, start_b, start_h, span_q, span_k, q_tup, k_tup
+                    bias_fn, qk, start_b, start_h, span_q, span_k, q_tup, k_tup
                 )
             if b_ref is not None:
                 qk = qk + pl.load(b_ref, (curr_q_slice, curr_k_slice))
-            if mask_mod is not None:
-                q_loaded = (
-                    None if data_q_ref is None else pl.load(data_q_ref, (curr_q_slice,))
+            if mask_fn is not None:
+                id_q = (
+                    None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
                 )
-                q_tup = None if q_loaded is None else (q_loaded,)
-                k_tup = None if kv_data is None else (kv_data,)
-                m2 = apply_mask(
-                    mask_mod, start_b, start_h, span_q, span_k, q_tup, k_tup
-                )
-                qk = jnp.where(m2, qk, DEFAULT_MASK_VALUE)
+                mask = mask_fn(span_q, span_k, id_q, id_k)
+                qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
         # No built-in causal; pass as mask via mask if needed.
 
         qk *= LOG2E
@@ -445,11 +451,12 @@ def mha_backward_kernel(
         ds = p * dp
         if sm_scale != 1.0:
             ds = ds * sm_scale
-        if score_mod_grad:
+        if bias_fn_grad:
             # Compute the gradient of score_mod with respect to qk
+            # TODO Refactor
             grad_score_mod = jnp.where(
                 qk != DEFAULT_MASK_VALUE,
-                score_mod_grad(qk_pre_mod, start_b, start_h, span_q, span_k),
+                bias_fn_grad(qk_pre_mod, start_b, start_h, span_q, span_k),
                 0.0,
             )
             ds = ds * grad_score_mod  # Element-wise multiplication
@@ -459,7 +466,7 @@ def mha_backward_kernel(
 
     # Iterate over Q blocks for this (B,H, KB-tile)
     if kv_index_offset_ref is not None and kv_index_offset_size_ref is not None:
-        iters = jnp.sum(kv_index_offset_size_ref[...])
+        iters = kv_index_offset_size_ref[...]
 
         def dyn_q(iter_q, carry):
             start_q = jnp.sum(
@@ -472,8 +479,11 @@ def mha_backward_kernel(
         dv, dk = lax.fori_loop(
             0, pl.cdiv(q_seq_len, block_q_dkv), inner_loop_dkdv, (dv, dk)
         )
-    dv_ref[...] = dv.astype(dv_ref.dtype)
-    dk_ref[...] = dk.astype(dk_ref.dtype)
+
+    dv_ref = pl.store(dv_ref, (slice(None), slice(None)), val=dv.astype(dv_ref.dtype), mask=mask_d)
+    dk_ref = pl.store(dk_ref, (slice(None), slice(None)), val=dk.astype(dk_ref.dtype), mask=mask_d)
+    #dv_ref[...] = dv.astype(dv_ref.dtype)
+    #dk_ref[...] = dk.astype(dk_ref.dtype)
 
     del dv, dk
 
@@ -502,36 +512,38 @@ def mha_backward_kernel(
             qk *= sm_scale
         qk_pre_mod = qk
 
-        if (score_mod is not None) or (mask_mod is not None) or (b_ref is not None):
+        if (bias_fn is not None) or (mask_fn is not None) or (b_ref is not None):
             span_k = start_k * block_kv_dq + jnp.arange(block_kv_dq)
             # boolean mask for the current qk slice
-            if score_mod is not None:
-                q_loaded = (
-                    None if data_q_ref is None else pl.load(data_q_ref, (curr_q_slice,))
+            if bias_fn is not None:
+                # TODO refactor
+                id_q = (
+                    None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
                 )
-                k_loaded = (
-                    None if data_k_ref is None else pl.load(data_k_ref, (curr_k_slice,))
+                id_k = (
+                    None if id_k_ref is None else pl.load(id_k_ref, (curr_k_slice,))
                 )
-                q_tup = None if q_loaded is None else (q_loaded,)
-                k_tup = None if k_loaded is None else (k_loaded,)
+                q_tup = None if id_q is None else (id_q,)
+                k_tup = None if id_k is None else (id_k,)
                 qk = apply_bias(
-                    score_mod, qk, start_b, start_h, span_q, span_k, q_tup, k_tup
+                    bias_fn, qk, start_b, start_h, span_q, span_k, q_tup, k_tup
                 )
             if b_ref is not None:
                 qk = qk + pl.load(b_ref, (curr_q_slice, curr_k_slice))
-            if mask_mod is not None:
-                q_loaded = (
-                    None if data_q_ref is None else pl.load(data_q_ref, (curr_q_slice,))
+            if mask_fn is not None:
+                id_q = (
+                    None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
                 )
-                k_loaded = (
-                    None if data_k_ref is None else pl.load(data_k_ref, (curr_k_slice,))
-                )
-                q_tup = None if q_loaded is None else (q_loaded,)
-                k_tup = None if k_loaded is None else (k_loaded,)
-                m2 = apply_mask(
-                    mask_mod, start_b, start_h, span_q, span_k, q_tup, k_tup
-                )
-                qk = jnp.where(m2, qk, DEFAULT_MASK_VALUE)
+                if id_k_ref is not None:
+                    id_k = pl.load(id_k_ref, (curr_k_slice,))
+                elif id_q_ref is not None:
+                    # Otherwise reuse id_q if available
+                    id_k = pl.load(id_q_ref, (curr_k_slice,))
+                else:
+                    id_k = None
+
+                mask = mask_fn(span_q, span_k, id_q, id_k)
+                qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
         # No built-in causal; pass as mask via mask if needed.
 
         qk *= LOG2E
@@ -549,11 +561,12 @@ def mha_backward_kernel(
         if sm_scale != 1.0:
             ds = ds * sm_scale
 
-        if score_mod_grad:
+        if bias_fn_grad:
             # Compute the gradient of score_mod with respect to qk
+            # TODO Refactor
             grad_score_mod = jnp.where(
                 qk != DEFAULT_MASK_VALUE,
-                score_mod_grad(qk_pre_mod, start_b, start_h, span_q, span_k),
+                bias_fn_grad(qk_pre_mod, start_b, start_h, span_q, span_k),
                 0.0,
             )
             ds = ds * grad_score_mod  # Element-wise multiplication
@@ -564,7 +577,7 @@ def mha_backward_kernel(
 
     # Iterate over KV blocks intersecting this (B,H, QB-tile)
     if q_index_offset_ref is not None and q_index_offset_size_ref is not None:
-        iters = jnp.sum(q_index_offset_size_ref[...])
+        iters = q_index_offset_size_ref[...]
 
         def dyn_k(iter_k, dq_c):
             start_k = jnp.sum(
@@ -767,10 +780,10 @@ def mha(
     )
 
 
-def _mha_forward(*args, **kwargs):
+def _mha_forward(*args):
     """Forward wrapper for custom VJP using shared impl."""
     out, residuals = _mha_impl(
-        **locals(),
+        *args,
         output_activations=True,
     )
     return out, residuals
@@ -808,15 +821,16 @@ def _mha_backward(
         Gradients of the query, key, and value tensors.
     """
     del num_stages, grid
-    q, k, v, mask_res, bias_res, rng, out, lse = res
-    mask = mask if mask is not None else mask_res
-    bias_mod = bias_mod if bias_mod is not None else bias_res
+    q, k, v, mask, bias, rng, out, lse = res
+    mask = mask if mask is not None else mask
+    bias = bias if bias is not None else bias
 
     if backward_pass_impl == "triton":
         if not block_sizes.has_backward_blocks:
             raise ValueError("Backward block sizes must all be set.")
 
-            batch_size, q_seq_len, num_heads, head_dim = q.shape
+        batch_size, q_seq_len, num_heads, head_dim = q.shape
+        block_d = pl.next_power_of_2(head_dim)
         kv_seq_len = k.shape[1]
         block_q = min(block_sizes.block_q, q_seq_len)
         block_q_dkv = min(block_sizes.block_q_dkv, q_seq_len)
@@ -839,24 +853,20 @@ def _mha_backward(
         ]
 
         # Prepare bias array for backward (for AttentionBiasBase instances)
+        # TODO
         bias = None
-        if isinstance(bias_mod, AttentionBias):
-            bdata = bias_mod.get_data()
-            if len(bdata) > 0:
-                bias = bdata[0]
 
-        # Build in_specs to match args: q, k, v, data_q, data_k, bias, dropout_mask, out, do, lse, delta,
-        #                                q_index_offset, q_index_offset_size, kv_index_offset, kv_index_offset_size
+
         in_specs = [
             # q, k, v
             pl.BlockSpec(
-                (None, q_seq_len, None, head_dim), lambda i, j, _: (i, 0, j, 0)
+                (None, q_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
             ),
             pl.BlockSpec(
-                (None, kv_seq_len, None, head_dim), lambda i, j, _: (i, 0, j, 0)
+                (None, kv_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
             ),
             pl.BlockSpec(
-                (None, kv_seq_len, None, head_dim), lambda i, j, _: (i, 0, j, 0)
+                (None, kv_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
             ),
             # segment_ids
             # data_q
@@ -881,10 +891,10 @@ def _mha_backward(
             None,
             # out, do, lse, delta
             pl.BlockSpec(
-                (None, q_seq_len, None, head_dim), lambda i, j, _: (i, 0, j, 0)
+                (None, q_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
             ),
             pl.BlockSpec(
-                (None, q_seq_len, None, head_dim), lambda i, j, _: (i, 0, j, 0)
+                (None, q_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
             ),
             pl.BlockSpec((None, None, q_seq_len), lambda i, j, _: (i, j, 0)),
             pl.BlockSpec((None, None, q_seq_len), lambda i, j, _: (i, j, 0)),
@@ -901,10 +911,10 @@ def _mha_backward(
             in_specs[4] = pl.BlockSpec((None, kv_seq_len), lambda i, j, _: (i, 0))
 
         if dropout_rate > 0:
-            assert prng_key is not None
+            assert rng is not None
             dropout_mask = get_dropout_mask(
                 (batch_size, num_heads, q_seq_len, kv_seq_len),
-                prng_key=prng_key,
+                prng_key=rng,
                 rate=dropout_rate,
             )
             in_specs[6] = pl.BlockSpec(
@@ -925,69 +935,55 @@ def _mha_backward(
                 num_warps_ = 8
 
         # Try to provide a gradient for score_mod if available
-        score_mod_grad = get_bias_grad(bias_mod)
+        # TODO
+        score_mod_grad = None
 
         # Optional block-sparse iterators
         q_index_offset = q_index_offset_size = kv_index_offset = (
             kv_index_offset_size
         ) = None
-        if block_sparse and mask is not None:
+        if mask is not None:
             # Build block masks using the respective backward block sizes
-            bm_dq = compute_block_mask(
-                mask,
-                batch_size=batch_size,
-                num_heads=num_heads,
-                q_len=q_seq_len,
-                kv_len=kv_seq_len,
-                block_q=block_q_dq,
-                block_k=block_kv_dq,
-                segment_ids=None,
-            )
-            bm_dkdv = compute_block_mask(
-                mask,
-                batch_size=batch_size,
-                num_heads=num_heads,
-                q_len=q_seq_len,
-                kv_len=kv_seq_len,
-                block_q=block_q_dkv,
-                block_k=block_kv_dkv,
-                segment_ids=None,
+            block_mask = mask.block_mask(
+                q_seq_len, kv_seq_len, block_q_dq, block_kv_dq
             )
             # Per-QB iterators over KV blocks for dQ
-            q_index_offset, q_index_offset_size = compute_block_iterators(bm_dq)
+            q_index_offset, q_index_offset_size = compute_block_iterators(block_mask)
             # Per-KB iterators over Q blocks for dK/dV
-            kv_index_offset, kv_index_offset_size = compute_kv_iterators(bm_dkdv)
+            # TODO CHECK
+            kv_index_offset, kv_index_offset_size = compute_kv_iterators(block_mask.T)
 
             num_kv_blocks_dq = pl.cdiv(kv_seq_len, block_kv_dq)
             num_q_blocks_dkdv = pl.cdiv(q_seq_len, block_q_dkv)
             # Map per-tile vectors/scalars. Grid dims are (B, H, KB) and we also reuse KB as QB
             # (enforced by the check above).
             in_specs[-4] = pl.BlockSpec(
-                (None, None, 1, num_kv_blocks_dq), lambda i, j, k: (i, j, k, 0)
+                (1, num_kv_blocks_dq), lambda i, j, k: (i, j, k, 0)
             )  # q_index_offset
             in_specs[-3] = pl.BlockSpec(
-                (None, None, 1), lambda i, j, k: (i, j, k)
+                (1,), lambda i, j, k: (i, j, k)
             )  # q_index_offset_size
             in_specs[-2] = pl.BlockSpec(
-                (None, None, 1, num_q_blocks_dkdv), lambda i, j, k: (i, j, k, 0)
+                (1, num_q_blocks_dkdv), lambda i, j, k: (i, j, k, 0)
             )  # kv_index_offset
             in_specs[-1] = pl.BlockSpec(
-                (None, None, 1), lambda i, j, k: (i, j, k)
+                (1,), lambda i, j, k: (i, j, k)
             )  # kv_index_offset_size
 
         dq, dk, dv = pl.pallas_call(
             functools.partial(
                 mha_backward_kernel,
                 sm_scale=sm_scale,
-                score_mod=(None if isinstance(bias_mod, AttentionBias) else bias_mod),
-                mask_mod=mask,
-                score_mod_grad=score_mod_grad,
+                bias_fn=bias.__call__ if bias is not None else None,
+                mask_fn=mask.__call__ if mask is not None else None,
+                bias_fn_grad=score_mod_grad,
                 dropout_rate=dropout_rate,
                 block_q_dkv=block_q_dkv,
                 block_kv_dkv=block_kv_dkv,
                 block_q_dq=block_q_dq,
                 block_kv_dq=block_kv_dq,
-                block_d=head_dim,
+                block_d=block_d,
+                head_dim=head_dim,
             ),
             out_shape=out_shapes,
             in_specs=in_specs,
@@ -1031,7 +1027,7 @@ def _mha_backward(
         )
     else:
         raise ValueError(f"Invalid backward pass implementation: {backward_pass_impl}")
-    return dq.astype(q.dtype), dk, dv
+    return dq.astype(q.dtype), dk, dv, None, None, None
 
 
 mha.defvjp(_mha_forward, _mha_backward)
