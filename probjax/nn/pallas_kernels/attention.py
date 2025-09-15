@@ -202,9 +202,9 @@ def mha_forward_kernel(
             elif id_q is not None:
                 # Otherwise reuse id_q if available
                 id_k = None if id_q_ref is None else pl.load(id_q_ref, (curr_k_slice,))
-            #jax.debug.print("id_q: {id_q}", id_q=id_q==id_k)
+            else:
+                id_k = None
             mask = mask_fn(span_q, span_k, id_q, id_k)
-            # Apply mask to qk.
             qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
 
         # Scale logits to convert from base-2 to the natural log domain.
@@ -496,7 +496,7 @@ def mha_backward_kernel(
     span_q = start_q * block_q_dq + jnp.arange(block_q_dq)
     dq = jnp.zeros([block_q_dq, block_d], dtype=jnp.float32)
 
-    q = pl.load(q_ref, (curr_q_slice, slice(None)))
+    q = pl.load(q_ref, (curr_q_slice, slice(None)), mask=mask_d, other=0.0)
     # segment ids not used in this kernel
     lse = pl.load(lse_ref, (curr_q_slice,))
     do = pl.load(do_scaled_ref, (curr_q_slice, slice(None)))
@@ -504,8 +504,8 @@ def mha_backward_kernel(
 
     def inner_loop_dq(start_k, dq):
         curr_k_slice = pl.dslice(start_k * block_kv_dq, block_kv_dq)
-        k = pl.load(k_ref, (curr_k_slice, slice(None)))
-        v = pl.load(v_ref, (curr_k_slice, slice(None)))
+        k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=mask_d, other=0.0)
+        v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=mask_d, other=0.0)
 
         qk = pl.dot(q, k.T)
         if sm_scale != 1.0:
@@ -588,7 +588,9 @@ def mha_backward_kernel(
         dq = lax.fori_loop(0, iters, dyn_k, dq)
     else:
         dq = lax.fori_loop(0, pl.cdiv(kv_seq_len, block_kv_dq), inner_loop_dq, dq)
-    dq_ref[...] = dq.astype(dq_ref.dtype)
+
+    pl.store(dq_ref, (slice(None), slice(None)), val=dq.astype(dq_ref.dtype), mask=mask_d)
+    #dq_ref[...] = dq.astype(dq_ref.dtype)
 
 
 def _mha_impl(
@@ -944,31 +946,34 @@ def _mha_backward(
         ) = None
         if mask is not None:
             # Build block masks using the respective backward block sizes
-            block_mask = mask.block_mask(
+            # Per-QB iterators over KV blocks for dQ
+            q_index_offset, q_index_offset_size = mask.query_iterator_indices(
                 q_seq_len, kv_seq_len, block_q_dq, block_kv_dq
             )
-            # Per-QB iterators over KV blocks for dQ
-            q_index_offset, q_index_offset_size = compute_block_iterators(block_mask)
-            # Per-KB iterators over Q blocks for dK/dV
-            # TODO CHECK
-            kv_index_offset, kv_index_offset_size = compute_kv_iterators(block_mask.T)
+            kv_index_offset, kv_index_offset_size = mask.kv_iterator_indices(
+                q_seq_len, kv_seq_len, block_q_dkv, block_kv_dkv
+            )
 
             num_kv_blocks_dq = pl.cdiv(kv_seq_len, block_kv_dq)
             num_q_blocks_dkdv = pl.cdiv(q_seq_len, block_q_dkv)
+            q_index_offset = q_index_offset_size = None
+            kv_index_offset = kv_index_offset_size = None
             # Map per-tile vectors/scalars. Grid dims are (B, H, KB) and we also reuse KB as QB
             # (enforced by the check above).
-            in_specs[-4] = pl.BlockSpec(
-                (1, num_kv_blocks_dq), lambda i, j, k: (i, j, k, 0)
-            )  # q_index_offset
-            in_specs[-3] = pl.BlockSpec(
-                (1,), lambda i, j, k: (i, j, k)
-            )  # q_index_offset_size
-            in_specs[-2] = pl.BlockSpec(
-                (1, num_q_blocks_dkdv), lambda i, j, k: (i, j, k, 0)
-            )  # kv_index_offset
-            in_specs[-1] = pl.BlockSpec(
-                (1,), lambda i, j, k: (i, j, k)
-            )  # kv_index_offset_size
+           # if q_index_offset is not None:
+           #     in_specs[-4] = pl.BlockSpec(
+           #         index_map=(lambda i, _, k: (i, 0)), block_shape=((None, num_kv_blocks_dq))
+           #     )  # q_index_offset
+           #     in_specs[-3] = pl.BlockSpec(
+           #         index_map=(lambda i, _, k: (i)), block_shape=((None,))
+           #     )  # q_index_offset_size
+           # if kv_index_offset is not None:
+           #     in_specs[-2] = pl.BlockSpec(
+           #         index_map=(lambda i, j, k: (i, j, k, 0)), block_shape=((None, num_q_blocks_dkdv))
+           #     )  # kv_index_offset
+           #     in_specs[-1] = pl.BlockSpec(
+           #         index_map=(lambda i, j, k: (i, j, k)), block_shape=((None,))
+           #     )  # kv_index_offset_size
 
         dq, dk, dv = pl.pallas_call(
             functools.partial(

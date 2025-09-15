@@ -49,10 +49,22 @@ def test_attention_functions(attention_fn, batch_size, seq_len, num_heads, qkv_d
     out = attention_fn(q, k, v)
     assert out.shape == (batch_size, seq_len, num_heads, qkv_dim)
 
-
-# @pytest.mark.gpu
-def test_attention_function_outputs_are_same():
-    q = k = v = jax.random.normal(jax.random.PRNGKey(0), (2, 256, 4, 16))
+@pytest.mark.parametrize(
+    "batch_size, seq_len, num_heads, qkv_dim",
+    [
+        (2, 16, 4, 16),
+        (4, 128, 8, 32),
+        (1, 256, 2, 8),
+        (3, 50, 8, 32),
+        (1, 1024, 16, 64),
+        (1, 2048, 10, 64),
+        (1, 1333, 12, 64),
+        (1, 256,  4, 30),
+        (1, 512,  8, 100),
+    ],
+)
+def test_attention_function_outputs_are_same(batch_size, seq_len, num_heads, qkv_dim):
+    q = k = v = jax.random.normal(jax.random.PRNGKey(0), (batch_size, seq_len, num_heads, qkv_dim))
     outputs = []
     attention_fns = [
         dot_product_attention,
@@ -64,13 +76,26 @@ def test_attention_function_outputs_are_same():
         outputs.append(attention_fn(q, k, v))
 
     for i in range(1, len(outputs)):
-        assert jnp.allclose(outputs[0], outputs[i], atol=1e-2), (
+        assert jnp.allclose(outputs[0], outputs[i], atol=1e-5), (
             f"Outputs are not same for {attention_fns[i]}"
         )
 
-
-def test_attention_function_gradients_are_same():
-    q = k = v = jax.random.normal(jax.random.PRNGKey(0), (2, 16, 4, 16))
+@pytest.mark.parametrize(
+    "batch_size, seq_len, num_heads, qkv_dim",
+    [
+        (2, 16, 4, 16),
+        (4, 128, 8, 32),
+        (1, 256, 2, 8),
+        (3, 50, 8, 32),
+        (1, 1024, 16, 64),
+        (1, 2048, 10, 64),
+        (1, 1333, 12, 64),
+        (1, 256,  4, 30),
+        (1, 512,  8, 100),
+    ],
+)
+def test_attention_function_gradients_are_same(batch_size, seq_len, num_heads, qkv_dim):
+    q = k = v = jax.random.normal(jax.random.PRNGKey(0), (batch_size, seq_len, num_heads, qkv_dim))
     attention_fns = [
         dot_product_attention,
         flex_attention,
@@ -86,7 +111,7 @@ def test_attention_function_gradients_are_same():
 
     for i in range(1, len(grads)):
         for g1, g2 in zip(grads[0], grads[i]):
-            assert jnp.allclose(g1, g2, atol=1e-2), (
+            assert jnp.allclose(g1, g2, atol=1e-3), (
                 f"Gradients are not same for {attention_fns[i]}"
                 f" error is {jnp.mean(jnp.abs(g1 - g2))}, std {jnp.std(g1 - g2)}"
             )

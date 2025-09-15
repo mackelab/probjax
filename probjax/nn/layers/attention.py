@@ -15,6 +15,7 @@ from probjax.nn.pallas_kernels.attention import BlockSizes, mha
 from probjax.nn.pallas_kernels.attention_mask_bias import (
     AttentionMask,
     AttentionBias,
+    QKVLengthMask,
 )
 from probjax.utils.typing import Array, ArrayLike
 
@@ -292,11 +293,18 @@ def flex_attention(
 
     _, l_q, h, n = query.shape
     _, l_kv, _, _ = key.shape
-    print(query.shape, key.shape, value.shape)
     query = pad_to_power_of_2(query)
     key = pad_to_power_of_2(key)
     value = pad_to_power_of_2(value)
-    print(query.shape, key.shape, value.shape)
+    if query.shape[1] != l_q or key.shape[1] != l_kv:
+        # Non power-of-2 sequence lengths, hence padding was applied.
+        # But this will bias the results, if we don't mask out the padded
+        # positions. So we create a mask for the padded positions.
+        mask = QKVLengthMask(
+            q_length=l_q,
+            kv_length=l_kv,
+            block_sparse=False,
+        ) if mask is None else mask & QKVLengthMask(q_length=l_q, kv_length=l_kv)
 
     # Currentlly the backward pass requires some conditons:
     # TODO: Move to BlockSizes

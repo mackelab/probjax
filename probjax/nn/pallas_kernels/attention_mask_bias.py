@@ -177,6 +177,23 @@ class AttentionMask(ABC):
         else:
             return None, None
 
+    def kv_iterator_indices(
+        self,
+        q_len: int,
+        kv_len: int,
+        block_q: int,
+        block_k: int,
+    ) -> tuple[Array, Array]:
+        """Per-(b,h,kv_block) iterators over non-empty Q blocks.
+
+        Returns (q_block_offset [nKB,nQB], q_block_offset_size [nKB]).
+        """
+        bm = self.block_mask(q_len=q_len, kv_len=kv_len, block_q=block_q, block_k=block_k)
+        if bm is not None:
+            return query_iterator_indices(bm.T)
+        else:
+            return None, None
+
 
 
 class AttentionBias(ABC):
@@ -475,6 +492,7 @@ class QKVLengthMask(AttentionMask):
 
     q_length: int
     kv_length: int
+    block_sparse: bool = True
 
     def __call__(
         self,
@@ -494,6 +512,24 @@ class QKVLengthMask(AttentionMask):
             (),
             {"q_length": self.q_length, "kv_length": self.kv_length},
         )
+
+    def block_mask(
+        self,
+        q_len: int,
+        kv_len: int,
+        block_q: int,
+        block_k: int,
+    ) -> Array:
+        if not self.block_sparse:
+            return None
+        nQB = ceil_div(q_len, block_q)
+        nKB = ceil_div(kv_len, block_k)
+        bm = jnp.ones((nQB, nKB), dtype=jnp.bool_)
+        last_q_block = (self.q_length - 1) // block_q
+        last_kv_block = (self.kv_length - 1) // block_k
+        bm = bm.at[last_q_block + 1 :, :].set(False)
+        bm = bm.at[:, last_kv_block + 1 :].set(False)
+        return bm
 
     @classmethod
     def tree_unflatten(cls, aux, children):
