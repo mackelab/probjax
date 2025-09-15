@@ -485,7 +485,7 @@ class QKVLengthMask(AttentionMask):
     ) -> Array:
         del seg_q, seg_k
         return jnp.logical_and(
-            q_idx[:, None] < self.q_length, k_idx[..., None, :] < self.kv_length
+            q_idx[:, None] < self.q_length, k_idx[None, :] < self.kv_length
         )
 
     def tree_flatten(self):
@@ -512,7 +512,7 @@ class KeyPaddingMask(AttentionMask):
             boolean array [B, K] where True indicates a valid KV position.
     """
 
-    key_lengths: Array
+    key_lengths: Array # Per query key lengths [B] or bool mask [B, K]
 
     def __call__(
         self,
@@ -521,18 +521,15 @@ class KeyPaddingMask(AttentionMask):
         seg_q: Optional[Array] = None,
         seg_k: Optional[Array] = None,
     ) -> Array:
-        del seg_q
-        if seg_k is None and self.key_lengths is None:
+        if seg_q is None and self.key_lengths is None:
             raise ValueError(
                 "KeyPaddingMask requires key_lengths provided either at construction or call time"
             )
-        kl = seg_k if seg_k is not None else self.key_lengths
+        kl = seg_q if seg_q is not None else self.key_lengths
         if kl is None:
             raise ValueError("KeyPaddingMask could not resolve key lengths")
         # lengths vector [B] or scalar
-        length0 = kl if kl.ndim == 1 else kl
-        valid_k = k_idx[None, :] < length0[:, None]  # [B, K]
-        print("valid_k", valid_k.shape)
+        valid_k = k_idx[None, :] < kl[:, None]  # [B, K]
         return valid_k[:q_idx.shape[0], :]
 
     # PyTree registration
@@ -546,12 +543,12 @@ class KeyPaddingMask(AttentionMask):
 
     def get_data_block_spec(self, q_len: int, kv_len: int = None):
         if self.key_lengths.ndim == 2:
-            k_spec = pl.BlockSpec((None, kv_len), lambda _, j, k: (j, 0))
+            q_spec = pl.BlockSpec((None, q_len), lambda _, j, k: (j, 0))
         elif self.key_lengths.ndim == 1:
-            k_spec = pl.BlockSpec((kv_len,), lambda _, j, k: (j,))
+            q_spec = pl.BlockSpec((q_len,), lambda _, j, k: (j,))
         else:
-            k_spec = None
-        return None, k_spec
+            q_spec = None
+        return q_spec, None
 
     def get_data(
         self,
@@ -559,9 +556,9 @@ class KeyPaddingMask(AttentionMask):
         q_seq_len: Optional[int] = None,
         kv_seq_len: Optional[int] = None,
     ) -> tuple[None, Optional[Array]]:
-        del q_seq_len
+        del q_seq_len, kv_seq_len
         kl = self.key_lengths
-        return None, kl
+        return kl, None
 
 
     def block_mask(
@@ -650,6 +647,69 @@ class SameSegmentMask(AttentionMask):
     def tree_unflatten(cls, aux, children):
         qids, kids = children
         return SameSegmentMask(qids, kids)
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class MarginalizationMask(AttentionMask):
+    """Allow attention only within the same segment (uses segment_ids)."""
+
+    # Exclude arrays from hashing/comparison to keep mask instances hashable
+    mask: Array
+
+    def __call__(
+        self,
+        q_idx: Array,
+        k_idx: Array,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> Array:
+        # Prefer explicitly provided seg_q/seg_k at call time; else fallback to stored ids.
+        mask_q = seg_q if seg_q is not None else self.mask
+        mask_k = seg_k if seg_k is not None else self.mask
+        jax.debug.print("mask_q: {m}", m=mask_q.shape)
+        # Handle optional leading batch dimension in stored ids.
+        return (mask_q[..., :, None] & mask_k[..., None, :]) | (q_idx[:, None] == k_idx[None, :])
+
+    def get_data_block_spec(self, q_len: int, kv_len: int = None):
+        if self.mask is None:
+            q_spec = None
+        elif self.mask.ndim == 2:
+            q_spec = pl.BlockSpec((None, q_len), lambda _, j, k: (j, 0))
+        elif self.mask.ndim == 1:
+            q_spec = pl.BlockSpec((q_len,), lambda _, j, k: (j,))
+        else:
+            raise ValueError()
+        return q_spec, None
+
+    def get_data(
+        self,
+        *,
+        q_seq_len: Optional[int] = None,
+        kv_seq_len: Optional[int] = None,
+    ) -> tuple[Optional[Array], Optional[Array]]:
+        del q_seq_len, kv_seq_len
+        return self.mask, None
+
+    def block_mask(
+        self,
+        q_len: int,
+        kv_len: int,
+        block_q: int,
+        block_k: int,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> Array | None:
+        # Dynamic tensors...
+        return None
+
+    # PyTree registration
+    def tree_flatten(self):
+        return (self.mask,), None
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        mask = children[0]
+        return MarginalizationMask(mask)
 
 
 # ------------------------------ Biases ----------------------------------------

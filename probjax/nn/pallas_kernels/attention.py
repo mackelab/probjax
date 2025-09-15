@@ -197,7 +197,11 @@ def mha_forward_kernel(
                 span_k,
             )
         if mask_fn is not None:
-            id_k = None if id_k_ref is None else pl.load(id_k_ref, (curr_k_slice,))
+            if id_k_ref is not None:
+                id_k = None if id_k_ref is None else pl.load(id_k_ref, (curr_k_slice,))
+            elif id_q is not None:
+                id_k = None if id_q_ref is None else pl.load(id_q_ref, (curr_k_slice,))
+            #jax.debug.print("id_q: {id_q}", id_q=id_q==id_k)
             mask = mask_fn(span_q, span_k, id_q, id_k)
             # Apply mask to qk.
             qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
@@ -613,12 +617,12 @@ def _mha_impl(
 
     # Optional block-sparse iterators
     index_offset = index_offset_size = None
-    if mask:
+    if mask is not None:
         index_offset, index_offset_size = mask.query_iterator_indices(q_seq_len, kv_seq_len, block_q, block_k)
- 
+
     # Bias tensor (dense) extracted if available
     bias = None
-    # TODO support bias 
+    # TODO support bias
 
     # Mask data arrays
     if mask is not None:
@@ -667,10 +671,10 @@ def _mha_impl(
     # q/k mask data specs
     if q_id is not None or k_id is not None:
         q_id_spec, k_id_spec = mask.get_data_block_spec(q_seq_len, kv_seq_len)
-        in_specs.append(k_id_spec); in_specs.append(k_id_spec)
+        in_specs.append(q_id_spec); in_specs.append(k_id_spec)
     else:
         in_specs.append(None); in_specs.append(None)
-    
+
     # Dropout mask spec
     if dropout_mask is not None:
         in_specs.append(
