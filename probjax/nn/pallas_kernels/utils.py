@@ -210,8 +210,6 @@ def compute_block_bounds(
 
 def materialize_mask(
     mask_mod_fn: MaskModFn,
-    batch_size: int,
-    num_heads: int,
     q_len: int,
     kv_len: int,
     *,
@@ -222,18 +220,11 @@ def materialize_mask(
     k_idx = jnp.arange(kv_len)
     seg_q, seg_k = ensure_tuple_segment_ids(segment_ids)
 
-    def per_head(bh: Array) -> Array:
-        b_idx, h_idx = bh
-        sq = None if seg_q is None else seg_q[b_idx]
-        sk = None if seg_k is None else seg_k[b_idx]
-        return mask_mod_fn(h_idx, q_idx, k_idx, sq, sk)
+    sq = None if seg_q is None else seg_q[b_idx]
+    sk = None if seg_k is None else seg_k[b_idx]
+    mask = mask_mod_fn(q_idx, k_idx, sq, sk)
 
-    bh = jnp.stack(
-        jnp.meshgrid(jnp.arange(batch_size), jnp.arange(num_heads), indexing="ij"),
-        axis=-1,
-    ).reshape(-1, 2)
-    mk: Array = jax.vmap(per_head)(bh).reshape(batch_size, num_heads, q_len, kv_len)
-    return mk
+    return mask
 
 
 def materialize_bias(
@@ -350,7 +341,8 @@ def get_cpu_dot_precision(dtype) -> jax.lax.DotAlgorithmPreset:
     if dtype == jnp.float16:
         return jax.lax.DotAlgorithmPreset.F16_F16_F16
     if dtype == jnp.bfloat16:
-        return jax.lax.DotAlgorithmPreset.BF16_BF16_BF16
+        # bfloat16 not supported
+        return jax.lax.DotAlgorithmPreset.F16_F16_F16
     raise ValueError(f"Unsupported dtype {dtype}")
 
 

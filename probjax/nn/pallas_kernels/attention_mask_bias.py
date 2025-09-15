@@ -3,6 +3,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
+import numpy as np
 
 import jax
 import jax.numpy as jnp
@@ -25,6 +27,7 @@ from .utils import (
     make_segment_bias,
     compute_padding_biases,
     alibi_get_slopes,
+    query_iterator_indices,
 )
 
 __all__ = [
@@ -80,7 +83,6 @@ class AttentionMask(ABC):
     @abstractmethod
     def __call__(
         self,
-        h_idx: Array,
         q_idx: Array,
         k_idx: Array,
         seg_q: Optional[Array] = None,
@@ -89,11 +91,8 @@ class AttentionMask(ABC):
         raise NotImplementedError
 
     # Optional: Pallas data specs for mask data per side. Default: None.
-    def pallas_q_data_spec(self, q_seq_len: int):  # pragma: no cover - API
-        return None
-
-    def pallas_k_data_spec(self, kv_seq_len: int):  # pragma: no cover - API
-        return None
+    def get_data_block_spec(self, q_len: int, kv_len: int):
+        return (None, None)
 
     # Logical combinators return composed masks.
     def __and__(self, other: "AttentionMask") -> "AttentionMask":
@@ -135,27 +134,32 @@ class AttentionMask(ABC):
         kv_len: int,
         block_q: int,
         block_k: int,
-        num_heads: int | None = None,
     ) -> Array:
-        """Default generic per-(b,h) block mask [nQB, nKB].
 
-        Subclasses may override for O(1) formulae (e.g., causal, sliding window).
+        """Build block map where True means the block is not fully masked.
+
+        Uses a separate thread to avoid inheriting sharding contexts during compile-time eval.
         """
 
-        def mask_fn(q_block, k_block):
-            return self(jnp.array(0), q_block.ravel(), k_block.ravel(), None, None)
+        def worker():
+            num_q_blocks = ceil_div(q_len, block_q)
+            num_kv_blocks = ceil_div(kv_len, block_k)
+            block_mask_map = np.ones(shape=(num_q_blocks, num_kv_blocks), dtype=np.bool_)
+            for i in range(0, q_len, block_q):
+                for j in range(0, kv_len, block_k):
+                    rows = np.arange(i, i + block_q, dtype=np.int32)
+                    cols = np.arange(j, j + block_k, dtype=np.int32)
+                    with jax.ensure_compile_time_eval():
+                        if not self.__call__(rows, cols).any():
+                            block_mask_map[i // block_q, j // block_k] = False
+            return block_mask_map
 
-        return build_block_mask(
-            mask_fn,
-            q_seq_len=q_len,
-            kv_seq_len=kv_len,
-            block_q=block_q,
-            block_k=block_k,
-        ).T
+        with ThreadPoolExecutor(1) as pool:
+            return pool.submit(worker).result()
 
-    def block_iterators(
+
+    def query_iterator_indices(
         self,
-        h_idx: Array,
         q_len: int,
         kv_len: int,
         block_q: int,
@@ -167,49 +171,19 @@ class AttentionMask(ABC):
 
         Returns (kv_block_offset [nQB,nKB], kv_block_offset_size [nQB]).
         """
-        del seg_q, seg_k
-        bm = self.block_mask(
-            q_len=q_len,
-            kv_len=kv_len,
-            block_q=block_q,
-            block_k=block_k,
-            num_heads=1,
-        )
-        idx, sz = jax.vmap(row_iterators)(bm)
-        return idx, sz
+        bm = self.block_mask(q_len=q_len, kv_len=kv_len, block_q=block_q, block_k=block_k )
+        if bm is not None:
+            return query_iterator_indices(bm)
+        else:
+            return None, None
 
-    def kv_iterators(
-        self,
-        h_idx: Array,
-        q_len: int,
-        kv_len: int,
-        block_q: int,
-        block_k: int,
-        seg_q: Optional[Array] = None,
-        seg_k: Optional[Array] = None,
-    ) -> tuple[Array, Array]:
-        """Per-(b,h,kv_block) iterators over non-empty Q blocks.
-
-        Returns (q_block_offset [nKB,nQB], q_block_offset_size [nKB]).
-        """
-        del seg_q, seg_k, h_idx
-        bm = self.block_mask(
-            q_len=q_len,
-            kv_len=kv_len,
-            block_q=block_q,
-            block_k=block_k,
-            num_heads=1,
-        )
-        bm_t = jnp.swapaxes(bm, -1, -2)
-        idx, sz = jax.vmap(row_iterators)(bm_t)
-        return idx, sz
 
 
 class AttentionBias(ABC):
     """Base class for attention score biases.
 
     Simplified signature (removed batch index). Implementations:
-        __call__(scores, h_idx, q_idx, k_idx, data_q, data_k) -> [Q,K] scores
+        __call__(scores, q_idx, k_idx, data_q, data_k) -> [Q,K] scores
     """
 
     @abstractmethod
@@ -276,14 +250,13 @@ class ComposeMask(AttentionMask):
 
     def __call__(
         self,
-        h_idx: Array,
         q_idx: Array,
         k_idx: Array,
         seg_q: Optional[Array] = None,
         seg_k: Optional[Array] = None,
     ) -> Array:
-        a = self.lhs(h_idx, q_idx, k_idx, seg_q, seg_k)
-        c = self.rhs(h_idx, q_idx, k_idx, seg_q, seg_k)
+        a = self.lhs(q_idx, k_idx, seg_q, seg_k)
+        c = self.rhs(q_idx, k_idx, seg_q, seg_k)
         if self.op == "and":
             return jnp.logical_and(a, c)
         if self.op == "or":
@@ -310,7 +283,6 @@ class NotMask(AttentionMask):
 
     def __call__(
         self,
-        h_idx: Array,
         q_idx: Array,
         k_idx: Array,
         seg_q: Optional[Array] = None,
@@ -365,13 +337,12 @@ class NoMask(AttentionMask):
 
     def __call__(
         self,
-        h_idx: Array,
         q_idx: Array,
         k_idx: Array,
         seg_q: Optional[Array] = None,
         seg_k: Optional[Array] = None,
     ) -> Array:
-        del h_idx, seg_q, seg_k
+        del seg_q, seg_k
         return jnp.ones((q_idx.shape[0], k_idx.shape[0]), dtype=bool)
 
     def block_mask(
@@ -380,7 +351,6 @@ class NoMask(AttentionMask):
         kv_len: int,
         block_q: int,
         block_k: int,
-        num_heads: int = None,
     ) -> Array:
         nQB = ceil_div(q_len, block_q)
         nKB = ceil_div(kv_len, block_k)
@@ -401,14 +371,13 @@ class CausalMask(AttentionMask):
 
     def __call__(
         self,
-        h_idx: Array,
         q_idx: Array,
         k_idx: Array,
         seg_q: Optional[Array] = None,
         seg_k: Optional[Array] = None,
     ) -> Array:
-        del h_idx, seg_q, seg_k
-        return q_idx[:, None] >= k_idx[None, :]
+        del seg_q, seg_k
+        return q_idx[:,None] >= k_idx[None, :]
 
     def block_mask(
         self,
@@ -452,15 +421,18 @@ class LocalWindowMask(AttentionMask):
 
     def __call__(
         self,
-        h_idx: Array,
         q_idx: Array,
         k_idx: Array,
         seg_q: Optional[Array] = None,
         seg_k: Optional[Array] = None,
     ) -> Array:
-        del h_idx, seg_q, seg_k
+        del seg_q, seg_k
         dqk = q_idx[:, None] - k_idx[None, :]
-        return jnp.logical_and(dqk >= -self.right_window, dqk <= self.left_window)
+        if self.right_window is None:
+            right_window = 0
+        else:
+            right_window = int(self.right_window)
+        return jnp.logical_and(dqk >= -right_window, dqk <= self.left_window)
 
     def block_mask(
         self,
@@ -468,10 +440,11 @@ class LocalWindowMask(AttentionMask):
         kv_len: int,
         block_q: int,
         block_k: int,
-        num_heads: int | None = None,
     ) -> Array:
-        del num_heads
-        rw = int(self.right_window)
+        if self.right_window is None:
+            rw = 0
+        else:
+            rw = int(self.right_window)
         return fast_blockmask_local_window(
             q_len=q_len,
             kv_len=kv_len,
@@ -505,15 +478,14 @@ class QKVLengthMask(AttentionMask):
 
     def __call__(
         self,
-        h_idx: Array,
         q_idx: Array,
         k_idx: Array,
         seg_q: Optional[Array] = None,
         seg_k: Optional[Array] = None,
     ) -> Array:
-        del h_idx, seg_q, seg_k
+        del seg_q, seg_k
         return jnp.logical_and(
-            q_idx[..., None, :] < self.q_length, k_idx[..., :, None] < self.kv_length
+            q_idx[:, None] < self.q_length, k_idx[..., None, :] < self.kv_length
         )
 
     def tree_flatten(self):
@@ -540,17 +512,16 @@ class KeyPaddingMask(AttentionMask):
             boolean array [B, K] where True indicates a valid KV position.
     """
 
-    key_lengths: Optional[Array]
+    key_lengths: Array
 
     def __call__(
         self,
-        h_idx: Array,
         q_idx: Array,
         k_idx: Array,
         seg_q: Optional[Array] = None,
         seg_k: Optional[Array] = None,
     ) -> Array:
-        del h_idx, seg_q
+        del seg_q
         if seg_k is None and self.key_lengths is None:
             raise ValueError(
                 "KeyPaddingMask requires key_lengths provided either at construction or call time"
@@ -558,16 +529,11 @@ class KeyPaddingMask(AttentionMask):
         kl = seg_k if seg_k is not None else self.key_lengths
         if kl is None:
             raise ValueError("KeyPaddingMask could not resolve key lengths")
-        if (seg_k is not None) and (seg_k.ndim == 1):
-            valid_k = kl.astype(jnp.bool_)
-        elif kl.dtype == jnp.bool_:
-            # Assume first batch entry (multi-batch should be vmapped outside)
-            valid_k = kl[0][k_idx] if kl.ndim == 2 else kl[k_idx]
-        else:
-            # lengths vector [B] or scalar
-            length0 = kl[0] if kl.ndim == 1 else kl
-            valid_k = k_idx < length0
-        return jnp.broadcast_to(valid_k[None, :], (q_idx.shape[0], k_idx.shape[0]))
+        # lengths vector [B] or scalar
+        length0 = kl if kl.ndim == 1 else kl
+        valid_k = k_idx[None, :] < length0[:, None]  # [B, K]
+        print("valid_k", valid_k.shape)
+        return valid_k[:q_idx.shape[0], :]
 
     # PyTree registration
     def tree_flatten(self):
@@ -578,43 +544,25 @@ class KeyPaddingMask(AttentionMask):
         (key_lengths,) = children
         return KeyPaddingMask(key_lengths)
 
-    def pallas_k_data_spec(self, kv_seq_len: int):
-        return pl.BlockSpec((None, kv_seq_len), lambda _, j, k: (j, 0))
+    def get_data_block_spec(self, q_len: int, kv_len: int = None):
+        if self.key_lengths.ndim == 2:
+            k_spec = pl.BlockSpec((None, kv_len), lambda _, j, k: (j, 0))
+        elif self.key_lengths.ndim == 1:
+            k_spec = pl.BlockSpec((kv_len,), lambda _, j, k: (j,))
+        else:
+            k_spec = None
+        return None, k_spec
 
     def get_data(
         self,
         *,
         q_seq_len: Optional[int] = None,
         kv_seq_len: Optional[int] = None,
-    ) -> tuple[Optional[Array], Optional[Array]]:
+    ) -> tuple[None, Optional[Array]]:
         del q_seq_len
-        if self.key_lengths is None:
-            return None, None
         kl = self.key_lengths
-        if kv_seq_len is None:
-            # Return stored form as-is
-            return None, kl
-        # Normalize to boolean [B, K] when necessary
-        if kl.dtype == jnp.bool_:
-            return None, kl
-        # lengths [B] -> boolean [B,K]
-        bools = (jnp.arange(kv_seq_len)[None, :] < kl[:, None]).astype(jnp.bool_)
-        return None, bools
-
-    # Optional helper to prepare per-sequence data.
-    def get_data_with_seq(
-        self, q_seq_len: int, kv_seq_len: int
-    ) -> tuple[Optional[Array], Optional[Array]]:
-        del q_seq_len
-        if self.key_lengths is None:
-            return None, None
-        kl = self.key_lengths
-        if kl.dtype == jnp.bool_ and kl.ndim == 2:
-            return None, kl
-        if kl.ndim == 1:
-            bools = (jnp.arange(kv_seq_len)[None, :] < kl[:, None]).astype(jnp.bool_)
-            return None, bools
         return None, kl
+
 
     def block_mask(
         self,
@@ -622,37 +570,8 @@ class KeyPaddingMask(AttentionMask):
         kv_len: int,
         block_q: int,
         block_k: int,
-        num_heads: int,
-    ) -> Array:
-        nQB = ceil_div(q_len, block_q)
-        nKB = ceil_div(kv_len, block_k)
-        k_starts = jnp.arange(0, kv_len, block_k)
-        # Determine validity per KV block
-        del num_heads
-        kl = self.key_lengths
-        if kl is None:
-            raise ValueError("KeyPaddingMask requires key_lengths")
-        if kl.dtype == jnp.bool_ and kl.ndim == 2:
-            kb = kl[0]
-
-            def any_in_block(k_start):
-                end = jnp.minimum(k_start + block_k, kv_len)
-                return jnp.any(kb[k_start:end])
-
-            allowed = jax.vmap(any_in_block)(k_starts)
-        elif kl.dtype == jnp.bool_ and kl.ndim == 1:
-            # Already per-position validity
-            def any_in_block(k_start):
-                end = jnp.minimum(k_start + block_k, kv_len)
-                return jnp.any(kl[k_start:end])
-
-            allowed = jax.vmap(any_in_block)(k_starts)
-        else:
-            length0 = kl[0] if kl.ndim == 1 else kl
-            allowed = k_starts < length0
-        # Broadcast across all query blocks
-        return jnp.broadcast_to(allowed[None, :], (nQB, nKB))
-
+    ) -> Array | None:
+        return None
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
@@ -660,12 +579,11 @@ class SameSegmentMask(AttentionMask):
     """Allow attention only within the same segment (uses segment_ids)."""
 
     # Exclude arrays from hashing/comparison to keep mask instances hashable
-    query_segment_ids: Optional[Array]
+    query_segment_ids: Array
     key_segment_ids: Optional[Array]
 
     def __call__(
         self,
-        h_idx: Array,
         q_idx: Array,
         k_idx: Array,
         seg_q: Optional[Array] = None,
@@ -673,30 +591,35 @@ class SameSegmentMask(AttentionMask):
     ) -> Array:
         # Prefer explicitly provided seg_q/seg_k at call time; else fallback to stored ids.
         s_q = seg_q if seg_q is not None else self.query_segment_ids
-        s_k = seg_k if seg_k is not None else self.key_segment_ids
+        if self.key_segment_ids is None:
+            s_k=s_q
+        else:
+            s_k = seg_k if seg_k is not None else self.key_segment_ids
         if s_q is None or s_k is None:
             raise ValueError(
                 "SameSegmentMask requires segment ids via call(seg_q, seg_k) or stored in the dataclass."
             )
-        del h_idx
         # Handle optional leading batch dimension in stored ids.
         return s_q[..., :, None] == s_k[..., None, :]
 
-    def pallas_q_data_spec(self, q_seq_len: int, block_q: int = None):
-        if self.query_segment_ids.ndim == 2:
-            return pl.BlockSpec((None, q_seq_len), lambda _, j, k: (j, 0))
+    def get_data_block_spec(self, q_len: int, kv_len: int = None):
+        if self.query_segment_ids is None:
+            q_spec = None
+        elif self.query_segment_ids.ndim == 2:
+            q_spec = pl.BlockSpec((None, q_len), lambda _, j, k: (j, 0))
         elif self.query_segment_ids.ndim == 1:
-            return pl.BlockSpec((q_seq_len,), lambda _, j, k: (j,))
+            q_spec = pl.BlockSpec((q_len,), lambda _, j, k: (j,))
         else:
+            raise ValueError()
+        if self.key_segment_ids is None:
             return None
-
-    def pallas_k_data_spec(self, kv_seq_len: int, block_k: int = None):
-        if self.key_segment_ids.ndim == 2:
-            return pl.BlockSpec((None, kv_seq_len), lambda _, j, k: (j, 0))
+        elif self.key_segment_ids.ndim == 2:
+            k_spec = pl.BlockSpec((None, kv_len), lambda _, j, k: (j, 0))
         elif self.key_segment_ids.ndim == 1:
-            return pl.BlockSpec((kv_seq_len,), lambda _, j, k: (j,))
+            k_spec = pl.BlockSpec((kv_len,), lambda _, j, k: (j,))
         else:
-            return None
+            k_spec = None
+        return (q_spec, k_spec)
 
     def get_data(
         self,
@@ -715,7 +638,8 @@ class SameSegmentMask(AttentionMask):
         block_k: int,
         seg_q: Optional[Array] = None,
         seg_k: Optional[Array] = None,
-    ) -> Array:
+    ) -> Array | None:
+        # Dynamic tensors...
         return None
 
     # PyTree registration

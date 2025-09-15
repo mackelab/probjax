@@ -15,7 +15,6 @@ from probjax.nn.pallas_kernels.attention_mask_bias import (
     FromMaskBias,
     DenseBias,
     get_bias_grad,
-    compute_block_mask,
     apply_mask,
     apply_bias,
     bias_identity,
@@ -36,7 +35,7 @@ def test_nomask_and_causal_composition():
     mask = NoMask() & CausalMask()
     q_idx = jnp.arange(4)
     k_idx = jnp.arange(4)
-    out = mask(0, 0, q_idx, k_idx)
+    out = mask(q_idx, k_idx)
     assert out.shape == (4, 4)
     assert jnp.all(out == (q_idx[:, None] >= k_idx[None, :]))
 
@@ -46,13 +45,13 @@ def test_notmask_inverts():
     mask = ~base
     q_idx = jnp.arange(3)
     k_idx = jnp.arange(3)
-    out = mask(0, 0, q_idx, k_idx)
+    out = mask(q_idx, k_idx)
     assert jnp.all(out == jnp.logical_not(q_idx[:, None] >= k_idx[None, :]))
 
 
 def test_causalmask_adapter():
     mask = CausalMask()
-    out = mask(0, 0, jnp.arange(2), jnp.arange(2))
+    out = mask(jnp.arange(2), jnp.arange(2))
     assert jnp.array_equal(out, jnp.array([[True, False], [True, True]]))
 
 
@@ -60,10 +59,10 @@ def test_local_window_mask_call_and_block():
     mask = LocalWindowMask(left_window=1, right_window=2)
     q_idx = jnp.arange(6)
     k_idx = jnp.arange(6)
-    dense = mask(0, 0, q_idx, k_idx)
+    dense = mask(q_idx, k_idx)
     assert dense.dtype == jnp.bool_
     # Check block mask shape and that it allows at least one kv per q
-    bm = mask.block_mask(0, 0, q_len=6, kv_len=6, block_q=2, block_k=3)
+    bm = mask.block_mask(q_len=6, kv_len=6, block_q=2, block_k=3)
     assert bm.shape == (3, 2)
     assert jnp.all(bm.sum(axis=-1) > 0)
 
@@ -95,29 +94,15 @@ def test_same_segment_mask_with_and_without_batch_dim():
     qseg = jnp.tile(jnp.array([1, 1, 2, 0, 2]), (B, 1))
     kseg = jnp.tile(jnp.array([1, 0, 2, 2, 2]), (B, 1))
     mask = SameSegmentMask(query_segment_ids=qseg, key_segment_ids=kseg)
-    out = mask(1, 0, jnp.arange(Q), jnp.arange(K))
+    out = mask(jnp.arange(Q), jnp.arange(K))
     # Compare with explicit call-time seg ids
-    out2 = SameSegmentMask()(1, 0, jnp.arange(Q), jnp.arange(K), qseg, kseg)
+    out2 = mask(jnp.arange(Q), jnp.arange(K), qseg, kseg)
     assert jnp.array_equal(out, out2)
     # Missing seg ids should error
-    with pytest.raises(ValueError):
-        _ = SameSegmentMask()(0, 0, jnp.arange(Q), jnp.arange(K))
+    with pytest.raises(TypeError):
+        _ = SameSegmentMask()(jnp.arange(Q), jnp.arange(K))
 
 
-def test_compute_block_mask_class():
-    B, H, Q, K = 1, 1, 4, 5
-    bm = compute_block_mask(
-        CausalMask(),
-        batch_size=B,
-        num_heads=H,
-        q_len=Q,
-        kv_len=K,
-        block_q=2,
-        block_k=2,
-        segment_ids=None,
-    )
-    assert bm.shape == (B, H, 2, 3)
-    assert bm[0, 0, 0, 0]
 
 
 def test_apply_mask_and_bias_helpers():

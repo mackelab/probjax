@@ -198,7 +198,7 @@ def mha_forward_kernel(
             )
         if mask_fn is not None:
             id_k = None if id_k_ref is None else pl.load(id_k_ref, (curr_k_slice,))
-            mask = mask_fn(start_h, span_q, span_k, id_q, id_k)
+            mask = mask_fn(span_q, span_k, id_q, id_k)
             # Apply mask to qk.
             qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
 
@@ -614,23 +614,14 @@ def _mha_impl(
     # Optional block-sparse iterators
     index_offset = index_offset_size = None
     if mask:
-        bm = mask.block_mask(
-            q_len=q_seq_len, kv_len=kv_seq_len, block_q=block_q, block_k=block_k
-        )
-        if bm is not None:
-            index_offset, index_offset_size = compute_block_iterators(
-                bm
-            )
-
+        index_offset, index_offset_size = mask.query_iterator_indices(q_seq_len, kv_seq_len, block_q, block_k)
+ 
     # Bias tensor (dense) extracted if available
     bias = None
-    if isinstance(bias, AttentionBias):
-        bdata = bias.get_data()
-        if bdata:
-            bias = bdata[0]
+    # TODO support bias 
 
     # Mask data arrays
-    if mask:
+    if mask is not None:
         q_id, k_id = mask.get_data(q_seq_len=q_seq_len, kv_seq_len=kv_seq_len)
     else:
         q_id = k_id = None
@@ -668,35 +659,18 @@ def _mha_impl(
 
     # Bias spec
     if bias is not None:
-        spec = (
-            bias.pallas_bias_spec(block_q=block_q, kv_seq_len=kv_seq_len)
-            if isinstance(bias, AttentionBias)
-            else None
-        )
-        if spec is None:
-            spec = pl.BlockSpec(
-                index_map=lambda i, j, k_: (
-                    j if bias.shape[0] != 1 else 0,
-                    k_ if bias.shape[1] != 1 else 0,
-                    i,
-                    0,
-                ),
-                block_shape=(None, None, block_q, kv_seq_len),
-            )
-        in_specs.append(spec)
+        # TODO
+        pass
     else:
         in_specs.append(None)
+
     # q/k mask data specs
-    if q_id is not None:
-        block_spec = mask.pallas_q_data_spec(q_seq_len=q_seq_len)
-        in_specs.append(block_spec)
+    if q_id is not None or k_id is not None:
+        q_id_spec, k_id_spec = mask.get_data_block_spec(q_seq_len, kv_seq_len)
+        in_specs.append(k_id_spec); in_specs.append(k_id_spec)
     else:
-        in_specs.append(None)
-    if k_id is not None:
-        block_spec = mask.pallas_k_data_spec(kv_seq_len=kv_seq_len)
-        in_specs.append(block_spec)
-    else:
-        in_specs.append(None)
+        in_specs.append(None); in_specs.append(None)
+    
     # Dropout mask spec
     if dropout_mask is not None:
         in_specs.append(
