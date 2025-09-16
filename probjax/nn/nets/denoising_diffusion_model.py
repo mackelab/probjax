@@ -61,7 +61,6 @@ class DiffusionDenoiser(nnx.Module):
         self.last_layer = last_layer
 
         self._loss_type = loss_type
-        self._build_loss_fn(loss_type, loss_kwargs)
 
     def _build_loss_fn(self, loss_type: str, loss_kwargs=None):
         if loss_type == "x0":
@@ -275,12 +274,13 @@ class DiffusionDenoiser(nnx.Module):
         **kwargs,
     ) -> Array:
         """Compute diffusion denoising loss."""
+        loss_fn = self._build_loss_fn(self._loss_type)
         rng_times, rng_loss = jax.random.split(rng, 2)
         ndims = data.ndim - 2
         times = self.noise_schedule(rng_times, (data.shape[0],) + (1,) * ndims)
 
         axis = tuple(range(1, data.ndim))
-        loss = self._loss_fn(times, data, *args, rng=rng_loss, axis=axis, **kwargs)
+        loss = loss_fn(times, data, *args, rng=rng_loss, axis=axis, **kwargs)
         return loss
 
 

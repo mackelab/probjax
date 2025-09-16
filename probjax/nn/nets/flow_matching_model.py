@@ -78,13 +78,6 @@ class FlowMatcher(nnx.Module):
         if loss_kwargs is None:
             loss_kwargs = {}
 
-        self._loss = build_flow_matching_loss(
-            self,
-            interpolation_fn=self.interpolation_fn,
-            interpolation_noise_fn=self.interpolation_std_fn,
-            weight_fn=None,
-            **loss_kwargs,
-        )
 
     def __call__(self, t, x: ArrayLike, *args, **kwargs) -> ArrayLike:
         """Forward pass of the model - v-prediction.
@@ -136,6 +129,14 @@ class FlowMatcher(nnx.Module):
         )
 
     def loss(self, rng, data: ArrayLike, *args, **kwargs):
+
+        loss_fn = build_flow_matching_loss(
+            self,
+            interpolation_fn=self.interpolation_fn,
+            interpolation_noise_fn=self.interpolation_std_fn,
+            weight_fn=None,
+        )
+
         rng_source, rng_times = jax.random.split(rng, 2)
 
         # Generate noise for x0
@@ -149,7 +150,7 @@ class FlowMatcher(nnx.Module):
         ndims = data.ndim - 2
         times = self.noise_schedule(rng_times, (data_shape[0],) + (1,) * ndims)
 
-        loss = self._loss(times, x0, data, *args, **kwargs)
+        loss = loss_fn(times, x0, data, *args, **kwargs)
         return loss
 
 
@@ -177,14 +178,7 @@ class MeanFlowMatcher(nnx.Module):
         self.interpolation_grad_fn = interpolation_grad_fn
         self.interpolation_noise_grad_fn = interpolation_noise_grad_fn
         self.rngs = rngs
-        self._loss = build_mean_flow_matching_loss(
-            self,
-            interpolation_fn=self.interpolation_fn,
-            interpolation_noise_fn=self.interpolation_std_fn,
-            interpolation_grad_fn=self.interpolation_grad_fn,
-            interpolation_noise_grad_fn=self.interpolation_noise_grad_fn,
-            weight_fn=None,
-        )
+
 
     def __call__(
         self, t: ArrayLike, x: ArrayLike, r: Optional[ArrayLike] = None, *args, **kwargs
@@ -271,6 +265,14 @@ class MeanFlowMatcher(nnx.Module):
         adaptive_weight_eps: float = 1e-3,
         **kwargs,
     ):
+
+        loss_fn = build_mean_flow_matching_loss(
+            self,
+            interpolation_fn=self.interpolation_fn,
+            interpolation_noise_fn=self.interpolation_std_fn,
+            weight_fn=None,
+        )
+
         rng_source, rng_times = jax.random.split(rng, 2)
         ndims = data.ndim - 2
         times_t, times_r = self.noise_schedule(
@@ -281,7 +283,7 @@ class MeanFlowMatcher(nnx.Module):
             jax.random.normal(rng_source, shape=data.shape) * self.std0.value
             + self.mu0.value
         )
-        loss = self._loss(
+        loss = loss_fn(
             times_r,
             times_t,
             x0,

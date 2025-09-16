@@ -48,6 +48,8 @@ class UNet(nnx.Module):
         use_attention: bool | Sequence[bool] = False,
         context_features: int | None = None,
         resize_method: str = "bilinear",
+        dropout_rate: float = 0.0,
+        # --- initialization/precision ---
         precision: PrecisionLike | None = None,
         dtype: jnp.dtype | None = None,
         param_dtype: jnp.dtype | None = None,
@@ -95,6 +97,7 @@ class UNet(nnx.Module):
             kernel_size=kernel_size_resnet,
             strides=strides_resnet,
             context_features=context_features,
+            dropout_rate=dropout_rate,
             rngs=rngs,
             **filter_precision_kwargs(resnet_block_cls, **precision_kwargs),
         )
@@ -142,7 +145,7 @@ class UNet(nnx.Module):
         )
 
         _attn_block = partial(
-            attn_cls, rngs=rngs, **filter_precision_kwargs(attn_cls, **precision_kwargs)
+            attn_cls, dropout_rate=dropout_rate, rngs=rngs, **filter_precision_kwargs(attn_cls, **precision_kwargs)
         )
 
         # ---------------------------------------------------------------------
