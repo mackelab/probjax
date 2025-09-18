@@ -1,32 +1,32 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Optional
-from concurrent.futures import ThreadPoolExecutor
-import numpy as np
 
 import jax
 import jax.numpy as jnp
-from probjax.utils.typing import Array, Callable
+import numpy as np
 from jax.experimental import pallas as pl
+
+from probjax.utils.typing import Array, Callable
+
 from .utils import (
-    NEG_INF,
     DEFAULT_MASK_VALUE,
-    build_block_mask,
+    NEG_INF,
+    alibi_get_slopes,
+    apply_attention_logit_biases,
     ceil_div,
-    fast_blockmask_local_window,
-    fast_blockmask_causal,
-    row_iterators,
+    compute_block_bounds,
     compute_block_iterators,
     compute_kv_iterators,
-    compute_block_bounds,
-    materialize_mask,
-    materialize_bias,
-    apply_attention_logit_biases,
-    make_segment_bias,
     compute_padding_biases,
-    alibi_get_slopes,
+    fast_blockmask_causal,
+    fast_blockmask_local_window,
+    make_segment_bias,
+    materialize_bias,
+    materialize_mask,
     query_iterator_indices,
 )
 
@@ -79,6 +79,7 @@ class AttentionMask(ABC):
     Multi-batch use should be handled by vmapping externally. For legacy code
     that previously passed a batch index, remove it and vmap over batch dim.
     """
+    stateful: bool = False  # True if mask uses stored data (e.g., lengths, segment ids)
 
     @abstractmethod
     def __call__(
@@ -135,7 +136,6 @@ class AttentionMask(ABC):
         block_q: int,
         block_k: int,
     ) -> Array:
-
         """Build block map where True means the block is not fully masked.
 
         Uses a separate thread to avoid inheriting sharding contexts during compile-time eval.
@@ -144,7 +144,9 @@ class AttentionMask(ABC):
         def worker():
             num_q_blocks = ceil_div(q_len, block_q)
             num_kv_blocks = ceil_div(kv_len, block_k)
-            block_mask_map = np.ones(shape=(num_q_blocks, num_kv_blocks), dtype=np.bool_)
+            block_mask_map = np.ones(
+                shape=(num_q_blocks, num_kv_blocks), dtype=np.bool_
+            )
             for i in range(0, q_len, block_q):
                 for j in range(0, kv_len, block_k):
                     rows = np.arange(i, i + block_q, dtype=np.int32)
@@ -156,7 +158,6 @@ class AttentionMask(ABC):
 
         with ThreadPoolExecutor(1) as pool:
             return pool.submit(worker).result()
-
 
     def query_iterator_indices(
         self,
@@ -171,7 +172,9 @@ class AttentionMask(ABC):
 
         Returns (kv_block_offset [nQB,nKB], kv_block_offset_size [nQB]).
         """
-        bm = self.block_mask(q_len=q_len, kv_len=kv_len, block_q=block_q, block_k=block_k )
+        bm = self.block_mask(
+            q_len=q_len, kv_len=kv_len, block_q=block_q, block_k=block_k
+        )
         if bm is not None:
             return query_iterator_indices(bm)
         else:
@@ -188,12 +191,13 @@ class AttentionMask(ABC):
 
         Returns (q_block_offset [nKB,nQB], q_block_offset_size [nKB]).
         """
-        bm = self.block_mask(q_len=q_len, kv_len=kv_len, block_q=block_q, block_k=block_k)
+        bm = self.block_mask(
+            q_len=q_len, kv_len=kv_len, block_q=block_q, block_k=block_k
+        )
         if bm is not None:
             return query_iterator_indices(bm.T)
         else:
             return None, None
-
 
 
 class AttentionBias(ABC):
@@ -282,15 +286,36 @@ class ComposeMask(AttentionMask):
             return jnp.logical_xor(a, c)
         raise ValueError(f"Unknown op for ComposeMask: {self.op}")
 
+    def get_data(self, *, q_seq_len: int | None = None, kv_seq_len: int | None = None) -> tuple[Array | None, Array | None]:
+        if self.lhs.stateful and self.rhs.stateful:
+            raise ValueError("Cannot compose two stateful masks; ambiguous data requirements.")
+        if self.lhs.stateful:
+            return self.lhs.get_data(q_seq_len=q_seq_len, kv_seq_len=kv_seq_len)
+        if self.rhs.stateful:
+            return self.rhs.get_data(q_seq_len=q_seq_len, kv_seq_len=kv_seq_len)
+        return (None, None)
+
+    def get_data_block_spec(self, q_len: int, kv_len: int = None):
+        if self.lhs.stateful and self.rhs.stateful:
+            raise ValueError("Cannot compose two stateful masks; ambiguous data requirements.")
+        if self.lhs.stateful:
+            return self.lhs.get_data_block_spec(q_len=q_len, kv_len=kv_len)
+        if self.rhs.stateful:
+            return self.rhs.get_data_block_spec(q_len=q_len, kv_len=kv_len)
+        return (None, None)
+
     # PyTree: children are lhs/rhs masks; op is static aux.
     def tree_flatten(self):
-        return ((self.lhs, self.rhs), {"op": self.op})
+        flat_arrays, tree = jax.tree_util.tree_flatten((self.lhs, self.rhs))
+        if len(flat_arrays) > 2:
+            raise ValueError("Naive composition not supported between stateful masks")
+        return (flat_arrays, {"tree": tree, "op": self.op})
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        lhs, rhs = children
-        op = aux["op"] if isinstance(aux, dict) else aux
-        return ComposeMask(op, lhs, rhs)
+        tree = aux["tree"]
+        lhs, rhs = jax.tree_util.tree_unflatten(tree, children)
+        return ComposeMask(op=aux["op"], lhs=lhs, rhs=rhs)
 
 
 @jax.tree_util.register_pytree_node_class
@@ -305,7 +330,7 @@ class NotMask(AttentionMask):
         seg_q: Optional[Array] = None,
         seg_k: Optional[Array] = None,
     ) -> Array:
-        return jnp.logical_not(self.inner(h_idx, q_idx, k_idx, seg_q, seg_k))
+        return jnp.logical_not(self.inner(q_idx, k_idx, seg_q, seg_k))
 
     def tree_flatten(self):
         return ((self.inner,), {})
@@ -394,7 +419,7 @@ class CausalMask(AttentionMask):
         seg_k: Optional[Array] = None,
     ) -> Array:
         del seg_q, seg_k
-        return q_idx[:,None] >= k_idx[None, :]
+        return q_idx[:, None] >= k_idx[None, :]
 
     def block_mask(
         self,
@@ -548,7 +573,11 @@ class KeyPaddingMask(AttentionMask):
             boolean array [B, K] where True indicates a valid KV position.
     """
 
-    key_lengths: Array # Per query key lengths [B] or bool mask [B, K]
+    key_lengths: Array  # Per query key lengths [B] or bool mask [B, K]
+    stateful: bool = True
+
+    def __post_init__(self):
+        object.__setattr__(self, "key_lengths", jnp.asarray(self.key_lengths))
 
     def __call__(
         self,
@@ -566,7 +595,7 @@ class KeyPaddingMask(AttentionMask):
             raise ValueError("KeyPaddingMask could not resolve key lengths")
         # lengths vector [B] or scalar
         valid_k = k_idx[None, :] < kl[:, None]  # [B, K]
-        return valid_k[:q_idx.shape[0], :]
+        return valid_k[: q_idx.shape[0], :]
 
     # PyTree registration
     def tree_flatten(self):
@@ -596,7 +625,6 @@ class KeyPaddingMask(AttentionMask):
         kl = self.key_lengths
         return kl, None
 
-
     def block_mask(
         self,
         q_len: int,
@@ -606,6 +634,7 @@ class KeyPaddingMask(AttentionMask):
     ) -> Array | None:
         return None
 
+
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
 class SameSegmentMask(AttentionMask):
@@ -614,6 +643,12 @@ class SameSegmentMask(AttentionMask):
     # Exclude arrays from hashing/comparison to keep mask instances hashable
     query_segment_ids: Array
     key_segment_ids: Optional[Array]
+    stateful: bool = True
+
+    def __post_init__(self):
+        object.__setattr__(self, "query_segment_ids", jnp.asarray(self.query_segment_ids))
+        if self.key_segment_ids is not None:
+            object.__setattr__(self, "key_segment_ids", jnp.asarray(self.key_segment_ids))
 
     def __call__(
         self,
@@ -625,7 +660,7 @@ class SameSegmentMask(AttentionMask):
         # Prefer explicitly provided seg_q/seg_k at call time; else fallback to stored ids.
         s_q = seg_q if seg_q is not None else self.query_segment_ids
         if self.key_segment_ids is None:
-            s_k=s_q
+            s_k = s_q
         else:
             s_k = seg_k if seg_k is not None else self.key_segment_ids
         if s_q is None or s_k is None:
@@ -684,13 +719,19 @@ class SameSegmentMask(AttentionMask):
         qids, kids = children
         return SameSegmentMask(qids, kids)
 
+
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
 class MarginalizationMask(AttentionMask):
     """Allow attention only within the same segment (uses segment_ids)."""
 
     # Exclude arrays from hashing/comparison to keep mask instances hashable
+
     mask: Array
+    stateful: bool = True
+
+    def __post_init__(self):
+        object.__setattr__(self, "mask", jnp.asarray(self.mask))
 
     def __call__(
         self,
@@ -704,7 +745,9 @@ class MarginalizationMask(AttentionMask):
         mask_k = seg_k if seg_k is not None else self.mask
         jax.debug.print("mask_q: {m}", m=mask_q.shape)
         # Handle optional leading batch dimension in stored ids.
-        return (mask_q[..., :, None] & mask_k[..., None, :]) | (q_idx[:, None] == k_idx[None, :])
+        return (mask_q[..., :, None] & mask_k[..., None, :]) | (
+            q_idx[...,:, None] == k_idx[...,None, :]
+        )
 
     def get_data_block_spec(self, q_len: int, kv_len: int = None):
         if self.mask is None:
@@ -1028,7 +1071,7 @@ def apply_bias(
     return bias(scores, h_idx, q_idx, k_idx, data_q, data_k)
 
 
-## CallableBias removed; only class-based biases are supported.
+# CallableBias removed; only class-based biases are supported.
 
 
 # --------------------------- Stateless Bias Fns -------------------------------
@@ -1056,7 +1099,7 @@ def bias_distance_decay(
     return DistanceDecayBias()(scores, h_idx, q_idx, k_idx)
 
 
-## Helpers imported from utils are re-exported via __all__ at module import.
+# Helpers imported from utils are re-exported via __all__ at module import.
 
 
 class AttentionLogitBiasLayer:
@@ -1125,4 +1168,4 @@ class SymmetricALiBiAttentionLogitBiasLayer(FullAttentionLogitBiasLayer):
         return apply_attention_logit_biases(alibi_bias, base)
 
 
-## FlashAttention mask adapters deprecated and removed.
+# FlashAttention mask adapters deprecated and removed.

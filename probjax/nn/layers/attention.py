@@ -13,8 +13,8 @@ from jax import lax
 
 from probjax.nn.pallas_kernels.attention import BlockSizes, mha
 from probjax.nn.pallas_kernels.attention_mask_bias import (
-    AttentionMask,
     AttentionBias,
+    AttentionMask,
     QKVLengthMask,
 )
 from probjax.utils.typing import Array, ArrayLike
@@ -199,29 +199,26 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         out = self.out(x)
         return out
 
-
-def pad_to_power_of_2(arr: Array, min_size: int = 16) -> Array:
-    """Pad the array to the next power of 2 greater than min_size."""
+def pad_to_power_of_2(arr: Array, min_size: int = 16, axis=(-1,)) -> Array:
+    """Pad the array to the next power of 2 greater than min_size along given axis."""
 
     def next_power_of_2(x):
         return 1 << (x - 1).bit_length()
 
     target_shape = list(arr.shape)
-    seq_len = arr.shape[-3]
-    dim = arr.shape[-1]
-    if seq_len < min_size:
-        target_shape[-3] = min_size
-    else:
-        target_shape[-3] = next_power_of_2(seq_len)
-    if dim < min_size:
-        target_shape[-1] = min_size
-    else:
-        target_shape[-1] = next_power_of_2(dim)
+    for ax in axis:
+        seq_len = arr.shape[ax]
+        if seq_len < min_size:
+            target_shape[ax] = min_size
+        else:
+            target_shape[ax] = next_power_of_2(seq_len)
 
     pad_width = [
-        (0, target - current) for current, target in zip(arr.shape, target_shape)
+        (0, target - current)
+        for current, target in zip(arr.shape, target_shape, strict=False)
     ]
     return jnp.pad(arr, pad_width)
+
 
 
 def flex_attention(
@@ -236,7 +233,7 @@ def flex_attention(
     dtype=None,
     precision=None,
     module=None,  # Required arguments by Flax
-    sm_scale: Optional[bool] = None,
+    sm_scale: Optional[float] = None,
     enable_gqa: bool = False,
     block_sizes: BlockSizes = BlockSizes.get_default(),
     backward_pass_impl: str = "triton",
@@ -293,18 +290,25 @@ def flex_attention(
 
     _, l_q, h, n = query.shape
     _, l_kv, _, _ = key.shape
-    query = pad_to_power_of_2(query)
-    key = pad_to_power_of_2(key)
-    value = pad_to_power_of_2(value)
+    query = pad_to_power_of_2(query, axis=(-3,-1))
+    key = pad_to_power_of_2(key, axis=(-3,-1))
+    value = pad_to_power_of_2(value, axis=(-3,-1))
+
     if query.shape[1] != l_q or key.shape[1] != l_kv:
         # Non power-of-2 sequence lengths, hence padding was applied.
         # But this will bias the results, if we don't mask out the padded
         # positions. So we create a mask for the padded positions.
-        mask = QKVLengthMask(
-            q_length=l_q,
-            kv_length=l_kv,
-            block_sparse=False,
-        ) if mask is None else mask & QKVLengthMask(q_length=l_q, kv_length=l_kv)
+        mask = (
+            QKVLengthMask(
+                q_length=l_q,
+                kv_length=l_kv,
+                block_sparse=False,
+            )
+            if mask is None
+            else mask & QKVLengthMask(q_length=l_q, kv_length=l_kv)
+        )
+
+    mask = jax.tree_util.tree_map(pad_to_power_of_2, mask) if mask is not None else None
 
     # Currentlly the backward pass requires some conditons:
     # TODO: Move to BlockSizes

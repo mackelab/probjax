@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from typing import Optional, Tuple, NamedTuple
 from concurrent.futures import ThreadPoolExecutor
+from typing import NamedTuple, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -179,6 +179,7 @@ def compute_block_iterators(block_mask: Array) -> tuple[Array, Array]:
 
     idx, sz = jax.vmap(row_iterators)(block_mask)
     return idx, sz
+
 
 def compute_kv_iterators(block_mask: Array) -> tuple[Array, Array]:
     """Per-(B,H,KB) iterators over non-empty Q blocks.

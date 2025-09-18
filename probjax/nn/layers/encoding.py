@@ -53,11 +53,6 @@ class PosEncode(nnx.Module):
         seq_len = x.shape[-2]
         token_dim = x.shape[-1]
 
-        if seq_len > self.max_seq_len:
-            raise ValueError(
-                f"Sequence length {seq_len} exceeds max_seq_len {self.max_seq_len}"
-            )
-
         if idx is None:
             idx = jnp.arange(seq_len, dtype=jnp.float32)
         else:

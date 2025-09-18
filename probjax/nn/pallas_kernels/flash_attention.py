@@ -55,6 +55,7 @@ from .utils import (
     key_value_iterator_indices,
     build_sliding_window_mask,
     get_dropout_mask,
+    get_dot_precision,
     segment_mask,
 )
 from jax.experimental.pallas.triton import TritonCompilerParams
@@ -113,7 +114,7 @@ def _mha_forward_kernel(
     kv_seq_len = k_ref.shape[0]
     block_d = q_ref.shape[-1]
     start_q = pl.program_id(0)
-    precision = get_gpu_dot_precision(q_ref.dtype)
+    precision = get_dot_precision(jax.default_backend(), q_ref.dtype)
 
     # o is the buffer where we accumulate the output on sram.
     # m_i and l_i (see FlashAttention paper) are updated during the k,v loop.
@@ -447,7 +448,7 @@ def _mha_backward_kernel_dkdv(
     """
     q_seq_len = q_ref.shape[0]
     block_d = q_ref.shape[-1]
-    precision = get_gpu_dot_precision(q_ref.dtype)
+    precision = get_dot_precision(jax.default_backend(),q_ref.dtype)
 
     start_k = pl.program_id(2)
     curr_k_slice = pl.dslice(start_k * block_k, block_k)
@@ -545,7 +546,7 @@ def _mha_backward_kernel_dq(
     """
     kv_seq_len = k_ref.shape[0]
     block_d = q_ref.shape[-1]
-    precision = get_gpu_dot_precision(q_ref.dtype)
+    precision = get_dot_precision(jax.default_backend(),q_ref.dtype)
 
     start_q = pl.program_id(2)
     curr_q_slice = pl.ds(start_q * block_q, block_q)

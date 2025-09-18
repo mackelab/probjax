@@ -18,29 +18,24 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-from typing import Any
+from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
-from jax import Array, lax
+from jax import lax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import triton as plgpu
+
+from .attention_mask_bias import (
+    AttentionBias,
+    AttentionMask,
+    apply_bias,
+)
 from .utils import (
     DEFAULT_MASK_VALUE,
     NEG_INF,
-    get_dropout_mask,
     get_dot_precision,
-    key_value_iterator_indices,
-)
-from .attention_mask_bias import (
-    AttentionMask,
-    AttentionBias,
-    compute_block_iterators,
-    compute_kv_iterators,
-    DenseBias,
-    apply_mask,
-    apply_bias,
-    get_bias_grad,
+    get_dropout_mask,
 )
 
 
@@ -110,8 +105,8 @@ def mha_forward_kernel(
     *residual_refs: Any,  # Residual outputs
     sm_scale: float,
     head_dim: int,
-    mask_fn: None = None,
-    bias_fn: None = None,
+    mask_fn: Callable | None = None,
+    bias_fn: Callable | None = None,
     dropout_rate: float = 0.0,
     block_q: int,
     block_d: int,
@@ -331,15 +326,16 @@ def mha_backward_kernel(
     dk_ref,
     dv_ref,
     *,
+    # Static
     sm_scale: float,
     block_q_dkv: int,
     block_kv_dkv: int,
     block_q_dq: int,
     block_kv_dq: int,
     block_d: int,
-    bias_fn: None = None,
-    mask_fn: None = None,
-    bias_fn_grad = None,
+    bias_fn: Callable | None = None,
+    mask_fn: Callable | None = None,
+    bias_fn_grad=None,
     dropout_rate: float = 0.0,
     head_dim: int,
 ):
@@ -422,9 +418,7 @@ def mha_backward_kernel(
             if b_ref is not None:
                 qk = qk + pl.load(b_ref, (curr_q_slice, curr_k_slice))
             if mask_fn is not None:
-                id_q = (
-                    None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
-                )
+                id_q = None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
                 mask = mask_fn(span_q, span_k, id_q, id_k)
                 qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
         # No built-in causal; pass as mask via mask if needed.
@@ -480,10 +474,14 @@ def mha_backward_kernel(
             0, pl.cdiv(q_seq_len, block_q_dkv), inner_loop_dkdv, (dv, dk)
         )
 
-    dv_ref = pl.store(dv_ref, (slice(None), slice(None)), val=dv.astype(dv_ref.dtype), mask=mask_d)
-    dk_ref = pl.store(dk_ref, (slice(None), slice(None)), val=dk.astype(dk_ref.dtype), mask=mask_d)
-    #dv_ref[...] = dv.astype(dv_ref.dtype)
-    #dk_ref[...] = dk.astype(dk_ref.dtype)
+    dv_ref = pl.store(
+        dv_ref, (slice(None), slice(None)), val=dv.astype(dv_ref.dtype), mask=mask_d
+    )
+    dk_ref = pl.store(
+        dk_ref, (slice(None), slice(None)), val=dk.astype(dk_ref.dtype), mask=mask_d
+    )
+    # dv_ref[...] = dv.astype(dv_ref.dtype)
+    # dk_ref[...] = dk.astype(dk_ref.dtype)
 
     del dv, dk
 
@@ -517,12 +515,8 @@ def mha_backward_kernel(
             # boolean mask for the current qk slice
             if bias_fn is not None:
                 # TODO refactor
-                id_q = (
-                    None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
-                )
-                id_k = (
-                    None if id_k_ref is None else pl.load(id_k_ref, (curr_k_slice,))
-                )
+                id_q = None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
+                id_k = None if id_k_ref is None else pl.load(id_k_ref, (curr_k_slice,))
                 q_tup = None if id_q is None else (id_q,)
                 k_tup = None if id_k is None else (id_k,)
                 qk = apply_bias(
@@ -531,9 +525,7 @@ def mha_backward_kernel(
             if b_ref is not None:
                 qk = qk + pl.load(b_ref, (curr_q_slice, curr_k_slice))
             if mask_fn is not None:
-                id_q = (
-                    None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
-                )
+                id_q = None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
                 if id_k_ref is not None:
                     id_k = pl.load(id_k_ref, (curr_k_slice,))
                 elif id_q_ref is not None:
@@ -589,8 +581,10 @@ def mha_backward_kernel(
     else:
         dq = lax.fori_loop(0, pl.cdiv(kv_seq_len, block_kv_dq), inner_loop_dq, dq)
 
-    pl.store(dq_ref, (slice(None), slice(None)), val=dq.astype(dq_ref.dtype), mask=mask_d)
-    #dq_ref[...] = dq.astype(dq_ref.dtype)
+    pl.store(
+        dq_ref, (slice(None), slice(None)), val=dq.astype(dq_ref.dtype), mask=mask_d
+    )
+    # dq_ref[...] = dq.astype(dq_ref.dtype)
 
 
 def _mha_impl(
@@ -626,14 +620,12 @@ def _mha_impl(
     grid_ = grid or (pl.cdiv(q_seq_len, block_q), batch_size, num_heads)
     num_warps_ = num_warps or (4 if block_d <= 64 else 8)
 
-    # Determine callable impls
-    mask_impl = mask.__call__ if mask is not None else None
-    score_impl = bias.__call__ if bias is not None else None
-
     # Optional block-sparse iterators
     index_offset = index_offset_size = None
     if mask is not None:
-        index_offset, index_offset_size = mask.query_iterator_indices(q_seq_len, kv_seq_len, block_q, block_k)
+        index_offset, index_offset_size = mask.query_iterator_indices(
+            q_seq_len, kv_seq_len, block_q, block_k
+        )
 
     # Bias tensor (dense) extracted if available
     bias = None
@@ -664,8 +656,8 @@ def _mha_impl(
         block_q=block_q,
         block_k=block_k,
         block_d=block_d,
-        mask_fn=mask_impl,
-        bias_fn=score_impl,
+        mask_fn=mask.__call__ if mask is not None else None,
+        bias_fn=bias.__call__ if bias is not None else None,
         dropout_rate=dropout_rate,
     )
 
@@ -686,9 +678,11 @@ def _mha_impl(
     # q/k mask data specs
     if q_id is not None or k_id is not None:
         q_id_spec, k_id_spec = mask.get_data_block_spec(q_seq_len, kv_seq_len)
-        in_specs.append(q_id_spec); in_specs.append(k_id_spec)
+        in_specs.append(q_id_spec)
+        in_specs.append(k_id_spec)
     else:
-        in_specs.append(None); in_specs.append(None)
+        in_specs.append(None)
+        in_specs.append(None)
 
     # Dropout mask spec
     if dropout_mask is not None:
@@ -858,7 +852,6 @@ def _mha_backward(
         # TODO
         bias = None
 
-
         in_specs = [
             # q, k, v
             pl.BlockSpec(
@@ -956,24 +949,29 @@ def _mha_backward(
 
             num_kv_blocks_dq = pl.cdiv(kv_seq_len, block_kv_dq)
             num_q_blocks_dkdv = pl.cdiv(q_seq_len, block_q_dkv)
-            q_index_offset = q_index_offset_size = None
-            kv_index_offset = kv_index_offset_size = None
+            print(q_index_offset, q_index_offset_size)
+            print(kv_index_offset, kv_index_offset_size)
             # Map per-tile vectors/scalars. Grid dims are (B, H, KB) and we also reuse KB as QB
             # (enforced by the check above).
-           # if q_index_offset is not None:
-           #     in_specs[-4] = pl.BlockSpec(
-           #         index_map=(lambda i, _, k: (i, 0)), block_shape=((None, num_kv_blocks_dq))
-           #     )  # q_index_offset
-           #     in_specs[-3] = pl.BlockSpec(
-           #         index_map=(lambda i, _, k: (i)), block_shape=((None,))
-           #     )  # q_index_offset_size
-           # if kv_index_offset is not None:
-           #     in_specs[-2] = pl.BlockSpec(
-           #         index_map=(lambda i, j, k: (i, j, k, 0)), block_shape=((None, num_q_blocks_dkdv))
-           #     )  # kv_index_offset
-           #     in_specs[-1] = pl.BlockSpec(
-           #         index_map=(lambda i, j, k: (i, j, k)), block_shape=((None,))
-           #     )  # kv_index_offset_size
+            if q_index_offset is not None:
+                q_index_offset_spec = pl.BlockSpec(
+                    index_map=(lambda i, _, k: (k, 0)), block_shape=((None, num_kv_blocks_dq))
+                )
+                q_index_offset_size_spec = pl.BlockSpec(
+                    index_map=(lambda i, _, k: (k)), block_shape=((None,))
+                )
+                in_specs[-4] = q_index_offset_spec  # q_index_offset
+                in_specs[-3] = q_index_offset_size_spec  # q_index_offset_size
+            if kv_index_offset is not None:
+                kv_index_offset_spec = pl.BlockSpec(
+                    index_map=(lambda i, _, k: (k, 0)), block_shape=((None, num_q_blocks_dkdv))
+                )
+
+                kv_index_offset_size_spec = pl.BlockSpec(
+                    index_map=(lambda i, _, k: (k)), block_shape=((None,))
+                )
+                in_specs[-2] = kv_index_offset_spec  # kv_index_offset
+                in_specs[-1] = kv_index_offset_size_spec  # kv_index_offset_size
 
         dq, dk, dv = pl.pallas_call(
             functools.partial(
