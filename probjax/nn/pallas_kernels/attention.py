@@ -400,11 +400,10 @@ def mha_backward_kernel(
             # boolean mask for the current qk slice
             if bias_fn is not None:
                 b_chunk = (
-                    pl.load(b_ref, (slice(None), curr_k_slice)) if b_ref is not None else None
+                    pl.load(b_ref, (curr_q_slice, curr_k_slice)) if b_ref is not None else None
                 )
                 qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
-            if b_ref is not None:
-                qk = qk + pl.load(b_ref, (curr_q_slice, curr_k_slice))
+
             if mask_fn is not None:
                 id_q = None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
                 mask = mask_fn(span_q, span_k, id_q, id_k)
@@ -503,11 +502,10 @@ def mha_backward_kernel(
             # boolean mask for the current qk slice
             if bias_fn is not None:
                 b_chunk = (
-                    pl.load(b_ref, (slice(None), curr_k_slice)) if b_ref is not None else None
+                    pl.load(b_ref, (curr_q_slice, curr_k_slice)) if b_ref is not None else None
                 )
                 qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
-            if b_ref is not None:
-                qk = qk + pl.load(b_ref, (curr_q_slice, curr_k_slice))
+
             if mask_fn is not None:
                 id_q = None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
                 if id_k_ref is not None:
@@ -859,8 +857,11 @@ def _mha_backward(
                 else bias.get_block_spec(
                     q_len=q_seq_len,
                     kv_len=kv_seq_len,
-                    block_q=block_q,
-                    block_kv=block_kv_dkv,
+                    # Use full sequence extents so both dKdV and dQ loops
+                    # can slice (curr_q_slice, curr_k_slice) regardless of
+                    # their per-loop tile sizes.
+                    block_q=q_seq_len,
+                    block_kv=kv_seq_len,
                 )
             ),
             # dropout mask

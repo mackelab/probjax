@@ -809,7 +809,13 @@ class DenseBias(AttentionBias):
     """
 
     def __init__(self, bias: Array):
-        assert bias.ndim == 4, "bias must have shape [B|1, H|1, Q, K]"
+        # During JAX transformations (e.g., autodiff) pytree children for
+        # non-differentiable leaves may be replaced with a sentinel
+        # `<object object at ...>`, which does not have array attributes
+        # like `ndim`. Avoid asserting in that case so tree_unflatten can
+        # reconstruct a placeholder instance safely.
+        if hasattr(bias, "ndim"):
+            assert bias.ndim == 4, "bias must have shape [B|1, H|1, Q, K]"
         self.bias = bias
 
     def __call__(
@@ -853,6 +859,14 @@ class DenseBias(AttentionBias):
     @classmethod
     def tree_unflatten(cls, aux, children):
         (bias,) = children
+        # If `bias` is a JAX sentinel (e.g., `<object object ...>`), avoid
+        # calling `__init__` which asserts on `ndim`. Instead, construct a
+        # bare instance and attach the sentinel; it will only be used for
+        # structural purposes during transformation and not at runtime.
+        if not hasattr(bias, "ndim"):
+            obj = object.__new__(DenseBias)
+            obj.bias = bias
+            return obj
         return DenseBias(bias)
 
 
