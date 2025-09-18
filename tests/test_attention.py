@@ -19,6 +19,7 @@ from probjax.nn.pallas_kernels.attention_mask_bias import (
     NoMask,
     QKVLengthMask,
     SameSegmentMask,
+    DenseBias,
 )
 from probjax.nn.pallas_kernels.utils import materialize_mask
 
@@ -233,6 +234,77 @@ def test_attention_with_masks(batch_size, seq_len, num_heads, qkv_dim, mask_fn):
             f"Outputs are not same with mask, with error {jnp.max(jnp.abs(out - out2))}"
         )
 
+
+@pytest.mark.parametrize(
+    "batch_size, seq_len, num_heads, qkv_dim",
+    [
+        (2, 16, 4, 16),
+        (4, 128, 8, 32),
+        (1, 256, 2, 8),
+        (3, 50, 8, 32),
+        (1, 1024, 16, 64),
+        (1, 2048, 10, 64),
+        (1, 1333, 12, 64),
+        (1, 256, 4, 30),
+        (1, 512, 8, 100),
+    ],
+)
+def  test_attention_with_bias(batch_size, seq_len, num_heads, qkv_dim):
+    q = k = v = jax.random.normal(
+        jax.random.PRNGKey(0), (batch_size, seq_len, num_heads, qkv_dim)
+    )
+    bias = jax.random.normal(jax.random.PRNGKey(1), (1, 1, seq_len, seq_len)) * 10
+    out1 = dot_product_attention(q, k, v, bias=bias)
+    out2 = flex_attention(q, k, v, bias=DenseBias(bias))
+    assert jnp.allclose(out1, out2, atol=1e-5), (
+        f"Outputs are not same with bias, with error {jnp.max(jnp.abs(out1 - out2))}"
+    )
+
+@pytest.mark.parametrize(
+    "batch_size, seq_len, num_heads, qkv_dim",
+    [
+        (2, 16, 4, 16),
+        (4, 128, 8, 32),
+        (1, 256, 2, 8),
+        (3, 50, 8, 32),
+        (1, 1024, 16, 64),
+        (1, 2048, 10, 64),
+        (1, 1333, 12, 64),
+        (1, 256, 4, 30),
+        (1, 512, 8, 100),
+    ],
+)
+def test_attention_with_bias_gradients(batch_size, seq_len, num_heads, qkv_dim):
+    batch_size, seq_len, num_heads, qkv_dim = 2, 16, 4, 16
+    q = k = v = jax.random.normal(
+        jax.random.PRNGKey(0), (batch_size, seq_len, num_heads, qkv_dim)
+    )
+    bias = jax.random.normal(jax.random.PRNGKey(1), (1, 1, seq_len, seq_len)) * 10
+
+    def loss_fn1(params):
+        q, k, v = params
+        out = dot_product_attention(q, k, v, bias=bias)
+        return jnp.sum(out**2)
+
+    def loss_fn2(params):
+        q, k, v = params
+        out = flex_attention(q, k, v, bias=DenseBias(bias))
+        return jnp.sum(out**2)
+
+    out = jax.grad(loss_fn1)((q, k, v))
+    out2 = jax.grad(loss_fn2)((q, k, v))
+    assert out[0].shape == (batch_size, seq_len, num_heads, qkv_dim)
+    assert out[1].shape == (batch_size, seq_len, num_heads, qkv_dim)
+    assert out[2].shape == (batch_size, seq_len, num_heads, qkv_dim)
+    assert out[3].shape == (1, 1, seq_len, seq_len)
+    assert out2[0].shape == (batch_size, seq_len, num_heads, qkv_dim)
+    assert out2[1].shape == (batch_size, seq_len, num_heads, qkv_dim)
+    assert out2[2].shape == (batch_size, seq_len, num_heads, qkv_dim)
+    assert out2[3].shape == (1, 1, seq_len, seq_len)
+
+    assert jax.tree_util.tree_all(
+        jax.tree_util.tree_map(partial(jnp.allclose, atol=1e-5), out, out2)
+    )
 
 @pytest.mark.parametrize(
     "batch_size, seq_len, num_heads, qkv_dim",

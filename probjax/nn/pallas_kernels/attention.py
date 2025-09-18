@@ -399,8 +399,10 @@ def mha_backward_kernel(
             span_q = start_q * block_q_dkv + jnp.arange(block_q_dkv)
             # boolean mask for the current qk slice
             if bias_fn is not None:
-                # Bias classes now accept a single optional data array; we pass None here.
-                qk = apply_bias(bias_fn, qk, start_b, start_h, span_q, span_k)
+                b_chunk = (
+                    pl.load(b_ref, (slice(None), curr_k_slice)) if b_ref is not None else None
+                )
+                qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
             if b_ref is not None:
                 qk = qk + pl.load(b_ref, (curr_q_slice, curr_k_slice))
             if mask_fn is not None:
@@ -500,8 +502,10 @@ def mha_backward_kernel(
             span_k = start_k * block_kv_dq + jnp.arange(block_kv_dq)
             # boolean mask for the current qk slice
             if bias_fn is not None:
-                # Bias classes now accept a single optional data array; we pass None here.
-                qk = apply_bias(bias_fn, qk, start_b, start_h, span_q, span_k)
+                b_chunk = (
+                    pl.load(b_ref, (slice(None), curr_k_slice)) if b_ref is not None else None
+                )
+                qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
             if b_ref is not None:
                 qk = qk + pl.load(b_ref, (curr_q_slice, curr_k_slice))
             if mask_fn is not None:
@@ -829,9 +833,8 @@ def _mha_backward(
             jax.ShapeDtypeStruct(v.shape, v.dtype),
         ]
 
-        # Prepare bias array for backward (for AttentionBiasBase instances)
-        # TODO
-        bias = None
+        # Prepare bias array for backward (for dense bias instances)
+        b_data = bias.get_data() if (bias is not None) else None
 
         in_specs = [
             # q, k, v
@@ -852,15 +855,12 @@ def _mha_backward(
             # bias
             (
                 None
-                if bias is None
-                else pl.BlockSpec(
-                    index_map=lambda i, j, _: (
-                        i if bias.shape[0] != 1 else 0,
-                        j if bias.shape[1] != 1 else 0,
-                        0,
-                        0,
-                    ),
-                    block_shape=(None, None, q_seq_len, kv_seq_len),
+                if b_data is None
+                else bias.get_block_spec(
+                    q_len=q_seq_len,
+                    kv_len=kv_seq_len,
+                    block_q=block_q,
+                    block_kv=block_kv_dkv,
                 )
             ),
             # dropout mask
@@ -1010,7 +1010,7 @@ def _mha_backward(
             v,
             q_data,
             k_data,
-            bias,
+            b_data,
             dropout_mask,
             out,
             do,
