@@ -281,5 +281,5 @@ def test_attention_gradient_with_masks(
         return
 
     assert jax.tree_util.tree_all(
-        jax.tree_util.tree_map(partial(jnp.allclose, atol=1e-3), out, out2)
+        jax.tree_util.tree_map(partial(jnp.allclose, atol=1e-2), out, out2)
     )

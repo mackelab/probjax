@@ -103,6 +103,7 @@ def mha_forward_kernel(
     index_offset_size_ref: jax.Array | None,
     o_ref: Any,  # Output
     *residual_refs: Any,  # Residual outputs
+    # Static elements
     sm_scale: float,
     head_dim: int,
     mask_fn: Callable | None = None,
@@ -171,26 +172,19 @@ def mha_forward_kernel(
         # Scale this by user-provided factor (1 / sqrt(d_k) for original transformer).
         if sm_scale != 1.0:
             qk *= sm_scale
-        # Apply bias to qk.
-        if b_ref is not None:
-            # bias expected shape [B|1, H|1, Q, K] mapped via BlockSpec to (b,h)
-            qk = qk + pl.load(
-                b_ref, (curr_q_slice, slice(None)), mask=d_mask, other=0.0
-            )
+
 
         # Seq ids for mask and bias
         if (bias_fn is not None) or (mask_fn is not None):
             span_k = start_k * block_k + jnp.arange(block_k)
-        # boolean mask for the current qk slice
+        # Apply bias to qk: dense tensor via b_ref; function via bias_fn
         if bias_fn is not None:
-            qk = apply_bias(
-                bias_fn,
-                qk,
-                start_b,
-                start_h,
-                span_q,
-                span_k,
-            )
+            if b_ref is not None:
+                b_chunk = pl.load(b_ref, (slice(None), curr_k_slice))
+            else:
+                b_chunk = None
+            qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
+        # boolean mask for the current qk slice
         if mask_fn is not None:
             if id_k_ref is not None:
                 id_k = None if id_k_ref is None else pl.load(id_k_ref, (curr_k_slice,))
@@ -405,16 +399,8 @@ def mha_backward_kernel(
             span_q = start_q * block_q_dkv + jnp.arange(block_q_dkv)
             # boolean mask for the current qk slice
             if bias_fn is not None:
-                q_tup = (
-                    None
-                    if (id_q_ref is None)
-                    else (pl.load(id_q_ref, (curr_q_slice,)),)
-                )
-                k_tup = None if id_k is None else (id_k,)
-                # TODO refactor
-                qk = apply_bias(
-                    bias_fn, qk, start_b, start_h, span_q, span_k, q_tup, k_tup
-                )
+                # Bias classes now accept a single optional data array; we pass None here.
+                qk = apply_bias(bias_fn, qk, start_b, start_h, span_q, span_k)
             if b_ref is not None:
                 qk = qk + pl.load(b_ref, (curr_q_slice, curr_k_slice))
             if mask_fn is not None:
@@ -514,14 +500,8 @@ def mha_backward_kernel(
             span_k = start_k * block_kv_dq + jnp.arange(block_kv_dq)
             # boolean mask for the current qk slice
             if bias_fn is not None:
-                # TODO refactor
-                id_q = None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
-                id_k = None if id_k_ref is None else pl.load(id_k_ref, (curr_k_slice,))
-                q_tup = None if id_q is None else (id_q,)
-                k_tup = None if id_k is None else (id_k,)
-                qk = apply_bias(
-                    bias_fn, qk, start_b, start_h, span_q, span_k, q_tup, k_tup
-                )
+                # Bias classes now accept a single optional data array; we pass None here.
+                qk = apply_bias(bias_fn, qk, start_b, start_h, span_q, span_k)
             if b_ref is not None:
                 qk = qk + pl.load(b_ref, (curr_q_slice, curr_k_slice))
             if mask_fn is not None:
@@ -628,8 +608,7 @@ def _mha_impl(
         )
 
     # Bias tensor (dense) extracted if available
-    bias = None
-    # TODO support bias
+    b_data = bias.get_data() if bias is not None else None
 
     # Mask data arrays
     if mask is not None:
@@ -669,9 +648,11 @@ def _mha_impl(
     ]
 
     # Bias spec
-    if bias is not None:
-        # TODO
-        pass
+    if b_data is not None:
+        b_specs = bias.get_block_spec(
+            q_len=q_seq_len, kv_len=kv_seq_len, block_q=block_q, block_kv=block_k
+        )
+        in_specs.append(b_specs)
     else:
         in_specs.append(None)
 
@@ -740,7 +721,7 @@ def _mha_impl(
         debug=debug,
         interpret=interpret,
         name="mha_forward",
-    )(q, k, v, bias, q_id, k_id, dropout_mask, index_offset, index_offset_size)
+    )(q, k, v, b_data, q_id, k_id, dropout_mask, index_offset, index_offset_size)
 
     if output_activations:
         out, lse = pallas_out

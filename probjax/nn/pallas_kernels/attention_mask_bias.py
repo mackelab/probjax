@@ -204,7 +204,7 @@ class AttentionBias(ABC):
     """Base class for attention score biases.
 
     Simplified signature (removed batch index). Implementations:
-        __call__(scores, q_idx, k_idx, data_q, data_k) -> [Q,K] scores
+        __call__(scores, h_idx, q_idx, k_idx, data) -> [Q,K] scores
     """
 
     @abstractmethod
@@ -214,14 +214,13 @@ class AttentionBias(ABC):
         h_idx: Array,
         q_idx: Array,
         k_idx: Array,
-        data_q: Optional[Array] = None,
-        data_k: Optional[Array] = None,
+        data: Optional[Array] = None,
     ) -> Array:
         raise NotImplementedError
 
     # Optional: Pallas bias spec for dense tensor bias.
-    def pallas_bias_spec(
-        self, *, block_q: int, kv_seq_len: int
+    def get_block_spec(
+        self, *, q_len: int, kv_len: int, block_q: int, block_kv: int
     ):  # pragma: no cover - API
         return None
 
@@ -236,13 +235,8 @@ class AttentionBias(ABC):
             return NotImplemented
         return SumBias(other, self)
 
-    # (pallas_bias_spec defined above)
-
-    # Optional: returns tuple of arrays to be provided to the kernel (e.g., a dense bias tensor)
-    def get_data(
-        self,
-    ) -> tuple[Optional[Array], Optional[Array] | Array]:  # pragma: no cover - API
-        return (None, None)
+    def get_data(self) -> Optional[Array]:  # pragma: no cover - API
+        return None
 
     # Optional: gradient of the bias modifier w.r.t. input scores.
     # For purely additive biases f(scores) = scores + g(...), df/dscores = 1.
@@ -253,8 +247,7 @@ class AttentionBias(ABC):
         h_idx: Array,
         q_idx: Array,
         k_idx: Array,
-        data_q: Optional[Array] = None,
-        data_k: Optional[Array] = None,
+        data: Optional[Array] = None,
     ) -> Array:  # pragma: no cover - default behavior
         return jnp.ones_like(scores)
 
@@ -782,42 +775,6 @@ class MarginalizationMask(AttentionMask):
 
 # ------------------------------ Biases ----------------------------------------
 
-
-@jax.tree_util.register_pytree_node_class
-class FromMaskBias(AttentionBias):
-    """Converts a mask into additive bias using a large negative value.
-
-    Positions where mask is False receive `mask_value` (e.g., -1e9), others get 0.
-    """
-
-    def __init__(self, mask: AttentionMask, mask_value: float = DEFAULT_MASK_VALUE):
-        self.mask = mask
-        self.mask_value = mask_value
-
-    def __call__(
-        self,
-        scores: Array,
-        h_idx: Array,
-        q_idx: Array,
-        k_idx: Array,
-        data_q: Optional[Array] = None,
-        data_k: Optional[Array] = None,
-    ) -> Array:
-        del data_q, data_k
-        mk = self.mask(h_idx, q_idx, k_idx, None, None)
-        return jnp.where(mk, scores, scores + self.mask_value)
-
-    def tree_flatten(self):
-        return ((self.mask,), {"mask_value": self.mask_value})
-
-    @classmethod
-    def tree_unflatten(cls, aux, children):
-        (mask,) = children
-        mv = aux.get("mask_value") if isinstance(aux, dict) else aux
-        return FromMaskBias(mask, mv)
-
-
-@jax.tree_util.register_pytree_node_class
 class ConstantBias(AttentionBias):
     """Adds a constant bias to all logits."""
 
@@ -830,10 +787,9 @@ class ConstantBias(AttentionBias):
         h_idx: Array,
         q_idx: Array,
         k_idx: Array,
-        data_q: Optional[Array] = None,
-        data_k: Optional[Array] = None,
+        data: Optional[Array] = None,
     ) -> Array:
-        del h_idx, q_idx, k_idx, data_q, data_k
+        del h_idx, q_idx, k_idx, data
         return scores + self.value
 
     def tree_flatten(self):
@@ -843,7 +799,6 @@ class ConstantBias(AttentionBias):
     def tree_unflatten(cls, aux, children):
         val = aux.get("value") if isinstance(aux, dict) else aux
         return ConstantBias(val)
-
 
 @jax.tree_util.register_pytree_node_class
 class DenseBias(AttentionBias):
@@ -863,30 +818,33 @@ class DenseBias(AttentionBias):
         h_idx: Array,
         q_idx: Array,
         k_idx: Array,
-        data_q: Optional[Array] = None,
-        data_k: Optional[Array] = None,
+        data: Optional[Array] = None,
     ) -> Array:
-        del data_q, data_k
+        # If chunked data is provided (e.g., via Pallas b_ref), prefer it.
+        if data is not None:
+            # Expect data shaped like (block_q, kv_len) or (block_q, block_kv).
+            # Add matching columns to current score tile.
+            return scores + data
+        # Fallback: slice from stored dense tensor using indices.
         B, H, *_ = self.bias.shape
         hsel = 0 if H == 1 else int(h_idx)
-        bh_bias = self.bias[0 if B > 0 else 0, hsel]
+        bh_bias = self.bias[0 if B != 0 else 0, hsel]
         add = bh_bias[q_idx][:, k_idx]
         return scores + add
 
-    def pallas_bias_spec(self, *, block_q: int, kv_seq_len: int):
-        B, H, *_ = self.bias.shape
+    def get_block_spec(self, *, q_len: int, kv_len: int, block_q: int, block_kv: int):
         return pl.BlockSpec(
             index_map=lambda i, j, k: (
-                j if B != 1 else 0,
-                k if H != 1 else 0,
+                j if self.bias.shape[0] != 1 else 0,
+                k if self.bias.shape[1] != 1 else 0,
                 i,
-                0,
-            ),
-            block_shape=(None, None, block_q, kv_seq_len),
-        )
+                    0,
+                ),
+                block_shape=(None, None, block_q, kv_len),
+            )
 
-    def get_data(self) -> tuple[Array, ...]:
-        return (self.bias,)
+    def get_data(self) -> Array:
+        return self.bias
 
     # PyTree registration
     def tree_flatten(self):
@@ -911,10 +869,9 @@ class IdentityBias(AttentionBias):
         h_idx: Array,
         q_idx: Array,
         k_idx: Array,
-        data_q: Optional[Array] = None,
-        data_k: Optional[Array] = None,
+        data: Optional[Array] = None,
     ) -> Array:
-        del h_idx, q_idx, k_idx, data_q, data_k
+        del h_idx, q_idx, k_idx, data
         return scores
 
     def tree_flatten(self):
@@ -938,10 +895,9 @@ class CausalBias(AttentionBias):
         h_idx: Array,
         q_idx: Array,
         k_idx: Array,
-        data_q: Optional[Array] = None,
-        data_k: Optional[Array] = None,
+        data: Optional[Array] = None,
     ) -> Array:
-        del h_idx, data_q, data_k
+        del h_idx, data
         mask = q_idx[:, None] >= k_idx[None, :]
         return jnp.where(mask, scores, scores + self.mask_value)
 
@@ -973,10 +929,9 @@ class ALiBiBias(AttentionBias):
         h_idx: Array,
         q_idx: Array,
         k_idx: Array,
-        data_q: Optional[Array] = None,
-        data_k: Optional[Array] = None,
+        data: Optional[Array] = None,
     ) -> Array:
-        del data_q, data_k
+        del data
         slope = _alibi_slope_for_head(h_idx)
         dist = jnp.maximum(q_idx[:, None] - k_idx[None, :], 0)
         return scores - slope * dist
@@ -1005,10 +960,9 @@ class DistanceDecayBias(AttentionBias):
         h_idx: Array,
         q_idx: Array,
         k_idx: Array,
-        data_q: Optional[Array] = None,
-        data_k: Optional[Array] = None,
+        data: Optional[Array] = None,
     ) -> Array:
-        del h_idx, data_q, data_k
+        del h_idx, data
         dist = jnp.abs(q_idx[:, None] - k_idx[None, :]).astype(jnp.float32)
         return scores - jnp.asarray(self.alpha, dtype=dist.dtype) * dist
 
@@ -1054,10 +1008,9 @@ def apply_bias(
     h_idx: Array,
     q_idx: Array,
     k_idx: Array,
-    data_q: Optional[Array] = None,
-    data_k: Optional[Array] = None,
+    data: Optional[Array] = None,
 ) -> Array:
-    return bias(scores, h_idx, q_idx, k_idx, data_q, data_k)
+    return bias(scores, h_idx, q_idx, k_idx, data)
 
 
 # CallableBias removed; only class-based biases are supported.
