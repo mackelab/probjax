@@ -774,7 +774,7 @@ class MarginalizationMask(AttentionMask):
 
 
 # ------------------------------ Biases ----------------------------------------
-
+@jax.tree_util.register_pytree_node_class
 class ConstantBias(AttentionBias):
     """Adds a constant bias to all logits."""
 

@@ -20,8 +20,12 @@ from probjax.nn.pallas_kernels.attention_mask_bias import (
     QKVLengthMask,
     SameSegmentMask,
     DenseBias,
+    IdentityBias,
+    ALiBiBias,
+    DistanceDecayBias,
+    ConstantBias,
 )
-from probjax.nn.pallas_kernels.utils import materialize_mask
+from probjax.nn.pallas_kernels.utils import materialize_mask, materialize_bias
 
 
 @pytest.fixture(
@@ -260,6 +264,45 @@ def  test_attention_with_bias(batch_size, seq_len, num_heads, qkv_dim):
         f"Outputs are not same with bias, with error {jnp.max(jnp.abs(out1 - out2))}"
     )
 
+
+@pytest.mark.parametrize(
+    "batch_size, seq_len, num_heads, qkv_dim",
+    [
+        (2, 16, 4, 16),
+        (1, 64, 2, 8),
+    ],
+)
+@pytest.mark.parametrize(
+    "bias_obj",
+    [IdentityBias(), ALiBiBias(), DistanceDecayBias(0.7), ConstantBias(0.3)],
+)
+def test_attention_with_stateless_bias_objects_equivalence(
+    batch_size, seq_len, num_heads, qkv_dim, bias_obj
+):
+    q = k = v = jax.random.normal(
+        jax.random.PRNGKey(0), (batch_size, seq_len, num_heads, qkv_dim)
+    )
+
+    # Materialize dense bias from bias object for baseline JAX attention
+    def score_mod_fn(base, b_idx, h_idx, q_idx, k_idx):
+        del b_idx
+        return bias_obj(base, h_idx, q_idx, k_idx)
+
+    dense_bias = materialize_bias(
+        score_mod_fn,
+        batch_size=batch_size,
+        num_heads=num_heads,
+        q_len=seq_len,
+        kv_len=seq_len,
+    )
+
+    out_ref = dot_product_attention(q, k, v, bias=dense_bias)
+    out_flex = flex_attention(q, k, v, bias=bias_obj)
+    assert jnp.allclose(out_ref, out_flex, atol=1e-5), (
+        f"Mismatch with {bias_obj.__class__.__name__}: "
+        f"max err={jnp.max(jnp.abs(out_ref - out_flex))}"
+    )
+
 @pytest.mark.parametrize(
     "batch_size, seq_len, num_heads, qkv_dim",
     [
@@ -306,6 +349,53 @@ def test_attention_with_bias_gradients(batch_size, seq_len, num_heads, qkv_dim):
     ), (
         f"Gradients are not same with bias, with error {jnp.max(jnp.abs(out[0] - out2[0]))}"
     )
+
+
+@pytest.mark.parametrize(
+    "batch_size, seq_len, num_heads, qkv_dim, bias_obj",
+    [
+        (2, 16, 4, 16, IdentityBias()),
+        (1, 64, 2, 8, ALiBiBias()),
+        (1, 64, 2, 8, DistanceDecayBias(0.5)),
+        (1, 64, 2, 8, ConstantBias(0.2)),
+    ],
+)
+def test_attention_with_stateless_bias_gradients(
+    batch_size, seq_len, num_heads, qkv_dim, bias_obj
+):
+    q = k = v = jax.random.normal(
+        jax.random.PRNGKey(0), (batch_size, seq_len, num_heads, qkv_dim)
+    )
+
+    def loss_ref(params):
+        q, k, v = params
+        # materialize dense bias for JAX reference
+        def score_mod_fn(base, b_idx, h_idx, q_idx, k_idx):
+            del b_idx
+            return bias_obj(base, h_idx, q_idx, k_idx)
+
+        dense_bias = materialize_bias(
+            score_mod_fn,
+            batch_size=batch_size,
+            num_heads=num_heads,
+            q_len=seq_len,
+            kv_len=seq_len,
+        )
+        out = dot_product_attention(q, k, v, bias=dense_bias)
+        return jnp.sum(out**2)
+
+    def loss_flex(params):
+        q, k, v = params
+        out = flex_attention(q, k, v, bias=bias_obj)
+        return jnp.sum(out**2)
+
+    grads_ref = jax.grad(loss_ref)((q, k, v))
+    grads_flex = jax.grad(loss_flex)((q, k, v))
+
+    assert jax.tree_util.tree_all(
+        jax.tree_util.tree_map(partial(jnp.allclose, atol=1e-2), grads_ref, grads_flex)
+    )
+
 
 @pytest.mark.parametrize(
     "batch_size, seq_len, num_heads, qkv_dim",
