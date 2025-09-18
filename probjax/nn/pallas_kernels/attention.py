@@ -897,16 +897,26 @@ def _mha_backward(
         # Reserve 4 slots for optional dynamic iterators
         in_specs.extend([None, None, None, None])
         # Prepare optional mask data specs (q_id_ref, k_id_ref) via the mask
+        # Backward: pass mask data arrays with BlockSpecs adapted to backward grid (B, H, KV).
         q_data = k_data = None
         if isinstance(mask, AttentionMask):
             q_data, k_data = mask.get_data(q_seq_len=q_seq_len, kv_seq_len=kv_seq_len)
-            q_spec, k_spec = mask.get_data_block_spec(q_seq_len, kv_seq_len)
-            print(q_data, k_data)
-            print(q_spec, k_spec)
-            if q_spec is not None:
-                in_specs[3] = q_spec
-            if k_spec is not None:
-                in_specs[4] = k_spec
+        # q_id_ref spec (per-query indices). Kernel loads with (curr_q_slice,)
+        if q_data is not None:
+            if getattr(q_data, "ndim", None) == 2:
+                # Shape (B, Q) -> slice by batch via grid dim 0
+                in_specs[3] = pl.BlockSpec((None, q_seq_len), lambda i, j, k: (i, 0))
+            elif getattr(q_data, "ndim", None) == 1:
+                # Shape (Q,) -> head-independent
+                in_specs[3] = pl.BlockSpec((q_seq_len,), lambda i, j, k: (0,))
+        # k_id_ref spec (per-key indices). Kernel loads with (curr_k_slice,)
+        if k_data is not None:
+            if getattr(k_data, "ndim", None) == 2:
+                # Shape (B, K) -> slice by batch via grid dim 0
+                in_specs[4] = pl.BlockSpec((None, kv_seq_len), lambda i, j, k: (i, 0))
+            elif getattr(k_data, "ndim", None) == 1:
+                # Shape (K,) -> head-independent
+                in_specs[4] = pl.BlockSpec((kv_seq_len,), lambda i, j, k: (0,))
 
         if dropout_rate > 0:
             assert rng is not None
@@ -952,8 +962,7 @@ def _mha_backward(
 
             num_kv_blocks_dq = pl.cdiv(kv_seq_len, block_kv_dq)
             num_q_blocks_dkdv = pl.cdiv(q_seq_len, block_q_dkv)
-            print(q_index_offset, q_index_offset_size)
-            print(kv_index_offset, kv_index_offset_size)
+            # Debug prints removed
             # Map per-tile vectors/scalars. Grid dims are (B, H, KB) and we also reuse KB as QB
             # (enforced by the check above).
             if q_index_offset is not None:

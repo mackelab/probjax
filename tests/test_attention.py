@@ -276,6 +276,10 @@ def test_attention_gradient_with_masks(
     assert out2[1].shape == (batch_size, seq_len, num_heads, qkv_dim)
     assert out2[2].shape == (batch_size, seq_len, num_heads, qkv_dim)
 
+    # Different whole rows are masked out
+    if isinstance(mask, QKVLengthMask):
+        return
+
     assert jax.tree_util.tree_all(
         jax.tree_util.tree_map(partial(jnp.allclose, atol=1e-3), out, out2)
     )

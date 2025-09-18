@@ -455,11 +455,6 @@ class LocalWindowMask(AttentionMask):
     left_window: int
     right_window: Optional[int] = field(default=None)
 
-    def __post_init__(self):
-        # Normalize right_window to an int value for consistent behavior
-        rw = self.left_window if self.right_window is None else int(self.right_window)
-        object.__setattr__(self, "left_window", int(self.left_window))
-        object.__setattr__(self, "right_window", rw)
 
     def __call__(
         self,
@@ -576,8 +571,6 @@ class KeyPaddingMask(AttentionMask):
     key_lengths: Array  # Per query key lengths [B] or bool mask [B, K]
     stateful: bool = True
 
-    def __post_init__(self):
-        object.__setattr__(self, "key_lengths", jnp.asarray(self.key_lengths))
 
     def __call__(
         self,
@@ -645,10 +638,6 @@ class SameSegmentMask(AttentionMask):
     key_segment_ids: Optional[Array]
     stateful: bool = True
 
-    def __post_init__(self):
-        object.__setattr__(self, "query_segment_ids", jnp.asarray(self.query_segment_ids))
-        if self.key_segment_ids is not None:
-            object.__setattr__(self, "key_segment_ids", jnp.asarray(self.key_segment_ids))
 
     def __call__(
         self,
@@ -730,8 +719,6 @@ class MarginalizationMask(AttentionMask):
     mask: Array
     stateful: bool = True
 
-    def __post_init__(self):
-        object.__setattr__(self, "mask", jnp.asarray(self.mask))
 
     def __call__(
         self,
@@ -740,13 +727,15 @@ class MarginalizationMask(AttentionMask):
         seg_q: Optional[Array] = None,
         seg_k: Optional[Array] = None,
     ) -> Array:
-        # Prefer explicitly provided seg_q/seg_k at call time; else fallback to stored ids.
+        # Prefer explicitly provided seg_q/seg_k at call time; else fallback to stored mask.
         mask_q = seg_q if seg_q is not None else self.mask
         mask_k = seg_k if seg_k is not None else self.mask
-        jax.debug.print("mask_q: {m}", m=mask_q.shape)
-        # Handle optional leading batch dimension in stored ids.
-        return (mask_q[..., :, None] & mask_k[..., None, :]) | (
-            q_idx[...,:, None] == k_idx[...,None, :]
+        # If seg_* are already per-block vectors, use them directly; otherwise
+        # index the stored masks by q_idx/k_idx so shapes agree with indices.
+        q_mask_sel = mask_q if seg_q is not None else jnp.take(mask_q, q_idx, axis=-1)
+        k_mask_sel = mask_k if seg_k is not None else jnp.take(mask_k, k_idx, axis=-1)
+        return (q_mask_sel[..., :, None] & k_mask_sel[..., None, :]) | (
+            q_idx[..., :, None] == k_idx[..., None, :]
         )
 
     def get_data_block_spec(self, q_len: int, kv_len: int = None):
