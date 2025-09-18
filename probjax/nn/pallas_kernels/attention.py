@@ -464,7 +464,7 @@ def mha_backward_kernel(
 
         def dyn_q(iter_q, carry):
             start_q = jnp.sum(
-                pl.load(kv_index_offset_ref, (slice(None), pl.dslice(iter_q, 1)))
+                pl.load(kv_index_offset_ref, (pl.dslice(iter_q, 1),))
             )
             return inner_loop_dkdv(start_q, carry)
 
@@ -573,7 +573,7 @@ def mha_backward_kernel(
 
         def dyn_k(iter_k, dq_c):
             start_k = jnp.sum(
-                pl.load(q_index_offset_ref, (slice(None), pl.dslice(iter_k, 1)))
+                pl.load(q_index_offset_ref, (pl.dslice(iter_k, 1),))
             )
             return inner_loop_dq(start_k, dq_c)
 
@@ -896,14 +896,17 @@ def _mha_backward(
         ]
         # Reserve 4 slots for optional dynamic iterators
         in_specs.extend([None, None, None, None])
-        # Prepare optional mask data specs
-        q_data, k_data = (None, None)
+        # Prepare optional mask data specs (q_id_ref, k_id_ref) via the mask
+        q_data = k_data = None
         if isinstance(mask, AttentionMask):
             q_data, k_data = mask.get_data(q_seq_len=q_seq_len, kv_seq_len=kv_seq_len)
-        if q_data is not None:
-            in_specs[3] = pl.BlockSpec((None, q_seq_len), lambda i, j, _: (i, 0))
-        if k_data is not None:
-            in_specs[4] = pl.BlockSpec((None, kv_seq_len), lambda i, j, _: (i, 0))
+            q_spec, k_spec = mask.get_data_block_spec(q_seq_len, kv_seq_len)
+            print(q_data, k_data)
+            print(q_spec, k_spec)
+            if q_spec is not None:
+                in_specs[3] = q_spec
+            if k_spec is not None:
+                in_specs[4] = k_spec
 
         if dropout_rate > 0:
             assert rng is not None
