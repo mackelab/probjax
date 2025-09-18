@@ -29,7 +29,6 @@ from jax.experimental.pallas import triton as plgpu
 from .attention_mask_bias import (
     AttentionBias,
     AttentionMask,
-    apply_bias,
 )
 from .utils import (
     DEFAULT_MASK_VALUE,
@@ -924,9 +923,8 @@ def _mha_backward(
             else:
                 num_warps_ = 8
 
-        # Try to provide a gradient for score_mod if available
-        # TODO
-        score_mod_grad = None
+        # Provide gradient modifier for stateless biases (no dense data)
+        bias_fn_grad = bias.grad if (bias is not None) else None
 
         # Optional block-sparse iterators
         q_index_offset = q_index_offset_size = kv_index_offset = (
@@ -973,7 +971,7 @@ def _mha_backward(
                 sm_scale=sm_scale,
                 bias_fn=bias.__call__ if bias is not None else None,
                 mask_fn=mask.__call__ if mask is not None else None,
-                bias_fn_grad=score_mod_grad,
+                bias_fn_grad=bias_fn_grad,
                 dropout_rate=dropout_rate,
                 block_q_dkv=block_q_dkv,
                 block_kv_dkv=block_kv_dkv,
