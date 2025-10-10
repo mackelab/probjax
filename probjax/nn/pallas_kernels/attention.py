@@ -53,24 +53,79 @@ class BlockSizes:
         block_kv_dq: Block size along KV sequence length for dQ backward kernel.
     """
 
-    block_q: int
-    block_k: int
+    block_q: int = 128
+    block_k: int = 128
 
-    block_q_dkv: int | None = None
-    block_kv_dkv: int | None = None
-    block_q_dq: int | None = None
-    block_kv_dq: int | None = None
+    block_q_dkv: int = 64
+    block_kv_dkv: int = 64
+    block_q_dq: int = 64
+    block_kv_dq: int = 64
 
     @classmethod
-    def get_default(cls):
-        return BlockSizes(
-            block_q=128,
-            block_k=128,
-            block_q_dkv=64,
-            block_kv_dkv=64,
-            block_q_dq=64,
-            block_kv_dq=64,
+    def init_default(
+        cls,
+        q_len: int,
+        kv_len: int,
+        block_q: int,
+        block_k: int,
+        block_q_dkv: int,
+        block_kv_dkv: int,
+        block_q_dq: int,
+        block_kv_dq: int,
+        backward_pass_impl: str = "triton_fused",
+    ) -> BlockSizes:
+        """Return block sizes adjusted to be backward-compatible when fused.
+
+        The fused backward pass requires that the number of Q tiles and KV tiles
+        match along the grid dimension. Concretely, we need
+            ceil_div(q_len, block_q_dq) == ceil_div(kv_len, block_kv_dkv).
+
+        This method adjusts only `block_q_dq` and `block_kv_dkv` to satisfy the
+        equality while keeping the forward and the other backward block specs
+        unchanged. If the provided specs already satisfy the constraint, they
+        are returned as-is.
+        """
+
+        # Helper for ceil-div without importing pallas utilities here.
+        def cdiv(a: int, b: int) -> int:
+            return (a + b - 1) // b if b > 0 else 0
+
+        # Start from requested specs
+        bq = block_q
+        bk = block_k
+        bq_dkv = block_q_dkv
+        bkv_dkv = block_kv_dkv
+        bq_dq = block_q_dq
+        bkv_dq = block_kv_dq
+
+        # Only the fused backward cares about matching tile counts. If the
+        # split (separate dKdV and dQ) backward is used, we can keep blocks
+        # independent to allow efficiency when q_len << kv_len.
+        if backward_pass_impl == "triton_fused":
+            nq = max(cdiv(q_len, max(bq_dq, 1)), 1)
+            nkv = max(cdiv(kv_len, max(bkv_dkv, 1)), 1)
+            if nq != nkv:
+                # Target a common number of tiles. Choose the larger to avoid
+                # decreasing parallelism unnecessarily.
+                n = max(nq, nkv)
+                # Derive block sizes that yield exactly `n` tiles.
+                # Using ceil_div ensures cdiv(len, block) == n.
+                bq_dq = max((q_len + n - 1) // n, 1)
+                bkv_dkv = max((kv_len + n - 1) // n, 1)
+
+        return cls(
+            block_q=bq,
+            block_k=bk,
+            block_q_dkv=bq_dkv,
+            block_kv_dkv=bkv_dkv,
+            block_q_dq=bq_dq,
+            block_kv_dq=bkv_dq,
         )
+
+    @classmethod
+    def get_default(cls) -> BlockSizes:
+        """Returns default block sizes."""
+        return cls()
 
     @property
     def has_backward_blocks(self) -> bool:
@@ -149,6 +204,7 @@ def mha_forward_kernel(
     curr_q_slice = pl.dslice(start_q * block_q, block_q)
     # Load the current Q tile into SRAM
     q = pl.load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
+    # TODO For per batch id_q or id_k, we should not slice along curr_q_slice here
     id_q = None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
     if mask_fn or bias_fn:
         span_q = start_q * block_q + jnp.arange(block_q)
@@ -171,7 +227,6 @@ def mha_forward_kernel(
         # Scale this by user-provided factor (1 / sqrt(d_k) for original transformer).
         if sm_scale != 1.0:
             qk *= sm_scale
-
 
         # Seq ids for mask and bias
         if (bias_fn is not None) or (mask_fn is not None):
@@ -294,7 +349,7 @@ def _preprocess_backward(out, do, lse, block_q: int, debug: bool, interpret: boo
 
 
 # This kernel computes dK_i, dV_i and dQ_i in parallel across the sequence
-# length.
+# length. Specifically, it fuses the two scans over Q and KV into a single kernel.
 # Inspired by the triton tutorial: https://github.com/triton-lang/triton/blob/main/python/tutorials/06-fused-attention.py
 def mha_backward_kernel(
     # Inputs
@@ -399,7 +454,9 @@ def mha_backward_kernel(
             # boolean mask for the current qk slice
             if bias_fn is not None:
                 b_chunk = (
-                    pl.load(b_ref, (curr_q_slice, curr_k_slice)) if b_ref is not None else None
+                    pl.load(b_ref, (curr_q_slice, curr_k_slice))
+                    if b_ref is not None
+                    else None
                 )
                 qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
 
@@ -449,9 +506,7 @@ def mha_backward_kernel(
         iters = kv_index_offset_size_ref[...]
 
         def dyn_q(iter_q, carry):
-            start_q = jnp.sum(
-                pl.load(kv_index_offset_ref, (pl.dslice(iter_q, 1),))
-            )
+            start_q = jnp.sum(pl.load(kv_index_offset_ref, (pl.dslice(iter_q, 1),)))
             return inner_loop_dkdv(start_q, carry)
 
         dv, dk = lax.fori_loop(0, iters, dyn_q, (dv, dk))
@@ -501,7 +556,9 @@ def mha_backward_kernel(
             # boolean mask for the current qk slice
             if bias_fn is not None:
                 b_chunk = (
-                    pl.load(b_ref, (curr_q_slice, curr_k_slice)) if b_ref is not None else None
+                    pl.load(b_ref, (curr_q_slice, curr_k_slice))
+                    if b_ref is not None
+                    else None
                 )
                 qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
 
@@ -553,9 +610,7 @@ def mha_backward_kernel(
         iters = q_index_offset_size_ref[...]
 
         def dyn_k(iter_k, dq_c):
-            start_k = jnp.sum(
-                pl.load(q_index_offset_ref, (pl.dslice(iter_k, 1),))
-            )
+            start_k = jnp.sum(pl.load(q_index_offset_ref, (pl.dslice(iter_k, 1),)))
             return inner_loop_dq(start_k, dq_c)
 
         dq = lax.fori_loop(0, iters, dyn_k, dq)
@@ -566,6 +621,236 @@ def mha_backward_kernel(
         dq_ref, (slice(None), slice(None)), val=dq.astype(dq_ref.dtype), mask=mask_d
     )
     # dq_ref[...] = dq.astype(dq_ref.dtype)
+
+
+# ------------------ Split Backward Kernels (separate passes) -----------------
+
+
+def mha_backward_kernel_split_dkdv(
+    # Inputs
+    q_ref,
+    k_ref,
+    v_ref,
+    id_q_ref: jax.Array | None,
+    id_k_ref: jax.Array | None,
+    b_ref: jax.Array | None,
+    dropout_mask_ref: jax.Array | None,
+    do_scaled_ref,
+    lse_ref,
+    delta_ref,
+    # Optional dynamic iterators (KV -> Q)
+    index_offset_ref: jax.Array | None,
+    index_offset_size_ref: jax.Array | None,
+    # Outputs
+    dk_ref,
+    dv_ref,
+    *,
+    sm_scale: float,
+    mask_fn: Callable | None,
+    bias_fn: Callable | None,
+    bias_fn_grad: Callable | None,
+    dropout_rate: float,
+    block_q_dkv: int,
+    block_kv_dkv: int,
+    block_d: int,
+    head_dim: int,
+):
+    """Computes dK and dV in a dedicated pass iterating over Q blocks."""
+    q_seq_len = q_ref.shape[0]
+    block_mask = jnp.arange(block_d)[None] < head_dim
+    start_b = pl.program_id(0)
+    start_h = pl.program_id(1)
+    start_k = pl.program_id(2)
+    curr_k_slice = pl.dslice(start_k * block_kv_dkv, block_kv_dkv)
+    span_k = start_k * block_kv_dkv + jnp.arange(block_kv_dkv)
+
+    dv = jnp.zeros([block_kv_dkv, block_d], dtype=jnp.float32)
+    dk = jnp.zeros([block_kv_dkv, block_d], dtype=jnp.float32)
+
+    v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=block_mask, other=0.0)
+    k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=block_mask, other=0.0)
+
+    if id_k_ref is not None:
+        id_k = pl.load(id_k_ref, (curr_k_slice,))
+    elif id_q_ref is not None:
+        id_k = pl.load(id_q_ref, (curr_k_slice,))
+    else:
+        id_k = None
+
+    LOG2E = 1.4426950408889634
+
+    def inner_loop(start_q, carry):
+        if index_offset_ref is not None:
+            start_q = jnp.sum(pl.load(index_offset_ref, (pl.dslice(start_q, 1),)))
+        span_q = start_q * block_q_dkv + jnp.arange(block_q_dkv)
+        dv_acc, dk_acc = carry
+        curr_q_slice = pl.dslice(start_q * block_q_dkv, block_q_dkv)
+        q = pl.load(q_ref, (curr_q_slice, slice(None)), mask=block_mask, other=0.0)
+        qk = pl.dot(q, k.T)
+        if sm_scale != 1.0:
+            qk *= sm_scale
+        qk_pre = qk
+        if (bias_fn is not None) or (mask_fn is not None) or (b_ref is not None):
+            if b_ref is not None and bias_fn is not None:
+                b_chunk = pl.load(b_ref, (curr_q_slice, curr_k_slice))
+            else:
+                b_chunk = None
+            if bias_fn is not None:
+                qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
+            if mask_fn is not None:
+                id_q = None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
+                m = mask_fn(span_q, span_k, id_q, id_k)
+                qk = jnp.where(m, qk, DEFAULT_MASK_VALUE)
+
+        qk *= LOG2E
+        lse = pl.load(lse_ref, (curr_q_slice,))
+        di = pl.load(delta_ref, (curr_q_slice,))
+        do = pl.load(do_scaled_ref, (curr_q_slice, slice(None)))
+
+        p = jnp.exp2(qk - lse[:, None])
+        dp_dropped = pl.dot(do, v.T)
+        dp = jnp.zeros((block_q_dkv, block_kv_dkv), dtype=jnp.float32) - di[:, None]
+        dp = dp + dp_dropped
+        if dropout_mask_ref is not None and dropout_rate > 0:
+            dmask = pl.load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
+            p = jnp.where(dmask, 0, p / (1 - dropout_rate))
+            dp = jnp.where(dmask, 0, dp_dropped / (1 - dropout_rate)) + (
+                jnp.zeros_like(dp) - di[:, None]
+            )
+        dv_acc = dv_acc + pl.dot(p.astype(do.dtype).T, do)
+        ds = p * dp
+        if sm_scale != 1.0:
+            ds = ds * sm_scale
+        if bias_fn_grad is not None:
+            grad_mod = jnp.where(
+                qk != DEFAULT_MASK_VALUE,
+                bias_fn_grad(qk_pre, start_b, start_h, span_q, span_k),
+                0.0,
+            )
+            ds = ds * grad_mod
+        dk_acc = dk_acc + pl.dot(ds.astype(q_ref.dtype).T, q)
+        return dv_acc, dk_acc
+
+    if index_offset_size_ref is not None:
+        dv, dk = lax.fori_loop(0, index_offset_size_ref[...], inner_loop, (dv, dk))
+    else:
+        dv, dk = lax.fori_loop(0, pl.cdiv(q_seq_len, block_q_dkv), inner_loop, (dv, dk))
+
+    pl.store(
+        dv_ref, (slice(None), slice(None)), val=dv.astype(dv_ref.dtype), mask=block_mask
+    )
+    pl.store(
+        dk_ref, (slice(None), slice(None)), val=dk.astype(dk_ref.dtype), mask=block_mask
+    )
+
+
+def mha_backward_kernel_split_dq(
+    # Inputs
+    q_ref,
+    k_ref,
+    v_ref,
+    id_q_ref: jax.Array | None,
+    id_k_ref: jax.Array | None,
+    b_ref: jax.Array | None,
+    dropout_mask_ref: jax.Array | None,
+    do_scaled_ref,
+    lse_ref,
+    delta_ref,
+    # Optional dynamic iterators (Q -> KV)
+    index_offset_ref: jax.Array | None,
+    index_offset_size_ref: jax.Array | None,
+    # Outputs
+    dq_ref,
+    *,
+    sm_scale: float,
+    mask_fn: Callable | None,
+    bias_fn: Callable | None,
+    bias_fn_grad: Callable | None,
+    dropout_rate: float,
+    block_q_dq: int,
+    block_kv_dq: int,
+    block_d: int,
+    head_dim: int,
+):
+    """Computes dQ in a dedicated pass iterating over KV blocks."""
+    kv_seq_len = k_ref.shape[0]
+    block_mask = jnp.arange(block_d)[None] < head_dim
+    start_b = pl.program_id(0)
+    start_h = pl.program_id(1)
+    start_q = pl.program_id(2)
+    curr_q_slice = pl.dslice(start_q * block_q_dq, block_q_dq)
+    span_q = start_q * block_q_dq + jnp.arange(block_q_dq)
+
+    dq = jnp.zeros([block_q_dq, block_d], dtype=jnp.float32)
+
+    q = pl.load(q_ref, (curr_q_slice, slice(None)), mask=block_mask, other=0.0)
+    lse = pl.load(lse_ref, (curr_q_slice,))
+    do = pl.load(do_scaled_ref, (curr_q_slice, slice(None)))
+    di = pl.load(delta_ref, (curr_q_slice,))
+
+    LOG2E = 1.4426950408889634
+
+    def inner_loop(start_k, dq_c):
+        if index_offset_ref is not None:
+            start_k = jnp.sum(pl.load(index_offset_ref, (pl.dslice(start_k, 1),)))
+        span_k = start_k * block_kv_dq + jnp.arange(block_kv_dq)
+        curr_k_slice = pl.dslice(start_k * block_kv_dq, block_kv_dq)
+        k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=block_mask, other=0.0)
+        v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=block_mask, other=0.0)
+        qk = pl.dot(q, k.T)
+        if sm_scale != 1.0:
+            qk *= sm_scale
+        qk_pre = qk
+        if (bias_fn is not None) or (mask_fn is not None) or (b_ref is not None):
+            if b_ref is not None and bias_fn is not None:
+                b_chunk = pl.load(b_ref, (curr_q_slice, curr_k_slice))
+            else:
+                b_chunk = None
+            if bias_fn is not None:
+                qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
+            if mask_fn is not None:
+                id_q = None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
+                if id_k_ref is not None:
+                    id_k = pl.load(id_k_ref, (curr_k_slice,))
+                elif id_q_ref is not None:
+                    id_k = pl.load(id_q_ref, (curr_k_slice,))
+                else:
+                    id_k = None
+                m = mask_fn(span_q, span_k, id_q, id_k)
+                qk = jnp.where(m, qk, DEFAULT_MASK_VALUE)
+
+        qk *= LOG2E
+        p = jnp.exp2(qk - lse[:, None])
+        dp_dropped = pl.dot(do, v.T)
+        dp = jnp.zeros((block_q_dq, block_kv_dq), dtype=jnp.float32) - di[:, None]
+        dp = dp + dp_dropped
+        if dropout_mask_ref is not None and dropout_rate > 0:
+            dmask = pl.load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
+            p = jnp.where(dmask, 0, p / (1 - dropout_rate))
+            dp = jnp.where(dmask, 0, dp_dropped / (1 - dropout_rate)) + (
+                jnp.zeros_like(dp) - di[:, None]
+            )
+        ds = p * dp
+        if sm_scale != 1.0:
+            ds = ds * sm_scale
+        if bias_fn_grad is not None:
+            grad_mod = jnp.where(
+                qk != DEFAULT_MASK_VALUE,
+                bias_fn_grad(qk_pre, start_b, start_h, span_q, span_k),
+                0.0,
+            )
+            ds = ds * grad_mod
+        dq_c = dq_c + pl.dot(ds.astype(k.dtype), k).astype(dq_c.dtype)
+        return dq_c
+
+    if index_offset_size_ref is not None:
+        dq = lax.fori_loop(0, index_offset_size_ref[...], inner_loop, dq)
+    else:
+        dq = lax.fori_loop(0, pl.cdiv(kv_seq_len, block_kv_dq), inner_loop, dq)
+
+    pl.store(
+        dq_ref, (slice(None), slice(None)), val=dq.astype(dq_ref.dtype), mask=block_mask
+    )
 
 
 def _mha_impl(
@@ -659,7 +944,9 @@ def _mha_impl(
 
     # q/k mask data specs
     if q_id is not None or k_id is not None:
-        q_id_spec, k_id_spec = mask.get_data_block_spec(q_seq_len, kv_seq_len)
+        q_id_spec, k_id_spec = mask.get_data_block_spec(
+            q_seq_len, kv_seq_len, block_q, block_k
+        )
         in_specs.append(q_id_spec)
         in_specs.append(k_id_spec)
     else:
@@ -743,7 +1030,7 @@ def mha(
     rng: jax.Array | None = None,
     sm_scale: float = 1.0,
     block_sizes: BlockSizes = BlockSizes.get_default(),
-    backward_pass_impl: str = "triton",
+    backward_pass_impl: str = "triton_fused",
     num_warps: int | None = None,
     num_stages: int = 2,
     grid: tuple[int, ...] | None = None,
@@ -803,7 +1090,7 @@ def _mha_backward(
     mask = mask if mask is not None else mask
     bias = bias if bias is not None else bias
 
-    if backward_pass_impl == "triton":
+    if backward_pass_impl == "triton_fused":
         if not block_sizes.has_backward_blocks:
             raise ValueError("Backward block sizes must all be set.")
 
@@ -811,13 +1098,13 @@ def _mha_backward(
         block_d = pl.next_power_of_2(head_dim)
         kv_seq_len = k.shape[1]
         block_q = min(block_sizes.block_q, q_seq_len)
+        block_k = min(block_sizes.block_k, kv_seq_len)
         block_q_dkv = min(block_sizes.block_q_dkv, q_seq_len)
         block_kv_dkv = min(block_sizes.block_kv_dkv, kv_seq_len)
         block_q_dq = min(block_sizes.block_q_dq, q_seq_len)
         block_kv_dq = min(block_sizes.block_kv_dq, kv_seq_len)
-        # Debug prints removed
 
-        if q_seq_len // block_q_dq != kv_seq_len // block_kv_dkv:
+        if pl.cdiv(q_seq_len, block_q_dq) != pl.cdiv(kv_seq_len, block_kv_dkv):
             raise ValueError(
                 "q_seq_len and kv_seq_len must be divided into the same "
                 "number of blocks for the fused backward pass."
@@ -884,20 +1171,18 @@ def _mha_backward(
             q_data, k_data = mask.get_data(q_seq_len=q_seq_len, kv_seq_len=kv_seq_len)
         # q_id_ref spec (per-query indices). Kernel loads with (curr_q_slice,)
         if q_data is not None:
-            if getattr(q_data, "ndim", None) == 2:
-                # Shape (B, Q) -> slice by batch via grid dim 0
-                in_specs[3] = pl.BlockSpec((None, q_seq_len), lambda i, j, k: (i, 0))
-            elif getattr(q_data, "ndim", None) == 1:
-                # Shape (Q,) -> head-independent
-                in_specs[3] = pl.BlockSpec((q_seq_len,), lambda i, j, k: (0,))
-        # k_id_ref spec (per-key indices). Kernel loads with (curr_k_slice,)
-        if k_data is not None:
-            if getattr(k_data, "ndim", None) == 2:
-                # Shape (B, K) -> slice by batch via grid dim 0
-                in_specs[4] = pl.BlockSpec((None, kv_seq_len), lambda i, j, k: (i, 0))
-            elif getattr(k_data, "ndim", None) == 1:
-                # Shape (K,) -> head-independent
-                in_specs[4] = pl.BlockSpec((kv_seq_len,), lambda i, j, k: (0,))
+            q_data_spec, k_data_spec = mask.get_data_block_spec_backward_pass(
+                q_seq_len,
+                kv_seq_len,
+                block_q,
+                block_k,
+                block_kv_dkv,
+                block_kv_dq,
+                block_q_dkv,
+                block_q_dq,
+            )
+            in_specs[3] = q_data_spec
+            in_specs[4] = k_data_spec
 
         if dropout_rate > 0:
             assert rng is not None
@@ -947,7 +1232,8 @@ def _mha_backward(
             # (enforced by the check above).
             if q_index_offset is not None:
                 q_index_offset_spec = pl.BlockSpec(
-                    index_map=(lambda i, _, k: (k, 0)), block_shape=((None, num_kv_blocks_dq))
+                    index_map=(lambda i, _, k: (k, 0)),
+                    block_shape=((None, num_kv_blocks_dq)),
                 )
                 q_index_offset_size_spec = pl.BlockSpec(
                     index_map=(lambda i, _, k: (k)), block_shape=((None,))
@@ -956,7 +1242,8 @@ def _mha_backward(
                 in_specs[-3] = q_index_offset_size_spec  # q_index_offset_size
             if kv_index_offset is not None:
                 kv_index_offset_spec = pl.BlockSpec(
-                    index_map=(lambda i, _, k: (k, 0)), block_shape=((None, num_q_blocks_dkdv))
+                    index_map=(lambda i, _, k: (k, 0)),
+                    block_shape=((None, num_q_blocks_dkdv)),
                 )
 
                 kv_index_offset_size_spec = pl.BlockSpec(
@@ -1021,7 +1308,251 @@ def _mha_backward(
             kv_index_offset_size,
         )
     else:
-        raise ValueError(f"Invalid backward pass implementation: {backward_pass_impl}")
+        # Split backward into two kernels: first dKdV, then dQ.
+        if backward_pass_impl not in ("triton_split", "split", "triton_2pass"):
+            raise ValueError(
+                f"Invalid backward pass implementation: {backward_pass_impl}"
+            )
+
+        if not block_sizes.has_backward_blocks:
+            raise ValueError("Backward block sizes must all be set.")
+
+        batch_size, q_seq_len, num_heads, head_dim = q.shape
+        kv_seq_len = k.shape[1]
+        block_d = pl.next_power_of_2(head_dim)
+        block_q = min(block_sizes.block_q, q_seq_len)
+        block_k = min(block_sizes.block_k, kv_seq_len)
+        block_q_dkv = min(block_sizes.block_q_dkv, q_seq_len)
+        block_kv_dkv = min(block_sizes.block_kv_dkv, kv_seq_len)
+        block_q_dq = min(block_sizes.block_q_dq, q_seq_len)
+        block_kv_dq = min(block_sizes.block_kv_dq, kv_seq_len)
+
+        # Preprocess to compute delta
+        delta = _preprocess_backward(out, do, lse, block_q, debug, interpret)
+
+        # Prepare mask data and bias tensors
+        b_data = bias.get_data() if (bias is not None) else None
+        q_data = k_data = None
+        if isinstance(mask, AttentionMask):
+            q_data, k_data = mask.get_data(q_seq_len=q_seq_len, kv_seq_len=kv_seq_len)
+
+        # Dropout mask
+        if dropout_rate > 0:
+            assert rng is not None
+            dropout_mask = get_dropout_mask(
+                (batch_size, num_heads, q_seq_len, kv_seq_len),
+                prng_key=rng,
+                rate=dropout_rate,
+            )
+        else:
+            dropout_mask = None
+
+        # Optional block-sparse iterators
+        q_index_offset = q_index_offset_size = kv_index_offset = (
+            kv_index_offset_size
+        ) = None
+        if mask is not None:
+            q_index_offset, q_index_offset_size = mask.query_iterator_indices(
+                q_seq_len, kv_seq_len, block_q_dq, block_kv_dq
+            )
+            kv_index_offset, kv_index_offset_size = mask.kv_iterator_indices(
+                q_seq_len, kv_seq_len, block_q_dkv, block_kv_dkv
+            )
+
+        # Compiler params
+        num_warps_ = num_warps
+        if num_warps_ is None:
+            if (
+                block_q_dkv * block_kv_dkv < 128 * 128
+                or block_q_dq * block_kv_dq < 128 * 128
+            ):
+                num_warps_ = 4
+            else:
+                num_warps_ = 8
+
+        # Bias grad function for stateless biases
+        bias_fn_grad = bias.grad if (bias is not None) else None
+
+        # Build mask data specs for backward
+        if q_data is not None:
+            q_data_spec, k_data_spec = mask.get_data_block_spec_backward_pass(
+                q_seq_len,
+                kv_seq_len,
+                block_q,
+                block_k,
+                block_q_dkv,
+                block_kv_dkv,
+                block_q_dq,
+                block_kv_dq,
+            )
+        else:
+            q_data_spec = k_data_spec = None
+
+        # Common input specs across both kernels
+        common_in_specs = [
+            # q, k, v
+            pl.BlockSpec(
+                (None, q_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
+            ),
+            pl.BlockSpec(
+                (None, kv_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
+            ),
+            pl.BlockSpec(
+                (None, kv_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
+            ),
+            # mask data
+            q_data_spec,
+            k_data_spec,
+            # bias (dense)
+            (
+                None
+                if b_data is None
+                else bias.get_block_spec(
+                    q_len=q_seq_len,
+                    kv_len=kv_seq_len,
+                    block_q=q_seq_len,
+                    block_kv=kv_seq_len,
+                )
+            ),
+            # dropout mask
+            (
+                None
+                if dropout_mask is None
+                else pl.BlockSpec(
+                    (None, None, q_seq_len, kv_seq_len),
+                    lambda i, j, _: (i, j, 0, 0),
+                )
+            ),
+            # do, lse, delta
+            pl.BlockSpec(
+                (None, q_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
+            ),
+            pl.BlockSpec((None, None, q_seq_len), lambda i, j, _: (i, j, 0)),
+            pl.BlockSpec((None, None, q_seq_len), lambda i, j, _: (i, j, 0)),
+        ]
+
+        # 1) dKdV kernel call
+
+        # dKdV call
+        dkdv_in_specs = common_in_specs + [None, None]  # reserve index offset slots
+        if kv_index_offset is not None:
+            num_q_blocks_dkdv = pl.cdiv(q_seq_len, block_q_dkv)
+            kv_index_offset_spec = pl.BlockSpec(
+                index_map=(lambda i, _, k: (k, 0)),
+                block_shape=((None, num_q_blocks_dkdv)),
+            )
+            kv_index_offset_size_spec = pl.BlockSpec(
+                index_map=(lambda i, _, k: (k)), block_shape=((None,))
+            )
+            dkdv_in_specs[-2] = kv_index_offset_spec
+            dkdv_in_specs[-1] = kv_index_offset_size_spec
+
+        dk, dv = pl.pallas_call(
+            functools.partial(
+                mha_backward_kernel_split_dkdv,
+                sm_scale=sm_scale,
+                mask_fn=mask.__call__ if mask is not None else None,
+                bias_fn=bias.__call__ if bias is not None else None,
+                bias_fn_grad=bias_fn_grad,
+                dropout_rate=dropout_rate,
+                block_q_dkv=block_q_dkv,
+                block_kv_dkv=block_kv_dkv,
+                block_d=block_d,
+                head_dim=head_dim,
+            ),
+            out_shape=[
+                jax.ShapeDtypeStruct(k.shape, k.dtype),
+                jax.ShapeDtypeStruct(v.shape, v.dtype),
+            ],
+            in_specs=dkdv_in_specs,
+            grid=(batch_size, num_heads, pl.cdiv(kv_seq_len, block_kv_dkv)),
+            out_specs=[
+                pl.BlockSpec(
+                    (None, block_kv_dkv, None, head_dim),
+                    lambda i, j, k: (i, k, j, 0),
+                ),
+                pl.BlockSpec(
+                    (None, block_kv_dkv, None, head_dim),
+                    lambda i, j, k: (i, k, j, 0),
+                ),
+            ],
+            name="mha_backward_split_dkdv",
+            debug=debug,
+            interpret=interpret,
+            compiler_params=plgpu.TritonCompilerParams(
+                num_warps=num_warps_, num_stages=2
+            ),
+        )(
+            q,
+            k,
+            v,
+            q_data,
+            k_data,
+            b_data,
+            dropout_mask,
+            do,
+            lse,
+            delta,
+            kv_index_offset,
+            kv_index_offset_size,
+        )
+
+        # dQ call
+        dq_in_specs = common_in_specs + [None, None]
+        if q_index_offset is not None:
+            num_kv_blocks_dq = pl.cdiv(kv_seq_len, block_kv_dq)
+            q_index_offset_spec = pl.BlockSpec(
+                index_map=(lambda i, _, k: (k, 0)),
+                block_shape=((None, num_kv_blocks_dq)),
+            )
+            q_index_offset_size_spec = pl.BlockSpec(
+                index_map=(lambda i, _, k: (k)), block_shape=((None,))
+            )
+            dq_in_specs[-2] = q_index_offset_spec
+            dq_in_specs[-1] = q_index_offset_size_spec
+
+        dq = pl.pallas_call(
+            functools.partial(
+                mha_backward_kernel_split_dq,
+                sm_scale=sm_scale,
+                mask_fn=mask.__call__ if mask is not None else None,
+                bias_fn=bias.__call__ if bias is not None else None,
+                bias_fn_grad=bias_fn_grad,
+                dropout_rate=dropout_rate,
+                block_q_dq=block_q_dq,
+                block_kv_dq=block_kv_dq,
+                block_d=block_d,
+                head_dim=head_dim,
+            ),
+            out_shape=jax.ShapeDtypeStruct(q.shape, q.dtype),
+            in_specs=dq_in_specs,
+            grid=(batch_size, num_heads, pl.cdiv(q_seq_len, block_q_dq)),
+            out_specs=pl.BlockSpec(
+                (None, block_q_dq, None, head_dim),
+                lambda i, j, k: (i, k, j, 0),
+            ),
+            name="mha_backward_split_dq",
+            debug=debug,
+            interpret=interpret,
+            compiler_params=plgpu.TritonCompilerParams(
+                num_warps=num_warps_, num_stages=2
+            ),
+        )(
+            q,
+            k,
+            v,
+            q_data,
+            k_data,
+            b_data,
+            dropout_mask,
+            do,
+            lse,
+            delta,
+            q_index_offset,
+            q_index_offset_size,
+        )
+
+        return dq.astype(q.dtype), dk, dv, None, None, None
     return dq.astype(q.dtype), dk, dv, None, None, None
 
 

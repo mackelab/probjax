@@ -79,6 +79,7 @@ class AttentionMask(ABC):
     Multi-batch use should be handled by vmapping externally. For legacy code
     that previously passed a batch index, remove it and vmap over batch dim.
     """
+
     stateful: bool = False  # True if mask uses stored data (e.g., lengths, segment ids)
 
     @abstractmethod
@@ -92,8 +93,27 @@ class AttentionMask(ABC):
         raise NotImplementedError
 
     # Optional: Pallas data specs for mask data per side. Default: None.
-    def get_data_block_spec(self, q_len: int, kv_len: int):
+    def get_data_block_spec(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+    ):
         return (None, None)
+
+    def get_data_block_spec_backward_pass(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+        block_q_dkv: int | None = None,
+        block_kv_dkv: int | None = None,
+        block_q_dq: int | None = None,
+        block_kv_dq: int | None = None,
+    ) -> tuple[None, None]:
+        return self.get_data_block_spec(q_len, kv_len, block_q, block_k)
 
     # Logical combinators return composed masks.
     def __and__(self, other: "AttentionMask") -> "AttentionMask":
@@ -279,22 +299,38 @@ class ComposeMask(AttentionMask):
             return jnp.logical_xor(a, c)
         raise ValueError(f"Unknown op for ComposeMask: {self.op}")
 
-    def get_data(self, *, q_seq_len: int | None = None, kv_seq_len: int | None = None) -> tuple[Array | None, Array | None]:
+    def get_data(
+        self, *, q_seq_len: int | None = None, kv_seq_len: int | None = None
+    ) -> tuple[Array | None, Array | None]:
         if self.lhs.stateful and self.rhs.stateful:
-            raise ValueError("Cannot compose two stateful masks; ambiguous data requirements.")
+            raise ValueError(
+                "Cannot compose two stateful masks; ambiguous data requirements."
+            )
         if self.lhs.stateful:
             return self.lhs.get_data(q_seq_len=q_seq_len, kv_seq_len=kv_seq_len)
         if self.rhs.stateful:
             return self.rhs.get_data(q_seq_len=q_seq_len, kv_seq_len=kv_seq_len)
         return (None, None)
 
-    def get_data_block_spec(self, q_len: int, kv_len: int = None):
+    def get_data_block_spec(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+    ):
         if self.lhs.stateful and self.rhs.stateful:
-            raise ValueError("Cannot compose two stateful masks; ambiguous data requirements.")
+            raise ValueError(
+                "Cannot compose two stateful masks; ambiguous data requirements."
+            )
         if self.lhs.stateful:
-            return self.lhs.get_data_block_spec(q_len=q_len, kv_len=kv_len)
+            return self.lhs.get_data_block_spec(
+                q_len=q_len, kv_len=kv_len, block_q=block_q, block_k=block_k
+            )
         if self.rhs.stateful:
-            return self.rhs.get_data_block_spec(q_len=q_len, kv_len=kv_len)
+            return self.rhs.get_data_block_spec(
+                q_len=q_len, kv_len=kv_len, block_q=block_q, block_k=block_k
+            )
         return (None, None)
 
     # PyTree: children are lhs/rhs masks; op is static aux.
@@ -386,10 +422,8 @@ class NoMask(AttentionMask):
         kv_len: int,
         block_q: int,
         block_k: int,
-    ) -> Array:
-        nQB = ceil_div(q_len, block_q)
-        nKB = ceil_div(kv_len, block_k)
-        return jnp.ones((nQB, nKB), dtype=jnp.bool_)
+    ) -> Array | None:
+        return None
 
     def tree_flatten(self):
         return ((), {})
@@ -447,7 +481,6 @@ class LocalWindowMask(AttentionMask):
 
     left_window: int
     right_window: Optional[int] = field(default=None)
-
 
     def __call__(
         self,
@@ -537,11 +570,11 @@ class QKVLengthMask(AttentionMask):
             return None
         nQB = ceil_div(q_len, block_q)
         nKB = ceil_div(kv_len, block_k)
-        bm = jnp.ones((nQB, nKB), dtype=jnp.bool_)
+        bm = np.ones((nQB, nKB), dtype=np.bool_)
         last_q_block = (self.q_length - 1) // block_q
         last_kv_block = (self.kv_length - 1) // block_k
-        bm = bm.at[last_q_block + 1 :, :].set(False)
-        bm = bm.at[:, last_kv_block + 1 :].set(False)
+        bm[last_q_block + 1 :, :] = False
+        bm[:, last_kv_block + 1 :] = False
         return bm
 
     @classmethod
@@ -563,7 +596,6 @@ class KeyPaddingMask(AttentionMask):
 
     key_lengths: Array  # Per query key lengths [B] or bool mask [B, K]
     stateful: bool = True
-
 
     def __call__(
         self,
@@ -592,7 +624,13 @@ class KeyPaddingMask(AttentionMask):
         (key_lengths,) = children
         return KeyPaddingMask(key_lengths)
 
-    def get_data_block_spec(self, q_len: int, kv_len: int = None):
+    def get_data_block_spec(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+    ):
         if self.key_lengths.ndim == 2:
             q_spec = pl.BlockSpec((None, q_len), lambda _, j, k: (j, 0))
         elif self.key_lengths.ndim == 1:
@@ -623,6 +661,119 @@ class KeyPaddingMask(AttentionMask):
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
+class SeqLenMask(AttentionMask):
+    """Different seqlen per batch element.
+
+    Args:
+        seq_lengths: int array [B] giving number of valid KV tokens per batch;
+    """
+
+    seq_lengths: Array  # Per query key lengths [B]
+    stateful: bool = True
+
+    def __call__(
+        self,
+        q_idx: Array,
+        k_idx: Array,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> Array:
+        """Mask for per-batch variable sequence lengths.
+
+        - Within the valid sequence [0, L) for the batch, allow full attention.
+        - Outside the valid sequence, allow only self-attention (diagonal).
+
+        seg_q/seg_k may be provided as vectors matching the current block (each
+        entry typically equal to L for that batch). If not provided, falls back
+        to the stored per-batch lengths and is expected to be vmapped outside.
+        """
+        if seg_q is None and self.seq_lengths is None:
+            raise ValueError(
+                "SeqLenMask requires seq_lengths provided either at construction or call time"
+            )
+
+        if seg_q is not None:
+            # seg_q and seg_k are per-position vectors (block-sized), each entry equal to L.
+            # Build rectangular validity from q and k indices separately.
+            valid_q = q_idx < seg_q  # [Q]
+            # If seg_k not provided, default to seg_q (self-attention case).
+            seg_k = seg_k if seg_k is not None else seg_q
+            valid_k = k_idx < seg_k  # [K]
+            rect = valid_q[:, None] & valid_k[None, :]
+            diag = q_idx[:, None] == k_idx[None, :]
+            return rect | diag
+        else:
+            # Fallback for cases where we call without seg_* (should be vmapped over batch).
+            # self.seq_lengths shape [B]; compare against q_idx/k_idx assuming single batch use.
+            # Construct per-batch boolean matrices [B, Q, K]. Outside-L diagonal is kept.
+            L = self.seq_lengths
+            # Broadcast batch lengths to index domain; these branches are less commonly used in-kernel.
+            valid_q = q_idx[None, :] < L[:, None]
+            valid_k = k_idx[None, :] < L[:, None]
+            rect = valid_q[:, :, None] & valid_k[:, None, :]
+            eye = jnp.eye(rect.shape[-1], dtype=rect.dtype)[None, :, :]
+            return rect | eye
+
+    # PyTree registration
+    def tree_flatten(self):
+        return ((self.seq_lengths,), {})
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        (seq_lengths,) = children
+        return SeqLenMask(seq_lengths)
+
+    def get_data_block_spec(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+    ):
+        # Provide a per-batch row view of length q_len; kernel will slice with curr_q_slice.
+        q_spec = pl.BlockSpec((None, q_len), lambda _, j, k_: (j, 0))
+        return q_spec, None
+
+    def get_data_block_spec_backward_pass(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+        block_q_dkv: int | None = None,
+        block_kv_dkv: int | None = None,
+        block_q_dq: int | None = None,
+        block_kv_dq: int | None = None,
+    ) -> tuple[None, None]:
+        # Backward grids use (B, H, tile) ordering; we still expose a row view per batch.
+        q_spec = pl.BlockSpec((None, q_len), lambda i, j, k_: (i, 0))
+        return q_spec, None
+
+    def get_data(
+        self,
+        *,
+        q_seq_len: Optional[int] = None,
+        kv_seq_len: Optional[int] = None,
+    ) -> tuple[Optional[Array], Optional[Array]]:
+        # Broadcast per-batch lengths to a (B, Q) array whose rows are all the batch length.
+        if q_seq_len is None:
+            raise ValueError("SeqLenMask.get_data requires q_seq_len")
+        L = jnp.asarray(self.seq_lengths)
+        Lbq = jnp.broadcast_to(L[:, None], (L.shape[0], q_seq_len))
+        return Lbq, None
+
+    def block_mask(
+        self,
+        q_len: int,
+        kv_len: int,
+        block_q: int,
+        block_k: int,
+    ) -> Array | None:
+        return None
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
 class SameSegmentMask(AttentionMask):
     """Allow attention only within the same segment (uses segment_ids)."""
 
@@ -630,7 +781,6 @@ class SameSegmentMask(AttentionMask):
     query_segment_ids: Array
     key_segment_ids: Optional[Array]
     stateful: bool = True
-
 
     def __call__(
         self,
@@ -652,7 +802,13 @@ class SameSegmentMask(AttentionMask):
         # Handle optional leading batch dimension in stored ids.
         return s_q[..., :, None] == s_k[..., None, :]
 
-    def get_data_block_spec(self, q_len: int, kv_len: int = None):
+    def get_data_block_spec(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+    ):
         if self.query_segment_ids is None:
             q_spec = None
         elif self.query_segment_ids.ndim == 2:
@@ -712,7 +868,6 @@ class MarginalizationMask(AttentionMask):
     mask: Array
     stateful: bool = True
 
-
     def __call__(
         self,
         q_idx: Array,
@@ -731,7 +886,13 @@ class MarginalizationMask(AttentionMask):
             q_idx[..., :, None] == k_idx[..., None, :]
         )
 
-    def get_data_block_spec(self, q_len: int, kv_len: int = None):
+    def get_data_block_spec(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+    ):
         if self.mask is None:
             q_spec = None
         elif self.mask.ndim == 2:
@@ -800,6 +961,7 @@ class ConstantBias(AttentionBias):
         val = aux.get("value") if isinstance(aux, dict) else aux
         return ConstantBias(val)
 
+
 @jax.tree_util.register_pytree_node_class
 class DenseBias(AttentionBias):
     """Adds a precomputed dense bias tensor to the logits.
@@ -844,10 +1006,10 @@ class DenseBias(AttentionBias):
                 j if self.bias.shape[0] != 1 else 0,
                 k if self.bias.shape[1] != 1 else 0,
                 i,
-                    0,
-                ),
-                block_shape=(None, None, block_q, kv_len),
-            )
+                0,
+            ),
+            block_shape=(None, None, block_q, kv_len),
+        )
 
     def get_data(self) -> Array:
         return self.bias
@@ -894,8 +1056,6 @@ class IdentityBias(AttentionBias):
     @classmethod
     def tree_unflatten(cls, aux, children):
         return IdentityBias()
-
-
 
 
 def _alibi_slope_for_head(h_idx: Array) -> Array:

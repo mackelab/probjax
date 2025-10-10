@@ -19,6 +19,7 @@ from probjax.nn.pallas_kernels.attention_mask_bias import (
     NoMask,
     QKVLengthMask,
     SameSegmentMask,
+    SeqLenMask,
     DenseBias,
     IdentityBias,
     ALiBiBias,
@@ -446,3 +447,199 @@ def test_attention_gradient_with_masks(
     assert jax.tree_util.tree_all(
         jax.tree_util.tree_map(partial(jnp.allclose, atol=1e-2), out, out2)
     )
+
+
+@pytest.mark.parametrize(
+    "attention_fn",
+    [
+        dot_product_attention,
+        flex_attention,
+        memory_efficient_dot_product_attention,
+        dot_product_attention_jax,
+    ],
+)
+@pytest.mark.parametrize(
+    "batch_size, q_len, kv_len, num_heads, qkv_dim",
+    [
+        (2, 13, 17, 4, 16),
+        (1, 5, 9, 2, 8),
+    ],
+)
+def test_cross_attention_shapes(attention_fn, batch_size, q_len, kv_len, num_heads, qkv_dim):
+    # Cross attention: different Q and KV sequences and different lengths
+    key_q, key_k, key_v = jax.random.split(jax.random.PRNGKey(0), 3)
+    q = jax.random.normal(key_q, (batch_size, q_len, num_heads, qkv_dim))
+    k = jax.random.normal(key_k, (batch_size, kv_len, num_heads, qkv_dim))
+    v = jax.random.normal(key_v, (batch_size, kv_len, num_heads, qkv_dim))
+    out = attention_fn(q, k, v)
+    assert out.shape == (batch_size, q_len, num_heads, qkv_dim)
+
+
+@pytest.mark.parametrize(
+    "batch_size, q_len, kv_len, num_heads, qkv_dim",
+    [
+        (2, 128, 128, 4, 16),
+        (1, 128, 256, 2, 8),
+        (1, 64, 512, 8, 32),
+        (3, 512, 64, 8, 32),
+        (1, 32, 222, 4, 30),
+        (1, 222, 32, 4, 30),
+    ],
+)
+def test_cross_attention_outputs_match(batch_size, q_len, kv_len, num_heads, qkv_dim):
+    key_q, key_k, key_v = jax.random.split(jax.random.PRNGKey(1), 3)
+    q = jax.random.normal(key_q, (batch_size, q_len, num_heads, qkv_dim))
+    k = jax.random.normal(key_k, (batch_size, kv_len, num_heads, qkv_dim))
+    v = jax.random.normal(key_v, (batch_size, kv_len, num_heads, qkv_dim))
+
+    attention_fns = [
+        dot_product_attention,
+        flex_attention,
+        memory_efficient_dot_product_attention,
+        dot_product_attention_jax,
+    ]
+    outputs = [fn(q, k, v) for fn in attention_fns]
+
+    for i in range(1, len(outputs)):
+        assert jnp.allclose(outputs[0], outputs[i], atol=1e-5), (
+            f"Cross-attention outputs differ for {attention_fns[i]}"
+        )
+
+
+@pytest.mark.parametrize(
+    "batch_size, q_len, kv_len, num_heads, qkv_dim",
+    [
+        (2, 128, 128, 4, 16),
+        (1, 128, 256, 2, 8),
+        (1, 64, 512, 8, 32),
+        (3, 512, 64, 8, 32),
+        (1, 32, 222, 4, 30),
+        (1, 222, 32, 4, 30),
+    ],
+)
+def test_cross_attention_gradients_match(batch_size, q_len, kv_len, num_heads, qkv_dim):
+    key_q, key_k, key_v = jax.random.split(jax.random.PRNGKey(2), 3)
+    q = jax.random.normal(key_q, (batch_size, q_len, num_heads, qkv_dim))
+    k = jax.random.normal(key_k, (batch_size, kv_len, num_heads, qkv_dim))
+    v = jax.random.normal(key_v, (batch_size, kv_len, num_heads, qkv_dim))
+
+    attention_fns = [
+        dot_product_attention,
+        flex_attention,
+        memory_efficient_dot_product_attention,
+        dot_product_attention_jax,
+    ]
+
+    grads = []
+    for fn in attention_fns:
+        grad_fn = jax.grad(lambda q, k, v: jnp.sum(fn(q, k, v)), argnums=(0, 1, 2))
+        grads.append(grad_fn(q, k, v))
+
+    for i in range(1, len(grads)):
+        for g1, g2 in zip(grads[0], grads[i], strict=False):
+            assert jnp.allclose(g1, g2, atol=1e-2), (
+                f"Cross-attention gradients differ for {attention_fns[i]}"
+            )
+
+
+@pytest.mark.parametrize(
+    "batch_size, q_len, kv_len, num_heads, qkv_dim",
+    [
+        (2, 13, 17, 4, 16),
+        (1, 5, 9, 2, 8),
+    ],
+)
+def test_cross_attention_with_mask_and_bias(batch_size, q_len, kv_len, num_heads, qkv_dim, mask_fn):
+    # Compare flex_attention with mask objects and DenseBias vs dense attention with materialized mask/bias
+    key0, key1, key2, key3 = jax.random.split(jax.random.PRNGKey(3), 4)
+    q = jax.random.normal(key0, (batch_size, q_len, num_heads, qkv_dim))
+    k = jax.random.normal(key1, (batch_size, kv_len, num_heads, qkv_dim))
+    v = jax.random.normal(key2, (batch_size, kv_len, num_heads, qkv_dim))
+
+    mask = mask_fn(q_len, kv_len)
+    mask_dense = materialize_mask(mask, q_len, kv_len)
+
+    # Some stateful masks like KeyPaddingMask/MarginalizationMask may differ in
+    # semantics under cross-attention with added bias; skip those here.
+    if isinstance(mask, (KeyPaddingMask, MarginalizationMask)):
+        pytest.skip("Skipping cross-attention equivalence for KeyPadding/Marginalization masks")
+
+    bias_dense = jax.random.normal(key3, (1, 1, q_len, kv_len)) * 1.5
+
+    out_dense = dot_product_attention(q, k, v, mask=mask_dense, bias=bias_dense)
+    out_flex = flex_attention(q, k, v, mask=mask, bias=DenseBias(bias_dense))
+
+    if isinstance(mask, QKVLengthMask):
+        assert jnp.allclose(out_dense[:, : mask.q_length], out_flex[:, : mask.q_length], atol=1e-4)
+    else:
+        assert jnp.allclose(out_dense, out_flex, atol=1e-5), (
+            f"Cross-attention with mask+bias mismatch, max err={jnp.max(jnp.abs(out_dense - out_flex))}"
+        )
+
+
+def _build_seq_len_dense_mask(seq_lengths: jax.Array, q_len: int) -> jax.Array:
+    """Dense [B, Q, Q] mask for SeqLenMask semantics.
+
+    True if (i< L_b and j < L_b) OR (i == j).
+    """
+    b = seq_lengths.shape[0]
+    q_idx = jnp.arange(q_len)
+    valid_q = q_idx[None, :] < seq_lengths[:, None]  # [B, Q]
+    valid_k = valid_q
+    rect = valid_q[:, :, None] & valid_k[:, None, :]
+    eye = jnp.eye(q_len, dtype=rect.dtype)[None, :, :]
+    return rect | eye
+
+
+@pytest.mark.parametrize(
+    "batch_size, seq_len, num_heads, qkv_dim",
+    [
+        (2, 32, 4, 16),
+        (3, 64, 2, 8),
+    ],
+)
+def test_seq_len_mask_forward(batch_size, seq_len, num_heads, qkv_dim):
+    key = jax.random.PRNGKey(0)
+    q = k = v = jax.random.normal(key, (batch_size, seq_len, num_heads, qkv_dim))
+    # Random per-batch lengths in [1, seq_len]
+    L = jax.random.randint(jax.random.PRNGKey(1), (batch_size,), 1, seq_len + 1)
+
+    dense_mask = _build_seq_len_dense_mask(L, seq_len)
+    out_ref = dot_product_attention(q, k, v, mask=dense_mask)
+    out_flex = flex_attention(q, k, v, mask=SeqLenMask(L))
+
+    assert out_ref.shape == out_flex.shape == (batch_size, seq_len, num_heads, qkv_dim)
+    assert jnp.allclose(out_ref, out_flex, atol=1e-5), (
+        f"SeqLenMask forward mismatch, max err={jnp.max(jnp.abs(out_ref - out_flex))}"
+    )
+
+
+@pytest.mark.parametrize(
+    "batch_size, seq_len, num_heads, qkv_dim",
+    [
+        (2, 32, 4, 16),
+        (2, 48, 2, 8),
+    ],
+)
+def test_seq_len_mask_backward(batch_size, seq_len, num_heads, qkv_dim):
+    key_q, key_len = jax.random.split(jax.random.PRNGKey(42))
+    q = k = v = jax.random.normal(key_q, (batch_size, seq_len, num_heads, qkv_dim))
+    L = jax.random.randint(key_len, (batch_size,), 1, seq_len + 1)
+    dense_mask = _build_seq_len_dense_mask(L, seq_len)
+
+    def loss_ref(q, k, v):
+        out = dot_product_attention(q, k, v, mask=dense_mask)
+        return jnp.sum(out**2)
+
+    def loss_flex(q, k, v):
+        out = flex_attention(q, k, v, mask=SeqLenMask(L))
+        return jnp.sum(out**2)
+
+    grads_ref = jax.grad(loss_ref, argnums=(0, 1, 2))(q, k, v)
+    grads_flex = jax.grad(loss_flex, argnums=(0, 1, 2))(q, k, v)
+
+    for g_ref, g_flex in zip(grads_ref, grads_flex, strict=False):
+        assert g_ref.shape == g_flex.shape == (batch_size, seq_len, num_heads, qkv_dim)
+        assert jnp.allclose(g_ref, g_flex, atol=1e-2), (
+            f"SeqLenMask backward mismatch, max err={jnp.max(jnp.abs(g_ref - g_flex))}"
+        )

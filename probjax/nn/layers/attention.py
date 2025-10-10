@@ -229,14 +229,20 @@ def flex_attention(
     bias: AttentionBias | None = None,
     dropout_rng=None,
     dropout_rate: float = 0.0,
+    broadcast_dropout: bool = False,
     deterministic=True,
     dtype=None,
     precision=None,
     module=None,  # Required arguments by Flax
     sm_scale: Optional[float] = None,
     enable_gqa: bool = False,
-    block_sizes: BlockSizes = BlockSizes.get_default(),
-    backward_pass_impl: str = "triton",
+    block_q: int = 128,
+    block_k: int = 128,
+    block_q_dkv: int = 64,
+    block_kv_dkv: int = 64,
+    block_q_dq: int = 64,
+    block_kv_dq: int = 64,
+    backward_pass_impl: str = "triton_fused",
     num_warps: int | None = None,
     num_stages: int = 2,
     grid: tuple[int, ...] | None = None,
@@ -247,6 +253,7 @@ def flex_attention(
     del (
         module,
         precision,
+        broadcast_dropout,
     )
 
     if dtype is not None:
@@ -284,7 +291,7 @@ def flex_attention(
             )
 
     if sm_scale is None:
-        sm_scale = 1 / math.sqrt(query.shape[-1])
+        sm_scale = 1.0 / math.sqrt(query.shape[-1])
 
     query = query[None] if query.ndim == 3 else query
 
@@ -305,29 +312,22 @@ def flex_attention(
                 block_sparse=False,
             )
             if mask is None
-            else mask & QKVLengthMask(q_length=l_q, kv_length=l_kv)
+            else mask & QKVLengthMask(q_length=l_q, kv_length=l_kv, block_sparse=False)
         )
 
     mask = jax.tree_util.tree_map(pad_to_power_of_2, mask) if mask is not None else None
 
-    # Currentlly the backward pass requires some conditons:
-    # TODO: Move to BlockSizes
-    if l_kv != l_q:
-        q_seq_len = query.shape[-3]
-        kv_seq_len = key.shape[-3]
-        n_blocks = max(q_seq_len // block_sizes.block_q_dq, 1)
-        block_kv_dkv_new = kv_seq_len // n_blocks
-        block_q_dq_new = q_seq_len // n_blocks
-        block_sizes = BlockSizes(
-            block_sizes.block_q,
-            block_sizes.block_k,
-            block_sizes.block_q_dkv,
-            block_kv_dkv_new,
-            block_q_dq_new,
-            block_sizes.block_kv_dq,
-        )
-        print(q_seq_len // block_sizes.block_q_dq, kv_seq_len // block_kv_dkv_new)
-
+    # Compute backward-compatible block sizes (no external BlockSizes input)
+    block_sizes = BlockSizes.init_default(
+        query.shape[-3],
+        key.shape[-3],
+        block_q,
+        block_k,
+        block_q_dkv,
+        block_kv_dkv,
+        block_q_dq,
+        block_kv_dq,
+    )
     # Score modifier gradient is handled via bias classes in pallas kernels.
 
     # If compiling for CPU, enforce interpret mode
