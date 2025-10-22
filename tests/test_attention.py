@@ -656,13 +656,13 @@ def _build_seq_len_dense_mask(seq_lengths: jax.Array, q_len: int) -> jax.Array:
 
     True if (i< L_b and j < L_b) OR (i == j).
     """
-    b = seq_lengths.shape[0]
     q_idx = jnp.arange(q_len)
     valid_q = q_idx[None, :] < seq_lengths[:, None]  # [B, Q]
     valid_k = valid_q
     rect = valid_q[:, :, None] & valid_k[:, None, :]
     eye = jnp.eye(q_len, dtype=rect.dtype)[None, :, :]
-    return rect | eye
+    mask = rect | eye
+    return mask[:, None, :, :]
 
 
 @pytest.mark.parametrize(

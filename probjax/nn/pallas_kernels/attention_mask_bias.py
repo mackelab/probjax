@@ -704,9 +704,13 @@ class SeqLenMask(AttentionMask):
         if seg_q is not None:
             # seg_q and seg_k are per-position vectors (block-sized), each entry equal to L.
             # Build rectangular validity from q and k indices separately.
+            seg_q = jnp.asarray(seg_q)
+            seg_k = seg_k if seg_k is not None else seg_q
+            seg_k = jnp.asarray(seg_k)
+            q_idx = jnp.asarray(q_idx)
+            k_idx = jnp.asarray(k_idx)
             valid_q = q_idx < seg_q  # [Q]
             # If seg_k not provided, default to seg_q (self-attention case).
-            seg_k = seg_k if seg_k is not None else seg_q
             valid_k = k_idx < seg_k  # [K]
             rect = valid_q[:, None] & valid_k[None, :]
             diag = q_idx[:, None] == k_idx[None, :]
@@ -715,13 +719,16 @@ class SeqLenMask(AttentionMask):
             # Fallback for cases where we call without seg_* (should be vmapped over batch).
             # self.seq_lengths shape [B]; compare against q_idx/k_idx assuming single batch use.
             # Construct per-batch boolean matrices [B, Q, K]. Outside-L diagonal is kept.
-            L = self.seq_lengths
+            L = jnp.asarray(self.seq_lengths)
+            q_idx = jnp.asarray(q_idx)
+            k_idx = jnp.asarray(k_idx)
             # Broadcast batch lengths to index domain; these branches are less commonly used in-kernel.
             valid_q = q_idx[None, :] < L[:, None]
             valid_k = k_idx[None, :] < L[:, None]
             rect = valid_q[:, :, None] & valid_k[:, None, :]
-            eye = jnp.eye(rect.shape[-1], dtype=rect.dtype)[None, :, :]
-            return rect | eye
+            # Diagonal guard is independent of batch; broadcast across batches.
+            diag = jnp.equal(q_idx[:, None], k_idx[None, :])[None, :, :]
+            return rect | diag
 
     # PyTree registration
     def tree_flatten(self):
@@ -741,7 +748,9 @@ class SeqLenMask(AttentionMask):
     ):
         # Provide a per-batch row view of length q_len; kernel will slice with curr_q_slice.
         q_spec = pl.BlockSpec((None, q_len), lambda _, j, k_: (j, 0))
-        return q_spec, None
+        kv_extent = kv_len if kv_len is not None else q_len
+        k_spec = pl.BlockSpec((None, kv_extent), lambda _, j, k_: (j, 0))
+        return q_spec, k_spec
 
     def get_data_block_spec_backward_pass(
         self,
@@ -756,7 +765,9 @@ class SeqLenMask(AttentionMask):
     ) -> tuple[None, None]:
         # Backward grids use (B, H, tile) ordering; we still expose a row view per batch.
         q_spec = pl.BlockSpec((None, q_len), lambda i, j, k_: (i, 0))
-        return q_spec, None
+        kv_extent = kv_len if kv_len is not None else q_len
+        k_spec = pl.BlockSpec((None, kv_extent), lambda i, j, k_: (i, 0))
+        return q_spec, k_spec
 
     def get_data(
         self,
@@ -769,7 +780,9 @@ class SeqLenMask(AttentionMask):
             raise ValueError("SeqLenMask.get_data requires q_seq_len")
         L = jnp.asarray(self.seq_lengths)
         Lbq = jnp.broadcast_to(L[:, None], (L.shape[0], q_seq_len))
-        return Lbq, None
+        kv_extent = kv_seq_len if kv_seq_len is not None else q_seq_len
+        Lbk = jnp.broadcast_to(L[:, None], (L.shape[0], kv_extent))
+        return Lbq, Lbk
 
     def block_mask(
         self,
