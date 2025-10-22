@@ -27,18 +27,12 @@ __all__ = [
     "compute_block_iterators",
     "compute_kv_iterators",
     "compute_block_bounds",
-    # Materializers
-    "materialize_mask",
-    "materialize_bias",
     # Bias helpers
-    "apply_attention_logit_biases",
     "make_segment_bias",
     "compute_padding_biases",
     "alibi_get_slopes",
     # Flash helpers
     "FlashMaskFn",
-    "flash_causal_mask_fn",
-    "flash_local_window_mask_fn",
     # Flash attention utilities
     "get_cpu_dot_precision",
     "get_gpu_dot_precision",
@@ -206,60 +200,7 @@ def compute_block_bounds(
     return q_start, q_end, kv_start, kv_end
 
 
-# ---------------------------- Materializers ----------------------------------
-
-
-def materialize_mask(
-    mask_mod_fn: MaskModFn,
-    q_len: int,
-    kv_len: int,
-    *,
-    segment_ids: Optional[Tuple[Array, Array] | Array] = None,
-) -> Array:
-    """Materializes a boolean mask array of shape [B, H, Q, K]."""
-    q_idx = jnp.arange(q_len)
-    k_idx = jnp.arange(kv_len)
-    seg_q, seg_k = ensure_tuple_segment_ids(segment_ids)
-
-    sq = None if seg_q is None else seg_q[b_idx]
-    sk = None if seg_k is None else seg_k[b_idx]
-    mask = mask_mod_fn(q_idx, k_idx, sq, sk)
-
-    return mask
-
-
-def materialize_bias(
-    score_mod_fn: ScoreModFn,
-    batch_size: int,
-    num_heads: int,
-    q_len: int,
-    kv_len: int,
-) -> Array:
-    """Materializes an additive bias array [B, H, Q, K] from a score modifier."""
-    q_idx = jnp.arange(q_len)
-    k_idx = jnp.arange(kv_len)
-
-    def per_head(bh: Array) -> Array:
-        b_idx, h_idx = bh
-        base = jnp.zeros((q_len, kv_len))
-        return score_mod_fn(base, b_idx, h_idx, q_idx, k_idx)
-
-    bh = jnp.stack(
-        jnp.meshgrid(jnp.arange(batch_size), jnp.arange(num_heads), indexing="ij"),
-        axis=-1,
-    ).reshape(-1, 2)
-    bi: Array = jax.vmap(per_head)(bh).reshape(batch_size, num_heads, q_len, kv_len)
-    return bi
-
-
 # ------------------------------ Bias Helpers ---------------------------------
-
-
-def apply_attention_logit_biases(bias_a: Array, bias_b: Array | None) -> Array:
-    """Combines two bias tensors, handling None and broadcasting."""
-    if bias_b is None:
-        return bias_a
-    return bias_a + bias_b
 
 
 def make_segment_bias(source_segments: Array, target_segments: Array) -> Array:
@@ -304,32 +245,6 @@ def alibi_get_slopes(num_heads: int) -> Array:
 
     slopes = _slopes_list(num_heads)
     return jnp.asarray(slopes, dtype=jnp.float32)
-
-
-# -------------------- FlashAttention Mask Adapters ---------------------------
-
-
-def flash_causal_mask_fn() -> FlashMaskFn:
-    """Returns a FlashAttention-compatible causal mask function."""
-
-    def fn(rows: Array, cols: Array) -> Array:
-        return rows >= cols
-
-    return fn
-
-
-def flash_local_window_mask_fn(
-    left_window: int, right_window: Optional[int] = None
-) -> FlashMaskFn:
-    """Returns a FlashAttention-compatible local window mask function."""
-    lw = int(left_window)
-    rw = int(left_window if right_window is None else right_window)
-
-    def fn(rows: Array, cols: Array) -> Array:
-        diff = rows - cols
-        return jnp.logical_and(diff <= lw, diff >= -rw)
-
-    return fn
 
 
 # -------------------- FlashAttention Utilities -------------------------------

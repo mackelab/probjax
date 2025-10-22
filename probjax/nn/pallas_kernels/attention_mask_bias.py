@@ -10,63 +10,13 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental import pallas as pl
 
-from probjax.utils.typing import Array, Callable
-
+from probjax.utils.typing import Array
 from .utils import (
-    DEFAULT_MASK_VALUE,
-    NEG_INF,
-    alibi_get_slopes,
-    apply_attention_logit_biases,
     ceil_div,
-    compute_block_bounds,
-    compute_block_iterators,
-    compute_kv_iterators,
-    compute_padding_biases,
     fast_blockmask_causal,
     fast_blockmask_local_window,
-    make_segment_bias,
-    materialize_bias,
-    materialize_mask,
     query_iterator_indices,
 )
-
-__all__ = [
-    "AttentionMask",
-    "AttentionBias",
-    "CausalMask",
-    "LocalWindowMask",
-    "KeyPaddingMask",
-    "SameSegmentMask",
-    "NoMask",
-    "FromMaskBias",
-    "ConstantBias",
-    "DenseBias",
-    "get_bias_grad",
-    "IdentityBias",
-    "CausalBias",
-    "ALiBiBias",
-    "DistanceDecayBias",
-    "bias_identity",
-    "bias_causal",
-    "bias_alibi",
-    "bias_distance_decay",
-    "AttentionLogitBiasLayer",
-    "CausalAttentionLogitBiasLayer",
-    "FullAttentionLogitBiasLayer",
-    "ALiBiAttentionLogitBiasLayer",
-    "SymmetricALiBiAttentionLogitBiasLayer",
-    "compute_padding_biases",
-    "make_segment_bias",
-    "apply_attention_logit_biases",
-    "alibi_get_slopes",
-    "compute_block_iterators",
-    "compute_kv_iterators",
-    "compute_block_bounds",
-    "ceil_div",
-    "materialize_mask",
-    "materialize_bias",
-]
-
 
 # ---------------------------- Base Classes -----------------------------------
 
@@ -91,6 +41,41 @@ class AttentionMask(ABC):
         seg_k: Optional[Array] = None,
     ) -> Array:
         raise NotImplementedError
+
+    def dense(
+        self,
+        q_len: int,
+        kv_len: int,
+        *,
+        batch_size: int = 1,
+        num_heads: int = 1,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> jax.Array:
+        """Materialize a dense boolean mask [B, H, Q, K].
+
+        - For head dimension, masks are head-agnostic and broadcast across H.
+        - For batch dimension, optional `seg_q` and `seg_k` can be provided as
+          [B, Q] and [B, K] to drive per-batch masking where needed.
+        """
+        q_idx = jnp.arange(q_len, dtype=jnp.int32)
+        k_idx = jnp.arange(kv_len, dtype=jnp.int32)
+
+        def per_batch(b: jax.Array) -> jax.Array:
+            # Use JAX-friendly dynamic indexing; avoid Python int() on tracers.
+            if seg_q is None:
+                sq = None
+            else:
+                sq = seg_q[b] if getattr(seg_q, "ndim", 0) >= 2 else seg_q
+            if seg_k is None:
+                sk = None
+            else:
+                sk = seg_k[b] if getattr(seg_k, "ndim", 0) >= 2 else seg_k
+            mk = self.__call__(q_idx, k_idx, sq, sk)  # [Q, K]
+            return jnp.broadcast_to(mk, (num_heads, q_len, kv_len))  # [H, Q, K]
+
+        b_axis = jnp.arange(batch_size, dtype=jnp.int32)
+        return jax.vmap(per_batch)(b_axis)  # [B, H, Q, K]
 
     # Optional: Pallas data specs for mask data per side. Default: None.
     def get_data_block_spec(
@@ -270,6 +255,30 @@ class AttentionBias(ABC):
         data: Optional[Array] = None,
     ) -> Array:  # pragma: no cover - default behavior
         return jnp.ones_like(scores)
+
+    def dense(
+        self,
+        q_len: int,
+        kv_len: int,
+        *,
+        batch_size: int = 1,
+        num_heads: int = 1,
+    ) -> jax.Array:
+        """Materialize a dense additive bias tensor [B, H, Q, K].
+
+        Default implementation evaluates the bias per head and broadcasts across batch.
+        Subclasses with stored dense data (e.g., DenseBias) may override for efficiency.
+        """
+        q_idx = jnp.arange(q_len, dtype=jnp.int32)
+        k_idx = jnp.arange(kv_len, dtype=jnp.int32)
+
+        def per_head(h: jax.Array) -> jax.Array:
+            base = jnp.zeros((q_len, kv_len), dtype=jnp.float32)
+            return self(base, h, q_idx, k_idx)  # [Q, K]
+
+        h_axis = jnp.arange(num_heads, dtype=jnp.int32)
+        per_h = jax.vmap(per_head)(h_axis)  # [H, Q, K]
+        return jnp.broadcast_to(per_h, (batch_size, num_heads, q_len, kv_len))
 
 
 # -------------------------- Composition helpers ------------------------------
@@ -1013,6 +1022,35 @@ class DenseBias(AttentionBias):
 
     def get_data(self) -> Array:
         return self.bias
+
+    def dense(
+        self,
+        q_len: int,
+        kv_len: int,
+        *,
+        batch_size: int = 1,
+        num_heads: int = 1,
+    ) -> jax.Array:
+        b = self.bias
+        if hasattr(b, "shape") and b.shape[-2:] != (q_len, kv_len):
+            raise ValueError(
+                f"DenseBias shape mismatch: bias[...,Q,K]={b.shape[-2:]} vs ({q_len},{kv_len})"
+            )
+        B_src, H_src = int(b.shape[0]), int(b.shape[1])
+        # Validate broadcastability
+        if not (B_src in (1, batch_size)):
+            raise ValueError(f"Cannot broadcast bias batch dim {B_src} to {batch_size}")
+        if not (H_src in (1, num_heads)):
+            raise ValueError(f"Cannot broadcast bias head dim {H_src} to {num_heads}")
+        target_shape = (
+            batch_size,
+            num_heads,
+            q_len,
+            kv_len,
+        )
+        if B_src == batch_size and H_src == num_heads:
+            return b
+        return jnp.broadcast_to(b, target_shape)
 
     # PyTree registration
     def tree_flatten(self):

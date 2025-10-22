@@ -21,13 +21,11 @@ from probjax.nn.pallas_kernels.attention_mask_bias import (
     bias_causal,
     bias_alibi,
     bias_distance_decay,
-    compute_block_iterators,
-    compute_kv_iterators,
 )
 from probjax.nn.pallas_kernels.utils import (
     DEFAULT_MASK_VALUE,
-    materialize_mask,
-    materialize_bias,
+    compute_block_iterators,
+    compute_kv_iterators,
 )
 
 

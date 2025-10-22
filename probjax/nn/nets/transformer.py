@@ -219,16 +219,16 @@ class Transformer(nnx.Module):
             v = jnp.asarray(v)
         if context is not None:
             context = jnp.asarray(context)
-
-        if mask is not None:
-            if mask.ndim == 2:
-                mask = mask[None, :, :]
-            elif mask.ndim == 3:
-                mask = mask[:, None, :, :]
-            elif mask.ndim == 4:
-                mask = mask
-            else:
-                raise ValueError(f"Mask must have ndim 2 or 3, got {mask.ndim}.")
+        if isinstance(mask, jax.Array):
+            if mask is not None:
+                if mask.ndim == 2:
+                    mask = mask[None, :, :]
+                elif mask.ndim == 3:
+                    mask = mask[:, None, :, :]
+                elif mask.ndim == 4:
+                    mask = mask
+                else:
+                    raise ValueError(f"Mask must have ndim 2 or 3, got {mask.ndim}.")
 
         shape = q.shape
         q = q.reshape(-1, q.shape[-2], q.shape[-1])
