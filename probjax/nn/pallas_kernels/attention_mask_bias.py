@@ -680,6 +680,44 @@ class SeqLenMask(AttentionMask):
     seq_lengths: Array  # Per query key lengths [B]
     stateful: bool = True
 
+    def dense(
+        self,
+        q_len: int,
+        kv_len: int,
+        *,
+        batch_size: int = 1,
+        num_heads: int = 1,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> jax.Array:
+        """Materialize [B, H, Q, K] respecting per-batch seq lengths."""
+        if seg_q is not None or seg_k is not None:
+            return super().dense(
+                q_len,
+                kv_len,
+                batch_size=batch_size,
+                num_heads=num_heads,
+                seg_q=seg_q,
+                seg_k=seg_k,
+            )
+
+        L = jnp.asarray(self.seq_lengths).reshape(-1)
+        b = L.shape[0]
+        if batch_size != b:
+            raise ValueError(
+                f"SeqLenMask.dense batch_size={batch_size} does not match stored lengths {b}"
+            )
+
+        q_idx = jnp.arange(q_len, dtype=jnp.int32)
+        k_idx = jnp.arange(kv_len, dtype=jnp.int32)
+        valid_q = q_idx[None, :] < L[:, None]
+        valid_k = k_idx[None, :] < L[:, None]
+        rect = valid_q[:, :, None] & valid_k[:, None, :]
+        diag = jnp.equal(q_idx[:, None], k_idx[None, :])[None, :, :]
+        mask = rect | diag
+        mask = mask[:, None, :, :]
+        return jnp.broadcast_to(mask, (b, num_heads, q_len, kv_len))
+
     def __call__(
         self,
         q_idx: Array,

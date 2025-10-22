@@ -692,7 +692,7 @@ def test_seq_len_mask_forward(batch_size, seq_len, num_heads, qkv_dim):
     "batch_size, seq_len, num_heads, qkv_dim",
     [
         (2, 32, 4, 16),
-        (2, 48, 2, 8),
+        (2, 64, 2, 8),
     ],
 )
 def test_seq_len_mask_backward(batch_size, seq_len, num_heads, qkv_dim):
