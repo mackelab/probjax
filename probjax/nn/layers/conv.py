@@ -10,6 +10,7 @@ from flax.typing import Initializer
 from probjax.nn.layers.attention import MultiHeadAttention
 from probjax.nn.layers.encoding import PosEncode
 from probjax.nn.layers.fuse import AdditiveFuse, AffineFuse, ConcatFuse, GatedFuse
+from probjax.nn.layers.reg import DropPath
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
@@ -304,6 +305,7 @@ class ResnetBlock(nnx.Module):
         strides: int | Sequence[int] = 1,
         context_features: int | None = None,
         rescale_skip: bool = False,
+        use_drop_path: bool = True,
         dropout_rate: float = 0.0,
         precision: PrecisionLike | None = None,
         dtype: jnp.dtype | None = None,
@@ -376,6 +378,11 @@ class ResnetBlock(nnx.Module):
         else:
             self.dropout = None
 
+        if use_drop_path and self.dropout_rate == 0.0:
+            self.dropout_path = DropPath(drop_rate=dropout_rate, rngs=rngs)
+        else:
+            self.dropout_path = None
+
     def __call__(
         self,
         inputs: ArrayLike,
@@ -398,6 +405,8 @@ class ResnetBlock(nnx.Module):
         skip_connection = self.skip_connection(inputs).astype(
             self.preferred_element_type
         )
+        if self.dropout_path:
+            x = self.dropout_path(x, deterministic=deterministic)
         out = x + skip_connection
         if self.rescale_skip:
             # Scale by sqrt(2) to preserve variance when adding
@@ -420,6 +429,7 @@ class SpatialSelfAttention(nnx.Module):
         num_heads: int = 8,
         attn_size: int | None = None,
         dropout_rate: float = 0.0,
+        use_drop_path: bool = True,
         pos_emb: nnx.Module | None = None,
         precision: PrecisionLike | None = None,
         dtype: jnp.dtype | None = None,
@@ -428,18 +438,18 @@ class SpatialSelfAttention(nnx.Module):
         norm: type[nnx.LayerNorm]
         | type[nnx.GroupNorm]
         | type[nnx.Module] = nnx.GroupNorm,
-        mha: type[MultiHeadAttention] | type[nnx.Module] = MultiHeadAttention,
+        mha_cls: type[MultiHeadAttention] | type[nnx.Module] = MultiHeadAttention,
     ):
         self.preferred_element_type = preferred_element_type
         self.num_spatial_dims = num_spatial_dims
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, None
         )
-        precision_kwargs = filter_precision_kwargs(mha, **precision_kwargs)
+        precision_kwargs = filter_precision_kwargs(mha_cls, **precision_kwargs)
 
         # Layers
         self.norm = norm(in_features, rngs=rngs)
-        self.attn = mha(
+        self.attn = mha_cls(
             num_heads=num_heads,
             in_features=in_features,
             qkv_features=in_features // num_heads
@@ -460,6 +470,11 @@ class SpatialSelfAttention(nnx.Module):
         else:
             self.context_fuse = None
 
+        if use_drop_path and dropout_rate > 0.0:
+            self.dropout_path = DropPath(drop_rate=dropout_rate, rngs=rngs)
+        else:
+            self.dropout_path = None
+
     def __call__(
         self, x: ArrayLike, context: ArrayLike | None = None, deterministic: bool = True
     ) -> Array:
@@ -474,6 +489,8 @@ class SpatialSelfAttention(nnx.Module):
         y = self.attn(y, deterministic=deterministic)  # MultiHeadAttention
         y = y.reshape(*b, *spatial_dims, c)
         y = y.astype(self.preferred_element_type)
+        if self.dropout_path:
+            y = self.dropout_path(y, deterministic=deterministic)
         if self.context_fuse is not None and context is not None:
             y = self.context_fuse(x, y, context)
         else:

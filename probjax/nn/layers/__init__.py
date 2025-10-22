@@ -33,3 +33,4 @@ from probjax.nn.layers.lru import (
     mamba_scan,
     ssd,
 )
+from probjax.nn.layers.reg import DropPath
