@@ -1,5 +1,6 @@
 import math
-from typing import Optional
+import numbers
+from typing import Optional, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -86,6 +87,303 @@ class PosEncode(nnx.Module):
         )
 
         return x + pos_encoding
+
+
+
+class RotaryPosEncode(nnx.Module):
+    """Rotary positional encoding module supporting 1D and ND coordinates."""
+
+    def __init__(
+        self,
+        token_dim: int,
+        *,
+        max_seq_len: int = 4_096,
+        base: float = 10_000.0,
+        rotary_dim: Optional[int] = None,
+        spatial_ndims: int | None = None,
+        spatial_shape: int | Sequence[int] | None = None,
+        dtype: DTypeLike | None = None,
+        cache_cos_sin: bool = True,
+        rngs: nnx.Rngs | None = None,
+    ):
+        """Rotary positional embedding module (RoPE).
+
+        Args:
+            token_dim: Feature dimension of the incoming tensor.
+            max_seq_len: Maximum sequence length cached for rotary frequencies.
+            base: Exponential base used to compute inverse frequencies.
+            rotary_dim: Number of leading features to rotate. Defaults to
+                ``token_dim``.
+            spatial_ndims: Number of spatial dimensions expected when using
+                structured grids. Defaults to 1. Ignored when ``spatial_shape``
+                is provided.
+            spatial_shape: Optional static spatial shape. When ``None`` the
+                module treats inputs as 1D unless an explicit shape is supplied
+                at call time.
+            dtype: Optional dtype used for cached cos/sin tables.
+            cache_cos_sin: If True, precomputes cos/sin tables up to
+                ``max_seq_len`` for faster lookups when using sequential
+                positions.
+            rngs: Random number generators (unused, kept for API consistency).
+        """
+        del rngs
+        if token_dim <= 0:
+            raise ValueError("token_dim must be positive")
+        if max_seq_len <= 0:
+            raise ValueError("max_seq_len must be positive")
+        self.token_dim = token_dim
+        self.rotary_dim = rotary_dim or token_dim
+        if self.rotary_dim % 2 != 0:
+            raise ValueError("rotary_dim must be even in order to apply rotations")
+        if self.rotary_dim > token_dim:
+            raise ValueError("rotary_dim cannot exceed token_dim")
+        if spatial_shape is not None:
+            if isinstance(spatial_shape, numbers.Integral):
+                parsed_shape = (int(spatial_shape),)
+            else:
+                parsed_shape = tuple(int(dim) for dim in spatial_shape)
+            if not parsed_shape:
+                raise ValueError("spatial_shape must contain at least one dimension")
+            if spatial_ndims is not None and int(spatial_ndims) != len(parsed_shape):
+                raise ValueError("spatial_shape length must match spatial_ndims when both are provided")
+            self.spatial_shape = parsed_shape
+            self.spatial_ndims = len(parsed_shape)
+        else:
+            if spatial_ndims is None:
+                spatial_ndims = 1
+            if spatial_ndims <= 0:
+                raise ValueError("spatial_ndims must be positive")
+            self.spatial_shape = None
+            self.spatial_ndims = int(spatial_ndims)
+
+        self.max_seq_len = max_seq_len
+        self.base = base
+        self.dtype = dtype
+
+        self._full_inv_freq = self._compute_inv_freq(self.rotary_dim)
+
+        if cache_cos_sin:
+            positions = jnp.arange(max_seq_len, dtype=self._full_inv_freq.dtype)
+            cos, sin = self._compute_cos_sin(positions, self._full_inv_freq)
+            self.cos_cache = nnx.Variable(cos)
+            self.sin_cache = nnx.Variable(sin)
+        else:
+            self.cos_cache = None
+            self.sin_cache = None
+
+    def _compute_inv_freq(self, rotary_dim: int) -> Array:
+        dtype = self.dtype or jnp.float32
+        base = jnp.asarray(self.base, dtype=dtype)
+        exponents = jnp.arange(0, rotary_dim, 2, dtype=dtype) / rotary_dim
+        return 1.0 / (base**exponents)
+
+    def _compute_cos_sin(
+        self,
+        positions: Array,
+        inv_freq: Array,
+    ) -> tuple[Array, Array]:
+        positions = jnp.asarray(positions, dtype=inv_freq.dtype)
+        angles = positions[:, None] * inv_freq[None, :]
+        cos = jnp.cos(angles)
+        sin = jnp.sin(angles)
+        if self.dtype is not None:
+            cos = cos.astype(self.dtype)
+            sin = sin.astype(self.dtype)
+        return cos, sin
+
+    def _lookup_cos_sin_1d(
+        self,
+        seq_len: int,
+        positions: Optional[Array],
+        *,
+        offset: float,
+    ) -> tuple[Array, Array]:
+        if (
+            positions is None
+            and self.cos_cache is not None
+            and self.sin_cache is not None
+        ):
+            offset_int = int(offset)
+            if offset_int == offset and offset_int >= 0:
+                end = offset_int + seq_len
+                if end <= self.max_seq_len:
+                    cos = self.cos_cache.value[offset_int:end]
+                    sin = self.sin_cache.value[offset_int:end]
+                    return cos, sin
+        if positions is None:
+            positions = jnp.arange(
+                seq_len, dtype=self._full_inv_freq.dtype
+            ) + offset
+        else:
+            positions = jnp.asarray(positions, dtype=self._full_inv_freq.dtype)
+        return self._compute_cos_sin(positions, self._full_inv_freq)
+
+    def _apply_rotary(self, x_slice: Array, cos: Array, sin: Array) -> Array:
+        cos = cos.reshape((1,) * (x_slice.ndim - 2) + cos.shape)
+        sin = sin.reshape((1,) * (x_slice.ndim - 2) + sin.shape)
+        even = x_slice[..., ::2]
+        odd = x_slice[..., 1::2]
+        rotated_even = even * cos - odd * sin
+        rotated_odd = odd * cos + even * sin
+        return jnp.stack((rotated_even, rotated_odd), axis=-1).reshape(x_slice.shape)
+
+    def _normalize_offset(self, offset, dims: int) -> tuple[float, ...]:
+        if isinstance(offset, numbers.Real):
+            return (float(offset),) * dims
+        if isinstance(offset, (tuple, list)):
+            if len(offset) == dims:
+                return tuple(float(o) for o in offset)
+            if len(offset) == 1:
+                return tuple(float(offset[0]) for _ in range(dims))
+        raise TypeError(
+            "offset must be a scalar or a sequence matching the positional dimensionality"
+        )
+
+    def __call__(
+        self,
+        x: ArrayLike,
+        idx: ArrayLike | None = None,
+        *,
+        offset=0,
+    ) -> Array:
+        """Apply rotary positional encoding.
+
+        Args:
+            x: Input array of shape [..., seq_len, token_dim].
+            idx: Optional positions. For 1D inputs the shape is ``[seq_len]``.
+                For ND inputs supply ``[seq_len, ndim]`` coordinates.
+            offset: Scalar (1D) or sequence (ND) indicating the starting
+                coordinate when ``idx`` is not provided or when a shift is
+                required.
+
+        Returns:
+            Array with rotary encodings applied to the first ``rotary_dim`` features.
+
+        Examples:
+            1. Sequential 1D tokens::
+
+                   x = jnp.zeros((batch, length, model_dim))
+                   rope = RotaryPosEncode(model_dim)
+                   x = rope(x)  # implicit indices [0, 1, ..., length - 1]
+
+            2. 2D image grid::
+
+                   h, w = 16, 16
+                   coords = jnp.stack(jnp.meshgrid(jnp.arange(h), jnp.arange(w), indexing="ij"), axis=-1)
+                   coords = coords.reshape(h * w, 2)
+                   x = jnp.zeros((batch, h * w, model_dim))
+                   rope = RotaryPosEncode(model_dim, rotary_dim=64)
+                   x = rope(x, idx=coords)
+        """
+        x = jnp.asarray(x)
+        seq_len = x.shape[-2]
+
+        idx_arr = None if idx is None else jnp.asarray(idx)
+        if idx_arr is not None and idx_arr.shape[0] != seq_len:
+            raise ValueError(
+                f"idx shape {idx_arr.shape} doesn't match sequence length {seq_len}"
+            )
+        if idx_arr is not None and idx_arr.ndim > 2:
+            raise ValueError("idx must be rank 1 or 2")
+
+        if idx_arr is None:
+            position_dims = 1
+        elif idx_arr.ndim == 1:
+            position_dims = 1
+        else:
+            position_dims = idx_arr.shape[-1]
+
+        offsets = self._normalize_offset(offset, position_dims)
+
+        rotary_slice = x[..., : self.rotary_dim]
+        remainder = x[..., self.rotary_dim :] if self.rotary_dim < self.token_dim else None
+
+        if position_dims == 1:
+            idx_1d = None if idx_arr is None else idx_arr.reshape((seq_len,))
+            cos, sin = self._lookup_cos_sin_1d(seq_len, idx_1d, offset=offsets[0])
+            rotary_out = self._apply_rotary(rotary_slice, cos, sin)
+        else:
+            if self.rotary_dim % position_dims != 0:
+                raise ValueError(
+                    "rotary_dim must be divisible by the number of positional dimensions"
+                )
+            chunk = self.rotary_dim // position_dims
+            if chunk % 2 != 0:
+                raise ValueError(
+                    "rotary_dim per positional dimension must be even"
+                )
+            if idx_arr is None:
+                raise ValueError(
+                    "idx must be provided when using ND rotary coordinates"
+                )
+            inv_freq_axis = self._compute_inv_freq(chunk)
+            rotated_parts = []
+            for axis in range(position_dims):
+                pos_axis = idx_arr[:, axis] + offsets[axis]
+                cos_axis, sin_axis = self._compute_cos_sin(pos_axis, inv_freq_axis)
+                axis_slice = rotary_slice[..., axis * chunk : (axis + 1) * chunk]
+                rotated_parts.append(self._apply_rotary(axis_slice, cos_axis, sin_axis))
+            rotary_out = jnp.concatenate(rotated_parts, axis=-1)
+
+        if remainder is not None:
+            return jnp.concatenate([rotary_out, remainder], axis=-1)
+        return rotary_out
+
+    def _apply_spatial(
+        self,
+        x: ArrayLike,
+        spatial_shape: int | Sequence[int] | None = None,
+        *,
+        offset=0,
+    ) -> Array:
+        """Apply rotary encoding over a structured spatial grid.
+
+        Args:
+            x: Input array shaped [..., prod(spatial_shape), token_dim].
+            spatial_shape: Spatial dimensions that were flattened into the
+                sequence axis. When ``None``, the instance uses ``self.spatial_shape``
+                if available, otherwise infers a 1D layout.
+            offset: Optional scalar or per-dimension offset applied via the
+                rotary phase.
+
+        Returns:
+            Array with rotary encodings applied along the final-but-one axis.
+        """
+        x = jnp.asarray(x)
+        if spatial_shape is None:
+            if self.spatial_shape is not None:
+                dims = self.spatial_shape
+            elif self.spatial_ndims == 1:
+                dims = (x.shape[-2],)
+            else:
+                raise ValueError(
+                    "spatial_shape must be provided for rotary encodings with more than one dimension"
+                )
+        elif isinstance(spatial_shape, numbers.Integral):
+            dims = (int(spatial_shape),)
+        else:
+            dims = tuple(int(d) for d in spatial_shape)
+        if not dims:
+            raise ValueError("spatial_shape must contain at least one dimension")
+        if len(dims) != self.spatial_ndims:
+            raise ValueError(
+                f"Expected spatial_shape with {self.spatial_ndims} dims but received {len(dims)}"
+            )
+        seq_len = math.prod(dims)
+        if x.shape[-2] != seq_len:
+            raise ValueError(
+                f"Expected sequence length {seq_len} for spatial_shape {dims} "
+                f"but received {x.shape[-2]}"
+            )
+        dtype = self._full_inv_freq.dtype
+        if len(dims) == 1:
+            coords = jnp.arange(seq_len, dtype=dtype)
+        else:
+            axes = jnp.meshgrid(
+                *[jnp.arange(dim, dtype=dtype) for dim in dims], indexing="ij"
+            )
+            coords = jnp.stack(axes, axis=-1).reshape(seq_len, len(dims))
+        return self(x, idx=coords, offset=offset)
 
 
 class LearnablePosEncode(nnx.Module):

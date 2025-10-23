@@ -15,8 +15,10 @@ from probjax.nn.layers.conv import (
 from probjax.nn.layers.encoding import (
     GaussianFourierEmbedding,
     LearnablePosEncode,
+    RotaryPosEncode,
     OneHot,
     PosEncode,
+    RotaryPosEncode,
 )
 from probjax.nn.layers.fuse import (
     AdditiveFuse,

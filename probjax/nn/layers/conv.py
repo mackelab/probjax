@@ -8,7 +8,7 @@ from flax import nnx
 from flax.typing import Initializer
 
 from probjax.nn.layers.attention import MultiHeadAttention
-from probjax.nn.layers.encoding import PosEncode
+from probjax.nn.layers.encoding import PosEncode, RotaryPosEncode
 from probjax.nn.layers.fuse import AdditiveFuse, AffineFuse, ConcatFuse, GatedFuse
 from probjax.nn.layers.reg import DropPath
 from probjax.nn.utils import (
@@ -461,7 +461,18 @@ class SpatialSelfAttention(nnx.Module):
             **precision_kwargs,
         )
         if pos_emb is None:
-            self.pos_emb = PosEncode(rngs=rngs)
+            rotary_dim = (
+                in_features // (2 * max(1, num_spatial_dims))
+            ) * (2 * max(1, num_spatial_dims))
+            if rotary_dim == 0:
+                self.pos_emb = PosEncode(rngs=rngs)
+            else:
+                self.pos_emb = RotaryPosEncode(
+                    token_dim=in_features,
+                    rotary_dim=rotary_dim,
+                    spatial_ndims=num_spatial_dims,
+                    rngs=rngs,
+                )
         else:
             self.pos_emb = pos_emb
 
@@ -484,7 +495,9 @@ class SpatialSelfAttention(nnx.Module):
         spatial_dims = x.shape[-self.num_spatial_dims - 1 : -1]
         seq_len = math.prod(spatial_dims)
         c = x.shape[-1]
+        x = x.reshape(*b, seq_len, c)
         x = self.pos_emb(x)
+        x = x.reshape(*b, *spatial_dims, c)
         y = self.norm(x).reshape(*b, seq_len, c)  # →  (B, N, C)  with N = H·W
         y = self.attn(y, deterministic=deterministic)  # MultiHeadAttention
         y = y.reshape(*b, *spatial_dims, c)

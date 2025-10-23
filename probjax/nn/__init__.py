@@ -14,6 +14,7 @@ from probjax.nn.layers import (
     LearnablePosEncode,
     MultiHeadAttention,
     OneHot,
+    RotaryPosEncode,
     Permute,
     PosEncode,
     RescaleConv,
