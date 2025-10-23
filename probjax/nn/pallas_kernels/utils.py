@@ -127,14 +127,14 @@ def fast_blockmask_local_window(
     """
     num_q_blocks = ceil_div(q_len, block_q)
     num_kv_blocks = ceil_div(kv_len, block_k)
-    i = jnp.arange(num_q_blocks)
-    j = jnp.arange(num_kv_blocks)
+    i = np.arange(num_q_blocks)
+    j = np.arange(num_kv_blocks)
     i0 = i * block_q
-    i1 = jnp.minimum((i + 1) * block_q - 1, q_len - 1)
+    i1 = np.minimum((i + 1) * block_q - 1, q_len - 1)
     j0 = j * block_k
-    j1 = jnp.minimum((j + 1) * block_k - 1, kv_len - 1)
-    cond_left = jnp.expand_dims(j0, 0) <= jnp.expand_dims(i1 + right_window, 1)
-    cond_right = jnp.expand_dims(j1, 0) >= jnp.expand_dims(i0 - left_window, 1)
+    j1 = np.minimum((j + 1) * block_k - 1, kv_len - 1)
+    cond_left = np.expand_dims(j0, 0) <= np.expand_dims(i1 + right_window, 1)
+    cond_right = np.expand_dims(j1, 0) >= np.expand_dims(i0 - left_window, 1)
     return cond_left & cond_right
 
 
@@ -144,11 +144,11 @@ def fast_blockmask_causal(
     """Fast block mask for causal mask (allow k <= q)."""
     num_q_blocks = ceil_div(q_len, block_q)
     num_kv_blocks = ceil_div(kv_len, block_k)
-    i = jnp.arange(num_q_blocks)
-    j = jnp.arange(num_kv_blocks)
-    i1 = jnp.minimum((i + 1) * block_q - 1, q_len - 1)
+    i = np.arange(num_q_blocks)
+    j = np.arange(num_kv_blocks)
+    i1 = np.minimum((i + 1) * block_q - 1, q_len - 1)
     j0 = j * block_k
-    return jnp.expand_dims(j0, 0) <= jnp.expand_dims(i1, 1)
+    return np.expand_dims(j0, 0) <= np.expand_dims(i1, 1)
 
 
 def row_iterators(mask_row: Array) -> tuple[Array, Array]:
