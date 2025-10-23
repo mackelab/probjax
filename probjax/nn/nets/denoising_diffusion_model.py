@@ -274,13 +274,15 @@ class DiffusionDenoiser(nnx.Module):
         **kwargs,
     ) -> Array:
         """Compute diffusion denoising loss."""
-        loss_fn = self._build_loss_fn(self._loss_type)
+        self._build_loss_fn(self._loss_type)
         rng_times, rng_loss = jax.random.split(rng, 2)
         ndims = data.ndim - 2
         times = self.noise_schedule(rng_times, (data.shape[0],) + (1,) * ndims)
 
-        axis = tuple(range(1, data.ndim))
-        loss = loss_fn(times, data, *args, rng=rng_loss, axis=axis, **kwargs)
+        if 'axis' not in kwargs:
+            axis = tuple(range(1, data.ndim))
+            kwargs['axis'] = axis
+        loss = self._loss_fn(times, data, *args, rng=rng_loss,**kwargs)
         return loss
 
 

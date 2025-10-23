@@ -62,12 +62,12 @@ def base_denoising_loss(
     loss = (x_pred - x0) ** 2
     if loss_mask is not None:
         loss = jnp.where(~loss_mask, loss, jnp.zeros_like(loss))
+    loss = weight * loss if weight is not None else loss
     loss = jnp.sum(loss, axis=axis)
 
     if control_variate:
         raise NotImplementedError("Control variate is not implemented yet.")
 
-    loss = loss * weight.reshape(loss.shape) if weight is not None else loss
 
     return loss
 
@@ -114,9 +114,8 @@ def base_eps_prediction_loss(
 
     if loss_mask is not None:
         loss = jnp.where(~loss_mask, loss, jnp.zeros_like(loss))
+    loss = weight * loss if weight is not None else loss
     loss = jnp.sum(loss, axis=axis)
-
-    loss = loss * weight.reshape(loss.shape) if weight is not None else loss
 
     return loss
 
@@ -178,9 +177,8 @@ def base_v_prediction_loss(
 
     if loss_mask is not None:
         loss = jnp.where(~loss_mask, loss, jnp.zeros_like(loss))
+    loss = weight * loss if weight is not None else loss
     loss = jnp.sum(loss, axis=axis)
-
-    loss = loss * weight.reshape(loss.shape) if weight is not None else loss
 
     return loss
 
@@ -311,7 +309,6 @@ def build_time_dependent_denoising_loss(
     std_fn: Callable[[ArrayLike], Array],
     weight_fn: WeightFn,
     argnums: int = 0,
-    axis: int = -1,
     control_variate: bool = False,
     copula: Optional[Callable] = None,
     reduction_fn: ReductionFn = jnp.mean,
@@ -335,7 +332,7 @@ def build_time_dependent_denoising_loss(
         A loss function that takes time and inputs and returns a scalar loss value
     """
 
-    def loss_fn(t, *args, rng=None, loss_mask=None, **kwargs):
+    def loss_fn(t, *args, rng=None, loss_mask=None, axis=-1, **kwargs):
         assert (
             rng is not None
         ), "loss_fn does require rngs, pass them to function kwargs."
@@ -350,7 +347,6 @@ def build_time_dependent_denoising_loss(
         new_args = (t,) + args[:argnums] + (x_noisy,) + args[argnums + 1 :]
         weight = weight_fn(t)
 
-        _axis = kwargs.pop("axis", axis)
 
         # Get scale directly from scale_fn
         scale = alpha_t
@@ -364,7 +360,7 @@ def build_time_dependent_denoising_loss(
                 sigma_t,
                 weight,
                 loss_mask,
-                _axis,
+                axis,
                 argnums + 1,
                 control_variate,
                 copula,
@@ -380,7 +376,7 @@ def build_time_dependent_denoising_loss(
                 sigma_t,
                 weight,
                 loss_mask,
-                _axis,
+                axis,
                 argnums + 1,
                 control_variate,
                 copula,
@@ -396,7 +392,7 @@ def build_time_dependent_denoising_loss(
                 sigma_t,
                 weight,
                 loss_mask,
-                _axis,
+                axis,
                 argnums + 1,
                 control_variate,
                 copula,
@@ -412,7 +408,7 @@ def build_time_dependent_denoising_loss(
                 sigma_t,
                 weight,
                 loss_mask,
-                _axis,
+                axis,
                 argnums + 1,
                 *new_args,
                 **kwargs,
