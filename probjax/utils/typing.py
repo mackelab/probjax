@@ -1,18 +1,21 @@
 # minjax_types.py
 # Minimal typing helpers for JAX PyTrees and RNG keys (typed & legacy).
 from __future__ import annotations
+
 from typing import (
     Any,
     Callable,
     Iterable,
     Mapping,
+    Protocol,
     Sequence,
     TypeAlias,
     TypeGuard,
     TypeVar,
     Union,
+    runtime_checkable,
 )
-from typing import Protocol, runtime_checkable
+
 import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
@@ -42,7 +45,7 @@ __all__ = [
 
 # ---------------- Core aliases ----------------
 Array: TypeAlias = jax.Array
-ArrayLike = jax.typing.ArrayLike
+ArrayLike: TypeAlias = jax.typing.ArrayLike
 DTypeLike: TypeAlias = jax.typing.DTypeLike
 PrecisionLike: TypeAlias = Union[
     None,

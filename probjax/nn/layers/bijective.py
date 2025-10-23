@@ -1,19 +1,17 @@
 from functools import partial
-from typing import Optional
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 from flax.typing import Initializer
 
+from probjax.core import custom_inverse
 from probjax.utils.typing import (
     Array,
     ArrayLike,
     DTypeLike,
-    PrecisionLike,
     RngKeyLike,
 )
-from probjax.core import custom_inverse
 
 
 def skew_symmetric_to_rotation_matrix(skew_params: Array, n: int) -> Array:

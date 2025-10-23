@@ -199,6 +199,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         out = self.out(x)
         return out
 
+
 def pad_to_power_of_2(arr: Array, min_size: int = 16, axis=(-1,)) -> Array:
     """Pad the array to the next power of 2 greater than min_size along given axis."""
 
@@ -218,7 +219,6 @@ def pad_to_power_of_2(arr: Array, min_size: int = 16, axis=(-1,)) -> Array:
         for current, target in zip(arr.shape, target_shape, strict=False)
     ]
     return jnp.pad(arr, pad_width)
-
 
 
 def flex_attention(
@@ -297,9 +297,9 @@ def flex_attention(
 
     _, l_q, h, n = query.shape
     _, l_kv, _, _ = key.shape
-    query = pad_to_power_of_2(query, axis=(-3,-1))
-    key = pad_to_power_of_2(key, axis=(-3,-1))
-    value = pad_to_power_of_2(value, axis=(-3,-1))
+    query = pad_to_power_of_2(query, axis=(-3, -1))
+    key = pad_to_power_of_2(key, axis=(-3, -1))
+    value = pad_to_power_of_2(value, axis=(-3, -1))
 
     if query.shape[1] != l_q or key.shape[1] != l_kv:
         # Non power-of-2 sequence lengths, hence padding was applied.
@@ -361,41 +361,6 @@ def flex_attention(
     output = output[:, :l_q, :h, :n]
 
     return output
-
-
-def dot_product_attention_jax(
-    query,
-    key,
-    value,
-    mask=None,
-    dtype=None,
-    precision=None,
-    bias=None,
-    local_window_size=None,
-    implementation=None,
-    is_caual=False,
-    query_seq_lengths=None,
-    key_value_seq_lengths=None,
-    scale=None,
-    module=None,
-    **kwargs,
-):
-    if module is not None:
-        raise ValueError("Saving attention weights is not supported in JAX backend")
-
-    return jax.nn.dot_product_attention(
-        query,
-        key,
-        value,
-        bias=bias,
-        mask=mask,
-        scale=1.0 / jnp.sqrt(query.shape[-1]) if scale is None else scale,
-        is_causal=is_caual,
-        query_seq_lengths=query_seq_lengths,
-        key_value_seq_lengths=key_value_seq_lengths,
-        local_window_size=local_window_size,
-        implementation=implementation,
-    )
 
 
 @partial(jax.jit, static_argnums=(3,))

@@ -305,8 +305,8 @@ class ResnetBlock(nnx.Module):
         strides: int | Sequence[int] = 1,
         context_features: int | None = None,
         rescale_skip: bool = False,
-        use_drop_path: bool = True,
         dropout_rate: float = 0.0,
+        drop_path_rate: float = 0.0,
         precision: PrecisionLike | None = None,
         dtype: jnp.dtype | None = None,
         param_dtype: jnp.dtype | None = None,
@@ -329,6 +329,8 @@ class ResnetBlock(nnx.Module):
                 and should accept `kernel_size`, `padding`, and `strides` as keyword arguments.
             context_features: Optional number of context features for context fusion.
             context_fuse: Type of context fusion to use, either `AffineFuse` or `AdditiveFuse`.
+            dropout_rate: Standard dropout rate applied inside the block.
+            drop_path_rate: Stochastic depth (DropPath) rate for the residual branch.
             kernel_size: Size of the convolutional kernel.
             padding: Padding type for the convolution.
             strides: Strides for the convolution.
@@ -339,6 +341,7 @@ class ResnetBlock(nnx.Module):
         self.context_features = context_features
         self.preferred_element_type = preferred_element_type
         self.dropout_rate = dropout_rate
+        self.drop_path_rate = drop_path_rate
         self.rescale_skip = rescale_skip
 
         precision_kwargs = get_active_precision_kwargs(
@@ -378,8 +381,9 @@ class ResnetBlock(nnx.Module):
         else:
             self.dropout = None
 
-        if use_drop_path and self.dropout_rate == 0.0:
-            self.dropout_path = DropPath(drop_rate=dropout_rate, rngs=rngs)
+        # Use a separate drop path rate for stochastic depth.
+        if self.drop_path_rate > 0.0:
+            self.dropout_path = DropPath(drop_rate=self.drop_path_rate, rngs=rngs)
         else:
             self.dropout_path = None
 
@@ -429,7 +433,7 @@ class SpatialSelfAttention(nnx.Module):
         num_heads: int = 8,
         attn_size: int | None = None,
         dropout_rate: float = 0.0,
-        use_drop_path: bool = True,
+        drop_path_rate: float = 0.0,
         pos_emb: nnx.Module | None = None,
         precision: PrecisionLike | None = None,
         dtype: jnp.dtype | None = None,
@@ -481,15 +485,20 @@ class SpatialSelfAttention(nnx.Module):
         else:
             self.context_fuse = None
 
-        if use_drop_path and dropout_rate > 0.0:
-            self.dropout_path = DropPath(drop_rate=dropout_rate, rngs=rngs)
+        # Use a separate drop path rate for stochastic depth.
+        if drop_path_rate > 0.0:
+            self.dropout_path = DropPath(drop_rate=drop_path_rate, rngs=rngs)
         else:
             self.dropout_path = None
 
     def __call__(
         self, x: ArrayLike, context: ArrayLike | None = None, deterministic: bool = True
     ) -> Array:
-        """Applies group normalization and multi-head self-attention."""
+        """Applies group normalization and multi-head self-attention.
+
+        Dropout (attention dropout) is controlled via `dropout_rate`. Residual
+        stochastic depth is controlled independently via `drop_path_rate`.
+        """
         x = jnp.asarray(x)
         b = x.shape[: -self.num_spatial_dims - 1]
         spatial_dims = x.shape[-self.num_spatial_dims - 1 : -1]

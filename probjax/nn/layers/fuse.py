@@ -10,6 +10,10 @@ from probjax.utils.typing import (
     DTypeLike,
     PrecisionLike,
 )
+from probjax.nn.utils import (
+    filter_precision_kwargs,
+    get_active_precision_kwargs,
+)
 
 
 class Fuse(nnx.Module):
@@ -55,14 +59,16 @@ class AdditiveFuse(Fuse):
             raise ValueError("context_features must be positive")
 
         super().__init__()
+        precision_kwargs = get_active_precision_kwargs(
+            dtype, precision, param_dtype, preferred_element_type
+        )
+        precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
+
         self.linear = layer_cls(
             context_features,
             in_features,
-            dtype=dtype,
-            param_dtype=param_dtype,
-            precision=precision,
-            preferred_element_type=preferred_element_type,
             rngs=rngs,
+            **precision_kwargs,
         )
 
     def __call__(self, x: ArrayLike, context: ArrayLike) -> Array:
@@ -124,27 +130,26 @@ class AffineFuse(Fuse):
             raise ValueError("context_features must be positive")
 
         super().__init__()
+        precision_kwargs = get_active_precision_kwargs(
+            dtype, precision, param_dtype, preferred_element_type
+        )
+        precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
+
         self.linear_scale = layer_cls(
             context_features,
             in_features,
-            dtype=dtype,
-            param_dtype=param_dtype,
-            precision=precision,
-            preferred_element_type=preferred_element_type,
             use_bias=use_bias,
             kernel_init=nnx.initializers.zeros,
             rngs=rngs,
+            **precision_kwargs,
         )
         self.linear_bias = layer_cls(
             context_features,
             in_features,
-            dtype=dtype,
-            param_dtype=param_dtype,
-            precision=precision,
-            preferred_element_type=preferred_element_type,
             use_bias=use_bias,
             kernel_init=nnx.initializers.zeros,
             rngs=rngs,
+            **precision_kwargs,
         )
         self.scale_activation = scale_activation
 
@@ -200,23 +205,22 @@ class ConcatFuse(Fuse):
             raise ValueError("context_features must be positive")
 
         super().__init__()
+        precision_kwargs = get_active_precision_kwargs(
+            dtype, precision, param_dtype, preferred_element_type
+        )
+        precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
+
         self.ctx_layer = layer_cls(
             context_features,
             in_features,
-            dtype=dtype,
-            param_dtype=param_dtype,
-            precision=precision,
-            preferred_element_type=preferred_element_type,
             rngs=rngs,
+            **precision_kwargs,
         )
         self.merge_layer = layer_cls(
             in_features + in_features,
             in_features,
-            dtype=dtype,
-            param_dtype=param_dtype,
-            precision=precision,
-            preferred_element_type=preferred_element_type,
             rngs=rngs,
+            **precision_kwargs,
         )
 
     def __call__(self, x: ArrayLike, context: ArrayLike) -> ArrayLike:
@@ -277,14 +281,16 @@ class GatedFuse(Fuse):
 
         super().__init__()
 
+        precision_kwargs = get_active_precision_kwargs(
+            dtype, precision, param_dtype, preferred_element_type
+        )
+        precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
+
         self.gate_layer = layer_cls(
             context_features,
             in_features,
-            dtype=dtype,
-            param_dtype=param_dtype,
-            precision=precision,
-            preferred_element_type=preferred_element_type,
             rngs=rngs,
+            **precision_kwargs,
         )
 
     def __call__(self, x: ArrayLike, y: ArrayLike, context: ArrayLike) -> ArrayLike:

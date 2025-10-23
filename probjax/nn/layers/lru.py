@@ -6,6 +6,11 @@ import jax.numpy as jnp
 
 # Advanced Pallas kernels (Mamba/SSD) user-facing wrappers
 from probjax.nn.pallas_kernels.mambda import compute_mamba_scan
+from probjax.nn.utils import (
+    filter_precision_kwargs,
+    get_active_precision_kwargs,
+)
+from probjax.utils.typing import DTypeLike, PrecisionLike
 
 
 @jax.vmap
@@ -245,6 +250,10 @@ class MambaLRU(nnx.Module):
         seq_tile_size: int = 64,
         dim_tile_size: int = 128,
         include_out_proj: bool = True,
+        dtype: DTypeLike | None = None,
+        param_dtype: DTypeLike | None = None,
+        precision: PrecisionLike | None = None,
+        preferred_element_type: DTypeLike | None = None,
     ):
         self.in_dim = in_dim
         self.out_dim = out_dim
@@ -256,15 +265,21 @@ class MambaLRU(nnx.Module):
         self.a = nnx.Param(matrix_init(rngs.params(), (state_dim, in_dim), normalization=jnp.sqrt(in_dim)))
         self.d = nnx.Param(matrix_init(rngs.params(), (1, in_dim), normalization=jnp.sqrt(in_dim)))
 
+        # Precision/dtype kwargs for linear projections
+        precision_kwargs = get_active_precision_kwargs(
+            dtype, precision, param_dtype, preferred_element_type
+        )
+        precision_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
+
         # Token-wise generators for b, c, delta
-        self.to_b = nnx.Linear(in_dim, state_dim, rngs=rngs)
-        self.to_c = nnx.Linear(in_dim, state_dim, rngs=rngs)
-        self.to_delta = nnx.Linear(in_dim, in_dim, rngs=rngs)
+        self.to_b = nnx.Linear(in_dim, state_dim, rngs=rngs, **precision_kwargs)
+        self.to_c = nnx.Linear(in_dim, state_dim, rngs=rngs, **precision_kwargs)
+        self.to_delta = nnx.Linear(in_dim, in_dim, rngs=rngs, **precision_kwargs)
 
         # Optional output projection
         self.out = None
         if include_out_proj:
-            self.out = nnx.Linear(in_dim, out_dim, rngs=rngs)
+            self.out = nnx.Linear(in_dim, out_dim, rngs=rngs, **precision_kwargs)
 
     def __call__(self, inputs: jax.Array) -> jax.Array:
         # Accept [L, D] or [B, L, D]
@@ -334,6 +349,10 @@ class SSDLRU(nnx.Module):
         *,
         num_heads: int = 1,
         reduce: str = "sum",
+        dtype: DTypeLike | None = None,
+        param_dtype: DTypeLike | None = None,
+        precision: PrecisionLike | None = None,
+        preferred_element_type: DTypeLike | None = None,
     ):
         self.in_dim = in_dim
         self.out_dim = out_dim if out_dim is not None else in_dim
@@ -343,21 +362,29 @@ class SSDLRU(nnx.Module):
             raise ValueError("reduce must be 'sum' or 'mean'")
         self.reduce = reduce
 
+        # Precision/dtype kwargs for linear projections
+        precision_kwargs = get_active_precision_kwargs(
+            dtype, precision, param_dtype, preferred_element_type
+        )
+        precision_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
+
         # Projections to q/k/v and per-step decay log_alpha
-        self.to_q = nnx.Linear(in_dim, state_dim, rngs=rngs)
-        self.to_k = nnx.Linear(in_dim, state_dim, rngs=rngs)
+        self.to_q = nnx.Linear(in_dim, state_dim, rngs=rngs, **precision_kwargs)
+        self.to_k = nnx.Linear(in_dim, state_dim, rngs=rngs, **precision_kwargs)
         # Set dv = out_dim // num_heads if divisible, else use out_dim per head and sum
         # choose dv so H*dv matches out_dim if divisible; else keep dv=in_dim and post-project later
         if (self.out_dim % self.num_heads) == 0:
             self.dv = self.out_dim // self.num_heads
         else:
             self.dv = in_dim
-        self.to_v = nnx.Linear(in_dim, self.dv, rngs=rngs)
-        self.to_alpha = nnx.Linear(in_dim, self.num_heads, rngs=rngs)
+        self.to_v = nnx.Linear(in_dim, self.dv, rngs=rngs, **precision_kwargs)
+        self.to_alpha = nnx.Linear(in_dim, self.num_heads, rngs=rngs, **precision_kwargs)
         # Optional post-proj if dv*H != out_dim
         self.post = None
         if self.num_heads * self.dv != self.out_dim:
-            self.post = nnx.Linear(self.num_heads * self.dv, self.out_dim, rngs=rngs)
+            self.post = nnx.Linear(
+                self.num_heads * self.dv, self.out_dim, rngs=rngs, **precision_kwargs
+            )
 
     def __call__(self, inputs: jax.Array) -> jax.Array:
         # Accept [L, D] or [B, L, D]
@@ -406,10 +433,18 @@ class LRUCell(nnx.Module):
 
 class MambaCell(nnx.Module):
     def __init__(self, model_dim: int, rngs, *, state_dim: int | None = None, seq_tile_size: int = 64, dim_tile_size: int = 128, **kwargs):
-        del kwargs
         sd = state_dim or model_dim
         # No output projection to preserve dimension
-        self.core = MambaLRU(model_dim, model_dim, sd, rngs, seq_tile_size=seq_tile_size, dim_tile_size=dim_tile_size, include_out_proj=False)
+        self.core = MambaLRU(
+            model_dim,
+            model_dim,
+            sd,
+            rngs,
+            seq_tile_size=seq_tile_size,
+            dim_tile_size=dim_tile_size,
+            include_out_proj=False,
+            **kwargs,
+        )
 
     def __call__(self, inputs: jax.Array) -> jax.Array:
         return self.core(inputs)
@@ -417,10 +452,17 @@ class MambaCell(nnx.Module):
 
 class SSDCell(nnx.Module):
     def __init__(self, model_dim: int, rngs, *, state_dim: int | None = None, num_heads: int = 1, reduce: str = "sum", **kwargs):
-        del kwargs
         sd = state_dim or model_dim
         # Set out_dim=None so SSDLRU maps back to in_dim (model_dim)
-        self.core = SSDLRU(model_dim, None, sd, rngs, num_heads=num_heads, reduce=reduce)
+        self.core = SSDLRU(
+            model_dim,
+            None,
+            sd,
+            rngs,
+            num_heads=num_heads,
+            reduce=reduce,
+            **kwargs,
+        )
 
     def __call__(self, inputs: jax.Array) -> jax.Array:
         return self.core(inputs)
@@ -435,6 +477,10 @@ class LRUBlock(nnx.Module):
         dropout: Optional[float] = None,
         norm: nnx.Module = nnx.LayerNorm,
         activation: Callable = jax.nn.gelu,
+        dtype: DTypeLike | None = None,
+        param_dtype: DTypeLike | None = None,
+        precision: PrecisionLike | None = None,
+        preferred_element_type: DTypeLike | None = None,
     ):
         """Initialize a Linear Recurrent Unit (LRU) block.
         This is a stackable bloc of LRUs with a residual connection and a
@@ -447,8 +493,12 @@ class LRUBlock(nnx.Module):
         if dropout is not None:
             self.dropout1 = nnx.Dropout(dropout, rngs=rngs)
             self.dropout2 = nnx.Dropout(dropout, rngs=rngs)
-        self.out1 = nnx.Linear(model_dim, model_dim, rngs=rngs)
-        self.out2 = nnx.Linear(model_dim, model_dim, rngs=rngs)
+        precision_kwargs = get_active_precision_kwargs(
+            dtype, precision, param_dtype, preferred_element_type
+        )
+        precision_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
+        self.out1 = nnx.Linear(model_dim, model_dim, rngs=rngs, **precision_kwargs)
+        self.out2 = nnx.Linear(model_dim, model_dim, rngs=rngs, **precision_kwargs)
 
     def __call__(self, inputs, deterministic: bool | None = None):
         x = self.norm(inputs)
