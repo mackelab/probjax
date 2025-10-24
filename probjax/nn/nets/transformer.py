@@ -4,13 +4,13 @@ from typing import Callable, Optional
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from jax import Array, nn
+from jax import Array
 
 from probjax.nn.layers.attention import MultiHeadAttention
+from probjax.nn.layers.fuse import AffineFuse, ContextFuse
 from probjax.nn.nets.simple import MLP
-from probjax.nn.layers.fuse import AffineFuse, Fuse
-from probjax.utils.typing import ArrayLike, DTypeLike, PrecisionLike, ModuleLikeType
-from probjax.nn.utils import get_active_precision_kwargs, filter_precision_kwargs
+from probjax.nn.utils import filter_precision_kwargs, get_active_precision_kwargs
+from probjax.utils.typing import ArrayLike, DTypeLike, ModuleLikeType, PrecisionLike
 
 
 class Transformer(nnx.Module):
@@ -40,13 +40,13 @@ class Transformer(nnx.Module):
         act: Callable = jax.nn.gelu,
         skip_connection_attn: bool = True,
         skip_connection_mlp: bool = True,
-        initializer: Optional[nnx.initializers.Initializer] = None,
+        initializer: Optional[nnx.Initializer] = None,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
         norm_cls: type[nnx.Module] = nnx.LayerNorm,
-        context_fusion: type[Fuse] = AffineFuse,
+        context_fusion: type[ContextFuse] = AffineFuse,
         attention_fn: Optional[Callable] = None,
         cross_attention_fn: Optional[Callable] = None,
         mlp_cls: ModuleLikeType = MLP,
@@ -106,7 +106,6 @@ class Transformer(nnx.Module):
             param_dtype,
             preferred_element_type,
         )
-
 
         # Layer norms for the attention and dense blocks.
         self.layer_norms_attn = nnx.List([
