@@ -9,6 +9,7 @@ import numpy as np
 from flax.nnx import MultiHeadAttention as FlaxMultiHeadAttention
 from flax.nnx import combine_masks, dot_product_attention
 from flax.nnx.module import first_from
+from flax.nnx import rnglib
 from jax import lax
 
 from probjax.nn.pallas_kernels.attention import BlockSizes, mha
@@ -78,6 +79,8 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         """
         if rngs is None:
             rngs = self.rngs
+        elif isinstance(rngs, rnglib.Rngs):
+            rngs = rngs.dropout
 
         if inputs_k is None:
             if inputs_v is not None:
@@ -173,7 +176,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
                         "'rngs' must be provided to __call__ method if "
                         "MultiHeadAttention instance is defined with keep_rngs=False."
                     )
-                dropout_rng = rngs.dropout()
+                dropout_rng = rngs()
             else:
                 dropout_rng = None
         else:
