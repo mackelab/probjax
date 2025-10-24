@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Callable, Optional, Sequence
+from typing import Callable, Literal, Optional, Sequence
 
 import flax.nnx as nnx
 import jax
@@ -14,14 +14,35 @@ from probjax.nn.nets.transformer import Transformer
 from probjax.nn.layers.encoding import PosEncode
 
 
-def get_autoregressive_masks(dims: Sequence[int]):
+def get_autoregressive_masks(
+    dims: Sequence[int],
+    *,
+    output_order: Literal["interleaved", "grouped"] = "grouped",
+) -> list[jax.Array]:
     masks = []
-    for i in range(len(dims) - 1):
-        x1 = jnp.arange(dims[i]).reshape(-1, 1) % dims[0] + 1
-        x2 = jnp.arange(dims[i + 1]).reshape(1, -1) % dims[0] + 1
+    if output_order not in {"interleaved", "grouped"}:
+        raise ValueError(
+            f"Unsupported output_order={output_order}. "
+            "Expected one of {'interleaved', 'grouped'}."
+        )
 
-        mask = x2 >= x1 if i != 0 else x2 > x1
+    input_dim = dims[0]
+    for layer_idx in range(len(dims) - 1):
+        x1 = jnp.arange(dims[layer_idx]).reshape(-1, 1) % input_dim + 1
+        if output_order == "grouped" and layer_idx == len(dims) - 2:
+            out_dim = dims[layer_idx + 1]
+            if out_dim % input_dim != 0:
+                raise ValueError(
+                    "Grouped output_order requires final layer size "
+                    "to be a multiple of the input dimension."
+                )
+            repeats = out_dim // input_dim
+            x2_vals = jnp.repeat(jnp.arange(input_dim), repeats)
+            x2 = x2_vals.reshape(1, -1) + 1
+        else:
+            x2 = jnp.arange(dims[layer_idx + 1]).reshape(1, -1) % input_dim + 1
 
+        mask = x2 >= x1 if layer_idx != 0 else x2 > x1
         masks.append(mask)
     return masks
 
@@ -39,12 +60,15 @@ class AutoregressiveMLP(nnx.Module):
         norm_cls: Optional[nnx.LayerNorm | nnx.BatchNorm | nnx.Module] = None,
         activation=jax.nn.gelu,
         activate_final: bool = False,
+        init_last_layer_to_zero: bool = True,
         mlp_cls: ModuleLikeType = MaskedMLP,
+        output_order: Literal["interleaved", "grouped"] = "grouped",
         **kwargs,
     ):
         dims = [in_out_features] + list(hidden_dims) + [in_out_features * bijector_dim]
-        masks = get_autoregressive_masks(dims)
+        masks = get_autoregressive_masks(dims, output_order=output_order)
         self.in_out_features = in_out_features
+        self.bijector_dim = bijector_dim
         self.bijector = bijector
         self.bijector_inv = inverse_and_logabsdet(bijector, invertible_arg=1)
 
@@ -59,6 +83,12 @@ class AutoregressiveMLP(nnx.Module):
             **kwargs,
         )
 
+        if init_last_layer_to_zero:
+            self.masked_mlp.layers[-1].kernel.init = nnx.initializers.zeros
+            self.masked_mlp.layers[-1].kernel.value = jnp.zeros_like(
+                self.masked_mlp.layers[-1].kernel.value
+            )
+
     def predict_bij_params(self, x: jax.Array, context=None):
         return self.masked_mlp(x, context)
 
@@ -70,20 +100,16 @@ class AutoregressiveMLP(nnx.Module):
         def scan_fn(carry, i):
             x = carry
             bij_params = self.masked_mlp(x, context)  # type: ignore
-            # Reshape parameters to (batch_dims..., in_out_dim, bijector_dim)
-            bij_params = bij_params.reshape(
-                bij_params.shape[:-1] + (self.in_out_features, -1)
-            )
             # Get parameters for the i-th dimension using dynamic indexing
             bij_params_i = jax.lax.dynamic_slice(
                 bij_params,
-                (0,) * (bij_params.ndim - 2) + (i, 0),
-                (1,) * (bij_params.ndim - 2) + (1, bij_params.shape[-1]),
+                (0,) * (bij_params.ndim - 1) + (i*self.bijector_dim,),
+                bij_params.shape[:-1] + (self.bijector_dim,),
             )
             bij_params_i = bij_params_i.reshape(bij_params_i.shape[:-2] + (-1,))
             # Apply bijector to the i-th dimension only
             x_i = jax.lax.dynamic_slice(
-                x, (0,) * (x.ndim - 1) + (i,), (1,) * (x.ndim - 1) + (1,)
+                x, (0,) * (x.ndim - 1) + (i,), x.shape[:-1] + (1,)
             )
             x_new_i = self.bijector(bij_params_i, x_i)
             x = x.at[..., i].set(x_new_i[..., 0])
@@ -95,11 +121,20 @@ class AutoregressiveMLP(nnx.Module):
 
     def inverse_and_logdet(self, Tx: jax.Array, context=None):
         bij_params = self.masked_mlp(Tx, context)
-        return self.bijector_inv(bij_params, Tx)
+        bij_params = jnp.reshape(
+            bij_params, Tx.shape + (self.bijector_dim,)
+        )
+        x, logdet = self.bijector_inv(bij_params, Tx[...,None])
+        return x[...,0], logdet
 
     def inverse(self, Tx: jax.Array, context=None):
         bij_params = self.masked_mlp(Tx, context)
-        return self.bijector_inv(bij_params, Tx)[0]
+        bij_params = jnp.reshape(
+            bij_params, bij_params.shape[:-1] + (self.in_out_features, self.bijector_dim,)
+        )
+
+        x = self.bijector_inv(bij_params, Tx[...,None])[0]
+        return x[..., 0]
 
 
 class AutoregressiveTransformer(nnx.Module):

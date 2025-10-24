@@ -726,7 +726,7 @@ def _rational_linear_spline_inv(
 @partial(custom_inverse, inv_argnum=1)
 def rational_linear_spline(params, x, x_min=-10.0, x_max=10.0, y_min=-10.0, y_max=10.0, min_bin_size=1e-4, min_knot_slope=1e-4, bounded=False):
     """Rational linear spline transformation.
-    
+
     Args:
         params: Parameters containing x_pos, y_pos, and knot_slopes
         x: Input values to transform
@@ -734,15 +734,15 @@ def rational_linear_spline(params, x, x_min=-10.0, x_max=10.0, y_min=-10.0, y_ma
         min_bin_size: Minimum size of each bin
         min_knot_slope: Minimum slope at knot points
         bounded: Whether to use bounded interpolation
-        
+
     Returns:
         Transformed values
     """
     x_pos, y_pos, knot_slopes = jnp.split(params, 3, axis=-1)
-    
+
     # Normalize slopes and bins
     knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
-    
+
     x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
         (x_max - min_bin_size) - x_min
     ) + x_min
@@ -780,7 +780,7 @@ def inv_rational_linear_spline(
     bounded: bool = False,
 ):
     """Inverse of the rational linear spline.
-    
+
     Args:
         params: Parameters containing x_pos, y_pos, and knot_slopes
         x: Input values to invert
@@ -788,15 +788,15 @@ def inv_rational_linear_spline(
         min_bin_size: Minimum size of each bin
         min_knot_slope: Minimum slope at knot points
         bounded: Whether to use bounded interpolation
-        
+
     Returns:
         Tuple of (inverse values, log determinant)
     """
     x_pos, y_pos, knot_slopes = jnp.split(params, 3, axis=-1)
-    
+
     # Normalize slopes and bins
     knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
-    
+
     x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
         (x_max - min_bin_size) - x_min
     ) + x_min
@@ -1296,7 +1296,7 @@ def _monotone_hermite_cubic_spline_inv(
 @partial(custom_inverse, inv_argnum=1)
 def monotone_hermite_cubic_spline(params, x, x_min=-10.0, x_max=10.0, y_min=-10.0, y_max=10.0, min_bin_size=1e-4, min_knot_slope=1e-4, bounded=False):
     """Monotone Hermite cubic spline transformation.
-    
+
     Args:
         params: Parameters containing x_pos, y_pos, and knot_slopes
         x: Input values to transform
@@ -1304,15 +1304,15 @@ def monotone_hermite_cubic_spline(params, x, x_min=-10.0, x_max=10.0, y_min=-10.
         min_bin_size: Minimum size of each bin
         min_knot_slope: Minimum slope at knot points
         bounded: Whether to use bounded interpolation
-        
+
     Returns:
         Transformed values
     """
     x_pos, y_pos, knot_slopes = jnp.split(params, 3, axis=-1)
-    
+
     # Normalize slopes and bins
     knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
-    
+
     x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
         (x_max - min_bin_size) - x_min
     ) + x_min
@@ -1350,7 +1350,7 @@ def inv_monotone_hermite_cubic_spline(
     bounded: bool = False,
 ):
     """Inverse of the monotone Hermite cubic spline.
-    
+
     Args:
         params: Parameters containing x_pos, y_pos, and knot_slopes
         x: Input values to invert
@@ -1358,15 +1358,15 @@ def inv_monotone_hermite_cubic_spline(
         min_bin_size: Minimum size of each bin
         min_knot_slope: Minimum slope at knot points
         bounded: Whether to use bounded interpolation
-        
+
     Returns:
         Tuple of (inverse values, log determinant)
     """
     x_pos, y_pos, knot_slopes = jnp.split(params, 3, axis=-1)
-    
+
     # Normalize slopes and bins
     knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
-    
+
     x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
         (x_max - min_bin_size) - x_min
     ) + x_min
@@ -1439,10 +1439,10 @@ learnable_mixture_cdf.definv_and_logdet(_inv_and_logdet_learnable_mixture_cdf)
 
 
 def affine_bijector(
-    params: ArrayLike, x: ArrayLike, min_scale=5e-1, max_scale=5.0, **kwargs
+    params: ArrayLike, x: ArrayLike, min_scale=1e-3, **kwargs
 ):
     loc, scale = jnp.split(params, 2, axis=-1)
-    scale = jax.nn.sigmoid(scale) * (max_scale - min_scale) + min_scale
+    scale = jnp.exp(scale) + min_scale  # ensure positivity
 
     return loc + scale * x
 
