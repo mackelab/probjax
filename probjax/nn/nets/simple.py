@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.nn.layers.fuse import AffineFuse, Fuse
+from probjax.nn.layers.fuse import AffineFuse, ContextFuse
 from probjax.nn.layers.masked import MaskedLinear
 from probjax.nn.utils import (
     filter_precision_kwargs,
@@ -48,7 +48,7 @@ class MLP(nnx.Module):
         norm_cls: type[nnx.Module] | None = None,
         # Allow a single linear class or a per-layer sequence
         linear_cls: ModuleLikeType | Sequence[ModuleLikeType] = nnx.Linear,
-        context_fuse_cls: type[Fuse] = AffineFuse,
+        context_fuse_cls: type[ContextFuse] = AffineFuse,
         rngs: nnx.Rngs,
         **kwargs,
     ):
@@ -108,15 +108,13 @@ class MLP(nnx.Module):
             ctor = partial(linear_cls, rngs=rngs, **filtered, **kwargs)
             linears = [ctor for _ in range(num_layers)]
 
-        self.layers = nnx.List(
-            [
-                linears[i](
-                    feature_dims[i],
-                    feature_dims[i + 1],
-                )
-                for i in range(num_layers)
-            ]
-        )
+        self.layers = nnx.List([
+            linears[i](
+                feature_dims[i],
+                feature_dims[i + 1],
+            )
+            for i in range(num_layers)
+        ])
         if norm_cls is not None:
             self.norm_layers = nnx.List([
                 norm_cls(feature_dims[i + 1], rngs=rngs)
@@ -171,13 +169,16 @@ class MaskedMLP(MLP):
         **kwargs,
     ):
         if len(masks) != len(dims) - 1:
-            raise ValueError(
-                f"Expected {len(dims) - 1} masks, got {len(masks)}"
-            )
+            raise ValueError(f"Expected {len(dims) - 1} masks, got {len(masks)}")
         # Build per-layer masked linear constructors via partial so MLP can handle them
-        masked_linears = [partial(MaskedLinear, mask=masks[i]) for i in range(len(dims) - 1)]
+        masked_linears = [
+            partial(MaskedLinear, mask=masks[i]) for i in range(len(dims) - 1)
+        ]
         # Delegate to MLP with a sequence of constructors
-        super().__init__(feature_dims=dims, linear_cls=masked_linears, rngs=rngs, **kwargs)
+        super().__init__(
+            feature_dims=dims, linear_cls=masked_linears, rngs=rngs, **kwargs
+        )
+
 
 class ResNet(nnx.Module):
     """Residual neural network with optional context conditioning."""
@@ -196,7 +197,7 @@ class ResNet(nnx.Module):
         dtype: Optional[jax.numpy.dtype] = None,
         param_dtype: Optional[jax.numpy.dtype] = None,
         preferred_element_dtype: Optional[jax.numpy.dtype] = None,
-        context_fuse_cls: type[Fuse] = AffineFuse,
+        context_fuse_cls: type[ContextFuse] = AffineFuse,
         norm_cls: Optional[nnx.LayerNorm | nnx.BatchNorm | nnx.Module] = None,
         linear_cls: nnx.Linear | nnx.LoRALinear | nnx.Module = nnx.Linear,
         rngs: nnx.Rngs,
