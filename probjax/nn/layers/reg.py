@@ -47,11 +47,13 @@ class DropPath(nnx.Module):
         if self.broadcast_dims is None:
             mask_shape = () if x.ndim == 0 else (x.shape[0],) + (1,) * (x.ndim - 1)
         else:
-            mask_shape = tuple(1 if i in self.broadcast_dims else x.shape[i]
-                               for i in range(x.ndim))
+            mask_shape = tuple(
+                1 if i in self.broadcast_dims else x.shape[i] for i in range(x.ndim)
+            )
 
-        rngs = rngs or self.rngs
-        key = rngs.dropout()
+        rngs = self.rngs if rngs is None else rngs
+        assert rngs is not None, "rngs must be provided for DropPath during training."
+        key = rngs()
         keep_mask = jax.random.bernoulli(key, keep_prob, mask_shape).astype(x.dtype)
 
         if scale_by_keep and keep_prob > 0:

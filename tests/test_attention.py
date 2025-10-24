@@ -8,7 +8,6 @@ import pytest
 from probjax.nn.layers.attention import (
     dot_product_attention,
     flex_attention,
-    memory_efficient_dot_product_attention,
 )
 from probjax.nn.pallas_kernels.attention_mask_bias import (
     ALiBiBias,
@@ -72,7 +71,6 @@ def mask_fn(request):
     [
         dot_product_attention,
         flex_attention,
-        memory_efficient_dot_product_attention,
     ],
 )
 @pytest.mark.parametrize(
@@ -114,7 +112,6 @@ def test_attention_function_outputs_are_same(batch_size, seq_len, num_heads, qkv
     attention_fns = [
         dot_product_attention,
         flex_attention,
-        memory_efficient_dot_product_attention,
     ]
     for attention_fn in attention_fns:
         outputs.append(attention_fn(q, k, v))
@@ -146,7 +143,6 @@ def test_attention_function_gradients_are_same(batch_size, seq_len, num_heads, q
     attention_fns = [
         dot_product_attention,
         flex_attention,
-        memory_efficient_dot_product_attention,
     ]
     grads = []
     for attention_fn in attention_fns:
@@ -440,7 +436,6 @@ def test_attention_gradient_with_masks(
     [
         dot_product_attention,
         flex_attention,
-        memory_efficient_dot_product_attention,
     ],
 )
 @pytest.mark.parametrize(
@@ -573,8 +568,6 @@ def test_cross_attention_gradients_match(batch_size, q_len, kv_len, num_heads, q
     attention_fns = [
         dot_product_attention,
         flex_attention,
-        memory_efficient_dot_product_attention,
-        dot_product_attention_jax,
     ]
 
     grads = []

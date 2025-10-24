@@ -14,26 +14,13 @@ from probjax.nn.layers.reg import DropPath
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
+    identity_1x1,
 )
 from probjax.utils.typing import (
     Array,
-    ArrayLike,
     DTypeLike,
     PrecisionLike,
 )
-
-
-def identity_1x1(_, shape: Sequence[int], dtype=jnp.float32):
-    """Kernel init for a 1×1 Conv that starts as identity.
-
-    Works for (1, 1, C_in, C_out).  If C_in ≠ C_out the extra
-    channels are zero-filled.
-    """
-    k = jnp.zeros(shape, dtype)
-    diag = jnp.arange(min(shape[2], shape[3]))
-    # set W[0, 0, i, i] = 1
-    k = k.at[0, 0, diag, diag].set(1.0)
-    return k
 
 
 class ConvBlock(nnx.Module):
@@ -54,7 +41,7 @@ class ConvBlock(nnx.Module):
         kernel_dilation: int | Sequence[int] | None = 1,
         feature_group_count: int = 1,
         use_bias: bool = True,
-        mask: ArrayLike | None = None,
+        mask: Array | None = None,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike = jnp.float32,
         precision: PrecisionLike = None,
@@ -119,7 +106,7 @@ class ConvBlock(nnx.Module):
         )
         self.activation = activation
 
-    def __call__(self, x: ArrayLike) -> ArrayLike:
+    def __call__(self, x: Array) -> Array:
         """Applies normalization, activation, and convolution."""
         if self.preactivation:
             if self.norm is not None:
@@ -151,7 +138,7 @@ class ResizeConv(nnx.Module):
         kernel_dilation: int | Sequence[int] | None = 1,
         feature_group_count: int = 1,
         use_bias: bool = True,
-        mask: ArrayLike | None = None,
+        mask: Array | None = None,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike = jnp.float32,
         precision: PrecisionLike = None,
@@ -186,7 +173,7 @@ class ResizeConv(nnx.Module):
         )
         self.preferred_element_type = preferred_element_type
 
-    def __call__(self, x: ArrayLike) -> ArrayLike:
+    def __call__(self, x: Array) -> Array:
         """Resizes input and applies convolution."""
         x = jnp.asarray(x)
         shape = x.shape
@@ -229,7 +216,7 @@ class RescaleConv(nnx.Module):
         kernel_dilation: int | Sequence[int] | None = 1,
         feature_group_count: int = 1,
         use_bias: bool = True,
-        mask: ArrayLike | None = None,
+        mask: Array | None = None,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike = jnp.float32,
         precision: PrecisionLike = None,
@@ -265,7 +252,7 @@ class RescaleConv(nnx.Module):
         )
         self.preferred_element_type = preferred_element_type
 
-    def __call__(self, x: ArrayLike) -> ArrayLike:
+    def __call__(self, x: Array) -> Array:
         """Resizes input and applies convolution."""
         x = jnp.asarray(x)
         shape = x.shape
@@ -315,7 +302,7 @@ class ResnetBlock(nnx.Module):
         context_fuse: type[AffineFuse]
         | type[AdditiveFuse]
         | type[ConcatFuse] = AffineFuse,
-        conv_block: type[nnx.Module] = ConvBlock,
+        conv_block: type[ConvBlock] = ConvBlock,
         rngs: nnx.Rngs,
         **kwargs,
     ):
@@ -389,8 +376,8 @@ class ResnetBlock(nnx.Module):
 
     def __call__(
         self,
-        inputs: ArrayLike,
-        context: ArrayLike | None = None,
+        inputs: Array,
+        context: Array | None = None,
         deterministic: bool = True,
     ) -> Array:
         """Forward pass with optional context fusion and skip connection."""
@@ -439,10 +426,9 @@ class SpatialSelfAttention(nnx.Module):
         dtype: jnp.dtype | None = None,
         param_dtype: jnp.dtype | None = None,
         preferred_element_type: jnp.dtype | None = None,
-        norm: type[nnx.LayerNorm]
-        | type[nnx.GroupNorm]
-        | type[nnx.Module] = nnx.GroupNorm,
-        mha_cls: type[MultiHeadAttention] | type[nnx.Module] = MultiHeadAttention,
+        # Base building block choices:
+        norm_cls: type[nnx.LayerNorm] | type[nnx.GroupNorm] = nnx.GroupNorm,
+        mha_cls: type[MultiHeadAttention] = MultiHeadAttention,
     ):
         self.preferred_element_type = preferred_element_type
         self.num_spatial_dims = num_spatial_dims
@@ -452,7 +438,7 @@ class SpatialSelfAttention(nnx.Module):
         precision_kwargs = filter_precision_kwargs(mha_cls, **precision_kwargs)
 
         # Layers
-        self.norm = norm(in_features, rngs=rngs)
+        self.norm = norm_cls(in_features, rngs=rngs)
         self.attn = mha_cls(
             num_heads=num_heads,
             in_features=in_features,
@@ -465,9 +451,9 @@ class SpatialSelfAttention(nnx.Module):
             **precision_kwargs,
         )
         if pos_emb is None:
-            rotary_dim = (
-                in_features // (2 * max(1, num_spatial_dims))
-            ) * (2 * max(1, num_spatial_dims))
+            rotary_dim = (in_features // (2 * max(1, num_spatial_dims))) * (
+                2 * max(1, num_spatial_dims)
+            )
             if rotary_dim == 0:
                 self.pos_emb = PosEncode(rngs=rngs)
             else:
@@ -492,7 +478,7 @@ class SpatialSelfAttention(nnx.Module):
             self.dropout_path = None
 
     def __call__(
-        self, x: ArrayLike, context: ArrayLike | None = None, deterministic: bool = True
+        self, x: Array, context: Array | None = None, deterministic: bool = True
     ) -> Array:
         """Applies group normalization and multi-head self-attention.
 

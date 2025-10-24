@@ -1,6 +1,3 @@
-from typing import Optional, Sequence
-
-import jax
 import jax.numpy as jnp
 from flax import nnx
 from jax.typing import ArrayLike
@@ -24,7 +21,7 @@ class MaskedLinear(nnx.Linear):
 
     def __call__(self, inputs):
         kernel = jnp.where(self.mask.value, self.kernel.value, 0.0)
-        bias = self.bias.value
+        bias = self.bias.value if self.bias else None
 
         inputs, kernel, bias = self.promote_dtype(
             (inputs, kernel, bias), dtype=self.dtype

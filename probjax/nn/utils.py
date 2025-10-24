@@ -1,18 +1,50 @@
-from functools import partial
-from typing import Callable, Optional
 import inspect
+from functools import partial
+from typing import Sequence
 
 import flax.nnx as nnx
-import jax
 import jax.numpy as jnp
 from jax import lax
 from jax.ops import segment_max  # segment reduction (available in JAX)
-from jaxtyping import Array
 from ott.geometry import costs, pointcloud
 from ott.problems.linear import linear_problem
 from ott.solvers.linear import sinkhorn
 
-from probjax.core.custom_primitives.custom_inverse import custom_inverse
+from probjax.utils.typing import Array
+
+
+def identity_1x1(_, shape: Sequence[int], dtype=jnp.float32):
+    """Kernel init for a 1×1 Conv that starts as identity.
+
+    Works for (1, 1, C_in, C_out).  If C_in ≠ C_out the extra
+    channels are zero-filled.
+    """
+    k = jnp.zeros(shape, dtype)
+    diag = jnp.arange(min(shape[2], shape[3]))
+    # set W[0, 0, i, i] = 1
+    k = k.at[0, 0, diag, diag].set(1.0)
+    return k
+
+
+def pad_to_power_of_2(arr: Array, min_size: int = 16, axis=(-1,)) -> Array:
+    """Pad the array to the next power of 2 greater than min_size along given axis."""
+
+    def next_power_of_2(x):
+        return 1 << (x - 1).bit_length()
+
+    target_shape = list(arr.shape)
+    for ax in axis:
+        seq_len = arr.shape[ax]
+        if seq_len < min_size:
+            target_shape[ax] = min_size
+        else:
+            target_shape[ax] = next_power_of_2(seq_len)
+
+    pad_width = [
+        (0, target - current)
+        for current, target in zip(arr.shape, target_shape, strict=False)
+    ]
+    return jnp.pad(arr, pad_width)
 
 
 def filter_precision_kwargs(cls: type[nnx.Module], **kwargs):
@@ -50,7 +82,9 @@ def filter_precision_kwargs(cls: type[nnx.Module], **kwargs):
     return {key: kwargs[key] for key in kwargs if key in param_names}
 
 
-def get_active_precision_kwargs(dtype, precision, param_dtype, preferred_element_type) -> dict:
+def get_active_precision_kwargs(
+    dtype, precision, param_dtype, preferred_element_type
+) -> dict:
     """Utility function to get the active precision kwargs."""
     precision_kwargs = {}
     if dtype is not None:

@@ -22,7 +22,7 @@ default_embed_init = nnx.initializers.variance_scaling(
 class PosEncode(nnx.Module):
     """Sinusoidal positional embedding module."""
 
-    def __init__(self, max_seq_len: int = 10_000, rngs: nnx.Rngs = None):
+    def __init__(self, max_seq_len: int = 10_000, *, rngs: nnx.Rngs):
         """Positional embedding module using sinusoidal patterns.
 
         Args:
@@ -89,7 +89,6 @@ class PosEncode(nnx.Module):
         return x + pos_encoding
 
 
-
 class RotaryPosEncode(nnx.Module):
     """Rotary positional encoding module supporting 1D and ND coordinates."""
 
@@ -145,7 +144,9 @@ class RotaryPosEncode(nnx.Module):
             if not parsed_shape:
                 raise ValueError("spatial_shape must contain at least one dimension")
             if spatial_ndims is not None and int(spatial_ndims) != len(parsed_shape):
-                raise ValueError("spatial_shape length must match spatial_ndims when both are provided")
+                raise ValueError(
+                    "spatial_shape length must match spatial_ndims when both are provided"
+                )
             self.spatial_shape = parsed_shape
             self.spatial_ndims = len(parsed_shape)
         else:
@@ -211,9 +212,7 @@ class RotaryPosEncode(nnx.Module):
                     sin = self.sin_cache.value[offset_int:end]
                     return cos, sin
         if positions is None:
-            positions = jnp.arange(
-                seq_len, dtype=self._full_inv_freq.dtype
-            ) + offset
+            positions = jnp.arange(seq_len, dtype=self._full_inv_freq.dtype) + offset
         else:
             positions = jnp.asarray(positions, dtype=self._full_inv_freq.dtype)
         return self._compute_cos_sin(positions, self._full_inv_freq)
@@ -286,17 +285,14 @@ class RotaryPosEncode(nnx.Module):
         if idx_arr is not None and idx_arr.ndim > 2:
             raise ValueError("idx must be rank 1 or 2")
 
-        if idx_arr is None:
-            position_dims = 1
-        elif idx_arr.ndim == 1:
-            position_dims = 1
-        else:
-            position_dims = idx_arr.shape[-1]
+        position_dims = 1 if idx_arr is None or idx_arr.ndim == 1 else idx_arr.shape[-1]
 
         offsets = self._normalize_offset(offset, position_dims)
 
         rotary_slice = x[..., : self.rotary_dim]
-        remainder = x[..., self.rotary_dim :] if self.rotary_dim < self.token_dim else None
+        remainder = (
+            x[..., self.rotary_dim :] if self.rotary_dim < self.token_dim else None
+        )
 
         if position_dims == 1:
             idx_1d = None if idx_arr is None else idx_arr.reshape((seq_len,))
@@ -309,9 +305,7 @@ class RotaryPosEncode(nnx.Module):
                 )
             chunk = self.rotary_dim // position_dims
             if chunk % 2 != 0:
-                raise ValueError(
-                    "rotary_dim per positional dimension must be even"
-                )
+                raise ValueError("rotary_dim per positional dimension must be even")
             if idx_arr is None:
                 raise ValueError(
                     "idx must be provided when using ND rotary coordinates"

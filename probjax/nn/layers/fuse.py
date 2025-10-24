@@ -1,29 +1,30 @@
-from typing import Callable
+from typing import Callable, Literal
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from probjax.nn.utils import (
+    filter_precision_kwargs,
+    get_active_precision_kwargs,
+)
 from probjax.utils.typing import (
     Array,
     ArrayLike,
     DTypeLike,
     PrecisionLike,
 )
-from probjax.nn.utils import (
-    filter_precision_kwargs,
-    get_active_precision_kwargs,
-)
 
 
-class Fuse(nnx.Module):
+class ContextFuse(nnx.Module):
     """Base class for fusion modules."""
 
-    def __call__(self, x: ArrayLike, context: ArrayLike, *args, **kwargs) -> ArrayLike:
+    def __call__(self, x: Array, context: Array, *args, **kwargs) -> ArrayLike:
+        del x, context, args, kwargs
         raise NotImplementedError("Fuse is an abstract base class.")
 
 
-class AdditiveFuse(Fuse):
+class AdditiveFuse(ContextFuse):
     """Additive fusion module for combining input and context."""
 
     def __init__(
@@ -35,7 +36,7 @@ class AdditiveFuse(Fuse):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        layer_cls: type[nnx.Module] = nnx.Linear,
+        layer_cls: type[nnx.Linear] = nnx.Linear,
         rngs: nnx.Rngs,
     ):
         """Additive fusion module that applies linear transformation to context
@@ -71,7 +72,7 @@ class AdditiveFuse(Fuse):
             **precision_kwargs,
         )
 
-    def __call__(self, x: ArrayLike, context: ArrayLike) -> Array:
+    def __call__(self, x: Array, context: Array) -> Array:
         """Apply additive fusion to input and context.
 
         Args:
@@ -88,7 +89,7 @@ def default_scale_activation(x: ArrayLike) -> ArrayLike:
     return x + 1.0  # For identity initialization
 
 
-class AffineFuse(Fuse):
+class AffineFuse(ContextFuse):
     """Affine fusion module that applies scale and bias transformations."""
 
     def __init__(
@@ -102,7 +103,7 @@ class AffineFuse(Fuse):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        layer_cls: type[nnx.Module] = nnx.Linear,
+        layer_cls: type[nnx.Linear] = nnx.Linear,
         rngs: nnx.Rngs,
     ):
         """Affine fusion module that applies scale and bias to the input
@@ -153,7 +154,7 @@ class AffineFuse(Fuse):
         )
         self.scale_activation = scale_activation
 
-    def __call__(self, x: ArrayLike, context: ArrayLike) -> Array:
+    def __call__(self, x: Array, context: Array) -> Array:
         """Apply affine fusion to input and context.
 
         Args:
@@ -169,7 +170,7 @@ class AffineFuse(Fuse):
         return x * scale + bias
 
 
-class ConcatFuse(Fuse):
+class ConcatFuse(ContextFuse):
     """Concatenation fusion module that combines input and context features."""
 
     def __init__(
@@ -181,7 +182,7 @@ class ConcatFuse(Fuse):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        layer_cls: type[nnx.Module] = nnx.Linear,
+        layer_cls: type[nnx.Linear] = nnx.Linear,
         rngs: nnx.Rngs,
     ):
         """Concatenation fusion module that linearly transforms context
@@ -223,7 +224,7 @@ class ConcatFuse(Fuse):
             **precision_kwargs,
         )
 
-    def __call__(self, x: ArrayLike, context: ArrayLike) -> ArrayLike:
+    def __call__(self, x: Array, context: Array) -> Array:
         """Apply concatenation fusion to input and context.
 
         Args:
@@ -244,7 +245,8 @@ class ConcatFuse(Fuse):
         x = self.merge_layer(x_ctx)
         return x
 
-class GatedFuse(Fuse):
+
+class GatedFuse(ContextFuse):
     """Gated fusion module that combines input and context features."""
 
     def __init__(
@@ -256,7 +258,8 @@ class GatedFuse(Fuse):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        layer_cls: type[nnx.Module] = nnx.Linear,
+        mode: Literal["convex", "left", "right"] = "convex",
+        layer_cls: type[nnx.Linear] = nnx.Linear,
         rngs: nnx.Rngs,
     ):
         """Gated fusion module that linearly transforms context
@@ -286,6 +289,7 @@ class GatedFuse(Fuse):
         )
         precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
 
+        self.mode = mode
         self.gate_layer = layer_cls(
             context_features,
             in_features,
@@ -293,7 +297,7 @@ class GatedFuse(Fuse):
             **precision_kwargs,
         )
 
-    def __call__(self, x: ArrayLike, y: ArrayLike, context: ArrayLike) -> ArrayLike:
+    def __call__(self, x: Array, y: Array, context: Array) -> Array:
         """Apply gated fusion to input and context.
 
         Args:
@@ -309,4 +313,9 @@ class GatedFuse(Fuse):
         # Ensure same leading dimensions as x
         context = jnp.broadcast_to(context, x.shape[:-1] + (context.shape[-1],))
         gate = jax.nn.sigmoid(self.gate_layer(context))
-        return x * gate + y * (1 - gate)
+        if self.mode == "left":
+            return x * gate + y
+        elif self.mode == "right":
+            return x + y * gate
+        else:  # convex
+            return x * gate + y * (1 - gate)

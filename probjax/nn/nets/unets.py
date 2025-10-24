@@ -1,18 +1,14 @@
 from functools import partial
-from typing import Callable, Optional, Sequence, Type
+from typing import Optional, Sequence
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from flax.nnx import Conv, ConvTranspose
-from flax.typing import Array, Dtype, Initializer, PrecisionLike
-from jax.lax import conv_general_dilated
-from jax.typing import DTypeLike
+from flax.typing import Array, PrecisionLike
 
 from probjax.nn.layers.conv import (
     ResnetBlock,
     SpatialSelfAttention,
-    ResizeConv,
 )
 from probjax.nn.utils import (
     filter_precision_kwargs,
@@ -49,6 +45,7 @@ class UNet(nnx.Module):
         context_features: int | None = None,
         resize_method: str = "bilinear",
         dropout_rate: float = 0.0,
+        drop_path_rate: float = 0.0,
         # --- initialization/precision ---
         precision: PrecisionLike | None = None,
         dtype: jnp.dtype | None = None,
@@ -98,6 +95,7 @@ class UNet(nnx.Module):
             strides=strides_resnet,
             context_features=context_features,
             dropout_rate=dropout_rate,
+            drop_path_rate=drop_path_rate,
             rngs=rngs,
             **filter_precision_kwargs(resnet_block_cls, **precision_kwargs),
         )
@@ -145,7 +143,10 @@ class UNet(nnx.Module):
         )
 
         _attn_block = partial(
-            attn_cls, dropout_rate=dropout_rate, rngs=rngs, **filter_precision_kwargs(attn_cls, **precision_kwargs)
+            attn_cls,
+            dropout_rate=dropout_rate,
+            rngs=rngs,
+            **filter_precision_kwargs(attn_cls, **precision_kwargs),
         )
 
         # ---------------------------------------------------------------------
