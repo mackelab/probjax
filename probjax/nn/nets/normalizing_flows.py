@@ -260,8 +260,7 @@ class SplineAutoregressiveFlow(NormalizingFlow):
         )
 
         def spline_fn(params, x):
-            params = jnp.reshape(params, (self.input_dim, num_bins * 3))
-            return jax.vmap(spline)(params, x)
+            return spline(params, x)
 
         autoregressive = partial(
             autoregressive_class, input_dim, params_per_dim, spline_fn

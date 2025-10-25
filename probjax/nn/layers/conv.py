@@ -9,14 +9,20 @@ from flax.typing import Initializer
 
 from probjax.nn.layers.attention import MultiHeadAttention
 from probjax.nn.layers.encoding import PosEncode, RotaryPosEncode
-from probjax.nn.layers.fuse import AdditiveFuse, AffineFuse, ConcatFuse, GatedFuse
+from probjax.nn.layers.fuse import AffineFuse, GatedFuse
 from probjax.nn.layers.reg import DropPath
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
     identity_1x1,
 )
-from probjax.utils.typing import Array, DTypeLike, PrecisionLike, ModuleLike, ModuleLikeType
+from probjax.utils.typing import (
+    Array,
+    DTypeLike,
+    ModuleLike,
+    ModuleLikeType,
+    PrecisionLike,
+)
 
 
 class ConvBlock(nnx.Module):
@@ -331,7 +337,9 @@ class ResnetBlock(nnx.Module):
         precision_kwargs = filter_precision_kwargs(conv_block_cls, **precision_kwargs)
 
         if context_features is not None:
-            self.context_fuse = context_fuse_cls(out_features, context_features, rngs=rngs)
+            self.context_fuse = context_fuse_cls(
+                out_features, context_features, rngs=rngs
+            )
 
         _conv_block = partial(
             conv_block_cls,

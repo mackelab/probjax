@@ -214,6 +214,7 @@ def dot_product_attention(
     sm_scale: Optional[float] = None,
     enable_gqa: bool = False,
 ):
+    del sm_scale, enable_gqa  # Not used in this function
     batch_size, q_len, num_heads, _ = query.shape
     kv_len = key.shape[-3]
     if isinstance(mask, AttentionMask):

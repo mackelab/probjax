@@ -13,7 +13,12 @@ import jax.numpy as jnp
 from jax import random
 from jaxtyping import ArrayLike, PRNGKeyArray
 
-from probjax.stats.base import rv_continuous_frozen, rv_discrete_frozen, rv_generic
+from probjax.stats.base import (
+    rv_continuous_frozen,
+    rv_discrete_frozen,
+    rv_frozen,
+    rv_generic,
+)
 from probjax.stats.constraints import distribution, simplex
 
 __all__ = ["mixture"]
@@ -55,7 +60,7 @@ class mixture_gen(rv_generic):
     def __init__(self, name: Optional[str] = None):
         super().__init__(name=name)
 
-    def __call__(self, mixing_probs, components, **kwargs):
+    def __call__(self, mixing_probs, components, **kwargs) -> rv_frozen:
         """Create a frozen mixture distribution."""
         return self.freeze(mixing_probs=mixing_probs, components=components, **kwargs)
 

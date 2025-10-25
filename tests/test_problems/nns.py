@@ -5,7 +5,7 @@ from flax import nnx
 
 from probjax.nn import (
     EDM,
-    LRU,
+    LRUModel,
     MLP,
     VE,
     VP,
@@ -135,10 +135,14 @@ def multi_head_attention(request):
 
 
 def affine_bijector(params, x):
+    x = jnp.asarray(x)
+    params = jnp.asarray(params).reshape(x.shape)
     return params + x
 
 
 def scale_bijector(params, x):
+    x = jnp.asarray(x)
+    params = jnp.asarray(params).reshape(x.shape)
     return jnp.exp(params) * x
 
 
@@ -252,7 +256,7 @@ def transformer_with_context(request):
         num_layers,
         attn_size,
         context_dim=context_dim,
-        context_fusion=fussion_method,
+        context_fusion_cls=fussion_method,
         rngs=nnx.Rngs(0),
     )
     return model_dim, context_dim, model
@@ -279,17 +283,24 @@ def transformer_with_cross_attention_and_context():
 
 @pytest.fixture(
     params=[
-        (1, 1, 1),
-        (2, 1, 2),
-        (1, 2, 1),
-        (2, 2, 2),
-        (1, 3, 1),
-        (3, 1, 3),
+        (1, 1, 1, 1, False),
+        (2, 1, 2, 1, True),
+        (1, 2, 2, 2, False),
+        (2, 2, 3, 2, True),
+        (1, 3, 4, 3, False),
+        (3, 1, 3, 3, True),
     ]
 )
 def lru(request):
-    in_dim, out_dim, hidden_dim = request.param
-    model = LRU(in_dim, out_dim, hidden_dim, rngs=nnx.Rngs(0))
+    in_dim, out_dim, model_dim, num_layers, bidirectional = request.param
+    model = LRUModel(
+        in_dim,
+        model_dim,
+        out_dim,
+        num_layers,
+        bidirectional=bidirectional,
+        rngs=nnx.Rngs(0),
+    )
     return in_dim, out_dim, model
 
 

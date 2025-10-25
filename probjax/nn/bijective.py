@@ -1441,11 +1441,16 @@ learnable_mixture_cdf.definv_and_logdet(_inv_and_logdet_learnable_mixture_cdf)
 def affine_bijector(
     params: ArrayLike, x: ArrayLike, min_scale=1e-3, **kwargs
 ):
+    x = jnp.asarray(x)
     loc, scale = jnp.split(params, 2, axis=-1)
+    loc, scale = loc.reshape(x.shape), scale.reshape(x.shape)
     scale = jnp.exp(scale) + min_scale  # ensure positivity
 
     return loc + scale * x
 
 
 def additive_bijector(params: ArrayLike, x: ArrayLike, **kwargs):
+    x = jnp.asarray(x)
+    params = jnp.asarray(params)
+    params = params.reshape(x.shape)
     return x + params

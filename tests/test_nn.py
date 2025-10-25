@@ -153,7 +153,7 @@ def test_transformer_with_context(transformer_with_context, seq_len, batch_shape
     assert y.shape == batch_shape + (seq_len, model_dim)
 
     def loss_fn(model):
-        return jnp.sum(model(x, context))
+        return jnp.sum(model(x, context=context))
 
     # Can be differentiated
     _ = jax.grad(loss_fn)
@@ -172,7 +172,7 @@ def test_transformer_with_context_and_cross_attention(
     assert y.shape == batch_shape + (seq_len, model_dim)
 
     def loss_fn(model):
-        return jnp.sum(model(x, context))
+        return jnp.sum(model(x, x + 1, x + 1, context=context))
 
     # Can be differentiated
     _ = jax.grad(loss_fn)

@@ -1,16 +1,80 @@
 from functools import partial
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 from jax import Array
 
-from probjax.nn.layers.attention import MultiHeadAttention
-from probjax.nn.layers.fuse import AffineFuse, ContextFuse
+from probjax.nn.layers.attention import (
+    AttentionBias,
+    AttentionMask,
+    MultiHeadAttention,
+    dot_product_attention,
+)
+from probjax.nn.layers.fuse import AffineFuse
 from probjax.nn.nets.simple import MLP
 from probjax.nn.utils import filter_precision_kwargs, get_active_precision_kwargs
-from probjax.utils.typing import ArrayLike, DTypeLike, ModuleLikeType, PrecisionLike
+from probjax.utils.typing import DTypeLike, ModuleLikeType, PrecisionLike
+
+
+# ---------------- Helper utilities ----------------
+def _flatten_to_btd(x: Array | None) -> Tuple[Array | None, tuple | None]:
+    """Flatten leading batch dims to (B, T, D) for attention blocks.
+
+    Returns the flattened array and the original shape to restore later.
+    If x is None, returns (None, None).
+    """
+    if x is None:
+        return None, None
+    x = jnp.asarray(x)
+    orig = x.shape
+    x = x.reshape(-1, x.shape[-2], x.shape[-1])
+    return x, orig
+
+
+def _restore_from_btd(x: Array, orig_shape: tuple | None) -> Array:
+    """Restore tensor from (B, T, D) back to original leading batch dims."""
+    if orig_shape is None:
+        return x
+    return x.reshape(orig_shape)
+
+
+def _normalize_attn_mask(mask: Array | None) -> Array | None:
+    """Normalize attention mask shapes to [B, 1, T, T] or broadcastable.
+
+    Accepts 2D [T, T], 3D [B, T, T], or 4D [B, 1, T, T]. Returns a shape
+    that broadcasts with [B, H, T, T]. If mask is None, returns None.
+    """
+    if mask is None:
+        return None
+    mask = jnp.asarray(mask)
+    if mask.ndim == 2:
+        return mask[None, None, :, :]
+    if mask.ndim == 3:
+        return mask[:, None, :, :]
+    if mask.ndim == 4:
+        return mask
+    raise ValueError(f"Mask must have ndim 2, 3, or 4; got {mask.ndim}.")
+
+
+def _normalize_attn_bias(bias: Array | None) -> Array | None:
+    """Normalize attention bias shapes similar to masks.
+
+    Accepts 2D [T, T], 3D [B, T, T], or 4D [B, 1, T, T]. Returns a shape
+    broadcastable with attention logits [B, H, T, T]. If bias is None, returns None.
+    Other shapes (e.g., custom bias types) are passed through by the caller.
+    """
+    if bias is None:
+        return None
+    bias = jnp.asarray(bias)
+    if bias.ndim == 2:
+        return bias[None, None, :, :]
+    if bias.ndim == 3:
+        return bias[:, None, :, :]
+    if bias.ndim == 4:
+        return bias
+    raise ValueError(f"Bias must have ndim 2, 3, or 4; got {bias.ndim}.")
 
 
 class Transformer(nnx.Module):
@@ -45,8 +109,8 @@ class Transformer(nnx.Module):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        norm_cls: type[nnx.Module] = nnx.LayerNorm,
-        context_fusion: type[ContextFuse] = AffineFuse,
+        norm_cls: ModuleLikeType = nnx.LayerNorm,
+        context_fusion_cls: ModuleLikeType = AffineFuse,
         attention_fn: Optional[Callable] = None,
         cross_attention_fn: Optional[Callable] = None,
         mlp_cls: ModuleLikeType = MLP,
@@ -124,7 +188,7 @@ class Transformer(nnx.Module):
 
         # Attention block.
         attention_fn = (
-            attention_fn if attention_fn is not None else nnx.dot_product_attention
+            attention_fn if attention_fn is not None else dot_product_attention
         )
         self.attention_blocks = nnx.List([
             mha_cls(
@@ -167,7 +231,7 @@ class Transformer(nnx.Module):
         # Context fusion if context is provided.
         if context_dim is not None:
             self.context_layers = nnx.List([
-                context_fusion(model_dim, context_dim, rngs=rngs)
+                context_fusion_cls(model_dim, context_dim, rngs=rngs)
                 for _ in range(num_layers)
             ])
 
@@ -199,45 +263,40 @@ class Transformer(nnx.Module):
 
     def __call__(
         self,
-        q: ArrayLike,  # [B, T, D]
-        k: Optional[ArrayLike] = None,  # [B, T', D]
+        q: Array,  # [B, T, D]
+        k: Optional[Array] = None,  # [B, T', D]
         v: Optional[Array] = None,  # [B, T', D]
         context: Optional[Array] = None,  # [B, D_context]
-        mask: Array | None = None,  # [T, T] or [B, T, T]
-        mask_cross: Array | None = None,  # [T, T'] or [B, T, T']
-        bias: Array | None = None,  # [B, T, D]
-        bias_cross: Array | None = None,  # [B, T', D]
+        mask: AttentionMask | Array | None = None,
+        mask_cross: AttentionMask | Array | None = None,
+        bias: AttentionBias | Array | None = None,
+        bias_cross: AttentionBias | Array | None = None,
         deterministic: bool | None = None,
         decode: bool = False,
     ) -> Array:  # [B, T, D]
         """Transforms input embedding sequences to output embedding sequences."""
         q = jnp.asarray(q)
-        if k is not None:
-            k = jnp.asarray(k)
-        if v is not None:
-            v = jnp.asarray(v)
-        if context is not None:
-            context = jnp.asarray(context)
+        k = None if k is None else jnp.asarray(k)
+        v = None if v is None else jnp.asarray(v)
+        context = None if context is None else jnp.asarray(context)
+
+        # Normalize masks/bias to broadcastable shapes
         if isinstance(mask, jax.Array):
-            if mask is not None:
-                if mask.ndim == 2:
-                    mask = mask[None, :, :]
-                elif mask.ndim == 3:
-                    mask = mask[:, None, :, :]
-                elif mask.ndim == 4:
-                    mask = mask
-                else:
-                    raise ValueError(f"Mask must have ndim 2 or 3, got {mask.ndim}.")
+            mask = _normalize_attn_mask(mask)
+        if isinstance(mask_cross, jax.Array):
+            mask_cross = _normalize_attn_mask(mask_cross)
+        if isinstance(bias, jax.Array):
+            bias = _normalize_attn_bias(bias)
+        if isinstance(bias_cross, jax.Array):
+            bias_cross = _normalize_attn_bias(bias_cross)
 
-        shape = q.shape
-        q = q.reshape(-1, q.shape[-2], q.shape[-1])
-        if k is not None:
-            k = k.reshape(-1, k.shape[-2], k.shape[-1])
-        if v is not None:
-            v = v.reshape(-1, v.shape[-2], v.shape[-1])
+        # Flatten to (B, T, D)
+        q, q_shape = _flatten_to_btd(q)
+        k, _ = _flatten_to_btd(k)
+        v, _ = _flatten_to_btd(v)
 
+        # Ensure context has shape [B, 1, Dc] when provided
         if context is not None:
-            # Ensure context has shape [batch, context_dim] or [batch, 1, context_dim]
             context = context.reshape(-1, 1, context.shape[-1])
 
         if k is not None and not self.enable_cross_attention:
@@ -281,4 +340,4 @@ class Transformer(nnx.Module):
 
         q = self.out_layer_norm(q)
 
-        return q.reshape(shape)
+        return _restore_from_btd(q, q_shape)

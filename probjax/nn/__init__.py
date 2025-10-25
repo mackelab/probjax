@@ -3,7 +3,9 @@ from flax.nnx.nn import *  # type: ignore
 
 # Override specific imports with probjax implementations
 from probjax.nn.layers import (
-    LRU,
+    LRUCell,
+    MambaCell,
+    SSDCell,
     AdditiveFuse,
     Affine,
     AffineFuse,

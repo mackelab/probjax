@@ -26,9 +26,6 @@ from probjax.nn.layers.fuse import (
     ConcatFuse,
 )
 from probjax.nn.layers.lru import (
-    LRU,
-    MambaLRU,
-    SSDLRU,
     LRUCell,
     MambaCell,
     SSDCell,

@@ -4,19 +4,29 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from probjax.nn.layers.reg import DropPath
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
 )
-from probjax.utils.typing import Array, ArrayLike, DTypeLike, PrecisionLike, ModuleLikeType
+from probjax.utils.typing import (
+    Array,
+    ArrayLike,
+    DTypeLike,
+    PrecisionLike,
+)
 
 
 class ContextFuse(nnx.Module):
     """Base class for fusion modules."""
 
-    def __call__(self, x: Array, context: Array, *args, **kwargs) -> ArrayLike:
-        del x, context, args, kwargs
-        raise NotImplementedError("Fuse is an abstract base class.")
+    def __call__(self, x: Array, context: Array) -> Array: ...
+
+
+class BinaryFuse(nnx.Module):
+    """Base class for binary fusion modules."""
+
+    def __call__(self, x: Array, y: Array, context: Array | None) -> Array: ...
 
 
 class AdditiveFuse(ContextFuse):
@@ -31,7 +41,7 @@ class AdditiveFuse(ContextFuse):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        layer_cls: ModuleLikeType = nnx.Linear,
+        layer_cls: type[nnx.Linear] = nnx.Linear,
         rngs: nnx.Rngs,
     ):
         """Additive fusion module that applies linear transformation to context
@@ -98,7 +108,7 @@ class AffineFuse(ContextFuse):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        layer_cls: ModuleLikeType = nnx.Linear,
+        layer_cls: type[nnx.Linear] = nnx.Linear,
         rngs: nnx.Rngs,
     ):
         """Affine fusion module that applies scale and bias to the input
@@ -177,7 +187,7 @@ class ConcatFuse(ContextFuse):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        layer_cls: ModuleLikeType = nnx.Linear,
+        layer_cls: type[nnx.Linear] = nnx.Linear,
         rngs: nnx.Rngs,
     ):
         """Concatenation fusion module that linearly transforms context
@@ -241,7 +251,22 @@ class ConcatFuse(ContextFuse):
         return x
 
 
-class GatedFuse(ContextFuse):
+class AdditiveBinaryFuse(BinaryFuse):
+    def __init__(self, *, drop_path_rate: float = 0.0, rngs: nnx.Rngs):
+        """Additive binary fusion module that adds two inputs."""
+        super().__init__()
+        if drop_path_rate > 0.0:
+            self.drop_path = DropPath(drop_rate=drop_path_rate, rngs=rngs)
+        else:
+            self.drop_path = None
+
+    def __call__(self, x: Array, y: Array, context: Array | None) -> Array:
+        del context
+        y = self.drop_path(y) if self.drop_path is not None else y
+        return x + y
+
+
+class GatedFuse(BinaryFuse):
     """Gated fusion module that combines input and context features."""
 
     def __init__(
@@ -249,12 +274,13 @@ class GatedFuse(ContextFuse):
         in_features: int,
         context_features: int,
         *,
+        drop_path_rate: float = 0.0,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
         mode: Literal["convex", "left", "right"] = "convex",
-        layer_cls: ModuleLikeType = nnx.Linear,
+        layer_cls: type[nnx.Linear] = nnx.Linear,
         rngs: nnx.Rngs,
     ):
         """Gated fusion module that linearly transforms context
@@ -292,7 +318,17 @@ class GatedFuse(ContextFuse):
             **precision_kwargs,
         )
 
-    def __call__(self, x: Array, y: Array, context: Array) -> Array:
+        if self.mode not in {"convex", "left", "right"}:
+            raise ValueError(
+                f"Invalid mode '{self.mode}'. Must be 'convex', 'left', or 'right'."
+            )
+
+        if drop_path_rate > 0.0:
+            self.drop_path = DropPath(drop_rate=drop_path_rate, rngs=rngs)
+        else:
+            self.drop_path = None
+
+    def __call__(self, x: Array, y: Array, context: Array | None) -> Array:
         """Apply gated fusion to input and context.
 
         Args:
@@ -303,8 +339,9 @@ class GatedFuse(ContextFuse):
             Array of shape [..., input_dim] with gated combination of input
             and transformed context.
         """
-        x = jnp.asarray(x)
-        context = jnp.asarray(context)
+        if context is None:
+            raise ValueError("Context must be provided for GatedFuse.")
+        y = self.drop_path(y) if self.drop_path is not None else y
         # Ensure same leading dimensions as x
         context = jnp.broadcast_to(context, x.shape[:-1] + (context.shape[-1],))
         gate = jax.nn.sigmoid(self.gate_layer(context))

@@ -1,22 +1,37 @@
-from typing import Callable, Optional, Literal, Mapping
+from typing import Callable, Mapping, Optional
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.nn.layers.lru import LRUBlock, LRUCell
+from probjax.nn.layers.lru import LRUCell
 from probjax.nn.nets.simple import MLP
 from probjax.nn.utils import filter_precision_kwargs, get_active_precision_kwargs
-from probjax.utils.typing import Array, ArrayLike, DTypeLike, PrecisionLike, ModuleLikeType
+from probjax.utils.typing import (
+    Array,
+    ArrayLike,
+    DTypeLike,
+    ModuleLikeType,
+    PrecisionLike,
+)
 
 
 class LRUModel(nnx.Module):
-    """Linear Recurrent Unit (LRU) model with optional bidirectional processing.
+    """Stacked LRU-style sequence model with optional bidirectionality.
 
-    This model stacks LRU blocks with MLP layers and residual connections,
-    optionally alternating between forward and backward processing for
-    bidirectional modeling. Each LRU and MLP block is preceded by layer
-    normalization following the pre-norm architecture pattern.
+    - Stacks recurrent cells (default: LRUCell) and MLP residual blocks.
+    - Pre-norm architecture: each block is preceded by LayerNorm.
+    - Optional alternating forward/backward passes for bidirectional context.
+
+    References:
+    - Orvieto et al., 2023: Linear Recurrent Units (LRU).
+    - Gu & Dao, 2023: Mamba — Selective State Space Models.
+    - Dao et al., 2024: Mamba-2 / SSD (Selective SSMs with diffusion).
+
+    Notes:
+    - Normalization, residual connections, and GLU heads live in this module.
+      The recurrent cells (LRUCell, MambaCell, SSDCell) implement only the
+      [B, L, D] -> [B, L, D] recurrent transformation.
     """
 
     input_dim: int  # Input dimension
@@ -35,14 +50,14 @@ class LRUModel(nnx.Module):
         *,
         bidirectional: bool = True,
         dropout_rate: Optional[float] = None,
-        mlp_widening_factor: int = 2,
+        mlp_widening_factor: int = 4,
         mlp_num_hidden_layers: int = 1,
         skip_connection_lru: bool = True,
         skip_connection_mlp: bool = True,
         activation: Callable = jax.nn.gelu,
-        norm_cls: type[nnx.Module] = nnx.LayerNorm,
+        norm_cls: ModuleLikeType = nnx.LayerNorm,
         mlp_cls: ModuleLikeType = MLP,
-        initializer: Optional[nnx.initializers.Initializer] = None,
+        initializer: Optional[nnx.Initializer] = None,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
@@ -115,8 +130,11 @@ class LRUModel(nnx.Module):
 
         # Initialize linear layers with precision kwargs
         init_default = (
-            nnx.initializers.variance_scaling(2 / max(num_layers, 1), 'fan_in', 'truncated_normal')
-            if initializer is None else initializer
+            nnx.initializers.variance_scaling(
+                2 / max(num_layers, 1), 'fan_in', 'truncated_normal'
+            )
+            if initializer is None
+            else initializer
         )
         linear_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
         linear_kwargs['kernel_init'] = init_default
@@ -155,15 +173,21 @@ class LRUModel(nnx.Module):
             self.block_dropout1 = None
             self.block_dropout2 = None
         self.block_out1 = nnx.List([
-            nnx.Linear(model_dim, model_dim, rngs=rngs, **linear_kwargs) for _ in range(num_layers)
+            nnx.Linear(model_dim, model_dim, rngs=rngs, **linear_kwargs)
+            for _ in range(num_layers)
         ])
         self.block_out2 = nnx.List([
-            nnx.Linear(model_dim, model_dim, rngs=rngs, **linear_kwargs) for _ in range(num_layers)
+            nnx.Linear(model_dim, model_dim, rngs=rngs, **linear_kwargs)
+            for _ in range(num_layers)
         ])
         self.block_activation = activation
 
         # MLP layers for processing between LRU blocks
-        mlp_dims = [model_dim] + [mlp_widening_factor * model_dim] * mlp_num_hidden_layers + [model_dim]
+        mlp_dims = (
+            [model_dim]
+            + [mlp_widening_factor * model_dim] * mlp_num_hidden_layers
+            + [model_dim]
+        )
         mlp_kwargs = filter_precision_kwargs(mlp_cls, **precision_kwargs)
         self.mlp_layers = nnx.List([
             mlp_cls(
@@ -240,6 +264,3 @@ class LRUModel(nnx.Module):
         h = self.out_layer_norm(h)
         h = self.out_layer(h)
         return h.reshape(shape[:-2] + (shape[-2], self.output_dim))
-
-
-    

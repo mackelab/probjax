@@ -106,7 +106,7 @@ class AutoregressiveMLP(nnx.Module):
                 (0,) * (bij_params.ndim - 1) + (i*self.bijector_dim,),
                 bij_params.shape[:-1] + (self.bijector_dim,),
             )
-            bij_params_i = bij_params_i.reshape(bij_params_i.shape[:-2] + (-1,))
+            bij_params_i = bij_params_i.reshape(bij_params_i.shape[:-1] + (-1,))
             # Apply bijector to the i-th dimension only
             x_i = jax.lax.dynamic_slice(
                 x, (0,) * (x.ndim - 1) + (i,), x.shape[:-1] + (1,)
@@ -124,17 +124,18 @@ class AutoregressiveMLP(nnx.Module):
         bij_params = jnp.reshape(
             bij_params, Tx.shape + (self.bijector_dim,)
         )
-        x, logdet = self.bijector_inv(bij_params, Tx[...,None])
-        return x[...,0], logdet
+        x, logdet = jax.vmap(self.bijector_inv)(bij_params, Tx)
+        return x, logdet
 
     def inverse(self, Tx: jax.Array, context=None):
+        print("Hey")
         bij_params = self.masked_mlp(Tx, context)
         bij_params = jnp.reshape(
             bij_params, bij_params.shape[:-1] + (self.in_out_features, self.bijector_dim,)
         )
-
-        x = self.bijector_inv(bij_params, Tx[...,None])[0]
-        return x[..., 0]
+        print(bij_params.shape, Tx.shape)
+        x = jax.vmap(self.bijector_inv)(bij_params, Tx)[0]
+        return x
 
 
 class AutoregressiveTransformer(nnx.Module):
@@ -193,7 +194,7 @@ class AutoregressiveTransformer(nnx.Module):
         self.encoder = encoder
         self.decoder = decoder
         if pos_embed is None:
-            pos_embed = PosEmbed(model_dim, rngs=rngs)
+            pos_embed = PosEncode(model_dim, rngs=rngs)
         self.pos_embed = pos_embed
 
     def predict_bij_params(self, x: jax.Array, context=None, k=None, v=None, **kwargs):
