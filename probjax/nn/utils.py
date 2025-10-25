@@ -10,7 +10,7 @@ from ott.geometry import costs, pointcloud
 from ott.problems.linear import linear_problem
 from ott.solvers.linear import sinkhorn
 
-from probjax.utils.typing import Array
+from probjax.utils.typing import Array, ModuleLikeType
 
 
 def identity_1x1(_, shape: Sequence[int], dtype=jnp.float32):
@@ -47,7 +47,7 @@ def pad_to_power_of_2(arr: Array, min_size: int = 16, axis=(-1,)) -> Array:
     return jnp.pad(arr, pad_width)
 
 
-def filter_precision_kwargs(cls: type[nnx.Module], **kwargs):
+def filter_precision_kwargs(cls: ModuleLikeType, **kwargs):
     """Utility function to filter out unsupported precision kwargs.
 
     Note:

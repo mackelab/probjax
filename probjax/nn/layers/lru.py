@@ -10,7 +10,7 @@ from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
 )
-from probjax.utils.typing import DTypeLike, PrecisionLike
+from probjax.utils.typing import DTypeLike, PrecisionLike, ModuleLikeType
 
 
 @jax.vmap
@@ -475,7 +475,7 @@ class LRUBlock(nnx.Module):
         rngs,
         *,
         dropout: Optional[float] = None,
-        norm: nnx.Module = nnx.LayerNorm,
+        norm_cls: ModuleLikeType = nnx.LayerNorm,
         activation: Callable = jax.nn.gelu,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
@@ -487,7 +487,7 @@ class LRUBlock(nnx.Module):
         Gated Linear Unit (GLU) output.
         """
         self.lru = LRU(model_dim, model_dim, model_dim, rngs)
-        self.norm = norm(model_dim, rngs=rngs)
+        self.norm = norm_cls(model_dim, rngs=rngs)
         self.activation = activation
         self.dropout = dropout
         if dropout is not None:

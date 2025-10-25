@@ -4,7 +4,6 @@ from typing import Optional, Sequence
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from flax.typing import Array, PrecisionLike
 
 from probjax.nn.layers.conv import (
     ResnetBlock,
@@ -14,21 +13,52 @@ from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
 )
+from probjax.utils.typing import Array, ModuleLikeType, PrecisionLike
 
 
 class UNet(nnx.Module):
-    """
-    Flexible U-Net with pluggable builders for:
-      - resnet blocks (default: ResnetBlock)
-      - downsampling convs (default: nnx.Conv)
-      - upsampling convs (default: nnx.ConvTranspose)
-      - attention blocks (default: SpatialSelfAttention, or None to disable)
+    """Flexible U-Net with pluggable submodules and per-layer drop-path.
 
-    You can pass either:
-      - *_cls
-      - *_factory callables that build a module for a given (in_ch, out_ch).
+    Pluggable builders:
+    - ResNet blocks (default: ResnetBlock)
+    - Downsampling convolutions (default: nnx.Conv)
+    - Upsampling convolutions (default: nnx.ConvTranspose)
+    - Spatial attention blocks (default: SpatialSelfAttention)
 
-    Factories take precedence if provided.
+    Required constructor signatures for swappable modules:
+    - resnet_block_cls: Callable[..., nnx.Module]
+      __init__(in_features: int, out_features: int,
+               *, kernel_size, strides,
+               context_features=None, dropout_rate=0.0,
+               drop_path_rate=0.0, rngs: nnx.Rngs, ...)
+      __call__(x, context=None, *, deterministic: bool = True) -> Array
+
+    - conv_down_cls / conv_up_cls: Callable[..., nnx.Module]
+      __init__(in_features: int, out_features: int,
+               *, kernel_size, strides, rngs: nnx.Rngs, ...)
+      __call__(x) -> Array
+
+    - attn_cls: Callable[..., nnx.Module]
+      __init__(features: int, *, dropout_rate=0.0, rngs: nnx.Rngs, ...)
+      __call__(x, context=None, *, deterministic: bool = True) -> Array
+
+    - conv_cls (1x1 projections): Callable[..., nnx.Module]
+      __init__(in_features: int, out_features: int,
+               *, kernel_size=1, use_bias: bool, rngs: nnx.Rngs, ...)
+      must accept `kernel_init` as kwarg for final layer init.
+
+    All builders should accept standard precision/dtype kwargs as applicable:
+    `dtype`, `precision`, `param_dtype`, `preferred_element_type` (some may be
+    filtered by `filter_precision_kwargs`).
+
+    Drop-path configuration:
+    - drop_path_rate: float applied uniformly to all ResNet blocks, or a
+      sequence of length (2 * num_stages + 2). Layer indices are:
+        [0..num_stages-1]         Down path ResNet blocks
+        [num_stages]              Middle block 1
+        [num_stages+1]            Middle block 2
+        [num_stages+2 .. end]     Up path ResNet blocks (from bottom to top)
+    If a sequence is provided, it overrides the uniform rate.
     """
 
     def __init__(
@@ -45,18 +75,18 @@ class UNet(nnx.Module):
         context_features: int | None = None,
         resize_method: str = "bilinear",
         dropout_rate: float = 0.0,
-        drop_path_rate: float = 0.0,
+        drop_path_rate: float | Sequence[float] = 0.0,
         # --- initialization/precision ---
         precision: PrecisionLike | None = None,
         dtype: jnp.dtype | None = None,
         param_dtype: jnp.dtype | None = None,
         preferred_element_type: jnp.dtype | None = None,
         # --- pluggable builders: classes ---
-        resnet_block_cls: type[nnx.Module] = ResnetBlock,
-        conv_down_cls: type[nnx.Module] | Sequence[type[nnx.Module]] = nnx.Conv,
-        conv_up_cls: type[nnx.Module] | Sequence[type[nnx.Module]] = nnx.ConvTranspose,
-        attn_cls: type[nnx.Module] = SpatialSelfAttention,
-        conv_cls: type[nnx.Module] = nnx.Conv,
+        resnet_block_cls: ModuleLikeType = ResnetBlock,
+        conv_down_cls: ModuleLikeType | Sequence[ModuleLikeType] = nnx.Conv,
+        conv_up_cls: ModuleLikeType | Sequence[ModuleLikeType] = nnx.ConvTranspose,
+        attn_cls: ModuleLikeType = SpatialSelfAttention,
+        conv_cls: ModuleLikeType = nnx.Conv,
         rngs: nnx.Rngs,
     ):
         assert len(out_features) >= 2, "Must have at least 2 output channels"
@@ -95,10 +125,22 @@ class UNet(nnx.Module):
             strides=strides_resnet,
             context_features=context_features,
             dropout_rate=dropout_rate,
-            drop_path_rate=drop_path_rate,
             rngs=rngs,
             **filter_precision_kwargs(resnet_block_cls, **precision_kwargs),
         )
+
+        # Build per-layer drop-path rate list
+        total_blocks = 2 * self.num_stages + 2
+        if isinstance(drop_path_rate, Sequence) and not isinstance(
+            drop_path_rate, (str, bytes)
+        ):
+            if len(drop_path_rate) != total_blocks:
+                raise ValueError(
+                    f"drop_path_rate sequence length must be {total_blocks}, got {len(drop_path_rate)}"
+                )
+            dpr_list = [float(x) for x in drop_path_rate]
+        else:
+            dpr_list = [float(drop_path_rate)] * total_blocks
 
         _down_blocks = nnx.List()
         for i in range(self.num_stages - 1):
@@ -156,11 +198,17 @@ class UNet(nnx.Module):
         self.downsampling_layers = nnx.List()
         self.att_layers_down = nnx.List()
 
+        layer_idx = 0
         for i in range(self.num_stages):
             # ResNet in each stage works on out_features[i]
             self.resnet_blocks_down.append(
-                _resnet_block(self.out_features[i], self.out_features[i])
+                _resnet_block(
+                    self.out_features[i],
+                    self.out_features[i],
+                    drop_path_rate=dpr_list[layer_idx],
+                )
             )
+            layer_idx += 1
             # Optional attention for this stage
             if self.attn_mask[i]:
                 self.att_layers_down.append(_attn_block(self.out_features[i]))
@@ -177,8 +225,14 @@ class UNet(nnx.Module):
         # Middle block
         # ---------------------------------------------------------------------
         top_ch = self.out_features[-1]
-        self.middle_block1 = _resnet_block(top_ch, top_ch)
-        self.middle_block2 = _resnet_block(top_ch, top_ch)
+        self.middle_block1 = _resnet_block(
+            top_ch, top_ch, drop_path_rate=dpr_list[layer_idx]
+        )
+        layer_idx += 1
+        self.middle_block2 = _resnet_block(
+            top_ch, top_ch, drop_path_rate=dpr_list[layer_idx]
+        )
+        layer_idx += 1
         self.att_middle = _attn_block(top_ch) if self.attn_mask[-1] else None
 
         # ---------------------------------------------------------------------
@@ -194,7 +248,10 @@ class UNet(nnx.Module):
             ch = self.out_features[i]
 
             # ResNet block after concatenating skip connection
-            self.resnet_blocks_up.append(_resnet_block(ch * 2, ch))
+            self.resnet_blocks_up.append(
+                _resnet_block(ch * 2, ch, drop_path_rate=dpr_list[layer_idx])
+            )
+            layer_idx += 1
 
             # Attention layer (mirroring down path)
             if self.attn_mask[self.num_stages - i - 1]:

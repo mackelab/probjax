@@ -5,13 +5,21 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.nn.layers.fuse import AffineFuse, ContextFuse
+from probjax.nn.layers.fuse import AffineFuse
 from probjax.nn.layers.masked import MaskedLinear
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
 )
-from probjax.utils.typing import Array, ArrayLike, ModuleLikeType, PyTree
+from probjax.utils.typing import (
+    Array,
+    ArrayLike,
+    DTypeLike,
+    ModuleLike,
+    ModuleLikeType,
+    PrecisionLike,
+    PyTree,
+)
 
 
 class Sequential(nnx.Module):
@@ -41,14 +49,13 @@ class MLP(nnx.Module):
         context_dim: Optional[int] = None,
         # Accept alias used elsewhere in the codebase
         context_features: Optional[int] = None,
-        precision: Optional[jax.lax.Precision] = None,
-        dtype: Optional[jax.numpy.dtype] = None,
-        param_dtype: Optional[jax.numpy.dtype] = None,
-        preferred_element_dtype: Optional[jax.numpy.dtype] = None,
-        norm_cls: type[nnx.Module] | None = None,
-        # Allow a single linear class or a per-layer sequence
+        precision: PrecisionLike | None = None,
+        dtype: DTypeLike | None = None,
+        param_dtype: DTypeLike | None = None,
+        preferred_element_type: DTypeLike | None = None,
+        norm_cls: ModuleLikeType | None = None,
         linear_cls: ModuleLikeType | Sequence[ModuleLikeType] = nnx.Linear,
-        context_fuse_cls: type[ContextFuse] = AffineFuse,
+        context_fuse_cls: ModuleLikeType = AffineFuse,
         rngs: nnx.Rngs,
         **kwargs,
     ):
@@ -84,7 +91,7 @@ class MLP(nnx.Module):
         # Prefer explicit context_dim, fallback to alias if provided
         self.context_dim = context_dim if context_dim is not None else context_features
         precision_kwargs = get_active_precision_kwargs(
-            dtype, precision, param_dtype, preferred_element_dtype
+            dtype, precision, param_dtype, preferred_element_type
         )
         # Build per-layer linear constructors (support sequence of linear classes)
         num_layers = len(feature_dims) - 1
@@ -134,7 +141,7 @@ class MLP(nnx.Module):
         self.activation = activation
         self.activate_final = activate_final
 
-    def __call__(self, x: ArrayLike, context: ArrayLike | None = None) -> Array:
+    def __call__(self, x: Array, context: Array | None = None) -> Array:
         """Forward pass through the MLP.
 
         Args:
@@ -193,13 +200,13 @@ class ResNet(nnx.Module):
         context_dim: Optional[int] = None,
         activation=jax.nn.gelu,
         activate_final: bool = False,
-        precision: Optional[jax.lax.Precision] = None,
-        dtype: Optional[jax.numpy.dtype] = None,
-        param_dtype: Optional[jax.numpy.dtype] = None,
-        preferred_element_dtype: Optional[jax.numpy.dtype] = None,
-        context_fuse_cls: type[ContextFuse] = AffineFuse,
-        norm_cls: Optional[nnx.LayerNorm | nnx.BatchNorm | nnx.Module] = None,
-        linear_cls: nnx.Linear | nnx.LoRALinear | nnx.Module = nnx.Linear,
+        precision: PrecisionLike | None = None,
+        dtype: DTypeLike | None = None,
+        param_dtype: DTypeLike | None = None,
+        preferred_element_type: DTypeLike | None = None,
+        context_fuse_cls: ModuleLikeType = AffineFuse,
+        norm_cls: ModuleLikeType | None = None,
+        linear_cls: ModuleLikeType = nnx.Linear,
         rngs: nnx.Rngs,
         **kwargs,
     ):
@@ -244,7 +251,7 @@ class ResNet(nnx.Module):
         self.context_dim = context_dim
 
         precision_kwargs = get_active_precision_kwargs(
-            dtype, precision, param_dtype, preferred_element_dtype
+            dtype, precision, param_dtype, preferred_element_type
         )
         precision_kwargs = filter_precision_kwargs(linear_cls, **precision_kwargs)
         _linear = partial(linear_cls, rngs=rngs, **precision_kwargs, **kwargs)
@@ -330,8 +337,8 @@ class DeepSet(nnx.Module):
 
     def __init__(
         self,
-        phi: nnx.Module,
-        rho: nnx.Module,
+        phi: ModuleLike,
+        rho: ModuleLike,
         *,
         reduction: Callable = jnp.sum,
         axis: tuple[int] | int = -2,

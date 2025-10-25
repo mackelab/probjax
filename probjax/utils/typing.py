@@ -16,7 +16,6 @@ from typing import (
     runtime_checkable,
 )
 
-import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
 
@@ -34,6 +33,7 @@ __all__ = [
     "is_key",
     "assert_key",
     # Modules
+    "ModuleLike",
     "ModuleLikeType",
     # Standard typing
     "Callable",
@@ -103,15 +103,16 @@ def assert_key(x: Array) -> RngKey:
 
 # ---------------- Module typing ----------------
 @runtime_checkable
-class _ModuleFactory(Protocol):
-    """A callable that returns an nnx.Module.
+class ModuleLike(Protocol):
+    """Structural protocol for an nnx-like Module instance.
 
-    Accepts both classes (e.g., nnx.Linear) and callables/partials that
-    construct and return an nnx.Module instance when invoked.
+    Kept minimal on purpose for Pyright compatibility; describes only the
+    callable interface we rely on at runtime.
     """
 
-    def __call__(self, *args: Any, **kwargs: Any) -> nnx.Module: ...
+    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
-# Public alias for module-like constructors (classes or partials)
-ModuleLikeType: TypeAlias = _ModuleFactory
+# Constructors for modules: return a callable ModuleLike instance.
+# Using ModuleLike here helps pyright understand instances are callable.
+ModuleLikeType: TypeAlias = Callable[..., ModuleLike]

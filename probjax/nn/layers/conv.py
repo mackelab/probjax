@@ -16,11 +16,7 @@ from probjax.nn.utils import (
     get_active_precision_kwargs,
     identity_1x1,
 )
-from probjax.utils.typing import (
-    Array,
-    DTypeLike,
-    PrecisionLike,
-)
+from probjax.utils.typing import Array, DTypeLike, PrecisionLike, ModuleLike, ModuleLikeType
 
 
 class ConvBlock(nnx.Module):
@@ -34,7 +30,7 @@ class ConvBlock(nnx.Module):
         kernel_size: int | Sequence[int] = 3,
         strides: int | Sequence[int] = 1,
         padding: str = "SAME",
-        norm: type[nnx.LayerNorm] | type[nnx.GroupNorm] | None = nnx.GroupNorm,
+        norm_cls: ModuleLikeType | None = nnx.GroupNorm,
         activation: Callable = nnx.silu,
         preactivation: bool = True,
         input_dilation: int | Sequence[int] | None = 1,
@@ -64,7 +60,7 @@ class ConvBlock(nnx.Module):
             precision: Precision for the convolution operation.
             dtype: Data type for the convolution operation.
             params_dtype: Data type for the parameters of the convolution.
-            norm: Type of normalization to apply, either `LayerNorm` or `GroupNorm`.
+            norm_cls: Normalization class to apply, e.g., LayerNorm or GroupNorm.
             activation: Activation function to apply after normalization.
             preferred_element_type: Preferred output data type after convolution.
             **kwargs: Additional keyword arguments for the convolutional layer.
@@ -97,11 +93,11 @@ class ConvBlock(nnx.Module):
         self.preferred_element_type = preferred_element_type
         self.preactivation = preactivation
         self.norm = (
-            norm(
+            norm_cls(
                 in_features,
                 rngs=rngs,
             )
-            if norm is not None
+            if norm_cls is not None
             else None
         )
         self.activation = activation
@@ -299,10 +295,8 @@ class ResnetBlock(nnx.Module):
         param_dtype: jnp.dtype | None = None,
         preferred_element_type=None,
         # Building block choices:
-        context_fuse: type[AffineFuse]
-        | type[AdditiveFuse]
-        | type[ConcatFuse] = AffineFuse,
-        conv_block: type[ConvBlock] = ConvBlock,
+        context_fuse_cls: ModuleLikeType = AffineFuse,
+        conv_block_cls: ModuleLikeType = ConvBlock,
         rngs: nnx.Rngs,
         **kwargs,
     ):
@@ -312,10 +306,10 @@ class ResnetBlock(nnx.Module):
             in_features: Number of input features.
             out_features: Number of output features.
             rngs: Random number generators for initialization.
-            conv_block: Type of convolutional block to use, needs to be a subclass of `nnx.Module`.
-                and should accept `kernel_size`, `padding`, and `strides` as keyword arguments.
+            conv_block_cls: Convolutional block builder. Must accept in/out features,
+                kernel_size, strides, rngs and precision kwargs.
             context_features: Optional number of context features for context fusion.
-            context_fuse: Type of context fusion to use, either `AffineFuse` or `AdditiveFuse`.
+            context_fuse_cls: Context fusion builder.
             dropout_rate: Standard dropout rate applied inside the block.
             drop_path_rate: Stochastic depth (DropPath) rate for the residual branch.
             kernel_size: Size of the convolutional kernel.
@@ -334,13 +328,13 @@ class ResnetBlock(nnx.Module):
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
         )
-        precision_kwargs = filter_precision_kwargs(conv_block, **precision_kwargs)
+        precision_kwargs = filter_precision_kwargs(conv_block_cls, **precision_kwargs)
 
         if context_features is not None:
-            self.context_fuse = context_fuse(out_features, context_features, rngs=rngs)
+            self.context_fuse = context_fuse_cls(out_features, context_features, rngs=rngs)
 
         _conv_block = partial(
-            conv_block,
+            conv_block_cls,
             rngs=rngs,
             kernel_size=kernel_size,
             strides=strides,
@@ -413,7 +407,7 @@ class SpatialSelfAttention(nnx.Module):
     def __init__(
         self,
         in_features: int,
-        rngs,
+        rngs: nnx.Rngs,
         *,
         num_spatial_dims: int = 2,
         context_features: int | None = None,
@@ -421,14 +415,14 @@ class SpatialSelfAttention(nnx.Module):
         attn_size: int | None = None,
         dropout_rate: float = 0.0,
         drop_path_rate: float = 0.0,
-        pos_emb: nnx.Module | None = None,
+        pos_emb: ModuleLike | None = None,
         precision: PrecisionLike | None = None,
-        dtype: jnp.dtype | None = None,
-        param_dtype: jnp.dtype | None = None,
-        preferred_element_type: jnp.dtype | None = None,
+        dtype: DTypeLike | None = None,
+        param_dtype: DTypeLike | None = None,
+        preferred_element_type: DTypeLike | None = None,
         # Base building block choices:
-        norm_cls: type[nnx.LayerNorm] | type[nnx.GroupNorm] = nnx.GroupNorm,
-        mha_cls: type[MultiHeadAttention] = MultiHeadAttention,
+        norm_cls: ModuleLikeType = nnx.GroupNorm,
+        mha_cls: ModuleLikeType = MultiHeadAttention,
     ):
         self.preferred_element_type = preferred_element_type
         self.num_spatial_dims = num_spatial_dims

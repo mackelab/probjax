@@ -8,12 +8,7 @@ from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
 )
-from probjax.utils.typing import (
-    Array,
-    ArrayLike,
-    DTypeLike,
-    PrecisionLike,
-)
+from probjax.utils.typing import Array, ArrayLike, DTypeLike, PrecisionLike, ModuleLikeType
 
 
 class ContextFuse(nnx.Module):
@@ -36,7 +31,7 @@ class AdditiveFuse(ContextFuse):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        layer_cls: type[nnx.Linear] = nnx.Linear,
+        layer_cls: ModuleLikeType = nnx.Linear,
         rngs: nnx.Rngs,
     ):
         """Additive fusion module that applies linear transformation to context
@@ -103,7 +98,7 @@ class AffineFuse(ContextFuse):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        layer_cls: type[nnx.Linear] = nnx.Linear,
+        layer_cls: ModuleLikeType = nnx.Linear,
         rngs: nnx.Rngs,
     ):
         """Affine fusion module that applies scale and bias to the input
@@ -182,7 +177,7 @@ class ConcatFuse(ContextFuse):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        layer_cls: type[nnx.Linear] = nnx.Linear,
+        layer_cls: ModuleLikeType = nnx.Linear,
         rngs: nnx.Rngs,
     ):
         """Concatenation fusion module that linearly transforms context
@@ -259,7 +254,7 @@ class GatedFuse(ContextFuse):
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
         mode: Literal["convex", "left", "right"] = "convex",
-        layer_cls: type[nnx.Linear] = nnx.Linear,
+        layer_cls: ModuleLikeType = nnx.Linear,
         rngs: nnx.Rngs,
     ):
         """Gated fusion module that linearly transforms context

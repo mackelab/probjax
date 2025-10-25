@@ -202,8 +202,8 @@ def dot_product_attention(
     query: Array,
     key: Array,
     value: Array,
-    mask: AttentionMask | None = None,
-    bias: AttentionBias | None = None,
+    mask: AttentionMask | Array | None = None,
+    bias: AttentionBias | Array | None = None,
     dropout_rng=None,
     dropout_rate: float = 0.0,
     broadcast_dropout: bool = False,
@@ -214,6 +214,12 @@ def dot_product_attention(
     sm_scale: Optional[float] = None,
     enable_gqa: bool = False,
 ):
+    batch_size, q_len, num_heads, _ = query.shape
+    kv_len = key.shape[-3]
+    if isinstance(mask, AttentionMask):
+        mask = mask.dense(q_len, kv_len, batch_size=batch_size, num_heads=num_heads)
+    if isinstance(bias, AttentionBias):
+        bias = bias.dense(q_len, kv_len, batch_size=batch_size, num_heads=num_heads)
     return flax_dot_product_attention(
         query,
         key,
@@ -227,8 +233,6 @@ def dot_product_attention(
         dtype=dtype,
         precision=precision,
         module=module,
-        sm_scale=sm_scale,
-        enable_gqa=enable_gqa,
     )
 
 

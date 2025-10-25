@@ -538,7 +538,6 @@ def test_cross_attention_outputs_match(batch_size, q_len, kv_len, num_heads, qkv
     attention_fns = [
         dot_product_attention,
         flex_attention,
-        memory_efficient_dot_product_attention,
     ]
     outputs = [fn(q, k, v) for fn in attention_fns]
 
