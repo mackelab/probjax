@@ -5,7 +5,6 @@ from flax import nnx
 
 from probjax.nn import (
     EDM,
-    LRUModel,
     MLP,
     VE,
     VP,
@@ -20,6 +19,7 @@ from probjax.nn import (
     CouplingMLP,
     DeepSet,
     GaussianFourierEmbedding,
+    LRUModel,
     MultiHeadAttention,
     ResNet,
     SplineAutoregressiveFlow,
@@ -376,3 +376,95 @@ def denoising_diffusion(request):
 
     model = sde_type(BaseNet())
     return input_dim, model
+
+
+@pytest.fixture(
+    params=[
+        (
+            jnp.arange(2 * 4 * 4 * 3).reshape(2, 4, 4, 3),
+            (2, 2),
+            -1,
+        ),
+        (
+            jnp.arange(8).reshape(2, 4),
+            2,
+            None,
+        ),
+    ],
+    ids=[
+        "chunkify_spatial",
+        "chunkify_no_channel",
+    ],
+)
+def chunkify_inputs(request):
+    return request.param
+
+
+@pytest.fixture(
+    params=[
+        (
+            jnp.arange(8).reshape(2, 4),
+            3,
+            None,
+        ),
+    ],
+    ids=[
+        "chunkify_invalid_divisor",
+    ],
+)
+def chunkify_invalid_inputs(request):
+    return request.param
+
+
+@pytest.fixture
+def masked_linear_case():
+    mask = jnp.array([[1, 0], [0, 1]], dtype=jnp.bool_)
+    kernel = jnp.array([[1.0, 2.0], [3.0, 4.0]])
+    bias = jnp.zeros((2,))
+    x = jnp.array([[1.0, 2.0]])
+    expected = jnp.array([[1.0, 8.0]])
+    return mask, kernel, bias, x, expected
+
+
+@pytest.fixture(
+    params=[
+        (1.0, False),
+        (0.0, False),
+    ],
+    ids=[
+        "drop_path_zero",
+        "drop_path_keep",
+    ],
+)
+def drop_path_case(request):
+    drop_rate, deterministic = request.param
+    x = jnp.ones((4, 3))
+    expected = jnp.zeros_like(x) if drop_rate == 1.0 and not deterministic else x
+    return drop_rate, deterministic, x, expected
+
+
+@pytest.fixture
+def additive_binary_fuse_case():
+    x = jnp.ones((2, 3))
+    y = 2.0 * jnp.ones((2, 3))
+    return x, y
+
+
+@pytest.fixture(
+    params=[
+        "convex",
+        "left",
+        "right",
+    ],
+    ids=[
+        "gated_convex",
+        "gated_left",
+        "gated_right",
+    ],
+)
+def gated_fuse_case(request):
+    mode = request.param
+    x = jnp.ones((1, 4))
+    y = 2.0 * jnp.ones((1, 4))
+    context = jnp.ones((1, 3))
+    return mode, x, y, context
