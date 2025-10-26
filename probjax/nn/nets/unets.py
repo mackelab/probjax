@@ -211,7 +211,11 @@ class UNet(nnx.Module):
             layer_idx += 1
             # Optional attention for this stage
             if self.attn_mask[i]:
-                self.att_layers_down.append(_attn_block(self.out_features[i]))
+                self.att_layers_down.append(
+                    _attn_block(
+                        self.out_features[i], drop_path_rate=dpr_list[layer_idx]
+                    )
+                )
             else:
                 self.att_layers_down.append(None)
 
@@ -233,7 +237,11 @@ class UNet(nnx.Module):
             top_ch, top_ch, drop_path_rate=dpr_list[layer_idx]
         )
         layer_idx += 1
-        self.att_middle = _attn_block(top_ch) if self.attn_mask[-1] else None
+        self.att_middle = (
+            _attn_block(top_ch, drop_path_rate=dpr_list[layer_idx])
+            if self.attn_mask[-1]
+            else None
+        )
 
         # ---------------------------------------------------------------------
         # Up path (mirror of down)
@@ -255,7 +263,9 @@ class UNet(nnx.Module):
 
             # Attention layer (mirroring down path)
             if self.attn_mask[self.num_stages - i - 1]:
-                self.att_layers_up.append(_attn_block(ch))
+                self.att_layers_up.append(
+                    _attn_block(ch, drop_path_rate=dpr_list[layer_idx])
+                )
             else:
                 self.att_layers_up.append(None)
 
