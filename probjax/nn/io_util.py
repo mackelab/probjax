@@ -1,10 +1,16 @@
 # indexed_async_dataloader_v6.py
-import asyncio, itertools, queue, threading, collections, weakref
+import asyncio
+import collections
+import itertools
+import queue
+import threading
+import weakref
 from concurrent.futures import ThreadPoolExecutor
-from typing import Iterable, Iterator, Optional, Sequence, Any, Callable, Union
+from typing import Any, Callable, Optional, Sequence, Union
 
+import jax
+import jax.numpy as jnp
 import numpy as np
-import jax, jax.numpy as jnp
 from flax.jax_utils import prefetch_to_device
 
 
@@ -34,6 +40,117 @@ def _prefetch_single(iterator, size, device):
     while dq:
         yield dq.popleft()
         _fill(1)
+
+
+def chunkify(
+    x: "jax.Array",
+    chunk_shape: Union[int, Sequence[int]],
+    *,
+    channel_axis: Optional[int] = -1,
+) -> "jax.Array":
+    """
+    Partition an array with spatial structure into a sequence of transformer tokens.
+
+    Parameters
+    ----------
+    x:
+        Input array of shape ``(*batch_dims, *spatial_dims, channels)``. The channel
+        dimension can be omitted by setting ``channel_axis=None``.
+    chunk_shape:
+        Size of each chunk along the spatial dimensions. Can be an ``int`` (applied
+        uniformly) or an ``Iterable[int]`` with length equal to the number of spatial
+        dimensions.
+    channel_axis:
+        Axis that stores per-location features (e.g. RGB channels). Set to ``None`` if
+        the input does not have a dedicated channel dimension. Defaults to the last
+        axis.
+
+    Returns
+    -------
+    jax.Array
+        Array of shape ``(*batch_dims, num_chunks, chunk_volume * channels)`` where
+        ``num_chunks`` is the product over the number of chunks per spatial dimension
+        and ``chunk_volume`` is the product over ``chunk_shape``.
+    """
+
+    x = jnp.asarray(x)
+    if isinstance(chunk_shape, int):
+        if chunk_shape <= 0:
+            raise ValueError("chunk_shape must be positive.")
+        chunk_shape = (chunk_shape,)
+    else:
+        chunk_shape = tuple(int(cs) for cs in chunk_shape)
+        if not chunk_shape:
+            raise ValueError("chunk_shape must be non-empty.")
+        if any(cs <= 0 for cs in chunk_shape):
+            raise ValueError("All entries in chunk_shape must be positive.")
+
+    spatial_ndim = len(chunk_shape)
+
+    if channel_axis is None:
+        x = jnp.expand_dims(x, axis=-1)
+        channel_axis = x.ndim - 1
+    else:
+        channel_axis = int(channel_axis)
+        if not (-x.ndim <= channel_axis < x.ndim):
+            raise ValueError(
+                f"channel_axis={channel_axis} is out of bounds for array with "
+                f"{x.ndim} dimensions."
+            )
+        channel_axis = channel_axis % x.ndim
+        if channel_axis != x.ndim - 1:
+            x = jnp.moveaxis(x, channel_axis, -1)
+
+    if x.ndim < spatial_ndim + 1:
+        raise ValueError(
+            f"Input must have at least {spatial_ndim} spatial dims plus channels, "
+            f"got shape {x.shape}."
+        )
+
+    spatial_start = x.ndim - spatial_ndim - 1
+    batch_shape = x.shape[:spatial_start]
+    spatial_shape = x.shape[spatial_start:-1]
+    channel_dim = x.shape[-1]
+
+    if len(spatial_shape) != spatial_ndim:
+        raise ValueError(
+            f"Expected {spatial_ndim} spatial dimensions, got {len(spatial_shape)}."
+        )
+
+    for i, (size, chunk) in enumerate(zip(spatial_shape, chunk_shape, strict=False)):
+        if size % chunk:
+            raise ValueError(
+                f"Spatial dimension {i} with size {size} is not divisible by "
+                f"chunk size {chunk}."
+            )
+
+    chunk_counts = tuple(
+        size // chunk for size, chunk in zip(spatial_shape, chunk_shape, strict=False)
+    )
+
+    # Reshape to interleave chunk counts and chunk sizes, keeping batch dims in front.
+    reshaped_shape: list[int] = list(batch_shape)
+    for n_chunks, chunk_size in zip(chunk_counts, chunk_shape, strict=False):
+        reshaped_shape.extend([n_chunks, chunk_size])
+    reshaped_shape.append(channel_dim)
+    tokens = x.reshape(reshaped_shape)
+
+    batch_ndim = len(batch_shape)
+    count_axes = [batch_ndim + 2 * idx for idx in range(spatial_ndim)]
+    chunk_axes = [axis + 1 for axis in count_axes]
+    perm = (
+        list(range(batch_ndim))
+        + count_axes
+        + chunk_axes
+        + [batch_ndim + 2 * spatial_ndim]
+    )
+    tokens = tokens.transpose(perm)
+
+    total_chunks = int(np.prod(chunk_counts)) if chunk_counts else 1
+    chunk_volume = int(np.prod(chunk_shape)) if chunk_shape else 1
+    output_shape = batch_shape + (total_chunks, chunk_volume * channel_dim)
+
+    return tokens.reshape(output_shape)
 
 
 # --------------------------------------------------------------------- #

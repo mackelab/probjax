@@ -1,17 +1,15 @@
-from datetime import time
-from typing import Callable, Optional
+from typing import Callable, Mapping, Tuple
 
 import jax
 import jax.numpy as jnp
 import jax.tree_util
 from flax import nnx
-from jax.typing import ArrayLike
-from jaxtyping import PyTree
 
 from probjax.nn.loss_fn.flow_matching import (
     build_flow_matching_loss,
     build_mean_flow_matching_loss,
 )
+from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
 
 
 class FlowMatcher(nnx.Module):
@@ -35,15 +33,15 @@ class FlowMatcher(nnx.Module):
 
     def __init__(
         self,
-        net: nnx.Module,
+        net: ModuleLike,
         mu0: ArrayLike = 0.0,
         std0: ArrayLike = 1.0,
         mu1: ArrayLike = 0.0,
         std1: ArrayLike = 1.0,
-        interpolation_fn: Optional[Callable] = None,
-        interpolation_std_fn: Optional[Callable] = None,
-        loss_kwargs: Optional[dict] = None,
-        rngs=None,
+        interpolation_fn: Callable | None = None,
+        interpolation_std_fn: Callable | None = None,
+        loss_kwargs: Mapping[str, object] | None = None,
+        rngs: nnx.RngStream | None = None,
     ):
         """Base class for flow matching models.
 
@@ -61,7 +59,7 @@ class FlowMatcher(nnx.Module):
             rngs (_type_, optional): _description_. Defaults to None.
         """
         self.rngs = rngs
-        self.net = net
+        self.net: ModuleLike = net
         if interpolation_fn is not None:
             self.interpolation_fn = interpolation_fn
 
@@ -75,11 +73,11 @@ class FlowMatcher(nnx.Module):
         self.mu1 = nnx.Variable(mu1)
         self.std1 = nnx.Variable(std1)
 
-        if loss_kwargs is None:
-            loss_kwargs = {}
+        self._loss_kwargs: dict[str, object] = dict(loss_kwargs or {})
 
-
-    def __call__(self, t, x: ArrayLike, *args, **kwargs) -> ArrayLike:
+    def __call__(
+        self, t: ArrayLike, x: PyTree[Array], *args, **kwargs
+    ) -> PyTree[Array]:
         """Forward pass of the model - v-prediction.
 
         We do a Gaussian closed-form preconditioning scheme. We know that
@@ -116,25 +114,34 @@ class FlowMatcher(nnx.Module):
 
         return jax.tree_util.tree_map(process_leaf, x, residual_correction)
 
-    def score(self, t, x, *args, **kwargs):
+    def score(
+        self, t: ArrayLike, x: PyTree[Array], *args, **kwargs
+    ) -> PyTree[Array]:
         """Score function for the model."""
         raise NotImplementedError(
             "Implemented only for specific implementation of this base class"
         )
 
-    def denoise(self, t, x):
+    def denoise(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
         """Denoise the input x at time t."""
         raise NotImplementedError(
             "Implemented only for specific implementation of this base class"
         )
 
-    def loss(self, rng, data: ArrayLike, *args, **kwargs):
+    def loss(
+        self,
+        rng: RngKey,
+        data: Array,
+        *args,
+        **kwargs,
+    ) -> Array:
 
         loss_fn = build_flow_matching_loss(
             self,
             interpolation_fn=self.interpolation_fn,
             interpolation_noise_fn=self.interpolation_std_fn,
             weight_fn=None,
+            **self._loss_kwargs,
         )
 
         rng_source, rng_times = jax.random.split(rng, 2)
@@ -157,18 +164,19 @@ class FlowMatcher(nnx.Module):
 class MeanFlowMatcher(nnx.Module):
     def __init__(
         self,
-        net,
-        interpolation_fn,
-        interpolation_std_fn=None,
-        interpolation_grad_fn=None,
-        interpolation_noise_grad_fn=None,
-        mu0=0,
-        std0=1,
-        mu1=0.0,
-        std1=1.0,
-        rngs=None,
+        net: ModuleLike,
+        interpolation_fn: Callable,
+        interpolation_std_fn: Callable | None = None,
+        interpolation_grad_fn: Callable | None = None,
+        interpolation_noise_grad_fn: Callable | None = None,
+        mu0: ArrayLike = 0,
+        std0: ArrayLike = 1,
+        mu1: ArrayLike = 0.0,
+        std1: ArrayLike = 1.0,
+        rngs: nnx.RngStream | None = None,
+        loss_kwargs: Mapping[str, object] | None = None,
     ):
-        self.net = net
+        self.net: ModuleLike = net
         self.mu0 = nnx.Variable(mu0)
         self.std0 = nnx.Variable(std0)
         self.mu1 = nnx.Variable(mu1)
@@ -178,11 +186,12 @@ class MeanFlowMatcher(nnx.Module):
         self.interpolation_grad_fn = interpolation_grad_fn
         self.interpolation_noise_grad_fn = interpolation_noise_grad_fn
         self.rngs = rngs
+        self._loss_kwargs: dict[str, object] = dict(loss_kwargs or {})
 
 
     def __call__(
-        self, t: ArrayLike, x: ArrayLike, r: Optional[ArrayLike] = None, *args, **kwargs
-    ) -> ArrayLike:
+        self, t: ArrayLike, x: Array, r: ArrayLike | None = None, *args, **kwargs
+    ) -> Array:
         """
         Args:
             t: Current time t.
@@ -220,14 +229,14 @@ class MeanFlowMatcher(nnx.Module):
 
     def noise_schedule(
         self,
-        rng,
-        shape,
-        percent_rt=0.25,
-        mu_rt=-0.4,
-        scale_rt=1.0,
-        mu_t=0.,
-        scale_t=1.0,
-    ):
+        rng: RngKey,
+        shape: Tuple[int, ...],
+        percent_rt: float = 0.25,
+        mu_rt: float = -0.4,
+        scale_rt: float = 1.0,
+        mu_t: float = 0.0,
+        scale_t: float = 1.0,
+    ) -> tuple[Array, Array]:
         batch_size = shape[0]
         batch_size_different = int(batch_size * percent_rt)
         batch_size_same = batch_size - batch_size_different
@@ -258,19 +267,20 @@ class MeanFlowMatcher(nnx.Module):
 
     def loss(
         self,
-        rng,
-        data: ArrayLike,
+        rng: RngKey,
+        data: Array,
         *args,
         adaptive_weight_p: float = 0.3,
         adaptive_weight_eps: float = 1e-3,
         **kwargs,
-    ):
+    ) -> Array:
 
         loss_fn = build_mean_flow_matching_loss(
             self,
             interpolation_fn=self.interpolation_fn,
             interpolation_noise_fn=self.interpolation_std_fn,
             weight_fn=None,
+            **self._loss_kwargs,
         )
 
         rng_source, rng_times = jax.random.split(rng, 2)
@@ -299,13 +309,13 @@ class MeanFlowMatcher(nnx.Module):
 class LinearFlow(FlowMatcher):
     def __init__(
         self,
-        net: nnx.Module,
+        net: ModuleLike,
         mu0: ArrayLike = 0.0,
         std0: ArrayLike = 1.0,
         mu1: ArrayLike = 0.0,
         std1: ArrayLike = 1.0,
-        rngs=None,
-        loss_kwargs=None,
+        rngs: nnx.RngStream | None = None,
+        loss_kwargs: Mapping[str, object] | None = None,
     ):
         super().__init__(
             net,
@@ -318,7 +328,7 @@ class LinearFlow(FlowMatcher):
             loss_kwargs=loss_kwargs,
         )
 
-    def denoise(self, t, x: PyTree[ArrayLike]) -> PyTree[ArrayLike]:
+    def denoise(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
         # x0 is noise
         # x1 is data
         # xt = (1 - t) * x0 + t * x1
@@ -334,7 +344,9 @@ class LinearFlow(FlowMatcher):
 
         return jax.tree_util.tree_map(denoise_leaf, x, v)
 
-    def score(self, t, x: PyTree[ArrayLike], max_t=1 - 1e-3) -> PyTree[ArrayLike]:
+    def score(
+        self, t: ArrayLike, x: PyTree[Array], max_t: float = 1 - 1e-3
+    ) -> PyTree[Array]:
         # We can recover a "denoiser" so we can use it to get the score
         # using Tweedie's formula
         # Pertubration kernel is given by
@@ -354,10 +366,12 @@ class LinearFlow(FlowMatcher):
 
         return jax.tree_util.tree_map(score_leaf, x, v)
 
-    def noise_schedule(self, rng, shape, mu=0.0, scale=1.0):
+    def noise_schedule(
+        self, rng: RngKey, shape: Tuple[int, ...], mu: float = 0.0, scale: float = 1.0
+    ) -> Array:
         return jax.nn.sigmoid(jax.random.normal(rng, shape=shape + (1,)) * scale + mu)
 
-    def solve_schedule(self, num_steps=50):
+    def solve_schedule(self, num_steps: int = 50) -> Array:
         ts = jnp.linspace(0, 1, num_steps)
         return ts
 
@@ -365,12 +379,13 @@ class LinearFlow(FlowMatcher):
 class LinearMeanFlow(MeanFlowMatcher):
     def __init__(
         self,
-        net,
-        mu0=0,
-        std0=1,
-        mu1=0.0,
-        std1=1.0,
-        rngs=None,
+        net: ModuleLike,
+        mu0: ArrayLike = 0,
+        std0: ArrayLike = 1,
+        mu1: ArrayLike = 0.0,
+        std1: ArrayLike = 1.0,
+        rngs: nnx.RngStream | None = None,
+        loss_kwargs: Mapping[str, object] | None = None,
     ):
         interpolation_fn = lambda x0, x1, t: (1 - t) * x0 + t * x1
         super().__init__(
@@ -384,8 +399,9 @@ class LinearMeanFlow(MeanFlowMatcher):
             mu1=mu1,
             std1=std1,
             rngs=rngs,
+            loss_kwargs=loss_kwargs,
         )
 
-    def solve_schedule(self, num_steps=50):
+    def solve_schedule(self, num_steps: int = 50) -> Array:
         ts = jnp.linspace(0, 1, num_steps)
         return ts

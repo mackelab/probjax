@@ -8,10 +8,11 @@ import jax.numpy as jnp
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.core.transformation import inverse_and_logabsdet
 from probjax.nn.layers.attention import flex_attention
-from probjax.nn.nets.simple import MaskedMLP
-from probjax.utils.typing import ModuleLikeType
-from probjax.nn.nets.transformer import Transformer
 from probjax.nn.layers.encoding import PosEncode
+from probjax.nn.nets.simple import MaskedMLP
+from probjax.nn.nets.transformer import Transformer
+from probjax.nn.pallas_kernels.attention_mask_bias import CausalMask
+from probjax.utils.typing import ModuleLikeType
 
 
 def get_autoregressive_masks(
@@ -84,6 +85,7 @@ class AutoregressiveMLP(nnx.Module):
         )
 
         if init_last_layer_to_zero:
+            assert hasattr(self.masked_mlp, "layers"), 'mlp_cls must have a "layers"'
             self.masked_mlp.layers[-1].kernel.init = nnx.initializers.zeros
             self.masked_mlp.layers[-1].kernel.value = jnp.zeros_like(
                 self.masked_mlp.layers[-1].kernel.value
@@ -103,7 +105,7 @@ class AutoregressiveMLP(nnx.Module):
             # Get parameters for the i-th dimension using dynamic indexing
             bij_params_i = jax.lax.dynamic_slice(
                 bij_params,
-                (0,) * (bij_params.ndim - 1) + (i*self.bijector_dim,),
+                (0,) * (bij_params.ndim - 1) + (i * self.bijector_dim,),
                 bij_params.shape[:-1] + (self.bijector_dim,),
             )
             bij_params_i = bij_params_i.reshape(bij_params_i.shape[:-1] + (-1,))
@@ -121,9 +123,7 @@ class AutoregressiveMLP(nnx.Module):
 
     def inverse_and_logdet(self, Tx: jax.Array, context=None):
         bij_params = self.masked_mlp(Tx, context)
-        bij_params = jnp.reshape(
-            bij_params, Tx.shape + (self.bijector_dim,)
-        )
+        bij_params = jnp.reshape(bij_params, Tx.shape + (self.bijector_dim,))
         x, logdet = jax.vmap(self.bijector_inv)(bij_params, Tx)
         return x, logdet
 
@@ -131,7 +131,12 @@ class AutoregressiveMLP(nnx.Module):
         print("Hey")
         bij_params = self.masked_mlp(Tx, context)
         bij_params = jnp.reshape(
-            bij_params, bij_params.shape[:-1] + (self.in_out_features, self.bijector_dim,)
+            bij_params,
+            bij_params.shape[:-1]
+            + (
+                self.in_out_features,
+                self.bijector_dim,
+            ),
         )
         print(bij_params.shape, Tx.shape)
         x = jax.vmap(self.bijector_inv)(bij_params, Tx)[0]
@@ -171,7 +176,7 @@ class AutoregressiveTransformer(nnx.Module):
                 num_layers=num_layers,
                 attn_size=attn_size,
                 widening_factor=widening_factor,
-                attention_fn=partial(flex_attention, causal=True),
+                attention_fn=partial(flex_attention, mask=CausalMask()),
                 rngs=rngs,
                 context_dim=context_dim,
                 **kwargs,
@@ -202,11 +207,11 @@ class AutoregressiveTransformer(nnx.Module):
         start_token = jnp.broadcast_to(
             start_token, x.shape[:-2] + (1,) + (self.transformer.model_dim,)
         )
-        x = self.encoder(x)
+        x = self.encoder(x)  # type: ignore
         x = jnp.concatenate([start_token, x], axis=-2)
-        x = self.pos_embed(x)
-        h = self.transformer(x, k, v, context=context, **kwargs)[..., :-1, :]
-        bij_params = self.decoder(h)
+        x = self.pos_embed(x)  # type: ignore
+        h = self.transformer(x, k, v, context=context, **kwargs)[..., :-1, :]  # type: ignore
+        bij_params = self.decoder(h)  # type: ignore
         return bij_params
 
     def __call__(self, x: jax.Array, context=None, k=None, v=None, **kwargs):

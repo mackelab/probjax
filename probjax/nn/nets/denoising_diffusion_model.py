@@ -1,14 +1,11 @@
-from typing import Callable, Optional, Tuple, Any
+from typing import Callable, Mapping, Tuple
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from jax import Array
-from jax.random import PRNGKey
-from jax.typing import ArrayLike
-from jaxtyping import PyTree
 
 from probjax.nn.loss_fn.denoising import build_time_dependent_denoising_loss
+from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
 
 
 class DiffusionDenoiser(nnx.Module):
@@ -30,14 +27,14 @@ class DiffusionDenoiser(nnx.Module):
 
     def __init__(
         self,
-        net: nnx.Module,
+        net: ModuleLike,
         std0: ArrayLike = 1.0,
-        scale_fn: Optional[Callable[[ArrayLike], Array]] = None,
-        std_fn: Optional[Callable[[ArrayLike], Array]] = None,
-        last_layer: Optional[Callable[[ArrayLike], ArrayLike]] = None,
+        scale_fn: Callable[[ArrayLike], Array] | None = None,
+        std_fn: Callable[[ArrayLike], Array] | None = None,
+        last_layer: Callable[[Array], Array] | None = None,
         loss_type: str = "x0",
-        loss_kwargs=None,
-        rngs: nnx.RngStream = None,
+        loss_kwargs: Mapping[str, object] | None = None,
+        rngs: nnx.RngStream | None = None,
     ) -> None:
         """
         Initialize the diffusion denoiser.
@@ -52,7 +49,7 @@ class DiffusionDenoiser(nnx.Module):
             loss_type: Type of prediction target: "x0", "epsilon", or "v".
         """
         self.rngs = rngs
-        self.net = net
+        self.net: ModuleLike = net
         if scale_fn is not None:
             self.scale_fn = scale_fn
         if std_fn is not None:
@@ -60,9 +57,16 @@ class DiffusionDenoiser(nnx.Module):
         self.std0 = nnx.Variable(std0)
         self.last_layer = last_layer
 
+        self._loss_kwargs: dict[str, object] = dict(loss_kwargs or {})
         self._loss_type = loss_type
+        self._build_loss_fn(loss_type)
 
-    def _build_loss_fn(self, loss_type: str, loss_kwargs=None):
+    def _build_loss_fn(
+        self, loss_type: str, loss_kwargs: Mapping[str, object] | None = None
+    ) -> None:
+        if loss_kwargs is not None:
+            self._loss_kwargs = dict(loss_kwargs)
+
         if loss_type == "x0":
             weight_fn = self.weight_fn
             pred_fn = self.denoise
@@ -81,43 +85,45 @@ class DiffusionDenoiser(nnx.Module):
             std_fn=self.std_fn,
             weight_fn=weight_fn,
             prediction_target=loss_type,
-            **(loss_kwargs or {}),
+            **self._loss_kwargs,
         )
 
     @property
-    def loss_type(self):
+    def loss_type(self) -> str:
         return self._loss_type
 
     @loss_type.setter
-    def loss_type(self, value: str, loss_kwargs=None):
+    def loss_type(
+        self, value: str, loss_kwargs: Mapping[str, object] | None = None
+    ) -> None:
         self._loss_type = value
         self._build_loss_fn(value, loss_kwargs)
 
-    def c_in(self, t: ArrayLike) -> float:
+    def c_in(self, t: ArrayLike) -> Array:
         """Compute input scaling factor."""
-        return 1.0
+        return jnp.asarray(1.0)
 
-    def c_out(self, t: ArrayLike) -> float:
+    def c_out(self, t: ArrayLike) -> Array:
         """Compute output scaling factor."""
-        return 1.0
+        return jnp.asarray(1.0)
 
     def c_t(self, t: ArrayLike) -> Array:
         """Compute noise embedding scaling factor."""
         return self.std_fn(t)
 
-    def c_skip(self, t: ArrayLike) -> Optional[float]:
+    def c_skip(self, t: ArrayLike) -> Array | None:
         """Compute skip connection scaling factor or None."""
         return None
 
-    def weight_fn(self, t: ArrayLike) -> float:
+    def weight_fn(self, t: ArrayLike) -> Array:
         """Compute weighting function for loss."""
-        return 1.0
+        return jnp.asarray(1.0)
 
-    def weight_fn_eps(self, t: ArrayLike) -> float:
+    def weight_fn_eps(self, t: ArrayLike) -> Array:
         """Compute weighting function for loss."""
         return self.weight_fn(t) * self.std_fn(t) ** 2
 
-    def weight_fn_v(self, t: ArrayLike) -> float:
+    def weight_fn_v(self, t: ArrayLike) -> Array:
         """Compute weighting function for loss."""
         alpha_t = self.scale_fn(t)
         sigma_t = self.std_fn(t)
@@ -130,8 +136,8 @@ class DiffusionDenoiser(nnx.Module):
         return 0.5 * (a_t_weight + s_t_weight)  # This normally comes down to just 1.0
 
     def __call__(
-        self, t: ArrayLike, x_t: PyTree[ArrayLike], *args, **kwargs
-    ) -> PyTree[ArrayLike]:
+        self, t: ArrayLike, x_t: PyTree[Array], *args, **kwargs
+    ) -> PyTree[Array]:
         """
         Forward pass of the model.
 
@@ -156,8 +162,8 @@ class DiffusionDenoiser(nnx.Module):
         return out
 
     def denoise(
-        self, t: ArrayLike, x_t: PyTree[ArrayLike], *args, **kwargs
-    ) -> PyTree[ArrayLike]:
+        self, t: ArrayLike, x_t: PyTree[Array], *args, **kwargs
+    ) -> PyTree[Array]:
         """Predict denoised x0 from noisy x_t at time t."""
         model_output = self.__call__(t, x_t, *args, **kwargs)
         # Karras-preconditioned x0 prediction
@@ -171,8 +177,8 @@ class DiffusionDenoiser(nnx.Module):
         )
 
     def epsilon(
-        self, t: ArrayLike, x_t: PyTree[ArrayLike], *args, **kwargs
-    ) -> PyTree[ArrayLike]:
+        self, t: ArrayLike, x_t: PyTree[Array], *args, **kwargs
+    ) -> PyTree[Array]:
         """Predict noise epsilon from noisy x_t at time t."""
         sigma_t = self.std_fn(t)
         x0_pred = self.denoise(t, x_t, *args, **kwargs)
@@ -183,9 +189,7 @@ class DiffusionDenoiser(nnx.Module):
             x0_pred,
         )
 
-    def score(
-        self, t: ArrayLike, x_t: PyTree[ArrayLike], *args, **kwargs
-    ) -> PyTree[ArrayLike]:
+    def score(self, t: ArrayLike, x_t: PyTree[Array], *args, **kwargs) -> PyTree[Array]:
         """Compute score (nabla_x_t log p(x_t|x0)) from noisy x_t at time t.
         Defined as -epsilon_pred / sigma_t.
         """
@@ -196,9 +200,7 @@ class DiffusionDenoiser(nnx.Module):
             epsilon_pred,
         )
 
-    def v(
-        self, t: ArrayLike, x_t: PyTree[ArrayLike], *args, **kwargs
-    ) -> PyTree[ArrayLike]:
+    def v(self, t: ArrayLike, x_t: PyTree[Array], *args, **kwargs) -> PyTree[Array]:
         """Predict v (velocity or related quantity) from noisy x_t at time t.
         Here, v is defined as v_target = alpha_t * epsilon - sigma_t * x0.
         """
@@ -231,15 +233,13 @@ class DiffusionDenoiser(nnx.Module):
 
         return v
 
-    def marginal_std(self, t: ArrayLike) -> ArrayLike:
+    def marginal_std(self, t: ArrayLike) -> Array:
         """Compute marginal standard deviation."""
         return jnp.sqrt(
             self.scale_fn(t) ** 2 * (self.std_fn(t) ** 2 + self.std0.value**2)
         )
 
-    def drift(
-        self, t: ArrayLike, x: PyTree[ArrayLike], *args, **kwargs
-    ) -> PyTree[ArrayLike]:
+    def drift(self, t: ArrayLike, x: PyTree[Array], *args, **kwargs) -> PyTree[Array]:
         """Compute SDE drift term."""
         scale = self.scale_fn(t)
         scale_dt = jax.grad(lambda t: jnp.sum(self.scale_fn(t)))(t)
@@ -249,8 +249,8 @@ class DiffusionDenoiser(nnx.Module):
         )
 
     def diffusion(
-        self, t: ArrayLike, x: PyTree[ArrayLike], *args, **kwargs
-    ) -> PyTree[ArrayLike]:
+        self, t: ArrayLike, x: PyTree[Array], *args, **kwargs
+    ) -> PyTree[Array]:
         """Compute SDE diffusion term."""
         scale = self.scale_fn(t)
         std = self.std_fn(t)
@@ -260,7 +260,7 @@ class DiffusionDenoiser(nnx.Module):
             x,
         )
 
-    def noise_schedule(self, rng: PRNGKey, shape: Tuple[int, ...]) -> Array:
+    def noise_schedule(self, rng: RngKey, shape: Tuple[int, ...]) -> Array:
         """Compute noise levels for given shape and RNG."""
         raise NotImplementedError(
             "Implemented only for specific implementation of this base class"
@@ -268,8 +268,8 @@ class DiffusionDenoiser(nnx.Module):
 
     def loss(
         self,
-        rng: PRNGKey,
-        data: ArrayLike,
+        rng: RngKey,
+        data: Array,
         *args,
         **kwargs,
     ) -> Array:
@@ -279,10 +279,9 @@ class DiffusionDenoiser(nnx.Module):
         ndims = data.ndim - 2
         times = self.noise_schedule(rng_times, (data.shape[0],) + (1,) * ndims)
 
-        if 'axis' not in kwargs:
-            axis = tuple(range(1, data.ndim))
-            kwargs['axis'] = axis
-        loss = self._loss_fn(times, data, *args, rng=rng_loss,**kwargs)
+        if "axis" not in kwargs:
+            kwargs["axis"] = tuple(range(1, data.ndim))
+        loss = self._loss_fn(times, data, *args, rng=rng_loss, **kwargs)
         return loss
 
 
@@ -296,25 +295,25 @@ class EDM(DiffusionDenoiser):
     min_noise: float = 0.0001
     max_noise: float = 80.0
 
-    def c_in(self, t: ArrayLike) -> float:
+    def c_in(self, t: ArrayLike) -> Array:
         total_std = jnp.sqrt(self.std0.value**2 + self.std_fn(t) ** 2)
         return 1.0 / total_std
 
-    def c_out(self, t: ArrayLike) -> float:
+    def c_out(self, t: ArrayLike) -> Array:
         std = self.std_fn(t)
         return std * self.std0.value / jnp.sqrt(self.std0.value**2 + std**2)
 
     def c_t(self, t: ArrayLike) -> Array:
         return 0.25 * jnp.log(self.std_fn(t))
 
-    def c_skip(self, t: ArrayLike) -> Optional[float]:
+    def c_skip(self, t: ArrayLike) -> Array:
         return self.std0.value / (self.std0.value**2 + self.std_fn(t) ** 2)
 
-    def weight_fn(self, t: ArrayLike) -> float:
+    def weight_fn(self, t: ArrayLike) -> Array:
         out_weight = self.c_out(t)
         return 1.0 / out_weight**2
 
-    def noise_schedule(self, rng: PRNGKey, shape: Tuple[int, ...]) -> Array:
+    def noise_schedule(self, rng: RngKey, shape: Tuple[int, ...]) -> Array:
         logt = (
             jax.random.normal(rng, shape=shape + (1,)) * self.lognoise_scale
             + self.lognoise_mean
@@ -336,7 +335,7 @@ class VE(EDM):
     drift: lambda _, t, x: jnp.array([0.0])
     diffusion: lambda _, t, x: jnp.atleast_1d((t**-0.5 * 2 * t**0.5) ** 0.5)
 
-    def noise_schedule(self, rng: PRNGKey, shape: Tuple[int, ...]) -> Array:
+    def noise_schedule(self, rng: RngKey, shape: Tuple[int, ...]) -> Array:
         """Compute noise schedule for VE."""
         logt = (
             jax.random.normal(rng, shape=shape + (1,)) * self.lognoise_scale
@@ -362,11 +361,11 @@ class VP(EDM):
 
     def __init__(
         self,
-        net: nnx.Module,
+        net: ModuleLike,
         beta_min: float = 0.1,
         beta_max: float = 10.0,
         std0: ArrayLike = 1.0,
-        rngs: nnx.RngStream = None,
+        rngs: nnx.RngStream | None = None,
         loss_type: str = "x0",
     ) -> None:
         """VP variant with beta range for SDE."""
@@ -392,7 +391,7 @@ class VP(EDM):
         term = jnp.exp(integral)
         return 1 / jnp.atleast_1d(jnp.sqrt(term))
 
-    def noise_schedule(self, rng: PRNGKey, shape: Tuple[int, ...]) -> Array:
+    def noise_schedule(self, rng: RngKey, shape: Tuple[int, ...]) -> Array:
         """Compute noise schedule for VP."""
         logt = (
             jax.random.normal(rng, shape=shape + (1,)) * self.lognoise_scale

@@ -13,8 +13,17 @@ from probjax.utils.typing import (
     Array,
     ArrayLike,
     DTypeLike,
+    ModuleLikeType,
     PrecisionLike,
 )
+
+
+def default_scale_activation(x: ArrayLike) -> ArrayLike:
+    return x + 1.0  # For identity initialization
+
+
+def identity(x: ArrayLike) -> ArrayLike:
+    return x
 
 
 class ContextFuse(nnx.Module):
@@ -29,6 +38,58 @@ class BinaryFuse(nnx.Module):
     def __call__(self, x: Array, y: Array, context: Array | None) -> Array: ...
 
 
+class MLPConditioner(nnx.Module):
+    """Two-layer MLP used as the default fusion projection."""
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        *,
+        hidden_features: int | None = None,
+        activation: Callable[[Array], Array] = jax.nn.gelu,
+        dtype: DTypeLike | None = None,
+        param_dtype: DTypeLike | None = None,
+        precision: PrecisionLike | None = None,
+        preferred_element_type: DTypeLike | None = None,
+        rngs: nnx.Rngs,
+    ):
+        if in_features <= 0:
+            raise ValueError("in_features must be positive")
+        if out_features <= 0:
+            raise ValueError("out_features must be positive")
+
+        super().__init__()
+        hidden_features = hidden_features or max(in_features, out_features)
+        if hidden_features <= 0:
+            raise ValueError("hidden_features must be positive")
+
+        precision_kwargs = get_active_precision_kwargs(
+            dtype, precision, param_dtype, preferred_element_type
+        )
+        linear_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
+
+        self.activation = activation
+        self.hidden = nnx.Linear(
+            in_features,
+            hidden_features,
+            rngs=rngs,
+            **linear_kwargs,
+        )
+        self.proj = nnx.Linear(
+            hidden_features,
+            out_features,
+            rngs=rngs,
+            kernel_init=nnx.initializers.zeros,
+            **linear_kwargs,
+        )
+
+    def __call__(self, x: Array) -> Array:
+        x = self.hidden(x)
+        x = self.activation(x)
+        return self.proj(x)
+
+
 class AdditiveFuse(ContextFuse):
     """Additive fusion module for combining input and context."""
 
@@ -41,7 +102,7 @@ class AdditiveFuse(ContextFuse):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        layer_cls: type[nnx.Linear] = nnx.Linear,
+        layer_cls: ModuleLikeType = MLPConditioner,
         rngs: nnx.Rngs,
     ):
         """Additive fusion module that applies linear transformation to context
@@ -90,10 +151,6 @@ class AdditiveFuse(ContextFuse):
         return x + self.linear(context)
 
 
-def default_scale_activation(x: ArrayLike) -> ArrayLike:
-    return x + 1.0  # For identity initialization
-
-
 class AffineFuse(ContextFuse):
     """Affine fusion module that applies scale and bias transformations."""
 
@@ -103,12 +160,11 @@ class AffineFuse(ContextFuse):
         context_features: int,
         *,
         scale_activation: Callable = default_scale_activation,
-        use_bias: bool = False,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        layer_cls: type[nnx.Linear] = nnx.Linear,
+        layer_cls: ModuleLikeType = MLPConditioner,
         rngs: nnx.Rngs,
     ):
         """Affine fusion module that applies scale and bias to the input
@@ -141,19 +197,9 @@ class AffineFuse(ContextFuse):
         )
         precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
 
-        self.linear_scale = layer_cls(
+        self.linear_scale_bias = layer_cls(
             context_features,
-            in_features,
-            use_bias=use_bias,
-            kernel_init=nnx.initializers.zeros,
-            rngs=rngs,
-            **precision_kwargs,
-        )
-        self.linear_bias = layer_cls(
-            context_features,
-            in_features,
-            use_bias=use_bias,
-            kernel_init=nnx.initializers.zeros,
+            2 * in_features,
             rngs=rngs,
             **precision_kwargs,
         )
@@ -169,9 +215,9 @@ class AffineFuse(ContextFuse):
         Returns:
             Array with same shape as x, with affine transformation applied.
         """
-        scale = self.linear_scale(context)
+        scale_bias = self.linear_scale_bias(context)
+        scale, bias = jnp.split(scale_bias, 2, axis=-1)
         scale = self.scale_activation(scale)
-        bias = self.linear_bias(context)
         return x * scale + bias
 
 
@@ -187,7 +233,7 @@ class ConcatFuse(ContextFuse):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        layer_cls: type[nnx.Linear] = nnx.Linear,
+        layer_cls: ModuleLikeType = MLPConditioner,
         rngs: nnx.Rngs,
     ):
         """Concatenation fusion module that linearly transforms context
@@ -240,8 +286,6 @@ class ConcatFuse(ContextFuse):
             Array of shape [..., input_dim + input_dim] with transformed context
             concatenated to the input.
         """
-        x = jnp.asarray(x)
-        context = jnp.asarray(context)
         context = self.ctx_layer(context)
         # Ensure same leading dimensions as x
         context = jnp.broadcast_to(context, x.shape[:-1] + (context.shape[-1],))  # type: ignore
@@ -274,13 +318,14 @@ class GatedFuse(BinaryFuse):
         in_features: int,
         context_features: int,
         *,
+        gate_activation: Callable = jax.nn.sigmoid,
         drop_path_rate: float = 0.0,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        mode: Literal["convex", "left", "right"] = "convex",
-        layer_cls: type[nnx.Linear] = nnx.Linear,
+        mode: Literal["convex", "left", "right"] = "right",
+        layer_cls: ModuleLikeType = MLPConditioner,
         rngs: nnx.Rngs,
     ):
         """Gated fusion module that linearly transforms context
@@ -317,6 +362,7 @@ class GatedFuse(BinaryFuse):
             rngs=rngs,
             **precision_kwargs,
         )
+        self.gate_activation = gate_activation
 
         if self.mode not in {"convex", "left", "right"}:
             raise ValueError(
@@ -344,10 +390,10 @@ class GatedFuse(BinaryFuse):
         y = self.drop_path(y) if self.drop_path is not None else y
         # Ensure same leading dimensions as x
         context = jnp.broadcast_to(context, x.shape[:-1] + (context.shape[-1],))
-        gate = jax.nn.sigmoid(self.gate_layer(context))
+        gate = self.gate_activation(self.gate_layer(context))
         if self.mode == "left":
-            return x * gate + y
+            return (x * gate + y) / jnp.sqrt(1 + gate * gate)
         elif self.mode == "right":
-            return x + y * gate
+            return (x + y * gate) / jnp.sqrt(1 + gate * gate)
         else:  # convex
             return x * gate + y * (1 - gate)

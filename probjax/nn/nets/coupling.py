@@ -5,9 +5,14 @@ import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.nets.simple import MLP
-from probjax.utils.typing import ModuleLikeType
 from probjax.nn.utils import filter_precision_kwargs, get_active_precision_kwargs
-from probjax.utils.typing import Array, ArrayLike, DTypeLike, PrecisionLike
+from probjax.utils.typing import (
+    Array,
+    ArrayLike,
+    DTypeLike,
+    ModuleLikeType,
+    PrecisionLike,
+)
 
 
 class CouplingMLP(nnx.Module):
