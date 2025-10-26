@@ -1,6 +1,6 @@
 import inspect
 from functools import partial
-from typing import Sequence
+from typing import Optional, Sequence, Tuple
 
 import flax.nnx as nnx
 import jax.numpy as jnp
@@ -10,7 +10,7 @@ from ott.geometry import costs, pointcloud
 from ott.problems.linear import linear_problem
 from ott.solvers.linear import sinkhorn
 
-from probjax.utils.typing import Array, ModuleLikeType
+from probjax.utils.typing import Array, ArrayLike, ModuleLikeType
 
 
 def identity_1x1(_, shape: Sequence[int], dtype=jnp.float32):
@@ -45,6 +45,55 @@ def pad_to_power_of_2(arr: Array, min_size: int = 16, axis=(-1,)) -> Array:
         for current, target in zip(arr.shape, target_shape, strict=False)
     ]
     return jnp.pad(arr, pad_width)
+
+
+def flatten_to_btd(x: ArrayLike) -> Tuple[Array, Tuple[int, ...]]:
+    """Flatten leading batch dims to (B, T, D); returns flattened tensor and original shape."""
+    x = jnp.asarray(x)
+    if x.ndim < 2:
+        raise ValueError(
+            f"Expected tensor with at least 2 dims (time, dim); got shape {x.shape}"
+        )
+    orig = tuple(x.shape)
+    time_dim = x.shape[-2]
+    feature_dim = x.shape[-1]
+    x = x.reshape((-1, time_dim, feature_dim))
+    return x, orig
+
+
+def restore_from_btd(x: Array, orig_shape: Optional[tuple[int, ...]]) -> Array:
+    """Restore tensor from (B, T, D) back to original leading batch dims."""
+    if orig_shape is None:
+        return x
+    return x.reshape(orig_shape)
+
+
+def normalize_attn_mask(mask: Array | None) -> Array | None:
+    """Normalize attention mask shapes to broadcast with [B, H, T, T]."""
+    if mask is None:
+        return None
+    mask = jnp.asarray(mask)
+    if mask.ndim == 2:
+        return mask[None, None, :, :]
+    if mask.ndim == 3:
+        return mask[:, None, :, :]
+    if mask.ndim == 4:
+        return mask
+    raise ValueError(f"Mask must have ndim 2, 3, or 4; got {mask.ndim}.")
+
+
+def normalize_attn_bias(bias: Array | None) -> Array | None:
+    """Normalize attention bias shapes to broadcast with attention logits [B, H, T, T]."""
+    if bias is None:
+        return None
+    bias = jnp.asarray(bias)
+    if bias.ndim == 2:
+        return bias[None, None, :, :]
+    if bias.ndim == 3:
+        return bias[:, None, :, :]
+    if bias.ndim == 4:
+        return bias
+    raise ValueError(f"Bias must have ndim 2, 3, or 4; got {bias.ndim}.")
 
 
 def filter_precision_kwargs(cls: ModuleLikeType, **kwargs):

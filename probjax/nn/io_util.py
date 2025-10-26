@@ -153,6 +153,117 @@ def chunkify(
     return tokens.reshape(output_shape)
 
 
+def unchunkify(
+    tokens: "jax.Array",
+    chunk_shape: Union[int, Sequence[int]],
+    *,
+    spatial_shape: Sequence[int],
+    channel_axis: Optional[int] = -1,
+) -> "jax.Array":
+    """
+    Invert ``chunkify`` by folding a token sequence back into its spatial layout.
+
+    Parameters
+    ----------
+    tokens:
+        Array of shape ``(*batch_dims, num_chunks, chunk_volume * channels)`` produced
+        by :func:`chunkify`.
+    chunk_shape:
+        Chunk shape passed to :func:`chunkify`.
+    spatial_shape:
+        Spatial shape of the original tensor prior to chunking. Each entry must be
+        divisible by the corresponding entry in ``chunk_shape``.
+    channel_axis:
+        Original channel axis supplied to :func:`chunkify`. Use ``None`` if the input
+        tensor had no explicit channel dimension.
+
+    Returns
+    -------
+    jax.Array
+        Array of shape ``(*batch_dims, *spatial_shape, channels)`` (or without the
+        channel dimension when ``channel_axis=None``).
+    """
+
+    tokens = jnp.asarray(tokens)
+    if isinstance(chunk_shape, int):
+        if chunk_shape <= 0:
+            raise ValueError("chunk_shape must be positive.")
+        chunk_shape = (chunk_shape,)
+    else:
+        chunk_shape = tuple(int(cs) for cs in chunk_shape)
+        if not chunk_shape:
+            raise ValueError("chunk_shape must be non-empty.")
+        if any(cs <= 0 for cs in chunk_shape):
+            raise ValueError("All entries in chunk_shape must be positive.")
+
+    spatial_shape = tuple(int(s) for s in spatial_shape)
+    if any(s <= 0 for s in spatial_shape):
+        raise ValueError("All entries in spatial_shape must be positive.")
+
+    spatial_ndim = len(chunk_shape)
+    if len(spatial_shape) != spatial_ndim:
+        raise ValueError(
+            f"spatial_shape has {len(spatial_shape)} dimensions but chunk_shape "
+            f"requires {spatial_ndim}."
+        )
+
+    chunk_counts = []
+    for s, c in zip(spatial_shape, chunk_shape, strict=False):
+        if s % c:
+            raise ValueError(
+                "Each entry in spatial_shape must be divisible by the matching "
+                "chunk_shape."
+            )
+        chunk_counts.append(s // c)
+    chunk_counts = tuple(chunk_counts)
+
+    batch_shape = tokens.shape[:-2]
+    total_chunks = tokens.shape[-2]
+    chunk_volume = int(np.prod(chunk_shape)) if chunk_shape else 1
+
+    if chunk_volume == 0:
+        raise ValueError("chunk_shape must define a strictly positive chunk volume.")
+    if tokens.shape[-1] % chunk_volume:
+        raise ValueError(
+            f"Last dimension ({tokens.shape[-1]}) is not divisible by chunk_volume "
+            f"{chunk_volume}."
+        )
+    channel_dim = tokens.shape[-1] // chunk_volume
+
+    expected_chunks = int(np.prod(chunk_counts)) if chunk_counts else 1
+    if total_chunks != expected_chunks:
+        raise ValueError(
+            f"Token dimension ({total_chunks}) is incompatible with chunk counts "
+            f"{chunk_counts}."
+        )
+
+    reshaped = tokens.reshape(batch_shape + chunk_counts + chunk_shape + (channel_dim,))
+
+    batch_ndim = len(batch_shape)
+    perm = list(range(batch_ndim))
+    perm.extend(
+        axis
+        for idx in range(spatial_ndim)
+        for axis in (batch_ndim + idx, batch_ndim + spatial_ndim + idx)
+    )
+    perm.append(batch_ndim + 2 * spatial_ndim)
+    interleaved = reshaped.transpose(perm)
+
+    full_spatial_shape = tuple(
+        n * c for n, c in zip(chunk_counts, chunk_shape, strict=False)
+    )
+    result = interleaved.reshape(batch_shape + full_spatial_shape + (channel_dim,))
+
+    if channel_axis is None:
+        return result[..., 0]
+
+    channel_axis = int(channel_axis)
+    channel_axis = channel_axis % result.ndim
+    if channel_axis != result.ndim - 1:
+        result = jnp.moveaxis(result, -1, channel_axis)
+    return result
+
+
 # --------------------------------------------------------------------- #
 
 

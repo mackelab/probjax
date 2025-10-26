@@ -1,8 +1,7 @@
 from functools import partial
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional
 
 import jax
-import jax.numpy as jnp
 from flax import nnx
 from jax import Array
 
@@ -12,69 +11,17 @@ from probjax.nn.layers.attention import (
     MultiHeadAttention,
     dot_product_attention,
 )
-from probjax.nn.layers.fuse import AffineFuse
+from probjax.nn.layers.fuse import AdditiveBinaryFuse, AffineFuse
 from probjax.nn.nets.simple import MLP
-from probjax.nn.utils import filter_precision_kwargs, get_active_precision_kwargs
+from probjax.nn.utils import (
+    filter_precision_kwargs,
+    flatten_to_btd,
+    get_active_precision_kwargs,
+    normalize_attn_bias,
+    normalize_attn_mask,
+    restore_from_btd,
+)
 from probjax.utils.typing import DTypeLike, ModuleLikeType, PrecisionLike
-
-
-# ---------------- Helper utilities ----------------
-def _flatten_to_btd(x: Array | None) -> Tuple[Array | None, tuple | None]:
-    """Flatten leading batch dims to (B, T, D) for attention blocks.
-
-    Returns the flattened array and the original shape to restore later.
-    If x is None, returns (None, None).
-    """
-    if x is None:
-        return None, None
-    x = jnp.asarray(x)
-    orig = x.shape
-    x = x.reshape(-1, x.shape[-2], x.shape[-1])
-    return x, orig
-
-
-def _restore_from_btd(x: Array, orig_shape: tuple | None) -> Array:
-    """Restore tensor from (B, T, D) back to original leading batch dims."""
-    if orig_shape is None:
-        return x
-    return x.reshape(orig_shape)
-
-
-def _normalize_attn_mask(mask: Array | None) -> Array | None:
-    """Normalize attention mask shapes to [B, 1, T, T] or broadcastable.
-
-    Accepts 2D [T, T], 3D [B, T, T], or 4D [B, 1, T, T]. Returns a shape
-    that broadcasts with [B, H, T, T]. If mask is None, returns None.
-    """
-    if mask is None:
-        return None
-    mask = jnp.asarray(mask)
-    if mask.ndim == 2:
-        return mask[None, None, :, :]
-    if mask.ndim == 3:
-        return mask[:, None, :, :]
-    if mask.ndim == 4:
-        return mask
-    raise ValueError(f"Mask must have ndim 2, 3, or 4; got {mask.ndim}.")
-
-
-def _normalize_attn_bias(bias: Array | None) -> Array | None:
-    """Normalize attention bias shapes similar to masks.
-
-    Accepts 2D [T, T], 3D [B, T, T], or 4D [B, 1, T, T]. Returns a shape
-    broadcastable with attention logits [B, H, T, T]. If bias is None, returns None.
-    Other shapes (e.g., custom bias types) are passed through by the caller.
-    """
-    if bias is None:
-        return None
-    bias = jnp.asarray(bias)
-    if bias.ndim == 2:
-        return bias[None, None, :, :]
-    if bias.ndim == 3:
-        return bias[:, None, :, :]
-    if bias.ndim == 4:
-        return bias
-    raise ValueError(f"Bias must have ndim 2, 3, or 4; got {bias.ndim}.")
 
 
 class Transformer(nnx.Module):
@@ -102,8 +49,8 @@ class Transformer(nnx.Module):
         widening_factor: int = 4,
         num_hidden_layers: int = 1,
         act: Callable = jax.nn.gelu,
-        skip_connection_attn: bool = True,
-        skip_connection_mlp: bool = True,
+        attention_fn: Optional[Callable] = None,
+        cross_attention_fn: Optional[Callable] = None,
         initializer: Optional[nnx.Initializer] = None,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
@@ -111,8 +58,8 @@ class Transformer(nnx.Module):
         preferred_element_type: DTypeLike | None = None,
         norm_cls: ModuleLikeType = nnx.LayerNorm,
         context_fusion_cls: ModuleLikeType = AffineFuse,
-        attention_fn: Optional[Callable] = None,
-        cross_attention_fn: Optional[Callable] = None,
+        attn_fuse_cls: ModuleLikeType | None = AdditiveBinaryFuse,
+        mlp_fuse_cls: ModuleLikeType | None = AdditiveBinaryFuse,
         mlp_cls: ModuleLikeType = MLP,
         mha_cls: ModuleLikeType = MultiHeadAttention,
         rngs: nnx.Rngs,
@@ -134,15 +81,19 @@ class Transformer(nnx.Module):
             num_hidden_layers (int, optional): Number of hidden layers in the MLP block.
                 Defaults to 1.
             act (Callable, optional): Activation function. Defaults to jax.nn.gelu.
-            skip_connection_attn (bool, optional): Whether to use skip connections in
-                attention blocks. Defaults to True.
-            skip_connection_mlp (bool, optional): Whether to use skip connections in
-                MLP blocks. Defaults to True.
+            attention_fn (Optional[Callable], optional): Custom attention function.
+                If None, uses dot product attention. Defaults to None.
+            cross_attention_fn (Optional[Callable], optional): Custom cross attention
+                function. Defaults to dot product attention.
+            attn_fuse_cls: Binary fusion module for residual connections in the
+                attention block. Use None to disable the residual path. Defaults to
+                AdditiveBinaryFuse which reproduces a standard residual add.
+            mlp_fuse_cls: Binary fusion module for residual connections in the MLP
+                block. Use None to disable the residual path. Defaults to
+                AdditiveBinaryFuse.
             initializer (Optional[nnx.initializers.Initializer], optional): Weight
                 initializer. If None, uses truncated normal with variance scaling.
                 Defaults to None.
-            attention_fn (Optional[Callable], optional): Custom attention function.
-                If None, uses dot product attention. Defaults to None.
         """
         super().__init__()
         self.model_dim = model_dim
@@ -160,8 +111,6 @@ class Transformer(nnx.Module):
         )
         self.act = act
         self.enable_cross_attention = enable_cross_attention
-        self.skip_connection_attn = skip_connection_attn
-        self.skip_connection_mlp = skip_connection_mlp
 
         # Precision and dtype settings.
         precision_kwargs = get_active_precision_kwargs(
@@ -261,6 +210,21 @@ class Transformer(nnx.Module):
         else:
             self.dropout_dense = None
 
+        def _build_binary_fuse(cls: ModuleLikeType | None):
+            if cls is None:
+                return None
+            modules = []
+            for _ in range(num_layers):
+                try:
+                    module = cls(model_dim, model_dim, rngs=rngs)
+                except TypeError:
+                    module = cls(rngs=rngs)
+                modules.append(module)
+            return nnx.List(modules)
+
+        self.attn_skip_fuse = _build_binary_fuse(attn_fuse_cls)
+        self.mlp_skip_fuse = _build_binary_fuse(mlp_fuse_cls)
+
     def __call__(
         self,
         q: Array,  # [B, T, D]
@@ -275,25 +239,21 @@ class Transformer(nnx.Module):
         decode: bool = False,
     ) -> Array:  # [B, T, D]
         """Transforms input embedding sequences to output embedding sequences."""
-        q = jnp.asarray(q)
-        k = None if k is None else jnp.asarray(k)
-        v = None if v is None else jnp.asarray(v)
-        context = None if context is None else jnp.asarray(context)
 
         # Normalize masks/bias to broadcastable shapes
         if isinstance(mask, jax.Array):
-            mask = _normalize_attn_mask(mask)
+            mask = normalize_attn_mask(mask)
         if isinstance(mask_cross, jax.Array):
-            mask_cross = _normalize_attn_mask(mask_cross)
+            mask_cross = normalize_attn_mask(mask_cross)
         if isinstance(bias, jax.Array):
-            bias = _normalize_attn_bias(bias)
+            bias = normalize_attn_bias(bias)
         if isinstance(bias_cross, jax.Array):
-            bias_cross = _normalize_attn_bias(bias_cross)
+            bias_cross = normalize_attn_bias(bias_cross)
 
         # Flatten to (B, T, D)
-        q, q_shape = _flatten_to_btd(q)
-        k, _ = _flatten_to_btd(k)
-        v, _ = _flatten_to_btd(v)
+        q, q_shape = flatten_to_btd(q)
+        k, _ = flatten_to_btd(k) if k is not None else (None, None)
+        v, _ = flatten_to_btd(v) if v is not None else (None, None)
 
         # Ensure context has shape [B, 1, Dc] when provided
         if context is not None:
@@ -307,10 +267,14 @@ class Transformer(nnx.Module):
         for i in range(self.num_layers):
             # First the attention block.
             q = self.layer_norms_attn[i](q)
+            attn_residual = q
             h_attn = self.attention_blocks[i](
                 q, mask=mask, bias=bias, deterministic=deterministic, decode=decode
             )
-            q = q + h_attn if self.skip_connection_attn else h_attn
+            if self.attn_skip_fuse is not None:
+                q = self.attn_skip_fuse[i](attn_residual, h_attn, None)
+            else:
+                q = h_attn
 
             # Then cross attention if wanted
             if self.enable_cross_attention:
@@ -328,6 +292,7 @@ class Transformer(nnx.Module):
 
             # Then the dense block and global context.
             q = self.layer_norms_dense[i](q)
+            dense_residual = q
             if context is not None and self.context_dim is not None:
                 h_context = self.context_layers[i](q, context)
             else:
@@ -336,8 +301,11 @@ class Transformer(nnx.Module):
             h_dense = self.dense_blocks[i](h_context)
             if self.dropout_dense is not None:
                 h_dense = self.dropout_dense[i](h_dense, deterministic=deterministic)
-            q = q + h_dense if self.skip_connection_mlp else h_dense
+            if self.mlp_skip_fuse is not None:
+                q = self.mlp_skip_fuse[i](dense_residual, h_dense, None)
+            else:
+                q = h_dense
 
         q = self.out_layer_norm(q)
 
-        return _restore_from_btd(q, q_shape)
+        return restore_from_btd(q, q_shape)

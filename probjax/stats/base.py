@@ -340,7 +340,6 @@ class rv_exponential_family(rv_generic):
 class rv_continuous(rv_generic):
     """Base class for continuous random variables."""
 
-
     def freeze(self, *args, **kwds):
         """Freeze the distribution for the given arguments."""
         # Create the frozen class

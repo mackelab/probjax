@@ -214,7 +214,6 @@ def dot_product_attention(
     sm_scale: Optional[float] = None,
     enable_gqa: bool = False,
 ):
-    del sm_scale, enable_gqa  # Not used in this function
     batch_size, q_len, num_heads, _ = query.shape
     kv_len = key.shape[-3]
     if isinstance(mask, AttentionMask):
@@ -311,8 +310,8 @@ def flex_attention(
 
     query = query[None] if query.ndim == 3 else query
 
-    _, l_q, h, n = query.shape
-    _, l_kv, _, _ = key.shape
+    *_, l_q, h, n = query.shape
+    *_, l_kv, _, _ = key.shape
     query = pad_to_power_of_2(query, axis=(-3, -1))
     key = pad_to_power_of_2(key, axis=(-3, -1))
     value = pad_to_power_of_2(value, axis=(-3, -1))
