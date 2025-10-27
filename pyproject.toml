@@ -34,12 +34,17 @@ dependencies = [
     "matplotlib",
     "jax >= 0.4.34",
     "jaxlib >= 0.4.34",
+    "chex",
+    "einops",
     "optax",
     "flax >= 0.12.0",
+    "jaxtyping",
     "ott-jax",
     "networkx",
     "blackjax",
     "sympy",
+    "psutil",
+    "pynvml",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +52,7 @@ dev = [
     "pytest",
     "ruff",
     "pytest-xdist",
+    "scipy",
 ]
 cuda12 = [
     "jax[cuda12]>=0.4.34",
