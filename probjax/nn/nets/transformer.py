@@ -306,6 +306,4 @@ class Transformer(nnx.Module):
             else:
                 q = h_dense
 
-        q = self.out_layer_norm(q)
-
         return restore_from_btd(q, q_shape)
