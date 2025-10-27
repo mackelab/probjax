@@ -300,22 +300,22 @@ class Transformer(nnx.Module):
 
         for i in range(self.num_layers):
             # First the attention block.
+            q_res = q
             q = self.layer_norms_attn[i](q)
-            attn_residual = q
-            h_attn = self.attention_blocks[i](
+            if context is not None and self.context_dim is not None:
+                q = self.context_layers[i](q, context)
+            q = self.attention_blocks[i](
                 q, mask=mask, bias=bias, deterministic=deterministic, decode=decode
             )
-            if self.attn_skip_fuse is not None:
-                q = self.attn_skip_fuse[i](
-                    attn_residual, h_attn, context=context, deterministic=deterministic
-                )
-            else:
-                q = h_attn
+            q = self.attn_skip_fuse[i](
+                q_res, q, context=context, deterministic=deterministic
+            )
 
             # Then cross attention if wanted
             if self.enable_cross_attention:
+                q_res = q
                 q = self.layer_norms_cross_attn[i](q)
-                h_cross_attn = self.cross_attention_blocks[i](
+                q = self.cross_attention_blocks[i](
                     q,
                     k,
                     v,
@@ -324,32 +324,24 @@ class Transformer(nnx.Module):
                     deterministic=deterministic,
                     decode=False,
                 )
-                if self.cross_skip_fuse is not None:
-                    q = self.cross_skip_fuse[i](
-                        q, h_cross_attn, context=context, deterministic=deterministic
-                    )
-                else:
-                    q = q + h_cross_attn
+                q = self.cross_skip_fuse[i](
+                    q_res, q, context=context, deterministic=deterministic
+                )
 
             # Then the dense block and global context.
+            q_res = q
             q = self.layer_norms_dense[i](q)
-            dense_residual = q
-            if context is not None and self.context_dim is not None:
-                h_context = self.context_layers[i](q, context)
-            else:
-                h_context = q
+            # if context is not None and self.context_dim is not None:
+            #    q = self.context_layers[i](q, context)
 
-            h_dense = self.dense_blocks[i](h_context)
+            q = self.dense_blocks[i](q)
             if self.dropout_dense is not None:
-                h_dense = self.dropout_dense[i](h_dense, deterministic=deterministic)
-            if self.mlp_skip_fuse is not None:
-                q = self.mlp_skip_fuse[i](
-                    dense_residual,
-                    h_dense,
-                    context=context,
-                    deterministic=deterministic,
-                )
-            else:
-                q = h_dense
+                q = self.dropout_dense[i](q, deterministic=deterministic)
+            q = self.mlp_skip_fuse[i](
+                q_res,
+                q,
+                context=context,
+                deterministic=deterministic,
+            )
 
         return restore_from_btd(q, q_shape)
