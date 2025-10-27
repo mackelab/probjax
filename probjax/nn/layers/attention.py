@@ -159,8 +159,12 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
             )
 
         if self.dropout_rate > 0.0:  # Require `deterministic` only if using dropout.
-            if deterministic is None and self.deterministic is None:
-                deterministic = True
+            deterministic = first_from(
+                deterministic,
+                self.deterministic,
+                error_msg="""No `deterministic` argument was provided to MultiHeadAttention
+                    as either a __call__ argument, class attribute, or nnx.flag.""",
+            )
             if not deterministic:
                 if rngs is None:
                     raise ValueError(
