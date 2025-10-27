@@ -41,10 +41,37 @@ Built on top of [Haiku](https://github.com/deepmind/dm-haiku), featuring:
 pip install -e probjax
 ```
 
+### Installing with uv
+You can use [uv](https://github.com/astral-sh/uv) for faster and more reliable Python package management:
+```bash
+uv pip install -e probjax
+```
+
 For CUDA 12 support with GPU acceleration:
 ```bash
 pip install -e "probjax[cuda12]"
 ```
+
+For Apple Silicon (Metal) GPU acceleration:
+```bash
+pip install -e "probjax[metal]"
+```
+
+Then select the Metal backend at runtime (recommended via env var):
+```bash
+# Bash/Zsh
+export JAX_PLATFORMS=metal,cpu
+```
+
+Or in Python before importing JAX modules:
+```python
+import os
+os.environ["JAX_PLATFORMS"] = "metal,cpu"
+import jax
+print(jax.devices())  # should list Metal devices
+```
+
+Requirements: macOS 12+ on Apple Silicon (M1/M2/M3), recent Xcode Command Line Tools, Python 3.9–3.12.
 
 ### Development Installation
 For development and testing:

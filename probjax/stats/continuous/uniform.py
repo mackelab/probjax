@@ -151,26 +151,14 @@ class uniform_gen(rv_continuous):
 
     @classmethod
     def rvs(
-        cls, rng: PRNGKeyArray, shape: Tuple[int, ...] = (), low=0.0, high=1.0, **kwargs
+        cls,
+        rng: PRNGKeyArray,
+        low=0.0,
+        high=1.0,
+        shape: Tuple[int, ...] = (),
+        **kwargs,
     ) -> Float[Array, "..."]:
-        """Random variates of the uniform distribution.
-
-        Parameters
-        ----------
-        rng : PRNGKeyArray
-            JAX PRNG key for random number generation
-        shape : tuple of ints, optional
-            Output shape. Default is (), meaning a single value.
-        low : float, optional
-            Lower bound of the distribution. Default is 0.
-        high : float, optional
-            Upper bound of the distribution. Default is 1.
-
-        Returns
-        -------
-        rvs : ndarray or scalar
-            Random variates of given shape
-        """
+        """Random variates of the uniform distribution."""
         low = jnp.asarray(low)
         high = jnp.asarray(high)
         event_shape = jnp.broadcast_shapes(low.shape, high.shape)

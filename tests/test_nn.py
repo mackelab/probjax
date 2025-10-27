@@ -1,8 +1,17 @@
 import jax
 import jax.numpy as jnp
+import numpy as np
+import pytest
 from flax import nnx
 
 from probjax.core import inverse, inverse_and_logabsdet
+from probjax.nn import (
+    AdditiveBinaryFuse,
+    DropPath,
+    GatedFuse,
+    MaskedLinear,
+    chunkify,
+)
 
 pytest_plugins = ["test_problems.nns"]
 
@@ -153,7 +162,7 @@ def test_transformer_with_context(transformer_with_context, seq_len, batch_shape
     assert y.shape == batch_shape + (seq_len, model_dim)
 
     def loss_fn(model):
-        return jnp.sum(model(x, context))
+        return jnp.sum(model(x, context=context))
 
     # Can be differentiated
     _ = jax.grad(loss_fn)
@@ -172,7 +181,7 @@ def test_transformer_with_context_and_cross_attention(
     assert y.shape == batch_shape + (seq_len, model_dim)
 
     def loss_fn(model):
-        return jnp.sum(model(x, context))
+        return jnp.sum(model(x, x + 1, x + 1, context=context))
 
     # Can be differentiated
     _ = jax.grad(loss_fn)
@@ -249,3 +258,136 @@ def test_flows(flow):
     # Log probability
     logprob = frozen_model.logpdf(samples)
     assert logprob.shape == (10,)
+
+
+def test_chunkify(chunkify_inputs):
+    x, chunk_shape, channel_axis = chunkify_inputs
+    metadata = _chunkify_metadata(x, chunk_shape, channel_axis)
+    expected_shape = _chunkify_expected_shape(metadata)
+    tokens = chunkify(x, chunk_shape, channel_axis=channel_axis)
+    assert tokens.shape == expected_shape
+    reconstructed = _unchunkify(tokens, x, metadata)
+    assert jnp.array_equal(reconstructed, x)
+
+
+def test_chunkify_invalid(chunkify_invalid_inputs):
+    x, chunk_shape, channel_axis = chunkify_invalid_inputs
+    with pytest.raises(ValueError):
+        chunkify(x, chunk_shape, channel_axis=channel_axis)
+
+
+def test_masked_linear_forward(masked_linear_case):
+    mask, kernel, bias, x, expected = masked_linear_case
+    layer = MaskedLinear(2, 2, mask, rngs=nnx.Rngs(0))
+    layer.kernel.value = kernel
+    layer.bias.value = bias
+    y = layer(x)
+    assert jnp.allclose(y, expected)
+
+
+def test_drop_path(drop_path_case):
+    drop_rate, deterministic, x, expected = drop_path_case
+    drop = DropPath(drop_rate=drop_rate, rngs=nnx.Rngs(0))
+    y = drop(x, deterministic=deterministic)
+    assert jnp.allclose(y, expected)
+
+
+def test_additive_binary_fuse(additive_binary_fuse_case):
+    x, y = additive_binary_fuse_case
+    fuse = AdditiveBinaryFuse(rngs=nnx.Rngs(0))
+    out = fuse(x, y, None)
+    assert jnp.allclose(out, x + y)
+
+
+def test_gated_fuse_modes(gated_fuse_case):
+    mode, x, y, context = gated_fuse_case
+    fuse = GatedFuse(4, 3, mode=mode, rngs=nnx.Rngs(0))
+    out = fuse(x, y, context)
+    assert out.shape == x.shape
+
+
+def test_gated_fuse_invalid_mode():
+    with pytest.raises(ValueError):
+        GatedFuse(4, 3, mode="invalid", rngs=nnx.Rngs(0))
+
+
+def _chunkify_metadata(x, chunk_shape, channel_axis):
+    x_arr = jnp.asarray(x)
+    chunk_shape_tuple = (
+        (chunk_shape,) if isinstance(chunk_shape, int) else tuple(chunk_shape)
+    )
+    x_work = x_arr
+    inserted_channel = False
+    channel_axis_mod = None
+
+    if channel_axis is None:
+        x_work = jnp.expand_dims(x_work, axis=-1)
+        inserted_channel = True
+    else:
+        channel_axis_mod = channel_axis % x_work.ndim
+        if channel_axis_mod != x_work.ndim - 1:
+            x_work = jnp.moveaxis(x_work, channel_axis_mod, -1)
+
+    spatial_ndim = len(chunk_shape_tuple)
+    spatial_start = x_work.ndim - spatial_ndim - 1
+    batch_shape = x_work.shape[:spatial_start]
+    spatial_shape = x_work.shape[spatial_start:-1]
+    channel_dim = x_work.shape[-1]
+    chunk_counts = tuple(
+        size // chunk
+        for size, chunk in zip(spatial_shape, chunk_shape_tuple, strict=False)
+    )
+    chunk_volume = int(np.prod(chunk_shape_tuple)) if chunk_shape_tuple else 1
+    total_chunks = int(np.prod(chunk_counts)) if chunk_counts else 1
+    perm = _chunkify_perm(len(batch_shape), spatial_ndim)
+
+    return {
+        "chunk_shape": chunk_shape_tuple,
+        "batch_shape": batch_shape,
+        "spatial_shape": spatial_shape,
+        "channel_dim": channel_dim,
+        "chunk_counts": chunk_counts,
+        "chunk_volume": chunk_volume,
+        "total_chunks": total_chunks,
+        "perm": perm,
+        "channel_axis_mod": channel_axis_mod,
+        "inserted_channel": inserted_channel,
+    }
+
+
+def _chunkify_expected_shape(metadata):
+    return metadata["batch_shape"] + (
+        metadata["total_chunks"],
+        metadata["chunk_volume"] * metadata["channel_dim"],
+    )
+
+
+def _chunkify_perm(batch_ndim, spatial_ndim):
+    count_axes = [batch_ndim + 2 * idx for idx in range(spatial_ndim)]
+    chunk_axes = [axis + 1 for axis in count_axes]
+    channel_axis = batch_ndim + 2 * spatial_ndim
+    return list(range(batch_ndim)) + count_axes + chunk_axes + [channel_axis]
+
+
+def _unchunkify(tokens, x, metadata):
+    chunk_shape = metadata["chunk_shape"]
+    chunk_counts = metadata["chunk_counts"]
+    batch_shape = metadata["batch_shape"]
+    channel_dim = metadata["channel_dim"]
+    perm = metadata["perm"]
+
+    reshaped = tokens.reshape(batch_shape + chunk_counts + chunk_shape + (channel_dim,))
+    perm_inv = tuple(np.argsort(perm))
+    transposed = reshaped.transpose(perm_inv)
+    spatial_shape = tuple(
+        count * size for count, size in zip(chunk_counts, chunk_shape, strict=False)
+    )
+    x_channel_last = transposed.reshape(batch_shape + spatial_shape + (channel_dim,))
+
+    if metadata["inserted_channel"]:
+        return jnp.squeeze(x_channel_last, axis=-1)
+
+    channel_axis_mod = metadata["channel_axis_mod"]
+    if channel_axis_mod is not None and channel_axis_mod != x.ndim - 1:
+        x_channel_last = jnp.moveaxis(x_channel_last, -1, channel_axis_mod)
+    return x_channel_last

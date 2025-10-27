@@ -95,7 +95,13 @@ class poisson_gen(rv_discrete, rv_exponential_family):
         return ppf_single(q, rate)
 
     @classmethod
-    def rvs(cls, rng: PRNGKeyArray, shape: Tuple[int, ...] = (), rate=None, **kwds):
+    def rvs(
+        cls,
+        rng: PRNGKeyArray,
+        rate=None,
+        shape: Tuple[int, ...] = (),
+        **kwargs,
+    ):
         """Random variates of the Poisson distribution."""
         rate = jnp.asarray(rate)
         event_shape = rate.shape

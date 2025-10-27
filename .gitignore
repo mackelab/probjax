@@ -88,6 +88,7 @@ target/
 *.out
 *.gz
 *.toc
+*.lock
 
 # IDEs (VSCode, etc.)
 .env

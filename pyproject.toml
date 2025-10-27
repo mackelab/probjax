@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 name = "probjax"
 description = "Jax library for probabilistic computations"
 version = "0.1.0"  # Update to match your version
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 authors = [
     { name = "Manuel Gloeckler", email = "manuel.gloeckler@uni-tuebingen.de" }
 ]
@@ -34,12 +34,17 @@ dependencies = [
     "matplotlib",
     "jax >= 0.4.34",
     "jaxlib >= 0.4.34",
+    "chex",
+    "einops",
     "optax",
-    "flax <= 0.10.6",
+    "flax >= 0.12.0",
+    "jaxtyping",
     "ott-jax",
     "networkx",
     "blackjax",
     "sympy",
+    "psutil",
+    "pynvml",
 ]
 
 [project.optional-dependencies]
@@ -47,10 +52,14 @@ dev = [
     "pytest",
     "ruff",
     "pytest-xdist",
+    "scipy",
 ]
 cuda12 = [
     "jax[cuda12]>=0.4.34",
     "jaxlib[cuda12]>=0.4.34",
+]
+metal = [
+    "jax-metal",
 ]
 
 
@@ -83,6 +92,14 @@ known-first-party = ["sbi", "tests", "tutorials"]
 exclude = ["*.ipynb"]
 preview = true
 quote-style = "preserve"
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+
+[tool.pycodestyle]
+max-line-length = 88
+ignore = ["E203", "W503"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

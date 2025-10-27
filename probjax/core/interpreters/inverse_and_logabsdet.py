@@ -4,6 +4,11 @@ import jax
 import jax.numpy as jnp
 from jax._src.util import safe_map
 from jax.extend.core import Literal, Primitive
+try:
+    from jax.experimental.pjit import pjit_p
+except ImportError:
+    # JaX 0.7
+    from jax._src.pjit import jit_p as pjit_p
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
 from probjax.core.interpreters.inverse import (
@@ -41,7 +46,7 @@ def value_and_log_det_diagonal(f):
             vmaped_grad_fn = jax.vmap(vmaped_grad_fn)
         value, det = vmaped_grad_fn(*args_arrays, **kwargs)
 
-        log_det = jnp.log(jnp.abs(det))
+        log_det = jnp.log(jnp.abs(det) + 1e-10)
         while log_det.ndim > 0:
             log_det = jnp.sum(log_det, axis=-1)
         return value, log_det
@@ -93,7 +98,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         ):
             return self._default_custom_rule_apply(eqn, known_invars, known_outvars)
         elif (
-            not all(is_known_invars) and eqn.primitive is jax.experimental.pjit.pjit_p
+            not all(is_known_invars) and eqn.primitive is pjit_p
         ):  # or eqn.primitive is custom_jvp_call_p:
             return self._default_pjit(eqn, known_invars, known_outvars)
 

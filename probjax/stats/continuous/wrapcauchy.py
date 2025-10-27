@@ -84,13 +84,12 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
     def rvs(
         cls,
         rng: PRNGKeyArray,
-        shape: Tuple[int, ...] = (),
         loc=0.0,
         gamma=0.5,
+        shape: Tuple[int, ...] = (),
         **kwargs,
     ):
         """Random variates of the wrapped Cauchy distribution."""
-        # Generate Cauchy random variates and wrap them
         u = random.uniform(rng, shape=shape)
         return (2 * jnp.arctan(gamma * jnp.tan(jnp.pi * (u - 0.5))) + loc) % (
             2 * jnp.pi

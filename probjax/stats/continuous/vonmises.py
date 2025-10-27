@@ -79,24 +79,20 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
     def rvs(
         cls,
         rng: PRNGKeyArray,
-        shape: Tuple[int, ...] = (),
         loc=0.0,
         kappa=1.0,
+        shape: Tuple[int, ...] = (),
         **kwargs,
     ):
         """Random variates of the von Mises distribution."""
 
-        # Use rejection sampling
         def _rejection_sampling(key):
-            # Generate uniform random numbers
             u = random.uniform(key, shape=shape)
             v = random.uniform(key, shape=shape)
-            # Transform to von Mises
             z = jnp.cos(jnp.pi * u)
             f = (1 + kappa * z) / (kappa + z)
             c = kappa * jnp.sqrt((1 - f) / (1 + f))
             return jnp.where(v < c, jnp.arccos(f), jnp.pi - jnp.arccos(f)) + loc
-
         return _rejection_sampling(rng)
 
     @classmethod

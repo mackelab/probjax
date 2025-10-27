@@ -77,15 +77,19 @@ class LogPotentialProcessingRule(ForwardProcessingRule):
             # But we still have to compute the log_prob
             in_known = list(in_known)
             # print(name, outvals)
-            for i in range(len(in_known)):
-                if hasattr(in_known[i], "dtype") and jax._src.dtypes.issubdtype(
-                    in_known[i].dtype, jax._src.dtypes.prng_key
-                ):
-                    in_known[i] = outvals[0]  # From where do I know this?
-            log_prob_fn = eqn.params["log_prob_fn_jaxpr"]
-            self.log_prob += eval_jaxpr(
-                log_prob_fn.jaxpr, log_prob_fn.consts, *in_known
-            )[0]
+            in_known[0] = outvals[0]
+            # print(in_known)
+            # for i in range(len(in_known)):
+            #     # Check for JAX PRNGKey by type instead of dtype, since dtype-based checks no longer work with new JAX RNG keys
+            #     if type(in_known[i]).__name__ == "PRNGKeyArray":
+            #         in_known[i] = outvals[0]  # From where do I know this?
+            # print(in_known)
+            log_pdf_fn = eqn.params["logpdf_fn"]
+            self.log_prob += log_pdf_fn(*in_known)
+            # log_prob_fn = eqn.params["log_prob_fn_jaxpr"]
+            # self.log_prob += eval_jaxpr(
+            #    log_prob_fn.jaxpr, log_prob_fn.consts, *in_known
+            # )[0]
         else:
             outvars, outvals = super().__call__(eqn, in_known, out_known)
 

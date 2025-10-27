@@ -2,7 +2,11 @@ import math
 from typing import Any, Callable, Optional, Sequence, Tuple
 
 from jax._src.util import safe_map as map
-from jax.experimental.pjit import pjit_p
+try:
+    from jax.experimental.pjit import pjit_p
+except ImportError:
+    # JaX 0.7
+    from jax._src.pjit import jit_p as pjit_p
 from jax.extend.core import Jaxpr, JaxprEqn, Var
 from jaxtyping import Array
 
@@ -150,8 +154,6 @@ def propagate(
     eqn_env = EqnEnvironment(G, env, jaxpr.eqns, cost_fn)
 
     while not eqn_env.is_empty():
-        # print(list(env.keys()))
-        # print(eqn_env.eqn_queue)
 
         eqn = eqn_env.pop()  # Equation to process
 

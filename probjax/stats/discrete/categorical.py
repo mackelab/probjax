@@ -44,7 +44,13 @@ class categorical_gen(rv_discrete, rv_exponential_family):
         return log_probs
 
     @classmethod
-    def rvs(cls, rng: PRNGKeyArray, shape: Tuple[int, ...] = (), probs=None, **kwds):
+    def rvs(
+        cls,
+        rng: PRNGKeyArray,
+        probs=None,
+        shape: Tuple[int, ...] = (),
+        **kwargs,
+    ):
         """Random variates of the Categorical distribution."""
         probs = jnp.asarray(probs)
         event_shape = probs.shape[

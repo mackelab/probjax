@@ -67,7 +67,12 @@ class pareto_gen(rv_continuous, rv_exponential_family):
 
     @classmethod
     def rvs(
-        cls, rng: PRNGKeyArray, shape: Tuple[int, ...] = (), b=1.0, alpha=1.0, **kwargs
+        cls,
+        rng: PRNGKeyArray,
+        b=1.0,
+        alpha=1.0,
+        shape: Tuple[int, ...] = (),
+        **kwargs,
     ):
         """Random variates of the Pareto distribution."""
         b = jnp.asarray(b)

@@ -1,17 +1,150 @@
+import inspect
 from functools import partial
-from typing import Callable, Optional
+from typing import Optional, Sequence, Tuple
 
 import flax.nnx as nnx
-import jax
 import jax.numpy as jnp
 from jax import lax
 from jax.ops import segment_max  # segment reduction (available in JAX)
-from jaxtyping import Array
 from ott.geometry import costs, pointcloud
 from ott.problems.linear import linear_problem
 from ott.solvers.linear import sinkhorn
 
-from probjax.core.custom_primitives.custom_inverse import custom_inverse
+from probjax.utils.typing import Array, ArrayLike, ModuleLikeType
+
+
+def identity_1x1(_, shape: Sequence[int], dtype=jnp.float32):
+    """Kernel init for a 1×1 Conv that starts as identity.
+
+    Works for (1, 1, C_in, C_out).  If C_in ≠ C_out the extra
+    channels are zero-filled.
+    """
+    k = jnp.zeros(shape, dtype)
+    diag = jnp.arange(min(shape[2], shape[3]))
+    # set W[0, 0, i, i] = 1
+    k = k.at[0, 0, diag, diag].set(1.0)
+    return k
+
+
+def pad_to_power_of_2(arr: Array, min_size: int = 16, axis=(-1,)) -> Array:
+    """Pad the array to the next power of 2 greater than min_size along given axis."""
+
+    def next_power_of_2(x):
+        return 1 << (x - 1).bit_length()
+
+    target_shape = list(arr.shape)
+    for ax in axis:
+        seq_len = arr.shape[ax]
+        if seq_len < min_size:
+            target_shape[ax] = min_size
+        else:
+            target_shape[ax] = next_power_of_2(seq_len)
+
+    pad_width = [
+        (0, target - current)
+        for current, target in zip(arr.shape, target_shape, strict=False)
+    ]
+    return jnp.pad(arr, pad_width)
+
+
+def flatten_to_btd(x: ArrayLike) -> Tuple[Array, Tuple[int, ...]]:
+    """Flatten leading batch dims to (B, T, D); returns flattened tensor and original shape."""
+    x = jnp.asarray(x)
+    if x.ndim < 2:
+        raise ValueError(
+            f"Expected tensor with at least 2 dims (time, dim); got shape {x.shape}"
+        )
+    orig = tuple(x.shape)
+    time_dim = x.shape[-2]
+    feature_dim = x.shape[-1]
+    x = x.reshape((-1, time_dim, feature_dim))
+    return x, orig
+
+
+def restore_from_btd(x: Array, orig_shape: Optional[tuple[int, ...]]) -> Array:
+    """Restore tensor from (B, T, D) back to original leading batch dims."""
+    if orig_shape is None:
+        return x
+    return x.reshape(orig_shape)
+
+
+def normalize_attn_mask(mask: Array | None) -> Array | None:
+    """Normalize attention mask shapes to broadcast with [B, H, T, T]."""
+    if mask is None:
+        return None
+    mask = jnp.asarray(mask)
+    if mask.ndim == 2:
+        return mask[None, None, :, :]
+    if mask.ndim == 3:
+        return mask[:, None, :, :]
+    if mask.ndim == 4:
+        return mask
+    raise ValueError(f"Mask must have ndim 2, 3, or 4; got {mask.ndim}.")
+
+
+def normalize_attn_bias(bias: Array | None) -> Array | None:
+    """Normalize attention bias shapes to broadcast with attention logits [B, H, T, T]."""
+    if bias is None:
+        return None
+    bias = jnp.asarray(bias)
+    if bias.ndim == 2:
+        return bias[None, None, :, :]
+    if bias.ndim == 3:
+        return bias[:, None, :, :]
+    if bias.ndim == 4:
+        return bias
+    raise ValueError(f"Bias must have ndim 2, 3, or 4; got {bias.ndim}.")
+
+
+def filter_precision_kwargs(cls: ModuleLikeType, **kwargs):
+    """Utility function to filter out unsupported precision kwargs.
+
+    Note:
+      - We unwrap functools.partial only for the BUGGED-class check.
+      - We inspect the callable (class or partial) directly to get the effective parameters.
+    """
+
+    # Unwrap only for BUGGED membership check
+    def unpack(cls):
+        while isinstance(cls, partial):
+            cls = cls.func
+        return cls
+
+    target_cls = unpack(cls)
+
+    # Unsupported precision kwargs due to bug
+    # JAX does not support backward pass with preferred_element_type!=input dtype
+    # see JAX #31592
+    BUGGED = {nnx.Conv, nnx.ConvTranspose}
+
+    # Inspect the callable to get its effective parameters (works for class and partial)
+    try:
+        param_names = inspect.signature(cls.__init__).parameters.keys()
+    except (ValueError, TypeError):
+        # Fallback to known precision-related keys
+        param_names = {"dtype", "precision", "param_dtype", "preferred_element_type"}
+
+    if target_cls in BUGGED and "preferred_element_type" in param_names:
+        kwargs.pop("preferred_element_type", None)
+
+    # Filter out unsupported precision kwargs
+    return {key: kwargs[key] for key in kwargs if key in param_names}
+
+
+def get_active_precision_kwargs(
+    dtype, precision, param_dtype, preferred_element_type
+) -> dict:
+    """Utility function to get the active precision kwargs."""
+    precision_kwargs = {}
+    if dtype is not None:
+        precision_kwargs["dtype"] = dtype
+    if precision is not None:
+        precision_kwargs["precision"] = precision
+    if param_dtype is not None:
+        precision_kwargs["param_dtype"] = param_dtype
+    if preferred_element_type is not None:
+        precision_kwargs["preferred_element_type"] = preferred_element_type
+    return precision_kwargs
 
 
 def extract_permutation(M: jnp.ndarray) -> jnp.ndarray:
@@ -94,242 +227,3 @@ def ot_copula(
     permutation = extract_permutation(ot.matrix)
     y_permuted = y[permutation]
     return x, y_permuted
-
-
-class Sequential(nnx.Module, experimental_pytree=True):
-    def __init__(self, *layers):
-        """Sequential module.
-
-        Args:
-            layers (nnx.Module): List of layers.
-        """
-        self.layers = layers
-
-    def __call__(self, x, *args, **kwargs) -> Array:
-        for layer in self.layers:
-            x = layer(x, *args, **kwargs)
-        return x
-
-
-class Affine(nnx.Module, experimental_pytree=True):
-    def __init__(self, in_out_dim: int, rngs):
-        """This module applies an affine transformation to the input.
-
-        Args:
-            in_out_dim (int): Input and output dimension.
-            rngs (rngs): Random generator stream.
-        """
-        self.scale = nnx.Variable(
-            nnx.initializers.normal(1.0)(rngs.next(), shape=(in_out_dim,))
-        )
-        self.bias = nnx.Variable(
-            nnx.initializers.normal(1.0)(rngs.next(), shape=(in_out_dim,))
-        )
-
-    def __call__(self, x: Array, *args) -> Array:
-        return x * self.scale.value + self.bias.value
-
-
-class Flip(nnx.Module, experimental_pytree=True):
-    def __init__(self, axis: int = -1, rngs=None):
-        """Flip the array along an axis.
-
-        Args:
-            axis (int, optional): Axis to flip. Defaults to -1.
-        """
-        self.axis = axis
-
-    def __call__(self, x: Array, *args) -> Array:
-        return jnp.flip(x, axis=self.axis)
-
-
-class Permute(nnx.Module, experimental_pytree=True):
-    def __init__(self, permutation: Array, axis: int = -1, rngs=None):
-        """Permutes the array along an axis.
-
-        Args:
-            permutation (Array): An array of indices to permute.
-            axis (int, optional): Axis to permute. Defaults to -1.
-        """
-        self.permutation = nnx.Variable(permutation)
-        self.axis = axis
-
-    def __call__(self, x: Array, *args) -> Array:
-        return jnp.take(x, self.permutation, axis=self.axis)
-
-
-class Rotate(nnx.Module, experimental_pytree=True):
-    def __init__(
-        self,
-        in_out_dim: int,
-        rngs,
-        *,
-        rotation_matrix: Optional[Array] = None,
-        learnable: bool = False,
-    ):
-        """Rotate the array.
-
-        Args:
-            rotation_matrix (Array): Rotation matrix.
-            name (str, optional): Name of the module. Defaults to "rotate".
-        """
-        self.in_out_dim = in_out_dim
-        self.learnable = learnable
-        if not learnable:
-            if rotation_matrix is None:
-                self.rotation_matrix = nnx.Variable(
-                    nnx.initializers.orthogonal()(
-                        rngs.next(), shape=(in_out_dim, in_out_dim)
-                    )
-                )
-
-            else:
-                self.rotation_matrix = nnx.Variable(rotation_matrix)
-        else:
-            raise NotImplementedError(
-                "Learnable rotation matrix is not implemented yet."
-            )
-            # TODO: Matrix exponetial of any skew symetric matrix is orthogonal
-            # Use for reparameterization
-
-    def __call__(self, x: Array, *args) -> Array:
-        if not self.learnable:
-            rotation_matrix = jax.lax.stop_gradient(self.rotation_matrix.value)
-        return rotate(rotation_matrix, x)
-
-
-@partial(custom_inverse, inv_argnum=1)
-def rotate(R, x):
-    return jnp.matmul(R, x.T).T
-
-
-rotate.definv_and_logdet(lambda R, x: (jnp.matmul(R.T, x.T).T, 0.0))
-
-
-class GaussianFourierEmbedding(nnx.Module, experimental_pytree=True):
-    def __init__(
-        self,
-        input_dim: int,
-        output_dim: int,
-        rngs,
-        *,
-        learnable=True,
-    ):
-        """Gaussian Fourier embedding module. Mostly used to embed time.
-
-        Args:
-            output_dim (int, optional): Output dimesion. Defaults to 128.
-            name (str, optional): Name of the module. Defaults to
-            "gaussian_fourier_embedding".
-        """
-        self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.learnable = learnable
-        half_dim = self.output_dim // 2 + 1
-        if not learnable:
-            self.B = nnx.Variable(
-                nnx.initializers.normal(1.0)(rngs.next(), shape=(half_dim, input_dim))
-            )
-        else:
-            self.B = nnx.Param(
-                nnx.initializers.normal(1.0)(rngs.next(), shape=(half_dim, input_dim))
-            )
-
-    def __call__(self, inputs):
-        B = self.B.value
-        if not self.learnable:
-            B = jax.lax.stop_gradient(B)
-        term1 = jnp.cos(2 * jnp.pi * jnp.dot(inputs, B.T))
-        term2 = jnp.sin(2 * jnp.pi * jnp.dot(inputs, B.T))
-        out = jnp.concatenate([term1, term2], axis=-1)
-        return out[..., : self.output_dim]
-
-
-class OneHot(nnx.Module, experimental_pytree=True):
-    """One hot encoding module."""
-
-    def __init__(self, num_tokens: int, rngs=None):
-        """Represents a one hot encoding module.
-
-        Args:
-            num_tokens (int): Number of distinct tokens.
-        """
-        self.num_tokens = num_tokens
-
-    def __call__(self, x: Array, *args) -> Array:
-        """One hot encodes the input.
-
-        Args:
-            x (jax.Array): Input array of shape [B, T]
-        """
-        return jax.nn.one_hot(x, self.num_tokens)
-
-
-class AdditiveFuse(nnx.Module, experimental_pytree=True):
-    def __init__(self, input_dim: int, context_dim: int, rngs):
-        """This module applies an additive transformation to the input.
-
-        Args:
-            in_out_dim (int): Input and output dimension.
-            rngs (rngs): Random generator stream.
-        """
-        self.linear = nnx.Linear(context_dim, input_dim, rngs=rngs)
-
-    def __call__(self, x: Array, context: Array) -> Array:
-        return x + self.linear(context)
-
-
-class AffineFuse(nnx.Module, experimental_pytree=True):
-    def __init__(
-        self,
-        input_dim: int,
-        context_dim: int,
-        rngs,
-        scale_activation: Callable | None = None,
-        use_bias: bool = False,
-    ):
-        """This module applies an affine transformation to the input.
-
-        Args:
-            in_out_dim (int): Input and output dimension.
-            rngs (rngs): Random generator stream.
-        """
-        self.linear_scale = nnx.Linear(
-            context_dim,
-            input_dim,
-            rngs=rngs,
-            use_bias=use_bias,
-            kernel_init=nnx.initializers.zeros,
-        )
-        self.linear_bias = nnx.Linear(
-            context_dim,
-            input_dim,
-            rngs=rngs,
-            use_bias=use_bias,
-            kernel_init=nnx.initializers.zeros,
-        )
-        self.scale_activation = scale_activation
-
-    def __call__(self, x: Array, context: Array) -> Array:
-        scale = 1 + self.linear_scale(context)
-        if self.scale_activation is not None:
-            scale = self.scale_activation(scale)
-        bias = self.linear_bias(context)
-        return x * scale + bias
-
-
-class ConcatFuse(nnx.Module, experimental_pytree=True):
-    def __init__(self, input_dim: int, context_dim: int, rngs):
-        """This module applies an additive transformation to the input.
-
-        Args:
-            in_out_dim (int): Input and output dimension.
-            rngs (rngs): Random generator stream.
-        """
-        self.linear = nnx.Linear(context_dim, input_dim, rngs=rngs)
-
-    def __call__(self, x: Array, context: Array) -> Array:
-        context = self.linear(context)
-        # Ensure same leading dimensions as x
-        context = jnp.broadcast_to(context, x.shape[:-1] + (context.shape[-1],))
-        return jnp.concatenate([x, context], axis=-1)

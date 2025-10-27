@@ -1,239 +1,266 @@
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
 
-import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
+from flax import nnx
 
+from probjax.nn.layers.lru import LRUCell
 from probjax.nn.nets.simple import MLP
+from probjax.nn.utils import filter_precision_kwargs, get_active_precision_kwargs
+from probjax.utils.typing import (
+    Array,
+    ArrayLike,
+    DTypeLike,
+    ModuleLikeType,
+    PrecisionLike,
+)
 
 
-@jax.vmap
-def binary_operator_diag(q_i, q_j):
-    """Binary operator for parallel scan of linear recurrence"""
-    A_i, b_i = q_i
-    A_j, b_j = q_j
-    return A_j * A_i, A_j * b_i + b_j
+class LRUModel(nnx.Module):
+    """Stacked LRU-style sequence model with optional bidirectionality.
 
+    - Stacks recurrent cells (default: LRUCell) and MLP residual blocks.
+    - Pre-norm architecture: each block is preceded by LayerNorm.
+    - Optional alternating forward/backward passes for bidirectional context.
 
-def matrix_init(key, shape, dtype=jnp.float32, normalization=1):
-    return jax.random.normal(key=key, shape=shape, dtype=dtype) / normalization
+    References:
+    - Orvieto et al., 2023: Linear Recurrent Units (LRU).
+    - Gu & Dao, 2023: Mamba — Selective State Space Models.
+    - Dao et al., 2024: Mamba-2 / SSD (Selective SSMs with diffusion).
 
+    Notes:
+    - Normalization, residual connections, and GLU heads live in this module.
+      The recurrent cells (LRUCell, MambaCell, SSDCell) implement only the
+      [B, L, D] -> [B, L, D] recurrent transformation.
+    """
 
-def nu_init(key, shape, r_min, r_max, dtype=jnp.float32):
-    u = jax.random.uniform(key=key, shape=shape, dtype=dtype)
-    return jnp.log(-0.5 * jnp.log(u * (r_max**2 - r_min**2) + r_min**2))
+    input_dim: int  # Input dimension
+    model_dim: int  # Model hidden dimension
+    output_dim: int  # Output dimension
+    num_layers: int  # Number of LRU layers
+    bidirectional: bool  # Whether to use bidirectional processing
+    dropout_rate: float | None  # Dropout rate
 
-
-def theta_init(key, shape, max_phase, dtype=jnp.float32):
-    u = jax.random.uniform(key, shape=shape, dtype=dtype)
-    return jnp.log(max_phase * u)
-
-
-def gamma_log_init(key, lamb):
-    nu, theta = lamb
-    diag_lambda = jnp.exp(-jnp.exp(nu) + 1j * jnp.exp(theta))
-    return jnp.log(jnp.sqrt(1 - jnp.abs(diag_lambda) ** 2))
-
-
-class LRU(nnx.Module, experimental_pytree=True):
-    def __init__(
-        self,
-        in_dim: int,
-        out_dim: int,
-        hidden_dim: int,
-        rngs,
-        *,
-        r_min: float = 0.0,
-        r_max: float = 1.0,
-        max_phase: float = 6.28,
-    ):
-        """Initialize the Linear Recurrent Unit (LRU) layer.
-        This layer implements a Linear Recurrent Unit, which is a type of recurrent
-        neural network hat uses complex-valued representations of linear dynamics.
-
-        NOTE: Expressivity is limited to linear dynamics. But recurrent dynamics can be
-        parallelized!!!
-        NOTE: Presumes an initial state of zero.
-
-        Args:
-            in_dim (int): Input dimension.
-            out_dim (int): Output dimension.
-            hidden_dim (int): Hidden state dimension.
-            rngs: Random number generator keys for parameter initialization.
-            r_min (float, optional): Minimum value for the decay rate. Defaults to 0.0.
-            r_max (float, optional): Maximum value for the decay rate. Defaults to 1.0.
-            max_phase (float, optional): Maximum phase value for theta initialization.
-                Defaults to 6.28.
-
-        Attributes:
-            theta_log (nnx.Param): Log of theta parameters controlling the phase.
-            nu_log (nnx.Param): Log of nu parameters controlling the decay rate.
-            gamma_log (nnx.Param): Log of gamma parameters for scaling.
-            B_re (nnx.Param): Real part of the input projection matrix.
-            B_im (nnx.Param): Imaginary part of the input projection matrix.
-            C_re (nnx.Param): Real part of the output projection matrix.
-            C_im (nnx.Param): Imaginary part of the output projection matrix.
-            D (nnx.Param): Direct input-to-output connection matrix.
-        """
-
-        self.in_dim = in_dim
-        self.out_dim = out_dim
-        self.hidden_dim = hidden_dim
-        self.r_min = r_min
-        self.r_max = r_max
-        self.max_phase = max_phase
-
-        # Scale and shift parameters
-        self.theta_log = nnx.Param(
-            theta_init(rngs.params(), (self.hidden_dim,), max_phase=self.max_phase)
-        )
-        self.nu_log = nnx.Param(nu_init(rngs.next(), (self.hidden_dim,), r_min, r_max))
-        self.gamma_log = nnx.Param(
-            gamma_log_init(rngs.params(), (self.nu_log, self.theta_log))
-        )
-
-        # Projection matrices
-        B_re = matrix_init(
-            rngs.params(),
-            (in_dim, hidden_dim),
-            normalization=jnp.sqrt(2 * self.in_dim),
-        )
-        self.B_re = nnx.Param(B_re)
-        B_im = matrix_init(
-            rngs.params(),
-            (in_dim, hidden_dim),
-            normalization=jnp.sqrt(2 * self.in_dim),
-        )
-        self.B_im = nnx.Param(B_im)
-        C_re = matrix_init(
-            rngs.params(),
-            (out_dim, hidden_dim),
-            normalization=jnp.sqrt(self.hidden_dim),
-        )
-        self.C_re = nnx.Param(C_re)
-        C_im = matrix_init(
-            rngs.params(),
-            (out_dim, hidden_dim),
-            normalization=jnp.sqrt(self.hidden_dim),
-        )
-        self.C_im = nnx.Param(C_im)
-        self.D = nnx.Param(matrix_init(rngs.params(), (out_dim, in_dim)))
-
-    def __call__(self, inputs):
-        # Fetch parameters
-        nu_log = self.nu_log.value
-        theta_log = self.theta_log.value
-        gamma_log = self.gamma_log.value
-
-        # Fetch projection matrices
-        B_re = self.B_re.value
-        B_im = self.B_im.value
-        C_re = self.C_re.value
-        C_im = self.C_im.value
-        D = self.D.value
-
-        # Diag drift
-        diag_lambda = jnp.exp(-jnp.exp(nu_log) + 1j * jnp.exp(theta_log))
-
-        # Input projection
-        B_norm = B_re + 1j * B_im
-        B_norm = B_norm * jnp.expand_dims(jnp.exp(gamma_log), axis=-2)
-        # Output projection
-        C = C_re + 1j * C_im
-
-        Lambda_elements = jnp.repeat(diag_lambda[None, ...], inputs.shape[-2], axis=-2)
-        Bu_elements = jnp.einsum("ih,ti->th", B_norm, inputs)
-
-        # Compute hidden states
-        _, hidden_states = jax.lax.associative_scan(
-            binary_operator_diag, (Lambda_elements, Bu_elements)
-        )
-        # Use them to compute the output of the module
-        outputs = jnp.real(jnp.einsum("th,oh->to", hidden_states, C))
-        outputs += jnp.einsum("ti,oi->to", inputs, D)
-
-        return outputs
-
-
-class LRUBlock(nnx.Module, experimental_pytree=True):
-    def __init__(
-        self,
-        model_dim: int,
-        rngs,
-        *,
-        dropout: Optional[float] = None,
-        norm: nnx.Module = nnx.LayerNorm,
-        activation: Callable = jax.nn.gelu,
-    ):
-        """Initialize a Linear Recurrent Unit (LRU) block.
-        This is a stackable bloc of LRUs with a residual connection and a
-        Gated Linear Unit (GLU) output.
-        """
-        self.lru = LRU(model_dim, model_dim, model_dim, rngs)
-        self.norm = norm(model_dim, rngs=rngs)
-        self.activation = activation
-        self.dropout = dropout
-        if dropout is not None:
-            self.dropout1 = nnx.Dropout(dropout, rngs=rngs)
-            self.dropout2 = nnx.Dropout(dropout, rngs=rngs)
-        self.out1 = nnx.Linear(model_dim, model_dim, rngs=rngs)
-        self.out2 = nnx.Linear(model_dim, model_dim, rngs=rngs)
-
-    def __call__(self, inputs, deterministic: bool | None = None):
-        x = self.norm(inputs)
-        x = jax.vmap(self.lru)(x)
-        x = self.activation(x)
-        if self.dropout is not None:
-            x = self.dropout1(x, deterministic=deterministic)
-        x = self.out1(x) * jax.nn.sigmoid(self.out2(x))  # GLU
-        if self.dropout is not None:
-            x = self.dropout2(x, deterministic=deterministic)
-        return x
-
-
-class LRUModel(nnx.Module, experimental_pytree=True):
     def __init__(
         self,
         input_dim: int,
         model_dim: int,
         output_dim: int,
-        n_layers: int,
-        rngs,
+        num_layers: int,
         *,
         bidirectional: bool = True,
-        dropout: Optional[float] = None,
-        norm: nnx.Module = nnx.LayerNorm,
+        dropout_rate: Optional[float] = None,
+        mlp_widening_factor: int = 4,
+        mlp_num_hidden_layers: int = 1,
+        skip_connection_lru: bool = True,
+        skip_connection_mlp: bool = True,
         activation: Callable = jax.nn.gelu,
+        norm_cls: ModuleLikeType = nnx.LayerNorm,
+        mlp_cls: ModuleLikeType = MLP,
+        initializer: Optional[nnx.Initializer] = None,
+        dtype: DTypeLike | None = None,
+        param_dtype: DTypeLike | None = None,
+        precision: PrecisionLike | None = None,
+        preferred_element_type: DTypeLike | None = None,
+        # Recurrent cell choice and kwargs
+        recurrent_cls: ModuleLikeType = LRUCell,
+        recurrent_kwargs: Optional[Mapping] = None,
+        rngs: nnx.Rngs,
     ):
-        self.bidirectional = bidirectional
+        """Initialize an LRU model.
 
-        self.in_layer = nnx.Linear(input_dim, model_dim, rngs=rngs)
-        self.out_layer = nnx.Linear(model_dim, output_dim, rngs=rngs)
-        self.layers = [
-            LRUBlock(
-                model_dim,
-                rngs,
-                dropout=dropout,
-                norm=norm,
-                activation=activation,
+        Args:
+            input_dim: Input dimension.
+            model_dim: Model hidden dimension.
+            output_dim: Output dimension.
+            num_layers: Number of LRU layers to stack.
+            bidirectional: Whether to use bidirectional processing by alternating
+                forward and backward passes. Defaults to True.
+            dropout_rate: Dropout rate. If None, no dropout is applied.
+                Defaults to None.
+            mlp_widening_factor: Factor by which to widen the MLP hidden dimension.
+                Defaults to 2.
+            activation: Activation function. Defaults to jax.nn.gelu.
+            norm_cls: Normalization layer class. Defaults to nnx.LayerNorm.
+            mlp_cls: MLP class to use. Defaults to MLP.
+            initializer: Weight initializer. If None, uses default initialization.
+                Defaults to None.
+            dtype: Computation dtype.
+            param_dtype: Parameter dtype.
+            precision: Computation precision.
+            preferred_element_type: Preferred element type.
+            rngs: Random number generators.
+
+            Raises:
+                ValueError: If any dimension is not positive or if num_layers is
+                    negative.
+        """
+        if input_dim <= 0:
+            raise ValueError(f"input_dim must be positive, got {input_dim}")
+        if model_dim <= 0:
+            raise ValueError(f"model_dim must be positive, got {model_dim}")
+        if output_dim <= 0:
+            raise ValueError(f"output_dim must be positive, got {output_dim}")
+        if num_layers < 0:
+            raise ValueError(f"num_layers must be non-negative, got {num_layers}")
+        if dropout_rate is not None and not (0.0 <= dropout_rate <= 1.0):
+            raise ValueError(
+                f"dropout_rate must be between 0.0 and 1.0, got {dropout_rate}"
             )
-            for _ in range(n_layers)
-        ]
-        self.mlp_layers = [
-            MLP([model_dim, 2 * model_dim, model_dim], rngs=rngs)
-            for _ in range(n_layers)
-        ]
 
-    def __call__(self, inputs, *args, **kwargs):
-        h = self.in_layer(inputs)
-        for i, (layer, mlp) in enumerate(zip(self.layers, self.mlp_layers)):
+        super().__init__()
+        self.input_dim = input_dim
+        self.model_dim = model_dim
+        self.output_dim = output_dim
+        self.num_layers = num_layers
+        self.bidirectional = bidirectional
+        self.dropout_rate = dropout_rate
+        self.recurrent_cls = recurrent_cls
+        self.recurrent_kwargs = dict(recurrent_kwargs or {})
+        self.skip_connection_lru = skip_connection_lru
+        self.skip_connection_mlp = skip_connection_mlp
+
+        # Precision and dtype settings
+        precision_kwargs = get_active_precision_kwargs(
+            dtype,
+            precision,
+            param_dtype,
+            preferred_element_type,
+        )
+
+        # Initialize linear layers with precision kwargs
+        init_default = (
+            nnx.initializers.variance_scaling(
+                2 / max(num_layers, 1), 'fan_in', 'truncated_normal'
+            )
+            if initializer is None
+            else initializer
+        )
+        linear_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
+        linear_kwargs['kernel_init'] = init_default
+
+        self.in_layer = nnx.Linear(input_dim, model_dim, rngs=rngs, **linear_kwargs)
+        self.out_layer = nnx.Linear(model_dim, output_dim, rngs=rngs, **linear_kwargs)
+
+        # Layer norms for LRU and MLP blocks
+        self.layer_norms_lru = nnx.List([
+            norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
+        ])
+        self.layer_norms_mlp = nnx.List([
+            norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
+        ])
+
+        # Final output layer norm
+        self.out_layer_norm = norm_cls(model_dim, rngs=rngs)
+
+        # Recurrent cell stack (each cell maps [B, T, D] -> [B, T, D])
+        self.recurrent_layers = nnx.List([
+            self.recurrent_cls(model_dim, rngs=rngs, **self.recurrent_kwargs)
+            for _ in range(num_layers)
+        ])
+        # Heads for block post-processing (norm, activation, GLU, dropout)
+        self.block_norms = nnx.List([
+            norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
+        ])
+        if dropout_rate is not None:
+            self.block_dropout1 = nnx.List([
+                nnx.Dropout(dropout_rate, rngs=rngs) for _ in range(num_layers)
+            ])
+            self.block_dropout2 = nnx.List([
+                nnx.Dropout(dropout_rate, rngs=rngs) for _ in range(num_layers)
+            ])
+        else:
+            self.block_dropout1 = None
+            self.block_dropout2 = None
+        self.block_out1 = nnx.List([
+            nnx.Linear(model_dim, model_dim, rngs=rngs, **linear_kwargs)
+            for _ in range(num_layers)
+        ])
+        self.block_out2 = nnx.List([
+            nnx.Linear(model_dim, model_dim, rngs=rngs, **linear_kwargs)
+            for _ in range(num_layers)
+        ])
+        self.block_activation = activation
+
+        # MLP layers for processing between LRU blocks
+        mlp_dims = (
+            [model_dim]
+            + [mlp_widening_factor * model_dim] * mlp_num_hidden_layers
+            + [model_dim]
+        )
+        mlp_kwargs = filter_precision_kwargs(mlp_cls, **precision_kwargs)
+        self.mlp_layers = nnx.List([
+            mlp_cls(
+                mlp_dims,
+                rngs=rngs,
+                activation=activation,
+                activate_final=True,
+                **mlp_kwargs,
+            )
+            for _ in range(num_layers)
+        ])
+
+    def __call__(
+        self,
+        inputs: ArrayLike,
+        deterministic: bool | None = None,
+    ) -> Array:
+        """Forward pass through the LRU model.
+
+        Args:
+            inputs: Input array of shape [..., seq_len, input_dim].
+            deterministic: Whether to run in deterministic mode (for dropout).
+                If None, uses training mode.
+
+        Returns:
+            Output array of shape [..., seq_len, output_dim].
+        """
+        inputs = jnp.asarray(inputs)
+        shape = inputs.shape
+        # Flatten leading batch dims to [-1, T, D]
+        x = inputs.reshape(-1, inputs.shape[-2], inputs.shape[-1])
+        h = self.in_layer(x)
+
+        for i, mlp_layer in enumerate(self.mlp_layers):
+            # Apply layer norm before LRU layer
+            h_normed = self.layer_norms_lru[i](h)
+
+            # Apply LRU layer, optionally with bidirectional processing
             if self.bidirectional:
-                # Alternate between forward and backward layers
-                h = layer(h) if i % 2 == 0 else layer(h[:, ::-1])[:, ::-1]
+                # Alternate between forward and backward processing
+                if i % 2 == 0:
+                    h_cell_in = self.block_norms[i](h_normed)
+                    h_cell = self.recurrent_layers[i](h_cell_in)
+                else:
+                    # Reverse sequence, apply LRU, then reverse back
+                    h_reversed = h_normed[..., ::-1, :]
+                    h_cell_in = self.block_norms[i](h_reversed)
+                    h_cell = self.recurrent_layers[i](h_cell_in)
+                    h_cell = h_cell[..., ::-1, :]
             else:
-                h = layer(h)
-            h_new = mlp(h)
-            h = h + h_new
+                h_cell_in = self.block_norms[i](h_normed)
+                h_cell = self.recurrent_layers[i](h_cell_in)
 
-        out = self.out_layer(h)
-        return out
+            # Residual connection for LRU
+            # GLU head: activation + optional dropout + gated linear
+            x = self.block_activation(h_cell)
+            if self.block_dropout1 is not None:
+                x = self.block_dropout1[i](x, deterministic=deterministic)
+            x = self.block_out1[i](x) * jax.nn.sigmoid(self.block_out2[i](x))
+            if self.block_dropout2 is not None:
+                x = self.block_dropout2[i](x, deterministic=deterministic)
+            h = h + x if self.skip_connection_lru else x
+
+            # Apply layer norm before MLP layer
+            h_normed = self.layer_norms_mlp[i](h)
+
+            # Apply MLP layer
+            h_mlp = mlp_layer(h_normed)
+
+            # Residual connection for MLP
+            h = h + h_mlp if self.skip_connection_mlp else h_mlp
+
+        # Apply final layer norm and output projection
+        h = self.out_layer_norm(h)
+        h = self.out_layer(h)
+        return h.reshape(shape[:-2] + (shape[-2], self.output_dim))

@@ -2,7 +2,6 @@ from functools import wraps
 from typing import Callable, Iterable, Optional
 
 import jax
-import sympy
 from jax import numpy as jnp
 from jaxtyping import Array
 
@@ -18,42 +17,9 @@ from probjax.core.interpreters.joint_sample import JointSampleProcessingRule
 from probjax.core.interpreters.log_potential import (
     LogPotentialProcessingRule,
 )
-from probjax.core.interpreters.symbolic import SymbolicProcessingRule, as_symbolic_var
 from probjax.core.interpreters.trace import TraceProcessingRule
 from probjax.core.jaxpr_propagation.interpret import interpret
 from probjax.core.jaxpr_propagation.propagate import propagate
-
-
-def symbolify(fun: Callable):
-    jaxpr_maker = jax.make_jaxpr(fun)
-    procecessing_rule = SymbolicProcessingRule()
-
-    def wrapped(*args, **kwargs):
-        jaxpr = jaxpr_maker(*args, **kwargs)
-        args = list(map(as_symbolic_var, args))
-        out = interpret(
-            jaxpr.jaxpr,
-            jaxpr.consts,
-            jaxpr.jaxpr.invars,
-            args,
-            jaxpr.jaxpr.outvars,
-            process_eqn=procecessing_rule,
-        )
-
-        return out[0]
-
-    return wrapped
-
-
-def lambdafy(expr: sympy.Expr, static_symbols: Optional[dict] = None):
-    if static_symbols is not None:
-        expr = expr.subs(**static_symbols)
-
-    def wrapped(*args):
-        return sympy.lambdify(expr.free_symbols, expr, module="jax")(*args)
-
-    return wrapped
-
 
 def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
     """Samples all random variables called in the probabilistic function. If rvs is
@@ -238,22 +204,43 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
     @wraps(fun)
     def wrapped(*args, **kwargs):
         jaxpr = jaxpr_maker(*args, **kwargs)
+
+        if invertible_arg is not None:
+            flatten_args, _ = jax.tree_util.tree_flatten(args)
+            if invertible_arg < 0:
+                adjusted_invertible_arg = len(flatten_args) + invertible_arg
+            else:
+                adjusted_invertible_arg = invertible_arg
+            out_arg = [flatten_args[adjusted_invertible_arg]]
+            flat_args = (
+                flatten_args[:adjusted_invertible_arg]
+                + flatten_args[adjusted_invertible_arg + 1 :]
+                + out_arg
+            )
+            const_invars = (
+                jaxpr.jaxpr.invars[:adjusted_invertible_arg]
+                + jaxpr.jaxpr.invars[adjusted_invertible_arg + 1 :]
+            )
+            out_invar = [jaxpr.jaxpr.invars[adjusted_invertible_arg]]
+            invars = const_invars + jaxpr.jaxpr.outvars
+            outvars = out_invar
+            args_for_propagate = flat_args
+        else:
+            invars = jaxpr.jaxpr.outvars
+            outvars = jaxpr.jaxpr.invars
+            args_for_propagate = args
+
         out = propagate(
             jaxpr.jaxpr,
             jaxpr.consts,
-            jaxpr.jaxpr.outvars,
-            args,
-            jaxpr.jaxpr.invars,
+            invars,
+            args_for_propagate,
+            outvars,
             process_eqn=processing_rule,
             cost_fn=inverse_cost_fn,
             process_all_eqns=True,
         )
-        log_det = jnp.asarray(
-            sum([processing_rule.log_dets[v] for v in jaxpr.jaxpr.invars])
-        )
-        # if log_det.ndim == out[0].ndim and log_det.ndim > 0:
-        #     # Hacky bug fix TODO: Fix this
-        #     log_det = jnp.sum(log_det, axis=-1, keepdims=True)
+        log_det = jnp.asarray(sum([processing_rule.log_dets[v] for v in outvars]))
         return out[0], log_det
 
     return wrapped

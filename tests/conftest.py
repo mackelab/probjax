@@ -2,12 +2,15 @@ import jax
 import jax.numpy as jnp
 import pytest
 from jax import random
+import numpy as np
 
 from probjax.utils.odeutil.solvers.base import get_methods as get_methods_ode
 from probjax.utils.sdeutil import get_methods as get_methods_sde
 
 # Remove the hardcoded CPU configuration
 jax.config.update("jax_platform_name", "cpu")
+# Set a fixed random key for all tests
+np.random.seed(0)
 
 key = random.PRNGKey(0)
 
