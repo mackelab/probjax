@@ -28,7 +28,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         *,
         mask: AttentionMask | ArrayLike | None = None,
         bias: AttentionBias | ArrayLike | None = None,
-        deterministic: bool | None = True,
+        deterministic: bool | None = None,
         rngs: rnglib.Rngs | rnglib.RngStream | None = None,
         sow_weights: bool = False,
         decode: bool | None = False,
