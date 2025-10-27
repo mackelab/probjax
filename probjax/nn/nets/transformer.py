@@ -203,6 +203,7 @@ class Transformer(nnx.Module):
             ])
             self.context_layers2 = nnx.List([
                 context_fusion_cls(model_dim, context_dim, rngs=rngs)
+                for _ in range(num_layers)
             ])
 
         # Dense block.
