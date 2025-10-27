@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 import jax
 from flax import nnx
@@ -31,7 +31,8 @@ class Transformer(nnx.Module):
     num_heads: int  # Number of attention heads.
     num_layers: int  # Number of transformer (attention + MLP) layers to stack.
     attn_size: int  # Size of the attention (key, query, value) vectors.
-    dropout_rate: float | None  # Probability with which to apply dropout.
+    dropout_rate: float  # Probability with which to apply dropout.
+    drop_path_rates: Sequence[float]  # Drop-path rate(s) per layer.
     widening_factor: int = 4  # Factor by which the MLP hidden layer widens.
 
     def __init__(
@@ -45,7 +46,8 @@ class Transformer(nnx.Module):
         normalize_qk_attn: bool = False,
         normalize_qk_cross_attn: bool = False,
         context_dim: Optional[int] = None,
-        dropout_rate: Optional[float] = None,
+        dropout_rate: float = 0.0,
+        drop_path_rate: float | Sequence[float] = 0.0,
         widening_factor: int = 4,
         num_hidden_layers: int = 1,
         act: Callable = jax.nn.gelu,
@@ -58,8 +60,8 @@ class Transformer(nnx.Module):
         preferred_element_type: DTypeLike | None = None,
         norm_cls: ModuleLikeType = nnx.LayerNorm,
         context_fusion_cls: ModuleLikeType = AffineFuse,
-        attn_fuse_cls: ModuleLikeType | None = AdditiveBinaryFuse,
-        mlp_fuse_cls: ModuleLikeType | None = AdditiveBinaryFuse,
+        attn_fuse_cls: ModuleLikeType = AdditiveBinaryFuse,
+        mlp_fuse_cls: ModuleLikeType = AdditiveBinaryFuse,
         mlp_cls: ModuleLikeType = MLP,
         mha_cls: ModuleLikeType = MultiHeadAttention,
         rngs: nnx.Rngs,
@@ -74,8 +76,11 @@ class Transformer(nnx.Module):
             context_dim (Optional[int], optional): Dimension of additional context to be
                 concatenated with transformer output. If None, no context is used.
                 Defaults to None.
-            dropout_rate (Optional[float], optional): Dropout rate. If None, no dropout
-                is applied. Defaults to None.
+            dropout_rate (float, optional): Dropout rate. If 0.0, dropout is disabled.
+                Defaults to 0.0.
+            drop_path_rate (float | Sequence[float], optional): Drop-path rate(s) per
+                layer. Provide a single float to apply uniformly, or a sequence of
+                length `num_layers`. Defaults to 0.0.
             widening_factor (int, optional): Factor by which to increase the dimension
                 in the MLP. Defaults to 4.
             num_hidden_layers (int, optional): Number of hidden layers in the MLP block.
@@ -102,6 +107,19 @@ class Transformer(nnx.Module):
         self.num_layers = num_layers
         self.attn_size = attn_size
         self.dropout_rate = dropout_rate
+        if isinstance(drop_path_rate, Sequence) and not isinstance(
+            drop_path_rate, (str, bytes)
+        ):
+            if len(drop_path_rate) != num_layers:
+                raise ValueError(
+                    "drop_path_rate sequence length must match num_layers "
+                    f"({num_layers}), got {len(drop_path_rate)}."
+                )
+            drop_path_rates = [float(x) for x in drop_path_rate]
+        else:
+            drop_path_rates = [float(drop_path_rate)] * num_layers
+
+        self.drop_path_rates = drop_path_rates
         self.initializer = (
             nnx.initializers.variance_scaling(
                 2 / self.num_layers, 'fan_in', 'truncated_normal'
@@ -147,7 +165,7 @@ class Transformer(nnx.Module):
                 model_dim,
                 rngs=rngs,
                 kernel_init=self.initializer,
-                dropout_rate=dropout_rate if dropout_rate is not None else 0.0,
+                dropout_rate=dropout_rate,
                 attention_fn=attention_fn,
                 normalize_qk=normalize_qk_attn,
                 **filter_precision_kwargs(mha_cls, **precision_kwargs),
@@ -169,7 +187,7 @@ class Transformer(nnx.Module):
                     model_dim,
                     rngs=rngs,
                     kernel_init=self.initializer,
-                    dropout_rate=dropout_rate if dropout_rate is not None else 0.0,
+                    dropout_rate=dropout_rate,
                     attention_fn=cross_attention_fn,
                     normalize_qk=normalize_qk_cross_attn,
                     **filter_precision_kwargs(mha_cls, **precision_kwargs),
@@ -202,28 +220,33 @@ class Transformer(nnx.Module):
             )
             for _ in range(num_layers)
         ])
-
-        if dropout_rate is not None:
-            self.dropout_dense = nnx.List([
-                nnx.Dropout(rate=dropout_rate, rngs=rngs) for _ in range(num_layers)
-            ])
+        if dropout_rate > 0.0:
+            self.dropout_dense = nnx.List([nnx.Dropout(rate=dropout_rate, rngs=rngs)])
         else:
             self.dropout_dense = None
 
-        def _build_binary_fuse(cls: ModuleLikeType | None):
-            if cls is None:
-                return None
-            modules = []
-            for _ in range(num_layers):
-                try:
-                    module = cls(model_dim, model_dim, rngs=rngs)
-                except TypeError:
-                    module = cls(rngs=rngs)
-                modules.append(module)
-            return nnx.List(modules)
-
-        self.attn_skip_fuse = _build_binary_fuse(attn_fuse_cls)
-        self.mlp_skip_fuse = _build_binary_fuse(mlp_fuse_cls)
+        # Skip connection fusers.
+        self.attn_skip_fuse = nnx.List([])
+        self.mlp_skip_fuse = nnx.List([])
+        if enable_cross_attention:
+            self.cross_skip_fuse = nnx.List([])
+        for num_layer in range(num_layers):
+            self.attn_skip_fuse.append(
+                attn_fuse_cls(
+                    model_dim, drop_path_rate=drop_path_rates[num_layer], rngs=rngs
+                )
+            )
+            self.mlp_skip_fuse.append(
+                mlp_fuse_cls(
+                    model_dim, drop_path_rate=drop_path_rates[num_layer], rngs=rngs
+                )
+            )
+            if self.enable_cross_attention:
+                self.cross_skip_fuse.append(
+                    attn_fuse_cls(
+                        model_dim, rngs=rngs, drop_path_rate=drop_path_rates[num_layer]
+                    )
+                )
 
     def __call__(
         self,
@@ -272,7 +295,9 @@ class Transformer(nnx.Module):
                 q, mask=mask, bias=bias, deterministic=deterministic, decode=decode
             )
             if self.attn_skip_fuse is not None:
-                q = self.attn_skip_fuse[i](attn_residual, h_attn, None)
+                q = self.attn_skip_fuse[i](
+                    attn_residual, h_attn, context=context, deterministic=deterministic
+                )
             else:
                 q = h_attn
 
@@ -288,7 +313,12 @@ class Transformer(nnx.Module):
                     deterministic=deterministic,
                     decode=False,
                 )
-                q = q + h_cross_attn
+                if self.cross_skip_fuse is not None:
+                    q = self.cross_skip_fuse[i](
+                        q, h_cross_attn, context=context, deterministic=deterministic
+                    )
+                else:
+                    q = q + h_cross_attn
 
             # Then the dense block and global context.
             q = self.layer_norms_dense[i](q)
@@ -302,7 +332,12 @@ class Transformer(nnx.Module):
             if self.dropout_dense is not None:
                 h_dense = self.dropout_dense[i](h_dense, deterministic=deterministic)
             if self.mlp_skip_fuse is not None:
-                q = self.mlp_skip_fuse[i](dense_residual, h_dense, None)
+                q = self.mlp_skip_fuse[i](
+                    dense_residual,
+                    h_dense,
+                    context=context,
+                    deterministic=deterministic,
+                )
             else:
                 q = h_dense
 

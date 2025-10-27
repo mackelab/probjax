@@ -35,7 +35,14 @@ class ContextFuse(nnx.Module):
 class BinaryFuse(nnx.Module):
     """Base class for binary fusion modules."""
 
-    def __call__(self, x: Array, y: Array, context: Array | None) -> Array: ...
+    def __call__(
+        self,
+        x: Array,
+        y: Array,
+        context: Array | None,
+        *,
+        deterministic: bool = True,
+    ) -> Array: ...
 
 
 class MLPConditioner(nnx.Module):
@@ -304,9 +311,17 @@ class AdditiveBinaryFuse(BinaryFuse):
         else:
             self.drop_path = None
 
-    def __call__(self, x: Array, y: Array, context: Array | None) -> Array:
+    def __call__(
+        self,
+        x: Array,
+        y: Array,
+        context: Array | None,
+        *,
+        deterministic: bool = True,
+    ) -> Array:
         del context
-        y = self.drop_path(y) if self.drop_path is not None else y
+        if self.drop_path is not None:
+            y = self.drop_path(y, deterministic=deterministic)
         return x + y
 
 
@@ -374,7 +389,14 @@ class GatedFuse(BinaryFuse):
         else:
             self.drop_path = None
 
-    def __call__(self, x: Array, y: Array, context: Array | None) -> Array:
+    def __call__(
+        self,
+        x: Array,
+        y: Array,
+        context: Array | None,
+        *,
+        deterministic: bool = True,
+    ) -> Array:
         """Apply gated fusion to input and context.
 
         Args:
@@ -387,7 +409,8 @@ class GatedFuse(BinaryFuse):
         """
         if context is None:
             raise ValueError("Context must be provided for GatedFuse.")
-        y = self.drop_path(y) if self.drop_path is not None else y
+        if self.drop_path is not None:
+            y = self.drop_path(y, deterministic=deterministic)
         # Ensure same leading dimensions as x
         context = jnp.broadcast_to(context, x.shape[:-1] + (context.shape[-1],))
         gate = self.gate_activation(self.gate_layer(context))
