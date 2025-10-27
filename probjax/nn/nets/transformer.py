@@ -243,6 +243,7 @@ class Transformer(nnx.Module):
                     context_dim,
                     drop_path_rate=drop_path_rates[num_layer],
                     rngs=rngs,
+                    **filter_precision_kwargs(attn_fuse_cls, **precision_kwargs),
                 )
             )
             self.mlp_skip_fuse.append(
@@ -251,6 +252,7 @@ class Transformer(nnx.Module):
                     context_dim,
                     drop_path_rate=drop_path_rates[num_layer],
                     rngs=rngs,
+                    **filter_precision_kwargs(mlp_fuse_cls, **precision_kwargs),
                 )
             )
             if self.enable_cross_attention:
@@ -260,6 +262,7 @@ class Transformer(nnx.Module):
                         context_dim,
                         rngs=rngs,
                         drop_path_rate=drop_path_rates[num_layer],
+                        **filter_precision_kwargs(attn_fuse_cls, **precision_kwargs),
                     )
                 )
 
