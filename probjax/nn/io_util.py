@@ -1,6 +1,7 @@
 # indexed_async_dataloader_v6.py
 import asyncio
 import collections
+from collections.abc import Sequence as SequenceCollection
 import itertools
 import queue
 import threading
@@ -13,10 +14,17 @@ import jax.numpy as jnp
 import numpy as np
 from flax.jax_utils import prefetch_to_device
 
+from probjax.utils.typing import Device
+
 
 # ------------------------- small helpers ----------------------------- #
-def _tree_to_jnp(batch):
-    return jax.tree_util.tree_map(jnp.asarray, batch)
+def _tree_to_jnp(batch, host_device: Device):
+    """Materialize batch leaves as JAX arrays on `host_device`."""
+
+    def to_host(x):
+        return jax.device_put(x, host_device)
+
+    return jax.tree_util.tree_map(to_host, batch)
 
 
 def _shard(batch, n_dev):
@@ -267,7 +275,8 @@ def unchunkify(
 # --------------------------------------------------------------------- #
 
 
-Transform = Union[Callable[[Any], Any], Sequence[Callable[[Any], Any]]]
+TransformFn = Callable[[Any], Any]
+Transform = Union[TransformFn, Sequence[TransformFn]]
 
 
 class DataLoader:
@@ -282,6 +291,9 @@ class DataLoader:
         Applied **after** the batch has been moved to accelerator memory
         (and sharded, if `shard=True`).  Pass JIT-compiled functions for
         best speed (`@jax.jit` or `@jax.pmap` when multi-device).
+    host_device       : jax.Device | None
+        Device that stores producer-side batches before they are prefetched.
+        Defaults to the first CPU device when available.
     """
 
     # ------------------------- init ----------------------------------- #
@@ -300,8 +312,9 @@ class DataLoader:
         min_fill: float = 0.5,
         num_prefetch_device: int = 2,
         shard: bool = False,
-        devices: Optional[Sequence[jax.Device]] = None,
+        devices: Optional[Sequence[Device]] = None,
         num_async_workers: int = 1,
+        host_device: Optional[Device] = None,
     ):
         if batch_size <= 0:
             raise ValueError("batch_size must be positive.")
@@ -314,16 +327,21 @@ class DataLoader:
         self._rng = np.random.default_rng(seed) if shuffle else None
 
         # -------- transforms ---------- #
-        self._host_tfns = (
-            list(host_transforms)
-            if isinstance(host_transforms, (list, tuple))
-            else ([host_transforms] if host_transforms else [])
-        )
-        self._device_tfns = (
-            list(device_transforms)
-            if isinstance(device_transforms, (list, tuple))
-            else ([device_transforms] if device_transforms else [])
-        )
+        self._host_tfns: list[TransformFn]
+        if host_transforms is None:
+            self._host_tfns = []
+        elif isinstance(host_transforms, SequenceCollection):
+            self._host_tfns = list(host_transforms)
+        else:
+            self._host_tfns = [host_transforms]
+
+        self._device_tfns: list[TransformFn]
+        if device_transforms is None:
+            self._device_tfns = []
+        elif isinstance(device_transforms, SequenceCollection):
+            self._device_tfns = list(device_transforms)
+        else:
+            self._device_tfns = [device_transforms]
 
         # -------- queues / buffers ----- #
         self._q = queue.Queue(num_prefetch_host)
@@ -333,6 +351,13 @@ class DataLoader:
         self._shard_flag = shard
         self._devices = list(devices) if devices else jax.local_devices()
         self._n_dev = len(self._devices)
+        if host_device is None:
+            try:
+                cpu_devices = jax.devices("cpu")
+            except RuntimeError:
+                cpu_devices = []
+            host_device = cpu_devices[0] if cpu_devices else jax.devices()[0]
+        self._host_device = host_device
 
         # -------- infra ---------------- #
         self._executor = ThreadPoolExecutor(max_workers=num_async_workers)
@@ -384,7 +409,7 @@ class DataLoader:
         batch = self._fetch_batch(idxs)
         for fn in self._host_tfns:
             batch = fn(batch)
-        batch = _tree_to_jnp(batch)
+        batch = _tree_to_jnp(batch, self._host_device)
         return batch
 
     # ---------------- host iterator w/ recycling ---------------------- #

@@ -41,6 +41,7 @@ __all__ = [
     "Mapping",
     "Sequence",
     "Union",
+    "Device",
 ]
 
 # ---------------- Core aliases ----------------
@@ -54,6 +55,7 @@ PrecisionLike: TypeAlias = Union[
     tuple[str, str],
     tuple[jax.lax.Precision, jax.lax.Precision],
 ]
+Device: TypeAlias = jax.Device
 
 # Keys: support both typed-key dtype and legacy uint32[..., key_bits]
 RngKey: TypeAlias = Array  # use runtime guards below to distinguish
