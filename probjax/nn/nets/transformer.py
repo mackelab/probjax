@@ -233,18 +233,27 @@ class Transformer(nnx.Module):
         for num_layer in range(num_layers):
             self.attn_skip_fuse.append(
                 attn_fuse_cls(
-                    model_dim, drop_path_rate=drop_path_rates[num_layer], rngs=rngs
+                    model_dim,
+                    context_dim,
+                    drop_path_rate=drop_path_rates[num_layer],
+                    rngs=rngs,
                 )
             )
             self.mlp_skip_fuse.append(
                 mlp_fuse_cls(
-                    model_dim, drop_path_rate=drop_path_rates[num_layer], rngs=rngs
+                    model_dim,
+                    context_dim,
+                    drop_path_rate=drop_path_rates[num_layer],
+                    rngs=rngs,
                 )
             )
             if self.enable_cross_attention:
                 self.cross_skip_fuse.append(
                     attn_fuse_cls(
-                        model_dim, rngs=rngs, drop_path_rate=drop_path_rates[num_layer]
+                        model_dim,
+                        context_dim,
+                        rngs=rngs,
+                        drop_path_rate=drop_path_rates[num_layer],
                     )
                 )
 

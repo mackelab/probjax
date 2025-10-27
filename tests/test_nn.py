@@ -294,7 +294,7 @@ def test_drop_path(drop_path_case):
 
 def test_additive_binary_fuse(additive_binary_fuse_case):
     x, y = additive_binary_fuse_case
-    fuse = AdditiveBinaryFuse(rngs=nnx.Rngs(0))
+    fuse = AdditiveBinaryFuse(x.shape[-1], context_features=None, rngs=nnx.Rngs(0))
     out = fuse(x, y, None)
     assert jnp.allclose(out, x + y)
 

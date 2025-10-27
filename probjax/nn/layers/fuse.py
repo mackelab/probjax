@@ -303,9 +303,24 @@ class ConcatFuse(ContextFuse):
 
 
 class AdditiveBinaryFuse(BinaryFuse):
-    def __init__(self, *, drop_path_rate: float = 0.0, rngs: nnx.Rngs):
+    def __init__(
+        self,
+        in_features: int,
+        context_features: int | None = None,
+        *,
+        drop_path_rate: float = 0.0,
+        rngs: nnx.Rngs,
+    ):
         """Additive binary fusion module that adds two inputs."""
         super().__init__()
+        if in_features <= 0:
+            raise ValueError("in_features must be positive")
+        if context_features is not None and context_features <= 0:
+            raise ValueError("context_features must be positive when provided")
+
+        self.in_features = in_features
+        self.context_features = context_features
+
         if drop_path_rate > 0.0:
             self.drop_path = DropPath(drop_rate=drop_path_rate, rngs=rngs)
         else:
