@@ -120,6 +120,11 @@ _betaincinv_core = jax.custom_vjp(_betaincinv_impl)
 _betaincinv_core.defvjp(_betaincinv_fwd, _betaincinv_bwd)
 
 
+@jax.jit(static_argnums=(3, 4))
+def _betaincinv_jit(a, b, p, max_halley_steps, max_bisection_steps):
+    return _betaincinv_core(a, b, p, max_halley_steps, max_bisection_steps)
+
+
 def betaincinv(a, b, p, *, max_halley_steps=6, max_bisection_steps=15):
     """
     Inverse of the regularized incomplete beta function.
@@ -134,19 +139,9 @@ def betaincinv(a, b, p, *, max_halley_steps=6, max_bisection_steps=15):
     Returns:
         jnp.ndarray: The value x in [0, 1] which satisfies betainc(a, b, x) = p.
     """
-    return _betaincinv_core(
-        a,
-        b,
-        p,
-        int(max_halley_steps),
-        int(max_bisection_steps),
-    )
-
-
-# Apply JIT to the public function
-betaincinv = jax.jit(
-    betaincinv, static_argnames=("max_halley_steps", "max_bisection_steps")
-)
+    max_halley_steps = int(max_halley_steps)
+    max_bisection_steps = int(max_bisection_steps)
+    return _betaincinv_jit(a, b, p, max_halley_steps, max_bisection_steps)
 
 
 # -------------------------------------------------------------------
