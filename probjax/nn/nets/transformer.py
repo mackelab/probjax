@@ -221,7 +221,9 @@ class Transformer(nnx.Module):
             for _ in range(num_layers)
         ])
         if dropout_rate > 0.0:
-            self.dropout_dense = nnx.List([nnx.Dropout(rate=dropout_rate, rngs=rngs)])
+            self.dropout_dense = nnx.List([
+                nnx.Dropout(rate=dropout_rate, rngs=rngs) for _ in range(num_layers)
+            ])
         else:
             self.dropout_dense = None
 
