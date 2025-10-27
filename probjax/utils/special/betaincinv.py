@@ -13,7 +13,7 @@ from jax.scipy.special import betainc, gammaln
 # -------------------------------------------------------------------
 
 
-def _betaincinv_impl(a, b, p):
+def _betaincinv_impl(a, b, p, max_halley_steps, max_bisection_steps):
     """
     Implementation of the inverse of the regularized incomplete beta function.
     Returns x in (0,1) such that betainc(a, b, x) = p.
@@ -22,11 +22,16 @@ def _betaincinv_impl(a, b, p):
         a (jnp.ndarray): Shape parameter (a > 0).
         b (jnp.ndarray): Shape parameter (b > 0).
         p (jnp.ndarray): Probability in [0, 1].
+        max_halley_steps (int): Number of Halley refinement steps.
+        max_bisection_steps (int): Number of fallback bisection steps.
 
     Returns:
         jnp.ndarray: The value x in [0, 1] which satisfies
                      betainc(a, b, x) = p.
     """
+    max_halley_steps = int(max_halley_steps)
+    max_bisection_steps = int(max_bisection_steps)
+
     # Clip p to [0,1] and handle trivial cases
     p = jnp.clip(p, 0.0, 1.0)
     x0_or_1 = jnp.where((p <= 0.0) | (a <= 0.0), 0.0, 1.0)
@@ -42,7 +47,14 @@ def _betaincinv_impl(a, b, p):
     x_init = jnp.where(trivial, x0_or_1, x_init)
 
     # Safe solve (Newton + bisection)
-    x_solved = _safe_betaincinv_solve(a_, b_, p_, x_init)
+    x_solved = _safe_betaincinv_solve(
+        a_,
+        b_,
+        p_,
+        x_init,
+        max_halley_steps=max_halley_steps,
+        max_bisection_steps=max_bisection_steps,
+    )
 
     # Reflect back if needed
     x_final = jnp.where(reflect, 1.0 - x_solved, x_solved)
@@ -51,9 +63,9 @@ def _betaincinv_impl(a, b, p):
     return jnp.where(trivial, x0_or_1, x_final)
 
 
-def _betaincinv_fwd(a, b, p):
+def _betaincinv_fwd(a, b, p, *, max_halley_steps=6, max_bisection_steps=15):
     """Forward pass for betaincinv custom vjp."""
-    y = _betaincinv_impl(a, b, p)
+    y = _betaincinv_impl(a, b, p, max_halley_steps, max_bisection_steps)
     # Store values needed for backward pass
     return y, (a, b, p, y)
 
@@ -100,15 +112,34 @@ def _betaincinv_bwd(res, g):
     grad_b = -dbetainc_db * dy_dp * g
     grad_p = dy_dp * g
 
-    return grad_a, grad_b, grad_p
+    return grad_a, grad_b, grad_p, None, None
 
 
 # Create the custom VJP version of betaincinv
-betaincinv = jax.custom_vjp(_betaincinv_impl)
+@jax.custom_vjp
+def betaincinv(a, b, p, *, max_halley_steps=6, max_bisection_steps=15):
+    """
+    Inverse of the regularized incomplete beta function.
+
+    Args:
+        a (jnp.ndarray): Shape parameter (a > 0).
+        b (jnp.ndarray): Shape parameter (b > 0).
+        p (jnp.ndarray): Probability in [0, 1].
+        max_halley_steps (int, optional): Number of Halley refinement steps. Defaults to 6.
+        max_bisection_steps (int, optional): Number of fallback bisection steps. Defaults to 15.
+
+    Returns:
+        jnp.ndarray: The value x in [0, 1] which satisfies betainc(a, b, x) = p.
+    """
+    return _betaincinv_impl(a, b, p, max_halley_steps, max_bisection_steps)
+
+
 betaincinv.defvjp(_betaincinv_fwd, _betaincinv_bwd)
 
 # Apply JIT to the public function
-betaincinv = jax.jit(betaincinv)
+betaincinv = jax.jit(
+    betaincinv, static_argnames=("max_halley_steps", "max_bisection_steps")
+)
 
 
 # -------------------------------------------------------------------
