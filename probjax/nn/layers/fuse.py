@@ -332,7 +332,7 @@ class AdditiveBinaryFuse(BinaryFuse):
         y: Array,
         context: Array | None,
         *,
-        deterministic: bool = True,
+        deterministic: bool | None = None,
     ) -> Array:
         del context
         if self.drop_path is not None:
@@ -410,7 +410,7 @@ class GatedFuse(BinaryFuse):
         y: Array,
         context: Array | None,
         *,
-        deterministic: bool = True,
+        deterministic: bool | None = None,
     ) -> Array:
         """Apply gated fusion to input and context.
 
