@@ -197,9 +197,12 @@ class Transformer(nnx.Module):
 
         # Context fusion if context is provided.
         if context_dim is not None:
-            self.context_layers = nnx.List([
+            self.context_layers1 = nnx.List([
                 context_fusion_cls(model_dim, context_dim, rngs=rngs)
                 for _ in range(num_layers)
+            ])
+            self.context_layers2 = nnx.List([
+                context_fusion_cls(model_dim, context_dim, rngs=rngs)
             ])
 
         # Dense block.
@@ -303,7 +306,7 @@ class Transformer(nnx.Module):
             q_res = q
             q = self.layer_norms_attn[i](q)
             if context is not None and self.context_dim is not None:
-                q = self.context_layers[i](q, context)
+                q = self.context_layers1[i](q, context)
             q = self.attention_blocks[i](
                 q, mask=mask, bias=bias, deterministic=deterministic, decode=decode
             )
@@ -331,8 +334,8 @@ class Transformer(nnx.Module):
             # Then the dense block and global context.
             q_res = q
             q = self.layer_norms_dense[i](q)
-            # if context is not None and self.context_dim is not None:
-            #    q = self.context_layers[i](q, context)
+            if context is not None and self.context_dim is not None:
+                q = self.context_layers2[i](q, context)
 
             q = self.dense_blocks[i](q)
             if self.dropout_dense is not None:
