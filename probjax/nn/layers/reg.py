@@ -98,10 +98,7 @@ class DropPath(Module):
 
         keep_prob = 1.0 - self.drop_rate
         if self.broadcast_dims is None:
-            if x.ndim == 0:
-                mask_shape = ()
-            else:
-                mask_shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+            mask_shape = () if x.ndim == 0 else (x.shape[0],) + (1,) * (x.ndim - 1)
         else:
             mask_shape = tuple(
                 1 if dim in self.broadcast_dims else x.shape[dim]

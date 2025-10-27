@@ -430,8 +430,8 @@ class GatedFuse(BinaryFuse):
         context = jnp.broadcast_to(context, x.shape[:-1] + (context.shape[-1],))
         gate = self.gate_activation(self.gate_layer(context))
         if self.mode == "left":
-            return (x * gate + y) / jnp.sqrt(1 + gate * gate)
+            return (x * gate + y) / jnp.sqrt(1.0 + gate * gate)
         elif self.mode == "right":
-            return (x + y * gate) / jnp.sqrt(1 + gate * gate)
+            return (x + y * gate) / jnp.sqrt(1.0 + gate * gate)
         else:  # convex
             return x * gate + y * (1 - gate)

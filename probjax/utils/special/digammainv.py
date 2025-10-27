@@ -1,9 +1,9 @@
 from typing import Union
 
 import jax.numpy as jnp
-from jax import jit, lax, vmap
+from jax import lax
 from jax.scipy.special import digamma, polygamma
-import jax
+
 
 def digammainv(
     y: Union[float, jnp.ndarray], maxiter: int = 5, tol: float = 1e-14
@@ -59,10 +59,3 @@ def digammainv(
     x = lax.fori_loop(0, maxiter, body_fun, x)
 
     return jnp.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
-
-
-# Vectorized version for array inputs
-@jit
-def digammainv_vec(y: jnp.ndarray) -> jnp.ndarray:
-    """Vectorized version of digammainv"""
-    return vmap(digammainv)(y)

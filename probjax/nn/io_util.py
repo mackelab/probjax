@@ -1,7 +1,7 @@
 # indexed_async_dataloader_v6.py
 import asyncio
 import collections
-from collections.abc import Sequence as SequenceCollection
+import contextlib
 import itertools
 import queue
 import threading
@@ -275,8 +275,7 @@ def unchunkify(
 # --------------------------------------------------------------------- #
 
 
-TransformFn = Callable[[Any], Any]
-Transform = Union[TransformFn, Sequence[TransformFn]]
+Transform = Union[Callable[[Any], Any], Sequence[Callable[[Any], Any]]]
 
 
 class DataLoader:
@@ -327,21 +326,16 @@ class DataLoader:
         self._rng = np.random.default_rng(seed) if shuffle else None
 
         # -------- transforms ---------- #
-        self._host_tfns: list[TransformFn]
-        if host_transforms is None:
-            self._host_tfns = []
-        elif isinstance(host_transforms, SequenceCollection):
-            self._host_tfns = list(host_transforms)
-        else:
-            self._host_tfns = [host_transforms]
-
-        self._device_tfns: list[TransformFn]
-        if device_transforms is None:
-            self._device_tfns = []
-        elif isinstance(device_transforms, SequenceCollection):
-            self._device_tfns = list(device_transforms)
-        else:
-            self._device_tfns = [device_transforms]
+        self._host_tfns = (
+            list(host_transforms)
+            if isinstance(host_transforms, (list, tuple))
+            else ([host_transforms] if host_transforms else [])
+        )
+        self._device_tfns = (
+            list(device_transforms)
+            if isinstance(device_transforms, (list, tuple))
+            else ([device_transforms] if device_transforms else [])
+        )
 
         # -------- queues / buffers ----- #
         self._q = queue.Queue(num_prefetch_host)
@@ -464,10 +458,8 @@ class DataLoader:
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _finalizer(self):
-        try:
+        with contextlib.suppress(Exception):
             self.close()
-        except Exception:
-            pass
 
     def __del__(self):
         self._finalizer()
