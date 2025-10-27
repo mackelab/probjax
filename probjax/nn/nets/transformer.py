@@ -43,6 +43,7 @@ class Transformer(nnx.Module):
         attn_size: int,
         *,
         enable_cross_attention: bool = False,
+        kv_in_features: Optional[int] = None,
         normalize_qk_attn: bool = False,
         normalize_qk_cross_attn: bool = False,
         context_dim: Optional[int] = None,
@@ -157,10 +158,10 @@ class Transformer(nnx.Module):
         )
         self.attention_blocks = nnx.List([
             mha_cls(
-                num_heads,
-                model_dim,
-                attn_size * num_heads,
-                model_dim,
+                num_heads=num_heads,
+                model_dim=model_dim,
+                qkv_features=attn_size * num_heads,
+                out_features=model_dim,
                 rngs=rngs,
                 kernel_init=self.initializer,
                 dropout_rate=dropout_rate,
@@ -179,10 +180,11 @@ class Transformer(nnx.Module):
             )
             self.cross_attention_blocks = nnx.List([
                 mha_cls(
-                    num_heads,
-                    model_dim,
-                    attn_size * num_heads,
-                    model_dim,
+                    num_heads=num_heads,
+                    in_feature=model_dim,
+                    qkv_features=attn_size * num_heads,
+                    out_features=model_dim,
+                    kv_in_features=kv_in_features,
                     rngs=rngs,
                     kernel_init=self.initializer,
                     dropout_rate=dropout_rate,
