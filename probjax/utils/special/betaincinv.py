@@ -63,7 +63,7 @@ def _betaincinv_impl(a, b, p, max_halley_steps, max_bisection_steps):
     return jnp.where(trivial, x0_or_1, x_final)
 
 
-def _betaincinv_fwd(a, b, p, *, max_halley_steps=6, max_bisection_steps=15):
+def _betaincinv_fwd(a, b, p, max_halley_steps, max_bisection_steps):
     """Forward pass for betaincinv custom vjp."""
     y = _betaincinv_impl(a, b, p, max_halley_steps, max_bisection_steps)
     # Store values needed for backward pass
@@ -116,7 +116,10 @@ def _betaincinv_bwd(res, g):
 
 
 # Create the custom VJP version of betaincinv
-@jax.custom_vjp
+_betaincinv_core = jax.custom_vjp(_betaincinv_impl)
+_betaincinv_core.defvjp(_betaincinv_fwd, _betaincinv_bwd)
+
+
 def betaincinv(a, b, p, *, max_halley_steps=6, max_bisection_steps=15):
     """
     Inverse of the regularized incomplete beta function.
@@ -131,10 +134,14 @@ def betaincinv(a, b, p, *, max_halley_steps=6, max_bisection_steps=15):
     Returns:
         jnp.ndarray: The value x in [0, 1] which satisfies betainc(a, b, x) = p.
     """
-    return _betaincinv_impl(a, b, p, max_halley_steps, max_bisection_steps)
+    return _betaincinv_core(
+        a,
+        b,
+        p,
+        int(max_halley_steps),
+        int(max_bisection_steps),
+    )
 
-
-betaincinv.defvjp(_betaincinv_fwd, _betaincinv_bwd)
 
 # Apply JIT to the public function
 betaincinv = jax.jit(
