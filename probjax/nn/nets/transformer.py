@@ -151,8 +151,6 @@ class Transformer(nnx.Module):
                 norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
             ])
 
-        self.out_layer_norm = norm_cls(model_dim, rngs=rngs)
-
         # Attention block.
         attention_fn = (
             attention_fn if attention_fn is not None else dot_product_attention
@@ -177,7 +175,7 @@ class Transformer(nnx.Module):
             cross_attention_fn = (
                 cross_attention_fn
                 if cross_attention_fn is not None
-                else nnx.dot_product_attention
+                else dot_product_attention
             )
             self.cross_attention_blocks = nnx.List([
                 mha_cls(
@@ -219,7 +217,7 @@ class Transformer(nnx.Module):
                 rngs=rngs,
                 linear_cls=linear,
                 activation=act,
-                activate_final=True,
+                # activate_final=True,
                 **filter_precision_kwargs(mlp_cls, **precision_kwargs),
             )
             for _ in range(num_layers)
