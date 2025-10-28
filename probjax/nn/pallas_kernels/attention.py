@@ -1287,9 +1287,7 @@ def _mha_backward(
             name="mha_backward",
             debug=debug,
             interpret=interpret,
-            compiler_params=plgpu.TritonCompilerParams(
-                num_warps=num_warps_, num_stages=2
-            ),
+            compiler_params=plgpu.CompilerParams(num_warps=num_warps_, num_stages=2),
         )(
             q,
             k,
@@ -1479,9 +1477,7 @@ def _mha_backward(
             name="mha_backward_split_dkdv",
             debug=debug,
             interpret=interpret,
-            compiler_params=plgpu.TritonCompilerParams(
-                num_warps=num_warps_, num_stages=2
-            ),
+            compiler_params=plgpu.CompilerParams(num_warps=num_warps_, num_stages=2),
         )(
             q,
             k,
@@ -1534,9 +1530,7 @@ def _mha_backward(
             name="mha_backward_split_dq",
             debug=debug,
             interpret=interpret,
-            compiler_params=plgpu.TritonCompilerParams(
-                num_warps=num_warps_, num_stages=2
-            ),
+            compiler_params=plgpu.CompilerParams(num_warps=num_warps_, num_stages=2),
         )(
             q,
             k,
