@@ -407,6 +407,7 @@ class LearnablePosEncode(nnx.Module):
             embedding_init: Embedding initializer.
             rngs: Random number generators.
         """
+        del precision, preferred_element_type  # Unused but kept for API consistency
         if in_out_features <= 0:
             raise ValueError("in_out_features must be positive")
         if max_seq_len <= 0:
@@ -418,8 +419,6 @@ class LearnablePosEncode(nnx.Module):
             in_out_features,
             dtype=dtype,
             param_dtype=param_dtype,
-            precision=precision,
-            preferred_element_type=preferred_element_type,
             embedding_init=embedding_init,
             rngs=rngs,
         )
