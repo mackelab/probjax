@@ -159,7 +159,7 @@ class Transformer(nnx.Module):
         self.attention_blocks = nnx.List([
             mha_cls(
                 num_heads=num_heads,
-                model_dim=model_dim,
+                in_features=model_dim,
                 qkv_features=attn_size * num_heads,
                 out_features=model_dim,
                 rngs=rngs,
