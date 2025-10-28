@@ -166,7 +166,7 @@ class DataLoader:
     # ---------------- main iterator API ------------------------------- #
     def __iter__(self):
         host_it = self._host_iter()
-        if self._shard_flag and self._n_dev > 1:
+        if self._shard_flag:
             host_it = (_shard(b, self._n_dev) for b in host_it)
 
         self._dev_it = (
