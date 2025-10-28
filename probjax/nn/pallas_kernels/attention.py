@@ -339,7 +339,7 @@ def _preprocess_backward(out, do, lse, block_q: int, debug: bool, interpret: boo
             pl.BlockSpec((None, block_q, None, head_dim), lambda i, j, k: (j, i, k, 0)),
         ],
         out_specs=pl.BlockSpec((None, None, block_q), lambda i, j, k: (j, k, i)),
-        compiler_params=plgpu.TritonCompilerParams(num_warps=4, num_stages=3),
+        compiler_params=plgpu.CompilerParams(num_warps=4, num_stages=3),
         out_shape=out_shape,
         debug=debug,
         interpret=interpret,
@@ -1002,7 +1002,7 @@ def _mha_impl(
         grid=grid_,
         in_specs=in_specs,
         out_specs=out_specs,
-        compiler_params=plgpu.TritonCompilerParams(
+        compiler_params=plgpu.CompilerParams(
             num_warps=num_warps_, num_stages=num_stages
         ),
         out_shape=out_shape,
