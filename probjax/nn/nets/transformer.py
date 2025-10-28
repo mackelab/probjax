@@ -184,7 +184,7 @@ class Transformer(nnx.Module):
                     in_features=model_dim,
                     qkv_features=attn_size * num_heads,
                     out_features=model_dim,
-                    kv_in_features=kv_in_features,
+                    in_kv_features=kv_in_features,
                     rngs=rngs,
                     kernel_init=self.initializer,
                     dropout_rate=dropout_rate,
