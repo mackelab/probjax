@@ -78,7 +78,9 @@ def chunkify(
     jax.Array
         Array of shape ``(*batch_dims, num_chunks, chunk_volume * channels)`` where
         ``num_chunks`` is the product over the number of chunks per spatial dimension
-        and ``chunk_volume`` is the product over ``chunk_shape``.
+        and ``chunk_volume`` is the product over ``chunk_shape``. When a spatial
+        dimension is not divisible by the corresponding ``chunk_shape``, the input is
+        padded with zeros at the end to the nearest multiple before chunking.
     """
 
     x = jnp.asarray(x)
@@ -125,16 +127,25 @@ def chunkify(
             f"Expected {spatial_ndim} spatial dimensions, got {len(spatial_shape)}."
         )
 
-    for i, (size, chunk) in enumerate(zip(spatial_shape, chunk_shape, strict=False)):
-        if size % chunk:
-            raise ValueError(
-                f"Spatial dimension {i} with size {size} is not divisible by "
-                f"chunk size {chunk}."
-            )
+    pad_widths = [(0, 0)] * x.ndim
+    padded_spatial_shape = []
+    chunk_counts = []
+    pad_required = False
+    for idx, (size, chunk) in enumerate(zip(spatial_shape, chunk_shape, strict=False)):
+        padded_size = ((size + chunk - 1) // chunk) * chunk
+        pad_after = padded_size - size
+        if pad_after:
+            pad_required = True
+            pad_widths[spatial_start + idx] = (0, pad_after)
+        padded_spatial_shape.append(padded_size)
+        chunk_counts.append(padded_size // chunk)
+    if pad_required:
+        x = jnp.pad(x, pad_widths)
+        spatial_shape = tuple(padded_spatial_shape)
+    else:
+        spatial_shape = tuple(spatial_shape)
 
-    chunk_counts = tuple(
-        size // chunk for size, chunk in zip(spatial_shape, chunk_shape, strict=False)
-    )
+    chunk_counts = tuple(chunk_counts)
 
     # Reshape to interleave chunk counts and chunk sizes, keeping batch dims in front.
     reshaped_shape: list[int] = list(batch_shape)
@@ -180,7 +191,8 @@ def unchunkify(
         Chunk shape passed to :func:`chunkify`.
     spatial_shape:
         Spatial shape of the original tensor prior to chunking. Each entry must be
-        divisible by the corresponding entry in ``chunk_shape``.
+        positive. Spatial dimensions that are not divisible by ``chunk_shape`` are
+        reconstructed with zero-padding that is removed before returning.
     channel_axis:
         Original channel axis supplied to :func:`chunkify`. Use ``None`` if the input
         tensor had no explicit channel dimension.
@@ -216,14 +228,13 @@ def unchunkify(
         )
 
     chunk_counts = []
+    padded_spatial_shape = []
     for s, c in zip(spatial_shape, chunk_shape, strict=False):
-        if s % c:
-            raise ValueError(
-                "Each entry in spatial_shape must be divisible by the matching "
-                "chunk_shape."
-            )
-        chunk_counts.append(s // c)
+        chunk_count = (s + c - 1) // c
+        chunk_counts.append(chunk_count)
+        padded_spatial_shape.append(chunk_count * c)
     chunk_counts = tuple(chunk_counts)
+    padded_spatial_shape = tuple(padded_spatial_shape)
 
     batch_shape = tokens.shape[:-2]
     total_chunks = tokens.shape[-2]
@@ -257,10 +268,13 @@ def unchunkify(
     perm.append(batch_ndim + 2 * spatial_ndim)
     interleaved = reshaped.transpose(perm)
 
-    full_spatial_shape = tuple(
-        n * c for n, c in zip(chunk_counts, chunk_shape, strict=False)
-    )
-    result = interleaved.reshape(batch_shape + full_spatial_shape + (channel_dim,))
+    result = interleaved.reshape(batch_shape + padded_spatial_shape + (channel_dim,))
+
+    if padded_spatial_shape != spatial_shape:
+        slices = [slice(None)] * result.ndim
+        for axis_idx, size in enumerate(spatial_shape):
+            slices[batch_ndim + axis_idx] = slice(0, size)
+        result = result[tuple(slices)]
 
     if channel_axis is None:
         return result[..., 0]
