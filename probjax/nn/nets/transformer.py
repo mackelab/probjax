@@ -181,7 +181,7 @@ class Transformer(nnx.Module):
             self.cross_attention_blocks = nnx.List([
                 mha_cls(
                     num_heads=num_heads,
-                    in_feature=model_dim,
+                    in_features=model_dim,
                     qkv_features=attn_size * num_heads,
                     out_features=model_dim,
                     kv_in_features=kv_in_features,
