@@ -77,9 +77,9 @@ from probjax.nn.nets import (
 )
 from probjax.nn.pallas_kernels.attention import BlockSizes
 from probjax.nn.pallas_kernels.attention_mask_bias import (
-    ALiBiBias,
     AttentionBias,
     AttentionMask,
+    CausalAlibiBias,
     CausalMask,
     ComposeMask,
     ConstantBias,
@@ -94,5 +94,6 @@ from probjax.nn.pallas_kernels.attention_mask_bias import (
     QKVLengthMask,
     SameSegmentMask,
     SeqLenMask,
+    SymmetricAlibiBias,
     SumBias,
 )

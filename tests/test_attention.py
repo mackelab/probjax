@@ -10,7 +10,6 @@ from probjax.nn.layers.attention import (
     flex_attention,
 )
 from probjax.nn.pallas_kernels.attention_mask_bias import (
-    ALiBiBias,
     CausalMask,
     ConstantBias,
     DenseBias,
@@ -23,6 +22,8 @@ from probjax.nn.pallas_kernels.attention_mask_bias import (
     QKVLengthMask,
     SameSegmentMask,
     SeqLenMask,
+    CausalAlibiBias,
+    SymmetricAlibiBias,
 )
 
 # materialize helpers deprecated; use class methods on mask/bias instead
@@ -270,7 +271,13 @@ def test_attention_with_bias(batch_size, seq_len, num_heads, qkv_dim):
 )
 @pytest.mark.parametrize(
     "bias_obj",
-    [IdentityBias(), ALiBiBias(), DistanceDecayBias(0.7), ConstantBias(0.3)],
+    [
+        IdentityBias(),
+        CausalAlibiBias(),
+        SymmetricAlibiBias(),
+        DistanceDecayBias(0.7),
+        ConstantBias(0.3),
+    ],
 )
 def test_attention_with_stateless_bias_objects_equivalence(
     batch_size, seq_len, num_heads, qkv_dim, bias_obj
@@ -344,7 +351,8 @@ def test_attention_with_bias_gradients(batch_size, seq_len, num_heads, qkv_dim):
     "batch_size, seq_len, num_heads, qkv_dim, bias_obj",
     [
         (2, 16, 4, 16, IdentityBias()),
-        (1, 64, 2, 8, ALiBiBias()),
+        (1, 64, 2, 8, CausalAlibiBias()),
+        (1, 64, 2, 8, SymmetricAlibiBias()),
         (1, 64, 2, 8, DistanceDecayBias(0.5)),
         (1, 64, 2, 8, ConstantBias(0.2)),
     ],

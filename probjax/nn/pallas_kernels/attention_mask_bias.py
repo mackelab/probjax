@@ -11,6 +11,7 @@ import numpy as np
 from jax.experimental import pallas as pl
 
 from probjax.utils.typing import Array
+
 from .utils import (
     ceil_div,
     fast_blockmask_causal,
@@ -1089,9 +1090,9 @@ class DenseBias(AttentionBias):
             )
         B_src, H_src = int(b.shape[0]), int(b.shape[1])
         # Validate broadcastability
-        if not (B_src in (1, batch_size)):
+        if B_src not in (1, batch_size):
             raise ValueError(f"Cannot broadcast bias batch dim {B_src} to {batch_size}")
-        if not (H_src in (1, num_heads)):
+        if H_src not in (1, num_heads):
             raise ValueError(f"Cannot broadcast bias head dim {H_src} to {num_heads}")
         target_shape = (
             batch_size,
@@ -1154,8 +1155,8 @@ def _alibi_slope_for_head(h_idx: Array) -> Array:
 
 
 @jax.tree_util.register_pytree_node_class
-class ALiBiBias(AttentionBias):
-    """ALiBi-like linear position bias with head-dependent slope.
+class CausalAlibiBias(AttentionBias):
+    """Causal ALiBi-style linear position bias with head-dependent slope.
 
     bias = -slope(h) * relu(i - j)
     """
@@ -1178,7 +1179,39 @@ class ALiBiBias(AttentionBias):
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        return ALiBiBias()
+        return CausalAlibiBias()
+
+
+@jax.tree_util.register_pytree_node_class
+class SymmetricAlibiBias(AttentionBias):
+    """Symmetric ALiBi-style bias using absolute distance.
+
+    bias = -slope(h) * |i - j|
+    """
+
+    def __call__(
+        self,
+        scores: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        data: Optional[Array] = None,
+    ) -> Array:
+        del data
+        slope = _alibi_slope_for_head(h_idx)
+        dist = jnp.abs(q_idx[:, None] - k_idx[None, :])
+        return scores - slope * dist
+
+    def tree_flatten(self):
+        return ((), {})
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        return SymmetricAlibiBias()
+
+
+# Backward compatible alias; prefer CausalAlibiBias directly.
+ALiBiBias = CausalAlibiBias
 
 
 @jax.tree_util.register_pytree_node_class
