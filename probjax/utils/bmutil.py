@@ -57,6 +57,9 @@ class Benchmark:
         self._end_time = None
         self._iteration_count = 0
         self._active = False
+        self._duration_estimator = None
+        self._warmup_duration = None
+        self._iteration_durations = []
 
     def __enter__(self):
         self._prepare_trackers()
@@ -64,6 +67,9 @@ class Benchmark:
         self._start_time = time.time()
         self._iteration_count = 0
         self._active = True
+        self._duration_estimator = OnlineMeanStdEstimator()
+        self._warmup_duration = None
+        self._iteration_durations = []
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -100,7 +106,15 @@ class Benchmark:
             ):
                 break
             self._iteration_count += 1
+            iteration_start = time.time()
             yield self._iteration_count
+            iteration_end = time.time()
+            duration = iteration_end - iteration_start
+            if self._iteration_count == 1:
+                self._warmup_duration = duration
+            else:
+                self._iteration_durations.append(duration)
+                self._duration_estimator.update(duration)
 
     def _report_elapsed_time(self):
         if self.elapsed is None:
@@ -109,26 +123,34 @@ class Benchmark:
         if self._iteration_count == 0:
             print("Benchmark completed without iterations; nothing to report.")
             return
+        sample_count = len(self._iteration_durations)
+        if sample_count == 0:
+            print(
+                "Benchmark collected no steady-state iterations; "
+                "ensure the block runs at least twice."
+            )
+            return
 
-        per_iteration = self.elapsed / self._iteration_count
-        total_time = self.elapsed
-        total_unit, total_scaled = self._format_duration(total_time)
-        iter_unit, iter_scaled = self._format_duration(per_iteration)
+        mean = self._duration_estimator.get_mean()
+        std = self._duration_estimator.get_std()
+        unit, multiplier = self._duration_unit(mean)
+        mean_scaled = mean * multiplier
+        std_scaled = std * multiplier
         print(
-            f"Elapsed time: {total_scaled:.2f} {total_unit} "
-            f"({iter_scaled:.2f} {iter_unit} per iteration over "
-            f"{self._iteration_count} runs)"
+            f"Time per iteration: {mean_scaled:.2f} {unit} +/- "
+            f"{std_scaled:.2f} {unit} (over {sample_count} runs; "
+            f"warm-up excluded)"
         )
 
     @staticmethod
-    def _format_duration(duration):
+    def _duration_unit(duration):
         if duration < 1e-6:
-            return "ns", duration * 1e9
+            return "ns", 1e9
         if duration < 1e-3:
-            return "us", duration * 1e6
+            return "us", 1e6
         if duration < 1:
-            return "ms", duration * 1e3
-        return "s", duration
+            return "ms", 1e3
+        return "s", 1.0
 
     def _prepare_trackers(self):
         self._trackers = []
