@@ -15,16 +15,35 @@ from pynvml import (
 
 
 class Benchmark:
-    """Context manager to benchmark a code block while collecting resource metrics."""
+    """Context manager to benchmark a code block while collecting resource metrics.
+
+    Usage:
+        with benchmark(max_time=5) as bm:
+            for _ in bm:
+                ... work to benchmark ...
+    """
 
     def __init__(
         self,
         *,
+        max_time=5.0,
+        min_iterations=1,
+        max_iterations=None,
         track_gpu=True,
         track_cpu=True,
         track_mem=True,
         track_disk=False,
     ):
+        if max_time <= 0:
+            raise ValueError("max_time must be positive.")
+        if min_iterations < 1:
+            raise ValueError("min_iterations must be at least 1.")
+        if max_iterations is not None and max_iterations < min_iterations:
+            raise ValueError("max_iterations must be >= min_iterations.")
+
+        self.max_time = max_time
+        self.min_iterations = min_iterations
+        self.max_iterations = max_iterations
         self.track_gpu = track_gpu
         self.track_cpu = track_cpu
         self.track_mem = track_mem
@@ -36,11 +55,15 @@ class Benchmark:
         self._trackers_running = False
         self._start_time = None
         self._end_time = None
+        self._iteration_count = 0
+        self._active = False
 
     def __enter__(self):
         self._prepare_trackers()
         self._start_trackers()
         self._start_time = time.time()
+        self._iteration_count = 0
+        self._active = True
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -50,27 +73,62 @@ class Benchmark:
         )
         # Ensure trackers stop even when errors occur inside the context.
         self._stop_trackers()
+        self._active = False
         self._report_elapsed_time()
         return False
+
+    def __iter__(self):
+        if not self._active:
+            raise RuntimeError("Benchmark iterator is available only inside the context.")
+        return self._iteration_generator()
+
+    def loop(self):
+        """Return an iterator that yields for each benchmark iteration."""
+        return iter(self)
+
+    def _iteration_generator(self):
+        while True:
+            now = time.time()
+            if (
+                self._iteration_count >= self.min_iterations
+                and now - self._start_time >= self.max_time
+            ):
+                break
+            if (
+                self.max_iterations is not None
+                and self._iteration_count >= self.max_iterations
+            ):
+                break
+            self._iteration_count += 1
+            yield self._iteration_count
 
     def _report_elapsed_time(self):
         if self.elapsed is None:
             print("Benchmark elapsed time unavailable.")
             return
+        if self._iteration_count == 0:
+            print("Benchmark completed without iterations; nothing to report.")
+            return
 
-        time_taken = self.elapsed
-        if time_taken < 1e-6:
-            time_taken *= 1e9
-            unit = "ns"
-        elif time_taken < 1e-3:
-            time_taken *= 1e6
-            unit = "us"
-        elif time_taken < 1:
-            time_taken *= 1e3
-            unit = "ms"
-        else:
-            unit = "s"
-        print(f"Elapsed time: {time_taken:.2f} {unit}")
+        per_iteration = self.elapsed / self._iteration_count
+        total_time = self.elapsed
+        total_unit, total_scaled = self._format_duration(total_time)
+        iter_unit, iter_scaled = self._format_duration(per_iteration)
+        print(
+            f"Elapsed time: {total_scaled:.2f} {total_unit} "
+            f"({iter_scaled:.2f} {iter_unit} per iteration over "
+            f"{self._iteration_count} runs)"
+        )
+
+    @staticmethod
+    def _format_duration(duration):
+        if duration < 1e-6:
+            return "ns", duration * 1e9
+        if duration < 1e-3:
+            return "us", duration * 1e6
+        if duration < 1:
+            return "ms", duration * 1e3
+        return "s", duration
 
     def _prepare_trackers(self):
         self._trackers = []
@@ -120,6 +178,9 @@ class Benchmark:
 
 def benchmark(
     *,
+    max_time=5.0,
+    min_iterations=1,
+    max_iterations=None,
     track_gpu=True,
     track_cpu=True,
     track_mem=True,
@@ -127,6 +188,9 @@ def benchmark(
 ):
     """Create a Benchmark context manager."""
     return Benchmark(
+        max_time=max_time,
+        min_iterations=min_iterations,
+        max_iterations=max_iterations,
         track_gpu=track_gpu,
         track_cpu=track_cpu,
         track_mem=track_mem,
