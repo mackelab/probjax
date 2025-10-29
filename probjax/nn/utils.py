@@ -119,7 +119,7 @@ def filter_precision_kwargs(cls: ModuleLikeType, **kwargs):
 
     # Inspect the callable to get its effective parameters (works for class and partial)
     try:
-        param_names = inspect.signature(cls.__init__).parameters.keys()
+        param_names = inspect.signature(target_cls.__init__).parameters.keys()
     except (ValueError, TypeError):
         # Fallback to known precision-related keys
         param_names = {"dtype", "precision", "param_dtype", "preferred_element_type"}
