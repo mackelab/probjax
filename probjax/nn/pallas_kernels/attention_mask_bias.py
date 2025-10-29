@@ -14,6 +14,7 @@ from probjax.utils.typing import Array
 
 from .utils import (
     ceil_div,
+    fast_blockmask_causal,
     fast_blockmask_local_window,
     query_iterator_indices,
 )
@@ -457,18 +458,18 @@ class CausalMask(AttentionMask):
         del seg_q, seg_k
         return q_idx[:, None] >= k_idx[None, :]
 
-        # def block_mask(
-        #    self,
-        #    q_len: int,
-        #    kv_len: int,
-        #    block_q: int,
-        #    block_k: int,
-        #    num_heads: int | None = None,
-        # ) -> Array:
-        #    del num_heads
-        #    return fast_blockmask_causal(
-        #        q_len=q_len, kv_len=kv_len, block_q=block_q, block_k=block_k
-        #    )
+    def block_mask(
+        self,
+        q_len: int,
+        kv_len: int,
+        block_q: int,
+        block_k: int,
+        num_heads: int | None = None,
+    ) -> Array:
+        del num_heads
+        return fast_blockmask_causal(
+            q_len=q_len, kv_len=kv_len, block_q=block_q, block_k=block_k
+        )
 
     def tree_flatten(self):
         return ((), {})
