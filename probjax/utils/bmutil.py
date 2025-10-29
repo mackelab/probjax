@@ -1,79 +1,137 @@
 import os
 import threading
 import time
+from contextlib import suppress
 
+import jax
 import psutil
 from pynvml import (
+    NVMLError,
     nvmlDeviceGetHandleByIndex,
     nvmlDeviceGetUtilizationRates,
     nvmlInit,
     nvmlShutdown,
 )
-import jax
+
+
+class Benchmark:
+    """Context manager to benchmark a code block while collecting resource metrics."""
+
+    def __init__(
+        self,
+        *,
+        track_gpu=True,
+        track_cpu=True,
+        track_mem=True,
+        track_disk=False,
+    ):
+        self.track_gpu = track_gpu
+        self.track_cpu = track_cpu
+        self.track_mem = track_mem
+        self.track_disk = track_disk
+
+        self.elapsed = None
+
+        self._trackers = []
+        self._trackers_running = False
+        self._start_time = None
+        self._end_time = None
+
+    def __enter__(self):
+        self._prepare_trackers()
+        self._start_trackers()
+        self._start_time = time.time()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._end_time = time.time()
+        self.elapsed = (
+            self._end_time - self._start_time if self._start_time is not None else None
+        )
+        # Ensure trackers stop even when errors occur inside the context.
+        self._stop_trackers()
+        self._report_elapsed_time()
+        return False
+
+    def _report_elapsed_time(self):
+        if self.elapsed is None:
+            print("Benchmark elapsed time unavailable.")
+            return
+
+        time_taken = self.elapsed
+        if time_taken < 1e-6:
+            time_taken *= 1e9
+            unit = "ns"
+        elif time_taken < 1e-3:
+            time_taken *= 1e6
+            unit = "us"
+        elif time_taken < 1:
+            time_taken *= 1e3
+            unit = "ms"
+        else:
+            unit = "s"
+        print(f"Elapsed time: {time_taken:.2f} {unit}")
+
+    def _prepare_trackers(self):
+        self._trackers = []
+        if self.track_gpu and self._gpu_is_available():
+            self._trackers.append(GPUUtilizationTracker())
+        elif self.track_gpu:
+            self.track_gpu = False
+
+        if self.track_cpu:
+            self._trackers.append(CPUUtilizationTracker())
+        if self.track_mem:
+            self._trackers.append(MemoryUtilizationTracker())
+        if self.track_disk:
+            self._trackers.append(DiskUtilizationTracker())
+
+    def _start_trackers(self):
+        if self._trackers_running:
+            return
+        for tracker in self._trackers:
+            tracker.start()
+        self._trackers_running = True
+
+    def _stop_trackers(self):
+        if not self._trackers_running:
+            return
+        for tracker in self._trackers:
+            tracker.stop()
+        self._trackers_running = False
+
+    @staticmethod
+    def _gpu_is_available():
+        try:
+            devices = jax.devices()
+        except RuntimeError:
+            return False
+        if not any(device.platform == "gpu" for device in devices):
+            return False
+        try:
+            nvmlInit()
+        except NVMLError:
+            return False
+        finally:
+            with suppress(NVMLError):
+                nvmlShutdown()
+        return True
 
 
 def benchmark(
-    func,
-    *args,
-    max_time=5,
+    *,
     track_gpu=True,
     track_cpu=True,
     track_mem=True,
     track_disk=False,
-    **kwargs,
 ):
-    """Benchmark the time taken by a function to execute, and return the result of the
-    function."""
-
-    if jax.devices()[0].platform != "gpu":
-        track_gpu = False
-
-    result = func(*args, **kwargs)  # Pre-run to ensure that the function is compiled
-    start = time.time()
-    count = 0
-    # Run the function such that the time takes around 5 seconds
-    # Average over multiple runs
-    trackers = []
-    if track_gpu:
-        gpu_tracker = GPUUtilizationTracker()
-        trackers.append(gpu_tracker)
-    if track_cpu:
-        cpu_tracker = CPUUtilizationTracker()
-        trackers.append(cpu_tracker)
-    if track_mem:
-        mem_tracker = MemoryUtilizationTracker()
-        trackers.append(mem_tracker)
-    if track_disk:
-        disk_tracker = DiskUtilizationTracker()
-        trackers.append(disk_tracker)
-
-    for tracker in trackers:
-        tracker.start()
-
-    while time.time() - start < max_time:
-        out = func(*args, **kwargs)
-        jax.block_until_ready(out)
-        count += 1
-
-    for tracker in trackers:
-        tracker.stop()
-
-    end_time = time.time()
-    # Return time in best possible units
-    time_taken = (end_time - start) / count
-    if time_taken < 1e-6:
-        time_taken *= 1e9
-        unit = "ns"
-    elif time_taken < 1e-3:
-        time_taken *= 1e6
-        unit = "us"
-    elif time_taken < 1:
-        time_taken *= 1e3
-        unit = "ms"
-    else:
-        unit = "s"
-    print(f"Average time taken: {time_taken:.2f} {unit}")
-    return result
+    """Create a Benchmark context manager."""
+    return Benchmark(
+        track_gpu=track_gpu,
+        track_cpu=track_cpu,
+        track_mem=track_mem,
+        track_disk=track_disk,
+    )
 
 
 class OnlineMeanStdEstimator:
