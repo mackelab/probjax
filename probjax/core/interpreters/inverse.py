@@ -22,7 +22,19 @@ def logit(x, **params):
     return jax.lax.log_p.bind(x) - jax.lax.log1p_p.bind(-x)  # type: ignore
 
 
-_UNIVARITAE_INVERSE_REGISTRY = {
+def sqrt_inverse(x, **params):
+    params = dict(params)
+    params.pop("accuracy", None)
+    return jax.lax.pow_p.bind(x, 2.0, **params)
+
+
+def rsqrt_inverse(x, **params):
+    params = dict(params)
+    params.pop("accuracy", None)
+    return 1.0 / jax.lax.pow_p.bind(x, 2.0, **params)
+
+
+_UNIVARIATE_INVERSE_REGISTRY = {
     jax.lax.tanh_p: jax.lax.atanh_p,
     jax.lax.atanh_p: jax.lax.tanh_p,
     jax.lax.sinh_p: jax.lax.asinh_p,
@@ -32,8 +44,8 @@ _UNIVARITAE_INVERSE_REGISTRY = {
     jax.lax.exp_p: jax.lax.log_p,
     jax.lax.exp2_p: lambda x, **params: jnp.log2(x),
     jax.lax.log_p: jax.lax.exp_p,
-    jax.lax.sqrt_p: lambda x, **params: jax.lax.pow_p.bind(x, 2.0, **params),
-    jax.lax.rsqrt_p: lambda x, **params: 1.0 / jax.lax.pow_p.bind(x, 2.0, **params),
+    jax.lax.sqrt_p: sqrt_inverse,
+    jax.lax.rsqrt_p: rsqrt_inverse,
     jax.lax.neg_p: jax.lax.neg_p,
     jax.lax.log1p_p: jax.lax.expm1_p,
     jax.lax.expm1_p: jax.lax.log1p_p,
@@ -42,11 +54,8 @@ _UNIVARITAE_INVERSE_REGISTRY = {
     jax.lax.conj_p: jax.lax.conj_p,
     jax.lax.real_p: jax.lax.real_p,
     jax.lax.imag_p: jax.lax.imag_p,
-    # jax.lax.rev_p: jax.lax.rev_p,
     jax.lax.logistic_p: logit,
     jax.lax.integer_pow_p: integer_pow_inverse,
-    jax.lax.erf_p: jax.lax.erf_inv,
-    jax.lax.erf_inv_p: jax.lax.erf,
 }
 
 
@@ -69,12 +78,6 @@ _BIVARIATE_INVERSE_REGISTRY = {
         jax.lax.add_p.bind,
         lambda x, y, **params: jax.lax.sub_p.bind(y, x, **params),
     ),  # a - b = c -> a = c + b -> b = a - c
-    jax.lax.pow_p: (
-        lambda x, y, **params: jax.lax.pow_p.bind(
-            x, 1.0 / y, **params
-        ),  # a^b = c -> a = c^(1/b) -> b = log_c(a) = log(a)/log(c)
-        lambda x, y, **params: jax.lax.log_p.bind(x) / jax.lax.log_p.bind(y),  # type: ignore
-    ),
     jax.lax.pow_p: (
         lambda x, y, **params: jax.lax.pow_p.bind(
             x, 1.0 / y, **params
@@ -186,14 +189,20 @@ def invert_scatter(eqn, known_invars, known_outvars):
         scatter_numdim.scatter_dims_to_operand_dims,
     )
 
-    slice_sizes = eqn.invars[2].aval.shape
-    while len(slice_sizes) < out.ndim:
-        slice_sizes = slice_sizes + (1,)
-    update_val = jax.lax.gather(out, index, gather_numdim, slice_sizes)
+    operand_ndim = out.ndim
+    slice_sizes = [1] * operand_ndim
 
-    # print(eqn.params)
-    # print(eqn.invars[0].aval.shape, out.shape)
-    # print(eqn.invars[2].aval.shape, update_val.shape)
+    collapsed_dims = set(gather_numdim.collapsed_slice_dims)
+    window_operand_dims = [i for i in range(operand_ndim) if i not in collapsed_dims]
+    update_shape = eqn.invars[2].aval.shape
+    update_window_dims = tuple(sorted(scatter_numdim.update_window_dims))
+
+    for operand_dim, update_dim in zip(window_operand_dims, update_window_dims):
+        if update_dim < len(update_shape):
+            slice_sizes[operand_dim] = update_shape[update_dim]
+
+    update_val = jax.lax.gather(out, index, gather_numdim, tuple(slice_sizes))
+    update_val = jnp.reshape(update_val, eqn.invars[2].aval.shape)
 
     return [eqn.invars[0], eqn.invars[2]], [out, update_val]
 
@@ -326,7 +335,7 @@ def has_registered_inverse(eqn, known_invars, known_outvars) -> bool:
         return cond1 and cond2
     else:
         return (
-            primitive in _UNIVARITAE_INVERSE_REGISTRY
+            primitive in _UNIVARIATE_INVERSE_REGISTRY
             or (primitive in _BIVARIATE_INVERSE_REGISTRY and any(known_invars))
             or primitive in _CUSTOM_INVERSE_PROCESSING_RULES
         )
@@ -390,10 +399,10 @@ class InverseProcessingRule(ProcessingRule):
 
     def _default_univariate_inverse(self, eqn, known_invars, known_outvars):
         primitive = eqn.primitive
-        if primitive not in _UNIVARITAE_INVERSE_REGISTRY:
+        if primitive not in _UNIVARIATE_INVERSE_REGISTRY:
             raise NotImplementedError(f"{primitive} is not invertible!")
 
-        inv_primitive = _UNIVARITAE_INVERSE_REGISTRY[primitive]
+        inv_primitive = _UNIVARIATE_INVERSE_REGISTRY[primitive]
         if isinstance(inv_primitive, Primitive):
             subfuns, bind_params = inv_primitive.get_bind_params(eqn.params)
             invars = inv_primitive.bind(*subfuns, *known_outvars, **bind_params)

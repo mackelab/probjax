@@ -8,7 +8,7 @@ from jax import Array
 from jax.typing import ArrayLike
 
 from probjax.core.transformation import inverse, inverse_and_logabsdet
-from probjax.utils.odeutil import odeint_adaptive
+from probjax.utils.odeutil.core import _odeint
 from probjax.utils.odeutil.adaptive import AdaptiveParams
 
 
@@ -39,7 +39,15 @@ def _inv_odeint(
         adaptive_params = AdaptiveParams()
 
     y0 = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], ys)
-    xs = odeint_adaptive(method, drift, adaptive_params, y0, ts[::-1], *args, **kwargs)
+    xs = _odeint(
+        drift,
+        y0,
+        ts[::-1],
+        *args,
+        method=method,
+        adaptive_params=adaptive_params,
+        **kwargs,
+    )
     yT = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], xs)
     return yT
 
@@ -76,15 +84,22 @@ def _inv_logdet_odeint(
     def aug_drift(t, state, *args):
         x, logdet = state
         dx = jnp.atleast_1d(drift(t, x, *args))
-        dlogdet = jnp.atleast_1d(jnp.trace(jac(t, x)))
+        trace_val = jnp.asarray(jnp.trace(jac(t, x)), dtype=dx.dtype)
+        dlogdet = jnp.broadcast_to(trace_val, logdet.shape)
         return dx, dlogdet
 
     y0 = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], ys)
     logdet0 = jax.tree_util.tree_map(
         lambda x: jnp.zeros_like(jnp.atleast_1d(x)[-1]), ys
     )
-    xs, logdets = odeint_adaptive(
-        method, aug_drift, adaptive_params, (y0, logdet0), ts[::-1], *args, **kwargs
+    xs, logdets = _odeint(
+        aug_drift,
+        (y0, logdet0),
+        ts[::-1],
+        *args,
+        method=method,
+        adaptive_params=adaptive_params,
+        **kwargs,
     )
 
     yT = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], xs)
@@ -94,5 +109,5 @@ def _inv_logdet_odeint(
 
 
 # Register inverse transformations
-odeint_inv = inverse(_inv_odeint, static_argnums=(0, 2))
-odeint_inv_and_logdet = inverse_and_logabsdet(_inv_logdet_odeint, static_argnums=(0, 2))
+odeint_inv = inverse(_inv_odeint, static_argnums=(0,))
+odeint_inv_and_logdet = inverse_and_logabsdet(_inv_logdet_odeint, static_argnums=(0,))

@@ -14,7 +14,7 @@ from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
 from probjax.core.interpreters.inverse import (
     _BIVARIATE_INVERSE_REGISTRY,
     _CUSTOM_INVERSE_PROCESSING_RULES,
-    _UNIVARITAE_INVERSE_REGISTRY,
+    _UNIVARIATE_INVERSE_REGISTRY,
     InverseProcessingRule,
     is_bivariate,
     is_univariate,
@@ -113,10 +113,10 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
 
     def _default_univariate_inverse(self, eqn, known_invars, known_outvars):
         primitive = eqn.primitive
-        if primitive not in _UNIVARITAE_INVERSE_REGISTRY:
+        if primitive not in _UNIVARIATE_INVERSE_REGISTRY:
             raise NotImplementedError(f"{primitive} is not invertible!")
 
-        inv_primitive = _UNIVARITAE_INVERSE_REGISTRY[primitive]
+        inv_primitive = _UNIVARIATE_INVERSE_REGISTRY[primitive]
         if isinstance(inv_primitive, Primitive):
 
             def f(*args):

@@ -1,3 +1,4 @@
+from functools import partial
 from typing import Any, Callable, Optional, Sequence, Tuple, Union
 
 import jax.numpy as jnp
@@ -5,8 +6,11 @@ from jax import Array
 from jaxtyping import PyTree
 
 from probjax.utils.odeutil import AdaptiveParams, _odeint
+from probjax.utils.odeutil.inverse import _inv_logdet_odeint, _inv_odeint
+from probjax.core.custom_primitives.custom_inverse import custom_inverse
 
 
+@partial(custom_inverse, inv_argnum=1, static_argnums=(0,))
 def odeint(
     drift: Callable[[Array, PyTree[Array], ...], PyTree[Array]],
     y0: PyTree[Array],
@@ -94,3 +98,7 @@ def odeint(
         check_points=check_points,
         adaptive_params=adaptive_params,
     )
+
+
+odeint.definv(_inv_odeint)
+odeint.definv_and_logdet(_inv_logdet_odeint)

@@ -313,17 +313,42 @@ class EDM(DiffusionDenoiser):
         out_weight = self.c_out(t)
         return 1.0 / out_weight**2
 
-    def noise_schedule(self, rng: RngKey, shape: Tuple[int, ...]) -> Array:
-        logt = (
-            jax.random.normal(rng, shape=shape + (1,)) * self.lognoise_scale
-            + self.lognoise_mean
+    def noise_schedule(
+        self,
+        rng: RngKey,
+        shape: Tuple[int, ...],
+        *,
+        min_noise: float | None = None,
+        max_noise: float | None = None,
+        lognoise_mean: float | None = None,
+        lognoise_scale: float | None = None,
+    ) -> Array:
+        min_noise = self.min_noise if min_noise is None else min_noise
+        max_noise = self.max_noise if max_noise is None else max_noise
+        lognoise_mean = self.lognoise_mean if lognoise_mean is None else lognoise_mean
+        lognoise_scale = (
+            self.lognoise_scale if lognoise_scale is None else lognoise_scale
         )
-        return jnp.clip(jnp.exp(logt) + self.min_noise, self.min_noise, self.max_noise)
+        logt = (
+            jax.random.normal(rng, shape=shape + (1,)) * lognoise_scale + lognoise_mean
+        )
+        return jnp.clip(jnp.exp(logt) + min_noise, min_noise, max_noise)
 
-    def solve_schedule(self, num_steps: int = 100, rho: int = 7) -> Array:
+    def solve_schedule(
+        self,
+        num_steps: int | None = None,
+        rho: int | None = None,
+        *,
+        min_noise: float | None = None,
+        max_noise: float | None = None,
+    ) -> Array:
+        num_steps = 100 if num_steps is None else num_steps
+        rho = 7 if rho is None else rho
+        min_noise = self.min_noise if min_noise is None else min_noise
+        max_noise = self.max_noise if max_noise is None else max_noise
         ns = jnp.arange(0, num_steps, dtype=jnp.float32)
-        term1 = self.max_noise ** (1 / rho)
-        length = (self.min_noise ** (1 / rho) - term1) * ns / (num_steps - 1)
+        term1 = max_noise ** (1 / rho)
+        length = (min_noise ** (1 / rho) - term1) * ns / (num_steps - 1)
         return (term1 + length) ** rho
 
 
@@ -335,19 +360,44 @@ class VE(EDM):
     drift: lambda _, t, x: jnp.array([0.0])
     diffusion: lambda _, t, x: jnp.atleast_1d((t**-0.5 * 2 * t**0.5) ** 0.5)
 
-    def noise_schedule(self, rng: RngKey, shape: Tuple[int, ...]) -> Array:
+    def noise_schedule(
+        self,
+        rng: RngKey,
+        shape: Tuple[int, ...],
+        *,
+        min_noise: float | None = None,
+        max_noise: float | None = None,
+        lognoise_mean: float | None = None,
+        lognoise_scale: float | None = None,
+    ) -> Array:
         """Compute noise schedule for VE."""
-        logt = (
-            jax.random.normal(rng, shape=shape + (1,)) * self.lognoise_scale
-            + self.lognoise_mean
+        min_noise = self.min_noise if min_noise is None else min_noise
+        max_noise = self.max_noise if max_noise is None else max_noise
+        lognoise_mean = self.lognoise_mean if lognoise_mean is None else lognoise_mean
+        lognoise_scale = (
+            self.lognoise_scale if lognoise_scale is None else lognoise_scale
         )
-        return jnp.clip(jnp.exp(logt) + self.min_noise, self.min_noise, self.max_noise)
+        logt = (
+            jax.random.normal(rng, shape=shape + (1,)) * lognoise_scale + lognoise_mean
+        )
+        return jnp.clip(jnp.exp(logt) + min_noise, min_noise, max_noise)
 
-    def solve_schedule(self, num_steps: int = 100, rho: int = 7) -> Array:
+    def solve_schedule(
+        self,
+        num_steps: int | None = None,
+        rho: int | None = None,
+        *,
+        min_noise: float | None = None,
+        max_noise: float | None = None,
+    ) -> Array:
         """Compute solving schedule for VE."""
+        num_steps = 100 if num_steps is None else num_steps
+        rho = 7 if rho is None else rho
+        min_noise = self.min_noise if min_noise is None else min_noise
+        max_noise = self.max_noise if max_noise is None else max_noise
         ns = jnp.arange(0, num_steps, dtype=jnp.float32)
-        term1 = self.max_noise ** (1 / rho)
-        length = (self.min_noise ** (1 / rho) - term1) * ns / (num_steps - 1)
+        term1 = max_noise ** (1 / rho)
+        length = (min_noise ** (1 / rho) - term1) * ns / (num_steps - 1)
         return (term1 + length) ** rho
 
 
@@ -391,15 +441,36 @@ class VP(EDM):
         term = jnp.exp(integral)
         return 1 / jnp.atleast_1d(jnp.sqrt(term))
 
-    def noise_schedule(self, rng: RngKey, shape: Tuple[int, ...]) -> Array:
+    def noise_schedule(
+        self,
+        rng: RngKey,
+        shape: Tuple[int, ...],
+        *,
+        min_noise: float | None = None,
+        max_noise: float | None = None,
+        lognoise_mean: float | None = None,
+        lognoise_scale: float | None = None,
+    ) -> Array:
         """Compute noise schedule for VP."""
-        logt = (
-            jax.random.normal(rng, shape=shape + (1,)) * self.lognoise_scale
-            + self.lognoise_mean
+        min_noise = self.min_noise if min_noise is None else min_noise
+        max_noise = self.max_noise if max_noise is None else max_noise
+        lognoise_mean = self.lognoise_mean if lognoise_mean is None else lognoise_mean
+        lognoise_scale = (
+            self.lognoise_scale if lognoise_scale is None else lognoise_scale
         )
-        return jax.nn.sigmoid(logt) * (self.max_noise - self.min_noise) + self.min_noise
+        logt = (
+            jax.random.normal(rng, shape=shape + (1,)) * lognoise_scale + lognoise_mean
+        )
+        return jax.nn.sigmoid(logt) * (max_noise - min_noise) + min_noise
 
-    def solve_schedule(self, num_steps: int = 100, rho: int = 7) -> Array:
+    def solve_schedule(
+        self,
+        num_steps: int | None = None,
+        *,
+        min_noise: float | None = None,
+    ) -> Array:
         """Compute solving schedule for VP."""
-        ts = jnp.linspace(self.min_noise, 1.0 + 1 / num_steps, num_steps)[::-1]
+        num_steps = 100 if num_steps is None else num_steps
+        min_noise = self.min_noise if min_noise is None else min_noise
+        ts = jnp.linspace(min_noise, 1.0 + 1 / num_steps, num_steps)[::-1]
         return ts
