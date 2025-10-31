@@ -18,9 +18,9 @@ def _inv_odeint(drift, ys: Array, ts: Array, *args, **kwargs):
     Returns:
         The initial state
     """
-    y0 = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], ys)
+    y0 = jax.tree_util.tree_map(lambda x: x[-1], ys)
     xs = _odeint(drift, y0, ts[::-1], *args, **kwargs)
-    yT = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], xs)
+    yT = jax.tree_util.tree_map(lambda x: x[-1], xs)
     return yT
 
 
@@ -37,7 +37,7 @@ def _inv_logdet_odeint(drift, ys, ts, *args, **kwargs):
     Returns:
         Tuple of (initial state, log determinant)
     """
-    _jac = jax.jacfwd(drift, argnums=1)
+    _jac = jax.jacobian(drift, argnums=1)
     jac = lambda t, x: jnp.atleast_2d(_jac(t, x))
 
     def aug_drift(t, state, *args):
@@ -46,13 +46,13 @@ def _inv_logdet_odeint(drift, ys, ts, *args, **kwargs):
         dlogdet = jnp.atleast_1d(jnp.trace(jac(t, x)))
         return dx, dlogdet
 
-    y0 = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], ys)
+    y0 = jax.tree_util.tree_map(lambda x: x[-1], ys)
     logdet0 = jax.tree_util.tree_map(
-        lambda x: jnp.zeros_like(jnp.atleast_1d(x)[-1]), ys
+        lambda x: jnp.zeros_like(x[-1]), ys
     )
     xs, logdets = _odeint(aug_drift, (y0, logdet0), ts[::-1], *args, **kwargs)
 
-    yT = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], xs)
-    logdetsT = jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x)[-1], logdets)
+    yT = jax.tree_util.tree_map(lambda x: x[-1], xs)
+    logdetsT = jax.tree_util.tree_map(lambda x: x[-1], logdets)
 
     return yT, logdetsT

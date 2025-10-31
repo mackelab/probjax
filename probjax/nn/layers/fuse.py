@@ -348,7 +348,7 @@ class GatedFuse(BinaryFuse):
         in_features: int,
         context_features: int,
         *,
-        gate_activation: Callable = jax.nn.sigmoid,
+        gate_activation: Callable = identity,
         drop_path_rate: float = 0.0,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
