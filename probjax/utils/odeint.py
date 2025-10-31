@@ -101,4 +101,4 @@ def odeint(
 
 
 odeint.definv(_inv_odeint)
-odeint.definv_and_logdet(_inv_logdet_odeint)
+#odeint.definv_and_logdet(_inv_logdet_odeint)
