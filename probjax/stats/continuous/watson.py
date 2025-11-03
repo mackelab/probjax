@@ -43,11 +43,115 @@ def _orthogonal_unit_vector(mu: Array) -> Array:
     return jnp.where(norm_v > _EPS, v / (norm_v + _EPS), basis[(idx + 1) % dim])
 
 
+def _log_hyp1f1_half(kappa: Array, dim: int) -> Array:
+    """Stable computation of log 1F1(1/2, dim/2, kappa)."""
+    calc_dtype = jnp.result_type(jnp.asarray(kappa).dtype, jnp.float32)
+    kappa_arr = jnp.asarray(kappa, dtype=calc_dtype)
+
+    if dim <= 1:
+        return kappa_arr.astype(calc_dtype)
+
+    a = jnp.asarray(0.5, dtype=calc_dtype)
+    b = jnp.asarray(0.5 * dim, dtype=calc_dtype)
+    a_neg = b - a
+
+    small_thresh = jnp.asarray(1e-3, dtype=calc_dtype)
+    large_thresh = jnp.asarray(40.0, dtype=calc_dtype)
+
+    pref_pos = gammaln(b) - gammaln(a)
+    pref_neg = gammaln(b) - gammaln(a_neg)
+
+    def series_log(z):
+        term1 = (a / b) * z
+        term2 = (
+            (a * (a + jnp.asarray(1.0, dtype=calc_dtype)))
+            / (b * (b + jnp.asarray(1.0, dtype=calc_dtype)))
+            * (z**2)
+            / jnp.asarray(2.0, dtype=calc_dtype)
+        )
+        term3 = (
+            (a * (a + 1.0) * (a + 2.0))
+            / (b * (b + 1.0) * (b + 2.0))
+            * (z**3)
+            / jnp.asarray(6.0, dtype=calc_dtype)
+        )
+        term4 = (
+            (a * (a + 1.0) * (a + 2.0) * (a + 3.0))
+            / (b * (b + 1.0) * (b + 2.0) * (b + 3.0))
+            * (z**4)
+            / jnp.asarray(24.0, dtype=calc_dtype)
+        )
+        return jnp.log1p(term1 + term2 + term3 + term4)
+
+    def mid_log(z):
+        val = hyp1f1(a, b, z)
+        return jnp.log(jnp.maximum(val, jnp.asarray(_EPS, dtype=calc_dtype)))
+
+    def pos_asympt(z_pos, a_param, pref):
+        corr1 = (a_param * (b - a_param)) / (z_pos + _EPS)
+        corr2 = (
+            a_param
+            * (a_param + jnp.asarray(1.0, dtype=calc_dtype))
+            * (b - a_param)
+            * (b - a_param + jnp.asarray(1.0, dtype=calc_dtype))
+        ) / (jnp.asarray(2.0, dtype=calc_dtype) * (z_pos**2 + _EPS))
+        corr = corr1 + corr2
+        corr = jnp.clip(corr, -0.9, None)
+        return (
+            pref
+            + z_pos
+            + (a_param - b) * jnp.log(z_pos)
+            + jnp.log1p(corr)
+        )
+
+    def pos_log(z):
+        return pos_asympt(jnp.maximum(z, large_thresh), a, pref_pos)
+
+    def neg_log(z):
+        z_pos = jnp.maximum(-z, large_thresh)
+        return z + pos_asympt(z_pos, a_neg, pref_neg)
+
+    def scalar_eval(z):
+        abs_z = jnp.abs(z)
+        small = abs_z <= small_thresh
+        large_pos = z >= large_thresh
+        large_neg = z <= -large_thresh
+
+        def handle_not_small(_):
+            return lax.cond(
+                large_pos,
+                lambda __: pos_log(z),
+                lambda __: lax.cond(
+                    large_neg,
+                    lambda ___: neg_log(z),
+                    lambda ___: mid_log(z),
+                    operand=None,
+                ),
+                operand=None,
+            )
+
+        return lax.cond(
+            small,
+            lambda __: series_log(z),
+            handle_not_small,
+            operand=None,
+        )
+
+    kappa_flat = kappa_arr.reshape(-1)
+    log_flat = jax.vmap(scalar_eval)(kappa_flat)
+    return log_flat.reshape(kappa_arr.shape)
+
+
 def _log_normalization(kappa: Array, dim: int) -> Array:
     """Log of the normalisation constant of the Watson distribution."""
-    half_dim = 0.5 * dim
-    log_uniform = gammaln(half_dim) - jnp.log(2.0) - half_dim * jnp.log(jnp.pi)
-    log_hyp1f1 = jnp.log(hyp1f1(0.5, half_dim, kappa))
+    dtype = jnp.result_type(jnp.asarray(kappa).dtype, jnp.float32)
+    half_dim = jnp.asarray(0.5 * dim, dtype=dtype)
+    log_uniform = (
+        gammaln(half_dim)
+        - jnp.log(jnp.asarray(2.0, dtype=dtype))
+        - half_dim * jnp.log(jnp.asarray(jnp.pi, dtype=dtype))
+    )
+    log_hyp1f1 = _log_hyp1f1_half(kappa, dim)
     return log_uniform - log_hyp1f1
 
 
@@ -256,6 +360,7 @@ class watson_gen(rv_continuous, rv_exponential_family):
         kappa = jnp.asarray(kappa)
 
         dot_prod = jnp.sum(x * mean_direction, axis=-1)
+        dot_prod = jnp.clip(dot_prod, -1.0, 1.0)
         dim = x.shape[-1]
         log_norm = _log_normalization(kappa, dim)
         return kappa * dot_prod**2 + log_norm
