@@ -387,7 +387,7 @@ class bingham_gen(rv_continuous, rv_exponential_family):
         weights: Optional[ArrayLike] = None,
         **kwargs,
     ):
-        """Estimate parameters from the sample scatter matrix."""
+        """Estimate Bingham parameters via moment matching / maximum likelihood."""
         data = jnp.asarray(data)
         if data.ndim == 1:
             data = data[None, :]
@@ -399,17 +399,72 @@ class bingham_gen(rv_continuous, rv_exponential_family):
             if weights.shape[0] != n:
                 raise ValueError("weights must have the same number of rows as data")
             weights = jnp.clip(weights, 0)
-            total = jnp.sum(weights)
-            total = jnp.where(total > 0, total, jnp.asarray(n, dtype=dtype))
-            weights = weights / total
-            scatter = (data * weights[:, None]).T @ data
         else:
-            scatter = data.T @ data / n
+            weights = jnp.ones((n,), dtype=dtype)
+
+        total = jnp.sum(weights)
+        total = jnp.where(total > 0, total, jnp.asarray(n, dtype=dtype))
+        weights = weights / total
+
+        scatter = (data * weights[:, None]).T @ data
+        scatter = 0.5 * (scatter + jnp.swapaxes(scatter, -1, -2))
+
         eigvals, eigvecs = jnp.linalg.eigh(scatter)
-        idx = jnp.flip(jnp.argsort(eigvals))
+        idx = jnp.argsort(eigvals)[::-1]
         eigvals = eigvals[idx]
         orientation = eigvecs[:, idx]
-        concentration = eigvals - jnp.mean(eigvals)
+
+        dim = data.shape[-1]
+        target = jnp.clip(eigvals / jnp.sum(eigvals), 1e-12, 1.0)
+        iso = 1.0 / dim
+
+        if float(jnp.max(jnp.abs(target - iso))) < 1e-6:
+            concentration = jnp.zeros_like(target)
+            return orientation, concentration
+
+        eye = jnp.eye(dim, dtype=dtype)
+
+        def log_partition_diag(conc):
+            return cls.log_partition(eye, conc)
+
+        grad_log_partition = jax.grad(log_partition_diag)
+
+        def theta_to_lambda(theta_vec):
+            tail = -jnp.sum(theta_vec)
+            return jnp.concatenate(
+                [theta_vec, jnp.asarray([tail], dtype=theta_vec.dtype)], axis=0
+            )
+
+        lam_init = 5.0 * (target - iso)
+        lam_init = lam_init - jnp.mean(lam_init)
+        theta = lam_init[:-1]
+
+        target_reduced = target[:-1]
+
+        def residual(theta_vec):
+            lam = theta_to_lambda(theta_vec)
+            expected = grad_log_partition(lam)
+            expected = expected / jnp.sum(expected)
+            return expected[:-1] - target_reduced
+
+        tol = 1e-6
+        max_iter = 50
+        reg = 1e-6
+
+        for _ in range(max_iter):
+            res = residual(theta)
+            res_norm = float(jnp.max(jnp.abs(res)))
+            if res_norm < tol:
+                break
+            jac = jax.jacrev(residual)(theta)
+            jac = jac + reg * jnp.eye(jac.shape[0], dtype=jac.dtype)
+            step = jnp.linalg.solve(jac, res)
+            theta = theta - step
+
+        lam = theta_to_lambda(theta)
+        lam = lam - jnp.mean(lam)
+
+        concentration = lam.astype(dtype)
         return orientation, concentration
 
 
