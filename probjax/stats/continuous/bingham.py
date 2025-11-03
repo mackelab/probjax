@@ -528,81 +528,93 @@ class bingham_gen(rv_continuous, rv_exponential_family):
 
         eigvals, eigvecs = jnp.linalg.eigh(scatter)
         idx = jnp.argsort(eigvals)[::-1]
-        eigvals = eigvals[idx]
-        orientation = eigvecs[:, idx]
+        eigvals = jnp.take_along_axis(eigvals, idx, axis=0)
+        orientation = jnp.take_along_axis(
+            eigvecs, idx[jnp.newaxis, :], axis=1
+        ).astype(dtype)
 
         dim = data.shape[-1]
-        target = jnp.clip(eigvals / jnp.sum(eigvals), 1e-12, 1.0)
-        iso = 1.0 / dim
-
-        if float(jnp.max(jnp.abs(target - iso))) < 1e-6:
-            concentration = jnp.zeros_like(target)
-            return orientation, concentration
-
+        target = jnp.clip(
+            eigvals / jnp.sum(eigvals),
+            jnp.asarray(1e-12, dtype=dtype),
+            jnp.asarray(1.0, dtype=dtype),
+        )
+        iso = jnp.asarray(1.0 / dim, dtype=dtype)
         eye = jnp.eye(dim, dtype=dtype)
 
-        def log_partition_diag(conc):
-            return cls.log_partition(eye, conc)
+        diff = jnp.max(jnp.abs(target - iso))
+        threshold = jnp.asarray(1e-6, dtype=dtype)
 
-        grad_log_partition = jax.grad(log_partition_diag)
+        operand = (target, iso, eye)
 
-        def theta_to_lambda(theta_vec):
-            tail = -jnp.sum(theta_vec)
-            return jnp.concatenate(
-                [theta_vec, jnp.asarray([tail], dtype=theta_vec.dtype)], axis=0
+        def zero_branch(op):
+            target_local, _, _ = op
+            return jnp.zeros_like(target_local)
+
+        def solve_branch(op):
+            target_local, iso_local, eye_local = op
+            dtype_local = target_local.dtype
+            lam_init = jnp.asarray(5.0, dtype=dtype_local) * (
+                target_local - iso_local
+            )
+            lam_init = lam_init - jnp.mean(lam_init)
+            theta0 = lam_init[:-1]
+            target_reduced = target_local[:-1]
+
+            def theta_to_lambda(theta_vec):
+                tail = -jnp.sum(theta_vec, keepdims=True)
+                return jnp.concatenate([theta_vec, tail], axis=0)
+
+            def log_partition_diag(conc_vec):
+                return cls.log_partition(eye_local, conc_vec, **kwargs)
+
+            grad_log_partition = jax.grad(log_partition_diag)
+
+            def residual(theta_vec):
+                lam_vec = theta_to_lambda(theta_vec)
+                expected = grad_log_partition(lam_vec)
+                expected = expected / jnp.sum(expected)
+                return expected[:-1] - target_reduced
+
+            theta_size = theta0.shape[0]
+
+            def run_newton(theta_init):
+                jacobian_fn = jax.jacfwd(residual)
+                tol = jnp.asarray(1e-6, dtype=dtype_local)
+                reg = jnp.asarray(1e-6, dtype=dtype_local)
+                eye_theta = jnp.eye(theta_size, dtype=dtype_local)
+
+                def step(carry, _):
+                    theta_curr, converged_curr = carry
+                    res = residual(theta_curr)
+                    jac = jacobian_fn(theta_curr)
+                    jac = jac + reg * eye_theta
+                    step_vec = jnp.linalg.solve(jac, res)
+                    theta_candidate = theta_curr - step_vec
+                    res_norm = jnp.max(jnp.abs(res))
+                    converged_next = jnp.logical_or(converged_curr, res_norm < tol)
+                    theta_next = jnp.where(
+                        converged_curr, theta_curr, theta_candidate
+                    )
+                    return (theta_next, converged_next), None
+
+                max_iter_newton = 50
+                (theta_final, _), _ = lax.scan(
+                    step, (theta_init, False), xs=None, length=max_iter_newton
+                )
+                return theta_final
+
+            theta_final = (
+                theta0
+                if theta_size == 0
+                else run_newton(theta0)
             )
 
-        lam_init = 5.0 * (target - iso)
-        lam_init = lam_init - jnp.mean(lam_init)
-        theta = lam_init[:-1]
+            lam_final = theta_to_lambda(theta_final)
+            lam_final = lam_final - jnp.mean(lam_final)
+            return lam_final.astype(dtype_local)
 
-        target_reduced = target[:-1]
-
-        def residual(theta_vec):
-            lam = theta_to_lambda(theta_vec)
-            expected = grad_log_partition(lam)
-            expected = expected / jnp.sum(expected)
-            return expected[:-1] - target_reduced
-
-        tol = jnp.asarray(1e-6, dtype=theta.dtype)
-        max_iter = 50
-        reg = jnp.asarray(1e-6, dtype=theta.dtype)
-
-        jacobian_fn = jax.jacfwd(residual)
-        eye_theta = jnp.eye(theta.shape[0], dtype=theta.dtype)
-
-        def newton_body(carry, _):
-            theta_curr, converged = carry
-            res = residual(theta_curr)
-            res_norm = jnp.max(jnp.abs(res))
-            done = converged | (res_norm < tol)
-
-            def update(args):
-                theta_val, res_val = args
-                jac = jacobian_fn(theta_val)
-                jac = jac + reg * eye_theta
-                step = jnp.linalg.solve(jac, res_val)
-                return theta_val - step
-
-            theta_next = lax.cond(
-                done,
-                lambda _: theta_curr,
-                update,
-                operand=(theta_curr, res),
-            )
-            return (theta_next, done), res_norm
-
-        (theta, _), _ = lax.scan(
-            newton_body,
-            (theta, False),
-            xs=None,
-            length=max_iter,
-        )
-
-        lam = theta_to_lambda(theta)
-        lam = lam - jnp.mean(lam)
-
-        concentration = lam.astype(dtype)
+        concentration = lax.cond(diff < threshold, zero_branch, solve_branch, operand)
         return orientation, concentration
 
 

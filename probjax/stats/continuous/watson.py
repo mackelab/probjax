@@ -228,64 +228,128 @@ def _watson_moment_ratio(kappa, dim: int, dtype):
     return result
 
 
-def _solve_watson_kappa(target: float, dim: int, dtype) -> jnp.ndarray:
+def _solve_watson_kappa(target: ArrayLike, dim: int, dtype) -> jnp.ndarray:
     """Invert E[(μᵀX)²] = target for the Watson concentration parameter."""
-    if not np.isfinite(target):
-        target = 1.0 / dim
+    target = jnp.asarray(target, dtype=dtype)
+    iso = jnp.asarray(1.0 / dim, dtype=dtype)
+    eps = jnp.asarray(1e-12, dtype=dtype)
+    upper = jnp.asarray(1.0, dtype=dtype) - eps
+    target = jnp.clip(target, eps, upper)
 
-    # Constrain to the open interval (0, 1) for numerical stability.
-    eps = 1e-12
-    target = float(np.clip(target, eps, 1.0 - eps))
-    iso = 1.0 / dim
+    tol = jnp.asarray(1e-8, dtype=dtype)
+    max_expand = jnp.int32(60)
+    max_iter = jnp.int32(80)
 
-    if abs(target - iso) < 1e-8:
+    def close_branch(_):
         return jnp.asarray(0.0, dtype=dtype)
 
-    tol = 1e-8
-    max_iter = 80
+    def solve_branch(_):
+        def positive_branch(_):
+            lo = jnp.asarray(0.0, dtype=dtype)
+            hi = jnp.asarray(1.0, dtype=dtype)
+            ratio_hi = _watson_moment_ratio(hi, dim, dtype)
 
-    if target > iso:
-        lo, hi = 0.0, 1.0
-        ratio_hi = float(_watson_moment_ratio(hi, dim, dtype))
-        while ratio_hi <= target and hi < 1e6:
-            hi *= 2.0
-            ratio_hi = float(_watson_moment_ratio(hi, dim, dtype))
-        if ratio_hi <= target:
-            return jnp.asarray(hi, dtype=dtype)
-        for _ in range(max_iter):
-            mid = 0.5 * (lo + hi)
-            ratio_mid = float(_watson_moment_ratio(mid, dim, dtype))
-            if abs(ratio_mid - target) <= tol:
-                return jnp.asarray(mid, dtype=dtype)
-            if ratio_mid < target:
-                lo = mid
-            else:
-                hi = mid
-            if hi - lo <= tol * (1.0 + abs(mid)):
-                break
-        kappa = 0.5 * (lo + hi)
-        return jnp.asarray(kappa, dtype=dtype)
+            def expand_cond(state):
+                lo_, hi_, ratio_hi_, count_ = state
+                return jnp.logical_and(ratio_hi_ <= target, count_ < max_expand)
 
-    hi, lo = 0.0, -1.0
-    ratio_lo = float(_watson_moment_ratio(lo, dim, dtype))
-    while ratio_lo >= target and lo > -1e6:
-        lo *= 2.0
-        ratio_lo = float(_watson_moment_ratio(lo, dim, dtype))
-    if ratio_lo >= target:
-        return jnp.asarray(lo, dtype=dtype)
-    for _ in range(max_iter):
-        mid = 0.5 * (lo + hi)
-        ratio_mid = float(_watson_moment_ratio(mid, dim, dtype))
-        if abs(ratio_mid - target) <= tol:
-            return jnp.asarray(mid, dtype=dtype)
-        if ratio_mid > target:
-            hi = mid
-        else:
-            lo = mid
-        if hi - lo <= tol * (1.0 + abs(mid)):
-            break
-    kappa = 0.5 * (lo + hi)
-    return jnp.asarray(kappa, dtype=dtype)
+            def expand_body(state):
+                lo_, hi_, ratio_hi_, count_ = state
+                hi_new = hi_ * jnp.asarray(2.0, dtype=dtype)
+                ratio_hi_new = _watson_moment_ratio(hi_new, dim, dtype)
+                return (lo_, hi_new, ratio_hi_new, count_ + 1)
+
+            lo, hi, ratio_hi, _ = lax.while_loop(
+                expand_cond, expand_body, (lo, hi, ratio_hi, jnp.int32(0))
+            )
+            ratio_lo = _watson_moment_ratio(lo, dim, dtype)
+
+            def bisect_cond(state):
+                lo_, hi_, ratio_lo_, ratio_hi_, count_ = state
+                width = hi_ - lo_
+                return jnp.logical_and(
+                    count_ < max_iter,
+                    width > tol * (jnp.asarray(1.0, dtype=dtype) + jnp.abs(hi_)),
+                )
+
+            def bisect_body(state):
+                lo_, hi_, ratio_lo_, ratio_hi_, count_ = state
+                mid = jnp.asarray(0.5, dtype=dtype) * (lo_ + hi_)
+                ratio_mid = _watson_moment_ratio(mid, dim, dtype)
+                choose_hi = ratio_mid > target
+                hi_new = jnp.where(choose_hi, mid, hi_)
+                lo_new = jnp.where(choose_hi, lo_, mid)
+                ratio_hi_new = jnp.where(choose_hi, ratio_mid, ratio_hi_)
+                ratio_lo_new = jnp.where(choose_hi, ratio_lo_, ratio_mid)
+                return (lo_new, hi_new, ratio_lo_new, ratio_hi_new, count_ + 1)
+
+            lo, hi, ratio_lo, ratio_hi, _ = lax.while_loop(
+                bisect_cond,
+                bisect_body,
+                (lo, hi, ratio_lo, ratio_hi, jnp.int32(0)),
+            )
+            return jnp.asarray(0.5, dtype=dtype) * (lo + hi)
+
+        def negative_branch(_):
+            hi = jnp.asarray(0.0, dtype=dtype)
+            lo = jnp.asarray(-1.0, dtype=dtype)
+            ratio_lo = _watson_moment_ratio(lo, dim, dtype)
+
+            limit = jnp.asarray(-1e6, dtype=dtype)
+
+            def expand_cond(state):
+                lo_, ratio_lo_, count_ = state
+                cond_lo = lo_ > limit
+                return jnp.logical_and(
+                    jnp.logical_and(ratio_lo_ >= target, cond_lo),
+                    count_ < max_expand,
+                )
+
+            def expand_body(state):
+                lo_, ratio_lo_, count_ = state
+                lo_new = lo_ * jnp.asarray(2.0, dtype=dtype)
+                ratio_lo_new = _watson_moment_ratio(lo_new, dim, dtype)
+                return (lo_new, ratio_lo_new, count_ + 1)
+
+            lo, ratio_lo, _ = lax.while_loop(
+                expand_cond, expand_body, (lo, ratio_lo, jnp.int32(0))
+            )
+            ratio_hi = _watson_moment_ratio(hi, dim, dtype)
+
+            def bisect_cond(state):
+                lo_, hi_, ratio_lo_, ratio_hi_, count_ = state
+                width = hi_ - lo_
+                return jnp.logical_and(
+                    count_ < max_iter,
+                    width > tol * (jnp.asarray(1.0, dtype=dtype) + jnp.abs(hi_)),
+                )
+
+            def bisect_body(state):
+                lo_, hi_, ratio_lo_, ratio_hi_, count_ = state
+                mid = jnp.asarray(0.5, dtype=dtype) * (lo_ + hi_)
+                ratio_mid = _watson_moment_ratio(mid, dim, dtype)
+                choose_hi = ratio_mid > target
+                hi_new = jnp.where(choose_hi, mid, hi_)
+                lo_new = jnp.where(choose_hi, lo_, mid)
+                ratio_hi_new = jnp.where(choose_hi, ratio_mid, ratio_hi_)
+                ratio_lo_new = jnp.where(choose_hi, ratio_lo_, ratio_mid)
+                return (lo_new, hi_new, ratio_lo_new, ratio_hi_new, count_ + 1)
+
+            lo, hi, ratio_lo, ratio_hi, _ = lax.while_loop(
+                bisect_cond,
+                bisect_body,
+                (lo, hi, ratio_lo, ratio_hi, jnp.int32(0)),
+            )
+            return jnp.asarray(0.5, dtype=dtype) * (lo + hi)
+
+        return lax.cond(target > iso, positive_branch, negative_branch, operand=None)
+
+    return lax.cond(
+        jnp.abs(target - iso) < tol,
+        close_branch,
+        solve_branch,
+        operand=None,
+    )
 
 
 def _sample_watson_direction(
@@ -568,22 +632,20 @@ class watson_gen(rv_continuous, rv_exponential_family):
         scatter = 0.5 * (scatter + jnp.swapaxes(scatter, -1, -2))
         eigvals, eigvecs = jnp.linalg.eigh(scatter)
         dim = data.shape[-1]
-        iso = 1.0 / dim
+        iso = jnp.asarray(1.0 / dim, dtype=dtype)
 
-        eigvals_np = np.array(eigvals)
-        idx_max = int(eigvals_np.argmax())
-        idx_min = int(eigvals_np.argmin())
+        idx_max = jnp.argmax(eigvals)
+        idx_min = jnp.argmin(eigvals)
+        rho_max = eigvals[idx_max]
+        rho_min = eigvals[idx_min]
 
-        rho_max = float(eigvals_np[idx_max])
-        rho_min = float(eigvals_np[idx_min])
-
-        if abs(rho_max - iso) >= abs(rho_min - iso):
-            mu = eigvecs[:, idx_max]
-        else:
-            mu = eigvecs[:, idx_min]
-
+        mu_max = eigvecs[:, idx_max]
+        mu_min = eigvecs[:, idx_min]
+        choose_max = jnp.abs(rho_max - iso) >= jnp.abs(rho_min - iso)
+        mu = jnp.where(choose_max, mu_max, mu_min)
         mu = _normalize_vector(mu)
-        axial_moment = float(jnp.sum(weights * jnp.square(data @ mu)))
+
+        axial_moment = jnp.sum(weights * jnp.square(data @ mu))
         kappa = _solve_watson_kappa(axial_moment, dim, dtype)
         return mu, kappa
 
