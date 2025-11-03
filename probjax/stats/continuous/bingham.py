@@ -250,8 +250,40 @@ class bingham_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def logpdf(cls, x: Array, orientation: Array, concentration: Array, **kwargs):
         x = jnp.asarray(x)
-        parameter_matrix = _build_parameter_matrix(orientation, concentration)
+        orientation = jnp.asarray(orientation)
+        concentration = jnp.asarray(concentration)
+
+        event_dim = orientation.shape[-1]
+
         x = x / (jnp.linalg.norm(x, axis=-1, keepdims=True) + _EPS)
+
+        if event_dim == 3:
+            batch_shape = jax.lax.broadcast_shapes(
+                orientation.shape[:-2], concentration.shape[:-1]
+            )
+            orientation = jnp.broadcast_to(orientation, batch_shape + (3, 3))
+            concentration = jnp.broadcast_to(concentration, batch_shape + (3,))
+
+            log_partition = cls.log_partition(orientation, concentration, **kwargs)
+
+            sample_shape = x.shape[:-1]
+            x_reshaped = x.reshape(sample_shape + (1,) * len(batch_shape) + (3,))
+            orientation_reshaped = orientation.reshape(
+                (1,) * len(sample_shape) + batch_shape + (3, 3)
+            )
+            concentration_reshaped = concentration.reshape(
+                (1,) * len(sample_shape) + batch_shape + (3,)
+            )
+
+            coords = jnp.einsum("...i,...ij->...j", x_reshaped, orientation_reshaped)
+            quad = jnp.sum(concentration_reshaped * coords**2, axis=-1)
+
+            log_partition = log_partition.reshape(
+                (1,) * len(sample_shape) + batch_shape
+            )
+            return quad - log_partition
+
+        parameter_matrix = _build_parameter_matrix(orientation, concentration)
         quad = jnp.einsum("...i,...ij,...j->...", x, parameter_matrix, x)
         log_partition = cls.log_partition(orientation, concentration, **kwargs)
         return quad - log_partition
@@ -532,19 +564,40 @@ class bingham_gen(rv_continuous, rv_exponential_family):
             expected = expected / jnp.sum(expected)
             return expected[:-1] - target_reduced
 
-        tol = 1e-6
+        tol = jnp.asarray(1e-6, dtype=theta.dtype)
         max_iter = 50
-        reg = 1e-6
+        reg = jnp.asarray(1e-6, dtype=theta.dtype)
 
-        for _ in range(max_iter):
-            res = residual(theta)
-            res_norm = float(jnp.max(jnp.abs(res)))
-            if res_norm < tol:
-                break
-            jac = jax.jacrev(residual)(theta)
-            jac = jac + reg * jnp.eye(jac.shape[0], dtype=jac.dtype)
-            step = jnp.linalg.solve(jac, res)
-            theta = theta - step
+        jacobian_fn = jax.jacfwd(residual)
+        eye_theta = jnp.eye(theta.shape[0], dtype=theta.dtype)
+
+        def newton_body(carry, _):
+            theta_curr, converged = carry
+            res = residual(theta_curr)
+            res_norm = jnp.max(jnp.abs(res))
+            done = converged | (res_norm < tol)
+
+            def update(args):
+                theta_val, res_val = args
+                jac = jacobian_fn(theta_val)
+                jac = jac + reg * eye_theta
+                step = jnp.linalg.solve(jac, res_val)
+                return theta_val - step
+
+            theta_next = lax.cond(
+                done,
+                lambda _: theta_curr,
+                update,
+                operand=(theta_curr, res),
+            )
+            return (theta_next, done), res_norm
+
+        (theta, _), _ = lax.scan(
+            newton_body,
+            (theta, False),
+            xs=None,
+            length=max_iter,
+        )
 
         lam = theta_to_lambda(theta)
         lam = lam - jnp.mean(lam)
