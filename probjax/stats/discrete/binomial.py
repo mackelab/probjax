@@ -5,7 +5,7 @@ Binomial Distribution (:mod:`probjax.stats.binomial`)
 This module implements the Binomial distribution.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -195,7 +195,14 @@ class binomial_gen(rv_discrete, rv_exponential_family):
         return n * jnp.log(1 + jnp.exp(jnp.log(probs / (1 - probs))))
 
     @classmethod
-    def fit(cls, data: ArrayLike, n: int, **kwds):
+    def fit(
+        cls,
+        data: ArrayLike,
+        *,
+        n: int,
+        weights: Optional[ArrayLike] = None,
+        **kwds,
+    ):
         """Maximum likelihood estimation of Binomial distribution parameter.
 
         The MLE for the Binomial distribution is:
@@ -216,7 +223,20 @@ class binomial_gen(rv_discrete, rv_exponential_family):
             The fitted parameters (n, p)
         """
         data = jnp.asarray(data)
-        p = jnp.mean(data) / n
+        data = jnp.reshape(data, (-1,))
+        dtype = data.dtype
+        if weights is not None:
+            weights = jnp.asarray(weights, dtype=dtype).reshape((-1,))
+            if weights.shape[0] != data.shape[0]:
+                raise ValueError("weights must have the same length as data")
+            weights = jnp.clip(weights, 0)
+            total = jnp.sum(weights)
+            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=dtype))
+            weights = weights / total
+            mean_successes = jnp.sum(weights * data)
+        else:
+            mean_successes = jnp.mean(data)
+        p = mean_successes / n
         return (n, p)
 
 

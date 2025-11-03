@@ -8,6 +8,7 @@ This module contains the Truncated Normal distribution.
 from typing import Tuple
 
 import jax.numpy as jnp
+from jax import random
 from jax.scipy.stats import truncnorm as _truncnorm
 from jaxtyping import PRNGKeyArray
 
@@ -95,14 +96,18 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
         a = jnp.asarray(a)
         b = jnp.asarray(b)
         event_shape = jnp.broadcast_shapes(loc.shape, scale.shape, a.shape, b.shape)
-        return _truncnorm.rvs(
-            a=(a - loc) / scale,
-            b=(b - loc) / scale,
-            loc=loc,
-            scale=scale,
-            size=shape + event_shape,
-            key=rng,
-        )
+        loc = jnp.broadcast_to(loc, event_shape)
+        scale = jnp.broadcast_to(scale, event_shape)
+        a = jnp.broadcast_to(a, event_shape)
+        b = jnp.broadcast_to(b, event_shape)
+        size = shape + event_shape
+        dtype = jnp.result_type(loc, scale, a, b)
+        lower = (a - loc) / scale
+        upper = (b - loc) / scale
+        lower = jnp.broadcast_to(lower, event_shape)
+        upper = jnp.broadcast_to(upper, event_shape)
+        samples = random.truncated_normal(rng, lower, upper, shape=size, dtype=dtype)
+        return samples * scale + loc
 
     @classmethod
     def sf(cls, x, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):

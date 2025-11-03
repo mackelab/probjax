@@ -5,7 +5,7 @@ Poisson Distribution (:mod:`probjax.stats.poisson`)
 This module implements the Poisson distribution.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -162,7 +162,13 @@ class poisson_gen(rv_discrete, rv_exponential_family):
         return rate
 
     @classmethod
-    def fit(cls, data: ArrayLike, **kwds):
+    def fit(
+        cls,
+        data: ArrayLike,
+        *,
+        weights: Optional[ArrayLike] = None,
+        **kwds,
+    ):
         """Maximum likelihood estimation of Poisson distribution parameter.
 
         The MLE for the Poisson distribution is simply the sample mean:
@@ -181,7 +187,19 @@ class poisson_gen(rv_discrete, rv_exponential_family):
             The fitted parameter (rate,)
         """
         data = jnp.asarray(data)
-        rate = jnp.mean(data)
+        data = jnp.reshape(data, (-1,))
+        dtype = data.dtype
+        if weights is not None:
+            weights = jnp.asarray(weights, dtype=dtype).reshape((-1,))
+            if weights.shape[0] != data.shape[0]:
+                raise ValueError("weights must have the same length as data")
+            weights = jnp.clip(weights, 0)
+            total = jnp.sum(weights)
+            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=dtype))
+            weights = weights / total
+            rate = jnp.sum(weights * data)
+        else:
+            rate = jnp.mean(data)
         return (rate,)
 
 

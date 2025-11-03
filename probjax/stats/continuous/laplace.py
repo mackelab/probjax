@@ -5,7 +5,7 @@ Laplace Distribution (:mod:`probjax.stats.laplace`)
 This module contains the Laplace distribution.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
@@ -427,7 +427,13 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         return jnp.log(2.0 * scale) + jnp.abs(loc) / scale
 
     @classmethod
-    def fit(cls, data: ArrayLike, **kwds):
+    def fit(
+        cls,
+        data: ArrayLike,
+        *,
+        weights: Optional[ArrayLike] = None,
+        **kwds,
+    ):
         """Maximum likelihood estimation of Laplace distribution parameters.
 
         The MLE for the Laplace distribution has a closed-form solution:
@@ -446,6 +452,10 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         params : tuple
             The fitted parameters (loc, scale)
         """
+        if weights is not None:
+            raise NotImplementedError(
+                "Weighted fitting is not implemented for the Laplace distribution."
+            )
         data = jnp.asarray(data)
         loc = jnp.median(data)
         scale = jnp.mean(jnp.abs(data - loc))

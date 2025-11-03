@@ -5,11 +5,11 @@ Wrapped Cauchy Distribution (:mod:`probjax.stats.wrapcauchy`)
 This module contains the Wrapped Cauchy distribution.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import PRNGKeyArray
+from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
@@ -164,6 +164,41 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
     def log_partition(cls, loc=0.0, gamma=0.5, **kwargs):
         """Log partition function of the wrapped Cauchy distribution."""
         return jnp.log(2 * jnp.pi * (1 - gamma**2))
+
+    @classmethod
+    def fit(
+        cls,
+        data,
+        *,
+        weights: Optional[ArrayLike] = None,
+        **kwargs,
+    ):
+        """Estimate parameters via the first circular moment."""
+        data = jnp.asarray(data)
+        data = jnp.reshape(data, (-1,))
+        dtype = data.dtype
+
+        cos_vals = jnp.cos(data)
+        sin_vals = jnp.sin(data)
+
+        if weights is not None:
+            weights = jnp.asarray(weights, dtype=dtype).reshape((-1,))
+            if weights.shape[0] != data.shape[0]:
+                raise ValueError("weights must have the same length as data")
+            weights = jnp.clip(weights, 0)
+            total = jnp.sum(weights)
+            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=dtype))
+            weights = weights / total
+            mean_cos = jnp.sum(weights * cos_vals)
+            mean_sin = jnp.sum(weights * sin_vals)
+        else:
+            mean_cos = jnp.mean(cos_vals)
+            mean_sin = jnp.mean(sin_vals)
+
+        loc = jnp.arctan2(mean_sin, mean_cos)
+        gamma = jnp.sqrt(mean_cos**2 + mean_sin**2)
+        gamma = jnp.clip(gamma, jnp.asarray(1e-6, dtype=dtype), 1 - 1e-6)
+        return loc, gamma
 
 
 wrapcauchy = wrapcauchy_gen(name="wrapcauchy")

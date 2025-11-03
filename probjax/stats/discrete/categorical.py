@@ -90,7 +90,14 @@ class categorical_gen(rv_discrete, rv_exponential_family):
         return 0.0
 
     @classmethod
-    def fit(cls, data: ArrayLike, num_classes: Optional[int] = None, **kwds):
+    def fit(
+        cls,
+        data: ArrayLike,
+        *,
+        num_classes: Optional[int] = None,
+        weights: Optional[ArrayLike] = None,
+        **kwds,
+    ):
         """Maximum likelihood estimation of Categorical distribution parameters.
 
         The MLE for the Categorical distribution has a closed-form solution:
@@ -113,8 +120,21 @@ class categorical_gen(rv_discrete, rv_exponential_family):
         data = jnp.asarray(data)
         if num_classes is None:
             num_classes = jnp.max(data) + 1
-        counts = jnp.bincount(data, length=num_classes)
-        probs = counts / jnp.sum(counts)
+        if weights is not None:
+            weights = jnp.asarray(weights, dtype=data.dtype)
+            if weights.ndim != 1 or weights.shape[0] != data.shape[0]:
+                raise ValueError("weights must have the same length as data")
+            weights = jnp.clip(weights, 0)
+            total = jnp.sum(weights)
+            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=data.dtype))
+            weights = weights / total
+            counts = jnp.zeros((num_classes,), dtype=data.dtype)
+            counts = counts.at[data].add(weights)
+        else:
+            counts = jnp.bincount(data, length=num_classes)
+            counts = counts / jnp.sum(counts)
+        probs = jnp.clip(counts, jnp.asarray(1e-12, dtype=data.dtype), None)
+        probs = probs / jnp.sum(probs)
         return (probs,)
 
     @classmethod

@@ -5,12 +5,12 @@ Von Mises Distribution (:mod:`probjax.stats.vonmises`)
 This module contains the Von Mises distribution.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
 from jax.scipy.special import i0, i1
-from jaxtyping import PRNGKeyArray
+from jaxtyping import Array, ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
@@ -164,6 +164,47 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
     def log_partition(cls, loc=0.0, kappa=1.0, **kwargs):
         """Log partition function of the von Mises distribution."""
         return jnp.log(2 * jnp.pi * i0(kappa))
+
+    @classmethod
+    def fit(cls, data, weights: Optional[ArrayLike] = None, **kwargs):
+        """Estimate parameters via the sample first circular moment."""
+        data = jnp.asarray(data)
+        if weights is not None:
+            weights = jnp.asarray(weights, dtype=data.dtype)
+            if weights.shape[0] != data.shape[0]:
+                raise ValueError("weights must have the same length as data")
+            weights = jnp.clip(weights, 0)
+            total = jnp.sum(weights)
+            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=data.dtype))
+            weights = weights / total
+            s = jnp.sum(weights * jnp.sin(data))
+            c = jnp.sum(weights * jnp.cos(data))
+        else:
+            s = jnp.mean(jnp.sin(data))
+            c = jnp.mean(jnp.cos(data))
+        loc = jnp.arctan2(s, c)
+        R = jnp.sqrt(c**2 + s**2)
+        tiny = jnp.asarray(1e-6, dtype=data.dtype)
+
+        def approx_kappa(r):
+            r = jnp.clip(r, 0.0, 0.999999)
+            kappa = jnp.where(
+                r < 0.53,
+                2 * r + r**3 + 5 * r**5 / 6,
+                jnp.where(
+                    r < 0.85,
+                    -0.4 + 1.39 * r + 0.43 / (1 - r),
+                    jnp.where(
+                        r < 0.999999,
+                        1.0 / (r**3 - 4 * r**2 + 3 * r),
+                        1e6,
+                    ),
+                ),
+            )
+            return jnp.maximum(kappa, tiny)
+
+        kappa = jnp.where(R < tiny, tiny, approx_kappa(R))
+        return loc, kappa
 
 
 vonmises = vonmises_gen(name="vonmises")

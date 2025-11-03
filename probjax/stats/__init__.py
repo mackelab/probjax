@@ -22,6 +22,11 @@ from probjax.stats.continuous.expon import expon
 from probjax.stats.continuous.gamma import gamma
 from probjax.stats.continuous.laplace import laplace
 from probjax.stats.continuous.multivariate_normal import multivariate_normal
+from probjax.stats.continuous.vonmises import vonmises
+from probjax.stats.continuous.pareto import pareto
+from probjax.stats.continuous.truncnorm import truncnorm
+from probjax.stats.continuous.watson import watson
+from probjax.stats.continuous.bingham import bingham
 
 # Import all implemented distributions
 from probjax.stats.continuous.norm import norm
@@ -62,6 +67,9 @@ __all__ = [
     'cauchy',
     'dirichlet',
     'multivariate_normal',
+    'vonmises',
+    'truncnorm',
+    'pareto',
     # Discrete distributions
     'bernoulli',
     'binomial',

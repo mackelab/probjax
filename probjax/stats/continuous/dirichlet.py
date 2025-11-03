@@ -5,13 +5,13 @@ Dirichlet Distribution (:mod:`probjax.stats.dirichlet`)
 This module contains the Dirichlet distribution.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 from jax import random
 from jax.scipy.special import digamma, gammaln
-from jaxtyping import Array, PRNGKeyArray
+from jaxtyping import Array, ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import positive
@@ -307,6 +307,42 @@ class dirichlet_gen(rv_continuous, rv_exponential_family):
         rv._batch_shape = alpha.shape[:-1]
         rv._event_shape = alpha.shape[-1:]
         return rv
+
+    @classmethod
+    def fit(
+        cls,
+        data: ArrayLike,
+        *,
+        weights: Optional[ArrayLike] = None,
+        **kwargs,
+    ):
+        """Method-of-moments estimate for the Dirichlet concentration vector."""
+        data = jnp.asarray(data)
+        if data.ndim == 1:
+            raise ValueError("Dirichlet fitting expects observations arranged by rows.")
+        dtype = data.dtype
+        eps = jnp.asarray(1e-6, dtype=dtype)
+
+        if weights is not None:
+            weights = jnp.asarray(weights, dtype=dtype).reshape((-1, 1))
+            if weights.shape[0] != data.shape[0]:
+                raise ValueError("weights must have the same number of rows as data")
+            weights = jnp.clip(weights, 0)
+            total = jnp.sum(weights)
+            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=dtype))
+            weights = weights / total
+            mean = jnp.sum(weights * data, axis=0)
+            var = jnp.sum(weights * (data - mean) ** 2, axis=0)
+        else:
+            mean = jnp.mean(data, axis=0)
+            var = jnp.var(data, axis=0)
+
+        mean = jnp.clip(mean, eps, 1 - eps)
+        var = jnp.maximum(var, eps)
+        alpha0 = jnp.mean(mean * (1 - mean) / var - 1.0)
+        alpha0 = jnp.maximum(alpha0, eps)
+        alpha = jnp.clip(mean * alpha0, eps, None)
+        return (alpha,)
 
 
 dirichlet = dirichlet_gen(name="dirichlet")

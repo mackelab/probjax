@@ -5,7 +5,7 @@ Bernoulli Distribution (:mod:`probjax.stats.bernoulli`)
 This module implements the Bernoulli distribution.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
@@ -119,7 +119,13 @@ class bernoulli_gen(rv_discrete, rv_exponential_family):
         return -jnp.log(1 - p)
 
     @classmethod
-    def fit(cls, data: ArrayLike, **kwds):
+    def fit(
+        cls,
+        data: ArrayLike,
+        *,
+        weights: Optional[ArrayLike] = None,
+        **kwds,
+    ):
         """Maximum likelihood estimation of Bernoulli distribution parameter.
 
         The MLE for the Bernoulli distribution is simply the sample mean:
@@ -138,7 +144,19 @@ class bernoulli_gen(rv_discrete, rv_exponential_family):
             The fitted parameter (p,)
         """
         data = jnp.asarray(data)
-        p = jnp.mean(data)
+        data = jnp.reshape(data, (-1,))
+        dtype = data.dtype
+        if weights is not None:
+            weights = jnp.asarray(weights, dtype=dtype).reshape((-1,))
+            if weights.shape[0] != data.shape[0]:
+                raise ValueError("weights must have the same length as data")
+            weights = jnp.clip(weights, 0)
+            total = jnp.sum(weights)
+            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=dtype))
+            weights = weights / total
+            p = jnp.sum(weights * data)
+        else:
+            p = jnp.mean(data)
         return (p,)
 
 

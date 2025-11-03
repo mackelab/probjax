@@ -5,11 +5,11 @@ Logistic Distribution (:mod:`probjax.stats.logistic`)
 This module contains the Logistic distribution.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax.numpy as jnp
 from jax.scipy.stats import logistic as _logistic
-from jaxtyping import PRNGKeyArray
+from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
@@ -149,6 +149,37 @@ class logistic_gen(rv_continuous, rv_exponential_family):
     def log_partition(cls, loc=0.0, scale=1.0, **kwargs):
         """Log partition function of the logistic distribution."""
         return jnp.log(scale) + loc / scale
+
+    @classmethod
+    def fit(
+        cls,
+        data,
+        *,
+        weights: Optional[ArrayLike] = None,
+        **kwargs,
+    ):
+        """Closed-form fit using (optionally weighted) mean and variance."""
+        data = jnp.asarray(data)
+        data = jnp.reshape(data, (-1,))
+        dtype = data.dtype
+
+        if weights is not None:
+            weights = jnp.asarray(weights, dtype=dtype).reshape((-1,))
+            if weights.shape[0] != data.shape[0]:
+                raise ValueError("weights must have the same length as data")
+            weights = jnp.clip(weights, 0)
+            total = jnp.sum(weights)
+            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=dtype))
+            weights = weights / total
+            loc = jnp.sum(weights * data)
+            var = jnp.sum(weights * (data - loc) ** 2)
+        else:
+            loc = jnp.mean(data)
+            var = jnp.var(data)
+
+        scale = jnp.sqrt(jnp.maximum(var, jnp.asarray(1e-9, dtype=dtype)) * 3.0) / jnp.pi
+        scale = jnp.maximum(scale, jnp.asarray(1e-6, dtype=dtype))
+        return loc, scale
 
 
 logistic = logistic_gen(name="logistic")

@@ -5,12 +5,12 @@ Cauchy Distribution (:mod:`probjax.stats.cauchy`)
 This module contains the Cauchy distribution.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax.numpy as jnp
 import jax.scipy.stats.cauchy as _cauchy
 from jax import random
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous
 from probjax.stats.constraints import real, strict_positive
@@ -358,6 +358,25 @@ class cauchy_gen(rv_continuous):
             Excess kurtosis of the distribution (undefined, returns NaN)
         """
         return jnp.full_like(loc, jnp.nan)
+
+    @classmethod
+    def fit(
+        cls,
+        data,
+        *,
+        weights: Optional[ArrayLike] = None,
+        **kwargs,
+    ):
+        """Closed-form estimator using the sample median and MAD."""
+        if weights is not None:
+            raise NotImplementedError(
+                "Weighted fitting is not implemented for the Cauchy distribution."
+            )
+        data = jnp.asarray(data)
+        loc = jnp.median(data, axis=0)
+        scale = jnp.median(jnp.abs(data - loc), axis=0)
+        scale = jnp.maximum(scale, jnp.asarray(1e-6, dtype=data.dtype))
+        return loc, scale
 
 
 cauchy = cauchy_gen(name="cauchy")

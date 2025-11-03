@@ -6,7 +6,7 @@ This module implements mixture distributions that combine multiple component dis
 with mixing probabilities.
 """
 
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -21,7 +21,122 @@ from probjax.stats.base import (
 )
 from probjax.stats.constraints import distribution, simplex
 
+try:
+    from probjax.stats.continuous.norm import norm as _norm_distribution
+except ImportError:  # pragma: no cover
+    _norm_distribution = None
+
+_NORM_GEN = _norm_distribution.__class__ if _norm_distribution is not None else None
+
 __all__ = ["mixture"]
+
+
+def _component_logpdf(dist, args, kwds, data: jnp.ndarray) -> jnp.ndarray:
+    """Evaluate log-density (or log-mass) for a component parameterisation."""
+    if hasattr(dist, "logpdf"):
+        return dist.logpdf(data, *args, **kwds)
+    if hasattr(dist, "logpmf"):
+        return dist.logpmf(data, *args, **kwds)
+    raise TypeError(
+        f"Component {dist} does not provide logpdf/logpmf for mixture fitting."
+    )
+
+
+def _update_component_with_weights(
+    data: jnp.ndarray,
+    weights: jnp.ndarray,
+    dist,
+    args: Tuple,
+    kwds: dict,
+    rng_key: PRNGKeyArray,
+) -> Tuple[Tuple, dict]:
+    """Update a component using weighted data."""
+    weights = jnp.asarray(weights)
+    dtype = jnp.result_type(data.dtype, weights.dtype, jnp.float32)
+    weights = weights.astype(dtype)
+    data = data.astype(dtype)
+    total_weight = jnp.sum(weights)
+
+    def _coerce(value):
+        if isinstance(value, jnp.ndarray):
+            return value.astype(dtype)
+        return value
+
+    def _apply_params(params):
+        if isinstance(params, dict):
+            new_args = tuple(_coerce(arg) for arg in args)
+            new_kwds = {k: _coerce(v) for k, v in kwds.items()}
+            for name, value in params.items():
+                new_kwds[name] = _coerce(value)
+            return new_args, new_kwds
+
+        params_seq = tuple(params)
+        original_args = tuple(_coerce(arg) for arg in args)
+        new_args_list = list(original_args)
+        max_pos = min(len(params_seq), len(original_args))
+        for idx in range(max_pos):
+            new_args_list[idx] = _coerce(params_seq[idx])
+        new_args = tuple(new_args_list)
+
+        new_kwds = {k: _coerce(v) for k, v in kwds.items()}
+        remaining = params_seq[len(original_args) :]
+        if remaining:
+            param_names = list(getattr(dist, "parameters", {}).keys())
+            positional_names = param_names[: len(original_args)]
+            remaining_names = [name for name in param_names if name not in positional_names]
+            preferred = [name for name in remaining_names if name in new_kwds]
+            fallback = [name for name in remaining_names if name not in new_kwds]
+            ordered_names = (preferred + fallback)[: len(remaining)]
+            if len(ordered_names) < len(remaining):
+                extra = [
+                    name
+                    for name in param_names
+                    if name not in positional_names and name not in ordered_names
+                ]
+                ordered_names += extra[: len(remaining) - len(ordered_names)]
+            for name, value in zip(ordered_names, remaining):
+                new_kwds[name] = _coerce(value)
+
+        return new_args, new_kwds
+
+    if float(total_weight) <= 1e-10:
+        idx = int(
+            random.randint(rng_key, (), 0, data.shape[0], dtype=jnp.int32).item()
+        )
+        sample = data[idx]
+        if _NORM_GEN and isinstance(dist, _NORM_GEN):
+            global_scale = jnp.std(data) + jnp.asarray(1e-3, dtype=dtype)
+            params = (
+                jnp.asarray(sample, dtype=dtype),
+                jnp.asarray(global_scale, dtype=dtype),
+            )
+        else:
+            params = args
+        return _apply_params(params)
+
+    normalised_weights = weights / jnp.asarray(total_weight, dtype=dtype)
+
+    if _NORM_GEN and isinstance(dist, _NORM_GEN):
+        mean = jnp.sum(normalised_weights * data)
+        diff = data - mean
+        var = jnp.sum(normalised_weights * diff**2)
+        scale = jnp.sqrt(jnp.maximum(var, jnp.asarray(1e-6, dtype=dtype)))
+        params = (
+            jnp.asarray(mean, dtype=dtype),
+            jnp.asarray(scale, dtype=dtype),
+        )
+        return _apply_params(params)
+
+    try:
+        params = dist.fit(data, weights=normalised_weights)
+    except TypeError:
+        params = dist.fit(data)
+
+    if isinstance(params, dict):
+        return _apply_params(params)
+    if not isinstance(params, tuple):
+        params = (params,)
+    return _apply_params(params)
 
 
 class mixture_frozen(rv_continuous_frozen, rv_discrete_frozen):
@@ -150,34 +265,104 @@ class mixture_gen(rv_generic):
 
     @classmethod
     def mode(cls, mixing_probs, components, **kwds):
-        """Mode of the mixture distribution.
+        """Mode of the mixture distribution (supports univariate mixtures)."""
+        if not components:
+            raise ValueError("At least one component is required to compute the mode.")
 
-        For a mixture distribution with unimodal components, the true mode lies within
-        the convex hull of the component modes. We use this fact to constrain our
-        optimization search space.
-        """
-        # Actually not that straightforward to compute the mode of a mixture distribution
-        raise NotImplementedError("Mode not implemented for mixture distribution")
-        # Get component modes as vertices of the convex hull
-        # modes = jnp.stack([comp.mode() for comp in components], axis=0)
+        event_shape = components[0].event_shape
+        if event_shape not in ((), (1,)):
+            raise NotImplementedError(
+                "mixture.mode currently supports only univariate mixtures."
+            )
 
-        # # Define objective function (negative log probability)
-        # def objective(x):
-        #     return -cls.logpdf(x, mixing_probs, components).sum()
+        # Restrict implementation to mixtures of univariate Normal components for now.
+        if not (_NORM_GEN and all(isinstance(comp.dist, _NORM_GEN) for comp in components)):
+            raise NotImplementedError(
+                "Mode computation currently implemented only for univariate Normal mixtures."
+            )
 
-        # # Use BFGS optimization to find the mode
-        # minimize_fn = partial(
-        #     minimize, objective, method='BFGS', options={'maxiter': 10}
-        # )
-        # result = jax.vmap(minimize_fn)(modes)
-        # modes = result.x
-        # logpdfs = result.fun
-        # idxs = jnp.argmax(logpdfs, axis=0)
-        # while idxs.ndim < modes.ndim:
-        #     idxs = idxs[..., None]
-        # mode = jnp.take_along_axis(modes, idxs, axis=0)
+        dtype = mixing_probs.dtype
 
-        # return jnp.squeeze(mode, axis=-1)
+        def log_prob(x):
+            return cls.logpdf(x, mixing_probs, components, **kwds)
+
+        candidates = []
+        for comp in components:
+            try:
+                comp_mode = jnp.asarray(comp.mode())
+                candidates.append(comp_mode.reshape(()))
+            except NotImplementedError:
+                try:
+                    comp_mean = jnp.asarray(comp.mean())
+                    candidates.append(comp_mean.reshape(()))
+                except NotImplementedError:
+                    pass
+
+        try:
+            mixture_mean = jnp.asarray(cls.mean(mixing_probs, components, **kwds)).reshape(())
+            candidates.append(mixture_mean)
+        except NotImplementedError:
+            pass
+
+        if not candidates:
+            raise NotImplementedError("Unable to construct candidate modes for the mixture.")
+
+        candidates_arr = jnp.stack([jnp.asarray(c, dtype=dtype) for c in candidates])
+        candidate_logp = log_prob(candidates_arr)
+        best_idx = jnp.argmax(candidate_logp)
+        best_candidate = candidates_arr[best_idx]
+
+        # Discrete mixtures: return the best candidate directly.
+        if hasattr(components[0], "pmf") or hasattr(components[0], "logpmf"):
+            return best_candidate
+
+        # Attempt a simple grid search around the mixture mean if variance is finite.
+        try:
+            mixture_var = jnp.asarray(cls.var(mixing_probs, components, **kwds)).reshape(())
+        except NotImplementedError:
+            mixture_var = jnp.asarray(jnp.nan, dtype=dtype)
+
+        finite_var = jnp.isfinite(mixture_var) & (mixture_var > 0)
+        std = jnp.sqrt(jnp.maximum(mixture_var, jnp.asarray(1e-12, dtype=dtype)))
+        span = jnp.asarray(5.0, dtype=dtype) * std
+        all_points = jnp.concatenate([candidates_arr, jnp.array([best_candidate])])
+        low = jnp.min(all_points)
+        high = jnp.max(all_points)
+        try:
+            mean_val = jnp.asarray(cls.mean(mixing_probs, components, **kwds)).reshape(())
+        except NotImplementedError:
+            mean_val = best_candidate
+
+        if bool(finite_var):
+            low = jnp.minimum(low, mean_val - span)
+            high = jnp.maximum(high, mean_val + span)
+        else:
+            width = jnp.maximum(high - low, jnp.asarray(1.0, dtype=dtype))
+            low = low - 0.5 * width
+            high = high + 0.5 * width
+
+        if not jnp.isfinite(low):
+            low = best_candidate - jnp.asarray(5.0, dtype=dtype)
+        if not jnp.isfinite(high):
+            high = best_candidate + jnp.asarray(5.0, dtype=dtype)
+
+        if high <= low:
+            high = low + jnp.asarray(1.0, dtype=dtype)
+
+        grid = jnp.linspace(low, high, num=512, dtype=dtype)
+        grid_logp = log_prob(grid)
+        grid_best_idx = jnp.argmax(grid_logp)
+        grid_best = grid[grid_best_idx]
+
+        # Local refinement around the best grid point.
+        step = (high - low) / jnp.asarray(511.0, dtype=dtype)
+        left = jnp.maximum(low, grid_best - 3 * step)
+        right = jnp.minimum(high, grid_best + 3 * step)
+        fine_grid = jnp.linspace(left, right, num=256, dtype=dtype)
+        fine_logp = log_prob(fine_grid)
+        fine_best = fine_grid[jnp.argmax(fine_logp)]
+
+        return fine_best
 
     @classmethod
     def entropy(cls, mixing_probs, components, **kwds):
@@ -188,79 +373,113 @@ class mixture_gen(rv_generic):
     def fit(
         cls,
         x: ArrayLike,
-        components,
+        components: Sequence[rv_frozen],
+        mixing_probs_init: Optional[ArrayLike] = None,
         max_iter: int = 100,
         tol: float = 1e-4,
         rng_key: Optional[PRNGKeyArray] = None,
     ):
-        """Fit the mixture distribution to data using the EM algorithm.
+        """Fit a finite mixture model using a plain EM loop."""
+        if not components:
+            raise ValueError("mixture.fit requires at least one component.")
+        if not all(isinstance(comp, rv_frozen) for comp in components):
+            raise TypeError(
+                "mixture.fit expects frozen component distributions (e.g. ``norm(loc, scale)``)."
+            )
 
-        Args:
-            x: Array of observations
-            components: List of component distributions to fit
-            max_iter: Maximum number of EM iterations
-            tol: Convergence tolerance for log-likelihood
-            rng_key: Random key for initialization
+        if rng_key is None:
+            rng_key = random.PRNGKey(0)
 
-        Returns:
-            Tuple of (mixing_probs, fitted_components)
-        """
-        x = jnp.asarray(x)
-        n_samples = x.shape[0]
+        data = jnp.asarray(x)
+        event_shape = components[0].event_shape
+        if any(comp.event_shape != event_shape for comp in components[1:]):
+            raise ValueError("All components must share the same event shape.")
+        if any(comp.batch_shape for comp in components):
+            raise NotImplementedError(
+                "mixture.fit does not currently support batched component parameters."
+            )
+
+        if event_shape:
+            if data.ndim < len(event_shape):
+                raise ValueError(
+                    "Observations must have enough trailing dimensions to match the component event shape."
+                )
+            if tuple(data.shape[-len(event_shape) :]) != event_shape:
+                raise ValueError(
+                    "Trailing dimensions of the observations must match the component event shape."
+                )
+            data = jnp.reshape(data, (-1,) + event_shape)
+        else:
+            data = jnp.reshape(jnp.asarray(data), (-1,))
+
+        if data.shape[0] == 0:
+            raise ValueError("mixture.fit requires at least one observation.")
+
+        numeric_dtype = jnp.result_type(data.dtype, jnp.float32)
         n_components = len(components)
 
-        # Initialize mixing probabilities uniformly
-        mixing_probs = jnp.ones(n_components) / n_components
+        if mixing_probs_init is None:
+            mixing_probs = jnp.full((n_components,), 1.0 / n_components, dtype=numeric_dtype)
+        else:
+            mixing_probs = jnp.asarray(mixing_probs_init, dtype=numeric_dtype)
+            if mixing_probs.shape != (n_components,):
+                raise ValueError("mixing_probs_init must have shape (n_components,)")
+            mixing_probs = jnp.clip(mixing_probs, 1e-12)
+            mixing_probs = mixing_probs / jnp.sum(mixing_probs)
 
-        # Initialize component parameters using their fit methods
-        fitted_components = [comp.fit(x) for comp in components]
+        component_dists = tuple(comp.dist for comp in components)
+        component_params = [(
+            tuple(comp.args),
+            dict(comp.kwds),
+        ) for comp in components]
 
-        # Initialize log-likelihood
-        prev_log_likelihood = -jnp.inf
+        prev_log_likelihood = float("-inf")
+        tol_value = float(tol)
 
-        def em_step(state):
-            mixing_probs, fitted_components, prev_log_likelihood = state
-
-            # E-step: Compute responsibilities
-            log_pdfs = jnp.stack(
-                [comp.logpdf(x) for comp in fitted_components], axis=-1
-            )
-            log_responsibilities = jnp.log(mixing_probs) + log_pdfs
-            responsibilities = jnp.exp(
-                log_responsibilities
-                - jax.scipy.special.logsumexp(
-                    log_responsibilities, axis=-1, keepdims=True
-                )
-            )
-
-            # M-step: Update mixing probabilities
-            mixing_probs = jnp.mean(responsibilities, axis=0)
-
-            # M-step: Update component parameters
-            fitted_components = [
-                comp.fit(x, weights=responsibilities[:, i])
-                for i, comp in enumerate(components)
-            ]
-
-            # Compute log-likelihood
-            log_likelihood = jnp.mean(
-                jax.scipy.special.logsumexp(log_responsibilities, axis=-1)
-            )
-
-            return (mixing_probs, fitted_components, log_likelihood)
-
-        def convergence_check(state):
-            mixing_probs, fitted_components, log_likelihood = state
-            return jnp.abs(log_likelihood - prev_log_likelihood) > tol
-
-        # Run EM algorithm
-        state = (mixing_probs, fitted_components, prev_log_likelihood)
         for _ in range(max_iter):
-            state = em_step(state)
-            if not convergence_check(state):
-                break
+            log_pdfs = jnp.stack(
+                [
+                    _component_logpdf(dist, args, kwds, data)
+                    for dist, (args, kwds) in zip(component_dists, component_params)
+                ],
+                axis=1,
+            )
+            log_weights = jnp.log(jnp.clip(mixing_probs, 1e-12)) + log_pdfs
+            log_norm = jax.scipy.special.logsumexp(log_weights, axis=1, keepdims=True)
+            responsibilities = jnp.exp(log_weights - log_norm)
 
-        mixing_probs, fitted_components, _ = state
+            Nk = jnp.sum(responsibilities, axis=0)
+            mixing_probs = jnp.clip(Nk / jnp.sum(Nk), 1e-12)
+            mixing_probs = mixing_probs / jnp.sum(mixing_probs)
+
+            split_keys = random.split(rng_key, n_components + 1)
+            rng_key = split_keys[0]
+            component_keys = split_keys[1:]
+
+            new_params = []
+            for idx, key in enumerate(component_keys):
+                args_i, kwds_i = component_params[idx]
+                updated = _update_component_with_weights(
+                    data,
+                    responsibilities[:, idx],
+                    component_dists[idx],
+                    args_i,
+                    kwds_i,
+                    key,
+                )
+                new_params.append(updated)
+            component_params = new_params
+
+            log_likelihood = float(jnp.mean(log_norm))
+            if abs(log_likelihood - prev_log_likelihood) < tol_value:
+                prev_log_likelihood = log_likelihood
+                break
+            prev_log_likelihood = log_likelihood
+
+        fitted_components = [
+            dist(*args, **kwds)
+            for dist, (args, kwds) in zip(component_dists, component_params)
+        ]
         return mixing_probs, fitted_components
 
 

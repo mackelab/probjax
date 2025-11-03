@@ -1,9 +1,9 @@
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Array, PRNGKeyArray
+from jaxtyping import Array, ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous
 from probjax.stats.constraints import real, symmetric_positive_definite_matrix
@@ -383,6 +383,42 @@ class multivariate_normal_gen(rv_continuous):
         rv._batch_shape = loc.shape[:-1]
         rv._event_shape = loc.shape[-1:]
         return rv
+
+    @classmethod
+    def fit(
+        cls,
+        data: ArrayLike,
+        *,
+        weights: Optional[ArrayLike] = None,
+        **kwargs,
+    ):
+        """Closed-form estimators using sample mean and covariance."""
+        data = jnp.asarray(data)
+        if data.ndim == 1:
+            data = data[..., None]
+        dtype = data.dtype
+        n = data.shape[0]
+
+        if weights is not None:
+            weights = jnp.asarray(weights, dtype=dtype).reshape((n,))
+            if weights.shape[0] != n:
+                raise ValueError("weights must have the same number of rows as data")
+            weights = jnp.clip(weights, 0)
+            total = jnp.sum(weights)
+            total = jnp.where(total > 0, total, jnp.asarray(n, dtype=dtype))
+            weights = weights / total
+            loc = jnp.sum(weights[:, None] * data, axis=0)
+            centered = data - loc
+            cov = (centered * weights[:, None]).T @ centered
+        else:
+            loc = jnp.mean(data, axis=0)
+            centered = data - loc
+            denom = jnp.maximum(n - 1, 1)
+            cov = centered.T @ centered / denom
+
+        eps = jnp.asarray(1e-6, dtype=cov.dtype)
+        cov = cov + eps * jnp.eye(cov.shape[-1], dtype=cov.dtype)
+        return loc, cov
 
 
 multivariate_normal = multivariate_normal_gen(name="multivariate_normal")

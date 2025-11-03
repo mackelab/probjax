@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -95,7 +95,13 @@ class chi2_gen(rv_continuous):
         )
 
     @classmethod
-    def fit(cls, data: ArrayLike, **kwds):
+    def fit(
+        cls,
+        data: ArrayLike,
+        *,
+        weights: Optional[ArrayLike] = None,
+        **kwds,
+    ):
         """Maximum likelihood estimation of chi-squared distribution parameters.
 
         The MLE for the chi-squared distribution has a closed-form solution:
@@ -116,11 +122,26 @@ class chi2_gen(rv_continuous):
             The fitted parameters (df, loc, scale)
         """
         data = jnp.asarray(data)
-        loc = 0.0  # Fixed at 0
-        mean = jnp.mean(data)
-        var = jnp.var(data)
-        df = mean**2 / var
-        scale = mean / df
+        data = jnp.reshape(data, (-1,))
+        dtype = data.dtype
+
+        if weights is not None:
+            weights = jnp.asarray(weights, dtype=dtype).reshape((-1,))
+            if weights.shape[0] != data.shape[0]:
+                raise ValueError("weights must have the same length as data")
+            weights = jnp.clip(weights, 0)
+            total = jnp.sum(weights)
+            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=dtype))
+            weights = weights / total
+            mean = jnp.sum(weights * data)
+            var = jnp.sum(weights * (data - mean) ** 2)
+        else:
+            mean = jnp.mean(data)
+            var = jnp.var(data)
+
+        loc = jnp.asarray(0.0, dtype=dtype)
+        df = mean**2 / jnp.maximum(var, jnp.asarray(1e-12, dtype=dtype))
+        scale = mean / jnp.maximum(df, jnp.asarray(1e-12, dtype=dtype))
         return (df, loc, scale)
 
 

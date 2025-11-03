@@ -5,7 +5,7 @@ Beta Distribution (:mod:`probjax.stats.beta`)
 This module contains the Beta distribution.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -444,7 +444,13 @@ class beta_gen(rv_continuous, rv_exponential_family):
         return gammaln(alpha) + gammaln(beta) - gammaln(alpha + beta)
 
     @classmethod
-    def fit(cls, data: ArrayLike, **kwds):
+    def fit(
+        cls,
+        data: ArrayLike,
+        *,
+        weights: Optional[ArrayLike] = None,
+        **kwds,
+    ):
         """Maximum likelihood estimation of beta distribution parameters.
 
         The MLE for the beta distribution requires solving a system of equations:
@@ -466,14 +472,28 @@ class beta_gen(rv_continuous, rv_exponential_family):
             The fitted parameters (alpha, beta)
         """
         data = jnp.asarray(data)
+        data = jnp.reshape(data, (-1,))
+        dtype = data.dtype
         log_data = jnp.log(data)
         log_1_minus_data = jnp.log(1 - data)
-        mean_log_data = jnp.mean(log_data)
-        mean_log_1_minus_data = jnp.mean(log_1_minus_data)
 
-        # Initial guess using method of moments
-        mean_data = jnp.mean(data)
-        var_data = jnp.var(data)
+        if weights is not None:
+            weights = jnp.asarray(weights, dtype=dtype).reshape((-1,))
+            if weights.shape[0] != data.shape[0]:
+                raise ValueError("weights must have the same length as data")
+            weights = jnp.clip(weights, 0)
+            total = jnp.sum(weights)
+            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=dtype))
+            weights = weights / total
+            mean_data = jnp.sum(weights * data)
+            mean_log_data = jnp.sum(weights * log_data)
+            mean_log_1_minus_data = jnp.sum(weights * log_1_minus_data)
+            var_data = jnp.sum(weights * (data - mean_data) ** 2)
+        else:
+            mean_log_data = jnp.mean(log_data)
+            mean_log_1_minus_data = jnp.mean(log_1_minus_data)
+            mean_data = jnp.mean(data)
+            var_data = jnp.var(data)
         alpha = mean_data * (mean_data * (1 - mean_data) / var_data - 1)
         beta = (1 - mean_data) * (mean_data * (1 - mean_data) / var_data - 1)
 
@@ -503,7 +523,7 @@ class beta_gen(rv_continuous, rv_exponential_family):
             return jnp.array([alpha - delta[0], beta - delta[1]])
 
         # Run a few iterations
-        params = jnp.array([alpha, beta])
+        params = jnp.array([alpha, beta], dtype=dtype)
         for _ in range(10):
             params = newton_step(params)
 

@@ -5,7 +5,7 @@ Normal Distribution (:mod:`probjax.stats.norm`)
 This module contains the Normal (Gaussian) distribution.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
@@ -427,7 +427,7 @@ class norm_gen(rv_continuous, rv_exponential_family):
         return 0.5 * (loc**2 / scale**2 + jnp.log(2 * jnp.pi * scale**2))
 
     @classmethod
-    def fit(cls, data: ArrayLike, **kwds):
+    def fit(cls, data: ArrayLike, weights: Optional[ArrayLike] = None, **kwds):
         """Maximum likelihood estimation of normal distribution parameters.
 
         The MLE for the normal distribution has a closed-form solution:
@@ -447,8 +447,25 @@ class norm_gen(rv_continuous, rv_exponential_family):
             The fitted parameters (loc, scale)
         """
         data = jnp.asarray(data)
-        loc = jnp.mean(data)
-        scale = jnp.std(data)
+        if data.ndim != 1:
+            data = jnp.reshape(data, (-1,))
+
+        if weights is None:
+            loc = jnp.mean(data)
+            var = jnp.var(data)
+        else:
+            weights = jnp.asarray(weights, dtype=data.dtype).reshape((-1,))
+            if weights.shape[0] != data.shape[0]:
+                raise ValueError("weights must have the same length as data")
+            weights = jnp.clip(weights, a_min=0)
+            total = jnp.sum(weights)
+            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=data.dtype))
+            weights = weights / total
+            loc = jnp.sum(weights * data)
+            diff = data - loc
+            var = jnp.sum(weights * diff**2)
+
+        scale = jnp.sqrt(jnp.maximum(var, jnp.asarray(1e-6, dtype=data.dtype)))
         return loc, scale
 
 

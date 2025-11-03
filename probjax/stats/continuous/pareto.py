@@ -5,9 +5,10 @@ Pareto Distribution (:mod:`probjax.stats.pareto`)
 This module contains the Pareto distribution.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax.numpy as jnp
+from jax import random
 from jax.scipy.stats import pareto as _pareto
 from jaxtyping import ArrayLike, PRNGKeyArray
 
@@ -48,22 +49,22 @@ class pareto_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def pdf(cls, x, b=1.0, alpha=1.0, **kwargs):
         """Probability density function of the Pareto distribution."""
-        return _pareto.pdf(x, b=b, scale=alpha)
+        return _pareto.pdf(x, b=alpha, scale=b)
 
     @classmethod
     def logpdf(cls, x, b=1.0, alpha=1.0, **kwargs):
         """Log of the probability density function of the Pareto distribution."""
-        return _pareto.logpdf(x, b=b, scale=alpha)
+        return _pareto.logpdf(x, b=alpha, scale=b)
 
     @classmethod
     def cdf(cls, x, b=1.0, alpha=1.0, **kwargs):
         """Cumulative distribution function of the Pareto distribution."""
-        return _pareto.cdf(x, b=b, scale=alpha)
+        return _pareto.cdf(x, b=alpha, scale=b)
 
     @classmethod
     def ppf(cls, q, b=1.0, alpha=1.0, **kwargs):
         """Percent point function (inverse of cdf) of the Pareto distribution."""
-        return _pareto.ppf(q, b=b, scale=alpha)
+        return _pareto.ppf(q, b=alpha, scale=b)
 
     @classmethod
     def rvs(
@@ -78,22 +79,27 @@ class pareto_gen(rv_continuous, rv_exponential_family):
         b = jnp.asarray(b)
         alpha = jnp.asarray(alpha)
         event_shape = jnp.broadcast_shapes(b.shape, alpha.shape)
-        return _pareto.rvs(b=b, scale=alpha, size=shape + event_shape, key=rng)
+        b = jnp.broadcast_to(b, event_shape)
+        alpha = jnp.broadcast_to(alpha, event_shape)
+        size = shape + event_shape
+        dtype = jnp.result_type(b, alpha)
+        samples = random.pareto(rng, alpha, shape=size, dtype=dtype)
+        return (samples + 1.0) * b
 
     @classmethod
     def sf(cls, x, b=1.0, alpha=1.0, **kwargs):
         """Survival function (1 - cdf) of the Pareto distribution."""
-        return _pareto.sf(x, b=b, scale=alpha)
+        return _pareto.sf(x, b=alpha, scale=b)
 
     @classmethod
     def isf(cls, q, b=1.0, alpha=1.0, **kwargs):
         """Inverse survival function (inverse of sf) of the Pareto distribution."""
-        return _pareto.isf(q, b=b, scale=alpha)
+        return _pareto.isf(q, b=alpha, scale=b)
 
     @classmethod
     def logcdf(cls, x, b=1.0, alpha=1.0, **kwargs):
         """Log of the cumulative distribution function of the Pareto distribution."""
-        return _pareto.logcdf(x, b=b, scale=alpha)
+        return _pareto.logcdf(x, b=alpha, scale=b)
 
     @classmethod
     def mean(cls, b=1.0, alpha=1.0, **kwargs):
@@ -165,7 +171,13 @@ class pareto_gen(rv_continuous, rv_exponential_family):
         return jnp.log(alpha * b**alpha)
 
     @classmethod
-    def fit(cls, data: ArrayLike, **kwds):
+    def fit(
+        cls,
+        data: ArrayLike,
+        *,
+        weights: Optional[ArrayLike] = None,
+        **kwds,
+    ):
         """Maximum likelihood estimation of Pareto distribution parameters.
 
         The MLE for the Pareto distribution has a closed-form solution:
@@ -184,6 +196,8 @@ class pareto_gen(rv_continuous, rv_exponential_family):
         params : tuple
             The fitted parameters (b, alpha)
         """
+        if weights is not None:
+            raise NotImplementedError("Weighted fitting is not implemented for the Pareto distribution.")
         data = jnp.asarray(data)
         b = jnp.min(data)
         alpha = len(data) / jnp.sum(jnp.log(data / b))

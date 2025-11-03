@@ -5,7 +5,7 @@ Uniform Distribution (:mod:`probjax.stats.uniform`)
 This module contains the Uniform distribution.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
@@ -362,7 +362,13 @@ class uniform_gen(rv_continuous):
         return -1.2 * jnp.ones_like(low)
 
     @classmethod
-    def fit(cls, data: ArrayLike, **kwds):
+    def fit(
+        cls,
+        data: ArrayLike,
+        *,
+        weights: Optional[ArrayLike] = None,
+        **kwds,
+    ):
         """Maximum likelihood estimation of uniform distribution parameters.
 
         The MLE for the uniform distribution has a closed-form solution:
@@ -381,6 +387,8 @@ class uniform_gen(rv_continuous):
         params : tuple
             The fitted parameters (low, high)
         """
+        if weights is not None:
+            raise NotImplementedError("Weighted fitting is not implemented for the uniform distribution.")
         data = jnp.asarray(data)
         low = jnp.min(data)
         high = jnp.max(data)

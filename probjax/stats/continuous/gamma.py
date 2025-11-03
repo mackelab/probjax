@@ -5,7 +5,7 @@ Gamma Distribution (:mod:`probjax.stats.gamma`)
 This module contains the Gamma distribution.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -405,7 +405,13 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         return gammaln(alpha) - alpha * jnp.log(beta)
 
     @classmethod
-    def fit(cls, data: ArrayLike, **kwds):
+    def fit(
+        cls,
+        data: ArrayLike,
+        *,
+        weights: Optional[ArrayLike] = None,
+        **kwds,
+    ):
         """Maximum likelihood estimation of gamma distribution parameters.
 
         The MLE for the gamma distribution has a closed-form solution for beta:
@@ -427,16 +433,29 @@ class gamma_gen(rv_continuous, rv_exponential_family):
             The fitted parameters (alpha, beta)
         """
         data = jnp.asarray(data)
+        data = jnp.reshape(data, (-1,))
+        dtype = data.dtype
         log_data = jnp.log(data)
-        mean_data = jnp.mean(data)
-        mean_log_data = jnp.mean(log_data)
+
+        if weights is not None:
+            weights = jnp.asarray(weights, dtype=dtype).reshape((-1,))
+            if weights.shape[0] != data.shape[0]:
+                raise ValueError("weights must have the same length as data")
+            weights = jnp.clip(weights, 0)
+            total = jnp.sum(weights)
+            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=dtype))
+            weights = weights / total
+            mean_data = jnp.sum(weights * data)
+            mean_log_data = jnp.sum(weights * log_data)
+        else:
+            mean_data = jnp.mean(data)
+            mean_log_data = jnp.mean(log_data)
 
         # Initial guess for alpha
         alpha = 0.5 / (jnp.log(mean_data) - mean_log_data)
 
         # Newton-Raphson iteration to find alpha
         def newton_step(alpha):
-            # Compute the function and its derivative
             f = jnp.log(alpha) - digamma(alpha) - (jnp.log(mean_data) - mean_log_data)
             f_prime = 1.0 / alpha - jax.grad(digamma)(alpha)
             return alpha - f / f_prime
@@ -446,7 +465,7 @@ class gamma_gen(rv_continuous, rv_exponential_family):
             alpha = newton_step(alpha)
 
         # Compute beta
-        beta = alpha / mean_data
+        beta = alpha / jnp.maximum(mean_data, jnp.asarray(1e-12, dtype=dtype))
 
         return alpha, beta
 
