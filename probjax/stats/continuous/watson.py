@@ -51,7 +51,7 @@ def _log_normalization(kappa: Array, dim: int) -> Array:
     return log_uniform - log_hyp1f1
 
 
-def _watson_moment_ratio(kappa: float, dim: int, dtype) -> float:
+def _watson_moment_ratio(kappa, dim: int, dtype):
     """Return E[(μᵀX)²] for a Watson distribution with parameter κ."""
     calc_dtype = jnp.result_type(dtype, jnp.float32)
     kappa_arr = jnp.asarray(kappa, dtype=calc_dtype)
@@ -60,7 +60,7 @@ def _watson_moment_ratio(kappa: float, dim: int, dtype) -> float:
     m0 = hyp1f1(a, b, kappa_arr)
     m1 = hyp1f1(a + 1.0, b + 1.0, kappa_arr)
     ratio = (a / b) * m1 / m0
-    return float(ratio)
+    return ratio
 
 
 def _solve_watson_kappa(target: float, dim: int, dtype) -> jnp.ndarray:
@@ -81,15 +81,15 @@ def _solve_watson_kappa(target: float, dim: int, dtype) -> jnp.ndarray:
 
     if target > iso:
         lo, hi = 0.0, 1.0
-        ratio_hi = _watson_moment_ratio(hi, dim, dtype)
+        ratio_hi = float(_watson_moment_ratio(hi, dim, dtype))
         while ratio_hi <= target and hi < 1e6:
             hi *= 2.0
-            ratio_hi = _watson_moment_ratio(hi, dim, dtype)
+            ratio_hi = float(_watson_moment_ratio(hi, dim, dtype))
         if ratio_hi <= target:
             return jnp.asarray(hi, dtype=dtype)
         for _ in range(max_iter):
             mid = 0.5 * (lo + hi)
-            ratio_mid = _watson_moment_ratio(mid, dim, dtype)
+            ratio_mid = float(_watson_moment_ratio(mid, dim, dtype))
             if abs(ratio_mid - target) <= tol:
                 return jnp.asarray(mid, dtype=dtype)
             if ratio_mid < target:
@@ -102,15 +102,15 @@ def _solve_watson_kappa(target: float, dim: int, dtype) -> jnp.ndarray:
         return jnp.asarray(kappa, dtype=dtype)
 
     hi, lo = 0.0, -1.0
-    ratio_lo = _watson_moment_ratio(lo, dim, dtype)
+    ratio_lo = float(_watson_moment_ratio(lo, dim, dtype))
     while ratio_lo >= target and lo > -1e6:
         lo *= 2.0
-        ratio_lo = _watson_moment_ratio(lo, dim, dtype)
+        ratio_lo = float(_watson_moment_ratio(lo, dim, dtype))
     if ratio_lo >= target:
         return jnp.asarray(lo, dtype=dtype)
     for _ in range(max_iter):
         mid = 0.5 * (lo + hi)
-        ratio_mid = _watson_moment_ratio(mid, dim, dtype)
+        ratio_mid = float(_watson_moment_ratio(mid, dim, dtype))
         if abs(ratio_mid - target) <= tol:
             return jnp.asarray(mid, dtype=dtype)
         if ratio_mid > target:
@@ -272,6 +272,14 @@ class watson_gen(rv_continuous, rv_exponential_family):
         return mean_direction
 
     @classmethod
+    def mean_direction_vector(cls, mean_direction: Array, kappa: Array = 0.0, **kwargs):
+        """Representative mean direction (principal axis)."""
+        mean_direction = _normalize_vector(jnp.asarray(mean_direction))
+        kappa = jnp.asarray(kappa)
+        batch_shape = jax.lax.broadcast_shapes(mean_direction.shape[:-1], kappa.shape)
+        return jnp.broadcast_to(mean_direction, batch_shape + mean_direction.shape[-1:])
+
+    @classmethod
     def log_partition(cls, mean_direction: Array, kappa: Array = 0.0, **kwargs):
         mean_direction = _normalize_vector(jnp.asarray(mean_direction))
         kappa = jnp.asarray(kappa)
@@ -296,6 +304,65 @@ class watson_gen(rv_continuous, rv_exponential_family):
     def sufficient_statistics(cls, x: Array, **kwargs):
         x = _normalize_vector(jnp.asarray(x))
         return jnp.square(x)
+
+    @classmethod
+    def mean_direction_dyad(cls, mean_direction: Array, kappa: Array = 0.0, **kwargs):
+        """Expected dyadic product :math:`E[XX^T]` for the Watson distribution."""
+        mean_direction = _normalize_vector(jnp.asarray(mean_direction))
+        kappa = jnp.asarray(kappa, dtype=mean_direction.dtype)
+
+        dim = mean_direction.shape[-1]
+        if dim < 1:
+            raise ValueError("mean_direction must have at least one dimension.")
+
+        batch_shape = jax.lax.broadcast_shapes(mean_direction.shape[:-1], kappa.shape)
+        mean_direction = jnp.broadcast_to(mean_direction, batch_shape + (dim,))
+        kappa = jnp.broadcast_to(kappa, batch_shape)
+
+        if dim == 1:
+            return jnp.broadcast_to(jnp.ones((1, 1), dtype=mean_direction.dtype), batch_shape + (1, 1))
+
+        rho = jnp.asarray(_watson_moment_ratio(kappa, dim, mean_direction.dtype), dtype=mean_direction.dtype)
+        rho = jnp.broadcast_to(rho, batch_shape)
+
+        mu_outer = jnp.einsum("...i,...j->...ij", mean_direction, mean_direction)
+        identity = jnp.eye(dim, dtype=mean_direction.dtype)
+        identity = jnp.broadcast_to(identity, batch_shape + (dim, dim))
+
+        rho_term = rho[..., None, None] * mu_outer
+        perp_scale = ((1.0 - rho) / jnp.asarray(dim - 1, dtype=mean_direction.dtype))[..., None, None]
+        perp_term = perp_scale * (identity - mu_outer)
+        return rho_term + perp_term
+
+    @classmethod
+    def dispersion(cls, mean_direction: Array, kappa: Array = 0.0, **kwargs):
+        """Dispersion matrix defined as :math:`E[XX^T] - I/d`."""
+        dyad = cls.mean_direction_dyad(mean_direction, kappa, **kwargs)
+        dim = dyad.shape[-1]
+        identity = jnp.eye(dim, dtype=dyad.dtype) / dim
+        identity = jnp.broadcast_to(identity, dyad.shape)
+        return dyad - identity
+
+    @classmethod
+    def axial_dispersion(cls, mean_direction: Array, kappa: Array = 0.0, **kwargs):
+        """Dispersion along the principal axis :math:`1 - E[(\\mu^T X)^2]`."""
+        mean_direction = _normalize_vector(jnp.asarray(mean_direction))
+        kappa = jnp.asarray(kappa, dtype=mean_direction.dtype)
+        dim = mean_direction.shape[-1]
+
+        if dim < 1:
+            raise ValueError("mean_direction must have at least one dimension.")
+
+        batch_shape = jax.lax.broadcast_shapes(mean_direction.shape[:-1], kappa.shape)
+        mean_direction = jnp.broadcast_to(mean_direction, batch_shape + (dim,))
+        kappa = jnp.broadcast_to(kappa, batch_shape)
+
+        rho = jnp.asarray(
+            _watson_moment_ratio(kappa, dim, mean_direction.dtype),
+            dtype=mean_direction.dtype,
+        )
+        rho = jnp.broadcast_to(rho, batch_shape)
+        return 1.0 - rho
 
     @classmethod
     def fit(

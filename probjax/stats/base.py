@@ -1016,6 +1016,38 @@ class rv_continuous_frozen(rv_frozen):
         """
         return self.dist.rvs(rng, *self.args, shape=shape, **self.kwds)
 
+    def mean_direction(self):
+        """Return a representative mean direction when defined."""
+        if hasattr(self.dist, "mean_direction_vector"):
+            return self.dist.mean_direction_vector(*self.args, **self.kwds)
+        raise NotImplementedError(
+            f"{self.dist.__class__.__name__} does not implement mean_direction_vector."
+        )
+
+    def mean_direction_dyad(self):
+        """Return expected dyadic product when defined."""
+        if hasattr(self.dist, "mean_direction_dyad"):
+            return self.dist.mean_direction_dyad(*self.args, **self.kwds)
+        raise NotImplementedError(
+            f"{self.dist.__class__.__name__} does not implement mean_direction_dyad."
+        )
+
+    def dispersion(self):
+        """Return dispersion matrix when defined."""
+        if hasattr(self.dist, "dispersion"):
+            return self.dist.dispersion(*self.args, **self.kwds)
+        raise NotImplementedError(
+            f"{self.dist.__class__.__name__} does not implement dispersion."
+        )
+
+    def axial_dispersion(self):
+        """Return axial dispersion (variance along principal axis) when defined."""
+        if hasattr(self.dist, "axial_dispersion"):
+            return self.dist.axial_dispersion(*self.args, **self.kwds)
+        raise NotImplementedError(
+            f"{self.dist.__class__.__name__} does not implement axial_dispersion."
+        )
+
 
 # Register frozen classes as JAX PyTrees
 jax.tree_util.register_pytree_node_class(rv_frozen)

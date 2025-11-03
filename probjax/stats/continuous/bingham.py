@@ -346,6 +346,29 @@ class bingham_gen(rv_continuous, rv_exponential_family):
         return jnp.zeros(batch_shape + (event_dim,), dtype=orientation.dtype)
 
     @classmethod
+    def mean_direction_vector(cls, orientation: Array, concentration: Array, **kwargs):
+        """Representative mean direction (axis with largest concentration)."""
+        orientation = jnp.asarray(orientation)
+        concentration = jnp.asarray(concentration)
+        if orientation.ndim < 2:
+            raise ValueError("orientation must be at least two-dimensional.")
+        if concentration.ndim == 0 or concentration.shape[-1] != orientation.shape[-1]:
+            raise ValueError("concentration must have trailing dimension equal to event dimension.")
+
+        batch_shape = jax.lax.broadcast_shapes(
+            orientation.shape[:-2], concentration.shape[:-1]
+        )
+        orientation = jnp.broadcast_to(orientation, batch_shape + orientation.shape[-2:])
+        concentration = jnp.broadcast_to(concentration, batch_shape + concentration.shape[-1:])
+
+        idx = jnp.argmax(concentration, axis=-1)
+        idx_exp = idx[..., None, None]
+        vector = jnp.take_along_axis(orientation, idx_exp, axis=-1)[..., 0]
+        norm = jnp.linalg.norm(vector, axis=-1, keepdims=True)
+        vector = vector / (norm + _EPS)
+        return vector
+
+    @classmethod
     def log_partition(cls, orientation: Array, concentration: Array, **kwargs):
         orientation = jnp.asarray(orientation)
         concentration = jnp.asarray(concentration)
@@ -378,6 +401,63 @@ class bingham_gen(rv_continuous, rv_exponential_family):
     def sufficient_statistics(cls, x: Array, **kwargs):
         x = jnp.asarray(x)
         return jnp.einsum("...i,...j->...ij", x, x)
+
+    @classmethod
+    def mean_direction_dyad(cls, orientation: Array, concentration: Array, **kwargs):
+        """Expected dyadic product :math:`E[XX^T]` of a Bingham-distributed vector."""
+        orientation = jnp.asarray(orientation)
+        concentration = jnp.asarray(concentration)
+        if orientation.ndim < 2:
+            raise ValueError("orientation must be at least two-dimensional.")
+
+        dim = orientation.shape[-1]
+        if concentration.ndim == 0 or concentration.shape[-1] != dim:
+            raise ValueError("concentration must have trailing dimension equal to orientation dimension.")
+
+        dtype = jnp.result_type(orientation.dtype, concentration.dtype, jnp.float32)
+        orientation = orientation.astype(dtype)
+        concentration = concentration.astype(dtype)
+
+        batch_shape = jax.lax.broadcast_shapes(orientation.shape[:-2], concentration.shape[:-1])
+        orientation = jnp.broadcast_to(orientation, batch_shape + (dim, dim))
+        concentration = jnp.broadcast_to(concentration, batch_shape + (dim,))
+
+        eye = jnp.eye(dim, dtype=dtype)
+
+        def log_partition_diag(conc_vec):
+            return cls.log_partition(eye, conc_vec, **kwargs)
+
+        grad_log_partition = jax.grad(log_partition_diag)
+
+        orientation_flat = orientation.reshape((-1, dim, dim))
+        concentration_flat = concentration.reshape((-1, dim))
+
+        def compute(o, c):
+            expected_axis = grad_log_partition(c)
+            expected_axis = expected_axis / jnp.sum(expected_axis)
+            weighted = o * expected_axis[None, :]
+            return weighted @ jnp.swapaxes(o, -1, -2)
+
+        dyad_flat = jax.vmap(compute)(orientation_flat, concentration_flat)
+        dyad = dyad_flat.reshape(batch_shape + (dim, dim))
+        return dyad
+
+    @classmethod
+    def dispersion(cls, orientation: Array, concentration: Array, **kwargs):
+        """Dispersion matrix defined as :math:`E[XX^T] - I/d`."""
+        dyad = cls.mean_direction_dyad(orientation, concentration, **kwargs)
+        dim = dyad.shape[-1]
+        identity = jnp.eye(dim, dtype=dyad.dtype) / dim
+        identity = jnp.broadcast_to(identity, dyad.shape)
+        return dyad - identity
+
+    @classmethod
+    def axial_dispersion(cls, orientation: Array, concentration: Array, **kwargs):
+        """Dispersion along the principal axis :math:`1 - \\mu^T E[XX^T] \\mu`."""
+        mean_vec = cls.mean_direction_vector(orientation, concentration, **kwargs)
+        dyad = cls.mean_direction_dyad(orientation, concentration, **kwargs)
+        axial_moment = jnp.einsum("...i,...ij,...j->...", mean_vec, dyad, mean_vec)
+        return 1.0 - axial_moment
 
     @classmethod
     def fit(
