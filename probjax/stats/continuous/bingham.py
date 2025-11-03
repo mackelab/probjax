@@ -78,13 +78,13 @@ def deterministic_sphere_integration(
     n_theta: int = 200,
     n_phi: int = 200,
 ) -> Array:
-    """Deterministic trapezoidal integration on S^2 for quadratic exponentials."""
+    """Log integral of exp-quadratic density on S^2 via trapezoidal rule."""
     dtype = jnp.result_type(kappa, beta, mu, mu_beta)
     thetas = jnp.linspace(0.0, jnp.pi, n_theta, dtype=dtype)
     phis = jnp.linspace(0.0, 2.0 * jnp.pi, n_phi, dtype=dtype)
     Theta, Phi = jnp.meshgrid(thetas, phis, indexing="ij")
 
-    sinT = jnp.sin(Theta)
+    sinT = jnp.clip(jnp.sin(Theta), _EPS, None)
     cosT = jnp.cos(Theta)
     cosP = jnp.cos(Phi)
     sinP = jnp.sin(Phi)
@@ -110,13 +110,18 @@ def deterministic_sphere_integration(
     )
 
     exponent = kappa * dot_mu**2 + beta * dot_mubeta**2
-    integrand = jnp.exp(exponent) * sinT
+    max_exponent = jnp.max(exponent, axis=(-2, -1), keepdims=True)
+    shifted = exponent - max_exponent
+    integrand = jnp.exp(shifted) * sinT
 
     dtheta = jnp.pi / (n_theta - 1)
     dphi = 2.0 * jnp.pi / (n_phi - 1)
     integral_phi = _trapz(integrand, dx=dphi, axis=-1)
     integral = _trapz(integral_phi, dx=dtheta, axis=-1)
-    return integral
+    log_integral = (
+        jnp.log(integral + _EPS) + jnp.squeeze(max_exponent, axis=(-2, -1))
+    )
+    return log_integral
 
 
 def sample_sphere(key: PRNGKeyArray, n_samples: int, dtype=jnp.float32) -> Array:
@@ -385,10 +390,10 @@ class bingham_gen(rv_continuous, rv_exponential_family):
             )
             n_theta = kwargs.pop("n_theta", 200)
             n_phi = kwargs.pop("n_phi", 200)
-            integral = deterministic_sphere_integration(
+            log_integral = deterministic_sphere_integration(
                 kappa, beta, mu, mu_beta, n_theta=n_theta, n_phi=n_phi
             )
-            return jnp.log(integral) + base
+            return log_integral + base
 
         parameter_matrix = _build_parameter_matrix(orientation, concentration)
         return _approximate_log_partition_mc(parameter_matrix)

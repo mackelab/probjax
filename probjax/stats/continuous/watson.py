@@ -55,12 +55,73 @@ def _watson_moment_ratio(kappa, dim: int, dtype):
     """Return E[(μᵀX)²] for a Watson distribution with parameter κ."""
     calc_dtype = jnp.result_type(dtype, jnp.float32)
     kappa_arr = jnp.asarray(kappa, dtype=calc_dtype)
-    a = jnp.asarray(0.5, dtype=calc_dtype)
-    b = jnp.asarray(0.5 * dim, dtype=calc_dtype)
-    m0 = hyp1f1(a, b, kappa_arr)
-    m1 = hyp1f1(a + 1.0, b + 1.0, kappa_arr)
-    ratio = (a / b) * m1 / m0
-    return ratio
+
+    abs_kappa = jnp.abs(kappa_arr)
+    small_mask = abs_kappa < jnp.asarray(1e-4, dtype=calc_dtype)
+    large_mask = abs_kappa > jnp.asarray(50.0, dtype=calc_dtype)
+    mid_mask = ~(small_mask | large_mask)
+
+    def series():
+        k = kappa_arr
+        dim_val = jnp.asarray(dim, dtype=calc_dtype)
+        base = jnp.full_like(k, 1.0 / dim_val, dtype=calc_dtype)
+        term2 = jnp.where(
+            dim > 2,
+            k / (dim_val * (dim_val + jnp.asarray(2.0, dtype=calc_dtype))),
+            jnp.zeros_like(k),
+        )
+        term4 = jnp.where(
+            dim > 4,
+            (k**2)
+            / (
+                dim_val
+                * (dim_val + jnp.asarray(2.0, dtype=calc_dtype))
+                * (dim_val + jnp.asarray(4.0, dtype=calc_dtype))
+            )
+            * (dim_val + jnp.asarray(6.0, dtype=calc_dtype))
+            / (dim_val + jnp.asarray(2.0, dtype=calc_dtype)),
+            jnp.zeros_like(k),
+        )
+        approx = base + term2 + term4
+        return approx
+
+    def hyp1f1_ratio():
+        k = kappa_arr.astype(calc_dtype)
+        a = jnp.asarray(0.5, dtype=calc_dtype)
+        b = jnp.asarray(0.5 * dim, dtype=calc_dtype)
+        m0 = hyp1f1(a, b, k)
+        m1 = hyp1f1(a + jnp.asarray(1.0, dtype=calc_dtype), b + jnp.asarray(1.0, dtype=calc_dtype), k)
+        ratio = (a / b) * m1 / m0
+        return ratio
+
+    def asymptotic():
+        sign = jnp.sign(kappa_arr)
+        mag = abs_kappa
+        dim_val = jnp.asarray(dim, dtype=calc_dtype)
+        ones = jnp.ones_like(kappa_arr, dtype=calc_dtype)
+        iso = ones / dim_val
+        approx = jnp.where(
+            sign >= 0,
+            ones
+            - (dim_val - jnp.asarray(1.0, dtype=calc_dtype))
+            / (jnp.asarray(2.0, dtype=calc_dtype) * mag)
+            + (dim_val - jnp.asarray(1.0, dtype=calc_dtype))
+            * (dim_val - jnp.asarray(3.0, dtype=calc_dtype))
+            / (jnp.asarray(8.0, dtype=calc_dtype) * mag**2 + _EPS),
+            iso,
+        )
+        return approx
+
+    result_series = series()
+    result_mid = hyp1f1_ratio()
+    result_large = asymptotic()
+
+    result = jnp.where(
+        small_mask,
+        result_series,
+        jnp.where(large_mask, result_large, result_mid),
+    )
+    return result
 
 
 def _solve_watson_kappa(target: float, dim: int, dtype) -> jnp.ndarray:
@@ -361,8 +422,13 @@ class watson_gen(rv_continuous, rv_exponential_family):
             _watson_moment_ratio(kappa, dim, mean_direction.dtype),
             dtype=mean_direction.dtype,
         )
+        rho = jnp.clip(
+            rho,
+            jnp.asarray(0.0, dtype=mean_direction.dtype),
+            jnp.asarray(1.0, dtype=mean_direction.dtype),
+        )
         rho = jnp.broadcast_to(rho, batch_shape)
-        return 1.0 - rho
+        return jnp.maximum(jnp.asarray(0.0, dtype=mean_direction.dtype), 1.0 - rho)
 
     @classmethod
     def fit(
