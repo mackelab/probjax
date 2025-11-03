@@ -70,6 +70,8 @@ __all__ = [
     'vonmises',
     'truncnorm',
     'pareto',
+    'watson',
+    'bingham',
     # Discrete distributions
     'bernoulli',
     'binomial',
