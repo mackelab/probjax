@@ -10,10 +10,10 @@ from typing import Optional, Tuple
 import jax.numpy as jnp
 from jax import random
 from jax.scipy.stats import expon as _expon
-from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import positive, strict_positive
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["expon"]
 
@@ -135,11 +135,11 @@ class expon_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         rate=1.0,
         shape: Tuple[int, ...] = (),
         **kwargs,
-    ) -> Float[Array, "..."]:
+    ) -> Array:
         """Random variates of the exponential distribution."""
         rate = jnp.asarray(rate)
         event_shape = rate.shape

@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax._src.util import safe_map
 from jax.extend.core import Literal, Primitive
+
 try:
     from jax.experimental.pjit import pjit_p
 except ImportError:
@@ -192,7 +193,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
 
         # print(subvars)
         # print(vars)
-        for v_sub, v in zip(subvars, vars):
+        for v_sub, v in zip(subvars, vars, strict=False):
             if v_sub in self.log_dets and not isinstance(v, Literal):
                 self.log_dets[v] = self.log_dets[v_sub]
 

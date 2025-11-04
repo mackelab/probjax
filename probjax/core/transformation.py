@@ -21,6 +21,7 @@ from probjax.core.interpreters.trace import TraceProcessingRule
 from probjax.core.jaxpr_propagation.interpret import interpret
 from probjax.core.jaxpr_propagation.propagate import propagate
 
+
 def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
     """Samples all random variables called in the probabilistic function. If rvs is
     given, it only samples the random variables in rvs.

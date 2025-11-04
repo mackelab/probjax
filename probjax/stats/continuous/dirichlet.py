@@ -11,10 +11,10 @@ import jax
 import jax.numpy as jnp
 from jax import random
 from jax.scipy.special import digamma, gammaln
-from jaxtyping import Array, ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import positive
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["dirichlet"]
 
@@ -93,7 +93,7 @@ class dirichlet_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         alpha: Array = None,
         shape: Tuple[int, ...] = (),
         **kwargs,

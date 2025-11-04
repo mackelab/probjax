@@ -2,9 +2,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jax.scipy.special import betainc, gammainc, digamma
+from jax.scipy.special import betainc, digamma, gammainc
 from scipy.special import betaincinv as scipy_betaincinv
 from scipy.special import gammaincinv as scipy_gammaincinv
+
 from probjax.stats.continuous import gamma, norm, uniform
 
 # Import your betaincinv function here
@@ -19,7 +20,7 @@ from probjax.utils.stats import differential_entropy, mle_dirichlet
     list(
         zip(
             np.random.uniform(0.0001, 10.0, size=(100,)),
-            np.random.uniform(0.0001, 10.0, size=(100,)),
+            np.random.uniform(0.0001, 10.0, size=(100,)), strict=False,
         )
     ),
 )
@@ -38,7 +39,9 @@ def test_betaincinv(a, b):
     x_scipy = scipy_betaincinv(a, b, p)
 
     # Should be close to the original p
-    assert jnp.allclose(x, x_scipy, atol=1e-4, rtol=1e-4), "Avg absolute error: {}".format(jnp.mean(jnp.abs(x - x_scipy)))
+    assert jnp.allclose(x, x_scipy, atol=1e-4, rtol=1e-4), (
+        "Avg absolute error: {}".format(jnp.mean(jnp.abs(x - x_scipy)))
+    )
 
 
 @pytest.mark.parametrize("a", np.random.uniform(0.001, 20.0, size=(100,)))
@@ -84,14 +87,22 @@ def test_differential_entropy(dist, num_samples):
 
 
 def test_digammainv():
-    x = jnp.linspace(0., 100.0, 1000)
+    x = jnp.linspace(0.0, 100.0, 1000)
     y = digamma(x)
     x_recovered = jax.vmap(digammainv)(y)
 
-    assert jnp.allclose(x, x_recovered, atol=1e-3), "Avg absolute error: {}".format(jnp.mean(jnp.abs(x - x_recovered)))
+    assert jnp.allclose(x, x_recovered, atol=1e-3), "Avg absolute error: {}".format(
+        jnp.mean(jnp.abs(x - x_recovered))
+    )
 
-@pytest.mark.parametrize("alpha", [jnp.ones(4), jnp.ones(4) * 0.1, np.random.uniform(0.0001, 10.0, size=(4,))])
+
+@pytest.mark.parametrize(
+    "alpha",
+    [jnp.ones(4), jnp.ones(4) * 0.1, np.random.uniform(0.0001, 10.0, size=(4,))],
+)
 def test_mle_dirichlet(alpha):
     xs = jax.random.dirichlet(jax.random.key(0), alpha, (100000,))
     alpha_mle = mle_dirichlet(xs)
-    assert jnp.allclose(alpha, alpha_mle, atol=1e-2, rtol=1e-2), "Avg absolute error: {}".format(jnp.mean(jnp.abs(alpha - alpha_mle)))
+    assert jnp.allclose(alpha, alpha_mle, atol=1e-2, rtol=1e-2), (
+        "Avg absolute error: {}".format(jnp.mean(jnp.abs(alpha - alpha_mle)))
+    )

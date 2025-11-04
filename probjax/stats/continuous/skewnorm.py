@@ -11,10 +11,10 @@ import jax
 import jax.numpy as jnp
 from jax import random
 from jax.scipy.special import erf
-from jaxtyping import PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
+from probjax.utils.typing import RngKey
 
 __all__ = ["skewnorm"]
 
@@ -97,7 +97,7 @@ class skewnorm_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         a=0.0,
         loc=0.0,
         scale=1.0,

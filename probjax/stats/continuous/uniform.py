@@ -10,10 +10,10 @@ from typing import Optional, Tuple
 import jax.numpy as jnp
 from jax import random
 from jax.scipy.stats import uniform as _uniform
-from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous
 from probjax.stats.constraints import interval, real
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["uniform"]
 
@@ -152,12 +152,12 @@ class uniform_gen(rv_continuous):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         low=0.0,
         high=1.0,
         shape: Tuple[int, ...] = (),
         **kwargs,
-    ) -> Float[Array, "..."]:
+    ) -> Array:
         """Random variates of the uniform distribution."""
         low = jnp.asarray(low)
         high = jnp.asarray(high)
@@ -388,7 +388,9 @@ class uniform_gen(rv_continuous):
             The fitted parameters (low, high)
         """
         if weights is not None:
-            raise NotImplementedError("Weighted fitting is not implemented for the uniform distribution.")
+            raise NotImplementedError(
+                "Weighted fitting is not implemented for the uniform distribution."
+            )
         data = jnp.asarray(data)
         low = jnp.min(data)
         high = jnp.max(data)

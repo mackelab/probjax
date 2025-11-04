@@ -10,10 +10,10 @@ from typing import Optional, Tuple
 import jax.numpy as jnp
 from jax import random
 from jax.scipy.stats import pareto as _pareto
-from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
+from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["pareto"]
 
@@ -69,7 +69,7 @@ class pareto_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         b=1.0,
         alpha=1.0,
         shape: Tuple[int, ...] = (),
@@ -197,7 +197,9 @@ class pareto_gen(rv_continuous, rv_exponential_family):
             The fitted parameters (b, alpha)
         """
         if weights is not None:
-            raise NotImplementedError("Weighted fitting is not implemented for the Pareto distribution.")
+            raise NotImplementedError(
+                "Weighted fitting is not implemented for the Pareto distribution."
+            )
         data = jnp.asarray(data)
         b = jnp.min(data)
         alpha = len(data) / jnp.sum(jnp.log(data / b))

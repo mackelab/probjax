@@ -44,7 +44,7 @@ class WithProgressBarAPI:
         progress_bar = f'\rProgress: |{bar}| {percent}%'
 
         progress_bar += " ".join(
-            f" {name}: {stat:.2f}" for name, stat in zip(cls._running_stats, stats)
+            f" {name}: {stat:.2f}" for name, stat in zip(cls._running_stats, stats, strict=False)
         )
 
         print(progress_bar, end="\r")

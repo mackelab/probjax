@@ -114,9 +114,7 @@ class FlowMatcher(nnx.Module):
 
         return jax.tree_util.tree_map(process_leaf, x, residual_correction)
 
-    def score(
-        self, t: ArrayLike, x: PyTree[Array], *args, **kwargs
-    ) -> PyTree[Array]:
+    def score(self, t: ArrayLike, x: PyTree[Array], *args, **kwargs) -> PyTree[Array]:
         """Score function for the model."""
         raise NotImplementedError(
             "Implemented only for specific implementation of this base class"
@@ -135,7 +133,6 @@ class FlowMatcher(nnx.Module):
         *args,
         **kwargs,
     ) -> Array:
-
         loss_fn = build_flow_matching_loss(
             self,
             interpolation_fn=self.interpolation_fn,
@@ -188,7 +185,6 @@ class MeanFlowMatcher(nnx.Module):
         self.rngs = rngs
         self._loss_kwargs: dict[str, object] = dict(loss_kwargs or {})
 
-
     def __call__(
         self, t: ArrayLike, x: Array, r: ArrayLike | None = None, *args, **kwargs
     ) -> Array:
@@ -208,7 +204,6 @@ class MeanFlowMatcher(nnx.Module):
 
         r: ArrayLike = t if r is None else jnp.clip(r, a_min=t, a_max=1.0)
 
-
         approx_mu_t = self.interpolation_fn(mu0, mu1, t)
         approx_std_t = jnp.sqrt(t**2 * std1**2 + (1 - t) ** 2 * std0**2)
 
@@ -218,8 +213,10 @@ class MeanFlowMatcher(nnx.Module):
         scale = ((t * std1**2) - (1 - t) * std0**2) / (
             (1 - t) ** 2 * std0**2 + t**2 * std1**2
         )
+
         def g(h):
-            return 1. + jnp.tanh(h/0.1)
+            return 1.0 + jnp.tanh(h / 0.1)
+
         geo_std = jnp.sqrt(std_r * std_t)
         scale_residual = geo_std * g(r - t)
 
@@ -274,7 +271,6 @@ class MeanFlowMatcher(nnx.Module):
         adaptive_weight_eps: float = 1e-3,
         **kwargs,
     ) -> Array:
-
         loss_fn = build_mean_flow_matching_loss(
             self,
             interpolation_fn=self.interpolation_fn,

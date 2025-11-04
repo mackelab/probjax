@@ -47,9 +47,7 @@ def _inv_logdet_odeint(drift, ys, ts, *args, **kwargs):
         return dx, dlogdet
 
     y0 = jax.tree_util.tree_map(lambda x: x[-1], ys)
-    logdet0 = jax.tree_util.tree_map(
-        lambda x: jnp.zeros_like(x[-1]), ys
-    )
+    logdet0 = jax.tree_util.tree_map(lambda x: jnp.zeros_like(x[-1]), ys)
     xs, logdets = _odeint(aug_drift, (y0, logdet0), ts[::-1], *args, **kwargs)
 
     yT = jax.tree_util.tree_map(lambda x: x[-1], xs)

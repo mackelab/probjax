@@ -9,10 +9,10 @@ from typing import Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_discrete, rv_exponential_family
 from probjax.stats.constraints import unit_interval
+from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["geometric"]
 
@@ -50,7 +50,7 @@ class geometric_gen(rv_discrete, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         p=None,
         shape: Tuple[int, ...] = (),
         **kwargs,

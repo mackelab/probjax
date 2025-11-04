@@ -10,10 +10,10 @@ from typing import Optional, Tuple
 import jax
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_discrete, rv_discrete_frozen, rv_exponential_family
 from probjax.stats.constraints import simplex
+from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["categorical"]
 
@@ -46,7 +46,7 @@ class categorical_gen(rv_discrete, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         probs=None,
         shape: Tuple[int, ...] = (),
         **kwargs,
@@ -126,7 +126,9 @@ class categorical_gen(rv_discrete, rv_exponential_family):
                 raise ValueError("weights must have the same length as data")
             weights = jnp.clip(weights, 0)
             total = jnp.sum(weights)
-            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=data.dtype))
+            total = jnp.where(
+                total > 0, total, jnp.asarray(data.shape[0], dtype=data.dtype)
+            )
             weights = weights / total
             counts = jnp.zeros((num_classes,), dtype=data.dtype)
             counts = counts.at[data].add(weights)

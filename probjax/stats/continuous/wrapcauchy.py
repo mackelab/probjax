@@ -9,10 +9,10 @@ from typing import Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
+from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["wrapcauchy"]
 
@@ -83,7 +83,7 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         loc=0.0,
         gamma=0.5,
         shape: Tuple[int, ...] = (),

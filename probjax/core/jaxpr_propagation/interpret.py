@@ -1,6 +1,7 @@
 from typing import Any, Callable, Optional, Sequence, Tuple
 
 from jax._src.util import safe_map as map
+
 try:
     from jax.experimental.pjit import pjit_p
 except ImportError:
@@ -52,7 +53,7 @@ def interpret(
             sub_outvars = []
             for v, val in zip(
                 sub_jaxpr.jaxpr.invars + sub_jaxpr.jaxpr.outvars,
-                known_invars + known_outvars,
+                known_invars + known_outvars, strict=False,
             ):
                 if val is None:
                     sub_outvars.append(v)

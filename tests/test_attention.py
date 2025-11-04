@@ -10,6 +10,7 @@ from probjax.nn.layers.attention import (
     flex_attention,
 )
 from probjax.nn.pallas_kernels.attention_mask_bias import (
+    CausalAlibiBias,
     CausalMask,
     ConstantBias,
     DenseBias,
@@ -22,7 +23,6 @@ from probjax.nn.pallas_kernels.attention_mask_bias import (
     QKVLengthMask,
     SameSegmentMask,
     SeqLenMask,
-    CausalAlibiBias,
     SymmetricAlibiBias,
 )
 

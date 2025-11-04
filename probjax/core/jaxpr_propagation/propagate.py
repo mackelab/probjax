@@ -2,6 +2,7 @@ import math
 from typing import Any, Callable, Optional, Sequence, Tuple
 
 from jax._src.util import safe_map as map
+
 try:
     from jax.experimental.pjit import pjit_p
 except ImportError:
@@ -154,7 +155,6 @@ def propagate(
     eqn_env = EqnEnvironment(G, env, jaxpr.eqns, cost_fn)
 
     while not eqn_env.is_empty():
-
         eqn = eqn_env.pop()  # Equation to process
 
         # Read known invars and outvars
@@ -173,7 +173,7 @@ def propagate(
             sub_invar_vals = []
             sub_outvars = []
             for v, val in zip(
-                sub_jaxpr.invars + sub_jaxpr.outvars, known_invars + known_outvars
+                sub_jaxpr.invars + sub_jaxpr.outvars, known_invars + known_outvars, strict=False
             ):
                 if val is None:
                     sub_outvars.append(v)
@@ -192,7 +192,7 @@ def propagate(
                 process_all_eqns=process_all_eqns,
             )
             ouput_vars = []
-            for v, val in zip(eqn.invars + eqn.outvars, known_invars + known_outvars):
+            for v, val in zip(eqn.invars + eqn.outvars, known_invars + known_outvars, strict=False):
                 if val is None:
                     ouput_vars.append(v)
 

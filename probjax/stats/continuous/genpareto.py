@@ -9,10 +9,10 @@ from typing import Tuple
 
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
+from probjax.utils.typing import RngKey
 
 __all__ = ["genpareto"]
 
@@ -76,7 +76,7 @@ class genpareto_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         shape: Tuple[int, ...] = (),
         c=0.0,
         loc=0.0,

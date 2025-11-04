@@ -11,10 +11,10 @@ import jax
 import jax.numpy as jnp
 from jax import random
 from jax.scipy.special import gammaln
-from jaxtyping import Array, Float, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive, strict_positive_integer
+from probjax.utils.typing import Array, RngKey
 
 __all__ = ["t"]
 
@@ -137,18 +137,18 @@ class t_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         df=1.0,
         loc=0.0,
         scale=1.0,
         shape: Tuple[int, ...] = (),
         **kwargs,
-    ) -> Float[Array, "..."]:
+    ) -> Array:
         """Random variates of the Student's t-distribution.
 
         Parameters
         ----------
-        rng : PRNGKeyArray
+        rng : RngKey
             JAX PRNG key for random number generation.
         df : float
             Degrees of freedom.

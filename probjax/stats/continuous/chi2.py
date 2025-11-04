@@ -4,10 +4,10 @@ import jax
 import jax.numpy as jnp
 from jax import random
 from jax.scipy.stats import chi2 as _chi2
-from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous
 from probjax.stats.constraints import real, strict_positive, strict_positive_integer
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["chi2"]
 
@@ -57,13 +57,13 @@ class chi2_gen(rv_continuous):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         df=1.0,
         loc=0.0,
         scale=1.0,
         shape: Tuple[int, ...] = (),
         **kwargs,
-    ) -> Float[Array, "..."]:
+    ) -> Array:
         """Random variates of the chi-squared distribution."""
         df = jnp.asarray(df)
         loc = jnp.asarray(loc)

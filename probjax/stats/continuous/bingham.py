@@ -14,14 +14,14 @@ from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import lax, random
 from jax.numpy.linalg import eigh
 from jax.scipy.special import gammaln
-from jaxtyping import Array, ArrayLike, PRNGKeyArray
-import numpy as np
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, spherical, stiefel
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["bingham"]
 
@@ -118,13 +118,11 @@ def deterministic_sphere_integration(
     dphi = 2.0 * jnp.pi / (n_phi - 1)
     integral_phi = _trapz(integrand, dx=dphi, axis=-1)
     integral = _trapz(integral_phi, dx=dtheta, axis=-1)
-    log_integral = (
-        jnp.log(integral + _EPS) + jnp.squeeze(max_exponent, axis=(-2, -1))
-    )
+    log_integral = jnp.log(integral + _EPS) + jnp.squeeze(max_exponent, axis=(-2, -1))
     return log_integral
 
 
-def sample_sphere(key: PRNGKeyArray, n_samples: int, dtype=jnp.float32) -> Array:
+def sample_sphere(key: RngKey, n_samples: int, dtype=jnp.float32) -> Array:
     """Sample `n_samples` random unit vectors on S^2."""
     xyz = random.normal(key, shape=(n_samples, 3), dtype=dtype)
     norms = jnp.linalg.norm(xyz, axis=-1, keepdims=True)
@@ -132,7 +130,7 @@ def sample_sphere(key: PRNGKeyArray, n_samples: int, dtype=jnp.float32) -> Array
 
 
 def sample_quad_exp_distribution(
-    key: PRNGKeyArray,
+    key: RngKey,
     kappa: Array,
     beta: Array,
     mu: Array,
@@ -199,13 +197,13 @@ def _approximate_log_partition_mc(parameter_matrix: Array) -> Array:
     return log_area + logmeanexp
 
 
-def _sample_uniform_sphere(key: PRNGKeyArray, dim: int) -> Array:
+def _sample_uniform_sphere(key: RngKey, dim: int) -> Array:
     vec = random.normal(key, shape=(dim,))
     return vec / (jnp.linalg.norm(vec) + _EPS)
 
 
 def _sample_bingham_direction_mc(
-    key: PRNGKeyArray,
+    key: RngKey,
     parameter_matrix: Array,
     lambda_max: Array,
 ) -> Array:
@@ -295,14 +293,14 @@ class bingham_gen(rv_continuous, rv_exponential_family):
         **kwargs,
     ):
         """Freeze parameters while recording batch and event shapes."""
-        rv = super().freeze(orientation=orientation, concentration=concentration, **kwargs)
+        rv = super().freeze(
+            orientation=orientation, concentration=concentration, **kwargs
+        )
         orientation_arr = jnp.asarray(orientation)
         if orientation_arr.ndim < 2:
             raise ValueError("orientation must be at least two-dimensional.")
         concentration_arr = jnp.asarray(concentration)
-        conc_batch = (
-            concentration_arr.shape[:-1] if concentration_arr.ndim > 0 else ()
-        )
+        conc_batch = concentration_arr.shape[:-1] if concentration_arr.ndim > 0 else ()
         batch_shape = jax.lax.broadcast_shapes(orientation_arr.shape[:-2], conc_batch)
         rv._batch_shape = batch_shape
         rv._event_shape = orientation_arr.shape[-1:]
@@ -311,7 +309,7 @@ class bingham_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         orientation: Array,
         concentration: Array,
         shape: Tuple[int, ...] = (),
@@ -390,13 +388,19 @@ class bingham_gen(rv_continuous, rv_exponential_family):
         if orientation.ndim < 2:
             raise ValueError("orientation must be at least two-dimensional.")
         if concentration.ndim == 0 or concentration.shape[-1] != orientation.shape[-1]:
-            raise ValueError("concentration must have trailing dimension equal to event dimension.")
+            raise ValueError(
+                "concentration must have trailing dimension equal to event dimension."
+            )
 
         batch_shape = jax.lax.broadcast_shapes(
             orientation.shape[:-2], concentration.shape[:-1]
         )
-        orientation = jnp.broadcast_to(orientation, batch_shape + orientation.shape[-2:])
-        concentration = jnp.broadcast_to(concentration, batch_shape + concentration.shape[-1:])
+        orientation = jnp.broadcast_to(
+            orientation, batch_shape + orientation.shape[-2:]
+        )
+        concentration = jnp.broadcast_to(
+            concentration, batch_shape + concentration.shape[-1:]
+        )
 
         idx = jnp.argmax(concentration, axis=-1)
         idx_exp = idx[..., None, None]
@@ -449,13 +453,17 @@ class bingham_gen(rv_continuous, rv_exponential_family):
 
         dim = orientation.shape[-1]
         if concentration.ndim == 0 or concentration.shape[-1] != dim:
-            raise ValueError("concentration must have trailing dimension equal to orientation dimension.")
+            raise ValueError(
+                "concentration must have trailing dimension equal to orientation dimension."
+            )
 
         dtype = jnp.result_type(orientation.dtype, concentration.dtype, jnp.float32)
         orientation = orientation.astype(dtype)
         concentration = concentration.astype(dtype)
 
-        batch_shape = jax.lax.broadcast_shapes(orientation.shape[:-2], concentration.shape[:-1])
+        batch_shape = jax.lax.broadcast_shapes(
+            orientation.shape[:-2], concentration.shape[:-1]
+        )
         orientation = jnp.broadcast_to(orientation, batch_shape + (dim, dim))
         concentration = jnp.broadcast_to(concentration, batch_shape + (dim,))
 
@@ -529,9 +537,9 @@ class bingham_gen(rv_continuous, rv_exponential_family):
         eigvals, eigvecs = jnp.linalg.eigh(scatter)
         idx = jnp.argsort(eigvals)[::-1]
         eigvals = jnp.take_along_axis(eigvals, idx, axis=0)
-        orientation = jnp.take_along_axis(
-            eigvecs, idx[jnp.newaxis, :], axis=1
-        ).astype(dtype)
+        orientation = jnp.take_along_axis(eigvecs, idx[jnp.newaxis, :], axis=1).astype(
+            dtype
+        )
 
         dim = data.shape[-1]
         target = jnp.clip(
@@ -554,9 +562,7 @@ class bingham_gen(rv_continuous, rv_exponential_family):
         def solve_branch(op):
             target_local, iso_local, eye_local = op
             dtype_local = target_local.dtype
-            lam_init = jnp.asarray(5.0, dtype=dtype_local) * (
-                target_local - iso_local
-            )
+            lam_init = jnp.asarray(5.0, dtype=dtype_local) * (target_local - iso_local)
             lam_init = lam_init - jnp.mean(lam_init)
             theta0 = lam_init[:-1]
             target_reduced = target_local[:-1]
@@ -593,9 +599,7 @@ class bingham_gen(rv_continuous, rv_exponential_family):
                     theta_candidate = theta_curr - step_vec
                     res_norm = jnp.max(jnp.abs(res))
                     converged_next = jnp.logical_or(converged_curr, res_norm < tol)
-                    theta_next = jnp.where(
-                        converged_curr, theta_curr, theta_candidate
-                    )
+                    theta_next = jnp.where(converged_curr, theta_curr, theta_candidate)
                     return (theta_next, converged_next), None
 
                 max_iter_newton = 50
@@ -604,11 +608,7 @@ class bingham_gen(rv_continuous, rv_exponential_family):
                 )
                 return theta_final
 
-            theta_final = (
-                theta0
-                if theta_size == 0
-                else run_newton(theta0)
-            )
+            theta_final = theta0 if theta_size == 0 else run_newton(theta0)
 
             lam_final = theta_to_lambda(theta_final)
             lam_final = lam_final - jnp.mean(lam_final)
@@ -619,6 +619,8 @@ class bingham_gen(rv_continuous, rv_exponential_family):
 
 
 bingham = bingham_gen(name="bingham")
+
+
 def _trapz(y: Array, dx: Array, axis: int = -1) -> Array:
     """Simple trapezoidal integration along a given axis."""
     sum_y = jnp.sum(y, axis=axis)

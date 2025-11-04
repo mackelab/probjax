@@ -8,8 +8,8 @@ from jax import Array
 from jax.typing import ArrayLike
 
 from probjax.core.transformation import inverse, inverse_and_logabsdet
-from probjax.utils.odeutil.core import _odeint
 from probjax.utils.odeutil.adaptive import AdaptiveParams
+from probjax.utils.odeutil.core import _odeint
 
 
 def _inv_odeint(

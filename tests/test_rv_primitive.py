@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import pytest
 
 from probjax.core.custom_primitives.random_variable import rv_p
-from probjax.stats import norm, gamma, beta, poisson, binomial
+from probjax.stats import beta, binomial, gamma, norm, poisson
 
 # Each entry is (distribution, *args)
 dist_params = [

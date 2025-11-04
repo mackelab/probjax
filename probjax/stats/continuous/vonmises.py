@@ -10,10 +10,10 @@ from typing import Optional, Tuple
 import jax.numpy as jnp
 from jax import random
 from jax.scipy.special import i0, i1
-from jaxtyping import Array, ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
+from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["vonmises"]
 
@@ -78,7 +78,7 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         loc=0.0,
         kappa=1.0,
         shape: Tuple[int, ...] = (),
@@ -93,6 +93,7 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
             f = (1 + kappa * z) / (kappa + z)
             c = kappa * jnp.sqrt((1 - f) / (1 + f))
             return jnp.where(v < c, jnp.arccos(f), jnp.pi - jnp.arccos(f)) + loc
+
         return _rejection_sampling(rng)
 
     @classmethod
@@ -175,7 +176,9 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
                 raise ValueError("weights must have the same length as data")
             weights = jnp.clip(weights, 0)
             total = jnp.sum(weights)
-            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=data.dtype))
+            total = jnp.where(
+                total > 0, total, jnp.asarray(data.shape[0], dtype=data.dtype)
+            )
             weights = weights / total
             s = jnp.sum(weights * jnp.sin(data))
             c = jnp.sum(weights * jnp.cos(data))
@@ -203,7 +206,7 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
             )
             return jnp.maximum(kappa, tiny)
 
-        kappa = jnp.where(R < tiny, tiny, approx_kappa(R))
+        kappa = jnp.where(tiny > R, tiny, approx_kappa(R))
         return loc, kappa
 
 

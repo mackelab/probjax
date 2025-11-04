@@ -106,8 +106,8 @@ def _kl_discrete_discrete(p, q, mc_samples=0, key=None):
     assert key is not None, "Key must be provided if mc_samples > 0"
 
     samples = p.rvs(key, (mc_samples,))
-    log_prob_p = p.logpmf(samples)
-    log_prob_q = q.logpmf(samples)
+    log_prob_p = p.logpdf(samples)
+    log_prob_q = q.logpdf(samples)
     return (log_prob_p - log_prob_q).mean(0)
 
 

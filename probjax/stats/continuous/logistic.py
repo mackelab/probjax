@@ -9,10 +9,10 @@ from typing import Optional, Tuple
 
 import jax.numpy as jnp
 from jax.scipy.stats import logistic as _logistic
-from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
+from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["logistic"]
 
@@ -66,7 +66,7 @@ class logistic_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         loc=0.0,
         scale=1.0,
         shape: Tuple[int, ...] = (),
@@ -177,7 +177,9 @@ class logistic_gen(rv_continuous, rv_exponential_family):
             loc = jnp.mean(data)
             var = jnp.var(data)
 
-        scale = jnp.sqrt(jnp.maximum(var, jnp.asarray(1e-9, dtype=dtype)) * 3.0) / jnp.pi
+        scale = (
+            jnp.sqrt(jnp.maximum(var, jnp.asarray(1e-9, dtype=dtype)) * 3.0) / jnp.pi
+        )
         scale = jnp.maximum(scale, jnp.asarray(1e-6, dtype=dtype))
         return loc, scale
 

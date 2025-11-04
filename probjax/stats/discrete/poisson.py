@@ -11,10 +11,10 @@ import jax
 import jax.numpy as jnp
 from jax import random
 from jax.scipy.stats import poisson as jax_poisson
-from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_discrete, rv_exponential_family
 from probjax.stats.constraints import positive_integer
+from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["poisson"]
 
@@ -97,7 +97,7 @@ class poisson_gen(rv_discrete, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         rate=None,
         shape: Tuple[int, ...] = (),
         **kwargs,

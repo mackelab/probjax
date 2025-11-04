@@ -5,51 +5,44 @@ import jax.numpy as jnp
 import pytest
 
 from probjax.stats import (
-    rv_generic,
-    rv_continuous,
-    rv_discrete,
-    rv_continuous_frozen,
-    rv_discrete_frozen,
-    # Continuous distributions
-    norm,
-    gamma,
-    beta,
-    expon,
-    laplace,
-    uniform,
-    chi2,
-    t,
-    cauchy,
-    dirichlet,
-    multivariate_normal,
-    vonmises,
-    truncnorm,
-    pareto,
     # Discrete distributions
     bernoulli,
+    beta,
     binomial,
     categorical,
-    poisson,
-    geometric,
+    cauchy,
+    chi2,
     dirac,
-    empirical,
+    dirichlet,
+    expon,
+    gamma,
+    geometric,
     # Higher-order distributions
     independent,
-    transformed,
+    laplace,
     mixture,
+    multivariate_normal,
+    # Continuous distributions
+    norm,
+    pareto,
+    poisson,
+    t,
+    transformed,
+    truncnorm,
+    uniform,
+    vonmises,
 )
-
 from probjax.stats.constraint_registry import transform_to
 from probjax.stats.divergences import (
     kl_divergence,
-    wasserstein_distance,
-    sliced_wasserstein_distance,
     max_slice_wasserstein_distance,
+    sliced_wasserstein_distance,
+    wasserstein_distance,
 )
 from probjax.stats.divergences.wasserstein import (
     _1d_wasserstein_without_cdf,
-    __sliced_wasserstein_generic,
     __max_slice_wasserstein_generic,
+    __sliced_wasserstein_generic,
 )
 
 CONTINUOUS_DIST = [
@@ -182,6 +175,7 @@ FIT_TEST_CASES = [
     },
 ]
 
+
 # Helper functions
 def sample_and_check_shape(dist, key, sample_shape, *args, **kwargs):
     """Check if sampling and shape handling works correctly."""
@@ -190,6 +184,7 @@ def sample_and_check_shape(dist, key, sample_shape, *args, **kwargs):
         "Sample shape mismatch"
     )
     return sample
+
 
 def check_mean_and_var(dist, key, *args, **kwargs):
     """Check if mean and variance are computed correctly."""
@@ -239,6 +234,7 @@ def check_mean_and_var(dist, key, *args, **kwargs):
     except NotImplementedError:
         pass
 
+
 def check_cdf_icdf(dist, key, *args, **kwargs):
     """Check if CDF and ICDF (PPF) are computed correctly."""
     sample = dist.rvs(key, *args, shape=(10000,), **kwargs)
@@ -265,6 +261,7 @@ def check_cdf_icdf(dist, key, *args, **kwargs):
             pass
     except NotImplementedError:
         pass
+
 
 def check_mode(dist, key, *args, **kwargs):
     """Check if mode is computed correctly."""
@@ -301,6 +298,7 @@ def _case_id(case):
     dist = case["dist"]
     return getattr(dist, "name", dist.__class__.__name__)
 
+
 def init_dist(dist, key, shape=(1,)):
     """Initialize a distribution with random parameters."""
     if dist == uniform:
@@ -316,7 +314,7 @@ def init_dist(dist, key, shape=(1,)):
     elif hasattr(dist, 'parameters'):
         keys = jax.random.split(key, len(dist.parameters))
         kwargs = {}
-        for (name, constraint), key in zip(dist.parameters.items(), keys):
+        for (name, constraint), key in zip(dist.parameters.items(), keys, strict=False):
             transform = transform_to(constraint)
             kwargs[name] = transform(jax.random.normal(key, shape))
         return dist(**kwargs)
@@ -358,9 +356,10 @@ def test_distribution_fit_estimators(case):
         )
         atol = _get_tol(case, "atol", name, 0.1)
         rtol = _get_tol(case, "rtol", name, 0.1)
-        assert jnp.allclose(
-            fitted_arr, expected_arr, atol=atol, rtol=rtol
-        ), f"{_case_id(case)} fit mismatch for parameter '{name}'"
+        assert jnp.allclose(fitted_arr, expected_arr, atol=atol, rtol=rtol), (
+            f"{_case_id(case)} fit mismatch for parameter '{name}'"
+        )
+
 
 @pytest.mark.parametrize(
     "dist",
@@ -374,6 +373,7 @@ def test_distribution_class_attributes(dist):
     )
     assert hasattr(dist, 'support') and callable(dist.support), "Missing support"
     assert hasattr(dist, 'rvs') and callable(dist.rvs), "Missing rvs"
+
 
 @pytest.mark.parametrize("dist", CONTINUOUS_DIST + DISCRETE_DIST, ids=lambda x: x.name)
 def test_base_distribution(dist, shape=(1,), seed=0):
@@ -399,6 +399,7 @@ def test_base_distribution(dist, shape=(1,), seed=0):
     assert jnp.allclose(p.rvs(key, shape=shape), q.rvs(key, shape=shape)), (
         "PyTree reconstruction mismatch"
     )
+
 
 @pytest.mark.parametrize("dist", CONTINUOUS_DIST + DISCRETE_DIST, ids=lambda x: x.name)
 def test_independent_distribution(dist, shape=(2,), seed=0):
@@ -427,6 +428,7 @@ def test_independent_distribution(dist, shape=(2,), seed=0):
     assert jnp.allclose(
         p.rvs(key, shape=shape), q.rvs(key, shape=shape), atol=0.01, rtol=0.01
     ), "PyTree reconstruction mismatch"
+
 
 @pytest.mark.parametrize(
     "dist1, dist2",
@@ -625,7 +627,9 @@ def test_truncnorm_sampling_with_bounds(seed: int = 0):
     assert jnp.all(samples <= upper + 1e-6)
 
 
-@pytest.mark.xfail(reason="Pareto sampler mean check is flaky; investigate analytic comparison.")
+@pytest.mark.xfail(
+    reason="Pareto sampler mean check is flaky; investigate analytic comparison."
+)
 def test_pareto_sampling_matches_moment(seed: int = 0):
     """Pareto sampler should respect the minimum and produce the correct mean."""
     key = jax.random.PRNGKey(seed)
@@ -649,8 +653,8 @@ def test_pareto_sampling_matches_moment(seed: int = 0):
     )
 
 
-def test_geometric_rvs_and_logpmf_alignment(seed: int = 0):
-    """Geometric sampler and logpmf should align on support and probabilities."""
+def test_geometric_rvs_and_logpdf_alignment(seed: int = 0):
+    """Geometric sampler and logpdf should align on support and probabilities."""
     key = jax.random.PRNGKey(seed)
     prob = jnp.array(0.37)
     dist = geometric(prob)
@@ -660,11 +664,11 @@ def test_geometric_rvs_and_logpmf_alignment(seed: int = 0):
     assert samples.dtype == jnp.int32
 
     values = jnp.arange(5, dtype=prob.dtype)
-    expected_logpmf = jnp.log(prob) + values * jnp.log1p(-prob)
-    observed_logpmf = dist.logpmf(values)
-    assert jnp.allclose(observed_logpmf, expected_logpmf, atol=1e-6, rtol=1e-6)
+    expected_logpdf = jnp.log(prob) + values * jnp.log1p(-prob)
+    observed_logpdf = dist.logpdf(values)
+    assert jnp.allclose(observed_logpdf, expected_logpdf, atol=1e-6, rtol=1e-6)
 
-    assert dist.logpmf(jnp.array(-1.0)) == -jnp.inf
+    assert dist.logpdf(jnp.array(-1.0)) == -jnp.inf
 
 
 @pytest.mark.parametrize("dist", CONTINUOUS_DIST)
@@ -703,10 +707,7 @@ def test_kl_divergence(dist1, dist2, shape=(1,), seed=0):
 
     # Monte Carlo estimation of KL divergence
     samples = p.rvs(key1, shape=(10000,))
-    if isinstance(p, rv_discrete):
-        log_ratio = p.logpmf(samples) - q.logpmf(samples)
-    else:
-        log_ratio = p.logpdf(samples) - q.logpdf(samples)
+    log_ratio = p.logpdf(samples) - q.logpdf(samples)
     dist_mc = jnp.mean(log_ratio)
 
     assert dist.shape == p.batch_shape, "KL divergence shape mismatch"

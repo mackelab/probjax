@@ -21,7 +21,7 @@ class TraceProcessingRule(ForwardProcessingRule):
         self, eqn: JaxprEqn, known_inputs: Sequence[Any | None], _: Sequence[Any | None]
     ) -> Tuple[Sequence[Any | None], Sequence[Any | None]]:
         outvars, outvals = super().__call__(eqn, known_inputs, _)
-        for o, v in zip(outvars, outvals):
+        for o, v in zip(outvars, outvals, strict=False):
             if self.traced_vars is None or str(o) in self.traced_vars:
                 self.traced_samples[str(o)] = v
         return outvars, outvals

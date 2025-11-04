@@ -11,10 +11,10 @@ import jax
 import jax.numpy as jnp
 from jax import random
 from jax.scipy.stats import binom
-from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_discrete, rv_exponential_family
 from probjax.stats.constraints import strict_positive_integer, unit_interval
+from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["binomial"]
 
@@ -142,7 +142,7 @@ class binomial_gen(rv_discrete, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         n=None,
         probs=None,
         shape: Tuple[int, ...] = (),

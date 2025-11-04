@@ -181,8 +181,8 @@ def to_networkx(
             outer_outvar_names = [var_name_fn(n, level=level) for n in outvars]
 
             rename_dict = dict(
-                list(zip(invar_names, outer_invar_names))
-                + list(zip(outvar_names, outer_outvar_names))
+                list(zip(invar_names, outer_invar_names, strict=False))
+                + list(zip(outvar_names, outer_outvar_names, strict=False))
             )
             sub_graph = nx.relabel_nodes(sub_graph, rename_dict)
 
@@ -298,13 +298,13 @@ class JaxprGraph:
     @property
     def eqns(self):
         eqn_names = [f"f{i}" for i in range(len(self._jaxpr.eqns))]
-        return dict(zip(eqn_names, self._jaxpr.eqns))
+        return dict(zip(eqn_names, self._jaxpr.eqns, strict=False))
 
     @property
     def vars(self):
         var_names = [n for n in self._graph.nodes if not re.match(r"f\d+", n)]
         vars = [self._graph.nodes[n] for n in var_names]
-        return dict(zip(var_names, vars))
+        return dict(zip(var_names, vars, strict=False))
 
     def __repr__(self):
         AGraph = nx.nx_agraph.to_agraph(self._graph)

@@ -85,7 +85,9 @@ class Benchmark:
 
     def __iter__(self):
         if not self._active:
-            raise RuntimeError("Benchmark iterator is available only inside the context.")
+            raise RuntimeError(
+                "Benchmark iterator is available only inside the context."
+            )
         return self._iteration_generator()
 
     def loop(self):

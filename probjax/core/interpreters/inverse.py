@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax._src.util import safe_map
+
 try:
     from jax.experimental.pjit import pjit_p
 except ImportError:
@@ -197,7 +198,7 @@ def invert_scatter(eqn, known_invars, known_outvars):
     update_shape = eqn.invars[2].aval.shape
     update_window_dims = tuple(sorted(scatter_numdim.update_window_dims))
 
-    for operand_dim, update_dim in zip(window_operand_dims, update_window_dims):
+    for operand_dim, update_dim in zip(window_operand_dims, update_window_dims, strict=False):
         if update_dim < len(update_shape):
             slice_sizes[operand_dim] = update_shape[update_dim]
 
@@ -218,7 +219,7 @@ def invert_select_n(eqn, known_invars, known_outvars):
     in_avals = safe_map(lambda x: x.aval, eqn.invars[1:])
 
     new_cases = []
-    for c, aval in zip(cases, in_avals):
+    for c, aval in zip(cases, in_avals, strict=False):
         if c is None:
             new_cases.append(out.astype(aval.dtype))
         else:
@@ -305,7 +306,7 @@ def invert_split(eqn, known_invars, known_outvars):
     axis = params["axis"]
     sizes = params["sizes"]
 
-    assert all(o.shape[axis] == s for o, s in zip(known_outvars, sizes)), (
+    assert all(o.shape[axis] == s for o, s in zip(known_outvars, sizes, strict=False)), (
         "Output shapes do not match the sizes!"
     )
 

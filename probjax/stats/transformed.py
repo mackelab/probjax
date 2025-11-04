@@ -11,11 +11,11 @@ from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.core import inverse_and_logabsdet
-from probjax.stats.base import rv_continuous, rv_continuous_frozen, rv_generic
+from probjax.stats.base import rv_continuous
 from probjax.stats.constraints import distribution, real
+from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["transformed"]
 
@@ -61,7 +61,6 @@ class transformed_gen(rv_continuous):
             inv_and_logdet = jax.vmap(inv_and_logdet)
         return inv_and_logdet
 
-
     @classmethod
     def logpdf(cls, x: ArrayLike, base_dist, bijector, inverse_and_logdet=None, **kwds):
         """Log probability density function of the transformed distribution."""
@@ -103,7 +102,7 @@ class transformed_gen(rv_continuous):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         base_dist=None,
         bijector=None,
         shape: Tuple[int, ...] = (),

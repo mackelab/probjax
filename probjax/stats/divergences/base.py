@@ -55,7 +55,7 @@ class Match:
         for reg_types, func in self.registry.items():
             if len(reg_types) != len(types):
                 continue
-            if all(issubclass(t, rt) for t, rt in zip(types, reg_types)):
+            if all(issubclass(t, rt) for t, rt in zip(types, reg_types, strict=False)):
                 matches.append((reg_types, func))
 
         if not matches:
@@ -64,7 +64,7 @@ class Match:
         # Find the most specific match
         best_match = matches[0]
         for match in matches[1:]:
-            if all(issubclass(rt1, rt2) for rt1, rt2 in zip(match[0], best_match[0])):
+            if all(issubclass(rt1, rt2) for rt1, rt2 in zip(match[0], best_match[0], strict=False)):
                 best_match = match
 
         return best_match[1]

@@ -53,7 +53,6 @@ class ProcessingRule(ABC):
         pass
 
 
-
 class ForwardProcessingRule(ProcessingRule):
     def __call__(
         self,

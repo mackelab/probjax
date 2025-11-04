@@ -1,8 +1,7 @@
 import jax.numpy as jnp
 import pytest
-from jax.tree_util import tree_map
 
-from probjax.utils.odeint import _odeint, AdaptiveParams
+from probjax.utils.odeint import AdaptiveParams, _odeint
 
 pytest_plugins = ["test_problems.ode_problems"]
 
@@ -36,6 +35,7 @@ def test_odeint_nonlienar_ode(nonlinear_ode_problem, ode_method):
     f_true = f_true(ts_dense, x0)
     error = jnp.mean((f_approx - f_true) ** 2)
     assert error < 1e-1, "Solver failed on dense grid to match true solution"
+
 
 def test_odeint_with_pytree(ode_method):
     if ode_method in KNOWN_ERROR:

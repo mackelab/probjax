@@ -4,13 +4,10 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 
-from functools import partial
-
 from probjax.utils.protocols import (
     InterpolationFn,
     InterpolationNoiseFn,
     LossFn,
-    ModelFn,
     ReductionFn,
     TimeDependentModelFn,
     WeightFn,

@@ -10,10 +10,10 @@ from typing import Optional, Tuple
 import jax.numpy as jnp
 from jax import random
 from jax.scipy.stats import laplace as _laplace
-from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["laplace"]
 
@@ -150,17 +150,17 @@ class laplace_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         loc=0.0,
         scale=1.0,
         shape: Tuple[int, ...] = (),
         **kwargs,
-    ) -> Float[Array, "..."]:
+    ) -> Array:
         """Random variates of the Laplace distribution.
 
         Parameters
         ----------
-        rng : PRNGKeyArray
+        rng : RngKey
             JAX PRNG key for random number generation
         loc : float, optional
             Location parameter. Default is 0.

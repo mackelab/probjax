@@ -43,9 +43,9 @@ def test_markov_kernel_vector_input(kernel_type, in_shape):
     next_state, next_info = kernel(jax.random.PRNGKey(i), state, params)
 
     assert hasattr(next_state, "position"), "State must have a position attribute"
-    assert (
-        next_state.position.shape == in_shape
-    ), "Position shape must match input shape after transition"
+    assert next_state.position.shape == in_shape, (
+        "Position shape must match input shape after transition"
+    )
 
 
 @pytest.mark.parametrize(
@@ -90,13 +90,13 @@ def test_markov_kernel_invariance(kernel_type, in_shape):
     mean_before = jnp.mean(positions, axis=0)
     mean_after = jnp.mean(new_positions, axis=0)
 
-    assert jnp.allclose(
-        mean_before, mean_after, atol=1e-1, rtol=1e-1
-    ), "Mean must be invariant"
+    assert jnp.allclose(mean_before, mean_after, atol=1e-1, rtol=1e-1), (
+        "Mean must be invariant"
+    )
 
     var_before = jnp.var(positions, axis=0)
     var_after = jnp.var(new_positions, axis=0)
 
-    assert jnp.allclose(
-        var_before, var_after, atol=1e-1, rtol=1e-1
-    ), "Variance must be invariant"
+    assert jnp.allclose(var_before, var_after, atol=1e-1, rtol=1e-1), (
+        "Variance must be invariant"
+    )

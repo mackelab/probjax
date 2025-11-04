@@ -94,6 +94,6 @@ from probjax.nn.pallas_kernels.attention_mask_bias import (
     QKVLengthMask,
     SameSegmentMask,
     SeqLenMask,
-    SymmetricAlibiBias,
     SumBias,
+    SymmetricAlibiBias,
 )

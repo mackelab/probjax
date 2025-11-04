@@ -32,11 +32,10 @@ from typing import Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
+from einops import rearrange, repeat
 from jax import lax
 from jax._src.lax.control_flow import for_loop
 from jax.experimental import pallas as pl
-
-from einops import rearrange, repeat
 
 
 def _matmul_fp32(lhs: jax.Array, rhs: jax.Array) -> jax.Array:

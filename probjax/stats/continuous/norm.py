@@ -10,10 +10,10 @@ from typing import Optional, Tuple
 import jax.numpy as jnp
 from jax import random
 from jax.scipy.stats import norm as _norm
-from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["norm"]
 
@@ -122,12 +122,12 @@ class norm_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         loc=0.0,
         scale=1.0,
         shape: Tuple[int, ...] = (),
         **kwargs,
-    ) -> Float[Array, "..."]:
+    ) -> Array:
         """Random variates of the normal distribution.
 
         Parameters
@@ -138,7 +138,7 @@ class norm_gen(rv_continuous, rv_exponential_family):
             Standard deviation of the distribution. Default is 1.
         shape : int or tuple of ints, optional
             Output shape. Default is None, in which case a single value is returned.
-        key : PRNGKeyArray, optional
+        key : RngKey, optional
             JAX PRNG key for random number generation.
 
         Returns
@@ -459,7 +459,9 @@ class norm_gen(rv_continuous, rv_exponential_family):
                 raise ValueError("weights must have the same length as data")
             weights = jnp.clip(weights, a_min=0)
             total = jnp.sum(weights)
-            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=data.dtype))
+            total = jnp.where(
+                total > 0, total, jnp.asarray(data.shape[0], dtype=data.dtype)
+            )
             weights = weights / total
             loc = jnp.sum(weights * data)
             diff = data - loc

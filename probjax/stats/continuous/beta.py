@@ -12,11 +12,11 @@ import jax.numpy as jnp
 from jax import random
 from jax.scipy.special import digamma, gammaln
 from jax.scipy.stats import beta as _beta
-from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import strict_positive, unit_interval
 from probjax.utils.special import betaincinv
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["beta"]
 
@@ -147,17 +147,17 @@ class beta_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         alpha=1.0,
         beta=1.0,
         shape: Tuple[int, ...] = (),
         **kwargs,
-    ) -> Float[Array, "..."]:
+    ) -> Array:
         """Random variates of the beta distribution.
 
         Parameters
         ----------
-        rng : PRNGKeyArray
+        rng : RngKey
             JAX PRNG key for random number generation
         alpha : float, optional
             Concentration parameter alpha. Default is 1.

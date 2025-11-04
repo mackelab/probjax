@@ -3,11 +3,11 @@ from typing import Optional, Tuple
 import jax
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Array, ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_continuous
 from probjax.stats.constraints import real, symmetric_positive_definite_matrix
 from probjax.utils.linalg import batch_mahalanobis, batch_mv
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 
 class multivariate_normal_gen(rv_continuous):
@@ -95,7 +95,7 @@ class multivariate_normal_gen(rv_continuous):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         loc: Array = None,
         cov: Array = None,
         precision_matrix: Array = None,

@@ -5,16 +5,15 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
+from probjax.nn.loss_fn.denoising_score_matching import (
+    base_denoising_score_matching_loss,
+)
 from probjax.utils.protocols import (
     LossFn,
     ModelFn,
     ReductionFn,
     TimeDependentModelFn,
     WeightFn,
-)
-
-from probjax.nn.loss_fn.denoising_score_matching import (
-    base_denoising_score_matching_loss,
 )
 
 __all__ = ["build_denoising_loss", "build_time_dependent_denoising_loss"]
@@ -115,9 +114,7 @@ def _compute_prediction_loss(
             "Control variates are only implemented for prediction_target='score'."
         )
     prediction = model_fn(*args_with_noisy, **model_kwargs)
-    target = _compute_target(
-        prediction_target, x0=x0, eps=eps, scale=scale, std=std
-    )
+    target = _compute_target(prediction_target, x0=x0, eps=eps, scale=scale, std=std)
     loss = (prediction - target) ** 2
     return _finalize_loss(
         loss,
@@ -169,7 +166,14 @@ def build_denoising_loss(
     scale_array = jnp.asarray(scale)
     std_array = jnp.asarray(std)
 
-    def loss_fn(*args, rng=None, loss_mask=None, adaptive_weight_p=0.0, adaptive_weight_eps=1e-3, **kwargs):
+    def loss_fn(
+        *args,
+        rng=None,
+        loss_mask=None,
+        adaptive_weight_p=0.0,
+        adaptive_weight_eps=1e-3,
+        **kwargs,
+    ):
         if rng is None:
             raise ValueError(
                 "loss_fn requires an RNG key. Pass it via the 'rng' keyword."
@@ -244,7 +248,15 @@ def build_time_dependent_denoising_loss(
     if copula is not None:
         raise NotImplementedError("Copula-based noise is not supported yet.")
 
-    def loss_fn(t, *args, rng=None, loss_mask=None, adaptive_weight_p=0.0, adaptive_weight_eps=1e-3, **kwargs):
+    def loss_fn(
+        t,
+        *args,
+        rng=None,
+        loss_mask=None,
+        adaptive_weight_p=0.0,
+        adaptive_weight_eps=1e-3,
+        **kwargs,
+    ):
         if rng is None:
             raise ValueError(
                 "loss_fn requires an RNG key. Pass it via the 'rng' keyword."

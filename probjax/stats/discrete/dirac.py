@@ -8,10 +8,10 @@ This module implements the Dirac distribution.
 from typing import Tuple
 
 import jax.numpy as jnp
-from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_discrete, rv_exponential_family
 from probjax.stats.constraints import real
+from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["dirac"]
 
@@ -41,7 +41,7 @@ class dirac_gen(rv_discrete, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         loc=None,
         shape: Tuple[int, ...] = (),
         **kwargs,

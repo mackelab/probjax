@@ -1,12 +1,12 @@
-import jax
+from functools import lru_cache, partial
 from threading import local
 
-from jax.extend.core import Primitive
-from jax.core import eval_jaxpr
-
-from jax.interpreters import ad, batching, mlir, partial_eval as pe
-from functools import partial, lru_cache
+import jax
 from jax._src.ad_util import Zero
+from jax.core import eval_jaxpr
+from jax.extend.core import Primitive
+from jax.interpreters import ad, batching, mlir
+from jax.interpreters import partial_eval as pe
 
 
 class NameStack(local):

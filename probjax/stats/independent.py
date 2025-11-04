@@ -9,7 +9,8 @@ from typing import Optional, Sequence, Tuple, Union
 
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import PRNGKeyArray
+
+from probjax.utils.typing import RngKey
 
 from .base import rv_continuous_frozen, rv_generic
 from .constraints import distribution
@@ -47,7 +48,7 @@ def determine_shapes(
     new_event_shapes = []
     new_batch_shapes = []
 
-    for b_shape, e_shape in zip(batch_shapes, event_shapes):
+    for b_shape, e_shape in zip(batch_shapes, event_shapes, strict=False):
         if len(b_shape) > 0:
             # Reinterpret batch dimensions as event dimensions
             new_event_shape = b_shape + e_shape
@@ -170,7 +171,7 @@ class independent_gen(rv_generic):
         split_value = jnp.split(x, split_indices, axis=-1)
 
         # Compute logpdf for each base distribution
-        logpdf = sum(d.logpdf(v) for d, v in zip(base_dists, split_value))
+        logpdf = sum(d.logpdf(v) for d, v in zip(base_dists, split_value, strict=False))
         # Sum up to be of shape reinterpreted_batch_ndins
         for _ in range(reinterpreted_batch_ndims):
             logpdf = jnp.sum(logpdf, axis=-1)
@@ -187,7 +188,7 @@ class independent_gen(rv_generic):
         split_value = jnp.split(x, split_indices, axis=-1)
 
         # Compute CDF for each base distribution
-        cdf = jnp.prod([d.cdf(v) for d, v in zip(base_dists, split_value)])
+        cdf = jnp.prod([d.cdf(v) for d, v in zip(base_dists, split_value, strict=False)])
 
         # Product up to be of shape reinterpreted_batch_ndims
         for _ in range(reinterpreted_batch_ndims):
@@ -197,7 +198,7 @@ class independent_gen(rv_generic):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         base_dists=None,
         reinterpreted_batch_ndims=1,
         shape: Tuple[int, ...] = (),
@@ -211,7 +212,7 @@ class independent_gen(rv_generic):
 
         # Generate samples for each base distribution
         samples = jnp.concatenate(
-            [d.rvs(k, shape=shape) for k, d in zip(keys, base_dists)],
+            [d.rvs(k, shape=shape) for k, d in zip(keys, base_dists, strict=False)],
             axis=-1,
         )
         return samples
@@ -293,7 +294,7 @@ class independent_gen(rv_generic):
         split_data = jnp.split(data, split_indices, axis=-1)
 
         # Fit each base distribution
-        fitted_dists = [d.fit(dat, **kwargs) for d, dat in zip(base_dists, split_data)]
+        fitted_dists = [d.fit(dat, **kwargs) for d, dat in zip(base_dists, split_data, strict=False)]
 
         return fitted_dists
 

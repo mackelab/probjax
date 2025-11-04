@@ -9,10 +9,10 @@ from typing import Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import ArrayLike, PRNGKeyArray
 
 from probjax.stats.base import rv_discrete, rv_discrete_frozen
 from probjax.stats.constraints import simplex
+from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["empirical", "empirical_frozen"]
 
@@ -92,7 +92,7 @@ class empirical(rv_discrete):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         values=None,
         weights=None,
         shape: Tuple[int, ...] = (),
@@ -162,9 +162,11 @@ class empirical_frozen(rv_discrete_frozen):
         """Percent point function of the frozen Empirical distribution."""
         return self.dist.ppf(q, self.values, self.weights, **self.kwds)
 
-    def rvs(self, rng: PRNGKeyArray, shape: Tuple[int, ...] = (), **kwargs):
+    def rvs(self, rng: RngKey, shape: Tuple[int, ...] = (), **kwargs):
         """Random variates of the frozen Empirical distribution."""
-        return self.dist.rvs(rng, self.values, self.weights, shape=shape, **self.kwds, **kwargs)
+        return self.dist.rvs(
+            rng, self.values, self.weights, shape=shape, **self.kwds, **kwargs
+        )
 
     def mean(self):
         """Mean of the frozen Empirical distribution."""

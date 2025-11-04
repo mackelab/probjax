@@ -13,7 +13,8 @@ from typing import Any, Union
 
 import jax.numpy as jnp
 from jax.tree_util import tree_flatten
-from jaxtyping import Array, PyTree
+
+from probjax.utils.typing import Array, PyTree
 
 # TODO Maybe add differentiable _call methods
 
@@ -22,10 +23,10 @@ from jaxtyping import Array, PyTree
 class Constraint:
     """A constraint checks if a value satisfies the constraint."""
 
-    def __contains__(self, val: PyTree[Union[Array, "Constraint"]]) -> bool:
+    def __contains__(self, val: PyTree[Any]) -> bool:
         # Should transform the value to satisfy the constraint.
         val_flatten, _ = tree_flatten(val)
-        return all(self._is_contained(x) for x in val_flatten)
+        return all(bool(self._is_contained(x)) for x in val_flatten)
 
     def __eq__(self, __value: object) -> bool:
         return self.__class__ == __value.__class__
@@ -56,7 +57,7 @@ class Real(Constraint):
 
     def _is_contained(self, x: Union[Array, "Constraint"]) -> bool:
         if isinstance(x, Array):
-            return jnp.isreal(x).all()
+            return bool(jnp.all(jnp.isreal(x)))
         elif isinstance(x, Constraint):
             return x == self
         else:
@@ -102,7 +103,11 @@ class Interval(Real):
         if isinstance(x, Array):
             term1 = x >= self.lower if self.closed_left else x > self.lower
             term2 = x <= self.upper if self.closed_right else x < self.upper
-            return super()._is_contained(x) and all(term1) and all(term2)
+            return (
+                super()._is_contained(x)
+                and bool(jnp.all(term1))
+                and bool(jnp.all(term2))
+            )
         else:
             is_real = super()._is_contained(x)
             is_interval = isinstance(x, Interval)
@@ -162,9 +167,9 @@ class IntegerInterval(Integer, Interval):
 
     def _is_contained(self, x: Array) -> bool:
         if isinstance(x, Array):
-            return (
-                super()._is_contained(x) and all(x > self.lower) and all(x < self.upper)
-            )
+            lower_ok = bool(jnp.all(x > self.lower))
+            upper_ok = bool(jnp.all(x < self.upper))
+            return super()._is_contained(x) and lower_ok and upper_ok
         else:
             is_integer = super()._is_contained(x)
             is_interval = isinstance(x, IntegerInterval)
@@ -222,7 +227,7 @@ class FiniteSet(Constraint):
             return x in self.values
         else:
             if isinstance(x, FiniteSet):
-                return all([v in self.values for v in x.values])
+                return all(v in self.values for v in x.values)
             elif isinstance(x, Interval):
                 min = jnp.min(self.values)
                 max = jnp.max(self.values)
@@ -255,7 +260,7 @@ class SymmetricPositiveDefiniteMatrix(SymmetricMatrix):
     """A constraint that checks if a value is a symmetric positive definite matrix."""
 
     def _is_contained(self, x: Any | Constraint) -> bool:
-        return super()._is_contained(x) and jnp.all(jnp.linalg.eigvals(x) > 0)
+        return bool(super()._is_contained(x) and jnp.all(jnp.linalg.eigvals(x) > 0))
 
 
 class Spherical(Constraint):

@@ -2,7 +2,6 @@ import math
 from typing import Dict, Sequence
 
 import jax
-from jax._src.core import eval_jaxpr
 from jax.extend.core import Jaxpr, JaxprEqn
 from jaxtyping import Array
 

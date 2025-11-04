@@ -6,26 +6,17 @@ This module contains the base classes for continuous and discrete random variabl
 that provide a SciPy-like API. This closely follows the structure of scipy.stats._distn_infrastructure.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    Iterable,
-    List,
-    Mapping,
-    MutableMapping,
-    Optional,
-    Sequence,
-    Tuple,
-)
+from typing import Any, ClassVar, Mapping, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jaxtyping import Array, ArrayLike, PRNGKeyArray
 
 from probjax.stats.constraints import Constraint
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = [
     "rv_generic",
@@ -35,144 +26,34 @@ __all__ = [
     "rv_discrete_frozen",
 ]
 
-_ArrayDict = Dict[str, Array]
-_FlatMetadata = List[Tuple[str, Tuple[int, ...]]]
-
-
-def _as_array(value: ArrayLike, dtype: Optional[jnp.dtype] = None) -> Array:
-    """Convert an input value to a JAX array with optional dtype coercion."""
-    arr = jnp.asarray(value)
-    if dtype is not None and arr.dtype != dtype:
-        arr = arr.astype(dtype)
-    return arr
-
-
-def _flatten_param_dict(param_dict: Mapping[str, ArrayLike]) -> Tuple[Array, _FlatMetadata]:
-    """Flatten a dictionary of parameter arrays into a single vector."""
-    flat_pieces: List[Array] = []
-    metadata: _FlatMetadata = []
-
-    for name, value in param_dict.items():
-        arr = _as_array(value)
-        metadata.append((name, arr.shape))
-        flat_pieces.append(arr.reshape(-1))
-
-    if not flat_pieces:
-        return jnp.array([], dtype=jnp.float32), metadata
-
-    if len(flat_pieces) == 1:
-        flat = flat_pieces[0]
-    else:
-        flat = jnp.concatenate(flat_pieces)
-
-    return flat, metadata
-
-
-def _unflatten_param_vector(
-    vector: Array, metadata: _FlatMetadata
-) -> Dict[str, Array]:
-    """Reconstruct a parameter dictionary from a flattened representation."""
-    params: Dict[str, Array] = {}
-    cursor = 0
-    for name, shape in metadata:
-        size = int(np.prod(shape)) if shape else 1
-        slice_ = vector[cursor : cursor + size]
-        params[name] = slice_.reshape(shape) if shape else jnp.asarray(slice_)
-        cursor += size
-    return params
-
-
-def _default_initial_guess(name: str, data: Array) -> Array:
-    """Heuristic initial guesses for parameter optimisation."""
-    dtype = data.dtype
-    if name in {"loc", "mean", "mu"}:
-        return jnp.mean(data, axis=0, dtype=dtype)
-    if name in {"scale", "std", "sigma"}:
-        return jnp.maximum(jnp.std(data, axis=0, dtype=dtype), jnp.asarray(1e-6, dtype))
-    if name in {"variance"}:
-        return jnp.maximum(jnp.var(data, axis=0, dtype=dtype), jnp.asarray(1e-6, dtype))
-    if name in {"p", "prob"}:
-        clipped = jnp.clip(jnp.mean(data, axis=0, dtype=dtype), 1e-6, 1 - 1e-6)
-        return clipped
-    if name in {"rate", "lambda"}:
-        return jnp.reciprocal(jnp.maximum(jnp.mean(data, axis=0, dtype=dtype), jnp.asarray(1e-6, dtype)))
-    if name in {"alpha", "beta", "kappa", "shape", "concentration"}:
-        return jnp.asarray(1.0, dtype)
-    return jnp.asarray(1.0, dtype)
-
-
-def _normalize_sample_weights(
-    num_samples: int,
-    weights: Optional[ArrayLike],
-    dtype: jnp.dtype,
-) -> Optional[Array]:
-    """Normalize sample weights ensuring positivity and unit sum."""
-    if weights is None:
-        return None
-    w = jnp.asarray(weights, dtype=dtype)
-    if w.ndim != 1 or w.shape[0] != num_samples:
-        raise ValueError(
-            f"weights must be a one-dimensional array of length {num_samples}, got shape {w.shape}."
-        )
-    w = jnp.clip(w, a_min=jnp.asarray(0.0, dtype=dtype))
-    total = jnp.sum(w)
-    fallback = jnp.asarray(num_samples, dtype=dtype)
-    total = jnp.where(total > 0, total, fallback)
-    return w / total
-
-
-def _prepare_initial_parameters(
-    cls: "rv_generic",
-    data: Array,
-    overrides: Optional[Mapping[str, ArrayLike]] = None,
-    fixed: Optional[Mapping[str, ArrayLike]] = None,
-) -> Dict[str, Array]:
-    overrides = overrides or {}
-    fixed = fixed or {}
-    dtype = data.dtype
-    guessed: Dict[str, Array] = {}
-
-    # Allow subclass hook
-    subclass_guess: Dict[str, ArrayLike] = {}
-    subclass_guess_raw = getattr(cls, "_fit_initial_guess", None)
-    if callable(subclass_guess_raw):
-        maybe_guess = subclass_guess_raw(data)
-        if maybe_guess is not None:
-            subclass_guess = dict(maybe_guess)
-    for name in cls.parameters:
-        if name in fixed:
-            guessed[name] = _as_array(fixed[name], dtype)
-        elif name in overrides:
-            guessed[name] = _as_array(overrides[name], dtype)
-        elif name in subclass_guess:
-            guessed[name] = _as_array(subclass_guess[name], dtype)
-        else:
-            guessed[name] = _default_initial_guess(name, data)
-    return guessed
-
 
 class rv_generic(ABC):
     """Generic random variable class for common functionality."""
 
-    name: Optional[str] = None
-    parameters: Dict[str, Constraint] = {}
+    name: ClassVar[Optional[str]] = None
+    parameters: ClassVar[Mapping[str, Constraint]] = {}
 
     def __init__(self, name: Optional[str] = None):
-        self.name = name
+        if name is not None:
+            self.name = name
 
-    def __call__(self, *args, **kwds):
+    def __call__(self, *args: Any, **kwds: Any) -> "rv_frozen":
         """Call the distribution with the given arguments."""
         return self.freeze(*args, **kwds)
 
-    def _parse_args(cls, *args, **kwds):
+    @classmethod
+    def _parse_args(
+        cls, *args: Any, **kwds: Any
+    ) -> tuple[tuple[Any, ...], dict[str, Any]]:
         """Parse arguments for the distribution."""
         # Move important kwds to args
-        for param_name in cls.parameters:
+        params = dict(cls.parameters)
+        for param_name in params:
             if param_name in kwds:
                 args = args + (kwds.pop(param_name),)
         return args, kwds
 
-    def freeze(self, *args, **kwds):
+    def freeze(self, *args: Any, **kwds: Any) -> "rv_frozen":
         """Freeze the distribution for the given arguments."""
         # Create the frozen class
         frozen_cls = type('FrozenDistribution', (rv_frozen,), {'dist': self})
@@ -180,13 +61,15 @@ class rv_generic(ABC):
 
     @classmethod
     @abstractmethod
-    def support(cls, *args, **kwds):
+    def support(cls, *args, **kwds) -> Constraint:
         """Support of the distribution."""
         ...
 
     @classmethod
     @abstractmethod
-    def rvs(cls, rng: PRNGKeyArray, *args, shape: Tuple[int, ...] = (), **kwargs):
+    def rvs(
+        cls, rng: RngKey, *args: Any, shape: Tuple[int, ...] = (), **kwargs: Any
+    ) -> Array:
         """Random variates of given shape.
 
         Parameters
@@ -208,68 +91,75 @@ class rv_generic(ABC):
         ...
 
     @classmethod
-    def mean(cls, *args, **kwds):
+    def mean(cls, *args: Any, **kwds: Any) -> Array:
         """Mean of the distribution."""
         raise NotImplementedError("Mean is not implemented for this distribution.")
 
     @classmethod
-    def mode(cls, *args, **kwds):
+    def mode(cls, *args: Any, **kwds: Any) -> Array:
         """Mode of the distribution."""
         raise NotImplementedError("Mode is not implemented for this distribution.")
 
     @classmethod
-    def var(cls, *args, **kwds):
+    def var(cls, *args: Any, **kwds: Any) -> Array:
         """Variance of the distribution."""
         raise NotImplementedError("Variance is not implemented for this distribution.")
 
     @classmethod
-    def std(cls, *args, **kwds):
+    def std(cls, *args: Any, **kwds: Any) -> Array:
         """Standard deviation of the distribution."""
         return jnp.sqrt(cls.var(*args, **kwds))
 
     @classmethod
-    def cdf(cls, *args, **kwds):
+    def cdf(cls, *args: Any, **kwds: Any) -> Array:
         """Cumulative distribution function of the RV."""
         raise NotImplementedError("CDF is not implemented for this distribution.")
 
     @classmethod
-    def logcdf(cls, x: ArrayLike, *args, **kwds):
+    @abstractmethod
+    def logpdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
+        """Log probability of the distribution at the given value."""
+        ...
+
+    @classmethod
+    def logcdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
         """Log of the cumulative distribution function at x of the given RV."""
         return jnp.log(cls.cdf(x, *args, **kwds))
 
     @classmethod
-    def sf(cls, x: ArrayLike, *args, **kwds):
+    def sf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
         """Survival function (1 - cdf) at x of the given RV."""
         return 1.0 - cls.cdf(x, *args, **kwds)
 
     @classmethod
-    def logsf(cls, x: ArrayLike, *args, **kwds):
+    def logsf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
         """Log of the survival function at x of the given RV."""
         return jnp.log(cls.sf(x, *args, **kwds))
 
     @classmethod
-    def ppf(cls, *args, **kwds):
+    def ppf(cls, *args: Any, **kwds: Any) -> Array:
         """Percent point function (inverse of cdf) of the RV."""
         raise NotImplementedError("PPF is not implemented for this distribution.")
 
     @classmethod
-    def isf(cls, q: ArrayLike, *args, **kwds):
+    def isf(cls, q: ArrayLike, *args: Any, **kwds: Any) -> Array:
         """Inverse survival function (1 - ppf) of the RV."""
-        return cls.ppf(1 - q, *args, **kwds)
+        q = jnp.asarray(q)
+        return cls.ppf(1.0 - q, *args, **kwds)
 
     @classmethod
-    def entropy(cls, *args, **kwds):
+    def entropy(cls, *args: Any, **kwds: Any) -> Array:
         """Entropy of the RV."""
         raise NotImplementedError("Entropy is not implemented for this distribution.")
 
     @classmethod
-    def median(cls, *args, **kwds):
+    def median(cls, *args: Any, **kwds: Any) -> Array:
         """Median of the distribution."""
         args, kwds = cls._parse_args(*args, **kwds)
         return cls.ppf(0.5, *args, **kwds)
 
     @classmethod
-    def interval(cls, alpha: ArrayLike, *args, **kwds):
+    def interval(cls, alpha: ArrayLike, *args: Any, **kwds: Any) -> tuple[Array, Array]:
         """Confidence interval with equal areas around the median."""
         args, kwds = cls._parse_args(*args, **kwds)
         alpha = jnp.asarray(alpha)
@@ -280,7 +170,7 @@ class rv_generic(ABC):
         return a, b
 
     @classmethod
-    def moment(cls, n: int, *args, **kwds):
+    def moment(cls, n: int, *args: Any, **kwds: Any) -> Array:
         """n-th non-central moment of the distribution.
 
         Parameters
@@ -300,7 +190,7 @@ class rv_generic(ABC):
         raise NotImplementedError("Moment is not implemented for this distribution.")
 
     @classmethod
-    def skew(cls, *args, **kwds):
+    def skew(cls, *args: Any, **kwds: Any) -> Array:
         """Skewness of the distribution.
 
         Parameters
@@ -318,7 +208,7 @@ class rv_generic(ABC):
         raise NotImplementedError("Skewness is not implemented for this distribution.")
 
     @classmethod
-    def kurtosis(cls, *args, **kwds):
+    def kurtosis(cls, *args: Any, **kwds: Any) -> Array:
         """Kurtosis of the distribution.
 
         Parameters
@@ -336,227 +226,140 @@ class rv_generic(ABC):
         raise NotImplementedError("Kurtosis is not implemented for this distribution.")
 
     @classmethod
-    def _fit_closed_form(
-        cls,
-        data: Array,
-        *,
-        weights: Optional[Array] = None,
-        fixed: Optional[Mapping[str, ArrayLike]] = None,
-        **kwargs: Any,
-    ) -> Optional[Tuple[Array, ...]]:
-        """Optional closed-form estimator hook. Subclasses may override."""
-        return None
-
-    @classmethod
-    def _build_parameter_dict(
-        cls,
-        varying: Mapping[str, Array],
-        fixed: Optional[Mapping[str, ArrayLike]] = None,
-    ) -> Dict[str, Array]:
-        params: Dict[str, Array] = {}
-        fixed = fixed or {}
-        for name in cls.parameters:
-            if name in fixed:
-                params[name] = _as_array(fixed[name])
-            else:
-                params[name] = varying[name]
-        return params
-
-    @classmethod
-    def _fit_numeric(
-        cls,
-        data: Array,
-        *,
-        initial: Optional[Mapping[str, ArrayLike]] = None,
-        fixed: Optional[Mapping[str, ArrayLike]] = None,
-        optimizer: str = "BFGS",
-        optimizer_kwargs: Optional[Mapping[str, Any]] = None,
-        weights: Optional[Array] = None,
-        **logpdf_kwargs: Any,
-    ) -> Tuple[Array, ...]:
-        if not cls.parameters:
-            raise ValueError(
-                f"Distribution {cls.__name__} does not expose parameters to fit."
-            )
-
-        fixed = fixed or {}
-        initial_params = _prepare_initial_parameters(
-            cls,
-            data,
-            overrides=initial,
-            fixed=fixed,
-        )
-
-        free_names = [name for name in cls.parameters if name not in fixed]
-        varying_initial = {name: initial_params[name] for name in free_names}
-
-        if not varying_initial:
-            fitted = cls._build_parameter_dict({}, fixed=fixed)
-            return tuple(fitted[name] for name in cls.parameters)
-
-        flat_init, metadata = _flatten_param_dict(varying_initial)
-        target_dtype = jnp.result_type(data.dtype, jnp.float32)
-        flat_init = flat_init.astype(target_dtype)
-
-        def objective(theta: Array) -> Array:
-            varying = _unflatten_param_vector(theta, metadata)
-            params = cls._build_parameter_dict(varying, fixed=fixed)
-            log_prob = cls.logpdf(data, **params, **logpdf_kwargs)
-            if weights is not None:
-                log_prob = log_prob * weights
-            return -jnp.sum(log_prob).astype(target_dtype)
-
-        grad_fn = jax.grad(objective)
-        optimizer_kwargs = dict(optimizer_kwargs or {})
-
-        from jax.scipy.optimize import minimize
-
-        result = minimize(
-            objective,
-            flat_init,
-            method=optimizer,
-            jac=grad_fn,
-            **optimizer_kwargs,
-        )
-        if not getattr(result, "success", False):
-            message = getattr(result, "message", "Unknown optimisation failure")
-            raise ValueError(f"Optimization failed for {cls.__name__}: {message}")
-
-        fitted_varying = _unflatten_param_vector(result.x, metadata)
-        fitted = cls._build_parameter_dict(fitted_varying, fixed=fixed)
-        ordered = tuple(fitted[name] for name in cls.parameters)
-        return ordered
-
-    @classmethod
-    def fit(
-        cls,
-        data: ArrayLike,
-        *,
-        method: str = "auto",
-        initial: Optional[Mapping[str, ArrayLike]] = None,
-        fixed: Optional[Mapping[str, ArrayLike]] = None,
-        optimizer: str = "BFGS",
-        optimizer_kwargs: Optional[Mapping[str, Any]] = None,
-        weights: Optional[ArrayLike] = None,
-        **kwargs: Any,
-    ) -> Tuple[Array, ...]:
-        """
-        Estimate distribution parameters from data.
+    def fit(cls, data: ArrayLike, **kwds: Any) -> tuple[Array, ...]:
+        """Maximum likelihood estimation of distribution parameters.
 
         Parameters
         ----------
-        data:
-            Observations drawn from the distribution.
-        method:
-            Either ``"auto"`` (default), ``"closed_form"`` to force closed-form
-            estimation, or ``"numeric"`` to skip analytic attempts.
-        initial:
-            Optional mapping providing initial guesses for the optimiser.
-        fixed:
-            Optional mapping of parameter names to values that should be held
-            constant during fitting.
-        optimizer:
-            Optimiser name passed to :func:`jax.scipy.optimize.minimize` when a
-            numeric routine is required.
-        optimizer_kwargs:
-            Additional keyword arguments forwarded to the optimiser.
-        weights:
-            Optional non-negative sample weights. When provided, closed-form
-            implementations may exploit them; otherwise a
-            ``NotImplementedError`` is raised.
-        **kwargs:
-            Additional keyword arguments. If any share a name with distribution
-            parameters they are interpreted as fixed parameters; remaining keys
-            are merged into ``optimizer_kwargs``.
+        data : array_like
+            Data to fit the distribution to
+        **kwds : dict, optional
+            Additional parameters for the optimization
+
+        Returns
+        -------
+        params : tuple
+            The fitted parameters of the distribution
         """
-        data_arr = _as_array(data)
-        if data_arr.size == 0:
-            raise ValueError("Cannot fit distribution with empty data.")
-        if data_arr.ndim == 0:
-            data_arr = jnp.reshape(data_arr, (1,))
-
-        num_samples = int(data_arr.shape[0])
-        weights_arr = _normalize_sample_weights(num_samples, weights, data_arr.dtype)
-
-        fixed_map: Dict[str, ArrayLike] = dict(fixed or {})
-        extra_opt_kwargs: Dict[str, Any] = {}
-        for key, value in kwargs.items():
-            if key in cls.parameters:
-                fixed_map[key] = value
-            else:
-                extra_opt_kwargs[key] = value
-
-        if extra_opt_kwargs:
-            base_opts = dict(optimizer_kwargs or {})
-            base_opts.update(extra_opt_kwargs)
-            optimizer_kwargs = base_opts
-
-        if method not in {"auto", "closed_form", "numeric"}:
-            raise ValueError(f"Unknown fit method '{method}'")
-
-        if method in {"auto", "closed_form"}:
-            closed = cls._fit_closed_form(
-                data_arr,
-                weights=weights_arr,
-                fixed=fixed_map if fixed_map else None,
-            )
-            if closed is not None:
-                return tuple(_as_array(param, data_arr.dtype) for param in closed)
-            if method == "closed_form":
-                raise NotImplementedError(
-                    f"No closed-form fit available for {cls.__name__}."
-                )
-
-        return cls._fit_numeric(
-            data_arr,
-            initial=initial,
-            fixed=fixed_map,
-            optimizer=optimizer,
-            optimizer_kwargs=optimizer_kwargs,
-            weights=weights_arr,
-        )
+        raise NotImplementedError("Not implemented for this distribution.")
 
 
 class rv_exponential_family(rv_generic):
     """Base class for exponential family random variables."""
 
     @classmethod
-    def natural_parameters(cls, *args, **kwds):
+    def natural_parameters(cls, *args: Any, **kwds: Any) -> Array:
         """Natural parameters of the distribution."""
         raise NotImplementedError(
             "Natural parameters are not implemented for this distribution."
         )
 
     @classmethod
-    def sufficient_statistics(cls, x: ArrayLike, *args, **kwds):
+    def sufficient_statistics(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
         """Sufficient statistics of the distribution."""
         raise NotImplementedError(
             "Sufficient statistics are not implemented for this distribution."
         )
 
     @classmethod
-    def log_partition(cls, *args, **kwds):
+    def log_partition(cls, *args: Any, **kwds: Any) -> Array:
         """Log partition function of the distribution."""
         raise NotImplementedError(
             "Log partition function is not implemented for this distribution."
         )
 
     @classmethod
-    def fit(
-        cls,
-        data: ArrayLike,
-        *,
-        weights: Optional[ArrayLike] = None,
-        **kwargs,
-    ):
-        """Default fit relies on :meth:`rv_generic.fit`."""
-        return super().fit(data, weights=weights, **kwargs)
+    def fit(cls, data: ArrayLike, **kwds: Any) -> tuple[Array, ...]:
+        """Maximum likelihood estimation of distribution parameters using sufficient
+        statistics.
+
+        For exponential family distributions, the MLE can be computed efficiently using
+        sufficient statistics. The natural parameters are found by solving the equation:
+
+            E[T(X)] = T(x)
+
+        where T(X) is the sufficient statistic and T(x) is the observed sufficient
+        statistic.
+
+        Parameters
+        ----------
+        data : array_like
+            Data to fit the distribution to
+        **kwds : dict, optional
+            Additional parameters for the optimization
+
+        Returns
+        -------
+        params : tuple
+            The fitted parameters of the distribution
+        """
+        data = jnp.asarray(data)
+
+        # Compute sufficient statistics
+        T = cls.sufficient_statistics(data)
+
+        # Get initial parameters from kwds or use defaults
+        init_params: dict[str, Array] = {}
+        for param_name, constraint in cls.parameters.items():
+            if param_name in kwds:
+                init_params[param_name] = kwds.pop(param_name)
+            else:
+                # Use default value from constraint
+                default_value = getattr(constraint, "default_value", None)
+                if default_value is None:
+                    raise ValueError(
+                        f"Constraint {constraint!r} lacks a default value for parameter"
+                        f" '{param_name}'. Provide an explicit initial value."
+                    )
+                init_params[param_name] = jnp.asarray(default_value)
+
+        # Convert to flat array for optimization
+        init_flat = jnp.concatenate([jnp.ravel(v) for v in init_params.values()])
+
+        def neg_log_likelihood(params_flat: Array) -> Array:
+            # Reshape parameters according to their original shapes
+            start_idx = 0
+            params: dict[str, Array] = {}
+            for param_name, param_value in init_params.items():
+                param_size = jnp.size(param_value)
+                param_shape = jnp.shape(param_value)
+                param = params_flat[start_idx : start_idx + param_size].reshape(
+                    param_shape
+                )
+                params[param_name] = param
+                start_idx += param_size
+
+            # Get natural parameters
+            eta = cls.natural_parameters(**params)
+
+            # Compute negative log likelihood using sufficient statistics
+            return -jnp.sum(eta * T - cls.log_partition(eta))
+
+        # Optimize
+        from jax.scipy.optimize import minimize
+
+        result = minimize(neg_log_likelihood, init_flat, method="BFGS", **kwds)
+
+        if not result.success:
+            raise ValueError(f"Optimization failed: {result.message}")
+
+        # Reshape parameters back to their original shapes
+        start_idx = 0
+        fitted_params: dict[str, Array] = {}
+        for param_name, param_value in init_params.items():
+            param_size = jnp.size(param_value)
+            param_shape = jnp.shape(param_value)
+            param = result.x[start_idx : start_idx + param_size].reshape(param_shape)
+            fitted_params[param_name] = param
+            start_idx += param_size
+
+        return tuple(fitted_params.values())
 
 
 class rv_continuous(rv_generic):
     """Base class for continuous random variables."""
 
-    def freeze(self, *args, **kwds):
+    def freeze(self, *args: Any, **kwds: Any) -> "rv_continuous_frozen":
         """Freeze the distribution for the given arguments."""
         # Create the frozen class
         frozen_cls = type(
@@ -565,32 +368,96 @@ class rv_continuous(rv_generic):
         return frozen_cls(self, *args, **kwds)
 
     @classmethod
-    def pdf(cls, x: ArrayLike, *args, **kwds):
+    def pdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
         """Probability density function at x of the given RV."""
         args, kwds = cls._parse_args(*args, **kwds)
         return jnp.exp(cls.logpdf(x, *args, **kwds))
 
     @classmethod
-    def logpdf(cls, x: ArrayLike, *args, **kwds):
+    def logpdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
         """Log of the probability density function at x of the given RV."""
         raise NotImplementedError("Logpdf is not implemented for this distribution.")
 
     @classmethod
-    def fit(
-        cls,
-        data: ArrayLike,
-        *,
-        weights: Optional[ArrayLike] = None,
-        **kwds,
-    ):
-        """Delegate to :meth:`rv_generic.fit` for numerical/analytic estimation."""
-        return super().fit(data, weights=weights, **kwds)
+    def fit(cls, data: ArrayLike, **kwds: Any) -> tuple[Array, ...]:
+        """Maximum likelihood estimation of distribution parameters.
+
+        For discrete distributions, the MLE is found by maximizing the log-likelihood
+        using the logpmf function.
+
+        Parameters
+        ----------
+        data : array_like
+            Data to fit the distribution to
+        **kwds : dict, optional
+            Additional parameters for the optimization
+
+        Returns
+        -------
+        params : tuple
+            The fitted parameters of the distribution
+        """
+        data = jnp.asarray(data)
+
+        # Get initial parameters from kwds or use defaults
+        init_params: dict[str, Array] = {}
+        for param_name, constraint in cls.parameters.items():
+            if param_name in kwds:
+                init_params[param_name] = kwds.pop(param_name)
+            else:
+                # Use default value from constraint
+                default_value = getattr(constraint, "default_value", None)
+                if default_value is None:
+                    raise ValueError(
+                        f"Constraint {constraint!r} lacks a default value for parameter"
+                        f" '{param_name}'. Provide an explicit initial value."
+                    )
+                init_params[param_name] = jnp.asarray(default_value)
+
+        # Convert to flat array for optimization
+        init_flat = jnp.concatenate([jnp.ravel(v) for v in init_params.values()])
+
+        def neg_log_likelihood(params_flat: Array) -> Array:
+            # Reshape parameters according to their original shapes
+            start_idx = 0
+            params: dict[str, Array] = {}
+            for param_name, param_value in init_params.items():
+                param_size = jnp.size(param_value)
+                param_shape = jnp.shape(param_value)
+                param = params_flat[start_idx : start_idx + param_size].reshape(
+                    param_shape
+                )
+                params[param_name] = param
+                start_idx += param_size
+
+            # Compute negative log likelihood using logpmf
+            return -jnp.sum(cls.logpdf(data, **params))
+
+        # Optimize
+        from jax.scipy.optimize import minimize
+
+        result = minimize(neg_log_likelihood, init_flat, method="BFGS", **kwds)
+
+        if not result.success:
+            raise ValueError(f"Optimization failed: {result.message}")
+
+        # Reshape parameters back to their original shapes
+        start_idx = 0
+        fitted_params: dict[str, Array] = {}
+        for param_name, param_value in init_params.items():
+            param_size = jnp.size(param_value)
+            param_shape = jnp.shape(param_value)
+            param = result.x[start_idx : start_idx + param_size].reshape(param_shape)
+            fitted_params[param_name] = param
+            start_idx += param_size
+
+        return tuple(fitted_params.values())
 
 
 class rv_discrete(rv_generic):
     """Base class for discrete random variables."""
 
-    def freeze(self, *args, **kwds):
+    def freeze(self, *args: Any, **kwds: Any) -> "rv_discrete_frozen":
         """Freeze the distribution for the given arguments."""
         # Create the frozen class
         frozen_cls = type(
@@ -600,22 +467,22 @@ class rv_discrete(rv_generic):
 
     @classmethod
     @abstractmethod
-    def pmf(cls, k: ArrayLike, *args, **kwds):
+    def pmf(cls, k: ArrayLike, *args: Any, **kwds: Any) -> Array:
         """Probability mass function at k of the given RV."""
         ...
 
     @classmethod
-    def logpmf(cls, k: ArrayLike, *args, **kwds):
+    def logpmf(cls, k: ArrayLike, *args: Any, **kwds: Any) -> Array:
         """Log of the probability mass function at k of the given RV."""
         return jnp.log(cls.pmf(k, *args, **kwds))
 
     @classmethod
-    def logpdf(cls, x: ArrayLike, *args, **kwds):
+    def logpdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
         """Log of the probability density function at x of the given RV."""
         return cls.logpmf(x, *args, **kwds)
 
     @classmethod
-    def pdf(cls, x: ArrayLike, *args, **kwds):
+    def pdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
         """Probability density function at x of the given RV."""
         return jnp.exp(cls.logpdf(x, *args, **kwds))
 
@@ -795,7 +662,7 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
         """Inverse survival function (1 - ppf) of the frozen distribution."""
         return self.dist.isf(q, *self.args, **self.kwds)
 
-    def rvs(self, rng: PRNGKeyArray, shape: Tuple[int, ...] = (), **kwargs):
+    def rvs(self, rng: RngKey, shape: Tuple[int, ...] = (), **kwargs):
         """Random variates of the frozen distribution.
 
         Parameters
@@ -999,7 +866,7 @@ class rv_continuous_frozen(rv_frozen):
         """
         return self.dist.ppf(q, *self.args, **self.kwds)
 
-    def rvs(self, rng: PRNGKeyArray, *args, shape: Tuple[int, ...] = (), **kwargs):
+    def rvs(self, rng: RngKey, *args, shape: Tuple[int, ...] = (), **kwargs):
         """Random variates of the distribution.
 
         Parameters
@@ -1015,38 +882,6 @@ class rv_continuous_frozen(rv_frozen):
             Random variates of given shape
         """
         return self.dist.rvs(rng, *self.args, shape=shape, **self.kwds)
-
-    def mean_direction(self):
-        """Return a representative mean direction when defined."""
-        if hasattr(self.dist, "mean_direction_vector"):
-            return self.dist.mean_direction_vector(*self.args, **self.kwds)
-        raise NotImplementedError(
-            f"{self.dist.__class__.__name__} does not implement mean_direction_vector."
-        )
-
-    def mean_direction_dyad(self):
-        """Return expected dyadic product when defined."""
-        if hasattr(self.dist, "mean_direction_dyad"):
-            return self.dist.mean_direction_dyad(*self.args, **self.kwds)
-        raise NotImplementedError(
-            f"{self.dist.__class__.__name__} does not implement mean_direction_dyad."
-        )
-
-    def dispersion(self):
-        """Return dispersion matrix when defined."""
-        if hasattr(self.dist, "dispersion"):
-            return self.dist.dispersion(*self.args, **self.kwds)
-        raise NotImplementedError(
-            f"{self.dist.__class__.__name__} does not implement dispersion."
-        )
-
-    def axial_dispersion(self):
-        """Return axial dispersion (variance along principal axis) when defined."""
-        if hasattr(self.dist, "axial_dispersion"):
-            return self.dist.axial_dispersion(*self.args, **self.kwds)
-        raise NotImplementedError(
-            f"{self.dist.__class__.__name__} does not implement axial_dispersion."
-        )
 
 
 # Register frozen classes as JAX PyTrees

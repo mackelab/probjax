@@ -13,13 +13,13 @@ from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import lax, random
 from jax.scipy.special import gammaln, hyp1f1
-from jaxtyping import Array, ArrayLike, PRNGKeyArray
-import numpy as np
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, spherical
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["watson"]
 
@@ -97,12 +97,7 @@ def _log_hyp1f1_half(kappa: Array, dim: int) -> Array:
         ) / (jnp.asarray(2.0, dtype=calc_dtype) * (z_pos**2 + _EPS))
         corr = corr1 + corr2
         corr = jnp.clip(corr, -0.9, None)
-        return (
-            pref
-            + z_pos
-            + (a_param - b) * jnp.log(z_pos)
-            + jnp.log1p(corr)
-        )
+        return pref + z_pos + (a_param - b) * jnp.log(z_pos) + jnp.log1p(corr)
 
     def pos_log(z):
         return pos_asympt(jnp.maximum(z, large_thresh), a, pref_pos)
@@ -194,7 +189,11 @@ def _watson_moment_ratio(kappa, dim: int, dtype):
         a = jnp.asarray(0.5, dtype=calc_dtype)
         b = jnp.asarray(0.5 * dim, dtype=calc_dtype)
         m0 = hyp1f1(a, b, k)
-        m1 = hyp1f1(a + jnp.asarray(1.0, dtype=calc_dtype), b + jnp.asarray(1.0, dtype=calc_dtype), k)
+        m1 = hyp1f1(
+            a + jnp.asarray(1.0, dtype=calc_dtype),
+            b + jnp.asarray(1.0, dtype=calc_dtype),
+            k,
+        )
         ratio = (a / b) * m1 / m0
         return ratio
 
@@ -353,7 +352,7 @@ def _solve_watson_kappa(target: ArrayLike, dim: int, dtype) -> jnp.ndarray:
 
 
 def _sample_watson_direction(
-    key: PRNGKeyArray,
+    key: RngKey,
     mu: Array,
     kappa: Array,
 ) -> Array:
@@ -451,7 +450,7 @@ class watson_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def rvs(
         cls,
-        rng: PRNGKeyArray,
+        rng: RngKey,
         mean_direction: Array,
         kappa: Array = 0.0,
         shape: Tuple[int, ...] = (),
@@ -473,22 +472,16 @@ class watson_gen(rv_continuous, rv_exponential_family):
 
         keys = random.split(rng, total)
 
-        mean_direction = jnp.broadcast_to(
-            mean_direction, batch_shape + event_shape
-        )
+        mean_direction = jnp.broadcast_to(mean_direction, batch_shape + event_shape)
         kappa = jnp.broadcast_to(kappa, batch_shape)
 
-        mean_tiled = jnp.broadcast_to(
-            mean_direction, sample_shape + event_shape
-        )
+        mean_tiled = jnp.broadcast_to(mean_direction, sample_shape + event_shape)
         kappa_tiled = jnp.broadcast_to(kappa, sample_shape)
 
         mean_flat = mean_tiled.reshape((total,) + event_shape)
         kappa_flat = kappa_tiled.reshape((total,))
 
-        samples = jax.vmap(_sample_watson_direction)(
-            keys, mean_flat, kappa_flat
-        )
+        samples = jax.vmap(_sample_watson_direction)(keys, mean_flat, kappa_flat)
         return samples.reshape(sample_shape + event_shape)
 
     @classmethod
@@ -521,9 +514,7 @@ class watson_gen(rv_continuous, rv_exponential_family):
     def natural_parameters(cls, mean_direction: Array, kappa: Array = 0.0, **kwargs):
         mean_direction = _normalize_vector(jnp.asarray(mean_direction))
         kappa = jnp.asarray(kappa)
-        batch_shape = jax.lax.broadcast_shapes(
-            mean_direction.shape[:-1], kappa.shape
-        )
+        batch_shape = jax.lax.broadcast_shapes(mean_direction.shape[:-1], kappa.shape)
         mean_direction = jnp.broadcast_to(
             mean_direction, batch_shape + mean_direction.shape[-1:]
         )
@@ -550,9 +541,14 @@ class watson_gen(rv_continuous, rv_exponential_family):
         kappa = jnp.broadcast_to(kappa, batch_shape)
 
         if dim == 1:
-            return jnp.broadcast_to(jnp.ones((1, 1), dtype=mean_direction.dtype), batch_shape + (1, 1))
+            return jnp.broadcast_to(
+                jnp.ones((1, 1), dtype=mean_direction.dtype), batch_shape + (1, 1)
+            )
 
-        rho = jnp.asarray(_watson_moment_ratio(kappa, dim, mean_direction.dtype), dtype=mean_direction.dtype)
+        rho = jnp.asarray(
+            _watson_moment_ratio(kappa, dim, mean_direction.dtype),
+            dtype=mean_direction.dtype,
+        )
         rho = jnp.broadcast_to(rho, batch_shape)
 
         mu_outer = jnp.einsum("...i,...j->...ij", mean_direction, mean_direction)
@@ -560,7 +556,9 @@ class watson_gen(rv_continuous, rv_exponential_family):
         identity = jnp.broadcast_to(identity, batch_shape + (dim, dim))
 
         rho_term = rho[..., None, None] * mu_outer
-        perp_scale = ((1.0 - rho) / jnp.asarray(dim - 1, dtype=mean_direction.dtype))[..., None, None]
+        perp_scale = ((1.0 - rho) / jnp.asarray(dim - 1, dtype=mean_direction.dtype))[
+            ..., None, None
+        ]
         perp_term = perp_scale * (identity - mu_outer)
         return rho_term + perp_term
 
