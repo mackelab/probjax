@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 from jax import lax
-from jax.scipy.linalg import sqrtm
+import jax.scipy.linalg as jsp_linalg
 
 from .constraints import (
     Constraint,
@@ -31,6 +31,19 @@ __all__ = [
     "transform_to",
     "manifold_registry",
 ]
+
+expm = jsp_linalg.expm
+sqrtm = jsp_linalg.sqrtm
+
+if hasattr(jsp_linalg, "logm"):
+    logm = jsp_linalg.logm  # type: ignore[attr-defined]
+else:
+    def logm(matrix: jnp.ndarray) -> jnp.ndarray:
+        """Logarithm of a symmetric positive definite matrix."""
+        eigvals, eigvecs = jnp.linalg.eigh(matrix)
+        log_eigvals = jnp.log(jnp.clip(eigvals, a_min=1e-12))
+        scaled_vecs = eigvecs * log_eigvals[..., None, :]
+        return scaled_vecs @ jnp.swapaxes(eigvecs, -1, -2)
 
 
 class ConstraintRegistry:
@@ -200,7 +213,7 @@ def stiefel_exp_map(x, v):
     # QR decomposition of the tangent vector
     q, r = jnp.linalg.qr(v)
     # Compute the exponential map
-    return x @ jnp.linalg.expm(r)
+    return x @ expm(r)
 
 
 def stiefel_log_map(x, y):
@@ -221,14 +234,14 @@ def spd_exp_map(x, v):
     """Exponential map for SPD manifold."""
     x_sqrt = sqrtm(x)
     x_sqrt_inv = jnp.linalg.inv(x_sqrt)
-    return x_sqrt @ jnp.linalg.expm(x_sqrt_inv @ v @ x_sqrt_inv) @ x_sqrt
+    return x_sqrt @ expm(x_sqrt_inv @ v @ x_sqrt_inv) @ x_sqrt
 
 
 def spd_log_map(x, y):
     """Logarithmic map for SPD manifold."""
     x_sqrt = sqrtm(x)
     x_sqrt_inv = jnp.linalg.inv(x_sqrt)
-    return x_sqrt @ jnp.logm(x_sqrt_inv @ y @ x_sqrt_inv) @ x_sqrt
+    return x_sqrt @ logm(x_sqrt_inv @ y @ x_sqrt_inv) @ x_sqrt
 
 
 def spd_transform(x):

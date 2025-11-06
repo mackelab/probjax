@@ -218,8 +218,14 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         isf : ndarray
             Quantile corresponding to the upper tail probability q
         """
-        scale = 1.0 / beta
-        return _gamma.isf(q, alpha, scale=scale)
+        q_arr = jnp.asarray(q)
+        alpha_arr = jnp.asarray(alpha)
+        beta_arr = jnp.asarray(beta)
+        q_clipped = jnp.clip(
+            q_arr, a_min=jnp.finfo(q_arr.dtype).tiny, a_max=1.0 - jnp.finfo(q_arr.dtype).eps
+        )
+        inv = gammaincinv(alpha_arr, 1.0 - q_clipped)
+        return inv / beta_arr
 
     @classmethod
     def mean(cls, alpha=1.0, beta=1.0, **kwargs):
@@ -237,7 +243,7 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         mean : float
             Mean of the distribution
         """
-        return alpha / beta
+        return jnp.asarray(alpha) / jnp.asarray(beta)
 
     @classmethod
     def mode(cls, alpha=1.0, beta=1.0, **kwargs):
@@ -274,7 +280,9 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         var : float
             Variance of the distribution
         """
-        return alpha / beta**2
+        alpha_arr = jnp.asarray(alpha)
+        beta_arr = jnp.asarray(beta)
+        return alpha_arr / (beta_arr**2)
 
     @classmethod
     def entropy(cls, alpha=1.0, beta=1.0, **kwargs):
@@ -292,7 +300,14 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         entropy : float
             Entropy of the distribution
         """
-        return alpha - jnp.log(beta) + gammaln(alpha) + (1 - alpha) * digamma(alpha)
+        alpha_arr = jnp.asarray(alpha)
+        beta_arr = jnp.asarray(beta)
+        return (
+            alpha_arr
+            - jnp.log(beta_arr)
+            + gammaln(alpha_arr)
+            + (1 - alpha_arr) * digamma(alpha_arr)
+        )
 
     @classmethod
     def moment(cls, n, alpha=1.0, beta=1.0, **kwargs):
@@ -314,7 +329,9 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         """
         # n-th moment: E[X^n] = Γ(α+n)/Γ(α) * β^(-n)
         n = jnp.asarray(n)
-        return jnp.exp(gammaln(alpha + n) - gammaln(alpha)) / beta**n
+        alpha_arr = jnp.asarray(alpha)
+        beta_arr = jnp.asarray(beta)
+        return jnp.exp(gammaln(alpha_arr + n) - gammaln(alpha_arr)) / (beta_arr**n)
 
     @classmethod
     def skew(cls, alpha=1.0, beta=1.0, **kwargs):

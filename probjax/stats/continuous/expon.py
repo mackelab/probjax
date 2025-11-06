@@ -180,8 +180,9 @@ class expon_gen(rv_continuous, rv_exponential_family):
         isf : ndarray
             Quantile corresponding to the upper tail probability q
         """
-        scale = 1.0 / rate
-        return _expon.isf(q, loc=0.0, scale=scale)
+        q = jnp.asarray(q)
+        rate_arr = jnp.asarray(rate)
+        return -jnp.log(jnp.clip(q, a_min=jnp.finfo(q.dtype).tiny, a_max=1.0)) / rate_arr
 
     @classmethod
     def mean(cls, rate=1.0, **kwargs):
@@ -197,7 +198,7 @@ class expon_gen(rv_continuous, rv_exponential_family):
         mean : float
             Mean of the distribution
         """
-        return 1.0 / rate
+        return jnp.asarray(1.0) / jnp.asarray(rate)
 
     @classmethod
     def mode(cls, rate=1.0, **kwargs):
@@ -229,7 +230,8 @@ class expon_gen(rv_continuous, rv_exponential_family):
         var : float
             Variance of the distribution
         """
-        return 1.0 / (rate**2)
+        rate_arr = jnp.asarray(rate)
+        return jnp.asarray(1.0) / (rate_arr**2)
 
     @classmethod
     def entropy(cls, rate=1.0, **kwargs):

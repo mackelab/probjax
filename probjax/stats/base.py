@@ -35,7 +35,7 @@ class rv_generic(ABC):
 
     def __init__(self, name: Optional[str] = None):
         if name is not None:
-            self.name = name
+            type(self).name = name
 
     def __call__(self, *args: Any, **kwds: Any) -> "rv_frozen":
         """Call the distribution with the given arguments."""
@@ -91,27 +91,27 @@ class rv_generic(ABC):
         ...
 
     @classmethod
-    def mean(cls, *args: Any, **kwds: Any) -> Array:
+    def mean(cls, *args: Any, **kwds: Any) -> ArrayLike:
         """Mean of the distribution."""
         raise NotImplementedError("Mean is not implemented for this distribution.")
 
     @classmethod
-    def mode(cls, *args: Any, **kwds: Any) -> Array:
+    def mode(cls, *args: Any, **kwds: Any) -> ArrayLike:
         """Mode of the distribution."""
         raise NotImplementedError("Mode is not implemented for this distribution.")
 
     @classmethod
-    def var(cls, *args: Any, **kwds: Any) -> Array:
+    def var(cls, *args: Any, **kwds: Any) -> ArrayLike:
         """Variance of the distribution."""
         raise NotImplementedError("Variance is not implemented for this distribution.")
 
     @classmethod
-    def std(cls, *args: Any, **kwds: Any) -> Array:
+    def std(cls, *args: Any, **kwds: Any) -> ArrayLike:
         """Standard deviation of the distribution."""
         return jnp.sqrt(cls.var(*args, **kwds))
 
     @classmethod
-    def cdf(cls, *args: Any, **kwds: Any) -> Array:
+    def cdf(cls, *args: Any, **kwds: Any) -> ArrayLike:
         """Cumulative distribution function of the RV."""
         raise NotImplementedError("CDF is not implemented for this distribution.")
 
@@ -129,7 +129,8 @@ class rv_generic(ABC):
     @classmethod
     def sf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
         """Survival function (1 - cdf) at x of the given RV."""
-        return 1.0 - cls.cdf(x, *args, **kwds)
+        cdf_val = jnp.asarray(cls.cdf(x, *args, **kwds))
+        return jnp.ones_like(cdf_val) - cdf_val
 
     @classmethod
     def logsf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
@@ -137,29 +138,29 @@ class rv_generic(ABC):
         return jnp.log(cls.sf(x, *args, **kwds))
 
     @classmethod
-    def ppf(cls, *args: Any, **kwds: Any) -> Array:
+    def ppf(cls, *args: Any, **kwds: Any) -> ArrayLike:
         """Percent point function (inverse of cdf) of the RV."""
         raise NotImplementedError("PPF is not implemented for this distribution.")
 
     @classmethod
-    def isf(cls, q: ArrayLike, *args: Any, **kwds: Any) -> Array:
+    def isf(cls, q: ArrayLike, *args: Any, **kwds: Any) -> ArrayLike:
         """Inverse survival function (1 - ppf) of the RV."""
         q = jnp.asarray(q)
         return cls.ppf(1.0 - q, *args, **kwds)
 
     @classmethod
-    def entropy(cls, *args: Any, **kwds: Any) -> Array:
+    def entropy(cls, *args: Any, **kwds: Any) -> ArrayLike:
         """Entropy of the RV."""
         raise NotImplementedError("Entropy is not implemented for this distribution.")
 
     @classmethod
-    def median(cls, *args: Any, **kwds: Any) -> Array:
+    def median(cls, *args: Any, **kwds: Any) -> ArrayLike:
         """Median of the distribution."""
         args, kwds = cls._parse_args(*args, **kwds)
         return cls.ppf(0.5, *args, **kwds)
 
     @classmethod
-    def interval(cls, alpha: ArrayLike, *args: Any, **kwds: Any) -> tuple[Array, Array]:
+    def interval(cls, alpha: ArrayLike, *args: Any, **kwds: Any) -> tuple[ArrayLike, ArrayLike]:
         """Confidence interval with equal areas around the median."""
         args, kwds = cls._parse_args(*args, **kwds)
         alpha = jnp.asarray(alpha)
@@ -170,7 +171,7 @@ class rv_generic(ABC):
         return a, b
 
     @classmethod
-    def moment(cls, n: int, *args: Any, **kwds: Any) -> Array:
+    def moment(cls, n: int, *args: Any, **kwds: Any) -> ArrayLike:
         """n-th non-central moment of the distribution.
 
         Parameters
@@ -190,7 +191,7 @@ class rv_generic(ABC):
         raise NotImplementedError("Moment is not implemented for this distribution.")
 
     @classmethod
-    def skew(cls, *args: Any, **kwds: Any) -> Array:
+    def skew(cls, *args: Any, **kwds: Any) -> ArrayLike:
         """Skewness of the distribution.
 
         Parameters
@@ -208,7 +209,7 @@ class rv_generic(ABC):
         raise NotImplementedError("Skewness is not implemented for this distribution.")
 
     @classmethod
-    def kurtosis(cls, *args: Any, **kwds: Any) -> Array:
+    def kurtosis(cls, *args: Any, **kwds: Any) -> ArrayLike:
         """Kurtosis of the distribution.
 
         Parameters
@@ -341,7 +342,8 @@ class rv_exponential_family(rv_generic):
         result = minimize(neg_log_likelihood, init_flat, method="BFGS", **kwds)
 
         if not result.success:
-            raise ValueError(f"Optimization failed: {result.message}")
+            message = getattr(result, "message", "unknown error")
+            raise ValueError(f"Optimization failed: {message}")
 
         # Reshape parameters back to their original shapes
         start_idx = 0
@@ -439,7 +441,8 @@ class rv_continuous(rv_generic):
         result = minimize(neg_log_likelihood, init_flat, method="BFGS", **kwds)
 
         if not result.success:
-            raise ValueError(f"Optimization failed: {result.message}")
+            message = getattr(result, "message", "unknown error")
+            raise ValueError(f"Optimization failed: {message}")
 
         # Reshape parameters back to their original shapes
         start_idx = 0
@@ -544,11 +547,12 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
 
         # Compute final shapes assuming rv is univariate
         if len(batch_shapes) > 0:
-            batch_shape = jnp.broadcast_shapes(*batch_shapes)
+            batch_shape_raw = jnp.broadcast_shapes(*batch_shapes)
         else:
-            batch_shape = ()
+            batch_shape_raw = ()
 
-        event_shape = ()
+        batch_shape: Tuple[int, ...] = tuple(int(dim) for dim in batch_shape_raw)
+        event_shape: Tuple[int, ...] = ()
 
         return batch_shape, event_shape
 

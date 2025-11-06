@@ -9,6 +9,7 @@ from typing import Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
+from jax.scipy.special import gammaln
 from jax.scipy.stats import laplace as _laplace
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
@@ -197,7 +198,13 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         sf : ndarray
             Survival function evaluated at x
         """
-        return _laplace.sf(x, loc, scale)
+        x_arr = jnp.asarray(x)
+        loc_arr = jnp.asarray(loc)
+        scale_arr = jnp.asarray(scale)
+        z = (x_arr - loc_arr) / scale_arr
+        upper_branch = 1.0 - 0.5 * jnp.exp(z)
+        lower_branch = 0.5 * jnp.exp(-z)
+        return jnp.where(x_arr < loc_arr, upper_branch, lower_branch)
 
     @classmethod
     def isf(cls, q, loc=0.0, scale=1.0, **kwargs):
@@ -217,7 +224,14 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         isf : ndarray
             Quantile corresponding to the upper tail probability q
         """
-        return _laplace.isf(q, loc, scale)
+        q_arr = jnp.asarray(q)
+        loc_arr = jnp.asarray(loc)
+        scale_arr = jnp.asarray(scale)
+        eps = jnp.finfo(q_arr.dtype).tiny
+        q_clipped = jnp.clip(q_arr, a_min=eps, a_max=1.0 - eps)
+        upper_branch = loc_arr + scale_arr * jnp.log(2.0 * (1.0 - q_clipped))
+        lower_branch = loc_arr - scale_arr * jnp.log(2.0 * q_clipped)
+        return jnp.where(q_clipped > 0.5, upper_branch, lower_branch)
 
     @classmethod
     def mean(cls, loc=0.0, scale=1.0, **kwargs):
@@ -271,7 +285,8 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         var : float
             Variance of the distribution
         """
-        return 2.0 * scale**2
+        scale_arr = jnp.asarray(scale)
+        return jnp.asarray(2.0) * (scale_arr**2)
 
     @classmethod
     def entropy(cls, loc=0.0, scale=1.0, **kwargs):
@@ -289,7 +304,8 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         entropy : float
             Entropy of the distribution
         """
-        return 1.0 + jnp.log(2.0 * scale)
+        scale_arr = jnp.asarray(scale)
+        return jnp.asarray(1.0) + jnp.log(2.0 * scale_arr)
 
     @classmethod
     def moment(cls, n, loc=0.0, scale=1.0, **kwargs):
@@ -309,34 +325,35 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         moment : float
             n-th non-central moment
         """
-        n = jnp.asarray(n)
-        # For odd n, central moment is 0
-        # For even n, central moment is n! * scale^n
-        # Convert to non-central moment by adding loc
+        n_int = int(jnp.asarray(n))
+        scale_arr = jnp.asarray(scale)
+        loc_arr = jnp.asarray(loc)
 
-        # Central moments
-        even_central = jnp.exp(
-            jnp.log(jnp.prod(jnp.arange(1, n + 1))) + n * jnp.log(scale)
+        k_int = jnp.arange(n_int + 1, dtype=jnp.int32)
+        k_float = k_int.astype(scale_arr.dtype)
+
+        expand_shape = (k_int.shape[0],) + (1,) * loc_arr.ndim
+        loc_reshaped = loc_arr.reshape((1,) + loc_arr.shape)
+        scale_reshaped = scale_arr.reshape((1,) + scale_arr.shape)
+
+        coef = jnp.exp(
+            gammaln(jnp.asarray(n_int + 1.0, dtype=scale_arr.dtype))
+            - gammaln(k_float + 1.0)
+            - gammaln((n_int - k_int).astype(scale_arr.dtype) + 1.0)
+        ).reshape(expand_shape)
+
+        loc_term = loc_reshaped ** (n_int - k_int).reshape(expand_shape)
+
+        even_mask = (k_int % 2 == 0).reshape(expand_shape)
+        central_even = jnp.exp(gammaln(k_float + 1.0)).reshape(expand_shape) * (
+            scale_reshaped**k_float.reshape(expand_shape)
         )
-        central_moment = jnp.where(n % 2 == 0, even_central, 0.0)
-
-        # Use binomial expansion to compute non-central moments
-        k = jnp.arange(n + 1)
-        binomial_coef = jnp.exp(jnp.log(jnp.math.comb(n, k)))
-        loc_powers = loc ** (n - k)
-
-        # Get central moments for each k (which are 0 for odd k)
-        k_central_moments = jnp.where(
-            k % 2 == 0,
-            jnp.exp(
-                jnp.log(jnp.prod(jnp.where(k >= 1, jnp.arange(1, k + 1), 1)))
-                + k * jnp.log(scale)
-            ),
-            0.0,
+        central = jnp.where(
+            even_mask, central_even, jnp.zeros_like(central_even, dtype=scale_arr.dtype)
         )
 
-        # Combine using binomial expansion
-        return jnp.sum(binomial_coef * loc_powers * k_central_moments)
+        moment_terms = coef * loc_term * central
+        return jnp.sum(moment_terms, axis=0)
 
     @classmethod
     def skew(cls, loc=0.0, scale=1.0, **kwargs):
@@ -354,7 +371,7 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         skew : float
             Skewness of the distribution
         """
-        return jnp.zeros_like(loc)  # Skewness is always 0 (symmetric distribution)
+        return jnp.zeros_like(jnp.asarray(loc))  # Skewness is always 0 (symmetric distribution)
 
     @classmethod
     def kurtosis(cls, loc=0.0, scale=1.0, **kwargs):
@@ -372,7 +389,8 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         kurtosis : float
             Excess kurtosis of the distribution
         """
-        return 3.0 * jnp.ones_like(loc)
+        loc_arr = jnp.asarray(loc)
+        return jnp.asarray(3.0) * jnp.ones_like(loc_arr)
 
     @classmethod
     def natural_parameters(cls, loc=0.0, scale=1.0, **kwargs):
@@ -390,7 +408,9 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         natural_parameters : tuple
             Natural parameters of the distribution
         """
-        return jnp.array([loc, -1.0 / scale])
+        loc_arr = jnp.asarray(loc)
+        scale_arr = jnp.asarray(scale)
+        return jnp.stack((loc_arr, -1.0 / scale_arr))
 
     @classmethod
     def sufficient_statistics(cls, x, **kwargs):
@@ -406,7 +426,8 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         sufficient_statistics : tuple
             Sufficient statistics of the distribution
         """
-        return jnp.array([x, jnp.abs(x)])
+        x_arr = jnp.asarray(x)
+        return jnp.stack((x_arr, jnp.abs(x_arr)))
 
     @classmethod
     def log_partition(cls, loc=0.0, scale=1.0, **kwargs):
@@ -424,7 +445,9 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         log_partition : float
             Log partition function of the distribution
         """
-        return jnp.log(2.0 * scale) + jnp.abs(loc) / scale
+        loc_arr = jnp.asarray(loc)
+        scale_arr = jnp.asarray(scale)
+        return jnp.log(2.0 * scale_arr) + jnp.abs(loc_arr) / scale_arr
 
     @classmethod
     def fit(

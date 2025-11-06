@@ -68,6 +68,17 @@ class dirichlet_gen(rv_continuous, rv_exponential_family):
         """
         return jnp.exp(cls.logpdf(x, alpha, **kwargs))
 
+    def freeze(self, alpha: Array, **kwargs):
+        rv = super().freeze(alpha=alpha, **kwargs)
+        alpha_arr = jnp.asarray(alpha)
+        if alpha_arr.ndim < 1:
+            raise ValueError("alpha must be at least one-dimensional.")
+        batch_shape = tuple(int(dim) for dim in alpha_arr.shape[:-1])
+        event_shape = (int(alpha_arr.shape[-1]),)
+        object.__setattr__(rv, "_batch_shape", batch_shape)
+        object.__setattr__(rv, "_event_shape", event_shape)
+        return rv
+
     @classmethod
     def logpdf(cls, x: Array, alpha: Array, **kwargs):
         """Log of the probability density function of the Dirichlet distribution.
@@ -84,17 +95,20 @@ class dirichlet_gen(rv_continuous, rv_exponential_family):
         logpdf : ndarray
             Log of the probability density function evaluated at x
         """
-        alpha, x = jnp.broadcast_arrays(alpha, x)
-        log_prob_fn = jax.scipy.stats.dirichlet.logpdf
-        for _ in range(x.ndim - 1):
-            log_prob_fn = jax.vmap(log_prob_fn)
-        return log_prob_fn(x, alpha)
+        alpha_arr, x_arr = jnp.broadcast_arrays(alpha, x)
+        x_arr = jnp.asarray(x_arr)
+        if x_arr.ndim == 1:
+            return jax.scipy.stats.dirichlet.logpdf(x_arr, alpha_arr)
+        log_fn = jax.scipy.stats.dirichlet.logpdf
+        for _ in range(x_arr.ndim - 1):
+            log_fn = jax.vmap(log_fn)
+        return log_fn(x_arr, alpha_arr)
 
     @classmethod
     def rvs(
         cls,
         rng: RngKey,
-        alpha: Array = None,
+        alpha: Array,
         shape: Tuple[int, ...] = (),
         **kwargs,
     ):
@@ -294,19 +308,6 @@ class dirichlet_gen(rv_continuous, rv_exponential_family):
         """
         alpha_sum = jnp.sum(alpha, axis=-1, keepdims=True)
         return gammaln(alpha_sum) - jnp.sum(gammaln(alpha), axis=-1)
-
-    def freeze(self, alpha: Array, **kwargs):
-        """Freeze the distribution by fixing the parameters.
-
-        Parameters
-        ----------
-        alpha : array_like
-            Concentration parameters
-        """
-        rv = super().freeze(alpha=alpha, **kwargs)
-        rv._batch_shape = alpha.shape[:-1]
-        rv._event_shape = alpha.shape[-1:]
-        return rv
 
     @classmethod
     def fit(

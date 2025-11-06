@@ -6,8 +6,65 @@ from jax import random
 
 from probjax.stats.base import rv_continuous
 from probjax.stats.constraints import real, symmetric_positive_definite_matrix
-from probjax.utils.linalg import batch_mahalanobis, batch_mv
+from probjax.utils.linalg import batch_mahalanobis
 from probjax.utils.typing import Array, ArrayLike, RngKey
+
+
+def _asarray_optional(value: Optional[Array]) -> Optional[Array]:
+    if value is None:
+        return None
+    return jnp.asarray(value)
+
+
+def _ensure_array(name: str, value: Optional[Array]) -> Array:
+    if value is None:
+        raise ValueError(f"Parameter '{name}' must be provided for multivariate normal distribution.")
+    return jnp.asarray(value)
+
+
+def _resolve_scale_tril(
+    loc: Array,
+    cov: Optional[Array],
+    precision_matrix: Optional[Array],
+    scale_tril: Optional[Array],
+) -> Tuple[Array, Array, Tuple[int, ...]]:
+    loc_arr = jnp.asarray(loc)
+    if loc_arr.ndim < 1:
+        raise ValueError("loc must be at least one-dimensional.")
+
+    if scale_tril is not None:
+        scale_arr = jnp.asarray(scale_tril)
+        if scale_arr.ndim < 2:
+            raise ValueError("scale_tril must be at least two-dimensional.")
+        batch_shape = jnp.broadcast_shapes(scale_arr.shape[:-2], loc_arr.shape[:-1])
+        scale_arr = jnp.broadcast_to(scale_arr, batch_shape + scale_arr.shape[-2:])
+        return loc_arr, scale_arr, tuple(int(s) for s in batch_shape)
+
+    if cov is not None:
+        cov_arr = jnp.asarray(cov)
+        if cov_arr.ndim < 2:
+            raise ValueError("covariance matrix must be at least two-dimensional.")
+        batch_shape = jnp.broadcast_shapes(cov_arr.shape[:-2], loc_arr.shape[:-1])
+        cov_arr = jnp.broadcast_to(cov_arr, batch_shape + cov_arr.shape[-2:])
+        scale_arr = jnp.linalg.cholesky(cov_arr)
+        return loc_arr, scale_arr, tuple(int(s) for s in batch_shape)
+
+    if precision_matrix is not None:
+        precision_arr = jnp.asarray(precision_matrix)
+        if precision_arr.ndim < 2:
+            raise ValueError("precision_matrix must be at least two-dimensional.")
+        batch_shape = jnp.broadcast_shapes(precision_arr.shape[:-2], loc_arr.shape[:-1])
+        precision_arr = jnp.broadcast_to(
+            precision_arr,
+            batch_shape + precision_arr.shape[-2:],
+        )
+        cov_arr = jnp.linalg.inv(precision_arr)
+        scale_arr = jnp.linalg.cholesky(cov_arr)
+        return loc_arr, scale_arr, tuple(int(s) for s in batch_shape)
+
+    raise ValueError(
+        "At least one of cov, precision_matrix, or scale_tril must be specified."
+    )
 
 
 class multivariate_normal_gen(rv_continuous):
@@ -56,9 +113,9 @@ class multivariate_normal_gen(rv_continuous):
         cls,
         x: Array,
         loc: Array,
-        cov: Array = None,
-        precision_matrix: Array = None,
-        scale_tril: Array = None,
+        cov: Optional[Array] = None,
+        precision_matrix: Optional[Array] = None,
+        scale_tril: Optional[Array] = None,
         **kwargs,
     ):
         """Probability density function of the multivariate normal distribution.
@@ -96,10 +153,10 @@ class multivariate_normal_gen(rv_continuous):
     def rvs(
         cls,
         rng: RngKey,
-        loc: Array = None,
-        cov: Array = None,
-        precision_matrix: Array = None,
-        scale_tril: Array = None,
+        loc: Array,
+        cov: Optional[Array] = None,
+        precision_matrix: Optional[Array] = None,
+        scale_tril: Optional[Array] = None,
         shape: Tuple[int, ...] = (),
         **kwargs,
     ):
@@ -125,69 +182,56 @@ class multivariate_normal_gen(rv_continuous):
         rvs : ndarray
             Random variates of given shape
         """
-        if loc.ndim < 1:
-            raise ValueError("loc must be at least one-dimensional.")
+        loc_arr, scale_arr, batch_shape = _resolve_scale_tril(
+            loc, cov, precision_matrix, scale_tril
+        )
 
-        # Choose the most efficient computation path
-        if scale_tril is not None:
-            # Most efficient path - just need matrix-vector product
-            if scale_tril.ndim < 2:
-                raise ValueError(
-                    "scale_tril matrix must be at least two-dimensional, "
-                    "with optional leading batch dimensions"
-                )
-            batch_shape = jax.lax.broadcast_shapes(
-                scale_tril.shape[:-2], loc.shape[:-1]
-            )
-            scale_tril = jnp.broadcast_to(
-                scale_tril, batch_shape + scale_tril.shape[-2:]
-            )
-        elif cov is not None:
-            # Need to compute Cholesky decomposition
-            if cov.ndim < 2:
-                raise ValueError(
-                    "covariance_matrix must be at least two-dimensional, "
-                    "with optional leading batch dimensions"
-                )
-            batch_shape = jax.lax.broadcast_shapes(cov.shape[:-2], loc.shape[:-1])
-            cov = jnp.broadcast_to(cov, batch_shape + cov.shape[-2:])
-            scale_tril = jnp.linalg.cholesky(cov)
-        elif precision_matrix is not None:
-            # Need to compute inverse and Cholesky
-            if precision_matrix.ndim < 2:
-                raise ValueError(
-                    "precision_matrix must be at least two-dimensional, "
-                    "with optional leading batch dimensions"
-                )
-            batch_shape = jax.lax.broadcast_shapes(
-                precision_matrix.shape[:-2], loc.shape[:-1]
-            )
-            precision_matrix = jnp.broadcast_to(
-                precision_matrix,
-                batch_shape + precision_matrix.shape[-2:],
-            )
-            scale_tril = jnp.linalg.cholesky(jnp.linalg.inv(precision_matrix))
-        else:
-            raise ValueError(
-                "At least one of covariance_matrix, precision_matrix, or scale_tril "
-                "must be specified."
-            )
+        event_dim = int(loc_arr.shape[-1])
+        sample_shape = shape + batch_shape + (event_dim,)
+        eps = random.normal(rng, shape=sample_shape, dtype=loc_arr.dtype)
 
-        loc = jnp.broadcast_to(loc, batch_shape + loc.shape[-1:])
-        event_shape = loc.shape[-1:]
-        shape = shape + batch_shape + event_shape
+        loc_reshaped = loc_arr.reshape((1,) * len(shape) + loc_arr.shape)
+        loc_broadcast = jnp.broadcast_to(loc_reshaped, shape + loc_arr.shape)
 
-        eps = random.normal(rng, shape=shape, dtype=loc.dtype)
-        return loc + batch_mv(scale_tril, eps)
+        scale_reshaped = scale_arr.reshape((1,) * len(shape) + scale_arr.shape)
+        scale_broadcast = jnp.broadcast_to(
+            scale_reshaped, shape + scale_arr.shape
+        )
+
+        transformed = jnp.einsum("...ij,...j->...i", scale_broadcast, eps)
+        return loc_broadcast + transformed
+
+    def freeze(
+        self,
+        loc: Array,
+        cov: Optional[Array] = None,
+        precision_matrix: Optional[Array] = None,
+        scale_tril: Optional[Array] = None,
+        **kwargs,
+    ):
+        rv = super().freeze(
+            loc=loc,
+            cov=cov,
+            precision_matrix=precision_matrix,
+            scale_tril=scale_tril,
+            **kwargs,
+        )
+        loc_arr, _, batch_shape = _resolve_scale_tril(
+            loc, cov, precision_matrix, scale_tril
+        )
+        event_shape = (int(loc_arr.shape[-1]),)
+        object.__setattr__(rv, "_batch_shape", batch_shape)
+        object.__setattr__(rv, "_event_shape", event_shape)
+        return rv
 
     @classmethod
     def logpdf(
         cls,
         x: Array,
         loc: Array,
-        cov: Array = None,
-        precision_matrix: Array = None,
-        scale_tril: Array = None,
+        cov: Optional[Array] = None,
+        precision_matrix: Optional[Array] = None,
+        scale_tril: Optional[Array] = None,
         **kwargs,
     ):
         """Log of the probability density function of the multivariate normal distribution.
@@ -210,36 +254,40 @@ class multivariate_normal_gen(rv_continuous):
         logpdf : ndarray
             Log of the probability density function evaluated at x
         """
-        # Choose the most efficient computation path
-        if precision_matrix is not None:
-            # Most efficient for logpdf - just need quadratic form
-            diff = x - loc
-            M = diff @ precision_matrix @ diff
-            half_log_det = -0.5 * jnp.sum(
-                jnp.log(jnp.diagonal(precision_matrix, axis1=-2, axis2=-1)),
-                axis=-1,
-            )
-        elif scale_tril is not None:
-            # Need to compute quadratic form with inverse
-            diff = x - loc
-            M = batch_mahalanobis(scale_tril, diff)
+        x_arr = jnp.asarray(x)
+        loc_arr = jnp.asarray(loc)
+        precision_arr = _asarray_optional(precision_matrix)
+        scale_arr = _asarray_optional(scale_tril)
+        cov_arr = _asarray_optional(cov)
+
+        event_dim = int(loc_arr.shape[-1])
+        diff = x_arr - loc_arr
+
+        if precision_arr is not None:
+            M = jnp.einsum("...i,...ij,...j->...", diff, precision_arr, diff)
+            sign, logdet = jnp.linalg.slogdet(precision_arr)
+            if jnp.any(sign <= 0):
+                raise ValueError("precision_matrix must be positive definite.")
+            half_log_det = 0.5 * logdet
+        elif scale_arr is not None:
+            M = batch_mahalanobis(scale_arr, diff)
             half_log_det = jnp.sum(
-                jnp.log(jnp.diagonal(scale_tril, axis1=-2, axis2=-1)),
+                jnp.log(jnp.diagonal(scale_arr, axis1=-2, axis2=-1)),
                 axis=-1,
             )
-        elif cov is not None:
-            # Need to compute inverse and determinant
-            diff = x - loc
-            scale_tril = jnp.linalg.cholesky(cov)
-            M = batch_mahalanobis(scale_tril, diff)
-            half_log_det = -0.5 * jnp.log(jnp.linalg.det(cov))
+        elif cov_arr is not None:
+            chol = jnp.linalg.cholesky(cov_arr)
+            M = batch_mahalanobis(chol, diff)
+            sign, logdet = jnp.linalg.slogdet(cov_arr)
+            if jnp.any(sign <= 0):
+                raise ValueError("covariance matrix must be positive definite.")
+            half_log_det = 0.5 * logdet
         else:
             raise ValueError(
-                "At least one of covariance_matrix, precision_matrix, or scale_tril "
-                "must be specified."
+                "At least one of cov, precision_matrix, or scale_tril must be specified."
             )
 
-        return -0.5 * (loc.shape[-1] * jnp.log(2 * jnp.pi) + M) - half_log_det
+        return -0.5 * (event_dim * jnp.log(2 * jnp.pi) + M) - half_log_det
 
     @classmethod
     def mean(cls, loc: Array, **kwargs):
@@ -277,9 +325,9 @@ class multivariate_normal_gen(rv_continuous):
     def var(
         cls,
         loc: Array,
-        cov: Array = None,
-        precision_matrix: Array = None,
-        scale_tril: Array = None,
+        cov: Optional[Array] = None,
+        precision_matrix: Optional[Array] = None,
+        scale_tril: Optional[Array] = None,
         **kwargs,
     ):
         """Variance of the multivariate normal distribution.
@@ -300,21 +348,30 @@ class multivariate_normal_gen(rv_continuous):
         var : ndarray
             Variance of the distribution
         """
-        if cov is not None:
-            return jnp.diagonal(cov, axis1=-2, axis2=-1)
-        else:
-            if scale_tril is None:
-                precision_matrix = kwargs.get("precision_matrix")
-                scale_tril = jnp.linalg.cholesky(jnp.linalg.inv(precision_matrix))
-            return jnp.diagonal(scale_tril @ scale_tril.T, axis1=-2, axis2=-1)
+        cov_arr = _asarray_optional(cov)
+        precision_arr = _asarray_optional(precision_matrix)
+        scale_arr = _asarray_optional(scale_tril)
+
+        if cov_arr is not None:
+            return jnp.diagonal(cov_arr, axis1=-2, axis2=-1)
+        if scale_arr is not None:
+            cov_from_scale = scale_arr @ jnp.swapaxes(scale_arr, -1, -2)
+            return jnp.diagonal(cov_from_scale, axis1=-2, axis2=-1)
+        if precision_arr is not None:
+            chol = jnp.linalg.cholesky(jnp.linalg.inv(precision_arr))
+            cov_from_scale = chol @ jnp.swapaxes(chol, -1, -2)
+            return jnp.diagonal(cov_from_scale, axis1=-2, axis2=-1)
+        raise ValueError(
+            "At least one of cov, precision_matrix, or scale_tril must be specified."
+        )
 
     @classmethod
     def entropy(
         cls,
         loc: Array,
-        cov: Array = None,
-        precision_matrix: Array = None,
-        scale_tril: Array = None,
+        cov: Optional[Array] = None,
+        precision_matrix: Optional[Array] = None,
+        scale_tril: Optional[Array] = None,
         **kwargs,
     ):
         """Entropy of the multivariate normal distribution.
@@ -335,54 +392,27 @@ class multivariate_normal_gen(rv_continuous):
         entropy : ndarray
             Entropy of the distribution
         """
-        if scale_tril is None:
-            if cov is not None:
-                scale_tril = jnp.linalg.cholesky(cov)
+        cov_arr = _asarray_optional(cov)
+        precision_arr = _asarray_optional(precision_matrix)
+        scale_arr = _asarray_optional(scale_tril)
+
+        if scale_arr is None:
+            if cov_arr is not None:
+                scale_arr = jnp.linalg.cholesky(cov_arr)
+            elif precision_arr is not None:
+                cov_from_precision = jnp.linalg.inv(precision_arr)
+                scale_arr = jnp.linalg.cholesky(cov_from_precision)
             else:
-                scale_tril = jnp.linalg.cholesky(jnp.linalg.inv(precision_matrix))
+                raise ValueError(
+                    "At least one of cov, precision_matrix, or scale_tril must be specified."
+                )
 
         half_log_det = jnp.sum(
-            jnp.log(jnp.diagonal(scale_tril, axis1=-2, axis2=-1)),
+            jnp.log(jnp.diagonal(scale_arr, axis1=-2, axis2=-1)),
             axis=-1,
         )
-        return 0.5 * loc.shape[-1] * (1 + jnp.log(2 * jnp.pi)) + half_log_det
-
-    def freeze(
-        self,
-        loc: Array,
-        cov: Array = None,
-        precision_matrix: Array = None,
-        scale_tril: Array = None,
-        **kwargs,
-    ):
-        """Freeze the distribution by fixing the parameters.
-
-        Parameters
-        ----------
-        loc : array_like
-            Mean of the distribution
-        cov : array_like, optional
-            Covariance matrix
-        precision_matrix : array_like, optional
-            Precision matrix
-        scale_tril : array_like, optional
-            Lower triangular matrix with positive diagonal
-
-        Returns
-        -------
-        frozen_dist : multivariate_normal_gen
-            Frozen distribution
-        """
-        rv = super().freeze(
-            loc=loc,
-            cov=cov,
-            precision_matrix=precision_matrix,
-            scale_tril=scale_tril,
-            **kwargs,
-        )
-        rv._batch_shape = loc.shape[:-1]
-        rv._event_shape = loc.shape[-1:]
-        return rv
+        event_dim = int(jnp.asarray(loc).shape[-1])
+        return 0.5 * event_dim * (1 + jnp.log(2 * jnp.pi)) + half_log_det
 
     @classmethod
     def fit(

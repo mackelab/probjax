@@ -214,7 +214,8 @@ class beta_gen(rv_continuous, rv_exponential_family):
         isf : ndarray
             Quantile corresponding to the upper tail probability q
         """
-        return _beta.isf(q, alpha, beta)
+        q = jnp.asarray(q)
+        return betaincinv(alpha, beta, 1.0 - q)
 
     @classmethod
     def mean(cls, alpha=1.0, beta=1.0, **kwargs):

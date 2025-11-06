@@ -11,7 +11,7 @@ import jax.numpy as jnp
 from jax import random
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
-from probjax.stats.constraints import real, strict_positive
+from probjax.stats.constraints import interval as interval_constraint, real, strict_positive
 from probjax.utils.typing import RngKey
 
 __all__ = ["genpareto"]
@@ -45,10 +45,13 @@ class genpareto_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def support(cls, c=0.0, loc=0.0, scale=1.0, **kwargs):
         """Support of the generalized Pareto distribution."""
-        if c >= 0:
-            return jnp.array([loc, jnp.inf])
-        else:
-            return jnp.array([loc, loc - scale / c])
+        c_val = float(jnp.asarray(c))
+        loc_val = float(jnp.asarray(loc))
+        scale_val = float(jnp.asarray(scale))
+        if c_val >= 0.0:
+            return interval_constraint(loc_val, float("inf"), closed_right=False)
+        upper = loc_val - scale_val / c_val
+        return interval_constraint(loc_val, upper, closed_right=False)
 
     @classmethod
     def pdf(cls, x, c=0.0, loc=0.0, scale=1.0, **kwargs):

@@ -38,8 +38,10 @@ def _cached_sphere_samples(dim: int, num_samples: int) -> jnp.ndarray:
 
 
 def _sphere_area(dim: int) -> jnp.ndarray:
-    dim = jnp.asarray(dim, dtype=jnp.float32)
-    return jnp.exp(jnp.log(2.0) + 0.5 * dim * jnp.log(jnp.pi) - gammaln(0.5 * dim))
+    dim_arr = jnp.asarray(dim, dtype=jnp.float32)
+    return jnp.exp(
+        jnp.log(2.0) + 0.5 * dim_arr * jnp.log(jnp.pi) - gammaln(0.5 * dim_arr)
+    )
 
 
 def _build_parameter_matrix(orientation: Array, concentration: Array) -> Array:
@@ -164,8 +166,8 @@ def sample_quad_exp_distribution(
         return i + 1, done | accepted, rng, new_sample
 
     init = (0, False, key, mu)
-    _, done, _, final_sample = lax.while_loop(cond_fun, body_fun, init)
-    return final_sample
+    _, done, key_out, final_sample = lax.while_loop(cond_fun, body_fun, init)
+    return lax.cond(done, lambda _: final_sample, lambda _: mu, operand=None)
 
 
 def _sort_axes(concentration: Array, orientation: Array) -> Tuple[Array, Array]:
@@ -224,10 +226,9 @@ def _sample_bingham_direction_mc(
         return accept, sample, key
 
     state0 = (False, jnp.zeros((dim,), dtype=parameter_matrix.dtype), key)
-    _, sample, _ = lax.while_loop(cond_fn, body_fn, state0)
-    return jnp.where(
-        jnp.linalg.norm(sample) < _EPS, _sample_uniform_sphere(key, dim), sample
-    )
+    accepted, sample, key_out = lax.while_loop(cond_fn, body_fn, state0)
+    fallback = _sample_uniform_sphere(key_out, dim)
+    return lax.cond(accepted, lambda _: sample, lambda _: fallback, operand=None)
 
 
 class bingham_gen(rv_continuous, rv_exponential_family):
@@ -244,6 +245,28 @@ class bingham_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def pdf(cls, x: Array, orientation: Array, concentration: Array, **kwargs):
         return jnp.exp(cls.logpdf(x, orientation, concentration, **kwargs))
+
+    def freeze(
+        self,
+        orientation: Array,
+        concentration: Array,
+        **kwargs,
+    ):
+        rv = super().freeze(
+            orientation=orientation, concentration=concentration, **kwargs
+        )
+        orientation_arr = jnp.asarray(orientation)
+        if orientation_arr.ndim < 2:
+            raise ValueError("orientation must be at least two-dimensional.")
+        concentration_arr = jnp.asarray(concentration)
+        conc_batch = concentration_arr.shape[:-1] if concentration_arr.ndim > 0 else ()
+        batch_shape = jax.lax.broadcast_shapes(
+            orientation_arr.shape[:-2], conc_batch
+        )
+        event_shape = (int(orientation_arr.shape[-1]),)
+        object.__setattr__(rv, "_batch_shape", tuple(int(dim) for dim in batch_shape))
+        object.__setattr__(rv, "_event_shape", event_shape)
+        return rv
 
     @classmethod
     def logpdf(cls, x: Array, orientation: Array, concentration: Array, **kwargs):
@@ -285,26 +308,6 @@ class bingham_gen(rv_continuous, rv_exponential_family):
         quad = jnp.einsum("...i,...ij,...j->...", x, parameter_matrix, x)
         log_partition = cls.log_partition(orientation, concentration, **kwargs)
         return quad - log_partition
-
-    def freeze(
-        self,
-        orientation: Array,
-        concentration: Array,
-        **kwargs,
-    ):
-        """Freeze parameters while recording batch and event shapes."""
-        rv = super().freeze(
-            orientation=orientation, concentration=concentration, **kwargs
-        )
-        orientation_arr = jnp.asarray(orientation)
-        if orientation_arr.ndim < 2:
-            raise ValueError("orientation must be at least two-dimensional.")
-        concentration_arr = jnp.asarray(concentration)
-        conc_batch = concentration_arr.shape[:-1] if concentration_arr.ndim > 0 else ()
-        batch_shape = jax.lax.broadcast_shapes(orientation_arr.shape[:-2], conc_batch)
-        rv._batch_shape = batch_shape
-        rv._event_shape = orientation_arr.shape[-1:]
-        return rv
 
     @classmethod
     def rvs(
@@ -621,9 +624,10 @@ class bingham_gen(rv_continuous, rv_exponential_family):
 bingham = bingham_gen(name="bingham")
 
 
-def _trapz(y: Array, dx: Array, axis: int = -1) -> Array:
+def _trapz(y: Array, dx: ArrayLike, axis: int = -1) -> Array:
     """Simple trapezoidal integration along a given axis."""
+    dx_arr = jnp.asarray(dx, dtype=y.dtype)
     sum_y = jnp.sum(y, axis=axis)
     edge0 = jnp.take(y, 0, axis=axis)
     edge1 = jnp.take(y, -1, axis=axis)
-    return dx * (sum_y - 0.5 * (edge0 + edge1))
+    return dx_arr * (sum_y - 0.5 * (edge0 + edge1))
