@@ -345,34 +345,13 @@ class mixture_gen(rv_generic):
         data = data.astype(numeric_dtype)
         prev_log_likelihood = jnp.asarray(-jnp.inf, dtype=numeric_dtype)
 
-        max_iter_value = jnp.asarray(max_iter, dtype=jnp.int32)
+        mixing_probs_curr = mixing_probs
+        params_curr = component_params
+        prev_ll_curr = prev_log_likelihood
+        key_curr = rng_key
+        diff_curr = jnp.asarray(jnp.inf, dtype=numeric_dtype)
 
-        initial_diff = jnp.asarray(jnp.inf, dtype=numeric_dtype)
-
-        init_state = (
-            jnp.asarray(0, dtype=jnp.int32),
-            mixing_probs,
-            component_params,
-            prev_log_likelihood,
-            initial_diff,
-            rng_key,
-        )
-
-        def cond_fun(state):
-            iteration, _, _, _, diff_prev, _ = state
-            return jnp.logical_and(iteration < max_iter_value, diff_prev > tol_value)
-
-        def body_fun(state):
-            (
-                iteration,
-                mixing_probs_curr,
-                params_curr,
-                prev_ll_curr,
-                diff_curr,
-                key_curr,
-            ) = state
-            del diff_curr
-
+        for _ in range(int(max_iter)):
             log_pdfs = jnp.stack(
                 [
                     dist.logpdf(data, *args_i, **kwds_i)
@@ -392,7 +371,6 @@ class mixture_gen(rv_generic):
             key_new = split_keys[0]
             component_keys = split_keys[1:]
 
-            data_count = data.shape[0]
             new_params = []
 
             for idx, (dist, (args_i, kwds_i)) in enumerate(
@@ -474,29 +452,31 @@ class mixture_gen(rv_generic):
             params_next = tuple(new_params)
 
             log_likelihood = jnp.mean(log_norm)
-            diff = jnp.abs(log_likelihood - prev_ll_curr)
-            diff = jnp.where(
+            diff_curr = jnp.abs(log_likelihood - prev_ll_curr)
+            diff_curr = jnp.where(
                 jnp.isfinite(prev_ll_curr),
-                diff,
+                diff_curr,
                 jnp.asarray(jnp.inf, dtype=numeric_dtype),
             )
 
-            return (
-                iteration + jnp.asarray(1, dtype=jnp.int32),
-                mixing_probs_new,
-                params_next,
-                log_likelihood,
-                diff,
-                key_new,
-            )
+            mixing_probs_curr = mixing_probs_new
+            params_curr = params_next
+            prev_ll_curr = log_likelihood
+            key_curr = key_new
 
-        final_state = lax.while_loop(cond_fun, body_fun, init_state)
-        _, mixing_probs_final, params_final, _, _, _ = final_state
+            if float(diff_curr) <= float(tol_value):
+                break
 
-        fitted_components = [
-            dist(*args, **kwds)
-            for dist, (args, kwds) in zip(component_dists, params_final, strict=False)
-        ]
+        mixing_probs_final = mixing_probs_curr
+        params_final = params_curr
+
+        fitted_components = []
+        for dist, (args, kwds) in zip(component_dists, params_final, strict=False):
+            norm_args, norm_kwds = dist._parse_args(*args, **kwds)
+            component = dist(*norm_args, **norm_kwds)
+            component.args = norm_args
+            component.kwds = norm_kwds
+            fitted_components.append(component)
         return mixing_probs_final, fitted_components
 
 
