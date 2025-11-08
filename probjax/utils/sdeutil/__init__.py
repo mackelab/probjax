@@ -5,6 +5,6 @@ from probjax.utils.sdeutil.base import (
     get_method,
     get_methods,
 )
-from probjax.utils.sdeutil.em import euler_maruyama
-from probjax.utils.sdeutil.milstein import milstein
-from probjax.utils.sdeutil.srk_explicit import sri1, sri2
+from probjax.utils.sdeutil.solver.em import euler_maruyama
+from probjax.utils.sdeutil.solver.milstein import milstein
+from probjax.utils.sdeutil.solver.srk_explicit import sri1, sri2

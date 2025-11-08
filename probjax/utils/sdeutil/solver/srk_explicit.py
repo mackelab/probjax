@@ -1,11 +1,8 @@
-from functools import partial
-from typing import Callable, Tuple
 
+from functools import partial
 import jax
 import jax.numpy as jnp
-from jax import Array
-from jaxtyping import Key
-
+from probjax.utils.typing import Array, ArrayLike, Callable, RngKey
 from probjax.utils.brownian import get_iterated_integrals_fn
 from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
 
@@ -22,15 +19,15 @@ class SRKState(SDEState):
     y0: Array
 
 
-def init_state(t0: Array, y0: Array, **kwargs):
+def init_state(t0: ArrayLike, y0: ArrayLike, **kwargs) -> SRKState:
     t0 = jnp.asarray(t0)
     y0 = jnp.asarray(y0)
     return SRKState(t0, y0)
 
 
 def build_sri1_coefficients(
-    dtype: jnp.dtype = jnp.float32,
-) -> Tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array]:
+    dtype: ArrayLike = jnp.float32,
+) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array]:
     """Build the Butcher tableau coefficients for the SRI1 method.
 
     Args:
@@ -54,8 +51,8 @@ def build_sri1_coefficients(
 
 
 def build_sri2_coefficients(
-    dtype: jnp.dtype = jnp.float32,
-) -> Tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array]:
+    dtype: ArrayLike = jnp.float32,
+) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array]:
     """Build the Butcher tableau coefficients for the SRI2 method.
 
     Args:
@@ -225,7 +222,7 @@ def build_srk_step(
     # Get coefficients from builder function
     c0, c1, A0, A1, B0, B1, b_sol, gamma0, gamma1, b_error = build_coefficients()
 
-    def step_fn(rng: Key, state: SRKState, dt: float):
+    def step_fn(rng: RngKey, state: SRKState, dt: float):
         dt = jnp.asarray(dt)
         t0, y0 = state.t0, state.y0
         rng1, rng2 = jax.random.split(rng, 2)

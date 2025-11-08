@@ -1,17 +1,16 @@
 from functools import partial
-from typing import Callable, Optional, Sequence
+from typing import Optional, Sequence
 
 import jax
 import jax.numpy as jnp
-import numpy as np
-from jax import Array
-from jaxtyping import PyTree
 
 from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
 from probjax.utils.odeutil.adaptive import AdaptiveParams
+from probjax.utils.odeutil.filters import TraceFilter
 from probjax.utils.odeutil.integrate_adaptive import odeint_adaptive
 from probjax.utils.odeutil.integrate_on_grid import _odeint_on_grid
-from probjax.utils.odeutil.solvers import ODESolver, get_method
+from probjax.utils.odeutil.solvers import get_method
+from probjax.utils.typing import Array, PyTree
 
 STATIC_NAMES = (
     "drift",
@@ -20,7 +19,7 @@ STATIC_NAMES = (
     "filter_state",
     "check_points",
     "adaptive_params",
-    "return_state",
+    "collect_trace",
 )
 
 
@@ -33,10 +32,10 @@ def _odeint(
     y0: PyTree[Array],
     ts: Array,
     *args,
-    method: str | ODESolver = "rk4",
+    method: str = "rk4",
     dtype=jnp.float32,
-    return_state: bool = False,
-    filter_state: Optional[Callable[[PyTree[Array]], PyTree[Array]]] = None,
+    filter_state: Optional[TraceFilter] = None,
+    collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
     adaptive_params: Optional[AdaptiveParams] = None,
 ):
@@ -49,62 +48,59 @@ def _odeint(
         *args: Additional arguments for the drift function
         method: Integration method
         dtype: Data type for computation
-        return_state: Whether to return solver state
-        filter_state: Optional state filter function that operates on unraveled state
+        filter_state: Trace filter describing which quantity to store or return.
+            If the filter returns ``None`` (e.g. :class:`TraceNothing`), the
+            output is ``None`` regardless of `collect_trace`.
+        collect_trace: Whether to record the filtered quantity for each time
+            point (`True`) or return only the filtered terminal state (`False`).
         check_points: Optional check points for grid integration
         adaptive_params: Parameters for adaptive integration
 
     Returns:
-        Solution trajectory or tuple of (state, trajectory)
+        PyTree with either the stacked trajectory (when `collect_trace` is True)
+        or the filtered terminal state (when `collect_trace` is False). If the
+        filter returns ``None`` the result is ``None``.
     """
     if adaptive_params is None:
         adaptive_params = AdaptiveParams()
 
     if dtype is not None:
         ts = ts.astype(dtype)
-        y0 = jax.tree_util.tree_map(lambda x: x.astype(dtype), y0)
+        y0 = jax.tree_util.tree_map(lambda x: jnp.asarray(x, dtype=dtype), y0)
 
-    y0 = jax.tree_util.tree_map(jnp.atleast_1d, y0)
     ts = jnp.atleast_1d(ts)
 
     flat_y0, unravel = ravel_args(y0)
     drift = ravel_arg_fun(drift, unravel, 1)
 
-    if filter_state is not None:
-        with jax.ensure_compile_time_eval():
-            flat_y0_indices = np.arange(len(flat_y0), dtype=np.int32)
-            y0_indices = unravel(flat_y0_indices)
-            filtered_indices = filter_state(y0_indices)
-            if filtered_indices is None:
-                flat_filtered_indices = None
-            else:
-                flat_filtered_indices, _ = ravel_args(filtered_indices)
+    def _apply_filter(state_tree: PyTree[Array]) -> Optional[PyTree[Array]]:
+        if filter_state is None:
+            return state_tree
+        return filter_state(state_tree)
 
-            def raveled_filter(yi, info):
-                del info
-                if flat_filtered_indices is not None:
-                    return yi[flat_filtered_indices]
-                else:
-                    return None
+    init_filtered = _apply_filter(y0)
+    trace_enabled = collect_trace and init_filtered is not None
 
-    else:
-        raveled_filter = None
+    def raveled_filter(yi, info):
+        del info
+        return _apply_filter(unravel(yi))
 
-    method, info = get_method(method)
+    trace_filter_fn = raveled_filter if trace_enabled else None
+
+    solver, info = get_method(method)
 
     is_adaptive = info["adaptive"]
 
-    # Precompute filter indices if filter_state is provided
-
     if not is_adaptive:
         state, ys = _odeint_on_grid(
-            method,
+            solver,
             drift,
             flat_y0,
             ts,
             *args,
-            filter_output=raveled_filter,
+            trace_filter=trace_filter_fn,
             check_points=check_points,
+            collect_trace=trace_enabled,
         )
     else:
         order = info["order"]
@@ -115,29 +111,26 @@ def _odeint(
         kwargs = {
             "adaptive_params": adaptive_params,
             "interpolation_order": interpolation_order,
-            "filter_output": raveled_filter,
-            "return_state": return_state,
+            "filter_output": trace_filter_fn,
+            "collect_trace": trace_enabled,
         }
-        ys = odeint_adaptive(method, drift, kwargs, flat_y0, ts, *args)
+        state, ys = odeint_adaptive(solver, drift, kwargs, flat_y0, ts, *args)
 
-    # Unravel and concat y0.
-    if filter_state is None:
-        ys = jax.vmap(unravel)(ys)
-        ys = jax.tree_util.tree_map(
-            lambda x, y: jnp.concatenate([x[None], y], axis=0), y0, ys
+    final_state = unravel(state.y0 if state is not None else flat_y0)
+    final_filtered = _apply_filter(final_state)
+
+    if trace_enabled and ys is not None:
+
+        def _stack(init_leaf, trace_leaf):
+            init_leaf = jnp.asarray(init_leaf)
+            trace_leaf = jnp.asarray(trace_leaf)
+            return jnp.concatenate([init_leaf[None], trace_leaf], axis=0)
+
+        trace = jax.tree_util.tree_map(
+            _stack,
+            init_filtered,
+            ys,
         )
-    else:
-        y0_filtered = filter_state(y0)
-        # Unravel the filtered state
-        if y0_filtered is not None:
-            _, unravel_filtered = ravel_args(y0_filtered)
-            ys = jax.tree_util.tree_map(jnp.atleast_1d, ys)
-            ys = jax.vmap(unravel_filtered)(ys)
-            ys = jax.tree_util.tree_map(
-                lambda x, y: jnp.concatenate([x[None], y], axis=0), y0_filtered, ys
-            )
+        return trace
 
-    if return_state:
-        return state, ys
-    else:
-        return ys
+    return final_filtered

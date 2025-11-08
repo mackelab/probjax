@@ -20,10 +20,20 @@ def sdeint(
     return_brownian: bool = False,
     return_state: bool = False,
     noise_type: Optional[str] = None,
-    filter_state: Optional[Callable[[PyTree[Array]], PyTree[Array]]] = None,
+    filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
+    collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
 ) -> Union[
-    PyTree[Array], Tuple[Any, PyTree[Array]], Tuple[Any, PyTree[Array], PyTree[Array]]
+    Optional[PyTree[Array]],
+    Tuple[Any, Optional[PyTree[Array]]],
+    Tuple[
+        Optional[PyTree[Array]],
+        Optional[PyTree[Array]],
+    ],
+    Tuple[
+        Any,
+        Tuple[Optional[PyTree[Array]], Optional[PyTree[Array]]],
+    ],
 ]:
     """Solve a stochastic differential equation.
 
@@ -53,20 +63,25 @@ def sdeint(
             - "ito": Ito interpretation (default)
             - "stratonovich": Stratonovich interpretation
         return_brownian: Whether to return Brownian motion paths along with the solution.
+            Requires `collect_trace=True`.
         return_state: Whether to return solver state along with the solution.
         noise_type: Type of noise in the diffusion term:
             - "diagonal": Diagonal noise (default for scalar diffusion)
             - "general": General noise matrix
         filter_state: Optional function to filter the state during integration.
-            Useful for tracking specific components of the state.
+            Useful for tracking specific components of the state. Returning ``None``
+            disables tracing entirely.
+        collect_trace: Whether to record the filtered quantity at every time step
+            (`True`, default) or only return the filtered terminal state (`False`).
+            Must be `True` when returning Brownian paths.
         check_points: Optional sequence of indices for grid integration.
 
     Returns:
-        Depending on return_brownian and return_state:
-        - If return_brownian=False, return_state=False: solution trajectory
-        - If return_brownian=False, return_state=True: (state, solution)
-        - If return_brownian=True, return_state=False: (solution, brownian_paths)
-        - If return_brownian=True, return_state=True: (state, solution, brownian_paths)
+        When `return_brownian=False`, returns the filtered trajectory (if `collect_trace`
+        is True) or the filtered terminal state (if `collect_trace` is False). When
+        `return_brownian=True`, returns a tuple of (state_trace, brownian_trace), both
+        stacked over all time points. If `return_state=True`, the solver state is
+        prepended to the output tuple.
 
     Notes:
         - The solution includes the initial condition y0 as the first point.
@@ -107,6 +122,7 @@ def sdeint(
         return_brownian=return_brownian,
         return_state=return_state,
         noise_type=noise_type,
-        filter_output=filter_state,
+        filter_state=filter_state,
+        collect_trace=collect_trace,
         check_points=check_points,
     )

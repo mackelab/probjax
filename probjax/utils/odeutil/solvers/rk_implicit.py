@@ -1,9 +1,9 @@
-from typing import Any, Callable, Optional, Tuple
+from __future__ import annotations
+
+from typing import Any, Optional
 
 import jax
 import jax.numpy as jnp
-from jax import Array
-from jax.typing import ArrayLike
 
 from probjax.utils.odeutil.solvers.base import (
     ODEInfo,
@@ -12,6 +12,7 @@ from probjax.utils.odeutil.solvers.base import (
     register_method,
 )
 from probjax.utils.solver import root
+from probjax.utils.typing import Array, ArrayLike, Callable, DTypeLike
 
 info = {
     "explicit": False,
@@ -31,14 +32,21 @@ class ImpEulerState(ODEState):
     y0: Array
 
 
-def init_implicit_euler(t0: ArrayLike, y0: Array, *args, **kwargs) -> ODEState:
+def init_implicit_euler(t0: ArrayLike, y0: ArrayLike, *args, **kwargs) -> ODEState:
+    """Initialize implicit Euler solver state."""
+    t0 = jnp.asarray(t0)
+    y0 = jnp.asarray(y0)
     return ImpEulerState(t0=t0, y0=y0)
 
 
 def build_implicit_euler_step(
-    drift: Callable, dtype: jnp.dtype = jnp.float32, solver: Callable = root
-) -> Callable:
-    def step_fn(state: ImpEulerState, dt: ArrayLike, *args) -> Tuple[ODEState, ODEInfo]:
+    drift: Callable, solver: Callable = root
+) -> Callable[[ImpEulerState, ArrayLike], tuple[ODEState, ODEInfo]]:
+    """Build implicit Euler step function."""
+
+    def step_fn(
+        state: ImpEulerState, dt: ArrayLike, *args
+    ) -> tuple[ODEState, ODEInfo]:
         y0 = state.y0
         t0 = state.t0
         t1 = t0 + dt
@@ -76,8 +84,11 @@ class ImpRKInfo(ODEInfo):
 
 
 def init_imp_rk(
-    t0: ArrayLike, y0: Array, *args, drift: Optional[Callable] = None
+    t0: ArrayLike, y0: ArrayLike, *args, drift: Optional[Callable] = None
 ) -> ODEState:
+    """Initialize implicit Runge-Kutta solver state."""
+    t0 = jnp.asarray(t0)
+    y0 = jnp.asarray(y0)
     f0 = drift(t0, y0, *args) if drift is not None else None
     return ImpRKState(t0=t0, y0=y0, f0=f0)
 
@@ -90,12 +101,13 @@ def build_implicit_rk_step(
     b_error: Optional[Array] = None,
     b_mid: Optional[Array] = None,
     last_equals_next: bool = False,
-):
+) -> Callable[[ImpRKState, ArrayLike], tuple[ImpRKState, ImpRKInfo]]:
+    """Build implicit Runge-Kutta step function."""
     stages = c.shape[0]
 
     def imp_rk_step_fn(
         state: ImpRKState, dt: ArrayLike, *args
-    ) -> Tuple[ImpRKState, ImpRKInfo]:
+    ) -> tuple[ImpRKState, ImpRKInfo]:
         t0 = state.t0
         y0 = state.y0
         f0 = state.f0 if not last_equals_next else drift(t0, y0)

@@ -223,9 +223,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         return outvars, outs
 
     def _default_custom_inverse_call_apply(self, eqn, known_invars, known_outvars):
-        inverse_jaxpr = eqn.params["inverse_jaxpr"]
-        if callable(inverse_jaxpr):
-            inverse_jaxpr = inverse_jaxpr()
+        inverse_jaxpr = eqn.params["inverse_jaxpr_thunk"]()
         jaxpr = inverse_jaxpr.jaxpr
         consts = inverse_jaxpr.literals
         inputs = [v if v is not None else known_outvars[0] for v in known_invars]

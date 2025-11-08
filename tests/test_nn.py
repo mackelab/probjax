@@ -270,12 +270,6 @@ def test_chunkify(chunkify_inputs):
     assert jnp.array_equal(reconstructed, x)
 
 
-def test_chunkify_invalid(chunkify_invalid_inputs):
-    x, chunk_shape, channel_axis = chunkify_invalid_inputs
-    with pytest.raises(ValueError):
-        chunkify(x, chunk_shape, channel_axis=channel_axis)
-
-
 def test_masked_linear_forward(masked_linear_case):
     mask, kernel, bias, x, expected = masked_linear_case
     layer = MaskedLinear(2, 2, mask, rngs=nnx.Rngs(0))

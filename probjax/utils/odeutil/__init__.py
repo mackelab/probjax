@@ -1,5 +1,6 @@
 from probjax.utils.odeutil.adaptive import AdaptiveParams
 from probjax.utils.odeutil.core import _odeint
+from probjax.utils.odeutil.filters import TraceEverything, TraceFilter, TraceNothing
 from probjax.utils.odeutil.inversion import _inv_logdet_odeint, _inv_odeint
 from probjax.utils.odeutil.solvers import (
     ODEInfo,
@@ -23,4 +24,7 @@ __all__ = [
     "AdaptiveParams",
     "euler",
     "implicit_euler",
+    "TraceFilter",
+    "TraceEverything",
+    "TraceNothing",
 ]

@@ -196,7 +196,7 @@ def test_inverse_odeint_linear_system():
         return -x
 
     def forward(x):
-        return odeint(drift, x, ts)[-1]
+        return odeint(drift, x, ts, collect_trace=False)
 
     x0 = jnp.array([1.0, 2.0, 3.0])
     y = forward(x0)

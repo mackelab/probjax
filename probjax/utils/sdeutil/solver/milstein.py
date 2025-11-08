@@ -1,10 +1,7 @@
-from typing import Callable
 
 import jax
 import jax.numpy as jnp
-from jax import Array
-from jaxtyping import Key
-
+from probjax.utils.typing import Array, ArrayLike, Callable, RngKey
 from probjax.utils.brownian import get_iterated_integrals_fn
 from probjax.utils.linalg import mv_diag_or_dense
 from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
@@ -20,7 +17,7 @@ class MilsteinState(SDEState):
     y0: Array
 
 
-def init_state(t0: Array, y0: Array, **kwargs):
+def init_state(t0: ArrayLike, y0: ArrayLike, **kwargs) -> MilsteinState:
     t0 = jnp.asarray(t0)
     y0 = jnp.asarray(y0)
     return MilsteinState(t0, y0)
@@ -29,11 +26,11 @@ def init_state(t0: Array, y0: Array, **kwargs):
 def build_milstein_step(
     drift: Callable,
     diffusion: Callable,
-    noise_type="diagonal",
-    sde_type="ito",
+    noise_type: str = "diagonal",
+    sde_type: str = "ito",
     jac_fn: Callable = jax.jacfwd,
     iterated_integrals_fn=get_iterated_integrals_fn,
-):
+) -> Callable[[RngKey, MilsteinState, float], tuple[MilsteinState, MilsteinInfo]]:
     g_jac = jac_fn(
         lambda t, x: jnp.sum(jnp.atleast_1d(diffusion(t, x)), axis=0), argnums=1
     )
@@ -41,7 +38,7 @@ def build_milstein_step(
     iterated_integrals_fn = iterated_integrals_fn(noise_type, sde_type)
     is_diagonal = noise_type == "diagonal"
 
-    def step_fn(rng: Key, state: MilsteinState, dt: float):
+    def step_fn(rng: RngKey, state: MilsteinState, dt: float) -> tuple[MilsteinState, MilsteinInfo]:
         dt = jnp.asarray(dt)
         t0, y0 = state.t0, state.y0
         rng1, rng2 = jax.random.split(rng, 2)

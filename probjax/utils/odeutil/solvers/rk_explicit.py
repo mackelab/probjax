@@ -1,9 +1,9 @@
-from typing import Callable, Optional, Tuple
+from __future__ import annotations
+
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
-from jax import Array
-from jax.typing import ArrayLike
 
 from probjax.utils.odeutil.solvers.base import (
     ODEInfo,
@@ -11,6 +11,7 @@ from probjax.utils.odeutil.solvers.base import (
     ODEState,
     register_method,
 )
+from probjax.utils.typing import Array, ArrayLike, Callable, DTypeLike
 
 # 1st order
 # Euler's method
@@ -33,14 +34,19 @@ class EulerState(ODEState):
     y0: Array
 
 
-def init_euler(t0: ArrayLike, y0: Array, *args, **kwargs) -> ODEState:
+def init_euler(t0: ArrayLike, y0: ArrayLike, *args, **kwargs) -> ODEState:
+    """Initialize Euler solver state."""
     t0 = jnp.asarray(t0)
     y0 = jnp.asarray(y0)
     return EulerState(t0=t0, y0=y0)
 
 
-def build_euler_step(drift: Callable, dtype: jnp.dtype = jnp.float32):
-    def step_fn(state: ODEState, dt: ArrayLike, *args) -> Tuple[ODEState, ODEInfo]:
+def build_euler_step(
+    drift: Callable, dtype: DTypeLike = jnp.float32
+) -> Callable[[ODEState, ArrayLike], tuple[ODEState, ODEInfo]]:
+    """Build Euler step function."""
+
+    def step_fn(state: ODEState, dt: ArrayLike, *args) -> tuple[ODEState, ODEInfo]:
         y0 = state.y0
         t0 = state.t0
         y1 = y0 + drift(t0, y0, *args) * dt
@@ -72,7 +78,10 @@ class RKInfo(ODEInfo):
     y1_mid: Optional[Array]  # Midpoint
 
 
-def init_rk(t0: ArrayLike, y0: Array, *args, drift=None) -> ODEState:
+def init_rk(
+    t0: ArrayLike, y0: ArrayLike, *args, drift: Optional[Callable] = None
+) -> ODEState:
+    """Initialize Runge-Kutta solver state."""
     t0 = jnp.asarray(t0)
     y0 = jnp.asarray(y0)
     f0 = drift(t0, y0, *args) if drift is not None else None
@@ -87,10 +96,11 @@ def build_rk_step(
     b_error: Optional[Array] = None,
     b_mid: Optional[Array] = None,
     last_equals_next: bool = False,
-):
+) -> Callable[[RKState, ArrayLike], tuple[RKState, RKInfo]]:
+    """Build a Runge-Kutta step function."""
     stages = c.shape[0]
 
-    def rk_step_fn(state: RKState, dt: ArrayLike, *args) -> Tuple[RKState, RKInfo]:
+    def rk_step_fn(state: RKState, dt: ArrayLike, *args) -> tuple[RKState, RKInfo]:
         t0 = state.t0
         y0 = state.y0
         f0 = state.f0 if not last_equals_next else drift(t0, y0, *args)

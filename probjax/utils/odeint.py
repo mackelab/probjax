@@ -1,13 +1,16 @@
-from typing import Any, Callable, Optional, Sequence, Tuple, Union
+from functools import partial
+from typing import Callable, Optional, Sequence
 
 import jax.numpy as jnp
 from jax import Array
 from jaxtyping import PyTree
 
+from probjax.core import custom_inverse
 from probjax.utils.odeutil import AdaptiveParams, _odeint
+from probjax.utils.odeutil.inversion import _inv_logdet_odeint, _inv_odeint
 
 
-# @partial(custom_inverse, inv_argnum=1, static_argnums=(0,))
+@partial(custom_inverse, inv_argnum=1, static_argnums=(0,))
 def odeint(
     drift: Callable[[Array, PyTree[Array], ...], PyTree[Array]],
     y0: PyTree[Array],
@@ -15,11 +18,11 @@ def odeint(
     *args,
     method: str = "rk4",
     dtype: Optional[jnp.dtype] = jnp.float32,
-    return_state: bool = False,
-    filter_state: Optional[Callable[[PyTree[Array]], PyTree[Array]]] = None,
+    filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
+    collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
     adaptive_params: Optional[AdaptiveParams] = None,
-) -> Union[PyTree[Array], Tuple[Any, PyTree[Array]]]:
+) -> Optional[PyTree[Array]]:
     """Solve an ordinary differential equation.
 
     This is a high-level interface for solving ODEs using various numerical methods.
@@ -45,19 +48,23 @@ def odeint(
                 - "tsit8": Tsitouras 8th order method (order 8)
                 - "bogacki_shampine": Bogacki-Shampine 3rd order method (order 3)
         dtype: Data type for computation. Defaults to float32.
-        return_state: Whether to return solver state along with the solution.
         filter_state: Optional function to filter the state during integration.
-            Useful for tracking specific components of the state.
+            Useful for tracking specific components of the state. Returning ``None``
+            disables tracing for the selected components.
+        collect_trace: If ``True`` (default), return the filtered state at every
+            requested time point (including the initial condition). If ``False``,
+            return only the filtered terminal state, avoiding time-series storage.
         check_points: Optional sequence of indices for grid integration.
             Only used with fixed-step methods.
         adaptive_params: Parameters for adaptive integration methods.
             Controls error tolerances and step size adaptation.
 
     Returns:
-        If return_state is False:
-            PyTree[Array]: Solution trajectory evaluated at time points ts.
-        If return_state is True:
-            Tuple[Any, PyTree[Array]]: Tuple containing (solver_state, solution_trajectory).
+        PyTree containing either:
+            - The time-series trace with leading dimension ``len(ts)`` when
+              ``collect_trace=True`` and the filter returns a PyTree.
+            - The filtered terminal state when ``collect_trace=False``.
+            - ``None`` when the provided filter returns ``None``.
 
     Notes:
         - The solution includes the initial condition y0 as the first point.
@@ -90,12 +97,12 @@ def odeint(
         *args,
         method=method,
         dtype=dtype,
-        return_state=return_state,
         filter_state=filter_state,
+        collect_trace=collect_trace,
         check_points=check_points,
         adaptive_params=adaptive_params,
     )
 
 
-# odeint.definv(_inv_odeint)
-# odeint.definv_and_logdet(_inv_logdet_odeint)
+odeint.definv(_inv_odeint)
+odeint.definv_and_logdet(_inv_logdet_odeint)

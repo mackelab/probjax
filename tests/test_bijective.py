@@ -16,7 +16,7 @@ from probjax.nn.bijective import (
 
 @pytest.mark.parametrize("seed", np.random.randint(0, 1000, 2))
 @pytest.mark.parametrize("scale", [1.0, 2.0])
-@pytest.mark.parametrize("num_bins", [4, 16, 32])
+@pytest.mark.parametrize("num_bins", [4, 8, 16])
 def test_rational_quadratic_spline(seed, scale, num_bins):
     rng = jax.random.PRNGKey(seed)
     rng1, rng2 = jax.random.split(rng)

@@ -458,10 +458,7 @@ class InverseProcessingRule(ProcessingRule):
 
     def _default_custom_inverse_call_apply(self, eqn, known_invars, known_outvars):
         # TODO: Inverse of custom inverse call should also be a custom inverse call
-        inverse_jaxpr = eqn.params["inverse_jaxpr"]
-
-        if callable(inverse_jaxpr):
-            inverse_jaxpr = inverse_jaxpr()
+        inverse_jaxpr = eqn.params["inverse_jaxpr_thunk"]()
 
         jaxpr = inverse_jaxpr.jaxpr
         consts = inverse_jaxpr.literals

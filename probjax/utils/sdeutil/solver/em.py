@@ -1,11 +1,8 @@
-from functools import partial
-from typing import Callable
 
+from functools import partial
 import jax
 import jax.numpy as jnp
-from jax import Array
-from jaxtyping import Key
-
+from probjax.utils.typing import Array, ArrayLike, Callable, RngKey
 from probjax.utils.linalg import mv_diag_or_dense
 from probjax.utils.odeutil.solvers.rk_explicit import RKInfo, RKState, heun
 from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
@@ -20,14 +17,14 @@ class EulerMaruyamaState(SDEState):
     y0: Array
 
 
-def init_state(t0: Array, y0: Array, **kwargs):
+def init_state(t0: ArrayLike, y0: ArrayLike, **kwargs) -> EulerMaruyamaState:
     t0 = jnp.asarray(t0)
     y0 = jnp.asarray(y0)
     return EulerMaruyamaState(t0, y0)
 
 
-def build_em_step(drift: Callable, diffusion: Callable, **kwargs):
-    def step_fn(rng: Key, state: EulerMaruyamaState, dt: float):
+def build_em_step(drift: Callable, diffusion: Callable, **kwargs) -> Callable[[RngKey, EulerMaruyamaState, float], tuple[EulerMaruyamaState, EulerMaruyamaInfo]]:
+    def step_fn(rng: RngKey, state: EulerMaruyamaState, dt: float) -> tuple[EulerMaruyamaState, EulerMaruyamaInfo]:
         t0, y0 = state.t0, state.y0
         f0 = drift(t0, y0)
         g0 = diffusion(t0, y0)
@@ -35,9 +32,7 @@ def build_em_step(drift: Callable, diffusion: Callable, **kwargs):
         y1 = y0 + dt * f0 + mv_diag_or_dense(g0, dWt)
         new_state = EulerMaruyamaState(t0 + dt, y1)
         info = EulerMaruyamaInfo(dWt=dWt)
-
         return new_state, info
-
     return step_fn
 
 

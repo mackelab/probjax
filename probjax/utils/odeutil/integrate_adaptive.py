@@ -78,8 +78,8 @@ def _odeint_adaptive(
     adaptive_params: AdaptiveParams,
     dtinit: Optional[float] = None,
     interpolation_order: int = 3,
-    return_state: bool = False,
     filter_output: Optional[Callable] = None,
+    collect_trace: bool = True,
     **kwargs,
 ):
     y0 = jnp.asarray(y0)
@@ -119,14 +119,20 @@ def _odeint_adaptive(
 
         i, *carry = jax.lax.while_loop(cond_fun, body_fun, [0] + carry)
         new_state, dt, last_t, interp_coeff = carry
-        relative_output_time = (target_t - last_t) / (new_state.t0 - last_t)
+        denom = new_state.t0 - last_t
+        relative_output_time = jnp.where(
+            denom == 0,
+            jnp.zeros_like(denom),
+            (target_t - last_t) / denom,
+        )
 
         y_target = jnp.polyval(interp_coeff, relative_output_time)
 
-        if filter_output is not None:
-            y_target = filter_output(y_target, new_state)
+        trace_value = (
+            y_target if filter_output is None else filter_output(y_target, new_state)
+        )
 
-        return carry, y_target
+        return carry, trace_value
 
     t0 = ts[0]
     if dtinit is None:
@@ -151,13 +157,21 @@ def _odeint_adaptive(
     state = solver.init(t0, y0, *args)
     interp_coeff = jnp.array([y0] * (interpolation_order + 1))
     init_carry = [state, dt, t0, interp_coeff]
-    final_carry, ys = jax.lax.scan(scan_fun, init_carry, ts[1:])
-    state = final_carry[0]
+    targets = ts[1:]
 
-    if return_state:
-        return state, ys
+    if collect_trace:
+        final_carry, ys = jax.lax.scan(scan_fun, init_carry, targets)
     else:
-        return ys
+        def body(i, carry):
+            target = targets[i]
+            carry, _ = scan_fun(carry, target)
+            return carry
+
+        final_carry = jax.lax.fori_loop(0, targets.shape[0], body, init_carry)
+        ys = None
+
+    state = final_carry[0]
+    return state, ys
 
 
 def _odeint_adaptive_wrapper(
@@ -171,7 +185,7 @@ def _odeint_adaptive_wrapper(
 ):
     flat_y0, unravel = ravel_args(y0)
     drift_flat = ravel_arg_fun(drift, unravel, 1)
-    ys = _odeint_adaptive(
+    state, ys = _odeint_adaptive(
         method,
         drift_flat,
         flat_y0,
@@ -181,6 +195,8 @@ def _odeint_adaptive_wrapper(
         **kwargs,
     )
 
+    if ys is None:
+        raise ValueError("Tracing was disabled; cannot unwrap adaptive results.")
     return jax.vmap(unravel)(ys)
 
 
@@ -222,10 +238,11 @@ def _odeint_fwd(
             order=order,
         )
 
-    ys = _odeint_adaptive(
+    result = _odeint_adaptive(
         method, drift, y0, ts, *args, adaptive_params=adaptive_params, **kwargs
     )
-    return ys, (ys, ts, args, adaptive_params, kwargs)
+    state, ys = result
+    return result, (ys, ts, args, adaptive_params, kwargs)
 
 
 def _odeint_rev(
@@ -238,7 +255,14 @@ def _odeint_rev(
     ys, ts, args, adaptive_params, kwargs = res
 
     filter_output = kwargs.pop("filter_output", None)
-    return_state = kwargs.pop("return_state", False)
+    collect_trace = kwargs.pop("collect_trace", True)
+
+    g_state, g_traj = g
+
+    if not collect_trace or ys is None or g_traj is None:
+        raise ValueError(
+            "Cannot compute gradients when trace output is disabled for adaptive solvers."
+        )
 
     def aug_dynamics(t, augmented_state):
         y, y_bar, *_ = augmented_state
@@ -247,17 +271,15 @@ def _odeint_rev(
         y_dot, vjpfun = jax.vjp(drift, -t, y, *args)
         return (-y_dot, *vjpfun(y_bar))
 
-    y_bar = g[-1]
+    y_bar = g_traj[-1]
     ts_bar = []
     t0_bar = 0.0
-
-    print(g)
 
     def scan_fun(carry, i):
         y_bar, t0_bar, args_bar = carry
         # Compute effect of moving measurement time
         # `t_bar` should not be complex as it represents time
-        t_bar = jnp.dot(drift(ts[i], ys[i], *args), g[i]).real
+        t_bar = jnp.dot(drift(ts[i], ys[i], *args), g_traj[i]).real
         t0_bar = t0_bar - t_bar
         # Run augmented system backwards to previous observation
         augmented_state = (ys[i], y_bar, t0_bar, args_bar)
@@ -273,7 +295,7 @@ def _odeint_rev(
             op.itemgetter(1), (y_bar, t0_bar, args_bar)
         )
         # Add gradient from current output
-        y_bar = y_bar + g[i - 1]
+        y_bar = y_bar + g_traj[i - 1]
 
         if filter_output is not None:
             y_bar = filter_output(y_bar)

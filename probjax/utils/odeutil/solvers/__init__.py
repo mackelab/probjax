@@ -1,6 +1,7 @@
 from probjax.utils.odeutil.solvers.base import (
     ODEInfo,
     ODESolver,
+    ODESolverAPI,
     ODEState,
     get_method,
     get_methods,
@@ -13,6 +14,7 @@ __all__ = [
     "ODEInfo",
     "ODESolver",
     "ODEState",
+    "ODESolverAPI",
     "get_method",
     "get_methods",
     "euler",

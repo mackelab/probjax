@@ -21,6 +21,7 @@ def _sdeint_on_grid(
     check_points: Optional[Sequence[int]] = None,
     unroll: int | bool = False,
     _split_transpose: bool = False,
+    collect_trace: bool = True,
 ) -> Tuple[SDEState, Any]:
     # Time steps
     solver = method(drift, diffusion)
@@ -36,24 +37,34 @@ def _sdeint_on_grid(
 
     t0 = ts[0]
     state = solver.init(t0, y0, *args)
-    keys = jax.random.split(rng, dts.shape)
-    if check_points is None:
-        state, traced = jax.lax.scan(
-            scan_fun,
-            state,
-            (dts, keys),
-            unroll=unroll,
-            _split_transpose=_split_transpose,
-        )
+    keys = jax.random.split(rng, dts.shape[0])
+    if not collect_trace:
+        def body(i, carry):
+            dt = dts[i]
+            key = keys[i]
+            new_state, _ = solver.step(key, carry, dt, *args)
+            return new_state
+
+        state = jax.lax.fori_loop(0, dts.shape[0], body, state)
+        traced = None
     else:
-        state, traced = nested_checkpoint_scan(
-            scan_fun,
-            state,
-            (dts, keys),
-            nested_lengths=check_points,
-            scan_fn=partial(
-                jax.lax.scan, unroll=unroll, _split_transpose=_split_transpose
-            ),
-        )
+        if check_points is None:
+            state, traced = jax.lax.scan(
+                scan_fun,
+                state,
+                (dts, keys),
+                unroll=unroll,
+                _split_transpose=_split_transpose,
+            )
+        else:
+            state, traced = nested_checkpoint_scan(
+                scan_fun,
+                state,
+                (dts, keys),
+                nested_lengths=check_points,
+                scan_fn=partial(
+                    jax.lax.scan, unroll=unroll, _split_transpose=_split_transpose
+                ),
+            )
 
     return state, traced
