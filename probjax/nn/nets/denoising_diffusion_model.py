@@ -115,7 +115,6 @@ class TrainingConfigProtocol(Protocol):
       - which loss target
       - kwargs for loss
       - how to sample t
-      - how to derive the *training* corruption (scale,std) from the original schedule
     """
 
     loss_type: str
@@ -124,9 +123,6 @@ class TrainingConfigProtocol(Protocol):
     t_max: float
 
     def sample_times(self, rng: RngKey, shape: Tuple[int, ...]) -> Array: ...
-
-    def train_scale(self, schedule: NoiseScheduleProtocol) -> Callable[[ArrayLike], Array]: ...
-    def train_std(self, schedule: NoiseScheduleProtocol) -> Callable[[ArrayLike], Array]: ...
 
 
 @runtime_checkable
@@ -302,10 +298,12 @@ class BaseNoiseSchedule(NoiseScheduleProtocol):
         )
         return 0.5 * (lo + hi)
 
-    # ---- SDE helpers ----
+    # ---- SDE helpers (default) ----
 
     def marginal_std(self, t: ArrayLike, std0: ArrayLike) -> Array:
-        return jnp.sqrt(self.scale(t) ** 2 * (self.std(t) ** 2 + jnp.asarray(std0) ** 2))
+        return jnp.sqrt(
+            self.scale(t) ** 2 * (self.std(t) ** 2 + jnp.asarray(std0) ** 2)
+        )
 
     def drift(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
         # drift = (d/dt log scale) * x
@@ -324,7 +322,7 @@ class BaseNoiseSchedule(NoiseScheduleProtocol):
         s = self.scale(t)
         sig = self.std(t)
         sig_dt = jax.grad(_sum_std)(t)
-        diff = s * jnp.sqrt(2.0 * sig_dt * sig)
+        diff = s * jnp.sqrt(jnp.maximum(2.0 * sig_dt * sig, 0.0))
         return jax.tree_util.tree_map(lambda xi: jnp.broadcast_to(diff, xi.shape), x)
 
 
@@ -431,6 +429,7 @@ class VENoiseSchedule(BaseNoiseSchedule):
         return t
 
     def drift(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
+        # Standard VE SDE: zero drift in many formulations.
         return jax.tree_util.tree_map(lambda xi: jnp.zeros_like(xi), x)
 
 
@@ -461,22 +460,40 @@ class VPNoiseSchedule(BaseNoiseSchedule):
         if not (0.0 <= self.min_tau < 1.0):
             raise ValueError("min_tau must be in [0,1) for VP.")
 
-    def _tau(self, t: ArrayLike) -> Array:
+    # ---- helpers ----
+
+    def _u(self, t: ArrayLike) -> Array:
+        """Raw normalized time in [0,1]."""
         span = self.t_max - self.t_min
         u = (jnp.asarray(t) - self.t_min) / span
-        u = jnp.clip(u, 0.0, 1.0)
+        return jnp.clip(u, 0.0, 1.0)
+
+    def _tau(self, t: ArrayLike) -> Array:
+        """Beta parameterization time."""
+        u = self._u(t)
         if self.parameterization == "song":
+            # Avoid tau=0 to keep alpha_bar from exactly 1 and sigma from 0.
             return self.min_tau + (1.0 - self.min_tau) * u
         else:
+        # legacy: tau == t in [0,1]
             return u
 
+    def _beta(self, t: ArrayLike) -> Array:
+        """Instantaneous beta(t)."""
+        tau = self._tau(t) if self.parameterization == "song" else self._u(t)
+        db = self.beta_max - self.beta_min
+        return self.beta_min + db * tau
+
     def _integral_beta(self, t: ArrayLike) -> Array:
+        """Integral of beta from 0 to effective time (tau or t)."""
         db = self.beta_max - self.beta_min
         if self.parameterization == "legacy":
-            tt = jnp.asarray(t)
+            tt = self._u(t)
             return self.beta_min * tt + 0.5 * db * tt**2
         tau = self._tau(t)
         return self.beta_min * tau + 0.5 * db * tau**2
+
+    # ---- schedule ----
 
     def scale(self, t: ArrayLike) -> Array:
         I = self._integral_beta(t)
@@ -490,8 +507,10 @@ class VPNoiseSchedule(BaseNoiseSchedule):
         alpha_bar = jnp.clip(alpha_bar, self.eps, 1.0)
         return jnp.sqrt(jnp.maximum(1.0 - alpha_bar, 0.0))
 
+    # ---- sigma_eff ----
+
     def sigma_eff(self, t: ArrayLike) -> Array:
-        # sigma_eff^2 = e^{I} - 1
+        # sigma_eff^2 = (1 - alpha_bar)/alpha_bar = e^{I} - 1
         I = self._integral_beta(t)
         se2 = jnp.maximum(jnp.exp(I) - 1.0, 0.0)
         return jnp.sqrt(se2)
@@ -499,27 +518,45 @@ class VPNoiseSchedule(BaseNoiseSchedule):
     def inv_sigma_eff(self, sigma_eff: ArrayLike) -> Array:
         se = jnp.asarray(sigma_eff)
         se2 = jnp.maximum(se**2, 0.0)
-        I = jnp.log1p(se2)  # log(1 + sigma_eff^2)
+        I = jnp.log1p(se2)  # I = log(1 + sigma_eff^2)
         db = self.beta_max - self.beta_min
 
-        if self.parameterization == "legacy":
-            a = 0.5 * db
-            b = self.beta_min
-            disc = jnp.maximum(b**2 + 2.0 * db * I, 0.0)
-            t = (-b + jnp.sqrt(disc)) / jnp.maximum(db, self.eps)
-            return jnp.clip(t, self.t_min, self.t_max)
-
-        # song: solve beta_min tau + 0.5 db tau^2 = I
+        # Solve beta_min * z + 0.5 db z^2 = I for z in [0,1], where z is tau or u.
         a = 0.5 * db
         b = self.beta_min
         disc = jnp.maximum(b**2 + 2.0 * db * I, 0.0)
-        tau = (-b + jnp.sqrt(disc)) / jnp.maximum(db, self.eps)
-        tau = jnp.clip(tau, self.min_tau, 1.0)
+        z = (-b + jnp.sqrt(disc)) / jnp.maximum(db, self.eps)
+        z = jnp.clip(z, 0.0, 1.0)
 
-        u = (tau - self.min_tau) / jnp.maximum(1.0 - self.min_tau, self.eps)
-        u = jnp.clip(u, 0.0, 1.0)
+        if self.parameterization == "legacy":
+            u = z
+        else:
+            # z is tau; map back to u in [0,1]
+            u = (z - self.min_tau) / jnp.maximum(1.0 - self.min_tau, self.eps)
+            u = jnp.clip(u, 0.0, 1.0)
+
         t = self.t_min + u * (self.t_max - self.t_min)
         return t
+
+    # ---- SDE: override diffusion to be consistent with VP SDE ----
+
+    def drift(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
+        """
+        VP reverse/forward drift structure uses:
+          drift_forward = -0.5 * beta(t) * x
+        Our BaseSolver / probability flow will combine this with score.
+        """
+        beta_t = self._beta(t)
+        return jax.tree_util.tree_map(lambda xi: -0.5 * beta_t * xi, x)
+
+    def diffusion(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
+        """
+        VP SDE diffusion:
+          g(t) = sqrt(beta(t))
+        """
+        beta_t = self._beta(t)
+        g = jnp.sqrt(jnp.maximum(beta_t, self.eps))
+        return jax.tree_util.tree_map(lambda xi: jnp.broadcast_to(g, xi.shape), x)
 
 
 # =============================================================================
@@ -628,7 +665,7 @@ class EDMPreconditioning(PreconditioningProtocol):
 
 
 # =============================================================================
-# Training configs (now define train_scale/train_std)
+# Training configs
 # =============================================================================
 
 
@@ -636,10 +673,6 @@ class EDMPreconditioning(PreconditioningProtocol):
 class EDMTrainingConfig(TrainingConfigProtocol):
     """
     EDM-style training where schedule parameter t is sigma itself.
-
-    For consistency with EDM preconditioning:
-      train_scale = 1
-      train_std   = sigma_eff(t)  (== t here)
     """
 
     loss_type: str = "x0"
@@ -659,13 +692,6 @@ class EDMTrainingConfig(TrainingConfigProtocol):
         t = jnp.exp(logt)
         return jnp.clip(t, self.t_min, self.t_max)
 
-    def train_scale(self, schedule: NoiseScheduleProtocol) -> Callable[[ArrayLike], Array]:
-        del schedule
-        return lambda t: jnp.ones_like(jnp.asarray(t))
-
-    def train_std(self, schedule: NoiseScheduleProtocol) -> Callable[[ArrayLike], Array]:
-        return lambda t: schedule.sigma_eff(t)
-
 
 @dataclass
 class SigmaEffEDMTrainingConfig(TrainingConfigProtocol):
@@ -675,9 +701,6 @@ class SigmaEffEDMTrainingConfig(TrainingConfigProtocol):
       - sample sigma_eff ~ log-normal
       - clip to [sigma_eff(t_min), sigma_eff(t_max)]
       - map back to t via inv_sigma_eff
-      - use (train_scale=1, train_std=sigma_eff) in the loss.
-
-    Works for arbitrary monotone schedules (e.g. VP).
     """
 
     schedule: NoiseScheduleProtocol
@@ -706,21 +729,11 @@ class SigmaEffEDMTrainingConfig(TrainingConfigProtocol):
         t = self.schedule.inv_sigma_eff(sigma)
         return t
 
-    def train_scale(self, schedule: NoiseScheduleProtocol) -> Callable[[ArrayLike], Array]:
-        del schedule
-        return lambda t: jnp.ones_like(jnp.asarray(t))
-
-    def train_std(self, schedule: NoiseScheduleProtocol) -> Callable[[ArrayLike], Array]:
-        return lambda t: schedule.sigma_eff(t)
-
 
 @dataclass
 class UniformTTrainingConfig(TrainingConfigProtocol):
     """
-    Uniform in t in [t_min, t_max] with identity corruption:
-
-      train_scale = schedule.scale
-      train_std   = schedule.std
+    Uniform in t in [t_min, t_max] while using the physical corruption schedule.
     """
 
     loss_type: str = "x0"
@@ -736,12 +749,6 @@ class UniformTTrainingConfig(TrainingConfigProtocol):
             minval=self.t_min,
             maxval=self.t_max,
         )
-
-    def train_scale(self, schedule: NoiseScheduleProtocol) -> Callable[[ArrayLike], Array]:
-        return schedule.scale
-
-    def train_std(self, schedule: NoiseScheduleProtocol) -> Callable[[ArrayLike], Array]:
-        return schedule.std
 
 
 # =============================================================================
@@ -983,7 +990,7 @@ class VParamODESolverConfig(BaseSolverConfig):
         def ode_drift(t: ArrayLike, x_t: PyTree[Array]) -> PyTree[Array]:
             a = model.scale_fn(t)
             s = model.std_fn(t)
-            denom = a**2 + s**2
+            denom = jnp.maximum(a**2 + s**2, 1e-12)
 
             def _sum_a(tt):
                 return jnp.sum(model.scale_fn(tt))
@@ -1035,7 +1042,7 @@ class DiffusionDenoiser(nnx.Module):
 
       - schedule   : NoiseScheduleProtocol   (physical schedule)
       - precond    : PreconditioningProtocol (defines c_in/out/etc)
-      - train_cfg  : TrainingConfigProtocol  (defines t sampling + training scale/std)
+      - train_cfg  : TrainingConfigProtocol  (defines t sampling)
       - solver_cfg : SolverConfigProtocol    (defines solve ODE/SDE)
     """
 
@@ -1073,7 +1080,7 @@ class DiffusionDenoiser(nnx.Module):
         self.std0 = nnx.Variable(std0)
         self.last_layer = last_layer
 
-    # ---- physical schedule adapters (used by precond & solvers) ----
+    # ---- physical schedule adapters ----
 
     def scale_fn(self, t: ArrayLike) -> Array:
         return self.schedule.scale(t)
@@ -1081,7 +1088,7 @@ class DiffusionDenoiser(nnx.Module):
     def std_fn(self, t: ArrayLike) -> Array:
         return self.schedule.std(t)
 
-    # ---- preconditioning adapters (based on physical schedule) ----
+    # ---- preconditioning adapters ----
 
     def c_in(self, t: ArrayLike) -> Array:
         return self.precond.c_in(
@@ -1143,10 +1150,6 @@ class DiffusionDenoiser(nnx.Module):
     def _build_loss_fn(self):
         loss_type = self.train_cfg.loss_type
 
-        # training-time corruption schedule
-        train_scale_fn = self.train_cfg.train_scale(self.schedule)
-        train_std_fn = self.train_cfg.train_std(self.schedule)
-
         if loss_type == "x0":
             weight_fn = self.weight_fn
             pred_fn = self.denoise
@@ -1162,8 +1165,8 @@ class DiffusionDenoiser(nnx.Module):
 
         return build_time_dependent_denoising_loss(
             pred_fn,
-            scale_fn=train_scale_fn,
-            std_fn=train_std_fn,
+            scale_fn=self.scale_fn,
+            std_fn=self.std_fn,
             weight_fn=weight_fn,
             prediction_target=loss_type,
             **dict(self.train_cfg.loss_kwargs),
@@ -1194,7 +1197,7 @@ class DiffusionDenoiser(nnx.Module):
             out = jax.tree_util.tree_map(self.last_layer, out)
         return out
 
-    # ---- prediction heads (using physical schedule via preconditioning) ----
+    # ---- prediction heads ----
 
     def denoise(
         self,
@@ -1252,8 +1255,9 @@ class DiffusionDenoiser(nnx.Module):
         **kwargs,
     ) -> PyTree[Array]:
         """
-        Karras-style v:
-          v = alpha(t) * eps - sigma(t) * x0.
+        Normalized v:
+          v = alpha_hat(t) * eps - sigma_hat(t) * x0
+        based on normalized (alpha_hat, sigma_hat).
         """
         x0_pred = self.denoise(t, x_t, *args, **kwargs)
         alpha_t = self.scale_fn(t)
@@ -1263,8 +1267,7 @@ class DiffusionDenoiser(nnx.Module):
             x_t,
             x0_pred,
         )
-        total_var = jnp.sqrt(alpha_t**2 + sigma_t**2)
-        total_var = jnp.maximum(total_var, 1e-12)
+        total_var = jnp.sqrt(jnp.maximum(alpha_t**2 + sigma_t**2, 1e-12))
         alpha_hat = alpha_t / total_var
         sigma_hat = sigma_t / total_var
         return jax.tree_util.tree_map(
@@ -1273,7 +1276,7 @@ class DiffusionDenoiser(nnx.Module):
             x0_pred,
         )
 
-    # ---- SDE helpers (physical) ----
+    # ---- SDE helpers ----
 
     def marginal_std(self, t: ArrayLike) -> Array:
         return self.schedule.marginal_std(t, self.std0.value)
@@ -1316,7 +1319,7 @@ class DiffusionDenoiser(nnx.Module):
             kwargs["axis"] = tuple(range(1, data.ndim))
         return loss_fn(times, data, *args, rng=rng_loss, **kwargs)
 
-    # ---- sampling (delegates to solver_cfg; uses physical schedule) ----
+    # ---- sampling (delegates to solver_cfg) ----
 
     def sample_ode(
         self,
@@ -1430,7 +1433,7 @@ class VE(DiffusionDenoiser):
     VE variant:
       - VENoiseSchedule(sigma_min, sigma_max)
       - EDMPreconditioning
-      - UniformTTrainingConfig (identity corruption) by default
+      - UniformTTrainingConfig
       - BaseSolverConfig by default
     """
 
@@ -1516,8 +1519,7 @@ class VP(DiffusionDenoiser):
             min_tau=min_tau,
         )
         precond = EDMPreconditioning()
-        train_cfg = SigmaEffEDMTrainingConfig(
-            schedule=schedule,
+        train_cfg = UniformTTrainingConfig(
             loss_type=loss_type,
             loss_kwargs=dict(loss_kwargs or {}),
             t_min=t_min,
