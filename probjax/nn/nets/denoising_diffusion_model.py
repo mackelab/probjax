@@ -783,21 +783,30 @@ class BaseSolverConfig(SolverConfigProtocol):
         model: ScheduleAwareModelProtocol,
         *args,
         **kwargs,
-    ) -> Callable[[ArrayLike, PyTree[Array]], PyTree[Array]]:
+    ) -> SplitDrift:
         # probability flow ODE
-        def ode_drift(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
+
+        def _sum_scale(tt):
+            return jnp.sum(model.scale_fn(tt))
+
+        def linear_coeff(t: ArrayLike) -> Array:
+            t_arr = jnp.atleast_1d(t)
+            scale = jnp.asarray(model.scale_fn(t_arr))
+            scale = jnp.where(jnp.abs(scale) < 1e-12, 1e-12, scale)
+            scale_grad = jax.grad(_sum_scale)(t_arr)
+            return scale_grad / scale
+
+        def nonlin(t: ArrayLike, x: PyTree[Array], *fn_args, **fn_kwargs):
             t = jnp.atleast_1d(t)
-            f = model.drift(t, x, *args, **kwargs)
-            g = model.diffusion(t, x, *args, **kwargs)
-            s = model.score(t, x, *args, **kwargs)
+            g = model.diffusion(t, x, *fn_args, **fn_kwargs)
+            s = model.score(t, x, *fn_args, **fn_kwargs)
             return jax.tree_util.tree_map(
-                lambda fi, gi, si: fi - 0.5 * gi**2 * si,
-                f,
+                lambda gi, si: -0.5 * gi**2 * si,
                 g,
                 s,
             )
 
-        return ode_drift
+        return SplitDrift(lin_coeff=linear_coeff, nonlin=nonlin)
 
     def build_sde_drift_and_diffusion(
         self,
@@ -920,8 +929,9 @@ class DDIMSolverConfig(BaseSolverConfig):
         model: ScheduleAwareModelProtocol,
         *args,
         **kwargs,
-    ) -> Callable[[ArrayLike, PyTree[Array]], PyTree[Array]]:
+    ) -> SplitDrift:
         def ode_drift(t: ArrayLike, x_t: PyTree[Array]) -> PyTree[Array]:
+            t = jnp.atleast_1d(t)
             alpha_t = model.scale_fn(t)
             sigma_t = model.std_fn(t)
             sign_alpha = jnp.where(alpha_t >= 0, 1.0, -1.0)
@@ -999,27 +1009,7 @@ class VParamODESolverConfig(BaseSolverConfig):
     """
 
     ode_method: str = "exp_ab2_scalarL"
-    _dpm_methods: tuple[str, ...] = ("exp_ab2_scalarL", "exp_ab3_scalarL")
 
-
-class _SplitDriftAdapter:
-    def __init__(self, split: SplitDrift):
-        self.__split_drift__ = split
-
-    def __call__(
-        self,
-        t: ArrayLike,
-        x: PyTree[Array],
-        *args,
-        **kwargs,
-    ) -> PyTree[Array]:
-        Ax = self.__split_drift__.lin_coeff(t)
-        nonlin = self.__split_drift__.nonlin(t, x, *args, **kwargs)
-        return jax.tree_util.tree_map(
-            lambda xi, ni: Ax * xi + ni,
-            x,
-            nonlin,
-        )
 
     def _coeff_fn(
         self,
@@ -1060,7 +1050,7 @@ class _SplitDriftAdapter:
 
         return coeffs
 
-    def _build_split_drift(
+    def build_ode_drift(
         self,
         model: ScheduleAwareModelProtocol,
         *args,
@@ -1078,34 +1068,12 @@ class _SplitDriftAdapter:
             *fn_args,
             **fn_kwargs,
         ) -> PyTree[Array]:
+            t = jnp.atleast_1d(t)
             _, Av = coeffs(t)
             v_pred = model.v(t, x, *fn_args, **fn_kwargs)
             return jax.tree_util.tree_map(lambda v_i: Av * v_i, v_pred)
 
-        split = SplitDrift(lin_coeff=lin_coeff, nonlin=nonlin)
-        return _SplitDriftAdapter(split)
-
-    def build_ode_drift(
-        self,
-        model: ScheduleAwareModelProtocol,
-        *args,
-        **kwargs,
-    ) -> Callable[[ArrayLike, PyTree[Array]], PyTree[Array]]:
-        if self.ode_method in self._dpm_methods:
-            return self._build_split_drift(model, *args, **kwargs)
-
-        coeffs = self._coeff_fn(model)
-
-        def ode_drift(t: ArrayLike, x_t: PyTree[Array]) -> PyTree[Array]:
-            A_x, A_v = coeffs(t)
-            v_pred = model.v(t, x_t, *args, **kwargs)
-            return jax.tree_util.tree_map(
-                lambda x_i, v_i: A_x * x_i + A_v * v_i,
-                x_t,
-                v_pred,
-            )
-
-        return ode_drift
+        return SplitDrift(lin_coeff=lin_coeff, nonlin=nonlin)
 
     def build_sde_drift_and_diffusion(
         self,
@@ -1113,26 +1081,10 @@ class _SplitDriftAdapter:
         *args,
         **kwargs,
     ):
-        ode_drift = self.build_ode_drift(model, *args, **kwargs)
-
-        split_drift = getattr(ode_drift, "__split_drift__", None)
-
-        if split_drift is not None:
-            def _compose_split(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
-                Ax = split_drift.lin_coeff(t)
-                nonlin = split_drift.nonlin(t, x, *args, **kwargs)
-                return jax.tree_util.tree_map(
-                    lambda xi, ni: Ax * xi + ni,
-                    x,
-                    nonlin,
-                )
-
-            ode_callable = _compose_split
-        else:
-            ode_callable = ode_drift
+        split = self.build_ode_drift(model, *args, **kwargs)
 
         def drift(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
-            return ode_callable(t, x)
+            return split(t, x, *args, **kwargs)
 
         def diffusion(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
             return jax.tree_util.tree_map(lambda xi: jnp.zeros_like(xi), x)

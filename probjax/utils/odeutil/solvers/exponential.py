@@ -12,7 +12,7 @@ from probjax.utils.odeutil.solvers.base import (
     ODEState,
     register_method,
 )
-from probjax.utils.typing import Array, ArrayLike, Callable
+from probjax.utils.typing import Array, ArrayLike, Callable, PyTree
 
 
 # =============================================================================
@@ -55,17 +55,21 @@ def init_exp(
 class SplitDrift(NamedTuple):
     """
     dy/dt = L(t) y + N(t,y), with L(t) = c(t) * I (scalar multiple of identity).
-    - lin_coeff(t) -> scalar c(t)
-    - nonlin(t, y, *args) -> N(t, y)
+      - lin_coeff(t) -> scalar c(t)
+      - nonlin(t, y, *args) -> N(t, y)
+
+    Instances are callable with the canonical drift signature (t, y, *args, **kwargs)
+    so they can be plugged into any solver directly.
     """
 
     lin_coeff: Callable[[Array], Array]
-    nonlin: Callable[..., Array]  # (t: Array, y: Array, *args) -> Array
+    nonlin: Callable[..., PyTree]  # (t, y, *args, **kwargs) -> PyTree
 
-    def __call__(self, x: Array, t: Array, *args, **kwds) -> Array:
+    def __call__(self, t: Array, x: PyTree, *args, **kwds) -> PyTree:
+        coeff = self.lin_coeff(t)
+        linear = jax.tree_util.tree_map(lambda xi: coeff * xi, x)
         nonl = self.nonlin(t, x, *args, **kwds)
-        linear = self.lin_coeff(t) * x
-        return linear + nonl
+        return jax.tree_util.tree_map(lambda li, ni: li + ni, linear, nonl)
 
 
 def _as_split(split_or_drift: Callable | SplitDrift) -> SplitDrift:
