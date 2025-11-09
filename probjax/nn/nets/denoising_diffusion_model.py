@@ -301,9 +301,10 @@ class BaseNoiseSchedule(NoiseScheduleProtocol):
     # ---- SDE helpers (default) ----
 
     def marginal_std(self, t: ArrayLike, std0: ArrayLike) -> Array:
-        return jnp.sqrt(
-            self.scale(t) ** 2 * (self.std(t) ** 2 + jnp.asarray(std0) ** 2)
-        )
+        scale_t = self.scale(t)
+        std_t = self.std(t)
+        std0_arr = jnp.asarray(std0)
+        return jnp.sqrt(scale_t**2 * std0_arr**2 + std_t**2)
 
     def drift(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
         # drift = (d/dt log scale) * x
@@ -362,17 +363,12 @@ class EDMNoiseSchedule(BaseNoiseSchedule):
 @dataclass
 class VENoiseSchedule(BaseNoiseSchedule):
     """
-    VE-style schedule parameterized by (sigma_min, sigma_max).
-
-    parameterization:
-      - "sqrt": sqrt-shaped interpolation
-      - "song": geometric interpolation (Song et al. VE)
+    VE-style schedule parameterized by (sigma_min, sigma_max) using the
+    geometric (Song et al.) interpolation between the endpoints.
     """
 
     sigma_min: float = 1e-4
     sigma_max: float = 80.0
-    parameterization: str = "song"
-    min_tau: float = 1e-5  # for sqrt variant
 
     def __post_init__(self) -> None:
         if self.sigma_min <= 0 or self.sigma_max <= 0:
@@ -381,28 +377,19 @@ class VENoiseSchedule(BaseNoiseSchedule):
             raise ValueError("sigma_max must be larger than sigma_min for VE.")
         if self.t_max <= self.t_min:
             raise ValueError("t_max must be greater than t_min for VE.")
-        if self.parameterization not in {"sqrt", "song"}:
-            raise ValueError("parameterization must be 'sqrt' or 'song'.")
 
-    def _tau(self, t: ArrayLike) -> Array:
+    def _u(self, t: ArrayLike) -> Array:
         span = self.t_max - self.t_min
-        tau = (jnp.asarray(t) - self.t_min) / span
-        tau = jnp.clip(tau, 0.0, 1.0)
-        if self.parameterization == "sqrt":
-            tau = self.min_tau + (1.0 - self.min_tau) * tau
-        return tau
+        u = (jnp.asarray(t) - self.t_min) / span
+        return jnp.clip(u, 0.0, 1.0)
 
     def scale(self, t: ArrayLike) -> Array:
         return jnp.asarray(1.0)
 
     def std(self, t: ArrayLike) -> Array:
-        tau = self._tau(t)
-        if self.parameterization == "song":
-            log_ratio = jnp.log(self.sigma_max / self.sigma_min)
-            std = self.sigma_min * jnp.exp(tau * log_ratio)
-        else:
-            sqrt_tau = jnp.sqrt(tau)
-            std = self.sigma_min + (self.sigma_max - self.sigma_min) * sqrt_tau
+        u = self._u(t)
+        log_ratio = jnp.log(self.sigma_max / self.sigma_min)
+        std = self.sigma_min * jnp.exp(u * log_ratio)
         return jnp.atleast_1d(std)
 
     def sigma_eff(self, t: ArrayLike) -> Array:
@@ -413,19 +400,12 @@ class VENoiseSchedule(BaseNoiseSchedule):
         sigma = jnp.asarray(sigma_eff)
         sigma = jnp.clip(sigma, self.sigma_min, self.sigma_max)
 
-        if self.parameterization == "song":
-            ratio = self.sigma_max / self.sigma_min
-            log_ratio = jnp.log(ratio)
-            tau = jnp.log(sigma / self.sigma_min) / jnp.maximum(log_ratio, self.eps)
-        else:
-            scale = (sigma - self.sigma_min) / (self.sigma_max - self.sigma_min)
-            scale = jnp.clip(scale, 0.0, 1.0)
-            sqrt_tau = scale
-            tau = sqrt_tau**2
-            tau = (tau - self.min_tau) / jnp.maximum(1.0 - self.min_tau, self.eps)
-            tau = jnp.clip(tau, 0.0, 1.0)
+        ratio = self.sigma_max / self.sigma_min
+        log_ratio = jnp.log(ratio)
+        u = jnp.log(sigma / self.sigma_min) / jnp.maximum(log_ratio, self.eps)
+        u = jnp.clip(u, 0.0, 1.0)
 
-        t = self.t_min + tau * (self.t_max - self.t_min)
+        t = self.t_min + u * (self.t_max - self.t_min)
         return t
 
     def drift(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
@@ -436,16 +416,12 @@ class VENoiseSchedule(BaseNoiseSchedule):
 @dataclass
 class VPNoiseSchedule(BaseNoiseSchedule):
     """
-    VP schedule with linear beta in [beta_min, beta_max].
-
-    parameterization:
-      - "song": beta linear in tau in [min_tau,1]
-      - "legacy": beta linear in raw t
+    VP schedule with linear beta in [beta_min, beta_max] using the Song-style
+    warped time (tau) in [min_tau, 1].
     """
 
     beta_min: float = 0.1
     beta_max: float = 10.0
-    parameterization: str = "song"
     min_tau: float = 1e-5
 
     def __post_init__(self) -> None:
@@ -455,8 +431,6 @@ class VPNoiseSchedule(BaseNoiseSchedule):
             raise ValueError("beta_max must be larger than beta_min for VP.")
         if self.t_max <= self.t_min:
             raise ValueError("t_max must be greater than t_min for VP.")
-        if self.parameterization not in {"song", "legacy"}:
-            raise ValueError("parameterization must be 'song' or 'legacy'.")
         if not (0.0 <= self.min_tau < 1.0):
             raise ValueError("min_tau must be in [0,1) for VP.")
 
@@ -471,25 +445,18 @@ class VPNoiseSchedule(BaseNoiseSchedule):
     def _tau(self, t: ArrayLike) -> Array:
         """Beta parameterization time."""
         u = self._u(t)
-        if self.parameterization == "song":
-            # Avoid tau=0 to keep alpha_bar from exactly 1 and sigma from 0.
-            return self.min_tau + (1.0 - self.min_tau) * u
-        else:
-        # legacy: tau == t in [0,1]
-            return u
+        # Avoid tau=0 to keep alpha_bar from exactly 1 and sigma from 0.
+        return self.min_tau + (1.0 - self.min_tau) * u
 
     def _beta(self, t: ArrayLike) -> Array:
         """Instantaneous beta(t)."""
-        tau = self._tau(t) if self.parameterization == "song" else self._u(t)
+        tau = self._tau(t)
         db = self.beta_max - self.beta_min
         return self.beta_min + db * tau
 
     def _integral_beta(self, t: ArrayLike) -> Array:
         """Integral of beta from 0 to effective time (tau or t)."""
         db = self.beta_max - self.beta_min
-        if self.parameterization == "legacy":
-            tt = self._u(t)
-            return self.beta_min * tt + 0.5 * db * tt**2
         tau = self._tau(t)
         return self.beta_min * tau + 0.5 * db * tau**2
 
@@ -528,12 +495,9 @@ class VPNoiseSchedule(BaseNoiseSchedule):
         z = (-b + jnp.sqrt(disc)) / jnp.maximum(db, self.eps)
         z = jnp.clip(z, 0.0, 1.0)
 
-        if self.parameterization == "legacy":
-            u = z
-        else:
-            # z is tau; map back to u in [0,1]
-            u = (z - self.min_tau) / jnp.maximum(1.0 - self.min_tau, self.eps)
-            u = jnp.clip(u, 0.0, 1.0)
+        # z is tau; map back to u in [0,1]
+        u = (z - self.min_tau) / jnp.maximum(1.0 - self.min_tau, self.eps)
+        u = jnp.clip(u, 0.0, 1.0)
 
         t = self.t_min + u * (self.t_max - self.t_min)
         return t
@@ -920,24 +884,25 @@ class DDIMSolverConfig(BaseSolverConfig):
         **kwargs,
     ) -> Callable[[ArrayLike, PyTree[Array]], PyTree[Array]]:
         def ode_drift(t: ArrayLike, x_t: PyTree[Array]) -> PyTree[Array]:
-            alpha_t, sigma_t = alpha_sigma_from_scale_std(
-                model.scale_fn, model.std_fn, t
+            alpha_t = model.scale_fn(t)
+            sigma_t = model.std_fn(t)
+            sign_alpha = jnp.where(alpha_t >= 0, 1.0, -1.0)
+            alpha_safe = jnp.where(
+                jnp.abs(alpha_t) < 1e-12, sign_alpha * 1e-12, alpha_t
             )
             eps_hat = model.epsilon(t, x_t, *args, **kwargs)
 
             x0_hat = jax.tree_util.tree_map(
-                lambda x_i, e_i: (jnp.nan_to_num(x_i) - sigma_t * e_i) / alpha_t,
+                lambda x_i, e_i: (jnp.nan_to_num(x_i) - sigma_t * e_i) / alpha_safe,
                 x_t,
                 eps_hat,
             )
 
             def _sum_alpha(tt):
-                a, _ = alpha_sigma_from_scale_std(model.scale_fn, model.std_fn, tt)
-                return jnp.sum(a)
+                return jnp.sum(model.scale_fn(tt))
 
             def _sum_sigma(tt):
-                _, s = alpha_sigma_from_scale_std(model.scale_fn, model.std_fn, tt)
-                return jnp.sum(s)
+                return jnp.sum(model.std_fn(tt))
 
             alpha_p = jax.grad(_sum_alpha)(t)
             sigma_p = jax.grad(_sum_sigma)(t)
@@ -1049,7 +1014,7 @@ class DiffusionDenoiser(nnx.Module):
     schedule: NoiseScheduleProtocol
     precond: PreconditioningProtocol
     train_cfg: TrainingConfigProtocol
-    solver_cfg: SolverConfigProtocol
+    solver_cfg: SolverConfigProtocol | None
 
     def __init__(
         self,
@@ -1057,7 +1022,7 @@ class DiffusionDenoiser(nnx.Module):
         schedule: NoiseScheduleProtocol,
         precond: PreconditioningProtocol,
         train_cfg: TrainingConfigProtocol,
-        solver_cfg: SolverConfigProtocol,
+        solver_cfg: SolverConfigProtocol | None = None,
         std0: ArrayLike = 1.0,
         last_layer: Callable[[Array], Array] | None = None,
         rngs: nnx.RngStream | None = None,
@@ -1068,7 +1033,10 @@ class DiffusionDenoiser(nnx.Module):
             raise TypeError("precond must implement PreconditioningProtocol")
         if not isinstance(train_cfg, TrainingConfigProtocol):
             raise TypeError("train_cfg must implement TrainingConfigProtocol")
-        if not isinstance(solver_cfg, SolverConfigProtocol):
+        if (
+            solver_cfg is not None
+            and not isinstance(solver_cfg, SolverConfigProtocol)
+        ):
             raise TypeError("solver_cfg must implement SolverConfigProtocol")
 
         self.rngs = rngs
@@ -1079,6 +1047,11 @@ class DiffusionDenoiser(nnx.Module):
         self.solver_cfg = solver_cfg
         self.std0 = nnx.Variable(std0)
         self.last_layer = last_layer
+
+    def set_solver_cfg(self, solver_cfg: SolverConfigProtocol) -> None:
+        if not isinstance(solver_cfg, SolverConfigProtocol):
+            raise TypeError("solver_cfg must implement SolverConfigProtocol")
+        self.solver_cfg = solver_cfg
 
     # ---- physical schedule adapters ----
 
@@ -1335,6 +1308,10 @@ class DiffusionDenoiser(nnx.Module):
             t_start = self.train_cfg.t_max
         if t_end is None:
             t_end = self.train_cfg.t_min
+        if self.solver_cfg is None:
+            raise ValueError(
+                "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
+            )
         return self.solver_cfg.sample_ode(
             self,
             eps,
@@ -1361,6 +1338,10 @@ class DiffusionDenoiser(nnx.Module):
             t_start = self.train_cfg.t_max
         if t_end is None:
             t_end = self.train_cfg.t_min
+        if self.solver_cfg is None:
+            raise ValueError(
+                "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
+            )
         return self.solver_cfg.sample_sde(
             self,
             rng,
@@ -1446,8 +1427,6 @@ class VE(DiffusionDenoiser):
         sigma_max: float = 80.0,
         t_min: float = 1e-3,
         t_max: float = 1.0,
-        parameterization: str = "song",
-        min_tau: float = 1e-5,
         num_steps: int = 100,
         loss_type: str = "x0",
         loss_kwargs: Mapping[str, object] | None = None,
@@ -1460,8 +1439,6 @@ class VE(DiffusionDenoiser):
             t_max=t_max,
             sigma_min=sigma_min,
             sigma_max=sigma_max,
-            parameterization=parameterization,
-            min_tau=min_tau,
         )
         precond = EDMPreconditioning()
         train_cfg = UniformTTrainingConfig(
@@ -1501,9 +1478,10 @@ class VP(DiffusionDenoiser):
         std0: float = 1.0,
         t_min: float = 0.0,
         t_max: float = 1.0,
-        parameterization: str = "song",
         min_tau: float = 1e-5,
         num_steps: int = 100,
+        logsigma_mean: float = -1.2,
+        logsigma_std: float = 1.2,
         loss_type: str = "x0",
         loss_kwargs: Mapping[str, object] | None = None,
         last_layer: Callable[[Array], Array] | None = None,
@@ -1515,13 +1493,15 @@ class VP(DiffusionDenoiser):
             t_max=t_max,
             beta_min=beta_min,
             beta_max=beta_max,
-            parameterization=parameterization,
             min_tau=min_tau,
         )
         precond = EDMPreconditioning()
-        train_cfg = UniformTTrainingConfig(
+        train_cfg = SigmaEffEDMTrainingConfig(
+            schedule=schedule,
             loss_type=loss_type,
             loss_kwargs=dict(loss_kwargs or {}),
+            logsigma_mean=logsigma_mean,
+            logsigma_std=logsigma_std,
             t_min=t_min,
             t_max=t_max,
         )
