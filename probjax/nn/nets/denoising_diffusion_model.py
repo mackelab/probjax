@@ -5,6 +5,8 @@ import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.loss_fn.denoising import build_time_dependent_denoising_loss
+from probjax.utils.odeint import odeint
+from probjax.utils.sdeint import sdeint
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
 
 
@@ -63,7 +65,7 @@ class DiffusionDenoiser(nnx.Module):
 
     def _build_loss_fn(
         self, loss_type: str, loss_kwargs: Mapping[str, object] | None = None
-    ) -> None:
+    ) -> Callable:
         if loss_kwargs is not None:
             self._loss_kwargs = dict(loss_kwargs)
 
@@ -79,7 +81,7 @@ class DiffusionDenoiser(nnx.Module):
         else:
             raise ValueError(f"Unsupported loss type: {loss_type}")
 
-        self._loss_fn = build_time_dependent_denoising_loss(
+        loss_fn = build_time_dependent_denoising_loss(
             pred_fn,
             scale_fn=self.scale_fn,
             std_fn=self.std_fn,
@@ -87,6 +89,7 @@ class DiffusionDenoiser(nnx.Module):
             prediction_target=loss_type,
             **self._loss_kwargs,
         )
+        return loss_fn
 
     @property
     def loss_type(self) -> str:
@@ -274,15 +277,92 @@ class DiffusionDenoiser(nnx.Module):
         **kwargs,
     ) -> Array:
         """Compute diffusion denoising loss."""
-        self._build_loss_fn(self._loss_type)
+        loss_fn = self._build_loss_fn(self._loss_type)
         rng_times, rng_loss = jax.random.split(rng, 2)
         ndims = data.ndim - 2
         times = self.noise_schedule(rng_times, (data.shape[0],) + (1,) * ndims)
 
         if "axis" not in kwargs:
             kwargs["axis"] = tuple(range(1, data.ndim))
-        loss = self._loss_fn(times, data, *args, rng=rng_loss, **kwargs)
+        loss = loss_fn(times, data, *args, rng=rng_loss, **kwargs)
         return loss
+
+    def solve_schedule(self, num_steps: int) -> Array:
+        return jnp.linspace(0.0, 1.0, num_steps)[::-1]
+
+    def build_ode_drift(self, *args, **kwargs) -> Callable:
+        def ode_drift(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
+            f = self.drift(t, x, *args, **kwargs)
+            g = self.diffusion(t, x, *args, **kwargs)
+            score = self.score(t, x, *args, **kwargs)
+            return jax.tree_util.tree_map(
+                lambda fi, gi, si: fi - 0.5 * gi**2 * si,
+                f,
+                g,
+                score,
+            )
+
+        return ode_drift
+
+    def build_sde_drift(self, *args, **kwargs) -> Callable:
+        def sde_drift(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
+            f = self.drift(t, x, *args, **kwargs)
+            g = self.diffusion(t, x, *args, **kwargs)
+            score = self.score(t, x, *args, **kwargs)
+            return jax.tree_util.tree_map(
+                lambda fi, gi, si: fi - gi**2 * si,
+                f,
+                g,
+                score,
+            )
+
+        return sde_drift
+
+    def sample_ode(
+        self,
+        eps: PyTree[Array],
+        num_steps: int,
+        collect_trace: bool = False,
+        method: str = "heun",
+        *args,
+        **kwargs,
+    ) -> PyTree[Array]:
+        """Sample from the diffusion model using ODE solver."""
+        ts = self.solve_schedule(num_steps)
+        drift = self.build_ode_drift(*args, **kwargs)
+        x_T = odeint(
+            drift,
+            eps,
+            ts,
+            collect_trace=collect_trace,
+            method=method,
+        )
+        return x_T
+
+    def sample_sde(
+        self,
+        rng: RngKey,
+        eps: PyTree[Array],
+        num_steps: int,
+        collect_trace: bool = False,
+        method: str = "euler_maruyama",
+        *args,
+        **kwargs,
+    ) -> PyTree[Array]:
+        """Sample from the diffusion model using SDE solver."""
+        ts = self.solve_schedule(num_steps)
+        drift = self.build_sde_drift(*args, **kwargs)
+        diffusion = self.diffusion
+        x_T = sdeint(
+            rng,
+            drift,
+            diffusion,
+            eps,
+            ts,
+            collect_trace=collect_trace,
+            method=method,
+        )
+        return x_T
 
 
 class EDM(DiffusionDenoiser):
@@ -337,8 +417,8 @@ class EDM(DiffusionDenoiser):
     def solve_schedule(
         self,
         num_steps: int | None = None,
-        rho: int | None = None,
         *,
+        rho: int | None = None,
         min_noise: float | None = None,
         max_noise: float | None = None,
     ) -> Array:
