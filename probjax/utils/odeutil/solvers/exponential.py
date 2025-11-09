@@ -78,6 +78,10 @@ def _as_split(split_or_drift: Callable | SplitDrift) -> SplitDrift:
     if isinstance(split_or_drift, SplitDrift):
         return split_or_drift
 
+    adapter = getattr(split_or_drift, "__split_drift__", None)
+    if isinstance(adapter, SplitDrift):
+        return adapter
+
     if callable(split_or_drift):
         zero_lin = lambda t: jnp.zeros_like(jnp.asarray(t))
         return SplitDrift(lin_coeff=zero_lin, nonlin=split_or_drift)

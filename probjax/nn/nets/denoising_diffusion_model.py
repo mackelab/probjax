@@ -9,6 +9,7 @@ from flax import nnx
 
 from probjax.nn.loss_fn.denoising import build_time_dependent_denoising_loss
 from probjax.utils.odeint import odeint
+from probjax.utils.odeutil.solvers.exponential import SplitDrift
 from probjax.utils.sdeint import sdeint
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
 
@@ -135,6 +136,8 @@ class ScheduleAwareModelProtocol(Protocol):
     # schedule (physical)
     def scale_fn(self, t: ArrayLike) -> Array: ...
     def std_fn(self, t: ArrayLike) -> Array: ...
+    def sigma_eff(self, t: ArrayLike) -> Array: ...
+    def inv_sigma_eff(self, sigma_eff: ArrayLike) -> Array: ...
 
     # SDE terms
     def drift(self, t: ArrayLike, x: PyTree[Array], *args, **kwargs) -> PyTree[Array]: ...
@@ -166,6 +169,7 @@ class SolverConfigProtocol(Protocol):
         t_start: float,
         t_end: float,
         num_steps: int | None = None,
+        model: ScheduleAwareModelProtocol | None = None,
     ) -> Array: ...
 
     def build_ode_drift(
@@ -731,7 +735,7 @@ class BaseSolverConfig(SolverConfigProtocol):
     """
 
     num_steps: int = 64
-    ode_method: str = "heun"
+    ode_method: str = "euler"
     sde_method: str = "euler_maruyama"
 
     def solve_schedule(
@@ -739,9 +743,40 @@ class BaseSolverConfig(SolverConfigProtocol):
         t_start: float,
         t_end: float,
         num_steps: int | None = None,
+        model: ScheduleAwareModelProtocol | None = None,
     ) -> Array:
         steps = self.num_steps if num_steps is None else num_steps
-        return jnp.linspace(t_start, t_end, steps)
+        if steps <= 1:
+            return jnp.asarray(t_start)[None]
+
+        if model is None:
+            return jnp.linspace(t_start, t_end, steps)
+
+        if not hasattr(model, "sigma_eff") or not hasattr(model, "inv_sigma_eff"):
+            return jnp.linspace(t_start, t_end, steps)
+
+        sigma_start = jnp.asarray(model.sigma_eff(t_start)).squeeze()
+        sigma_end = jnp.asarray(model.sigma_eff(t_end)).squeeze()
+        sigma_eps = 1e-6
+
+        if (
+            ~jnp.isfinite(sigma_start)
+            or ~jnp.isfinite(sigma_end)
+            or jnp.isclose(sigma_start, sigma_end, atol=1e-6)
+        ):
+            return jnp.linspace(t_start, t_end, steps)
+
+        log_start = jnp.log(jnp.maximum(sigma_start, sigma_eps))
+        log_end = jnp.log(jnp.maximum(sigma_end, sigma_eps))
+        logs = jnp.linspace(log_start, log_end, steps)
+        sigma_targets = jnp.exp(logs)
+        sigma_targets = sigma_targets.at[0].set(sigma_start)
+        sigma_targets = sigma_targets.at[-1].set(sigma_end)
+
+        ts = jnp.asarray(model.inv_sigma_eff(sigma_targets))
+        ts = ts.at[0].set(t_start)
+        ts = ts.at[-1].set(t_end)
+        return ts
 
     def build_ode_drift(
         self,
@@ -798,7 +833,7 @@ class BaseSolverConfig(SolverConfigProtocol):
         *args,
         **kwargs,
     ) -> PyTree[Array]:
-        ts = self.solve_schedule(t_start, t_end, num_steps)
+        ts = self.solve_schedule(t_start, t_end, num_steps, model)
         drift = self.build_ode_drift(model, *args, **kwargs)
         return odeint(
             drift,
@@ -820,7 +855,7 @@ class BaseSolverConfig(SolverConfigProtocol):
         *args,
         **kwargs,
     ) -> PyTree[Array]:
-        ts = self.solve_schedule(t_start, t_end, num_steps)
+        ts = self.solve_schedule(t_start, t_end, num_steps, model)
         drift, diffusion = self.build_sde_drift_and_diffusion(model, *args, **kwargs)
         return sdeint(
             rng,
@@ -846,6 +881,8 @@ class EDMSolverConfig(BaseSolverConfig):
       typically called with (t_start=sigma_max, t_end=sigma_min).
     """
 
+    ode_method : str = "heun"
+    sde_method : str = "euler_maruyama"
     rho: float = 7.0
 
     def solve_schedule(
@@ -853,6 +890,7 @@ class EDMSolverConfig(BaseSolverConfig):
         t_start: float,
         t_end: float,
         num_steps: int | None = None,
+        model: ScheduleAwareModelProtocol | None = None,
     ) -> Array:
         steps = self.num_steps if num_steps is None else num_steps
         ns = jnp.arange(0, steps, dtype=jnp.float32)
@@ -923,8 +961,22 @@ class DDIMSolverConfig(BaseSolverConfig):
     ):
         ode_drift = self.build_ode_drift(model, *args, **kwargs)
 
+        if isinstance(ode_drift, SplitDrift):
+            def _compose_split(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
+                Ax = ode_drift.lin_coeff(t)
+                nonlin = ode_drift.nonlin(t, x, *args, **kwargs)
+                return jax.tree_util.tree_map(
+                    lambda xi, ni: Ax * xi + ni,
+                    x,
+                    nonlin,
+                )
+
+            ode_callable = _compose_split
+        else:
+            ode_callable = ode_drift
+
         def drift(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
-            return ode_drift(t, x)
+            return ode_callable(t, x)
 
         def diffusion(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
             return jax.tree_util.tree_map(lambda xi: jnp.zeros_like(xi), x)
@@ -946,31 +998,107 @@ class VParamODESolverConfig(BaseSolverConfig):
       v   = alpha(t) eps - sigma(t) x0
     """
 
+    ode_method: str = "exp_ab2_scalarL"
+    _dpm_methods: tuple[str, ...] = ("exp_ab2_scalarL", "exp_ab3_scalarL")
+
+
+class _SplitDriftAdapter:
+    def __init__(self, split: SplitDrift):
+        self.__split_drift__ = split
+
+    def __call__(
+        self,
+        t: ArrayLike,
+        x: PyTree[Array],
+        *args,
+        **kwargs,
+    ) -> PyTree[Array]:
+        Ax = self.__split_drift__.lin_coeff(t)
+        nonlin = self.__split_drift__.nonlin(t, x, *args, **kwargs)
+        return jax.tree_util.tree_map(
+            lambda xi, ni: Ax * xi + ni,
+            x,
+            nonlin,
+        )
+
+    def _coeff_fn(
+        self,
+        model: ScheduleAwareModelProtocol,
+    ) -> Callable[[ArrayLike], tuple[Array, Array]]:
+        def _sum_norm(tt):
+            a_tt = model.scale_fn(tt)
+            s_tt = model.std_fn(tt)
+            norm_tt = jnp.sqrt(jnp.maximum(a_tt**2 + s_tt**2, 1e-12))
+            return jnp.sum(norm_tt)
+
+        def _sum_alpha_hat(tt):
+            alpha_tt, _ = alpha_sigma_from_scale_std(
+                model.scale_fn, model.std_fn, tt
+            )
+            return jnp.sum(alpha_tt)
+
+        def _sum_sigma_hat(tt):
+            _, sigma_tt = alpha_sigma_from_scale_std(
+                model.scale_fn, model.std_fn, tt
+            )
+            return jnp.sum(sigma_tt)
+
+        def coeffs(t: ArrayLike) -> tuple[Array, Array]:
+            a = model.scale_fn(t)
+            s = model.std_fn(t)
+            denom = jnp.maximum(a**2 + s**2, 1e-12)
+            norm = jnp.sqrt(denom)
+            alpha_hat, sigma_hat = alpha_sigma_from_scale_std(
+                model.scale_fn, model.std_fn, t
+            )
+            norm_p = jax.grad(_sum_norm)(t)
+            alpha_hat_p = jax.grad(_sum_alpha_hat)(t)
+            sigma_hat_p = jax.grad(_sum_sigma_hat)(t)
+            A_x = norm_p / jnp.maximum(norm, 1e-12)
+            A_v = norm * (alpha_hat * sigma_hat_p - sigma_hat * alpha_hat_p)
+            return A_x, A_v
+
+        return coeffs
+
+    def _build_split_drift(
+        self,
+        model: ScheduleAwareModelProtocol,
+        *args,
+        **kwargs,
+    ) -> SplitDrift:
+        coeffs = self._coeff_fn(model)
+
+        def lin_coeff(t: ArrayLike) -> Array:
+            Ax, _ = coeffs(t)
+            return jnp.asarray(Ax)
+
+        def nonlin(
+            t: ArrayLike,
+            x: PyTree[Array],
+            *fn_args,
+            **fn_kwargs,
+        ) -> PyTree[Array]:
+            _, Av = coeffs(t)
+            v_pred = model.v(t, x, *fn_args, **fn_kwargs)
+            return jax.tree_util.tree_map(lambda v_i: Av * v_i, v_pred)
+
+        split = SplitDrift(lin_coeff=lin_coeff, nonlin=nonlin)
+        return _SplitDriftAdapter(split)
+
     def build_ode_drift(
         self,
         model: ScheduleAwareModelProtocol,
         *args,
         **kwargs,
     ) -> Callable[[ArrayLike, PyTree[Array]], PyTree[Array]]:
+        if self.ode_method in self._dpm_methods:
+            return self._build_split_drift(model, *args, **kwargs)
+
+        coeffs = self._coeff_fn(model)
+
         def ode_drift(t: ArrayLike, x_t: PyTree[Array]) -> PyTree[Array]:
-            a = model.scale_fn(t)
-            s = model.std_fn(t)
-            denom = jnp.maximum(a**2 + s**2, 1e-12)
-
-            def _sum_a(tt):
-                return jnp.sum(model.scale_fn(tt))
-
-            def _sum_s(tt):
-                return jnp.sum(model.std_fn(tt))
-
-            a_p = jax.grad(_sum_a)(t)
-            s_p = jax.grad(_sum_s)(t)
-
-            A_x = (a * a_p + s * s_p) / denom
-            A_v = (a * s_p - s * a_p) / denom
-
+            A_x, A_v = coeffs(t)
             v_pred = model.v(t, x_t, *args, **kwargs)
-
             return jax.tree_util.tree_map(
                 lambda x_i, v_i: A_x * x_i + A_v * v_i,
                 x_t,
@@ -987,8 +1115,24 @@ class VParamODESolverConfig(BaseSolverConfig):
     ):
         ode_drift = self.build_ode_drift(model, *args, **kwargs)
 
+        split_drift = getattr(ode_drift, "__split_drift__", None)
+
+        if split_drift is not None:
+            def _compose_split(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
+                Ax = split_drift.lin_coeff(t)
+                nonlin = split_drift.nonlin(t, x, *args, **kwargs)
+                return jax.tree_util.tree_map(
+                    lambda xi, ni: Ax * xi + ni,
+                    x,
+                    nonlin,
+                )
+
+            ode_callable = _compose_split
+        else:
+            ode_callable = ode_drift
+
         def drift(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
-            return ode_drift(t, x)
+            return ode_callable(t, x)
 
         def diffusion(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
             return jax.tree_util.tree_map(lambda xi: jnp.zeros_like(xi), x)
@@ -1060,6 +1204,12 @@ class DiffusionDenoiser(nnx.Module):
 
     def std_fn(self, t: ArrayLike) -> Array:
         return self.schedule.std(t)
+
+    def sigma_eff(self, t: ArrayLike) -> Array:
+        return self.schedule.sigma_eff(t)
+
+    def inv_sigma_eff(self, sigma_eff: ArrayLike) -> Array:
+        return self.schedule.inv_sigma_eff(sigma_eff)
 
     # ---- preconditioning adapters ----
 
@@ -1447,7 +1597,7 @@ class VE(DiffusionDenoiser):
             t_min=t_min,
             t_max=t_max,
         )
-        solver_cfg = solver or BaseSolverConfig(num_steps=num_steps)
+        solver_cfg = solver or VParamODESolverConfig(num_steps=num_steps)
         super().__init__(
             net=net,
             schedule=schedule,
