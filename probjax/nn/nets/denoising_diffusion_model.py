@@ -1263,8 +1263,12 @@ class DiffusionDenoiser(nnx.Module):
             x_t,
             x0_pred,
         )
+        total_var = jnp.sqrt(alpha_t**2 + sigma_t**2)
+        total_var = jnp.maximum(total_var, 1e-12)
+        alpha_hat = alpha_t / total_var
+        sigma_hat = sigma_t / total_var
         return jax.tree_util.tree_map(
-            lambda e, x0_: alpha_t * e - sigma_t * x0_,
+            lambda e, x0_: alpha_hat * e - sigma_hat * x0_,
             eps_pred,
             x0_pred,
         )
