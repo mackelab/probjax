@@ -734,37 +734,33 @@ class BaseSolverConfig(SolverConfigProtocol):
       - build_sde_drift_and_diffusion: reverse SDE
     """
 
+    schedule: NoiseScheduleProtocol
     num_steps: int = 64
     ode_method: str = "euler"
     sde_method: str = "euler_maruyama"
+
+    def set_schedule(self, schedule: NoiseScheduleProtocol) -> None:
+        self.schedule = schedule
 
     def solve_schedule(
         self,
         t_start: float,
         t_end: float,
         num_steps: int | None = None,
-        model: ScheduleAwareModelProtocol | None = None,
     ) -> Array:
         steps = self.num_steps if num_steps is None else num_steps
         if steps <= 1:
             return jnp.asarray(t_start)[None]
 
-        if model is None:
-            return jnp.linspace(t_start, t_end, steps)
+        schedule = self.schedule
+        if schedule is None:
+            raise ValueError(
+                "BaseSolverConfig requires a schedule. Call set_schedule first."
+            )
 
-        if not hasattr(model, "sigma_eff") or not hasattr(model, "inv_sigma_eff"):
-            return jnp.linspace(t_start, t_end, steps)
-
-        sigma_start = jnp.asarray(model.sigma_eff(t_start)).squeeze()
-        sigma_end = jnp.asarray(model.sigma_eff(t_end)).squeeze()
+        sigma_start = jnp.asarray(schedule.sigma_eff(t_start)).squeeze()
+        sigma_end = jnp.asarray(schedule.sigma_eff(t_end)).squeeze()
         sigma_eps = 1e-6
-
-        if (
-            ~jnp.isfinite(sigma_start)
-            or ~jnp.isfinite(sigma_end)
-            or jnp.isclose(sigma_start, sigma_end, atol=1e-6)
-        ):
-            return jnp.linspace(t_start, t_end, steps)
 
         log_start = jnp.log(jnp.maximum(sigma_start, sigma_eps))
         log_end = jnp.log(jnp.maximum(sigma_end, sigma_eps))
@@ -773,7 +769,7 @@ class BaseSolverConfig(SolverConfigProtocol):
         sigma_targets = sigma_targets.at[0].set(sigma_start)
         sigma_targets = sigma_targets.at[-1].set(sigma_end)
 
-        ts = jnp.asarray(model.inv_sigma_eff(sigma_targets))
+        ts = jnp.asarray(schedule.inv_sigma_eff(sigma_targets))
         ts = ts.at[0].set(t_start)
         ts = ts.at[-1].set(t_end)
         return ts
@@ -842,7 +838,7 @@ class BaseSolverConfig(SolverConfigProtocol):
         *args,
         **kwargs,
     ) -> PyTree[Array]:
-        ts = self.solve_schedule(t_start, t_end, num_steps, model)
+        ts = self.solve_schedule(t_start, t_end, num_steps)
         drift = self.build_ode_drift(model, *args, **kwargs)
         return odeint(
             drift,
@@ -864,7 +860,7 @@ class BaseSolverConfig(SolverConfigProtocol):
         *args,
         **kwargs,
     ) -> PyTree[Array]:
-        ts = self.solve_schedule(t_start, t_end, num_steps, model)
+        ts = self.solve_schedule(t_start, t_end, num_steps)
         drift, diffusion = self.build_sde_drift_and_diffusion(model, *args, **kwargs)
         return sdeint(
             rng,
@@ -899,14 +895,27 @@ class EDMSolverConfig(BaseSolverConfig):
         t_start: float,
         t_end: float,
         num_steps: int | None = None,
-        model: ScheduleAwareModelProtocol | None = None,
     ) -> Array:
         steps = self.num_steps if num_steps is None else num_steps
+        if steps <= 1:
+            return jnp.asarray(t_start)[None]
+
+        schedule = self.schedule
+        sigma_eps = 1e-6
+        sigma_start = jnp.asarray(schedule.sigma_eff(t_start)).squeeze()
+        sigma_end = jnp.asarray(schedule.sigma_eff(t_end)).squeeze()
+
+        sigma_start_root = jnp.maximum(sigma_start, sigma_eps) ** (1.0 / self.rho)
+        sigma_end_root = jnp.maximum(sigma_end, sigma_eps) ** (1.0 / self.rho)
         ns = jnp.arange(0, steps, dtype=jnp.float32)
-        term1 = t_start ** (1.0 / self.rho)
-        term2 = t_end ** (1.0 / self.rho)
-        length = (term2 - term1) * ns / jnp.maximum(steps - 1, 1)
-        return (term1 + length) ** self.rho
+        length = (sigma_end_root - sigma_start_root) * ns / jnp.maximum(steps - 1, 1)
+        sigma_targets = (sigma_start_root + length) ** self.rho
+        sigma_targets = sigma_targets.at[0].set(sigma_start)
+        sigma_targets = sigma_targets.at[-1].set(sigma_end)
+        ts = jnp.asarray(schedule.inv_sigma_eff(sigma_targets))
+        ts = ts.at[0].set(t_start)
+        ts = ts.at[-1].set(t_end)
+        return ts
 
 
 # =============================================================================
@@ -930,7 +939,7 @@ class DDIMSolverConfig(BaseSolverConfig):
         *args,
         **kwargs,
     ) -> SplitDrift:
-        def ode_drift(t: ArrayLike, x_t: PyTree[Array]) -> PyTree[Array]:
+        def nonlin(t: ArrayLike, x_t: PyTree[Array], *fn_args, **fn_kwargs):
             t = jnp.atleast_1d(t)
             alpha_t = model.scale_fn(t)
             sigma_t = model.std_fn(t)
@@ -938,7 +947,7 @@ class DDIMSolverConfig(BaseSolverConfig):
             alpha_safe = jnp.where(
                 jnp.abs(alpha_t) < 1e-12, sign_alpha * 1e-12, alpha_t
             )
-            eps_hat = model.epsilon(t, x_t, *args, **kwargs)
+            eps_hat = model.epsilon(t, x_t, *fn_args, **fn_kwargs)
 
             x0_hat = jax.tree_util.tree_map(
                 lambda x_i, e_i: (jnp.nan_to_num(x_i) - sigma_t * e_i) / alpha_safe,
@@ -961,7 +970,10 @@ class DDIMSolverConfig(BaseSolverConfig):
                 eps_hat,
             )
 
-        return ode_drift
+        def lin_coeff(t: ArrayLike) -> Array:
+            return jnp.zeros_like(jnp.asarray(t))
+
+        return SplitDrift(lin_coeff=lin_coeff, nonlin=nonlin)
 
     def build_sde_drift_and_diffusion(
         self,
@@ -970,20 +982,7 @@ class DDIMSolverConfig(BaseSolverConfig):
         **kwargs,
     ):
         ode_drift = self.build_ode_drift(model, *args, **kwargs)
-
-        if isinstance(ode_drift, SplitDrift):
-            def _compose_split(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
-                Ax = ode_drift.lin_coeff(t)
-                nonlin = ode_drift.nonlin(t, x, *args, **kwargs)
-                return jax.tree_util.tree_map(
-                    lambda xi, ni: Ax * xi + ni,
-                    x,
-                    nonlin,
-                )
-
-            ode_callable = _compose_split
-        else:
-            ode_callable = ode_drift
+        ode_callable = ode_drift
 
         def drift(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
             return ode_callable(t, x)
@@ -1141,6 +1140,8 @@ class DiffusionDenoiser(nnx.Module):
         self.precond = precond
         self.train_cfg = train_cfg
         self.solver_cfg = solver_cfg
+        if self.solver_cfg is not None and hasattr(self.solver_cfg, "set_schedule"):
+            self.solver_cfg.set_schedule(self.schedule)
         self.std0 = nnx.Variable(std0)
         self.last_layer = last_layer
 
@@ -1148,6 +1149,8 @@ class DiffusionDenoiser(nnx.Module):
         if not isinstance(solver_cfg, SolverConfigProtocol):
             raise TypeError("solver_cfg must implement SolverConfigProtocol")
         self.solver_cfg = solver_cfg
+        if hasattr(self.solver_cfg, "set_schedule"):
+            self.solver_cfg.set_schedule(self.schedule)
 
     # ---- physical schedule adapters ----
 
@@ -1498,7 +1501,11 @@ class EDM(DiffusionDenoiser):
             t_min=t_min,
             t_max=t_max,
         )
-        solver_cfg = solver or EDMSolverConfig(num_steps=num_steps, rho=rho)
+        solver_cfg = solver or EDMSolverConfig(
+            schedule=schedule,
+            num_steps=num_steps,
+            rho=rho,
+        )
         super().__init__(
             net=net,
             schedule=schedule,
@@ -1549,7 +1556,10 @@ class VE(DiffusionDenoiser):
             t_min=t_min,
             t_max=t_max,
         )
-        solver_cfg = solver or VParamODESolverConfig(num_steps=num_steps)
+        solver_cfg = solver or VParamODESolverConfig(
+            schedule=schedule,
+            num_steps=num_steps,
+        )
         super().__init__(
             net=net,
             schedule=schedule,
@@ -1607,7 +1617,10 @@ class VP(DiffusionDenoiser):
             t_min=t_min,
             t_max=t_max,
         )
-        solver_cfg = solver or BaseSolverConfig(num_steps=num_steps)
+        solver_cfg = solver or BaseSolverConfig(
+            schedule=schedule,
+            num_steps=num_steps,
+        )
         super().__init__(
             net=net,
             schedule=schedule,

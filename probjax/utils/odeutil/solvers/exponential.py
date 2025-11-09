@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from typing import NamedTuple, Optional, Tuple
+from dataclasses import dataclass
+from typing import Optional, Tuple, NamedTuple
 
 import jax
 import jax.numpy as jnp
 import jax.scipy.linalg
+from jax import tree_util
 
 from probjax.utils.odeutil.solvers.base import (
     ODEInfo,
@@ -52,7 +54,9 @@ def init_exp(
 
 
 # --- NEW: split-form initialization for specialized scalar-L solvers
-class SplitDrift(NamedTuple):
+@tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class SplitDrift:
     """
     dy/dt = L(t) y + N(t,y), with L(t) = c(t) * I (scalar multiple of identity).
       - lin_coeff(t) -> scalar c(t)
@@ -70,6 +74,15 @@ class SplitDrift(NamedTuple):
         linear = jax.tree_util.tree_map(lambda xi: coeff * xi, x)
         nonl = self.nonlin(t, x, *args, **kwds)
         return jax.tree_util.tree_map(lambda li, ni: li + ni, linear, nonl)
+
+    def tree_flatten(self):
+        return (), (self.lin_coeff, self.nonlin)
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        del children  # no children were produced
+        lin_coeff, nonlin = aux_data
+        return cls(lin_coeff=lin_coeff, nonlin=nonlin)
 
 
 def _as_split(split_or_drift: Callable | SplitDrift) -> SplitDrift:
