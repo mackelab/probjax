@@ -166,8 +166,8 @@ class SolverConfigProtocol(Protocol):
 
     def solve_schedule(
         self,
-        t_start: float,
-        t_end: float,
+        t_min: float,
+        t_max: float,
         num_steps: int | None = None,
         model: ScheduleAwareModelProtocol | None = None,
     ) -> Array: ...
@@ -193,8 +193,8 @@ class SolverConfigProtocol(Protocol):
         self,
         model: ScheduleAwareModelProtocol,
         x_T: PyTree[Array],
-        t_start: float,
-        t_end: float,
+        t_min: float,
+        t_max: float,
         num_steps: int | None = None,
         collect_trace: bool = False,
         *args,
@@ -206,8 +206,8 @@ class SolverConfigProtocol(Protocol):
         model: ScheduleAwareModelProtocol,
         rng: RngKey,
         x_T: PyTree[Array],
-        t_start: float,
-        t_end: float,
+        t_min: float,
+        t_max: float,
         num_steps: int | None = None,
         collect_trace: bool = False,
         *args,
@@ -744,13 +744,13 @@ class BaseSolverConfig(SolverConfigProtocol):
 
     def solve_schedule(
         self,
-        t_start: float,
-        t_end: float,
+        t_min: float,
+        t_max: float,
         num_steps: int | None = None,
     ) -> Array:
         steps = self.num_steps if num_steps is None else num_steps
         if steps <= 1:
-            return jnp.asarray(t_start)[None]
+            return jnp.asarray(t_max)[None]
 
         schedule = self.schedule
         if schedule is None:
@@ -758,8 +758,8 @@ class BaseSolverConfig(SolverConfigProtocol):
                 "BaseSolverConfig requires a schedule. Call set_schedule first."
             )
 
-        sigma_start = jnp.asarray(schedule.sigma_eff(t_start)).squeeze()
-        sigma_end = jnp.asarray(schedule.sigma_eff(t_end)).squeeze()
+        sigma_start = jnp.asarray(schedule.sigma_eff(t_max)).squeeze()
+        sigma_end = jnp.asarray(schedule.sigma_eff(t_min)).squeeze()
         sigma_eps = 1e-6
 
         log_start = jnp.log(jnp.maximum(sigma_start, sigma_eps))
@@ -770,8 +770,8 @@ class BaseSolverConfig(SolverConfigProtocol):
         sigma_targets = sigma_targets.at[-1].set(sigma_end)
 
         ts = jnp.asarray(schedule.inv_sigma_eff(sigma_targets))
-        ts = ts.at[0].set(t_start)
-        ts = ts.at[-1].set(t_end)
+        ts = ts.at[0].set(t_max)
+        ts = ts.at[-1].set(t_min)
         return ts
 
     def build_ode_drift(
@@ -831,14 +831,15 @@ class BaseSolverConfig(SolverConfigProtocol):
         self,
         model: ScheduleAwareModelProtocol,
         x_T: PyTree[Array],
-        t_start: float,
-        t_end: float,
+        t_min: float,
+        t_max: float,
         num_steps: int | None = None,
         collect_trace: bool = False,
         *args,
         **kwargs,
     ) -> PyTree[Array]:
-        ts = self.solve_schedule(t_start, t_end, num_steps)
+        ts = self.solve_schedule(t_max=t_max, t_min=t_min, num_steps=num_steps)
+        print(ts)
         drift = self.build_ode_drift(model, *args, **kwargs)
         return odeint(
             drift,
@@ -853,14 +854,14 @@ class BaseSolverConfig(SolverConfigProtocol):
         model: ScheduleAwareModelProtocol,
         rng: RngKey,
         x_T: PyTree[Array],
-        t_start: float,
-        t_end: float,
+        t_min: float,
+        t_max: float,
         num_steps: int | None = None,
         collect_trace: bool = False,
         *args,
         **kwargs,
     ) -> PyTree[Array]:
-        ts = self.solve_schedule(t_start, t_end, num_steps)
+        ts = self.solve_schedule(t_max=t_max, t_min=t_min, num_steps=num_steps)
         drift, diffusion = self.build_sde_drift_and_diffusion(model, *args, **kwargs)
         return sdeint(
             rng,
@@ -892,18 +893,18 @@ class EDMSolverConfig(BaseSolverConfig):
 
     def solve_schedule(
         self,
-        t_start: float,
-        t_end: float,
+        t_min: float,
+        t_max: float,
         num_steps: int | None = None,
     ) -> Array:
         steps = self.num_steps if num_steps is None else num_steps
         if steps <= 1:
-            return jnp.asarray(t_start)[None]
+            return jnp.asarray(t_max)[None]
 
         schedule = self.schedule
         sigma_eps = 1e-6
-        sigma_start = jnp.asarray(schedule.sigma_eff(t_start)).squeeze()
-        sigma_end = jnp.asarray(schedule.sigma_eff(t_end)).squeeze()
+        sigma_start = jnp.asarray(schedule.sigma_eff(t_max)).squeeze()
+        sigma_end = jnp.asarray(schedule.sigma_eff(t_min)).squeeze()
 
         sigma_start_root = jnp.maximum(sigma_start, sigma_eps) ** (1.0 / self.rho)
         sigma_end_root = jnp.maximum(sigma_end, sigma_eps) ** (1.0 / self.rho)
@@ -913,8 +914,8 @@ class EDMSolverConfig(BaseSolverConfig):
         sigma_targets = sigma_targets.at[0].set(sigma_start)
         sigma_targets = sigma_targets.at[-1].set(sigma_end)
         ts = jnp.asarray(schedule.inv_sigma_eff(sigma_targets))
-        ts = ts.at[0].set(t_start)
-        ts = ts.at[-1].set(t_end)
+        ts = ts.at[0].set(t_max)
+        ts = ts.at[-1].set(t_min)
         return ts
 
 
@@ -999,7 +1000,7 @@ class DDIMSolverConfig(BaseSolverConfig):
 
 
 @dataclass
-class VParamODESolverConfig(BaseSolverConfig):
+class VSolverConfig(BaseSolverConfig):
     """
     ODE using v-prediction:
 
@@ -1402,26 +1403,27 @@ class DiffusionDenoiser(nnx.Module):
     def sample_ode(
         self,
         eps: PyTree[Array],
-        t_start: float | None = None,
-        t_end: float | None = None,
         num_steps: int | None = None,
+        t_min: float | None = None,
+        t_max: float | None = None,
         collect_trace: bool = False,
         *args,
         **kwargs,
     ) -> PyTree[Array]:
-        if t_start is None:
-            t_start = self.train_cfg.t_max
-        if t_end is None:
-            t_end = self.train_cfg.t_min
+        if t_max is None:
+            t_max = self.train_cfg.t_max
+        if t_min is None:
+            t_min = self.train_cfg.t_min
         if self.solver_cfg is None:
             raise ValueError(
                 "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
             )
+        print(t_min, t_max)
         return self.solver_cfg.sample_ode(
             self,
             eps,
-            t_start=t_start,
-            t_end=t_end,
+            t_max=t_max,
+            t_min=t_min,
             num_steps=num_steps,
             collect_trace=collect_trace,
             *args,
@@ -1432,17 +1434,17 @@ class DiffusionDenoiser(nnx.Module):
         self,
         rng: RngKey,
         eps: PyTree[Array],
-        t_start: float | None = None,
-        t_end: float | None = None,
         num_steps: int | None = None,
+        t_min: float | None = None,
+        t_max: float | None = None,
         collect_trace: bool = False,
         *args,
         **kwargs,
     ) -> PyTree[Array]:
-        if t_start is None:
-            t_start = self.train_cfg.t_max
-        if t_end is None:
-            t_end = self.train_cfg.t_min
+        if t_max is None:
+            t_max = self.train_cfg.t_max
+        if t_min is None:
+            t_min = self.train_cfg.t_min
         if self.solver_cfg is None:
             raise ValueError(
                 "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
@@ -1451,8 +1453,8 @@ class DiffusionDenoiser(nnx.Module):
             self,
             rng,
             eps,
-            t_start=t_start,
-            t_end=t_end,
+            t_min=t_min,
+            t_max=t_max,
             num_steps=num_steps,
             collect_trace=collect_trace,
             *args,
@@ -1556,7 +1558,7 @@ class VE(DiffusionDenoiser):
             t_min=t_min,
             t_max=t_max,
         )
-        solver_cfg = solver or VParamODESolverConfig(
+        solver_cfg = solver or VSolverConfig(
             schedule=schedule,
             num_steps=num_steps,
         )
