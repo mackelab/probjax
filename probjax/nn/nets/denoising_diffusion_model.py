@@ -792,10 +792,10 @@ class BaseSolverConfig(SolverConfigProtocol):
             scale_grad = jax.grad(_sum_scale)(t_arr)
             return scale_grad / scale
 
-        def nonlin(t: ArrayLike, x: PyTree[Array], *fn_args, **fn_kwargs):
+        def nonlin(t: ArrayLike, x: PyTree[Array]):
             t = jnp.atleast_1d(t)
-            g = model.diffusion(t, x, *fn_args, **fn_kwargs)
-            s = model.score(t, x, *fn_args, **fn_kwargs)
+            g = model.diffusion(t, x)
+            s = model.score(t, x, *args, **kwargs)
             return jax.tree_util.tree_map(
                 lambda gi, si: -0.5 * gi**2 * si,
                 g,
@@ -812,8 +812,8 @@ class BaseSolverConfig(SolverConfigProtocol):
     ):
         # reverse SDE: drift = f - g^2 * score, diffusion = g
         def drift(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
-            f = model.drift(t, x, *args, **kwargs)
-            g = model.diffusion(t, x, *args, **kwargs)
+            f = model.drift(t, x)
+            g = model.diffusion(t, x)
             s = model.score(t, x, *args, **kwargs)
             return jax.tree_util.tree_map(
                 lambda fi, gi, si: fi - gi**2 * si,
@@ -823,7 +823,7 @@ class BaseSolverConfig(SolverConfigProtocol):
             )
 
         def diffusion(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
-            return model.diffusion(t, x, *args, **kwargs)
+            return model.diffusion(t, x)
 
         return drift, diffusion
 
@@ -940,7 +940,7 @@ class DDIMSolverConfig(BaseSolverConfig):
         *args,
         **kwargs,
     ) -> SplitDrift:
-        def nonlin(t: ArrayLike, x_t: PyTree[Array], *fn_args, **fn_kwargs):
+        def nonlin(t: ArrayLike, x_t: PyTree[Array]):
             t = jnp.atleast_1d(t)
             alpha_t = model.scale_fn(t)
             sigma_t = model.std_fn(t)
@@ -948,7 +948,7 @@ class DDIMSolverConfig(BaseSolverConfig):
             alpha_safe = jnp.where(
                 jnp.abs(alpha_t) < 1e-12, sign_alpha * 1e-12, alpha_t
             )
-            eps_hat = model.epsilon(t, x_t, *fn_args, **fn_kwargs)
+            eps_hat = model.epsilon(t, x_t, *args, **kwargs)
 
             x0_hat = jax.tree_util.tree_map(
                 lambda x_i, e_i: (jnp.nan_to_num(x_i) - sigma_t * e_i) / alpha_safe,
@@ -1065,12 +1065,10 @@ class VSolverConfig(BaseSolverConfig):
         def nonlin(
             t: ArrayLike,
             x: PyTree[Array],
-            *fn_args,
-            **fn_kwargs,
         ) -> PyTree[Array]:
             t = jnp.atleast_1d(t)
             _, Av = coeffs(t)
-            v_pred = model.v(t, x, *fn_args, **fn_kwargs)
+            v_pred = model.v(t, x, *args, **kwargs)
             return jax.tree_util.tree_map(lambda v_i: Av * v_i, v_pred)
 
         return SplitDrift(lin_coeff=lin_coeff, nonlin=nonlin)
