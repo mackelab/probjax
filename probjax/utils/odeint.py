@@ -10,7 +10,7 @@ from probjax.utils.odeutil import AdaptiveParams, _odeint
 from probjax.utils.odeutil.inversion import _inv_logdet_odeint, _inv_odeint
 
 
-@partial(custom_inverse, inv_argnum=1, static_argnums=(0,))
+@partial(custom_inverse, inv_argnum=1)
 def odeint(
     drift: Callable[[Array, PyTree[Array], ...], PyTree[Array]],
     y0: PyTree[Array],
