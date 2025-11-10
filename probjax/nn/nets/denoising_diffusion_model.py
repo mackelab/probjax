@@ -1415,7 +1415,6 @@ class DiffusionDenoiser(nnx.Module):
             raise ValueError(
                 "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
             )
-        print(t_min, t_max)
         return self.solver_cfg.sample_ode(
             self,
             eps,
