@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Mapping, Tuple, Protocol, runtime_checkable
+from typing import Callable, Mapping, Protocol, Tuple, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -12,7 +12,6 @@ from probjax.utils.odeint import odeint
 from probjax.utils.odeutil.solvers.exponential import SplitDrift
 from probjax.utils.sdeint import sdeint
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
-
 
 # =============================================================================
 # Protocols
@@ -50,7 +49,7 @@ class PreconditioningProtocol(Protocol):
         self,
         t: ArrayLike,
         *,
-        std0: float,
+        std0: ArrayLike,
         scale_fn: Callable[[ArrayLike], Array],
         std_fn: Callable[[ArrayLike], Array],
     ) -> Array: ...
@@ -59,7 +58,7 @@ class PreconditioningProtocol(Protocol):
         self,
         t: ArrayLike,
         *,
-        std0: float,
+        std0: ArrayLike,
         scale_fn: Callable[[ArrayLike], Array],
         std_fn: Callable[[ArrayLike], Array],
     ) -> Array: ...
@@ -76,7 +75,7 @@ class PreconditioningProtocol(Protocol):
         self,
         t: ArrayLike,
         *,
-        std0: float,
+        std0: ArrakLike,
         scale_fn: Callable[[ArrayLike], Array],
         std_fn: Callable[[ArrayLike], Array],
     ) -> Array | None: ...
@@ -85,7 +84,7 @@ class PreconditioningProtocol(Protocol):
         self,
         t: ArrayLike,
         *,
-        std0: float,
+        std0: ArrayLike,
         scale_fn: Callable[[ArrayLike], Array],
         std_fn: Callable[[ArrayLike], Array],
     ) -> Array: ...
@@ -94,7 +93,7 @@ class PreconditioningProtocol(Protocol):
         self,
         t: ArrayLike,
         *,
-        std0: float,
+        std0: ArrayLike,
         scale_fn: Callable[[ArrayLike], Array],
         std_fn: Callable[[ArrayLike], Array],
     ) -> Array: ...
@@ -103,7 +102,7 @@ class PreconditioningProtocol(Protocol):
         self,
         t: ArrayLike,
         *,
-        std0: float,
+        std0: ArrayLike,
         scale_fn: Callable[[ArrayLike], Array],
         std_fn: Callable[[ArrayLike], Array],
     ) -> Array: ...
@@ -140,13 +139,23 @@ class ScheduleAwareModelProtocol(Protocol):
     def inv_sigma_eff(self, sigma_eff: ArrayLike) -> Array: ...
 
     # SDE terms
-    def drift(self, t: ArrayLike, x: PyTree[Array], *args, **kwargs) -> PyTree[Array]: ...
-    def diffusion(self, t: ArrayLike, x: PyTree[Array], *args, **kwargs) -> PyTree[Array]: ...
+    def drift(
+        self, t: ArrayLike, x: PyTree[Array], *args, **kwargs
+    ) -> PyTree[Array]: ...
+    def diffusion(
+        self, t: ArrayLike, x: PyTree[Array], *args, **kwargs
+    ) -> PyTree[Array]: ...
 
     # score / prediction heads
-    def score(self, t: ArrayLike, x: PyTree[Array], *args, **kwargs) -> PyTree[Array]: ...
-    def epsilon(self, t: ArrayLike, x: PyTree[Array], *args, **kwargs) -> PyTree[Array]: ...
-    def denoise(self, t: ArrayLike, x: PyTree[Array], *args, **kwargs) -> PyTree[Array]: ...
+    def score(
+        self, t: ArrayLike, x: PyTree[Array], *args, **kwargs
+    ) -> PyTree[Array]: ...
+    def epsilon(
+        self, t: ArrayLike, x: PyTree[Array], *args, **kwargs
+    ) -> PyTree[Array]: ...
+    def denoise(
+        self, t: ArrayLike, x: PyTree[Array], *args, **kwargs
+    ) -> PyTree[Array]: ...
     def v(self, t: ArrayLike, x: PyTree[Array], *args, **kwargs) -> PyTree[Array]: ...
 
 
@@ -297,9 +306,7 @@ class BaseNoiseSchedule(NoiseScheduleProtocol):
             hi = jnp.where(cond, hi, mid)
             return (lo, hi)
 
-        lo, hi = jax.lax.fori_loop(
-            0, self._num_bisect_steps, body_fn, (t_lo, t_hi)
-        )
+        lo, hi = jax.lax.fori_loop(0, self._num_bisect_steps, body_fn, (t_lo, t_hi))
         return 0.5 * (lo + hi)
 
     # ---- SDE helpers (default) ----
@@ -614,9 +621,10 @@ class EDMPreconditioning(PreconditioningProtocol):
         std_fn: Callable[[ArrayLike], Array],
     ) -> Array:
         sigma_eff = self._sigma_eff(t, scale_fn, std_fn)
-        return self.weight_x0(
-            t, std0=std0, scale_fn=scale_fn, std_fn=std_fn
-        ) * sigma_eff**2
+        return (
+            self.weight_x0(t, std0=std0, scale_fn=scale_fn, std_fn=std_fn)
+            * sigma_eff**2
+        )
 
     def weight_v(
         self,
@@ -653,8 +661,7 @@ class EDMTrainingConfig(TrainingConfigProtocol):
 
     def sample_times(self, rng: RngKey, shape: Tuple[int, ...]) -> Array:
         logt = (
-            jax.random.normal(rng, shape=shape + (1,))
-            * self.lognoise_scale
+            jax.random.normal(rng, shape=shape + (1,)) * self.lognoise_scale
             + self.lognoise_mean
         )
         t = jnp.exp(logt)
@@ -684,8 +691,7 @@ class SigmaEffEDMTrainingConfig(TrainingConfigProtocol):
 
     def sample_times(self, rng: RngKey, shape: Tuple[int, ...]) -> Array:
         logsigma = (
-            jax.random.normal(rng, shape=shape + (1,))
-            * self.logsigma_std
+            jax.random.normal(rng, shape=shape + (1,)) * self.logsigma_std
             + self.logsigma_mean
         )
         sigma = jnp.exp(logsigma)
@@ -886,8 +892,8 @@ class EDMSolverConfig(BaseSolverConfig):
       typically called with (t_start=sigma_max, t_end=sigma_min).
     """
 
-    ode_method : str = "heun"
-    sde_method : str = "euler_maruyama"
+    ode_method: str = "heun"
+    sde_method: str = "euler_maruyama"
     rho: float = 7.0
 
     def solve_schedule(
@@ -1009,7 +1015,6 @@ class VSolverConfig(BaseSolverConfig):
 
     ode_method: str = "exp_ab2_scalarL"
 
-
     def _coeff_fn(
         self,
         model: ScheduleAwareModelProtocol,
@@ -1021,15 +1026,11 @@ class VSolverConfig(BaseSolverConfig):
             return jnp.sum(norm_tt)
 
         def _sum_alpha_hat(tt):
-            alpha_tt, _ = alpha_sigma_from_scale_std(
-                model.scale_fn, model.std_fn, tt
-            )
+            alpha_tt, _ = alpha_sigma_from_scale_std(model.scale_fn, model.std_fn, tt)
             return jnp.sum(alpha_tt)
 
         def _sum_sigma_hat(tt):
-            _, sigma_tt = alpha_sigma_from_scale_std(
-                model.scale_fn, model.std_fn, tt
-            )
+            _, sigma_tt = alpha_sigma_from_scale_std(model.scale_fn, model.std_fn, tt)
             return jnp.sum(sigma_tt)
 
         def coeffs(t: ArrayLike) -> tuple[Array, Array]:
@@ -1126,10 +1127,7 @@ class DiffusionDenoiser(nnx.Module):
             raise TypeError("precond must implement PreconditioningProtocol")
         if not isinstance(train_cfg, TrainingConfigProtocol):
             raise TypeError("train_cfg must implement TrainingConfigProtocol")
-        if (
-            solver_cfg is not None
-            and not isinstance(solver_cfg, SolverConfigProtocol)
-        ):
+        if solver_cfg is not None and not isinstance(solver_cfg, SolverConfigProtocol):
             raise TypeError("solver_cfg must implement SolverConfigProtocol")
 
         self.rngs = rngs
@@ -1169,7 +1167,7 @@ class DiffusionDenoiser(nnx.Module):
     def c_in(self, t: ArrayLike) -> Array:
         return self.precond.c_in(
             t,
-            std0=float(self.std0.value),
+            std0=self.std0.value,
             scale_fn=self.scale_fn,
             std_fn=self.std_fn,
         )
@@ -1177,7 +1175,7 @@ class DiffusionDenoiser(nnx.Module):
     def c_out(self, t: ArrayLike) -> Array:
         return self.precond.c_out(
             t,
-            std0=float(self.std0.value),
+            std0=self.std0.value,
             scale_fn=self.scale_fn,
             std_fn=self.std_fn,
         )
@@ -1192,7 +1190,7 @@ class DiffusionDenoiser(nnx.Module):
     def c_skip(self, t: ArrayLike) -> Array | None:
         return self.precond.c_skip(
             t,
-            std0=float(self.std0.value),
+            std0=self.std0.value,
             scale_fn=self.scale_fn,
             std_fn=self.std_fn,
         )
@@ -1200,7 +1198,7 @@ class DiffusionDenoiser(nnx.Module):
     def weight_fn(self, t: ArrayLike) -> Array:
         return self.precond.weight_x0(
             t,
-            std0=float(self.std0.value),
+            std0=self.std0.value,
             scale_fn=self.scale_fn,
             std_fn=self.std_fn,
         )
@@ -1208,7 +1206,7 @@ class DiffusionDenoiser(nnx.Module):
     def weight_fn_eps(self, t: ArrayLike) -> Array:
         return self.precond.weight_eps(
             t,
-            std0=float(self.std0.value),
+            std0=self.std0.value,
             scale_fn=self.scale_fn,
             std_fn=self.std_fn,
         )
@@ -1216,7 +1214,7 @@ class DiffusionDenoiser(nnx.Module):
     def weight_fn_v(self, t: ArrayLike) -> Array:
         return self.precond.weight_v(
             t,
-            std0=float(self.std0.value),
+            std0=self.std0.value,
             scale_fn=self.scale_fn,
             std_fn=self.std_fn,
         )
