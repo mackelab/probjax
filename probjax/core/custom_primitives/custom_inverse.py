@@ -26,6 +26,15 @@ def _has_tracer(tree) -> bool:
     return any(isinstance(x, core.Tracer) for x in tree_leaves(tree))
 
 
+def _fail_on_tracer_constants(consts, where: str):
+    if _has_tracer(consts):
+        raise TypeError(
+            f"{where} closed over traced JAX values. "
+            "Pass such data as dynamic arguments or mark them static before "
+            "registering the custom inverse."
+        )
+
+
 def _ensure_hashable(x, where: str):
     try:
         hash(x)
@@ -171,6 +180,8 @@ class custom_inverse:
         f_flat, out_tree_thunk = flatten_fun_nokwargs(f_wrapped, in_tree)
 
         jaxpr, out_avals, consts = pe.trace_to_jaxpr_dynamic(f_flat, in_avals)
+        fun_name = getattr(self.fun, "__name__", str(self.fun))
+        _fail_on_tracer_constants(consts, f"custom_inverse forward ({fun_name})")
         forward_jaxpr = ClosedJaxpr(jaxpr, consts)
         out_tree = out_tree_thunk()
 
@@ -203,6 +214,8 @@ class custom_inverse:
             inv_jaxpr, _, inv_consts = pe.trace_to_jaxpr_dynamic(
                 inv_flat, tuple(inv_in_avals)
             )
+            inv_name = getattr(self.inv_fun_and_log_det, "__name__", "custom_inverse inverse")
+            _fail_on_tracer_constants(inv_consts, f"custom_inverse inverse ({inv_name})")
             return ClosedJaxpr(inv_jaxpr, inv_consts)
 
         return forward_jaxpr, out_tree, inv_argnum_dyn_index, inverse_jaxpr_thunk
