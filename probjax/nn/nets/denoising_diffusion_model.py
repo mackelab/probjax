@@ -839,7 +839,6 @@ class BaseSolverConfig(SolverConfigProtocol):
         **kwargs,
     ) -> PyTree[Array]:
         ts = self.solve_schedule(t_max=t_max, t_min=t_min, num_steps=num_steps)
-        print(ts)
         drift = self.build_ode_drift(model, *args, **kwargs)
         return odeint(
             drift,
