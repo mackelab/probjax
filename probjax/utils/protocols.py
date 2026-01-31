@@ -93,7 +93,7 @@ class WeightFn(Protocol):
 class ReductionFn(Protocol):
     """A callable that reduces an array to a scalar or smaller array."""
 
-    def __call__(self, x: Array, **kwargs: Any) -> Array:
+    def __call__(self, x: Array, *args, **kwargs: Any) -> Array:
         """Reduce array to scalar or smaller array.
 
         Args:

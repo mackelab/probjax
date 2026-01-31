@@ -67,6 +67,8 @@ from probjax.nn.nets import (
     FlowSolverConfigProtocol,
     FlowTrainingConfigProtocol,
     GaussianFlowPreconditioning,
+    AutodiffInterpolationSchedule,
+    GeneralInterpolationSchedule,
     InterpolationScheduleProtocol,
     CosineInterpolationSchedule,
     QuadraticInterpolationSchedule,

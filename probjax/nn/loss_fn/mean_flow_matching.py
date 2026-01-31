@@ -11,7 +11,7 @@ from probjax.utils.protocols import (
     WeightFn,
 )
 
-def base_flow_matching_loss(
+def base_mean_flow_matching_loss(
     model_fn: TimeDependentModelFn,
     schedule: "InterpolationScheduleProtocol",
     weight_fn: WeightFn | None,
@@ -19,6 +19,7 @@ def base_flow_matching_loss(
     adaptive_weight_eps: float,
     metric_fn: Callable[[Array, Array], Array] | None,
     axis: tuple[int, ...],
+    r: Array,
     t: Array,
     x0: Array,
     x1: Array,
@@ -27,34 +28,14 @@ def base_flow_matching_loss(
     loss_mask: Optional[Array] = None,
     **kwargs,
 ) -> Array:
-    """Base function for flow matching loss.
-
-    Args:
-        model_fn: Function that predicts the velocity field
-        schedule: Interpolation schedule providing path and velocity functions
-        weight_fn: Optional function that computes weights based on time
-        metric_fn: Optional function that computes the Riemannian metric tensor
-        axis: Axis along which to sum the loss
-        t: Time values
-        x0: Starting points
-        x1: Ending points
-        *args: Additional arguments passed to model_fn
-        rng: Random number generator key
-        loss_mask: Optional mask for the loss
-        **kwargs: Additional keyword arguments passed to model_fn
-
-    Returns:
-        Array of loss values
-    """
+    """Base function for mean flow matching loss."""
     xt = schedule.interpolation_fn(t, x0, x1)
-
     noise_scale = schedule.interpolation_noise_fn(t, x0, x1)
     if noise_scale is not None:
         assert rng is not None, "rng is required when using interpolation_noise_fn"
         eps = jax.random.normal(rng, shape=xt.shape)
         xt += noise_scale * eps
 
-    v_t = model_fn(t, xt, *args, **kwargs)
     u_t = schedule.interpolation_velocity_fn(t, x0, x1)
 
     if noise_scale is not None:
@@ -65,21 +46,21 @@ def base_flow_matching_loss(
             )
         u_t = u_t + noise_velocity * eps
 
-    # Compute loss using the metric if provided
+    def v_fn(r, t, x):
+        return model_fn(t, x, *args, r=r, **kwargs)
+
+    v_t, dv_dt = jax.jvp(v_fn, (r, t, xt), (jnp.zeros_like(r), jnp.ones_like(t), u_t))
+
+    u_t = u_t - (t - r) * dv_dt
+    u_t = jax.lax.stop_gradient(u_t)
     if metric_fn is not None:
-        # Get the metric tensor at the current point
         metric = metric_fn(xt, t)
-        # Compute the squared norm using the metric
-        # v_t and u_t should be vectors in the tangent space
         diff = v_t - u_t
         if len(metric.shape) == 2:
-            # If metric is a single matrix, broadcast it
             metric = jnp.expand_dims(metric, 0)
-        # Compute (v-u)^T M (v-u) for each point
-        loss = jnp.sum(diff * jnp.einsum('...ij,...j->...i', metric, diff), axis=axis)
+        loss = jnp.sum(diff * jnp.einsum("...ij,...j->...i", metric, diff), axis=axis)
     else:
         diff = v_t - u_t
-        # Euclidean (L2) metric
         loss = jnp.sum(diff**2, axis=axis)
 
     if adaptive_weight_p > 0:
@@ -97,55 +78,41 @@ def base_flow_matching_loss(
     return loss
 
 
-def build_flow_matching_loss(
+def build_mean_flow_matching_loss_from_schedule(
     model_fn: TimeDependentModelFn,
     schedule: "InterpolationScheduleProtocol",
-    weight_fn: Optional[WeightFn] = None,
+    **kwargs,
+) -> LossFn:
+    """Helper to build mean flow loss directly from an interpolation schedule."""
+    return build_mean_flow_matching_loss(
+        model_fn=model_fn,
+        schedule=schedule,
+        **kwargs,
+    )
+
+
+def build_mean_flow_matching_loss(
+    model_fn: TimeDependentModelFn,
+    schedule: "InterpolationScheduleProtocol",
+    weight_fn: WeightFn | None = None,
     metric_fn: Callable[[Array, Array], Array] | None = None,
     reduction_fn: ReductionFn = jnp.mean,
 ) -> LossFn:
-    """Build a Euclidean flow matching loss function.
-
-    Args:
-        model_fn: Function that predicts the velocity field
-        schedule: Interpolation schedule with explicit velocity functions
-        weight_fn: Optional function that computes weights based on time
-        metric_fn: Optional function that computes the Riemannian metric tensor
-        axis: Axis along which to sum the loss
-        reduction_fn: Function to reduce the loss to a scalar
-
-    Returns:
-        A loss function that takes time, x0, x1 and returns a scalar loss value
-    """
-
+    """Build a mean flow matching loss function."""
     def loss_fn(
-        t: Array,
-        x0: Array,
-        x1: Array,
+        r,
+        t,
+        x0,
+        x1,
         *args,
-        rng: Optional[Array] = None,
-        loss_mask: Optional[Array] = None,
-        axis: int | tuple[int, ...] = -1,
+        rng=None,
+        loss_mask=None,
         adaptive_weight_p: float = 0.0,
         adaptive_weight_eps: float = 1e-3,
+        axis=-1,
         **kwargs,
     ):
-        """Compute Euclidean flow matching loss.
-
-        Args:
-            t: Time values
-            x0: Starting points
-            x1: Ending points
-            *args: Additional arguments passed to model_fn
-            rng: Random number generator key
-            loss_mask: Optional mask for the loss
-            **kwargs: Additional keyword arguments passed to model_fn
-
-        Returns:
-            Scalar loss value
-        """
-        axis = axis if isinstance(axis, tuple) else (axis,)
-        event_dims = len(axis)
+        event_dims = 1 if isinstance(axis, int) else len(axis)
         if x0.ndim > 1 + event_dims:
             raise ValueError(
                 "x0 must have at most 1 batch dim + event_dims (len(axis)) dimensions"
@@ -159,8 +126,7 @@ def build_flow_matching_loss(
                 "t must have at most 1 batch dim + event_dims (len(axis)) dimensions"
             )
 
-        # Compute the loss
-        loss = base_flow_matching_loss(
+        loss = base_mean_flow_matching_loss(
             model_fn,
             schedule,
             weight_fn,
@@ -168,6 +134,7 @@ def build_flow_matching_loss(
             adaptive_weight_eps,
             metric_fn,
             axis,
+            r,
             t,
             x0,
             x1,

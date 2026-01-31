@@ -9,6 +9,20 @@ import jax.numpy as jnp
 from probjax.utils.typing import Array, ArrayLike
 
 
+def _autodiff_time_gradient(
+    fn: Callable[[ArrayLike, Array, Array], Array],
+    t: ArrayLike,
+    x0: Array,
+    x1: Array,
+) -> Array:
+    grad_fn = jax.jacfwd(lambda time, x_s, x_t: fn(time, x_s, x_t), argnums=0)
+    if jnp.ndim(x0) == 0:
+        return grad_fn(t, x0, x1)
+    if jnp.ndim(t) == 0 or jnp.shape(t)[0] != jnp.shape(x0)[0]:
+        return jax.vmap(grad_fn, in_axes=(None, 0, 0))(t, x0, x1)
+    return jax.vmap(grad_fn, in_axes=(0, 0, 0))(t, x0, x1)
+
+
 @runtime_checkable
 class InterpolationScheduleProtocol(Protocol):
     """Interpolation path + optional noise."""
@@ -16,6 +30,12 @@ class InterpolationScheduleProtocol(Protocol):
     def interpolation_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array: ...
 
     def interpolation_noise_fn(
+        self, t: ArrayLike, x0: Array, x1: Array
+    ) -> Array | None: ...
+
+    def interpolation_velocity_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array: ...
+
+    def interpolation_noise_velocity_fn(
         self, t: ArrayLike, x0: Array, x1: Array
     ) -> Array | None: ...
 
@@ -27,18 +47,93 @@ class InterpolationScheduleProtocol(Protocol):
 
 
 @dataclass
+class GeneralInterpolationSchedule(InterpolationScheduleProtocol):
+    """Generic schedule wrapper that derives velocities via autodiff."""
+
+    interp_fn: Callable[[ArrayLike, Array, Array], Array]
+    noise_fn: Callable[[ArrayLike, Array, Array], Array] | None = None
+    interp_velocity_fn: Callable[[ArrayLike, Array, Array], Array] | None = None
+    noise_velocity_fn: Callable[[ArrayLike, Array, Array], Array] | None = None
+    a_t_fn: Callable[[ArrayLike], Array] | None = None
+    b_t_fn: Callable[[ArrayLike], Array] | None = None
+    path_mean_fn: Callable[[ArrayLike, ArrayLike, ArrayLike], Array] | None = None
+    path_std_fn: Callable[[ArrayLike, ArrayLike, ArrayLike], Array] | None = None
+
+    def interpolation_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array:
+        return self.interp_fn(t, x0, x1)
+
+    def interpolation_noise_fn(
+        self, t: ArrayLike, x0: Array, x1: Array
+    ) -> Array | None:
+        if self.noise_fn is None:
+            return None
+        return self.noise_fn(t, x0, x1)
+
+    def interpolation_velocity_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array:
+        def grad_fn(time, x_s, x_t):
+            if self.interp_velocity_fn is not None:
+                return self.interp_velocity_fn(time, x_s, x_t)
+            return _autodiff_time_gradient(self.interp_fn, time, x_s, x_t)
+
+        return grad_fn(t, x0, x1)
+
+    def interpolation_noise_velocity_fn(
+        self, t: ArrayLike, x0: Array, x1: Array
+    ) -> Array | None:
+        if self.noise_fn is None:
+            return None
+        def grad_fn(time, x_s, x_t):
+            if self.noise_velocity_fn is not None:
+                return self.noise_velocity_fn(time, x_s, x_t)
+            return _autodiff_time_gradient(self.noise_fn, time, x_s, x_t)
+
+        return grad_fn(t, x0, x1)
+
+    def a_t(self, t: ArrayLike) -> Array:
+        if self.a_t_fn is None:
+            raise NotImplementedError("a_t is not defined for this schedule.")
+        return self.a_t_fn(t)
+
+    def b_t(self, t: ArrayLike) -> Array:
+        if self.b_t_fn is None:
+            raise NotImplementedError("b_t is not defined for this schedule.")
+        return self.b_t_fn(t)
+
+    def path_mean(self, t: ArrayLike, mu0: ArrayLike, mu1: ArrayLike) -> Array:
+        if self.path_mean_fn is not None:
+            return self.path_mean_fn(t, mu0, mu1)
+        return self.interpolation_fn(t, jnp.asarray(mu0), jnp.asarray(mu1))
+
+    def path_std(self, t: ArrayLike, std0: ArrayLike, std1: ArrayLike) -> Array:
+        if self.path_std_fn is None:
+            raise NotImplementedError("path_std is not defined for this schedule.")
+        return self.path_std_fn(t, std0, std1)
+
+
+class AutodiffInterpolationSchedule(GeneralInterpolationSchedule):
+    """Backward-compatible alias of GeneralInterpolationSchedule."""
+
+
+@dataclass
 class LinearInterpolationSchedule(InterpolationScheduleProtocol):
     """
     Default linear interpolation schedule with optional additive noise.
     """
 
     noise_fn: Callable[[ArrayLike, Array, Array], Array] | None = None
+    noise_velocity_fn: Callable[[ArrayLike, Array, Array], Array] | None = None
 
     def a_t(self, t: ArrayLike) -> Array:
         return 1.0 - jnp.asarray(t)
 
     def b_t(self, t: ArrayLike) -> Array:
         return jnp.asarray(t)
+
+    def da_dt(self, t: ArrayLike) -> Array:
+        return -jnp.ones_like(jnp.asarray(t))
+
+    def db_dt(self, t: ArrayLike) -> Array:
+        return jnp.ones_like(jnp.asarray(t))
 
     def interpolation_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array:
         a = self.a_t(t)
@@ -51,6 +146,20 @@ class LinearInterpolationSchedule(InterpolationScheduleProtocol):
         if self.noise_fn is None:
             return None
         return self.noise_fn(t, x0, x1)
+
+    def interpolation_velocity_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array:
+        da = self.da_dt(t)
+        db = self.db_dt(t)
+        return da * x0 + db * x1
+
+    def interpolation_noise_velocity_fn(
+        self, t: ArrayLike, x0: Array, x1: Array
+    ) -> Array | None:
+        if self.noise_fn is None:
+            return None
+        if self.noise_velocity_fn is not None:
+            return self.noise_velocity_fn(t, x0, x1)
+        return _autodiff_time_gradient(self.noise_fn, t, x0, x1)
 
     def path_mean(self, t: ArrayLike, mu0: ArrayLike, mu1: ArrayLike) -> Array:
         return self.interpolation_fn(t, jnp.asarray(mu0), jnp.asarray(mu1))
@@ -68,12 +177,19 @@ class CosineInterpolationSchedule(InterpolationScheduleProtocol):
     """
 
     noise_fn: Callable[[ArrayLike, Array, Array], Array] | None = None
+    noise_velocity_fn: Callable[[ArrayLike, Array, Array], Array] | None = None
 
     def a_t(self, t: ArrayLike) -> Array:
         return jnp.cos(jnp.asarray(t) * jnp.pi / 2.0)
 
     def b_t(self, t: ArrayLike) -> Array:
         return jnp.sin(jnp.asarray(t) * jnp.pi / 2.0)
+
+    def da_dt(self, t: ArrayLike) -> Array:
+        return -(jnp.pi / 2.0) * jnp.sin(jnp.asarray(t) * jnp.pi / 2.0)
+
+    def db_dt(self, t: ArrayLike) -> Array:
+        return (jnp.pi / 2.0) * jnp.cos(jnp.asarray(t) * jnp.pi / 2.0)
 
     def interpolation_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array:
         a = self.a_t(t)
@@ -86,6 +202,20 @@ class CosineInterpolationSchedule(InterpolationScheduleProtocol):
         if self.noise_fn is None:
             return None
         return self.noise_fn(t, x0, x1)
+
+    def interpolation_velocity_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array:
+        da = self.da_dt(t)
+        db = self.db_dt(t)
+        return da * x0 + db * x1
+
+    def interpolation_noise_velocity_fn(
+        self, t: ArrayLike, x0: Array, x1: Array
+    ) -> Array | None:
+        if self.noise_fn is None:
+            return None
+        if self.noise_velocity_fn is not None:
+            return self.noise_velocity_fn(t, x0, x1)
+        return _autodiff_time_gradient(self.noise_fn, t, x0, x1)
 
     def path_mean(self, t: ArrayLike, mu0: ArrayLike, mu1: ArrayLike) -> Array:
         return self.interpolation_fn(t, jnp.asarray(mu0), jnp.asarray(mu1))
@@ -103,12 +233,19 @@ class QuadraticInterpolationSchedule(InterpolationScheduleProtocol):
     """
 
     noise_fn: Callable[[ArrayLike, Array, Array], Array] | None = None
+    noise_velocity_fn: Callable[[ArrayLike, Array, Array], Array] | None = None
 
     def a_t(self, t: ArrayLike) -> Array:
         return (1.0 - jnp.asarray(t)) ** 2
 
     def b_t(self, t: ArrayLike) -> Array:
         return 1.0 - self.a_t(t)
+
+    def da_dt(self, t: ArrayLike) -> Array:
+        return -2.0 * (1.0 - jnp.asarray(t))
+
+    def db_dt(self, t: ArrayLike) -> Array:
+        return -self.da_dt(t)
 
     def interpolation_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array:
         a = self.a_t(t)
@@ -121,6 +258,20 @@ class QuadraticInterpolationSchedule(InterpolationScheduleProtocol):
         if self.noise_fn is None:
             return None
         return self.noise_fn(t, x0, x1)
+
+    def interpolation_velocity_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array:
+        da = self.da_dt(t)
+        db = self.db_dt(t)
+        return da * x0 + db * x1
+
+    def interpolation_noise_velocity_fn(
+        self, t: ArrayLike, x0: Array, x1: Array
+    ) -> Array | None:
+        if self.noise_fn is None:
+            return None
+        if self.noise_velocity_fn is not None:
+            return self.noise_velocity_fn(t, x0, x1)
+        return _autodiff_time_gradient(self.noise_fn, t, x0, x1)
 
     def path_mean(self, t: ArrayLike, mu0: ArrayLike, mu1: ArrayLike) -> Array:
         return self.interpolation_fn(t, jnp.asarray(mu0), jnp.asarray(mu1))
@@ -260,53 +411,6 @@ class LogitNormalFlowTrainingConfig(FlowTrainingConfigProtocol):
         return jnp.clip(t, self.t_min, self.t_max)
 
 
-@dataclass
-class SigmoidPairFlowTrainingConfig(FlowPairTrainingConfigProtocol):
-    """
-    Pair sampling mirroring MeanFlowMatcher.noise_schedule.
-    """
-
-    percent_rt: float = 0.25
-    mu_rt: float = -0.4
-    scale_rt: float = 1.0
-    mu_t: float = 0.0
-    scale_t: float = 1.0
-    t_min: float = 0.0
-    t_max: float = 1.0
-
-    def sample_times_pair(self, rng, shape: Tuple[int, ...]) -> tuple[Array, Array]:
-        batch_size = shape[0]
-        batch_size_different = int(batch_size * self.percent_rt)
-        batch_size_same = batch_size - batch_size_different
-
-        rng_t, rng_r, rng_tr = jax.random.split(rng, 3)
-
-        t1 = jax.nn.sigmoid(
-            jax.random.normal(rng_t, (batch_size_different,) + shape[1:] + (1,))
-            * self.scale_rt
-            - self.mu_rt
-        )
-        r1 = jax.nn.sigmoid(
-            jax.random.normal(rng_r, (batch_size_different,) + shape[1:] + (1,))
-            * self.scale_rt
-            - self.mu_rt
-        )
-        r1 = jnp.clip(t1 + r1, a_min=self.t_min, a_max=self.t_max)
-
-        t2 = r2 = jax.nn.sigmoid(
-            jax.random.normal(rng_tr, (batch_size_same,) + shape[1:] + (1,))
-            * self.scale_t
-            - self.mu_t
-        )
-
-        t = jnp.concatenate([t1, t2], axis=0)
-        r = jnp.concatenate([r1, r2], axis=0)
-
-        t = jnp.clip(t, self.t_min, self.t_max)
-        r = jnp.clip(r, self.t_min, self.t_max)
-        return t, r
-
-
 @runtime_checkable
 class FlowSolverConfigProtocol(Protocol):
     """Inference-time schedule builder."""
@@ -316,16 +420,6 @@ class FlowSolverConfigProtocol(Protocol):
     def solve_schedule(
         self, t_min: float, t_max: float, num_steps: int | None = None
     ) -> Array: ...
-
-
-@runtime_checkable
-class FlowPairTrainingConfigProtocol(Protocol):
-    """Training-time sampling for (t, r) pairs (for mean flow matching)."""
-
-    t_min: float
-    t_max: float
-
-    def sample_times_pair(self, rng, shape: Tuple[int, ...]) -> tuple[Array, Array]: ...
 
 
 @dataclass

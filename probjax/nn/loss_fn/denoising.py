@@ -5,9 +5,6 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
-from probjax.nn.loss_fn.denoising_score_matching import (
-    base_denoising_score_matching_loss,
-)
 from probjax.utils.protocols import (
     LossFn,
     ModelFn,
@@ -20,7 +17,7 @@ __all__ = ["build_denoising_loss", "build_time_dependent_denoising_loss"]
 
 
 def _validate_prediction_target(prediction_target: str) -> str:
-    valid_targets = {"eps", "score", "v", "x0"}
+    valid_targets = {"eps", "v", "x0"}
     if prediction_target not in valid_targets:
         raise ValueError(
             f"Invalid prediction target '{prediction_target}'. "
@@ -73,7 +70,6 @@ def _compute_prediction_loss(
     *,
     prediction_target: str,
     args_with_noisy: tuple,
-    args_with_clean: tuple,
     model_kwargs: dict,
     x0: Array,
     eps: Array,
@@ -84,35 +80,7 @@ def _compute_prediction_loss(
     axis: int | tuple[int, ...] | None,
     adaptive_weight_p: float,
     adaptive_weight_eps: float,
-    control_variate: bool,
-    argnums: int,
 ) -> Array:
-    if prediction_target == "score":
-        if loss_mask is not None:
-            raise ValueError(
-                "loss_mask is not supported for prediction_target='score'."
-            )
-        loss = base_denoising_score_matching_loss(
-            model_fn,
-            eps=eps,
-            std=std,
-            weight=weight,
-            axis=axis,
-            argnums=argnums,
-            control_variate=control_variate,
-            *args_with_clean,
-            **model_kwargs,
-        )
-        if adaptive_weight_p > 0:
-            adaptive_weight = jax.lax.stop_gradient(
-                1 / (loss + adaptive_weight_eps) ** adaptive_weight_p
-            )
-            loss = loss * adaptive_weight
-        return loss
-    if control_variate:
-        raise NotImplementedError(
-            "Control variates are only implemented for prediction_target='score'."
-        )
     prediction = model_fn(*args_with_noisy, **model_kwargs)
     target = _compute_target(prediction_target, x0=x0, eps=eps, scale=scale, std=std)
     loss = (prediction - target) ** 2
@@ -133,8 +101,6 @@ def build_denoising_loss(
     weight: Optional[ArrayLike] = None,
     argnums: int = 0,
     axis: int | tuple[int, ...] | None = -1,
-    control_variate: bool = False,
-    copula: Optional[Callable] = None,
     reduction_fn: ReductionFn = jnp.mean,
     prediction_target: str = "x0",
 ) -> LossFn:
@@ -149,19 +115,14 @@ def build_denoising_loss(
         adaptive_weight_eps: Stabiliser added before adaptive re-weighting.
         argnums: Index of the argument corresponding to the clean sample.
         axis: Axis (or tuple of axes) reduced after computing element-wise losses.
-        control_variate: Enable control variates (only valid for ``"score"``).
-        copula: Placeholder for copula-based noise; not implemented yet.
         reduction_fn: Function applied to the batch of losses.
-        prediction_target: One of ``"x0"``, ``"eps"``, ``"v"``, or ``"score"``.
+        prediction_target: One of ``"x0"``, ``"eps"``, or ``"v"``.
         **extra_kwargs: Captures legacy keyword arguments (e.g. ``addaptive_weight_p``).
 
     Returns:
         A callable loss function accepting the same positional arguments as ``model_fn``.
     """
     prediction_target = _validate_prediction_target(prediction_target)
-
-    if copula is not None:
-        raise NotImplementedError("Copula-based noise is not supported yet.")
 
     scale_array = jnp.asarray(scale)
     std_array = jnp.asarray(std)
@@ -193,7 +154,6 @@ def build_denoising_loss(
             model_fn,
             prediction_target=prediction_target,
             args_with_noisy=args_with_noisy,
-            args_with_clean=args,
             model_kwargs=model_kwargs,
             x0=x0,
             eps=eps,
@@ -204,8 +164,6 @@ def build_denoising_loss(
             axis=axis_override,
             adaptive_weight_p=adaptive_weight_p,
             adaptive_weight_eps=adaptive_weight_eps,
-            control_variate=control_variate,
-            argnums=argnums,
         )
 
         return reduction_fn(loss)
@@ -219,8 +177,6 @@ def build_time_dependent_denoising_loss(
     std_fn: Callable[[ArrayLike], Array],
     weight_fn: WeightFn,
     argnums: int = 0,
-    control_variate: bool = False,
-    copula: Optional[Callable] = None,
     reduction_fn: ReductionFn = jnp.mean,
     prediction_target: str = "x0",
 ) -> LossFn:
@@ -234,19 +190,14 @@ def build_time_dependent_denoising_loss(
         adaptive_weight_p: Power for adaptive re-weighting; set to 0.0 to disable.
         adaptive_weight_eps: Stabiliser added before adaptive re-weighting.
         argnums: Index of the clean sample within ``*args`` (after ``t``).
-        control_variate: Enable control variates (only valid for ``"score"``).
-        copula: Placeholder for copula-based noise; not implemented yet.
         reduction_fn: Function applied to the batch of losses.
-        prediction_target: One of ``"x0"``, ``"eps"``, ``"v"``, or ``"score"``.
+        prediction_target: One of ``"x0"``, ``"eps"``, or ``"v"``.
         **extra_kwargs: Captures legacy keyword arguments (e.g. ``addaptive_weight_p``).
 
     Returns:
         A callable time-dependent loss function.
     """
     prediction_target = _validate_prediction_target(prediction_target)
-
-    if copula is not None:
-        raise NotImplementedError("Copula-based noise is not supported yet.")
 
     def loss_fn(
         t,
@@ -271,7 +222,6 @@ def build_time_dependent_denoising_loss(
 
         x_noisy = alpha_t * x0 + sigma_t * eps
 
-        args_with_clean = (t,) + args
         args_with_noisy = (t,) + args[:argnums] + (x_noisy,) + args[argnums + 1 :]
 
         weight = weight_fn(t)
@@ -280,7 +230,6 @@ def build_time_dependent_denoising_loss(
             model_fn,
             prediction_target=prediction_target,
             args_with_noisy=args_with_noisy,
-            args_with_clean=args_with_clean,
             model_kwargs=model_kwargs,
             x0=x0,
             eps=eps,
@@ -291,8 +240,6 @@ def build_time_dependent_denoising_loss(
             axis=axis,
             adaptive_weight_p=adaptive_weight_p,
             adaptive_weight_eps=adaptive_weight_eps,
-            control_variate=control_variate,
-            argnums=argnums + 1,
         )
 
         return reduction_fn(loss)
