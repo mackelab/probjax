@@ -48,6 +48,7 @@ class Transformer(nnx.Module):
         normalize_qk_cross_attn: bool = False,
         context_dim: Optional[int] = None,
         dropout_rate: float = 0.0,
+        dropout_rate_attn: float | None = None,
         drop_path_rate: float | Sequence[float] = 0.0,
         widening_factor: int = 4,
         num_hidden_layers: int = 1,
@@ -79,6 +80,8 @@ class Transformer(nnx.Module):
                 Defaults to None.
             dropout_rate (float, optional): Dropout rate. If 0.0, dropout is disabled.
                 Defaults to 0.0.
+            dropout_rate_attn (float | None, optional): Dropout rate for attention if
+                None, uses `dropout_rate`.
             drop_path_rate (float | Sequence[float], optional): Drop-path rate(s) per
                 layer. Provide a single float to apply uniformly, or a sequence of
                 length `num_layers`. Defaults to 0.0.
@@ -108,6 +111,9 @@ class Transformer(nnx.Module):
         self.num_layers = num_layers
         self.attn_size = attn_size
         self.dropout_rate = dropout_rate
+        self.dropout_rate_attn = (
+            dropout_rate_attn if dropout_rate_attn is not None else dropout_rate
+        )
         if isinstance(drop_path_rate, Sequence) and not isinstance(
             drop_path_rate, (str, bytes)
         ):
@@ -164,7 +170,7 @@ class Transformer(nnx.Module):
                 out_features=model_dim,
                 rngs=rngs,
                 kernel_init=self.initializer,
-                dropout_rate=dropout_rate,
+                dropout_rate=self.dropout_rate_attn,
                 attention_fn=attention_fn,
                 normalize_qk=normalize_qk_attn,
                 **filter_precision_kwargs(mha_cls, **precision_kwargs),
@@ -187,7 +193,7 @@ class Transformer(nnx.Module):
                     in_kv_features=kv_in_features,
                     rngs=rngs,
                     kernel_init=self.initializer,
-                    dropout_rate=dropout_rate,
+                    dropout_rate=self.dropout_rate_attn,
                     attention_fn=cross_attention_fn,
                     normalize_qk=normalize_qk_cross_attn,
                     **filter_precision_kwargs(mha_cls, **precision_kwargs),

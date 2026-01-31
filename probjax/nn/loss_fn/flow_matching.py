@@ -1,4 +1,4 @@
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 import jax
 import jax.numpy as jnp
@@ -13,6 +13,8 @@ from probjax.utils.protocols import (
     WeightFn,
 )
 
+if TYPE_CHECKING:
+    from probjax.nn.nets.flow_matching_configs import InterpolationScheduleProtocol
 
 def base_flow_matching_loss(
     model_fn: TimeDependentModelFn,
@@ -37,7 +39,7 @@ def base_flow_matching_loss(
 
     Args:
         model_fn: Function that predicts the velocity field
-        interpolation_fn: Function that interpolates between x0 and x1 at time t
+        interpolation_fn: Function ``interpolation_fn(t, x0, x1)`` describing the path
         interpolation_noise_fn: Optional function that provides noise scale for interpolation
         interpolation_noise_grad: Optional function that computes gradient of noise scale
         interpolation_grad: Function that computes gradient of interpolation
@@ -55,18 +57,18 @@ def base_flow_matching_loss(
     Returns:
         Array of loss values
     """
-    xt = interpolation_fn(x0, x1, t)
+    xt = interpolation_fn(t, x0, x1)
 
     if interpolation_noise_fn:
         assert rng is not None, "rng is required when using interpolation_noise_fn"
         eps = jax.random.normal(rng, shape=xt.shape)
-        xt += interpolation_noise_fn(x0, x1, t) * eps
+        xt += interpolation_noise_fn(t, x0, x1) * eps
 
     v_t = model_fn(t, xt, *args, **kwargs)
-    u_t = jax.vmap(interpolation_grad_fn)(x0, x1, t).reshape(v_t.shape)
+    u_t = jax.vmap(interpolation_grad_fn)(t, x0, x1).reshape(v_t.shape)
 
     if interpolation_noise_fn:
-        u_t += interpolation_noise_grad_fn(x0, x1, t).reshape(v_t.shape) * eps
+        u_t += interpolation_noise_grad_fn(t, x0, x1).reshape(v_t.shape) * eps
 
     # Compute loss using the metric if provided
     if metric_fn is not None:
@@ -124,7 +126,7 @@ def base_mean_flow_matching_loss(
 
     Args:
         model_fn: Function that predicts the velocity field
-        interpolation_fn: Function that interpolates between x0 and x1 at time t
+        interpolation_fn: Function ``interpolation_fn(t, x0, x1)`` describing the path
         interpolation_noise_fn: Optional function that provides noise scale for interpolation
         interpolation_noise_grad: Optional function that computes gradient of noise scale
         interpolation_grad: Function that computes gradient of interpolation
@@ -143,16 +145,16 @@ def base_mean_flow_matching_loss(
     Returns:
         Array of loss values
     """
-    xt = interpolation_fn(x0, x1, t)
+    xt = interpolation_fn(t, x0, x1)
     if interpolation_noise_fn:
         assert rng is not None, "rng is required when using interpolation_noise_fn"
         eps = jax.random.normal(rng, shape=xt.shape)
-        xt += interpolation_noise_fn(x0, x1, t) * eps
+        xt += interpolation_noise_fn(t, x0, x1) * eps
 
-    u_t = jax.vmap(interpolation_grad_fn)(x0, x1, t).reshape(xt.shape)
+    u_t = jax.vmap(interpolation_grad_fn)(t, x0, x1).reshape(xt.shape)
 
     if interpolation_noise_fn:
-        u_t += interpolation_noise_grad_fn(x0, x1, t).reshape(eps.shape) * eps
+        u_t += interpolation_noise_grad_fn(t, x0, x1).reshape(eps.shape) * eps
 
     def v_fn(r, t, x):
         return model_fn(t, x, *args, r=r, **kwargs)
@@ -161,7 +163,6 @@ def base_mean_flow_matching_loss(
 
     u_t = u_t - (t - r) * dv_dt
     u_t = jax.lax.stop_gradient(u_t)
-    print(v_t.shape, u_t.shape)
     # Compute loss using the metric if provided
     if metric_fn is not None:
         # Get the metric tensor at the current point
@@ -196,7 +197,7 @@ def base_mean_flow_matching_loss(
 
 def build_flow_matching_loss(
     model_fn: TimeDependentModelFn,
-    interpolation_fn: InterpolationFn,
+    interpolation_fn: InterpolationFn = lambda t, x0, x1: (1 - t) * x0 + t * x1,
     interpolation_noise_fn: Optional[InterpolationNoiseFn] = None,
     interpolation_noise_grad_fn: Optional[Callable] = None,
     interpolation_grad_fn: Optional[Callable] = None,
@@ -220,14 +221,14 @@ def build_flow_matching_loss(
     # For default this is just x1-x0 !
     if interpolation_grad_fn is None:
         interpolation_grad_fn = jax.jacfwd(
-            lambda x_s, x_t, t: interpolation_fn(x_s, x_t, t), argnums=2
+            lambda t, x_s, x_t: interpolation_fn(t, x_s, x_t), argnums=0
         )
     else:
         interpolation_grad_fn = interpolation_grad_fn
 
     if interpolation_noise_fn and interpolation_noise_grad_fn is None:
         interpolation_noise_grad_fn = jax.jacfwd(
-            lambda x_s, x_t, t: interpolation_noise_fn(x_s, x_t, t), argnums=2
+            lambda t, x_s, x_t: interpolation_noise_fn(t, x_s, x_t), argnums=0
         )
 
     def loss_fn(
@@ -296,6 +297,33 @@ def build_flow_matching_loss(
     return loss_fn
 
 
+def build_flow_matching_loss_from_schedule(
+    model_fn: TimeDependentModelFn,
+    schedule: "InterpolationScheduleProtocol",
+    **kwargs,
+) -> LossFn:
+    """Helper to build loss directly from an interpolation schedule."""
+    return build_flow_matching_loss(
+        model_fn=model_fn,
+        interpolation_fn=schedule.interpolation_fn,
+        interpolation_noise_fn=schedule.interpolation_noise_fn,
+        **kwargs,
+    )
+
+
+def build_mean_flow_matching_loss_from_schedule(
+    model_fn: TimeDependentModelFn,
+    schedule: "InterpolationScheduleProtocol",
+    **kwargs,
+) -> LossFn:
+    """Helper to build mean flow loss directly from an interpolation schedule."""
+    return build_mean_flow_matching_loss(
+        model_fn=model_fn,
+        interpolation_fn=schedule.interpolation_fn,
+        interpolation_noise_fn=schedule.interpolation_noise_fn,
+        **kwargs,
+    )
+
 def build_mean_flow_matching_loss(
     model_fn: TimeDependentModelFn,
     interpolation_fn: InterpolationFn = lambda t, x0, x1: (1 - t) * x0 + t * x1,
@@ -322,14 +350,14 @@ def build_mean_flow_matching_loss(
     # For default this is just x1-x0 !
     if interpolation_grad_fn is None:
         interpolation_grad_fn = jax.jacfwd(
-            lambda x_s, x_t, t: interpolation_fn(x_s, x_t, t), argnums=2
+            lambda t, x_s, x_t: interpolation_fn(t, x_s, x_t), argnums=0
         )
     else:
         pass
 
     if interpolation_noise_fn and interpolation_noise_grad_fn is None:
         interpolation_noise_grad_fn = jax.jacfwd(
-            lambda x_s, x_t, t: interpolation_noise_fn(x_s, x_t, t), argnums=2
+            lambda t, x_s, x_t: interpolation_noise_fn(t, x_s, x_t), argnums=0
         )
 
     def loss_fn(
@@ -431,13 +459,13 @@ def build_riemannian_flow_matching_loss(
     # For default this is just x1-x0 !
     if interpolation_grad_fn is None:
         interpolation_grad_fn = jax.jacfwd(
-            lambda x_s, x_t, t: interpolation_fn(x_s, x_t, t), argnums=2
+            lambda t, x_s, x_t: interpolation_fn(t, x_s, x_t), argnums=0
         )
 
     if interpolation_noise_fn:
         if interpolation_noise_grad_fn is None:
             interpolation_noise_grad_fn = jax.jacfwd(
-                lambda x_s, x_t, t: interpolation_noise_fn(x_s, x_t, t), argnums=2
+                lambda t, x_s, x_t: interpolation_noise_fn(t, x_s, x_t), argnums=0
             )
 
     def loss_fn(

@@ -1,6 +1,28 @@
 from probjax.nn.nets.autoregressive import AutoregressiveMLP, AutoregressiveTransformer
 from probjax.nn.nets.coupling import CouplingMLP
-from probjax.nn.nets.denoising_diffusion_model import EDM, VE, VP, DiffusionDenoiser
+from probjax.nn.nets.denoising_diffusion_model import (
+    CosineDM,
+    DiffusionDenoiser,
+    EDM,
+    VE,
+    VP,
+)
+from probjax.nn.nets.flow_matching_configs import (
+    FlowPreconditioningProtocol,
+    FlowPairTrainingConfigProtocol,
+    FlowSolverConfigProtocol,
+    FlowTrainingConfigProtocol,
+    GaussianFlowPreconditioning,
+    InterpolationScheduleProtocol,
+    CosineInterpolationSchedule,
+    QuadraticInterpolationSchedule,
+    LinearFlowSolverConfig,
+    LinearInterpolationSchedule,
+    LogitNormalFlowTrainingConfig,
+    SigmoidPairFlowTrainingConfig,
+    RhoFlowSolverConfig,
+    UniformFlowTrainingConfig,
+)
 from probjax.nn.nets.flow_matching_model import (
     FlowMatcher,
     LinearFlow,
