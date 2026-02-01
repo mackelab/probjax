@@ -6,6 +6,7 @@ from flax import nnx
 
 from probjax.nn.layers.lru import LRUCell
 from probjax.nn.nets.simple import MLP
+from probjax.nn.sharding import mesh_context
 from probjax.nn.utils import filter_precision_kwargs, get_active_precision_kwargs
 from probjax.utils.typing import (
     Array,
@@ -65,6 +66,7 @@ class LRUModel(nnx.Module):
         # Recurrent cell choice and kwargs
         recurrent_cls: ModuleLikeType = LRUCell,
         recurrent_kwargs: Optional[Mapping] = None,
+        sharding: jax.sharding.Mesh | None = None,
         rngs: nnx.Rngs,
     ):
         """Initialize an LRU model.
@@ -119,6 +121,7 @@ class LRUModel(nnx.Module):
         self.recurrent_kwargs = dict(recurrent_kwargs or {})
         self.skip_connection_lru = skip_connection_lru
         self.skip_connection_mlp = skip_connection_mlp
+        self._mesh = sharding
 
         # Precision and dtype settings
         precision_kwargs = get_active_precision_kwargs(
@@ -139,66 +142,74 @@ class LRUModel(nnx.Module):
         linear_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
         linear_kwargs['kernel_init'] = init_default
 
-        self.in_layer = nnx.Linear(input_dim, model_dim, rngs=rngs, **linear_kwargs)
-        self.out_layer = nnx.Linear(model_dim, output_dim, rngs=rngs, **linear_kwargs)
-
-        # Layer norms for LRU and MLP blocks
-        self.layer_norms_lru = nnx.List([
-            norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
-        ])
-        self.layer_norms_mlp = nnx.List([
-            norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
-        ])
-
-        # Final output layer norm
-        self.out_layer_norm = norm_cls(model_dim, rngs=rngs)
-
-        # Recurrent cell stack (each cell maps [B, T, D] -> [B, T, D])
-        self.recurrent_layers = nnx.List([
-            self.recurrent_cls(model_dim, rngs=rngs, **self.recurrent_kwargs)
-            for _ in range(num_layers)
-        ])
-        # Heads for block post-processing (norm, activation, GLU, dropout)
-        self.block_norms = nnx.List([
-            norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
-        ])
-        if dropout_rate is not None:
-            self.block_dropout1 = nnx.List([
-                nnx.Dropout(dropout_rate, rngs=rngs) for _ in range(num_layers)
-            ])
-            self.block_dropout2 = nnx.List([
-                nnx.Dropout(dropout_rate, rngs=rngs) for _ in range(num_layers)
-            ])
-        else:
-            self.block_dropout1 = None
-            self.block_dropout2 = None
-        self.block_out1 = nnx.List([
-            nnx.Linear(model_dim, model_dim, rngs=rngs, **linear_kwargs)
-            for _ in range(num_layers)
-        ])
-        self.block_out2 = nnx.List([
-            nnx.Linear(model_dim, model_dim, rngs=rngs, **linear_kwargs)
-            for _ in range(num_layers)
-        ])
-        self.block_activation = activation
-
-        # MLP layers for processing between LRU blocks
-        mlp_dims = (
-            [model_dim]
-            + [mlp_widening_factor * model_dim] * mlp_num_hidden_layers
-            + [model_dim]
-        )
-        mlp_kwargs = filter_precision_kwargs(mlp_cls, **precision_kwargs)
-        self.mlp_layers = nnx.List([
-            mlp_cls(
-                mlp_dims,
-                rngs=rngs,
-                activation=activation,
-                activate_final=True,
-                **mlp_kwargs,
+        with mesh_context(self._mesh):
+            self.in_layer = nnx.Linear(
+                input_dim, model_dim, rngs=rngs, **linear_kwargs
             )
-            for _ in range(num_layers)
-        ])
+            self.out_layer = nnx.Linear(
+                model_dim, output_dim, rngs=rngs, **linear_kwargs
+            )
+
+            # Layer norms for LRU and MLP blocks
+            self.layer_norms_lru = nnx.List([
+                norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
+            ])
+            self.layer_norms_mlp = nnx.List([
+                norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
+            ])
+
+            # Final output layer norm
+            self.out_layer_norm = norm_cls(model_dim, rngs=rngs)
+
+            # Recurrent cell stack (each cell maps [B, T, D] -> [B, T, D])
+            self.recurrent_layers = nnx.List([
+                self.recurrent_cls(
+                    model_dim, rngs=rngs, sharding=sharding, **self.recurrent_kwargs
+                )
+                for _ in range(num_layers)
+            ])
+            # Heads for block post-processing (norm, activation, GLU, dropout)
+            self.block_norms = nnx.List([
+                norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
+            ])
+            if dropout_rate is not None:
+                self.block_dropout1 = nnx.List([
+                    nnx.Dropout(dropout_rate, rngs=rngs) for _ in range(num_layers)
+                ])
+                self.block_dropout2 = nnx.List([
+                    nnx.Dropout(dropout_rate, rngs=rngs) for _ in range(num_layers)
+                ])
+            else:
+                self.block_dropout1 = None
+                self.block_dropout2 = None
+            self.block_out1 = nnx.List([
+                nnx.Linear(model_dim, model_dim, rngs=rngs, **linear_kwargs)
+                for _ in range(num_layers)
+            ])
+            self.block_out2 = nnx.List([
+                nnx.Linear(model_dim, model_dim, rngs=rngs, **linear_kwargs)
+                for _ in range(num_layers)
+            ])
+            self.block_activation = activation
+
+            # MLP layers for processing between LRU blocks
+            mlp_dims = (
+                [model_dim]
+                + [mlp_widening_factor * model_dim] * mlp_num_hidden_layers
+                + [model_dim]
+            )
+            mlp_kwargs = filter_precision_kwargs(mlp_cls, **precision_kwargs)
+            self.mlp_layers = nnx.List([
+                mlp_cls(
+                    mlp_dims,
+                    rngs=rngs,
+                    activation=activation,
+                    activate_final=True,
+                    sharding=sharding,
+                    **mlp_kwargs,
+                )
+                for _ in range(num_layers)
+            ])
 
     def __call__(
         self,
@@ -215,52 +226,53 @@ class LRUModel(nnx.Module):
         Returns:
             Output array of shape [..., seq_len, output_dim].
         """
-        inputs = jnp.asarray(inputs)
-        shape = inputs.shape
-        # Flatten leading batch dims to [-1, T, D]
-        x = inputs.reshape(-1, inputs.shape[-2], inputs.shape[-1])
-        h = self.in_layer(x)
+        with mesh_context(self._mesh):
+            inputs = jnp.asarray(inputs)
+            shape = inputs.shape
+            # Flatten leading batch dims to [-1, T, D]
+            x = inputs.reshape(-1, inputs.shape[-2], inputs.shape[-1])
+            h = self.in_layer(x)
 
-        for i, mlp_layer in enumerate(self.mlp_layers):
-            # Apply layer norm before LRU layer
-            h_normed = self.layer_norms_lru[i](h)
+            for i, mlp_layer in enumerate(self.mlp_layers):
+                # Apply layer norm before LRU layer
+                h_normed = self.layer_norms_lru[i](h)
 
-            # Apply LRU layer, optionally with bidirectional processing
-            if self.bidirectional:
-                # Alternate between forward and backward processing
-                if i % 2 == 0:
+                # Apply LRU layer, optionally with bidirectional processing
+                if self.bidirectional:
+                    # Alternate between forward and backward processing
+                    if i % 2 == 0:
+                        h_cell_in = self.block_norms[i](h_normed)
+                        h_cell = self.recurrent_layers[i](h_cell_in)
+                    else:
+                        # Reverse sequence, apply LRU, then reverse back
+                        h_reversed = h_normed[..., ::-1, :]
+                        h_cell_in = self.block_norms[i](h_reversed)
+                        h_cell = self.recurrent_layers[i](h_cell_in)
+                        h_cell = h_cell[..., ::-1, :]
+                else:
                     h_cell_in = self.block_norms[i](h_normed)
                     h_cell = self.recurrent_layers[i](h_cell_in)
-                else:
-                    # Reverse sequence, apply LRU, then reverse back
-                    h_reversed = h_normed[..., ::-1, :]
-                    h_cell_in = self.block_norms[i](h_reversed)
-                    h_cell = self.recurrent_layers[i](h_cell_in)
-                    h_cell = h_cell[..., ::-1, :]
-            else:
-                h_cell_in = self.block_norms[i](h_normed)
-                h_cell = self.recurrent_layers[i](h_cell_in)
 
-            # Residual connection for LRU
-            # GLU head: activation + optional dropout + gated linear
-            x = self.block_activation(h_cell)
-            if self.block_dropout1 is not None:
-                x = self.block_dropout1[i](x, deterministic=deterministic)
-            x = self.block_out1[i](x) * jax.nn.sigmoid(self.block_out2[i](x))
-            if self.block_dropout2 is not None:
-                x = self.block_dropout2[i](x, deterministic=deterministic)
-            h = h + x if self.skip_connection_lru else x
+                # Residual connection for LRU
+                # GLU head: activation + optional dropout + gated linear
+                x = self.block_activation(h_cell)
+                if self.block_dropout1 is not None:
+                    x = self.block_dropout1[i](x, deterministic=deterministic)
+                x = self.block_out1[i](x) * jax.nn.sigmoid(self.block_out2[i](x))
+                if self.block_dropout2 is not None:
+                    x = self.block_dropout2[i](x, deterministic=deterministic)
+                h = h + x if self.skip_connection_lru else x
 
-            # Apply layer norm before MLP layer
-            h_normed = self.layer_norms_mlp[i](h)
+                # Apply layer norm before MLP layer
+                h_normed = self.layer_norms_mlp[i](h)
 
-            # Apply MLP layer
-            h_mlp = mlp_layer(h_normed)
+                # Apply MLP layer
+                h_mlp = mlp_layer(h_normed)
 
-            # Residual connection for MLP
-            h = h + h_mlp if self.skip_connection_mlp else h_mlp
+                # Residual connection for MLP
+                h = h + h_mlp if self.skip_connection_mlp else h_mlp
 
-        # Apply final layer norm and output projection
-        h = self.out_layer_norm(h)
-        h = self.out_layer(h)
-        return h.reshape(shape[:-2] + (shape[-2], self.output_dim))
+            # Apply final layer norm and output projection
+            h = self.out_layer_norm(h)
+            h = self.out_layer(h)
+            return h.reshape(shape[:-2] + (shape[-2], self.output_dim))

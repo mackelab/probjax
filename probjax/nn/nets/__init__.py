@@ -45,6 +45,14 @@ from probjax.nn.nets.normalizing_flows import (
     SplineAutoregressiveFlow,
     SplineCouplingFlow,
 )
-from probjax.nn.nets.simple import MLP, DeepSet, MaskedMLP, ResNet, Sequential
+from probjax.nn.nets.simple import (
+    LinearShardingSpec,
+    MLP,
+    MLPShardingSpec,
+    DeepSet,
+    MaskedMLP,
+    ResNet,
+    Sequential,
+)
 from probjax.nn.nets.transformer import Transformer
 from probjax.nn.nets.unets import UNet

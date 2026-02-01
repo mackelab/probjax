@@ -22,9 +22,12 @@ from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
+from jax._src import ad_util
 from jax import lax
+from jax.extend.core import Primitive
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import triton as plgpu
+from jax.interpreters import ad, mlir
 
 from .attention_mask_bias import (
     AttentionBias,
@@ -1017,10 +1020,91 @@ def _mha_impl(
     return pallas_out
 
 
-@functools.partial(
-    jax.custom_vjp,
-    nondiff_argnums=[6, 7, 8, 9, 10, 11, 12, 13, 14],
-)
+def _flatten_optional_pytree(value):
+    if value is None:
+        return None, ()
+    leaves, treedef = jax.tree_util.tree_flatten(value)
+    return treedef, tuple(leaves)
+
+
+def _unflatten_optional_pytree(treedef, leaves):
+    if treedef is None:
+        return None
+    return jax.tree_util.tree_unflatten(treedef, leaves)
+
+
+def _split_mha_operands(args, *, mask_num_leaves: int, bias_num_leaves: int):
+    q, k, v, rng, *rest = args
+    mask_leaves = rest[:mask_num_leaves]
+    bias_leaves = rest[mask_num_leaves : mask_num_leaves + bias_num_leaves]
+    return q, k, v, rng, mask_leaves, bias_leaves
+
+
+def _mha_reference(
+    q,
+    k,
+    v,
+    *,
+    mask: AttentionMask | jax.Array | None,
+    bias: AttentionBias | jax.Array | None,
+    rng: jax.Array | None,
+    sm_scale: float,
+    dropout_rate: float,
+):
+    batch_size, q_len, num_heads, _ = q.shape
+    kv_len = k.shape[1]
+
+    scores = jnp.einsum("bqhd,bkhd->bhqk", q, k) * sm_scale
+
+    if mask is not None:
+        if isinstance(mask, AttentionMask):
+            if getattr(mask, "stateful", False):
+                seg_q, seg_k = mask.get_data(q_seq_len=q_len, kv_seq_len=kv_len)
+                if seg_q is not None and getattr(seg_q, "ndim", 0) >= 2:
+                    seg_q = seg_q[:batch_size]
+                if seg_k is not None and getattr(seg_k, "ndim", 0) >= 2:
+                    seg_k = seg_k[:batch_size]
+                dense_mask = mask.dense(
+                    q_len,
+                    kv_len,
+                    batch_size=batch_size,
+                    num_heads=num_heads,
+                    seg_q=seg_q,
+                    seg_k=seg_k,
+                )
+            else:
+                dense_mask = mask.dense(
+                    q_len, kv_len, batch_size=batch_size, num_heads=num_heads
+                )
+        else:
+            dense_mask = mask
+        scores = jnp.where(dense_mask, scores, DEFAULT_MASK_VALUE)
+
+    if bias is not None:
+        if isinstance(bias, AttentionBias):
+            dense_bias = bias.dense(
+                q_len, kv_len, batch_size=batch_size, num_heads=num_heads
+            )
+        else:
+            dense_bias = bias
+        scores = scores + dense_bias
+
+    weights = jax.nn.softmax(scores, axis=-1)
+
+    if dropout_rate > 0:
+        if rng is None:
+            raise ValueError("dropout_rate > 0 requires a non-None rng.")
+        dropout_mask = get_dropout_mask(
+            (batch_size, num_heads, q_len, kv_len), prng_key=rng, rate=dropout_rate
+        )
+        weights = jnp.where(dropout_mask, 0, weights / (1 - dropout_rate))
+
+    return jnp.einsum("bhqk,bkhd->bqhd", weights, v)
+
+
+_mha_p = Primitive("mha")
+
+
 def mha(
     q,
     k,
@@ -1039,19 +1123,34 @@ def mha(
     dropout_rate: float = 0.0,
 ):
     """Multi-Head Attention public API (forward only in primal eval)."""
-    return _mha_impl(
-        **locals(),
-        output_activations=False,
-    )
+    if dropout_rate > 0 and rng is None:
+        raise ValueError("dropout_rate > 0 requires a non-None rng.")
+    rng = rng if rng is not None else jax.random.PRNGKey(0)
 
+    mask_treedef, mask_leaves = _flatten_optional_pytree(mask)
+    bias_treedef, bias_leaves = _flatten_optional_pytree(bias)
 
-def _mha_forward(*args):
-    """Forward wrapper for custom VJP using shared impl."""
-    out, residuals = _mha_impl(
-        *args,
-        output_activations=True,
+    return _mha_p.bind(
+        q,
+        k,
+        v,
+        rng,
+        *mask_leaves,
+        *bias_leaves,
+        sm_scale=sm_scale,
+        block_sizes=block_sizes,
+        backward_pass_impl=backward_pass_impl,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        grid=grid,
+        interpret=interpret,
+        debug=debug,
+        dropout_rate=dropout_rate,
+        mask_treedef=mask_treedef,
+        bias_treedef=bias_treedef,
+        mask_num_leaves=len(mask_leaves),
+        bias_num_leaves=len(bias_leaves),
     )
-    return out, residuals
 
 
 def _mha_backward(
@@ -1550,4 +1649,256 @@ def _mha_backward(
     return dq.astype(q.dtype), dk, dv, None, None, None
 
 
-mha.defvjp(_mha_forward, _mha_backward)
+def _mha_prim_impl(
+    q,
+    k,
+    v,
+    rng,
+    *rest,
+    sm_scale: float,
+    block_sizes: BlockSizes,
+    backward_pass_impl: str,
+    num_warps: int | None,
+    num_stages: int,
+    grid: tuple[int, ...] | None,
+    interpret: bool,
+    debug: bool,
+    dropout_rate: float,
+    mask_treedef,
+    bias_treedef,
+    mask_num_leaves: int,
+    bias_num_leaves: int,
+):
+    _, _, _, _, mask_leaves, bias_leaves = _split_mha_operands(
+        (q, k, v, rng, *rest),
+        mask_num_leaves=mask_num_leaves,
+        bias_num_leaves=bias_num_leaves,
+    )
+    mask = _unflatten_optional_pytree(mask_treedef, mask_leaves)
+    bias = _unflatten_optional_pytree(bias_treedef, bias_leaves)
+    return _mha_impl(
+        q=q,
+        k=k,
+        v=v,
+        mask=mask,
+        bias=bias,
+        rng=rng,
+        sm_scale=sm_scale,
+        block_sizes=block_sizes,
+        backward_pass_impl=backward_pass_impl,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        grid=grid,
+        interpret=interpret,
+        debug=debug,
+        dropout_rate=dropout_rate,
+        output_activations=False,
+    )
+
+
+def _mha_prim_abstract_eval(
+    q_aval,
+    k_aval,
+    v_aval,
+    rng_aval,
+    *rest,
+    sm_scale: float,
+    block_sizes: BlockSizes,
+    backward_pass_impl: str,
+    num_warps: int | None,
+    num_stages: int,
+    grid: tuple[int, ...] | None,
+    interpret: bool,
+    debug: bool,
+    dropout_rate: float,
+    mask_treedef,
+    bias_treedef,
+    mask_num_leaves: int,
+    bias_num_leaves: int,
+):
+    del (
+        k_aval,
+        v_aval,
+        rng_aval,
+        rest,
+        sm_scale,
+        block_sizes,
+        backward_pass_impl,
+        num_warps,
+        num_stages,
+        grid,
+        interpret,
+        debug,
+        dropout_rate,
+        mask_treedef,
+        bias_treedef,
+        mask_num_leaves,
+        bias_num_leaves,
+    )
+    return q_aval
+
+
+def _mha_prim_jvp(
+    primals,
+    tangents,
+    *,
+    sm_scale: float,
+    block_sizes: BlockSizes,
+    backward_pass_impl: str,
+    num_warps: int | None,
+    num_stages: int,
+    grid: tuple[int, ...] | None,
+    interpret: bool,
+    debug: bool,
+    dropout_rate: float,
+    mask_treedef,
+    bias_treedef,
+    mask_num_leaves: int,
+    bias_num_leaves: int,
+):
+    q, k, v, rng, mask_leaves, bias_leaves = _split_mha_operands(
+        primals,
+        mask_num_leaves=mask_num_leaves,
+        bias_num_leaves=bias_num_leaves,
+    )
+    dq, dk, dv, drng, *rest_tangents = tangents
+
+    mask = _unflatten_optional_pytree(mask_treedef, mask_leaves)
+    bias = _unflatten_optional_pytree(bias_treedef, bias_leaves)
+
+    primal_out = _mha_impl(
+        q=q,
+        k=k,
+        v=v,
+        mask=mask,
+        bias=bias,
+        rng=rng,
+        sm_scale=sm_scale,
+        block_sizes=block_sizes,
+        backward_pass_impl=backward_pass_impl,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        grid=grid,
+        interpret=interpret,
+        debug=debug,
+        dropout_rate=dropout_rate,
+        output_activations=False,
+    )
+
+    def _tangent_or_zero(t, primal):
+        if isinstance(t, ad_util.Zero):
+            return jnp.zeros_like(primal)
+        return t
+
+    dq = _tangent_or_zero(dq, q)
+    dk = _tangent_or_zero(dk, k)
+    dv = _tangent_or_zero(dv, v)
+    def _zero_tangent_like(p):
+        if jnp.issubdtype(p.dtype, jnp.inexact):
+            return jnp.zeros_like(p)
+        return jnp.zeros_like(p, dtype=jax.dtypes.float0)
+
+    drng = _zero_tangent_like(rng)
+
+    def _ref_fn(q_, k_, v_, rng_, *mask_bias_leaves):
+        mask_ls = mask_bias_leaves[:mask_num_leaves]
+        bias_ls = mask_bias_leaves[mask_num_leaves:]
+        mask_ = _unflatten_optional_pytree(mask_treedef, mask_ls)
+        bias_ = _unflatten_optional_pytree(bias_treedef, bias_ls)
+        return _mha_reference(
+            q_,
+            k_,
+            v_,
+            mask=mask_,
+            bias=bias_,
+            rng=rng_,
+            sm_scale=sm_scale,
+            dropout_rate=dropout_rate,
+        )
+
+    del rest_tangents
+    zero_rest = [_zero_tangent_like(p) for p in (*mask_leaves, *bias_leaves)]
+    _, tangent_out = jax.jvp(
+        _ref_fn,
+        (q, k, v, rng, *mask_leaves, *bias_leaves),
+        (dq, dk, dv, drng, *zero_rest),
+    )
+    return primal_out, tangent_out
+
+
+def _mha_prim_transpose(
+    ct,
+    q,
+    k,
+    v,
+    rng,
+    *rest,
+    sm_scale: float,
+    block_sizes: BlockSizes,
+    backward_pass_impl: str,
+    num_warps: int | None,
+    num_stages: int,
+    grid: tuple[int, ...] | None,
+    interpret: bool,
+    debug: bool,
+    dropout_rate: float,
+    mask_treedef,
+    bias_treedef,
+    mask_num_leaves: int,
+    bias_num_leaves: int,
+):
+    if isinstance(ct, ad_util.Zero):
+        return (None,) * (4 + mask_num_leaves + bias_num_leaves)
+
+    _, _, _, _, mask_leaves, bias_leaves = _split_mha_operands(
+        (q, k, v, rng, *rest),
+        mask_num_leaves=mask_num_leaves,
+        bias_num_leaves=bias_num_leaves,
+    )
+    mask = _unflatten_optional_pytree(mask_treedef, mask_leaves)
+    bias = _unflatten_optional_pytree(bias_treedef, bias_leaves)
+
+    out, res = _mha_impl(
+        q=q,
+        k=k,
+        v=v,
+        mask=mask,
+        bias=bias,
+        rng=rng,
+        sm_scale=sm_scale,
+        block_sizes=block_sizes,
+        backward_pass_impl=backward_pass_impl,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        grid=grid,
+        interpret=interpret,
+        debug=debug,
+        dropout_rate=dropout_rate,
+        output_activations=True,
+    )
+    del out
+
+    dq, dk, dv, _, _, _ = _mha_backward(
+        sm_scale,
+        block_sizes,
+        backward_pass_impl,
+        num_warps,
+        num_stages,
+        grid,
+        interpret,
+        debug,
+        dropout_rate,
+        res,
+        ct,
+    )
+    grads = [dq, dk, dv, None]
+    grads.extend([None] * mask_num_leaves)
+    grads.extend([None] * bias_num_leaves)
+    return tuple(grads)
+
+
+_mha_p.def_impl(_mha_prim_impl)
+_mha_p.def_abstract_eval(_mha_prim_abstract_eval)
+mlir.register_lowering(_mha_p, mlir.lower_fun(_mha_prim_impl, multiple_results=False))
+ad.primitive_jvps[_mha_p] = _mha_prim_jvp
+ad.primitive_transposes[_mha_p] = _mha_prim_transpose

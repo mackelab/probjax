@@ -12,6 +12,7 @@ from probjax.nn.layers.encoding import PosEncode
 from probjax.nn.nets.simple import MaskedMLP
 from probjax.nn.nets.transformer import Transformer
 from probjax.nn.pallas_kernels.attention_mask_bias import CausalMask
+from probjax.nn.sharding import mesh_context
 from probjax.utils.typing import ModuleLikeType
 
 
@@ -64,6 +65,7 @@ class AutoregressiveMLP(nnx.Module):
         init_last_layer_to_zero: bool = True,
         mlp_cls: ModuleLikeType = MaskedMLP,
         output_order: Literal["interleaved", "grouped"] = "grouped",
+        sharding: jax.sharding.Mesh | None = None,
         **kwargs,
     ):
         dims = [in_out_features] + list(hidden_dims) + [in_out_features * bijector_dim]
@@ -72,17 +74,20 @@ class AutoregressiveMLP(nnx.Module):
         self.bijector_dim = bijector_dim
         self.bijector = bijector
         self.bijector_inv = inverse_and_logabsdet(bijector, invertible_arg=1)
+        self._mesh = sharding
 
-        self.masked_mlp = mlp_cls(
-            dims,
-            masks,
-            rngs=rngs,
-            context_features=context_features,
-            norm_cls=norm_cls,
-            activation=activation,
-            activate_final=activate_final,
-            **kwargs,
-        )
+        with mesh_context(self._mesh):
+            self.masked_mlp = mlp_cls(
+                dims,
+                masks,
+                rngs=rngs,
+                context_features=context_features,
+                norm_cls=norm_cls,
+                activation=activation,
+                activate_final=activate_final,
+                sharding=sharding,
+                **kwargs,
+            )
 
         if init_last_layer_to_zero:
             assert hasattr(self.masked_mlp, "layers"), 'mlp_cls must have a "layers"'
@@ -92,55 +97,60 @@ class AutoregressiveMLP(nnx.Module):
             )
 
     def predict_bij_params(self, x: jax.Array, context=None):
-        return self.masked_mlp(x, context)
+        with mesh_context(self._mesh):
+            return self.masked_mlp(x, context)
 
     def __call__(self, x: jax.Array, context=None):
-        y = autoregressive_transform(x, self, context)
-        return y
+        with mesh_context(self._mesh):
+            y = autoregressive_transform(x, self, context)
+            return y
 
     def forward(self, x: jax.Array, context=None):
-        def scan_fn(carry, i):
-            x = carry
-            bij_params = self.masked_mlp(x, context)  # type: ignore
-            # Get parameters for the i-th dimension using dynamic indexing
-            bij_params_i = jax.lax.dynamic_slice(
-                bij_params,
-                (0,) * (bij_params.ndim - 1) + (i * self.bijector_dim,),
-                bij_params.shape[:-1] + (self.bijector_dim,),
-            )
-            bij_params_i = bij_params_i.reshape(bij_params_i.shape[:-1] + (-1,))
-            # Apply bijector to the i-th dimension only
-            x_i = jax.lax.dynamic_slice(
-                x, (0,) * (x.ndim - 1) + (i,), x.shape[:-1] + (1,)
-            )
-            x_new_i = self.bijector(bij_params_i, x_i)
-            x = x.at[..., i].set(x_new_i[..., 0])
-            return x, None
+        with mesh_context(self._mesh):
+            def scan_fn(carry, i):
+                x = carry
+                bij_params = self.masked_mlp(x, context)  # type: ignore
+                # Get parameters for the i-th dimension using dynamic indexing
+                bij_params_i = jax.lax.dynamic_slice(
+                    bij_params,
+                    (0,) * (bij_params.ndim - 1) + (i * self.bijector_dim,),
+                    bij_params.shape[:-1] + (self.bijector_dim,),
+                )
+                bij_params_i = bij_params_i.reshape(bij_params_i.shape[:-1] + (-1,))
+                # Apply bijector to the i-th dimension only
+                x_i = jax.lax.dynamic_slice(
+                    x, (0,) * (x.ndim - 1) + (i,), x.shape[:-1] + (1,)
+                )
+                x_new_i = self.bijector(bij_params_i, x_i)
+                x = x.at[..., i].set(x_new_i[..., 0])
+                return x, None
 
-        Tx = x
-        Tx, _ = jax.lax.scan(scan_fn, Tx, jnp.arange(self.in_out_features))
-        return Tx
+            Tx = x
+            Tx, _ = jax.lax.scan(scan_fn, Tx, jnp.arange(self.in_out_features))
+            return Tx
 
     def inverse_and_logdet(self, Tx: jax.Array, context=None):
-        bij_params = self.masked_mlp(Tx, context)
-        bij_params = jnp.reshape(bij_params, Tx.shape + (self.bijector_dim,))
-        x, logdet = jax.vmap(self.bijector_inv)(bij_params, Tx)
-        return x, logdet
+        with mesh_context(self._mesh):
+            bij_params = self.masked_mlp(Tx, context)
+            bij_params = jnp.reshape(bij_params, Tx.shape + (self.bijector_dim,))
+            x, logdet = jax.vmap(self.bijector_inv)(bij_params, Tx)
+            return x, logdet
 
     def inverse(self, Tx: jax.Array, context=None):
-        print("Hey")
-        bij_params = self.masked_mlp(Tx, context)
-        bij_params = jnp.reshape(
-            bij_params,
-            bij_params.shape[:-1]
-            + (
-                self.in_out_features,
-                self.bijector_dim,
-            ),
-        )
-        print(bij_params.shape, Tx.shape)
-        x = jax.vmap(self.bijector_inv)(bij_params, Tx)[0]
-        return x
+        with mesh_context(self._mesh):
+            print("Hey")
+            bij_params = self.masked_mlp(Tx, context)
+            bij_params = jnp.reshape(
+                bij_params,
+                bij_params.shape[:-1]
+                + (
+                    self.in_out_features,
+                    self.bijector_dim,
+                ),
+            )
+            print(bij_params.shape, Tx.shape)
+            x = jax.vmap(self.bijector_inv)(bij_params, Tx)[0]
+            return x
 
 
 class AutoregressiveTransformer(nnx.Module):
@@ -161,6 +171,7 @@ class AutoregressiveTransformer(nnx.Module):
         widening_factor: int = 2,
         pos_embed: Optional[nnx.Module] = None,
         context_dim: Optional[int] = None,
+        sharding: jax.sharding.Mesh | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -168,55 +179,62 @@ class AutoregressiveTransformer(nnx.Module):
         self.bijector_dim = bijector_dim
         self.bijector = bijector
         self.bijector_inv = inverse_and_logabsdet(bijector, invertible_arg=1)
+        self._mesh = sharding
 
-        if transformer is None:
-            transformer = Transformer(
-                model_dim=model_dim,
-                num_heads=num_heads,
-                num_layers=num_layers,
-                attn_size=attn_size,
-                widening_factor=widening_factor,
-                attention_fn=partial(flex_attention, mask=CausalMask()),
-                rngs=rngs,
-                context_dim=context_dim,
-                **kwargs,
-            )
-        self.transformer = transformer
-        self.start_token = nnx.Param(jnp.zeros((self.transformer.model_dim,)))
+        with mesh_context(self._mesh):
+            if transformer is None:
+                transformer = Transformer(
+                    model_dim=model_dim,
+                    num_heads=num_heads,
+                    num_layers=num_layers,
+                    attn_size=attn_size,
+                    widening_factor=widening_factor,
+                    attention_fn=partial(flex_attention, mask=CausalMask()),
+                    rngs=rngs,
+                    context_dim=context_dim,
+                    sharding=sharding,
+                    **kwargs,
+                )
+            self.transformer = transformer
+            self.start_token = nnx.Param(jnp.zeros((self.transformer.model_dim,)))
 
-        if encoder is None:
-            encoder = nnx.Linear(
-                in_out_dim, self.transformer.model_dim, rngs=rngs, use_bias=False
-            )
-        if decoder is None:
-            decoder = nnx.Linear(
-                self.transformer.model_dim,
-                bijector_dim,
-                rngs=rngs,
-                kernel_init=nnx.initializers.zeros,
-                use_bias=False,
-            )
-        self.encoder = encoder
-        self.decoder = decoder
-        if pos_embed is None:
-            pos_embed = PosEncode(model_dim, rngs=rngs)
-        self.pos_embed = pos_embed
+            if encoder is None:
+                encoder = nnx.Linear(
+                    in_out_dim, self.transformer.model_dim, rngs=rngs, use_bias=False
+                )
+            if decoder is None:
+                decoder = nnx.Linear(
+                    self.transformer.model_dim,
+                    bijector_dim,
+                    rngs=rngs,
+                    kernel_init=nnx.initializers.zeros,
+                    use_bias=False,
+                )
+            self.encoder = encoder
+            self.decoder = decoder
+            if pos_embed is None:
+                pos_embed = PosEncode(model_dim, rngs=rngs, sharding=sharding)
+            self.pos_embed = pos_embed
 
     def predict_bij_params(self, x: jax.Array, context=None, k=None, v=None, **kwargs):
-        start_token = self.start_token.reshape((1,) * (x.ndim - 1) + (-1,))
-        start_token = jnp.broadcast_to(
-            start_token, x.shape[:-2] + (1,) + (self.transformer.model_dim,)
-        )
-        x = self.encoder(x)  # type: ignore
-        x = jnp.concatenate([start_token, x], axis=-2)
-        x = self.pos_embed(x)  # type: ignore
-        h = self.transformer(x, k, v, context=context, **kwargs)[..., :-1, :]  # type: ignore
-        bij_params = self.decoder(h)  # type: ignore
-        return bij_params
+        with mesh_context(self._mesh):
+            start_token = self.start_token.reshape((1,) * (x.ndim - 1) + (-1,))
+            start_token = jnp.broadcast_to(
+                start_token, x.shape[:-2] + (1,) + (self.transformer.model_dim,)
+            )
+            x = self.encoder(x)  # type: ignore
+            x = jnp.concatenate([start_token, x], axis=-2)
+            x = self.pos_embed(x)  # type: ignore
+            h = self.transformer(x, k, v, context=context, **kwargs)[
+                ..., :-1, :
+            ]  # type: ignore
+            bij_params = self.decoder(h)  # type: ignore
+            return bij_params
 
     def __call__(self, x: jax.Array, context=None, k=None, v=None, **kwargs):
-        y = autoregressive_transform(x, self, k, v, context, **kwargs)
-        return y
+        with mesh_context(self._mesh):
+            y = autoregressive_transform(x, self, k, v, context, **kwargs)
+            return y
 
     def forward(
         self, x: jax.Array, context=None, k=None, v=None, inverse_impl="naive", **kwargs

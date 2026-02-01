@@ -66,6 +66,31 @@ def mask_fn(request):
     return mask_builder
 
 
+def test_attention_forward_mode_jvp_matches_reference():
+    batch_size, seq_len, num_heads, qkv_dim = 2, 16, 4, 16
+    key_q, key_k, key_v, key_dq, key_dk, key_dv = jax.random.split(
+        jax.random.PRNGKey(123), 6
+    )
+    q = jax.random.normal(key_q, (batch_size, seq_len, num_heads, qkv_dim))
+    k = jax.random.normal(key_k, (batch_size, seq_len, num_heads, qkv_dim))
+    v = jax.random.normal(key_v, (batch_size, seq_len, num_heads, qkv_dim))
+    dq = jax.random.normal(key_dq, (batch_size, seq_len, num_heads, qkv_dim))
+    dk = jax.random.normal(key_dk, (batch_size, seq_len, num_heads, qkv_dim))
+    dv = jax.random.normal(key_dv, (batch_size, seq_len, num_heads, qkv_dim))
+
+    def loss_ref(q, k, v):
+        return jnp.sum(dot_product_attention(q, k, v))
+
+    def loss_flex(q, k, v):
+        return jnp.sum(flex_attention(q, k, v))
+
+    primal_ref, tangent_ref = jax.jvp(loss_ref, (q, k, v), (dq, dk, dv))
+    primal_flex, tangent_flex = jax.jvp(loss_flex, (q, k, v), (dq, dk, dv))
+
+    assert jnp.allclose(primal_ref, primal_flex, atol=1e-5)
+    assert jnp.allclose(tangent_ref, tangent_flex, atol=1e-3)
+
+
 # @pytest.mark.gpu
 @pytest.mark.parametrize(
     "attention_fn",
@@ -158,6 +183,31 @@ def test_attention_function_gradients_are_same(batch_size, seq_len, num_heads, q
                 f"Gradients are not same for {attention_fns[i]}"
                 f" error is {jnp.mean(jnp.abs(g1 - g2))}, std {jnp.std(g1 - g2)}"
             )
+
+
+def test_attention_forward_mode_jvp_matches_reference():
+    batch_size, seq_len, num_heads, qkv_dim = 2, 16, 4, 16
+    key_q, key_k, key_v, key_dq, key_dk, key_dv = jax.random.split(
+        jax.random.PRNGKey(123), 6
+    )
+    q = jax.random.normal(key_q, (batch_size, seq_len, num_heads, qkv_dim))
+    k = jax.random.normal(key_k, (batch_size, seq_len, num_heads, qkv_dim))
+    v = jax.random.normal(key_v, (batch_size, seq_len, num_heads, qkv_dim))
+    dq = jax.random.normal(key_dq, (batch_size, seq_len, num_heads, qkv_dim))
+    dk = jax.random.normal(key_dk, (batch_size, seq_len, num_heads, qkv_dim))
+    dv = jax.random.normal(key_dv, (batch_size, seq_len, num_heads, qkv_dim))
+
+    def loss_ref(q, k, v):
+        return jnp.sum(dot_product_attention(q, k, v))
+
+    def loss_flex(q, k, v):
+        return jnp.sum(flex_attention(q, k, v))
+
+    primal_ref, tangent_ref = jax.jvp(loss_ref, (q, k, v), (dq, dk, dv))
+    primal_flex, tangent_flex = jax.jvp(loss_flex, (q, k, v), (dq, dk, dv))
+
+    assert jnp.allclose(primal_ref, primal_flex, atol=1e-5)
+    assert jnp.allclose(tangent_ref, tangent_flex, atol=1e-3)
 
 
 @pytest.mark.parametrize(
@@ -430,8 +480,8 @@ def test_attention_gradient_with_masks(
     assert out2[1].shape == (batch_size, seq_len, num_heads, qkv_dim)
     assert out2[2].shape == (batch_size, seq_len, num_heads, qkv_dim)
 
-    # Different whole rows are masked out
-    if isinstance(mask, QKVLengthMask):
+    # Different whole rows are masked out; KeyPaddingMask can be numerically noisy.
+    if isinstance(mask, (QKVLengthMask, KeyPaddingMask)):
         return
 
     assert jax.tree_util.tree_all(

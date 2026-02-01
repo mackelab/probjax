@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
@@ -6,10 +6,10 @@ from jaxtyping import Array
 
 from probjax.utils.protocols import (
     LossFn,
-    ReductionFn,
     TimeDependentModelFn,
     WeightFn,
 )
+
 
 def base_flow_matching_loss(
     model_fn: TimeDependentModelFn,
@@ -102,7 +102,7 @@ def build_flow_matching_loss(
     schedule: "InterpolationScheduleProtocol",
     weight_fn: Optional[WeightFn] = None,
     metric_fn: Callable[[Array, Array], Array] | None = None,
-    reduction_fn: ReductionFn = jnp.mean,
+    reduction_fn: Callable = jnp.mean,
 ) -> LossFn:
     """Build a Euclidean flow matching loss function.
 

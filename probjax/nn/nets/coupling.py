@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.nets.simple import MLP
+from probjax.nn.sharding import mesh_context
 from probjax.nn.utils import filter_precision_kwargs, get_active_precision_kwargs
 from probjax.utils.typing import (
     Array,
@@ -40,6 +41,7 @@ class CouplingMLP(nnx.Module):
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
         mlp_cls: ModuleLikeType = MLP,
+        sharding: jax.sharding.Mesh | None = None,
         **kwargs,
     ):
         """Initialize the CouplingMLP module.
@@ -100,6 +102,7 @@ class CouplingMLP(nnx.Module):
         # Prefer explicit context_dim; fallback to alias for consistency
         self.context_dim = context_dim if context_dim is not None else context_features
         self.bijector = bijector
+        self._mesh = sharding
 
         # Precision and dtype settings
         precision_kwargs = get_active_precision_kwargs(
@@ -114,15 +117,17 @@ class CouplingMLP(nnx.Module):
         feature_dims = [in_dim] + list(hidden_dims) + [bij_params_dim]
 
         # Create MLP conditioner
-        self.conditioner = mlp_cls(
-            feature_dims,
-            rngs=rngs,
-            activation=activation,
-            activate_final=activate_final,
-            context_dim=None,  # Context is handled manually in this layer
-            **filter_precision_kwargs(mlp_cls, **precision_kwargs),
-            **kwargs,
-        )
+        with mesh_context(self._mesh):
+            self.conditioner = mlp_cls(
+                feature_dims,
+                rngs=rngs,
+                activation=activation,
+                activate_final=activate_final,
+                context_dim=None,  # Context is handled manually in this layer
+                sharding=sharding,
+                **filter_precision_kwargs(mlp_cls, **precision_kwargs),
+                **kwargs,
+            )
 
     def __call__(
         self,
@@ -148,41 +153,42 @@ class CouplingMLP(nnx.Module):
             ValueError: If context is required but not provided, if context is provided
                 but context_dim is None, or if input dimensions are invalid.
         """
-        x = jnp.asarray(x)
+        with mesh_context(self._mesh):
+            x = jnp.asarray(x)
 
-        # Validate input dimensions
-        if x.shape[-1] <= self.split_index:
-            raise ValueError(
-                f"Input last dimension ({x.shape[-1]}) must be greater than "
-                f"split_index ({self.split_index})"
-            )
+            # Validate input dimensions
+            if x.shape[-1] <= self.split_index:
+                raise ValueError(
+                    f"Input last dimension ({x.shape[-1]}) must be greater than "
+                    f"split_index ({self.split_index})"
+                )
 
-        # Validate context requirements
-        if self.context_dim is not None and context is None:
-            raise ValueError("context is required when context_dim is specified")
-        if self.context_dim is None and context is not None:
-            raise ValueError("context provided but context_dim is None")
+            # Validate context requirements
+            if self.context_dim is not None and context is None:
+                raise ValueError("context is required when context_dim is specified")
+            if self.context_dim is None and context is not None:
+                raise ValueError("context provided but context_dim is None")
 
-        # Split the input
-        x1, x2 = jnp.split(x, [self.split_index], axis=-1)
+            # Split the input
+            x1, x2 = jnp.split(x, [self.split_index], axis=-1)
 
-        # Prepare input for conditioner
-        conditioner_input = x1
-        if context is not None:
-            context = jnp.asarray(context)
-            # Ensure context has compatible shape for broadcasting
-            if context.ndim < x1.ndim:
-                # Add dimensions to match x1's batch dimensions
-                for _ in range(x1.ndim - context.ndim):
-                    context = context[None, ...]
-            conditioner_input = jnp.concatenate([x1, context], axis=-1)
+            # Prepare input for conditioner
+            conditioner_input = x1
+            if context is not None:
+                context = jnp.asarray(context)
+                # Ensure context has compatible shape for broadcasting
+                if context.ndim < x1.ndim:
+                    # Add dimensions to match x1's batch dimensions
+                    for _ in range(x1.ndim - context.ndim):
+                        context = context[None, ...]
+                conditioner_input = jnp.concatenate([x1, context], axis=-1)
 
-        # Compute bijector parameters
-        bijector_params = self.conditioner(conditioner_input)
+            # Compute bijector parameters
+            bijector_params = self.conditioner(conditioner_input)
 
-        # Apply bijective transformation to x2, keeping x1 unchanged
-        y1 = x1
-        y2 = self.bijector(bijector_params, x2, **bijector_kwargs)
+            # Apply bijective transformation to x2, keeping x1 unchanged
+            y1 = x1
+            y2 = self.bijector(bijector_params, x2, **bijector_kwargs)
 
-        # Concatenate results
-        return jnp.concatenate([y1, y2], axis=-1)
+            # Concatenate results
+            return jnp.concatenate([y1, y2], axis=-1)

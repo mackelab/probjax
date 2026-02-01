@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.layers.reg import DropPath
+from probjax.nn.sharding import mesh_context
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
@@ -59,6 +60,7 @@ class MLPConditioner(nnx.Module):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
+        sharding: jax.sharding.Mesh | None = None,
         rngs: nnx.Rngs,
     ):
         if in_features <= 0:
@@ -76,25 +78,28 @@ class MLPConditioner(nnx.Module):
         )
         linear_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
 
+        self._mesh = sharding
         self.activation = activation
-        self.hidden = nnx.Linear(
-            in_features,
-            hidden_features,
-            rngs=rngs,
-            **linear_kwargs,
-        )
-        self.proj = nnx.Linear(
-            hidden_features,
-            out_features,
-            rngs=rngs,
-            kernel_init=nnx.initializers.zeros,
-            **linear_kwargs,
-        )
+        with mesh_context(self._mesh):
+            self.hidden = nnx.Linear(
+                in_features,
+                hidden_features,
+                rngs=rngs,
+                **linear_kwargs,
+            )
+            self.proj = nnx.Linear(
+                hidden_features,
+                out_features,
+                rngs=rngs,
+                kernel_init=nnx.initializers.zeros,
+                **linear_kwargs,
+            )
 
     def __call__(self, x: Array) -> Array:
-        x = self.hidden(x)
-        x = self.activation(x)
-        return self.proj(x)
+        with mesh_context(self._mesh):
+            x = self.hidden(x)
+            x = self.activation(x)
+            return self.proj(x)
 
 
 class AdditiveFuse(ContextFuse):
@@ -110,6 +115,7 @@ class AdditiveFuse(ContextFuse):
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
         layer_cls: ModuleLikeType = MLPConditioner,
+        sharding: jax.sharding.Mesh | None = None,
         rngs: nnx.Rngs,
     ):
         """Additive fusion module that applies linear transformation to context
@@ -133,17 +139,19 @@ class AdditiveFuse(ContextFuse):
             raise ValueError("context_features must be positive")
 
         super().__init__()
+        self._mesh = sharding
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
         )
         precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
 
-        self.linear = layer_cls(
-            context_features,
-            in_features,
-            rngs=rngs,
-            **precision_kwargs,
-        )
+        with mesh_context(self._mesh):
+            self.linear = layer_cls(
+                context_features,
+                in_features,
+                rngs=rngs,
+                **precision_kwargs,
+            )
 
     def __call__(self, x: Array, context: Array) -> Array:
         """Apply additive fusion to input and context.
@@ -155,7 +163,8 @@ class AdditiveFuse(ContextFuse):
         Returns:
             Array with same shape as x, with transformed context added.
         """
-        return x + self.linear(context)
+        with mesh_context(self._mesh):
+            return x + self.linear(context)
 
 
 class AffineFuse(ContextFuse):
@@ -172,6 +181,7 @@ class AffineFuse(ContextFuse):
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
         layer_cls: ModuleLikeType = MLPConditioner,
+        sharding: jax.sharding.Mesh | None = None,
         rngs: nnx.Rngs,
     ):
         """Affine fusion module that applies scale and bias to the input
@@ -199,17 +209,19 @@ class AffineFuse(ContextFuse):
             raise ValueError("context_features must be positive")
 
         super().__init__()
+        self._mesh = sharding
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
         )
         precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
 
-        self.linear_scale_bias = layer_cls(
-            context_features,
-            2 * in_features,
-            rngs=rngs,
-            **precision_kwargs,
-        )
+        with mesh_context(self._mesh):
+            self.linear_scale_bias = layer_cls(
+                context_features,
+                2 * in_features,
+                rngs=rngs,
+                **precision_kwargs,
+            )
         self.scale_activation = scale_activation
 
     def __call__(self, x: Array, context: Array) -> Array:
@@ -222,10 +234,11 @@ class AffineFuse(ContextFuse):
         Returns:
             Array with same shape as x, with affine transformation applied.
         """
-        scale_bias = self.linear_scale_bias(context)
-        scale, bias = jnp.split(scale_bias, 2, axis=-1)
-        scale = self.scale_activation(scale)
-        return x * scale + bias
+        with mesh_context(self._mesh):
+            scale_bias = self.linear_scale_bias(context)
+            scale, bias = jnp.split(scale_bias, 2, axis=-1)
+            scale = self.scale_activation(scale)
+            return x * scale + bias
 
 
 class ConcatFuse(ContextFuse):
@@ -241,6 +254,7 @@ class ConcatFuse(ContextFuse):
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
         layer_cls: ModuleLikeType = MLPConditioner,
+        sharding: jax.sharding.Mesh | None = None,
         rngs: nnx.Rngs,
     ):
         """Concatenation fusion module that linearly transforms context
@@ -264,23 +278,25 @@ class ConcatFuse(ContextFuse):
             raise ValueError("context_features must be positive")
 
         super().__init__()
+        self._mesh = sharding
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
         )
         precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
 
-        self.ctx_layer = layer_cls(
-            context_features,
-            in_features,
-            rngs=rngs,
-            **precision_kwargs,
-        )
-        self.merge_layer = layer_cls(
-            in_features + in_features,
-            in_features,
-            rngs=rngs,
-            **precision_kwargs,
-        )
+        with mesh_context(self._mesh):
+            self.ctx_layer = layer_cls(
+                context_features,
+                in_features,
+                rngs=rngs,
+                **precision_kwargs,
+            )
+            self.merge_layer = layer_cls(
+                in_features + in_features,
+                in_features,
+                rngs=rngs,
+                **precision_kwargs,
+            )
 
     def __call__(self, x: Array, context: Array) -> Array:
         """Apply concatenation fusion to input and context.
@@ -293,13 +309,14 @@ class ConcatFuse(ContextFuse):
             Array of shape [..., input_dim + input_dim] with transformed context
             concatenated to the input.
         """
-        context = self.ctx_layer(context)
-        # Ensure same leading dimensions as x
-        context = jnp.broadcast_to(context, x.shape[:-1] + (context.shape[-1],))  # type: ignore
+        with mesh_context(self._mesh):
+            context = self.ctx_layer(context)
+            # Ensure same leading dimensions as x
+            context = jnp.broadcast_to(context, x.shape[:-1] + (context.shape[-1],))  # type: ignore
 
-        x_ctx = jnp.concatenate([x, context], axis=-1)
-        x = self.merge_layer(x_ctx)
-        return x
+            x_ctx = jnp.concatenate([x, context], axis=-1)
+            x = self.merge_layer(x_ctx)
+            return x
 
 
 class AdditiveBinaryFuse(BinaryFuse):
@@ -309,6 +326,7 @@ class AdditiveBinaryFuse(BinaryFuse):
         context_features: int | None = None,
         *,
         drop_path_rate: float = 0.0,
+        sharding: jax.sharding.Mesh | None = None,
         rngs: nnx.Rngs,
     ):
         """Additive binary fusion module that adds two inputs."""
@@ -320,11 +338,13 @@ class AdditiveBinaryFuse(BinaryFuse):
 
         self.in_features = in_features
         self.context_features = context_features
+        self._mesh = sharding
 
-        if drop_path_rate > 0.0:
-            self.drop_path = DropPath(drop_rate=drop_path_rate, rngs=rngs)
-        else:
-            self.drop_path = None
+        with mesh_context(self._mesh):
+            if drop_path_rate > 0.0:
+                self.drop_path = DropPath(drop_rate=drop_path_rate, rngs=rngs)
+            else:
+                self.drop_path = None
 
     def __call__(
         self,
@@ -335,9 +355,10 @@ class AdditiveBinaryFuse(BinaryFuse):
         deterministic: bool | None = None,
     ) -> Array:
         del context
-        if self.drop_path is not None:
-            y = self.drop_path(y, deterministic=deterministic)
-        return x + y
+        with mesh_context(self._mesh):
+            if self.drop_path is not None:
+                y = self.drop_path(y, deterministic=deterministic)
+            return x + y
 
 
 class GatedFuse(BinaryFuse):
@@ -356,6 +377,7 @@ class GatedFuse(BinaryFuse):
         preferred_element_type: DTypeLike | None = None,
         mode: Literal["convex", "left", "right"] = "right",
         layer_cls: ModuleLikeType = MLPConditioner,
+        sharding: jax.sharding.Mesh | None = None,
         rngs: nnx.Rngs,
     ):
         """Gated fusion module that linearly transforms context
@@ -379,6 +401,7 @@ class GatedFuse(BinaryFuse):
             raise ValueError("context_features must be positive")
 
         super().__init__()
+        self._mesh = sharding
 
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
@@ -386,12 +409,13 @@ class GatedFuse(BinaryFuse):
         precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
 
         self.mode = mode
-        self.gate_layer = layer_cls(
-            context_features,
-            in_features,
-            rngs=rngs,
-            **precision_kwargs,
-        )
+        with mesh_context(self._mesh):
+            self.gate_layer = layer_cls(
+                context_features,
+                in_features,
+                rngs=rngs,
+                **precision_kwargs,
+            )
         self.gate_activation = gate_activation
 
         if self.mode not in {"convex", "left", "right"}:
@@ -399,10 +423,11 @@ class GatedFuse(BinaryFuse):
                 f"Invalid mode '{self.mode}'. Must be 'convex', 'left', or 'right'."
             )
 
-        if drop_path_rate > 0.0:
-            self.drop_path = DropPath(drop_rate=drop_path_rate, rngs=rngs)
-        else:
-            self.drop_path = None
+        with mesh_context(self._mesh):
+            if drop_path_rate > 0.0:
+                self.drop_path = DropPath(drop_rate=drop_path_rate, rngs=rngs)
+            else:
+                self.drop_path = None
 
     def __call__(
         self,
@@ -424,14 +449,15 @@ class GatedFuse(BinaryFuse):
         """
         if context is None:
             raise ValueError("Context must be provided for GatedFuse.")
-        if self.drop_path is not None:
-            y = self.drop_path(y, deterministic=deterministic)
-        # Ensure same leading dimensions as x
-        context = jnp.broadcast_to(context, x.shape[:-1] + (context.shape[-1],))
-        gate = self.gate_activation(self.gate_layer(context))
-        if self.mode == "left":
-            return (x * gate + y) / jnp.sqrt(1.0 + gate * gate)
-        elif self.mode == "right":
-            return (x + y * gate) / jnp.sqrt(1.0 + gate * gate)
-        else:  # convex
-            return x * gate + y * (1 - gate)
+        with mesh_context(self._mesh):
+            if self.drop_path is not None:
+                y = self.drop_path(y, deterministic=deterministic)
+            # Ensure same leading dimensions as x
+            context = jnp.broadcast_to(context, x.shape[:-1] + (context.shape[-1],))
+            gate = self.gate_activation(self.gate_layer(context))
+            if self.mode == "left":
+                return (x * gate + y) / jnp.sqrt(1.0 + gate * gate)
+            elif self.mode == "right":
+                return (x + y * gate) / jnp.sqrt(1.0 + gate * gate)
+            else:  # convex
+                return x * gate + y * (1 - gate)

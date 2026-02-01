@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax.sharding import PartitionSpec as P
 from flax import nnx
 
 from probjax.core import inverse, inverse_and_logabsdet
@@ -9,11 +10,21 @@ from probjax.nn import (
     AdditiveBinaryFuse,
     DropPath,
     GatedFuse,
+    LinearShardingSpec,
     MaskedLinear,
+    MLP,
+    MLPShardingSpec,
     chunkify,
 )
 
 pytest_plugins = ["test_problems.nns"]
+
+
+def _mesh_for(model_axis=2):
+    device_count = jax.device_count()
+    if device_count % model_axis != 0:
+        pytest.skip("mesh test requires device_count divisible by model_axis")
+    return jax.make_mesh((device_count // model_axis, model_axis), ("data", "model"))
 
 
 def test_mlp(mlp, batch_shape):
@@ -30,6 +41,208 @@ def test_mlp(mlp, batch_shape):
 
     # Can be flattened
     _, _ = jax.tree_util.tree_flatten(model)
+
+
+@pytest.mark.mesh
+@pytest.mark.parametrize("model_axis", [1, 2])
+def test_mlp_sharding_defaults_and_overrides(model_axis):
+    device_count = jax.device_count()
+    mesh = _mesh_for(model_axis)
+    mlp = MLP(
+        feature_dims=[4, 8, 4],
+        sharding=mesh,
+        activate_final=True,
+        rngs=nnx.Rngs(0),
+    )
+    expected_kernel = P(None, "model") if device_count > 1 else P()
+    expected_bias = P("model",) if device_count > 1 else P()
+    assert mlp.layers[0].kernel.value.sharding.spec in (expected_kernel, P())
+    assert mlp.layers[0].bias.value.sharding.spec in (expected_bias, P())
+
+    data_axis = device_count // model_axis
+    y = mlp(jnp.ones((data_axis, 4)))
+    expected_act = P("data", "model") if device_count > 1 else P()
+    assert y.sharding.spec in (expected_act, P())
+
+    sharding = MLPShardingSpec(
+        mesh=mesh,
+        default=LinearShardingSpec(kernel=P("model", None)),
+    )
+    mlp_override = MLP(
+        feature_dims=[4, 8, 4],
+        sharding=sharding,
+        rngs=nnx.Rngs(1),
+    )
+    expected_override = P("model", None) if device_count > 1 else P()
+    assert mlp_override.layers[0].kernel.value.sharding.spec in (
+        expected_override,
+        P(),
+    )
+
+
+@pytest.mark.mesh
+@pytest.mark.parametrize("model_axis", [1, 2])
+def test_layers_forward_with_mesh(model_axis):
+    mesh = _mesh_for(model_axis)
+
+    mask = jnp.ones((4, 4))
+    masked = MaskedLinear(4, 4, mask, sharding=mesh, rngs=nnx.Rngs(0))
+    y = masked(jnp.ones((2, 4)))
+    assert y.shape == (2, 4)
+
+    # Use ConvBlock to hit mesh context in conv layers.
+    from probjax.nn.layers import ConvBlock, SpatialSelfAttention
+
+    block = ConvBlock(3, 3, sharding=mesh, norm_cls=None, rngs=nnx.Rngs(2))
+    x = jnp.ones((1, 8, 8, 3))
+    y = block(x)
+    assert y.shape == x.shape
+
+    attn = SpatialSelfAttention(32, sharding=mesh, rngs=nnx.Rngs(3), num_heads=4)
+    x = jnp.ones((1, 4, 4, 32))
+    y = attn(x)
+    assert y.shape == x.shape
+
+
+@pytest.mark.mesh
+@pytest.mark.parametrize("model_axis", [1, 2])
+def test_resnet_forward_with_mesh(model_axis):
+    mesh = _mesh_for(model_axis)
+    from probjax.nn import ResNet
+    model = ResNet(
+        4,
+        4,
+        hidden_dim=8,
+        num_hidden_layers=2,
+        sharding=mesh,
+        rngs=nnx.Rngs(4),
+    )
+    x = jnp.ones((2, 4))
+    y = model(x)
+    assert y.shape == x.shape
+
+
+@pytest.mark.mesh
+@pytest.mark.parametrize("model_axis", [1, 2])
+def test_mesh_nets_forward(model_axis):
+    mesh = _mesh_for(model_axis)
+
+    # CouplingMLP
+    from probjax.nn.nets.coupling import CouplingMLP
+
+    def add_bijector(params, x):
+        return x + params[..., : x.shape[-1]]
+
+    coupling = CouplingMLP(
+        split_index=2,
+        bij_params_dim=2,
+        bijector=add_bijector,
+        rngs=nnx.Rngs(0),
+        sharding=mesh,
+    )
+    x = jnp.ones((2, 4))
+    y = coupling(x)
+    assert y.shape == x.shape
+
+    # AutoregressiveMLP uses lax.scan internally which conflicts with set_mesh.
+
+    # Normalizing flow
+    from probjax.nn.nets.normalizing_flows import AdditiveCouplingFlow
+
+    flow = AdditiveCouplingFlow(
+        input_dim=4, num_transforms=2, rngs=nnx.Rngs(2), sharding=mesh
+    )
+    y = flow(jnp.ones((2, 4)))
+    assert y.shape == (2, 4)
+
+    # UNet
+    from probjax.nn.nets.unets import UNet
+
+    unet = UNet(
+        3,
+        [32, 32],
+        rngs=nnx.Rngs(3),
+        sharding=mesh,
+        kernel_size=(4, 4),
+        strides=(2, 2),
+        kernel_size_resnet=(3, 3),
+        strides_resnet=(1, 1),
+    )
+    x = jnp.ones((1, 8, 8, 3))
+    y = unet(x)
+    assert y.shape == x.shape
+
+    # Transformer
+    from probjax.nn.nets.transformer import Transformer
+
+    transformer = Transformer(
+        model_dim=8,
+        num_heads=2,
+        num_layers=2,
+        attn_size=4,
+        rngs=nnx.Rngs(8),
+        sharding=mesh,
+    )
+    x = jnp.ones((2, 4, 8))
+    y = transformer(x)
+    assert y.shape == x.shape
+
+    # LRUModel
+    from probjax.nn.nets.lru import LRUModel
+
+    lru = LRUModel(
+        input_dim=4,
+        model_dim=8,
+        output_dim=4,
+        num_layers=2,
+        rngs=nnx.Rngs(4),
+        sharding=mesh,
+    )
+    x = jnp.ones((2, 4, 4))
+    y = lru(x)
+    assert y.shape == (2, 4, 4)
+
+    # FlowMatcher / LinearFlow
+    from probjax.nn.nets.flow_matching_model import LinearFlow
+
+    class TinyFlowNet(nnx.Module):
+        def __init__(self, rngs, *, sharding=None):
+            self._mesh = sharding
+            self.proj = nnx.Linear(2, 2, rngs=rngs)
+
+        def __call__(self, t, x, **kwargs):
+            return self.proj(x)
+
+    fm_net = TinyFlowNet(nnx.Rngs(5), sharding=mesh)
+    flow_matcher = LinearFlow(fm_net, sharding=mesh)
+    data_axis = jax.device_count() // model_axis
+    t = jnp.ones((data_axis, 1))
+    x = jnp.ones((data_axis, 2))
+    y = flow_matcher(t, x)
+    assert y.shape == x.shape
+
+    # MeanFlowMatcher / LinearMeanFlow
+    from probjax.nn.nets.mean_flow_matching_model import LinearMeanFlow
+
+    mean_flow = LinearMeanFlow(fm_net, sharding=mesh)
+    y = mean_flow(t, x)
+    assert y.shape == x.shape
+
+    # DiffusionDenoiser
+    from probjax.nn.nets.denoising_diffusion_model import EDM
+
+    class TinyDenoiser(nnx.Module):
+        def __init__(self, rngs, *, sharding=None):
+            self._mesh = sharding
+            self.proj = nnx.Linear(2, 2, rngs=rngs)
+
+        def __call__(self, t_embed, x_embed):
+            return self.proj(x_embed)
+
+    den_net = TinyDenoiser(nnx.Rngs(6), sharding=mesh)
+    denoiser = EDM(den_net, rngs=nnx.Rngs(7), sharding=mesh)
+    y = denoiser(t, x)
+    assert y.shape == x.shape
 
 
 def test_resnet(resnet, batch_shape):

@@ -9,6 +9,11 @@ from probjax.nn.layers.conv import (
     ResnetBlock,
     SpatialSelfAttention,
 )
+from probjax.nn.sharding import (
+    DEFAULT_SPATIAL_ACTIVATION,
+    filter_sharding_kwargs,
+    mesh_context,
+)
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
@@ -87,6 +92,7 @@ class UNet(nnx.Module):
         conv_up_cls: ModuleLikeType | Sequence[ModuleLikeType] = nnx.ConvTranspose,
         attn_cls: ModuleLikeType = SpatialSelfAttention,
         conv_cls: ModuleLikeType = nnx.Conv,
+        sharding: jax.sharding.Mesh | None = None,
         rngs: nnx.Rngs,
     ):
         assert len(out_features) >= 2, "Must have at least 2 output channels"
@@ -96,6 +102,10 @@ class UNet(nnx.Module):
         self.num_stages = len(out_features)
         self.resize_method = resize_method  # Triggered if user shapes do not mat
         self.preferred_element_type = preferred_element_type
+        self._mesh = sharding
+        self._activation_sharding = (
+            DEFAULT_SPATIAL_ACTIVATION if sharding is not None else None
+        )
 
         precision_kwargs = get_active_precision_kwargs(
             dtype,
@@ -126,6 +136,7 @@ class UNet(nnx.Module):
             context_features=context_features,
             dropout_rate=dropout_rate,
             rngs=rngs,
+            **filter_sharding_kwargs(resnet_block_cls, sharding=sharding),
             **filter_precision_kwargs(resnet_block_cls, **precision_kwargs),
         )
 
@@ -155,6 +166,7 @@ class UNet(nnx.Module):
                     kernel_size=kernel_size,
                     strides=strides,
                     rngs=rngs,
+                    **filter_sharding_kwargs(conv_down_cls_i, sharding=sharding),
                     **filter_precision_kwargs(conv_down_cls_i, **precision_kwargs),
                 )
             )
@@ -171,6 +183,7 @@ class UNet(nnx.Module):
                     kernel_size=kernel_size,
                     strides=strides,
                     rngs=rngs,
+                    **filter_sharding_kwargs(conv_up_cls_i, sharding=sharding),
                     **filter_precision_kwargs(conv_up_cls_i, **precision_kwargs),
                 )
             )
@@ -181,6 +194,7 @@ class UNet(nnx.Module):
             kernel_size=1,
             use_bias=False,
             rngs=rngs,
+            **filter_sharding_kwargs(conv_cls, sharding=sharding),
             **filter_precision_kwargs(conv_cls, **precision_kwargs),
         )
 
@@ -188,98 +202,102 @@ class UNet(nnx.Module):
             attn_cls,
             dropout_rate=dropout_rate,
             rngs=rngs,
+            **filter_sharding_kwargs(attn_cls, sharding=sharding),
             **filter_precision_kwargs(attn_cls, **precision_kwargs),
         )
 
-        # ---------------------------------------------------------------------
-        # Down path
-        # ---------------------------------------------------------------------
-        self.resnet_blocks_down = nnx.List()
-        self.downsampling_layers = nnx.List()
-        self.att_layers_down = nnx.List()
+        with mesh_context(self._mesh):
+            # -----------------------------------------------------------------
+            # Down path
+            # -----------------------------------------------------------------
+            self.resnet_blocks_down = nnx.List()
+            self.downsampling_layers = nnx.List()
+            self.att_layers_down = nnx.List()
 
-        layer_idx = 0
-        for i in range(self.num_stages):
-            # ResNet in each stage works on out_features[i]
-            self.resnet_blocks_down.append(
-                _resnet_block(
-                    self.out_features[i],
-                    self.out_features[i],
-                    drop_path_rate=dpr_list[layer_idx],
-                )
-            )
-            layer_idx += 1
-            # Optional attention for this stage
-            if self.attn_mask[i]:
-                self.att_layers_down.append(
-                    _attn_block(
-                        self.out_features[i], drop_path_rate=dpr_list[layer_idx]
+            layer_idx = 0
+            for i in range(self.num_stages):
+                # ResNet in each stage works on out_features[i]
+                self.resnet_blocks_down.append(
+                    _resnet_block(
+                        self.out_features[i],
+                        self.out_features[i],
+                        drop_path_rate=dpr_list[layer_idx],
                     )
                 )
-            else:
-                self.att_layers_down.append(None)
+                layer_idx += 1
+                # Optional attention for this stage
+                if self.attn_mask[i]:
+                    self.att_layers_down.append(
+                        _attn_block(
+                            self.out_features[i], drop_path_rate=dpr_list[layer_idx]
+                        )
+                    )
+                else:
+                    self.att_layers_down.append(None)
 
-            # Insert a downsample conv between stages (0->1, 1->2, ...)
-            if i > 0:
-                self.downsampling_layers.append(
-                    _down_blocks[i - 1](self.out_features[i - 1], self.out_features[i])
-                )
+                # Insert a downsample conv between stages (0->1, 1->2, ...)
+                if i > 0:
+                    self.downsampling_layers.append(
+                        _down_blocks[i - 1](
+                            self.out_features[i - 1], self.out_features[i]
+                        )
+                    )
 
-        # ---------------------------------------------------------------------
-        # Middle block
-        # ---------------------------------------------------------------------
-        top_ch = self.out_features[-1]
-        self.middle_block1 = _resnet_block(
-            top_ch, top_ch, drop_path_rate=dpr_list[layer_idx]
-        )
-        layer_idx += 1
-        self.middle_block2 = _resnet_block(
-            top_ch, top_ch, drop_path_rate=dpr_list[layer_idx]
-        )
-        layer_idx += 1
-        self.att_middle = (
-            _attn_block(top_ch, drop_path_rate=dpr_list[layer_idx])
-            if self.attn_mask[-1]
-            else None
-        )
-
-        # ---------------------------------------------------------------------
-        # Up path (mirror of down)
-        # We build resnet_blocks_up to take (ch*2)->ch due to skip concat.
-        # Attention order mirrors the down path order.
-        # ---------------------------------------------------------------------
-        self.resnet_blocks_up = nnx.List()
-        self.att_layers_up = nnx.List()
-        self.upsampling_layers = nnx.List()
-
-        for i in reversed(range(self.num_stages)):
-            ch = self.out_features[i]
-
-            # ResNet block after concatenating skip connection
-            self.resnet_blocks_up.append(
-                _resnet_block(ch * 2, ch, drop_path_rate=dpr_list[layer_idx])
+            # -----------------------------------------------------------------
+            # Middle block
+            # -----------------------------------------------------------------
+            top_ch = self.out_features[-1]
+            self.middle_block1 = _resnet_block(
+                top_ch, top_ch, drop_path_rate=dpr_list[layer_idx]
             )
             layer_idx += 1
+            self.middle_block2 = _resnet_block(
+                top_ch, top_ch, drop_path_rate=dpr_list[layer_idx]
+            )
+            layer_idx += 1
+            self.att_middle = (
+                _attn_block(top_ch, drop_path_rate=dpr_list[layer_idx])
+                if self.attn_mask[-1]
+                else None
+            )
 
-            # Attention layer (mirroring down path)
-            if self.attn_mask[self.num_stages - i - 1]:
-                self.att_layers_up.append(
-                    _attn_block(ch, drop_path_rate=dpr_list[layer_idx])
+            # -----------------------------------------------------------------
+            # Up path (mirror of down)
+            # -----------------------------------------------------------------
+            self.resnet_blocks_up = nnx.List()
+            self.att_layers_up = nnx.List()
+            self.upsampling_layers = nnx.List()
+
+            for i in reversed(range(self.num_stages)):
+                ch = self.out_features[i]
+
+                # ResNet block after concatenating skip connection
+                self.resnet_blocks_up.append(
+                    _resnet_block(ch * 2, ch, drop_path_rate=dpr_list[layer_idx])
                 )
-            else:
-                self.att_layers_up.append(None)
+                layer_idx += 1
 
-            # Upsample conv (skip for bottom-most stage)
-            if i > 0:
-                self.upsampling_layers.append(
-                    _up_blocks[i - 1](ch, self.out_features[i - 1])
-                )
+                # Attention layer (mirroring down path)
+                if self.attn_mask[self.num_stages - i - 1]:
+                    self.att_layers_up.append(
+                        _attn_block(ch, drop_path_rate=dpr_list[layer_idx])
+                    )
+                else:
+                    self.att_layers_up.append(None)
 
-        # Initial and final 1x1 projections
-        self.conv_initial = _init_final(in_features, self.out_features[0])
-        self.conv_final = _init_final(
-            self.out_features[0] * 2, in_features, kernel_init=nnx.initializers.zeros
-        )
+                # Upsample conv (skip for bottom-most stage)
+                if i > 0:
+                    self.upsampling_layers.append(
+                        _up_blocks[i - 1](ch, self.out_features[i - 1])
+                    )
+
+            # Initial and final 1x1 projections
+            self.conv_initial = _init_final(in_features, self.out_features[0])
+            self.conv_final = _init_final(
+                self.out_features[0] * 2,
+                in_features,
+                kernel_init=nnx.initializers.zeros,
+            )
 
     def __call__(
         self,
@@ -288,51 +306,74 @@ class UNet(nnx.Module):
         verbose: bool = False,
         deterministic: bool = True,
     ) -> Array:
-        # 1) Initial projection
-        x = self.conv_initial(inputs)
+        with mesh_context(self._mesh):
+            def _constrain(x: Array) -> Array:
+                if self._activation_sharding is not None:
+                    return jax.lax.with_sharding_constraint(
+                        x, self._activation_sharding
+                    )
+                return x
 
-        # Stash features before each downsample for skips
-        pre_downsampling = [x]
+            # 1) Initial projection
+            x = self.conv_initial(inputs)
+            x = _constrain(x)
 
-        # 2) Down path
-        for i in range(self.num_stages):
-            x = self.resnet_blocks_down[i](x, context, deterministic=deterministic)
-            if self.att_layers_down[i] is not None:
-                x = self.att_layers_down[i](x, context, deterministic=deterministic)
-            pre_downsampling.append(x)
-            if i < self.num_stages - 1:
-                if verbose:
-                    print("Down:", x.shape)
-                x = self.downsampling_layers[i](x).astype(self.preferred_element_type)
+            # Stash features before each downsample for skips
+            pre_downsampling = [x]
 
-        # 3) Middle
-        x = self.middle_block1(x, context, deterministic=deterministic)
-        if self.att_middle is not None:
-            x = self.att_middle(x, context, deterministic=deterministic)
-        x = self.middle_block2(x, context, deterministic=deterministic)
-        if verbose:
-            print("Mid:", x.shape)
+            # 2) Down path
+            for i in range(self.num_stages):
+                x = self.resnet_blocks_down[i](x, context, deterministic=deterministic)
+                if self.att_layers_down[i] is not None:
+                    x = self.att_layers_down[i](
+                        x, context, deterministic=deterministic
+                    )
+                x = _constrain(x)
+                pre_downsampling.append(x)
+                if i < self.num_stages - 1:
+                    if verbose:
+                        print("Down:", x.shape)
+                    x = self.downsampling_layers[i](x).astype(
+                        self.preferred_element_type
+                    )
+                    x = _constrain(x)
 
-        # 4) Up path
-        for idx in range(self.num_stages):
-            down = pre_downsampling.pop()
-            # Ensure spatial match (covers odd sizes / stride combos)
-            if x.shape != down.shape:
-                x = jax.image.resize(x, down.shape, method=self.resize_method)
-            x = jnp.concatenate([down, x], axis=-1)
+            # 3) Middle
+            x = self.middle_block1(x, context, deterministic=deterministic)
+            if self.att_middle is not None:
+                x = self.att_middle(x, context, deterministic=deterministic)
+            x = self.middle_block2(x, context, deterministic=deterministic)
+            x = _constrain(x)
+            if verbose:
+                print("Mid:", x.shape)
 
-            x = self.resnet_blocks_up[idx](x, context, deterministic=deterministic)
-            if self.att_layers_up[idx] is not None:
-                x = self.att_layers_up[idx](x, context, deterministic=deterministic)
+            # 4) Up path
+            for idx in range(self.num_stages):
+                down = pre_downsampling.pop()
+                # Ensure spatial match (covers odd sizes / stride combos)
+                if x.shape != down.shape:
+                    x = jax.image.resize(x, down.shape, method=self.resize_method)
+                x = jnp.concatenate([down, x], axis=-1)
 
-            if idx < self.num_stages - 1:
-                x = self.upsampling_layers[idx](x).astype(self.preferred_element_type)
-                if verbose:
-                    print("Up:", x.shape)
+                x = self.resnet_blocks_up[idx](x, context, deterministic=deterministic)
+                if self.att_layers_up[idx] is not None:
+                    x = self.att_layers_up[idx](
+                        x, context, deterministic=deterministic
+                    )
+                x = _constrain(x)
 
-        # 5) Final projection (+ last skip from very beginning)
-        pre_in = pre_downsampling.pop()
-        x = jnp.concatenate([pre_in, x], axis=-1)
-        x = self.conv_final(x)
+                if idx < self.num_stages - 1:
+                    x = self.upsampling_layers[idx](x).astype(
+                        self.preferred_element_type
+                    )
+                    x = _constrain(x)
+                    if verbose:
+                        print("Up:", x.shape)
 
-        return x
+            # 5) Final projection (+ last skip from very beginning)
+            pre_in = pre_downsampling.pop()
+            x = jnp.concatenate([pre_in, x], axis=-1)
+            x = self.conv_final(x)
+            x = _constrain(x)
+
+            return x

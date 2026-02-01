@@ -5,6 +5,11 @@ import jax
 import jax.numpy as jnp
 
 from probjax.nn.pallas_kernels.mambda import compute_mamba_scan
+from probjax.nn.sharding import (
+    DEFAULT_LINEAR_SHARDING,
+    DEFAULT_MHA_SHARDING,
+    mesh_context,
+)
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
@@ -40,6 +45,14 @@ def gamma_log_init(key, lamb):
     return jnp.log(jnp.sqrt(1 - jnp.abs(diag_lambda) ** 2))
 
 
+def _activation_spec_for_rank(rank: int):
+    if rank == 2:
+        return DEFAULT_LINEAR_SHARDING.activation
+    if rank == 3:
+        return DEFAULT_MHA_SHARDING.activation
+    return None
+
+
 class RecurrentCell(nnx.Module):
     """Abstract recurrent cell mapping [B, L, D] → [B, L, D].
 
@@ -70,6 +83,7 @@ class LRUCell(RecurrentCell):
         r_min: float = 0.0,
         r_max: float = 1.0,
         max_phase: float = 6.28,
+        sharding: jax.sharding.Mesh | None = None,
     ):
         state_dim = state_dim or model_dim
 
@@ -78,69 +92,85 @@ class LRUCell(RecurrentCell):
         self.r_min = r_min
         self.r_max = r_max
         self.max_phase = max_phase
+        self._mesh = sharding
 
-        # Scale and shift parameters
-        self.theta_log = nnx.Param(
-            theta_init(rngs.params(), (state_dim,), max_phase=self.max_phase)
-        )
-        self.nu_log = nnx.Param(nu_init(rngs.next(), (state_dim,), r_min, r_max))
-        self.gamma_log = nnx.Param(
-            gamma_log_init(rngs.params(), (self.nu_log, self.theta_log))
-        )
+        with mesh_context(self._mesh):
+            # Scale and shift parameters
+            self.theta_log = nnx.Param(
+                theta_init(rngs.params(), (state_dim,), max_phase=self.max_phase)
+            )
+            self.nu_log = nnx.Param(nu_init(rngs.next(), (state_dim,), r_min, r_max))
+            self.gamma_log = nnx.Param(
+                gamma_log_init(rngs.params(), (self.nu_log, self.theta_log))
+            )
 
-        # Projection matrices
-        B_re = matrix_init(
-            rngs.params(), (model_dim, state_dim), normalization=jnp.sqrt(2 * model_dim)
-        )
-        self.B_re = nnx.Param(B_re)
-        B_im = matrix_init(
-            rngs.params(), (model_dim, state_dim), normalization=jnp.sqrt(2 * model_dim)
-        )
-        self.B_im = nnx.Param(B_im)
-        C_re = matrix_init(
-            rngs.params(), (model_dim, state_dim), normalization=jnp.sqrt(state_dim)
-        )
-        self.C_re = nnx.Param(C_re)
-        C_im = matrix_init(
-            rngs.params(), (model_dim, state_dim), normalization=jnp.sqrt(state_dim)
-        )
-        self.C_im = nnx.Param(C_im)
-        self.D = nnx.Param(matrix_init(rngs.params(), (model_dim, model_dim)))
+            # Projection matrices
+            B_re = matrix_init(
+                rngs.params(),
+                (model_dim, state_dim),
+                normalization=jnp.sqrt(2 * model_dim),
+            )
+            self.B_re = nnx.Param(B_re)
+            B_im = matrix_init(
+                rngs.params(),
+                (model_dim, state_dim),
+                normalization=jnp.sqrt(2 * model_dim),
+            )
+            self.B_im = nnx.Param(B_im)
+            C_re = matrix_init(
+                rngs.params(),
+                (model_dim, state_dim),
+                normalization=jnp.sqrt(state_dim),
+            )
+            self.C_re = nnx.Param(C_re)
+            C_im = matrix_init(
+                rngs.params(),
+                (model_dim, state_dim),
+                normalization=jnp.sqrt(state_dim),
+            )
+            self.C_im = nnx.Param(C_im)
+            self.D = nnx.Param(matrix_init(rngs.params(), (model_dim, model_dim)))
 
     def __call__(self, inputs: jax.Array) -> jax.Array:
-        inputs = jnp.asarray(inputs)
+        with mesh_context(self._mesh):
+            inputs = jnp.asarray(inputs)
 
-        def _single(x_td):
-            # Parameters
-            nu_log = self.nu_log.value
-            theta_log = self.theta_log.value
-            gamma_log = self.gamma_log.value
+            def _single(x_td):
+                # Parameters
+                nu_log = self.nu_log.value
+                theta_log = self.theta_log.value
+                gamma_log = self.gamma_log.value
 
-            B_re = self.B_re.value
-            B_im = self.B_im.value
-            C_re = self.C_re.value
-            C_im = self.C_im.value
-            D = self.D.value
+                B_re = self.B_re.value
+                B_im = self.B_im.value
+                C_re = self.C_re.value
+                C_im = self.C_im.value
+                D = self.D.value
 
-            # Diagonal dynamics
-            diag_lambda = jnp.exp(-jnp.exp(nu_log) + 1j * jnp.exp(theta_log))
-            B_norm = (B_re + 1j * B_im) * jnp.expand_dims(jnp.exp(gamma_log), axis=-2)
-            C = C_re + 1j * C_im
+                # Diagonal dynamics
+                diag_lambda = jnp.exp(-jnp.exp(nu_log) + 1j * jnp.exp(theta_log))
+                B_norm = (B_re + 1j * B_im) * jnp.expand_dims(
+                    jnp.exp(gamma_log), axis=-2
+                )
+                C = C_re + 1j * C_im
 
-            Lambda_elements = jnp.repeat(
-                diag_lambda[None, ...], x_td.shape[-2], axis=-2
-            )
-            Bu_elements = jnp.einsum("ih,ti->th", B_norm, x_td)
-            _, hidden_states = jax.lax.associative_scan(
-                binary_operator_diag, (Lambda_elements, Bu_elements)
-            )
-            outputs = jnp.real(jnp.einsum("th,oh->to", hidden_states, C))
-            outputs += jnp.einsum("ti,oi->to", x_td, D)
-            return outputs
+                Lambda_elements = jnp.repeat(
+                    diag_lambda[None, ...], x_td.shape[-2], axis=-2
+                )
+                Bu_elements = jnp.einsum("ih,ti->th", B_norm, x_td)
+                _, hidden_states = jax.lax.associative_scan(
+                    binary_operator_diag, (Lambda_elements, Bu_elements)
+                )
+                outputs = jnp.real(jnp.einsum("th,oh->to", hidden_states, C))
+                outputs += jnp.einsum("ti,oi->to", x_td, D)
+                return outputs
 
-        if inputs.ndim == 3:
-            return jax.vmap(_single)(inputs)
-        return _single(inputs)
+            out = jax.vmap(_single)(inputs) if inputs.ndim == 3 else _single(inputs)
+            if self._mesh is not None:
+                spec = _activation_spec_for_rank(out.ndim)
+                if spec is not None:
+                    out = jax.lax.with_sharding_constraint(out, spec)
+            return out
 
 
 # ----------------------------- Mamba LRU ------------------------------------
@@ -193,24 +223,27 @@ class MambaCell(RecurrentCell):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
+        sharding: jax.sharding.Mesh | None = None,
     ):
         sd = state_dim or model_dim
         self.model_dim = model_dim
         self.state_dim = sd
         self.seq_tile_size = seq_tile_size
         self.dim_tile_size = dim_tile_size
+        self._mesh = sharding
 
-        # Recurrent parameters
-        self.a = nnx.Param(
-            matrix_init(
-                rngs.params(), (sd, model_dim), normalization=jnp.sqrt(model_dim)
+        with mesh_context(self._mesh):
+            # Recurrent parameters
+            self.a = nnx.Param(
+                matrix_init(
+                    rngs.params(), (sd, model_dim), normalization=jnp.sqrt(model_dim)
+                )
             )
-        )
-        self.d = nnx.Param(
-            matrix_init(
-                rngs.params(), (1, model_dim), normalization=jnp.sqrt(model_dim)
+            self.d = nnx.Param(
+                matrix_init(
+                    rngs.params(), (1, model_dim), normalization=jnp.sqrt(model_dim)
+                )
             )
-        )
 
         # Precision/dtype kwargs for linear projections
         precision_kwargs = get_active_precision_kwargs(
@@ -218,34 +251,42 @@ class MambaCell(RecurrentCell):
         )
         precision_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
 
-        # Token-wise generators for b, c, delta
-        self.to_b = nnx.Linear(model_dim, sd, rngs=rngs, **precision_kwargs)
-        self.to_c = nnx.Linear(model_dim, sd, rngs=rngs, **precision_kwargs)
-        self.to_delta = nnx.Linear(model_dim, model_dim, rngs=rngs, **precision_kwargs)
+        with mesh_context(self._mesh):
+            # Token-wise generators for b, c, delta
+            self.to_b = nnx.Linear(model_dim, sd, rngs=rngs, **precision_kwargs)
+            self.to_c = nnx.Linear(model_dim, sd, rngs=rngs, **precision_kwargs)
+            self.to_delta = nnx.Linear(
+                model_dim, model_dim, rngs=rngs, **precision_kwargs
+            )
 
     def __call__(self, inputs: jax.Array) -> jax.Array:
-        added_batch = False
-        if inputs.ndim == 2:
-            inputs = inputs[None, ...]
-            added_batch = True
+        with mesh_context(self._mesh):
+            added_batch = False
+            if inputs.ndim == 2:
+                inputs = inputs[None, ...]
+                added_batch = True
 
-        b = self.to_b(inputs)  # [B, L, S]
-        c = self.to_c(inputs)  # [B, L, S]
-        delta = self.to_delta(inputs)  # [B, L, D]
+            b = self.to_b(inputs)  # [B, L, S]
+            c = self.to_c(inputs)  # [B, L, S]
+            delta = self.to_delta(inputs)  # [B, L, D]
 
-        y = mamba_scan(
-            inputs,
-            self.a.value,
-            b,
-            c,
-            delta,
-            self.d.value,
-            seq_tile_size=self.seq_tile_size,
-            dim_tile_size=self.dim_tile_size,
-        )
-        if added_batch:
-            y = y[0]
-        return y
+            y = mamba_scan(
+                inputs,
+                self.a.value,
+                b,
+                c,
+                delta,
+                self.d.value,
+                seq_tile_size=self.seq_tile_size,
+                dim_tile_size=self.dim_tile_size,
+            )
+            if added_batch:
+                y = y[0]
+            if self._mesh is not None:
+                spec = _activation_spec_for_rank(y.ndim)
+                if spec is not None:
+                    y = jax.lax.with_sharding_constraint(y, spec)
+            return y
 
 
 # ------------------------------ SSD (Mamba-2) -------------------------------
@@ -294,6 +335,7 @@ class SSDCell(RecurrentCell):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
+        sharding: jax.sharding.Mesh | None = None,
     ):
         sd = state_dim or model_dim
         self.model_dim = model_dim
@@ -302,48 +344,55 @@ class SSDCell(RecurrentCell):
         if reduce not in ("sum", "mean"):
             raise ValueError("reduce must be 'sum' or 'mean'")
         self.reduce = reduce
+        self._mesh = sharding
 
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
         )
         precision_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
 
-        self.to_q = nnx.Linear(model_dim, sd, rngs=rngs, **precision_kwargs)
-        self.to_k = nnx.Linear(model_dim, sd, rngs=rngs, **precision_kwargs)
-        if (model_dim % self.num_heads) == 0:
-            self.dv = model_dim // self.num_heads
-        else:
-            self.dv = model_dim
-        self.to_v = nnx.Linear(model_dim, self.dv, rngs=rngs, **precision_kwargs)
-        self.to_alpha = nnx.Linear(
-            model_dim, self.num_heads, rngs=rngs, **precision_kwargs
-        )
+        with mesh_context(self._mesh):
+            self.to_q = nnx.Linear(model_dim, sd, rngs=rngs, **precision_kwargs)
+            self.to_k = nnx.Linear(model_dim, sd, rngs=rngs, **precision_kwargs)
+            if (model_dim % self.num_heads) == 0:
+                self.dv = model_dim // self.num_heads
+            else:
+                self.dv = model_dim
+            self.to_v = nnx.Linear(model_dim, self.dv, rngs=rngs, **precision_kwargs)
+            self.to_alpha = nnx.Linear(
+                model_dim, self.num_heads, rngs=rngs, **precision_kwargs
+            )
         self.post = None  # by construction preserves model_dim
 
     def __call__(self, inputs: jax.Array) -> jax.Array:
-        added_batch = False
-        if inputs.ndim == 2:
-            inputs = inputs[None, ...]
-            added_batch = True
+        with mesh_context(self._mesh):
+            added_batch = False
+            if inputs.ndim == 2:
+                inputs = inputs[None, ...]
+                added_batch = True
 
-        B, L, _ = inputs.shape
-        G = self.num_heads
-        H = self.num_heads
+            B, L, _ = inputs.shape
+            G = self.num_heads
+            H = self.num_heads
 
-        q = self.to_q(inputs)
-        k = self.to_k(inputs)
-        v = self.to_v(inputs)
-        q = q.reshape(B, 1, L, self.state_dim).repeat(G, axis=1)
-        k = k.reshape(B, 1, L, self.state_dim).repeat(G, axis=1)
-        v = v.reshape(B, 1, L, self.dv).repeat(H, axis=1)
-        log_alpha = self.to_alpha(inputs)
-        log_alpha = jnp.swapaxes(log_alpha, 1, 2)
+            q = self.to_q(inputs)
+            k = self.to_k(inputs)
+            v = self.to_v(inputs)
+            q = q.reshape(B, 1, L, self.state_dim).repeat(G, axis=1)
+            k = k.reshape(B, 1, L, self.state_dim).repeat(G, axis=1)
+            v = v.reshape(B, 1, L, self.dv).repeat(H, axis=1)
+            log_alpha = self.to_alpha(inputs)
+            log_alpha = jnp.swapaxes(log_alpha, 1, 2)
 
-        out = ssd(q, k, v, log_alpha, h0=None)
-        y = out.sum(axis=1) if self.reduce == "sum" else out.mean(axis=1)
-        if added_batch:
-            y = y[0]
-        return y
+            out = ssd(q, k, v, log_alpha, h0=None)
+            y = out.sum(axis=1) if self.reduce == "sum" else out.mean(axis=1)
+            if added_batch:
+                y = y[0]
+            if self._mesh is not None:
+                spec = _activation_spec_for_rank(y.ndim)
+                if spec is not None:
+                    y = jax.lax.with_sharding_constraint(y, spec)
+            return y
 
 
 # Uniform cell-style wrappers returning [B, L, D]

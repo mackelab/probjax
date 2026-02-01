@@ -14,6 +14,7 @@ from probjax.nn.layers.bijective import Flip
 from probjax.nn.nets.autoregressive import AutoregressiveMLP
 from probjax.nn.nets.coupling import CouplingMLP
 from probjax.nn.nets.simple import Sequential
+from probjax.nn.sharding import mesh_context
 from probjax.stats.continuous import norm
 from probjax.stats.independent import independent
 from probjax.stats.transformed import transformed
@@ -21,14 +22,21 @@ from probjax.stats.transformed import transformed
 
 class NormalizingFlow(nnx.Module):
     def __init__(
-        self, base_dist, transformation: Callable[..., Any], name: Optional[str] = None
+        self,
+        base_dist,
+        transformation: Callable[..., Any],
+        name: Optional[str] = None,
+        *,
+        sharding: jax.sharding.Mesh | None = None,
     ):
         self.base_dist = base_dist
         self.transformation = transformation
+        self._mesh = sharding
         super().__init__()
 
     def transform(self, x):
-        return self.transformation(x)
+        with mesh_context(self._mesh):
+            return self.transformation(x)
 
     def __call__(self, x):
         return self.transform(x)
@@ -56,28 +64,31 @@ class AdditiveCouplingFlow(NormalizingFlow):
         coupling_class: nnx.Module = CouplingMLP,
         mixing_class: nnx.Module = Flip,
         name: Optional[str] = None,
+        sharding: jax.sharding.Mesh | None = None,
     ) -> None:
         self.input_dim = input_dim
         split_dim = input_dim // 2
         params_dim = input_dim - split_dim
-        coupling_net = partial(coupling_class, split_dim, params_dim, additive_bijector)
+        coupling_net = partial(
+            coupling_class, split_dim, params_dim, additive_bijector, sharding=sharding
+        )
 
         # Build the flow transformation
         transforms = []
         for i in range(num_transforms):
             transforms += [coupling_net(rngs=rngs)]
             if i < num_transforms - 1:
-                transforms += [mixing_class(rngs=rngs)]
+                transforms += [mixing_class(rngs=rngs, sharding=sharding)]
         transforms += [last_transform] if last_transform is not None else []
 
-        transform = Sequential(*transforms)
+        transform = Sequential(*transforms, sharding=sharding)
 
         # Build the base distribution
         mu0 = jnp.zeros((input_dim,))
         std0 = jnp.ones((input_dim,))
         q0 = independent(norm(mu0, std0))
 
-        super().__init__(q0, transform, name=name)
+        super().__init__(q0, transform, name=name, sharding=sharding)
 
 
 class AffineCouplingFlow(NormalizingFlow):
@@ -91,28 +102,31 @@ class AffineCouplingFlow(NormalizingFlow):
         coupling_class: nnx.Module = CouplingMLP,
         mixing_class: nnx.Module = Flip,
         name: Optional[str] = None,
+        sharding: jax.sharding.Mesh | None = None,
     ) -> None:
         self.input_dim = input_dim
         split_dim = input_dim // 2
         params_dim = (input_dim - split_dim) * 2
-        coupling_net = partial(coupling_class, split_dim, params_dim, affine_bijector)
+        coupling_net = partial(
+            coupling_class, split_dim, params_dim, affine_bijector, sharding=sharding
+        )
 
         # Build the flow
         transforms = []
         for i in range(num_transforms):
             transforms += [coupling_net(rngs=rngs)]
             if i < num_transforms - 1:
-                transforms += [mixing_class(rngs=rngs)]
+                transforms += [mixing_class(rngs=rngs, sharding=sharding)]
         transforms += [last_transform] if last_transform is not None else []
 
-        transform = Sequential(*transforms)
+        transform = Sequential(*transforms, sharding=sharding)
 
         # Build the base distribution
         mu0 = jnp.zeros((input_dim,))
         std0 = jnp.ones((input_dim,))
         q0 = independent(norm(mu0, std0))
 
-        super().__init__(q0, transform, name=name)
+        super().__init__(q0, transform, name=name, sharding=sharding)
 
 
 class SplineCouplingFlow(NormalizingFlow):
@@ -127,6 +141,7 @@ class SplineCouplingFlow(NormalizingFlow):
         coupling_class: nnx.Module = CouplingMLP,
         mixing_class: nnx.Module = Flip,
         name: Optional[str] = None,
+        sharding: jax.sharding.Mesh | None = None,
     ) -> None:
         self.input_dim = input_dim
         split_dim = input_dim // 2
@@ -144,24 +159,26 @@ class SplineCouplingFlow(NormalizingFlow):
             params = jnp.reshape(params, (dims, num_bins * 3))
             return jax.vmap(spline)(params, x)
 
-        coupling_net = partial(coupling_class, split_dim, params_dim, spline_fn)
+        coupling_net = partial(
+            coupling_class, split_dim, params_dim, spline_fn, sharding=sharding
+        )
 
         # Build the flow
         transforms = []
         for i in range(num_transforms):
             transforms += [coupling_net(rngs=rngs)]
             if i < num_transforms - 1:
-                transforms += [mixing_class(rngs=rngs)]
+                transforms += [mixing_class(rngs=rngs, sharding=sharding)]
         transforms += [last_transform] if last_transform is not None else []
 
-        transform = Sequential(*transforms)
+        transform = Sequential(*transforms, sharding=sharding)
 
         # Build the base distribution
         mu0 = jnp.zeros((input_dim,))
         std0 = jnp.ones((input_dim,))
         q0 = independent(norm(mu0, std0))
 
-        super().__init__(q0, transform, name=name)
+        super().__init__(q0, transform, name=name, sharding=sharding)
 
 
 class AdditiveAutoregressiveFlow(NormalizingFlow):
@@ -175,11 +192,16 @@ class AdditiveAutoregressiveFlow(NormalizingFlow):
         autoregressive_class: nnx.Module = AutoregressiveMLP,
         mixing_class: nnx.Module = Flip,
         name: Optional[str] = None,
+        sharding: jax.sharding.Mesh | None = None,
     ) -> None:
         self.input_dim = input_dim
         params_per_dim = 1
         autoregressive = partial(
-            autoregressive_class, input_dim, params_per_dim, additive_bijector
+            autoregressive_class,
+            input_dim,
+            params_per_dim,
+            additive_bijector,
+            sharding=sharding,
         )
 
         # Build the flow
@@ -187,17 +209,17 @@ class AdditiveAutoregressiveFlow(NormalizingFlow):
         for i in range(num_transforms):
             transforms += [autoregressive(rngs=rngs)]
             if i < num_transforms - 1:
-                transforms += [mixing_class(rngs=rngs)]
+                transforms += [mixing_class(rngs=rngs, sharding=sharding)]
         transforms += [last_transform] if last_transform is not None else []
 
-        transform = Sequential(*transforms)
+        transform = Sequential(*transforms, sharding=sharding)
 
         # Build the base distribution
         mu0 = jnp.zeros((input_dim,))
         std0 = jnp.ones((input_dim,))
         q0 = independent(norm(mu0, std0))
 
-        super().__init__(q0, transform, name=name)
+        super().__init__(q0, transform, name=name, sharding=sharding)
 
 
 class AffineAutoregressiveFlow(NormalizingFlow):
@@ -211,11 +233,16 @@ class AffineAutoregressiveFlow(NormalizingFlow):
         autoregressive_class: nnx.Module = AutoregressiveMLP,
         mixing_class: nnx.Module = Flip,
         name: Optional[str] = None,
+        sharding: jax.sharding.Mesh | None = None,
     ) -> None:
         self.input_dim = input_dim
         params_per_dim = 2
         autoregressive = partial(
-            autoregressive_class, input_dim, params_per_dim, affine_bijector
+            autoregressive_class,
+            input_dim,
+            params_per_dim,
+            affine_bijector,
+            sharding=sharding,
         )
 
         # Build the flow
@@ -223,17 +250,17 @@ class AffineAutoregressiveFlow(NormalizingFlow):
         for i in range(num_transforms):
             transforms += [autoregressive(rngs=rngs)]
             if i < num_transforms - 1:
-                transforms += [mixing_class(rngs=rngs)]
+                transforms += [mixing_class(rngs=rngs, sharding=sharding)]
         transforms += [last_transform] if last_transform is not None else []
 
-        transform = Sequential(*transforms)
+        transform = Sequential(*transforms, sharding=sharding)
 
         # Build the base distribution
         mu0 = jnp.zeros((input_dim,))
         std0 = jnp.ones((input_dim,))
         q0 = independent(norm(mu0, std0))
 
-        super().__init__(q0, transform, name=name)
+        super().__init__(q0, transform, name=name, sharding=sharding)
 
 
 class SplineAutoregressiveFlow(NormalizingFlow):
@@ -248,6 +275,7 @@ class SplineAutoregressiveFlow(NormalizingFlow):
         autoregressive_class: nnx.Module = AutoregressiveMLP,
         mixing_class: nnx.Module = Flip,
         name: Optional[str] = None,
+        sharding: jax.sharding.Mesh | None = None,
     ) -> None:
         self.input_dim = input_dim
         params_per_dim = 3 * num_bins * input_dim
@@ -263,7 +291,11 @@ class SplineAutoregressiveFlow(NormalizingFlow):
             return spline(params, x)
 
         autoregressive = partial(
-            autoregressive_class, input_dim, params_per_dim, spline_fn
+            autoregressive_class,
+            input_dim,
+            params_per_dim,
+            spline_fn,
+            sharding=sharding,
         )
 
         # Build the flow
@@ -271,14 +303,14 @@ class SplineAutoregressiveFlow(NormalizingFlow):
         for i in range(num_transforms):
             transforms += [autoregressive(rngs=rngs)]
             if i < num_transforms - 1:
-                transforms += [mixing_class(rngs=rngs)]
+                transforms += [mixing_class(rngs=rngs, sharding=sharding)]
         transforms += [last_transform] if last_transform is not None else []
 
-        transform = Sequential(*transforms)
+        transform = Sequential(*transforms, sharding=sharding)
 
         # Build the base distribution
         mu0 = jnp.zeros((input_dim,))
         std0 = jnp.ones((input_dim,))
         q0 = independent(norm(mu0, std0))
 
-        super().__init__(q0, transform, name=name)
+        super().__init__(q0, transform, name=name, sharding=sharding)

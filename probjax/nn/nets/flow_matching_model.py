@@ -6,6 +6,7 @@ import jax.tree_util
 from flax import nnx
 
 from probjax.nn.loss_fn.flow_matching import build_flow_matching_loss
+from probjax.nn.sharding import mesh_context
 from probjax.nn.nets.flow_matching_configs import (
     CosineInterpolationSchedule,
     FlowPreconditioningProtocol,
@@ -49,6 +50,7 @@ class FlowMatcher(nnx.Module):
         mu1: ArrayLike = 0.0,
         std1: ArrayLike = 1.0,
         loss_kwargs: Mapping[str, object] | None = None,
+        sharding: jax.sharding.Mesh | None = None,
         rngs: nnx.RngStream | None = None,
     ):
         if not isinstance(schedule, InterpolationScheduleProtocol):
@@ -66,11 +68,13 @@ class FlowMatcher(nnx.Module):
         self.preconditioning = preconditioning
         self.train_cfg = train_cfg
         self.solver_cfg = solver_cfg
+        self._mesh = sharding
 
-        self.mu0 = nnx.Variable(mu0)
-        self.std0 = nnx.Variable(std0)
-        self.mu1 = nnx.Variable(mu1)
-        self.std1 = nnx.Variable(std1)
+        with mesh_context(self._mesh):
+            self.mu0 = nnx.Variable(mu0)
+            self.std0 = nnx.Variable(std0)
+            self.mu1 = nnx.Variable(mu1)
+            self.std1 = nnx.Variable(std1)
 
         self._loss_kwargs: dict[str, object] = dict(loss_kwargs or {})
 
@@ -96,29 +100,30 @@ class FlowMatcher(nnx.Module):
         We can plug in all the values for this but predict mu_t by the model.
 
         """
-        # With preconditioning
-        mu0 = self.mu0.value
-        std0 = self.std0.value
-        mu1 = self.mu1.value
-        std1 = self.std1.value
+        with mesh_context(self._mesh):
+            # With preconditioning
+            mu0 = self.mu0.value
+            std0 = self.std0.value
+            mu1 = self.mu1.value
+            std1 = self.std1.value
 
-        x_normed, approx_mut, approx_stdt = self.preconditioning.normalize(
-            self.schedule, t, x, mu0, mu1, std0, std1
-        )
-        residual_pred = self.net(t, x_normed, *args, **kwargs)
-        residual_correction = jax.tree_util.tree_map(
-            lambda r: approx_stdt * r, residual_pred
-        )
-        return self.preconditioning.decode_velocity(
-            self.schedule,
-            t,
-            x,
-            mu0,
-            mu1,
-            std0,
-            std1,
-            residual_correction,
-        )
+            x_normed, approx_mut, approx_stdt = self.preconditioning.normalize(
+                self.schedule, t, x, mu0, mu1, std0, std1
+            )
+            residual_pred = self.net(t, x_normed, *args, **kwargs)
+            residual_correction = jax.tree_util.tree_map(
+                lambda r: approx_stdt * r, residual_pred
+            )
+            return self.preconditioning.decode_velocity(
+                self.schedule,
+                t,
+                x,
+                mu0,
+                mu1,
+                std0,
+                std1,
+                residual_correction,
+            )
 
     def score(self, t: ArrayLike, x: PyTree[Array], *args, **kwargs) -> PyTree[Array]:
         """Score function for the model."""
@@ -139,30 +144,33 @@ class FlowMatcher(nnx.Module):
         *args,
         **kwargs,
     ) -> Array:
-        loss_fn = build_flow_matching_loss(
-            self,
-            schedule=self.schedule,
-            weight_fn=None,
-            interpolation_grad_fn=None,
-            interpolation_noise_grad_fn=None,
-            **self._loss_kwargs,
-        )
+        with mesh_context(self._mesh):
+            loss_fn = build_flow_matching_loss(
+                self,
+                schedule=self.schedule,
+                weight_fn=None,
+                interpolation_grad_fn=None,
+                interpolation_noise_grad_fn=None,
+                **self._loss_kwargs,
+            )
 
-        rng_source, rng_times = jax.random.split(rng, 2)
+            rng_source, rng_times = jax.random.split(rng, 2)
 
-        # Generate noise for x0
-        x0 = (
-            jax.random.normal(rng_source, shape=data.shape) * self.std0.value
-            + self.mu0.value
-        )
+            # Generate noise for x0
+            x0 = (
+                jax.random.normal(rng_source, shape=data.shape) * self.std0.value
+                + self.mu0.value
+            )
 
-        # Get shape from data for time scheduling
-        data_shape = data.shape
-        ndims = data.ndim - 2
-        times = self.train_cfg.sample_times(rng_times, (data_shape[0],) + (1,) * ndims)
+            # Get shape from data for time scheduling
+            data_shape = data.shape
+            ndims = data.ndim - 2
+            times = self.train_cfg.sample_times(
+                rng_times, (data_shape[0],) + (1,) * ndims
+            )
 
-        loss = loss_fn(times, x0, data, *args, **kwargs)
-        return loss
+            loss = loss_fn(times, x0, data, *args, **kwargs)
+            return loss
 
     def solve_schedule(
         self,
@@ -187,6 +195,7 @@ class LinearFlow(FlowMatcher):
         solver_cfg: FlowSolverConfigProtocol | None = None,
         schedule: InterpolationScheduleProtocol | None = None,
         preconditioning: FlowPreconditioningProtocol | None = None,
+        sharding: jax.sharding.Mesh | None = None,
     ):
         schedule = schedule or LinearInterpolationSchedule()
         preconditioning = preconditioning or GaussianFlowPreconditioning()
@@ -203,6 +212,7 @@ class LinearFlow(FlowMatcher):
             std1=std1,
             rngs=rngs,
             loss_kwargs=loss_kwargs,
+            sharding=sharding,
         )
 
     def denoise(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:

@@ -6,6 +6,7 @@ from flax import nnx
 from flax.typing import Initializer
 
 from probjax.core import custom_inverse
+from probjax.nn.sharding import mesh_context
 from probjax.utils.typing import (
     Array,
     ArrayLike,
@@ -83,6 +84,7 @@ class Affine(nnx.Module):
         param_dtype: DTypeLike | None = None,
         scale_init: Initializer = identity_init,
         bias_init: Initializer = nnx.initializers.zeros,
+        sharding: jax.sharding.Mesh | None = None,
         rngs: nnx.Rngs,
     ):
         """Affine transformation module that applies scale and bias to input.
@@ -104,13 +106,15 @@ class Affine(nnx.Module):
         self.in_out_features = in_out_features
         self.dtype = dtype
         self.param_dtype = param_dtype
+        self._mesh = sharding
 
-        self.scale = nnx.Param(
-            scale_init(rngs.next(), shape=(in_out_features,), dtype=param_dtype)
-        )
-        self.bias = nnx.Param(
-            bias_init(rngs.next(), shape=(in_out_features,), dtype=param_dtype)
-        )
+        with mesh_context(self._mesh):
+            self.scale = nnx.Param(
+                scale_init(rngs.next(), shape=(in_out_features,), dtype=param_dtype)
+            )
+            self.bias = nnx.Param(
+                bias_init(rngs.next(), shape=(in_out_features,), dtype=param_dtype)
+            )
 
     def __call__(self, x: ArrayLike) -> Array:
         """Apply affine transformation to input.
@@ -121,16 +125,25 @@ class Affine(nnx.Module):
         Returns:
             Array with same shape as x, with affine transformation applied.
         """
-        x = jnp.asarray(x)
-        scale = self.scale.value.astype(self.dtype) if self.dtype else self.scale.value
-        bias = self.bias.value.astype(self.dtype) if self.dtype else self.bias.value
-        return x * scale + bias
+        with mesh_context(self._mesh):
+            x = jnp.asarray(x)
+            scale = (
+                self.scale.value.astype(self.dtype) if self.dtype else self.scale.value
+            )
+            bias = self.bias.value.astype(self.dtype) if self.dtype else self.bias.value
+            return x * scale + bias
 
 
 class Flip(nnx.Module):
     """Module for flipping arrays along a specified axis."""
 
-    def __init__(self, axis: int = -1, *, rngs: nnx.Rngs = None):
+    def __init__(
+        self,
+        axis: int = -1,
+        *,
+        sharding: jax.sharding.Mesh | None = None,
+        rngs: nnx.Rngs = None,
+    ):
         """Flip module that reverses elements along a specified axis.
 
         Args:
@@ -140,6 +153,7 @@ class Flip(nnx.Module):
         """
         del rngs  # Unused but kept for compatibility
         self.axis = axis
+        self._mesh = sharding
 
     def __call__(self, x: ArrayLike, *args) -> Array:
         """Flip the input array along the specified axis.
@@ -151,14 +165,22 @@ class Flip(nnx.Module):
         Returns:
             Array with same shape as x, flipped along the specified axis.
         """
-        x = jnp.asarray(x)
-        return jnp.flip(x, axis=self.axis)
+        with mesh_context(self._mesh):
+            x = jnp.asarray(x)
+            return jnp.flip(x, axis=self.axis)
 
 
 class Permute(nnx.Module):
     """Module for permuting arrays along a specified axis."""
 
-    def __init__(self, permutation: Array, axis: int = -1, *, rngs: nnx.Rngs = None):
+    def __init__(
+        self,
+        permutation: Array,
+        axis: int = -1,
+        *,
+        sharding: jax.sharding.Mesh | None = None,
+        rngs: nnx.Rngs = None,
+    ):
         """Permutation module that reorders elements along a specified axis.
 
         Args:
@@ -172,12 +194,14 @@ class Permute(nnx.Module):
             ValueError: If permutation contains negative values.
         """
         del rngs  # Unused but kept for compatibility
+        self._mesh = sharding
         permutation = jnp.asarray(permutation)
 
         if jnp.any(permutation < 0):
             raise ValueError("Permutation indices must be non-negative")
 
-        self.permutation = nnx.Variable(permutation)
+        with mesh_context(self._mesh):
+            self.permutation = nnx.Variable(permutation)
         self.axis = axis
 
     def __call__(self, x: ArrayLike, *args) -> Array:
@@ -193,8 +217,9 @@ class Permute(nnx.Module):
         Raises:
             ValueError: If permutation indices are out of bounds for the axis.
         """
-        x = jnp.asarray(x)
-        return jnp.take(x, self.permutation.value, axis=self.axis)
+        with mesh_context(self._mesh):
+            x = jnp.asarray(x)
+            return jnp.take(x, self.permutation.value, axis=self.axis)
 
 
 class Rotate(nnx.Module):
@@ -208,6 +233,7 @@ class Rotate(nnx.Module):
         learnable: bool = False,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
+        sharding: jax.sharding.Mesh | None = None,
         rngs: nnx.Rngs,
     ):
         """Rotation module that applies orthogonal transformations to input.
@@ -232,35 +258,37 @@ class Rotate(nnx.Module):
         self.learnable = learnable
         self.dtype = dtype
         self.param_dtype = param_dtype
+        self._mesh = sharding
 
-        if not learnable:
-            if rotation_matrix is None:
-                # Generate random orthogonal matrix
-                self.rotation_matrix = nnx.Variable(
-                    nnx.initializers.orthogonal()(
-                        rngs.next(),
-                        shape=(in_out_features, in_out_features),
-                        dtype=param_dtype,
+        with mesh_context(self._mesh):
+            if not learnable:
+                if rotation_matrix is None:
+                    # Generate random orthogonal matrix
+                    self.rotation_matrix = nnx.Variable(
+                        nnx.initializers.orthogonal()(
+                            rngs.next(),
+                            shape=(in_out_features, in_out_features),
+                            dtype=param_dtype,
+                        )
                     )
-                )
+                else:
+                    rotation_matrix = jnp.asarray(rotation_matrix)
+                    if rotation_matrix.shape != (in_out_features, in_out_features):
+                        raise ValueError(
+                            f"rotation_matrix shape {rotation_matrix.shape} "
+                            f"doesn't match expected shape "
+                            f"({in_out_features}, {in_out_features})"
+                        )
+                    self.rotation_matrix = nnx.Variable(rotation_matrix)
             else:
-                rotation_matrix = jnp.asarray(rotation_matrix)
-                if rotation_matrix.shape != (in_out_features, in_out_features):
-                    raise ValueError(
-                        f"rotation_matrix shape {rotation_matrix.shape} "
-                        f"doesn't match expected shape "
-                        f"({in_out_features}, {in_out_features})"
+                # Use skew-symmetric matrix parameterization for learnable rotation
+                # The matrix exponential of any skew-symmetric matrix is orthogonal
+                skew_params_size = in_out_features * (in_out_features - 1) // 2
+                self.skew_params = nnx.Param(
+                    nnx.initializers.normal(stddev=0.1)(
+                        rngs.next(), shape=(skew_params_size,), dtype=param_dtype
                     )
-                self.rotation_matrix = nnx.Variable(rotation_matrix)
-        else:
-            # Use skew-symmetric matrix parameterization for learnable rotation
-            # The matrix exponential of any skew-symmetric matrix is orthogonal
-            skew_params_size = in_out_features * (in_out_features - 1) // 2
-            self.skew_params = nnx.Param(
-                nnx.initializers.normal(stddev=0.1)(
-                    rngs.next(), shape=(skew_params_size,), dtype=param_dtype
                 )
-            )
 
     def __call__(self, x: ArrayLike, *args) -> Array:
         """Apply rotation transformation to input.
@@ -272,21 +300,22 @@ class Rotate(nnx.Module):
         Returns:
             Array with same shape as x, with rotation applied.
         """
-        x = jnp.asarray(x)
+        with mesh_context(self._mesh):
+            x = jnp.asarray(x)
 
-        if not self.learnable:
-            rotation_matrix = jax.lax.stop_gradient(self.rotation_matrix.value)
-        else:
-            rotation_matrix = skew_symmetric_to_rotation_matrix(
-                self.skew_params.value, self.in_out_features
-            )
+            if not self.learnable:
+                rotation_matrix = jax.lax.stop_gradient(self.rotation_matrix.value)
+            else:
+                rotation_matrix = skew_symmetric_to_rotation_matrix(
+                    self.skew_params.value, self.in_out_features
+                )
 
-        # Apply dtype conversion if needed
-        if self.dtype:
-            rotation_matrix = rotation_matrix.astype(self.dtype)
-            x = x.astype(self.dtype)
+            # Apply dtype conversion if needed
+            if self.dtype:
+                rotation_matrix = rotation_matrix.astype(self.dtype)
+                x = x.astype(self.dtype)
 
-        return rotate(rotation_matrix, x)
+            return rotate(rotation_matrix, x)
 
 
 @partial(custom_inverse, inv_argnum=1)

@@ -14,6 +14,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from flax.jax_utils import prefetch_to_device
+from jax.sharding import Mesh, NamedSharding, PartitionSpec, Sharding
 
 from probjax.utils.typing import Device
 
@@ -41,6 +42,19 @@ def _shard(batch, n_dev):
 def _prefetch_single(iterator, size, device):
     dq = collections.deque()
     _put = lambda x: jax.device_put(x, device)
+    _fill = lambda n: [
+        dq.append(jax.tree_util.tree_map(_put, d))
+        for d in itertools.islice(iterator, n)
+    ]
+    _fill(size)
+    while dq:
+        yield dq.popleft()
+        _fill(1)
+
+
+def _prefetch_sharding(iterator, size, sharding: Sharding):
+    dq = collections.deque()
+    _put = lambda x: jax.device_put(x, sharding)
     _fill = lambda n: [
         dq.append(jax.tree_util.tree_map(_put, d))
         for d in itertools.islice(iterator, n)
@@ -316,6 +330,13 @@ class DataLoader:
         (and sharded, if `shard=True`). Pass JIT-compiled functions for best speed.
     host_device       : jax.Device | None
         Device that stores producer-side batches before they are prefetched.
+    sharding          : jax.sharding.Sharding | None
+        Optional global sharding to apply when moving batches to device.
+        Mutually exclusive with shard=True and mesh/batch_spec.
+    mesh              : jax.sharding.Mesh | None
+        Mesh used to build a NamedSharding when batch_spec is provided.
+    batch_spec        : jax.sharding.PartitionSpec | None
+        PartitionSpec for the batch when mesh is provided.
     max_in_flight      : int | None
         Number of in-flight CPU batch jobs scheduled via `run_in_executor`.
         Keeping this >1 enables actual async pipelining. Order is preserved.
@@ -342,6 +363,9 @@ class DataLoader:
         num_async_workers: int = 1,
         host_device: Optional[Device] = None,
         max_in_flight: Optional[int] = None,
+        sharding: Sharding | None = None,
+        mesh: Mesh | None = None,
+        batch_spec: PartitionSpec | None = None,
     ):
         if batch_size <= 0:
             raise ValueError("batch_size must be positive.")
@@ -376,6 +400,8 @@ class DataLoader:
         self._min_fill, self._prefetch_dev = min_fill, max(1, num_prefetch_device)
 
         # -------- device config -------- #
+        if shard and (sharding is not None or mesh is not None or batch_spec is not None):
+            raise ValueError("Use either shard=True or explicit sharding/mesh, not both.")
         self._shard_flag = shard
         self._devices = list(devices) if devices else jax.local_devices()
         self._n_dev = len(self._devices)
@@ -386,6 +412,8 @@ class DataLoader:
                 cpu_devices = []
             host_device = cpu_devices[0] if cpu_devices else jax.devices()[0]
         self._host_device = host_device
+
+        self._sharding = self._resolve_sharding(sharding, mesh, batch_spec)
 
         # -------- infra ---------------- #
         self._num_async_workers = int(num_async_workers)
@@ -415,6 +443,22 @@ class DataLoader:
         self._finalizer_ref = weakref.finalize(
             self, DataLoader._finalize, weakref.ref(self)
         )
+
+    @staticmethod
+    def _resolve_sharding(
+        sharding: Sharding | None,
+        mesh: Mesh | None,
+        batch_spec: PartitionSpec | None,
+    ) -> Sharding | None:
+        if sharding is not None:
+            if mesh is not None or batch_spec is not None:
+                raise ValueError("Provide either sharding or mesh+batch_spec, not both.")
+            return sharding
+        if mesh is None and batch_spec is None:
+            return None
+        if mesh is None or batch_spec is None:
+            raise ValueError("mesh and batch_spec must be provided together.")
+        return NamedSharding(mesh, batch_spec)
 
     @staticmethod
     def _finalize(self_ref: "weakref.ReferenceType[DataLoader]"):
@@ -610,11 +654,14 @@ class DataLoader:
         if self._shard_flag:
             host_it = (_shard(b, self._n_dev) for b in host_it)
 
-        dev_it = (
-            _prefetch_single(host_it, self._prefetch_dev, self._devices[0])
-            if self._n_dev == 1 and not self._shard_flag
-            else prefetch_to_device(host_it, self._prefetch_dev, self._devices)
-        )
+        if self._sharding is not None:
+            dev_it = _prefetch_sharding(host_it, self._prefetch_dev, self._sharding)
+        else:
+            dev_it = (
+                _prefetch_single(host_it, self._prefetch_dev, self._devices[0])
+                if self._n_dev == 1 and not self._shard_flag
+                else prefetch_to_device(host_it, self._prefetch_dev, self._devices)
+            )
 
         # generator wrapper ensures close() runs on exception unwind (CPython refcount)
         def gen():

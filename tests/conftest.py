@@ -1,3 +1,34 @@
+import os
+import sys
+
+
+def _marker_expr_from_args(argv):
+    if "-m" in argv:
+        idx = argv.index("-m")
+        if idx + 1 < len(argv):
+            return argv[idx + 1]
+    for arg in argv:
+        if arg.startswith("-m") and len(arg) > 2:
+            return arg[2:]
+    return ""
+
+
+def _mesh_marker_enabled():
+    expr = _marker_expr_from_args(sys.argv)
+    expr = expr.strip()
+    if not expr:
+        return False
+    return expr == "mesh"
+
+
+cpu_devices = 2
+enable_multi = _mesh_marker_enabled()
+if enable_multi and cpu_devices > 1:
+    xla_flags = os.environ.get("XLA_FLAGS", "")
+    flag = f"--xla_force_host_platform_device_count={cpu_devices}"
+    if flag not in xla_flags:
+        os.environ["XLA_FLAGS"] = f"{xla_flags} {flag}".strip()
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -109,6 +140,7 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "gpu: requires GPU to run")
+    config.addinivalue_line("markers", "mesh: requires multi-device mesh to run")
     # Set JAX platform based on device option
     device = config.getoption("--device")
     jax.config.update("jax_platform_name", device)
@@ -118,6 +150,11 @@ def pytest_collection_modifyitems(config, items):
     device = config.getoption("--device")
     if device == "gpu":
         return
+    if enable_multi:
+        skip_non_mesh = pytest.mark.skip(reason="requires -m mesh to run")
+        for item in items:
+            if "mesh" not in item.keywords:
+                item.add_marker(skip_non_mesh)
     skip_gpu = pytest.mark.skip(reason="need --device gpu option to run")
     for item in items:
         if "gpu" in item.keywords:

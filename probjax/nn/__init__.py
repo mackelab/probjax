@@ -80,6 +80,8 @@ from probjax.nn.nets import (
     LogitNormalFlowTrainingConfig,
     SigmoidPairFlowTrainingConfig,
     RhoFlowSolverConfig,
+    LinearShardingSpec,
+    MLPShardingSpec,
     MaskedMLP,
     MeanFlowMatcher,
     NormalizingFlow,
