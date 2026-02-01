@@ -7,11 +7,7 @@ import jax.numpy as jnp
 from flax import nnx
 from flax.typing import Initializer
 
-from probjax.nn.sharding import (
-    DEFAULT_LINEAR_SHARDING,
-    DEFAULT_MHA_SHARDING,
-    mesh_context,
-)
+from probjax.nn.sharding import DEFAULT_LINEAR_SHARDING, DEFAULT_MHA_SHARDING
 from probjax.utils.typing import (
     Array,
     ArrayLike,
@@ -71,48 +67,47 @@ class PosEncode(nnx.Module):
         Raises:
             ValueError: If sequence length exceeds max_seq_len.
         """
-        with mesh_context(self._mesh):
-            seq_len = x.shape[-2]
-            token_dim = x.shape[-1]
+        seq_len = x.shape[-2]
+        token_dim = x.shape[-1]
 
-            if idx is None:
-                idx = jnp.arange(seq_len, dtype=jnp.float32)
-            else:
-                idx = jnp.asarray(idx, dtype=jnp.float32)
-                if idx.shape != (seq_len,):
-                    raise ValueError(
-                        f"idx shape {idx.shape} doesn't match sequence length {seq_len}"
-                    )
+        if idx is None:
+            idx = jnp.arange(seq_len, dtype=jnp.float32)
+        else:
+            idx = jnp.asarray(idx, dtype=jnp.float32)
+            if idx.shape != (seq_len,):
+                raise ValueError(
+                    f"idx shape {idx.shape} doesn't match sequence length {seq_len}"
+                )
 
-            # Create position encoding using the standard formula
-            # PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
-            # PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
-            div_term = jnp.exp(
-                jnp.arange(0, token_dim, 2, dtype=jnp.float32)
-                * (-jnp.log(self.max_seq_len) / token_dim)
-            )
+        # Create position encoding using the standard formula
+        # PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
+        # PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
+        div_term = jnp.exp(
+            jnp.arange(0, token_dim, 2, dtype=jnp.float32)
+            * (-jnp.log(self.max_seq_len) / token_dim)
+        )
 
-            # Reshape for broadcasting: [seq_len, 1] * [token_dim//2]
-            pos_encoding = jnp.zeros((seq_len, token_dim), dtype=x.dtype)
-            pos_encoding = pos_encoding.at[:, 0::2].set(
-                jnp.sin(idx[:, None] * div_term[None, :])
-            )
-            pos_encoding = pos_encoding.at[:, 1::2].set(
-                jnp.cos(idx[:, None] * div_term[None, :])
-            )
+        # Reshape for broadcasting: [seq_len, 1] * [token_dim//2]
+        pos_encoding = jnp.zeros((seq_len, token_dim), dtype=x.dtype)
+        pos_encoding = pos_encoding.at[:, 0::2].set(
+            jnp.sin(idx[:, None] * div_term[None, :])
+        )
+        pos_encoding = pos_encoding.at[:, 1::2].set(
+            jnp.cos(idx[:, None] * div_term[None, :])
+        )
 
-            # Reshape to match input dimensions
-            batch_shape = x.shape[:-2]
-            pos_encoding = pos_encoding.reshape(
-                (1,) * len(batch_shape) + pos_encoding.shape
-            )
+        # Reshape to match input dimensions
+        batch_shape = x.shape[:-2]
+        pos_encoding = pos_encoding.reshape(
+            (1,) * len(batch_shape) + pos_encoding.shape
+        )
 
-            out = x + pos_encoding
-            if self._mesh is not None:
-                spec = _activation_spec_for_rank(out.ndim)
-                if spec is not None:
-                    out = jax.lax.with_sharding_constraint(out, spec)
-            return out
+        out = x + pos_encoding
+        if self._mesh is not None:
+            spec = _activation_spec_for_rank(out.ndim)
+            if spec is not None:
+                out = jax.lax.with_sharding_constraint(out, spec)
+        return out
 
 
 class RotaryPosEncode(nnx.Module):
@@ -191,15 +186,14 @@ class RotaryPosEncode(nnx.Module):
 
         self._full_inv_freq = self._compute_inv_freq(self.rotary_dim)
 
-        with mesh_context(self._mesh):
-            if cache_cos_sin:
-                positions = jnp.arange(max_seq_len, dtype=self._full_inv_freq.dtype)
-                cos, sin = self._compute_cos_sin(positions, self._full_inv_freq)
-                self.cos_cache = nnx.Variable(cos)
-                self.sin_cache = nnx.Variable(sin)
-            else:
-                self.cos_cache = None
-                self.sin_cache = None
+        if cache_cos_sin:
+            positions = jnp.arange(max_seq_len, dtype=self._full_inv_freq.dtype)
+            cos, sin = self._compute_cos_sin(positions, self._full_inv_freq)
+            self.cos_cache = nnx.Variable(cos)
+            self.sin_cache = nnx.Variable(sin)
+        else:
+            self.cos_cache = None
+            self.sin_cache = None
 
     def _compute_inv_freq(self, rotary_dim: int) -> Array:
         dtype = self.dtype or jnp.float32
@@ -303,66 +297,65 @@ class RotaryPosEncode(nnx.Module):
                    rope = RotaryPosEncode(model_dim, rotary_dim=64)
                    x = rope(x, idx=coords)
         """
-        with mesh_context(self._mesh):
-            x = jnp.asarray(x)
-            seq_len = x.shape[-2]
+        x = jnp.asarray(x)
+        seq_len = x.shape[-2]
 
-            idx_arr = None if idx is None else jnp.asarray(idx)
-            if idx_arr is not None and idx_arr.shape[0] != seq_len:
+        idx_arr = None if idx is None else jnp.asarray(idx)
+        if idx_arr is not None and idx_arr.shape[0] != seq_len:
+            raise ValueError(
+                f"idx shape {idx_arr.shape} doesn't match sequence length {seq_len}"
+            )
+        if idx_arr is not None and idx_arr.ndim > 2:
+            raise ValueError("idx must be rank 1 or 2")
+
+        position_dims = (
+            1 if idx_arr is None or idx_arr.ndim == 1 else idx_arr.shape[-1]
+        )
+
+        offsets = self._normalize_offset(offset, position_dims)
+
+        rotary_slice = x[..., : self.rotary_dim]
+        remainder = (
+            x[..., self.rotary_dim :] if self.rotary_dim < self.token_dim else None
+        )
+
+        if position_dims == 1:
+            idx_1d = None if idx_arr is None else idx_arr.reshape((seq_len,))
+            cos, sin = self._lookup_cos_sin_1d(seq_len, idx_1d, offset=offsets[0])
+            rotary_out = self._apply_rotary(rotary_slice, cos, sin)
+        else:
+            if self.rotary_dim % position_dims != 0:
                 raise ValueError(
-                    f"idx shape {idx_arr.shape} doesn't match sequence length {seq_len}"
+                    "rotary_dim must be divisible by the number of positional dimensions"
                 )
-            if idx_arr is not None and idx_arr.ndim > 2:
-                raise ValueError("idx must be rank 1 or 2")
+            chunk = self.rotary_dim // position_dims
+            if chunk % 2 != 0:
+                raise ValueError("rotary_dim per positional dimension must be even")
+            if idx_arr is None:
+                raise ValueError(
+                    "idx must be provided when using ND rotary coordinates"
+                )
+            inv_freq_axis = self._compute_inv_freq(chunk)
+            rotated_parts = []
+            for axis in range(position_dims):
+                pos_axis = idx_arr[:, axis] + offsets[axis]
+                cos_axis, sin_axis = self._compute_cos_sin(pos_axis, inv_freq_axis)
+                axis_slice = rotary_slice[..., axis * chunk : (axis + 1) * chunk]
+                rotated_parts.append(
+                    self._apply_rotary(axis_slice, cos_axis, sin_axis)
+                )
+            rotary_out = jnp.concatenate(rotated_parts, axis=-1)
 
-            position_dims = (
-                1 if idx_arr is None or idx_arr.ndim == 1 else idx_arr.shape[-1]
-            )
-
-            offsets = self._normalize_offset(offset, position_dims)
-
-            rotary_slice = x[..., : self.rotary_dim]
-            remainder = (
-                x[..., self.rotary_dim :] if self.rotary_dim < self.token_dim else None
-            )
-
-            if position_dims == 1:
-                idx_1d = None if idx_arr is None else idx_arr.reshape((seq_len,))
-                cos, sin = self._lookup_cos_sin_1d(seq_len, idx_1d, offset=offsets[0])
-                rotary_out = self._apply_rotary(rotary_slice, cos, sin)
-            else:
-                if self.rotary_dim % position_dims != 0:
-                    raise ValueError(
-                        "rotary_dim must be divisible by the number of positional dimensions"
-                    )
-                chunk = self.rotary_dim // position_dims
-                if chunk % 2 != 0:
-                    raise ValueError("rotary_dim per positional dimension must be even")
-                if idx_arr is None:
-                    raise ValueError(
-                        "idx must be provided when using ND rotary coordinates"
-                    )
-                inv_freq_axis = self._compute_inv_freq(chunk)
-                rotated_parts = []
-                for axis in range(position_dims):
-                    pos_axis = idx_arr[:, axis] + offsets[axis]
-                    cos_axis, sin_axis = self._compute_cos_sin(pos_axis, inv_freq_axis)
-                    axis_slice = rotary_slice[..., axis * chunk : (axis + 1) * chunk]
-                    rotated_parts.append(
-                        self._apply_rotary(axis_slice, cos_axis, sin_axis)
-                    )
-                rotary_out = jnp.concatenate(rotated_parts, axis=-1)
-
-            out = (
-                jnp.concatenate([rotary_out, remainder], axis=-1)
-                if remainder is not None
-                else rotary_out
-            )
-            if self._mesh is not None:
-                spec = _activation_spec_for_rank(out.ndim)
-                if spec is not None:
-                    out = jax.lax.with_sharding_constraint(out, spec)
-            return out
+        out = (
+            jnp.concatenate([rotary_out, remainder], axis=-1)
+            if remainder is not None
+            else rotary_out
+        )
+        if self._mesh is not None:
+            spec = _activation_spec_for_rank(out.ndim)
+            if spec is not None:
+                out = jax.lax.with_sharding_constraint(out, spec)
+        return out
 
     def _apply_spatial(
         self,
@@ -457,15 +450,14 @@ class LearnablePosEncode(nnx.Module):
 
         self.max_seq_len = max_seq_len
         self._mesh = sharding
-        with mesh_context(self._mesh):
-            self.embed = nnx.Embed(
-                max_seq_len,
-                in_out_features,
-                dtype=dtype,
-                param_dtype=param_dtype,
-                embedding_init=embedding_init,
-                rngs=rngs,
-            )
+        self.embed = nnx.Embed(
+            max_seq_len,
+            in_out_features,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            embedding_init=embedding_init,
+            rngs=rngs,
+        )
 
     def __call__(self, x: ArrayLike, idx: ArrayLike | None = None) -> Array:
         """Add learned positional embeddings to input.
@@ -481,36 +473,35 @@ class LearnablePosEncode(nnx.Module):
         Raises:
             ValueError: If sequence length exceeds max_seq_len.
         """
-        with mesh_context(self._mesh):
-            x = jnp.asarray(x)
-            seq_len = x.shape[-2]
+        x = jnp.asarray(x)
+        seq_len = x.shape[-2]
 
-            if seq_len > self.max_seq_len:
+        if seq_len > self.max_seq_len:
+            raise ValueError(
+                f"Sequence length {seq_len} exceeds max_seq_len {self.max_seq_len}"
+            )
+
+        if idx is None:
+            idx = jnp.arange(seq_len)
+        else:
+            idx = jnp.asarray(idx)
+            if idx.shape != (seq_len,):
                 raise ValueError(
-                    f"Sequence length {seq_len} exceeds max_seq_len {self.max_seq_len}"
+                    f"idx shape {idx.shape} doesn't match sequence length {seq_len}"
                 )
 
-            if idx is None:
-                idx = jnp.arange(seq_len)
-            else:
-                idx = jnp.asarray(idx)
-                if idx.shape != (seq_len,):
-                    raise ValueError(
-                        f"idx shape {idx.shape} doesn't match sequence length {seq_len}"
-                    )
+        pos_emb = self.embed(idx)
 
-            pos_emb = self.embed(idx)
+        # Reshape to match input dimensions: [..., seq_len, features]
+        batch_shape = x.shape[:-2]
+        pos_emb = pos_emb.reshape((1,) * len(batch_shape) + pos_emb.shape)
 
-            # Reshape to match input dimensions: [..., seq_len, features]
-            batch_shape = x.shape[:-2]
-            pos_emb = pos_emb.reshape((1,) * len(batch_shape) + pos_emb.shape)
-
-            out = x + pos_emb
-            if self._mesh is not None:
-                spec = _activation_spec_for_rank(out.ndim)
-                if spec is not None:
-                    out = jax.lax.with_sharding_constraint(out, spec)
-            return out
+        out = x + pos_emb
+        if self._mesh is not None:
+            spec = _activation_spec_for_rank(out.ndim)
+            if spec is not None:
+                out = jax.lax.with_sharding_constraint(out, spec)
+        return out
 
 
 class GaussianFourierEmbedding(nnx.Module):
@@ -571,11 +562,10 @@ class GaussianFourierEmbedding(nnx.Module):
             rngs.next(), shape=(half_dim, in_features), dtype=param_dtype
         )
 
-        with mesh_context(self._mesh):
-            if learnable:
-                self.P = nnx.Param(P_init)
-            else:
-                self.P = nnx.Variable(P_init)
+        if learnable:
+            self.P = nnx.Param(P_init)
+        else:
+            self.P = nnx.Variable(P_init)
 
     def __call__(self, inputs: ArrayLike) -> Array:
         """Apply Gaussian Fourier embedding to inputs.
@@ -586,41 +576,40 @@ class GaussianFourierEmbedding(nnx.Module):
         Returns:
             Array of shape [..., output_dim] with Fourier features.
         """
-        with mesh_context(self._mesh):
-            inputs = jnp.asarray(inputs)
-            P = self.P.value
+        inputs = jnp.asarray(inputs)
+        P = self.P.value
 
-            # Ensure P has the correct compute dtype
-            P = P.astype(self.dtype) if self.dtype else P
-            inputs = inputs.astype(self.dtype) if self.dtype else inputs
+        # Ensure P has the correct compute dtype
+        P = P.astype(self.dtype) if self.dtype else P
+        inputs = inputs.astype(self.dtype) if self.dtype else inputs
 
-            if not self.learnable:
-                # Ensure P is not updated during backprop
-                P = jax.lax.stop_gradient(P)
+        if not self.learnable:
+            # Ensure P is not updated during backprop
+            P = jax.lax.stop_gradient(P)
 
-            # Compute 2π * inputs @ P^T
-            frequencies = (2 * jnp.pi / self.in_features) * jnp.dot(
-                inputs,
-                P.T,
-                precision=self.precision,
-                preferred_element_type=self.preferred_element_type,
-            )
-            # Ensure correct preferred element type
-            if self.preferred_element_type:
-                frequencies = frequencies.astype(self.preferred_element_type)
+        # Compute 2π * inputs @ P^T
+        frequencies = (2 * jnp.pi / self.in_features) * jnp.dot(
+            inputs,
+            P.T,
+            precision=self.precision,
+            preferred_element_type=self.preferred_element_type,
+        )
+        # Ensure correct preferred element type
+        if self.preferred_element_type:
+            frequencies = frequencies.astype(self.preferred_element_type)
 
-            # Apply sin and cos
-            cos_features = jnp.cos(frequencies)
-            sin_features = jnp.sin(frequencies)
+        # Apply sin and cos
+        cos_features = jnp.cos(frequencies)
+        sin_features = jnp.sin(frequencies)
 
-            # Concatenate and truncate to exact output_dim
-            features = jnp.concatenate([cos_features, sin_features], axis=-1)
-            out = features[..., : self.out_features]
-            if self._mesh is not None:
-                spec = _activation_spec_for_rank(out.ndim)
-                if spec is not None:
-                    out = jax.lax.with_sharding_constraint(out, spec)
-            return out
+        # Concatenate and truncate to exact output_dim
+        features = jnp.concatenate([cos_features, sin_features], axis=-1)
+        out = features[..., : self.out_features]
+        if self._mesh is not None:
+            spec = _activation_spec_for_rank(out.ndim)
+            if spec is not None:
+                out = jax.lax.with_sharding_constraint(out, spec)
+        return out
 
 
 class OneHot(nnx.Module):
@@ -661,19 +650,18 @@ class OneHot(nnx.Module):
         Raises:
             ValueError: If input contains indices outside valid range.
         """
-        with mesh_context(self._mesh):
-            x = jnp.asarray(x)
+        x = jnp.asarray(x)
 
-            # Validate input range
-            if jnp.any(x < 0) or jnp.any(x >= self.num_tokens):
-                raise ValueError(
-                    f"Input indices must be in range [0, {self.num_tokens}), "
-                    f"but got min={jnp.min(x)}, max={jnp.max(x)}"
-                )
+        # Validate input range
+        if jnp.any(x < 0) or jnp.any(x >= self.num_tokens):
+            raise ValueError(
+                f"Input indices must be in range [0, {self.num_tokens}), "
+                f"but got min={jnp.min(x)}, max={jnp.max(x)}"
+            )
 
-            out = jax.nn.one_hot(x, self.num_tokens)
-            if self._mesh is not None:
-                spec = _activation_spec_for_rank(out.ndim)
-                if spec is not None:
-                    out = jax.lax.with_sharding_constraint(out, spec)
-            return out
+        out = jax.nn.one_hot(x, self.num_tokens)
+        if self._mesh is not None:
+            spec = _activation_spec_for_rank(out.ndim)
+            if spec is not None:
+                out = jax.lax.with_sharding_constraint(out, spec)
+        return out

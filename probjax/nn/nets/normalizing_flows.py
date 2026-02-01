@@ -14,7 +14,7 @@ from probjax.nn.layers.bijective import Flip
 from probjax.nn.nets.autoregressive import AutoregressiveMLP
 from probjax.nn.nets.coupling import CouplingMLP
 from probjax.nn.nets.simple import Sequential
-from probjax.nn.sharding import mesh_context
+
 from probjax.stats.continuous import norm
 from probjax.stats.independent import independent
 from probjax.stats.transformed import transformed
@@ -35,8 +35,7 @@ class NormalizingFlow(nnx.Module):
         super().__init__()
 
     def transform(self, x):
-        with mesh_context(self._mesh):
-            return self.transformation(x)
+        return self.transformation(x)
 
     def __call__(self, x):
         return self.transform(x)

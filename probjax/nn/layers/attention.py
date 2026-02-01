@@ -16,7 +16,7 @@ from probjax.nn.pallas_kernels.attention_mask_bias import (
     AttentionMask,
     QKVLengthMask,
 )
-from probjax.nn.sharding import DEFAULT_MHA_SHARDING, mesh_context
+from probjax.nn.sharding import DEFAULT_MHA_SHARDING
 from probjax.nn.utils import pad_to_power_of_2
 from probjax.utils.typing import Array, ArrayLike
 
@@ -41,8 +41,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
             self._activation_sharding = spec.activation
         else:
             self._activation_sharding = None
-        with mesh_context(self._mesh):
-            super().__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
     def __call__(
         self,
@@ -90,139 +89,138 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         Returns:
         output of shape `[batch_sizes..., length, features]`.
         """
-        with mesh_context(self._mesh):
-            if rngs is None:
-                rngs = self.rngs
-            elif isinstance(rngs, rnglib.Rngs):
-                rngs = rngs.dropout
+        if rngs is None:
+            rngs = self.rngs
+        elif isinstance(rngs, rnglib.Rngs):
+            rngs = rngs.dropout
 
-            if inputs_k is None:
-                if inputs_v is not None:
-                    raise ValueError(
-                        '`inputs_k` cannot be None if `inputs_v` is not None. '
-                        'To have both `inputs_k` and `inputs_v` be the same value, pass in the '
-                        'value to `inputs_k` and leave `inputs_v` as None.'
-                    )
-                inputs_k = inputs_q
-                if inputs_v is None:
-                    inputs_v = inputs_k
-
-            if inputs_q.shape[-1] != self.in_features:
+        if inputs_k is None:
+            if inputs_v is not None:
                 raise ValueError(
-                    f'Incompatible input dimension, got {inputs_q.shape[-1]} '
-                    f'but module expects {self.in_features}.'
+                    '`inputs_k` cannot be None if `inputs_v` is not None. '
+                    'To have both `inputs_k` and `inputs_v` be the same value, pass in the '
+                    'value to `inputs_k` and leave `inputs_v` as None.'
                 )
+            inputs_k = inputs_q
+            if inputs_v is None:
+                inputs_v = inputs_k
 
-            query = self.query(inputs_q)
-            key = self.key(inputs_k)
-            value = self.value(inputs_v)
+        if inputs_q.shape[-1] != self.in_features:
+            raise ValueError(
+                f'Incompatible input dimension, got {inputs_q.shape[-1]} '
+                f'but module expects {self.in_features}.'
+            )
 
-            if self.normalize_qk:
-                assert self.query_ln is not None and self.key_ln is not None
-                # Normalizing query and key projections stabilizes training with higher
-                # LR. See ViT-22B paper http://arxiv.org/abs/2302.05442 for analysis.
-                query = self.query_ln(query)
-                key = self.key_ln(key)
+        query = self.query(inputs_q)
+        key = self.key(inputs_k)
+        value = self.value(inputs_v)
+
+        if self.normalize_qk:
+            assert self.query_ln is not None and self.key_ln is not None
+            # Normalizing query and key projections stabilizes training with higher
+            # LR. See ViT-22B paper http://arxiv.org/abs/2302.05442 for analysis.
+            query = self.query_ln(query)
+            key = self.key_ln(key)
 
         # During fast autoregressive decoding, we feed one position at a time,
         # and cache the keys and values step by step.
-            decode = first_from(
-                decode,
-                self.decode,
-                error_msg="""No `decode` argument was provided to MultiHeadAttention
+        decode = first_from(
+            decode,
+            self.decode,
+            error_msg="""No `decode` argument was provided to MultiHeadAttention
+                as either a __call__ argument, class attribute, or nnx.flag.""",
+        )
+
+        if decode:
+            # Only supported with Array based attention masks for now.
+            if mask is not None and not isinstance(mask, jax.Array):
+                raise ValueError(
+                    "Autoregressive caching with MultiHeadAttention only supports "
+                    "Array based attention masks for now."
+                )
+            if (
+                self.cached_key is None
+                or self.cached_value is None
+                or self.cache_index is None
+            ):
+                raise ValueError(
+                    'Autoregressive cache not initialized, call ``init_cache`` first.'
+                )
+            (
+                *batch_dims,
+                max_length,
+                num_heads,
+                depth_per_head,
+            ) = self.cached_key.value.shape
+            # shape check of cached keys against query input
+            expected_shape = tuple(batch_dims) + (1, num_heads, depth_per_head)
+            if expected_shape != query.shape:
+                raise ValueError(
+                    'Autoregressive cache shape error, '
+                    'expected query shape %s instead got %s.'
+                    % (expected_shape, query.shape)
+                )
+            # update key, value caches with our new 1d spatial slices
+            cur_index = self.cache_index[...]
+            zero = jnp.array(0, dtype=lax.dtype(cur_index.dtype))
+            indices = (zero,) * len(batch_dims) + (cur_index, zero, zero)
+            key = lax.dynamic_update_slice(self.cached_key[...], key, indices)
+            value = lax.dynamic_update_slice(self.cached_value[...], value, indices)
+            self.cached_key[...] = key
+            self.cached_value[...] = value
+            self.cache_index[...] += 1
+            # causal mask for cached decoder self-attention:
+            # our single query position should only attend to those key
+            # positions that have already been generated and cached,
+            # not the remaining zero elements.
+            mask = combine_masks(
+                mask,
+                jnp.broadcast_to(
+                    jnp.arange(max_length) <= cur_index,
+                    tuple(batch_dims) + (1, 1, max_length),
+                ),
+            )
+
+        if self.dropout_rate > 0.0:  # Require `deterministic` only if using dropout.
+            deterministic = first_from(
+                deterministic,
+                self.deterministic,
+                error_msg="""No `deterministic` argument was provided to MultiHeadAttention
                     as either a __call__ argument, class attribute, or nnx.flag.""",
             )
-
-            if decode:
-                # Only supported with Array based attention masks for now.
-                if mask is not None and not isinstance(mask, jax.Array):
+            if not deterministic:
+                if rngs is None:
                     raise ValueError(
-                        "Autoregressive caching with MultiHeadAttention only supports "
-                        "Array based attention masks for now."
+                        "'rngs' must be provided to __call__ method if "
+                        "MultiHeadAttention instance is defined with keep_rngs=False."
                     )
-                if (
-                    self.cached_key is None
-                    or self.cached_value is None
-                    or self.cache_index is None
-                ):
-                    raise ValueError(
-                        'Autoregressive cache not initialized, call ``init_cache`` first.'
-                    )
-                (
-                    *batch_dims,
-                    max_length,
-                    num_heads,
-                    depth_per_head,
-                ) = self.cached_key.value.shape
-                # shape check of cached keys against query input
-                expected_shape = tuple(batch_dims) + (1, num_heads, depth_per_head)
-                if expected_shape != query.shape:
-                    raise ValueError(
-                        'Autoregressive cache shape error, '
-                        'expected query shape %s instead got %s.'
-                        % (expected_shape, query.shape)
-                    )
-                # update key, value caches with our new 1d spatial slices
-                cur_index = self.cache_index[...]
-                zero = jnp.array(0, dtype=lax.dtype(cur_index.dtype))
-                indices = (zero,) * len(batch_dims) + (cur_index, zero, zero)
-                key = lax.dynamic_update_slice(self.cached_key[...], key, indices)
-                value = lax.dynamic_update_slice(self.cached_value[...], value, indices)
-                self.cached_key[...] = key
-                self.cached_value[...] = value
-                self.cache_index[...] += 1
-                # causal mask for cached decoder self-attention:
-                # our single query position should only attend to those key
-                # positions that have already been generated and cached,
-                # not the remaining zero elements.
-                mask = combine_masks(
-                    mask,
-                    jnp.broadcast_to(
-                        jnp.arange(max_length) <= cur_index,
-                        tuple(batch_dims) + (1, 1, max_length),
-                    ),
-                )
-
-            if self.dropout_rate > 0.0:  # Require `deterministic` only if using dropout.
-                deterministic = first_from(
-                    deterministic,
-                    self.deterministic,
-                    error_msg="""No `deterministic` argument was provided to MultiHeadAttention
-                        as either a __call__ argument, class attribute, or nnx.flag.""",
-                )
-                if not deterministic:
-                    if rngs is None:
-                        raise ValueError(
-                            "'rngs' must be provided to __call__ method if "
-                            "MultiHeadAttention instance is defined with keep_rngs=False."
-                        )
-                    dropout_rng = rngs()
-                else:
-                    dropout_rng = None
+                dropout_rng = rngs()
             else:
-                deterministic = True
                 dropout_rng = None
+        else:
+            deterministic = True
+            dropout_rng = None
 
-            # apply attention
-            x = self.attention_fn(
-                query,
-                key,
-                value,
-                mask=mask,
-                bias=bias,
-                dropout_rng=dropout_rng,
-                dropout_rate=self.dropout_rate,
-                broadcast_dropout=self.broadcast_dropout,
-                deterministic=deterministic,
-                dtype=self.dtype,
-                precision=self.precision,
-                module=self if sow_weights else None,
-            )
-            # back to the original inputs dimensions
-            out = self.out(x)
-            if self._activation_sharding is not None:
-                out = jax.lax.with_sharding_constraint(out, self._activation_sharding)
-            return out
+        # apply attention
+        x = self.attention_fn(
+            query,
+            key,
+            value,
+            mask=mask,
+            bias=bias,
+            dropout_rng=dropout_rng,
+            dropout_rate=self.dropout_rate,
+            broadcast_dropout=self.broadcast_dropout,
+            deterministic=deterministic,
+            dtype=self.dtype,
+            precision=self.precision,
+            module=self if sow_weights else None,
+        )
+        # back to the original inputs dimensions
+        out = self.out(x)
+        if self._activation_sharding is not None:
+            out = jax.lax.with_sharding_constraint(out, self._activation_sharding)
+        return out
 
 
 def dot_product_attention(

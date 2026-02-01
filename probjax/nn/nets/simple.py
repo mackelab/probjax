@@ -12,7 +12,6 @@ from probjax.nn.sharding import (
     MLPShardingSpec,
     linear_sharding_kwargs,
     make_sharded_linear_ctor,
-    mesh_context,
     normalize_mlp_sharding,
 )
 from probjax.nn.utils import (
@@ -45,10 +44,9 @@ class Sequential(nnx.Module):
         self.layers = nnx.List(layers)
 
     def __call__(self, x, *args, **kwargs) -> Array:
-        with mesh_context(self._mesh):
-            for layer in self.layers:
-                x = layer(x, *args, **kwargs)
-            return x
+        for layer in self.layers:
+            x = layer(x, *args, **kwargs)
+        return x
 
 
 class MLP(nnx.Module):
@@ -143,23 +141,22 @@ class MLP(nnx.Module):
         norm_layers = []
         context_fuses = []
         _ctx_dim = self.context_dim
-        with mesh_context(self._mesh):
-            for i in range(num_layers):
-                ctor = base_linears[i]
-                if per_layer_sharding is not None:
-                    sharding_kwargs = linear_sharding_kwargs(
-                        ctor, per_layer_sharding[i]
-                    )
-                    if sharding_kwargs:
-                        ctor = make_sharded_linear_ctor(ctor, sharding_kwargs)
-                layers.append(ctor(feature_dims[i], feature_dims[i + 1]))
+        for i in range(num_layers):
+            ctor = base_linears[i]
+            if per_layer_sharding is not None:
+                sharding_kwargs = linear_sharding_kwargs(
+                    ctor, per_layer_sharding[i]
+                )
+                if sharding_kwargs:
+                    ctor = make_sharded_linear_ctor(ctor, sharding_kwargs)
+            layers.append(ctor(feature_dims[i], feature_dims[i + 1]))
 
-                if norm_cls is not None and i < num_layers - 1:
-                    norm_layers.append(norm_cls(feature_dims[i + 1], rngs=rngs))
-                if _ctx_dim is not None:
-                    context_fuses.append(
-                        context_fuse_cls(feature_dims[i + 1], _ctx_dim, rngs=rngs)
-                    )
+            if norm_cls is not None and i < num_layers - 1:
+                norm_layers.append(norm_cls(feature_dims[i + 1], rngs=rngs))
+            if _ctx_dim is not None:
+                context_fuses.append(
+                    context_fuse_cls(feature_dims[i + 1], _ctx_dim, rngs=rngs)
+                )
 
         self.layers = nnx.List(layers)
         self.norm_layers = nnx.List(norm_layers) if norm_cls is not None else None
@@ -176,34 +173,33 @@ class MLP(nnx.Module):
         Returns:
             Output array of shape [..., output_dim].
         """
-        with mesh_context(self._mesh):
-            h = self.layers[0](x)
+        h = self.layers[0](x)
+        h = self.activation(h)
+        if self._activation_shardings is not None:
+            spec = self._activation_shardings[0]
+            if spec is not None:
+                h = jax.lax.with_sharding_constraint(h, spec)
+        for i in range(1, len(self.layers) - 1):
+            h = self.layers[i](h)
+            if self.norm_layers is not None:
+                h = self.norm_layers[i - 1](h)
             h = self.activation(h)
+            if self.context_fuses is not None:
+                h = self.context_fuses[i - 1](h, context)
             if self._activation_shardings is not None:
-                spec = self._activation_shardings[0]
+                spec = self._activation_shardings[i]
                 if spec is not None:
                     h = jax.lax.with_sharding_constraint(h, spec)
-            for i in range(1, len(self.layers) - 1):
-                h = self.layers[i](h)
-                if self.norm_layers is not None:
-                    h = self.norm_layers[i - 1](h)
-                h = self.activation(h)
-                if self.context_fuses is not None:
-                    h = self.context_fuses[i - 1](h, context)
-                if self._activation_shardings is not None:
-                    spec = self._activation_shardings[i]
-                    if spec is not None:
-                        h = jax.lax.with_sharding_constraint(h, spec)
 
-            out = self.layers[-1](h) if len(self.layers) > 1 else h
+        out = self.layers[-1](h) if len(self.layers) > 1 else h
 
-            if self.activate_final:
-                out = self.activation(out)
-                if self._activation_shardings is not None:
-                    spec = self._activation_shardings[-1]
-                    if spec is not None:
-                        out = jax.lax.with_sharding_constraint(out, spec)
-            return out
+        if self.activate_final:
+            out = self.activation(out)
+            if self._activation_shardings is not None:
+                spec = self._activation_shardings[-1]
+                if spec is not None:
+                    out = jax.lax.with_sharding_constraint(out, spec)
+        return out
 
 
 class MaskedMLP(MLP):
@@ -312,29 +308,28 @@ class ResNet(nnx.Module):
         hidden_layers = []
         norm_layers = []
         context_layers = []
-        with mesh_context(self._mesh):
-            for i in range(num_layers):
-                ctor = base_ctor
-                if per_layer_sharding is not None:
-                    sharding_kwargs = linear_sharding_kwargs(
-                        ctor, per_layer_sharding[i]
+        for i in range(num_layers):
+            ctor = base_ctor
+            if per_layer_sharding is not None:
+                sharding_kwargs = linear_sharding_kwargs(
+                    ctor, per_layer_sharding[i]
+                )
+                if sharding_kwargs:
+                    ctor = make_sharded_linear_ctor(ctor, sharding_kwargs)
+
+            if i == 0:
+                self.in_layer = ctor(in_features, hidden_dim)
+            elif i == num_layers - 1:
+                self.out_layer = ctor(hidden_dim, out_features)
+            else:
+                hidden_layers.append(ctor(hidden_dim, hidden_dim))
+
+                if norm_cls is not None:
+                    norm_layers.append(norm_cls(hidden_dim, rngs=rngs))
+                if context_dim is not None:
+                    context_layers.append(
+                        context_fuse_cls(hidden_dim, context_dim, rngs=rngs)
                     )
-                    if sharding_kwargs:
-                        ctor = make_sharded_linear_ctor(ctor, sharding_kwargs)
-
-                if i == 0:
-                    self.in_layer = ctor(in_features, hidden_dim)
-                elif i == num_layers - 1:
-                    self.out_layer = ctor(hidden_dim, out_features)
-                else:
-                    hidden_layers.append(ctor(hidden_dim, hidden_dim))
-
-                    if norm_cls is not None:
-                        norm_layers.append(norm_cls(hidden_dim, rngs=rngs))
-                    if context_dim is not None:
-                        context_layers.append(
-                            context_fuse_cls(hidden_dim, context_dim, rngs=rngs)
-                        )
 
         self.hidden_layers = nnx.List(hidden_layers)
         self.norm_layers = nnx.List(norm_layers) if norm_cls is not None else None
@@ -363,37 +358,36 @@ class ResNet(nnx.Module):
         if self.context_dim is None and context is not None:
             raise ValueError("context provided but context_dim is None")
 
-        with mesh_context(self._mesh):
-            h = self.in_layer(x)
+        h = self.in_layer(x)
+        h = self.activation(h)
+        if self._activation_shardings is not None:
+            spec = self._activation_shardings[0]
+            if spec is not None:
+                h = jax.lax.with_sharding_constraint(h, spec)
+        for i in range(len(self.hidden_layers)):
+            h_old = h
+            if self.norm_layers is not None:
+                h = self.norm_layers[i](h)
+            h = self.hidden_layers[i](h)
             h = self.activation(h)
+            if self.context_layers is not None:
+                h = self.context_layers[i](h, context)
             if self._activation_shardings is not None:
-                spec = self._activation_shardings[0]
+                spec = self._activation_shardings[i + 1]
                 if spec is not None:
                     h = jax.lax.with_sharding_constraint(h, spec)
-            for i in range(len(self.hidden_layers)):
-                h_old = h
-                if self.norm_layers is not None:
-                    h = self.norm_layers[i](h)
-                h = self.hidden_layers[i](h)
-                h = self.activation(h)
-                if self.context_layers is not None:
-                    h = self.context_layers[i](h, context)
-                if self._activation_shardings is not None:
-                    spec = self._activation_shardings[i + 1]
-                    if spec is not None:
-                        h = jax.lax.with_sharding_constraint(h, spec)
 
-                h = h + h_old
+            h = h + h_old
 
-            out = self.out_layer(h) if len(self.hidden_layers) > 0 else h
+        out = self.out_layer(h) if len(self.hidden_layers) > 0 else h
 
-            if self.activate_final:
-                out = self.activation(out)
-                if self._activation_shardings is not None:
-                    spec = self._activation_shardings[-1]
-                    if spec is not None:
-                        out = jax.lax.with_sharding_constraint(out, spec)
-            return out
+        if self.activate_final:
+            out = self.activation(out)
+            if self._activation_shardings is not None:
+                spec = self._activation_shardings[-1]
+                if spec is not None:
+                    out = jax.lax.with_sharding_constraint(out, spec)
+        return out
 
 
 class DeepSet(nnx.Module):
@@ -478,16 +472,15 @@ class DeepSet(nnx.Module):
         rho_args = rho_args if rho_args is not None else ()
         phi_kwargs = phi_kwargs if phi_kwargs is not None else {}
         rho_kwargs = rho_kwargs if rho_kwargs is not None else {}
-        with mesh_context(self._mesh):
-            # Apply phi to each element
-            phi_x = self.phi(x, *phi_args, **phi_kwargs)
+        # Apply phi to each element
+        phi_x = self.phi(x, *phi_args, **phi_kwargs)
 
-            # Apply dropout if enabled
-            if self.dropout is not None:
-                phi_x = self.dropout(phi_x, deterministic=deterministic)
+        # Apply dropout if enabled
+        if self.dropout is not None:
+            phi_x = self.dropout(phi_x, deterministic=deterministic)
 
-            # Aggregate
-            h = self.reduction(phi_x, axis=self.axis)
+        # Aggregate
+        h = self.reduction(phi_x, axis=self.axis)
 
-            # Apply rho
-            return self.rho(h, **(rho_kwargs if rho_kwargs is not None else {}))
+        # Apply rho
+        return self.rho(h, **(rho_kwargs if rho_kwargs is not None else {}))

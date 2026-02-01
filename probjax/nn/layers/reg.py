@@ -8,7 +8,7 @@ from flax import nnx
 from flax.nnx import rnglib
 from flax.nnx.module import Module, first_from
 
-from probjax.nn.sharding import mesh_context
+
 from probjax.utils.typing import Array, ArrayLike
 
 __all__ = ["DropPath"]
@@ -44,17 +44,16 @@ class DropPath(Module):
         self.rng_collection = rng_collection
         self._mesh = sharding
 
-        with mesh_context(self._mesh):
-            if isinstance(rngs, rnglib.Rngs):
-                self.rngs = rngs[self.rng_collection].fork()
-            elif isinstance(rngs, rnglib.RngStream):
-                self.rngs = rngs.fork()
-            elif rngs is None:
-                self.rngs = nnx.data(None)
-            else:
-                raise TypeError(
-                    f"rngs must be a Rngs, RngStream or None, but got {type(rngs)}."
-                )
+        if isinstance(rngs, rnglib.Rngs):
+            self.rngs = rngs[self.rng_collection].fork()
+        elif isinstance(rngs, rnglib.RngStream):
+            self.rngs = rngs.fork()
+        elif rngs is None:
+            self.rngs = nnx.data(None)
+        else:
+            raise TypeError(
+                f"rngs must be a Rngs, RngStream or None, but got {type(rngs)}."
+            )
 
     def __call__(
         self,
@@ -64,64 +63,63 @@ class DropPath(Module):
         rngs: rnglib.Rngs | rnglib.RngStream | jax.Array | None = None,
         scale_by_keep: bool | None = None,
     ) -> Array:
-        with mesh_context(self._mesh):
-            deterministic = first_from(
-                deterministic,
-                self.deterministic,
-                error_msg="""No `deterministic` argument was provided to DropPath
-                    as either a __call__ argument or class attribute""",
+        deterministic = first_from(
+            deterministic,
+            self.deterministic,
+            error_msg="""No `deterministic` argument was provided to DropPath
+                as either a __call__ argument or class attribute""",
+        )
+
+        x = jnp.asarray(inputs)
+        if not jnp.issubdtype(x.dtype, jnp.floating):
+            x = x.astype(jnp.float32)
+
+        if (self.drop_rate == 0.0) or deterministic:
+            return x
+
+        # Drop entirely when drop_rate == 1.0 to avoid NaNs.
+        if self.drop_rate == 1.0:
+            return jnp.zeros_like(x)
+
+        rngs = first_from(
+            rngs,
+            self.rngs,
+            error_msg="""`deterministic` is False, but no `rngs` argument was provided to DropPath
+                as either a __call__ argument or class attribute.""",
+        )
+
+        if isinstance(rngs, rnglib.Rngs):
+            key = rngs[self.rng_collection]()
+        elif isinstance(rngs, rnglib.RngStream):
+            key = rngs()
+        elif isinstance(rngs, jax.Array):
+            key = rngs
+        else:
+            raise TypeError(
+                f"rngs must be a Rngs, RngStream or jax.Array, but got {type(rngs)}."
             )
 
-            x = jnp.asarray(inputs)
-            if not jnp.issubdtype(x.dtype, jnp.floating):
-                x = x.astype(jnp.float32)
-
-            if (self.drop_rate == 0.0) or deterministic:
-                return x
-
-            # Drop entirely when drop_rate == 1.0 to avoid NaNs.
-            if self.drop_rate == 1.0:
-                return jnp.zeros_like(x)
-
-            rngs = first_from(
-                rngs,
-                self.rngs,
-                error_msg="""`deterministic` is False, but no `rngs` argument was provided to DropPath
-                    as either a __call__ argument or class attribute.""",
+        keep_prob = 1.0 - self.drop_rate
+        if self.broadcast_dims is None:
+            mask_shape = (
+                () if x.ndim == 0 else (x.shape[0],) + (1,) * (x.ndim - 1)
+            )
+        else:
+            mask_shape = tuple(
+                1 if dim in self.broadcast_dims else x.shape[dim]
+                for dim in range(x.ndim)
             )
 
-            if isinstance(rngs, rnglib.Rngs):
-                key = rngs[self.rng_collection]()
-            elif isinstance(rngs, rnglib.RngStream):
-                key = rngs()
-            elif isinstance(rngs, jax.Array):
-                key = rngs
-            else:
-                raise TypeError(
-                    f"rngs must be a Rngs, RngStream or jax.Array, but got {type(rngs)}."
-                )
+        keep_mask = jax.random.bernoulli(key, p=keep_prob, shape=mask_shape)
+        keep_mask = keep_mask.astype(x.dtype)
 
-            keep_prob = 1.0 - self.drop_rate
-            if self.broadcast_dims is None:
-                mask_shape = (
-                    () if x.ndim == 0 else (x.shape[0],) + (1,) * (x.ndim - 1)
-                )
-            else:
-                mask_shape = tuple(
-                    1 if dim in self.broadcast_dims else x.shape[dim]
-                    for dim in range(x.ndim)
-                )
+        # Match Dropout behavior by allowing runtime override.
+        scale = first_from(
+            scale_by_keep,
+            self.scale_by_keep,
+            error_msg="Internal error resolving scale_by_keep flag for DropPath.",
+        )
+        if scale and keep_prob > 0.0:
+            x = x / keep_prob
 
-            keep_mask = jax.random.bernoulli(key, p=keep_prob, shape=mask_shape)
-            keep_mask = keep_mask.astype(x.dtype)
-
-            # Match Dropout behavior by allowing runtime override.
-            scale = first_from(
-                scale_by_keep,
-                self.scale_by_keep,
-                error_msg="Internal error resolving scale_by_keep flag for DropPath.",
-            )
-            if scale and keep_prob > 0.0:
-                x = x / keep_prob
-
-            return x * keep_mask
+        return x * keep_mask

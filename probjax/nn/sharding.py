@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
 from dataclasses import dataclass
 from functools import partial
 import inspect
@@ -38,10 +37,6 @@ DEFAULT_MHA_SHARDING = LinearShardingSpec(
 )
 
 DEFAULT_SPATIAL_ACTIVATION = PartitionSpec("data", None, None, "model")
-
-
-def mesh_context(mesh: Mesh | None):
-    return jax.set_mesh(mesh) if mesh is not None else nullcontext()
 
 
 def normalize_mlp_sharding(

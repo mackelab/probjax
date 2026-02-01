@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.loss_fn.denoising import build_time_dependent_denoising_loss
-from probjax.nn.sharding import mesh_context
+
 from probjax.nn.nets.denoising_diffusion_configs import (
     BaseSolverConfig,
     CosineNoiseSchedule,
@@ -74,8 +74,7 @@ class DiffusionDenoiser(nnx.Module):
         self._mesh = sharding
         if self.solver_cfg is not None and hasattr(self.solver_cfg, "set_schedule"):
             self.solver_cfg.set_schedule(self.schedule)
-        with mesh_context(self._mesh):
-            self.std0 = nnx.Variable(std0)
+        self.std0 = nnx.Variable(std0)
         self.last_layer = last_layer
 
     def set_solver_cfg(self, solver_cfg: SolverConfigProtocol) -> None:
@@ -201,13 +200,12 @@ class DiffusionDenoiser(nnx.Module):
         *args,
         **kwargs,
     ) -> PyTree[Array]:
-        with mesh_context(self._mesh):
-            noise_embed = self.c_t(t)
-            x_embed = jax.tree_util.tree_map(lambda x: self.c_in(t) * x, x_t)
-            out = self.net(noise_embed, x_embed, *args, **kwargs)
-            if self.last_layer is not None:
-                out = jax.tree_util.tree_map(self.last_layer, out)
-            return out
+        noise_embed = self.c_t(t)
+        x_embed = jax.tree_util.tree_map(lambda x: self.c_in(t) * x, x_t)
+        out = self.net(noise_embed, x_embed, *args, **kwargs)
+        if self.last_layer is not None:
+            out = jax.tree_util.tree_map(self.last_layer, out)
+        return out
 
     # ---- prediction heads ----
 
@@ -320,17 +318,16 @@ class DiffusionDenoiser(nnx.Module):
         *args,
         **kwargs,
     ) -> Array:
-        with mesh_context(self._mesh):
-            loss_fn = self._build_loss_fn()
-            rng_times, rng_loss = jax.random.split(rng, 2)
+        loss_fn = self._build_loss_fn()
+        rng_times, rng_loss = jax.random.split(rng, 2)
 
-            ndims = data.ndim - 2
-            time_shape = (data.shape[0],) + (1,) * ndims
-            times = self.train_cfg.sample_times(rng_times, time_shape)
+        ndims = data.ndim - 2
+        time_shape = (data.shape[0],) + (1,) * ndims
+        times = self.train_cfg.sample_times(rng_times, time_shape)
 
-            if "axis" not in kwargs:
-                kwargs["axis"] = tuple(range(1, data.ndim))
-            return loss_fn(times, data, *args, rng=rng_loss, **kwargs)
+        if "axis" not in kwargs:
+            kwargs["axis"] = tuple(range(1, data.ndim))
+        return loss_fn(times, data, *args, rng=rng_loss, **kwargs)
 
     # ---- sampling (delegates to solver_cfg) ----
 
