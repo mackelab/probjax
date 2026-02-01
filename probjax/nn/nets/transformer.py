@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from functools import partial
 from typing import Callable, Optional, Sequence
 
@@ -14,7 +15,15 @@ from probjax.nn.layers.attention import (
 )
 from probjax.nn.layers.fuse import AdditiveBinaryFuse, AffineFuse
 from probjax.nn.nets.simple import MLP
-from probjax.nn.sharding import DEFAULT_MHA_SHARDING
+from probjax.nn.sharding import (
+    DEFAULT_MHA_SHARDING,
+    LinearShardingSpec,
+    MLPShardingSpec,
+    DEFAULT_TRANSFORMER_HIDDEN_ACTIVATION,
+    DEFAULT_TRANSFORMER_INPUT_ACTIVATION,
+    TRANSFORMER_MLP_COLUMN_SHARDING,
+    TRANSFORMER_MLP_ROW_SHARDING,
+)
 from probjax.nn.utils import (
     filter_precision_kwargs,
     flatten_to_btd,
@@ -141,7 +150,13 @@ class Transformer(nnx.Module):
         self.enable_cross_attention = enable_cross_attention
         self._mesh = sharding
         self._activation_sharding = (
-            DEFAULT_MHA_SHARDING.activation if sharding is not None else None
+            DEFAULT_TRANSFORMER_HIDDEN_ACTIVATION if sharding is not None else None
+        )
+        self._input_sharding = (
+            DEFAULT_TRANSFORMER_INPUT_ACTIVATION if sharding is not None else None
+        )
+        self._dense_mlp_sharding = self._make_dense_mlp_sharding(
+            sharding, num_hidden_layers
         )
 
         # Precision and dtype settings.
@@ -163,19 +178,18 @@ class Transformer(nnx.Module):
                 ),
             }
 
-        # Layer norms for the attention and dense blocks.
-        self.layer_norms_attn = nnx.List([
-            norm_cls(model_dim, rngs=rngs, **norm_kwargs) for _ in range(num_layers)
-        ])
-        self.layer_norms_dense = nnx.List([
-            norm_cls(model_dim, rngs=rngs, **norm_kwargs) for _ in range(num_layers)
-        ])
+        # Norm layers.
+        self.layer_norms_attn = nnx.List(
+            [norm_cls(model_dim, rngs=rngs, **norm_kwargs) for _ in range(num_layers)]
+        )
+        self.layer_norms_dense = nnx.List(
+            [norm_cls(model_dim, rngs=rngs, **norm_kwargs) for _ in range(num_layers)]
+        )
 
         if self.enable_cross_attention:
-            self.layer_norms_cross_attn = nnx.List([
-                norm_cls(model_dim, rngs=rngs, **norm_kwargs)
-                for _ in range(num_layers)
-            ])
+            self.layer_norms_cross_attn = nnx.List(
+                [norm_cls(model_dim, rngs=rngs, **norm_kwargs) for _ in range(num_layers)]
+            )
 
         # Attention block.
         attention_fn = (
@@ -193,6 +207,7 @@ class Transformer(nnx.Module):
                 attention_fn=attention_fn,
                 normalize_qk=normalize_qk_attn,
                 sharding=sharding,
+                sharding_spec=DEFAULT_MHA_SHARDING,
                 **filter_precision_kwargs(mha_cls, **precision_kwargs),
             )
             for _ in range(num_layers)
@@ -246,7 +261,7 @@ class Transformer(nnx.Module):
                 rngs=rngs,
                 linear_cls=linear,
                 activation=act,
-                sharding=sharding,
+                sharding=self._dense_mlp_sharding,
                 # activate_final=True,
                 **filter_precision_kwargs(mlp_cls, **precision_kwargs),
             )
@@ -297,6 +312,153 @@ class Transformer(nnx.Module):
                     )
                 )
 
+        # Layer norms for the attention and dense blocks.
+        self.layer_norms_attn = nnx.List([
+            norm_cls(model_dim, rngs=rngs, **norm_kwargs) for _ in range(num_layers)
+        ])
+        self.layer_norms_dense = nnx.List([
+            norm_cls(model_dim, rngs=rngs, **norm_kwargs) for _ in range(num_layers)
+        ])
+
+        if self.enable_cross_attention:
+            self.layer_norms_cross_attn = nnx.List([
+                norm_cls(model_dim, rngs=rngs, **norm_kwargs)
+                for _ in range(num_layers)
+            ])
+
+        # Attention block.
+        attention_fn = (
+            attention_fn if attention_fn is not None else dot_product_attention
+        )
+        self.attention_blocks = nnx.List([
+            mha_cls(
+                num_heads=num_heads,
+                in_features=model_dim,
+                qkv_features=attn_size * num_heads,
+                out_features=model_dim,
+                rngs=rngs,
+                kernel_init=self.initializer,
+                dropout_rate=self.dropout_rate_attn,
+                attention_fn=attention_fn,
+                normalize_qk=normalize_qk_attn,
+                sharding=sharding,
+                sharding_spec=DEFAULT_MHA_SHARDING,
+                **filter_precision_kwargs(mha_cls, **precision_kwargs),
+            )
+            for _ in range(num_layers)
+        ])
+
+        if self.enable_cross_attention:
+            cross_attention_fn = (
+                cross_attention_fn
+                if cross_attention_fn is not None
+                else dot_product_attention
+            )
+            self.cross_attention_blocks = nnx.List([
+                mha_cls(
+                    num_heads=num_heads,
+                    in_features=model_dim,
+                    qkv_features=attn_size * num_heads,
+                    out_features=model_dim,
+                    in_kv_features=kv_in_features,
+                    rngs=rngs,
+                    kernel_init=self.initializer,
+                    dropout_rate=self.dropout_rate_attn,
+                    attention_fn=cross_attention_fn,
+                    normalize_qk=normalize_qk_cross_attn,
+                    sharding=sharding,
+                    **filter_precision_kwargs(mha_cls, **precision_kwargs),
+                )
+                for _ in range(num_layers)
+            ])
+
+        # Context fusion if context is provided.
+        if context_dim is not None:
+            self.context_layers1 = nnx.List([
+                context_fusion_cls(model_dim, context_dim, rngs=rngs, sharding=sharding)
+                for _ in range(num_layers)
+            ])
+            self.context_layers2 = nnx.List([
+                context_fusion_cls(model_dim, context_dim, rngs=rngs, sharding=sharding)
+                for _ in range(num_layers)
+            ])
+
+        # Dense block.
+        dims = (
+            [model_dim]
+            + [widening_factor * model_dim] * num_hidden_layers
+            + [model_dim]
+        )
+        linear = partial(nnx.Linear, kernel_init=self.initializer)
+        self.dense_blocks = nnx.List([
+            mlp_cls(
+                dims,
+                rngs=rngs,
+                linear_cls=linear,
+                activation=act,
+                sharding=self._dense_mlp_sharding,
+                # activate_final=True,
+                **filter_precision_kwargs(mlp_cls, **precision_kwargs),
+            )
+            for _ in range(num_layers)
+        ])
+        if dropout_rate > 0.0:
+            self.dropout_dense = nnx.List([
+                nnx.Dropout(rate=dropout_rate, rngs=rngs) for _ in range(num_layers)
+            ])
+        else:
+            self.dropout_dense = None
+
+        # Skip connection fusers.
+        self.attn_skip_fuse = nnx.List([])
+        self.mlp_skip_fuse = nnx.List([])
+        if enable_cross_attention:
+            self.cross_skip_fuse = nnx.List([])
+        for num_layer in range(num_layers):
+            self.attn_skip_fuse.append(
+                attn_fuse_cls(
+                    model_dim,
+                    context_dim,
+                    drop_path_rate=drop_path_rates[num_layer],
+                    rngs=rngs,
+                    sharding=sharding,
+                    **filter_precision_kwargs(attn_fuse_cls, **precision_kwargs),
+                )
+            )
+            self.mlp_skip_fuse.append(
+                mlp_fuse_cls(
+                    model_dim,
+                    context_dim,
+                    drop_path_rate=drop_path_rates[num_layer],
+                    rngs=rngs,
+                    sharding=sharding,
+                    **filter_precision_kwargs(mlp_fuse_cls, **precision_kwargs),
+                )
+            )
+        if self.enable_cross_attention:
+            self.cross_skip_fuse.append(
+                attn_fuse_cls(
+                    model_dim,
+                    context_dim,
+                    rngs=rngs,
+                    drop_path_rate=drop_path_rates[num_layer],
+                    sharding=sharding,
+                    **filter_precision_kwargs(attn_fuse_cls, **precision_kwargs),
+                )
+            )
+
+    @staticmethod
+    def _make_dense_mlp_sharding(
+        sharding: jax.sharding.Mesh | None, num_hidden_layers: int
+    ) -> MLPShardingSpec | None:
+        if sharding is None:
+            return None
+        per_layer = (
+            [TRANSFORMER_MLP_COLUMN_SHARDING] * num_hidden_layers
+            + [TRANSFORMER_MLP_ROW_SHARDING]
+        )
+        return MLPShardingSpec(mesh=sharding, per_layer=per_layer)
+
     def __call__(
         self,
         q: Array,  # [B, T, D]
@@ -326,6 +488,9 @@ class Transformer(nnx.Module):
         q, q_shape = flatten_to_btd(q)
         k, _ = flatten_to_btd(k) if k is not None else (None, None)
         v, _ = flatten_to_btd(v) if v is not None else (None, None)
+
+        if self._input_sharding is not None:
+            q = jax.lax.with_sharding_constraint(q, self._input_sharding)
 
         # Ensure context has shape [B, 1, Dc] when provided
         if context is not None:

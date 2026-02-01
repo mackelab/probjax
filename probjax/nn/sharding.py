@@ -36,6 +36,20 @@ DEFAULT_MHA_SHARDING = LinearShardingSpec(
     activation=PartitionSpec("data", None, "model"),
 )
 
+DEFAULT_TRANSFORMER_HIDDEN_ACTIVATION = PartitionSpec("data", None, "model")
+DEFAULT_TRANSFORMER_INPUT_ACTIVATION = PartitionSpec("data", None, None)
+
+TRANSFORMER_MLP_COLUMN_SHARDING = LinearShardingSpec(
+    kernel=PartitionSpec(None, "model"),
+    bias=PartitionSpec("model",),
+    activation=DEFAULT_TRANSFORMER_HIDDEN_ACTIVATION,
+)
+TRANSFORMER_MLP_ROW_SHARDING = LinearShardingSpec(
+    kernel=PartitionSpec("model", None),
+    bias=PartitionSpec("model",),
+    activation=DEFAULT_TRANSFORMER_HIDDEN_ACTIVATION,
+)
+
 DEFAULT_SPATIAL_ACTIVATION = PartitionSpec("data", None, None, "model")
 
 
