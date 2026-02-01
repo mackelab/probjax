@@ -5,6 +5,7 @@ import contextlib
 import itertools
 import queue
 import threading
+import traceback
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional, Sequence, Union
@@ -291,6 +292,16 @@ def unchunkify(
 
 Transform = Union[Callable[[Any], Any], Sequence[Callable[[Any], Any]]]
 
+_STOP = object()
+
+
+class _WorkerError:
+    __slots__ = ("exc", "tb")
+
+    def __init__(self, exc: BaseException, tb: str):
+        self.exc = exc
+        self.tb = tb
+
 
 class DataLoader:
     """
@@ -302,11 +313,13 @@ class DataLoader:
         Applied on the **CPU** worker thread immediately after `dataset[idxs]`.
     device_transforms : callable | Sequence[callable] | None
         Applied **after** the batch has been moved to accelerator memory
-        (and sharded, if `shard=True`).  Pass JIT-compiled functions for
-        best speed (`@jax.jit` or `@jax.pmap` when multi-device).
+        (and sharded, if `shard=True`). Pass JIT-compiled functions for best speed.
     host_device       : jax.Device | None
         Device that stores producer-side batches before they are prefetched.
-        Defaults to the first CPU device when available.
+    max_in_flight      : int | None
+        Number of in-flight CPU batch jobs scheduled via `run_in_executor`.
+        Keeping this >1 enables actual async pipelining. Order is preserved.
+        Defaults to `num_async_workers` (min 1).
     """
 
     # ------------------------- init ----------------------------------- #
@@ -328,11 +341,18 @@ class DataLoader:
         devices: Optional[Sequence[Device]] = None,
         num_async_workers: int = 1,
         host_device: Optional[Device] = None,
+        max_in_flight: Optional[int] = None,
     ):
         if batch_size <= 0:
             raise ValueError("batch_size must be positive.")
         if not (0.0 < min_fill <= 1.0):
             raise ValueError("min_fill must be in (0,1].")
+        if num_prefetch_host <= 0:
+            raise ValueError("num_prefetch_host must be positive.")
+        if num_async_workers <= 0:
+            raise ValueError("num_async_workers must be positive.")
+        if max_in_flight is not None and max_in_flight <= 0:
+            raise ValueError("max_in_flight must be positive or None.")
 
         self._ds, self._N, self._bsz = dataset, len(dataset), batch_size
         self._drop_last, self._loop = drop_last, loop
@@ -368,16 +388,43 @@ class DataLoader:
         self._host_device = host_device
 
         # -------- infra ---------------- #
-        self._executor = ThreadPoolExecutor(max_workers=num_async_workers)
+        self._num_async_workers = int(num_async_workers)
+        self._max_in_flight = (
+            max(1, self._num_async_workers)
+            if max_in_flight is None
+            else int(max_in_flight)
+        )
+
+        self._executor = ThreadPoolExecutor(max_workers=self._num_async_workers)
         self._stop_event = threading.Event()
+
+        # worker error propagation (producer thread -> consumer thread)
+        self._worker_error: Optional[_WorkerError] = None
+        self._worker_error_lock = threading.Lock()
+
+        # asyncio loop/task owned by producer thread
+        self._loop_ref: Optional[asyncio.AbstractEventLoop] = None
+        self._task_ref: Optional[asyncio.Task] = None
+
         self._producer_th = threading.Thread(target=self._producer_main, daemon=True)
         self._producer_th.start()
+
         self._closed = False
-        weakref.finalize(self, self._finalizer)
+
+        # IMPORTANT: don't pass a bound method to weakref.finalize (can keep self alive)
+        self._finalizer_ref = weakref.finalize(
+            self, DataLoader._finalize, weakref.ref(self)
+        )
+
+    @staticmethod
+    def _finalize(self_ref: "weakref.ReferenceType[DataLoader]"):
+        obj = self_ref()
+        if obj is not None:
+            with contextlib.suppress(Exception):
+                obj.close()
 
     # ---------------- epoch index generator --------------------------- #
     def _index_batches(self):
-        # This can be overwritten for more complicated indexing
         while True:
             idx = np.arange(self._N, dtype=np.int64)
             if self._rng is not None:
@@ -390,28 +437,129 @@ class DataLoader:
                 break
 
     def _fetch_batch(self, idxs):
-        # This can be overwritten for more complicated dataset indexing
         batch = self._ds[idxs]
         return batch
 
+    # ---------------- internal queue utilities ------------------------ #
+    def _drain_queue(self) -> None:
+        while True:
+            try:
+                self._q.get_nowait()
+            except queue.Empty:
+                return
+
+    def _force_put(self, item, *, clear: bool = False) -> None:
+        """
+        Ensure `item` gets into the queue without blocking. Optionally clear the queue.
+        This is used ONLY for terminal signaling (_STOP) so dropping queued batches is OK.
+        """
+        if clear:
+            self._drain_queue()
+        while True:
+            try:
+                self._q.put_nowait(item)
+                return
+            except queue.Full:
+                # Make room by dropping one element.
+                with contextlib.suppress(queue.Empty):
+                    self._q.get_nowait()
+
+    def _set_worker_error(self, exc: BaseException) -> None:
+        err = _WorkerError(exc, traceback.format_exc())
+        with self._worker_error_lock:
+            self._worker_error = err
+
+    def _get_worker_error(self) -> Optional[_WorkerError]:
+        with self._worker_error_lock:
+            return self._worker_error
+
     # ---------------- background producer ----------------------------- #
     def _producer_main(self):
-        asyncio.run(self._fill_queue())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop_ref = loop
+        self._task_ref = loop.create_task(self._fill_queue())
+        try:
+            loop.run_until_complete(self._task_ref)
+        finally:
+            with contextlib.suppress(Exception):
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
 
     async def _fill_queue(self):
+        """
+        Async producer:
+        - schedules CPU work via run_in_executor
+        - maintains up to `max_in_flight` in-flight tasks (ORDER PRESERVED)
+        - pushes batches into a bounded host queue without blocking the event loop
+        - on error, stores traceback and wakes consumer via _STOP
+        """
+        pending: collections.deque[asyncio.Task] = collections.deque()
+
+        async def run_one(idxs):
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(self._executor, self._process_batch, idxs)
+
+        async def put_batch_nonblocking(item) -> bool:
+            # Never block the event loop; wait for space or stop.
+            while not self._stop_event.is_set():
+                try:
+                    self._q.put_nowait(item)
+                    return True
+                except queue.Full:
+                    await asyncio.sleep(0.005)
+            return False
+
         try:
             for idxs in self._index_batches():
                 if self._stop_event.is_set():
                     break
-                fut = asyncio.get_running_loop().run_in_executor(
-                    self._executor, self._process_batch, idxs
-                )
-                batch = await fut
-                self._q.put(batch)  # blocks if queue full
-            self._q.put(None)
-        except Exception:
-            self._q.put(None)
-            raise
+
+                # schedule next compute
+                pending.append(asyncio.create_task(run_one(idxs)))
+
+                # keep pipeline bounded; preserve order by awaiting oldest
+                if len(pending) >= self._max_in_flight:
+                    oldest = pending.popleft()
+                    try:
+                        batch = await oldest
+                    except asyncio.CancelledError:
+                        break
+                    except BaseException as e:
+                        self._set_worker_error(e)
+                        self._stop_event.set()
+                        break
+
+                    if not await put_batch_nonblocking(batch):
+                        break
+
+            # drain remaining tasks (in order) if not stopping
+            while pending and not self._stop_event.is_set():
+                oldest = pending.popleft()
+                try:
+                    batch = await oldest
+                except asyncio.CancelledError:
+                    break
+                except BaseException as e:
+                    self._set_worker_error(e)
+                    self._stop_event.set()
+                    break
+                if not await put_batch_nonblocking(batch):
+                    break
+
+        except asyncio.CancelledError:
+            # Expected during close()
+            pass
+        except BaseException as e:
+            self._set_worker_error(e)
+        finally:
+            # Cancel anything still pending
+            while pending:
+                t = pending.popleft()
+                t.cancel()
+
+            # Unblock consumer immediately. Clear queue so _STOP always lands.
+            self._force_put(_STOP, clear=True)
 
     def _process_batch(self, idxs):
         batch = self._fetch_batch(idxs)
@@ -422,36 +570,63 @@ class DataLoader:
 
     # ---------------- host iterator w/ recycling ---------------------- #
     def _host_iter(self):
-        min_size = int(self._q.maxsize * self._min_fill)
+        maxsize = getattr(self._q, "maxsize", 0) or 0
+        min_size = int(maxsize * self._min_fill) if maxsize > 0 else 0
+
         while True:
-            batch = self._q.get()
-            if batch is None:
+            item = self._q.get()
+
+            if item is _STOP:
+                err = self._get_worker_error()
+                if err is not None:
+                    raise RuntimeError(
+                        f"DataLoader worker failed:\n{err.tb}"
+                    ) from err.exc
                 raise StopIteration
-            while self._q.qsize() < min_size and not self._q.full():
+
+            batch = item
+
+            # recycle if below threshold (your original behavior)
+            while min_size > 0 and self._q.qsize() < min_size and not self._q.full():
                 try:
                     self._q.put_nowait(batch)
                 except queue.Full:
                     break
+
             yield batch
 
     # ---------------- main iterator API ------------------------------- #
     def __iter__(self):
+        self._iter_ref = self._iter_gen()
+        return self
+
+    def __next__(self):
+        if not hasattr(self, "_iter_ref") or self._iter_ref is None:
+            self._iter_ref = self._iter_gen()
+        return next(self._iter_ref)
+
+    def _iter_gen(self):
         host_it = self._host_iter()
         if self._shard_flag:
             host_it = (_shard(b, self._n_dev) for b in host_it)
 
-        self._dev_it = (
+        dev_it = (
             _prefetch_single(host_it, self._prefetch_dev, self._devices[0])
             if self._n_dev == 1 and not self._shard_flag
             else prefetch_to_device(host_it, self._prefetch_dev, self._devices)
         )
-        return self
 
-    def __next__(self):
-        batch = next(self._dev_it)
-        for fn in self._device_tfns:
-            batch = fn(batch)
-        return batch
+        # generator wrapper ensures close() runs on exception unwind (CPython refcount)
+        def gen():
+            try:
+                for batch in dev_it:
+                    for fn in self._device_tfns:
+                        batch = fn(batch)
+                    yield batch
+            finally:
+                self.close()
+
+        return gen()
 
     def __len__(self):
         return (
@@ -465,22 +640,36 @@ class DataLoader:
         if self._closed:
             return
         self._closed = True
+
         self._stop_event.set()
-        self._q.put(None)
+
+        # Unblock consumer immediately (and avoid deadlock if queue is full).
+        self._force_put(_STOP, clear=True)
+
+        # Cancel the asyncio producer task thread-safely.
+        loop = self._loop_ref
+        task = self._task_ref
+        if loop is not None and task is not None:
+
+            def _cancel_task():
+                if not task.done():
+                    task.cancel()
+
+            with contextlib.suppress(Exception):
+                loop.call_soon_threadsafe(_cancel_task)
+
         if self._producer_th.is_alive():
             self._producer_th.join(timeout=1.0)
+
+        # Don't wait: prevents hanging on long-running host transforms / dataset.
         self._executor.shutdown(wait=False, cancel_futures=True)
 
-    def _finalizer(self):
+    def __del__(self):
         with contextlib.suppress(Exception):
             self.close()
-
-    def __del__(self):
-        self._finalizer()
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
         self.close()
-        return False
