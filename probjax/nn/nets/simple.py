@@ -199,6 +199,10 @@ class MLP(nnx.Module):
                 spec = self._activation_shardings[-1]
                 if spec is not None:
                     out = jax.lax.with_sharding_constraint(out, spec)
+        elif self._activation_shardings is not None:
+            spec = self._activation_shardings[-1]
+            if spec is not None:
+                out = jax.lax.with_sharding_constraint(out, spec)
         return out
 
 
