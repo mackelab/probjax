@@ -2,11 +2,11 @@ from typing import Callable, NamedTuple, Tuple
 
 import blackjax
 from blackjax.mcmc.mala import MALAInfo, MALAState
-from chex import PRNGKey
-from jaxtyping import PyTree
+from probjax.utils.typing import PyTree, RngKey
 
 from probjax.inference.mcmc.adaptation import step_size_adaption
-from probjax.inference.mcmc.base import MarkovKernelAPI
+from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
+from probjax.inference.mcmc.hmc import _scale_step_size_by_grad
 
 
 class MALAParams(NamedTuple):
@@ -14,33 +14,27 @@ class MALAParams(NamedTuple):
 
 
 def build_step(logdensity_fn: Callable) -> Callable:
-    kernel = blackjax.mala.build_kernel()
-
-    def step(
-        key: PRNGKey, state: MALAState, params: MALAParams
-    ) -> Tuple[MALAState, MALAInfo]:
-        return kernel(
-            key, state, logdensity_fn=logdensity_fn, step_size=params.step_size
-        )
-
-    return step
+    return make_step_from_kernel(
+        logdensity_fn,
+        blackjax.mala.build_kernel,
+    )
 
 
-def build_adaptation(
-    logdensity_fn: Callable,
-) -> Callable:
-    def adapt_parms(
-        key: PRNGKey,
-        position: PyTree,
+def build_adaptation(logdensity_fn: Callable) -> Callable:
+    def fit_params(
+        key: RngKey,
+        state: PyTree,
         params: MALAParams,
         num_steps: int = 100,
         target_acceptance_rate: float = 0.65,
         t0: int = 10,
         gamma: float = 0.05,
         kappa: float = 0.75,
+        **_,
     ) -> Tuple[MALAState, MALAInfo]:
+        position = state.position if hasattr(state, "position") else state
         adaption_alg = step_size_adaption(
-            MALA,
+            mala,
             logdensity_fn,
             params,
             target=target_acceptance_rate,
@@ -52,15 +46,18 @@ def build_adaptation(
         out, _ = adaption_alg.run(key, position, num_steps)
         return out.state, out.parameters
 
-    return adapt_parms
+    return fit_params
 
 
-def init_params(position: PyTree, step_size: float = 1e-2) -> MALAParams:
+def init_params(state: PyTree, step_size: float = 1e-2) -> MALAParams:
+    step_size = _scale_step_size_by_grad(state, step_size)
     return MALAParams(step_size=step_size)
 
 
-class MALA(MarkovKernelAPI):
-    init = blackjax.mala.init
-    build_step = build_step
-    init_params = init_params
-    build_adaptation = build_adaptation
+mala = make_kernel_api(
+    name="mala",
+    init_fn=blackjax.mala.init,
+    init_params_fn=init_params,
+    build_step_fn=build_step,
+    build_adaptation_fn=build_adaptation,
+)

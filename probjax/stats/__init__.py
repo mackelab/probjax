@@ -40,7 +40,7 @@ from probjax.stats.discrete.categorical import categorical
 from probjax.stats.discrete.dirac import dirac
 from probjax.stats.discrete.geometric import geometric
 from probjax.stats.discrete.poisson import poisson
-from probjax.stats.empirical import empirical
+from probjax.stats.discrete.empirical import empirical
 
 # Import higher-order distributions
 from probjax.stats.independent import independent

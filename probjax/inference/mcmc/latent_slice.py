@@ -2,12 +2,10 @@ from typing import Callable, NamedTuple, Tuple
 
 import jax
 import jax.numpy as jnp
-from jax import Array
-from jax.random import PRNGKey
-from jaxtyping import PyTree
+from probjax.utils.typing import Array, PyTree, RngKey
 
 from probjax.inference.mcmc.adaptation import step_size_adaption
-from probjax.inference.mcmc.base import MarkovKernelAPI
+from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
 
 
 class LatentSliceParams(NamedTuple):
@@ -25,11 +23,13 @@ class LatentSliceInfo(NamedTuple):
     proposal: LatentSliceState
 
 
-def init_params(position: PyTree, step_size: float = 0.5) -> LatentSliceParams:
+def init_params(state: PyTree, step_size: float = 0.5) -> LatentSliceParams:
     return LatentSliceParams(step_size=step_size)
 
 
-def init(position: PyTree, logdensity_fn: Callable, rng_key=None) -> LatentSliceState:
+def init(
+    position: PyTree, logdensity_fn: Callable, rng_key=None
+) -> LatentSliceState:
     log_density = logdensity_fn(position)
     latent_bracket_width = jnp.zeros_like(position)
     return LatentSliceState(position, log_density, latent_bracket_width)
@@ -37,7 +37,7 @@ def init(position: PyTree, logdensity_fn: Callable, rng_key=None) -> LatentSlice
 
 def build_kernel():
     def kernel(
-        rng_key: PRNGKey,
+        rng_key: RngKey,
         state: LatentSliceState,
         logdensity_fn: Callable,
         step_size: float = 0.5,
@@ -77,25 +77,21 @@ def build_kernel():
 
 
 def build_step(logdensity_fn: Callable, max_evals: int = 100) -> Callable:
-    kernel = build_kernel()
-
-    def step(
-        key: PRNGKey, state: LatentSliceState, params: LatentSliceParams
-    ) -> Tuple[LatentSliceState, LatentSliceInfo]:
-        return kernel(
-            key, state, logdensity_fn, step_size=params.step_size, max_evals=max_evals
-        )
-
-    return step
+    kernel_builder = build_kernel
+    return make_step_from_kernel(
+        logdensity_fn,
+        kernel_builder,
+        call_defaults={"max_evals": max_evals},
+    )
 
 
 def build_adaptation(
     logdensity_fn: Callable,
     max_evals: int = 100,
 ) -> Callable:
-    def adapt_parms(
-        key: PRNGKey,
-        position: PyTree,
+    def fit_params(
+        key: RngKey,
+        state: PyTree,
         params: LatentSliceParams,
         num_steps: int = 100,
         target_num_evals: int = 5,
@@ -103,10 +99,12 @@ def build_adaptation(
         t0: int = 10,
         gamma: float = 0.05,
         kappa: float = 0.75,
+        **_,
     ) -> Tuple[LatentSliceState, LatentSliceParams]:
+        position = state.position if hasattr(state, "position") else state
         if method == "step_size":
             adaption_alg = step_size_adaption(
-                LatentSlice,
+                latent_slice,
                 logdensity_fn,
                 params,
                 target=float(target_num_evals) / max_evals,
@@ -124,22 +122,24 @@ def build_adaptation(
         out, _ = adaption_alg.run(key, position, num_steps)
         return out.state, out.parameters
 
-    return adapt_parms
+    return fit_params
 
 
-class LatentSlice(MarkovKernelAPI):
-    init = init
-    init_params = init_params
-    build_step = build_step
-    build_adaptation = build_adaptation
+latent_slice = make_kernel_api(
+    name="latent_slice",
+    init_fn=init,
+    init_params_fn=init_params,
+    build_step_fn=build_step,
+    build_adaptation_fn=build_adaptation,
+)
 
 
 def accept_reject_proposal(
     logdensity_fn: Callable,
-    key: PRNGKey,
+    key: RngKey,
     lower: Array,
     upper: Array,
-    position: Array,
+    state: Array,
     y: float,
     max_evals: int,
 ):
@@ -177,7 +177,7 @@ def accept_reject_proposal(
 
         return i + 1, is_accepted, rng, lower, upper, x_new, log_density
 
-    init_carry = (0, jnp.array(False), key, lower, upper, position, y)
+    init_carry = (0, jnp.array(False), key, lower, upper, state, y)
     final_carry = jax.lax.while_loop(cond_fn, body_fn, init_carry)
     i, is_accepted, _, _, _, x, logdensity = final_carry
 

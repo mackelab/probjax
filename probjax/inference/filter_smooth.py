@@ -57,7 +57,7 @@ def filter(
         _, output = nested_checkpoint_scan(
             scan_fn, carry, ts[1:], nested_lengths=checkpoint_lengths, unroll=unroll
         )
-        # output = jax.tree_map(lambda x: jnp.concatenate([inital_output, x]), output)
+        # output = jax.tree_util.tree_map(lambda x: jnp.concatenate([inital_output, x]), output)
 
     return output
 

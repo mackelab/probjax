@@ -4,8 +4,7 @@ from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 import jax
 import jax.numpy as jnp
 from blackjax.base import Info, SamplingAlgorithm, State
-from chex import PRNGKey
-from jaxtyping import Array, ArrayLike
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 
 class GibbsState(NamedTuple):
@@ -21,7 +20,7 @@ def init(
     position: Dict[str, ArrayLike],
     logdensity_fn: Callable,
     inner_kernel: Dict,
-    rng_key: Optional[PRNGKey] = None,
+    rng_key: Optional[RngKey] = None,
 ) -> GibbsState:
     inner_state = {}
 
@@ -49,10 +48,18 @@ def build_kernel(
     inner_kernel_kwargs: Optional[Dict[str, Any]] = None,
     inner_kernel_steps: Optional[Dict[str, int]] = None,
 ) -> Callable:
-    _kernels = {k: inner_kernel[k].build_kernel() for k in inner_kernel}
+    _kernel_builders = {}
+    for k in inner_kernel:
+        if hasattr(inner_kernel[k], "build_step"):
+            _kernel_builders[k] = inner_kernel[k].build_step
+        else:
+            raise ValueError(
+                "Each inner kernel must expose build_step so it can receive a "
+                "conditional logdensity_fn."
+            )
 
     def kernel(
-        rng_key: PRNGKey,
+        rng_key: RngKey,
         state: GibbsState,
         logdensity_fn: Callable,
         **kwargs,
@@ -74,16 +81,37 @@ def build_kernel(
             logdensity_k = partial(logdensity_conditional, k)
             kwargs = {} if inner_kernel_kwargs is None else inner_kernel_kwargs[k] or {}
 
-            new_inner_state, new_inner_info = _kernels[k](
-                rng_keys[0], state.inner_state[k], logdensity_k, **kwargs
+            kernel_step = _kernel_builders[k](logdensity_k, **kwargs)
+            params = (
+                inner_kernel[k].init_params(state.inner_state[k])
+                if hasattr(inner_kernel[k], "init_params")
+                else None
             )
+
+            try:
+                new_inner_state, new_inner_info = kernel_step(
+                    rng_keys[0], state.inner_state[k], params
+                )
+            except TypeError:
+                new_inner_state, new_inner_info = kernel_step(
+                    rng_keys[0], state.inner_state[k]
+                )
 
             if num_steps > 1:
                 carry = (new_inner_state, new_inner_info)
 
                 def one_step(carry, key):
                     state, info = carry
-                    state, info = _kernels[k](key, state, logdensity_k, **kwargs)  # noqa: B023
+                    kernel_step = _kernel_builders[k](logdensity_k, **kwargs)
+                    params = (
+                        inner_kernel[k].init_params(state)
+                        if hasattr(inner_kernel[k], "init_params")
+                        else None
+                    )
+                    try:
+                        state, info = kernel_step(key, state, params)  # noqa: B023
+                    except TypeError:
+                        state, info = kernel_step(key, state)  # noqa: B023
                     return (state, info), None
 
                 (new_inner_state, new_inner_info), _ = jax.lax.scan(
@@ -124,7 +152,7 @@ class gibbs:
                 rng_key=rng_key,
             )
 
-        def step_fn(rng_key: PRNGKey, state):
+        def step_fn(rng_key: RngKey, state):
             return kernel(
                 rng_key,
                 state,

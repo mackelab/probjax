@@ -3,7 +3,7 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import Key
+from probjax.utils.typing import RngKey
 
 from probjax.inference.mcmc.base import MarkovKernel, Params, State
 from probjax.utils.jaxutils import WithProgressBarAPI, print_scan
@@ -24,7 +24,7 @@ class MCMC(WithProgressBarAPI):
     @partial(jax.jit, static_argnums=(0, 3))
     def run(
         self,
-        key: Key,
+        key: RngKey,
         state: State,
         num_steps: int,
         params: Optional[Params] = None,
@@ -36,7 +36,7 @@ class MCMC(WithProgressBarAPI):
             return (new_key, new_state), info_filter(info)
 
         if params is None:
-            params = self.kernel.init_params(state.position)
+            params = self.kernel.init_params(state)
 
         carry = (key, state)
 
@@ -71,13 +71,13 @@ class MCMC(WithProgressBarAPI):
 
     def sample(
         self,
-        key: Key,
+        key: RngKey,
         state: State,
         num_samples: int,
         params: Optional[Params] = None,
         thin: int = 1,
     ):
-        samples = jax.tree_map(
+        samples = jax.tree_util.tree_map(
             lambda x: jnp.empty((num_samples,) + x.shape), state.position
         )
 
@@ -106,7 +106,7 @@ class MCMC(WithProgressBarAPI):
             return (samples, new_key, new_state), info
 
         if params is None:
-            params = self.kernel.init_params(state.position)
+            params = self.kernel.init_params(state)
 
         if not self.verbose:
             info_filter = lambda x: None

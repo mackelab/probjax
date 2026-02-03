@@ -2,17 +2,16 @@ from typing import Callable, NamedTuple, Optional, Tuple
 
 import blackjax
 from blackjax.mcmc.elliptical_slice import EllipSliceInfo, EllipSliceState
-from chex import PRNGKey
-from jaxtyping import Array, PyTree
+from probjax.utils.typing import Array, PyTree, RngKey
 
-from probjax.inference.mcmc.base import MarkovKernelAPI
+from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
 
 
 class EllipticalSliceParams(NamedTuple):
     pass
 
 
-def init_params(position: PyTree) -> EllipticalSliceParams:
+def init_params(state: PyTree) -> EllipticalSliceParams:
     return EllipticalSliceParams()
 
 
@@ -22,19 +21,13 @@ def build_eliptical_slice_step(
     cov_matrix: Array,
     mean: Array,
 ) -> Callable:
-    kernel = blackjax.elliptical_slice.build_kernel(cov_matrix, mean)
-
-    def step(
-        key: PRNGKey,
-        state: EllipSliceState,
-        params: Optional[EllipticalSliceParams] = None,
-    ) -> Tuple[EllipSliceState, EllipSliceInfo]:
-        return kernel(key, state, logdensity_fn=logdensity_fn)
-
-    return step
+    kernel_builder = lambda: blackjax.elliptical_slice.build_kernel(cov_matrix, mean)
+    return make_step_from_kernel(logdensity_fn, kernel_builder)
 
 
-class EllipticalSlice(MarkovKernelAPI):
-    init = blackjax.elliptical_slice.init
-    build_step = build_eliptical_slice_step
-    init_params = init_params
+elliptical_slice = make_kernel_api(
+    name="elliptical_slice",
+    init_fn=blackjax.elliptical_slice.init,
+    init_params_fn=init_params,
+    build_step_fn=build_eliptical_slice_step,
+)

@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from blackjax.adaptation.base import AdaptationResults
 from blackjax.adaptation.step_size import dual_averaging_adaptation
 from blackjax.base import AdaptationAlgorithm
-from jaxtyping import Array
+from probjax.utils.typing import Array
 
 from probjax.utils.linalg import cholesky_update
 
