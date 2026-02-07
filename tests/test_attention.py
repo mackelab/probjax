@@ -224,7 +224,8 @@ def test_attention_forward_mode_jvp_matches_reference():
         (1, 512, 8, 100),
     ],
 )
-def test_attention_with_dropout(batch_size, seq_len, num_heads, qkv_dim):
+@pytest.mark.parametrize("dropout_impl", ["materialize", "counter"])
+def test_attention_with_dropout(batch_size, seq_len, num_heads, qkv_dim, dropout_impl):
     q = k = v = jax.random.normal(
         jax.random.PRNGKey(0), (batch_size, seq_len, num_heads, qkv_dim)
     )
@@ -235,6 +236,7 @@ def test_attention_with_dropout(batch_size, seq_len, num_heads, qkv_dim):
         dropout_rate=0.1,
         deterministic=False,
         dropout_rng=jax.random.PRNGKey(0),
+        dropout_impl=dropout_impl,
     )
     assert out1.shape == (batch_size, seq_len, num_heads, qkv_dim)
     out2 = flex_attention(
@@ -244,6 +246,7 @@ def test_attention_with_dropout(batch_size, seq_len, num_heads, qkv_dim):
         dropout_rate=0.1,
         deterministic=False,
         dropout_rng=jax.random.PRNGKey(1),
+        dropout_impl=dropout_impl,
     )
     assert out2.shape == (batch_size, seq_len, num_heads, qkv_dim)
     assert not jnp.allclose(out1, out2, atol=1e-5), "Dropout did not change the output"
@@ -515,6 +518,68 @@ def test_cross_attention_shapes(
     v = jax.random.normal(key_v, (batch_size, kv_len, num_heads, qkv_dim))
     out = attention_fn(q, k, v)
     assert out.shape == (batch_size, q_len, num_heads, qkv_dim)
+
+
+def test_flex_attention_vmap_over_leading_batch_matches_manual():
+    outer_batch, batch_size, seq_len, num_heads, qkv_dim = 3, 2, 8, 2, 8
+    key_q, key_k, key_v = jax.random.split(jax.random.PRNGKey(0), 3)
+    q = jax.random.normal(
+        key_q, (outer_batch, batch_size, seq_len, num_heads, qkv_dim)
+    )
+    k = jax.random.normal(
+        key_k, (outer_batch, batch_size, seq_len, num_heads, qkv_dim)
+    )
+    v = jax.random.normal(
+        key_v, (outer_batch, batch_size, seq_len, num_heads, qkv_dim)
+    )
+
+    def attention_fn(q_, k_, v_):
+        return flex_attention(q_, k_, v_, deterministic=True)
+
+    out_vmap = jax.vmap(attention_fn, in_axes=0)(q, k, v)
+    out_manual = jnp.stack(
+        [attention_fn(q[i], k[i], v[i]) for i in range(outer_batch)], axis=0
+    )
+    assert out_vmap.shape == (
+        outer_batch,
+        batch_size,
+        seq_len,
+        num_heads,
+        qkv_dim,
+    )
+    assert jnp.allclose(out_vmap, out_manual, atol=1e-5)
+
+
+def test_flex_attention_vmap_over_leading_batch_with_mask_matches_manual():
+    outer_batch, batch_size, seq_len, num_heads, qkv_dim = 2, 2, 8, 2, 8
+    key_q, key_k, key_v = jax.random.split(jax.random.PRNGKey(202), 3)
+    q = jax.random.normal(
+        key_q, (outer_batch, batch_size, seq_len, num_heads, qkv_dim)
+    )
+    k = jax.random.normal(
+        key_k, (outer_batch, batch_size, seq_len, num_heads, qkv_dim)
+    )
+    v = jax.random.normal(
+        key_v, (outer_batch, batch_size, seq_len, num_heads, qkv_dim)
+    )
+    mask = CausalMask()
+
+    def attention_fn(q, k, v):
+        return flex_attention(q, k, v, mask=mask)
+
+    out_vmap = jax.vmap(attention_fn, in_axes=0)(q, k, v)
+    out_manual = jnp.stack(
+        [attention_fn(q[i], k[i], v[i]) for i in range(outer_batch)], axis=0
+    )
+
+    assert out_vmap.shape == (
+        outer_batch,
+        batch_size,
+        seq_len,
+        num_heads,
+        qkv_dim,
+    )
+    assert jnp.allclose(out_vmap, out_manual, atol=1e-5)
 
 
 @pytest.mark.parametrize(

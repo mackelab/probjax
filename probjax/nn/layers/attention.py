@@ -288,6 +288,7 @@ def flex_attention(
     grid: tuple[int, ...] | None = None,
     interpret: bool = False,
     debug: bool = False,
+    dropout_impl: str = "materialize",
 ):
     # These can not be used by the pallas backend
     del (
@@ -391,6 +392,7 @@ def flex_attention(
         block_sizes=block_sizes,
         backward_pass_impl=backward_pass_impl,
         dropout_rate=dropout_rate,
+        dropout_impl=dropout_impl,
         num_warps=num_warps,
         num_stages=num_stages,
         grid=grid,
