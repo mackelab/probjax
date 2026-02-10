@@ -438,6 +438,8 @@ class DataLoader:
         self._producer_th.start()
 
         self._closed = False
+        self._iter_ref = None
+        self._iter_token = None
 
         # IMPORTANT: don't pass a bound method to weakref.finalize (can keep self alive)
         self._finalizer_ref = weakref.finalize(
@@ -640,16 +642,25 @@ class DataLoader:
             yield batch
 
     # ---------------- main iterator API ------------------------------- #
+    def _ensure_iter(self):
+        if self._closed:
+            return
+        if self._iter_ref is None:
+            token = object()
+            self._iter_token = token
+            self._iter_ref = self._iter_gen(token)
+
     def __iter__(self):
-        self._iter_ref = self._iter_gen()
+        self._ensure_iter()
         return self
 
     def __next__(self):
-        if not hasattr(self, "_iter_ref") or self._iter_ref is None:
-            self._iter_ref = self._iter_gen()
+        if self._closed:
+            raise StopIteration
+        self._ensure_iter()
         return next(self._iter_ref)
 
-    def _iter_gen(self):
+    def _iter_gen(self, token):
         host_it = self._host_iter()
         if self._shard_flag:
             host_it = (_shard(b, self._n_dev) for b in host_it)
@@ -671,7 +682,9 @@ class DataLoader:
                         batch = fn(batch)
                     yield batch
             finally:
-                self.close()
+                # Avoid closing the loader if a newer iterator replaced this one.
+                if self._iter_token is token:
+                    self.close()
 
         return gen()
 
@@ -687,6 +700,8 @@ class DataLoader:
         if self._closed:
             return
         self._closed = True
+        self._iter_ref = None
+        self._iter_token = None
 
         self._stop_event.set()
 

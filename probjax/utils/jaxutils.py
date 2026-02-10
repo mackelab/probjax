@@ -9,7 +9,19 @@ from jax._src import linear_util as lu
 from jax._src.api_util import debug_info
 from jax._src.core import eval_jaxpr
 from jax._src.flatten_util import ravel_pytree
-from jax.interpreters.partial_eval import partial_eval_jaxpr_nounits
+try:
+    from jax.interpreters.partial_eval import partial_eval_jaxpr_nounits
+except Exception:  # JAX internals moved across versions.
+    try:
+        from jax._src.interpreters.partial_eval import partial_eval_jaxpr_nounits
+    except Exception:
+        try:
+            from jax.interpreters.partial_eval import partial_eval_jaxpr as _partial_eval_jaxpr
+        except Exception:
+            from jax._src.interpreters.partial_eval import partial_eval_jaxpr as _partial_eval_jaxpr
+
+        def partial_eval_jaxpr_nounits(jaxpr, unknowns, instantiate):
+            return _partial_eval_jaxpr(jaxpr, unknowns, instantiate)
 from jaxtyping import Array, PyTree
 
 
