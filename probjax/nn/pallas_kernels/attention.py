@@ -22,6 +22,7 @@ from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
+from jax import core as jax_core
 from jax._src import ad_util
 from jax import lax
 from jax.extend.core import Primitive
@@ -529,6 +530,95 @@ def mha_jvp_simple_kernel(
     lower_bound = 0
     upper_bound = pl.cdiv(seq_len, block_k)
     do = lax.fori_loop(lower_bound, upper_bound, body_jvp, do)
+    pl.store(do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask)
+
+
+def mha_forward_jvp_simple_kernel(
+    q_ref: jax.Array,
+    k_ref: jax.Array,
+    v_ref: jax.Array,
+    dq_ref: jax.Array,
+    dk_ref: jax.Array,
+    dv_ref: jax.Array,
+    o_ref: Any,
+    do_ref: Any,
+    *,
+    sm_scale: float,
+    head_dim: int,
+    block_q: int,
+    block_d: int,
+    block_k: int,
+):
+    """Fused forward + JVP for no mask/bias/dropout."""
+    seq_len = k_ref.shape[0]
+    start_q = pl.program_id(0)
+    start_b = pl.program_id(1)
+    start_h = pl.program_id(2)
+    precision = get_dot_precision(jax.default_backend(), q_ref.dtype)
+
+    d_mask = jnp.arange(block_d)[None] < head_dim
+    curr_q_slice = pl.dslice(start_q * block_q, block_q)
+    q = pl.load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
+    dq = pl.load(dq_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
+    LOG2E = 1.4426950408889634  # log2(e)
+
+    m_i = jnp.full((block_q,), NEG_INF, dtype=jnp.float32)
+    l_i = jnp.zeros(block_q, dtype=jnp.float32)
+    o = jnp.zeros((block_q, block_d), dtype=jnp.float32)
+
+    def body_fwd(start_k, carry):
+        o_prev, m_prev, l_prev = carry
+        curr_k_slice = pl.dslice(start_k * block_k, block_k)
+        k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        qk = pl.dot(q, k.T, precision=precision)
+        if sm_scale != 1.0:
+            qk *= sm_scale
+        qk *= LOG2E
+        m_curr = qk.max(axis=-1)
+        m_next = jnp.maximum(m_prev, m_curr)
+        correction = jnp.exp2(m_prev - m_next)
+        l_prev_corr = correction * l_prev
+        s_curr = jnp.exp2(qk - m_next[:, None])
+        l_curr = s_curr.sum(axis=-1)
+        l_next = l_prev_corr + l_curr
+        o_prev_corr = correction[:, None] * o_prev
+        v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=jnp.nan)
+        o_curr = pl.dot(s_curr.astype(v.dtype), v, precision=precision)
+        o_next = o_prev_corr + o_curr
+        return o_next, m_next, l_next
+
+    upper_bound = pl.cdiv(seq_len, block_k)
+    o, m_i, l_i = lax.fori_loop(0, upper_bound, body_fwd, (o, m_i, l_i))
+
+    l_i = jnp.where(l_i == 0.0, 1, l_i)
+    o /= l_i[:, None]
+    lse = m_i + jnp.log2(l_i)
+
+    do = jnp.zeros((block_q, block_d), dtype=jnp.float32)
+
+    def body_jvp(start_k, do_acc):
+        curr_k_slice = pl.dslice(start_k * block_k, block_k)
+        k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        dk = pl.load(dk_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        dv = pl.load(dv_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+
+        qk = pl.dot(q, k.T, precision=precision)
+        dqk = pl.dot(dq, k.T, precision=precision) + pl.dot(q, dk.T, precision=precision)
+        if sm_scale != 1.0:
+            qk *= sm_scale
+            dqk *= sm_scale
+        qk *= LOG2E
+        p = jnp.exp2(qk - lse[:, None])
+        row_sum = jnp.sum(dqk * p, axis=-1)
+        dP = p * (dqk - row_sum[:, None])
+
+        do_acc = do_acc + pl.dot(dP.astype(v.dtype), v, precision=precision)
+        do_acc = do_acc + pl.dot(p.astype(v.dtype), dv, precision=precision)
+        return do_acc
+
+    do = lax.fori_loop(0, upper_bound, body_jvp, do)
+    pl.store(o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask)
     pl.store(do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask)
 
 
@@ -1510,6 +1600,73 @@ def _mha_impl_jvp_from_lse(
     return tangent_out
 
 
+def _mha_impl_fused_jvp_simple(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    dq: jax.Array,
+    dk: jax.Array,
+    dv: jax.Array,
+    sm_scale: float,
+    block_sizes: BlockSizes,
+    num_warps: int | None,
+    num_stages: int,
+    grid: Any,
+    interpret: bool,
+    debug: bool,
+):
+    batch_size, q_seq_len, num_heads, head_dim = q.shape
+    kv_seq_len = k.shape[1]
+    block_q = min(block_sizes.block_q, q_seq_len)
+    block_k = min(block_sizes.block_k, kv_seq_len)
+    block_d = pl.next_power_of_2(head_dim)
+    grid_ = grid or (pl.cdiv(q_seq_len, block_q), batch_size, num_heads)
+    num_warps_ = num_warps or (4 if block_d <= 64 else 8)
+
+    kernel = functools.partial(
+        mha_forward_jvp_simple_kernel,
+        sm_scale=sm_scale,
+        head_dim=head_dim,
+        block_q=block_q,
+        block_k=block_k,
+        block_d=block_d,
+    )
+
+    in_specs = [
+        pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
+        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
+        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
+        pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
+        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
+        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
+    ]
+
+    out_shape = [
+        jax.ShapeDtypeStruct(shape=q.shape, dtype=q.dtype),
+        jax.ShapeDtypeStruct(shape=q.shape, dtype=q.dtype),
+    ]
+    out_specs = [
+        pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
+        pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
+    ]
+
+    out, tangent_out = pl.pallas_call(
+        kernel,
+        grid=grid_,
+        in_specs=in_specs,
+        out_specs=out_specs,
+        compiler_params=plgpu.CompilerParams(
+            num_warps=num_warps_, num_stages=num_stages
+        ),
+        out_shape=out_shape,
+        debug=debug,
+        interpret=interpret,
+        name="mha_forward_jvp_simple",
+    )(q, k, v, dq, dk, dv)
+
+    return out, tangent_out
+
+
 def _flatten_optional_pytree(value):
     if value is None:
         return None, ()
@@ -1714,6 +1871,36 @@ def _mha_jvp_rule(
         raise ValueError("dropout_rate > 0 requires a non-None rng.")
     rng = rng if rng is not None else jax.random.PRNGKey(0)
 
+    def _tangent_or_zero(t, primal):
+        if isinstance(t, ad_util.Zero):
+            return jnp.zeros_like(primal)
+        return t
+
+    dq = _tangent_or_zero(dq, q)
+    dk = _tangent_or_zero(dk, k)
+    dv = _tangent_or_zero(dv, v)
+
+    has_tracer_tangent = isinstance(dq, jax_core.Tracer) or isinstance(
+        dk, jax_core.Tracer
+    ) or isinstance(dv, jax_core.Tracer)
+    if mask is None and bias is None and dropout_rate == 0.0 and not has_tracer_tangent:
+        out, tangent_out = _mha_impl_fused_jvp_simple(
+            q=q,
+            k=k,
+            v=v,
+            dq=dq,
+            dk=dk,
+            dv=dv,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+        )
+        return out, tangent_out
+
     out, res = _mha_impl(
         q=q,
         k=k,
@@ -1734,15 +1921,6 @@ def _mha_jvp_rule(
         output_activations=True,
     )
     q_res, k_res, v_res, rng_res, out_res, lse_res = res
-
-    def _tangent_or_zero(t, primal):
-        if isinstance(t, ad_util.Zero):
-            return jnp.zeros_like(primal)
-        return t
-
-    dq = _tangent_or_zero(dq, q)
-    dk = _tangent_or_zero(dk, k)
-    dv = _tangent_or_zero(dv, v)
 
     mask_treedef, mask_leaves = _flatten_optional_pytree(mask)
     bias_treedef, bias_leaves = _flatten_optional_pytree(bias)
