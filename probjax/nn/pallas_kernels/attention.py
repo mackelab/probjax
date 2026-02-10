@@ -22,7 +22,6 @@ from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
-from jax import core as jax_core
 from jax._src import ad_util
 from jax import lax
 from jax.extend.core import Primitive
@@ -1770,6 +1769,7 @@ def _mha_bind(
     debug: bool = False,
     dropout_rate: float = 0.0,
     dropout_impl: str = "materialize",
+    jvp_fused: bool = False,
 ):
     """Multi-Head Attention public API (forward only in primal eval)."""
     if dropout_rate > 0 and rng is None:
@@ -1796,6 +1796,7 @@ def _mha_bind(
         debug=debug,
         dropout_rate=dropout_rate,
         dropout_impl=dropout_impl,
+        jvp_fused=jvp_fused,
         mask_treedef=mask_treedef,
         bias_treedef=bias_treedef,
         mask_num_leaves=len(mask_leaves),
@@ -1806,7 +1807,7 @@ def _mha_bind(
 
 @functools.partial(
     jax.custom_jvp,
-    nondiff_argnums=(3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
+    nondiff_argnums=(3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16),
 )
 def mha(
     q,
@@ -1825,6 +1826,7 @@ def mha(
     debug: bool = False,
     dropout_rate: float = 0.0,
     dropout_impl: str = "materialize",
+    jvp_fused: bool = False,
 ):
     return _mha_bind(
         q=q,
@@ -1843,6 +1845,7 @@ def mha(
         debug=debug,
         dropout_rate=dropout_rate,
         dropout_impl=dropout_impl,
+        jvp_fused=jvp_fused,
     )
 
 
@@ -1861,6 +1864,7 @@ def _mha_jvp_rule(
     debug,
     dropout_rate,
     dropout_impl,
+    jvp_fused,
     primals,
     tangents,
 ):
@@ -1880,10 +1884,7 @@ def _mha_jvp_rule(
     dk = _tangent_or_zero(dk, k)
     dv = _tangent_or_zero(dv, v)
 
-    has_tracer_tangent = isinstance(dq, jax_core.Tracer) or isinstance(
-        dk, jax_core.Tracer
-    ) or isinstance(dv, jax_core.Tracer)
-    if mask is None and bias is None and dropout_rate == 0.0 and not has_tracer_tangent:
+    if jvp_fused and mask is None and bias is None and dropout_rate == 0.0:
         out, tangent_out = _mha_impl_fused_jvp_simple(
             q=q,
             k=k,
@@ -2492,11 +2493,13 @@ def _mha_prim_impl(
     debug: bool,
     dropout_rate: float,
     dropout_impl: str,
+    jvp_fused: bool,
     mask_treedef,
     bias_treedef,
     mask_num_leaves: int,
     bias_num_leaves: int,
 ):
+    del jvp_fused
     _, _, _, _, mask_leaves, bias_leaves = _split_mha_operands(
         (q, k, v, rng, *rest),
         mask_num_leaves=mask_num_leaves,
@@ -2714,6 +2717,7 @@ def _mha_prim_abstract_eval(
     debug: bool,
     dropout_rate: float,
     dropout_impl: str,
+    jvp_fused: bool,
     mask_treedef,
     bias_treedef,
     mask_num_leaves: int,
@@ -2734,6 +2738,7 @@ def _mha_prim_abstract_eval(
         debug,
         dropout_rate,
         dropout_impl,
+        jvp_fused,
         mask_treedef,
         bias_treedef,
         mask_num_leaves,
