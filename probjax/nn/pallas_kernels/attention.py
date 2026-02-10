@@ -472,6 +472,66 @@ def mha_jvp_from_lse_kernel(
     pl.store(do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask)
 
 
+def mha_jvp_simple_kernel(
+    q_ref: jax.Array,
+    k_ref: jax.Array,
+    v_ref: jax.Array,
+    dq_ref: jax.Array,
+    dk_ref: jax.Array,
+    dv_ref: jax.Array,
+    lse_ref: jax.Array,
+    do_ref: Any,
+    *,
+    sm_scale: float,
+    head_dim: int,
+    block_q: int,
+    block_d: int,
+    block_k: int,
+):
+    """JVP kernel specialized for no mask/bias/dropout."""
+    seq_len = k_ref.shape[0]
+    start_q = pl.program_id(0)
+    start_b = pl.program_id(1)
+    start_h = pl.program_id(2)
+    precision = get_dot_precision(jax.default_backend(), q_ref.dtype)
+
+    d_mask = jnp.arange(block_d)[None] < head_dim
+    curr_q_slice = pl.dslice(start_q * block_q, block_q)
+    q = pl.load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
+    dq = pl.load(dq_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
+    LOG2E = 1.4426950408889634  # log2(e)
+
+    lse = pl.load(lse_ref, (curr_q_slice,))
+    do = jnp.zeros((block_q, block_d), dtype=jnp.float32)
+
+    def body_jvp(start_k, do_acc):
+        curr_k_slice = pl.dslice(start_k * block_k, block_k)
+        k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        dk = pl.load(dk_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        dv = pl.load(dv_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+
+        qk = pl.dot(q, k.T, precision=precision)
+        dqk = pl.dot(dq, k.T, precision=precision) + pl.dot(q, dk.T, precision=precision)
+        if sm_scale != 1.0:
+            qk *= sm_scale
+            dqk *= sm_scale
+
+        qk *= LOG2E
+        p = jnp.exp2(qk - lse[:, None])
+        row_sum = jnp.sum(dqk * p, axis=-1)
+        dP = p * (dqk - row_sum[:, None])
+
+        do_acc = do_acc + pl.dot(dP.astype(v.dtype), v, precision=precision)
+        do_acc = do_acc + pl.dot(p.astype(v.dtype), dv, precision=precision)
+        return do_acc
+
+    lower_bound = 0
+    upper_bound = pl.cdiv(seq_len, block_k)
+    do = lax.fori_loop(lower_bound, upper_bound, body_jvp, do)
+    pl.store(do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask)
+
+
 def _preprocess_backward_kernel(out_ref, dout_ref, delta_ref):
     """
     Preprocesses the backward pass by computing the delta.
@@ -1270,6 +1330,53 @@ def _mha_impl_jvp_from_lse(
     block_d = pl.next_power_of_2(head_dim)
     grid_ = grid or (pl.cdiv(q_seq_len, block_q), batch_size, num_heads)
     num_warps_ = num_warps or (4 if block_d <= 64 else 8)
+
+    fast_jvp = mask is None and bias is None and dropout_rate == 0.0
+    if fast_jvp:
+        kernel = functools.partial(
+            mha_jvp_simple_kernel,
+            sm_scale=sm_scale,
+            head_dim=head_dim,
+            block_q=block_q,
+            block_k=block_k,
+            block_d=block_d,
+        )
+        in_specs = [
+            pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
+            pl.BlockSpec(
+                (None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)
+            ),
+            pl.BlockSpec(
+                (None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)
+            ),
+            pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
+            pl.BlockSpec(
+                (None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)
+            ),
+            pl.BlockSpec(
+                (None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)
+            ),
+            pl.BlockSpec((None, None, block_q), lambda i, j, k_: (j, k_, i)),
+        ]
+
+        out_shape = jax.ShapeDtypeStruct(shape=q.shape, dtype=q.dtype)
+        out_specs = pl.BlockSpec(
+            (None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)
+        )
+
+        return pl.pallas_call(
+            kernel,
+            grid=grid_,
+            in_specs=in_specs,
+            out_specs=out_specs,
+            compiler_params=plgpu.CompilerParams(
+                num_warps=num_warps_, num_stages=num_stages
+            ),
+            out_shape=out_shape,
+            debug=debug,
+            interpret=interpret,
+            name="mha_jvp_simple",
+        )(q, k, v, dq, dk, dv, lse)
 
     index_offset = index_offset_size = None
     if mask is not None:
