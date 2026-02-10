@@ -84,7 +84,8 @@ def _load_rng_key(rng_ref, batch_idx):
     else:
         key_len = rng_ref.shape[1]
         b = pl.dslice(batch_idx, 1)
-        key = pl.load(rng_ref, (b, pl.dslice(0, key_len)))[0, :]
+        key = pl.load(rng_ref, (b, pl.dslice(0, key_len)))
+        key = jnp.reshape(key, (key_len,))
     return key
 
 
