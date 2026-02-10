@@ -3,7 +3,8 @@
 /docs/docs/tutorial/*
 /docs/docs/examples/*
 /docs/site/*
-
+wandb/
+examples/nn/diffusion
 # Development files and python cache
 /*.pyc
 /*.egg
