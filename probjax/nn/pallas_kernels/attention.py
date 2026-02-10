@@ -42,7 +42,7 @@ from .utils import (
 
 
 def _dropout_mask_counter(
-    rng_key: jax.Array,
+    rng_seed: jax.Array,
     batch_idx: jax.Array,
     head_idx: jax.Array,
     q_idx: jax.Array,
@@ -50,13 +50,14 @@ def _dropout_mask_counter(
     rate: float,
 ) -> jax.Array:
     """Counter-based dropout mask for a [Q, K] tile."""
-    seed = rng_key.astype(jnp.uint32)
-    x = seed[0]
-    if seed.shape[0] > 1:
-        x ^= seed[1] * jnp.uint32(0x9E3779B9)
-        for i in range(2, seed.shape[0]):
-            x ^= seed[i] * jnp.uint32(0x85EBCA6B + i)
-    seed = x
+    seed = rng_seed.astype(jnp.uint32)
+    if seed.shape:
+        x = seed[0]
+        if seed.shape[0] > 1:
+            x ^= seed[1] * jnp.uint32(0x9E3779B9)
+            for i in range(2, seed.shape[0]):
+                x ^= seed[i] * jnp.uint32(0x85EBCA6B + i)
+        seed = x
     b = jnp.uint32(batch_idx)
     h = jnp.uint32(head_idx)
     q = q_idx.astype(jnp.uint32)[:, None]
@@ -75,18 +76,14 @@ def _dropout_mask_counter(
     return u < rate
 
 
-def _load_rng_key(rng_ref, batch_idx):
-    if rng_ref is None:
-        return None
-    if len(rng_ref.shape) == 1:
-        key_len = rng_ref.shape[0]
-        key = pl.load(rng_ref, (pl.dslice(0, key_len),))
-    else:
-        key_len = rng_ref.shape[1]
-        b = pl.dslice(batch_idx, 1)
-        key = pl.load(rng_ref, (b, pl.dslice(0, key_len)))
-        key = jnp.reshape(key, (key_len,))
-    return key
+def _rng_seed_from_key(rng: jax.Array) -> jax.Array:
+    key = jnp.asarray(rng, dtype=jnp.uint32).reshape((-1,))
+    seed = key[0]
+    if key.shape[0] > 1:
+        seed = seed ^ (key[1] * jnp.uint32(0x9E3779B9))
+        for i in range(2, key.shape[0]):
+            seed = seed ^ (key[i] * jnp.uint32(0x85EBCA6B + i))
+    return seed
 
 
 @jax.tree_util.register_pytree_node_class
@@ -337,9 +334,9 @@ def mha_forward_kernel(
             if dropout_mask_ref is not None:
                 dmask = pl.load(dropout_mask_ref, (slice(None), curr_k_slice))
             else:
-                rng_key = _load_rng_key(rng_ref, start_b)
+                rng_seed = pl.load(rng_ref, ())
                 dmask = _dropout_mask_counter(
-                    rng_key, start_b, start_h, span_q, span_k, dropout_rate
+                    rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
             s_curr = jnp.where(dmask, 0, s_curr / (1 - dropout_rate))
         o_curr = pl.dot(s_curr.astype(v.dtype), v, precision=precision)
@@ -463,9 +460,9 @@ def mha_jvp_from_lse_kernel(
             if dropout_mask_ref is not None:
                 dmask = pl.load(dropout_mask_ref, (slice(None), curr_k_slice))
             else:
-                rng_key = _load_rng_key(rng_ref, start_b)
+                rng_seed = pl.load(rng_ref, ())
                 dmask = _dropout_mask_counter(
-                    rng_key, start_b, start_h, span_q, span_k, dropout_rate
+                    rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
             p_drop = jnp.where(dmask, 0, p / (1 - dropout_rate))
         else:
@@ -729,9 +726,9 @@ def mha_forward_jvp_kernel(
             if dropout_mask_ref is not None:
                 dmask = pl.load(dropout_mask_ref, (slice(None), curr_k_slice))
             else:
-                rng_key = _load_rng_key(rng_ref, start_b)
+                rng_seed = pl.load(rng_ref, ())
                 dmask = _dropout_mask_counter(
-                    rng_key, start_b, start_h, span_q, span_k, dropout_rate
+                    rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
             s_curr = jnp.where(dmask, 0, s_curr / (1 - dropout_rate))
         o_curr = pl.dot(s_curr.astype(v.dtype), v, precision=precision)
@@ -801,9 +798,9 @@ def mha_forward_jvp_kernel(
             if dropout_mask_ref is not None:
                 dmask = pl.load(dropout_mask_ref, (slice(None), curr_k_slice))
             else:
-                rng_key = _load_rng_key(rng_ref, start_b)
+                rng_seed = pl.load(rng_ref, ())
                 dmask = _dropout_mask_counter(
-                    rng_key, start_b, start_h, span_q, span_k, dropout_rate
+                    rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
             p_drop = jnp.where(dmask, 0, p / (1 - dropout_rate))
         else:
@@ -1014,9 +1011,9 @@ def mha_backward_kernel(
             if dropout_mask_ref is not None:
                 dmask = pl.load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
             else:
-                rng_key = _load_rng_key(rng_ref, start_b)
+                rng_seed = pl.load(rng_ref, ())
                 dmask = _dropout_mask_counter(
-                    rng_key, start_b, start_h, span_q, span_k, dropout_rate
+                    rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
             p = jnp.where(dmask, 0, p / (1 - dropout_rate))
             # Scale dp consistently with forward scaling
@@ -1125,9 +1122,9 @@ def mha_backward_kernel(
             if dropout_mask_ref is not None:
                 dmask = pl.load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
             else:
-                rng_key = _load_rng_key(rng_ref, start_b)
+                rng_seed = pl.load(rng_ref, ())
                 dmask = _dropout_mask_counter(
-                    rng_key, start_b, start_h, span_q, span_k, dropout_rate
+                    rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
             p = jnp.where(dmask, 0, p / (1 - dropout_rate))
             dp = jnp.where(dmask, 0, dp_dropped / (1 - dropout_rate)) + (
@@ -1262,9 +1259,9 @@ def mha_backward_kernel_split_dkdv(
             if dropout_mask_ref is not None:
                 dmask = pl.load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
             else:
-                rng_key = _load_rng_key(rng_ref, start_b)
+                rng_seed = pl.load(rng_ref, ())
                 dmask = _dropout_mask_counter(
-                    rng_key, start_b, start_h, span_q, span_k, dropout_rate
+                    rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
             p = jnp.where(dmask, 0, p / (1 - dropout_rate))
             dp = jnp.where(dmask, 0, dp_dropped / (1 - dropout_rate)) + (
@@ -1382,9 +1379,9 @@ def mha_backward_kernel_split_dq(
             if dropout_mask_ref is not None:
                 dmask = pl.load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
             else:
-                rng_key = _load_rng_key(rng_ref, start_b)
+                rng_seed = pl.load(rng_ref, ())
                 dmask = _dropout_mask_counter(
-                    rng_key, start_b, start_h, span_q, span_k, dropout_rate
+                    rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
             p = jnp.where(dmask, 0, p / (1 - dropout_rate))
             dp = jnp.where(dmask, 0, dp_dropped / (1 - dropout_rate)) + (
@@ -1420,6 +1417,7 @@ def _mha_impl(
     mask: AttentionMask | None,
     bias: AttentionBias | None,
     rng: jax.Array | None,
+    rng_seed: jax.Array,
     sm_scale: float,
     block_sizes: BlockSizes,
     backward_pass_impl: str,
@@ -1528,7 +1526,7 @@ def _mha_impl(
         )
     else:
         in_specs.append(None)
-    in_specs.append(pl.BlockSpec((2,), lambda *_: (0,)))
+    in_specs.append(pl.BlockSpec((), lambda *_: ()))
 
     # Dynamic iterator specs (kv)
     if index_offset is not None and index_offset_size is not None:
@@ -1584,14 +1582,14 @@ def _mha_impl(
         q_id,
         k_id,
         dropout_mask,
-        rng,
+        rng_seed,
         index_offset,
         index_offset_size,
     )
 
     if output_activations:
         out, lse = pallas_out
-        return out, (q, k, v, rng, out, lse)
+        return out, (q, k, v, rng_seed, out, lse)
     return pallas_out
 
 
@@ -1606,6 +1604,7 @@ def _mha_impl_jvp_from_lse(
     mask: AttentionMask | None,
     bias: AttentionBias | None,
     rng: jax.Array | None,
+    rng_seed: jax.Array,
     sm_scale: float,
     block_sizes: BlockSizes,
     backward_pass_impl: str,
@@ -1752,7 +1751,7 @@ def _mha_impl_jvp_from_lse(
         )
     else:
         in_specs.append(None)
-    in_specs.append(pl.BlockSpec((2,), lambda *_: (0,)))
+    in_specs.append(pl.BlockSpec((), lambda *_: ()))
 
     in_specs.append(pl.BlockSpec((None, None, block_q), lambda i, j, k_: (j, k_, i)))
 
@@ -1797,7 +1796,7 @@ def _mha_impl_jvp_from_lse(
         q_id,
         k_id,
         dropout_mask,
-        rng,
+        rng_seed,
         lse,
         index_offset,
         index_offset_size,
@@ -1883,6 +1882,7 @@ def _mha_impl_fused_jvp(
     mask: AttentionMask | None,
     bias: AttentionBias | None,
     rng: jax.Array | None,
+    rng_seed: jax.Array,
     sm_scale: float,
     block_sizes: BlockSizes,
     num_warps: int | None,
@@ -1979,7 +1979,7 @@ def _mha_impl_fused_jvp(
         )
     else:
         in_specs.append(None)
-    in_specs.append(pl.BlockSpec((2,), lambda *_: (0,)))
+    in_specs.append(pl.BlockSpec((), lambda *_: ()))
 
     if index_offset is not None and index_offset_size is not None:
         index_offset_spec = pl.BlockSpec(
@@ -2026,7 +2026,7 @@ def _mha_impl_fused_jvp(
         q_id,
         k_id,
         dropout_mask,
-        rng,
+        rng_seed,
         index_offset,
         index_offset_size,
     )
@@ -2048,10 +2048,10 @@ def _unflatten_optional_pytree(treedef, leaves):
 
 
 def _split_mha_operands(args, *, mask_num_leaves: int, bias_num_leaves: int):
-    q, k, v, rng, *rest = args
+    q, k, v, rng, rng_seed, *rest = args
     mask_leaves = rest[:mask_num_leaves]
     bias_leaves = rest[mask_num_leaves : mask_num_leaves + bias_num_leaves]
-    return q, k, v, rng, mask_leaves, bias_leaves
+    return q, k, v, rng, rng_seed, mask_leaves, bias_leaves
 
 
 def _mha_reference(
@@ -2142,6 +2142,7 @@ def _mha_bind(
     if dropout_rate > 0 and rng is None:
         raise ValueError("dropout_rate > 0 requires a non-None rng.")
     rng = rng if rng is not None else jax.random.PRNGKey(0)
+    rng_seed = _rng_seed_from_key(rng)
 
     mask_treedef, mask_leaves = _flatten_optional_pytree(mask)
     bias_treedef, bias_leaves = _flatten_optional_pytree(bias)
@@ -2151,6 +2152,7 @@ def _mha_bind(
         k,
         v,
         rng,
+        rng_seed,
         *mask_leaves,
         *bias_leaves,
         sm_scale=sm_scale,
@@ -2243,6 +2245,7 @@ def _mha_jvp_rule(
     if dropout_rate > 0 and rng is None:
         raise ValueError("dropout_rate > 0 requires a non-None rng.")
     rng = rng if rng is not None else jax.random.PRNGKey(0)
+    rng_seed = _rng_seed_from_key(rng)
 
     def _tangent_or_zero(t, primal):
         if isinstance(t, ad_util.Zero):
@@ -2287,6 +2290,7 @@ def _mha_jvp_rule(
             mask=mask,
             bias=bias,
             rng=rng,
+            rng_seed=rng_seed,
             sm_scale=sm_scale,
             block_sizes=block_sizes,
             num_warps=num_warps,
@@ -2306,6 +2310,7 @@ def _mha_jvp_rule(
         mask=mask,
         bias=bias,
         rng=rng,
+        rng_seed=rng_seed,
         sm_scale=sm_scale,
         block_sizes=block_sizes,
         backward_pass_impl=backward_pass_impl,
@@ -2318,7 +2323,7 @@ def _mha_jvp_rule(
         dropout_impl=dropout_impl,
         output_activations=True,
     )
-    q_res, k_res, v_res, rng_res, out_res, lse_res = res
+    q_res, k_res, v_res, rng_seed_res, out_res, lse_res = res
 
     mask_treedef, mask_leaves = _flatten_optional_pytree(mask)
     bias_treedef, bias_leaves = _flatten_optional_pytree(bias)
@@ -2327,7 +2332,8 @@ def _mha_jvp_rule(
         q_res,
         k_res,
         v_res,
-        rng_res,
+        rng,
+        rng_seed_res,
         out_res,
         lse_res,
         dq,
@@ -2455,8 +2461,8 @@ def _mha_backward(
             ),
         # dropout mask
         None,
-        # rng key
-        pl.BlockSpec((2,), lambda *_: (0,)),
+        # rng seed
+        pl.BlockSpec((), lambda *_: ()),
         # out, do, lse, delta
         pl.BlockSpec(
             (None, q_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
@@ -2738,7 +2744,7 @@ def _mha_backward(
                 )
             ),
             # rng key
-            pl.BlockSpec((2,), lambda *_: (0,)),
+            pl.BlockSpec((), lambda *_: ()),
             # do, lse, delta
             pl.BlockSpec(
                 (None, q_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
@@ -2879,6 +2885,7 @@ def _mha_prim_impl(
     k,
     v,
     rng,
+    rng_seed,
     *rest,
     sm_scale: float,
     block_sizes: BlockSizes,
@@ -2895,8 +2902,8 @@ def _mha_prim_impl(
     mask_num_leaves: int,
     bias_num_leaves: int,
 ):
-    _, _, _, _, mask_leaves, bias_leaves = _split_mha_operands(
-        (q, k, v, rng, *rest),
+    _, _, _, _, rng_seed, mask_leaves, bias_leaves = _split_mha_operands(
+        (q, k, v, rng, rng_seed, *rest),
         mask_num_leaves=mask_num_leaves,
         bias_num_leaves=bias_num_leaves,
     )
@@ -2909,6 +2916,7 @@ def _mha_prim_impl(
         mask=mask,
         bias=bias,
         rng=rng,
+        rng_seed=rng_seed,
         sm_scale=sm_scale,
         block_sizes=block_sizes,
         backward_pass_impl=backward_pass_impl,
@@ -2928,6 +2936,7 @@ def _mha_lin_prim_impl(
     k,
     v,
     rng,
+    rng_seed,
     out,
     lse,
     dq,
@@ -2950,8 +2959,8 @@ def _mha_lin_prim_impl(
     bias_num_leaves: int,
 ):
     del out
-    _, _, _, _, mask_leaves, bias_leaves = _split_mha_operands(
-        (q, k, v, rng, *rest),
+    _, _, _, _, rng_seed, mask_leaves, bias_leaves = _split_mha_operands(
+        (q, k, v, rng, rng_seed, *rest),
         mask_num_leaves=mask_num_leaves,
         bias_num_leaves=bias_num_leaves,
     )
@@ -2968,6 +2977,7 @@ def _mha_lin_prim_impl(
         mask=mask,
         bias=bias,
         rng=rng,
+        rng_seed=rng_seed,
         sm_scale=sm_scale,
         block_sizes=block_sizes,
         backward_pass_impl=backward_pass_impl,
@@ -2986,6 +2996,7 @@ def _mha_lin_prim_abstract_eval(
     k_aval,
     v_aval,
     rng_aval,
+    rng_seed_aval,
     out_aval,
     lse_aval,
     dq_aval,
@@ -3011,6 +3022,7 @@ def _mha_lin_prim_abstract_eval(
         k_aval,
         v_aval,
         rng_aval,
+        rng_seed_aval,
         out_aval,
         lse_aval,
         dq_aval,
@@ -3041,6 +3053,7 @@ def _mha_lin_prim_transpose(
     k,
     v,
     rng,
+    rng_seed,
     out,
     lse,
     dq,
@@ -3063,17 +3076,17 @@ def _mha_lin_prim_transpose(
     bias_num_leaves: int,
 ):
     if isinstance(ct, ad_util.Zero):
-        return (None,) * (9 + mask_num_leaves + bias_num_leaves)
+        return (None,) * (10 + mask_num_leaves + bias_num_leaves)
 
-    _, _, _, _, mask_leaves, bias_leaves = _split_mha_operands(
-        (q, k, v, rng, *rest),
+    _, _, _, _, rng_seed, mask_leaves, bias_leaves = _split_mha_operands(
+        (q, k, v, rng, rng_seed, *rest),
         mask_num_leaves=mask_num_leaves,
         bias_num_leaves=bias_num_leaves,
     )
     mask = _unflatten_optional_pytree(mask_treedef, mask_leaves)
     bias = _unflatten_optional_pytree(bias_treedef, bias_leaves)
 
-    res = (q, k, v, rng, out, lse)
+    res = (q, k, v, rng_seed, out, lse)
     dq_ct, dk_ct, dv_ct, _, _, _ = _mha_backward(
         sm_scale,
         block_sizes,
@@ -3090,7 +3103,7 @@ def _mha_lin_prim_transpose(
         mask=mask,
         bias=bias,
     )
-    grads = [None, None, None, None, None, None, dq_ct, dk_ct, dv_ct]
+    grads = [None, None, None, None, None, None, None, dq_ct, dk_ct, dv_ct]
     grads.extend([None] * mask_num_leaves)
     grads.extend([None] * bias_num_leaves)
     return tuple(grads)
@@ -3101,6 +3114,7 @@ def _mha_prim_abstract_eval(
     k_aval,
     v_aval,
     rng_aval,
+    rng_seed_aval,
     *rest,
     sm_scale: float,
     block_sizes: BlockSizes,
@@ -3121,6 +3135,7 @@ def _mha_prim_abstract_eval(
         k_aval,
         v_aval,
         rng_aval,
+        rng_seed_aval,
         rest,
         sm_scale,
         block_sizes,
@@ -3162,14 +3177,15 @@ def _mha_batching_rule(batched_args, batch_dims, **params):
         out = _mha_p.bind(*batched_args, **params)
         return out, batching.not_mapped
 
-    q, k, v, rng, *mask_bias = batched_args
-    q_bdim, k_bdim, v_bdim, rng_bdim, *other_bdims = batch_dims
+    q, k, v, rng, rng_seed, *mask_bias = batched_args
+    q_bdim, k_bdim, v_bdim, rng_bdim, rng_seed_bdim, *other_bdims = batch_dims
 
     can_merge = (
         q_bdim == k_bdim == v_bdim == 0
         and q_bdim is not batching.not_mapped
         and all(d is batching.not_mapped for d in other_bdims)
         and (rng_bdim is batching.not_mapped or params["dropout_rate"] == 0.0)
+        and (rng_seed_bdim is batching.not_mapped or params["dropout_rate"] == 0.0)
         and params["grid"] is None
         and mask_num_leaves == 0
         and bias_num_leaves == 0
@@ -3185,6 +3201,10 @@ def _mha_batching_rule(batched_args, batch_dims, **params):
             rng_merged = rng
         else:
             rng_merged = rng[0]
+        if rng_seed_bdim is batching.not_mapped:
+            rng_seed_merged = rng_seed
+        else:
+            rng_seed_merged = rng_seed[0]
         out = _mha_impl(
             q=q,
             k=k,
@@ -3192,6 +3212,7 @@ def _mha_batching_rule(batched_args, batch_dims, **params):
             mask=_unflatten_optional_pytree(mask_treedef, ()),
             bias=_unflatten_optional_pytree(bias_treedef, ()),
             rng=rng_merged,
+            rng_seed=rng_seed_merged,
             sm_scale=params["sm_scale"],
             block_sizes=params["block_sizes"],
             backward_pass_impl=params["backward_pass_impl"],
@@ -3217,7 +3238,7 @@ def _mha_batching_rule(batched_args, batch_dims, **params):
             new_args.append(batching.moveaxis(x, d, 0) if d != 0 else x)
             in_axes.append(0)
 
-    def _impl(q, k, v, rng, *mask_bias_leaves):
+    def _impl(q, k, v, rng, rng_seed, *mask_bias_leaves):
         mask_leaves = mask_bias_leaves[:mask_num_leaves]
         bias_leaves = mask_bias_leaves[mask_num_leaves:]
         mask = _unflatten_optional_pytree(mask_treedef, mask_leaves)
@@ -3229,6 +3250,7 @@ def _mha_batching_rule(batched_args, batch_dims, **params):
             mask=mask,
             bias=bias,
             rng=rng,
+            rng_seed=rng_seed,
             sm_scale=params["sm_scale"],
             block_sizes=params["block_sizes"],
             backward_pass_impl=params["backward_pass_impl"],
@@ -3250,9 +3272,9 @@ batching.primitive_batchers[_mha_p] = _mha_batching_rule
 
 
 def _mha_lin_batching_rule(batched_args, batch_dims, **params):
-    dq_bdim = batch_dims[6]
-    dk_bdim = batch_dims[7]
-    dv_bdim = batch_dims[8]
+    dq_bdim = batch_dims[7]
+    dk_bdim = batch_dims[8]
+    dv_bdim = batch_dims[9]
 
     if dq_bdim is batching.not_mapped:
         out = _mha_lin_p.bind(*batched_args, **params)
@@ -3261,14 +3283,14 @@ def _mha_lin_batching_rule(batched_args, batch_dims, **params):
     if not (dq_bdim == dk_bdim == dv_bdim):
         raise NotImplementedError("mha_lin: mismatched tangent batch dims")
 
-    q, k, v, rng, out, lse, dq, dk, dv, *rest = batched_args
+    q, k, v, rng, rng_seed, out, lse, dq, dk, dv, *rest = batched_args
     dq = batching.moveaxis(dq, dq_bdim, 0)
     dk = batching.moveaxis(dk, dk_bdim, 0)
     dv = batching.moveaxis(dv, dv_bdim, 0)
 
     def _impl(dq_i, dk_i, dv_i):
         return _mha_lin_prim_impl(
-            q, k, v, rng, out, lse, dq_i, dk_i, dv_i, *rest, **params
+            q, k, v, rng, rng_seed, out, lse, dq_i, dk_i, dv_i, *rest, **params
         )
 
     y = jax.vmap(_impl, in_axes=(0, 0, 0), out_axes=0)(dq, dk, dv)
