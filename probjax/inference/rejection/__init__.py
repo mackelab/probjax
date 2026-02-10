@@ -55,7 +55,6 @@ class RejectionSampler:
         )
         self._batch_size = batch_size
 
-    # @partial(jax.jit, static_argnums=(0,))
     def run(self, key, num_samples: int = 1, **kwargs) -> Array:
         key, subkey = jax.random.split(key)
         batch_size = self._batch_size
