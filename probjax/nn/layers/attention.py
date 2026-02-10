@@ -289,6 +289,7 @@ def flex_attention(
     interpret: bool = False,
     debug: bool = False,
     dropout_impl: str = "materialize",
+    jvp_fused: bool = False,
 ):
     # These can not be used by the pallas backend
     del (
@@ -398,6 +399,7 @@ def flex_attention(
         grid=grid,
         interpret=interpret,
         debug=debug,
+        jvp_fused=jvp_fused,
     )
 
     output = output[:, :l_q, :h, :n]
