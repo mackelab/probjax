@@ -7,7 +7,10 @@ import jax.numpy as jnp
 from flax import nnx
 from flax.typing import Initializer
 
-from probjax.nn.sharding import DEFAULT_LINEAR_SHARDING, DEFAULT_MHA_SHARDING
+from probjax.nn.sharding import (
+    DEFAULT_LINEAR_SHARDING,
+    DEFAULT_MHA_SHARDING,
+)
 from probjax.utils.typing import (
     Array,
     ArrayLike,
@@ -231,8 +234,8 @@ class RotaryPosEncode(nnx.Module):
             if offset_int == offset and offset_int >= 0:
                 end = offset_int + seq_len
                 if end <= self.max_seq_len:
-                    cos = self.cos_cache.value[offset_int:end]
-                    sin = self.sin_cache.value[offset_int:end]
+                    cos = self.cos_cache[...][offset_int:end]
+                    sin = self.sin_cache[...][offset_int:end]
                     return cos, sin
         if positions is None:
             positions = jnp.arange(seq_len, dtype=self._full_inv_freq.dtype) + offset
@@ -577,7 +580,7 @@ class GaussianFourierEmbedding(nnx.Module):
             Array of shape [..., output_dim] with Fourier features.
         """
         inputs = jnp.asarray(inputs)
-        P = self.P.value
+        P = self.P[...]
 
         # Ensure P has the correct compute dtype
         P = P.astype(self.dtype) if self.dtype else P

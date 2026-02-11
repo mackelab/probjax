@@ -34,7 +34,6 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange, repeat
 from jax import lax
-from jax._src.lax.control_flow import for_loop
 from jax.experimental import pallas as pl
 
 
@@ -151,11 +150,7 @@ def _ssd_forward_kernel(
     # Obtain final state from previous chunk.
     h_carry = mutable_final_state_ref[:, :]
     mutable_ch_ref[:, :] = mutable_final_state_ref[:, :]
-    final_state = for_loop.for_loop(
-        subchunk_dim,
-        _ssd_forward_chunk_loop_body,
-        h_carry,
-    )
+    final_state = lax.fori_loop(0, subchunk_dim, _ssd_forward_chunk_loop_body, h_carry)
     mutable_final_state_ref[:, :] = final_state
 
 

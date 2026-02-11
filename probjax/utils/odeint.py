@@ -1,13 +1,15 @@
+from functools import partial
 from typing import Callable, Optional, Sequence
 
 import jax.numpy as jnp
 from jax import Array
 from jaxtyping import PyTree
 
-from probjax.utils.odeutil import AdaptiveParams, _odeint
+from probjax.core.custom_primitives.custom_inverse import custom_inverse
+from probjax.utils.odeutil import AdaptiveParams, _inv_logdet_odeint, _inv_odeint, _odeint
 
 
-# @partial(custom_inverse, inv_argnum=1)
+@partial(custom_inverse, inv_argnum=1, static_argnums=(0,))
 def odeint(
     drift: Callable[[Array, PyTree[Array], ...], PyTree[Array]],
     y0: PyTree[Array],
@@ -101,6 +103,5 @@ def odeint(
     )
 
 
-# Current custom inverse does not support Traced side effects...
-# odeint.definv(_inv_odeint)
-# odeint.definv_and_logdet(_inv_logdet_odeint)
+odeint.definv(_inv_odeint)
+odeint.definv_and_logdet(_inv_logdet_odeint)

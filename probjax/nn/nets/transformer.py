@@ -171,10 +171,10 @@ class Transformer(nnx.Module):
         if sharding is not None:
             norm_kwargs = {
                 "scale_init": nnx.with_partitioning(
-                    nnx.initializers.ones, PartitionSpec("model",)
+                    nnx.initializers.ones, PartitionSpec()
                 ),
                 "bias_init": nnx.with_partitioning(
-                    nnx.initializers.zeros, PartitionSpec("model",)
+                    nnx.initializers.zeros, PartitionSpec()
                 ),
             }
 

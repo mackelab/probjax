@@ -9,7 +9,10 @@ from probjax.nn.layers.conv import (
     ResnetBlock,
     SpatialSelfAttention,
 )
-from probjax.nn.sharding import DEFAULT_SPATIAL_ACTIVATION, filter_sharding_kwargs
+from probjax.nn.sharding import (
+    DEFAULT_SPATIAL_ACTIVATION,
+    filter_sharding_kwargs,
+)
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,

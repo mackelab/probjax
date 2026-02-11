@@ -100,10 +100,10 @@ class FlowMatcher(nnx.Module):
 
         """
         # With preconditioning
-        mu0 = self.mu0.value
-        std0 = self.std0.value
-        mu1 = self.mu1.value
-        std1 = self.std1.value
+        mu0 = self.mu0.get_value()
+        std0 = self.std0.get_value()
+        mu1 = self.mu1.get_value()
+        std1 = self.std1.get_value()
 
         x_normed, approx_mut, approx_stdt = self.preconditioning.normalize(
             self.schedule, t, x, mu0, mu1, std0, std1
@@ -155,8 +155,8 @@ class FlowMatcher(nnx.Module):
 
         # Generate noise for x0
         x0 = (
-            jax.random.normal(rng_source, shape=data.shape) * self.std0.value
-            + self.mu0.value
+            jax.random.normal(rng_source, shape=data.shape) * self.std0.get_value()
+            + self.mu0.get_value()
         )
 
         # Get shape from data for time scheduling
@@ -240,8 +240,8 @@ class LinearFlow(FlowMatcher):
         # = (-(1-t) * xt - t*(1-t)*v + (1-t)*mu0) / (1-t)**2*std0**2
         # = (- t*v + mu0 - xt) / (1-t)*std0**2
 
-        mu0 = self.mu0.value
-        std0 = self.std0.value
+        mu0 = self.mu0.get_value()
+        std0 = self.std0.get_value()
         t = jnp.clip(t, 0, max_t)
         v = self.__call__(t, x)
 

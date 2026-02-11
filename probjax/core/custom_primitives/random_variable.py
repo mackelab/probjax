@@ -6,7 +6,8 @@ from jax._src.ad_util import Zero
 from jax.core import eval_jaxpr
 from jax.extend.core import Primitive
 from jax.interpreters import ad, batching, mlir
-from jax.interpreters import partial_eval as pe
+from jax._src.interpreters import ad as ad_src
+from jax._src.interpreters import partial_eval as pe_src
 
 
 class NameStack(local):
@@ -134,11 +135,11 @@ def custom_rv_jvp(primals, tangents, **params):
     rvs_fn_jaxpr = params["rvs_jaxpr_thunk"]()
 
     nonzeros = [type(t) is not Zero for t in tangents]
-    forward_jvp_jaxpr, forward_out_nz = ad.jvp_jaxpr(
+    forward_jvp_jaxpr, forward_out_nz = ad_src.jvp_jaxpr(
         rvs_fn_jaxpr, nonzeros, instantiate=False
     )
     nonzero_tangents = [t for t in tangents if type(t) is not Zero]
-    forward_jvp_jaxpr_ = pe.convert_constvars_jaxpr(forward_jvp_jaxpr.jaxpr)
+    forward_jvp_jaxpr_ = pe_src.convert_constvars_jaxpr(forward_jvp_jaxpr.jaxpr)
 
     # TODO: This should be bound to a new primitive with adjusted dist, pdf,...
     # For now we just evaluate the jaxpr and return the result i.e. we will lose its

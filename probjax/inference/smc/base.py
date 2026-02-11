@@ -1,6 +1,8 @@
 from functools import partial
 import inspect
 from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
+from collections.abc import Mapping
+from dataclasses import asdict, is_dataclass
 
 import jax
 import jax.numpy as jnp
@@ -63,7 +65,8 @@ def _filter_kwargs(fn: Callable, kwargs: Dict[str, Any], *, allow_kwargs: bool =
     return {k: v for k, v in kwargs.items() if k in sig.parameters}
 
 
-def _ensure_param_batch(params: Dict[str, Any], *, shared: bool) -> Dict[str, Array]:
+def _ensure_param_batch(params, *, shared: bool) -> Dict[str, Array]:
+    params = _params_to_dict(params)
     batched = {}
     for k, v in params.items():
         arr = jnp.asarray(v)
@@ -84,9 +87,11 @@ def _params_to_dict(params) -> Dict[str, Any]:
         return {}
     if hasattr(params, "_asdict"):
         return params._asdict()
-    if isinstance(params, dict):
-        return params
-    raise TypeError("mcmc_params must be a dict or NamedTuple")
+    if isinstance(params, Mapping):
+        return dict(params)
+    if is_dataclass(params):
+        return asdict(params)
+    raise TypeError("mcmc_params must be a mapping, NamedTuple, or dataclass")
 
 
 class _ParamsProxy:
@@ -100,6 +105,12 @@ class _ParamsProxy:
 
 
 def _wrap_params(params: Dict[str, Any]):
+    if params is None:
+        return _ParamsProxy({})
+    if hasattr(params, "_asdict"):
+        return params
+    if is_dataclass(params):
+        return _ParamsProxy(asdict(params))
     return _ParamsProxy(params)
 
 
@@ -139,7 +150,7 @@ def init_mcmc_params(
     mcmc_init_fn, _ = make_mcmc_adapter(mcmc_kernel, **mcmc_kernel_kwargs)
     mcmc_state = mcmc_init_fn(particle0, tempered_logposterior_fn, rng_key=rng_key)
     params = mcmc_kernel.init_params(mcmc_state, **mcmc_param_kwargs)
-    return _ensure_param_batch(_params_to_dict(params), shared=True)
+    return _ensure_param_batch(params, shared=True)
 
 
 def make_smc_api(

@@ -11,6 +11,8 @@ from jax._src.core import shaped_abstractify
 from jax._src.util import safe_map, safe_zip
 from jax.extend.core import ClosedJaxpr, Primitive
 from jax.interpreters import ad, batching, mlir
+from jax._src.interpreters import ad as ad_src
+from jax._src.interpreters import batching as batching_src
 from jax.interpreters import partial_eval as pe
 from jax.tree_util import tree_flatten, tree_unflatten, tree_leaves
 
@@ -328,7 +330,7 @@ def custom_inverse_jvp(primals, tangents,
     del inverse_jaxpr_thunk, in_tree, inv_argnum
 
     nonzeros = [not isinstance(t, ad_util.Zero) for t in tangents]
-    jvp_cj, out_nonzeros = ad.jvp_jaxpr(forward_jaxpr, nonzeros, instantiate=False)
+    jvp_cj, out_nonzeros = ad_src.jvp_jaxpr(forward_jaxpr, nonzeros, instantiate=False)
     nonzero_tangents = [t for t in tangents if not isinstance(t, ad_util.Zero)]
 
     err_thunk = _error_inverse_thunk(
@@ -366,20 +368,20 @@ ad.primitive_jvps[custom_inverse_call_p] = custom_inverse_jvp
 # vmap: re-emit primitive, keep inverse lazy (fixes inverse(vmap(f)))
 # ---------------------------------------------------------------------------
 
-def batch_custom_inverse_call(axis_size, args, in_dims,
+def batch_custom_inverse_call(axis_data, args, in_dims,
                               forward_jaxpr, inverse_jaxpr_thunk, in_tree, inv_argnum):
     # Move mapped axes to front; track which args are batched.
     new_args = []
-    in_batched = []
+    in_axes = []
     for x, d in zip(args, in_dims):
         if d is batching.not_mapped:
             new_args.append(x)
-            in_batched.append(False)
+            in_axes.append(batching.not_mapped)
         else:
             new_args.append(batching.moveaxis(x, d, 0) if d != 0 else x)
-            in_batched.append(True)
+            in_axes.append(0)
 
-    any_batched = any(in_batched)
+    any_batched = any(d is not batching.not_mapped for d in in_axes)
     if not any_batched:
         # Nothing to do; keep primitive as-is.
         outs = custom_inverse_call_p.bind(
@@ -393,8 +395,15 @@ def batch_custom_inverse_call(axis_size, args, in_dims,
         return outs, out_dims
 
     # Batch the forward jaxpr.
-    batched_forward_jaxpr, _ = batching.batch_jaxpr(
-        forward_jaxpr, axis_size, tuple(in_batched), instantiate=False
+    if not isinstance(axis_data, batching_src.AxisData):
+        axis_data = batching_src.AxisData(
+            name="batch",
+            size=axis_data,
+            spmd_name=None,
+            _ema=None,
+        )
+    batched_forward_jaxpr, out_axes = batching_src.batch_jaxpr2(
+        forward_jaxpr, axis_data, tuple(in_axes)
     )
 
     # Lazily batch the inverse jaxpr only if someone actually asks for it.
@@ -402,8 +411,8 @@ def batch_custom_inverse_call(axis_size, args, in_dims,
         inv_cj = inverse_jaxpr_thunk() if callable(inverse_jaxpr_thunk) else inverse_jaxpr_thunk
         if inv_cj is None:
             raise ValueError("No inverse defined for batched custom_inverse call.")
-        batched_inv_cj, _ = batching.batch_jaxpr(
-            inv_cj, axis_size, tuple(in_batched), instantiate=False
+        batched_inv_cj, _ = batching_src.batch_jaxpr2(
+            inv_cj, axis_data, tuple(in_axes)
         )
         return batched_inv_cj
 
@@ -416,8 +425,7 @@ def batch_custom_inverse_call(axis_size, args, in_dims,
         inv_argnum=inv_argnum,
     )
 
-    out_dims = [0 if any_batched else batching.not_mapped for _ in outs]
-    return outs, out_dims
+    return outs, list(out_axes)
 
 
 batching.fancy_primitive_batchers[custom_inverse_call_p] = batch_custom_inverse_call

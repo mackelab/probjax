@@ -73,10 +73,10 @@ class MeanFlowMatcher(nnx.Module):
         Returns:
             Predicted velocity to time r.
         """
-        mu0 = self.mu0.value
-        std0 = self.std0.value
-        mu1 = self.mu1.value
-        std1 = self.std1.value
+        mu0 = self.mu0.get_value()
+        std0 = self.std0.get_value()
+        mu1 = self.mu1.get_value()
+        std1 = self.std1.get_value()
 
         r: ArrayLike = t if r is None else jnp.clip(r, a_min=t, a_max=1.0)
 
@@ -127,8 +127,8 @@ class MeanFlowMatcher(nnx.Module):
         )
 
         x0 = (
-            jax.random.normal(rng_source, shape=data.shape) * self.std0.value
-            + self.mu0.value
+            jax.random.normal(rng_source, shape=data.shape) * self.std0.get_value()
+            + self.mu0.get_value()
         )
         loss = loss_fn(
             times_r,

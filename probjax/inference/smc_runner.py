@@ -62,6 +62,7 @@ class SMC(WithProgressBarAPI):
                 scan_fn,
                 (key, state, mcmc_parameters),
                 init_stats,
+                xs=tempering_params,
                 length=tempering_params.shape[0],
                 update_stats=update_stats,
                 print_fn=print_fn,

@@ -5,7 +5,10 @@ import jax
 import jax.numpy as jnp
 
 from probjax.nn.pallas_kernels.mambda import compute_mamba_scan
-from probjax.nn.sharding import DEFAULT_LINEAR_SHARDING, DEFAULT_MHA_SHARDING
+from probjax.nn.sharding import (
+    DEFAULT_LINEAR_SHARDING,
+    DEFAULT_MHA_SHARDING,
+)
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
@@ -131,15 +134,15 @@ class LRUCell(RecurrentCell):
 
         def _single(x_td):
             # Parameters
-            nu_log = self.nu_log.value
-            theta_log = self.theta_log.value
-            gamma_log = self.gamma_log.value
+            nu_log = self.nu_log[...]
+            theta_log = self.theta_log[...]
+            gamma_log = self.gamma_log[...]
 
-            B_re = self.B_re.value
-            B_im = self.B_im.value
-            C_re = self.C_re.value
-            C_im = self.C_im.value
-            D = self.D.value
+            B_re = self.B_re[...]
+            B_im = self.B_im[...]
+            C_re = self.C_re[...]
+            C_im = self.C_im[...]
+            D = self.D[...]
 
             # Diagonal dynamics
             diag_lambda = jnp.exp(-jnp.exp(nu_log) + 1j * jnp.exp(theta_log))
@@ -263,11 +266,11 @@ class MambaCell(RecurrentCell):
 
         y = mamba_scan(
             inputs,
-            self.a.value,
+            self.a[...],
             b,
             c,
             delta,
-            self.d.value,
+            self.d[...],
             seq_tile_size=self.seq_tile_size,
             dim_tile_size=self.dim_tile_size,
         )

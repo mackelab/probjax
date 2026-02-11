@@ -25,8 +25,8 @@ class MaskedLinear(nnx.Linear):
         self.mask = nnx.Variable(mask)
 
     def __call__(self, inputs):
-        kernel = jnp.where(self.mask.value, self.kernel.value, 0.0)
-        bias = self.bias.value if self.bias else None
+        kernel = jnp.where(self.mask[...], self.kernel[...], 0.0)
+        bias = self.bias[...] if self.bias else None
 
         inputs, kernel, bias = self.promote_dtype(
             (inputs, kernel, bias), dtype=self.dtype

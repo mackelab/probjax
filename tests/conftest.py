@@ -13,15 +13,28 @@ def _marker_expr_from_args(argv):
     return ""
 
 
+def _keyword_expr_from_args(argv):
+    if "-k" in argv:
+        idx = argv.index("-k")
+        if idx + 1 < len(argv):
+            return argv[idx + 1]
+    for arg in argv:
+        if arg.startswith("-k") and len(arg) > 2:
+            return arg[2:]
+    return ""
+
+
 def _mesh_marker_enabled():
     expr = _marker_expr_from_args(sys.argv)
     expr = expr.strip()
     if not expr:
-        return False
+        # Also enable when -k selects mesh tests.
+        kexpr = _keyword_expr_from_args(sys.argv).strip()
+        return "mesh" in kexpr if kexpr else False
     return expr == "mesh"
 
 
-cpu_devices = 2
+cpu_devices = 4
 enable_multi = _mesh_marker_enabled()
 if enable_multi and cpu_devices > 1:
     xla_flags = os.environ.get("XLA_FLAGS", "")

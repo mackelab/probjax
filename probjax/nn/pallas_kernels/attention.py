@@ -26,6 +26,7 @@ from jax._src import ad_util
 from jax import lax
 from jax.extend.core import Primitive
 from jax.experimental import pallas as pl
+from jax._src.pallas import primitives as pallas_primitives
 from jax.experimental.pallas import triton as plgpu
 from jax.interpreters import ad, batching, mlir
 
@@ -39,6 +40,13 @@ from .utils import (
     get_dot_precision,
     get_dropout_mask,
 )
+
+def pallas_load(ref, idx, *, mask=None, other=None):
+    return pallas_primitives.load(ref, idx, mask=mask, other=other)
+
+
+def pallas_store(ref, idx, *, val, mask=None):
+    return pallas_primitives.store(ref, idx, val, mask=mask)
 
 
 def _dropout_mask_counter(
@@ -271,9 +279,9 @@ def mha_forward_kernel(
     # q tile has shape [block_q, block_d], block_d == head_dim.
     curr_q_slice = pl.dslice(start_q * block_q, block_q)
     # Load the current Q tile into SRAM
-    q = pl.load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
+    q = pallas_load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
     # TODO For per batch id_q or id_k, we should not slice along curr_q_slice here
-    id_q = None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
+    id_q = None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
     span_q = start_q * block_q + jnp.arange(block_q)
     LOG2E = 1.4426950408889634  # log2(e)
 
@@ -284,11 +292,11 @@ def mha_forward_kernel(
     def body(start_k, carry):
         if index_offset_ref is not None:
             # We retrieve the dynamic indices for the current block if offset is provided.
-            start_k = jnp.sum(pl.load(index_offset_ref, (pl.dslice(start_k, 1),)))
+            start_k = jnp.sum(pallas_load(index_offset_ref, (pl.dslice(start_k, 1),)))
         o_prev, m_prev, l_prev = carry
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
 
-        k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        k = pallas_load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
         qk = pl.dot(q, k.T, precision=precision)  # [block_q, block_k]
 
         # Scale this by user-provided factor (1 / sqrt(d_k) for original transformer).
@@ -300,17 +308,17 @@ def mha_forward_kernel(
         # Apply bias to qk: dense tensor via b_ref; function via bias_fn
         if bias_fn is not None:
             if b_ref is not None:
-                b_chunk = pl.load(b_ref, (slice(None), curr_k_slice))
+                b_chunk = pallas_load(b_ref, (slice(None), curr_k_slice))
             else:
                 b_chunk = None
             qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
         # boolean mask for the current qk slice
         if mask_fn is not None:
             if id_k_ref is not None:
-                id_k = None if id_k_ref is None else pl.load(id_k_ref, (curr_k_slice,))
+                id_k = None if id_k_ref is None else pallas_load(id_k_ref, (curr_k_slice,))
             elif id_q is not None:
                 # Otherwise reuse id_q if available
-                id_k = None if id_q_ref is None else pl.load(id_q_ref, (curr_k_slice,))
+                id_k = None if id_q_ref is None else pallas_load(id_q_ref, (curr_k_slice,))
             else:
                 id_k = None
             mask = mask_fn(span_q, span_k, id_q, id_k)
@@ -329,12 +337,12 @@ def mha_forward_kernel(
         l_curr = s_curr.sum(axis=-1)
         l_next = l_prev_corr + l_curr
         o_prev_corr = correction[:, None] * o_prev
-        v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=jnp.nan)
+        v = pallas_load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=jnp.nan)
         if dropout_rate > 0:
             if dropout_mask_ref is not None:
-                dmask = pl.load(dropout_mask_ref, (slice(None), curr_k_slice))
+                dmask = pallas_load(dropout_mask_ref, (slice(None), curr_k_slice))
             else:
-                rng_seed = pl.load(rng_ref, ())
+                rng_seed = pallas_load(rng_ref, ())
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
@@ -364,7 +372,7 @@ def mha_forward_kernel(
         lse_ref = residual_refs[0]
         lse_ref[...] = m_i + jnp.log2(l_i)
     # Write output to dram.
-    pl.store(o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask)
+    pallas_store(o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask)
 
 
 def mha_jvp_from_lse_kernel(
@@ -402,24 +410,24 @@ def mha_jvp_from_lse_kernel(
 
     d_mask = jnp.arange(block_d)[None] < head_dim
     curr_q_slice = pl.dslice(start_q * block_q, block_q)
-    q = pl.load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
-    dq = pl.load(dq_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
-    id_q = None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
+    q = pallas_load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
+    dq = pallas_load(dq_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
+    id_q = None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
     span_q = start_q * block_q + jnp.arange(block_q)
     LOG2E = 1.4426950408889634  # log2(e)
 
-    lse = pl.load(lse_ref, (curr_q_slice,))
+    lse = pallas_load(lse_ref, (curr_q_slice,))
     do = jnp.zeros((block_q, block_d), dtype=jnp.float32)
 
     def body_jvp(start_k, do_acc):
         if index_offset_ref is not None:
-            start_k = jnp.sum(pl.load(index_offset_ref, (pl.dslice(start_k, 1),)))
+            start_k = jnp.sum(pallas_load(index_offset_ref, (pl.dslice(start_k, 1),)))
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
 
-        k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
-        dk = pl.load(dk_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
-        v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
-        dv = pl.load(dv_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        k = pallas_load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        dk = pallas_load(dk_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        v = pallas_load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        dv = pallas_load(dv_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
 
         qk = pl.dot(q, k.T, precision=precision)
         dqk = pl.dot(dq, k.T, precision=precision) + pl.dot(q, dk.T, precision=precision)
@@ -431,15 +439,15 @@ def mha_jvp_from_lse_kernel(
         span_k = start_k * block_k + jnp.arange(block_k)
         if bias_fn is not None:
             if b_ref is not None:
-                b_chunk = pl.load(b_ref, (slice(None), curr_k_slice))
+                b_chunk = pallas_load(b_ref, (slice(None), curr_k_slice))
             else:
                 b_chunk = None
             qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
         if mask_fn is not None:
             if id_k_ref is not None:
-                id_k = pl.load(id_k_ref, (curr_k_slice,))
+                id_k = pallas_load(id_k_ref, (curr_k_slice,))
             elif id_q is not None:
-                id_k = pl.load(id_q_ref, (curr_k_slice,))
+                id_k = pallas_load(id_q_ref, (curr_k_slice,))
             else:
                 id_k = None
             mask = mask_fn(span_q, span_k, id_q, id_k)
@@ -458,9 +466,9 @@ def mha_jvp_from_lse_kernel(
         p = jnp.exp2(qk - lse[:, None])
         if dropout_rate > 0:
             if dropout_mask_ref is not None:
-                dmask = pl.load(dropout_mask_ref, (slice(None), curr_k_slice))
+                dmask = pallas_load(dropout_mask_ref, (slice(None), curr_k_slice))
             else:
-                rng_seed = pl.load(rng_ref, ())
+                rng_seed = pallas_load(rng_ref, ())
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
@@ -485,7 +493,7 @@ def mha_jvp_from_lse_kernel(
     else:
         do = lax.fori_loop(lower_bound, upper_bound, body_jvp, do)
 
-    pl.store(do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask)
+    pallas_store(do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask)
 
 
 def mha_jvp_simple_kernel(
@@ -513,19 +521,19 @@ def mha_jvp_simple_kernel(
 
     d_mask = jnp.arange(block_d)[None] < head_dim
     curr_q_slice = pl.dslice(start_q * block_q, block_q)
-    q = pl.load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
-    dq = pl.load(dq_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
+    q = pallas_load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
+    dq = pallas_load(dq_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
     LOG2E = 1.4426950408889634  # log2(e)
 
-    lse = pl.load(lse_ref, (curr_q_slice,))
+    lse = pallas_load(lse_ref, (curr_q_slice,))
     do = jnp.zeros((block_q, block_d), dtype=jnp.float32)
 
     def body_jvp(start_k, do_acc):
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
-        k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
-        dk = pl.load(dk_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
-        v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
-        dv = pl.load(dv_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        k = pallas_load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        dk = pallas_load(dk_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        v = pallas_load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        dv = pallas_load(dv_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
 
         qk = pl.dot(q, k.T, precision=precision)
         dqk = pl.dot(dq, k.T, precision=precision) + pl.dot(q, dk.T, precision=precision)
@@ -545,7 +553,7 @@ def mha_jvp_simple_kernel(
     lower_bound = 0
     upper_bound = pl.cdiv(seq_len, block_k)
     do = lax.fori_loop(lower_bound, upper_bound, body_jvp, do)
-    pl.store(do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask)
+    pallas_store(do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask)
 
 
 def mha_forward_jvp_simple_kernel(
@@ -573,8 +581,8 @@ def mha_forward_jvp_simple_kernel(
 
     d_mask = jnp.arange(block_d)[None] < head_dim
     curr_q_slice = pl.dslice(start_q * block_q, block_q)
-    q = pl.load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
-    dq = pl.load(dq_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
+    q = pallas_load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
+    dq = pallas_load(dq_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
     LOG2E = 1.4426950408889634  # log2(e)
 
     m_i = jnp.full((block_q,), NEG_INF, dtype=jnp.float32)
@@ -584,7 +592,7 @@ def mha_forward_jvp_simple_kernel(
     def body_fwd(start_k, carry):
         o_prev, m_prev, l_prev = carry
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
-        k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        k = pallas_load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
         qk = pl.dot(q, k.T, precision=precision)
         if sm_scale != 1.0:
             qk *= sm_scale
@@ -597,7 +605,7 @@ def mha_forward_jvp_simple_kernel(
         l_curr = s_curr.sum(axis=-1)
         l_next = l_prev_corr + l_curr
         o_prev_corr = correction[:, None] * o_prev
-        v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=jnp.nan)
+        v = pallas_load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=jnp.nan)
         o_curr = pl.dot(s_curr.astype(v.dtype), v, precision=precision)
         o_next = o_prev_corr + o_curr
         return o_next, m_next, l_next
@@ -613,10 +621,10 @@ def mha_forward_jvp_simple_kernel(
 
     def body_jvp(start_k, do_acc):
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
-        k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
-        dk = pl.load(dk_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
-        v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
-        dv = pl.load(dv_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        k = pallas_load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        dk = pallas_load(dk_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        v = pallas_load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        dv = pallas_load(dv_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
 
         qk = pl.dot(q, k.T, precision=precision)
         dqk = pl.dot(dq, k.T, precision=precision) + pl.dot(q, dk.T, precision=precision)
@@ -633,8 +641,8 @@ def mha_forward_jvp_simple_kernel(
         return do_acc
 
     do = lax.fori_loop(0, upper_bound, body_jvp, do)
-    pl.store(o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask)
-    pl.store(do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask)
+    pallas_store(o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask)
+    pallas_store(do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask)
 
 
 def mha_forward_jvp_kernel(
@@ -673,9 +681,9 @@ def mha_forward_jvp_kernel(
 
     d_mask = jnp.arange(block_d)[None] < head_dim
     curr_q_slice = pl.dslice(start_q * block_q, block_q)
-    q = pl.load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
-    dq = pl.load(dq_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
-    id_q = None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
+    q = pallas_load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
+    dq = pallas_load(dq_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
+    id_q = None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
     span_q = start_q * block_q + jnp.arange(block_q)
     LOG2E = 1.4426950408889634  # log2(e)
 
@@ -685,11 +693,11 @@ def mha_forward_jvp_kernel(
 
     def body_fwd(start_k, carry):
         if index_offset_ref is not None:
-            start_k = jnp.sum(pl.load(index_offset_ref, (pl.dslice(start_k, 1),)))
+            start_k = jnp.sum(pallas_load(index_offset_ref, (pl.dslice(start_k, 1),)))
         o_prev, m_prev, l_prev = carry
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
 
-        k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        k = pallas_load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
         qk = pl.dot(q, k.T, precision=precision)
         if sm_scale != 1.0:
             qk *= sm_scale
@@ -697,15 +705,15 @@ def mha_forward_jvp_kernel(
         span_k = start_k * block_k + jnp.arange(block_k)
         if bias_fn is not None:
             if b_ref is not None:
-                b_chunk = pl.load(b_ref, (slice(None), curr_k_slice))
+                b_chunk = pallas_load(b_ref, (slice(None), curr_k_slice))
             else:
                 b_chunk = None
             qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
         if mask_fn is not None:
             if id_k_ref is not None:
-                id_k = pl.load(id_k_ref, (curr_k_slice,))
+                id_k = pallas_load(id_k_ref, (curr_k_slice,))
             elif id_q is not None:
-                id_k = pl.load(id_q_ref, (curr_k_slice,))
+                id_k = pallas_load(id_q_ref, (curr_k_slice,))
             else:
                 id_k = None
             mask = mask_fn(span_q, span_k, id_q, id_k)
@@ -721,12 +729,12 @@ def mha_forward_jvp_kernel(
         l_next = l_prev_corr + l_curr
         o_prev_corr = correction[:, None] * o_prev
 
-        v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=jnp.nan)
+        v = pallas_load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=jnp.nan)
         if dropout_rate > 0:
             if dropout_mask_ref is not None:
-                dmask = pl.load(dropout_mask_ref, (slice(None), curr_k_slice))
+                dmask = pallas_load(dropout_mask_ref, (slice(None), curr_k_slice))
             else:
-                rng_seed = pl.load(rng_ref, ())
+                rng_seed = pallas_load(rng_ref, ())
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
@@ -751,13 +759,13 @@ def mha_forward_jvp_kernel(
 
     def body_jvp(start_k, do_acc):
         if index_offset_ref is not None:
-            start_k = jnp.sum(pl.load(index_offset_ref, (pl.dslice(start_k, 1),)))
+            start_k = jnp.sum(pallas_load(index_offset_ref, (pl.dslice(start_k, 1),)))
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
 
-        k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
-        dk = pl.load(dk_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
-        v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
-        dv = pl.load(dv_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        k = pallas_load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        dk = pallas_load(dk_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        v = pallas_load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
+        dv = pallas_load(dv_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
 
         qk = pl.dot(q, k.T, precision=precision)
         dqk = pl.dot(dq, k.T, precision=precision) + pl.dot(q, dk.T, precision=precision)
@@ -769,15 +777,15 @@ def mha_forward_jvp_kernel(
         span_k = start_k * block_k + jnp.arange(block_k)
         if bias_fn is not None:
             if b_ref is not None:
-                b_chunk = pl.load(b_ref, (slice(None), curr_k_slice))
+                b_chunk = pallas_load(b_ref, (slice(None), curr_k_slice))
             else:
                 b_chunk = None
             qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
         if mask_fn is not None:
             if id_k_ref is not None:
-                id_k = pl.load(id_k_ref, (curr_k_slice,))
+                id_k = pallas_load(id_k_ref, (curr_k_slice,))
             elif id_q is not None:
-                id_k = pl.load(id_q_ref, (curr_k_slice,))
+                id_k = pallas_load(id_q_ref, (curr_k_slice,))
             else:
                 id_k = None
             mask = mask_fn(span_q, span_k, id_q, id_k)
@@ -796,9 +804,9 @@ def mha_forward_jvp_kernel(
         p = jnp.exp2(qk - lse[:, None])
         if dropout_rate > 0:
             if dropout_mask_ref is not None:
-                dmask = pl.load(dropout_mask_ref, (slice(None), curr_k_slice))
+                dmask = pallas_load(dropout_mask_ref, (slice(None), curr_k_slice))
             else:
-                rng_seed = pl.load(rng_ref, ())
+                rng_seed = pallas_load(rng_ref, ())
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
@@ -821,8 +829,8 @@ def mha_forward_jvp_kernel(
     else:
         do = lax.fori_loop(lower_bound, upper_bound, body_jvp, do)
 
-    pl.store(o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask)
-    pl.store(do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask)
+    pallas_store(o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask)
+    pallas_store(do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask)
 
 
 def _preprocess_backward_kernel(out_ref, dout_ref, delta_ref):
@@ -957,14 +965,14 @@ def mha_backward_kernel(
     dk = jnp.zeros([block_kv_dkv, block_d], dtype=jnp.float32)
     mask_d = jnp.arange(block_d)[None] < head_dim
 
-    v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=mask_d, other=0.0)
-    k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=mask_d, other=0.0)
+    v = pallas_load(v_ref, (curr_k_slice, slice(None)), mask=mask_d, other=0.0)
+    k = pallas_load(k_ref, (curr_k_slice, slice(None)), mask=mask_d, other=0.0)
     span_k = start_k * block_kv_dkv + jnp.arange(block_kv_dkv)
     if id_k_ref is not None:
-        id_k = pl.load(id_k_ref, (curr_k_slice,))
+        id_k = pallas_load(id_k_ref, (curr_k_slice,))
     elif id_q_ref is not None:
         # Otherwise reuse id_q if available
-        id_k = pl.load(id_q_ref, (curr_k_slice,))
+        id_k = pallas_load(id_q_ref, (curr_k_slice,))
     else:
         id_k = None
 
@@ -975,7 +983,7 @@ def mha_backward_kernel(
         curr_q_slice = pl.dslice(start_q * block_q_dkv, block_q_dkv)
         span_q = start_q * block_q_dkv + jnp.arange(block_q_dkv)
 
-        q = pl.load(q_ref, (curr_q_slice, slice(None)), mask=mask_d, other=0.0)
+        q = pallas_load(q_ref, (curr_q_slice, slice(None)), mask=mask_d, other=0.0)
         qk = pl.dot(q, k.T)
         if sm_scale != 1.0:
             qk *= sm_scale
@@ -985,22 +993,22 @@ def mha_backward_kernel(
             # boolean mask for the current qk slice
             if bias_fn is not None:
                 b_chunk = (
-                    pl.load(b_ref, (curr_q_slice, curr_k_slice))
+                    pallas_load(b_ref, (curr_q_slice, curr_k_slice))
                     if b_ref is not None
                     else None
                 )
                 qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
 
             if mask_fn is not None:
-                id_q = None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
+                id_q = None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
                 mask = mask_fn(span_q, span_k, id_q, id_k)
                 qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
         # No built-in causal; pass as mask via mask if needed.
 
         qk *= LOG2E
-        lse = pl.load(lse_ref, (curr_q_slice,))
-        di = pl.load(delta_ref, (curr_q_slice,))
-        do = pl.load(do_scaled_ref, (curr_q_slice, slice(None)))
+        lse = pallas_load(lse_ref, (curr_q_slice,))
+        di = pallas_load(delta_ref, (curr_q_slice,))
+        do = pallas_load(do_scaled_ref, (curr_q_slice, slice(None)))
 
         p = jnp.exp2(qk - lse[:, None])
         dp_dropped = pl.dot(do, v.T)
@@ -1009,9 +1017,9 @@ def mha_backward_kernel(
         # Apply dropout scaling consistently with forward if present
         if dropout_rate > 0:
             if dropout_mask_ref is not None:
-                dmask = pl.load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
+                dmask = pallas_load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
             else:
-                rng_seed = pl.load(rng_ref, ())
+                rng_seed = pallas_load(rng_ref, ())
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
@@ -1043,7 +1051,7 @@ def mha_backward_kernel(
         iters = kv_index_offset_size_ref[...]
 
         def dyn_q(iter_q, carry):
-            start_q = jnp.sum(pl.load(kv_index_offset_ref, (pl.dslice(iter_q, 1),)))
+            start_q = jnp.sum(pallas_load(kv_index_offset_ref, (pl.dslice(iter_q, 1),)))
             return inner_loop_dkdv(start_q, carry)
 
         dv, dk = lax.fori_loop(0, iters, dyn_q, (dv, dk))
@@ -1052,10 +1060,10 @@ def mha_backward_kernel(
             0, pl.cdiv(q_seq_len, block_q_dkv), inner_loop_dkdv, (dv, dk)
         )
 
-    dv_ref = pl.store(
+    dv_ref = pallas_store(
         dv_ref, (slice(None), slice(None)), val=dv.astype(dv_ref.dtype), mask=mask_d
     )
-    dk_ref = pl.store(
+    dk_ref = pallas_store(
         dk_ref, (slice(None), slice(None)), val=dk.astype(dk_ref.dtype), mask=mask_d
     )
     # dv_ref[...] = dv.astype(dv_ref.dtype)
@@ -1072,16 +1080,16 @@ def mha_backward_kernel(
     span_q = start_q * block_q_dq + jnp.arange(block_q_dq)
     dq = jnp.zeros([block_q_dq, block_d], dtype=jnp.float32)
 
-    q = pl.load(q_ref, (curr_q_slice, slice(None)), mask=mask_d, other=0.0)
+    q = pallas_load(q_ref, (curr_q_slice, slice(None)), mask=mask_d, other=0.0)
     # segment ids not used in this kernel
-    lse = pl.load(lse_ref, (curr_q_slice,))
-    do = pl.load(do_scaled_ref, (curr_q_slice, slice(None)))
-    di = pl.load(delta_ref, (curr_q_slice,))
+    lse = pallas_load(lse_ref, (curr_q_slice,))
+    do = pallas_load(do_scaled_ref, (curr_q_slice, slice(None)))
+    di = pallas_load(delta_ref, (curr_q_slice,))
 
     def inner_loop_dq(start_k, dq):
         curr_k_slice = pl.dslice(start_k * block_kv_dq, block_kv_dq)
-        k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=mask_d, other=0.0)
-        v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=mask_d, other=0.0)
+        k = pallas_load(k_ref, (curr_k_slice, slice(None)), mask=mask_d, other=0.0)
+        v = pallas_load(v_ref, (curr_k_slice, slice(None)), mask=mask_d, other=0.0)
 
         qk = pl.dot(q, k.T)
         if sm_scale != 1.0:
@@ -1093,19 +1101,19 @@ def mha_backward_kernel(
             # boolean mask for the current qk slice
             if bias_fn is not None:
                 b_chunk = (
-                    pl.load(b_ref, (curr_q_slice, curr_k_slice))
+                    pallas_load(b_ref, (curr_q_slice, curr_k_slice))
                     if b_ref is not None
                     else None
                 )
                 qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
 
             if mask_fn is not None:
-                id_q = None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
+                id_q = None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
                 if id_k_ref is not None:
-                    id_k = pl.load(id_k_ref, (curr_k_slice,))
+                    id_k = pallas_load(id_k_ref, (curr_k_slice,))
                 elif id_q_ref is not None:
                     # Otherwise reuse id_q if available
-                    id_k = pl.load(id_q_ref, (curr_k_slice,))
+                    id_k = pallas_load(id_q_ref, (curr_k_slice,))
                 else:
                     id_k = None
 
@@ -1120,9 +1128,9 @@ def mha_backward_kernel(
         dp = dp + dp_dropped
         if dropout_rate > 0:
             if dropout_mask_ref is not None:
-                dmask = pl.load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
+                dmask = pallas_load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
             else:
-                rng_seed = pl.load(rng_ref, ())
+                rng_seed = pallas_load(rng_ref, ())
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
@@ -1153,14 +1161,14 @@ def mha_backward_kernel(
         iters = q_index_offset_size_ref[...]
 
         def dyn_k(iter_k, dq_c):
-            start_k = jnp.sum(pl.load(q_index_offset_ref, (pl.dslice(iter_k, 1),)))
+            start_k = jnp.sum(pallas_load(q_index_offset_ref, (pl.dslice(iter_k, 1),)))
             return inner_loop_dq(start_k, dq_c)
 
         dq = lax.fori_loop(0, iters, dyn_k, dq)
     else:
         dq = lax.fori_loop(0, pl.cdiv(kv_seq_len, block_kv_dq), inner_loop_dq, dq)
 
-    pl.store(
+    pallas_store(
         dq_ref, (slice(None), slice(None)), val=dq.astype(dq_ref.dtype), mask=mask_d
     )
     # dq_ref[...] = dq.astype(dq_ref.dtype)
@@ -1211,13 +1219,13 @@ def mha_backward_kernel_split_dkdv(
     dv = jnp.zeros([block_kv_dkv, block_d], dtype=jnp.float32)
     dk = jnp.zeros([block_kv_dkv, block_d], dtype=jnp.float32)
 
-    v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=block_mask, other=0.0)
-    k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=block_mask, other=0.0)
+    v = pallas_load(v_ref, (curr_k_slice, slice(None)), mask=block_mask, other=0.0)
+    k = pallas_load(k_ref, (curr_k_slice, slice(None)), mask=block_mask, other=0.0)
 
     if id_k_ref is not None:
-        id_k = pl.load(id_k_ref, (curr_k_slice,))
+        id_k = pallas_load(id_k_ref, (curr_k_slice,))
     elif id_q_ref is not None:
-        id_k = pl.load(id_q_ref, (curr_k_slice,))
+        id_k = pallas_load(id_q_ref, (curr_k_slice,))
     else:
         id_k = None
 
@@ -1225,31 +1233,31 @@ def mha_backward_kernel_split_dkdv(
 
     def inner_loop(start_q, carry):
         if index_offset_ref is not None:
-            start_q = jnp.sum(pl.load(index_offset_ref, (pl.dslice(start_q, 1),)))
+            start_q = jnp.sum(pallas_load(index_offset_ref, (pl.dslice(start_q, 1),)))
         span_q = start_q * block_q_dkv + jnp.arange(block_q_dkv)
         dv_acc, dk_acc = carry
         curr_q_slice = pl.dslice(start_q * block_q_dkv, block_q_dkv)
-        q = pl.load(q_ref, (curr_q_slice, slice(None)), mask=block_mask, other=0.0)
+        q = pallas_load(q_ref, (curr_q_slice, slice(None)), mask=block_mask, other=0.0)
         qk = pl.dot(q, k.T)
         if sm_scale != 1.0:
             qk *= sm_scale
         qk_pre = qk
         if (bias_fn is not None) or (mask_fn is not None) or (b_ref is not None):
             if b_ref is not None and bias_fn is not None:
-                b_chunk = pl.load(b_ref, (curr_q_slice, curr_k_slice))
+                b_chunk = pallas_load(b_ref, (curr_q_slice, curr_k_slice))
             else:
                 b_chunk = None
             if bias_fn is not None:
                 qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
             if mask_fn is not None:
-                id_q = None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
+                id_q = None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
                 m = mask_fn(span_q, span_k, id_q, id_k)
                 qk = jnp.where(m, qk, DEFAULT_MASK_VALUE)
 
         qk *= LOG2E
-        lse = pl.load(lse_ref, (curr_q_slice,))
-        di = pl.load(delta_ref, (curr_q_slice,))
-        do = pl.load(do_scaled_ref, (curr_q_slice, slice(None)))
+        lse = pallas_load(lse_ref, (curr_q_slice,))
+        di = pallas_load(delta_ref, (curr_q_slice,))
+        do = pallas_load(do_scaled_ref, (curr_q_slice, slice(None)))
 
         p = jnp.exp2(qk - lse[:, None])
         dp_dropped = pl.dot(do, v.T)
@@ -1257,9 +1265,9 @@ def mha_backward_kernel_split_dkdv(
         dp = dp + dp_dropped
         if dropout_rate > 0:
             if dropout_mask_ref is not None:
-                dmask = pl.load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
+                dmask = pallas_load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
             else:
-                rng_seed = pl.load(rng_ref, ())
+                rng_seed = pallas_load(rng_ref, ())
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
@@ -1286,10 +1294,10 @@ def mha_backward_kernel_split_dkdv(
     else:
         dv, dk = lax.fori_loop(0, pl.cdiv(q_seq_len, block_q_dkv), inner_loop, (dv, dk))
 
-    pl.store(
+    pallas_store(
         dv_ref, (slice(None), slice(None)), val=dv.astype(dv_ref.dtype), mask=block_mask
     )
-    pl.store(
+    pallas_store(
         dk_ref, (slice(None), slice(None)), val=dk.astype(dk_ref.dtype), mask=block_mask
     )
 
@@ -1334,37 +1342,37 @@ def mha_backward_kernel_split_dq(
 
     dq = jnp.zeros([block_q_dq, block_d], dtype=jnp.float32)
 
-    q = pl.load(q_ref, (curr_q_slice, slice(None)), mask=block_mask, other=0.0)
-    lse = pl.load(lse_ref, (curr_q_slice,))
-    do = pl.load(do_scaled_ref, (curr_q_slice, slice(None)))
-    di = pl.load(delta_ref, (curr_q_slice,))
+    q = pallas_load(q_ref, (curr_q_slice, slice(None)), mask=block_mask, other=0.0)
+    lse = pallas_load(lse_ref, (curr_q_slice,))
+    do = pallas_load(do_scaled_ref, (curr_q_slice, slice(None)))
+    di = pallas_load(delta_ref, (curr_q_slice,))
 
     LOG2E = 1.4426950408889634
 
     def inner_loop(start_k, dq_c):
         if index_offset_ref is not None:
-            start_k = jnp.sum(pl.load(index_offset_ref, (pl.dslice(start_k, 1),)))
+            start_k = jnp.sum(pallas_load(index_offset_ref, (pl.dslice(start_k, 1),)))
         span_k = start_k * block_kv_dq + jnp.arange(block_kv_dq)
         curr_k_slice = pl.dslice(start_k * block_kv_dq, block_kv_dq)
-        k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=block_mask, other=0.0)
-        v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=block_mask, other=0.0)
+        k = pallas_load(k_ref, (curr_k_slice, slice(None)), mask=block_mask, other=0.0)
+        v = pallas_load(v_ref, (curr_k_slice, slice(None)), mask=block_mask, other=0.0)
         qk = pl.dot(q, k.T)
         if sm_scale != 1.0:
             qk *= sm_scale
         qk_pre = qk
         if (bias_fn is not None) or (mask_fn is not None) or (b_ref is not None):
             if b_ref is not None and bias_fn is not None:
-                b_chunk = pl.load(b_ref, (curr_q_slice, curr_k_slice))
+                b_chunk = pallas_load(b_ref, (curr_q_slice, curr_k_slice))
             else:
                 b_chunk = None
             if bias_fn is not None:
                 qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
             if mask_fn is not None:
-                id_q = None if id_q_ref is None else pl.load(id_q_ref, (curr_q_slice,))
+                id_q = None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
                 if id_k_ref is not None:
-                    id_k = pl.load(id_k_ref, (curr_k_slice,))
+                    id_k = pallas_load(id_k_ref, (curr_k_slice,))
                 elif id_q_ref is not None:
-                    id_k = pl.load(id_q_ref, (curr_k_slice,))
+                    id_k = pallas_load(id_q_ref, (curr_k_slice,))
                 else:
                     id_k = None
                 m = mask_fn(span_q, span_k, id_q, id_k)
@@ -1377,9 +1385,9 @@ def mha_backward_kernel_split_dq(
         dp = dp + dp_dropped
         if dropout_rate > 0:
             if dropout_mask_ref is not None:
-                dmask = pl.load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
+                dmask = pallas_load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
             else:
-                rng_seed = pl.load(rng_ref, ())
+                rng_seed = pallas_load(rng_ref, ())
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
@@ -1405,7 +1413,7 @@ def mha_backward_kernel_split_dq(
     else:
         dq = lax.fori_loop(0, pl.cdiv(kv_seq_len, block_kv_dq), inner_loop, dq)
 
-    pl.store(
+    pallas_store(
         dq_ref, (slice(None), slice(None)), val=dq.astype(dq_ref.dtype), mask=block_mask
     )
 

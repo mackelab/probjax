@@ -124,3 +124,4 @@ def _resolve_init_fn(ctor, name: str, default_fn):
     if isinstance(ctor, partial) and ctor.keywords and name in ctor.keywords:
         return ctor.keywords[name]
     return default_fn
+

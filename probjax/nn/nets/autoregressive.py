@@ -12,7 +12,6 @@ from probjax.nn.layers.encoding import PosEncode
 from probjax.nn.nets.simple import MaskedMLP
 from probjax.nn.nets.transformer import Transformer
 from probjax.nn.pallas_kernels.attention_mask_bias import CausalMask
-
 from probjax.utils.typing import ModuleLikeType
 
 
@@ -90,10 +89,8 @@ class AutoregressiveMLP(nnx.Module):
 
         if init_last_layer_to_zero:
             assert hasattr(self.masked_mlp, "layers"), 'mlp_cls must have a "layers"'
-            self.masked_mlp.layers[-1].kernel.init = nnx.initializers.zeros
-            self.masked_mlp.layers[-1].kernel.value = jnp.zeros_like(
-                self.masked_mlp.layers[-1].kernel.value
-            )
+            last_kernel = self.masked_mlp.layers[-1].kernel
+            last_kernel[...] = jnp.zeros_like(last_kernel[...])
 
     def predict_bij_params(self, x: jax.Array, context=None):
         return self.masked_mlp(x, context)
@@ -132,7 +129,6 @@ class AutoregressiveMLP(nnx.Module):
         return x, logdet
 
     def inverse(self, Tx: jax.Array, context=None):
-        print("Hey")
         bij_params = self.masked_mlp(Tx, context)
         bij_params = jnp.reshape(
             bij_params,
@@ -142,7 +138,6 @@ class AutoregressiveMLP(nnx.Module):
                 self.bijector_dim,
             ),
         )
-        print(bij_params.shape, Tx.shape)
         x = jax.vmap(self.bijector_inv)(bij_params, Tx)[0]
         return x
 
@@ -217,9 +212,7 @@ class AutoregressiveTransformer(nnx.Module):
         x = self.encoder(x)  # type: ignore
         x = jnp.concatenate([start_token, x], axis=-2)
         x = self.pos_embed(x)  # type: ignore
-        h = self.transformer(x, k, v, context=context, **kwargs)[
-            ..., :-1, :
-        ]  # type: ignore
+        h = self.transformer(x, k, v, context=context, **kwargs)[..., :-1, :]  # type: ignore
         bij_params = self.decoder(h)  # type: ignore
         return bij_params
 
@@ -272,7 +265,7 @@ class AutoregressiveTransformer(nnx.Module):
         return self.inverse_and_logdet(Tx, context, k, v, **kwargs)[0]
 
 
-@partial(custom_inverse, static_argnums=(1,))
+@partial(custom_inverse)
 def autoregressive_transform(x, model, *args, **kwargs):
     Tx = model.forward(x, *args, **kwargs)
     return Tx

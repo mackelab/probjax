@@ -126,9 +126,9 @@ class Affine(nnx.Module):
         """
         x = jnp.asarray(x)
         scale = (
-            self.scale.value.astype(self.dtype) if self.dtype else self.scale.value
+            self.scale[...].astype(self.dtype) if self.dtype else self.scale[...]
         )
-        bias = self.bias.value.astype(self.dtype) if self.dtype else self.bias.value
+        bias = self.bias[...].astype(self.dtype) if self.dtype else self.bias[...]
         return x * scale + bias
 
 
@@ -214,7 +214,7 @@ class Permute(nnx.Module):
             ValueError: If permutation indices are out of bounds for the axis.
         """
         x = jnp.asarray(x)
-        return jnp.take(x, self.permutation.value, axis=self.axis)
+        return jnp.take(x, self.permutation[...], axis=self.axis)
 
 
 class Rotate(nnx.Module):
@@ -297,10 +297,10 @@ class Rotate(nnx.Module):
         x = jnp.asarray(x)
 
         if not self.learnable:
-            rotation_matrix = jax.lax.stop_gradient(self.rotation_matrix.value)
+            rotation_matrix = jax.lax.stop_gradient(self.rotation_matrix[...])
         else:
             rotation_matrix = skew_symmetric_to_rotation_matrix(
-                self.skew_params.value, self.in_out_features
+                self.skew_params[...], self.in_out_features
             )
 
         # Apply dtype conversion if needed

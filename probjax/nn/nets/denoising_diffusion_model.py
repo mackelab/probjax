@@ -103,7 +103,7 @@ class DiffusionDenoiser(nnx.Module):
     def c_in(self, t: ArrayLike) -> Array:
         return self.precond.c_in(
             t,
-            std0=self.std0.value,
+            std0=self.std0.get_value(),
             scale_fn=self.scale_fn,
             std_fn=self.std_fn,
         )
@@ -111,7 +111,7 @@ class DiffusionDenoiser(nnx.Module):
     def c_out(self, t: ArrayLike) -> Array:
         return self.precond.c_out(
             t,
-            std0=self.std0.value,
+            std0=self.std0.get_value(),
             scale_fn=self.scale_fn,
             std_fn=self.std_fn,
         )
@@ -126,7 +126,7 @@ class DiffusionDenoiser(nnx.Module):
     def c_skip(self, t: ArrayLike) -> Array | None:
         return self.precond.c_skip(
             t,
-            std0=self.std0.value,
+            std0=self.std0.get_value(),
             scale_fn=self.scale_fn,
             std_fn=self.std_fn,
         )
@@ -134,7 +134,7 @@ class DiffusionDenoiser(nnx.Module):
     def weight_fn(self, t: ArrayLike) -> Array:
         return self.precond.weight_x0(
             t,
-            std0=self.std0.value,
+            std0=self.std0.get_value(),
             scale_fn=self.scale_fn,
             std_fn=self.std_fn,
         )
@@ -142,7 +142,7 @@ class DiffusionDenoiser(nnx.Module):
     def weight_fn_eps(self, t: ArrayLike) -> Array:
         return self.precond.weight_eps(
             t,
-            std0=self.std0.value,
+            std0=self.std0.get_value(),
             scale_fn=self.scale_fn,
             std_fn=self.std_fn,
         )
@@ -150,7 +150,7 @@ class DiffusionDenoiser(nnx.Module):
     def weight_fn_v(self, t: ArrayLike) -> Array:
         return self.precond.weight_v(
             t,
-            std0=self.std0.value,
+            std0=self.std0.get_value(),
             scale_fn=self.scale_fn,
             std_fn=self.std_fn,
         )
@@ -289,7 +289,7 @@ class DiffusionDenoiser(nnx.Module):
     # ---- SDE helpers ----
 
     def marginal_std(self, t: ArrayLike) -> Array:
-        return self.schedule.marginal_std(t, self.std0.value)
+        return self.schedule.marginal_std(t, self.std0.get_value())
 
     def drift(
         self,
