@@ -1,25 +1,55 @@
 from functools import wraps
-from typing import Callable, Iterable, Optional
+from typing import Callable, Iterable, Optional, cast
 
 import jax
 from jax import numpy as jnp
 from jaxtyping import Array
 
-from probjax.core.interpreters.interventions import IntervenedProcessingRule
-from probjax.core.interpreters.inverse import (
-    InverseProcessingRule,
-    inverse_cost_fn,
-)
-from probjax.core.interpreters.inverse_and_logabsdet import (
+from probjax.core.interpreters import (
+    INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
+    IntervenedProcessingRule,
     InverseAndLogAbsDetProcessingRule,
-)
-from probjax.core.interpreters.joint_sample import JointSampleProcessingRule
-from probjax.core.interpreters.log_potential import (
+    InverseProcessingRule,
+    JointSampleProcessingRule,
     LogPotentialProcessingRule,
+    TraceProcessingRule,
+    inverse_and_logabsdet_state_reducer,
+    inverse_cost_fn,
+    joint_sample_state_reducer,
+    log_potential_state_reducer,
+    trace_state_reducer,
 )
-from probjax.core.interpreters.trace import TraceProcessingRule
 from probjax.core.jaxpr_propagation.interpret import interpret
 from probjax.core.jaxpr_propagation.propagate import propagate
+
+
+def _leaf_signature(leaf):
+    if hasattr(leaf, "shape") and hasattr(leaf, "dtype"):
+        return ("array", tuple(leaf.shape), str(leaf.dtype))
+
+    try:
+        hash(leaf)
+        return ("py", leaf)
+    except TypeError:
+        return ("obj", type(leaf).__name__, repr(leaf))
+
+
+def _trace_signature(args, kwargs):
+    flat, tree = jax.tree_util.tree_flatten((args, kwargs))
+    return tree, tuple(_leaf_signature(leaf) for leaf in flat)
+
+
+def _cached_jaxpr_getter(fun: Callable, static_argnums=()):
+    jaxpr_maker = jax.make_jaxpr(fun, static_argnums=static_argnums)
+    cache = {}
+
+    def get_jaxpr(*args, **kwargs):
+        key = _trace_signature(args, kwargs)
+        if key not in cache:
+            cache[key] = jaxpr_maker(*args, **kwargs)
+        return cache[key]
+
+    return get_jaxpr
 
 
 def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
@@ -34,21 +64,31 @@ def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
     Returns:
         Callable: Sampling function
     """
-    jaxpr_maker = jax.make_jaxpr(fun)
-    processing_rule = JointSampleProcessingRule(rvs=rvs)
+    get_jaxpr = _cached_jaxpr_getter(fun)
+    interventions = getattr(fun, "_probjax_interventions", None)
 
     def wrapped(*args, **kwargs):
-        jaxpr = jaxpr_maker(*args, **kwargs)
-        _ = interpret(
-            jaxpr.jaxpr,
-            jaxpr.consts,
-            jaxpr.jaxpr.invars,
-            args,
-            jaxpr.jaxpr.outvars,
-            process_eqn=processing_rule,
+        processing_rule = JointSampleProcessingRule(
+            rvs=rvs, interventions=interventions
         )
+        jaxpr = get_jaxpr(*args, **kwargs)
+        joint_result = cast(
+            tuple[list, dict],
+            interpret(
+                jaxpr.jaxpr,
+                jaxpr.consts,
+                jaxpr.jaxpr.invars,
+                args,
+                jaxpr.jaxpr.outvars,
+                process_eqn=processing_rule,
+                reducer=joint_sample_state_reducer,
+                initial_state={},
+                return_state=True,
+            ),
+        )
+        joint_samples = joint_result[1]
 
-        return processing_rule.joint_samples
+        return joint_samples
 
     return wrapped
 
@@ -57,9 +97,8 @@ def intervene(fun: Callable, rvs: dict[str, Array], *args, **kwargs):
     """Fix the value of random variables in the probabilistic function.
     This does not sample the random variables, but fixes them to the given values.
 
-    It preserves the random_variable primitive, but changes the sampling function to
-    a constant function. Hence it still works with the log_potential_fn, and computes
-    the correct log potential (up to a constant).
+    The wrapped function uses interpreter-level overrides for the selected
+    random variables while leaving all other equations unchanged.
 
     Args:
         fun (Callable): A function to transform.
@@ -71,11 +110,11 @@ def intervene(fun: Callable, rvs: dict[str, Array], *args, **kwargs):
     """
 
     jaxpr = jax.make_jaxpr(fun)(jax.random.PRNGKey(0), *args, **kwargs)
-    tree_out = jax.tree_structure(fun(jax.random.PRNGKey(0), *args, **kwargs))
-    processing_rule = IntervenedProcessingRule(interventions=rvs)
+    tree_out = jax.tree_util.tree_structure(fun(jax.random.PRNGKey(0), *args, **kwargs))
 
     @wraps(fun)
     def wrapped(*args, **kwargs):
+        processing_rule = IntervenedProcessingRule(interventions=rvs)
         out = interpret(
             jaxpr.jaxpr,
             jaxpr.consts,
@@ -85,8 +124,9 @@ def intervene(fun: Callable, rvs: dict[str, Array], *args, **kwargs):
             process_eqn=processing_rule,
         )
 
-        return jax.tree_unflatten(tree_out, out)
+        return jax.tree_util.tree_unflatten(tree_out, out)
 
+    setattr(wrapped, "_probjax_interventions", frozenset(rvs.keys()))
     return wrapped
 
 
@@ -101,64 +141,70 @@ def log_potential_fn(fun: Callable, *args, **kwargs):
         Callable: Log potential function
     """
     jaxpr = jax.make_jaxpr(fun)(jax.random.PRNGKey(0), *args, **kwargs)
+    interventions = getattr(fun, "_probjax_interventions", None)
 
     def log_potential(**joint_samples):
-        processing_rule = LogPotentialProcessingRule(joint_samples=joint_samples)
-
-        _ = interpret(
-            jaxpr.jaxpr,
-            jaxpr.consts,
-            jaxpr.jaxpr.invars,
-            (jax.random.PRNGKey(0),) + args,
-            jaxpr.jaxpr.outvars,
-            process_eqn=processing_rule,
+        processing_rule = LogPotentialProcessingRule(
+            joint_samples=joint_samples,
+            interventions=interventions,
         )
-        # _ = propagate(
-        #     jaxpr.jaxpr,
-        #     jaxpr.consts,
-        #     rv_vars,
-        #     rv_values,
-        #     rv_vars,
-        #     process_eqn=processing_rule,
-        #     cost_fn=potential_cost_fn,
-        #     process_all_eqns=True,
-        # )
 
-        return jnp.nan_to_num(
-            processing_rule.log_prob, nan=-jnp.inf, posinf=jnp.inf, neginf=-jnp.inf
+        log_potential_result = cast(
+            tuple[list, jax.Array],
+            interpret(
+                jaxpr.jaxpr,
+                jaxpr.consts,
+                jaxpr.jaxpr.invars,
+                (jax.random.PRNGKey(0),) + args,
+                jaxpr.jaxpr.outvars,
+                process_eqn=processing_rule,
+                reducer=log_potential_state_reducer,
+                initial_state=jnp.asarray(0.0),
+                return_state=True,
+            ),
         )
+        log_prob = log_potential_result[1]
+
+        return jnp.nan_to_num(log_prob, nan=-jnp.inf, posinf=jnp.inf, neginf=-jnp.inf)
 
     return log_potential
 
 
 def trace(fun: Callable, traced_vars=None):
-    jaxpr_maker = jax.make_jaxpr(fun)
-    processing_rule = TraceProcessingRule(traced_vars=traced_vars)
+    get_jaxpr = _cached_jaxpr_getter(fun)
 
     @wraps(fun)
     def wrapped(*args, **kwargs):
-        jaxpr = jaxpr_maker(*args, **kwargs)
-        _ = interpret(
-            jaxpr.jaxpr,
-            jaxpr.consts,
-            jaxpr.jaxpr.invars,
-            args,
-            jaxpr.jaxpr.outvars,
-            process_eqn=processing_rule,
+        processing_rule = TraceProcessingRule(traced_vars=traced_vars)
+        jaxpr = get_jaxpr(*args, **kwargs)
+        trace_result = cast(
+            tuple[list, dict],
+            interpret(
+                jaxpr.jaxpr,
+                jaxpr.consts,
+                jaxpr.jaxpr.invars,
+                args,
+                jaxpr.jaxpr.outvars,
+                process_eqn=processing_rule,
+                reducer=trace_state_reducer,
+                initial_state={},
+                return_state=True,
+            ),
         )
+        traced_samples = trace_result[1]
 
-        return processing_rule.traced_samples
+        return traced_samples
 
     return wrapped
 
 
 def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
-    jaxpr_maker = jax.make_jaxpr(fun, static_argnums=static_argnums)
-    processing_rule = InverseProcessingRule()
+    get_jaxpr = _cached_jaxpr_getter(fun, static_argnums=static_argnums)
 
     @wraps(fun)
     def wrapped(*args, **kwargs):
-        jaxpr = jaxpr_maker(*args, **kwargs)
+        processing_rule = InverseProcessingRule()
+        jaxpr = get_jaxpr(*args, **kwargs)
 
         if invertible_arg is not None:
             flatten_args, _ = jax.tree_util.tree_flatten(args)
@@ -199,12 +245,14 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
 
 
 def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None):
-    jaxpr_maker = jax.make_jaxpr(fun, static_argnums=static_argnums)
-    processing_rule = InverseAndLogAbsDetProcessingRule()
+    get_jaxpr = _cached_jaxpr_getter(fun, static_argnums=static_argnums)
 
     @wraps(fun)
     def wrapped(*args, **kwargs):
-        jaxpr = jaxpr_maker(*args, **kwargs)
+        processing_rule = InverseAndLogAbsDetProcessingRule(
+            state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE
+        )
+        jaxpr = get_jaxpr(*args, **kwargs)
 
         if invertible_arg is not None:
             flatten_args, _ = jax.tree_util.tree_flatten(args)
@@ -231,17 +279,28 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
             outvars = jaxpr.jaxpr.invars
             args_for_propagate = args
 
-        out = propagate(
-            jaxpr.jaxpr,
-            jaxpr.consts,
-            invars,
-            args_for_propagate,
-            outvars,
-            process_eqn=processing_rule,
-            cost_fn=inverse_cost_fn,
-            process_all_eqns=True,
+        inverse_result = cast(
+            tuple[list, dict],
+            propagate(
+                jaxpr.jaxpr,
+                jaxpr.consts,
+                invars,
+                args_for_propagate,
+                outvars,
+                process_eqn=processing_rule,
+                cost_fn=inverse_cost_fn,
+                process_all_eqns=True,
+                reducer=inverse_and_logabsdet_state_reducer,
+                initial_state={},
+                return_state=True,
+                state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
+            ),
         )
-        log_det = jnp.asarray(sum([processing_rule.log_dets[v] for v in outvars]))
+        out, log_dets = inverse_result
+
+        log_det = jnp.asarray(0.0)
+        for v in outvars:
+            log_det = log_det + jnp.asarray(log_dets.get(v, 0.0))
         return out[0], log_det
 
     return wrapped

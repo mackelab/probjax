@@ -1,12 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Optional, Sequence, Tuple
 
-from jax._src.core import (
-    shaped_abstractify,
-)
-from jax._src.util import safe_map as map
-from jax.extend.core import ClosedJaxpr, Jaxpr, JaxprEqn, Literal, Var
-from jax.tree_util import tree_flatten
+from jax.extend.core import JaxprEqn, Literal
 from jaxtyping import Array
 
 # High level API
@@ -15,7 +10,13 @@ from jaxtyping import Array
 class Environment(dict):
     """A compute environment that stores intermediate computations."""
 
-    def __getitem__(self, var: Var | None) -> Optional[Array]:
+    def __init__(self):
+        super().__init__()
+        self.eqn_states: dict[Any, Any] = {}
+        self.eqn_states_by_namespace: dict[Any, dict[str, Any]] = {}
+        self.run_states: dict[str, Any] = {}
+
+    def __getitem__(self, var: Any) -> Optional[Array]:
         if isinstance(var, Literal):
             return var.val
         elif var in self:
@@ -23,18 +24,65 @@ class Environment(dict):
         else:
             return None
 
-    def __setitem__(self, var: Var | None, val: Array | None) -> None:
+    def __setitem__(self, var: Any, val: Array | None) -> None:
         if not isinstance(var, Literal):
             super().__setitem__(var, val)
 
-    def read(self, var: Var | None) -> Array | None:
+    def read(self, var: Any) -> Array | None:
         return self[var]
 
-    def write(self, var: Var | None, val: Array | None) -> None:
+    def write(self, var: Any, val: Array | None) -> None:
         self[var] = val
 
-    def known(self, var: Var | None) -> bool:
+    def known(self, var: Any) -> bool:
         return isinstance(var, Literal) or var in self
+
+    def read_state(self, eqn: Any, namespace: str | None = None) -> Any:
+        if namespace is None:
+            value = self.eqn_states.get(eqn)
+            if value is not None:
+                return value
+            if isinstance(eqn, int):
+                return self.eqn_states.get((eqn,))
+            return None
+
+        value = self.eqn_states_by_namespace.get(eqn, {}).get(namespace)
+        if value is not None:
+            return value
+        if isinstance(eqn, int):
+            return self.eqn_states_by_namespace.get((eqn,), {}).get(namespace)
+        return None
+
+    def write_state(
+        self,
+        eqn: Any,
+        state: Any,
+        namespace: str | None = None,
+    ) -> None:
+        if namespace is None:
+            namespace = "default"
+        self.eqn_states[eqn] = state
+        states = self.eqn_states_by_namespace.get(eqn)
+        if states is None:
+            self.eqn_states_by_namespace[eqn] = {namespace: state}
+        else:
+            states[namespace] = state
+
+    def read_run_state(self, namespace: str | None = None) -> Any:
+        if namespace is None:
+            namespace = "default"
+        return self.run_states.get(namespace)
+
+    def write_run_state(self, state: Any, namespace: str | None = None) -> None:
+        if namespace is None:
+            namespace = "default"
+        self.run_states[namespace] = state
+
+
+RuleOutput = (
+    Tuple[Sequence[Any | None], Sequence[Any | None]]
+    | Tuple[Sequence[Any | None], Sequence[Any | None], Any]
+)
 
 
 class ProcessingRule(ABC):
@@ -47,9 +95,9 @@ class ProcessingRule(ABC):
     def __call__(
         self,
         eqn: JaxprEqn,
-        known_inputs: Sequence[Any | None] | None,
-        known_outputs: Sequence[Any | None] | None,
-    ) -> Tuple[Sequence[Any | None], Sequence[Any | None]]:
+        known_inputs: Sequence[Any | None],
+        known_outputs: Sequence[Any | None],
+    ) -> RuleOutput | None:
         pass
 
 
@@ -59,7 +107,7 @@ class ForwardProcessingRule(ProcessingRule):
         eqn: JaxprEqn,
         known_inputs: Sequence[Array | None],
         _: Sequence[Array | None],
-    ) -> Tuple[Sequence[Var | None], Sequence[Array | None]]:
+    ) -> RuleOutput:
         # assert (
         #     (known_inputs != None) and (None not in known_inputs)
         # ), "All inputs must be known for the forward pass."
@@ -74,39 +122,5 @@ class ForwardProcessingRule(ProcessingRule):
         return eqn.outvars, outvals  # type: ignore
 
 
-# Some helper functions
-
-
-def construct_jaxpr_graph(jaxpr: Jaxpr):
-    neighbors = {}
-
-    for i, eqn in enumerate(jaxpr.eqns):
-        vars = eqn.invars + eqn.outvars
-        for var in vars:
-            if not isinstance(var, Literal):
-                if var not in neighbors:
-                    neighbors[var] = [i]
-                else:
-                    neighbors[var].append(i)
-
-    return neighbors
-
-
-def remove_closed_jaxpr_vars_with_suffix(closed_jaxpr, suffix="_"):
-    jaxpr = closed_jaxpr.jaxpr
-    new_jaxpr = remove_jaxpr_vars_with_suffix(jaxpr, suffix=suffix)
-    return ClosedJaxpr(new_jaxpr, closed_jaxpr.literals)
-
-
-def remove_jaxpr_vars_with_suffix(jaxpr, suffix="_"):
-    return jaxpr.replace(invars=[v for v in jaxpr.invars if v.suffix != suffix])
-
-
-def jaxpr_returning_const(*consts, invars=None):
-    invars = invars or []
-    consts, const_tree = tree_flatten(consts)
-    const_avals = tuple(map(shaped_abstractify, consts))
-    const_vars = [Var(0, "_obs", c_aval) for c_aval in const_avals]
-    new_jaxpr = Jaxpr(const_vars, invars, const_vars, [])
-    new_closed_jaxpr = ClosedJaxpr(new_jaxpr, consts)
-    return new_closed_jaxpr, const_tree
+# Helper utilities intentionally kept minimal; runtime graph construction lives
+# in `extended.py` and execution logic lives in `engine.py`.

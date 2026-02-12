@@ -14,7 +14,6 @@ from probjax.nn.layers.bijective import Flip
 from probjax.nn.nets.autoregressive import AutoregressiveMLP
 from probjax.nn.nets.coupling import CouplingMLP
 from probjax.nn.nets.simple import Sequential
-
 from probjax.stats.continuous import norm
 from probjax.stats.independent import independent
 from probjax.stats.transformed import transformed

@@ -53,7 +53,7 @@ class MCMC(WithProgressBarAPI):
             update_stats = lambda stats, _, y: tuple([
                 self._state_gamma * stats[i] + (1 - self._state_gamma) * y[i]
                 for i in range(len(stats))
-            ])
+ c           ])
             print_fn = lambda i, total, state: self._print_progress(
                 type(self), i, total, state
             )
@@ -76,6 +76,7 @@ class MCMC(WithProgressBarAPI):
         num_samples: int,
         params: Optional[Params] = None,
         thin: int = 1,
+
     ):
         samples = jax.tree_util.tree_map(
             lambda x: jnp.empty((num_samples,) + x.shape), state.position

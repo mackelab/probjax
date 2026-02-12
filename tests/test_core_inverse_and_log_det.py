@@ -3,6 +3,13 @@ import jax.numpy as jnp
 import pytest
 
 from probjax.core import inverse, inverse_and_logabsdet
+from probjax.core.interpreters.inverse.registry import (
+    BIVARIATE_INVERSE_REGISTRY,
+    CUSTOM_INVERSE_PROCESSING_RULES,
+)
+from probjax.core.interpreters.inverse.logabsdet_rules import (
+    CUSTOM_INVERSE_AND_LOG_DET_RULES,
+)
 from probjax.utils.odeint import odeint
 
 
@@ -13,7 +20,7 @@ def test_inverse_1d(invertible_function_1d):
     mask = jnp.isfinite(y)
 
     inv_fun = inverse(invertible_function_1d)
-    inv_y = inv_fun(y)
+    inv_y = jnp.asarray(inv_fun(y))
 
     assert x.shape == inv_y.shape, "Inverse function shape is not correct."
     assert jnp.allclose(x[mask], inv_y[mask], atol=1e-3, rtol=1e-3), (
@@ -44,6 +51,41 @@ def test_inverse_and_logabsdet_1d(invertible_function_1d):
     )
 
 
+def test_inverse_and_logabsdet_wrapper_is_stateless():
+    def f(x):
+        return jnp.exp(x) + 1.0
+
+    inv_and_logdet = inverse_and_logabsdet(f)
+
+    y0 = f(jnp.array(0.2))
+    x0, logdet0 = inv_and_logdet(y0)
+    assert jnp.allclose(x0, 0.2, atol=1e-6, rtol=1e-6)
+
+    y1 = f(jnp.array(1.3))
+    x1, logdet1 = inv_and_logdet(y1)
+    assert jnp.allclose(x1, 1.3, atol=1e-6, rtol=1e-6)
+
+    expected0 = -jnp.log(jnp.exp(jnp.array(0.2)))
+    expected1 = -jnp.log(jnp.exp(jnp.array(1.3)))
+    assert jnp.allclose(logdet0, expected0, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(logdet1, expected1, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_and_logabsdet_nested_jit():
+    def f(x):
+        return jax.jit(lambda z: jnp.exp(z) + 1.0)(x)
+
+    x0 = jnp.array(0.7)
+    y0 = f(x0)
+
+    inv_and_logdet = inverse_and_logabsdet(f)
+    x_rec, log_det = inv_and_logdet(y0)
+
+    expected_log_det = -jnp.log(jnp.exp(x0))
+    assert jnp.allclose(x_rec, x0, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(log_det, expected_log_det, atol=1e-6, rtol=1e-6)
+
+
 def test_inverse_split():
     x = jnp.ones((10, 2))
 
@@ -62,18 +104,40 @@ def test_inverse_split():
 @pytest.mark.parametrize(
     "fun,x",
     [
+        (lambda x: jnp.sin(x), jnp.linspace(-1.0, 1.0, 7)),
+        (lambda x: jnp.arcsin(x), jnp.linspace(-0.9, 0.9, 7)),
+        (lambda x: jnp.cos(x), jnp.linspace(0.2, 2.9, 7)),
+        (lambda x: jnp.arccos(x), jnp.linspace(-0.9, 0.9, 7)),
+        (lambda x: jnp.tan(x), jnp.linspace(-1.0, 1.0, 7)),
+        (lambda x: jnp.arctan(x), jnp.linspace(-3.0, 3.0, 7)),
         (lambda x: jnp.tanh(x), jnp.linspace(-0.5, 0.5, 7)),
         (lambda x: jnp.sinh(x), jnp.linspace(-0.4, 0.4, 7)),
         (lambda x: jnp.exp(x), jnp.linspace(-1.0, 1.0, 7)),
         (lambda x: jnp.sqrt(x), jnp.linspace(0.25, 2.0, 7)),
+        (lambda x: jnp.cbrt(x), jnp.linspace(-8.0, 8.0, 7)),
+        (lambda x: jnp.copy(x), jnp.linspace(-0.5, 0.5, 7)),
         (lambda x: jnp.log1p(x), jnp.linspace(0.05, 0.95, 7)),
     ],
-    ids=["tanh", "sinh", "exp", "sqrt", "log1p"],
+    ids=[
+        "sin",
+        "asin",
+        "cos",
+        "acos",
+        "tan",
+        "atan",
+        "tanh",
+        "sinh",
+        "exp",
+        "sqrt",
+        "cbrt",
+        "copy",
+        "log1p",
+    ],
 )
 def test_inverse_univariate_registry(fun, x):
     inv_fun = inverse(fun)
     y = fun(x)
-    x_rec = inv_fun(y)
+    x_rec = jnp.asarray(inv_fun(y))
     assert jnp.allclose(x, x_rec, atol=1e-6, rtol=1e-6)
 
 
@@ -91,7 +155,7 @@ def test_inverse_univariate_registry(fun, x):
 def test_inverse_bivariate_registry(fun, x):
     inv_fun = inverse(fun)
     y = fun(x)
-    x_rec = inv_fun(y)
+    x_rec = jnp.asarray(inv_fun(y))
     assert jnp.allclose(x, x_rec, atol=1e-6, rtol=1e-6)
 
 
@@ -147,6 +211,16 @@ def test_inverse_rev_reshape():
     assert jnp.allclose(x0, x_rec)
 
 
+def test_inverse_transpose():
+    def f(x):
+        return jnp.transpose(x, (2, 0, 1))
+
+    x0 = jnp.arange(24, dtype=jnp.float32).reshape(2, 3, 4)
+    inv_f = inverse(f)
+    x_rec = inv_f(f(x0))
+    assert jnp.allclose(x0, x_rec)
+
+
 @pytest.mark.xfail(
     reason="Dynamic slice inverse rule does not fully reconstruct inputs", strict=False
 )
@@ -164,9 +238,6 @@ def test_inverse_slice_dynamic_slice():
     assert jnp.allclose(x0, x_rec)
 
 
-@pytest.mark.xfail(
-    reason="convert_element_type inverse rule currently incomplete", strict=False
-)
 def test_inverse_convert_element_type():
     def f(x):
         return x.astype(jnp.float64)
@@ -176,6 +247,25 @@ def test_inverse_convert_element_type():
     x_rec = inv_f(f(x0))
     assert x_rec.dtype == x0.dtype
     assert jnp.allclose(x0, x_rec, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_bitcast_convert_type():
+    def f(x):
+        return jax.lax.bitcast_convert_type(x, jnp.uint32)
+
+    x0 = jnp.array([0.0, 1.5, -2.25, 3.75], dtype=jnp.float32)
+    eqn = jax.make_jaxpr(f)(x0).jaxpr.eqns[0]
+    _, outvals = CUSTOM_INVERSE_PROCESSING_RULES[jax.lax.bitcast_convert_type_p](
+        eqn,
+        [None],
+        [f(x0)],
+    )
+    x_rec = outvals[0]
+    assert x_rec.dtype == x0.dtype
+    assert jnp.array_equal(
+        jax.lax.bitcast_convert_type(x_rec, jnp.uint32),
+        jax.lax.bitcast_convert_type(x0, jnp.uint32),
+    )
 
 
 def test_inverse_select_n():
@@ -207,3 +297,348 @@ def test_inverse_odeint_linear_system():
     assert jnp.allclose(x0, x_inv, atol=1e-3, rtol=1e-3), (
         "Inverse function failed for ODE-based transform."
     )
+
+
+def test_inverse_and_logabsdet_tan():
+    def f(x):
+        return jnp.tan(x)
+
+    x = jnp.linspace(-0.8, 0.8, 21)
+    y = f(x)
+
+    inv_and_det_fn = inverse_and_logabsdet(f)
+    x_rec, logabsdet = jax.vmap(inv_and_det_fn)(y)
+
+    assert jnp.allclose(x_rec, x, atol=1e-6, rtol=1e-6)
+
+    jac = jax.grad(lambda t: f(t).sum())(x)
+    expected = -jnp.log(jnp.abs(jac))
+    assert jnp.allclose(logabsdet, expected, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_dot_general_lhs():
+    w = jnp.array([
+        [2.0, 0.2, -0.1],
+        [0.0, 1.5, 0.3],
+        [0.0, 0.0, 1.1],
+    ])
+
+    def f(x):
+        return x @ w
+
+    x0 = jnp.array([0.3, -1.2, 2.1])
+    inv_f = inverse(f)
+    x_rec = inv_f(f(x0))
+    assert jnp.allclose(x0, x_rec, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_dot_general_rhs():
+    x = jnp.array([
+        [1.2, 0.1, -0.2],
+        [0.0, 1.1, 0.3],
+        [-0.4, 0.2, 0.9],
+    ])
+
+    def f(w):
+        return x @ w
+
+    w0 = jnp.array([
+        [0.4, -1.0],
+        [1.2, 0.5],
+        [-0.3, 2.0],
+    ])
+    inv_f = inverse(f)
+    w_rec = inv_f(f(w0))
+    assert jnp.allclose(w0, w_rec, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_dot_general_non_square_raises():
+    w = jnp.array([
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [0.0, 0.0],
+    ])
+
+    def f(x):
+        return x @ w
+
+    x0 = jnp.array([0.2, -0.3, 1.4])
+    y0 = f(x0)
+    eqn = jax.make_jaxpr(f)(x0).jaxpr.eqns[0]
+    left_inverse, _ = BIVARIATE_INVERSE_REGISTRY[jax.lax.dot_general_p]
+
+    with pytest.raises(NotImplementedError):
+        left_inverse(y0, w, **eqn.params)
+
+
+def test_inverse_and_logabsdet_dot_general_vector():
+    w = jnp.array([
+        [1.8, 0.2, -0.1],
+        [0.0, 1.3, 0.4],
+        [0.0, 0.0, 0.9],
+    ])
+
+    def f(x):
+        return x @ w
+
+    x0 = jnp.array([0.2, -0.7, 1.3])
+    inv_and_det = inverse_and_logabsdet(f)
+    x_rec, log_det = inv_and_det(f(x0))
+
+    _, logabsdet_w = jnp.linalg.slogdet(w)
+    expected = -logabsdet_w
+
+    assert jnp.allclose(x0, x_rec, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(log_det, expected, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_and_logabsdet_dot_general_rhs():
+    x = jnp.array([
+        [1.6, 0.1, -0.2],
+        [0.0, 1.2, 0.3],
+        [0.0, 0.0, 1.1],
+    ])
+
+    def f(w):
+        return x @ w
+
+    w0 = jnp.array([
+        [0.4, -1.0],
+        [1.2, 0.5],
+        [-0.3, 2.0],
+    ])
+    inv_and_det = inverse_and_logabsdet(f)
+    w_rec, log_det = inv_and_det(f(w0))
+
+    _, logabsdet_x = jnp.linalg.slogdet(x)
+    expected = -w0.shape[-1] * logabsdet_x
+
+    assert jnp.allclose(w0, w_rec, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(log_det, expected, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_and_logabsdet_dot_general_non_square_raises():
+    w = jnp.array([
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [0.0, 0.0],
+    ])
+
+    def f(x):
+        return x @ w
+
+    x0 = jnp.array([0.2, -0.3, 1.4])
+    y0 = f(x0)
+    eqn = jax.make_jaxpr(f)(x0).jaxpr.eqns[0]
+    rule = CUSTOM_INVERSE_AND_LOG_DET_RULES[jax.lax.dot_general_p]
+
+    with pytest.raises(NotImplementedError):
+        rule(eqn, [None, w], [y0], context=None)
+
+
+def test_inverse_cond_with_known_branch():
+    def f(pred, x):
+        return jax.lax.cond(
+            pred,
+            lambda t: jnp.exp(t),
+            lambda t: t + 2.5,
+            x,
+        )
+
+    inv_f = inverse(f, invertible_arg=1)
+
+    x_true = jnp.array(0.7)
+    y_true = f(True, x_true)
+    x_true_rec = inv_f(True, y_true)
+
+    x_false = jnp.array(-1.3)
+    y_false = f(False, x_false)
+    x_false_rec = inv_f(False, y_false)
+
+    assert jnp.allclose(x_true, x_true_rec, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(x_false, x_false_rec, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_switch_with_known_branch_index():
+    def f(index, x):
+        return jax.lax.switch(
+            index,
+            [
+                lambda t: t + 1.0,
+                lambda t: jnp.exp(t),
+                lambda t: 2.0 * t - 1.0,
+            ],
+            x,
+        )
+
+    inv_f = inverse(f, invertible_arg=1)
+
+    x0 = jnp.array(0.2)
+    y0 = f(jnp.array(0, dtype=jnp.int32), x0)
+    x0_rec = inv_f(jnp.array(0, dtype=jnp.int32), y0)
+
+    x1 = jnp.array(-0.4)
+    y1 = f(jnp.array(1, dtype=jnp.int32), x1)
+    x1_rec = inv_f(jnp.array(1, dtype=jnp.int32), y1)
+
+    x2 = jnp.array(1.5)
+    y2 = f(jnp.array(2, dtype=jnp.int32), x2)
+    x2_rec = inv_f(jnp.array(2, dtype=jnp.int32), y2)
+
+    assert jnp.allclose(x0, x0_rec, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(x1, x1_rec, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(x2, x2_rec, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_and_logabsdet_cond_with_known_branch():
+    def f(pred, x):
+        return jax.lax.cond(
+            pred,
+            lambda t: jnp.exp(t),
+            lambda t: 3.0 * t - 1.0,
+            x,
+        )
+
+    inv_and_det = inverse_and_logabsdet(f, invertible_arg=1)
+
+    x_true = jnp.array(0.6)
+    y_true = f(True, x_true)
+    x_true_rec, logdet_true = inv_and_det(True, y_true)
+    expected_true = -jnp.log(jnp.exp(x_true))
+
+    x_false = jnp.array(-0.2)
+    y_false = f(False, x_false)
+    x_false_rec, logdet_false = inv_and_det(False, y_false)
+    expected_false = -jnp.log(3.0)
+
+    assert jnp.allclose(x_true, x_true_rec, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(logdet_true, expected_true, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(x_false, x_false_rec, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(logdet_false, expected_false, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_scan_carry_only():
+    def f(c0, xs):
+        def body(carry, x):
+            return carry + x, None
+
+        carry_final, _ = jax.lax.scan(body, c0, xs)
+        return carry_final
+
+    c0 = jnp.array(0.7)
+    xs = jnp.array([0.2, -0.1, 0.4, 1.0])
+    y = f(c0, xs)
+
+    inv_f = inverse(f, invertible_arg=0)
+    c0_rec = inv_f(y, xs)
+    assert jnp.allclose(c0, c0_rec, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_scan_with_outputs_rule_level():
+    def f(c0, xs):
+        def body(carry, x):
+            carry_new = carry + x
+            y = 2.0 * carry_new
+            return carry_new, y
+
+        return jax.lax.scan(body, c0, xs)
+
+    c0 = jnp.array(1.2)
+    xs = jnp.array([0.1, 0.3, -0.2, 0.8])
+    carry_final, ys = f(c0, xs)
+
+    eqn = jax.make_jaxpr(f)(c0, xs).jaxpr.eqns[0]
+    rule = CUSTOM_INVERSE_PROCESSING_RULES[jax.lax.scan_p]
+    outvars, outvals = rule(
+        eqn,
+        [None, xs],
+        [carry_final, ys],
+    )
+
+    assert outvars == [eqn.invars[0]]
+    assert jnp.allclose(outvals[0], c0, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_and_logabsdet_scan_carry_only():
+    scale = 1.7
+
+    def f(c0, xs):
+        def body(carry, x):
+            return scale * carry + x, None
+
+        carry_final, _ = jax.lax.scan(body, c0, xs)
+        return carry_final
+
+    c0 = jnp.array(-0.4)
+    xs = jnp.array([0.3, -0.2, 0.5])
+    y = f(c0, xs)
+
+    inv_and_det = inverse_and_logabsdet(f, invertible_arg=0)
+    c0_rec, logdet = inv_and_det(y, xs)
+    expected = -xs.shape[0] * jnp.log(jnp.abs(scale))
+
+    assert jnp.allclose(c0, c0_rec, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(logdet, expected, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_while_rule_level():
+    def f(i0, x0):
+        def cond(state):
+            i, _ = state
+            return i < 4
+
+        def body(state):
+            i, x = state
+            return i + 1, x + 2.0
+
+        return jax.lax.while_loop(cond, body, (i0, x0))
+
+    i0 = jnp.array(0, dtype=jnp.int32)
+    x0 = jnp.array(1.1)
+    out_i, out_x = f(i0, x0)
+
+    eqn = jax.make_jaxpr(f)(i0, x0).jaxpr.eqns[0]
+    rule = CUSTOM_INVERSE_PROCESSING_RULES[jax.lax.while_p]
+    outvars, outvals = rule(
+        eqn,
+        [i0, None],
+        [out_i, out_x],
+    )
+
+    assert outvars == [eqn.invars[1]]
+    assert jnp.allclose(outvals[0], x0, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_and_logabsdet_while_rule_level():
+    scale = 1.5
+
+    def f(i0, x0):
+        def cond(state):
+            i, _ = state
+            return i < 4
+
+        def body(state):
+            i, x = state
+            return i + 1, scale * x
+
+        return jax.lax.while_loop(cond, body, (i0, x0))
+
+    i0 = jnp.array(0, dtype=jnp.int32)
+    x0 = jnp.array(0.8)
+    out_i, out_x = f(i0, x0)
+
+    eqn = jax.make_jaxpr(f)(i0, x0).jaxpr.eqns[0]
+    rule = CUSTOM_INVERSE_AND_LOG_DET_RULES[jax.lax.while_p]
+    outvars, outvals, updates = rule(
+        eqn,
+        [i0, None],
+        [out_i, out_x],
+        context=None,
+    )
+
+    assert outvars == [eqn.invars[1]]
+    assert jnp.allclose(outvals[0], x0, atol=1e-6, rtol=1e-6)
+
+    expected = -(out_i - i0).astype(jnp.float32) * jnp.log(jnp.abs(scale))
+    assert eqn.invars[1] in updates
+    assert jnp.allclose(updates[eqn.invars[1]], expected, atol=1e-6, rtol=1e-6)

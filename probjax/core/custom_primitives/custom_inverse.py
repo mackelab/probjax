@@ -3,7 +3,6 @@ from typing import Any, Callable, Tuple
 
 import jax
 import jax.numpy as jnp
-from jax import core
 from jax._src import ad_util
 from jax._src import linear_util as lu
 from jax._src.api_util import debug_info, flatten_fun_nokwargs
@@ -14,7 +13,18 @@ from jax.interpreters import ad, batching, mlir
 from jax._src.interpreters import ad as ad_src
 from jax._src.interpreters import batching as batching_src
 from jax.interpreters import partial_eval as pe
-from jax.tree_util import tree_flatten, tree_unflatten, tree_leaves
+from jax.tree_util import tree_flatten, tree_unflatten
+
+from probjax.core.custom_primitives.call_primitive import (
+    call_abstract_eval,
+    call_impl,
+    call_lowering,
+)
+from probjax.core.custom_primitives.common import (
+    ensure_hashable,
+    fail_on_tracer_constants,
+    has_tracer,
+)
 
 map = safe_map
 zip = safe_zip
@@ -24,36 +34,18 @@ zip = safe_zip
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _has_tracer(tree) -> bool:
-    return any(isinstance(x, core.Tracer) for x in tree_leaves(tree))
-
-
-def _fail_on_tracer_constants(consts, where: str):
-    if _has_tracer(consts):
-        raise TypeError(
-            f"{where} closed over traced JAX values. "
-            "Pass such data as dynamic arguments or mark them static before "
-            "registering the custom inverse."
-        )
-
-
-def _ensure_hashable(x, where: str):
-    try:
-        hash(x)
-    except TypeError as e:
-        raise TypeError(f"{where} must be hashable; got {type(x)}") from e
-    return x
-
 
 def _error_inverse_thunk(msg: str):
     def thunk():
         raise ValueError(msg)
+
     return thunk
 
 
 # ---------------------------------------------------------------------------
 # custom_inverse wrapper
 # ---------------------------------------------------------------------------
+
 
 class custom_inverse:
     """
@@ -71,7 +63,9 @@ class custom_inverse:
         update_wrapper(self, fun)
         self.fun = fun
         self.inv_argnum = inv_argnum
-        self.static_argnums = None if static_argnums is None else tuple(sorted(static_argnums))
+        self.static_argnums = (
+            None if static_argnums is None else tuple(sorted(static_argnums))
+        )
 
         self.inv_fun = None
         self.inv_fun_and_log_det = None
@@ -101,6 +95,7 @@ class custom_inverse:
 
     def definv(self, inv_fun: Callable) -> Callable:
         """Define inverse; log-det defaults to NaN."""
+
         def inv_and_ld(*a, **k):
             return inv_fun(*a, **k), jnp.nan
 
@@ -183,7 +178,7 @@ class custom_inverse:
 
         jaxpr, out_avals, consts = pe.trace_to_jaxpr_dynamic(f_flat, in_avals)
         fun_name = getattr(self.fun, "__name__", str(self.fun))
-        _fail_on_tracer_constants(consts, f"custom_inverse forward ({fun_name})")
+        fail_on_tracer_constants(consts, f"custom_inverse forward ({fun_name})")
         forward_jaxpr = ClosedJaxpr(jaxpr, consts)
         out_tree = out_tree_thunk()
 
@@ -192,7 +187,9 @@ class custom_inverse:
 
         # Inverted arg must be dynamic
         if self.inv_argnum not in dyn_idxs:
-            raise ValueError("inv_argnum must refer to a non-static positional argument.")
+            raise ValueError(
+                "inv_argnum must refer to a non-static positional argument."
+            )
         inv_argnum_dyn_index = dyn_idxs.index(self.inv_argnum)
 
         # ---------- lazy inverse jaxpr thunk ----------
@@ -207,7 +204,9 @@ class custom_inverse:
                 full = assemble_args(dyn_args_tuple)
                 return self.inv_fun_and_log_det(*full, **params)
 
-            info_inv = debug_info("custom_inverse inverse", self.inv_fun_and_log_det, (), {})
+            info_inv = debug_info(
+                "custom_inverse inverse", self.inv_fun_and_log_det, (), {}
+            )
             inv_wrapped = lu.wrap_init(inv_dyn, debug_info=info_inv)
             inv_flat, _ = flatten_fun_nokwargs(inv_wrapped, in_tree)
 
@@ -216,8 +215,10 @@ class custom_inverse:
             inv_jaxpr, _, inv_consts = pe.trace_to_jaxpr_dynamic(
                 inv_flat, tuple(inv_in_avals)
             )
-            inv_name = getattr(self.inv_fun_and_log_det, "__name__", "custom_inverse inverse")
-            _fail_on_tracer_constants(inv_consts, f"custom_inverse inverse ({inv_name})")
+            inv_name = getattr(
+                self.inv_fun_and_log_det, "__name__", "custom_inverse inverse"
+            )
+            fail_on_tracer_constants(inv_consts, f"custom_inverse inverse ({inv_name})")
             return ClosedJaxpr(inv_jaxpr, inv_consts)
 
         return forward_jaxpr, out_tree, inv_argnum_dyn_index, inverse_jaxpr_thunk
@@ -233,12 +234,12 @@ class custom_inverse:
             )
 
         # Fast path: no tracers -> plain Python
-        if not _has_tracer((args, kwargs)):
+        if not has_tracer((args, kwargs)):
             return self.fun(*args, **kwargs)
 
         # Enforce hashable kwargs (by assumption)
         params_items = tuple(
-            sorted((k, _ensure_hashable(v, f"kwargs['{k}']")) for k, v in kwargs.items())
+            sorted((k, ensure_hashable(v, f"kwargs['{k}']")) for k, v in kwargs.items())
         )
 
         n_args = len(args)
@@ -246,7 +247,7 @@ class custom_inverse:
         dyn_idxs = tuple(i for i in range(n_args) if i not in static_idxs)
 
         static_args = tuple(
-            _ensure_hashable(args[i], f"static arg {i}") for i in static_idxs
+            ensure_hashable(args[i], f"static arg {i}") for i in static_idxs
         )
         dyn_args = tuple(args[i] for i in dyn_idxs)
 
@@ -289,9 +290,14 @@ def custom_inverse_call_impl(
     in_tree,
     inv_argnum: int,
 ):
-    # Runtime uses only the forward jaxpr.
-    del inverse_jaxpr_thunk, in_tree, inv_argnum
-    return core.eval_jaxpr(forward_jaxpr.jaxpr, forward_jaxpr.consts, *args)
+    return call_impl(
+        *args,
+        forward_jaxpr=forward_jaxpr,
+        single_result=False,
+        inverse_jaxpr_thunk=inverse_jaxpr_thunk,
+        in_tree=in_tree,
+        inv_argnum=inv_argnum,
+    )
 
 
 def custom_inverse_call_abstract_eval(
@@ -301,19 +307,31 @@ def custom_inverse_call_abstract_eval(
     in_tree,
     inv_argnum: int,
 ):
-    del avals, inverse_jaxpr_thunk, in_tree, inv_argnum
-    return tuple(forward_jaxpr.out_avals)
+    return call_abstract_eval(
+        *avals,
+        forward_jaxpr=forward_jaxpr,
+        single_result=False,
+        inverse_jaxpr_thunk=inverse_jaxpr_thunk,
+        in_tree=in_tree,
+        inv_argnum=inv_argnum,
+    )
 
 
 custom_inverse_call_p.def_impl(custom_inverse_call_impl)
 custom_inverse_call_p.def_abstract_eval(custom_inverse_call_abstract_eval)
 
 
-def custom_inverse_call_lowering(ctx, *mlir_args, forward_jaxpr, inverse_jaxpr_thunk, in_tree, inv_argnum):
-    # Lower via a call to the forward jaxpr only.
-    del inverse_jaxpr_thunk, in_tree, inv_argnum
-    return mlir.core_call_lowering(
-        ctx, *mlir_args, name="custom_inverse_forward", call_jaxpr=forward_jaxpr
+def custom_inverse_call_lowering(
+    ctx, *mlir_args, forward_jaxpr, inverse_jaxpr_thunk, in_tree, inv_argnum
+):
+    return call_lowering(
+        ctx,
+        *mlir_args,
+        forward_jaxpr=forward_jaxpr,
+        lowering_name="custom_inverse_forward",
+        inverse_jaxpr_thunk=inverse_jaxpr_thunk,
+        in_tree=in_tree,
+        inv_argnum=inv_argnum,
     )
 
 
@@ -324,8 +342,10 @@ mlir.register_lowering(custom_inverse_call_p, custom_inverse_call_lowering)
 # JVP: forward-only; inverse thunk errors if asked to invert this
 # ---------------------------------------------------------------------------
 
-def custom_inverse_jvp(primals, tangents,
-                       forward_jaxpr, inverse_jaxpr_thunk, in_tree, inv_argnum):
+
+def custom_inverse_jvp(
+    primals, tangents, forward_jaxpr, inverse_jaxpr_thunk, in_tree, inv_argnum
+):
     # Do NOT reuse original inverse for the JVP'ed primitive.
     del inverse_jaxpr_thunk, in_tree, inv_argnum
 
@@ -368,8 +388,10 @@ ad.primitive_jvps[custom_inverse_call_p] = custom_inverse_jvp
 # vmap: re-emit primitive, keep inverse lazy (fixes inverse(vmap(f)))
 # ---------------------------------------------------------------------------
 
-def batch_custom_inverse_call(axis_data, args, in_dims,
-                              forward_jaxpr, inverse_jaxpr_thunk, in_tree, inv_argnum):
+
+def batch_custom_inverse_call(
+    axis_data, args, in_dims, forward_jaxpr, inverse_jaxpr_thunk, in_tree, inv_argnum
+):
     # Move mapped axes to front; track which args are batched.
     new_args = []
     in_axes = []
@@ -408,12 +430,14 @@ def batch_custom_inverse_call(axis_data, args, in_dims,
 
     # Lazily batch the inverse jaxpr only if someone actually asks for it.
     def batched_inverse_thunk():
-        inv_cj = inverse_jaxpr_thunk() if callable(inverse_jaxpr_thunk) else inverse_jaxpr_thunk
+        inv_cj = (
+            inverse_jaxpr_thunk()
+            if callable(inverse_jaxpr_thunk)
+            else inverse_jaxpr_thunk
+        )
         if inv_cj is None:
             raise ValueError("No inverse defined for batched custom_inverse call.")
-        batched_inv_cj, _ = batching_src.batch_jaxpr2(
-            inv_cj, axis_data, tuple(in_axes)
-        )
+        batched_inv_cj, _ = batching_src.batch_jaxpr2(inv_cj, axis_data, tuple(in_axes))
         return batched_inv_cj
 
     # Re-emit the primitive so inverse() still sees it.
@@ -435,8 +459,10 @@ batching.fancy_primitive_batchers[custom_inverse_call_p] = batch_custom_inverse_
 # Transpose: reuse forward, inverse thunk -> error
 # ---------------------------------------------------------------------------
 
-def custom_inverse_transpose(cts, *args,
-                             forward_jaxpr, inverse_jaxpr_thunk, in_tree, inv_argnum):
+
+def custom_inverse_transpose(
+    cts, *args, forward_jaxpr, inverse_jaxpr_thunk, in_tree, inv_argnum
+):
     # Transposed primitive has no sensible inverse; install failing thunk.
     del inverse_jaxpr_thunk
     err_thunk = _error_inverse_thunk(

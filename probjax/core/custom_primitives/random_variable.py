@@ -1,13 +1,25 @@
-from functools import lru_cache, partial
+from functools import lru_cache
 from threading import local
+from typing import Any, cast
 
 import jax
-from jax._src.ad_util import Zero
-from jax.core import eval_jaxpr
-from jax.extend.core import Primitive
-from jax.interpreters import ad, batching, mlir
+from jax._src import linear_util as lu
+from jax._src.api_util import debug_info, flatten_fun_nokwargs
+from jax._src.core import shaped_abstractify
 from jax._src.interpreters import ad as ad_src
+from jax._src.interpreters import batching as batching_src
 from jax._src.interpreters import partial_eval as pe_src
+from jax.extend.core import ClosedJaxpr, Primitive
+from jax.interpreters import ad, batching, mlir
+from jax.tree_util import tree_flatten, tree_unflatten
+
+from probjax.core.custom_primitives.call_primitive import (
+    call_abstract_eval,
+    call_impl,
+    call_lowering,
+    jvp_from_forward_jaxpr,
+)
+from probjax.core.custom_primitives.common import ensure_hashable, has_tracer
 
 
 class NameStack(local):
@@ -26,136 +38,138 @@ class NameStack(local):
 name_stack = NameStack()
 
 
-def _build_jaxpr_thunk_rvs(rvs_fn, key, args, kwds=None, shape=(), **params):
-    del params
-
-    if kwds is None:
-        kwds = {}
-
-    @lru_cache
-    def _jaxpr_thunk():
-        return jax.make_jaxpr(rvs_fn)(key, *args, **kwds, shape=shape)
-
-    return _jaxpr_thunk
-
-
-def _build_jaxpr_thunk_logpdf(
-    rvs_fn, logpdf_fn, key, args, kwds=None, shape=(), **params
+@lru_cache(maxsize=4096)
+def _trace_random_variable_jaxpr(
+    rvs_fn,
+    in_tree,
+    in_avals,
+    shape,
+    kwds_items,
 ):
-    del params
+    kwds = dict(kwds_items)
 
-    if kwds is None:
-        kwds = {}
+    def f_dyn(*flat_inputs):
+        inputs = tree_unflatten(in_tree, flat_inputs)
+        key, *args = inputs
+        return rvs_fn(key, *args, shape=shape, **kwds)
 
-    @lru_cache
-    def _jaxpr_thunk():
-        out_shape = jax.eval_shape(rvs_fn, key, *args, **kwds, shape=shape)
-        out_aval = jax.core.ShapedArray(out_shape.shape, out_shape.dtype)
-        return jax.make_jaxpr(logpdf_fn)(out_aval, *args, **kwds)
-
-    return _jaxpr_thunk
-
-
-def _rv_impl(key, *args, kwds=None, dist=None, shape=(), name=None, **params):
-    del dist, name
-    if kwds is None:
-        kwds = {}
-    rvs_fn = params.pop("rvs_fn")
-
-    return rvs_fn(key, *args, **kwds, shape=shape)
+    info = debug_info("random_variable forward", rvs_fn, (), {})
+    f_wrapped = lu.wrap_init(f_dyn, debug_info=info)
+    f_flat, out_tree_thunk = flatten_fun_nokwargs(f_wrapped, in_tree)
+    jaxpr, _, consts = pe_src.trace_to_jaxpr_dynamic(f_flat, in_avals)
+    _ = out_tree_thunk()
+    return ClosedJaxpr(jaxpr, consts)
 
 
-def _rv_abstract_eval(key, *args, kwds=None, dist=None, shape=(), name=None, **params):
-    del dist, name
-    if kwds is None:
-        kwds = {}
-
-    rvs_fn = params.pop("rvs_fn")
-
-    out = jax.eval_shape(rvs_fn, key, *args, **kwds, shape=shape)
-    out = jax.core.ShapedArray(out.shape, out.dtype)
-    return out
-
-
-def _rv_lowering(ctx, key, *args, kwds=None, dist=None, name=None, **params):
-    if kwds is None:
-        kwds = {}
-
-    rvs_jaxpr_thunk = params.pop("rvs_jaxpr_thunk")
-    return mlir.core_call_lowering(
-        ctx,
-        key,
-        *args,
+def _rv_impl(
+    *flat_inputs,
+    forward_jaxpr,
+    in_tree,
+    shape,
+    dist,
+    name,
+    rvs_fn,
+    logpdf_fn,
+    kwds_items,
+):
+    return call_impl(
+        *flat_inputs,
+        forward_jaxpr=forward_jaxpr,
+        single_result=True,
+        in_tree=in_tree,
+        shape=shape,
+        dist=dist,
         name=name,
-        call_jaxpr=rvs_jaxpr_thunk(),
+        rvs_fn=rvs_fn,
+        logpdf_fn=logpdf_fn,
+        kwds_items=kwds_items,
+    )
+
+
+def _rv_abstract_eval(
+    *flat_avals,
+    forward_jaxpr,
+    in_tree,
+    shape,
+    dist,
+    name,
+    rvs_fn,
+    logpdf_fn,
+    kwds_items,
+):
+    return call_abstract_eval(
+        *flat_avals,
+        forward_jaxpr=forward_jaxpr,
+        single_result=True,
+        in_tree=in_tree,
+        shape=shape,
+        dist=dist,
+        name=name,
+        rvs_fn=rvs_fn,
+        logpdf_fn=logpdf_fn,
+        kwds_items=kwds_items,
+    )
+
+
+def _rv_lowering(ctx, *mlir_args, **params):
+    params = dict(params)
+    forward_jaxpr = params.pop("forward_jaxpr")
+    lowering_name = params.pop("name", "random_variable")
+    return call_lowering(
+        ctx,
+        *mlir_args,
+        forward_jaxpr=forward_jaxpr,
+        lowering_name=lowering_name,
+        **params,
     )
 
 
 def _rv_batching_rule(batched_args, batch_dims, **params):
-    logpdf_fn = params.pop("logpdf_fn")
-    kwds = params.pop("kwds")
+    params = dict(params)
+    rvs_fn = params["rvs_fn"]
+    logpdf_fn = params["logpdf_fn"]
+    shape = params.get("shape", ())
+    kwds = dict(params.get("kwds_items", ()))
 
-    # Create batched versions of the functions
-    rvs_fn_batched = jax.vmap(
-        partial(_rv_impl, kwds=kwds, **params), in_axes=batch_dims
-    )
-    # No key for logpdf
-    if any(batch_dims[1:]):
+    def rvs_fn_with_shape(key, *args, shape=shape, **kwargs):
+        del kwargs
+        return rvs_fn(key, *args, shape=shape, **kwds)
+
+    rvs_fn_batched = jax.vmap(rvs_fn_with_shape, in_axes=batch_dims)
+    if any(d is not batching.not_mapped for d in batch_dims[1:]):
         logpdf_fn_batched = jax.vmap(logpdf_fn, in_axes=batch_dims[1:])
     else:
         logpdf_fn_batched = logpdf_fn
 
-    # Create new jaxpr thunk!
-    del params["rvs_fn"]
-    del params["rvs_jaxpr_thunk"]
-    del params["logpdf_jaxpr_thunk"]
-
-    # Properly unpack batched_args: first element is key, rest are args
     key, *args = batched_args
-
     out = rv_p.bind(
         key,
         *args,
+        dist=params.get("dist"),
+        shape=shape,
+        name=params.get("name"),
         rvs_fn=rvs_fn_batched,
         logpdf_fn=logpdf_fn_batched,
-        **params,
+        kwds=kwds,
     )
-
-    out_dims = 0
-
-    return out, out_dims
+    return out, 0
 
 
-def custom_rv_jvp(primals, tangents, **params):
-    # NOTE Differentiating a random variable will lead to a different distribution!
-    # Example: x ~ N(loc, scale) then x = loc + scale * z, where z ~ N(0, 1)
-    # Hence then d/dloc x = Dirac(1.) and d/dscale x = N(0, 1)
-    # In other words the correct VJP would return another random variable with adjusted
-    # distribution.
-    rvs_fn_jaxpr = params["rvs_jaxpr_thunk"]()
-
-    nonzeros = [type(t) is not Zero for t in tangents]
-    forward_jvp_jaxpr, forward_out_nz = ad_src.jvp_jaxpr(
-        rvs_fn_jaxpr, nonzeros, instantiate=False
+def _rv_jvp(primals, tangents, **params):
+    primal_outs, tangent_outs = jvp_from_forward_jaxpr(
+        params["forward_jaxpr"],
+        primals,
+        tangents,
     )
-    nonzero_tangents = [t for t in tangents if type(t) is not Zero]
-    forward_jvp_jaxpr_ = pe_src.convert_constvars_jaxpr(forward_jvp_jaxpr.jaxpr)
-
-    # TODO: This should be bound to a new primitive with adjusted dist, pdf,...
-    # For now we just evaluate the jaxpr and return the result i.e. we will lose its
-    # interpretation as a random variable.
-    new_primals, new_tangent = eval_jaxpr(
-        forward_jvp_jaxpr_, forward_jvp_jaxpr.consts, *primals, *nonzero_tangents
-    )
-
-    return new_primals, new_tangent
+    return primal_outs[0], tangent_outs[0]
 
 
 def _rv_transpose_rule(*args, **kwargs):
-    return ad.call_transpose(rv_p, *args, **kwargs)
+    call_transpose = getattr(ad_src, "call_transpose")
+    return call_transpose(rv_p, *args, **kwargs)
 
 
-class RandomVariable(Primitive):
+class RandomVariableCallPrimitive(Primitive):
     def __init__(self):
         super().__init__("random_variable")
 
@@ -168,51 +182,71 @@ class RandomVariable(Primitive):
         name=None,
         rvs_fn=None,
         logpdf_fn=None,
-        rvs_jaxpr_thunk=None,
-        logpdf_jaxpr_thunk=None,
         kwds=None,
+        **params,
     ):
+        if dist is None and (rvs_fn is None or logpdf_fn is None):
+            raise ValueError("dist must be provided when rvs_fn/logpdf_fn are not set")
+
+        dist_obj = cast(Any, dist)
         if rvs_fn is None:
-            rvs_fn = dist.rvs
+            rvs_fn = dist_obj.rvs
         if logpdf_fn is None:
-            logpdf_fn = dist.logpdf
+            logpdf_fn = dist_obj.logpdf
 
         if kwds is None:
             kwds = {}
-
         if name is None:
-            prefix = getattr(dist, "name", "rv")
+            prefix = getattr(dist_obj, "name", "rv")
             name = name_stack.get_name(prefix)
 
-        args, kwds = dist._parse_args(*args, **kwds)
+        args, kwds = dist_obj._parse_args(*args, **kwds)
+        kwds_items = tuple(
+            sorted((k, ensure_hashable(v, f"kwds['{k}']")) for k, v in kwds.items())
+        )
 
-        if rvs_jaxpr_thunk is None:
-            rvs_jaxpr_thunk = _build_jaxpr_thunk_rvs(
-                rvs_fn, key, args, kwds, shape=shape
-            )
-        if logpdf_jaxpr_thunk is None:
-            logpdf_jaxpr_thunk = _build_jaxpr_thunk_logpdf(
-                rvs_fn, logpdf_fn, key, args, kwds, shape=shape
-            )
+        if not has_tracer((key, args, kwds)):
+            return rvs_fn(key, *args, shape=shape, **kwds)
+
+        dyn_inputs = (key, *args)
+        flat_inputs, in_tree = tree_flatten(dyn_inputs)
+        in_avals = tuple(map(shaped_abstractify, flat_inputs))
+        forward_jaxpr = _trace_random_variable_jaxpr(
+            rvs_fn,
+            in_tree,
+            in_avals,
+            shape,
+            kwds_items,
+        )
 
         return super().bind(
-            key,
-            *args,
-            kwds=None,
+            *flat_inputs,
+            forward_jaxpr=forward_jaxpr,
+            in_tree=in_tree,
             shape=shape,
-            dist=dist,
+            dist=dist_obj,
             name=name,
             rvs_fn=rvs_fn,
-            rvs_jaxpr_thunk=rvs_jaxpr_thunk,
             logpdf_fn=logpdf_fn,
-            logpdf_jaxpr_thunk=logpdf_jaxpr_thunk,
+            kwds_items=kwds_items,
+            **params,
         )
 
 
-rv_p = RandomVariable()
+rv_p = RandomVariableCallPrimitive()
+call_rv_p = rv_p
+
 rv_p.def_impl(_rv_impl)
 rv_p.def_abstract_eval(_rv_abstract_eval)
 batching.primitive_batchers[rv_p] = _rv_batching_rule
 mlir.register_lowering(rv_p, _rv_lowering)
-ad.primitive_jvps[rv_p] = custom_rv_jvp
+ad.primitive_jvps[rv_p] = _rv_jvp
 ad.primitive_transposes[rv_p] = _rv_transpose_rule
+
+
+__all__ = [
+    "NameStack",
+    "call_rv_p",
+    "name_stack",
+    "rv_p",
+]

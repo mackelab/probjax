@@ -1,8 +1,9 @@
 from functools import partial
-from typing import Callable, NamedTuple, Tuple
+from typing import Callable, NamedTuple
 
 import jax
 import jax.numpy as jnp
+
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 
@@ -43,6 +44,7 @@ def init_ars_state(
     max_points: int = 50,
 ):
     num_initial_points = len(xi)
+    # Cheap ARS with fixed nodes better https://arxiv.org/pdf/1509.07985
 
     x = jnp.sort(xi)
     h, hprime = jax.vmap(jax.value_and_grad(log_density_fn))(x)
@@ -222,6 +224,3 @@ def ars(state: ARSState, key: RngKey, num_samples: int, log_density_fn: Callable
     _, _, state, samples, iterations = jax.lax.while_loop(cond_fn, body_fn, carry)
 
     return samples, state, num_samples / iterations
-
-
- 

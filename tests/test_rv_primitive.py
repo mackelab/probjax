@@ -1,8 +1,9 @@
 import jax
 import jax.numpy as jnp
 import pytest
+from jax.extend.core import ClosedJaxpr
 
-from probjax.core.custom_primitives.random_variable import rv_p
+from probjax.core.custom_primitives.random_variable import call_rv_p, rv_p
 from probjax.stats import beta, binomial, gamma, norm, poisson
 
 # Each entry is (distribution, *args)
@@ -34,7 +35,7 @@ def test_jaxpr(test_case):
 
     key = jax.random.PRNGKey(0)
     jaxpr = jax.make_jaxpr(f)(key)
-    assert isinstance(jaxpr, jax.extend.core.ClosedJaxpr)
+    assert isinstance(jaxpr, ClosedJaxpr)
 
 
 @pytest.mark.parametrize("test_case", dist_params)
@@ -88,6 +89,10 @@ grad_dist_params = [
     (gamma, 1.0, 1.0),
     (beta, 1.0, 1.0),
 ]
+
+
+def test_selected_runtime_primitive_is_call_variant():
+    assert rv_p is call_rv_p
 
 
 @pytest.mark.parametrize("test_case", grad_dist_params)
