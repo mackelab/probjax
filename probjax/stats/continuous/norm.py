@@ -13,6 +13,11 @@ from jax.scipy.stats import norm as _norm
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
+from probjax.stats.utils import (
+    flatten_samples,
+    mean_and_var_1d,
+    normalize_sample_weights,
+)
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["norm"]
@@ -446,26 +451,13 @@ class norm_gen(rv_continuous, rv_exponential_family):
         params : tuple
             The fitted parameters (loc, scale)
         """
-        data = jnp.asarray(data)
-        if data.ndim != 1:
-            data = jnp.reshape(data, (-1,))
-
-        if weights is None:
-            loc = jnp.mean(data)
-            var = jnp.var(data)
-        else:
-            weights = jnp.asarray(weights, dtype=data.dtype).reshape((-1,))
-            if weights.shape[0] != data.shape[0]:
-                raise ValueError("weights must have the same length as data")
-            weights = jnp.clip(weights, a_min=0)
-            total = jnp.sum(weights)
-            total = jnp.where(
-                total > 0, total, jnp.asarray(data.shape[0], dtype=data.dtype)
-            )
-            weights = weights / total
-            loc = jnp.sum(weights * data)
-            diff = data - loc
-            var = jnp.sum(weights * diff**2)
+        data = flatten_samples(data)
+        weights_arr = normalize_sample_weights(
+            weights,
+            n_samples=data.shape[0],
+            dtype=data.dtype,
+        )
+        loc, var = mean_and_var_1d(data, weights_arr)
 
         scale = jnp.sqrt(jnp.maximum(var, jnp.asarray(1e-6, dtype=data.dtype)))
         return loc, scale

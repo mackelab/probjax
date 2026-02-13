@@ -14,6 +14,7 @@ from jax.scipy.stats import poisson as jax_poisson
 
 from probjax.stats.base import rv_discrete, rv_exponential_family
 from probjax.stats.constraints import positive_integer
+from probjax.stats.utils import flatten_samples, normalize_sample_weights
 from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["poisson"]
@@ -186,18 +187,15 @@ class poisson_gen(rv_discrete, rv_exponential_family):
         params : tuple
             The fitted parameter (rate,)
         """
-        data = jnp.asarray(data)
-        data = jnp.reshape(data, (-1,))
+        data = flatten_samples(data)
         dtype = data.dtype
-        if weights is not None:
-            weights = jnp.asarray(weights, dtype=dtype).reshape((-1,))
-            if weights.shape[0] != data.shape[0]:
-                raise ValueError("weights must have the same length as data")
-            weights = jnp.clip(weights, 0)
-            total = jnp.sum(weights)
-            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=dtype))
-            weights = weights / total
-            rate = jnp.sum(weights * data)
+        weights_arr = normalize_sample_weights(
+            weights,
+            n_samples=data.shape[0],
+            dtype=dtype,
+        )
+        if weights_arr is not None:
+            rate = jnp.sum(weights_arr * data)
         else:
             rate = jnp.mean(data)
         return (rate,)

@@ -4,8 +4,9 @@ import jax
 import jax.numpy as jnp
 from jax import random
 
-from probjax.stats.base import rv_continuous
+from probjax.stats.base import rv_multivariate
 from probjax.stats.constraints import real, symmetric_positive_definite_matrix
+from probjax.stats.utils import normalize_sample_weights, row_mean_and_cov
 from probjax.utils.linalg import batch_mahalanobis
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
@@ -18,7 +19,9 @@ def _asarray_optional(value: Optional[Array]) -> Optional[Array]:
 
 def _ensure_array(name: str, value: Optional[Array]) -> Array:
     if value is None:
-        raise ValueError(f"Parameter '{name}' must be provided for multivariate normal distribution.")
+        raise ValueError(
+            f"Parameter '{name}' must be provided for multivariate normal distribution."
+        )
     return jnp.asarray(value)
 
 
@@ -67,7 +70,7 @@ def _resolve_scale_tril(
     )
 
 
-class multivariate_normal_gen(rv_continuous):
+class multivariate_normal_gen(rv_multivariate):
     """Multivariate normal (also called Gaussian) distribution parameterized by
     a mean vector and a covariance matrix.
 
@@ -194,35 +197,25 @@ class multivariate_normal_gen(rv_continuous):
         loc_broadcast = jnp.broadcast_to(loc_reshaped, shape + loc_arr.shape)
 
         scale_reshaped = scale_arr.reshape((1,) * len(shape) + scale_arr.shape)
-        scale_broadcast = jnp.broadcast_to(
-            scale_reshaped, shape + scale_arr.shape
-        )
+        scale_broadcast = jnp.broadcast_to(scale_reshaped, shape + scale_arr.shape)
 
         transformed = jnp.einsum("...ij,...j->...i", scale_broadcast, eps)
         return loc_broadcast + transformed
 
-    def freeze(
-        self,
+    @classmethod
+    def _multivariate_batch_event_shape(
+        cls,
         loc: Array,
         cov: Optional[Array] = None,
         precision_matrix: Optional[Array] = None,
         scale_tril: Optional[Array] = None,
         **kwargs,
     ):
-        rv = super().freeze(
-            loc=loc,
-            cov=cov,
-            precision_matrix=precision_matrix,
-            scale_tril=scale_tril,
-            **kwargs,
-        )
         loc_arr, _, batch_shape = _resolve_scale_tril(
             loc, cov, precision_matrix, scale_tril
         )
         event_shape = (int(loc_arr.shape[-1]),)
-        object.__setattr__(rv, "_batch_shape", batch_shape)
-        object.__setattr__(rv, "_event_shape", event_shape)
-        return rv
+        return batch_shape, event_shape
 
     @classmethod
     def logpdf(
@@ -427,24 +420,15 @@ class multivariate_normal_gen(rv_continuous):
         if data.ndim == 1:
             data = data[..., None]
         dtype = data.dtype
-        n = data.shape[0]
 
-        if weights is not None:
-            weights = jnp.asarray(weights, dtype=dtype).reshape((n,))
-            if weights.shape[0] != n:
-                raise ValueError("weights must have the same number of rows as data")
-            weights = jnp.clip(weights, 0)
-            total = jnp.sum(weights)
-            total = jnp.where(total > 0, total, jnp.asarray(n, dtype=dtype))
-            weights = weights / total
-            loc = jnp.sum(weights[:, None] * data, axis=0)
-            centered = data - loc
-            cov = (centered * weights[:, None]).T @ centered
-        else:
-            loc = jnp.mean(data, axis=0)
-            centered = data - loc
-            denom = jnp.maximum(n - 1, 1)
-            cov = centered.T @ centered / denom
+        weights_arr = normalize_sample_weights(
+            weights,
+            n_samples=data.shape[0],
+            dtype=dtype,
+            mismatch_message="weights must have the same number of rows as data",
+            column=True,
+        )
+        loc, cov = row_mean_and_cov(data, weights_arr, unbiased_unweighted=True)
 
         eps = jnp.asarray(1e-6, dtype=cov.dtype)
         cov = cov + eps * jnp.eye(cov.shape[-1], dtype=cov.dtype)

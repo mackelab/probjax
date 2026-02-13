@@ -17,8 +17,9 @@ import numpy as np
 from jax import lax, random
 from jax.scipy.special import gammaln, hyp1f1
 
-from probjax.stats.base import rv_continuous, rv_exponential_family
+from probjax.stats.base import rv_exponential_family, rv_spherical
 from probjax.stats.constraints import real, spherical
+from probjax.stats.utils import normalize_sample_weights
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["watson"]
@@ -392,7 +393,7 @@ def _sample_watson_direction(
     return _normalize_vector(sample)
 
 
-class watson_gen(rv_continuous, rv_exponential_family):
+class watson_gen(rv_spherical, rv_exponential_family):
     """Watson distribution on the unit sphere.
 
     Parameters
@@ -428,14 +429,14 @@ class watson_gen(rv_continuous, rv_exponential_family):
         log_norm = _log_normalization(kappa, dim)
         return kappa * dot_prod**2 + log_norm
 
-    def freeze(
-        self,
+    @classmethod
+    def _multivariate_batch_event_shape(
+        cls,
         mean_direction: Array,
         kappa: Array = 0.0,
         **kwargs,
     ):
-        """Freeze parameters while recording batch and event shapes."""
-        rv = super().freeze(mean_direction=mean_direction, kappa=kappa, **kwargs)
+        """Infer batch/event shapes for frozen Watson distributions."""
         mean_direction_arr = jnp.asarray(mean_direction)
         if mean_direction_arr.ndim < 1:
             raise ValueError("mean_direction must be at least one-dimensional.")
@@ -443,9 +444,8 @@ class watson_gen(rv_continuous, rv_exponential_family):
         batch_shape = jax.lax.broadcast_shapes(
             mean_direction_arr.shape[:-1], kappa_arr.shape
         )
-        rv._batch_shape = batch_shape
-        rv._event_shape = mean_direction_arr.shape[-1:]
-        return rv
+        event_shape = (int(mean_direction_arr.shape[-1]),)
+        return tuple(int(dim) for dim in batch_shape), event_shape
 
     @classmethod
     def rvs(
@@ -563,41 +563,6 @@ class watson_gen(rv_continuous, rv_exponential_family):
         return rho_term + perp_term
 
     @classmethod
-    def dispersion(cls, mean_direction: Array, kappa: Array = 0.0, **kwargs):
-        """Dispersion matrix defined as :math:`E[XX^T] - I/d`."""
-        dyad = cls.mean_direction_dyad(mean_direction, kappa, **kwargs)
-        dim = dyad.shape[-1]
-        identity = jnp.eye(dim, dtype=dyad.dtype) / dim
-        identity = jnp.broadcast_to(identity, dyad.shape)
-        return dyad - identity
-
-    @classmethod
-    def axial_dispersion(cls, mean_direction: Array, kappa: Array = 0.0, **kwargs):
-        """Dispersion along the principal axis :math:`1 - E[(\\mu^T X)^2]`."""
-        mean_direction = _normalize_vector(jnp.asarray(mean_direction))
-        kappa = jnp.asarray(kappa, dtype=mean_direction.dtype)
-        dim = mean_direction.shape[-1]
-
-        if dim < 1:
-            raise ValueError("mean_direction must have at least one dimension.")
-
-        batch_shape = jax.lax.broadcast_shapes(mean_direction.shape[:-1], kappa.shape)
-        mean_direction = jnp.broadcast_to(mean_direction, batch_shape + (dim,))
-        kappa = jnp.broadcast_to(kappa, batch_shape)
-
-        rho = jnp.asarray(
-            _watson_moment_ratio(kappa, dim, mean_direction.dtype),
-            dtype=mean_direction.dtype,
-        )
-        rho = jnp.clip(
-            rho,
-            jnp.asarray(0.0, dtype=mean_direction.dtype),
-            jnp.asarray(1.0, dtype=mean_direction.dtype),
-        )
-        rho = jnp.broadcast_to(rho, batch_shape)
-        return jnp.maximum(jnp.asarray(0.0, dtype=mean_direction.dtype), 1.0 - rho)
-
-    @classmethod
     def fit(
         cls,
         data: ArrayLike,
@@ -612,21 +577,16 @@ class watson_gen(rv_continuous, rv_exponential_family):
         n = data.shape[0]
         dtype = data.dtype
 
-        if weights is not None:
-            weights = jnp.asarray(weights, dtype=dtype).reshape((n,))
-            if weights.shape[0] != n:
-                raise ValueError("weights must have the same number of rows as data")
-            weights = jnp.clip(weights, 0)
-        else:
-            weights = jnp.ones((n,), dtype=dtype)
-
-        total_weight = jnp.sum(weights)
-        total_weight = jnp.where(
-            total_weight > 0, total_weight, jnp.asarray(n, dtype=dtype)
+        weights_arr = normalize_sample_weights(
+            weights,
+            n_samples=n,
+            dtype=dtype,
+            mismatch_message="weights must have the same number of rows as data",
         )
-        weights = weights / total_weight
+        if weights_arr is None:
+            weights_arr = jnp.ones((n,), dtype=dtype) / jnp.asarray(n, dtype=dtype)
 
-        scatter = (data * weights[:, None]).T @ data
+        scatter = (data * weights_arr[:, None]).T @ data
         scatter = 0.5 * (scatter + jnp.swapaxes(scatter, -1, -2))
         eigvals, eigvecs = jnp.linalg.eigh(scatter)
         dim = data.shape[-1]
@@ -643,7 +603,7 @@ class watson_gen(rv_continuous, rv_exponential_family):
         mu = jnp.where(choose_max, mu_max, mu_min)
         mu = _normalize_vector(mu)
 
-        axial_moment = jnp.sum(weights * jnp.square(data @ mu))
+        axial_moment = jnp.sum(weights_arr * jnp.square(data @ mu))
         kappa = _solve_watson_kappa(axial_moment, dim, dtype)
         return mu, kappa
 

@@ -15,6 +15,7 @@ from jax.scipy.stats import beta as _beta
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import strict_positive, unit_interval
+from probjax.stats.utils import flatten_samples, normalize_sample_weights
 from probjax.utils.special import betaincinv
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
@@ -472,29 +473,26 @@ class beta_gen(rv_continuous, rv_exponential_family):
         params : tuple
             The fitted parameters (alpha, beta)
         """
-        data = jnp.asarray(data)
-        data = jnp.reshape(data, (-1,))
+        data = flatten_samples(data)
         dtype = data.dtype
         log_data = jnp.log(data)
         log_1_minus_data = jnp.log(1 - data)
 
-        if weights is not None:
-            weights = jnp.asarray(weights, dtype=dtype).reshape((-1,))
-            if weights.shape[0] != data.shape[0]:
-                raise ValueError("weights must have the same length as data")
-            weights = jnp.clip(weights, 0)
-            total = jnp.sum(weights)
-            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=dtype))
-            weights = weights / total
-            mean_data = jnp.sum(weights * data)
-            mean_log_data = jnp.sum(weights * log_data)
-            mean_log_1_minus_data = jnp.sum(weights * log_1_minus_data)
-            var_data = jnp.sum(weights * (data - mean_data) ** 2)
-        else:
+        weights_arr = normalize_sample_weights(
+            weights,
+            n_samples=data.shape[0],
+            dtype=dtype,
+        )
+        if weights_arr is None:
             mean_log_data = jnp.mean(log_data)
             mean_log_1_minus_data = jnp.mean(log_1_minus_data)
             mean_data = jnp.mean(data)
             var_data = jnp.var(data)
+        else:
+            mean_data = jnp.sum(weights_arr * data)
+            mean_log_data = jnp.sum(weights_arr * log_data)
+            mean_log_1_minus_data = jnp.sum(weights_arr * log_1_minus_data)
+            var_data = jnp.sum(weights_arr * (data - mean_data) ** 2)
         alpha = mean_data * (mean_data * (1 - mean_data) / var_data - 1)
         beta = (1 - mean_data) * (mean_data * (1 - mean_data) / var_data - 1)
 
