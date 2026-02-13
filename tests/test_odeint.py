@@ -1,7 +1,8 @@
+import jax
 import jax.numpy as jnp
 import pytest
 
-from probjax.utils.odeint import AdaptiveParams, _odeint
+from probjax.utils.odeint import AdaptiveParams, _odeint, odeint
 from probjax.utils.odeutil import TraceNothing
 
 pytest_plugins = ["test_problems.ode_problems"]
@@ -135,3 +136,77 @@ def test_odeint_trace_nothing(ode_method):
         collect_trace=False,
     )
     assert final_none is None
+
+
+def test_odeint_supports_drift_kwargs(ode_method):
+    if ode_method in KNOWN_ERROR:
+        pytest.xfail(f"{ode_method} method has known error")
+
+    x0 = jnp.array([1.0, -2.0])
+    ts = jnp.linspace(0.0, 1.0, 50)
+    rate = jnp.array(-0.3)
+    bias = jnp.array(0.15)
+
+    def drift(t, x, rate, bias=0.0):
+        del t
+        return rate * x + bias
+
+    trace_positional = odeint(
+        drift,
+        x0,
+        ts,
+        rate,
+        bias,
+        method=ode_method,
+        collect_trace=True,
+    )
+    trace_keyword = odeint(
+        drift,
+        x0,
+        ts,
+        rate,
+        bias=bias,
+        method=ode_method,
+        collect_trace=True,
+    )
+    trace_keyword_only = odeint(
+        drift,
+        x0,
+        ts,
+        rate=rate,
+        bias=bias,
+        method=ode_method,
+        collect_trace=True,
+    )
+
+    assert trace_positional is not None
+    assert trace_keyword is not None
+    assert trace_keyword_only is not None
+
+    assert jnp.allclose(trace_keyword, trace_positional, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(trace_keyword_only, trace_positional, atol=1e-6, rtol=1e-6)
+
+    jitted_terminal = jax.jit(
+        lambda y, r, b: odeint(
+            drift,
+            y,
+            ts,
+            rate=r,
+            bias=b,
+            method=ode_method,
+            collect_trace=False,
+        )
+    )
+    terminal_ref = odeint(
+        drift,
+        x0,
+        ts,
+        rate=rate,
+        bias=bias,
+        method=ode_method,
+        collect_trace=False,
+    )
+    terminal_jit = jitted_terminal(x0, rate, bias)
+    assert terminal_ref is not None
+    assert terminal_jit is not None
+    assert jnp.allclose(terminal_jit, terminal_ref, atol=1e-6, rtol=1e-6)

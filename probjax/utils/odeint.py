@@ -1,20 +1,42 @@
 from functools import partial
-from typing import Callable, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 import jax.numpy as jnp
 from jax import Array
 from jaxtyping import PyTree
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
-from probjax.utils.odeutil import AdaptiveParams, _inv_logdet_odeint, _inv_odeint, _odeint
+from probjax.utils.odeutil import (
+    AdaptiveParams,
+    _inv_logdet_odeint,
+    _inv_odeint,
+    _odeint,
+)
+
+
+def _bind_drift_kwargs(
+    drift: Callable[..., PyTree[Array]],
+    drift_kwargs: Optional[Mapping[str, Any]],
+) -> Callable[..., PyTree[Array]]:
+    """Bind keyword arguments to drift while keeping positional ODE arguments."""
+    if not drift_kwargs:
+        return drift
+
+    kwargs_dict = dict(drift_kwargs)
+
+    def drift_with_kwargs(t: Array, y: PyTree[Array], *args: Any):
+        return drift(t, y, *args, **kwargs_dict)
+
+    return drift_with_kwargs
 
 
 @partial(custom_inverse, inv_argnum=1, static_argnums=(0,))
-def odeint(
-    drift: Callable[[Array, PyTree[Array], ...], PyTree[Array]],
+def _odeint_custom(
+    drift: Callable[..., PyTree[Array]],
     y0: PyTree[Array],
     ts: Array,
-    *args,
+    drift_args: Sequence[Any] = (),
+    drift_kwargs: Optional[Mapping[str, Any]] = None,
     method: str = "rk4",
     dtype: Optional[jnp.dtype] = jnp.float32,
     filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
@@ -89,11 +111,12 @@ def odeint(
         >>> # Solve using adaptive integration
         >>> ys = odeint(lotka_volterra, y0, ts, *params, method="dopri5")
     """
+    drift_fn = _bind_drift_kwargs(drift, drift_kwargs)
     return _odeint(
-        drift,
+        drift_fn,
         y0,
         ts,
-        *args,
+        *drift_args,
         method=method,
         dtype=dtype,
         filter_state=filter_state,
@@ -103,5 +126,37 @@ def odeint(
     )
 
 
-odeint.definv(_inv_odeint)
-odeint.definv_and_logdet(_inv_logdet_odeint)
+def odeint(
+    drift: Callable[..., PyTree[Array]],
+    y0: PyTree[Array],
+    ts: Array,
+    *args,
+    method: str = "rk4",
+    dtype: Optional[jnp.dtype] = jnp.float32,
+    filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
+    collect_trace: bool = True,
+    check_points: Optional[Sequence[int]] = None,
+    adaptive_params: Optional[AdaptiveParams] = None,
+    **drift_kwargs,
+) -> Optional[PyTree[Array]]:
+    """Solve an ordinary differential equation.
+
+    Additional keyword arguments are forwarded to `drift`.
+    """
+    return _odeint_custom(
+        drift,
+        y0,
+        ts,
+        args,
+        drift_kwargs,
+        method=method,
+        dtype=dtype,
+        filter_state=filter_state,
+        collect_trace=collect_trace,
+        check_points=check_points,
+        adaptive_params=adaptive_params,
+    )
+
+
+_odeint_custom.definv(_inv_odeint)
+_odeint_custom.definv_and_logdet(_inv_logdet_odeint)

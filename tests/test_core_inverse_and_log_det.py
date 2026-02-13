@@ -362,6 +362,28 @@ def test_inverse_odeint_linear_system():
     )
 
 
+def test_inverse_odeint_linear_system_with_drift_kwargs():
+    ts = jnp.linspace(0.0, 1.0, 1000)
+    rate = jnp.array(0.8)
+
+    def drift(t, x, rate):
+        del t
+        return -rate * x
+
+    def forward(x):
+        return odeint(drift, x, ts, rate=rate, collect_trace=False)
+
+    x0 = jnp.array([1.0, -2.0, 0.5])
+    y = forward(x0)
+
+    inv_forward = inverse(forward)
+    x_inv = inv_forward(y)
+
+    assert jnp.allclose(x0, x_inv, atol=1e-3, rtol=1e-3), (
+        "Inverse function failed for ODE-based transform with drift kwargs."
+    )
+
+
 def test_inverse_and_logabsdet_tan():
     def f(x):
         return jnp.tan(x)
