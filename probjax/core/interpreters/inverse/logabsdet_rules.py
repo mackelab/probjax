@@ -2,22 +2,26 @@ import jax
 import jax.numpy as jnp
 from jax.extend.core import Literal
 
-from probjax.core.interpreters.inverse.rules_binary import (
+from probjax.core.interpreters.inverse.registry import inverse_cost_fn
+from probjax.core.interpreters.inverse.rules import (
     dot_general_left_inverse_and_logdet,
     dot_general_right_inverse_and_logdet,
-)
-from probjax.core.interpreters.inverse.rules_tensor import (
+    read_state_values,
     parse_scan_problem,
     parse_while_problem,
     prepare_cond_branch_problem,
     scan_reverse_indices,
     select_cond_branch_jaxpr,
+    solve_nested_values_and_state,
+    state_from_vars,
     verify_while_candidate,
     _values_equal,
 )
+from probjax.core.jaxpr_propagation.utils import ProcessingRuleFactory
 
 CUSTOM_INVERSE_AND_LOG_DET_RULES = {}
 INVERSE_AND_LOGABSDET_STATE_NAMESPACE = "inverse_and_logabsdet.log_dets"
+_LOGABSDET_PROCESSING_RULE_FACTORY: ProcessingRuleFactory | None = None
 
 
 def register_inverse_and_log_det_rule(key):
@@ -27,6 +31,17 @@ def register_inverse_and_log_det_rule(key):
         return func
 
     return decorator
+
+
+def set_logabsdet_processing_rule_factory(factory):
+    global _LOGABSDET_PROCESSING_RULE_FACTORY
+    _LOGABSDET_PROCESSING_RULE_FACTORY = factory
+
+
+def _make_logabsdet_processing_rule(state_namespace):
+    if _LOGABSDET_PROCESSING_RULE_FACTORY is None:
+        raise RuntimeError("Logabsdet processing rule factory has not been configured.")
+    return _LOGABSDET_PROCESSING_RULE_FACTORY(state_namespace)
 
 
 def _sum_previous_log_dets(context, outvars):
@@ -91,12 +106,6 @@ def invert_cond_and_logdet(eqn, known_invars, known_outvars, context=None):
     if not target_sub_vars:
         return [], [], {}
 
-    from probjax.core.interpreters.inverse.logabsdet_interpreter import (
-        InverseAndLogAbsDetProcessingRule,
-    )
-    from probjax.core.interpreters.inverse.registry import inverse_cost_fn
-    from probjax.core.jaxpr_propagation.propagate import propagate
-
     outer_state = {}
     if context is not None:
         state = context.read_run_state(namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE)
@@ -112,20 +121,18 @@ def invert_cond_and_logdet(eqn, known_invars, known_outvars, context=None):
         if outer_outvar in outer_state:
             initial_state[branch_outvar] = outer_state[outer_outvar]
 
-    nested_values, nested_state = propagate(
-        branch.jaxpr,
-        branch.consts,
-        known_vars,
-        known_vals,
-        target_sub_vars,
-        process_eqn=InverseAndLogAbsDetProcessingRule(
-            state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE
+    nested_values, nested_state = solve_nested_values_and_state(
+        jaxpr=branch.jaxpr,
+        consts=branch.consts,
+        known_vars=known_vars,
+        known_vals=known_vals,
+        target_vars=target_sub_vars,
+        process_eqn=_make_logabsdet_processing_rule(
+            INVERSE_AND_LOGABSDET_STATE_NAMESPACE
         ),
         cost_fn=inverse_cost_fn,
-        process_all_eqns=True,
         reducer=inverse_and_logabsdet_state_reducer,
         initial_state=initial_state,
-        return_state=True,
         state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
     )
 
@@ -160,12 +167,6 @@ def invert_scan_and_logdet(eqn, known_invars, known_outvars, context=None):
     if not missing_indices:
         return [], [], {}
 
-    from probjax.core.interpreters.inverse.logabsdet_interpreter import (
-        InverseAndLogAbsDetProcessingRule,
-    )
-    from probjax.core.interpreters.inverse.registry import inverse_cost_fn
-    from probjax.core.jaxpr_propagation.propagate import propagate
-
     outer_state = {}
     if context is not None:
         state = context.read_run_state(namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE)
@@ -190,41 +191,34 @@ def invert_scan_and_logdet(eqn, known_invars, known_outvars, context=None):
         )
         known_vals = list(problem["known_const_vals"]) + x_step_vals + current_carry
 
-        initial_state = {
-            var: logdet
-            for var, logdet in zip(
-                problem["body_carry_outvars"], current_carry_logdets, strict=False
-            )
-            if not isinstance(var, Literal)
-        }
+        initial_state = state_from_vars(
+            problem["body_carry_outvars"],
+            current_carry_logdets,
+        )
 
-        recovered_carry, nested_state = propagate(
-            problem["body"].jaxpr,
-            problem["body"].consts,
-            known_vars,
-            known_vals,
-            problem["body_carry_invars"],
-            process_eqn=InverseAndLogAbsDetProcessingRule(
-                state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE
+        recovered_carry, nested_state = solve_nested_values_and_state(
+            jaxpr=problem["body"].jaxpr,
+            consts=problem["body"].consts,
+            known_vars=known_vars,
+            known_vals=known_vals,
+            target_vars=problem["body_carry_invars"],
+            process_eqn=_make_logabsdet_processing_rule(
+                INVERSE_AND_LOGABSDET_STATE_NAMESPACE
             ),
             cost_fn=inverse_cost_fn,
-            process_all_eqns=True,
             reducer=inverse_and_logabsdet_state_reducer,
             initial_state=initial_state,
-            return_state=True,
             state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
         )
 
         if any(v is None for v in recovered_carry):
             raise NotImplementedError("scan inverse+logdet could not recover carry")
 
-        nested_state = {} if nested_state is None else nested_state
-        next_logdets = [
-            jnp.asarray(nested_state.get(var, 0.0))
-            if not isinstance(var, Literal)
-            else jnp.asarray(0.0)
-            for var in problem["body_carry_invars"]
-        ]
+        next_logdets = read_state_values(
+            nested_state,
+            problem["body_carry_invars"],
+            default_factory=lambda: jnp.asarray(0.0),
+        )
         current_carry = list(recovered_carry)
         current_carry_logdets = next_logdets
 
@@ -257,12 +251,6 @@ def invert_while_and_logdet(eqn, known_invars, known_outvars, context=None):
         raise NotImplementedError(
             "while inverse+logdet requires at least one known input state"
         )
-
-    from probjax.core.interpreters.inverse.logabsdet_interpreter import (
-        InverseAndLogAbsDetProcessingRule,
-    )
-    from probjax.core.interpreters.inverse.registry import inverse_cost_fn
-    from probjax.core.jaxpr_propagation.propagate import propagate
 
     outer_state = {}
     if context is not None:
@@ -302,43 +290,34 @@ def invert_while_and_logdet(eqn, known_invars, known_outvars, context=None):
         )
         known_vals = list(problem["known_body_const_vals"]) + current_state
 
-        initial_state = {
-            var: logdet
-            for var, logdet in zip(
-                problem["body"].jaxpr.outvars,
-                current_state_logdets,
-                strict=False,
-            )
-            if not isinstance(var, Literal)
-        }
+        initial_state = state_from_vars(
+            problem["body"].jaxpr.outvars,
+            current_state_logdets,
+        )
 
-        previous_state, nested_state = propagate(
-            problem["body"].jaxpr,
-            problem["body"].consts,
-            known_vars,
-            known_vals,
-            problem["body_state_invars"],
-            process_eqn=InverseAndLogAbsDetProcessingRule(
-                state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE
+        previous_state, nested_state = solve_nested_values_and_state(
+            jaxpr=problem["body"].jaxpr,
+            consts=problem["body"].consts,
+            known_vars=known_vars,
+            known_vals=known_vals,
+            target_vars=problem["body_state_invars"],
+            process_eqn=_make_logabsdet_processing_rule(
+                INVERSE_AND_LOGABSDET_STATE_NAMESPACE
             ),
             cost_fn=inverse_cost_fn,
-            process_all_eqns=True,
             reducer=inverse_and_logabsdet_state_reducer,
             initial_state=initial_state,
-            return_state=True,
             state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
         )
 
         if any(v is None for v in previous_state):
             raise NotImplementedError("while inverse+logdet could not recover state")
 
-        nested_state = {} if nested_state is None else nested_state
-        next_logdets = [
-            jnp.asarray(nested_state.get(var, 0.0))
-            if not isinstance(var, Literal)
-            else jnp.asarray(0.0)
-            for var in problem["body_state_invars"]
-        ]
+        next_logdets = read_state_values(
+            nested_state,
+            problem["body_state_invars"],
+            default_factory=lambda: jnp.asarray(0.0),
+        )
 
         current_state = list(previous_state)
         current_state_logdets = next_logdets

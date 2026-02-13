@@ -1,7 +1,10 @@
 import jax
+import jax.numpy as jnp
 from jax._src import core as jax_core
 from jax.extend.core import Primitive
 
+from probjax.core.custom_primitives.contracts import parse_custom_inverse_call_params
+from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.core.interpreters.common import apply_rule
 from probjax.core.interpreters.inverse.dispatch import (
     DispatchAction,
@@ -24,6 +27,59 @@ _ACTION_METHODS = {
     DispatchAction.BIVARIATE: "_default_bivariate_inverse",
     DispatchAction.FORWARD: "_default_forward_processing",
 }
+
+
+def maybe_inverse_custom_inverse(
+    fun,
+    *,
+    static_argnums=(),
+    invertible_arg=None,
+):
+    if not isinstance(fun, custom_inverse):
+        return None
+
+    configured_static = tuple(fun.static_argnums or ())
+    requested_static = tuple(static_argnums or ())
+    if requested_static and requested_static != configured_static:
+        raise ValueError(
+            "For custom_inverse inputs, static_argnums must match the "
+            "custom_inverse configuration."
+        )
+
+    if invertible_arg is not None and invertible_arg != fun.inv_argnum:
+        raise ValueError(
+            "For custom_inverse inputs, invertible_arg must match "
+            "custom_inverse.inv_argnum."
+        )
+
+    if fun.inv_fun is None or fun.inv_fun_and_log_det is None:
+        raise AttributeError(
+            "Inverse not defined on custom_inverse input. "
+            "Use definv/definv_and_logdet first."
+        )
+
+    inverse_wrapper = custom_inverse(
+        fun.inv_fun,
+        inv_argnum=fun.inv_argnum,
+        static_argnums=fun.static_argnums,
+    )
+    inverse_wrapper.definv(fun.fun)
+
+    def inverse_inverse_and_logdet(*args, **kwargs):
+        # Prefer a direct forward value/logdet if available.
+        if fun.value_and_logdet_fun is not None:
+            return fun.value_and_logdet(*args, **kwargs)
+
+        # Otherwise use the inverse branch and negate its logdet.
+        y = fun.fun(*args, **kwargs)
+        inv_args = list(args)
+        inv_args[fun.inv_argnum] = y
+        _, inv_logdet = fun.inv_and_logdet(*tuple(inv_args), **kwargs)
+        return y, -jnp.asarray(inv_logdet)
+
+    inverse_wrapper.definv_and_logdet(inverse_inverse_and_logdet)
+    inverse_wrapper.defvalue_and_logdet(fun.inv_and_logdet)
+    return inverse_wrapper
 
 
 class InverseProcessingRule(ProcessingRule):
@@ -114,7 +170,8 @@ class InverseProcessingRule(ProcessingRule):
         return eqn.outvars, outvals  # type: ignore
 
     def _default_custom_inverse_call_apply(self, eqn, known_invars, known_outvars):
-        inverse_jaxpr = eqn.params["inverse_jaxpr_thunk"]()
+        custom_params = parse_custom_inverse_call_params(eqn.params)
+        inverse_jaxpr = custom_params.inverse_jaxpr_thunk()
 
         jaxpr = inverse_jaxpr.jaxpr
         consts = inverse_jaxpr.literals

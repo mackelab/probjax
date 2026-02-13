@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from probjax.core import inverse, inverse_and_logabsdet
+from probjax.core import custom_inverse, inverse, inverse_and_logabsdet
 from probjax.core.interpreters.inverse.registry import (
     BIVARIATE_INVERSE_REGISTRY,
     CUSTOM_INVERSE_PROCESSING_RULES,
@@ -84,6 +84,69 @@ def test_inverse_and_logabsdet_nested_jit():
     expected_log_det = -jnp.log(jnp.exp(x0))
     assert jnp.allclose(x_rec, x0, atol=1e-6, rtol=1e-6)
     assert jnp.allclose(log_det, expected_log_det, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_of_custom_inverse_returns_custom_inverse():
+    @custom_inverse
+    def f(x):
+        return 3.0 * x + 1.0
+
+    f.definv(lambda y: (y - 1.0) / 3.0)
+    f.definv_and_logdet(lambda y: ((y - 1.0) / 3.0, -jnp.asarray(2.5)))
+
+    inv_f = inverse(f)
+    assert isinstance(inv_f, custom_inverse)
+
+    x0 = jnp.asarray(0.7)
+    y0 = f(x0)
+    assert jnp.allclose(inv_f(y0), x0, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(inverse(inv_f)(x0), y0, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_of_custom_inverse_logdet_priority_and_fallback():
+    @custom_inverse
+    def g(x):
+        return x + 1.0
+
+    g.definv_and_logdet(lambda y: (y - 1.0, -jnp.asarray(1.0)))
+    g.defvalue_and_logdet(lambda x: (x + 1.0, jnp.asarray(9.0)))
+    inv_g = inverse(g)
+    y_g, logdet_g = inverse_and_logabsdet(inv_g)(jnp.asarray(2.0))
+    assert jnp.allclose(y_g, jnp.asarray(3.0), atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(logdet_g, jnp.asarray(9.0), atol=1e-6, rtol=1e-6)
+
+    @custom_inverse
+    def h(x):
+        return 4.0 * x - 2.0
+
+    h.definv_and_logdet(lambda y: ((y + 2.0) / 4.0, -jnp.asarray(7.0)))
+    inv_h = inverse(h)
+    y_h, logdet_h = inverse_and_logabsdet(inv_h)(jnp.asarray(0.5))
+    assert jnp.allclose(y_h, jnp.asarray(0.0), atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(logdet_h, jnp.asarray(7.0), atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_of_custom_inverse_respects_configuration_guards():
+    @custom_inverse
+    def f(x):
+        return x + 1.0
+
+    f.definv_and_logdet(lambda y: (y - 1.0, jnp.asarray(0.0)))
+
+    with pytest.raises(ValueError):
+        inverse(f, invertible_arg=1)
+
+    with pytest.raises(ValueError):
+        inverse(f, static_argnums=(0,))
+
+
+def test_inverse_of_custom_inverse_requires_registered_inverse():
+    @custom_inverse
+    def f(x):
+        return x + 1.0
+
+    with pytest.raises(AttributeError):
+        inverse(f)
 
 
 def test_inverse_split():

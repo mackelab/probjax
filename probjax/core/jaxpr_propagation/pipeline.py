@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
 from probjax.core.jaxpr_propagation.context import ExecutionContext
+from probjax.core.jaxpr_propagation.utils import as_sequence, supports_context_argument
 
 ProcessResult = (
     tuple[Sequence[Any | None], Sequence[Any | None]]
@@ -38,35 +38,10 @@ class NamespacedStatePayload(Mapping[str, Any]):
         return self.state_values[index]
 
 
-def _as_sequence(value: Any) -> Sequence[Any]:
-    if isinstance(value, (list, tuple)):
-        return value
-    return (value,)
-
-
-def _supports_context_argument(func: Callable) -> bool:
-    try:
-        signature = inspect.signature(func)
-    except (TypeError, ValueError):
-        return False
-
-    positional_params = [
-        parameter
-        for parameter in signature.parameters.values()
-        if parameter.kind
-        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-    ]
-    has_varargs = any(
-        parameter.kind == inspect.Parameter.VAR_POSITIONAL
-        for parameter in signature.parameters.values()
-    )
-    return has_varargs or len(positional_params) >= 4
-
-
 def _compile_rule(
     rule: Callable,
 ) -> Callable[[Any, Any, Any, ExecutionContext | None], ProcessResult]:
-    use_context = _supports_context_argument(rule)
+    use_context = supports_context_argument(rule, 4)
     if use_context:
 
         def call(equation, known_inputs, known_outputs, context):
@@ -86,9 +61,9 @@ def _parse_result(result: ProcessResult):
         return (), (), None
     if len(result) == 2:
         outvars, outvals = result
-        return _as_sequence(outvars), _as_sequence(outvals), None
+        return as_sequence(outvars), as_sequence(outvals), None
     outvars, outvals, eqn_state = result
-    return _as_sequence(outvars), _as_sequence(outvals), eqn_state
+    return as_sequence(outvars), as_sequence(outvals), eqn_state
 
 
 @dataclass(frozen=True)

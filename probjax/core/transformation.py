@@ -17,10 +17,50 @@ from probjax.core.interpreters import (
     inverse_cost_fn,
     joint_sample_state_reducer,
     log_potential_state_reducer,
+    maybe_inverse_custom_inverse,
     trace_state_reducer,
 )
 from probjax.core.jaxpr_propagation.interpret import interpret
 from probjax.core.jaxpr_propagation.propagate import propagate
+
+
+def _resolve_invertible_index(args, invertible_arg: int) -> int:
+    flat_args, _ = jax.tree_util.tree_flatten(args)
+    n_args = len(flat_args)
+    index = n_args + invertible_arg if invertible_arg < 0 else invertible_arg
+    if index < 0 or index >= n_args:
+        raise IndexError(
+            f"invertible_arg={invertible_arg} is out of range for {n_args} flattened args."
+        )
+    return index
+
+
+def _prepare_inverse_problem(
+    jaxpr_invars,
+    args,
+    invertible_arg,
+):
+    if invertible_arg is None:
+        return [], list(jaxpr_invars), list(args)
+
+    adjusted_index = _resolve_invertible_index(args, invertible_arg)
+    flatten_args, _ = jax.tree_util.tree_flatten(args)
+    out_arg = [flatten_args[adjusted_index]]
+    args_for_propagate = list(
+        flatten_args[:adjusted_index] + flatten_args[adjusted_index + 1 :] + out_arg
+    )
+    known_invars = list(
+        jaxpr_invars[:adjusted_index] + jaxpr_invars[adjusted_index + 1 :]
+    )
+    target_invars = [jaxpr_invars[adjusted_index]]
+    return known_invars, target_invars, args_for_propagate
+
+
+def _sum_log_dets_for_vars(log_dets: dict, vars_) -> jax.Array:
+    total = jnp.asarray(0.0)
+    for var in vars_:
+        total = total + jnp.asarray(log_dets.get(var, 0.0))
+    return total
 
 
 def _leaf_signature(leaf):
@@ -199,41 +239,31 @@ def trace(fun: Callable, traced_vars=None):
 
 
 def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
+    maybe_custom = maybe_inverse_custom_inverse(
+        fun,
+        static_argnums=static_argnums,
+        invertible_arg=invertible_arg,
+    )
+    if maybe_custom is not None:
+        return maybe_custom
+
     get_jaxpr = _cached_jaxpr_getter(fun, static_argnums=static_argnums)
 
     @wraps(fun)
     def wrapped(*args, **kwargs):
         processing_rule = InverseProcessingRule()
         jaxpr = get_jaxpr(*args, **kwargs)
-
-        if invertible_arg is not None:
-            flatten_args, _ = jax.tree_util.tree_flatten(args)
-            if invertible_arg < 0:
-                adjusted_invertible_arg = len(flatten_args) + invertible_arg
-            else:
-                adjusted_invertible_arg = invertible_arg
-            out_arg = [flatten_args[adjusted_invertible_arg]]
-            flat_args = (
-                flatten_args[:adjusted_invertible_arg]
-                + flatten_args[adjusted_invertible_arg + 1 :]
-                + out_arg
-            )
-            const_invars = (
-                jaxpr.jaxpr.invars[:adjusted_invertible_arg]
-                + jaxpr.jaxpr.invars[adjusted_invertible_arg + 1 :]
-            )
-            out_invar = [jaxpr.jaxpr.invars[adjusted_invertible_arg]]
-
-        else:
-            const_invars = []
-            out_invar = jaxpr.jaxpr.invars
-            flat_args = args
+        known_invars, target_invars, args_for_propagate = _prepare_inverse_problem(
+            jaxpr.jaxpr.invars,
+            args,
+            invertible_arg,
+        )
         out = propagate(
             jaxpr.jaxpr,
             jaxpr.consts,
-            const_invars + jaxpr.jaxpr.outvars,
-            flat_args,
-            out_invar,
+            known_invars + jaxpr.jaxpr.outvars,
+            args_for_propagate,
+            target_invars,
             process_eqn=processing_rule,
             cost_fn=inverse_cost_fn,
             process_all_eqns=True,
@@ -253,31 +283,13 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
             state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE
         )
         jaxpr = get_jaxpr(*args, **kwargs)
-
-        if invertible_arg is not None:
-            flatten_args, _ = jax.tree_util.tree_flatten(args)
-            if invertible_arg < 0:
-                adjusted_invertible_arg = len(flatten_args) + invertible_arg
-            else:
-                adjusted_invertible_arg = invertible_arg
-            out_arg = [flatten_args[adjusted_invertible_arg]]
-            flat_args = (
-                flatten_args[:adjusted_invertible_arg]
-                + flatten_args[adjusted_invertible_arg + 1 :]
-                + out_arg
-            )
-            const_invars = (
-                jaxpr.jaxpr.invars[:adjusted_invertible_arg]
-                + jaxpr.jaxpr.invars[adjusted_invertible_arg + 1 :]
-            )
-            out_invar = [jaxpr.jaxpr.invars[adjusted_invertible_arg]]
-            invars = const_invars + jaxpr.jaxpr.outvars
-            outvars = out_invar
-            args_for_propagate = flat_args
-        else:
-            invars = jaxpr.jaxpr.outvars
-            outvars = jaxpr.jaxpr.invars
-            args_for_propagate = args
+        known_invars, target_invars, args_for_propagate = _prepare_inverse_problem(
+            jaxpr.jaxpr.invars,
+            args,
+            invertible_arg,
+        )
+        invars = known_invars + jaxpr.jaxpr.outvars
+        outvars = target_invars
 
         inverse_result = cast(
             tuple[list, dict],
@@ -298,9 +310,7 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
         )
         out, log_dets = inverse_result
 
-        log_det = jnp.asarray(0.0)
-        for v in outvars:
-            log_det = log_det + jnp.asarray(log_dets.get(v, 0.0))
+        log_det = _sum_log_dets_for_vars(log_dets, outvars)
         return out[0], log_det
 
     return wrapped

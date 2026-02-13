@@ -4,6 +4,7 @@ from probjax.core.interpreters.inverse import (
     InverseProcessingRule,
     inverse_and_logabsdet_state_reducer,
     inverse_cost_fn,
+    maybe_inverse_custom_inverse,
 )
 from probjax.core.interpreters.stochastic import (
     IntervenedProcessingRule,
@@ -25,6 +26,7 @@ __all__ = [
     "TraceProcessingRule",
     "inverse_and_logabsdet_state_reducer",
     "inverse_cost_fn",
+    "maybe_inverse_custom_inverse",
     "joint_sample_state_reducer",
     "log_potential_state_reducer",
     "trace_state_reducer",

@@ -1,18 +1,13 @@
 from functools import lru_cache, update_wrapper
 from typing import Any, Callable, Tuple
 
-import jax
 import jax.numpy as jnp
 from jax._src import ad_util
-from jax._src import linear_util as lu
-from jax._src.api_util import debug_info, flatten_fun_nokwargs
 from jax._src.core import shaped_abstractify
 from jax._src.util import safe_map, safe_zip
 from jax.extend.core import ClosedJaxpr, Primitive
 from jax.interpreters import ad, batching, mlir
 from jax._src.interpreters import ad as ad_src
-from jax._src.interpreters import batching as batching_src
-from jax.interpreters import partial_eval as pe
 from jax.tree_util import tree_flatten, tree_unflatten
 
 from probjax.core.custom_primitives.call_primitive import (
@@ -20,10 +15,13 @@ from probjax.core.custom_primitives.call_primitive import (
     call_impl,
     call_lowering,
 )
+from probjax.core.custom_primitives.contracts import parse_custom_inverse_call_params
 from probjax.core.custom_primitives.common import (
+    batch_closed_jaxpr,
     ensure_hashable,
-    fail_on_tracer_constants,
     has_tracer,
+    move_mapped_axes_to_front,
+    trace_to_closed_jaxpr,
 )
 
 map = safe_map
@@ -172,15 +170,14 @@ class custom_inverse:
         def f_dyn(*dyn_args_tuple):
             return self.fun(*assemble_args(dyn_args_tuple), **params)
 
-        info_fwd = debug_info("custom_inverse forward", self.fun, (), {})
-        f_wrapped = lu.wrap_init(f_dyn, debug_info=info_fwd)
-        f_flat, out_tree_thunk = flatten_fun_nokwargs(f_wrapped, in_tree)
-
-        jaxpr, out_avals, consts = pe.trace_to_jaxpr_dynamic(f_flat, in_avals)
         fun_name = getattr(self.fun, "__name__", str(self.fun))
-        fail_on_tracer_constants(consts, f"custom_inverse forward ({fun_name})")
-        forward_jaxpr = ClosedJaxpr(jaxpr, consts)
-        out_tree = out_tree_thunk()
+        forward_jaxpr, out_avals, out_tree = trace_to_closed_jaxpr(
+            f_dyn,
+            in_tree=in_tree,
+            in_avals=in_avals,
+            debug_name="custom_inverse forward",
+            const_context=f"custom_inverse forward ({fun_name})",
+        )
 
         if not out_avals:
             raise ValueError("custom_inverse expects at least one output.")
@@ -204,22 +201,19 @@ class custom_inverse:
                 full = assemble_args(dyn_args_tuple)
                 return self.inv_fun_and_log_det(*full, **params)
 
-            info_inv = debug_info(
-                "custom_inverse inverse", self.inv_fun_and_log_det, (), {}
-            )
-            inv_wrapped = lu.wrap_init(inv_dyn, debug_info=info_inv)
-            inv_flat, _ = flatten_fun_nokwargs(inv_wrapped, in_tree)
-
             inv_in_avals = list(in_avals)
             inv_in_avals[inv_argnum_dyn_index] = out_avals[0]
-            inv_jaxpr, _, inv_consts = pe.trace_to_jaxpr_dynamic(
-                inv_flat, tuple(inv_in_avals)
-            )
             inv_name = getattr(
                 self.inv_fun_and_log_det, "__name__", "custom_inverse inverse"
             )
-            fail_on_tracer_constants(inv_consts, f"custom_inverse inverse ({inv_name})")
-            return ClosedJaxpr(inv_jaxpr, inv_consts)
+            inverse_jaxpr, _, _ = trace_to_closed_jaxpr(
+                inv_dyn,
+                in_tree=in_tree,
+                in_avals=tuple(inv_in_avals),
+                debug_name="custom_inverse inverse",
+                const_context=f"custom_inverse inverse ({inv_name})",
+            )
+            return inverse_jaxpr
 
         return forward_jaxpr, out_tree, inv_argnum_dyn_index, inverse_jaxpr_thunk
 
@@ -290,6 +284,14 @@ def custom_inverse_call_impl(
     in_tree,
     inv_argnum: int,
 ):
+    _ = parse_custom_inverse_call_params(
+        {
+            "forward_jaxpr": forward_jaxpr,
+            "inverse_jaxpr_thunk": inverse_jaxpr_thunk,
+            "in_tree": in_tree,
+            "inv_argnum": inv_argnum,
+        }
+    )
     return call_impl(
         *args,
         forward_jaxpr=forward_jaxpr,
@@ -307,6 +309,14 @@ def custom_inverse_call_abstract_eval(
     in_tree,
     inv_argnum: int,
 ):
+    _ = parse_custom_inverse_call_params(
+        {
+            "forward_jaxpr": forward_jaxpr,
+            "inverse_jaxpr_thunk": inverse_jaxpr_thunk,
+            "in_tree": in_tree,
+            "inv_argnum": inv_argnum,
+        }
+    )
     return call_abstract_eval(
         *avals,
         forward_jaxpr=forward_jaxpr,
@@ -324,6 +334,14 @@ custom_inverse_call_p.def_abstract_eval(custom_inverse_call_abstract_eval)
 def custom_inverse_call_lowering(
     ctx, *mlir_args, forward_jaxpr, inverse_jaxpr_thunk, in_tree, inv_argnum
 ):
+    _ = parse_custom_inverse_call_params(
+        {
+            "forward_jaxpr": forward_jaxpr,
+            "inverse_jaxpr_thunk": inverse_jaxpr_thunk,
+            "in_tree": in_tree,
+            "inv_argnum": inv_argnum,
+        }
+    )
     return call_lowering(
         ctx,
         *mlir_args,
@@ -393,17 +411,7 @@ def batch_custom_inverse_call(
     axis_data, args, in_dims, forward_jaxpr, inverse_jaxpr_thunk, in_tree, inv_argnum
 ):
     # Move mapped axes to front; track which args are batched.
-    new_args = []
-    in_axes = []
-    for x, d in zip(args, in_dims):
-        if d is batching.not_mapped:
-            new_args.append(x)
-            in_axes.append(batching.not_mapped)
-        else:
-            new_args.append(batching.moveaxis(x, d, 0) if d != 0 else x)
-            in_axes.append(0)
-
-    any_batched = any(d is not batching.not_mapped for d in in_axes)
+    new_args, in_axes, any_batched = move_mapped_axes_to_front(args, in_dims)
     if not any_batched:
         # Nothing to do; keep primitive as-is.
         outs = custom_inverse_call_p.bind(
@@ -417,15 +425,8 @@ def batch_custom_inverse_call(
         return outs, out_dims
 
     # Batch the forward jaxpr.
-    if not isinstance(axis_data, batching_src.AxisData):
-        axis_data = batching_src.AxisData(
-            name="batch",
-            size=axis_data,
-            spmd_name=None,
-            _ema=None,
-        )
-    batched_forward_jaxpr, out_axes = batching_src.batch_jaxpr2(
-        forward_jaxpr, axis_data, tuple(in_axes)
+    batched_forward_jaxpr, out_axes = batch_closed_jaxpr(
+        forward_jaxpr, axis_data, in_axes
     )
 
     # Lazily batch the inverse jaxpr only if someone actually asks for it.
@@ -437,7 +438,7 @@ def batch_custom_inverse_call(
         )
         if inv_cj is None:
             raise ValueError("No inverse defined for batched custom_inverse call.")
-        batched_inv_cj, _ = batching_src.batch_jaxpr2(inv_cj, axis_data, tuple(in_axes))
+        batched_inv_cj, _ = batch_closed_jaxpr(inv_cj, axis_data, in_axes)
         return batched_inv_cj
 
     # Re-emit the primitive so inverse() still sees it.

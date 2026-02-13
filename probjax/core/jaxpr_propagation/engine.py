@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import inspect
 import math
+import weakref
 from typing import (
     Any,
     Callable,
@@ -24,18 +24,22 @@ from probjax.core.jaxpr_propagation.extended import (
     ExtendedJaxpr,
 )
 from probjax.core.jaxpr_propagation.utils import (
+    CostFunction,
     Environment,
     ForwardProcessingRule,
     ProcessingRule,
+    ReducerFunction,
     RuleOutput,
+    as_sequence,
+    supports_context_argument,
 )
 from probjax.utils.containers import PriorityQueue
 
 Scheduler = TypingLiteral["topological", "priority"]
 RecursePolicy = TypingLiteral["always", "missing_inputs", "never"]
-CostFn = Callable[[JaxprEqn, Sequence[bool], Sequence[bool]], float]
 State = Any
-Reducer = Callable[..., State]
+CostFn = CostFunction
+Reducer = ReducerFunction
 ProcessResult = RuleOutput | None
 ProcessEqn = ProcessingRule | Callable[..., ProcessResult]
 
@@ -61,31 +65,6 @@ def identity_reducer(
     return state
 
 
-def _as_sequence(value: Any) -> Sequence[Any]:
-    if isinstance(value, (list, tuple)):
-        return value
-    return (value,)
-
-
-def _supports_context_argument(func: Callable, required_positional: int) -> bool:
-    try:
-        signature = inspect.signature(func)
-    except (TypeError, ValueError):
-        return False
-
-    positional_params = [
-        parameter
-        for parameter in signature.parameters.values()
-        if parameter.kind
-        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-    ]
-    has_varargs = any(
-        parameter.kind == inspect.Parameter.VAR_POSITIONAL
-        for parameter in signature.parameters.values()
-    )
-    return has_varargs or len(positional_params) >= required_positional
-
-
 ProcessAdapter = Callable[
     [
         ExtendedEquation,
@@ -99,10 +78,17 @@ ReducerAdapter = Callable[
     [Environment, ExtendedEquation, State, State, ExecutionContext], State
 ]
 
+_PROCESS_ADAPTER_CACHE: weakref.WeakKeyDictionary[Any, ProcessAdapter] = (
+    weakref.WeakKeyDictionary()
+)
+_REDUCER_ADAPTER_CACHE: weakref.WeakKeyDictionary[Any, ReducerAdapter] = (
+    weakref.WeakKeyDictionary()
+)
 
-def _compile_process_adapter(process_eqn: ProcessEqn) -> ProcessAdapter:
+
+def _build_process_adapter(process_eqn: ProcessEqn) -> ProcessAdapter:
     process_fn = cast(Callable[..., ProcessResult], process_eqn)
-    use_context = _supports_context_argument(cast(Callable, process_eqn), 4)
+    use_context = supports_context_argument(cast(Callable, process_eqn), 4)
 
     if use_context:
 
@@ -128,9 +114,23 @@ def _compile_process_adapter(process_eqn: ProcessEqn) -> ProcessAdapter:
     return invoke
 
 
-def _compile_reducer_adapter(reducer: Reducer) -> ReducerAdapter:
+def _compile_process_adapter(process_eqn: ProcessEqn) -> ProcessAdapter:
+    try:
+        cached = _PROCESS_ADAPTER_CACHE.get(process_eqn)
+    except TypeError:
+        return _build_process_adapter(process_eqn)
+
+    if cached is not None:
+        return cached
+
+    compiled = _build_process_adapter(process_eqn)
+    _PROCESS_ADAPTER_CACHE[process_eqn] = compiled
+    return compiled
+
+
+def _build_reducer_adapter(reducer: Reducer) -> ReducerAdapter:
     reducer_fn = cast(Callable[..., State], reducer)
-    use_context = _supports_context_argument(cast(Callable, reducer), 5)
+    use_context = supports_context_argument(cast(Callable, reducer), 5)
 
     if use_context:
 
@@ -158,6 +158,20 @@ def _compile_reducer_adapter(reducer: Reducer) -> ReducerAdapter:
     return invoke
 
 
+def _compile_reducer_adapter(reducer: Reducer) -> ReducerAdapter:
+    try:
+        cached = _REDUCER_ADAPTER_CACHE.get(reducer)
+    except TypeError:
+        return _build_reducer_adapter(reducer)
+
+    if cached is not None:
+        return cached
+
+    compiled = _build_reducer_adapter(reducer)
+    _REDUCER_ADAPTER_CACHE[reducer] = compiled
+    return compiled
+
+
 def _can_use_eval_jaxpr_fast_path(
     jaxpr: Jaxpr,
     invars: Sequence[Var],
@@ -175,8 +189,6 @@ def _can_use_eval_jaxpr_fast_path(
     if scheduler != "topological":
         return False
     if process_all_eqns:
-        return False
-    if recurse_policy != "always":
         return False
     if run_post_nested_process:
         return False
@@ -246,10 +258,10 @@ def _parse_process_result(
 
     if len(result) == 2:
         outvars, outvals = result
-        return _as_sequence(outvars), _as_sequence(outvals), None
+        return as_sequence(outvars), as_sequence(outvals), None
     if len(result) == 3:
         outvars, outvals, eqn_state = result
-        return _as_sequence(outvars), _as_sequence(outvals), eqn_state
+        return as_sequence(outvars), as_sequence(outvals), eqn_state
 
     raise ValueError(
         "Processing rules must return (outvars, outvals) or "
@@ -392,13 +404,16 @@ class _EquationQueue:
         self._initialize()
 
     def _initialize(self):
+        seed_eqn_ids: set[EqnId] = set()
         for var in self.env:
-            eqn_ids = self.neighbors.get(var, ())
-            map(self.push, eqn_ids)
+            seed_eqn_ids.update(self.neighbors.get(var, ()))
 
         for extended_eqn in self.equation_by_id.values():
             if all(map(self.env.known, extended_eqn.invars)):
-                self.push(extended_eqn.eqn_id)
+                seed_eqn_ids.add(extended_eqn.eqn_id)
+
+        for eqn_id in seed_eqn_ids:
+            self.push(eqn_id)
 
     def _compute_cost(self, eqn_id: EqnId) -> float:
         extended_eqn = self.equation_by_id[eqn_id]
@@ -624,7 +639,8 @@ def run_jaxpr(
 
         for var in written_vars:
             eqn_ids = extended.neighbors.get(var, ())
-            map(equation_queue.push, eqn_ids)
+            for eqn_id in eqn_ids:
+                equation_queue.push(eqn_id)
 
         if not process_all_eqns and all(map(env.known, outvars)):
             break

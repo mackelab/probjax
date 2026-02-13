@@ -4,6 +4,7 @@ from jaxtyping import Array
 
 from jax.extend.core import JaxprEqn
 
+from probjax.core.custom_primitives.contracts import parse_random_variable_call_params
 from probjax.core.custom_primitives.random_variable import rv_p
 from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
 
@@ -36,10 +37,9 @@ class JointSampleProcessingRule(ForwardProcessingRule):
         outvars, outvals = result[0], result[1]
         eqn_state = {}
         if eqn.primitive is rv_p:
-            name = eqn.params["name"]
-            intervened = (
-                eqn.params.get("intervened", False) or name in self.interventions
-            )
+            rv_params = parse_random_variable_call_params(eqn.params)
+            name = rv_params.name
+            intervened = eqn.params.get("intervened", False) or name in self.interventions
             if not intervened and (self.rvs is None or name in self.rvs):
                 eqn_state[name] = outvals[0]
         return outvars, outvals, eqn_state

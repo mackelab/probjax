@@ -50,6 +50,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-benchmark",
     "ruff",
     "pytest-xdist",
     "scipy",
@@ -106,3 +107,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+addopts = "--benchmark-sort=name"
+filterwarnings = [
+    "ignore:Setting `jax_pmap_shmap_merge` is deprecated in JAX v0.9.0 and will be removed in JAX v0.10.0.:DeprecationWarning:jax._src.config",
+]

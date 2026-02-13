@@ -3,6 +3,7 @@ from typing import Dict, Sequence
 from jax.extend.core import JaxprEqn
 from jaxtyping import Array
 
+from probjax.core.custom_primitives.contracts import parse_random_variable_call_params
 from probjax.core.custom_primitives.random_variable import rv_p
 from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
 
@@ -32,7 +33,8 @@ class LogPotentialProcessingRule(ForwardProcessingRule):
     ):
         if eqn.primitive is rv_p:
             # We do not have to sample -> Already given
-            name = eqn.params["name"]
+            rv_params = parse_random_variable_call_params(eqn.params)
+            name = rv_params.name
             intervened = (
                 eqn.params.get("intervened", False) or name in self.intervened_names
             )
@@ -46,7 +48,7 @@ class LogPotentialProcessingRule(ForwardProcessingRule):
 
                 in_known_values = list(in_known)
                 in_known_values[0] = outvals[0]
-                log_pdf_fn = eqn.params["logpdf_fn"]
+                log_pdf_fn = rv_params.logpdf_fn
                 eqn_state = log_pdf_fn(*in_known_values)
             else:
                 result = super().__call__(eqn, in_known, out_known)

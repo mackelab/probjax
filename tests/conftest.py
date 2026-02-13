@@ -51,6 +51,11 @@ from jax import random
 from probjax.utils.odeutil.solvers.base import get_methods as get_methods_ode
 from probjax.utils.sdeutil import get_methods as get_methods_sde
 
+try:
+    import pytest_benchmark.plugin as _pytest_benchmark_plugin
+except ImportError:
+    _pytest_benchmark_plugin = None
+
 # Remove the hardcoded CPU configuration
 jax.config.update("jax_platform_name", "cpu")
 # Set a fixed random key for all tests
@@ -143,6 +148,12 @@ def pytest_addoption(parser):
         "--gpu", action="store_true", default=False, help="run tests requiring GPU"
     )
     parser.addoption(
+        "--run-benchmarks",
+        action="store_true",
+        default=False,
+        help="run benchmark tests (disabled by default)",
+    )
+    parser.addoption(
         "--device",
         action="store",
         default="cpu",
@@ -154,6 +165,9 @@ def pytest_addoption(parser):
 def pytest_configure(config):
     config.addinivalue_line("markers", "gpu: requires GPU to run")
     config.addinivalue_line("markers", "mesh: requires multi-device mesh to run")
+    config.addinivalue_line(
+        "markers", "benchmark: performance benchmark tests (opt-in)"
+    )
     # Set JAX platform based on device option
     device = config.getoption("--device")
     jax.config.update("jax_platform_name", device)
@@ -161,8 +175,17 @@ def pytest_configure(config):
 
 def pytest_collection_modifyitems(config, items):
     device = config.getoption("--device")
+    run_benchmarks = config.getoption("--run-benchmarks")
     if device == "gpu":
+        skip_benchmark = pytest.mark.skip(reason="need --run-benchmarks option to run")
+        for item in items:
+            if "benchmark" in item.keywords and not run_benchmarks:
+                item.add_marker(skip_benchmark)
         return
+    skip_benchmark = pytest.mark.skip(reason="need --run-benchmarks option to run")
+    for item in items:
+        if "benchmark" in item.keywords and not run_benchmarks:
+            item.add_marker(skip_benchmark)
     if enable_multi:
         skip_non_mesh = pytest.mark.skip(reason="requires -m mesh to run")
         for item in items:
@@ -172,3 +195,10 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "gpu" in item.keywords:
             item.add_marker(skip_gpu)
+
+
+if _pytest_benchmark_plugin is None:
+
+    @pytest.fixture
+    def benchmark():
+        pytest.skip("pytest-benchmark is not installed; install dev extras to run")

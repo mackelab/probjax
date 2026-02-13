@@ -3,6 +3,7 @@ from typing import Any, Sequence, Tuple
 from jax.extend.core import JaxprEqn
 from jaxtyping import Array
 
+from probjax.core.custom_primitives.contracts import parse_random_variable_call_params
 from probjax.core.custom_primitives.random_variable import rv_p
 from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
 
@@ -20,7 +21,7 @@ class IntervenedProcessingRule(ForwardProcessingRule):
         self, eqn: JaxprEqn, known_inputs: Sequence[Any | None], _: Sequence[Any | None]
     ) -> Tuple[Sequence[Any | None], Sequence[Any | None]]:
         if eqn.primitive is rv_p:
-            name = eqn.params["name"]
+            name = parse_random_variable_call_params(eqn.params).name
             if name in self.interventions:
                 return eqn.outvars, [self.interventions[name]]
 

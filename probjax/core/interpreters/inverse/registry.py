@@ -15,12 +15,12 @@ if pjit_p is None:
     from jax._src.pjit import jit_p as pjit_p
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
-from probjax.core.interpreters.inverse.rules_binary import BIVARIATE_INVERSE_REGISTRY
-from probjax.core.interpreters.inverse.rules_tensor import (
+from probjax.core.interpreters.inverse.rules import (
+    BIVARIATE_INVERSE_REGISTRY,
     CUSTOM_INVERSE_PROCESSING_RULES,
+    UNIVARIATE_INVERSE_REGISTRY,
     register_inverse_rule,
 )
-from probjax.core.interpreters.inverse.rules_unary import UNIVARIATE_INVERSE_REGISTRY
 
 
 def is_univariate(eqn) -> bool:

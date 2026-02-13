@@ -1,5 +1,6 @@
+import inspect
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Optional, Sequence, Tuple
+from typing import Any, Callable, Optional, Protocol, Sequence, Tuple
 
 from jax.extend.core import JaxprEqn, Literal
 from jaxtyping import Array
@@ -83,6 +84,48 @@ RuleOutput = (
     Tuple[Sequence[Any | None], Sequence[Any | None]]
     | Tuple[Sequence[Any | None], Sequence[Any | None], Any]
 )
+
+
+class ProcessingRuleFactory(Protocol):
+    def __call__(self) -> "ProcessingRule | Callable[..., RuleOutput | None]": ...
+
+
+class CostFunction(Protocol):
+    def __call__(
+        self,
+        eqn: JaxprEqn,
+        known_invars: Sequence[bool],
+        known_outvars: Sequence[bool],
+    ) -> float: ...
+
+
+class ReducerFunction(Protocol):
+    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+
+
+def as_sequence(value: Any) -> Sequence[Any]:
+    if isinstance(value, (list, tuple)):
+        return value
+    return (value,)
+
+
+def supports_context_argument(func: Callable, required_positional: int) -> bool:
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return False
+
+    positional_params = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    has_varargs = any(
+        parameter.kind == inspect.Parameter.VAR_POSITIONAL
+        for parameter in signature.parameters.values()
+    )
+    return has_varargs or len(positional_params) >= required_positional
 
 
 class ProcessingRule(ABC):

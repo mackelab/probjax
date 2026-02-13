@@ -3,6 +3,7 @@ import jax.numpy as jnp
 from jax._src import core as jax_core
 from jax.extend.core import Literal, Primitive
 
+from probjax.core.custom_primitives.contracts import parse_custom_inverse_call_params
 from probjax.core.interpreters.common import apply_rule
 from probjax.core.interpreters.inverse.dispatch import (
     DispatchAction,
@@ -253,7 +254,8 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         known_outvars,
         context=None,
     ):
-        inverse_jaxpr = eqn.params["inverse_jaxpr_thunk"]()
+        custom_params = parse_custom_inverse_call_params(eqn.params)
+        inverse_jaxpr = custom_params.inverse_jaxpr_thunk()
         jaxpr = inverse_jaxpr.jaxpr
         consts = inverse_jaxpr.literals
         inputs = [v if v is not None else known_outvars[0] for v in known_invars]

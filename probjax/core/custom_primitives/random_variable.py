@@ -2,13 +2,8 @@ from functools import lru_cache
 from threading import local
 from typing import Any, cast
 
-import jax
-from jax._src import linear_util as lu
-from jax._src.api_util import debug_info, flatten_fun_nokwargs
 from jax._src.core import shaped_abstractify
 from jax._src.interpreters import ad as ad_src
-from jax._src.interpreters import batching as batching_src
-from jax._src.interpreters import partial_eval as pe_src
 from jax.extend.core import ClosedJaxpr, Primitive
 from jax.interpreters import ad, batching, mlir
 from jax.tree_util import tree_flatten, tree_unflatten
@@ -19,7 +14,14 @@ from probjax.core.custom_primitives.call_primitive import (
     call_lowering,
     jvp_from_forward_jaxpr,
 )
-from probjax.core.custom_primitives.common import ensure_hashable, has_tracer
+from probjax.core.custom_primitives.common import (
+    batch_closed_jaxpr,
+    ensure_hashable,
+    has_tracer,
+    move_mapped_axes_to_front,
+    trace_to_closed_jaxpr,
+)
+from probjax.core.custom_primitives.contracts import parse_random_variable_call_params
 
 
 class NameStack(local):
@@ -53,12 +55,15 @@ def _trace_random_variable_jaxpr(
         key, *args = inputs
         return rvs_fn(key, *args, shape=shape, **kwds)
 
-    info = debug_info("random_variable forward", rvs_fn, (), {})
-    f_wrapped = lu.wrap_init(f_dyn, debug_info=info)
-    f_flat, out_tree_thunk = flatten_fun_nokwargs(f_wrapped, in_tree)
-    jaxpr, _, consts = pe_src.trace_to_jaxpr_dynamic(f_flat, in_avals)
-    _ = out_tree_thunk()
-    return ClosedJaxpr(jaxpr, consts)
+    fn_name = getattr(rvs_fn, "__name__", str(rvs_fn))
+    forward_jaxpr, _, _ = trace_to_closed_jaxpr(
+        f_dyn,
+        in_tree=in_tree,
+        in_avals=in_avals,
+        debug_name="random_variable forward",
+        const_context=f"random_variable forward ({fn_name})",
+    )
+    return forward_jaxpr
 
 
 def _rv_impl(
@@ -72,6 +77,18 @@ def _rv_impl(
     logpdf_fn,
     kwds_items,
 ):
+    _ = parse_random_variable_call_params(
+        {
+            "forward_jaxpr": forward_jaxpr,
+            "in_tree": in_tree,
+            "shape": shape,
+            "dist": dist,
+            "name": name,
+            "rvs_fn": rvs_fn,
+            "logpdf_fn": logpdf_fn,
+            "kwds_items": kwds_items,
+        }
+    )
     return call_impl(
         *flat_inputs,
         forward_jaxpr=forward_jaxpr,
@@ -97,6 +114,18 @@ def _rv_abstract_eval(
     logpdf_fn,
     kwds_items,
 ):
+    _ = parse_random_variable_call_params(
+        {
+            "forward_jaxpr": forward_jaxpr,
+            "in_tree": in_tree,
+            "shape": shape,
+            "dist": dist,
+            "name": name,
+            "rvs_fn": rvs_fn,
+            "logpdf_fn": logpdf_fn,
+            "kwds_items": kwds_items,
+        }
+    )
     return call_abstract_eval(
         *flat_avals,
         forward_jaxpr=forward_jaxpr,
@@ -124,35 +153,23 @@ def _rv_lowering(ctx, *mlir_args, **params):
     )
 
 
-def _rv_batching_rule(batched_args, batch_dims, **params):
+def _rv_batching_rule(axis_data, batched_args, batch_dims, **params):
     params = dict(params)
-    rvs_fn = params["rvs_fn"]
-    logpdf_fn = params["logpdf_fn"]
-    shape = params.get("shape", ())
-    kwds = dict(params.get("kwds_items", ()))
+    forward_jaxpr = params["forward_jaxpr"]
 
-    def rvs_fn_with_shape(key, *args, shape=shape, **kwargs):
-        del kwargs
-        return rvs_fn(key, *args, shape=shape, **kwds)
+    new_args, in_axes, any_batched = move_mapped_axes_to_front(batched_args, batch_dims)
+    if not any_batched:
+        out = Primitive.bind(rv_p, *new_args, **params)
+        return out, batching.not_mapped
 
-    rvs_fn_batched = jax.vmap(rvs_fn_with_shape, in_axes=batch_dims)
-    if any(d is not batching.not_mapped for d in batch_dims[1:]):
-        logpdf_fn_batched = jax.vmap(logpdf_fn, in_axes=batch_dims[1:])
-    else:
-        logpdf_fn_batched = logpdf_fn
-
-    key, *args = batched_args
-    out = rv_p.bind(
-        key,
-        *args,
-        dist=params.get("dist"),
-        shape=shape,
-        name=params.get("name"),
-        rvs_fn=rvs_fn_batched,
-        logpdf_fn=logpdf_fn_batched,
-        kwds=kwds,
+    batched_forward_jaxpr, out_axes = batch_closed_jaxpr(
+        forward_jaxpr, axis_data, in_axes
     )
-    return out, 0
+
+    rebound_params = dict(params, forward_jaxpr=batched_forward_jaxpr)
+    out = Primitive.bind(rv_p, *new_args, **rebound_params)
+    out_axis = out_axes[0] if out_axes else batching.not_mapped
+    return out, out_axis
 
 
 def _rv_jvp(primals, tangents, **params):
@@ -183,6 +200,9 @@ class RandomVariableCallPrimitive(Primitive):
         rvs_fn=None,
         logpdf_fn=None,
         kwds=None,
+        forward_jaxpr=None,
+        in_tree=None,
+        kwds_items=None,
         **params,
     ):
         if dist is None and (rvs_fn is None or logpdf_fn is None):
@@ -195,29 +215,37 @@ class RandomVariableCallPrimitive(Primitive):
             logpdf_fn = dist_obj.logpdf
 
         if kwds is None:
-            kwds = {}
+            kwds = {} if kwds_items is None else dict(kwds_items)
         if name is None:
             prefix = getattr(dist_obj, "name", "rv")
             name = name_stack.get_name(prefix)
 
-        args, kwds = dist_obj._parse_args(*args, **kwds)
-        kwds_items = tuple(
-            sorted((k, ensure_hashable(v, f"kwds['{k}']")) for k, v in kwds.items())
-        )
+        args, parsed_kwds = dist_obj._parse_args(*args, **kwds)
+        if kwds_items is None:
+            kwds_items = tuple(
+                sorted(
+                    (k, ensure_hashable(v, f"kwds['{k}']"))
+                    for k, v in parsed_kwds.items()
+                )
+            )
 
-        if not has_tracer((key, args, kwds)):
-            return rvs_fn(key, *args, shape=shape, **kwds)
+        if not has_tracer((key, args, parsed_kwds)):
+            return rvs_fn(key, *args, shape=shape, **parsed_kwds)
 
         dyn_inputs = (key, *args)
-        flat_inputs, in_tree = tree_flatten(dyn_inputs)
-        in_avals = tuple(map(shaped_abstractify, flat_inputs))
-        forward_jaxpr = _trace_random_variable_jaxpr(
-            rvs_fn,
-            in_tree,
-            in_avals,
-            shape,
-            kwds_items,
-        )
+        flat_inputs, dyn_tree = tree_flatten(dyn_inputs)
+        if in_tree is None:
+            in_tree = dyn_tree
+
+        if forward_jaxpr is None:
+            in_avals = tuple(map(shaped_abstractify, flat_inputs))
+            forward_jaxpr = _trace_random_variable_jaxpr(
+                rvs_fn,
+                in_tree,
+                in_avals,
+                shape,
+                kwds_items,
+            )
 
         return super().bind(
             *flat_inputs,
@@ -238,7 +266,7 @@ call_rv_p = rv_p
 
 rv_p.def_impl(_rv_impl)
 rv_p.def_abstract_eval(_rv_abstract_eval)
-batching.primitive_batchers[rv_p] = _rv_batching_rule
+batching.fancy_primitive_batchers[rv_p] = _rv_batching_rule
 mlir.register_lowering(rv_p, _rv_lowering)
 ad.primitive_jvps[rv_p] = _rv_jvp
 ad.primitive_transposes[rv_p] = _rv_transpose_rule
