@@ -345,130 +345,184 @@ class mixture_gen(rv_generic):
         data = data.astype(numeric_dtype)
         prev_log_likelihood = jnp.asarray(-jnp.inf, dtype=numeric_dtype)
 
-        mixing_probs_curr = mixing_probs
-        params_curr = component_params
-        prev_ll_curr = prev_log_likelihood
-        key_curr = rng_key
-        diff_curr = jnp.asarray(jnp.inf, dtype=numeric_dtype)
+        def em_step(carry, _):
+            mixing_probs_curr, params_curr, prev_ll_curr, key_curr, done_curr = carry
 
-        for _ in range(int(max_iter)):
-            log_pdfs = jnp.stack(
-                [
-                    dist.logpdf(data, *args_i, **kwds_i)
-                    for dist, (args_i, kwds_i) in zip(component_dists, params_curr, strict=False)
-                ],
-                axis=1,
-            )
-            log_weights = jnp.log(jnp.clip(mixing_probs_curr, 1e-12)) + log_pdfs
-            log_norm = jax.scipy.special.logsumexp(log_weights, axis=1, keepdims=True)
-            responsibilities = jnp.exp(log_weights - log_norm)
+            def no_op(state):
+                mixing_probs_state, params_state, prev_ll_state, key_state = state
+                diff_state = jnp.asarray(0.0, dtype=numeric_dtype)
+                return (
+                    mixing_probs_state,
+                    params_state,
+                    prev_ll_state,
+                    key_state,
+                ), diff_state
 
-            Nk = jnp.sum(responsibilities, axis=0)
-            mixing_probs_new = jnp.clip(Nk / jnp.sum(Nk), 1e-12)
-            mixing_probs_new = mixing_probs_new / jnp.sum(mixing_probs_new)
+            def update(state):
+                mixing_probs_state, params_state, prev_ll_state, key_state = state
 
-            split_keys = random.split(key_curr, n_components + 1)
-            key_new = split_keys[0]
-            component_keys = split_keys[1:]
-
-            new_params = []
-
-            for idx, (dist, (args_i, kwds_i)) in enumerate(
-                zip(component_dists, params_curr, strict=False)
-            ):
-                weights = jnp.asarray(responsibilities[:, idx])
-                dtype = jnp.result_type(data.dtype, weights.dtype, jnp.float32)
-                weights = weights.astype(dtype)
-                typed_data = data.astype(dtype)
-                total_weight = jnp.sum(weights)
-
-                def coerce(value):
-                    if isinstance(value, jnp.ndarray):
-                        return value.astype(dtype)
-                    return value
-
-                args_typed = tuple(coerce(arg) for arg in args_i)
-                kwds_typed = {k: coerce(v) for k, v in kwds_i.items()}
-
-                def apply_params(params_out):
-                    if isinstance(params_out, dict):
-                        updated_args = args_typed
-                        updated_kwds = dict(kwds_typed)
-                        for name, value in params_out.items():
-                            updated_kwds[name] = coerce(value)
-                        return updated_args, updated_kwds
-
-                    params_seq = params_out if isinstance(params_out, tuple) else (params_out,)
-                    updated_args_list = list(args_typed)
-                    max_pos = min(len(params_seq), len(updated_args_list))
-                    for pos in range(max_pos):
-                        updated_args_list[pos] = coerce(params_seq[pos])
-
-                    updated_kwds = dict(kwds_typed)
-                    remaining = params_seq[len(updated_args_list) :]
-                    if remaining:
-                        param_names = list(getattr(dist, "parameters", {}).keys())
-                        positional = param_names[: len(updated_args_list)]
-                        remaining_names = [name for name in param_names if name not in positional]
-                        preferred = [name for name in remaining_names if name in updated_kwds]
-                        fallback = [name for name in remaining_names if name not in updated_kwds]
-                        ordered = (preferred + fallback)[: len(remaining)]
-                        if len(ordered) < len(remaining):
-                            extra = [
-                                name
-                                for name in param_names
-                                if name not in positional and name not in ordered
-                            ]
-                            ordered += extra[: len(remaining) - len(ordered)]
-                        for name, value in zip(ordered, remaining, strict=False):
-                            updated_kwds[name] = coerce(value)
-
-                    return tuple(updated_args_list), updated_kwds
-
-                def reinit_branch(key_inner):
-                    del key_inner  # PRNG key unused when returning initial parameters
-                    return args_typed, kwds_typed
-
-                def update_branch(key_inner):
-                    del key_inner
-                    normalised_weights = weights / jnp.asarray(
-                        jnp.maximum(total_weight, jnp.asarray(1e-12, dtype=dtype)), dtype=dtype
-                    )
-
-                    try:
-                        params_out = dist.fit(typed_data, weights=normalised_weights)
-                    except TypeError:
-                        params_out = dist.fit(typed_data)
-                    return apply_params(params_out)
-
-                params_updated = lax.cond(
-                    total_weight <= jnp.asarray(1e-10, dtype=dtype),
-                    reinit_branch,
-                    update_branch,
-                    component_keys[idx],
+                log_pdfs = jnp.stack(
+                    [
+                        dist.logpdf(data, *args_i, **kwds_i)
+                        for dist, (args_i, kwds_i) in zip(
+                            component_dists, params_state, strict=False
+                        )
+                    ],
+                    axis=1,
                 )
-                new_params.append(params_updated)
+                log_weights = jnp.log(jnp.clip(mixing_probs_state, 1e-12)) + log_pdfs
+                log_norm = jax.scipy.special.logsumexp(
+                    log_weights, axis=1, keepdims=True
+                )
+                responsibilities = jnp.exp(log_weights - log_norm)
 
-            params_next = tuple(new_params)
+                Nk = jnp.sum(responsibilities, axis=0)
+                mixing_probs_new = jnp.clip(Nk / jnp.sum(Nk), 1e-12)
+                mixing_probs_new = mixing_probs_new / jnp.sum(mixing_probs_new)
 
-            log_likelihood = jnp.mean(log_norm)
-            diff_curr = jnp.abs(log_likelihood - prev_ll_curr)
-            diff_curr = jnp.where(
-                jnp.isfinite(prev_ll_curr),
-                diff_curr,
-                jnp.asarray(jnp.inf, dtype=numeric_dtype),
+                split_keys = random.split(key_state, n_components + 1)
+                key_new = split_keys[0]
+                component_keys = split_keys[1:]
+
+                new_params = []
+
+                for idx, (dist, (args_i, kwds_i)) in enumerate(
+                    zip(component_dists, params_state, strict=False)
+                ):
+                    weights = jnp.asarray(responsibilities[:, idx])
+                    dtype = jnp.result_type(data.dtype, weights.dtype, jnp.float32)
+                    weights = weights.astype(dtype)
+                    typed_data = data.astype(dtype)
+                    total_weight = jnp.sum(weights)
+
+                    def coerce(value):
+                        if isinstance(value, jnp.ndarray):
+                            return value.astype(dtype)
+                        return value
+
+                    args_typed = tuple(coerce(arg) for arg in args_i)
+                    kwds_typed = {k: coerce(v) for k, v in kwds_i.items()}
+
+                    def apply_params(params_out):
+                        if isinstance(params_out, dict):
+                            updated_args = args_typed
+                            updated_kwds = dict(kwds_typed)
+                            for name, value in params_out.items():
+                                updated_kwds[name] = coerce(value)
+                            return updated_args, updated_kwds
+
+                        params_seq = (
+                            params_out
+                            if isinstance(params_out, tuple)
+                            else (params_out,)
+                        )
+                        updated_args_list = list(args_typed)
+                        max_pos = min(len(params_seq), len(updated_args_list))
+                        for pos in range(max_pos):
+                            updated_args_list[pos] = coerce(params_seq[pos])
+
+                        updated_kwds = dict(kwds_typed)
+                        remaining = params_seq[len(updated_args_list) :]
+                        if remaining:
+                            param_names = list(getattr(dist, "parameters", {}).keys())
+                            positional = param_names[: len(updated_args_list)]
+                            remaining_names = [
+                                name for name in param_names if name not in positional
+                            ]
+                            preferred = [
+                                name for name in remaining_names if name in updated_kwds
+                            ]
+                            fallback = [
+                                name
+                                for name in remaining_names
+                                if name not in updated_kwds
+                            ]
+                            ordered = (preferred + fallback)[: len(remaining)]
+                            if len(ordered) < len(remaining):
+                                extra = [
+                                    name
+                                    for name in param_names
+                                    if name not in positional and name not in ordered
+                                ]
+                                ordered += extra[: len(remaining) - len(ordered)]
+                            for name, value in zip(ordered, remaining, strict=False):
+                                updated_kwds[name] = coerce(value)
+
+                        return tuple(updated_args_list), updated_kwds
+
+                    def reinit_branch(key_inner):
+                        del (
+                            key_inner
+                        )  # PRNG key unused when returning current parameters
+                        return args_typed, kwds_typed
+
+                    def update_branch(key_inner):
+                        del key_inner
+                        normalised_weights = weights / jnp.asarray(
+                            jnp.maximum(total_weight, jnp.asarray(1e-12, dtype=dtype)),
+                            dtype=dtype,
+                        )
+
+                        try:
+                            params_out = dist.fit(
+                                typed_data, weights=normalised_weights
+                            )
+                        except TypeError:
+                            params_out = dist.fit(typed_data)
+                        return apply_params(params_out)
+
+                    params_updated = lax.cond(
+                        total_weight <= jnp.asarray(1e-10, dtype=dtype),
+                        reinit_branch,
+                        update_branch,
+                        component_keys[idx],
+                    )
+                    new_params.append(params_updated)
+
+                params_next = tuple(new_params)
+
+                log_likelihood = jnp.mean(log_norm)
+                diff_next = jnp.abs(log_likelihood - prev_ll_state)
+                diff_next = jnp.where(
+                    jnp.isfinite(prev_ll_state),
+                    diff_next,
+                    jnp.asarray(jnp.inf, dtype=numeric_dtype),
+                )
+                return (
+                    mixing_probs_new,
+                    params_next,
+                    log_likelihood,
+                    key_new,
+                ), diff_next
+
+            (mixing_probs_next, params_next, prev_ll_next, key_next), diff_next = (
+                lax.cond(
+                    done_curr,
+                    no_op,
+                    update,
+                    (mixing_probs_curr, params_curr, prev_ll_curr, key_curr),
+                )
             )
 
-            mixing_probs_curr = mixing_probs_new
-            params_curr = params_next
-            prev_ll_curr = log_likelihood
-            key_curr = key_new
+            converged = jnp.isfinite(prev_ll_next) & (diff_next <= tol_value)
+            done_next = done_curr | converged
+            return (
+                mixing_probs_next,
+                params_next,
+                prev_ll_next,
+                key_next,
+                done_next,
+            ), diff_next
 
-            if float(diff_curr) <= float(tol_value):
-                break
-
-        mixing_probs_final = mixing_probs_curr
-        params_final = params_curr
+        init_carry = (
+            mixing_probs,
+            component_params,
+            prev_log_likelihood,
+            rng_key,
+            jnp.asarray(False),
+        )
+        final_carry, _ = lax.scan(em_step, init_carry, xs=None, length=int(max_iter))
+        mixing_probs_final, params_final, _, _, _ = final_carry
 
         fitted_components = []
         for dist, (args, kwds) in zip(component_dists, params_final, strict=False):
