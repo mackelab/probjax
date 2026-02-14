@@ -310,7 +310,9 @@ def test_linear_exact_with_bias():
     dt = ts[1] - ts[0]
     z = A * dt
     phi1 = (jnp.expm1(z) / z).reshape(())
-    expected = x0 * jnp.exp(A * ts) + (0.5 / A) * (jnp.exp(A * ts) - 1.0)
+    expected = (x0 * jnp.exp(A * ts) + (0.5 / A) * (jnp.exp(A * ts) - 1.0)).reshape(
+        -1, 1
+    )
     assert jnp.allclose(result, expected, atol=1e-5)
 
 
