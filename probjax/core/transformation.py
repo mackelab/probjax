@@ -1,10 +1,11 @@
 from functools import wraps
-from typing import Callable, Iterable, Optional, cast
+from typing import Any, Callable, Iterable, Mapping, Optional, cast
 
 import jax
 from jax import numpy as jnp
 from jaxtyping import Array
 
+from probjax.core.custom_primitives.random_variable import name_stack
 from probjax.core.interpreters import (
     INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
     IntervenedProcessingRule,
@@ -92,6 +93,73 @@ def _cached_jaxpr_getter(fun: Callable, static_argnums=()):
     return get_jaxpr
 
 
+_INTERVENTIONS_ATTR = "_probjax_interventions_map"
+_OBSERVATIONS_ATTR = "_probjax_observations_map"
+_REPLAY_ATTR = "_probjax_replay_map"
+
+
+def _flatten_call_inputs(args, kwargs):
+    flat_inputs, _ = jax.tree_util.tree_flatten((args, kwargs))
+    return tuple(flat_inputs)
+
+
+def _collect_stochastic_maps(fun: Callable):
+    interventions = dict(getattr(fun, _INTERVENTIONS_ATTR, {}))
+    observations = dict(getattr(fun, _OBSERVATIONS_ATTR, {}))
+    replay = dict(getattr(fun, _REPLAY_ATTR, {}))
+    return interventions, observations, replay
+
+
+def _get_base_fun(fun: Callable) -> Callable:
+    return cast(Callable, getattr(fun, "_probjax_base_fun", fun))
+
+
+def _set_stochastic_maps(
+    wrapped: Callable,
+    *,
+    interventions: Mapping[str, Any],
+    observations: Mapping[str, Any],
+    replay: Mapping[str, Any],
+) -> Callable:
+    setattr(wrapped, _INTERVENTIONS_ATTR, dict(interventions))
+    setattr(wrapped, _OBSERVATIONS_ATTR, dict(observations))
+    setattr(wrapped, _REPLAY_ATTR, dict(replay))
+    setattr(wrapped, "_probjax_interventions", frozenset(interventions.keys()))
+    return wrapped
+
+
+def _merge_maps(base: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for name, value in dict(update).items():
+        merged[name] = value
+    return merged
+
+
+def _make_substitution_wrapper(
+    fun: Callable, substitutions: Mapping[str, Any]
+) -> Callable:
+    """Create a callable wrapper that replaces stochastic sites with fixed values."""
+    base_fun = _get_base_fun(fun)
+    get_jaxpr = _cached_jaxpr_getter(base_fun)
+
+    @wraps(fun)
+    def wrapped(*args, **kwargs):
+        jaxpr = get_jaxpr(*args, **kwargs)
+        out_flat = interpret(
+            jaxpr.jaxpr,
+            jaxpr.consts,
+            jaxpr.jaxpr.invars,
+            _flatten_call_inputs(args, kwargs),
+            jaxpr.jaxpr.outvars,
+            process_eqn=IntervenedProcessingRule(interventions=dict(substitutions)),
+        )
+        out_template = jax.eval_shape(fun, *args, **kwargs)
+        out_tree = jax.tree_util.tree_structure(out_template)
+        return jax.tree_util.tree_unflatten(out_tree, out_flat)
+
+    return wrapped
+
+
 def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
     """Samples all random variables called in the probabilistic function. If rvs is
     given, it only samples the random variables in rvs.
@@ -104,12 +172,20 @@ def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
     Returns:
         Callable: Sampling function
     """
-    get_jaxpr = _cached_jaxpr_getter(fun)
-    interventions = getattr(fun, "_probjax_interventions", None)
+    base_fun = _get_base_fun(fun)
+    get_jaxpr = _cached_jaxpr_getter(base_fun)
+    interventions, observations, replay = _collect_stochastic_maps(fun)
+    fixed_values = {}
+    fixed_values.update(replay)
+    fixed_values.update(observations)
+    fixed_values.update(interventions)
+    legacy_fixed = getattr(fun, "_probjax_interventions", None)
 
     def wrapped(*args, **kwargs):
         processing_rule = JointSampleProcessingRule(
-            rvs=rvs, interventions=interventions
+            rvs=rvs,
+            fixed_values=fixed_values,
+            fixed_names=legacy_fixed,
         )
         jaxpr = get_jaxpr(*args, **kwargs)
         joint_result = cast(
@@ -118,7 +194,7 @@ def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
                 jaxpr.jaxpr,
                 jaxpr.consts,
                 jaxpr.jaxpr.invars,
-                args,
+                _flatten_call_inputs(args, kwargs),
                 jaxpr.jaxpr.outvars,
                 process_eqn=processing_rule,
                 reducer=joint_sample_state_reducer,
@@ -133,8 +209,12 @@ def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
     return wrapped
 
 
-def intervene(fun: Callable, rvs: dict[str, Array], *args, **kwargs):
-    """Fix the value of random variables in the probabilistic function.
+def intervene(fun: Callable, rvs: Mapping[str, Array], *args, **kwargs):
+    """Fix stochastic sites via intervention values.
+
+    This is equivalent to a causal ``do`` operation. The name ``do`` is the
+    probabilistic alias for this function.
+
     This does not sample the random variables, but fixes them to the given values.
 
     The wrapped function uses interpreter-level overrides for the selected
@@ -146,33 +226,172 @@ def intervene(fun: Callable, rvs: dict[str, Array], *args, **kwargs):
             intervene.
 
     Returns:
-        _type_: _description_
+        Callable: Wrapped probabilistic function with interventions.
     """
 
-    jaxpr = jax.make_jaxpr(fun)(jax.random.PRNGKey(0), *args, **kwargs)
-    tree_out = jax.tree_util.tree_structure(fun(jax.random.PRNGKey(0), *args, **kwargs))
+    del args, kwargs
+    base_fun = _get_base_fun(fun)
+    current_interventions, current_observations, current_replay = (
+        _collect_stochastic_maps(fun)
+    )
 
-    @wraps(fun)
-    def wrapped(*args, **kwargs):
-        processing_rule = IntervenedProcessingRule(interventions=rvs)
-        out = interpret(
-            jaxpr.jaxpr,
-            jaxpr.consts,
-            jaxpr.jaxpr.invars,
-            args,
-            jaxpr.jaxpr.outvars,
-            process_eqn=processing_rule,
+    merged_interventions = _merge_maps(current_interventions, rvs)
+    merged_observations = {
+        name: value
+        for name, value in current_observations.items()
+        if name not in merged_interventions
+    }
+    merged_replay = {
+        name: value
+        for name, value in current_replay.items()
+        if name not in merged_interventions
+    }
+
+    substitutions = {}
+    substitutions.update(merged_replay)
+    substitutions.update(merged_observations)
+    substitutions.update(merged_interventions)
+
+    wrapped = _make_substitution_wrapper(base_fun, substitutions)
+    setattr(wrapped, "_probjax_base_fun", base_fun)
+    return _set_stochastic_maps(
+        wrapped,
+        interventions=merged_interventions,
+        observations=merged_observations,
+        replay=merged_replay,
+    )
+
+
+def do(fun: Callable, interventions: Mapping[str, Array], *args, **kwargs) -> Callable:
+    """Apply a causal ``do`` intervention to stochastic sites.
+
+    This is a probabilistic alias for :func:`intervene`.
+    """
+    return intervene(fun, interventions, *args, **kwargs)
+
+
+def condition(fun: Callable, observations: Mapping[str, Array]) -> Callable:
+    """Condition a probabilistic program on observed site values.
+
+    The preferred probabilistic name is :func:`observe`.
+    """
+    base_fun = _get_base_fun(fun)
+    current_interventions, current_observations, current_replay = (
+        _collect_stochastic_maps(fun)
+    )
+
+    merged_observations = _merge_maps(current_observations, observations)
+    merged_observations = {
+        name: value
+        for name, value in merged_observations.items()
+        if name not in current_interventions
+    }
+
+    merged_replay = {
+        name: value
+        for name, value in current_replay.items()
+        if name not in current_interventions and name not in merged_observations
+    }
+
+    substitutions = {}
+    substitutions.update(merged_replay)
+    substitutions.update(merged_observations)
+    substitutions.update(current_interventions)
+
+    wrapped = _make_substitution_wrapper(base_fun, substitutions)
+    setattr(wrapped, "_probjax_base_fun", base_fun)
+    return _set_stochastic_maps(
+        wrapped,
+        interventions=current_interventions,
+        observations=merged_observations,
+        replay=merged_replay,
+    )
+
+
+def observe(fun: Callable, observations: Mapping[str, Array]) -> Callable:
+    """Observe stochastic sites in a probabilistic program.
+
+    This is a probabilistic alias for :func:`condition`.
+    """
+    return condition(fun, observations)
+
+
+def _normalize_substitute_mode(mode: str) -> str:
+    if not isinstance(mode, str):
+        raise TypeError("mode must be a string.")
+
+    normalized_mode = mode.strip().lower()
+    if normalized_mode in {"condition", "replay"}:
+        return "condition"
+    if normalized_mode in {"do", "intervene"}:
+        return "do"
+
+    raise ValueError("mode must be one of {'condition', 'replay', 'do', 'intervene'}.")
+
+
+def substitute(
+    fun: Callable, values: Mapping[str, Array], mode: str = "condition"
+) -> Callable:
+    """Substitute stochastic sites with fixed values.
+
+    Args:
+        fun: Probabilistic function.
+        values: Site-value mapping.
+        mode: `"condition"` (or legacy `"replay"`) includes substituted sites
+            in log-probability; `"do"` (or legacy `"intervene"`) applies
+            intervention semantics and drops substituted-site log terms.
+    """
+    normalized_mode = _normalize_substitute_mode(mode)
+
+    if normalized_mode == "condition":
+        base_fun = _get_base_fun(fun)
+        current_interventions, current_observations, current_replay = (
+            _collect_stochastic_maps(fun)
+        )
+        merged_replay = _merge_maps(current_replay, values)
+        merged_replay = {
+            name: value
+            for name, value in merged_replay.items()
+            if name not in current_interventions and name not in current_observations
+        }
+
+        substitutions = {}
+        substitutions.update(merged_replay)
+        substitutions.update(current_observations)
+        substitutions.update(current_interventions)
+
+        wrapped = _make_substitution_wrapper(base_fun, substitutions)
+        setattr(wrapped, "_probjax_base_fun", base_fun)
+        return _set_stochastic_maps(
+            wrapped,
+            interventions=current_interventions,
+            observations=current_observations,
+            replay=merged_replay,
         )
 
-        return jax.tree_util.tree_unflatten(tree_out, out)
+    if normalized_mode == "do":
+        return do(fun, values)
 
-    setattr(wrapped, "_probjax_interventions", frozenset(rvs.keys()))
-    return wrapped
+    raise AssertionError("unreachable")
 
 
-def log_potential_fn(fun: Callable, *args, **kwargs):
-    """Computes the log potential of the probabilistic function.
-    This does not about normalizing constant.
+def scope(name: str):
+    """Create a naming scope for stochastic sites."""
+    return name_stack.scope(name)
+
+
+def log_potential_fn(
+    fun: Callable,
+    *args,
+    strict: bool = True,
+    allow_partial: bool = False,
+    **kwargs,
+):
+    """Compute the unnormalized log density of a probabilistic function.
+
+    This is the legacy name for :func:`log_joint_fn`.
+
+    This does not include the normalizing constant.
 
     Args:
         fun (Callable): Probabilistic function
@@ -180,13 +399,22 @@ def log_potential_fn(fun: Callable, *args, **kwargs):
     Returns:
         Callable: Log potential function
     """
-    jaxpr = jax.make_jaxpr(fun)(jax.random.PRNGKey(0), *args, **kwargs)
-    interventions = getattr(fun, "_probjax_interventions", None)
+    base_fun = _get_base_fun(fun)
+    interventions, observations, replay = _collect_stochastic_maps(fun)
+    legacy_interventions = getattr(fun, "_probjax_interventions", None)
+
+    jaxpr = jax.make_jaxpr(base_fun)(jax.random.PRNGKey(0), *args, **kwargs)
+    model_inputs = _flatten_call_inputs((jax.random.PRNGKey(0),) + args, kwargs)
 
     def log_potential(**joint_samples):
+        intervention_config = interventions if interventions else legacy_interventions
         processing_rule = LogPotentialProcessingRule(
             joint_samples=joint_samples,
-            interventions=interventions,
+            interventions=intervention_config,
+            observations=observations,
+            replay=replay,
+            strict=strict,
+            allow_partial=allow_partial,
         )
 
         log_potential_result = cast(
@@ -195,7 +423,7 @@ def log_potential_fn(fun: Callable, *args, **kwargs):
                 jaxpr.jaxpr,
                 jaxpr.consts,
                 jaxpr.jaxpr.invars,
-                (jax.random.PRNGKey(0),) + args,
+                model_inputs,
                 jaxpr.jaxpr.outvars,
                 process_eqn=processing_rule,
                 reducer=log_potential_state_reducer,
@@ -210,12 +438,61 @@ def log_potential_fn(fun: Callable, *args, **kwargs):
     return log_potential
 
 
-def trace(fun: Callable, traced_vars=None):
-    get_jaxpr = _cached_jaxpr_getter(fun)
+def log_joint_fn(
+    fun: Callable,
+    *args,
+    strict: bool = True,
+    allow_partial: bool = False,
+    **kwargs,
+):
+    """Compute the model log-joint (up to a constant)."""
+    return log_potential_fn(
+        fun,
+        *args,
+        strict=strict,
+        allow_partial=allow_partial,
+        **kwargs,
+    )
+
+
+def log_prob_fn(
+    fun: Callable,
+    *args,
+    strict: bool = True,
+    allow_partial: bool = False,
+    **kwargs,
+):
+    """Backward-compatible alias for :func:`log_joint_fn`."""
+    return log_joint_fn(
+        fun,
+        *args,
+        strict=strict,
+        allow_partial=allow_partial,
+        **kwargs,
+    )
+
+
+def trace(
+    fun: Callable,
+    traced_vars=None,
+    *,
+    sites: bool = False,
+    kind_labels: str = "probabilistic",
+):
+    base_fun = _get_base_fun(fun)
+    get_jaxpr = _cached_jaxpr_getter(base_fun)
+    interventions, observations, replay = _collect_stochastic_maps(fun)
 
     @wraps(fun)
     def wrapped(*args, **kwargs):
-        processing_rule = TraceProcessingRule(traced_vars=traced_vars)
+        processing_rule = TraceProcessingRule(
+            traced_vars=traced_vars,
+            sites=sites,
+            interventions=interventions,
+            observations=observations,
+            replay=replay,
+            kind_labels=kind_labels,
+        )
         jaxpr = get_jaxpr(*args, **kwargs)
         trace_result = cast(
             tuple[list, dict],
@@ -223,7 +500,7 @@ def trace(fun: Callable, traced_vars=None):
                 jaxpr.jaxpr,
                 jaxpr.consts,
                 jaxpr.jaxpr.invars,
-                args,
+                _flatten_call_inputs(args, kwargs),
                 jaxpr.jaxpr.outvars,
                 process_eqn=processing_rule,
                 reducer=trace_state_reducer,

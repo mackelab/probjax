@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from functools import lru_cache
 from threading import local
 from typing import Any, cast
@@ -27,14 +28,29 @@ from probjax.core.custom_primitives.contracts import parse_random_variable_call_
 class NameStack(local):
     def __init__(self):
         self.counts = {}
+        self.scopes = []
+
+    def _scoped_prefix(self, prefix="rv"):
+        if not self.scopes:
+            return prefix
+        return "__".join(tuple(self.scopes) + (prefix,))
 
     def get_name(self, prefix="rv"):
-        if prefix not in self.counts:
-            self.counts[prefix] = 0
-        count = self.counts[prefix]
-        name = f"{prefix}_{count}"
-        self.counts[prefix] += 1
+        scoped_prefix = self._scoped_prefix(prefix)
+        if scoped_prefix not in self.counts:
+            self.counts[scoped_prefix] = 0
+        count = self.counts[scoped_prefix]
+        name = f"{scoped_prefix}_{count}"
+        self.counts[scoped_prefix] += 1
         return name
+
+    @contextmanager
+    def scope(self, name: str):
+        self.scopes.append(str(name))
+        try:
+            yield
+        finally:
+            self.scopes.pop()
 
 
 name_stack = NameStack()
@@ -77,18 +93,16 @@ def _rv_impl(
     logpdf_fn,
     kwds_items,
 ):
-    _ = parse_random_variable_call_params(
-        {
-            "forward_jaxpr": forward_jaxpr,
-            "in_tree": in_tree,
-            "shape": shape,
-            "dist": dist,
-            "name": name,
-            "rvs_fn": rvs_fn,
-            "logpdf_fn": logpdf_fn,
-            "kwds_items": kwds_items,
-        }
-    )
+    _ = parse_random_variable_call_params({
+        "forward_jaxpr": forward_jaxpr,
+        "in_tree": in_tree,
+        "shape": shape,
+        "dist": dist,
+        "name": name,
+        "rvs_fn": rvs_fn,
+        "logpdf_fn": logpdf_fn,
+        "kwds_items": kwds_items,
+    })
     return call_impl(
         *flat_inputs,
         forward_jaxpr=forward_jaxpr,
@@ -114,18 +128,16 @@ def _rv_abstract_eval(
     logpdf_fn,
     kwds_items,
 ):
-    _ = parse_random_variable_call_params(
-        {
-            "forward_jaxpr": forward_jaxpr,
-            "in_tree": in_tree,
-            "shape": shape,
-            "dist": dist,
-            "name": name,
-            "rvs_fn": rvs_fn,
-            "logpdf_fn": logpdf_fn,
-            "kwds_items": kwds_items,
-        }
-    )
+    _ = parse_random_variable_call_params({
+        "forward_jaxpr": forward_jaxpr,
+        "in_tree": in_tree,
+        "shape": shape,
+        "dist": dist,
+        "name": name,
+        "rvs_fn": rvs_fn,
+        "logpdf_fn": logpdf_fn,
+        "kwds_items": kwds_items,
+    })
     return call_abstract_eval(
         *flat_avals,
         forward_jaxpr=forward_jaxpr,

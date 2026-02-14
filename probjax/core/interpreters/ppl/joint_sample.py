@@ -13,7 +13,8 @@ class JointSampleProcessingRule(ForwardProcessingRule):
     def __init__(
         self,
         rvs: Optional[Iterable] = None,
-        interventions: Optional[dict[str, Array] | Sequence[str]] = None,
+        fixed_values: Optional[dict[str, Array]] = None,
+        fixed_names: Optional[Sequence[str]] = None,
     ) -> None:
         """Subset of random variables to be sampled jointly. By default all are sampled!
 
@@ -22,13 +23,11 @@ class JointSampleProcessingRule(ForwardProcessingRule):
                 Defaults to None.
         """
         self.rvs = rvs
-
-        if interventions is None:
-            self.interventions = set()
-        elif isinstance(interventions, dict):
-            self.interventions = set(interventions.keys())
-        else:
-            self.interventions = set(interventions)
+        self.fixed_values = {} if fixed_values is None else dict(fixed_values)
+        fixed_set = set(self.fixed_values.keys())
+        if fixed_names is not None:
+            fixed_set.update(fixed_names)
+        self.fixed_names = fixed_set
 
     def __call__(
         self, eqn: JaxprEqn, known_inputs: Sequence[Any | None], _: Sequence[Any | None]
@@ -39,8 +38,11 @@ class JointSampleProcessingRule(ForwardProcessingRule):
         if eqn.primitive is rv_p:
             rv_params = parse_random_variable_call_params(eqn.params)
             name = rv_params.name
-            intervened = eqn.params.get("intervened", False) or name in self.interventions
-            if not intervened and (self.rvs is None or name in self.rvs):
+            if name in self.fixed_values:
+                return outvars, [self.fixed_values[name]], eqn_state
+
+            fixed = eqn.params.get("intervened", False) or name in self.fixed_names
+            if not fixed and (self.rvs is None or name in self.rvs):
                 eqn_state[name] = outvals[0]
         return outvars, outvals, eqn_state
 

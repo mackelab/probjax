@@ -9,8 +9,8 @@ from probjax.utils.sdeutil.core import _sdeint
 
 def sdeint(
     rng: Key,
-    drift: Callable[[Array, PyTree[Array], ...], PyTree[Array]],
-    diffusion: Callable[[Array, PyTree[Array], ...], PyTree[Array]],
+    drift: Callable[..., PyTree[Array]],
+    diffusion: Callable[..., PyTree[Array]],
     y0: PyTree[Array],
     ts: Array,
     *args,
@@ -19,10 +19,10 @@ def sdeint(
     sde_type: str = "ito",
     return_brownian: bool = False,
     return_state: bool = False,
-    noise_type: Optional[str] = None,
     filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
     collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
+    **kwargs,
 ) -> Union[
     Optional[PyTree[Array]],
     Tuple[Any, Optional[PyTree[Array]]],
@@ -38,8 +38,7 @@ def sdeint(
     """Solve a stochastic differential equation.
 
     This is a high-level interface for solving SDEs using various numerical methods.
-    It supports both Ito and Stratonovich SDEs, with options for different integration
-    methods and noise types.
+    It supports both Ito and Stratonovich SDEs with automatic noise-shape inference.
 
     Args:
         rng: Random number generator key
@@ -53,7 +52,7 @@ def sdeint(
             and any additional arguments specified in *args.
         y0: Initial state. Can be a single array or a PyTree of arrays.
         ts: Time points at which to evaluate the solution. Must be a 1D array of increasing values.
-        *args: Additional arguments for the drift and diffusion functions.
+        *args: Additional positional arguments forwarded to drift and diffusion.
         method: Integration method to use. Available methods include:
             - "euler_maruyama": Euler-Maruyama method (order 0.5)
             - "milstein": Milstein method (order 1.0)
@@ -62,12 +61,12 @@ def sdeint(
         sde_type: Type of SDE interpretation:
             - "ito": Ito interpretation (default)
             - "stratonovich": Stratonovich interpretation
+            Noise layout is inferred automatically from `diffusion` output shape:
+            scalar/vector outputs are treated as diagonal noise; matrix outputs
+            are treated as full (including rectangular) noise.
         return_brownian: Whether to return Brownian motion paths along with the solution.
             Requires `collect_trace=True`.
         return_state: Whether to return solver state along with the solution.
-        noise_type: Type of noise in the diffusion term:
-            - "diagonal": Diagonal noise (default for scalar diffusion)
-            - "general": General noise matrix
         filter_state: Optional function to filter the state during integration.
             Useful for tracking specific components of the state. Returning ``None``
             disables tracing entirely.
@@ -75,6 +74,7 @@ def sdeint(
             (`True`, default) or only return the filtered terminal state (`False`).
             Must be `True` when returning Brownian paths.
         check_points: Optional sequence of indices for grid integration.
+        **kwargs: Additional keyword arguments forwarded to drift and diffusion.
 
     Returns:
         When `return_brownian=False`, returns the filtered trajectory (if `collect_trace`
@@ -115,13 +115,13 @@ def sdeint(
         diffusion,
         y0,
         ts,
-        *args,
+        args,
+        kwargs,
         method=method,
         dtype=dtype,
         sde_type=sde_type,
         return_brownian=return_brownian,
         return_state=return_state,
-        noise_type=noise_type,
         filter_state=filter_state,
         collect_trace=collect_trace,
         check_points=check_points,

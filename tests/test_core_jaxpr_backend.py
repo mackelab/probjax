@@ -1,7 +1,20 @@
 import jax
 import jax.numpy as jnp
 
-from probjax.core import intervene, inverse, joint_sample, log_potential_fn, trace
+from probjax.core import (
+    do,
+    condition,
+    intervene,
+    inverse,
+    joint_sample,
+    log_joint_fn,
+    log_prob_fn,
+    log_potential_fn,
+    observe,
+    scope,
+    substitute,
+    trace,
+)
 from probjax.core.custom_primitives.random_variable import rv_p
 from probjax.core.jaxpr_propagation import (
     ExtendedJaxpr,
@@ -191,3 +204,206 @@ def test_interpreter_pipeline_supports_dependency_context():
     for eqn_state in state:
         assert eqn_state["observer"]["depends_on"] == eqn_state["primary"]["primitive"]
     assert env.read_state(0, namespace="pipeline") is not None
+
+
+def test_condition_replaces_observed_sites_and_updates_log_potential():
+    obs_y = jnp.array(0.25)
+
+    def model(key):
+        k1, k2 = jax.random.split(key)
+        z = rv_p.bind(k1, 0.0, 1.0, dist=norm, name="z")
+        y = rv_p.bind(k2, z, 0.5, dist=norm, name="y")
+        return y
+
+    conditioned = condition(model, {"y": obs_y})
+    samples = joint_sample(conditioned)(jax.random.PRNGKey(0))
+    assert set(samples.keys()) == {"z"}
+
+    lp = log_potential_fn(conditioned)
+    got = lp(z=samples["z"])
+    expected = norm.logpdf(samples["z"], 0.0, 1.0) + norm.logpdf(
+        obs_y, samples["z"], 0.5
+    )
+    assert jnp.allclose(got, expected)
+
+    traced = trace(conditioned, sites=True)(jax.random.PRNGKey(1))
+    assert traced["y"]["kind"] == "observe"
+    assert traced["y"]["kind_probabilistic"] == "observe"
+    assert traced["y"]["kind_legacy"] == "observe"
+    assert jnp.allclose(traced["y"]["value"], obs_y)
+
+
+def test_observe_alias_matches_condition_and_log_joint_alias():
+    obs_y = jnp.array(0.25)
+
+    def model(key):
+        k1, k2 = jax.random.split(key)
+        z = rv_p.bind(k1, 0.0, 1.0, dist=norm, name="z")
+        y = rv_p.bind(k2, z, 0.5, dist=norm, name="y")
+        return y
+
+    conditioned = condition(model, {"y": obs_y})
+    observed = observe(model, {"y": obs_y})
+
+    z_value = jnp.array(-0.3)
+    got_legacy = log_potential_fn(conditioned)(z=z_value)
+    got_probabilistic = log_joint_fn(observed)(z=z_value)
+
+    assert jnp.allclose(got_probabilistic, got_legacy)
+
+
+def test_substitute_replay_keeps_log_prob_terms():
+    replay_z = jnp.array(-0.4)
+    replay_z_loc = float(replay_z)
+
+    def model(key):
+        k1, k2 = jax.random.split(key)
+        z = rv_p.bind(k1, 0.0, 1.0, dist=norm, name="z")
+        y = rv_p.bind(k2, z, 0.5, dist=norm, name="y")
+        return y
+
+    replayed = substitute(model, {"z": replay_z}, mode="replay")
+    samples = joint_sample(replayed)(jax.random.PRNGKey(0))
+    assert set(samples.keys()) == {"y"}
+
+    got = log_prob_fn(replayed)(y=samples["y"])
+    expected = norm.logpdf(replay_z, 0.0, 1.0) + norm.logpdf(
+        samples["y"], replay_z_loc, 0.5
+    )
+    assert jnp.allclose(got, expected)
+
+    traced = trace(replayed, sites=True)(jax.random.PRNGKey(2))
+    assert traced["z"]["kind"] == "condition"
+    assert traced["z"]["kind_probabilistic"] == "condition"
+    assert traced["z"]["kind_legacy"] == "replay"
+    assert jnp.allclose(traced["z"]["value"], replay_z)
+
+
+def test_substitute_condition_mode_alias_matches_replay():
+    fixed_z = jnp.array(-0.4)
+
+    def model(key):
+        k1, k2 = jax.random.split(key)
+        z = rv_p.bind(k1, 0.0, 1.0, dist=norm, name="z")
+        y = rv_p.bind(k2, z, 0.5, dist=norm, name="y")
+        return y
+
+    conditioned = substitute(model, {"z": fixed_z}, mode="condition")
+    replayed = substitute(model, {"z": fixed_z}, mode="replay")
+
+    samples_condition = joint_sample(conditioned)(jax.random.PRNGKey(0))
+    samples_replay = joint_sample(replayed)(jax.random.PRNGKey(0))
+    assert jnp.allclose(samples_condition["y"], samples_replay["y"])
+
+    got_condition = log_joint_fn(conditioned)(y=samples_condition["y"])
+    got_replay = log_prob_fn(replayed)(y=samples_condition["y"])
+    assert jnp.allclose(got_condition, got_replay)
+
+
+def test_intervene_do_drops_intervened_log_prob_term():
+    do_z = jnp.array(1.2)
+    do_z_loc = float(do_z)
+
+    def model(key):
+        k1, k2 = jax.random.split(key)
+        z = rv_p.bind(k1, 0.0, 1.0, dist=norm, name="z")
+        y = rv_p.bind(k2, z, 0.5, dist=norm, name="y")
+        return y
+
+    intervened = intervene(model, {"z": do_z})
+    samples = joint_sample(intervened)(jax.random.PRNGKey(0))
+    assert set(samples.keys()) == {"y"}
+
+    got = log_potential_fn(intervened)(y=samples["y"])
+    expected = norm.logpdf(samples["y"], do_z_loc, 0.5)
+    assert jnp.allclose(got, expected)
+
+    traced = trace(intervened, sites=True)(jax.random.PRNGKey(3))
+    assert traced["z"]["kind"] == "do"
+    assert traced["z"]["kind_probabilistic"] == "do"
+    assert traced["z"]["kind_legacy"] == "intervene"
+    assert traced["z"]["log_prob"] is None
+
+
+def test_trace_legacy_kind_labels_preserves_old_names():
+    fixed_z = jnp.array(-0.4)
+
+    def model(key):
+        k1, k2 = jax.random.split(key)
+        z = rv_p.bind(k1, 0.0, 1.0, dist=norm, name="z")
+        y = rv_p.bind(k2, z, 0.5, dist=norm, name="y")
+        return y
+
+    replayed = substitute(model, {"z": fixed_z}, mode="replay")
+    traced_replay = trace(replayed, sites=True, kind_labels="legacy")(
+        jax.random.PRNGKey(0)
+    )
+    assert traced_replay["z"]["kind"] == "replay"
+    assert traced_replay["z"]["kind_probabilistic"] == "condition"
+
+    intervened = do(model, {"z": fixed_z})
+    traced_do = trace(intervened, sites=True, kind_labels="legacy")(
+        jax.random.PRNGKey(1)
+    )
+    assert traced_do["z"]["kind"] == "intervene"
+    assert traced_do["z"]["kind_probabilistic"] == "do"
+
+
+def test_do_alias_matches_intervene_and_substitute_intervene_mode():
+    fixed_z = jnp.array(1.2)
+
+    def model(key):
+        k1, k2 = jax.random.split(key)
+        z = rv_p.bind(k1, 0.0, 1.0, dist=norm, name="z")
+        y = rv_p.bind(k2, z, 0.5, dist=norm, name="y")
+        return y
+
+    intervened = intervene(model, {"z": fixed_z})
+    do_model = do(model, {"z": fixed_z})
+    substitute_intervene = substitute(model, {"z": fixed_z}, mode="intervene")
+
+    samples_intervened = joint_sample(intervened)(jax.random.PRNGKey(0))
+    samples_do = joint_sample(do_model)(jax.random.PRNGKey(0))
+    samples_substitute = joint_sample(substitute_intervene)(jax.random.PRNGKey(0))
+
+    assert jnp.allclose(samples_intervened["y"], samples_do["y"])
+    assert jnp.allclose(samples_intervened["y"], samples_substitute["y"])
+
+    got_intervened = log_potential_fn(intervened)(y=samples_intervened["y"])
+    got_do = log_joint_fn(do_model)(y=samples_intervened["y"])
+    got_substitute = log_prob_fn(substitute_intervene)(y=samples_intervened["y"])
+    assert jnp.allclose(got_do, got_intervened)
+    assert jnp.allclose(got_substitute, got_intervened)
+
+
+def test_log_prob_fn_allows_partial_assignments():
+    def model(key):
+        k1, k2 = jax.random.split(key)
+        z = rv_p.bind(k1, 0.0, 1.0, dist=norm, name="z")
+        y = rv_p.bind(k2, z, 0.5, dist=norm, name="y")
+        return y
+
+    strict_lp = log_prob_fn(model)
+    try:
+        strict_lp(z=jnp.array(0.1))
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("Expected strict log_prob_fn to require all latent sites.")
+
+    partial_lp = log_prob_fn(model, allow_partial=True)
+    got = partial_lp(z=jnp.array(0.1))
+    expected = norm.logpdf(jnp.array(0.1), 0.0, 1.0)
+    assert jnp.allclose(got, expected)
+
+
+def test_scope_prefixes_site_names():
+    def model(key):
+        with scope("outer"):
+            z = rv_p.bind(key, 0.0, 1.0, dist=norm)
+        return z
+
+    samples = joint_sample(model)(jax.random.PRNGKey(0))
+    assert len(samples) == 1
+    only_name = next(iter(samples.keys()))
+    assert "outer__norm_" in only_name
