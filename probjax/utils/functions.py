@@ -78,11 +78,20 @@ class linear_drift:
     b: Callable[..., Array] | None = None
 
     def __call__(self, t: ArrayLike, y: PyTree, *args, **kwargs) -> PyTree:
+        import jax.numpy as jnp
+
         if callable(self.A):
             A_t = self.A(t)
         else:
             A_t = self.A
-        linear_part = jax.tree_util.tree_map(lambda yi: A_t @ yi, y)
+
+        # Handle scalar A matrices (can't use @ operator on scalars)
+        A_concrete = jnp.asarray(A_t)
+        if A_concrete.ndim == 0:
+            linear_part = jax.tree_util.tree_map(lambda yi: A_t * yi, y)
+        else:
+            linear_part = jax.tree_util.tree_map(lambda yi: A_t @ yi, y)
+
         if self.b is None:
             return linear_part
         bias_part = self.b(t, *args, **kwargs)

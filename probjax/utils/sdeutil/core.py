@@ -206,6 +206,7 @@ def _sdeint(
     noise_type, noise_dim = _infer_noise_layout(diffusion_shape, flat_state_dim)
 
     additive_marker = diffusion if isinstance(diffusion, additive_diffusion) else None
+    const_marker = diffusion if isinstance(diffusion, const_diffusion) else None
 
     if noise_type == "diagonal":
 
@@ -257,6 +258,30 @@ def _sdeint(
             diffusion_solver = cast(
                 Callable,
                 additive_diffusion(diffusion=additive_dense),
+            )
+
+    if const_marker is not None:
+        # Preserve const_diffusion marker for specialized solvers
+        if noise_type == "diagonal":
+            G_flat, _ = ravel_args(const_marker.G)
+            diffusion_solver = cast(
+                Callable,
+                const_diffusion(G=G_flat),
+            )
+        else:
+            # For full diffusion, keep G as 2D matrix
+            G_value = jnp.asarray(const_marker.G)
+            if G_value.ndim != 2:
+                raise ValueError(
+                    "Full diffusion const_diffusion.G must be a 2D matrix with shape (state_dim, noise_dim)."
+                )
+            if int(G_value.shape[0]) != flat_state_dim:
+                raise ValueError(
+                    "Full diffusion const_diffusion.G must have leading dimension equal to state dimension."
+                )
+            diffusion_solver = cast(
+                Callable,
+                const_diffusion(G=G_value),
             )
 
     def apply_filter(tree: PyTree[Array]) -> Optional[PyTree[Array]]:
