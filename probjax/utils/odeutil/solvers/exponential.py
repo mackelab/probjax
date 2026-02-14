@@ -1,20 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional, Tuple, NamedTuple
+from typing import NamedTuple, Optional, Tuple, cast
 
 import jax
 import jax.numpy as jnp
 import jax.scipy.linalg
-from jax import tree_util
 
+from probjax.utils.functions import split_drift
 from probjax.utils.odeutil.solvers.base import (
     ODEInfo,
     ODESolverAPI,
     ODEState,
     register_method,
 )
-from probjax.utils.typing import Array, ArrayLike, Callable, PyTree
+from probjax.utils.typing import Array, ArrayLike, Callable
 
 
 # =============================================================================
@@ -53,61 +52,6 @@ def init_exp(
     return ExpODEState(t0=t0, y0=y0, f0=f0)
 
 
-# --- NEW: split-form initialization for specialized scalar-L solvers
-@tree_util.register_pytree_node_class
-@dataclass(frozen=True)
-class SplitDrift:
-    """
-    dy/dt = L(t) y + N(t,y), with L(t) = c(t) * I (scalar multiple of identity).
-      - lin_coeff(t) -> scalar c(t)
-      - nonlin(t, y, *args) -> N(t, y)
-
-    Instances are callable with the canonical drift signature (t, y, *args, **kwargs)
-    so they can be plugged into any solver directly.
-    """
-
-    lin_coeff: Callable[[Array], Array]
-    nonlin: Callable[..., PyTree]  # (t, y, *args, **kwargs) -> PyTree
-
-    def __call__(self, t: Array, x: PyTree, *args, **kwds) -> PyTree:
-        coeff = self.lin_coeff(t)
-        linear = jax.tree_util.tree_map(lambda xi: coeff * xi, x)
-        nonl = self.nonlin(t, x, *args, **kwds)
-        return jax.tree_util.tree_map(lambda li, ni: li + ni, linear, nonl)
-
-    def tree_flatten(self):
-        return (), (self.lin_coeff, self.nonlin)
-
-    @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        del children  # no children were produced
-        lin_coeff, nonlin = aux_data
-        return cls(lin_coeff=lin_coeff, nonlin=nonlin)
-
-
-def _as_split(split_or_drift: Callable | SplitDrift) -> SplitDrift:
-    """Ensure we always operate on a SplitDrift instance.
-
-    When users pass a plain drift callable (as the legacy solvers expect) we
-    treat the entire drift as the nonlinear part and set the linear coefficient
-    to zero. Providing an explicit SplitDrift keeps the optimized path.
-    """
-    if isinstance(split_or_drift, SplitDrift):
-        return split_or_drift
-
-    adapter = getattr(split_or_drift, "__split_drift__", None)
-    if isinstance(adapter, SplitDrift):
-        return adapter
-
-    if callable(split_or_drift):
-        zero_lin = lambda t: jnp.zeros_like(jnp.asarray(t))
-        return SplitDrift(lin_coeff=zero_lin, nonlin=split_or_drift)
-
-    raise TypeError(
-        "split-based exponential methods require either a SplitDrift or a drift callable"
-    )
-
-
 def _history_init(f0: Array, history_size: int) -> Tuple[Array, Array]:
     if history_size <= 0:
         history = jnp.zeros((0,) + f0.shape, dtype=f0.dtype)
@@ -117,9 +61,7 @@ def _history_init(f0: Array, history_size: int) -> Tuple[Array, Array]:
     return history, fill
 
 
-def _history_push(
-    history: Array, fill: Array, new_value: Array
-) -> Tuple[Array, Array]:
+def _history_push(history: Array, fill: Array, new_value: Array) -> Tuple[Array, Array]:
     max_len = history.shape[0]
     if max_len == 0:
         return history, fill
@@ -142,18 +84,21 @@ def init_exp_split(
     t0: ArrayLike,
     y0: Array,
     *args,
-    split: Optional[SplitDrift] = None,
+    split: Optional[split_drift] = None,
     drift: Optional[Callable] = None,
     history_size: int = 0,
 ) -> ExpSplitState:
     t0 = jnp.asarray(t0)
     y0 = jnp.asarray(y0)
-    split = split or _as_split(drift)
-    f0 = split.nonlin(t0, y0, *args)  # cache N(t0, y0)
+    if split is None:
+        if not isinstance(drift, split_drift):
+            raise TypeError(
+                "exp_ab*_scalarL requires `drift` to be a `split_drift` instance"
+            )
+        split = drift
+    f0 = cast(Array, split.nonlin(t0, y0, *args))  # cache N(t0, y0)
     history, fill = _history_init(f0, history_size)
-    return ExpSplitState(
-        t0=t0, y0=y0, f0=f0, nonlin_history=history, history_fill=fill
-    )
+    return ExpSplitState(t0=t0, y0=y0, f0=f0, nonlin_history=history, history_fill=fill)
 
 
 # =============================================================================
@@ -313,21 +258,26 @@ def _phi3_scalar(z: Array) -> Array:
     return jnp.where(small, series, num / (z * z * z))
 
 
-def build_exp_ab2_scalarL(split: SplitDrift | Callable):
+def build_exp_ab2_scalarL(split: split_drift | Callable):
     """
     Exponential AB2 with scalar L. Signature matches your solvers:
       step(state, dt, y_nm1, N_nm1, *user_args) -> (state', info)
     where N_nm1 is the cached nonlinearity at (t_{n-1}, y_{n-1}).
     """
 
-    split = _as_split(split)
+    if not isinstance(split, split_drift):
+        raise TypeError("exp_ab2_scalarL requires a `split_drift` callable")
 
     def step_fn(
         state: ExpSplitState, dt: ArrayLike, *args
     ) -> Tuple[ExpSplitState, ExpODEInfo]:
         t_n, y_n = state.t0, state.y0
         # Current N_n (nonlinear) from cache or compute
-        N_n = state.f0 if state.f0 is not None else split.nonlin(t_n, y_n, *args)
+        N_n = (
+            state.f0
+            if state.f0 is not None
+            else cast(Array, split.nonlin(t_n, y_n, *args))
+        )
 
         history = state.nonlin_history
         fill = state.history_fill
@@ -341,7 +291,7 @@ def build_exp_ab2_scalarL(split: SplitDrift | Callable):
         # y_{n+1} = e^{z} y_n + dt φ1(z) [2 N_n - N_{n-1}]
         y_np1 = r * y_n + dt * ph1 * (2.0 * N_n - N_nm1)
 
-        N_np1 = split.nonlin(t_n + dt, y_np1, *args)
+        N_np1 = cast(Array, split.nonlin(t_n + dt, y_np1, *args))
         history, fill = _history_push(history, fill, N_n)
         return (
             ExpSplitState(
@@ -357,19 +307,24 @@ def build_exp_ab2_scalarL(split: SplitDrift | Callable):
     return step_fn
 
 
-def build_exp_ab3_scalarL(split: SplitDrift | Callable):
+def build_exp_ab3_scalarL(split: split_drift | Callable):
     """
     Exponential AB3 with scalar L.
       step(state, dt, y_nm1, N_nm1, y_nm2, N_nm2, *user_args)
     """
 
-    split = _as_split(split)
+    if not isinstance(split, split_drift):
+        raise TypeError("exp_ab3_scalarL requires a `split_drift` callable")
 
     def step_fn(
         state: ExpSplitState, dt: ArrayLike, *args
     ) -> Tuple[ExpSplitState, ExpODEInfo]:
         t_n, y_n = state.t0, state.y0
-        N_n = state.f0 if state.f0 is not None else split.nonlin(t_n, y_n, *args)
+        N_n = (
+            state.f0
+            if state.f0 is not None
+            else cast(Array, split.nonlin(t_n, y_n, *args))
+        )
 
         c_np1 = split.lin_coeff(t_n + dt)
         z = c_np1 * dt
@@ -395,7 +350,7 @@ def build_exp_ab3_scalarL(split: SplitDrift | Callable):
 
         y_np1 = jnp.where(has_nm2, y_ab3, jnp.where(has_nm1, y_ab2, y_ab1))
 
-        N_np1 = split.nonlin(t_n + dt, y_np1, *args)
+        N_np1 = cast(Array, split.nonlin(t_n + dt, y_np1, *args))
         history, fill = _history_push(history, fill, N_n)
         return (
             ExpSplitState(

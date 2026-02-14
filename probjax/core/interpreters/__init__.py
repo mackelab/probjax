@@ -6,7 +6,7 @@ from probjax.core.interpreters.inverse import (
     inverse_cost_fn,
     maybe_inverse_custom_inverse,
 )
-from probjax.core.interpreters.stochastic import (
+from probjax.core.interpreters.ppl import (
     IntervenedProcessingRule,
     JointSampleProcessingRule,
     LogPotentialProcessingRule,

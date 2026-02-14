@@ -1,13 +1,13 @@
-from probjax.core.interpreters.stochastic.interventions import IntervenedProcessingRule
-from probjax.core.interpreters.stochastic.joint_sample import (
+from probjax.core.interpreters.ppl.interventions import IntervenedProcessingRule
+from probjax.core.interpreters.ppl.joint_sample import (
     JointSampleProcessingRule,
     joint_sample_state_reducer,
 )
-from probjax.core.interpreters.stochastic.log_potential import (
+from probjax.core.interpreters.ppl.log_potential import (
     LogPotentialProcessingRule,
     log_potential_state_reducer,
 )
-from probjax.core.interpreters.stochastic.trace import (
+from probjax.core.interpreters.ppl.trace import (
     TraceProcessingRule,
     trace_state_reducer,
 )

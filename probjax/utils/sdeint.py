@@ -55,6 +55,7 @@ def sdeint(
         *args: Additional positional arguments forwarded to drift and diffusion.
         method: Integration method to use. Available methods include:
             - "euler_maruyama": Euler-Maruyama method (order 0.5)
+            - "exp_euler_maruyama": Exponential Euler-Maruyama (`split_drift` required)
             - "milstein": Milstein method (order 1.0)
             - "srk": Stochastic Runge-Kutta methods
         dtype: Data type for computation. Defaults to float32.

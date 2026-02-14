@@ -1,11 +1,17 @@
 from functools import partial
-from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, Union, cast
 
 import jax
 import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Key, PyTree
 
+from probjax.utils.functions import (
+    additive_diffusion,
+    const_diffusion,
+    linear_drift,
+    split_drift,
+)
 from probjax.utils.jaxutils import ravel_args
 from probjax.utils.odeutil.filters import TraceFilter
 from probjax.utils.sdeutil.base import get_method
@@ -35,11 +41,40 @@ def _bind_sde_function_args(
     args = tuple(sde_args)
     kwargs = {} if sde_kwargs is None else dict(sde_kwargs)
 
-    def drift_bound(t, y):
-        return drift(t, y, *args, **kwargs)
+    if isinstance(drift, split_drift):
 
-    def diffusion_bound(t, y):
-        return diffusion(t, y, *args, **kwargs)
+        def split_nonlin_bound(t, y):
+            return drift.nonlin(t, y, *args, **kwargs)
+
+        drift_bound = cast(
+            Callable,
+            split_drift(
+                lin_coeff=drift.lin_coeff,
+                nonlin=split_nonlin_bound,
+            ),
+        )
+    elif isinstance(drift, linear_drift):
+        drift_bound = drift
+    else:
+
+        def drift_bound(t, y):
+            return drift(t, y, *args, **kwargs)
+
+    if isinstance(diffusion, additive_diffusion):
+
+        def additive_diffusion_bound(t):
+            return diffusion.diffusion(t, *args, **kwargs)
+
+        diffusion_bound = cast(
+            Callable,
+            additive_diffusion(diffusion=additive_diffusion_bound),
+        )
+    elif isinstance(diffusion, const_diffusion):
+        diffusion_bound = diffusion
+    else:
+
+        def diffusion_bound(t, y):
+            return diffusion(t, y, *args, **kwargs)
 
     return drift_bound, diffusion_bound
 
@@ -137,11 +172,31 @@ def _sdeint(
     flat_y0, unravel = ravel_args(y0)
     flat_state_dim = int(flat_y0.shape[0])
 
-    def drift_raveled(t, yi):
-        yi_tree = unravel(yi)
-        drift_tree = drift(t, yi_tree)
-        drift_flat, _ = ravel_args(drift_tree)
-        return drift_flat
+    if isinstance(drift, split_drift):
+        split_marker = drift
+
+        def nonlin_flat(t, yi):
+            yi_tree = unravel(yi)
+            nonlin_tree = split_marker.nonlin(t, yi_tree)
+            nonlin_flattened, _ = ravel_args(nonlin_tree)
+            return nonlin_flattened
+
+        drift_raveled = cast(
+            Callable,
+            split_drift(
+                lin_coeff=split_marker.lin_coeff,
+                nonlin=nonlin_flat,
+            ),
+        )
+    elif isinstance(drift, linear_drift):
+        drift_raveled = cast(Callable, drift)
+    else:
+
+        def drift_raveled(t, yi):
+            yi_tree = unravel(yi)
+            drift_tree = drift(t, yi_tree)
+            drift_flat, _ = ravel_args(drift_tree)
+            return drift_flat
 
     def diffusion_unraveled(t, yi):
         yi_tree = unravel(yi)
@@ -149,6 +204,8 @@ def _sdeint(
 
     diffusion_shape = jax.eval_shape(diffusion_unraveled, ts[0], flat_y0)
     noise_type, noise_dim = _infer_noise_layout(diffusion_shape, flat_state_dim)
+
+    additive_marker = diffusion if isinstance(diffusion, additive_diffusion) else None
 
     if noise_type == "diagonal":
 
@@ -170,6 +227,37 @@ def _sdeint(
                     "Full diffusion must have leading dimension equal to state dimension."
                 )
             return diffusion_value
+
+    if additive_marker is not None:
+        if noise_type == "diagonal":
+
+            def additive_flat(t):
+                diffusion_tree = additive_marker.diffusion(t)
+                diffusion_flat, _ = ravel_args(diffusion_tree)
+                return diffusion_flat
+
+            diffusion_solver = cast(
+                Callable,
+                additive_diffusion(diffusion=additive_flat),
+            )
+        else:
+
+            def additive_dense(t):
+                diffusion_value = jnp.asarray(additive_marker.diffusion(t))
+                if diffusion_value.ndim != 2:
+                    raise ValueError(
+                        "Full diffusion must return a matrix with shape (state_dim, noise_dim)."
+                    )
+                if int(diffusion_value.shape[0]) != flat_state_dim:
+                    raise ValueError(
+                        "Full diffusion must have leading dimension equal to state dimension."
+                    )
+                return diffusion_value
+
+            diffusion_solver = cast(
+                Callable,
+                additive_diffusion(diffusion=additive_dense),
+            )
 
     def apply_filter(tree: PyTree[Array]) -> Optional[PyTree[Array]]:
         if filter_state is None:

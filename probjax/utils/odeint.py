@@ -6,6 +6,7 @@ from jax import Array
 from jaxtyping import PyTree
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
+from probjax.utils.functions import linear_drift, split_drift
 from probjax.utils.odeutil import (
     AdaptiveParams,
     _inv_logdet_odeint,
@@ -23,6 +24,12 @@ def _bind_drift_kwargs(
         return drift
 
     kwargs_dict = dict(drift_kwargs)
+    if isinstance(drift, split_drift):
+
+        def nonlin_with_kwargs(t: Array, y: PyTree[Array], *args: Any):
+            return drift.nonlin(t, y, *args, **kwargs_dict)
+
+        return split_drift(lin_coeff=drift.lin_coeff, nonlin=nonlin_with_kwargs)
 
     def drift_with_kwargs(t: Array, y: PyTree[Array], *args: Any):
         return drift(t, y, *args, **kwargs_dict)

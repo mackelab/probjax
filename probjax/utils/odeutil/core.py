@@ -4,6 +4,7 @@ from typing import Optional, Sequence
 import jax
 import jax.numpy as jnp
 
+from probjax.utils.functions import linear_drift, split_drift
 from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
 from probjax.utils.odeutil.adaptive import AdaptiveParams
 from probjax.utils.odeutil.filters import TraceFilter
@@ -71,7 +72,22 @@ def _odeint(
     ts = jnp.atleast_1d(ts)
 
     flat_y0, unravel = ravel_args(y0)
-    drift = ravel_arg_fun(drift, unravel, 1)
+    if isinstance(drift, split_drift):
+        split_marker = drift
+
+        def nonlin_flat(t, yi, *args):
+            nonlin_tree = split_marker.nonlin(t, unravel(yi), *args)
+            nonlin_flattened, _ = ravel_args(nonlin_tree)
+            return nonlin_flattened
+
+        drift = split_drift(
+            lin_coeff=split_marker.lin_coeff,
+            nonlin=nonlin_flat,
+        )
+    elif isinstance(drift, linear_drift):
+        pass
+    else:
+        drift = ravel_arg_fun(drift, unravel, 1)
 
     def _apply_filter(state_tree: PyTree[Array]) -> Optional[PyTree[Array]]:
         if filter_state is None:

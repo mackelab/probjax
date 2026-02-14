@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.utils.odeint import odeint
-from probjax.utils.odeutil.solvers.exponential import SplitDrift
+from probjax.utils.functions import split_drift
 from probjax.utils.sdeint import sdeint
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
@@ -220,6 +220,7 @@ class SolverConfigProtocol(Protocol):
         *args,
         **kwargs,
     ) -> PyTree[Array]: ...
+
 
 # =============================================================================
 # Shared helpers
@@ -882,7 +883,7 @@ class BaseSolverConfig(SolverConfigProtocol):
         model: ScheduleAwareModelProtocol,
         *args,
         **kwargs,
-    ) -> SplitDrift:
+    ) -> split_drift:
         # probability flow ODE
 
         def _sum_scale(tt):
@@ -905,7 +906,7 @@ class BaseSolverConfig(SolverConfigProtocol):
                 s,
             )
 
-        return SplitDrift(lin_coeff=linear_coeff, nonlin=nonlin)
+        return split_drift(lin_coeff=linear_coeff, nonlin=nonlin)
 
     def build_sde_drift_and_diffusion(
         self,
@@ -1041,7 +1042,7 @@ class DDIMSolverConfig(BaseSolverConfig):
         model: ScheduleAwareModelProtocol,
         *args,
         **kwargs,
-    ) -> SplitDrift:
+    ) -> split_drift:
         def nonlin(t: ArrayLike, x_t: PyTree[Array]):
             t = jnp.atleast_1d(t)
             alpha_t = model.scale_fn(t)
@@ -1076,7 +1077,7 @@ class DDIMSolverConfig(BaseSolverConfig):
         def lin_coeff(t: ArrayLike) -> Array:
             return jnp.zeros_like(jnp.asarray(t))
 
-        return SplitDrift(lin_coeff=lin_coeff, nonlin=nonlin)
+        return split_drift(lin_coeff=lin_coeff, nonlin=nonlin)
 
     def build_sde_drift_and_diffusion(
         self,
@@ -1152,7 +1153,7 @@ class VSolverConfig(BaseSolverConfig):
         model: ScheduleAwareModelProtocol,
         *args,
         **kwargs,
-    ) -> SplitDrift:
+    ) -> split_drift:
         coeffs = self._coeff_fn(model)
 
         def lin_coeff(t: ArrayLike) -> Array:
@@ -1168,7 +1169,7 @@ class VSolverConfig(BaseSolverConfig):
             v_pred = model.v(t, x, *args, **kwargs)
             return jax.tree_util.tree_map(lambda v_i: Av * v_i, v_pred)
 
-        return SplitDrift(lin_coeff=lin_coeff, nonlin=nonlin)
+        return split_drift(lin_coeff=lin_coeff, nonlin=nonlin)
 
     def build_sde_drift_and_diffusion(
         self,
