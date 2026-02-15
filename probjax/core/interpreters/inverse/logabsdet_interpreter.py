@@ -1,48 +1,48 @@
+"""
+Inverse+LogAbsDet interpreter using unified rule registry.
+
+This module provides the InverseAndLogAbsDetProcessingRule class that processes
+JAXPR equations to compute inverse values along with log-determinant tracking
+using rules registered in the global REGISTRY.
+"""
+
 import jax
 import jax.numpy as jnp
 from jax._src import core as jax_core
-from jax.extend.core import Literal, Primitive
+from jax.extend.core import Literal
 
 from probjax.core.custom_primitives.contracts import parse_custom_inverse_call_params
-from probjax.core.interpreters.common import apply_rule
-from probjax.core.interpreters.inverse.dispatch import (
-    DispatchAction,
-    classify_primitive,
-    compute_knownness,
-    select_dispatch_action,
-)
+from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
 from probjax.core.interpreters.inverse.interpreter import InverseProcessingRule
-from probjax.core.interpreters.inverse.registry import (
-    BIVARIATE_INVERSE_REGISTRY,
-    CUSTOM_INVERSE_PROCESSING_RULES,
-    UNIVARIATE_INVERSE_REGISTRY,
-)
 from probjax.core.interpreters.inverse.logabsdet_rules import (
-    CUSTOM_INVERSE_AND_LOG_DET_RULES,
     INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
     value_and_log_det_diagonal,
 )
-
-
-_ACTION_METHODS = {
-    DispatchAction.CUSTOM_CALL: "_custom_inverse_call_with_logdet",
-    DispatchAction.CUSTOM_RULE: "_custom_rule_with_logdet",
-    DispatchAction.PJIT_MISSING_INPUTS: "_pjit_with_logdet",
-    DispatchAction.UNIVARIATE: "_univariate_inverse_with_logdet",
-    DispatchAction.BIVARIATE: "_bivariate_inverse_with_logdet",
-}
-
-
-def _is_inexact_value(value) -> bool:
-    return jnp.issubdtype(jnp.asarray(value).dtype, jnp.inexact)
+from probjax.core.logabsdet_utils import is_inexact_value
+from probjax.core.registry import Context, ProcessedResult, REGISTRY
 
 
 class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
+    """
+    Processing rule that computes inverse values with log-determinant tracking.
+
+    This extends InverseProcessingRule to additionally track the log absolute
+    determinant of the Jacobian for each transformation. The log-determinants
+    are accumulated in the context's run state.
+
+    For each equation, this rule:
+    1. If a INVERSE_LOGDET rule exists and all outputs are known: use it
+    2. If only INVERSE rule exists: fall back to autodiff for log-det
+    3. If all inputs known: run forward (with zero log-det contribution)
+    4. Handle custom_inverse_call_p specially using its inverse+logdet jaxpr
+    """
+
     def __init__(self, state_namespace: str = INVERSE_AND_LOGABSDET_STATE_NAMESPACE):
         super().__init__()
         self.state_namespace = state_namespace
 
     def _read_log_dets(self, context) -> dict:
+        """Read accumulated log-determinants from context."""
         if context is None:
             return {}
         state = context.read_run_state(namespace=self.state_namespace)
@@ -51,6 +51,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         return state
 
     def _read_nested_log_dets(self, context) -> dict:
+        """Read nested log-determinants from transient state."""
         if context is None:
             return {}
         nested_state = context.read_transient_state(self.state_namespace, default=None)
@@ -60,6 +61,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
 
     @staticmethod
     def _sum_log_dets(log_dets: dict, vars_) -> jax.Array:
+        """Sum log-determinants for the given variables."""
         total = jnp.asarray(0.0)
         for v in vars_:
             if isinstance(v, Literal):
@@ -68,210 +70,157 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         return total
 
     def __call__(self, eqn, known_invars, known_outvars, context=None):
-        knownness = compute_knownness(known_invars, known_outvars)
-
-        if eqn.primitive in CUSTOM_INVERSE_AND_LOG_DET_RULES and knownness.out_all:
-            return apply_rule(
-                CUSTOM_INVERSE_AND_LOG_DET_RULES[eqn.primitive],
-                eqn,
-                known_invars,
-                known_outvars,
-                context=context,
+        # Handle custom_inverse_call_p specially
+        if eqn.primitive is custom_inverse_call_p:
+            return self._process_custom_inverse_call_with_logdet(
+                eqn, known_invars, known_outvars, context
             )
 
-        primitive_kind = classify_primitive(
-            eqn,
-            custom_rules=CUSTOM_INVERSE_PROCESSING_RULES,
-            univariate_registry=UNIVARIATE_INVERSE_REGISTRY,
-            bivariate_registry=BIVARIATE_INVERSE_REGISTRY,
-        )
-        action = select_dispatch_action(
-            primitive_kind,
-            knownness,
-            prefer_resolve_conflict=False,
-        )
-
-        if action is DispatchAction.FORWARD:
-            return self._default_forward_processing(eqn, known_invars, known_outvars)
-
-        method_name = _ACTION_METHODS.get(action)
-        if method_name is not None:
-            method = getattr(self, method_name)
-            return method(eqn, known_invars, known_outvars, context=context)
-
-        raise NotImplementedError(f"Cannot invert {eqn}")
-
-    def _univariate_inverse_with_logdet(
-        self, eqn, known_invars, known_outvars, context=None
-    ):
-        del known_invars
-        primitive = eqn.primitive
-        if primitive not in UNIVARIATE_INVERSE_REGISTRY:
-            raise NotImplementedError(f"{primitive} is not invertible!")
-
-        inv_primitive = UNIVARIATE_INVERSE_REGISTRY[primitive]
-        if isinstance(inv_primitive, Primitive):
-            subfuns, bind_params = inv_primitive.get_bind_params(eqn.params)
-            invars = inv_primitive.bind(*subfuns, *known_outvars, **bind_params)
-
-            if _is_inexact_value(known_outvars[0]) and _is_inexact_value(invars):
-
-                def f(*args):
-                    subfuns, bind_params = inv_primitive.get_bind_params(eqn.params)
-                    invars_local = inv_primitive.bind(*subfuns, *args, **bind_params)
-                    return jnp.sum(invars_local)
-
-                eval_fn = value_and_log_det_diagonal(f)
-                invars, log_abs_det = eval_fn(*known_outvars)
-            else:
-                log_abs_det = jnp.asarray(0.0)
-        else:
-            invars = inv_primitive(*known_outvars, **eqn.params)
-            if _is_inexact_value(known_outvars[0]) and _is_inexact_value(invars):
-                eval_fn = value_and_log_det_diagonal(
-                    lambda *args: jnp.sum(inv_primitive(*args, **eqn.params))
+        # Try INVERSE_LOGDET rule if all outputs are known
+        if all(v is not None for v in known_outvars):
+            result = REGISTRY.process(
+                eqn, known_invars, known_outvars, Context.INVERSE_LOGDET
+            )
+            if result is not None:
+                # Add previous log-dets from output variables to the rule's state
+                return self._add_previous_logdets_to_state(
+                    eqn,
+                    result.resolved_vars,
+                    result.resolved_vals,
+                    result.state or {},
+                    context,
                 )
-                invars, log_abs_det = eval_fn(*known_outvars)
-            else:
-                log_abs_det = jnp.asarray(0.0)
 
-        if not isinstance(invars, list):
-            invars = [invars]
-
-        log_dets = self._read_log_dets(context)
-        previous = jnp.asarray(log_dets.get(eqn.outvars[0], 0.0))
-        updates = {}
-        if not isinstance(eqn.invars[0], Literal):
-            updates[eqn.invars[0]] = previous + log_abs_det
-
-        return eqn.invars, invars, updates
-
-    def _bivariate_inverse_with_logdet(
-        self, eqn, known_invars, known_outvars, context=None
-    ):
-        primitive = eqn.primitive
-        input1 = known_outvars[0]
-        left_inverse = known_invars[0] is None
-        input2 = known_invars[1] if left_inverse else known_invars[0]
-
-        (left_inverse_fn, right_inverse_fn) = BIVARIATE_INVERSE_REGISTRY[primitive]
-        inv_primitive = left_inverse_fn if left_inverse else right_inverse_fn
-
-        if isinstance(inv_primitive, Primitive):
-            subfuns, bind_params = inv_primitive.get_bind_params(eqn.params)
-            invars = inv_primitive.bind(*subfuns, input1, input2, **bind_params)
-
-            if _is_inexact_value(input1) and _is_inexact_value(invars):
-
-                def f(*args):
-                    subfuns, bind_params = inv_primitive.get_bind_params(eqn.params)
-                    return inv_primitive.bind(*subfuns, *args, **bind_params)
-
-                eval_fn = value_and_log_det_diagonal(f)
-                invars, log_abs_det = eval_fn(input1, input2)
-            else:
-                log_abs_det = jnp.asarray(0.0)
-        else:
-            invars = inv_primitive(input1, input2, **eqn.params)
-            if _is_inexact_value(input1) and _is_inexact_value(invars):
-                eval_fn = value_and_log_det_diagonal(
-                    lambda *args: jnp.sum(inv_primitive(*args, **eqn.params))
+            # Fall back to INVERSE rule + autodiff for log-det
+            result = REGISTRY.process(eqn, known_invars, known_outvars, Context.INVERSE)
+            if result is not None:
+                return self._add_autodiff_logdet(
+                    eqn, known_invars, known_outvars, result, context
                 )
-                invars, log_abs_det = eval_fn(input1, input2)
-            else:
-                log_abs_det = jnp.asarray(0.0)
 
+        # Try forward rule if all inputs are known
+        if all(v is not None for v in known_invars):
+            result = REGISTRY.process(eqn, known_invars, known_outvars, Context.FORWARD)
+            if result is not None:
+                return result.resolved_vars, result.resolved_vals, {}
+
+        # Cannot process this equation
+        return None
+
+    def _add_previous_logdets_to_state(
+        self, eqn, resolved_vars, resolved_vals, state, context
+    ):
+        """
+        Add previous log-dets from output variables to the state.
+
+        This implements the chain rule: log|dx/dz| = log|dx/dy| + log|dy/dz|
+        The rule provides log|dx/dy|, and we need to add the accumulated
+        log|dy/dz| from the output variables.
+        """
         log_dets = self._read_log_dets(context)
-        previous = jnp.asarray(log_dets.get(eqn.outvars[0], 0.0))
-        updates = {}
-        if left_inverse:
-            if not isinstance(eqn.invars[0], Literal):
-                updates[eqn.invars[0]] = previous + log_abs_det
-            return [eqn.invars[0]], [invars], updates
+        previous = self._sum_log_dets(log_dets, eqn.outvars)
 
-        if not isinstance(eqn.invars[1], Literal):
-            updates[eqn.invars[1]] = previous + log_abs_det
-        return [eqn.invars[1]], [invars], updates
-
-    def _pjit_with_logdet(self, eqn, known_invars, known_outvars, context=None):
-        del known_invars, known_outvars
-        if "jaxpr" in eqn.params:
-            jaxpr = eqn.params["jaxpr"]
-        else:
-            jaxpr = eqn.params["call_jaxpr"]
-
-        sub_invars = jaxpr.jaxpr.invars
-        sub_outvars = jaxpr.jaxpr.outvars
-        subvars = sub_invars + sub_outvars
-        vars_ = eqn.invars + eqn.outvars
-
-        log_dets = self._read_log_dets(context)
-        nested_log_dets = self._read_nested_log_dets(context)
-        lookup = dict(log_dets)
-        lookup.update(nested_log_dets)
-
-        updates = {}
-        for v_sub, v in zip(subvars, vars_, strict=False):
-            if not isinstance(v, Literal) and v_sub in lookup:
-                updates[v] = lookup[v_sub]
-
-        previous = jnp.asarray(0.0)
-        for v in eqn.outvars:
-            if isinstance(v, Literal):
+        updated_state = {}
+        for var in resolved_vars:
+            if isinstance(var, Literal):
                 continue
-            previous = previous + jnp.asarray(updates.get(v, lookup.get(v, 0.0)))
+            local_logdet = state.get(var, jnp.asarray(0.0))
+            updated_state[var] = previous + jnp.asarray(local_logdet)
 
-        for v in eqn.invars:
-            if not isinstance(v, Literal):
-                if v not in updates:
-                    updates[v] = previous
+        return resolved_vars, resolved_vals, updated_state
 
-        return [], [], updates
+    def _add_autodiff_logdet(
+        self, eqn, known_invars, known_outvars, inverse_result, context
+    ):
+        """
+        Compute log-determinant via autodiff for an inverse result.
 
-    def _custom_rule_with_logdet(self, eqn, known_invars, known_outvars, context=None):
-        primitive = eqn.primitive
-        if primitive not in CUSTOM_INVERSE_PROCESSING_RULES:
-            raise NotImplementedError(f"{primitive} is not invertible!")
-
-        outvars, outs = apply_rule(
-            CUSTOM_INVERSE_PROCESSING_RULES[primitive],
-            eqn,
-            known_invars,
-            known_outvars,
-            context=context,
-        )
+        This is used as a fallback when no explicit INVERSE_LOGDET rule exists.
+        """
+        resolved_vars = inverse_result.resolved_vars
+        resolved_vals = inverse_result.resolved_vals
 
         log_dets = self._read_log_dets(context)
         previous = self._sum_log_dets(log_dets, eqn.outvars)
-        updates = {v: previous for v in outvars if not isinstance(v, Literal)}
 
-        return outvars, outs, updates
+        # Compute log-det via autodiff if values are inexact
+        if len(resolved_vals) == 1:
+            out_val = known_outvars[0]
+            in_val = resolved_vals[0]
 
-    def _custom_inverse_call_with_logdet(
-        self,
-        eqn,
-        known_invars,
-        known_outvars,
-        context=None,
+            if is_inexact_value(out_val) and is_inexact_value(in_val):
+                # Build a function that computes the inverse for autodiff
+                rule = REGISTRY.get(eqn.primitive, Context.INVERSE)
+                if rule is not None:
+
+                    def inverse_fn(*args):
+                        # Re-execute the inverse to get value for autodiff
+                        result = rule(eqn, known_invars, args)
+                        if isinstance(result, ProcessedResult):
+                            return jnp.sum(result.resolved_vals[0])
+                        elif isinstance(result, tuple):
+                            return jnp.sum(result[1][0])
+                        return jnp.asarray(0.0)
+
+                    eval_fn = value_and_log_det_diagonal(inverse_fn)
+                    _, log_abs_det = eval_fn(*known_outvars)
+                else:
+                    log_abs_det = jnp.asarray(0.0)
+            else:
+                log_abs_det = jnp.asarray(0.0)
+        else:
+            log_abs_det = jnp.asarray(0.0)
+
+        # Build updates
+        updates = {}
+        for var in resolved_vars:
+            if not isinstance(var, Literal):
+                updates[var] = previous + log_abs_det
+
+        return resolved_vars, resolved_vals, updates
+
+    def _process_custom_inverse_call_with_logdet(
+        self, eqn, known_invars, known_outvars, context
     ):
+        """
+        Handle custom_inverse_call_p by evaluating its inverse+logdet jaxpr.
+        """
+        # If outputs not known, cannot compute inverse
+        if not all(v is not None for v in known_outvars):
+            # Try forward if all inputs known
+            if all(v is not None for v in known_invars):
+                result = REGISTRY.process(
+                    eqn, known_invars, known_outvars, Context.FORWARD
+                )
+                if result is not None:
+                    return result.resolved_vars, result.resolved_vals, {}
+            return None
+
         custom_params = parse_custom_inverse_call_params(eqn.params)
         inverse_jaxpr = custom_params.inverse_jaxpr_thunk()
+
         jaxpr = inverse_jaxpr.jaxpr
         consts = inverse_jaxpr.literals
+
+        # Build inputs: use known_invars where available, else use output value
         inputs = [v if v is not None else known_outvars[0] for v in known_invars]
-        out = jax_core.eval_jaxpr(
-            jaxpr,
-            consts,
-            *inputs,
-        )
+
+        out = jax_core.eval_jaxpr(jaxpr, consts, *inputs)
+
+        # Return only the variables that were unknown
         invars = [
             eqn.invars[i] for i in range(len(eqn.invars)) if known_invars[i] is None
         ]
-        inputs = [out[0] for i in range(len(eqn.invars)) if known_invars[i] is None]
+        result_vals = [
+            out[0] for i in range(len(eqn.invars)) if known_invars[i] is None
+        ]
+
+        # Extract log-det from output (last element)
         log_abs_det = jnp.sum(out[-1])
 
         log_dets = self._read_log_dets(context)
         previous = self._sum_log_dets(log_dets, eqn.outvars)
+
         updates = {
             v: previous + log_abs_det for v in eqn.invars if not isinstance(v, Literal)
         }

@@ -1,32 +1,22 @@
+"""
+Inverse interpreter using unified rule registry.
+
+This module provides the InverseProcessingRule class that processes JAXPR
+equations to compute inverse values using rules registered in the global
+REGISTRY.
+"""
+
 import jax
 import jax.numpy as jnp
 from jax._src import core as jax_core
-from jax.extend.core import Primitive
 
 from probjax.core.custom_primitives.contracts import parse_custom_inverse_call_params
-from probjax.core.custom_primitives.custom_inverse import custom_inverse
-from probjax.core.interpreters.common import apply_rule
-from probjax.core.interpreters.inverse.dispatch import (
-    DispatchAction,
-    classify_primitive,
-    compute_knownness,
-    select_dispatch_action,
-)
-from probjax.core.interpreters.inverse.registry import (
-    BIVARIATE_INVERSE_REGISTRY,
-    CUSTOM_INVERSE_PROCESSING_RULES,
-    UNIVARIATE_INVERSE_REGISTRY,
+from probjax.core.custom_primitives.custom_inverse import (
+    custom_inverse,
+    custom_inverse_call_p,
 )
 from probjax.core.jaxpr_propagation.utils import ProcessingRule
-
-
-_ACTION_METHODS = {
-    DispatchAction.CUSTOM_CALL: "_default_custom_inverse_call_apply",
-    DispatchAction.RESOLVE_CONFLICT: "_default_resolve_conflicts",
-    DispatchAction.UNIVARIATE: "_default_univariate_inverse",
-    DispatchAction.BIVARIATE: "_default_bivariate_inverse",
-    DispatchAction.FORWARD: "_default_forward_processing",
-}
+from probjax.core.registry import Context, REGISTRY
 
 
 def maybe_inverse_custom_inverse(
@@ -35,6 +25,13 @@ def maybe_inverse_custom_inverse(
     static_argnums=(),
     invertible_arg=None,
 ):
+    """
+    Create an inverse wrapper for a custom_inverse function.
+
+    If `fun` is already a custom_inverse instance with defined inverse functions,
+    this returns a new custom_inverse that inverts the inverse (i.e., recovers
+    the original forward function behavior).
+    """
     if not isinstance(fun, custom_inverse):
         return None
 
@@ -83,106 +80,77 @@ def maybe_inverse_custom_inverse(
 
 
 class InverseProcessingRule(ProcessingRule):
-    def __call__(self, eqn, known_invars, known_outvars, context=None):
-        knownness = compute_knownness(known_invars, known_outvars)
-        primitive_kind = classify_primitive(
-            eqn,
-            custom_rules=CUSTOM_INVERSE_PROCESSING_RULES,
-            univariate_registry=UNIVARIATE_INVERSE_REGISTRY,
-            bivariate_registry=BIVARIATE_INVERSE_REGISTRY,
-        )
-        action = select_dispatch_action(
-            primitive_kind,
-            knownness,
-            prefer_resolve_conflict=True,
-        )
+    """
+    Processing rule that computes inverse values using the unified registry.
 
-        if action is DispatchAction.CUSTOM_RULE:
-            return apply_rule(
-                CUSTOM_INVERSE_PROCESSING_RULES[eqn.primitive],
-                eqn,
-                known_invars,
-                known_outvars,
-                context=context,
-            )
-        if action is DispatchAction.PJIT_MISSING_INPUTS:
+    For each equation, this rule:
+    1. If all outputs are known: try to apply an INVERSE rule to recover inputs
+    2. If all inputs are known: run the primitive forward to compute outputs
+    3. Handle custom_inverse_call_p specially using its inverse jaxpr
+    """
+
+    def __call__(self, eqn, known_invars, known_outvars, context=None):
+        # Check if this is a custom_inverse_call primitive
+        if eqn.primitive is custom_inverse_call_p:
+            return self._process_custom_inverse_call(eqn, known_invars, known_outvars)
+
+        all_inputs_known = all(v is not None for v in known_invars)
+        all_outputs_known = all(v is not None for v in known_outvars)
+
+        # When BOTH inputs AND outputs are known, prefer FORWARD processing.
+        # This handles the "resolve conflicts" case where an intermediate variable
+        # was set to a placeholder value by an inverse rule, and the forward pass
+        # should overwrite it with the correct computed value.
+        if all_inputs_known and all_outputs_known:
+            result = REGISTRY.process(eqn, known_invars, known_outvars, Context.FORWARD)
+            if result is not None:
+                return result.resolved_vars, result.resolved_vals
+
+        # Try inverse rule if all outputs are known
+        if all_outputs_known:
+            result = REGISTRY.process(eqn, known_invars, known_outvars, Context.INVERSE)
+            if result is not None:
+                return result.resolved_vars, result.resolved_vals
+
+        # Try forward rule if all inputs are known
+        if all_inputs_known:
+            result = REGISTRY.process(eqn, known_invars, known_outvars, Context.FORWARD)
+            if result is not None:
+                return result.resolved_vars, result.resolved_vals
+
+        # Cannot process this equation
+        return None
+
+    def _process_custom_inverse_call(self, eqn, known_invars, known_outvars):
+        """
+        Handle custom_inverse_call_p by evaluating its inverse jaxpr.
+        """
+        # If outputs not known, cannot compute inverse
+        if not all(v is not None for v in known_outvars):
+            # Try forward if all inputs known
+            if all(v is not None for v in known_invars):
+                result = REGISTRY.process(
+                    eqn, known_invars, known_outvars, Context.FORWARD
+                )
+                if result is not None:
+                    return result.resolved_vars, result.resolved_vals
             return None
 
-        method_name = _ACTION_METHODS.get(action)
-        if method_name is not None:
-            method = getattr(self, method_name)
-            return method(eqn, known_invars, known_outvars)
-
-        raise NotImplementedError(f"Cannot invert {eqn}")
-
-    def _default_univariate_inverse(self, eqn, known_invars, known_outvars):
-        del known_invars
-        primitive = eqn.primitive
-        if primitive not in UNIVARIATE_INVERSE_REGISTRY:
-            raise NotImplementedError(f"{primitive} is not invertible!")
-
-        inv_primitive = UNIVARIATE_INVERSE_REGISTRY[primitive]
-        if isinstance(inv_primitive, Primitive):
-            subfuns, bind_params = inv_primitive.get_bind_params(eqn.params)
-            invars = inv_primitive.bind(*subfuns, *known_outvars, **bind_params)
-        else:
-            invars = inv_primitive(*known_outvars, **eqn.params)
-
-        if not isinstance(invars, list):
-            invars = [invars]
-
-        return eqn.invars, invars
-
-    def _default_bivariate_inverse(self, eqn, known_invars, known_outvars):
-        primitive = eqn.primitive
-        input1 = known_outvars[0]
-        left_inverse = known_invars[0] is None
-        input2 = known_invars[1] if left_inverse else known_invars[0]
-
-        (left_inverse_fn, right_inverse_fn) = BIVARIATE_INVERSE_REGISTRY[primitive]
-        inv_primitive = left_inverse_fn if left_inverse else right_inverse_fn
-
-        if isinstance(inv_primitive, Primitive):
-            subfuns, bind_params = inv_primitive.get_bind_params(eqn.params)
-            missing_invar = inv_primitive.bind(*subfuns, input1, input2, **bind_params)
-        else:
-            missing_invar = inv_primitive(input1, input2, **eqn.params)
-
-        if left_inverse:
-            return [eqn.invars[0]], [missing_invar]
-        return [eqn.invars[1]], [missing_invar]
-
-    def _default_resolve_conflicts(self, eqn, known_invars, known_outvars):
-        outvars, outvals = self._default_forward_processing(
-            eqn,
-            known_invars,
-            known_outvars,
-        )
-        return outvars, outvals
-
-    def _default_forward_processing(self, eqn, known_invars, known_outvars):
-        del known_outvars
-        primitive = eqn.primitive
-        subfuns, bind_params = primitive.get_bind_params(eqn.params)
-        outvals = primitive.bind(*subfuns, *known_invars, **bind_params)
-        if not eqn.primitive.multiple_results:
-            outvals = [outvals]
-        return eqn.outvars, outvals  # type: ignore
-
-    def _default_custom_inverse_call_apply(self, eqn, known_invars, known_outvars):
         custom_params = parse_custom_inverse_call_params(eqn.params)
         inverse_jaxpr = custom_params.inverse_jaxpr_thunk()
 
         jaxpr = inverse_jaxpr.jaxpr
         consts = inverse_jaxpr.literals
+
+        # Build inputs: use known_invars where available, else use output value
         inputs = [v if v is not None else known_outvars[0] for v in known_invars]
-        out = jax_core.eval_jaxpr(
-            jaxpr,
-            consts,
-            *inputs,
-        )
+
+        out = jax_core.eval_jaxpr(jaxpr, consts, *inputs)
+
+        # Return only the variables that were unknown
         invars = [
             eqn.invars[i] for i in range(len(eqn.invars)) if known_invars[i] is None
         ]
         inputs = [out[0] for i in range(len(eqn.invars)) if known_invars[i] is None]
+
         return invars, inputs

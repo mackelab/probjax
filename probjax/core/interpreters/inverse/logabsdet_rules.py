@@ -1,15 +1,20 @@
+# Log-determinant inverse rules - explicit logdet formulas for common primitives.
+# All rules are registered in the unified REGISTRY with Context.INVERSE_LOGDET.
+
+from __future__ import annotations
+
 import jax
 import jax.numpy as jnp
 from jax.extend.core import Literal
 
-from probjax.core.interpreters.inverse.registry import inverse_cost_fn
 from probjax.core.interpreters.inverse.rules import (
+    _get_inverse_cost_fn,
     dot_general_left_inverse_and_logdet,
     dot_general_right_inverse_and_logdet,
-    read_state_values,
     parse_scan_problem,
     parse_while_problem,
     prepare_cond_branch_problem,
+    read_state_values,
     scan_reverse_indices,
     select_cond_branch_jaxpr,
     solve_nested_values_and_state,
@@ -18,19 +23,16 @@ from probjax.core.interpreters.inverse.rules import (
     _values_equal,
 )
 from probjax.core.jaxpr_propagation.utils import ProcessingRuleFactory
+from probjax.core.registry import (
+    Context,
+    ProcessedResult,
+    REGISTRY,
+    register_univariate_inverse_logdet,
+    register_bivariate_inverse_logdet,
+)
 
-CUSTOM_INVERSE_AND_LOG_DET_RULES = {}
 INVERSE_AND_LOGABSDET_STATE_NAMESPACE = "inverse_and_logabsdet.log_dets"
 _LOGABSDET_PROCESSING_RULE_FACTORY: ProcessingRuleFactory | None = None
-
-
-def register_inverse_and_log_det_rule(key):
-    def decorator(func):
-        nonlocal key
-        CUSTOM_INVERSE_AND_LOG_DET_RULES[key] = func
-        return func
-
-    return decorator
 
 
 def set_logabsdet_processing_rule_factory(factory):
@@ -59,7 +61,217 @@ def _sum_previous_log_dets(context, outvars):
     return total
 
 
-@register_inverse_and_log_det_rule(jax.lax.dot_general_p)
+def value_and_log_det_diagonal(f):
+    """Autodiff fallback for computing value and log-det of the Jacobian diagonal."""
+    grad_fn = jax.value_and_grad(f)
+
+    def log_det_fn(*args, **kwargs):
+        args_arrays = [jnp.array(arg) if jnp.ndim(arg) == 0 else arg for arg in args]
+        args_arrays = jnp.broadcast_arrays(*args_arrays)
+        n_dim = args_arrays[0].ndim
+        vmaped_grad_fn = grad_fn
+        for _ in range(n_dim):
+            vmaped_grad_fn = jax.vmap(vmaped_grad_fn)
+        value, det = vmaped_grad_fn(*args_arrays, **kwargs)
+
+        log_det = jnp.log(jnp.abs(det) + 1e-10)
+        while log_det.ndim > 0:
+            log_det = jnp.sum(log_det, axis=-1)
+        return value, log_det
+
+    return log_det_fn
+
+
+def inverse_and_logabsdet_state_reducer(env, eqn, state, eqn_state, context=None):
+    """State reducer for accumulating log-determinants."""
+    del env, eqn, context
+    base_state = {} if state is None else dict(state)
+    if not eqn_state:
+        return base_state
+    merged_state = dict(base_state)
+    merged_state.update(eqn_state)
+    return merged_state
+
+
+# =============================================================================
+# Register univariate inverse+logdet rules with explicit formulas
+# =============================================================================
+
+# exp: d/dy[log(y)] = 1/y => log|Jacobian| = -log(|y|)
+register_univariate_inverse_logdet(
+    jax.lax.exp_p,
+    jax.lax.log_p,
+    lambda out_val, in_val, params: -jnp.sum(jnp.log(jnp.abs(out_val))),
+)
+
+# log: d/dy[exp(y)] = exp(y) = y (since x = exp(y)) => log|Jacobian| = log(|out|) = y_sum?
+# Actually: x = exp(y), dx/dy = exp(y) = x = out, so log|det| = sum(log(|out|))
+# But we want d(input)/d(output) for inverse. If forward is log, inverse is exp.
+# d/dy[exp(y)] = exp(y). So log|det| = sum(y) where y = output (of forward log)
+register_univariate_inverse_logdet(
+    jax.lax.log_p,
+    jax.lax.exp_p,
+    lambda out_val, in_val, params: jnp.sum(out_val),  # sum(y) where y is log output
+)
+
+# neg: d/dy[-y] = -1 => log|Jacobian| = 0
+register_univariate_inverse_logdet(
+    jax.lax.neg_p,
+    jax.lax.neg_p,
+    lambda out_val, in_val, params: jnp.asarray(0.0),
+)
+
+# copy: identity, log|Jacobian| = 0
+register_univariate_inverse_logdet(
+    jax.lax.copy_p,
+    jax.lax.copy_p,
+    lambda out_val, in_val, params: jnp.asarray(0.0),
+)
+
+
+# sqrt: x = y^2, d/dy[y^2] = 2y => log|det| = sum(log(2) + log(|y|))
+def sqrt_inverse_fn(x, **params):
+    params = dict(params)
+    params.pop("accuracy", None)
+    return jax.lax.pow_p.bind(x, 2.0, **params)
+
+
+register_univariate_inverse_logdet(
+    jax.lax.sqrt_p,
+    sqrt_inverse_fn,
+    lambda out_val, in_val, params: jnp.sum(jnp.log(2.0) + jnp.log(jnp.abs(out_val))),
+)
+
+
+# cbrt: x = y^3, d/dy[y^3] = 3y^2 => log|det| = sum(log(3) + 2*log(|y|))
+def cbrt_inverse_fn(x, **params):
+    params = dict(params)
+    params.pop("accuracy", None)
+    return jax.lax.pow_p.bind(x, 3.0, **params)
+
+
+register_univariate_inverse_logdet(
+    jax.lax.cbrt_p,
+    cbrt_inverse_fn,
+    lambda out_val, in_val, params: jnp.sum(
+        jnp.log(3.0) + 2.0 * jnp.log(jnp.abs(out_val))
+    ),
+)
+
+# tanh/atanh: d/dy[tanh(y)] = sech^2(y) = 1 - tanh^2(y)
+# Since x = tanh(y), dx/dy = 1 - x^2, so log|det| = sum(log(1 - x^2))
+# For inverse (forward=tanh), out = x = tanh(y), in = y = atanh(x)
+register_univariate_inverse_logdet(
+    jax.lax.tanh_p,
+    jax.lax.atanh_p,
+    lambda out_val, in_val, params: jnp.sum(jnp.log(1.0 - out_val**2 + 1e-10)),
+)
+
+# logistic (sigmoid): d/dy[logit(y)] = 1/(y*(1-y))
+# For inverse of logistic, input is y = sigmoid(x), output is x
+# d[logit(y)]/dy = 1/(y*(1-y)), so log|det| = -sum(log(y) + log(1-y))
+register_univariate_inverse_logdet(
+    jax.lax.logistic_p,
+    lambda x, **params: jax.lax.log_p.bind(x) - jax.lax.log1p_p.bind(-x),
+    lambda out_val, in_val, params: (
+        -jnp.sum(jnp.log(out_val + 1e-10) + jnp.log(1.0 - out_val + 1e-10))
+    ),
+)
+
+# log1p/expm1: log1p inverse is expm1
+# d/dy[expm1(y)] = exp(y) = expm1(y) + 1 = 1 + y (approximately for small y)
+# Actually exp(y) exactly. So log|det| = sum(y)
+register_univariate_inverse_logdet(
+    jax.lax.log1p_p,
+    jax.lax.expm1_p,
+    lambda out_val, in_val, params: jnp.sum(out_val),
+)
+
+# expm1: inverse is log1p
+# d/dy[log1p(y)] = 1/(1+y)
+# For expm1 forward, out = expm1(x) = e^x - 1, inverse gives x = log1p(out)
+# d[log1p(y)]/dy = 1/(1+y), so log|det| = -sum(log(1+out))
+register_univariate_inverse_logdet(
+    jax.lax.expm1_p,
+    jax.lax.log1p_p,
+    lambda out_val, in_val, params: -jnp.sum(jnp.log(1.0 + out_val)),
+)
+
+
+# =============================================================================
+# Register bivariate inverse+logdet rules with explicit formulas
+# =============================================================================
+
+
+# mul: z = x * y. Solving for x: x = z/y, dx/dz = 1/y => log|det| = -sum(log|y|)
+def _mul_left_logdet(out_val, result, other, params):
+    # Solving for left: left = out/right, d(left)/d(out) = 1/right
+    return -jnp.sum(jnp.log(jnp.abs(other) + 1e-10))
+
+
+def _mul_right_logdet(out_val, result, other, params):
+    # Solving for right: right = out/left, d(right)/d(out) = 1/left
+    return -jnp.sum(jnp.log(jnp.abs(other) + 1e-10))
+
+
+register_bivariate_inverse_logdet(
+    jax.lax.mul_p,
+    jax.lax.div_p,
+    jax.lax.div_p,
+    _mul_left_logdet,
+    _mul_right_logdet,
+)
+
+
+# div: z = x / y. Solving for x: x = z * y, dx/dz = y => log|det| = sum(log|y|)
+# Solving for y: y = x / z, dy/dz = -x/z^2 => log|det| = sum(log|x|) - 2*sum(log|z|)
+def _div_left_logdet(out_val, result, other, params):
+    # Solving for left (numerator): left = out * right, d(left)/d(out) = right
+    return jnp.sum(jnp.log(jnp.abs(other) + 1e-10))
+
+
+def _div_right_logdet(out_val, result, other, params):
+    # Solving for right (denominator): right = left / out
+    # d(right)/d(out) = -left / out^2
+    return jnp.sum(jnp.log(jnp.abs(other) + 1e-10)) - 2.0 * jnp.sum(
+        jnp.log(jnp.abs(out_val) + 1e-10)
+    )
+
+
+register_bivariate_inverse_logdet(
+    jax.lax.div_p,
+    jax.lax.mul_p,
+    lambda x, y, **params: jax.lax.div_p.bind(y, x, **params),
+    _div_left_logdet,
+    _div_right_logdet,
+)
+
+# add: z = x + y. Solving for either: dx/dz = 1 => log|det| = 0
+register_bivariate_inverse_logdet(
+    jax.lax.add_p,
+    jax.lax.sub_p,
+    jax.lax.sub_p,
+    lambda out_val, result, other, params: jnp.asarray(0.0),
+    lambda out_val, result, other, params: jnp.asarray(0.0),
+)
+
+# sub: z = x - y. Solving for x: x = z + y, dx/dz = 1
+# Solving for y: y = x - z, dy/dz = -1 => log|det| = 0
+register_bivariate_inverse_logdet(
+    jax.lax.sub_p,
+    jax.lax.add_p.bind,
+    lambda x, y, **params: jax.lax.sub_p.bind(y, x, **params),
+    lambda out_val, result, other, params: jnp.asarray(0.0),
+    lambda out_val, result, other, params: jnp.asarray(0.0),
+)
+
+
+# =============================================================================
+# Custom inverse+logdet rules for control flow primitives
+# =============================================================================
+
+
+@REGISTRY.rule(jax.lax.dot_general_p, Context.INVERSE_LOGDET)
 def invert_dot_general_and_logdet(eqn, known_invars, known_outvars, context=None):
     out = known_outvars[0]
     lhs, rhs = known_invars
@@ -88,11 +300,13 @@ def invert_dot_general_and_logdet(eqn, known_invars, known_outvars, context=None
         previous = _sum_previous_log_dets(context, eqn.outvars)
         updates[missing_var] = previous + jnp.asarray(log_abs_det)
 
-    return [missing_var], [missing_value], updates
+    return ProcessedResult([missing_var], [missing_value], updates)
 
 
-@register_inverse_and_log_det_rule(jax.lax.cond_p)
+@REGISTRY.rule(jax.lax.cond_p, Context.INVERSE_LOGDET)
 def invert_cond_and_logdet(eqn, known_invars, known_outvars, context=None):
+    if any(out is None for out in known_outvars):
+        return None
     branch = select_cond_branch_jaxpr(eqn, known_invars)
     target_sub_vars, target_outer_vars, known_vars, known_vals = (
         prepare_cond_branch_problem(
@@ -104,7 +318,7 @@ def invert_cond_and_logdet(eqn, known_invars, known_outvars, context=None):
     )
 
     if not target_sub_vars:
-        return [], [], {}
+        return ProcessedResult([], [], {})
 
     outer_state = {}
     if context is not None:
@@ -130,7 +344,7 @@ def invert_cond_and_logdet(eqn, known_invars, known_outvars, context=None):
         process_eqn=_make_logabsdet_processing_rule(
             INVERSE_AND_LOGABSDET_STATE_NAMESPACE
         ),
-        cost_fn=inverse_cost_fn,
+        cost_fn=_get_inverse_cost_fn(),
         reducer=inverse_and_logabsdet_state_reducer,
         initial_state=initial_state,
         state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
@@ -150,11 +364,13 @@ def invert_cond_and_logdet(eqn, known_invars, known_outvars, context=None):
             )
         updates[outer_var] = nested_state[sub_var]
 
-    return target_outer_vars, nested_values, updates
+    return ProcessedResult(target_outer_vars, nested_values, updates)
 
 
-@register_inverse_and_log_det_rule(jax.lax.scan_p)
+@REGISTRY.rule(jax.lax.scan_p, Context.INVERSE_LOGDET)
 def invert_scan_and_logdet(eqn, known_invars, known_outvars, context=None):
+    if any(out is None for out in known_outvars):
+        return None
     problem = parse_scan_problem(eqn, known_invars, known_outvars)
     if problem["ys_outvars"]:
         raise NotImplementedError(
@@ -165,7 +381,7 @@ def invert_scan_and_logdet(eqn, known_invars, known_outvars, context=None):
         i for i, value in enumerate(problem["known_carry_in_vals"]) if value is None
     ]
     if not missing_indices:
-        return [], [], {}
+        return ProcessedResult([], [], {})
 
     outer_state = {}
     if context is not None:
@@ -205,7 +421,7 @@ def invert_scan_and_logdet(eqn, known_invars, known_outvars, context=None):
             process_eqn=_make_logabsdet_processing_rule(
                 INVERSE_AND_LOGABSDET_STATE_NAMESPACE
             ),
-            cost_fn=inverse_cost_fn,
+            cost_fn=_get_inverse_cost_fn(),
             reducer=inverse_and_logabsdet_state_reducer,
             initial_state=initial_state,
             state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
@@ -231,18 +447,20 @@ def invert_scan_and_logdet(eqn, known_invars, known_outvars, context=None):
         if not isinstance(var, Literal):
             updates[var] = current_carry_logdets[i]
 
-    return output_vars, output_vals, updates
+    return ProcessedResult(output_vars, output_vals, updates)
 
 
-@register_inverse_and_log_det_rule(jax.lax.while_p)
+@REGISTRY.rule(jax.lax.while_p, Context.INVERSE_LOGDET)
 def invert_while_and_logdet(eqn, known_invars, known_outvars, context=None):
+    if any(out is None for out in known_outvars):
+        return None
     problem = parse_while_problem(eqn, known_invars, known_outvars)
 
     missing_indices = [
         i for i, value in enumerate(problem["known_state_in_vals"]) if value is None
     ]
     if not missing_indices:
-        return [], [], {}
+        return ProcessedResult([], [], {})
 
     anchor_indices = [
         i for i, value in enumerate(problem["known_state_in_vals"]) if value is not None
@@ -304,7 +522,7 @@ def invert_while_and_logdet(eqn, known_invars, known_outvars, context=None):
             process_eqn=_make_logabsdet_processing_rule(
                 INVERSE_AND_LOGABSDET_STATE_NAMESPACE
             ),
-            cost_fn=inverse_cost_fn,
+            cost_fn=_get_inverse_cost_fn(),
             reducer=inverse_and_logabsdet_state_reducer,
             initial_state=initial_state,
             state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
@@ -336,34 +554,45 @@ def invert_while_and_logdet(eqn, known_invars, known_outvars, context=None):
         if not isinstance(var, Literal):
             updates[var] = recovered_state_logdets[i]
 
-    return output_vars, output_vals, updates
+    return ProcessedResult(output_vars, output_vals, updates)
 
 
-def value_and_log_det_diagonal(f):
-    grad_fn = jax.value_and_grad(f)
-
-    def log_det_fn(*args, **kwargs):
-        args_arrays = [jnp.array(arg) if jnp.ndim(arg) == 0 else arg for arg in args]
-        args_arrays = jnp.broadcast_arrays(*args_arrays)
-        n_dim = args_arrays[0].ndim
-        vmaped_grad_fn = grad_fn
-        for _ in range(n_dim):
-            vmaped_grad_fn = jax.vmap(vmaped_grad_fn)
-        value, det = vmaped_grad_fn(*args_arrays, **kwargs)
-
-        log_det = jnp.log(jnp.abs(det) + 1e-10)
-        while log_det.ndim > 0:
-            log_det = jnp.sum(log_det, axis=-1)
-        return value, log_det
-
-    return log_det_fn
+# =============================================================================
+# Backwards Compatibility Shims
+# =============================================================================
 
 
-def inverse_and_logabsdet_state_reducer(env, eqn, state, eqn_state, context=None):
-    del env, eqn, context
-    base_state = {} if state is None else dict(state)
-    if not eqn_state:
-        return base_state
-    merged_state = dict(base_state)
-    merged_state.update(eqn_state)
-    return merged_state
+class _LogDetRegistryShim:
+    """
+    Shim that wraps the unified REGISTRY to provide backwards-compatible
+    dict-like access for old code that uses CUSTOM_INVERSE_AND_LOG_DET_RULES.
+
+    This is deprecated and will be removed in a future version.
+    """
+
+    def __contains__(self, primitive):
+        return REGISTRY.has_rule(primitive, Context.INVERSE_LOGDET)
+
+    def __getitem__(self, primitive):
+        rule = REGISTRY.get(primitive, Context.INVERSE_LOGDET)
+        if rule is None:
+            raise KeyError(f"No INVERSE_LOGDET rule registered for {primitive}")
+        return rule
+
+    def get(self, primitive, default=None):
+        rule = REGISTRY.get(primitive, Context.INVERSE_LOGDET)
+        return rule if rule is not None else default
+
+
+# Backwards compatibility: shim provides dict-like access to INVERSE_LOGDET rules
+# DEPRECATED: Use REGISTRY.has_rule(prim, Context.INVERSE_LOGDET) instead
+CUSTOM_INVERSE_AND_LOG_DET_RULES = _LogDetRegistryShim()
+
+
+def register_inverse_and_log_det_rule(primitive, rule):
+    """
+    Register an inverse+logdet rule for a primitive.
+
+    DEPRECATED: Use @REGISTRY.rule(primitive, Context.INVERSE_LOGDET) instead.
+    """
+    REGISTRY.register(primitive, Context.INVERSE_LOGDET, rule)

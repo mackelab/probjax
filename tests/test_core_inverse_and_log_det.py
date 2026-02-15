@@ -4,12 +4,12 @@ import pytest
 
 from probjax.core import custom_inverse, inverse, inverse_and_logabsdet
 from probjax.core.interpreters.inverse.registry import (
-    BIVARIATE_INVERSE_REGISTRY,
     CUSTOM_INVERSE_PROCESSING_RULES,
 )
 from probjax.core.interpreters.inverse.logabsdet_rules import (
     CUSTOM_INVERSE_AND_LOG_DET_RULES,
 )
+from probjax.core.registry import REGISTRY, Context
 from probjax.utils.odeint import odeint
 
 
@@ -318,12 +318,12 @@ def test_inverse_bitcast_convert_type():
 
     x0 = jnp.array([0.0, 1.5, -2.25, 3.75], dtype=jnp.float32)
     eqn = jax.make_jaxpr(f)(x0).jaxpr.eqns[0]
-    _, outvals = CUSTOM_INVERSE_PROCESSING_RULES[jax.lax.bitcast_convert_type_p](
+    result = CUSTOM_INVERSE_PROCESSING_RULES[jax.lax.bitcast_convert_type_p](
         eqn,
         [None],
         [f(x0)],
     )
-    x_rec = outvals[0]
+    x_rec = result.resolved_vals[0]
     assert x_rec.dtype == x0.dtype
     assert jnp.array_equal(
         jax.lax.bitcast_convert_type(x_rec, jnp.uint32),
@@ -450,10 +450,11 @@ def test_inverse_dot_general_non_square_raises():
     x0 = jnp.array([0.2, -0.3, 1.4])
     y0 = f(x0)
     eqn = jax.make_jaxpr(f)(x0).jaxpr.eqns[0]
-    left_inverse, _ = BIVARIATE_INVERSE_REGISTRY[jax.lax.dot_general_p]
+    rule = REGISTRY.get(jax.lax.dot_general_p, Context.INVERSE)
 
+    # Calling the rule with non-square matrix should raise
     with pytest.raises(NotImplementedError):
-        left_inverse(y0, w, **eqn.params)
+        rule(eqn, [None, w], [y0])
 
 
 def test_inverse_and_logabsdet_dot_general_vector():
@@ -634,14 +635,14 @@ def test_inverse_scan_with_outputs_rule_level():
 
     eqn = jax.make_jaxpr(f)(c0, xs).jaxpr.eqns[0]
     rule = CUSTOM_INVERSE_PROCESSING_RULES[jax.lax.scan_p]
-    outvars, outvals = rule(
+    result = rule(
         eqn,
         [None, xs],
         [carry_final, ys],
     )
 
-    assert outvars == [eqn.invars[0]]
-    assert jnp.allclose(outvals[0], c0, atol=1e-6, rtol=1e-6)
+    assert result.resolved_vars == [eqn.invars[0]]
+    assert jnp.allclose(result.resolved_vals[0], c0, atol=1e-6, rtol=1e-6)
 
 
 def test_inverse_and_logabsdet_scan_carry_only():
@@ -684,14 +685,14 @@ def test_inverse_while_rule_level():
 
     eqn = jax.make_jaxpr(f)(i0, x0).jaxpr.eqns[0]
     rule = CUSTOM_INVERSE_PROCESSING_RULES[jax.lax.while_p]
-    outvars, outvals = rule(
+    result = rule(
         eqn,
         [i0, None],
         [out_i, out_x],
     )
 
-    assert outvars == [eqn.invars[1]]
-    assert jnp.allclose(outvals[0], x0, atol=1e-6, rtol=1e-6)
+    assert result.resolved_vars == [eqn.invars[1]]
+    assert jnp.allclose(result.resolved_vals[0], x0, atol=1e-6, rtol=1e-6)
 
 
 def test_inverse_and_logabsdet_while_rule_level():
@@ -714,16 +715,16 @@ def test_inverse_and_logabsdet_while_rule_level():
 
     eqn = jax.make_jaxpr(f)(i0, x0).jaxpr.eqns[0]
     rule = CUSTOM_INVERSE_AND_LOG_DET_RULES[jax.lax.while_p]
-    outvars, outvals, updates = rule(
+    result = rule(
         eqn,
         [i0, None],
         [out_i, out_x],
         context=None,
     )
 
-    assert outvars == [eqn.invars[1]]
-    assert jnp.allclose(outvals[0], x0, atol=1e-6, rtol=1e-6)
+    assert result.resolved_vars == [eqn.invars[1]]
+    assert jnp.allclose(result.resolved_vals[0], x0, atol=1e-6, rtol=1e-6)
 
     expected = -(out_i - i0).astype(jnp.float32) * jnp.log(jnp.abs(scale))
-    assert eqn.invars[1] in updates
-    assert jnp.allclose(updates[eqn.invars[1]], expected, atol=1e-6, rtol=1e-6)
+    assert eqn.invars[1] in result.state
+    assert jnp.allclose(result.state[eqn.invars[1]], expected, atol=1e-6, rtol=1e-6)

@@ -353,9 +353,20 @@ def _run_nested(
         )
         target_vals, nested_state = nested_result
 
-    eqn_state: State = nested_state
+    # Remap nested state from inner variables to outer variables
+    # This is needed because the nested jaxpr has different Var objects
+    # than the outer jaxpr, even for corresponding positions
+    eqn_state: State = None
     if nested_state is not None:
-        context.set_transient_state(state_namespace, nested_state)
+        inner_to_outer = dict(zip(nested_vars, outer_vars, strict=False))
+        remapped_state = {}
+        for inner_var, val in nested_state.items():
+            outer_var = inner_to_outer.get(inner_var)
+            if outer_var is not None:
+                remapped_state[outer_var] = val
+        eqn_state = remapped_state if remapped_state else None
+        # Store remapped state for post-processing rules to access
+        context.set_transient_state(state_namespace, eqn_state)
 
     if run_post_nested_process and any(v is not None for v in known_outputs):
         _, _, post_state = _run_process_rule(
