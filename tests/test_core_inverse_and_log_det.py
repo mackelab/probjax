@@ -3,12 +3,6 @@ import jax.numpy as jnp
 import pytest
 
 from probjax.core import custom_inverse, inverse, inverse_and_logabsdet
-from probjax.core.interpreters.inverse.registry import (
-    CUSTOM_INVERSE_PROCESSING_RULES,
-)
-from probjax.core.interpreters.inverse.logabsdet_rules import (
-    CUSTOM_INVERSE_AND_LOG_DET_RULES,
-)
 from probjax.core.registry import REGISTRY, Context
 from probjax.utils.odeint import odeint
 
@@ -318,7 +312,8 @@ def test_inverse_bitcast_convert_type():
 
     x0 = jnp.array([0.0, 1.5, -2.25, 3.75], dtype=jnp.float32)
     eqn = jax.make_jaxpr(f)(x0).jaxpr.eqns[0]
-    result = CUSTOM_INVERSE_PROCESSING_RULES[jax.lax.bitcast_convert_type_p](
+    rule = REGISTRY.get(jax.lax.bitcast_convert_type_p, Context.INVERSE)
+    result = rule(
         eqn,
         [None],
         [f(x0)],
@@ -516,7 +511,7 @@ def test_inverse_and_logabsdet_dot_general_non_square_raises():
     x0 = jnp.array([0.2, -0.3, 1.4])
     y0 = f(x0)
     eqn = jax.make_jaxpr(f)(x0).jaxpr.eqns[0]
-    rule = CUSTOM_INVERSE_AND_LOG_DET_RULES[jax.lax.dot_general_p]
+    rule = REGISTRY.get(jax.lax.dot_general_p, Context.INVERSE_LOGDET)
 
     with pytest.raises(NotImplementedError):
         rule(eqn, [None, w], [y0], context=None)
@@ -634,7 +629,7 @@ def test_inverse_scan_with_outputs_rule_level():
     carry_final, ys = f(c0, xs)
 
     eqn = jax.make_jaxpr(f)(c0, xs).jaxpr.eqns[0]
-    rule = CUSTOM_INVERSE_PROCESSING_RULES[jax.lax.scan_p]
+    rule = REGISTRY.get(jax.lax.scan_p, Context.INVERSE)
     result = rule(
         eqn,
         [None, xs],
@@ -684,7 +679,7 @@ def test_inverse_while_rule_level():
     out_i, out_x = f(i0, x0)
 
     eqn = jax.make_jaxpr(f)(i0, x0).jaxpr.eqns[0]
-    rule = CUSTOM_INVERSE_PROCESSING_RULES[jax.lax.while_p]
+    rule = REGISTRY.get(jax.lax.while_p, Context.INVERSE)
     result = rule(
         eqn,
         [i0, None],
@@ -714,7 +709,7 @@ def test_inverse_and_logabsdet_while_rule_level():
     out_i, out_x = f(i0, x0)
 
     eqn = jax.make_jaxpr(f)(i0, x0).jaxpr.eqns[0]
-    rule = CUSTOM_INVERSE_AND_LOG_DET_RULES[jax.lax.while_p]
+    rule = REGISTRY.get(jax.lax.while_p, Context.INVERSE_LOGDET)
     result = rule(
         eqn,
         [i0, None],

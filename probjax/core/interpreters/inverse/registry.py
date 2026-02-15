@@ -111,59 +111,7 @@ def inverse_cost_fn(eqn, known_invars, known_outvars):
     return jnp.inf
 
 
-# =============================================================================
-# Backwards Compatibility Shims
-# =============================================================================
-
-
-class _RegistryShim:
-    """
-    Shim that wraps the unified REGISTRY to provide backwards-compatible
-    dict-like access for old code that uses UNIVARIATE_INVERSE_REGISTRY, etc.
-
-    This is deprecated and will be removed in a future version.
-    """
-
-    def __init__(self, context: str):
-        self.context = context
-
-    def __contains__(self, primitive):
-        return REGISTRY.has_rule(primitive, self.context)
-
-    def __getitem__(self, primitive):
-        rule = REGISTRY.get(primitive, self.context)
-        if rule is None:
-            raise KeyError(f"No rule registered for {primitive} in {self.context}")
-        return rule
-
-    def get(self, primitive, default=None):
-        rule = REGISTRY.get(primitive, self.context)
-        return rule if rule is not None else default
-
-
-# Backwards compatibility: these shims provide dict-like access to rules
-# DEPRECATED: Use REGISTRY.has_rule(prim, Context.INVERSE) instead
-UNIVARIATE_INVERSE_REGISTRY = _RegistryShim(Context.INVERSE)
-BIVARIATE_INVERSE_REGISTRY = _RegistryShim(Context.INVERSE)
-CUSTOM_INVERSE_PROCESSING_RULES = _RegistryShim(Context.INVERSE)
-
-
-def register_inverse_rule(primitive, rule):
-    """
-    Register an inverse rule for a primitive.
-
-    DEPRECATED: Use @REGISTRY.rule(primitive, Context.INVERSE) instead.
-    """
-    REGISTRY.register(primitive, Context.INVERSE, rule)
-
-
 __all__ = [
-    # Main exports
     "has_registered_inverse",
     "inverse_cost_fn",
-    # Backwards compatibility (deprecated)
-    "BIVARIATE_INVERSE_REGISTRY",
-    "CUSTOM_INVERSE_PROCESSING_RULES",
-    "UNIVARIATE_INVERSE_REGISTRY",
-    "register_inverse_rule",
 ]
