@@ -256,12 +256,23 @@ def build_bosh3_tablau(dtype: jnp.dtype):
     return c, A, b_sol, b_error, b_mid
 
 
-# Bogacki-Shampine method of 3rd order
+# Bogacki-Shampine method of 3rd order (FSAL - First Same As Last)
+# This is a 4-stage method where the 4th stage equals the first stage of the next step
 def build_bogacki_shampine_tablau(dtype: jnp.dtype):
-    c = jnp.array([0.0, 0.5, 0.75], dtype=dtype)
-    A = jnp.array([[0, 0, 0], [0.5, 0, 0], [0, 0.75, 0]], dtype=dtype)
-    b_sol = jnp.array([2.0 / 9.0, 1.0 / 3.0, 4.0 / 9.0], dtype=dtype)
-    b_error = jnp.array([7.0 / 24.0, 0.25, 1.0 / 3.0], dtype=dtype)
+    c = jnp.array([0.0, 0.5, 0.75, 1.0], dtype=dtype)
+    A = jnp.array(
+        [
+            [0.0, 0.0, 0.0, 0.0],
+            [0.5, 0.0, 0.0, 0.0],
+            [0.0, 0.75, 0.0, 0.0],
+            [2.0 / 9.0, 1.0 / 3.0, 4.0 / 9.0, 0.0],
+        ],
+        dtype=dtype,
+    )
+    # 3rd order solution (same as 4th row of A, making it FSAL)
+    b_sol = jnp.array([2.0 / 9.0, 1.0 / 3.0, 4.0 / 9.0, 0.0], dtype=dtype)
+    # 2nd order embedded solution for error estimation
+    b_error = jnp.array([7.0 / 24.0, 0.25, 1.0 / 3.0, 1.0 / 8.0], dtype=dtype)
     b_mid = None
 
     return c, A, b_sol, b_error, b_mid
@@ -324,7 +335,7 @@ bosh3 = build_rk_method("bosh3", build_bosh3_tablau, last_equals_next=False)
 bogacki_shampine = build_rk_method(
     "bogacki_shampine",
     build_bogacki_shampine_tablau,
-    last_equals_next=False,  # This might be wrong
+    last_equals_next=True,  # FSAL method - last stage equals first stage of next step
 )
 heun3 = build_rk_method("heun3", build_heun3_tablau, last_equals_next=False)
 vanderhouwen = build_rk_method(
@@ -657,7 +668,7 @@ register_method(
         "order": 3,
         "info": "Bogacki-Shampine method with error estimation",
         "adaptive": True,
-        "interpolation_order": 4,
+        "interpolation_order": 3,  # 3rd order interpolation (no midpoint available)
     },
 )
 

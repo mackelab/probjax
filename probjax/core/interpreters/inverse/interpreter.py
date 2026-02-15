@@ -15,7 +15,10 @@ from probjax.core.custom_primitives.custom_inverse import (
     custom_inverse,
     custom_inverse_call_p,
 )
-from probjax.core.jaxpr_propagation.utils import ProcessingRule
+from probjax.core.jaxpr_propagation.utils import (
+    KnownessLevel,
+    ProcessingRule,
+)
 from probjax.core.registry import Context, ProcessedResult, REGISTRY
 
 
@@ -83,10 +86,14 @@ class InverseProcessingRule(ProcessingRule):
     """
     Processing rule that computes inverse values using the unified registry.
 
-    For each equation, this rule:
-    1. If all outputs are known: try to apply an INVERSE rule to recover inputs
-    2. If all inputs are known: run the primitive forward to compute outputs
-    3. Handle custom_inverse_call_p specially using its inverse jaxpr
+    For each equation, this rule uses Knowness levels to determine whether
+    to run FORWARD or INVERSE:
+
+    1. If any output is COMPLETE: prefer INVERSE (don't overwrite authoritative values)
+    2. If all inputs known and outputs can be overwritten: prefer FORWARD
+    3. If all outputs known: try INVERSE
+    4. If all inputs known: try FORWARD
+    5. Handle custom_inverse_call_p specially using its inverse jaxpr
     """
 
     def __call__(
@@ -99,29 +106,96 @@ class InverseProcessingRule(ProcessingRule):
         all_inputs_known = all(v is not None for v in known_invars)
         all_outputs_known = all(v is not None for v in known_outvars)
 
-        # When BOTH inputs AND outputs are known, prefer FORWARD processing.
-        # This handles the "resolve conflicts" case where an intermediate variable
-        # was set to a placeholder value by an inverse rule, and the forward pass
-        # should overwrite it with the correct computed value.
-        if all_inputs_known and all_outputs_known:
-            result = REGISTRY.process(eqn, known_invars, known_outvars, Context.FORWARD)
-            if result is not None:
-                return result
+        # Get knowness levels from context if available
+        # This allows us to distinguish PARTIAL from COMPLETE outputs
+        output_knowness_levels = self._get_output_knowness_levels(eqn, context)
+        input_knowness_levels = self._get_input_knowness_levels(eqn, context)
 
-        # Try inverse rule if all outputs are known
-        if all_outputs_known:
+        any_output_complete = any(
+            level == KnownessLevel.COMPLETE for level in output_knowness_levels
+        )
+        all_outputs_complete = all(
+            level == KnownessLevel.COMPLETE for level in output_knowness_levels
+        )
+        all_outputs_can_overwrite = all(
+            level != KnownessLevel.COMPLETE for level in output_knowness_levels
+        )
+        # Check if ALL inputs are COMPLETE (authoritative, no placeholders)
+        all_inputs_complete = all(
+            level == KnownessLevel.COMPLETE for level in input_knowness_levels
+        )
+
+        # When BOTH inputs AND outputs are known, use knowness to decide:
+        # - If any output is COMPLETE (authoritative), prefer INVERSE
+        # - If outputs are PARTIAL and ALL inputs are COMPLETE, FORWARD can fix them
+        if all_inputs_known and all_outputs_known:
+            if any_output_complete:
+                # At least one output is authoritative - use INVERSE to compute inputs
+                result = REGISTRY.process(
+                    eqn, known_invars, known_outvars, Context.INVERSE
+                )
+                if result is not None:
+                    return result
+            elif all_outputs_can_overwrite and all_inputs_complete:
+                # Outputs are partial/placeholder AND inputs are fully known
+                # FORWARD can fix the placeholder outputs
+                result = REGISTRY.process(
+                    eqn, known_invars, known_outvars, Context.FORWARD
+                )
+                if result is not None:
+                    return result
+
+        # Try inverse rule if all outputs are known AND all outputs are COMPLETE
+        # (If any output is PARTIAL, inverse would use placeholder values)
+        # Exception: The "any_output_complete" case above already handled mixed cases
+        if all_outputs_known and all_outputs_complete:
             result = REGISTRY.process(eqn, known_invars, known_outvars, Context.INVERSE)
             if result is not None:
                 return result
 
-        # Try forward rule if all inputs are known
-        if all_inputs_known:
+        # Try forward rule if all inputs are known AND all inputs are COMPLETE
+        # (If any input is PARTIAL, forward would produce garbage from placeholder values)
+        if all_inputs_known and all_inputs_complete:
             result = REGISTRY.process(eqn, known_invars, known_outvars, Context.FORWARD)
+            if result is not None:
+                return result
+
+        # Fallback: Try inverse if outputs are known but inputs are not all known
+        # This handles cases like scatter where we need to extract values from
+        # a PARTIAL output array (e.g., dynamic_slice wrote valid data at scatter indices)
+        if all_outputs_known and not all_inputs_known:
+            result = REGISTRY.process(eqn, known_invars, known_outvars, Context.INVERSE)
             if result is not None:
                 return result
 
         # Cannot process this equation
         return None
+
+    def _get_input_knowness_levels(self, eqn, context) -> list[KnownessLevel]:
+        """Get the knowness levels for input variables."""
+        if context is None or not hasattr(context, "env"):
+            # Fallback: assume all known values are COMPLETE
+            return [KnownessLevel.COMPLETE] * len(eqn.invars)
+
+        env = context.env
+        levels = []
+        for var in eqn.invars:
+            level = env.get_knowness_level(var)
+            levels.append(level)
+        return levels
+
+    def _get_output_knowness_levels(self, eqn, context) -> list[KnownessLevel]:
+        """Get the knowness levels for output variables."""
+        if context is None or not hasattr(context, "env"):
+            # Fallback: assume all known values are COMPLETE
+            return [KnownessLevel.COMPLETE] * len(eqn.outvars)
+
+        env = context.env
+        levels = []
+        for var in eqn.outvars:
+            level = env.get_knowness_level(var)
+            levels.append(level)
+        return levels
 
     def _process_custom_inverse_call(
         self, eqn, known_invars, known_outvars

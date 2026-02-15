@@ -36,6 +36,8 @@ from einops import rearrange, repeat
 from jax import lax
 from jax.experimental import pallas as pl
 
+from probjax.nn.pallas_kernels.utils import use_interpret_mode
+
 
 def _matmul_fp32(lhs: jax.Array, rhs: jax.Array) -> jax.Array:
     """A wrapper around jax.lax.dot to conduct float32 matmul"""
@@ -280,7 +282,10 @@ def _ssd_forward(
                     "arbitrary",
                 )
             )
-        ),
+        )
+        if not use_interpret_mode()
+        else None,
+        interpret=use_interpret_mode(),
     )(q, k, v, cum_log_alpha, initial_state, gamma_expanded)
 
     o = jnp.sum(o, axis=2)  # sum over dkn dim
@@ -561,7 +566,10 @@ def _ssd_backward(residuals: Tuple, do: jax.Array) -> Tuple:
                     "arbitrary",
                 )
             )
-        ),
+        )
+        if not use_interpret_mode()
+        else None,
+        interpret=use_interpret_mode(),
     )(q, k, v, cum_log_alpha, gamma_expanded, chunk_states, do)
 
     # Sum over dvn dim.

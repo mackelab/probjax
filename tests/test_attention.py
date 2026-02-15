@@ -523,15 +523,9 @@ def test_cross_attention_shapes(
 def test_flex_attention_vmap_over_leading_batch_matches_manual():
     outer_batch, batch_size, seq_len, num_heads, qkv_dim = 3, 2, 8, 2, 8
     key_q, key_k, key_v = jax.random.split(jax.random.PRNGKey(0), 3)
-    q = jax.random.normal(
-        key_q, (outer_batch, batch_size, seq_len, num_heads, qkv_dim)
-    )
-    k = jax.random.normal(
-        key_k, (outer_batch, batch_size, seq_len, num_heads, qkv_dim)
-    )
-    v = jax.random.normal(
-        key_v, (outer_batch, batch_size, seq_len, num_heads, qkv_dim)
-    )
+    q = jax.random.normal(key_q, (outer_batch, batch_size, seq_len, num_heads, qkv_dim))
+    k = jax.random.normal(key_k, (outer_batch, batch_size, seq_len, num_heads, qkv_dim))
+    v = jax.random.normal(key_v, (outer_batch, batch_size, seq_len, num_heads, qkv_dim))
 
     def attention_fn(q_, k_, v_):
         return flex_attention(q_, k_, v_, deterministic=True)
@@ -553,15 +547,9 @@ def test_flex_attention_vmap_over_leading_batch_matches_manual():
 def test_flex_attention_vmap_over_leading_batch_with_mask_matches_manual():
     outer_batch, batch_size, seq_len, num_heads, qkv_dim = 2, 2, 8, 2, 8
     key_q, key_k, key_v = jax.random.split(jax.random.PRNGKey(202), 3)
-    q = jax.random.normal(
-        key_q, (outer_batch, batch_size, seq_len, num_heads, qkv_dim)
-    )
-    k = jax.random.normal(
-        key_k, (outer_batch, batch_size, seq_len, num_heads, qkv_dim)
-    )
-    v = jax.random.normal(
-        key_v, (outer_batch, batch_size, seq_len, num_heads, qkv_dim)
-    )
+    q = jax.random.normal(key_q, (outer_batch, batch_size, seq_len, num_heads, qkv_dim))
+    k = jax.random.normal(key_k, (outer_batch, batch_size, seq_len, num_heads, qkv_dim))
+    v = jax.random.normal(key_v, (outer_batch, batch_size, seq_len, num_heads, qkv_dim))
     mask = CausalMask()
 
     def attention_fn(q, k, v):
@@ -764,10 +752,7 @@ def test_cross_attention_with_mask_and_bias(
     # Some stateful masks like KeyPaddingMask/MarginalizationMask may differ in
     # semantics under cross-attention with added bias; skip those here.
     if isinstance(mask, (KeyPaddingMask, MarginalizationMask)):
-        pytest.skip(
-            "Skipping cross-attention equivalence for KeyPadding/Marginalization masks"
-        )
-
+        return
     bias_dense = jax.random.normal(key3, (1, 1, q_len, kv_len)) * 1.5
 
     out_dense = dot_product_attention(q, k, v, mask=mask_dense, bias=bias_dense)

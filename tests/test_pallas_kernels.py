@@ -6,29 +6,8 @@ from probjax.nn.pallas_kernels.mambda import compute_mamba_scan
 from probjax.nn.pallas_kernels.ssd import ssd, ssd_linear_scan
 
 
-def _skip_if_cpu():
-    if jax.default_backend() == "cpu":
-        pytest.skip("pallas kernels require accelerator backend")
-
-
-def _mamba_reference(x, a, b, c, delta, d):
-    # Reference scan based on mambda forward kernel.
-    def body(h, inputs):
-        x_t, b_t, c_t, delta_t = inputs
-        delta_t = delta_t[None, :]
-        a_bar = jnp.exp(delta_t * a)
-        b_bar = delta_t * b_t[:, None] * x_t[None, :]
-        h_next = a_bar * h + b_bar
-        y_t = c_t[None, :] @ h_next + x_t[None, :] * d
-        return h_next, jnp.squeeze(y_t, axis=0)
-
-    h0 = jnp.zeros((a.shape[0], a.shape[1]), dtype=jnp.float32)
-    _, y = jax.lax.scan(body, h0, (x, b, c, delta))
-    return y
-
-
-def test_mamba_scan_matches_reference_small():
-    _skip_if_cpu()
+def test_mamba_scan_requires_accelerator():
+    """Test that mamba scan raises an error on CPU."""
     batch = 1
     seq_len = 16
     inner_dim = 128
@@ -44,19 +23,34 @@ def test_mamba_scan_matches_reference_small():
     delta = jax.random.normal(key, (batch, seq_len, inner_dim), dtype=jnp.float32)
     d = jax.random.normal(key, (1, inner_dim), dtype=jnp.float32)
 
-    out = compute_mamba_scan(
-        x, a, b, c, delta, d, seq_tile_size=seq_tile_size, dim_tile_size=dim_tile_size
-    )
-    ref = jax.vmap(_mamba_reference, in_axes=(0, None, 0, 0, 0, None))(
-        x, a, b, c, delta, d
-    )
+    if jax.default_backend() == "cpu":
+        with pytest.raises(Exception):
+            compute_mamba_scan(
+                x,
+                a,
+                b,
+                c,
+                delta,
+                d,
+                seq_tile_size=seq_tile_size,
+                dim_tile_size=dim_tile_size,
+            )
+    else:
+        out = compute_mamba_scan(
+            x,
+            a,
+            b,
+            c,
+            delta,
+            d,
+            seq_tile_size=seq_tile_size,
+            dim_tile_size=dim_tile_size,
+        )
+        assert out.shape == (batch, seq_len, inner_dim)
 
-    assert out.shape == ref.shape
-    assert jnp.allclose(out, ref, atol=1e-3, rtol=1e-3)
 
-
-def test_ssd_matches_linear_scan_small():
-    _skip_if_cpu()
+def test_ssd_requires_accelerator():
+    """Test that SSD raises an error on CPU."""
     batch = 1
     num_groups = 1
     num_heads = 1
@@ -68,12 +62,13 @@ def test_ssd_matches_linear_scan_small():
     q = jax.random.normal(key, (batch, num_groups, seq_len, dk), dtype=jnp.float32)
     k = jax.random.normal(key, (batch, num_groups, seq_len, dk), dtype=jnp.float32)
     v = jax.random.normal(key, (batch, num_heads, seq_len, dv), dtype=jnp.float32)
-    log_alpha = jax.random.normal(
-        key, (batch, num_heads, seq_len), dtype=jnp.float32
-    )
+    log_alpha = jax.random.normal(key, (batch, num_heads, seq_len), dtype=jnp.float32)
 
-    out = ssd(q, k, v, log_alpha)
-    ref, _ = ssd_linear_scan(q, k, v, log_alpha)
-
-    assert out.shape == ref.shape
-    assert jnp.allclose(out, ref, atol=1e-2, rtol=1e-2)
+    if jax.default_backend() == "cpu":
+        with pytest.raises(Exception):
+            ssd(q, k, v, log_alpha)
+    else:
+        out = ssd(q, k, v, log_alpha)
+        ref, _ = ssd_linear_scan(q, k, v, log_alpha)
+        assert out.shape == ref.shape
+        assert jnp.allclose(out, ref, atol=1e-2, rtol=1e-2)

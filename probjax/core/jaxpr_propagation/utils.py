@@ -1,5 +1,7 @@
 import inspect
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Callable, Optional, Protocol, Sequence
 
 from jax.extend.core import JaxprEqn, Literal
@@ -8,17 +10,123 @@ from jaxtyping import Array
 if TYPE_CHECKING:
     from probjax.core.registry import ProcessedResult
 
-# High level API
+
+# =============================================================================
+# Knowness Type - Tracks variable knowledge state
+# =============================================================================
+
+
+class KnownessLevel(Enum):
+    """Level of knowledge about a variable's value.
+
+    UNKNOWN: No value has been computed yet.
+    PARTIAL: Value exists but may be incomplete (e.g., array with some NaN
+             placeholders). Can be updated/merged with additional information.
+    COMPLETE: Value is fully determined and authoritative. Should not be
+              overwritten by forward computation.
+    """
+
+    UNKNOWN = auto()
+    PARTIAL = auto()
+    COMPLETE = auto()
+
+
+@dataclass(frozen=True, slots=True)
+class Knowness:
+    """
+    Represents the state of knowledge about a variable.
+
+    This type enables more nuanced control over how variables are processed
+    during inverse propagation:
+
+    - UNKNOWN: No value yet, waiting for computation
+    - PARTIAL: Has a value that can be updated (e.g., accumulating slices)
+    - COMPLETE: Authoritative value, forward computation should not overwrite
+
+    Attributes:
+        level: The level of knowledge (UNKNOWN, PARTIAL, or COMPLETE)
+        value: The actual value (None only if UNKNOWN)
+    """
+
+    level: KnownessLevel
+    value: Optional[Any] = None
+
+    def __post_init__(self):
+        if self.level == KnownessLevel.UNKNOWN and self.value is not None:
+            raise ValueError("UNKNOWN knowness must have value=None")
+        if self.level != KnownessLevel.UNKNOWN and self.value is None:
+            raise ValueError(f"{self.level.name} knowness must have a value")
+
+    @classmethod
+    def unknown(cls) -> "Knowness":
+        """Create an UNKNOWN knowness (no value yet)."""
+        return cls(KnownessLevel.UNKNOWN, None)
+
+    @classmethod
+    def partial(cls, value: Any) -> "Knowness":
+        """Create a PARTIAL knowness (value can be updated/merged)."""
+        return cls(KnownessLevel.PARTIAL, value)
+
+    @classmethod
+    def complete(cls, value: Any) -> "Knowness":
+        """Create a COMPLETE knowness (authoritative, don't overwrite)."""
+        return cls(KnownessLevel.COMPLETE, value)
+
+    @classmethod
+    def from_value(cls, value: Optional[Any]) -> "Knowness":
+        """Convert a legacy None/value to Knowness.
+
+        None becomes UNKNOWN, any value becomes COMPLETE.
+        This provides backward compatibility with code that uses
+        None to represent unknown values.
+        """
+        if value is None:
+            return cls.unknown()
+        return cls.complete(value)
+
+    @property
+    def is_known(self) -> bool:
+        """True if any value exists (PARTIAL or COMPLETE)."""
+        return self.level != KnownessLevel.UNKNOWN
+
+    @property
+    def is_complete(self) -> bool:
+        """True if value is authoritative (COMPLETE only)."""
+        return self.level == KnownessLevel.COMPLETE
+
+    @property
+    def is_partial(self) -> bool:
+        """True if value exists but can be updated (PARTIAL only)."""
+        return self.level == KnownessLevel.PARTIAL
+
+    @property
+    def can_overwrite(self) -> bool:
+        """True if forward computation can overwrite this value.
+
+        UNKNOWN and PARTIAL can be overwritten, COMPLETE cannot.
+        """
+        return self.level in (KnownessLevel.UNKNOWN, KnownessLevel.PARTIAL)
+
+
+# =============================================================================
+# Environment - Stores intermediate computations
+# =============================================================================
 
 
 class Environment(dict):
-    """A compute environment that stores intermediate computations."""
+    """A compute environment that stores intermediate computations.
+
+    The Environment stores both raw values and their knowness levels.
+    For backward compatibility, it can be used with just values (defaulting
+    to COMPLETE knowness), or with explicit Knowness objects for finer control.
+    """
 
     def __init__(self):
         super().__init__()
         self.eqn_states: dict[Any, Any] = {}
         self.eqn_states_by_namespace: dict[Any, dict[str, Any]] = {}
         self.run_states: dict[str, Any] = {}
+        self._knowness: dict[Any, KnownessLevel] = {}
 
     def __getitem__(self, var: Any) -> Optional[Array]:
         if isinstance(var, Literal):
@@ -31,12 +139,54 @@ class Environment(dict):
     def __setitem__(self, var: Any, val: Array | None) -> None:
         if not isinstance(var, Literal):
             super().__setitem__(var, val)
+            # Default to COMPLETE when setting raw values
+            if val is not None:
+                self._knowness[var] = KnownessLevel.COMPLETE
 
     def read(self, var: Any) -> Array | None:
         return self[var]
 
     def write(self, var: Any, val: Array | None) -> None:
         self[var] = val
+
+    def read_knowness(self, var: Any) -> Knowness:
+        """Read the knowness state of a variable.
+
+        Returns a Knowness object representing the current state of knowledge
+        about the variable.
+        """
+        if isinstance(var, Literal):
+            return Knowness.complete(var.val)
+        if var not in self:
+            return Knowness.unknown()
+        value = super().__getitem__(var)
+        level = self._knowness.get(var, KnownessLevel.COMPLETE)
+        return Knowness(level, value)
+
+    def write_knowness(self, var: Any, knowness: Knowness) -> None:
+        """Write a variable with explicit knowness level.
+
+        Args:
+            var: The variable to write
+            knowness: A Knowness object containing value and level
+        """
+        if isinstance(var, Literal):
+            return
+        if knowness.level == KnownessLevel.UNKNOWN:
+            # Remove from environment if setting to unknown
+            self.pop(var, None)
+            self._knowness.pop(var, None)
+        else:
+            super().__setitem__(var, knowness.value)
+            self._knowness[var] = knowness.level
+
+    def get_knowness_level(self, var: Any) -> KnownessLevel:
+        """Get just the knowness level for a variable."""
+        if isinstance(var, Literal):
+            return KnownessLevel.COMPLETE
+        if var not in self:
+            return KnownessLevel.UNKNOWN
+        return self._knowness.get(var, KnownessLevel.COMPLETE)
 
     def known(self, var: Any) -> bool:
         return isinstance(var, Literal) or var in self

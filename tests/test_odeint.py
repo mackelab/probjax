@@ -8,7 +8,7 @@ from probjax.utils.odeutil import TraceNothing
 
 pytest_plugins = ["test_problems.ode_problems"]
 
-KNOWN_ERROR = ["bogacki_shampine"]
+KNOWN_ERROR = []  # All methods should work now
 # Methods that require split_drift
 SPLIT_DRIFT_METHODS = ["exp_ab2_scalarL", "exp_ab3_scalarL"]
 

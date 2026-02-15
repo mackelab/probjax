@@ -18,6 +18,8 @@ from jax import numpy as jnp
 from jax._src.lax import fori_loop
 from jax.experimental import pallas as pl
 
+from probjax.nn.pallas_kernels.utils import use_interpret_mode
+
 # MATMUL_PREC can be set to jax.lax.Precision("float32") for greater accuracy.
 MATMUL_PREC = None
 
@@ -449,7 +451,10 @@ def _loop_backward_pallas(
         out_specs=[carry_spec, bdry_spec],
         compiler_params=dict(
             mosaic=dict(dimension_semantics=("parallel", "parallel", "arbitrary"))
-        ),
+        )
+        if not use_interpret_mode()
+        else None,
+        interpret=use_interpret_mode(),
     )(x, a, b, delta)
 
     # Create BlockSpecs for gradient jax.Arrays with different shapes from their forward
@@ -524,7 +529,10 @@ def _loop_backward_pallas(
         ],
         compiler_params=dict(
             mosaic=dict(dimension_semantics=("parallel", "parallel", "arbitrary")),
-        ),
+        )
+        if not use_interpret_mode()
+        else None,
+        interpret=use_interpret_mode(),
     )(
         dy,
         x,
@@ -688,7 +696,10 @@ def _loop_forward_pallas(
                     "arbitrary",
                 )
             )
-        ),
+        )
+        if not use_interpret_mode()
+        else None,
+        interpret=use_interpret_mode(),
     )(
         x.astype(jnp.float32),
         a,

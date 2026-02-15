@@ -14,6 +14,14 @@ NEG_INF = -1e15
 DEFAULT_MASK_VALUE = NEG_INF
 
 
+def use_interpret_mode() -> bool:
+    """Check if we should use interpret mode for pallas kernels.
+
+    Returns True when running on CPU, which requires interpret mode for pallas.
+    """
+    return jax.default_backend() == "cpu"
+
+
 # ------------------------ Block Sparsity Helpers -----------------------------
 
 

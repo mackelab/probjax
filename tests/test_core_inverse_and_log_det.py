@@ -278,9 +278,6 @@ def test_inverse_transpose():
     assert jnp.allclose(x0, x_rec)
 
 
-@pytest.mark.xfail(
-    reason="Dynamic slice inverse rule does not fully reconstruct inputs", strict=False
-)
 def test_inverse_slice_dynamic_slice():
     def f(x):
         head = jax.lax.dynamic_slice(x, (0,), (2,))

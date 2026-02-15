@@ -27,6 +27,8 @@ from probjax.core.jaxpr_propagation.utils import (
     CostFunction,
     Environment,
     ForwardProcessingRule,
+    Knowness,
+    KnownessLevel,
     ProcessingRule,
     ReducerFunction,
     as_sequence,
@@ -365,9 +367,17 @@ def _write_outputs(
     outvars: Sequence[Any],
     outvals: Sequence[Any],
 ) -> list[Any]:
+    """Write output values to the environment.
+
+    If a value is a Knowness object, it is written with its associated level.
+    Otherwise, the value is written as COMPLETE (authoritative).
+    """
     written_vars: list[Any] = []
     for var, val in zip(outvars, outvals, strict=False):
-        env.write(var, val)
+        if isinstance(val, Knowness):
+            env.write_knowness(var, val)
+        else:
+            env.write(var, val)
         written_vars.append(var)
     return written_vars
 
@@ -388,6 +398,8 @@ class _EquationQueue:
         }
 
         self.processed_eqns: set[EqnId] = set()
+        # Track equations that returned no results (can be re-processed)
+        self.deferred_eqns: set[EqnId] = set()
         self.queue = PriorityQueue()
 
         self._initialize()
@@ -412,7 +424,11 @@ class _EquationQueue:
 
     def push(self, eqn_id: EqnId):
         if eqn_id in self.processed_eqns:
+            # Fully processed equations cannot be re-added
             return
+        # Deferred equations CAN be re-added when new info is available
+        if eqn_id in self.deferred_eqns:
+            self.deferred_eqns.remove(eqn_id)
         cost = self._compute_cost(eqn_id)
         if eqn_id in self.queue:
             self.queue.update_cost(eqn_id, cost)
@@ -421,8 +437,17 @@ class _EquationQueue:
 
     def pop(self) -> ExtendedEquation:
         eqn_id = self.queue.pop()
-        self.processed_eqns.add(eqn_id)
+        # Don't mark as processed yet - caller will call mark_processed or mark_deferred
         return self.equation_by_id[eqn_id]
+
+    def mark_processed(self, eqn_id: EqnId):
+        """Mark equation as fully processed (cannot be re-added)."""
+        self.processed_eqns.add(eqn_id)
+        self.deferred_eqns.discard(eqn_id)
+
+    def mark_deferred(self, eqn_id: EqnId):
+        """Mark equation as deferred (can be re-added when new info available)."""
+        self.deferred_eqns.add(eqn_id)
 
     def is_empty(self) -> bool:
         return self.queue.is_empty()
@@ -621,10 +646,28 @@ def run_jaxpr(
                 context,
             )
 
+        # Write outputs FIRST, then determine processing status
         written_vars = _write_outputs(env, output_vars, output_vals)
         _write_equation_state(env, extended_eqn, eqn_state, state_namespace)
         state = reducer_adapter(env, extended_eqn, state, eqn_state, context)
         context.write_run_state(state, namespace=state_namespace)
+
+        # Determine if equation should be marked as fully processed or deferred
+        # An equation is fully processed only when ALL its output variables are COMPLETE
+        # If any output is still PARTIAL, we may need to re-process later
+        if output_vars:
+            # Check if all outputs of this equation are now COMPLETE
+            all_outputs_complete = all(
+                env.get_knowness_level(var) == KnownessLevel.COMPLETE
+                for var in extended_eqn.outvars
+            )
+            if all_outputs_complete:
+                equation_queue.mark_processed(extended_eqn.eqn_id)
+            else:
+                # Some outputs are still PARTIAL, may need re-processing
+                equation_queue.mark_deferred(extended_eqn.eqn_id)
+        else:
+            equation_queue.mark_deferred(extended_eqn.eqn_id)
 
         for var in written_vars:
             eqn_ids = extended.neighbors.get(var, ())

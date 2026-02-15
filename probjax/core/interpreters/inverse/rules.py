@@ -14,7 +14,11 @@ from jax._src.util import safe_map
 from jax.extend.core import Literal
 
 from probjax.core.jaxpr_propagation import propagate
-from probjax.core.jaxpr_propagation.utils import CostFunction, ProcessingRuleFactory
+from probjax.core.jaxpr_propagation.utils import (
+    CostFunction,
+    Knowness,
+    ProcessingRuleFactory,
+)
 from probjax.core.registry import (
     Context,
     ProcessedResult,
@@ -887,26 +891,53 @@ def invert_select_n(eqn, known_invars, known_outvars):
     in_avals = safe_map(lambda x: x.aval, eqn.invars[1:])
 
     # For select_n(which, case0, case1, ...), we have: out = cases[which]
-    # When inverting, we set ALL unknown cases to the output value.
-    # This works because:
-    # 1. The selected case will have the correct value (output)
-    # 2. For non-selected cases, the forward pass of their producer equations
-    #    will overwrite them with correct values (computed from the now-known
-    #    selected case value).
+    # When we know `which`, we can precisely set only the selected case to the output value.
+    # Non-selected cases remain UNKNOWN - their values will be computed by FORWARD
+    # from the now-known selected case value.
     #
     # Example: select_n(idx=1, neg(x), x) with output y
-    # - We set both neg(x) and x to y
-    # - x = y is correct (since idx=1 selected x)
-    # - neg's forward pass then computes neg(x) = neg(y), overwriting the wrong value
+    # - We set only x = y (since idx=1 selected x)
+    # - neg's forward pass then computes neg(x) = neg(y)
 
-    new_cases = []
-    for c, aval in zip(cases, in_avals, strict=False):
-        if c is None:
-            new_cases.append(out.astype(aval.dtype))
-        else:
-            new_cases.append(c)
+    # Check if which is a scalar (all elements same) or varies per element
+    which_array = jnp.asarray(which)
+    first_idx = which_array.flatten()[0]
 
-    return ProcessedResult(eqn.invars[1:], new_cases)
+    # For now, handle the simple case where which is uniform (all same index)
+    # This covers the common case of jnp.select with a uniform condition
+    if which_array.ndim == 0 or jnp.all(which_array == first_idx):
+        # Uniform selection - only one case was selected everywhere
+        selected_idx = int(first_idx)
+
+        resolved_vars = []
+        resolved_vals = []
+
+        for i, (c, aval) in enumerate(zip(cases, in_avals, strict=False)):
+            if c is None:
+                if i == selected_idx:
+                    # This is THE selected case - set to COMPLETE output value
+                    resolved_vars.append(eqn.invars[1 + i])
+                    resolved_vals.append(out.astype(aval.dtype))
+                # Non-selected cases: leave as UNKNOWN (don't add to result)
+            # Already-known cases: don't overwrite
+
+        if not resolved_vars:
+            return None
+        return ProcessedResult(resolved_vars, resolved_vals)
+    else:
+        # Non-uniform selection (different indices for different elements)
+        # Fall back to setting all unknown cases as PARTIAL placeholders
+        new_cases = []
+        resolved_vars = []
+        for i, (c, aval) in enumerate(zip(cases, in_avals, strict=False)):
+            if c is None:
+                # This is a placeholder value - mark as PARTIAL so forward can fix it
+                resolved_vars.append(eqn.invars[1 + i])
+                new_cases.append(Knowness.partial(out.astype(aval.dtype)))
+
+        if not resolved_vars:
+            return None
+        return ProcessedResult(resolved_vars, new_cases)
 
 
 @REGISTRY.rule(jax.lax.reshape_p, Context.INVERSE)
@@ -981,14 +1012,33 @@ def invert_slice(eqn, known_invars, known_outvars):
     if out is None:
         return None
     start_index = eqn.params["start_indices"]
+    limit_indices = eqn.params["limit_indices"]
+    strides = eqn.params.get("strides")
     invar = eqn.invars[0]
     in_aval = invar.aval
+
+    # Check if this is a full slice (covers the entire input)
+    # A full slice has start_index all zeros, limit_indices equal to input shape,
+    # and either no strides or all strides equal to 1
+    is_full_slice = (
+        all(s == 0 for s in start_index)
+        and tuple(limit_indices) == tuple(in_aval.shape)
+        and (strides is None or all(s == 1 for s in strides))
+    )
+
+    # Track if we're creating a partial reconstruction
+    is_partial = input_val is None and not is_full_slice
     if input_val is None:
         input_val = jnp.zeros(in_aval.shape, in_aval.dtype)
+
     out1 = out
     while out1.ndim < input_val.ndim:
         out1 = jnp.expand_dims(out1, axis=-1)
     new_input = jax.lax.dynamic_update_slice(input_val, out1, start_index)
+
+    # Return PARTIAL if we created placeholder values, COMPLETE otherwise
+    if is_partial:
+        return ProcessedResult([invar], [Knowness.partial(new_input)])
     return ProcessedResult([invar], [new_input])
 
 
@@ -1003,10 +1053,16 @@ def invert_dynamic_slice(eqn, known_invars, known_outvars):
     invar = eqn.invars[0]
     in_aval = invar.aval
 
+    # Track if we're creating a partial reconstruction
+    is_partial = input_val is None
     if input_val is None:
         input_val = jnp.full(in_aval.shape, jnp.nan, dtype=in_aval.dtype)
 
     new_input = jax.lax.dynamic_update_slice(input_val, out, start_indices)
+
+    # Return PARTIAL if we created placeholder values, COMPLETE otherwise
+    if is_partial:
+        return ProcessedResult([invar], [Knowness.partial(new_input)])
     return ProcessedResult([invar], [new_input])
 
 

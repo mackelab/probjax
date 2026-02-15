@@ -100,8 +100,6 @@ def inverse_cost_fn(eqn, known_invars, known_outvars):
             return jnp.inf
 
     # Cost based on what's known
-    if eqn.primitive is jax.lax.gather_p or eqn.primitive is jax.lax.slice_p:
-        return 1.0
     if eqn.primitive is pjit_p and all(known_outvars):
         return 1.5
     if all(known_invars) and not any(known_outvars):
