@@ -664,3 +664,87 @@ def run_jaxpr(
         return_state=return_state,
         return_env=return_env,
     )
+
+
+def interpret(
+    jaxpr: Jaxpr,
+    consts: Sequence[Array],
+    invars: Sequence[Var],
+    inputs: Sequence[Array],
+    outvars: Sequence[Var],
+    process_eqn: ProcessEqn = ForwardProcessingRule(),
+    reducer: Reducer = identity_reducer,
+    initial_state: State = None,
+    return_state: bool = False,
+    return_env: bool = False,
+    state_namespace: str = "default",
+):
+    """
+    Interpret a JAXPR with topological scheduling and automatic recursion.
+
+    This is a convenience wrapper around run_jaxpr that uses:
+    - scheduler="topological": process equations in order
+    - recurse_policy="always": always recurse into nested jaxprs
+
+    Suitable for standard forward evaluation where all inputs are known.
+    """
+    return run_jaxpr(
+        jaxpr,
+        consts,
+        invars,
+        inputs,
+        outvars,
+        process_eqn=process_eqn,
+        scheduler="topological",
+        recurse_policy="always",
+        reducer=reducer,
+        initial_state=initial_state,
+        return_state=return_state,
+        return_env=return_env,
+        state_namespace=state_namespace,
+    )
+
+
+def propagate(
+    jaxpr: Jaxpr,
+    consts: Sequence[Array],
+    invars: Sequence[Var],
+    inputs: Sequence[Array],
+    outvars: Sequence[Var],
+    process_eqn: ProcessEqn = ForwardProcessingRule(),
+    cost_fn: CostFn = naive_cost_fn,
+    process_all_eqns: bool = False,
+    reducer: Reducer = identity_reducer,
+    initial_state: State = None,
+    return_state: bool = False,
+    return_env: bool = False,
+    state_namespace: str = "default",
+):
+    """
+    Propagate values through a JAXPR with priority-based scheduling.
+
+    This is a convenience wrapper around run_jaxpr that uses:
+    - scheduler="priority": process equations by cost
+    - recurse_policy="missing_inputs": only recurse when inputs are missing
+    - run_post_nested_process=True: run process rule after nested recursion
+
+    Suitable for inverse computation where some values need to be inferred.
+    """
+    return run_jaxpr(
+        jaxpr,
+        consts,
+        invars,
+        inputs,
+        outvars,
+        process_eqn=process_eqn,
+        scheduler="priority",
+        cost_fn=cost_fn,
+        process_all_eqns=process_all_eqns,
+        recurse_policy="missing_inputs",
+        run_post_nested_process=True,
+        reducer=reducer,
+        initial_state=initial_state,
+        return_state=return_state,
+        return_env=return_env,
+        state_namespace=state_namespace,
+    )

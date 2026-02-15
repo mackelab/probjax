@@ -21,8 +21,7 @@ from probjax.core.interpreters import (
     maybe_inverse_custom_inverse,
     trace_state_reducer,
 )
-from probjax.core.jaxpr_propagation.interpret import interpret
-from probjax.core.jaxpr_propagation.propagate import propagate
+from probjax.core.jaxpr_propagation import interpret, propagate
 
 
 def _resolve_invertible_index(args, invertible_arg: int) -> int:

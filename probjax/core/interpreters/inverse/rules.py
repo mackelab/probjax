@@ -13,7 +13,7 @@ from jax._src import core as jax_core
 from jax._src.util import safe_map
 from jax.extend.core import Literal
 
-from probjax.core.jaxpr_propagation.propagate import propagate
+from probjax.core.jaxpr_propagation import propagate
 from probjax.core.jaxpr_propagation.utils import CostFunction, ProcessingRuleFactory
 from probjax.core.registry import (
     Context,

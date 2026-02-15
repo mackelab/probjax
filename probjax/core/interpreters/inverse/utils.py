@@ -1,5 +1,5 @@
 """
-Utilities for log absolute determinant computations.
+Utilities for inverse interpreter computations.
 
 This module provides helper functions used by the inverse interpreter
 and log-det tracking machinery.

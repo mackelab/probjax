@@ -20,9 +20,9 @@ from probjax.core.jaxpr_propagation import (
     ExtendedJaxpr,
     InterpreterPipeline,
     InterpreterSpec,
+    interpret,
+    propagate,
 )
-from probjax.core.jaxpr_propagation.interpret import interpret
-from probjax.core.jaxpr_propagation.propagate import propagate
 from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
 from probjax.stats import norm
 

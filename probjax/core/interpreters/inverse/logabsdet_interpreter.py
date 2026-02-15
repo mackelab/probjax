@@ -18,7 +18,7 @@ from probjax.core.interpreters.inverse.logabsdet_rules import (
     INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
     value_and_log_det_diagonal,
 )
-from probjax.core.logabsdet_utils import is_inexact_value
+from probjax.core.interpreters.inverse.utils import is_inexact_value
 from probjax.core.registry import Context, ProcessedResult, REGISTRY
 
 
