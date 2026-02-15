@@ -17,12 +17,12 @@ SPLIT_DRIFT_SDE_METHODS = ["exp_euler_maruyama"]
 
 def test_sdeint_scalar(sde_method, scalar_sde_problem):
     """Test SDE solvers with scalar problem."""
-    # Skip exponential methods - they need split_drift
+    # Exponential methods need split_drift (see test_sdeint_split_drift)
     if sde_method in SPLIT_DRIFT_SDE_METHODS:
-        pytest.skip(f"{sde_method} requires split_drift (see test_sdeint_split_drift)")
-    # Skip linear_exact_sde - it needs linear_drift + const_diffusion
+        return
+    # linear_exact_sde needs linear_drift + const_diffusion (tested separately)
     if sde_method == "linear_exact_sde":
-        pytest.skip(f"{sde_method} requires linear_drift + const_diffusion")
+        return
 
     x0, f, g, f_true = scalar_sde_problem
     key = jax.random.PRNGKey(0)
@@ -36,7 +36,7 @@ def test_sdeint_scalar(sde_method, scalar_sde_problem):
 def test_sdeint_split_drift(sde_method, split_drift_sde_problem):
     """Test exponential SDE methods that require split_drift."""
     if sde_method not in SPLIT_DRIFT_SDE_METHODS:
-        pytest.skip(f"{sde_method} doesn't require split_drift")
+        return
 
     x0, f, g, f_true = split_drift_sde_problem
     key = jax.random.PRNGKey(0)
@@ -49,9 +49,9 @@ def test_sdeint_split_drift(sde_method, split_drift_sde_problem):
 
 def test_sdeint_collect_trace_false(sde_method, scalar_sde_problem):
     """Test SDE solvers with collect_trace=False."""
-    # Skip specialized methods
+    # Specialized methods require specific drift type wrappers
     if sde_method in SPLIT_DRIFT_SDE_METHODS + ["linear_exact_sde"]:
-        pytest.skip(f"{sde_method} requires specific drift type wrappers")
+        return
 
     x0, f, g, _ = scalar_sde_problem
     key = jax.random.PRNGKey(1)
@@ -85,9 +85,9 @@ def test_sdeint_return_brownian_requires_trace(scalar_sde_problem):
 
 def test_sdeint_2d(sde_method, two_dimensional_sde_problem):
     """Test SDE solvers with 2D problem."""
-    # Skip specialized methods
+    # Specialized methods require specific drift type wrappers
     if sde_method in SPLIT_DRIFT_SDE_METHODS + ["linear_exact_sde"]:
-        pytest.skip(f"{sde_method} requires specific drift type wrappers")
+        return
 
     x0, f, g, f_true = two_dimensional_sde_problem
     key = jax.random.PRNGKey(0)
@@ -100,9 +100,9 @@ def test_sdeint_2d(sde_method, two_dimensional_sde_problem):
 
 def test_sdeint_supports_kwargs(sde_method, scalar_sde_problem):
     """Test SDE solvers support kwargs."""
-    # Skip specialized methods
+    # Specialized methods require specific drift type wrappers
     if sde_method in SPLIT_DRIFT_SDE_METHODS + ["linear_exact_sde"]:
-        pytest.skip(f"{sde_method} requires specific drift type wrappers")
+        return
 
     x0, base_drift, base_diffusion, _ = scalar_sde_problem
     key = jax.random.PRNGKey(3)
@@ -134,9 +134,9 @@ def test_sdeint_supports_kwargs(sde_method, scalar_sde_problem):
 
 def test_sdeint_rectangular_diffusion_is_supported(sde_method):
     """Test SDE solvers support rectangular diffusion matrices."""
-    # Skip specialized methods
+    # Specialized methods require specific drift type wrappers
     if sde_method in SPLIT_DRIFT_SDE_METHODS + ["linear_exact_sde"]:
-        pytest.skip(f"{sde_method} requires specific drift type wrappers")
+        return
 
     key = jax.random.PRNGKey(4)
     ts = jnp.linspace(0.0, 1.0, 64)

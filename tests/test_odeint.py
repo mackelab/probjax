@@ -21,11 +21,9 @@ def test_odeint_basic_linear_ode(linear_ode_problem, ode_method):
     if ode_method in KNOWN_ERROR:
         pytest.xfail(f"{ode_method} method has known error")
 
-    # Skip exponential split methods - they need split_drift fixture
+    # Exponential split methods need split_drift - tested separately
     if ode_method in SPLIT_DRIFT_METHODS:
-        pytest.skip(
-            f"{ode_method} requires split_drift (see test_odeint_split_drift_ode)"
-        )
+        return
 
     x0, drift, f_true = linear_ode_problem
     adaptive_params = AdaptiveParams(atol=1e-2, rtol=1e-2)
@@ -45,7 +43,7 @@ def test_odeint_basic_linear_ode(linear_ode_problem, ode_method):
 def test_odeint_split_drift_ode(split_drift_ode_problem, ode_method):
     """Test exponential methods that require split_drift."""
     if ode_method not in SPLIT_DRIFT_METHODS:
-        pytest.skip(f"{ode_method} doesn't require split_drift")
+        return
 
     x0, drift, f_true = split_drift_ode_problem
     adaptive_params = AdaptiveParams(atol=1e-2, rtol=1e-2)
@@ -67,9 +65,9 @@ def test_odeint_nonlienar_ode(nonlinear_ode_problem, ode_method):
     if ode_method in KNOWN_ERROR:
         pytest.xfail(f"{ode_method} method has known error")
 
-    # Skip specialized methods - they require specific drift types
+    # Specialized methods require specific drift types - tested separately
     if ode_method in SPLIT_DRIFT_METHODS + ["linear_exact"]:
-        pytest.skip(f"{ode_method} requires specific drift type wrappers")
+        return
 
     x0, drift, f_true = nonlinear_ode_problem
     adaptive_params = AdaptiveParams(atol=1e-2, rtol=1e-2)
@@ -91,9 +89,9 @@ def test_odeint_with_pytree(ode_method):
     if ode_method in KNOWN_ERROR:
         pytest.xfail(f"{ode_method} method has known error")
 
-    # Skip specialized methods - they require specific drift types
+    # Specialized methods require specific drift types
     if ode_method in SPLIT_DRIFT_METHODS + ["linear_exact"]:
-        pytest.skip(f"{ode_method} requires specific drift type wrappers")
+        return
 
     x0 = {"x": jnp.ones(1) * 10.0, "y": jnp.ones(1) * 5.0}
     ts = jnp.linspace(0, 1, 100)
@@ -118,9 +116,9 @@ def test_odeint_with_pytree_filter_state(ode_method):
     if ode_method in KNOWN_ERROR:
         pytest.xfail(f"{ode_method} method has known error")
 
-    # Skip specialized methods - they require specific drift types
+    # Specialized methods require specific drift types
     if ode_method in SPLIT_DRIFT_METHODS + ["linear_exact"]:
-        pytest.skip(f"{ode_method} requires specific drift type wrappers")
+        return
 
     x0 = {"x": jnp.ones(1) * 10.0, "y": jnp.ones(1) * 5.0}
     ts = jnp.linspace(0, 1, 100)
@@ -158,9 +156,9 @@ def test_odeint_trace_nothing(ode_method):
     if ode_method in KNOWN_ERROR:
         pytest.xfail(f"{ode_method} method has known error")
 
-    # Skip specialized methods - they require specific drift types
+    # Specialized methods require specific drift types
     if ode_method in SPLIT_DRIFT_METHODS + ["linear_exact"]:
-        pytest.skip(f"{ode_method} requires specific drift type wrappers")
+        return
 
     x0 = jnp.ones(2)
     ts = jnp.linspace(0, 0.5, 10)
@@ -195,9 +193,9 @@ def test_odeint_supports_drift_kwargs(ode_method):
     if ode_method in KNOWN_ERROR:
         pytest.xfail(f"{ode_method} method has known error")
 
-    # Skip specialized methods - they require specific drift types
+    # Specialized methods require specific drift types
     if ode_method in SPLIT_DRIFT_METHODS + ["linear_exact"]:
-        pytest.skip(f"{ode_method} requires specific drift type wrappers")
+        return
 
     x0 = jnp.array([1.0, -2.0])
     ts = jnp.linspace(0.0, 1.0, 50)

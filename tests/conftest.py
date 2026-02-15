@@ -176,25 +176,37 @@ def pytest_configure(config):
 def pytest_collection_modifyitems(config, items):
     device = config.getoption("--device")
     run_benchmarks = config.getoption("--run-benchmarks")
-    if device == "gpu":
-        skip_benchmark = pytest.mark.skip(reason="need --run-benchmarks option to run")
-        for item in items:
-            if "benchmark" in item.keywords and not run_benchmarks:
-                item.add_marker(skip_benchmark)
-        return
-    skip_benchmark = pytest.mark.skip(reason="need --run-benchmarks option to run")
+
+    # Deselect items that shouldn't run, collect remaining items
+    selected = []
+    deselected = []
+
     for item in items:
+        # Deselect benchmark tests unless --run-benchmarks is passed
         if "benchmark" in item.keywords and not run_benchmarks:
-            item.add_marker(skip_benchmark)
-    if enable_multi:
-        skip_non_mesh = pytest.mark.skip(reason="requires -m mesh to run")
-        for item in items:
-            if "mesh" not in item.keywords:
-                item.add_marker(skip_non_mesh)
-    skip_gpu = pytest.mark.skip(reason="need --device gpu option to run")
-    for item in items:
-        if "gpu" in item.keywords:
-            item.add_marker(skip_gpu)
+            deselected.append(item)
+            continue
+
+        # Deselect mesh tests unless -m mesh is explicitly requested
+        if "mesh" in item.keywords and not enable_multi:
+            deselected.append(item)
+            continue
+
+        # When running mesh tests, deselect non-mesh tests
+        if enable_multi and "mesh" not in item.keywords:
+            deselected.append(item)
+            continue
+
+        # Deselect GPU tests unless --device gpu is passed
+        if "gpu" in item.keywords and device != "gpu":
+            deselected.append(item)
+            continue
+
+        selected.append(item)
+
+    # Update the items list and report deselected
+    items[:] = selected
+    config.hook.pytest_deselected(items=deselected)
 
 
 if _pytest_benchmark_plugin is None:
