@@ -1030,6 +1030,19 @@ def invert_split(eqn, known_invars, known_outvars):
     return ProcessedResult([invar], [jnp.concatenate(known_outvars, axis=axis)])
 
 
+@REGISTRY.rule(jax.lax.split_p, Context.INVERSE_LOGDET)
+def invert_split_logdet(eqn, known_invars, known_outvars):
+    """Inverse of split with log-det = 0 (volume-preserving)."""
+    del known_invars
+    params = eqn.params
+    invar = eqn.invars[0]
+    if any(out is None for out in known_outvars):
+        return None
+    axis = params["axis"]
+    concatenated = jnp.concatenate(known_outvars, axis=axis)
+    return ProcessedResult([invar], [concatenated], {invar: jnp.asarray(0.0)})
+
+
 @REGISTRY.rule(jax.lax.cond_p, Context.INVERSE)
 def invert_cond(eqn, known_invars, known_outvars):
     if any(out is None for out in known_outvars):
