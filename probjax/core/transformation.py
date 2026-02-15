@@ -64,9 +64,14 @@ def _sum_log_dets_for_vars(log_dets: dict, vars_) -> jax.Array:
 
 
 def _leaf_signature(leaf):
+    """Create a hashable signature for a pytree leaf for caching."""
+    # Fast path for JAX arrays (most common case)
+    if isinstance(leaf, jax.Array):
+        return ("array", leaf.shape, leaf.dtype)
+    # NumPy arrays or similar
     if hasattr(leaf, "shape") and hasattr(leaf, "dtype"):
         return ("array", tuple(leaf.shape), str(leaf.dtype))
-
+    # Hashable Python objects
     try:
         hash(leaf)
         return ("py", leaf)
@@ -74,20 +79,46 @@ def _leaf_signature(leaf):
         return ("obj", type(leaf).__name__, repr(leaf))
 
 
-def _trace_signature(args, kwargs):
+def _flatten_and_signature(args, kwargs):
+    """Flatten args/kwargs and compute cache signature in one pass.
+
+    Returns:
+        (flat_inputs, cache_key) where flat_inputs is a tuple and cache_key
+        is a hashable tuple suitable for dict keys.
+    """
     flat, tree = jax.tree_util.tree_flatten((args, kwargs))
-    return tree, tuple(_leaf_signature(leaf) for leaf in flat)
+    sig = (tree, tuple(_leaf_signature(leaf) for leaf in flat))
+    return tuple(flat), sig
+
+
+def _cached_jaxpr_and_tree_getter(fun: Callable, static_argnums=()):
+    """Create a cached getter for both JAXPR and output tree structure.
+
+    This avoids re-tracing and re-computing eval_shape on every call.
+    """
+    jaxpr_maker = jax.make_jaxpr(fun, static_argnums=static_argnums)
+    cache: dict = {}
+
+    def get_jaxpr_and_tree(flat_inputs, cache_key, args, kwargs):
+        """Get cached JAXPR and output tree, tracing if needed."""
+        if cache_key not in cache:
+            jaxpr = jaxpr_maker(*args, **kwargs)
+            out_template = jax.eval_shape(fun, *args, **kwargs)
+            out_tree = jax.tree_util.tree_structure(out_template)
+            cache[cache_key] = (jaxpr, out_tree)
+        return cache[cache_key]
+
+    return get_jaxpr_and_tree
 
 
 def _cached_jaxpr_getter(fun: Callable, static_argnums=()):
-    jaxpr_maker = jax.make_jaxpr(fun, static_argnums=static_argnums)
-    cache = {}
+    """Create a cached getter for JAXPR only (backward compatible)."""
+    getter = _cached_jaxpr_and_tree_getter(fun, static_argnums)
 
     def get_jaxpr(*args, **kwargs):
-        key = _trace_signature(args, kwargs)
-        if key not in cache:
-            cache[key] = jaxpr_maker(*args, **kwargs)
-        return cache[key]
+        flat_inputs, cache_key = _flatten_and_signature(args, kwargs)
+        jaxpr, _ = getter(flat_inputs, cache_key, args, kwargs)
+        return jaxpr
 
     return get_jaxpr
 
@@ -128,10 +159,49 @@ def _set_stochastic_maps(
 
 
 def _merge_maps(base: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:
-    merged = dict(base)
-    for name, value in dict(update).items():
-        merged[name] = value
-    return merged
+    """Merge two mappings, with update taking precedence."""
+    return {**base, **update}
+
+
+def _apply_stochastic_substitution(
+    fun: Callable,
+    *,
+    update_interventions: Optional[Mapping[str, Any]] = None,
+    update_observations: Optional[Mapping[str, Any]] = None,
+    update_replay: Optional[Mapping[str, Any]] = None,
+) -> Callable:
+    """Unified substitution logic for intervene/condition/substitute.
+
+    Priority order: interventions > observations > replay.
+    Sites in higher priority categories are excluded from lower priority categories.
+    """
+    base_fun = _get_base_fun(fun)
+    current_int, current_obs, current_replay = _collect_stochastic_maps(fun)
+
+    # Merge with priority (interventions override observations override replay)
+    merged_int = _merge_maps(current_int, update_interventions or {})
+    merged_obs = {
+        k: v
+        for k, v in _merge_maps(current_obs, update_observations or {}).items()
+        if k not in merged_int
+    }
+    merged_replay = {
+        k: v
+        for k, v in _merge_maps(current_replay, update_replay or {}).items()
+        if k not in merged_int and k not in merged_obs
+    }
+
+    # Build substitutions dict with priority order
+    substitutions = {**merged_replay, **merged_obs, **merged_int}
+
+    wrapped = _make_substitution_wrapper(base_fun, substitutions)
+    setattr(wrapped, "_probjax_base_fun", base_fun)
+    return _set_stochastic_maps(
+        wrapped,
+        interventions=merged_int,
+        observations=merged_obs,
+        replay=merged_replay,
+    )
 
 
 def _make_substitution_wrapper(
@@ -139,21 +209,21 @@ def _make_substitution_wrapper(
 ) -> Callable:
     """Create a callable wrapper that replaces stochastic sites with fixed values."""
     base_fun = _get_base_fun(fun)
-    get_jaxpr = _cached_jaxpr_getter(base_fun)
+    get_jaxpr_and_tree = _cached_jaxpr_and_tree_getter(base_fun)
 
     @wraps(fun)
     def wrapped(*args, **kwargs):
-        jaxpr = get_jaxpr(*args, **kwargs)
+        # Single flatten pass for both cache key and inputs
+        flat_inputs, cache_key = _flatten_and_signature(args, kwargs)
+        jaxpr, out_tree = get_jaxpr_and_tree(flat_inputs, cache_key, args, kwargs)
         out_flat = interpret(
             jaxpr.jaxpr,
             jaxpr.consts,
             jaxpr.jaxpr.invars,
-            _flatten_call_inputs(args, kwargs),
+            flat_inputs,
             jaxpr.jaxpr.outvars,
             process_eqn=IntervenedProcessingRule(interventions=dict(substitutions)),
         )
-        out_template = jax.eval_shape(fun, *args, **kwargs)
-        out_tree = jax.tree_util.tree_structure(out_template)
         return jax.tree_util.tree_unflatten(out_tree, out_flat)
 
     return wrapped
@@ -208,7 +278,7 @@ def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
     return wrapped
 
 
-def intervene(fun: Callable, rvs: Mapping[str, Array], *args, **kwargs):
+def intervene(fun: Callable, rvs: Mapping[str, Array]) -> Callable:
     """Fix stochastic sites via intervention values.
 
     This is equivalent to a causal ``do`` operation. The name ``do`` is the
@@ -227,46 +297,15 @@ def intervene(fun: Callable, rvs: Mapping[str, Array], *args, **kwargs):
     Returns:
         Callable: Wrapped probabilistic function with interventions.
     """
-
-    del args, kwargs
-    base_fun = _get_base_fun(fun)
-    current_interventions, current_observations, current_replay = (
-        _collect_stochastic_maps(fun)
-    )
-
-    merged_interventions = _merge_maps(current_interventions, rvs)
-    merged_observations = {
-        name: value
-        for name, value in current_observations.items()
-        if name not in merged_interventions
-    }
-    merged_replay = {
-        name: value
-        for name, value in current_replay.items()
-        if name not in merged_interventions
-    }
-
-    substitutions = {}
-    substitutions.update(merged_replay)
-    substitutions.update(merged_observations)
-    substitutions.update(merged_interventions)
-
-    wrapped = _make_substitution_wrapper(base_fun, substitutions)
-    setattr(wrapped, "_probjax_base_fun", base_fun)
-    return _set_stochastic_maps(
-        wrapped,
-        interventions=merged_interventions,
-        observations=merged_observations,
-        replay=merged_replay,
-    )
+    return _apply_stochastic_substitution(fun, update_interventions=rvs)
 
 
-def do(fun: Callable, interventions: Mapping[str, Array], *args, **kwargs) -> Callable:
+def do(fun: Callable, interventions: Mapping[str, Array]) -> Callable:
     """Apply a causal ``do`` intervention to stochastic sites.
 
     This is a probabilistic alias for :func:`intervene`.
     """
-    return intervene(fun, interventions, *args, **kwargs)
+    return intervene(fun, interventions)
 
 
 def condition(fun: Callable, observations: Mapping[str, Array]) -> Callable:
@@ -274,37 +313,7 @@ def condition(fun: Callable, observations: Mapping[str, Array]) -> Callable:
 
     The preferred probabilistic name is :func:`observe`.
     """
-    base_fun = _get_base_fun(fun)
-    current_interventions, current_observations, current_replay = (
-        _collect_stochastic_maps(fun)
-    )
-
-    merged_observations = _merge_maps(current_observations, observations)
-    merged_observations = {
-        name: value
-        for name, value in merged_observations.items()
-        if name not in current_interventions
-    }
-
-    merged_replay = {
-        name: value
-        for name, value in current_replay.items()
-        if name not in current_interventions and name not in merged_observations
-    }
-
-    substitutions = {}
-    substitutions.update(merged_replay)
-    substitutions.update(merged_observations)
-    substitutions.update(current_interventions)
-
-    wrapped = _make_substitution_wrapper(base_fun, substitutions)
-    setattr(wrapped, "_probjax_base_fun", base_fun)
-    return _set_stochastic_maps(
-        wrapped,
-        interventions=current_interventions,
-        observations=merged_observations,
-        replay=merged_replay,
-    )
+    return _apply_stochastic_substitution(fun, update_observations=observations)
 
 
 def observe(fun: Callable, observations: Mapping[str, Array]) -> Callable:
@@ -343,33 +352,10 @@ def substitute(
     normalized_mode = _normalize_substitute_mode(mode)
 
     if normalized_mode == "condition":
-        base_fun = _get_base_fun(fun)
-        current_interventions, current_observations, current_replay = (
-            _collect_stochastic_maps(fun)
-        )
-        merged_replay = _merge_maps(current_replay, values)
-        merged_replay = {
-            name: value
-            for name, value in merged_replay.items()
-            if name not in current_interventions and name not in current_observations
-        }
-
-        substitutions = {}
-        substitutions.update(merged_replay)
-        substitutions.update(current_observations)
-        substitutions.update(current_interventions)
-
-        wrapped = _make_substitution_wrapper(base_fun, substitutions)
-        setattr(wrapped, "_probjax_base_fun", base_fun)
-        return _set_stochastic_maps(
-            wrapped,
-            interventions=current_interventions,
-            observations=current_observations,
-            replay=merged_replay,
-        )
+        return _apply_stochastic_substitution(fun, update_replay=values)
 
     if normalized_mode == "do":
-        return do(fun, values)
+        return intervene(fun, values)
 
     raise AssertionError("unreachable")
 

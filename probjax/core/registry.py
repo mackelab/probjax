@@ -120,6 +120,44 @@ class ProcessedResult:
     state: Any = None
 
 
+def parse_processed_result(
+    result: Optional["ProcessedResult"],
+) -> Tuple[Sequence[Any], Sequence[Any], Any]:
+    """Parse a ProcessedResult into (vars, vals, state) tuple.
+
+    This is a shared utility for engine.py and pipeline.py to avoid
+    duplicating the parsing logic.
+
+    Args:
+        result: ProcessedResult from a rule, or None if rule didn't apply
+
+    Returns:
+        (resolved_vars, resolved_vals, state) tuple. Returns empty sequences
+        and None state if result is None.
+
+    Raises:
+        TypeError: If result is not ProcessedResult or None
+    """
+    if result is None:
+        return (), (), None
+
+    if not isinstance(result, ProcessedResult):
+        raise TypeError(
+            f"Processing rules must return ProcessedResult or None, "
+            f"got {type(result).__name__}"
+        )
+
+    # Normalize to sequences (handle single values)
+    resolved_vars = result.resolved_vars
+    resolved_vals = result.resolved_vals
+    if not isinstance(resolved_vars, (list, tuple)):
+        resolved_vars = [resolved_vars]
+    if not isinstance(resolved_vals, (list, tuple)):
+        resolved_vals = [resolved_vals]
+
+    return tuple(resolved_vars), tuple(resolved_vals), result.state
+
+
 class RuleRegistry:
     """
     Central registry mapping (primitive, context) → rule.

@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
 from probjax.core.jaxpr_propagation.context import ExecutionContext
-from probjax.core.jaxpr_propagation.utils import as_sequence, supports_context_argument
-from probjax.core.registry import ProcessedResult
+from probjax.core.jaxpr_propagation.utils import supports_context_argument
+from probjax.core.registry import ProcessedResult, parse_processed_result
 
 # ProcessResult can be ProcessedResult, legacy tuple, or None
 ProcessResult = ProcessedResult | None
@@ -52,22 +52,6 @@ def _compile_rule(
             return rule(equation, known_inputs, known_outputs)
 
     return call
-
-
-def _parse_result(result: ProcessResult):
-    if result is None:
-        return (), (), None
-
-    if not isinstance(result, ProcessedResult):
-        raise TypeError(
-            f"Processing rules must return ProcessedResult or None, got {type(result).__name__}"
-        )
-
-    return (
-        as_sequence(result.resolved_vars),
-        as_sequence(result.resolved_vals),
-        result.state,
-    )
 
 
 @dataclass(frozen=True)
@@ -150,7 +134,7 @@ class InterpreterPipeline:
                     )
 
             result = interpreter.call(equation, known_inputs, known_outputs, context)
-            outvars, outvals, eqn_state = _parse_result(result)
+            outvars, outvals, eqn_state = parse_processed_result(result)
 
             if selected_outputs is None and outvars and not interpreter.observe_only:
                 selected_outputs = (outvars, outvals)

@@ -32,7 +32,7 @@ from probjax.core.jaxpr_propagation.utils import (
     as_sequence,
     supports_context_argument,
 )
-from probjax.core.registry import ProcessedResult
+from probjax.core.registry import ProcessedResult, parse_processed_result
 from probjax.utils.containers import PriorityQueue
 
 Scheduler = TypingLiteral["topological", "priority"]
@@ -247,24 +247,6 @@ def _should_recurse(
     return not all(v is not None for v in known_inputs)
 
 
-def _parse_process_result(
-    result: ProcessResult,
-) -> tuple[Sequence[Any], Sequence[Any], State]:
-    if result is None:
-        return (), (), None
-
-    if not isinstance(result, ProcessedResult):
-        raise TypeError(
-            f"Processing rules must return ProcessedResult or None, got {type(result).__name__}"
-        )
-
-    return (
-        as_sequence(result.resolved_vars),
-        as_sequence(result.resolved_vals),
-        result.state,
-    )
-
-
 def _run_process_rule(
     process_adapter: ProcessAdapter,
     extended_eqn: ExtendedEquation,
@@ -273,7 +255,7 @@ def _run_process_rule(
     context: ExecutionContext,
 ) -> tuple[Sequence[Any], Sequence[Any], State]:
     result = process_adapter(extended_eqn, known_inputs, known_outputs, context)
-    return _parse_process_result(cast(ProcessResult, result))
+    return parse_processed_result(cast(ProcessResult, result))
 
 
 def _run_nested(
