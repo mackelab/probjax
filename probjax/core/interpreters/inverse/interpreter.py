@@ -16,7 +16,7 @@ from probjax.core.custom_primitives.custom_inverse import (
     custom_inverse_call_p,
 )
 from probjax.core.jaxpr_propagation.utils import ProcessingRule
-from probjax.core.registry import Context, REGISTRY
+from probjax.core.registry import Context, ProcessedResult, REGISTRY
 
 
 def maybe_inverse_custom_inverse(
@@ -89,7 +89,9 @@ class InverseProcessingRule(ProcessingRule):
     3. Handle custom_inverse_call_p specially using its inverse jaxpr
     """
 
-    def __call__(self, eqn, known_invars, known_outvars, context=None):
+    def __call__(
+        self, eqn, known_invars, known_outvars, context=None
+    ) -> ProcessedResult | None:
         # Check if this is a custom_inverse_call primitive
         if eqn.primitive is custom_inverse_call_p:
             return self._process_custom_inverse_call(eqn, known_invars, known_outvars)
@@ -104,24 +106,26 @@ class InverseProcessingRule(ProcessingRule):
         if all_inputs_known and all_outputs_known:
             result = REGISTRY.process(eqn, known_invars, known_outvars, Context.FORWARD)
             if result is not None:
-                return result.resolved_vars, result.resolved_vals
+                return result
 
         # Try inverse rule if all outputs are known
         if all_outputs_known:
             result = REGISTRY.process(eqn, known_invars, known_outvars, Context.INVERSE)
             if result is not None:
-                return result.resolved_vars, result.resolved_vals
+                return result
 
         # Try forward rule if all inputs are known
         if all_inputs_known:
             result = REGISTRY.process(eqn, known_invars, known_outvars, Context.FORWARD)
             if result is not None:
-                return result.resolved_vars, result.resolved_vals
+                return result
 
         # Cannot process this equation
         return None
 
-    def _process_custom_inverse_call(self, eqn, known_invars, known_outvars):
+    def _process_custom_inverse_call(
+        self, eqn, known_invars, known_outvars
+    ) -> ProcessedResult | None:
         """
         Handle custom_inverse_call_p by evaluating its inverse jaxpr.
         """
@@ -133,7 +137,7 @@ class InverseProcessingRule(ProcessingRule):
                     eqn, known_invars, known_outvars, Context.FORWARD
                 )
                 if result is not None:
-                    return result.resolved_vars, result.resolved_vals
+                    return result
             return None
 
         custom_params = parse_custom_inverse_call_params(eqn.params)
@@ -151,6 +155,6 @@ class InverseProcessingRule(ProcessingRule):
         invars = [
             eqn.invars[i] for i in range(len(eqn.invars)) if known_invars[i] is None
         ]
-        inputs = [out[0] for i in range(len(eqn.invars)) if known_invars[i] is None]
+        vals = [out[0] for i in range(len(eqn.invars)) if known_invars[i] is None]
 
-        return invars, inputs
+        return ProcessedResult(invars, vals)

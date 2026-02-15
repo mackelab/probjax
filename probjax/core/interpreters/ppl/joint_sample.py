@@ -1,4 +1,4 @@
-from typing import Any, Iterable, Optional, Sequence, Tuple
+from typing import Any, Iterable, Optional, Sequence
 
 from jaxtyping import Array
 
@@ -7,6 +7,7 @@ from jax.extend.core import JaxprEqn
 from probjax.core.custom_primitives.contracts import parse_random_variable_call_params
 from probjax.core.custom_primitives.random_variable import rv_p
 from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
+from probjax.core.registry import ProcessedResult
 
 
 class JointSampleProcessingRule(ForwardProcessingRule):
@@ -31,20 +32,20 @@ class JointSampleProcessingRule(ForwardProcessingRule):
 
     def __call__(
         self, eqn: JaxprEqn, known_inputs: Sequence[Any | None], _: Sequence[Any | None]
-    ) -> Tuple[Sequence[Any | None], Sequence[Any | None], dict[str, Any]]:
+    ) -> ProcessedResult:
         result = super().__call__(eqn, known_inputs, _)
-        outvars, outvals = result[0], result[1]
-        eqn_state = {}
+        outvars, outvals = result.resolved_vars, list(result.resolved_vals)
+        eqn_state: dict[str, Any] = {}
         if eqn.primitive is rv_p:
             rv_params = parse_random_variable_call_params(eqn.params)
             name = rv_params.name
             if name in self.fixed_values:
-                return outvars, [self.fixed_values[name]], eqn_state
+                return ProcessedResult(outvars, [self.fixed_values[name]], eqn_state)
 
             fixed = eqn.params.get("intervened", False) or name in self.fixed_names
             if not fixed and (self.rvs is None or name in self.rvs):
                 eqn_state[name] = outvals[0]
-        return outvars, outvals, eqn_state
+        return ProcessedResult(outvars, outvals, eqn_state)
 
 
 def joint_sample_state_reducer(env, eqn, state, eqn_state, context=None):

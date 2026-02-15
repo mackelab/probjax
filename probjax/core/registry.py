@@ -71,24 +71,11 @@ class RuleFunction(Protocol):
         eqn: JaxprEqn,
         known_in: Sequence[Any],
         known_out: Sequence[Any],
-    ) -> Optional[
-        Union[
-            "ProcessedResult",
-            Tuple[Sequence[Atom], Sequence[Any]],
-            Tuple[Sequence[Atom], Sequence[Any], Any],
-        ]
-    ]: ...
+    ) -> Optional["ProcessedResult"]: ...
 
 
-# Rule result can optionally include state (for log_prob accumulation, etc.)
-RuleResult = Union[
-    None,  # Rule didn't apply
-    "ProcessedResult",  # Canonical return type
-    Tuple[Sequence[Atom], Sequence[Any]],  # Legacy: (vars, vals) - deprecated
-    Tuple[
-        Sequence[Atom], Sequence[Any], Any
-    ],  # Legacy: (vars, vals, state) - deprecated
-]
+# Rule result type
+RuleResult = Union[None, "ProcessedResult"]
 
 
 # =============================================================================
@@ -268,25 +255,12 @@ class RuleRegistry:
         if result is None:
             return None
 
-        # All rules should now return ProcessedResult
-        if isinstance(result, ProcessedResult):
-            return result
-
-        # Defensive fallback for any remaining tuple returns (should not happen)
-        assert isinstance(result, tuple), (
-            f"Expected ProcessedResult or tuple, got {type(result)}"
-        )
-        if len(result) == 2:
-            return ProcessedResult(resolved_vars=result[0], resolved_vals=result[1])
-        if len(result) == 3:
-            return ProcessedResult(
-                resolved_vars=result[0],
-                resolved_vals=result[1],
-                state=result[2],
+        if not isinstance(result, ProcessedResult):
+            raise TypeError(
+                f"Rules must return ProcessedResult or None, got {type(result).__name__}"
             )
-        raise ValueError(
-            f"Invalid rule result: expected 2 or 3 elements, got {len(result)}"
-        )
+
+        return result
 
     def list_contexts(self) -> list[str]:
         """List all registered contexts."""
@@ -510,7 +484,7 @@ def forward_rule(
     eqn: JaxprEqn,
     known_in: Sequence[Any],
     known_out: Sequence[Any],
-) -> Optional[Tuple[Sequence[Var], Sequence[Any]]]:
+) -> Optional[ProcessedResult]:
     """
     Default forward execution rule.
 
@@ -527,8 +501,8 @@ def forward_rule(
     result = primitive.bind(*subfuns, *known_in, **params)
 
     if primitive.multiple_results:
-        return eqn.outvars, list(result)
-    return eqn.outvars, [result]
+        return ProcessedResult(resolved_vars=eqn.outvars, resolved_vals=list(result))
+    return ProcessedResult(resolved_vars=eqn.outvars, resolved_vals=[result])
 
 
 # Register forward as the fallback for forward context

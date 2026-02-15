@@ -6,6 +6,7 @@ from jaxtyping import Array
 from probjax.core.custom_primitives.contracts import parse_random_variable_call_params
 from probjax.core.custom_primitives.random_variable import rv_p
 from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
+from probjax.core.registry import ProcessedResult
 
 
 class LogPotentialProcessingRule(ForwardProcessingRule):
@@ -49,50 +50,53 @@ class LogPotentialProcessingRule(ForwardProcessingRule):
         eqn: JaxprEqn,
         in_known: Sequence[Array | None],
         out_known: Sequence[Array | None],
-    ):
+    ) -> ProcessedResult:
         if eqn.primitive is rv_p:
             rv_params = parse_random_variable_call_params(eqn.params)
             name = rv_params.name
 
             if name in self.intervention_values:
-                return eqn.outvars, [self.intervention_values[name]], None
+                return ProcessedResult(
+                    eqn.outvars, [self.intervention_values[name]], None
+                )
 
             if eqn.params.get("intervened", False) or name in self.intervened_names:
                 result = super().__call__(eqn, in_known, out_known)
-                outvars, outvals = result[0], result[1]
-                return outvars, outvals, None
+                return ProcessedResult(
+                    result.resolved_vars, list(result.resolved_vals), None
+                )
 
             if name in self.observation_values:
                 value = self.observation_values[name]
                 eqn_state = self._logpdf_from_inputs(
                     rv_params.logpdf_fn, in_known, value
                 )
-                return eqn.outvars, [value], eqn_state
+                return ProcessedResult(eqn.outvars, [value], eqn_state)
 
             if name in self.replay_values:
                 value = self.replay_values[name]
                 eqn_state = self._logpdf_from_inputs(
                     rv_params.logpdf_fn, in_known, value
                 )
-                return eqn.outvars, [value], eqn_state
+                return ProcessedResult(eqn.outvars, [value], eqn_state)
 
             if name in self.joint_samples:
                 value = self.joint_samples[name]
                 eqn_state = self._logpdf_from_inputs(
                     rv_params.logpdf_fn, in_known, value
                 )
-                return eqn.outvars, [value], eqn_state
+                return ProcessedResult(eqn.outvars, [value], eqn_state)
 
             if self.strict and not self.allow_partial:
                 raise KeyError(f"Missing joint sample for random variable '{name}'.")
 
             result = super().__call__(eqn, in_known, out_known)
-            outvars, outvals = result[0], result[1]
-            return outvars, outvals, None
+            return ProcessedResult(
+                result.resolved_vars, list(result.resolved_vals), None
+            )
 
         result = super().__call__(eqn, in_known, out_known)
-        outvars, outvals = result[0], result[1]
-        return outvars, outvals, None
+        return ProcessedResult(result.resolved_vars, list(result.resolved_vals), None)
 
 
 def log_potential_state_reducer(env, eqn, state, eqn_state, context=None):

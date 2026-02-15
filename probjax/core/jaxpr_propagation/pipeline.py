@@ -6,12 +6,10 @@ from typing import Any, Callable, Sequence
 
 from probjax.core.jaxpr_propagation.context import ExecutionContext
 from probjax.core.jaxpr_propagation.utils import as_sequence, supports_context_argument
+from probjax.core.registry import ProcessedResult
 
-ProcessResult = (
-    tuple[Sequence[Any | None], Sequence[Any | None]]
-    | tuple[Sequence[Any | None], Sequence[Any | None], Any]
-    | None
-)
+# ProcessResult can be ProcessedResult, legacy tuple, or None
+ProcessResult = ProcessedResult | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,11 +57,17 @@ def _compile_rule(
 def _parse_result(result: ProcessResult):
     if result is None:
         return (), (), None
-    if len(result) == 2:
-        outvars, outvals = result
-        return as_sequence(outvars), as_sequence(outvals), None
-    outvars, outvals, eqn_state = result
-    return as_sequence(outvars), as_sequence(outvals), eqn_state
+
+    if not isinstance(result, ProcessedResult):
+        raise TypeError(
+            f"Processing rules must return ProcessedResult or None, got {type(result).__name__}"
+        )
+
+    return (
+        as_sequence(result.resolved_vars),
+        as_sequence(result.resolved_vals),
+        result.state,
+    )
 
 
 @dataclass(frozen=True)
@@ -163,4 +167,6 @@ class InterpreterPipeline:
             state_values=tuple(states),
             name_to_index=self._name_to_index,
         )
-        return selected_outputs[0], selected_outputs[1], namespaced_state
+        return ProcessedResult(
+            selected_outputs[0], selected_outputs[1], namespaced_state
+        )

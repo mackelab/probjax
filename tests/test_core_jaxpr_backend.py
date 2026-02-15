@@ -24,6 +24,7 @@ from probjax.core.jaxpr_propagation import (
     propagate,
 )
 from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
+from probjax.core.registry import ProcessedResult
 from probjax.stats import norm
 
 
@@ -103,8 +104,7 @@ def test_interpret_reducer_and_equation_states():
 
     def process_eqn_with_state(eqn, known_inputs, known_outputs):
         result = ForwardProcessingRule()(eqn, known_inputs, known_outputs)
-        outvars, outvals = result[0], result[1]
-        return outvars, outvals, 1
+        return ProcessedResult(result.resolved_vars, result.resolved_vals, 1)
 
     def reducer(_, __, state, eqn_state):
         return state + (eqn_state or 0)
@@ -164,12 +164,15 @@ def test_interpreter_pipeline_supports_dependency_context():
 
     def primary_rule(eqn, known_inputs, known_outputs, context):
         result = ForwardProcessingRule()(eqn, known_inputs, known_outputs)
-        outvars, outvals = result[0], result[1]
-        return outvars, outvals, {"primitive": eqn.primitive.name}
+        return ProcessedResult(
+            result.resolved_vars,
+            result.resolved_vals,
+            {"primitive": eqn.primitive.name},
+        )
 
     def observer_rule(_, __, ___, context):
         primary_state = context.read_transient_state("primary")
-        return [], [], {"depends_on": primary_state["primitive"]}
+        return ProcessedResult([], [], {"depends_on": primary_state["primitive"]})
 
     pipeline = InterpreterPipeline([
         InterpreterSpec(name="primary", rule=primary_rule),

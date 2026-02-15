@@ -1,10 +1,11 @@
-from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from jax.extend.core import JaxprEqn
 
 from probjax.core.custom_primitives.contracts import parse_random_variable_call_params
 from probjax.core.custom_primitives.random_variable import rv_p
 from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
+from probjax.core.registry import ProcessedResult
 
 
 class TraceProcessingRule(ForwardProcessingRule):
@@ -60,14 +61,14 @@ class TraceProcessingRule(ForwardProcessingRule):
 
     def __call__(
         self, eqn: JaxprEqn, known_inputs: Sequence[Any | None], _: Sequence[Any | None]
-    ) -> Tuple[Sequence[Any | None], Sequence[Any | None], dict[str, Any]]:
+    ) -> ProcessedResult:
         result = super().__call__(eqn, known_inputs, _)
-        outvars, outvals = result[0], result[1]
-        eqn_state = {}
+        outvars, outvals = result.resolved_vars, list(result.resolved_vals)
+        eqn_state: dict[str, Any] = {}
 
         if self.sites:
             if eqn.primitive is not rv_p:
-                return outvars, outvals, eqn_state
+                return ProcessedResult(outvars, outvals, eqn_state)
 
             rv_params = parse_random_variable_call_params(eqn.params)
             name = rv_params.name
@@ -114,13 +115,13 @@ class TraceProcessingRule(ForwardProcessingRule):
                     "dist": rv_params.dist,
                     "shape": rv_params.shape,
                 }
-            return outvars, outvals, eqn_state
+            return ProcessedResult(outvars, outvals, eqn_state)
 
         for outvar, outval in zip(outvars, outvals, strict=False):
             var_name = str(outvar)
             if self.traced_vars is None or var_name in self.traced_vars:
                 eqn_state[var_name] = outval
-        return outvars, outvals, eqn_state
+        return ProcessedResult(outvars, outvals, eqn_state)
 
 
 def trace_state_reducer(env, eqn, state, eqn_state, context=None):

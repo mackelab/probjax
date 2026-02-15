@@ -69,7 +69,9 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
             total = total + jnp.asarray(log_dets.get(v, 0.0))
         return total
 
-    def __call__(self, eqn, known_invars, known_outvars, context=None):
+    def __call__(
+        self, eqn, known_invars, known_outvars, context=None
+    ) -> ProcessedResult | None:
         # Handle custom_inverse_call_p specially
         if eqn.primitive is custom_inverse_call_p:
             return self._process_custom_inverse_call_with_logdet(
@@ -102,14 +104,14 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         if all(v is not None for v in known_invars):
             result = REGISTRY.process(eqn, known_invars, known_outvars, Context.FORWARD)
             if result is not None:
-                return result.resolved_vars, result.resolved_vals, {}
+                return ProcessedResult(result.resolved_vars, result.resolved_vals, {})
 
         # Cannot process this equation
         return None
 
     def _add_previous_logdets_to_state(
         self, eqn, resolved_vars, resolved_vals, state, context
-    ):
+    ) -> ProcessedResult:
         """
         Add previous log-dets from output variables to the state.
 
@@ -127,11 +129,11 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
             local_logdet = state.get(var, jnp.asarray(0.0))
             updated_state[var] = previous + jnp.asarray(local_logdet)
 
-        return resolved_vars, resolved_vals, updated_state
+        return ProcessedResult(resolved_vars, resolved_vals, updated_state)
 
     def _add_autodiff_logdet(
         self, eqn, known_invars, known_outvars, inverse_result, context
-    ):
+    ) -> ProcessedResult:
         """
         Compute log-determinant via autodiff for an inverse result.
 
@@ -177,11 +179,11 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
             if not isinstance(var, Literal):
                 updates[var] = previous + log_abs_det
 
-        return resolved_vars, resolved_vals, updates
+        return ProcessedResult(resolved_vars, resolved_vals, updates)
 
     def _process_custom_inverse_call_with_logdet(
         self, eqn, known_invars, known_outvars, context
-    ):
+    ) -> ProcessedResult | None:
         """
         Handle custom_inverse_call_p by evaluating its inverse+logdet jaxpr.
         """
@@ -193,7 +195,9 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
                     eqn, known_invars, known_outvars, Context.FORWARD
                 )
                 if result is not None:
-                    return result.resolved_vars, result.resolved_vals, {}
+                    return ProcessedResult(
+                        result.resolved_vars, result.resolved_vals, {}
+                    )
             return None
 
         custom_params = parse_custom_inverse_call_params(eqn.params)
@@ -211,9 +215,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         invars = [
             eqn.invars[i] for i in range(len(eqn.invars)) if known_invars[i] is None
         ]
-        result_vals = [
-            out[0] for i in range(len(eqn.invars)) if known_invars[i] is None
-        ]
+        result_vals = list(out[:-1])
 
         # Extract log-det from output (last element)
         log_abs_det = jnp.sum(out[-1])
@@ -225,4 +227,4 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
             v: previous + log_abs_det for v in eqn.invars if not isinstance(v, Literal)
         }
 
-        return invars, out[:-1], updates
+        return ProcessedResult(invars, result_vals, updates)

@@ -1,9 +1,12 @@
 import inspect
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Optional, Protocol, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Optional, Protocol, Sequence
 
 from jax.extend.core import JaxprEqn, Literal
 from jaxtyping import Array
+
+if TYPE_CHECKING:
+    from probjax.core.registry import ProcessedResult
 
 # High level API
 
@@ -80,14 +83,8 @@ class Environment(dict):
         self.run_states[namespace] = state
 
 
-RuleOutput = (
-    Tuple[Sequence[Any | None], Sequence[Any | None]]
-    | Tuple[Sequence[Any | None], Sequence[Any | None], Any]
-)
-
-
 class ProcessingRuleFactory(Protocol):
-    def __call__(self) -> "ProcessingRule | Callable[..., RuleOutput | None]": ...
+    def __call__(self) -> "ProcessingRule | Callable[..., ProcessedResult | None]": ...
 
 
 class CostFunction(Protocol):
@@ -129,7 +126,11 @@ def supports_context_argument(func: Callable, required_positional: int) -> bool:
 
 
 class ProcessingRule(ABC):
-    """A processing rule for equations."""
+    """A processing rule for equations.
+
+    All processing rules should return ProcessedResult or None.
+    ProcessedResult contains resolved_vars, resolved_vals, and optional state.
+    """
 
     def __init__(self, propagator: Callable | None = None):
         self.propagator = propagator
@@ -140,29 +141,28 @@ class ProcessingRule(ABC):
         eqn: JaxprEqn,
         known_inputs: Sequence[Any | None],
         known_outputs: Sequence[Any | None],
-    ) -> RuleOutput | None:
+    ) -> "ProcessedResult | None":
         pass
 
 
 class ForwardProcessingRule(ProcessingRule):
+    """Default forward execution rule that evaluates primitives with known inputs."""
+
     def __call__(
         self,
         eqn: JaxprEqn,
         known_inputs: Sequence[Array | None],
         _: Sequence[Array | None],
-    ) -> RuleOutput:
-        # assert (
-        #     (known_inputs != None) and (None not in known_inputs)
-        # ), "All inputs must be known for the forward pass."
+    ) -> "ProcessedResult":
+        from probjax.core.registry import ProcessedResult
+
         primitive = eqn.primitive
         subfuns, bind_params = primitive.get_bind_params(eqn.params)
-        # `bind` is how a primitive is called
         outvals = primitive.bind(*subfuns, *known_inputs, **bind_params)
-        # Primitives may return multiple outputs or not
         if not eqn.primitive.multiple_results:
             outvals = [outvals]
 
-        return eqn.outvars, outvals  # type: ignore
+        return ProcessedResult(eqn.outvars, outvals)
 
 
 # Helper utilities intentionally kept minimal; runtime graph construction lives

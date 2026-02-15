@@ -29,10 +29,10 @@ from probjax.core.jaxpr_propagation.utils import (
     ForwardProcessingRule,
     ProcessingRule,
     ReducerFunction,
-    RuleOutput,
     as_sequence,
     supports_context_argument,
 )
+from probjax.core.registry import ProcessedResult
 from probjax.utils.containers import PriorityQueue
 
 Scheduler = TypingLiteral["topological", "priority"]
@@ -40,7 +40,7 @@ RecursePolicy = TypingLiteral["always", "missing_inputs", "never"]
 State = Any
 CostFn = CostFunction
 Reducer = ReducerFunction
-ProcessResult = RuleOutput | None
+ProcessResult = ProcessedResult | None
 ProcessEqn = ProcessingRule | Callable[..., ProcessResult]
 
 
@@ -253,19 +253,15 @@ def _parse_process_result(
     if result is None:
         return (), (), None
 
-    if not isinstance(result, tuple):
-        raise TypeError("Processing rules must return None or a tuple.")
+    if not isinstance(result, ProcessedResult):
+        raise TypeError(
+            f"Processing rules must return ProcessedResult or None, got {type(result).__name__}"
+        )
 
-    if len(result) == 2:
-        outvars, outvals = result
-        return as_sequence(outvars), as_sequence(outvals), None
-    if len(result) == 3:
-        outvars, outvals, eqn_state = result
-        return as_sequence(outvars), as_sequence(outvals), eqn_state
-
-    raise ValueError(
-        "Processing rules must return (outvars, outvals) or "
-        "(outvars, outvals, eqn_state)."
+    return (
+        as_sequence(result.resolved_vars),
+        as_sequence(result.resolved_vals),
+        result.state,
     )
 
 
