@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence, Union
 
 from jax.extend.core import ClosedJaxpr
 
@@ -26,21 +26,50 @@ class RandomVariableCallParams:
     kwds_items: tuple[tuple[str, Any], ...]
 
 
-def _require_keys(params: Mapping[str, Any], required: Sequence[str], where: str) -> None:
+def _require_keys(
+    params: Mapping[str, Any], required: Sequence[str], where: str
+) -> None:
     missing = [key for key in required if key not in params]
     if missing:
         raise KeyError(f"{where} missing required params: {missing}")
 
 
+def _resolve_lazy_forward(lazy_forward) -> ClosedJaxpr:
+    """Resolve lazy forward jaxpr, evaluating the thunk if needed."""
+    from probjax.core.custom_primitives.common import Lazy
+
+    if isinstance(lazy_forward, Lazy):
+        forward_jaxpr, _, _ = lazy_forward.get()
+        return forward_jaxpr
+    # Backwards compatibility: already a ClosedJaxpr
+    return lazy_forward
+
+
 def parse_custom_inverse_call_params(
     params: Mapping[str, Any],
 ) -> CustomInverseCallParams:
+    # Support both 'lazy_forward' (new) and 'forward_jaxpr' (legacy)
+    has_lazy = "lazy_forward" in params
+    has_forward = "forward_jaxpr" in params
+
+    if not has_lazy and not has_forward:
+        raise KeyError(
+            "custom_inverse_call missing required params: "
+            "['lazy_forward'] or ['forward_jaxpr']"
+        )
+
     _require_keys(
         params,
-        ("forward_jaxpr", "inverse_jaxpr_thunk", "in_tree", "inv_argnum"),
+        ("inverse_jaxpr_thunk", "in_tree", "inv_argnum"),
         where="custom_inverse_call",
     )
-    forward_jaxpr = params["forward_jaxpr"]
+
+    # Resolve forward_jaxpr from lazy_forward or use directly
+    if has_lazy:
+        forward_jaxpr = _resolve_lazy_forward(params["lazy_forward"])
+    else:
+        forward_jaxpr = params["forward_jaxpr"]
+
     inverse_jaxpr_thunk = params["inverse_jaxpr_thunk"]
     in_tree = params["in_tree"]
     inv_argnum = params["inv_argnum"]

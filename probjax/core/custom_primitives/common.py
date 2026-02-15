@@ -1,4 +1,6 @@
-from typing import Any, Callable, Sequence
+from __future__ import annotations
+
+from typing import Any, Callable, Generic, Sequence, TypeVar
 
 from jax._src import core as jax_core
 from jax._src import linear_util as lu
@@ -8,6 +10,52 @@ from jax._src.interpreters import partial_eval as pe
 from jax.interpreters import batching
 from jax.extend.core import ClosedJaxpr
 from jax.tree_util import tree_leaves
+
+T = TypeVar("T")
+
+
+class Lazy(Generic[T]):
+    """Lazy thunk that caches its result after first evaluation.
+
+    This avoids repeated expensive tracing by computing the value only once
+    and memoizing it for subsequent accesses.
+    """
+
+    __slots__ = ("_thunk", "_value", "_evaluated", "__weakref__")
+
+    def __init__(self, thunk: Callable[[], T]) -> None:
+        self._thunk = thunk
+        self._value: T | None = None
+        self._evaluated = False
+
+    def get(self) -> T:
+        """Return the lazily computed value, evaluating the thunk if needed."""
+        if not self._evaluated:
+            self._value = self._thunk()
+            self._evaluated = True
+        return self._value  # type: ignore[return-value]
+
+    def __call__(self) -> T:
+        """Allow using Lazy as a callable thunk for backwards compatibility."""
+        return self.get()
+
+    @property
+    def is_evaluated(self) -> bool:
+        """Check if the thunk has been evaluated."""
+        return self._evaluated
+
+    def map(self, fn: Callable[[T], T]) -> "Lazy[T]":
+        """Return a new Lazy that applies fn to this Lazy's value."""
+        return Lazy(lambda: fn(self.get()))
+
+
+class LazyClosedJaxpr(Lazy[ClosedJaxpr]):
+    """Lazy wrapper specifically for ClosedJaxpr to avoid eager tracing."""
+
+    __slots__ = ()
+
+    def __init__(self, thunk: Callable[[], ClosedJaxpr]) -> None:
+        super().__init__(thunk)
 
 
 def has_tracer(tree) -> bool:
@@ -69,6 +117,8 @@ def batch_closed_jaxpr(
 
 
 def move_mapped_axes_to_front(args, in_dims):
+    import jax.numpy as jnp
+
     new_args = []
     in_axes = []
     for x, d in zip(args, in_dims, strict=False):
@@ -76,7 +126,7 @@ def move_mapped_axes_to_front(args, in_dims):
             new_args.append(x)
             in_axes.append(batching.not_mapped)
         else:
-            new_args.append(batching.moveaxis(x, d, 0) if d != 0 else x)
+            new_args.append(jnp.moveaxis(x, d, 0) if d != 0 else x)
             in_axes.append(0)
 
     any_batched = any(d is not batching.not_mapped for d in in_axes)
