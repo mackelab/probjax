@@ -3,12 +3,14 @@ import asyncio
 import collections
 import contextlib
 import itertools
+import math
 import queue
 import threading
+import time
 import traceback
 import weakref
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, Union
 
 import jax
 import jax.numpy as jnp
@@ -16,7 +18,10 @@ import numpy as np
 from flax.jax_utils import prefetch_to_device
 from jax.sharding import Mesh, NamedSharding, PartitionSpec, Sharding
 
-from probjax.utils.typing import Device
+from probjax.utils.typing import Device, RngKey
+
+if TYPE_CHECKING:
+    pass
 
 
 # ------------------------- small helpers ----------------------------- #
@@ -301,6 +306,426 @@ def unchunkify(
     return result
 
 
+# Datasets
+
+
+class SimulationDataset:
+    """Fixed-size dataset whose samples are refreshed asynchronously.
+
+    Parameters
+    ----------
+    simulator_fn : Callable
+        A function that takes a RNG key and returns a simulation output.
+    simulation_batch_size : int
+        Number of simulations to run per batch.
+    rng : RngKey
+        JAX random key for reproducibility.
+    simulation_devices : Device | Sequence[Device]
+        Device(s) to run simulations on. If multiple devices are provided,
+        simulations are parallelized across them using pmap.
+    jit_simulator : bool
+        Whether to JIT compile the simulator. Default True.
+    buffer_size : int
+        Size of the data buffer. Default 8192.
+    """
+
+    def __init__(
+        self,
+        simulator_fn: Callable[..., Any],
+        *,
+        simulation_batch_size: int = 128,
+        rng: RngKey,
+        simulation_devices: Union[Device, Sequence[Device]] = None,
+        jit_simulator: bool = True,
+        buffer_size: int = 8192,
+    ) -> None:
+        if simulation_devices is None:
+            simulation_devices = jax.devices()[0]
+
+        if isinstance(simulation_devices, (list, tuple)):
+            self._simulation_devices = list(simulation_devices)
+        else:
+            self._simulation_devices = [simulation_devices]
+
+        self._n_sim_devices = len(self._simulation_devices)
+        self._simulation_device = self._simulation_devices[0]
+
+        self._simulator_fn = simulator_fn
+        self._batch_size = int(simulation_batch_size)
+
+        if self._batch_size % self._n_sim_devices != 0:
+            raise ValueError(
+                f"simulation_batch_size ({self._batch_size}) must be divisible "
+                f"by the number of simulation devices ({self._n_sim_devices})"
+            )
+        self._batch_size_per_device = self._batch_size // self._n_sim_devices
+
+        # Round buffer up to a whole number of batches for clean ring writes.
+        self._buffer_batches = max(1, math.ceil(int(buffer_size) / self._batch_size))
+        self._dataset_size = self._buffer_batches * self._batch_size
+
+        self._initial_rng = rng
+        rng_key = jax.random.PRNGKey(0) if isinstance(rng, int) else rng
+        rng_array = jax.random.split(rng_key, self._n_sim_devices)
+        self._sim_rngs = jax.device_put(rng_array, self._simulation_devices)
+
+        self._stop_event = threading.Event()
+        self._lock = threading.RLock()
+        self._condition = threading.Condition(self._lock)
+
+        self._batched_simulator = self._build_batched_simulator(jit_simulator)
+        self._producer: threading.Thread | None = None
+
+        self._buffer: Any | None = None
+        self._buffer_leaves: Sequence[np.ndarray] = ()
+        self._tree_def = None
+        self._write_ptr = 0
+        self._pending_refresh = 0
+
+        self._stats = {
+            "batches_produced": 0,
+            "production_time": 0.0,
+            "samples_written": 0,
+            "batches_requested": 0,
+            "samples_requested": 0,
+        }
+
+        self._initialise_buffer()
+        self._start_producer()
+
+    def __del__(self) -> None:
+        """Cleanup: stop producer thread when object is deleted."""
+        try:
+            self.close()
+        except Exception:
+            # Suppress exceptions during cleanup to avoid errors in __del__
+            pass
+
+    def __len__(self) -> int:
+        return self._dataset_size
+
+    def __getitem__(self, index: Any) -> Any:
+        idxs, squeeze = self._normalise_indices(index)
+        with self._lock:
+            if self._buffer is None:
+                raise RuntimeError("Simulation buffer not initialised.")
+            leaves = [leaf[idxs] for leaf in self._buffer_leaves]
+            self._stats["batches_requested"] += 1
+            self._stats["samples_requested"] += idxs.shape[0]
+        batch = jax.tree_util.tree_unflatten(self._tree_def, leaves)
+        if squeeze:
+            batch = jax.tree_util.tree_map(lambda x: x[0], batch)
+        batch = self._convert_for_consumer(batch)
+        self._request_refresh(idxs.shape[0])
+        return batch
+
+    def get_stats(self) -> dict[str, Any]:
+        with self._lock:
+            stats = dict(self._stats)
+            batches = max(1, int(stats.get("batches_produced", 0)))
+            stats["avg_production_time_per_batch"] = stats["production_time"] / batches
+            return stats
+
+    def reset(self, *, seed: int | None = None, rng: RngKey | None = None) -> None:
+        if rng is not None and seed is not None:
+            raise ValueError("Provide either rng or seed, not both.")
+        if rng is None:
+            if seed is None:
+                rng = self._initial_rng
+            else:
+                rng = jax.random.PRNGKey(int(seed))
+        else:
+            rng = jax.random.PRNGKey(int(rng)) if isinstance(rng, int) else rng
+        self._initial_rng = rng
+        rng_key = jax.random.PRNGKey(0) if isinstance(rng, int) else rng
+        rng_array = jax.random.split(rng_key, self._n_sim_devices)
+        self._sim_rngs = jax.device_put(rng_array, self._simulation_devices)
+        self._stop_producer()
+        with self._lock:
+            self._pending_refresh = 0
+        self._initialise_buffer()
+        self._start_producer()
+
+    def close(self) -> None:
+        """Stop the producer thread and clean up resources."""
+        self._stop_producer()
+        with self._lock:
+            self._buffer = None
+            self._buffer_leaves = ()
+            self._tree_def = None
+
+    def set_data(self, data: Any) -> None:
+        """Replace the internal buffer with user-provided data.
+
+        Parameters
+        ----------
+        data : Any
+            A PyTree of arrays with a leading sample dimension. Leaves must be
+            array-like and broadcast-consistent in their first dimension.
+        start_producer : bool, default False
+            If True, (re)start the background producer after setting the buffer.
+            By default we keep the dataset static and the producer stopped.
+        """
+        # Stop producer while we mutate the buffer
+        self._stop_producer()
+
+        # Convert to host NumPy, validate tree & batch dimension
+        data_host = jax.tree_util.tree_map(
+            lambda x: np.asarray(jax.device_get(x)), data
+        )
+        leaves = jax.tree_util.tree_leaves(data_host)
+        if not leaves:
+            raise ValueError("set_data: Provided data has no leaves.")
+
+        # Infer N (samples) and validate consistent leading dim
+        try:
+            N = int(leaves[0].shape[0])
+        except Exception as e:
+            raise ValueError("set_data: Could not infer leading dimension.") from e
+        for i, lf in enumerate(leaves[1:], start=1):
+            if lf.shape[0] != N:
+                raise ValueError(
+                    f"set_data: Leaf 0 has N={N} but leaf {i} has N={lf.shape[0]}."
+                )
+
+        if N <= 0:
+            raise ValueError("set_data: Need at least one sample.")
+
+        # Round up to a whole number of batches
+        batch_size = self._batch_size
+        buffer_batches = max(1, math.ceil(N / batch_size))
+        dataset_size = buffer_batches * batch_size
+
+        # Build new buffer with rounded size and copy data (pad by wrap if needed)
+        tree_def = jax.tree_util.tree_structure(data_host)
+        new_buffer = jax.tree_util.tree_map(
+            lambda x: np.empty((dataset_size,) + x.shape[1:], dtype=x.dtype),
+            data_host,
+        )
+        new_buffer_leaves = jax.tree_util.tree_leaves(new_buffer)
+
+        if dataset_size == N:
+            # Exact fit
+            for buf_leaf, data_leaf in zip(new_buffer_leaves, leaves, strict=True):
+                buf_leaf[:] = data_leaf
+        else:
+            # Copy the N samples, then pad by wrapping from the start
+            for buf_leaf, data_leaf in zip(new_buffer_leaves, leaves, strict=True):
+                buf_leaf[:N] = data_leaf
+                remaining = dataset_size - N
+                if remaining > 0:
+                    # Wrap (repeat from the start) to fill the last partial batch
+                    wrap_src = (
+                        data_leaf[: remaining % N if N != 0 else 0]
+                        if remaining > N
+                        else data_leaf[:remaining]
+                    )
+                    # If remaining > N, tile then slice (avoids large loops)
+                    if remaining > N:
+                        reps = (remaining + N - 1) // N
+                        tiled = np.concatenate([data_leaf] * reps, axis=0)
+                        buf_leaf[N:] = tiled[:remaining]
+                    else:
+                        buf_leaf[N:] = wrap_src
+
+        # Reset internal state and stats
+        with self._lock:
+            self._buffer = new_buffer
+            self._buffer_leaves = new_buffer_leaves
+            self._tree_def = tree_def
+            self._write_ptr = 0
+            self._pending_refresh = 0
+
+            # Update size bookkeeping to match the new buffer
+            self._buffer_batches = buffer_batches
+            self._dataset_size = dataset_size
+
+            # Reset (only) counters that logically depend on production
+            self._stats.update({
+                "batches_produced": 0,
+                "production_time": 0.0,
+                "samples_written": dataset_size,
+                "batches_requested": 0,
+                "samples_requested": 0,
+            })
+
+        # Optionally restart the producer (kept off by default for a fixed dataset)
+        self._start_producer()
+
+    # --- internal helpers ------------------------------------------------------------
+
+    def _initialise_buffer(self) -> None:
+        self._stop_event.clear()
+        self._write_ptr = 0
+
+        batch, duration = self._produce_batch()
+        batch_host = self._to_host(batch)
+        batch_leaves = jax.tree_util.tree_leaves(batch_host)
+
+        tree_def = jax.tree_util.tree_structure(batch_host)
+        buffer = jax.tree_util.tree_map(
+            lambda x: np.empty(
+                (self._dataset_size,) + np.asarray(x).shape[1:],
+                dtype=np.asarray(x).dtype,
+            ),
+            batch_host,
+        )
+        buffer_leaves = jax.tree_util.tree_leaves(buffer)
+
+        if not buffer_leaves:
+            raise RuntimeError("Simulator returned an empty batch.")
+
+        for buf_leaf, data_leaf in zip(buffer_leaves, batch_leaves, strict=True):
+            reshaped = buf_leaf.reshape(
+                (self._buffer_batches, self._batch_size) + data_leaf.shape[1:]
+            )
+            reshaped[:] = data_leaf
+
+        with self._lock:
+            self._buffer = buffer
+            self._buffer_leaves = buffer_leaves
+            self._tree_def = tree_def
+            self._stats["batches_produced"] += 1
+            self._stats["production_time"] += duration
+            self._stats["samples_written"] += self._batch_size
+            # Request refresh of entire buffer so producer starts working immediately
+            self._pending_refresh = self._dataset_size
+
+        with self._condition:
+            self._condition.notify_all()
+
+    def _start_producer(self) -> None:
+        if self._producer is not None and self._producer.is_alive():
+            return
+        self._stop_event.clear()
+        self._producer = threading.Thread(target=self._producer_main, daemon=True)
+        self._producer.start()
+
+    def _stop_producer(self) -> None:
+        self._stop_event.set()
+        with self._condition:
+            self._condition.notify_all()
+        if self._producer is not None and self._producer.is_alive():
+            self._producer.join(timeout=1.0)
+        self._producer = None
+
+    def _producer_main(self) -> None:
+        while not self._stop_event.is_set():
+            with self._condition:
+                while (
+                    not self._stop_event.is_set()
+                    and self._pending_refresh < self._batch_size
+                ):
+                    self._condition.wait(timeout=0.1)
+                if self._stop_event.is_set():
+                    break
+                self._pending_refresh -= self._batch_size
+            try:
+                batch, duration = self._produce_batch()
+            except Exception:
+                self._stop_event.set()
+                raise
+
+            batch_host = self._to_host(batch)
+            with self._lock:
+                if self._buffer is None:
+                    continue
+                self._write_batch(batch_host)
+                self._stats["batches_produced"] += 1
+                self._stats["production_time"] += duration
+
+    def _produce_batch(self) -> tuple[Any, float]:
+        self._sim_rngs, keys = jax.random.split(self._sim_rngs)
+        keys_per_device = jax.random.split(keys, self._n_sim_devices)
+        keys_per_device = jax.tree_util.tree_map(
+            lambda x: x.reshape(
+                (self._n_sim_devices, self._batch_size_per_device) + x.shape[1:]
+            ),
+            keys_per_device,
+        )
+        start = time.perf_counter()
+
+        if self._n_sim_devices > 1:
+            batch = self._batched_simulator(keys_per_device)
+            batch = jax.tree_util.tree_map(
+                lambda x: x.reshape((self._batch_size,) + x.shape[2:]), batch
+            )
+        else:
+            batch = self._batched_simulator(keys_per_device[0])
+
+        duration = time.perf_counter() - start
+        return batch, duration
+
+    def _build_batched_simulator(self, jit_simulator: bool) -> Callable[[Any], Any]:
+        def single_call(key: RngKey) -> Any:
+            return self._simulator_fn(key)
+
+        if self._n_sim_devices > 1:
+            batched = jax.pmap(single_call, devices=self._simulation_devices)
+        else:
+            batched = jax.vmap(single_call)
+
+        if jit_simulator:
+            return jax.jit(batched)
+        return batched
+
+    def _to_host(self, batch: Any) -> Any:
+        return jax.tree_util.tree_map(lambda x: np.asarray(jax.device_get(x)), batch)
+
+    def _write_batch(self, batch_host: Any) -> None:
+        if self._buffer is None:
+            raise RuntimeError("Simulation buffer not initialised.")
+        indices = self._reserve_indices(self._batch_size)
+        batch_leaves = jax.tree_util.tree_leaves(batch_host)
+        for buf_leaf, data_leaf in zip(self._buffer_leaves, batch_leaves, strict=True):
+            buf_leaf[indices] = data_leaf
+        self._stats["samples_written"] += len(indices)
+
+    def _reserve_indices(self, count: int) -> np.ndarray:
+        start = self._write_ptr
+        end = (start + count) % self._dataset_size
+        if count <= 0:
+            return np.empty((0,), dtype=np.int64)
+        if start < end or end == 0:
+            idxs = np.arange(start, start + count, dtype=np.int64) % self._dataset_size
+        else:
+            first = np.arange(start, self._dataset_size, dtype=np.int64)
+            second = np.arange(0, end, dtype=np.int64)
+            idxs = np.concatenate([first, second])
+        self._write_ptr = end
+        return idxs
+
+    def _convert_for_consumer(self, batch: Any) -> Any:
+        return batch
+
+    def _normalise_indices(self, index: Any) -> tuple[np.ndarray, bool]:
+        if isinstance(index, slice):
+            start, stop, step = index.indices(self._dataset_size)
+            idxs = np.arange(start, stop, step, dtype=np.int64)
+            squeeze = False
+        elif isinstance(index, (list, tuple, np.ndarray)):
+            arr = np.asarray(index, dtype=np.int64)
+            idxs = np.mod(arr, self._dataset_size)
+            squeeze = False
+        else:
+            idx = int(index)
+            idxs = np.array([(idx % self._dataset_size)], dtype=np.int64)
+            squeeze = True
+        return idxs, squeeze
+
+    def _request_refresh(self, count: int) -> None:
+        if count <= 0:
+            return
+        with self._condition:
+            self._pending_refresh += count
+            self._condition.notify_all()
+
+    def mark_batch_served(self, sample_count: int) -> None:
+        with self._lock:
+            self._stats["batches_consumed"] += 1
+            self._stats["samples_served"] += int(sample_count)
+
+
 # --------------------------------------------------------------------- #
 
 
@@ -400,8 +825,12 @@ class DataLoader:
         self._min_fill, self._prefetch_dev = min_fill, max(1, num_prefetch_device)
 
         # -------- device config -------- #
-        if shard and (sharding is not None or mesh is not None or batch_spec is not None):
-            raise ValueError("Use either shard=True or explicit sharding/mesh, not both.")
+        if shard and (
+            sharding is not None or mesh is not None or batch_spec is not None
+        ):
+            raise ValueError(
+                "Use either shard=True or explicit sharding/mesh, not both."
+            )
         self._shard_flag = shard
         self._devices = list(devices) if devices else jax.local_devices()
         self._n_dev = len(self._devices)
@@ -454,7 +883,9 @@ class DataLoader:
     ) -> Sharding | None:
         if sharding is not None:
             if mesh is not None or batch_spec is not None:
-                raise ValueError("Provide either sharding or mesh+batch_spec, not both.")
+                raise ValueError(
+                    "Provide either sharding or mesh+batch_spec, not both."
+                )
             return sharding
         if mesh is None and batch_spec is None:
             return None

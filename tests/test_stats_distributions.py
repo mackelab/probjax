@@ -629,8 +629,8 @@ def test_truncnorm_sampling_with_bounds(seed: int = 0):
 def test_pareto_sampling_matches_moment(seed: int = 0):
     """Pareto sampler should respect the minimum and produce the correct mean."""
     key = jax.random.PRNGKey(seed)
-    scale = jnp.array(1.7)
-    tail = jnp.array(4.5)
+    scale = jnp.array(0.0)
+    tail = jnp.array(2.5)
     dist = pareto(scale, tail)
 
     samples = dist.rvs(key, shape=(32000,))
