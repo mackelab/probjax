@@ -1,8 +1,11 @@
 import jax
+import jax.numpy as jnp
 import pytest
+import itertools
 
 from probjax.nn.loss_fn import (
     build_denoising_loss,
+    build_time_dependent_multinomial_diffusion_loss,
     build_denoising_score_matching_loss,
     build_flow_matching_loss,
     build_score_matching_loss,
@@ -94,3 +97,263 @@ def test_flow_matching_autodiff_schedule():
     loss = loss_fn(t, x0, x1, x0, x1, rng=jax.random.key(2))
 
     assert jax.numpy.allclose(loss, 0.0, atol=1e-5), "loss should be ~0"
+
+
+def test_multinomial_diffusion_loss_builder():
+    num_classes = 5
+
+    def q_sample_fn(rng, x0, t):
+        del t
+        probs = jax.nn.one_hot(x0, num_classes, dtype=jnp.float32)
+        return jax.random.categorical(rng, jnp.log(probs), axis=-1)
+
+    def sample_t_fn(rng, shape):
+        return jax.random.randint(rng, shape=shape, minval=1, maxval=4)
+
+    def model_fn(t, x_t):
+        del t
+        return jax.nn.one_hot(x_t, num_classes, dtype=jnp.float32)
+
+    loss_fn = build_time_dependent_multinomial_diffusion_loss(
+        model_fn,
+        q_sample_fn=q_sample_fn,
+        sample_timesteps_fn=sample_t_fn,
+        weight_fn=lambda t: jnp.ones_like(t),
+    )
+
+    x0 = jax.random.randint(jax.random.key(0), (32, 4), minval=0, maxval=num_classes)
+    loss = loss_fn(x0, rng=jax.random.key(1))
+    assert loss.ndim == 0
+    assert jnp.isfinite(loss)
+
+
+def test_multinomial_diffusion_loss_builder_rao_blackwellized():
+    num_classes = 4
+    base_probs = jnp.ones((num_classes,), dtype=jnp.float32) / num_classes
+
+    def q_sample_fn(rng, x0, t):
+        del rng, t
+        return x0
+
+    def q_xt_given_x0_probs_fn(x0, t):
+        del t
+        return jax.nn.one_hot(x0, num_classes, dtype=jnp.float32)
+
+    def sample_t_fn(rng, shape):
+        return jax.random.uniform(rng, shape=shape, minval=0.0, maxval=1.0)
+
+    def model_fn(t, x_t):
+        del t
+        return jax.nn.one_hot(x_t, num_classes, dtype=jnp.float32)
+
+    loss_fn = build_time_dependent_multinomial_diffusion_loss(
+        model_fn,
+        q_sample_fn=q_sample_fn,
+        sample_timesteps_fn=sample_t_fn,
+        q_xt_given_x0_probs_fn=q_xt_given_x0_probs_fn,
+        base_probs=base_probs,
+        rao_blackwellize_xt=True,
+        rao_blackwellize_xt_num_samples=3,
+        num_classes=num_classes,
+    )
+
+    x0 = jax.random.randint(jax.random.key(10), (16, 3), minval=0, maxval=num_classes)
+    loss = loss_fn(x0, rng=jax.random.key(11))
+    assert loss.ndim == 0
+    assert jnp.isfinite(loss)
+
+
+def test_multinomial_diffusion_loss_builder_rao_blackwellized_matches_exact_expectation():
+    num_classes = 7
+    base_probs = jnp.array([0.05, 0.1, 0.2, 0.25, 0.15, 0.15, 0.1], dtype=jnp.float32)
+    base_probs = base_probs / jnp.sum(base_probs)
+
+    x0 = jax.random.randint(jax.random.key(20), (64, 5), minval=0, maxval=num_classes)
+    t = jnp.full((x0.shape[0], 1), 0.37, dtype=jnp.float32)
+
+    def alpha_bar_fn(tt):
+        return 0.1 + 0.8 * jnp.exp(-2.0 * tt)
+
+    def q_xt_given_x0_probs_fn(x0_idx, tt):
+        a = alpha_bar_fn(tt)[..., None]
+        return a * jax.nn.one_hot(x0_idx, num_classes) + (1.0 - a) * base_probs
+
+    def q_sample_fn(rng, x0_idx, tt):
+        q = q_xt_given_x0_probs_fn(x0_idx, tt)
+        return jax.random.categorical(rng, jnp.log(q), axis=-1)
+
+    w = jax.random.normal(jax.random.key(21), (num_classes, num_classes)) * 0.7
+    u = jax.random.normal(jax.random.key(22), (num_classes,)) * 0.3
+
+    def model_fn(tt, x_t):
+        tt = jnp.asarray(tt, dtype=jnp.float32)
+        if tt.shape != x_t.shape:
+            tt = jnp.broadcast_to(tt, x_t.shape)
+        return w[x_t] + tt[..., None] * u
+
+    loss_fn = build_time_dependent_multinomial_diffusion_loss(
+        model_fn,
+        q_sample_fn=q_sample_fn,
+        sample_timesteps_fn=lambda rng, shape: jnp.broadcast_to(t, shape),
+        q_xt_given_x0_probs_fn=q_xt_given_x0_probs_fn,
+        alpha_bar_fn=alpha_bar_fn,
+        base_probs=base_probs,
+        rao_blackwellize_xt=True,
+        rao_blackwellize_xt_num_samples=16,
+        num_classes=num_classes,
+    )
+
+    xt_all = jnp.broadcast_to(jnp.arange(num_classes, dtype=jnp.int32), x0.shape + (num_classes,))
+    logits_all = jax.vmap(lambda xt: model_fn(t, xt), in_axes=-1, out_axes=-2)(xt_all)
+    logp_all = jax.nn.log_softmax(logits_all, axis=-1)
+    ce_all = -jnp.take_along_axis(logp_all, x0[..., None, None], axis=-1).squeeze(-1)
+    q = q_xt_given_x0_probs_fn(x0, t)
+    exact = jnp.mean(jnp.sum(q * ce_all, axis=-1))
+
+    vals = []
+    for i in range(128):
+        vals.append(loss_fn(x0, rng=jax.random.fold_in(jax.random.key(23), i), t=t))
+    vals = jnp.asarray(vals)
+    estimate = jnp.mean(vals)
+
+    assert jnp.abs(estimate - exact) < 5e-3
+
+
+def test_multinomial_diffusion_loss_builder_rao_blackwellized_vector_coupled_matches_exact():
+    num_classes = 4
+    dim = 3
+    base_probs = jnp.array([0.1, 0.2, 0.3, 0.4], dtype=jnp.float32)
+    base_probs = base_probs / jnp.sum(base_probs)
+
+    x0 = jax.random.randint(jax.random.key(30), (8, dim), minval=0, maxval=num_classes)
+    t = jnp.full((x0.shape[0], 1), 0.45, dtype=jnp.float32)
+
+    def alpha_bar_fn(tt):
+        return jnp.full_like(tt, 0.65)
+
+    def q_xt_given_x0_probs_fn(x0_idx, tt):
+        a = alpha_bar_fn(tt)[..., None]
+        return a * jax.nn.one_hot(x0_idx, num_classes) + (1.0 - a) * base_probs
+
+    def q_sample_fn(rng, x0_idx, tt):
+        q = q_xt_given_x0_probs_fn(x0_idx, tt)
+        return jax.random.categorical(rng, jnp.log(q), axis=-1)
+
+    def model_fn(tt, x_t):
+        tt = jnp.asarray(tt, dtype=jnp.float32)
+        if tt.shape != x_t.shape:
+            tt = jnp.broadcast_to(tt, x_t.shape)
+        x_oh = jax.nn.one_hot(x_t, num_classes, dtype=jnp.float32)
+        ctx = jnp.sum(x_oh, axis=1, keepdims=True)
+        return 0.7 * x_oh + 0.3 * ctx + 0.1 * tt[..., None]
+
+    loss_fn = build_time_dependent_multinomial_diffusion_loss(
+        model_fn,
+        q_sample_fn=q_sample_fn,
+        sample_timesteps_fn=lambda rng, shape: jnp.broadcast_to(t, shape),
+        q_xt_given_x0_probs_fn=q_xt_given_x0_probs_fn,
+        alpha_bar_fn=alpha_bar_fn,
+        base_probs=base_probs,
+        rao_blackwellize_xt=True,
+        rao_blackwellize_xt_num_samples=4,
+        num_classes=num_classes,
+    )
+
+    states = jnp.array(
+        list(itertools.product(range(num_classes), repeat=dim)), dtype=jnp.int32
+    )  # [S, D]
+    s = states.shape[0]
+
+    q_probs = q_xt_given_x0_probs_fn(x0, t)  # [B, D, K]
+    q_pick = jnp.take_along_axis(
+        q_probs[:, None, :, :],
+        states[None, :, :, None],
+        axis=-1,
+    ).squeeze(-1)  # [B, S, D]
+    q_state = jnp.prod(q_pick, axis=-1)  # [B, S]
+
+    x_states = jnp.broadcast_to(states[:, None, :], (s, x0.shape[0], dim))
+    logits_states = jax.vmap(lambda x_t_state: model_fn(t, x_t_state))(x_states)
+    logp_states = jax.nn.log_softmax(logits_states, axis=-1)
+    ce_states = -jnp.take_along_axis(
+        logp_states, x0[None, :, :, None], axis=-1
+    ).squeeze(-1)  # [S, B, D]
+    exact = jnp.mean(jnp.sum(q_state.T[:, :, None] * ce_states, axis=0))
+
+    vals = []
+    for i in range(128):
+        vals.append(loss_fn(x0, rng=jax.random.fold_in(jax.random.key(31), i), t=t))
+    vals = jnp.asarray(vals)
+    estimate = jnp.mean(vals)
+
+    assert jnp.abs(estimate - exact) < 1e-2
+
+
+def test_multinomial_diffusion_loss_builder_rao_blackwellized_vector_subset_matches_exact_in_expectation():
+    num_classes = 4
+    dim = 3
+    base_probs = jnp.array([0.1, 0.2, 0.3, 0.4], dtype=jnp.float32)
+    base_probs = base_probs / jnp.sum(base_probs)
+
+    x0 = jax.random.randint(jax.random.key(40), (8, dim), minval=0, maxval=num_classes)
+    t = jnp.full((x0.shape[0], 1), 0.45, dtype=jnp.float32)
+
+    def alpha_bar_fn(tt):
+        return jnp.full_like(tt, 0.65)
+
+    def q_xt_given_x0_probs_fn(x0_idx, tt):
+        a = alpha_bar_fn(tt)[..., None]
+        return a * jax.nn.one_hot(x0_idx, num_classes) + (1.0 - a) * base_probs
+
+    def q_sample_fn(rng, x0_idx, tt):
+        q = q_xt_given_x0_probs_fn(x0_idx, tt)
+        return jax.random.categorical(rng, jnp.log(q), axis=-1)
+
+    def model_fn(tt, x_t):
+        tt = jnp.asarray(tt, dtype=jnp.float32)
+        if tt.shape != x_t.shape:
+            tt = jnp.broadcast_to(tt, x_t.shape)
+        x_oh = jax.nn.one_hot(x_t, num_classes, dtype=jnp.float32)
+        ctx = jnp.sum(x_oh, axis=1, keepdims=True)
+        return 0.7 * x_oh + 0.3 * ctx + 0.1 * tt[..., None]
+
+    loss_fn = build_time_dependent_multinomial_diffusion_loss(
+        model_fn,
+        q_sample_fn=q_sample_fn,
+        sample_timesteps_fn=lambda rng, shape: jnp.broadcast_to(t, shape),
+        q_xt_given_x0_probs_fn=q_xt_given_x0_probs_fn,
+        alpha_bar_fn=alpha_bar_fn,
+        base_probs=base_probs,
+        rao_blackwellize_xt=True,
+        rao_blackwellize_xt_num_samples=8,
+        rao_blackwellize_xt_num_features=2,
+        num_classes=num_classes,
+    )
+
+    states = jnp.array(
+        list(itertools.product(range(num_classes), repeat=dim)), dtype=jnp.int32
+    )  # [S, D]
+    s = states.shape[0]
+    q_probs = q_xt_given_x0_probs_fn(x0, t)  # [B, D, K]
+    q_pick = jnp.take_along_axis(
+        q_probs[:, None, :, :],
+        states[None, :, :, None],
+        axis=-1,
+    ).squeeze(-1)  # [B, S, D]
+    q_state = jnp.prod(q_pick, axis=-1)  # [B, S]
+
+    x_states = jnp.broadcast_to(states[:, None, :], (s, x0.shape[0], dim))
+    logits_states = jax.vmap(lambda x_t_state: model_fn(t, x_t_state))(x_states)
+    logp_states = jax.nn.log_softmax(logits_states, axis=-1)
+    ce_states = -jnp.take_along_axis(
+        logp_states, x0[None, :, :, None], axis=-1
+    ).squeeze(-1)  # [S, B, D]
+    exact = jnp.mean(jnp.sum(q_state.T[:, :, None] * ce_states, axis=0))
+
+    vals = []
+    for i in range(256):
+        vals.append(loss_fn(x0, rng=jax.random.fold_in(jax.random.key(41), i), t=t))
+    vals = jnp.asarray(vals)
+    estimate = jnp.mean(vals)
+
+    assert jnp.abs(estimate - exact) < 2e-2

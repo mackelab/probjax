@@ -13,6 +13,9 @@ from probjax.nn.loss_fn.mean_flow_matching import (
     build_mean_flow_matching_loss,
     build_mean_flow_matching_loss_from_schedule,
 )
+from probjax.nn.loss_fn.multinomial_diffusion import (
+    build_time_dependent_multinomial_diffusion_loss,
+)
 from probjax.nn.loss_fn.score_matching import (
     build_score_matching_loss,
     build_time_dependent_score_matching_loss,

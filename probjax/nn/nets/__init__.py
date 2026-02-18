@@ -35,6 +35,18 @@ from probjax.nn.nets.mean_flow_matching_model import (
     LinearMeanFlow,
     MeanFlowMatcher,
 )
+from probjax.nn.nets.multinomial_diffusion import (
+    CategoricalPreconditioningProtocol,
+    CategoricalScheduleProtocol,
+    CategoricalTrainingConfigProtocol,
+    CategoricalEDMPreconditioning,
+    ImportanceContinuousTimeTrainingConfig,
+    MultinomialCosineDM,
+    MultinomialDiffusion,
+    MultinomialDiffusionSchedule,
+    MultinomialLogSNRDM,
+    UniformContinuousTimeTrainingConfig,
+)
 from probjax.nn.nets.lru import LRUModel
 from probjax.nn.nets.normalizing_flows import (
     AdditiveAutoregressiveFlow,
