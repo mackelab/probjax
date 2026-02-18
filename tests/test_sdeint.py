@@ -132,6 +132,90 @@ def test_sdeint_supports_kwargs(sde_method, scalar_sde_problem):
     assert jnp.allclose(positional, keyword, atol=1e-6, rtol=1e-6)
 
 
+def test_sdeint_split_drift_supports_kwargs(sde_method):
+    if sde_method not in SPLIT_DRIFT_SDE_METHODS:
+        return
+
+    key = jax.random.PRNGKey(7)
+    x0 = jnp.array([1.0])
+    ts = jnp.linspace(0.0, 0.5, 64)
+    scale = jnp.array(0.6)
+    bias = jnp.array(0.03)
+
+    def lin_coeff(t):
+        del t
+        return jnp.array(-0.4)
+
+    def nonlin(t, y, scale, bias=0.0):
+        del t
+        return scale * y + bias
+
+    def diffusion(t, y, scale, bias=0.0):
+        del t, bias
+        return jnp.abs(scale) * jnp.ones_like(y)
+
+    drift = split_drift(lin_coeff=lin_coeff, nonlin=nonlin)
+
+    positional = sdeint(key, drift, diffusion, x0, ts, scale, bias, method=sde_method)
+    keyword = sdeint(
+        key,
+        drift,
+        diffusion,
+        x0,
+        ts,
+        scale=scale,
+        bias=bias,
+        method=sde_method,
+    )
+
+    assert jnp.allclose(positional, keyword, atol=1e-6, rtol=1e-6)
+
+
+def test_exp_euler_maruyama_weights_diffusion_with_linear_coeff():
+    key = jax.random.PRNGKey(17)
+    x0 = jnp.array([0.4])
+    ts = jnp.array([0.0, 0.2])
+    c = jnp.array(3.0)
+
+    def lin_coeff(t):
+        del t
+        return c
+
+    def nonlin(t, y):
+        del t, y
+        return jnp.zeros_like(x0)
+
+    # Depend on state to avoid additive_diffusion marker path.
+    def diffusion(t, y):
+        del t
+        return jnp.ones_like(y)
+
+    drift = split_drift(lin_coeff=lin_coeff, nonlin=nonlin)
+    result = sdeint(
+        key,
+        drift,
+        diffusion,
+        x0,
+        ts,
+        method="exp_euler_maruyama",
+        return_brownian=True,
+    )
+    assert isinstance(result, tuple)
+    _, brownian_trace = result
+    assert brownian_trace is not None
+
+    dt = ts[1] - ts[0]
+    weighted_var = jnp.abs(dt) * (
+        (jnp.exp(2.0 * c * jnp.abs(dt)) - 1.0) / (2.0 * c * jnp.abs(dt))
+    )
+    expected_std = jnp.sqrt(weighted_var)
+    step_key = jax.random.split(key, ts.shape[0] - 1)[0]
+    expected_increment = jax.random.normal(step_key, (x0.shape[0],)) * expected_std
+    brownian_step = jnp.asarray(brownian_trace)[1]
+
+    assert jnp.allclose(brownian_step, expected_increment, atol=1e-6, rtol=1e-6)
+
+
 def test_sdeint_rectangular_diffusion_is_supported(sde_method):
     """Test SDE solvers support rectangular diffusion matrices."""
     # Specialized methods require specific drift type wrappers
@@ -246,3 +330,42 @@ def test_linear_exact_sde_requires_markers():
 
     with pytest.raises(TypeError, match="linear_exact_sde requires.*linear_drift"):
         sdeint(key, plain_drift, plain_diffusion, x0, ts, method="linear_exact_sde")
+
+
+def test_linear_exact_sde_supports_linear_drift_kwargs():
+    key = jax.random.PRNGKey(11)
+    A = jnp.array(-0.8)
+    x0 = jnp.array([1.0])
+    ts = jnp.linspace(0.0, 0.2, 8)
+    offset = 0.12
+
+    def b(t, offset=0.0):
+        del t
+        return jnp.asarray([offset])
+
+    drift = linear_drift(A=A, b=b)
+    diffusion = const_diffusion(G=jnp.array(0.2))
+
+    result_kw = sdeint(
+        key,
+        drift,
+        diffusion,
+        x0,
+        ts,
+        offset=offset,
+        method="linear_exact_sde",
+    )
+
+    def b_bound(t):
+        return b(t, offset=offset)
+
+    expected = sdeint(
+        key,
+        linear_drift(A=A, b=b_bound),
+        diffusion,
+        x0,
+        ts,
+        method="linear_exact_sde",
+    )
+
+    assert jnp.allclose(result_kw, expected, atol=1e-6, rtol=1e-6)

@@ -267,6 +267,72 @@ def test_odeint_supports_drift_kwargs(ode_method):
     assert jnp.allclose(terminal_jit, terminal_ref, atol=1e-6, rtol=1e-6)
 
 
+def test_odeint_split_drift_supports_kwargs(ode_method):
+    if ode_method not in SPLIT_DRIFT_METHODS:
+        return
+
+    x0 = jnp.array([1.0])
+    ts = jnp.linspace(0.0, 1.0, 40)
+    scale = jnp.array(-0.1)
+    bias = jnp.array(0.05)
+
+    def lin_coeff(t):
+        del t
+        return jnp.array(-0.2)
+
+    def nonlin(t, x, scale, bias=0.0):
+        del t
+        return scale * x + bias
+
+    drift = split_drift(lin_coeff=lin_coeff, nonlin=nonlin)
+
+    trace_positional = odeint(
+        drift,
+        x0,
+        ts,
+        scale,
+        bias,
+        method=ode_method,
+        collect_trace=True,
+    )
+    trace_keyword = odeint(
+        drift,
+        x0,
+        ts,
+        scale=scale,
+        bias=bias,
+        method=ode_method,
+        collect_trace=True,
+    )
+
+    assert trace_positional is not None
+    assert trace_keyword is not None
+    assert jnp.allclose(trace_keyword, trace_positional, atol=1e-6, rtol=1e-6)
+
+
+def test_linear_exact_supports_linear_drift_kwargs():
+    A = jnp.array(-0.7)
+    x0 = jnp.array([1.25])
+    ts = jnp.linspace(0.0, 1.0, 30)
+    bias = 0.15
+
+    def b(t, bias=0.0):
+        del t
+        return jnp.asarray([bias])
+
+    drift = linear_drift(A=A, b=b)
+
+    result_kw = odeint(drift, x0, ts, bias=bias, method="linear_exact")
+
+    def b_bound(t):
+        return b(t, bias=bias)
+
+    expected = odeint(linear_drift(A=A, b=b_bound), x0, ts, method="linear_exact")
+    assert result_kw is not None
+    assert expected is not None
+    assert jnp.allclose(result_kw, expected, atol=1e-6, rtol=1e-6)
+
+
 def test_linear_exact_scalar():
     A = jnp.array(-0.5)
     x0 = jnp.array([1.0])

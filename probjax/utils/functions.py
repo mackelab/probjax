@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import jax
 
 from probjax.utils.typing import Array, ArrayLike, Callable, PyTree
+
+
+def _replace_positional_arg(
+    args: tuple[Any, ...], index: int, value: Any
+) -> tuple[Any, ...]:
+    if index < 0 or index >= len(args):
+        raise IndexError(
+            f"Argument index {index} is out of range for {len(args)} arguments."
+        )
+    return args[:index] + (value,) + args[index + 1 :]
 
 
 @jax.tree_util.register_pytree_node_class
@@ -20,6 +31,28 @@ class split_drift:
         linear = jax.tree_util.tree_map(lambda xi: coeff * xi, x)
         nonlin = self.nonlin(t, x, *args, **kwargs)
         return jax.tree_util.tree_map(lambda li, ni: li + ni, linear, nonlin)
+
+    def bind_args(self, *args, **kwargs) -> split_drift:
+        if not args and not kwargs:
+            return self
+
+        def nonlin_bound(t: ArrayLike, x: PyTree):
+            return self.nonlin(t, x, *args, **kwargs)
+
+        return split_drift(lin_coeff=self.lin_coeff, nonlin=nonlin_bound)
+
+    def ravel_arg(
+        self, unravel: Callable[[Array], PyTree], index: int = 1
+    ) -> split_drift:
+        from probjax.utils.jaxutils import ravel_args
+
+        def nonlin_raveled(*args, **kwargs):
+            args = _replace_positional_arg(args, index, unravel(args[index]))
+            value = self.nonlin(*args, **kwargs)
+            value_flat, _ = ravel_args(value)
+            return value_flat
+
+        return split_drift(lin_coeff=self.lin_coeff, nonlin=nonlin_raveled)
 
     def tree_flatten(self):
         return (), (self.lin_coeff, self.nonlin)
@@ -41,6 +74,26 @@ class state_drift:
         del t
         return self.drift(y, *args, **kwargs)
 
+    def bind_args(self, *args, **kwargs) -> state_drift:
+        if not args and not kwargs:
+            return self
+
+        def drift_bound(y: PyTree):
+            return self.drift(y, *args, **kwargs)
+
+        return state_drift(drift=drift_bound)
+
+    def ravel_arg(self, unravel: Callable[[Array], PyTree], index: int = 1) -> Callable:
+        from probjax.utils.jaxutils import ravel_args
+
+        def drift_raveled(*args, **kwargs):
+            args = _replace_positional_arg(args, index, unravel(args[index]))
+            value = self(*args, **kwargs)
+            value_flat, _ = ravel_args(value)
+            return value_flat
+
+        return drift_raveled
+
 
 @dataclass(frozen=True)
 class affine_drift:
@@ -54,6 +107,29 @@ class affine_drift:
         bias_part = self.bias(t, *args, **kwargs)
         return jax.tree_util.tree_map(lambda li, bi: li + bi, linear_part, bias_part)
 
+    def bind_args(self, *args, **kwargs) -> affine_drift:
+        if not args and not kwargs:
+            return self
+
+        def linear_bound(t: ArrayLike, y: PyTree):
+            return self.linear(t, y, *args, **kwargs)
+
+        def bias_bound(t: ArrayLike):
+            return self.bias(t, *args, **kwargs)
+
+        return affine_drift(linear=linear_bound, bias=bias_bound)
+
+    def ravel_arg(self, unravel: Callable[[Array], PyTree], index: int = 1) -> Callable:
+        from probjax.utils.jaxutils import ravel_args
+
+        def drift_raveled(*args, **kwargs):
+            args = _replace_positional_arg(args, index, unravel(args[index]))
+            value = self(*args, **kwargs)
+            value_flat, _ = ravel_args(value)
+            return value_flat
+
+        return drift_raveled
+
 
 @dataclass(frozen=True)
 class additive_diffusion:
@@ -64,6 +140,15 @@ class additive_diffusion:
     def __call__(self, t: ArrayLike, y: PyTree, *args, **kwargs) -> PyTree:
         del y
         return self.diffusion(t, *args, **kwargs)
+
+    def bind_args(self, *args, **kwargs) -> additive_diffusion:
+        if not args and not kwargs:
+            return self
+
+        def diffusion_bound(t: ArrayLike):
+            return self.diffusion(t, *args, **kwargs)
+
+        return additive_diffusion(diffusion=diffusion_bound)
 
 
 @dataclass(frozen=True)
@@ -96,6 +181,23 @@ class linear_drift:
             return linear_part
         bias_part = self.b(t, *args, **kwargs)
         return jax.tree_util.tree_map(lambda li, bi: li + bi, linear_part, bias_part)
+
+    def bind_args(self, *args, **kwargs) -> linear_drift:
+        if self.b is None or (not args and not kwargs):
+            return self
+
+        b_fn = self.b
+
+        def b_bound(t: ArrayLike):
+            return b_fn(t, *args, **kwargs)
+
+        return linear_drift(A=self.A, b=b_bound)
+
+    def ravel_arg(
+        self, unravel: Callable[[Array], PyTree], index: int = 1
+    ) -> linear_drift:
+        del unravel, index
+        return self
 
     @property
     def is_constant(self) -> bool:
@@ -136,6 +238,10 @@ class const_diffusion:
     def __call__(self, t: ArrayLike, y: PyTree, *args, **kwargs) -> PyTree:
         del t, args, kwargs
         return self.G
+
+    def bind_args(self, *args, **kwargs) -> const_diffusion:
+        del args, kwargs
+        return self
 
     def __hash__(self):
         # Make hashable for use with jit and custom_inverse

@@ -1,10 +1,9 @@
 from functools import partial
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence, cast
 
 import jax
 import jax.numpy as jnp
 
-from probjax.utils.functions import linear_drift, split_drift
 from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
 from probjax.utils.odeutil.adaptive import AdaptiveParams
 from probjax.utils.odeutil.filters import TraceFilter
@@ -72,20 +71,9 @@ def _odeint(
     ts = jnp.atleast_1d(ts)
 
     flat_y0, unravel = ravel_args(y0)
-    if isinstance(drift, split_drift):
-        split_marker = drift
-
-        def nonlin_flat(t, yi, *args):
-            nonlin_tree = split_marker.nonlin(t, unravel(yi), *args)
-            nonlin_flattened, _ = ravel_args(nonlin_tree)
-            return nonlin_flattened
-
-        drift = split_drift(
-            lin_coeff=split_marker.lin_coeff,
-            nonlin=nonlin_flat,
-        )
-    elif isinstance(drift, linear_drift):
-        pass
+    ravel_arg = getattr(drift, "ravel_arg", None)
+    if callable(ravel_arg):
+        drift = cast(Callable, ravel_arg(unravel, index=1))
     else:
         drift = ravel_arg_fun(drift, unravel, 1)
 
@@ -132,7 +120,8 @@ def _odeint(
         }
         state, ys = odeint_adaptive(solver, drift, kwargs, flat_y0, ts, *args)
 
-    final_state = unravel(state.y0 if state is not None else flat_y0)
+    state_y0 = getattr(state, "y0") if state is not None else flat_y0
+    final_state = unravel(state_y0)
     final_filtered = _apply_filter(final_state)
 
     if trace_enabled and ys is not None:

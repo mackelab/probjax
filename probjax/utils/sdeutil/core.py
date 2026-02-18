@@ -9,8 +9,6 @@ from jaxtyping import Key, PyTree
 from probjax.utils.functions import (
     additive_diffusion,
     const_diffusion,
-    linear_drift,
-    split_drift,
 )
 from probjax.utils.jaxutils import ravel_args
 from probjax.utils.odeutil.filters import TraceFilter
@@ -41,36 +39,17 @@ def _bind_sde_function_args(
     args = tuple(sde_args)
     kwargs = {} if sde_kwargs is None else dict(sde_kwargs)
 
-    if isinstance(drift, split_drift):
-
-        def split_nonlin_bound(t, y):
-            return drift.nonlin(t, y, *args, **kwargs)
-
-        drift_bound = cast(
-            Callable,
-            split_drift(
-                lin_coeff=drift.lin_coeff,
-                nonlin=split_nonlin_bound,
-            ),
-        )
-    elif isinstance(drift, linear_drift):
-        drift_bound = drift
+    drift_bind_args = getattr(drift, "bind_args", None)
+    if callable(drift_bind_args):
+        drift_bound = cast(Callable, drift_bind_args(*args, **kwargs))
     else:
 
         def drift_bound(t, y):
             return drift(t, y, *args, **kwargs)
 
-    if isinstance(diffusion, additive_diffusion):
-
-        def additive_diffusion_bound(t):
-            return diffusion.diffusion(t, *args, **kwargs)
-
-        diffusion_bound = cast(
-            Callable,
-            additive_diffusion(diffusion=additive_diffusion_bound),
-        )
-    elif isinstance(diffusion, const_diffusion):
-        diffusion_bound = diffusion
+    diffusion_bind_args = getattr(diffusion, "bind_args", None)
+    if callable(diffusion_bind_args):
+        diffusion_bound = cast(Callable, diffusion_bind_args(*args, **kwargs))
     else:
 
         def diffusion_bound(t, y):
@@ -172,24 +151,9 @@ def _sdeint(
     flat_y0, unravel = ravel_args(y0)
     flat_state_dim = int(flat_y0.shape[0])
 
-    if isinstance(drift, split_drift):
-        split_marker = drift
-
-        def nonlin_flat(t, yi):
-            yi_tree = unravel(yi)
-            nonlin_tree = split_marker.nonlin(t, yi_tree)
-            nonlin_flattened, _ = ravel_args(nonlin_tree)
-            return nonlin_flattened
-
-        drift_raveled = cast(
-            Callable,
-            split_drift(
-                lin_coeff=split_marker.lin_coeff,
-                nonlin=nonlin_flat,
-            ),
-        )
-    elif isinstance(drift, linear_drift):
-        drift_raveled = cast(Callable, drift)
+    ravel_arg = getattr(drift, "ravel_arg", None)
+    if callable(ravel_arg):
+        drift_raveled = cast(Callable, ravel_arg(unravel, index=1))
     else:
 
         def drift_raveled(t, yi):

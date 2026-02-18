@@ -110,11 +110,8 @@ def build_exp_euler_maruyama_step(
             g_n = state.g0
 
         inferred_noise_dim = _infer_noise_dim(g_n, y0.shape[0], noise_dim)
-        if is_additive:
-            noise_var = _weighted_noise_variance(c_np1, dt)
-            noise_std = jnp.sqrt(noise_var)
-        else:
-            noise_std = jnp.sqrt(jnp.abs(dt))
+        noise_var = _weighted_noise_variance(c_np1, dt)
+        noise_std = jnp.sqrt(noise_var)
 
         dWt = jax.random.normal(rng, (inferred_noise_dim,)) * noise_std
         y_np1 = y_det + mv_diag_or_dense(g_n, dWt)
@@ -150,6 +147,6 @@ register_method(
         "strong_order": 0.5,
         "weak_order": 1.0,
         "adaptive": False,
-        "info": "Exponential Euler-Maruyama (requires split_drift; additive_diffusion optional)",
+        "info": "Exponential Euler-Maruyama with exponential drift and weighted diffusion increments (requires split_drift)",
     },
 )
