@@ -365,9 +365,7 @@ class SimulationDataset:
         self._dataset_size = self._buffer_batches * self._batch_size
 
         self._initial_rng = rng
-        rng_key = jax.random.PRNGKey(0) if isinstance(rng, int) else rng
-        rng_array = jax.random.split(rng_key, self._n_sim_devices)
-        self._sim_rngs = jax.device_put(rng_array, self._simulation_devices)
+        self._sim_rng = jax.random.PRNGKey(0) if isinstance(rng, int) else rng
 
         self._stop_event = threading.Event()
         self._lock = threading.RLock()
@@ -437,9 +435,7 @@ class SimulationDataset:
         else:
             rng = jax.random.PRNGKey(int(rng)) if isinstance(rng, int) else rng
         self._initial_rng = rng
-        rng_key = jax.random.PRNGKey(0) if isinstance(rng, int) else rng
-        rng_array = jax.random.split(rng_key, self._n_sim_devices)
-        self._sim_rngs = jax.device_put(rng_array, self._simulation_devices)
+        self._sim_rng = jax.random.PRNGKey(0) if isinstance(rng, int) else rng
         self._stop_producer()
         with self._lock:
             self._pending_refresh = 0
@@ -635,14 +631,15 @@ class SimulationDataset:
                 self._stats["production_time"] += duration
 
     def _produce_batch(self) -> tuple[Any, float]:
-        self._sim_rngs, keys = jax.random.split(self._sim_rngs)
-        keys_per_device = jax.random.split(keys, self._n_sim_devices)
-        keys_per_device = jax.tree_util.tree_map(
-            lambda x: x.reshape(
-                (self._n_sim_devices, self._batch_size_per_device) + x.shape[1:]
-            ),
-            keys_per_device,
-        )
+        self._sim_rng, batch_key = jax.random.split(self._sim_rng)
+        sample_keys = jax.random.split(batch_key, self._batch_size)
+        if self._n_sim_devices > 1:
+            keys_per_device = sample_keys.reshape(
+                (self._n_sim_devices, self._batch_size_per_device)
+                + sample_keys.shape[1:]
+            )
+        else:
+            keys_per_device = sample_keys
         start = time.perf_counter()
 
         if self._n_sim_devices > 1:
@@ -651,7 +648,7 @@ class SimulationDataset:
                 lambda x: x.reshape((self._batch_size,) + x.shape[2:]), batch
             )
         else:
-            batch = self._batched_simulator(keys_per_device[0])
+            batch = self._batched_simulator(keys_per_device)
 
         duration = time.perf_counter() - start
         return batch, duration
@@ -661,7 +658,10 @@ class SimulationDataset:
             return self._simulator_fn(key)
 
         if self._n_sim_devices > 1:
-            batched = jax.pmap(single_call, devices=self._simulation_devices)
+            batched = jax.pmap(
+                jax.vmap(single_call),
+                devices=self._simulation_devices,
+            )
         else:
             batched = jax.vmap(single_call)
 
