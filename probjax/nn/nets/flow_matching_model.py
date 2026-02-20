@@ -7,7 +7,7 @@ from flax import nnx
 
 from probjax.nn.loss_fn.flow_matching import build_flow_matching_loss
 
-from probjax.nn.nets.flow_matching_configs import (
+from probjax.nn.nets.config.flow_matching_configs import (
     CosineInterpolationSchedule,
     FlowPreconditioningProtocol,
     FlowSolverConfigProtocol,

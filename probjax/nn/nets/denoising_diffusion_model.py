@@ -8,7 +8,7 @@ from flax import nnx
 
 from probjax.nn.loss_fn.denoising import build_time_dependent_denoising_loss
 
-from probjax.nn.nets.denoising_diffusion_configs import (
+from probjax.nn.nets.config.denoising_diffusion_configs import (
     BaseSolverConfig,
     CosineNoiseSchedule,
     EDMNoiseSchedule,
@@ -576,7 +576,7 @@ class CosineDM(DiffusionDenoiser):
     Cosine schedule variant:
       - CosineNoiseSchedule
       - EDMPreconditioning
-      - LogSNRTrainingConfig (log-SNR sampling)
+      - LogSNRTrainingConfig (log-SNR sampling over bounded sigma range)
       - BaseSolverConfig by default
     """
 
@@ -588,6 +588,8 @@ class CosineDM(DiffusionDenoiser):
         t_min: float = 1e-3,
         t_max: float = 1.0,
         s: float = 0.008,
+        sigma_min: float = 2e-3,
+        sigma_max: float = 80.0,
         num_steps: int = 64,
         loss_type: str = "x0",
         loss_kwargs: Mapping[str, object] | None = None,
@@ -596,14 +598,29 @@ class CosineDM(DiffusionDenoiser):
         rngs: nnx.RngStream | None = None,
         solver: SolverConfigProtocol | None = None,
     ) -> None:
+        if sigma_min <= 0.0:
+            raise ValueError("sigma_min must be positive.")
+        if sigma_max <= sigma_min:
+            raise ValueError("sigma_max must be greater than sigma_min.")
+
         schedule = CosineNoiseSchedule(t_min=t_min, t_max=t_max, s=s)
+        bounded_t_min = float(jnp.asarray(schedule.inv_sigma_eff(sigma_min)))
+        bounded_t_max = float(jnp.asarray(schedule.inv_sigma_eff(sigma_max)))
+        train_t_min = max(t_min, bounded_t_min)
+        train_t_max = min(t_max, bounded_t_max)
+        if train_t_max <= train_t_min:
+            raise ValueError(
+                "Invalid cosine time bounds after sigma clipping. "
+                "Choose a wider [t_min, t_max] or adjust sigma_min/sigma_max."
+            )
+
         precond = EDMPreconditioning()
         train_cfg = LogSNRTrainingConfig(
             schedule=schedule,
             loss_type=loss_type,
             loss_kwargs=dict(loss_kwargs or {}),
-            t_min=t_min,
-            t_max=t_max,
+            t_min=train_t_min,
+            t_max=train_t_max,
         )
         solver_cfg = solver or BaseSolverConfig(
             schedule=schedule,

@@ -554,6 +554,10 @@ class CosineNoiseSchedule(BaseNoiseSchedule):
         u = (jnp.asarray(t) - self.t_min) / span
         return jnp.clip(u, 0.0, 1.0)
 
+    def _theta(self, t: ArrayLike) -> Array:
+        u = self._u(t)
+        return (self.s + u) / (1.0 + self.s) * (jnp.pi / 2.0)
+
     def _theta0(self) -> Array:
         return (self.s / (1.0 + self.s)) * (jnp.pi / 2.0)
 
@@ -561,8 +565,7 @@ class CosineNoiseSchedule(BaseNoiseSchedule):
         return jnp.maximum(jnp.cos(self._theta0()), self.eps)
 
     def _alpha_bar(self, t: ArrayLike) -> Array:
-        u = self._u(t)
-        theta = (self.s + u) / (1.0 + self.s) * (jnp.pi / 2.0)
+        theta = self._theta(t)
         cos_theta = jnp.cos(theta)
         denom = self._cos_norm()
         alpha_bar = (cos_theta / denom) ** 2
@@ -588,6 +591,22 @@ class CosineNoiseSchedule(BaseNoiseSchedule):
         frac = (2.0 * theta / jnp.pi) * (1.0 + self.s) - self.s
         u = jnp.clip(frac, 0.0, 1.0)
         return self.t_min + u * (self.t_max - self.t_min)
+
+    def _beta(self, t: ArrayLike) -> Array:
+        span = jnp.maximum(self.t_max - self.t_min, self.eps)
+        theta = self._theta(t)
+        dtheta_dt = (jnp.pi / 2.0) / ((1.0 + self.s) * span)
+        beta_t = 2.0 * jnp.tan(theta) * dtheta_dt
+        return jnp.maximum(beta_t, self.eps)
+
+    def drift(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
+        beta_t = self._beta(t)
+        return jax.tree_util.tree_map(lambda xi: -0.5 * beta_t * xi, x)
+
+    def diffusion(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
+        beta_t = self._beta(t)
+        g = jnp.sqrt(jnp.maximum(beta_t, self.eps))
+        return jax.tree_util.tree_map(lambda xi: jnp.broadcast_to(g, xi.shape), x)
 
 
 # =============================================================================

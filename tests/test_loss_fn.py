@@ -12,7 +12,7 @@ from probjax.nn.loss_fn import (
     build_sliced_score_matching_loss,
     build_target_score_matching_loss,
 )
-from probjax.nn.nets.flow_matching_configs import (
+from probjax.nn.nets.config.flow_matching_configs import (
     AutodiffInterpolationSchedule,
     LinearInterpolationSchedule,
 )

@@ -7,7 +7,7 @@ from probjax.nn.nets.denoising_diffusion_model import (
     VE,
     VP,
 )
-from probjax.nn.nets.flow_matching_configs import (
+from probjax.nn.nets.config.flow_matching_configs import (
     AutodiffInterpolationSchedule,
     GeneralInterpolationSchedule,
     FlowPreconditioningProtocol,
@@ -23,7 +23,7 @@ from probjax.nn.nets.flow_matching_configs import (
     RhoFlowSolverConfig,
     UniformFlowTrainingConfig,
 )
-from probjax.nn.nets.mean_flow_matching_configs import (
+from probjax.nn.nets.config.mean_flow_matching_configs import (
     FlowPairTrainingConfigProtocol,
     SigmoidPairFlowTrainingConfig,
 )
@@ -35,17 +35,19 @@ from probjax.nn.nets.mean_flow_matching_model import (
     LinearMeanFlow,
     MeanFlowMatcher,
 )
-from probjax.nn.nets.multinomial_diffusion import (
+from probjax.nn.nets.config.multinomial_diffusion_configs import (
     CategoricalPreconditioningProtocol,
     CategoricalScheduleProtocol,
     CategoricalTrainingConfigProtocol,
     CategoricalEDMPreconditioning,
     ImportanceContinuousTimeTrainingConfig,
+    MultinomialDiffusionSchedule,
+    UniformContinuousTimeTrainingConfig,
+)
+from probjax.nn.nets.multinomial_diffusion import (
     MultinomialCosineDM,
     MultinomialDiffusion,
-    MultinomialDiffusionSchedule,
     MultinomialLogSNRDM,
-    UniformContinuousTimeTrainingConfig,
 )
 from probjax.nn.nets.lru import LRUModel
 from probjax.nn.nets.normalizing_flows import (
