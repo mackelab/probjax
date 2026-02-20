@@ -11,17 +11,77 @@
 """Pallas kernels for use with Mamba models."""
 
 import functools
+import os
+import warnings
 from typing import NamedTuple
 
 import jax
 from jax import numpy as jnp
-from jax._src.lax import fori_loop
+from jax import lax
 from jax.experimental import pallas as pl
 
-from probjax.nn.pallas_kernels.utils import use_interpret_mode
+from probjax.nn.pallas_kernels.utils import get_dot_precision, use_interpret_mode
 
-# MATMUL_PREC can be set to jax.lax.Precision("float32") for greater accuracy.
-MATMUL_PREC = None
+
+def _bs(index_map, block_shape):
+    """Compatibility wrapper for BlockSpec(index_map, block_shape) call sites."""
+    return pl.BlockSpec(block_shape=block_shape, index_map=index_map)
+
+
+def _validate_mamba_runtime_inputs(
+    x: jax.Array,
+    a: jax.Array,
+    b: jax.Array,
+    c: jax.Array,
+    delta: jax.Array,
+    d: jax.Array,
+    *,
+    seq_tile_size: int,
+    dim_tile_size: int,
+) -> None:
+    if seq_tile_size <= 0 or seq_tile_size % 8 != 0:
+        raise ValueError("`seq_tile_size` must be a positive multiple of 8.")
+    if dim_tile_size <= 0 or dim_tile_size % 128 != 0:
+        raise ValueError("`dim_tile_size` must be a positive multiple of 128.")
+
+    if x.ndim != 3:
+        raise ValueError(f"`x` must be rank-3 [B, L, D], got shape {x.shape}.")
+    if a.ndim != 2:
+        raise ValueError(f"`a` must be rank-2 [S, D], got shape {a.shape}.")
+    if b.ndim != 3:
+        raise ValueError(f"`b` must be rank-3 [B, L, S], got shape {b.shape}.")
+    if c.ndim != 3:
+        raise ValueError(f"`c` must be rank-3 [B, L, S], got shape {c.shape}.")
+    if delta.ndim != 3:
+        raise ValueError(
+            f"`delta` must be rank-3 [B, L, D], got shape {delta.shape}."
+        )
+    if d.ndim != 2:
+        raise ValueError(f"`d` must be rank-2 [1, D], got shape {d.shape}.")
+
+    batch_size, seq_len, inner_dim = x.shape
+    state_dim, a_inner_dim = a.shape
+
+    if b.shape != (batch_size, seq_len, state_dim):
+        raise ValueError(
+            f"`b` shape mismatch: expected {(batch_size, seq_len, state_dim)}, got {b.shape}."
+        )
+    if c.shape != (batch_size, seq_len, state_dim):
+        raise ValueError(
+            f"`c` shape mismatch: expected {(batch_size, seq_len, state_dim)}, got {c.shape}."
+        )
+    if delta.shape != (batch_size, seq_len, inner_dim):
+        raise ValueError(
+            f"`delta` shape mismatch: expected {(batch_size, seq_len, inner_dim)}, got {delta.shape}."
+        )
+    if a_inner_dim != inner_dim:
+        raise ValueError(
+            f"`a` inner dimension mismatch: expected {inner_dim}, got {a_inner_dim}."
+        )
+    if d.shape != (1, inner_dim):
+        raise ValueError(
+            f"`d` shape mismatch: expected {(1, inner_dim)}, got {d.shape}."
+        )
 
 
 class MambaArgumentBlockSpecs(NamedTuple):
@@ -56,20 +116,20 @@ def _parameter_blockspecs(
 
     # Note: `None` is equivalent to 1, but the dimension is squeezed away in the kernel.
     x_tiling = (None, seq_tile_size, dim_tile_size)
-    x_spec = pl.BlockSpec(lambda b, d, s: (b, s, d), x_tiling)
+    x_spec = _bs(lambda b, d, s: (b, s, d), x_tiling)
 
     # Note: we do not tile over state_dim.
     a_tiling = (state_dim, dim_tile_size)
-    a_spec = pl.BlockSpec(lambda b, d, s: (0, d), a_tiling)
+    a_spec = _bs(lambda b, d, s: (0, d), a_tiling)
 
     b_tiling = (None, seq_tile_size, state_dim)
-    b_spec = pl.BlockSpec(lambda b, d, s: (b, s, 0), b_tiling)
+    b_spec = _bs(lambda b, d, s: (b, s, 0), b_tiling)
 
     d_tiling = (1, dim_tile_size)
-    d_spec = pl.BlockSpec(lambda b, d, s: (0, d), d_tiling)
+    d_spec = _bs(lambda b, d, s: (0, d), d_tiling)
 
     carry_tiling = (None, state_dim, dim_tile_size)
-    carry_spec = pl.BlockSpec(lambda b, d, s: (b, 0, 0), carry_tiling)
+    carry_spec = _bs(lambda b, d, s: (b, 0, 0), carry_tiling)
 
     return MambaArgumentBlockSpecs(
         x_spec=x_spec,
@@ -85,16 +145,119 @@ def _in_kernel_dtype() -> jnp.dtype:
     return jnp.float32
 
 
+def _matmul_precision(dtype: jnp.dtype):
+    return get_dot_precision(jax.default_backend(), dtype)
+
+
+def _tpu_compiler_params(*, dimension_semantics):
+    """Returns TPU compiler params when running on TPU, else None."""
+    if use_interpret_mode() or jax.default_backend() != "tpu":
+        return None
+    from jax.experimental.pallas import tpu as pltpu
+
+    return pltpu.CompilerParams(dimension_semantics=dimension_semantics)
+
+
+def _is_hopper_or_newer_gpu() -> bool:
+    if jax.default_backend() != "gpu":
+        return False
+    kind = jax.devices()[0].device_kind.lower()
+    return any(tag in kind for tag in ("h100", "h200", "b100", "b200", "hopper", "blackwell"))
+
+
+def _prefer_mosaic_gpu() -> bool:
+    val = os.environ.get("PROBJAX_PALLAS_PREFER_MOSAIC_GPU", "0").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
+def _pallas_backend(prefer_mosaic_gpu: bool | None = None) -> str | None:
+    """Selects the explicit Pallas backend for the current JAX platform."""
+    if prefer_mosaic_gpu is None:
+        prefer_mosaic_gpu = _prefer_mosaic_gpu()
+    backend = jax.default_backend()
+    if backend == "gpu":
+        if prefer_mosaic_gpu and _is_hopper_or_newer_gpu():
+            return "mosaic_gpu"
+        return "triton"
+    if backend == "tpu":
+        return "mosaic_tpu"
+    return None
+
+
+@functools.lru_cache(maxsize=128)
+def _gpu_supports_mamba_pallas_for_shape(
+    *,
+    seq_len: int,
+    inner_dim: int,
+    state_dim: int,
+    seq_tile_size: int,
+    dim_tile_size: int,
+    pallas_backend: str | None,
+) -> bool:
+    """Cheap/static capability check for Mamba Pallas on GPU."""
+    if jax.default_backend() != "gpu":
+        return False
+    if use_interpret_mode():
+        return True
+    if pallas_backend not in ("triton", "mosaic_gpu"):
+        return False
+    if pallas_backend == "mosaic_gpu" and not _is_hopper_or_newer_gpu():
+        return False
+    if pallas_backend == "triton" and state_dim < 16:
+        return False
+    if seq_len <= 0 or inner_dim <= 0 or state_dim <= 0:
+        return False
+    if seq_tile_size <= 0 or seq_tile_size % 8 != 0:
+        return False
+    if dim_tile_size <= 0 or dim_tile_size % 128 != 0:
+        return False
+    return True
+
+
+_FAILED_MAMBA_PALLAS_CONFIGS: set[tuple] = set()
+
+
+def _mamba_pallas_failure_key(
+    *,
+    pallas_backend: str | None,
+    x: jax.Array,
+    a: jax.Array,
+    b: jax.Array,
+    c: jax.Array,
+    delta: jax.Array,
+    d: jax.Array,
+    seq_tile_size: int,
+    dim_tile_size: int,
+) -> tuple:
+    return (
+        pallas_backend,
+        seq_tile_size,
+        dim_tile_size,
+        x.shape,
+        a.shape,
+        b.shape,
+        c.shape,
+        delta.shape,
+        d.shape,
+        str(x.dtype),
+        str(a.dtype),
+        str(b.dtype),
+        str(c.dtype),
+        str(delta.dtype),
+        str(d.dtype),
+    )
+
+
 # pylint: disable=invalid-name
 
 
 def _update_carry(
     t: int,
-    mutable_carry_ref: jax.Array,
+    carry: jax.Array,
     *,
     dtype: jnp.dtype,
     x_ref: jax.Array,
-    a_ref: jax.Array,
+    a: jax.Array,
     b_ref: jax.Array,
     delta_ref: jax.Array,
 ):
@@ -106,21 +269,20 @@ def _update_carry(
         mutable_carry_ref: A [state_dim, dim_tile_size] jax.Array reference to h_t,
             modified by the function.
         x_ref: A [seq_len, dim_tile_size] jax.Array reference.
-        a_ref: A [state_dim, dim_tile_size] jax.Array reference.
+        a: A [state_dim, dim_tile_size] jax.Array.
         b_ref: A [seq_len, state_dim] jax.Array reference.
         delta_ref: A [seq_len, dim_tile_size] jax.Array reference.
     """
     delta = jnp.expand_dims(delta_ref[t].astype(dtype), axis=0)  # [1, inner_dim]
-    a = a_ref[:].astype(dtype)  # [state_dim, inner_dim]
     a_bar = jnp.exp(delta * a)  # [state_sim, inner_dim]
     b = jnp.expand_dims(b_ref[t].astype(dtype), axis=-1)  # [state_dim, 1]
     b_bar = delta * b * jnp.expand_dims(x_ref[t].astype(dtype), axis=0)
-    # carry_ref holds h_t.
-    a_bar *= mutable_carry_ref[:]
+    # `carry` holds h_t.
+    a_bar *= carry
     # Put h_{t+1} in the a_bar register.
     a_bar += b_bar
-    # carry_ref now holds h_{t+1}.
-    mutable_carry_ref[:] = a_bar
+    # Return h_{t+1}.
+    return a_bar
 
 
 def _forward_kernel_boundary_hs(
@@ -144,6 +306,7 @@ def _forward_kernel_boundary_hs(
             modified by the function.
     """
     dtype = _in_kernel_dtype()
+    a = a_ref[:].astype(dtype)
     seq_len = x_ref.shape[0]
 
     # Zero h_carry_ref, which holds h_t, only when in the first tile along the sequence dimension.
@@ -152,13 +315,14 @@ def _forward_kernel_boundary_hs(
         mutable_carry_ref[:] = jnp.zeros_like(mutable_carry_ref)
 
     h_carry = mutable_carry_ref[:]
-    h_T = fori_loop(  # fills h_ref
+    h_T = lax.fori_loop(  # fills h_ref
+        0,
         seq_len,
         functools.partial(
             _update_carry,
             dtype=dtype,
             x_ref=x_ref,
-            a_ref=a_ref,
+            a=a,
             b_ref=b_ref,
             delta_ref=delta_ref,
         ),
@@ -211,6 +375,8 @@ def _backward_kernel(
     """
     seq_len = dy_ref.shape[0]
     dtype = _in_kernel_dtype()
+    matmul_prec = _matmul_precision(dtype)
+    a = a_ref[:].astype(dtype)
 
     # If it's the final backward block, which corresponds to the first forward block,
     # then the boundary state is 0.
@@ -218,40 +384,41 @@ def _backward_kernel(
     def zero_boundary():
         boundary_hs_ref[:] = jnp.zeros_like(boundary_hs_ref)
 
-    def _forward_kernel_save_hs_body(t: int, mutable_carry_ref: jax.Array):
+    def _forward_kernel_save_hs_body(t: int, carry: jax.Array):
         """Computes h_{t+1} = a_bar_t * h_t + b_bar_t * x_t and saves it in
         `mutable_forward_hs_ref`."""
-        _update_carry(
+        next_carry = _update_carry(
             t,
-            mutable_carry_ref,
+            carry,
             dtype=dtype,
             x_ref=x_ref,
-            a_ref=a_ref,
+            a=a,
             b_ref=b_ref,
             delta_ref=delta_ref,
         )
-        mutable_forward_hs_ref[t] = mutable_carry_ref[:]
+        mutable_forward_hs_ref[t] = next_carry
+        return next_carry
 
     # Compute all the forward states in the block and store in forward_hs_ref.
     # TODO(swiseman): investigate computing dc as part of this loop (h/t bailin-wang);
     # currently we run into scoped vmem errors.
     h_carry = boundary_hs_ref[:]
 
-    _ = fori_loop(
+    _ = lax.fori_loop(
+        0,
         seq_len,
         _forward_kernel_save_hs_body,
         h_carry,
     )
 
-    a = a_ref[:].astype(dtype)
     d = jnp.squeeze(d_ref[:], axis=0).astype(dtype)
-    ones = jnp.ones((a_ref.shape[1], 1))[:]
+    ones_row = jnp.ones((1, a_ref.shape[1]))[:]
 
-    def _backward_kernel_body(i: int, mutable_carry_ref: jax.Array):
+    def _backward_kernel_body(i: int, carry: jax.Array):
         """Computes gradient contributions wrt parameters from time-step t, and
         partially computes d/dh_{t-1}."""
         t = seq_len - 1 - i
-        dh_t = mutable_carry_ref[:].astype(dtype)
+        dh_t = carry.astype(dtype)
         delta = jnp.expand_dims(delta_ref[t].astype(dtype), axis=0)  # [1, inner]
         a_bar = jnp.exp(delta * a)
         dL_da_bar = (
@@ -265,39 +432,41 @@ def _backward_kernel(
         mutable_ddelta_ref[t] = ddelta.astype(mutable_ddelta_ref.dtype)
 
         dh_t_delta = dh_t * delta
-        # Use an all-ones vector to sum dh_t_delta * x over its final dimension, since
-        # Pallas won't let us sum over axis=1.
-        mutable_db_ref[t] = jax.lax.dot_general(
-            (dh_t_delta * x),
-            ones,
+        # Sum over the inner dimension with a matmul arranged to satisfy Triton
+        # dot operand constraints (second operand dims >= 16).
+        db_t = jax.lax.dot_general(
+            ones_row,
+            (dh_t_delta * x).T,
             (
                 ((1,), (0,)),
                 ((), ()),
             ),
             preferred_element_type=jnp.float32,
-            precision=MATMUL_PREC,
+            precision=matmul_prec,
         )
+        mutable_db_ref[t] = db_t.T
         dy = dy_ref[t]
         mutable_dd_ref[:] += x.astype(dtype) * dy
         mutable_dx_ref[t] = (jnp.sum(dh_t_delta * b, axis=0) + dy * d).astype(
             mutable_dx_ref.dtype
         )
-        mutable_dc_ref[t] = jax.lax.dot_general(  # equivalent to h_t @ dy: [state, 1]
-            mutable_forward_hs_ref[t],  # [state, inner]
-            jnp.expand_dims(dy, axis=-1),  # [inner, 1]
+        dc_t = jax.lax.dot_general(
+            jnp.expand_dims(dy, axis=0),  # [1, inner]
+            mutable_forward_hs_ref[t].astype(dtype).T,  # [inner, state]
             (
                 ((1,), (0,)),
                 ((), ()),
             ),
             preferred_element_type=jnp.float32,
-            precision=MATMUL_PREC,
+            precision=matmul_prec,
         )
+        mutable_dc_ref[t] = dc_t.T
         # Compute d/dh_{t-1} and store it.
         dh_prev = jnp.expand_dims(dy_ref[t - 1], axis=0) * jnp.expand_dims(
             c_ref[t - 1], axis=-1
         )
         dh_prev += dh_t * a_bar
-        mutable_carry_ref[:] = dh_prev
+        return dh_prev
 
     # Initialize da and dd to zero if this is the first backward tile.
     @pl.when(pl.program_id(axis=2) == 0)
@@ -317,7 +486,8 @@ def _backward_kernel(
     )
 
     # Compute param grads for steps T thru 2 and d/dh_t for steps T-1 thru 1.
-    dh_1 = fori_loop(
+    dh_1 = lax.fori_loop(
+        0,
         seq_len - 1,
         _backward_kernel_body,
         dcarry,
@@ -336,31 +506,33 @@ def _backward_kernel(
     ).astype(mutable_ddelta_ref.dtype)
     # Compute d/db1 and d/dx1
     dh_1_delta = dh_1 * delta1
-    mutable_db_ref[0] = jax.lax.dot_general(
-        (dh_1_delta * x1),
-        ones,
+    db_1 = jax.lax.dot_general(
+        ones_row,
+        (dh_1_delta * x1).T,
         (
             ((1,), (0,)),
             ((), ()),
         ),
         preferred_element_type=jnp.float32,
-        precision=MATMUL_PREC,
+        precision=matmul_prec,
     )
+    mutable_db_ref[0] = db_1.T
     dy1 = dy_ref[0]
     mutable_dd_ref[:] += dy1 * x1.astype(dtype)
     mutable_dx_ref[0] = (jnp.sum(dh_1_delta * b1, axis=0) + dy1 * d).astype(
         mutable_dx_ref.dtype
     )
-    mutable_dc_ref[0] = jax.lax.dot_general(
-        mutable_forward_hs_ref[0],
-        jnp.expand_dims(dy1, axis=-1),
+    dc_1 = jax.lax.dot_general(
+        jnp.expand_dims(dy1, axis=0),
+        mutable_forward_hs_ref[0].astype(dtype).T,
         (
             ((1,), (0,)),
             ((), ()),
         ),
         preferred_element_type=jnp.float32,
-        precision=MATMUL_PREC,
+        precision=matmul_prec,
     )
+    mutable_dc_ref[0] = dc_1.T
     # Compute part of d/d_h0 (i.e., grad wrt final step of previous tile). If necessary,
     # the contribution from previous timestep will be added above.
     dh_0 = dh_1 * a_bar1
@@ -435,8 +607,8 @@ def _loop_backward_pallas(
     ) + a.shape  # [batch_size, seq_len / seq_tile_size + 1, state_dim, inner_dim]
     boundary_hs_tiling = (None, None, state_dim, dim_tile_size)
     # In the forward pass, i-th block writes to i+1-th block for use in the backward pass.
-    bdry_spec = pl.BlockSpec(lambda b, d, s: (b, s + 1, 0, d), boundary_hs_tiling)
-    bw_bdry_spec = pl.BlockSpec(
+    bdry_spec = _bs(lambda b, d, s: (b, s + 1, 0, d), boundary_hs_tiling)
+    bw_bdry_spec = _bs(
         lambda b, d, s: (b, seq_grid_size - 1 - s, 0, d), boundary_hs_tiling
     )
     # Write boundary states to hbm.
@@ -449,11 +621,10 @@ def _loop_backward_pallas(
             jax.ShapeDtypeStruct(boundary_hs_shape, carry_dtype),
         ],
         out_specs=[carry_spec, bdry_spec],
-        compiler_params=dict(
-            mosaic=dict(dimension_semantics=("parallel", "parallel", "arbitrary"))
-        )
-        if not use_interpret_mode()
-        else None,
+        compiler_params=_tpu_compiler_params(
+            dimension_semantics=("parallel", "parallel", "arbitrary")
+        ),
+        backend=_pallas_backend(),
         interpret=use_interpret_mode(),
     )(x, a, b, delta)
 
@@ -463,23 +634,23 @@ def _loop_backward_pallas(
     # accumulate da or dd gradients over examples. We therefore add a batch dimension.
     da_shape = (x.shape[0],) + a.shape
     da_tiling = (None, state_dim, dim_tile_size)
-    da_spec = pl.BlockSpec(lambda b, d, s: (b, 0, d), da_tiling)
+    da_spec = _bs(lambda b, d, s: (b, 0, d), da_tiling)
 
     dd_shape = (x.shape[0],) + d.shape
     dd_tiling = (None, 1, dim_tile_size)
-    dd_spec = pl.BlockSpec(lambda b, d, s: (b, 0, d), dd_tiling)
+    dd_spec = _bs(lambda b, d, s: (b, 0, d), dd_tiling)
 
     # Similarly, db and dc gradients cannot accumulate over the inner_dim blocks,
     # since they are not accessed contiguously. We therefore add a seq_tile_size
     # dimension.
     db_shape = (grid[1],) + b.shape + (1,)
     db_tiling = (None, None, seq_tile_size, state_dim, 1)
-    db_spec = pl.BlockSpec(lambda b, d, s: (d, b, s, 0, 0), db_tiling)
+    db_spec = _bs(lambda b, d, s: (d, b, s, 0, 0), db_tiling)
 
     # Reverse BlockSpecs along the sequence axis, since gradients are computed from
     # last time-step to first.
     def _reversed_blockspec(spec):
-        return pl.BlockSpec(
+        return _bs(
             lambda b, d, s: spec.index_map(b, d, seq_grid_size - 1 - s),
             spec.block_shape,
         )
@@ -492,7 +663,7 @@ def _loop_backward_pallas(
     # this could be done directly in VMEM, but it does not appear to be possible.
     forward_hs_shape = (batch_tile_size, seq_tile_size, state_dim, dim_tile_size)
     forward_hs_tiling = (None, seq_tile_size, state_dim, dim_tile_size)
-    forward_hs_spec = pl.BlockSpec(lambda b, d, s: (0, 0, 0, 0), forward_hs_tiling)
+    forward_hs_spec = _bs(lambda b, d, s: (0, 0, 0, 0), forward_hs_tiling)
 
     dx, da, db, dc, ddelta, dd, _, _ = pl.pallas_call(
         _backward_kernel,
@@ -527,11 +698,10 @@ def _loop_backward_pallas(
             carry_spec,
             forward_hs_spec,
         ],
-        compiler_params=dict(
-            mosaic=dict(dimension_semantics=("parallel", "parallel", "arbitrary")),
-        )
-        if not use_interpret_mode()
-        else None,
+        compiler_params=_tpu_compiler_params(
+            dimension_semantics=("parallel", "parallel", "arbitrary")
+        ),
+        backend=_pallas_backend(),
         interpret=use_interpret_mode(),
     )(
         dy,
@@ -578,8 +748,11 @@ def _forward_kernel(
             modified by the function.
     """
     dtype = _in_kernel_dtype()
+    matmul_prec = _matmul_precision(dtype)
+    a = a_ref[:].astype(dtype)
+    d_vec = d_ref[:].astype(dtype)
 
-    def _forward_kernel_body(t: int, mutable_carry_ref: jax.Array):
+    def _forward_kernel_body(t: int, carry: jax.Array):
         """Computes h_{t+1}, stores it in mutable_carry_ref, computes output,
         and stores it in y_ref."""
         # Compute h_{t+1} = h_t * a_bar_t + b_bar_x_t, where:
@@ -587,15 +760,12 @@ def _forward_kernel(
         # The calculation of the carry below can be replaced with `update_carry`, but this
         # decreases speed by about 5%, presumably because `a_bar` cannot then stay in a register.
         delta = jnp.expand_dims(delta_ref[t].astype(dtype), axis=0)  # [1, inner_dim]
-        a = a_ref[:].astype(dtype)  # [state_dim, inner_dim]
         a_bar = jnp.exp(delta * a)  # [state_dim, inner_dim]
         x = jnp.expand_dims(x_ref[t].astype(dtype), axis=0)  # [1, inner_dim]
         b_bar = delta * jnp.expand_dims(b_ref[t].astype(dtype), axis=-1) * x
-        a_bar *= mutable_carry_ref[:]
+        a_bar *= carry
         # Put h_{t+1} in the a_bar register.
         a_bar += b_bar
-        # Store h_{t+1} in mutable_carry_ref.
-        mutable_carry_ref[:] = a_bar
         ct = jnp.expand_dims(c_ref[t].astype(dtype), axis=0)  # [1, state_dim]
         yt = jax.lax.dot_general(  # Equivalent to ct @ a_bar: [1, inner_dim]
             ct,
@@ -605,11 +775,12 @@ def _forward_kernel(
                 ((), ()),
             ),
             preferred_element_type=jnp.float32,
-            precision=MATMUL_PREC,
+            precision=matmul_prec,
         )
-        x *= d_ref[:].astype(dtype)
+        x *= d_vec
         yt += x
         mutable_y_ref[t] = jnp.squeeze(yt, axis=0).astype(mutable_y_ref.dtype)
+        return a_bar
 
     seq_len = x_ref.shape[0]
 
@@ -621,7 +792,8 @@ def _forward_kernel(
     # Loop variables need to be "concrete," not references.
     h_carry = mutable_carry_ref[:]
     # Fill y_ref inside the loop.
-    h_T = fori_loop(
+    h_T = lax.fori_loop(
+        0,
         seq_len,
         _forward_kernel_body,
         h_carry,
@@ -686,19 +858,16 @@ def _loop_forward_pallas(
             jax.ShapeDtypeStruct(hcarry_shape, carry_dtype),  # Output 2: hcarry.
         ],
         out_specs=[x_spec, carry_spec],
-        compiler_params=dict(
-            mosaic=dict(
-                # Below we tell the compiler which dimensions can be parallelized.
-                # All but the sequence dimension are embarassingly parallel.
-                dimension_semantics=(
-                    "parallel",
-                    "parallel",
-                    "arbitrary",
-                )
+        compiler_params=_tpu_compiler_params(
+            # Below we tell the compiler which dimensions can be parallelized.
+            # All but the sequence dimension are embarassingly parallel.
+            dimension_semantics=(
+                "parallel",
+                "parallel",
+                "arbitrary",
             )
-        )
-        if not use_interpret_mode()
-        else None,
+        ),
+        backend=_pallas_backend(),
         interpret=use_interpret_mode(),
     )(
         x.astype(jnp.float32),
@@ -786,6 +955,49 @@ def _pad_to_multiple(x: jax.Array, *, divisor: int, axis: int) -> jax.Array:
     return jnp.concatenate([x, zeros], axis=axis)
 
 
+def _mamba_scan_reference(
+    x: jax.Array,
+    a: jax.Array,
+    b: jax.Array,
+    c: jax.Array,
+    delta: jax.Array,
+    d: jax.Array,
+) -> jax.Array:
+    """Pure-JAX reference implementation of the Mamba recurrence."""
+    dtype = x.dtype
+    x_f32 = x.astype(jnp.float32)
+    a_f32 = a.astype(jnp.float32)
+    b_f32 = b.astype(jnp.float32)
+    c_f32 = c.astype(jnp.float32)
+    delta_f32 = delta.astype(jnp.float32)
+    d_f32 = d.astype(jnp.float32)
+
+    batch_size, _, inner_dim = x_f32.shape
+    state_dim = a_f32.shape[0]
+    h0 = jnp.zeros((batch_size, state_dim, inner_dim), dtype=jnp.float32)
+
+    def step(carry, inputs):
+        x_t, b_t, c_t, delta_t = inputs  # [B,D], [B,S], [B,S], [B,D]
+        a_bar = jnp.exp(delta_t[:, None, :] * a_f32[None, :, :])  # [B,S,D]
+        b_bar = delta_t[:, None, :] * b_t[:, :, None] * x_t[:, None, :]  # [B,S,D]
+        h = a_bar * carry + b_bar
+        y_t = jnp.einsum("bs,bsd->bd", c_t, h, preferred_element_type=jnp.float32)
+        y_t = y_t + x_t * d_f32
+        return h, y_t.astype(dtype)
+
+    _, y = jax.lax.scan(
+        step,
+        h0,
+        (
+            jnp.swapaxes(x_f32, 0, 1),
+            jnp.swapaxes(b_f32, 0, 1),
+            jnp.swapaxes(c_f32, 0, 1),
+            jnp.swapaxes(delta_f32, 0, 1),
+        ),
+    )
+    return jnp.swapaxes(y, 0, 1)
+
+
 def compute_mamba_scan(
     x: jax.Array,
     a: jax.Array,
@@ -816,12 +1028,48 @@ def compute_mamba_scan(
     Returns:
         A [batch_size, seqlen, inner_dim] jax.Array representing the Mamba scan's output.
     """
-    assert seq_tile_size > 0 and seq_tile_size % 8 == 0, (
-        "`seq_tile_size` must be a positive multiple of 8."
+    _validate_mamba_runtime_inputs(
+        x,
+        a,
+        b,
+        c,
+        delta,
+        d,
+        seq_tile_size=seq_tile_size,
+        dim_tile_size=dim_tile_size,
     )
-    assert dim_tile_size > 0 and dim_tile_size % 128 == 0, (
-        "`dim_tile_size` must be a positive multiple of 128."
-    )
+
+    x_in, a_in, b_in, c_in, delta_in, d_in = x, a, b, c, delta, d
+    backend = jax.default_backend()
+    pallas_backend = _pallas_backend()
+    if backend == "cpu":
+        raise RuntimeError("compute_mamba_scan requires an accelerator backend.")
+    if backend not in ("tpu", "gpu"):
+        return _mamba_scan_reference(x_in, a_in, b_in, c_in, delta_in, d_in)
+    if backend == "gpu" and not _gpu_supports_mamba_pallas_for_shape(
+        seq_len=x.shape[1],
+        inner_dim=x.shape[2],
+        state_dim=a.shape[0],
+        seq_tile_size=seq_tile_size,
+        dim_tile_size=dim_tile_size,
+        pallas_backend=pallas_backend,
+    ):
+        return _mamba_scan_reference(x_in, a_in, b_in, c_in, delta_in, d_in)
+    if backend == "gpu":
+        failure_key = _mamba_pallas_failure_key(
+            pallas_backend=pallas_backend,
+            x=x,
+            a=a,
+            b=b,
+            c=c,
+            delta=delta,
+            d=d,
+            seq_tile_size=seq_tile_size,
+            dim_tile_size=dim_tile_size,
+        )
+        if failure_key in _FAILED_MAMBA_PALLAS_CONFIGS:
+            return _mamba_scan_reference(x_in, a_in, b_in, c_in, delta_in, d_in)
+
     _, seqlen, inner = x.shape
 
     x, b, c, delta = (
@@ -831,6 +1079,18 @@ def compute_mamba_scan(
         _pad_to_multiple(arg, divisor=dim_tile_size, axis=2) for arg in [x, delta]
     )
     a, d = (_pad_to_multiple(arg, divisor=dim_tile_size, axis=1) for arg in [a, d])
-    y = _mamba_scan(x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
-    # Remove zero-padding if any.
-    return y[:, :seqlen, :inner]
+    try:
+        y = _mamba_scan(x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
+        # Remove zero-padding if any.
+        return y[:, :seqlen, :inner]
+    except (AssertionError, NotImplementedError, RuntimeError, TypeError, ValueError) as err:
+        if backend != "gpu":
+            raise
+        _FAILED_MAMBA_PALLAS_CONFIGS.add(failure_key)
+        warnings.warn(
+            "Falling back to reference Mamba scan on GPU because "
+            f"Pallas/Triton kernel failed: {err}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return _mamba_scan_reference(x_in, a_in, b_in, c_in, delta_in, d_in)

@@ -377,6 +377,15 @@ def flex_attention(
         not isinstance(query, jax.Array) and query.device.platform == "cpu"
     ):
         interpret = True
+    elif (
+        block_sizes.block_q_dkv < 16
+        or block_sizes.block_kv_dkv < 16
+        or block_sizes.block_q_dq < 16
+        or block_sizes.block_kv_dq < 16
+    ):
+        # Triton lowering requires matmul inner dims >= 16 for these kernels.
+        # Fall back to interpret mode for very small backward tiles.
+        interpret = True
 
     if deterministic:
         dropout_rate = 0.0

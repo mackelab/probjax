@@ -2457,7 +2457,7 @@ def _mha_backward(
             (
                 None
                 if b_data is None
-                else bias.get_block_spec(
+                else bias.get_block_spec_backward(
                     q_len=q_seq_len,
                     kv_len=kv_seq_len,
                     # Use full sequence extents so both dKdV and dQ loops
@@ -2735,7 +2735,7 @@ def _mha_backward(
             (
                 None
                 if b_data is None
-                else bias.get_block_spec(
+                else bias.get_block_spec_backward(
                     q_len=q_seq_len,
                     kv_len=kv_seq_len,
                     block_q=q_seq_len,

@@ -230,6 +230,18 @@ class AttentionBias(ABC):
     ):  # pragma: no cover - API
         return None
 
+    # Optional: backward-specific Pallas bias spec for dense tensor bias.
+    # Default to forward mapping for compatibility.
+    def get_block_spec_backward(
+        self, *, q_len: int, kv_len: int, block_q: int, block_kv: int
+    ):  # pragma: no cover - API
+        return self.get_block_spec(
+            q_len=q_len,
+            kv_len=kv_len,
+            block_q=block_q,
+            block_kv=block_kv,
+        )
+
     # Allow additive composition of biases.
     def __add__(self, other: "AttentionBias") -> "AttentionBias":
         if not isinstance(other, AttentionBias):
@@ -644,7 +656,8 @@ class KeyPaddingMask(AttentionMask):
         if self.key_lengths.ndim == 2:
             q_spec = pl.BlockSpec((None, q_len), lambda _, j, k: (j, 0))
         elif self.key_lengths.ndim == 1:
-            q_spec = pl.BlockSpec((q_len,), lambda _, j, k: (j,))
+            # Shared 1D vector (no batch axis): always index from 0.
+            q_spec = pl.BlockSpec((q_len,), lambda _, j, k: (0,))
         else:
             q_spec = None
         return q_spec, None
@@ -875,7 +888,8 @@ class SameSegmentMask(AttentionMask):
         elif self.query_segment_ids.ndim == 2:
             q_spec = pl.BlockSpec((None, q_len), lambda _, j, k: (j, 0))
         elif self.query_segment_ids.ndim == 1:
-            q_spec = pl.BlockSpec((q_len,), lambda _, j, k: (j,))
+            # Shared 1D vector (no batch axis): always index from 0.
+            q_spec = pl.BlockSpec((q_len,), lambda _, j, k: (0,))
         else:
             raise ValueError()
         if self.key_segment_ids is None:
@@ -883,7 +897,8 @@ class SameSegmentMask(AttentionMask):
         elif self.key_segment_ids.ndim == 2:
             k_spec = pl.BlockSpec((None, kv_len), lambda _, j, k: (j, 0))
         elif self.key_segment_ids.ndim == 1:
-            k_spec = pl.BlockSpec((kv_len,), lambda _, j, k: (j,))
+            # Shared 1D vector (no batch axis): always index from 0.
+            k_spec = pl.BlockSpec((kv_len,), lambda _, j, k: (0,))
         else:
             k_spec = None
         return (q_spec, k_spec)
@@ -959,7 +974,8 @@ class MarginalizationMask(AttentionMask):
         elif self.mask.ndim == 2:
             q_spec = pl.BlockSpec((None, q_len), lambda _, j, k: (j, 0))
         elif self.mask.ndim == 1:
-            q_spec = pl.BlockSpec((q_len,), lambda _, j, k: (j,))
+            # Shared 1D vector (no batch axis): always index from 0.
+            q_spec = pl.BlockSpec((q_len,), lambda _, j, k: (0,))
         else:
             raise ValueError()
         return q_spec, None
@@ -1070,6 +1086,21 @@ class DenseBias(AttentionBias):
                 0,
             ),
             block_shape=(None, None, block_q, kv_len),
+        )
+
+    def get_block_spec_backward(
+        self, *, q_len: int, kv_len: int, block_q: int, block_kv: int
+    ):
+        # Backward kernels use grid ordering (batch, head, tile), unlike forward
+        # (q_tile, batch, head). Map B/H from the first two program IDs.
+        return pl.BlockSpec(
+            index_map=lambda b, h, _: (
+                b if self.bias.shape[0] != 1 else 0,
+                h if self.bias.shape[1] != 1 else 0,
+                0,
+                0,
+            ),
+            block_shape=(None, None, block_q, block_kv),
         )
 
     def get_data(self) -> Array:

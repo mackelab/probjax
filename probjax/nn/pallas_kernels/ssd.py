@@ -6,9 +6,8 @@
 """Pallas kernels for Mamba2
 
 High-level idea: this kernel implements a two-level chunking algorithm to
-balance memory consumption and running speed. Intuitively, we store chunk-level
-hidden states to avoid recomputation, and subchunk-level states are recomputed based
-on the chunk-level states.
+balance memory consumption and running speed. To reduce forward HBM traffic,
+chunk-level states are recomputed in backward rather than stored from forward.
 
 
 Notations:
@@ -28,6 +27,9 @@ and the original implementation.
 
 """
 
+import functools
+import os
+import warnings
 from typing import Optional, Tuple, Union
 
 import jax
@@ -36,14 +38,179 @@ from einops import rearrange, repeat
 from jax import lax
 from jax.experimental import pallas as pl
 
-from probjax.nn.pallas_kernels.utils import use_interpret_mode
+from probjax.nn.pallas_kernels.utils import get_dot_precision, use_interpret_mode
+
+
+def _bs(index_map, block_shape):
+    """Compatibility wrapper for BlockSpec(index_map, block_shape) call sites."""
+    return pl.BlockSpec(block_shape=block_shape, index_map=index_map)
+
+
+def _tpu_compiler_params(*, dimension_semantics):
+    """Returns TPU compiler params when running on TPU, else None."""
+    if use_interpret_mode() or jax.default_backend() != "tpu":
+        return None
+    from jax.experimental.pallas import tpu as pltpu
+
+    return pltpu.CompilerParams(dimension_semantics=dimension_semantics)
+
+
+def _is_hopper_or_newer_gpu() -> bool:
+    if jax.default_backend() != "gpu":
+        return False
+    kind = jax.devices()[0].device_kind.lower()
+    return any(tag in kind for tag in ("h100", "h200", "b100", "b200", "hopper", "blackwell"))
+
+
+def _prefer_mosaic_gpu() -> bool:
+    val = os.environ.get("PROBJAX_PALLAS_PREFER_MOSAIC_GPU", "0").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
+def _pallas_backend(prefer_mosaic_gpu: bool | None = None) -> str | None:
+    """Selects the explicit Pallas backend for the current JAX platform."""
+    if prefer_mosaic_gpu is None:
+        prefer_mosaic_gpu = _prefer_mosaic_gpu()
+    backend = jax.default_backend()
+    if backend == "gpu":
+        if prefer_mosaic_gpu and _is_hopper_or_newer_gpu():
+            return "mosaic_gpu"
+        return "triton"
+    if backend == "tpu":
+        return "mosaic_tpu"
+    return None
+
+
+def _ssd_tiling_config() -> tuple[int, int, int]:
+    """Returns (singleton_dim, chunk_size, subchunk_size) for the current backend."""
+    if jax.default_backend() == "gpu":
+        # Triton path: reduce tile sizes to satisfy shared-memory limits on common GPUs.
+        return 64, 256, 64
+    # TPU-tuned defaults.
+    return 128, 512, 64
+
+
+@functools.lru_cache(maxsize=64)
+def _gpu_supports_ssd_pallas_for_shape(
+    *,
+    seq_len: int,
+    num_groups: int,
+    num_heads: int,
+    dk: int,
+    dv: int,
+    pallas_backend: str | None,
+) -> bool:
+    """Cheap/static capability check for SSD Pallas on GPU."""
+    if jax.default_backend() != "gpu":
+        return False
+    if use_interpret_mode():
+        return True
+    if pallas_backend not in ("triton", "mosaic_gpu"):
+        return False
+    if pallas_backend == "mosaic_gpu" and not _is_hopper_or_newer_gpu():
+        return False
+    if pallas_backend == "triton" and num_heads < 2:
+        return False
+    if seq_len <= 0 or num_groups <= 0 or num_heads <= 0 or dk <= 0 or dv <= 0:
+        return False
+    singleton_dim, chunk_size, _ = _ssd_tiling_config()
+    if seq_len % chunk_size != 0:
+        return False
+    if dk % singleton_dim != 0 or dv % singleton_dim != 0:
+        return False
+    if num_heads % num_groups != 0:
+        return False
+    return True
+
+
+_FAILED_SSD_PALLAS_CONFIGS: set[tuple] = set()
+
+
+def _ssd_pallas_failure_key(
+    *,
+    pallas_backend: str | None,
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    log_alpha: jax.Array,
+    h0: jax.Array,
+) -> tuple:
+    return (
+        pallas_backend,
+        q.shape,
+        k.shape,
+        v.shape,
+        log_alpha.shape,
+        h0.shape,
+        str(q.dtype),
+        str(k.dtype),
+        str(v.dtype),
+        str(log_alpha.dtype),
+        str(h0.dtype),
+    )
 
 
 def _matmul_fp32(lhs: jax.Array, rhs: jax.Array) -> jax.Array:
     """A wrapper around jax.lax.dot to conduct float32 matmul"""
+    precision = get_dot_precision(jax.default_backend(), lhs.dtype)
     return jax.lax.dot(
-        lhs, rhs, precision="float32", preferred_element_type=jnp.float32
+        lhs, rhs, precision=precision, preferred_element_type=jnp.float32
     )
+
+
+def _validate_ssd_runtime_inputs(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    log_alpha: jax.Array,
+    h0: Optional[jax.Array],
+) -> None:
+    if q.ndim != 4:
+        raise ValueError(f"`q` must be rank-4 [B, G, L, Dk], got shape {q.shape}.")
+    if k.ndim != 4:
+        raise ValueError(f"`k` must be rank-4 [B, G, L, Dk], got shape {k.shape}.")
+    if v.ndim != 4:
+        raise ValueError(f"`v` must be rank-4 [B, H, L, Dv], got shape {v.shape}.")
+    if log_alpha.ndim != 3:
+        raise ValueError(
+            f"`log_alpha` must be rank-3 [B, H, L], got shape {log_alpha.shape}."
+        )
+
+    if q.shape != k.shape:
+        raise ValueError(f"`q` and `k` must have the same shape, got {q.shape} and {k.shape}.")
+
+    bs, ng, seq_len, dk = q.shape
+    bs_v, nh, seq_len_v, dv = v.shape
+    bs_a, nh_a, seq_len_a = log_alpha.shape
+
+    if bs_v != bs or seq_len_v != seq_len:
+        raise ValueError(
+            f"`v` shape mismatch: expected batch/seq {(bs, seq_len)}, got {(bs_v, seq_len_v)}."
+        )
+    if bs_a != bs or nh_a != nh or seq_len_a != seq_len:
+        raise ValueError(
+            f"`log_alpha` shape mismatch: expected {(bs, nh, seq_len)}, got {log_alpha.shape}."
+        )
+    if ng <= 0 or nh <= 0:
+        raise ValueError(f"`num_groups` and `num_heads` must be > 0, got ng={ng}, nh={nh}.")
+    if nh % ng != 0:
+        raise ValueError(f"`num_heads` must be divisible by `num_groups`, got nh={nh}, ng={ng}.")
+
+    if v.dtype != jnp.float32:
+        raise ValueError(f"`v` must be float32, got dtype {v.dtype}.")
+    if log_alpha.dtype != jnp.float32:
+        raise ValueError(f"`log_alpha` must be float32, got dtype {log_alpha.dtype}.")
+
+    if h0 is not None:
+        expected_h0_shape = (bs, nh, dk, dv)
+        if h0.ndim != 4:
+            raise ValueError(
+                f"`h0` must be rank-4 [B, H, Dk, Dv], got shape {h0.shape}."
+            )
+        if h0.shape != expected_h0_shape:
+            raise ValueError(
+                f"`h0` shape mismatch: expected {expected_h0_shape}, got {h0.shape}."
+            )
 
 
 @jax.custom_vjp
@@ -76,7 +243,7 @@ def _ssd_forward_kernel(
     cum_log_alpha_ref: jax.Array,
     initial_state_ref: jax.Array,
     gamma_ref: jax.Array,
-    mutable_ch_ref: jax.Array,
+    causal_mask_ref: jax.Array,
     mutable_final_state_ref: jax.Array,
     mutable_o_ref: jax.Array,
 ):
@@ -91,7 +258,6 @@ def _ssd_forward_kernel(
         gamma_ref: jax.Array reference of shape [ns, bl, singleton_dim]
 
     Output via mutable jax.Arrays:
-        mutable_ch_ref: jax.Array reference of shape [ns, singleton_dim, singleton_dim]
         mutable_final_state_ref: jax.Array reference of shape [singleton_dim, singleton_dim]
         mutable_o_ref: jax.Array reference of shape [ns, bl, singleton_dim]
 
@@ -102,17 +268,17 @@ def _ssd_forward_kernel(
             - it will be updated after processing each chunk
             - in the end, it will return as the seq-level final state
     """
-    subchunk_dim, subchunk_size = cum_log_alpha_ref.shape[0], cum_log_alpha_ref.shape[1]
-    casual_mask = jnp.tril(jnp.ones((subchunk_size, subchunk_size)), k=0)
+    subchunk_dim, _ = cum_log_alpha_ref.shape[0], cum_log_alpha_ref.shape[1]
+    causal_mask = causal_mask_ref[:]
 
     # In our grid definition, axis 4 is the chunk index.
     @pl.when(pl.program_id(axis=4) == 0)
     def init_carry():
         mutable_final_state_ref[:, :] = initial_state_ref[:, :]
 
-    def _ssd_forward_chunk_loop_body(t: int, h_carry_ref: jax.Array):
+    def _ssd_forward_chunk_loop_body(t: int, h_carry: jax.Array):
         subchunk_idx = t
-        prev_state = h_carry_ref[:, :]
+        prev_state = h_carry
 
         q_block = q_ref[subchunk_idx, :].astype(jnp.float32)
         k_block = k_ref[subchunk_idx, :].astype(jnp.float32)
@@ -127,7 +293,7 @@ def _ssd_forward_kernel(
             jnp.expand_dims(gamma_block, axis=0) - lambda_block
         )  # [bl, singleton_dim] after broadcasting
         ssd_mask_block = lambda_block - jnp.transpose(lambda_block, [1, 0])
-        ssd_mask_block = ssd_mask_block * casual_mask
+        ssd_mask_block = ssd_mask_block * causal_mask
 
         lambda_block = jnp.exp(lambda_block)
         beta_block = jnp.exp(beta_block)
@@ -139,20 +305,62 @@ def _ssd_forward_kernel(
 
         o_block_inter = _matmul_fp32(q_tilde_block, prev_state)
         intra_att = _matmul_fp32(q_block, k_block.T)
-        attn_mask = casual_mask * ssd_mask_block
+        attn_mask = causal_mask * ssd_mask_block
         o_block_intra = _matmul_fp32((intra_att * attn_mask), v_block)
         o_block = o_block_inter + o_block_intra
 
         cur_state = prev_state * jnp.expand_dims(gamma_block, axis=-1) + _matmul_fp32(
             k_tilde_block.T, v_block
         )  # [d_k, d_v]
-        h_carry_ref[:, :] = cur_state
         mutable_o_ref[subchunk_idx, :] = o_block.astype(mutable_o_ref.dtype)
+        return cur_state
 
-    # Obtain final state from previous chunk.
     h_carry = mutable_final_state_ref[:, :]
-    mutable_ch_ref[:, :] = mutable_final_state_ref[:, :]
     final_state = lax.fori_loop(0, subchunk_dim, _ssd_forward_chunk_loop_body, h_carry)
+    mutable_final_state_ref[:, :] = final_state
+
+
+def _ssd_chunk_states_kernel(
+    k_ref: jax.Array,
+    v_ref: jax.Array,
+    cum_log_alpha_ref: jax.Array,
+    initial_state_ref: jax.Array,
+    gamma_ref: jax.Array,
+    mutable_ch_ref: jax.Array,
+    mutable_final_state_ref: jax.Array,
+):
+    """Kernel that recomputes chunk-level states for SSD backward."""
+    subchunk_dim, _ = cum_log_alpha_ref.shape[0], cum_log_alpha_ref.shape[1]
+
+    @pl.when(pl.program_id(axis=4) == 0)
+    def init_carry():
+        mutable_final_state_ref[:, :] = initial_state_ref[:, :]
+
+    def _ssd_chunk_state_loop_body(t: int, h_carry: jax.Array):
+        subchunk_idx = t
+        prev_state = h_carry
+
+        k_block = k_ref[subchunk_idx, :].astype(jnp.float32)
+        v_block = v_ref[subchunk_idx, :].astype(jnp.float32)
+
+        lambda_block = cum_log_alpha_ref[subchunk_idx, :]
+        gamma_block = gamma_ref[subchunk_idx]
+
+        lambda_block = jnp.expand_dims(lambda_block, axis=-1)
+        beta_block = gamma_block - lambda_block
+
+        beta_block = jnp.exp(beta_block)
+        gamma_block = jnp.exp(gamma_block)
+
+        k_tilde_block = k_block * beta_block
+        cur_state = prev_state * jnp.expand_dims(gamma_block, axis=-1) + _matmul_fp32(
+            k_tilde_block.T, v_block
+        )
+        return cur_state
+
+    h_carry = mutable_final_state_ref[:, :]
+    mutable_ch_ref[:, :] = h_carry
+    final_state = lax.fori_loop(0, subchunk_dim, _ssd_chunk_state_loop_body, h_carry)
     mutable_final_state_ref[:, :] = final_state
 
 
@@ -178,10 +386,7 @@ def _ssd_forward(
     """
     bs, num_qk_heads, seq_len, k_head_dim = q.shape
     _, num_v_heads, _, v_head_dim = v.shape
-    # TODO (bailin-wang): the following defaults works best for v5p, but they may not be optimal
-    # for others tpu types. We may need to expose them as arguments in the future.
-    singleton_dim = 128
-    chunk_size, subchunk_size = 512, 64
+    singleton_dim, chunk_size, subchunk_size = _ssd_tiling_config()
     acc_dtype, orig_dtype = jnp.float32, q.dtype
 
     assert seq_len % chunk_size == 0 and chunk_size % subchunk_size == 0
@@ -207,29 +412,22 @@ def _ssd_forward(
 
     # None is effectively 1, but the dim will be squeezed out.
     qk_tiling = (None, None, subchunk_dim, subchunk_size, singleton_dim)
-    qk_spec = pl.BlockSpec(
+    qk_spec = _bs(
         lambda b, h, k, v, m: (b, lax.div(h, num_head_per_group), m, 0, k), qk_tiling
     )
     v_tiling = (None, None, subchunk_dim, subchunk_size, singleton_dim)
-    v_spec = pl.BlockSpec(lambda b, h, k, v, m: (b, h, m, 0, v), v_tiling)
+    v_spec = _bs(lambda b, h, k, v, m: (b, h, m, 0, v), v_tiling)
 
     alpha_tiling = (None, None, None, subchunk_dim, subchunk_size)
-    alpha_spec = pl.BlockSpec(lambda b, h, k, v, m: (b, h, m, 0, 0), alpha_tiling)
+    alpha_spec = _bs(lambda b, h, k, v, m: (b, h, m, 0, 0), alpha_tiling)
 
     # Initial hidden states.
     is_tiling = (None, None, singleton_dim, singleton_dim)
-    is_spec = pl.BlockSpec(lambda b, h, k, v, m: (b, h, k, v), is_tiling)
-
-    # Chunk-wise states (not subchunk-wise states).
-    ch_tiling = (None, None, None, singleton_dim, singleton_dim)
-    ch_spec = pl.BlockSpec(lambda b, h, k, v, m: (b, h, m, k, v), ch_tiling)
+    is_spec = _bs(lambda b, h, k, v, m: (b, h, k, v), is_tiling)
 
     # Chunk-wise final states help pass states from the previous chunk to the next.
     fs_spec = is_spec
 
-    ch_shape = jax.ShapeDtypeStruct(
-        shape=(bs, num_heads, chunk_dim, k_head_dim, v_head_dim), dtype=acc_dtype
-    )
     fs_shape = jax.ShapeDtypeStruct(
         shape=(bs, num_heads, k_head_dim, v_head_dim), dtype=jnp.float32
     )
@@ -244,16 +442,21 @@ def _ssd_forward(
     k = rearrange(k, "b h (nb bl) dk -> b h nb bl dk", bl=subchunk_size)
     v = rearrange(v, "b h (nb bl) dv -> b h nb bl dv", bl=subchunk_size)
 
-    # Pallas kernels operate on tiles of size at least [8, 128].
     gamma = cum_log_alpha[:, :, :, :, subchunk_size - 1 :]  # [b, h, nb, ns, 1]
     gamma_expanded = jnp.repeat(
         gamma, singleton_dim, axis=-1
     )  # [b, h, nb, ns, singleton_dim]
     gamma_tiling = (None, None, None, subchunk_dim, singleton_dim)
-    gamma_spec = pl.BlockSpec(lambda b, h, k, v, m: (b, h, m, 0, 0), gamma_tiling)
+    gamma_spec = _bs(lambda b, h, k, v, m: (b, h, m, 0, 0), gamma_tiling)
+    causal_mask_spec = _bs(
+        lambda b, h, k, v, m: (0, 0), (subchunk_size, subchunk_size)
+    )
+    causal_mask = jnp.tril(
+        jnp.ones((subchunk_size, subchunk_size), dtype=jnp.float32), k=0
+    )
 
     o_tiling = (None, None, None, subchunk_dim, subchunk_size, singleton_dim)
-    o_spec = pl.BlockSpec(lambda b, h, k, v, m: (b, h, k, m, 0, v), o_tiling)
+    o_spec = _bs(lambda b, h, k, v, m: (b, h, k, m, 0, v), o_tiling)
     o_shape = jax.ShapeDtypeStruct(
         shape=(
             bs,
@@ -266,35 +469,109 @@ def _ssd_forward(
         dtype=orig_dtype,
     )
 
-    chunk_states, final_state, o = pl.pallas_call(
+    _, o = pl.pallas_call(
         _ssd_forward_kernel,
-        in_specs=(qk_spec, qk_spec, v_spec, alpha_spec, is_spec, gamma_spec),
-        out_specs=(ch_spec, fs_spec, o_spec),
-        out_shape=(ch_shape, fs_shape, o_shape),
+        in_specs=(
+            qk_spec,
+            qk_spec,
+            v_spec,
+            alpha_spec,
+            is_spec,
+            gamma_spec,
+            causal_mask_spec,
+        ),
+        out_specs=(fs_spec, o_spec),
+        out_shape=(fs_shape, o_shape),
         grid=grid,
-        compiler_params=dict(
-            mosaic=dict(
-                dimension_semantics=(
-                    "parallel",
-                    "parallel",
-                    "parallel",
-                    "parallel",
-                    "arbitrary",
-                )
+        compiler_params=_tpu_compiler_params(
+            dimension_semantics=(
+                "parallel",
+                "parallel",
+                "parallel",
+                "parallel",
+                "arbitrary",
             )
-        )
-        if not use_interpret_mode()
-        else None,
+        ),
+        backend=_pallas_backend(),
         interpret=use_interpret_mode(),
-    )(q, k, v, cum_log_alpha, initial_state, gamma_expanded)
+    )(q, k, v, cum_log_alpha, initial_state, gamma_expanded, causal_mask)
 
     o = jnp.sum(o, axis=2)  # sum over dkn dim
     o = rearrange(o, "b h nb bl dv -> b h (nb bl) dv")
 
-    # Input jax.Arrays q/k/v stored in the residual list for backward pass are reshaped, and
-    # cum_log_alpha and gamma are upcasted to float32.
-    final_state = final_state.astype(orig_dtype)
-    return o, (q, k, v, cum_log_alpha, gamma_expanded, chunk_states, final_state)
+    # Store minimal residuals; chunk_states/gamma are recomputed in backward to
+    # reduce forward HBM traffic.
+    return o, (q, k, v, cum_log_alpha, initial_state)
+
+
+@jax.jit
+def _ssd_recompute_chunk_states(
+    k: jax.Array,
+    v: jax.Array,
+    cum_log_alpha: jax.Array,
+    gamma_expanded: jax.Array,
+    initial_state: jax.Array,
+) -> jax.Array:
+    """Recomputes per-chunk start states for SSD backward."""
+    singleton_dim, _, _ = _ssd_tiling_config()
+    bs, num_heads, chunk_dim, subchunk_dim, subchunk_size = cum_log_alpha.shape
+    k_dim, v_dim = k.shape[-1], v.shape[-1]
+    num_qk_heads = k.shape[1]
+    num_head_per_group = num_heads // num_qk_heads
+    num_k_tiles, num_v_tiles = k_dim // singleton_dim, v_dim // singleton_dim
+
+    grid = (bs, num_heads, num_k_tiles, num_v_tiles, chunk_dim)
+
+    qk_tiling = (None, None, subchunk_dim, subchunk_size, singleton_dim)
+    qk_spec = _bs(
+        lambda b, h, k_, v_, m: (
+            b,
+            lax.div(h, num_head_per_group),
+            m,
+            0,
+            k_,
+        ),
+        qk_tiling,
+    )
+    v_tiling = (None, None, subchunk_dim, subchunk_size, singleton_dim)
+    v_spec = _bs(lambda b, h, k_, v_, m: (b, h, m, 0, v_), v_tiling)
+
+    alpha_tiling = (None, None, None, subchunk_dim, subchunk_size)
+    alpha_spec = _bs(lambda b, h, k_, v_, m: (b, h, m, 0, 0), alpha_tiling)
+    gamma_tiling = (None, None, None, subchunk_dim, singleton_dim)
+    gamma_spec = _bs(lambda b, h, k_, v_, m: (b, h, m, 0, 0), gamma_tiling)
+
+    is_tiling = (None, None, singleton_dim, singleton_dim)
+    is_spec = _bs(lambda b, h, k_, v_, m: (b, h, k_, v_), is_tiling)
+
+    ch_tiling = (None, None, None, singleton_dim, singleton_dim)
+    ch_spec = _bs(lambda b, h, k_, v_, m: (b, h, m, k_, v_), ch_tiling)
+    fs_spec = is_spec
+
+    ch_shape = jax.ShapeDtypeStruct(
+        shape=(bs, num_heads, chunk_dim, k_dim, v_dim), dtype=jnp.float32
+    )
+    fs_shape = jax.ShapeDtypeStruct(shape=(bs, num_heads, k_dim, v_dim), dtype=jnp.float32)
+
+    chunk_states, _ = pl.pallas_call(
+        _ssd_chunk_states_kernel,
+        in_specs=(qk_spec, v_spec, alpha_spec, is_spec, gamma_spec),
+        out_specs=(ch_spec, fs_spec),
+        out_shape=(ch_shape, fs_shape),
+        grid=grid,
+        compiler_params=_tpu_compiler_params(
+            dimension_semantics=(
+                "parallel",
+                "parallel",
+                "parallel",
+                "parallel",
+                "arbitrary",
+            )
+        ),
+        backend=_pallas_backend(),
+        interpret=use_interpret_mode(),
+    )(k, v, cum_log_alpha, initial_state.astype(jnp.float32), gamma_expanded)
+    return chunk_states
 
 
 def _ssd_backward_kernel(
@@ -304,6 +581,7 @@ def _ssd_backward_kernel(
     cum_log_alpha_ref: jax.Array,
     gamma_ref: jax.Array,
     ch_ref: jax.Array,
+    causal_mask_ref: jax.Array,
     mutable_do_ref: jax.Array,
     mutable_dq_ref: jax.Array,
     mutable_dk_ref: jax.Array,
@@ -331,10 +609,8 @@ def _ssd_backward_kernel(
     hidden states across different chunks. It will be initalized to zero at the last chunk.
     The final gradient wrt. hidden states will be returned as the gradient wrt. initial_state.
     """
-    subchunk_dim, subchunk_size = cum_log_alpha_ref.shape[0], cum_log_alpha_ref.shape[1]
-    causal_mask = jnp.tril(jnp.ones((subchunk_size, subchunk_size)), k=0).astype(
-        jnp.float32
-    )
+    subchunk_dim, _ = cum_log_alpha_ref.shape[0], cum_log_alpha_ref.shape[1]
+    causal_mask = causal_mask_ref[:]
 
     # In our grid definition, axis 4 is the chunk index.
     @pl.when(pl.program_id(axis=4) == 0)
@@ -343,9 +619,9 @@ def _ssd_backward_kernel(
             mutable_dh_carry_ref, dtype=jnp.float32
         )
 
-    def _ssd_backward_dq_chunk_loop_body(t: int, h_carry_ref: jax.Array):
+    def _ssd_backward_dq_chunk_loop_body(t: int, h_carry: jax.Array):
         subchunk_idx = t
-        h_block = h_carry_ref[:, :]  # final states from previous chunk
+        h_block = h_carry  # final states from previous chunk
         k_block = k_ref[subchunk_idx, :].astype(jnp.float32)
         v_block = v_ref[subchunk_idx, :].astype(jnp.float32)
         do_block = mutable_do_ref[subchunk_idx, :].astype(jnp.float32)
@@ -377,19 +653,15 @@ def _ssd_backward_kernel(
         next_h_block = h_block * jnp.expand_dims(gamma_block, axis=-1) + _matmul_fp32(
             k_tilde_block.T, v_block
         )
-        h_carry_ref[:, :] = next_h_block
+        return next_h_block
 
-    def _ssd_backward_dkv_chunk_loop_body(t: int, dh_carry_ref: jax.Array):
+    def _ssd_backward_dkv_chunk_loop_body(t: int, dh_carry: jax.Array):
         subchunk_idx = t
-        dh_block = dh_carry_ref[:, :]
+        dh_block = dh_carry
         q_block = q_ref[subchunk_idx, :].astype(jnp.float32)
         k_block = k_ref[subchunk_idx, :].astype(jnp.float32)
         v_block = v_ref[subchunk_idx, :].astype(jnp.float32)
         do_block = mutable_do_ref[subchunk_idx, :].astype(jnp.float32)
-        causal_mask = jnp.tril(jnp.ones((subchunk_size, subchunk_size)), k=0).astype(
-            jnp.float32
-        )
-
         lambda_block = cum_log_alpha_ref[subchunk_idx, :]
         gamma_block = gamma_ref[subchunk_idx]
 
@@ -424,14 +696,17 @@ def _ssd_backward_kernel(
         prev_dh_block = dh_block * jnp.expand_dims(gamma_block, axis=-1) + _matmul_fp32(
             q_tilde_block.T, do_block
         )
-        dh_carry_ref[:, :] = prev_dh_block
+        return prev_dh_block
 
     h_carry = ch_ref[:, :]
-    _ = for_loop.for_loop(subchunk_dim, _ssd_backward_dq_chunk_loop_body, h_carry)
+    _ = lax.fori_loop(0, subchunk_dim, _ssd_backward_dq_chunk_loop_body, h_carry)
+
+    def _ssd_backward_dkv_chunk_loop_body_reverse(t: int, dh_carry_ref: jax.Array):
+        return _ssd_backward_dkv_chunk_loop_body(subchunk_dim - 1 - t, dh_carry_ref)
 
     dh_carry = mutable_dh_carry_ref[:, :]
-    dinitial_state = for_loop.for_loop(
-        subchunk_dim, _ssd_backward_dkv_chunk_loop_body, dh_carry, reverse=True
+    dinitial_state = lax.fori_loop(
+        0, subchunk_dim, _ssd_backward_dkv_chunk_loop_body_reverse, dh_carry
     )
     mutable_dh_carry_ref[:, :] = dinitial_state
 
@@ -451,22 +726,26 @@ def _ssd_backward(residuals: Tuple, do: jax.Array) -> Tuple:
         dlog_alpha: [bs, num_heads, seq_len]
         dinitial_state: [bs, num_heads, dk, dv]
     """
-    q, k, v, cum_log_alpha, gamma_expanded, chunk_states, final_state = residuals
+    q, k, v, cum_log_alpha, initial_state = residuals
+    orig_dtype = q.dtype
 
-    # `final_state` preserves the original dtype (e.g., bfloat16).
-    orig_dtype = final_state.dtype
-
-    singleton_dim = 128
+    singleton_dim, _, _ = _ssd_tiling_config()
     bs, num_heads, chunk_dim, subchunk_dim, subchunk_size = cum_log_alpha.shape
     k_dim, v_dim = q.shape[-1], v.shape[-1]
     num_k_tiles, num_v_tiles = k_dim // singleton_dim, v_dim // singleton_dim
     num_qk_heads = q.shape[1]
     num_head_per_group = num_heads // num_qk_heads
 
+    gamma = cum_log_alpha[:, :, :, :, subchunk_size - 1 :]  # [b, h, nb, ns, 1]
+    gamma_expanded = jnp.repeat(gamma, singleton_dim, axis=-1)
+    chunk_states = _ssd_recompute_chunk_states(
+        k, v, cum_log_alpha, gamma_expanded, initial_state
+    )
+
     grid = (bs, num_heads, num_k_tiles, num_v_tiles, chunk_dim)
 
     qk_tiling = (None, None, subchunk_dim, subchunk_size, singleton_dim)
-    qk_spec = pl.BlockSpec(
+    qk_spec = _bs(
         lambda b, h, k, v, m: (
             b,
             lax.div(h, num_head_per_group),
@@ -477,31 +756,37 @@ def _ssd_backward(residuals: Tuple, do: jax.Array) -> Tuple:
         qk_tiling,
     )
     v_tiling = (None, None, subchunk_dim, subchunk_size, singleton_dim)
-    v_spec = pl.BlockSpec(
+    v_spec = _bs(
         lambda b, h, k, v, m: (b, h, chunk_dim - 1 - m, 0, v), v_tiling
     )
 
     alpha_tiling = (None, None, None, subchunk_dim, subchunk_size)
-    alpha_spec = pl.BlockSpec(
+    alpha_spec = _bs(
         lambda b, h, k, v, m: (b, h, chunk_dim - 1 - m, 0, 0), alpha_tiling
     )
     gamma_tiling = (None, None, None, subchunk_dim, singleton_dim)
-    gamma_spec = pl.BlockSpec(
+    gamma_spec = _bs(
         lambda b, h, k, v, m: (b, h, chunk_dim - 1 - m, 0, 0), gamma_tiling
     )
 
     ch_tiling = (None, None, None, singleton_dim, singleton_dim)
-    ch_spec = pl.BlockSpec(
+    ch_spec = _bs(
         lambda b, h, k, v, m: (b, h, chunk_dim - 1 - m, k, v), ch_tiling
     )
 
     do_tiling = (None, None, subchunk_dim, subchunk_size, singleton_dim)
-    do_spec = pl.BlockSpec(
+    do_spec = _bs(
         lambda b, h, k, v, m: (b, h, chunk_dim - 1 - m, 0, v), do_tiling
+    )
+    causal_mask_spec = _bs(
+        lambda b, h, k, v, m: (0, 0), (subchunk_size, subchunk_size)
+    )
+    causal_mask = jnp.tril(
+        jnp.ones((subchunk_size, subchunk_size), dtype=jnp.float32), k=0
     )
 
     dqk_tiling = (None, None, None, None, subchunk_dim, subchunk_size, singleton_dim)
-    dqk_spec = pl.BlockSpec(
+    dqk_spec = _bs(
         lambda b, h, k, v, m: (
             b,
             lax.div(h, num_head_per_group),
@@ -527,7 +812,7 @@ def _ssd_backward(residuals: Tuple, do: jax.Array) -> Tuple:
     )
 
     dv_tiling = (None, None, None, subchunk_dim, subchunk_size, singleton_dim)
-    dv_spec = pl.BlockSpec(
+    dv_spec = _bs(
         lambda b, h, k, v, m: (b, h, k, chunk_dim - 1 - m, 0, v), dv_tiling
     )
     dv_shape = jax.ShapeDtypeStruct(
@@ -543,7 +828,7 @@ def _ssd_backward(residuals: Tuple, do: jax.Array) -> Tuple:
     )
 
     dh_carry_tiling = (None, None, singleton_dim, singleton_dim)
-    dh_carry_spec = pl.BlockSpec(lambda b, h, k, v, m: (b, h, k, v), dh_carry_tiling)
+    dh_carry_spec = _bs(lambda b, h, k, v, m: (b, h, k, v), dh_carry_tiling)
     dh_carry_shape = jax.ShapeDtypeStruct(
         shape=(bs, num_heads, k_dim, v_dim), dtype=jnp.float32
     )
@@ -552,25 +837,31 @@ def _ssd_backward(residuals: Tuple, do: jax.Array) -> Tuple:
 
     dq, dk, dv, dinitial_state = pl.pallas_call(
         _ssd_backward_kernel,
-        in_specs=(qk_spec, qk_spec, v_spec, alpha_spec, gamma_spec, ch_spec, do_spec),
+        in_specs=(
+            qk_spec,
+            qk_spec,
+            v_spec,
+            alpha_spec,
+            gamma_spec,
+            ch_spec,
+            causal_mask_spec,
+            do_spec,
+        ),
         out_specs=(dqk_spec, dqk_spec, dv_spec, dh_carry_spec),
         out_shape=(dqk_shape, dqk_shape, dv_shape, dh_carry_shape),
         grid=grid,
-        compiler_params=dict(
-            mosaic=dict(
-                dimension_semantics=(
-                    "parallel",
-                    "parallel",
-                    "parallel",
-                    "parallel",
-                    "arbitrary",
-                )
+        compiler_params=_tpu_compiler_params(
+            dimension_semantics=(
+                "parallel",
+                "parallel",
+                "parallel",
+                "parallel",
+                "arbitrary",
             )
-        )
-        if not use_interpret_mode()
-        else None,
+        ),
+        backend=_pallas_backend(),
         interpret=use_interpret_mode(),
-    )(q, k, v, cum_log_alpha, gamma_expanded, chunk_states, do)
+    )(q, k, v, cum_log_alpha, gamma_expanded, chunk_states, causal_mask, do)
 
     # Sum over dvn dim.
     dq = jnp.sum(dq, axis=3)
@@ -631,18 +922,59 @@ def ssd(
     The notion of groups is similar to the group in multi-group attention (or more preciesly
     multi-value attention) -- one group of q/k corresponds to multiple v heads.
     """
+    _validate_ssd_runtime_inputs(q, k, v, log_alpha, h0)
 
     bs, ng, _, dk = q.shape
-    bs, nh, _, dv = v.shape
-    assert nh % ng == 0
-    assert v.dtype == jnp.float32
-    assert log_alpha.dtype == jnp.float32
+    _, nh, _, dv = v.shape
+    backend = jax.default_backend()
+    pallas_backend = _pallas_backend()
+    if backend == "cpu":
+        raise RuntimeError("ssd requires an accelerator backend.")
 
     if h0 is None:
         h0 = jnp.zeros((bs, nh, dk, dv), dtype=jnp.float32)
 
-    output = _ssd(q, k, v, log_alpha, h0)
-    return output
+    if backend not in ("tpu", "gpu"):
+        output, _ = ssd_linear_scan(q, k, v, log_alpha, h0)
+        return output
+
+    if backend == "gpu" and not _gpu_supports_ssd_pallas_for_shape(
+        seq_len=q.shape[2],
+        num_groups=ng,
+        num_heads=nh,
+        dk=dk,
+        dv=dv,
+        pallas_backend=pallas_backend,
+    ):
+        output, _ = ssd_linear_scan(q, k, v, log_alpha, h0)
+        return output
+    if backend == "gpu":
+        failure_key = _ssd_pallas_failure_key(
+            pallas_backend=pallas_backend,
+            q=q,
+            k=k,
+            v=v,
+            log_alpha=log_alpha,
+            h0=h0,
+        )
+        if failure_key in _FAILED_SSD_PALLAS_CONFIGS:
+            output, _ = ssd_linear_scan(q, k, v, log_alpha, h0)
+            return output
+
+    try:
+        output = _ssd(q, k, v, log_alpha, h0)
+        return output
+    except (AssertionError, NotImplementedError, RuntimeError, TypeError, ValueError) as err:
+        if backend != "gpu":
+            raise
+        _FAILED_SSD_PALLAS_CONFIGS.add(failure_key)
+        warnings.warn(
+            f"Falling back to ssd_linear_scan on GPU because Pallas/Triton kernel failed: {err}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        output, _ = ssd_linear_scan(q, k, v, log_alpha, h0)
+        return output
 
 
 def ssd_linear_scan(

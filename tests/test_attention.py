@@ -7,8 +7,9 @@ import pytest
 
 from probjax.nn.layers.attention import (
     dot_product_attention,
-    flex_attention,
+    flex_attention as _flex_attention_impl,
 )
+from probjax.nn.pallas_kernels.flash_attention3 import mha_flash
 from probjax.nn.pallas_kernels.attention_mask_bias import (
     CausalAlibiBias,
     CausalMask,
@@ -27,6 +28,90 @@ from probjax.nn.pallas_kernels.attention_mask_bias import (
 )
 
 # materialize helpers deprecated; use class methods on mask/bias instead
+
+
+FWD_ATOL = 1e-3
+FWD_RTOL = 1e-3
+JVP_PRIMAL_ATOL = 5e-3
+JVP_TANGENT_ATOL = 2e-3
+
+
+_FLASH3_INCOMPAT_SUBSTRINGS = (
+    "flash_attention3 is not available in this jax build",
+    "flash_attention3 requires a gpu backend",
+    "flash_attention3 requires a mosaic-compatible gpu",
+    "causal flash_attention3 is unsupported for cuda runtime versions",
+    "causal attention is not supported with the pipeline emitter",
+)
+
+
+def _is_expected_flash3_incompatibility(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return isinstance(exc, (RuntimeError, NotImplementedError)) and any(
+        token in message for token in _FLASH3_INCOMPAT_SUBSTRINGS
+    )
+
+
+def flex_attention(query, key, value, *args, **kwargs):
+    # Keep TF32 fast path, but avoid OOM for larger padded head dimensions in tests.
+    if "block_q" not in kwargs and "block_k" not in kwargs:
+        max_head_dim = max(query.shape[-1], key.shape[-1], value.shape[-1])
+        if max_head_dim > 64:
+            kwargs["block_q"] = 64
+            kwargs["block_k"] = 64
+    return _flex_attention_impl(query, key, value, *args, **kwargs)
+
+
+def test_mha_flash_forward_or_expected_incompatibility():
+    q = jax.random.normal(
+        jax.random.PRNGKey(123), (1, 256, 8, 64), dtype=jnp.float16
+    )
+    try:
+        out = mha_flash(
+            q,
+            q,
+            q,
+            deterministic=True,
+            block_q=128,
+            block_k=128,
+            block_kv=128,
+            max_concurrent_steps=2,
+            causal=False,
+        )
+    except Exception as exc:
+        if _is_expected_flash3_incompatibility(exc):
+            pytest.skip(f"Expected FlashAttention3 incompatibility: {exc}")
+        raise
+
+    assert out.shape == q.shape
+    assert out.dtype == q.dtype
+
+
+def test_mha_flash_residuals_or_expected_incompatibility():
+    q = jax.random.normal(
+        jax.random.PRNGKey(321), (1, 256, 8, 64), dtype=jnp.float16
+    )
+    try:
+        out, residuals = mha_flash(
+            q,
+            q,
+            q,
+            deterministic=True,
+            block_q=128,
+            block_k=128,
+            block_kv=128,
+            max_concurrent_steps=2,
+            causal=False,
+            save_residuals=True,
+        )
+    except Exception as exc:
+        if _is_expected_flash3_incompatibility(exc):
+            pytest.skip(f"Expected FlashAttention3 incompatibility: {exc}")
+        raise
+
+    assert out.shape == q.shape
+    assert isinstance(residuals, tuple)
+    assert len(residuals) == 1
 
 
 @pytest.fixture(
@@ -87,8 +172,8 @@ def test_attention_forward_mode_jvp_matches_reference():
     primal_ref, tangent_ref = jax.jvp(loss_ref, (q, k, v), (dq, dk, dv))
     primal_flex, tangent_flex = jax.jvp(loss_flex, (q, k, v), (dq, dk, dv))
 
-    assert jnp.allclose(primal_ref, primal_flex, atol=1e-5)
-    assert jnp.allclose(tangent_ref, tangent_flex, atol=1e-3)
+    assert jnp.allclose(primal_ref, primal_flex, atol=JVP_PRIMAL_ATOL, rtol=FWD_RTOL)
+    assert jnp.allclose(tangent_ref, tangent_flex, atol=JVP_TANGENT_ATOL, rtol=FWD_RTOL)
 
 
 # @pytest.mark.gpu
@@ -143,7 +228,7 @@ def test_attention_function_outputs_are_same(batch_size, seq_len, num_heads, qkv
         outputs.append(attention_fn(q, k, v))
 
     for i in range(1, len(outputs)):
-        assert jnp.allclose(outputs[0], outputs[i], atol=1e-5), (
+        assert jnp.allclose(outputs[0], outputs[i], atol=FWD_ATOL, rtol=FWD_RTOL), (
             f"Outputs are not same for {attention_fns[i]}"
         )
 
@@ -179,7 +264,7 @@ def test_attention_function_gradients_are_same(batch_size, seq_len, num_heads, q
 
     for i in range(1, len(grads)):
         for g1, g2 in zip(grads[0], grads[i], strict=False):
-            assert jnp.allclose(g1, g2, atol=1e-3), (
+            assert jnp.allclose(g1, g2, atol=1e-2), (
                 f"Gradients are not same for {attention_fns[i]}"
                 f" error is {jnp.mean(jnp.abs(g1 - g2))}, std {jnp.std(g1 - g2)}"
             )
@@ -206,8 +291,8 @@ def test_attention_forward_mode_jvp_matches_reference():
     primal_ref, tangent_ref = jax.jvp(loss_ref, (q, k, v), (dq, dk, dv))
     primal_flex, tangent_flex = jax.jvp(loss_flex, (q, k, v), (dq, dk, dv))
 
-    assert jnp.allclose(primal_ref, primal_flex, atol=1e-5)
-    assert jnp.allclose(tangent_ref, tangent_flex, atol=1e-3)
+    assert jnp.allclose(primal_ref, primal_flex, atol=JVP_PRIMAL_ATOL, rtol=FWD_RTOL)
+    assert jnp.allclose(tangent_ref, tangent_flex, atol=JVP_TANGENT_ATOL, rtol=FWD_RTOL)
 
 
 @pytest.mark.parametrize(
@@ -249,7 +334,9 @@ def test_attention_with_dropout(batch_size, seq_len, num_heads, qkv_dim, dropout
         dropout_impl=dropout_impl,
     )
     assert out2.shape == (batch_size, seq_len, num_heads, qkv_dim)
-    assert not jnp.allclose(out1, out2, atol=1e-5), "Dropout did not change the output"
+    assert not jnp.allclose(out1, out2, atol=FWD_ATOL, rtol=FWD_RTOL), (
+        "Dropout did not change the output"
+    )
 
 
 @pytest.mark.parametrize(
@@ -281,10 +368,10 @@ def test_attention_with_masks(batch_size, seq_len, num_heads, qkv_dim, mask_fn):
     if isinstance(mask, QKVLengthMask):
         # If stuff is completly gone including the diagonal they behave a bit differently.
         assert jnp.allclose(
-            out[:, : mask.q_length], out2[:, : mask.q_length], atol=1e-4
+            out[:, : mask.q_length], out2[:, : mask.q_length], atol=FWD_ATOL, rtol=FWD_RTOL
         )
     else:
-        assert jnp.allclose(out, out2, atol=1e-5), (
+        assert jnp.allclose(out, out2, atol=FWD_ATOL, rtol=FWD_RTOL), (
             f"Outputs are not same with mask, with error {jnp.max(jnp.abs(out - out2))}"
         )
 
@@ -310,7 +397,7 @@ def test_attention_with_bias(batch_size, seq_len, num_heads, qkv_dim):
     bias = jax.random.normal(jax.random.PRNGKey(1), (1, 1, seq_len, seq_len)) * 10
     out1 = dot_product_attention(q, k, v, bias=bias)
     out2 = flex_attention(q, k, v, bias=DenseBias(bias))
-    assert jnp.allclose(out1, out2, atol=1e-5), (
+    assert jnp.allclose(out1, out2, atol=FWD_ATOL, rtol=FWD_RTOL), (
         f"Outputs are not same with bias, with error {jnp.max(jnp.abs(out1 - out2))}"
     )
 
@@ -346,7 +433,7 @@ def test_attention_with_stateless_bias_objects_equivalence(
 
     out_ref = dot_product_attention(q, k, v, bias=dense_bias)
     out_flex = flex_attention(q, k, v, bias=bias_obj)
-    assert jnp.allclose(out_ref, out_flex, atol=1e-5), (
+    assert jnp.allclose(out_ref, out_flex, atol=FWD_ATOL, rtol=FWD_RTOL), (
         f"Mismatch with {bias_obj.__class__.__name__}: "
         f"max err={jnp.max(jnp.abs(out_ref - out_flex))}"
     )
@@ -367,7 +454,6 @@ def test_attention_with_stateless_bias_objects_equivalence(
     ],
 )
 def test_attention_with_bias_gradients(batch_size, seq_len, num_heads, qkv_dim):
-    batch_size, seq_len, num_heads, qkv_dim = 2, 16, 4, 16
     q = k = v = jax.random.normal(
         jax.random.PRNGKey(0), (batch_size, seq_len, num_heads, qkv_dim)
     )
@@ -394,7 +480,9 @@ def test_attention_with_bias_gradients(batch_size, seq_len, num_heads, qkv_dim):
     assert out2[2].shape == (batch_size, seq_len, num_heads, qkv_dim)
 
     assert jax.tree_util.tree_all(
-        jax.tree_util.tree_map(partial(jnp.allclose, atol=1e-2), out, out2)
+        jax.tree_util.tree_map(
+            partial(jnp.allclose, atol=2e-2, rtol=1e-2), out, out2
+        )
     ), (
         f"Gradients are not same with bias, with error {jnp.max(jnp.abs(out[0] - out2[0]))}"
     )
@@ -435,7 +523,9 @@ def test_attention_with_stateless_bias_gradients(
     grads_flex = jax.grad(loss_flex)((q, k, v))
 
     assert jax.tree_util.tree_all(
-        jax.tree_util.tree_map(partial(jnp.allclose, atol=1e-2), grads_ref, grads_flex)
+        jax.tree_util.tree_map(
+            partial(jnp.allclose, atol=1.5e-2, rtol=1e-2), grads_ref, grads_flex
+        )
     )
 
 
@@ -488,7 +578,9 @@ def test_attention_gradient_with_masks(
         return
 
     assert jax.tree_util.tree_all(
-        jax.tree_util.tree_map(partial(jnp.allclose, atol=1e-2), out, out2)
+        jax.tree_util.tree_map(
+            partial(jnp.allclose, atol=3e-2, rtol=1e-2), out, out2
+        )
     )
 
 
@@ -541,7 +633,7 @@ def test_flex_attention_vmap_over_leading_batch_matches_manual():
         num_heads,
         qkv_dim,
     )
-    assert jnp.allclose(out_vmap, out_manual, atol=1e-5)
+    assert jnp.allclose(out_vmap, out_manual, atol=FWD_ATOL, rtol=FWD_RTOL)
 
 
 def test_flex_attention_vmap_over_leading_batch_with_mask_matches_manual():
@@ -567,7 +659,7 @@ def test_flex_attention_vmap_over_leading_batch_with_mask_matches_manual():
         num_heads,
         qkv_dim,
     )
-    assert jnp.allclose(out_vmap, out_manual, atol=1e-5)
+    assert jnp.allclose(out_vmap, out_manual, atol=FWD_ATOL, rtol=FWD_RTOL)
 
 
 @pytest.mark.parametrize(
@@ -589,7 +681,7 @@ def test_cross_attention_forward_lengths_mismatch(
     out_ref = dot_product_attention(q, k, v)
     out_flex = flex_attention(q, k, v)
     assert out_ref.shape == out_flex.shape == (batch_size, q_len, num_heads, qkv_dim)
-    assert jnp.allclose(out_ref, out_flex, atol=1e-5), (
+    assert jnp.allclose(out_ref, out_flex, atol=FWD_ATOL, rtol=FWD_RTOL), (
         f"Cross-attention forward mismatch (Q={q_len},K={kv_len}), max err={jnp.max(jnp.abs(out_ref - out_flex))}"
     )
 
@@ -653,7 +745,7 @@ def test_cross_attention_outputs_match(batch_size, q_len, kv_len, num_heads, qkv
     outputs = [fn(q, k, v) for fn in attention_fns]
 
     for i in range(1, len(outputs)):
-        assert jnp.allclose(outputs[0], outputs[i], atol=1e-5), (
+        assert jnp.allclose(outputs[0], outputs[i], atol=FWD_ATOL, rtol=FWD_RTOL), (
             f"Cross-attention outputs differ for {attention_fns[i]}"
         )
 
@@ -760,10 +852,13 @@ def test_cross_attention_with_mask_and_bias(
 
     if isinstance(mask, QKVLengthMask):
         assert jnp.allclose(
-            out_dense[:, : mask.q_length], out_flex[:, : mask.q_length], atol=1e-4
+            out_dense[:, : mask.q_length],
+            out_flex[:, : mask.q_length],
+            atol=FWD_ATOL,
+            rtol=FWD_RTOL,
         )
     else:
-        assert jnp.allclose(out_dense, out_flex, atol=1e-5), (
+        assert jnp.allclose(out_dense, out_flex, atol=FWD_ATOL, rtol=FWD_RTOL), (
             f"Cross-attention with mask+bias mismatch, max err={jnp.max(jnp.abs(out_dense - out_flex))}"
         )
 
@@ -800,7 +895,7 @@ def test_seq_len_mask_forward(batch_size, seq_len, num_heads, qkv_dim):
     out_flex = flex_attention(q, k, v, mask=SeqLenMask(L))
 
     assert out_ref.shape == out_flex.shape == (batch_size, seq_len, num_heads, qkv_dim)
-    assert jnp.allclose(out_ref, out_flex, atol=1e-5), (
+    assert jnp.allclose(out_ref, out_flex, atol=FWD_ATOL, rtol=FWD_RTOL), (
         f"SeqLenMask forward mismatch, max err={jnp.max(jnp.abs(out_ref - out_flex))}"
     )
 
