@@ -5,6 +5,7 @@ import itertools
 
 from probjax.nn.loss_fn import (
     build_denoising_loss,
+    build_time_dependent_denoising_loss,
     build_time_dependent_multinomial_diffusion_loss,
     build_denoising_score_matching_loss,
     build_flow_matching_loss,
@@ -40,6 +41,120 @@ def test_loss_fn(builder, kwargs):
     loss = loss_fn(batch_vectors, rng=jax.random.key(0))
     assert loss.ndim == 0, "loss is not a scalar"
     assert jax.numpy.isfinite(loss), "loss is not finite"
+
+
+def test_denoising_loss_noise_mask_only_noises_masked_positions():
+    captured = {}
+
+    def capture_model_fn(x):
+        captured["x_noisy"] = x
+        return x
+
+    loss_fn = build_denoising_loss(
+        capture_model_fn,
+        std=0.5,
+        scale=1.0,
+        prediction_target="x0",
+    )
+
+    x0 = jnp.arange(12, dtype=jnp.float32).reshape(3, 4)
+    noise_mask = jnp.array(
+        [
+            [True, False, True, False],
+            [False, False, False, False],
+            [True, True, False, False],
+        ],
+        dtype=bool,
+    )
+    _ = loss_fn(x0, rng=jax.random.key(0), noise_mask=noise_mask)
+
+    x_noisy = captured["x_noisy"]
+    assert jnp.array_equal(x_noisy[~noise_mask], x0[~noise_mask])
+    assert bool(jnp.any(jnp.abs(x_noisy[noise_mask] - x0[noise_mask]) > 1e-7))
+
+
+def test_time_dependent_denoising_loss_noise_mask_broadcast():
+    captured = {}
+
+    def capture_model_fn(t, x):
+        del t
+        captured["x_noisy"] = x
+        return x
+
+    loss_fn = build_time_dependent_denoising_loss(
+        capture_model_fn,
+        scale_fn=lambda t: jnp.ones_like(t),
+        std_fn=lambda t: 0.5 * jnp.ones_like(t),
+        weight_fn=lambda t: jnp.ones_like(t),
+        prediction_target="x0",
+    )
+
+    x0 = jnp.arange(12, dtype=jnp.float32).reshape(3, 4)
+    t = jnp.ones((3, 1), dtype=jnp.float32)
+    noise_mask = jnp.array([[True], [False], [True]], dtype=bool)  # broadcast to (3, 4)
+    full_mask = jnp.broadcast_to(noise_mask, x0.shape)
+
+    _ = loss_fn(t, x0, rng=jax.random.key(1), noise_mask=noise_mask)
+    x_noisy = captured["x_noisy"]
+
+    assert jnp.array_equal(x_noisy[~full_mask], x0[~full_mask])
+    assert bool(jnp.any(jnp.abs(x_noisy[full_mask] - x0[full_mask]) > 1e-7))
+
+
+def test_time_dependent_denoising_loss_noise_mask_shape_validation():
+    def model_fn(t, x):
+        del t
+        return x
+
+    loss_fn = build_time_dependent_denoising_loss(
+        model_fn,
+        scale_fn=lambda t: jnp.ones_like(t),
+        std_fn=lambda t: 0.5 * jnp.ones_like(t),
+        weight_fn=lambda t: jnp.ones_like(t),
+    )
+
+    x0 = jnp.ones((3, 4), dtype=jnp.float32)
+    t = jnp.ones((3, 1), dtype=jnp.float32)
+    bad_mask = jnp.ones((2, 2), dtype=bool)
+
+    with pytest.raises(ValueError, match="broadcastable"):
+        _ = loss_fn(t, x0, rng=jax.random.key(2), noise_mask=bad_mask)
+
+
+def test_time_dependent_denoising_loss_uses_loss_mask_for_noising():
+    captured = {}
+
+    def capture_model_fn(t, x):
+        del t
+        captured["x_noisy"] = x
+        return x
+
+    loss_fn = build_time_dependent_denoising_loss(
+        capture_model_fn,
+        scale_fn=lambda t: jnp.ones_like(t),
+        std_fn=lambda t: 0.5 * jnp.ones_like(t),
+        weight_fn=lambda t: jnp.ones_like(t),
+        prediction_target="x0",
+    )
+
+    x0 = jnp.arange(12, dtype=jnp.float32).reshape(3, 4)
+    t = jnp.ones((3, 1), dtype=jnp.float32)
+    # True means "masked out from loss", so these entries should not be noised.
+    loss_mask = jnp.array(
+        [
+            [True, False, True, False],
+            [True, True, True, True],
+            [False, False, True, True],
+        ],
+        dtype=bool,
+    )
+
+    _ = loss_fn(t, x0, rng=jax.random.key(3), loss_mask=loss_mask)
+    x_noisy = captured["x_noisy"]
+    contributing = ~loss_mask
+
+    assert jnp.array_equal(x_noisy[loss_mask], x0[loss_mask])
+    assert bool(jnp.any(jnp.abs(x_noisy[contributing] - x0[contributing]) > 1e-7))
 
 
 def test_flow_matching_schedule_zero_loss():

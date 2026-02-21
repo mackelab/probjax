@@ -94,6 +94,48 @@ def _compute_prediction_loss(
     )
 
 
+def _apply_noise_mask(
+    *,
+    x0: Array,
+    x_noisy: Array,
+    eps: Array,
+    noise_mask: Optional[ArrayLike],
+) -> tuple[Array, Array]:
+    if noise_mask is None:
+        return x_noisy, eps
+
+    mask = jnp.asarray(noise_mask, dtype=bool)
+    try:
+        mask = jnp.broadcast_to(mask, x0.shape)
+    except ValueError as exc:
+        raise ValueError(
+            "noise_mask must be broadcastable to the clean sample shape"
+        ) from exc
+
+    x_noisy_masked = jnp.where(mask, x_noisy, x0)
+    eps_masked = jnp.where(mask, eps, jnp.zeros_like(eps))
+    return x_noisy_masked, eps_masked
+
+
+def _resolve_noise_mask(
+    *,
+    loss_mask: Optional[ArrayLike],
+    noise_mask: Optional[ArrayLike],
+) -> Optional[ArrayLike]:
+    """Resolve noising mask from explicit noise mask and loss mask.
+
+    Convention: ``loss_mask=True`` means "exclude from loss". Therefore, by default
+    only contributing entries (``~loss_mask``) are noised.
+    """
+    if loss_mask is None:
+        return noise_mask
+
+    contributing = ~jnp.asarray(loss_mask, dtype=bool)
+    if noise_mask is None:
+        return contributing
+    return jnp.asarray(noise_mask, dtype=bool) & contributing
+
+
 def build_denoising_loss(
     model_fn: ModelFn,
     scale: ArrayLike,
@@ -131,6 +173,7 @@ def build_denoising_loss(
         *args,
         rng=None,
         loss_mask=None,
+        noise_mask=None,
         adaptive_weight_p=0.0,
         adaptive_weight_eps=1e-3,
         **kwargs,
@@ -147,6 +190,16 @@ def build_denoising_loss(
 
         alpha = jnp.sqrt(1.0 - std_array**2)
         x_noisy = alpha * x0 + std_array * eps
+        effective_noise_mask = _resolve_noise_mask(
+            loss_mask=loss_mask,
+            noise_mask=noise_mask,
+        )
+        x_noisy, eps = _apply_noise_mask(
+            x0=x0,
+            x_noisy=x_noisy,
+            eps=eps,
+            noise_mask=effective_noise_mask,
+        )
 
         args_with_noisy = args[:argnums] + (x_noisy,) + args[argnums + 1 :]
 
@@ -204,6 +257,7 @@ def build_time_dependent_denoising_loss(
         *args,
         rng=None,
         loss_mask=None,
+        noise_mask=None,
         adaptive_weight_p=0.0,
         adaptive_weight_eps=1e-3,
         **kwargs,
@@ -221,6 +275,16 @@ def build_time_dependent_denoising_loss(
         eps = jax.random.normal(rng, shape=x0.shape)
 
         x_noisy = alpha_t * x0 + sigma_t * eps
+        effective_noise_mask = _resolve_noise_mask(
+            loss_mask=loss_mask,
+            noise_mask=noise_mask,
+        )
+        x_noisy, eps = _apply_noise_mask(
+            x0=x0,
+            x_noisy=x_noisy,
+            eps=eps,
+            noise_mask=effective_noise_mask,
+        )
 
         args_with_noisy = (t,) + args[:argnums] + (x_noisy,) + args[argnums + 1 :]
 
