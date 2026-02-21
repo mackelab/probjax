@@ -14,7 +14,11 @@ except Exception:  # pragma: no cover - depends on local jax build
 try:
     from jax.experimental.pallas.ops.gpu.attention_mgpu import (
         TuningConfig,
+    )
+    from jax.experimental.pallas.ops.gpu.attention_mgpu import (
         attention as _attention_impl,
+    )
+    from jax.experimental.pallas.ops.gpu.attention_mgpu import (
         attention_with_pipeline_emitter as _attention_with_pipeline_emitter_impl,
     )
 
@@ -35,7 +39,9 @@ def _gpu_supports_mosaic() -> bool:
         capability = getattr(device, "compute_capability", None)
         if capability is None:
             continue
-        major = capability[0] if isinstance(capability, tuple) else int(float(capability))
+        major = (
+            capability[0] if isinstance(capability, tuple) else int(float(capability))
+        )
         if major >= 9:
             return True
     return False
@@ -68,7 +74,11 @@ def _ensure_flash3_supported(*, causal: bool, use_pipeline_emitter: bool) -> Non
             "Causal attention is not supported with the pipeline emitter.",
         )
     cuda_runtime_version = _cuda_runtime_version()
-    if causal and cuda_runtime_version is not None and 12080 <= cuda_runtime_version < 12091:
+    if (
+        causal
+        and cuda_runtime_version is not None
+        and 12080 <= cuda_runtime_version < 12091
+    ):
         raise RuntimeError(
             "Causal flash_attention3 is unsupported for CUDA runtime versions "
             "12.8.0 <= CUDA < 12.9.1 due to a ptxas issue.",
@@ -105,7 +115,7 @@ def mha_flash(
     bias=None,
     dropout_rng=None,
     dropout_rate: float = 0.0,
-    broadcast_dropout: bool = False,
+    broadcast_dropout: bool = True,
     deterministic: bool = True,
     dtype=None,
     precision=None,
@@ -140,8 +150,6 @@ def mha_flash(
         )
     if bias is not None:
         raise NotImplementedError("mha_flash does not support additive attention bias.")
-    if broadcast_dropout:
-        raise NotImplementedError("mha_flash does not support broadcast_dropout.")
 
     if deterministic:
         dropout_rate = 0.0
@@ -166,7 +174,9 @@ def mha_flash(
             f"Expected 4D query/key/value, got {query.ndim=}, {key.ndim=}, {value.ndim=}.",
         )
     if key.shape != value.shape:
-        raise ValueError(f"Expected key and value shapes to match, got {key.shape=} and {value.shape=}.")
+        raise ValueError(
+            f"Expected key and value shapes to match, got {key.shape=} and {value.shape=}."
+        )
     if query.shape[0] != key.shape[0] or query.shape[-1] != key.shape[-1]:
         raise ValueError(
             "Batch size and head dimension must match between query and key/value.",
@@ -190,7 +200,9 @@ def mha_flash(
     kv_len = key.shape[1]
     q_multiple = block_q if use_pipeline_emitter else (2 * block_q)
     if q_len % q_multiple:
-        raise ValueError(f"{q_len=} must be a multiple of {q_multiple=} for this kernel.")
+        raise ValueError(
+            f"{q_len=} must be a multiple of {q_multiple=} for this kernel."
+        )
     if kv_len % block_kv:
         raise ValueError(f"{kv_len=} must be a multiple of {block_kv=}.")
 
