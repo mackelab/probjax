@@ -358,6 +358,7 @@ class SimulationDataset:
 
         self._n_sim_devices = len(self._simulation_devices)
         self._simulation_device = self._simulation_devices[0]
+        self._simulation_backend = self._simulation_device.platform
 
         self._simulator_fn = simulator_fn
         self._batch_size = int(simulation_batch_size)
@@ -380,6 +381,8 @@ class SimulationDataset:
 
         self._initial_rng = rng
         self._sim_rng = jax.random.PRNGKey(0) if isinstance(rng, int) else rng
+        # Keep RNG state on the simulation device so split/dispatch follows it.
+        self._sim_rng = self._pin_sim_key(self._sim_rng)
 
         self._stop_event = threading.Event()
         self._lock = threading.RLock()
@@ -450,6 +453,7 @@ class SimulationDataset:
             rng = jax.random.PRNGKey(int(rng)) if isinstance(rng, int) else rng
         self._initial_rng = rng
         self._sim_rng = jax.random.PRNGKey(0) if isinstance(rng, int) else rng
+        self._sim_rng = self._pin_sim_key(self._sim_rng)
         self._stop_producer()
         with self._lock:
             self._pending_refresh = 0
@@ -645,6 +649,7 @@ class SimulationDataset:
                 self._stats["production_time"] += duration
 
     def _produce_batch(self) -> tuple[Any, float]:
+        self._sim_rng = self._pin_sim_key(self._sim_rng)
         self._sim_rng, batch_key = jax.random.split(self._sim_rng)
         sample_keys = jax.random.split(batch_key, self._batch_size)
         if self._n_sim_devices > 1:
@@ -653,7 +658,7 @@ class SimulationDataset:
                 + sample_keys.shape[1:]
             )
         else:
-            keys_per_device = sample_keys
+            keys_per_device = jax.device_put(sample_keys, self._simulation_device)
         start = time.perf_counter()
 
         if self._n_sim_devices > 1:
@@ -686,8 +691,13 @@ class SimulationDataset:
             batched = per_device_batched
 
         if jit_simulator:
-            return jax.jit(batched)
+            if self._n_sim_devices > 1:
+                return jax.jit(batched, backend=self._simulation_backend)
+            return jax.jit(batched, device=self._simulation_device)
         return batched
+
+    def _pin_sim_key(self, key: RngKey) -> RngKey:
+        return jax.device_put(key, self._simulation_device)
 
     def _to_host(self, batch: Any) -> Any:
         return jax.tree_util.tree_map(lambda x: np.asarray(jax.device_get(x)), batch)
