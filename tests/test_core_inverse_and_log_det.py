@@ -4,6 +4,7 @@ import pytest
 
 from probjax.core import custom_inverse, inverse, inverse_and_logabsdet
 from probjax.core.registry import REGISTRY, Context
+from probjax.utils.functions import split_drift
 from probjax.utils.odeint import odeint
 
 
@@ -374,6 +375,255 @@ def test_inverse_odeint_linear_system_with_drift_kwargs():
     assert jnp.allclose(x0, x_inv, atol=1e-3, rtol=1e-3), (
         "Inverse function failed for ODE-based transform with drift kwargs."
     )
+
+
+def test_inverse_odeint_with_traced_drift_kwargs():
+    ts = jnp.linspace(0.0, 1.0, 400)
+
+    def drift(t, x, rate, bias=0.0):
+        del t
+        return -rate * x + bias
+
+    def forward(x, rate, bias):
+        return odeint(
+            drift,
+            x,
+            ts,
+            rate=rate,
+            bias=bias,
+            collect_trace=False,
+            method="rk4",
+        )
+
+    x0 = jnp.array([1.0, -2.0, 0.5])
+    rate = jnp.array(0.7)
+    bias = jnp.array(0.1)
+    y = forward(x0, rate, bias)
+
+    inv_forward = inverse(forward, invertible_arg=0)
+    x_inv = inv_forward(y, rate, bias)
+
+    assert jnp.allclose(x0, x_inv, atol=1e-3, rtol=1e-3), (
+        "Inverse failed when odeint drift kwargs are traced runtime values."
+    )
+
+
+def test_inverse_and_logabsdet_odeint_with_traced_drift_kwargs():
+    ts = jnp.linspace(0.0, 1.0, 400)
+
+    def drift(t, x, rate, bias=0.0):
+        del t
+        return -rate * x + bias
+
+    def forward(x, rate, bias):
+        return odeint(
+            drift,
+            x,
+            ts,
+            rate=rate,
+            bias=bias,
+            collect_trace=False,
+            method="rk4",
+        )
+
+    x0 = jnp.array([1.2, -0.3, 0.8])
+    rate = jnp.array(0.4)
+    bias = jnp.array(-0.2)
+    y = forward(x0, rate, bias)
+
+    inv_and_det = inverse_and_logabsdet(forward, invertible_arg=0)
+    x_inv, logabsdet = inv_and_det(y, rate, bias)
+
+    duration = ts[-1] - ts[0]
+    expected_logabsdet = x0.shape[0] * rate * duration
+
+    assert jnp.allclose(x0, x_inv, atol=1e-3, rtol=1e-3), (
+        "Inverse+logabsdet failed when odeint drift kwargs are traced values."
+    )
+    assert jnp.allclose(logabsdet, expected_logabsdet, atol=5e-2, rtol=5e-2), (
+        "Inverse logabsdet for linear ODE drift is inconsistent with expectation."
+    )
+
+
+def test_inverse_odeint_with_traced_drift_closure():
+    ts = jnp.linspace(0.0, 1.0, 400)
+
+    def forward(x, rate, bias):
+        def drift(t, y):
+            del t
+            return -rate * y + bias
+
+        return odeint(
+            drift,
+            x,
+            ts,
+            collect_trace=False,
+            method="rk4",
+        )
+
+    x0 = jnp.array([1.0, -2.0, 0.5])
+    rate = jnp.array(0.7)
+    bias = jnp.array(0.1)
+    y = forward(x0, rate, bias)
+
+    inv_forward = inverse(forward, invertible_arg=0)
+    x_inv = inv_forward(y, rate, bias)
+
+    assert jnp.allclose(x0, x_inv, atol=1e-3, rtol=1e-3), (
+        "Inverse failed when drift closes over traced runtime values."
+    )
+
+
+def test_inverse_odeint_with_traced_split_drift_closure():
+    ts = jnp.linspace(0.0, 1.0, 400)
+
+    def forward(x, rate, bias):
+        def lin_coeff(t):
+            del t
+            return jnp.asarray(0.0)
+
+        def nonlin(t, y):
+            del t
+            return -rate * y + bias
+
+        drift = split_drift(lin_coeff=lin_coeff, nonlin=nonlin)
+        return odeint(
+            drift,
+            x,
+            ts,
+            collect_trace=False,
+            method="rk4",
+        )
+
+    x0 = jnp.array([1.0, -2.0, 0.5])
+    rate = jnp.array(0.7)
+    bias = jnp.array(0.1)
+    y = forward(x0, rate, bias)
+
+    inv_forward = inverse(forward, invertible_arg=0)
+    x_inv = inv_forward(y, rate, bias)
+
+    assert jnp.allclose(x0, x_inv, atol=1e-3, rtol=1e-3), (
+        "Inverse failed for split_drift with traced closure values."
+    )
+
+
+def test_inverse_odeint_with_mixed_static_and_traced_drift_kwargs():
+    ts = jnp.linspace(0.0, 1.0, 400)
+
+    def drift(t, x, rate, bias=0.0, mode="affine"):
+        del t
+        if mode == "affine":
+            return -rate * x + bias
+        return -rate * x
+
+    def forward(x, rate):
+        bias = 0.1 * jnp.ones_like(rate)
+        return odeint(
+            drift,
+            x,
+            ts,
+            rate=rate,
+            bias=bias,
+            mode="affine",
+            collect_trace=False,
+            method="rk4",
+        )
+
+    x0 = jnp.array([1.0, -2.0, 0.5])
+    rate = jnp.array(0.7)
+    y = forward(x0, rate)
+
+    inv_forward = inverse(forward, invertible_arg=0)
+    x_inv = inv_forward(y, rate)
+
+    assert jnp.allclose(x0, x_inv, atol=1e-3, rtol=1e-3), (
+        "Inverse failed when static and traced drift kwargs are mixed."
+    )
+
+
+def test_inverse_odeint_with_static_bool_control_flow_kwarg():
+    ts = jnp.linspace(0.0, 1.0, 400)
+
+    def drift(t, x, rate, bias=0.0, use_bias=True):
+        del t
+        if use_bias:
+            return -rate * x + bias
+        return -rate * x
+
+    def forward_true(x, rate):
+        bias = 0.1 * jnp.ones_like(rate)
+        return odeint(
+            drift,
+            x,
+            ts,
+            rate=rate,
+            bias=bias,
+            use_bias=True,
+            collect_trace=False,
+            method="rk4",
+        )
+
+    def forward_false(x, rate):
+        bias = 0.1 * jnp.ones_like(rate)
+        return odeint(
+            drift,
+            x,
+            ts,
+            rate=rate,
+            bias=bias,
+            use_bias=False,
+            collect_trace=False,
+            method="rk4",
+        )
+
+    x0 = jnp.array([1.0, -2.0, 0.5])
+    rate = jnp.array(0.7)
+
+    y_true = forward_true(x0, rate)
+    inv_forward_true = inverse(forward_true, invertible_arg=0)
+    x_inv_true = inv_forward_true(y_true, rate)
+    assert jnp.allclose(x0, x_inv_true, atol=1e-3, rtol=1e-3), (
+        "Inverse failed with static boolean control-flow kwarg set to True."
+    )
+
+    y_false = forward_false(x0, rate)
+    inv_forward_false = inverse(forward_false, invertible_arg=0)
+    x_inv_false = inv_forward_false(y_false, rate)
+    assert jnp.allclose(x0, x_inv_false, atol=1e-3, rtol=1e-3), (
+        "Inverse failed with static boolean control-flow kwarg set to False."
+    )
+
+
+def test_inverse_odeint_with_dynamic_bool_control_flow_kwarg_raises():
+    ts = jnp.linspace(0.0, 1.0, 400)
+
+    def drift(t, x, rate, bias=0.0, use_bias=True):
+        del t
+        if use_bias:
+            return -rate * x + bias
+        return -rate * x
+
+    def forward(x, rate, use_bias):
+        bias = 0.1 * jnp.ones_like(rate)
+        return odeint(
+            drift,
+            x,
+            ts,
+            rate=rate,
+            bias=bias,
+            use_bias=use_bias,
+            collect_trace=False,
+            method="rk4",
+        )
+
+    x0 = jnp.array([1.0, -2.0, 0.5])
+    rate = jnp.array(0.7)
+    y = forward(x0, rate, True)
+    inv_forward = inverse(forward, invertible_arg=0)
+
+    with pytest.raises(jax.errors.TracerBoolConversionError):
+        _ = inv_forward(y, rate, True)
 
 
 def test_inverse_and_logabsdet_tan():

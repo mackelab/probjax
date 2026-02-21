@@ -249,6 +249,42 @@ def alpha_sigma_from_scale_std(
     return alpha, sigma
 
 
+def _broadcast_mask_to_leaf(mask: ArrayLike, leaf: Array) -> Array:
+    """Broadcast a state mask to a given leaf shape."""
+    mask_arr = jnp.asarray(mask, dtype=bool)
+    if mask_arr.ndim > leaf.ndim:
+        raise ValueError(
+            "state_mask has more dimensions than a sampled state leaf: "
+            f"{mask_arr.shape} vs {leaf.shape}"
+        )
+    if mask_arr.ndim < leaf.ndim:
+        mask_arr = mask_arr.reshape(mask_arr.shape + (1,) * (leaf.ndim - mask_arr.ndim))
+    try:
+        return jnp.broadcast_to(mask_arr, leaf.shape)
+    except ValueError as exc:
+        raise ValueError(
+            "state_mask must be broadcastable to sampled state leaves. "
+            f"Got mask shape {mask_arr.shape} and leaf shape {leaf.shape}."
+        ) from exc
+
+
+def _apply_state_mask(
+    tree: PyTree[Array],
+    state_mask: ArrayLike | None,
+) -> PyTree[Array]:
+    """Zero-out drift/diffusion entries outside the active state mask."""
+    if state_mask is None:
+        return tree
+    return jax.tree_util.tree_map(
+        lambda leaf: jnp.where(
+            _broadcast_mask_to_leaf(state_mask, leaf),
+            leaf,
+            jnp.zeros_like(leaf),
+        ),
+        tree,
+    )
+
+
 # =============================================================================
 # Noise schedules
 # =============================================================================
@@ -900,6 +936,7 @@ class BaseSolverConfig(SolverConfigProtocol):
     def build_ode_drift(
         self,
         model: ScheduleAwareModelProtocol,
+        state_mask: ArrayLike | None = None,
         *args,
         **kwargs,
     ) -> split_drift:
@@ -919,17 +956,32 @@ class BaseSolverConfig(SolverConfigProtocol):
             t = jnp.atleast_1d(t)
             g = model.diffusion(t, x)
             s = model.score(t, x, *args, **kwargs)
-            return jax.tree_util.tree_map(
+            drift_nonlin = jax.tree_util.tree_map(
                 lambda gi, si: -0.5 * gi**2 * si,
                 g,
                 s,
             )
+            if state_mask is None:
+                return drift_nonlin
+
+            coeff = jnp.asarray(linear_coeff(t))
+
+            def _masked_nonlin(xi: Array, ni: Array) -> Array:
+                mask = _broadcast_mask_to_leaf(state_mask, xi)
+                mask_f = mask.astype(xi.dtype)
+                coeff_i = coeff.astype(xi.dtype)
+                # split_drift evaluates coeff * x + nonlin; correction removes
+                # the linear term on frozen coordinates and masks nonlinearity.
+                return mask_f * ni + (mask_f - 1.0) * coeff_i * xi
+
+            return jax.tree_util.tree_map(_masked_nonlin, x, drift_nonlin)
 
         return split_drift(lin_coeff=linear_coeff, nonlin=nonlin)
 
     def build_sde_drift_and_diffusion(
         self,
         model: ScheduleAwareModelProtocol,
+        state_mask: ArrayLike | None = None,
         *args,
         **kwargs,
     ):
@@ -938,15 +990,17 @@ class BaseSolverConfig(SolverConfigProtocol):
             f = model.drift(t, x)
             g = model.diffusion(t, x)
             s = model.score(t, x, *args, **kwargs)
-            return jax.tree_util.tree_map(
+            raw_drift = jax.tree_util.tree_map(
                 lambda fi, gi, si: fi - gi**2 * si,
                 f,
                 g,
                 s,
             )
+            return _apply_state_mask(raw_drift, state_mask)
 
         def diffusion(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
-            return model.diffusion(t, x)
+            raw_diffusion = model.diffusion(t, x)
+            return _apply_state_mask(raw_diffusion, state_mask)
 
         return drift, diffusion
 
@@ -961,8 +1015,14 @@ class BaseSolverConfig(SolverConfigProtocol):
         *args,
         **kwargs,
     ) -> PyTree[Array]:
+        state_mask = kwargs.pop("state_mask", None)
         ts = self.solve_schedule(t_max=t_max, t_min=t_min, num_steps=num_steps)
-        drift = self.build_ode_drift(model, *args, **kwargs)
+        drift = self.build_ode_drift(
+            model,
+            state_mask=state_mask,
+            *args,
+            **kwargs,
+        )
         return odeint(
             drift,
             x_T,
@@ -983,8 +1043,14 @@ class BaseSolverConfig(SolverConfigProtocol):
         *args,
         **kwargs,
     ) -> PyTree[Array]:
+        state_mask = kwargs.pop("state_mask", None)
         ts = self.solve_schedule(t_max=t_max, t_min=t_min, num_steps=num_steps)
-        drift, diffusion = self.build_sde_drift_and_diffusion(model, *args, **kwargs)
+        drift, diffusion = self.build_sde_drift_and_diffusion(
+            model,
+            state_mask=state_mask,
+            *args,
+            **kwargs,
+        )
         return sdeint(
             rng,
             drift,
@@ -1059,6 +1125,7 @@ class DDIMSolverConfig(BaseSolverConfig):
     def build_ode_drift(
         self,
         model: ScheduleAwareModelProtocol,
+        state_mask: ArrayLike | None = None,
         *args,
         **kwargs,
     ) -> split_drift:
@@ -1087,11 +1154,12 @@ class DDIMSolverConfig(BaseSolverConfig):
             alpha_p = jax.grad(_sum_alpha)(t)
             sigma_p = jax.grad(_sum_sigma)(t)
 
-            return jax.tree_util.tree_map(
+            raw_drift = jax.tree_util.tree_map(
                 lambda x0_i, e_i: alpha_p * x0_i + sigma_p * e_i,
                 x0_hat,
                 eps_hat,
             )
+            return _apply_state_mask(raw_drift, state_mask)
 
         def lin_coeff(t: ArrayLike) -> Array:
             return jnp.zeros_like(jnp.asarray(t))
@@ -1101,10 +1169,16 @@ class DDIMSolverConfig(BaseSolverConfig):
     def build_sde_drift_and_diffusion(
         self,
         model: ScheduleAwareModelProtocol,
+        state_mask: ArrayLike | None = None,
         *args,
         **kwargs,
     ):
-        ode_drift = self.build_ode_drift(model, *args, **kwargs)
+        ode_drift = self.build_ode_drift(
+            model,
+            state_mask=state_mask,
+            *args,
+            **kwargs,
+        )
         ode_callable = ode_drift
 
         def drift(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
@@ -1170,6 +1244,7 @@ class VSolverConfig(BaseSolverConfig):
     def build_ode_drift(
         self,
         model: ScheduleAwareModelProtocol,
+        state_mask: ArrayLike | None = None,
         *args,
         **kwargs,
     ) -> split_drift:
@@ -1184,19 +1259,35 @@ class VSolverConfig(BaseSolverConfig):
             x: PyTree[Array],
         ) -> PyTree[Array]:
             t = jnp.atleast_1d(t)
-            _, Av = coeffs(t)
+            Ax, Av = coeffs(t)
             v_pred = model.v(t, x, *args, **kwargs)
-            return jax.tree_util.tree_map(lambda v_i: Av * v_i, v_pred)
+            if state_mask is None:
+                return jax.tree_util.tree_map(lambda v_i: Av * v_i, v_pred)
+
+            def _masked_nonlin(xi: Array, vi: Array) -> Array:
+                mask = _broadcast_mask_to_leaf(state_mask, xi)
+                mask_f = mask.astype(xi.dtype)
+                ax_i = jnp.asarray(Ax, dtype=xi.dtype)
+                av_i = jnp.asarray(Av, dtype=xi.dtype)
+                return mask_f * (av_i * vi) + (mask_f - 1.0) * (ax_i * xi)
+
+            return jax.tree_util.tree_map(_masked_nonlin, x, v_pred)
 
         return split_drift(lin_coeff=lin_coeff, nonlin=nonlin)
 
     def build_sde_drift_and_diffusion(
         self,
         model: ScheduleAwareModelProtocol,
+        state_mask: ArrayLike | None = None,
         *args,
         **kwargs,
     ):
-        split = self.build_ode_drift(model, *args, **kwargs)
+        split = self.build_ode_drift(
+            model,
+            state_mask=state_mask,
+            *args,
+            **kwargs,
+        )
 
         def drift(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
             return split(t, x, *args, **kwargs)

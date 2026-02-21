@@ -1,6 +1,9 @@
 from functools import partial
+from dataclasses import fields, is_dataclass, replace
+import types
 from typing import Any, Callable, Mapping, Optional, Sequence, cast
 
+import jax
 import jax.numpy as jnp
 from jax import Array
 from jaxtyping import PyTree
@@ -27,10 +30,247 @@ def _bind_drift_kwargs(
     if callable(bind_args):
         return cast(Callable[..., PyTree[Array]], bind_args(**kwargs_dict))
 
-    def drift_with_kwargs(t: Array, y: PyTree[Array], *args: Any):
-        return drift(t, y, *args, **kwargs_dict)
+    def drift_with_kwargs(t: Array, y: PyTree[Array], *args: Any, **dynamic_kwargs: Any):
+        return drift(t, y, *args, **kwargs_dict, **dynamic_kwargs)
 
     return drift_with_kwargs
+
+
+def _has_tracer(tree: Any) -> bool:
+    return any(
+        isinstance(x, jax.core.Tracer)
+        for x in jax.tree_util.tree_leaves(tree)
+    )
+
+
+def _make_cell(value: Any):
+    def inner():
+        return value
+
+    return inner.__closure__[0]
+
+
+def _extract_function_dynamic_cells(
+    fun: Any,
+) -> tuple[tuple[int, ...], tuple[Any, ...]] | None:
+    if not isinstance(fun, types.FunctionType):
+        return None
+    closure = fun.__closure__
+    if not closure:
+        return None
+
+    dynamic_indices: list[int] = []
+    dynamic_values: list[Any] = []
+    for i, cell in enumerate(closure):
+        value = cell.cell_contents
+        if _has_tracer(value):
+            dynamic_indices.append(i)
+            dynamic_values.append(value)
+
+    if not dynamic_indices:
+        return None
+    return tuple(dynamic_indices), tuple(dynamic_values)
+
+
+def _rebuild_function_with_dynamic_cells(
+    fun: types.FunctionType,
+    dynamic_indices: tuple[int, ...],
+    dynamic_values: tuple[Any, ...],
+) -> types.FunctionType:
+    closure = fun.__closure__
+    if closure is None:
+        return fun
+
+    all_values = [cell.cell_contents for cell in closure]
+    for i, value in zip(dynamic_indices, dynamic_values, strict=True):
+        all_values[i] = value
+
+    rebuilt = types.FunctionType(
+        fun.__code__,
+        fun.__globals__,
+        name=fun.__name__,
+        argdefs=fun.__defaults__,
+        closure=tuple(_make_cell(v) for v in all_values),
+    )
+    if fun.__kwdefaults__ is not None:
+        rebuilt.__kwdefaults__ = dict(fun.__kwdefaults__)
+    return rebuilt
+
+
+def _extract_dataclass_function_dynamic_cells(
+    obj: Any,
+) -> tuple[dict[str, tuple[int, ...]], dict[str, tuple[Any, ...]]] | None:
+    if not is_dataclass(obj):
+        return None
+
+    dynamic_index_map: dict[str, tuple[int, ...]] = {}
+    dynamic_value_map: dict[str, tuple[Any, ...]] = {}
+    for field in fields(obj):
+        value = getattr(obj, field.name)
+        dynamic = _extract_function_dynamic_cells(value)
+        if dynamic is None:
+            continue
+        dyn_indices, dyn_values = dynamic
+        dynamic_index_map[field.name] = dyn_indices
+        dynamic_value_map[field.name] = dyn_values
+
+    if not dynamic_index_map:
+        return None
+    return dynamic_index_map, dynamic_value_map
+
+
+def _rebuild_dataclass_with_dynamic_cells(
+    obj: Any,
+    dynamic_index_map: dict[str, tuple[int, ...]],
+    dynamic_value_map: Mapping[str, tuple[Any, ...]],
+) -> Any:
+    updates: dict[str, Any] = {}
+    for name, dynamic_indices in dynamic_index_map.items():
+        fun = getattr(obj, name)
+        if not isinstance(fun, types.FunctionType):
+            continue
+        updates[name] = _rebuild_function_with_dynamic_cells(
+            fun,
+            dynamic_indices,
+            dynamic_value_map[name],
+        )
+    if not updates:
+        return obj
+    return replace(obj, **updates)
+
+
+def _prepare_drift_call(
+    drift: Callable[..., PyTree[Array]],
+    drift_args: Sequence[Any],
+    drift_kwargs: Optional[Mapping[str, Any]],
+) -> tuple[Callable[..., PyTree[Array]], tuple[Any, ...]]:
+    """Prepare drift invocation without closing over traced values."""
+    drift_args_tuple = tuple(drift_args)
+
+    dynamic_kwargs: Optional[dict[str, Any]] = None
+    if drift_kwargs:
+        kwargs_dict = dict(drift_kwargs)
+        static_kwargs: dict[str, Any] = {}
+        traced_kwargs: dict[str, Any] = {}
+        for key, value in kwargs_dict.items():
+            if _has_tracer(value):
+                traced_kwargs[key] = value
+            else:
+                static_kwargs[key] = value
+
+        if static_kwargs:
+            drift = _bind_drift_kwargs(drift, static_kwargs)
+        if traced_kwargs:
+            dynamic_kwargs = traced_kwargs
+
+    function_dynamic = _extract_function_dynamic_cells(drift)
+    dataclass_dynamic = (
+        None if function_dynamic is not None else _extract_dataclass_function_dynamic_cells(drift)
+    )
+
+    if (
+        dynamic_kwargs is None
+        and function_dynamic is None
+        and dataclass_dynamic is None
+    ):
+        return drift, drift_args_tuple
+
+    def drift_with_dynamic_payload(t: Array, y: PyTree[Array], *packed: Any):
+        idx = 0
+        positional_args = packed[: len(drift_args_tuple)]
+        idx += len(drift_args_tuple)
+
+        kw: Mapping[str, Any] = {}
+        if dynamic_kwargs is not None:
+            kw = packed[idx]
+            idx += 1
+
+        drift_local: Any = drift
+        if function_dynamic is not None:
+            dynamic_indices, _ = function_dynamic
+            closure_values = packed[idx]
+            idx += 1
+            drift_local = _rebuild_function_with_dynamic_cells(
+                drift,
+                dynamic_indices,
+                closure_values,
+            )
+        elif dataclass_dynamic is not None:
+            dynamic_index_map, _ = dataclass_dynamic
+            closure_payload = packed[idx]
+            idx += 1
+            drift_local = _rebuild_dataclass_with_dynamic_cells(
+                drift,
+                dynamic_index_map,
+                closure_payload,
+            )
+
+        return drift_local(t, y, *positional_args, **kw)
+
+    packed_args = drift_args_tuple
+    if dynamic_kwargs is not None:
+        packed_args = packed_args + (dynamic_kwargs,)
+    if function_dynamic is not None:
+        _, dynamic_values = function_dynamic
+        packed_args = packed_args + (dynamic_values,)
+    elif dataclass_dynamic is not None:
+        _, dynamic_value_map = dataclass_dynamic
+        packed_args = packed_args + (dynamic_value_map,)
+
+    return drift_with_dynamic_payload, packed_args
+
+
+def _partition_drift_kwargs(
+    drift_kwargs: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:
+    if not drift_kwargs:
+        return {}, None
+
+    static_kwargs: dict[str, Any] = {}
+    traced_kwargs: dict[str, Any] = {}
+    for key, value in dict(drift_kwargs).items():
+        if _has_tracer(value):
+            traced_kwargs[key] = value
+        else:
+            static_kwargs[key] = value
+
+    return static_kwargs, traced_kwargs or None
+
+
+def _lift_drift_traced_closure(
+    drift: Callable[..., PyTree[Array]],
+) -> tuple[Callable[..., PyTree[Array]], tuple[Any, ...]]:
+    function_dynamic = _extract_function_dynamic_cells(drift)
+    if function_dynamic is not None:
+        dynamic_indices, dynamic_values = function_dynamic
+
+        def drift_with_dynamic_closure(t: Array, y: PyTree[Array], *packed: Any):
+            *drift_args, closure_values = packed
+            rebuilt = _rebuild_function_with_dynamic_cells(
+                cast(types.FunctionType, drift),
+                dynamic_indices,
+                closure_values,
+            )
+            return rebuilt(t, y, *drift_args)
+
+        return drift_with_dynamic_closure, (dynamic_values,)
+
+    dataclass_dynamic = _extract_dataclass_function_dynamic_cells(drift)
+    if dataclass_dynamic is not None:
+        dynamic_index_map, dynamic_value_map = dataclass_dynamic
+
+        def drift_with_dynamic_closure(t: Array, y: PyTree[Array], *packed: Any):
+            *drift_args, closure_payload = packed
+            rebuilt = _rebuild_dataclass_with_dynamic_cells(
+                drift,
+                dynamic_index_map,
+                closure_payload,
+            )
+            return rebuilt(t, y, *drift_args)
+
+        return drift_with_dynamic_closure, (dynamic_value_map,)
+
+    return drift, ()
 
 
 @partial(custom_inverse, inv_argnum=1, static_argnums=(0,))
@@ -114,12 +354,12 @@ def _odeint_custom(
         >>> # Solve using adaptive integration
         >>> ys = odeint(lotka_volterra, y0, ts, *params, method="dopri5")
     """
-    drift_fn = _bind_drift_kwargs(drift, drift_kwargs)
+    drift_fn, packed_args = _prepare_drift_call(drift, drift_args, drift_kwargs)
     return _odeint(
         drift_fn,
         y0,
         ts,
-        *drift_args,
+        *packed_args,
         method=method,
         dtype=dtype,
         filter_state=filter_state,
@@ -146,12 +386,17 @@ def odeint(
 
     Additional keyword arguments are forwarded to `drift`.
     """
+    static_drift_kwargs, dynamic_drift_kwargs = _partition_drift_kwargs(drift_kwargs)
+    if static_drift_kwargs:
+        drift = _bind_drift_kwargs(drift, static_drift_kwargs)
+
+    drift, lifted_args = _lift_drift_traced_closure(drift)
     return _odeint_custom(
         drift,
         y0,
         ts,
-        args,
-        drift_kwargs,
+        args + lifted_args,
+        dynamic_drift_kwargs,
         method=method,
         dtype=dtype,
         filter_state=filter_state,
