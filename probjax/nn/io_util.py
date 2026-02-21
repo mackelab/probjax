@@ -323,6 +323,10 @@ class SimulationDataset:
     simulation_devices : Device | Sequence[Device]
         Device(s) to run simulations on. If multiple devices are provided,
         simulations are parallelized across them using pmap.
+        Defaults to CPU when available.
+    simulation_batch_mode : {"vmap", "map"}
+        Batch execution mode for simulations on each device.
+        ``"vmap"`` uses vectorized execution; ``"map"`` uses ``jax.lax.map``.
     jit_simulator : bool
         Whether to JIT compile the simulator. Default True.
     buffer_size : int
@@ -336,11 +340,16 @@ class SimulationDataset:
         simulation_batch_size: int = 128,
         rng: RngKey,
         simulation_devices: Union[Device, Sequence[Device]] = None,
+        simulation_batch_mode: str = "vmap",
         jit_simulator: bool = True,
         buffer_size: int = 8192,
     ) -> None:
         if simulation_devices is None:
-            simulation_devices = jax.devices()[0]
+            try:
+                cpu_devices = jax.devices("cpu")
+            except Exception:
+                cpu_devices = []
+            simulation_devices = cpu_devices[0] if cpu_devices else jax.devices()[0]
 
         if isinstance(simulation_devices, (list, tuple)):
             self._simulation_devices = list(simulation_devices)
@@ -352,6 +361,11 @@ class SimulationDataset:
 
         self._simulator_fn = simulator_fn
         self._batch_size = int(simulation_batch_size)
+        self._simulation_batch_mode = str(simulation_batch_mode).lower()
+        if self._simulation_batch_mode not in {"vmap", "map"}:
+            raise ValueError(
+                "simulation_batch_mode must be one of {'vmap', 'map'}."
+            )
 
         if self._batch_size % self._n_sim_devices != 0:
             raise ValueError(
@@ -657,13 +671,19 @@ class SimulationDataset:
         def single_call(key: RngKey) -> Any:
             return self._simulator_fn(key)
 
+        if self._simulation_batch_mode == "map":
+            def per_device_batched(keys):
+                return jax.lax.map(single_call, keys)
+        else:
+            per_device_batched = jax.vmap(single_call)
+
         if self._n_sim_devices > 1:
             batched = jax.pmap(
-                jax.vmap(single_call),
+                per_device_batched,
                 devices=self._simulation_devices,
             )
         else:
-            batched = jax.vmap(single_call)
+            batched = per_device_batched
 
         if jit_simulator:
             return jax.jit(batched)
