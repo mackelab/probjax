@@ -2582,11 +2582,14 @@ def _mha_backward(
         block_q_dq = min(block_sizes.block_q_dq, q_seq_len)
         block_kv_dq = min(block_sizes.block_kv_dq, kv_seq_len)
 
-        if pl.cdiv(q_seq_len, block_q_dq) != pl.cdiv(kv_seq_len, block_kv_dkv):
-            raise ValueError(
-                "q_seq_len and kv_seq_len must be divided into the same "
-                "number of blocks for the fused backward pass."
-            )
+        # Enforce tile count matching for fused backward
+        nq = pl.cdiv(q_seq_len, block_q_dq)
+        nkv = pl.cdiv(kv_seq_len, block_kv_dkv)
+        if nq != nkv:
+            # Adjust block sizes to match tile counts (same logic as BlockSizes.init_default)
+            n = max(nq, nkv)
+            block_q_dq = max((q_seq_len + n - 1) // n, 1)
+            block_kv_dkv = max((kv_seq_len + n - 1) // n, 1)
 
         delta = _preprocess_backward(out, do, lse, block_q, debug, interpret)
         out_shapes = [
