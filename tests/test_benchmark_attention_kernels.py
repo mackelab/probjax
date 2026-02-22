@@ -67,9 +67,11 @@ def _build_cross_attention_inputs():
     kq, kk, kv = jax.random.split(jax.random.PRNGKey(42), 3)
     q_shape = (BATCH_SIZE, CROSS_Q_LEN, NUM_HEADS, HEAD_DIM)
     kv_shape = (BATCH_SIZE, CROSS_KV_LEN, NUM_HEADS, HEAD_DIM)
-    q = jax.random.normal(kq, q_shape, dtype=jnp.float16)
-    k = jax.random.normal(kk, kv_shape, dtype=jnp.float16)
-    v = jax.random.normal(kv, kv_shape, dtype=jnp.float16)
+    # Use float32 on CPU, float16 on GPU
+    dtype = jnp.float32 if jax.default_backend() == "cpu" else jnp.float16
+    q = jax.random.normal(kq, q_shape, dtype=dtype)
+    k = jax.random.normal(kk, kv_shape, dtype=dtype)
+    v = jax.random.normal(kv, kv_shape, dtype=dtype)
     return q, k, v
 
 

@@ -2557,6 +2557,17 @@ def _mha_backward(
     del num_stages, grid
     q, k, v, rng, out, lse = res
 
+    # Resolve auto-selection to actual implementation
+    if backward_pass_impl == "auto":
+        q_seq_len = q.shape[1]
+        kv_seq_len = k.shape[1]
+        if BlockSizes._should_use_split_backward(
+            q_seq_len, kv_seq_len, block_sizes.block_q_dq, block_sizes.block_kv_dkv
+        ):
+            backward_pass_impl = "triton_split"
+        else:
+            backward_pass_impl = "triton_fused"
+
     if backward_pass_impl == "triton_fused":
         if not block_sizes.has_backward_blocks:
             raise ValueError("Backward block sizes must all be set.")
