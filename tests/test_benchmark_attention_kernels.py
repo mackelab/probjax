@@ -13,6 +13,10 @@ SEQ_LEN = 1024
 NUM_HEADS = 8
 HEAD_DIM = 64
 
+# Cross-attention parameters (Q << KV scenario)
+CROSS_Q_LEN = 128
+CROSS_KV_LEN = 2048
+
 BLOCK_Q = 128
 BLOCK_K = 128
 BLOCK_KV = 128
@@ -55,6 +59,17 @@ def _build_inputs():
     q = jax.random.normal(kq, shape, dtype=jnp.float16)
     k = jax.random.normal(kk, shape, dtype=jnp.float16)
     v = jax.random.normal(kv, shape, dtype=jnp.float16)
+    return q, k, v
+
+
+def _build_cross_attention_inputs():
+    """Build inputs for cross-attention benchmarks (Q << KV scenario)."""
+    kq, kk, kv = jax.random.split(jax.random.PRNGKey(42), 3)
+    q_shape = (BATCH_SIZE, CROSS_Q_LEN, NUM_HEADS, HEAD_DIM)
+    kv_shape = (BATCH_SIZE, CROSS_KV_LEN, NUM_HEADS, HEAD_DIM)
+    q = jax.random.normal(kq, q_shape, dtype=jnp.float16)
+    k = jax.random.normal(kk, kv_shape, dtype=jnp.float16)
+    v = jax.random.normal(kv, kv_shape, dtype=jnp.float16)
     return q, k, v
 
 
@@ -116,6 +131,39 @@ def _forward_impl(name: str):
             dropout_rate=0.0,
             block_q=BLOCK_Q,
             block_k=BLOCK_K,
+        )
+    if name == "flex_auto":
+        return lambda q, k, v: flex_attention(
+            q,
+            k,
+            v,
+            deterministic=True,
+            dropout_rate=0.0,
+            block_q=BLOCK_Q,
+            block_k=BLOCK_K,
+            backward_pass_impl="auto",  # Test auto-selection
+        )
+    if name == "flex_split":
+        return lambda q, k, v: flex_attention(
+            q,
+            k,
+            v,
+            deterministic=True,
+            dropout_rate=0.0,
+            block_q=BLOCK_Q,
+            block_k=BLOCK_K,
+            backward_pass_impl="triton_split",  # Force split for comparison
+        )
+    if name == "flex_fused":
+        return lambda q, k, v: flex_attention(
+            q,
+            k,
+            v,
+            deterministic=True,
+            dropout_rate=0.0,
+            block_q=BLOCK_Q,
+            block_k=BLOCK_K,
+            backward_pass_impl="triton_fused",  # Force fused for comparison
         )
     if name == "flash":
         return lambda q, k, v: mha_flash(
@@ -191,13 +239,64 @@ def test_benchmark_attention_forward(benchmark, impl):
 def test_benchmark_attention_backward(benchmark, impl):
     q, k, v = _build_inputs()
     fwd = _forward_impl(impl)
-    grad_fn = jax.jit(jax.grad(lambda q, k, v: jnp.sum(fwd(q, k, v)), argnums=(0, 1, 2)))
+    grad_fn = jax.jit(
+        jax.grad(lambda q, k, v: jnp.sum(fwd(q, k, v)), argnums=(0, 1, 2))
+    )
 
     try:
         warm = grad_fn(q, k, v)
         warm = jax.tree_util.tree_map(jax.block_until_ready, warm)
     except Exception as exc:
         _maybe_skip_flash(impl, exc)
+
+    def run_once():
+        grads = grad_fn(q, k, v)
+        grads = jax.tree_util.tree_map(jax.block_until_ready, grads)
+        return grads[0]
+
+    dq = benchmark(run_once)
+    assert dq.shape == q.shape
+
+
+@pytest.mark.gpu
+@pytest.mark.benchmark(group="cross_attention_forward")
+@pytest.mark.parametrize("impl", ["naive", "flex_auto", "flex_split", "flex_fused"])
+def test_benchmark_cross_attention_forward(benchmark, impl):
+    """Benchmark cross-attention forward pass (Q << KV scenario)."""
+    q, k, v = _build_cross_attention_inputs()
+    fn = jax.jit(_forward_impl(impl))
+
+    # Warm up
+    warm = fn(q, k, v)
+    warm = jax.block_until_ready(warm)
+
+    def run_once():
+        out = fn(q, k, v)
+        return jax.block_until_ready(out)
+
+    out = benchmark(run_once)
+    assert out.shape == q.shape
+
+
+@pytest.mark.gpu
+@pytest.mark.benchmark(group="cross_attention_backward")
+@pytest.mark.parametrize("impl", ["naive", "flex_auto", "flex_split", "flex_fused"])
+def test_benchmark_cross_attention_backward(benchmark, impl):
+    """Benchmark cross-attention backward pass (Q << KV scenario).
+
+    This tests the performance impact of the auto-selection logic and
+    demonstrates the efficiency difference between fused vs split backward
+    when Q sequence length << KV sequence length.
+    """
+    q, k, v = _build_cross_attention_inputs()
+    fwd = _forward_impl(impl)
+    grad_fn = jax.jit(
+        jax.grad(lambda q, k, v: jnp.sum(fwd(q, k, v)), argnums=(0, 1, 2))
+    )
+
+    # Warm up
+    warm = grad_fn(q, k, v)
+    warm = jax.tree_util.tree_map(jax.block_until_ready, warm)
 
     def run_once():
         grads = grad_fn(q, k, v)

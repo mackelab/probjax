@@ -282,13 +282,13 @@ def flex_attention(
     block_kv_dkv: int = 64,
     block_q_dq: int = 64,
     block_kv_dq: int = 64,
-    backward_pass_impl: str = "triton_fused",
+    backward_pass_impl: str = "auto",
     num_warps: int | None = None,
     num_stages: int = 2,
     grid: tuple[int, ...] | None = None,
     interpret: bool = False,
     debug: bool = False,
-    dropout_impl: str = "materialize",
+    dropout_impl: str = "counter",
     diff_mode: str = "reverse",
 ):
     # These can not be used by the pallas backend

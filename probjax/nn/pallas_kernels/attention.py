@@ -41,6 +41,7 @@ from .utils import (
     get_dropout_mask,
 )
 
+
 def pallas_load(ref, idx, *, mask=None, other=None):
     return pallas_primitives.load(ref, idx, mask=mask, other=other)
 
@@ -119,6 +120,59 @@ class BlockSizes:
     block_kv_dq: int = 64
 
     @classmethod
+    def _should_use_split_backward(
+        cls,
+        q_len: int,
+        kv_len: int,
+        block_q_dq: int,
+        block_kv_dkv: int,
+        min_efficient_tile_size: int = 16,
+        max_asymmetry_ratio: float = 4.0,
+    ) -> bool:
+        """
+        Heuristic to determine if split backward should be used instead of fused.
+
+        Args:
+            q_len: Query sequence length
+            kv_len: Key-Value sequence length
+            block_q_dq: Desired Q block size for dQ pass
+            block_kv_dkv: Desired KV block size for dKV pass
+            min_efficient_tile_size: Minimum tile size considered efficient
+            max_asymmetry_ratio: Max ratio before considering sequences asymmetric
+
+        Returns:
+            True if split backward should be used for efficiency
+        """
+
+        def cdiv(a: int, b: int) -> int:
+            return (a + b - 1) // b if b > 0 else 0
+
+        # Calculate what tile counts would be with current block sizes
+        nq = max(cdiv(q_len, max(block_q_dq, 1)), 1)
+        nkv = max(cdiv(kv_len, max(block_kv_dkv, 1)), 1)
+
+        # If tile counts already match, fused is fine
+        if nq == nkv:
+            return False
+
+        # Check sequence length asymmetry
+        ratio = max(q_len, kv_len) / max(min(q_len, kv_len), 1)
+        if ratio > max_asymmetry_ratio:
+            # For highly asymmetric sequences, check if fused would create tiny tiles
+            n = max(nq, nkv)
+            forced_q_tile_size = max((q_len + n - 1) // n, 1)
+            forced_kv_tile_size = max((kv_len + n - 1) // n, 1)
+
+            # Use split if either tile would become too small
+            if (
+                forced_q_tile_size < min_efficient_tile_size
+                or forced_kv_tile_size < min_efficient_tile_size
+            ):
+                return True
+
+        return False
+
+    @classmethod
     def init_default(
         cls,
         q_len: int,
@@ -129,18 +183,22 @@ class BlockSizes:
         block_kv_dkv: int,
         block_q_dq: int,
         block_kv_dq: int,
-        backward_pass_impl: str = "triton_fused",
+        backward_pass_impl: str = "auto",
     ) -> BlockSizes:
-        """Return block sizes adjusted to be backward-compatible when fused.
+        """Return block sizes with optimal backward pass implementation selection.
 
-        The fused backward pass requires that the number of Q tiles and KV tiles
-        match along the grid dimension. Concretely, we need
-            ceil_div(q_len, block_q_dq) == ceil_div(kv_len, block_kv_dkv).
+        For backward_pass_impl="auto", automatically chooses between fused and split
+        backward based on sequence length asymmetry and tile efficiency:
+        - Self-attention (q_len ≈ kv_len): Uses fused backward for efficiency
+        - Cross-attention (q_len << kv_len or q_len >> kv_len): Uses split backward
+          to avoid tiny tile sizes that hurt performance
 
-        This method adjusts only `block_q_dq` and `block_kv_dkv` to satisfy the
-        equality while keeping the forward and the other backward block specs
-        unchanged. If the provided specs already satisfy the constraint, they
-        are returned as-is.
+        For backward_pass_impl="triton_fused", forces fused backward and adjusts
+        block sizes to satisfy: ceil_div(q_len, block_q_dq) == ceil_div(kv_len, block_kv_dkv).
+        This may create inefficient tiny tiles for asymmetric sequence lengths.
+
+        For backward_pass_impl="triton_split", uses split backward with independent
+        tile sizes optimized for each pass.
         """
 
         # Helper for ceil-div without importing pallas utilities here.
@@ -155,10 +213,18 @@ class BlockSizes:
         bq_dq = block_q_dq
         bkv_dq = block_kv_dq
 
-        # Only the fused backward cares about matching tile counts. If the
-        # split (separate dKdV and dQ) backward is used, we can keep blocks
-        # independent to allow efficiency when q_len << kv_len.
-        if backward_pass_impl == "triton_fused":
+        # Auto-select backward implementation based on efficiency heuristics
+        if backward_pass_impl == "auto":
+            if cls._should_use_split_backward(q_len, kv_len, bq_dq, bkv_dkv):
+                # Use split backward - no tile count matching needed
+                # Keep original block sizes for optimal efficiency
+                pass  # bq_dq and bkv_dkv remain unchanged
+            else:
+                # Use fused backward - enforce tile count matching
+                backward_pass_impl = "triton_fused"
+
+        # Handle backward compatibility: "triton_fused" was the old default
+        if backward_pass_impl in ["triton_fused", "fused"]:
             nq = max(cdiv(q_len, max(bq_dq, 1)), 1)
             nkv = max(cdiv(kv_len, max(bkv_dkv, 1)), 1)
             if nq != nkv:
@@ -169,6 +235,9 @@ class BlockSizes:
                 # Using ceil_div ensures cdiv(len, block) == n.
                 bq_dq = max((q_len + n - 1) // n, 1)
                 bkv_dkv = max((kv_len + n - 1) // n, 1)
+
+        # For split backward ("triton_split", "split", "triton_2pass"),
+        # keep independent block sizes - no matching required
 
         return cls(
             block_q=bq,
@@ -183,6 +252,27 @@ class BlockSizes:
     def get_default(cls) -> BlockSizes:
         """Returns default block sizes."""
         return cls()
+
+    @classmethod
+    def get_recommended_backward_impl(
+        cls, q_len: int, kv_len: int, block_q_dq: int = 64, block_kv_dkv: int = 64
+    ) -> str:
+        """
+        Returns the recommended backward implementation for given sequence lengths.
+
+        Args:
+            q_len: Query sequence length
+            kv_len: Key-Value sequence length
+            block_q_dq: Desired Q block size for dQ pass (default: 64)
+            block_kv_dkv: Desired KV block size for dKV pass (default: 64)
+
+        Returns:
+            "triton_split" for asymmetric lengths, "triton_fused" for symmetric lengths
+        """
+        if cls._should_use_split_backward(q_len, kv_len, block_q_dq, block_kv_dkv):
+            return "triton_split"
+        else:
+            return "triton_fused"
 
     @property
     def has_backward_blocks(self) -> bool:
@@ -214,8 +304,6 @@ class BlockSizes:
     def tree_unflatten(cls, aux_data, children):
         del children
         return cls(*aux_data)
-
-
 
 
 def mha_forward_kernel(
@@ -315,10 +403,14 @@ def mha_forward_kernel(
         # boolean mask for the current qk slice
         if mask_fn is not None:
             if id_k_ref is not None:
-                id_k = None if id_k_ref is None else pallas_load(id_k_ref, (curr_k_slice,))
+                id_k = (
+                    None if id_k_ref is None else pallas_load(id_k_ref, (curr_k_slice,))
+                )
             elif id_q is not None:
                 # Otherwise reuse id_q if available
-                id_k = None if id_q_ref is None else pallas_load(id_q_ref, (curr_k_slice,))
+                id_k = (
+                    None if id_q_ref is None else pallas_load(id_q_ref, (curr_k_slice,))
+                )
             else:
                 id_k = None
             mask = mask_fn(span_q, span_k, id_q, id_k)
@@ -372,7 +464,9 @@ def mha_forward_kernel(
         lse_ref = residual_refs[0]
         lse_ref[...] = m_i + jnp.log2(l_i)
     # Write output to dram.
-    pallas_store(o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask)
+    pallas_store(
+        o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask
+    )
 
 
 def mha_jvp_from_lse_kernel(
@@ -430,7 +524,9 @@ def mha_jvp_from_lse_kernel(
         dv = pallas_load(dv_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
 
         qk = pl.dot(q, k.T, precision=precision)
-        dqk = pl.dot(dq, k.T, precision=precision) + pl.dot(q, dk.T, precision=precision)
+        dqk = pl.dot(dq, k.T, precision=precision) + pl.dot(
+            q, dk.T, precision=precision
+        )
         if sm_scale != 1.0:
             qk *= sm_scale
             dqk *= sm_scale
@@ -493,7 +589,9 @@ def mha_jvp_from_lse_kernel(
     else:
         do = lax.fori_loop(lower_bound, upper_bound, body_jvp, do)
 
-    pallas_store(do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask)
+    pallas_store(
+        do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask
+    )
 
 
 def mha_jvp_simple_kernel(
@@ -536,7 +634,9 @@ def mha_jvp_simple_kernel(
         dv = pallas_load(dv_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
 
         qk = pl.dot(q, k.T, precision=precision)
-        dqk = pl.dot(dq, k.T, precision=precision) + pl.dot(q, dk.T, precision=precision)
+        dqk = pl.dot(dq, k.T, precision=precision) + pl.dot(
+            q, dk.T, precision=precision
+        )
         if sm_scale != 1.0:
             qk *= sm_scale
             dqk *= sm_scale
@@ -553,7 +653,9 @@ def mha_jvp_simple_kernel(
     lower_bound = 0
     upper_bound = pl.cdiv(seq_len, block_k)
     do = lax.fori_loop(lower_bound, upper_bound, body_jvp, do)
-    pallas_store(do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask)
+    pallas_store(
+        do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask
+    )
 
 
 def mha_forward_jvp_simple_kernel(
@@ -627,7 +729,9 @@ def mha_forward_jvp_simple_kernel(
         dv = pallas_load(dv_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
 
         qk = pl.dot(q, k.T, precision=precision)
-        dqk = pl.dot(dq, k.T, precision=precision) + pl.dot(q, dk.T, precision=precision)
+        dqk = pl.dot(dq, k.T, precision=precision) + pl.dot(
+            q, dk.T, precision=precision
+        )
         if sm_scale != 1.0:
             qk *= sm_scale
             dqk *= sm_scale
@@ -641,8 +745,12 @@ def mha_forward_jvp_simple_kernel(
         return do_acc
 
     do = lax.fori_loop(0, upper_bound, body_jvp, do)
-    pallas_store(o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask)
-    pallas_store(do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask)
+    pallas_store(
+        o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask
+    )
+    pallas_store(
+        do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask
+    )
 
 
 def mha_forward_jvp_kernel(
@@ -768,7 +876,9 @@ def mha_forward_jvp_kernel(
         dv = pallas_load(dv_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
 
         qk = pl.dot(q, k.T, precision=precision)
-        dqk = pl.dot(dq, k.T, precision=precision) + pl.dot(q, dk.T, precision=precision)
+        dqk = pl.dot(dq, k.T, precision=precision) + pl.dot(
+            q, dk.T, precision=precision
+        )
         if sm_scale != 1.0:
             qk *= sm_scale
             dqk *= sm_scale
@@ -829,8 +939,12 @@ def mha_forward_jvp_kernel(
     else:
         do = lax.fori_loop(lower_bound, upper_bound, body_jvp, do)
 
-    pallas_store(o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask)
-    pallas_store(do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask)
+    pallas_store(
+        o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask
+    )
+    pallas_store(
+        do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask
+    )
 
 
 def _preprocess_backward_kernel(out_ref, dout_ref, delta_ref):
@@ -1000,7 +1114,9 @@ def mha_backward_kernel(
                 qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
 
             if mask_fn is not None:
-                id_q = None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
+                id_q = (
+                    None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
+                )
                 mask = mask_fn(span_q, span_k, id_q, id_k)
                 qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
         # No built-in causal; pass as mask via mask if needed.
@@ -1012,9 +1128,8 @@ def mha_backward_kernel(
 
         p = jnp.exp2(qk - lse[:, None])
         dp_dropped = pl.dot(do, v.T)
-        dp = jnp.zeros((block_q_dkv, block_kv_dkv), dtype=jnp.float32) - di[:, None]
-        dp = dp + dp_dropped
-        # Apply dropout scaling consistently with forward if present
+
+        # Apply dropout scaling for forward consistency
         if dropout_rate > 0:
             if dropout_mask_ref is not None:
                 dmask = pallas_load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
@@ -1023,13 +1138,21 @@ def mha_backward_kernel(
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
-            p = jnp.where(dmask, 0, p / (1 - dropout_rate))
-            # Scale dp consistently with forward scaling
-            dp = jnp.where(dmask, 0, dp_dropped / (1 - dropout_rate)) + (
-                jnp.zeros_like(dp) - di[:, None]
-            )
-        # Accumulate dV
-        dv = dv + pl.dot(p.astype(do.dtype).T, do)
+            # p_drop for dV accumulation (forward consistency)
+            p_drop = jnp.where(dmask, 0, p / (1 - dropout_rate))
+            # g_drop for softmax Jacobian computation
+            g_drop = jnp.where(dmask, 0, dp_dropped / (1 - dropout_rate))
+            dp = jnp.zeros((block_q_dkv, block_kv_dkv), dtype=jnp.float32) - di[:, None]
+            dp = dp + g_drop
+        else:
+            # No dropout case
+            p_drop = p
+            dp = jnp.zeros((block_q_dkv, block_kv_dkv), dtype=jnp.float32) - di[:, None]
+            dp = dp + dp_dropped
+
+        # Accumulate dV: use dropout-scaled probabilities
+        dv = dv + pl.dot(p_drop.astype(do.dtype).T, do)
+        # Softmax Jacobian: use ORIGINAL probabilities (not dropout-scaled)
         ds = p * dp
         if sm_scale != 1.0:
             ds = ds * sm_scale
@@ -1108,7 +1231,9 @@ def mha_backward_kernel(
                 qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
 
             if mask_fn is not None:
-                id_q = None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
+                id_q = (
+                    None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
+                )
                 if id_k_ref is not None:
                     id_k = pallas_load(id_k_ref, (curr_k_slice,))
                 elif id_q_ref is not None:
@@ -1124,8 +1249,7 @@ def mha_backward_kernel(
         qk *= LOG2E
         p = jnp.exp2(qk - lse[:, None])
         dp_dropped = pl.dot(do, v.T)
-        dp = jnp.zeros((block_q_dq, block_kv_dq), dtype=jnp.float32) - di[:, None]
-        dp = dp + dp_dropped
+
         if dropout_rate > 0:
             if dropout_mask_ref is not None:
                 dmask = pallas_load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
@@ -1134,10 +1258,16 @@ def mha_backward_kernel(
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
-            p = jnp.where(dmask, 0, p / (1 - dropout_rate))
-            dp = jnp.where(dmask, 0, dp_dropped / (1 - dropout_rate)) + (
-                jnp.zeros_like(dp) - di[:, None]
-            )
+            # g_drop for softmax Jacobian computation
+            g_drop = jnp.where(dmask, 0, dp_dropped / (1 - dropout_rate))
+            dp = jnp.zeros((block_q_dq, block_kv_dq), dtype=jnp.float32) - di[:, None]
+            dp = dp + g_drop
+        else:
+            # No dropout case
+            dp = jnp.zeros((block_q_dq, block_kv_dq), dtype=jnp.float32) - di[:, None]
+            dp = dp + dp_dropped
+
+        # Softmax Jacobian: use ORIGINAL probabilities (not dropout-scaled)
         ds = p * dp
         if sm_scale != 1.0:
             ds = ds * sm_scale
@@ -1250,7 +1380,9 @@ def mha_backward_kernel_split_dkdv(
             if bias_fn is not None:
                 qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
             if mask_fn is not None:
-                id_q = None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
+                id_q = (
+                    None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
+                )
                 m = mask_fn(span_q, span_k, id_q, id_k)
                 qk = jnp.where(m, qk, DEFAULT_MASK_VALUE)
 
@@ -1261,8 +1393,7 @@ def mha_backward_kernel_split_dkdv(
 
         p = jnp.exp2(qk - lse[:, None])
         dp_dropped = pl.dot(do, v.T)
-        dp = jnp.zeros((block_q_dkv, block_kv_dkv), dtype=jnp.float32) - di[:, None]
-        dp = dp + dp_dropped
+
         if dropout_rate > 0:
             if dropout_mask_ref is not None:
                 dmask = pallas_load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
@@ -1271,11 +1402,21 @@ def mha_backward_kernel_split_dkdv(
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
-            p = jnp.where(dmask, 0, p / (1 - dropout_rate))
-            dp = jnp.where(dmask, 0, dp_dropped / (1 - dropout_rate)) + (
-                jnp.zeros_like(dp) - di[:, None]
-            )
-        dv_acc = dv_acc + pl.dot(p.astype(do.dtype).T, do)
+            # p_drop for dV accumulation (forward consistency)
+            p_drop = jnp.where(dmask, 0, p / (1 - dropout_rate))
+            # g_drop for softmax Jacobian computation
+            g_drop = jnp.where(dmask, 0, dp_dropped / (1 - dropout_rate))
+            dp = jnp.zeros((block_q_dkv, block_kv_dkv), dtype=jnp.float32) - di[:, None]
+            dp = dp + g_drop
+        else:
+            # No dropout case
+            p_drop = p
+            dp = jnp.zeros((block_q_dkv, block_kv_dkv), dtype=jnp.float32) - di[:, None]
+            dp = dp + dp_dropped
+
+        # Accumulate dV: use dropout-scaled probabilities
+        dv_acc = dv_acc + pl.dot(p_drop.astype(do.dtype).T, do)
+        # Softmax Jacobian: use ORIGINAL probabilities (not dropout-scaled)
         ds = p * dp
         if sm_scale != 1.0:
             ds = ds * sm_scale
@@ -1368,7 +1509,9 @@ def mha_backward_kernel_split_dq(
             if bias_fn is not None:
                 qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
             if mask_fn is not None:
-                id_q = None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
+                id_q = (
+                    None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
+                )
                 if id_k_ref is not None:
                     id_k = pallas_load(id_k_ref, (curr_k_slice,))
                 elif id_q_ref is not None:
@@ -1381,8 +1524,7 @@ def mha_backward_kernel_split_dq(
         qk *= LOG2E
         p = jnp.exp2(qk - lse[:, None])
         dp_dropped = pl.dot(do, v.T)
-        dp = jnp.zeros((block_q_dq, block_kv_dq), dtype=jnp.float32) - di[:, None]
-        dp = dp + dp_dropped
+
         if dropout_rate > 0:
             if dropout_mask_ref is not None:
                 dmask = pallas_load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
@@ -1391,10 +1533,16 @@ def mha_backward_kernel_split_dq(
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
-            p = jnp.where(dmask, 0, p / (1 - dropout_rate))
-            dp = jnp.where(dmask, 0, dp_dropped / (1 - dropout_rate)) + (
-                jnp.zeros_like(dp) - di[:, None]
-            )
+            # g_drop for softmax Jacobian computation
+            g_drop = jnp.where(dmask, 0, dp_dropped / (1 - dropout_rate))
+            dp = jnp.zeros((block_q_dq, block_kv_dq), dtype=jnp.float32) - di[:, None]
+            dp = dp + g_drop
+        else:
+            # No dropout case
+            dp = jnp.zeros((block_q_dq, block_kv_dq), dtype=jnp.float32) - di[:, None]
+            dp = dp + dp_dropped
+
+        # Softmax Jacobian: use ORIGINAL probabilities (not dropout-scaled)
         ds = p * dp
         if sm_scale != 1.0:
             ds = ds * sm_scale
@@ -1542,7 +1690,7 @@ def _mha_impl(
             index_map=(lambda i, _, k: (i, 0)), block_shape=((None, block_k))
         )
         index_offset_size_spec = pl.BlockSpec(
-            index_map=(lambda i, _, k: (i)), block_shape=((None,))
+            index_map=(lambda i, _, k: i), block_shape=((None,))
         )
         in_specs.append(index_offset_spec)
         in_specs.append(index_offset_size_spec)
@@ -1645,14 +1793,18 @@ def _mha_impl_jvp_from_lse(
             block_d=block_d,
         )
         in_specs = [
-            pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
             pl.BlockSpec(
-                (None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)
+                (None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)
             ),
             pl.BlockSpec(
                 (None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)
             ),
-            pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
+            pl.BlockSpec(
+                (None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)
+            ),
+            pl.BlockSpec(
+                (None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)
+            ),
             pl.BlockSpec(
                 (None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)
             ),
@@ -1768,7 +1920,7 @@ def _mha_impl_jvp_from_lse(
             index_map=(lambda i, _, k: (i, 0)), block_shape=((None, block_k))
         )
         index_offset_size_spec = pl.BlockSpec(
-            index_map=(lambda i, _, k: (i)), block_shape=((None,))
+            index_map=(lambda i, _, k: i), block_shape=((None,))
         )
         in_specs.append(index_offset_spec)
         in_specs.append(index_offset_size_spec)
@@ -1994,7 +2146,7 @@ def _mha_impl_fused_jvp(
             index_map=(lambda i, _, k: (i, 0)), block_shape=((None, block_k))
         )
         index_offset_size_spec = pl.BlockSpec(
-            index_map=(lambda i, _, k: (i)), block_shape=((None,))
+            index_map=(lambda i, _, k: i), block_shape=((None,))
         )
         in_specs.append(index_offset_spec)
         in_specs.append(index_offset_size_spec)
@@ -2367,8 +2519,6 @@ def _mha_jvp_rule(
     return out, tangent_out
 
 
-
-
 def _mha_backward(
     sm_scale: float,
     block_sizes: BlockSizes,
@@ -2467,14 +2617,14 @@ def _mha_backward(
                     block_kv=kv_seq_len,
                 )
             ),
-        # dropout mask
-        None,
-        # rng seed
-        pl.BlockSpec((), lambda *_: ()),
-        # out, do, lse, delta
-        pl.BlockSpec(
-            (None, q_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
-        ),
+            # dropout mask
+            None,
+            # rng seed
+            pl.BlockSpec((), lambda *_: ()),
+            # out, do, lse, delta
+            pl.BlockSpec(
+                (None, q_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
+            ),
             pl.BlockSpec(
                 (None, q_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
             ),
@@ -2495,10 +2645,10 @@ def _mha_backward(
                 kv_seq_len,
                 block_q,
                 block_k,
-                block_kv_dkv,
-                block_kv_dq,
                 block_q_dkv,
+                block_kv_dkv,
                 block_q_dq,
+                block_kv_dq,
             )
             in_specs[3] = q_data_spec
             in_specs[4] = k_data_spec
@@ -2560,7 +2710,7 @@ def _mha_backward(
                     block_shape=((None, num_kv_blocks_dq)),
                 )
                 q_index_offset_size_spec = pl.BlockSpec(
-                    index_map=(lambda i, _, k: (k)), block_shape=((None,))
+                    index_map=(lambda i, _, k: k), block_shape=((None,))
                 )
                 in_specs[-4] = q_index_offset_spec  # q_index_offset
                 in_specs[-3] = q_index_offset_size_spec  # q_index_offset_size
@@ -2571,7 +2721,7 @@ def _mha_backward(
                 )
 
                 kv_index_offset_size_spec = pl.BlockSpec(
-                    index_map=(lambda i, _, k: (k)), block_shape=((None,))
+                    index_map=(lambda i, _, k: k), block_shape=((None,))
                 )
                 in_specs[-2] = kv_index_offset_spec  # kv_index_offset
                 in_specs[-1] = kv_index_offset_size_spec  # kv_index_offset_size
@@ -2772,7 +2922,7 @@ def _mha_backward(
                 block_shape=((None, num_q_blocks_dkdv)),
             )
             kv_index_offset_size_spec = pl.BlockSpec(
-                index_map=(lambda i, _, k: (k)), block_shape=((None,))
+                index_map=(lambda i, _, k: k), block_shape=((None,))
             )
             dkdv_in_specs[-2] = kv_index_offset_spec
             dkdv_in_specs[-1] = kv_index_offset_size_spec
@@ -2835,7 +2985,7 @@ def _mha_backward(
                 block_shape=((None, num_kv_blocks_dq)),
             )
             q_index_offset_size_spec = pl.BlockSpec(
-                index_map=(lambda i, _, k: (k)), block_shape=((None,))
+                index_map=(lambda i, _, k: k), block_shape=((None,))
             )
             dq_in_specs[-2] = q_index_offset_spec
             dq_in_specs[-1] = q_index_offset_size_spec
@@ -2882,10 +3032,6 @@ def _mha_backward(
 
         return dq.astype(q.dtype), dk, dv, None, None, None
     return dq.astype(q.dtype), dk, dv, None, None, None
-
-
-
-
 
 
 def _mha_prim_impl(
@@ -3173,6 +3319,7 @@ mlir.register_lowering(
     _mha_lin_p, mlir.lower_fun(_mha_lin_prim_impl, multiple_results=False)
 )
 ad.primitive_transposes[_mha_lin_p] = _mha_lin_prim_transpose
+
 
 def _mha_batching_rule(batched_args, batch_dims, **params):
     mask_treedef = params["mask_treedef"]
