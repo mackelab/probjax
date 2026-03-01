@@ -38,7 +38,7 @@ from einops import rearrange, repeat
 from jax import lax
 from jax.experimental import pallas as pl
 
-from probjax.nn.pallas_kernels.utils import get_dot_precision, use_interpret_mode
+from ..kernel_utils import get_dot_precision, use_interpret_mode
 
 
 def _bs(index_map, block_shape):
@@ -59,7 +59,9 @@ def _is_hopper_or_newer_gpu() -> bool:
     if jax.default_backend() != "gpu":
         return False
     kind = jax.devices()[0].device_kind.lower()
-    return any(tag in kind for tag in ("h100", "h200", "b100", "b200", "hopper", "blackwell"))
+    return any(
+        tag in kind for tag in ("h100", "h200", "b100", "b200", "hopper", "blackwell")
+    )
 
 
 def _prefer_mosaic_gpu() -> bool:
@@ -177,7 +179,9 @@ def _validate_ssd_runtime_inputs(
         )
 
     if q.shape != k.shape:
-        raise ValueError(f"`q` and `k` must have the same shape, got {q.shape} and {k.shape}.")
+        raise ValueError(
+            f"`q` and `k` must have the same shape, got {q.shape} and {k.shape}."
+        )
 
     bs, ng, seq_len, dk = q.shape
     bs_v, nh, seq_len_v, dv = v.shape
@@ -192,9 +196,13 @@ def _validate_ssd_runtime_inputs(
             f"`log_alpha` shape mismatch: expected {(bs, nh, seq_len)}, got {log_alpha.shape}."
         )
     if ng <= 0 or nh <= 0:
-        raise ValueError(f"`num_groups` and `num_heads` must be > 0, got ng={ng}, nh={nh}.")
+        raise ValueError(
+            f"`num_groups` and `num_heads` must be > 0, got ng={ng}, nh={nh}."
+        )
     if nh % ng != 0:
-        raise ValueError(f"`num_heads` must be divisible by `num_groups`, got nh={nh}, ng={ng}.")
+        raise ValueError(
+            f"`num_heads` must be divisible by `num_groups`, got nh={nh}, ng={ng}."
+        )
 
     if v.dtype != jnp.float32:
         raise ValueError(f"`v` must be float32, got dtype {v.dtype}.")
@@ -448,9 +456,7 @@ def _ssd_forward(
     )  # [b, h, nb, ns, singleton_dim]
     gamma_tiling = (None, None, None, subchunk_dim, singleton_dim)
     gamma_spec = _bs(lambda b, h, k, v, m: (b, h, m, 0, 0), gamma_tiling)
-    causal_mask_spec = _bs(
-        lambda b, h, k, v, m: (0, 0), (subchunk_size, subchunk_size)
-    )
+    causal_mask_spec = _bs(lambda b, h, k, v, m: (0, 0), (subchunk_size, subchunk_size))
     causal_mask = jnp.tril(
         jnp.ones((subchunk_size, subchunk_size), dtype=jnp.float32), k=0
     )
@@ -551,7 +557,9 @@ def _ssd_recompute_chunk_states(
     ch_shape = jax.ShapeDtypeStruct(
         shape=(bs, num_heads, chunk_dim, k_dim, v_dim), dtype=jnp.float32
     )
-    fs_shape = jax.ShapeDtypeStruct(shape=(bs, num_heads, k_dim, v_dim), dtype=jnp.float32)
+    fs_shape = jax.ShapeDtypeStruct(
+        shape=(bs, num_heads, k_dim, v_dim), dtype=jnp.float32
+    )
 
     chunk_states, _ = pl.pallas_call(
         _ssd_chunk_states_kernel,
@@ -756,9 +764,7 @@ def _ssd_backward(residuals: Tuple, do: jax.Array) -> Tuple:
         qk_tiling,
     )
     v_tiling = (None, None, subchunk_dim, subchunk_size, singleton_dim)
-    v_spec = _bs(
-        lambda b, h, k, v, m: (b, h, chunk_dim - 1 - m, 0, v), v_tiling
-    )
+    v_spec = _bs(lambda b, h, k, v, m: (b, h, chunk_dim - 1 - m, 0, v), v_tiling)
 
     alpha_tiling = (None, None, None, subchunk_dim, subchunk_size)
     alpha_spec = _bs(
@@ -770,17 +776,11 @@ def _ssd_backward(residuals: Tuple, do: jax.Array) -> Tuple:
     )
 
     ch_tiling = (None, None, None, singleton_dim, singleton_dim)
-    ch_spec = _bs(
-        lambda b, h, k, v, m: (b, h, chunk_dim - 1 - m, k, v), ch_tiling
-    )
+    ch_spec = _bs(lambda b, h, k, v, m: (b, h, chunk_dim - 1 - m, k, v), ch_tiling)
 
     do_tiling = (None, None, subchunk_dim, subchunk_size, singleton_dim)
-    do_spec = _bs(
-        lambda b, h, k, v, m: (b, h, chunk_dim - 1 - m, 0, v), do_tiling
-    )
-    causal_mask_spec = _bs(
-        lambda b, h, k, v, m: (0, 0), (subchunk_size, subchunk_size)
-    )
+    do_spec = _bs(lambda b, h, k, v, m: (b, h, chunk_dim - 1 - m, 0, v), do_tiling)
+    causal_mask_spec = _bs(lambda b, h, k, v, m: (0, 0), (subchunk_size, subchunk_size))
     causal_mask = jnp.tril(
         jnp.ones((subchunk_size, subchunk_size), dtype=jnp.float32), k=0
     )
@@ -812,9 +812,7 @@ def _ssd_backward(residuals: Tuple, do: jax.Array) -> Tuple:
     )
 
     dv_tiling = (None, None, None, subchunk_dim, subchunk_size, singleton_dim)
-    dv_spec = _bs(
-        lambda b, h, k, v, m: (b, h, k, chunk_dim - 1 - m, 0, v), dv_tiling
-    )
+    dv_spec = _bs(lambda b, h, k, v, m: (b, h, k, chunk_dim - 1 - m, 0, v), dv_tiling)
     dv_shape = jax.ShapeDtypeStruct(
         shape=(
             bs,
@@ -964,7 +962,13 @@ def ssd(
     try:
         output = _ssd(q, k, v, log_alpha, h0)
         return output
-    except (AssertionError, NotImplementedError, RuntimeError, TypeError, ValueError) as err:
+    except (
+        AssertionError,
+        NotImplementedError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as err:
         if backend != "gpu":
             raise
         _FAILED_SSD_PALLAS_CONFIGS.add(failure_key)

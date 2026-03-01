@@ -9,8 +9,7 @@ from probjax.nn.layers.attention import (
     dot_product_attention,
     flex_attention as _flex_attention_impl,
 )
-from probjax.nn.pallas_kernels.flash_attention3 import mha_flash
-from probjax.nn.pallas_kernels.attention_mask_bias import (
+from probjax.nn.pallas_kernels import (
     CausalAlibiBias,
     CausalMask,
     ConstantBias,
@@ -25,6 +24,7 @@ from probjax.nn.pallas_kernels.attention_mask_bias import (
     SameSegmentMask,
     SeqLenMask,
     SymmetricAlibiBias,
+    mha_flash,
 )
 
 # materialize helpers deprecated; use class methods on mask/bias instead
@@ -63,9 +63,7 @@ def flex_attention(query, key, value, *args, **kwargs):
 
 
 def test_mha_flash_forward_or_expected_incompatibility():
-    q = jax.random.normal(
-        jax.random.PRNGKey(123), (1, 256, 8, 64), dtype=jnp.float16
-    )
+    q = jax.random.normal(jax.random.PRNGKey(123), (1, 256, 8, 64), dtype=jnp.float16)
     try:
         out = mha_flash(
             q,
@@ -88,9 +86,7 @@ def test_mha_flash_forward_or_expected_incompatibility():
 
 
 def test_mha_flash_residuals_or_expected_incompatibility():
-    q = jax.random.normal(
-        jax.random.PRNGKey(321), (1, 256, 8, 64), dtype=jnp.float16
-    )
+    q = jax.random.normal(jax.random.PRNGKey(321), (1, 256, 8, 64), dtype=jnp.float16)
     try:
         out, residuals = mha_flash(
             q,
@@ -368,7 +364,10 @@ def test_attention_with_masks(batch_size, seq_len, num_heads, qkv_dim, mask_fn):
     if isinstance(mask, QKVLengthMask):
         # If stuff is completly gone including the diagonal they behave a bit differently.
         assert jnp.allclose(
-            out[:, : mask.q_length], out2[:, : mask.q_length], atol=FWD_ATOL, rtol=FWD_RTOL
+            out[:, : mask.q_length],
+            out2[:, : mask.q_length],
+            atol=FWD_ATOL,
+            rtol=FWD_RTOL,
         )
     else:
         assert jnp.allclose(out, out2, atol=FWD_ATOL, rtol=FWD_RTOL), (
@@ -480,9 +479,7 @@ def test_attention_with_bias_gradients(batch_size, seq_len, num_heads, qkv_dim):
     assert out2[2].shape == (batch_size, seq_len, num_heads, qkv_dim)
 
     assert jax.tree_util.tree_all(
-        jax.tree_util.tree_map(
-            partial(jnp.allclose, atol=2e-2, rtol=1e-2), out, out2
-        )
+        jax.tree_util.tree_map(partial(jnp.allclose, atol=2e-2, rtol=1e-2), out, out2)
     ), (
         f"Gradients are not same with bias, with error {jnp.max(jnp.abs(out[0] - out2[0]))}"
     )
@@ -578,9 +575,7 @@ def test_attention_gradient_with_masks(
         return
 
     assert jax.tree_util.tree_all(
-        jax.tree_util.tree_map(
-            partial(jnp.allclose, atol=3e-2, rtol=1e-2), out, out2
-        )
+        jax.tree_util.tree_map(partial(jnp.allclose, atol=3e-2, rtol=1e-2), out, out2)
     )
 
 

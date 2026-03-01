@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from probjax.nn.pallas_kernels.kernel_mv import (
+from probjax.nn.pallas_kernels import (
     kde_density,
     kernel_mv,
     kernel_mv_naive,

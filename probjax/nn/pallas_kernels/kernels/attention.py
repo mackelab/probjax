@@ -30,11 +30,11 @@ from jax._src.pallas import primitives as pallas_primitives
 from jax.experimental.pallas import triton as plgpu
 from jax.interpreters import ad, batching, mlir
 
-from .attention_mask_bias import (
+from ..attention_mask_bias import (
     AttentionBias,
     AttentionMask,
 )
-from .utils import (
+from ..kernel_utils import (
     DEFAULT_MASK_VALUE,
     NEG_INF,
     get_dot_precision,

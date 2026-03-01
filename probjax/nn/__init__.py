@@ -104,8 +104,8 @@ from probjax.nn.nets import (
     UniformFlowTrainingConfig,
     UNet,
 )
-from probjax.nn.pallas_kernels.attention import BlockSizes
-from probjax.nn.pallas_kernels.attention_mask_bias import (
+from probjax.nn.pallas_kernels import (
+    BlockSizes,
     AttentionBias,
     AttentionMask,
     CausalAlibiBias,
@@ -125,8 +125,6 @@ from probjax.nn.pallas_kernels.attention_mask_bias import (
     SeqLenMask,
     SumBias,
     SymmetricAlibiBias,
-)
-from probjax.nn.pallas_kernels.kernel_mv import (
     kde_density,
     kernel_mv,
     kernel_mv_naive,

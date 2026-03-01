@@ -4,14 +4,13 @@ import numpy as np
 import pytest
 
 from probjax.core import inverse
-from probjax.nn.bijective import (
-    additive_bijector,
-    affine_bijector,
+from probjax.nn.nets.normalizing_flows import (
     monotone_hermite_cubic_spline,
     piecewise_affine_spline,
     rational_linear_spline,
     rational_quadratic_spline,
 )
+from probjax.stats.bijective import additive_bijector, affine_bijector
 
 
 @pytest.mark.parametrize("seed", np.random.randint(0, 1000, 2))

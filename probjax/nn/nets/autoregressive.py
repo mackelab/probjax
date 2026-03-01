@@ -11,7 +11,7 @@ from probjax.nn.layers.attention import flex_attention
 from probjax.nn.layers.encoding import PosEncode
 from probjax.nn.nets.simple import MaskedMLP
 from probjax.nn.nets.transformer import Transformer
-from probjax.nn.pallas_kernels.attention_mask_bias import CausalMask
+from probjax.nn.pallas_kernels import CausalMask
 from probjax.utils.typing import ModuleLikeType
 
 

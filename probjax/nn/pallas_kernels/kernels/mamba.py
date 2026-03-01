@@ -20,7 +20,7 @@ from jax import numpy as jnp
 from jax import lax
 from jax.experimental import pallas as pl
 
-from probjax.nn.pallas_kernels.utils import get_dot_precision, use_interpret_mode
+from ..kernel_utils import get_dot_precision, use_interpret_mode
 
 
 def _bs(index_map, block_shape):
@@ -53,9 +53,7 @@ def _validate_mamba_runtime_inputs(
     if c.ndim != 3:
         raise ValueError(f"`c` must be rank-3 [B, L, S], got shape {c.shape}.")
     if delta.ndim != 3:
-        raise ValueError(
-            f"`delta` must be rank-3 [B, L, D], got shape {delta.shape}."
-        )
+        raise ValueError(f"`delta` must be rank-3 [B, L, D], got shape {delta.shape}.")
     if d.ndim != 2:
         raise ValueError(f"`d` must be rank-2 [1, D], got shape {d.shape}.")
 
@@ -162,7 +160,9 @@ def _is_hopper_or_newer_gpu() -> bool:
     if jax.default_backend() != "gpu":
         return False
     kind = jax.devices()[0].device_kind.lower()
-    return any(tag in kind for tag in ("h100", "h200", "b100", "b200", "hopper", "blackwell"))
+    return any(
+        tag in kind for tag in ("h100", "h200", "b100", "b200", "hopper", "blackwell")
+    )
 
 
 def _prefer_mosaic_gpu() -> bool:
@@ -1083,7 +1083,13 @@ def compute_mamba_scan(
         y = _mamba_scan(x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
         # Remove zero-padding if any.
         return y[:, :seqlen, :inner]
-    except (AssertionError, NotImplementedError, RuntimeError, TypeError, ValueError) as err:
+    except (
+        AssertionError,
+        NotImplementedError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as err:
         if backend != "gpu":
             raise
         _FAILED_MAMBA_PALLAS_CONFIGS.add(failure_key)

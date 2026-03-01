@@ -9,7 +9,7 @@ from jax import lax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import triton as plgpu
 
-from probjax.nn.pallas_kernels.utils import get_dot_precision, use_interpret_mode
+from ..kernel_utils import get_dot_precision, use_interpret_mode
 from probjax.utils.typing import Array
 
 KernelFn = Callable[[Array, Array, Array], Array]

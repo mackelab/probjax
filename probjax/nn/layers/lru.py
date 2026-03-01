@@ -4,7 +4,7 @@ import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
 
-from probjax.nn.pallas_kernels.mambda import compute_mamba_scan
+from probjax.nn.pallas_kernels import compute_mamba_scan, ssd as pallas_ssd
 from probjax.nn.sharding import (
     DEFAULT_LINEAR_SHARDING,
     DEFAULT_MHA_SHARDING,
@@ -146,9 +146,7 @@ class LRUCell(RecurrentCell):
 
             # Diagonal dynamics
             diag_lambda = jnp.exp(-jnp.exp(nu_log) + 1j * jnp.exp(theta_log))
-            B_norm = (B_re + 1j * B_im) * jnp.expand_dims(
-                jnp.exp(gamma_log), axis=-2
-            )
+            B_norm = (B_re + 1j * B_im) * jnp.expand_dims(jnp.exp(gamma_log), axis=-2)
             C = C_re + 1j * C_im
 
             Lambda_elements = jnp.repeat(
@@ -250,9 +248,7 @@ class MambaCell(RecurrentCell):
         # Token-wise generators for b, c, delta
         self.to_b = nnx.Linear(model_dim, sd, rngs=rngs, **precision_kwargs)
         self.to_c = nnx.Linear(model_dim, sd, rngs=rngs, **precision_kwargs)
-        self.to_delta = nnx.Linear(
-            model_dim, model_dim, rngs=rngs, **precision_kwargs
-        )
+        self.to_delta = nnx.Linear(model_dim, model_dim, rngs=rngs, **precision_kwargs)
 
     def __call__(self, inputs: jax.Array) -> jax.Array:
         added_batch = False
@@ -302,10 +298,7 @@ def ssd(
     - h0: optional [B, H, dk, dv]
     Returns: [B, H, L, dv]
     """
-    # Lazy import to avoid optional dependency (einops) at module import time.
-    from probjax.nn.pallas_kernels import ssd as _ssd_mod
-
-    return _ssd_mod.ssd(q, k, v, log_alpha, h0)
+    return pallas_ssd(q, k, v, log_alpha, h0)
 
 
 class SSDCell(RecurrentCell):

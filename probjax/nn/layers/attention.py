@@ -10,11 +10,12 @@ from flax.nnx import dot_product_attention as flax_dot_product_attention
 from flax.nnx.module import first_from
 from jax import lax
 
-from probjax.nn.pallas_kernels.attention import BlockSizes, mha
-from probjax.nn.pallas_kernels.attention_mask_bias import (
+from probjax.nn.pallas_kernels import (
+    BlockSizes,
     AttentionBias,
     AttentionMask,
     QKVLengthMask,
+    mha,
 )
 from probjax.nn.sharding import DEFAULT_MHA_SHARDING
 from probjax.nn.utils import pad_to_power_of_2

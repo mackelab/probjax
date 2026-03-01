@@ -3,9 +3,13 @@ import jax.numpy as jnp
 import pytest
 
 from probjax.nn.layers.attention import dot_product_attention, flex_attention
-from probjax.nn.pallas_kernels.flash_attention3 import mha_flash
-from probjax.nn.pallas_kernels.mambda import _mamba_scan_reference, compute_mamba_scan
-from probjax.nn.pallas_kernels.ssd import ssd, ssd_linear_scan
+from probjax.nn.pallas_kernels import (
+    compute_mamba_scan,
+    mha_flash,
+    ssd,
+    ssd_linear_scan,
+)
+from probjax.nn.pallas_kernels.kernels.mamba import _mamba_scan_reference
 
 
 BATCH_SIZE = 32

@@ -1,12 +1,9 @@
-from functools import partial
-
 import jax
 import jax.numpy as jnp
 from flax import nnx
 from flax.typing import Initializer
 
-from probjax.core import custom_inverse
-
+from probjax.stats.bijective import rotate
 from probjax.utils.typing import (
     Array,
     ArrayLike,
@@ -125,9 +122,7 @@ class Affine(nnx.Module):
             Array with same shape as x, with affine transformation applied.
         """
         x = jnp.asarray(x)
-        scale = (
-            self.scale[...].astype(self.dtype) if self.dtype else self.scale[...]
-        )
+        scale = self.scale[...].astype(self.dtype) if self.dtype else self.scale[...]
         bias = self.bias[...].astype(self.dtype) if self.dtype else self.bias[...]
         return x * scale + bias
 
@@ -309,20 +304,3 @@ class Rotate(nnx.Module):
             x = x.astype(self.dtype)
 
         return rotate(rotation_matrix, x)
-
-
-@partial(custom_inverse, inv_argnum=1)
-def rotate(R, x):
-    """Apply rotation matrix to input array.
-
-    Args:
-        R: Rotation matrix of shape (n, n).
-        x: Input array of shape (..., n).
-
-    Returns:
-        Rotated array with same shape as x.
-    """
-    return jnp.matmul(R, x.T).T
-
-
-rotate.definv_and_logdet(lambda R, x: (jnp.matmul(R.T, x.T).T, 0.0))

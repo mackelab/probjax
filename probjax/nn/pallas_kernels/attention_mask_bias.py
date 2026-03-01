@@ -12,7 +12,7 @@ from jax.experimental import pallas as pl
 
 from probjax.utils.typing import Array
 
-from .utils import (
+from .kernel_utils import (
     ceil_div,
     fast_blockmask_causal,
     fast_blockmask_local_window,

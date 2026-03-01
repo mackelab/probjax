@@ -2,8 +2,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from probjax.nn.pallas_kernels.mambda import compute_mamba_scan
-from probjax.nn.pallas_kernels.ssd import ssd, ssd_linear_scan
+from probjax.nn.pallas_kernels import compute_mamba_scan, ssd, ssd_linear_scan
 
 
 def test_mamba_scan_requires_accelerator():

@@ -24,7 +24,7 @@ from jax import tree_util
 from probjax.nn import LearnablePosEncode, Transformer
 from probjax.nn.io_util import DataLoader
 from probjax.nn.layers.attention import flex_attention
-from probjax.nn.pallas_kernels.attention_mask_bias import CausalMask
+from probjax.nn.pallas_kernels import CausalMask
 
 NUM_PIXELS = 28 * 28
 NUM_CLASSES = 256
@@ -153,9 +153,7 @@ class Model(nnx.Module):
     ):
         self.dropout_rate = dropout_rate
         self.embed = nnx.Embed(self.vocab_size, dim, rngs=rngs)
-        self.pos_embed = LearnablePosEncode(
-            dim, max_seq_len=NUM_PIXELS + 1, rngs=rngs
-        )
+        self.pos_embed = LearnablePosEncode(dim, max_seq_len=NUM_PIXELS + 1, rngs=rngs)
         self.transformer = Transformer(
             dim,
             self.num_heads,
@@ -163,7 +161,7 @@ class Model(nnx.Module):
             self.attn_size,
             attention_fn=flex_attention,
             widening_factor=self.widening_factor,
-            dropout_rate=0.0,#dropout_rate if dropout_rate else 0.0,
+            dropout_rate=0.0,  # dropout_rate if dropout_rate else 0.0,
             rngs=rngs,
             dtype=jnp.bfloat16,
             precision="BF16_BF16_F32",
@@ -179,9 +177,7 @@ class Model(nnx.Module):
             kernel_init=nnx.initializers.normal(stddev=0.02),
         )
         # Initialize start token with small random values
-        self.start_token = nnx.Param(
-            jax.random.normal(rngs(), (1, dim)) * 0.02
-        )
+        self.start_token = nnx.Param(jax.random.normal(rngs(), (1, dim)) * 0.02)
         if dropout_rate and dropout_rate > 0:
             self.dropout = nnx.Dropout(dropout_rate, rngs=rngs)
 
@@ -209,8 +205,6 @@ class Model(nnx.Module):
         tokens = self.output_norm(tokens)
         logits = self.output(tokens)
         return logits[..., :-1, :]
-
-
 
     def predict_logits(
         self,
@@ -252,16 +246,13 @@ def build_train_step(
         logits = model(tokens, deterministic=False)
         targets = jnp.asarray(tokens, dtype=jnp.int32)
         # Apply label smoothing for better generalization
-        token_loss = optax.softmax_cross_entropy_with_integer_labels(
-            logits, targets
-        )
+        token_loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets)
         if label_smoothing > 0:
             # Compute label smoothing loss
             num_classes = logits.shape[-1]
             smooth_labels = jax.nn.one_hot(targets, num_classes)
             smooth_labels = (
-                smooth_labels * (1 - label_smoothing)
-                + label_smoothing / num_classes
+                smooth_labels * (1 - label_smoothing) + label_smoothing / num_classes
             )
             smooth_loss = optax.softmax_cross_entropy(logits, smooth_labels)
             token_loss = smooth_loss
@@ -438,9 +429,7 @@ def run_training(
                 if isinstance(loaded, dict) and isinstance(ref, dict):
                     for key in ref:
                         if key not in loaded:
-                            raise ValueError(
-                                f"Missing key in checkpoint: {path}.{key}"
-                            )
+                            raise ValueError(f"Missing key in checkpoint: {path}.{key}")
                         check_shapes(loaded[key], ref[key], f"{path}.{key}")
                 elif isinstance(loaded, (np.ndarray, jax.Array)) and isinstance(
                     ref, (np.ndarray, jax.Array)
@@ -463,9 +452,7 @@ def run_training(
                     logger.info("Unreplicating checkpoint state")
                     loaded_state = flax_jax_utils.unreplicate(loaded_state)
                 check_shapes(loaded_state, state)
-                state = jax.tree_util.tree_map(
-                    lambda x: jnp.asarray(x), loaded_state
-                )
+                state = jax.tree_util.tree_map(lambda x: jnp.asarray(x), loaded_state)
 
             # Load and align optimizer state
             loaded_opt_state = checkpoint["opt_state"]
@@ -522,7 +509,6 @@ def run_training(
         log_interval,
         eval_interval if eval_interval else "disabled",
     )
-
 
     logger.info(
         "Starting training loop (first step will trigger JIT compilation, "
