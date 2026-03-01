@@ -1,11 +1,8 @@
-from functools import partial
-
 import jax
 import jax.numpy as jnp
 from jax import Array
 from jax.typing import ArrayLike
 
-from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.stats.bijective.monotone_hermite_cubic import (
     monotone_hermite_cubic_spline as _monotone_hermite_cubic_spline,
 )
@@ -70,7 +67,6 @@ def rational_quadratic_spline_and_logdets(
     )
 
 
-@partial(custom_inverse, inv_argnum=1)
 def rational_quadratic_spline(
     params: ArrayLike,
     x: ArrayLike,
@@ -106,51 +102,6 @@ def rational_quadratic_spline(
     )
 
 
-def inv_rational_quadratic_spline(
-    params: ArrayLike,
-    x: ArrayLike,
-    range_min_x: float = -10.0,
-    range_max_x: float = 10.0,
-    range_min_y: float = -10.0,
-    range_max_y: float = 10.0,
-    min_bin_size: float = 1e-4,
-    min_knot_slope: float = 1e-4,
-    bounded: bool = False,
-):
-    x_pos, y_pos, knot_slopes = jnp.split(params, 3, axis=-1)
-    knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
-    x_pos = jnp.clip(x_pos, -6, 6)
-    y_pos = jnp.clip(y_pos, -6, 6)
-
-    x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
-        (range_max_x - min_bin_size) - range_min_x
-    ) + range_min_x
-    y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
-        (range_max_y - min_bin_size) - range_min_y
-    ) + range_min_y
-
-    if not bounded:
-        y, log_det = _rational_quadratic_spline.inv_and_logdet(
-            x, x_pos, y_pos, knot_slopes
-        )
-    else:
-        y, log_det = _rational_quadratic_spline.inv_and_logdet(
-            x,
-            x_pos,
-            y_pos,
-            knot_slopes,
-            x_min=range_min_x,
-            x_max=range_max_x,
-            y_min=range_min_y,
-            y_max=range_max_y,
-        )
-    return y, jnp.squeeze(log_det)
-
-
-rational_quadratic_spline.definv_and_logdet(inv_rational_quadratic_spline)
-
-
-@partial(custom_inverse, inv_argnum=1)
 def rational_linear_spline(
     params,
     x,
@@ -186,47 +137,6 @@ def rational_linear_spline(
     )
 
 
-def inv_rational_linear_spline(
-    params: ArrayLike,
-    x: ArrayLike,
-    x_min=-10.0,
-    x_max=10.0,
-    y_min=-10.0,
-    y_max=10.0,
-    min_bin_size=1e-4,
-    min_knot_slope: float = 1e-4,
-    bounded: bool = False,
-):
-    x_pos, y_pos, knot_slopes = jnp.split(params, 3, axis=-1)
-    knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
-
-    x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
-        (x_max - min_bin_size) - x_min
-    ) + x_min
-    y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
-        (y_max - min_bin_size) - y_min
-    ) + y_min
-
-    if not bounded:
-        y, log_det = _rational_linear_spline.inv_and_logdet(x, x_pos, y_pos, knot_slopes)
-    else:
-        y, log_det = _rational_linear_spline.inv_and_logdet(
-            x,
-            x_pos,
-            y_pos,
-            knot_slopes,
-            x_min=x_min,
-            x_max=x_max,
-            y_min=y_min,
-            y_max=y_max,
-        )
-    return y, jnp.squeeze(log_det)
-
-
-rational_linear_spline.definv_and_logdet(inv_rational_linear_spline)
-
-
-@partial(custom_inverse, inv_argnum=1)
 def piecewise_affine_spline(
     params: ArrayLike,
     x: ArrayLike,
@@ -261,46 +171,6 @@ def piecewise_affine_spline(
     )
 
 
-def piecewise_affine_spline_inv(
-    params: ArrayLike,
-    y: ArrayLike,
-    range_min_x: float = -10.0,
-    range_max_x: float = 10.0,
-    range_min_y: float = -10.0,
-    range_max_y: float = 10.0,
-    min_bin_size: float = 1e-4,
-    bounded: bool = False,
-):
-    x_pos, y_pos = jnp.split(params, 2, axis=-1)
-    x_pos = x_pos - jnp.mean(x_pos)
-    y_pos = y_pos - jnp.mean(y_pos)
-
-    x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
-        ((range_max_x - min_bin_size) - range_min_x) + (range_min_x)
-    )
-    y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
-        (range_max_y - min_bin_size) - range_min_y
-    ) + range_min_y
-
-    if not bounded:
-        x, logdet = _piecewise_affine_spline.inv_and_logdet(y, x_pos, y_pos)
-    else:
-        x, logdet = _piecewise_affine_spline.inv_and_logdet(
-            y,
-            x_pos,
-            y_pos,
-            x_min=range_min_x,
-            x_max=range_max_x,
-            y_min=range_min_y,
-            y_max=range_max_y,
-        )
-    return x, logdet
-
-
-piecewise_affine_spline.definv_and_logdet(piecewise_affine_spline_inv)
-
-
-@partial(custom_inverse, inv_argnum=1)
 def monotone_hermite_cubic_spline(
     params,
     x,
@@ -336,49 +206,6 @@ def monotone_hermite_cubic_spline(
     )
 
 
-def inv_monotone_hermite_cubic_spline(
-    params: ArrayLike,
-    x: ArrayLike,
-    x_min=-10.0,
-    x_max=10.0,
-    y_min=-10.0,
-    y_max=10.0,
-    min_bin_size=1e-4,
-    min_knot_slope: float = 1e-4,
-    bounded: bool = False,
-):
-    x_pos, y_pos, knot_slopes = jnp.split(params, 3, axis=-1)
-    knot_slopes = _normalize_knot_slopes(knot_slopes, min_knot_slope)
-
-    x_pos = (jnp.cumsum(jax.nn.softmax(x_pos), -1) + min_bin_size) * (
-        (x_max - min_bin_size) - x_min
-    ) + x_min
-    y_pos = (jnp.cumsum(jax.nn.softmax(y_pos), -1) + min_bin_size) * (
-        (y_max - min_bin_size) - y_min
-    ) + y_min
-
-    if not bounded:
-        y, log_det = _monotone_hermite_cubic_spline.inv_and_logdet(
-            x, x_pos, y_pos, knot_slopes
-        )
-    else:
-        y, log_det = _monotone_hermite_cubic_spline.inv_and_logdet(
-            x,
-            x_pos,
-            y_pos,
-            knot_slopes,
-            x_min=x_min,
-            x_max=x_max,
-            y_min=y_min,
-            y_max=y_max,
-        )
-    return y, jnp.squeeze(log_det)
-
-
-monotone_hermite_cubic_spline.definv_and_logdet(inv_monotone_hermite_cubic_spline)
-
-
-@partial(custom_inverse, inv_argnum=1)
 def learnable_mixture_cdf(
     params: ArrayLike,
     y: ArrayLike,
@@ -416,10 +243,6 @@ def _inv_and_logdet_learnable_mixture_cdf(params, x, **kwargs):
     _f = jax.vmap(jax.value_and_grad(_inv_learnable_mixture_cdf, argnums=1))
     value, grad = _f(params, x)
     return value, jnp.log(jnp.abs(grad))
-
-
-learnable_mixture_cdf.definv(_inv_learnable_mixture_cdf)
-learnable_mixture_cdf.definv_and_logdet(_inv_and_logdet_learnable_mixture_cdf)
 
 
 def affine_bijector(params: ArrayLike, x: ArrayLike, min_scale=1e-3, **kwargs):

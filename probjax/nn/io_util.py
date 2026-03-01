@@ -364,9 +364,7 @@ class SimulationDataset:
         self._batch_size = int(simulation_batch_size)
         self._simulation_batch_mode = str(simulation_batch_mode).lower()
         if self._simulation_batch_mode not in {"vmap", "map"}:
-            raise ValueError(
-                "simulation_batch_mode must be one of {'vmap', 'map'}."
-            )
+            raise ValueError("simulation_batch_mode must be one of {'vmap', 'map'}.")
 
         if self._batch_size % self._n_sim_devices != 0:
             raise ValueError(
@@ -677,8 +675,10 @@ class SimulationDataset:
             return self._simulator_fn(key)
 
         if self._simulation_batch_mode == "map":
+
             def per_device_batched(keys):
                 return jax.lax.map(single_call, keys)
+
         else:
             per_device_batched = jax.vmap(single_call)
 

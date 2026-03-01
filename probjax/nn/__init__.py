@@ -126,3 +126,11 @@ from probjax.nn.pallas_kernels.attention_mask_bias import (
     SumBias,
     SymmetricAlibiBias,
 )
+from probjax.nn.pallas_kernels.kernel_mv import (
+    kde_density,
+    kernel_mv,
+    kernel_mv_naive,
+    rbf_kde_density,
+    rbf_kernel_mv,
+    rbf_kernel_mv_naive,
+)
