@@ -60,7 +60,7 @@ class chi2_gen(rv_continuous):
         raise NotImplementedError("PPF not implemented for chi2 distribution")
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         df=1.0,

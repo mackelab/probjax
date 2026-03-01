@@ -134,7 +134,7 @@ class expon_gen(rv_continuous, rv_exponential_family):
         return _expon.ppf(q, loc=0.0, scale=scale)
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         rate=1.0,

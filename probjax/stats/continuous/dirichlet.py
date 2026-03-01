@@ -104,7 +104,7 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
         return log_fn(x_arr, alpha_arr)
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         alpha: Array,

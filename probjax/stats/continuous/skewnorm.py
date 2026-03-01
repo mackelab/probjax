@@ -95,7 +95,7 @@ class skewnorm_gen(rv_continuous, rv_exponential_family):
         return loc + scale * z
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         a=0.0,

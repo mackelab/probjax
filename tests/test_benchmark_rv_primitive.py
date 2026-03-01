@@ -40,7 +40,7 @@ def _baseline_eager_call():
     scale = jnp.asarray(1.0)
 
     def run_once(key):
-        out = norm.rvs(key, loc, scale)
+        out = norm._rvs_impl(key, loc, scale)
         return jax.block_until_ready(out)
 
     return run_once
@@ -51,7 +51,7 @@ def _baseline_jit_call():
     scale = jnp.asarray(1.0)
 
     def fn(rng, loc_, scale_):
-        return norm.rvs(rng, loc_, scale_)
+        return norm._rvs_impl(rng, loc_, scale_)
 
     jitted = jax.jit(fn)
 

@@ -45,7 +45,7 @@ class categorical_gen(rv_discrete, rv_exponential_family):
         return log_probs
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         probs=None,

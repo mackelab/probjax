@@ -448,7 +448,7 @@ class watson_gen(rv_spherical, rv_exponential_family):
         return tuple(int(dim) for dim in batch_shape), event_shape
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         mean_direction: Array,

@@ -188,7 +188,7 @@ class transformed_gen(rv_continuous):
         )
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         base_dist=None,

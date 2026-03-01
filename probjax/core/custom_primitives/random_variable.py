@@ -222,7 +222,9 @@ class RandomVariableCallPrimitive(Primitive):
 
         dist_obj = cast(Any, dist)
         if rvs_fn is None:
-            rvs_fn = dist_obj.rvs
+            rvs_fn = getattr(dist_obj, "_rvs_impl", None)
+            if rvs_fn is None:
+                rvs_fn = dist_obj.rvs
         if logpdf_fn is None:
             logpdf_fn = dist_obj.logpdf
 

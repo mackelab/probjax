@@ -146,7 +146,7 @@ class beta_gen(rv_continuous, rv_exponential_family):
         return betaincinv(alpha, beta, q)
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         alpha=1.0,

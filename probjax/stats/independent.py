@@ -196,7 +196,7 @@ class independent_gen(rv_generic):
         return cdf
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         base_dists=None,

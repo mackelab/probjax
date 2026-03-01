@@ -72,7 +72,7 @@ class bernoulli_gen(rv_discrete, rv_exponential_family):
         return jnp.where(q <= 1 - p, 0, 1)
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         p=None,

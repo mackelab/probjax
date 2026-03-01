@@ -305,7 +305,7 @@ class bingham_gen(rv_spherical, rv_exponential_family):
         return quad - log_partition
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         orientation: Array,

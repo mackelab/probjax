@@ -112,7 +112,7 @@ class mixture_gen(rv_generic):
         ).x
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         mixing_probs=None,

@@ -149,7 +149,7 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         return gammaincinv(alpha, q) * scale
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         alpha=1.0,

@@ -89,7 +89,7 @@ class logistic_gen(rv_continuous, rv_exponential_family):
         return loc_arr + scale_arr * jnp.log(q_clipped / (1.0 - q_clipped))
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         loc=0.0,

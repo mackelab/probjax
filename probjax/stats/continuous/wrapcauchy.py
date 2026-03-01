@@ -82,7 +82,7 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
         ) % (2 * jnp.pi)
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         loc=0.0,

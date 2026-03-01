@@ -90,7 +90,7 @@ class empirical(rv_discrete):
         return jnp.interp(q, cdf, sorted_values)
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         values=None,
@@ -162,11 +162,15 @@ class empirical_frozen(rv_discrete_frozen):
         """Percent point function of the frozen Empirical distribution."""
         return self.dist.ppf(q, self.values, self.weights, **self.kwds)
 
-    def rvs(self, rng: RngKey, shape: Tuple[int, ...] = (), **kwargs):
+    def rvs(
+        self,
+        rng: RngKey,
+        shape: Tuple[int, ...] = (),
+        name: Optional[str] = None,
+        **kwargs,
+    ):
         """Random variates of the frozen Empirical distribution."""
-        return self.dist.rvs(
-            rng, self.values, self.weights, shape=shape, **self.kwds, **kwargs
-        )
+        return self._bind_rvs(rng, shape=shape, name=name, **kwargs)
 
     def mean(self):
         """Mean of the frozen Empirical distribution."""

@@ -141,7 +141,7 @@ class binomial_gen(rv_discrete, rv_exponential_family):
         return ppf_single(q_b, n_b, probs_b)
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         n=None,

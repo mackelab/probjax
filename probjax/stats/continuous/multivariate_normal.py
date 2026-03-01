@@ -154,7 +154,7 @@ class multivariate_normal_gen(rv_multivariate):
         )
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         loc: Array,

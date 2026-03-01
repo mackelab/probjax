@@ -100,6 +100,32 @@ class rv_generic(ABC):
         """Freeze the distribution for the given arguments."""
         return self._freeze_as(rv_frozen, *args, **kwds)
 
+    def rvs(
+        self,
+        rng: RngKey,
+        *args: Any,
+        shape: Tuple[int, ...] = (),
+        name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Array:
+        """Random variates of given shape.
+
+        Calls through the `rv_p` primitive so traced execution records a random
+        variable site while eager execution remains a direct sample.
+        """
+        from probjax.core.custom_primitives.random_variable import rv_p
+
+        return rv_p.bind(
+            rng,
+            *args,
+            shape=shape,
+            dist=self,
+            name=name,
+            rvs_fn=type(self)._rvs_impl,
+            logpdf_fn=type(self).logpdf,
+            kwds=kwargs,
+        )
+
     @classmethod
     @abstractmethod
     def support(cls, *args, **kwds) -> Constraint:
@@ -108,10 +134,10 @@ class rv_generic(ABC):
 
     @classmethod
     @abstractmethod
-    def rvs(
+    def _rvs_impl(
         cls, rng: RngKey, *args: Any, shape: Tuple[int, ...] = (), **kwargs: Any
     ) -> Array:
-        """Random variates of given shape.
+        """Implementation for random variate sampling.
 
         Parameters
         ----------
@@ -121,6 +147,9 @@ class rv_generic(ABC):
             Shape parameters for the distribution
         shape : tuple of ints, optional
             The shape of the samples to draw
+        name : str, optional
+            Optional site name used when tracing probabilistic programs.
+            If omitted, a unique name is generated from the distribution name.
         **kwargs : dict, optional
             Additional parameters (loc, scale, etc.)
 
@@ -686,6 +715,33 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
         call_kwds.update(kwds)
         return method(*args, **call_kwds)
 
+    def _bind_rvs(
+        self,
+        rng: RngKey,
+        shape: Tuple[int, ...],
+        name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Array:
+        from probjax.core.custom_primitives.random_variable import rv_p
+
+        self._refresh_parameter_state()
+        call_kwds = dict(self._call_kwds)
+        call_kwds.update(kwargs)
+
+        rvs_fn = getattr(type(self.dist), "_rvs_impl", None)
+        if rvs_fn is None:
+            rvs_fn = self.dist.rvs
+
+        return rv_p.bind(
+            rng,
+            shape=shape,
+            dist=self.dist,
+            name=name,
+            rvs_fn=rvs_fn,
+            logpdf_fn=type(self.dist).logpdf,
+            kwds=call_kwds,
+        )
+
     def _compute_batch_and_event_shape(
         self, *args: Any, **kwds: Any
     ) -> tuple[Tuple[int, ...], Tuple[int, ...]]:
@@ -842,7 +898,13 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
         """Inverse survival function (1 - ppf) of the frozen distribution."""
         return self._call_dist("isf", q)
 
-    def rvs(self, rng: RngKey, shape: Tuple[int, ...] = (), **kwargs):
+    def rvs(
+        self,
+        rng: RngKey,
+        shape: Tuple[int, ...] = (),
+        name: Optional[str] = None,
+        **kwargs,
+    ):
         """Random variates of the frozen distribution.
 
         Parameters
@@ -851,13 +913,15 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
             The random key used for sampling
         shape : tuple of ints, optional
             The shape of the samples to draw. Default is ().
+        name : str, optional
+            Optional site name used when tracing probabilistic programs.
 
         Returns
         -------
         rvs : ndarray or scalar
             Random variates of given shape
         """
-        return self._call_dist("rvs", rng, shape=shape, **kwargs)
+        return self._bind_rvs(rng, shape=shape, name=name, **kwargs)
 
     def sf(self, x: ArrayLike):
         """Survival function (1 - cdf)."""
@@ -1044,7 +1108,14 @@ class rv_continuous_frozen(rv_frozen):
         """
         return self._call_dist("ppf", q)
 
-    def rvs(self, rng: RngKey, *args, shape: Tuple[int, ...] = (), **kwargs):
+    def rvs(
+        self,
+        rng: RngKey,
+        *args,
+        shape: Tuple[int, ...] = (),
+        name: Optional[str] = None,
+        **kwargs,
+    ):
         """Random variates of the distribution.
 
         Parameters
@@ -1053,13 +1124,15 @@ class rv_continuous_frozen(rv_frozen):
             The random key used for sampling
         shape : tuple of ints, optional
             The shape of the samples to draw. Default is ().
+        name : str, optional
+            Optional site name used when tracing probabilistic programs.
 
         Returns
         -------
         rvs : ndarray or scalar
             Random variates of given shape
         """
-        return self._call_dist("rvs", rng, shape=shape, **kwargs)
+        return self._bind_rvs(rng, shape=shape, name=name, **kwargs)
 
 
 class rv_multivariate_frozen(rv_continuous_frozen):

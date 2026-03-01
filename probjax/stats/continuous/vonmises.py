@@ -77,7 +77,7 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
         ) + loc
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         loc=0.0,

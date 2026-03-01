@@ -96,7 +96,7 @@ class poisson_gen(rv_discrete, rv_exponential_family):
         return ppf_single(q, rate)
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         rate=None,
