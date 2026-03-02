@@ -9,6 +9,7 @@ from flax import nnx
 from probjax.nn.loss_fn.multinomial_diffusion import (
     build_time_dependent_multinomial_diffusion_loss,
 )
+from probjax.nn.utils import module_accepts_rng
 from probjax.nn.nets.config.multinomial_diffusion_configs import (
     CategoricalEDMPreconditioning,
     CategoricalPreconditioningProtocol,
@@ -51,6 +52,7 @@ class MultinomialDiffusion(nnx.Module):
             raise TypeError("schedule must implement CategoricalScheduleProtocol")
 
         self.net = net
+        self._net_accepts_rng = module_accepts_rng(self.net)
         self.schedule = schedule
         self.precond = preconditioning or CategoricalEDMPreconditioning()
         # Backward-compatible alias.
@@ -134,7 +136,9 @@ class MultinomialDiffusion(nnx.Module):
         t_cont = self._to_continuous_time(t)
         t_embed = self.c_t(t_cont)
         x_embed = self.c_in(t_cont)[..., None] * x_features
-        return self.net(t_embed, x_embed, *args, rng=rng, **kwargs)
+        if self._net_accepts_rng:
+            return self.net(t_embed, x_embed, *args, rng=rng, **kwargs)
+        return self.net(t_embed, x_embed, *args, **kwargs)
 
     def __call__(
         self,

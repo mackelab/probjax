@@ -18,6 +18,7 @@ from probjax.nn import (
 
 pytest_plugins = ["test_problems.nns"]
 
+
 def test_mlp(mlp, batch_shape):
     in_dim, out_dim, model = mlp
     x = jnp.ones(batch_shape + (in_dim,))
@@ -32,6 +33,7 @@ def test_mlp(mlp, batch_shape):
 
     # Can be flattened
     _, _ = jax.tree_util.tree_flatten(model)
+
 
 def test_resnet(resnet, batch_shape):
     in_dim, out_dim, model = resnet
@@ -48,6 +50,7 @@ def test_resnet(resnet, batch_shape):
     # Can be flattened
     _, _ = jax.tree_util.tree_flatten(model)
 
+
 def test_deepset(deepset, seq_len, batch_shape):
     in_dim, out_dim, model = deepset
     x = jnp.ones(batch_shape + (seq_len, in_dim))
@@ -63,6 +66,7 @@ def test_deepset(deepset, seq_len, batch_shape):
     # Can be flattened
     _, _ = jax.tree_util.tree_flatten(model)
 
+
 def test_attention(multi_head_attention, seq_len, batch_shape):
     in_dim, out_dim, model = multi_head_attention
     x = jnp.ones(batch_shape + (seq_len, in_dim))
@@ -77,6 +81,7 @@ def test_attention(multi_head_attention, seq_len, batch_shape):
 
     # Can be flattened
     _, _ = jax.tree_util.tree_flatten(model)
+
 
 def test_coupling(coupling_mlp, batch_shape):
     in_dim, out_dim, model = coupling_mlp
@@ -98,6 +103,7 @@ def test_coupling(coupling_mlp, batch_shape):
     y_inv = model_inv(y)
     assert jnp.allclose(x, y_inv), "Inverse is not correct"
 
+
 def test_autoregressive(autoregressive_mlp, batch_shape):
     in_dim, out_dim, model = autoregressive_mlp
     x = jnp.ones(batch_shape + (in_dim,))
@@ -118,6 +124,7 @@ def test_autoregressive(autoregressive_mlp, batch_shape):
     y_inv = model_inv(y)
     assert jnp.allclose(x, y_inv), " Inverse is not correct"
 
+
 def test_gaussian_fourier_embedding(gaussian_fourier_embedding, batch_shape):
     in_dim, out_dim, model = gaussian_fourier_embedding
     x = jnp.ones(batch_shape + (in_dim,))
@@ -132,6 +139,7 @@ def test_gaussian_fourier_embedding(gaussian_fourier_embedding, batch_shape):
 
     # Can be flattened
     _, _ = jax.tree_util.tree_flatten(model)
+
 
 def test_transformer(transformer, seq_len, batch_shape):
     model_dim, model = transformer
@@ -148,6 +156,7 @@ def test_transformer(transformer, seq_len, batch_shape):
     # Can be flattened
     _, _ = jax.tree_util.tree_flatten(model)
 
+
 def test_transformer_with_context(transformer_with_context, seq_len, batch_shape):
     model_dim, context_dim, model = transformer_with_context
     x = jnp.ones(batch_shape + (seq_len, model_dim))
@@ -163,6 +172,7 @@ def test_transformer_with_context(transformer_with_context, seq_len, batch_shape
 
     # Can be flattened
     _, _ = jax.tree_util.tree_flatten(model)
+
 
 def test_transformer_with_context_and_cross_attention(
     transformer_with_cross_attention_and_context, seq_len, batch_shape
@@ -182,6 +192,7 @@ def test_transformer_with_context_and_cross_attention(
     # Can be flattened
     _, _ = jax.tree_util.tree_flatten(model)
 
+
 def test_lru(lru, seq_len):
     in_dim, out_dim, model = lru
     batch_shape = ()  # Needs vmap
@@ -199,6 +210,7 @@ def test_lru(lru, seq_len):
     # Can be flattened
     _, _ = jax.tree_util.tree_flatten(model)
 
+
 def test_diffusion(denoising_diffusion):
     in_dim, model = denoising_diffusion
     batch_shape = (10,)  # Only support one batch dimension
@@ -213,6 +225,7 @@ def test_diffusion(denoising_diffusion):
 
     loss = model.loss(jax.random.key(0), x)
     assert loss.shape == (), "Loss shape is not correct"
+
 
 def test_flows(flow):
     input_dim, model = flow
@@ -249,6 +262,7 @@ def test_flows(flow):
     logprob = frozen_model.logpdf(samples)
     assert logprob.shape == (10,)
 
+
 def test_chunkify(chunkify_inputs):
     x, chunk_shape, channel_axis = chunkify_inputs
     metadata = _chunkify_metadata(x, chunk_shape, channel_axis)
@@ -258,13 +272,15 @@ def test_chunkify(chunkify_inputs):
     reconstructed = _unchunkify(tokens, x, metadata)
     assert jnp.array_equal(reconstructed, x)
 
+
 def test_masked_linear_forward(masked_linear_case):
     mask, kernel, bias, x, expected = masked_linear_case
     layer = MaskedLinear(2, 2, mask, rngs=nnx.Rngs(0))
-    layer.kernel.value = kernel
-    layer.bias.value = bias
+    layer.kernel[...] = kernel
+    layer.bias[...] = bias
     y = layer(x)
     assert jnp.allclose(y, expected)
+
 
 def test_drop_path(drop_path_case):
     drop_rate, deterministic, x, expected = drop_path_case
@@ -272,11 +288,13 @@ def test_drop_path(drop_path_case):
     y = drop(x, deterministic=deterministic)
     assert jnp.allclose(y, expected)
 
+
 def test_additive_binary_fuse(additive_binary_fuse_case):
     x, y = additive_binary_fuse_case
     fuse = AdditiveBinaryFuse(x.shape[-1], context_features=None, rngs=nnx.Rngs(0))
     out = fuse(x, y, None)
     assert jnp.allclose(out, x + y)
+
 
 def test_gated_fuse_modes(gated_fuse_case):
     mode, x, y, context = gated_fuse_case
@@ -284,9 +302,11 @@ def test_gated_fuse_modes(gated_fuse_case):
     out = fuse(x, y, context)
     assert out.shape == x.shape
 
+
 def test_gated_fuse_invalid_mode():
     with pytest.raises(ValueError):
         GatedFuse(4, 3, mode="invalid", rngs=nnx.Rngs(0))
+
 
 def _chunkify_metadata(x, chunk_shape, channel_axis):
     x_arr = jnp.asarray(x)
@@ -331,17 +351,20 @@ def _chunkify_metadata(x, chunk_shape, channel_axis):
         "inserted_channel": inserted_channel,
     }
 
+
 def _chunkify_expected_shape(metadata):
     return metadata["batch_shape"] + (
         metadata["total_chunks"],
         metadata["chunk_volume"] * metadata["channel_dim"],
     )
 
+
 def _chunkify_perm(batch_ndim, spatial_ndim):
     count_axes = [batch_ndim + 2 * idx for idx in range(spatial_ndim)]
     chunk_axes = [axis + 1 for axis in count_axes]
     channel_axis = batch_ndim + 2 * spatial_ndim
     return list(range(batch_ndim)) + count_axes + chunk_axes + [channel_axis]
+
 
 def _unchunkify(tokens, x, metadata):
     chunk_shape = metadata["chunk_shape"]

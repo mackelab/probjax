@@ -728,9 +728,13 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
         call_kwds = dict(self._call_kwds)
         call_kwds.update(kwargs)
 
-        rvs_fn = getattr(type(self.dist), "_rvs_impl", None)
+        rvs_fn = getattr(self.dist, "_rvs_impl", None)
         if rvs_fn is None:
             rvs_fn = self.dist.rvs
+
+        logpdf_fn = getattr(self.dist, "logpdf", None)
+        if logpdf_fn is None:
+            logpdf_fn = getattr(type(self.dist), "logpdf", None)
 
         return rv_p.bind(
             rng,
@@ -738,7 +742,7 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
             dist=self.dist,
             name=name,
             rvs_fn=rvs_fn,
-            logpdf_fn=type(self.dist).logpdf,
+            logpdf_fn=logpdf_fn,
             kwds=call_kwds,
         )
 

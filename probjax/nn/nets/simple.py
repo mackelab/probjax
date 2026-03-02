@@ -17,6 +17,7 @@ from probjax.nn.sharding import (
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
+    module_accepts_rng,
 )
 from probjax.utils.typing import (
     Array,
@@ -159,8 +160,16 @@ class MLP(nnx.Module):
                 )
 
         self.layers = nnx.List(layers)
+        self._layer_accepts_rng = tuple(
+            module_accepts_rng(layer) for layer in self.layers
+        )
         self.norm_layers = nnx.List(norm_layers) if norm_cls is not None else None
         self.context_fuses = nnx.List(context_fuses) if _ctx_dim is not None else None
+        self._context_fuse_accepts_rng = (
+            tuple(module_accepts_rng(fuse) for fuse in self.context_fuses)
+            if self.context_fuses is not None
+            else None
+        )
         self.activation = activation
         self.activate_final = activate_final
 
@@ -175,25 +184,46 @@ class MLP(nnx.Module):
         Returns:
             Output array of shape [..., output_dim].
         """
-        h = self.layers[0](x, rng=rng)
+        h = (
+            self.layers[0](x, rng=rng)
+            if self._layer_accepts_rng[0]
+            else self.layers[0](x)
+        )
         h = self.activation(h)
         if self._activation_shardings is not None:
             spec = self._activation_shardings[0]
             if spec is not None:
                 h = jax.lax.with_sharding_constraint(h, spec)
         for i in range(1, len(self.layers) - 1):
-            h = self.layers[i](h, rng=rng)
+            h = (
+                self.layers[i](h, rng=rng)
+                if self._layer_accepts_rng[i]
+                else self.layers[i](h)
+            )
             if self.norm_layers is not None:
                 h = self.norm_layers[i - 1](h)
             h = self.activation(h)
             if self.context_fuses is not None:
-                h = self.context_fuses[i - 1](h, context, rng=rng)
+                if (
+                    self._context_fuse_accepts_rng is not None
+                    and self._context_fuse_accepts_rng[i - 1]
+                ):
+                    h = self.context_fuses[i - 1](h, context, rng=rng)
+                else:
+                    h = self.context_fuses[i - 1](h, context)
             if self._activation_shardings is not None:
                 spec = self._activation_shardings[i]
                 if spec is not None:
                     h = jax.lax.with_sharding_constraint(h, spec)
 
-        out = self.layers[-1](h, rng=rng) if len(self.layers) > 1 else h
+        if len(self.layers) > 1:
+            out = (
+                self.layers[-1](h, rng=rng)
+                if self._layer_accepts_rng[-1]
+                else self.layers[-1](h)
+            )
+        else:
+            out = h
 
         if self.activate_final:
             out = self.activation(out)
@@ -334,12 +364,22 @@ class ResNet(nnx.Module):
                     )
 
         self.hidden_layers = nnx.List(hidden_layers)
+        self._in_layer_accepts_rng = module_accepts_rng(self.in_layer)
+        self._hidden_layer_accepts_rng = tuple(
+            module_accepts_rng(layer) for layer in self.hidden_layers
+        )
+        self._out_layer_accepts_rng = module_accepts_rng(self.out_layer)
         self.norm_layers = nnx.List(norm_layers) if norm_cls is not None else None
         self.activation = activation
         self.activate_final = activate_final
 
         self.context_layers = (
             nnx.List(context_layers) if context_dim is not None else None
+        )
+        self._context_layer_accepts_rng = (
+            tuple(module_accepts_rng(layer) for layer in self.context_layers)
+            if self.context_layers is not None
+            else None
         )
 
     def __call__(
@@ -366,7 +406,11 @@ class ResNet(nnx.Module):
         if self.context_dim is None and context is not None:
             raise ValueError("context provided but context_dim is None")
 
-        h = self.in_layer(x, rng=rng)
+        h = (
+            self.in_layer(x, rng=rng)
+            if self._in_layer_accepts_rng
+            else self.in_layer(x)
+        )
         h = self.activation(h)
         if self._activation_shardings is not None:
             spec = self._activation_shardings[0]
@@ -376,10 +420,20 @@ class ResNet(nnx.Module):
             h_old = h
             if self.norm_layers is not None:
                 h = self.norm_layers[i](h)
-            h = self.hidden_layers[i](h, rng=rng)
+            h = (
+                self.hidden_layers[i](h, rng=rng)
+                if self._hidden_layer_accepts_rng[i]
+                else self.hidden_layers[i](h)
+            )
             h = self.activation(h)
             if self.context_layers is not None:
-                h = self.context_layers[i](h, context, rng=rng)
+                if (
+                    self._context_layer_accepts_rng is not None
+                    and self._context_layer_accepts_rng[i]
+                ):
+                    h = self.context_layers[i](h, context, rng=rng)
+                else:
+                    h = self.context_layers[i](h, context)
             if self._activation_shardings is not None:
                 spec = self._activation_shardings[i + 1]
                 if spec is not None:
@@ -387,7 +441,14 @@ class ResNet(nnx.Module):
 
             h = h + h_old
 
-        out = self.out_layer(h, rng=rng) if len(self.hidden_layers) > 0 else h
+        if len(self.hidden_layers) > 0:
+            out = (
+                self.out_layer(h, rng=rng)
+                if self._out_layer_accepts_rng
+                else self.out_layer(h)
+            )
+        else:
+            out = h
 
         if self.activate_final:
             out = self.activation(out)

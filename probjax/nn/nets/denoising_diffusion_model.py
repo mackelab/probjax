@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.loss_fn.denoising import build_time_dependent_denoising_loss
+from probjax.nn.utils import module_accepts_rng
 
 from probjax.nn.nets.config.denoising_diffusion_configs import (
     BaseSolverConfig,
@@ -67,6 +68,7 @@ class DiffusionDenoiser(nnx.Module):
 
         self.rngs = rngs
         self.net: ModuleLike = net
+        self._net_accepts_rng = module_accepts_rng(self.net)
         self.schedule = schedule
         self.precond = precond
         self.train_cfg = train_cfg
@@ -203,7 +205,10 @@ class DiffusionDenoiser(nnx.Module):
     ) -> PyTree[Array]:
         noise_embed = self.c_t(t)
         x_embed = jax.tree_util.tree_map(lambda x: self.c_in(t) * x, x_t)
-        out = self.net(noise_embed, x_embed, *args, rng=rng, **kwargs)
+        if self._net_accepts_rng:
+            out = self.net(noise_embed, x_embed, *args, rng=rng, **kwargs)
+        else:
+            out = self.net(noise_embed, x_embed, *args, **kwargs)
         if self.last_layer is not None:
             out = jax.tree_util.tree_map(self.last_layer, out)
         return out

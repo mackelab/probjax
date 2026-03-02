@@ -6,7 +6,11 @@ from flax import nnx
 
 from probjax.nn.nets.simple import MLP
 
-from probjax.nn.utils import filter_precision_kwargs, get_active_precision_kwargs
+from probjax.nn.utils import (
+    filter_precision_kwargs,
+    get_active_precision_kwargs,
+    module_accepts_rng,
+)
 from probjax.utils.typing import (
     Array,
     ArrayLike,
@@ -127,6 +131,7 @@ class CouplingMLP(nnx.Module):
             **filter_precision_kwargs(mlp_cls, **precision_kwargs),
             **kwargs,
         )
+        self._conditioner_accepts_rng = module_accepts_rng(self.conditioner)
 
     def __call__(
         self,
@@ -183,7 +188,10 @@ class CouplingMLP(nnx.Module):
             conditioner_input = jnp.concatenate([x1, context], axis=-1)
 
         # Compute bijector parameters
-        bijector_params = self.conditioner(conditioner_input, rng=rng)
+        if self._conditioner_accepts_rng:
+            bijector_params = self.conditioner(conditioner_input, rng=rng)
+        else:
+            bijector_params = self.conditioner(conditioner_input)
 
         # Apply bijective transformation to x2, keeping x1 unchanged
         y1 = x1

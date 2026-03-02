@@ -13,6 +13,11 @@ from ott.solvers.linear import sinkhorn
 from probjax.utils.typing import Array, ArrayLike, ModuleLikeType
 
 
+_RNG_SUPPORT_BY_TYPE: dict[type, bool] = {
+    nnx.Linear: False,
+}
+
+
 def identity_1x1(_, shape: Sequence[int], dtype=jnp.float32):
     """Kernel init for a 1×1 Conv that starts as identity.
 
@@ -145,6 +150,35 @@ def get_active_precision_kwargs(
     if preferred_element_type is not None:
         precision_kwargs["preferred_element_type"] = preferred_element_type
     return precision_kwargs
+
+
+def call_with_optional_rng(module, *args, rng=None, **kwargs):
+    """Call a module/function and pass `rng` only if supported."""
+    if rng is None:
+        return module(*args, **kwargs)
+
+    if not module_accepts_rng(module):
+        return module(*args, **kwargs)
+
+    return module(*args, rng=rng, **kwargs)
+
+
+def module_accepts_rng(module) -> bool:
+    module_type = type(module)
+    cached = _RNG_SUPPORT_BY_TYPE.get(module_type)
+    if cached is not None:
+        return cached
+
+    call_target = module.__call__ if hasattr(module, "__call__") else module
+    try:
+        params = inspect.signature(call_target).parameters.values()
+        supports_rng = any(
+            p.name == "rng" or p.kind == inspect.Parameter.VAR_KEYWORD for p in params
+        )
+    except (TypeError, ValueError):
+        supports_rng = True
+    _RNG_SUPPORT_BY_TYPE[module_type] = supports_rng
+    return supports_rng
 
 
 def extract_permutation(M: jnp.ndarray) -> jnp.ndarray:
