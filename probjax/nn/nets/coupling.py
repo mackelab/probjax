@@ -132,6 +132,7 @@ class CouplingMLP(nnx.Module):
         self,
         x: ArrayLike,
         context: Optional[ArrayLike] = None,
+        rng: jax.Array | None = None,
         **bijector_kwargs,
     ) -> Array:
         """Apply the coupling transformation.
@@ -182,7 +183,7 @@ class CouplingMLP(nnx.Module):
             conditioner_input = jnp.concatenate([x1, context], axis=-1)
 
         # Compute bijector parameters
-        bijector_params = self.conditioner(conditioner_input)
+        bijector_params = self.conditioner(conditioner_input, rng=rng)
 
         # Apply bijective transformation to x2, keeping x1 unchanged
         y1 = x1

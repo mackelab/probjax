@@ -112,7 +112,7 @@ class Affine(nnx.Module):
             bias_init(rngs.next(), shape=(in_out_features,), dtype=param_dtype)
         )
 
-    def __call__(self, x: ArrayLike) -> Array:
+    def __call__(self, x: ArrayLike, *, rng: jax.Array | None = None) -> Array:
         """Apply affine transformation to input.
 
         Args:
@@ -121,6 +121,7 @@ class Affine(nnx.Module):
         Returns:
             Array with same shape as x, with affine transformation applied.
         """
+        del rng
         x = jnp.asarray(x)
         scale = self.scale[...].astype(self.dtype) if self.dtype else self.scale[...]
         bias = self.bias[...].astype(self.dtype) if self.dtype else self.bias[...]
@@ -148,7 +149,7 @@ class Flip(nnx.Module):
         self.axis = axis
         self._mesh = sharding
 
-    def __call__(self, x: ArrayLike, *args) -> Array:
+    def __call__(self, x: ArrayLike, *args, rng: jax.Array | None = None) -> Array:
         """Flip the input array along the specified axis.
 
         Args:
@@ -158,6 +159,7 @@ class Flip(nnx.Module):
         Returns:
             Array with same shape as x, flipped along the specified axis.
         """
+        del args, rng
         x = jnp.asarray(x)
         return jnp.flip(x, axis=self.axis)
 
@@ -195,7 +197,7 @@ class Permute(nnx.Module):
         self.permutation = nnx.Variable(permutation)
         self.axis = axis
 
-    def __call__(self, x: ArrayLike, *args) -> Array:
+    def __call__(self, x: ArrayLike, *args, rng: jax.Array | None = None) -> Array:
         """Apply permutation to the input array along the specified axis.
 
         Args:
@@ -208,6 +210,7 @@ class Permute(nnx.Module):
         Raises:
             ValueError: If permutation indices are out of bounds for the axis.
         """
+        del args, rng
         x = jnp.asarray(x)
         return jnp.take(x, self.permutation[...], axis=self.axis)
 
@@ -279,7 +282,7 @@ class Rotate(nnx.Module):
                 )
             )
 
-    def __call__(self, x: ArrayLike, *args) -> Array:
+    def __call__(self, x: ArrayLike, *args, rng: jax.Array | None = None) -> Array:
         """Apply rotation transformation to input.
 
         Args:
@@ -289,6 +292,7 @@ class Rotate(nnx.Module):
         Returns:
             Array with same shape as x, with rotation applied.
         """
+        del args, rng
         x = jnp.asarray(x)
 
         if not self.learnable:

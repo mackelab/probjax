@@ -56,10 +56,14 @@ class FlowMatcher(nnx.Module):
         if not isinstance(schedule, InterpolationScheduleProtocol):
             raise TypeError("schedule must implement InterpolationScheduleProtocol")
         if not isinstance(preconditioning, FlowPreconditioningProtocol):
-            raise TypeError("preconditioning must implement FlowPreconditioningProtocol")
+            raise TypeError(
+                "preconditioning must implement FlowPreconditioningProtocol"
+            )
         if not isinstance(train_cfg, FlowTrainingConfigProtocol):
             raise TypeError("train_cfg must implement FlowTrainingConfigProtocol")
-        if solver_cfg is not None and not isinstance(solver_cfg, FlowSolverConfigProtocol):
+        if solver_cfg is not None and not isinstance(
+            solver_cfg, FlowSolverConfigProtocol
+        ):
             raise TypeError("solver_cfg must implement FlowSolverConfigProtocol")
 
         self.rngs = rngs
@@ -83,7 +87,12 @@ class FlowMatcher(nnx.Module):
         self.solver_cfg = solver_cfg
 
     def __call__(
-        self, t: ArrayLike, x: PyTree[Array], *args, **kwargs
+        self,
+        t: ArrayLike,
+        x: PyTree[Array],
+        *args,
+        rng: jax.Array | None = None,
+        **kwargs,
     ) -> PyTree[Array]:
         """Forward pass of the model - v-prediction.
 
@@ -108,7 +117,7 @@ class FlowMatcher(nnx.Module):
         x_normed, approx_mut, approx_stdt = self.preconditioning.normalize(
             self.schedule, t, x, mu0, mu1, std0, std1
         )
-        residual_pred = self.net(t, x_normed, *args, **kwargs)
+        residual_pred = self.net(t, x_normed, *args, rng=rng, **kwargs)
         residual_correction = jax.tree_util.tree_map(
             lambda r: approx_stdt * r, residual_pred
         )
@@ -162,9 +171,7 @@ class FlowMatcher(nnx.Module):
         # Get shape from data for time scheduling
         data_shape = data.shape
         ndims = data.ndim - 2
-        times = self.train_cfg.sample_times(
-            rng_times, (data_shape[0],) + (1,) * ndims
-        )
+        times = self.train_cfg.sample_times(rng_times, (data_shape[0],) + (1,) * ndims)
 
         loss = loss_fn(times, x0, data, *args, **kwargs)
         return loss
@@ -175,7 +182,9 @@ class FlowMatcher(nnx.Module):
         t_max: float = 1.0,
         num_steps: int | None = None,
     ) -> Array:
-        return self.solver_cfg.solve_schedule(t_min=t_min, t_max=t_max, num_steps=num_steps)
+        return self.solver_cfg.solve_schedule(
+            t_min=t_min, t_max=t_max, num_steps=num_steps
+        )
 
 
 class LinearFlow(FlowMatcher):

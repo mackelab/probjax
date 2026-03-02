@@ -4,8 +4,6 @@ from flax import nnx
 from jax.typing import ArrayLike
 
 
-
-
 class MaskedLinear(nnx.Linear):
     def __init__(
         self,
@@ -24,7 +22,8 @@ class MaskedLinear(nnx.Linear):
             raise ValueError("Mask shape must be (in_features, out_features)")
         self.mask = nnx.Variable(mask)
 
-    def __call__(self, inputs):
+    def __call__(self, inputs, rng: jax.Array | None = None):
+        del rng
         kernel = jnp.where(self.mask[...], self.kernel[...], 0.0)
         bias = self.bias[...] if self.bias else None
 
@@ -37,9 +36,7 @@ class MaskedLinear(nnx.Linear):
         # existing code
         dot_general_kwargs = {}
         if self.preferred_element_type is not None:
-            dot_general_kwargs["preferred_element_type"] = (
-                self.preferred_element_type
-            )
+            dot_general_kwargs["preferred_element_type"] = self.preferred_element_type
         y = self.dot_general(
             inputs,
             kernel,

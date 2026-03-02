@@ -58,7 +58,10 @@ class RecurrentCell(nnx.Module):
     Subclasses implement sequence transforms with a fixed model dimension.
     """
 
-    def __call__(self, inputs: jax.Array) -> jax.Array:  # pragma: no cover - abstract
+    def __call__(
+        self, inputs: jax.Array, *, rng: jax.Array | None = None
+    ) -> jax.Array:  # pragma: no cover - abstract
+        del rng
         del inputs
         raise NotImplementedError
 
@@ -129,7 +132,8 @@ class LRUCell(RecurrentCell):
         self.C_im = nnx.Param(C_im)
         self.D = nnx.Param(matrix_init(rngs.params(), (model_dim, model_dim)))
 
-    def __call__(self, inputs: jax.Array) -> jax.Array:
+    def __call__(self, inputs: jax.Array, *, rng: jax.Array | None = None) -> jax.Array:
+        del rng
         inputs = jnp.asarray(inputs)
 
         def _single(x_td):
@@ -250,7 +254,8 @@ class MambaCell(RecurrentCell):
         self.to_c = nnx.Linear(model_dim, sd, rngs=rngs, **precision_kwargs)
         self.to_delta = nnx.Linear(model_dim, model_dim, rngs=rngs, **precision_kwargs)
 
-    def __call__(self, inputs: jax.Array) -> jax.Array:
+    def __call__(self, inputs: jax.Array, *, rng: jax.Array | None = None) -> jax.Array:
+        del rng
         added_batch = False
         if inputs.ndim == 2:
             inputs = inputs[None, ...]
@@ -350,7 +355,8 @@ class SSDCell(RecurrentCell):
         )
         self.post = None  # by construction preserves model_dim
 
-    def __call__(self, inputs: jax.Array) -> jax.Array:
+    def __call__(self, inputs: jax.Array, *, rng: jax.Array | None = None) -> jax.Array:
+        del rng
         added_batch = False
         if inputs.ndim == 2:
             inputs = inputs[None, ...]

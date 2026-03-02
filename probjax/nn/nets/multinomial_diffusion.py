@@ -128,22 +128,24 @@ class MultinomialDiffusion(nnx.Module):
         t: ArrayLike,
         x_features: Array,
         *args,
+        rng: jax.Array | None = None,
         **kwargs,
     ) -> Array:
         t_cont = self._to_continuous_time(t)
         t_embed = self.c_t(t_cont)
         x_embed = self.c_in(t_cont)[..., None] * x_features
-        return self.net(t_embed, x_embed, *args, **kwargs)
+        return self.net(t_embed, x_embed, *args, rng=rng, **kwargs)
 
     def __call__(
         self,
         t: ArrayLike,
         x_t: Array,
         *args,
+        rng: jax.Array | None = None,
         **kwargs,
     ) -> Array:
         x_features = self._net_input(x_t)
-        return self._net_forward(t, x_features, *args, **kwargs)
+        return self._net_forward(t, x_features, *args, rng=rng, **kwargs)
 
     def _predict_x0_logits_from_probs(
         self,
@@ -279,7 +281,9 @@ class MultinomialDiffusion(nnx.Module):
     ) -> Array:
         t_cont = self._to_continuous_time(t)
         if t_prev is None:
-            raise ValueError("p_probs requires t_prev for continuous-time reverse transitions.")
+            raise ValueError(
+                "p_probs requires t_prev for continuous-time reverse transitions."
+            )
         t_prev_cont = self._to_continuous_time(t_prev)
         x0_probs = self.predict_x0_probs(t_cont, x_t, *args, **kwargs)
         return self.schedule.posterior_mixture_probs(
@@ -492,6 +496,7 @@ class MultinomialLogSNRDM(MultinomialDiffusion):
             rngs=rngs,
             sharding=sharding,
         )
+
 
 __all__ = [
     "CategoricalScheduleProtocol",

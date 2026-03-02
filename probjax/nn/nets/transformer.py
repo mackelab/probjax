@@ -179,17 +179,17 @@ class Transformer(nnx.Module):
             }
 
         # Norm layers.
-        self.layer_norms_attn = nnx.List(
-            [norm_cls(model_dim, rngs=rngs, **norm_kwargs) for _ in range(num_layers)]
-        )
-        self.layer_norms_dense = nnx.List(
-            [norm_cls(model_dim, rngs=rngs, **norm_kwargs) for _ in range(num_layers)]
-        )
+        self.layer_norms_attn = nnx.List([
+            norm_cls(model_dim, rngs=rngs, **norm_kwargs) for _ in range(num_layers)
+        ])
+        self.layer_norms_dense = nnx.List([
+            norm_cls(model_dim, rngs=rngs, **norm_kwargs) for _ in range(num_layers)
+        ])
 
         if self.enable_cross_attention:
-            self.layer_norms_cross_attn = nnx.List(
-                [norm_cls(model_dim, rngs=rngs, **norm_kwargs) for _ in range(num_layers)]
-            )
+            self.layer_norms_cross_attn = nnx.List([
+                norm_cls(model_dim, rngs=rngs, **norm_kwargs) for _ in range(num_layers)
+            ])
 
         # Attention block.
         attention_fn = (
@@ -322,8 +322,7 @@ class Transformer(nnx.Module):
 
         if self.enable_cross_attention:
             self.layer_norms_cross_attn = nnx.List([
-                norm_cls(model_dim, rngs=rngs, **norm_kwargs)
-                for _ in range(num_layers)
+                norm_cls(model_dim, rngs=rngs, **norm_kwargs) for _ in range(num_layers)
             ])
 
         # Attention block.
@@ -453,10 +452,9 @@ class Transformer(nnx.Module):
     ) -> MLPShardingSpec | None:
         if sharding is None:
             return None
-        per_layer = (
-            [TRANSFORMER_MLP_COLUMN_SHARDING] * num_hidden_layers
-            + [TRANSFORMER_MLP_ROW_SHARDING]
-        )
+        per_layer = [TRANSFORMER_MLP_COLUMN_SHARDING] * num_hidden_layers + [
+            TRANSFORMER_MLP_ROW_SHARDING
+        ]
         return MLPShardingSpec(mesh=sharding, per_layer=per_layer)
 
     def __call__(
@@ -471,6 +469,7 @@ class Transformer(nnx.Module):
         bias_cross: AttentionBias | Array | None = None,
         deterministic: bool | None = None,
         decode: bool = False,
+        rng: jax.Array | None = None,
     ) -> Array:  # [B, T, D]
         """Transforms input embedding sequences to output embedding sequences."""
 
@@ -506,16 +505,19 @@ class Transformer(nnx.Module):
             q_res = q
             q = self.layer_norms_attn[i](q)
             if context is not None and self.context_dim is not None:
-                q = self.context_layers1[i](q, context)
+                q = self.context_layers1[i](q, context, rng=rng)
             q = self.attention_blocks[i](
-                q, mask=mask, bias=bias, deterministic=deterministic, decode=decode
+                q,
+                mask=mask,
+                bias=bias,
+                deterministic=deterministic,
+                decode=decode,
+                rng=rng,
             )
             if self._activation_sharding is not None:
-                q = jax.lax.with_sharding_constraint(
-                    q, self._activation_sharding
-                )
+                q = jax.lax.with_sharding_constraint(q, self._activation_sharding)
             q = self.attn_skip_fuse[i](
-                q_res, q, context=context, deterministic=deterministic
+                q_res, q, context=context, deterministic=deterministic, rng=rng
             )
 
             # Then cross attention if wanted
@@ -530,33 +532,31 @@ class Transformer(nnx.Module):
                     bias=bias_cross,
                     deterministic=deterministic,
                     decode=False,
+                    rng=rng,
                 )
                 if self._activation_sharding is not None:
-                    q = jax.lax.with_sharding_constraint(
-                        q, self._activation_sharding
-                    )
+                    q = jax.lax.with_sharding_constraint(q, self._activation_sharding)
                 q = self.cross_skip_fuse[i](
-                    q_res, q, context=context, deterministic=deterministic
+                    q_res, q, context=context, deterministic=deterministic, rng=rng
                 )
 
             # Then the dense block and global context.
             q_res = q
             q = self.layer_norms_dense[i](q)
             if context is not None and self.context_dim is not None:
-                q = self.context_layers2[i](q, context)
+                q = self.context_layers2[i](q, context, rng=rng)
 
-            q = self.dense_blocks[i](q)
+            q = self.dense_blocks[i](q, rng=rng)
             if self._activation_sharding is not None:
-                q = jax.lax.with_sharding_constraint(
-                    q, self._activation_sharding
-                )
+                q = jax.lax.with_sharding_constraint(q, self._activation_sharding)
             if self.dropout_dense is not None:
-                q = self.dropout_dense[i](q, deterministic=deterministic)
+                q = self.dropout_dense[i](q, deterministic=deterministic, rngs=rng)
             q = self.mlp_skip_fuse[i](
                 q_res,
                 q,
                 context=context,
                 deterministic=deterministic,
+                rng=rng,
             )
 
         return restore_from_btd(q, q_shape)

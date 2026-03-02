@@ -198,11 +198,12 @@ class DiffusionDenoiser(nnx.Module):
         t: ArrayLike,
         x_t: PyTree[Array],
         *args,
+        rng: jax.Array | None = None,
         **kwargs,
     ) -> PyTree[Array]:
         noise_embed = self.c_t(t)
         x_embed = jax.tree_util.tree_map(lambda x: self.c_in(t) * x, x_t)
-        out = self.net(noise_embed, x_embed, *args, **kwargs)
+        out = self.net(noise_embed, x_embed, *args, rng=rng, **kwargs)
         if self.last_layer is not None:
             out = jax.tree_util.tree_map(self.last_layer, out)
         return out

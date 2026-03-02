@@ -142,12 +142,8 @@ class LRUModel(nnx.Module):
         linear_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
         linear_kwargs['kernel_init'] = init_default
 
-        self.in_layer = nnx.Linear(
-            input_dim, model_dim, rngs=rngs, **linear_kwargs
-        )
-        self.out_layer = nnx.Linear(
-            model_dim, output_dim, rngs=rngs, **linear_kwargs
-        )
+        self.in_layer = nnx.Linear(input_dim, model_dim, rngs=rngs, **linear_kwargs)
+        self.out_layer = nnx.Linear(model_dim, output_dim, rngs=rngs, **linear_kwargs)
 
         # Layer norms for LRU and MLP blocks
         self.layer_norms_lru = nnx.List([
@@ -214,6 +210,7 @@ class LRUModel(nnx.Module):
         self,
         inputs: ArrayLike,
         deterministic: bool | None = None,
+        rng: jax.Array | None = None,
     ) -> Array:
         """Forward pass through the LRU model.
 
@@ -240,32 +237,32 @@ class LRUModel(nnx.Module):
                 # Alternate between forward and backward processing
                 if i % 2 == 0:
                     h_cell_in = self.block_norms[i](h_normed)
-                    h_cell = self.recurrent_layers[i](h_cell_in)
+                    h_cell = self.recurrent_layers[i](h_cell_in, rng=rng)
                 else:
                     # Reverse sequence, apply LRU, then reverse back
                     h_reversed = h_normed[..., ::-1, :]
                     h_cell_in = self.block_norms[i](h_reversed)
-                    h_cell = self.recurrent_layers[i](h_cell_in)
+                    h_cell = self.recurrent_layers[i](h_cell_in, rng=rng)
                     h_cell = h_cell[..., ::-1, :]
             else:
                 h_cell_in = self.block_norms[i](h_normed)
-                h_cell = self.recurrent_layers[i](h_cell_in)
+                h_cell = self.recurrent_layers[i](h_cell_in, rng=rng)
 
             # Residual connection for LRU
             # GLU head: activation + optional dropout + gated linear
             x = self.block_activation(h_cell)
             if self.block_dropout1 is not None:
-                x = self.block_dropout1[i](x, deterministic=deterministic)
+                x = self.block_dropout1[i](x, deterministic=deterministic, rngs=rng)
             x = self.block_out1[i](x) * jax.nn.sigmoid(self.block_out2[i](x))
             if self.block_dropout2 is not None:
-                x = self.block_dropout2[i](x, deterministic=deterministic)
+                x = self.block_dropout2[i](x, deterministic=deterministic, rngs=rng)
             h = h + x if self.skip_connection_lru else x
 
             # Apply layer norm before MLP layer
             h_normed = self.layer_norms_mlp[i](h)
 
             # Apply MLP layer
-            h_mlp = mlp_layer(h_normed)
+            h_mlp = mlp_layer(h_normed, rng=rng)
 
             # Residual connection for MLP
             h = h + h_mlp if self.skip_connection_mlp else h_mlp

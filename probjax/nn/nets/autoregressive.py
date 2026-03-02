@@ -92,17 +92,19 @@ class AutoregressiveMLP(nnx.Module):
             last_kernel = self.masked_mlp.layers[-1].kernel
             last_kernel[...] = jnp.zeros_like(last_kernel[...])
 
-    def predict_bij_params(self, x: jax.Array, context=None):
-        return self.masked_mlp(x, context)
+    def predict_bij_params(
+        self, x: jax.Array, context=None, *, rng: jax.Array | None = None
+    ):
+        return self.masked_mlp(x, context, rng=rng)
 
-    def __call__(self, x: jax.Array, context=None):
-        y = autoregressive_transform(x, self, context)
+    def __call__(self, x: jax.Array, context=None, *, rng: jax.Array | None = None):
+        y = autoregressive_transform(x, self, context, rng=rng)
         return y
 
-    def forward(self, x: jax.Array, context=None):
+    def forward(self, x: jax.Array, context=None, *, rng: jax.Array | None = None):
         def scan_fn(carry, i):
             x = carry
-            bij_params = self.masked_mlp(x, context)  # type: ignore
+            bij_params = self.masked_mlp(x, context, rng=rng)  # type: ignore
             # Get parameters for the i-th dimension using dynamic indexing
             bij_params_i = jax.lax.dynamic_slice(
                 bij_params,
@@ -122,14 +124,16 @@ class AutoregressiveMLP(nnx.Module):
         Tx, _ = jax.lax.scan(scan_fn, Tx, jnp.arange(self.in_out_features))
         return Tx
 
-    def inverse_and_logdet(self, Tx: jax.Array, context=None):
-        bij_params = self.masked_mlp(Tx, context)
+    def inverse_and_logdet(
+        self, Tx: jax.Array, context=None, *, rng: jax.Array | None = None
+    ):
+        bij_params = self.masked_mlp(Tx, context, rng=rng)
         bij_params = jnp.reshape(bij_params, Tx.shape + (self.bijector_dim,))
         x, logdet = jax.vmap(self.bijector_inv)(bij_params, Tx)
         return x, logdet
 
-    def inverse(self, Tx: jax.Array, context=None):
-        bij_params = self.masked_mlp(Tx, context)
+    def inverse(self, Tx: jax.Array, context=None, *, rng: jax.Array | None = None):
+        bij_params = self.masked_mlp(Tx, context, rng=rng)
         bij_params = jnp.reshape(
             bij_params,
             bij_params.shape[:-1]
@@ -204,20 +208,38 @@ class AutoregressiveTransformer(nnx.Module):
             pos_embed = PosEncode(model_dim, rngs=rngs, sharding=sharding)
         self.pos_embed = pos_embed
 
-    def predict_bij_params(self, x: jax.Array, context=None, k=None, v=None, **kwargs):
+    def predict_bij_params(
+        self,
+        x: jax.Array,
+        context=None,
+        k=None,
+        v=None,
+        *,
+        rng: jax.Array | None = None,
+        **kwargs,
+    ):
         start_token = self.start_token.reshape((1,) * (x.ndim - 1) + (-1,))
         start_token = jnp.broadcast_to(
             start_token, x.shape[:-2] + (1,) + (self.transformer.model_dim,)
         )
         x = self.encoder(x)  # type: ignore
         x = jnp.concatenate([start_token, x], axis=-2)
-        x = self.pos_embed(x)  # type: ignore
-        h = self.transformer(x, k, v, context=context, **kwargs)[..., :-1, :]  # type: ignore
+        x = self.pos_embed(x, rng=rng)  # type: ignore
+        h = self.transformer(x, k, v, context=context, rng=rng, **kwargs)[..., :-1, :]  # type: ignore
         bij_params = self.decoder(h)  # type: ignore
         return bij_params
 
-    def __call__(self, x: jax.Array, context=None, k=None, v=None, **kwargs):
-        y = autoregressive_transform(x, self, k, v, context, **kwargs)
+    def __call__(
+        self,
+        x: jax.Array,
+        context=None,
+        k=None,
+        v=None,
+        *,
+        rng: jax.Array | None = None,
+        **kwargs,
+    ):
+        y = autoregressive_transform(x, self, k, v, context, rng=rng, **kwargs)
         return y
 
     def forward(

@@ -60,6 +60,7 @@ class DropPath(Module):
         inputs: ArrayLike,
         *,
         deterministic: bool | None = None,
+        rng: jax.Array | None = None,
         rngs: rnglib.Rngs | rnglib.RngStream | jax.Array | None = None,
         scale_by_keep: bool | None = None,
     ) -> Array:
@@ -81,6 +82,9 @@ class DropPath(Module):
         if self.drop_rate == 1.0:
             return jnp.zeros_like(x)
 
+        if rng is not None and rngs is None:
+            rngs = rng
+
         rngs = first_from(
             rngs,
             self.rngs,
@@ -101,9 +105,7 @@ class DropPath(Module):
 
         keep_prob = 1.0 - self.drop_rate
         if self.broadcast_dims is None:
-            mask_shape = (
-                () if x.ndim == 0 else (x.shape[0],) + (1,) * (x.ndim - 1)
-            )
+            mask_shape = () if x.ndim == 0 else (x.shape[0],) + (1,) * (x.ndim - 1)
         else:
             mask_shape = tuple(
                 1 if dim in self.broadcast_dims else x.shape[dim]

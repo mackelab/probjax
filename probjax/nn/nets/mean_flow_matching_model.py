@@ -50,10 +50,14 @@ class MeanFlowMatcher(nnx.Module):
         if not isinstance(schedule, InterpolationScheduleProtocol):
             raise TypeError("schedule must implement InterpolationScheduleProtocol")
         if not isinstance(preconditioning, FlowPreconditioningProtocol):
-            raise TypeError("preconditioning must implement FlowPreconditioningProtocol")
+            raise TypeError(
+                "preconditioning must implement FlowPreconditioningProtocol"
+            )
         if not isinstance(train_cfg, FlowPairTrainingConfigProtocol):
             raise TypeError("train_cfg must implement FlowPairTrainingConfigProtocol")
-        if solver_cfg is not None and not isinstance(solver_cfg, FlowSolverConfigProtocol):
+        if solver_cfg is not None and not isinstance(
+            solver_cfg, FlowSolverConfigProtocol
+        ):
             raise TypeError("solver_cfg must implement FlowSolverConfigProtocol")
 
         self.schedule = schedule
@@ -62,7 +66,13 @@ class MeanFlowMatcher(nnx.Module):
         self.solver_cfg = solver_cfg
 
     def __call__(
-        self, t: ArrayLike, x: Array, r: ArrayLike | None = None, *args, **kwargs
+        self,
+        t: ArrayLike,
+        x: Array,
+        r: ArrayLike | None = None,
+        *args,
+        rng: jax.Array | None = None,
+        **kwargs,
     ) -> Array:
         """
         Args:
@@ -84,9 +94,7 @@ class MeanFlowMatcher(nnx.Module):
         approx_mu_t = self.schedule.path_mean(t, mu0, mu1)
         approx_std_t = jnp.maximum(self.schedule.path_std(t, std0, std1), eps)
 
-        x_normed = jax.tree_util.tree_map(
-            lambda x: (x - approx_mu_t) / approx_std_t, x
-        )
+        x_normed = jax.tree_util.tree_map(lambda x: (x - approx_mu_t) / approx_std_t, x)
         std_t = approx_std_t
         std_r = jnp.maximum(self.schedule.path_std(r, std0, std1), eps)
         a_t = self.schedule.a_t(t)
@@ -100,7 +108,7 @@ class MeanFlowMatcher(nnx.Module):
         geo_std = jnp.sqrt(std_r * std_t)
         scale_residual = geo_std * g(r - t)
 
-        pred_mu1 = self.net(t, x_normed, *args, r=r, **kwargs)
+        pred_mu1 = self.net(t, x_normed, *args, r=r, rng=rng, **kwargs)
 
         return mu1 - mu0 + scale * (x - approx_mu_t) + scale_residual * pred_mu1
 
@@ -148,7 +156,9 @@ class MeanFlowMatcher(nnx.Module):
         t_max: float = 1.0,
         num_steps: int | None = None,
     ) -> Array:
-        return self.solver_cfg.solve_schedule(t_min=t_min, t_max=t_max, num_steps=num_steps)
+        return self.solver_cfg.solve_schedule(
+            t_min=t_min, t_max=t_max, num_steps=num_steps
+        )
 
 
 class LinearMeanFlow(MeanFlowMatcher):

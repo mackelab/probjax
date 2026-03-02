@@ -303,11 +303,11 @@ class NormalizingFlow(nnx.Module):
         self._mesh = sharding
         super().__init__()
 
-    def transform(self, x):
-        return self.transformation(x)
+    def transform(self, x, *, rng: jax.Array | None = None):
+        return self.transformation(x, rng=rng)
 
-    def __call__(self, x):
-        return self.transform(x)
+    def __call__(self, x, *, rng: jax.Array | None = None):
+        return self.transform(x, rng=rng)
 
     def sample(self, rng, shape=()):
         """Sample from the flow distribution."""

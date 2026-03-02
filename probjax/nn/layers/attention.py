@@ -53,6 +53,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         mask: AttentionMask | ArrayLike | None = None,
         bias: AttentionBias | ArrayLike | None = None,
         deterministic: bool | None = None,
+        rng: jax.Array | None = None,
         rngs: rnglib.Rngs | rnglib.RngStream | None = None,
         sow_weights: bool = False,
         decode: bool | None = False,
@@ -90,6 +91,8 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         Returns:
         output of shape `[batch_sizes..., length, features]`.
         """
+        if rng is not None and rngs is None:
+            rngs = lambda: rng
         if rngs is None:
             rngs = self.rngs
         elif isinstance(rngs, rnglib.Rngs):

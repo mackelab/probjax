@@ -56,7 +56,13 @@ class PosEncode(nnx.Module):
             raise ValueError("max_seq_len must be positive")
         self.max_seq_len = max_seq_len
 
-    def __call__(self, x: Array, idx: Optional[Array] = None) -> Array:
+    def __call__(
+        self,
+        x: Array,
+        idx: Optional[Array] = None,
+        *,
+        rng: jax.Array | None = None,
+    ) -> Array:
         """Add sinusoidal positional encoding to input.
 
         Args:
@@ -70,6 +76,7 @@ class PosEncode(nnx.Module):
         Raises:
             ValueError: If sequence length exceeds max_seq_len.
         """
+        del rng
         seq_len = x.shape[-2]
         token_dim = x.shape[-1]
 
@@ -270,6 +277,7 @@ class RotaryPosEncode(nnx.Module):
         idx: ArrayLike | None = None,
         *,
         offset=0,
+        rng: jax.Array | None = None,
     ) -> Array:
         """Apply rotary positional encoding.
 
@@ -300,6 +308,7 @@ class RotaryPosEncode(nnx.Module):
                    rope = RotaryPosEncode(model_dim, rotary_dim=64)
                    x = rope(x, idx=coords)
         """
+        del rng
         x = jnp.asarray(x)
         seq_len = x.shape[-2]
 
@@ -311,9 +320,7 @@ class RotaryPosEncode(nnx.Module):
         if idx_arr is not None and idx_arr.ndim > 2:
             raise ValueError("idx must be rank 1 or 2")
 
-        position_dims = (
-            1 if idx_arr is None or idx_arr.ndim == 1 else idx_arr.shape[-1]
-        )
+        position_dims = 1 if idx_arr is None or idx_arr.ndim == 1 else idx_arr.shape[-1]
 
         offsets = self._normalize_offset(offset, position_dims)
 
@@ -344,9 +351,7 @@ class RotaryPosEncode(nnx.Module):
                 pos_axis = idx_arr[:, axis] + offsets[axis]
                 cos_axis, sin_axis = self._compute_cos_sin(pos_axis, inv_freq_axis)
                 axis_slice = rotary_slice[..., axis * chunk : (axis + 1) * chunk]
-                rotated_parts.append(
-                    self._apply_rotary(axis_slice, cos_axis, sin_axis)
-                )
+                rotated_parts.append(self._apply_rotary(axis_slice, cos_axis, sin_axis))
             rotary_out = jnp.concatenate(rotated_parts, axis=-1)
 
         out = (
@@ -462,7 +467,13 @@ class LearnablePosEncode(nnx.Module):
             rngs=rngs,
         )
 
-    def __call__(self, x: ArrayLike, idx: ArrayLike | None = None) -> Array:
+    def __call__(
+        self,
+        x: ArrayLike,
+        idx: ArrayLike | None = None,
+        *,
+        rng: jax.Array | None = None,
+    ) -> Array:
         """Add learned positional embeddings to input.
 
         Args:
@@ -476,6 +487,7 @@ class LearnablePosEncode(nnx.Module):
         Raises:
             ValueError: If sequence length exceeds max_seq_len.
         """
+        del rng
         x = jnp.asarray(x)
         seq_len = x.shape[-2]
 
@@ -570,7 +582,7 @@ class GaussianFourierEmbedding(nnx.Module):
         else:
             self.P = nnx.Variable(P_init)
 
-    def __call__(self, inputs: ArrayLike) -> Array:
+    def __call__(self, inputs: ArrayLike, *, rng: jax.Array | None = None) -> Array:
         """Apply Gaussian Fourier embedding to inputs.
 
         Args:
@@ -579,6 +591,7 @@ class GaussianFourierEmbedding(nnx.Module):
         Returns:
             Array of shape [..., output_dim] with Fourier features.
         """
+        del rng
         inputs = jnp.asarray(inputs)
         P = self.P[...]
 
@@ -641,7 +654,7 @@ class OneHot(nnx.Module):
         self.num_tokens = max_num_sequence
         self._mesh = sharding
 
-    def __call__(self, x: ArrayLike) -> Array:
+    def __call__(self, x: ArrayLike, *, rng: jax.Array | None = None) -> Array:
         """One-hot encode the input.
 
         Args:
@@ -653,6 +666,7 @@ class OneHot(nnx.Module):
         Raises:
             ValueError: If input contains indices outside valid range.
         """
+        del rng
         x = jnp.asarray(x)
 
         # Validate input range
