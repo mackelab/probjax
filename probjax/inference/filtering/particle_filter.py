@@ -122,7 +122,7 @@ def build_kernel(
                 log_normalizer = jax.scipy.special.logsumexp(log_weights)
                 log_weights = log_weights - log_normalizer
             else:
-                new_log_weights = log_weights
+                pass
             log_likelihood = 0.0  # Without observation we don't have a logZ
 
         # Resample if necessary
@@ -189,3 +189,7 @@ class ParticleFilter(FilterAPI):
 
     init = init
     build_kernel = build_kernel
+
+    @staticmethod
+    def default_unpack(state, info):
+        return state.particles

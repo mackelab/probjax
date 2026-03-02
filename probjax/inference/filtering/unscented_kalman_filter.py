@@ -7,13 +7,13 @@ from jax.typing import ArrayLike
 from probjax.inference.filtering.base import FilterAPI
 
 
-class UncentedKalmanFilterState(NamedTuple):
+class UnscentedKalmanFilterState(NamedTuple):
     mean: ArrayLike
     cov: ArrayLike
     t: Optional[ArrayLike]
 
 
-class UncentedKalmanFilterInfo(NamedTuple):
+class UnscentedKalmanFilterInfo(NamedTuple):
     mean_pred: ArrayLike
     cov_pred: ArrayLike
     log_likelihood: Optional[ArrayLike]
@@ -207,7 +207,7 @@ def unscented_transform(
 
 def init(
     mu0: ArrayLike, cov0: ArrayLike, t: Optional[float | int] = None
-) -> UncentedKalmanFilterState:
+) -> UnscentedKalmanFilterState:
     """Initialize the unscented Kalman filter.
 
     Args:
@@ -216,9 +216,9 @@ def init(
         t (Optional[float | int], optional): Time. Defaults to None.
 
     Returns:
-        UncentedKalmanFilterState: Initial state of the unscented Kalman filter
+        UnscentedKalmanFilterState: Initial state of the unscented Kalman filter
     """
-    return UncentedKalmanFilterState(mu0, cov0, t)
+    return UnscentedKalmanFilterState(mu0, cov0, t)
 
 
 def build_kernel(
@@ -244,22 +244,22 @@ def build_kernel(
     """
 
     def kernel(
-        state: UncentedKalmanFilterState,
+        state: UnscentedKalmanFilterState,
         t: Optional[float | int] = None,
         observed: Optional[ArrayLike] = None,
         rng_key: Optional[jnp.ndarray] = None,
-    ) -> Tuple[UncentedKalmanFilterState, UncentedKalmanFilterInfo]:
+    ) -> Tuple[UnscentedKalmanFilterState, UnscentedKalmanFilterInfo]:
         """One step of the unscented Kalman filter.
 
         Args:
-            state (UncentedKalmanFilterState): Mean and covariance of the state
+            state (UnscentedKalmanFilterState): Mean and covariance of the state
             t (Optional[float  |  int], optional): Time. Defaults to None.
             observed (Optional[ArrayLike], optional): Observation. Defaults to None.
             rng_key (Optional[jnp.ndarray], optional): Random generator key.
                 Defaults to None.
 
         Returns:
-            Tuple[UncentedKalmanFilterState, UncentedKalmanFilterInfo]: _description_
+            Tuple[UnscentedKalmanFilterState, UnscentedKalmanFilterInfo]: _description_
         """
 
         mu0 = state.mean
@@ -311,14 +311,14 @@ def build_kernel(
                 jnp.linalg.slogdet(cov_y)[1] + r.T @ jnp.linalg.solve(cov_y, r)
             )
 
-            return UncentedKalmanFilterState(mu1, cov1, t), UncentedKalmanFilterInfo(
+            return UnscentedKalmanFilterState(mu1, cov1, t), UnscentedKalmanFilterInfo(
                 mu1_, cov1_, log_likelihood
             )
         else:
             log_likelihood = jnp.array(0.0)
-            return UncentedKalmanFilterState(mu1_, cov1_, t), UncentedKalmanFilterInfo(
-                mu1_, cov1_, log_likelihood
-            )
+            return UnscentedKalmanFilterState(
+                mu1_, cov1_, t
+            ), UnscentedKalmanFilterInfo(mu1_, cov1_, log_likelihood)
 
     return kernel
 
@@ -342,3 +342,7 @@ class ukf(FilterAPI):
 
     init = init
     build_kernel = build_kernel
+
+    @staticmethod
+    def default_unpack(state, info):
+        return (state.mean, state.cov)

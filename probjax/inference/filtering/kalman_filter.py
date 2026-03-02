@@ -44,7 +44,7 @@ def build_kernel(
         state: KalmanFilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng: Optional[jnp.ndarray] = None,
+        rng_key: Optional[jnp.ndarray] = None,
     ) -> Tuple[KalmanFilterState, KalmanFilterInfo]:
         mu0 = state.mean
         cov0 = state.cov
@@ -55,8 +55,10 @@ def build_kernel(
         # Q a positive definite matrix
         Phi, Q = transition_model_fns(t_old, t)
 
-        assert isinstance(Q, (ArrayLike, LinearOperator)), "Q must be and Array"
-        assert isinstance(Phi, (ArrayLike, LinearOperator)), (
+        assert isinstance(Q, (jnp.ndarray, LinearOperator)), (
+            "Q must be an Array or LinearOperator"
+        )
+        assert isinstance(Phi, (jnp.ndarray, LinearOperator)), (
             "Phi must be an Array or LinearOperator"
         )
 
@@ -134,3 +136,7 @@ class kalman_filter(FilterAPI):
 
     init = init
     build_kernel = build_kernel
+
+    @staticmethod
+    def default_unpack(state, info):
+        return (state.mean, state.cov)

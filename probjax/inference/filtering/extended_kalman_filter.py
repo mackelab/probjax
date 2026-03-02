@@ -12,8 +12,8 @@ from probjax.inference.filtering.kalman_filter import (
 )
 
 
-# This is the discrete time Kalman filter for a linear Gaussian model of the form:
-# x_t = A_t x_{t-1} + C**1/2 @ w_t
+# Extended Kalman filter for a nonlinear state space model of the form:
+# x_{t+1} = f(x_t, t) + w_t, y_t ~ N(h(x_t, t), R_t)
 def build_kernel(
     transition_fn: Callable[[float | ArrayLike], ArrayLike] | ArrayLike,
     observation_fn: Callable[[float | ArrayLike], ArrayLike] | ArrayLike,
@@ -26,7 +26,7 @@ def build_kernel(
         state: KalmanFilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng: Optional[jnp.ndarray] = None,
+        rng_key: Optional[jnp.ndarray] = None,
     ) -> Tuple[KalmanFilterState, KalmanFilterInfo]:
         mu0 = state.mean
         cov0 = state.cov
@@ -35,7 +35,7 @@ def build_kernel(
 
         # Predict
         _f = lambda x: transition_fn(x, t_old, t)
-        mu1_, _f_jvp = jax.linearize(_f, mu0)
+        mu1_ = _f(mu0)
 
         # In this case it does not make to much sense to only use jvp
         Phi, Q = transition_matrix_and_covariance_fn(mu0, cov0, t)
@@ -79,22 +79,25 @@ def build_kernel(
 
 class extended_kalman_filter(FilterAPI):
     r"""
-    Kalman filter for a general state space model.
+    Extended Kalman filter for a nonlinear state space model.
 
-    $$dx_t = f(x_t, t) + B_t dw_t \qquad y_t = \mathcal{N}(y_t; C x_t, R_t)$$
+    $$x_{t+1} = f(x_t, t) + w_t \qquad y_t = \mathcal{N}(y_t; h(x_t, t), R_t)$$
 
-    To build a Kalman filter kernel, we require the following components:
+    The EKF linearizes the transition and observation functions around the current
+    state estimate to apply the standard Kalman filter update equations.
 
     Args:
-        transition_matrix (Callable[[float | ArrayLike], ArrayLike] | ArrayLike):
-            Transition matrix A_t
-        transition_covariance_matrix (Callable[[float | ArrayLike], ArrayLike] |
-            ArrayLike): Transition covariance matrix Q_t
-        observation_matrix (Callable[[float | ArrayLike], ArrayLike] | ArrayLike):
-            Observation matrix C_t
-        observation_covariance (Callable[[float | ArrayLike], ArrayLike] | ArrayLike):
-            Observation covariance matrix R_t
+        transition_fn (Callable): Nonlinear transition function f(x, t_old, t) -> x_new
+        observation_fn (Callable): Nonlinear observation function h(x, t) -> y
+        transition_matrix_and_covariance_fn (Callable): Returns (Phi, Q) — the
+            Jacobian of the transition function and the process noise covariance.
+        observation_matrix_and_covariance_fn (Callable): Returns (C, R) — the
+            Jacobian of the observation function and the observation noise covariance.
     """
 
     init = init
     build_kernel = build_kernel
+
+    @staticmethod
+    def default_unpack(state, info):
+        return (state.mean, state.cov)

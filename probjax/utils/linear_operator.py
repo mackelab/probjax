@@ -1,3 +1,4 @@
+import functools
 from typing import Any, Callable, Tuple
 
 import jax
@@ -120,7 +121,7 @@ class LinearOperator:
     def __call__(self, x: ArrayLike) -> ArrayLike:
         return self.operator(x)
 
-    @jax.util.cache()
+    @functools.lru_cache(maxsize=None)
     def __jax_array__(self) -> ArrayLike:
         with jax.ensure_compile_time_eval():
             matrix = LinearOperator.to_array(self.operator, self.in_dim, self.dtype)
