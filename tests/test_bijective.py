@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from probjax.core import inverse
+from probjax.core import inverse, inverse_and_logabsdet
 from probjax.nn.nets.normalizing_flows import (
     monotone_hermite_cubic_spline,
     piecewise_affine_spline,
@@ -23,7 +23,8 @@ def test_rational_quadratic_spline(seed, scale, num_bins):
     params = jax.random.normal(rng2, (3 * num_bins)) * scale
 
     y = rational_quadratic_spline(params, x)
-    x_rec, logdet = rational_quadratic_spline.inv_and_logdet(params, y)
+    inv_and_logdet = inverse_and_logabsdet(rational_quadratic_spline, invertible_arg=1)
+    x_rec, logdet = inv_and_logdet(params, y)
 
     assert y.shape == x.shape
     assert jnp.allclose(jnp.abs(x - x_rec).mean(), 0.0, atol=1e-2), (
@@ -46,7 +47,8 @@ def test_linear_spline(seed, scale, num_bins):
     params = jax.random.normal(rng2, (2 * num_bins)) * scale
 
     y = piecewise_affine_spline(params, x)
-    x_rec, logdet = piecewise_affine_spline.inv_and_logdet(params, y)
+    inv_and_logdet = inverse_and_logabsdet(piecewise_affine_spline, invertible_arg=1)
+    x_rec, logdet = inv_and_logdet(params, y)
 
     assert y.shape == x.shape
     assert jnp.allclose(x, x_rec, atol=1e-2)
@@ -63,7 +65,8 @@ def test_rational_linear_spline(seed, scale, num_bins):
     params = jax.random.normal(rng2, (3 * num_bins)) * scale
 
     y = rational_linear_spline(params, x)
-    x_rec, logdet = rational_linear_spline.inv_and_logdet(params, y)
+    inv_and_logdet = inverse_and_logabsdet(rational_linear_spline, invertible_arg=1)
+    x_rec, logdet = inv_and_logdet(params, y)
 
     assert y.shape == x.shape
     assert jnp.allclose(x, x_rec, atol=1e-2)
@@ -80,7 +83,10 @@ def test_monotone_hermite_cubic_spline(seed, scale, num_bins):
     params = jax.random.normal(rng2, (3 * num_bins)) * scale
 
     y = monotone_hermite_cubic_spline(params, x)
-    x_rec, logdet = monotone_hermite_cubic_spline.inv_and_logdet(params, y)
+    inv_and_logdet = inverse_and_logabsdet(
+        monotone_hermite_cubic_spline, invertible_arg=1
+    )
+    x_rec, logdet = inv_and_logdet(params, y)
 
     assert y.shape == x.shape
     assert jnp.allclose(x, x_rec, atol=1e-2)
@@ -106,9 +112,5 @@ def test_additive_bijector():
     y = additive_bijector(params, x)
 
     x_rec = inverse(additive_bijector, invertible_arg=1)(params, y)
-    # x_rec, logdet = inverse_and_logabsdet(additive_bijector, invertible_arg=1)(
-    #     params, y
-    # )
     assert y.shape == x.shape
     assert jnp.allclose(x, x_rec, atol=1e-2)
-    # assert jnp.allclose(logdet, 0.0, atol=1e-2)

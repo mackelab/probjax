@@ -22,6 +22,7 @@ from probjax.nn.nets.config.multinomial_diffusion_configs import (
     _require_float_time,
     _sample_categorical,
 )
+from probjax.nn.sharding import ShardingCfg, resolve_sharding_mesh
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, RngKey
 
 
@@ -45,7 +46,7 @@ class MultinomialDiffusion(nnx.Module):
         rao_blackwellize_xt_num_samples: int = 4,
         rao_blackwellize_xt_num_features: Optional[int] = None,
         rngs: nnx.RngStream | None = None,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         eps: float = 1e-12,
     ):
         if not isinstance(schedule, CategoricalScheduleProtocol):
@@ -79,7 +80,7 @@ class MultinomialDiffusion(nnx.Module):
             raise ValueError("rao_blackwellize_xt_num_features must be >= 1.")
         self.eps = eps
         self.rngs = rngs
-        self._mesh = sharding
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
 
     @property
     def num_classes(self) -> int:
@@ -411,7 +412,7 @@ class MultinomialCosineDM(MultinomialDiffusion):
         rao_blackwellize_xt_num_samples: int = 4,
         rao_blackwellize_xt_num_features: Optional[int] = 1,
         rngs: nnx.RngStream | None = None,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
     ):
         schedule = MultinomialDiffusionSchedule.from_cosine(
             num_steps=num_steps,
@@ -438,7 +439,7 @@ class MultinomialCosineDM(MultinomialDiffusion):
             rao_blackwellize_xt_num_samples=rao_blackwellize_xt_num_samples,
             rao_blackwellize_xt_num_features=rao_blackwellize_xt_num_features,
             rngs=rngs,
-            sharding=sharding,
+            sharding_cfg=sharding_cfg,
         )
 
 
@@ -469,7 +470,7 @@ class MultinomialLogSNRDM(MultinomialDiffusion):
         rao_blackwellize_xt_num_samples: int = 4,
         rao_blackwellize_xt_num_features: Optional[int] = 1,
         rngs: nnx.RngStream | None = None,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
     ):
         schedule = MultinomialDiffusionSchedule.from_logsnr(
             num_steps=num_steps,
@@ -498,7 +499,7 @@ class MultinomialLogSNRDM(MultinomialDiffusion):
             rao_blackwellize_xt_num_samples=rao_blackwellize_xt_num_samples,
             rao_blackwellize_xt_num_features=rao_blackwellize_xt_num_features,
             rngs=rngs,
-            sharding=sharding,
+            sharding_cfg=sharding_cfg,
         )
 
 

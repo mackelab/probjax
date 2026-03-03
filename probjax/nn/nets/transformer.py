@@ -16,13 +16,9 @@ from probjax.nn.layers.attention import (
 from probjax.nn.layers.fuse import AdditiveBinaryFuse, AffineFuse
 from probjax.nn.nets.simple import MLP
 from probjax.nn.sharding import (
-    DEFAULT_MHA_SHARDING,
-    LinearShardingSpec,
     MLPShardingSpec,
-    DEFAULT_TRANSFORMER_HIDDEN_ACTIVATION,
-    DEFAULT_TRANSFORMER_INPUT_ACTIVATION,
-    TRANSFORMER_MLP_COLUMN_SHARDING,
-    TRANSFORMER_MLP_ROW_SHARDING,
+    ShardingCfg,
+    TransformerShardingCfg,
 )
 from probjax.nn.utils import (
     filter_precision_kwargs,
@@ -77,7 +73,7 @@ class Transformer(nnx.Module):
         mlp_fuse_cls: ModuleLikeType = AdditiveBinaryFuse,
         mlp_cls: ModuleLikeType = MLP,
         mha_cls: ModuleLikeType = MultiHeadAttention,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Initialize a Transformer model.
@@ -148,15 +144,28 @@ class Transformer(nnx.Module):
         )
         self.act = act
         self.enable_cross_attention = enable_cross_attention
-        self._mesh = sharding
-        self._activation_sharding = (
-            DEFAULT_TRANSFORMER_HIDDEN_ACTIVATION if sharding is not None else None
+        self._sharding_cfg = ShardingCfg.resolve(sharding_cfg)
+        self._mesh = (
+            self._sharding_cfg.resolved_mesh()
+            if self._sharding_cfg is not None
+            else None
         )
-        self._input_sharding = (
-            DEFAULT_TRANSFORMER_INPUT_ACTIVATION if sharding is not None else None
+        if self._sharding_cfg is not None and isinstance(
+            self._sharding_cfg, TransformerShardingCfg
+        ):
+            self._sharding_runtime_cfg = self._sharding_cfg
+        else:
+            self._sharding_runtime_cfg = TransformerShardingCfg(mesh=self._mesh)
+        self._activation_sharding = self._sharding_runtime_cfg.transformer_hidden_spec(
+            self._mesh,
+        )
+        self._input_sharding = self._sharding_runtime_cfg.transformer_input_spec(
+            self._mesh,
         )
         self._dense_mlp_sharding = self._make_dense_mlp_sharding(
-            sharding, num_hidden_layers
+            self._sharding_cfg,
+            self._mesh,
+            num_hidden_layers,
         )
 
         # Precision and dtype settings.
@@ -168,13 +177,15 @@ class Transformer(nnx.Module):
         )
 
         norm_kwargs = {}
-        if sharding is not None:
+        if self._mesh is not None:
             norm_kwargs = {
                 "scale_init": nnx.with_partitioning(
-                    nnx.initializers.ones, PartitionSpec()
+                    nnx.initializers.ones,
+                    (),
                 ),
                 "bias_init": nnx.with_partitioning(
-                    nnx.initializers.zeros, PartitionSpec()
+                    nnx.initializers.zeros,
+                    (),
                 ),
             }
 
@@ -206,8 +217,8 @@ class Transformer(nnx.Module):
                 dropout_rate=self.dropout_rate_attn,
                 attention_fn=attention_fn,
                 normalize_qk=normalize_qk_attn,
-                sharding=sharding,
-                sharding_spec=DEFAULT_MHA_SHARDING,
+                sharding_cfg=self._sharding_cfg,
+                sharding_spec=self._sharding_runtime_cfg.mha_spec(self._mesh),
                 **filter_precision_kwargs(mha_cls, **precision_kwargs),
             )
             for _ in range(num_layers)
@@ -231,7 +242,7 @@ class Transformer(nnx.Module):
                     dropout_rate=self.dropout_rate_attn,
                     attention_fn=cross_attention_fn,
                     normalize_qk=normalize_qk_cross_attn,
-                    sharding=sharding,
+                    sharding_cfg=self._sharding_cfg,
                     **filter_precision_kwargs(mha_cls, **precision_kwargs),
                 )
                 for _ in range(num_layers)
@@ -240,11 +251,21 @@ class Transformer(nnx.Module):
         # Context fusion if context is provided.
         if context_dim is not None:
             self.context_layers1 = nnx.List([
-                context_fusion_cls(model_dim, context_dim, rngs=rngs, sharding=sharding)
+                context_fusion_cls(
+                    model_dim,
+                    context_dim,
+                    rngs=rngs,
+                    sharding_cfg=self._sharding_cfg,
+                )
                 for _ in range(num_layers)
             ])
             self.context_layers2 = nnx.List([
-                context_fusion_cls(model_dim, context_dim, rngs=rngs, sharding=sharding)
+                context_fusion_cls(
+                    model_dim,
+                    context_dim,
+                    rngs=rngs,
+                    sharding_cfg=self._sharding_cfg,
+                )
                 for _ in range(num_layers)
             ])
 
@@ -261,7 +282,7 @@ class Transformer(nnx.Module):
                 rngs=rngs,
                 linear_cls=linear,
                 activation=act,
-                sharding=self._dense_mlp_sharding,
+                sharding_cfg=self._dense_mlp_sharding,
                 # activate_final=True,
                 **filter_precision_kwargs(mlp_cls, **precision_kwargs),
             )
@@ -286,7 +307,7 @@ class Transformer(nnx.Module):
                     context_dim,
                     drop_path_rate=drop_path_rates[num_layer],
                     rngs=rngs,
-                    sharding=sharding,
+                    sharding_cfg=self._sharding_cfg,
                     **filter_precision_kwargs(attn_fuse_cls, **precision_kwargs),
                 )
             )
@@ -296,7 +317,7 @@ class Transformer(nnx.Module):
                     context_dim,
                     drop_path_rate=drop_path_rates[num_layer],
                     rngs=rngs,
-                    sharding=sharding,
+                    sharding_cfg=self._sharding_cfg,
                     **filter_precision_kwargs(mlp_fuse_cls, **precision_kwargs),
                 )
             )
@@ -307,7 +328,7 @@ class Transformer(nnx.Module):
                         context_dim,
                         rngs=rngs,
                         drop_path_rate=drop_path_rates[num_layer],
-                        sharding=sharding,
+                        sharding_cfg=self._sharding_cfg,
                         **filter_precision_kwargs(attn_fuse_cls, **precision_kwargs),
                     )
                 )
@@ -340,8 +361,8 @@ class Transformer(nnx.Module):
                 dropout_rate=self.dropout_rate_attn,
                 attention_fn=attention_fn,
                 normalize_qk=normalize_qk_attn,
-                sharding=sharding,
-                sharding_spec=DEFAULT_MHA_SHARDING,
+                sharding_cfg=self._sharding_cfg,
+                sharding_spec=self._sharding_runtime_cfg.mha_spec(self._mesh),
                 **filter_precision_kwargs(mha_cls, **precision_kwargs),
             )
             for _ in range(num_layers)
@@ -365,7 +386,7 @@ class Transformer(nnx.Module):
                     dropout_rate=self.dropout_rate_attn,
                     attention_fn=cross_attention_fn,
                     normalize_qk=normalize_qk_cross_attn,
-                    sharding=sharding,
+                    sharding_cfg=self._sharding_cfg,
                     **filter_precision_kwargs(mha_cls, **precision_kwargs),
                 )
                 for _ in range(num_layers)
@@ -374,11 +395,21 @@ class Transformer(nnx.Module):
         # Context fusion if context is provided.
         if context_dim is not None:
             self.context_layers1 = nnx.List([
-                context_fusion_cls(model_dim, context_dim, rngs=rngs, sharding=sharding)
+                context_fusion_cls(
+                    model_dim,
+                    context_dim,
+                    rngs=rngs,
+                    sharding_cfg=self._sharding_cfg,
+                )
                 for _ in range(num_layers)
             ])
             self.context_layers2 = nnx.List([
-                context_fusion_cls(model_dim, context_dim, rngs=rngs, sharding=sharding)
+                context_fusion_cls(
+                    model_dim,
+                    context_dim,
+                    rngs=rngs,
+                    sharding_cfg=self._sharding_cfg,
+                )
                 for _ in range(num_layers)
             ])
 
@@ -395,7 +426,7 @@ class Transformer(nnx.Module):
                 rngs=rngs,
                 linear_cls=linear,
                 activation=act,
-                sharding=self._dense_mlp_sharding,
+                sharding_cfg=self._dense_mlp_sharding,
                 # activate_final=True,
                 **filter_precision_kwargs(mlp_cls, **precision_kwargs),
             )
@@ -420,7 +451,7 @@ class Transformer(nnx.Module):
                     context_dim,
                     drop_path_rate=drop_path_rates[num_layer],
                     rngs=rngs,
-                    sharding=sharding,
+                    sharding_cfg=self._sharding_cfg,
                     **filter_precision_kwargs(attn_fuse_cls, **precision_kwargs),
                 )
             )
@@ -430,32 +461,42 @@ class Transformer(nnx.Module):
                     context_dim,
                     drop_path_rate=drop_path_rates[num_layer],
                     rngs=rngs,
-                    sharding=sharding,
+                    sharding_cfg=self._sharding_cfg,
                     **filter_precision_kwargs(mlp_fuse_cls, **precision_kwargs),
                 )
             )
-        if self.enable_cross_attention:
-            self.cross_skip_fuse.append(
-                attn_fuse_cls(
-                    model_dim,
-                    context_dim,
-                    rngs=rngs,
-                    drop_path_rate=drop_path_rates[num_layer],
-                    sharding=sharding,
-                    **filter_precision_kwargs(attn_fuse_cls, **precision_kwargs),
+            if self.enable_cross_attention:
+                self.cross_skip_fuse.append(
+                    attn_fuse_cls(
+                        model_dim,
+                        context_dim,
+                        rngs=rngs,
+                        drop_path_rate=drop_path_rates[num_layer],
+                        sharding_cfg=self._sharding_cfg,
+                        **filter_precision_kwargs(attn_fuse_cls, **precision_kwargs),
+                    )
                 )
-            )
 
     @staticmethod
     def _make_dense_mlp_sharding(
-        sharding: jax.sharding.Mesh | None, num_hidden_layers: int
+        sharding_cfg: ShardingCfg | None,
+        mesh: jax.sharding.Mesh | None,
+        num_hidden_layers: int,
     ) -> MLPShardingSpec | None:
-        if sharding is None:
+        if mesh is None:
             return None
-        per_layer = [TRANSFORMER_MLP_COLUMN_SHARDING] * num_hidden_layers + [
-            TRANSFORMER_MLP_ROW_SHARDING
-        ]
-        return MLPShardingSpec(mesh=sharding, per_layer=per_layer)
+        if sharding_cfg is not None and isinstance(
+            sharding_cfg, TransformerShardingCfg
+        ):
+            sharding_runtime_cfg = sharding_cfg
+        else:
+            sharding_runtime_cfg = TransformerShardingCfg(mesh=mesh)
+        column = sharding_runtime_cfg.transformer_mlp_column_spec(mesh)
+        row = sharding_runtime_cfg.transformer_mlp_row_spec(mesh)
+        if column is None and row is None:
+            return None
+        per_layer = [column] * num_hidden_layers + [row]
+        return MLPShardingSpec(sharding_cfg=sharding_cfg, per_layer=per_layer)
 
     def __call__(
         self,
@@ -489,7 +530,11 @@ class Transformer(nnx.Module):
         v, _ = flatten_to_btd(v) if v is not None else (None, None)
 
         if self._input_sharding is not None:
-            q = jax.lax.with_sharding_constraint(q, self._input_sharding)
+            q = self._sharding_runtime_cfg.apply_activation(
+                q,
+                self._input_sharding,
+                self._mesh,
+            )
 
         # Ensure context has shape [B, 1, Dc] when provided
         if context is not None:
@@ -515,7 +560,11 @@ class Transformer(nnx.Module):
                 rng=rng,
             )
             if self._activation_sharding is not None:
-                q = jax.lax.with_sharding_constraint(q, self._activation_sharding)
+                q = self._sharding_runtime_cfg.apply_activation(
+                    q,
+                    self._activation_sharding,
+                    self._mesh,
+                )
             q = self.attn_skip_fuse[i](
                 q_res, q, context=context, deterministic=deterministic, rng=rng
             )
@@ -535,7 +584,11 @@ class Transformer(nnx.Module):
                     rng=rng,
                 )
                 if self._activation_sharding is not None:
-                    q = jax.lax.with_sharding_constraint(q, self._activation_sharding)
+                    q = self._sharding_runtime_cfg.apply_activation(
+                        q,
+                        self._activation_sharding,
+                        self._mesh,
+                    )
                 q = self.cross_skip_fuse[i](
                     q_res, q, context=context, deterministic=deterministic, rng=rng
                 )
@@ -548,7 +601,11 @@ class Transformer(nnx.Module):
 
             q = self.dense_blocks[i](q, rng=rng)
             if self._activation_sharding is not None:
-                q = jax.lax.with_sharding_constraint(q, self._activation_sharding)
+                q = self._sharding_runtime_cfg.apply_activation(
+                    q,
+                    self._activation_sharding,
+                    self._mesh,
+                )
             if self.dropout_dense is not None:
                 q = self.dropout_dense[i](q, deterministic=deterministic, rngs=rng)
             q = self.mlp_skip_fuse[i](

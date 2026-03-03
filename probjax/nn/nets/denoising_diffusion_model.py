@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.loss_fn.denoising import build_time_dependent_denoising_loss
+from probjax.nn.sharding import ShardingCfg, resolve_sharding_mesh
 from probjax.nn.utils import module_accepts_rng
 
 from probjax.nn.nets.config.denoising_diffusion_configs import (
@@ -54,7 +55,7 @@ class DiffusionDenoiser(nnx.Module):
         solver_cfg: SolverConfigProtocol | None = None,
         std0: ArrayLike = 1.0,
         last_layer: Callable[[Array], Array] | None = None,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.RngStream | None = None,
     ) -> None:
         if not isinstance(schedule, NoiseScheduleProtocol):
@@ -73,7 +74,7 @@ class DiffusionDenoiser(nnx.Module):
         self.precond = precond
         self.train_cfg = train_cfg
         self.solver_cfg = solver_cfg
-        self._mesh = sharding
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
         if self.solver_cfg is not None and hasattr(self.solver_cfg, "set_schedule"):
             self.solver_cfg.set_schedule(self.schedule)
         self.std0 = nnx.Variable(std0)
@@ -426,7 +427,7 @@ class EDM(DiffusionDenoiser):
         loss_type: str = "x0",
         loss_kwargs: Mapping[str, object] | None = None,
         last_layer: Callable[[Array], Array] | None = None,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.RngStream | None = None,
         solver: SolverConfigProtocol | None = None,
     ) -> None:
@@ -454,7 +455,7 @@ class EDM(DiffusionDenoiser):
             std0=std0,
             last_layer=last_layer,
             rngs=rngs,
-            sharding=sharding,
+            sharding_cfg=sharding_cfg,
         )
 
 
@@ -480,7 +481,7 @@ class VE(DiffusionDenoiser):
         loss_type: str = "x0",
         loss_kwargs: Mapping[str, object] | None = None,
         last_layer: Callable[[Array], Array] | None = None,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.RngStream | None = None,
         solver: SolverConfigProtocol | None = None,
     ) -> None:
@@ -510,7 +511,7 @@ class VE(DiffusionDenoiser):
             std0=std0,
             last_layer=last_layer,
             rngs=rngs,
-            sharding=sharding,
+            sharding_cfg=sharding_cfg,
         )
 
 
@@ -539,7 +540,7 @@ class VP(DiffusionDenoiser):
         loss_type: str = "x0",
         loss_kwargs: Mapping[str, object] | None = None,
         last_layer: Callable[[Array], Array] | None = None,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.RngStream | None = None,
         solver: SolverConfigProtocol | None = None,
     ) -> None:
@@ -573,7 +574,7 @@ class VP(DiffusionDenoiser):
             std0=std0,
             last_layer=last_layer,
             rngs=rngs,
-            sharding=sharding,
+            sharding_cfg=sharding_cfg,
         )
 
 
@@ -600,7 +601,7 @@ class CosineDM(DiffusionDenoiser):
         loss_type: str = "x0",
         loss_kwargs: Mapping[str, object] | None = None,
         last_layer: Callable[[Array], Array] | None = None,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.RngStream | None = None,
         solver: SolverConfigProtocol | None = None,
     ) -> None:
@@ -641,5 +642,5 @@ class CosineDM(DiffusionDenoiser):
             std0=std0,
             last_layer=last_layer,
             rngs=rngs,
-            sharding=sharding,
+            sharding_cfg=sharding_cfg,
         )

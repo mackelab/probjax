@@ -129,6 +129,21 @@ register_univariate_inverse_logdet(
 )
 
 
+# rev (array reversal / jnp.flip): permutation, volume-preserving => log|Jacobian| = 0
+# rev is its own inverse: rev(rev(x, dims), dims) = x
+@REGISTRY.rule(jax.lax.rev_p, Context.INVERSE_LOGDET)
+def invert_rev_and_logdet(eqn, known_invars, known_outvars, context=None):
+    del known_invars
+    if known_outvars[0] is None:
+        return None
+    in_val = eqn.primitive.bind(*known_outvars, **eqn.params)
+    updates = {}
+    for var in eqn.invars:
+        if not isinstance(var, Literal):
+            updates[var] = jnp.asarray(0.0)
+    return ProcessedResult(eqn.invars, [in_val], updates)
+
+
 # sqrt: x = y^2, d/dy[y^2] = 2y => log|det| = sum(log(2) + log(|y|))
 def sqrt_inverse_fn(x, **params):
     params = dict(params)

@@ -10,12 +10,16 @@ from probjax.nn.layers.conv import (
     SpatialSelfAttention,
 )
 from probjax.nn.sharding import (
-    DEFAULT_SPATIAL_ACTIVATION,
+    ShardingCfg,
+    SpatialShardingCfg,
+    apply_activation_sharding,
     filter_sharding_kwargs,
+    resolve_sharding_mesh,
 )
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
+    module_accepts_rng,
 )
 from probjax.utils.typing import Array, ModuleLikeType, PrecisionLike
 
@@ -91,7 +95,7 @@ class UNet(nnx.Module):
         conv_up_cls: ModuleLikeType | Sequence[ModuleLikeType] = nnx.ConvTranspose,
         attn_cls: ModuleLikeType = SpatialSelfAttention,
         conv_cls: ModuleLikeType = nnx.Conv,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         assert len(out_features) >= 2, "Must have at least 2 output channels"
@@ -101,10 +105,15 @@ class UNet(nnx.Module):
         self.num_stages = len(out_features)
         self.resize_method = resize_method  # Triggered if user shapes do not mat
         self.preferred_element_type = preferred_element_type
-        self._mesh = sharding
-        self._activation_sharding = (
-            DEFAULT_SPATIAL_ACTIVATION if sharding is not None else None
-        )
+        self._sharding_cfg = sharding_cfg
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        if self._sharding_cfg is not None and isinstance(
+            self._sharding_cfg, SpatialShardingCfg
+        ):
+            spatial_cfg = self._sharding_cfg
+        else:
+            spatial_cfg = SpatialShardingCfg(mesh=self._mesh)
+        self._activation_sharding = spatial_cfg.spatial_activation_spec(self._mesh)
 
         precision_kwargs = get_active_precision_kwargs(
             dtype,
@@ -135,7 +144,10 @@ class UNet(nnx.Module):
             context_features=context_features,
             dropout_rate=dropout_rate,
             rngs=rngs,
-            **filter_sharding_kwargs(resnet_block_cls, sharding=sharding),
+            **filter_sharding_kwargs(
+                resnet_block_cls,
+                sharding_cfg=self._sharding_cfg,
+            ),
             **filter_precision_kwargs(resnet_block_cls, **precision_kwargs),
         )
 
@@ -165,7 +177,10 @@ class UNet(nnx.Module):
                     kernel_size=kernel_size,
                     strides=strides,
                     rngs=rngs,
-                    **filter_sharding_kwargs(conv_down_cls_i, sharding=sharding),
+                    **filter_sharding_kwargs(
+                        conv_down_cls_i,
+                        sharding_cfg=self._sharding_cfg,
+                    ),
                     **filter_precision_kwargs(conv_down_cls_i, **precision_kwargs),
                 )
             )
@@ -182,7 +197,10 @@ class UNet(nnx.Module):
                     kernel_size=kernel_size,
                     strides=strides,
                     rngs=rngs,
-                    **filter_sharding_kwargs(conv_up_cls_i, sharding=sharding),
+                    **filter_sharding_kwargs(
+                        conv_up_cls_i,
+                        sharding_cfg=self._sharding_cfg,
+                    ),
                     **filter_precision_kwargs(conv_up_cls_i, **precision_kwargs),
                 )
             )
@@ -193,7 +211,7 @@ class UNet(nnx.Module):
             kernel_size=1,
             use_bias=False,
             rngs=rngs,
-            **filter_sharding_kwargs(conv_cls, sharding=sharding),
+            **filter_sharding_kwargs(conv_cls, sharding_cfg=self._sharding_cfg),
             **filter_precision_kwargs(conv_cls, **precision_kwargs),
         )
 
@@ -201,7 +219,7 @@ class UNet(nnx.Module):
             attn_cls,
             dropout_rate=dropout_rate,
             rngs=rngs,
-            **filter_sharding_kwargs(attn_cls, sharding=sharding),
+            **filter_sharding_kwargs(attn_cls, sharding_cfg=self._sharding_cfg),
             **filter_precision_kwargs(attn_cls, **precision_kwargs),
         )
 
@@ -294,6 +312,14 @@ class UNet(nnx.Module):
             in_features,
             kernel_init=nnx.initializers.zeros,
         )
+        self._conv_initial_accepts_rng = module_accepts_rng(self.conv_initial)
+        self._conv_final_accepts_rng = module_accepts_rng(self.conv_final)
+        self._downsampling_accepts_rng = tuple(
+            module_accepts_rng(layer) for layer in self.downsampling_layers
+        )
+        self._upsampling_accepts_rng = tuple(
+            module_accepts_rng(layer) for layer in self.upsampling_layers
+        )
 
     def __call__(
         self,
@@ -305,11 +331,19 @@ class UNet(nnx.Module):
     ) -> Array:
         def _constrain(x: Array) -> Array:
             if self._activation_sharding is not None:
-                return jax.lax.with_sharding_constraint(x, self._activation_sharding)
+                return apply_activation_sharding(
+                    x,
+                    self._activation_sharding,
+                    self._mesh,
+                )
             return x
 
         # 1) Initial projection
-        x = self.conv_initial(inputs, rng=rng)
+        x = (
+            self.conv_initial(inputs, rng=rng)
+            if self._conv_initial_accepts_rng
+            else self.conv_initial(inputs)
+        )
         x = _constrain(x)
 
         # Stash features before each downsample for skips
@@ -329,9 +363,11 @@ class UNet(nnx.Module):
             if i < self.num_stages - 1:
                 if verbose:
                     print("Down:", x.shape)
-                x = self.downsampling_layers[i](x, rng=rng).astype(
-                    self.preferred_element_type
-                )
+                x = (
+                    self.downsampling_layers[i](x, rng=rng)
+                    if self._downsampling_accepts_rng[i]
+                    else self.downsampling_layers[i](x)
+                ).astype(self.preferred_element_type)
                 x = _constrain(x)
 
         # 3) Middle
@@ -361,9 +397,11 @@ class UNet(nnx.Module):
             x = _constrain(x)
 
             if idx < self.num_stages - 1:
-                x = self.upsampling_layers[idx](x, rng=rng).astype(
-                    self.preferred_element_type
-                )
+                x = (
+                    self.upsampling_layers[idx](x, rng=rng)
+                    if self._upsampling_accepts_rng[idx]
+                    else self.upsampling_layers[idx](x)
+                ).astype(self.preferred_element_type)
                 x = _constrain(x)
                 if verbose:
                     print("Up:", x.shape)
@@ -371,7 +409,11 @@ class UNet(nnx.Module):
         # 5) Final projection (+ last skip from very beginning)
         pre_in = pre_downsampling.pop()
         x = jnp.concatenate([pre_in, x], axis=-1)
-        x = self.conv_final(x, rng=rng)
+        x = (
+            self.conv_final(x, rng=rng)
+            if self._conv_final_accepts_rng
+            else self.conv_final(x)
+        )
         x = _constrain(x)
 
         return x

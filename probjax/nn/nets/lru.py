@@ -6,6 +6,7 @@ from flax import nnx
 
 from probjax.nn.layers.lru import LRUCell
 from probjax.nn.nets.simple import MLP
+from probjax.nn.sharding import ShardingCfg, resolve_sharding_mesh
 
 from probjax.nn.utils import filter_precision_kwargs, get_active_precision_kwargs
 from probjax.utils.typing import (
@@ -66,7 +67,7 @@ class LRUModel(nnx.Module):
         # Recurrent cell choice and kwargs
         recurrent_cls: ModuleLikeType = LRUCell,
         recurrent_kwargs: Optional[Mapping] = None,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Initialize an LRU model.
@@ -121,7 +122,8 @@ class LRUModel(nnx.Module):
         self.recurrent_kwargs = dict(recurrent_kwargs or {})
         self.skip_connection_lru = skip_connection_lru
         self.skip_connection_mlp = skip_connection_mlp
-        self._mesh = sharding
+        self._sharding_cfg = sharding_cfg
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
 
         # Precision and dtype settings
         precision_kwargs = get_active_precision_kwargs(
@@ -159,7 +161,10 @@ class LRUModel(nnx.Module):
         # Recurrent cell stack (each cell maps [B, T, D] -> [B, T, D])
         self.recurrent_layers = nnx.List([
             self.recurrent_cls(
-                model_dim, rngs=rngs, sharding=sharding, **self.recurrent_kwargs
+                model_dim,
+                rngs=rngs,
+                sharding_cfg=self._sharding_cfg,
+                **self.recurrent_kwargs,
             )
             for _ in range(num_layers)
         ])
@@ -200,7 +205,7 @@ class LRUModel(nnx.Module):
                 rngs=rngs,
                 activation=activation,
                 activate_final=True,
-                sharding=sharding,
+                sharding_cfg=self._sharding_cfg,
                 **mlp_kwargs,
             )
             for _ in range(num_layers)

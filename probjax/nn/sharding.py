@@ -1,115 +1,25 @@
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from functools import partial
-import inspect
-from typing import Sequence
+from typing import Callable, Sequence
 
 import jax
 from flax import nnx
 from jax.sharding import Mesh, PartitionSpec
 
 
-@dataclass(frozen=True)
-class LinearShardingSpec:
-    kernel: PartitionSpec | None = None
-    bias: PartitionSpec | None = None
-    activation: PartitionSpec | None = None
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class MLPShardingSpec:
-    mesh: Mesh | None = None
-    per_layer: Sequence[LinearShardingSpec | None] | LinearShardingSpec | None = None
-    default: LinearShardingSpec | None = None
-
-
-DEFAULT_LINEAR_SHARDING = LinearShardingSpec(
-    kernel=PartitionSpec(None, "model"),
-    bias=PartitionSpec("model",),
-    activation=PartitionSpec("data", "model"),
-)
-
-DEFAULT_MHA_SHARDING = LinearShardingSpec(
-    kernel=PartitionSpec(None, "model"),
-    bias=PartitionSpec("model",),
-    activation=PartitionSpec("data", None, "model"),
-)
-
-DEFAULT_TRANSFORMER_HIDDEN_ACTIVATION = PartitionSpec("data", None, "model")
-DEFAULT_TRANSFORMER_INPUT_ACTIVATION = PartitionSpec("data", None, None)
-
-TRANSFORMER_MLP_COLUMN_SHARDING = LinearShardingSpec(
-    kernel=PartitionSpec(None, "model"),
-    bias=PartitionSpec("model",),
-    activation=DEFAULT_TRANSFORMER_HIDDEN_ACTIVATION,
-)
-TRANSFORMER_MLP_ROW_SHARDING = LinearShardingSpec(
-    kernel=PartitionSpec("model", None),
-    bias=PartitionSpec("model",),
-    activation=DEFAULT_TRANSFORMER_HIDDEN_ACTIVATION,
-)
-
-DEFAULT_SPATIAL_ACTIVATION = PartitionSpec("data", None, None, "model")
-
-
-def normalize_mlp_sharding(
-    sharding: Mesh | MLPShardingSpec | None, num_layers: int
-):
-    if sharding is None:
-        return None, None, None
-
-    if isinstance(sharding, Mesh):
-        mesh = sharding
-        default_spec = DEFAULT_LINEAR_SHARDING
-        per_layer = None
-    elif isinstance(sharding, MLPShardingSpec):
-        mesh = sharding.mesh
-        default_spec = sharding.default or DEFAULT_LINEAR_SHARDING
-        per_layer = sharding.per_layer
-    else:
-        raise TypeError(
-            "sharding must be a jax.sharding.Mesh or MLPShardingSpec, "
-            f"got {type(sharding)}"
-        )
-
-    if per_layer is None:
-        per_layer_specs = [default_spec for _ in range(num_layers)]
-    elif isinstance(per_layer, LinearShardingSpec):
-        per_layer_specs = [per_layer for _ in range(num_layers)]
-    else:
-        if len(per_layer) != num_layers:
-            raise ValueError(
-                f"sharding per_layer must have length {num_layers}, got {len(per_layer)}"
-            )
-        per_layer_specs = [
-            spec if spec is not None else default_spec for spec in per_layer
-        ]
-    return mesh, default_spec, per_layer_specs
-
-
-def linear_sharding_kwargs(ctor, spec: LinearShardingSpec | None) -> dict:
-    if spec is None:
-        return {}
-    kwargs = {}
-    if spec.kernel is not None:
-        init_fn = _resolve_init_fn(ctor, "kernel_init", nnx.initializers.lecun_normal())
-        kwargs["kernel_init"] = nnx.with_partitioning(init_fn, spec.kernel)
-    if spec.bias is not None:
-        init_fn = _resolve_init_fn(ctor, "bias_init", nnx.initializers.zeros)
-        kwargs["bias_init"] = nnx.with_partitioning(init_fn, spec.bias)
-    return _filter_constructor_kwargs(ctor, **kwargs)
-
-
-def make_sharded_linear_ctor(base_ctor, sharding_kwargs):
-    def ctor(in_features, out_features):
-        return base_ctor(in_features, out_features, **sharding_kwargs)
-
-    return ctor
-
-
-def filter_sharding_kwargs(ctor, **kwargs):
-    return _filter_constructor_kwargs(ctor, **kwargs)
+def _partition_spec_or_none(*axes: str | None) -> PartitionSpec | None:
+    """Build a PartitionSpec unless every axis is None."""
+    if all(axis is None for axis in axes):
+        return None
+    return PartitionSpec(*axes)
 
 
 def _filter_constructor_kwargs(ctor, **kwargs):
@@ -125,3 +35,394 @@ def _resolve_init_fn(ctor, name: str, default_fn):
         return ctor.keywords[name]
     return default_fn
 
+
+# ---------------------------------------------------------------------------
+# Core data types
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LinearShardingSpec:
+    """Partition specs for a single linear (dense) layer."""
+
+    kernel: PartitionSpec | None = None
+    bias: PartitionSpec | None = None
+    activation: PartitionSpec | None = None
+
+
+# ---------------------------------------------------------------------------
+# Base ShardingCfg – mesh resolution + fundamental operations
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ShardingCfg:
+    """Minimal sharding configuration: mesh resolution and core operations.
+
+    Subclass or mix-in additional ``*ShardingMixin`` classes to add
+    layer-specific partition spec generation.
+    """
+
+    mesh: Mesh | None = None
+    data_axis: str = "data"
+    model_axis: str = "model"
+
+    # -- Class-level resolution -------------------------------------------
+
+    @classmethod
+    def resolve(cls, cfg: ShardingCfg | None) -> ShardingCfg | None:
+        """Return *cfg* if given, else auto-detect from ``jax.sharding.get_mesh()``."""
+        if cfg is not None:
+            return cfg
+        mesh = jax.sharding.get_mesh()
+        axis_names = tuple(getattr(mesh, "axis_names", ()))
+        return cls(mesh=mesh) if axis_names else None
+
+    # -- Mesh helpers ------------------------------------------------------
+
+    def resolved_mesh(self) -> Mesh | None:
+        if self.mesh is not None:
+            return self.mesh
+        mesh = jax.sharding.get_mesh()
+        axis_names = tuple(getattr(mesh, "axis_names", ()))
+        return mesh if axis_names else None
+
+    def has_axis(self, axis_name: str, mesh: Mesh | None = None) -> bool:
+        mesh = self.resolved_mesh() if mesh is None else mesh
+        return mesh is not None and axis_name in tuple(getattr(mesh, "axis_names", ()))
+
+    def data_axis_name(self, mesh: Mesh | None = None) -> str | None:
+        return self.data_axis if self.has_axis(self.data_axis, mesh) else None
+
+    def model_axis_name(self, mesh: Mesh | None = None) -> str | None:
+        mesh = self.resolved_mesh() if mesh is None else mesh
+        if mesh is None or not self.has_axis(self.model_axis, mesh):
+            return None
+        return self.model_axis if mesh.shape[self.model_axis] > 1 else None
+
+    # -- Core operations ---------------------------------------------------
+
+    def partitioned_init(
+        self,
+        init_fn: Callable,
+        spec: PartitionSpec | None,
+        mesh: Mesh | None = None,
+    ) -> Callable:
+        """Wrap *init_fn* so its result is resharded to *spec*."""
+        resolved_mesh = self.resolved_mesh() if mesh is None else mesh
+        if spec is None or resolved_mesh is None:
+            return init_fn
+        target_sharding = jax.sharding.NamedSharding(resolved_mesh, spec)
+
+        def wrapped_init(*args, **kwargs):
+            value = init_fn(*args, **kwargs)
+            try:
+                return jax.sharding.reshard(value, target_sharding)
+            except Exception:
+                return value
+
+        return wrapped_init
+
+    def apply_activation(
+        self,
+        value,
+        spec: PartitionSpec | None,
+        mesh: Mesh | None = None,
+    ):
+        """Reshard *value* according to *spec*."""
+        resolved_mesh = self.resolved_mesh() if mesh is None else mesh
+        if spec is None or resolved_mesh is None:
+            return value
+        try:
+            return jax.sharding.reshard(
+                value,
+                jax.sharding.NamedSharding(resolved_mesh, spec),
+            )
+        except Exception:
+            return value
+
+
+# ---------------------------------------------------------------------------
+# Mixins – opt-in spec generation for specific layer families
+# ---------------------------------------------------------------------------
+
+
+class LinearShardingMixin:
+    """Adds ``linear_spec`` and ``mha_spec`` to a :class:`ShardingCfg`."""
+
+    # Satisfy type-checkers; the concrete class supplies these via ShardingCfg.
+    linear: LinearShardingSpec | None
+    mha: LinearShardingSpec | None
+    data_axis_name: Callable
+    model_axis_name: Callable
+
+    def linear_spec(self, mesh: Mesh | None = None) -> LinearShardingSpec | None:
+        if self.linear is not None:  # type: ignore[attr-defined]
+            return self.linear  # type: ignore[attr-defined]
+        data_axis = self.data_axis_name(mesh)
+        spec = LinearShardingSpec(
+            kernel=None,
+            bias=None,
+            activation=_partition_spec_or_none(data_axis, None),
+        )
+        return spec if spec.activation is not None else None
+
+    def mha_spec(self, mesh: Mesh | None = None) -> LinearShardingSpec | None:
+        if self.mha is not None:  # type: ignore[attr-defined]
+            return self.mha  # type: ignore[attr-defined]
+        data_axis = self.data_axis_name(mesh)
+        spec = LinearShardingSpec(
+            kernel=None,
+            bias=None,
+            activation=_partition_spec_or_none(data_axis, None, None),
+        )
+        return spec if spec.activation is not None else None
+
+
+class TransformerShardingMixin:
+    """Adds transformer-specific partition specs."""
+
+    transformer_hidden_activation: PartitionSpec | None
+    transformer_input_activation: PartitionSpec | None
+    transformer_mlp_column: LinearShardingSpec | None
+    transformer_mlp_row: LinearShardingSpec | None
+    data_axis_name: Callable
+
+    def transformer_hidden_spec(self, mesh: Mesh | None = None) -> PartitionSpec | None:
+        if self.transformer_hidden_activation is not None:  # type: ignore[attr-defined]
+            return self.transformer_hidden_activation  # type: ignore[attr-defined]
+        data_axis = self.data_axis_name(mesh)
+        return _partition_spec_or_none(data_axis, None, None)
+
+    def transformer_input_spec(self, mesh: Mesh | None = None) -> PartitionSpec | None:
+        if self.transformer_input_activation is not None:  # type: ignore[attr-defined]
+            return self.transformer_input_activation  # type: ignore[attr-defined]
+        data_axis = self.data_axis_name(mesh)
+        return _partition_spec_or_none(data_axis, None, None)
+
+    def transformer_mlp_column_spec(
+        self, mesh: Mesh | None = None
+    ) -> LinearShardingSpec | None:
+        if self.transformer_mlp_column is not None:  # type: ignore[attr-defined]
+            return self.transformer_mlp_column  # type: ignore[attr-defined]
+        activation = self.transformer_hidden_spec(mesh)
+        spec = LinearShardingSpec(kernel=None, bias=None, activation=activation)
+        return spec if spec.activation is not None else None
+
+    def transformer_mlp_row_spec(
+        self, mesh: Mesh | None = None
+    ) -> LinearShardingSpec | None:
+        if self.transformer_mlp_row is not None:  # type: ignore[attr-defined]
+            return self.transformer_mlp_row  # type: ignore[attr-defined]
+        activation = self.transformer_hidden_spec(mesh)
+        spec = LinearShardingSpec(kernel=None, bias=None, activation=activation)
+        return spec if spec.activation is not None else None
+
+
+class SpatialShardingMixin:
+    """Adds spatial activation spec (for UNet-style architectures)."""
+
+    spatial_activation: PartitionSpec | None
+    data_axis_name: Callable
+
+    def spatial_activation_spec(self, mesh: Mesh | None = None) -> PartitionSpec | None:
+        if self.spatial_activation is not None:  # type: ignore[attr-defined]
+            return self.spatial_activation  # type: ignore[attr-defined]
+        data_axis = self.data_axis_name(mesh)
+        return _partition_spec_or_none(data_axis, None, None, None)
+
+
+# ---------------------------------------------------------------------------
+# Composed configs – ready-made combinations
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LinearShardingCfg(ShardingCfg, LinearShardingMixin):
+    """ShardingCfg with linear/MHA layer support."""
+
+    linear: LinearShardingSpec | None = None
+    mha: LinearShardingSpec | None = None
+
+
+@dataclass(frozen=True)
+class TransformerShardingCfg(LinearShardingCfg, TransformerShardingMixin):
+    """ShardingCfg with full transformer support (includes linear/MHA)."""
+
+    transformer_hidden_activation: PartitionSpec | None = None
+    transformer_input_activation: PartitionSpec | None = None
+    transformer_mlp_column: LinearShardingSpec | None = None
+    transformer_mlp_row: LinearShardingSpec | None = None
+
+
+@dataclass(frozen=True)
+class SpatialShardingCfg(LinearShardingCfg, SpatialShardingMixin):
+    """ShardingCfg with spatial activation support (for UNets)."""
+
+    spatial_activation: PartitionSpec | None = None
+
+
+# ---------------------------------------------------------------------------
+# MLP-specific sharding helper
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MLPShardingSpec:
+    sharding_cfg: ShardingCfg | None = None
+    per_layer: Sequence[LinearShardingSpec | None] | LinearShardingSpec | None = None
+    default: LinearShardingSpec | None = None
+
+    def normalize(self, num_layers: int):
+        """Resolve per-layer specs for an MLP with *num_layers* linear layers.
+
+        Returns ``(mesh, default_spec, per_layer_specs)`` where
+        *per_layer_specs* is a list of length *num_layers* or ``None``.
+        """
+        cfg = self.sharding_cfg or ShardingCfg.resolve(None)
+        mesh = cfg.resolved_mesh() if cfg is not None else None
+        default_spec = self.default
+        if (
+            default_spec is None
+            and cfg is not None
+            and isinstance(cfg, LinearShardingMixin)
+        ):
+            default_spec = cfg.linear_spec(mesh)
+        elif default_spec is None and cfg is not None:
+            # Wrap in LinearShardingCfg to get linear_spec
+            linear_cfg = LinearShardingCfg(
+                mesh=cfg.mesh,
+                data_axis=cfg.data_axis,
+                model_axis=cfg.model_axis,
+            )
+            default_spec = linear_cfg.linear_spec(mesh)
+        per_layer = self.per_layer
+
+        if per_layer is None:
+            per_layer_specs = (
+                [default_spec for _ in range(num_layers)]
+                if default_spec is not None
+                else None
+            )
+        elif isinstance(per_layer, LinearShardingSpec):
+            per_layer_specs = [per_layer for _ in range(num_layers)]
+        else:
+            if len(per_layer) != num_layers:
+                raise ValueError(
+                    "sharding_cfg per_layer must have length "
+                    f"{num_layers}, got {len(per_layer)}"
+                )
+            per_layer_specs = [
+                spec if spec is not None else default_spec for spec in per_layer
+            ]
+        return mesh, default_spec, per_layer_specs
+
+
+# ---------------------------------------------------------------------------
+# Public helpers consumed by layer/net modules
+# ---------------------------------------------------------------------------
+
+
+def resolve_sharding_mesh(sharding_cfg: ShardingCfg | None) -> Mesh | None:
+    """Resolve an optional ShardingCfg to a Mesh (or None)."""
+    cfg = ShardingCfg.resolve(sharding_cfg)
+    return cfg.resolved_mesh() if cfg is not None else None
+
+
+def normalize_mlp_sharding(
+    sharding_cfg: ShardingCfg | MLPShardingSpec | None,
+    num_layers: int,
+):
+    """Normalize MLP sharding config to (mesh, default_spec, per_layer_specs).
+
+    Accepts a ``ShardingCfg``, ``MLPShardingSpec``, or ``None``.
+    """
+    if sharding_cfg is None:
+        return MLPShardingSpec().normalize(num_layers)
+    if isinstance(sharding_cfg, MLPShardingSpec):
+        return sharding_cfg.normalize(num_layers)
+    if isinstance(sharding_cfg, ShardingCfg):
+        return MLPShardingSpec(sharding_cfg=sharding_cfg).normalize(num_layers)
+    raise TypeError(
+        "sharding_cfg must be a ShardingCfg or MLPShardingSpec, "
+        f"got {type(sharding_cfg)}"
+    )
+
+
+def make_partitioned_init(
+    init_fn: Callable,
+    spec: PartitionSpec | None,
+    mesh: Mesh | None,
+) -> Callable:
+    """Wrap an initializer so its output is resharded to *spec* on *mesh*."""
+    if mesh is None:
+        return init_fn
+    cfg = ShardingCfg(mesh=mesh)
+    return cfg.partitioned_init(init_fn, spec, mesh)
+
+
+def apply_activation_sharding(value, spec: PartitionSpec | None, mesh: Mesh | None):
+    """Reshard *value* to *spec* on *mesh*."""
+    if mesh is None:
+        return value
+    cfg = ShardingCfg(mesh=mesh)
+    return cfg.apply_activation(value, spec, mesh)
+
+
+def linear_sharding_kwargs(
+    ctor,
+    spec: LinearShardingSpec | None,
+    mesh: Mesh | None,
+) -> dict:
+    """Build keyword arguments to pass sharded initializers to a linear layer ctor."""
+    if spec is None:
+        return {}
+    kwargs = {}
+    if spec.kernel is not None:
+        init_fn = _resolve_init_fn(ctor, "kernel_init", nnx.initializers.lecun_normal())
+        kwargs["kernel_init"] = make_partitioned_init(init_fn, spec.kernel, mesh)
+    if spec.bias is not None:
+        init_fn = _resolve_init_fn(ctor, "bias_init", nnx.initializers.zeros)
+        kwargs["bias_init"] = make_partitioned_init(init_fn, spec.bias, mesh)
+    return _filter_constructor_kwargs(ctor, **kwargs)
+
+
+def make_sharded_linear_ctor(base_ctor, sharding_kwargs):
+    """Return a linear layer constructor with baked-in sharding kwargs."""
+
+    def ctor(in_features, out_features):
+        return base_ctor(in_features, out_features, **sharding_kwargs)
+
+    return ctor
+
+
+def filter_sharding_kwargs(ctor, **kwargs):
+    """Filter *kwargs* to only those accepted by *ctor*."""
+    return _filter_constructor_kwargs(ctor, **kwargs)
+
+
+def activation_spec_for_rank(
+    cfg: ShardingCfg | None,
+    mesh: Mesh | None,
+    rank: int,
+) -> PartitionSpec | None:
+    """Return a default activation PartitionSpec for the given tensor rank.
+
+    Uses ``linear_spec`` for rank-2 and ``mha_spec`` for rank-3.
+    """
+    if cfg is None or mesh is None:
+        return None
+    # Wrap in LinearShardingCfg if needed to access linear_spec/mha_spec
+    if isinstance(cfg, LinearShardingMixin):
+        linear_cfg = cfg
+    else:
+        linear_cfg = LinearShardingCfg(
+            mesh=cfg.mesh, data_axis=cfg.data_axis, model_axis=cfg.model_axis
+        )
+    if rank == 2:
+        spec = linear_cfg.linear_spec(mesh)
+        return spec.activation if spec is not None else None
+    if rank == 3:
+        spec = linear_cfg.mha_spec(mesh)
+        return spec.activation if spec is not None else None
+    return None

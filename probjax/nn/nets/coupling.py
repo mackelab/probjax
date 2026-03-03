@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.nets.simple import MLP
+from probjax.nn.sharding import ShardingCfg, resolve_sharding_mesh
 
 from probjax.nn.utils import (
     filter_precision_kwargs,
@@ -45,7 +46,7 @@ class CouplingMLP(nnx.Module):
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
         mlp_cls: ModuleLikeType = MLP,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         **kwargs,
     ):
         """Initialize the CouplingMLP module.
@@ -106,7 +107,8 @@ class CouplingMLP(nnx.Module):
         # Prefer explicit context_dim; fallback to alias for consistency
         self.context_dim = context_dim if context_dim is not None else context_features
         self.bijector = bijector
-        self._mesh = sharding
+        self._sharding_cfg = sharding_cfg
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
 
         # Precision and dtype settings
         precision_kwargs = get_active_precision_kwargs(
@@ -127,7 +129,7 @@ class CouplingMLP(nnx.Module):
             activation=activation,
             activate_final=activate_final,
             context_dim=None,  # Context is handled manually in this layer
-            sharding=sharding,
+            sharding_cfg=self._sharding_cfg,
             **filter_precision_kwargs(mlp_cls, **precision_kwargs),
             **kwargs,
         )

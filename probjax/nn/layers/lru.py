@@ -6,8 +6,10 @@ import jax.numpy as jnp
 
 from probjax.nn.pallas_kernels import compute_mamba_scan, ssd as pallas_ssd
 from probjax.nn.sharding import (
-    DEFAULT_LINEAR_SHARDING,
-    DEFAULT_MHA_SHARDING,
+    ShardingCfg,
+    activation_spec_for_rank,
+    apply_activation_sharding,
+    resolve_sharding_mesh,
 )
 from probjax.nn.utils import (
     filter_precision_kwargs,
@@ -44,12 +46,10 @@ def gamma_log_init(key, lamb):
     return jnp.log(jnp.sqrt(1 - jnp.abs(diag_lambda) ** 2))
 
 
-def _activation_spec_for_rank(rank: int):
-    if rank == 2:
-        return DEFAULT_LINEAR_SHARDING.activation
-    if rank == 3:
-        return DEFAULT_MHA_SHARDING.activation
-    return None
+def _activation_spec_for_rank(
+    sharding_cfg: ShardingCfg | None, mesh: jax.sharding.Mesh | None, rank: int
+):
+    return activation_spec_for_rank(sharding_cfg, mesh, rank)
 
 
 class RecurrentCell(nnx.Module):
@@ -85,7 +85,7 @@ class LRUCell(RecurrentCell):
         r_min: float = 0.0,
         r_max: float = 1.0,
         max_phase: float = 6.28,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
     ):
         state_dim = state_dim or model_dim
 
@@ -94,7 +94,8 @@ class LRUCell(RecurrentCell):
         self.r_min = r_min
         self.r_max = r_max
         self.max_phase = max_phase
-        self._mesh = sharding
+        self._sharding_cfg = sharding_cfg
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
 
         # Scale and shift parameters
         self.theta_log = nnx.Param(
@@ -135,6 +136,12 @@ class LRUCell(RecurrentCell):
     def __call__(self, inputs: jax.Array, *, rng: jax.Array | None = None) -> jax.Array:
         del rng
         inputs = jnp.asarray(inputs)
+        if self._mesh is not None:
+            inputs = apply_activation_sharding(
+                inputs,
+                jax.sharding.PartitionSpec(*((None,) * inputs.ndim)),
+                self._mesh,
+            )
 
         def _single(x_td):
             # Parameters
@@ -166,9 +173,9 @@ class LRUCell(RecurrentCell):
 
         out = jax.vmap(_single)(inputs) if inputs.ndim == 3 else _single(inputs)
         if self._mesh is not None:
-            spec = _activation_spec_for_rank(out.ndim)
+            spec = _activation_spec_for_rank(self._sharding_cfg, self._mesh, out.ndim)
             if spec is not None:
-                out = jax.lax.with_sharding_constraint(out, spec)
+                out = apply_activation_sharding(out, spec, self._mesh)
         return out
 
 
@@ -222,14 +229,15 @@ class MambaCell(RecurrentCell):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
     ):
         sd = state_dim or model_dim
         self.model_dim = model_dim
         self.state_dim = sd
         self.seq_tile_size = seq_tile_size
         self.dim_tile_size = dim_tile_size
-        self._mesh = sharding
+        self._sharding_cfg = sharding_cfg
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
 
         # Recurrent parameters
         self.a = nnx.Param(
@@ -278,9 +286,9 @@ class MambaCell(RecurrentCell):
         if added_batch:
             y = y[0]
         if self._mesh is not None:
-            spec = _activation_spec_for_rank(y.ndim)
+            spec = _activation_spec_for_rank(self._sharding_cfg, self._mesh, y.ndim)
             if spec is not None:
-                y = jax.lax.with_sharding_constraint(y, spec)
+                y = apply_activation_sharding(y, spec, self._mesh)
         return y
 
 
@@ -327,7 +335,7 @@ class SSDCell(RecurrentCell):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
     ):
         sd = state_dim or model_dim
         self.model_dim = model_dim
@@ -336,7 +344,8 @@ class SSDCell(RecurrentCell):
         if reduce not in ("sum", "mean"):
             raise ValueError("reduce must be 'sum' or 'mean'")
         self.reduce = reduce
-        self._mesh = sharding
+        self._sharding_cfg = sharding_cfg
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
 
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
@@ -380,9 +389,9 @@ class SSDCell(RecurrentCell):
         if added_batch:
             y = y[0]
         if self._mesh is not None:
-            spec = _activation_spec_for_rank(y.ndim)
+            spec = _activation_spec_for_rank(self._sharding_cfg, self._mesh, y.ndim)
             if spec is not None:
-                y = jax.lax.with_sharding_constraint(y, spec)
+                y = apply_activation_sharding(y, spec, self._mesh)
         return y
 
 

@@ -10,9 +10,11 @@ from probjax.nn.layers.masked import MaskedLinear
 from probjax.nn.sharding import (
     LinearShardingSpec,
     MLPShardingSpec,
+    ShardingCfg,
     linear_sharding_kwargs,
     make_sharded_linear_ctor,
     normalize_mlp_sharding,
+    resolve_sharding_mesh,
 )
 from probjax.nn.utils import (
     filter_precision_kwargs,
@@ -34,14 +36,14 @@ class Sequential(nnx.Module):
     def __init__(
         self,
         *layers,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
     ):
         """Sequential module.
 
         Args:
             layers (nnx.Module): List of layers.
         """
-        self._mesh = sharding
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
         self.layers = nnx.List(layers)
 
     def __call__(self, x, *args, rng: Array | None = None, **kwargs) -> Array:
@@ -71,7 +73,7 @@ class MLP(nnx.Module):
         norm_cls: ModuleLikeType | None = None,
         linear_cls: ModuleLikeType | Sequence[ModuleLikeType] = nnx.Linear,
         context_fuse_cls: ModuleLikeType = AffineFuse,
-        sharding: jax.sharding.Mesh | MLPShardingSpec | None = None,
+        sharding_cfg: ShardingCfg | MLPShardingSpec | None = None,
         rngs: nnx.Rngs,
         **kwargs,
     ):
@@ -107,8 +109,10 @@ class MLP(nnx.Module):
         # Prefer explicit context_dim, fallback to alias if provided
         self.context_dim = context_dim if context_dim is not None else context_features
         self._mesh, _, per_layer_sharding = normalize_mlp_sharding(
-            sharding, len(feature_dims) - 1
+            sharding_cfg,
+            len(feature_dims) - 1,
         )
+        self._sharding_runtime_cfg = ShardingCfg(mesh=self._mesh)
         if per_layer_sharding is not None:
             self._activation_shardings = [
                 spec.activation if spec is not None else None
@@ -147,7 +151,11 @@ class MLP(nnx.Module):
         for i in range(num_layers):
             ctor = base_linears[i]
             if per_layer_sharding is not None:
-                sharding_kwargs = linear_sharding_kwargs(ctor, per_layer_sharding[i])
+                sharding_kwargs = linear_sharding_kwargs(
+                    ctor,
+                    per_layer_sharding[i],
+                    self._mesh,
+                )
                 if sharding_kwargs:
                     ctor = make_sharded_linear_ctor(ctor, sharding_kwargs)
             layers.append(ctor(feature_dims[i], feature_dims[i + 1]))
@@ -193,7 +201,7 @@ class MLP(nnx.Module):
         if self._activation_shardings is not None:
             spec = self._activation_shardings[0]
             if spec is not None:
-                h = jax.lax.with_sharding_constraint(h, spec)
+                h = self._sharding_runtime_cfg.apply_activation(h, spec, self._mesh)
         for i in range(1, len(self.layers) - 1):
             h = (
                 self.layers[i](h, rng=rng)
@@ -214,7 +222,7 @@ class MLP(nnx.Module):
             if self._activation_shardings is not None:
                 spec = self._activation_shardings[i]
                 if spec is not None:
-                    h = jax.lax.with_sharding_constraint(h, spec)
+                    h = self._sharding_runtime_cfg.apply_activation(h, spec, self._mesh)
 
         if len(self.layers) > 1:
             out = (
@@ -230,11 +238,15 @@ class MLP(nnx.Module):
             if self._activation_shardings is not None:
                 spec = self._activation_shardings[-1]
                 if spec is not None:
-                    out = jax.lax.with_sharding_constraint(out, spec)
+                    out = self._sharding_runtime_cfg.apply_activation(
+                        out,
+                        spec,
+                        self._mesh,
+                    )
         elif self._activation_shardings is not None:
             spec = self._activation_shardings[-1]
             if spec is not None:
-                out = jax.lax.with_sharding_constraint(out, spec)
+                out = self._sharding_runtime_cfg.apply_activation(out, spec, self._mesh)
         return out
 
 
@@ -278,7 +290,7 @@ class ResNet(nnx.Module):
         context_fuse_cls: ModuleLikeType = AffineFuse,
         norm_cls: ModuleLikeType | None = None,
         linear_cls: ModuleLikeType = nnx.Linear,
-        sharding: jax.sharding.Mesh | MLPShardingSpec | None = None,
+        sharding_cfg: ShardingCfg | MLPShardingSpec | None = None,
         rngs: nnx.Rngs,
         **kwargs,
     ):
@@ -324,7 +336,11 @@ class ResNet(nnx.Module):
             raise ValueError(f"context_dim must be positive, got {context_dim}")
         self.context_dim = context_dim
         num_layers = num_hidden_layers + 2
-        self._mesh, _, per_layer_sharding = normalize_mlp_sharding(sharding, num_layers)
+        self._mesh, _, per_layer_sharding = normalize_mlp_sharding(
+            sharding_cfg,
+            num_layers,
+        )
+        self._sharding_runtime_cfg = ShardingCfg(mesh=self._mesh)
         if per_layer_sharding is not None:
             self._activation_shardings = [
                 spec.activation if spec is not None else None
@@ -345,7 +361,11 @@ class ResNet(nnx.Module):
         for i in range(num_layers):
             ctor = base_ctor
             if per_layer_sharding is not None:
-                sharding_kwargs = linear_sharding_kwargs(ctor, per_layer_sharding[i])
+                sharding_kwargs = linear_sharding_kwargs(
+                    ctor,
+                    per_layer_sharding[i],
+                    self._mesh,
+                )
                 if sharding_kwargs:
                     ctor = make_sharded_linear_ctor(ctor, sharding_kwargs)
 
@@ -415,7 +435,7 @@ class ResNet(nnx.Module):
         if self._activation_shardings is not None:
             spec = self._activation_shardings[0]
             if spec is not None:
-                h = jax.lax.with_sharding_constraint(h, spec)
+                h = self._sharding_runtime_cfg.apply_activation(h, spec, self._mesh)
         for i in range(len(self.hidden_layers)):
             h_old = h
             if self.norm_layers is not None:
@@ -437,7 +457,7 @@ class ResNet(nnx.Module):
             if self._activation_shardings is not None:
                 spec = self._activation_shardings[i + 1]
                 if spec is not None:
-                    h = jax.lax.with_sharding_constraint(h, spec)
+                    h = self._sharding_runtime_cfg.apply_activation(h, spec, self._mesh)
 
             h = h + h_old
 
@@ -455,7 +475,11 @@ class ResNet(nnx.Module):
             if self._activation_shardings is not None:
                 spec = self._activation_shardings[-1]
                 if spec is not None:
-                    out = jax.lax.with_sharding_constraint(out, spec)
+                    out = self._sharding_runtime_cfg.apply_activation(
+                        out,
+                        spec,
+                        self._mesh,
+                    )
         return out
 
 
@@ -475,7 +499,7 @@ class DeepSet(nnx.Module):
         reduction: Callable = jnp.sum,
         axis: tuple[int] | int = -2,
         dropout_rate: float = 0.0,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Initialize the DeepSets module.
@@ -508,7 +532,7 @@ class DeepSet(nnx.Module):
         self.reduction = reduction
         self.axis = axis
         self.dropout_rate = dropout_rate
-        self._mesh = sharding
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
 
         if dropout_rate > 0.0:
             self.dropout = nnx.Dropout(rate=dropout_rate, rngs=rngs)

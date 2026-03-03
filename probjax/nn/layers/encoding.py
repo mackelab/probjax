@@ -8,8 +8,10 @@ from flax import nnx
 from flax.typing import Initializer
 
 from probjax.nn.sharding import (
-    DEFAULT_LINEAR_SHARDING,
-    DEFAULT_MHA_SHARDING,
+    ShardingCfg,
+    activation_spec_for_rank,
+    apply_activation_sharding,
+    resolve_sharding_mesh,
 )
 from probjax.utils.typing import (
     Array,
@@ -23,12 +25,12 @@ default_embed_init = nnx.initializers.variance_scaling(
 )
 
 
-def _activation_spec_for_rank(rank: int):
-    if rank == 2:
-        return DEFAULT_LINEAR_SHARDING.activation
-    if rank == 3:
-        return DEFAULT_MHA_SHARDING.activation
-    return None
+def _activation_spec_for_rank(
+    sharding_cfg: ShardingCfg | None,
+    mesh: jax.sharding.Mesh | None,
+    rank: int,
+):
+    return activation_spec_for_rank(sharding_cfg, mesh, rank)
 
 
 class PosEncode(nnx.Module):
@@ -38,7 +40,7 @@ class PosEncode(nnx.Module):
         self,
         max_seq_len: int = 10_000,
         *,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Positional embedding module using sinusoidal patterns.
@@ -51,7 +53,8 @@ class PosEncode(nnx.Module):
         """
         del rngs
         super().__init__()
-        self._mesh = sharding
+        self._sharding_cfg = sharding_cfg
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
         if max_seq_len <= 0:
             raise ValueError("max_seq_len must be positive")
         self.max_seq_len = max_seq_len
@@ -114,9 +117,9 @@ class PosEncode(nnx.Module):
 
         out = x + pos_encoding
         if self._mesh is not None:
-            spec = _activation_spec_for_rank(out.ndim)
+            spec = _activation_spec_for_rank(self._sharding_cfg, self._mesh, out.ndim)
             if spec is not None:
-                out = jax.lax.with_sharding_constraint(out, spec)
+                out = apply_activation_sharding(out, spec, self._mesh)
         return out
 
 
@@ -134,7 +137,7 @@ class RotaryPosEncode(nnx.Module):
         spatial_shape: int | Sequence[int] | None = None,
         dtype: DTypeLike | None = None,
         cache_cos_sin: bool = True,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs | None = None,
     ):
         """Rotary positional embedding module (RoPE).
@@ -158,7 +161,8 @@ class RotaryPosEncode(nnx.Module):
             rngs: Random number generators (unused, kept for API consistency).
         """
         del rngs
-        self._mesh = sharding
+        self._sharding_cfg = sharding_cfg
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
         if token_dim <= 0:
             raise ValueError("token_dim must be positive")
         if max_seq_len <= 0:
@@ -360,9 +364,9 @@ class RotaryPosEncode(nnx.Module):
             else rotary_out
         )
         if self._mesh is not None:
-            spec = _activation_spec_for_rank(out.ndim)
+            spec = _activation_spec_for_rank(self._sharding_cfg, self._mesh, out.ndim)
             if spec is not None:
-                out = jax.lax.with_sharding_constraint(out, spec)
+                out = apply_activation_sharding(out, spec, self._mesh)
         return out
 
     def _apply_spatial(
@@ -435,7 +439,7 @@ class LearnablePosEncode(nnx.Module):
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
         embedding_init: Initializer = default_embed_init,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Learned positional embedding module.
@@ -457,7 +461,8 @@ class LearnablePosEncode(nnx.Module):
             raise ValueError("max_seq_len must be positive")
 
         self.max_seq_len = max_seq_len
-        self._mesh = sharding
+        self._sharding_cfg = sharding_cfg
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
         self.embed = nnx.Embed(
             max_seq_len,
             in_out_features,
@@ -513,9 +518,9 @@ class LearnablePosEncode(nnx.Module):
 
         out = x + pos_emb
         if self._mesh is not None:
-            spec = _activation_spec_for_rank(out.ndim)
+            spec = _activation_spec_for_rank(self._sharding_cfg, self._mesh, out.ndim)
             if spec is not None:
-                out = jax.lax.with_sharding_constraint(out, spec)
+                out = apply_activation_sharding(out, spec, self._mesh)
         return out
 
 
@@ -533,7 +538,7 @@ class GaussianFourierEmbedding(nnx.Module):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Gaussian Fourier embedding module. Mostly used to embed time or
@@ -567,7 +572,8 @@ class GaussianFourierEmbedding(nnx.Module):
         self.param_dtype = param_dtype
         self.precision = precision
         self.preferred_element_type = preferred_element_type
-        self._mesh = sharding
+        self._sharding_cfg = sharding_cfg
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
 
         # Use half_dim to ensure we can create the full output_dim
         half_dim = math.ceil(out_features / 2)
@@ -622,9 +628,9 @@ class GaussianFourierEmbedding(nnx.Module):
         features = jnp.concatenate([cos_features, sin_features], axis=-1)
         out = features[..., : self.out_features]
         if self._mesh is not None:
-            spec = _activation_spec_for_rank(out.ndim)
+            spec = _activation_spec_for_rank(self._sharding_cfg, self._mesh, out.ndim)
             if spec is not None:
-                out = jax.lax.with_sharding_constraint(out, spec)
+                out = apply_activation_sharding(out, spec, self._mesh)
         return out
 
 
@@ -635,7 +641,7 @@ class OneHot(nnx.Module):
         self,
         max_num_sequence: int,
         *,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """One-hot encoding module.
@@ -652,7 +658,8 @@ class OneHot(nnx.Module):
         if max_num_sequence <= 0:
             raise ValueError("num_tokens must be positive")
         self.num_tokens = max_num_sequence
-        self._mesh = sharding
+        self._sharding_cfg = sharding_cfg
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
 
     def __call__(self, x: ArrayLike, *, rng: jax.Array | None = None) -> Array:
         """One-hot encode the input.
@@ -678,7 +685,7 @@ class OneHot(nnx.Module):
 
         out = jax.nn.one_hot(x, self.num_tokens)
         if self._mesh is not None:
-            spec = _activation_spec_for_rank(out.ndim)
+            spec = _activation_spec_for_rank(self._sharding_cfg, self._mesh, out.ndim)
             if spec is not None:
-                out = jax.lax.with_sharding_constraint(out, spec)
+                out = apply_activation_sharding(out, spec, self._mesh)
         return out

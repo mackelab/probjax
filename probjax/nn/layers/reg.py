@@ -8,6 +8,7 @@ from flax import nnx
 from flax.nnx import rnglib
 from flax.nnx.module import Module, first_from
 
+from probjax.nn.sharding import ShardingCfg, resolve_sharding_mesh
 
 from probjax.utils.typing import Array, ArrayLike
 
@@ -31,7 +32,7 @@ class DropPath(Module):
         scale_by_keep: bool = True,
         deterministic: bool = False,
         rng_collection: str = "droppath",
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         rngs: rnglib.Rngs | rnglib.RngStream | None = None,
     ):
         if not (0.0 <= drop_rate <= 1.0):
@@ -42,7 +43,7 @@ class DropPath(Module):
         self.scale_by_keep = scale_by_keep
         self.deterministic = deterministic
         self.rng_collection = rng_collection
-        self._mesh = sharding
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
 
         if isinstance(rngs, rnglib.Rngs):
             self.rngs = rngs[self.rng_collection].fork()

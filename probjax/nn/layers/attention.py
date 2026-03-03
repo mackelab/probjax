@@ -1,5 +1,5 @@
 import math
-from typing import Optional
+from typing import Optional, cast
 
 import jax
 import jax.numpy as jnp
@@ -17,7 +17,7 @@ from probjax.nn.pallas_kernels import (
     QKVLengthMask,
     mha,
 )
-from probjax.nn.sharding import DEFAULT_MHA_SHARDING
+from probjax.nn.sharding import LinearShardingCfg, ShardingCfg
 from probjax.nn.utils import pad_to_power_of_2
 from probjax.utils.typing import Array, ArrayLike
 
@@ -26,19 +26,43 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
     def __init__(
         self,
         *args,
-        sharding: jax.sharding.Mesh | None = None,
-        sharding_spec=DEFAULT_MHA_SHARDING,
+        sharding_cfg: ShardingCfg | None = None,
+        sharding_spec=None,
         **kwargs,
     ):
-        self._mesh = sharding
-        spec = sharding_spec if sharding is not None else None
+        self._sharding_cfg = ShardingCfg.resolve(sharding_cfg)
+        self._mesh = (
+            self._sharding_cfg.resolved_mesh()
+            if self._sharding_cfg is not None
+            else None
+        )
+        if self._sharding_cfg is not None and isinstance(
+            self._sharding_cfg, LinearShardingCfg
+        ):
+            sharding_runtime_cfg = self._sharding_cfg
+        else:
+            sharding_runtime_cfg = LinearShardingCfg(mesh=self._mesh)
+        self._sharding_runtime_cfg = sharding_runtime_cfg
+        spec = (
+            sharding_spec
+            if sharding_spec is not None
+            else sharding_runtime_cfg.mha_spec(self._mesh)
+        )
         if spec is not None:
             if spec.kernel is not None:
                 init_fn = kwargs.get("kernel_init", nnx.initializers.lecun_normal())
-                kwargs["kernel_init"] = nnx.with_partitioning(init_fn, spec.kernel)
+                kwargs["kernel_init"] = sharding_runtime_cfg.partitioned_init(
+                    init_fn,
+                    spec.kernel,
+                    self._mesh,
+                )
             if spec.bias is not None:
                 init_fn = kwargs.get("bias_init", nnx.initializers.zeros)
-                kwargs["bias_init"] = nnx.with_partitioning(init_fn, spec.bias)
+                kwargs["bias_init"] = sharding_runtime_cfg.partitioned_init(
+                    init_fn,
+                    spec.bias,
+                    self._mesh,
+                )
             self._activation_sharding = spec.activation
         else:
             self._activation_sharding = None
@@ -92,7 +116,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         output of shape `[batch_sizes..., length, features]`.
         """
         if rng is not None and rngs is None:
-            rngs = lambda: rng
+            rngs = cast(rnglib.RngStream, lambda: rng)
         if rngs is None:
             rngs = self.rngs
         elif isinstance(rngs, rnglib.Rngs):
@@ -117,6 +141,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
 
         query = self.query(inputs_q)
         key = self.key(inputs_k)
+        assert inputs_v is not None
         value = self.value(inputs_v)
 
         if self.normalize_qk:
@@ -223,7 +248,11 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         # back to the original inputs dimensions
         out = self.out(x)
         if self._activation_sharding is not None:
-            out = jax.lax.with_sharding_constraint(out, self._activation_sharding)
+            out = self._sharding_runtime_cfg.apply_activation(
+                out,
+                self._activation_sharding,
+                self._mesh,
+            )
         return out
 
 

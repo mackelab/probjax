@@ -3,6 +3,8 @@ import jax.numpy as jnp
 from flax import nnx
 from jax.typing import ArrayLike
 
+from probjax.nn.sharding import ShardingCfg, resolve_sharding_mesh
+
 
 class MaskedLinear(nnx.Linear):
     def __init__(
@@ -11,11 +13,11 @@ class MaskedLinear(nnx.Linear):
         out_features: int,
         mask: ArrayLike,
         *,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
         **kwargs,
     ):
-        self._mesh = sharding
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
         super().__init__(in_features, out_features, rngs=rngs, **kwargs)
         mask = jnp.asarray(mask, dtype=jnp.bool_)
         if mask.shape != (in_features, out_features):

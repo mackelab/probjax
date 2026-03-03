@@ -6,6 +6,7 @@ import jax.tree_util
 from flax import nnx
 
 from probjax.nn.loss_fn.flow_matching import build_flow_matching_loss
+from probjax.nn.sharding import ShardingCfg, resolve_sharding_mesh
 
 from probjax.nn.nets.config.flow_matching_configs import (
     CosineInterpolationSchedule,
@@ -50,7 +51,7 @@ class FlowMatcher(nnx.Module):
         mu1: ArrayLike = 0.0,
         std1: ArrayLike = 1.0,
         loss_kwargs: Mapping[str, object] | None = None,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.RngStream | None = None,
     ):
         if not isinstance(schedule, InterpolationScheduleProtocol):
@@ -72,7 +73,7 @@ class FlowMatcher(nnx.Module):
         self.preconditioning = preconditioning
         self.train_cfg = train_cfg
         self.solver_cfg = solver_cfg
-        self._mesh = sharding
+        self._mesh = resolve_sharding_mesh(sharding_cfg)
 
         self.mu0 = nnx.Variable(mu0)
         self.std0 = nnx.Variable(std0)
@@ -201,7 +202,7 @@ class LinearFlow(FlowMatcher):
         solver_cfg: FlowSolverConfigProtocol | None = None,
         schedule: InterpolationScheduleProtocol | None = None,
         preconditioning: FlowPreconditioningProtocol | None = None,
-        sharding: jax.sharding.Mesh | None = None,
+        sharding_cfg: ShardingCfg | None = None,
     ):
         schedule = schedule or LinearInterpolationSchedule()
         preconditioning = preconditioning or GaussianFlowPreconditioning()
@@ -218,7 +219,7 @@ class LinearFlow(FlowMatcher):
             std1=std1,
             rngs=rngs,
             loss_kwargs=loss_kwargs,
-            sharding=sharding,
+            sharding_cfg=sharding_cfg,
         )
 
     def denoise(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
