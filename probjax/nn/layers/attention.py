@@ -30,42 +30,27 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         sharding_spec=None,
         **kwargs,
     ):
-        self._sharding_cfg = ShardingCfg.resolve(sharding_cfg)
-        self._mesh = (
-            self._sharding_cfg.resolved_mesh()
-            if self._sharding_cfg is not None
-            else None
-        )
-        if self._sharding_cfg is not None and isinstance(
-            self._sharding_cfg, LinearShardingCfg
-        ):
-            sharding_runtime_cfg = self._sharding_cfg
-        else:
-            sharding_runtime_cfg = LinearShardingCfg(mesh=self._mesh)
-        self._sharding_runtime_cfg = sharding_runtime_cfg
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
+        cfg = self.sharding_cfg.as_type(LinearShardingCfg)
         spec = (
             sharding_spec
             if sharding_spec is not None
-            else sharding_runtime_cfg.mha_spec(self._mesh)
+            else (cfg.mha_spec() if isinstance(cfg, LinearShardingCfg) else None)
         )
         if spec is not None:
             if spec.kernel is not None:
                 init_fn = kwargs.get("kernel_init", nnx.initializers.lecun_normal())
-                kwargs["kernel_init"] = sharding_runtime_cfg.partitioned_init(
-                    init_fn,
-                    spec.kernel,
-                    self._mesh,
+                kwargs["kernel_init"] = self.sharding_cfg.partitioned_init(
+                    init_fn, spec.kernel
                 )
             if spec.bias is not None:
                 init_fn = kwargs.get("bias_init", nnx.initializers.zeros)
-                kwargs["bias_init"] = sharding_runtime_cfg.partitioned_init(
-                    init_fn,
-                    spec.bias,
-                    self._mesh,
+                kwargs["bias_init"] = self.sharding_cfg.partitioned_init(
+                    init_fn, spec.bias
                 )
-            self._activation_sharding = spec.activation
+            self._activation_spec = spec.activation
         else:
-            self._activation_sharding = None
+            self._activation_spec = None
         super().__init__(*args, **kwargs)
 
     def __call__(
@@ -247,13 +232,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         )
         # back to the original inputs dimensions
         out = self.out(x)
-        if self._activation_sharding is not None:
-            out = self._sharding_runtime_cfg.apply_activation(
-                out,
-                self._activation_sharding,
-                self._mesh,
-            )
-        return out
+        return self.sharding_cfg.constrain(out, self._activation_spec)
 
 
 def dot_product_attention(

@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.loss_fn.denoising import build_time_dependent_denoising_loss
-from probjax.nn.sharding import ShardingCfg, resolve_sharding_mesh
+from probjax.nn.sharding import ShardingCfg
 from probjax.nn.utils import module_accepts_rng
 
 from probjax.nn.nets.config.denoising_diffusion_configs import (
@@ -74,7 +74,7 @@ class DiffusionDenoiser(nnx.Module):
         self.precond = precond
         self.train_cfg = train_cfg
         self.solver_cfg = solver_cfg
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         if self.solver_cfg is not None and hasattr(self.solver_cfg, "set_schedule"):
             self.solver_cfg.set_schedule(self.schedule)
         self.std0 = nnx.Variable(std0)

@@ -70,6 +70,7 @@ from probjax.nn.sharding import (
     LinearShardingCfg,
     LinearShardingSpec,
     MLPShardingSpec,
+    NormShardingSpec,
     ShardingCfg,
     SpatialShardingCfg,
     TransformerShardingCfg,

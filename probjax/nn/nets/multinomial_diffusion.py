@@ -22,7 +22,7 @@ from probjax.nn.nets.config.multinomial_diffusion_configs import (
     _require_float_time,
     _sample_categorical,
 )
-from probjax.nn.sharding import ShardingCfg, resolve_sharding_mesh
+from probjax.nn.sharding import ShardingCfg
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, RngKey
 
 
@@ -80,7 +80,7 @@ class MultinomialDiffusion(nnx.Module):
             raise ValueError("rao_blackwellize_xt_num_features must be >= 1.")
         self.eps = eps
         self.rngs = rngs
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
     @property
     def num_classes(self) -> int:

@@ -5,12 +5,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.nn.pallas_kernels import compute_mamba_scan, ssd as pallas_ssd
-from probjax.nn.sharding import (
-    ShardingCfg,
-    activation_spec_for_rank,
-    apply_activation_sharding,
-    resolve_sharding_mesh,
-)
+from probjax.nn.sharding import ShardingCfg
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
@@ -44,12 +39,6 @@ def gamma_log_init(key, lamb):
     nu, theta = lamb
     diag_lambda = jnp.exp(-jnp.exp(nu) + 1j * jnp.exp(theta))
     return jnp.log(jnp.sqrt(1 - jnp.abs(diag_lambda) ** 2))
-
-
-def _activation_spec_for_rank(
-    sharding_cfg: ShardingCfg | None, mesh: jax.sharding.Mesh | None, rank: int
-):
-    return activation_spec_for_rank(sharding_cfg, mesh, rank)
 
 
 class RecurrentCell(nnx.Module):
@@ -94,8 +83,7 @@ class LRUCell(RecurrentCell):
         self.r_min = r_min
         self.r_max = r_max
         self.max_phase = max_phase
-        self._sharding_cfg = sharding_cfg
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         # Scale and shift parameters
         self.theta_log = nnx.Param(
@@ -136,12 +124,10 @@ class LRUCell(RecurrentCell):
     def __call__(self, inputs: jax.Array, *, rng: jax.Array | None = None) -> jax.Array:
         del rng
         inputs = jnp.asarray(inputs)
-        if self._mesh is not None:
-            inputs = apply_activation_sharding(
-                inputs,
-                jax.sharding.PartitionSpec(*((None,) * inputs.ndim)),
-                self._mesh,
-            )
+        # Replicate inputs across all axes for the recurrence
+        inputs = self.sharding_cfg.constrain(
+            inputs, jax.sharding.PartitionSpec(*((None,) * inputs.ndim))
+        )
 
         def _single(x_td):
             # Parameters
@@ -172,11 +158,7 @@ class LRUCell(RecurrentCell):
             return outputs
 
         out = jax.vmap(_single)(inputs) if inputs.ndim == 3 else _single(inputs)
-        if self._mesh is not None:
-            spec = _activation_spec_for_rank(self._sharding_cfg, self._mesh, out.ndim)
-            if spec is not None:
-                out = apply_activation_sharding(out, spec, self._mesh)
-        return out
+        return self.sharding_cfg.constrain_for_rank(out, out.ndim)
 
 
 # ----------------------------- Mamba LRU ------------------------------------
@@ -236,8 +218,7 @@ class MambaCell(RecurrentCell):
         self.state_dim = sd
         self.seq_tile_size = seq_tile_size
         self.dim_tile_size = dim_tile_size
-        self._sharding_cfg = sharding_cfg
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         # Recurrent parameters
         self.a = nnx.Param(
@@ -285,11 +266,7 @@ class MambaCell(RecurrentCell):
         )
         if added_batch:
             y = y[0]
-        if self._mesh is not None:
-            spec = _activation_spec_for_rank(self._sharding_cfg, self._mesh, y.ndim)
-            if spec is not None:
-                y = apply_activation_sharding(y, spec, self._mesh)
-        return y
+        return self.sharding_cfg.constrain_for_rank(y, y.ndim)
 
 
 # ------------------------------ SSD (Mamba-2) -------------------------------
@@ -344,8 +321,7 @@ class SSDCell(RecurrentCell):
         if reduce not in ("sum", "mean"):
             raise ValueError("reduce must be 'sum' or 'mean'")
         self.reduce = reduce
-        self._sharding_cfg = sharding_cfg
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
@@ -388,11 +364,7 @@ class SSDCell(RecurrentCell):
         y = out.sum(axis=1) if self.reduce == "sum" else out.mean(axis=1)
         if added_batch:
             y = y[0]
-        if self._mesh is not None:
-            spec = _activation_spec_for_rank(self._sharding_cfg, self._mesh, y.ndim)
-            if spec is not None:
-                y = apply_activation_sharding(y, spec, self._mesh)
-        return y
+        return self.sharding_cfg.constrain_for_rank(y, y.ndim)
 
 
 # Uniform cell-style wrappers returning [B, L, D]

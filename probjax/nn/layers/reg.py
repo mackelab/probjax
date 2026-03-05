@@ -8,7 +8,7 @@ from flax import nnx
 from flax.nnx import rnglib
 from flax.nnx.module import Module, first_from
 
-from probjax.nn.sharding import ShardingCfg, resolve_sharding_mesh
+from probjax.nn.sharding import ShardingCfg
 
 from probjax.utils.typing import Array, ArrayLike
 
@@ -43,7 +43,7 @@ class DropPath(Module):
         self.scale_by_keep = scale_by_keep
         self.deterministic = deterministic
         self.rng_collection = rng_collection
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         if isinstance(rngs, rnglib.Rngs):
             self.rngs = rngs[self.rng_collection].fork()

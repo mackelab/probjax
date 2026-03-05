@@ -50,6 +50,18 @@ class LinearShardingSpec:
     activation: PartitionSpec | None = None
 
 
+@dataclass(frozen=True)
+class NormShardingSpec:
+    """Partition specs for a normalization layer (LayerNorm, RMSNorm, etc.).
+
+    Defaults to fully replicated (empty PartitionSpec) since norm parameters
+    are small and benefit from being available on every device.
+    """
+
+    scale: PartitionSpec = PartitionSpec()
+    bias: PartitionSpec = PartitionSpec()
+
+
 # ---------------------------------------------------------------------------
 # Base ShardingCfg – mesh resolution + fundamental operations
 # ---------------------------------------------------------------------------
@@ -61,6 +73,18 @@ class ShardingCfg:
 
     Subclass or mix-in additional ``*ShardingMixin`` classes to add
     layer-specific partition spec generation.
+
+    **Convenience API** — modules should call methods on ``self.sharding_cfg``
+    rather than using free functions:
+
+    - ``constrain(value, spec)`` — reshard an activation
+    - ``constrain_for_rank(value, rank)`` — reshard by tensor rank
+    - ``norm_kwargs(ctor)`` — kwargs for norm layer constructors
+    - ``linear_kwargs(ctor, spec)`` — kwargs for linear layer constructors
+    - ``make_linear_ctor(base_ctor, spec)`` — constructor with baked-in sharding
+    - ``partitioned_init(init_fn, spec)`` — wrap initializer with partitioning
+    - ``as_type(target_cls)`` — upcast to a composed config subclass
+    - ``resolve_or_noop(cfg)`` — class method returning cfg or ``_NOOP``
     """
 
     mesh: Mesh | None = None
@@ -77,6 +101,18 @@ class ShardingCfg:
         mesh = jax.sharding.get_mesh()
         axis_names = tuple(getattr(mesh, "axis_names", ()))
         return cls(mesh=mesh) if axis_names else None
+
+    @classmethod
+    def resolve_or_noop(cls, cfg: ShardingCfg | None) -> ShardingCfg:
+        """Return *cfg* if given, auto-detect, or the noop singleton.
+
+        Guarantees a non-``None`` return so callers never need null checks.
+        """
+        resolved = cls.resolve(cfg)
+        if resolved is not None:
+            return resolved
+        # _NOOP is defined after this class; use module-level lookup
+        return globals()["_NOOP"]
 
     # -- Mesh helpers ------------------------------------------------------
 
@@ -102,27 +138,6 @@ class ShardingCfg:
 
     # -- Core operations ---------------------------------------------------
 
-    def partitioned_init(
-        self,
-        init_fn: Callable,
-        spec: PartitionSpec | None,
-        mesh: Mesh | None = None,
-    ) -> Callable:
-        """Wrap *init_fn* so its result is resharded to *spec*."""
-        resolved_mesh = self.resolved_mesh() if mesh is None else mesh
-        if spec is None or resolved_mesh is None:
-            return init_fn
-        target_sharding = jax.sharding.NamedSharding(resolved_mesh, spec)
-
-        def wrapped_init(*args, **kwargs):
-            value = init_fn(*args, **kwargs)
-            try:
-                return jax.sharding.reshard(value, target_sharding)
-            except Exception:
-                return value
-
-        return wrapped_init
-
     def apply_activation(
         self,
         value,
@@ -140,6 +155,99 @@ class ShardingCfg:
             )
         except Exception:
             return value
+
+    # -- Convenience methods (used by NN modules) --------------------------
+
+    def constrain(self, value, spec: PartitionSpec | None = None):
+        """Reshard *value* according to *spec* (alias for ``apply_activation``)."""
+        return self.apply_activation(value, spec)
+
+    def constrain_for_rank(self, value, rank: int):
+        """Reshard *value* using a default spec derived from tensor *rank*.
+
+        Uses ``linear_spec`` for rank-2 and ``mha_spec`` for rank-3.
+        """
+        mesh = self.resolved_mesh()
+        if mesh is None:
+            return value
+        spec = activation_spec_for_rank(self, mesh, rank)
+        return self.constrain(value, spec)
+
+    def norm_kwargs(self, ctor) -> dict:
+        """Build keyword arguments for a norm layer constructor."""
+        mesh = self.resolved_mesh()
+        if mesh is None:
+            return {}
+        spec = self._resolve_norm_spec(mesh)
+        if spec is None:
+            return {}
+        kwargs = {}
+        if spec.scale is not None:
+            init_fn = _resolve_init_fn(ctor, "scale_init", nnx.initializers.ones)
+            kwargs["scale_init"] = self.partitioned_init(init_fn, spec.scale)
+        if spec.bias is not None:
+            init_fn = _resolve_init_fn(ctor, "bias_init", nnx.initializers.zeros)
+            kwargs["bias_init"] = self.partitioned_init(init_fn, spec.bias)
+        return _filter_constructor_kwargs(ctor, **kwargs)
+
+    def linear_kwargs(self, ctor, spec: LinearShardingSpec | None = None) -> dict:
+        """Build keyword arguments for a linear layer constructor."""
+        if spec is None:
+            return {}
+        mesh = self.resolved_mesh()
+        kwargs = {}
+        if spec.kernel is not None:
+            init_fn = _resolve_init_fn(
+                ctor, "kernel_init", nnx.initializers.lecun_normal()
+            )
+            kwargs["kernel_init"] = self.partitioned_init(init_fn, spec.kernel)
+        if spec.bias is not None:
+            init_fn = _resolve_init_fn(ctor, "bias_init", nnx.initializers.zeros)
+            kwargs["bias_init"] = self.partitioned_init(init_fn, spec.bias)
+        return _filter_constructor_kwargs(ctor, **kwargs)
+
+    def make_linear_ctor(self, base_ctor, spec: LinearShardingSpec | None = None):
+        """Return a linear layer constructor with baked-in sharding kwargs."""
+        kwargs = self.linear_kwargs(base_ctor, spec)
+        if not kwargs:
+            return base_ctor
+
+        def ctor(in_features, out_features):
+            return base_ctor(in_features, out_features, **kwargs)
+
+        return ctor
+
+    def partitioned_init(
+        self, init_fn: Callable, spec: PartitionSpec | None = None
+    ) -> Callable:
+        """Wrap *init_fn* with ``nnx.with_partitioning`` for *spec*."""
+        mesh = self.resolved_mesh()
+        if spec is None or mesh is None:
+            return init_fn
+        return nnx.with_partitioning(init_fn, sharding=tuple(spec), mesh=mesh)
+
+    def as_type(self, target_cls: type) -> ShardingCfg:
+        """Upcast to *target_cls* if not already an instance.
+
+        Preserves existing fields and creates a new instance of *target_cls*
+        using the base ``mesh``, ``data_axis``, ``model_axis`` fields.
+        """
+        if isinstance(self, target_cls):
+            return self
+        return target_cls(
+            mesh=self.mesh, data_axis=self.data_axis, model_axis=self.model_axis
+        )
+
+    # -- Internal helpers --------------------------------------------------
+
+    def _resolve_norm_spec(self, mesh: Mesh | None = None) -> NormShardingSpec | None:
+        """Resolve a NormShardingSpec from this config."""
+        if isinstance(self, NormShardingMixin):
+            return self.norm_spec(mesh)
+        resolved_mesh = self.resolved_mesh() if mesh is None else mesh
+        if resolved_mesh is None:
+            return None
+        return NormShardingSpec()
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +327,25 @@ class TransformerShardingMixin:
         return spec if spec.activation is not None else None
 
 
+class NormShardingMixin:
+    """Adds ``norm_spec`` to a :class:`ShardingCfg`."""
+
+    norm: NormShardingSpec | None
+    data_axis_name: Callable
+
+    def norm_spec(self, mesh: Mesh | None = None) -> NormShardingSpec | None:
+        """Return the norm sharding spec.
+
+        Returns the explicit ``norm`` field if set, otherwise defaults to
+        fully replicated (empty PartitionSpec for both scale and bias) when
+        a mesh is available.
+        """
+        if self.norm is not None:  # type: ignore[attr-defined]
+            return self.norm  # type: ignore[attr-defined]
+        # Default: replicate norm params (they're small).
+        return NormShardingSpec()
+
+
 class SpatialShardingMixin:
     """Adds spatial activation spec (for UNet-style architectures)."""
 
@@ -238,11 +365,12 @@ class SpatialShardingMixin:
 
 
 @dataclass(frozen=True)
-class LinearShardingCfg(ShardingCfg, LinearShardingMixin):
-    """ShardingCfg with linear/MHA layer support."""
+class LinearShardingCfg(ShardingCfg, LinearShardingMixin, NormShardingMixin):
+    """ShardingCfg with linear/MHA/norm layer support."""
 
     linear: LinearShardingSpec | None = None
     mha: LinearShardingSpec | None = None
+    norm: NormShardingSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -260,6 +388,102 @@ class SpatialShardingCfg(LinearShardingCfg, SpatialShardingMixin):
     """ShardingCfg with spatial activation support (for UNets)."""
 
     spatial_activation: PartitionSpec | None = None
+
+
+# ---------------------------------------------------------------------------
+# Noop singleton – null-object pattern
+# ---------------------------------------------------------------------------
+
+
+class NoopShardingCfg(ShardingCfg):
+    """No-op sharding config.  Every method is safe to call but does nothing.
+
+    Modules store ``self.sharding_cfg = ShardingCfg.resolve_or_noop(cfg)``
+    so they never need ``if self.sharding_cfg is not None:`` checks.
+    """
+
+    # Prevent dataclass inheritance from adding fields
+    __slots__ = ()
+
+    def __init__(self):
+        # Bypass frozen-dataclass __init__; set fields via object.__setattr__
+        object.__setattr__(self, "mesh", None)
+        object.__setattr__(self, "data_axis", "data")
+        object.__setattr__(self, "model_axis", "model")
+
+    # -- Mesh helpers (all return None / False) ----------------------------
+    def resolved_mesh(self) -> None:
+        return None
+
+    def has_axis(self, axis_name: str, mesh: Mesh | None = None) -> bool:
+        return False
+
+    def data_axis_name(self, mesh: Mesh | None = None) -> None:
+        return None
+
+    def model_axis_name(self, mesh: Mesh | None = None) -> None:
+        return None
+
+    # -- Core operations (all no-ops) --------------------------------------
+    def apply_activation(self, value, spec=None, mesh=None):
+        return value
+
+    def constrain(self, value, spec=None):
+        return value
+
+    def constrain_for_rank(self, value, rank: int):
+        return value
+
+    def norm_kwargs(self, ctor) -> dict:
+        return {}
+
+    def linear_kwargs(self, ctor, spec=None) -> dict:
+        return {}
+
+    def make_linear_ctor(self, base_ctor, spec=None):
+        return base_ctor
+
+    def partitioned_init(self, init_fn, spec=None):
+        return init_fn
+
+    def as_type(self, target_cls):
+        return self
+
+    def _resolve_norm_spec(self, mesh=None):
+        return None
+
+    # -- Mixin method stubs (all return None) ------------------------------
+    def linear_spec(self, mesh=None):
+        return None
+
+    def mha_spec(self, mesh=None):
+        return None
+
+    def transformer_hidden_spec(self, mesh=None):
+        return None
+
+    def transformer_input_spec(self, mesh=None):
+        return None
+
+    def transformer_mlp_column_spec(self, mesh=None):
+        return None
+
+    def transformer_mlp_row_spec(self, mesh=None):
+        return None
+
+    def spatial_activation_spec(self, mesh=None):
+        return None
+
+    def norm_spec(self, mesh=None):
+        return None
+
+    # Singleton-friendly repr
+    def __repr__(self) -> str:
+        return "NoopShardingCfg()"
+
+
+# Module-level singleton — used by resolve_or_noop when no sharding is active.
+_NOOP = NoopShardingCfg()
 
 
 # ---------------------------------------------------------------------------
@@ -323,12 +547,6 @@ class MLPShardingSpec:
 # ---------------------------------------------------------------------------
 
 
-def resolve_sharding_mesh(sharding_cfg: ShardingCfg | None) -> Mesh | None:
-    """Resolve an optional ShardingCfg to a Mesh (or None)."""
-    cfg = ShardingCfg.resolve(sharding_cfg)
-    return cfg.resolved_mesh() if cfg is not None else None
-
-
 def normalize_mlp_sharding(
     sharding_cfg: ShardingCfg | MLPShardingSpec | None,
     num_layers: int,
@@ -347,53 +565,6 @@ def normalize_mlp_sharding(
         "sharding_cfg must be a ShardingCfg or MLPShardingSpec, "
         f"got {type(sharding_cfg)}"
     )
-
-
-def make_partitioned_init(
-    init_fn: Callable,
-    spec: PartitionSpec | None,
-    mesh: Mesh | None,
-) -> Callable:
-    """Wrap an initializer so its output is resharded to *spec* on *mesh*."""
-    if mesh is None:
-        return init_fn
-    cfg = ShardingCfg(mesh=mesh)
-    return cfg.partitioned_init(init_fn, spec, mesh)
-
-
-def apply_activation_sharding(value, spec: PartitionSpec | None, mesh: Mesh | None):
-    """Reshard *value* to *spec* on *mesh*."""
-    if mesh is None:
-        return value
-    cfg = ShardingCfg(mesh=mesh)
-    return cfg.apply_activation(value, spec, mesh)
-
-
-def linear_sharding_kwargs(
-    ctor,
-    spec: LinearShardingSpec | None,
-    mesh: Mesh | None,
-) -> dict:
-    """Build keyword arguments to pass sharded initializers to a linear layer ctor."""
-    if spec is None:
-        return {}
-    kwargs = {}
-    if spec.kernel is not None:
-        init_fn = _resolve_init_fn(ctor, "kernel_init", nnx.initializers.lecun_normal())
-        kwargs["kernel_init"] = make_partitioned_init(init_fn, spec.kernel, mesh)
-    if spec.bias is not None:
-        init_fn = _resolve_init_fn(ctor, "bias_init", nnx.initializers.zeros)
-        kwargs["bias_init"] = make_partitioned_init(init_fn, spec.bias, mesh)
-    return _filter_constructor_kwargs(ctor, **kwargs)
-
-
-def make_sharded_linear_ctor(base_ctor, sharding_kwargs):
-    """Return a linear layer constructor with baked-in sharding kwargs."""
-
-    def ctor(in_features, out_features):
-        return base_ctor(in_features, out_features, **sharding_kwargs)
-
-    return ctor
 
 
 def filter_sharding_kwargs(ctor, **kwargs):

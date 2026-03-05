@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.layers.reg import DropPath
-from probjax.nn.sharding import ShardingCfg, resolve_sharding_mesh
+from probjax.nn.sharding import ShardingCfg
 
 from probjax.nn.utils import (
     filter_precision_kwargs,
@@ -82,7 +82,7 @@ class MLPConditioner(nnx.Module):
         )
         linear_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
 
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         self.activation = activation
         self.hidden = nnx.Linear(
             in_features,
@@ -142,7 +142,7 @@ class AdditiveFuse(ContextFuse):
             raise ValueError("context_features must be positive")
 
         super().__init__()
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
         )
@@ -213,7 +213,7 @@ class AffineFuse(ContextFuse):
             raise ValueError("context_features must be positive")
 
         super().__init__()
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
         )
@@ -283,7 +283,7 @@ class ConcatFuse(ContextFuse):
             raise ValueError("context_features must be positive")
 
         super().__init__()
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
         )
@@ -344,7 +344,7 @@ class AdditiveBinaryFuse(BinaryFuse):
 
         self.in_features = in_features
         self.context_features = context_features
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         if drop_path_rate > 0.0:
             self.drop_path = DropPath(drop_rate=drop_path_rate, rngs=rngs)
@@ -406,7 +406,7 @@ class GatedFuse(BinaryFuse):
             raise ValueError("context_features must be positive")
 
         super().__init__()
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type

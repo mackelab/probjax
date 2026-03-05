@@ -7,12 +7,7 @@ import jax.numpy as jnp
 from flax import nnx
 from flax.typing import Initializer
 
-from probjax.nn.sharding import (
-    ShardingCfg,
-    activation_spec_for_rank,
-    apply_activation_sharding,
-    resolve_sharding_mesh,
-)
+from probjax.nn.sharding import ShardingCfg
 from probjax.utils.typing import (
     Array,
     ArrayLike,
@@ -23,14 +18,6 @@ from probjax.utils.typing import (
 default_embed_init = nnx.initializers.variance_scaling(
     1.0, 'fan_in', 'normal', out_axis=0
 )
-
-
-def _activation_spec_for_rank(
-    sharding_cfg: ShardingCfg | None,
-    mesh: jax.sharding.Mesh | None,
-    rank: int,
-):
-    return activation_spec_for_rank(sharding_cfg, mesh, rank)
 
 
 class PosEncode(nnx.Module):
@@ -53,8 +40,7 @@ class PosEncode(nnx.Module):
         """
         del rngs
         super().__init__()
-        self._sharding_cfg = sharding_cfg
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         if max_seq_len <= 0:
             raise ValueError("max_seq_len must be positive")
         self.max_seq_len = max_seq_len
@@ -116,11 +102,7 @@ class PosEncode(nnx.Module):
         )
 
         out = x + pos_encoding
-        if self._mesh is not None:
-            spec = _activation_spec_for_rank(self._sharding_cfg, self._mesh, out.ndim)
-            if spec is not None:
-                out = apply_activation_sharding(out, spec, self._mesh)
-        return out
+        return self.sharding_cfg.constrain_for_rank(out, out.ndim)
 
 
 class RotaryPosEncode(nnx.Module):
@@ -161,8 +143,7 @@ class RotaryPosEncode(nnx.Module):
             rngs: Random number generators (unused, kept for API consistency).
         """
         del rngs
-        self._sharding_cfg = sharding_cfg
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         if token_dim <= 0:
             raise ValueError("token_dim must be positive")
         if max_seq_len <= 0:
@@ -363,11 +344,7 @@ class RotaryPosEncode(nnx.Module):
             if remainder is not None
             else rotary_out
         )
-        if self._mesh is not None:
-            spec = _activation_spec_for_rank(self._sharding_cfg, self._mesh, out.ndim)
-            if spec is not None:
-                out = apply_activation_sharding(out, spec, self._mesh)
-        return out
+        return self.sharding_cfg.constrain_for_rank(out, out.ndim)
 
     def _apply_spatial(
         self,
@@ -461,8 +438,7 @@ class LearnablePosEncode(nnx.Module):
             raise ValueError("max_seq_len must be positive")
 
         self.max_seq_len = max_seq_len
-        self._sharding_cfg = sharding_cfg
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         self.embed = nnx.Embed(
             max_seq_len,
             in_out_features,
@@ -517,11 +493,7 @@ class LearnablePosEncode(nnx.Module):
         pos_emb = pos_emb.reshape((1,) * len(batch_shape) + pos_emb.shape)
 
         out = x + pos_emb
-        if self._mesh is not None:
-            spec = _activation_spec_for_rank(self._sharding_cfg, self._mesh, out.ndim)
-            if spec is not None:
-                out = apply_activation_sharding(out, spec, self._mesh)
-        return out
+        return self.sharding_cfg.constrain_for_rank(out, out.ndim)
 
 
 class GaussianFourierEmbedding(nnx.Module):
@@ -572,8 +544,7 @@ class GaussianFourierEmbedding(nnx.Module):
         self.param_dtype = param_dtype
         self.precision = precision
         self.preferred_element_type = preferred_element_type
-        self._sharding_cfg = sharding_cfg
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         # Use half_dim to ensure we can create the full output_dim
         half_dim = math.ceil(out_features / 2)
@@ -627,11 +598,7 @@ class GaussianFourierEmbedding(nnx.Module):
         # Concatenate and truncate to exact output_dim
         features = jnp.concatenate([cos_features, sin_features], axis=-1)
         out = features[..., : self.out_features]
-        if self._mesh is not None:
-            spec = _activation_spec_for_rank(self._sharding_cfg, self._mesh, out.ndim)
-            if spec is not None:
-                out = apply_activation_sharding(out, spec, self._mesh)
-        return out
+        return self.sharding_cfg.constrain_for_rank(out, out.ndim)
 
 
 class OneHot(nnx.Module):
@@ -658,8 +625,7 @@ class OneHot(nnx.Module):
         if max_num_sequence <= 0:
             raise ValueError("num_tokens must be positive")
         self.num_tokens = max_num_sequence
-        self._sharding_cfg = sharding_cfg
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
     def __call__(self, x: ArrayLike, *, rng: jax.Array | None = None) -> Array:
         """One-hot encode the input.
@@ -684,8 +650,4 @@ class OneHot(nnx.Module):
             )
 
         out = jax.nn.one_hot(x, self.num_tokens)
-        if self._mesh is not None:
-            spec = _activation_spec_for_rank(self._sharding_cfg, self._mesh, out.ndim)
-            if spec is not None:
-                out = apply_activation_sharding(out, spec, self._mesh)
-        return out
+        return self.sharding_cfg.constrain_for_rank(out, out.ndim)

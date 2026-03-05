@@ -10,7 +10,7 @@ from probjax.core.transformation import inverse_and_logabsdet
 from probjax.nn.layers.attention import flex_attention
 from probjax.nn.layers.encoding import PosEncode
 from probjax.nn.nets.simple import MaskedMLP
-from probjax.nn.sharding import ShardingCfg, resolve_sharding_mesh
+from probjax.nn.sharding import ShardingCfg
 from probjax.nn.nets.transformer import Transformer
 from probjax.nn.pallas_kernels import CausalMask
 from probjax.utils.typing import ModuleLikeType
@@ -74,7 +74,7 @@ class AutoregressiveMLP(nnx.Module):
         self.bijector_dim = bijector_dim
         self.bijector = bijector
         self.bijector_inv = inverse_and_logabsdet(bijector, invertible_arg=1)
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         self.masked_mlp = mlp_cls(
             dims,
@@ -173,7 +173,7 @@ class AutoregressiveTransformer(nnx.Module):
         self.bijector_dim = bijector_dim
         self.bijector = bijector
         self.bijector_inv = inverse_and_logabsdet(bijector, invertible_arg=1)
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         if transformer is None:
             transformer = Transformer(

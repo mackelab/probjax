@@ -11,12 +11,7 @@ from probjax.nn.layers.attention import MultiHeadAttention
 from probjax.nn.layers.encoding import PosEncode, RotaryPosEncode
 from probjax.nn.layers.fuse import AffineFuse, GatedFuse
 from probjax.nn.layers.reg import DropPath
-from probjax.nn.sharding import (
-    ShardingCfg,
-    apply_activation_sharding,
-    filter_sharding_kwargs,
-    resolve_sharding_mesh,
-)
+from probjax.nn.sharding import ShardingCfg, filter_sharding_kwargs
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
@@ -87,7 +82,7 @@ class ConvBlock(nnx.Module):
             dtype, precision, param_dtype, preferred_element_type
         )
         precision_kwargs = filter_precision_kwargs(nnx.Conv, **precision_kwargs)
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         self.conv = nnx.Conv(
             in_features=in_features,
             out_features=out_features,
@@ -111,6 +106,7 @@ class ConvBlock(nnx.Module):
             norm_cls(
                 in_features,
                 rngs=rngs,
+                **self.sharding_cfg.norm_kwargs(norm_cls),
             )
             if norm_cls is not None
             else None
@@ -162,7 +158,7 @@ class ResizeConv(nnx.Module):
     ):
         self.resize_method = resize_method
         self.out_shape = out_shape
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
@@ -244,7 +240,7 @@ class RescaleConv(nnx.Module):
         self.resize_method = resize_method
         self.resize_factor = resize_factor
         self.spatial_dims = spatial_dims
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
@@ -347,7 +343,7 @@ class ResnetBlock(nnx.Module):
         self.dropout_rate = dropout_rate
         self.drop_path_rate = drop_path_rate
         self.rescale_skip = rescale_skip
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
@@ -456,14 +452,18 @@ class SpatialSelfAttention(nnx.Module):
     ):
         self.preferred_element_type = preferred_element_type
         self.num_spatial_dims = num_spatial_dims
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, None
         )
         precision_kwargs = filter_precision_kwargs(mha_cls, **precision_kwargs)
 
         # Layers
-        self.norm = norm_cls(in_features, rngs=rngs)
+        self.norm = norm_cls(
+            in_features,
+            rngs=rngs,
+            **self.sharding_cfg.norm_kwargs(norm_cls),
+        )
         self.attn = mha_cls(
             num_heads=num_heads,
             in_features=in_features,
@@ -517,12 +517,10 @@ class SpatialSelfAttention(nnx.Module):
         stochastic depth is controlled independently via `drop_path_rate`.
         """
         x = jnp.asarray(x)
-        if self._mesh is not None:
-            x = apply_activation_sharding(
-                x,
-                jax.sharding.PartitionSpec(*((None,) * x.ndim)),
-                self._mesh,
-            )
+        # Replicate inputs across all axes
+        x = self.sharding_cfg.constrain(
+            x, jax.sharding.PartitionSpec(*((None,) * x.ndim))
+        )
         b = x.shape[: -self.num_spatial_dims - 1]
         spatial_dims = x.shape[-self.num_spatial_dims - 1 : -1]
         seq_len = math.prod(spatial_dims)

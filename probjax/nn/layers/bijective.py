@@ -3,7 +3,7 @@ import jax.numpy as jnp
 from flax import nnx
 from flax.typing import Initializer
 
-from probjax.nn.sharding import ShardingCfg, resolve_sharding_mesh
+from probjax.nn.sharding import ShardingCfg
 from probjax.stats.bijective import rotate
 from probjax.utils.typing import (
     Array,
@@ -104,7 +104,7 @@ class Affine(nnx.Module):
         self.in_out_features = in_out_features
         self.dtype = dtype
         self.param_dtype = param_dtype
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         self.scale = nnx.Param(
             scale_init(rngs.next(), shape=(in_out_features,), dtype=param_dtype)
@@ -148,7 +148,7 @@ class Flip(nnx.Module):
         """
         del rngs  # Unused but kept for compatibility
         self.axis = axis
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
     def __call__(self, x: ArrayLike, *args, rng: jax.Array | None = None) -> Array:
         """Flip the input array along the specified axis.
@@ -189,7 +189,7 @@ class Permute(nnx.Module):
             ValueError: If permutation contains negative values.
         """
         del rngs  # Unused but kept for compatibility
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         permutation = jnp.asarray(permutation)
 
         if jnp.any(permutation < 0):
@@ -252,7 +252,7 @@ class Rotate(nnx.Module):
         self.learnable = learnable
         self.dtype = dtype
         self.param_dtype = param_dtype
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         if not learnable:
             if rotation_matrix is None:

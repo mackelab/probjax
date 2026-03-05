@@ -11,7 +11,7 @@ from probjax.nn.layers.bijective import Flip
 from probjax.nn.nets.autoregressive import AutoregressiveMLP
 from probjax.nn.nets.coupling import CouplingMLP
 from probjax.nn.nets.simple import Sequential
-from probjax.nn.sharding import ShardingCfg, resolve_sharding_mesh
+from probjax.nn.sharding import ShardingCfg
 from probjax.stats.bijective import additive_bijector, affine_bijector
 from probjax.stats.bijective.monotone_hermite_cubic import (
     monotone_hermite_cubic_spline as _monotone_hermite_cubic_spline,
@@ -348,7 +348,7 @@ class NormalizingFlow(nnx.Module):
     ):
         self.base_dist = base_dist
         self.transformation = transformation
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         super().__init__()
 
     # -- scipy-like stats API via transformed distribution --

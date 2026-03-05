@@ -12,9 +12,7 @@ from probjax.nn.layers.conv import (
 from probjax.nn.sharding import (
     ShardingCfg,
     SpatialShardingCfg,
-    apply_activation_sharding,
     filter_sharding_kwargs,
-    resolve_sharding_mesh,
 )
 from probjax.nn.utils import (
     filter_precision_kwargs,
@@ -105,15 +103,9 @@ class UNet(nnx.Module):
         self.num_stages = len(out_features)
         self.resize_method = resize_method  # Triggered if user shapes do not mat
         self.preferred_element_type = preferred_element_type
-        self._sharding_cfg = sharding_cfg
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
-        if self._sharding_cfg is not None and isinstance(
-            self._sharding_cfg, SpatialShardingCfg
-        ):
-            spatial_cfg = self._sharding_cfg
-        else:
-            spatial_cfg = SpatialShardingCfg(mesh=self._mesh)
-        self._activation_sharding = spatial_cfg.spatial_activation_spec(self._mesh)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
+        _scfg = self.sharding_cfg.as_type(SpatialShardingCfg)
+        self._activation_spec = _scfg.spatial_activation_spec()
 
         precision_kwargs = get_active_precision_kwargs(
             dtype,
@@ -146,7 +138,7 @@ class UNet(nnx.Module):
             rngs=rngs,
             **filter_sharding_kwargs(
                 resnet_block_cls,
-                sharding_cfg=self._sharding_cfg,
+                sharding_cfg=self.sharding_cfg,
             ),
             **filter_precision_kwargs(resnet_block_cls, **precision_kwargs),
         )
@@ -179,7 +171,7 @@ class UNet(nnx.Module):
                     rngs=rngs,
                     **filter_sharding_kwargs(
                         conv_down_cls_i,
-                        sharding_cfg=self._sharding_cfg,
+                        sharding_cfg=self.sharding_cfg,
                     ),
                     **filter_precision_kwargs(conv_down_cls_i, **precision_kwargs),
                 )
@@ -199,7 +191,7 @@ class UNet(nnx.Module):
                     rngs=rngs,
                     **filter_sharding_kwargs(
                         conv_up_cls_i,
-                        sharding_cfg=self._sharding_cfg,
+                        sharding_cfg=self.sharding_cfg,
                     ),
                     **filter_precision_kwargs(conv_up_cls_i, **precision_kwargs),
                 )
@@ -211,7 +203,7 @@ class UNet(nnx.Module):
             kernel_size=1,
             use_bias=False,
             rngs=rngs,
-            **filter_sharding_kwargs(conv_cls, sharding_cfg=self._sharding_cfg),
+            **filter_sharding_kwargs(conv_cls, sharding_cfg=self.sharding_cfg),
             **filter_precision_kwargs(conv_cls, **precision_kwargs),
         )
 
@@ -219,7 +211,7 @@ class UNet(nnx.Module):
             attn_cls,
             dropout_rate=dropout_rate,
             rngs=rngs,
-            **filter_sharding_kwargs(attn_cls, sharding_cfg=self._sharding_cfg),
+            **filter_sharding_kwargs(attn_cls, sharding_cfg=self.sharding_cfg),
             **filter_precision_kwargs(attn_cls, **precision_kwargs),
         )
 
@@ -330,13 +322,7 @@ class UNet(nnx.Module):
         rng: jax.Array | None = None,
     ) -> Array:
         def _constrain(x: Array) -> Array:
-            if self._activation_sharding is not None:
-                return apply_activation_sharding(
-                    x,
-                    self._activation_sharding,
-                    self._mesh,
-                )
-            return x
+            return self.sharding_cfg.constrain(x, self._activation_spec)
 
         # 1) Initial projection
         x = (

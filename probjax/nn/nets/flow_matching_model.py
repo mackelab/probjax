@@ -6,7 +6,7 @@ import jax.tree_util
 from flax import nnx
 
 from probjax.nn.loss_fn.flow_matching import build_flow_matching_loss
-from probjax.nn.sharding import ShardingCfg, resolve_sharding_mesh
+from probjax.nn.sharding import ShardingCfg
 
 from probjax.nn.nets.config.flow_matching_configs import (
     CosineInterpolationSchedule,
@@ -73,7 +73,7 @@ class FlowMatcher(nnx.Module):
         self.preconditioning = preconditioning
         self.train_cfg = train_cfg
         self.solver_cfg = solver_cfg
-        self._mesh = resolve_sharding_mesh(sharding_cfg)
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         self.mu0 = nnx.Variable(mu0)
         self.std0 = nnx.Variable(std0)
