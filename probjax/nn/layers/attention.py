@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import math
-from typing import Optional, cast
+from typing import Any, Optional, cast
 
 import jax
 import jax.numpy as jnp
@@ -8,26 +10,289 @@ from flax.nnx import MultiHeadAttention as FlaxMultiHeadAttention
 from flax.nnx import combine_masks, rnglib
 from flax.nnx import dot_product_attention as flax_dot_product_attention
 from flax.nnx.module import first_from
+from flax.typing import Dtype
 from jax import lax
 
 from probjax.nn.pallas_kernels import (
-    BlockSizes,
     AttentionBias,
     AttentionMask,
+    BlockSizes,
     QKVLengthMask,
     mha,
 )
 from probjax.nn.sharding import LinearShardingCfg, ShardingCfg
 from probjax.nn.utils import pad_to_power_of_2
-from probjax.utils.typing import Array, ArrayLike
+from probjax.utils.typing import Array, ArrayLike, DTypeLike, ModuleLikeType
+
+
+# ---------------------------------------------------------------------------
+# Query scaling modules (pre-kernel Q scaling for SSMax / QASSMax / etc.)
+# ---------------------------------------------------------------------------
+
+
+def _zero_init_last_layer(mlp: Any, bias_value: float | None = None) -> None:
+    """Zero the last layer's kernel of an MLP so it starts as a no-op.
+
+    Optionally set the last layer's bias to a constant (e.g. 1.0 so the
+    MLP initially outputs that constant everywhere).
+    """
+    last = mlp.layers[-1]
+    last.kernel[...] = jnp.zeros_like(last.kernel[...])
+    if bias_value is not None and last.bias is not None:
+        last.bias[...] = jnp.full_like(last.bias[...], bias_value)
+
+
+class SSMaxQueryScale(nnx.Module):
+    """Scalable-Softmax (SSMax) per-head query scaling.
+
+    Scales each query by ``s_h * log(n)`` where *s* is a learnable per-head
+    scalar and *n* is the number of keys (KV sequence length).  This
+    compensates for "attention fading" as the context grows.
+
+    At initialisation ``s = 1`` so the effective scaling is just ``log(n)``.
+
+    Reference: *Scalable Softmax* (https://arxiv.org/abs/2501.14222).
+
+    The module is designed to be passed to :class:`MultiHeadAttention` via
+    the ``query_scale`` argument::
+
+        mha = MultiHeadAttention(
+            ...,
+            query_scale=SSMaxQueryScale(num_heads=8, rngs=rngs),
+        )
+
+    Args:
+        num_heads: number of attention heads.
+        param_dtype: dtype for the learnable scalar.
+        rngs: random number generators.
+    """
+
+    def __init__(
+        self,
+        num_heads: int,
+        *,
+        param_dtype: Dtype = jnp.float32,
+        rngs: rnglib.Rngs,
+    ):
+        self.s = nnx.Param(jnp.ones((num_heads,), dtype=param_dtype))
+
+    def __call__(self, query: Array, *, kv_len: int | Array) -> Array:
+        """Scale *query* by ``s * log(kv_len)``.
+
+        Args:
+            query: projected queries, shape ``[batch, length, num_heads, head_dim]``.
+            kv_len: number of keys the query will attend over.  Can be a
+                scalar (same for all examples) or a per-batch array of shape
+                ``[batch]`` / ``[batch, 1]`` for variable-length sequences.
+
+        Returns:
+            Scaled queries (same shape).
+        """
+        kv_len = jnp.asarray(kv_len, dtype=jnp.float32)
+        log_n = jnp.log(jnp.maximum(kv_len, 1.0))
+        # Reshape log_n so it broadcasts with query [B, L, H, D].
+        # scalar → works as-is; [B] → [B, 1, 1, 1]; [B, 1] → [B, 1, 1, 1]
+        if log_n.ndim >= 1:
+            log_n = log_n.reshape(-1, *([1] * (query.ndim - 1)))
+        # s: [H] → [1, 1, H, 1]
+        scale = self.s[...][None, None, :, None] * log_n
+        return query * scale
+
+
+class QASSMaxQueryScale(nnx.Module):
+    """Query-Aware Scalable Softmax (QASSMax) per-head query scaling.
+
+    A richer variant of SSMax where the scaling is both *per-element* and
+    *query-dependent*:
+
+    .. math::
+
+        \\tilde q_{h,i} = q_{h,i} \\odot \\text{base}_h(\\log n)
+                          \\odot (1 + \\tanh(\\text{gate}_h(q_{h,i})))
+
+    * ``base_h(log n)``: a per-head 2-layer MLP that maps the scalar
+      ``log(n)`` to a ``[num_heads * head_dim]`` vector (reshaped to
+      ``[num_heads, head_dim]``).  Zero-init output with bias = 1 so it
+      starts as identity scaling.
+    * ``gate_h(q)``: a 2-layer MLP operating on the last axis (``head_dim``)
+      of the query tensor.  Because query has shape
+      ``[batch, len, num_heads, head_dim]``, the MLP naturally broadcasts
+      over batch/length/heads and produces head-specific outputs (different
+      query → different gate).  Zero-init output so ``1 + tanh(0) = 1``
+      at initialisation.
+
+    Combined, at init: ``q' = q * 1 * 1 = q`` (identity).
+
+    Reference: *TabICLv2* (https://arxiv.org/abs/2506.05196).
+
+    Args:
+        num_heads: number of attention heads.
+        head_dim: dimension of each head.
+        hidden_dim: hidden dimension for both MLPs.
+        param_dtype: dtype for learnable parameters.
+        dtype: computation dtype (forwarded to MLP).
+        rngs: random number generators.
+    """
+
+    def __init__(
+        self,
+        num_heads: int,
+        head_dim: int,
+        *,
+        hidden_dim: int = 64,
+        param_dtype: DTypeLike | None = None,
+        dtype: DTypeLike | None = None,
+        rngs: rnglib.Rngs,
+    ):
+        self.num_heads = num_heads
+        self.head_dim = head_dim
+
+        # Lazy import to avoid circular dependency
+        # (attention → nets.simple → nets.__init__ → autoregressive → attention).
+        from probjax.nn.nets.simple import MLP
+
+        mlp_kwargs: dict[str, Any] = {}
+        if param_dtype is not None:
+            mlp_kwargs["param_dtype"] = param_dtype
+        if dtype is not None:
+            mlp_kwargs["dtype"] = dtype
+
+        # Base MLP: scalar log(n) → [num_heads * head_dim].
+        # Starts outputting 1.0 everywhere (identity scaling).
+        self.base_mlp = MLP(
+            feature_dims=[1, hidden_dim, num_heads * head_dim],
+            rngs=rngs,
+            **mlp_kwargs,
+        )
+        _zero_init_last_layer(self.base_mlp, bias_value=1.0)
+
+        # Gate MLP: [head_dim] → [head_dim], shared weights across heads.
+        # Applied to query of shape [..., num_heads, head_dim] — the Linear
+        # operates on the last axis and broadcasts over all leading dims,
+        # so each head gets a different output (different query vector in).
+        # Starts outputting 0.0 → 1 + tanh(0) = 1.0 (identity).
+        self.gate_mlp = MLP(
+            feature_dims=[head_dim, hidden_dim, head_dim],
+            rngs=rngs,
+            **mlp_kwargs,
+        )
+        _zero_init_last_layer(self.gate_mlp)
+
+    def __call__(self, query: Array, *, kv_len: int | Array) -> Array:
+        """Scale *query* using base and gate MLPs.
+
+        Args:
+            query: projected queries, shape ``[batch, length, num_heads, head_dim]``.
+            kv_len: number of keys the query will attend over.  Can be a
+                scalar (same for all examples) or a per-batch array of shape
+                ``[batch]`` / ``[batch, 1]`` for variable-length sequences.
+
+        Returns:
+            Scaled queries (same shape).
+        """
+        kv_len = jnp.asarray(kv_len, dtype=jnp.float32)
+        log_n = jnp.log(jnp.maximum(kv_len, 1.0))
+
+        # Base MLP: f(log_n) → per-head per-dim scale.
+        # Input: scalar → [1, 1] or per-batch [B] → [B, 1].
+        log_n_flat = log_n.reshape(-1, 1)  # [B, 1] or [1, 1]
+        base_flat = self.base_mlp(log_n_flat)  # [B, H*D] or [1, H*D]
+        # Reshape to [B, 1, H, D] (or [1, 1, H, D] for scalar kv_len)
+        # so it broadcasts with query [B, L, H, D].
+        base = base_flat.reshape(-1, 1, self.num_heads, self.head_dim)
+
+        # Gate: g(query) → [B, L, H, D], bounded (0, 2)
+        gate = 1.0 + jnp.tanh(self.gate_mlp(query))
+
+        return query * base * gate
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_qk_norm(
+    *,
+    cls: ModuleLikeType | None,
+    head_dim: int,
+    dtype: Any,
+    param_dtype: Any,
+    promote_dtype: Any,
+    scale_metadata: dict,
+    rngs: rnglib.Rngs,
+    extra_kwargs: dict | None,
+) -> Any:
+    """Instantiate a normalization layer for query or key projections.
+
+    When *cls* is None, falls back to ``nnx.LayerNorm`` (the Flax default).
+    For ``nnx.LayerNorm`` specifically, ``use_bias=False`` and
+    ``scale_metadata`` are forwarded.  For any other class the caller can
+    pass arbitrary kwargs via *extra_kwargs*.
+    """
+    if cls is None:
+        return nnx.LayerNorm(
+            head_dim,
+            use_bias=False,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            promote_dtype=promote_dtype,
+            rngs=rngs,
+            scale_metadata=scale_metadata,
+        )
+
+    kw: dict = dict(extra_kwargs) if extra_kwargs else {}
+    kw.setdefault("dtype", dtype)
+    kw.setdefault("param_dtype", param_dtype)
+    return cls(head_dim, rngs=rngs, **kw)
 
 
 class MultiHeadAttention(FlaxMultiHeadAttention):
+    """Multi-head attention with optional QK normalization and query scaling.
+
+    Extends Flax's ``MultiHeadAttention`` with sharding support, pluggable
+    QK normalization layers, and a pre-kernel *query scaling* hook.
+
+    **QK normalization** (``normalize_qk`` + ``normalize_{q,kv}_cls``)
+    lets you swap in any norm layer (e.g. ``LpNorm`` for cosine-similarity
+    attention).
+
+    **Query scaling** (``query_scale``) is applied *after* QK normalisation
+    and *before* the attention kernel.  Because attention logits are linear
+    in Q, multiplying Q is equivalent to multiplying the logits — which is
+    exactly how SSMax and QASSMax are meant to be implemented.
+
+    Args:
+        normalize_qk: if True, normalize query and key projections before
+            computing attention weights.
+        normalize_q_cls: optional module *class* (constructor) used to build
+            the query normalizer.  Receives ``(head_dim, *, rngs=...)`` plus
+            any extra kwargs supplied via ``normalize_q_kwargs``.  When
+            ``None`` (default) and ``normalize_qk`` is True, falls back to
+            ``nnx.LayerNorm``.
+        normalize_kv_cls: same as ``normalize_q_cls`` but for keys.
+        normalize_q_kwargs: extra keyword arguments forwarded to the query
+            normalizer constructor (after ``num_features`` and ``rngs``).
+        normalize_kv_kwargs: extra keyword arguments forwarded to the key
+            normalizer constructor.
+        query_scale: an optional ``nnx.Module`` that scales the projected
+            queries before they enter the attention kernel.  The module must
+            accept ``(query, *, kv_len)`` and return the scaled queries.
+            Built-in options: :class:`SSMaxQueryScale`,
+            :class:`QASSMaxQueryScale`.  Constructed externally and passed in.
+    """
+
     def __init__(
         self,
         *args,
         sharding_cfg: ShardingCfg | None = None,
         sharding_spec=None,
+        normalize_qk: bool = False,
+        normalize_q_cls: ModuleLikeType | None = None,
+        normalize_kv_cls: ModuleLikeType | None = None,
+        normalize_q_kwargs: dict | None = None,
+        normalize_kv_kwargs: dict | None = None,
+        query_scale: nnx.Module | None = None,
         **kwargs,
     ):
         self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
@@ -51,7 +316,42 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
             self._activation_spec = spec.activation
         else:
             self._activation_spec = None
-        super().__init__(*args, **kwargs)
+
+        # Grab rngs and metadata before passing kwargs to the parent.
+        rngs: rnglib.Rngs = kwargs["rngs"]
+        query_ln_scale_metadata = kwargs.get("query_ln_scale_metadata", {})
+        key_ln_scale_metadata = kwargs.get("key_ln_scale_metadata", {})
+
+        super().__init__(*args, normalize_qk=False, **kwargs)
+
+        # Build QK normalization layers ourselves so we can swap in any class.
+        if normalize_qk:
+            self.normalize_qk = True
+            self.query_ln = _build_qk_norm(  # type: ignore[assignment]
+                cls=normalize_q_cls,
+                head_dim=self.head_dim,
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+                promote_dtype=self.ln_promote_dtype,
+                scale_metadata=query_ln_scale_metadata,
+                rngs=rngs,
+                extra_kwargs=normalize_q_kwargs,
+            )
+            self.key_ln = _build_qk_norm(  # type: ignore[assignment]
+                cls=normalize_kv_cls,
+                head_dim=self.head_dim,
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+                promote_dtype=self.ln_promote_dtype,
+                scale_metadata=key_ln_scale_metadata,
+                rngs=rngs,
+                extra_kwargs=normalize_kv_kwargs,
+            )
+
+        # Pre-kernel query scaling (SSMax, QASSMax, etc.).
+        self._query_scale: nnx.Module | None = (
+            query_scale if query_scale is not None else nnx.data(None)
+        )
 
     def __call__(
         self,
@@ -66,6 +366,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         rngs: rnglib.Rngs | rnglib.RngStream | None = None,
         sow_weights: bool = False,
         decode: bool | None = False,
+        kv_len: int | Array | None = None,
     ):
         """Applies multi-head dot product attention on the input data.
 
@@ -96,6 +397,14 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         decode: whether to prepare and use an autoregressive cache. The ``decode``
             flag passed into the call method will take precedence over the ``decode``
             flag passed into the constructor.
+        kv_len: effective number of keys each query attends over.  Used by
+            ``query_scale`` (SSMax / QASSMax) for the ``log(n)`` term.  Can be:
+
+            - ``None`` (default): inferred from the key tensor shape, or from
+              the cache index during autoregressive decoding.
+            - A scalar ``int`` or 0-d array: same length for every example.
+            - A 1-d array of shape ``[batch]``: per-example lengths for
+              variable-length sequences (e.g. in a padded batch).
 
         Returns:
         output of shape `[batch_sizes..., length, features]`.
@@ -194,6 +503,24 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
                     tuple(batch_dims) + (1, 1, max_length),
                 ),
             )
+
+        # Per-head query scaling (SSMax, QASSMax, etc.).
+        # Applied after QK norm and after cache update so that kv_len
+        # reflects the actual number of keys being attended to.
+        # Because logits = Q @ K^T, scaling Q is equivalent to scaling
+        # the logits — this is the "pre-kernel" trick from the SSMax paper.
+        if self._query_scale is not None:
+            if kv_len is not None:
+                # Caller provided an explicit kv_len (scalar or [batch]).
+                effective_kv_len = kv_len
+            elif decode and self.cache_index is not None:
+                # During autoregressive decoding, use the number of keys
+                # actually filled in the cache (cur_index was incremented
+                # above, so cache_index already equals the count).
+                effective_kv_len = self.cache_index[...]
+            else:
+                effective_kv_len = key.shape[-3]
+            query = self._query_scale(query, kv_len=effective_kv_len)
 
         if self.dropout_rate > 0.0:  # Require `deterministic` only if using dropout.
             deterministic = first_from(

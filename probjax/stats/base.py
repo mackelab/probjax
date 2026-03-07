@@ -8,7 +8,7 @@ that provide a SciPy-like API. This closely follows the structure of scipy.stats
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import ABC, ABCMeta, abstractmethod
 from typing import Any, ClassVar, Mapping, Optional, Tuple, cast
 
 import jax
@@ -625,10 +625,112 @@ class rv_discrete(rv_generic):
         return jnp.exp(cls.logpdf(x, *args, **kwds))
 
 
-class FrozenDistributionMeta(type):
+class DistributionAPI(ABC):
+    """Common distribution interface shared by frozen and module-backed dists."""
+
+    @property
+    @abstractmethod
+    def batch_shape(self) -> Tuple[int, ...]: ...
+
+    @property
+    @abstractmethod
+    def event_shape(self) -> Tuple[int, ...]: ...
+
+    @abstractmethod
+    def logpdf(self, x: ArrayLike) -> Array: ...
+
+    @abstractmethod
+    def rvs(
+        self,
+        rng: RngKey,
+        shape: Tuple[int, ...] = (),
+        name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Array: ...
+
+    def pdf(self, x: ArrayLike):
+        return jnp.exp(self.logpdf(x))
+
+    def cdf(self, x: ArrayLike):
+        raise NotImplementedError("CDF not implemented for this distribution")
+
+    def logcdf(self, x: ArrayLike):
+        return jnp.log(self.cdf(x))
+
+    def ppf(self, q: ArrayLike):
+        raise NotImplementedError("PPF not implemented for this distribution")
+
+    def sf(self, x: ArrayLike):
+        return 1.0 - self.cdf(x)
+
+    def logsf(self, x: ArrayLike):
+        return jnp.log(self.sf(x))
+
+    def isf(self, q: ArrayLike):
+        return self.ppf(1.0 - q)
+
+    def mean(self):
+        raise NotImplementedError("Mean not implemented for this distribution")
+
+    def mode(self):
+        raise NotImplementedError("Mode not implemented for this distribution")
+
+    def var(self):
+        raise NotImplementedError("Variance not implemented for this distribution")
+
+    def std(self):
+        return jnp.sqrt(self.var())
+
+    def entropy(self):
+        raise NotImplementedError("Entropy not implemented for this distribution")
+
+    def median(self):
+        return self.ppf(0.5)
+
+    def interval(self, confidence: Optional[ArrayLike] = None):
+        confidence = 0.95 if confidence is None else confidence
+        alpha = (1.0 - confidence) / 2.0
+        return self.ppf(alpha), self.ppf(1.0 - alpha)
+
+    def moment(self, order: Optional[int] = None):
+        raise NotImplementedError("Moment not implemented for this distribution")
+
+    def skew(self):
+        raise NotImplementedError("Skew not implemented for this distribution")
+
+    def kurtosis(self):
+        raise NotImplementedError("Kurtosis not implemented for this distribution")
+
+    def stats(self, moments: str = "mv"):
+        values = []
+        for m in moments:
+            if m == "m":
+                values.append(self.mean())
+            elif m == "v":
+                values.append(self.var())
+            elif m == "s":
+                values.append(self.skew())
+            elif m == "k":
+                values.append(self.kurtosis())
+            else:
+                raise ValueError(
+                    "moments must contain only the letters 'm', 'v', 's', and 'k'."
+                )
+        if not values:
+            return ()
+        return values[0] if len(values) == 1 else tuple(values)
+
+    def sample(self, rng: RngKey, shape: Tuple[int, ...] = ()) -> Array:
+        return self.rvs(rng, shape=shape)
+
+    def support(self):
+        raise NotImplementedError("Support not implemented for this distribution")
+
+
+class FrozenDistributionMeta(ABCMeta):
     """Metaclass for frozen distributions that inherits name and docstrings."""
 
-    def __new__(mcs, name, bases, namespace, dist=None):
+    def __new__(mcs, name, bases, namespace, dist=None, **kwargs):
         if dist is not None:
             impl_class = dist if isinstance(dist, type) else dist.__class__
             dist_name = getattr(dist, "name", None) or getattr(impl_class, "name", None)
@@ -636,10 +738,10 @@ class FrozenDistributionMeta(type):
                 namespace.setdefault("name", dist_name)
             namespace.setdefault("dist", dist)
 
-        return super().__new__(mcs, name, bases, namespace)
+        return super().__new__(mcs, name, bases, namespace, **kwargs)
 
 
-class rv_frozen(metaclass=FrozenDistributionMeta):
+class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
     def __init__(
         self,
         dist,

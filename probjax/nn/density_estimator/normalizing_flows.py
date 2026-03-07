@@ -12,6 +12,7 @@ from probjax.nn.nets.autoregressive import AutoregressiveMLP
 from probjax.nn.nets.coupling import CouplingMLP
 from probjax.nn.nets.simple import Sequential
 from probjax.nn.sharding import ShardingCfg
+from probjax.stats.base import DistributionAPI, rv_frozen
 from probjax.stats.bijective import additive_bijector, affine_bijector
 from probjax.stats.bijective.monotone_hermite_cubic import (
     monotone_hermite_cubic_spline as _monotone_hermite_cubic_spline,
@@ -337,7 +338,7 @@ def _inv_and_logdet_learnable_mixture_cdf(params, x, **kwargs):
 # ---------------------------------------------------------------------------
 
 
-class NormalizingFlow(nnx.Module):
+class NormalizingFlow(nnx.Module, DistributionAPI):
     def __init__(
         self,
         base_dist,
@@ -348,6 +349,7 @@ class NormalizingFlow(nnx.Module):
     ):
         self.base_dist = base_dist
         self.transformation = transformation
+        self.name = name
         self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         super().__init__()
 
@@ -358,18 +360,95 @@ class NormalizingFlow(nnx.Module):
         """Frozen ``transformed`` distribution for full scipy-like API access."""
         return transformed(base_dist=self.base_dist, bijector=self.transformation)
 
-    def transform(self, x, *, rng: jax.Array | None = None):
-        return self.transformation(x, rng=rng)
+    def conditional_dist(self, context):
+        """Frozen transformed distribution conditioned on context."""
 
-    def __call__(self, x, *, rng: jax.Array | None = None):
-        return self.transform(x, rng=rng)
+        def _bijector(x):
+            return self.transformation(x, context)
 
-    def sample(self, rng, shape=()):
+        return transformed(base_dist=self.base_dist, bijector=_bijector)
+
+    def _dist_for_context(self, context=None):
+        return self.dist if context is None else self.conditional_dist(context)
+
+    @property
+    def batch_shape(self):
+        return self.dist.batch_shape
+
+    @property
+    def event_shape(self):
+        return self.dist.event_shape
+
+    def transform(self, x, context=None, *, rng: jax.Array | None = None):
+        if context is None:
+            return self.transformation(x, rng=rng)
+        return self.transformation(x, context, rng=rng)
+
+    def __call__(self, x, context=None, *, rng: jax.Array | None = None):
+        return self.transform(x, context=context, rng=rng)
+
+    def sample(self, rng, shape=(), context=None):
         """Sample from the flow distribution."""
-        return self.dist.rvs(rng, shape=shape)
+        return self.rvs(rng, shape=shape, context=context)
 
-    def logpdf(self, x):
-        return self.dist.logpdf(x)
+    def rvs(self, rng, shape=(), name: Optional[str] = None, context=None, **kwargs):
+        return self._dist_for_context(context).rvs(
+            rng, shape=shape, name=name, **kwargs
+        )
+
+    def logpdf(self, x, context=None):
+        return self._dist_for_context(context).logpdf(x)
+
+    def pdf(self, x, context=None):
+        return self._dist_for_context(context).pdf(x)
+
+    def cdf(self, x, context=None):
+        return self._dist_for_context(context).cdf(x)
+
+    def ppf(self, q, context=None):
+        return self._dist_for_context(context).ppf(q)
+
+    def logcdf(self, x, context=None):
+        return self._dist_for_context(context).logcdf(x)
+
+    def sf(self, x, context=None):
+        return self._dist_for_context(context).sf(x)
+
+    def logsf(self, x, context=None):
+        return self._dist_for_context(context).logsf(x)
+
+    def isf(self, q, context=None):
+        return self._dist_for_context(context).isf(q)
+
+    def mean(self):
+        return self.dist.mean()
+
+    def mode(self):
+        return self.dist.mode()
+
+    def var(self):
+        return self.dist.var()
+
+    def std(self):
+        return self.dist.std()
+
+    def entropy(self):
+        return self.dist.entropy()
+
+    def median(self):
+        return self.dist.median()
+
+    def interval(self, confidence=None, context=None):
+        return self._dist_for_context(context).interval(confidence)
+
+    def moment(self, order: Optional[int] = None, context=None):
+        return self._dist_for_context(context).moment(order)
+
+    def stats(self, moments: str = "mv", context=None):
+        return self._dist_for_context(context).stats(moments=moments)
+
+    def support(self):
+        return self.dist.support()
 
     # -- Helper for building the standard normal base distribution --
 
@@ -417,6 +496,7 @@ class AdditiveCouplingFlow(NormalizingFlow):
         num_transforms: int,
         rngs,
         *,
+        context_features: Optional[int] = None,
         last_transform: Optional[Callable] = None,
         coupling_class: nnx.Module = CouplingMLP,
         mixing_class: nnx.Module = Flip,
@@ -431,6 +511,7 @@ class AdditiveCouplingFlow(NormalizingFlow):
             split_dim,
             params_dim,
             additive_bijector,
+            context_dim=context_features,
             sharding_cfg=sharding_cfg,
         )
 
@@ -453,6 +534,7 @@ class AffineCouplingFlow(NormalizingFlow):
         num_transforms: int,
         rngs,
         *,
+        context_features: Optional[int] = None,
         last_transform: Optional[Callable] = None,
         coupling_class: nnx.Module = CouplingMLP,
         mixing_class: nnx.Module = Flip,
@@ -467,6 +549,7 @@ class AffineCouplingFlow(NormalizingFlow):
             split_dim,
             params_dim,
             affine_bijector,
+            context_dim=context_features,
             sharding_cfg=sharding_cfg,
         )
 
@@ -489,6 +572,7 @@ class SplineCouplingFlow(NormalizingFlow):
         num_transforms: int,
         rngs,
         *,
+        context_features: Optional[int] = None,
         num_bins: int = 10,
         last_transform: Optional[Callable] = None,
         coupling_class: nnx.Module = CouplingMLP,
@@ -524,6 +608,7 @@ class SplineCouplingFlow(NormalizingFlow):
             split_dim,
             params_dim,
             spline_fn,
+            context_dim=context_features,
             sharding_cfg=sharding_cfg,
         )
 
@@ -551,6 +636,7 @@ class AdditiveAutoregressiveFlow(NormalizingFlow):
         num_transforms: int,
         rngs,
         *,
+        context_features: Optional[int] = None,
         last_transform: Optional[Callable] = None,
         autoregressive_class: nnx.Module = AutoregressiveMLP,
         mixing_class: nnx.Module = Flip,
@@ -564,6 +650,7 @@ class AdditiveAutoregressiveFlow(NormalizingFlow):
             input_dim,
             params_per_dim,
             additive_bijector,
+            context_features=context_features,
             sharding_cfg=sharding_cfg,
         )
 
@@ -586,6 +673,7 @@ class AffineAutoregressiveFlow(NormalizingFlow):
         num_transforms: int,
         rngs,
         *,
+        context_features: Optional[int] = None,
         last_transform: Optional[Callable] = None,
         autoregressive_class: nnx.Module = AutoregressiveMLP,
         mixing_class: nnx.Module = Flip,
@@ -599,6 +687,7 @@ class AffineAutoregressiveFlow(NormalizingFlow):
             input_dim,
             params_per_dim,
             affine_bijector,
+            context_features=context_features,
             sharding_cfg=sharding_cfg,
         )
 
@@ -621,6 +710,7 @@ class SplineAutoregressiveFlow(NormalizingFlow):
         num_transforms: int,
         rngs,
         *,
+        context_features: Optional[int] = None,
         num_bins: int = 10,
         last_transform: Optional[Callable] = None,
         autoregressive_class: nnx.Module = AutoregressiveMLP,
@@ -646,6 +736,7 @@ class SplineAutoregressiveFlow(NormalizingFlow):
             input_dim,
             params_per_dim,
             spline_fn,
+            context_features=context_features,
             sharding_cfg=sharding_cfg,
         )
 
@@ -659,3 +750,86 @@ class SplineAutoregressiveFlow(NormalizingFlow):
         )
         q0 = self._standard_normal_base(input_dim)
         super().__init__(q0, transform, name=name, sharding_cfg=sharding_cfg)
+
+
+class NeuralSplineFlow(SplineAutoregressiveFlow):
+    """Neural Spline Flow (NSF) style wrapper."""
+
+
+class NeuralAutoregressiveFlow(AffineAutoregressiveFlow):
+    """Neural Autoregressive Flow (NAF) style wrapper."""
+
+
+class UnconstrainedNeuralAutoregressiveFlow(SplineAutoregressiveFlow):
+    """UNAF-style wrapper implemented with autoregressive spline transforms."""
+
+
+class SumOfSquaresPolynomialFlow(SplineAutoregressiveFlow):
+    """SOSPF-style wrapper implemented with monotone spline surrogates."""
+
+
+class BernsteinPolynomialFlow(SplineAutoregressiveFlow):
+    """BPF-style wrapper implemented with monotone spline surrogates."""
+
+
+class GaussianizationFlow(AffineCouplingFlow):
+    """Gaussianization Flow (GF) style wrapper."""
+
+
+class NormalizingFlowsOnToriAndSpheres(NormalizingFlow):
+    """NCSF placeholder.
+
+    This requires manifold-specific bijectors and chart handling which are not yet
+    available in the density estimator stack.
+    """
+
+    def __init__(self, *args, **kwargs):
+        del args, kwargs
+        raise NotImplementedError(
+            "NCSF requires manifold bijectors for tori/spheres and is not yet "
+            "implemented in probjax.nn.density_estimator."
+        )
+
+
+rv_frozen.register(NormalizingFlow)
+
+
+# Lowercase aliases mirroring common flow naming conventions.
+nice = AdditiveCouplingFlow
+realnvp = AffineCouplingFlow
+maf = AffineAutoregressiveFlow
+nsf = SplineAutoregressiveFlow
+naf = NeuralAutoregressiveFlow
+unaf = UnconstrainedNeuralAutoregressiveFlow
+gf = GaussianizationFlow
+sospf = SumOfSquaresPolynomialFlow
+bpf = BernsteinPolynomialFlow
+ncsf = NormalizingFlowsOnToriAndSpheres
+
+
+__all__ = [
+    "NormalizingFlow",
+    "AdditiveCouplingFlow",
+    "AffineCouplingFlow",
+    "SplineCouplingFlow",
+    "AdditiveAutoregressiveFlow",
+    "AffineAutoregressiveFlow",
+    "SplineAutoregressiveFlow",
+    "NeuralSplineFlow",
+    "NeuralAutoregressiveFlow",
+    "UnconstrainedNeuralAutoregressiveFlow",
+    "GaussianizationFlow",
+    "SumOfSquaresPolynomialFlow",
+    "BernsteinPolynomialFlow",
+    "NormalizingFlowsOnToriAndSpheres",
+    "nice",
+    "realnvp",
+    "maf",
+    "nsf",
+    "naf",
+    "unaf",
+    "gf",
+    "sospf",
+    "bpf",
+    "ncsf",
+]

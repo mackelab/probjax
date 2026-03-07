@@ -276,7 +276,53 @@ class AutoregressiveTransformer(nnx.Module):
             Tx, _ = jax.lax.scan(scan_fn, Tx, jnp.arange(x.shape[-2]))
             return Tx
         elif inverse_impl == "kv_cache":
-            pass
+            seq_len = x.shape[-2]
+            batch_shape = x.shape[:-2]
+
+            # Reset self-attention KV caches for this decode run.
+            cache_input_shape = batch_shape + (seq_len, self.transformer.model_dim)
+            for block in self.transformer.attention_blocks:
+                block.init_cache(cache_input_shape, dtype=x.dtype)
+
+            Tx = x
+            start_token = self.start_token.reshape(
+                (1,) * len(batch_shape) + (1, self.transformer.model_dim)
+            )
+            start_token = jnp.broadcast_to(
+                start_token,
+                batch_shape + (1, self.transformer.model_dim),
+            )
+
+            transformer_kwargs = dict(kwargs)
+            transformer_kwargs.pop("decode", None)
+
+            for i in range(seq_len):
+                if i == 0:
+                    token = start_token
+                else:
+                    token = self.encoder(Tx[..., i - 1 : i, :])  # type: ignore
+
+                token = self.pos_embed(  # type: ignore
+                    token,
+                    idx=jnp.asarray([i], dtype=jnp.int32),
+                    rng=transformer_kwargs.get("rng"),
+                )
+                h = self.transformer(
+                    token,
+                    k,
+                    v,
+                    context=context,
+                    decode=True,
+                    **transformer_kwargs,
+                )
+                bij_params_i = self.decoder(h)  # type: ignore
+                bij_params_i = bij_params_i.reshape(bij_params_i.shape[:-2] + (-1,))
+
+                x_i = Tx[..., i : i + 1, :]
+                x_new_i = self.bijector(bij_params_i, x_i)
+                Tx = Tx.at[..., i, :].set(x_new_i[..., 0, :])
+
+            return Tx
         else:
             raise ValueError(f"Invalid inverse implementation: {inverse_impl}")
 

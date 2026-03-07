@@ -5,14 +5,27 @@ import pytest
 from flax import nnx
 
 from probjax.core import inverse, inverse_and_logabsdet
+from probjax.nn.layers.attention import dot_product_attention
 from probjax.nn import (
+    AdditiveCouplingFlow,
     AdditiveBinaryFuse,
+    AffineAutoregressiveFlow,
+    AutoregressiveTransformer,
+    CouplingMLP,
+    CouplingTransformer,
     DropPath,
     GatedFuse,
     LinearShardingSpec,
     MaskedLinear,
     MLP,
     MLPShardingSpec,
+    Transformer,
+    bpf,
+    gf,
+    naf,
+    ncsf,
+    sospf,
+    unaf,
     chunkify,
 )
 
@@ -104,6 +117,59 @@ def test_coupling(coupling_mlp, batch_shape):
     assert jnp.allclose(x, y_inv), "Inverse is not correct"
 
 
+def test_coupling_mlp_custom_split_merge():
+    def add_bijector(params, x):
+        return x + params
+
+    def split_even_odd(x):
+        return x[..., ::2], x[..., 1::2]
+
+    def merge_even_odd(y1, y2):
+        y = jnp.stack([y1, y2], axis=-1)
+        return y.reshape(y.shape[:-2] + (y.shape[-2] * y.shape[-1],))
+
+    model = CouplingMLP(
+        split_index=2,
+        bij_params_dim=2,
+        bijector=add_bijector,
+        split_fn=split_even_odd,
+        merge_fn=merge_even_odd,
+        hidden_dims=[16, 16],
+        rngs=nnx.Rngs(0),
+    )
+
+    x = jnp.arange(8.0).reshape(2, 4)
+    y = model(x)
+    assert y.shape == x.shape
+
+
+def test_coupling_transformer_with_context():
+    def scale_bijector(params, x):
+        return x * jnp.exp(params)
+
+    model = CouplingTransformer(
+        split_index=2,
+        bij_params_dim=2,
+        bijector=scale_bijector,
+        context_features=3,
+        model_dim=16,
+        num_heads=2,
+        num_layers=1,
+        attn_size=8,
+        rngs=nnx.Rngs(0),
+    )
+
+    x = jnp.ones((5, 4))
+    context = jnp.ones((5, 3))
+    y = model(x, context=context)
+    assert y.shape == x.shape
+
+    def loss_fn(m):
+        return jnp.sum(m(x, context=context))
+
+    _ = jax.grad(loss_fn)(model)
+
+
 def test_autoregressive(autoregressive_mlp, batch_shape):
     in_dim, out_dim, model = autoregressive_mlp
     x = jnp.ones(batch_shape + (in_dim,))
@@ -123,6 +189,42 @@ def test_autoregressive(autoregressive_mlp, batch_shape):
     model_inv = inverse(model)
     y_inv = model_inv(y)
     assert jnp.allclose(x, y_inv), " Inverse is not correct"
+
+
+def test_autoregressive_transformer_kv_cache_matches_naive():
+    def additive_bijector(params, value):
+        return value + params[..., None, :]
+
+    transformer = Transformer(
+        model_dim=16,
+        num_heads=2,
+        num_layers=2,
+        attn_size=8,
+        attention_fn=dot_product_attention,
+        rngs=nnx.Rngs(0),
+    )
+    model = AutoregressiveTransformer(
+        in_out_dim=1,
+        bijector_dim=1,
+        bijector=additive_bijector,
+        transformer=transformer,
+        rngs=nnx.Rngs(0),
+    )
+    x = jax.random.normal(jax.random.key(1), (2, 8, 1))
+    mask = jnp.tril(jnp.ones((x.shape[-2] + 1, x.shape[-2] + 1), dtype=bool))
+
+    y_naive = x
+    for i in range(x.shape[-2]):
+        bij_params = model.predict_bij_params(y_naive, mask=mask)
+        bij_params_i = bij_params[..., i, :]
+        x_i = y_naive[..., i : i + 1, :]
+        x_new_i = model.bijector(bij_params_i, x_i)
+        y_naive = y_naive.at[..., i, :].set(x_new_i[..., 0, :])
+
+    y_kv_cache = model.forward(x, inverse_impl="kv_cache")
+
+    assert y_naive.shape == y_kv_cache.shape
+    assert jnp.allclose(y_naive, y_kv_cache, atol=1e-6, rtol=1e-6)
 
 
 def test_gaussian_fourier_embedding(gaussian_fourier_embedding, batch_shape):
@@ -234,6 +336,8 @@ def test_flows(flow):
 
     # Freeze the model to get a distribution object
     frozen_model = model
+    assert frozen_model.batch_shape == ()
+    assert frozen_model.event_shape == (input_dim,)
 
     def loss_fn(model):
         return jnp.sum(frozen_model.logpdf(x))
@@ -258,9 +362,55 @@ def test_flows(flow):
     # Sampling
     samples = frozen_model.sample(rng=jax.random.PRNGKey(0), shape=(10,))
     assert samples.shape == (10, input_dim)
+    samples_rvs = frozen_model.rvs(rng=jax.random.PRNGKey(1), shape=(10,))
+    assert samples_rvs.shape == (10, input_dim)
     # Log probability
     logprob = frozen_model.logpdf(samples)
     assert logprob.shape == (10,)
+
+
+@pytest.mark.parametrize(
+    "flow_ctor",
+    [
+        lambda rngs: AdditiveCouplingFlow(4, 2, rngs=rngs, context_features=3),
+        lambda rngs: AffineAutoregressiveFlow(4, 2, rngs=rngs, context_features=3),
+    ],
+)
+def test_conditional_flows_with_context(flow_ctor):
+    model = flow_ctor(nnx.Rngs(0))
+    x = jnp.ones((4,))
+    context = jnp.array([0.1, -0.2, 0.3])
+
+    y = model.transform(x, context=context)
+    assert y.shape == x.shape
+
+    model_inv = inverse(lambda z: model.transform(z, context=context))
+    y_inv = model_inv(y)
+    assert jnp.allclose(x, y_inv, atol=1e-2, rtol=1e-1), "Inverse is not correct"
+
+    samples = model.sample(rng=jax.random.PRNGKey(0), shape=(8,), context=context)
+    assert samples.shape == (8, 4)
+
+    logprob = model.logpdf(samples, context=context)
+    assert logprob.shape == (8,)
+
+    context_2 = jnp.array([-0.5, 0.7, -0.9])
+    logprob_2 = model.logpdf(samples, context=context_2)
+    assert logprob_2.shape == (8,)
+
+
+def test_named_flow_aliases_construct():
+    aliases = [naf, unaf, gf, bpf, sospf]
+    for ctor in aliases:
+        model = ctor(2, 1, rngs=nnx.Rngs(0))
+        x = jnp.ones((2,))
+        y = model.transform(x)
+        assert y.shape == x.shape
+
+
+def test_ncsf_placeholder():
+    with pytest.raises(NotImplementedError):
+        _ = ncsf(2, 1, rngs=nnx.Rngs(0))
 
 
 def test_chunkify(chunkify_inputs):

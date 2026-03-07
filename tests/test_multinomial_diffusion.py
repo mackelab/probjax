@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.nn.nets.multinomial_diffusion import (
+from probjax.nn.diffusion.multinomial_diffusion import (
     CategoricalEDMPreconditioning,
     ImportanceContinuousTimeTrainingConfig,
     MultinomialDiffusion,
@@ -39,7 +39,9 @@ def test_multinomial_schedule_continuous_time_q():
 
     probs = schedule.q_xt_given_x0_probs(x0, t)
     alpha_bar_t = schedule.alpha_bar(t)[..., None]
-    expected = alpha_bar_t * jax.nn.one_hot(x0, 4) + (1.0 - alpha_bar_t) * schedule.base_probs
+    expected = (
+        alpha_bar_t * jax.nn.one_hot(x0, 4) + (1.0 - alpha_bar_t) * schedule.base_probs
+    )
 
     assert probs.shape == x0.shape + (4,)
     assert jnp.allclose(probs, expected, atol=1e-6, rtol=1e-6)
@@ -190,4 +192,6 @@ def test_categorical_edm_preconditioning_well_behaved():
     assert jnp.isfinite(c_skip).all()
     assert jnp.isfinite(weight).all()
     assert jnp.logical_and(c_skip >= 0.0, c_skip <= 1.0).all()
-    assert jnp.logical_and(weight >= precond.min_weight, weight <= precond.max_weight).all()
+    assert jnp.logical_and(
+        weight >= precond.min_weight, weight <= precond.max_weight
+    ).all()

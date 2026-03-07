@@ -8,7 +8,7 @@ from flax import nnx
 from probjax.nn.loss_fn.mean_flow_matching import build_mean_flow_matching_loss
 from probjax.nn.sharding import ShardingCfg
 
-from probjax.nn.nets.config.flow_matching_configs import (
+from probjax.nn.diffusion.config.flow_matching_configs import (
     FlowPreconditioningProtocol,
     FlowSolverConfigProtocol,
     GaussianFlowPreconditioning,
@@ -16,7 +16,7 @@ from probjax.nn.nets.config.flow_matching_configs import (
     LinearFlowSolverConfig,
     LinearInterpolationSchedule,
 )
-from probjax.nn.nets.config.mean_flow_matching_configs import (
+from probjax.nn.diffusion.config.mean_flow_matching_configs import (
     FlowPairTrainingConfigProtocol,
     SigmoidPairFlowTrainingConfig,
 )

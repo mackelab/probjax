@@ -1,4 +1,8 @@
-from probjax.nn.layers.attention import MultiHeadAttention
+from probjax.nn.layers.attention import (
+    MultiHeadAttention,
+    QASSMaxQueryScale,
+    SSMaxQueryScale,
+)
 from probjax.nn.layers.bijective import Affine, Flip, Permute, Rotate
 from probjax.nn.layers.conv import (
     ConvBlock,

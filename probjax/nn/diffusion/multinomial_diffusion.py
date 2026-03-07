@@ -10,7 +10,7 @@ from probjax.nn.loss_fn.multinomial_diffusion import (
     build_time_dependent_multinomial_diffusion_loss,
 )
 from probjax.nn.utils import module_accepts_rng
-from probjax.nn.nets.config.multinomial_diffusion_configs import (
+from probjax.nn.diffusion.config.multinomial_diffusion_configs import (
     CategoricalEDMPreconditioning,
     CategoricalPreconditioningProtocol,
     CategoricalScheduleProtocol,

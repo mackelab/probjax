@@ -8,7 +8,7 @@ from flax import nnx
 from probjax.nn.loss_fn.flow_matching import build_flow_matching_loss
 from probjax.nn.sharding import ShardingCfg
 
-from probjax.nn.nets.config.flow_matching_configs import (
+from probjax.nn.diffusion.config.flow_matching_configs import (
     CosineInterpolationSchedule,
     FlowPreconditioningProtocol,
     FlowSolverConfigProtocol,

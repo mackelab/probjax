@@ -10,7 +10,7 @@ from probjax.nn.loss_fn.denoising import build_time_dependent_denoising_loss
 from probjax.nn.sharding import ShardingCfg
 from probjax.nn.utils import module_accepts_rng
 
-from probjax.nn.nets.config.denoising_diffusion_configs import (
+from probjax.nn.diffusion.config.denoising_diffusion_configs import (
     BaseSolverConfig,
     CosineNoiseSchedule,
     EDMNoiseSchedule,

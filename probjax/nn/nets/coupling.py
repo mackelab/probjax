@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.nets.simple import MLP
+from probjax.nn.nets.transformer import Transformer
 from probjax.nn.sharding import ShardingCfg
 
 from probjax.nn.utils import (
@@ -12,6 +13,8 @@ from probjax.nn.utils import (
     get_active_precision_kwargs,
     module_accepts_rng,
 )
+
+
 from probjax.utils.typing import (
     Array,
     ArrayLike,
@@ -19,6 +22,31 @@ from probjax.utils.typing import (
     ModuleLikeType,
     PrecisionLike,
 )
+
+
+def _default_split_fn(x, split_index: int):
+    parts = jnp.split(x, [split_index], axis=-1)
+    x1, x2 = parts[0], parts[1]
+    return x1, x2
+
+
+def _default_merge_fn(y1, y2):
+    return jnp.concatenate([y1, y2], axis=-1)
+
+
+def _validate_context(context_dim: Optional[int], context: Optional[ArrayLike]) -> None:
+    if context_dim is not None and context is None:
+        raise ValueError("context is required when context_dim is specified")
+    if context_dim is None and context is not None:
+        raise ValueError("context provided but context_dim is None")
+
+
+def _broadcast_context_to_x1(context: ArrayLike, x1):
+    context = jnp.asarray(context)
+    if context.ndim < x1.ndim:
+        for _ in range(x1.ndim - context.ndim):
+            context = context[None, ...]
+    return context
 
 
 class CouplingMLP(nnx.Module):
@@ -38,6 +66,8 @@ class CouplingMLP(nnx.Module):
         *,
         context_dim: Optional[int] = None,
         context_features: Optional[int] = None,
+        split_fn: Optional[Callable[[Array], tuple[Array, Array]]] = None,
+        merge_fn: Optional[Callable[[Array, Array], Array]] = None,
         hidden_dims: Sequence[int] = (50, 50),
         activation: Callable = jax.nn.gelu,
         activate_final: bool = False,
@@ -107,6 +137,8 @@ class CouplingMLP(nnx.Module):
         # Prefer explicit context_dim; fallback to alias for consistency
         self.context_dim = context_dim if context_dim is not None else context_features
         self.bijector = bijector
+        self.split_fn = split_fn
+        self.merge_fn = merge_fn
         self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         # Precision and dtype settings
@@ -168,25 +200,24 @@ class CouplingMLP(nnx.Module):
                 f"split_index ({self.split_index})"
             )
 
-        # Validate context requirements
-        if self.context_dim is not None and context is None:
-            raise ValueError("context is required when context_dim is specified")
-        if self.context_dim is None and context is not None:
-            raise ValueError("context provided but context_dim is None")
+        _validate_context(self.context_dim, context)
 
         # Split the input
-        x1, x2 = jnp.split(x, [self.split_index], axis=-1)
+        if self.split_fn is None:
+            x1, x2 = _default_split_fn(x, self.split_index)
+        else:
+            x1, x2 = self.split_fn(x)
+            if x1.shape[-1] != self.split_index:
+                raise ValueError(
+                    "split_fn must produce x1 with last dimension equal to "
+                    f"split_index ({self.split_index}), got {x1.shape[-1]}"
+                )
 
         # Prepare input for conditioner
         conditioner_input = x1
         if context is not None:
-            context = jnp.asarray(context)
-            # Ensure context has compatible shape for broadcasting
-            if context.ndim < x1.ndim:
-                # Add dimensions to match x1's batch dimensions
-                for _ in range(x1.ndim - context.ndim):
-                    context = context[None, ...]
-            conditioner_input = jnp.concatenate([x1, context], axis=-1)
+            ctx = _broadcast_context_to_x1(context, x1)
+            conditioner_input = jnp.concatenate([x1, ctx], axis=-1)
 
         # Compute bijector parameters
         if self._conditioner_accepts_rng:
@@ -199,4 +230,108 @@ class CouplingMLP(nnx.Module):
         y2 = self.bijector(bijector_params, x2, **bijector_kwargs)
 
         # Concatenate results
-        return jnp.concatenate([y1, y2], axis=-1)
+        if self.merge_fn is None:
+            return _default_merge_fn(y1, y2)
+        return self.merge_fn(y1, y2)
+
+
+class CouplingTransformer(nnx.Module):
+    """Coupling layer with a Transformer conditioner."""
+
+    def __init__(
+        self,
+        split_index: int,
+        bij_params_dim: int,
+        bijector: Callable,
+        rngs: nnx.Rngs,
+        *,
+        context_dim: Optional[int] = None,
+        context_features: Optional[int] = None,
+        split_fn: Optional[Callable[[Array], tuple[Array, Array]]] = None,
+        merge_fn: Optional[Callable[[Array, Array], Array]] = None,
+        model_dim: int = 32,
+        num_heads: int = 2,
+        num_layers: int = 2,
+        attn_size: int = 8,
+        widening_factor: int = 2,
+        transformer: Optional[Transformer] = None,
+        sharding_cfg: ShardingCfg | None = None,
+        **kwargs,
+    ):
+        super().__init__()
+        if split_index <= 0:
+            raise ValueError(f"split_index must be positive, got {split_index}")
+        if bij_params_dim <= 0:
+            raise ValueError(f"bij_params_dim must be positive, got {bij_params_dim}")
+
+        self.split_index = split_index
+        self.bij_params_dim = bij_params_dim
+        self.context_dim = context_dim if context_dim is not None else context_features
+        if self.context_dim is not None and self.context_dim <= 0:
+            raise ValueError(
+                f"context_dim must be positive when provided, got {self.context_dim}"
+            )
+        self.bijector = bijector
+        self.split_fn = split_fn
+        self.merge_fn = merge_fn
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
+
+        if transformer is None:
+            transformer = Transformer(
+                model_dim=model_dim,
+                num_heads=num_heads,
+                num_layers=num_layers,
+                attn_size=attn_size,
+                widening_factor=widening_factor,
+                context_dim=self.context_dim,
+                sharding_cfg=self.sharding_cfg,
+                rngs=rngs,
+                **kwargs,
+            )
+        self.transformer = transformer
+        self.encoder = nnx.Linear(1, model_dim, rngs=rngs)
+        self.decoder = nnx.Linear(split_index * model_dim, bij_params_dim, rngs=rngs)
+
+    def __call__(
+        self,
+        x: ArrayLike,
+        context: Optional[ArrayLike] = None,
+        rng: jax.Array | None = None,
+        **bijector_kwargs,
+    ) -> Array:
+        x = jnp.asarray(x)
+        if x.shape[-1] <= self.split_index:
+            raise ValueError(
+                f"Input last dimension ({x.shape[-1]}) must be greater than "
+                f"split_index ({self.split_index})"
+            )
+
+        _validate_context(self.context_dim, context)
+
+        if self.split_fn is None:
+            x1, x2 = _default_split_fn(x, self.split_index)
+        else:
+            x1, x2 = self.split_fn(x)
+            if x1.shape[-1] != self.split_index:
+                raise ValueError(
+                    "split_fn must produce x1 with last dimension equal to "
+                    f"split_index ({self.split_index}), got {x1.shape[-1]}"
+                )
+
+        tokens = x1[..., :, None]
+        tokens = self.encoder(tokens)
+        ctx = None
+        if context is not None:
+            ctx = _broadcast_context_to_x1(context, x1)
+        tokens = self.transformer(tokens, context=ctx, rng=rng)
+
+        flat_tokens = tokens.reshape(
+            tokens.shape[:-2] + (self.split_index * tokens.shape[-1],)
+        )
+        bijector_params = self.decoder(flat_tokens)
+
+        y1 = x1
+        y2 = self.bijector(bijector_params, x2, **bijector_kwargs)
+        if self.merge_fn is None:
+            return _default_merge_fn(y1, y2)
+        return self.merge_fn(y1, y2)

@@ -1,13 +1,13 @@
 from probjax.nn.nets.autoregressive import AutoregressiveMLP, AutoregressiveTransformer
-from probjax.nn.nets.coupling import CouplingMLP
-from probjax.nn.nets.denoising_diffusion_model import (
+from probjax.nn.nets.coupling import CouplingMLP, CouplingTransformer
+from probjax.nn.diffusion.denoising_diffusion_model import (
     CosineDM,
     DiffusionDenoiser,
     EDM,
     VE,
     VP,
 )
-from probjax.nn.nets.config.flow_matching_configs import (
+from probjax.nn.diffusion.config.flow_matching_configs import (
     AutodiffInterpolationSchedule,
     GeneralInterpolationSchedule,
     FlowPreconditioningProtocol,
@@ -23,19 +23,19 @@ from probjax.nn.nets.config.flow_matching_configs import (
     RhoFlowSolverConfig,
     UniformFlowTrainingConfig,
 )
-from probjax.nn.nets.config.mean_flow_matching_configs import (
+from probjax.nn.diffusion.config.mean_flow_matching_configs import (
     FlowPairTrainingConfigProtocol,
     SigmoidPairFlowTrainingConfig,
 )
-from probjax.nn.nets.flow_matching_model import (
+from probjax.nn.diffusion.flow_matching_model import (
     FlowMatcher,
     LinearFlow,
 )
-from probjax.nn.nets.mean_flow_matching_model import (
+from probjax.nn.diffusion.mean_flow_matching_model import (
     LinearMeanFlow,
     MeanFlowMatcher,
 )
-from probjax.nn.nets.config.multinomial_diffusion_configs import (
+from probjax.nn.diffusion.config.multinomial_diffusion_configs import (
     CategoricalPreconditioningProtocol,
     CategoricalScheduleProtocol,
     CategoricalTrainingConfigProtocol,
@@ -44,20 +44,37 @@ from probjax.nn.nets.config.multinomial_diffusion_configs import (
     MultinomialDiffusionSchedule,
     UniformContinuousTimeTrainingConfig,
 )
-from probjax.nn.nets.multinomial_diffusion import (
+from probjax.nn.diffusion.multinomial_diffusion import (
     MultinomialCosineDM,
     MultinomialDiffusion,
     MultinomialLogSNRDM,
 )
 from probjax.nn.nets.lru import LRUModel
-from probjax.nn.nets.normalizing_flows import (
+from probjax.nn.density_estimator.normalizing_flows import (
     AdditiveAutoregressiveFlow,
     AdditiveCouplingFlow,
     AffineAutoregressiveFlow,
     AffineCouplingFlow,
+    BernsteinPolynomialFlow,
+    GaussianizationFlow,
+    NeuralAutoregressiveFlow,
+    NeuralSplineFlow,
     NormalizingFlow,
+    NormalizingFlowsOnToriAndSpheres,
     SplineAutoregressiveFlow,
     SplineCouplingFlow,
+    SumOfSquaresPolynomialFlow,
+    UnconstrainedNeuralAutoregressiveFlow,
+    bpf,
+    gf,
+    maf,
+    naf,
+    ncsf,
+    nice,
+    nsf,
+    sospf,
+    unaf,
+    realnvp,
 )
 from probjax.nn.nets.simple import (
     MLP,

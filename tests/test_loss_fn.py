@@ -13,7 +13,7 @@ from probjax.nn.loss_fn import (
     build_sliced_score_matching_loss,
     build_target_score_matching_loss,
 )
-from probjax.nn.nets.config.flow_matching_configs import (
+from probjax.nn.diffusion.config.flow_matching_configs import (
     AutodiffInterpolationSchedule,
     LinearInterpolationSchedule,
 )
@@ -318,7 +318,9 @@ def test_multinomial_diffusion_loss_builder_rao_blackwellized_matches_exact_expe
         num_classes=num_classes,
     )
 
-    xt_all = jnp.broadcast_to(jnp.arange(num_classes, dtype=jnp.int32), x0.shape + (num_classes,))
+    xt_all = jnp.broadcast_to(
+        jnp.arange(num_classes, dtype=jnp.int32), x0.shape + (num_classes,)
+    )
     logits_all = jax.vmap(lambda xt: model_fn(t, xt), in_axes=-1, out_axes=-2)(xt_all)
     logp_all = jax.nn.log_softmax(logits_all, axis=-1)
     ce_all = -jnp.take_along_axis(logp_all, x0[..., None, None], axis=-1).squeeze(-1)
