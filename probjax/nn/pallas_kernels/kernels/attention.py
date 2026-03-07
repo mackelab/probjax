@@ -86,7 +86,7 @@ def _dropout_mask_counter(
 
 
 def _rng_seed_from_key(rng: jax.Array) -> jax.Array:
-    key = jnp.asarray(rng, dtype=jnp.uint32).reshape((-1,))
+    key = jax.random.key_data(rng).astype(jnp.uint32).reshape((-1,))
     seed = key[0]
     if key.shape[0] > 1:
         seed = seed ^ (key[1] * jnp.uint32(0x9E3779B9))
