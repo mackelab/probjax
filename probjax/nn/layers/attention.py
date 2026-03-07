@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import inspect
 from typing import Any, Optional, cast
 
 import jax
@@ -54,15 +55,17 @@ class SSMaxQueryScale(nnx.Module):
     Reference: *Scalable Softmax* (https://arxiv.org/abs/2501.14222).
 
     The module is designed to be passed to :class:`MultiHeadAttention` via
-    the ``query_scale`` argument::
+    ``q_scale_cls`` (or the legacy ``query_scale`` argument)::
 
         mha = MultiHeadAttention(
             ...,
-            query_scale=SSMaxQueryScale(num_heads=8, rngs=rngs),
+            q_scale_cls=SSMaxQueryScale,
         )
 
     Args:
         num_heads: number of attention heads.
+        min_scale: minimum allowed per-head scale.
+        max_scale: maximum allowed per-head scale.
         param_dtype: dtype for the learnable scalar.
         rngs: random number generators.
     """
@@ -71,9 +74,15 @@ class SSMaxQueryScale(nnx.Module):
         self,
         num_heads: int,
         *,
+        min_scale: float = 0.0,
+        max_scale: float = 4.0,
         param_dtype: Dtype = jnp.float32,
         rngs: rnglib.Rngs,
     ):
+        if min_scale > max_scale:
+            raise ValueError("`min_scale` must be <= `max_scale`.")
+        self.min_scale = min_scale
+        self.max_scale = max_scale
         self.s = nnx.Param(jnp.ones((num_heads,), dtype=param_dtype))
 
     def __call__(self, query: Array, *, kv_len: int | Array) -> Array:
@@ -95,8 +104,51 @@ class SSMaxQueryScale(nnx.Module):
         if log_n.ndim >= 1:
             log_n = log_n.reshape(-1, *([1] * (query.ndim - 1)))
         # s: [H] → [1, 1, H, 1]
-        scale = self.s[...][None, None, :, None] * log_n
+        s = jnp.clip(self.s[...], self.min_scale, self.max_scale)
+        scale = s[None, None, :, None] * log_n
         return query * scale
+
+
+class PerHeadQueryScale(nnx.Module):
+    """Simple learnable per-head query scaling.
+
+    Applies a learnable scalar ``s_h`` to each attention head:
+
+    ``q'[:, :, h, :] = s_h * q[:, :, h, :]``.
+
+    This module follows the same call signature as SSMax/QASSMax and can be
+    passed to :class:`MultiHeadAttention` via ``q_scale_cls``.
+
+    Args:
+        num_heads: number of attention heads.
+        init_value: initial value for each head scale.
+        min_scale: minimum allowed per-head scale.
+        max_scale: maximum allowed per-head scale.
+        param_dtype: dtype for the learnable scale parameters.
+        rngs: random number generators (accepted for API consistency).
+    """
+
+    def __init__(
+        self,
+        num_heads: int,
+        *,
+        init_value: float = 1.0,
+        min_scale: float = 0.0,
+        max_scale: float = 4.0,
+        param_dtype: Dtype = jnp.float32,
+        rngs: rnglib.Rngs,
+    ):
+        if min_scale > max_scale:
+            raise ValueError("`min_scale` must be <= `max_scale`.")
+        del rngs
+        self.min_scale = min_scale
+        self.max_scale = max_scale
+        self.s = nnx.Param(jnp.full((num_heads,), init_value, dtype=param_dtype))
+
+    def __call__(self, query: Array, *, kv_len: int | Array) -> Array:
+        del kv_len
+        s = jnp.clip(self.s[...], self.min_scale, self.max_scale)
+        return query * s[None, None, :, None]
 
 
 class QASSMaxQueryScale(nnx.Module):
@@ -247,6 +299,36 @@ def _build_qk_norm(
     return cls(head_dim, rngs=rngs, **kw)
 
 
+def _build_q_scale(
+    *,
+    cls: ModuleLikeType,
+    num_heads: int,
+    head_dim: int,
+    dtype: Any,
+    param_dtype: Any,
+    rngs: rnglib.Rngs,
+) -> Any:
+    """Instantiate a query-scaling module from a class.
+
+    The constructor is called with matching defaults if the class signature
+    accepts them: ``num_heads``, ``head_dim``, ``dtype``, ``param_dtype``,
+    ``rngs``.
+    """
+    kw: dict[str, Any] = {}
+    params = inspect.signature(cls.__init__).parameters
+    if "num_heads" in params:
+        kw.setdefault("num_heads", num_heads)
+    if "head_dim" in params:
+        kw.setdefault("head_dim", head_dim)
+    if "dtype" in params:
+        kw.setdefault("dtype", dtype)
+    if "param_dtype" in params:
+        kw.setdefault("param_dtype", param_dtype)
+    if "rngs" in params:
+        kw.setdefault("rngs", rngs)
+    return cls(**kw)
+
+
 class MultiHeadAttention(FlaxMultiHeadAttention):
     """Multi-head attention with optional QK normalization and query scaling.
 
@@ -257,7 +339,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
     lets you swap in any norm layer (e.g. ``LpNorm`` for cosine-similarity
     attention).
 
-    **Query scaling** (``query_scale``) is applied *after* QK normalisation
+    **Query scaling** (``q_scale_cls``) is applied *after* QK normalisation
     and *before* the attention kernel.  Because attention logits are linear
     in Q, multiplying Q is equivalent to multiplying the logits — which is
     exactly how SSMax and QASSMax are meant to be implemented.
@@ -275,11 +357,14 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
             normalizer constructor (after ``num_features`` and ``rngs``).
         normalize_kv_kwargs: extra keyword arguments forwarded to the key
             normalizer constructor.
-        query_scale: an optional ``nnx.Module`` that scales the projected
-            queries before they enter the attention kernel.  The module must
-            accept ``(query, *, kv_len)`` and return the scaled queries.
-            Built-in options: :class:`SSMaxQueryScale`,
-            :class:`QASSMaxQueryScale`.  Constructed externally and passed in.
+        q_scale_cls: optional module class used to build the query scaling
+            module. If provided, it is instantiated inside MHA with ``rngs``
+            plus matching defaults from ``num_heads``, ``head_dim``, ``dtype``,
+            and ``param_dtype`` when accepted by the constructor.
+        query_scale: optional pre-instantiated scaling module (legacy path).
+            Must accept ``(query, *, kv_len)`` and return scaled queries.
+            Built-in options: :class:`PerHeadQueryScale`,
+            :class:`SSMaxQueryScale`, :class:`QASSMaxQueryScale`.
     """
 
     def __init__(
@@ -292,6 +377,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         normalize_kv_cls: ModuleLikeType | None = None,
         normalize_q_kwargs: dict | None = None,
         normalize_kv_kwargs: dict | None = None,
+        q_scale_cls: ModuleLikeType | None = None,
         query_scale: nnx.Module | None = None,
         **kwargs,
     ):
@@ -349,9 +435,21 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
             )
 
         # Pre-kernel query scaling (SSMax, QASSMax, etc.).
-        self._query_scale: nnx.Module | None = (
-            query_scale if query_scale is not None else nnx.data(None)
-        )
+        if q_scale_cls is not None and query_scale is not None:
+            raise ValueError("Pass either `q_scale_cls` or `query_scale`, not both.")
+        if q_scale_cls is not None:
+            self._query_scale = _build_q_scale(
+                cls=q_scale_cls,
+                num_heads=self.num_heads,
+                head_dim=self.head_dim,
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+                rngs=rngs,
+            )
+        elif query_scale is not None:
+            self._query_scale = query_scale
+        else:
+            self._query_scale = nnx.data(None)
 
     def __call__(
         self,

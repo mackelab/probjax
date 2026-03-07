@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional, Sequence, cast
 
 import jax
 from flax import nnx
@@ -139,7 +139,10 @@ class Transformer(nnx.Module):
         self.act = act
         self.enable_cross_attention = enable_cross_attention
         self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
-        _tcfg = self.sharding_cfg.as_type(TransformerShardingCfg)
+        _tcfg = cast(
+            TransformerShardingCfg,
+            self.sharding_cfg.as_type(TransformerShardingCfg),
+        )
         self._activation_spec = _tcfg.transformer_hidden_spec()
         self._input_spec = _tcfg.transformer_input_spec()
         self._dense_mlp_sharding = self._make_dense_mlp_sharding(
@@ -329,6 +332,7 @@ class Transformer(nnx.Module):
         bias_cross: AttentionBias | Array | None = None,
         deterministic: bool | None = None,
         decode: bool = False,
+        kv_len: int | Array | None = None,
         rng: jax.Array | None = None,
     ) -> Array:  # [B, T, D]
         """Transforms input embedding sequences to output embedding sequences."""
@@ -371,6 +375,7 @@ class Transformer(nnx.Module):
                 bias=bias,
                 deterministic=deterministic,
                 decode=decode,
+                kv_len=kv_len,
                 rng=rng,
             )
             q = self.sharding_cfg.constrain(q, self._activation_spec)
