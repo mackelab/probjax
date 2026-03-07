@@ -7,6 +7,7 @@ wandb/
 examples/nn/diffusion
 # Development files and python cache
 /*.pyc
+/*.pkl
 /*.egg
 /*.egg-info
 
