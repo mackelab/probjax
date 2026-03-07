@@ -98,7 +98,7 @@ class SSMaxQueryScale(nnx.Module):
             Scaled queries (same shape).
         """
         kv_len = jnp.asarray(kv_len, dtype=jnp.float32)
-        log_n = jnp.log(jnp.maximum(kv_len, 1.0))
+        log_n = jnp.log(kv_len + 1.0)
         # Reshape log_n so it broadcasts with query [B, L, H, D].
         # scalar → works as-is; [B] → [B, 1, 1, 1]; [B, 1] → [B, 1, 1, 1]
         if log_n.ndim >= 1:
@@ -243,7 +243,7 @@ class QASSMaxQueryScale(nnx.Module):
             Scaled queries (same shape).
         """
         kv_len = jnp.asarray(kv_len, dtype=jnp.float32)
-        log_n = jnp.log(jnp.maximum(kv_len, 1.0))
+        log_n = jnp.log(kv_len + 1.0)
 
         # Base MLP: f(log_n) → per-head per-dim scale.
         # Input: scalar → [1, 1] or per-batch [B] → [B, 1].
@@ -273,7 +273,6 @@ def _build_qk_norm(
     promote_dtype: Any,
     scale_metadata: dict,
     rngs: rnglib.Rngs,
-    extra_kwargs: dict | None,
 ) -> Any:
     """Instantiate a normalization layer for query or key projections.
 
@@ -293,10 +292,17 @@ def _build_qk_norm(
             scale_metadata=scale_metadata,
         )
 
-    kw: dict = dict(extra_kwargs) if extra_kwargs else {}
-    kw.setdefault("dtype", dtype)
-    kw.setdefault("param_dtype", param_dtype)
-    return cls(head_dim, rngs=rngs, **kw)
+    kw: dict[str, Any] = {}
+    params = inspect.signature(cls.__init__).parameters
+    if "dtype" in params:
+        kw.setdefault("dtype", dtype)
+    if "param_dtype" in params:
+        kw.setdefault("param_dtype", param_dtype)
+    if "promote_dtype" in params:
+        kw.setdefault("promote_dtype", promote_dtype)
+    if "rngs" in params:
+        kw.setdefault("rngs", rngs)
+    return cls(head_dim, **kw)
 
 
 def _build_q_scale(
@@ -348,15 +354,13 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         normalize_qk: if True, normalize query and key projections before
             computing attention weights.
         normalize_q_cls: optional module *class* (constructor) used to build
-            the query normalizer.  Receives ``(head_dim, *, rngs=...)`` plus
-            any extra kwargs supplied via ``normalize_q_kwargs``.  When
+            the query normalizer.  It is instantiated inside MHA with
+            constructor-aware defaults (``rngs``, ``dtype``, ``param_dtype``,
+            ``promote_dtype``) when accepted by the class signature.  When
             ``None`` (default) and ``normalize_qk`` is True, falls back to
             ``nnx.LayerNorm``.
-        normalize_kv_cls: same as ``normalize_q_cls`` but for keys.
-        normalize_q_kwargs: extra keyword arguments forwarded to the query
-            normalizer constructor (after ``num_features`` and ``rngs``).
-        normalize_kv_kwargs: extra keyword arguments forwarded to the key
-            normalizer constructor.
+        normalize_k_cls: same as ``normalize_q_cls`` but for keys only.
+            Values are not normalized.
         q_scale_cls: optional module class used to build the query scaling
             module. If provided, it is instantiated inside MHA with ``rngs``
             plus matching defaults from ``num_heads``, ``head_dim``, ``dtype``,
@@ -374,13 +378,20 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         sharding_spec=None,
         normalize_qk: bool = False,
         normalize_q_cls: ModuleLikeType | None = None,
+        normalize_k_cls: ModuleLikeType | None = None,
         normalize_kv_cls: ModuleLikeType | None = None,
-        normalize_q_kwargs: dict | None = None,
-        normalize_kv_kwargs: dict | None = None,
         q_scale_cls: ModuleLikeType | None = None,
         query_scale: nnx.Module | None = None,
         **kwargs,
     ):
+        if normalize_k_cls is not None and normalize_kv_cls is not None:
+            raise ValueError(
+                "Pass either `normalize_k_cls` or `normalize_kv_cls`, not both."
+            )
+        key_norm_cls = (
+            normalize_k_cls if normalize_k_cls is not None else normalize_kv_cls
+        )
+
         self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         cfg = self.sharding_cfg.as_type(LinearShardingCfg)
         spec = (
@@ -421,17 +432,15 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
                 promote_dtype=self.ln_promote_dtype,
                 scale_metadata=query_ln_scale_metadata,
                 rngs=rngs,
-                extra_kwargs=normalize_q_kwargs,
             )
             self.key_ln = _build_qk_norm(  # type: ignore[assignment]
-                cls=normalize_kv_cls,
+                cls=key_norm_cls,
                 head_dim=self.head_dim,
                 dtype=self.dtype,
                 param_dtype=self.param_dtype,
                 promote_dtype=self.ln_promote_dtype,
                 scale_metadata=key_ln_scale_metadata,
                 rngs=rngs,
-                extra_kwargs=normalize_kv_kwargs,
             )
 
         # Pre-kernel query scaling (SSMax, QASSMax, etc.).
