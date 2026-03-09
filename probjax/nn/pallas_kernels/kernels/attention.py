@@ -2333,10 +2333,6 @@ def _mha_bind(
     return out
 
 
-@functools.partial(
-    jax.custom_jvp,
-    nondiff_argnums=(3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16),
-)
 def mha(
     q,
     k,
@@ -2356,17 +2352,34 @@ def mha(
     dropout_impl: str = "materialize",
     diff_mode: str = "reverse",
 ):
+    """Multi-Head Attention public API.
+
+    This wrapper flattens mask/bias pytrees so that any traced array leaves
+    (e.g. ``SeqLenMask.seq_lengths``) flow through JAX tracing as regular
+    operands.  Only the purely-static tree structure metadata is passed as
+    ``nondiff_argnums`` to the inner ``custom_jvp`` function, making ``mha``
+    safe to use inside ``jax.checkpoint`` (remat) even when the mask or bias
+    carries dynamic traced arrays.
+    """
     if diff_mode not in ("reverse", "forward"):
         raise ValueError(
             f"diff_mode must be 'reverse' or 'forward', got {diff_mode!r}."
         )
-    return _mha_bind(
-        q=q,
-        k=k,
-        v=v,
-        mask=mask,
-        bias=bias,
-        rng=rng,
+
+    # Flatten mask/bias pytrees: array leaves become regular traced args,
+    # treedefs are truly static metadata.
+    mask_treedef, mask_leaves = _flatten_optional_pytree(mask)
+    bias_treedef, bias_leaves = _flatten_optional_pytree(bias)
+
+    # Build the inner custom_jvp function with static config captured via
+    # functools.partial.  This ensures mask/bias array leaves and rng flow
+    # through JAX tracing as normal operands (remat-safe), while purely
+    # static metadata (treedefs, scalars) lives in the closure.
+    inner = _make_mha_custom_jvp(
+        mask_treedef=mask_treedef,
+        bias_treedef=bias_treedef,
+        mask_num_leaves=len(mask_leaves),
+        bias_num_leaves=len(bias_leaves),
         sm_scale=sm_scale,
         block_sizes=block_sizes,
         backward_pass_impl=backward_pass_impl,
@@ -2377,82 +2390,53 @@ def mha(
         debug=debug,
         dropout_rate=dropout_rate,
         dropout_impl=dropout_impl,
+        diff_mode=diff_mode,
     )
 
+    return inner(q, k, v, rng, mask_leaves, bias_leaves)
 
-@mha.defjvp
-def _mha_jvp_rule(
-    mask,
-    bias,
-    rng,
-    sm_scale,
-    block_sizes,
-    backward_pass_impl,
-    num_warps,
-    num_stages,
-    grid,
-    interpret,
-    debug,
-    dropout_rate,
-    dropout_impl,
-    diff_mode,
-    primals,
-    tangents,
+
+def _make_mha_custom_jvp(
+    *,
+    mask_treedef,
+    bias_treedef,
+    mask_num_leaves: int,
+    bias_num_leaves: int,
+    sm_scale: float,
+    block_sizes: BlockSizes,
+    backward_pass_impl: str,
+    num_warps: int | None,
+    num_stages: int,
+    grid: tuple[int, ...] | None,
+    interpret: bool,
+    debug: bool,
+    dropout_rate: float,
+    dropout_impl: str,
+    diff_mode: str,
 ):
-    (q, k, v) = primals
-    (dq, dk, dv) = tangents
+    """Build a custom_jvp function with static config in closure.
 
-    if dropout_rate > 0 and rng is None:
-        raise ValueError("dropout_rate > 0 requires a non-None rng.")
-    rng = rng if rng is not None else jax.random.PRNGKey(0)
-    rng_seed = _rng_seed_from_key(rng)
+    Returns a function ``f(q, k, v, rng, mask_leaves, bias_leaves) -> output``
+    where ``mask_leaves`` and ``bias_leaves`` are tuples of arrays (JAX pytree
+    leaves) that flow through tracing normally.
+    """
 
-    def _tangent_or_zero(t, primal):
-        if isinstance(t, ad_util.Zero):
-            return jnp.zeros_like(primal)
-        return t
-
-    dq = _tangent_or_zero(dq, q)
-    dk = _tangent_or_zero(dk, k)
-    dv = _tangent_or_zero(dv, v)
-
-    if diff_mode == "forward":
-        if any(ad.is_undefined_primal(x) for x in (q, k, v)):
-            raise ValueError(
-                "diff_mode='forward' does not support reverse-mode "
-                "autodiff; use diff_mode='reverse' for grad."
-            )
-        if mask is None and bias is None and dropout_rate == 0.0:
-            out, tangent_out = _mha_impl_fused_jvp_simple(
-                q=q,
-                k=k,
-                v=v,
-                dq=dq,
-                dk=dk,
-                dv=dv,
-                sm_scale=sm_scale,
-                block_sizes=block_sizes,
-                num_warps=num_warps,
-                num_stages=num_stages,
-                grid=grid,
-                interpret=interpret,
-                debug=debug,
-            )
-            return out, tangent_out
-
-        out, tangent_out = _mha_impl_fused_jvp(
+    # The 6 positional args are all traceable.  mask_leaves and bias_leaves
+    # are tuples (valid JAX pytrees), so their elements participate in tracing.
+    @jax.custom_jvp
+    def _mha_inner(q, k, v, rng, mask_leaves_tuple, bias_leaves_tuple):
+        mask = _unflatten_optional_pytree(mask_treedef, mask_leaves_tuple)
+        bias = _unflatten_optional_pytree(bias_treedef, bias_leaves_tuple)
+        return _mha_bind(
             q=q,
             k=k,
             v=v,
-            dq=dq,
-            dk=dk,
-            dv=dv,
             mask=mask,
             bias=bias,
             rng=rng,
-            rng_seed=rng_seed,
             sm_scale=sm_scale,
             block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
             num_warps=num_warps,
             num_stages=num_stages,
             grid=grid,
@@ -2461,62 +2445,133 @@ def _mha_jvp_rule(
             dropout_rate=dropout_rate,
             dropout_impl=dropout_impl,
         )
+
+    @_mha_inner.defjvp
+    def _jvp_rule(primals, tangents):
+        q, k, v, rng, mask_leaves_tuple, bias_leaves_tuple = primals
+        dq, dk, dv, _drng, _dmask, _dbias = tangents
+        del _drng, _dmask, _dbias  # rng/mask/bias tangents unused
+
+        mask = _unflatten_optional_pytree(mask_treedef, mask_leaves_tuple)
+        bias = _unflatten_optional_pytree(bias_treedef, bias_leaves_tuple)
+
+        if dropout_rate > 0 and rng is None:
+            raise ValueError("dropout_rate > 0 requires a non-None rng.")
+        rng_val = rng if rng is not None else jax.random.PRNGKey(0)
+        rng_seed = _rng_seed_from_key(rng_val)
+
+        def _tangent_or_zero(t, primal):
+            if isinstance(t, ad_util.Zero):
+                return jnp.zeros_like(primal)
+            return t
+
+        dq = _tangent_or_zero(dq, q)
+        dk = _tangent_or_zero(dk, k)
+        dv = _tangent_or_zero(dv, v)
+
+        if diff_mode == "forward":
+            if any(ad.is_undefined_primal(x) for x in (q, k, v)):
+                raise ValueError(
+                    "diff_mode='forward' does not support reverse-mode "
+                    "autodiff; use diff_mode='reverse' for grad."
+                )
+            if mask is None and bias is None and dropout_rate == 0.0:
+                out, tangent_out = _mha_impl_fused_jvp_simple(
+                    q=q,
+                    k=k,
+                    v=v,
+                    dq=dq,
+                    dk=dk,
+                    dv=dv,
+                    sm_scale=sm_scale,
+                    block_sizes=block_sizes,
+                    num_warps=num_warps,
+                    num_stages=num_stages,
+                    grid=grid,
+                    interpret=interpret,
+                    debug=debug,
+                )
+                return out, tangent_out
+
+            out, tangent_out = _mha_impl_fused_jvp(
+                q=q,
+                k=k,
+                v=v,
+                dq=dq,
+                dk=dk,
+                dv=dv,
+                mask=mask,
+                bias=bias,
+                rng=rng_val,
+                rng_seed=rng_seed,
+                sm_scale=sm_scale,
+                block_sizes=block_sizes,
+                num_warps=num_warps,
+                num_stages=num_stages,
+                grid=grid,
+                interpret=interpret,
+                debug=debug,
+                dropout_rate=dropout_rate,
+                dropout_impl=dropout_impl,
+            )
+            return out, tangent_out
+
+        out, res = _mha_impl(
+            q=q,
+            k=k,
+            v=v,
+            mask=mask,
+            bias=bias,
+            rng=rng_val,
+            rng_seed=rng_seed,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+            output_activations=True,
+        )
+        q_res, k_res, v_res, rng_seed_res, out_res, lse_res = res
+
+        _mk_treedef, _mk_leaves = _flatten_optional_pytree(mask)
+        _bi_treedef, _bi_leaves = _flatten_optional_pytree(bias)
+
+        tangent_out = _mha_lin_p.bind(
+            q_res,
+            k_res,
+            v_res,
+            rng_val,
+            rng_seed_res,
+            out_res,
+            lse_res,
+            dq,
+            dk,
+            dv,
+            *_mk_leaves,
+            *_bi_leaves,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+            mask_treedef=_mk_treedef,
+            bias_treedef=_bi_treedef,
+            mask_num_leaves=len(_mk_leaves),
+            bias_num_leaves=len(_bi_leaves),
+        )
         return out, tangent_out
 
-    out, res = _mha_impl(
-        q=q,
-        k=k,
-        v=v,
-        mask=mask,
-        bias=bias,
-        rng=rng,
-        rng_seed=rng_seed,
-        sm_scale=sm_scale,
-        block_sizes=block_sizes,
-        backward_pass_impl=backward_pass_impl,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        grid=grid,
-        interpret=interpret,
-        debug=debug,
-        dropout_rate=dropout_rate,
-        dropout_impl=dropout_impl,
-        output_activations=True,
-    )
-    q_res, k_res, v_res, rng_seed_res, out_res, lse_res = res
-
-    mask_treedef, mask_leaves = _flatten_optional_pytree(mask)
-    bias_treedef, bias_leaves = _flatten_optional_pytree(bias)
-
-    tangent_out = _mha_lin_p.bind(
-        q_res,
-        k_res,
-        v_res,
-        rng,
-        rng_seed_res,
-        out_res,
-        lse_res,
-        dq,
-        dk,
-        dv,
-        *mask_leaves,
-        *bias_leaves,
-        sm_scale=sm_scale,
-        block_sizes=block_sizes,
-        backward_pass_impl=backward_pass_impl,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        grid=grid,
-        interpret=interpret,
-        debug=debug,
-        dropout_rate=dropout_rate,
-        dropout_impl=dropout_impl,
-        mask_treedef=mask_treedef,
-        bias_treedef=bias_treedef,
-        mask_num_leaves=len(mask_leaves),
-        bias_num_leaves=len(bias_leaves),
-    )
-    return out, tangent_out
+    return _mha_inner
 
 
 def _mha_backward(

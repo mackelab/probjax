@@ -25,8 +25,8 @@ from .kernel_utils import (
 class AttentionMask(ABC):
     """Base class for attention masks.
 
-    Simplified signature (removed batch index). Implementations:
-        __call__(h_idx, q_idx, k_idx, seg_q, seg_k) -> [Q, K] bool
+    Simplified signature (removed batch/head index). Implementations:
+        __call__(q_idx, k_idx, seg_q, seg_k) -> [Q, K] bool
     Multi-batch use should be handled by vmapping externally. For legacy code
     that previously passed a batch index, remove it and vmap over batch dim.
     """
@@ -64,14 +64,19 @@ class AttentionMask(ABC):
 
         def per_batch(b: jax.Array) -> jax.Array:
             # Use JAX-friendly dynamic indexing; avoid Python int() on tracers.
-            if seg_q is None:
-                sq = None
-            else:
-                sq = seg_q[b] if getattr(seg_q, "ndim", 0) >= 2 else seg_q
-            if seg_k is None:
-                sk = None
-            else:
-                sk = seg_k[b] if getattr(seg_k, "ndim", 0) >= 2 else seg_k
+
+            def maybe_take_batch(data: Optional[Array]) -> Optional[Array]:
+                if data is None:
+                    return None
+                ndim = getattr(data, "ndim", 0)
+                if ndim >= 2:
+                    return data[b]
+                if ndim == 1 and getattr(data, "shape", (None,))[0] == batch_size:
+                    return data[b]
+                return data
+
+            sq = maybe_take_batch(seg_q)
+            sk = maybe_take_batch(seg_k)
             mk = self.__call__(q_idx, k_idx, sq, sk)  # [Q, K]
             return jnp.broadcast_to(mk, (num_heads, q_len, kv_len))  # [H, Q, K]
 
@@ -303,6 +308,10 @@ class ComposeMask(AttentionMask):
     op: str  # one of: 'and', 'or', 'xor'
     lhs: AttentionMask
     rhs: AttentionMask
+    stateful: bool = field(init=False, default=False)
+
+    def __post_init__(self):
+        object.__setattr__(self, "stateful", self.lhs.stateful or self.rhs.stateful)
 
     def __call__(
         self,
@@ -334,6 +343,27 @@ class ComposeMask(AttentionMask):
             return self.rhs.get_data(q_seq_len=q_seq_len, kv_seq_len=kv_seq_len)
         return (None, None)
 
+    def dense(
+        self,
+        q_len: int,
+        kv_len: int,
+        *,
+        batch_size: int = 1,
+        num_heads: int = 1,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> jax.Array:
+        if self.stateful and seg_q is None and seg_k is None:
+            seg_q, seg_k = self.get_data(q_seq_len=q_len, kv_seq_len=kv_len)
+        return super().dense(
+            q_len,
+            kv_len,
+            batch_size=batch_size,
+            num_heads=num_heads,
+            seg_q=seg_q,
+            seg_k=seg_k,
+        )
+
     def get_data_block_spec(
         self,
         q_len: int,
@@ -358,8 +388,6 @@ class ComposeMask(AttentionMask):
     # PyTree: children are lhs/rhs masks; op is static aux.
     def tree_flatten(self):
         flat_arrays, tree = jax.tree_util.tree_flatten((self.lhs, self.rhs))
-        if len(flat_arrays) > 2:
-            raise ValueError("Naive composition not supported between stateful masks")
         return (flat_arrays, {"tree": tree, "op": self.op})
 
     @classmethod
@@ -404,12 +432,13 @@ class SumBias(AttentionBias):
         h_idx: Array,
         q_idx: Array,
         k_idx: Array,
-        data_q: Optional[Array] = None,
-        data_k: Optional[Array] = None,
+        data: Optional[Array] = None,
     ) -> Array:
-        s1 = self.lhs(scores, h_idx, q_idx, k_idx, data_q, data_k)
-        s2 = self.rhs(scores, h_idx, q_idx, k_idx, data_q, data_k)
-        return s1 + s2
+        s1 = self.lhs(scores, h_idx, q_idx, k_idx, data=data)
+        s2 = self.rhs(scores, h_idx, q_idx, k_idx, data=data)
+        # Each bias returns modified scores. Convert to additive deltas so
+        # composition is scores + (delta_lhs + delta_rhs).
+        return scores + (s1 - scores) + (s2 - scores)
 
     def tree_flatten(self):
         return ((self.lhs, self.rhs), {})
@@ -476,9 +505,7 @@ class CausalMask(AttentionMask):
         kv_len: int,
         block_q: int,
         block_k: int,
-        num_heads: int | None = None,
     ) -> Array:
-        del num_heads
         return fast_blockmask_causal(
             q_len=q_len, kv_len=kv_len, block_q=block_q, block_k=block_k
         )
@@ -551,6 +578,277 @@ class LocalWindowMask(AttentionMask):
         lw = aux.get("left_window") if isinstance(aux, dict) else aux[0]
         rw = aux.get("right_window") if isinstance(aux, dict) else aux[1]
         return LocalWindowMask(left_window=lw, right_window=rw)
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class CausalLocalWindowMask(AttentionMask):
+    """Causal local attention with a finite left context window.
+
+    Query i can attend to keys k in [i - left_window, i].
+    """
+
+    left_window: int
+
+    def __call__(
+        self,
+        q_idx: Array,
+        k_idx: Array,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> Array:
+        del seg_q, seg_k
+        dqk = q_idx[:, None] - k_idx[None, :]
+        return jnp.logical_and(dqk >= 0, dqk <= self.left_window)
+
+    def block_mask(
+        self,
+        q_len: int,
+        kv_len: int,
+        block_q: int,
+        block_k: int,
+    ) -> Array:
+        return fast_blockmask_local_window(
+            q_len=q_len,
+            kv_len=kv_len,
+            block_q=block_q,
+            block_k=block_k,
+            left_window=self.left_window,
+            right_window=0,
+        )
+
+    def tree_flatten(self):
+        return ((), {"left_window": self.left_window})
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        lw = aux.get("left_window") if isinstance(aux, dict) else aux
+        return CausalLocalWindowMask(left_window=lw)
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class CausalFromBottomRightMask(AttentionMask):
+    """Causal mask aligned from the bottom-right for q_len != kv_len.
+
+    Allow where q_idx + (kv_length - q_length) >= k_idx.
+    """
+
+    q_length: int
+    kv_length: int
+
+    def __call__(
+        self,
+        q_idx: Array,
+        k_idx: Array,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> Array:
+        del seg_q, seg_k
+        shift = int(self.kv_length) - int(self.q_length)
+        return (q_idx[:, None] + shift) >= k_idx[None, :]
+
+    def tree_flatten(self):
+        return ((), {"q_length": self.q_length, "kv_length": self.kv_length})
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        ql = aux.get("q_length") if isinstance(aux, dict) else aux[0]
+        kl = aux.get("kv_length") if isinstance(aux, dict) else aux[1]
+        return CausalFromBottomRightMask(q_length=ql, kv_length=kl)
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class PrefixLMMask(AttentionMask):
+    """Prefix-LM mask: bidirectional on prefix, causal on suffix.
+
+    Keys in [0, prefix_length) are visible to all queries. For keys outside
+    prefix, standard causal masking is used.
+    """
+
+    prefix_lengths: Array
+    stateful: bool = True
+
+    def __call__(
+        self,
+        q_idx: Array,
+        k_idx: Array,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> Array:
+        del seg_k
+        p = seg_q if seg_q is not None else self.prefix_lengths
+        if p is None:
+            raise ValueError("PrefixLMMask requires prefix lengths")
+        p = jnp.asarray(p)
+        if p.ndim > 0:
+            p = p.reshape(-1)[0]
+        return (k_idx[None, :] < p) | (q_idx[:, None] >= k_idx[None, :])
+
+    def get_data_block_spec(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+    ):
+        del kv_len, block_q, block_k
+        if getattr(self.prefix_lengths, "ndim", 0) == 0:
+            return (None, None)
+        q_spec = pl.BlockSpec((None, q_len), lambda _, j, k: (j, 0))
+        return (q_spec, None)
+
+    def get_data(
+        self,
+        *,
+        q_seq_len: Optional[int] = None,
+        kv_seq_len: Optional[int] = None,
+    ) -> tuple[Optional[Array], Optional[Array]]:
+        del kv_seq_len
+        p = jnp.asarray(self.prefix_lengths)
+        if p.ndim == 0:
+            return (p, None)
+        if q_seq_len is None:
+            raise ValueError(
+                "PrefixLMMask.get_data requires q_seq_len for vector input"
+            )
+        p_bq = jnp.broadcast_to(p[:, None], (p.shape[0], q_seq_len))
+        return (p_bq, None)
+
+    def tree_flatten(self):
+        return ((self.prefix_lengths,), {})
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        (prefix_lengths,) = children
+        return PrefixLMMask(prefix_lengths)
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class BlockDiagonalMask(AttentionMask):
+    """Allow attention only for token pairs with the same block id."""
+
+    query_block_ids: Array
+    key_block_ids: Optional[Array] = None
+    stateful: bool = True
+
+    def __call__(
+        self,
+        q_idx: Array,
+        k_idx: Array,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> Array:
+        qids = seg_q if seg_q is not None else self.query_block_ids
+        kids = (
+            seg_k
+            if seg_k is not None
+            else (self.key_block_ids if self.key_block_ids is not None else qids)
+        )
+        if qids is None or kids is None:
+            raise ValueError("BlockDiagonalMask requires block ids")
+        return qids[..., :, None] == kids[..., None, :]
+
+    def get_data_block_spec(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+    ):
+        if self.query_block_ids is None:
+            q_spec = None
+        elif self.query_block_ids.ndim == 2:
+            q_spec = pl.BlockSpec((None, q_len), lambda _, j, k: (j, 0))
+        elif self.query_block_ids.ndim == 1:
+            q_spec = pl.BlockSpec((q_len,), lambda _, j, k: (0,))
+        else:
+            q_spec = None
+        if self.key_block_ids is None:
+            return (q_spec, None)
+        if self.key_block_ids.ndim == 2:
+            k_spec = pl.BlockSpec((None, kv_len), lambda _, j, k: (j, 0))
+        elif self.key_block_ids.ndim == 1:
+            k_spec = pl.BlockSpec((kv_len,), lambda _, j, k: (0,))
+        else:
+            k_spec = None
+        return (q_spec, k_spec)
+
+    def get_data(
+        self,
+        *,
+        q_seq_len: Optional[int] = None,
+        kv_seq_len: Optional[int] = None,
+    ) -> tuple[Optional[Array], Optional[Array]]:
+        del q_seq_len, kv_seq_len
+        return self.query_block_ids, self.key_block_ids
+
+    def tree_flatten(self):
+        return ((self.query_block_ids, self.key_block_ids), {})
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        qids, kids = children
+        return BlockDiagonalMask(qids, kids)
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class BlockDiagonalCausalMask(AttentionMask):
+    """Causal mask applied independently within each block id."""
+
+    query_block_ids: Array
+    key_block_ids: Optional[Array] = None
+    stateful: bool = True
+
+    def __call__(
+        self,
+        q_idx: Array,
+        k_idx: Array,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> Array:
+        qids = seg_q if seg_q is not None else self.query_block_ids
+        kids = (
+            seg_k
+            if seg_k is not None
+            else (self.key_block_ids if self.key_block_ids is not None else qids)
+        )
+        if qids is None or kids is None:
+            raise ValueError("BlockDiagonalCausalMask requires block ids")
+        same = qids[..., :, None] == kids[..., None, :]
+        causal = q_idx[:, None] >= k_idx[None, :]
+        return same & causal
+
+    def get_data_block_spec(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+    ):
+        return BlockDiagonalMask(
+            self.query_block_ids, self.key_block_ids
+        ).get_data_block_spec(q_len, kv_len, block_q, block_k)
+
+    def get_data(
+        self,
+        *,
+        q_seq_len: Optional[int] = None,
+        kv_seq_len: Optional[int] = None,
+    ) -> tuple[Optional[Array], Optional[Array]]:
+        del q_seq_len, kv_seq_len
+        return self.query_block_ids, self.key_block_ids
+
+    def tree_flatten(self):
+        return ((self.query_block_ids, self.key_block_ids), {})
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        qids, kids = children
+        return BlockDiagonalCausalMask(qids, kids)
 
 
 @jax.tree_util.register_pytree_node_class
@@ -893,7 +1191,7 @@ class SameSegmentMask(AttentionMask):
         else:
             raise ValueError()
         if self.key_segment_ids is None:
-            return None
+            return (q_spec, None)
         elif self.key_segment_ids.ndim == 2:
             k_spec = pl.BlockSpec((None, kv_len), lambda _, j, k: (j, 0))
         elif self.key_segment_ids.ndim == 1:
@@ -937,7 +1235,11 @@ class SameSegmentMask(AttentionMask):
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
 class MarginalizationMask(AttentionMask):
-    """Allow attention only within the same segment (uses segment_ids)."""
+    """Mask tokens by a boolean keep-mask with diagonal passthrough.
+
+    Positions where both query and key mask are True are allowed. The diagonal
+    (self-attention) is always kept to avoid fully-masked rows.
+    """
 
     # Exclude arrays from hashing/comparison to keep mask instances hashable
 
@@ -1073,7 +1375,11 @@ class DenseBias(AttentionBias):
         # Fallback: slice from stored dense tensor using indices.
         B, H, *_ = self.bias.shape
         hsel = 0 if H == 1 else int(h_idx)
-        bh_bias = self.bias[0 if B != 0 else 0, hsel]
+        if B != 1:
+            raise ValueError(
+                "DenseBias.__call__ without block data requires bias batch dimension to be 1"
+            )
+        bh_bias = self.bias[0, hsel]
         add = bh_bias[q_idx][:, k_idx]
         return scores + add
 
@@ -1274,3 +1580,236 @@ class DistanceDecayBias(AttentionBias):
     def tree_unflatten(cls, aux, children):
         a = aux.get("alpha") if isinstance(aux, dict) else aux
         return DistanceDecayBias(alpha=a)
+
+
+def _relative_position_bucket(
+    relative_position: Array,
+    *,
+    num_buckets: int,
+    max_distance: int,
+    bidirectional: bool,
+) -> Array:
+    """T5-style relative position bucketing."""
+    rp = -relative_position
+    if bidirectional:
+        half = num_buckets // 2
+        sign_bucket = (rp < 0).astype(jnp.int32) * half
+        rp = jnp.abs(rp)
+        nb = half
+    else:
+        sign_bucket = 0
+        rp = jnp.maximum(rp, 0)
+        nb = num_buckets
+
+    max_exact = nb // 2
+    is_small = rp < max_exact
+    rp_float = rp.astype(jnp.float32)
+    max_exact_f = jnp.asarray(max_exact, dtype=jnp.float32)
+    nb_f = jnp.asarray(nb, dtype=jnp.float32)
+    max_dist_f = jnp.asarray(max_distance, dtype=jnp.float32)
+    val_large = max_exact_f + (
+        jnp.log(jnp.maximum(rp_float, 1.0) / max_exact_f)
+        / jnp.log(max_dist_f / max_exact_f)
+        * (nb_f - max_exact_f)
+    )
+    val_large = jnp.minimum(nb - 1, val_large.astype(jnp.int32))
+    bucket = jnp.where(is_small, rp.astype(jnp.int32), val_large)
+    return bucket + sign_bucket
+
+
+@jax.tree_util.register_pytree_node_class
+class T5RelativePositionBias(AttentionBias):
+    """T5-style bucketed relative position bias.
+
+    `bias_table` has shape [H|1, num_buckets] (or [num_buckets]).
+    """
+
+    def __init__(
+        self,
+        bias_table: Array,
+        *,
+        num_buckets: int,
+        max_distance: int = 128,
+        bidirectional: bool = True,
+    ):
+        bt = jnp.asarray(bias_table)
+        if bt.ndim == 1:
+            bt = bt[None, :]
+        if bt.ndim != 2:
+            raise ValueError("bias_table must have shape [H|1, num_buckets]")
+        if int(bt.shape[-1]) != int(num_buckets):
+            raise ValueError("bias_table last dim must equal num_buckets")
+        self.bias_table = bt
+        self.num_buckets = int(num_buckets)
+        self.max_distance = int(max_distance)
+        self.bidirectional = bool(bidirectional)
+
+    def __call__(
+        self,
+        scores: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        data: Optional[Array] = None,
+    ) -> Array:
+        del data
+        rel = k_idx[None, :] - q_idx[:, None]
+        buckets = _relative_position_bucket(
+            rel,
+            num_buckets=self.num_buckets,
+            max_distance=self.max_distance,
+            bidirectional=self.bidirectional,
+        )
+        hsel = 0 if self.bias_table.shape[0] == 1 else int(h_idx)
+        add = self.bias_table[hsel][buckets]
+        return scores + add
+
+    def tree_flatten(self):
+        return (
+            (self.bias_table,),
+            {
+                "num_buckets": self.num_buckets,
+                "max_distance": self.max_distance,
+                "bidirectional": self.bidirectional,
+            },
+        )
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        (bias_table,) = children
+        return T5RelativePositionBias(
+            bias_table,
+            num_buckets=aux["num_buckets"],
+            max_distance=aux["max_distance"],
+            bidirectional=aux["bidirectional"],
+        )
+
+
+@jax.tree_util.register_pytree_node_class
+class LearnedRelativePositionBias(AttentionBias):
+    """Learned clipped-distance bias table indexed by (k - q).
+
+    `table` has shape [H|1, 2*max_distance + 1] (or [2*max_distance + 1]).
+    """
+
+    def __init__(self, table: Array, *, max_distance: int):
+        t = jnp.asarray(table)
+        if t.ndim == 1:
+            t = t[None, :]
+        if t.ndim != 2:
+            raise ValueError("table must have shape [H|1, 2*max_distance+1]")
+        expected = 2 * int(max_distance) + 1
+        if int(t.shape[-1]) != expected:
+            raise ValueError("table last dim must be 2*max_distance+1")
+        self.table = t
+        self.max_distance = int(max_distance)
+
+    def __call__(
+        self,
+        scores: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        data: Optional[Array] = None,
+    ) -> Array:
+        del data
+        rel = k_idx[None, :] - q_idx[:, None]
+        rel = jnp.clip(rel, -self.max_distance, self.max_distance) + self.max_distance
+        hsel = 0 if self.table.shape[0] == 1 else int(h_idx)
+        add = self.table[hsel][rel]
+        return scores + add
+
+    def tree_flatten(self):
+        return ((self.table,), {"max_distance": self.max_distance})
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        (table,) = children
+        return LearnedRelativePositionBias(table, max_distance=aux["max_distance"])
+
+
+@jax.tree_util.register_pytree_node_class
+class SoftCappingBias(AttentionBias):
+    """Apply tanh soft-capping to logits: softcap * tanh(scores / softcap)."""
+
+    def __init__(self, softcap: float = 20.0):
+        if softcap <= 0:
+            raise ValueError("softcap must be > 0")
+        self.softcap = float(softcap)
+
+    def __call__(
+        self,
+        scores: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        data: Optional[Array] = None,
+    ) -> Array:
+        del h_idx, q_idx, k_idx, data
+        s = jnp.asarray(self.softcap, dtype=scores.dtype)
+        return s * jnp.tanh(scores / s)
+
+    def grad(
+        self,
+        scores: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        data: Optional[Array] = None,
+    ) -> Array:
+        del h_idx, q_idx, k_idx, data
+        s = jnp.asarray(self.softcap, dtype=scores.dtype)
+        t = jnp.tanh(scores / s)
+        return 1.0 - t * t
+
+    def tree_flatten(self):
+        return ((), {"softcap": self.softcap})
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        return SoftCappingBias(softcap=aux["softcap"])
+
+
+@jax.tree_util.register_pytree_node_class
+class PerHeadScaleBias(AttentionBias):
+    """Multiply attention scores by a per-head scale."""
+
+    def __init__(self, scales: Array):
+        s = jnp.asarray(scales)
+        if s.ndim == 0:
+            s = s[None]
+        if s.ndim != 1:
+            raise ValueError("scales must be shape [H|1]")
+        self.scales = s.astype(jnp.float32)
+
+    def __call__(
+        self,
+        scores: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        data: Optional[Array] = None,
+    ) -> Array:
+        del q_idx, k_idx, data
+        hsel = 0 if self.scales.shape[0] == 1 else int(h_idx)
+        return scores * jnp.asarray(self.scales[hsel], dtype=scores.dtype)
+
+    def grad(
+        self,
+        scores: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        data: Optional[Array] = None,
+    ) -> Array:
+        del scores, q_idx, k_idx, data
+        hsel = 0 if self.scales.shape[0] == 1 else int(h_idx)
+        return jnp.asarray(self.scales[hsel], dtype=jnp.float32)
+
+    def tree_flatten(self):
+        return ((self.scales,), {})
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        (scales,) = children
+        return PerHeadScaleBias(scales)

@@ -924,3 +924,164 @@ def test_seq_len_mask_backward(batch_size, seq_len, num_heads, qkv_dim):
         assert jnp.allclose(g_ref, g_flex, atol=1e-2), (
             f"SeqLenMask backward mismatch, max err={jnp.max(jnp.abs(g_ref - g_flex))}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Remat (jax.checkpoint) compatibility tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "batch_size, seq_len, num_heads, qkv_dim",
+    [
+        (2, 32, 4, 16),
+    ],
+)
+class TestRematCompatibility:
+    """Verify that mha / flex_attention work under jax.checkpoint.
+
+    The core issue: masks like SeqLenMask carry traced arrays (seq_lengths).
+    Under jax.checkpoint (remat), if those arrays are captured as nondiff
+    static metadata they escape the remat trace -> UnexpectedTracerError.
+    """
+
+    def test_remat_no_mask(self, batch_size, seq_len, num_heads, qkv_dim):
+        """Baseline: remat with no mask should always work."""
+        key = jax.random.PRNGKey(0)
+        q = k = v = jax.random.normal(key, (batch_size, seq_len, num_heads, qkv_dim))
+
+        @jax.checkpoint
+        def f(q, k, v):
+            return flex_attention(q, k, v)
+
+        # Forward through checkpoint
+        out = f(q, k, v)
+        assert out.shape == (batch_size, seq_len, num_heads, qkv_dim)
+
+        # Backward through checkpoint
+        g = jax.grad(lambda q, k, v: jnp.sum(f(q, k, v) ** 2), argnums=(0, 1, 2))(
+            q, k, v
+        )
+        for gi in g:
+            assert gi.shape == (batch_size, seq_len, num_heads, qkv_dim)
+
+    def test_remat_causal_mask(self, batch_size, seq_len, num_heads, qkv_dim):
+        """Static mask (CausalMask has no traced arrays) under remat."""
+        key = jax.random.PRNGKey(0)
+        q = k = v = jax.random.normal(key, (batch_size, seq_len, num_heads, qkv_dim))
+
+        @jax.checkpoint
+        def f(q, k, v):
+            return flex_attention(q, k, v, mask=CausalMask())
+
+        out = f(q, k, v)
+        assert out.shape == (batch_size, seq_len, num_heads, qkv_dim)
+
+        g = jax.grad(lambda q, k, v: jnp.sum(f(q, k, v) ** 2), argnums=(0, 1, 2))(
+            q, k, v
+        )
+        for gi in g:
+            assert gi.shape == (batch_size, seq_len, num_heads, qkv_dim)
+
+    def test_remat_seq_len_mask(self, batch_size, seq_len, num_heads, qkv_dim):
+        """Dynamic mask (SeqLenMask carries traced seq_lengths) under remat.
+
+        This is the key regression test.  Before the fix, this would raise
+        jax.errors.UnexpectedTracerError because SeqLenMask.seq_lengths
+        was captured as static nondiff metadata inside custom_jvp.
+        """
+        key = jax.random.PRNGKey(0)
+        q = k = v = jax.random.normal(key, (batch_size, seq_len, num_heads, qkv_dim))
+        L = jax.random.randint(jax.random.PRNGKey(1), (batch_size,), 1, seq_len + 1)
+
+        @jax.checkpoint
+        def f(q, k, v):
+            return flex_attention(q, k, v, mask=SeqLenMask(L))
+
+        out = f(q, k, v)
+        assert out.shape == (batch_size, seq_len, num_heads, qkv_dim)
+
+        # Also test backward (grad through checkpoint re-traces forward)
+        g = jax.grad(lambda q, k, v: jnp.sum(f(q, k, v) ** 2), argnums=(0, 1, 2))(
+            q, k, v
+        )
+        for gi in g:
+            assert gi.shape == (batch_size, seq_len, num_heads, qkv_dim)
+
+    def test_remat_seq_len_mask_no_grad_leak(
+        self, batch_size, seq_len, num_heads, qkv_dim
+    ):
+        """Gradient must not leak from outside the valid length into the loss.
+
+        Construct a loss that only depends on output positions inside [0, L).
+        Then dv at positions >= L must be zero for every batch element, because
+        the mask blocks those keys from contributing to any valid query.
+        """
+        key = jax.random.PRNGKey(7)
+        k1, k2, k3 = jax.random.split(key, 3)
+        q = jax.random.normal(k1, (batch_size, seq_len, num_heads, qkv_dim))
+        k = jax.random.normal(k2, (batch_size, seq_len, num_heads, qkv_dim))
+        v = jax.random.normal(k3, (batch_size, seq_len, num_heads, qkv_dim))
+        # Ensure every batch element has padding (L < seq_len).
+        L = jax.random.randint(
+            jax.random.PRNGKey(8), (batch_size,), 1, max(seq_len // 2, 2)
+        )
+
+        # Build per-position validity mask [B, S] for slicing the loss.
+        pos = jnp.arange(seq_len)[None, :]  # [1, S]
+        valid = pos < L[:, None]  # [B, S]
+
+        def loss_valid_only(v_):
+            """Sum of outputs at valid positions only."""
+
+            @jax.checkpoint
+            def fwd(q, k, v_inner):
+                return flex_attention(q, k, v_inner, mask=SeqLenMask(L))
+
+            out = fwd(q, k, v_)  # [B, S, H, D]
+            # Zero out padding positions before summing.
+            out_masked = out * valid[:, :, None, None]
+            return jnp.sum(out_masked)
+
+        dv = jax.grad(loss_valid_only)(v)  # [B, S, H, D]
+
+        for b in range(batch_size):
+            length_b = int(L[b])
+            padding_grad = dv[b, length_b:, :, :]
+            assert jnp.allclose(padding_grad, 0.0, atol=1e-5), (
+                f"Gradient leaked into padding for batch {b} (L={length_b}), "
+                f"max |dv|={float(jnp.max(jnp.abs(padding_grad))):.2e}"
+            )
+
+    def test_remat_seq_len_mask_correctness(
+        self, batch_size, seq_len, num_heads, qkv_dim
+    ):
+        """Verify that remat does not change the numerical result."""
+        key = jax.random.PRNGKey(0)
+        q = k = v = jax.random.normal(key, (batch_size, seq_len, num_heads, qkv_dim))
+        L = jax.random.randint(jax.random.PRNGKey(1), (batch_size,), 1, seq_len + 1)
+
+        def f_plain(q, k, v):
+            return flex_attention(q, k, v, mask=SeqLenMask(L))
+
+        @jax.checkpoint
+        def f_remat(q, k, v):
+            return flex_attention(q, k, v, mask=SeqLenMask(L))
+
+        out_plain = f_plain(q, k, v)
+        out_remat = f_remat(q, k, v)
+        assert jnp.allclose(out_plain, out_remat, atol=1e-5), (
+            f"remat changed result, max err={jnp.max(jnp.abs(out_plain - out_remat))}"
+        )
+
+        # Gradients should also match
+        g_plain = jax.grad(
+            lambda q, k, v: jnp.sum(f_plain(q, k, v) ** 2), argnums=(0, 1, 2)
+        )(q, k, v)
+        g_remat = jax.grad(
+            lambda q, k, v: jnp.sum(f_remat(q, k, v) ** 2), argnums=(0, 1, 2)
+        )(q, k, v)
+        for gp, gr in zip(g_plain, g_remat, strict=False):
+            assert jnp.allclose(gp, gr, atol=1e-4), (
+                f"remat changed grads, max err={jnp.max(jnp.abs(gp - gr))}"
+            )
