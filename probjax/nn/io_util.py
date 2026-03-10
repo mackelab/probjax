@@ -59,7 +59,32 @@ def _prefetch_single(iterator, size, device):
 
 def _prefetch_sharding(iterator, size, sharding: Sharding):
     dq = collections.deque()
-    _put = lambda x: jax.device_put(x, sharding)
+
+    if isinstance(sharding, NamedSharding):
+        base_spec = getattr(
+            sharding, "spec", getattr(sharding, "partition_spec", PartitionSpec())
+        )
+        base_spec_entries = tuple(base_spec)
+        sharding_by_ndim: dict[int, NamedSharding] = {}
+
+        def _put(x):
+            ndim = np.ndim(x)
+            leaf_sharding = sharding_by_ndim.get(ndim)
+            if leaf_sharding is None:
+                if ndim <= len(base_spec_entries):
+                    leaf_spec = PartitionSpec(*base_spec_entries[:ndim])
+                else:
+                    leaf_spec = PartitionSpec(
+                        *base_spec_entries,
+                        *([None] * (ndim - len(base_spec_entries))),
+                    )
+                leaf_sharding = NamedSharding(sharding.mesh, leaf_spec)
+                sharding_by_ndim[ndim] = leaf_sharding
+            return jax.device_put(x, leaf_sharding)
+
+    else:
+        _put = lambda x: jax.device_put(x, sharding)
+
     _fill = lambda n: [
         dq.append(jax.tree_util.tree_map(_put, d))
         for d in itertools.islice(iterator, n)
@@ -791,7 +816,10 @@ class DataLoader:
     mesh              : jax.sharding.Mesh | None
         Mesh used to build a NamedSharding when batch_spec is provided.
     batch_spec        : jax.sharding.PartitionSpec | None
-        PartitionSpec for the batch when mesh is provided.
+        PartitionSpec for the batch when mesh is provided. For PyTree leaves with
+        different rank, the spec is adapted per leaf: shorter leaves use the first
+        ``leaf.ndim`` entries, and longer leaves append replicated dimensions
+        (``None`` entries).
     max_in_flight      : int | None
         Number of in-flight CPU batch jobs scheduled via `run_in_executor`.
         Keeping this >1 enables actual async pipelining. Order is preserved.
