@@ -954,7 +954,7 @@ class KeyPaddingMask(AttentionMask):
         if self.key_lengths.ndim == 2:
             q_spec = pl.BlockSpec((None, q_len), lambda _, j, k: (j, 0))
         elif self.key_lengths.ndim == 1:
-            # Shared 1D vector (no batch axis): always index from 0.
+            # 1D key_lengths is per-query-position; pass full vector, kernel slices.
             q_spec = pl.BlockSpec((q_len,), lambda _, j, k: (0,))
         else:
             q_spec = None
@@ -1042,9 +1042,11 @@ class SeqLenMask(AttentionMask):
         - Within the valid sequence [0, L) for the batch, allow full attention.
         - Outside the valid sequence, allow only self-attention (diagonal).
 
-        seg_q/seg_k may be provided as vectors matching the current block (each
-        entry typically equal to L for that batch). If not provided, falls back
-        to the stored per-batch lengths and is expected to be vmapped outside.
+        seg_q/seg_k may be:
+          - Scalars (0-d): the sequence length L for this batch element (from
+            scalar BlockSpec). Broadcasting handles all shapes automatically.
+          - Vectors (1-d, block-sized): per-position values (legacy path).
+          - None: falls back to stored seq_lengths (vmapped over batch externally).
         """
         if seg_q is None and self.seq_lengths is None:
             raise ValueError(
@@ -1052,16 +1054,16 @@ class SeqLenMask(AttentionMask):
             )
 
         if seg_q is not None:
-            # seg_q and seg_k are per-position vectors (block-sized), each entry equal to L.
-            # Build rectangular validity from q and k indices separately.
-            seg_q = jnp.asarray(seg_q)
-            seg_k = seg_k if seg_k is not None else seg_q
-            seg_k = jnp.asarray(seg_k)
+            # seg_q is the sequence length L — either a scalar or a per-position vector.
+            L_q = jnp.asarray(seg_q)
+            L_k = jnp.asarray(seg_k) if seg_k is not None else L_q
             q_idx = jnp.asarray(q_idx)
             k_idx = jnp.asarray(k_idx)
-            valid_q = q_idx < seg_q  # [Q]
-            # If seg_k not provided, default to seg_q (self-attention case).
-            valid_k = k_idx < seg_k  # [K]
+            # Broadcasting works for both scalar L and vector L:
+            #   scalar: q_idx [Q] < L [] -> [Q], then [:, None] -> [Q, 1]
+            #   vector: q_idx [Q] < L [Q] -> [Q], then [:, None] -> [Q, 1]
+            valid_q = q_idx < L_q  # [Q]
+            valid_k = k_idx < L_k  # [K]
             rect = valid_q[:, None] & valid_k[None, :]
             diag = q_idx[:, None] == k_idx[None, :]
             return rect | diag
@@ -1096,10 +1098,12 @@ class SeqLenMask(AttentionMask):
         block_q: int | None = None,
         block_k: int | None = None,
     ):
-        # Provide a per-batch row view of length q_len; kernel will slice with curr_q_slice.
-        q_spec = pl.BlockSpec((None, q_len), lambda _, j, k_: (j, 0))
-        kv_extent = kv_len if kv_len is not None else q_len
-        k_spec = pl.BlockSpec((None, kv_extent), lambda _, j, k_: (j, 0))
+        # Data is (B,) (possibly padded to next power-of-2 by flex_attention).
+        # Select one element per batch.  The kernel helper _load_mask_data
+        # detects the (1,) ref and extracts a scalar for the mask __call__.
+        # Forward grid is (q_tile, batch, head) -> j is batch.
+        q_spec = pl.BlockSpec((1,), lambda _, j, k_: (j,))
+        k_spec = pl.BlockSpec((1,), lambda _, j, k_: (j,))
         return q_spec, k_spec
 
     def get_data_block_spec_backward_pass(
@@ -1113,10 +1117,10 @@ class SeqLenMask(AttentionMask):
         block_q_dq: int | None = None,
         block_kv_dq: int | None = None,
     ) -> tuple[None, None]:
-        # Backward grids use (B, H, tile) ordering; we still expose a row view per batch.
-        q_spec = pl.BlockSpec((None, q_len), lambda i, j, k_: (i, 0))
-        kv_extent = kv_len if kv_len is not None else q_len
-        k_spec = pl.BlockSpec((None, kv_extent), lambda i, j, k_: (i, 0))
+        # Data is (B,) (possibly padded).  Select one element per batch.
+        # Backward grid is (batch, head, tile) -> i is batch.
+        q_spec = pl.BlockSpec((1,), lambda i, j, k_: (i,))
+        k_spec = pl.BlockSpec((1,), lambda i, j, k_: (i,))
         return q_spec, k_spec
 
     def get_data(
@@ -1125,14 +1129,143 @@ class SeqLenMask(AttentionMask):
         q_seq_len: Optional[int] = None,
         kv_seq_len: Optional[int] = None,
     ) -> tuple[Optional[Array], Optional[Array]]:
-        # Broadcast per-batch lengths to a (B, Q) array whose rows are all the batch length.
-        if q_seq_len is None:
-            raise ValueError("SeqLenMask.get_data requires q_seq_len")
-        L = jnp.asarray(self.seq_lengths)
-        Lbq = jnp.broadcast_to(L[:, None], (L.shape[0], q_seq_len))
-        kv_extent = kv_seq_len if kv_seq_len is not None else q_seq_len
-        Lbk = jnp.broadcast_to(L[:, None], (L.shape[0], kv_extent))
-        return Lbq, Lbk
+        del q_seq_len, kv_seq_len
+        # Return the raw (B,) lengths; the scalar BlockSpec delivers one per batch.
+        L = jnp.asarray(self.seq_lengths).reshape(-1)
+        return L, L
+
+    def block_mask(
+        self,
+        q_len: int,
+        kv_len: int,
+        block_q: int,
+        block_k: int,
+    ) -> Array | None:
+        return None
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class KVLenMask(AttentionMask):
+    """Per-batch KV padding mask.
+
+    For batch element b, all query positions can attend only to keys in
+    [0, kv_lengths[b]). Keys at positions >= kv_lengths[b] are masked.
+    """
+
+    kv_lengths: Array  # Per-batch KV lengths [B]
+    stateful: bool = True
+
+    def dense(
+        self,
+        q_len: int,
+        kv_len: int,
+        *,
+        batch_size: int = 1,
+        num_heads: int = 1,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> jax.Array:
+        """Materialize [B, H, Q, K] for per-batch KV lengths."""
+        if seg_q is not None or seg_k is not None:
+            return super().dense(
+                q_len,
+                kv_len,
+                batch_size=batch_size,
+                num_heads=num_heads,
+                seg_q=seg_q,
+                seg_k=seg_k,
+            )
+
+        L = jnp.asarray(self.kv_lengths).reshape(-1)
+        b = L.shape[0]
+        if batch_size != b:
+            raise ValueError(
+                f"KVLenMask.dense batch_size={batch_size} does not match stored lengths {b}"
+            )
+
+        k_idx = jnp.arange(kv_len, dtype=jnp.int32)
+        valid_k = k_idx[None, :] < L[:, None]  # [B, K]
+        mask = valid_k[:, None, None, :]
+        return jnp.broadcast_to(mask, (b, num_heads, q_len, kv_len))
+
+    def __call__(
+        self,
+        q_idx: Array,
+        k_idx: Array,
+        seg_q: Optional[Array] = None,
+        seg_k: Optional[Array] = None,
+    ) -> Array:
+        """Mask keys by per-batch length while keeping all query rows active."""
+        if seg_q is None and seg_k is None and self.kv_lengths is None:
+            raise ValueError(
+                "KVLenMask requires kv_lengths provided either at construction or call time"
+            )
+
+        if seg_q is not None or seg_k is not None:
+            L = seg_k if seg_k is not None else seg_q
+            if L is None:
+                raise ValueError("KVLenMask could not resolve KV lengths")
+            L = jnp.asarray(L)
+            q_idx = jnp.asarray(q_idx)
+            k_idx = jnp.asarray(k_idx)
+            valid_k = k_idx < L  # [K]
+            return jnp.broadcast_to(valid_k[None, :], (q_idx.shape[0], k_idx.shape[0]))
+
+        # Fallback: return per-batch [B, Q, K] when called without seg_*.
+        L = jnp.asarray(self.kv_lengths).reshape(-1)
+        q_idx = jnp.asarray(q_idx)
+        k_idx = jnp.asarray(k_idx)
+        valid_k = k_idx[None, :] < L[:, None]  # [B, K]
+        return jnp.broadcast_to(
+            valid_k[:, None, :], (L.shape[0], q_idx.shape[0], k_idx.shape[0])
+        )
+
+    def tree_flatten(self):
+        return ((self.kv_lengths,), {})
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        (kv_lengths,) = children
+        return KVLenMask(kv_lengths)
+
+    def get_data_block_spec(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+    ):
+        # Data is (B,) (possibly padded). Select one element per batch.
+        # Forward grid is (q_tile, batch, head) -> j is batch.
+        q_spec = pl.BlockSpec((1,), lambda _, j, k_: (j,))
+        return q_spec, None
+
+    def get_data_block_spec_backward_pass(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+        block_q_dkv: int | None = None,
+        block_kv_dkv: int | None = None,
+        block_q_dq: int | None = None,
+        block_kv_dq: int | None = None,
+    ) -> tuple[None, None]:
+        # Data is (B,) (possibly padded). Select one element per batch.
+        # Backward grid is (batch, head, tile) -> i is batch.
+        q_spec = pl.BlockSpec((1,), lambda i, j, k_: (i,))
+        return q_spec, None
+
+    def get_data(
+        self,
+        *,
+        q_seq_len: Optional[int] = None,
+        kv_seq_len: Optional[int] = None,
+    ) -> tuple[Optional[Array], Optional[Array]]:
+        del q_seq_len, kv_seq_len
+        L = jnp.asarray(self.kv_lengths).reshape(-1)
+        return L, None
 
     def block_mask(
         self,

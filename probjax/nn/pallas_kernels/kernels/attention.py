@@ -46,6 +46,22 @@ def pallas_load(ref, idx, *, mask=None, other=None):
     return pallas_primitives.load(ref, idx, mask=mask, other=other)
 
 
+def _load_mask_data(ref, seq_slice):
+    """Load mask data from a ref, handling scalar-like refs directly.
+
+    For per-batch scalar data (e.g. SeqLenMask seq_lengths), the BlockSpec
+    delivers a 0-d or (1,) ref.  We load it without sequence slicing so
+    the mask __call__ receives a scalar and broadcasts naturally.
+    """
+    if ref is None:
+        return None
+    if ref.shape == ():
+        return pallas_load(ref, ())
+    if ref.shape == (1,):
+        return pallas_load(ref, (pl.dslice(0, 1),))[0]
+    return pallas_load(ref, (seq_slice,))
+
+
 def pallas_store(ref, idx, *, val, mask=None):
     return pallas_primitives.store(ref, idx, val, mask=mask)
 
@@ -368,8 +384,7 @@ def mha_forward_kernel(
     curr_q_slice = pl.dslice(start_q * block_q, block_q)
     # Load the current Q tile into SRAM
     q = pallas_load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
-    # TODO For per batch id_q or id_k, we should not slice along curr_q_slice here
-    id_q = None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
+    id_q = _load_mask_data(id_q_ref, curr_q_slice)
     span_q = start_q * block_q + jnp.arange(block_q)
     LOG2E = 1.4426950408889634  # log2(e)
 
@@ -403,14 +418,10 @@ def mha_forward_kernel(
         # boolean mask for the current qk slice
         if mask_fn is not None:
             if id_k_ref is not None:
-                id_k = (
-                    None if id_k_ref is None else pallas_load(id_k_ref, (curr_k_slice,))
-                )
+                id_k = _load_mask_data(id_k_ref, curr_k_slice)
             elif id_q is not None:
-                # Otherwise reuse id_q if available
-                id_k = (
-                    None if id_q_ref is None else pallas_load(id_q_ref, (curr_k_slice,))
-                )
+                # Reuse id_q ref for k-side (e.g. SeqLenMask uses same lengths).
+                id_k = _load_mask_data(id_q_ref, curr_k_slice)
             else:
                 id_k = None
             mask = mask_fn(span_q, span_k, id_q, id_k)
@@ -506,7 +517,7 @@ def mha_jvp_from_lse_kernel(
     curr_q_slice = pl.dslice(start_q * block_q, block_q)
     q = pallas_load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
     dq = pallas_load(dq_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
-    id_q = None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
+    id_q = _load_mask_data(id_q_ref, curr_q_slice)
     span_q = start_q * block_q + jnp.arange(block_q)
     LOG2E = 1.4426950408889634  # log2(e)
 
@@ -541,9 +552,9 @@ def mha_jvp_from_lse_kernel(
             qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
         if mask_fn is not None:
             if id_k_ref is not None:
-                id_k = pallas_load(id_k_ref, (curr_k_slice,))
+                id_k = _load_mask_data(id_k_ref, curr_k_slice)
             elif id_q is not None:
-                id_k = pallas_load(id_q_ref, (curr_k_slice,))
+                id_k = _load_mask_data(id_q_ref, curr_k_slice)
             else:
                 id_k = None
             mask = mask_fn(span_q, span_k, id_q, id_k)
@@ -791,7 +802,7 @@ def mha_forward_jvp_kernel(
     curr_q_slice = pl.dslice(start_q * block_q, block_q)
     q = pallas_load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
     dq = pallas_load(dq_ref, (slice(None), slice(None)), mask=d_mask, other=0.0)
-    id_q = None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
+    id_q = _load_mask_data(id_q_ref, curr_q_slice)
     span_q = start_q * block_q + jnp.arange(block_q)
     LOG2E = 1.4426950408889634  # log2(e)
 
@@ -819,9 +830,9 @@ def mha_forward_jvp_kernel(
             qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
         if mask_fn is not None:
             if id_k_ref is not None:
-                id_k = pallas_load(id_k_ref, (curr_k_slice,))
+                id_k = _load_mask_data(id_k_ref, curr_k_slice)
             elif id_q is not None:
-                id_k = pallas_load(id_q_ref, (curr_k_slice,))
+                id_k = _load_mask_data(id_q_ref, curr_k_slice)
             else:
                 id_k = None
             mask = mask_fn(span_q, span_k, id_q, id_k)
@@ -893,9 +904,9 @@ def mha_forward_jvp_kernel(
             qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
         if mask_fn is not None:
             if id_k_ref is not None:
-                id_k = pallas_load(id_k_ref, (curr_k_slice,))
+                id_k = _load_mask_data(id_k_ref, curr_k_slice)
             elif id_q is not None:
-                id_k = pallas_load(id_q_ref, (curr_k_slice,))
+                id_k = _load_mask_data(id_q_ref, curr_k_slice)
             else:
                 id_k = None
             mask = mask_fn(span_q, span_k, id_q, id_k)
@@ -1083,10 +1094,9 @@ def mha_backward_kernel(
     k = pallas_load(k_ref, (curr_k_slice, slice(None)), mask=mask_d, other=0.0)
     span_k = start_k * block_kv_dkv + jnp.arange(block_kv_dkv)
     if id_k_ref is not None:
-        id_k = pallas_load(id_k_ref, (curr_k_slice,))
+        id_k = _load_mask_data(id_k_ref, curr_k_slice)
     elif id_q_ref is not None:
-        # Otherwise reuse id_q if available
-        id_k = pallas_load(id_q_ref, (curr_k_slice,))
+        id_k = _load_mask_data(id_q_ref, curr_k_slice)
     else:
         id_k = None
 
@@ -1114,9 +1124,7 @@ def mha_backward_kernel(
                 qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
 
             if mask_fn is not None:
-                id_q = (
-                    None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
-                )
+                id_q = _load_mask_data(id_q_ref, curr_q_slice)
                 mask = mask_fn(span_q, span_k, id_q, id_k)
                 qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
         # No built-in causal; pass as mask via mask if needed.
@@ -1231,14 +1239,11 @@ def mha_backward_kernel(
                 qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
 
             if mask_fn is not None:
-                id_q = (
-                    None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
-                )
+                id_q = _load_mask_data(id_q_ref, curr_q_slice)
                 if id_k_ref is not None:
-                    id_k = pallas_load(id_k_ref, (curr_k_slice,))
+                    id_k = _load_mask_data(id_k_ref, curr_k_slice)
                 elif id_q_ref is not None:
-                    # Otherwise reuse id_q if available
-                    id_k = pallas_load(id_q_ref, (curr_k_slice,))
+                    id_k = _load_mask_data(id_q_ref, curr_k_slice)
                 else:
                     id_k = None
 
@@ -1353,9 +1358,9 @@ def mha_backward_kernel_split_dkdv(
     k = pallas_load(k_ref, (curr_k_slice, slice(None)), mask=block_mask, other=0.0)
 
     if id_k_ref is not None:
-        id_k = pallas_load(id_k_ref, (curr_k_slice,))
+        id_k = _load_mask_data(id_k_ref, curr_k_slice)
     elif id_q_ref is not None:
-        id_k = pallas_load(id_q_ref, (curr_k_slice,))
+        id_k = _load_mask_data(id_q_ref, curr_k_slice)
     else:
         id_k = None
 
@@ -1380,9 +1385,7 @@ def mha_backward_kernel_split_dkdv(
             if bias_fn is not None:
                 qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
             if mask_fn is not None:
-                id_q = (
-                    None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
-                )
+                id_q = _load_mask_data(id_q_ref, curr_q_slice)
                 m = mask_fn(span_q, span_k, id_q, id_k)
                 qk = jnp.where(m, qk, DEFAULT_MASK_VALUE)
 
@@ -1509,13 +1512,11 @@ def mha_backward_kernel_split_dq(
             if bias_fn is not None:
                 qk = bias_fn(qk, start_h, span_q, span_k, data=b_chunk)
             if mask_fn is not None:
-                id_q = (
-                    None if id_q_ref is None else pallas_load(id_q_ref, (curr_q_slice,))
-                )
+                id_q = _load_mask_data(id_q_ref, curr_q_slice)
                 if id_k_ref is not None:
-                    id_k = pallas_load(id_k_ref, (curr_k_slice,))
+                    id_k = _load_mask_data(id_k_ref, curr_k_slice)
                 elif id_q_ref is not None:
-                    id_k = pallas_load(id_q_ref, (curr_k_slice,))
+                    id_k = _load_mask_data(id_q_ref, curr_k_slice)
                 else:
                     id_k = None
                 m = mask_fn(span_q, span_k, id_q, id_k)

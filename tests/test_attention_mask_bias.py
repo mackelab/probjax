@@ -15,6 +15,7 @@ from probjax.nn.pallas_kernels.attention_mask_bias import (
     DenseBias,
     DistanceDecayBias,
     IdentityBias,
+    KVLenMask,
     KeyPaddingMask,
     LearnedRelativePositionBias,
     LocalWindowMask,
@@ -144,6 +145,19 @@ def test_seq_len_mask_dense_matches_reference():
     rect = valid[:, :, None] & valid[:, None, :]
     diag = jnp.eye(q_len, dtype=bool)[None, :, :]
     expected = (rect | diag)[:, None, :, :]
+    expected = jnp.broadcast_to(expected, dense.shape)
+    assert jnp.array_equal(dense, expected)
+
+
+def test_kv_len_mask_dense_matches_reference():
+    lengths = jnp.array([2, 4, 6], dtype=jnp.int32)
+    q_len = 5
+    kv_len = 6
+    dense = KVLenMask(lengths).dense(q_len, kv_len, batch_size=3, num_heads=2)
+
+    k_idx = _idx(kv_len)
+    valid_k = k_idx[None, :] < lengths[:, None]  # [B, K]
+    expected = valid_k[:, None, None, :]
     expected = jnp.broadcast_to(expected, dense.shape)
     assert jnp.array_equal(dense, expected)
 
@@ -338,6 +352,7 @@ def test_per_head_scale_bias_scales_by_head():
         CausalMask(),
         LocalWindowMask(left_window=2, right_window=1),
         QKVLengthMask(q_length=3, kv_length=4),
+        KVLenMask(jnp.array([3, 4], dtype=jnp.int32)),
         SameSegmentMask(
             jnp.array([0, 1, 1, 2], dtype=jnp.int32),
             jnp.array([1, 0, 2, 1, 2], dtype=jnp.int32),
