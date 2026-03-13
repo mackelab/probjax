@@ -1720,6 +1720,15 @@ def _resolve_attention_num_stages(num_stages: int, *, has_dense_bias: bool) -> i
     return num_stages
 
 
+def _should_fallback_from_cp_error(err: Exception) -> bool:
+    if isinstance(err, AssertionError):
+        return True
+    if isinstance(err, NotImplementedError):
+        # TODO: maybe implement the batching rule
+        return "Batching rule for 'custom_partitioning' not implemented" in str(err)
+    return False
+
+
 def _mha_impl_raw(
     q: jax.Array,
     k: jax.Array,
@@ -2911,14 +2920,14 @@ def mha(
     rng: jax.Array | None = None,
     sm_scale: float = 1.0,
     block_sizes: BlockSizes = BlockSizes.get_default(),
-    backward_pass_impl: str = "triton_fused",
+    backward_pass_impl: str = "auto",
     num_warps: int | None = None,
     num_stages: int = 2,
     grid: tuple[int, ...] | None = None,
     interpret: bool = False,
     debug: bool = False,
     dropout_rate: float = 0.0,
-    dropout_impl: str = "materialize",
+    dropout_impl: str = "counter",
     diff_mode: str = "reverse",
 ):
     """Multi-Head Attention public API.
@@ -3078,8 +3087,9 @@ def _make_mha_runners(
                 out, lse = result
                 return out, rng_val, rng_seed, lse
             return result
-        except AssertionError:
-            pass
+        except (AssertionError, NotImplementedError) as err:
+            if not _should_fallback_from_cp_error(err):
+                raise
 
         result = _mha_impl_raw(
             q,
@@ -3193,8 +3203,9 @@ def _make_mha_runners(
                 _or_sentinel(arrays["kv_index_offset"]),
                 _or_sentinel(arrays["kv_index_offset_size"]),
             )
-        except AssertionError:
-            pass
+        except (AssertionError, NotImplementedError) as err:
+            if not _should_fallback_from_cp_error(err):
+                raise
 
         return _mha_backward_raw(
             do,
@@ -3481,8 +3492,9 @@ def _make_mha_forward_jvp(
                 _or_sentinel(arrays["index_offset_size"]),
             )
             return out, tangent_out
-        except AssertionError:
-            pass
+        except (AssertionError, NotImplementedError) as err:
+            if not _should_fallback_from_cp_error(err):
+                raise
 
         if mask is None and bias is None and dropout_rate == 0.0:
             return _mha_impl_fused_jvp_simple(
