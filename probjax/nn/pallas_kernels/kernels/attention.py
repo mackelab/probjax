@@ -2563,6 +2563,21 @@ def _mha_bind(
     return out
 
 
+def _use_custom_partitioning() -> bool:
+    """Return True when a multi-device mesh is active and CP should be used.
+
+    ``custom_partitioning`` lowering in JAX ≤0.9 crashes with
+    ``AssertionError`` when no mesh or only a single-device mesh is present
+    (the GSPMD lowering path requires ≥2 devices).  By guarding on the mesh
+    we avoid the crash and also skip the (unnecessary) CP overhead on single
+    devices.
+    """
+    from jax._src import mesh as mesh_lib  # local import to avoid circular deps
+
+    mesh = mesh_lib.get_concrete_mesh()
+    return not mesh.empty and mesh.size > 1
+
+
 def _sentinel() -> jax.Array:
     """Dummy scalar used as positional arg placeholder for ``None`` arrays
     in ``custom_partitioning``-wrapped functions (which require all positional
@@ -3434,39 +3449,69 @@ def _make_mha_custom_jvp(
             dropout_impl=dropout_impl,
         )
 
-        cp_fwd = _make_cp_mha_fwd(
-            has_b_data=arrays["b_data"] is not None,
-            has_q_id=arrays["q_id"] is not None,
-            has_k_id=arrays["k_id"] is not None,
-            has_dropout_mask=arrays["dropout_mask"] is not None,
-            has_index=arrays["index_offset"] is not None,
-            sm_scale=sm_scale,
-            block_sizes=block_sizes,
-            num_warps=num_warps,
-            num_stages=num_stages,
-            grid=grid,
-            interpret=interpret,
-            debug=debug,
-            dropout_rate=dropout_rate,
-            output_activations=True,
-            mask_fn=specs["mask_fn"],
-            bias_fn=specs["bias_fn"],
-            b_spec=specs["b_spec"],
-            q_id_spec=specs["q_id_spec"],
-            k_id_spec=specs["k_id_spec"],
-        )
-        out, lse_res = cp_fwd(
-            q,
-            k,
-            v,
-            rng_seed,
-            _or_sentinel(arrays["b_data"]),
-            _or_sentinel(arrays["q_id"]),
-            _or_sentinel(arrays["k_id"]),
-            _or_sentinel(arrays["dropout_mask"]),
-            _or_sentinel(arrays["index_offset"]),
-            _or_sentinel(arrays["index_offset_size"]),
-        )
+        if _use_custom_partitioning():
+            cp_fwd = _make_cp_mha_fwd(
+                has_b_data=arrays["b_data"] is not None,
+                has_q_id=arrays["q_id"] is not None,
+                has_k_id=arrays["k_id"] is not None,
+                has_dropout_mask=arrays["dropout_mask"] is not None,
+                has_index=arrays["index_offset"] is not None,
+                sm_scale=sm_scale,
+                block_sizes=block_sizes,
+                num_warps=num_warps,
+                num_stages=num_stages,
+                grid=grid,
+                interpret=interpret,
+                debug=debug,
+                dropout_rate=dropout_rate,
+                output_activations=True,
+                mask_fn=specs["mask_fn"],
+                bias_fn=specs["bias_fn"],
+                b_spec=specs["b_spec"],
+                q_id_spec=specs["q_id_spec"],
+                k_id_spec=specs["k_id_spec"],
+            )
+            out, lse_res = cp_fwd(
+                q,
+                k,
+                v,
+                rng_seed,
+                _or_sentinel(arrays["b_data"]),
+                _or_sentinel(arrays["q_id"]),
+                _or_sentinel(arrays["k_id"]),
+                _or_sentinel(arrays["dropout_mask"]),
+                _or_sentinel(arrays["index_offset"]),
+                _or_sentinel(arrays["index_offset_size"]),
+            )
+        else:
+            # No multi-device mesh — call raw kernel directly.
+            result = _mha_impl_raw(
+                q,
+                k,
+                v,
+                rng_seed,
+                arrays["b_data"],
+                arrays["q_id"],
+                arrays["k_id"],
+                arrays["dropout_mask"],
+                arrays["index_offset"],
+                arrays["index_offset_size"],
+                mask_fn=specs["mask_fn"],
+                bias_fn=specs["bias_fn"],
+                b_spec=specs["b_spec"],
+                q_id_spec=specs["q_id_spec"],
+                k_id_spec=specs["k_id_spec"],
+                sm_scale=sm_scale,
+                block_sizes=block_sizes,
+                num_warps=num_warps,
+                num_stages=num_stages,
+                grid=grid,
+                interpret=interpret,
+                debug=debug,
+                dropout_rate=dropout_rate,
+                output_activations=True,
+            )
+            out, (_q, _k, _v, _seed, _out_res, lse_res) = result
         # Re-bind primals for residuals (cp_fwd only returns out, lse).
         q_res, k_res, v_res, rng_seed_res, out_res = q, k, v, rng_seed, out
 
@@ -4106,12 +4151,58 @@ def _mha_prim_impl(
         dropout_impl=dropout_impl,
     )
 
-    cp_fwd = _make_cp_mha_fwd(
-        has_b_data=arrays["b_data"] is not None,
-        has_q_id=arrays["q_id"] is not None,
-        has_k_id=arrays["k_id"] is not None,
-        has_dropout_mask=arrays["dropout_mask"] is not None,
-        has_index=arrays["index_offset"] is not None,
+    if _use_custom_partitioning():
+        cp_fwd = _make_cp_mha_fwd(
+            has_b_data=arrays["b_data"] is not None,
+            has_q_id=arrays["q_id"] is not None,
+            has_k_id=arrays["k_id"] is not None,
+            has_dropout_mask=arrays["dropout_mask"] is not None,
+            has_index=arrays["index_offset"] is not None,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            output_activations=False,
+            mask_fn=specs["mask_fn"],
+            bias_fn=specs["bias_fn"],
+            b_spec=specs["b_spec"],
+            q_id_spec=specs["q_id_spec"],
+            k_id_spec=specs["k_id_spec"],
+        )
+        return cp_fwd(
+            q,
+            k,
+            v,
+            rng_seed,
+            _or_sentinel(arrays["b_data"]),
+            _or_sentinel(arrays["q_id"]),
+            _or_sentinel(arrays["k_id"]),
+            _or_sentinel(arrays["dropout_mask"]),
+            _or_sentinel(arrays["index_offset"]),
+            _or_sentinel(arrays["index_offset_size"]),
+        )
+
+    # No multi-device mesh — call the raw kernel directly (no CP overhead).
+    return _mha_impl_raw(
+        q,
+        k,
+        v,
+        rng_seed,
+        arrays["b_data"],
+        arrays["q_id"],
+        arrays["k_id"],
+        arrays["dropout_mask"],
+        arrays["index_offset"],
+        arrays["index_offset_size"],
+        mask_fn=specs["mask_fn"],
+        bias_fn=specs["bias_fn"],
+        b_spec=specs["b_spec"],
+        q_id_spec=specs["q_id_spec"],
+        k_id_spec=specs["k_id_spec"],
         sm_scale=sm_scale,
         block_sizes=block_sizes,
         num_warps=num_warps,
@@ -4121,23 +4212,6 @@ def _mha_prim_impl(
         debug=debug,
         dropout_rate=dropout_rate,
         output_activations=False,
-        mask_fn=specs["mask_fn"],
-        bias_fn=specs["bias_fn"],
-        b_spec=specs["b_spec"],
-        q_id_spec=specs["q_id_spec"],
-        k_id_spec=specs["k_id_spec"],
-    )
-    return cp_fwd(
-        q,
-        k,
-        v,
-        rng_seed,
-        _or_sentinel(arrays["b_data"]),
-        _or_sentinel(arrays["q_id"]),
-        _or_sentinel(arrays["k_id"]),
-        _or_sentinel(arrays["dropout_mask"]),
-        _or_sentinel(arrays["index_offset"]),
-        _or_sentinel(arrays["index_offset_size"]),
     )
 
 
@@ -4197,12 +4271,68 @@ def _mha_lin_prim_impl(
     )
     bias_fn_grad = bias.grad if (bias is not None) else None
 
-    cp_jvp = _make_cp_mha_jvp(
-        has_b_data=arrays["b_data"] is not None,
-        has_q_id=arrays["q_id"] is not None,
-        has_k_id=arrays["k_id"] is not None,
-        has_dropout_mask=arrays["dropout_mask"] is not None,
-        has_index=arrays["index_offset"] is not None,
+    if _use_custom_partitioning():
+        cp_jvp = _make_cp_mha_jvp(
+            has_b_data=arrays["b_data"] is not None,
+            has_q_id=arrays["q_id"] is not None,
+            has_k_id=arrays["k_id"] is not None,
+            has_dropout_mask=arrays["dropout_mask"] is not None,
+            has_index=arrays["index_offset"] is not None,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            mask_fn=specs["mask_fn"],
+            bias_fn=specs["bias_fn"],
+            bias_fn_grad=bias_fn_grad,
+            b_spec=specs["b_spec"],
+            q_id_spec=specs["q_id_spec"],
+            k_id_spec=specs["k_id_spec"],
+        )
+        return cp_jvp(
+            q,
+            k,
+            v,
+            dq,
+            dk,
+            dv,
+            lse,
+            rng,
+            rng_seed,
+            _or_sentinel(arrays["b_data"]),
+            _or_sentinel(arrays["q_id"]),
+            _or_sentinel(arrays["k_id"]),
+            _or_sentinel(arrays["dropout_mask"]),
+            _or_sentinel(arrays["index_offset"]),
+            _or_sentinel(arrays["index_offset_size"]),
+        )
+
+    # No multi-device mesh — call the raw JVP kernel directly.
+    return _mha_impl_jvp_from_lse_raw(
+        q,
+        k,
+        v,
+        dq,
+        dk,
+        dv,
+        lse,
+        rng_seed,
+        arrays["b_data"],
+        arrays["q_id"],
+        arrays["k_id"],
+        arrays["dropout_mask"],
+        arrays["index_offset"],
+        arrays["index_offset_size"],
+        mask_fn=specs["mask_fn"],
+        bias_fn=specs["bias_fn"],
+        bias_fn_grad=bias_fn_grad,
+        b_spec=specs["b_spec"],
+        q_id_spec=specs["q_id_spec"],
+        k_id_spec=specs["k_id_spec"],
         sm_scale=sm_scale,
         block_sizes=block_sizes,
         num_warps=num_warps,
@@ -4211,29 +4341,6 @@ def _mha_lin_prim_impl(
         interpret=interpret,
         debug=debug,
         dropout_rate=dropout_rate,
-        mask_fn=specs["mask_fn"],
-        bias_fn=specs["bias_fn"],
-        bias_fn_grad=bias_fn_grad,
-        b_spec=specs["b_spec"],
-        q_id_spec=specs["q_id_spec"],
-        k_id_spec=specs["k_id_spec"],
-    )
-    return cp_jvp(
-        q,
-        k,
-        v,
-        dq,
-        dk,
-        dv,
-        lse,
-        rng,
-        rng_seed,
-        _or_sentinel(arrays["b_data"]),
-        _or_sentinel(arrays["q_id"]),
-        _or_sentinel(arrays["k_id"]),
-        _or_sentinel(arrays["dropout_mask"]),
-        _or_sentinel(arrays["index_offset"]),
-        _or_sentinel(arrays["index_offset_size"]),
     )
 
 
@@ -4359,44 +4466,77 @@ def _mha_lin_prim_transpose(
         dropout_impl=dropout_impl,
     )
 
-    cp_bwd = _make_cp_mha_bwd(
-        has_b_data=arrays["b_data"] is not None,
-        has_q_data=arrays["q_data"] is not None,
-        has_k_data=arrays["k_data"] is not None,
-        has_dropout_mask=arrays["dropout_mask"] is not None,
-        has_q_index=arrays["q_index_offset"] is not None,
-        has_kv_index=arrays["kv_index_offset"] is not None,
-        sm_scale=sm_scale,
-        block_sizes=block_sizes,
-        backward_pass_impl=backward_pass_impl,
-        num_warps=num_warps,
-        interpret=interpret,
-        debug=debug,
-        dropout_rate=dropout_rate,
-        mask_fn=specs["mask_fn"],
-        bias_fn=specs["bias_fn"],
-        bias_fn_grad=specs["bias_fn_grad"],
-        b_spec_bwd=specs["b_spec_bwd"],
-        q_data_spec=specs["q_data_spec"],
-        k_data_spec=specs["k_data_spec"],
-    )
-    dq_ct, dk_ct, dv_ct = cp_bwd(
-        ct,
-        q,
-        k,
-        v,
-        rng_seed,
-        out,
-        lse,
-        _or_sentinel(arrays["b_data"]),
-        _or_sentinel(arrays["q_data"]),
-        _or_sentinel(arrays["k_data"]),
-        _or_sentinel(arrays["dropout_mask"]),
-        _or_sentinel(arrays["q_index_offset"]),
-        _or_sentinel(arrays["q_index_offset_size"]),
-        _or_sentinel(arrays["kv_index_offset"]),
-        _or_sentinel(arrays["kv_index_offset_size"]),
-    )
+    if _use_custom_partitioning():
+        cp_bwd = _make_cp_mha_bwd(
+            has_b_data=arrays["b_data"] is not None,
+            has_q_data=arrays["q_data"] is not None,
+            has_k_data=arrays["k_data"] is not None,
+            has_dropout_mask=arrays["dropout_mask"] is not None,
+            has_q_index=arrays["q_index_offset"] is not None,
+            has_kv_index=arrays["kv_index_offset"] is not None,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            mask_fn=specs["mask_fn"],
+            bias_fn=specs["bias_fn"],
+            bias_fn_grad=specs["bias_fn_grad"],
+            b_spec_bwd=specs["b_spec_bwd"],
+            q_data_spec=specs["q_data_spec"],
+            k_data_spec=specs["k_data_spec"],
+        )
+        dq_ct, dk_ct, dv_ct = cp_bwd(
+            ct,
+            q,
+            k,
+            v,
+            rng_seed,
+            out,
+            lse,
+            _or_sentinel(arrays["b_data"]),
+            _or_sentinel(arrays["q_data"]),
+            _or_sentinel(arrays["k_data"]),
+            _or_sentinel(arrays["dropout_mask"]),
+            _or_sentinel(arrays["q_index_offset"]),
+            _or_sentinel(arrays["q_index_offset_size"]),
+            _or_sentinel(arrays["kv_index_offset"]),
+            _or_sentinel(arrays["kv_index_offset_size"]),
+        )
+    else:
+        # No multi-device mesh — call the raw backward kernel directly.
+        dq_ct, dk_ct, dv_ct = _mha_backward_raw(
+            ct,
+            q,
+            k,
+            v,
+            rng_seed,
+            out,
+            lse,
+            arrays["b_data"],
+            arrays["q_data"],
+            arrays["k_data"],
+            arrays["dropout_mask"],
+            arrays["q_index_offset"],
+            arrays["q_index_offset_size"],
+            arrays["kv_index_offset"],
+            arrays["kv_index_offset_size"],
+            mask_fn=specs["mask_fn"],
+            bias_fn=specs["bias_fn"],
+            bias_fn_grad=specs["bias_fn_grad"],
+            b_spec_bwd=specs["b_spec_bwd"],
+            q_data_spec=specs["q_data_spec"],
+            k_data_spec=specs["k_data_spec"],
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+        )
     grads = [None, None, None, None, None, None, None, dq_ct, dk_ct, dv_ct]
     grads.extend([None] * mask_num_leaves)
     grads.extend([None] * bias_num_leaves)
