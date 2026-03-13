@@ -29,6 +29,7 @@ from jax.experimental import pallas as pl
 from jax._src.pallas import primitives as pallas_primitives
 from jax.experimental.pallas import triton as plgpu
 from jax.interpreters import ad, batching, mlir
+from jax.sharding import PartitionSpec as P
 
 from ..attention_mask_bias import (
     AttentionBias,
@@ -42,24 +43,108 @@ from ..kernel_utils import (
 )
 
 
+def _detect_batch_sharding(q: jax.Array):
+    """Detect if q has NamedSharding on its batch (first) dimension.
+
+    Returns (axis_name, mesh) if the batch dim is sharded, else (None, None).
+    This works inside jit by inspecting the abstract value's sharding.
+    """
+    import jax._src.core as core
+
+    try:
+        aval = core.get_aval(q)
+        sharding = getattr(aval, "sharding", None)
+        if sharding is None:
+            return None, None
+        spec = getattr(sharding, "spec", None)
+        if spec is None or len(spec) == 0:
+            return None, None
+        axis_name = spec[0]
+        if axis_name is None:
+            return None, None
+        mesh = sharding.mesh
+        return axis_name, mesh
+    except Exception:
+        return None, None
+
+
+def _infer_shard_spec(arr, axis_name):
+    """Build a PartitionSpec for *arr* that shards its batch dim.
+
+    If *arr* has the same first-dim size as the batch dimension tracked by
+    *axis_name*, partition that dim; otherwise replicate.  Works on concrete
+    arrays as well as abstract avals.
+
+    For arrays whose aval already carries a sharding with the matching
+    *axis_name* on some dimension, we mirror that spec exactly (so mask / bias
+    leaves that happen to have a batch axis are correctly partitioned).
+    Otherwise we conservatively replicate the whole array.
+    """
+    import jax._src.core as core
+
+    try:
+        aval = core.get_aval(arr)
+    except Exception:
+        return P()
+
+    sharding = getattr(aval, "sharding", None)
+    if sharding is None:
+        return P(*([None] * aval.ndim)) if hasattr(aval, "ndim") else P()
+
+    spec = getattr(sharding, "spec", None)
+    if spec is None:
+        return P(*([None] * aval.ndim)) if hasattr(aval, "ndim") else P()
+
+    # Mirror whatever the trace already decided for this array.
+    return P(*spec)
+
+
 def pallas_load(ref, idx, *, mask=None, other=None):
     return pallas_primitives.load(ref, idx, mask=mask, other=other)
 
 
 def _load_mask_data(ref, seq_slice):
-    """Load mask data from a ref, handling scalar-like refs directly.
+    """Load mask data from a ref, handling scalar-like and 4D refs.
 
-    For per-batch scalar data (e.g. SeqLenMask seq_lengths), the BlockSpec
-    delivers a 0-d or (1,) ref.  We load it without sequence slicing so
-    the mask __call__ receives a scalar and broadcasts naturally.
+    Mask data is stored in 4D format (B, T, 1, 1) for uniform sharding.
+    BlockSpecs page the batch dim via ``None``, so the ref seen inside the
+    kernel may have shape ``(T, 1, 1)`` or ``(1, 1, 1)`` (scalar-like).
+    For shared (non-batched) data the ref may be ``(1, T, 1, 1)`` where the
+    leading 1 is the un-paged batch placeholder.
+
+    After stripping leading and trailing unit dims we fall back to the logic:
+      - scalar / empty → load directly as scalar
+      - ``(1,)`` → extract the single element as a scalar
+      - ``(T,)`` → load the ``seq_slice`` window
     """
     if ref is None:
         return None
-    if ref.shape == ():
-        return pallas_load(ref, ())
-    if ref.shape == (1,):
-        return pallas_load(ref, (pl.dslice(0, 1),))[0]
-    return pallas_load(ref, (seq_slice,))
+
+    # Strip trailing singleton dims introduced by the 4D convention.
+    shape = ref.shape
+    while len(shape) > 1 and shape[-1] == 1:
+        shape = shape[:-1]
+
+    # Also strip leading singletons (un-paged batch dim for shared data).
+    n_leading = 0
+    while n_leading < len(shape) - 1 and shape[n_leading] == 1:
+        n_leading += 1
+    core = shape[n_leading:]  # The meaningful part of the shape.
+
+    if core == () or ref.shape == ():
+        return pallas_load(ref, tuple(slice(None) for _ in ref.shape)).reshape(())
+    if core == (1,):
+        slices = tuple(pl.dslice(0, 1) for _ in ref.shape)
+        return pallas_load(ref, slices).reshape(())
+    # core is (T,) — load along the sequence dimension.
+    # Build slices: leading dims get dslice(0,1), the seq dim gets seq_slice,
+    # trailing dims get dslice(0,1).
+    slices = (
+        tuple(pl.dslice(0, 1) for _ in range(n_leading))
+        + (seq_slice,)
+        + tuple(pl.dslice(0, 1) for _ in ref.shape[n_leading + 1 :])
+    )
+    return pallas_load(ref, slices).reshape(-1)
 
 
 def pallas_store(ref, idx, *, val, mask=None):
@@ -3126,6 +3211,33 @@ def _mha_prim_impl(
     mask_num_leaves: int,
     bias_num_leaves: int,
 ):
+    axis_name, mesh = _detect_batch_sharding(q)
+    if axis_name is not None:
+        return _mha_prim_impl_sharded(
+            q,
+            k,
+            v,
+            rng,
+            rng_seed,
+            *rest,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+            mask_treedef=mask_treedef,
+            bias_treedef=bias_treedef,
+            mask_num_leaves=mask_num_leaves,
+            bias_num_leaves=bias_num_leaves,
+            axis_name=axis_name,
+            mesh=mesh,
+        )
+
     _, _, _, _, rng_seed, mask_leaves, bias_leaves = _split_mha_operands(
         (q, k, v, rng, rng_seed, *rest),
         mask_num_leaves=mask_num_leaves,
@@ -3155,6 +3267,75 @@ def _mha_prim_impl(
     )
 
 
+def _mha_prim_impl_sharded(
+    q,
+    k,
+    v,
+    rng,
+    rng_seed,
+    *rest,
+    sm_scale,
+    block_sizes,
+    backward_pass_impl,
+    num_warps,
+    num_stages,
+    grid,
+    interpret,
+    debug,
+    dropout_rate,
+    dropout_impl,
+    mask_treedef,
+    bias_treedef,
+    mask_num_leaves,
+    bias_num_leaves,
+    axis_name,
+    mesh,
+):
+    """Forward lowering wrapped in shard_map for batch-sharded inputs."""
+    from jax import shard_map
+
+    all_args = (q, k, v, rng, rng_seed, *rest)
+    in_specs = tuple(_infer_shard_spec(a, axis_name) for a in all_args)
+    out_specs = _infer_shard_spec(q, axis_name)  # output has same shape/sharding as q
+
+    def impl(*args):
+        q_, k_, v_, rng_, rng_seed_, *rest_ = args
+        _, _, _, _, rng_seed_, mask_leaves, bias_leaves = _split_mha_operands(
+            (q_, k_, v_, rng_, rng_seed_, *rest_),
+            mask_num_leaves=mask_num_leaves,
+            bias_num_leaves=bias_num_leaves,
+        )
+        mask = _unflatten_optional_pytree(mask_treedef, mask_leaves)
+        bias = _unflatten_optional_pytree(bias_treedef, bias_leaves)
+        return _mha_impl(
+            q=q_,
+            k=k_,
+            v=v_,
+            mask=mask,
+            bias=bias,
+            rng=rng_,
+            rng_seed=rng_seed_,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+            output_activations=False,
+        )
+
+    return shard_map(
+        impl,
+        mesh=mesh,
+        in_specs=in_specs,
+        out_specs=out_specs,
+    )(*all_args)
+
+
 def _mha_lin_prim_impl(
     q,
     k,
@@ -3182,6 +3363,38 @@ def _mha_lin_prim_impl(
     mask_num_leaves: int,
     bias_num_leaves: int,
 ):
+    axis_name, mesh_obj = _detect_batch_sharding(q)
+    if axis_name is not None:
+        return _mha_lin_prim_impl_sharded(
+            q,
+            k,
+            v,
+            rng,
+            rng_seed,
+            out,
+            lse,
+            dq,
+            dk,
+            dv,
+            *rest,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+            mask_treedef=mask_treedef,
+            bias_treedef=bias_treedef,
+            mask_num_leaves=mask_num_leaves,
+            bias_num_leaves=bias_num_leaves,
+            axis_name=axis_name,
+            mesh=mesh_obj,
+        )
+
     del out
     _, _, _, _, rng_seed, mask_leaves, bias_leaves = _split_mha_operands(
         (q, k, v, rng, rng_seed, *rest),
@@ -3213,6 +3426,84 @@ def _mha_lin_prim_impl(
         dropout_rate=dropout_rate,
         dropout_impl=dropout_impl,
     )
+
+
+def _mha_lin_prim_impl_sharded(
+    q,
+    k,
+    v,
+    rng,
+    rng_seed,
+    out,
+    lse,
+    dq,
+    dk,
+    dv,
+    *rest,
+    sm_scale,
+    block_sizes,
+    backward_pass_impl,
+    num_warps,
+    num_stages,
+    grid,
+    interpret,
+    debug,
+    dropout_rate,
+    dropout_impl,
+    mask_treedef,
+    bias_treedef,
+    mask_num_leaves,
+    bias_num_leaves,
+    axis_name,
+    mesh,
+):
+    """JVP tangent lowering wrapped in shard_map for batch-sharded inputs."""
+    from jax import shard_map
+
+    # All positional args: q, k, v, rng, rng_seed, out, lse, dq, dk, dv, *rest
+    all_args = (q, k, v, rng, rng_seed, out, lse, dq, dk, dv, *rest)
+    in_specs = tuple(_infer_shard_spec(a, axis_name) for a in all_args)
+    out_specs = _infer_shard_spec(q, axis_name)  # tangent_out same shape as q
+
+    def impl(*args):
+        q_, k_, v_, rng_, rng_seed_, out_, lse_, dq_, dk_, dv_, *rest_ = args
+        _, _, _, _, rng_seed_, mask_leaves, bias_leaves = _split_mha_operands(
+            (q_, k_, v_, rng_, rng_seed_, *rest_),
+            mask_num_leaves=mask_num_leaves,
+            bias_num_leaves=bias_num_leaves,
+        )
+        mask = _unflatten_optional_pytree(mask_treedef, mask_leaves)
+        bias = _unflatten_optional_pytree(bias_treedef, bias_leaves)
+        return _mha_impl_jvp_from_lse(
+            q=q_,
+            k=k_,
+            v=v_,
+            dq=dq_,
+            dk=dk_,
+            dv=dv_,
+            lse=lse_,
+            mask=mask,
+            bias=bias,
+            rng=rng_,
+            rng_seed=rng_seed_,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+        )
+
+    return shard_map(
+        impl,
+        mesh=mesh,
+        in_specs=in_specs,
+        out_specs=out_specs,
+    )(*all_args)
 
 
 def _mha_lin_prim_abstract_eval(
@@ -3302,6 +3593,39 @@ def _mha_lin_prim_transpose(
     if isinstance(ct, ad_util.Zero):
         return (None,) * (10 + mask_num_leaves + bias_num_leaves)
 
+    axis_name, mesh_obj = _detect_batch_sharding(q)
+    if axis_name is not None:
+        return _mha_lin_prim_transpose_sharded(
+            ct,
+            q,
+            k,
+            v,
+            rng,
+            rng_seed,
+            out,
+            lse,
+            dq,
+            dk,
+            dv,
+            *rest,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+            mask_treedef=mask_treedef,
+            bias_treedef=bias_treedef,
+            mask_num_leaves=mask_num_leaves,
+            bias_num_leaves=bias_num_leaves,
+            axis_name=axis_name,
+            mesh=mesh_obj,
+        )
+
     _, _, _, _, rng_seed, mask_leaves, bias_leaves = _split_mha_operands(
         (q, k, v, rng, rng_seed, *rest),
         mask_num_leaves=mask_num_leaves,
@@ -3327,6 +3651,91 @@ def _mha_lin_prim_transpose(
         mask=mask,
         bias=bias,
     )
+    grads = [None, None, None, None, None, None, None, dq_ct, dk_ct, dv_ct]
+    grads.extend([None] * mask_num_leaves)
+    grads.extend([None] * bias_num_leaves)
+    return tuple(grads)
+
+
+def _mha_lin_prim_transpose_sharded(
+    ct,
+    q,
+    k,
+    v,
+    rng,
+    rng_seed,
+    out,
+    lse,
+    dq,
+    dk,
+    dv,
+    *rest,
+    sm_scale,
+    block_sizes,
+    backward_pass_impl,
+    num_warps,
+    num_stages,
+    grid,
+    interpret,
+    debug,
+    dropout_rate,
+    dropout_impl,
+    mask_treedef,
+    bias_treedef,
+    mask_num_leaves,
+    bias_num_leaves,
+    axis_name,
+    mesh,
+):
+    """Backward (transpose) wrapped in shard_map for batch-sharded inputs."""
+    from jax import shard_map
+
+    # shard_map inputs: q, k, v, rng, rng_seed, out, lse, ct, *rest (mask/bias leaves)
+    # We pass rng_seed separately (it was extracted from rng in forward).
+    # `dq`, `dk`, `dv` are the tangent primals (unused/None in transpose), skip them.
+    # `rng` may be None (a ZeroTangent) — not needed by _mha_backward which uses rng_seed.
+    all_args = (q, k, v, rng_seed, out, lse, ct, *rest)
+    in_specs = tuple(_infer_shard_spec(a, axis_name) for a in all_args)
+    # Outputs: (dq_ct, dk_ct, dv_ct) — all 4D with same shape/sharding as q, k, v
+    out_specs = (
+        _infer_shard_spec(q, axis_name),
+        _infer_shard_spec(k, axis_name),
+        _infer_shard_spec(v, axis_name),
+    )
+
+    def impl(*args):
+        q_, k_, v_, rng_seed_, out_, lse_, ct_, *rest_ = args
+        # Split rest_ into mask/bias leaves
+        mask_leaves = rest_[:mask_num_leaves]
+        bias_leaves = rest_[mask_num_leaves : mask_num_leaves + bias_num_leaves]
+        mask_ = _unflatten_optional_pytree(mask_treedef, mask_leaves)
+        bias_ = _unflatten_optional_pytree(bias_treedef, bias_leaves)
+        res = (q_, k_, v_, rng_seed_, out_, lse_)
+        dq_ct, dk_ct, dv_ct, _, _, _ = _mha_backward(
+            sm_scale,
+            block_sizes,
+            backward_pass_impl,
+            num_warps,
+            num_stages,
+            grid,
+            interpret,
+            debug,
+            dropout_rate,
+            dropout_impl,
+            res,
+            ct_,
+            mask=mask_,
+            bias=bias_,
+        )
+        return dq_ct, dk_ct, dv_ct
+
+    dq_ct, dk_ct, dv_ct = shard_map(
+        impl,
+        mesh=mesh,
+        in_specs=in_specs,
+        out_specs=out_specs,
+    )(*all_args)
+
     grads = [None, None, None, None, None, None, None, dq_ct, dk_ct, dv_ct]
     grads.extend([None] * mask_num_leaves)
     grads.extend([None] * bias_num_leaves)

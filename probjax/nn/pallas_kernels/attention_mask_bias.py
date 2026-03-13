@@ -385,6 +385,45 @@ class ComposeMask(AttentionMask):
             )
         return (None, None)
 
+    def get_data_block_spec_backward_pass(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+        block_q_dkv: int | None = None,
+        block_kv_dkv: int | None = None,
+        block_q_dq: int | None = None,
+        block_kv_dq: int | None = None,
+    ):
+        if self.lhs.stateful and self.rhs.stateful:
+            raise ValueError(
+                "Cannot compose two stateful masks; ambiguous data requirements."
+            )
+        if self.lhs.stateful:
+            return self.lhs.get_data_block_spec_backward_pass(
+                q_len=q_len,
+                kv_len=kv_len,
+                block_q=block_q,
+                block_k=block_k,
+                block_q_dkv=block_q_dkv,
+                block_kv_dkv=block_kv_dkv,
+                block_q_dq=block_q_dq,
+                block_kv_dq=block_kv_dq,
+            )
+        if self.rhs.stateful:
+            return self.rhs.get_data_block_spec_backward_pass(
+                q_len=q_len,
+                kv_len=kv_len,
+                block_q=block_q,
+                block_k=block_k,
+                block_q_dkv=block_q_dkv,
+                block_kv_dkv=block_kv_dkv,
+                block_q_dq=block_q_dq,
+                block_kv_dq=block_kv_dq,
+            )
+        return (None, None)
+
     # PyTree: children are lhs/rhs masks; op is static aux.
     def tree_flatten(self):
         flat_arrays, tree = jax.tree_util.tree_flatten((self.lhs, self.rhs))
@@ -696,7 +735,7 @@ class PrefixLMMask(AttentionMask):
         del kv_len, block_q, block_k
         if getattr(self.prefix_lengths, "ndim", 0) == 0:
             return (None, None)
-        q_spec = pl.BlockSpec((None, q_len), lambda _, j, k: (j, 0))
+        q_spec = pl.BlockSpec((None, q_len, 1, 1), lambda _, j, k: (j, 0, 0, 0))
         return (q_spec, None)
 
     def get_data(
@@ -714,7 +753,26 @@ class PrefixLMMask(AttentionMask):
                 "PrefixLMMask.get_data requires q_seq_len for vector input"
             )
         p_bq = jnp.broadcast_to(p[:, None], (p.shape[0], q_seq_len))
+        # Reshape to 4D (B, T, 1, 1) for uniform shard_map specs.
+        p_bq = p_bq.reshape(p_bq.shape[0], p_bq.shape[1], 1, 1)
         return (p_bq, None)
+
+    def get_data_block_spec_backward_pass(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+        block_q_dkv: int | None = None,
+        block_kv_dkv: int | None = None,
+        block_q_dq: int | None = None,
+        block_kv_dq: int | None = None,
+    ):
+        # Backward grid is (batch, head, tile) -> i is batch.
+        if getattr(self.prefix_lengths, "ndim", 0) == 0:
+            return (None, None)
+        q_spec = pl.BlockSpec((None, q_len, 1, 1), lambda i, j, k: (i, 0, 0, 0))
+        return (q_spec, None)
 
     def tree_flatten(self):
         return ((self.prefix_lengths,), {})
@@ -761,17 +819,17 @@ class BlockDiagonalMask(AttentionMask):
         if self.query_block_ids is None:
             q_spec = None
         elif self.query_block_ids.ndim == 2:
-            q_spec = pl.BlockSpec((None, q_len), lambda _, j, k: (j, 0))
+            q_spec = pl.BlockSpec((None, q_len, 1, 1), lambda _, j, k: (j, 0, 0, 0))
         elif self.query_block_ids.ndim == 1:
-            q_spec = pl.BlockSpec((q_len,), lambda _, j, k: (0,))
+            q_spec = pl.BlockSpec((1, q_len, 1, 1), lambda _, j, k: (0, 0, 0, 0))
         else:
             q_spec = None
         if self.key_block_ids is None:
             return (q_spec, None)
         if self.key_block_ids.ndim == 2:
-            k_spec = pl.BlockSpec((None, kv_len), lambda _, j, k: (j, 0))
+            k_spec = pl.BlockSpec((None, kv_len, 1, 1), lambda _, j, k: (j, 0, 0, 0))
         elif self.key_block_ids.ndim == 1:
-            k_spec = pl.BlockSpec((kv_len,), lambda _, j, k: (0,))
+            k_spec = pl.BlockSpec((1, kv_len, 1, 1), lambda _, j, k: (0, 0, 0, 0))
         else:
             k_spec = None
         return (q_spec, k_spec)
@@ -783,7 +841,51 @@ class BlockDiagonalMask(AttentionMask):
         kv_seq_len: Optional[int] = None,
     ) -> tuple[Optional[Array], Optional[Array]]:
         del q_seq_len, kv_seq_len
-        return self.query_block_ids, self.key_block_ids
+        q_ids = self.query_block_ids
+        k_ids = self.key_block_ids
+        if q_ids is not None:
+            q_ids = jnp.asarray(q_ids)
+            if q_ids.ndim == 1:
+                q_ids = q_ids.reshape(1, -1, 1, 1)
+            elif q_ids.ndim == 2:
+                q_ids = q_ids.reshape(q_ids.shape[0], q_ids.shape[1], 1, 1)
+        if k_ids is not None:
+            k_ids = jnp.asarray(k_ids)
+            if k_ids.ndim == 1:
+                k_ids = k_ids.reshape(1, -1, 1, 1)
+            elif k_ids.ndim == 2:
+                k_ids = k_ids.reshape(k_ids.shape[0], k_ids.shape[1], 1, 1)
+        return q_ids, k_ids
+
+    def get_data_block_spec_backward_pass(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+        block_q_dkv: int | None = None,
+        block_kv_dkv: int | None = None,
+        block_q_dq: int | None = None,
+        block_kv_dq: int | None = None,
+    ):
+        # Backward grid is (batch, head, tile) -> i is batch.
+        if self.query_block_ids is None:
+            q_spec = None
+        elif self.query_block_ids.ndim == 2:
+            q_spec = pl.BlockSpec((None, q_len, 1, 1), lambda i, j, k: (i, 0, 0, 0))
+        elif self.query_block_ids.ndim == 1:
+            q_spec = pl.BlockSpec((1, q_len, 1, 1), lambda i, j, k: (0, 0, 0, 0))
+        else:
+            q_spec = None
+        if self.key_block_ids is None:
+            return (q_spec, None)
+        if self.key_block_ids.ndim == 2:
+            k_spec = pl.BlockSpec((None, kv_len, 1, 1), lambda i, j, k: (i, 0, 0, 0))
+        elif self.key_block_ids.ndim == 1:
+            k_spec = pl.BlockSpec((1, kv_len, 1, 1), lambda i, j, k: (0, 0, 0, 0))
+        else:
+            k_spec = None
+        return (q_spec, k_spec)
 
     def tree_flatten(self):
         return ((self.query_block_ids, self.key_block_ids), {})
@@ -840,7 +942,45 @@ class BlockDiagonalCausalMask(AttentionMask):
         kv_seq_len: Optional[int] = None,
     ) -> tuple[Optional[Array], Optional[Array]]:
         del q_seq_len, kv_seq_len
-        return self.query_block_ids, self.key_block_ids
+        q_ids = self.query_block_ids
+        k_ids = self.key_block_ids
+        if q_ids is not None:
+            q_ids = jnp.asarray(q_ids)
+            if q_ids.ndim == 1:
+                q_ids = q_ids.reshape(1, -1, 1, 1)
+            elif q_ids.ndim == 2:
+                q_ids = q_ids.reshape(q_ids.shape[0], q_ids.shape[1], 1, 1)
+        if k_ids is not None:
+            k_ids = jnp.asarray(k_ids)
+            if k_ids.ndim == 1:
+                k_ids = k_ids.reshape(1, -1, 1, 1)
+            elif k_ids.ndim == 2:
+                k_ids = k_ids.reshape(k_ids.shape[0], k_ids.shape[1], 1, 1)
+        return q_ids, k_ids
+
+    def get_data_block_spec_backward_pass(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+        block_q_dkv: int | None = None,
+        block_kv_dkv: int | None = None,
+        block_q_dq: int | None = None,
+        block_kv_dq: int | None = None,
+    ):
+        return BlockDiagonalMask(
+            self.query_block_ids, self.key_block_ids
+        ).get_data_block_spec_backward_pass(
+            q_len,
+            kv_len,
+            block_q,
+            block_k,
+            block_q_dkv,
+            block_kv_dkv,
+            block_q_dq,
+            block_kv_dq,
+        )
 
     def tree_flatten(self):
         return ((self.query_block_ids, self.key_block_ids), {})
@@ -931,7 +1071,12 @@ class KeyPaddingMask(AttentionMask):
         kl = seg_q if seg_q is not None else self.key_lengths
         if kl is None:
             raise ValueError("KeyPaddingMask could not resolve key lengths")
-        # lengths vector [B] or scalar
+        # kl is either a scalar (inside pallas kernel, one batch element) or
+        # a vector [B] / matrix [B,K] (dense evaluation path).
+        if jnp.ndim(kl) == 0:
+            # Scalar: simple broadcast comparison.
+            return k_idx < kl
+        # lengths vector [B] or bool mask [B, K]
         valid_k = k_idx[None, :] < kl[:, None]  # [B, K]
         return valid_k[: q_idx.shape[0], :]
 
@@ -952,10 +1097,11 @@ class KeyPaddingMask(AttentionMask):
         block_k: int | None = None,
     ):
         if self.key_lengths.ndim == 2:
-            q_spec = pl.BlockSpec((None, q_len), lambda _, j, k: (j, 0))
+            # Stored as (B,K) → 4D (B,K,1,1).  Page batch via None.
+            q_spec = pl.BlockSpec((None, q_len, 1, 1), lambda _, j, k: (j, 0, 0, 0))
         elif self.key_lengths.ndim == 1:
-            # 1D key_lengths is per-query-position; pass full vector, kernel slices.
-            q_spec = pl.BlockSpec((q_len,), lambda _, j, k: (0,))
+            # 1D key_lengths (T,) → 4D (1,T,1,1). Per-position data, shared across batches.
+            q_spec = pl.BlockSpec((1, q_len, 1, 1), lambda _, j, k: (0, 0, 0, 0))
         else:
             q_spec = None
         return q_spec, None
@@ -967,8 +1113,33 @@ class KeyPaddingMask(AttentionMask):
         kv_seq_len: Optional[int] = None,
     ) -> tuple[None, Optional[Array]]:
         del q_seq_len, kv_seq_len
-        kl = self.key_lengths
+        kl = jnp.asarray(self.key_lengths)
+        if kl.ndim == 1:
+            kl = kl.reshape(1, -1, 1, 1)
+        elif kl.ndim == 2:
+            kl = kl.reshape(kl.shape[0], kl.shape[1], 1, 1)
         return kl, None
+
+    def get_data_block_spec_backward_pass(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+        block_q_dkv: int | None = None,
+        block_kv_dkv: int | None = None,
+        block_q_dq: int | None = None,
+        block_kv_dq: int | None = None,
+    ):
+        # Backward grid is (batch, head, tile) -> i is batch.
+        if self.key_lengths.ndim == 2:
+            q_spec = pl.BlockSpec((None, q_len, 1, 1), lambda i, j, k: (i, 0, 0, 0))
+        elif self.key_lengths.ndim == 1:
+            # 1D key_lengths (T,) → 4D (1,T,1,1). Shared, no batch paging.
+            q_spec = pl.BlockSpec((1, q_len, 1, 1), lambda i, j, k: (0, 0, 0, 0))
+        else:
+            q_spec = None
+        return q_spec, None
 
     def block_mask(
         self,
@@ -1098,12 +1269,10 @@ class SeqLenMask(AttentionMask):
         block_q: int | None = None,
         block_k: int | None = None,
     ):
-        # Data is (B,) (possibly padded to next power-of-2 by flex_attention).
-        # Select one element per batch.  The kernel helper _load_mask_data
-        # detects the (1,) ref and extracts a scalar for the mask __call__.
+        # Data is (B,1,1,1).  Select one element per batch.
         # Forward grid is (q_tile, batch, head) -> j is batch.
-        q_spec = pl.BlockSpec((1,), lambda _, j, k_: (j,))
-        k_spec = pl.BlockSpec((1,), lambda _, j, k_: (j,))
+        q_spec = pl.BlockSpec((1, 1, 1, 1), lambda _, j, k_: (j, 0, 0, 0))
+        k_spec = pl.BlockSpec((1, 1, 1, 1), lambda _, j, k_: (j, 0, 0, 0))
         return q_spec, k_spec
 
     def get_data_block_spec_backward_pass(
@@ -1117,10 +1286,10 @@ class SeqLenMask(AttentionMask):
         block_q_dq: int | None = None,
         block_kv_dq: int | None = None,
     ) -> tuple[None, None]:
-        # Data is (B,) (possibly padded).  Select one element per batch.
+        # Data is (B,1,1,1).  Select one element per batch.
         # Backward grid is (batch, head, tile) -> i is batch.
-        q_spec = pl.BlockSpec((1,), lambda i, j, k_: (i,))
-        k_spec = pl.BlockSpec((1,), lambda i, j, k_: (i,))
+        q_spec = pl.BlockSpec((1, 1, 1, 1), lambda i, j, k_: (i, 0, 0, 0))
+        k_spec = pl.BlockSpec((1, 1, 1, 1), lambda i, j, k_: (i, 0, 0, 0))
         return q_spec, k_spec
 
     def get_data(
@@ -1130,8 +1299,8 @@ class SeqLenMask(AttentionMask):
         kv_seq_len: Optional[int] = None,
     ) -> tuple[Optional[Array], Optional[Array]]:
         del q_seq_len, kv_seq_len
-        # Return the raw (B,) lengths; the scalar BlockSpec delivers one per batch.
-        L = jnp.asarray(self.seq_lengths).reshape(-1)
+        # Return (B,1,1,1) lengths for uniform 4D sharding.
+        L = jnp.asarray(self.seq_lengths).reshape(-1, 1, 1, 1)
         return L, L
 
     def block_mask(
@@ -1236,9 +1405,9 @@ class KVLenMask(AttentionMask):
         block_q: int | None = None,
         block_k: int | None = None,
     ):
-        # Data is (B,) (possibly padded). Select one element per batch.
+        # Data is (B,1,1,1). Select one element per batch.
         # Forward grid is (q_tile, batch, head) -> j is batch.
-        q_spec = pl.BlockSpec((1,), lambda _, j, k_: (j,))
+        q_spec = pl.BlockSpec((1, 1, 1, 1), lambda _, j, k_: (j, 0, 0, 0))
         return q_spec, None
 
     def get_data_block_spec_backward_pass(
@@ -1252,9 +1421,9 @@ class KVLenMask(AttentionMask):
         block_q_dq: int | None = None,
         block_kv_dq: int | None = None,
     ) -> tuple[None, None]:
-        # Data is (B,) (possibly padded). Select one element per batch.
+        # Data is (B,1,1,1). Select one element per batch.
         # Backward grid is (batch, head, tile) -> i is batch.
-        q_spec = pl.BlockSpec((1,), lambda i, j, k_: (i,))
+        q_spec = pl.BlockSpec((1, 1, 1, 1), lambda i, j, k_: (i, 0, 0, 0))
         return q_spec, None
 
     def get_data(
@@ -1264,7 +1433,7 @@ class KVLenMask(AttentionMask):
         kv_seq_len: Optional[int] = None,
     ) -> tuple[Optional[Array], Optional[Array]]:
         del q_seq_len, kv_seq_len
-        L = jnp.asarray(self.kv_lengths).reshape(-1)
+        L = jnp.asarray(self.kv_lengths).reshape(-1, 1, 1, 1)
         return L, None
 
     def block_mask(
@@ -1317,19 +1486,19 @@ class SameSegmentMask(AttentionMask):
         if self.query_segment_ids is None:
             q_spec = None
         elif self.query_segment_ids.ndim == 2:
-            q_spec = pl.BlockSpec((None, q_len), lambda _, j, k: (j, 0))
+            # Stored as (B,T) → 4D (B,T,1,1).  Page batch via None.
+            q_spec = pl.BlockSpec((None, q_len, 1, 1), lambda _, j, k: (j, 0, 0, 0))
         elif self.query_segment_ids.ndim == 1:
-            # Shared 1D vector (no batch axis): always index from 0.
-            q_spec = pl.BlockSpec((q_len,), lambda _, j, k: (0,))
+            # Shared 1D (T,) → 4D (1,T,1,1).  Always index from 0.
+            q_spec = pl.BlockSpec((1, q_len, 1, 1), lambda _, j, k: (0, 0, 0, 0))
         else:
             raise ValueError()
         if self.key_segment_ids is None:
             return (q_spec, None)
         elif self.key_segment_ids.ndim == 2:
-            k_spec = pl.BlockSpec((None, kv_len), lambda _, j, k: (j, 0))
+            k_spec = pl.BlockSpec((None, kv_len, 1, 1), lambda _, j, k: (j, 0, 0, 0))
         elif self.key_segment_ids.ndim == 1:
-            # Shared 1D vector (no batch axis): always index from 0.
-            k_spec = pl.BlockSpec((kv_len,), lambda _, j, k: (0,))
+            k_spec = pl.BlockSpec((1, kv_len, 1, 1), lambda _, j, k: (0, 0, 0, 0))
         else:
             k_spec = None
         return (q_spec, k_spec)
@@ -1341,7 +1510,51 @@ class SameSegmentMask(AttentionMask):
         kv_seq_len: Optional[int] = None,
     ) -> tuple[Optional[Array], Optional[Array]]:
         del q_seq_len, kv_seq_len
-        return self.query_segment_ids, self.key_segment_ids
+        q_ids = self.query_segment_ids
+        k_ids = self.key_segment_ids
+        if q_ids is not None:
+            q_ids = jnp.asarray(q_ids)
+            if q_ids.ndim == 1:
+                q_ids = q_ids.reshape(1, -1, 1, 1)
+            elif q_ids.ndim == 2:
+                q_ids = q_ids.reshape(q_ids.shape[0], q_ids.shape[1], 1, 1)
+        if k_ids is not None:
+            k_ids = jnp.asarray(k_ids)
+            if k_ids.ndim == 1:
+                k_ids = k_ids.reshape(1, -1, 1, 1)
+            elif k_ids.ndim == 2:
+                k_ids = k_ids.reshape(k_ids.shape[0], k_ids.shape[1], 1, 1)
+        return q_ids, k_ids
+
+    def get_data_block_spec_backward_pass(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+        block_q_dkv: int | None = None,
+        block_kv_dkv: int | None = None,
+        block_q_dq: int | None = None,
+        block_kv_dq: int | None = None,
+    ):
+        # Backward grid is (batch, head, tile) -> i is batch.
+        if self.query_segment_ids is None:
+            q_spec = None
+        elif self.query_segment_ids.ndim == 2:
+            q_spec = pl.BlockSpec((None, q_len, 1, 1), lambda i, j, k: (i, 0, 0, 0))
+        elif self.query_segment_ids.ndim == 1:
+            q_spec = pl.BlockSpec((1, q_len, 1, 1), lambda i, j, k: (0, 0, 0, 0))
+        else:
+            raise ValueError()
+        if self.key_segment_ids is None:
+            return (q_spec, None)
+        elif self.key_segment_ids.ndim == 2:
+            k_spec = pl.BlockSpec((None, kv_len, 1, 1), lambda i, j, k: (i, 0, 0, 0))
+        elif self.key_segment_ids.ndim == 1:
+            k_spec = pl.BlockSpec((1, kv_len, 1, 1), lambda i, j, k: (0, 0, 0, 0))
+        else:
+            k_spec = None
+        return (q_spec, k_spec)
 
     def block_mask(
         self,
@@ -1407,10 +1620,10 @@ class MarginalizationMask(AttentionMask):
         if self.mask is None:
             q_spec = None
         elif self.mask.ndim == 2:
-            q_spec = pl.BlockSpec((None, q_len), lambda _, j, k: (j, 0))
+            q_spec = pl.BlockSpec((None, q_len, 1, 1), lambda _, j, k: (j, 0, 0, 0))
         elif self.mask.ndim == 1:
             # Shared 1D vector (no batch axis): always index from 0.
-            q_spec = pl.BlockSpec((q_len,), lambda _, j, k: (0,))
+            q_spec = pl.BlockSpec((1, q_len, 1, 1), lambda _, j, k: (0, 0, 0, 0))
         else:
             raise ValueError()
         return q_spec, None
@@ -1422,7 +1635,36 @@ class MarginalizationMask(AttentionMask):
         kv_seq_len: Optional[int] = None,
     ) -> tuple[Optional[Array], Optional[Array]]:
         del q_seq_len, kv_seq_len
-        return self.mask, None
+        m = self.mask
+        if m is not None:
+            m = jnp.asarray(m)
+            if m.ndim == 1:
+                m = m.reshape(1, -1, 1, 1)
+            elif m.ndim == 2:
+                m = m.reshape(m.shape[0], m.shape[1], 1, 1)
+        return m, None
+
+    def get_data_block_spec_backward_pass(
+        self,
+        q_len: int,
+        kv_len: int | None = None,
+        block_q: int | None = None,
+        block_k: int | None = None,
+        block_q_dkv: int | None = None,
+        block_kv_dkv: int | None = None,
+        block_q_dq: int | None = None,
+        block_kv_dq: int | None = None,
+    ):
+        # Backward grid is (batch, head, tile) -> i is batch.
+        if self.mask is None:
+            q_spec = None
+        elif self.mask.ndim == 2:
+            q_spec = pl.BlockSpec((None, q_len, 1, 1), lambda i, j, k: (i, 0, 0, 0))
+        elif self.mask.ndim == 1:
+            q_spec = pl.BlockSpec((1, q_len, 1, 1), lambda i, j, k: (0, 0, 0, 0))
+        else:
+            raise ValueError()
+        return q_spec, None
 
     def block_mask(
         self,
