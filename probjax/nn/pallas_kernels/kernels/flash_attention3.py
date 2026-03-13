@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import math
 from typing import Any
 
@@ -12,6 +13,7 @@ except Exception:  # pragma: no cover - depends on local jax build
     cuda_versions = None
 
 try:
+    from jax.experimental.pallas.ops.gpu import attention_mgpu as _attention_mgpu
     from jax.experimental.pallas.ops.gpu.attention_mgpu import (
         TuningConfig,
     )
@@ -24,10 +26,23 @@ try:
 
     _FLASH3_IMPORT_ERROR = None
 except Exception as exc:  # pragma: no cover - depends on local jax build
+    _attention_mgpu = None
     TuningConfig = Any  # type: ignore[assignment]
     _attention_impl = None
     _attention_with_pipeline_emitter_impl = None
     _FLASH3_IMPORT_ERROR = exc
+
+
+_attention_forward_impl = (
+    getattr(_attention_mgpu, "_attention_forward", None)
+    if _attention_mgpu is not None
+    else None
+)
+_attention_backward_impl = (
+    getattr(_attention_mgpu, "_attention_bwd", None)
+    if _attention_mgpu is not None
+    else None
+)
 
 
 def _gpu_supports_mosaic() -> bool:
@@ -85,9 +100,245 @@ def _ensure_flash3_supported(*, causal: bool, use_pipeline_emitter: bool) -> Non
         )
 
 
+def _use_custom_partitioning() -> bool:
+    from jax._src import mesh as mesh_lib
+
+    mesh = mesh_lib.get_concrete_mesh()
+    return not mesh.empty and mesh.size > 1
+
+
+def _validate_flash_sharding(sharding, name: str) -> None:
+    spec = getattr(sharding, "spec", None)
+    if spec is None or len(spec) == 0:
+        return
+
+    for dim_idx, axis in enumerate(spec):
+        if axis is None:
+            continue
+        if dim_idx == 1:
+            raise ValueError(
+                f"flash_attention3 does not support sharding on the sequence "
+                f"dimension (dim 1) of `{name}`. Got PartitionSpec{tuple(spec)} "
+                f"which shards dim 1 over mesh axis '{axis}'."
+            )
+        if dim_idx == 3:
+            raise ValueError(
+                f"flash_attention3 does not support sharding on the head_dim "
+                f"dimension (dim 3) of `{name}`. Got PartitionSpec{tuple(spec)} "
+                f"which shards dim 3 over mesh axis '{axis}'."
+            )
+
+
+def _result_sharding_rule(*, include_lse: bool) -> tuple[str, tuple[str, ...]]:
+    rule = (
+        "batch seq heads head_dim, "
+        "batch seq heads head_dim, "
+        "batch seq heads head_dim -> "
+        "batch seq heads head_dim"
+    )
+    if include_lse:
+        rule += ", batch heads seq"
+    return rule, ("seq", "head_dim")
+
+
+def _run_flash_forward_raw(
+    q,
+    k,
+    v,
+    *,
+    config: TuningConfig,
+    save_residuals: bool,
+    use_pipeline_emitter: bool,
+):
+    if use_pipeline_emitter:
+        result = _attention_with_pipeline_emitter_impl(
+            q,
+            k,
+            v,
+            config=config,
+            save_residuals=save_residuals,
+        )
+    elif _attention_forward_impl is not None:
+        result = _attention_forward_impl(q, k, v, config, save_residuals)
+    else:
+        result = _attention_impl(q, k, v, config=config, save_residuals=save_residuals)
+
+    if save_residuals:
+        out, (lse,) = result
+        return out, lse
+    return result
+
+
+def _run_flash_backward_raw(
+    do,
+    q,
+    k,
+    v,
+    out,
+    lse,
+    *,
+    config: TuningConfig,
+):
+    if _attention_backward_impl is None:
+        _, vjp_fun = jax.vjp(
+            lambda q, k, v: _attention_impl(
+                q,
+                k,
+                v,
+                config=config,
+                save_residuals=False,
+            ),
+            q,
+            k,
+            v,
+        )
+        return vjp_fun(do)
+    return _attention_backward_impl(config, False, (q, k, v, out, lse), do)
+
+
+@functools.lru_cache(maxsize=None)
+def _make_cp_flash_forward(
+    config: TuningConfig,
+    save_residuals: bool,
+    use_pipeline_emitter: bool,
+):
+    from jax.experimental.custom_partitioning import custom_partitioning
+
+    rule, repl = _result_sharding_rule(include_lse=save_residuals)
+
+    def _call_raw(q, k, v):
+        return _run_flash_forward_raw(
+            q,
+            k,
+            v,
+            config=config,
+            save_residuals=save_residuals,
+            use_pipeline_emitter=use_pipeline_emitter,
+        )
+
+    @custom_partitioning
+    def _fwd(q, k, v):
+        return _call_raw(q, k, v)
+
+    def _partition(mesh, arg_shapes, result_shape):
+        for shape, name in zip(jax.tree.leaves(arg_shapes), ("q", "k", "v")):
+            _validate_flash_sharding(shape.sharding, name)
+        result_shardings = jax.tree.map(lambda s: s.sharding, result_shape)
+        arg_shardings = jax.tree.map(lambda s: s.sharding, arg_shapes)
+
+        def lower_fn(q, k, v):
+            return _call_raw(q, k, v)
+
+        return mesh, lower_fn, result_shardings, arg_shardings
+
+    _fwd.def_partition(
+        partition=_partition,
+        sharding_rule=rule,
+        need_replication_factors=repl,
+    )
+    return _fwd
+
+
+@functools.lru_cache(maxsize=None)
+def _make_cp_flash_backward(config: TuningConfig):
+    from jax.experimental.custom_partitioning import custom_partitioning
+
+    @custom_partitioning
+    def _bwd(do, q, k, v, out, lse):
+        return _run_flash_backward_raw(do, q, k, v, out, lse, config=config)
+
+    def _partition(mesh, arg_shapes, result_shape):
+        for shape, name in zip(jax.tree.leaves(arg_shapes)[1:4], ("q", "k", "v")):
+            _validate_flash_sharding(shape.sharding, name)
+        result_shardings = jax.tree.map(lambda s: s.sharding, result_shape)
+        arg_shardings = jax.tree.map(lambda s: s.sharding, arg_shapes)
+
+        def lower_fn(do, q, k, v, out, lse):
+            return _run_flash_backward_raw(do, q, k, v, out, lse, config=config)
+
+        return mesh, lower_fn, result_shardings, arg_shardings
+
+    _bwd.def_partition(
+        partition=_partition,
+        sharding_rule=(
+            "batch seq heads head_dim, "
+            "batch seq heads head_dim, "
+            "batch seq heads head_dim, "
+            "batch seq heads head_dim, "
+            "batch seq heads head_dim, "
+            "batch heads seq -> "
+            "batch seq heads head_dim, "
+            "batch seq heads head_dim, "
+            "batch seq heads head_dim"
+        ),
+        need_replication_factors=("seq", "head_dim"),
+    )
+    return _bwd
+
+
+@functools.lru_cache(maxsize=None)
+def _make_flash_attention(config: TuningConfig):
+    @jax.custom_vjp
+    def _attn(q, k, v):
+        if _use_custom_partitioning():
+            return _make_cp_flash_forward(
+                config,
+                False,
+                False,
+            )(q, k, v)
+        return _run_flash_forward_raw(
+            q,
+            k,
+            v,
+            config=config,
+            save_residuals=False,
+            use_pipeline_emitter=False,
+        )
+
+    def _attn_fwd(q, k, v):
+        if _use_custom_partitioning():
+            out, lse = _make_cp_flash_forward(
+                config,
+                True,
+                False,
+            )(q, k, v)
+        else:
+            out, lse = _run_flash_forward_raw(
+                q,
+                k,
+                v,
+                config=config,
+                save_residuals=True,
+                use_pipeline_emitter=False,
+            )
+        return out, (q, k, v, out, lse)
+
+    def _attn_bwd(res, do):
+        q, k, v, out, lse = res
+        if _use_custom_partitioning():
+            return _make_cp_flash_backward(config)(do, q, k, v, out, lse)
+        return _run_flash_backward_raw(do, q, k, v, out, lse, config=config)
+
+    _attn.defvjp(_attn_fwd, _attn_bwd)
+    return _attn
+
+
 def attention(q, k, v, config: TuningConfig, save_residuals: bool = False):
     _ensure_flash3_supported(causal=config.causal, use_pipeline_emitter=False)
-    return _attention_impl(q, k, v, config=config, save_residuals=save_residuals)
+    if save_residuals:
+        if _use_custom_partitioning():
+            out, lse = _make_cp_flash_forward(config, True, False)(q, k, v)
+        else:
+            out, lse = _run_flash_forward_raw(
+                q,
+                k,
+                v,
+                config=config,
+                save_residuals=True,
+                use_pipeline_emitter=False,
+            )
+        return out, (lse,)
+    return _make_flash_attention(config)(q, k, v)
 
 
 def attention_with_pipeline_emitter(
@@ -98,13 +349,21 @@ def attention_with_pipeline_emitter(
     save_residuals: bool = False,
 ):
     _ensure_flash3_supported(causal=config.causal, use_pipeline_emitter=True)
-    return _attention_with_pipeline_emitter_impl(
-        q,
-        k,
-        v,
-        config=config,
-        save_residuals=save_residuals,
-    )
+    if _use_custom_partitioning():
+        result = _make_cp_flash_forward(config, save_residuals, True)(q, k, v)
+    else:
+        result = _run_flash_forward_raw(
+            q,
+            k,
+            v,
+            config=config,
+            save_residuals=save_residuals,
+            use_pipeline_emitter=True,
+        )
+    if save_residuals:
+        out, lse = result
+        return out, (lse,)
+    return result
 
 
 def _validate_no_unsupported_sharding(arr: jax.Array, name: str) -> None:
@@ -115,32 +374,15 @@ def _validate_no_unsupported_sharding(arr: jax.Array, name: str) -> None:
     NamedSharding that would cause XLA to insert all-gathers on unsupported axes.
     Batch (dim 0) and heads (dim 2) sharding are allowed (JAX handles them).
     """
-    import jax._src.core as core
-
     try:
-        aval = core.get_aval(arr)
-        sharding = getattr(aval, "sharding", None)
-        if sharding is None:
+        sharding = getattr(arr, "sharding", None)
+        if sharding is not None:
+            _validate_flash_sharding(sharding, name)
             return
-        spec = getattr(sharding, "spec", None)
-        if spec is None or len(spec) == 0:
-            return
+        import jax._src.core as core
 
-        for dim_idx, axis in enumerate(spec):
-            if axis is None:
-                continue
-            if dim_idx == 1:
-                raise ValueError(
-                    f"flash_attention3 does not support sharding on the sequence "
-                    f"dimension (dim 1) of `{name}`. Got PartitionSpec{tuple(spec)} "
-                    f"which shards dim 1 over mesh axis '{axis}'."
-                )
-            if dim_idx == 3:
-                raise ValueError(
-                    f"flash_attention3 does not support sharding on the head_dim "
-                    f"dimension (dim 3) of `{name}`. Got PartitionSpec{tuple(spec)} "
-                    f"which shards dim 3 over mesh axis '{axis}'."
-                )
+        aval = core.get_aval(arr)
+        _validate_flash_sharding(getattr(aval, "sharding", None), name)
     except ValueError:
         raise  # Re-raise our own validation errors.
     except Exception:

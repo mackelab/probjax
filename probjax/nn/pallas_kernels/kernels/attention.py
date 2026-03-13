@@ -24,12 +24,10 @@ import jax
 import jax.numpy as jnp
 from jax._src import ad_util
 from jax import lax
-from jax.extend.core import Primitive
 from jax.experimental import pallas as pl
 from jax._src.pallas import primitives as pallas_primitives
 from jax.experimental.pallas import triton as plgpu
-from jax.interpreters import ad, batching, mlir
-from jax.sharding import PartitionSpec as P
+from jax.interpreters import ad
 
 from ..attention_mask_bias import (
     AttentionBias,
@@ -1714,6 +1712,14 @@ def _extract_fwd_data(
     return arrays, specs
 
 
+def _resolve_attention_num_stages(num_stages: int, *, has_dense_bias: bool) -> int:
+    """Clamp pipeline depth for dense-bias kernels to stay within shared memory."""
+
+    if has_dense_bias:
+        return 1
+    return num_stages
+
+
 def _mha_impl_raw(
     q: jax.Array,
     k: jax.Array,
@@ -1753,6 +1759,9 @@ def _mha_impl_raw(
     block_d = pl.next_power_of_2(head_dim)
     grid_ = grid or (pl.cdiv(q_seq_len, block_q), batch_size, num_heads)
     num_warps_ = num_warps or (4 if block_d <= 64 else 8)
+    effective_num_stages = _resolve_attention_num_stages(
+        num_stages, has_dense_bias=b_data is not None
+    )
 
     kernel = functools.partial(
         mha_forward_kernel,
@@ -1829,7 +1838,7 @@ def _mha_impl_raw(
         in_specs=in_specs,
         out_specs=out_specs,
         compiler_params=plgpu.CompilerParams(
-            num_warps=num_warps_, num_stages=num_stages
+            num_warps=num_warps_, num_stages=effective_num_stages
         ),
         out_shape=out_shape,
         debug=debug,
@@ -1852,80 +1861,6 @@ def _mha_impl_raw(
         out, lse = pallas_out
         return out, (q, k, v, rng_seed, out, lse)
     return pallas_out
-
-
-def _mha_impl(
-    q: jax.Array,
-    k: jax.Array,
-    v: jax.Array,
-    mask: AttentionMask | None,
-    bias: AttentionBias | None,
-    rng: jax.Array | None,
-    rng_seed: jax.Array,
-    sm_scale: float,
-    block_sizes: BlockSizes,
-    backward_pass_impl: str,
-    num_warps: int | None,
-    num_stages: int,
-    grid: Any,
-    interpret: bool,
-    debug: bool,
-    dropout_rate: float,
-    dropout_impl: str,
-    *,
-    output_activations: bool = False,
-):
-    """Shared implementation for MHA forward.
-
-    If output_activations=True returns (out, (q,k,v,rng_seed,out,lse)).
-    Otherwise returns out only.
-    """
-    del backward_pass_impl  # Only one impl at the moment.
-    batch_size, q_seq_len, num_heads, head_dim = q.shape
-    kv_seq_len = k.shape[1]
-    block_q = min(block_sizes.block_q, q_seq_len)
-    block_k = min(block_sizes.block_k, kv_seq_len)
-
-    arrays, specs = _extract_fwd_data(
-        mask,
-        bias,
-        rng,
-        batch_size=batch_size,
-        q_seq_len=q_seq_len,
-        kv_seq_len=kv_seq_len,
-        num_heads=num_heads,
-        block_q=block_q,
-        block_k=block_k,
-        dropout_rate=dropout_rate,
-        dropout_impl=dropout_impl,
-    )
-
-    return _mha_impl_raw(
-        q,
-        k,
-        v,
-        rng_seed,
-        arrays["b_data"],
-        arrays["q_id"],
-        arrays["k_id"],
-        arrays["dropout_mask"],
-        arrays["index_offset"],
-        arrays["index_offset_size"],
-        mask_fn=specs["mask_fn"],
-        bias_fn=specs["bias_fn"],
-        b_spec=specs["b_spec"],
-        q_id_spec=specs["q_id_spec"],
-        k_id_spec=specs["k_id_spec"],
-        sm_scale=sm_scale,
-        block_sizes=block_sizes,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        grid=grid,
-        interpret=interpret,
-        debug=debug,
-        dropout_rate=dropout_rate,
-        output_activations=output_activations,
-    )
 
 
 def _mha_impl_jvp_from_lse_raw(
@@ -1970,6 +1905,9 @@ def _mha_impl_jvp_from_lse_raw(
     block_d = pl.next_power_of_2(head_dim)
     grid_ = grid or (pl.cdiv(q_seq_len, block_q), batch_size, num_heads)
     num_warps_ = num_warps or (4 if block_d <= 64 else 8)
+    effective_num_stages = _resolve_attention_num_stages(
+        num_stages, has_dense_bias=b_data is not None
+    )
 
     kernel = functools.partial(
         mha_jvp_from_lse_kernel,
@@ -2038,7 +1976,7 @@ def _mha_impl_jvp_from_lse_raw(
         in_specs=in_specs,
         out_specs=out_specs,
         compiler_params=plgpu.CompilerParams(
-            num_warps=num_warps_, num_stages=num_stages
+            num_warps=num_warps_, num_stages=effective_num_stages
         ),
         out_shape=out_shape,
         debug=debug,
@@ -2059,139 +1997,6 @@ def _mha_impl_jvp_from_lse_raw(
         lse,
         index_offset,
         index_offset_size,
-    )
-
-
-def _mha_impl_jvp_from_lse(
-    q: jax.Array,
-    k: jax.Array,
-    v: jax.Array,
-    dq: jax.Array,
-    dk: jax.Array,
-    dv: jax.Array,
-    lse: jax.Array,
-    mask: AttentionMask | None,
-    bias: AttentionBias | None,
-    rng: jax.Array | None,
-    rng_seed: jax.Array,
-    sm_scale: float,
-    block_sizes: BlockSizes,
-    backward_pass_impl: str,
-    num_warps: int | None,
-    num_stages: int,
-    grid: Any,
-    interpret: bool,
-    debug: bool,
-    dropout_rate: float,
-    dropout_impl: str,
-):
-    """JVP using precomputed lse (from forward)."""
-    del backward_pass_impl  # Only one impl at the moment.
-    batch_size, q_seq_len, num_heads, head_dim = q.shape
-    kv_seq_len = k.shape[1]
-    block_q = min(block_sizes.block_q, q_seq_len)
-    block_k = min(block_sizes.block_k, kv_seq_len)
-    block_d = pl.next_power_of_2(head_dim)
-    grid_ = grid or (pl.cdiv(q_seq_len, block_q), batch_size, num_heads)
-    num_warps_ = num_warps or (4 if block_d <= 64 else 8)
-
-    # Fast path: no mask/bias/dropout → simple JVP kernel
-    fast_jvp = mask is None and bias is None and dropout_rate == 0.0
-    if fast_jvp:
-        kernel = functools.partial(
-            mha_jvp_simple_kernel,
-            sm_scale=sm_scale,
-            head_dim=head_dim,
-            block_q=block_q,
-            block_k=block_k,
-            block_d=block_d,
-        )
-        in_specs = [
-            pl.BlockSpec(
-                (None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)
-            ),
-            pl.BlockSpec(
-                (None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)
-            ),
-            pl.BlockSpec(
-                (None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)
-            ),
-            pl.BlockSpec(
-                (None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)
-            ),
-            pl.BlockSpec(
-                (None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)
-            ),
-            pl.BlockSpec(
-                (None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)
-            ),
-            pl.BlockSpec((None, None, block_q), lambda i, j, k_: (j, k_, i)),
-        ]
-
-        out_shape = jax.ShapeDtypeStruct(shape=q.shape, dtype=q.dtype)
-        out_specs = pl.BlockSpec(
-            (None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)
-        )
-
-        return pl.pallas_call(
-            kernel,
-            grid=grid_,
-            in_specs=in_specs,
-            out_specs=out_specs,
-            compiler_params=plgpu.CompilerParams(
-                num_warps=num_warps_, num_stages=num_stages
-            ),
-            out_shape=out_shape,
-            debug=debug,
-            interpret=interpret,
-            name="mha_jvp_simple",
-        )(q, k, v, dq, dk, dv, lse)
-
-    # Slow path: extract arrays from mask/bias, delegate to raw
-    arrays, specs = _extract_fwd_data(
-        mask,
-        bias,
-        rng,
-        batch_size=batch_size,
-        q_seq_len=q_seq_len,
-        kv_seq_len=kv_seq_len,
-        num_heads=num_heads,
-        block_q=block_q,
-        block_k=block_k,
-        dropout_rate=dropout_rate,
-        dropout_impl=dropout_impl,
-    )
-    bias_fn_grad = bias.grad if (bias is not None) else None
-
-    return _mha_impl_jvp_from_lse_raw(
-        q,
-        k,
-        v,
-        dq,
-        dk,
-        dv,
-        lse,
-        rng_seed,
-        arrays["b_data"],
-        arrays["q_id"],
-        arrays["k_id"],
-        arrays["dropout_mask"],
-        arrays["index_offset"],
-        arrays["index_offset_size"],
-        mask_fn=specs["mask_fn"],
-        bias_fn=specs["bias_fn"],
-        bias_fn_grad=bias_fn_grad,
-        b_spec=specs["b_spec"],
-        q_id_spec=specs["q_id_spec"],
-        k_id_spec=specs["k_id_spec"],
-        sm_scale=sm_scale,
-        block_sizes=block_sizes,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        grid=grid,
-        interpret=interpret,
-        debug=debug,
-        dropout_rate=dropout_rate,
     )
 
 
@@ -2298,6 +2103,9 @@ def _mha_impl_fused_jvp(
         )
 
     b_data = bias.get_data() if bias is not None else None
+    effective_num_stages = _resolve_attention_num_stages(
+        num_stages, has_dense_bias=b_data is not None
+    )
 
     if mask is not None:
         q_id, k_id = mask.get_data(q_seq_len=q_seq_len, kv_seq_len=kv_seq_len)
@@ -2399,7 +2207,7 @@ def _mha_impl_fused_jvp(
         in_specs=in_specs,
         out_specs=out_specs,
         compiler_params=plgpu.CompilerParams(
-            num_warps=num_warps_, num_stages=num_stages
+            num_warps=num_warps_, num_stages=effective_num_stages
         ),
         out_shape=out_shape,
         debug=debug,
@@ -2435,147 +2243,6 @@ def _unflatten_optional_pytree(treedef, leaves):
     if treedef is None:
         return None
     return jax.tree_util.tree_unflatten(treedef, leaves)
-
-
-def _split_mha_operands(args, *, mask_num_leaves: int, bias_num_leaves: int):
-    q, k, v, rng, rng_seed, *rest = args
-    mask_leaves = rest[:mask_num_leaves]
-    bias_leaves = rest[mask_num_leaves : mask_num_leaves + bias_num_leaves]
-    return q, k, v, rng, rng_seed, mask_leaves, bias_leaves
-
-
-def _mha_reference(
-    q,
-    k,
-    v,
-    *,
-    mask: AttentionMask | jax.Array | None,
-    bias: AttentionBias | jax.Array | None,
-    rng: jax.Array | None,
-    sm_scale: float,
-    dropout_rate: float,
-):
-    batch_size, q_len, num_heads, _ = q.shape
-    kv_len = k.shape[1]
-
-    scores = jnp.einsum("bqhd,bkhd->bhqk", q, k) * sm_scale
-
-    if mask is not None:
-        if isinstance(mask, AttentionMask):
-            if getattr(mask, "stateful", False):
-                seg_q, seg_k = mask.get_data(q_seq_len=q_len, kv_seq_len=kv_len)
-                if seg_q is not None and getattr(seg_q, "ndim", 0) >= 2:
-                    seg_q = seg_q[:batch_size]
-                if seg_k is not None and getattr(seg_k, "ndim", 0) >= 2:
-                    seg_k = seg_k[:batch_size]
-                dense_mask = mask.dense(
-                    q_len,
-                    kv_len,
-                    batch_size=batch_size,
-                    num_heads=num_heads,
-                    seg_q=seg_q,
-                    seg_k=seg_k,
-                )
-            else:
-                dense_mask = mask.dense(
-                    q_len, kv_len, batch_size=batch_size, num_heads=num_heads
-                )
-        else:
-            dense_mask = mask
-        scores = jnp.where(dense_mask, scores, DEFAULT_MASK_VALUE)
-
-    if bias is not None:
-        if isinstance(bias, AttentionBias):
-            dense_bias = bias.dense(
-                q_len, kv_len, batch_size=batch_size, num_heads=num_heads
-            )
-        else:
-            dense_bias = bias
-        scores = scores + dense_bias
-
-    weights = jax.nn.softmax(scores, axis=-1)
-
-    if dropout_rate > 0:
-        if rng is None:
-            raise ValueError("dropout_rate > 0 requires a non-None rng.")
-        dropout_mask = get_dropout_mask(
-            (batch_size, num_heads, q_len, kv_len), prng_key=rng, rate=dropout_rate
-        )
-        weights = jnp.where(dropout_mask, 0, weights / (1 - dropout_rate))
-
-    return jnp.einsum("bhqk,bkhd->bqhd", weights, v)
-
-
-_mha_p = Primitive("mha")
-_mha_lin_p = Primitive("mha_lin")
-
-
-def _mha_bind(
-    q,
-    k,
-    v,
-    mask: AttentionMask | None = None,
-    bias: AttentionBias | None = None,
-    rng: jax.Array | None = None,
-    sm_scale: float = 1.0,
-    block_sizes: BlockSizes = BlockSizes.get_default(),
-    backward_pass_impl: str = "triton_fused",
-    num_warps: int | None = None,
-    num_stages: int = 2,
-    grid: tuple[int, ...] | None = None,
-    interpret: bool = False,
-    debug: bool = False,
-    dropout_rate: float = 0.0,
-    dropout_impl: str = "materialize",
-):
-    """Multi-Head Attention public API (forward only in primal eval)."""
-    if dropout_rate > 0 and rng is None:
-        raise ValueError("dropout_rate > 0 requires a non-None rng.")
-    rng = rng if rng is not None else jax.random.PRNGKey(0)
-    rng_seed = _rng_seed_from_key(rng)
-
-    mask_treedef, mask_leaves = _flatten_optional_pytree(mask)
-    bias_treedef, bias_leaves = _flatten_optional_pytree(bias)
-
-    out = _mha_p.bind(
-        q,
-        k,
-        v,
-        rng,
-        rng_seed,
-        *mask_leaves,
-        *bias_leaves,
-        sm_scale=sm_scale,
-        block_sizes=block_sizes,
-        backward_pass_impl=backward_pass_impl,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        grid=grid,
-        interpret=interpret,
-        debug=debug,
-        dropout_rate=dropout_rate,
-        dropout_impl=dropout_impl,
-        mask_treedef=mask_treedef,
-        bias_treedef=bias_treedef,
-        mask_num_leaves=len(mask_leaves),
-        bias_num_leaves=len(bias_leaves),
-    )
-    return out
-
-
-def _use_custom_partitioning() -> bool:
-    """Return True when a multi-device mesh is active and CP should be used.
-
-    ``custom_partitioning`` lowering in JAX ≤0.9 crashes with
-    ``AssertionError`` when no mesh or only a single-device mesh is present
-    (the GSPMD lowering path requires ≥2 devices).  By guarding on the mesh
-    we avoid the crash and also skip the (unnecessary) CP overhead on single
-    devices.
-    """
-    from jax._src import mesh as mesh_lib  # local import to avoid circular deps
-
-    mesh = mesh_lib.get_concrete_mesh()
-    return not mesh.empty and mesh.size > 1
 
 
 def _sentinel() -> jax.Array:
@@ -2678,7 +2345,7 @@ def _build_mha_sharding_rule_jvp(
 ) -> tuple[str, tuple[str, ...]]:
     """Build sharding rule + replication factors for the CP JVP function.
 
-    Positional args: q k v dq dk dv lse rng rng_seed
+    Positional args: q k v dq dk dv lse rng_seed
         b_data q_id k_id dropout_mask index_offset index_offset_size
     """
     parts = [
@@ -2689,7 +2356,6 @@ def _build_mha_sharding_rule_jvp(
         "batch seq heads head_dim",  # dk
         "batch seq heads head_dim",  # dv
         "batch heads seq",  # lse
-        "",  # rng ()
         "",  # rng_seed ()
     ]
     data_parts, data_factors = _data_rule_parts(_FWD_DATA_RULES, present_flags)
@@ -2912,7 +2578,7 @@ def _make_cp_mha_jvp(
 ):
     """Build a ``custom_partitioning``-wrapped MHA JVP-from-LSE function.
 
-    Returns ``f(q, k, v, dq, dk, dv, lse, rng, rng_seed,
+    Returns ``f(q, k, v, dq, dk, dv, lse, rng_seed,
     b_data, q_id, k_id, dropout_mask, index_offset, index_offset_size)
     -> tangent_out``.
     """
@@ -2936,7 +2602,6 @@ def _make_cp_mha_jvp(
         dk,
         dv,
         lse,
-        rng,
         rng_seed,
         b_data,
         q_id,
@@ -2985,7 +2650,6 @@ def _make_cp_mha_jvp(
         dk,
         dv,
         lse,
-        rng,
         rng_seed,
         b_data,
         q_id,
@@ -3002,7 +2666,6 @@ def _make_cp_mha_jvp(
             dk,
             dv,
             lse,
-            rng,
             rng_seed,
             b_data,
             q_id,
@@ -3024,7 +2687,6 @@ def _make_cp_mha_jvp(
             dk,
             dv,
             lse,
-            rng,
             rng_seed,
             b_data,
             q_id,
@@ -3041,7 +2703,6 @@ def _make_cp_mha_jvp(
                 dk,
                 dv,
                 lse,
-                rng,
                 rng_seed,
                 b_data,
                 q_id,
@@ -3073,6 +2734,7 @@ def _make_cp_mha_bwd(
     block_sizes: BlockSizes,
     backward_pass_impl: str,
     num_warps: int | None,
+    num_stages: int,
     interpret: bool,
     debug: bool,
     dropout_rate: float,
@@ -3148,6 +2810,7 @@ def _make_cp_mha_bwd(
             block_sizes=block_sizes,
             backward_pass_impl=backward_pass_impl,
             num_warps=num_warps,
+            num_stages=num_stages,
             interpret=interpret,
             debug=debug,
             dropout_rate=dropout_rate,
@@ -3260,18 +2923,15 @@ def mha(
 ):
     """Multi-Head Attention public API.
 
-    This wrapper flattens mask/bias pytrees so that any traced array leaves
-    (e.g. ``SeqLenMask.seq_lengths``) flow through JAX tracing as regular
-    operands.  Only the purely-static tree structure metadata is passed as
-    ``nondiff_argnums`` to the inner ``custom_jvp`` function, making ``mha``
-    safe to use inside ``jax.checkpoint`` (remat) even when the mask or bias
-    carries dynamic traced arrays.
+    Reverse-mode differentiation uses a lightweight ``custom_vjp`` wrapper
+    around the raw Pallas forward/backward kernels.  When a multi-device mesh
+    is active, those kernels are lowered per-shard via ``custom_partitioning``
+    so ordinary ``jax.jit(fn)(NamedSharding inputs)`` call sites do not incur
+    GSPMD all-gathers before ``pallas_call``.
 
-    When inputs carry ``NamedSharding`` (e.g. batch-sharded across a device
-    mesh), forward and backward Pallas kernels are automatically run
-    per-shard via ``custom_partitioning`` wrappers inside the primitive
-    lowering and transpose rules — no ``shard_map`` wrapping is needed at
-    the call site.
+    Forward-mode differentiation uses a separate fused-JVP path.  The public
+    API automatically routes JVP traces to that path so plain ``jax.jvp(mha)``
+    continues to work without involving the reverse-mode wrapper.
     """
     if diff_mode not in ("reverse", "forward"):
         raise ValueError(
@@ -3283,17 +2943,13 @@ def mha(
     mask_treedef, mask_leaves = _flatten_optional_pytree(mask)
     bias_treedef, bias_leaves = _flatten_optional_pytree(bias)
 
-    # Use custom_jvp for all diff modes.  The custom_jvp wrapper supports
-    # both forward-mode (jax.jvp) and reverse-mode (jax.grad) differentiation.
-    # SPMD partitioning is handled at the primitive level: the lowering and
-    # transpose rules for _mha_p / _mha_lin_p wrap the Pallas kernel calls in
-    # custom_partitioning, so GSPMD runs them per-shard when inputs have
-    # NamedSharding.
-    inner = _make_mha_custom_jvp(
+    force_forward_mode = diff_mode == "forward" or _is_direct_jvp_trace(
+        q, k, v, rng, mask_leaves, bias_leaves
+    )
+    factory = _make_mha_forward_jvp if force_forward_mode else _make_mha_custom_vjp
+    inner = factory(
         mask_treedef=mask_treedef,
         bias_treedef=bias_treedef,
-        mask_num_leaves=len(mask_leaves),
-        bias_num_leaves=len(bias_leaves),
         sm_scale=sm_scale,
         block_sizes=block_sizes,
         backward_pass_impl=backward_pass_impl,
@@ -3304,17 +2960,32 @@ def mha(
         debug=debug,
         dropout_rate=dropout_rate,
         dropout_impl=dropout_impl,
-        diff_mode=diff_mode,
     )
     return inner(q, k, v, rng, mask_leaves, bias_leaves)
 
 
-def _make_mha_custom_jvp(
+def _is_direct_jvp_trace(*args) -> bool:
+    """Return True only for active direct forward-mode JVP traces.
+
+    Reverse-mode linearization may introduce tracing as well, but we only want
+    to route plain ``jax.jvp(...)`` calls to the fused forward-mode path.
+    Requiring a non-symbolic-zero tangent keeps this check narrow.
+    """
+    flat_args, _ = jax.tree_util.tree_flatten(args)
+    for x in flat_args:
+        if isinstance(x, ad.JVPTracer) and not isinstance(x.tangent, ad_util.Zero):
+            return True
+    return False
+
+
+def _zero_cotangent_tuple(xs):
+    return tuple(None for _ in xs)
+
+
+def _make_mha_runners(
     *,
     mask_treedef,
     bias_treedef,
-    mask_num_leaves: int,
-    bias_num_leaves: int,
     sm_scale: float,
     block_sizes: BlockSizes,
     backward_pass_impl: str,
@@ -3325,111 +2996,31 @@ def _make_mha_custom_jvp(
     debug: bool,
     dropout_rate: float,
     dropout_impl: str,
-    diff_mode: str,
 ):
-    """Build a custom_jvp function with static config in closure.
+    """Build common forward/backward runners shared by custom_vjp/custom_jvp."""
 
-    Returns a function ``f(q, k, v, rng, mask_leaves, bias_leaves) -> output``
-    where ``mask_leaves`` and ``bias_leaves`` are tuples of arrays (JAX pytree
-    leaves) that flow through tracing normally.
-    """
-
-    # The 6 positional args are all traceable.  mask_leaves and bias_leaves
-    # are tuples (valid JAX pytrees), so their elements participate in tracing.
-    @jax.custom_jvp
-    def _mha_inner(q, k, v, rng, mask_leaves_tuple, bias_leaves_tuple):
-        mask = _unflatten_optional_pytree(mask_treedef, mask_leaves_tuple)
-        bias = _unflatten_optional_pytree(bias_treedef, bias_leaves_tuple)
-        return _mha_bind(
-            q=q,
-            k=k,
-            v=v,
-            mask=mask,
-            bias=bias,
-            rng=rng,
-            sm_scale=sm_scale,
-            block_sizes=block_sizes,
-            backward_pass_impl=backward_pass_impl,
-            num_warps=num_warps,
-            num_stages=num_stages,
-            grid=grid,
-            interpret=interpret,
-            debug=debug,
-            dropout_rate=dropout_rate,
-            dropout_impl=dropout_impl,
+    def _reconstruct_mask_bias(mask_leaves_tuple, bias_leaves_tuple):
+        return (
+            _unflatten_optional_pytree(mask_treedef, mask_leaves_tuple),
+            _unflatten_optional_pytree(bias_treedef, bias_leaves_tuple),
         )
 
-    @_mha_inner.defjvp
-    def _jvp_rule(primals, tangents):
-        q, k, v, rng, mask_leaves_tuple, bias_leaves_tuple = primals
-        dq, dk, dv, _drng, _dmask, _dbias = tangents
-        del _drng, _dmask, _dbias  # rng/mask/bias tangents unused
-
-        mask = _unflatten_optional_pytree(mask_treedef, mask_leaves_tuple)
-        bias = _unflatten_optional_pytree(bias_treedef, bias_leaves_tuple)
-
+    def _run_forward(
+        q,
+        k,
+        v,
+        rng,
+        mask_leaves_tuple,
+        bias_leaves_tuple,
+        *,
+        output_activations: bool,
+    ):
+        mask, bias = _reconstruct_mask_bias(mask_leaves_tuple, bias_leaves_tuple)
         if dropout_rate > 0 and rng is None:
             raise ValueError("dropout_rate > 0 requires a non-None rng.")
-        rng_val = rng if rng is not None else jax.random.PRNGKey(0)
+        rng_val = rng if rng is not None else jax.random.key(0)
         rng_seed = _rng_seed_from_key(rng_val)
 
-        def _tangent_or_zero(t, primal):
-            if isinstance(t, ad_util.Zero):
-                return jnp.zeros_like(primal)
-            return t
-
-        dq = _tangent_or_zero(dq, q)
-        dk = _tangent_or_zero(dk, k)
-        dv = _tangent_or_zero(dv, v)
-
-        if diff_mode == "forward":
-            if any(ad.is_undefined_primal(x) for x in (q, k, v)):
-                raise ValueError(
-                    "diff_mode='forward' does not support reverse-mode "
-                    "autodiff; use diff_mode='reverse' for grad."
-                )
-            if mask is None and bias is None and dropout_rate == 0.0:
-                out, tangent_out = _mha_impl_fused_jvp_simple(
-                    q=q,
-                    k=k,
-                    v=v,
-                    dq=dq,
-                    dk=dk,
-                    dv=dv,
-                    sm_scale=sm_scale,
-                    block_sizes=block_sizes,
-                    num_warps=num_warps,
-                    num_stages=num_stages,
-                    grid=grid,
-                    interpret=interpret,
-                    debug=debug,
-                )
-                return out, tangent_out
-
-            out, tangent_out = _mha_impl_fused_jvp(
-                q=q,
-                k=k,
-                v=v,
-                dq=dq,
-                dk=dk,
-                dv=dv,
-                mask=mask,
-                bias=bias,
-                rng=rng_val,
-                rng_seed=rng_seed,
-                sm_scale=sm_scale,
-                block_sizes=block_sizes,
-                num_warps=num_warps,
-                num_stages=num_stages,
-                grid=grid,
-                interpret=interpret,
-                debug=debug,
-                dropout_rate=dropout_rate,
-                dropout_impl=dropout_impl,
-            )
-            return out, tangent_out
-
-        # diff_mode == "reverse": use CP-wrapped forward + _mha_lin_p for tangent
         batch_size, q_seq_len, num_heads, _head_dim = q.shape
         kv_seq_len = k.shape[1]
         block_q = min(block_sizes.block_q, q_seq_len)
@@ -3449,8 +3040,410 @@ def _make_mha_custom_jvp(
             dropout_impl=dropout_impl,
         )
 
-        if _use_custom_partitioning():
-            cp_fwd = _make_cp_mha_fwd(
+        cp_fwd = _make_cp_mha_fwd(
+            has_b_data=arrays["b_data"] is not None,
+            has_q_id=arrays["q_id"] is not None,
+            has_k_id=arrays["k_id"] is not None,
+            has_dropout_mask=arrays["dropout_mask"] is not None,
+            has_index=arrays["index_offset"] is not None,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            output_activations=output_activations,
+            mask_fn=specs["mask_fn"],
+            bias_fn=specs["bias_fn"],
+            b_spec=specs["b_spec"],
+            q_id_spec=specs["q_id_spec"],
+            k_id_spec=specs["k_id_spec"],
+        )
+        try:
+            result = cp_fwd(
+                q,
+                k,
+                v,
+                rng_seed,
+                _or_sentinel(arrays["b_data"]),
+                _or_sentinel(arrays["q_id"]),
+                _or_sentinel(arrays["k_id"]),
+                _or_sentinel(arrays["dropout_mask"]),
+                _or_sentinel(arrays["index_offset"]),
+                _or_sentinel(arrays["index_offset_size"]),
+            )
+            if output_activations:
+                out, lse = result
+                return out, rng_val, rng_seed, lse
+            return result
+        except AssertionError:
+            pass
+
+        result = _mha_impl_raw(
+            q,
+            k,
+            v,
+            rng_seed,
+            arrays["b_data"],
+            arrays["q_id"],
+            arrays["k_id"],
+            arrays["dropout_mask"],
+            arrays["index_offset"],
+            arrays["index_offset_size"],
+            mask_fn=specs["mask_fn"],
+            bias_fn=specs["bias_fn"],
+            b_spec=specs["b_spec"],
+            q_id_spec=specs["q_id_spec"],
+            k_id_spec=specs["k_id_spec"],
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            output_activations=output_activations,
+        )
+        if output_activations:
+            out, (_q, _k, _v, _seed, _out_res, lse) = result
+            return out, rng_val, rng_seed, lse
+        return result
+
+    def _run_backward(
+        do,
+        q,
+        k,
+        v,
+        rng,
+        rng_seed,
+        out,
+        lse,
+        mask_leaves_tuple,
+        bias_leaves_tuple,
+    ):
+        mask, bias = _reconstruct_mask_bias(mask_leaves_tuple, bias_leaves_tuple)
+
+        batch_size, q_seq_len, num_heads, _head_dim = q.shape
+        kv_seq_len = k.shape[1]
+        block_q = min(block_sizes.block_q, q_seq_len)
+        block_k = min(block_sizes.block_k, kv_seq_len)
+        block_q_dkv = min(block_sizes.block_q_dkv, q_seq_len)
+        block_kv_dkv = min(block_sizes.block_kv_dkv, kv_seq_len)
+        block_q_dq = min(block_sizes.block_q_dq, q_seq_len)
+        block_kv_dq = min(block_sizes.block_kv_dq, kv_seq_len)
+
+        arrays, specs = _extract_bwd_data(
+            mask,
+            bias,
+            rng,
+            batch_size=batch_size,
+            q_seq_len=q_seq_len,
+            kv_seq_len=kv_seq_len,
+            num_heads=num_heads,
+            block_q=block_q,
+            block_k=block_k,
+            block_q_dkv=block_q_dkv,
+            block_kv_dkv=block_kv_dkv,
+            block_q_dq=block_q_dq,
+            block_kv_dq=block_kv_dq,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+        )
+
+        cp_bwd = _make_cp_mha_bwd(
+            has_b_data=arrays["b_data"] is not None,
+            has_q_data=arrays["q_data"] is not None,
+            has_k_data=arrays["k_data"] is not None,
+            has_dropout_mask=arrays["dropout_mask"] is not None,
+            has_q_index=arrays["q_index_offset"] is not None,
+            has_kv_index=arrays["kv_index_offset"] is not None,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            mask_fn=specs["mask_fn"],
+            bias_fn=specs["bias_fn"],
+            bias_fn_grad=specs["bias_fn_grad"],
+            b_spec_bwd=specs["b_spec_bwd"],
+            q_data_spec=specs["q_data_spec"],
+            k_data_spec=specs["k_data_spec"],
+        )
+        try:
+            return cp_bwd(
+                do,
+                q,
+                k,
+                v,
+                rng_seed,
+                out,
+                lse,
+                _or_sentinel(arrays["b_data"]),
+                _or_sentinel(arrays["q_data"]),
+                _or_sentinel(arrays["k_data"]),
+                _or_sentinel(arrays["dropout_mask"]),
+                _or_sentinel(arrays["q_index_offset"]),
+                _or_sentinel(arrays["q_index_offset_size"]),
+                _or_sentinel(arrays["kv_index_offset"]),
+                _or_sentinel(arrays["kv_index_offset_size"]),
+            )
+        except AssertionError:
+            pass
+
+        return _mha_backward_raw(
+            do,
+            q,
+            k,
+            v,
+            rng_seed,
+            out,
+            lse,
+            arrays["b_data"],
+            arrays["q_data"],
+            arrays["k_data"],
+            arrays["dropout_mask"],
+            arrays["q_index_offset"],
+            arrays["q_index_offset_size"],
+            arrays["kv_index_offset"],
+            arrays["kv_index_offset_size"],
+            mask_fn=specs["mask_fn"],
+            bias_fn=specs["bias_fn"],
+            bias_fn_grad=specs["bias_fn_grad"],
+            b_spec_bwd=specs["b_spec_bwd"],
+            q_data_spec=specs["q_data_spec"],
+            k_data_spec=specs["k_data_spec"],
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+        )
+
+    return _reconstruct_mask_bias, _run_forward, _run_backward
+
+
+def _make_mha_custom_vjp(
+    *,
+    mask_treedef,
+    bias_treedef,
+    sm_scale: float,
+    block_sizes: BlockSizes,
+    backward_pass_impl: str,
+    num_warps: int | None,
+    num_stages: int,
+    grid: tuple[int, ...] | None,
+    interpret: bool,
+    debug: bool,
+    dropout_rate: float,
+    dropout_impl: str,
+):
+    """Build the reverse-mode path using custom_vjp plus custom_partitioning."""
+
+    _, _run_forward, _run_backward = _make_mha_runners(
+        mask_treedef=mask_treedef,
+        bias_treedef=bias_treedef,
+        sm_scale=sm_scale,
+        block_sizes=block_sizes,
+        backward_pass_impl=backward_pass_impl,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        grid=grid,
+        interpret=interpret,
+        debug=debug,
+        dropout_rate=dropout_rate,
+        dropout_impl=dropout_impl,
+    )
+
+    @jax.custom_vjp
+    def _mha_inner(q, k, v, rng, mask_leaves_tuple, bias_leaves_tuple):
+        return _run_forward(
+            q,
+            k,
+            v,
+            rng,
+            mask_leaves_tuple,
+            bias_leaves_tuple,
+            output_activations=False,
+        )
+
+    def _mha_inner_fwd(q, k, v, rng, mask_leaves_tuple, bias_leaves_tuple):
+        out, rng_val, rng_seed, lse = _run_forward(
+            q,
+            k,
+            v,
+            rng,
+            mask_leaves_tuple,
+            bias_leaves_tuple,
+            output_activations=True,
+        )
+        residual = (
+            q,
+            k,
+            v,
+            rng_val,
+            rng_seed,
+            out,
+            lse,
+            mask_leaves_tuple,
+            bias_leaves_tuple,
+        )
+        return out, residual
+
+    def _mha_inner_bwd(res, do):
+        (
+            q,
+            k,
+            v,
+            rng_val,
+            rng_seed,
+            out,
+            lse,
+            mask_leaves_tuple,
+            bias_leaves_tuple,
+        ) = res
+
+        if isinstance(do, ad_util.Zero):
+            return (
+                None,
+                None,
+                None,
+                None,
+                _zero_cotangent_tuple(mask_leaves_tuple),
+                _zero_cotangent_tuple(bias_leaves_tuple),
+            )
+
+        dq, dk, dv = _run_backward(
+            do,
+            q,
+            k,
+            v,
+            rng_val,
+            rng_seed,
+            out,
+            lse,
+            mask_leaves_tuple,
+            bias_leaves_tuple,
+        )
+        return (
+            dq,
+            dk,
+            dv,
+            None,
+            _zero_cotangent_tuple(mask_leaves_tuple),
+            _zero_cotangent_tuple(bias_leaves_tuple),
+        )
+
+    _mha_inner.defvjp(_mha_inner_fwd, _mha_inner_bwd)
+    return _mha_inner
+
+
+def _make_mha_forward_jvp(
+    *,
+    mask_treedef,
+    bias_treedef,
+    sm_scale: float,
+    block_sizes: BlockSizes,
+    backward_pass_impl: str,
+    num_warps: int | None,
+    num_stages: int,
+    grid: tuple[int, ...] | None,
+    interpret: bool,
+    debug: bool,
+    dropout_rate: float,
+    dropout_impl: str,
+):
+    """Build the forward-mode path used for JVP traces."""
+
+    _reconstruct_mask_bias, _run_forward, _ = _make_mha_runners(
+        mask_treedef=mask_treedef,
+        bias_treedef=bias_treedef,
+        sm_scale=sm_scale,
+        block_sizes=block_sizes,
+        backward_pass_impl=backward_pass_impl,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        grid=grid,
+        interpret=interpret,
+        debug=debug,
+        dropout_rate=dropout_rate,
+        dropout_impl=dropout_impl,
+    )
+
+    @jax.custom_jvp
+    def _mha_inner(q, k, v, rng, mask_leaves_tuple, bias_leaves_tuple):
+        return _run_forward(
+            q,
+            k,
+            v,
+            rng,
+            mask_leaves_tuple,
+            bias_leaves_tuple,
+            output_activations=False,
+        )
+
+    @_mha_inner.defjvp
+    def _jvp_rule(primals, tangents):
+        q, k, v, rng, mask_leaves_tuple, bias_leaves_tuple = primals
+        dq, dk, dv, _drng, _dmask, _dbias = tangents
+        del _drng, _dmask, _dbias
+
+        if any(ad.is_undefined_primal(x) for x in (q, k, v)):
+            raise ValueError(
+                "diff_mode='forward' does not support reverse-mode "
+                "autodiff; use diff_mode='reverse' for grad."
+            )
+
+        mask, bias = _reconstruct_mask_bias(mask_leaves_tuple, bias_leaves_tuple)
+
+        def _tangent_or_zero(t, primal):
+            if isinstance(t, ad_util.Zero):
+                return jnp.zeros_like(primal)
+            return t
+
+        dq = _tangent_or_zero(dq, q)
+        dk = _tangent_or_zero(dk, k)
+        dv = _tangent_or_zero(dv, v)
+
+        try:
+            out, rng_val, rng_seed, lse_res = _run_forward(
+                q,
+                k,
+                v,
+                rng,
+                mask_leaves_tuple,
+                bias_leaves_tuple,
+                output_activations=True,
+            )
+
+            batch_size, q_seq_len, num_heads, _head_dim = q.shape
+            kv_seq_len = k.shape[1]
+            block_q = min(block_sizes.block_q, q_seq_len)
+            block_k = min(block_sizes.block_k, kv_seq_len)
+            arrays, specs = _extract_fwd_data(
+                mask,
+                bias,
+                rng,
+                batch_size=batch_size,
+                q_seq_len=q_seq_len,
+                kv_seq_len=kv_seq_len,
+                num_heads=num_heads,
+                block_q=block_q,
+                block_k=block_k,
+                dropout_rate=dropout_rate,
+                dropout_impl=dropout_impl,
+            )
+            bias_fn_grad = bias.grad if (bias is not None) else None
+
+            cp_jvp = _make_cp_mha_jvp(
                 has_b_data=arrays["b_data"] is not None,
                 has_q_id=arrays["q_id"] is not None,
                 has_k_id=arrays["k_id"] is not None,
@@ -3464,17 +3457,21 @@ def _make_mha_custom_jvp(
                 interpret=interpret,
                 debug=debug,
                 dropout_rate=dropout_rate,
-                output_activations=True,
                 mask_fn=specs["mask_fn"],
                 bias_fn=specs["bias_fn"],
+                bias_fn_grad=bias_fn_grad,
                 b_spec=specs["b_spec"],
                 q_id_spec=specs["q_id_spec"],
                 k_id_spec=specs["k_id_spec"],
             )
-            out, lse_res = cp_fwd(
+            tangent_out = cp_jvp(
                 q,
                 k,
                 v,
+                dq,
+                dk,
+                dv,
+                lse_res,
                 rng_seed,
                 _or_sentinel(arrays["b_data"]),
                 _or_sentinel(arrays["q_id"]),
@@ -3483,24 +3480,18 @@ def _make_mha_custom_jvp(
                 _or_sentinel(arrays["index_offset"]),
                 _or_sentinel(arrays["index_offset_size"]),
             )
-        else:
-            # No multi-device mesh — call raw kernel directly.
-            result = _mha_impl_raw(
-                q,
-                k,
-                v,
-                rng_seed,
-                arrays["b_data"],
-                arrays["q_id"],
-                arrays["k_id"],
-                arrays["dropout_mask"],
-                arrays["index_offset"],
-                arrays["index_offset_size"],
-                mask_fn=specs["mask_fn"],
-                bias_fn=specs["bias_fn"],
-                b_spec=specs["b_spec"],
-                q_id_spec=specs["q_id_spec"],
-                k_id_spec=specs["k_id_spec"],
+            return out, tangent_out
+        except AssertionError:
+            pass
+
+        if mask is None and bias is None and dropout_rate == 0.0:
+            return _mha_impl_fused_jvp_simple(
+                q=q,
+                k=k,
+                v=v,
+                dq=dq,
+                dk=dk,
+                dv=dv,
                 sm_scale=sm_scale,
                 block_sizes=block_sizes,
                 num_warps=num_warps,
@@ -3508,32 +3499,22 @@ def _make_mha_custom_jvp(
                 grid=grid,
                 interpret=interpret,
                 debug=debug,
-                dropout_rate=dropout_rate,
-                output_activations=True,
             )
-            out, (_q, _k, _v, _seed, _out_res, lse_res) = result
-        # Re-bind primals for residuals (cp_fwd only returns out, lse).
-        q_res, k_res, v_res, rng_seed_res, out_res = q, k, v, rng_seed, out
-
-        _mk_treedef, _mk_leaves = _flatten_optional_pytree(mask)
-        _bi_treedef, _bi_leaves = _flatten_optional_pytree(bias)
-
-        tangent_out = _mha_lin_p.bind(
-            q_res,
-            k_res,
-            v_res,
-            rng_val,
-            rng_seed_res,
-            out_res,
-            lse_res,
-            dq,
-            dk,
-            dv,
-            *_mk_leaves,
-            *_bi_leaves,
+        rng_val = rng if rng is not None else jax.random.key(0)
+        rng_seed = _rng_seed_from_key(rng_val)
+        return _mha_impl_fused_jvp(
+            q=q,
+            k=k,
+            v=v,
+            dq=dq,
+            dk=dk,
+            dv=dv,
+            mask=mask,
+            bias=bias,
+            rng=rng_val,
+            rng_seed=rng_seed,
             sm_scale=sm_scale,
             block_sizes=block_sizes,
-            backward_pass_impl=backward_pass_impl,
             num_warps=num_warps,
             num_stages=num_stages,
             grid=grid,
@@ -3541,12 +3522,7 @@ def _make_mha_custom_jvp(
             debug=debug,
             dropout_rate=dropout_rate,
             dropout_impl=dropout_impl,
-            mask_treedef=_mk_treedef,
-            bias_treedef=_bi_treedef,
-            mask_num_leaves=len(_mk_leaves),
-            bias_num_leaves=len(_bi_leaves),
         )
-        return out, tangent_out
 
     return _mha_inner
 
@@ -3683,6 +3659,7 @@ def _mha_backward_raw(
     block_sizes: BlockSizes,
     backward_pass_impl: str,
     num_warps: int | None,
+    num_stages: int,
     interpret: bool,
     debug: bool,
     dropout_rate: float,
@@ -3700,6 +3677,9 @@ def _mha_backward_raw(
     block_kv_dkv = min(block_sizes.block_kv_dkv, kv_seq_len)
     block_q_dq = min(block_sizes.block_q_dq, q_seq_len)
     block_kv_dq = min(block_sizes.block_kv_dq, kv_seq_len)
+    effective_num_stages = _resolve_attention_num_stages(
+        num_stages, has_dense_bias=b_data is not None
+    )
 
     # Resolve auto to actual impl
     if backward_pass_impl == "auto":
@@ -3837,7 +3817,9 @@ def _mha_backward_raw(
             name="mha_backward",
             debug=debug,
             interpret=interpret,
-            compiler_params=plgpu.CompilerParams(num_warps=num_warps_, num_stages=2),
+            compiler_params=plgpu.CompilerParams(
+                num_warps=num_warps_, num_stages=effective_num_stages
+            ),
         )(
             q,
             k,
@@ -3946,7 +3928,9 @@ def _mha_backward_raw(
             name="mha_backward_split_dkdv",
             debug=debug,
             interpret=interpret,
-            compiler_params=plgpu.CompilerParams(num_warps=num_warps_, num_stages=2),
+            compiler_params=plgpu.CompilerParams(
+                num_warps=num_warps_, num_stages=effective_num_stages
+            ),
         )(
             q,
             k,
@@ -3998,7 +3982,9 @@ def _mha_backward_raw(
             name="mha_backward_split_dq",
             debug=debug,
             interpret=interpret,
-            compiler_params=plgpu.CompilerParams(num_warps=num_warps_, num_stages=2),
+            compiler_params=plgpu.CompilerParams(
+                num_warps=num_warps_, num_stages=effective_num_stages
+            ),
         )(
             q,
             k,
@@ -4016,825 +4002,3 @@ def _mha_backward_raw(
         )
 
     return dq.astype(q.dtype), dk, dv
-
-
-def _mha_backward(
-    sm_scale: float,
-    block_sizes: BlockSizes,
-    backward_pass_impl: str,
-    num_warps: int | None,
-    num_stages: int,
-    grid: Any,
-    interpret: bool,
-    debug: bool,
-    dropout_rate: float,
-    dropout_impl: str,
-    res,
-    do,
-    *,
-    mask: AttentionMask | None,
-    bias: AttentionBias | None,
-):
-    """Backward pass for the Multi-Head Attention mechanism.
-
-    Extracts mask/bias data, then delegates to _mha_backward_raw.
-    """
-    del num_stages, grid
-    q, k, v, rng_seed, out, lse = res
-
-    batch_size, q_seq_len, num_heads, head_dim = q.shape
-    kv_seq_len = k.shape[1]
-    block_q = min(block_sizes.block_q, q_seq_len)
-    block_k = min(block_sizes.block_k, kv_seq_len)
-    block_q_dkv = min(block_sizes.block_q_dkv, q_seq_len)
-    block_kv_dkv = min(block_sizes.block_kv_dkv, kv_seq_len)
-    block_q_dq = min(block_sizes.block_q_dq, q_seq_len)
-    block_kv_dq = min(block_sizes.block_kv_dq, kv_seq_len)
-
-    arrays, specs = _extract_bwd_data(
-        mask,
-        bias,
-        rng_seed,
-        batch_size=batch_size,
-        q_seq_len=q_seq_len,
-        kv_seq_len=kv_seq_len,
-        num_heads=num_heads,
-        block_q=block_q,
-        block_k=block_k,
-        block_q_dkv=block_q_dkv,
-        block_kv_dkv=block_kv_dkv,
-        block_q_dq=block_q_dq,
-        block_kv_dq=block_kv_dq,
-        dropout_rate=dropout_rate,
-        dropout_impl=dropout_impl,
-    )
-
-    dq, dk, dv = _mha_backward_raw(
-        do,
-        q,
-        k,
-        v,
-        rng_seed,
-        out,
-        lse,
-        arrays["b_data"],
-        arrays["q_data"],
-        arrays["k_data"],
-        arrays["dropout_mask"],
-        arrays["q_index_offset"],
-        arrays["q_index_offset_size"],
-        arrays["kv_index_offset"],
-        arrays["kv_index_offset_size"],
-        mask_fn=specs["mask_fn"],
-        bias_fn=specs["bias_fn"],
-        bias_fn_grad=specs["bias_fn_grad"],
-        b_spec_bwd=specs["b_spec_bwd"],
-        q_data_spec=specs["q_data_spec"],
-        k_data_spec=specs["k_data_spec"],
-        sm_scale=sm_scale,
-        block_sizes=block_sizes,
-        backward_pass_impl=backward_pass_impl,
-        num_warps=num_warps,
-        interpret=interpret,
-        debug=debug,
-        dropout_rate=dropout_rate,
-    )
-    return dq, dk, dv, None, None, None
-
-
-def _mha_prim_impl(
-    q,
-    k,
-    v,
-    rng,
-    rng_seed,
-    *rest,
-    sm_scale: float,
-    block_sizes: BlockSizes,
-    backward_pass_impl: str,
-    num_warps: int | None,
-    num_stages: int,
-    grid: tuple[int, ...] | None,
-    interpret: bool,
-    debug: bool,
-    dropout_rate: float,
-    dropout_impl: str,
-    mask_treedef,
-    bias_treedef,
-    mask_num_leaves: int,
-    bias_num_leaves: int,
-):
-    _, _, _, _, rng_seed, mask_leaves, bias_leaves = _split_mha_operands(
-        (q, k, v, rng, rng_seed, *rest),
-        mask_num_leaves=mask_num_leaves,
-        bias_num_leaves=bias_num_leaves,
-    )
-    mask = _unflatten_optional_pytree(mask_treedef, tuple(mask_leaves))
-    bias = _unflatten_optional_pytree(bias_treedef, tuple(bias_leaves))
-
-    batch_size, q_seq_len, num_heads, _head_dim = q.shape
-    kv_seq_len = k.shape[1]
-    block_q = min(block_sizes.block_q, q_seq_len)
-    block_k = min(block_sizes.block_k, kv_seq_len)
-
-    arrays, specs = _extract_fwd_data(
-        mask,
-        bias,
-        rng,
-        batch_size=batch_size,
-        q_seq_len=q_seq_len,
-        kv_seq_len=kv_seq_len,
-        num_heads=num_heads,
-        block_q=block_q,
-        block_k=block_k,
-        dropout_rate=dropout_rate,
-        dropout_impl=dropout_impl,
-    )
-
-    if _use_custom_partitioning():
-        cp_fwd = _make_cp_mha_fwd(
-            has_b_data=arrays["b_data"] is not None,
-            has_q_id=arrays["q_id"] is not None,
-            has_k_id=arrays["k_id"] is not None,
-            has_dropout_mask=arrays["dropout_mask"] is not None,
-            has_index=arrays["index_offset"] is not None,
-            sm_scale=sm_scale,
-            block_sizes=block_sizes,
-            num_warps=num_warps,
-            num_stages=num_stages,
-            grid=grid,
-            interpret=interpret,
-            debug=debug,
-            dropout_rate=dropout_rate,
-            output_activations=False,
-            mask_fn=specs["mask_fn"],
-            bias_fn=specs["bias_fn"],
-            b_spec=specs["b_spec"],
-            q_id_spec=specs["q_id_spec"],
-            k_id_spec=specs["k_id_spec"],
-        )
-        return cp_fwd(
-            q,
-            k,
-            v,
-            rng_seed,
-            _or_sentinel(arrays["b_data"]),
-            _or_sentinel(arrays["q_id"]),
-            _or_sentinel(arrays["k_id"]),
-            _or_sentinel(arrays["dropout_mask"]),
-            _or_sentinel(arrays["index_offset"]),
-            _or_sentinel(arrays["index_offset_size"]),
-        )
-
-    # No multi-device mesh — call the raw kernel directly (no CP overhead).
-    return _mha_impl_raw(
-        q,
-        k,
-        v,
-        rng_seed,
-        arrays["b_data"],
-        arrays["q_id"],
-        arrays["k_id"],
-        arrays["dropout_mask"],
-        arrays["index_offset"],
-        arrays["index_offset_size"],
-        mask_fn=specs["mask_fn"],
-        bias_fn=specs["bias_fn"],
-        b_spec=specs["b_spec"],
-        q_id_spec=specs["q_id_spec"],
-        k_id_spec=specs["k_id_spec"],
-        sm_scale=sm_scale,
-        block_sizes=block_sizes,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        grid=grid,
-        interpret=interpret,
-        debug=debug,
-        dropout_rate=dropout_rate,
-        output_activations=False,
-    )
-
-
-def _mha_lin_prim_impl(
-    q,
-    k,
-    v,
-    rng,
-    rng_seed,
-    out,
-    lse,
-    dq,
-    dk,
-    dv,
-    *rest,
-    sm_scale: float,
-    block_sizes: BlockSizes,
-    backward_pass_impl: str,
-    num_warps: int | None,
-    num_stages: int,
-    grid: tuple[int, ...] | None,
-    interpret: bool,
-    debug: bool,
-    dropout_rate: float,
-    dropout_impl: str,
-    mask_treedef,
-    bias_treedef,
-    mask_num_leaves: int,
-    bias_num_leaves: int,
-):
-    del out
-    _, _, _, _, rng_seed, mask_leaves, bias_leaves = _split_mha_operands(
-        (q, k, v, rng, rng_seed, *rest),
-        mask_num_leaves=mask_num_leaves,
-        bias_num_leaves=bias_num_leaves,
-    )
-    mask = _unflatten_optional_pytree(mask_treedef, tuple(mask_leaves))
-    bias = _unflatten_optional_pytree(bias_treedef, tuple(bias_leaves))
-
-    batch_size, q_seq_len, num_heads, _head_dim = q.shape
-    kv_seq_len = k.shape[1]
-    block_q = min(block_sizes.block_q, q_seq_len)
-    block_k = min(block_sizes.block_k, kv_seq_len)
-
-    arrays, specs = _extract_fwd_data(
-        mask,
-        bias,
-        rng,
-        batch_size=batch_size,
-        q_seq_len=q_seq_len,
-        kv_seq_len=kv_seq_len,
-        num_heads=num_heads,
-        block_q=block_q,
-        block_k=block_k,
-        dropout_rate=dropout_rate,
-        dropout_impl=dropout_impl,
-    )
-    bias_fn_grad = bias.grad if (bias is not None) else None
-
-    if _use_custom_partitioning():
-        cp_jvp = _make_cp_mha_jvp(
-            has_b_data=arrays["b_data"] is not None,
-            has_q_id=arrays["q_id"] is not None,
-            has_k_id=arrays["k_id"] is not None,
-            has_dropout_mask=arrays["dropout_mask"] is not None,
-            has_index=arrays["index_offset"] is not None,
-            sm_scale=sm_scale,
-            block_sizes=block_sizes,
-            num_warps=num_warps,
-            num_stages=num_stages,
-            grid=grid,
-            interpret=interpret,
-            debug=debug,
-            dropout_rate=dropout_rate,
-            mask_fn=specs["mask_fn"],
-            bias_fn=specs["bias_fn"],
-            bias_fn_grad=bias_fn_grad,
-            b_spec=specs["b_spec"],
-            q_id_spec=specs["q_id_spec"],
-            k_id_spec=specs["k_id_spec"],
-        )
-        return cp_jvp(
-            q,
-            k,
-            v,
-            dq,
-            dk,
-            dv,
-            lse,
-            rng,
-            rng_seed,
-            _or_sentinel(arrays["b_data"]),
-            _or_sentinel(arrays["q_id"]),
-            _or_sentinel(arrays["k_id"]),
-            _or_sentinel(arrays["dropout_mask"]),
-            _or_sentinel(arrays["index_offset"]),
-            _or_sentinel(arrays["index_offset_size"]),
-        )
-
-    # No multi-device mesh — call the raw JVP kernel directly.
-    return _mha_impl_jvp_from_lse_raw(
-        q,
-        k,
-        v,
-        dq,
-        dk,
-        dv,
-        lse,
-        rng_seed,
-        arrays["b_data"],
-        arrays["q_id"],
-        arrays["k_id"],
-        arrays["dropout_mask"],
-        arrays["index_offset"],
-        arrays["index_offset_size"],
-        mask_fn=specs["mask_fn"],
-        bias_fn=specs["bias_fn"],
-        bias_fn_grad=bias_fn_grad,
-        b_spec=specs["b_spec"],
-        q_id_spec=specs["q_id_spec"],
-        k_id_spec=specs["k_id_spec"],
-        sm_scale=sm_scale,
-        block_sizes=block_sizes,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        grid=grid,
-        interpret=interpret,
-        debug=debug,
-        dropout_rate=dropout_rate,
-    )
-
-
-def _mha_lin_prim_abstract_eval(
-    q_aval,
-    k_aval,
-    v_aval,
-    rng_aval,
-    rng_seed_aval,
-    out_aval,
-    lse_aval,
-    dq_aval,
-    dk_aval,
-    dv_aval,
-    *rest,
-    sm_scale: float,
-    block_sizes: BlockSizes,
-    backward_pass_impl: str,
-    num_warps: int | None,
-    num_stages: int,
-    grid: tuple[int, ...] | None,
-    interpret: bool,
-    debug: bool,
-    dropout_rate: float,
-    dropout_impl: str,
-    mask_treedef,
-    bias_treedef,
-    mask_num_leaves: int,
-    bias_num_leaves: int,
-):
-    del (
-        k_aval,
-        v_aval,
-        rng_aval,
-        rng_seed_aval,
-        out_aval,
-        lse_aval,
-        dq_aval,
-        dk_aval,
-        dv_aval,
-        rest,
-        sm_scale,
-        block_sizes,
-        backward_pass_impl,
-        num_warps,
-        num_stages,
-        grid,
-        interpret,
-        debug,
-        dropout_rate,
-        dropout_impl,
-        mask_treedef,
-        bias_treedef,
-        mask_num_leaves,
-        bias_num_leaves,
-    )
-    return q_aval
-
-
-def _mha_lin_prim_transpose(
-    ct,
-    q,
-    k,
-    v,
-    rng,
-    rng_seed,
-    out,
-    lse,
-    dq,
-    dk,
-    dv,
-    *rest,
-    sm_scale: float,
-    block_sizes: BlockSizes,
-    backward_pass_impl: str,
-    num_warps: int | None,
-    num_stages: int,
-    grid: tuple[int, ...] | None,
-    interpret: bool,
-    debug: bool,
-    dropout_rate: float,
-    dropout_impl: str,
-    mask_treedef,
-    bias_treedef,
-    mask_num_leaves: int,
-    bias_num_leaves: int,
-):
-    if isinstance(ct, ad_util.Zero):
-        return (None,) * (10 + mask_num_leaves + bias_num_leaves)
-
-    _, _, _, _, rng_seed, mask_leaves, bias_leaves = _split_mha_operands(
-        (q, k, v, rng, rng_seed, *rest),
-        mask_num_leaves=mask_num_leaves,
-        bias_num_leaves=bias_num_leaves,
-    )
-    mask = _unflatten_optional_pytree(mask_treedef, tuple(mask_leaves))
-    bias = _unflatten_optional_pytree(bias_treedef, tuple(bias_leaves))
-
-    batch_size, q_seq_len, num_heads, _head_dim = q.shape
-    kv_seq_len = k.shape[1]
-    block_q = min(block_sizes.block_q, q_seq_len)
-    block_k = min(block_sizes.block_k, kv_seq_len)
-    block_q_dkv = min(block_sizes.block_q_dkv, q_seq_len)
-    block_kv_dkv = min(block_sizes.block_kv_dkv, kv_seq_len)
-    block_q_dq = min(block_sizes.block_q_dq, q_seq_len)
-    block_kv_dq = min(block_sizes.block_kv_dq, kv_seq_len)
-
-    arrays, specs = _extract_bwd_data(
-        mask,
-        bias,
-        rng,
-        batch_size=batch_size,
-        q_seq_len=q_seq_len,
-        kv_seq_len=kv_seq_len,
-        num_heads=num_heads,
-        block_q=block_q,
-        block_k=block_k,
-        block_q_dkv=block_q_dkv,
-        block_kv_dkv=block_kv_dkv,
-        block_q_dq=block_q_dq,
-        block_kv_dq=block_kv_dq,
-        dropout_rate=dropout_rate,
-        dropout_impl=dropout_impl,
-    )
-
-    if _use_custom_partitioning():
-        cp_bwd = _make_cp_mha_bwd(
-            has_b_data=arrays["b_data"] is not None,
-            has_q_data=arrays["q_data"] is not None,
-            has_k_data=arrays["k_data"] is not None,
-            has_dropout_mask=arrays["dropout_mask"] is not None,
-            has_q_index=arrays["q_index_offset"] is not None,
-            has_kv_index=arrays["kv_index_offset"] is not None,
-            sm_scale=sm_scale,
-            block_sizes=block_sizes,
-            backward_pass_impl=backward_pass_impl,
-            num_warps=num_warps,
-            interpret=interpret,
-            debug=debug,
-            dropout_rate=dropout_rate,
-            mask_fn=specs["mask_fn"],
-            bias_fn=specs["bias_fn"],
-            bias_fn_grad=specs["bias_fn_grad"],
-            b_spec_bwd=specs["b_spec_bwd"],
-            q_data_spec=specs["q_data_spec"],
-            k_data_spec=specs["k_data_spec"],
-        )
-        dq_ct, dk_ct, dv_ct = cp_bwd(
-            ct,
-            q,
-            k,
-            v,
-            rng_seed,
-            out,
-            lse,
-            _or_sentinel(arrays["b_data"]),
-            _or_sentinel(arrays["q_data"]),
-            _or_sentinel(arrays["k_data"]),
-            _or_sentinel(arrays["dropout_mask"]),
-            _or_sentinel(arrays["q_index_offset"]),
-            _or_sentinel(arrays["q_index_offset_size"]),
-            _or_sentinel(arrays["kv_index_offset"]),
-            _or_sentinel(arrays["kv_index_offset_size"]),
-        )
-    else:
-        # No multi-device mesh — call the raw backward kernel directly.
-        dq_ct, dk_ct, dv_ct = _mha_backward_raw(
-            ct,
-            q,
-            k,
-            v,
-            rng_seed,
-            out,
-            lse,
-            arrays["b_data"],
-            arrays["q_data"],
-            arrays["k_data"],
-            arrays["dropout_mask"],
-            arrays["q_index_offset"],
-            arrays["q_index_offset_size"],
-            arrays["kv_index_offset"],
-            arrays["kv_index_offset_size"],
-            mask_fn=specs["mask_fn"],
-            bias_fn=specs["bias_fn"],
-            bias_fn_grad=specs["bias_fn_grad"],
-            b_spec_bwd=specs["b_spec_bwd"],
-            q_data_spec=specs["q_data_spec"],
-            k_data_spec=specs["k_data_spec"],
-            sm_scale=sm_scale,
-            block_sizes=block_sizes,
-            backward_pass_impl=backward_pass_impl,
-            num_warps=num_warps,
-            interpret=interpret,
-            debug=debug,
-            dropout_rate=dropout_rate,
-        )
-    grads = [None, None, None, None, None, None, None, dq_ct, dk_ct, dv_ct]
-    grads.extend([None] * mask_num_leaves)
-    grads.extend([None] * bias_num_leaves)
-    return tuple(grads)
-
-
-def _mha_prim_abstract_eval(
-    q_aval,
-    k_aval,
-    v_aval,
-    rng_aval,
-    rng_seed_aval,
-    *rest,
-    sm_scale: float,
-    block_sizes: BlockSizes,
-    backward_pass_impl: str,
-    num_warps: int | None,
-    num_stages: int,
-    grid: tuple[int, ...] | None,
-    interpret: bool,
-    debug: bool,
-    dropout_rate: float,
-    dropout_impl: str,
-    mask_treedef,
-    bias_treedef,
-    mask_num_leaves: int,
-    bias_num_leaves: int,
-):
-    del (
-        k_aval,
-        v_aval,
-        rng_aval,
-        rng_seed_aval,
-        rest,
-        sm_scale,
-        block_sizes,
-        backward_pass_impl,
-        num_warps,
-        num_stages,
-        grid,
-        interpret,
-        debug,
-        dropout_rate,
-        dropout_impl,
-        mask_treedef,
-        bias_treedef,
-        mask_num_leaves,
-        bias_num_leaves,
-    )
-    return q_aval
-
-
-_mha_p.def_impl(_mha_prim_impl)
-_mha_p.def_abstract_eval(_mha_prim_abstract_eval)
-mlir.register_lowering(_mha_p, mlir.lower_fun(_mha_prim_impl, multiple_results=False))
-
-_mha_lin_p.def_impl(_mha_lin_prim_impl)
-_mha_lin_p.def_abstract_eval(_mha_lin_prim_abstract_eval)
-mlir.register_lowering(
-    _mha_lin_p, mlir.lower_fun(_mha_lin_prim_impl, multiple_results=False)
-)
-ad.primitive_transposes[_mha_lin_p] = _mha_lin_prim_transpose
-
-
-def _mha_batching_rule(batched_args, batch_dims, **params):
-    mask_treedef = params["mask_treedef"]
-    bias_treedef = params["bias_treedef"]
-    mask_num_leaves = params["mask_num_leaves"]
-    bias_num_leaves = params["bias_num_leaves"]
-
-    any_batched = any(d is not batching.not_mapped for d in batch_dims)
-    if not any_batched:
-        out = _mha_p.bind(*batched_args, **params)
-        return out, batching.not_mapped
-
-    q, k, v, rng, rng_seed, *mask_bias = batched_args
-    q_bdim, k_bdim, v_bdim, rng_bdim, rng_seed_bdim, *other_bdims = batch_dims
-
-    # Fast path: fold the outer (vmap) batch axis into the existing kernel batch
-    # dimension by reshaping q/k/v from (outer, batch, seq, heads, d) to
-    # (outer*batch, seq, heads, d).  This keeps a single pallas_call covering all
-    # data instead of launching one kernel per outer-batch element.
-    #
-    # Requirements:
-    #  - q, k, v are all batched on axis 0 (or will be moved there)
-    #  - mask/bias leaves are NOT themselves batched (broadcast to all elements)
-    #  - rng/rng_seed unbatched, or dropout disabled (rng is not data-dependent)
-    #  - grid is None so _mha_impl can derive the right grid from the merged shape
-    can_merge = (
-        q_bdim is not batching.not_mapped
-        and k_bdim is not batching.not_mapped
-        and v_bdim is not batching.not_mapped
-        and all(d is batching.not_mapped for d in other_bdims)
-        and (rng_bdim is batching.not_mapped or params["dropout_rate"] == 0.0)
-        and (rng_seed_bdim is batching.not_mapped or params["dropout_rate"] == 0.0)
-        and params["grid"] is None
-    )
-
-    if can_merge:
-        # Move vmap batch axis to front for all three tensors
-        q = jnp.moveaxis(q, q_bdim, 0)
-        k = jnp.moveaxis(k, k_bdim, 0)
-        v = jnp.moveaxis(v, v_bdim, 0)
-        outer = q.shape[0]  # vmap batch size
-        inner = q.shape[1]  # original kernel batch_size
-        q = q.reshape((outer * inner,) + q.shape[2:])
-        k = k.reshape((outer * inner,) + k.shape[2:])
-        v = v.reshape((outer * inner,) + v.shape[2:])
-        if rng_bdim is batching.not_mapped:
-            rng_merged = rng
-        else:
-            rng_merged = rng[0]
-        if rng_seed_bdim is batching.not_mapped:
-            rng_seed_merged = rng_seed
-        else:
-            rng_seed_merged = rng_seed[0]
-        # Reconstruct mask/bias from their (unbatched) leaves
-        mask_leaves = mask_bias[:mask_num_leaves]
-        bias_leaves = mask_bias[mask_num_leaves : mask_num_leaves + bias_num_leaves]
-        mask = _unflatten_optional_pytree(mask_treedef, mask_leaves)
-        bias = _unflatten_optional_pytree(bias_treedef, bias_leaves)
-        out = _mha_impl(
-            q=q,
-            k=k,
-            v=v,
-            mask=mask,
-            bias=bias,
-            rng=rng_merged,
-            rng_seed=rng_seed_merged,
-            sm_scale=params["sm_scale"],
-            block_sizes=params["block_sizes"],
-            backward_pass_impl=params["backward_pass_impl"],
-            num_warps=params["num_warps"],
-            num_stages=params["num_stages"],
-            grid=params["grid"],
-            interpret=params["interpret"],
-            debug=params["debug"],
-            dropout_rate=params["dropout_rate"],
-            dropout_impl=params["dropout_impl"],
-            output_activations=False,
-        )
-        out = out.reshape((outer, inner) + out.shape[1:])
-        return out, 0
-
-    # Fallback: vmap over elements that cannot be merged into the kernel grid.
-    # This handles unusual cases such as per-element masks/biases or custom grids.
-    new_args = []
-    in_axes = []
-    for x, d in zip(batched_args, batch_dims):
-        if d is batching.not_mapped:
-            new_args.append(x)
-            in_axes.append(None)
-        else:
-            new_args.append(jnp.moveaxis(x, d, 0) if d != 0 else x)
-            in_axes.append(0)
-
-    def _impl(q, k, v, rng, rng_seed, *mask_bias_leaves):
-        mask_leaves = mask_bias_leaves[:mask_num_leaves]
-        bias_leaves = mask_bias_leaves[mask_num_leaves:]
-        mask = _unflatten_optional_pytree(mask_treedef, mask_leaves)
-        bias = _unflatten_optional_pytree(bias_treedef, bias_leaves)
-        return _mha_impl(
-            q=q,
-            k=k,
-            v=v,
-            mask=mask,
-            bias=bias,
-            rng=rng,
-            rng_seed=rng_seed,
-            sm_scale=params["sm_scale"],
-            block_sizes=params["block_sizes"],
-            backward_pass_impl=params["backward_pass_impl"],
-            num_warps=params["num_warps"],
-            num_stages=params["num_stages"],
-            grid=params["grid"],
-            interpret=params["interpret"],
-            debug=params["debug"],
-            dropout_rate=params["dropout_rate"],
-            dropout_impl=params["dropout_impl"],
-            output_activations=False,
-        )
-
-    out = jax.vmap(_impl, in_axes=tuple(in_axes), out_axes=0)(*new_args)
-    return out, 0
-
-
-batching.primitive_batchers[_mha_p] = _mha_batching_rule
-
-
-def _mha_lin_batching_rule(batched_args, batch_dims, **params):
-    # Argument order: q, k, v, rng, rng_seed, out, lse, dq, dk, dv, *mask_bias
-    q_bdim, k_bdim, v_bdim = batch_dims[0], batch_dims[1], batch_dims[2]
-    rng_bdim, rng_seed_bdim = batch_dims[3], batch_dims[4]
-    out_bdim, lse_bdim = batch_dims[5], batch_dims[6]
-    dq_bdim, dk_bdim, dv_bdim = batch_dims[7], batch_dims[8], batch_dims[9]
-    other_bdims = batch_dims[10:]
-
-    any_batched = any(d is not batching.not_mapped for d in batch_dims)
-    if not any_batched:
-        out_val = _mha_lin_p.bind(*batched_args, **params)
-        return out_val, batching.not_mapped
-
-    mask_num_leaves = params["mask_num_leaves"]
-    bias_num_leaves = params["bias_num_leaves"]
-
-    # Fast path: fold the outer (vmap) batch axis into the kernel's existing
-    # batch dimension for all data tensors (q/k/v/out/lse/dq/dk/dv).
-    # Requires all data tensors to be batched on the same axis, mask/bias
-    # leaves unbatched, and no custom grid.
-    data_bdims = (q_bdim, k_bdim, v_bdim, out_bdim, lse_bdim, dq_bdim, dk_bdim, dv_bdim)
-    can_merge = (
-        all(d is not batching.not_mapped for d in data_bdims)
-        and all(d is batching.not_mapped for d in other_bdims)
-        and (rng_bdim is batching.not_mapped or params["dropout_rate"] == 0.0)
-        and (rng_seed_bdim is batching.not_mapped or params["dropout_rate"] == 0.0)
-        and params["grid"] is None
-    )
-
-    if can_merge:
-        q, k, v, rng, rng_seed, out_val, lse, dq, dk, dv, *rest = batched_args
-        # Move vmap batch axis to front for all data tensors
-        q = jnp.moveaxis(q, q_bdim, 0)
-        k = jnp.moveaxis(k, k_bdim, 0)
-        v = jnp.moveaxis(v, v_bdim, 0)
-        out_val = jnp.moveaxis(out_val, out_bdim, 0)
-        lse = jnp.moveaxis(lse, lse_bdim, 0)
-        dq = jnp.moveaxis(dq, dq_bdim, 0)
-        dk = jnp.moveaxis(dk, dk_bdim, 0)
-        dv = jnp.moveaxis(dv, dv_bdim, 0)
-
-        outer = q.shape[0]
-        inner = q.shape[1]
-
-        def _merge(x):
-            # Fold (outer, inner, ...) -> (outer*inner, ...)
-            return x.reshape((outer * inner,) + x.shape[2:])
-
-        q = _merge(q)
-        k = _merge(k)
-        v = _merge(v)
-        out_val = _merge(out_val)
-        lse = _merge(lse)
-        dq = _merge(dq)
-        dk = _merge(dk)
-        dv = _merge(dv)
-
-        rng_merged = rng if rng_bdim is batching.not_mapped else rng[0]
-        rng_seed_merged = (
-            rng_seed if rng_seed_bdim is batching.not_mapped else rng_seed[0]
-        )
-
-        mask_leaves = rest[:mask_num_leaves]
-        bias_leaves = rest[mask_num_leaves : mask_num_leaves + bias_num_leaves]
-        mask = _unflatten_optional_pytree(params["mask_treedef"], mask_leaves)
-        bias = _unflatten_optional_pytree(params["bias_treedef"], bias_leaves)
-
-        tangent_out = _mha_impl_jvp_from_lse(
-            q=q,
-            k=k,
-            v=v,
-            dq=dq,
-            dk=dk,
-            dv=dv,
-            lse=lse,
-            mask=mask,
-            bias=bias,
-            rng=rng_merged,
-            rng_seed=rng_seed_merged,
-            sm_scale=params["sm_scale"],
-            block_sizes=params["block_sizes"],
-            backward_pass_impl=params["backward_pass_impl"],
-            num_warps=params["num_warps"],
-            num_stages=params["num_stages"],
-            grid=params["grid"],
-            interpret=params["interpret"],
-            debug=params["debug"],
-            dropout_rate=params["dropout_rate"],
-            dropout_impl=params["dropout_impl"],
-        )
-        tangent_out = tangent_out.reshape((outer, inner) + tangent_out.shape[1:])
-        return tangent_out, 0
-
-    # Fallback: vmap over elements that cannot be merged into the kernel grid.
-    if not (dq_bdim == dk_bdim == dv_bdim):
-        raise NotImplementedError("mha_lin: mismatched tangent batch dims")
-
-    q, k, v, rng, rng_seed, out_val, lse, dq, dk, dv, *rest = batched_args
-    dq = jnp.moveaxis(dq, dq_bdim, 0)
-    dk = jnp.moveaxis(dk, dk_bdim, 0)
-    dv = jnp.moveaxis(dv, dv_bdim, 0)
-
-    def _impl(dq_i, dk_i, dv_i):
-        return _mha_lin_prim_impl(
-            q, k, v, rng, rng_seed, out_val, lse, dq_i, dk_i, dv_i, *rest, **params
-        )
-
-    y = jax.vmap(_impl, in_axes=(0, 0, 0), out_axes=0)(dq, dk, dv)
-    return y, 0
-
-
-batching.primitive_batchers[_mha_lin_p] = _mha_lin_batching_rule

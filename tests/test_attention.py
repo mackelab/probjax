@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 
 from probjax.nn.layers.attention import (
     dot_product_attention,
@@ -111,6 +112,70 @@ def test_mha_flash_residuals_or_expected_incompatibility():
     assert len(residuals) == 1
 
 
+def test_mha_flash_named_sharding_jit_forward_and_grad_or_expected_incompatibility():
+    if jax.default_backend() != "gpu":
+        pytest.skip("FlashAttention3 sharding regression test requires GPU.")
+    if jax.device_count() < 2:
+        pytest.skip("FlashAttention3 sharding regression test requires 2 devices.")
+
+    mesh = Mesh(np.asarray(jax.devices()[:2]), ("data",))
+    sharding = NamedSharding(mesh, P("data", None, None, None))
+
+    q = jax.random.normal(jax.random.PRNGKey(11), (2, 256, 8, 64), dtype=jnp.float16)
+    k = jax.random.normal(jax.random.PRNGKey(12), (2, 256, 8, 64), dtype=jnp.float16)
+    v = jax.random.normal(jax.random.PRNGKey(13), (2, 256, 8, 64), dtype=jnp.float16)
+
+    q = jax.device_put(q, sharding)
+    k = jax.device_put(k, sharding)
+    v = jax.device_put(v, sharding)
+
+    with jax.set_mesh(mesh):
+        fwd = jax.jit(
+            lambda q, k, v: mha_flash(
+                q,
+                k,
+                v,
+                deterministic=True,
+                block_q=128,
+                block_k=128,
+                block_kv=128,
+                max_concurrent_steps=2,
+                causal=False,
+            )
+        )
+        grad_fn = jax.jit(
+            jax.grad(
+                lambda q, k, v: jnp.sum(
+                    mha_flash(
+                        q,
+                        k,
+                        v,
+                        deterministic=True,
+                        block_q=128,
+                        block_k=128,
+                        block_kv=128,
+                        max_concurrent_steps=2,
+                        causal=False,
+                    ).astype(jnp.float32)
+                ),
+                argnums=(0, 1, 2),
+            )
+        )
+
+        try:
+            out = fwd(q, k, v)
+            dq, dk, dv = grad_fn(q, k, v)
+        except Exception as exc:
+            if _is_expected_flash3_incompatibility(exc):
+                pytest.skip(f"Expected FlashAttention3 incompatibility: {exc}")
+            raise
+
+    assert out.shape == q.shape
+    assert dq.shape == q.shape
+    assert dk.shape == k.shape
+    assert dv.shape == v.shape
+
+
 @pytest.fixture(
     params=[
         CausalMask,
@@ -171,6 +236,96 @@ def test_attention_forward_mode_jvp_matches_reference():
 
     assert jnp.allclose(primal_ref, primal_flex, atol=JVP_PRIMAL_ATOL, rtol=FWD_RTOL)
     assert jnp.allclose(tangent_ref, tangent_flex, atol=JVP_TANGENT_ATOL, rtol=FWD_RTOL)
+
+
+def test_flex_attention_named_sharding_jit_forward_grad_and_jvp():
+    if jax.default_backend() != "gpu":
+        pytest.skip("NamedSharding attention regression test requires GPU.")
+    if jax.device_count() < 2:
+        pytest.skip("NamedSharding attention regression test requires 2 devices.")
+
+    mesh = Mesh(np.asarray(jax.devices()[:2]), ("data",))
+    sharding = NamedSharding(mesh, P("data", None, None, None))
+
+    q = jax.random.normal(jax.random.PRNGKey(0), (2, 64, 4, 32), dtype=jnp.float16)
+    k = jax.random.normal(jax.random.PRNGKey(1), (2, 64, 4, 32), dtype=jnp.float16)
+    v = jax.random.normal(jax.random.PRNGKey(2), (2, 64, 4, 32), dtype=jnp.float16)
+
+    q = jax.device_put(q, sharding)
+    k = jax.device_put(k, sharding)
+    v = jax.device_put(v, sharding)
+
+    with jax.set_mesh(mesh):
+        forward = jax.jit(lambda q, k, v: flex_attention(q, k, v, deterministic=True))
+        out = forward(q, k, v)
+        assert out.shape == q.shape
+
+        grad_fn = jax.jit(
+            jax.grad(
+                lambda q, k, v: jnp.sum(
+                    flex_attention(q, k, v, deterministic=True).astype(jnp.float32)
+                ),
+                argnums=(0, 1, 2),
+            )
+        )
+        dq, dk, dv = grad_fn(q, k, v)
+        assert dq.shape == q.shape
+        assert dk.shape == k.shape
+        assert dv.shape == v.shape
+
+        dq_t = jnp.ones_like(q)
+        dk_t = jnp.ones_like(k)
+        dv_t = jnp.ones_like(v)
+        primal, tangent = jax.jit(
+            lambda q, k, v, dq, dk, dv: jax.jvp(
+                lambda q, k, v: flex_attention(q, k, v, deterministic=True),
+                (q, k, v),
+                (dq, dk, dv),
+            )
+        )(q, k, v, dq_t, dk_t, dv_t)
+        assert primal.shape == q.shape
+        assert tangent.shape == q.shape
+
+
+def test_flex_attention_named_sharding_jit_without_set_mesh_avoids_all_gathers():
+    if jax.default_backend() != "gpu":
+        pytest.skip("NamedSharding attention regression test requires GPU.")
+    if jax.device_count() < 2:
+        pytest.skip("NamedSharding attention regression test requires 2 devices.")
+
+    mesh = Mesh(np.asarray(jax.devices()[:2]), ("data",))
+    sharding = NamedSharding(mesh, P("data", None, None, None))
+
+    q = jax.random.normal(jax.random.PRNGKey(10), (2, 64, 4, 32), dtype=jnp.float16)
+    k = jax.random.normal(jax.random.PRNGKey(11), (2, 64, 4, 32), dtype=jnp.float16)
+    v = jax.random.normal(jax.random.PRNGKey(12), (2, 64, 4, 32), dtype=jnp.float16)
+
+    q = jax.device_put(q, sharding)
+    k = jax.device_put(k, sharding)
+    v = jax.device_put(v, sharding)
+
+    forward = jax.jit(lambda q, k, v: flex_attention(q, k, v, deterministic=True))
+    grad_fn = jax.jit(
+        jax.grad(
+            lambda q, k, v: jnp.sum(
+                flex_attention(q, k, v, deterministic=True).astype(jnp.float32)
+            ),
+            argnums=(0, 1, 2),
+        )
+    )
+
+    hlo_fwd = forward.lower(q, k, v).compiler_ir(dialect="hlo").as_hlo_text().lower()
+    hlo_bwd = grad_fn.lower(q, k, v).compiler_ir(dialect="hlo").as_hlo_text().lower()
+
+    assert "all-gather" not in hlo_fwd
+    assert "all-gather" not in hlo_bwd
+
+    out = forward(q, k, v)
+    dq, dk, dv = grad_fn(q, k, v)
+    assert out.shape == q.shape
+    assert dq.shape == q.shape
+    assert dk.shape == k.shape
+    assert dv.shape == v.shape
 
 
 # @pytest.mark.gpu
