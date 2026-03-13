@@ -43,97 +43,38 @@ from ..kernel_utils import (
 )
 
 
-def _detect_sharding(q: jax.Array):
-    """Detect if q (B, T, H, D) has NamedSharding on batch and/or heads dims.
+def _validate_mha_sharding(sharding, name: str):
+    """Validate that a NamedSharding on an MHA operand is supported.
 
-    Returns (axis_names, mesh) where *axis_names* is a dict mapping dimension
-    index to the mesh axis name (e.g. ``{0: 'data', 2: 'model'}``).
-    Returns ``({}, None)`` if no relevant sharding is detected.
+    For q/k/v shaped ``(B, T, H, D)`` only sharding on the batch (dim 0) and
+    heads (dim 2) dimensions is allowed.  Sharding on the sequence (dim 1) or
+    head_dim (dim 3) dimensions raises an informative ``ValueError``.
 
-    Raises ``ValueError`` if sharding is found on the sequence (dim 1) or
-    head_dim (dim 3) dimensions — these are not supported by the pallas
-    attention kernel.
+    Called inside the ``partition()`` callback of ``custom_partitioning``
+    where the sharding object is always available.
     """
-    import jax._src.core as core
-
-    try:
-        aval = core.get_aval(q)
-        sharding = getattr(aval, "sharding", None)
-        if sharding is None:
-            return {}, None
-        spec = getattr(sharding, "spec", None)
-        if spec is None or len(spec) == 0:
-            return {}, None
-
-        # Validate: only batch (0) and heads (2) are allowed.
-        dim_names = {0: "batch", 1: "sequence", 2: "heads", 3: "head_dim"}
-        axis_names = {}
-        for dim_idx, axis in enumerate(spec):
-            if axis is None:
-                continue
-            if dim_idx == 1:
-                raise ValueError(
-                    f"Pallas flash-attention does not support sharding on the "
-                    f"sequence dimension (dim 1). Got PartitionSpec{tuple(spec)} "
-                    f"which shards dim 1 over mesh axis '{axis}'. "
-                    f"Only batch (dim 0) and heads (dim 2) sharding are supported."
-                )
-            if dim_idx == 3:
-                raise ValueError(
-                    f"Pallas flash-attention does not support sharding on the "
-                    f"head_dim dimension (dim 3). Got PartitionSpec{tuple(spec)} "
-                    f"which shards dim 3 over mesh axis '{axis}'. "
-                    f"Only batch (dim 0) and heads (dim 2) sharding are supported."
-                )
-            if dim_idx in (0, 2):
-                axis_names[dim_idx] = axis
-
-        mesh = sharding.mesh if axis_names else None
-        return axis_names, mesh
-    except ValueError:
-        raise  # Re-raise our own validation errors.
-    except Exception:
-        return {}, None
-
-
-def _detect_sharding_multi(*arrays: jax.Array):
-    """Call ``_detect_sharding`` on each array and return the first non-empty result.
-
-    This validates sharding on ALL provided arrays (raising on unsupported dims)
-    while returning the detected axis_names from whichever array first has sharding.
-    """
-    result_names, result_mesh = {}, None
-    for arr in arrays:
-        names, mesh = _detect_sharding(arr)
-        if names and not result_names:
-            result_names, result_mesh = names, mesh
-    return result_names, result_mesh
-
-
-def _infer_shard_spec(arr, axis_names):
-    """Build a PartitionSpec for *arr* mirroring its aval sharding.
-
-    *axis_names* is the dict ``{dim_idx: axis_name}`` from ``_detect_sharding``.
-    We read the aval's existing sharding spec and mirror it.  For arrays without
-    an aval sharding (e.g. scalars), we replicate across all dims.
-    """
-    import jax._src.core as core
-
-    try:
-        aval = core.get_aval(arr)
-    except Exception:
-        return P()
-
-    sharding = getattr(aval, "sharding", None)
-    if sharding is None:
-        return P(*([None] * aval.ndim)) if hasattr(aval, "ndim") else P()
-
     spec = getattr(sharding, "spec", None)
-    if spec is None:
-        return P(*([None] * aval.ndim)) if hasattr(aval, "ndim") else P()
-
-    # Mirror whatever the trace already decided for this array.
-    return P(*spec)
+    if spec is None or len(spec) == 0:
+        return
+    for dim_idx, axis in enumerate(spec):
+        if axis is None:
+            continue
+        if dim_idx == 1:
+            raise ValueError(
+                f"Pallas flash-attention does not support sharding on the "
+                f"sequence dimension (dim 1) of '{name}'. "
+                f"Got PartitionSpec{tuple(spec)} which shards dim 1 over "
+                f"mesh axis '{axis}'. "
+                f"Only batch (dim 0) and heads (dim 2) sharding are supported."
+            )
+        if dim_idx == 3:
+            raise ValueError(
+                f"Pallas flash-attention does not support sharding on the "
+                f"head_dim dimension (dim 3) of '{name}'. "
+                f"Got PartitionSpec{tuple(spec)} which shards dim 3 over "
+                f"mesh axis '{axis}'. "
+                f"Only batch (dim 0) and heads (dim 2) sharding are supported."
+            )
 
 
 def pallas_load(ref, idx, *, mask=None, other=None):
@@ -2456,36 +2397,386 @@ def _mha_bind(
     return out
 
 
-def _mha_sharded(inner, q, k, v, rng, mask_leaves, bias_leaves, axis_names, mesh):
-    """Wrap `inner` (custom_jvp mha function) in shard_map for sharded inputs.
+def _build_mha_sharding_rule(
+    mask_leaf_ndims: tuple[int, ...],
+    bias_leaf_ndims: tuple[int, ...],
+    *,
+    include_rng: bool,
+    extra_inputs: tuple[str, ...] = (),
+    output_rule: str = "batch seq heads head_dim",
+):
+    """Build a sharding_rule string for a custom_partitioning MHA function.
 
-    This is called from `mha()` when NamedSharding is detected on q/k/v.
-    Wrapping happens at this level (before the primitive) because inside the
-    primitive's impl/lowering, arrays are re-traced as abstract values that
-    lose their sharding annotations.
+    Core array args are always ``q, k, v`` shaped ``(B, T, H, D)`` plus an
+    optional ``rng_seed`` scalar.  Mask/bias pytree leaves have irregular
+    shapes so they get unique replicated factor names (``_m0d0``, ``_b1d2``,
+    etc.) to ensure they are never sharded.
+
+    Parameters
+    ----------
+    mask_leaf_ndims : per-leaf ndim for each flattened mask array
+    bias_leaf_ndims : per-leaf ndim for each flattened bias array
+    include_rng : whether ``rng_seed ()`` is among the inputs
+    extra_inputs : sharding rule fragments for additional inputs inserted
+        between ``rng_seed`` and the mask/bias leaves (e.g. ``("batch seq
+        heads head_dim",)`` for ``out`` in the backward).
+    output_rule : sharding rule fragment for the output(s).
     """
-    from jax import shard_map
+    # q, k, v all (B, T, H, D).  k/v may have different seq length but the
+    # factor name is still "seq" — the partitioner treats identically-named
+    # factors across operands as the same axis even when sizes differ (it just
+    # requires compatible sharding decisions).  Since we mark seq/head_dim as
+    # need_replication_factors they cannot be sharded anyway, so the size
+    # difference is immaterial.
+    parts = [
+        "batch seq heads head_dim",  # q
+        "batch seq heads head_dim",  # k
+        "batch seq heads head_dim",  # v
+    ]
+    if include_rng:
+        parts.append("")  # rng_seed is a scalar ()
+    for frag in extra_inputs:
+        parts.append(frag)
+    # Mask leaves — give each dimension a unique replicated name.
+    for i, nd in enumerate(mask_leaf_ndims):
+        parts.append(" ".join(f"_m{i}d{d}" for d in range(nd)) if nd > 0 else "")
+    # Bias leaves — same.
+    for i, nd in enumerate(bias_leaf_ndims):
+        parts.append(" ".join(f"_b{i}d{d}" for d in range(nd)) if nd > 0 else "")
+    return ", ".join(parts) + " -> " + output_rule
 
-    # rng may be None — shard_map requires array leaves, so replace with dummy.
-    rng_val = rng if rng is not None else jax.random.PRNGKey(0)
 
-    # Build in_specs for each argument: q, k, v, rng, mask_leaves, bias_leaves
-    q_spec = _infer_shard_spec(q, axis_names)
-    k_spec = _infer_shard_spec(k, axis_names)
-    v_spec = _infer_shard_spec(v, axis_names)
-    rng_spec = _infer_shard_spec(rng_val, axis_names)
-    mask_specs = tuple(_infer_shard_spec(l, axis_names) for l in mask_leaves)
-    bias_specs = tuple(_infer_shard_spec(l, axis_names) for l in bias_leaves)
+def _mha_replication_factors(
+    mask_leaf_ndims: tuple[int, ...],
+    bias_leaf_ndims: tuple[int, ...],
+) -> tuple[str, ...]:
+    """Return need_replication_factors covering seq, head_dim, and all
+    mask/bias leaf dimension factors."""
+    factors = ["seq", "head_dim"]
+    for i, nd in enumerate(mask_leaf_ndims):
+        for d in range(nd):
+            factors.append(f"_m{i}d{d}")
+    for i, nd in enumerate(bias_leaf_ndims):
+        for d in range(nd):
+            factors.append(f"_b{i}d{d}")
+    return tuple(factors)
 
-    in_specs = (q_spec, k_spec, v_spec, rng_spec, mask_specs, bias_specs)
-    out_specs = q_spec  # output has same shape/sharding as q
 
-    return shard_map(
-        inner,
-        mesh=mesh,
-        in_specs=in_specs,
-        out_specs=out_specs,
-    )(q, k, v, rng_val, mask_leaves, bias_leaves)
+def _make_mha_partitioned(
+    *,
+    mask_treedef,
+    bias_treedef,
+    mask_num_leaves: int,
+    bias_num_leaves: int,
+    mask_leaf_ndims: tuple[int, ...],
+    bias_leaf_ndims: tuple[int, ...],
+    sm_scale: float,
+    block_sizes: BlockSizes,
+    backward_pass_impl: str,
+    num_warps: int | None,
+    num_stages: int,
+    grid: tuple[int, ...] | None,
+    interpret: bool,
+    debug: bool,
+    dropout_rate: float,
+    dropout_impl: str,
+):
+    """Build a differentiable, SPMD-partitionable MHA function.
+
+    Returns ``f(q, k, v, rng, mask_leaves_tuple, bias_leaves_tuple) -> out``
+    that uses ``custom_partitioning`` on forward/backward Pallas kernels so
+    GSPMD runs them per-shard, and ``custom_vjp`` for reverse-mode autodiff.
+
+    All static configuration (tile sizes, mask/bias treedefs, etc.) is
+    captured in the closure.
+    """
+    from jax.experimental.custom_partitioning import custom_partitioning
+
+    repl_factors = _mha_replication_factors(mask_leaf_ndims, bias_leaf_ndims)
+
+    # ── Forward (primal only, no activations) ──────────────────────────
+    @custom_partitioning
+    def _fwd(q, k, v, rng_seed, mask_leaves_tuple, bias_leaves_tuple):
+        mask = _unflatten_optional_pytree(mask_treedef, mask_leaves_tuple)
+        bias = _unflatten_optional_pytree(bias_treedef, bias_leaves_tuple)
+        return _mha_impl(
+            q=q,
+            k=k,
+            v=v,
+            mask=mask,
+            bias=bias,
+            rng=None,
+            rng_seed=rng_seed,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+            output_activations=False,
+        )
+
+    def _fwd_partition(mesh, arg_shapes, result_shape):
+        # arg_shapes: q, k, v, rng_seed, mask_leaves_tuple, bias_leaves_tuple
+        flat_arg_shapes = jax.tree.leaves(arg_shapes)
+        # First 3 are q, k, v
+        for shape, name in zip(flat_arg_shapes[:3], ("q", "k", "v")):
+            _validate_mha_sharding(shape.sharding, name)
+        result_shardings = jax.tree.map(lambda s: s.sharding, result_shape)
+        arg_shardings = jax.tree.map(lambda s: s.sharding, arg_shapes)
+
+        def lower_fn(q, k, v, rng_seed, mask_leaves_tuple, bias_leaves_tuple):
+            mask = _unflatten_optional_pytree(mask_treedef, mask_leaves_tuple)
+            bias = _unflatten_optional_pytree(bias_treedef, bias_leaves_tuple)
+            return _mha_impl(
+                q=q,
+                k=k,
+                v=v,
+                mask=mask,
+                bias=bias,
+                rng=None,
+                rng_seed=rng_seed,
+                sm_scale=sm_scale,
+                block_sizes=block_sizes,
+                backward_pass_impl=backward_pass_impl,
+                num_warps=num_warps,
+                num_stages=num_stages,
+                grid=grid,
+                interpret=interpret,
+                debug=debug,
+                dropout_rate=dropout_rate,
+                dropout_impl=dropout_impl,
+                output_activations=False,
+            )
+
+        return mesh, lower_fn, result_shardings, arg_shardings
+
+    fwd_rule = _build_mha_sharding_rule(
+        mask_leaf_ndims,
+        bias_leaf_ndims,
+        include_rng=True,
+        output_rule="batch seq heads head_dim",
+    )
+    _fwd.def_partition(
+        partition=_fwd_partition,
+        sharding_rule=fwd_rule,
+        need_replication_factors=repl_factors,
+    )
+
+    # ── Forward with residuals (for VJP) ───────────────────────────────
+    @custom_partitioning
+    def _fwd_res(q, k, v, rng_seed, mask_leaves_tuple, bias_leaves_tuple):
+        mask = _unflatten_optional_pytree(mask_treedef, mask_leaves_tuple)
+        bias = _unflatten_optional_pytree(bias_treedef, bias_leaves_tuple)
+        out, (_q, _k, _v, _seed, out_res, lse) = _mha_impl(
+            q=q,
+            k=k,
+            v=v,
+            mask=mask,
+            bias=bias,
+            rng=None,
+            rng_seed=rng_seed,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+            output_activations=True,
+        )
+        return out, lse
+
+    def _fwd_res_partition(mesh, arg_shapes, result_shape):
+        flat_arg_shapes = jax.tree.leaves(arg_shapes)
+        for shape, name in zip(flat_arg_shapes[:3], ("q", "k", "v")):
+            _validate_mha_sharding(shape.sharding, name)
+        result_shardings = jax.tree.map(lambda s: s.sharding, result_shape)
+        arg_shardings = jax.tree.map(lambda s: s.sharding, arg_shapes)
+
+        def lower_fn(q, k, v, rng_seed, mask_leaves_tuple, bias_leaves_tuple):
+            mask = _unflatten_optional_pytree(mask_treedef, mask_leaves_tuple)
+            bias = _unflatten_optional_pytree(bias_treedef, bias_leaves_tuple)
+            out, (_q, _k, _v, _seed, out_res, lse) = _mha_impl(
+                q=q,
+                k=k,
+                v=v,
+                mask=mask,
+                bias=bias,
+                rng=None,
+                rng_seed=rng_seed,
+                sm_scale=sm_scale,
+                block_sizes=block_sizes,
+                backward_pass_impl=backward_pass_impl,
+                num_warps=num_warps,
+                num_stages=num_stages,
+                grid=grid,
+                interpret=interpret,
+                debug=debug,
+                dropout_rate=dropout_rate,
+                dropout_impl=dropout_impl,
+                output_activations=True,
+            )
+            return out, lse
+
+        return mesh, lower_fn, result_shardings, arg_shardings
+
+    # Output is (out(B,T,H,D), lse(B,H,T))
+    fwd_res_rule = _build_mha_sharding_rule(
+        mask_leaf_ndims,
+        bias_leaf_ndims,
+        include_rng=True,
+        output_rule="batch seq heads head_dim, batch heads seq",
+    )
+    _fwd_res.def_partition(
+        partition=_fwd_res_partition,
+        sharding_rule=fwd_res_rule,
+        need_replication_factors=repl_factors,
+    )
+
+    # ── Backward kernel ────────────────────────────────────────────────
+    @custom_partitioning
+    def _bwd_kernel(
+        do, q, k, v, rng_seed, out, lse, mask_leaves_tuple, bias_leaves_tuple
+    ):
+        mask = _unflatten_optional_pytree(mask_treedef, mask_leaves_tuple)
+        bias = _unflatten_optional_pytree(bias_treedef, bias_leaves_tuple)
+        res = (q, k, v, rng_seed, out, lse)
+        dq, dk, dv, _, _, _ = _mha_backward(
+            sm_scale,
+            block_sizes,
+            backward_pass_impl,
+            num_warps,
+            num_stages,
+            grid,
+            interpret,
+            debug,
+            dropout_rate,
+            dropout_impl,
+            res,
+            do,
+            mask=mask,
+            bias=bias,
+        )
+        return dq, dk, dv
+
+    def _bwd_partition(mesh, arg_shapes, result_shape):
+        result_shardings = jax.tree.map(lambda s: s.sharding, result_shape)
+        arg_shardings = jax.tree.map(lambda s: s.sharding, arg_shapes)
+
+        def lower_fn(
+            do, q, k, v, rng_seed, out, lse, mask_leaves_tuple, bias_leaves_tuple
+        ):
+            mask = _unflatten_optional_pytree(mask_treedef, mask_leaves_tuple)
+            bias = _unflatten_optional_pytree(bias_treedef, bias_leaves_tuple)
+            res = (q, k, v, rng_seed, out, lse)
+            dq, dk, dv, _, _, _ = _mha_backward(
+                sm_scale,
+                block_sizes,
+                backward_pass_impl,
+                num_warps,
+                num_stages,
+                grid,
+                interpret,
+                debug,
+                dropout_rate,
+                dropout_impl,
+                res,
+                do,
+                mask=mask,
+                bias=bias,
+            )
+            return dq, dk, dv
+
+        return mesh, lower_fn, result_shardings, arg_shardings
+
+    # do(B,T,H,D) q(B,T,H,D) k(B,T,H,D) v(B,T,H,D) rng_seed() out(B,T,H,D)
+    # lse(B,H,T) mask_leaves... bias_leaves...
+    # -> dq(B,T,H,D) dk(B,T,H,D) dv(B,T,H,D)
+    bwd_rule = _build_mha_sharding_rule(
+        mask_leaf_ndims,
+        bias_leaf_ndims,
+        include_rng=True,
+        extra_inputs=(
+            "batch seq heads head_dim",  # do (placed before q,k,v in the arg list)
+        ),
+        output_rule=(
+            "batch seq heads head_dim, "
+            "batch seq heads head_dim, "
+            "batch seq heads head_dim"
+        ),
+    )
+
+    # Wait — the arg order is (do, q, k, v, rng_seed, out, lse, mask, bias).
+    # _build_mha_sharding_rule assumes (q, k, v, rng_seed, extras, mask, bias).
+    # We need to build the rule manually for backward.
+    bwd_parts = [
+        "batch seq heads head_dim",  # do
+        "batch seq heads head_dim",  # q
+        "batch seq heads head_dim",  # k
+        "batch seq heads head_dim",  # v
+        "",  # rng_seed ()
+        "batch seq heads head_dim",  # out
+        "batch heads seq",  # lse
+    ]
+    for i, nd in enumerate(mask_leaf_ndims):
+        bwd_parts.append(" ".join(f"_m{i}d{d}" for d in range(nd)) if nd > 0 else "")
+    for i, nd in enumerate(bias_leaf_ndims):
+        bwd_parts.append(" ".join(f"_b{i}d{d}" for d in range(nd)) if nd > 0 else "")
+    bwd_rule = (
+        ", ".join(bwd_parts) + " -> batch seq heads head_dim, "
+        "batch seq heads head_dim, "
+        "batch seq heads head_dim"
+    )
+    _bwd_kernel.def_partition(
+        partition=_bwd_partition,
+        sharding_rule=bwd_rule,
+        need_replication_factors=repl_factors,
+    )
+
+    # ── Differentiable wrapper (custom_vjp) ────────────────────────────
+    @jax.custom_vjp
+    def _op(q, k, v, rng, mask_leaves_tuple, bias_leaves_tuple):
+        rng_seed = _rng_seed_from_key(rng if rng is not None else jax.random.PRNGKey(0))
+        return _fwd(q, k, v, rng_seed, mask_leaves_tuple, bias_leaves_tuple)
+
+    def _op_fwd(q, k, v, rng, mask_leaves_tuple, bias_leaves_tuple):
+        rng_val = rng if rng is not None else jax.random.PRNGKey(0)
+        rng_seed = _rng_seed_from_key(rng_val)
+        out, lse = _fwd_res(q, k, v, rng_seed, mask_leaves_tuple, bias_leaves_tuple)
+        # Residuals: everything needed for backward.
+        res = (q, k, v, rng_seed, out, lse, mask_leaves_tuple, bias_leaves_tuple)
+        return out, res
+
+    def _op_bwd(res, do):
+        q, k, v, rng_seed, out, lse, mask_leaves_tuple, bias_leaves_tuple = res
+        dq, dk, dv = _bwd_kernel(
+            do,
+            q,
+            k,
+            v,
+            rng_seed,
+            out,
+            lse,
+            mask_leaves_tuple,
+            bias_leaves_tuple,
+        )
+        # Return grads for (q, k, v, rng, mask_leaves_tuple, bias_leaves_tuple).
+        # rng, mask, bias have no gradients.
+        zero_rng = None
+        zero_mask = jax.tree.map(jnp.zeros_like, mask_leaves_tuple)
+        zero_bias = jax.tree.map(jnp.zeros_like, bias_leaves_tuple)
+        return dq, dk, dv, zero_rng, zero_mask, zero_bias
+
+    _op.defvjp(_op_fwd, _op_bwd)
+    return _op
 
 
 def mha(
@@ -2515,6 +2806,11 @@ def mha(
     ``nondiff_argnums`` to the inner ``custom_jvp`` function, making ``mha``
     safe to use inside ``jax.checkpoint`` (remat) even when the mask or bias
     carries dynamic traced arrays.
+
+    When inputs carry ``NamedSharding`` (e.g. batch-sharded across a device
+    mesh) and ``diff_mode="reverse"``, forward and backward Pallas kernels
+    are automatically run per-shard via ``custom_partitioning`` — no
+    ``shard_map`` wrapping is needed at the call site.
     """
     if diff_mode not in ("reverse", "forward"):
         raise ValueError(
@@ -2526,10 +2822,36 @@ def mha(
     mask_treedef, mask_leaves = _flatten_optional_pytree(mask)
     bias_treedef, bias_leaves = _flatten_optional_pytree(bias)
 
-    # Build the inner custom_jvp function with static config captured via
-    # functools.partial.  This ensures mask/bias array leaves and rng flow
-    # through JAX tracing as normal operands (remat-safe), while purely
-    # static metadata (treedefs, scalars) lives in the closure.
+    if diff_mode == "reverse":
+        # Use custom_partitioning + custom_vjp for SPMD-aware reverse mode.
+        mask_leaf_ndims = tuple(
+            leaf.ndim if hasattr(leaf, "ndim") else 0 for leaf in mask_leaves
+        )
+        bias_leaf_ndims = tuple(
+            leaf.ndim if hasattr(leaf, "ndim") else 0 for leaf in bias_leaves
+        )
+        inner = _make_mha_partitioned(
+            mask_treedef=mask_treedef,
+            bias_treedef=bias_treedef,
+            mask_num_leaves=len(mask_leaves),
+            bias_num_leaves=len(bias_leaves),
+            mask_leaf_ndims=mask_leaf_ndims,
+            bias_leaf_ndims=bias_leaf_ndims,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+        )
+        return inner(q, k, v, rng, mask_leaves, bias_leaves)
+
+    # diff_mode="forward": use the existing custom_jvp path (no SPMD
+    # optimization — forward-mode JVP is uncommon in production).
     inner = _make_mha_custom_jvp(
         mask_treedef=mask_treedef,
         bias_treedef=bias_treedef,
@@ -2547,18 +2869,6 @@ def mha(
         dropout_impl=dropout_impl,
         diff_mode=diff_mode,
     )
-
-    # Detect NamedSharding on q/k/v.  When present, wrap the entire
-    # custom_jvp function in shard_map so that pallas_call runs per-shard
-    # without XLA inserting all-gathers.  Detection must happen HERE (before
-    # the primitive bind) because inside the primitive impl/lowering, arrays
-    # are re-traced as abstract values that lose sharding info.
-    axis_names, mesh = _detect_sharding_multi(q, k, v)
-    if axis_names:
-        return _mha_sharded(
-            inner, q, k, v, rng, mask_leaves, bias_leaves, axis_names, mesh
-        )
-
     return inner(q, k, v, rng, mask_leaves, bias_leaves)
 
 
