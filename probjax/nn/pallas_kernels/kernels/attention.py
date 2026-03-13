@@ -3405,20 +3405,33 @@ def _mha_batching_rule(batched_args, batch_dims, **params):
     q, k, v, rng, rng_seed, *mask_bias = batched_args
     q_bdim, k_bdim, v_bdim, rng_bdim, rng_seed_bdim, *other_bdims = batch_dims
 
+    # Fast path: fold the outer (vmap) batch axis into the existing kernel batch
+    # dimension by reshaping q/k/v from (outer, batch, seq, heads, d) to
+    # (outer*batch, seq, heads, d).  This keeps a single pallas_call covering all
+    # data instead of launching one kernel per outer-batch element.
+    #
+    # Requirements:
+    #  - q, k, v are all batched on axis 0 (or will be moved there)
+    #  - mask/bias leaves are NOT themselves batched (broadcast to all elements)
+    #  - rng/rng_seed unbatched, or dropout disabled (rng is not data-dependent)
+    #  - grid is None so _mha_impl can derive the right grid from the merged shape
     can_merge = (
-        q_bdim == k_bdim == v_bdim == 0
-        and q_bdim is not batching.not_mapped
+        q_bdim is not batching.not_mapped
+        and k_bdim is not batching.not_mapped
+        and v_bdim is not batching.not_mapped
         and all(d is batching.not_mapped for d in other_bdims)
         and (rng_bdim is batching.not_mapped or params["dropout_rate"] == 0.0)
         and (rng_seed_bdim is batching.not_mapped or params["dropout_rate"] == 0.0)
         and params["grid"] is None
-        and mask_num_leaves == 0
-        and bias_num_leaves == 0
     )
 
     if can_merge:
-        outer = q.shape[0]
-        inner = q.shape[1]
+        # Move vmap batch axis to front for all three tensors
+        q = jnp.moveaxis(q, q_bdim, 0)
+        k = jnp.moveaxis(k, k_bdim, 0)
+        v = jnp.moveaxis(v, v_bdim, 0)
+        outer = q.shape[0]  # vmap batch size
+        inner = q.shape[1]  # original kernel batch_size
         q = q.reshape((outer * inner,) + q.shape[2:])
         k = k.reshape((outer * inner,) + k.shape[2:])
         v = v.reshape((outer * inner,) + v.shape[2:])
@@ -3430,12 +3443,17 @@ def _mha_batching_rule(batched_args, batch_dims, **params):
             rng_seed_merged = rng_seed
         else:
             rng_seed_merged = rng_seed[0]
+        # Reconstruct mask/bias from their (unbatched) leaves
+        mask_leaves = mask_bias[:mask_num_leaves]
+        bias_leaves = mask_bias[mask_num_leaves : mask_num_leaves + bias_num_leaves]
+        mask = _unflatten_optional_pytree(mask_treedef, mask_leaves)
+        bias = _unflatten_optional_pytree(bias_treedef, bias_leaves)
         out = _mha_impl(
             q=q,
             k=k,
             v=v,
-            mask=_unflatten_optional_pytree(mask_treedef, ()),
-            bias=_unflatten_optional_pytree(bias_treedef, ()),
+            mask=mask,
+            bias=bias,
             rng=rng_merged,
             rng_seed=rng_seed_merged,
             sm_scale=params["sm_scale"],
@@ -3453,6 +3471,8 @@ def _mha_batching_rule(batched_args, batch_dims, **params):
         out = out.reshape((outer, inner) + out.shape[1:])
         return out, 0
 
+    # Fallback: vmap over elements that cannot be merged into the kernel grid.
+    # This handles unusual cases such as per-element masks/biases or custom grids.
     new_args = []
     in_axes = []
     for x, d in zip(batched_args, batch_dims):
@@ -3460,7 +3480,7 @@ def _mha_batching_rule(batched_args, batch_dims, **params):
             new_args.append(x)
             in_axes.append(None)
         else:
-            new_args.append(batching.moveaxis(x, d, 0) if d != 0 else x)
+            new_args.append(jnp.moveaxis(x, d, 0) if d != 0 else x)
             in_axes.append(0)
 
     def _impl(q, k, v, rng, rng_seed, *mask_bias_leaves):
@@ -3497,25 +3517,110 @@ batching.primitive_batchers[_mha_p] = _mha_batching_rule
 
 
 def _mha_lin_batching_rule(batched_args, batch_dims, **params):
-    dq_bdim = batch_dims[7]
-    dk_bdim = batch_dims[8]
-    dv_bdim = batch_dims[9]
+    # Argument order: q, k, v, rng, rng_seed, out, lse, dq, dk, dv, *mask_bias
+    q_bdim, k_bdim, v_bdim = batch_dims[0], batch_dims[1], batch_dims[2]
+    rng_bdim, rng_seed_bdim = batch_dims[3], batch_dims[4]
+    out_bdim, lse_bdim = batch_dims[5], batch_dims[6]
+    dq_bdim, dk_bdim, dv_bdim = batch_dims[7], batch_dims[8], batch_dims[9]
+    other_bdims = batch_dims[10:]
 
-    if dq_bdim is batching.not_mapped:
-        out = _mha_lin_p.bind(*batched_args, **params)
-        return out, batching.not_mapped
+    any_batched = any(d is not batching.not_mapped for d in batch_dims)
+    if not any_batched:
+        out_val = _mha_lin_p.bind(*batched_args, **params)
+        return out_val, batching.not_mapped
 
+    mask_num_leaves = params["mask_num_leaves"]
+    bias_num_leaves = params["bias_num_leaves"]
+
+    # Fast path: fold the outer (vmap) batch axis into the kernel's existing
+    # batch dimension for all data tensors (q/k/v/out/lse/dq/dk/dv).
+    # Requires all data tensors to be batched on the same axis, mask/bias
+    # leaves unbatched, and no custom grid.
+    data_bdims = (q_bdim, k_bdim, v_bdim, out_bdim, lse_bdim, dq_bdim, dk_bdim, dv_bdim)
+    can_merge = (
+        all(d is not batching.not_mapped for d in data_bdims)
+        and all(d is batching.not_mapped for d in other_bdims)
+        and (rng_bdim is batching.not_mapped or params["dropout_rate"] == 0.0)
+        and (rng_seed_bdim is batching.not_mapped or params["dropout_rate"] == 0.0)
+        and params["grid"] is None
+    )
+
+    if can_merge:
+        q, k, v, rng, rng_seed, out_val, lse, dq, dk, dv, *rest = batched_args
+        # Move vmap batch axis to front for all data tensors
+        q = jnp.moveaxis(q, q_bdim, 0)
+        k = jnp.moveaxis(k, k_bdim, 0)
+        v = jnp.moveaxis(v, v_bdim, 0)
+        out_val = jnp.moveaxis(out_val, out_bdim, 0)
+        lse = jnp.moveaxis(lse, lse_bdim, 0)
+        dq = jnp.moveaxis(dq, dq_bdim, 0)
+        dk = jnp.moveaxis(dk, dk_bdim, 0)
+        dv = jnp.moveaxis(dv, dv_bdim, 0)
+
+        outer = q.shape[0]
+        inner = q.shape[1]
+
+        def _merge(x):
+            # Fold (outer, inner, ...) -> (outer*inner, ...)
+            return x.reshape((outer * inner,) + x.shape[2:])
+
+        q = _merge(q)
+        k = _merge(k)
+        v = _merge(v)
+        out_val = _merge(out_val)
+        lse = _merge(lse)
+        dq = _merge(dq)
+        dk = _merge(dk)
+        dv = _merge(dv)
+
+        rng_merged = rng if rng_bdim is batching.not_mapped else rng[0]
+        rng_seed_merged = (
+            rng_seed if rng_seed_bdim is batching.not_mapped else rng_seed[0]
+        )
+
+        mask_leaves = rest[:mask_num_leaves]
+        bias_leaves = rest[mask_num_leaves : mask_num_leaves + bias_num_leaves]
+        mask = _unflatten_optional_pytree(params["mask_treedef"], mask_leaves)
+        bias = _unflatten_optional_pytree(params["bias_treedef"], bias_leaves)
+
+        tangent_out = _mha_impl_jvp_from_lse(
+            q=q,
+            k=k,
+            v=v,
+            dq=dq,
+            dk=dk,
+            dv=dv,
+            lse=lse,
+            mask=mask,
+            bias=bias,
+            rng=rng_merged,
+            rng_seed=rng_seed_merged,
+            sm_scale=params["sm_scale"],
+            block_sizes=params["block_sizes"],
+            backward_pass_impl=params["backward_pass_impl"],
+            num_warps=params["num_warps"],
+            num_stages=params["num_stages"],
+            grid=params["grid"],
+            interpret=params["interpret"],
+            debug=params["debug"],
+            dropout_rate=params["dropout_rate"],
+            dropout_impl=params["dropout_impl"],
+        )
+        tangent_out = tangent_out.reshape((outer, inner) + tangent_out.shape[1:])
+        return tangent_out, 0
+
+    # Fallback: vmap over elements that cannot be merged into the kernel grid.
     if not (dq_bdim == dk_bdim == dv_bdim):
         raise NotImplementedError("mha_lin: mismatched tangent batch dims")
 
-    q, k, v, rng, rng_seed, out, lse, dq, dk, dv, *rest = batched_args
-    dq = batching.moveaxis(dq, dq_bdim, 0)
-    dk = batching.moveaxis(dk, dk_bdim, 0)
-    dv = batching.moveaxis(dv, dv_bdim, 0)
+    q, k, v, rng, rng_seed, out_val, lse, dq, dk, dv, *rest = batched_args
+    dq = jnp.moveaxis(dq, dq_bdim, 0)
+    dk = jnp.moveaxis(dk, dk_bdim, 0)
+    dv = jnp.moveaxis(dv, dv_bdim, 0)
 
     def _impl(dq_i, dk_i, dv_i):
         return _mha_lin_prim_impl(
-            q, k, v, rng, rng_seed, out, lse, dq_i, dk_i, dv_i, *rest, **params
+            q, k, v, rng, rng_seed, out_val, lse, dq_i, dk_i, dv_i, *rest, **params
         )
 
     y = jax.vmap(_impl, in_axes=(0, 0, 0), out_axes=0)(dq, dk, dv)
