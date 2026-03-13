@@ -997,7 +997,6 @@ def _ssd_sharded(
     )(*all_args)
 
 
-@jax.jit
 @jax.named_call  # `named_call` ensures the name is used in tracing, which is useful for profiling.
 def ssd(
     q: jax.Array,
@@ -1020,6 +1019,11 @@ def ssd(
 
     The notion of groups is similar to the group in multi-group attention (or more preciesly
     multi-value attention) -- one group of q/k corresponds to multiple v heads.
+
+    Note: sharding detection happens in this non-jitted wrapper so that
+    NamedSharding annotations on concrete arrays are visible.  The actual
+    computation runs inside ``@jax.jit``-decorated helpers (``_ssd_forward``,
+    ``_ssd_backward``) or via ``shard_map`` which sets manual mesh mode.
     """
     _validate_ssd_runtime_inputs(q, k, v, log_alpha, h0)
 
@@ -1060,16 +1064,17 @@ def ssd(
             output, _ = ssd_linear_scan(q, k, v, log_alpha, h0)
             return output
 
+    # Detect sharding BEFORE entering any jit boundary.  Inside @jax.jit,
+    # core.get_aval() on tracers may lose NamedSharding annotations, so
+    # detection must happen here where arrays are still concrete (or are
+    # top-level jit tracers that preserve sharding info).
+    axis_names, mesh = {}, None
+    for arr in (q, k, v, h0):
+        names, m = _detect_ssd_sharding(arr)
+        if names and not axis_names:
+            axis_names, mesh = names, m
+
     try:
-        # Detect sharding and wrap in shard_map if needed.
-        # Check all 4D inputs (q, k, v, h0) for sharding detection/validation.
-        # log_alpha is 3D (B, H, L) so _detect_ssd_sharding doesn't apply directly,
-        # but its batch/heads dims (0, 1) are the same as q's (0, 1).
-        axis_names, mesh = {}, None
-        for arr in (q, k, v, h0):
-            names, m = _detect_ssd_sharding(arr)
-            if names and not axis_names:
-                axis_names, mesh = names, m
         if axis_names:
             output = _ssd_sharded(
                 q,

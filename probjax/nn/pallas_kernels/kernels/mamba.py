@@ -1177,6 +1177,15 @@ def compute_mamba_scan(
 
     _, seqlen, inner = x.shape
 
+    # Detect batch sharding BEFORE padding.  Padding operations
+    # (jnp.concatenate) create new arrays that may lose NamedSharding
+    # annotations, so detection must happen on the original inputs.
+    axis_name, mesh = None, None
+    for arr in (x, b, c, delta):
+        name, m = _detect_mamba_sharding(arr)
+        if name is not None and axis_name is None:
+            axis_name, mesh = name, m
+
     x, b, c, delta = (
         _pad_to_multiple(arg, divisor=seq_tile_size, axis=1) for arg in [x, b, c, delta]
     )
@@ -1184,14 +1193,6 @@ def compute_mamba_scan(
         _pad_to_multiple(arg, divisor=dim_tile_size, axis=2) for arg in [x, delta]
     )
     a, d = (_pad_to_multiple(arg, divisor=dim_tile_size, axis=1) for arg in [a, d])
-
-    # Detect batch sharding and wrap in shard_map if needed.
-    # Check all batched inputs (x, b, c, delta) to validate and detect.
-    axis_name, mesh = None, None
-    for arr in (x, b, c, delta):
-        name, m = _detect_mamba_sharding(arr)
-        if name is not None and axis_name is None:
-            axis_name, mesh = name, m
 
     try:
         if axis_name is not None:

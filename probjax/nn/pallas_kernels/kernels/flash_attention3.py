@@ -196,6 +196,12 @@ def mha_flash(
     if dropout_rate != 0.0:
         raise NotImplementedError("mha_flash does not support dropout.")
 
+    # Validate sharding on the original inputs BEFORE any transformations
+    # (astype, unsqueeze) that could lose NamedSharding annotations.
+    _validate_no_unsupported_sharding(query, "query")
+    _validate_no_unsupported_sharding(key, "key")
+    _validate_no_unsupported_sharding(value, "value")
+
     if dtype is not None:
         query = query.astype(dtype)
         key = key.astype(dtype)
@@ -225,11 +231,6 @@ def mha_flash(
         raise ValueError(
             f"Expected matching dtypes, got {query.dtype=}, {key.dtype=}, {value.dtype=}.",
         )
-
-    # Validate sharding: reject unsupported seq/head_dim sharding early.
-    _validate_no_unsupported_sharding(query, "query")
-    _validate_no_unsupported_sharding(key, "key")
-    _validate_no_unsupported_sharding(value, "value")
 
     if not enable_gqa and query.shape[-2] != key.shape[-2]:
         raise ValueError(
