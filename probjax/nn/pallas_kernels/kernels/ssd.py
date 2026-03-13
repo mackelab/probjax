@@ -41,75 +41,35 @@ from jax.experimental import pallas as pl
 from ..kernel_utils import get_dot_precision, use_interpret_mode
 
 
-def _detect_ssd_sharding(q: jax.Array):
-    """Detect if q (B, G, L, Dk) has NamedSharding on batch and/or heads dims.
+def _validate_ssd_sharding(sharding, name: str):
+    """Validate that *sharding* (a NamedSharding) does not shard unsupported dims.
 
-    Returns (axis_names, mesh) where *axis_names* is a dict mapping dimension
-    index to the mesh axis name (e.g. ``{0: 'data', 1: 'model'}``).
-    Returns ``({}, None)`` if no relevant sharding is detected.
-
-    Raises ``ValueError`` if sharding is found on the sequence (dim 2) or
-    dk/dv (dim 3) dimensions — these are not supported by the pallas SSD kernel.
+    Only batch (dim 0) and heads/groups (dim 1) sharding are supported for SSD.
+    Sharding on the sequence (dim 2) or dk/dv (dim 3) is rejected with an
+    informative error.
     """
-    import jax._src.core as core
-
-    try:
-        aval = core.get_aval(q)
-        sharding = getattr(aval, "sharding", None)
-        if sharding is None:
-            return {}, None
-        spec = getattr(sharding, "spec", None)
-        if spec is None or len(spec) == 0:
-            return {}, None
-
-        axis_names = {}
-        for dim_idx, axis in enumerate(spec):
-            if axis is None:
-                continue
-            if dim_idx == 2:
-                raise ValueError(
-                    f"Pallas SSD kernel does not support sharding on the "
-                    f"sequence dimension (dim 2). Got PartitionSpec{tuple(spec)} "
-                    f"which shards dim 2 over mesh axis '{axis}'. "
-                    f"Only batch (dim 0) and heads (dim 1) sharding are supported."
-                )
-            if dim_idx == 3:
-                raise ValueError(
-                    f"Pallas SSD kernel does not support sharding on the "
-                    f"dk/dv dimension (dim 3). Got PartitionSpec{tuple(spec)} "
-                    f"which shards dim 3 over mesh axis '{axis}'. "
-                    f"Only batch (dim 0) and heads (dim 1) sharding are supported."
-                )
-            if dim_idx in (0, 1):
-                axis_names[dim_idx] = axis
-
-        mesh = sharding.mesh if axis_names else None
-        return axis_names, mesh
-    except ValueError:
-        raise  # Re-raise our own validation errors.
-    except Exception:
-        return {}, None
-
-
-def _infer_ssd_shard_spec(arr, axis_names):
-    """Build a PartitionSpec for *arr* by mirroring its aval sharding.
-
-    *axis_names* is the dict ``{dim_idx: axis_name}`` from ``_detect_ssd_sharding``.
-    """
-    import jax._src.core as core
-    from jax.sharding import PartitionSpec as P
-
-    try:
-        aval = core.get_aval(arr)
-        sharding = getattr(aval, "sharding", None)
-        if sharding is not None:
-            spec = getattr(sharding, "spec", None)
-            if spec is not None and len(spec) > 0:
-                return P(*spec)
-    except Exception:
-        pass
-    # Fallback: replicate across all dims.
-    return P(*((None,) * arr.ndim))
+    spec = getattr(sharding, "spec", None)
+    if spec is None:
+        return
+    for dim_idx, axis in enumerate(spec):
+        if axis is None:
+            continue
+        if dim_idx == 2:
+            raise ValueError(
+                f"Pallas SSD kernel does not support sharding on the "
+                f"sequence dimension (dim 2) of '{name}'. "
+                f"Got PartitionSpec{tuple(spec)} which shards dim 2 over "
+                f"mesh axis '{axis}'. "
+                f"Only batch (dim 0) and heads (dim 1) sharding are supported."
+            )
+        if dim_idx == 3:
+            raise ValueError(
+                f"Pallas SSD kernel does not support sharding on the "
+                f"dk/dv dimension (dim 3) of '{name}'. "
+                f"Got PartitionSpec{tuple(spec)} which shards dim 3 over "
+                f"mesh axis '{axis}'. "
+                f"Only batch (dim 0) and heads (dim 1) sharding are supported."
+            )
 
 
 def _bs(index_map, block_shape):
@@ -292,26 +252,25 @@ def _validate_ssd_runtime_inputs(
             )
 
 
-@jax.custom_vjp
-def _ssd(
-    q: jax.Array, k: jax.Array, v: jax.Array, log_alpha: jax.Array, h0: jax.Array
+def _ssd_forward_impl(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    log_alpha: jax.Array,
+    initial_state: jax.Array,
 ) -> jax.Array:
-    """A differentiable function that computes the output of SSD.
+    """Forward pass body for SSD (no @jax.jit — called from custom_partitioning).
 
     Args:
-        q: [bs, num_heads, seq_len, dk]
-        k: [bs, num_heads, seq_len, dk]
+        q, k: [bs, num_groups, seq_len, dk]
         v: [bs, num_heads, seq_len, dv]
         log_alpha: [bs, num_heads, seq_len]
-        h0: [bs, num_heads, dk, dv]
+        initial_state: [bs, num_heads, dk, dv]
 
     Returns:
         o: [bs, num_heads, seq_len, dv]
     """
-    (
-        o,
-        _,
-    ) = _ssd_forward(q, k, v, log_alpha, h0)
+    o, _ = _ssd_forward(q, k, v, log_alpha, initial_state)
     return o
 
 
@@ -964,37 +923,133 @@ def _ssd_backward(residuals: Tuple, do: jax.Array) -> Tuple:
     return dq, dk, dv, dlog_alpha, dinitial_state
 
 
-_ssd.defvjp(_ssd_forward, _ssd_backward)
-
-
-def _ssd_sharded(
+def _ssd_backward_impl(
+    do: jax.Array,
     q: jax.Array,
     k: jax.Array,
     v: jax.Array,
     log_alpha: jax.Array,
-    h0: jax.Array,
-    *,
-    axis_names: dict,
-    mesh,
-) -> jax.Array:
-    """Wrap ``_ssd`` in ``shard_map`` for batch/heads-sharded inputs."""
-    from jax import shard_map
+    initial_state: jax.Array,
+) -> Tuple:
+    """Backward pass body for SSD (no @jax.jit — called from custom_partitioning).
 
-    all_args = (q, k, v, log_alpha, h0)
-    in_specs = tuple(_infer_ssd_shard_spec(a, axis_names) for a in all_args)
-    # Output has same shape/sharding as v: (B, H, L, Dv)
-    out_specs = _infer_ssd_shard_spec(v, axis_names)
+    Takes the *original* input shapes and redoes the rearrangements that were
+    done in the forward so that ``_ssd_backward`` receives the residual shapes
+    it expects.
 
-    def impl(q_, k_, v_, log_alpha_, h0_):
-        return _ssd(q_, k_, v_, log_alpha_, h0_)
+    Args:
+        do: [bs, num_heads, seq_len, dv]
+        q, k: [bs, num_groups, seq_len, dk]
+        v: [bs, num_heads, seq_len, dv]
+        log_alpha: [bs, num_heads, seq_len]
+        initial_state: [bs, num_heads, dk, dv]
 
-    return shard_map(
-        impl,
-        mesh=mesh,
-        in_specs=in_specs,
-        out_specs=out_specs,
-        check_vmap=False,
-    )(*all_args)
+    Returns:
+        (dq, dk, dv, dlog_alpha, dinitial_state)
+    """
+    singleton_dim, chunk_size, subchunk_size = _ssd_tiling_config()
+    seq_len = q.shape[2]
+    chunk_dim = seq_len // chunk_size
+    subchunk_dim = chunk_size // subchunk_size
+
+    # Redo the rearrangements that _ssd_forward performed before saving residuals.
+    log_alpha_r = rearrange(
+        log_alpha, "b h (nb ns bl) -> b h nb ns bl", nb=chunk_dim, ns=subchunk_dim
+    )
+    cum_log_alpha = jnp.cumsum(log_alpha_r, axis=-1)
+    q_r = rearrange(q, "b h (nb bl) dk -> b h nb bl dk", bl=subchunk_size)
+    k_r = rearrange(k, "b h (nb bl) dk -> b h nb bl dk", bl=subchunk_size)
+    v_r = rearrange(v, "b h (nb bl) dv -> b h nb bl dv", bl=subchunk_size)
+
+    residuals = (q_r, k_r, v_r, cum_log_alpha, initial_state)
+    return _ssd_backward(residuals, do)
+
+
+def _make_ssd():
+    """Build a differentiable, SPMD-partitionable SSD op.
+
+    Returns a function ``f(q, k, v, log_alpha, h0) -> o`` that:
+      - Uses ``custom_partitioning`` on the forward and backward Pallas kernels
+        so that GSPMD runs them per-shard without inserting all-gathers.
+      - Uses ``custom_vjp`` so that ``jax.grad`` works through the op.
+    """
+    from jax.experimental.custom_partitioning import custom_partitioning
+
+    # -- Forward kernel with custom_partitioning --------------------------
+    @custom_partitioning
+    def _fwd(q, k, v, log_alpha, h0):
+        return _ssd_forward_impl(q, k, v, log_alpha, h0)
+
+    def _fwd_partition(mesh, arg_shapes, result_shape):
+        names = ("q", "k", "v", "log_alpha", "h0")
+        for shape, name in zip(arg_shapes, names):
+            _validate_ssd_sharding(shape.sharding, name)
+
+        result_shardings = jax.tree.map(lambda s: s.sharding, result_shape)
+        arg_shardings = jax.tree.map(lambda s: s.sharding, arg_shapes)
+
+        def lower_fn(q, k, v, log_alpha, h0):
+            return _ssd_forward_impl(q, k, v, log_alpha, h0)
+
+        return mesh, lower_fn, result_shardings, arg_shardings
+
+    _fwd.def_partition(
+        partition=_fwd_partition,
+        # q(B,G,L,Dk) k(B,G,L,Dk) v(B,H,L,Dv) log_alpha(B,H,L) h0(B,H,Dk,Dv)
+        # -> o(B,H,L,Dv)
+        # batch and heads/groups are shardable; seq, dk, dv must be replicated.
+        sharding_rule=(
+            "batch groups seq dk, batch groups seq dk, "
+            "batch heads seq dv, batch heads seq, batch heads dk dv "
+            "-> batch heads seq dv"
+        ),
+        need_replication_factors=("seq", "dk", "dv"),
+    )
+
+    # -- Backward kernel with custom_partitioning -------------------------
+    @custom_partitioning
+    def _bwd(do, q, k, v, log_alpha, h0):
+        return _ssd_backward_impl(do, q, k, v, log_alpha, h0)
+
+    def _bwd_partition(mesh, arg_shapes, result_shape):
+        result_shardings = jax.tree.map(lambda s: s.sharding, result_shape)
+        arg_shardings = jax.tree.map(lambda s: s.sharding, arg_shapes)
+
+        def lower_fn(do, q, k, v, log_alpha, h0):
+            return _ssd_backward_impl(do, q, k, v, log_alpha, h0)
+
+        return mesh, lower_fn, result_shardings, arg_shardings
+
+    _bwd.def_partition(
+        partition=_bwd_partition,
+        # do(B,H,L,Dv) q(B,G,L,Dk) k(B,G,L,Dk) v(B,H,L,Dv)
+        #   log_alpha(B,H,L) h0(B,H,Dk,Dv)
+        # -> dq(B,G,L,Dk) dk(B,G,L,Dk) dv(B,H,L,Dv)
+        #    dlog_alpha(B,H,L) dh0(B,H,Dk,Dv)
+        sharding_rule=(
+            "batch heads seq dv, batch groups seq dk, batch groups seq dk, "
+            "batch heads seq dv, batch heads seq, batch heads dk dv "
+            "-> batch groups seq dk, batch groups seq dk, "
+            "batch heads seq dv, batch heads seq, batch heads dk dv"
+        ),
+        need_replication_factors=("seq", "dk", "dv"),
+    )
+
+    # -- Differentiable wrapper using custom_vjp --------------------------
+    @jax.custom_vjp
+    def _op(q, k, v, log_alpha, h0):
+        return _fwd(q, k, v, log_alpha, h0)
+
+    def _op_fwd(q, k, v, log_alpha, h0):
+        o = _fwd(q, k, v, log_alpha, h0)
+        return o, (q, k, v, log_alpha, h0)
+
+    def _op_bwd(res, do):
+        q, k, v, log_alpha, h0 = res
+        return _bwd(do, q, k, v, log_alpha, h0)
+
+    _op.defvjp(_op_fwd, _op_bwd)
+    return _op
 
 
 @jax.named_call  # `named_call` ensures the name is used in tracing, which is useful for profiling.
@@ -1006,6 +1061,11 @@ def ssd(
     h0: Optional[jax.Array] = None,
 ) -> jax.Array:
     """Differentiable function that computes the output of SSD.
+
+    When inputs carry ``NamedSharding`` (e.g. batch/heads-sharded across a
+    device mesh), the forward and backward Pallas kernels are automatically
+    run per-shard via ``custom_partitioning`` — no ``shard_map`` wrapping is
+    needed at the call site.
 
     Args:
         q: [batch_size, num_groups, seq_len, dk]
@@ -1019,11 +1079,6 @@ def ssd(
 
     The notion of groups is similar to the group in multi-group attention (or more preciesly
     multi-value attention) -- one group of q/k corresponds to multiple v heads.
-
-    Note: sharding detection happens in this non-jitted wrapper so that
-    NamedSharding annotations on concrete arrays are visible.  The actual
-    computation runs inside ``@jax.jit``-decorated helpers (``_ssd_forward``,
-    ``_ssd_backward``) or via ``shard_map`` which sets manual mesh mode.
     """
     _validate_ssd_runtime_inputs(q, k, v, log_alpha, h0)
 
@@ -1064,30 +1119,13 @@ def ssd(
             output, _ = ssd_linear_scan(q, k, v, log_alpha, h0)
             return output
 
-    # Detect sharding BEFORE entering any jit boundary.  Inside @jax.jit,
-    # core.get_aval() on tracers may lose NamedSharding annotations, so
-    # detection must happen here where arrays are still concrete (or are
-    # top-level jit tracers that preserve sharding info).
-    axis_names, mesh = {}, None
-    for arr in (q, k, v, h0):
-        names, m = _detect_ssd_sharding(arr)
-        if names and not axis_names:
-            axis_names, mesh = names, m
+    # Build a custom_partitioning-aware SSD op.
+    # When inputs are NamedSharded, GSPMD will call our partition()
+    # callback and run the Pallas kernel per-shard without all-gathers.
+    _ssd_op = _make_ssd()
 
     try:
-        if axis_names:
-            output = _ssd_sharded(
-                q,
-                k,
-                v,
-                log_alpha,
-                h0,
-                axis_names=axis_names,
-                mesh=mesh,
-            )
-        else:
-            output = _ssd(q, k, v, log_alpha, h0)
-        return output
+        return _ssd_op(q, k, v, log_alpha, h0)
     except (
         AssertionError,
         NotImplementedError,
