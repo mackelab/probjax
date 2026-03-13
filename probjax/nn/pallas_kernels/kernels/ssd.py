@@ -41,6 +41,77 @@ from jax.experimental import pallas as pl
 from ..kernel_utils import get_dot_precision, use_interpret_mode
 
 
+def _detect_ssd_sharding(q: jax.Array):
+    """Detect if q (B, G, L, Dk) has NamedSharding on batch and/or heads dims.
+
+    Returns (axis_names, mesh) where *axis_names* is a dict mapping dimension
+    index to the mesh axis name (e.g. ``{0: 'data', 1: 'model'}``).
+    Returns ``({}, None)`` if no relevant sharding is detected.
+
+    Raises ``ValueError`` if sharding is found on the sequence (dim 2) or
+    dk/dv (dim 3) dimensions — these are not supported by the pallas SSD kernel.
+    """
+    import jax._src.core as core
+
+    try:
+        aval = core.get_aval(q)
+        sharding = getattr(aval, "sharding", None)
+        if sharding is None:
+            return {}, None
+        spec = getattr(sharding, "spec", None)
+        if spec is None or len(spec) == 0:
+            return {}, None
+
+        axis_names = {}
+        for dim_idx, axis in enumerate(spec):
+            if axis is None:
+                continue
+            if dim_idx == 2:
+                raise ValueError(
+                    f"Pallas SSD kernel does not support sharding on the "
+                    f"sequence dimension (dim 2). Got PartitionSpec{tuple(spec)} "
+                    f"which shards dim 2 over mesh axis '{axis}'. "
+                    f"Only batch (dim 0) and heads (dim 1) sharding are supported."
+                )
+            if dim_idx == 3:
+                raise ValueError(
+                    f"Pallas SSD kernel does not support sharding on the "
+                    f"dk/dv dimension (dim 3). Got PartitionSpec{tuple(spec)} "
+                    f"which shards dim 3 over mesh axis '{axis}'. "
+                    f"Only batch (dim 0) and heads (dim 1) sharding are supported."
+                )
+            if dim_idx in (0, 1):
+                axis_names[dim_idx] = axis
+
+        mesh = sharding.mesh if axis_names else None
+        return axis_names, mesh
+    except ValueError:
+        raise  # Re-raise our own validation errors.
+    except Exception:
+        return {}, None
+
+
+def _infer_ssd_shard_spec(arr, axis_names):
+    """Build a PartitionSpec for *arr* by mirroring its aval sharding.
+
+    *axis_names* is the dict ``{dim_idx: axis_name}`` from ``_detect_ssd_sharding``.
+    """
+    import jax._src.core as core
+    from jax.sharding import PartitionSpec as P
+
+    try:
+        aval = core.get_aval(arr)
+        sharding = getattr(aval, "sharding", None)
+        if sharding is not None:
+            spec = getattr(sharding, "spec", None)
+            if spec is not None and len(spec) > 0:
+                return P(*spec)
+    except Exception:
+        pass
+    # Fallback: replicate across all dims.
+    return P(*((None,) * arr.ndim))
+
+
 def _bs(index_map, block_shape):
     """Compatibility wrapper for BlockSpec(index_map, block_shape) call sites."""
     return pl.BlockSpec(block_shape=block_shape, index_map=index_map)
@@ -896,6 +967,36 @@ def _ssd_backward(residuals: Tuple, do: jax.Array) -> Tuple:
 _ssd.defvjp(_ssd_forward, _ssd_backward)
 
 
+def _ssd_sharded(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    log_alpha: jax.Array,
+    h0: jax.Array,
+    *,
+    axis_names: dict,
+    mesh,
+) -> jax.Array:
+    """Wrap ``_ssd`` in ``shard_map`` for batch/heads-sharded inputs."""
+    from jax import shard_map
+
+    all_args = (q, k, v, log_alpha, h0)
+    in_specs = tuple(_infer_ssd_shard_spec(a, axis_names) for a in all_args)
+    # Output has same shape/sharding as v: (B, H, L, Dv)
+    out_specs = _infer_ssd_shard_spec(v, axis_names)
+
+    def impl(q_, k_, v_, log_alpha_, h0_):
+        return _ssd(q_, k_, v_, log_alpha_, h0_)
+
+    return shard_map(
+        impl,
+        mesh=mesh,
+        in_specs=in_specs,
+        out_specs=out_specs,
+        check_vmap=False,
+    )(*all_args)
+
+
 @jax.jit
 @jax.named_call  # `named_call` ensures the name is used in tracing, which is useful for profiling.
 def ssd(
@@ -960,7 +1061,27 @@ def ssd(
             return output
 
     try:
-        output = _ssd(q, k, v, log_alpha, h0)
+        # Detect sharding and wrap in shard_map if needed.
+        # Check all 4D inputs (q, k, v, h0) for sharding detection/validation.
+        # log_alpha is 3D (B, H, L) so _detect_ssd_sharding doesn't apply directly,
+        # but its batch/heads dims (0, 1) are the same as q's (0, 1).
+        axis_names, mesh = {}, None
+        for arr in (q, k, v, h0):
+            names, m = _detect_ssd_sharding(arr)
+            if names and not axis_names:
+                axis_names, mesh = names, m
+        if axis_names:
+            output = _ssd_sharded(
+                q,
+                k,
+                v,
+                log_alpha,
+                h0,
+                axis_names=axis_names,
+                mesh=mesh,
+            )
+        else:
+            output = _ssd(q, k, v, log_alpha, h0)
         return output
     except (
         AssertionError,

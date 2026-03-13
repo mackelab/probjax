@@ -43,11 +43,16 @@ from ..kernel_utils import (
 )
 
 
-def _detect_batch_sharding(q: jax.Array):
-    """Detect if q has NamedSharding on its batch (first) dimension.
+def _detect_sharding(q: jax.Array):
+    """Detect if q (B, T, H, D) has NamedSharding on batch and/or heads dims.
 
-    Returns (axis_name, mesh) if the batch dim is sharded, else (None, None).
-    This works inside jit by inspecting the abstract value's sharding.
+    Returns (axis_names, mesh) where *axis_names* is a dict mapping dimension
+    index to the mesh axis name (e.g. ``{0: 'data', 2: 'model'}``).
+    Returns ``({}, None)`` if no relevant sharding is detected.
+
+    Raises ``ValueError`` if sharding is found on the sequence (dim 1) or
+    head_dim (dim 3) dimensions — these are not supported by the pallas
+    attention kernel.
     """
     import jax._src.core as core
 
@@ -55,30 +60,62 @@ def _detect_batch_sharding(q: jax.Array):
         aval = core.get_aval(q)
         sharding = getattr(aval, "sharding", None)
         if sharding is None:
-            return None, None
+            return {}, None
         spec = getattr(sharding, "spec", None)
         if spec is None or len(spec) == 0:
-            return None, None
-        axis_name = spec[0]
-        if axis_name is None:
-            return None, None
-        mesh = sharding.mesh
-        return axis_name, mesh
+            return {}, None
+
+        # Validate: only batch (0) and heads (2) are allowed.
+        dim_names = {0: "batch", 1: "sequence", 2: "heads", 3: "head_dim"}
+        axis_names = {}
+        for dim_idx, axis in enumerate(spec):
+            if axis is None:
+                continue
+            if dim_idx == 1:
+                raise ValueError(
+                    f"Pallas flash-attention does not support sharding on the "
+                    f"sequence dimension (dim 1). Got PartitionSpec{tuple(spec)} "
+                    f"which shards dim 1 over mesh axis '{axis}'. "
+                    f"Only batch (dim 0) and heads (dim 2) sharding are supported."
+                )
+            if dim_idx == 3:
+                raise ValueError(
+                    f"Pallas flash-attention does not support sharding on the "
+                    f"head_dim dimension (dim 3). Got PartitionSpec{tuple(spec)} "
+                    f"which shards dim 3 over mesh axis '{axis}'. "
+                    f"Only batch (dim 0) and heads (dim 2) sharding are supported."
+                )
+            if dim_idx in (0, 2):
+                axis_names[dim_idx] = axis
+
+        mesh = sharding.mesh if axis_names else None
+        return axis_names, mesh
+    except ValueError:
+        raise  # Re-raise our own validation errors.
     except Exception:
-        return None, None
+        return {}, None
 
 
-def _infer_shard_spec(arr, axis_name):
-    """Build a PartitionSpec for *arr* that shards its batch dim.
+def _detect_sharding_multi(*arrays: jax.Array):
+    """Call ``_detect_sharding`` on each array and return the first non-empty result.
 
-    If *arr* has the same first-dim size as the batch dimension tracked by
-    *axis_name*, partition that dim; otherwise replicate.  Works on concrete
-    arrays as well as abstract avals.
+    This validates sharding on ALL provided arrays (raising on unsupported dims)
+    while returning the detected axis_names from whichever array first has sharding.
+    """
+    result_names, result_mesh = {}, None
+    for arr in arrays:
+        names, mesh = _detect_sharding(arr)
+        if names and not result_names:
+            result_names, result_mesh = names, mesh
+    return result_names, result_mesh
 
-    For arrays whose aval already carries a sharding with the matching
-    *axis_name* on some dimension, we mirror that spec exactly (so mask / bias
-    leaves that happen to have a batch axis are correctly partitioned).
-    Otherwise we conservatively replicate the whole array.
+
+def _infer_shard_spec(arr, axis_names):
+    """Build a PartitionSpec for *arr* mirroring its aval sharding.
+
+    *axis_names* is the dict ``{dim_idx: axis_name}`` from ``_detect_sharding``.
+    We read the aval's existing sharding spec and mirror it.  For arrays without
+    an aval sharding (e.g. scalars), we replicate across all dims.
     """
     import jax._src.core as core
 
@@ -3211,8 +3248,8 @@ def _mha_prim_impl(
     mask_num_leaves: int,
     bias_num_leaves: int,
 ):
-    axis_name, mesh = _detect_batch_sharding(q)
-    if axis_name is not None:
+    axis_names, mesh = _detect_sharding_multi(q, k, v)
+    if axis_names:
         return _mha_prim_impl_sharded(
             q,
             k,
@@ -3234,7 +3271,7 @@ def _mha_prim_impl(
             bias_treedef=bias_treedef,
             mask_num_leaves=mask_num_leaves,
             bias_num_leaves=bias_num_leaves,
-            axis_name=axis_name,
+            axis_names=axis_names,
             mesh=mesh,
         )
 
@@ -3288,15 +3325,15 @@ def _mha_prim_impl_sharded(
     bias_treedef,
     mask_num_leaves,
     bias_num_leaves,
-    axis_name,
+    axis_names,
     mesh,
 ):
     """Forward lowering wrapped in shard_map for batch-sharded inputs."""
     from jax import shard_map
 
     all_args = (q, k, v, rng, rng_seed, *rest)
-    in_specs = tuple(_infer_shard_spec(a, axis_name) for a in all_args)
-    out_specs = _infer_shard_spec(q, axis_name)  # output has same shape/sharding as q
+    in_specs = tuple(_infer_shard_spec(a, axis_names) for a in all_args)
+    out_specs = _infer_shard_spec(q, axis_names)  # output has same shape/sharding as q
 
     def impl(*args):
         q_, k_, v_, rng_, rng_seed_, *rest_ = args
@@ -3363,8 +3400,8 @@ def _mha_lin_prim_impl(
     mask_num_leaves: int,
     bias_num_leaves: int,
 ):
-    axis_name, mesh_obj = _detect_batch_sharding(q)
-    if axis_name is not None:
+    axis_names, mesh_obj = _detect_sharding_multi(q, k, v)
+    if axis_names:
         return _mha_lin_prim_impl_sharded(
             q,
             k,
@@ -3391,7 +3428,7 @@ def _mha_lin_prim_impl(
             bias_treedef=bias_treedef,
             mask_num_leaves=mask_num_leaves,
             bias_num_leaves=bias_num_leaves,
-            axis_name=axis_name,
+            axis_names=axis_names,
             mesh=mesh_obj,
         )
 
@@ -3454,7 +3491,7 @@ def _mha_lin_prim_impl_sharded(
     bias_treedef,
     mask_num_leaves,
     bias_num_leaves,
-    axis_name,
+    axis_names,
     mesh,
 ):
     """JVP tangent lowering wrapped in shard_map for batch-sharded inputs."""
@@ -3462,8 +3499,8 @@ def _mha_lin_prim_impl_sharded(
 
     # All positional args: q, k, v, rng, rng_seed, out, lse, dq, dk, dv, *rest
     all_args = (q, k, v, rng, rng_seed, out, lse, dq, dk, dv, *rest)
-    in_specs = tuple(_infer_shard_spec(a, axis_name) for a in all_args)
-    out_specs = _infer_shard_spec(q, axis_name)  # tangent_out same shape as q
+    in_specs = tuple(_infer_shard_spec(a, axis_names) for a in all_args)
+    out_specs = _infer_shard_spec(q, axis_names)  # tangent_out same shape as q
 
     def impl(*args):
         q_, k_, v_, rng_, rng_seed_, out_, lse_, dq_, dk_, dv_, *rest_ = args
@@ -3593,8 +3630,8 @@ def _mha_lin_prim_transpose(
     if isinstance(ct, ad_util.Zero):
         return (None,) * (10 + mask_num_leaves + bias_num_leaves)
 
-    axis_name, mesh_obj = _detect_batch_sharding(q)
-    if axis_name is not None:
+    axis_names, mesh_obj = _detect_sharding_multi(q, k, v)
+    if axis_names:
         return _mha_lin_prim_transpose_sharded(
             ct,
             q,
@@ -3622,7 +3659,7 @@ def _mha_lin_prim_transpose(
             bias_treedef=bias_treedef,
             mask_num_leaves=mask_num_leaves,
             bias_num_leaves=bias_num_leaves,
-            axis_name=axis_name,
+            axis_names=axis_names,
             mesh=mesh_obj,
         )
 
@@ -3684,7 +3721,7 @@ def _mha_lin_prim_transpose_sharded(
     bias_treedef,
     mask_num_leaves,
     bias_num_leaves,
-    axis_name,
+    axis_names,
     mesh,
 ):
     """Backward (transpose) wrapped in shard_map for batch-sharded inputs."""
@@ -3695,12 +3732,12 @@ def _mha_lin_prim_transpose_sharded(
     # `dq`, `dk`, `dv` are the tangent primals (unused/None in transpose), skip them.
     # `rng` may be None (a ZeroTangent) — not needed by _mha_backward which uses rng_seed.
     all_args = (q, k, v, rng_seed, out, lse, ct, *rest)
-    in_specs = tuple(_infer_shard_spec(a, axis_name) for a in all_args)
+    in_specs = tuple(_infer_shard_spec(a, axis_names) for a in all_args)
     # Outputs: (dq_ct, dk_ct, dv_ct) — all 4D with same shape/sharding as q, k, v
     out_specs = (
-        _infer_shard_spec(q, axis_name),
-        _infer_shard_spec(k, axis_name),
-        _infer_shard_spec(v, axis_name),
+        _infer_shard_spec(q, axis_names),
+        _infer_shard_spec(k, axis_names),
+        _infer_shard_spec(v, axis_names),
     )
 
     def impl(*args):

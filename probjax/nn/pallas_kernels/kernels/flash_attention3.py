@@ -107,6 +107,46 @@ def attention_with_pipeline_emitter(
     )
 
 
+def _validate_no_unsupported_sharding(arr: jax.Array, name: str) -> None:
+    """Raise ``ValueError`` if *arr* is sharded on sequence (dim 1) or head_dim (dim 3).
+
+    flash_attention3 delegates to JAX's built-in Mosaic GPU attention which does
+    not accept user-controlled shard_map wrapping.  We therefore reject any
+    NamedSharding that would cause XLA to insert all-gathers on unsupported axes.
+    Batch (dim 0) and heads (dim 2) sharding are allowed (JAX handles them).
+    """
+    import jax._src.core as core
+
+    try:
+        aval = core.get_aval(arr)
+        sharding = getattr(aval, "sharding", None)
+        if sharding is None:
+            return
+        spec = getattr(sharding, "spec", None)
+        if spec is None or len(spec) == 0:
+            return
+
+        for dim_idx, axis in enumerate(spec):
+            if axis is None:
+                continue
+            if dim_idx == 1:
+                raise ValueError(
+                    f"flash_attention3 does not support sharding on the sequence "
+                    f"dimension (dim 1) of `{name}`. Got PartitionSpec{tuple(spec)} "
+                    f"which shards dim 1 over mesh axis '{axis}'."
+                )
+            if dim_idx == 3:
+                raise ValueError(
+                    f"flash_attention3 does not support sharding on the head_dim "
+                    f"dimension (dim 3) of `{name}`. Got PartitionSpec{tuple(spec)} "
+                    f"which shards dim 3 over mesh axis '{axis}'."
+                )
+    except ValueError:
+        raise  # Re-raise our own validation errors.
+    except Exception:
+        pass  # Unable to inspect sharding; let JAX handle it.
+
+
 def mha_flash(
     query,
     key,
@@ -185,6 +225,11 @@ def mha_flash(
         raise ValueError(
             f"Expected matching dtypes, got {query.dtype=}, {key.dtype=}, {value.dtype=}.",
         )
+
+    # Validate sharding: reject unsupported seq/head_dim sharding early.
+    _validate_no_unsupported_sharding(query, "query")
+    _validate_no_unsupported_sharding(key, "key")
+    _validate_no_unsupported_sharding(value, "value")
 
     if not enable_gqa and query.shape[-2] != key.shape[-2]:
         raise ValueError(

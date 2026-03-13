@@ -23,6 +23,79 @@ from jax.experimental import pallas as pl
 from ..kernel_utils import get_dot_precision, use_interpret_mode
 
 
+def _detect_mamba_sharding(x: jax.Array):
+    """Detect if x (B, L, D) has NamedSharding on its batch dimension.
+
+    Returns (axis_name, mesh) if the batch dim is sharded, else (None, None).
+    Raises ``ValueError`` if sharding is found on the sequence (dim 1) or
+    inner_dim (dim 2) — these are not supported by the pallas Mamba kernel.
+    """
+    import jax._src.core as core
+
+    try:
+        aval = core.get_aval(x)
+        sharding = getattr(aval, "sharding", None)
+        if sharding is None:
+            return None, None
+        spec = getattr(sharding, "spec", None)
+        if spec is None or len(spec) == 0:
+            return None, None
+
+        for dim_idx, axis in enumerate(spec):
+            if axis is None:
+                continue
+            if dim_idx == 0:
+                # Batch sharding — supported.
+                continue
+            if dim_idx == 1:
+                raise ValueError(
+                    f"Pallas Mamba kernel does not support sharding on the "
+                    f"sequence dimension (dim 1). Got PartitionSpec{tuple(spec)} "
+                    f"which shards dim 1 over mesh axis '{axis}'. "
+                    f"Only batch (dim 0) sharding is supported."
+                )
+            if dim_idx == 2:
+                raise ValueError(
+                    f"Pallas Mamba kernel does not support sharding on the "
+                    f"inner_dim dimension (dim 2). Got PartitionSpec{tuple(spec)} "
+                    f"which shards dim 2 over mesh axis '{axis}'. "
+                    f"Only batch (dim 0) sharding is supported."
+                )
+
+        axis_name = spec[0]
+        if axis_name is None:
+            return None, None
+        mesh = sharding.mesh
+        return axis_name, mesh
+    except ValueError:
+        raise  # Re-raise our own validation errors.
+    except Exception:
+        return None, None
+
+
+def _infer_mamba_shard_spec(arr, axis_name):
+    """Build a PartitionSpec for *arr* by mirroring its aval sharding.
+
+    For arrays with a batch dimension sharded over *axis_name*, the spec
+    partitions that dim.  For arrays without a matching batch dim (e.g. ``a``
+    with shape ``(S, D)`` or ``d`` with shape ``(1, D)``), we replicate.
+    """
+    import jax._src.core as core
+    from jax.sharding import PartitionSpec as P
+
+    try:
+        aval = core.get_aval(arr)
+        sharding = getattr(aval, "sharding", None)
+        if sharding is not None:
+            spec = getattr(sharding, "spec", None)
+            if spec is not None and len(spec) > 0:
+                return P(*spec)
+    except Exception:
+        pass
+    # Fallback: replicate across all dims.
+    return P(*((None,) * arr.ndim))
+
+
 def _bs(index_map, block_shape):
     """Compatibility wrapper for BlockSpec(index_map, block_shape) call sites."""
     return pl.BlockSpec(block_shape=block_shape, index_map=index_map)
@@ -998,6 +1071,38 @@ def _mamba_scan_reference(
     return jnp.swapaxes(y, 0, 1)
 
 
+def _mamba_scan_sharded(
+    x: jax.Array,
+    a: jax.Array,
+    b: jax.Array,
+    c: jax.Array,
+    delta: jax.Array,
+    d: jax.Array,
+    *,
+    seq_tile_size: int,
+    dim_tile_size: int,
+    axis_name,
+    mesh,
+) -> jax.Array:
+    """Wrap ``_mamba_scan`` in ``shard_map`` for batch-sharded inputs."""
+    from jax import shard_map
+
+    all_args = (x, a, b, c, delta, d)
+    in_specs = tuple(_infer_mamba_shard_spec(arr, axis_name) for arr in all_args)
+    out_specs = _infer_mamba_shard_spec(x, axis_name)  # output same shape as x
+
+    def impl(x_, a_, b_, c_, delta_, d_):
+        return _mamba_scan(x_, a_, b_, c_, delta_, d_, seq_tile_size, dim_tile_size)
+
+    return shard_map(
+        impl,
+        mesh=mesh,
+        in_specs=in_specs,
+        out_specs=out_specs,
+        check_vmap=False,
+    )(*all_args)
+
+
 def compute_mamba_scan(
     x: jax.Array,
     a: jax.Array,
@@ -1079,8 +1184,31 @@ def compute_mamba_scan(
         _pad_to_multiple(arg, divisor=dim_tile_size, axis=2) for arg in [x, delta]
     )
     a, d = (_pad_to_multiple(arg, divisor=dim_tile_size, axis=1) for arg in [a, d])
+
+    # Detect batch sharding and wrap in shard_map if needed.
+    # Check all batched inputs (x, b, c, delta) to validate and detect.
+    axis_name, mesh = None, None
+    for arr in (x, b, c, delta):
+        name, m = _detect_mamba_sharding(arr)
+        if name is not None and axis_name is None:
+            axis_name, mesh = name, m
+
     try:
-        y = _mamba_scan(x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
+        if axis_name is not None:
+            y = _mamba_scan_sharded(
+                x,
+                a,
+                b,
+                c,
+                delta,
+                d,
+                seq_tile_size=seq_tile_size,
+                dim_tile_size=dim_tile_size,
+                axis_name=axis_name,
+                mesh=mesh,
+            )
+        else:
+            y = _mamba_scan(x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
         # Remove zero-padding if any.
         return y[:, :seqlen, :inner]
     except (
