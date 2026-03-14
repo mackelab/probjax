@@ -4,6 +4,10 @@ import pytest
 
 from probjax.nn.layers.attention import dot_product_attention, flex_attention
 from probjax.nn.pallas_kernels import (
+    CausalAlibiBias,
+    CausalMask,
+    LocalWindowMask,
+    SeqLenMask,
     compute_mamba_scan,
     mha_flash,
     ssd,
@@ -25,6 +29,7 @@ BLOCK_Q = 128
 BLOCK_K = 128
 BLOCK_KV = 128
 MAX_CONCURRENT_STEPS = 2
+LOCAL_WINDOW_LEFT = 256
 
 MAMBA_BATCH_SIZE = 8
 MAMBA_SEQ_LEN = 1024
@@ -64,6 +69,16 @@ def _build_inputs():
     k = jax.random.normal(kk, shape, dtype=jnp.float16)
     v = jax.random.normal(kv, shape, dtype=jnp.float16)
     return q, k, v
+
+
+def _build_variable_seq_lengths():
+    return jax.random.randint(
+        jax.random.PRNGKey(7),
+        (BATCH_SIZE,),
+        minval=SEQ_LEN // 2,
+        maxval=SEQ_LEN + 1,
+        dtype=jnp.int32,
+    )
 
 
 def _build_cross_attention_inputs():
@@ -193,6 +208,37 @@ def _maybe_skip_flash(name: str, exc: Exception):
     raise exc
 
 
+def _flex_mask_bias_impl(name: str):
+    mask = None
+    bias = None
+
+    if name == "causal_mask":
+        mask = CausalMask()
+    elif name == "causal_alibi_bias":
+        bias = CausalAlibiBias()
+    elif name == "local_window":
+        mask = LocalWindowMask(
+            left_window=LOCAL_WINDOW_LEFT, right_window=0
+        )
+        bias = CausalAlibiBias()
+    elif name == "seq_len_mask":
+        mask = SeqLenMask(_build_variable_seq_lengths())
+    else:
+        raise ValueError(f"Unknown flex mask/bias benchmark scenario: {name}")
+
+    return jax.jit(lambda q, k, v: flex_attention(
+        q,
+        k,
+        v,
+        mask=mask,
+        bias=bias,
+        deterministic=True,
+        dropout_rate=0.0,
+        block_q=BLOCK_Q,
+        block_k=BLOCK_K,
+    ))
+
+
 def _mamba_impl(name: str):
     if name == "naive":
         return lambda x, a, b, c, delta, d: _mamba_scan_reference(x, a, b, c, delta, d)
@@ -254,6 +300,52 @@ def test_benchmark_attention_backward(benchmark, impl):
         warm = jax.tree_util.tree_map(jax.block_until_ready, warm)
     except Exception as exc:
         _maybe_skip_flash(impl, exc)
+
+    def run_once():
+        grads = grad_fn(q, k, v)
+        grads = jax.tree_util.tree_map(jax.block_until_ready, grads)
+        return grads[0]
+
+    dq = benchmark(run_once)
+    assert dq.shape == q.shape
+
+
+@pytest.mark.gpu
+@pytest.mark.benchmark(group="attention_forward_mask_bias")
+@pytest.mark.parametrize(
+    "scenario",
+    ["causal_mask", "causal_alibi_bias", "local_window", "seq_len_mask"],
+)
+def test_benchmark_flex_attention_mask_bias_forward(benchmark, scenario):
+    q, k, v = _build_inputs()
+    fn = _flex_mask_bias_impl(scenario)
+
+    warm = fn(q, k, v)
+    warm = jax.block_until_ready(warm)
+
+    def run_once():
+        out = fn(q, k, v)
+        return jax.block_until_ready(out)
+
+    out = benchmark(run_once)
+    assert out.shape == q.shape
+
+
+@pytest.mark.gpu
+@pytest.mark.benchmark(group="attention_backward_mask_bias")
+@pytest.mark.parametrize(
+    "scenario",
+    ["causal_mask", "causal_alibi_bias", "local_window", "seq_len_mask"],
+)
+def test_benchmark_flex_attention_mask_bias_backward(benchmark, scenario):
+    q, k, v = _build_inputs()
+    fwd = _flex_mask_bias_impl(scenario)
+    grad_fn = jax.jit(
+        jax.grad(lambda q, k, v: jnp.sum(fwd(q, k, v)), argnums=(0, 1, 2))
+    )
+
+    warm = grad_fn(q, k, v)
+    warm = jax.tree_util.tree_map(jax.block_until_ready, warm)
 
     def run_once():
         grads = grad_fn(q, k, v)

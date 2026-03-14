@@ -29,7 +29,6 @@ and the original implementation.
 
 import functools
 import os
-import warnings
 from typing import Optional, Tuple, Union
 
 import jax
@@ -38,7 +37,12 @@ from einops import rearrange, repeat
 from jax import lax
 from jax.experimental import pallas as pl
 
-from ..kernel_utils import get_dot_precision, use_interpret_mode
+from ..kernel_utils import (
+    def_partition_compat,
+    get_dot_precision,
+    pallas_call_compat,
+    use_interpret_mode,
+)
 
 
 def _validate_ssd_sharding(sharding, name: str):
@@ -100,13 +104,23 @@ def _prefer_mosaic_gpu() -> bool:
     return val in ("1", "true", "yes", "on")
 
 
+def _unsafe_enable_mosaic_gpu() -> bool:
+    """Explicit opt-in for the unstable Mosaic GPU path for SSD."""
+    val = os.environ.get("PROBJAX_PALLAS_UNSAFE_ENABLE_MOSAIC_GPU", "0")
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _pallas_backend(prefer_mosaic_gpu: bool | None = None) -> str | None:
     """Selects the explicit Pallas backend for the current JAX platform."""
     if prefer_mosaic_gpu is None:
         prefer_mosaic_gpu = _prefer_mosaic_gpu()
     backend = jax.default_backend()
     if backend == "gpu":
-        if prefer_mosaic_gpu and _is_hopper_or_newer_gpu():
+        if (
+            prefer_mosaic_gpu
+            and _unsafe_enable_mosaic_gpu()
+            and _is_hopper_or_newer_gpu()
+        ):
             return "mosaic_gpu"
         return "triton"
     if backend == "tpu":
@@ -154,34 +168,6 @@ def _gpu_supports_ssd_pallas_for_shape(
     if num_heads % num_groups != 0:
         return False
     return True
-
-
-_FAILED_SSD_PALLAS_CONFIGS: set[tuple] = set()
-
-
-def _ssd_pallas_failure_key(
-    *,
-    pallas_backend: str | None,
-    q: jax.Array,
-    k: jax.Array,
-    v: jax.Array,
-    log_alpha: jax.Array,
-    h0: jax.Array,
-) -> tuple:
-    return (
-        pallas_backend,
-        q.shape,
-        k.shape,
-        v.shape,
-        log_alpha.shape,
-        h0.shape,
-        str(q.dtype),
-        str(k.dtype),
-        str(v.dtype),
-        str(log_alpha.dtype),
-        str(h0.dtype),
-    )
-
 
 def _matmul_fp32(lhs: jax.Array, rhs: jax.Array) -> jax.Array:
     """A wrapper around jax.lax.dot to conduct float32 matmul"""
@@ -505,7 +491,7 @@ def _ssd_forward(
         dtype=orig_dtype,
     )
 
-    _, o = pl.pallas_call(
+    _, o = pallas_call_compat(
         _ssd_forward_kernel,
         in_specs=(
             qk_spec,
@@ -591,7 +577,7 @@ def _ssd_recompute_chunk_states(
         shape=(bs, num_heads, k_dim, v_dim), dtype=jnp.float32
     )
 
-    chunk_states, _ = pl.pallas_call(
+    chunk_states, _ = pallas_call_compat(
         _ssd_chunk_states_kernel,
         in_specs=(qk_spec, v_spec, alpha_spec, is_spec, gamma_spec),
         out_specs=(ch_spec, fs_spec),
@@ -863,7 +849,7 @@ def _ssd_backward(residuals: Tuple, do: jax.Array) -> Tuple:
 
     do = rearrange(do, "b h (nb bl) dv -> b h nb bl dv", bl=subchunk_size)
 
-    dq, dk, dv, dinitial_state = pl.pallas_call(
+    dq, dk, dv, dinitial_state = pallas_call_compat(
         _ssd_backward_kernel,
         in_specs=(
             qk_spec,
@@ -993,7 +979,8 @@ def _make_ssd():
 
         return mesh, lower_fn, result_shardings, arg_shardings
 
-    _fwd.def_partition(
+    def_partition_compat(
+        _fwd.def_partition,
         partition=_fwd_partition,
         # q(B,G,L,Dk) k(B,G,L,Dk) v(B,H,L,Dv) log_alpha(B,H,L) h0(B,H,Dk,Dv)
         # -> o(B,H,L,Dv)
@@ -1020,7 +1007,8 @@ def _make_ssd():
 
         return mesh, lower_fn, result_shardings, arg_shardings
 
-    _bwd.def_partition(
+    def_partition_compat(
+        _bwd.def_partition,
         partition=_bwd_partition,
         # do(B,H,L,Dv) q(B,G,L,Dk) k(B,G,L,Dk) v(B,H,L,Dv)
         #   log_alpha(B,H,L) h0(B,H,Dk,Dv)
@@ -1093,8 +1081,7 @@ def ssd(
         h0 = jnp.zeros((bs, nh, dk, dv), dtype=jnp.float32)
 
     if backend not in ("tpu", "gpu"):
-        output, _ = ssd_linear_scan(q, k, v, log_alpha, h0)
-        return output
+        raise RuntimeError(f"ssd only supports TPU and GPU backends, got {backend!r}.")
 
     if backend == "gpu" and not _gpu_supports_ssd_pallas_for_shape(
         seq_len=q.shape[2],
@@ -1104,45 +1091,19 @@ def ssd(
         dv=dv,
         pallas_backend=pallas_backend,
     ):
-        output, _ = ssd_linear_scan(q, k, v, log_alpha, h0)
-        return output
-    if backend == "gpu":
-        failure_key = _ssd_pallas_failure_key(
-            pallas_backend=pallas_backend,
-            q=q,
-            k=k,
-            v=v,
-            log_alpha=log_alpha,
-            h0=h0,
+        raise RuntimeError(
+            "ssd does not support this GPU Pallas configuration. "
+            f"backend={pallas_backend!r}, seq_len={q.shape[2]}, num_groups={ng}, "
+            f"num_heads={nh}, dk={dk}, dv={dv}. "
+            "Reference fallback on GPU is disabled."
         )
-        if failure_key in _FAILED_SSD_PALLAS_CONFIGS:
-            output, _ = ssd_linear_scan(q, k, v, log_alpha, h0)
-            return output
 
     # Build a custom_partitioning-aware SSD op.
     # When inputs are NamedSharded, GSPMD will call our partition()
     # callback and run the Pallas kernel per-shard without all-gathers.
     _ssd_op = _make_ssd()
 
-    try:
-        return _ssd_op(q, k, v, log_alpha, h0)
-    except (
-        AssertionError,
-        NotImplementedError,
-        RuntimeError,
-        TypeError,
-        ValueError,
-    ) as err:
-        if backend != "gpu":
-            raise
-        _FAILED_SSD_PALLAS_CONFIGS.add(failure_key)
-        warnings.warn(
-            f"Falling back to ssd_linear_scan on GPU because Pallas/Triton kernel failed: {err}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        output, _ = ssd_linear_scan(q, k, v, log_alpha, h0)
-        return output
+    return _ssd_op(q, k, v, log_alpha, h0)
 
 
 def ssd_linear_scan(

@@ -1,3 +1,5 @@
+import importlib
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -13,6 +15,9 @@ from probjax.nn.pallas_kernels import (
     ssd,
     ssd_linear_scan,
 )
+
+mamba_kernel_mod = importlib.import_module("probjax.nn.pallas_kernels.kernels.mamba")
+ssd_kernel_mod = importlib.import_module("probjax.nn.pallas_kernels.kernels.ssd")
 
 
 def _scaled_rbf_kernel_fn(q_block, k_block, params):
@@ -217,7 +222,7 @@ def test_generic_kde_density_log_output_finite():
     assert jnp.all(jnp.isfinite(log_d))
 
 
-def test_mamba_scan_requires_accelerator():
+def test_mamba_scan_requires_supported_backend_config():
     batch = 1
     seq_len = 16
     inner_dim = 128
@@ -233,8 +238,8 @@ def test_mamba_scan_requires_accelerator():
     delta = jax.random.normal(key, (batch, seq_len, inner_dim), dtype=jnp.float32)
     d = jax.random.normal(key, (1, inner_dim), dtype=jnp.float32)
 
-    if jax.default_backend() == "cpu":
-        with pytest.raises(Exception):
+    if jax.default_backend() != "tpu":
+        with pytest.raises(RuntimeError):
             compute_mamba_scan(
                 x,
                 a,
@@ -259,7 +264,7 @@ def test_mamba_scan_requires_accelerator():
         assert out.shape == (batch, seq_len, inner_dim)
 
 
-def test_ssd_requires_accelerator():
+def test_ssd_requires_supported_backend_config():
     batch = 1
     num_groups = 1
     num_heads = 1
@@ -273,11 +278,262 @@ def test_ssd_requires_accelerator():
     v = jax.random.normal(key, (batch, num_heads, seq_len, dv), dtype=jnp.float32)
     log_alpha = jax.random.normal(key, (batch, num_heads, seq_len), dtype=jnp.float32)
 
-    if jax.default_backend() == "cpu":
-        with pytest.raises(Exception):
+    if jax.default_backend() != "tpu":
+        with pytest.raises(RuntimeError):
             ssd(q, k, v, log_alpha)
     else:
         out = ssd(q, k, v, log_alpha)
         ref, _ = ssd_linear_scan(q, k, v, log_alpha)
         assert out.shape == ref.shape
         assert jnp.allclose(out, ref, atol=1e-2, rtol=1e-2)
+
+
+def test_mamba_scan_gpu_supported_config_uses_pallas_scan(monkeypatch):
+    batch = 1
+    seq_len = 16
+    inner_dim = 128
+    state_dim = 16
+    seq_tile_size = 8
+    dim_tile_size = 128
+
+    key = jax.random.PRNGKey(6)
+    x = jax.random.normal(key, (batch, seq_len, inner_dim), dtype=jnp.float32)
+    a = jax.random.normal(key, (state_dim, inner_dim), dtype=jnp.float32)
+    b = jax.random.normal(key, (batch, seq_len, state_dim), dtype=jnp.float32)
+    c = jax.random.normal(key, (batch, seq_len, state_dim), dtype=jnp.float32)
+    delta = jax.random.normal(key, (batch, seq_len, inner_dim), dtype=jnp.float32)
+    d = jax.random.normal(key, (1, inner_dim), dtype=jnp.float32)
+
+    monkeypatch.setattr(mamba_kernel_mod.jax, "default_backend", lambda: "gpu")
+    monkeypatch.setattr(
+        mamba_kernel_mod, "_pallas_backend", lambda prefer_mosaic_gpu=None: "triton"
+    )
+    monkeypatch.setattr(
+        mamba_kernel_mod, "_gpu_supports_mamba_pallas_for_shape", lambda **_: True
+    )
+
+    def _unexpected_reference(*args, **kwargs):
+        raise AssertionError("reference fallback should be disabled")
+
+    def _fake_scan(*args, **kwargs):
+        x_arg = args[0]
+        return jnp.full_like(x_arg, 7.0)
+
+    monkeypatch.setattr(
+        mamba_kernel_mod, "_mamba_scan_reference", _unexpected_reference
+    )
+    monkeypatch.setattr(mamba_kernel_mod, "_make_mamba_scan", lambda *args: _fake_scan)
+
+    out = compute_mamba_scan(
+        x,
+        a,
+        b,
+        c,
+        delta,
+        d,
+        seq_tile_size=seq_tile_size,
+        dim_tile_size=dim_tile_size,
+    )
+
+    assert out.shape == x.shape
+    assert jnp.all(out == 7.0)
+
+
+def test_mamba_scan_gpu_unsupported_config_raises_without_reference_fallback(
+    monkeypatch,
+):
+    batch = 1
+    seq_len = 16
+    inner_dim = 128
+    state_dim = 16
+    seq_tile_size = 8
+    dim_tile_size = 128
+
+    key = jax.random.PRNGKey(2)
+    x = jax.random.normal(key, (batch, seq_len, inner_dim), dtype=jnp.float32)
+    a = jax.random.normal(key, (state_dim, inner_dim), dtype=jnp.float32)
+    b = jax.random.normal(key, (batch, seq_len, state_dim), dtype=jnp.float32)
+    c = jax.random.normal(key, (batch, seq_len, state_dim), dtype=jnp.float32)
+    delta = jax.random.normal(key, (batch, seq_len, inner_dim), dtype=jnp.float32)
+    d = jax.random.normal(key, (1, inner_dim), dtype=jnp.float32)
+
+    monkeypatch.setattr(mamba_kernel_mod.jax, "default_backend", lambda: "gpu")
+    monkeypatch.setattr(
+        mamba_kernel_mod, "_pallas_backend", lambda prefer_mosaic_gpu=None: "triton"
+    )
+    monkeypatch.setattr(
+        mamba_kernel_mod, "_gpu_supports_mamba_pallas_for_shape", lambda **_: False
+    )
+
+    def _unexpected_reference(*args, **kwargs):
+        raise AssertionError("reference fallback should be disabled")
+
+    monkeypatch.setattr(
+        mamba_kernel_mod, "_mamba_scan_reference", _unexpected_reference
+    )
+
+    with pytest.raises(RuntimeError, match="Reference fallback on GPU is disabled"):
+        compute_mamba_scan(
+            x,
+            a,
+            b,
+            c,
+            delta,
+            d,
+            seq_tile_size=seq_tile_size,
+            dim_tile_size=dim_tile_size,
+        )
+
+
+def test_mamba_scan_gpu_kernel_failure_raises_without_reference_fallback(monkeypatch):
+    batch = 1
+    seq_len = 16
+    inner_dim = 128
+    state_dim = 16
+    seq_tile_size = 8
+    dim_tile_size = 128
+
+    key = jax.random.PRNGKey(3)
+    x = jax.random.normal(key, (batch, seq_len, inner_dim), dtype=jnp.float32)
+    a = jax.random.normal(key, (state_dim, inner_dim), dtype=jnp.float32)
+    b = jax.random.normal(key, (batch, seq_len, state_dim), dtype=jnp.float32)
+    c = jax.random.normal(key, (batch, seq_len, state_dim), dtype=jnp.float32)
+    delta = jax.random.normal(key, (batch, seq_len, inner_dim), dtype=jnp.float32)
+    d = jax.random.normal(key, (1, inner_dim), dtype=jnp.float32)
+
+    monkeypatch.setattr(mamba_kernel_mod.jax, "default_backend", lambda: "gpu")
+    monkeypatch.setattr(
+        mamba_kernel_mod, "_pallas_backend", lambda prefer_mosaic_gpu=None: "triton"
+    )
+    monkeypatch.setattr(
+        mamba_kernel_mod, "_gpu_supports_mamba_pallas_for_shape", lambda **_: True
+    )
+
+    def _unexpected_reference(*args, **kwargs):
+        raise AssertionError("reference fallback should be disabled")
+
+    def _failing_scan(*args, **kwargs):
+        raise RuntimeError("pallas compile failed")
+
+    monkeypatch.setattr(
+        mamba_kernel_mod, "_mamba_scan_reference", _unexpected_reference
+    )
+    monkeypatch.setattr(
+        mamba_kernel_mod, "_make_mamba_scan", lambda *args: _failing_scan
+    )
+
+    with pytest.raises(RuntimeError, match="pallas compile failed"):
+        compute_mamba_scan(
+            x,
+            a,
+            b,
+            c,
+            delta,
+            d,
+            seq_tile_size=seq_tile_size,
+            dim_tile_size=dim_tile_size,
+        )
+
+
+def test_ssd_gpu_supported_config_uses_pallas_kernel(monkeypatch):
+    batch = 1
+    num_groups = 1
+    num_heads = 2
+    seq_len = 128
+    dk = 64
+    dv = 64
+
+    key = jax.random.PRNGKey(7)
+    q = jax.random.normal(key, (batch, num_groups, seq_len, dk), dtype=jnp.float32)
+    k = jax.random.normal(key, (batch, num_groups, seq_len, dk), dtype=jnp.float32)
+    v = jax.random.normal(key, (batch, num_heads, seq_len, dv), dtype=jnp.float32)
+    log_alpha = jax.random.normal(key, (batch, num_heads, seq_len), dtype=jnp.float32)
+
+    monkeypatch.setattr(ssd_kernel_mod.jax, "default_backend", lambda: "gpu")
+    monkeypatch.setattr(
+        ssd_kernel_mod, "_pallas_backend", lambda prefer_mosaic_gpu=None: "triton"
+    )
+    monkeypatch.setattr(
+        ssd_kernel_mod, "_gpu_supports_ssd_pallas_for_shape", lambda **_: True
+    )
+
+    def _unexpected_linear_scan(*args, **kwargs):
+        raise AssertionError("linear scan fallback should be disabled")
+
+    def _fake_ssd(q_arg, k_arg, v_arg, log_alpha_arg, h0_arg):
+        del q_arg, k_arg, log_alpha_arg, h0_arg
+        return jnp.full_like(v_arg, 5.0)
+
+    monkeypatch.setattr(ssd_kernel_mod, "ssd_linear_scan", _unexpected_linear_scan)
+    monkeypatch.setattr(ssd_kernel_mod, "_make_ssd", lambda: _fake_ssd)
+
+    out = ssd(q, k, v, log_alpha)
+
+    assert out.shape == v.shape
+    assert jnp.all(out == 5.0)
+
+
+def test_ssd_gpu_unsupported_config_raises_without_linear_scan_fallback(monkeypatch):
+    batch = 1
+    num_groups = 1
+    num_heads = 1
+    seq_len = 128
+    dk = 64
+    dv = 64
+
+    key = jax.random.PRNGKey(4)
+    q = jax.random.normal(key, (batch, num_groups, seq_len, dk), dtype=jnp.float32)
+    k = jax.random.normal(key, (batch, num_groups, seq_len, dk), dtype=jnp.float32)
+    v = jax.random.normal(key, (batch, num_heads, seq_len, dv), dtype=jnp.float32)
+    log_alpha = jax.random.normal(key, (batch, num_heads, seq_len), dtype=jnp.float32)
+
+    monkeypatch.setattr(ssd_kernel_mod.jax, "default_backend", lambda: "gpu")
+    monkeypatch.setattr(
+        ssd_kernel_mod, "_pallas_backend", lambda prefer_mosaic_gpu=None: "triton"
+    )
+    monkeypatch.setattr(
+        ssd_kernel_mod, "_gpu_supports_ssd_pallas_for_shape", lambda **_: False
+    )
+
+    def _unexpected_linear_scan(*args, **kwargs):
+        raise AssertionError("linear scan fallback should be disabled")
+
+    monkeypatch.setattr(ssd_kernel_mod, "ssd_linear_scan", _unexpected_linear_scan)
+
+    with pytest.raises(RuntimeError, match="Reference fallback on GPU is disabled"):
+        ssd(q, k, v, log_alpha)
+
+
+def test_ssd_gpu_kernel_failure_raises_without_linear_scan_fallback(monkeypatch):
+    batch = 1
+    num_groups = 1
+    num_heads = 1
+    seq_len = 128
+    dk = 64
+    dv = 64
+
+    key = jax.random.PRNGKey(5)
+    q = jax.random.normal(key, (batch, num_groups, seq_len, dk), dtype=jnp.float32)
+    k = jax.random.normal(key, (batch, num_groups, seq_len, dk), dtype=jnp.float32)
+    v = jax.random.normal(key, (batch, num_heads, seq_len, dv), dtype=jnp.float32)
+    log_alpha = jax.random.normal(key, (batch, num_heads, seq_len), dtype=jnp.float32)
+
+    monkeypatch.setattr(ssd_kernel_mod.jax, "default_backend", lambda: "gpu")
+    monkeypatch.setattr(
+        ssd_kernel_mod, "_pallas_backend", lambda prefer_mosaic_gpu=None: "triton"
+    )
+    monkeypatch.setattr(
+        ssd_kernel_mod, "_gpu_supports_ssd_pallas_for_shape", lambda **_: True
+    )
+
+    def _unexpected_linear_scan(*args, **kwargs):
+        raise AssertionError("linear scan fallback should be disabled")
+
+    def _failing_ssd(*args, **kwargs):
+        raise RuntimeError("pallas launch failed")
+
+    monkeypatch.setattr(ssd_kernel_mod, "ssd_linear_scan", _unexpected_linear_scan)
+    monkeypatch.setattr(ssd_kernel_mod, "_make_ssd", lambda: _failing_ssd)
+
+    with pytest.raises(RuntimeError, match="pallas launch failed"):
+        ssd(q, k, v, log_alpha)

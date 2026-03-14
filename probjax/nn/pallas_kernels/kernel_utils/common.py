@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import functools
+import inspect
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.experimental import pallas as pl
 
 from probjax.utils.typing import Array
 
@@ -20,6 +23,85 @@ def use_interpret_mode() -> bool:
     Returns True when running on CPU, which requires interpret mode for pallas.
     """
     return jax.default_backend() == "cpu"
+
+
+@functools.lru_cache(maxsize=1)
+def pallas_call_supports_backend() -> bool:
+    """Whether the installed ``pl.pallas_call`` accepts ``backend=``."""
+    try:
+        return "backend" in inspect.signature(pl.pallas_call).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _get_first_available_attr(module, *names):
+    """Return the first available attribute from *module*."""
+    for name in names:
+        try:
+            return getattr(module, name)
+        except AttributeError:
+            continue
+    joined_names = ", ".join(names)
+    raise AttributeError(f"{module.__name__} has none of: {joined_names}")
+
+
+def _coerce_backend_hint_to_compiler_params(
+    *,
+    backend: str | None,
+    compiler_params,
+):
+    """Map a backend hint to compiler params for newer JAX Pallas APIs."""
+    if compiler_params is not None or backend is None or jax.default_backend() != "gpu":
+        return compiler_params
+    if backend == "triton":
+        from jax.experimental.pallas import triton as pltriton
+
+        params_cls = _get_first_available_attr(
+            pltriton, "CompilerParams", "TritonCompilerParams"
+        )
+        return params_cls()
+    if backend == "mosaic_gpu":
+        from jax.experimental.pallas import mosaic_gpu as plgpu
+
+        params_cls = _get_first_available_attr(
+            plgpu, "CompilerParams", "GPUCompilerParams"
+        )
+        return params_cls()
+    return compiler_params
+
+
+def pallas_call_compat(*args, backend=None, **kwargs):
+    """Call ``pl.pallas_call`` across JAX versions with/without ``backend=``."""
+    if backend is not None and pallas_call_supports_backend():
+        kwargs["backend"] = backend
+    elif backend is not None:
+        kwargs["compiler_params"] = _coerce_backend_hint_to_compiler_params(
+            backend=backend,
+            compiler_params=kwargs.get("compiler_params"),
+        )
+    return pl.pallas_call(*args, **kwargs)
+
+
+@functools.lru_cache(maxsize=1)
+def def_partition_supports_need_replication_factors(def_partition) -> bool:
+    """Whether ``custom_partitioning.def_partition`` accepts the kwarg."""
+    try:
+        return "need_replication_factors" in inspect.signature(def_partition).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def def_partition_compat(def_partition, /, **kwargs):
+    """Call ``def_partition`` across JAX versions.
+
+    Older JAX builds do not accept ``need_replication_factors``.
+    """
+    if (
+        "need_replication_factors" in kwargs
+        and not def_partition_supports_need_replication_factors(def_partition)
+    ):
+        kwargs.pop("need_replication_factors")
+    return def_partition(**kwargs)
 
 
 # ------------------------ Block Sparsity Helpers -----------------------------

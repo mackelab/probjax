@@ -12,7 +12,6 @@
 
 import functools
 import os
-import warnings
 from typing import NamedTuple
 
 import jax
@@ -20,7 +19,12 @@ from jax import numpy as jnp
 from jax import lax
 from jax.experimental import pallas as pl
 
-from ..kernel_utils import get_dot_precision, use_interpret_mode
+from ..kernel_utils import (
+    def_partition_compat,
+    get_dot_precision,
+    pallas_call_compat,
+    use_interpret_mode,
+)
 
 
 def _validate_mamba_sharding(sharding, name: str):
@@ -198,13 +202,23 @@ def _prefer_mosaic_gpu() -> bool:
     return val in ("1", "true", "yes", "on")
 
 
+def _unsafe_enable_mosaic_gpu() -> bool:
+    """Explicit opt-in for the unstable Mosaic GPU path for Mamba."""
+    val = os.environ.get("PROBJAX_PALLAS_UNSAFE_ENABLE_MOSAIC_GPU", "0")
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _pallas_backend(prefer_mosaic_gpu: bool | None = None) -> str | None:
     """Selects the explicit Pallas backend for the current JAX platform."""
     if prefer_mosaic_gpu is None:
         prefer_mosaic_gpu = _prefer_mosaic_gpu()
     backend = jax.default_backend()
     if backend == "gpu":
-        if prefer_mosaic_gpu and _is_hopper_or_newer_gpu():
+        if (
+            prefer_mosaic_gpu
+            and _unsafe_enable_mosaic_gpu()
+            and _is_hopper_or_newer_gpu()
+        ):
             return "mosaic_gpu"
         return "triton"
     if backend == "tpu":
@@ -240,41 +254,6 @@ def _gpu_supports_mamba_pallas_for_shape(
     if dim_tile_size <= 0 or dim_tile_size % 128 != 0:
         return False
     return True
-
-
-_FAILED_MAMBA_PALLAS_CONFIGS: set[tuple] = set()
-
-
-def _mamba_pallas_failure_key(
-    *,
-    pallas_backend: str | None,
-    x: jax.Array,
-    a: jax.Array,
-    b: jax.Array,
-    c: jax.Array,
-    delta: jax.Array,
-    d: jax.Array,
-    seq_tile_size: int,
-    dim_tile_size: int,
-) -> tuple:
-    return (
-        pallas_backend,
-        seq_tile_size,
-        dim_tile_size,
-        x.shape,
-        a.shape,
-        b.shape,
-        c.shape,
-        delta.shape,
-        d.shape,
-        str(x.dtype),
-        str(a.dtype),
-        str(b.dtype),
-        str(c.dtype),
-        str(delta.dtype),
-        str(d.dtype),
-    )
-
 
 # pylint: disable=invalid-name
 
@@ -640,7 +619,7 @@ def _loop_backward_pallas(
         lambda b, d, s: (b, seq_grid_size - 1 - s, 0, d), boundary_hs_tiling
     )
     # Write boundary states to hbm.
-    _, boundary_hs = pl.pallas_call(
+    _, boundary_hs = pallas_call_compat(
         _forward_kernel_boundary_hs,
         grid=grid,
         in_specs=[x_spec, a_spec, b_spec, x_spec],
@@ -693,7 +672,7 @@ def _loop_backward_pallas(
     forward_hs_tiling = (None, seq_tile_size, state_dim, dim_tile_size)
     forward_hs_spec = _bs(lambda b, d, s: (0, 0, 0, 0), forward_hs_tiling)
 
-    dx, da, db, dc, ddelta, dd, _, _ = pl.pallas_call(
+    dx, da, db, dc, ddelta, dd, _, _ = pallas_call_compat(
         _backward_kernel,
         grid=grid,
         in_specs=[
@@ -875,7 +854,7 @@ def _loop_forward_pallas(
     # moving on to the next inner_dim-block.
     hcarry_shape = (x.shape[0], a.shape[0], dim_tile_size)
 
-    outputs = pl.pallas_call(
+    outputs = pallas_call_compat(
         _forward_kernel,
         grid=grid,
         in_specs=[x_spec, a_spec, b_spec, b_spec, x_spec, d_spec],
@@ -943,7 +922,8 @@ def _make_mamba_scan(seq_tile_size: int, dim_tile_size: int):
 
         return mesh, lower_fn, result_shardings, arg_shardings
 
-    _fwd.def_partition(
+    def_partition_compat(
+        _fwd.def_partition,
         partition=_fwd_partition,
         # x(B,L,D) a(S,D) b(B,L,S) c(B,L,S) delta(B,L,D) d(O,D) -> y(B,L,D)
         # Only batch dim is shardable; seq/dim/state/one must be replicated.
@@ -973,7 +953,8 @@ def _make_mamba_scan(seq_tile_size: int, dim_tile_size: int):
 
         return mesh, lower_fn, result_shardings, arg_shardings
 
-    _bwd.def_partition(
+    def_partition_compat(
+        _bwd.def_partition,
         partition=_bwd_partition,
         # dy(B,L,D) x(B,L,D) a(S,D) b(B,L,S) c(B,L,S) delta(B,L,D) d(O,D)
         # -> dx(B,L,D) da(S,D) db(B,L,S) dc(B,L,S) ddelta(B,L,D) dd(O,D)
@@ -1100,13 +1081,14 @@ def compute_mamba_scan(
         dim_tile_size=dim_tile_size,
     )
 
-    x_in, a_in, b_in, c_in, delta_in, d_in = x, a, b, c, delta, d
     backend = jax.default_backend()
     pallas_backend = _pallas_backend()
     if backend == "cpu":
         raise RuntimeError("compute_mamba_scan requires an accelerator backend.")
     if backend not in ("tpu", "gpu"):
-        return _mamba_scan_reference(x_in, a_in, b_in, c_in, delta_in, d_in)
+        raise RuntimeError(
+            f"compute_mamba_scan only supports TPU and GPU backends, got {backend!r}."
+        )
     if backend == "gpu" and not _gpu_supports_mamba_pallas_for_shape(
         seq_len=x.shape[1],
         inner_dim=x.shape[2],
@@ -1115,21 +1097,13 @@ def compute_mamba_scan(
         dim_tile_size=dim_tile_size,
         pallas_backend=pallas_backend,
     ):
-        return _mamba_scan_reference(x_in, a_in, b_in, c_in, delta_in, d_in)
-    if backend == "gpu":
-        failure_key = _mamba_pallas_failure_key(
-            pallas_backend=pallas_backend,
-            x=x,
-            a=a,
-            b=b,
-            c=c,
-            delta=delta,
-            d=d,
-            seq_tile_size=seq_tile_size,
-            dim_tile_size=dim_tile_size,
+        raise RuntimeError(
+            "compute_mamba_scan does not support this GPU Pallas configuration. "
+            f"backend={pallas_backend!r}, seq_len={x.shape[1]}, "
+            f"inner_dim={x.shape[2]}, state_dim={a.shape[0]}, "
+            f"seq_tile_size={seq_tile_size}, dim_tile_size={dim_tile_size}. "
+            "Reference fallback on GPU is disabled."
         )
-        if failure_key in _FAILED_MAMBA_PALLAS_CONFIGS:
-            return _mamba_scan_reference(x_in, a_in, b_in, c_in, delta_in, d_in)
 
     _, seqlen, inner = x.shape
 
@@ -1146,24 +1120,6 @@ def compute_mamba_scan(
     # callback and run the Pallas kernel per-shard without all-gathers.
     _scan = _make_mamba_scan(seq_tile_size, dim_tile_size)
 
-    try:
-        y = _scan(x, a, b, c, delta, d)
-        # Remove zero-padding if any.
-        return y[:, :seqlen, :inner]
-    except (
-        AssertionError,
-        NotImplementedError,
-        RuntimeError,
-        TypeError,
-        ValueError,
-    ) as err:
-        if backend != "gpu":
-            raise
-        _FAILED_MAMBA_PALLAS_CONFIGS.add(failure_key)
-        warnings.warn(
-            "Falling back to reference Mamba scan on GPU because "
-            f"Pallas/Triton kernel failed: {err}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        return _mamba_scan_reference(x_in, a_in, b_in, c_in, delta_in, d_in)
+    y = _scan(x, a, b, c, delta, d)
+    # Remove zero-padding if any.
+    return y[:, :seqlen, :inner]
