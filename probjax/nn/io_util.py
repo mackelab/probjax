@@ -57,36 +57,11 @@ def _prefetch_single(iterator, size, device):
         _fill(1)
 
 
-def _prefetch_sharding(iterator, size, sharding: Sharding):
+def _prefetch_sharding(iterator, size, sharding):
     dq = collections.deque()
 
-    if isinstance(sharding, NamedSharding):
-        base_spec = getattr(
-            sharding, "spec", getattr(sharding, "partition_spec", PartitionSpec())
-        )
-        base_spec_entries = tuple(base_spec)
-        sharding_by_ndim: dict[int, NamedSharding] = {}
-
-        def _put(x):
-            ndim = np.ndim(x)
-            leaf_sharding = sharding_by_ndim.get(ndim)
-            if leaf_sharding is None:
-                if ndim <= len(base_spec_entries):
-                    leaf_spec = PartitionSpec(*base_spec_entries[:ndim])
-                else:
-                    leaf_spec = PartitionSpec(
-                        *base_spec_entries,
-                        *([None] * (ndim - len(base_spec_entries))),
-                    )
-                leaf_sharding = NamedSharding(sharding.mesh, leaf_spec)
-                sharding_by_ndim[ndim] = leaf_sharding
-            return jax.device_put(x, leaf_sharding)
-
-    else:
-        _put = lambda x: jax.device_put(x, sharding)
-
     _fill = lambda n: [
-        dq.append(jax.tree_util.tree_map(_put, d))
+        dq.append(jax.tree_util.tree_map(jax.device_put, d, sharding))
         for d in itertools.islice(iterator, n)
     ]
     _fill(size)
@@ -810,16 +785,15 @@ class DataLoader:
         (and sharded, if `shard=True`). Pass JIT-compiled functions for best speed.
     host_device       : jax.Device | None
         Device that stores producer-side batches before they are prefetched.
-    sharding          : jax.sharding.Sharding | None
-        Optional global sharding to apply when moving batches to device.
-        Mutually exclusive with shard=True and mesh/batch_spec.
+    sharding          : jax.sharding.Sharding | PyTree[jax.sharding.Sharding] | None
+        Optional explicit sharding tree to apply when moving batches to device.
+        Must match the batch pytree structure. Mutually exclusive with
+        shard=True and mesh/batch_spec.
     mesh              : jax.sharding.Mesh | None
         Mesh used to build a NamedSharding when batch_spec is provided.
-    batch_spec        : jax.sharding.PartitionSpec | None
-        PartitionSpec for the batch when mesh is provided. For PyTree leaves with
-        different rank, the spec is adapted per leaf: shorter leaves use the first
-        ``leaf.ndim`` entries, and longer leaves append replicated dimensions
-        (``None`` entries).
+    batch_spec        : jax.sharding.PartitionSpec | PyTree[jax.sharding.PartitionSpec] | None
+        Explicit pytree of PartitionSpecs for the batch when mesh is provided.
+        This must match the batch pytree structure; leaf specs are not inferred.
     max_in_flight      : int | None
         Number of in-flight CPU batch jobs scheduled via `run_in_executor`.
         Keeping this >1 enables actual async pipelining. Order is preserved.
@@ -846,9 +820,9 @@ class DataLoader:
         num_async_workers: int = 1,
         host_device: Optional[Device] = None,
         max_in_flight: Optional[int] = None,
-        sharding: Sharding | None = None,
+        sharding: Any = None,
         mesh: Mesh | None = None,
-        batch_spec: PartitionSpec | None = None,
+        batch_spec: Any = None,
     ):
         if batch_size <= 0:
             raise ValueError("batch_size must be positive.")
@@ -935,10 +909,10 @@ class DataLoader:
 
     @staticmethod
     def _resolve_sharding(
-        sharding: Sharding | None,
+        sharding,
         mesh: Mesh | None,
-        batch_spec: PartitionSpec | None,
-    ) -> Sharding | None:
+        batch_spec,
+    ):
         if sharding is not None:
             if mesh is not None or batch_spec is not None:
                 raise ValueError(
@@ -949,7 +923,9 @@ class DataLoader:
             return None
         if mesh is None or batch_spec is None:
             raise ValueError("mesh and batch_spec must be provided together.")
-        return NamedSharding(mesh, batch_spec)
+        return jax.tree_util.tree_map(
+            lambda spec: NamedSharding(mesh, spec), batch_spec
+        )
 
     @staticmethod
     def _finalize(self_ref: "weakref.ReferenceType[DataLoader]"):

@@ -1,6 +1,8 @@
 import jax
 import jax.numpy as jnp
 import pytest
+from jax.experimental.shard_map import shard_map
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 
 from probjax.nn.layers.attention import dot_product_attention, flex_attention
 from probjax.nn.pallas_kernels import (
@@ -69,6 +71,38 @@ def _build_inputs():
     k = jax.random.normal(kk, shape, dtype=jnp.float16)
     v = jax.random.normal(kv, shape, dtype=jnp.float16)
     return q, k, v
+
+
+def _build_sharded_attention_inputs():
+    if jax.device_count() < 2:
+        pytest.skip("NamedSharding attention benchmark test requires 2 devices.")
+
+    mesh = Mesh(jax.devices()[:2], ("data",))
+    sharding = NamedSharding(mesh, P("data", None, None, None))
+    q, k, v = _build_inputs()
+    return (
+        mesh,
+        jax.device_put(q, sharding),
+        jax.device_put(k, sharding),
+        jax.device_put(v, sharding),
+    )
+
+
+def _forward_explicit_shard_map_impl(name: str, mesh: Mesh):
+    fn = _forward_impl(name)
+    return jax.jit(
+        shard_map(
+            lambda q, k, v: fn(q, k, v),
+            mesh=mesh,
+            in_specs=(
+                P("data", None, None, None),
+                P("data", None, None, None),
+                P("data", None, None, None),
+            ),
+            out_specs=P("data", None, None, None),
+            check_rep=False,
+        )
+    )
 
 
 def _build_variable_seq_lengths():
@@ -308,6 +342,81 @@ def test_benchmark_attention_backward(benchmark, impl):
 
     dq = benchmark(run_once)
     assert dq.shape == q.shape
+
+
+@pytest.mark.gpu
+def test_flex_attention_named_sharding_matches_naive():
+    if jax.default_backend() != "gpu":
+        pytest.skip("NamedSharding attention regression test requires GPU.")
+
+    mesh, q, k, v = _build_sharded_attention_inputs()
+
+    with jax.set_mesh(mesh):
+        naive_fn = jax.jit(
+            lambda q, k, v: dot_product_attention(q, k, v).astype(jnp.float32)
+        )
+        flex_fn = jax.jit(
+            lambda q, k, v: flex_attention(q, k, v, deterministic=True).astype(
+                jnp.float32
+            )
+        )
+
+        naive_out = jax.block_until_ready(naive_fn(q, k, v))
+        flex_out = jax.block_until_ready(flex_fn(q, k, v))
+
+    assert naive_out.shape == flex_out.shape == q.shape
+    assert jnp.allclose(naive_out, flex_out, atol=5e-2, rtol=5e-2)
+
+
+@pytest.mark.gpu
+def test_flex_attention_explicit_shard_map_matches_naive():
+    if jax.default_backend() != "gpu":
+        pytest.skip("Explicit shard_map attention regression test requires GPU.")
+
+    mesh, q, k, v = _build_sharded_attention_inputs()
+    naive_fn = _forward_explicit_shard_map_impl("naive", mesh)
+    flex_fn = _forward_explicit_shard_map_impl("flex", mesh)
+
+    naive_out = jax.block_until_ready(naive_fn(q, k, v)).astype(jnp.float32)
+    flex_out = jax.block_until_ready(flex_fn(q, k, v)).astype(jnp.float32)
+
+    assert naive_out.shape == flex_out.shape == q.shape
+    assert jnp.allclose(naive_out, flex_out, atol=5e-2, rtol=5e-2)
+
+
+@pytest.mark.gpu
+@pytest.mark.benchmark(group="attention_forward_sharded_runtime_comparison")
+@pytest.mark.parametrize("mode", ["named_sharding", "explicit_shard_map"])
+@pytest.mark.parametrize("impl", ["naive", "flex"])
+def test_benchmark_attention_forward_sharded_runtime_comparison(benchmark, mode, impl):
+    if jax.default_backend() != "gpu":
+        pytest.skip("Sharded attention benchmark test requires GPU.")
+    mesh, q, k, v = _build_sharded_attention_inputs()
+    if mode == "named_sharding":
+        fn = jax.jit(_forward_impl(impl))
+        with jax.set_mesh(mesh):
+            warm = fn(q, k, v)
+            _ = jax.block_until_ready(warm)
+
+            def run_once():
+                out = fn(q, k, v)
+                return jax.block_until_ready(out)
+
+            out = benchmark(run_once)
+    elif mode == "explicit_shard_map":
+        fn = _forward_explicit_shard_map_impl(impl, mesh)
+        warm = fn(q, k, v)
+        _ = jax.block_until_ready(warm)
+
+        def run_once():
+            out = fn(q, k, v)
+            return jax.block_until_ready(out)
+
+        out = benchmark(run_once)
+    else:
+        raise ValueError(f"Unknown sharding benchmark mode: {mode}")
+
+    assert out.shape == q.shape
 
 
 @pytest.mark.gpu

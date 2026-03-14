@@ -31,9 +31,16 @@ class _TreeDataset:
         }
 
 
-def test_dataloader_mesh_batch_spec_adapts_to_leaf_rank():
+def test_dataloader_mesh_batch_spec_uses_explicit_spec_tree():
     mesh = jax.make_mesh((1,), ("data",), devices=jax.devices()[:1])
     dataset = _TreeDataset()
+    batch_spec = {
+        "tokens": P("data", None, None),
+        "features": P("data", None),
+        "labels": P("data"),
+        "extra": P("data", None, None, None),
+        "constant": P(),
+    }
 
     with DataLoader(
         dataset,
@@ -43,7 +50,7 @@ def test_dataloader_mesh_batch_spec_adapts_to_leaf_rank():
         num_prefetch_host=2,
         num_prefetch_device=1,
         mesh=mesh,
-        batch_spec=P("data", None, None),
+        batch_spec=batch_spec,
     ) as loader:
         batch = next(iter(loader))
 
