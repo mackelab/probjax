@@ -21,7 +21,11 @@ from probjax.nn.pallas_kernels import (
     mha,
 )
 from probjax.nn.sharding import LinearShardingCfg, ShardingCfg
-from probjax.nn.utils import pad_to_power_of_2
+from probjax.nn.utils import (
+    filter_precision_kwargs,
+    get_active_precision_kwargs,
+    pad_to_power_of_2,
+)
 from probjax.utils.typing import (
     Array,
     ArrayLike,
@@ -658,16 +662,41 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
 
 
 class InducedSelfAttention(nnx.Module):
-    """Two-stage self-attention with learned inducing points.
+    """Two-stage self-attention with learned inducing points (ISAB).
 
-    This layer follows the Set Transformer induced-attention pattern but
-    matches the current NNX-based API used across the repo:
+    Implements the Set Transformer's Induced Self-Attention Block using two
+    Multihead Attention Blocks (MABs).  Each MAB is a full transformer-style
+    block consisting of multi-head attention followed by a row-wise
+    feedforward network, both with residual connections and layer
+    normalization (pre-norm convention):
 
-    1. learned inducing points attend to the input sequence
-    2. the input sequence attends back to the induced representation
+    .. code-block:: text
 
-    The module is intentionally attention-only: no feedforward/MLP sublayer is
-    included.
+        H = LayerNorm(X + Multihead(X, Y, Y))
+        MAB(X, Y) = LayerNorm(H + rFF(H))
+
+        ISAB(X) = MAB(X, MAB(I, X))
+
+    where *I* are the learned inducing points and *rFF* is a row-wise
+    feedforward (MLP) applied independently to each token.
+
+    Args:
+        in_features: input / output feature dimension.
+        num_inducing_points: number of learned inducing points.
+        num_heads: number of attention heads.
+        attn_size: per-head dimension (defaults to ``in_features // num_heads``).
+        widening_factor: expansion factor for the feedforward hidden dim.
+        mlp_cls: feedforward MLP class (default: ``probjax.nn.nets.simple.MLP``).
+        dropout_rate: dropout rate for MHA.
+        q_scale_cls: optional query-scaling class for the inducing MHA.
+        output_q_scale_cls: optional query-scaling class for the output MHA.
+        norm_cls: normalization layer class (``None`` to disable norms).
+        mha_cls: multi-head attention class.
+        dtype: computation dtype.
+        param_dtype: parameter dtype.
+        precision: computation precision.
+        preferred_element_type: output dtype cast.
+        sharding_cfg: sharding configuration.
     """
 
     def __init__(
@@ -678,6 +707,8 @@ class InducedSelfAttention(nnx.Module):
         rngs: nnx.Rngs,
         num_heads: int = 8,
         attn_size: int | None = None,
+        widening_factor: int = 4,
+        mlp_cls: ModuleLikeType | None = None,
         dropout_rate: float = 0.0,
         q_scale_cls: ModuleLikeType | None = None,
         output_q_scale_cls: ModuleLikeType | None = None,
@@ -693,8 +724,7 @@ class InducedSelfAttention(nnx.Module):
             raise ValueError(f"`in_features` must be positive, got {in_features}.")
         if num_inducing_points <= 0:
             raise ValueError(
-                "`num_inducing_points` must be positive, "
-                f"got {num_inducing_points}."
+                f"`num_inducing_points` must be positive, got {num_inducing_points}."
             )
 
         self.in_features = in_features
@@ -707,18 +737,25 @@ class InducedSelfAttention(nnx.Module):
             in_features // num_heads if attn_size is None else attn_size * num_heads
         )
 
+        # Precision and dtype settings.
+        precision_kwargs = get_active_precision_kwargs(
+            dtype,
+            precision,
+            param_dtype,
+            preferred_element_type,
+        )
+
+        # --- MHA sub-layers ---
         self.inducing_attn = mha_cls(
             num_heads=num_heads,
             in_features=in_features,
             qkv_features=qkv_features,
             out_features=in_features,
             dropout_rate=dropout_rate,
-            dtype=dtype,
-            param_dtype=param_dtype,
-            precision=precision,
             sharding_cfg=self.sharding_cfg,
             q_scale_cls=q_scale_cls,
             rngs=rngs,
+            **filter_precision_kwargs(mha_cls, **precision_kwargs),
         )
         self.output_attn = mha_cls(
             num_heads=num_heads,
@@ -726,51 +763,52 @@ class InducedSelfAttention(nnx.Module):
             qkv_features=qkv_features,
             out_features=in_features,
             dropout_rate=dropout_rate,
-            dtype=dtype,
-            param_dtype=param_dtype,
-            precision=precision,
             sharding_cfg=self.sharding_cfg,
             q_scale_cls=output_q_scale_cls,
             rngs=rngs,
+            **filter_precision_kwargs(mha_cls, **precision_kwargs),
         )
 
+        # --- Row-wise feedforward (rFF) sub-layers ---
+        if mlp_cls is None:
+            from probjax.nn.nets.simple import MLP as _MLP
+
+            mlp_cls = _MLP
+
+        ff_dims = [in_features, widening_factor * in_features, in_features]
+        self.inducing_ff = mlp_cls(
+            ff_dims,
+            rngs=rngs,
+            **filter_precision_kwargs(mlp_cls, **precision_kwargs),
+        )
+        self.output_ff = mlp_cls(
+            ff_dims,
+            rngs=rngs,
+            **filter_precision_kwargs(mlp_cls, **precision_kwargs),
+        )
+
+        # --- Normalization layers ---
+        # Each MAB needs: pre-attn norm (on Q), pre-attn norm (on KV),
+        # post-attn norm (on H before rFF).
+        # MAB1 (inducing): inducing_norm (Q), input_norm (KV), inducing_ff_norm (pre-FF)
+        # MAB2 (output):   output_norm (Q), hidden_norm (KV), output_ff_norm (pre-FF)
         norm_kwargs = (
             self.sharding_cfg.norm_kwargs(norm_cls) if norm_cls is not None else {}
         )
         if norm_cls is not None:
-            self.inducing_norm = norm_cls(
-                in_features,
-                dtype=dtype,
-                param_dtype=param_dtype,
-                rngs=rngs,
-                **norm_kwargs,
-            )
-            self.input_norm = norm_cls(
-                in_features,
-                dtype=dtype,
-                param_dtype=param_dtype,
-                rngs=rngs,
-                **norm_kwargs,
-            )
-            self.output_norm = norm_cls(
-                in_features,
-                dtype=dtype,
-                param_dtype=param_dtype,
-                rngs=rngs,
-                **norm_kwargs,
-            )
-            self.hidden_norm = norm_cls(
-                in_features,
-                dtype=dtype,
-                param_dtype=param_dtype,
-                rngs=rngs,
-                **norm_kwargs,
-            )
+            self.inducing_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
+            self.input_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
+            self.inducing_ff_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
+            self.output_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
+            self.hidden_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
+            self.output_ff_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
         else:
             self.inducing_norm = None
             self.input_norm = None
+            self.inducing_ff_norm = None
             self.output_norm = None
             self.hidden_norm = None
+            self.output_ff_norm = None
 
         init_dtype = jnp.float32 if param_dtype is None else param_dtype
         inducing_init = nnx.initializers.normal(stddev=0.02)(
@@ -783,6 +821,37 @@ class InducedSelfAttention(nnx.Module):
     @staticmethod
     def _maybe_norm(norm: nnx.Module | None, x: Array) -> Array:
         return x if norm is None else norm(x)
+
+    def _mab(
+        self,
+        x: Array,
+        y: Array,
+        *,
+        attn: Any,
+        x_norm: Any,
+        y_norm: Any,
+        ff: Any,
+        ff_norm: Any,
+        deterministic: bool,
+        rng: jax.Array | None,
+    ) -> Array:
+        """Single Multihead Attention Block (MAB).
+
+        H = X + MHA(norm(X), norm(Y), norm(Y))   # attention + residual
+        MAB(X, Y) = H + rFF(norm(H))              # feedforward + residual
+        """
+        # Attention sub-block (pre-norm residual).
+        y_n = self._maybe_norm(y_norm, y)
+        h = x + attn(
+            self._maybe_norm(x_norm, x),
+            y_n,
+            y_n,
+            deterministic=deterministic,
+            rng=rng,
+        )
+        # Feedforward sub-block (pre-norm residual).
+        out = h + ff(self._maybe_norm(ff_norm, h))
+        return out
 
     def __call__(
         self,
@@ -820,18 +889,28 @@ class InducedSelfAttention(nnx.Module):
             x.shape[:-2] + inducing_points.shape,
         )
 
-        source_norm = self._maybe_norm(self.input_norm, source)
-        inducing_hidden = inducing_points + self.inducing_attn(
-            self._maybe_norm(self.inducing_norm, inducing_points),
-            source_norm,
-            source_norm,
+        # MAB 1: inducing points attend to source  ->  H = MAB(I, X)
+        inducing_hidden = self._mab(
+            inducing_points,
+            source,
+            attn=self.inducing_attn,
+            x_norm=self.inducing_norm,
+            y_norm=self.input_norm,
+            ff=self.inducing_ff,
+            ff_norm=self.inducing_ff_norm,
             deterministic=deterministic,
             rng=rng,
         )
-        out = x + self.output_attn(
-            self._maybe_norm(self.output_norm, x),
-            self._maybe_norm(self.hidden_norm, inducing_hidden),
-            self._maybe_norm(self.hidden_norm, inducing_hidden),
+
+        # MAB 2: input attends to induced representation  ->  ISAB(X) = MAB(X, H)
+        out = self._mab(
+            x,
+            inducing_hidden,
+            attn=self.output_attn,
+            x_norm=self.output_norm,
+            y_norm=self.hidden_norm,
+            ff=self.output_ff,
+            ff_norm=self.output_ff_norm,
             deterministic=deterministic,
             rng=rng,
         )
@@ -839,6 +918,7 @@ class InducedSelfAttention(nnx.Module):
         if self.preferred_element_type is not None:
             out = out.astype(self.preferred_element_type)
         return out
+
 
 def dot_product_attention(
     query: Array,
