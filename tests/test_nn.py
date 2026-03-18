@@ -110,13 +110,15 @@ def test_induced_self_attention():
     x = jnp.ones((2, 7, 16))
 
     y = model(x)
-    y_train = model(x, train_size=5)
+    y_kv = model(x, kv_len=5)
+    y_kv_arr = model(x, kv_len=jnp.array([5, 3]))
 
     assert y.shape == x.shape
-    assert y_train.shape == x.shape
+    assert y_kv.shape == x.shape
+    assert y_kv_arr.shape == x.shape
 
     def loss_fn(m):
-        return jnp.sum(m(x, train_size=5))
+        return jnp.sum(m(x, kv_len=5))
 
     _ = jax.grad(loss_fn)
     _, _ = jax.tree_util.tree_flatten(model)

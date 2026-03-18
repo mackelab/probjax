@@ -834,6 +834,7 @@ class InducedSelfAttention(nnx.Module):
         ff_norm: Any,
         deterministic: bool,
         rng: jax.Array | None,
+        kv_len: int | Array | None = None,
     ) -> Array:
         """Single Multihead Attention Block (MAB).
 
@@ -848,6 +849,7 @@ class InducedSelfAttention(nnx.Module):
             y_n,
             deterministic=deterministic,
             rng=rng,
+            kv_len=kv_len,
         )
         # Feedforward sub-block (pre-norm residual).
         out = h + ff(self._maybe_norm(ff_norm, h))
@@ -857,10 +859,24 @@ class InducedSelfAttention(nnx.Module):
         self,
         x: Array,
         *,
-        train_size: int | None = None,
         deterministic: bool = True,
         rng: jax.Array | None = None,
+        kv_len: int | Array | None = None,
     ) -> Array:
+        """Apply induced self-attention.
+
+        Args:
+            x: input of shape ``[..., seq_len, features]``.
+            deterministic: if ``True``, disable dropout.
+            rng: optional PRNG key for dropout.
+            kv_len: effective number of keys for query scaling
+                (SSMax / QASSMax).  Forwarded to the underlying MHA calls.
+                Can be ``None`` (inferred from key shape), a scalar ``int``
+                or 0-d array, or a per-batch array of shape ``[batch]``.
+
+        Returns:
+            Output of same shape as *x*.
+        """
         x = jnp.asarray(x)
         if x.ndim < 2:
             raise ValueError(
@@ -872,27 +888,16 @@ class InducedSelfAttention(nnx.Module):
                 f"but module expects {self.in_features}."
             )
 
-        seq_len = x.shape[-2]
-        if train_size is None:
-            source = x
-        else:
-            if not 0 < train_size <= seq_len:
-                raise ValueError(
-                    "`train_size` must satisfy 0 < train_size <= seq_len, "
-                    f"got train_size={train_size}, seq_len={seq_len}."
-                )
-            source = x[..., :train_size, :]
-
         inducing_points = self.inducing_points[...]
         inducing_points = jnp.broadcast_to(
             inducing_points,
             x.shape[:-2] + inducing_points.shape,
         )
 
-        # MAB 1: inducing points attend to source  ->  H = MAB(I, X)
+        # MAB 1: inducing points attend to input  ->  H = MAB(I, X)
         inducing_hidden = self._mab(
             inducing_points,
-            source,
+            x,
             attn=self.inducing_attn,
             x_norm=self.inducing_norm,
             y_norm=self.input_norm,
@@ -900,6 +905,7 @@ class InducedSelfAttention(nnx.Module):
             ff_norm=self.inducing_ff_norm,
             deterministic=deterministic,
             rng=rng,
+            kv_len=kv_len,
         )
 
         # MAB 2: input attends to induced representation  ->  ISAB(X) = MAB(X, H)
