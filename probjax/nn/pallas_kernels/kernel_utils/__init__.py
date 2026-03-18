@@ -14,6 +14,18 @@ from .common import (
     query_iterator_indices,
     use_interpret_mode,
 )
+from .cp_utils import (
+    build_mha_sharding_rule_bwd,
+    build_mha_sharding_rule_fwd,
+    build_mha_sharding_rule_jvp,
+    make_cp_function,
+    or_sentinel,
+    sentinel,
+    should_fallback_from_cp_error,
+    try_cp_or_raw,
+    undo_sentinel,
+    validate_mha_sharding,
+)
 
 __all__ = [
     "DEFAULT_MASK_VALUE",
@@ -30,4 +42,15 @@ __all__ = [
     "pallas_call_supports_backend",
     "query_iterator_indices",
     "use_interpret_mode",
+    # cp_utils
+    "build_mha_sharding_rule_bwd",
+    "build_mha_sharding_rule_fwd",
+    "build_mha_sharding_rule_jvp",
+    "make_cp_function",
+    "or_sentinel",
+    "sentinel",
+    "should_fallback_from_cp_error",
+    "try_cp_or_raw",
+    "undo_sentinel",
+    "validate_mha_sharding",
 ]
