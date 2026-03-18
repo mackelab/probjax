@@ -1,4 +1,5 @@
 from probjax.nn.layers.attention import (
+    InducedSelfAttention,
     MultiHeadAttention,
     PerHeadQueryScale,
     QASSMaxQueryScale,

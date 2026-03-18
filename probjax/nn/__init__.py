@@ -17,6 +17,7 @@ from probjax.nn.layers import (
     Flip,
     GatedFuse,
     GaussianFourierEmbedding,
+    InducedSelfAttention,
     LRUCell,
     LearnablePosEncode,
     MambaCell,

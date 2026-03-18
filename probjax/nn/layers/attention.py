@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import inspect
 from typing import Any, Optional, cast
 
 import jax
@@ -23,7 +22,13 @@ from probjax.nn.pallas_kernels import (
 )
 from probjax.nn.sharding import LinearShardingCfg, ShardingCfg
 from probjax.nn.utils import pad_to_power_of_2
-from probjax.utils.typing import Array, ArrayLike, DTypeLike, ModuleLikeType
+from probjax.utils.typing import (
+    Array,
+    ArrayLike,
+    DTypeLike,
+    ModuleLikeType,
+    PrecisionLike,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -73,12 +78,15 @@ class SSMaxQueryScale(nnx.Module):
     def __init__(
         self,
         num_heads: int,
+        head_dim: int | None = None,
         *,
         min_scale: float = 0.0,
         max_scale: float = 4.0,
+        dtype: Dtype | None = None,
         param_dtype: Dtype = jnp.float32,
         rngs: rnglib.Rngs,
     ):
+        del head_dim, dtype
         if min_scale > max_scale:
             raise ValueError("`min_scale` must be <= `max_scale`.")
         self.min_scale = min_scale
@@ -131,16 +139,18 @@ class PerHeadQueryScale(nnx.Module):
     def __init__(
         self,
         num_heads: int,
+        head_dim: int | None = None,
         *,
         init_value: float = 1.0,
         min_scale: float = 0.0,
         max_scale: float = 4.0,
+        dtype: Dtype | None = None,
         param_dtype: Dtype = jnp.float32,
         rngs: rnglib.Rngs,
     ):
+        del head_dim, dtype, rngs
         if min_scale > max_scale:
             raise ValueError("`min_scale` must be <= `max_scale`.")
-        del rngs
         self.min_scale = min_scale
         self.max_scale = max_scale
         self.s = nnx.Param(jnp.full((num_heads,), init_value, dtype=param_dtype))
@@ -278,8 +288,7 @@ def _build_qk_norm(
 
     When *cls* is None, falls back to ``nnx.LayerNorm`` (the Flax default).
     For ``nnx.LayerNorm`` specifically, ``use_bias=False`` and
-    ``scale_metadata`` are forwarded.  For any other class the caller can
-    pass arbitrary kwargs via *extra_kwargs*.
+    ``scale_metadata`` are forwarded.
     """
     if cls is None:
         return nnx.LayerNorm(
@@ -292,17 +301,13 @@ def _build_qk_norm(
             scale_metadata=scale_metadata,
         )
 
-    kw: dict[str, Any] = {}
-    params = inspect.signature(cls.__init__).parameters
-    if "dtype" in params:
-        kw.setdefault("dtype", dtype)
-    if "param_dtype" in params:
-        kw.setdefault("param_dtype", param_dtype)
-    if "promote_dtype" in params:
-        kw.setdefault("promote_dtype", promote_dtype)
-    if "rngs" in params:
-        kw.setdefault("rngs", rngs)
-    return cls(head_dim, **kw)
+    return cls(
+        head_dim,
+        dtype=dtype,
+        param_dtype=param_dtype,
+        promote_dtype=promote_dtype,
+        rngs=rngs,
+    )
 
 
 def _build_q_scale(
@@ -316,23 +321,16 @@ def _build_q_scale(
 ) -> Any:
     """Instantiate a query-scaling module from a class.
 
-    The constructor is called with matching defaults if the class signature
-    accepts them: ``num_heads``, ``head_dim``, ``dtype``, ``param_dtype``,
-    ``rngs``.
+    The constructor is called with ``num_heads``, ``head_dim``, ``dtype``,
+    ``param_dtype``, and ``rngs``.
     """
-    kw: dict[str, Any] = {}
-    params = inspect.signature(cls.__init__).parameters
-    if "num_heads" in params:
-        kw.setdefault("num_heads", num_heads)
-    if "head_dim" in params:
-        kw.setdefault("head_dim", head_dim)
-    if "dtype" in params:
-        kw.setdefault("dtype", dtype)
-    if "param_dtype" in params:
-        kw.setdefault("param_dtype", param_dtype)
-    if "rngs" in params:
-        kw.setdefault("rngs", rngs)
-    return cls(**kw)
+    return cls(
+        num_heads=num_heads,
+        head_dim=head_dim,
+        dtype=dtype,
+        param_dtype=param_dtype,
+        rngs=rngs,
+    )
 
 
 class MultiHeadAttention(FlaxMultiHeadAttention):
@@ -355,20 +353,15 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
             computing attention weights.
         normalize_q_cls: optional module *class* (constructor) used to build
             the query normalizer.  It is instantiated inside MHA with
-            constructor-aware defaults (``rngs``, ``dtype``, ``param_dtype``,
-            ``promote_dtype``) when accepted by the class signature.  When
+            defaults (``rngs``, ``dtype``, ``param_dtype``, ``promote_dtype``).
+            When
             ``None`` (default) and ``normalize_qk`` is True, falls back to
             ``nnx.LayerNorm``.
         normalize_k_cls: same as ``normalize_q_cls`` but for keys only.
             Values are not normalized.
         q_scale_cls: optional module class used to build the query scaling
-            module. If provided, it is instantiated inside MHA with ``rngs``
-            plus matching defaults from ``num_heads``, ``head_dim``, ``dtype``,
-            and ``param_dtype`` when accepted by the constructor.
-        query_scale: optional pre-instantiated scaling module (legacy path).
-            Must accept ``(query, *, kv_len)`` and return scaled queries.
-            Built-in options: :class:`PerHeadQueryScale`,
-            :class:`SSMaxQueryScale`, :class:`QASSMaxQueryScale`.
+            module. If provided, it is instantiated inside MHA with ``rngs``,
+            ``num_heads``, ``head_dim``, ``dtype``, and ``param_dtype``.
     """
 
     def __init__(
@@ -381,7 +374,6 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         normalize_k_cls: ModuleLikeType | None = None,
         normalize_kv_cls: ModuleLikeType | None = None,
         q_scale_cls: ModuleLikeType | None = None,
-        query_scale: nnx.Module | None = None,
         **kwargs,
     ):
         if normalize_k_cls is not None and normalize_kv_cls is not None:
@@ -444,8 +436,6 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
             )
 
         # Pre-kernel query scaling (SSMax, QASSMax, etc.).
-        if q_scale_cls is not None and query_scale is not None:
-            raise ValueError("Pass either `q_scale_cls` or `query_scale`, not both.")
         if q_scale_cls is not None:
             self._query_scale = _build_q_scale(
                 cls=q_scale_cls,
@@ -455,10 +445,8 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
                 param_dtype=self.param_dtype,
                 rngs=rngs,
             )
-        elif query_scale is not None:
-            self._query_scale = query_scale
         else:
-            self._query_scale = nnx.data(None)
+            self._query_scale = None
 
     def __call__(
         self,
@@ -668,6 +656,189 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         out = self.out(x)
         return self.sharding_cfg.constrain(out, self._activation_spec)
 
+
+class InducedSelfAttention(nnx.Module):
+    """Two-stage self-attention with learned inducing points.
+
+    This layer follows the Set Transformer induced-attention pattern but
+    matches the current NNX-based API used across the repo:
+
+    1. learned inducing points attend to the input sequence
+    2. the input sequence attends back to the induced representation
+
+    The module is intentionally attention-only: no feedforward/MLP sublayer is
+    included.
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        *,
+        num_inducing_points: int,
+        rngs: nnx.Rngs,
+        num_heads: int = 8,
+        attn_size: int | None = None,
+        dropout_rate: float = 0.0,
+        q_scale_cls: ModuleLikeType | None = None,
+        output_q_scale_cls: ModuleLikeType | None = None,
+        norm_cls: ModuleLikeType | None = nnx.LayerNorm,
+        mha_cls: ModuleLikeType = MultiHeadAttention,
+        dtype: DTypeLike | None = None,
+        param_dtype: DTypeLike = jnp.float32,
+        precision: PrecisionLike | None = None,
+        preferred_element_type: DTypeLike | None = None,
+        sharding_cfg: ShardingCfg | None = None,
+    ):
+        if in_features <= 0:
+            raise ValueError(f"`in_features` must be positive, got {in_features}.")
+        if num_inducing_points <= 0:
+            raise ValueError(
+                "`num_inducing_points` must be positive, "
+                f"got {num_inducing_points}."
+            )
+
+        self.in_features = in_features
+        self.num_heads = num_heads
+        self.num_inducing_points = num_inducing_points
+        self.preferred_element_type = preferred_element_type
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
+
+        qkv_features = (
+            in_features // num_heads if attn_size is None else attn_size * num_heads
+        )
+
+        self.inducing_attn = mha_cls(
+            num_heads=num_heads,
+            in_features=in_features,
+            qkv_features=qkv_features,
+            out_features=in_features,
+            dropout_rate=dropout_rate,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            precision=precision,
+            sharding_cfg=self.sharding_cfg,
+            q_scale_cls=q_scale_cls,
+            rngs=rngs,
+        )
+        self.output_attn = mha_cls(
+            num_heads=num_heads,
+            in_features=in_features,
+            qkv_features=qkv_features,
+            out_features=in_features,
+            dropout_rate=dropout_rate,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            precision=precision,
+            sharding_cfg=self.sharding_cfg,
+            q_scale_cls=output_q_scale_cls,
+            rngs=rngs,
+        )
+
+        norm_kwargs = (
+            self.sharding_cfg.norm_kwargs(norm_cls) if norm_cls is not None else {}
+        )
+        if norm_cls is not None:
+            self.inducing_norm = norm_cls(
+                in_features,
+                dtype=dtype,
+                param_dtype=param_dtype,
+                rngs=rngs,
+                **norm_kwargs,
+            )
+            self.input_norm = norm_cls(
+                in_features,
+                dtype=dtype,
+                param_dtype=param_dtype,
+                rngs=rngs,
+                **norm_kwargs,
+            )
+            self.output_norm = norm_cls(
+                in_features,
+                dtype=dtype,
+                param_dtype=param_dtype,
+                rngs=rngs,
+                **norm_kwargs,
+            )
+            self.hidden_norm = norm_cls(
+                in_features,
+                dtype=dtype,
+                param_dtype=param_dtype,
+                rngs=rngs,
+                **norm_kwargs,
+            )
+        else:
+            self.inducing_norm = None
+            self.input_norm = None
+            self.output_norm = None
+            self.hidden_norm = None
+
+        init_dtype = jnp.float32 if param_dtype is None else param_dtype
+        inducing_init = nnx.initializers.normal(stddev=0.02)(
+            rngs.params(),
+            (num_inducing_points, in_features),
+            init_dtype,
+        )
+        self.inducing_points = nnx.Param(inducing_init)
+
+    @staticmethod
+    def _maybe_norm(norm: nnx.Module | None, x: Array) -> Array:
+        return x if norm is None else norm(x)
+
+    def __call__(
+        self,
+        x: Array,
+        *,
+        train_size: int | None = None,
+        deterministic: bool = True,
+        rng: jax.Array | None = None,
+    ) -> Array:
+        x = jnp.asarray(x)
+        if x.ndim < 2:
+            raise ValueError(
+                f"`x` must have shape [..., seq_len, features], got ndim={x.ndim}."
+            )
+        if x.shape[-1] != self.in_features:
+            raise ValueError(
+                f"Incompatible input dimension, got {x.shape[-1]} "
+                f"but module expects {self.in_features}."
+            )
+
+        seq_len = x.shape[-2]
+        if train_size is None:
+            source = x
+        else:
+            if not 0 < train_size <= seq_len:
+                raise ValueError(
+                    "`train_size` must satisfy 0 < train_size <= seq_len, "
+                    f"got train_size={train_size}, seq_len={seq_len}."
+                )
+            source = x[..., :train_size, :]
+
+        inducing_points = self.inducing_points[...]
+        inducing_points = jnp.broadcast_to(
+            inducing_points,
+            x.shape[:-2] + inducing_points.shape,
+        )
+
+        source_norm = self._maybe_norm(self.input_norm, source)
+        inducing_hidden = inducing_points + self.inducing_attn(
+            self._maybe_norm(self.inducing_norm, inducing_points),
+            source_norm,
+            source_norm,
+            deterministic=deterministic,
+            rng=rng,
+        )
+        out = x + self.output_attn(
+            self._maybe_norm(self.output_norm, x),
+            self._maybe_norm(self.hidden_norm, inducing_hidden),
+            self._maybe_norm(self.hidden_norm, inducing_hidden),
+            deterministic=deterministic,
+            rng=rng,
+        )
+
+        if self.preferred_element_type is not None:
+            out = out.astype(self.preferred_element_type)
+        return out
 
 def dot_product_attention(
     query: Array,

@@ -112,13 +112,11 @@ class RotaryPosEncode(nnx.Module):
         self,
         token_dim: int,
         *,
-        max_seq_len: int = 4_096,
         base: float = 10_000.0,
         rotary_dim: Optional[int] = None,
         spatial_ndims: int | None = None,
         spatial_shape: int | Sequence[int] | None = None,
         dtype: DTypeLike | None = None,
-        cache_cos_sin: bool = True,
         sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs | None = None,
     ):
@@ -126,7 +124,6 @@ class RotaryPosEncode(nnx.Module):
 
         Args:
             token_dim: Feature dimension of the incoming tensor.
-            max_seq_len: Maximum sequence length cached for rotary frequencies.
             base: Exponential base used to compute inverse frequencies.
             rotary_dim: Number of leading features to rotate. Defaults to
                 ``token_dim``.
@@ -136,18 +133,13 @@ class RotaryPosEncode(nnx.Module):
             spatial_shape: Optional static spatial shape. When ``None`` the
                 module treats inputs as 1D unless an explicit shape is supplied
                 at call time.
-            dtype: Optional dtype used for cached cos/sin tables.
-            cache_cos_sin: If True, precomputes cos/sin tables up to
-                ``max_seq_len`` for faster lookups when using sequential
-                positions.
+            dtype: Optional dtype used for the computed cos/sin tables.
             rngs: Random number generators (unused, kept for API consistency).
         """
         del rngs
         self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         if token_dim <= 0:
             raise ValueError("token_dim must be positive")
-        if max_seq_len <= 0:
-            raise ValueError("max_seq_len must be positive")
         self.token_dim = token_dim
         self.rotary_dim = rotary_dim or token_dim
         if self.rotary_dim % 2 != 0:
@@ -175,20 +167,10 @@ class RotaryPosEncode(nnx.Module):
             self.spatial_shape = None
             self.spatial_ndims = int(spatial_ndims)
 
-        self.max_seq_len = max_seq_len
         self.base = base
         self.dtype = dtype
 
         self._full_inv_freq = self._compute_inv_freq(self.rotary_dim)
-
-        if cache_cos_sin:
-            positions = jnp.arange(max_seq_len, dtype=self._full_inv_freq.dtype)
-            cos, sin = self._compute_cos_sin(positions, self._full_inv_freq)
-            self.cos_cache = nnx.Variable(cos)
-            self.sin_cache = nnx.Variable(sin)
-        else:
-            self.cos_cache = None
-            self.sin_cache = None
 
     def _compute_inv_freq(self, rotary_dim: int) -> Array:
         dtype = self.dtype or jnp.float32
@@ -210,25 +192,13 @@ class RotaryPosEncode(nnx.Module):
             sin = sin.astype(self.dtype)
         return cos, sin
 
-    def _lookup_cos_sin_1d(
+    def _compute_cos_sin_1d(
         self,
         seq_len: int,
         positions: Optional[Array],
         *,
         offset: float,
     ) -> tuple[Array, Array]:
-        if (
-            positions is None
-            and self.cos_cache is not None
-            and self.sin_cache is not None
-        ):
-            offset_int = int(offset)
-            if offset_int == offset and offset_int >= 0:
-                end = offset_int + seq_len
-                if end <= self.max_seq_len:
-                    cos = self.cos_cache[...][offset_int:end]
-                    sin = self.sin_cache[...][offset_int:end]
-                    return cos, sin
         if positions is None:
             positions = jnp.arange(seq_len, dtype=self._full_inv_freq.dtype) + offset
         else:
@@ -316,7 +286,7 @@ class RotaryPosEncode(nnx.Module):
 
         if position_dims == 1:
             idx_1d = None if idx_arr is None else idx_arr.reshape((seq_len,))
-            cos, sin = self._lookup_cos_sin_1d(seq_len, idx_1d, offset=offsets[0])
+            cos, sin = self._compute_cos_sin_1d(seq_len, idx_1d, offset=offsets[0])
             rotary_out = self._apply_rotary(rotary_slice, cos, sin)
         else:
             if self.rotary_dim % position_dims != 0:

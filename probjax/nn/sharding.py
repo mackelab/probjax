@@ -98,7 +98,10 @@ class ShardingCfg:
         """Return *cfg* if given, else auto-detect from ``jax.sharding.get_mesh()``."""
         if cfg is not None:
             return cfg
-        mesh = jax.sharding.get_mesh()
+        mesh_getter = getattr(jax.sharding, "get_mesh", None)
+        if mesh_getter is None:
+            return None
+        mesh = mesh_getter()
         axis_names = tuple(getattr(mesh, "axis_names", ()))
         return cls(mesh=mesh) if axis_names else None
 
@@ -119,7 +122,10 @@ class ShardingCfg:
     def resolved_mesh(self) -> Mesh | None:
         if self.mesh is not None:
             return self.mesh
-        mesh = jax.sharding.get_mesh()
+        mesh_getter = getattr(jax.sharding, "get_mesh", None)
+        if mesh_getter is None:
+            return None
+        mesh = mesh_getter()
         axis_names = tuple(getattr(mesh, "axis_names", ()))
         return mesh if axis_names else None
 

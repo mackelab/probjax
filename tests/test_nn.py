@@ -5,7 +5,7 @@ import pytest
 from flax import nnx
 
 from probjax.core import inverse, inverse_and_logabsdet
-from probjax.nn.layers.attention import dot_product_attention
+from probjax.nn.layers.attention import PerHeadQueryScale, dot_product_attention
 from probjax.nn import (
     AdditiveCouplingFlow,
     AdditiveBinaryFuse,
@@ -15,6 +15,7 @@ from probjax.nn import (
     CouplingTransformer,
     DropPath,
     GatedFuse,
+    InducedSelfAttention,
     LinearShardingSpec,
     MaskedLinear,
     MLP,
@@ -93,6 +94,31 @@ def test_attention(multi_head_attention, seq_len, batch_shape):
     _ = jax.grad(loss_fn)
 
     # Can be flattened
+    _, _ = jax.tree_util.tree_flatten(model)
+
+
+def test_induced_self_attention():
+    model = InducedSelfAttention(
+        16,
+        num_inducing_points=4,
+        num_heads=4,
+        attn_size=4,
+        q_scale_cls=PerHeadQueryScale,
+        output_q_scale_cls=PerHeadQueryScale,
+        rngs=nnx.Rngs(0),
+    )
+    x = jnp.ones((2, 7, 16))
+
+    y = model(x)
+    y_train = model(x, train_size=5)
+
+    assert y.shape == x.shape
+    assert y_train.shape == x.shape
+
+    def loss_fn(m):
+        return jnp.sum(m(x, train_size=5))
+
+    _ = jax.grad(loss_fn)
     _, _ = jax.tree_util.tree_flatten(model)
 
 

@@ -146,7 +146,7 @@ def test_layers_forward_with_mesh(mesh_shape):
     sharding_arg = None
 
     mask = jnp.ones((4, 4))
-    from probjax.nn.layers import ConvBlock, SpatialSelfAttention
+    from probjax.nn.layers import ConvBlock, InducedSelfAttention, SpatialSelfAttention
 
     with jax.set_mesh(mesh):
         masked = MaskedLinear(4, 4, mask, sharding_cfg=sharding_arg, rngs=nnx.Rngs(0))
@@ -185,6 +185,24 @@ def test_layers_forward_with_mesh(mesh_shape):
             ),
         )
         y = attn(x)
+        assert y.shape == x.shape
+
+        induced_attn = InducedSelfAttention(
+            32,
+            num_inducing_points=4,
+            sharding_cfg=sharding_arg,
+            rngs=nnx.Rngs(4),
+            num_heads=4,
+            attn_size=8,
+        )
+        x = _sharded_ones(
+            (data_axis, 8, 32),
+            mesh,
+            _input_spec_for_shape(
+                mesh, (data_axis, 8, 32), allow_model=mesh.shape.get("model", 1) == 1
+            ),
+        )
+        y = induced_attn(x)
         assert y.shape == x.shape
 
 

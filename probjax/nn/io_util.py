@@ -16,6 +16,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from flax.jax_utils import prefetch_to_device
+from jax.experimental import multihost_utils
 from jax.sharding import Mesh, NamedSharding, PartitionSpec, Sharding
 
 from probjax.utils.typing import Device, RngKey
@@ -32,6 +33,12 @@ def _tree_to_jnp(batch, host_device: Device):
         return jax.device_put(x, host_device)
 
     return jax.tree_util.tree_map(to_host, batch)
+
+
+def _tree_to_host(batch):
+    """Normalize batch leaves to host-backed arrays."""
+
+    return jax.tree_util.tree_map(np.asarray, batch)
 
 
 def _shard(batch, n_dev):
@@ -57,17 +64,126 @@ def _prefetch_single(iterator, size, device):
         _fill(1)
 
 
-def _prefetch_sharding(iterator, size, sharding):
-    dq = collections.deque()
+class _AsyncPrefetchIterator:
+    def __init__(
+        self,
+        iterator,
+        size: int,
+        put_fn: Callable[[Any], Any],
+        *,
+        queue_size: int | None = None,
+        min_fill: float = 0.5,
+    ):
+        self._iterator = iter(iterator)
+        self._put_fn = put_fn
+        maxsize = max(1, queue_size or size)
+        self._queue = queue.Queue(maxsize)
+        self._min_size = int(maxsize * min_fill) if maxsize > 0 else 0
+        self._stop_event = threading.Event()
+        self._sentinel = object()
+        self._error: BaseException | None = None
+        self._tb: str | None = None
+        self._thread = threading.Thread(target=self._worker_main, daemon=True)
+        self._thread.start()
 
-    _fill = lambda n: [
-        dq.append(jax.tree_util.tree_map(jax.device_put, d, sharding))
-        for d in itertools.islice(iterator, n)
-    ]
-    _fill(size)
-    while dq:
-        yield dq.popleft()
-        _fill(1)
+    def _force_put(self, item) -> None:
+        while True:
+            try:
+                self._queue.put_nowait(item)
+                return
+            except queue.Full:
+                with contextlib.suppress(queue.Empty):
+                    self._queue.get_nowait()
+
+    def _put_terminal(self) -> None:
+        while True:
+            try:
+                self._queue.put(self._sentinel, timeout=0.0005)
+                return
+            except queue.Full:
+                if self._stop_event.is_set():
+                    self._force_put(self._sentinel)
+                    return
+                continue
+
+    def _worker_main(self) -> None:
+        try:
+            for item in self._iterator:
+                if self._stop_event.is_set():
+                    break
+                prefetched = self._put_fn(item)
+                # Keep device placement asynchronous so prefetching can overlap
+                # with consumer work instead of synchronizing on every batch.
+                while not self._stop_event.is_set():
+                    try:
+                        self._queue.put(prefetched, timeout=0.0005)
+                        break
+                    except queue.Full:
+                        continue
+        except BaseException as exc:
+            self._error = exc
+            self._tb = traceback.format_exc()
+        finally:
+            self._put_terminal()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        item = self._queue.get()
+        if item is self._sentinel:
+            self.close()
+            if self._error is not None:
+                raise RuntimeError(
+                    f"Device prefetch worker failed:\n{self._tb}"
+                ) from self._error
+            raise StopIteration
+        while self._min_size > 0 and self._queue.qsize() < self._min_size and not self._queue.full():
+            try:
+                self._queue.put_nowait(item)
+            except queue.Full:
+                break
+        return item
+
+    def close(self) -> None:
+        self._stop_event.set()
+        self._force_put(self._sentinel)
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.0)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+def _prefetch_sharding(iterator, size, sharding, min_fill: float = 0.5):
+    def _put(x, leaf_sharding):
+        if isinstance(leaf_sharding, NamedSharding):
+            spec = getattr(
+                leaf_sharding,
+                "spec",
+                getattr(leaf_sharding, "partition_spec", PartitionSpec()),
+            )
+            return multihost_utils.host_local_array_to_global_array(
+                np.asarray(x), leaf_sharding.mesh, spec
+            )
+        return jax.device_put(x, leaf_sharding)
+
+    def _put_ready(data):
+        prefetched = jax.tree_util.tree_map(_put, data, sharding)
+        return jax.block_until_ready(prefetched)
+
+    return _AsyncPrefetchIterator(
+        iterator,
+        size,
+        _put_ready,
+        # Keep a little extra headroom so the consumer is less likely to see
+        # the sharding worker mid-transfer when batches are expensive.
+        queue_size=max(2, size * 2),
+        min_fill=min_fill,
+    )
 
 
 def chunkify(
@@ -875,6 +991,10 @@ class DataLoader:
         self._host_device = host_device
 
         self._sharding = self._resolve_sharding(sharding, mesh, batch_spec)
+        self._has_named_sharding = any(
+            isinstance(s, NamedSharding)
+            for s in jax.tree_util.tree_leaves(self._sharding)
+        )
 
         # -------- infra ---------------- #
         self._num_async_workers = int(num_async_workers)
@@ -1076,7 +1196,10 @@ class DataLoader:
         batch = self._fetch_batch(idxs)
         for fn in self._host_tfns:
             batch = fn(batch)
-        batch = _tree_to_jnp(batch, self._host_device)
+        if self._has_named_sharding:
+            batch = _tree_to_host(batch)
+        else:
+            batch = _tree_to_jnp(batch, self._host_device)
         return batch
 
     # ---------------- host iterator w/ recycling ---------------------- #
@@ -1131,7 +1254,12 @@ class DataLoader:
             host_it = (_shard(b, self._n_dev) for b in host_it)
 
         if self._sharding is not None:
-            dev_it = _prefetch_sharding(host_it, self._prefetch_dev, self._sharding)
+            dev_it = _prefetch_sharding(
+                host_it,
+                self._prefetch_dev,
+                self._sharding,
+                min_fill=self._min_fill,
+            )
         else:
             dev_it = (
                 _prefetch_single(host_it, self._prefetch_dev, self._devices[0])
@@ -1147,6 +1275,9 @@ class DataLoader:
                         batch = fn(batch)
                     yield batch
             finally:
+                close_dev_it = getattr(dev_it, "close", None)
+                if close_dev_it is not None:
+                    close_dev_it()
                 # Avoid closing the loader if a newer iterator replaced this one.
                 if self._iter_token is token:
                     self.close()
@@ -1192,8 +1323,10 @@ class DataLoader:
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     def __del__(self):
-        with contextlib.suppress(Exception):
+        try:
             self.close()
+        except Exception:
+            pass
 
     def __enter__(self):
         return self
