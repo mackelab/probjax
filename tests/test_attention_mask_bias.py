@@ -435,3 +435,163 @@ def test_same_segment_get_data_block_spec_returns_tuple():
     assert isinstance(spec, tuple)
     assert len(spec) == 2
     assert spec[1] is None
+
+
+# ---------- ComposeMask.block_mask() tests ----------
+
+
+class TestComposeMaskBlockMask:
+    """Tests for ComposeMask.block_mask() to prevent tracer leaks and
+    verify conservative block-mask combination semantics."""
+
+    Q_LEN = 16
+    KV_LEN = 16
+    BLOCK_Q = 4
+    BLOCK_K = 4
+
+    # --- A. Regression test: SeqLenMask & QKVLengthMask (the reported bug) ---
+
+    def test_seqlen_and_qkvlength_no_tracer_leak(self):
+        """ComposeMask.block_mask() must not call into SeqLenMask.__call__
+        during compile-time block-mask construction. The returned block mask
+        should equal the QKVLengthMask block mask (the only stateless child)."""
+        seq_lengths = jnp.array([10, 12], dtype=jnp.int32)
+        mask = SeqLenMask(seq_lengths) & QKVLengthMask(q_length=12, kv_length=14)
+
+        # This must not raise (previously would hit tracer leak via base fallback).
+        bm = mask.block_mask(self.Q_LEN, self.KV_LEN, self.BLOCK_Q, self.BLOCK_K)
+
+        # For AND with one stateful child, result equals the stateless child's block mask.
+        expected = QKVLengthMask(q_length=12, kv_length=14).block_mask(
+            self.Q_LEN, self.KV_LEN, self.BLOCK_Q, self.BLOCK_K
+        )
+        assert bm is not None
+        assert np.array_equal(bm, expected)
+
+    def test_seqlen_and_qkvlength_call_still_correct(self):
+        """Direct __call__ of SeqLenMask & QKVLengthMask with seg_q/seg_k
+        should produce correct token-level masks."""
+        q_len, kv_len = 12, 12
+        q_idx = _idx(q_len)
+        k_idx = _idx(kv_len)
+        L = jnp.array(6, dtype=jnp.int32)  # scalar: one batch element's length
+
+        mask = SeqLenMask(jnp.array([6], dtype=jnp.int32)) & QKVLengthMask(
+            q_length=8, kv_length=10
+        )
+        got = mask(q_idx, k_idx, seg_q=L, seg_k=L)
+
+        # SeqLenMask with scalar seg_q=6: valid_q & valid_k rectangle + diagonal
+        valid_q = q_idx < 6
+        valid_k = k_idx < 6
+        seq_expected = (valid_q[:, None] & valid_k[None, :]) | (
+            q_idx[:, None] == k_idx[None, :]
+        )
+        # QKVLengthMask: q < 8 and k < 10
+        qkv_expected = (q_idx[:, None] < 8) & (k_idx[None, :] < 10)
+        expected = seq_expected & qkv_expected
+        assert jnp.array_equal(got, expected)
+
+    # --- B. Safety tests for OR and XOR with one stateful child ---
+
+    def test_seqlen_or_qkvlength_block_mask_is_none(self):
+        """OR with one stateful child cannot safely prune; must return None."""
+        mask = SeqLenMask(jnp.array([8], dtype=jnp.int32)) | QKVLengthMask(
+            q_length=12, kv_length=12
+        )
+        bm = mask.block_mask(self.Q_LEN, self.KV_LEN, self.BLOCK_Q, self.BLOCK_K)
+        assert bm is None
+
+    def test_seqlen_xor_qkvlength_block_mask_is_none(self):
+        """XOR with one stateful child cannot safely prune; must return None."""
+        mask = SeqLenMask(jnp.array([8], dtype=jnp.int32)) ^ QKVLengthMask(
+            q_length=12, kv_length=12
+        )
+        bm = mask.block_mask(self.Q_LEN, self.KV_LEN, self.BLOCK_Q, self.BLOCK_K)
+        assert bm is None
+
+    # --- C. Stateless composition: block masks should combine correctly ---
+
+    def test_causal_and_qkvlength_combines_block_masks(self):
+        """AND of two stateless masks should intersect their block masks."""
+        mask = CausalMask() & QKVLengthMask(q_length=12, kv_length=10)
+        bm = mask.block_mask(self.Q_LEN, self.KV_LEN, self.BLOCK_Q, self.BLOCK_K)
+        expected_causal = CausalMask().block_mask(
+            self.Q_LEN, self.KV_LEN, self.BLOCK_Q, self.BLOCK_K
+        )
+        expected_qkv = QKVLengthMask(q_length=12, kv_length=10).block_mask(
+            self.Q_LEN, self.KV_LEN, self.BLOCK_Q, self.BLOCK_K
+        )
+        assert bm is not None
+        assert np.array_equal(bm, expected_causal & expected_qkv)
+
+    def test_causal_or_local_window_combines_block_masks(self):
+        """OR of two stateless masks should union their block masks."""
+        mask = CausalMask() | LocalWindowMask(left_window=3, right_window=2)
+        bm = mask.block_mask(self.Q_LEN, self.KV_LEN, self.BLOCK_Q, self.BLOCK_K)
+        expected_causal = CausalMask().block_mask(
+            self.Q_LEN, self.KV_LEN, self.BLOCK_Q, self.BLOCK_K
+        )
+        expected_lw = LocalWindowMask(left_window=3, right_window=2).block_mask(
+            self.Q_LEN, self.KV_LEN, self.BLOCK_Q, self.BLOCK_K
+        )
+        assert bm is not None
+        assert np.array_equal(bm, expected_causal | expected_lw)
+
+    def test_stateless_xor_combines_block_masks(self):
+        """XOR of two stateless masks should xor their block masks."""
+        mask = CausalMask() ^ QKVLengthMask(q_length=12, kv_length=10)
+        bm = mask.block_mask(self.Q_LEN, self.KV_LEN, self.BLOCK_Q, self.BLOCK_K)
+        expected_causal = CausalMask().block_mask(
+            self.Q_LEN, self.KV_LEN, self.BLOCK_Q, self.BLOCK_K
+        )
+        expected_qkv = QKVLengthMask(q_length=12, kv_length=10).block_mask(
+            self.Q_LEN, self.KV_LEN, self.BLOCK_Q, self.BLOCK_K
+        )
+        assert bm is not None
+        assert np.array_equal(bm, expected_causal ^ expected_qkv)
+
+    # --- D. Two stateful masks: get_data still rejects explicitly ---
+
+    def test_two_stateful_get_data_raises(self):
+        """Composing two stateful masks must still raise on get_data()."""
+        mask = SeqLenMask(jnp.array([3, 4], dtype=jnp.int32)) & KVLenMask(
+            jnp.array([5, 6], dtype=jnp.int32)
+        )
+        with pytest.raises(ValueError, match="two stateful masks"):
+            mask.get_data(q_seq_len=8, kv_seq_len=8)
+
+    def test_two_stateful_get_data_block_spec_raises(self):
+        """Composing two stateful masks must still raise on get_data_block_spec()."""
+        mask = SeqLenMask(jnp.array([3, 4], dtype=jnp.int32)) & KVLenMask(
+            jnp.array([5, 6], dtype=jnp.int32)
+        )
+        with pytest.raises(ValueError, match="two stateful masks"):
+            mask.get_data_block_spec(q_len=8, kv_len=8, block_q=4, block_k=4)
+
+    def test_two_stateful_block_mask_returns_none(self):
+        """Two stateful children: block_mask should return None (both unknown)."""
+        mask = SeqLenMask(jnp.array([3, 4], dtype=jnp.int32)) & KVLenMask(
+            jnp.array([5, 6], dtype=jnp.int32)
+        )
+        bm = mask.block_mask(self.Q_LEN, self.KV_LEN, self.BLOCK_Q, self.BLOCK_K)
+        assert bm is None
+
+    # --- E. Edge case: stateless child with block_mask returning None ---
+
+    def test_and_with_nomask_returns_other_block_mask(self):
+        """NoMask.block_mask() returns None. AND with QKVLengthMask should
+        return QKVLengthMask's block mask (the only non-None one)."""
+        mask = NoMask() & QKVLengthMask(q_length=8, kv_length=10)
+        bm = mask.block_mask(self.Q_LEN, self.KV_LEN, self.BLOCK_Q, self.BLOCK_K)
+        expected = QKVLengthMask(q_length=8, kv_length=10).block_mask(
+            self.Q_LEN, self.KV_LEN, self.BLOCK_Q, self.BLOCK_K
+        )
+        assert bm is not None
+        assert np.array_equal(bm, expected)
+
+    def test_or_with_nomask_returns_none(self):
+        """NoMask.block_mask() returns None. OR needs both to prune."""
+        mask = NoMask() | QKVLengthMask(q_length=8, kv_length=10)
+        bm = mask.block_mask(self.Q_LEN, self.KV_LEN, self.BLOCK_Q, self.BLOCK_K)
+        assert bm is None

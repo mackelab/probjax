@@ -335,7 +335,9 @@ class ComposeMask(AttentionMask):
     ) -> tuple[Array | None, Array | None]:
         if self.lhs.stateful and self.rhs.stateful:
             raise ValueError(
-                "Cannot compose two stateful masks; ambiguous data requirements."
+                "Cannot compose two stateful masks: dense/block-sparse composition "
+                "of two independently stateful masks is unsupported because the "
+                "current API can only carry one (seg_q, seg_k) payload pair."
             )
         if self.lhs.stateful:
             return self.lhs.get_data(q_seq_len=q_seq_len, kv_seq_len=kv_seq_len)
@@ -373,7 +375,9 @@ class ComposeMask(AttentionMask):
     ):
         if self.lhs.stateful and self.rhs.stateful:
             raise ValueError(
-                "Cannot compose two stateful masks; ambiguous data requirements."
+                "Cannot compose two stateful masks: dense/block-sparse composition "
+                "of two independently stateful masks is unsupported because the "
+                "current API can only carry one (seg_q, seg_k) payload pair."
             )
         if self.lhs.stateful:
             return self.lhs.get_data_block_spec(
@@ -398,7 +402,9 @@ class ComposeMask(AttentionMask):
     ):
         if self.lhs.stateful and self.rhs.stateful:
             raise ValueError(
-                "Cannot compose two stateful masks; ambiguous data requirements."
+                "Cannot compose two stateful masks: dense/block-sparse composition "
+                "of two independently stateful masks is unsupported because the "
+                "current API can only carry one (seg_q, seg_k) payload pair."
             )
         if self.lhs.stateful:
             return self.lhs.get_data_block_spec_backward_pass(
@@ -423,6 +429,60 @@ class ComposeMask(AttentionMask):
                 block_kv_dq=block_kv_dq,
             )
         return (None, None)
+
+    def block_mask(
+        self,
+        q_len: int,
+        kv_len: int,
+        block_q: int,
+        block_k: int,
+    ) -> Array | None:
+        """Combine children's block masks without evaluating stateful children.
+
+        Block-mask computation is allowed to be an over-approximation of
+        non-empty blocks. Stateful children (those carrying runtime data like
+        per-batch sequence lengths) are treated as "unknown" at block-mask time
+        and their block mask is not materialized. This is intentional: it avoids
+        tracer capture and compile-time evaluation of runtime-carried mask state
+        that would otherwise occur through the base-class fallback
+        (AttentionMask.block_mask → self.__call__ → stateful data access).
+
+        The file already separates two mechanisms:
+          - compile-time block pruning via block_mask()
+          - runtime mask state injection via get_data() / get_data_block_spec()
+        This override preserves that separation for composed masks.
+
+        Combination rules (conservative):
+          AND: either child's block map is a valid pruning superset, so a
+               single known child suffices.
+          OR / XOR: a single child's block map cannot prove emptiness, so
+               pruning is disabled unless both children are known.
+        """
+
+        def _safe_child_block_mask(child: AttentionMask) -> Array | None:
+            if child.stateful:
+                return None
+            return child.block_mask(q_len, kv_len, block_q, block_k)
+
+        lhs_bm = _safe_child_block_mask(self.lhs)
+        rhs_bm = _safe_child_block_mask(self.rhs)
+
+        if self.op == "and":
+            if lhs_bm is not None and rhs_bm is not None:
+                return lhs_bm & rhs_bm
+            if lhs_bm is not None:
+                return lhs_bm
+            if rhs_bm is not None:
+                return rhs_bm
+            return None
+        elif self.op == "or" or self.op == "xor":
+            if lhs_bm is not None and rhs_bm is not None:
+                if self.op == "or":
+                    return lhs_bm | rhs_bm
+                else:
+                    return lhs_bm ^ rhs_bm
+            return None
+        raise ValueError(f"Unknown op for ComposeMask: {self.op}")
 
     # PyTree: children are lhs/rhs masks; op is static aux.
     def tree_flatten(self):
