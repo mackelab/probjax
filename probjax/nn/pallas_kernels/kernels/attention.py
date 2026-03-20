@@ -45,7 +45,6 @@ from ..kernel_utils.cp_utils import (
     build_mha_sharding_rule_jvp,
     make_cp_function,
     or_sentinel,
-    should_fallback_from_cp_error,
     try_cp_or_raw,
     undo_sentinel,
     validate_mha_sharding,
@@ -2850,8 +2849,12 @@ def _make_mha_forward_jvp(
                 or_sentinel(arrays["index_offset_size"]),
             )
             return out, tangent_out
-        except (AssertionError, NotImplementedError) as err:
-            if not should_fallback_from_cp_error(err):
+        except NotImplementedError as err:
+            # Fall back to the non-CP fused JVP when the CP batching rule
+            # is not implemented (e.g. under vmap).
+            if "Batching rule for 'custom_partitioning' not implemented" not in str(
+                err
+            ):
                 raise
 
         rng_val = rng if rng is not None else jax.random.key(0)

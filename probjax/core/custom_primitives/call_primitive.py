@@ -1,5 +1,6 @@
 from jax._src import ad_util
 from jax._src import core as jax_core
+from jax._src.dispatch import prim_requires_devices_during_lowering
 from jax._src.interpreters import ad as ad_src
 from jax.interpreters import mlir
 
@@ -27,6 +28,25 @@ def call_lowering(ctx, *mlir_args, forward_jaxpr, lowering_name: str, **params):
         name=lowering_name,
         call_jaxpr=forward_jaxpr,
     )
+
+
+def mark_primitive_requires_devices(primitive: jax_core.Primitive) -> None:
+    """Register *primitive* so JAX populates ``device_assignment`` during lowering.
+
+    Call primitives that capture a ``forward_jaxpr`` may contain
+    ``custom_partitioning`` ops inside that jaxpr.  CP's lowering rule
+    requires a ``ShardingContext`` with a valid ``device_assignment``.
+
+    JAX decides whether to populate ``device_assignment`` by calling
+    ``jaxpr_has_prim_requiring_devices``, which traverses
+    ``core.subjaxprs``.  If the jaxpr is stored behind a ``Lazy`` wrapper
+    or is otherwise opaque to that traversal, CP inside the jaxpr will hit
+    ``device_assignment is None``.
+
+    Registering the enclosing call primitive here guarantees the device
+    assignment is always present when the primitive appears.
+    """
+    prim_requires_devices_during_lowering.add(primitive)
 
 
 def jvp_from_forward_jaxpr(forward_jaxpr, primals, tangents):

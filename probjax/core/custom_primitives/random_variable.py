@@ -285,6 +285,13 @@ mlir.register_lowering(rv_p, _rv_lowering)
 ad.primitive_jvps[rv_p] = _rv_jvp
 ad.primitive_transposes[rv_p] = _rv_transpose_rule
 
+# See ``mark_primitive_requires_devices`` in ``call_primitive`` for details.
+from probjax.core.custom_primitives.call_primitive import (  # noqa: E402
+    mark_primitive_requires_devices,
+)
+
+mark_primitive_requires_devices(rv_p)
+
 
 __all__ = [
     "NameStack",

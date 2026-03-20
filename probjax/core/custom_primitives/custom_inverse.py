@@ -296,6 +296,15 @@ class custom_inverse:
 custom_inverse_call_p = Primitive("custom_inverse_call_p")
 custom_inverse_call_p.multiple_results = True
 
+# The captured forward jaxpr is stored behind a ``Lazy`` wrapper that
+# ``jaxpr_has_prim_requiring_devices`` cannot traverse.  See
+# ``mark_primitive_requires_devices`` in ``call_primitive`` for details.
+from probjax.core.custom_primitives.call_primitive import (  # noqa: E402
+    mark_primitive_requires_devices,
+)
+
+mark_primitive_requires_devices(custom_inverse_call_p)
+
 
 def _resolve_forward_jaxpr(lazy_forward) -> ClosedJaxpr:
     """Resolve lazy forward jaxpr to ClosedJaxpr, evaluating if needed."""

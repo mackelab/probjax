@@ -5,8 +5,9 @@ This module contains:
 - Sharding rule builders for forward, JVP, and backward MHA passes.
 - A generic CP wrapper factory (make_cp_function) that eliminates boilerplate.
 - try_cp_or_raw: the "try custom_partitioning, fall back to raw" pattern.
+  Falls back to the raw implementation when CP raises a
+  ``NotImplementedError`` (e.g. the batching-rule gap under ``vmap``).
 - _validate_mha_sharding: sharding validation for q/k/v operands.
-- _should_fallback_from_cp_error: error classification for fallback decisions.
 """
 
 from __future__ import annotations
@@ -83,16 +84,12 @@ def validate_mha_sharding(sharding: Any, name: str) -> None:
 # Fallback error classification
 # ---------------------------------------------------------------------------
 
+_CP_BATCHING_MSG = "Batching rule for 'custom_partitioning' not implemented"
 
-def should_fallback_from_cp_error(err: Exception) -> bool:
-    """Return True if *err* from a custom_partitioning call should trigger
-    a fallback to the raw (non-partitioned) implementation."""
-    if isinstance(err, AssertionError):
-        return True
-    if isinstance(err, NotImplementedError):
-        # Batching rule for custom_partitioning is not yet implemented.
-        return "Batching rule for 'custom_partitioning' not implemented" in str(err)
-    return False
+
+def _is_cp_batching_error(err: NotImplementedError) -> bool:
+    """Return True if *err* is the known CP batching-rule gap."""
+    return _CP_BATCHING_MSG in str(err)
 
 
 # ---------------------------------------------------------------------------
@@ -313,9 +310,9 @@ def try_cp_or_raw(
 ) -> Any:
     """Call *cp_fn* with *cp_args*; fall back to *raw_fn* on CP errors.
 
-    Falls back when ``should_fallback_from_cp_error`` returns True (covers the
-    ``custom_partitioning`` batching-rule gap and assertion errors during mesh
-    inference).  All other exceptions propagate normally.
+    Falls back to *raw_fn* when ``custom_partitioning`` raises the known
+    ``NotImplementedError`` for the missing batching rule (triggered under
+    ``vmap``).  All other exceptions propagate normally.
 
     Args:
         cp_fn: custom_partitioning-wrapped function.
@@ -326,7 +323,7 @@ def try_cp_or_raw(
     """
     try:
         return cp_fn(*cp_args)
-    except (AssertionError, NotImplementedError) as err:
-        if not should_fallback_from_cp_error(err):
+    except NotImplementedError as err:
+        if not _is_cp_batching_error(err):
             raise
     return raw_fn(*raw_args, **raw_kwargs)
