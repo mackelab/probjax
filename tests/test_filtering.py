@@ -65,14 +65,14 @@ def observation_fn(x, t):
     return C @ x
 
 
-# EKF-specific: returns (Jacobian, Q)
-def transition_matrix_and_cov(x, cov, t):
-    return A, Q
+# EKF transition model: returns (x_pred, Phi, Q)
+def ekf_transition_model(x, cov, t_old, t):
+    return A @ x, A, Q
 
 
-# EKF-specific: returns (Jacobian, R)
-def observation_matrix_and_cov(x, cov, t):
-    return C, R
+# EKF observation model: returns (y_pred, C, R)
+def ekf_observation_model(x, cov, t):
+    return C @ x, C, R
 
 
 # Initial state
@@ -186,10 +186,8 @@ class TestExtendedKalmanFilter:
         """On a linear model, EKF should produce the same results as KF."""
         kernel_kf = kalman_filter(transition_model, observation_model)
         kernel_ekf = extended_kalman_filter(
-            transition_fn,
-            observation_fn,
-            transition_matrix_and_cov,
-            observation_matrix_and_cov,
+            ekf_transition_model,
+            ekf_observation_model,
         )
 
         state_kf = kernel_kf.init(mu0, cov0, t=0.0)

@@ -1,8 +1,8 @@
-import functools
 from typing import Any, Callable, Tuple
 
 import jax
 import jax.numpy as jnp
+from jax import tree_util
 from jax.typing import ArrayLike
 
 
@@ -59,12 +59,17 @@ class LinearOperator:
                 return self.operator(x) + other.operator(x)
 
             return LinearOperator(sum_fn, self.in_dim, self.out_dim, self.dtype)
-        elif isinstance(other, ArrayLike) and other.ndim == 2:
-            other = jnp.asarray(other)
-            operator = LinearOperator.from_array(other)
-            return self + operator
         else:
-            raise NotImplementedError(f"Addition with {type(other)} not implemented")
+            other = jnp.asarray(other)
+            assert other.ndim == 2, f"Can only add 2D arrays, got {other.ndim}D"
+
+            def sum_fn(x: ArrayLike) -> ArrayLike:
+                return self.operator(x) + other @ x
+
+            return LinearOperator(sum_fn, self.in_dim, self.out_dim, self.dtype)
+
+    def __radd__(self, other):
+        return self.__add__(other)
 
     def __neg__(self) -> 'LinearOperator':
         def neg_fn(x: ArrayLike) -> ArrayLike:
@@ -96,8 +101,11 @@ class LinearOperator:
             if other.ndim == 1:
                 return self.operator(other)
             else:
-                operator = LinearOperator.from_array(other)
-                return self @ operator
+
+                def matmul_fn(x: ArrayLike) -> ArrayLike:
+                    return other @ self.operator(x)
+
+                return LinearOperator(matmul_fn, self.in_dim, other.shape[-2])
         else:
             raise NotImplementedError(
                 f"Multiplication with {type(other)} not implemented"
@@ -106,34 +114,30 @@ class LinearOperator:
     def __rmatmul__(self, other: 'LinearOperator' | ArrayLike) -> 'LinearOperator':
         if isinstance(other, LinearOperator):
             return other @ self
-        elif isinstance(other, ArrayLike):
+        else:
             other = jnp.asarray(other)
             if other.ndim == 1:
                 return self.operator(other)
             else:
-                operator = LinearOperator.from_array(other)
-                return operator @ self
-        else:
-            raise NotImplementedError(
-                f"Multiplication with {type(other)} not implemented"
-            )
+
+                def composed(x: ArrayLike) -> ArrayLike:
+                    return other @ self.operator(x)
+
+                return LinearOperator(composed, self.in_dim, other.shape[-2])
 
     def __call__(self, x: ArrayLike) -> ArrayLike:
         return self.operator(x)
 
-    @functools.lru_cache(maxsize=None)
-    def __jax_array__(self) -> ArrayLike:
-        with jax.ensure_compile_time_eval():
-            matrix = LinearOperator.to_array(self.operator, self.in_dim, self.dtype)
-        return matrix
-
     def as_array(self) -> ArrayLike:
-        return self.__jax_array__()
+        """Materialize this LinearOperator as a dense array."""
+        return LinearOperator.to_array(self.operator, self.in_dim, self._dtype)
 
     @staticmethod
     def to_array(
-        operator: Callable[[ArrayLike], ArrayLike], in_dim: int, dtype=jnp.float32
+        operator: Callable[[ArrayLike], ArrayLike], in_dim: int, dtype=None
     ) -> ArrayLike:
+        if dtype is None:
+            dtype = jnp.result_type(jnp.ones(1))
         matrix = jax.vmap(operator)(jnp.eye(in_dim, dtype=dtype))
         return matrix.T
 
@@ -145,3 +149,17 @@ class LinearOperator:
             return jnp.dot(matrix, x)
 
         return LinearOperator(operator, matrix.shape[1], matrix.shape[0])
+
+    # Pytree registration
+    def tree_flatten(self):
+        return (), (self.operator, self.in_dim, self.out_dim, self._dtype)
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        op_fn, in_dim, out_dim, dtype = aux_data
+        return cls(op_fn, in_dim, out_dim, dtype)
+
+
+tree_util.register_pytree_node(
+    LinearOperator, LinearOperator.tree_flatten, LinearOperator.tree_unflatten
+)

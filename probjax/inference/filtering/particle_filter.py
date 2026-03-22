@@ -141,7 +141,11 @@ def build_kernel(
             return new_particles, new_log_weights, idx
 
         def no_resample(key, log_weights, particles):
-            return particles, log_weights, jnp.arange(particles.shape[0])
+            return (
+                particles,
+                log_weights,
+                jnp.arange(particles.shape[0], dtype=jnp.int32),
+            )
 
         new_particles, new_log_weights, ancestors = jax.lax.cond(
             do_resample,
