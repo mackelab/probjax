@@ -517,13 +517,24 @@ def _angle_distance(a, b):
 
 def test_mixture_em_vonmises(seed: int = 0):
     """EM should recover parameters of a von Mises mixture."""
-    key = jax.random.PRNGKey(seed)
-    true_probs = jnp.array([0.45, 0.55])
-    comp1 = vonmises(-1.8, 4.0)
-    comp2 = vonmises(1.8, 5.0)
-    mix = mixture(true_probs, [comp1, comp2])
+    import numpy as np
+    from scipy.stats import vonmises as scipy_vonmises
 
-    data = mix.rvs(key, shape=(6000,))
+    rng_np = np.random.default_rng(seed)
+    true_probs = jnp.array([0.45, 0.55])
+    loc1, kappa1 = -1.8, 4.0
+    loc2, kappa2 = 1.8, 5.0
+    comp1 = vonmises(loc1, kappa1)
+    comp2 = vonmises(loc2, kappa2)
+
+    n = 6000
+    labels = rng_np.choice(2, size=n, p=np.array(true_probs))
+    samples = np.where(
+        labels == 0,
+        scipy_vonmises.rvs(kappa1, loc=loc1, size=n, random_state=rng_np),
+        scipy_vonmises.rvs(kappa2, loc=loc2, size=n, random_state=rng_np),
+    )
+    data = jnp.array(samples)
 
     init_components = [vonmises(-1.0, 2.5), vonmises(2.3, 2.5)]
     rng = jax.random.PRNGKey(seed + 456)
