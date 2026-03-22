@@ -46,7 +46,9 @@ class SMCKernelAPI(metaclass=API):
         return no_tuning
 
     def __new__(cls, logprior_fn: Callable, loglikelihood_fn: Callable, **kwargs):
-        init = partial(cls.init, logprior_fn=logprior_fn, loglikelihood_fn=loglikelihood_fn)
+        init = partial(
+            cls.init, logprior_fn=logprior_fn, loglikelihood_fn=loglikelihood_fn
+        )
         init_params = partial(
             cls.init_params, logprior_fn=logprior_fn, loglikelihood_fn=loglikelihood_fn
         )
@@ -55,7 +57,9 @@ class SMCKernelAPI(metaclass=API):
         return SMCKernel(init, step, init_params, tune_params)
 
 
-def _filter_kwargs(fn: Callable, kwargs: Dict[str, Any], *, allow_kwargs: bool = True) -> Dict[str, Any]:
+def _filter_kwargs(
+    fn: Callable, kwargs: Dict[str, Any], *, allow_kwargs: bool = True
+) -> Dict[str, Any]:
     sig = inspect.signature(fn)
     accepts_kwargs = any(
         param.kind == inspect.Parameter.VAR_KEYWORD for param in sig.parameters.values()
@@ -74,6 +78,11 @@ def _ensure_param_batch(params, *, shared: bool) -> Dict[str, Array]:
             if arr.ndim == 0:
                 arr = arr[None, ...]
             elif arr.shape[0] != 1:
+                arr = arr[None, ...]
+            # Ensure shared params are at least 2-D so that
+            # BlackJAX's unshared_parameters_and_step_fn (which does
+            # v[0, ...] on shared params) preserves the inner array.
+            if arr.ndim == 1:
                 arr = arr[None, ...]
         else:
             if arr.ndim == 0:
@@ -118,8 +127,11 @@ def make_mcmc_adapter(mcmc_kernel, **kernel_kwargs):
     """Adapt a probjax MCMC API into BlackJAX SMC mcmc_init_fn/mcmc_step_fn."""
     if not hasattr(mcmc_kernel, "build_step") or not hasattr(mcmc_kernel, "init"):
         raise TypeError("mcmc_kernel must be a probjax MCMC API (not an instance).")
+
     def mcmc_init_fn(position, logdensity_fn, rng_key: Optional[RngKey] = None):
-        init_kwargs = _filter_kwargs(mcmc_kernel.init, kernel_kwargs, allow_kwargs=False)
+        init_kwargs = _filter_kwargs(
+            mcmc_kernel.init, kernel_kwargs, allow_kwargs=False
+        )
         return mcmc_kernel.init(position, logdensity_fn, rng_key=rng_key, **init_kwargs)
 
     def mcmc_step_fn(rng_key, state, logdensity_fn, **step_parameters):

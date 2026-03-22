@@ -11,4 +11,6 @@ from probjax.inference.mcmc.latent_slice import latent_slice
 from probjax.inference.mcmc.mala import mala
 from probjax.inference.mcmc.arms import arms, a2rms
 from probjax.inference.mcmc.mh import gauss_rwmh, mh
+from probjax.inference.mcmc.pmmcmc import pseudo_marginal
+from probjax.inference.mcmc.sgmcmc import sghmc, sgld, sgnht
 from probjax.inference.mcmc.slice import slice

@@ -39,9 +39,9 @@ class MarkovKernel(NamedTuple):
     fit_params: Callable
 
     def __call__(
-        self, key: RngKey, state: State, params: Optional[Params] = None
+        self, key: RngKey, state: State, params: Optional[Params] = None, *args
     ) -> Tuple[State, Info]:
-        return self.step(key, state, params)
+        return self.step(key, state, params, *args)
 
 
 class MarkovKernelAPI(metaclass=API):
@@ -66,12 +66,16 @@ class MarkovKernelAPI(metaclass=API):
 
     def __new__(cls, logdensity_fn: Callable, **kwargs) -> MarkovKernel:
         init_fn = partial(cls.init, logdensity_fn=logdensity_fn)
-        step = cls.build_step(logdensity_fn, **kwargs)
+        raw_step = cls.build_step(logdensity_fn, **kwargs)
         fit_params = cls.build_adaptation(logdensity_fn, **kwargs)
 
-        return MarkovKernel(
-            logdensity_fn, init_fn, step, cls.init_params, fit_params
-        )
+        # Wrap step to accept (and ignore) extra *args intended for
+        # logdensity_fn.  SG-MCMC kernels override step directly and
+        # forward *args to the grad estimator.
+        def step(key, state, params, *args):
+            return raw_step(key, state, params)
+
+        return MarkovKernel(logdensity_fn, init_fn, step, cls.init_params, fit_params)
 
 
 def make_kernel_api(
@@ -115,7 +119,7 @@ def make_step_from_kernel(
     """Build a step function from a BlackJAX-style kernel builder."""
     kernel = kernel_builder(**builder_kwargs) if builder_kwargs else kernel_builder()
 
-    def step(key: RngKey, state: State, params: Params):
+    def step(key: RngKey, state: State, params: Params, *args):
         params_kwargs = params._asdict() if hasattr(params, "_asdict") else {}
         call_kwargs = {}
         if call_defaults:

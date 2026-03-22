@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Optional
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -10,16 +10,78 @@ from probjax.utils.jaxutils import WithProgressBarAPI, print_scan
 
 
 class MCMC(WithProgressBarAPI):
-    _running_stats = ("acceptance_rate",)
-    _state_gamma = 0.9
+    """Run an MCMC kernel, optionally displaying a progress bar.
+
+    Args:
+        kernel: A :class:`MarkovKernel`.
+        verbose: If ``True``, display a progress bar with running stats.
+        tracked_stats: Names of scalars to display in the progress bar.
+            Each name is looked up first on the **state**, then on the
+            **info** returned by the kernel.  If a name is not found on
+            either, ``NaN`` is shown.  Defaults to
+            ``("logdensity", "acceptance_rate")``.
+    """
+
+    _default_tracked_stats = ("logdensity", "acceptance_rate")
+    _ema_gamma = 0.9
 
     def __init__(
         self,
         kernel: MarkovKernel,
         verbose: bool = False,
+        tracked_stats: Optional[Tuple[str, ...]] = None,
     ) -> None:
         self.kernel = kernel
         self.verbose = verbose
+        self.tracked_stats = tracked_stats or self._default_tracked_stats
+
+    # ------------------------------------------------------------------
+    # Stat extraction – no probe call, resolved at JAX trace time
+    # ------------------------------------------------------------------
+
+    def _extract_stats(self, state, info):
+        """Return a fixed-size tuple of floats, one per tracked stat.
+
+        For each name in ``self.tracked_stats`` we try ``state.<name>``
+        first, then ``info.<name>``.  If neither has the attribute the
+        value is ``NaN``.  Attribute lookup happens at Python / trace
+        time so the pytree structure is always static.
+        """
+        stats = []
+        for name in self.tracked_stats:
+            val = getattr(state, name, None)
+            if val is None:
+                val = getattr(info, name, None)
+            if val is None:
+                stats.append(jnp.float32(jnp.nan))
+            else:
+                stats.append(jnp.float32(val))
+        return tuple(stats)
+
+    # ------------------------------------------------------------------
+    # Verbose helpers (shared by run / sample)
+    # ------------------------------------------------------------------
+
+    def _make_verbose_fns(self, num_steps):
+        gamma = self._ema_gamma
+        names = self.tracked_stats
+        n = len(names)
+
+        def update_stats(stats, _carry, step_stats):
+            return tuple(
+                gamma * stats[i] + (1 - gamma) * step_stats[i] for i in range(n)
+            )
+
+        def print_fn(i, total, stats):
+            type(self)._write_progress(type(self), i, total, stats, names)
+
+        init_stats = tuple(0.0 for _ in names)
+        print_rate = num_steps // self._print_rate + 1
+        return update_stats, print_fn, init_stats, print_rate
+
+    # ------------------------------------------------------------------
+    # run
+    # ------------------------------------------------------------------
 
     @partial(jax.jit, static_argnums=(0, 3))
     def run(
@@ -28,46 +90,59 @@ class MCMC(WithProgressBarAPI):
         state: State,
         num_steps: int,
         params: Optional[Params] = None,
+        args: Optional[Tuple] = None,
     ):
-        def scan_fn(carry, _):
-            key, state = carry
-            key, new_key = jax.random.split(key)
-            new_state, info = self.kernel(key, state, params)
-            return (new_key, new_state), info_filter(info)
+        """Run the MCMC kernel for ``num_steps`` steps.
 
+        Args:
+            key: PRNG key.
+            state: Initial MCMC state.
+            num_steps: Number of steps to run.
+            params: Kernel parameters (defaults via ``kernel.init_params``).
+            args: Optional tuple of arrays whose leading axis is
+                ``num_steps``.  Each step receives one slice, forwarded as
+                extra positional arguments to the kernel (and ultimately to
+                ``logdensity_fn``).
+        """
         if params is None:
             params = self.kernel.init_params(state)
 
+        def scan_fn(carry, xs):
+            key, state = carry
+            key, new_key = jax.random.split(key)
+            if xs is None:
+                new_state, info = self.kernel(key, state, params)
+            else:
+                new_state, info = self.kernel(key, state, params, *xs)
+            stats = self._extract_stats(new_state, info)
+            return (new_key, new_state), stats
+
         carry = (key, state)
+        scan_length = num_steps if args is None else None
 
         if not self.verbose:
-            # We don't need the info, so we can just run the steps
-            info_filter = lambda x: None
-            (_, out_state), info = jax.lax.scan(scan_fn, carry, length=num_steps)
-            return out_state
-        else:
-            # We need the info, so we need to keep track of the stats
-            info_filter = lambda x: tuple([
-                getattr(x, stat) for stat in self._running_stats
-            ])
-            update_stats = lambda stats, _, y: tuple([
-                self._state_gamma * stats[i] + (1 - self._state_gamma) * y[i]
-                for i in range(len(stats))
-            ])
-            print_fn = lambda i, total, state: self._print_progress(
-                type(self), i, total, state
+            (_, out_state), _ = jax.lax.scan(
+                scan_fn, carry, xs=args, length=scan_length
             )
-            init_stats = tuple([0.0 for _ in self._running_stats])
+        else:
+            update_stats, print_fn, init_stats, print_rate = self._make_verbose_fns(
+                num_steps
+            )
             (_, out_state), _ = print_scan(
                 scan_fn,
                 carry,
                 init_stats,
-                length=num_steps,
+                xs=args,
+                length=scan_length,
                 update_stats=update_stats,
                 print_fn=print_fn,
-                print_rate=num_steps // self._print_rate + 1,
+                print_rate=print_rate,
             )
         return out_state
+
+    # ------------------------------------------------------------------
+    # sample
+    # ------------------------------------------------------------------
 
     def sample(
         self,
@@ -76,64 +151,93 @@ class MCMC(WithProgressBarAPI):
         num_samples: int,
         params: Optional[Params] = None,
         thin: int = 1,
-
+        args: Optional[Tuple] = None,
     ):
+        """Draw ``num_samples`` from the chain, thinning by ``thin`` steps.
+
+        Args:
+            key: PRNG key.
+            state: Initial MCMC state.
+            num_samples: Number of samples to collect.
+            params: Kernel parameters (defaults via ``kernel.init_params``).
+            thin: Number of kernel steps between collected samples.
+            args: Optional tuple of arrays whose leading axis is
+                ``num_samples * thin``.  Sliced so each thinning step
+                receives one element, forwarded as extra positional
+                arguments to the kernel.
+        """
+        if params is None:
+            params = self.kernel.init_params(state)
+
         samples = jax.tree_util.tree_map(
             lambda x: jnp.empty((num_samples,) + x.shape), state.position
         )
 
-        def scan_fn(carry, i):
+        # Reshape args: (num_samples * thin, ...) -> (num_samples, thin, ...)
+        if args is not None:
+            outer_args = jax.tree_util.tree_map(
+                lambda x: x.reshape((num_samples, thin) + x.shape[1:]), args
+            )
+        else:
+            outer_args = None
+
+        def scan_fn(carry, xs):
+            if outer_args is None:
+                i = xs
+                step_args_chunk = None
+            else:
+                i, step_args_chunk = xs
+
             samples, key, state = carry
             key, new_key = jax.random.split(key)
 
-            def inner_scan_fn(carry, _):
+            def inner_scan_fn(carry, inner_xs):
                 key, state = carry
                 key, new_key = jax.random.split(key)
-                new_state, info = self.kernel(key, state, params)
-                return (new_key, new_state), info_filter(info)
+                if inner_xs is None:
+                    new_state, info = self.kernel(key, state, params)
+                else:
+                    new_state, info = self.kernel(key, state, params, *inner_xs)
+                stats = self._extract_stats(new_state, info)
+                return (new_key, new_state), stats
 
-            (_, new_state), info = jax.lax.scan(
-                inner_scan_fn, (new_key, state), length=thin
+            (_, new_state), step_stats = jax.lax.scan(
+                inner_scan_fn,
+                (new_key, state),
+                xs=step_args_chunk,
+                length=thin if step_args_chunk is None else None,
             )
 
             samples = jax.tree_util.tree_map(
                 lambda s, s_new: s.at[i].set(s_new), samples, new_state.position
             )
-            if info is not None:
-                info = jax.tree_util.tree_map(
-                    jnp.mean, info
-                )  # Average the info over the thinning
+            # Average the per-thinning-step stats for the progress bar
+            avg_stats = jax.tree_util.tree_map(jnp.mean, step_stats)
+            return (samples, new_key, new_state), avg_stats
 
-            return (samples, new_key, new_state), info
-
-        if params is None:
-            params = self.kernel.init_params(state)
+        # Outer scan xs: always includes indices, optionally args chunks
+        indices = jnp.arange(num_samples)
+        outer_xs = (indices, outer_args) if outer_args is not None else indices
 
         if not self.verbose:
-            info_filter = lambda x: None
             carry = (samples, key, state)
             (samples, _, state), _ = jax.lax.scan(
-                scan_fn, carry, jnp.arange(num_samples), length=num_samples
+                scan_fn, carry, outer_xs, length=num_samples
             )
         else:
-            info_filter = lambda x: tuple(
-                getattr(x, stat) for stat in self._running_stats
+            update_stats, print_fn, init_stats, print_rate = self._make_verbose_fns(
+                num_samples
             )
-            update_stats = lambda stats, _, y: (0.6 * stats[0] + 0.4 * y[0],)
-            print_fn = lambda i, total, state: self._print_progress(
-                type(self), i, total, state
-            )
-            init_stats = (0.0,)
             carry = (samples, key, state)
             (samples, _, state), _ = print_scan(
                 scan_fn,
                 carry,
                 init_stats,
-                jnp.arange(num_samples),
+                outer_xs,
                 length=num_samples,
                 update_stats=update_stats,
                 print_fn=print_fn,
-                print_rate=num_samples // self._print_rate + 1,
+                print_rate=print_rate,
             )
 
         return samples, state

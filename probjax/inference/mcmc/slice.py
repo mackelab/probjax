@@ -84,9 +84,7 @@ class SliceInfo(NamedTuple):
     proposal: SliceState
 
 
-def init(
-    position: ArrayLike, logdensity_fn: Callable, rng_key: RngKey
-) -> SliceState:
+def init(position: ArrayLike, logdensity_fn: Callable, rng_key: RngKey) -> SliceState:
     log_density = logdensity_fn(position)
     return SliceState(position, log_density, rng_key)
 
@@ -166,6 +164,8 @@ def build_adaptation(
     max_evals: int = 100,
     slice_fn="linear",
     slice_fn_arg: Optional[Callable] = None,
+    step_size: float = 0.5,
+    **kwargs,
 ) -> Callable:
     def fit_params(
         key: RngKey,
@@ -185,7 +185,7 @@ def build_adaptation(
             adaption_alg = step_size_adaption(
                 slice,
                 logdensity_fn,
-                params,
+                SliceParams(step_size=step_size),
                 target=float(target_num_evals) / max_evals,
                 target_from_info_fn=lambda info: info.num_evals / max_evals,
                 t0=t0,

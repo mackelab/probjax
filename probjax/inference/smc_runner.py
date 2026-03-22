@@ -17,7 +17,7 @@ class SMC(WithProgressBarAPI):
         self.kernel = kernel
         self.verbose = verbose
 
-    @partial(jax.jit, static_argnums=(0,))
+    @partial(jax.jit, static_argnums=(0, 5))
     def run(
         self,
         key: RngKey,
@@ -54,8 +54,8 @@ class SMC(WithProgressBarAPI):
                 self._state_gamma * stats[i] + (1 - self._state_gamma) * y[i]
                 for i in range(len(stats))
             )
-            print_fn = lambda i, total, state: self._print_progress(
-                type(self), i, total, state
+            print_fn = lambda i, total, st: type(self)._write_progress(
+                type(self), i, total, st
             )
             init_stats = tuple([0.0 for _ in self._running_stats])
             (key, out_state, out_params), _ = print_scan(

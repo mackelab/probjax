@@ -32,10 +32,19 @@ def tune_from_particles(
                 getattr(from_particles, "mass_matrix_from_particles", None),
             )
             if fn is not None:
+                old = jnp.asarray(tuned[key])
                 val = fn(particles)
                 val = jnp.atleast_1d(val)
-                if val.ndim == 1 and val.shape[0] == 1:
-                    val = val[None, ...]
+                # Preserve the original shape: if input was diagonal
+                # (e.g. [1, d]), keep diagonal; if full ([1, d, d]), keep full.
+                if old.ndim == 2 and val.ndim == 2:
+                    # old is [batch, d] (diagonal), val is [d, d] (full)
+                    val = jnp.diag(val)
+                    if old.shape[0] == 1:
+                        val = val[None, ...]
+                else:
+                    if val.ndim == 1 and val.shape[0] == 1:
+                        val = val[None, ...]
                 tuned[key] = val
         elif mode == "stds":
             tuned[key] = jnp.atleast_1d(from_particles.particles_stds(particles))

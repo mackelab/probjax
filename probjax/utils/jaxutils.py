@@ -1,4 +1,6 @@
+import concurrent.futures
 import math
+import sys
 from functools import partial
 from typing import Callable, Optional, Sequence, Tuple
 
@@ -9,6 +11,7 @@ from jax._src import linear_util as lu
 from jax._src.api_util import debug_info
 from jax._src.core import eval_jaxpr
 from jax._src.flatten_util import ravel_pytree
+
 try:
     from jax.interpreters.partial_eval import partial_eval_jaxpr_nounits
 except Exception:  # JAX internals moved across versions.
@@ -16,13 +19,23 @@ except Exception:  # JAX internals moved across versions.
         from jax._src.interpreters.partial_eval import partial_eval_jaxpr_nounits
     except Exception:
         try:
-            from jax.interpreters.partial_eval import partial_eval_jaxpr as _partial_eval_jaxpr
+            from jax.interpreters.partial_eval import (
+                partial_eval_jaxpr as _partial_eval_jaxpr,
+            )
         except Exception:
-            from jax._src.interpreters.partial_eval import partial_eval_jaxpr as _partial_eval_jaxpr
+            from jax._src.interpreters.partial_eval import (
+                partial_eval_jaxpr as _partial_eval_jaxpr,
+            )
 
         def partial_eval_jaxpr_nounits(jaxpr, unknowns, instantiate):
             return _partial_eval_jaxpr(jaxpr, unknowns, instantiate)
+
+
 from jaxtyping import Array, PyTree
+
+_progress_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="progress"
+)
 
 
 class API(type):
@@ -41,27 +54,21 @@ class WithProgressBarAPI:
     _running_stats = ()
 
     @staticmethod
-    def _print_progress(cls, iteration, total, stats):
-        print_rate = total // cls._print_rate + 1
-        percent = 100 * ((iteration + print_rate) / float(total))
+    def _write_progress(cls, iteration, total, stats, stat_names=()):
+        try:
+            i, t = int(iteration), int(total)
+        except Exception:
+            return
 
-        percent = min(percent, 100)
+        print_len = cls._print_length
+        pct = min(100.0, 100 * (i + 1) / t)
+        filled = int(print_len * (i + 1) // t)
+        bar = "█" * filled + "-" * (print_len - filled)
+        s = f"Progress: |{bar}| {pct:.2f}%"
+        for name, val in zip(stat_names, stats):
+            s += f" {name}: {float(val):.2f}"
 
-        percent = ("{0:." + str(2) + "f}").format(percent)
-
-        filled_length = int(cls._print_length * iteration // total + 1)
-        bar = '█' * filled_length + '-' * (cls._print_length - filled_length)
-
-        progress_bar = f'\rProgress: |{bar}| {percent}%'
-
-        progress_bar += " ".join(
-            f" {name}: {stat:.2f}" for name, stat in zip(cls._running_stats, stats, strict=False)
-        )
-
-        print(progress_bar, end="\r")
-
-        if iteration == total:
-            print()
+        _progress_executor.submit(sys.stdout.write, f"\r{s}")
 
 
 @lu.transformation
@@ -272,7 +279,9 @@ def print_scan(
 
     """
     if length is None:
-        length = xs.shape[0]
+        # xs may be a pytree (e.g. tuple of arrays); grab the first leaf.
+        leaves = jax.tree_util.tree_leaves(xs)
+        length = leaves[0].shape[0]
 
     if print_rate is None:
         print_rate = length // 50 + 1
@@ -287,7 +296,7 @@ def print_scan(
 
         jax.lax.cond(
             i % print_rate == 0,
-            lambda: jax.experimental.io_callback(print_fn, None, i, length, stats),
+            lambda: jax.debug.callback(print_fn, i, length, stats),
             lambda: None,
         )
         i += 1
