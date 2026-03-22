@@ -231,6 +231,8 @@ def _make_cp_flash_forward(
 
         return mesh, lower_fn, result_shardings, arg_shardings
 
+    _partition._cp_raw_fn = _call_raw  # type: ignore[attr-defined]
+
     _fwd.def_partition(
         partition=_partition,
         sharding_rule=rule,
@@ -243,9 +245,12 @@ def _make_cp_flash_forward(
 def _make_cp_flash_backward(config: TuningConfig):
     from jax.experimental.custom_partitioning import custom_partitioning
 
+    def _call_bwd_raw(do, q, k, v, out, lse):
+        return _run_flash_backward_raw(do, q, k, v, out, lse, config=config)
+
     @custom_partitioning
     def _bwd(do, q, k, v, out, lse):
-        return _run_flash_backward_raw(do, q, k, v, out, lse, config=config)
+        return _call_bwd_raw(do, q, k, v, out, lse)
 
     def _partition(mesh, arg_shapes, result_shape):
         for shape, name in zip(jax.tree.leaves(arg_shapes)[1:4], ("q", "k", "v")):
@@ -254,9 +259,11 @@ def _make_cp_flash_backward(config: TuningConfig):
         arg_shardings = jax.tree.map(lambda s: s.sharding, arg_shapes)
 
         def lower_fn(do, q, k, v, out, lse):
-            return _run_flash_backward_raw(do, q, k, v, out, lse, config=config)
+            return _call_bwd_raw(do, q, k, v, out, lse)
 
         return mesh, lower_fn, result_shardings, arg_shardings
+
+    _partition._cp_raw_fn = _call_bwd_raw  # type: ignore[attr-defined]
 
     _bwd.def_partition(
         partition=_partition,

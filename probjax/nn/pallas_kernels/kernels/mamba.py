@@ -255,6 +255,7 @@ def _gpu_supports_mamba_pallas_for_shape(
         return False
     return True
 
+
 # pylint: disable=invalid-name
 
 
@@ -922,6 +923,10 @@ def _make_mamba_scan(seq_tile_size: int, dim_tile_size: int):
 
         return mesh, lower_fn, result_shardings, arg_shardings
 
+    _fwd_partition._cp_raw_fn = lambda x, a, b, c, delta, d: _loop_forward_pallas(
+        x, a, b, c, delta, d, seq_tile_size, dim_tile_size
+    )  # type: ignore[attr-defined]
+
     def_partition_compat(
         _fwd.def_partition,
         partition=_fwd_partition,
@@ -952,6 +957,10 @@ def _make_mamba_scan(seq_tile_size: int, dim_tile_size: int):
             )
 
         return mesh, lower_fn, result_shardings, arg_shardings
+
+    _bwd_partition._cp_raw_fn = lambda dy, x, a, b, c, delta, d: _loop_backward_pallas(
+        dy, x, a, b, c, delta, d, seq_tile_size, dim_tile_size
+    )  # type: ignore[attr-defined]
 
     def_partition_compat(
         _bwd.def_partition,

@@ -4,9 +4,12 @@ This module contains:
 - Sentinel helpers: substitutes for None arrays required by custom_partitioning.
 - Sharding rule builders for forward, JVP, and backward MHA passes.
 - A generic CP wrapper factory (make_cp_function) that eliminates boilerplate.
-- try_cp_or_raw: the "try custom_partitioning, fall back to raw" pattern.
-  Falls back to the raw implementation when CP raises a
-  ``NotImplementedError`` (e.g. the batching-rule gap under ``vmap``).
+- A batching rule for ``custom_partitioning_p`` that merges the ``vmap``
+  dimension into the leading (batch) dimension so CP-wrapped kernels can
+  be used directly under ``jax.vmap``.
+- try_cp_or_raw: legacy "try custom_partitioning, fall back to raw" pattern.
+  Kept as a safety net but should rarely trigger now that the batching rule
+  is registered.
 - _validate_mha_sharding: sharding validation for q/k/v operands.
 """
 
@@ -288,6 +291,11 @@ def make_cp_function(
 
         return mesh, lower_fn, result_shardings, arg_shardings
 
+    # Attach the raw callable so the batching rule can re-invoke it
+    # with merged shapes (pallas_call jaxprs have baked-in shapes and
+    # cannot be evaluated at different sizes via eval_jaxpr).
+    _partition._cp_raw_fn = _unwrap_and_call  # type: ignore[attr-defined]
+
     _cp_fn.def_partition(
         partition=_partition,
         sharding_rule=sharding_rule,
@@ -314,6 +322,11 @@ def try_cp_or_raw(
     ``NotImplementedError`` for the missing batching rule (triggered under
     ``vmap``).  All other exceptions propagate normally.
 
+    .. note::
+
+       With the ``custom_partitioning_p`` batching rule registered below,
+       this fallback should rarely trigger.  It is kept as a safety net.
+
     Args:
         cp_fn: custom_partitioning-wrapped function.
         cp_args: Positional args for *cp_fn* (optional arrays as sentinels).
@@ -327,3 +340,130 @@ def try_cp_or_raw(
         if not _is_cp_batching_error(err):
             raise
     return raw_fn(*raw_args, **raw_kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Batching rule for custom_partitioning_p
+# ---------------------------------------------------------------------------
+# JAX's ``custom_partitioning`` does not ship with a ``vmap`` batching rule.
+# When a CP-wrapped function is called under ``jax.vmap``, the
+# ``BatchTrace.process_primitive`` path raises ``NotImplementedError``.
+#
+# We register a global batching rule that handles this by *merging* the vmap
+# dimension into the leading (batch) dimension of each input, evaluating the
+# captured jaxpr at the merged shape, and then splitting the output back out.
+#
+# This is safe because all CP-wrapped kernels in this codebase treat dim 0 as
+# a pure batch dimension that is processed independently per-element.
+
+
+def _cp_batching_rule(
+    axis_data,
+    vals_in,
+    dims_in,
+    *,
+    call,
+    partition,
+    in_tree,
+    out_tree,
+    static_args,
+    **other_params,
+):
+    """Batching rule for ``custom_partitioning_p``.
+
+    Merges the ``vmap`` mapped axis into the leading (batch) dimension,
+    re-invokes the underlying computation with the merged shapes, then
+    splits the output back.
+
+    For batched args the mapped axis is moved to front and reshaped:
+    ``(V, B, ...) -> (V*B, ...)``.  Unbatched args with at least one
+    dimension are tiled along dim 0 so they broadcast correctly against
+    the merged-batch inputs.
+
+    The raw callable is obtained from the ``partition`` function's
+    ``_cp_raw_fn`` attribute (set by :func:`make_cp_function`).  For CP
+    wrappers created outside ``make_cp_function``, falls back to
+    ``eval_jaxpr`` on the captured jaxpr.
+    """
+    from jax._src import core
+    from jax._src.custom_partitioning import custom_partitioning_p
+    from jax._src.interpreters.batching import not_mapped
+
+    vmap_size = axis_data.size
+    any_batched = any(d is not not_mapped for d in dims_in)
+
+    if not any_batched:
+        # Nothing to merge — just call through.
+        out_flat = custom_partitioning_p.bind(
+            *vals_in,
+            call=call,
+            partition=partition,
+            in_tree=in_tree,
+            out_tree=out_tree,
+            static_args=static_args,
+            **other_params,
+        )
+        if custom_partitioning_p.multiple_results:
+            return out_flat, [not_mapped] * len(out_flat)
+        return out_flat, not_mapped
+
+    # Merge vmap dim into batch dim for batched args;
+    # tile unbatched args so shapes are compatible.
+    merged_vals = []
+    for val, dim in zip(vals_in, dims_in):
+        if dim is not not_mapped:
+            val = jnp.moveaxis(val, dim, 0)
+            if val.ndim > 1:
+                # (V, B, ...) -> (V*B, ...)
+                val = val.reshape(val.shape[0] * val.shape[1], *val.shape[2:])
+        elif val.ndim > 0:
+            # Unbatched array with a batch dim — tile V times along dim 0.
+            val = jnp.tile(val, (vmap_size,) + (1,) * (val.ndim - 1))
+        merged_vals.append(val)
+
+    # Re-invoke the underlying computation with merged shapes.
+    # Prefer the raw callable attached by make_cp_function (handles
+    # pallas_call and other shape-sensitive primitives correctly).
+    # Fall back to eval_jaxpr for CP wrappers created elsewhere.
+    raw_fn = getattr(partition, "_cp_raw_fn", None)
+    if raw_fn is not None:
+        args = jax.tree_util.tree_unflatten(in_tree, merged_vals)
+        result = raw_fn(*args)
+        out_flat, _ = jax.tree_util.tree_flatten(result)
+    else:
+        out_flat = core.eval_jaxpr(call.jaxpr, call.consts, *merged_vals)
+
+    # Split the merged batch dim back: (V*B, ...) -> (V, B, ...)
+    if custom_partitioning_p.multiple_results:
+        results = []
+        out_dims = []
+        for o in out_flat:
+            if o.ndim > 0:
+                o = o.reshape(vmap_size, -1, *o.shape[1:])
+                results.append(o)
+                out_dims.append(0)
+            else:
+                results.append(o)
+                out_dims.append(not_mapped)
+        return results, out_dims
+
+    out = out_flat[0] if isinstance(out_flat, (list, tuple)) else out_flat
+    if out.ndim > 0:
+        out = out.reshape(vmap_size, -1, *out.shape[1:])
+        return out, 0
+    return out, not_mapped
+
+
+def _register_cp_batching_rule() -> None:
+    """Register the batching rule for ``custom_partitioning_p``.
+
+    Called once at module import time.  Safe to call multiple times
+    (idempotent).
+    """
+    from jax._src.custom_partitioning import custom_partitioning_p
+    from jax._src.interpreters import batching
+
+    batching.fancy_primitive_batchers[custom_partitioning_p] = _cp_batching_rule
+
+
+_register_cp_batching_rule()

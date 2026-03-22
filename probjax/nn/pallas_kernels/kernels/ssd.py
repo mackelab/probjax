@@ -169,6 +169,7 @@ def _gpu_supports_ssd_pallas_for_shape(
         return False
     return True
 
+
 def _matmul_fp32(lhs: jax.Array, rhs: jax.Array) -> jax.Array:
     """A wrapper around jax.lax.dot to conduct float32 matmul"""
     precision = get_dot_precision(jax.default_backend(), lhs.dtype)
@@ -979,6 +980,10 @@ def _make_ssd():
 
         return mesh, lower_fn, result_shardings, arg_shardings
 
+    _fwd_partition._cp_raw_fn = lambda q, k, v, log_alpha, h0: _ssd_forward_impl(
+        q, k, v, log_alpha, h0
+    )  # type: ignore[attr-defined]
+
     def_partition_compat(
         _fwd.def_partition,
         partition=_fwd_partition,
@@ -1006,6 +1011,10 @@ def _make_ssd():
             return _ssd_backward_impl(do, q, k, v, log_alpha, h0)
 
         return mesh, lower_fn, result_shardings, arg_shardings
+
+    _bwd_partition._cp_raw_fn = lambda do, q, k, v, log_alpha, h0: _ssd_backward_impl(
+        do, q, k, v, log_alpha, h0
+    )  # type: ignore[attr-defined]
 
     def_partition_compat(
         _bwd.def_partition,
