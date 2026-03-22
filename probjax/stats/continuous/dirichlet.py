@@ -13,8 +13,13 @@ from jax import random
 from jax.scipy.special import digamma, gammaln
 
 from probjax.stats.base import rv_exponential_family, rv_multivariate
-from probjax.stats.constraints import positive
+from probjax.stats.constraints import (
+    positive,
+    simplex,
+    symmetric_positive_definite_matrix,
+)
 from probjax.stats.utils import normalize_sample_weights, row_mean_and_var
+from probjax.utils.stats import mle_dirichlet
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["dirichlet"]
@@ -316,7 +321,11 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
         weights: Optional[ArrayLike] = None,
         **kwargs,
     ):
-        """Method-of-moments estimate for the Dirichlet concentration vector."""
+        """Maximum likelihood estimation of Dirichlet concentration parameters.
+
+        Uses method of moments for the initial estimate, then refines via
+        fixed-point MLE iteration (Minka 2000).
+        """
         data = jnp.asarray(data)
         if data.ndim == 1:
             raise ValueError("Dirichlet fitting expects observations arranged by rows.")
@@ -336,7 +345,10 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
         var = jnp.maximum(var, eps)
         alpha0 = jnp.mean(mean * (1 - mean) / var - 1.0)
         alpha0 = jnp.maximum(alpha0, eps)
-        alpha = jnp.clip(mean * alpha0, eps, None)
+        alpha_init = jnp.clip(mean * alpha0, eps, None)
+
+        alpha = mle_dirichlet(data, alpha0=alpha_init)
+        alpha = jnp.maximum(alpha, eps)
         return (alpha,)
 
 

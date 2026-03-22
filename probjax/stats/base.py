@@ -455,8 +455,8 @@ class rv_continuous(rv_generic):
     def fit(cls, data: ArrayLike, **kwds: Any) -> tuple[Array, ...]:
         """Maximum likelihood estimation of distribution parameters.
 
-        For discrete distributions, the MLE is found by maximizing the log-likelihood
-        using the logpmf function.
+        For continuous distributions, the MLE is found by maximizing the log-likelihood
+        using the logpdf function.
 
         Parameters
         ----------

@@ -431,7 +431,7 @@ class multivariate_normal_gen(rv_multivariate):
             mismatch_message="weights must have the same number of rows as data",
             column=True,
         )
-        loc, cov = row_mean_and_cov(data, weights_arr, unbiased_unweighted=True)
+        loc, cov = row_mean_and_cov(data, weights_arr, unbiased_unweighted=False)
 
         eps = jnp.asarray(1e-6, dtype=cov.dtype)
         cov = cov + eps * jnp.eye(cov.shape[-1], dtype=cov.dtype)

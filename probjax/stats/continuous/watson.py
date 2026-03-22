@@ -570,7 +570,11 @@ class watson_gen(rv_spherical, rv_exponential_family):
         weights: Optional[ArrayLike] = None,
         **kwargs,
     ):
-        """Estimate mean direction via PCA and concentration via axial moment."""
+        """Maximum likelihood estimation of Watson distribution parameters.
+
+        Uses PCA and axial moment for the initial estimate, then refines
+        via BFGS optimization of the negative log-likelihood.
+        """
         data = _normalize_vector(jnp.asarray(data))
         if data.ndim == 1:
             data = data[None, :]
@@ -600,11 +604,31 @@ class watson_gen(rv_spherical, rv_exponential_family):
         mu_max = eigvecs[:, idx_max]
         mu_min = eigvecs[:, idx_min]
         choose_max = jnp.abs(rho_max - iso) >= jnp.abs(rho_min - iso)
-        mu = jnp.where(choose_max, mu_max, mu_min)
-        mu = _normalize_vector(mu)
+        mu_init = jnp.where(choose_max, mu_max, mu_min)
+        mu_init = _normalize_vector(mu_init)
 
-        axial_moment = jnp.sum(weights_arr * jnp.square(data @ mu))
-        kappa = _solve_watson_kappa(axial_moment, dim, dtype)
+        axial_moment = jnp.sum(weights_arr * jnp.square(data @ mu_init))
+        kappa_init = _solve_watson_kappa(axial_moment, dim, dtype)
+
+        # Refine via BFGS optimization in unconstrained space
+        from jax.scipy.optimize import minimize as jax_minimize
+
+        init_flat = jnp.concatenate([mu_init, jnp.atleast_1d(kappa_init)])
+
+        if weights_arr is None:
+            w = jnp.ones(n, dtype=dtype) / n
+        else:
+            w = weights_arr
+
+        def neg_log_lik(params_flat):
+            mu_raw = params_flat[:-1]
+            kappa = params_flat[-1]
+            # logpdf normalizes mu internally
+            return -jnp.sum(w * cls.logpdf(data, mean_direction=mu_raw, kappa=kappa))
+
+        result = jax_minimize(neg_log_lik, init_flat, method="BFGS")
+        mu = _normalize_vector(result.x[:-1])
+        kappa = result.x[-1]
         return mu, kappa
 
 

@@ -169,7 +169,12 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
 
     @classmethod
     def fit(cls, data, weights: Optional[ArrayLike] = None, **kwargs):
-        """Estimate parameters via the sample first circular moment."""
+        """Maximum likelihood estimation of von Mises distribution parameters.
+
+        Uses the circular mean for loc (which is the MLE) and the Mardia-Jupp
+        approximation for the initial kappa, then refines kappa via BFGS
+        optimization of the negative log-likelihood.
+        """
         data = flatten_samples(data)
         weights_arr = normalize_sample_weights(
             weights,
@@ -196,14 +201,31 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
                     -0.4 + 1.39 * r + 0.43 / (1 - r),
                     jnp.where(
                         r < 0.999999,
-                        1.0 / (r**3 - 4 * r**2 + 3 * r),
+                        1.0 / (r**3 - 4 * r**2 + 3 * r + 1),
                         1e6,
                     ),
                 ),
             )
             return jnp.maximum(kappa, tiny)
 
-        kappa = jnp.where(tiny > R, tiny, approx_kappa(R))
+        kappa_init = jnp.where(tiny > R, tiny, approx_kappa(R))
+
+        # Refine kappa via BFGS (loc MLE is the circular mean, keep it fixed)
+        from jax.scipy.optimize import minimize as jax_minimize
+
+        if weights_arr is not None:
+            w = weights_arr
+        else:
+            w = jnp.ones_like(data) / data.shape[0]
+
+        def neg_log_lik_kappa(log_kappa):
+            kappa = jnp.exp(log_kappa[0])
+            return -jnp.sum(w * cls.logpdf(data, loc=loc, kappa=kappa))
+
+        result = jax_minimize(
+            neg_log_lik_kappa, jnp.array([jnp.log(kappa_init)]), method="BFGS"
+        )
+        kappa = jnp.exp(result.x[0])
         return loc, kappa
 
 

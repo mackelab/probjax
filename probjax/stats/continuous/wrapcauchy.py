@@ -174,7 +174,11 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
         weights: Optional[ArrayLike] = None,
         **kwargs,
     ):
-        """Estimate parameters via the first circular moment."""
+        """Maximum likelihood estimation of Wrapped Cauchy parameters.
+
+        Uses circular moment matching for the initial estimate, then refines
+        via BFGS optimization of the negative log-likelihood.
+        """
         data = flatten_samples(data)
         dtype = data.dtype
 
@@ -193,9 +197,30 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
             mean_cos = jnp.mean(cos_vals)
             mean_sin = jnp.mean(sin_vals)
 
-        loc = jnp.arctan2(mean_sin, mean_cos)
-        gamma = jnp.sqrt(mean_cos**2 + mean_sin**2)
-        gamma = jnp.clip(gamma, jnp.asarray(1e-6, dtype=dtype), 1 - 1e-6)
+        loc_init = jnp.arctan2(mean_sin, mean_cos)
+        gamma_init = jnp.sqrt(mean_cos**2 + mean_sin**2)
+        gamma_init = jnp.clip(gamma_init, jnp.asarray(1e-6, dtype=dtype), 1 - 1e-6)
+
+        # Optimize log-likelihood via BFGS in unconstrained space
+        # gamma = sigmoid(logit_gamma), loc is already unconstrained
+        from jax.scipy.optimize import minimize as jax_minimize
+
+        if weights_arr is not None:
+            w = weights_arr
+        else:
+            w = jnp.ones(data.shape[0], dtype=dtype) / data.shape[0]
+
+        logit_gamma_init = jnp.log(gamma_init) - jnp.log1p(-gamma_init)
+        init_flat = jnp.array([loc_init, logit_gamma_init], dtype=dtype)
+
+        def neg_log_lik(params_flat):
+            loc = params_flat[0]
+            gamma = 1.0 / (1.0 + jnp.exp(-params_flat[1]))
+            return -jnp.sum(w * cls.logpdf(data, loc=loc, gamma=gamma))
+
+        result = jax_minimize(neg_log_lik, init_flat, method="BFGS")
+        loc = result.x[0]
+        gamma = 1.0 / (1.0 + jnp.exp(-result.x[1]))
         return loc, gamma
 
 
