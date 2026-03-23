@@ -77,6 +77,10 @@ tests/.mypy_cache
 
 # Sphinx documentation
 docs/_build/
+docs/api/generated/
+docs/.jupyter_cache/
+docs/__pycache__/
+docs/examples/
 
 # PyBuilder
 target/
