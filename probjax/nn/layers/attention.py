@@ -206,12 +206,14 @@ class QASSMaxQueryScale(nnx.Module):
         head_dim: int,
         *,
         hidden_dim: int = 64,
+        use_checkpointing: bool = True,
         param_dtype: DTypeLike | None = None,
         dtype: DTypeLike | None = None,
         rngs: rnglib.Rngs,
     ):
         self.num_heads = num_heads
         self.head_dim = head_dim
+        self.use_checkpointing = bool(use_checkpointing)
 
         # Lazy import to avoid circular dependency
         # (attention → nets.simple → nets.__init__ → autoregressive → attention).
@@ -244,6 +246,31 @@ class QASSMaxQueryScale(nnx.Module):
         )
         _zero_init_last_layer(self.gate_mlp)
 
+    def _scale_query(self, query: Array, kv_len: int | Array) -> Array:
+        q_dtype = query.dtype
+        kv_len_f32 = jnp.asarray(kv_len, dtype=jnp.float32)
+        # Keep heavy elementwise/broadcast math in query dtype (typically bf16)
+        # to reduce temporary activation footprint under SPMD.
+        log_n = jnp.log(kv_len_f32 + 1.0).astype(q_dtype)
+
+        # Base MLP: f(log_n) -> per-head per-dim scale.
+        # Input: scalar -> [1, 1] or per-batch [B] -> [B, 1].
+        log_n_flat = log_n.reshape(-1, 1)  # [B, 1] or [1, 1]
+        base_flat = self.base_mlp(log_n_flat)  # [B, H*D] or [1, H*D]
+        # Reshape to [B, 1, H, D] (or [1, 1, H, D] for scalar kv_len)
+        # so it broadcasts with query [B, L, H, D].
+        base = jnp.asarray(base_flat, dtype=q_dtype).reshape(
+            -1, 1, self.num_heads, self.head_dim
+        )
+
+        scaled = query * base
+
+        # Gate: tanh(g(query)) in [-1, 1]. Rewriting
+        # query*base*(1 + tanh(.)) as scaled + scaled*tanh(.)
+        # avoids an explicit large "+1" broadcast in the forward graph.
+        gate_tanh = jnp.tanh(jnp.asarray(self.gate_mlp(query), dtype=q_dtype))
+        return scaled + scaled * gate_tanh
+
     def __call__(self, query: Array, *, kv_len: int | Array) -> Array:
         """Scale *query* using base and gate MLPs.
 
@@ -256,21 +283,11 @@ class QASSMaxQueryScale(nnx.Module):
         Returns:
             Scaled queries (same shape).
         """
-        kv_len = jnp.asarray(kv_len, dtype=jnp.float32)
-        log_n = jnp.log(kv_len + 1.0)
-
-        # Base MLP: f(log_n) → per-head per-dim scale.
-        # Input: scalar → [1, 1] or per-batch [B] → [B, 1].
-        log_n_flat = log_n.reshape(-1, 1)  # [B, 1] or [1, 1]
-        base_flat = self.base_mlp(log_n_flat)  # [B, H*D] or [1, H*D]
-        # Reshape to [B, 1, H, D] (or [1, 1, H, D] for scalar kv_len)
-        # so it broadcasts with query [B, L, H, D].
-        base = base_flat.reshape(-1, 1, self.num_heads, self.head_dim)
-
-        # Gate: g(query) → [B, L, H, D], bounded (0, 2)
-        gate = 1.0 + jnp.tanh(self.gate_mlp(query))
-
-        return query * base * gate
+        if self.use_checkpointing:
+            return jax.checkpoint(
+                lambda q, n: self._scale_query(q, kv_len=n)
+            )(query, kv_len)
+        return self._scale_query(query, kv_len=kv_len)
 
 
 # ---------------------------------------------------------------------------
@@ -696,6 +713,10 @@ class InducedSelfAttention(nnx.Module):
         param_dtype: parameter dtype.
         precision: computation precision.
         preferred_element_type: output dtype cast.
+        checkpoint_inducing_ff: if True, rematerialize only the inducing MAB
+            feedforward branch during backward.
+        checkpoint_output_ff: if True, rematerialize only the output MAB
+            feedforward branch during backward.
         sharding_cfg: sharding configuration.
     """
 
@@ -718,6 +739,8 @@ class InducedSelfAttention(nnx.Module):
         param_dtype: DTypeLike = jnp.float32,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
+        checkpoint_inducing_ff: bool = False,
+        checkpoint_output_ff: bool = False,
         sharding_cfg: ShardingCfg | None = None,
     ):
         if in_features <= 0:
@@ -731,6 +754,8 @@ class InducedSelfAttention(nnx.Module):
         self.num_heads = num_heads
         self.num_inducing_points = num_inducing_points
         self.preferred_element_type = preferred_element_type
+        self.checkpoint_inducing_ff = bool(checkpoint_inducing_ff)
+        self.checkpoint_output_ff = bool(checkpoint_output_ff)
         self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         qkv_features = (
@@ -827,11 +852,13 @@ class InducedSelfAttention(nnx.Module):
         x: Array,
         y: Array,
         *,
+        x_attn: Array | None,
         attn: Any,
         x_norm: Any,
         y_norm: Any,
         ff: Any,
         ff_norm: Any,
+        checkpoint_ff: bool,
         deterministic: bool,
         rng: jax.Array | None,
         kv_len: int | Array | None = None,
@@ -842,17 +869,26 @@ class InducedSelfAttention(nnx.Module):
         MAB(X, Y) = H + rFF(norm(H))              # feedforward + residual
         """
         # Attention sub-block (pre-norm residual).
-        y_n = self._maybe_norm(y_norm, y)
-        h = x + attn(
-            self._maybe_norm(x_norm, x),
-            y_n,
-            y_n,
-            deterministic=deterministic,
-            rng=rng,
-            kv_len=kv_len,
-        )
+        with jax.named_scope("attn_residual"):
+            y_n = self._maybe_norm(y_norm, y)
+            x_q = x_attn if x_attn is not None else self._maybe_norm(x_norm, x)
+            h = x + attn(
+                x_q,
+                y_n,
+                y_n,
+                deterministic=deterministic,
+                rng=rng,
+                kv_len=kv_len,
+            )
         # Feedforward sub-block (pre-norm residual).
-        out = h + ff(self._maybe_norm(ff_norm, h))
+        with jax.named_scope("ff_residual"):
+            ff_in = self._maybe_norm(ff_norm, h)
+            if checkpoint_ff:
+                # Targeted remat for only the feedforward branch.
+                ff_out = jax.checkpoint(lambda z: ff(z))(ff_in)
+            else:
+                ff_out = ff(ff_in)
+            out = h + ff_out
         return out
 
     def __call__(
@@ -900,37 +936,51 @@ class InducedSelfAttention(nnx.Module):
         kv_input = x if x_kv is None else jnp.asarray(x_kv)
 
         inducing_points = self.inducing_points[...]
-        inducing_points = jnp.broadcast_to(
-            inducing_points,
-            kv_input.shape[:-2] + inducing_points.shape,
-        )
 
-        # MAB 1: inducing points attend to kv_input  ->  H = MAB(I, X_kv)
-        inducing_hidden = self._mab(
-            inducing_points,
-            kv_input,
-            attn=self.inducing_attn,
-            x_norm=self.inducing_norm,
-            y_norm=self.input_norm,
-            ff=self.inducing_ff,
-            ff_norm=self.inducing_ff_norm,
-            deterministic=deterministic,
-            rng=rng,
-            kv_len=kv_len,
-        )
+        # MAB 1: inducing points attend to input  ->  H = MAB(I, X)
+        with jax.named_scope("inducing_mab"):
+            # Normalize inducing points before broadcasting. This avoids
+            # broadcast-then-reduce normalization work on the expanded tensor.
+            inducing_query = self._maybe_norm(self.inducing_norm, inducing_points)
+            inducing_points = jnp.broadcast_to(
+                inducing_points,
+                x.shape[:-2] + inducing_points.shape,
+            )
+            inducing_query = jnp.broadcast_to(
+                inducing_query,
+                x.shape[:-2] + inducing_query.shape,
+            )
+            inducing_hidden = self._mab(
+                inducing_points,
+                x,
+                x_attn=inducing_query,
+                attn=self.inducing_attn,
+                x_norm=None,
+                y_norm=self.input_norm,
+                ff=self.inducing_ff,
+                ff_norm=self.inducing_ff_norm,
+                checkpoint_ff=self.checkpoint_inducing_ff,
+                deterministic=deterministic,
+                rng=rng,
+                kv_len=kv_len,
+            )
 
         # MAB 2: input attends to induced representation  ->  ISAB(X) = MAB(X, H)
-        out = self._mab(
-            x,
-            inducing_hidden,
-            attn=self.output_attn,
-            x_norm=self.output_norm,
-            y_norm=self.hidden_norm,
-            ff=self.output_ff,
-            ff_norm=self.output_ff_norm,
-            deterministic=deterministic,
-            rng=rng,
-        )
+        with jax.named_scope("output_mab"):
+            out = self._mab(
+                x,
+                inducing_hidden,
+                x_attn=None,
+                attn=self.output_attn,
+                x_norm=self.output_norm,
+                y_norm=self.hidden_norm,
+                ff=self.output_ff,
+                ff_norm=self.output_ff_norm,
+                checkpoint_ff=self.checkpoint_output_ff,
+                deterministic=deterministic,
+                rng=rng,
+                kv_len=kv_len,
+            )
 
         if self.preferred_element_type is not None:
             out = out.astype(self.preferred_element_type)

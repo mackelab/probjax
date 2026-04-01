@@ -99,23 +99,29 @@ def _is_cp_batching_error(err: NotImplementedError) -> bool:
 # Sharding rule builders
 # ---------------------------------------------------------------------------
 
-# Unique replicated factor names per extracted-array slot.  Every dimension
-# of every data array is replicated so that the GSPMD partitioner never
-# shards them.
+# Replication factor names per extracted-array slot.
+#
+# We keep the "semantic" dimensions that can safely follow q/k/v shardings:
+# - batch-like leading dims on aux data may shard with ``batch``
+# - head-like bias/dropout dims may shard with ``heads``
+#
+# The remaining dimensions stay replicated via unique factors. This reduces
+# unnecessary broadcast/plumbing around custom_partitioning without allowing
+# unsupported sequence/head-dim sharding into the Pallas kernels.
 _FWD_DATA_RULES: dict[str, tuple[int, str, tuple[str, ...]]] = {
-    "b_data": (4, "eb0 eb1 eb2 eb3", ("eb0", "eb1", "eb2", "eb3")),
-    "q_id": (4, "eq0 eq1 eq2 eq3", ("eq0", "eq1", "eq2", "eq3")),
-    "k_id": (4, "ek0 ek1 ek2 ek3", ("ek0", "ek1", "ek2", "ek3")),
-    "dropout_mask": (4, "ed0 ed1 ed2 ed3", ("ed0", "ed1", "ed2", "ed3")),
+    "b_data": (4, "batch heads eb2 eb3", ("eb2", "eb3")),
+    "q_id": (4, "batch eq1 eq2 eq3", ("eq1", "eq2", "eq3")),
+    "k_id": (4, "batch ek1 ek2 ek3", ("ek1", "ek2", "ek3")),
+    "dropout_mask": (4, "batch heads ed2 ed3", ("ed2", "ed3")),
     "index_offset": (2, "eo0 eo1", ("eo0", "eo1")),
     "index_offset_size": (1, "es0", ("es0",)),
 }
 
 _BWD_DATA_RULES: dict[str, tuple[int, str, tuple[str, ...]]] = {
-    "b_data": (4, "eb0 eb1 eb2 eb3", ("eb0", "eb1", "eb2", "eb3")),
-    "q_data": (4, "eq0 eq1 eq2 eq3", ("eq0", "eq1", "eq2", "eq3")),
-    "k_data": (4, "ek0 ek1 ek2 ek3", ("ek0", "ek1", "ek2", "ek3")),
-    "dropout_mask": (4, "ed0 ed1 ed2 ed3", ("ed0", "ed1", "ed2", "ed3")),
+    "b_data": (4, "batch heads eb2 eb3", ("eb2", "eb3")),
+    "q_data": (4, "batch eq1 eq2 eq3", ("eq1", "eq2", "eq3")),
+    "k_data": (4, "batch ek1 ek2 ek3", ("ek1", "ek2", "ek3")),
+    "dropout_mask": (4, "batch heads ed2 ed3", ("ed2", "ed3")),
     "q_index_offset": (2, "eo0 eo1", ("eo0", "eo1")),
     "q_index_offset_size": (1, "es0", ("es0",)),
     "kv_index_offset": (2, "ko0 ko1", ("ko0", "ko1")),

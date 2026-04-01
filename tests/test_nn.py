@@ -5,7 +5,11 @@ import pytest
 from flax import nnx
 
 from probjax.core import inverse, inverse_and_logabsdet
-from probjax.nn.layers.attention import PerHeadQueryScale, dot_product_attention
+from probjax.nn.layers.attention import (
+    PerHeadQueryScale,
+    QASSMaxQueryScale,
+    dot_product_attention,
+)
 from probjax.nn import (
     AdditiveCouplingFlow,
     AdditiveBinaryFuse,
@@ -122,6 +126,43 @@ def test_induced_self_attention():
 
     _ = jax.grad(loss_fn)
     _, _ = jax.tree_util.tree_flatten(model)
+
+
+def test_qassmax_query_scale_checkpointing_matches_eager():
+    rngs = nnx.Rngs(0)
+    eager = QASSMaxQueryScale(
+        num_heads=2,
+        head_dim=4,
+        hidden_dim=8,
+        use_checkpointing=False,
+        rngs=rngs,
+    )
+    remat = QASSMaxQueryScale(
+        num_heads=2,
+        head_dim=4,
+        hidden_dim=8,
+        use_checkpointing=True,
+        rngs=nnx.Rngs(0),
+    )
+    query = jnp.arange(2 * 5 * 2 * 4, dtype=jnp.float32).reshape(2, 5, 2, 4)
+    kv_len = jnp.array([5, 3], dtype=jnp.int32)
+
+    eager_out = eager(query, kv_len=kv_len)
+    remat_out = remat(query, kv_len=kv_len)
+    np.testing.assert_allclose(np.asarray(remat_out), np.asarray(eager_out), rtol=1e-5)
+
+    def eager_loss(q):
+        return jnp.sum(eager(q, kv_len=kv_len))
+
+    def remat_loss(q):
+        return jnp.sum(remat(q, kv_len=kv_len))
+
+    np.testing.assert_allclose(
+        np.asarray(jax.grad(remat_loss)(query)),
+        np.asarray(jax.grad(eager_loss)(query)),
+        rtol=1e-5,
+        atol=1e-5,
+    )
 
 
 def test_coupling(coupling_mlp, batch_shape):
