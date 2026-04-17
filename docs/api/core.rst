@@ -11,6 +11,7 @@ This module includes:
 - Automatic function inversion
 - Log-probability computation
 - Custom primitives for probabilistic programming
+- Interventions, observations, and conditioning
 
 Key Functions
 -------------
@@ -18,19 +19,19 @@ Key Functions
 .. autosummary::
    :toctree: generated
 
-   transformation.inverse
-   transformation.inverse_and_logabsdet
-   transformation.trace
-   transformation.log_prob_fn
-   transformation.log_joint_fn
-   transformation.condition
-   transformation.observe
-   transformation.intervene
-   transformation.substitute
-   transformation.do
-   transformation.scope
-   transformation.joint_sample
-   transformation.log_potential_fn
+   inverse
+   inverse_and_logabsdet
+   trace
+   log_prob_fn
+   log_joint_fn
+   log_potential_fn
+   condition
+   observe
+   intervene
+   do
+   substitute
+   joint_sample
+   scope
 
 Classes
 -------
@@ -38,7 +39,8 @@ Classes
 .. autosummary::
    :toctree: generated
 
-   jaxpr_propagation.graph.JaxprGraph
+   JaxprGraph
+   custom_inverse
 
 Detailed Documentation
 ----------------------
@@ -48,12 +50,12 @@ Detailed Documentation
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: probjax.core.jaxpr_propagation
+.. automodule:: probjax.core.jaxpr_propagation.graph
    :members:
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: probjax.core.custom_primitives
+.. automodule:: probjax.core.custom_primitives.custom_inverse
    :members:
    :undoc-members:
    :show-inheritance:

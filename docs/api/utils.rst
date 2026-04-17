@@ -11,7 +11,8 @@ This module includes:
 - Linear algebra utilities
 - Interpolation functions
 - Graph utilities
-- Typing and special functions
+- Special mathematical functions
+- Root finding and solvers
 
 ODE/SDE Integration
 -------------------
@@ -19,8 +20,8 @@ ODE/SDE Integration
 .. autosummary::
    :toctree: generated
 
-   odeint.odeint
-   sdeint.sdeint
+   odeint
+   sdeint
 
 Linear Algebra
 --------------
@@ -28,9 +29,8 @@ Linear Algebra
 .. autosummary::
    :toctree: generated
 
-   linalg.solve_triangular
-   linalg.cholesky
-   linalg.eigh
+   cholesky_update
+   mv_diag_or_dense
 
 Interpolation
 -------------
@@ -38,8 +38,8 @@ Interpolation
 .. autosummary::
    :toctree: generated
 
-   interpolation.interp1d
-   interpolation.interp2d
+   linear_interpolation
+   polynomial_interpolation
 
 Graph Utilities
 ---------------
@@ -47,9 +47,8 @@ Graph Utilities
 .. autosummary::
    :toctree: generated
 
-   graph.bfs
-   graph.dfs
-   graph.shortest_path
+   find_ancestors_jax
+   faithfull_mask
 
 Special Functions
 -----------------
@@ -57,9 +56,47 @@ Special Functions
 .. autosummary::
    :toctree: generated
 
-   special.gammaln
-   special.betaln
-   special.digamma
+   betaincinv
+   digammainv
+   gammaincinv
+
+Solvers
+-------
+
+.. autosummary::
+   :toctree: generated
+
+   newton_raphson
+   root
+
+Function Utilities
+------------------
+
+.. autosummary::
+   :toctree: generated
+
+   split_drift
+
+JAX Utilities
+-------------
+
+.. autosummary::
+   :toctree: generated
+
+   ravel_args
+
+Typing
+------
+
+.. autosummary::
+   :toctree: generated
+
+   Array
+   ArrayLike
+   PyTree
+   RngKey
+
+
 
 Detailed Documentation
 ----------------------
@@ -89,7 +126,17 @@ Detailed Documentation
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: probjax.utils.special
+.. automodule:: probjax.utils.solver
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: probjax.utils.functions
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: probjax.utils.jaxutils
    :members:
    :undoc-members:
    :show-inheritance:
@@ -99,7 +146,12 @@ Detailed Documentation
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: probjax.utils.jaxutils
+.. automodule:: probjax.utils.containers
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: probjax.utils.special
    :members:
    :undoc-members:
    :show-inheritance:

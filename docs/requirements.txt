@@ -1,6 +1,7 @@
 sphinx>=7.0
 sphinx-book-theme>=1.0
 myst-nb>=1.0
+myst-parser>=2.0
 sphinx-design
 sphinx-math-dollar
 sphinx-autodoc-typehints

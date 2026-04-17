@@ -13,65 +13,107 @@ This module includes:
 - Diffusion models
 - Custom layer implementations
 
-Key Classes
------------
-
 Architectures
-~~~~~~~~~~~~~
+-------------
 
 .. autosummary::
    :toctree: generated
 
-   nets.MLP
-   nets.ResNet
-   nets.UNet
-   nets.Transformer
-   nets.DeepSet
-   nets.Sequential
+   MLP
+   ResNet
+   Transformer
+   UNet
+   DeepSet
+   Sequential
+   MaskedMLP
+   CouplingMLP
+   CouplingTransformer
+   LRUModel
+   AutoregressiveMLP
+   AutoregressiveTransformer
 
 Normalizing Flows
-~~~~~~~~~~~~~~~~~
+-----------------
 
 .. autosummary::
    :toctree: generated
 
-   nets.NormalizingFlow
-   nets.AffineCouplingFlow
-   nets.AdditiveCouplingFlow
-   nets.NeuralSplineFlow
-   nets.BernsteinPolynomialFlow
-   nets.NeuralAutoregressiveFlow
-   nets.GaussianizationFlow
-   nets.LinearFlow
+   NormalizingFlow
+   AffineCouplingFlow
+   AdditiveCouplingFlow
+   NeuralSplineFlow
+   BernsteinPolynomialFlow
+   NeuralAutoregressiveFlow
+   GaussianizationFlow
+   LinearFlow
+   SplineCouplingFlow
+   SplineAutoregressiveFlow
+   AdditiveAutoregressiveFlow
+   AffineAutoregressiveFlow
+   UnconstrainedNeuralAutoregressiveFlow
+   SumOfSquaresPolynomialFlow
+   NormalizingFlowsOnToriAndSpheres
+
+Flow Matching
+-------------
+
+.. autosummary::
+   :toctree: generated
+
+   FlowMatcher
+   MeanFlowMatcher
+   LinearFlow
+   LinearMeanFlow
 
 Diffusion Models
-~~~~~~~~~~~~~~~~
+----------------
 
 .. autosummary::
    :toctree: generated
 
-   nets.DiffusionDenoiser
-   nets.EDM
-   nets.VP
-   nets.VE
+   DiffusionDenoiser
+   EDM
+   VP
+   VE
+   MultinomialDiffusion
+   MultinomialCosineDM
+   MultinomialLogSNRDM
 
 Layers
-~~~~~~
+------
 
 .. autosummary::
    :toctree: generated
 
-   layers.MultiHeadAttention
-   layers.MaskedLinear
-   layers.Affine
-   layers.ConcatFuse
-   layers.AdditiveFuse
-   layers.GatedFuse
-   layers.ResnetBlock
-   layers.ConvBlock
-   layers.GaussianFourierEmbedding
-   layers.PosEncode
-   layers.RotaryPosEncode
+   MultiHeadAttention
+   MaskedLinear
+   Affine
+   ConcatFuse
+   AdditiveFuse
+   GatedFuse
+   ResnetBlock
+   ConvBlock
+   GaussianFourierEmbedding
+   PosEncode
+   RotaryPosEncode
+   LearnablePosEncode
+   OneHot
+   Permute
+   Flip
+   Rotate
+   DropPath
+   LRUCell
+   MambaCell
+   SSDCell
+   RecurrentCell
+   InducedSelfAttention
+   SpatialSelfAttention
+   RescaleConv
+   ResizeConv
+   AdditiveBinaryFuse
+   AffineFuse
+   BinaryFuse
+   ContextFuse
 
 Loss Functions
 --------------
@@ -79,10 +121,18 @@ Loss Functions
 .. autosummary::
    :toctree: generated
 
-   loss_fn.build_flow_matching_loss
-   loss_fn.build_denoising_loss
-   loss_fn.build_score_matching_loss
-   loss_fn.build_sliced_score_matching_loss
+   build_flow_matching_loss
+   build_denoising_loss
+   build_score_matching_loss
+   build_sliced_score_matching_loss
+   build_target_score_matching_loss
+   build_denoising_score_matching_loss
+   build_time_dependent_denoising_loss
+   build_time_dependent_score_matching_loss
+   build_time_dependent_sliced_score_matching_loss
+   build_time_dependent_target_score_matching_loss
+   build_time_dependent_denoising_score_matching_loss
+   build_time_dependent_multinomial_diffusion_loss
 
 Utilities
 ---------
@@ -90,8 +140,41 @@ Utilities
 .. autosummary::
    :toctree: generated
 
-   io_util.DataLoader
-   io_util.chunkify
+   DataLoader
+   chunkify
+
+Protocols and Configs
+---------------------
+
+.. autosummary::
+   :toctree: generated
+
+   FlowPreconditioningProtocol
+   FlowSolverConfigProtocol
+   FlowTrainingConfigProtocol
+   InterpolationScheduleProtocol
+   GaussianFlowPreconditioning
+   CosineInterpolationSchedule
+   QuadraticInterpolationSchedule
+   LinearInterpolationSchedule
+   LogitNormalFlowTrainingConfig
+   UniformFlowTrainingConfig
+   CategoricalPreconditioningProtocol
+   CategoricalScheduleProtocol
+   CategoricalTrainingConfigProtocol
+
+Sharding
+--------
+
+.. autosummary::
+   :toctree: generated
+
+   ShardingCfg
+   LinearShardingCfg
+   LinearShardingSpec
+   MLPShardingSpec
+   SpatialShardingCfg
+   TransformerShardingCfg
 
 Detailed Documentation
 ----------------------
@@ -112,11 +195,6 @@ Detailed Documentation
    :show-inheritance:
 
 .. automodule:: probjax.nn.io_util
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: probjax.nn.pallas_kernels
    :members:
    :undoc-members:
    :show-inheritance:

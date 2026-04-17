@@ -49,14 +49,16 @@ autodoc_default_options = {
     "members": True,
     "undoc-members": True,
     "show-inheritance": True,
+    "member-order": "bysource",
 }
 autodoc_typehints = "description"
 autodoc_member_order = "bysource"
 add_module_names = False
 
-# -- Options for autosummary ------------------------------------------------
+# -- Options for autosummary -------------------------------------------------
 
-autosummary_generate = True
+autosummary_generate = True  # Automatically generate stub files
+autosummary_imported_members = False
 
 # -- Options for napoleon ----------------------------------------------------
 
@@ -84,7 +86,7 @@ intersphinx_mapping = {
     "flax": ("https://flax.readthedocs.io/en/latest", None),
 }
 
-# -- Options for MyST-NB -----------------------------------------------------
+# -- Options for MyST-NB ----------------------------------------------------
 
 myst_enable_extensions = [
     "dollarmath",
@@ -133,3 +135,8 @@ html_css_files = []
 
 # The master toctree document
 master_doc = "index"
+
+# Suppress warnings about missing references (useful during development)
+suppress_warnings = [
+    "myst.header",
+]

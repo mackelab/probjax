@@ -12,15 +12,43 @@ This module includes:
 - Filtering and smoothing algorithms
 - Rejection sampling
 
-MCMC
-----
+MCMC Kernels
+------------
 
 .. autosummary::
    :toctree: generated
 
-   mcmc.hmc.HMC
-   mcmc.nuts.NUTS
-   mcmc_runner.MCMCRunner
+   mcmc.hmc
+   mcmc.nuts
+   mcmc.mala
+   mcmc.mh
+   mcmc.gauss_rwmh
+   mcmc.imh
+   mcmc.gaussian_imh
+   mcmc.slice
+   mcmc.elliptical_slice
+   mcmc.latent_slice
+   mcmc.mclmc
+   mcmc.adjusted_mclmc
+   mcmc.adjusted_mclmc_dynamic
+   mcmc.dynamic_hmc
+   mcmc.arms
+   mcmc.a2rms
+   mcmc.pseudo_marginal
+   mcmc.sgld
+   mcmc.sghmc
+   mcmc.sgnht
+
+MCMC Runner
+-----------
+
+.. autosummary::
+   :toctree: generated
+
+   MCMC
+   MarkovKernel
+   State
+   Params
 
 SMC
 ---
@@ -28,8 +56,18 @@ SMC
 .. autosummary::
    :toctree: generated
 
-   smc_runner.SMCRunner
-   smc.SMC
+   smc.smc
+   smc.adaptive_smc
+   smc.adaptive_smc_kernel
+   smc.persistent_smc
+   smc.persistent_smc_kernel
+   smc.adaptive_persistent_smc
+   smc.adaptive_persistent_smc_kernel
+   smc.path_smc
+   smc.GeometricPath
+   smc.PartialPosteriorsPath
+   smc.tuning
+   SMC
 
 Filtering and Smoothing
 -----------------------
@@ -37,8 +75,32 @@ Filtering and Smoothing
 .. autosummary::
    :toctree: generated
 
-   filtering.kalman_filter
-   filtering.particle_filter
+   kalman_filter
+   extended_kalman_filter
+   ukf
+   sq_kalman_filter
+   rank_reduced_kalman_filter
+   ParticleFilter
+   particle_smoother
+   rauch_tung_stribel_smoother
+   smooth
+   FilterAPI
+   FilterInfo
+   FilterKernel
+   FilterState
+   make_filter_api
+
+Rejection Sampling
+------------------
+
+.. autosummary::
+   :toctree: generated
+
+   ars
+   ARSState
+   init_ars_state
+   update_ars_state
+   RejectionSampler
 
 Detailed Documentation
 ----------------------
@@ -68,7 +130,7 @@ Detailed Documentation
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: probjax.inference.rejection_sampling
+.. automodule:: probjax.inference.rejection
    :members:
    :undoc-members:
    :show-inheritance:

@@ -24,9 +24,17 @@ ProbJax is a powerful library for probabilistic computation in JAX, designed to 
 
 .. toctree::
    :maxdepth: 1
-   :caption: More
+   :caption: Guides
 
+   faq
+   troubleshooting
    contributing
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Project Info
+
+   changelog
 
 Key Features
 ------------
@@ -45,12 +53,13 @@ Key Features
   - Standard architectures (Transformers, ResNets, U-Nets)
   - Specialized layers for normalizing flows
   - Coupling and autoregressive layers
+  - Diffusion models and flow matching
   - Custom layer implementations
 
 **Inference**
-  - Various inference algorithms
+  - Various inference algorithms (MCMC, SMC, filtering)
   - Support for variational inference
-  - MCMC sampling capabilities
+  - Built-in progress bars and diagnostics
 
 **Utilities**
   - Numerical computation tools (ODE/SDE integration)

@@ -19,12 +19,12 @@ Base Classes
 .. autosummary::
    :toctree: generated
 
-   base.rv_generic
-   base.rv_continuous
-   base.rv_discrete
-   base.rv_multivariate
-   base.rv_exponential_family
-   base.rv_spherical
+   rv_generic
+   rv_continuous
+   rv_discrete
+   rv_multivariate
+   rv_exponential_family
+   rv_spherical
 
 Continuous Distributions
 ------------------------
@@ -32,27 +32,27 @@ Continuous Distributions
 .. autosummary::
    :toctree: generated
 
-   continuous.norm.norm
-   continuous.beta.beta
-   continuous.gamma.gamma
-   continuous.cauchy.cauchy
-   continuous.chi2.chi2
-   continuous.expon.expon
-   continuous.laplace.laplace
-   continuous.logistic.logistic
-   continuous.uniform.uniform
-   continuous.t.t
-   continuous.pareto.pareto
-   continuous.skewnorm.skewnorm
-   continuous.vonmises.vonmises
-   continuous.truncnorm.truncnorm
-   continuous.gennorm.gennorm
-   continuous.genpareto.genpareto
-   continuous.watson.watson
-   continuous.wrapcauchy.wrapcauchy
-   continuous.bingham.bingham
-   continuous.dirichlet.dirichlet
-   continuous.multivariate_normal.multivariate_normal
+   norm
+   beta
+   gamma
+   cauchy
+   chi2
+   expon
+   laplace
+   logistic
+   uniform
+   t
+   pareto
+   skewnorm
+   truncnorm
+   gennorm
+   genpareto
+   vonmises
+   watson
+   bingham
+   wrapcauchy
+   dirichlet
+   multivariate_normal
 
 Discrete Distributions
 ----------------------
@@ -60,13 +60,13 @@ Discrete Distributions
 .. autosummary::
    :toctree: generated
 
-   discrete.bernoulli.bernoulli
-   discrete.binomial.binomial
-   discrete.categorical.categorical
-   discrete.poisson.poisson
-   discrete.geometric.geometric
-   discrete.dirac.dirac
-   discrete.empirical.empirical
+   bernoulli
+   binomial
+   categorical
+   poisson
+   geometric
+   dirac
+   empirical
 
 Higher-Order Distributions
 --------------------------
@@ -74,24 +74,25 @@ Higher-Order Distributions
 .. autosummary::
    :toctree: generated
 
-   transformed.transformed
-   mixture.mixture
-   independent.independent
+   transformed
+   mixture
+   independent
+
+Bijective Transforms
+--------------------
+
+.. autosummary::
+   :toctree: generated
+
+   bijective.monotone_hermite_cubic
+   bijective.piecewise_affine
+   bijective.rational_linear
+   bijective.rational_quadratic
 
 Detailed Documentation
 ----------------------
 
 .. automodule:: probjax.stats.base
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: probjax.stats.continuous
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: probjax.stats.discrete
    :members:
    :undoc-members:
    :show-inheritance:

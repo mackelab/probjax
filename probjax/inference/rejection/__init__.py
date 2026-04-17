@@ -6,6 +6,12 @@ from jax.scipy.optimize import minimize
 from jaxtyping import Array
 
 from probjax.stats.base import rv_generic as Distribution
+from probjax.inference.rejection.univariate import (
+    ars,
+    ARSState,
+    init_ars_state,
+    update_ars_state,
+)
 
 
 def estimate_ratio_bound(
@@ -46,9 +52,9 @@ class RejectionSampler:
     ) -> None:
         self._potential_fn = potential_fn
         self._proposal = proposal
-        self._log_density_ratio_fn = lambda x: self._potential_fn(
-            x
-        ) - self._proposal.log_prob(x)
+        self._log_density_ratio_fn = lambda x: (
+            self._potential_fn(x) - self._proposal.log_prob(x)
+        )
         self._log_M = estimate_ratio_bound(
             self._log_density_ratio_fn,
             proposal.sample(jax.random.PRNGKey(42), (trial_samples_logM,)),
