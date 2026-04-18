@@ -1,4 +1,4 @@
-from typing import Any, Callable, NamedTuple, Optional, Sequence
+from typing import Any, Callable, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -17,11 +17,98 @@ from probjax.utils.jaxutils import (
 
 
 class FilteringTrace(NamedTuple):
+    """Trace of a filtering run.
+
+    Attributes:
+        ts: Time grid of shape (T,).
+        initial_state: Initial filter state.
+        states: Filter states at each time step after the initial.
+        infos: Filter info at each time step.
+        outputs: Unpacked outputs from each step (via unpack_fn).
+        obs_mask: Boolean mask indicating which times had observations.
+    """
+
     ts: ArrayLike
     initial_state: FilterState
     states: Any
     infos: Any
     outputs: Any
+    obs_mask: ArrayLike
+
+    def get_mean(self) -> ArrayLike:
+        """Extract state means from the trace.
+
+        Returns:
+            Array of shape (T-1, state_dim) for Gaussian filters,
+            or (T-1, num_particles, state_dim) for particle filters.
+        """
+        if hasattr(self.states, "mean"):
+            return self.states.mean
+        elif hasattr(self.states, "particles"):
+            return self.states.particles
+        else:
+            raise ValueError("Trace states have no 'mean' or 'particles' attribute.")
+
+    def get_cov(self) -> ArrayLike:
+        """Extract state covariances from the trace.
+
+        Returns:
+            Array of shape (T-1, state_dim, state_dim) for Gaussian filters.
+            For particle filters, computes empirical covariance.
+        """
+        if hasattr(self.states, "cov"):
+            return self.states.cov
+        elif hasattr(self.states, "particles") and hasattr(self.states, "log_weights"):
+            # Compute weighted empirical covariance for particles
+            particles = self.states.particles  # (T, N, D)
+            log_weights = self.states.log_weights  # (T, N)
+            weights = jnp.exp(log_weights)
+            weights = weights / weights.sum(axis=-1, keepdims=True)
+
+            # Weighted mean
+            mean = jnp.sum(weights[..., None] * particles, axis=-2)  # (T, D)
+
+            # Weighted covariance
+            diff = particles - mean[:, None, :]  # (T, N, D)
+            cov = jnp.sum(
+                weights[..., None, None] * diff[..., None, :] * diff[..., None], axis=-3
+            )  # (T, D, D)
+            return cov
+        else:
+            raise ValueError("Cannot extract covariance from trace states.")
+
+    def get_var(self) -> ArrayLike:
+        """Extract state variances (diagonal of covariance) from the trace.
+
+        Returns:
+            Array of shape (T-1, state_dim).
+        """
+        cov = self.get_cov()
+        if cov.ndim == 2:
+            # Single state - return diagonal
+            return jnp.diag(cov)
+        else:
+            # Batch of states - extract diagonal of each covariance matrix
+            return jax.vmap(jnp.diagonal)(cov)
+
+    def get_std(self) -> ArrayLike:
+        """Extract state standard deviations from the trace.
+
+        Returns:
+            Array of shape (T-1, state_dim).
+        """
+        return jnp.sqrt(self.get_var())
+
+    def get_log_likelihood(self) -> ArrayLike:
+        """Extract total log-likelihood from the trace.
+
+        Returns:
+            Scalar sum of log-likelihoods from all observation steps.
+        """
+        if hasattr(self.infos, "log_likelihood"):
+            return jnp.sum(self.infos.log_likelihood)
+        else:
+            raise ValueError("Trace infos have no 'log_likelihood' attribute.")
 
 
 def _extract_covariance(states):
@@ -58,7 +145,7 @@ def _trace_ts(trace: FilteringTrace):
     return trace.ts
 
 
-def unpack_log_likelihood(state: FilterState, info: FilterInfo):
+def _unpack_log_likelihood(state: FilterState, info: FilterInfo):
     if info is not None and hasattr(info, "log_likelihood"):
         return info.log_likelihood
     else:
@@ -68,30 +155,86 @@ def unpack_log_likelihood(state: FilterState, info: FilterInfo):
 class Filter(WithProgressBarAPI):
     """Run a filter kernel, optionally displaying a progress bar.
 
+    Supports two API styles:
+
+    **Functional API (frozen=True, default):**
+    All parameters passed explicitly to each method. JIT-compatible.
+    >>> kernel = kalman_filter(transition_model, observation_model)
+    >>> filt = Filter(kernel)  # frozen=True by default
+    >>> trace = filt.filter(key, ts, observations, mu0, cov0, obs_mask=mask)
+
+    **Object-Oriented API (frozen=False):**
+    Parameters stored internally for convenience. Not JIT-compatible.
+    >>> filt = Filter(kernel, frozen=False).set_params(mu0=mu0, cov0=cov0)
+    >>> trace = filt.filter(key, ts, observations, obs_mask=mask)  # mu0, cov0 from self
+
     Args:
-        kernel: A :class:`FilterKernel`.
+        kernel: A :class:`FilterKernel` or a callable that returns one (for ``fit()``).
         verbose: If ``True``, display a progress bar with log-likelihood.
+        frozen: If ``True`` (default), use functional API with explicit args.
+            If ``False``, use OO API with stored params via ``set_params()``.
     """
 
     _running_stats = ("log_likelihood",)
     _ema_gamma = 0.9
 
-    def __init__(self, kernel: FilterKernel, verbose: bool = False) -> None:
+    def __init__(
+        self,
+        kernel: Union[FilterKernel, Callable[[Any], FilterKernel]],
+        verbose: bool = False,
+        frozen: bool = True,
+    ) -> None:
         self.kernel = kernel
         self.verbose = verbose
+        self.frozen = frozen
+        self._stored_params = {}
+
+    def set_params(self, **kwargs) -> "Filter":
+        """Store parameters for the OO API (when frozen=False).
+
+        Returns self for method chaining.
+
+        Example:
+            >>> filt = Filter(kernel, frozen=False).set_params(mu0=mu0, cov0=cov0)
+        """
+        self._stored_params.update(kwargs)
+        return self
 
     def _extract_stats(self, info):
         if info is not None and hasattr(info, "log_likelihood"):
             return (jnp.float32(info.log_likelihood),)
         return (jnp.float32(jnp.nan),)
 
+    def step(
+        self,
+        state: FilterState,
+        t: ArrayLike,
+        observed: Optional[ArrayLike] = None,
+        rng_key: Optional[PRNGKey] = None,
+    ) -> Tuple[FilterState, FilterInfo]:
+        """Execute a single filter step.
+
+        This is a pure function that runs one step of the filter kernel.
+        Useful for debugging, custom loops, or step-by-step filtering.
+
+        Args:
+            state: Current filter state.
+            t: Current time.
+            observed: Observation at this time (None for predict-only steps).
+            rng_key: Random key (required for particle filters).
+
+        Returns:
+            Tuple of (next_state, info).
+        """
+        return self.kernel(state, t=t, observed=observed, rng_key=rng_key)
+
     def filter(
         self,
         key: PRNGKey,
         ts: ArrayLike,
-        t_o: Optional[ArrayLike],
-        x_o: Optional[ArrayLike],
+        observations: ArrayLike,
         *args,
+        obs_mask: Optional[ArrayLike] = None,
         unpack_fn: Optional[Callable] = None,
         checkpoint_lengths: Optional[Sequence[int]] = None,
         unroll: int = 1,
@@ -99,12 +242,29 @@ class Filter(WithProgressBarAPI):
     ) -> FilteringTrace:
         """Run filtering over the time grid.
 
+        The time grid `ts` includes all time points. Observations are provided
+        at all time points via `observations`, with `obs_mask` indicating which
+        times actually have observations (True = has observation, False = no observation).
+
+        For times without observations, the filter performs a predict-only step.
+
+        **Functional API (frozen=True, default):**
+        Pass ``mu0``, ``cov0`` as positional args or via ``**kwargs``.
+
+        **OO API (frozen=False):**
+        Store params via ``set_params(mu0=..., cov0=...)`` first.
+        They will be retrieved automatically.
+
         Args:
             key: PRNG key.
-            ts: Time grid of shape ``(T,)``.
-            t_o: Observation times.
-            x_o: Observation values.
+            ts: Time grid of shape ``(T,)``. Must include all times, both with and
+                without observations.
+            observations: Observation values of shape ``(T, ...)`` or ``(T,)``.
+                Values at times where ``obs_mask`` is False are ignored.
             *args: Positional args forwarded to ``kernel.init``.
+                For frozen=False, these can be omitted if stored via ``set_params()``.
+            obs_mask: Boolean mask of shape ``(T,)`` indicating which times have
+                observations. If None, assumes all times have observations.
             unpack_fn: Optional extractor applied to ``(state, info)`` each step.
                 Defaults to ``kernel.default_unpack``.
             checkpoint_lengths: If set, use ``nested_checkpoint_scan``
@@ -114,56 +274,73 @@ class Filter(WithProgressBarAPI):
 
         Returns:
             FilteringTrace containing times, initial state, states, infos,
-            and outputs.
+            outputs, and observation mask.
         """
+        # Handle OO API: retrieve stored params if frozen=False and args not provided
+        if not self.frozen and len(args) == 0:
+            # Try to get mu0, cov0 from stored params
+            # These are passed as positional args to kernel.init
+            stored_args = []
+            if "mu0" in self._stored_params:
+                stored_args.append(self._stored_params["mu0"])
+            if "cov0" in self._stored_params:
+                stored_args.append(self._stored_params["cov0"])
+            args = tuple(stored_args)
+
         kernel = self.kernel
         initial_state = kernel.init(*args, t=ts[0], **kwargs)
 
         if unpack_fn is None:
             unpack_fn = kernel.default_unpack
 
-        def scan_fn(carry, t):
-            state, key, i = carry
+        # Default: all times have observations
+        if obs_mask is None:
+            obs_mask = jnp.ones(ts.shape[0], dtype=bool)
+
+        # Ensure obs_mask is boolean array
+        obs_mask = jnp.asarray(obs_mask, dtype=bool)
+
+        def scan_fn(carry, scan_in):
+            state, key = carry
+            t, has_obs, obs = scan_in
             key, subkey = jax.random.split(key)
-            is_observed = t == t_o[i]
 
-            def update_fn(subkey, state, i):
-                state, info = kernel(state, t=t_o[i], observed=x_o[i], rng_key=subkey)
-                return state, info, i + 1
+            def update_fn(subkey, state, obs):
+                state, info = kernel(state, t=t, observed=obs, rng_key=subkey)
+                return state, info
 
-            def predict_fn(subkey, state, i):
-                state, info = kernel(state, t=t_o[i], rng_key=subkey)
-                return state, info, i
+            def predict_fn(subkey, state, obs):
+                state, info = kernel(state, t=t, rng_key=subkey)
+                return state, info
 
-            state, info, i = jax.lax.cond(
-                is_observed, update_fn, predict_fn, subkey, state, i
+            state, info = jax.lax.cond(
+                has_obs, update_fn, predict_fn, subkey, state, obs
             )
             out = unpack_fn(state, info)
-            return (state, key, i), (state, info, out)
+            return (state, key), (state, info, out)
 
-        carry = (initial_state, key, 0)
-        num_steps = ts[1:].shape[0]
+        carry = (initial_state, key)
+        scan_in = (ts[1:], obs_mask[1:], observations[1:])
 
         if self.verbose:
             gamma = self._ema_gamma
+            num_steps = ts[1:].shape[0]
 
-            def verbose_scan_fn(carry, t):
-                state, key, i, ema_ll = carry
+            def verbose_scan_fn(carry, scan_in):
+                state, key, ema_ll = carry
+                t, has_obs, obs = scan_in
                 key, subkey = jax.random.split(key)
-                is_observed = t == t_o[i]
 
-                def update_fn(subkey, state, i):
-                    state, info = kernel(
-                        state, t=t_o[i], observed=x_o[i], rng_key=subkey
-                    )
-                    return state, info, i + 1
+                def update_fn(subkey, state, obs):
+                    state, info = kernel(state, t=t, observed=obs, rng_key=subkey)
+                    return state, info
 
-                def predict_fn(subkey, state, i):
-                    state, info = kernel(state, t=t_o[i], rng_key=subkey)
-                    return state, info, i
+                def predict_fn(subkey, state, obs):
+                    state, info = kernel(state, t=t, rng_key=subkey)
+                    return state, info
 
-                state, info, i = jax.lax.cond(
-                    is_observed, update_fn, predict_fn, subkey, state, i
+                state, info = jax.lax.cond(
+                    has_obs, update_fn, predict_fn, subkey, state, obs
                 )
                 out = unpack_fn(state, info)
 
@@ -174,24 +351,28 @@ class Filter(WithProgressBarAPI):
                     lambda step, total, stats: type(self)._write_progress(
                         type(self), step, total, stats, ("log_likelihood",)
                     ),
-                    i,
+                    0,  # step counter - not used in this simplified version
                     num_steps,
                     (ema_ll,),
                 )
 
-                return (state, key, i, ema_ll), (state, info, out)
+                return (state, key, ema_ll), (state, info, out)
 
-            carry_v = (initial_state, key, 0, jnp.float32(0.0))
+            carry_v = (initial_state, key, jnp.float32(0.0))
             _, (states, infos, output) = jax.lax.scan(
-                verbose_scan_fn, carry_v, ts[1:], unroll=unroll
+                verbose_scan_fn, carry_v, scan_in, unroll=unroll
             )
         elif checkpoint_lengths is None:
             _, (states, infos, output) = jax.lax.scan(
-                scan_fn, carry, ts[1:], unroll=unroll
+                scan_fn, carry, scan_in, unroll=unroll
             )
         else:
             _, (states, infos, output) = nested_checkpoint_scan(
-                scan_fn, carry, ts[1:], nested_lengths=checkpoint_lengths, unroll=unroll
+                scan_fn,
+                carry,
+                scan_in,
+                nested_lengths=checkpoint_lengths,
+                unroll=unroll,
             )
 
         return FilteringTrace(
@@ -200,6 +381,7 @@ class Filter(WithProgressBarAPI):
             states=states,
             infos=infos,
             outputs=output,
+            obs_mask=obs_mask,
         )
 
     def smooth(
@@ -211,26 +393,46 @@ class Filter(WithProgressBarAPI):
     ) -> Any:
         """Smooth a filtering trace.
 
-        For Gaussian filters (KF/EKF/UKF/SqKF), pass ``smoother``.
-        For particle filters, pass ``key`` and ``transition_logdensity_fn``.
+        Auto-detects the appropriate smoothing algorithm based on trace content:
+        - Gaussian filters (KF/EKF/UKF/SqKF): Uses RTS-style smoothing
+        - Particle filters: Uses FFBSi (Forward Filter-Backward Simulator)
+
+        For Gaussian filters, provide ``smoother`` callback.
+        For particle filters, provide ``key`` and ``transition_logdensity_fn``.
 
         Args:
             trace: FilteringTrace from :meth:`filter`.
             smoother: RTS-style smoothing callback (Gaussian filters).
+                Signature: ``(t0, t1, mu0_s, cov0_s, mu0, cov0, mu0_, cov0_) -> (mu1, cov1)``.
             key: PRNG key for backward simulation (particle filters).
-            transition_logdensity_fn: Log-transition density
-                ``(x_tp1, x_t, t, tp1) -> scalar`` (particle filters).
+            transition_logdensity_fn: Log-transition density for particle filters.
+                Signature: ``(x_tp1, x_t, t, tp1) -> scalar``.
 
         Returns:
             Gaussian: ``(mus_s, covs_s)`` arrays.
             Particle: ``(smoothed_particles, smoothed_log_weights)`` arrays.
+
+        Raises:
+            ValueError: If trace type cannot be determined or required arguments
+                are missing for the detected type.
         """
         states = trace.states
 
-        if hasattr(states, "particles") and hasattr(states, "log_weights"):
-            if key is None or transition_logdensity_fn is None:
+        # Auto-detect: check if this is a particle filter trace
+        is_particle = hasattr(states, "particles") and hasattr(states, "log_weights")
+
+        if is_particle:
+            # Particle filter: use FFBSi
+            if key is None:
                 raise ValueError(
-                    "Particle smoothing requires `key` and `transition_logdensity_fn`."
+                    "Particle filter trace detected. "
+                    "Please provide `key` for FFBSi smoothing."
+                )
+            if transition_logdensity_fn is None:
+                raise ValueError(
+                    "Particle filter trace detected. "
+                    "Please provide `transition_logdensity_fn` for FFBSi smoothing. "
+                    "Signature: (x_tp1, x_t, t, tp1) -> scalar log-density."
                 )
             ts = _trace_ts(trace)
             ancestors = (
@@ -244,24 +446,28 @@ class Filter(WithProgressBarAPI):
                 transition_logdensity_fn,
                 ancestors=ancestors,
             )
-
-        if smoother is None:
-            raise ValueError("Gaussian smoothing requires `smoother` callback.")
-
-        ts = _trace_ts(trace)
-        mus = states.mean
-        covs = _extract_covariance(states)
-        mus_pred = trace.infos.mean_pred
-        covs_pred = _extract_pred_covariance(trace.infos)
-        return smooth_gaussian(ts, mus, covs, mus_pred, covs_pred, smoother)
+        else:
+            # Gaussian filter: use RTS smoothing
+            if smoother is None:
+                raise ValueError(
+                    "Gaussian filter trace detected. "
+                    "Please provide `smoother` callback for RTS smoothing. "
+                    "Example: `partial(rauch_tung_stribel_smoother, transition_matrix_fn)`."
+                )
+            ts = _trace_ts(trace)
+            mus = states.mean
+            covs = _extract_covariance(states)
+            mus_pred = trace.infos.mean_pred
+            covs_pred = _extract_pred_covariance(trace.infos)
+            return smooth_gaussian(ts, mus, covs, mus_pred, covs_pred, smoother)
 
     def log_likelihood(
         self,
         key: PRNGKey,
         ts: ArrayLike,
-        t_o: Optional[ArrayLike],
-        x_o: Optional[ArrayLike],
+        observations: ArrayLike,
         *args,
+        obs_mask: Optional[ArrayLike] = None,
         checkpoint_lengths: Optional[Sequence[int]] = None,
         unroll: int = 1,
         **kwargs,
@@ -271,146 +477,121 @@ class Filter(WithProgressBarAPI):
         Args:
             key: PRNG key.
             ts: Time grid of shape ``(T,)``.
-            t_o: Observation times.
-            x_o: Observation values.
+            observations: Observation values of shape ``(T, ...)`` or ``(T,)``.
             *args: Positional args forwarded to ``kernel.init``.
+            obs_mask: Boolean mask of shape ``(T,)`` indicating which times have
+                observations. If None, assumes all times have observations.
             checkpoint_lengths: If set, use ``nested_checkpoint_scan``.
             unroll: Unroll factor for the scan.
             **kwargs: Keyword args forwarded to ``kernel.init``.
 
         Returns:
-            Scalar log-likelihood.
+            Scalar log-likelihood (sum of log-likelihoods at observation times).
         """
-        output = self.filter(
+        trace = self.filter(
             key,
             ts,
-            t_o,
-            x_o,
+            observations,
             *args,
-            unpack_fn=unpack_log_likelihood,
+            obs_mask=obs_mask,
+            unpack_fn=_unpack_log_likelihood,
             checkpoint_lengths=checkpoint_lengths,
             unroll=unroll,
             **kwargs,
         )
-        return output.outputs.sum()
+        return trace.get_log_likelihood()
 
-
-# ----------------------------------------------------------------------
-# Backward-compatible free functions
-# ----------------------------------------------------------------------
-
-
-def filter(
-    key: PRNGKey,
-    ts: ArrayLike,
-    t_o: Optional[ArrayLike],
-    x_o: Optional[ArrayLike],
-    kernel: FilterKernel,
-    *args,
-    unpack_fn: Optional[Callable] = None,
-    checkpoint_lengths: Optional[Sequence[int]] = None,
-    unroll: int = 1,
-    return_trace: bool = False,
-    **kwargs,
-):
-    """Run filtering.  Deprecated — prefer :class:`Filter`."""
-    runner = Filter(kernel)
-    trace = runner.filter(
-        key,
-        ts,
-        t_o,
-        x_o,
+    def fit(
+        self,
+        key: PRNGKey,
+        ts: ArrayLike,
+        observations: ArrayLike,
         *args,
-        unpack_fn=unpack_fn,
-        checkpoint_lengths=checkpoint_lengths,
-        unroll=unroll,
+        obs_mask: Optional[ArrayLike] = None,
+        params_init: Optional[dict] = None,
+        num_steps: int = 100,
+        learning_rate: float = 0.01,
+        checkpoint_lengths: Optional[Sequence[int]] = None,
+        unroll: int = 1,
         **kwargs,
-    )
-    if return_trace:
-        return trace
-    return trace.outputs
+    ) -> Tuple[dict, ArrayLike]:
+        """Estimate parameters by maximizing the log-likelihood.
 
+        This method optimizes model parameters (e.g., noise covariances,
+        transition matrices) to maximize the filtering log-likelihood.
+        Uses Adam optimizer by default.
 
-def smooth(
-    *args,
-    smoother: Optional[Callable] = None,
-    key: Optional[PRNGKey] = None,
-    transition_logdensity_fn: Optional[Callable] = None,
-    **kwargs,
-):
-    """Smooth filtering output.  Deprecated — prefer :meth:`Filter.smooth`.
+        The kernel must be a **parameterized kernel factory** — a callable that
+        takes a parameter dict and returns a FilterKernel.
 
-    For Gaussian filters: ``smooth(trace, smoother=...)``.
-    For particle filters: ``smooth(trace, key=..., transition_logdensity_fn=...)``.
-    Also accepts raw arrays for backward compatibility:
-    ``smooth(ts, mus, covs, mus_pred, covs_pred, smoother)``.
-    """
-    if not args or not isinstance(args[0], FilteringTrace):
-        return smooth_gaussian(*args, **kwargs)
+        Args:
+            key: PRNG key.
+            ts: Time grid of shape ``(T,)``.
+            observations: Observation values of shape ``(T, ...)`` or ``(T,)``.
+            *args: Additional positional args forwarded to ``kernel.init``.
+            obs_mask: Boolean mask of shape ``(T,)`` indicating which times have
+                observations. If None, assumes all times have observations.
+            params_init: Initial parameter values as a dict. Keys and values
+                depend on your kernel factory. Common: ``{'log_Q': ..., 'log_R': ...}``.
+            num_steps: Number of optimization steps.
+            learning_rate: Adam learning rate.
+            checkpoint_lengths: If set, use ``nested_checkpoint_scan``.
+            unroll: Unroll factor for the scan.
+            **kwargs: Additional keyword args forwarded to ``kernel.init``.
 
-    return Filter(None).smooth(
-        args[0],
-        smoother=smoother,
-        key=key,
-        transition_logdensity_fn=transition_logdensity_fn,
-    )
+        Returns:
+            Tuple of (optimized_params, final_log_likelihood).
 
+        Example:
+            >>> def make_kernel(params):
+            ...     Q = jnp.exp(params['log_Q'])
+            ...     R = jnp.exp(params['log_R'])
+            ...     # ... create kernel with Q, R
+            ...     return kalman_filter(transition_model, observation_model)
+            >>>
+            >>> filt = Filter(make_kernel)
+            >>> params, ll = filt.fit(key, ts, obs, mu0, cov0,
+            ...                       params_init={'log_Q': 0.0, 'log_R': 0.0})
+        """
+        import optax
 
-def filter_and_smooth(
-    key: PRNGKey,
-    ts: ArrayLike,
-    t_o: Optional[ArrayLike],
-    x_o: Optional[ArrayLike],
-    kernel: FilterKernel,
-    *args,
-    smoother: Optional[Callable] = None,
-    smooth_key: Optional[PRNGKey] = None,
-    transition_logdensity_fn: Optional[Callable] = None,
-    checkpoint_lengths: Optional[Sequence[int]] = None,
-    unroll: int = 1,
-    **kwargs,
-):
-    """Run filtering and smoothing in one call.  Deprecated — prefer :class:`Filter`."""
-    filt = Filter(kernel)
-    trace = filt.filter(
-        key,
-        ts,
-        t_o,
-        x_o,
-        *args,
-        checkpoint_lengths=checkpoint_lengths,
-        unroll=unroll,
-        **kwargs,
-    )
-    if hasattr(trace.states, "particles") and hasattr(trace.states, "log_weights"):
-        if transition_logdensity_fn is None:
-            raise ValueError("Particle smoothing requires `transition_logdensity_fn`.")
-        if smooth_key is None:
-            smooth_key = key
-        smoothed = filt.smooth(
-            trace,
-            key=smooth_key,
-            transition_logdensity_fn=transition_logdensity_fn,
+        if params_init is None:
+            raise ValueError("Must provide params_init dict for optimization.")
+
+        # The kernel must be a factory function
+        kernel_factory = self.kernel
+
+        def objective(params):
+            """Negative log-likelihood (to minimize)."""
+            kernel = kernel_factory(params)
+            filt = Filter(kernel, verbose=False)
+            ll = filt.log_likelihood(
+                key,
+                ts,
+                observations,
+                *args,
+                obs_mask=obs_mask,
+                checkpoint_lengths=checkpoint_lengths,
+                unroll=unroll,
+                **kwargs,
+            )
+            return -ll  # minimize negative log-likelihood
+
+        # Setup optimizer
+        optimizer = optax.adam(learning_rate)
+        opt_state = optimizer.init(params_init)
+
+        # Optimization loop
+        def step_fn(carry, _):
+            params, opt_state = carry
+            loss, grads = jax.value_and_grad(objective)(params)
+            updates, opt_state = optimizer.update(grads, opt_state)
+            params = optax.apply_updates(params, updates)
+            return (params, opt_state), loss
+
+        (params_final, _), losses = jax.lax.scan(
+            step_fn, (params_init, opt_state), None, length=num_steps
         )
-    else:
-        if smoother is None:
-            raise ValueError("Gaussian smoothing requires `smoother` callback.")
-        smoothed = filt.smooth(trace, smoother=smoother)
 
-    return trace, smoothed
-
-
-def filter_log_likelihood(
-    key, ts, t_o, x_o, kernel, *args, checkpoint_lengths=None, unroll=1, **kwargs
-):
-    """Compute log-likelihood via filtering.  Deprecated — prefer :meth:`Filter.log_likelihood`."""
-    return Filter(kernel).log_likelihood(
-        key,
-        ts,
-        t_o,
-        x_o,
-        *args,
-        checkpoint_lengths=checkpoint_lengths,
-        unroll=unroll,
-        **kwargs,
-    )
+        final_ll = -objective(params_final)
+        return params_final, final_ll

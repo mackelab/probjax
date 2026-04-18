@@ -804,46 +804,46 @@ class TestImports:
         assert FilterKernel is not None
 
     def test_filter_smooth_imports(self):
-        """filter_smooth.py should export filter, smooth, and filter_log_likelihood."""
+        """filter_smooth.py should export Filter class and trace types."""
         from probjax.inference.filter_smooth import (
-            filter,
-            smooth,
-            filter_log_likelihood,
+            Filter,
+            FilteringTrace,
         )
 
-        assert callable(filter)
-        assert callable(smooth)
-        assert callable(filter_log_likelihood)
+        assert Filter is not None
+        assert FilteringTrace is not None
 
 
 class TestUnifiedFilterSmoothingAPI:
+    """Tests for the unified filter-smooth workflow using the Filter class."""
+
     def test_gaussian_smoothing_from_filtering_states(self):
-        from probjax.inference import filter_smooth as fs
+        from probjax.inference.filter_smooth import Filter
 
         kernel = kalman_filter(transition_model, observation_model)
-        ts = jnp.array([0.0, 1.0, 2.0])
-        t_o = jnp.array([1.0, 2.0])
-        x_o = jnp.array([[0.1], [-0.2]])
+        filt = Filter(kernel)
 
-        trace = fs.filter(
+        ts = jnp.array([0.0, 1.0, 2.0])
+        observations = jnp.array([[0.0], [0.1], [-0.2]])
+        obs_mask = jnp.array([False, True, True])
+
+        trace = filt.filter(
             jax.random.PRNGKey(0),
             ts,
-            t_o,
-            x_o,
-            kernel,
+            observations,
             mu0,
             cov0,
-            return_trace=True,
+            obs_mask=obs_mask,
         )
 
         smoother = partial(rauch_tung_stribel_smoother, lambda t0, t1: A)
-        mus_s, covs_s = fs.smooth(trace, smoother=smoother)
+        mus_s, covs_s = filt.smooth(trace, smoother=smoother)
 
         assert mus_s.shape[0] == trace.states.mean.shape[0]
         assert covs_s.shape[0] == trace.states.cov.shape[0]
 
     def test_particle_smoothing_from_filtering_states(self):
-        from probjax.inference import filter_smooth as fs
+        from probjax.inference.filter_smooth import Filter
 
         num_particles = 64
 
@@ -857,21 +857,20 @@ class TestUnifiedFilterSmoothingAPI:
             return jax.vmap(lambda x: A @ x)(particles) + noise
 
         kernel = ParticleFilter(log_likelihood, pf_transition)
+        filt = Filter(kernel)
         key = jax.random.PRNGKey(0)
         init_particles = jax.random.normal(key, (num_particles, 1))
 
         ts = jnp.array([0.0, 1.0, 2.0, 3.0])
-        t_o = jnp.array([1.0, 2.0, 3.0])
-        x_o = jnp.array([[0.1], [-0.2], [0.05]])
+        observations = jnp.array([[0.0], [0.1], [-0.2], [0.05]])
+        obs_mask = jnp.array([False, True, True, True])
 
-        trace = fs.filter(
+        trace = filt.filter(
             key,
             ts,
-            t_o,
-            x_o,
-            kernel,
+            observations,
             init_particles,
-            return_trace=True,
+            obs_mask=obs_mask,
         )
 
         def transition_logdensity(x_tp1, x_t, t, tp1):
@@ -879,7 +878,7 @@ class TestUnifiedFilterSmoothingAPI:
             diff = x_tp1 - mean
             return -0.5 * jnp.sum(diff**2 / Q[0, 0])
 
-        smoothed_particles, smoothed_log_weights = fs.smooth(
+        smoothed_particles, smoothed_log_weights = filt.smooth(
             trace,
             key=jax.random.PRNGKey(1),
             transition_logdensity_fn=transition_logdensity,
@@ -889,31 +888,32 @@ class TestUnifiedFilterSmoothingAPI:
         assert smoothed_log_weights.shape == trace.states.log_weights.shape
 
     def test_filter_and_smooth_gaussian(self):
-        from probjax.inference import filter_smooth as fs
+        from probjax.inference.filter_smooth import Filter
 
         kernel = kalman_filter(transition_model, observation_model)
+        filt = Filter(kernel)
+
         ts = jnp.array([0.0, 1.0, 2.0])
-        t_o = jnp.array([1.0, 2.0])
-        x_o = jnp.array([[0.1], [-0.2]])
+        observations = jnp.array([[0.0], [0.1], [-0.2]])
+        obs_mask = jnp.array([False, True, True])
 
         smoother = partial(rauch_tung_stribel_smoother, lambda t0, t1: A)
-        trace, (mus_s, covs_s) = fs.filter_and_smooth(
+        trace = filt.filter(
             jax.random.PRNGKey(3),
             ts,
-            t_o,
-            x_o,
-            kernel,
+            observations,
             mu0,
             cov0,
-            smoother=smoother,
+            obs_mask=obs_mask,
         )
+        mus_s, covs_s = filt.smooth(trace, smoother=smoother)
 
         assert hasattr(trace, "states")
         assert mus_s.shape[0] == trace.states.mean.shape[0]
         assert covs_s.shape[0] == trace.states.cov.shape[0]
 
     def test_filter_and_smooth_particle(self):
-        from probjax.inference import filter_smooth as fs
+        from probjax.inference.filter_smooth import Filter
 
         num_particles = 64
 
@@ -932,21 +932,24 @@ class TestUnifiedFilterSmoothingAPI:
             return -0.5 * jnp.sum(diff**2 / Q[0, 0])
 
         kernel = ParticleFilter(log_likelihood, pf_transition)
+        filt = Filter(kernel)
         key = jax.random.PRNGKey(0)
         init_particles = jax.random.normal(key, (num_particles, 1))
 
         ts = jnp.array([0.0, 1.0, 2.0, 3.0])
-        t_o = jnp.array([1.0, 2.0, 3.0])
-        x_o = jnp.array([[0.1], [-0.2], [0.05]])
+        observations = jnp.array([[0.0], [0.1], [-0.2], [0.05]])
+        obs_mask = jnp.array([False, True, True, True])
 
-        trace, (smoothed_particles, smoothed_log_weights) = fs.filter_and_smooth(
+        trace = filt.filter(
             key,
             ts,
-            t_o,
-            x_o,
-            kernel,
+            observations,
             init_particles,
-            smooth_key=jax.random.PRNGKey(4),
+            obs_mask=obs_mask,
+        )
+        smoothed_particles, smoothed_log_weights = filt.smooth(
+            trace,
+            key=jax.random.PRNGKey(4),
             transition_logdensity_fn=transition_logdensity,
         )
 
@@ -954,36 +957,36 @@ class TestUnifiedFilterSmoothingAPI:
         assert smoothed_log_weights.shape == trace.states.log_weights.shape
 
     def test_filter_and_smooth_rank_reduced_gaussian(self):
-        from probjax.inference import filter_smooth as fs
+        from probjax.inference.filter_smooth import Filter
 
         kernel = rank_reduced_kalman_filter(
             transition_model,
             observation_model,
             rank=1,
         )
+        filt = Filter(kernel)
+
         ts = jnp.array([0.0, 1.0, 2.0])
-        t_o = jnp.array([1.0, 2.0])
-        x_o = jnp.array([[0.1], [-0.2]])
+        observations = jnp.array([[0.0], [0.1], [-0.2]])
+        obs_mask = jnp.array([False, True, True])
 
         smoother = partial(rauch_tung_stribel_smoother, lambda t0, t1: A)
-        trace, (mus_s, covs_s) = fs.filter_and_smooth(
+        trace = filt.filter(
             jax.random.PRNGKey(5),
             ts,
-            t_o,
-            x_o,
-            kernel,
+            observations,
             mu0,
             cov0,
-            rank=1,
-            smoother=smoother,
+            obs_mask=obs_mask,
         )
+        mus_s, covs_s = filt.smooth(trace, smoother=smoother)
 
         assert mus_s.shape[0] == trace.states.mean.shape[0]
         assert covs_s.shape[0] == trace.states.cov_factor.shape[0]
 
 
 class TestFilterClass:
-    """Tests for the new Filter class API."""
+    """Tests for the Filter class API."""
 
     def test_filter_returns_trace(self):
         from probjax.inference.filter_smooth import Filter
@@ -992,30 +995,19 @@ class TestFilterClass:
         filt = Filter(kernel)
 
         ts = jnp.array([0.0, 1.0, 2.0])
-        t_o = jnp.array([1.0, 2.0])
-        x_o = jnp.array([[0.1], [-0.2]])
+        # Create observations array and mask for new API
+        observations = jnp.array([[0.0], [0.1], [-0.2]])  # dummy at t=0
+        obs_mask = jnp.array([False, True, True])  # observations at t=1,2
 
-        trace = filt.filter(jax.random.PRNGKey(0), ts, t_o, x_o, mu0, cov0)
+        trace = filt.filter(
+            jax.random.PRNGKey(0), ts, observations, mu0, cov0, obs_mask=obs_mask
+        )
 
         assert hasattr(trace, "states")
         assert hasattr(trace, "infos")
         assert hasattr(trace, "ts")
         assert hasattr(trace, "outputs")
-
-    def test_filter_gaussian_matches_backward_compat(self):
-        from probjax.inference.filter_smooth import Filter, filter as filter_fn
-
-        kernel = kalman_filter(transition_model, observation_model)
-        ts = jnp.array([0.0, 1.0, 2.0])
-        t_o = jnp.array([1.0, 2.0])
-        x_o = jnp.array([[0.1], [-0.2]])
-        key = jax.random.PRNGKey(0)
-
-        trace_new = Filter(kernel).filter(key, ts, t_o, x_o, mu0, cov0)
-        trace_old = filter_fn(key, ts, t_o, x_o, kernel, mu0, cov0, return_trace=True)
-
-        np.testing.assert_allclose(trace_new.states.mean, trace_old.states.mean)
-        np.testing.assert_allclose(trace_new.states.cov, trace_old.states.cov)
+        assert hasattr(trace, "obs_mask")
 
     def test_smooth_gaussian(self):
         from probjax.inference.filter_smooth import Filter
@@ -1024,10 +1016,12 @@ class TestFilterClass:
         filt = Filter(kernel)
 
         ts = jnp.array([0.0, 1.0, 2.0])
-        t_o = jnp.array([1.0, 2.0])
-        x_o = jnp.array([[0.1], [-0.2]])
+        observations = jnp.array([[0.0], [0.1], [-0.2]])
+        obs_mask = jnp.array([False, True, True])
 
-        trace = filt.filter(jax.random.PRNGKey(0), ts, t_o, x_o, mu0, cov0)
+        trace = filt.filter(
+            jax.random.PRNGKey(0), ts, observations, mu0, cov0, obs_mask=obs_mask
+        )
 
         smoother = partial(rauch_tung_stribel_smoother, lambda t0, t1: A)
         mus_s, covs_s = filt.smooth(trace, smoother=smoother)
@@ -1055,10 +1049,10 @@ class TestFilterClass:
         init_particles = jax.random.normal(key, (num_particles, 1))
 
         ts = jnp.array([0.0, 1.0, 2.0, 3.0])
-        t_o = jnp.array([1.0, 2.0, 3.0])
-        x_o = jnp.array([[0.1], [-0.2], [0.05]])
+        observations = jnp.array([[0.0], [0.1], [-0.2], [0.05]])
+        obs_mask = jnp.array([False, True, True, True])
 
-        trace = filt.filter(key, ts, t_o, x_o, init_particles)
+        trace = filt.filter(key, ts, observations, init_particles, obs_mask=obs_mask)
 
         def transition_logdensity(x_tp1, x_t, t, tp1):
             mean = A @ x_t
@@ -1081,27 +1075,15 @@ class TestFilterClass:
         filt = Filter(kernel)
 
         ts = jnp.array([0.0, 1.0, 2.0])
-        t_o = jnp.array([1.0, 2.0])
-        x_o = jnp.array([[0.1], [-0.2]])
+        observations = jnp.array([[0.0], [0.1], [-0.2]])
+        obs_mask = jnp.array([False, True, True])
 
-        ll = filt.log_likelihood(jax.random.PRNGKey(0), ts, t_o, x_o, mu0, cov0)
+        ll = filt.log_likelihood(
+            jax.random.PRNGKey(0), ts, observations, mu0, cov0, obs_mask=obs_mask
+        )
 
         assert ll.shape == ()
         assert jnp.isfinite(ll)
-
-    def test_log_likelihood_matches_backward_compat(self):
-        from probjax.inference.filter_smooth import Filter, filter_log_likelihood
-
-        kernel = kalman_filter(transition_model, observation_model)
-        ts = jnp.array([0.0, 1.0, 2.0])
-        t_o = jnp.array([1.0, 2.0])
-        x_o = jnp.array([[0.1], [-0.2]])
-        key = jax.random.PRNGKey(0)
-
-        ll_new = Filter(kernel).log_likelihood(key, ts, t_o, x_o, mu0, cov0)
-        ll_old = filter_log_likelihood(key, ts, t_o, x_o, kernel, mu0, cov0)
-
-        np.testing.assert_allclose(ll_new, ll_old)
 
     def test_filter_smooth_particle_one_shot(self):
         from probjax.inference.filter_smooth import Filter
@@ -1128,10 +1110,10 @@ class TestFilterClass:
         init_particles = jax.random.normal(key, (num_particles, 1))
 
         ts = jnp.array([0.0, 1.0, 2.0, 3.0])
-        t_o = jnp.array([1.0, 2.0, 3.0])
-        x_o = jnp.array([[0.1], [-0.2], [0.05]])
+        observations = jnp.array([[0.0], [0.1], [-0.2], [0.05]])
+        obs_mask = jnp.array([False, True, True, True])
 
-        trace = filt.filter(key, ts, t_o, x_o, init_particles)
+        trace = filt.filter(key, ts, observations, init_particles, obs_mask=obs_mask)
         smoothed_particles, smoothed_log_weights = filt.smooth(
             trace,
             key=jax.random.PRNGKey(1),
@@ -1140,3 +1122,229 @@ class TestFilterClass:
 
         assert smoothed_particles.shape == trace.states.particles.shape
         assert smoothed_log_weights.shape == trace.states.log_weights.shape
+
+    def test_trace_helpers(self):
+        """Test the FilteringTrace helper methods."""
+        from probjax.inference.filter_smooth import Filter
+
+        kernel = kalman_filter(transition_model, observation_model)
+        filt = Filter(kernel)
+
+        ts = jnp.array([0.0, 1.0, 2.0])
+        observations = jnp.array([[0.0], [0.1], [-0.2]])
+        obs_mask = jnp.array([False, True, True])
+
+        trace = filt.filter(
+            jax.random.PRNGKey(0), ts, observations, mu0, cov0, obs_mask=obs_mask
+        )
+
+        # Test get_mean
+        mean = trace.get_mean()
+        assert mean.shape == (2, 1)
+
+        # Test get_cov
+        cov = trace.get_cov()
+        assert cov.shape == (2, 1, 1)
+
+        # Test get_var
+        var = trace.get_var()
+        assert var.shape == (2, 1)
+
+        # Test get_std
+        std = trace.get_std()
+        assert std.shape == (2, 1)
+
+        # Test get_log_likelihood
+        ll = trace.get_log_likelihood()
+        assert ll.shape == ()
+        assert jnp.isfinite(ll)
+
+    def test_step_method(self):
+        """Test the step-by-step filtering method."""
+        from probjax.inference.filter_smooth import Filter
+
+        kernel = kalman_filter(transition_model, observation_model)
+        filt = Filter(kernel)
+
+        # Initialize
+        state = kernel.init(mu0, cov0, t=0.0)
+
+        # Step 1: predict only (no observation)
+        state, info = filt.step(
+            state, t=1.0, observed=None, rng_key=jax.random.PRNGKey(0)
+        )
+        assert hasattr(state, "mean")
+        assert hasattr(state, "cov")
+
+        # Step 2: update with observation
+        state, info = filt.step(
+            state, t=2.0, observed=jnp.array([[0.1]]), rng_key=jax.random.PRNGKey(1)
+        )
+        assert hasattr(state, "mean")
+        assert hasattr(state, "cov")
+        assert hasattr(info, "log_likelihood")
+
+    def test_smooth_auto_detect_gaussian(self):
+        """Test that smooth() auto-detects Gaussian filter and requires smoother."""
+        from probjax.inference.filter_smooth import Filter
+
+        kernel = kalman_filter(transition_model, observation_model)
+        filt = Filter(kernel)
+
+        ts = jnp.array([0.0, 1.0, 2.0])
+        observations = jnp.array([[0.0], [0.1], [-0.2]])
+        obs_mask = jnp.array([False, True, True])
+
+        trace = filt.filter(
+            jax.random.PRNGKey(0), ts, observations, mu0, cov0, obs_mask=obs_mask
+        )
+
+        # Should raise error without smoother
+        with pytest.raises(ValueError, match="smoother"):
+            filt.smooth(trace)
+
+        # Should work with smoother
+        smoother = partial(rauch_tung_stribel_smoother, lambda t0, t1: A)
+        mus_s, covs_s = filt.smooth(trace, smoother=smoother)
+        assert mus_s.shape[0] == trace.states.mean.shape[0]
+
+    def test_smooth_auto_detect_particle(self):
+        """Test that smooth() auto-detects particle filter and requires key and transition_logdensity_fn."""
+        from probjax.inference.filter_smooth import Filter
+
+        def log_likelihood(particles, obs, t):
+            return jax.vmap(lambda x: -0.5 * jnp.sum((C @ x - obs) ** 2 / R[0, 0]))(
+                particles
+            )
+
+        def pf_transition(key, particles, t):
+            noise = jax.random.normal(key, particles.shape) * jnp.sqrt(Q[0, 0])
+            return jax.vmap(lambda x: A @ x)(particles) + noise
+
+        kernel = ParticleFilter(log_likelihood, pf_transition)
+        filt = Filter(kernel)
+        key = jax.random.PRNGKey(0)
+        init_particles = jax.random.normal(key, (32, 1))
+
+        ts = jnp.array([0.0, 1.0, 2.0])
+        observations = jnp.array([[0.0], [0.1], [-0.2]])
+        obs_mask = jnp.array([False, True, True])
+
+        trace = filt.filter(key, ts, observations, init_particles, obs_mask=obs_mask)
+
+        def transition_logdensity(x_tp1, x_t, t, tp1):
+            mean = A @ x_t
+            diff = x_tp1 - mean
+            return -0.5 * jnp.sum(diff**2 / Q[0, 0])
+
+        # Should raise error without key
+        with pytest.raises(ValueError, match="key"):
+            filt.smooth(trace, transition_logdensity_fn=transition_logdensity)
+
+        # Should raise error without transition_logdensity_fn
+        with pytest.raises(ValueError, match="transition_logdensity_fn"):
+            filt.smooth(trace, key=jax.random.PRNGKey(1))
+
+    def test_frozen_api_functional(self):
+        """Test functional API (frozen=True, default) with explicit args."""
+        from probjax.inference.filter_smooth import Filter
+
+        kernel = kalman_filter(transition_model, observation_model)
+        filt = Filter(kernel, frozen=True)
+
+        ts = jnp.array([0.0, 1.0, 2.0])
+        observations = jnp.array([[0.0], [0.1], [-0.2]])
+        obs_mask = jnp.array([False, True, True])
+
+        # Functional API: pass mu0, cov0 explicitly
+        trace = filt.filter(
+            jax.random.PRNGKey(0), ts, observations, mu0, cov0, obs_mask=obs_mask
+        )
+        assert trace.states.mean.shape[0] == 2
+
+    def test_frozen_api_oo(self):
+        """Test OO API (frozen=False) with set_params."""
+        from probjax.inference.filter_smooth import Filter
+
+        kernel = kalman_filter(transition_model, observation_model)
+        filt = Filter(kernel, frozen=False).set_params(mu0=mu0, cov0=cov0)
+
+        ts = jnp.array([0.0, 1.0, 2.0])
+        observations = jnp.array([[0.0], [0.1], [-0.2]])
+        obs_mask = jnp.array([False, True, True])
+
+        # OO API: mu0, cov0 retrieved from stored params
+        trace = filt.filter(jax.random.PRNGKey(0), ts, observations, obs_mask=obs_mask)
+        assert trace.states.mean.shape[0] == 2
+
+    def test_frozen_apis_match(self):
+        """Test that functional and OO APIs produce identical results."""
+        from probjax.inference.filter_smooth import Filter
+
+        kernel = kalman_filter(transition_model, observation_model)
+
+        ts_local = jnp.array([0.0, 1.0, 2.0])
+        observations_local = jnp.array([[0.0], [0.1], [-0.2]])
+        obs_mask_local = jnp.array([False, True, True])
+
+        # Functional API
+        filt_func = Filter(kernel, frozen=True)
+        trace_func = filt_func.filter(
+            jax.random.PRNGKey(0),
+            ts_local,
+            observations_local,
+            mu0,
+            cov0,
+            obs_mask=obs_mask_local,
+        )
+
+        # OO API
+        filt_oo = Filter(kernel, frozen=False).set_params(mu0=mu0, cov0=cov0)
+        trace_oo = filt_oo.filter(
+            jax.random.PRNGKey(0), ts_local, observations_local, obs_mask=obs_mask_local
+        )
+
+        # Results should match
+        np.testing.assert_allclose(
+            trace_func.states.mean, trace_oo.states.mean, atol=1e-10
+        )
+        np.testing.assert_allclose(
+            trace_func.states.cov, trace_oo.states.cov, atol=1e-10
+        )
+
+    def test_fit_method_exists(self):
+        """Test that fit() method exists and runs without errors."""
+        from probjax.inference.filter_smooth import Filter
+
+        # Parameterized kernel factory
+        def make_kernel(params):
+            R_param = jnp.exp(params["log_R"])
+
+            def obs_model(t):
+                return C, R_param
+
+            return kalman_filter(transition_model, obs_model)
+
+        filt = Filter(make_kernel)
+
+        ts = jnp.array([0.0, 1.0, 2.0])
+        observations = jnp.array([[0.0], [0.1], [-0.2]])
+        obs_mask = jnp.array([False, True, True])
+
+        # Fit with initial parameter guess
+        params_init = {"log_R": jnp.log(0.2)}
+        params_opt, final_ll = filt.fit(
+            jax.random.PRNGKey(0),
+            ts,
+            observations,
+            mu0,
+            cov0,
+            obs_mask=obs_mask,
+            params_init=params_init,
+            num_steps=10,  # Just a few steps for testing
+            learning_rate=0.1,
+        )
+
+        # Check outputs
+        assert "log_R" in params_opt
+        assert jnp.isfinite(final_ll)

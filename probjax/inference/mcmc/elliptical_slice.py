@@ -39,15 +39,17 @@ def _make_loglikelihood(
         log_std = 0.5 * jnp.log(cov_matrix)
 
         def loglikelihood_fn(x):
+            x_flat = jnp.ravel(x)
             return logdensity_fn(x) - jnp.sum(
-                jax.scipy.stats.norm.logpdf(x, mean, jnp.exp(log_std))
+                jax.scipy.stats.norm.logpdf(x_flat, mean, jnp.exp(log_std))
             )
 
     elif ndim == 2:
 
         def loglikelihood_fn(x):
+            x_flat = jnp.ravel(x)
             return logdensity_fn(x) - jax.scipy.stats.multivariate_normal.logpdf(
-                x, mean, cov_matrix
+                x_flat, mean, cov_matrix
             )
 
     else:

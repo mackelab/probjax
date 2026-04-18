@@ -15,7 +15,10 @@ def _sharding_spec_of(array):
 
 
 def _require_two_gpus():
-    gpu_devices = jax.devices("gpu")
+    try:
+        gpu_devices = jax.devices("gpu")
+    except RuntimeError:
+        pytest.skip("test requires at least 2 GPU devices")
     if len(gpu_devices) < 2:
         pytest.skip("test requires at least 2 GPU devices")
     return gpu_devices[:2]
@@ -71,9 +74,7 @@ class _FeatureTreeDataset:
         self._features = np.arange(n_samples * width, dtype=np.float32).reshape(
             n_samples, width
         )
-        self._aux = np.arange(n_samples * 512, dtype=np.float32).reshape(
-            n_samples, 512
-        )
+        self._aux = np.arange(n_samples * 512, dtype=np.float32).reshape(n_samples, 512)
         self._labels = np.arange(n_samples, dtype=np.int32)
 
     def __len__(self):
@@ -150,7 +151,9 @@ def test_prefetch_sharding_uses_host_local_array_to_global_array(monkeypatch):
 
     def fail_device_put(x, device=None, **kwargs):
         if isinstance(device, jax.sharding.NamedSharding):
-            raise AssertionError("NamedSharding should use host_local_array_to_global_array")
+            raise AssertionError(
+                "NamedSharding should use host_local_array_to_global_array"
+            )
         return x
 
     monkeypatch.setattr(
@@ -193,13 +196,11 @@ def test_prefetch_sharding_serves_ready_batches(monkeypatch):
     monkeypatch.setattr(io_util.jax, "block_until_ready", fake_block_until_ready)
 
     it = io_util._prefetch_sharding(
-        iter(
-            [
-                {"x": np.array([[0, 1]], dtype=np.int32)},
-                {"x": np.array([[2, 3]], dtype=np.int32)},
-                {"x": np.array([[4, 5]], dtype=np.int32)},
-            ]
-        ),
+        iter([
+            {"x": np.array([[0, 1]], dtype=np.int32)},
+            {"x": np.array([[2, 3]], dtype=np.int32)},
+            {"x": np.array([[4, 5]], dtype=np.int32)},
+        ]),
         2,
         sharding,
     )
@@ -236,12 +237,10 @@ def test_prefetch_sharding_recycles_ready_batches_when_worker_lags(monkeypatch):
     monkeypatch.setattr(io_util.jax, "block_until_ready", fake_block_until_ready)
 
     it = io_util._prefetch_sharding(
-        iter(
-            [
-                {"x": np.array([[0, 1]], dtype=np.int32)},
-                {"x": np.array([[2, 3]], dtype=np.int32)},
-            ]
-        ),
+        iter([
+            {"x": np.array([[0, 1]], dtype=np.int32)},
+            {"x": np.array([[2, 3]], dtype=np.int32)},
+        ]),
         1,
         sharding,
     )
