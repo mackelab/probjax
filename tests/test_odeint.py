@@ -795,3 +795,181 @@ def test_linear_exact_sde_supports_linear_drift_kwargs():
     )
 
     assert jnp.allclose(result_kw, expected, atol=1e-6, rtol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Pytree-native drift tests (post closure-lifting-removal refactor)
+# ---------------------------------------------------------------------------
+
+
+def test_odeint_with_equinox_neural_drift():
+    """An ``eqx.Module`` with array fields should flow through as a pytree."""
+    eqx = pytest.importorskip("equinox")
+
+    class LinearDrift(eqx.Module):
+        A: jax.Array
+        b: jax.Array
+
+        def __call__(self, t, y):
+            del t
+            return self.A @ y + self.b
+
+    A = jnp.array([[-0.5, 0.1], [0.0, -0.3]])
+    b = jnp.array([0.05, -0.05])
+    drift = LinearDrift(A=A, b=b)
+
+    x0 = jnp.array([1.0, 2.0])
+    ts = jnp.linspace(0.0, 1.0, 20)
+
+    trace = odeint(drift, x0, ts, method="rk4", collect_trace=True)
+    assert trace is not None
+    assert trace.shape == (ts.shape[0], x0.shape[0])
+
+    # Grad through an array parameter of the drift (the whole point of
+    # pytree-native drifts: parameters participate in transformations).
+    def loss(A_, b_, x0_):
+        d = LinearDrift(A=A_, b=b_)
+        out = odeint(d, x0_, ts, method="rk4", collect_trace=False)
+        return jnp.sum(out ** 2)
+
+    gA = jax.grad(loss, argnums=0)(A, b, x0)
+    assert gA.shape == A.shape
+    assert jnp.all(jnp.isfinite(gA))
+
+
+def test_odeint_plain_closure_captures_are_constant_only():
+    """Plain drifts may close over *constant* (non-traced) values.
+
+    Traced values must be passed explicitly through ``*args``/``**kwargs`` —
+    the closure-lifting hack has been removed.
+    """
+    rate = jnp.array(-0.4)  # concrete constant, not traced
+    bias = jnp.array(0.05)
+
+    def drift(t, y):
+        del t
+        return rate * y + bias
+
+    x0 = jnp.array([1.0, -2.0])
+    ts = jnp.linspace(0.0, 1.0, 25)
+
+    trace = odeint(drift, x0, ts, method="rk4", collect_trace=True)
+    assert trace is not None
+    assert trace.shape == (ts.shape[0], x0.shape[0])
+
+
+def test_odeint_with_partial_drift():
+    """``functools.partial`` over constants should work as a drift."""
+    from functools import partial as fpartial
+
+    def drift(t, y, rate, bias):
+        del t
+        return rate * y + bias
+
+    bound = fpartial(drift, rate=jnp.array(-0.2), bias=jnp.array(0.03))
+
+    x0 = jnp.array([1.5, -0.25])
+    ts = jnp.linspace(0.0, 1.0, 20)
+
+    trace = odeint(bound, x0, ts, method="rk4", collect_trace=True)
+    assert trace is not None
+    assert trace.shape == (ts.shape[0], x0.shape[0])
+
+
+def test_odeint_with_pytree_dataclass_drift():
+    """User-registered pytree dataclass with array leaves flows through."""
+
+    class LinDriftPyTree:
+        def __init__(self, A, b):
+            self.A = A
+            self.b = b
+
+        def __call__(self, t, y):
+            del t
+            return self.A @ y + self.b
+
+    def _flatten(obj):
+        return (obj.A, obj.b), None
+
+    def _unflatten(_, children):
+        A, b = children
+        return LinDriftPyTree(A, b)
+
+    jax.tree_util.register_pytree_node(LinDriftPyTree, _flatten, _unflatten)
+
+    A = jnp.array([[-0.2, 0.0], [0.1, -0.4]])
+    b = jnp.array([0.02, -0.02])
+    drift = LinDriftPyTree(A, b)
+
+    x0 = jnp.array([1.0, 1.0])
+    ts = jnp.linspace(0.0, 1.0, 20)
+
+    trace = odeint(drift, x0, ts, method="rk4", collect_trace=True)
+    assert trace is not None
+    assert trace.shape == (ts.shape[0], x0.shape[0])
+
+
+def test_odeint_traced_kwargs_under_outer_jit():
+    """Traced kwargs must survive an outer ``jax.jit``."""
+
+    def drift(t, y, rate, bias=0.0):
+        del t
+        return rate * y + bias
+
+    x0 = jnp.array([1.0, -0.5])
+    ts = jnp.linspace(0.0, 1.0, 30)
+
+    @jax.jit
+    def run(y0, rate, bias):
+        return odeint(
+            drift,
+            y0,
+            ts,
+            rate=rate,
+            bias=bias,
+            method="rk4",
+            collect_trace=False,
+        )
+
+    out_ref = odeint(
+        drift,
+        x0,
+        ts,
+        rate=jnp.array(-0.3),
+        bias=jnp.array(0.1),
+        method="rk4",
+        collect_trace=False,
+    )
+    out_jit = run(x0, jnp.array(-0.3), jnp.array(0.1))
+
+    assert out_ref is not None
+    assert out_jit is not None
+    assert jnp.allclose(out_jit, out_ref, atol=1e-6, rtol=1e-6)
+
+
+def test_odeint_inverse_still_works_with_neural_drift():
+    """Inverse through an ``eqx.Module`` drift should still reconstruct y0."""
+    eqx = pytest.importorskip("equinox")
+    from probjax.core.transformation import inverse
+
+    class LinearDrift(eqx.Module):
+        A: jax.Array
+
+        def __call__(self, t, y):
+            del t
+            return self.A @ y
+
+    A = jnp.array([[-0.4, 0.0], [0.0, -0.2]])
+    drift = LinearDrift(A=A)
+
+    x0 = jnp.array([1.0, 2.0])
+    ts = jnp.linspace(0.0, 1.0, 200)
+
+    def forward(y0):
+        return odeint(drift, y0, ts, method="rk4", collect_trace=False)
+
+    y = forward(x0)
+    inv_forward = inverse(forward, invertible_arg=0)
+    x_inv = inv_forward(y)
+
+    assert jnp.allclose(x0, x_inv, atol=1e-3, rtol=1e-3)

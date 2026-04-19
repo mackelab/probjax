@@ -2,18 +2,17 @@ from functools import lru_cache, update_wrapper
 from typing import Any, Callable, Tuple
 
 import jax.numpy as jnp
-from jax._src import ad_util
 from jax._src.core import shaped_abstractify
 from jax._src.util import safe_map, safe_zip
 from jax.extend.core import ClosedJaxpr, Primitive
 from jax.interpreters import ad, batching, mlir
-from jax._src.interpreters import ad as ad_src
 from jax.tree_util import tree_flatten, tree_unflatten
 
 from probjax.core.custom_primitives.call_primitive import (
     call_abstract_eval,
     call_impl,
     call_lowering,
+    jvp_from_forward_jaxpr,
 )
 from probjax.core.custom_primitives.contracts import parse_custom_inverse_call_params
 from probjax.core.custom_primitives.common import (
@@ -399,41 +398,24 @@ mlir.register_lowering(custom_inverse_call_p, custom_inverse_call_lowering)
 def custom_inverse_jvp(
     primals, tangents, lazy_forward, inverse_jaxpr_thunk, in_tree, inv_argnum
 ):
-    # Do NOT reuse original inverse for the JVP'ed primitive.
+    """JVP rule: evaluate the JVP'ed forward jaxpr inline.
+
+    Re-emitting the primitive with a JVP'ed jaxpr would require a matching
+    ``partial_eval`` rule for reverse-mode ``jax.grad`` to split the call
+    into known primal outputs and unknown tangent outputs. Evaluating the
+    JVP jaxpr directly as ordinary JAX ops lets standard partial evaluation
+    see through to the underlying ops, so ``jax.grad`` and
+    ``jax.linearize`` work without a custom partial_eval registration.
+
+    The trade-off is that the JVP'ed call is no longer a single primitive
+    — ``inverse(grad(f))`` cannot be taken. The inverse of the *original*
+    (un-transformed) forward is unchanged, so ``grad(inverse(f))`` and
+    ``inverse(f)`` continue to work as before.
+    """
     del inverse_jaxpr_thunk, in_tree, inv_argnum
 
     forward_jaxpr = _resolve_forward_jaxpr(lazy_forward)
-
-    nonzeros = [not isinstance(t, ad_util.Zero) for t in tangents]
-    jvp_cj, out_nonzeros = ad_src.jvp_jaxpr(forward_jaxpr, nonzeros, instantiate=False)
-    nonzero_tangents = [t for t in tangents if not isinstance(t, ad_util.Zero)]
-
-    err_thunk = _error_inverse_thunk(
-        "Inverse of a JVP-transformed custom_inverse call is not supported."
-    )
-
-    # jvp_cj takes (primals, nonzero_tangents) -> (primals_out, tangents_out_nz)
-    outs = custom_inverse_call_p.bind(
-        *primals,
-        *nonzero_tangents,
-        lazy_forward=jvp_cj,
-        inverse_jaxpr_thunk=err_thunk,
-        in_tree=None,
-        inv_argnum=-1,
-    )
-
-    n_primals_out = len(forward_jaxpr.out_avals)
-    primals_out = list(outs[:n_primals_out])
-    tangents_out_nz = list(outs[n_primals_out:])
-
-    tangents_out = []
-    nz_iter = iter(tangents_out_nz)
-    for nz, aval in zip(out_nonzeros, forward_jaxpr.out_avals):
-        if nz:
-            tangents_out.append(next(nz_iter))
-        else:
-            tangents_out.append(ad_util.Zero(aval))
-    return primals_out, tangents_out
+    return jvp_from_forward_jaxpr(forward_jaxpr, primals, tangents)
 
 
 ad.primitive_jvps[custom_inverse_call_p] = custom_inverse_jvp

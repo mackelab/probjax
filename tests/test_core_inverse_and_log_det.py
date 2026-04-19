@@ -445,69 +445,6 @@ def test_inverse_and_logabsdet_odeint_with_traced_drift_kwargs():
     )
 
 
-def test_inverse_odeint_with_traced_drift_closure():
-    ts = jnp.linspace(0.0, 1.0, 400)
-
-    def forward(x, rate, bias):
-        def drift(t, y):
-            del t
-            return -rate * y + bias
-
-        return odeint(
-            drift,
-            x,
-            ts,
-            collect_trace=False,
-            method="rk4",
-        )
-
-    x0 = jnp.array([1.0, -2.0, 0.5])
-    rate = jnp.array(0.7)
-    bias = jnp.array(0.1)
-    y = forward(x0, rate, bias)
-
-    inv_forward = inverse(forward, invertible_arg=0)
-    x_inv = inv_forward(y, rate, bias)
-
-    assert jnp.allclose(x0, x_inv, atol=1e-3, rtol=1e-3), (
-        "Inverse failed when drift closes over traced runtime values."
-    )
-
-
-def test_inverse_odeint_with_traced_split_drift_closure():
-    ts = jnp.linspace(0.0, 1.0, 400)
-
-    def forward(x, rate, bias):
-        def lin_coeff(t):
-            del t
-            return jnp.asarray(0.0)
-
-        def nonlin(t, y):
-            del t
-            return -rate * y + bias
-
-        drift = split_drift(lin_coeff=lin_coeff, nonlin=nonlin)
-        return odeint(
-            drift,
-            x,
-            ts,
-            collect_trace=False,
-            method="rk4",
-        )
-
-    x0 = jnp.array([1.0, -2.0, 0.5])
-    rate = jnp.array(0.7)
-    bias = jnp.array(0.1)
-    y = forward(x0, rate, bias)
-
-    inv_forward = inverse(forward, invertible_arg=0)
-    x_inv = inv_forward(y, rate, bias)
-
-    assert jnp.allclose(x0, x_inv, atol=1e-3, rtol=1e-3), (
-        "Inverse failed for split_drift with traced closure values."
-    )
-
-
 def test_inverse_odeint_with_mixed_static_and_traced_drift_kwargs():
     ts = jnp.linspace(0.0, 1.0, 400)
 

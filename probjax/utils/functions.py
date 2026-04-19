@@ -18,7 +18,6 @@ def _replace_positional_arg(
     return args[:index] + (value,) + args[index + 1 :]
 
 
-@jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
 class split_drift:
     """Callable marker for drifts of the form c(t) * y + N(t, y)."""
@@ -53,15 +52,6 @@ class split_drift:
             return value_flat
 
         return split_drift(lin_coeff=self.lin_coeff, nonlin=nonlin_raveled)
-
-    def tree_flatten(self):
-        return (), (self.lin_coeff, self.nonlin)
-
-    @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        del children
-        lin_coeff, nonlin = aux_data
-        return cls(lin_coeff=lin_coeff, nonlin=nonlin)
 
 
 @dataclass(frozen=True)
