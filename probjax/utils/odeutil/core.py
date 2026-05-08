@@ -4,6 +4,7 @@ from typing import Callable, Optional, Sequence, cast
 import jax
 import jax.numpy as jnp
 
+from probjax.utils.functions import Drift, generic_drift
 from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
 from probjax.utils.odeutil.adaptive import AdaptiveParams
 from probjax.utils.odeutil.filters import TraceFilter
@@ -13,7 +14,6 @@ from probjax.utils.odeutil.solvers import get_method
 from probjax.utils.typing import Array, PyTree
 
 STATIC_NAMES = (
-    "drift",
     "method",
     "dtype",
     "filter_state",
@@ -76,6 +76,14 @@ def _odeint(
         drift = cast(Callable, ravel_arg(unravel, index=1))
     else:
         drift = ravel_arg_fun(drift, unravel, 1)
+
+    # Ensure drift flows as a registered pytree so ``odeint_adaptive``'s
+    # custom_vjp can tree-flatten it. Plain closures (e.g. from
+    # ``ravel_arg_fun`` on non-Drift pytrees, or from the base
+    # ``Drift.ravel_arg`` implementation) get wrapped in ``generic_drift`` so
+    # the callable rides as aux data with zero array leaves.
+    if not isinstance(drift, Drift):
+        drift = generic_drift(fn=drift)
 
     def _apply_filter(state_tree: PyTree[Array]) -> Optional[PyTree[Array]]:
         if filter_state is None:

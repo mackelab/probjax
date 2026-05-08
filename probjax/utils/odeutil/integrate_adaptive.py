@@ -1,6 +1,6 @@
 import operator as op
 from functools import partial
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import jax
 import jax.numpy as jnp
@@ -18,14 +18,30 @@ map = safe_map
 zip = safe_zip
 
 
-@partial(
-    jax.custom_vjp,
-    nondiff_argnums=(
-        0,
-        1,
-        2,
-    ),
-)
+def _extract_adaptive_params(kwargs: dict) -> tuple[AdaptiveParams, dict]:
+    """Pop AdaptiveParams (or per-key overrides) out of ``kwargs``.
+
+    Returns ``(adaptive_params, remaining_kwargs)``.
+    """
+    kwargs = dict(kwargs)
+    adaptive_params = kwargs.pop("adaptive_params", None)
+    if adaptive_params is None:
+        adaptive_params = AdaptiveParams(
+            rtol=kwargs.pop("rtol", 1e-3),
+            atol=kwargs.pop("atol", 1e-5),
+            mxstep=kwargs.pop("mxstep", jnp.inf),
+            dtmin=kwargs.pop("dtmin", 0.0),
+            dtmax=kwargs.pop("dtmax", jnp.inf),
+            maxerror=kwargs.pop("maxerror", 1.0),
+            safety=kwargs.pop("safety", 0.9),
+            ifactor=kwargs.pop("ifactor", 10.0),
+            dfactor=kwargs.pop("dfactor", 0.2),
+            error_norm=kwargs.pop("error_norm", 2),
+            order=kwargs.pop("order", 5),
+        )
+    return adaptive_params, kwargs
+
+
 def odeint_adaptive(
     method: Callable,
     drift: Callable,
@@ -34,36 +50,31 @@ def odeint_adaptive(
     ts: Array,
     *args,
 ):
-    # Extract AdaptiveParams if present, or create default one
-    adaptive_params = kwargs.pop("adaptive_params", None)
-    if adaptive_params is None:
-        # Create default params using any rtol, atol, etc. from kwargs
-        rtol = kwargs.pop("rtol", 1e-3)
-        atol = kwargs.pop("atol", 1e-5)
-        mxstep = kwargs.pop("mxstep", jnp.inf)
-        dtmin = kwargs.pop("dtmin", 0.0)
-        dtmax = kwargs.pop("dtmax", jnp.inf)
-        maxerror = kwargs.pop("maxerror", 1.0)
-        safety = kwargs.pop("safety", 0.9)
-        ifactor = kwargs.pop("ifactor", 10.0)
-        dfactor = kwargs.pop("dfactor", 0.2)
-        error_norm = kwargs.pop("error_norm", 2)
-        order = kwargs.pop("order", 5)
+    """Adaptive ODE integrator with custom VJP.
 
-        adaptive_params = AdaptiveParams(
-            rtol=rtol,
-            atol=atol,
-            mxstep=mxstep,
-            dtmin=dtmin,
-            dtmax=dtmax,
-            maxerror=maxerror,
-            safety=safety,
-            ifactor=ifactor,
-            dfactor=dfactor,
-            error_norm=error_norm,
-            order=order,
-        )
+    ``drift`` is a pytree-registered callable (see
+    :mod:`probjax.utils.functions`). Its array leaves flow as differentiable
+    args through the custom VJP so ``jax.jit`` / ``jax.grad`` traces them
+    cleanly; its static (callable / config) leaves ride as aux data.
+    """
+    leaves, treedef = jax.tree_util.tree_flatten(drift)
+    return _odeint_adaptive_cvjp(
+        method, treedef, kwargs, tuple(leaves), y0, ts, *args
+    )
 
+
+@partial(jax.custom_vjp, nondiff_argnums=(0, 1, 2))
+def _odeint_adaptive_cvjp(
+    method: Callable,
+    drift_treedef: Any,
+    kwargs: dict,
+    drift_leaves: tuple,
+    y0: Array,
+    ts: Array,
+    *args,
+):
+    drift = jax.tree_util.tree_unflatten(drift_treedef, list(drift_leaves))
+    adaptive_params, kwargs = _extract_adaptive_params(kwargs)
     return _odeint_adaptive(
         method, drift, y0, ts, *args, adaptive_params=adaptive_params, **kwargs
     )
@@ -202,57 +213,31 @@ def _odeint_adaptive_wrapper(
 
 def _odeint_fwd(
     method,
-    drift,
+    drift_treedef,
     kwargs,
+    drift_leaves,
     y0: Array,
     ts: Array,
     *args,
 ):
-    # Extract or create AdaptiveParams
-    adaptive_params = kwargs.pop("adaptive_params", None)
-    if adaptive_params is None:
-        # Create default params using any rtol, atol, etc. from kwargs
-        rtol = kwargs.pop("rtol", 1e-3)
-        atol = kwargs.pop("atol", 1e-5)
-        mxstep = kwargs.pop("mxstep", jnp.inf)
-        dtmin = kwargs.pop("dtmin", 0.0)
-        dtmax = kwargs.pop("dtmax", jnp.inf)
-        maxerror = kwargs.pop("maxerror", 1.0)
-        safety = kwargs.pop("safety", 0.9)
-        ifactor = kwargs.pop("ifactor", 10.0)
-        dfactor = kwargs.pop("dfactor", 0.2)
-        error_norm = kwargs.pop("error_norm", 2)
-        order = kwargs.pop("order", 5)
-
-        adaptive_params = AdaptiveParams(
-            rtol=rtol,
-            atol=atol,
-            mxstep=mxstep,
-            dtmin=dtmin,
-            dtmax=dtmax,
-            maxerror=maxerror,
-            safety=safety,
-            ifactor=ifactor,
-            dfactor=dfactor,
-            error_norm=error_norm,
-            order=order,
-        )
-
+    drift = jax.tree_util.tree_unflatten(drift_treedef, list(drift_leaves))
+    adaptive_params, kwargs = _extract_adaptive_params(kwargs)
     result = _odeint_adaptive(
         method, drift, y0, ts, *args, adaptive_params=adaptive_params, **kwargs
     )
     state, ys = result
-    return result, (ys, ts, args, adaptive_params, kwargs)
+    return result, (ys, ts, args, drift_leaves, adaptive_params, kwargs)
 
 
 def _odeint_rev(
     method,
-    drift,
+    drift_treedef,
     kwargs,
     res,
     g,
 ):
-    ys, ts, args, adaptive_params, kwargs = res
+    ys, ts, args, drift_leaves, adaptive_params, kwargs = res
+    drift = jax.tree_util.tree_unflatten(drift_treedef, list(drift_leaves))
 
     filter_output = kwargs.pop("filter_output", None)
     collect_trace = kwargs.pop("collect_trace", True)
@@ -307,7 +292,11 @@ def _odeint_rev(
         scan_fun, init_carry, jnp.arange(len(ts) - 1, 0, -1)
     )
     ts_bar = jnp.concatenate([jnp.array([t0_bar]), rev_ts_bar[::-1]])
-    return (y_bar, ts_bar, *args_bar)
+    # Cotangents for diff args: (drift_leaves, y0, ts, *args).
+    # Gradient w.r.t. drift parameter leaves is not propagated here — return
+    # zeros so jax.grad through adaptive solvers treats drift as a constant.
+    drift_leaves_bar = tuple(jnp.zeros_like(leaf) for leaf in drift_leaves)
+    return (drift_leaves_bar, y_bar, ts_bar, *args_bar)
 
 
-odeint_adaptive.defvjp(_odeint_fwd, _odeint_rev)
+_odeint_adaptive_cvjp.defvjp(_odeint_fwd, _odeint_rev)

@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Callable, Optional, Sequence, Tuple, Union, cast
 
 import jax
 import jax.numpy as jnp
@@ -16,8 +16,6 @@ from probjax.utils.sdeutil.base import get_method
 from probjax.utils.sdeutil.integrate_on_grid import _sdeint_on_grid
 
 STATIC_NAMES = [
-    "drift",
-    "diffusion",
     "method",
     "dtype",
     "sde_type",
@@ -33,27 +31,32 @@ def _bind_sde_function_args(
     drift: Callable,
     diffusion: Callable,
     sde_args: Sequence[Any],
-    sde_kwargs: Optional[Mapping[str, Any]],
 ) -> tuple[Callable, Callable]:
-    """Bind shared positional/keyword arguments for drift and diffusion."""
+    """Bind shared positional args into drift and diffusion.
+
+    SDE step functions don't thread user args — they close over them — so
+    we bind args up-front. Marker :class:`~probjax.utils.functions.Drift`
+    subclasses provide a type-preserving ``bind_args`` so specialized
+    solvers (``exp_euler_maruyama``, ``linear_exact_sde``, ...) continue to
+    ``isinstance``-dispatch on the bound result.
+    """
     args = tuple(sde_args)
-    kwargs = {} if sde_kwargs is None else dict(sde_kwargs)
 
     drift_bind_args = getattr(drift, "bind_args", None)
     if callable(drift_bind_args):
-        drift_bound = cast(Callable, drift_bind_args(*args, **kwargs))
+        drift_bound = cast(Callable, drift_bind_args(*args))
     else:
 
         def drift_bound(t, y):
-            return drift(t, y, *args, **kwargs)
+            return drift(t, y, *args)
 
     diffusion_bind_args = getattr(diffusion, "bind_args", None)
     if callable(diffusion_bind_args):
-        diffusion_bound = cast(Callable, diffusion_bind_args(*args, **kwargs))
+        diffusion_bound = cast(Callable, diffusion_bind_args(*args))
     else:
 
         def diffusion_bound(t, y):
-            return diffusion(t, y, *args, **kwargs)
+            return diffusion(t, y, *args)
 
     return drift_bound, diffusion_bound
 
@@ -90,7 +93,6 @@ def _sdeint(
     y0: PyTree[Array],
     ts: Array,
     sde_args: Sequence[Any] = (),
-    sde_kwargs: Optional[Mapping[str, Any]] = None,
     method: str = "euler_maruyama",
     dtype: Optional[jnp.dtype] = jnp.float32,
     sde_type: str = "ito",
@@ -115,7 +117,6 @@ def _sdeint(
         y0: Initial state
         ts: Time points
         sde_args: Additional positional arguments passed to drift and diffusion.
-        sde_kwargs: Additional keyword arguments passed to drift and diffusion.
         method: Integration method
         dtype: Data type for computation
         sde_type: Type of SDE ("ito" or "stratonovich")
@@ -146,7 +147,7 @@ def _sdeint(
     y0 = jax.tree_util.tree_map(jnp.atleast_1d, y0)
     ts = jnp.atleast_1d(ts)
 
-    drift, diffusion = _bind_sde_function_args(drift, diffusion, sde_args, sde_kwargs)
+    drift, diffusion = _bind_sde_function_args(drift, diffusion, sde_args)
 
     flat_y0, unravel = ravel_args(y0)
     flat_state_dim = int(flat_y0.shape[0])

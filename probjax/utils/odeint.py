@@ -1,170 +1,98 @@
-from functools import partial
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 import jax
 import jax.numpy as jnp
 from jax import Array
 from jaxtyping import PyTree
 
-from probjax.core.custom_primitives.custom_inverse import custom_inverse
-from probjax.utils.odeutil import (
-    AdaptiveParams,
-    _inv_logdet_odeint,
-    _inv_odeint,
-    _odeint,
-)
+from probjax.utils.functions import generic_drift
+from probjax.utils.odeutil import AdaptiveParams, _odeint_custom
+from probjax.utils.odeutil.inversion import SampleDist, TraceEstimator
 
 
-def _leaf_is_array_like(leaf: Any) -> bool:
-    """Heuristic for whether ``leaf`` is an array-like JAX value."""
-    return hasattr(leaf, "shape") and hasattr(leaf, "dtype")
-
-
-def _split_drift_pytree(
+def _wrap_if_plain_callable(
     drift: Callable[..., PyTree[Array]],
-) -> tuple[Callable[..., PyTree[Array]], tuple[Any, ...]]:
-    """Split a pytree-callable drift into (static wrapper, dynamic leaves).
+) -> Callable[..., PyTree[Array]]:
+    """Wrap plain Python callables in :class:`generic_drift` so they flow as
+    a pytree through ``jax.jit`` / ``custom_inverse``.
 
-    If ``drift`` is a registered JAX pytree node whose leaves are array-like
-    values (e.g. ``equinox.Module``, ``flax.struct.PyTreeNode``), those leaves
-    are lifted into positional arguments so they can ride through
-    ``jax.jit``/``custom_inverse`` as traced values while the drift itself is
-    represented by a small static reconstruction wrapper.
-
-    Otherwise the drift is returned unchanged and should be passed as a static
-    argument (it must therefore be hashable).
+    If ``drift`` already is a registered pytree (marker subclasses,
+    ``eqx.Module``, user-registered dataclasses, ...) it flows through
+    unchanged — its array leaves participate in transformations, its
+    callable/config leaves ride along as aux.
     """
-    leaves, treedef = jax.tree_util.tree_flatten(drift)
-
-    # A non-pytree callable (plain function, ``functools.partial``, marker
-    # dataclass not registered as a pytree, ...) flattens to a single leaf
-    # that IS the callable itself. In that case there is nothing to lift.
+    leaves, _ = jax.tree_util.tree_flatten(drift)
     if len(leaves) == 1 and leaves[0] is drift:
-        return drift, ()
-
-    # Pytree with no leaves (e.g. ``split_drift`` where both fields are in
-    # aux_data) can also flow through unchanged — there is nothing dynamic.
-    if not leaves:
-        return drift, ()
-
-    # Only lift when at least one leaf is array-like; otherwise assume the
-    # caller intends the drift to be static (non-traced configuration data).
-    if not any(_leaf_is_array_like(leaf) for leaf in leaves):
-        return drift, ()
-
-    n_leaves = len(leaves)
-
-    def drift_from_leaves(t: Array, y: PyTree[Array], *dynamic: Any, **kwargs: Any):
-        drift_leaves = list(dynamic[:n_leaves])
-        rest = dynamic[n_leaves:]
-        reconstructed = jax.tree_util.tree_unflatten(treedef, drift_leaves)
-        return reconstructed(t, y, *rest, **kwargs)
-
-    return drift_from_leaves, tuple(leaves)
-
-
-@partial(custom_inverse, inv_argnum=1, static_argnums=(0,))
-def _odeint_custom(
-    drift: Callable[..., PyTree[Array]],
-    y0: PyTree[Array],
-    ts: Array,
-    args: Sequence[Any] = (),
-    kwargs: Optional[Mapping[str, Any]] = None,
-    *,
-    method: str = "rk4",
-    dtype: Optional[jnp.dtype] = jnp.float32,
-    filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
-    collect_trace: bool = True,
-    check_points: Optional[Sequence[int]] = None,
-    adaptive_params: Optional[AdaptiveParams] = None,
-) -> Optional[PyTree[Array]]:
-    """Solve an ODE — internal ``custom_inverse``-wrapped implementation.
-
-    ``drift`` is a static argument; traced drift state must reach this
-    function through ``args`` (as positional values) or ``kwargs``. See
-    :func:`odeint` for the public API.
-    """
-    if kwargs:
-        kw = dict(kwargs)
-        bind_args = getattr(drift, "bind_args", None)
-        if callable(bind_args):
-            # Marker dataclasses (``split_drift``, ``linear_drift``, ...) know
-            # how to rebind kwargs without losing their isinstance identity,
-            # which specialized solvers rely on.
-            drift = bind_args(**kw)
-        else:
-            original_drift = drift
-
-            def drift_with_kwargs(t: Array, y: PyTree[Array], *a: Any):
-                return original_drift(t, y, *a, **kw)
-
-            drift = drift_with_kwargs
-
-    return _odeint(
-        drift,
-        y0,
-        ts,
-        *args,
-        method=method,
-        dtype=dtype,
-        filter_state=filter_state,
-        collect_trace=collect_trace,
-        check_points=check_points,
-        adaptive_params=adaptive_params,
-    )
+        return generic_drift(fn=drift)
+    return drift
 
 
 def odeint(
     drift: Callable[..., PyTree[Array]],
     y0: PyTree[Array],
     ts: Array,
-    *args,
+    *args: Any,
     method: str = "rk4",
     dtype: Optional[jnp.dtype] = jnp.float32,
     filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
     collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
     adaptive_params: Optional[AdaptiveParams] = None,
-    **kwargs,
+    logdet_rng: Optional[Array] = None,
+    trace_estimator: TraceEstimator = "exact",
+    num_samples: int = 1,
+    sample_dist: SampleDist = "rademacher",
 ) -> Optional[PyTree[Array]]:
-    """Solve an ordinary differential equation.
-
-    This is a high-level interface for solving ODEs using various numerical
-    methods. It supports both fixed-step and adaptive-step integration.
+    """Solve an ordinary differential equation ``dy/dt = drift(t, y, *args)``.
 
     ``drift`` may be any of:
 
-    - a plain Python callable ``drift(t, y, *args, **kwargs)``; any traced
-      parameters must be forwarded explicitly via ``args`` / ``kwargs``;
-    - a registered JAX pytree node (``equinox.Module``,
-      ``flax.struct.PyTreeNode``, ...) that is callable with the same
-      signature; its array leaves flow through as regular JAX inputs and
-      participate in transformations such as ``jax.jit``, ``jax.grad``, and
-      ``jax.vmap`` natively.
+    - a plain Python callable ``drift(t, y, *args)`` — it is automatically
+      wrapped in :class:`probjax.utils.functions.generic_drift` so it rides
+      as a pytree through ``jax.jit`` and the ``custom_inverse`` primitive;
+    - a registered JAX pytree node (``eqx.Module``, ``flax.struct.PyTreeNode``,
+      :class:`~probjax.utils.functions.Drift` subclass, ...) — its array
+      leaves participate in transformations natively, non-array fields ride
+      as aux.
 
-    Traced values captured implicitly in a plain drift's closure are no
-    longer lifted automatically. Pass them through as explicit arguments
-    or wrap them in a pytree-callable instead.
+    Drift keyword arguments are no longer supported. Pass parameters
+    positionally via ``*args``, or bind them up-front with ``functools.partial``
+    (or ``drift.bind_args(...)`` on a :class:`~probjax.utils.functions.Drift`).
 
     Args:
-        drift: The drift function ``f(t, y, *args, **kwargs)`` defining
-            ``dy/dt = f(t, y, *args, **kwargs)``.
-        y0: Initial state. Can be a single array or a PyTree of arrays.
+        drift: The drift function ``f(t, y, *args)``.
+        y0: Initial state. Single array or pytree of arrays.
         ts: Time points at which to evaluate the solution.
-        *args: Additional positional arguments forwarded to ``drift``.
-        method: Integration method to use.
-        dtype: Data type for computation. Defaults to float32.
-        filter_state: Optional function to filter the state during
-            integration.
-        collect_trace: If ``True`` (default), return the filtered state at
-            every requested time point; otherwise only the filtered terminal
-            state.
-        check_points: Optional sequence of indices for grid integration.
+        *args: Positional arguments forwarded to ``drift``.
+        method: Integration method name.
+        dtype: Computation dtype (default ``float32``).
+        filter_state: Optional function to filter the state during integration.
+        collect_trace: If ``True`` (default) return the filtered state at
+            every time point; otherwise return only the filtered terminal state.
+        check_points: Optional index sequence for checkpointed grid integration.
         adaptive_params: Parameters for adaptive integration methods.
-        **kwargs: Additional keyword arguments forwarded to ``drift``.
+        logdet_rng: RNG key for stochastic log-determinant estimators.
+            Required when ``trace_estimator="hutchinson"``. Ignored on the
+            forward path; only consumed by
+            :func:`probjax.core.inverse_and_logabsdet`.
+        trace_estimator: Log-det trace estimator used when the function is
+            inverted via ``inverse_and_logabsdet``. One of:
+
+            - ``"exact"`` (default): full Jacobian per step (O(d²) cost).
+            - ``"hutchinson"``: FFJORD-style stochastic estimator
+              ``tr(J) ≈ mean_k vᵀ_k J v_k`` via one JVP per probe vector;
+              probe vectors are fixed across the trajectory so
+              ``∫tr(J)dt`` stays unbiased. Requires ``logdet_rng``.
+            - a callable ``trace_fn(drift_flat, t, x_flat, args) -> scalar``
+              for custom structured-Jacobian strategies.
+        num_samples: Hutchinson probe-vector count per trajectory. Higher
+            values reduce variance linearly in cost.
+        sample_dist: Hutchinson probe distribution — ``"rademacher"``
+            (default, minimum-variance for general matrices) or
+            ``"normal"``.
 
     Returns:
-        PyTree containing either the time-series trace (when
+        Pytree containing either the time-series trace (when
         ``collect_trace=True``) or the filtered terminal state.
 
     Example:
@@ -182,58 +110,20 @@ def odeint(
         >>> ys = odeint(lotka_volterra, y0, ts, 1.0, 0.1, 0.075, 0.5,
         ...             method="dopri5")
     """
-    # Partition drift kwargs into traced (array-like) and static
-    # (Python scalars, strings, bools, ...). Static kwargs are bound into
-    # the drift at Python call time — keeping them out of the traced dict
-    # means the drift body can still use them for Python control flow
-    # (``if mode == "affine": ...``). Traced kwargs flow through a dynamic
-    # dict so they participate in ``jax.jit`` / ``jax.grad`` / custom_inverse.
-    static_kwargs = {}
-    traced_kwargs = {}
-    for name, value in kwargs.items():
-        if _leaf_is_array_like(value):
-            traced_kwargs[name] = value
-        else:
-            static_kwargs[name] = value
-
-    if static_kwargs:
-        bind = getattr(drift, "bind_args", None)
-        if callable(bind):
-            # Markers (``split_drift``, ``linear_drift``, ...) keep their
-            # isinstance identity through ``bind_args``.
-            drift = bind(**static_kwargs)
-            static_kwargs = {}
-
-    drift_static, drift_leaves = _split_drift_pytree(drift)
-
-    if static_kwargs:
-        # Plain or pytree-native drift: wrap the (possibly lifted) callable
-        # to inject the static kwargs without sending them through tracing.
-        _inner = drift_static
-        _static = static_kwargs
-
-        def drift_with_static(
-            t: Array, y: PyTree[Array], *dynamic: Any, **extra: Any
-        ):
-            return _inner(t, y, *dynamic, **_static, **extra)
-
-        drift_static = drift_with_static
-
-    packed_args = drift_leaves + tuple(args)
+    drift = _wrap_if_plain_callable(drift)
     return _odeint_custom(
-        drift_static,
         y0,
+        drift,
         ts,
-        packed_args,
-        traced_kwargs,
+        tuple(args),
+        logdet_rng,
         method=method,
         dtype=dtype,
         filter_state=filter_state,
         collect_trace=collect_trace,
         check_points=check_points,
         adaptive_params=adaptive_params,
+        trace_estimator=trace_estimator,
+        num_samples=num_samples,
+        sample_dist=sample_dist,
     )
-
-
-_odeint_custom.definv(_inv_odeint)
-_odeint_custom.definv_and_logdet(_inv_logdet_odeint)

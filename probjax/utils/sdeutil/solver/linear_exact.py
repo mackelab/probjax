@@ -75,10 +75,11 @@ def build_linear_exact_sde_step(
     is_const = drift.is_constant
     if is_const:
         A = drift.A if not callable(drift.A) else drift.A(jnp.asarray(0.0))
-        # Check if A is scalar
-        A_concrete = np.asarray(A)
-        is_scalar = A_concrete.ndim == 0 or (
-            A_concrete.ndim == 1 and A_concrete.shape[0] == 1
+        # Pytree-flowing drifts arrive with ``A`` as a traced array, so we
+        # branch on its static shape info (ndim) rather than on values.
+        A_sym = jnp.asarray(A)
+        is_scalar = A_sym.ndim == 0 or (
+            A_sym.ndim == 1 and A_sym.shape[0] == 1
         )
     else:
         A = None

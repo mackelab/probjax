@@ -355,7 +355,8 @@ def test_inverse_odeint_linear_system():
     )
 
 
-def test_inverse_odeint_linear_system_with_drift_kwargs():
+def test_inverse_odeint_linear_system_with_drift_args():
+    """Drift parameters forwarded as ``*args`` still support inversion."""
     ts = jnp.linspace(0.0, 1.0, 1000)
     rate = jnp.array(0.8)
 
@@ -364,7 +365,7 @@ def test_inverse_odeint_linear_system_with_drift_kwargs():
         return -rate * x
 
     def forward(x):
-        return odeint(drift, x, ts, rate=rate, collect_trace=False)
+        return odeint(drift, x, ts, rate, collect_trace=False)
 
     x0 = jnp.array([1.0, -2.0, 0.5])
     y = forward(x0)
@@ -373,14 +374,15 @@ def test_inverse_odeint_linear_system_with_drift_kwargs():
     x_inv = inv_forward(y)
 
     assert jnp.allclose(x0, x_inv, atol=1e-3, rtol=1e-3), (
-        "Inverse function failed for ODE-based transform with drift kwargs."
+        "Inverse function failed for ODE-based transform with drift args."
     )
 
 
-def test_inverse_odeint_with_traced_drift_kwargs():
+def test_inverse_odeint_with_traced_drift_args():
+    """Traced positional drift args must survive through the inverse."""
     ts = jnp.linspace(0.0, 1.0, 400)
 
-    def drift(t, x, rate, bias=0.0):
+    def drift(t, x, rate, bias):
         del t
         return -rate * x + bias
 
@@ -389,8 +391,8 @@ def test_inverse_odeint_with_traced_drift_kwargs():
             drift,
             x,
             ts,
-            rate=rate,
-            bias=bias,
+            rate,
+            bias,
             collect_trace=False,
             method="rk4",
         )
@@ -404,14 +406,14 @@ def test_inverse_odeint_with_traced_drift_kwargs():
     x_inv = inv_forward(y, rate, bias)
 
     assert jnp.allclose(x0, x_inv, atol=1e-3, rtol=1e-3), (
-        "Inverse failed when odeint drift kwargs are traced runtime values."
+        "Inverse failed when odeint drift args are traced runtime values."
     )
 
 
-def test_inverse_and_logabsdet_odeint_with_traced_drift_kwargs():
+def test_inverse_and_logabsdet_odeint_with_traced_drift_args():
     ts = jnp.linspace(0.0, 1.0, 400)
 
-    def drift(t, x, rate, bias=0.0):
+    def drift(t, x, rate, bias):
         del t
         return -rate * x + bias
 
@@ -420,8 +422,8 @@ def test_inverse_and_logabsdet_odeint_with_traced_drift_kwargs():
             drift,
             x,
             ts,
-            rate=rate,
-            bias=bias,
+            rate,
+            bias,
             collect_trace=False,
             method="rk4",
         )
@@ -438,17 +440,20 @@ def test_inverse_and_logabsdet_odeint_with_traced_drift_kwargs():
     expected_logabsdet = x0.shape[0] * rate * duration
 
     assert jnp.allclose(x0, x_inv, atol=1e-3, rtol=1e-3), (
-        "Inverse+logabsdet failed when odeint drift kwargs are traced values."
+        "Inverse+logabsdet failed when odeint drift args are traced values."
     )
     assert jnp.allclose(logabsdet, expected_logabsdet, atol=5e-2, rtol=5e-2), (
         "Inverse logabsdet for linear ODE drift is inconsistent with expectation."
     )
 
 
-def test_inverse_odeint_with_mixed_static_and_traced_drift_kwargs():
+def test_inverse_odeint_with_partial_bound_drift():
+    """Static drift configuration bound via ``functools.partial`` survives inversion."""
+    from functools import partial
+
     ts = jnp.linspace(0.0, 1.0, 400)
 
-    def drift(t, x, rate, bias=0.0, mode="affine"):
+    def drift(t, x, rate, bias, mode):
         del t
         if mode == "affine":
             return -rate * x + bias
@@ -456,13 +461,13 @@ def test_inverse_odeint_with_mixed_static_and_traced_drift_kwargs():
 
     def forward(x, rate):
         bias = 0.1 * jnp.ones_like(rate)
+        bound_drift = partial(drift, mode="affine")
         return odeint(
-            drift,
+            bound_drift,
             x,
             ts,
-            rate=rate,
-            bias=bias,
-            mode="affine",
+            rate,
+            bias,
             collect_trace=False,
             method="rk4",
         )
@@ -475,28 +480,31 @@ def test_inverse_odeint_with_mixed_static_and_traced_drift_kwargs():
     x_inv = inv_forward(y, rate)
 
     assert jnp.allclose(x0, x_inv, atol=1e-3, rtol=1e-3), (
-        "Inverse failed when static and traced drift kwargs are mixed."
+        "Inverse failed when drift configuration was bound via partial."
     )
 
 
-def test_inverse_odeint_with_static_bool_control_flow_kwarg():
+def test_inverse_odeint_with_static_bool_control_flow_via_closure():
+    """Static boolean control-flow fixed by closure still works under inversion."""
     ts = jnp.linspace(0.0, 1.0, 400)
 
-    def drift(t, x, rate, bias=0.0, use_bias=True):
-        del t
-        if use_bias:
-            return -rate * x + bias
-        return -rate * x
+    def make_drift(use_bias):
+        def drift(t, x, rate, bias):
+            del t
+            if use_bias:
+                return -rate * x + bias
+            return -rate * x
+
+        return drift
 
     def forward_true(x, rate):
         bias = 0.1 * jnp.ones_like(rate)
         return odeint(
-            drift,
+            make_drift(True),
             x,
             ts,
-            rate=rate,
-            bias=bias,
-            use_bias=True,
+            rate,
+            bias,
             collect_trace=False,
             method="rk4",
         )
@@ -504,12 +512,11 @@ def test_inverse_odeint_with_static_bool_control_flow_kwarg():
     def forward_false(x, rate):
         bias = 0.1 * jnp.ones_like(rate)
         return odeint(
-            drift,
+            make_drift(False),
             x,
             ts,
-            rate=rate,
-            bias=bias,
-            use_bias=False,
+            rate,
+            bias,
             collect_trace=False,
             method="rk4",
         )
@@ -521,46 +528,289 @@ def test_inverse_odeint_with_static_bool_control_flow_kwarg():
     inv_forward_true = inverse(forward_true, invertible_arg=0)
     x_inv_true = inv_forward_true(y_true, rate)
     assert jnp.allclose(x0, x_inv_true, atol=1e-3, rtol=1e-3), (
-        "Inverse failed with static boolean control-flow kwarg set to True."
+        "Inverse failed with static boolean control-flow set to True."
     )
 
     y_false = forward_false(x0, rate)
     inv_forward_false = inverse(forward_false, invertible_arg=0)
     x_inv_false = inv_forward_false(y_false, rate)
     assert jnp.allclose(x0, x_inv_false, atol=1e-3, rtol=1e-3), (
-        "Inverse failed with static boolean control-flow kwarg set to False."
+        "Inverse failed with static boolean control-flow set to False."
     )
 
 
-def test_inverse_odeint_with_dynamic_bool_control_flow_kwarg_raises():
-    ts = jnp.linspace(0.0, 1.0, 400)
+def test_inverse_and_logabsdet_odeint_hutchinson_matches_exact_in_expectation():
+    """Hutchinson trace estimator matches exact log-det in expectation."""
+    ts = jnp.linspace(0.0, 1.0, 200)
+    A = jnp.array(
+        [
+            [-0.5, 0.1, 0.0],
+            [0.0, -0.3, 0.2],
+            [0.1, 0.0, -0.4],
+        ]
+    )
 
-    def drift(t, x, rate, bias=0.0, use_bias=True):
+    def drift(t, x, A):
         del t
-        if use_bias:
-            return -rate * x + bias
-        return -rate * x
+        return A @ x
 
-    def forward(x, rate, use_bias):
-        bias = 0.1 * jnp.ones_like(rate)
+    def forward_exact(x, A):
         return odeint(
             drift,
             x,
             ts,
-            rate=rate,
-            bias=bias,
-            use_bias=use_bias,
+            A,
             collect_trace=False,
             method="rk4",
+            trace_estimator="exact",
         )
 
-    x0 = jnp.array([1.0, -2.0, 0.5])
-    rate = jnp.array(0.7)
-    y = forward(x0, rate, True)
-    inv_forward = inverse(forward, invertible_arg=0)
+    def forward_hutch(x, A, rng):
+        return odeint(
+            drift,
+            x,
+            ts,
+            A,
+            collect_trace=False,
+            method="rk4",
+            trace_estimator="hutchinson",
+            num_samples=1,
+            logdet_rng=rng,
+        )
 
-    with pytest.raises(jax.errors.TracerBoolConversionError):
-        _ = inv_forward(y, rate, True)
+    x0 = jnp.array([1.0, -0.5, 0.3])
+
+    y_exact = forward_exact(x0, A)
+    inv_exact = inverse_and_logabsdet(forward_exact, invertible_arg=0)
+    _, logdet_exact = inv_exact(y_exact, A)
+
+    seeds = jax.random.split(jax.random.PRNGKey(0), 256)
+
+    def single_hutch(rng):
+        y = forward_hutch(x0, A, rng)
+        inv_hutch = inverse_and_logabsdet(forward_hutch, invertible_arg=0)
+        _, logdet = inv_hutch(y, A, rng)
+        return jnp.squeeze(logdet)
+
+    logdets_hutch = jax.vmap(single_hutch)(seeds)
+    mean_hutch = jnp.mean(logdets_hutch)
+
+    duration = ts[-1] - ts[0]
+    expected = -jnp.trace(A) * duration
+
+    assert jnp.allclose(jnp.squeeze(logdet_exact), expected, atol=1e-2, rtol=1e-2), (
+        "Exact log-det does not match analytical -tr(A)*T."
+    )
+    assert jnp.allclose(mean_hutch, expected, atol=5e-2, rtol=5e-2), (
+        "Hutchinson MC mean over seeds does not match exact log-det."
+    )
+
+
+def test_inverse_and_logabsdet_odeint_hutchinson_num_samples_reduces_variance():
+    """Increasing ``num_samples`` reduces per-trajectory variance."""
+    ts = jnp.linspace(0.0, 1.0, 100)
+    A = jnp.array(
+        [
+            [-0.3, 0.2, 0.0, 0.1],
+            [0.1, -0.4, 0.3, 0.0],
+            [0.0, 0.1, -0.2, 0.2],
+            [0.2, 0.0, 0.1, -0.5],
+        ]
+    )
+
+    def drift(t, x, A):
+        del t
+        return A @ x
+
+    def forward_k1(x, A, rng):
+        return odeint(
+            drift,
+            x,
+            ts,
+            A,
+            collect_trace=False,
+            method="rk4",
+            trace_estimator="hutchinson",
+            num_samples=1,
+            logdet_rng=rng,
+        )
+
+    def forward_k16(x, A, rng):
+        return odeint(
+            drift,
+            x,
+            ts,
+            A,
+            collect_trace=False,
+            method="rk4",
+            trace_estimator="hutchinson",
+            num_samples=16,
+            logdet_rng=rng,
+        )
+
+    x0 = jnp.array([1.0, -0.5, 0.3, 0.8])
+    seeds = jax.random.split(jax.random.PRNGKey(1), 128)
+
+    def single(forward, rng):
+        y = forward(x0, A, rng)
+        inv = inverse_and_logabsdet(forward, invertible_arg=0)
+        _, logdet = inv(y, A, rng)
+        return jnp.squeeze(logdet)
+
+    logdets_k1 = jax.vmap(lambda r: single(forward_k1, r))(seeds)
+    logdets_k16 = jax.vmap(lambda r: single(forward_k16, r))(seeds)
+
+    var_k1 = jnp.var(logdets_k1)
+    var_k16 = jnp.var(logdets_k16)
+
+    assert var_k16 < var_k1, (
+        f"num_samples=16 variance ({var_k16:.4e}) should be below num_samples=1 "
+        f"variance ({var_k1:.4e})."
+    )
+    # With 16x more probe vectors per trajectory, variance should drop
+    # substantially. Leave a generous margin because vmap over paths and
+    # Rademacher finite-sample noise introduce their own variability.
+    assert var_k16 < 0.5 * var_k1, (
+        f"num_samples=16 variance ({var_k16:.4e}) should be at least ~2x below "
+        f"num_samples=1 variance ({var_k1:.4e})."
+    )
+
+
+def test_inverse_and_logabsdet_odeint_hutchinson_normal_probes():
+    """The ``sample_dist='normal'`` path is unbiased in expectation too."""
+    ts = jnp.linspace(0.0, 1.0, 100)
+    A = jnp.array(
+        [
+            [-0.3, 0.1, 0.0],
+            [0.0, -0.2, 0.2],
+            [0.1, 0.0, -0.4],
+        ]
+    )
+
+    def drift(t, x, A):
+        del t
+        return A @ x
+
+    def forward(x, A, rng):
+        return odeint(
+            drift,
+            x,
+            ts,
+            A,
+            collect_trace=False,
+            method="rk4",
+            trace_estimator="hutchinson",
+            num_samples=4,
+            sample_dist="normal",
+            logdet_rng=rng,
+        )
+
+    x0 = jnp.array([1.0, -0.5, 0.3])
+    seeds = jax.random.split(jax.random.PRNGKey(2), 256)
+
+    def single(rng):
+        y = forward(x0, A, rng)
+        inv = inverse_and_logabsdet(forward, invertible_arg=0)
+        _, logdet = inv(y, A, rng)
+        return jnp.squeeze(logdet)
+
+    logdets = jax.vmap(single)(seeds)
+    mean_logdet = jnp.mean(logdets)
+
+    duration = ts[-1] - ts[0]
+    expected = -jnp.trace(A) * duration
+
+    assert jnp.allclose(mean_logdet, expected, atol=0.1, rtol=0.1), (
+        "Normal-probe Hutchinson MC mean does not match analytical -tr(A)*T."
+    )
+
+
+def test_inverse_and_logabsdet_odeint_custom_trace_fn():
+    """User-supplied ``trace_fn`` callable is honoured for analytic traces."""
+    ts = jnp.linspace(0.0, 1.0, 400)
+
+    def drift(t, x, rate):
+        del t
+        return -rate * x
+
+    def trace_fn(drift_flat, t, x_flat, args):
+        del drift_flat, t
+        (rate,) = args
+        return -rate * x_flat.shape[0]
+
+    def forward(x, rate):
+        return odeint(
+            drift,
+            x,
+            ts,
+            rate,
+            collect_trace=False,
+            method="rk4",
+            trace_estimator=trace_fn,
+        )
+
+    x0 = jnp.array([1.0, -0.5, 0.3])
+    rate = jnp.array(0.7)
+    y = forward(x0, rate)
+
+    inv_and_det = inverse_and_logabsdet(forward, invertible_arg=0)
+    x_inv, logdet = inv_and_det(y, rate)
+
+    duration = ts[-1] - ts[0]
+    expected = x0.shape[0] * rate * duration
+
+    assert jnp.allclose(x0, x_inv, atol=1e-3, rtol=1e-3), (
+        "Custom trace_fn: inverse failed to recover x0."
+    )
+    assert jnp.allclose(jnp.squeeze(logdet), expected, atol=1e-3, rtol=1e-3), (
+        "Custom trace_fn: log-det does not match analytical expectation."
+    )
+
+
+def test_inverse_and_logabsdet_odeint_hutchinson_requires_logdet_rng():
+    """Asking for Hutchinson without an RNG must raise."""
+    ts = jnp.linspace(0.0, 1.0, 50)
+
+    def drift(t, x):
+        return -x
+
+    def forward(x):
+        return odeint(
+            drift,
+            x,
+            ts,
+            collect_trace=False,
+            trace_estimator="hutchinson",
+        )
+
+    x0 = jnp.array([1.0, 2.0])
+    y = forward(x0)
+    inv_and_det = inverse_and_logabsdet(forward)
+    with pytest.raises(ValueError, match="logdet_rng"):
+        inv_and_det(y)
+
+
+def test_inverse_and_logabsdet_odeint_unknown_trace_estimator_raises():
+    """Unknown string estimators are rejected up-front."""
+    ts = jnp.linspace(0.0, 1.0, 50)
+
+    def drift(t, x):
+        return -x
+
+    def forward(x):
+        return odeint(
+            drift,
+            x,
+            ts,
+            collect_trace=False,
+            trace_estimator="not_a_real_estimator",
+        )
+
+    x0 = jnp.array([1.0, 2.0])
+    y = forward(x0)
+    inv_and_det = inverse_and_logabsdet(forward)
+    with pytest.raises(ValueError, match="Unknown trace_estimator"):
+        inv_and_det(y)
 
 
 def test_inverse_and_logabsdet_tan():
