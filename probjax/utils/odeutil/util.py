@@ -86,35 +86,45 @@ def fit_cubic_hermite(y0, y1, dy0, dy1, dt):
 
 
 def fit_4th_order_polynomial(y0, y1, y_mid, dy0, dy1, dt):
-    """Be f(t) = a * t**4 + b * t**3 + c * t**2 + d * t + e, then this function returns
-    the coefficients a, b, c, d, e, which solve the system of equations:
-        f(0) = y0
-        f(1) = y1
-        f(1/2) = y_mid
-        f'(0) = dy0
-        f'(1) = dy1
+    """Quartic Hermite polynomial in normalized time ``t ∈ [0, 1]``.
+
+    Returns coefficients ``(a, b, c, d, e)`` for ``f(t) = a t^4 + b t^3 +
+    c t^2 + d t + e`` matching ``f(0)=y0``, ``f(1)=y1``, ``f(0.5)=y_mid``,
+    ``f'(0)=dt·dy0``, ``f'(1)=dt·dy1`` (real-time derivatives scaled by
+    chain rule).
+
+    Numerically stable form: factored through the curvature deviation
+    ``Δ_mid = y_mid - (y0+y1)/2`` (which is O(dt^2) for smooth ``f``)
+    rather than combining ``y0``, ``y1``, ``y_mid`` directly with large
+    coefficients (``±8``, ``±16``, ``±32``). The textbook form lost ~6
+    bits of precision under float32 when ``y0 ≈ y1 ≈ y_mid``; the
+    rewritten form avoids that catastrophic cancellation while remaining
+    algebraically identical.
     """
-    a = -2.0 * dt * dy0 + 2.0 * dt * dy1 - 8.0 * y0 - 8.0 * y1 + 16.0 * y_mid
-    b = 5.0 * dt * dy0 - 3.0 * dt * dy1 + 18.0 * y0 + 14.0 * y1 - 32.0 * y_mid
-    c = -4.0 * dt * dy0 + dt * dy1 - 11.0 * y0 - 5.0 * y1 + 16.0 * y_mid
+    delta_mid = y_mid - 0.5 * (y0 + y1)
+    delta_1 = y1 - y0
+    a = -2.0 * dt * dy0 + 2.0 * dt * dy1 + 16.0 * delta_mid
+    b = 5.0 * dt * dy0 - 3.0 * dt * dy1 - 32.0 * delta_mid - 2.0 * delta_1
+    c = -4.0 * dt * dy0 + dt * dy1 + 16.0 * delta_mid + 3.0 * delta_1
     d = dt * dy0
     e = y0
     return a, b, c, d, e
 
 
 def fit_3rd_order_polynomial(y0, y1, dy0, dy1, dt):
-    """Be f(t) = a * t**3 + b * t**2 + c * t + d, then this function returns
-    the coefficients a, b, c, d, which solve the system of equations:
-    f(0) = y0
-    f(1) = y1
-    f'(0) = dy0
-    f'(1) = dy1
+    """Cubic Hermite polynomial in normalized time ``t ∈ [0, 1]``.
+
+    Returns coefficients ``(a, b, c, d)`` such that ``f(t) = a t^3 + b t^2 +
+    c t + d`` satisfies ``f(0) = y0``, ``f(1) = y1`` and the chain-rule
+    boundary derivatives ``f'(0) = dt·dy0`` and ``f'(1) = dt·dy1`` (so the
+    caller may pass real-time derivatives ``dy = df/dT`` directly). Same
+    domain convention as :func:`fit_4th_order_polynomial`, so the adaptive
+    integrator can evaluate via ``polyval(coeffs, (target_t - last_t)/dt)``.
     """
     d = y0
-    c = dy0 * dt
-    b = (-2 / 3 * c - d / dt + y1 / dt - dy1 / 3) * dt**2
-    a = (y1 - b * dt**2 - c * dt - d) * dt**3
-
+    c = dt * dy0
+    a = 2.0 * (y0 - y1) + dt * (dy0 + dy1)
+    b = 3.0 * (y1 - y0) - dt * (2.0 * dy0 + dy1)
     return a, b, c, d
 
 
