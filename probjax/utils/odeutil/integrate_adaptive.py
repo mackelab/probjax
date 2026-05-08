@@ -8,38 +8,20 @@ from jax import Array
 from jax._src.util import safe_map, safe_zip
 
 from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
-from probjax.utils.odeutil.adaptive import AdaptiveParams, StepSizeAdapter
-from probjax.utils.odeutil.util import (
-    initial_step_size,
-    interp_fit,
-)
+from probjax.utils.odeutil.adaptive import StepSizeAdaptor
+from probjax.utils.odeutil.util import interp_fit
 
 map = safe_map
 zip = safe_zip
 
 
-def _extract_adaptive_params(kwargs: dict) -> tuple[AdaptiveParams, dict]:
-    """Pop AdaptiveParams (or per-key overrides) out of ``kwargs``.
-
-    Returns ``(adaptive_params, remaining_kwargs)``.
-    """
+def _extract_step_size_adaptor(kwargs: dict) -> tuple[StepSizeAdaptor, dict]:
+    """Pop ``step_size_adaptor`` out of ``kwargs``, defaulting to a fresh one."""
     kwargs = dict(kwargs)
-    adaptive_params = kwargs.pop("adaptive_params", None)
-    if adaptive_params is None:
-        adaptive_params = AdaptiveParams(
-            rtol=kwargs.pop("rtol", 1e-3),
-            atol=kwargs.pop("atol", 1e-5),
-            mxstep=kwargs.pop("mxstep", jnp.inf),
-            dtmin=kwargs.pop("dtmin", 0.0),
-            dtmax=kwargs.pop("dtmax", jnp.inf),
-            maxerror=kwargs.pop("maxerror", 1.0),
-            safety=kwargs.pop("safety", 0.9),
-            ifactor=kwargs.pop("ifactor", 10.0),
-            dfactor=kwargs.pop("dfactor", 0.2),
-            error_norm=kwargs.pop("error_norm", 2),
-            order=kwargs.pop("order", 5),
-        )
-    return adaptive_params, kwargs
+    adaptor = kwargs.pop("step_size_adaptor", None)
+    if adaptor is None:
+        adaptor = StepSizeAdaptor()
+    return adaptor, kwargs
 
 
 def odeint_adaptive(
@@ -74,9 +56,9 @@ def _odeint_adaptive_cvjp(
     *args,
 ):
     drift = jax.tree_util.tree_unflatten(drift_treedef, list(drift_leaves))
-    adaptive_params, kwargs = _extract_adaptive_params(kwargs)
+    step_size_adaptor, kwargs = _extract_step_size_adaptor(kwargs)
     return _odeint_adaptive(
-        method, drift, y0, ts, *args, adaptive_params=adaptive_params, **kwargs
+        method, drift, y0, ts, *args, step_size_adaptor=step_size_adaptor, **kwargs
     )
 
 
@@ -86,7 +68,7 @@ def _odeint_adaptive(
     y0: Array,
     ts: Array,
     *args,
-    adaptive_params: AdaptiveParams,
+    step_size_adaptor: StepSizeAdaptor,
     dtinit: Optional[float] = None,
     interpolation_order: int = 3,
     filter_output: Optional[Callable] = None,
@@ -95,30 +77,26 @@ def _odeint_adaptive(
 ):
     y0 = jnp.asarray(y0)
     solver = method(drift)
-
-    # Create adapter for step size control
-    adapter = StepSizeAdapter(adaptive_params)
+    adaptor = step_size_adaptor
 
     def scan_fun(carry, target_t):
         def cond_fun(state):
             i, state, dt, _, _ = state
             t = state.t0
-            return (t < target_t) & (i < adaptive_params.mxstep) & (dt > 0)
+            return (t < target_t) & (i < adaptor.mxstep) & (dt > 0)
 
         def body_fun(carry):
             i, state, dt, last_t, interp_coeff = carry
             t, y, f = state.t0, state.y0, state.f0
-            # Predicts the next step
             next_state, info = solver.step(state, dt, *args)
             next_y_error = info.y1_error
             y_mid = info.y1_mid
             next_y, next_f = next_state.y0, next_state.f0
 
-            # Use adapter for error estimation and step size control
-            error_ratio = adapter.error_ratio(next_y_error, y, next_y)
+            error_ratio = adaptor.error_ratio(next_y_error, y, next_y)
             new_interp_coeff = interp_fit(y, next_y, f, next_f, dt=dt, y_mid=y_mid)
-            dt = adapter.next_step_size(dt, error_ratio)
-            cond = adapter.accept_step(error_ratio, dt)
+            dt = adaptor.next_step_size(dt, error_ratio)
+            cond = adaptor.accept_step(error_ratio, dt)
 
             def accept():
                 return [i + 1, next_state, dt, t, new_interp_coeff]
@@ -148,20 +126,7 @@ def _odeint_adaptive(
     t0 = ts[0]
     if dtinit is None:
         f0 = drift(t0, y0, *args)
-        dt = jnp.clip(
-            initial_step_size(
-                drift,
-                args,
-                t0,
-                y0,
-                f0,
-                adaptive_params.order,
-                adaptive_params.rtol,
-                adaptive_params.atol,
-            ),
-            min=0.0,
-            max=jnp.inf,
-        )
+        dt = adaptor.initial_step_size(drift, args, t0, y0, f0)
     else:
         dt = dtinit
 
@@ -191,7 +156,7 @@ def _odeint_adaptive_wrapper(
     y0: Array,
     ts: Array,
     *args,
-    adaptive_params: AdaptiveParams,
+    step_size_adaptor: StepSizeAdaptor,
     **kwargs,
 ):
     flat_y0, unravel = ravel_args(y0)
@@ -202,7 +167,7 @@ def _odeint_adaptive_wrapper(
         flat_y0,
         ts,
         *args,
-        adaptive_params=adaptive_params,
+        step_size_adaptor=step_size_adaptor,
         **kwargs,
     )
 
@@ -221,12 +186,12 @@ def _odeint_fwd(
     *args,
 ):
     drift = jax.tree_util.tree_unflatten(drift_treedef, list(drift_leaves))
-    adaptive_params, kwargs = _extract_adaptive_params(kwargs)
+    step_size_adaptor, kwargs = _extract_step_size_adaptor(kwargs)
     result = _odeint_adaptive(
-        method, drift, y0, ts, *args, adaptive_params=adaptive_params, **kwargs
+        method, drift, y0, ts, *args, step_size_adaptor=step_size_adaptor, **kwargs
     )
     state, ys = result
-    return result, (ys, ts, args, drift_leaves, adaptive_params, kwargs)
+    return result, (ys, ts, args, drift_leaves, step_size_adaptor, kwargs)
 
 
 def _odeint_rev(
@@ -236,7 +201,7 @@ def _odeint_rev(
     res,
     g,
 ):
-    ys, ts, args, drift_leaves, adaptive_params, kwargs = res
+    ys, ts, args, drift_leaves, step_size_adaptor, kwargs = res
     drift = jax.tree_util.tree_unflatten(drift_treedef, list(drift_leaves))
 
     filter_output = kwargs.pop("filter_output", None)
@@ -273,7 +238,7 @@ def _odeint_rev(
             aug_dynamics,
             augmented_state,
             jnp.array([-ts[i], -ts[i - 1]]),
-            adaptive_params=adaptive_params,
+            step_size_adaptor=step_size_adaptor,
             **kwargs,
         )
         y_bar, t0_bar, args_bar = jax.tree_util.tree_map(

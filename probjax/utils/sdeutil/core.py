@@ -12,7 +12,9 @@ from probjax.utils.functions import (
 )
 from probjax.utils.jaxutils import ravel_args
 from probjax.utils.odeutil.filters import TraceFilter
+from probjax.utils.sdeutil.adaptive import SDEStepSizeAdaptor
 from probjax.utils.sdeutil.base import get_method
+from probjax.utils.sdeutil.integrate_adaptive import _sdeint_adaptive
 from probjax.utils.sdeutil.integrate_on_grid import _sdeint_on_grid
 
 STATIC_NAMES = [
@@ -24,6 +26,7 @@ STATIC_NAMES = [
     "filter_state",
     "collect_trace",
     "check_points",
+    "step_size_adaptor",
 ]
 
 
@@ -101,6 +104,7 @@ def _sdeint(
     filter_state: Optional[TraceFilter] = None,
     collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
+    step_size_adaptor: Optional[SDEStepSizeAdaptor] = None,
 ) -> Union[
     PyTree[Array], Tuple[Any, PyTree[Array]], Tuple[Any, PyTree[Array], PyTree[Array]]
 ]:
@@ -290,17 +294,61 @@ def _sdeint(
     else:
         trace_fn = None
 
-    state, traced = _sdeint_on_grid(
-        solver_method,
-        drift_raveled,
-        diffusion_solver,
-        rng,
-        flat_y0,
-        ts,
-        filter_output=trace_fn,
-        check_points=check_points,
-        collect_trace=trace_enabled,
-    )
+    if step_size_adaptor is not None:
+        if noise_type != "diagonal":
+            raise NotImplementedError(
+                "Adaptive SDE integration currently supports only diagonal "
+                "noise. Got noise_type=" + noise_type + "."
+            )
+        if return_brownian:
+            raise NotImplementedError(
+                "return_brownian is not yet supported on the adaptive path."
+            )
+        # Lock the controller's local-error order to the underlying
+        # step-doubled Euler-Maruyama (strong order 0.5 → effective order 1
+        # for the doubled-difference estimator).
+        adaptor = step_size_adaptor.with_order(1)
+        terminal_state, ys = _sdeint_adaptive(
+            drift_raveled,
+            diffusion_solver,
+            adaptor,
+            rng,
+            flat_y0,
+            ts,
+            noise_shape=(noise_dim,),
+            collect_trace=trace_enabled,
+        )
+        # Wrap into the API the rest of this function expects: a state-like
+        # object exposing ``y0``, plus a per-step trace via ``trace_fn``.
+        from probjax.utils.sdeutil.solver.em import EulerMaruyamaState
+
+        state = EulerMaruyamaState(t0=ts[-1], y0=terminal_state)
+        if trace_enabled and ys is not None and trace_fn is not None:
+            zero_dW = jnp.zeros((noise_dim,))
+
+            def _per_step_trace(yi):
+                from probjax.utils.sdeutil.solver.em import EulerMaruyamaInfo
+
+                return trace_fn(
+                    EulerMaruyamaState(t0=ts[0], y0=yi),
+                    EulerMaruyamaInfo(dWt=zero_dW),
+                )
+
+            traced = jax.vmap(_per_step_trace)(ys)
+        else:
+            traced = None
+    else:
+        state, traced = _sdeint_on_grid(
+            solver_method,
+            drift_raveled,
+            diffusion_solver,
+            rng,
+            flat_y0,
+            ts,
+            filter_output=trace_fn,
+            check_points=check_points,
+            collect_trace=trace_enabled,
+        )
 
     state_y0 = getattr(state, "y0")
     final_state = apply_filter(unravel(state_y0))

@@ -1,3 +1,7 @@
+import math
+from functools import partial
+from typing import Optional
+
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
@@ -134,24 +138,48 @@ def brownian_bridge(
     return mean + std * jrandom.normal(key, shape)
 
 
-@jax.jit
+def _depth_from_tol(tol: float) -> int:
+    """Pick a static refinement depth so leaf width on a unit interval ≤ tol."""
+    return max(1, int(math.ceil(-math.log2(float(tol)))))
+
+
+@partial(jax.jit, static_argnames=("tol", "depth"))
 def brownian_tree(
-    key: PRNGKey, t: Float, t0: Float, t1: Float, w0: Array, tol: Float
+    key: PRNGKey,
+    t: Float,
+    t0: Float,
+    t1: Float,
+    w0: Array,
+    tol: Optional[float] = None,
+    *,
+    depth: Optional[int] = None,
 ) -> Array:
-    """Brownian motion between two points using a tree. This allows to evaluate it at
-    any time, without having to save the whole trajectory.
+    """Brownian motion at arbitrary ``t`` via a virtual tree.
+
+    Refines a Brownian-bridge tree to a fixed (compile-time) ``depth`` so the
+    inner loop is :func:`lax.fori_loop`, which vectorizes cleanly under
+    :func:`jax.vmap` and supports reverse-mode differentiation. The
+    historical ``tol`` parameter is accepted for backward compatibility and
+    converted to ``depth = ceil(-log2(tol))`` at compile time.
 
     Args:
-        key (PRNGKey): Random generator key.
-        t (Float): Time at which to sample.
-        t0 (Float): Start time.
-        t1 (Float): End time.
-        w0 (Array): Start value.
-        tol (Float): Tolerance for the tree.
+        key: Master key — defines the underlying Brownian path.
+        t: Query time, ``t0 ≤ t ≤ t1``.
+        t0, t1, w0: Tree-root interval and starting value.
+        tol: Static target leaf width; converted to ``depth``. Mutually
+            exclusive with ``depth``.
+        depth: Static refinement depth. Per-query cost is ``O(depth)``.
+            Default ``16`` (≈ 1.5e-5 leaf width on a unit interval) — fine
+            enough for any controller-driven step above ``T·2^-16``. Pass a
+            tighter value (e.g. ``20``) for stiff or very-tight-tolerance
+            runs.
 
     Returns:
-        Array: Value of the bridge at t.
+        ``W(t)`` for the Brownian path keyed by ``key``.
     """
+    if depth is None:
+        depth = _depth_from_tol(tol) if tol is not None else 16
+
     key, init_key = jrandom.split(key, 2)
     shape = w0.shape
 
@@ -159,29 +187,21 @@ def brownian_tree(
     w1 = jrandom.normal(init_key, shape) * jnp.sqrt(t1 - t0)
     w_half = brownian_bridge(key, t_half, t0, t1, w0, w1)
 
-    init_state = (t0, t_half, t1, w0, w_half, w1, key)
+    def body(_, state):
+        s0, sh, s1, ws0, wsh, ws1 = state
+        k1, k2 = jrandom.split(key, 2)
+        cond = t > sh
+        s = jnp.where(cond, sh, s0)
+        u = jnp.where(cond, s1, sh)
+        w_s = jnp.where(cond, wsh, ws0)
+        w_u = jnp.where(cond, ws1, wsh)
+        kk = jnp.where(cond, k1, k2)
+        new_t = s + 0.5 * (u - s)
+        new_w = brownian_bridge(kk, new_t, s, u, w_s, w_u)
+        return (s, new_t, u, w_s, new_w, w_u)
 
-    def cond_fun(state):
-        start_time, _, end_time, _, _, _, _ = state
-        return (end_time - start_time) > tol
-
-    def body_fun(state):
-        t0, t_half, t1, w0, w_half, w1, key = state
-
-        _key1, _key2 = jrandom.split(key, 2)
-        _cond = t > t_half
-        _s = jnp.where(_cond, t_half, t0)
-        _u = jnp.where(_cond, t1, t_half)
-        _w_s = jnp.where(_cond, w_half, w0)
-        _w_u = jnp.where(_cond, w1, w_half)
-        _key = jnp.where(_cond, _key1, _key2)
-
-        _t = _s + 0.5 * (_u - _s)
-        _w_t = brownian_bridge(_key, _t, _s, _u, _w_s, _w_u)
-
-        return (_s, _t, _u, _w_s, _w_t, _w_u, key)
-
-    t0, t_half, t1, w0, w_half, w1, key = lax.while_loop(cond_fun, body_fun, init_state)
+    init_state = (t0, t_half, t1, w0, w_half, w1)
+    t0, t_half, t1, w0, w_half, w1 = lax.fori_loop(0, depth, body, init_state)
 
     rescale_t = (t - t0) / (t1 - t0)
     A = jnp.array([[2, -4, 2], [-3, 4, -1], [1, 0, 0]])

@@ -2,7 +2,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 from probjax.utils.typing import Array, ArrayLike, Callable, RngKey
-from probjax.utils.brownian import get_iterated_integrals_fn
+from probjax.utils.sdeutil.brownian import get_iterated_integrals_fn
 from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
 
 

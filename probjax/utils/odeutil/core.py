@@ -6,7 +6,7 @@ import jax.numpy as jnp
 
 from probjax.utils.functions import Drift, generic_drift
 from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
-from probjax.utils.odeutil.adaptive import AdaptiveParams
+from probjax.utils.odeutil.adaptive import StepSizeAdaptor
 from probjax.utils.odeutil.filters import TraceFilter
 from probjax.utils.odeutil.integrate_adaptive import odeint_adaptive
 from probjax.utils.odeutil.integrate_on_grid import _odeint_on_grid
@@ -18,7 +18,7 @@ STATIC_NAMES = (
     "dtype",
     "filter_state",
     "check_points",
-    "adaptive_params",
+    "step_size_adaptor",
     "collect_trace",
 )
 
@@ -37,7 +37,7 @@ def _odeint(
     filter_state: Optional[TraceFilter] = None,
     collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
-    adaptive_params: Optional[AdaptiveParams] = None,
+    step_size_adaptor: Optional[StepSizeAdaptor] = None,
 ):
     """Solve an ordinary differential equation.
 
@@ -54,15 +54,16 @@ def _odeint(
         collect_trace: Whether to record the filtered quantity for each time
             point (`True`) or return only the filtered terminal state (`False`).
         check_points: Optional check points for grid integration
-        adaptive_params: Parameters for adaptive integration
+        step_size_adaptor: Step-size controller for adaptive solver methods.
+            Ignored by fixed-step methods. Defaults to ``StepSizeAdaptor()``.
 
     Returns:
         PyTree with either the stacked trajectory (when `collect_trace` is True)
         or the filtered terminal state (when `collect_trace` is False). If the
         filter returns ``None`` the result is ``None``.
     """
-    if adaptive_params is None:
-        adaptive_params = AdaptiveParams()
+    if step_size_adaptor is None:
+        step_size_adaptor = StepSizeAdaptor()
 
     if dtype is not None:
         ts = ts.astype(dtype)
@@ -117,11 +118,10 @@ def _odeint(
     else:
         order = info["order"]
         interpolation_order = info.get("interpolation_order", 3)
-        # Create new AdaptiveParams with the method's order
-        adaptive_params = adaptive_params._replace(order=order)
-        # Pass AdaptiveParams through kwargs
+        # Lock the adaptor's local-error order to the method's.
+        step_size_adaptor = step_size_adaptor.with_order(order)
         kwargs = {
-            "adaptive_params": adaptive_params,
+            "step_size_adaptor": step_size_adaptor,
             "interpolation_order": interpolation_order,
             "filter_output": trace_filter_fn,
             "collect_trace": trace_enabled,

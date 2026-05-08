@@ -31,7 +31,7 @@ from jaxtyping import PyTree
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.utils.functions import generic_drift
 from probjax.utils.jaxutils import ravel_pytree
-from probjax.utils.odeutil.adaptive import AdaptiveParams
+from probjax.utils.odeutil.adaptive import StepSizeAdaptor
 from probjax.utils.odeutil.core import _odeint
 
 TraceEstimator = Union[Literal["exact", "hutchinson"], Callable]
@@ -68,7 +68,7 @@ def _odeint_custom(
     filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
     collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
-    adaptive_params: Optional[AdaptiveParams] = None,
+    step_size_adaptor: Optional[StepSizeAdaptor] = None,
     trace_estimator: TraceEstimator = "exact",
     num_samples: int = 1,
     sample_dist: SampleDist = "rademacher",
@@ -97,7 +97,7 @@ def _odeint_custom(
         filter_state=filter_state,
         collect_trace=collect_trace,
         check_points=check_points,
-        adaptive_params=adaptive_params,
+        step_size_adaptor=step_size_adaptor,
     )
 
 
@@ -113,7 +113,7 @@ def _inv_odeint(
     filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
     collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
-    adaptive_params: Optional[Any] = None,
+    step_size_adaptor: Optional[StepSizeAdaptor] = None,
     trace_estimator: TraceEstimator = "exact",
     num_samples: int = 1,
     sample_dist: SampleDist = "rademacher",
@@ -143,7 +143,7 @@ def _inv_odeint(
         filter_state=None,
         collect_trace=False,
         check_points=check_points,
-        adaptive_params=adaptive_params,
+        step_size_adaptor=step_size_adaptor,
     )
 
 
@@ -313,7 +313,7 @@ def _inv_logdet_odeint(
     filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
     collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
-    adaptive_params: Optional[Any] = None,
+    step_size_adaptor: Optional[StepSizeAdaptor] = None,
     trace_estimator: TraceEstimator = "exact",
     num_samples: int = 1,
     sample_dist: SampleDist = "rademacher",
@@ -375,7 +375,7 @@ def _inv_logdet_odeint(
         filter_state=None,
         collect_trace=False,
         check_points=check_points,
-        adaptive_params=adaptive_params,
+        step_size_adaptor=step_size_adaptor,
     )
     return yT, logdetsT
 

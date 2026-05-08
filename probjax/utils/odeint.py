@@ -6,7 +6,7 @@ from jax import Array
 from jaxtyping import PyTree
 
 from probjax.utils.functions import generic_drift
-from probjax.utils.odeutil import AdaptiveParams, _odeint_custom
+from probjax.utils.odeutil import StepSizeAdaptor, _odeint_custom
 from probjax.utils.odeutil.inversion import SampleDist, TraceEstimator
 
 
@@ -37,7 +37,7 @@ def odeint(
     filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
     collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
-    adaptive_params: Optional[AdaptiveParams] = None,
+    step_size_adaptor: Optional[StepSizeAdaptor] = None,
     logdet_rng: Optional[Array] = None,
     trace_estimator: TraceEstimator = "exact",
     num_samples: int = 1,
@@ -70,7 +70,14 @@ def odeint(
         collect_trace: If ``True`` (default) return the filtered state at
             every time point; otherwise return only the filtered terminal state.
         check_points: Optional index sequence for checkpointed grid integration.
-        adaptive_params: Parameters for adaptive integration methods.
+        step_size_adaptor: Step-size controller for **adaptive** solver
+            methods (``"dopri5"``, ``"dopri8"``, ``"bosh3"``, …). Pass an
+            instance of :class:`~probjax.utils.odeutil.adaptive.StepSizeAdaptor`
+            (or a subclass) to tune ``rtol`` / ``atol`` / clip bounds /
+            controller behavior. Ignored entirely by fixed-step methods
+            (``"rk4"``, ``"euler"``, ``"midpoint"``, …). Defaults to
+            :class:`StepSizeAdaptor()` with the standard Hairer–Wanner
+            controller.
         logdet_rng: RNG key for stochastic log-determinant estimators.
             Required when ``trace_estimator="hutchinson"``. Ignored on the
             forward path; only consumed by
@@ -122,7 +129,7 @@ def odeint(
         filter_state=filter_state,
         collect_trace=collect_trace,
         check_points=check_points,
-        adaptive_params=adaptive_params,
+        step_size_adaptor=step_size_adaptor,
         trace_estimator=trace_estimator,
         num_samples=num_samples,
         sample_dist=sample_dist,

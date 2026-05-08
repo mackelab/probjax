@@ -6,6 +6,7 @@ from jax import Array
 from jaxtyping import Key, PyTree
 
 from probjax.utils.functions import generic_drift
+from probjax.utils.sdeutil.adaptive import SDEStepSizeAdaptor
 from probjax.utils.sdeutil.core import _sdeint
 
 
@@ -37,6 +38,7 @@ def sdeint(
     filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
     collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
+    step_size_adaptor: Optional[SDEStepSizeAdaptor] = None,
 ) -> Union[
     Optional[PyTree[Array]],
     Tuple[Any, Optional[PyTree[Array]]],
@@ -91,6 +93,18 @@ def sdeint(
             (``False``). Must be ``True`` when returning Brownian paths.
         check_points: Optional index sequence for checkpointed grid
             integration.
+        step_size_adaptor: When provided, switches integration to an
+            adaptive step-doubling Euler-Maruyama scheme driven by the
+            given controller. Pass
+            :class:`~probjax.utils.sdeutil.adaptive.WeakStepSizeAdaptor`
+            for distributional / weak quantities (resamples noise on
+            rejection — cheaper) or
+            :class:`~probjax.utils.sdeutil.adaptive.StrongStepSizeAdaptor`
+            for per-path consistency (refines a single Brownian path via
+            a virtual tree). Currently restricted to **diagonal noise**
+            and ignores ``method`` (always uses Euler-Maruyama with
+            step-doubling error estimation). Defaults to ``None``
+            (fixed-step integration via ``method``).
 
     Returns:
         When ``return_brownian=False``: the filtered trajectory (if
@@ -130,4 +144,5 @@ def sdeint(
         filter_state=filter_state,
         collect_trace=collect_trace,
         check_points=check_points,
+        step_size_adaptor=step_size_adaptor,
     )
