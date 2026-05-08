@@ -5,7 +5,7 @@ from typing import Any, cast
 
 from probjax.utils.functions import const_diffusion, linear_drift, split_drift
 from probjax.utils.odeint import odeint
-from probjax.utils.odeutil import AdaptiveParams
+from probjax.utils.odeutil import StepSizeAdaptor
 from probjax.utils.odeutil import TraceNothing
 from probjax.utils.sdeint import sdeint
 
@@ -29,13 +29,13 @@ def test_odeint_basic_linear_ode(linear_ode_problem, ode_method):
         return
 
     x0, drift, f_true = linear_ode_problem
-    adaptive_params = AdaptiveParams(atol=1e-2, rtol=1e-2)
+    step_size_adaptor = StepSizeAdaptor(atol=1e-2, rtol=1e-2)
     f_approx = odeint(
         drift,
         x0,
         ts_dense,
         method=ode_method,
-        adaptive_params=adaptive_params,
+        step_size_adaptor=step_size_adaptor,
         collect_trace=True,
     )
     f_true = f_true(ts_dense, x0)
@@ -49,13 +49,13 @@ def test_odeint_split_drift_ode(split_drift_ode_problem, ode_method):
         return
 
     x0, drift, f_true = split_drift_ode_problem
-    adaptive_params = AdaptiveParams(atol=1e-2, rtol=1e-2)
+    step_size_adaptor = StepSizeAdaptor(atol=1e-2, rtol=1e-2)
     f_approx = odeint(
         drift,
         x0,
         ts_dense,
         method=ode_method,
-        adaptive_params=adaptive_params,
+        step_size_adaptor=step_size_adaptor,
         collect_trace=True,
     )
     f_true = f_true(ts_dense, x0)
@@ -73,13 +73,13 @@ def test_odeint_nonlienar_ode(nonlinear_ode_problem, ode_method):
         return
 
     x0, drift, f_true = nonlinear_ode_problem
-    adaptive_params = AdaptiveParams(atol=1e-2, rtol=1e-2)
+    step_size_adaptor = StepSizeAdaptor(atol=1e-2, rtol=1e-2)
     f_approx = odeint(
         drift,
         x0,
         ts_dense,
         method=ode_method,
-        adaptive_params=adaptive_params,
+        step_size_adaptor=step_size_adaptor,
         collect_trace=True,
     )
     f_true = f_true(ts_dense, x0)

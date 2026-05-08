@@ -73,8 +73,8 @@ class SDEStepSizeAdaptor(StepSizeAdaptor):
     def __init__(
         self,
         *,
-        max_inner_steps: int = 256,
-        unroll: int = 1,
+        max_inner_steps: int = 64,
+        unroll: int = 2,
         warn_on_boundary: bool = True,
         **kwargs,
     ):
@@ -82,14 +82,19 @@ class SDEStepSizeAdaptor(StepSizeAdaptor):
         Args:
             max_inner_steps: Static cap on inner adaptive iterations between
                 two output points. Drives the bounded :func:`jax.lax.scan`
-                length so the loop is reverse-mode differentiable. Set
-                generously: rejected steps and tight tolerances both
-                consume budget.
+                length so the loop is reverse-mode differentiable. The
+                scan **always** runs this many iterations (no-op past
+                completion), so larger values cost proportionally more
+                wall-clock. Default ``64`` is enough for typical
+                ``rtol/atol ≈ 1e-2``; raise it for tight tolerances or
+                stiff problems and a :class:`RuntimeWarning` will fire
+                when it's the wrong call.
             unroll: Static unroll factor for the inner scan. Higher values
                 let XLA fuse more work per loop iteration at the cost of
-                larger compiled code; default ``1`` keeps compile time low.
-                Try ``2`` or ``4`` if the inner step is small relative to
-                scheduling overhead.
+                larger compiled code; default ``2`` is a small sweet spot.
+                Try ``4`` or ``8`` if the inner step is small relative to
+                scheduling overhead, or drop to ``1`` to minimize compile
+                time.
             warn_on_boundary: If ``True`` (default), emit a host-side
                 ``RuntimeWarning`` via ``jax.debug.callback`` whenever
                 ``max_inner_steps`` is exhausted before reaching the next

@@ -24,37 +24,52 @@ from jaxtyping import Key
 from probjax.utils.sdeutil.adaptive import SDEStepSizeAdaptor
 
 
-def _maybe_warn_boundary(adaptor, total_hits, n_segments: int) -> None:
-    """Emit a single host warning iff the budget was exhausted *often*.
+def warn_boundary_hits(adaptor, total_hits, n_segments: int) -> None:
+    """Host-side warning emitter — call **after** the JIT'd integrator returns.
+
+    Lives outside the JIT graph because :func:`jax.debug.callback` dispatches
+    once per :func:`jax.vmap` element, which crushes throughput on heavy
+    batched workloads even when the callback ends up silent. By accepting
+    a concrete (non-traced) ``total_hits`` after the JIT call, the threshold
+    check costs nothing under vmap.
 
     "Often" means at least ``max(2, n_segments // 4)`` of the output
-    segments needed every one of ``max_inner_steps`` iterations. A handful
-    of hits is ignored — that's the "usually fine" regime the user
-    probably doesn't want to hear about.
+    segments exhausted ``max_inner_steps``. A handful of hits is ignored.
+    Under vmap, ``total_hits`` is an array; we warn if any element crosses
+    the threshold and report how many.
     """
     if not adaptor.warn_on_boundary or n_segments == 0:
         return
 
+    import warnings
+
     threshold = max(2, n_segments // 4)
+    max_steps = int(adaptor.max_inner_steps)
+    hits_arr = jnp.asarray(total_hits)
 
-    def _warn(hits, total, max_steps):
-        import warnings
+    if hits_arr.ndim == 0:
+        hits_i = int(hits_arr)
+        if hits_i >= threshold:
+            warnings.warn(
+                f"Adaptive SDE integrator exhausted max_inner_steps={max_steps} "
+                f"on {hits_i}/{n_segments} output segments. "
+                "Increase max_inner_steps or relax rtol/atol.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+        return
 
+    bad = int((hits_arr >= threshold).sum())
+    if bad > 0:
+        worst = int(hits_arr.max())
         warnings.warn(
-            f"Adaptive SDE integrator exhausted max_inner_steps={int(max_steps)} "
-            f"on {int(hits)}/{int(total)} output segments. "
+            f"Adaptive SDE integrator exhausted max_inner_steps={max_steps} "
+            f"on {bad}/{hits_arr.shape[0]} batched trajectories "
+            f"(worst case: {worst}/{n_segments} segments). "
             "Increase max_inner_steps or relax rtol/atol.",
             RuntimeWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
-
-    jax.lax.cond(
-        total_hits >= threshold,
-        lambda: jax.debug.callback(
-            _warn, total_hits, jnp.int32(n_segments), jnp.int32(adaptor.max_inner_steps)
-        ),
-        lambda: None,
-    )
 
 
 def _step_double_em(
@@ -221,5 +236,4 @@ def _sdeint_adaptive(
         )
         ys = None
 
-    _maybe_warn_boundary(adaptor, total_hits, n_segments)
-    return final_carry[1], ys
+    return final_carry[1], ys, total_hits

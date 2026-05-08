@@ -8,6 +8,7 @@ from jaxtyping import Key, PyTree
 from probjax.utils.functions import generic_drift
 from probjax.utils.sdeutil.adaptive import SDEStepSizeAdaptor
 from probjax.utils.sdeutil.core import _sdeint
+from probjax.utils.sdeutil.integrate_adaptive import warn_boundary_hits
 
 
 def _wrap_if_plain_callable(
@@ -129,7 +130,7 @@ def sdeint(
     """
     drift = _wrap_if_plain_callable(drift)
     diffusion = _wrap_if_plain_callable(diffusion)
-    return _sdeint(
+    result = _sdeint(
         rng,
         drift,
         diffusion,
@@ -146,3 +147,23 @@ def sdeint(
         check_points=check_points,
         step_size_adaptor=step_size_adaptor,
     )
+    # ``_sdeint`` appends an adaptive-diagnostic hit count as the last
+    # element of its return so we can warn host-side (no per-vmap-element
+    # callback overhead). Strip it before returning to the user; warn iff
+    # the controller ran out of budget on a meaningful fraction of the
+    # output segments.
+    if return_state:
+        state_obj, payload, diag_hits = result
+        out = (state_obj, payload)
+    else:
+        payload, diag_hits = result
+        out = payload
+    # Host-side boundary warning. Skip when a tracer flows through (under
+    # ``jax.vmap`` / ``jax.jit`` of ``sdeint`` itself); the warning will
+    # surface from the outermost concrete invocation. ``jax.core.Tracer``
+    # check costs nothing under vmap and avoids the per-element callback
+    # dispatch we'd pay if the warn lived inside the JIT graph.
+    if step_size_adaptor is not None and not isinstance(diag_hits, jax.core.Tracer):
+        n_segments = int(jnp.atleast_1d(jnp.asarray(ts)).shape[0]) - 1
+        warn_boundary_hits(step_size_adaptor, diag_hits, n_segments)
+    return out

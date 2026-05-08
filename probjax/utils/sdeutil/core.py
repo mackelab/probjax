@@ -308,7 +308,7 @@ def _sdeint(
         # step-doubled Euler-Maruyama (strong order 0.5 → effective order 1
         # for the doubled-difference estimator).
         adaptor = step_size_adaptor.with_order(1)
-        terminal_state, ys = _sdeint_adaptive(
+        terminal_state, ys, _adaptive_total_hits = _sdeint_adaptive(
             drift_raveled,
             diffusion_solver,
             adaptor,
@@ -386,7 +386,15 @@ def _sdeint(
     else:
         payload = trace_output
 
+    # Diagnostic for the adaptive path: total budget exhaustions across
+    # output segments. Always returned as the last element so the public
+    # ``sdeint`` wrapper can warn host-side without paying per-vmap-element
+    # callback overhead. Zero on the fixed-step path.
+    diag_hits = (
+        _adaptive_total_hits if step_size_adaptor is not None else jnp.int32(0)
+    )
+
     if return_state:
         frozen_state = jax.tree_util.tree_map(jax.lax.stop_gradient, state)
-        return frozen_state, payload
-    return payload
+        return frozen_state, payload, diag_hits
+    return payload, diag_hits
