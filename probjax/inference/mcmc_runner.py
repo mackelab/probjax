@@ -23,7 +23,6 @@ class MCMC(WithProgressBarAPI):
     """
 
     _default_tracked_stats = ("logdensity", "acceptance_rate")
-    _ema_gamma = 0.9
 
     def __init__(
         self,
@@ -34,50 +33,6 @@ class MCMC(WithProgressBarAPI):
         self.kernel = kernel
         self.verbose = verbose
         self.tracked_stats = tracked_stats or self._default_tracked_stats
-
-    # ------------------------------------------------------------------
-    # Stat extraction – no probe call, resolved at JAX trace time
-    # ------------------------------------------------------------------
-
-    def _extract_stats(self, state, info):
-        """Return a fixed-size tuple of floats, one per tracked stat.
-
-        For each name in ``self.tracked_stats`` we try ``state.<name>``
-        first, then ``info.<name>``.  If neither has the attribute the
-        value is ``NaN``.  Attribute lookup happens at Python / trace
-        time so the pytree structure is always static.
-        """
-        stats = []
-        for name in self.tracked_stats:
-            val = getattr(state, name, None)
-            if val is None:
-                val = getattr(info, name, None)
-            if val is None:
-                stats.append(jnp.float32(jnp.nan))
-            else:
-                stats.append(jnp.float32(val))
-        return tuple(stats)
-
-    # ------------------------------------------------------------------
-    # Verbose helpers (shared by run / sample)
-    # ------------------------------------------------------------------
-
-    def _make_verbose_fns(self, num_steps):
-        gamma = self._ema_gamma
-        names = self.tracked_stats
-        n = len(names)
-
-        def update_stats(stats, _carry, step_stats):
-            return tuple(
-                gamma * stats[i] + (1 - gamma) * step_stats[i] for i in range(n)
-            )
-
-        def print_fn(i, total, stats):
-            type(self)._write_progress(type(self), i, total, stats, names)
-
-        init_stats = tuple(0.0 for _ in names)
-        print_rate = num_steps // self._print_rate + 1
-        return update_stats, print_fn, init_stats, print_rate
 
     # ------------------------------------------------------------------
     # run

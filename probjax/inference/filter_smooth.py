@@ -13,6 +13,7 @@ from probjax.inference.filtering.smoothing import (
 from probjax.utils.jaxutils import (
     WithProgressBarAPI,
     nested_checkpoint_scan,
+    print_scan,
 )
 
 
@@ -175,19 +176,20 @@ class Filter(WithProgressBarAPI):
             If ``False``, use OO API with stored params via ``set_params()``.
     """
 
-    _running_stats = ("log_likelihood",)
-    _ema_gamma = 0.9
+    _default_tracked_stats = ("log_likelihood",)
 
     def __init__(
         self,
         kernel: Union[FilterKernel, Callable[[Any], FilterKernel]],
         verbose: bool = False,
         frozen: bool = True,
+        tracked_stats: Optional[Tuple[str, ...]] = None,
     ) -> None:
         self.kernel = kernel
         self.verbose = verbose
         self.frozen = frozen
         self._stored_params = {}
+        self.tracked_stats = tracked_stats or self._default_tracked_stats
 
     def set_params(self, **kwargs) -> "Filter":
         """Store parameters for the OO API (when frozen=False).
@@ -199,11 +201,6 @@ class Filter(WithProgressBarAPI):
         """
         self._stored_params.update(kwargs)
         return self
-
-    def _extract_stats(self, info):
-        if info is not None and hasattr(info, "log_likelihood"):
-            return (jnp.float32(info.log_likelihood),)
-        return (jnp.float32(jnp.nan),)
 
     def step(
         self,
@@ -321,46 +318,23 @@ class Filter(WithProgressBarAPI):
 
         carry = (initial_state, key)
         scan_in = (ts[1:], obs_mask[1:], observations[1:])
+        num_steps = ts[1:].shape[0]
 
         if self.verbose:
-            gamma = self._ema_gamma
-            num_steps = ts[1:].shape[0]
-
-            def verbose_scan_fn(carry, scan_in):
-                state, key, ema_ll = carry
-                t, has_obs, obs = scan_in
-                key, subkey = jax.random.split(key)
-
-                def update_fn(subkey, state, obs):
-                    state, info = kernel(state, t=t, observed=obs, rng_key=subkey)
-                    return state, info
-
-                def predict_fn(subkey, state, obs):
-                    state, info = kernel(state, t=t, rng_key=subkey)
-                    return state, info
-
-                state, info = jax.lax.cond(
-                    has_obs, update_fn, predict_fn, subkey, state, obs
-                )
-                out = unpack_fn(state, info)
-
-                ll = self._extract_stats(info)[0]
-                ema_ll = gamma * ema_ll + (1 - gamma) * ll
-                print_rate = num_steps // self._print_rate + 1
-                jax.debug.callback(
-                    lambda step, total, stats: type(self)._write_progress(
-                        type(self), step, total, stats, ("log_likelihood",)
-                    ),
-                    0,  # step counter - not used in this simplified version
-                    num_steps,
-                    (ema_ll,),
-                )
-
-                return (state, key, ema_ll), (state, info, out)
-
-            carry_v = (initial_state, key, jnp.float32(0.0))
-            _, (states, infos, output) = jax.lax.scan(
-                verbose_scan_fn, carry_v, scan_in, unroll=unroll
+            update_stats, print_fn, init_stats, print_rate = self._make_verbose_fns(
+                num_steps,
+                stats_fn=lambda _carry, y: self._extract_stats(y[0], y[1]),
+            )
+            _, (states, infos, output) = print_scan(
+                scan_fn,
+                carry,
+                init_stats,
+                xs=scan_in,
+                length=num_steps,
+                unroll=unroll,
+                update_stats=update_stats,
+                print_fn=print_fn,
+                print_rate=print_rate,
             )
         elif checkpoint_lengths is None:
             _, (states, infos, output) = jax.lax.scan(

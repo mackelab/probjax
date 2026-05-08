@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Iterable, Optional, Tuple
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -9,13 +9,44 @@ from probjax.inference.smc.base import SMCKernel
 from probjax.utils.jaxutils import WithProgressBarAPI, print_scan
 
 
-class SMC(WithProgressBarAPI):
-    _running_stats = ("log_likelihood_increment",)
-    _state_gamma = 0.9
+def _ess_from_weights(state, _info):
+    """Effective sample size from normalized SMC weights: 1 / sum(w^2)."""
+    return 1.0 / jnp.sum(state.weights**2)
 
-    def __init__(self, kernel: SMCKernel, verbose: bool = False) -> None:
+
+class SMC(WithProgressBarAPI):
+    """Run an SMC kernel, optionally displaying a progress bar with diagnostics.
+
+    Defaults track ESS (the canonical particle-collapse indicator),
+    log-likelihood increment, and an acceptance rate sourced either from the
+    SMC info or from the inner MCMC kernel info (``info.update_info``).
+
+    Args:
+        kernel: An :class:`SMCKernel`.
+        verbose: If ``True``, display a progress bar with running stats.
+        tracked_stats: Names of scalars to display. Each name is looked up on
+            **state**, then **info**, then ``info.update_info`` (the inner
+            MCMC kernel info), then in the computed registry (``"ess"``).
+            Names may be dotted paths. Defaults to
+            ``("ess", "log_likelihood_increment", "acceptance_rate")``.
+    """
+
+    _default_tracked_stats = ("ess", "log_likelihood_increment", "acceptance_rate")
+    _computed_stats = {"ess": _ess_from_weights}
+
+    def __init__(
+        self,
+        kernel: SMCKernel,
+        verbose: bool = False,
+        tracked_stats: Optional[Tuple[str, ...]] = None,
+    ) -> None:
         self.kernel = kernel
         self.verbose = verbose
+        self.tracked_stats = tracked_stats or self._default_tracked_stats
+
+    def _stat_objects(self, state, info):
+        # Inner MCMC kernel info commonly carries acceptance_rate / logdensity.
+        return (state, info, getattr(info, "update_info", None))
 
     @partial(jax.jit, static_argnums=(0, 5))
     def run(
@@ -38,37 +69,29 @@ class SMC(WithProgressBarAPI):
             )
             if tune_params:
                 params = self.kernel.tune_params(new_state, info, params, **tune_kwargs)
-            return (key, new_state, params), info_filter(info)
+            stats = self._extract_stats(new_state, info) if self.verbose else None
+            return (key, new_state, params), stats
 
         if not self.verbose:
-            info_filter = lambda x: None
             (key, out_state, out_params), _ = jax.lax.scan(
                 scan_fn, (key, state, mcmc_parameters), tempering_params
             )
             return out_state, out_params
-        else:
-            info_filter = lambda x: tuple(
-                getattr(x, stat) for stat in self._running_stats
-            )
-            update_stats = lambda stats, _, y: tuple(
-                self._state_gamma * stats[i] + (1 - self._state_gamma) * y[i]
-                for i in range(len(stats))
-            )
-            print_fn = lambda i, total, st: type(self)._write_progress(
-                type(self), i, total, st
-            )
-            init_stats = tuple([0.0 for _ in self._running_stats])
-            (key, out_state, out_params), _ = print_scan(
-                scan_fn,
-                (key, state, mcmc_parameters),
-                init_stats,
-                xs=tempering_params,
-                length=tempering_params.shape[0],
-                update_stats=update_stats,
-                print_fn=print_fn,
-                print_rate=tempering_params.shape[0] // self._print_rate + 1,
-            )
-            return out_state, out_params
+
+        update_stats, print_fn, init_stats, print_rate = self._make_verbose_fns(
+            tempering_params.shape[0]
+        )
+        (key, out_state, out_params), _ = print_scan(
+            scan_fn,
+            (key, state, mcmc_parameters),
+            init_stats,
+            xs=tempering_params,
+            length=tempering_params.shape[0],
+            update_stats=update_stats,
+            print_fn=print_fn,
+            print_rate=print_rate,
+        )
+        return out_state, out_params
 
     def sample(
         self,
