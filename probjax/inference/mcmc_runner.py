@@ -62,32 +62,36 @@ class MCMC(WithProgressBarAPI):
         if params is None:
             params = self.kernel.init_params(state)
 
-        def scan_fn(carry, xs):
-            key, state = carry
-            key, new_key = jax.random.split(key)
-            if xs is None:
-                new_state, info = self.kernel(key, state, params)
-            else:
-                new_state, info = self.kernel(key, state, params, *xs)
-            stats = self._extract_stats(new_state, info)
-            return (new_key, new_state), stats
+        keys = jax.random.split(key, num_steps)
+        scan_xs = keys if args is None else (keys, args)
 
-        carry = (key, state)
+        def scan_fn(carry, xs):
+            (state,) = carry
+            if args is None:
+                step_key = xs
+                new_state, info = self.kernel(step_key, state, params)
+            else:
+                step_key, step_args = xs
+                new_state, info = self.kernel(step_key, state, params, *step_args)
+            stats = self._extract_stats(new_state, info)
+            return (new_state,), stats
+
+        carry = (state,)
         scan_length = num_steps if args is None else None
 
         if not self.verbose:
-            (_, out_state), _ = jax.lax.scan(
-                scan_fn, carry, xs=args, length=scan_length
+            (out_state,), _ = jax.lax.scan(
+                scan_fn, carry, xs=scan_xs, length=scan_length
             )
         else:
             update_stats, print_fn, init_stats, print_rate = self._make_verbose_fns(
                 num_steps
             )
-            (_, out_state), _ = print_scan(
+            (out_state,), _ = print_scan(
                 scan_fn,
                 carry,
                 init_stats,
-                xs=args,
+                xs=scan_xs,
                 length=scan_length,
                 update_stats=update_stats,
                 print_fn=print_fn,
@@ -136,31 +140,37 @@ class MCMC(WithProgressBarAPI):
         else:
             outer_args = None
 
+        keys = jax.random.split(key, (num_samples, thin))
+
         def scan_fn(carry, xs):
             if outer_args is None:
-                i = xs
+                i, keys_chunk = xs
                 step_args_chunk = None
             else:
-                i, step_args_chunk = xs
+                i, keys_chunk, step_args_chunk = xs
 
-            samples, key, state = carry
-            key, new_key = jax.random.split(key)
+            samples, state = carry
 
-            def inner_scan_fn(carry, inner_xs):
-                key, state = carry
-                key, new_key = jax.random.split(key)
-                if inner_xs is None:
-                    new_state, info = self.kernel(key, state, params)
+            def inner_scan_fn(state, inner_xs):
+                if step_args_chunk is None:
+                    step_key = inner_xs
+                    new_state, info = self.kernel(step_key, state, params)
                 else:
-                    new_state, info = self.kernel(key, state, params, *inner_xs)
+                    step_key, step_args = inner_xs
+                    new_state, info = self.kernel(step_key, state, params, *step_args)
                 stats = self._extract_stats(new_state, info)
-                return (new_key, new_state), stats
+                return new_state, stats
 
-            (_, new_state), step_stats = jax.lax.scan(
+            inner_xs = (
+                keys_chunk
+                if step_args_chunk is None
+                else (keys_chunk, step_args_chunk)
+            )
+            new_state, step_stats = jax.lax.scan(
                 inner_scan_fn,
-                (new_key, state),
-                xs=step_args_chunk,
-                length=thin if step_args_chunk is None else None,
+                state,
+                xs=inner_xs,
+                length=thin,
             )
 
             samples = jax.tree_util.tree_map(
@@ -168,23 +178,25 @@ class MCMC(WithProgressBarAPI):
             )
             # Average the per-thinning-step stats for the progress bar
             avg_stats = jax.tree_util.tree_map(jnp.mean, step_stats)
-            return (samples, new_key, new_state), avg_stats
+            return (samples, new_state), avg_stats
 
         # Outer scan xs: always includes indices, optionally args chunks
         indices = jnp.arange(num_samples)
-        outer_xs = (indices, outer_args) if outer_args is not None else indices
+        outer_xs = (
+            (indices, keys, outer_args) if outer_args is not None else (indices, keys)
+        )
 
         if not self.verbose:
-            carry = (samples, key, state)
-            (samples, _, state), _ = jax.lax.scan(
+            carry = (samples, state)
+            (samples, state), _ = jax.lax.scan(
                 scan_fn, carry, outer_xs, length=num_samples
             )
         else:
             update_stats, print_fn, init_stats, print_rate = self._make_verbose_fns(
                 num_samples
             )
-            carry = (samples, key, state)
-            (samples, _, state), _ = print_scan(
+            carry = (samples, state)
+            (samples, state), _ = print_scan(
                 scan_fn,
                 carry,
                 init_stats,

@@ -61,31 +61,33 @@ class SMC(WithProgressBarAPI):
         if tune_kwargs is None:
             tune_kwargs = {}
 
-        def scan_fn(carry, t):
-            key, state, params = carry
-            key, new_key = jax.random.split(key)
+        keys = jax.random.split(key, tempering_params.shape[0])
+
+        def scan_fn(carry, xs):
+            state, params = carry
+            t, step_key = xs
             new_state, info = self.kernel.step(
-                new_key, state, tempering_param=t, mcmc_parameters=params
+                step_key, state, tempering_param=t, mcmc_parameters=params
             )
             if tune_params:
                 params = self.kernel.tune_params(new_state, info, params, **tune_kwargs)
             stats = self._extract_stats(new_state, info) if self.verbose else None
-            return (key, new_state, params), stats
+            return (new_state, params), stats
 
         if not self.verbose:
-            (key, out_state, out_params), _ = jax.lax.scan(
-                scan_fn, (key, state, mcmc_parameters), tempering_params
+            (out_state, out_params), _ = jax.lax.scan(
+                scan_fn, (state, mcmc_parameters), (tempering_params, keys)
             )
             return out_state, out_params
 
         update_stats, print_fn, init_stats, print_rate = self._make_verbose_fns(
             tempering_params.shape[0]
         )
-        (key, out_state, out_params), _ = print_scan(
+        (out_state, out_params), _ = print_scan(
             scan_fn,
-            (key, state, mcmc_parameters),
+            (state, mcmc_parameters),
             init_stats,
-            xs=tempering_params,
+            xs=(tempering_params, keys),
             length=tempering_params.shape[0],
             update_stats=update_stats,
             print_fn=print_fn,
@@ -110,13 +112,14 @@ class SMC(WithProgressBarAPI):
             lambda x: jnp.empty((num_steps,) + x.shape), state.particles
         )
         weights = jnp.empty((num_steps,) + state.weights.shape)
+        keys = jax.random.split(key, num_steps)
 
-        def scan_fn(carry, i):
-            particles, weights, key, state, params = carry
-            key, new_key = jax.random.split(key)
+        def scan_fn(carry, xs):
+            particles, weights, state, params = carry
+            i, step_key = xs
             t = tempering_params[i]
             new_state, info = self.kernel.step(
-                new_key, state, tempering_param=t, mcmc_parameters=params
+                step_key, state, tempering_param=t, mcmc_parameters=params
             )
             if tune_params:
                 params = self.kernel.tune_params(new_state, info, params, **tune_kwargs)
@@ -125,12 +128,12 @@ class SMC(WithProgressBarAPI):
                 lambda s, s_new: s.at[i].set(s_new), particles, new_state.particles
             )
             weights = weights.at[i].set(new_state.weights)
-            return (particles, weights, new_key, new_state, params), None
+            return (particles, weights, new_state, params), None
 
-        (particles, weights, _, final_state, final_params), _ = jax.lax.scan(
+        (particles, weights, final_state, final_params), _ = jax.lax.scan(
             scan_fn,
-            (particles, weights, key, state, mcmc_parameters),
-            jnp.arange(num_steps),
+            (particles, weights, state, mcmc_parameters),
+            (jnp.arange(num_steps), keys),
             length=num_steps,
         )
 

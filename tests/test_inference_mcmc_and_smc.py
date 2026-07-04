@@ -1,3 +1,5 @@
+from typing import NamedTuple
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -20,6 +22,7 @@ from probjax.inference.mcmc import (
     sgnht,
     slice,
 )
+from probjax.inference.mcmc.base import MarkovKernel, Params
 from probjax.inference.mcmc.pmmcmc import pseudo_marginal
 from probjax.inference.mcmc.sgmcmc import grad_estimator
 from probjax.inference.mcmc_runner import MCMC
@@ -28,6 +31,7 @@ from probjax.inference.smc import (
     persistent_smc_kernel,
     adaptive_persistent_smc_kernel,
 )
+from probjax.inference.smc.base import SMCKernel
 from probjax.inference.smc.path import GeometricPath, PartialPosteriorsPath
 from probjax.inference.smc_runner import SMC
 
@@ -502,6 +506,47 @@ def test_adaptive_persistent_smc_multiple_steps():
     assert state.iteration == 5
 
 
+class _KeyRecordingSMCState(NamedTuple):
+    particles: jax.Array
+    weights: jax.Array
+
+
+class _KeyRecordingSMCInfo(NamedTuple):
+    pass
+
+
+def test_smc_runner_sample_advances_key_past_kernel_step():
+    """SMC.sample must not reuse a key consumed inside the previous step."""
+
+    def init(particles, rng_key=None):
+        return _KeyRecordingSMCState(particles, jnp.ones((1,)))
+
+    def step(key, state, tempering_param, mcmc_parameters):
+        _, step_key = jax.random.split(key)
+        return (
+            _KeyRecordingSMCState(jnp.stack([key, step_key]), state.weights),
+            _KeyRecordingSMCInfo(),
+        )
+
+    kernel = SMCKernel(
+        init=init,
+        step=step,
+        init_params=lambda *args, **kwargs: {},
+        tune_params=lambda state, info, params, **kwargs: params,
+    )
+    state = kernel.init(jnp.zeros((2, 2), dtype=jnp.uint32))
+    runner = SMC(kernel)
+
+    particles, _, _, _ = runner.sample(
+        jax.random.PRNGKey(0),
+        state,
+        tempering_params=jnp.arange(4),
+        mcmc_parameters={},
+    )
+
+    assert not jnp.any(jnp.all(particles[:-1, 1] == particles[1:, 0], axis=1))
+
+
 # ---------------------------------------------------------------------------
 # SG-MCMC tests — minibatch via *args
 # ---------------------------------------------------------------------------
@@ -619,6 +664,49 @@ def test_mcmc_runner_run_without_args_unchanged():
     final_state = runner.run(key, state, 10, params=params)
 
     assert final_state.position.shape == position.shape
+
+
+class _KeyRecordingState(NamedTuple):
+    position: jax.Array
+
+
+class _KeyRecordingInfo(NamedTuple):
+    pass
+
+
+def test_mcmc_runner_sample_advances_key_past_inner_scan():
+    """Thinned sampling must not reuse keys consumed by the previous sample."""
+
+    def init(position, rng_key=None):
+        return _KeyRecordingState(position)
+
+    def step(key, state, params, *args):
+        return (
+            _KeyRecordingState(jnp.stack([state.position[1], key])),
+            _KeyRecordingInfo(),
+        )
+
+    kernel = MarkovKernel(
+        logdensity_fn=lambda x: 0.0,
+        init=init,
+        step=step,
+        init_params=lambda state: Params(),
+        fit_params=lambda *args, **kwargs: None,
+    )
+
+    initial_position = jnp.zeros((2, 2), dtype=jnp.uint32)
+    state = kernel.init(initial_position)
+    runner = MCMC(kernel, tracked_stats=())
+
+    samples, _ = runner.sample(
+        jax.random.PRNGKey(0),
+        state,
+        num_samples=4,
+        params=kernel.init_params(state),
+        thin=2,
+    )
+
+    assert not jnp.any(jnp.all(samples[:-1, 1] == samples[1:, 0], axis=1))
 
 
 @pytest.mark.parametrize("kernel_fn", [sgld, sgnht])
