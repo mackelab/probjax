@@ -1,6 +1,6 @@
 """
-Independent Distribution (:mod:`probjax.stats.independent`)
-==================================================
+Independent Distribution (:mod:`probjax.stats.indep`)
+====================================================
 
 This module contains the Independent distribution, which treats a distribution as a batch of independent distributions.
 """
@@ -15,7 +15,7 @@ from probjax.utils.typing import RngKey
 from .base import rv_continuous_frozen, rv_generic
 from .constraints import distribution
 
-__all__ = ["independent"]
+__all__ = ["indep"]
 
 
 def determine_shapes(
@@ -90,7 +90,7 @@ def determine_shapes(
     )
 
 
-class rv_frozen_independent(rv_continuous_frozen):
+class rv_frozen_indep(rv_continuous_frozen):
     """Frozen independent distribution."""
 
     def __init__(self, dist, base_dists, reinterpreted_batch_ndims, **kwargs):
@@ -108,7 +108,7 @@ class rv_frozen_independent(rv_continuous_frozen):
         self.base_dists = base_dists
 
 
-class independent_gen(rv_generic):
+class indep_gen(rv_generic):
     """Independent random variable.
 
     Creates an independent distribution by treating the provided distribution as
@@ -140,7 +140,7 @@ class independent_gen(rv_generic):
 
     def freeze(self, base_dists, reinterpreted_batch_ndims=1, **kwargs):
         """Freeze the independent distribution with the given parameters."""
-        return rv_frozen_independent(
+        return rv_frozen_indep(
             self,
             base_dists=base_dists,
             reinterpreted_batch_ndims=reinterpreted_batch_ndims,
@@ -299,4 +299,4 @@ class independent_gen(rv_generic):
         return fitted_dists
 
 
-independent = independent_gen(name="independent")
+indep = indep_gen(name="indep")

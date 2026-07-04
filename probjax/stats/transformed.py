@@ -40,6 +40,7 @@ class transformed_gen(rv_continuous):
         "base_dist": distribution,
         "bijector": callable,  # type: ignore[dict-item]
     }
+    extra_frozen_kwds = frozenset({"inverse_and_logdet"})
 
     def __init__(self, name: Optional[str] = None):
         super().__init__(name=name)

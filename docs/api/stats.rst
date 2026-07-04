@@ -11,7 +11,7 @@ This module includes:
 - Multivariate distributions
 - Transformed distributions
 - Mixture distributions
-- Independent distributions
+- Indep distributions
 
 Base Classes
 ------------
@@ -76,7 +76,7 @@ Higher-Order Distributions
 
    transformed
    mixture
-   independent
+    indep
 
 Bijective Transforms
 --------------------
@@ -107,7 +107,7 @@ Detailed Documentation
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: probjax.stats.independent
+.. automodule:: probjax.stats.indep
    :members:
    :undoc-members:
    :show-inheritance:

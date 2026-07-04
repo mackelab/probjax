@@ -9,6 +9,7 @@ that provide a SciPy-like API. This closely follows the structure of scipy.stats
 from __future__ import annotations
 
 from abc import ABC, ABCMeta, abstractmethod
+from dataclasses import dataclass
 from typing import Any, ClassVar, Mapping, Optional, Tuple, cast
 
 import jax
@@ -31,12 +32,20 @@ __all__ = [
 ]
 
 
+@dataclass(frozen=True)
+class _FrozenArgs:
+    args: tuple[Any, ...]
+    kwds: dict[str, Any]
+    parameter_values: dict[str, Any]
+
+
 class rv_generic(ABC):
     """Generic random variable class for common functionality."""
 
     name: ClassVar[Optional[str]] = None
     parameters: ClassVar[Mapping[str, Constraint]] = {}
     parameter_aliases: ClassVar[Mapping[str, str]] = {}
+    extra_frozen_kwds: ClassVar[frozenset[str]] = frozenset()
 
     def __init__(self, name: Optional[str] = None):
         if name is not None:
@@ -76,6 +85,50 @@ class rv_generic(ABC):
         )
         setattr(self, "_frozen_cls_cache", frozen_cls)
         return frozen_cls
+
+    @staticmethod
+    def _distribution_display_name(dist: Any) -> str:
+        return (
+            getattr(dist, "name", None)
+            or getattr(dist, "__name__", None)
+            or dist.__class__.__name__
+        )
+
+    @classmethod
+    def _bind_frozen_args_for_dist(
+        cls, dist: Any, args: tuple[Any, ...], kwds: Mapping[str, Any]
+    ) -> _FrozenArgs:
+        """Validate and bind frozen distribution arguments."""
+        parameters = tuple(getattr(dist, "parameters", {}).keys())
+        extra_kwds = set(getattr(dist, "extra_frozen_kwds", ()))
+        kwds_dict = dict(kwds)
+        dist_name = cls._distribution_display_name(dist)
+
+        if len(args) > len(parameters):
+            raise TypeError(
+                f"{dist_name} expected at most {len(parameters)} positional "
+                f"arguments, got {len(args)}."
+            )
+
+        positional_names = set(parameters[: len(args)])
+        duplicate_names = sorted(positional_names.intersection(kwds_dict))
+        if duplicate_names:
+            names = ", ".join(repr(name) for name in duplicate_names)
+            raise TypeError(f"{dist_name} got multiple values for argument {names}.")
+
+        valid_kwds = set(parameters).union(extra_kwds)
+        unexpected = sorted(set(kwds_dict).difference(valid_kwds))
+        if unexpected:
+            names = ", ".join(repr(name) for name in unexpected)
+            raise TypeError(f"{dist_name} got unexpected keyword argument {names}.")
+
+        parameter_values = {
+            name: value for name, value in zip(parameters, args, strict=False)
+        }
+        parameter_values.update(
+            {name: kwds_dict[name] for name in parameters if name in kwds_dict}
+        )
+        return _FrozenArgs(args=args, kwds=kwds_dict, parameter_values=parameter_values)
 
     def _freeze_as(
         self, base_frozen_cls: type["rv_frozen"], *args: Any, **kwds: Any
@@ -748,11 +801,14 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
         *args,
         **kwds,
     ):
-        self.args = tuple(args)
-        self.kwds = dict(kwds)
+        frozen_args = rv_generic._bind_frozen_args_for_dist(dist, tuple(args), kwds)
+        self.args = frozen_args.args
+        self.kwds = frozen_args.kwds
         self.dist = dist
 
-        self._refresh_parameter_state()
+        self._parameter_values = dict(frozen_args.parameter_values)
+        self._parameter_aliases = self._build_parameter_aliases()
+        self._call_kwds = self._build_call_kwargs()
 
         self._batch_shape, self._event_shape = self._compute_batch_and_event_shape(
             *self.args, **self.kwds

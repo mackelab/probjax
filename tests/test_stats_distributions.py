@@ -18,7 +18,7 @@ from probjax.stats import (
     gamma,
     geometric,
     # Higher-order distributions
-    independent,
+    indep,
     laplace,
     mixture,
     multivariate_normal,
@@ -59,7 +59,7 @@ CONTINUOUS_DIST = [
     multivariate_normal,
 ]
 DISCRETE_DIST = [bernoulli, binomial, categorical, poisson, geometric, dirac]
-SPECIAL_DIST = [independent, transformed, mixture]
+SPECIAL_DIST = [indep, transformed, mixture]
 
 FIT_TEST_CASES = [
     {
@@ -374,6 +374,46 @@ def test_distribution_class_attributes(dist):
     assert hasattr(dist, 'rvs') and callable(dist.rvs), "Missing rvs"
 
 
+def test_frozen_init_rejects_invalid_arguments():
+    with pytest.raises(TypeError, match="unexpected keyword argument 'foo'"):
+        norm(foo=1.0)
+
+    with pytest.raises(TypeError, match="expected at most 2 positional arguments"):
+        norm(0.0, 1.0, 2.0)
+
+    with pytest.raises(TypeError, match="multiple values for argument 'loc'"):
+        norm(0.0, loc=1.0)
+
+
+def test_frozen_init_rejects_invalid_special_distribution_keywords():
+    base_dist = norm(0.0, 1.0)
+
+    with pytest.raises(TypeError, match="unexpected keyword argument 'foo'"):
+        categorical(jnp.array([1.0]), foo=True)
+
+    with pytest.raises(TypeError, match="unexpected keyword argument 'foo'"):
+        indep(base_dist, foo=True)
+
+    with pytest.raises(TypeError, match="unexpected keyword argument 'foo'"):
+        mixture(jnp.array([1.0]), [base_dist], foo=True)
+
+    with pytest.raises(TypeError, match="unexpected keyword argument 'foo'"):
+        transformed(base_dist, lambda x: x, foo=True)
+
+
+def test_transformed_accepts_inverse_and_logdet_frozen_keyword():
+    def inverse_and_logdet(y):
+        return y, jnp.zeros_like(y)
+
+    dist = transformed(
+        norm(0.0, 1.0),
+        lambda x: x,
+        inverse_and_logdet=inverse_and_logdet,
+    )
+
+    assert dist.kwds["inverse_and_logdet"] is inverse_and_logdet
+
+
 @pytest.mark.parametrize("dist", CONTINUOUS_DIST + DISCRETE_DIST, ids=lambda x: x.name)
 def test_base_distribution(dist, shape=(1,), seed=0):
     """Test basic functionality of distributions."""
@@ -410,7 +450,7 @@ def test_independent_distribution(dist, shape=(2,), seed=0):
     key = jax.random.PRNGKey(seed)
     p = init_dist(dist, key, shape)
 
-    p = independent(p)
+    p = indep(p)
 
     # Test sampling and shape handling
     sample_and_check_shape(p, key, shape)
@@ -447,7 +487,7 @@ def test_mixed_independent_distribution(dist1, dist2, shape=(1,), seed=0):
     p2 = init_dist(dist2, key, shape)
 
     try:
-        p = independent(p1, p2)
+        p = indep(p1, p2)
     except AssertionError:
         return
 

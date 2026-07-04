@@ -52,7 +52,7 @@ from probjax.stats.discrete.poisson import poisson
 from probjax.stats.discrete.empirical import empirical
 
 # Import higher-order distributions
-from probjax.stats.independent import independent
+from probjax.stats.indep import indep
 from probjax.stats.mixture import mixture
 from probjax.stats.transformed import transformed
 
@@ -99,7 +99,7 @@ __all__ = [
     'dirac',
     'empirical',
     # Higher-order distributions
-    'independent',
+    'indep',
     'transformed',
     'mixture',
 ]

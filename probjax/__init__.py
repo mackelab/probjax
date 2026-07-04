@@ -62,7 +62,7 @@ from probjax.stats import (
     gennorm,
     genpareto,
     geometric,
-    independent,
+    indep,
     laplace,
     logistic,
     mixture,
@@ -253,7 +253,7 @@ __all__ = [
     # Higher-order distributions
     "transformed",
     "mixture",
-    "independent",
+    "indep",
     # Neural networks - architectures
     "MLP",
     "ResNet",
