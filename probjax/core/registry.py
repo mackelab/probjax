@@ -350,8 +350,8 @@ def register_univariate_inverse(
 
         if isinstance(inverse_prim_or_fn, Primitive):
             inv_prim = inverse_prim_or_fn
-            subfuns, params = inv_prim.get_bind_params(eqn.params)
-            result = inv_prim.bind(*subfuns, out_val, **params)
+            params = inv_prim.get_bind_params(eqn.params)
+            result = inv_prim.bind(out_val, **params)
         else:
             result = inverse_prim_or_fn(out_val, **eqn.params)
 
@@ -407,8 +407,8 @@ def register_bivariate_inverse(
             target_var = eqn.invars[0]
 
         if isinstance(inv_fn, Primitive):
-            subfuns, params = inv_fn.get_bind_params(eqn.params)
-            result = inv_fn.bind(*subfuns, out_val, other, **params)
+            params = inv_fn.get_bind_params(eqn.params)
+            result = inv_fn.bind(out_val, other, **params)
         else:
             result = inv_fn(out_val, other, **eqn.params)
 
@@ -442,8 +442,8 @@ def register_univariate_inverse_logdet(
         # Compute inverse value
         if isinstance(inverse_prim_or_fn, Primitive):
             inv_prim = inverse_prim_or_fn
-            subfuns, params = inv_prim.get_bind_params(eqn.params)
-            in_val = inv_prim.bind(*subfuns, out_val, **params)
+            params = inv_prim.get_bind_params(eqn.params)
+            in_val = inv_prim.bind(out_val, **params)
         else:
             in_val = inverse_prim_or_fn(out_val, **eqn.params)
 
@@ -496,8 +496,8 @@ def register_bivariate_inverse_logdet(
 
         # Compute inverse value
         if isinstance(inv_fn, Primitive):
-            subfuns, params = inv_fn.get_bind_params(eqn.params)
-            result = inv_fn.bind(*subfuns, out_val, other, **params)
+            params = inv_fn.get_bind_params(eqn.params)
+            result = inv_fn.bind(out_val, other, **params)
         else:
             result = inv_fn(out_val, other, **eqn.params)
 
@@ -535,8 +535,8 @@ def forward_rule(
         return None
 
     primitive = eqn.primitive
-    subfuns, params = primitive.get_bind_params(eqn.params)
-    result = primitive.bind(*subfuns, *known_in, **params)
+    params = primitive.get_bind_params(eqn.params)
+    result = primitive.bind(*known_in, **params)
 
     if primitive.multiple_results:
         return ProcessedResult(resolved_vars=eqn.outvars, resolved_vals=list(result))

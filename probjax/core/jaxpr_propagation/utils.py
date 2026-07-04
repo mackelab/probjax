@@ -307,8 +307,8 @@ class ForwardProcessingRule(ProcessingRule):
         from probjax.core.registry import ProcessedResult
 
         primitive = eqn.primitive
-        subfuns, bind_params = primitive.get_bind_params(eqn.params)
-        outvals = primitive.bind(*subfuns, *known_inputs, **bind_params)
+        bind_params = primitive.get_bind_params(eqn.params)
+        outvals = primitive.bind(*known_inputs, **bind_params)
         if not eqn.primitive.multiple_results:
             outvals = [outvals]
 
