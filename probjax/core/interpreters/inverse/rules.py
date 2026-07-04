@@ -18,6 +18,7 @@ from probjax.core.jaxpr_propagation.utils import (
     CostFunction,
     Knowness,
     ProcessingRuleFactory,
+    primitive_bind_params,
 )
 from probjax.core.registry import (
     Context,
@@ -824,7 +825,7 @@ def invert_gather(eqn, known_invars, known_outvars):
 
     primitive = eqn.primitive
     params = eqn.params
-    bind_params = primitive.get_bind_params(params)
+    _, bind_params = primitive_bind_params(primitive, params)
 
     gather_numdim = bind_params["dimension_numbers"]
     scatter_numdim = jax.lax.ScatterDimensionNumbers(
@@ -948,10 +949,10 @@ def invert_reshape(eqn, known_invars, known_outvars):
     in_aval = eqn.invars[0].aval
     primitive = eqn.primitive
     params = eqn.params
-    bind_params = dict(primitive.get_bind_params(params))
+    subfuns, bind_params = primitive_bind_params(primitive, params)
     bind_params["new_sizes"] = in_aval.shape
     return ProcessedResult(
-        [eqn.invars[0]], [primitive.bind(out, **bind_params)]
+        [eqn.invars[0]], [primitive.bind(*subfuns, out, **bind_params)]
     )
 
 
@@ -964,10 +965,10 @@ def invert_convert_element_type(eqn, known_invars, known_outvars):
     in_aval = eqn.invars[0].aval
     primitive = eqn.primitive
     params = eqn.params
-    bind_params = dict(primitive.get_bind_params(params))
+    subfuns, bind_params = primitive_bind_params(primitive, params)
     bind_params["new_dtype"] = in_aval.dtype
     return ProcessedResult(
-        [eqn.invars[0]], [primitive.bind(out, **bind_params)]
+        [eqn.invars[0]], [primitive.bind(*subfuns, out, **bind_params)]
     )
 
 
@@ -980,10 +981,10 @@ def invert_bitcast_convert_type(eqn, known_invars, known_outvars):
     in_aval = eqn.invars[0].aval
     primitive = eqn.primitive
     params = eqn.params
-    bind_params = dict(primitive.get_bind_params(params))
+    subfuns, bind_params = primitive_bind_params(primitive, params)
     bind_params["new_dtype"] = in_aval.dtype
     return ProcessedResult(
-        [eqn.invars[0]], [primitive.bind(out, **bind_params)]
+        [eqn.invars[0]], [primitive.bind(*subfuns, out, **bind_params)]
     )
 
 
@@ -995,12 +996,12 @@ def invert_transpose(eqn, known_invars, known_outvars):
         return None
     primitive = eqn.primitive
     params = eqn.params
-    bind_params = dict(primitive.get_bind_params(params))
+    subfuns, bind_params = primitive_bind_params(primitive, params)
     permutation = bind_params["permutation"]
     inverse_permutation = tuple(np.argsort(permutation).tolist())
     bind_params["permutation"] = inverse_permutation
     return ProcessedResult(
-        [eqn.invars[0]], [primitive.bind(out, **bind_params)]
+        [eqn.invars[0]], [primitive.bind(*subfuns, out, **bind_params)]
     )
 
 

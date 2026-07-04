@@ -2,13 +2,30 @@ import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Callable, Optional, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Protocol, Sequence
 
 from jax.extend.core import JaxprEqn, Literal
 from jaxtyping import Array
 
 if TYPE_CHECKING:
     from probjax.core.registry import ProcessedResult
+
+
+def primitive_bind_params(primitive, params) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    bind_params = primitive.get_bind_params(params)
+    if (
+        isinstance(bind_params, tuple)
+        and len(bind_params) == 2
+        and isinstance(bind_params[1], Mapping)
+    ):
+        subfuns, bind_params = bind_params
+        return tuple(subfuns), dict(bind_params)
+    return (), dict(bind_params)
+
+
+def bind_primitive(primitive, params, *args):
+    subfuns, bind_params = primitive_bind_params(primitive, params)
+    return primitive.bind(*subfuns, *args, **bind_params)
 
 
 # =============================================================================
@@ -307,8 +324,7 @@ class ForwardProcessingRule(ProcessingRule):
         from probjax.core.registry import ProcessedResult
 
         primitive = eqn.primitive
-        bind_params = primitive.get_bind_params(eqn.params)
-        outvals = primitive.bind(*known_inputs, **bind_params)
+        outvals = bind_primitive(primitive, eqn.params, *known_inputs)
         if not eqn.primitive.multiple_results:
             outvals = [outvals]
 

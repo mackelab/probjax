@@ -40,6 +40,8 @@ from typing import (
 
 from jax.extend.core import ClosedJaxpr, JaxprEqn, Literal, Primitive, Var
 
+from probjax.core.jaxpr_propagation.utils import bind_primitive
+
 # Atom is Var | Literal but not directly exported
 Atom = Union[Var, Literal]
 
@@ -350,8 +352,7 @@ def register_univariate_inverse(
 
         if isinstance(inverse_prim_or_fn, Primitive):
             inv_prim = inverse_prim_or_fn
-            params = inv_prim.get_bind_params(eqn.params)
-            result = inv_prim.bind(out_val, **params)
+            result = bind_primitive(inv_prim, eqn.params, out_val)
         else:
             result = inverse_prim_or_fn(out_val, **eqn.params)
 
@@ -407,8 +408,7 @@ def register_bivariate_inverse(
             target_var = eqn.invars[0]
 
         if isinstance(inv_fn, Primitive):
-            params = inv_fn.get_bind_params(eqn.params)
-            result = inv_fn.bind(out_val, other, **params)
+            result = bind_primitive(inv_fn, eqn.params, out_val, other)
         else:
             result = inv_fn(out_val, other, **eqn.params)
 
@@ -442,8 +442,7 @@ def register_univariate_inverse_logdet(
         # Compute inverse value
         if isinstance(inverse_prim_or_fn, Primitive):
             inv_prim = inverse_prim_or_fn
-            params = inv_prim.get_bind_params(eqn.params)
-            in_val = inv_prim.bind(out_val, **params)
+            in_val = bind_primitive(inv_prim, eqn.params, out_val)
         else:
             in_val = inverse_prim_or_fn(out_val, **eqn.params)
 
@@ -496,8 +495,7 @@ def register_bivariate_inverse_logdet(
 
         # Compute inverse value
         if isinstance(inv_fn, Primitive):
-            params = inv_fn.get_bind_params(eqn.params)
-            result = inv_fn.bind(out_val, other, **params)
+            result = bind_primitive(inv_fn, eqn.params, out_val, other)
         else:
             result = inv_fn(out_val, other, **eqn.params)
 
@@ -535,8 +533,7 @@ def forward_rule(
         return None
 
     primitive = eqn.primitive
-    params = primitive.get_bind_params(eqn.params)
-    result = primitive.bind(*known_in, **params)
+    result = bind_primitive(primitive, eqn.params, *known_in)
 
     if primitive.multiple_results:
         return ProcessedResult(resolved_vars=eqn.outvars, resolved_vals=list(result))
