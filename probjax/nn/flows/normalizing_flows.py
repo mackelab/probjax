@@ -7,9 +7,9 @@ from flax import nnx
 from jax import Array
 from jax.typing import ArrayLike
 
-from probjax.nn.layers.bijective import Flip
-from probjax.nn.nets.autoregressive import AutoregressiveMLP
-from probjax.nn.nets.coupling import CouplingMLP
+from probjax.nn.flows.autoregressive import AutoregressiveMLP
+from probjax.nn.flows.bijective import Flip
+from probjax.nn.flows.coupling import CouplingMLP
 from probjax.nn.nets.simple import Sequential
 from probjax.nn.sharding import ShardingCfg
 from probjax.stats.base import DistributionAPI, rv_frozen
@@ -30,7 +30,7 @@ from probjax.stats.bijective.rational_quadratic import (
     rational_quadratic_spline_and_logdets as _rational_quadratic_spline_and_logdets,
 )
 from probjax.stats.continuous import norm
-from probjax.stats.independent import independent
+from probjax.stats.indep import indep
 from probjax.stats.transformed import transformed
 from probjax.utils.solver import root_scalar
 
@@ -457,7 +457,7 @@ class NormalizingFlow(nnx.Module, DistributionAPI):
         """Create an independent standard normal base distribution."""
         mu0 = jnp.zeros((input_dim,))
         std0 = jnp.ones((input_dim,))
-        return independent(norm(mu0, std0))
+        return indep(norm(mu0, std0))
 
 
 # ---------------------------------------------------------------------------

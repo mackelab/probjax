@@ -5,7 +5,6 @@ from probjax.nn.layers.attention import (
     QASSMaxQueryScale,
     SSMaxQueryScale,
 )
-from probjax.nn.layers.bijective import Affine, Flip, Permute, Rotate
 from probjax.nn.layers.conv import (
     ConvBlock,
     RescaleConv,

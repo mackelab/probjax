@@ -5,10 +5,10 @@ import jax.numpy as jnp
 import jax.tree_util
 from flax import nnx
 
-from probjax.nn.loss_fn.flow_matching import build_flow_matching_loss
+from probjax.nn.diffusion.flow_matching.loss import build_flow_matching_loss
 from probjax.nn.sharding import ShardingCfg
 
-from probjax.nn.diffusion.config.flow_matching_configs import (
+from probjax.nn.diffusion.flow_matching.config import (
     CosineInterpolationSchedule,
     FlowPreconditioningProtocol,
     FlowSolverConfigProtocol,
@@ -185,6 +185,66 @@ class FlowMatcher(nnx.Module):
     ) -> Array:
         return self.solver_cfg.solve_schedule(
             t_min=t_min, t_max=t_max, num_steps=num_steps
+        )
+
+    def sample(
+        self,
+        eps: Array,
+        *,
+        num_steps: int | None = None,
+        method: str = "rk4",
+    ) -> Array:
+        """Generate samples by integrating the velocity ODE from ``eps``.
+
+        Solves ``dx/dt = self(t, x)`` along the schedule returned by
+        :meth:`solve_schedule`, starting at ``x(t_0) = eps``, and returns
+        the terminal state.
+
+        Args:
+            eps: Starting noise of shape ``batch_shape + event_shape``,
+                typically drawn from the base distribution
+                ``N(mu0, std0**2)``.
+            num_steps: Grid resolution forwarded to ``solve_schedule``.
+            method: ODE method for :func:`probjax.utils.odeint`
+                (``"rk4"`` default; ``"tsit5"``/``"dopri5"`` for adaptive
+                integration when paired with a ``step_size_adaptor``).
+        """
+        from probjax.utils.odeint import odeint
+
+        kwargs = {} if num_steps is None else {"num_steps": num_steps}
+        ts = self.solve_schedule(**kwargs)
+        traj = odeint(lambda t, x: self(t, x), eps, ts, method=method)
+        return traj[-1]
+
+    def as_distribution(
+        self,
+        event_shape: tuple,
+        *,
+        num_steps: int | None = None,
+        method: str = "rk4",
+    ):
+        """Expose this flow matcher as a :class:`probjax.stats.base.DistributionAPI`.
+
+        ``rvs`` draws ``eps ~ N(mu0, std0**2)`` and integrates the velocity
+        ODE; ``logpdf`` raises (use Hutchinson + ODE for change-of-
+        variables — pass ``logpdf_fn`` to :class:`LearnedDistribution`
+        explicitly if you need it).
+        """
+        from probjax.nn.distribution import LearnedDistribution
+
+        event_shape = tuple(int(d) for d in event_shape)
+        mu0 = self.mu0.get_value()
+        std0 = self.std0.get_value()
+
+        def sampler_fn(rng, batch_shape):
+            shape = tuple(batch_shape) + event_shape
+            eps = jax.random.normal(rng, shape) * std0 + mu0
+            return self.sample(eps, num_steps=num_steps, method=method)
+
+        return LearnedDistribution(
+            event_shape=event_shape,
+            sampler_fn=sampler_fn,
+            name=f"{type(self).__name__}",
         )
 
 

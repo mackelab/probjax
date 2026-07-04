@@ -242,7 +242,7 @@ def test_mesh_nets_forward(mesh_shape):
     sharding_arg = None
 
     # CouplingMLP
-    from probjax.nn.nets.coupling import CouplingMLP
+    from probjax.nn.flows.coupling import CouplingMLP
 
     def add_bijector(params, x):
         return x + params[..., : x.shape[-1]]
@@ -267,7 +267,7 @@ def test_mesh_nets_forward(mesh_shape):
 
         # AutoregressiveMLP uses lax.scan internally which conflicts with set_mesh.
         # Normalizing flow
-        from probjax.nn.density_estimator.normalizing_flows import AdditiveCouplingFlow
+        from probjax.nn.flows.normalizing_flows import AdditiveCouplingFlow
 
         flow = AdditiveCouplingFlow(
             input_dim=4, num_transforms=2, rngs=nnx.Rngs(2), sharding_cfg=sharding_arg
@@ -343,7 +343,7 @@ def test_mesh_nets_forward(mesh_shape):
         assert y.shape == (data_axis, 4, 4)
 
         # FlowMatcher / LinearFlow
-        from probjax.nn.diffusion.flow_matching_model import LinearFlow
+        from probjax.nn.diffusion.flow_matching.model import LinearFlow
 
         class TinyFlowNet(nnx.Module):
             def __init__(self, rngs, *, sharding_cfg=None):
@@ -370,14 +370,14 @@ def test_mesh_nets_forward(mesh_shape):
         assert y.shape == x.shape
 
         # MeanFlowMatcher / LinearMeanFlow
-        from probjax.nn.diffusion.mean_flow_matching_model import LinearMeanFlow
+        from probjax.nn.diffusion.mean_flow.model import LinearMeanFlow
 
         mean_flow = LinearMeanFlow(fm_net, sharding_cfg=cfg)
         y = mean_flow(t, x)
         assert y.shape == x.shape
 
         # DiffusionDenoiser
-        from probjax.nn.diffusion.denoising_diffusion_model import EDM
+        from probjax.nn.diffusion.ddpm.model import EDM
 
         class TinyDenoiser(nnx.Module):
             def __init__(self, rngs, *, sharding_cfg=None):

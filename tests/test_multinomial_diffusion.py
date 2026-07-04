@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.nn.diffusion.multinomial_diffusion import (
+from probjax.nn.diffusion.multinomial.model import (
     CategoricalEDMPreconditioning,
     ImportanceContinuousTimeTrainingConfig,
     MultinomialDiffusion,

@@ -6,11 +6,11 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.nn.loss_fn.denoising import build_time_dependent_denoising_loss
+from probjax.nn.diffusion.ddpm.denoising_loss import build_time_dependent_denoising_loss
 from probjax.nn.sharding import ShardingCfg
 from probjax.nn.utils import module_accepts_rng
 
-from probjax.nn.diffusion.config.denoising_diffusion_configs import (
+from probjax.nn.diffusion.ddpm.config import (
     BaseSolverConfig,
     CosineNoiseSchedule,
     EDMNoiseSchedule,
@@ -396,6 +396,60 @@ class DiffusionDenoiser(nnx.Module):
             collect_trace=collect_trace,
             *args,
             **kwargs,
+        )
+
+    def as_distribution(
+        self,
+        event_shape: tuple,
+        *,
+        mode: str = "ode",
+        num_steps: int | None = None,
+        t_min: float | None = None,
+        t_max: float | None = None,
+    ):
+        """Expose this model as a :class:`probjax.stats.base.DistributionAPI`.
+
+        Args:
+            event_shape: Trailing shape of one sample (e.g. ``(d,)`` for
+                vector data, ``(C, H, W)`` for images). The model's input
+                shape — kept here rather than on the model class because a
+                single trained denoiser can serve any compatible shape.
+            mode: ``"ode"`` (deterministic, faster) or ``"sde"``
+                (stochastic) sampling.
+            num_steps: Solver steps; defaults to the model's solver_cfg.
+            t_min, t_max: Integration endpoints; default to ``train_cfg``.
+
+        The returned distribution implements ``rvs`` via the chosen sampler
+        and ``logpdf`` raises (diffusion logpdf needs ODE-based change of
+        variables — pass ``logpdf_fn`` explicitly to
+        :class:`LearnedDistribution` if you need it).
+        """
+        from probjax.nn.distribution import LearnedDistribution
+
+        event_shape = tuple(int(d) for d in event_shape)
+        if mode not in ("ode", "sde"):
+            raise ValueError(f"mode must be 'ode' or 'sde', got {mode!r}")
+
+        if mode == "ode":
+
+            def sampler_fn(rng, batch_shape):
+                eps = jax.random.normal(rng, batch_shape + event_shape)
+                return self.sample_ode(
+                    eps, num_steps=num_steps, t_min=t_min, t_max=t_max
+                )
+        else:
+
+            def sampler_fn(rng, batch_shape):
+                key_eps, key_sde = jax.random.split(rng)
+                eps = jax.random.normal(key_eps, batch_shape + event_shape)
+                return self.sample_sde(
+                    key_sde, eps, num_steps=num_steps, t_min=t_min, t_max=t_max
+                )
+
+        return LearnedDistribution(
+            event_shape=event_shape,
+            sampler_fn=sampler_fn,
+            name=f"{type(self).__name__}({mode}-sampling)",
         )
 
 

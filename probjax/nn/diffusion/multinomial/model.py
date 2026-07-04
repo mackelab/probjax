@@ -6,11 +6,11 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.nn.loss_fn.multinomial_diffusion import (
+from probjax.nn.diffusion.multinomial.loss import (
     build_time_dependent_multinomial_diffusion_loss,
 )
 from probjax.nn.utils import module_accepts_rng
-from probjax.nn.diffusion.config.multinomial_diffusion_configs import (
+from probjax.nn.diffusion.multinomial.config import (
     CategoricalEDMPreconditioning,
     CategoricalPreconditioningProtocol,
     CategoricalScheduleProtocol,
@@ -387,6 +387,42 @@ class MultinomialDiffusion(nnx.Module):
             (step_keys, times[:-1], times[1:]),
         )
         return x_final
+
+    def as_distribution(
+        self,
+        event_shape: tuple,
+        *,
+        num_sample_steps: Optional[int] = None,
+    ):
+        """Expose this model as a :class:`probjax.stats.base.DistributionAPI`.
+
+        Args:
+            event_shape: Trailing shape of one categorical sample (e.g.
+                ``(seq_len, num_classes)``). The model itself is shape-
+                agnostic; we attach the shape here.
+            num_sample_steps: Reverse-process steps; defaults to
+                ``self.num_steps``.
+
+        ``rvs`` runs the multinomial reverse process; ``logpdf`` raises
+        (the variational log-likelihood bound is available separately via
+        the training loss).
+        """
+        from probjax.nn.distribution import LearnedDistribution
+
+        event_shape = tuple(int(d) for d in event_shape)
+
+        def sampler_fn(rng, batch_shape):
+            return self.sample(
+                rng,
+                tuple(batch_shape) + event_shape,
+                num_sample_steps=num_sample_steps,
+            )
+
+        return LearnedDistribution(
+            event_shape=event_shape,
+            sampler_fn=sampler_fn,
+            name=f"{type(self).__name__}",
+        )
 
 
 class MultinomialCosineDM(MultinomialDiffusion):

@@ -5,10 +5,10 @@ import jax.numpy as jnp
 import jax.tree_util
 from flax import nnx
 
-from probjax.nn.loss_fn.mean_flow_matching import build_mean_flow_matching_loss
+from probjax.nn.diffusion.mean_flow.loss import build_mean_flow_matching_loss
 from probjax.nn.sharding import ShardingCfg
 
-from probjax.nn.diffusion.config.flow_matching_configs import (
+from probjax.nn.diffusion.flow_matching.config import (
     FlowPreconditioningProtocol,
     FlowSolverConfigProtocol,
     GaussianFlowPreconditioning,
@@ -16,7 +16,7 @@ from probjax.nn.diffusion.config.flow_matching_configs import (
     LinearFlowSolverConfig,
     LinearInterpolationSchedule,
 )
-from probjax.nn.diffusion.config.mean_flow_matching_configs import (
+from probjax.nn.diffusion.mean_flow.config import (
     FlowPairTrainingConfigProtocol,
     SigmoidPairFlowTrainingConfig,
 )
@@ -159,6 +159,63 @@ class MeanFlowMatcher(nnx.Module):
     ) -> Array:
         return self.solver_cfg.solve_schedule(
             t_min=t_min, t_max=t_max, num_steps=num_steps
+        )
+
+    def sample(
+        self,
+        eps: Array,
+        *,
+        num_steps: int | None = None,
+    ) -> Array:
+        """Generate samples by stepping the mean-flow displacement.
+
+        Mean flow is **not** an ODE drift: ``self(t, x, r=...)`` returns the
+        average velocity over ``[t, r]``, so one call advances directly from
+        ``x_t`` to ``x_r`` via ``x_r = x_t + (r - t) · self(t, x, r=r)``.
+        We chain those over the integration grid in a single :func:`lax.scan`.
+
+        Args:
+            eps: Starting noise of shape ``batch_shape + event_shape``,
+                typically ``N(mu0, std0**2)``.
+            num_steps: Grid resolution forwarded to ``solve_schedule``.
+        """
+        kwargs = {} if num_steps is None else {"num_steps": num_steps}
+        ts = self.solve_schedule(**kwargs)
+
+        def step(x, ts_pair):
+            t, r = ts_pair
+            return x + (r - t) * self(t, x, r=r), None
+
+        x_final, _ = jax.lax.scan(step, eps, (ts[:-1], ts[1:]))
+        return x_final
+
+    def as_distribution(
+        self,
+        event_shape: tuple,
+        *,
+        num_steps: int | None = None,
+    ):
+        """Expose this mean-flow matcher as a :class:`probjax.stats.base.DistributionAPI`.
+
+        ``rvs`` draws ``eps ~ N(mu0, std0**2)`` and chains mean-flow
+        displacements; ``logpdf`` raises (no closed-form path-density for
+        mean flow without further machinery).
+        """
+        from probjax.nn.distribution import LearnedDistribution
+
+        event_shape = tuple(int(d) for d in event_shape)
+        mu0 = self.mu0.get_value()
+        std0 = self.std0.get_value()
+
+        def sampler_fn(rng, batch_shape):
+            shape = tuple(batch_shape) + event_shape
+            eps = jax.random.normal(rng, shape) * std0 + mu0
+            return self.sample(eps, num_steps=num_steps)
+
+        return LearnedDistribution(
+            event_shape=event_shape,
+            sampler_fn=sampler_fn,
+            name=f"{type(self).__name__}",
         )
 
 
