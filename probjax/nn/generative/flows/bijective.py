@@ -309,3 +309,40 @@ class Rotate(nnx.Module):
             x = x.astype(self.dtype)
 
         return rotate(rotation_matrix, x)
+
+
+class ElementwiseMonotone(nnx.Module):
+    """Per-dimension monotone bijector with directly learnable parameters.
+
+    Unlike the coupling/autoregressive conditioners, the bijector parameters
+    are plain trainable weights (one parameter vector per dimension) — the
+    building block of Gaussianization flows, where expressivity comes from
+    alternating elementwise layers with rotations.
+    """
+
+    def __init__(
+        self,
+        in_out_features: int,
+        bijector_dim: int,
+        bijector,
+        *,
+        params_init: Initializer = nnx.initializers.zeros,
+        param_dtype: DTypeLike | None = None,
+        sharding_cfg: ShardingCfg | None = None,
+        rngs: nnx.Rngs,
+    ):
+        if in_out_features <= 0:
+            raise ValueError("in_out_features must be positive")
+        self.in_out_features = in_out_features
+        self.bijector_dim = bijector_dim
+        self.bijector = bijector
+        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
+        self.params = nnx.Param(
+            params_init(
+                rngs.next(), shape=(in_out_features, bijector_dim), dtype=param_dtype
+            )
+        )
+
+    def __call__(self, x: ArrayLike, *args, rng: jax.Array | None = None) -> Array:
+        del args, rng
+        return self.bijector(self.params.get_value(), x)

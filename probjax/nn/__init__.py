@@ -5,7 +5,7 @@ from probjax.nn.distribution import LearnedDistribution
 from probjax.nn.io_util import DataLoader, chunkify
 
 # Override specific imports with probjax implementations
-from probjax.nn.flows import (
+from probjax.nn.generative.flows import (
     Affine,
     AutoregressiveMLP,
     AutoregressiveTransformer,
@@ -42,25 +42,23 @@ from probjax.nn.layers import (
     SSDCell,
     SpatialSelfAttention,
 )
-from probjax.nn.diffusion import (
+from probjax.nn.losses import (
     build_denoising_loss,
     build_denoising_score_matching_loss,
     build_flow_matching_loss,
     build_mean_flow_matching_loss,
     build_mean_flow_matching_loss_from_schedule,
-    build_time_dependent_denoising_loss,
-    build_time_dependent_denoising_score_matching_loss,
-    build_time_dependent_multinomial_diffusion_loss,
-)
-from probjax.nn.losses import (
     build_score_matching_loss,
     build_sliced_score_matching_loss,
     build_target_score_matching_loss,
+    build_time_dependent_denoising_loss,
+    build_time_dependent_denoising_score_matching_loss,
+    build_time_dependent_multinomial_diffusion_loss,
     build_time_dependent_score_matching_loss,
     build_time_dependent_sliced_score_matching_loss,
     build_time_dependent_target_score_matching_loss,
 )
-from probjax.nn.flows import (
+from probjax.nn.generative.flows import (
     AdditiveAutoregressiveFlow,
     AdditiveCouplingFlow,
     AffineAutoregressiveFlow,
@@ -70,7 +68,6 @@ from probjax.nn.flows import (
     NeuralAutoregressiveFlow,
     NeuralSplineFlow,
     NormalizingFlow,
-    NormalizingFlowsOnToriAndSpheres,
     SplineAutoregressiveFlow,
     SplineCouplingFlow,
     SumOfSquaresPolynomialFlow,
@@ -79,15 +76,15 @@ from probjax.nn.flows import (
     gf,
     maf,
     naf,
-    ncsf,
     nice,
     nsf,
     realnvp,
     sospf,
     unaf,
 )
-from probjax.nn.diffusion import (
+from probjax.nn.generative import (
     EDM,
+    GenerativeModelProtocol,
     VE,
     VP,
     AutodiffInterpolationSchedule,

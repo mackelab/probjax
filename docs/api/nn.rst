@@ -41,18 +41,16 @@ Normalizing Flows
    NormalizingFlow
    AffineCouplingFlow
    AdditiveCouplingFlow
-   NeuralSplineFlow
-   BernsteinPolynomialFlow
-   NeuralAutoregressiveFlow
-   GaussianizationFlow
-   LinearFlow
    SplineCouplingFlow
-   SplineAutoregressiveFlow
-   AdditiveAutoregressiveFlow
    AffineAutoregressiveFlow
+   AdditiveAutoregressiveFlow
+   SplineAutoregressiveFlow
+   NeuralSplineFlow
+   NeuralAutoregressiveFlow
    UnconstrainedNeuralAutoregressiveFlow
    SumOfSquaresPolynomialFlow
-   NormalizingFlowsOnToriAndSpheres
+   BernsteinPolynomialFlow
+   GaussianizationFlow
 
 Flow Matching
 -------------

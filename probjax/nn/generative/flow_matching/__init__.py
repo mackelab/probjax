@@ -2,10 +2,10 @@
 
 Public API: ``FlowMatcher`` / ``LinearFlow`` model classes, the loss builder
 ``build_flow_matching_loss``, and the configuration types from
-:mod:`probjax.nn.diffusion.flow_matching.config`.
+:mod:`probjax.nn.generative.flow_matching.config`.
 """
 
-from probjax.nn.diffusion.flow_matching.config import (
+from probjax.nn.generative.flow_matching.config import (
     AutodiffInterpolationSchedule,
     CosineInterpolationSchedule,
     FlowPreconditioningProtocol,
@@ -21,8 +21,8 @@ from probjax.nn.diffusion.flow_matching.config import (
     RhoFlowSolverConfig,
     UniformFlowTrainingConfig,
 )
-from probjax.nn.diffusion.flow_matching.loss import build_flow_matching_loss
-from probjax.nn.diffusion.flow_matching.model import FlowMatcher, LinearFlow
+from probjax.nn.losses.flow_matching import build_flow_matching_loss
+from probjax.nn.generative.flow_matching.model import FlowMatcher, LinearFlow
 
 __all__ = [
     "FlowMatcher",

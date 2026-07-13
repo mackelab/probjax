@@ -5,10 +5,12 @@ import jax.numpy as jnp
 import jax.tree_util
 from flax import nnx
 
-from probjax.nn.diffusion.mean_flow.loss import build_mean_flow_matching_loss
+from probjax.stats.fit import FitMixin
+
+from probjax.nn.losses.mean_flow import build_mean_flow_matching_loss
 from probjax.nn.sharding import ShardingCfg
 
-from probjax.nn.diffusion.flow_matching.config import (
+from probjax.nn.generative.flow_matching.config import (
     FlowPreconditioningProtocol,
     FlowSolverConfigProtocol,
     GaussianFlowPreconditioning,
@@ -16,14 +18,14 @@ from probjax.nn.diffusion.flow_matching.config import (
     LinearFlowSolverConfig,
     LinearInterpolationSchedule,
 )
-from probjax.nn.diffusion.mean_flow.config import (
+from probjax.nn.generative.mean_flow.config import (
     FlowPairTrainingConfigProtocol,
     SigmoidPairFlowTrainingConfig,
 )
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, RngKey
 
 
-class MeanFlowMatcher(nnx.Module):
+class MeanFlowMatcher(nnx.Module, FitMixin):
     def __init__(
         self,
         net: ModuleLike,

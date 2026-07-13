@@ -7,16 +7,26 @@ in JAX with a SciPy-like API.
 """
 
 from probjax.stats.base import (
+    DistributionAPI,
     rv_continuous,
     rv_continuous_frozen,
     rv_discrete,
     rv_discrete_frozen,
     rv_exponential_family,
+    rv_frozen,
     rv_generic,
     rv_multivariate,
     rv_multivariate_frozen,
     rv_spherical,
     rv_spherical_frozen,
+)
+from probjax.stats.fit import FitMixin, fit
+from probjax.stats.bijective.protocols import (
+    InvertibleTransformProtocol,
+    TransformedDistribution,
+    TransformProtocol,
+    ensure_invertible,
+    forward_and_logdet,
 )
 from probjax.stats.continuous.beta import beta
 from probjax.stats.continuous.bingham import bingham
@@ -58,6 +68,8 @@ from probjax.stats.transformed import transformed
 
 __all__ = [
     # Base classes
+    'DistributionAPI',
+    'rv_frozen',
     'rv_generic',
     'rv_continuous',
     'rv_discrete',
@@ -102,4 +114,13 @@ __all__ = [
     'indep',
     'transformed',
     'mixture',
+    # Transforms
+    'TransformProtocol',
+    'InvertibleTransformProtocol',
+    'TransformedDistribution',
+    'ensure_invertible',
+    'forward_and_logdet',
+    # Gradient-based fitting
+    'fit',
+    'FitMixin',
 ]

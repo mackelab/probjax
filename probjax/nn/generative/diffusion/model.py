@@ -6,11 +6,13 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.nn.diffusion.ddpm.denoising_loss import build_time_dependent_denoising_loss
+from probjax.stats.fit import FitMixin
+
+from probjax.nn.losses.denoising import build_time_dependent_denoising_loss
 from probjax.nn.sharding import ShardingCfg
 from probjax.nn.utils import module_accepts_rng
 
-from probjax.nn.diffusion.ddpm.config import (
+from probjax.nn.generative.diffusion.config import (
     BaseSolverConfig,
     CosineNoiseSchedule,
     EDMNoiseSchedule,
@@ -31,7 +33,7 @@ from probjax.nn.diffusion.ddpm.config import (
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
 
 
-class DiffusionDenoiser(nnx.Module):
+class DiffusionDenoiser(nnx.Module, FitMixin):
     """
     Composable diffusion denoiser:
 

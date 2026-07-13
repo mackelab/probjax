@@ -128,23 +128,15 @@ class AutoregressiveMLP(nnx.Module):
     def inverse_and_logdet(
         self, Tx: jax.Array, context=None, *, rng: jax.Array | None = None
     ):
+        """Inverse of a single (unbatched) event; logdet is the scalar total
+        over the event dimensions."""
         bij_params = self.masked_mlp(Tx, context, rng=rng)
         bij_params = jnp.reshape(bij_params, Tx.shape + (self.bijector_dim,))
         x, logdet = jax.vmap(self.bijector_inv)(bij_params, Tx)
-        return x, logdet
+        return x, jnp.sum(logdet)
 
     def inverse(self, Tx: jax.Array, context=None, *, rng: jax.Array | None = None):
-        bij_params = self.masked_mlp(Tx, context, rng=rng)
-        bij_params = jnp.reshape(
-            bij_params,
-            bij_params.shape[:-1]
-            + (
-                self.in_out_features,
-                self.bijector_dim,
-            ),
-        )
-        x = jax.vmap(self.bijector_inv)(bij_params, Tx)[0]
-        return x
+        return self.inverse_and_logdet(Tx, context, rng=rng)[0]
 
 
 class AutoregressiveTransformer(nnx.Module):

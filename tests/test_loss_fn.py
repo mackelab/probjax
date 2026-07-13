@@ -3,13 +3,13 @@ import jax.numpy as jnp
 import pytest
 import itertools
 
-from probjax.nn.diffusion.ddpm import (
+from probjax.nn.generative.diffusion import (
     build_denoising_loss,
     build_denoising_score_matching_loss,
     build_time_dependent_denoising_loss,
 )
-from probjax.nn.diffusion.flow_matching import build_flow_matching_loss
-from probjax.nn.diffusion.multinomial import (
+from probjax.nn.generative.flow_matching import build_flow_matching_loss
+from probjax.nn.generative.discrete import (
     build_time_dependent_multinomial_diffusion_loss,
 )
 from probjax.nn.losses import (
@@ -17,7 +17,7 @@ from probjax.nn.losses import (
     build_sliced_score_matching_loss,
     build_target_score_matching_loss,
 )
-from probjax.nn.diffusion.flow_matching.config import (
+from probjax.nn.generative.flow_matching.config import (
     AutodiffInterpolationSchedule,
     LinearInterpolationSchedule,
 )
@@ -192,6 +192,28 @@ def test_flow_matching_schedule_noise_zero_loss():
     loss = loss_fn(t, x0, x1, x0, x1, rng=jax.random.key(1))
 
     assert jax.numpy.allclose(loss, 0.0, atol=1e-5), "loss should be ~0"
+
+
+def test_flow_matcher_model_loss():
+    # Regression: FlowMatcher.loss used to pass stale kwargs to
+    # build_flow_matching_loss, raising TypeError.
+    from flax import nnx
+
+    from probjax.nn.generative.flow_matching.model import LinearFlow
+
+    class TinyFlowNet(nnx.Module):
+        def __init__(self, rngs):
+            self.proj = nnx.Linear(3, 3, rngs=rngs)
+
+        def __call__(self, t, x, **kwargs):
+            return self.proj(x)
+
+    model = LinearFlow(TinyFlowNet(nnx.Rngs(0)))
+    data = jax.random.normal(jax.random.key(1), (8, 3))
+    loss = model.loss(jax.random.key(2), data)
+
+    assert loss.ndim == 0, "loss is not a scalar"
+    assert jnp.isfinite(loss), "loss is not finite"
 
 
 def test_flow_matching_autodiff_schedule():

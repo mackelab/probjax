@@ -1,6 +1,6 @@
 """Adapter that exposes a learned generative model as a Distribution.
 
-Most generative-model classes in :mod:`probjax.nn.diffusion` don't carry an
+Most generative-model classes in :mod:`probjax.nn.generative` don't carry an
 intrinsic ``event_shape`` (a flow matcher trained on R^d looks the same as
 one trained on R^k), and their sampling pipelines have free parameters
 (``num_steps``, ``mode="ode"`` vs ``"sde"``). Rather than baking those into
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional, Tuple
 
-from probjax.stats.base import DistributionAPI
+from probjax.stats.base import DistributionAPI, rv_frozen
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 
@@ -99,3 +99,8 @@ class LearnedDistribution(DistributionAPI):
     def __repr__(self) -> str:
         label = self._name or type(self).__name__
         return f"{label}(event_shape={self._event_shape}, batch_shape={self._batch_shape})"
+
+
+# Accepted wherever frozen distributions are (e.g. as `base_dist` of
+# `transformed`), mirroring the registration of NormalizingFlow.
+rv_frozen.register(LearnedDistribution)

@@ -6,11 +6,13 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.nn.diffusion.multinomial.loss import (
+from probjax.stats.fit import FitMixin
+
+from probjax.nn.losses.multinomial import (
     build_time_dependent_multinomial_diffusion_loss,
 )
 from probjax.nn.utils import module_accepts_rng
-from probjax.nn.diffusion.multinomial.config import (
+from probjax.nn.generative.discrete.config import (
     CategoricalEDMPreconditioning,
     CategoricalPreconditioningProtocol,
     CategoricalScheduleProtocol,
@@ -26,7 +28,7 @@ from probjax.nn.sharding import ShardingCfg
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, RngKey
 
 
-class MultinomialDiffusion(nnx.Module):
+class MultinomialDiffusion(nnx.Module, FitMixin):
     """
     Discrete diffusion model with denoising_diffusion_model-like composition:
       - schedule

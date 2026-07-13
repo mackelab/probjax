@@ -7,13 +7,21 @@ from flax import nnx
 from jax import Array
 from jax.typing import ArrayLike
 
-from probjax.nn.flows.autoregressive import AutoregressiveMLP
-from probjax.nn.flows.bijective import Flip
-from probjax.nn.flows.coupling import CouplingMLP
+from probjax.nn.generative.flows.autoregressive import AutoregressiveMLP
+from probjax.nn.generative.flows.bijective import ElementwiseMonotone, Flip, Rotate
+from probjax.nn.generative.flows.coupling import CouplingMLP
 from probjax.nn.nets.simple import Sequential
 from probjax.nn.sharding import ShardingCfg
 from probjax.stats.base import DistributionAPI, rv_frozen
+from probjax.stats.fit import FitMixin
 from probjax.stats.bijective import additive_bijector, affine_bijector
+from probjax.stats.bijective.monotone import (
+    bernstein_bijector,
+    deep_sigmoid_bijector,
+    mixture_cdf_bijector,
+    sos_polynomial_bijector,
+    unconstrained_monotone_bijector,
+)
 from probjax.stats.bijective.monotone_hermite_cubic import (
     monotone_hermite_cubic_spline as _monotone_hermite_cubic_spline,
 )
@@ -32,7 +40,6 @@ from probjax.stats.bijective.rational_quadratic import (
 from probjax.stats.continuous import norm
 from probjax.stats.indep import indep
 from probjax.stats.transformed import transformed
-from probjax.utils.solver import root_scalar
 
 
 # ---------------------------------------------------------------------------
@@ -285,60 +292,11 @@ def monotone_hermite_cubic_spline(
 
 
 # ---------------------------------------------------------------------------
-# Learnable mixture CDF bijector
-# ---------------------------------------------------------------------------
-
-
-def learnable_mixture_cdf(
-    params: ArrayLike,
-    y: ArrayLike,
-    min_value: float = -10.0,
-    max_value: float = 10.0,
-    **kwargs,
-):
-    def f(x):
-        return _inv_learnable_mixture_cdf(params, x) - y
-
-    x = root_scalar(
-        f,
-        bracket=(min_value * jnp.ones_like(y), max_value * jnp.ones_like(y)),
-        **kwargs,
-    )
-    return x
-
-
-def _inv_learnable_mixture_cdf(
-    params: ArrayLike,
-    x: ArrayLike,
-    **kwargs,
-):
-    """Inverse of the learnable mixture CDF (forward pass of the bijector).
-
-    Computes a mixture of logistic CDFs, then maps through the normal PPF.
-    """
-    del kwargs
-    x = jnp.asarray(x)
-    loc, scale = jnp.split(params, 2, axis=-1)
-    scale = jnp.exp(scale)
-    x_ks = (x[..., None] - loc) / scale
-    # Logistic CDF mixture -> normal quantile
-    cdf = jnp.mean(jax.nn.sigmoid(x_ks), -1)
-    return norm.ppf(cdf)
-
-
-def _inv_and_logdet_learnable_mixture_cdf(params, x, **kwargs):
-    del kwargs
-    _f = jax.vmap(jax.value_and_grad(_inv_learnable_mixture_cdf, argnums=1))
-    value, grad = _f(params, x)
-    return value, jnp.log(jnp.abs(grad))
-
-
-# ---------------------------------------------------------------------------
 # NormalizingFlow base class
 # ---------------------------------------------------------------------------
 
 
-class NormalizingFlow(nnx.Module, DistributionAPI):
+class NormalizingFlow(nnx.Module, DistributionAPI, FitMixin):
     def __init__(
         self,
         base_dist,
@@ -449,6 +407,30 @@ class NormalizingFlow(nnx.Module, DistributionAPI):
 
     def support(self):
         return self.dist.support()
+
+    def loss(self, rng, data, *args, context=None, **kwargs):
+        """Negative mean log-likelihood training loss.
+
+        With ``context``, each data row is scored against its own context row
+        (per-pair conditional likelihood).
+        """
+        del rng, args, kwargs
+        if context is None:
+            return -jnp.mean(self.logpdf(data))
+        pair_logpdf = jax.vmap(lambda x, c: self.logpdf(x, context=c))
+        return -jnp.mean(pair_logpdf(data, context))
+
+    def as_distribution(self, event_shape=None, *, context=None):
+        """View this flow as a :class:`~probjax.stats.base.DistributionAPI`.
+
+        The flow already is one, so this returns ``self`` (or the frozen
+        conditional distribution when ``context`` is given). ``event_shape``
+        is accepted for protocol compatibility; it is fixed by the flow.
+        """
+        del event_shape
+        if context is None:
+            return self
+        return self.conditional_dist(context)
 
     # -- Helper for building the standard normal base distribution --
 
@@ -756,39 +738,184 @@ class NeuralSplineFlow(SplineAutoregressiveFlow):
     """Neural Spline Flow (NSF) style wrapper."""
 
 
-class NeuralAutoregressiveFlow(AffineAutoregressiveFlow):
-    """Neural Autoregressive Flow (NAF) style wrapper."""
+class _MonotoneAutoregressiveFlow(NormalizingFlow):
+    """Shared constructor for autoregressive flows with monotone-net bijectors.
 
-
-class UnconstrainedNeuralAutoregressiveFlow(SplineAutoregressiveFlow):
-    """UNAF-style wrapper implemented with autoregressive spline transforms."""
-
-
-class SumOfSquaresPolynomialFlow(SplineAutoregressiveFlow):
-    """SOSPF-style wrapper implemented with monotone spline surrogates."""
-
-
-class BernsteinPolynomialFlow(SplineAutoregressiveFlow):
-    """BPF-style wrapper implemented with monotone spline surrogates."""
-
-
-class GaussianizationFlow(AffineCouplingFlow):
-    """Gaussianization Flow (GF) style wrapper."""
-
-
-class NormalizingFlowsOnToriAndSpheres(NormalizingFlow):
-    """NCSF placeholder.
-
-    This requires manifold-specific bijectors and chart handling which are not yet
-    available in the density estimator stack.
+    The bijector's analytic direction is data -> base, so ``logpdf`` (and
+    training) is closed-form and differentiable; sampling solves the monotone
+    map elementwise by bisection.
     """
 
-    def __init__(self, *args, **kwargs):
-        del args, kwargs
-        raise NotImplementedError(
-            "NCSF requires manifold bijectors for tori/spheres and is not yet "
-            "implemented in probjax.nn.density_estimator."
+    def __init__(
+        self,
+        input_dim: int,
+        num_transforms: int,
+        rngs,
+        bijector,
+        bijector_dim: int,
+        *,
+        context_features: Optional[int] = None,
+        last_transform: Optional[Callable] = None,
+        autoregressive_class: nnx.Module = AutoregressiveMLP,
+        mixing_class: nnx.Module = Flip,
+        name: Optional[str] = None,
+        sharding_cfg: ShardingCfg | None = None,
+    ) -> None:
+        self.input_dim = input_dim
+        autoregressive = partial(
+            autoregressive_class,
+            input_dim,
+            bijector_dim,
+            bijector,
+            context_features=context_features,
+            sharding_cfg=sharding_cfg,
         )
+        transform = _build_transform_sequence(
+            autoregressive,
+            num_transforms,
+            rngs,
+            mixing_class,
+            last_transform,
+            sharding_cfg,
+        )
+        q0 = self._standard_normal_base(input_dim)
+        super().__init__(q0, transform, name=name, sharding_cfg=sharding_cfg)
+
+
+class NeuralAutoregressiveFlow(_MonotoneAutoregressiveFlow):
+    """Neural Autoregressive Flow with deep sigmoidal transforms (Huang et al., 2018)."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_transforms: int,
+        rngs,
+        *,
+        num_components: int = 8,
+        **kwargs,
+    ) -> None:
+        super().__init__(
+            input_dim,
+            num_transforms,
+            rngs,
+            deep_sigmoid_bijector,
+            3 * num_components,
+            **kwargs,
+        )
+
+
+class UnconstrainedNeuralAutoregressiveFlow(_MonotoneAutoregressiveFlow):
+    """UMNN-style flow: monotone neural integrand integrated by quadrature
+    (Wehenkel & Louppe, 2019)."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_transforms: int,
+        rngs,
+        *,
+        num_hidden: int = 8,
+        **kwargs,
+    ) -> None:
+        super().__init__(
+            input_dim,
+            num_transforms,
+            rngs,
+            unconstrained_monotone_bijector,
+            3 * num_hidden + 2,
+            **kwargs,
+        )
+
+
+class SumOfSquaresPolynomialFlow(_MonotoneAutoregressiveFlow):
+    """Sum-of-squares polynomial flow (Jaini et al., 2019)."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_transforms: int,
+        rngs,
+        *,
+        num_polys: int = 2,
+        **kwargs,
+    ) -> None:
+        from probjax.stats.bijective.monotone import _SOS_DEGREE
+
+        super().__init__(
+            input_dim,
+            num_transforms,
+            rngs,
+            sos_polynomial_bijector,
+            num_polys * (_SOS_DEGREE + 1) + 1,
+            **kwargs,
+        )
+
+
+class BernsteinPolynomialFlow(_MonotoneAutoregressiveFlow):
+    """Monotone Bernstein polynomial flow with identity tails (Sick et al., 2021)."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_transforms: int,
+        rngs,
+        *,
+        degree: int = 16,
+        **kwargs,
+    ) -> None:
+        super().__init__(
+            input_dim,
+            num_transforms,
+            rngs,
+            bernstein_bijector,
+            degree,
+            **kwargs,
+        )
+
+
+def _gf_params_init(key, shape, dtype=None):
+    """Zero-init mixture params except the location block, spread randomly."""
+    dtype = dtype or jnp.float32
+    num_components = shape[-1] // 3
+    params = jnp.zeros(shape, dtype)
+    locs = jax.random.normal(key, shape[:-1] + (num_components,), dtype)
+    return params.at[..., num_components : 2 * num_components].set(locs)
+
+
+class GaussianizationFlow(NormalizingFlow):
+    """Gaussianization Flow: learnable logistic-mixture-CDF layers alternated
+    with learnable rotations (Meng et al., 2020). Unconditional only."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_transforms: int,
+        rngs,
+        *,
+        num_components: int = 8,
+        name: Optional[str] = None,
+        sharding_cfg: ShardingCfg | None = None,
+    ) -> None:
+        self.input_dim = input_dim
+        layer_fn = partial(
+            ElementwiseMonotone,
+            input_dim,
+            3 * num_components,
+            mixture_cdf_bijector,
+            params_init=_gf_params_init,
+            sharding_cfg=sharding_cfg,
+        )
+        mixing = partial(Rotate, input_dim, learnable=True)
+        transform = _build_transform_sequence(
+            layer_fn,
+            num_transforms,
+            rngs,
+            mixing,
+            None,
+            sharding_cfg,
+        )
+        q0 = self._standard_normal_base(input_dim)
+        super().__init__(q0, transform, name=name, sharding_cfg=sharding_cfg)
 
 
 rv_frozen.register(NormalizingFlow)
@@ -801,10 +928,9 @@ maf = AffineAutoregressiveFlow
 nsf = SplineAutoregressiveFlow
 naf = NeuralAutoregressiveFlow
 unaf = UnconstrainedNeuralAutoregressiveFlow
-gf = GaussianizationFlow
 sospf = SumOfSquaresPolynomialFlow
 bpf = BernsteinPolynomialFlow
-ncsf = NormalizingFlowsOnToriAndSpheres
+gf = GaussianizationFlow
 
 
 __all__ = [
@@ -818,18 +944,16 @@ __all__ = [
     "NeuralSplineFlow",
     "NeuralAutoregressiveFlow",
     "UnconstrainedNeuralAutoregressiveFlow",
-    "GaussianizationFlow",
     "SumOfSquaresPolynomialFlow",
     "BernsteinPolynomialFlow",
-    "NormalizingFlowsOnToriAndSpheres",
+    "GaussianizationFlow",
     "nice",
     "realnvp",
     "maf",
     "nsf",
     "naf",
     "unaf",
-    "gf",
     "sospf",
     "bpf",
-    "ncsf",
+    "gf",
 ]

@@ -5,10 +5,12 @@ import jax.numpy as jnp
 import jax.tree_util
 from flax import nnx
 
-from probjax.nn.diffusion.flow_matching.loss import build_flow_matching_loss
+from probjax.stats.fit import FitMixin
+
+from probjax.nn.losses.flow_matching import build_flow_matching_loss
 from probjax.nn.sharding import ShardingCfg
 
-from probjax.nn.diffusion.flow_matching.config import (
+from probjax.nn.generative.flow_matching.config import (
     CosineInterpolationSchedule,
     FlowPreconditioningProtocol,
     FlowSolverConfigProtocol,
@@ -24,7 +26,7 @@ from probjax.nn.diffusion.flow_matching.config import (
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
 
 
-class FlowMatcher(nnx.Module):
+class FlowMatcher(nnx.Module, FitMixin):
     """
     Composable flow matcher:
 
@@ -145,6 +147,13 @@ class FlowMatcher(nnx.Module):
             "Implemented only for specific implementation of this base class"
         )
 
+    def _build_loss_fn(self):
+        return build_flow_matching_loss(
+            self,
+            schedule=self.schedule,
+            **self._loss_kwargs,
+        )
+
     def loss(
         self,
         rng: RngKey,
@@ -152,14 +161,7 @@ class FlowMatcher(nnx.Module):
         *args,
         **kwargs,
     ) -> Array:
-        loss_fn = build_flow_matching_loss(
-            self,
-            schedule=self.schedule,
-            weight_fn=None,
-            interpolation_grad_fn=None,
-            interpolation_noise_grad_fn=None,
-            **self._loss_kwargs,
-        )
+        loss_fn = self._build_loss_fn()
 
         rng_source, rng_times = jax.random.split(rng, 2)
 

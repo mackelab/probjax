@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from probjax.core import inverse, inverse_and_logabsdet
-from probjax.nn.flows.normalizing_flows import (
+from probjax.nn.generative.flows.models import (
     monotone_hermite_cubic_spline,
     piecewise_affine_spline,
     rational_linear_spline,

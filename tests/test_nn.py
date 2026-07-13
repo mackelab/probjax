@@ -25,12 +25,6 @@ from probjax.nn import (
     MLP,
     MLPShardingSpec,
     Transformer,
-    bpf,
-    gf,
-    naf,
-    ncsf,
-    sospf,
-    unaf,
     chunkify,
 )
 
@@ -469,7 +463,9 @@ def test_conditional_flows_with_context(flow_ctor):
 
 
 def test_named_flow_aliases_construct():
-    aliases = [naf, unaf, gf, bpf, sospf]
+    from probjax.nn import NeuralSplineFlow, maf, nice, nsf, realnvp
+
+    aliases = [nice, realnvp, maf, nsf, NeuralSplineFlow]
     for ctor in aliases:
         model = ctor(2, 1, rngs=nnx.Rngs(0))
         x = jnp.ones((2,))
@@ -477,9 +473,23 @@ def test_named_flow_aliases_construct():
         assert y.shape == x.shape
 
 
-def test_ncsf_placeholder():
-    with pytest.raises(NotImplementedError):
-        _ = ncsf(2, 1, rngs=nnx.Rngs(0))
+def test_public_import_surface():
+    import importlib
+
+    modules = [
+        "probjax.nn",
+        "probjax.nn.losses",
+        "probjax.nn.generative",
+        "probjax.nn.generative.flows",
+        "probjax.nn.generative.diffusion",
+        "probjax.nn.generative.flow_matching",
+        "probjax.nn.generative.mean_flow",
+        "probjax.nn.generative.discrete",
+    ]
+    for module_name in modules:
+        module = importlib.import_module(module_name)
+        for name in getattr(module, "__all__", []):
+            assert hasattr(module, name), f"{module_name}.{name} does not resolve"
 
 
 def test_chunkify(chunkify_inputs):

@@ -3,6 +3,20 @@ from probjax.stats.bijective.custom_inverses import (
     affine_bijector,
     rotate,
 )
+from probjax.stats.bijective.protocols import (
+    InvertibleTransformProtocol,
+    TransformedDistribution,
+    TransformProtocol,
+    ensure_invertible,
+    forward_and_logdet,
+)
+from probjax.stats.bijective.monotone import (
+    bernstein_bijector,
+    deep_sigmoid_bijector,
+    mixture_cdf_bijector,
+    sos_polynomial_bijector,
+    unconstrained_monotone_bijector,
+)
 from probjax.stats.bijective.monotone_hermite_cubic import (
     inv_monotone_hermite_cubic_spline,
     monotone_hermite_cubic_spline,
@@ -22,12 +36,22 @@ from probjax.stats.bijective.rational_quadratic import (
 )
 
 __all__ = [
+    "TransformProtocol",
+    "InvertibleTransformProtocol",
+    "TransformedDistribution",
+    "ensure_invertible",
+    "forward_and_logdet",
     "rational_quadratic_spline",
     "inv_rational_quadratic_spline",
     "rational_quadratic_spline_and_logdets",
     "affine_bijector",
     "additive_bijector",
     "rotate",
+    "bernstein_bijector",
+    "deep_sigmoid_bijector",
+    "mixture_cdf_bijector",
+    "sos_polynomial_bijector",
+    "unconstrained_monotone_bijector",
     "rational_linear_spline",
     "inv_rational_linear_spline",
     "piecewise_affine_spline",

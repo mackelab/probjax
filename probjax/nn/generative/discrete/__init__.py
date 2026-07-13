@@ -1,6 +1,6 @@
 """Multinomial / categorical diffusion models for discrete data."""
 
-from probjax.nn.diffusion.multinomial.config import (
+from probjax.nn.generative.discrete.config import (
     CategoricalEDMPreconditioning,
     CategoricalPreconditioningProtocol,
     CategoricalScheduleProtocol,
@@ -9,10 +9,10 @@ from probjax.nn.diffusion.multinomial.config import (
     MultinomialDiffusionSchedule,
     UniformContinuousTimeTrainingConfig,
 )
-from probjax.nn.diffusion.multinomial.loss import (
+from probjax.nn.losses.multinomial import (
     build_time_dependent_multinomial_diffusion_loss,
 )
-from probjax.nn.diffusion.multinomial.model import (
+from probjax.nn.generative.discrete.model import (
     MultinomialCosineDM,
     MultinomialDiffusion,
     MultinomialLogSNRDM,

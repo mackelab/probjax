@@ -68,13 +68,19 @@ class transformed_gen(rv_continuous):
         return jax.vmap(bijector)
 
     @classmethod
-    @functools.cache
     def _get_inverse_and_logdet(cls, bijector):
-        """Build inverse+logabsdet function for a bijector."""
+        """Build inverse+logabsdet function for a bijector.
+
+        Deliberately NOT cached on the bijector object: for module-backed
+        bijectors (e.g. a trained flow's nnx transformation) the inverse
+        jaxpr bakes the current weights in as constants, so a cache keyed by
+        object identity would keep serving stale weights after in-place
+        training. Under ``jax.jit`` the tracing cost is paid once per
+        compilation anyway.
+        """
         return inverse_and_logabsdet(bijector)
 
     @classmethod
-    @functools.cache
     def _get_vmapped_inverse_and_logdet(cls, bijector):
         """Get a single-axis vmapped inverse+logabsdet function."""
         return jax.vmap(cls._get_inverse_and_logdet(bijector))
@@ -83,8 +89,14 @@ class transformed_gen(rv_continuous):
     def _get_vmapped_inverse_and_logdet_with_override(
         cls, bijector, inverse_and_logdet_fn=None
     ):
-        """Get vmapped inverse+logabsdet, optionally using a custom function."""
-        del bijector
+        """Get vmapped inverse+logabsdet, optionally using a custom function.
+
+        Falls back to the bijector's own ``inverse_and_logdet`` method when
+        present (see :class:`probjax.stats.bijective.protocols.InvertibleTransformProtocol`),
+        skipping jaxpr auto-inversion.
+        """
+        if inverse_and_logdet_fn is None:
+            inverse_and_logdet_fn = getattr(bijector, "inverse_and_logdet", None)
         if inverse_and_logdet_fn is None:
             return None
         return jax.vmap(inverse_and_logdet_fn)
