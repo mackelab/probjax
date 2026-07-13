@@ -219,13 +219,17 @@ register_univariate_inverse_logdet(
 
 
 # mul: z = x * y. Solving for x: x = z/y, dx/dz = 1/y => log|det| = -sum(log|y|)
+# The known operand may have been broadcast (e.g. scalar * vector); its logdet
+# contribution counts once per output element.
 def _mul_left_logdet(out_val, result, other, params):
     # Solving for left: left = out/right, d(left)/d(out) = 1/right
+    other = jnp.broadcast_to(other, jnp.shape(out_val))
     return -jnp.sum(jnp.log(jnp.abs(other) + 1e-10))
 
 
 def _mul_right_logdet(out_val, result, other, params):
     # Solving for right: right = out/left, d(right)/d(out) = 1/left
+    other = jnp.broadcast_to(other, jnp.shape(out_val))
     return -jnp.sum(jnp.log(jnp.abs(other) + 1e-10))
 
 
@@ -242,12 +246,14 @@ register_bivariate_inverse_logdet(
 # Solving for y: y = x / z, dy/dz = -x/z^2 => log|det| = sum(log|x|) - 2*sum(log|z|)
 def _div_left_logdet(out_val, result, other, params):
     # Solving for left (numerator): left = out * right, d(left)/d(out) = right
+    other = jnp.broadcast_to(other, jnp.shape(out_val))
     return jnp.sum(jnp.log(jnp.abs(other) + 1e-10))
 
 
 def _div_right_logdet(out_val, result, other, params):
     # Solving for right (denominator): right = left / out
     # d(right)/d(out) = -left / out^2
+    other = jnp.broadcast_to(other, jnp.shape(out_val))
     return jnp.sum(jnp.log(jnp.abs(other) + 1e-10)) - 2.0 * jnp.sum(
         jnp.log(jnp.abs(out_val) + 1e-10)
     )

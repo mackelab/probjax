@@ -23,8 +23,20 @@ def primitive_bind_params(primitive, params) -> tuple[tuple[Any, ...], dict[str,
     return (), dict(bind_params)
 
 
+def sanitize_bind_params(params) -> dict[str, Any]:
+    """Drop default-valued dtype-hint params that not all primitives accept.
+
+    Newer JAX attaches ``out_dtype=None`` to some nary primitives (e.g. mul).
+    Inverse rules forward the forward eqn's params into a *different*
+    primitive's bind (e.g. div as mul's inverse); a foreign param stages an
+    eqn whose JVP rule rejects it. Dropping the param at its default is a
+    semantic no-op for primitives that do accept it.
+    """
+    return {k: v for k, v in params.items() if not (k == "out_dtype" and v is None)}
+
+
 def bind_primitive(primitive, params, *args):
-    subfuns, bind_params = primitive_bind_params(primitive, params)
+    subfuns, bind_params = primitive_bind_params(primitive, sanitize_bind_params(params))
     return primitive.bind(*subfuns, *args, **bind_params)
 
 

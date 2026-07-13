@@ -95,15 +95,27 @@ def _cached_jaxpr_and_tree_getter(fun: Callable, static_argnums=()):
     """Create a cached getter for both JAXPR and output tree structure.
 
     This avoids re-tracing and re-computing eval_shape on every call.
+
+    Tracing goes through a wrapper whose identity is unique to this getter:
+    JAX's global trace cache is keyed on callable identity, so tracing ``fun``
+    directly can silently return a jaxpr whose consts capture stale closure
+    state — e.g. an nnx module's weights from before in-place training. The
+    per-getter wrapper guarantees this getter's first trace sees the current
+    state; repeat calls on the same getter reuse its local cache (snapshot
+    semantics).
     """
-    jaxpr_maker = jax.make_jaxpr(fun, static_argnums=static_argnums)
+
+    def fun_snapshot(*args, **kwargs):
+        return fun(*args, **kwargs)
+
+    jaxpr_maker = jax.make_jaxpr(fun_snapshot, static_argnums=static_argnums)
     cache: dict = {}
 
     def get_jaxpr_and_tree(flat_inputs, cache_key, args, kwargs):
         """Get cached JAXPR and output tree, tracing if needed."""
         if cache_key not in cache:
             jaxpr = jaxpr_maker(*args, **kwargs)
-            out_template = jax.eval_shape(fun, *args, **kwargs)
+            out_template = jax.eval_shape(fun_snapshot, *args, **kwargs)
             out_tree = jax.tree_util.tree_structure(out_template)
             cache[cache_key] = (jaxpr, out_tree)
         return cache[cache_key]

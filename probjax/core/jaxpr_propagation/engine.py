@@ -307,6 +307,20 @@ def _run_nested(
             known_sub_vars.append(sub_var)
             known_sub_vals.append(val)
 
+    # Seed the nested run with the outer per-var state mapped onto the
+    # sub-jaxpr's boundary vars (mirrors what the cond/scan/while rules do
+    # manually). Without this, accumulated quantities attached to this eqn's
+    # outer vars — e.g. running log-determinants during inverse propagation —
+    # are invisible inside the sub-jaxpr and silently dropped.
+    nested_initial_state = initial_state
+    outer_state = context.read_run_state(namespace=state_namespace)
+    if outer_state:
+        seeded = dict(initial_state or {})
+        for sub_var, outer_var in zip(nested_vars, outer_vars, strict=False):
+            if outer_var in outer_state and sub_var not in seeded:
+                seeded[sub_var] = outer_state[outer_var]
+        nested_initial_state = seeded or None
+
     target_vals: Sequence[Any] = ()
     nested_state: State = None
     if target_sub_vars:
@@ -325,7 +339,7 @@ def _run_nested(
                 recurse_policy=recurse_policy,
                 run_post_nested_process=run_post_nested_process,
                 reducer=reducer,
-                initial_state=initial_state,
+                initial_state=nested_initial_state,
                 return_state=True,
                 path_prefix=extended_eqn.eqn_id,
                 state_namespace=state_namespace,

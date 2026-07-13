@@ -245,6 +245,31 @@ def test_inverse_gather_permutation():
     assert jnp.allclose(x0, x_rec, atol=1e-6, rtol=1e-6)
 
 
+def test_logabsdet_accumulates_through_nested_jit():
+    # Regression: jnp.flip stages a nested jit eqn; log-dets accumulated
+    # before the sub-jaxpr used to be dropped at the boundary.
+    def f(z):
+        return jnp.exp(jnp.flip(jnp.exp(z)))
+
+    x = jnp.array([0.3, 0.7])
+    y = f(x)
+    x_rec, log_det = inverse_and_logabsdet(f)(y)
+    expected = -jnp.log(jnp.abs(jnp.linalg.det(jax.jacobian(f)(x))))
+    assert jnp.allclose(x_rec, x, atol=1e-5)
+    assert jnp.allclose(log_det, expected, atol=1e-5)
+
+
+def test_logabsdet_scalar_broadcast_mul():
+    # Regression: scalar-broadcast scaling must count once per output element.
+    def f(z):
+        return 3.0 * z
+
+    y = jnp.array([6.0, -3.0])
+    x_rec, log_det = inverse_and_logabsdet(f)(y)
+    assert jnp.allclose(x_rec, y / 3.0)
+    assert jnp.allclose(log_det, -2.0 * jnp.log(3.0))
+
+
 def test_inverse_squeeze_broadcast():
     def f(x):
         y = jnp.expand_dims(x, axis=0)

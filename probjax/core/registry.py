@@ -40,7 +40,7 @@ from typing import (
 
 from jax.extend.core import ClosedJaxpr, JaxprEqn, Literal, Primitive, Var
 
-from probjax.core.jaxpr_propagation.utils import bind_primitive
+from probjax.core.jaxpr_propagation.utils import bind_primitive, sanitize_bind_params
 
 # Atom is Var | Literal but not directly exported
 Atom = Union[Var, Literal]
@@ -354,7 +354,7 @@ def register_univariate_inverse(
             inv_prim = inverse_prim_or_fn
             result = bind_primitive(inv_prim, eqn.params, out_val)
         else:
-            result = inverse_prim_or_fn(out_val, **eqn.params)
+            result = inverse_prim_or_fn(out_val, **sanitize_bind_params(eqn.params))
 
         return ProcessedResult([eqn.invars[0]], [result])
 
@@ -410,7 +410,7 @@ def register_bivariate_inverse(
         if isinstance(inv_fn, Primitive):
             result = bind_primitive(inv_fn, eqn.params, out_val, other)
         else:
-            result = inv_fn(out_val, other, **eqn.params)
+            result = inv_fn(out_val, other, **sanitize_bind_params(eqn.params))
 
         return ProcessedResult([target_var], [result])
 
@@ -444,7 +444,7 @@ def register_univariate_inverse_logdet(
             inv_prim = inverse_prim_or_fn
             in_val = bind_primitive(inv_prim, eqn.params, out_val)
         else:
-            in_val = inverse_prim_or_fn(out_val, **eqn.params)
+            in_val = inverse_prim_or_fn(out_val, **sanitize_bind_params(eqn.params))
 
         log_abs_det = logdet_fn(out_val, in_val, eqn.params)
 
@@ -497,7 +497,7 @@ def register_bivariate_inverse_logdet(
         if isinstance(inv_fn, Primitive):
             result = bind_primitive(inv_fn, eqn.params, out_val, other)
         else:
-            result = inv_fn(out_val, other, **eqn.params)
+            result = inv_fn(out_val, other, **sanitize_bind_params(eqn.params))
 
         log_abs_det = logdet_fn(out_val, result, other, eqn.params)
 
