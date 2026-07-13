@@ -1,11 +1,10 @@
-from typing import Callable, NamedTuple, Tuple
+from typing import Callable, NamedTuple
 
 import jax
 import jax.numpy as jnp
-from probjax.utils.typing import Array, PyTree, RngKey
 
-from probjax.inference.mcmc.adaptation import step_size_adaption
 from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
+from probjax.utils.typing import Array, PyTree, RngKey
 
 
 class LatentSliceParams(NamedTuple):
@@ -27,9 +26,7 @@ def init_params(state: PyTree, step_size: float = 0.5) -> LatentSliceParams:
     return LatentSliceParams(step_size=step_size)
 
 
-def init(
-    position: PyTree, logdensity_fn: Callable, rng_key=None
-) -> LatentSliceState:
+def init(position: PyTree, logdensity_fn: Callable, rng_key=None) -> LatentSliceState:
     log_density = logdensity_fn(position)
     latent_bracket_width = jnp.zeros_like(position)
     return LatentSliceState(position, log_density, latent_bracket_width)
@@ -85,52 +82,11 @@ def build_step(logdensity_fn: Callable, max_evals: int = 100) -> Callable:
     )
 
 
-def build_adaptation(
-    logdensity_fn: Callable,
-    max_evals: int = 100,
-) -> Callable:
-    def fit_params(
-        key: RngKey,
-        state: PyTree,
-        params: LatentSliceParams,
-        num_steps: int = 100,
-        target_num_evals: int = 5,
-        method: str = "step_size",
-        t0: int = 10,
-        gamma: float = 0.05,
-        kappa: float = 0.75,
-        **_,
-    ) -> Tuple[LatentSliceState, LatentSliceParams]:
-        position = state.position if hasattr(state, "position") else state
-        if method == "step_size":
-            adaption_alg = step_size_adaption(
-                latent_slice,
-                logdensity_fn,
-                params,
-                target=float(target_num_evals) / max_evals,
-                target_from_info_fn=lambda info: info.num_evals / max_evals,
-                t0=t0,
-                gamma=gamma,
-                kappa=kappa,
-                algorithm_kwargs={
-                    "max_evals": max_evals,
-                },
-            )
-        else:
-            raise ValueError("Invalid method")
-
-        out, _ = adaption_alg.run(key, position, num_steps)
-        return out.state, out.parameters
-
-    return fit_params
-
-
 latent_slice = make_kernel_api(
     name="latent_slice",
     init_fn=init,
     init_params_fn=init_params,
     build_step_fn=build_step,
-    build_adaptation_fn=build_adaptation,
 )
 
 

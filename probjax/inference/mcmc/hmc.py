@@ -1,12 +1,11 @@
-from typing import Callable, NamedTuple, Optional, Tuple
+from typing import Callable, NamedTuple, Optional
 
 import blackjax
 import jax.numpy as jnp
-from blackjax.mcmc.hmc import HMCInfo, HMCState
 from jax.flatten_util import ravel_pytree
-from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
+from probjax.utils.typing import Array, ArrayLike, PyTree
 
 
 class HMCParams(NamedTuple):
@@ -104,66 +103,11 @@ def build_step(
     )
 
 
-def build_hmc_family_adaption(
-    algorithm,
-    logdensity_fn: Callable,
-    integrator: Callable = blackjax.mcmc.integrators.velocity_verlet,
-    **kwargs,
-):
-    """Build parameter adaption method for the HMC kernel."""
-
-    def fit_params(
-        key: RngKey,
-        state: Array,
-        init_params,
-        num_steps: int,
-        method: str = "window",
-        target_acceptance_rate: float = 0.8,
-        **_,
-    ):
-        position = state.position if hasattr(state, "position") else state
-        if method == "window":
-            adaption_alg = blackjax.window_adaptation(
-                algorithm,
-                logdensity_fn,
-                initial_step_size=init_params.step_size,
-                target_acceptance_rate=target_acceptance_rate,
-                adaptation_info_fn=lambda *args, **kwargs: None,
-                integrator=integrator,
-                **kwargs,
-            )
-        elif method == "pathfinder":
-            adaption_alg = blackjax.pathfinder_adaptation(
-                algorithm,
-                logdensity_fn,
-                initial_step_size=init_params.step_size,
-                target_acceptance_rate=target_acceptance_rate,
-                adaptation_info_fn=lambda *args, **kwargs: None,
-                integrator=integrator,
-                **kwargs,
-            )
-        else:
-            raise ValueError(f"Adaption method {method} not supported")
-
-        adaption_state, _ = adaption_alg.run(key, position, num_steps)
-        state = adaption_state.state
-        params = HMCParams(
-            step_size=adaption_state.parameters["step_size"],
-            inverse_mass_matrix=adaption_state.parameters["inverse_mass_matrix"],
-        )
-        return state, params
-
-    return fit_params
-
-
 hmc = make_kernel_api(
     name="hmc",
     init_fn=blackjax.hmc.init,
     init_params_fn=init_params,
     build_step_fn=build_step,
-    build_adaptation_fn=lambda *args, **kwargs: build_hmc_family_adaption(
-        blackjax.hmc, *args, **kwargs
-    ),
 )
 
 
@@ -188,7 +132,4 @@ nuts = make_kernel_api(
     init_fn=blackjax.hmc.init,
     init_params_fn=init_params,
     build_step_fn=build_kernel_nuts,
-    build_adaptation_fn=lambda *args, **kwargs: build_hmc_family_adaption(
-        blackjax.nuts, *args, **kwargs
-    ),
 )

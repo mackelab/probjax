@@ -5,9 +5,9 @@ import blackjax
 import jax
 import jax.numpy as jnp
 from blackjax.mcmc.random_walk import RWInfo, RWState
-from probjax.utils.typing import Array, PyTree, RngKey
 
-from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
+from probjax.inference.mcmc.base import make_kernel_api
+from probjax.utils.typing import Array, PyTree, RngKey
 
 
 class IMHParams(NamedTuple):

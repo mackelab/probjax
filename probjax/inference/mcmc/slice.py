@@ -3,10 +3,9 @@ from typing import Callable, NamedTuple, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
-from probjax.inference.mcmc.adaptation import step_size_adaption
 from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 # Some utility functions for creating 1D slices through an N-dimensional space
 
@@ -159,60 +158,11 @@ def build_step(
     )
 
 
-def build_adaptation(
-    logdensity_fn: Callable,
-    max_evals: int = 100,
-    slice_fn="linear",
-    slice_fn_arg: Optional[Callable] = None,
-    step_size: float = 0.5,
-    **kwargs,
-) -> Callable:
-    def fit_params(
-        key: RngKey,
-        state: PyTree,
-        params: SliceParams,
-        num_steps: int = 100,
-        target_num_evals: int = 10,
-        method: str = "step_size",
-        t0: int = 10,
-        gamma: float = 0.05,
-        kappa: float = 0.75,
-        **_,
-    ) -> Tuple[SliceState, SliceParams]:
-        position = state.position if hasattr(state, "position") else state
-        if method == "step_size":
-            key, rng_init = jax.random.split(key)
-            adaption_alg = step_size_adaption(
-                slice,
-                logdensity_fn,
-                SliceParams(step_size=step_size),
-                target=float(target_num_evals) / max_evals,
-                target_from_info_fn=lambda info: info.num_evals / max_evals,
-                t0=t0,
-                gamma=gamma,
-                kappa=kappa,
-                init_kwargs={"rng_key": rng_init},
-                algorithm_kwargs={
-                    "max_evals": max_evals,
-                    "slice_fn": slice_fn,
-                    "slice_fn_arg": slice_fn_arg,
-                },
-            )
-        else:
-            raise ValueError("Invalid method")
-
-        out, _ = adaption_alg.run(key, position, num_steps)
-        return out.state, out.parameters
-
-    return fit_params
-
-
 slice = make_kernel_api(
     name="slice",
     init_fn=init,
     init_params_fn=init_params,
     build_step_fn=build_step,
-    build_adaptation_fn=build_adaptation,
 )
 
 

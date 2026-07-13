@@ -5,13 +5,12 @@ import jax
 from blackjax.smc import adaptive_tempered as bj_adaptive_tempered
 
 from probjax.inference.smc.base import (
-    make_mcmc_adapter,
-    make_smc_api,
-    _params_to_dict,
     _ensure_param_batch,
     _filter_kwargs,
+    _params_to_dict,
+    make_mcmc_adapter,
+    make_smc_api,
 )
-from probjax.inference.smc import tuning as smc_tuning
 
 
 def build_step(
@@ -80,26 +79,6 @@ def init_params(
     return _ensure_param_batch(_params_to_dict(params), shared=True)
 
 
-def build_tuning(
-    logprior_fn: Optional[Callable],
-    loglikelihood_fn: Optional[Callable],
-    *,
-    method: str = "from_particles",
-    **_,
-):
-    def tune_params(state, info, params, **kwargs):
-        params = _params_to_dict(params)
-        if method == "from_particles":
-            tuned = smc_tuning.tune_from_particles(params, state.particles, **kwargs)
-            return _ensure_param_batch(tuned, shared=True)
-        if method == "from_kernel_info":
-            tuned = smc_tuning.tune_from_kernel_info(params, info.update_info, **kwargs)
-            return _ensure_param_batch(tuned, shared=True)
-        return _ensure_param_batch(params, shared=True)
-
-    return tune_params
-
-
 def init(particles, **_):
     return bj_adaptive_tempered.init(particles)
 
@@ -109,5 +88,4 @@ adaptive_smc = make_smc_api(
     init_fn=init,
     init_params_fn=init_params,
     build_step_fn=build_step,
-    build_tuning_fn=build_tuning,
 )

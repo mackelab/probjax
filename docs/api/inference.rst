@@ -50,6 +50,32 @@ MCMC Runner
    State
    Params
 
+Adaptation and Warmup
+---------------------
+
+Adaptors are local ``init/update/finalize`` rules. They can be applied after
+individual transitions with ``MCMC.adapt_step`` or scanned through a standard
+finite warmup with ``MCMC.adapt``. Warmup procedures are separate because they
+own a finite schedule or replace the chain state.
+
+.. autosummary::
+   :toctree: generated
+
+   Adaptor
+   AdaptationResult
+   AdaptationTrace
+   Warmup
+   WarmupResult
+   adapt_step
+   compose_adaptors
+   step_size_adaptor
+   mass_matrix_adaptor
+   covariance_adaptor
+   slice_step_size_adaptor
+   window_warmup
+   pathfinder_warmup
+   mclmc_warmup
+
 SMC
 ---
 
@@ -67,6 +93,8 @@ SMC
    smc.GeometricPath
    smc.PartialPosteriorsPath
    smc.tuning
+   smc.particle_adaptor
+   smc.acceptance_rate_adaptor
    SMC
 
 Filtering and Smoothing

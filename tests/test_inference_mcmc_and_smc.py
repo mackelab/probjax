@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from probjax.inference.adaptation import adapt
 from probjax.inference.mcmc import (
     adjusted_mclmc,
     adjusted_mclmc_dynamic,
@@ -17,19 +18,20 @@ from probjax.inference.mcmc import (
     mala,
     mclmc,
     nuts,
-    sgld,
     sghmc,
+    sgld,
     sgnht,
     slice,
+    step_size_adaptor,
 )
 from probjax.inference.mcmc.base import MarkovKernel, Params
 from probjax.inference.mcmc.pmmcmc import pseudo_marginal
 from probjax.inference.mcmc.sgmcmc import grad_estimator
 from probjax.inference.mcmc_runner import MCMC
 from probjax.inference.smc import (
-    smc,
-    persistent_smc_kernel,
     adaptive_persistent_smc_kernel,
+    persistent_smc_kernel,
+    smc,
 )
 from probjax.inference.smc.base import SMCKernel
 from probjax.inference.smc.path import GeometricPath, PartialPosteriorsPath
@@ -85,7 +87,7 @@ def test_markov_kernel_vector_input(kernel_type, in_shape):
 
 
 @pytest.mark.parametrize("kernel_type", [hmc, nuts, mala, gauss_rwmh])
-def test_markov_kernel_fit_params_sanity(kernel_type):
+def test_markov_kernel_adaptation_sanity(kernel_type):
     key = jax.random.PRNGKey(0)
     x0 = jnp.array([0.1, -0.2])
 
@@ -101,7 +103,8 @@ def test_markov_kernel_fit_params_sanity(kernel_type):
     state = kernel.init(x0)
     params = kernel.init_params(state)
 
-    new_state, new_params = kernel.fit_params(key, state, params, num_steps=10)
+    result = adapt(key, kernel, step_size_adaptor(), state, params, num_steps=10)
+    new_state, new_params = result.state, result.params
 
     assert hasattr(new_state, "position")
     assert new_state.position.shape == x0.shape
@@ -299,14 +302,15 @@ def test_smc_runner_run():
 
     runner = SMC(kernel)
     temps = jnp.array([0.2, 0.5])
-    final_state, final_params = runner.run(key, state, temps, params)
+    result = runner.run(key, state, temps, params)
+    final_state = result.state
 
     assert final_state.particles.shape == particles.shape
     assert final_state.weights.shape[0] == particles.shape[0]
     assert final_state.tempering_param == temps[-1]
 
 
-def test_smc_runner_sample_with_tuning():
+def test_smc_runner_sample():
     key = jax.random.PRNGKey(1)
     particles = jax.random.normal(key, (8, 1))
 
@@ -336,15 +340,14 @@ def test_smc_runner_sample_with_tuning():
         step_size=0.1,
     )
 
-    runner = SMC(kernel)
+    runner = SMC(kernel, collect=True)
     temps = jnp.array([0.1, 0.3, 0.6])
-    particles_hist, weights_hist, final_state, final_params = runner.sample(
-        key, state, temps, params, tune_params=True
-    )
+    result = runner.run(key, state, temps, params)
+    states, _ = result.info
 
-    assert particles_hist.shape[0] == temps.shape[0]
-    assert weights_hist.shape[0] == temps.shape[0]
-    assert final_state.tempering_param == temps[-1]
+    assert states.particles.shape[0] == temps.shape[0]
+    assert states.weights.shape[0] == temps.shape[0]
+    assert result.state.tempering_param == temps[-1]
 
 
 def test_persistent_smc_step():
@@ -532,17 +535,18 @@ def test_smc_runner_sample_advances_key_past_kernel_step():
         init=init,
         step=step,
         init_params=lambda *args, **kwargs: {},
-        tune_params=lambda state, info, params, **kwargs: params,
     )
     state = kernel.init(jnp.zeros((2, 2), dtype=jnp.uint32))
     runner = SMC(kernel)
 
-    particles, _, _, _ = runner.sample(
+    result = runner.sample(
         jax.random.PRNGKey(0),
         state,
         tempering_params=jnp.arange(4),
-        mcmc_parameters={},
+        params={},
     )
+    states, _ = result.info
+    particles = states.particles
 
     assert not jnp.any(jnp.all(particles[:-1, 1] == particles[1:, 0], axis=1))
 
@@ -641,7 +645,9 @@ def test_sgmcmc_mcmc_runner_run(kernel_fn):
     num_steps = batches[0][0].shape[0]  # 10
 
     runner = MCMC(sampler)
-    final_state = runner.run(key, state, num_steps, params=params, args=batches)
+    final_state = runner.run(
+        key, state, num_steps, params=params, args=batches
+    ).state
 
     final_pos = _get_position(final_state)
     assert final_pos.shape == position.shape
@@ -661,7 +667,7 @@ def test_mcmc_runner_run_without_args_unchanged():
     params = kernel.init_params(state)
 
     runner = MCMC(kernel)
-    final_state = runner.run(key, state, 10, params=params)
+    final_state = runner.run(key, state, 10, params=params).state
 
     assert final_state.position.shape == position.shape
 
@@ -687,18 +693,16 @@ def test_mcmc_runner_sample_advances_key_past_inner_scan():
         )
 
     kernel = MarkovKernel(
-        logdensity_fn=lambda x: 0.0,
         init=init,
         step=step,
         init_params=lambda state: Params(),
-        fit_params=lambda *args, **kwargs: None,
     )
 
     initial_position = jnp.zeros((2, 2), dtype=jnp.uint32)
     state = kernel.init(initial_position)
     runner = MCMC(kernel, tracked_stats=())
 
-    samples, _ = runner.sample(
+    result = runner.sample(
         jax.random.PRNGKey(0),
         state,
         num_samples=4,
@@ -706,7 +710,9 @@ def test_mcmc_runner_sample_advances_key_past_inner_scan():
         thin=2,
     )
 
-    assert not jnp.any(jnp.all(samples[:-1, 1] == samples[1:, 0], axis=1))
+    assert not jnp.any(
+        jnp.all(result.samples[:-1, 1] == result.samples[1:, 0], axis=1)
+    )
 
 
 @pytest.mark.parametrize("kernel_fn", [sgld, sgnht])
@@ -731,12 +737,12 @@ def test_sgmcmc_mcmc_runner_sample(kernel_fn):
     total_batches = jax.tree_util.tree_map(lambda x: x[: num_samples * thin], batches)
 
     runner = MCMC(sampler)
-    samples, final_state = runner.sample(
+    result = runner.sample(
         key, state, num_samples, params=params, thin=thin, args=total_batches
     )
 
-    assert samples.shape == (num_samples, 2)
-    assert final_state.position.shape == position.shape
+    assert result.samples.shape == (num_samples, 2)
+    assert result.state.position.shape == position.shape
 
 
 # ---------------------------------------------------------------------------
@@ -816,7 +822,7 @@ def test_pseudo_marginal_mcmc_runner():
     params = kernel.init_params(state)
 
     runner = MCMC(kernel)
-    final_state = runner.run(key, state, 50, params=params)
+    final_state = runner.run(key, state, 50, params=params).state
 
     assert final_state.position.shape == position.shape
     assert not jnp.allclose(final_state.position, position), (
@@ -834,7 +840,7 @@ def test_pseudo_marginal_mcmc_runner_hmc():
     params = kernel.init_params(state)
 
     runner = MCMC(kernel)
-    final_state = runner.run(key, state, 20, params=params)
+    final_state = runner.run(key, state, 20, params=params).state
 
     assert final_state.position.shape == position.shape
     assert jnp.isfinite(final_state.logdensity)
@@ -861,7 +867,7 @@ def test_mcmc_runner_custom_tracked_stats():
     runner = MCMC(kernel, tracked_stats=("logdensity",))
     assert runner.tracked_stats == ("logdensity",)
     final = runner.run(key, state, 10, params=params)
-    assert final.position.shape == position.shape
+    assert final.state.position.shape == position.shape
 
 
 def test_mcmc_runner_logdensity_tracked():

@@ -1,11 +1,11 @@
-from functools import partial
 import inspect
-from typing import Callable, NamedTuple, Optional, Tuple
+from typing import Callable, NamedTuple, Optional
 
-from blackjax.base import Info, State
-from probjax.utils.typing import RngKey
+from blackjax.base import State
 
+from probjax.inference.base import Kernel
 from probjax.utils.jaxutils import API
+from probjax.utils.typing import RngKey
 
 
 def ignore_kwargs(fn: Callable, *keys) -> Callable:
@@ -27,21 +27,7 @@ class Params(NamedTuple):
     pass
 
 
-class MarkovKernel(NamedTuple):
-    """This is a NamedTuple that represents a Markov kernel with a stationary
-    distribution given by the logdensity_fn.
-    """
-
-    logdensity_fn: Callable
-    init: Callable
-    step: Callable
-    init_params: Callable
-    fit_params: Callable
-
-    def __call__(
-        self, key: RngKey, state: State, params: Optional[Params] = None, *args
-    ) -> Tuple[State, Info]:
-        return self.step(key, state, params, *args)
+MarkovKernel = Kernel
 
 
 class MarkovKernelAPI(metaclass=API):
@@ -57,25 +43,22 @@ class MarkovKernelAPI(metaclass=API):
     def build_step(*args, **kwargs) -> Callable:
         raise NotImplementedError("build_kernel method must be implemented")
 
-    @staticmethod
-    def build_adaptation(*args, **kwargs) -> Callable:
-        def no_adaptation(*args, **kwargs) -> Tuple[State, Info]:
-            raise NotImplementedError("No adaption method has been implemented")
-
-        return no_adaptation
-
     def __new__(cls, logdensity_fn: Callable, **kwargs) -> MarkovKernel:
-        init_fn = partial(cls.init, logdensity_fn=logdensity_fn)
-        raw_step = cls.build_step(logdensity_fn, **kwargs)
-        fit_params = cls.build_adaptation(logdensity_fn, **kwargs)
+        def init_fn(key, position=None, **init_kwargs):
+            # Accept the old position-first form while internal SMC composition
+            # is migrated to constructed kernel values.
+            if position is None:
+                position, key = key, init_kwargs.pop("rng_key", None)
+            return cls.init(
+                position, logdensity_fn=logdensity_fn, rng_key=key, **init_kwargs
+            )
 
-        # Wrap step to accept (and ignore) extra *args intended for
-        # logdensity_fn.  SG-MCMC kernels override step directly and
-        # forward *args to the grad estimator.
+        raw_step = cls.build_step(logdensity_fn, **kwargs)
+
         def step(key, state, params, *args):
             return raw_step(key, state, params)
 
-        return MarkovKernel(logdensity_fn, init_fn, step, cls.init_params, fit_params)
+        return MarkovKernel(init_fn, step, cls.init_params)
 
 
 def make_kernel_api(
@@ -84,7 +67,6 @@ def make_kernel_api(
     init_fn: Callable,
     init_params_fn: Callable,
     build_step_fn: Callable,
-    build_adaptation_fn: Optional[Callable] = None,
 ):
     """Create a MarkovKernelAPI subclass with minimal boilerplate."""
     sig = inspect.signature(init_fn)
@@ -103,9 +85,6 @@ def make_kernel_api(
         "init_params": staticmethod(init_params_fn),
         "build_step": staticmethod(build_step_fn),
     }
-    if build_adaptation_fn is not None:
-        attrs["build_adaptation"] = staticmethod(build_adaptation_fn)
-
     return type(name, (MarkovKernelAPI,), attrs)
 
 

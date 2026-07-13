@@ -1,9 +1,10 @@
-from probjax.inference.smc.path_smc import path_smc
-from probjax.inference.smc.path import GeometricPath, PartialPosteriorsPath
-from probjax.inference.smc.adaptive import adaptive_smc
-from probjax.inference.smc.persistent_smc import persistent_smc
-from probjax.inference.smc.adaptive_persistent_smc import adaptive_persistent_smc
 from probjax.inference.smc import tuning
+from probjax.inference.smc.adaptive import adaptive_smc
+from probjax.inference.smc.adaptive_persistent_smc import adaptive_persistent_smc
+from probjax.inference.smc.path import GeometricPath, PartialPosteriorsPath
+from probjax.inference.smc.path_smc import path_smc
+from probjax.inference.smc.persistent_smc import persistent_smc
+from probjax.inference.smc.tuning import acceptance_rate_adaptor, particle_adaptor
 
 
 def smc(*, path=None, **kwargs):

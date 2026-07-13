@@ -6,13 +6,9 @@ import jax
 import jax.numpy as jnp
 from blackjax.mcmc.random_walk import RWInfo, RWState
 from jax.flatten_util import ravel_pytree
-from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
-from probjax.inference.mcmc.adaptation import (
-    step_size_adaption,
-    step_size_and_scale_adaption,
-)
-from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
+from probjax.inference.mcmc.base import make_kernel_api
+from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 
 class RWParams(NamedTuple):
@@ -93,53 +89,6 @@ def gaussian_transition_proposal(key, position, params: RWParamsGauss):
     return unflatten(new_position)
 
 
-def build_adaptation(
-    logdensity_fn: Callable,
-) -> Callable:
-    def fit_params(
-        key: RngKey,
-        state: PyTree,
-        params: RWParamsGauss,
-        num_steps: int = 100,
-        method: str = "step_size",
-        target_acceptance_rate: float = 0.235,
-        is_diagonal_matrix: bool = True,
-        t0: int = 10,
-        gamma: float = 0.05,
-        kappa: float = 0.75,
-        **_,
-    ) -> Tuple[RWState, RWInfo]:
-        position = state.position if hasattr(state, "position") else state
-        if method == "step_size":
-            adaption_alg = step_size_adaption(
-                gauss_rwmh,
-                logdensity_fn,
-                params,
-                target=target_acceptance_rate,
-                t0=t0,
-                gamma=gamma,
-                kappa=kappa,
-            )
-        elif method == "step_size_and_scale":
-            adaption_alg = step_size_and_scale_adaption(
-                gauss_rwmh,
-                logdensity_fn,
-                params,
-                target_acceptance_rate=target_acceptance_rate,
-                is_diagonal_matrix=is_diagonal_matrix,
-                t0=t0,
-                gamma=gamma,
-                kappa=kappa,
-            )
-        else:
-            raise ValueError("Invalid method")
-
-        out, _ = adaption_alg.run(key, position, num_steps)
-        return out.state, out.parameters
-
-    return fit_params
-
-
 gauss_rwmh = make_kernel_api(
     name="gauss_rwmh",
     init_fn=blackjax.rmh.init,
@@ -147,5 +96,4 @@ gauss_rwmh = make_kernel_api(
     build_step_fn=partial(
         build_mh_step, transition_proposal_fn=gaussian_transition_proposal
     ),
-    build_adaptation_fn=build_adaptation,
 )

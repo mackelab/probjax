@@ -3,138 +3,240 @@ from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-from probjax.utils.typing import RngKey
 
+from probjax.inference.base import Adaptor, SMCResult
 from probjax.inference.smc.base import SMCKernel
 from probjax.utils.jaxutils import WithProgressBarAPI, print_scan
+from probjax.utils.typing import RngKey
 
 
 def _ess_from_weights(state, _info):
-    """Effective sample size from normalized SMC weights: 1 / sum(w^2)."""
     return 1.0 / jnp.sum(state.weights**2)
 
 
 class SMC(WithProgressBarAPI):
-    """Run an SMC kernel, optionally displaying a progress bar with diagnostics.
-
-    Defaults track ESS (the canonical particle-collapse indicator),
-    log-likelihood increment, and an acceptance rate sourced either from the
-    SMC info or from the inner MCMC kernel info (``info.update_info``).
-
-    Args:
-        kernel: An :class:`SMCKernel`.
-        verbose: If ``True``, display a progress bar with running stats.
-        tracked_stats: Names of scalars to display. Each name is looked up on
-            **state**, then **info**, then ``info.update_info`` (the inner
-            MCMC kernel info), then in the computed registry (``"ess"``).
-            Names may be dotted paths. Defaults to
-            ``("ess", "log_likelihood_increment", "acceptance_rate")``.
-    """
+    """Compiled standard execution for an SMC kernel."""
 
     _default_tracked_stats = ("ess", "log_likelihood_increment", "acceptance_rate")
     _computed_stats = {"ess": _ess_from_weights}
+    _print_rate = 50
 
     def __init__(
         self,
         kernel: SMCKernel,
         verbose: bool = False,
         tracked_stats: Optional[Tuple[str, ...]] = None,
+        collect: bool = False,
     ) -> None:
         self.kernel = kernel
         self.verbose = verbose
-        self.tracked_stats = tracked_stats or self._default_tracked_stats
+        self.tracked_stats = (
+            self._default_tracked_stats if tracked_stats is None else tracked_stats
+        )
+        self.collect = collect
 
     def _stat_objects(self, state, info):
-        # Inner MCMC kernel info commonly carries acceptance_rate / logdensity.
         return (state, info, getattr(info, "update_info", None))
 
-    @partial(jax.jit, static_argnums=(0, 5))
-    def run(
-        self,
+    @staticmethod
+    @partial(
+        jax.jit,
+        static_argnames=("kernel", "collect"),
+    )
+    def run_kernel(
         key: RngKey,
+        kernel: SMCKernel,
         state,
         tempering_params: jnp.ndarray,
-        mcmc_parameters: dict,
-        tune_params: bool = False,
-        tune_kwargs: Optional[dict] = None,
-    ):
-        if tune_kwargs is None:
-            tune_kwargs = {}
-
+        params,
+        *,
+        collect: bool = False,
+    ) -> SMCResult:
+        """Run a compiled SMC schedule without constructing a runner."""
         keys = jax.random.split(key, tempering_params.shape[0])
 
-        def scan_fn(carry, xs):
-            state, params = carry
-            t, step_key = xs
-            new_state, info = self.kernel.step(
-                step_key, state, tempering_param=t, mcmc_parameters=params
+        def one_step(state, xs):
+            tempering_param, step_key = xs
+            state, info = kernel.step(
+                step_key,
+                state,
+                tempering_param=tempering_param,
+                mcmc_parameters=params,
             )
-            if tune_params:
-                params = self.kernel.tune_params(new_state, info, params, **tune_kwargs)
-            stats = self._extract_stats(new_state, info) if self.verbose else None
-            return (new_state, params), stats
+            return state, (state, info) if collect else None
 
-        if not self.verbose:
-            (out_state, out_params), _ = jax.lax.scan(
-                scan_fn, (state, mcmc_parameters), (tempering_params, keys)
-            )
-            return out_state, out_params
+        state, trace = jax.lax.scan(one_step, state, (tempering_params, keys))
+        return SMCResult(state, params, trace if collect else None)
 
-        update_stats, print_fn, init_stats, print_rate = self._make_verbose_fns(
-            tempering_params.shape[0]
-        )
-        (out_state, out_params), _ = print_scan(
-            scan_fn,
-            (state, mcmc_parameters),
-            init_stats,
-            xs=(tempering_params, keys),
-            length=tempering_params.shape[0],
-            update_stats=update_stats,
-            print_fn=print_fn,
-            print_rate=print_rate,
-        )
-        return out_state, out_params
-
-    def sample(
-        self,
+    @staticmethod
+    @partial(
+        jax.jit,
+        static_argnames=("kernel", "adaptor", "collect"),
+    )
+    def adapt_kernel(
         key: RngKey,
+        kernel: SMCKernel,
+        adaptor: Adaptor,
         state,
         tempering_params: jnp.ndarray,
-        mcmc_parameters: dict,
-        tune_params: bool = False,
-        tune_kwargs: Optional[dict] = None,
-    ):
-        if tune_kwargs is None:
-            tune_kwargs = {}
+        params,
+        *,
+        collect: bool = False,
+    ) -> SMCResult:
+        """Run a compiled SMC schedule with parameter adaptation."""
+        adapt_state = adaptor.init(state, params)
+        keys = jax.random.split(key, tempering_params.shape[0])
 
-        num_steps = tempering_params.shape[0]
-        particles = jax.tree_util.tree_map(
-            lambda x: jnp.empty((num_steps,) + x.shape), state.particles
-        )
-        weights = jnp.empty((num_steps,) + state.weights.shape)
-        keys = jax.random.split(key, num_steps)
-
-        def scan_fn(carry, xs):
-            particles, weights, state, params = carry
-            i, step_key = xs
-            t = tempering_params[i]
-            new_state, info = self.kernel.step(
-                step_key, state, tempering_param=t, mcmc_parameters=params
+        def one_step(carry, xs):
+            state, params, adapt_state = carry
+            tempering_param, step_key = xs
+            state, info = kernel.step(
+                step_key,
+                state,
+                tempering_param=tempering_param,
+                mcmc_parameters=params,
             )
-            if tune_params:
-                params = self.kernel.tune_params(new_state, info, params, **tune_kwargs)
-
-            particles = jax.tree_util.tree_map(
-                lambda s, s_new: s.at[i].set(s_new), particles, new_state.particles
+            adapt_state, params, adapt_info = adaptor.update(
+                state, info, adapt_state, params
             )
-            weights = weights.at[i].set(new_state.weights)
-            return (particles, weights, new_state, params), None
+            output = (state, info, adapt_info) if collect else None
+            return (state, params, adapt_state), output
 
-        (particles, weights, final_state, final_params), _ = jax.lax.scan(
-            scan_fn,
-            (particles, weights, state, mcmc_parameters),
-            (jnp.arange(num_steps), keys),
-            length=num_steps,
+        (state, params, adapt_state), trace = jax.lax.scan(
+            one_step,
+            (state, params, adapt_state),
+            (tempering_params, keys),
+        )
+        params, final_info = adaptor.finalize(adapt_state, params)
+        info = (trace, final_info) if collect else None
+        return SMCResult(state, params, info)
+
+    def _verbose_scan(self, f, init, xs, length, stats_fn):
+        """Run a scan with a rate-limited progress bar.
+
+        ``print_scan`` requires a tuple carry, so we wrap the kernel state.
+        """
+
+        def wrapped(carry, x):
+            state, y = f(carry[0], x)
+            return (state,), y
+
+        update_stats, print_fn, init_stats, print_rate = self._make_verbose_fns(
+            length, stats_fn=lambda carry, y: stats_fn(carry[0], y)
+        )
+        (state,), y = print_scan(
+            wrapped,
+            (init,),
+            init_stats,
+            xs=xs,
+            length=length,
+            update_stats=update_stats,
+            print_rate=print_rate,
+            print_fn=print_fn,
+        )
+        return state, y
+
+    def _run_verbose(self, key, state, tempering_params, params, collect):
+        keys = jax.random.split(key, tempering_params.shape[0])
+        xs = (tempering_params, keys)
+
+        def one_step(state, xs):
+            tempering_param, step_key = xs
+            state, info = self.kernel.step(
+                step_key,
+                state,
+                tempering_param=tempering_param,
+                mcmc_parameters=params,
+            )
+            return state, (
+                self._extract_stats(state, info),
+                (state, info) if collect else None,
+            )
+
+        state, (_, trace) = self._verbose_scan(
+            one_step,
+            state,
+            xs,
+            tempering_params.shape[0],
+            stats_fn=lambda _carry, y: y[0],
+        )
+        return SMCResult(state, params, trace if collect else None)
+
+    def run(self, key, state, tempering_params, params) -> SMCResult:
+        """Run the schedule with this runner's configuration."""
+        if self.verbose:
+            return self._run_verbose(key, state, tempering_params, params, self.collect)
+        return self.run_kernel(
+            key,
+            self.kernel,
+            state,
+            tempering_params,
+            params,
+            collect=self.collect,
         )
 
-        return particles, weights, final_state, final_params
+    def sample(self, key, state, tempering_params, params) -> SMCResult:
+        """Run and retain every population and transition diagnostic."""
+        if not self.verbose:
+            return self.run_kernel(
+                key,
+                self.kernel,
+                state,
+                tempering_params,
+                params,
+                collect=True,
+            )
+        return self._run_verbose(key, state, tempering_params, params, True)
+
+    def adapt(
+        self,
+        key: RngKey,
+        adaptor: Adaptor,
+        state,
+        tempering_params: jnp.ndarray,
+        params,
+    ) -> SMCResult:
+        """Run the schedule with a composable parameter adaptor."""
+        if not self.verbose:
+            return self.adapt_kernel(
+                key,
+                self.kernel,
+                adaptor,
+                state,
+                tempering_params,
+                params,
+                collect=self.collect,
+            )
+
+        keys = jax.random.split(key, tempering_params.shape[0])
+        xs = (tempering_params, keys)
+        adapt_state = adaptor.init(state, params)
+
+        def one_step(carry, xs):
+            state, params, adapt_state = carry
+            tempering_param, step_key = xs
+            state, info = self.kernel.step(
+                step_key,
+                state,
+                tempering_param=tempering_param,
+                mcmc_parameters=params,
+            )
+            adapt_state, params, adapt_info = adaptor.update(
+                state, info, adapt_state, params
+            )
+            output = (state, info, adapt_info) if self.collect else None
+            return (state, params, adapt_state), (
+                self._extract_stats(state, info),
+                output,
+            )
+
+        (state, params, adapt_state), (_, trace) = self._verbose_scan(
+            one_step,
+            (state, params, adapt_state),
+            xs,
+            tempering_params.shape[0],
+            stats_fn=lambda _carry, y: y[0],
+        )
+        params, final_info = adaptor.finalize(adapt_state, params)
+        info = (trace, final_info) if self.collect else None
+        return SMCResult(state, params, info)

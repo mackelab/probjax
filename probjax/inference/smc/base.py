@@ -1,28 +1,22 @@
-from functools import partial
 import inspect
-from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
+from functools import partial
+from typing import Any, Callable, Dict, Optional
 
 import jax
 import jax.numpy as jnp
 from blackjax.smc import base as bj_smc_base
+
+from probjax.inference.base import Kernel
 from probjax.utils.jaxutils import API
 from probjax.utils.typing import Array, PyTree, RngKey
-
 
 SMCState = bj_smc_base.SMCState
 SMCInfo = bj_smc_base.SMCInfo
 
 
-class SMCKernel(NamedTuple):
-    init: Callable
-    step: Callable
-    init_params: Callable
-    tune_params: Callable
-
-    def __call__(self, *args: Any, **kwds: Any):
-        return self.step(*args, **kwds)
+SMCKernel = Kernel
 
 
 class SMCKernelAPI(metaclass=API):
@@ -38,13 +32,6 @@ class SMCKernelAPI(metaclass=API):
     def build_step(*args, **kwargs) -> Callable:
         raise NotImplementedError("build_step method must be implemented")
 
-    @staticmethod
-    def build_tuning(*args, **kwargs) -> Callable:
-        def no_tuning(state, info, params, **_):
-            return params
-
-        return no_tuning
-
     def __new__(cls, logprior_fn: Callable, loglikelihood_fn: Callable, **kwargs):
         init = partial(
             cls.init, logprior_fn=logprior_fn, loglikelihood_fn=loglikelihood_fn
@@ -53,8 +40,7 @@ class SMCKernelAPI(metaclass=API):
             cls.init_params, logprior_fn=logprior_fn, loglikelihood_fn=loglikelihood_fn
         )
         step = cls.build_step(logprior_fn, loglikelihood_fn, **kwargs)
-        tune_params = cls.build_tuning(logprior_fn, loglikelihood_fn, **kwargs)
-        return SMCKernel(init, step, init_params, tune_params)
+        return SMCKernel(init, step, init_params)
 
 
 def _filter_kwargs(
@@ -75,9 +61,7 @@ def _ensure_param_batch(params, *, shared: bool) -> Dict[str, Array]:
     for k, v in params.items():
         arr = jnp.asarray(v)
         if shared:
-            if arr.ndim == 0:
-                arr = arr[None, ...]
-            elif arr.shape[0] != 1:
+            if arr.ndim == 0 or arr.shape[0] != 1:
                 arr = arr[None, ...]
             # Ensure shared params are at least 2-D so that
             # BlackJAX's unshared_parameters_and_step_fn (which does
@@ -171,13 +155,10 @@ def make_smc_api(
     init_fn: Callable,
     init_params_fn: Callable,
     build_step_fn: Callable,
-    build_tuning_fn: Optional[Callable] = None,
 ):
     attrs = {
         "init": staticmethod(init_fn),
         "init_params": staticmethod(init_params_fn),
         "build_step": staticmethod(build_step_fn),
     }
-    if build_tuning_fn is not None:
-        attrs["build_tuning"] = staticmethod(build_tuning_fn)
     return type(name, (SMCKernelAPI,), attrs)

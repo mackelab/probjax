@@ -1,21 +1,17 @@
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, NamedTuple, Optional
 
+import blackjax
 import jax
 import jax.numpy as jnp
-import blackjax
-from typing import NamedTuple
-
-from blackjax.smc import base as bj_base
 from blackjax.smc import from_mcmc as bj_from_mcmc
 
 from probjax.inference.smc.base import (
-    make_mcmc_adapter,
-    make_smc_api,
-    _params_to_dict,
     _ensure_param_batch,
     _filter_kwargs,
+    _params_to_dict,
+    make_mcmc_adapter,
+    make_smc_api,
 )
-from probjax.inference.smc import tuning as smc_tuning
 
 
 class PathSMCState(NamedTuple):
@@ -66,7 +62,9 @@ def build_step(
     )
 
     if path_kwargs is None:
-        path_kwargs = _filter_kwargs(path.logdensity_fn, mcmc_kernel_kwargs, allow_kwargs=False)
+        path_kwargs = _filter_kwargs(
+            path.logdensity_fn, mcmc_kernel_kwargs, allow_kwargs=False
+        )
     else:
         path_kwargs = path_kwargs
 
@@ -80,7 +78,12 @@ def build_step(
             **path_kwargs,
         )
         smc_state, info = delegate(
-            rng_key, state, num_mcmc_steps, mcmc_parameters, logposterior_fn, log_weights_fn
+            rng_key,
+            state,
+            num_mcmc_steps,
+            mcmc_parameters,
+            logposterior_fn,
+            log_weights_fn,
         )
         return (
             PathSMCState(smc_state.particles, smc_state.weights, tempering_param),
@@ -114,7 +117,9 @@ def init_params(
     particle0 = jax.tree_util.tree_map(lambda x: x[0], particles)
     if initial_path_param is None:
         initial_path_param = path.initial_param(**path_kwargs)
-    logdensity_kwargs = _filter_kwargs(path.logdensity_fn, mcmc_param_kwargs, allow_kwargs=False)
+    logdensity_kwargs = _filter_kwargs(
+        path.logdensity_fn, mcmc_param_kwargs, allow_kwargs=False
+    )
     logposterior_fn = path.logdensity_fn(
         initial_path_param,
         logprior_fn=logprior_fn,
@@ -132,26 +137,6 @@ def init_params(
     return _ensure_param_batch(params_dict, shared=True)
 
 
-def build_tuning(
-    logprior_fn: Optional[Callable],
-    loglikelihood_fn: Optional[Callable],
-    *,
-    method: str = "from_particles",
-    **_,
-):
-    def tune_params(state, info, params, **kwargs):
-        params = _params_to_dict(params)
-        if method == "from_particles":
-            tuned = smc_tuning.tune_from_particles(params, state.particles, **kwargs)
-            return _ensure_param_batch(tuned, shared=True)
-        if method == "from_kernel_info":
-            tuned = smc_tuning.tune_from_kernel_info(params, info.update_info, **kwargs)
-            return _ensure_param_batch(tuned, shared=True)
-        return _ensure_param_batch(params, shared=True)
-
-    return tune_params
-
-
 def init(particles, *, path, initial_path_param=None, **path_kwargs):
     if initial_path_param is None:
         initial_path_param = path.initial_param(**path_kwargs)
@@ -165,5 +150,4 @@ path_smc = make_smc_api(
     init_fn=init,
     init_params_fn=init_params,
     build_step_fn=build_step,
-    build_tuning_fn=build_tuning,
 )

@@ -1,8 +1,10 @@
 from typing import Dict, Optional
 
-import jax
 import jax.numpy as jnp
 from blackjax.smc.tuning import from_kernel_info, from_particles
+
+from probjax.inference.base import Adaptor
+from probjax.inference.smc.base import _ensure_param_batch, _params_to_dict
 
 
 def tune_from_particles(
@@ -77,7 +79,55 @@ def tune_from_kernel_info(
     if rates is None or scale_key not in params:
         return params
     tuned = dict(params)
+    scale = jnp.asarray(tuned[scale_key])
+    rates = jnp.asarray(rates)
+    if scale.size == 1:
+        rates = jnp.mean(rates)
     tuned[scale_key] = from_kernel_info.update_scale_from_acceptance_rate(
-        jnp.asarray(tuned[scale_key]), jnp.asarray(rates), target_acceptance_rate
+        scale, rates, target_acceptance_rate
     )
     return tuned
+
+
+def particle_adaptor(*, updates: Optional[Dict[str, str]] = None) -> Adaptor:
+    """Update MCMC geometry from the current SMC particle population."""
+
+    def init(_state, _params):
+        return ()
+
+    def update(state, _info, adaptor_state, params):
+        params = tune_from_particles(
+            _params_to_dict(params), state.particles, updates=updates
+        )
+        return adaptor_state, _ensure_param_batch(params, shared=True), None
+
+    def finalize(_adaptor_state, params):
+        return params, None
+
+    return Adaptor(init, update, finalize)
+
+
+def acceptance_rate_adaptor(
+    *,
+    target_acceptance_rate: float = 0.234,
+    scale_key: str = "step_size",
+    info_fn=lambda info: info.update_info,
+) -> Adaptor:
+    """Update an SMC move-kernel scale from its acceptance diagnostics."""
+
+    def init(_state, _params):
+        return ()
+
+    def update(_state, info, adaptor_state, params):
+        params = tune_from_kernel_info(
+            _params_to_dict(params),
+            info_fn(info),
+            target_acceptance_rate=target_acceptance_rate,
+            scale_key=scale_key,
+        )
+        return adaptor_state, _ensure_param_batch(params, shared=True), None
+
+    def finalize(_adaptor_state, params):
+        return params, None
+
+    return Adaptor(init, update, finalize)

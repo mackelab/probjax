@@ -1,12 +1,11 @@
-from typing import Callable, NamedTuple, Optional, Tuple
+from typing import Callable, NamedTuple, Optional
 
 import blackjax
 import jax
 import jax.numpy as jnp
-from blackjax.mcmc.elliptical_slice import EllipSliceInfo, EllipSliceState
-from probjax.utils.typing import Array, PyTree, RngKey
 
 from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
+from probjax.utils.typing import Array, PyTree
 
 
 class EllipticalSliceParams(NamedTuple):

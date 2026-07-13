@@ -104,10 +104,12 @@ def pseudo_marginal(
     # ------------------------------------------------------------------
     # init: evaluate the stochastic logdensity once to populate state
     # ------------------------------------------------------------------
-    def init(position, rng_key=None):
-        if rng_key is None:
-            rng_key = jax.random.PRNGKey(0)
-        key_init, key_logdensity = jax.random.split(rng_key)
+    def init(key, position=None, rng_key=None):
+        if position is None:
+            position, key = key, rng_key
+        if key is None:
+            key = jax.random.PRNGKey(0)
+        key_init, key_logdensity = jax.random.split(key)
         fixed_logdensity = _make_fixed_logdensity(
             stochastic_logdensity_fn, key_logdensity, num_samples
         )
@@ -131,23 +133,7 @@ def pseudo_marginal(
         )
         return inner_step(key_kernel, state, params, *args)
 
-    # ------------------------------------------------------------------
-    # init_params / fit_params
-    # ------------------------------------------------------------------
     def init_params(state, *args, **kwargs):
         return inner_kernel_cls.init_params(state, *args, **kwargs)
 
-    def fit_params(*_args, **_kwargs):
-        raise NotImplementedError(
-            "Adaptation is not yet supported for pseudo-marginal kernels. "
-            "Tune the inner kernel on a tractable approximation first, "
-            "then pass the resulting params to the pseudo-marginal kernel."
-        )
-
-    return MarkovKernel(
-        logdensity_fn=stochastic_logdensity_fn,
-        init=init,
-        step=step,
-        init_params=init_params,
-        fit_params=fit_params,
-    )
+    return MarkovKernel(init, step, init_params)

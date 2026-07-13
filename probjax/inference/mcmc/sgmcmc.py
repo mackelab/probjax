@@ -32,8 +32,7 @@ from blackjax.types import ArrayTree
 from blackjax.util import generate_gaussian_noise
 
 from probjax.inference.mcmc.base import MarkovKernel
-from probjax.utils.typing import PyTree, RngKey
-
+from probjax.utils.typing import RngKey
 
 # ---------------------------------------------------------------------------
 # Shared state / info types
@@ -99,7 +98,9 @@ def sgld(grad_estimator: Callable, temperature: float = 1.0) -> MarkovKernel:
     """
     kernel = blackjax.sgld.build_kernel()
 
-    def init(position, rng_key=None):
+    def init(key, position=None, rng_key=None):
+        if position is None:
+            position = key
         return SGMCMCState(position=blackjax.sgld.init(position))
 
     def step(key: RngKey, state: SGMCMCState, params, *args):
@@ -114,14 +115,10 @@ def sgld(grad_estimator: Callable, temperature: float = 1.0) -> MarkovKernel:
         return SGMCMCState(position=new_position), SGMCMCInfo()
 
     return MarkovKernel(
-        logdensity_fn=grad_estimator,
-        init=init,
-        step=step,
-        init_params=lambda state, step_size=1e-3, temperature=1.0: SGLDParams(
+        init,
+        step,
+        lambda state, step_size=1e-3, temperature=1.0: SGLDParams(
             step_size=step_size, temperature=temperature
-        ),
-        fit_params=lambda *a, **kw: (_ for _ in ()).throw(
-            NotImplementedError("No adaptation for SGMCMC")
         ),
     )
 
@@ -155,7 +152,9 @@ def sghmc(
     """
     kernel = blackjax.sghmc.build_kernel(alpha=alpha, beta=beta)
 
-    def init(position, rng_key=None):
+    def init(key, position=None, rng_key=None):
+        if position is None:
+            position = key
         return SGMCMCState(position=blackjax.sghmc.init(position))
 
     def step(key: RngKey, state: SGMCMCState, params, *args):
@@ -171,14 +170,10 @@ def sghmc(
         return SGMCMCState(position=new_position), SGMCMCInfo()
 
     return MarkovKernel(
-        logdensity_fn=grad_estimator,
-        init=init,
-        step=step,
-        init_params=lambda state, step_size=1e-3, temperature=1.0: SGHMCParams(
+        init,
+        step,
+        lambda state, step_size=1e-3, temperature=1.0: SGHMCParams(
             step_size=step_size, temperature=temperature
-        ),
-        fit_params=lambda *a, **kw: (_ for _ in ()).throw(
-            NotImplementedError("No adaptation for SGMCMC")
         ),
     )
 
@@ -236,14 +231,15 @@ def sgnht(
         )
         return new_state, SGMCMCInfo()
 
+    def init(key, position=None, rng_key=None):
+        if position is None:
+            position, key = key, rng_key
+        return _sgnht_init(position, rng_key=key, alpha=alpha)
+
     return MarkovKernel(
-        logdensity_fn=grad_estimator,
-        init=_sgnht_init,
-        step=step,
-        init_params=lambda state, step_size=1e-3, temperature=1.0: SGNHTParams(
+        init,
+        step,
+        lambda state, step_size=1e-3, temperature=1.0: SGNHTParams(
             step_size=step_size, temperature=temperature
-        ),
-        fit_params=lambda *a, **kw: (_ for _ in ()).throw(
-            NotImplementedError("No adaptation for SGMCMC")
         ),
     )
