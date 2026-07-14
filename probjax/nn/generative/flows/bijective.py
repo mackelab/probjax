@@ -3,7 +3,7 @@ import jax.numpy as jnp
 from flax import nnx
 from flax.typing import Initializer
 
-from probjax.nn.sharding import ShardingCfg
+
 from probjax.stats.bijective import rotate
 from probjax.utils.typing import (
     Array,
@@ -82,7 +82,6 @@ class Affine(nnx.Module):
         param_dtype: DTypeLike | None = None,
         scale_init: Initializer = identity_init,
         bias_init: Initializer = nnx.initializers.zeros,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Affine transformation module that applies scale and bias to input.
@@ -104,7 +103,6 @@ class Affine(nnx.Module):
         self.in_out_features = in_out_features
         self.dtype = dtype
         self.param_dtype = param_dtype
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         self.scale = nnx.Param(
             scale_init(rngs.next(), shape=(in_out_features,), dtype=param_dtype)
@@ -136,7 +134,6 @@ class Flip(nnx.Module):
         self,
         axis: int = -1,
         *,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs = None,
     ):
         """Flip module that reverses elements along a specified axis.
@@ -148,7 +145,6 @@ class Flip(nnx.Module):
         """
         del rngs  # Unused but kept for compatibility
         self.axis = axis
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
     def __call__(self, x: ArrayLike, *args, rng: jax.Array | None = None) -> Array:
         """Flip the input array along the specified axis.
@@ -173,7 +169,6 @@ class Permute(nnx.Module):
         permutation: Array,
         axis: int = -1,
         *,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs = None,
     ):
         """Permutation module that reorders elements along a specified axis.
@@ -189,7 +184,6 @@ class Permute(nnx.Module):
             ValueError: If permutation contains negative values.
         """
         del rngs  # Unused but kept for compatibility
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         permutation = jnp.asarray(permutation)
 
         if jnp.any(permutation < 0):
@@ -227,7 +221,6 @@ class Rotate(nnx.Module):
         learnable: bool = False,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Rotation module that applies orthogonal transformations to input.
@@ -252,7 +245,6 @@ class Rotate(nnx.Module):
         self.learnable = learnable
         self.dtype = dtype
         self.param_dtype = param_dtype
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         if not learnable:
             if rotation_matrix is None:
@@ -328,7 +320,6 @@ class ElementwiseMonotone(nnx.Module):
         *,
         params_init: Initializer = nnx.initializers.zeros,
         param_dtype: DTypeLike | None = None,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         if in_out_features <= 0:
@@ -336,7 +327,6 @@ class ElementwiseMonotone(nnx.Module):
         self.in_out_features = in_out_features
         self.bijector_dim = bijector_dim
         self.bijector = bijector
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         self.params = nnx.Param(
             params_init(
                 rngs.next(), shape=(in_out_features, bijector_dim), dtype=param_dtype

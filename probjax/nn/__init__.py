@@ -1,5 +1,57 @@
-# Import all from flax.nnx
-from flax.nnx.nn import *  # type: ignore
+# Standard flax nnx layers, re-exported so probjax.nn is a drop-in superset.
+# probjax implementations below override where they exist (MultiHeadAttention,
+# Sequential, MLP, ...).
+from flax.nnx import (
+    RNN,
+    BatchNorm,
+    avg_pool,
+    max_pool,
+    min_pool,
+    initializers,
+    Bidirectional,
+    Conv,
+    ConvTranspose,
+    Dropout,
+    Einsum,
+    Embed,
+    GroupNorm,
+    GRUCell,
+    InstanceNorm,
+    LayerNorm,
+    Linear,
+    LinearGeneral,
+    LoRA,
+    LoRALinear,
+    LSTMCell,
+    OptimizedLSTMCell,
+    PReLU,
+    RMSNorm,
+    SpectralNorm,
+    WeightNorm,
+)
+from flax.nnx.nn.activations import (
+    celu,
+    elu,
+    gelu,
+    glu,
+    hard_sigmoid,
+    hard_silu,
+    hard_swish,
+    hard_tanh,
+    leaky_relu,
+    log_sigmoid,
+    log_softmax,
+    relu,
+    relu6,
+    selu,
+    sigmoid,
+    silu,
+    soft_sign,
+    softmax,
+    softplus,
+    swish,
+    tanh,
+)
 
 from probjax.nn.distribution import LearnedDistribution
 from probjax.nn.io_util import DataLoader, chunkify
@@ -123,16 +175,10 @@ from probjax.nn.nets import (
     MLP,
     DeepSet,
     LRUModel,
-    LinearShardingCfg,
-    LinearShardingSpec,
-    MLPShardingSpec,
     MaskedMLP,
     ResNet,
     Sequential,
-    ShardingCfg,
-    SpatialShardingCfg,
     Transformer,
-    TransformerShardingCfg,
     UNet,
 )
 from probjax.nn.pallas_kernels import (

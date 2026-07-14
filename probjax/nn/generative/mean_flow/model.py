@@ -8,7 +8,7 @@ from flax import nnx
 from probjax.stats.fit import FitMixin
 
 from probjax.nn.losses.mean_flow import build_mean_flow_matching_loss
-from probjax.nn.sharding import ShardingCfg
+
 
 from probjax.nn.generative.flow_matching.config import (
     FlowPreconditioningProtocol,
@@ -39,10 +39,8 @@ class MeanFlowMatcher(nnx.Module, FitMixin):
         std1: ArrayLike = 1.0,
         rngs: nnx.RngStream | None = None,
         loss_kwargs: Mapping[str, object] | None = None,
-        sharding_cfg: ShardingCfg | None = None,
     ):
         self.net: ModuleLike = net
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         self.mu0 = nnx.Variable(mu0)
         self.std0 = nnx.Variable(std0)
         self.mu1 = nnx.Variable(mu1)
@@ -235,7 +233,6 @@ class LinearMeanFlow(MeanFlowMatcher):
         preconditioning: FlowPreconditioningProtocol | None = None,
         train_cfg: FlowPairTrainingConfigProtocol | None = None,
         solver_cfg: FlowSolverConfigProtocol | None = None,
-        sharding_cfg: ShardingCfg | None = None,
     ):
         schedule = schedule or LinearInterpolationSchedule()
         preconditioning = preconditioning or GaussianFlowPreconditioning()
@@ -253,7 +250,6 @@ class LinearMeanFlow(MeanFlowMatcher):
             std1=std1,
             rngs=rngs,
             loss_kwargs=loss_kwargs,
-            sharding_cfg=sharding_cfg,
         )
 
     def solve_schedule(self, num_steps: int = 50) -> Array:

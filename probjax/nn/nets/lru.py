@@ -6,7 +6,7 @@ from flax import nnx
 
 from probjax.nn.layers.lru import LRUCell
 from probjax.nn.nets.simple import MLP
-from probjax.nn.sharding import ShardingCfg
+
 
 from probjax.nn.utils import filter_precision_kwargs, get_active_precision_kwargs
 from probjax.utils.typing import (
@@ -67,7 +67,6 @@ class LRUModel(nnx.Module):
         # Recurrent cell choice and kwargs
         recurrent_cls: ModuleLikeType = LRUCell,
         recurrent_kwargs: Optional[Mapping] = None,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Initialize an LRU model.
@@ -122,7 +121,6 @@ class LRUModel(nnx.Module):
         self.recurrent_kwargs = dict(recurrent_kwargs or {})
         self.skip_connection_lru = skip_connection_lru
         self.skip_connection_mlp = skip_connection_mlp
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         # Precision and dtype settings
         precision_kwargs = get_active_precision_kwargs(
@@ -147,32 +145,30 @@ class LRUModel(nnx.Module):
         self.out_layer = nnx.Linear(model_dim, output_dim, rngs=rngs, **linear_kwargs)
 
         # Norm sharding kwargs (default: replicate norm params).
-        _norm_kwargs = self.sharding_cfg.norm_kwargs(norm_cls)
 
         # Layer norms for LRU and MLP blocks
         self.layer_norms_lru = nnx.List([
-            norm_cls(model_dim, rngs=rngs, **_norm_kwargs) for _ in range(num_layers)
+            norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
         ])
         self.layer_norms_mlp = nnx.List([
-            norm_cls(model_dim, rngs=rngs, **_norm_kwargs) for _ in range(num_layers)
+            norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
         ])
 
         # Final output layer norm
-        self.out_layer_norm = norm_cls(model_dim, rngs=rngs, **_norm_kwargs)
+        self.out_layer_norm = norm_cls(model_dim, rngs=rngs)
 
         # Recurrent cell stack (each cell maps [B, T, D] -> [B, T, D])
         self.recurrent_layers = nnx.List([
             self.recurrent_cls(
                 model_dim,
                 rngs=rngs,
-                sharding_cfg=self.sharding_cfg,
                 **self.recurrent_kwargs,
             )
             for _ in range(num_layers)
         ])
         # Heads for block post-processing (norm, activation, GLU, dropout)
         self.block_norms = nnx.List([
-            norm_cls(model_dim, rngs=rngs, **_norm_kwargs) for _ in range(num_layers)
+            norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
         ])
         if dropout_rate is not None:
             self.block_dropout1 = nnx.List([
@@ -207,7 +203,6 @@ class LRUModel(nnx.Module):
                 rngs=rngs,
                 activation=activation,
                 activate_final=True,
-                sharding_cfg=self.sharding_cfg,
                 **mlp_kwargs,
             )
             for _ in range(num_layers)

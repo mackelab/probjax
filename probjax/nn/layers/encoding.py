@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from flax import nnx
 from flax.typing import Initializer
 
-from probjax.nn.sharding import ShardingCfg
+from probjax.nn.sharding import BATCH, constrain
 from probjax.utils.typing import (
     Array,
     ArrayLike,
@@ -27,7 +27,6 @@ class PosEncode(nnx.Module):
         self,
         max_seq_len: int = 10_000,
         *,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Positional embedding module using sinusoidal patterns.
@@ -40,7 +39,6 @@ class PosEncode(nnx.Module):
         """
         del rngs
         super().__init__()
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         if max_seq_len <= 0:
             raise ValueError("max_seq_len must be positive")
         self.max_seq_len = max_seq_len
@@ -102,7 +100,7 @@ class PosEncode(nnx.Module):
         )
 
         out = x + pos_encoding
-        return self.sharding_cfg.constrain_for_rank(out, out.ndim)
+        return constrain(out, BATCH)
 
 
 class RotaryPosEncode(nnx.Module):
@@ -117,7 +115,6 @@ class RotaryPosEncode(nnx.Module):
         spatial_ndims: int | None = None,
         spatial_shape: int | Sequence[int] | None = None,
         dtype: DTypeLike | None = None,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs | None = None,
     ):
         """Rotary positional embedding module (RoPE).
@@ -137,7 +134,6 @@ class RotaryPosEncode(nnx.Module):
             rngs: Random number generators (unused, kept for API consistency).
         """
         del rngs
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         if token_dim <= 0:
             raise ValueError("token_dim must be positive")
         self.token_dim = token_dim
@@ -314,7 +310,7 @@ class RotaryPosEncode(nnx.Module):
             if remainder is not None
             else rotary_out
         )
-        return self.sharding_cfg.constrain_for_rank(out, out.ndim)
+        return constrain(out, BATCH)
 
     def _apply_spatial(
         self,
@@ -386,7 +382,6 @@ class LearnablePosEncode(nnx.Module):
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
         embedding_init: Initializer = default_embed_init,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Learned positional embedding module.
@@ -408,7 +403,6 @@ class LearnablePosEncode(nnx.Module):
             raise ValueError("max_seq_len must be positive")
 
         self.max_seq_len = max_seq_len
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         self.embed = nnx.Embed(
             max_seq_len,
             in_out_features,
@@ -463,7 +457,7 @@ class LearnablePosEncode(nnx.Module):
         pos_emb = pos_emb.reshape((1,) * len(batch_shape) + pos_emb.shape)
 
         out = x + pos_emb
-        return self.sharding_cfg.constrain_for_rank(out, out.ndim)
+        return constrain(out, BATCH)
 
 
 class GaussianFourierEmbedding(nnx.Module):
@@ -480,7 +474,6 @@ class GaussianFourierEmbedding(nnx.Module):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Gaussian Fourier embedding module. Mostly used to embed time or
@@ -514,7 +507,6 @@ class GaussianFourierEmbedding(nnx.Module):
         self.param_dtype = param_dtype
         self.precision = precision
         self.preferred_element_type = preferred_element_type
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         # Use half_dim to ensure we can create the full output_dim
         half_dim = math.ceil(out_features / 2)
@@ -568,7 +560,7 @@ class GaussianFourierEmbedding(nnx.Module):
         # Concatenate and truncate to exact output_dim
         features = jnp.concatenate([cos_features, sin_features], axis=-1)
         out = features[..., : self.out_features]
-        return self.sharding_cfg.constrain_for_rank(out, out.ndim)
+        return constrain(out, BATCH)
 
 
 class OneHot(nnx.Module):
@@ -578,7 +570,6 @@ class OneHot(nnx.Module):
         self,
         max_num_sequence: int,
         *,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """One-hot encoding module.
@@ -595,7 +586,6 @@ class OneHot(nnx.Module):
         if max_num_sequence <= 0:
             raise ValueError("num_tokens must be positive")
         self.num_tokens = max_num_sequence
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
     def __call__(self, x: ArrayLike, *, rng: jax.Array | None = None) -> Array:
         """One-hot encode the input.
@@ -620,4 +610,4 @@ class OneHot(nnx.Module):
             )
 
         out = jax.nn.one_hot(x, self.num_tokens)
-        return self.sharding_cfg.constrain_for_rank(out, out.ndim)
+        return constrain(out, BATCH)

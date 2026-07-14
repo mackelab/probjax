@@ -9,11 +9,7 @@ from probjax.nn.layers.conv import (
     ResnetBlock,
     SpatialSelfAttention,
 )
-from probjax.nn.sharding import (
-    ShardingCfg,
-    SpatialShardingCfg,
-    filter_sharding_kwargs,
-)
+from probjax.nn.sharding import BATCH, constrain
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
@@ -93,7 +89,6 @@ class UNet(nnx.Module):
         conv_up_cls: ModuleLikeType | Sequence[ModuleLikeType] = nnx.ConvTranspose,
         attn_cls: ModuleLikeType = SpatialSelfAttention,
         conv_cls: ModuleLikeType = nnx.Conv,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         assert len(out_features) >= 2, "Must have at least 2 output channels"
@@ -103,10 +98,6 @@ class UNet(nnx.Module):
         self.num_stages = len(out_features)
         self.resize_method = resize_method  # Triggered if user shapes do not mat
         self.preferred_element_type = preferred_element_type
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
-        _scfg = self.sharding_cfg.as_type(SpatialShardingCfg)
-        self._activation_spec = _scfg.spatial_activation_spec()
-
         precision_kwargs = get_active_precision_kwargs(
             dtype,
             precision,
@@ -136,10 +127,6 @@ class UNet(nnx.Module):
             context_features=context_features,
             dropout_rate=dropout_rate,
             rngs=rngs,
-            **filter_sharding_kwargs(
-                resnet_block_cls,
-                sharding_cfg=self.sharding_cfg,
-            ),
             **filter_precision_kwargs(resnet_block_cls, **precision_kwargs),
         )
 
@@ -169,10 +156,6 @@ class UNet(nnx.Module):
                     kernel_size=kernel_size,
                     strides=strides,
                     rngs=rngs,
-                    **filter_sharding_kwargs(
-                        conv_down_cls_i,
-                        sharding_cfg=self.sharding_cfg,
-                    ),
                     **filter_precision_kwargs(conv_down_cls_i, **precision_kwargs),
                 )
             )
@@ -189,10 +172,6 @@ class UNet(nnx.Module):
                     kernel_size=kernel_size,
                     strides=strides,
                     rngs=rngs,
-                    **filter_sharding_kwargs(
-                        conv_up_cls_i,
-                        sharding_cfg=self.sharding_cfg,
-                    ),
                     **filter_precision_kwargs(conv_up_cls_i, **precision_kwargs),
                 )
             )
@@ -203,7 +182,6 @@ class UNet(nnx.Module):
             kernel_size=1,
             use_bias=False,
             rngs=rngs,
-            **filter_sharding_kwargs(conv_cls, sharding_cfg=self.sharding_cfg),
             **filter_precision_kwargs(conv_cls, **precision_kwargs),
         )
 
@@ -211,7 +189,6 @@ class UNet(nnx.Module):
             attn_cls,
             dropout_rate=dropout_rate,
             rngs=rngs,
-            **filter_sharding_kwargs(attn_cls, sharding_cfg=self.sharding_cfg),
             **filter_precision_kwargs(attn_cls, **precision_kwargs),
         )
 
@@ -322,7 +299,7 @@ class UNet(nnx.Module):
         rng: jax.Array | None = None,
     ) -> Array:
         def _constrain(x: Array) -> Array:
-            return self.sharding_cfg.constrain(x, self._activation_spec)
+            return constrain(x, BATCH)
 
         # 1) Initial projection
         x = (

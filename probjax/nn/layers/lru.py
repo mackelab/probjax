@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.nn.pallas_kernels import compute_mamba_scan, ssd as pallas_ssd
-from probjax.nn.sharding import ShardingCfg
+from probjax.nn.sharding import BATCH, constrain, replicate
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
@@ -74,7 +74,6 @@ class LRUCell(RecurrentCell):
         r_min: float = 0.0,
         r_max: float = 1.0,
         max_phase: float = 6.28,
-        sharding_cfg: ShardingCfg | None = None,
     ):
         state_dim = state_dim or model_dim
 
@@ -83,7 +82,6 @@ class LRUCell(RecurrentCell):
         self.r_min = r_min
         self.r_max = r_max
         self.max_phase = max_phase
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         # Scale and shift parameters
         self.theta_log = nnx.Param(
@@ -124,10 +122,8 @@ class LRUCell(RecurrentCell):
     def __call__(self, inputs: jax.Array, *, rng: jax.Array | None = None) -> jax.Array:
         del rng
         inputs = jnp.asarray(inputs)
-        # Replicate inputs across all axes for the recurrence
-        inputs = self.sharding_cfg.constrain(
-            inputs, jax.sharding.PartitionSpec(*((None,) * inputs.ndim))
-        )
+        # The recurrence requires gathered (unsharded) inputs.
+        inputs = replicate(inputs)
 
         def _single(x_td):
             # Parameters
@@ -158,7 +154,7 @@ class LRUCell(RecurrentCell):
             return outputs
 
         out = jax.vmap(_single)(inputs) if inputs.ndim == 3 else _single(inputs)
-        return self.sharding_cfg.constrain_for_rank(out, out.ndim)
+        return constrain(out, BATCH)
 
 
 # ----------------------------- Mamba LRU ------------------------------------
@@ -211,14 +207,12 @@ class MambaCell(RecurrentCell):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        sharding_cfg: ShardingCfg | None = None,
     ):
         sd = state_dim or model_dim
         self.model_dim = model_dim
         self.state_dim = sd
         self.seq_tile_size = seq_tile_size
         self.dim_tile_size = dim_tile_size
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         # Recurrent parameters
         self.a = nnx.Param(
@@ -266,7 +260,7 @@ class MambaCell(RecurrentCell):
         )
         if added_batch:
             y = y[0]
-        return self.sharding_cfg.constrain_for_rank(y, y.ndim)
+        return constrain(y, BATCH)
 
 
 # ------------------------------ SSD (Mamba-2) -------------------------------
@@ -312,7 +306,6 @@ class SSDCell(RecurrentCell):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        sharding_cfg: ShardingCfg | None = None,
     ):
         sd = state_dim or model_dim
         self.model_dim = model_dim
@@ -321,7 +314,6 @@ class SSDCell(RecurrentCell):
         if reduce not in ("sum", "mean"):
             raise ValueError("reduce must be 'sum' or 'mean'")
         self.reduce = reduce
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
@@ -364,7 +356,7 @@ class SSDCell(RecurrentCell):
         y = out.sum(axis=1) if self.reduce == "sum" else out.mean(axis=1)
         if added_batch:
             y = y[0]
-        return self.sharding_cfg.constrain_for_rank(y, y.ndim)
+        return constrain(y, BATCH)
 
 
 # Uniform cell-style wrappers returning [B, L, D]

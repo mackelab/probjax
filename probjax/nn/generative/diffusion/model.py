@@ -6,12 +6,6 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.stats.fit import FitMixin
-
-from probjax.nn.losses.denoising import build_time_dependent_denoising_loss
-from probjax.nn.sharding import ShardingCfg
-from probjax.nn.utils import module_accepts_rng
-
 from probjax.nn.generative.diffusion.config import (
     BaseSolverConfig,
     CosineNoiseSchedule,
@@ -30,6 +24,18 @@ from probjax.nn.generative.diffusion.config import (
     VPNoiseSchedule,
     VSolverConfig,
 )
+from probjax.nn.generative.sampling import (
+    BuiltSampler,
+    cached_sampler,
+    clear_sampler_cache,
+    export_sampler,
+)
+from probjax.nn.losses.denoising import build_time_dependent_denoising_loss
+from probjax.nn.utils import module_accepts_rng
+from probjax.stats.fit import FitMixin
+from probjax.utils.functions import generic_drift, split_drift
+from probjax.utils.odeint import odeint
+from probjax.utils.sdeint import sdeint
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
 
 
@@ -57,7 +63,6 @@ class DiffusionDenoiser(nnx.Module, FitMixin):
         solver_cfg: SolverConfigProtocol | None = None,
         std0: ArrayLike = 1.0,
         last_layer: Callable[[Array], Array] | None = None,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.RngStream | None = None,
     ) -> None:
         if not isinstance(schedule, NoiseScheduleProtocol):
@@ -76,7 +81,6 @@ class DiffusionDenoiser(nnx.Module, FitMixin):
         self.precond = precond
         self.train_cfg = train_cfg
         self.solver_cfg = solver_cfg
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         if self.solver_cfg is not None and hasattr(self.solver_cfg, "set_schedule"):
             self.solver_cfg.set_schedule(self.schedule)
         self.std0 = nnx.Variable(std0)
@@ -88,6 +92,7 @@ class DiffusionDenoiser(nnx.Module, FitMixin):
         self.solver_cfg = solver_cfg
         if hasattr(self.solver_cfg, "set_schedule"):
             self.solver_cfg.set_schedule(self.schedule)
+        clear_sampler_cache(self)
 
     # ---- physical schedule adapters ----
 
@@ -340,6 +345,120 @@ class DiffusionDenoiser(nnx.Module, FitMixin):
 
     # ---- sampling (delegates to solver_cfg) ----
 
+    def build_sampler(
+        self,
+        event_shape: tuple[int, ...],
+        *,
+        mode: str = "ode",
+        num_steps: int | None = None,
+        t_min: float | None = None,
+        t_max: float | None = None,
+        dtype=jnp.float32,
+    ) -> BuiltSampler:
+        """Build and cache a shape-polymorphic diffusion sampler."""
+        if mode not in ("ode", "sde"):
+            raise ValueError(f"mode must be 'ode' or 'sde', got {mode!r}")
+        if self.solver_cfg is None:
+            raise ValueError(
+                "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
+            )
+        event_shape = tuple(int(size) for size in event_shape)
+        dtype = jnp.dtype(dtype)
+        steps = self.solver_cfg.num_steps if num_steps is None else int(num_steps)
+        t_min = self.train_cfg.t_min if t_min is None else t_min
+        t_max = self.train_cfg.t_max if t_max is None else t_max
+        method = (
+            self.solver_cfg.ode_method if mode == "ode" else self.solver_cfg.sde_method
+        )
+        key = ("diffusion", mode, event_shape, dtype.str, steps, method, t_min, t_max)
+
+        def build():
+            graphdef, state = nnx.split(self)
+            ts = self.solver_cfg.solve_schedule(
+                t_min=t_min,
+                t_max=t_max,
+                num_steps=steps,
+            )
+
+            if mode == "ode":
+                prototype = self.solver_cfg.build_ode_drift(self)
+
+                def nonlin_fn(t, x, current_state):
+                    model = nnx.merge(graphdef, current_state)
+                    drift = model.solver_cfg.build_ode_drift(model)
+                    if isinstance(drift, split_drift):
+                        return drift.nonlin(t, x)
+                    return drift(t, x)
+
+                if isinstance(prototype, split_drift):
+                    drift = split_drift(prototype.lin_coeff, nonlin_fn)
+                else:
+                    drift = generic_drift(nonlin_fn)
+
+                def sample_fn(current_state, eps):
+                    return odeint(
+                        drift,
+                        eps,
+                        ts,
+                        current_state,
+                        method=method,
+                        dtype=dtype,
+                        collect_trace=False,
+                    )
+
+                exported = export_sampler(state, event_shape, dtype, sample_fn)
+            else:
+
+                def drift_fn(t, x, current_state):
+                    model = nnx.merge(graphdef, current_state)
+                    drift, _ = model.solver_cfg.build_sde_drift_and_diffusion(model)
+                    return drift(t, x)
+
+                def diffusion_fn(t, x, current_state):
+                    model = nnx.merge(graphdef, current_state)
+                    _, diffusion = model.solver_cfg.build_sde_drift_and_diffusion(model)
+                    return diffusion(t, x)
+
+                drift = generic_drift(drift_fn)
+                diffusion = generic_drift(diffusion_fn)
+
+                def one_sample(current_state, rng, eps):
+                    return sdeint(
+                        rng,
+                        drift,
+                        diffusion,
+                        eps,
+                        ts,
+                        current_state,
+                        method=method,
+                        dtype=dtype,
+                        collect_trace=False,
+                    )
+
+                def sample_fn(current_state, keys, eps):
+                    return jax.vmap(one_sample, in_axes=(None, 0, 0))(
+                        current_state, keys, eps
+                    )
+
+                exported = export_sampler(
+                    state,
+                    event_shape,
+                    dtype,
+                    sample_fn,
+                    stochastic=True,
+                )
+            return BuiltSampler(
+                self,
+                graphdef,
+                exported,
+                event_shape,
+                dtype,
+                base="standard",
+                stochastic=mode == "sde",
+            )
+
+        return cached_sampler(self, key, build)
+
     def sample_ode(
         self,
         eps: PyTree[Array],
@@ -365,7 +484,7 @@ class DiffusionDenoiser(nnx.Module, FitMixin):
             t_min=t_min,
             num_steps=num_steps,
             collect_trace=collect_trace,
-            *args,
+            *args,  # noqa: B026
             **kwargs,
         )
 
@@ -396,7 +515,7 @@ class DiffusionDenoiser(nnx.Module, FitMixin):
             t_max=t_max,
             num_steps=num_steps,
             collect_trace=collect_trace,
-            *args,
+            *args,  # noqa: B026
             **kwargs,
         )
 
@@ -432,21 +551,16 @@ class DiffusionDenoiser(nnx.Module, FitMixin):
         if mode not in ("ode", "sde"):
             raise ValueError(f"mode must be 'ode' or 'sde', got {mode!r}")
 
-        if mode == "ode":
+        sampler = self.build_sampler(
+            event_shape,
+            mode=mode,
+            num_steps=num_steps,
+            t_min=t_min,
+            t_max=t_max,
+        )
 
-            def sampler_fn(rng, batch_shape):
-                eps = jax.random.normal(rng, batch_shape + event_shape)
-                return self.sample_ode(
-                    eps, num_steps=num_steps, t_min=t_min, t_max=t_max
-                )
-        else:
-
-            def sampler_fn(rng, batch_shape):
-                key_eps, key_sde = jax.random.split(rng)
-                eps = jax.random.normal(key_eps, batch_shape + event_shape)
-                return self.sample_sde(
-                    key_sde, eps, num_steps=num_steps, t_min=t_min, t_max=t_max
-                )
+        def sampler_fn(rng, batch_shape):
+            return sampler(rng, tuple(batch_shape))
 
         return LearnedDistribution(
             event_shape=event_shape,
@@ -483,7 +597,6 @@ class EDM(DiffusionDenoiser):
         loss_type: str = "x0",
         loss_kwargs: Mapping[str, object] | None = None,
         last_layer: Callable[[Array], Array] | None = None,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.RngStream | None = None,
         solver: SolverConfigProtocol | None = None,
     ) -> None:
@@ -511,7 +624,6 @@ class EDM(DiffusionDenoiser):
             std0=std0,
             last_layer=last_layer,
             rngs=rngs,
-            sharding_cfg=sharding_cfg,
         )
 
 
@@ -537,7 +649,6 @@ class VE(DiffusionDenoiser):
         loss_type: str = "x0",
         loss_kwargs: Mapping[str, object] | None = None,
         last_layer: Callable[[Array], Array] | None = None,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.RngStream | None = None,
         solver: SolverConfigProtocol | None = None,
     ) -> None:
@@ -567,7 +678,6 @@ class VE(DiffusionDenoiser):
             std0=std0,
             last_layer=last_layer,
             rngs=rngs,
-            sharding_cfg=sharding_cfg,
         )
 
 
@@ -596,7 +706,6 @@ class VP(DiffusionDenoiser):
         loss_type: str = "x0",
         loss_kwargs: Mapping[str, object] | None = None,
         last_layer: Callable[[Array], Array] | None = None,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.RngStream | None = None,
         solver: SolverConfigProtocol | None = None,
     ) -> None:
@@ -630,7 +739,6 @@ class VP(DiffusionDenoiser):
             std0=std0,
             last_layer=last_layer,
             rngs=rngs,
-            sharding_cfg=sharding_cfg,
         )
 
 
@@ -657,7 +765,6 @@ class CosineDM(DiffusionDenoiser):
         loss_type: str = "x0",
         loss_kwargs: Mapping[str, object] | None = None,
         last_layer: Callable[[Array], Array] | None = None,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.RngStream | None = None,
         solver: SolverConfigProtocol | None = None,
     ) -> None:
@@ -698,5 +805,4 @@ class CosineDM(DiffusionDenoiser):
             std0=std0,
             last_layer=last_layer,
             rngs=rngs,
-            sharding_cfg=sharding_cfg,
         )

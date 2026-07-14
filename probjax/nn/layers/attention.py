@@ -20,7 +20,14 @@ from probjax.nn.pallas_kernels import (
     QKVLengthMask,
     mha,
 )
-from probjax.nn.sharding import LinearShardingCfg, ShardingCfg
+from probjax.nn.sharding import (
+    BATCH,
+    EMBED,
+    HEAD_DIM,
+    HEADS,
+    constrain,
+    param_metadata,
+)
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
@@ -388,8 +395,6 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
     def __init__(
         self,
         *args,
-        sharding_cfg: ShardingCfg | None = None,
-        sharding_spec=None,
         normalize_qk: bool = False,
         normalize_q_cls: ModuleLikeType | None = None,
         normalize_k_cls: ModuleLikeType | None = None,
@@ -405,27 +410,19 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
             normalize_k_cls if normalize_k_cls is not None else normalize_kv_cls
         )
 
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
-        cfg = self.sharding_cfg.as_type(LinearShardingCfg)
-        spec = (
-            sharding_spec
-            if sharding_spec is not None
-            else (cfg.mha_spec() if isinstance(cfg, LinearShardingCfg) else None)
-        )
-        if spec is not None:
-            if spec.kernel is not None:
-                init_fn = kwargs.get("kernel_init", nnx.initializers.lecun_normal())
-                kwargs["kernel_init"] = self.sharding_cfg.partitioned_init(
-                    init_fn, spec.kernel
-                )
-            if spec.bias is not None:
-                init_fn = kwargs.get("bias_init", nnx.initializers.zeros)
-                kwargs["bias_init"] = self.sharding_cfg.partitioned_init(
-                    init_fn, spec.bias
-                )
-            self._activation_spec = spec.activation
-        else:
-            self._activation_spec = None
+        # Head-parallel sharding metadata (no-op without an active mesh).
+        # qkv kernels: (in, heads, head_dim); out kernel: (heads, head_dim, out).
+        # out_* metadata must always be set alongside the qkv metadata:
+        # flax's MHA falls back out <- qkv otherwise, which has the wrong rank.
+        if md := param_metadata(EMBED, HEADS, HEAD_DIM):
+            kwargs.setdefault("kernel_metadata", md)
+            kwargs.setdefault("bias_metadata", param_metadata(HEADS, HEAD_DIM))
+            kwargs.setdefault(
+                "out_kernel_metadata", param_metadata(HEADS, HEAD_DIM, EMBED)
+            )
+            kwargs.setdefault(
+                "out_bias_metadata", param_metadata(EMBED) or {"sharding": (None,)}
+            )
 
         # Grab rngs and metadata before passing kwargs to the parent.
         rngs: rnglib.Rngs = kwargs["rngs"]
@@ -675,7 +672,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         )
         # back to the original inputs dimensions
         out = self.out(x)
-        return self.sharding_cfg.constrain(out, self._activation_spec)
+        return constrain(out, BATCH)
 
 
 class InducedSelfAttention(nnx.Module):
@@ -717,7 +714,6 @@ class InducedSelfAttention(nnx.Module):
             feedforward branch during backward.
         checkpoint_output_ff: if True, rematerialize only the output MAB
             feedforward branch during backward.
-        sharding_cfg: sharding configuration.
     """
 
     def __init__(
@@ -741,7 +737,6 @@ class InducedSelfAttention(nnx.Module):
         preferred_element_type: DTypeLike | None = None,
         checkpoint_inducing_ff: bool = False,
         checkpoint_output_ff: bool = False,
-        sharding_cfg: ShardingCfg | None = None,
     ):
         if in_features <= 0:
             raise ValueError(f"`in_features` must be positive, got {in_features}.")
@@ -756,7 +751,6 @@ class InducedSelfAttention(nnx.Module):
         self.preferred_element_type = preferred_element_type
         self.checkpoint_inducing_ff = bool(checkpoint_inducing_ff)
         self.checkpoint_output_ff = bool(checkpoint_output_ff)
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         qkv_features = (
             in_features // num_heads if attn_size is None else attn_size * num_heads
@@ -777,7 +771,6 @@ class InducedSelfAttention(nnx.Module):
             qkv_features=qkv_features,
             out_features=in_features,
             dropout_rate=dropout_rate,
-            sharding_cfg=self.sharding_cfg,
             q_scale_cls=q_scale_cls,
             rngs=rngs,
             **filter_precision_kwargs(mha_cls, **precision_kwargs),
@@ -788,7 +781,6 @@ class InducedSelfAttention(nnx.Module):
             qkv_features=qkv_features,
             out_features=in_features,
             dropout_rate=dropout_rate,
-            sharding_cfg=self.sharding_cfg,
             q_scale_cls=output_q_scale_cls,
             rngs=rngs,
             **filter_precision_kwargs(mha_cls, **precision_kwargs),
@@ -817,16 +809,14 @@ class InducedSelfAttention(nnx.Module):
         # post-attn norm (on H before rFF).
         # MAB1 (inducing): inducing_norm (Q), input_norm (KV), inducing_ff_norm (pre-FF)
         # MAB2 (output):   output_norm (Q), hidden_norm (KV), output_ff_norm (pre-FF)
-        norm_kwargs = (
-            self.sharding_cfg.norm_kwargs(norm_cls) if norm_cls is not None else {}
-        )
+
         if norm_cls is not None:
-            self.inducing_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
-            self.input_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
-            self.inducing_ff_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
-            self.output_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
-            self.hidden_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
-            self.output_ff_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
+            self.inducing_norm = norm_cls(in_features, rngs=rngs)
+            self.input_norm = norm_cls(in_features, rngs=rngs)
+            self.inducing_ff_norm = norm_cls(in_features, rngs=rngs)
+            self.output_norm = norm_cls(in_features, rngs=rngs)
+            self.hidden_norm = norm_cls(in_features, rngs=rngs)
+            self.output_ff_norm = norm_cls(in_features, rngs=rngs)
         else:
             self.inducing_norm = None
             self.input_norm = None

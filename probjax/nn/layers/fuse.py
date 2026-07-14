@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.layers.reg import DropPath
-from probjax.nn.sharding import ShardingCfg
+
 
 from probjax.nn.utils import (
     filter_precision_kwargs,
@@ -64,7 +64,6 @@ class MLPConditioner(nnx.Module):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         if in_features <= 0:
@@ -82,7 +81,6 @@ class MLPConditioner(nnx.Module):
         )
         linear_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
 
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         self.activation = activation
         self.hidden = nnx.Linear(
             in_features,
@@ -118,7 +116,6 @@ class AdditiveFuse(ContextFuse):
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
         layer_cls: ModuleLikeType = MLPConditioner,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Additive fusion module that applies linear transformation to context
@@ -142,7 +139,6 @@ class AdditiveFuse(ContextFuse):
             raise ValueError("context_features must be positive")
 
         super().__init__()
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
         )
@@ -185,7 +181,6 @@ class AffineFuse(ContextFuse):
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
         layer_cls: ModuleLikeType = MLPConditioner,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Affine fusion module that applies scale and bias to the input
@@ -213,7 +208,6 @@ class AffineFuse(ContextFuse):
             raise ValueError("context_features must be positive")
 
         super().__init__()
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
         )
@@ -259,7 +253,6 @@ class ConcatFuse(ContextFuse):
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
         layer_cls: ModuleLikeType = MLPConditioner,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Concatenation fusion module that linearly transforms context
@@ -283,7 +276,6 @@ class ConcatFuse(ContextFuse):
             raise ValueError("context_features must be positive")
 
         super().__init__()
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
         )
@@ -332,7 +324,6 @@ class AdditiveBinaryFuse(BinaryFuse):
         context_features: int | None = None,
         *,
         drop_path_rate: float = 0.0,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Additive binary fusion module that adds two inputs."""
@@ -344,7 +335,6 @@ class AdditiveBinaryFuse(BinaryFuse):
 
         self.in_features = in_features
         self.context_features = context_features
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         if drop_path_rate > 0.0:
             self.drop_path = DropPath(drop_rate=drop_path_rate, rngs=rngs)
@@ -382,7 +372,6 @@ class GatedFuse(BinaryFuse):
         preferred_element_type: DTypeLike | None = None,
         mode: Literal["convex", "left", "right"] = "right",
         layer_cls: ModuleLikeType = MLPConditioner,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Gated fusion module that linearly transforms context
@@ -406,7 +395,6 @@ class GatedFuse(BinaryFuse):
             raise ValueError("context_features must be positive")
 
         super().__init__()
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type

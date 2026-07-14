@@ -20,6 +20,7 @@ All families satisfy :class:`GenerativeModelProtocol`: they train via
 """
 
 from probjax.nn.generative.protocols import GenerativeModelProtocol
+from probjax.nn.generative.sampling import BuiltSampler
 from probjax.nn.generative.flows import (
     AdditiveAutoregressiveFlow,
     AdditiveCouplingFlow,

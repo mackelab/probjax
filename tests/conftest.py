@@ -34,7 +34,7 @@ def _mesh_marker_enabled():
     return expr == "mesh"
 
 
-cpu_devices = 4
+cpu_devices = 8
 enable_multi = _mesh_marker_enabled()
 if enable_multi and cpu_devices > 1:
     xla_flags = os.environ.get("XLA_FLAGS", "")

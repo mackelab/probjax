@@ -5,13 +5,7 @@ import jax.numpy as jnp
 import jax.tree_util
 from flax import nnx
 
-from probjax.stats.fit import FitMixin
-
-from probjax.nn.losses.flow_matching import build_flow_matching_loss
-from probjax.nn.sharding import ShardingCfg
-
 from probjax.nn.generative.flow_matching.config import (
-    CosineInterpolationSchedule,
     FlowPreconditioningProtocol,
     FlowSolverConfigProtocol,
     FlowTrainingConfigProtocol,
@@ -20,9 +14,17 @@ from probjax.nn.generative.flow_matching.config import (
     LinearFlowSolverConfig,
     LinearInterpolationSchedule,
     LogitNormalFlowTrainingConfig,
-    QuadraticInterpolationSchedule,
-    UniformFlowTrainingConfig,
 )
+from probjax.nn.generative.sampling import (
+    BuiltSampler,
+    cached_sampler,
+    clear_sampler_cache,
+    export_sampler,
+)
+from probjax.nn.losses.flow_matching import build_flow_matching_loss
+from probjax.stats.fit import FitMixin
+from probjax.utils.functions import generic_drift
+from probjax.utils.odeint import odeint
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
 
 
@@ -53,7 +55,6 @@ class FlowMatcher(nnx.Module, FitMixin):
         mu1: ArrayLike = 0.0,
         std1: ArrayLike = 1.0,
         loss_kwargs: Mapping[str, object] | None = None,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.RngStream | None = None,
     ):
         if not isinstance(schedule, InterpolationScheduleProtocol):
@@ -75,7 +76,6 @@ class FlowMatcher(nnx.Module, FitMixin):
         self.preconditioning = preconditioning
         self.train_cfg = train_cfg
         self.solver_cfg = solver_cfg
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         self.mu0 = nnx.Variable(mu0)
         self.std0 = nnx.Variable(std0)
@@ -88,6 +88,7 @@ class FlowMatcher(nnx.Module, FitMixin):
         if not isinstance(solver_cfg, FlowSolverConfigProtocol):
             raise TypeError("solver_cfg must implement FlowSolverConfigProtocol")
         self.solver_cfg = solver_cfg
+        clear_sampler_cache(self)
 
     def __call__(
         self,
@@ -105,7 +106,8 @@ class FlowMatcher(nnx.Module, FitMixin):
 
         E[x1-x0|xt] = (mu1 - mu0) + s(t) * (xt - mu_t)
 
-        Where s(t) = d/dt log sigma(t) and with sigma(t) = sqrt{t**2 * std1**2 + (1 - t) ** 2 * std0**2}
+        Where s(t) = d/dt log sigma(t), with sigma(t) defined by the
+        interpolation of the endpoint variances.
         we have that s(t) = (t * std1**2) / ((1 - t) ** 2 * std0**2 + t**2 * std1**2)
 
         We can plug in all the values for this but predict mu_t by the model.
@@ -185,9 +187,66 @@ class FlowMatcher(nnx.Module, FitMixin):
         t_max: float = 1.0,
         num_steps: int | None = None,
     ) -> Array:
+        if self.solver_cfg is None:
+            raise ValueError(
+                "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
+            )
         return self.solver_cfg.solve_schedule(
             t_min=t_min, t_max=t_max, num_steps=num_steps
         )
+
+    def build_sampler(
+        self,
+        event_shape: tuple[int, ...],
+        *,
+        num_steps: int | None = None,
+        method: str = "rk4",
+        t_min: float = 0.0,
+        t_max: float = 1.0,
+        dtype=jnp.float32,
+    ) -> BuiltSampler:
+        """Build and cache an ODE sampler with symbolic batch size."""
+        if self.solver_cfg is None:
+            raise ValueError(
+                "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
+            )
+        event_shape = tuple(int(size) for size in event_shape)
+        dtype = jnp.dtype(dtype)
+        steps = self.solver_cfg.num_steps if num_steps is None else int(num_steps)
+        key = ("flow", event_shape, dtype.str, steps, method, t_min, t_max)
+
+        def build():
+            graphdef, state = nnx.split(self)
+            ts = self.solve_schedule(t_min=t_min, t_max=t_max, num_steps=steps)
+
+            def drift_fn(t, x, current_state):
+                model = nnx.merge(graphdef, current_state)
+                return model(t, x)
+
+            drift = generic_drift(drift_fn)
+
+            def sample_fn(current_state, eps):
+                return odeint(
+                    drift,
+                    eps,
+                    ts,
+                    current_state,
+                    method=method,
+                    dtype=dtype,
+                    collect_trace=False,
+                )
+
+            exported = export_sampler(state, event_shape, dtype, sample_fn)
+            return BuiltSampler(
+                self,
+                graphdef,
+                exported,
+                event_shape,
+                dtype,
+                base="flow",
+            )
+
+        return cached_sampler(self, key, build)
 
     def sample(
         self,
@@ -235,13 +294,14 @@ class FlowMatcher(nnx.Module, FitMixin):
         from probjax.nn.distribution import LearnedDistribution
 
         event_shape = tuple(int(d) for d in event_shape)
-        mu0 = self.mu0.get_value()
-        std0 = self.std0.get_value()
+        sampler = self.build_sampler(
+            event_shape,
+            num_steps=num_steps,
+            method=method,
+        )
 
         def sampler_fn(rng, batch_shape):
-            shape = tuple(batch_shape) + event_shape
-            eps = jax.random.normal(rng, shape) * std0 + mu0
-            return self.sample(eps, num_steps=num_steps, method=method)
+            return sampler(rng, tuple(batch_shape))
 
         return LearnedDistribution(
             event_shape=event_shape,
@@ -264,11 +324,11 @@ class LinearFlow(FlowMatcher):
         solver_cfg: FlowSolverConfigProtocol | None = None,
         schedule: InterpolationScheduleProtocol | None = None,
         preconditioning: FlowPreconditioningProtocol | None = None,
-        sharding_cfg: ShardingCfg | None = None,
     ):
         schedule = schedule or LinearInterpolationSchedule()
         preconditioning = preconditioning or GaussianFlowPreconditioning()
         train_cfg = train_cfg or LogitNormalFlowTrainingConfig(mu=0.7, scale=1.0)
+        solver_cfg = solver_cfg or LinearFlowSolverConfig()
         super().__init__(
             net,
             schedule=schedule,
@@ -281,7 +341,6 @@ class LinearFlow(FlowMatcher):
             std1=std1,
             rngs=rngs,
             loss_kwargs=loss_kwargs,
-            sharding_cfg=sharding_cfg,
         )
 
     def denoise(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
@@ -326,7 +385,3 @@ class LinearFlow(FlowMatcher):
         self, rng: RngKey, shape: Tuple[int, ...], mu: float = 0.0, scale: float = 1.0
     ) -> Array:
         return jax.nn.sigmoid(jax.random.normal(rng, shape=shape + (1,)) * scale + mu)
-
-    def solve_schedule(self, num_steps: int = 50) -> Array:
-        ts = jnp.linspace(0, 1, num_steps)
-        return ts

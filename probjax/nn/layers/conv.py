@@ -11,7 +11,7 @@ from probjax.nn.layers.attention import MultiHeadAttention
 from probjax.nn.layers.encoding import PosEncode, RotaryPosEncode
 from probjax.nn.layers.fuse import AffineFuse, GatedFuse
 from probjax.nn.layers.reg import DropPath
-from probjax.nn.sharding import ShardingCfg, filter_sharding_kwargs
+from probjax.nn.sharding import replicate
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
@@ -53,7 +53,6 @@ class ConvBlock(nnx.Module):
         bias_init: Initializer = nnx.initializers.zeros,
         conv_general_dilated: Callable = jax.lax.conv_general_dilated,
         preferred_element_type: DTypeLike | None = None,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Initializes the convolutional block.
@@ -82,7 +81,6 @@ class ConvBlock(nnx.Module):
             dtype, precision, param_dtype, preferred_element_type
         )
         precision_kwargs = filter_precision_kwargs(nnx.Conv, **precision_kwargs)
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         self.conv = nnx.Conv(
             in_features=in_features,
             out_features=out_features,
@@ -106,7 +104,6 @@ class ConvBlock(nnx.Module):
             norm_cls(
                 in_features,
                 rngs=rngs,
-                **self.sharding_cfg.norm_kwargs(norm_cls),
             )
             if norm_cls is not None
             else None
@@ -153,12 +150,10 @@ class ResizeConv(nnx.Module):
         preferred_element_type: DTypeLike | None = None,
         kernel_init: Initializer = nnx.initializers.lecun_normal(),
         bias_init: Initializer = nnx.initializers.zeros,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         self.resize_method = resize_method
         self.out_shape = out_shape
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
@@ -234,13 +229,11 @@ class RescaleConv(nnx.Module):
         preferred_element_type: DTypeLike | None = None,
         kernel_init: Initializer = nnx.initializers.lecun_normal(),
         bias_init: Initializer = nnx.initializers.zeros,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         self.resize_method = resize_method
         self.resize_factor = resize_factor
         self.spatial_dims = spatial_dims
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
@@ -315,7 +308,6 @@ class ResnetBlock(nnx.Module):
         # Building block choices:
         context_fuse_cls: ModuleLikeType = AffineFuse,
         conv_block_cls: ModuleLikeType = ConvBlock,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
         **kwargs,
     ):
@@ -343,7 +335,6 @@ class ResnetBlock(nnx.Module):
         self.dropout_rate = dropout_rate
         self.drop_path_rate = drop_path_rate
         self.rescale_skip = rescale_skip
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
@@ -448,11 +439,9 @@ class SpatialSelfAttention(nnx.Module):
         # Base building block choices:
         norm_cls: ModuleLikeType = nnx.GroupNorm,
         mha_cls: ModuleLikeType = MultiHeadAttention,
-        sharding_cfg: ShardingCfg | None = None,
     ):
         self.preferred_element_type = preferred_element_type
         self.num_spatial_dims = num_spatial_dims
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, None
         )
@@ -462,7 +451,6 @@ class SpatialSelfAttention(nnx.Module):
         self.norm = norm_cls(
             in_features,
             rngs=rngs,
-            **self.sharding_cfg.norm_kwargs(norm_cls),
         )
         self.attn = mha_cls(
             num_heads=num_heads,
@@ -473,7 +461,6 @@ class SpatialSelfAttention(nnx.Module):
             out_features=in_features,
             dropout_rate=dropout_rate,
             rngs=rngs,
-            **filter_sharding_kwargs(mha_cls, sharding_cfg=sharding_cfg),
             **precision_kwargs,
         )
         if pos_emb is None:
@@ -481,13 +468,12 @@ class SpatialSelfAttention(nnx.Module):
                 2 * max(1, num_spatial_dims)
             )
             if rotary_dim == 0:
-                self.pos_emb = PosEncode(rngs=rngs, sharding_cfg=sharding_cfg)
+                self.pos_emb = PosEncode(rngs=rngs)
             else:
                 self.pos_emb = RotaryPosEncode(
                     token_dim=in_features,
                     rotary_dim=rotary_dim,
                     spatial_ndims=num_spatial_dims,
-                    sharding_cfg=sharding_cfg,
                     rngs=rngs,
                 )
         else:
@@ -517,10 +503,8 @@ class SpatialSelfAttention(nnx.Module):
         stochastic depth is controlled independently via `drop_path_rate`.
         """
         x = jnp.asarray(x)
-        # Replicate inputs across all axes
-        x = self.sharding_cfg.constrain(
-            x, jax.sharding.PartitionSpec(*((None,) * x.ndim))
-        )
+        # Spatial self-attention requires gathered (unsharded) inputs.
+        x = replicate(x)
         b = x.shape[: -self.num_spatial_dims - 1]
         spatial_dims = x.shape[-self.num_spatial_dims - 1 : -1]
         seq_len = math.prod(spatial_dims)

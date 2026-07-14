@@ -17,16 +17,6 @@ from probjax.nn.nets.simple import (
 )
 from probjax.nn.nets.transformer import Transformer
 from probjax.nn.nets.unets import UNet
-from probjax.nn.sharding import (
-    LinearShardingCfg,
-    LinearShardingSpec,
-    MLPShardingSpec,
-    NormShardingSpec,
-    ShardingCfg,
-    SpatialShardingCfg,
-    TransformerShardingCfg,
-)
-
 __all__ = [
     "DeepSet",
     "LRUModel",
@@ -36,12 +26,4 @@ __all__ = [
     "Sequential",
     "Transformer",
     "UNet",
-    # sharding (re-exported here for convenience)
-    "LinearShardingCfg",
-    "LinearShardingSpec",
-    "MLPShardingSpec",
-    "NormShardingSpec",
-    "ShardingCfg",
-    "SpatialShardingCfg",
-    "TransformerShardingCfg",
 ]

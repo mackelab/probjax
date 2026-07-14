@@ -161,18 +161,6 @@ Protocols and Configs
    CategoricalScheduleProtocol
    CategoricalTrainingConfigProtocol
 
-Sharding
---------
-
-.. autosummary::
-   :toctree: generated
-
-   ShardingCfg
-   LinearShardingCfg
-   LinearShardingSpec
-   MLPShardingSpec
-   SpatialShardingCfg
-   TransformerShardingCfg
 
 Detailed Documentation
 ----------------------

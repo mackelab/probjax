@@ -24,7 +24,7 @@ from probjax.nn.generative.discrete.config import (
     _require_float_time,
     _sample_categorical,
 )
-from probjax.nn.sharding import ShardingCfg
+
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, RngKey
 
 
@@ -48,7 +48,6 @@ class MultinomialDiffusion(nnx.Module, FitMixin):
         rao_blackwellize_xt_num_samples: int = 4,
         rao_blackwellize_xt_num_features: Optional[int] = None,
         rngs: nnx.RngStream | None = None,
-        sharding_cfg: ShardingCfg | None = None,
         eps: float = 1e-12,
     ):
         if not isinstance(schedule, CategoricalScheduleProtocol):
@@ -82,7 +81,6 @@ class MultinomialDiffusion(nnx.Module, FitMixin):
             raise ValueError("rao_blackwellize_xt_num_features must be >= 1.")
         self.eps = eps
         self.rngs = rngs
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
     @property
     def num_classes(self) -> int:
@@ -450,7 +448,6 @@ class MultinomialCosineDM(MultinomialDiffusion):
         rao_blackwellize_xt_num_samples: int = 4,
         rao_blackwellize_xt_num_features: Optional[int] = 1,
         rngs: nnx.RngStream | None = None,
-        sharding_cfg: ShardingCfg | None = None,
     ):
         schedule = MultinomialDiffusionSchedule.from_cosine(
             num_steps=num_steps,
@@ -477,7 +474,6 @@ class MultinomialCosineDM(MultinomialDiffusion):
             rao_blackwellize_xt_num_samples=rao_blackwellize_xt_num_samples,
             rao_blackwellize_xt_num_features=rao_blackwellize_xt_num_features,
             rngs=rngs,
-            sharding_cfg=sharding_cfg,
         )
 
 
@@ -508,7 +504,6 @@ class MultinomialLogSNRDM(MultinomialDiffusion):
         rao_blackwellize_xt_num_samples: int = 4,
         rao_blackwellize_xt_num_features: Optional[int] = 1,
         rngs: nnx.RngStream | None = None,
-        sharding_cfg: ShardingCfg | None = None,
     ):
         schedule = MultinomialDiffusionSchedule.from_logsnr(
             num_steps=num_steps,
@@ -537,7 +532,6 @@ class MultinomialLogSNRDM(MultinomialDiffusion):
             rao_blackwellize_xt_num_samples=rao_blackwellize_xt_num_samples,
             rao_blackwellize_xt_num_features=rao_blackwellize_xt_num_features,
             rngs=rngs,
-            sharding_cfg=sharding_cfg,
         )
 
 

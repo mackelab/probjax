@@ -101,6 +101,24 @@ def normalize_attn_bias(bias: Array | None) -> Array | None:
     raise ValueError(f"Bias must have ndim 2, 3, or 4; got {bias.ndim}.")
 
 
+def filter_supported_kwargs(ctor, **kwargs) -> dict:
+    """Keep only kwargs the constructor's signature accepts.
+
+    Works for classes, functions, and functools.partial wrappers. Used to
+    pass optional metadata (e.g. sharding) to layers that support it while
+    remaining compatible with custom layer classes that don't.
+    """
+    target = ctor
+    while isinstance(target, partial):
+        target = target.func
+    try:
+        fn = target.__init__ if isinstance(target, type) else target
+        param_names = inspect.signature(fn).parameters.keys()
+    except (ValueError, TypeError):
+        return {}
+    return {key: kwargs[key] for key in kwargs if key in param_names}
+
+
 def filter_precision_kwargs(cls: ModuleLikeType, **kwargs):
     """Utility function to filter out unsupported precision kwargs.
 

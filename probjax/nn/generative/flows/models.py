@@ -11,7 +11,7 @@ from probjax.nn.generative.flows.autoregressive import AutoregressiveMLP
 from probjax.nn.generative.flows.bijective import ElementwiseMonotone, Flip, Rotate
 from probjax.nn.generative.flows.coupling import CouplingMLP
 from probjax.nn.nets.simple import Sequential
-from probjax.nn.sharding import ShardingCfg
+
 from probjax.stats.base import DistributionAPI, rv_frozen
 from probjax.stats.fit import FitMixin
 from probjax.stats.bijective import additive_bijector, affine_bijector
@@ -302,13 +302,10 @@ class NormalizingFlow(nnx.Module, DistributionAPI, FitMixin):
         base_dist,
         transformation: Callable[..., Any],
         name: Optional[str] = None,
-        *,
-        sharding_cfg: ShardingCfg | None = None,
     ):
         self.base_dist = base_dist
         self.transformation = transformation
         self.name = name
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         super().__init__()
 
     # -- scipy-like stats API via transformed distribution --
@@ -453,17 +450,16 @@ def _build_transform_sequence(
     rngs,
     mixing_class,
     last_transform,
-    sharding_cfg,
 ):
     """Build a ``Sequential`` of alternating transform + mixing layers."""
     transforms = []
     for i in range(num_transforms):
         transforms.append(layer_fn(rngs=rngs))
         if i < num_transforms - 1:
-            transforms.append(mixing_class(rngs=rngs, sharding_cfg=sharding_cfg))
+            transforms.append(mixing_class(rngs=rngs))
     if last_transform is not None:
         transforms.append(last_transform)
-    return Sequential(*transforms, sharding_cfg=sharding_cfg)
+    return Sequential(*transforms)
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +479,6 @@ class AdditiveCouplingFlow(NormalizingFlow):
         coupling_class: nnx.Module = CouplingMLP,
         mixing_class: nnx.Module = Flip,
         name: Optional[str] = None,
-        sharding_cfg: ShardingCfg | None = None,
     ) -> None:
         self.input_dim = input_dim
         split_dim = input_dim // 2
@@ -494,7 +489,6 @@ class AdditiveCouplingFlow(NormalizingFlow):
             params_dim,
             additive_bijector,
             context_dim=context_features,
-            sharding_cfg=sharding_cfg,
         )
 
         transform = _build_transform_sequence(
@@ -503,10 +497,9 @@ class AdditiveCouplingFlow(NormalizingFlow):
             rngs,
             mixing_class,
             last_transform,
-            sharding_cfg,
         )
         q0 = self._standard_normal_base(input_dim)
-        super().__init__(q0, transform, name=name, sharding_cfg=sharding_cfg)
+        super().__init__(q0, transform, name=name)
 
 
 class AffineCouplingFlow(NormalizingFlow):
@@ -521,7 +514,6 @@ class AffineCouplingFlow(NormalizingFlow):
         coupling_class: nnx.Module = CouplingMLP,
         mixing_class: nnx.Module = Flip,
         name: Optional[str] = None,
-        sharding_cfg: ShardingCfg | None = None,
     ) -> None:
         self.input_dim = input_dim
         split_dim = input_dim // 2
@@ -532,7 +524,6 @@ class AffineCouplingFlow(NormalizingFlow):
             params_dim,
             affine_bijector,
             context_dim=context_features,
-            sharding_cfg=sharding_cfg,
         )
 
         transform = _build_transform_sequence(
@@ -541,10 +532,9 @@ class AffineCouplingFlow(NormalizingFlow):
             rngs,
             mixing_class,
             last_transform,
-            sharding_cfg,
         )
         q0 = self._standard_normal_base(input_dim)
-        super().__init__(q0, transform, name=name, sharding_cfg=sharding_cfg)
+        super().__init__(q0, transform, name=name)
 
 
 class SplineCouplingFlow(NormalizingFlow):
@@ -560,7 +550,6 @@ class SplineCouplingFlow(NormalizingFlow):
         coupling_class: nnx.Module = CouplingMLP,
         mixing_class: nnx.Module = Flip,
         name: Optional[str] = None,
-        sharding_cfg: ShardingCfg | None = None,
     ) -> None:
         self.input_dim = input_dim
         split_dim = input_dim // 2
@@ -591,7 +580,6 @@ class SplineCouplingFlow(NormalizingFlow):
             params_dim,
             spline_fn,
             context_dim=context_features,
-            sharding_cfg=sharding_cfg,
         )
 
         transform = _build_transform_sequence(
@@ -600,10 +588,9 @@ class SplineCouplingFlow(NormalizingFlow):
             rngs,
             mixing_class,
             last_transform,
-            sharding_cfg,
         )
         q0 = self._standard_normal_base(input_dim)
-        super().__init__(q0, transform, name=name, sharding_cfg=sharding_cfg)
+        super().__init__(q0, transform, name=name)
 
 
 # ---------------------------------------------------------------------------
@@ -623,7 +610,6 @@ class AdditiveAutoregressiveFlow(NormalizingFlow):
         autoregressive_class: nnx.Module = AutoregressiveMLP,
         mixing_class: nnx.Module = Flip,
         name: Optional[str] = None,
-        sharding_cfg: ShardingCfg | None = None,
     ) -> None:
         self.input_dim = input_dim
         params_per_dim = 1
@@ -633,7 +619,6 @@ class AdditiveAutoregressiveFlow(NormalizingFlow):
             params_per_dim,
             additive_bijector,
             context_features=context_features,
-            sharding_cfg=sharding_cfg,
         )
 
         transform = _build_transform_sequence(
@@ -642,10 +627,9 @@ class AdditiveAutoregressiveFlow(NormalizingFlow):
             rngs,
             mixing_class,
             last_transform,
-            sharding_cfg,
         )
         q0 = self._standard_normal_base(input_dim)
-        super().__init__(q0, transform, name=name, sharding_cfg=sharding_cfg)
+        super().__init__(q0, transform, name=name)
 
 
 class AffineAutoregressiveFlow(NormalizingFlow):
@@ -660,7 +644,6 @@ class AffineAutoregressiveFlow(NormalizingFlow):
         autoregressive_class: nnx.Module = AutoregressiveMLP,
         mixing_class: nnx.Module = Flip,
         name: Optional[str] = None,
-        sharding_cfg: ShardingCfg | None = None,
     ) -> None:
         self.input_dim = input_dim
         params_per_dim = 2
@@ -670,7 +653,6 @@ class AffineAutoregressiveFlow(NormalizingFlow):
             params_per_dim,
             affine_bijector,
             context_features=context_features,
-            sharding_cfg=sharding_cfg,
         )
 
         transform = _build_transform_sequence(
@@ -679,10 +661,9 @@ class AffineAutoregressiveFlow(NormalizingFlow):
             rngs,
             mixing_class,
             last_transform,
-            sharding_cfg,
         )
         q0 = self._standard_normal_base(input_dim)
-        super().__init__(q0, transform, name=name, sharding_cfg=sharding_cfg)
+        super().__init__(q0, transform, name=name)
 
 
 class SplineAutoregressiveFlow(NormalizingFlow):
@@ -698,7 +679,6 @@ class SplineAutoregressiveFlow(NormalizingFlow):
         autoregressive_class: nnx.Module = AutoregressiveMLP,
         mixing_class: nnx.Module = Flip,
         name: Optional[str] = None,
-        sharding_cfg: ShardingCfg | None = None,
     ) -> None:
         self.input_dim = input_dim
         params_per_dim = 3 * num_bins * input_dim
@@ -719,7 +699,6 @@ class SplineAutoregressiveFlow(NormalizingFlow):
             params_per_dim,
             spline_fn,
             context_features=context_features,
-            sharding_cfg=sharding_cfg,
         )
 
         transform = _build_transform_sequence(
@@ -728,10 +707,9 @@ class SplineAutoregressiveFlow(NormalizingFlow):
             rngs,
             mixing_class,
             last_transform,
-            sharding_cfg,
         )
         q0 = self._standard_normal_base(input_dim)
-        super().__init__(q0, transform, name=name, sharding_cfg=sharding_cfg)
+        super().__init__(q0, transform, name=name)
 
 
 class NeuralSplineFlow(SplineAutoregressiveFlow):
@@ -759,7 +737,6 @@ class _MonotoneAutoregressiveFlow(NormalizingFlow):
         autoregressive_class: nnx.Module = AutoregressiveMLP,
         mixing_class: nnx.Module = Flip,
         name: Optional[str] = None,
-        sharding_cfg: ShardingCfg | None = None,
     ) -> None:
         self.input_dim = input_dim
         autoregressive = partial(
@@ -768,7 +745,6 @@ class _MonotoneAutoregressiveFlow(NormalizingFlow):
             bijector_dim,
             bijector,
             context_features=context_features,
-            sharding_cfg=sharding_cfg,
         )
         transform = _build_transform_sequence(
             autoregressive,
@@ -776,10 +752,9 @@ class _MonotoneAutoregressiveFlow(NormalizingFlow):
             rngs,
             mixing_class,
             last_transform,
-            sharding_cfg,
         )
         q0 = self._standard_normal_base(input_dim)
-        super().__init__(q0, transform, name=name, sharding_cfg=sharding_cfg)
+        super().__init__(q0, transform, name=name)
 
 
 class NeuralAutoregressiveFlow(_MonotoneAutoregressiveFlow):
@@ -894,7 +869,6 @@ class GaussianizationFlow(NormalizingFlow):
         *,
         num_components: int = 8,
         name: Optional[str] = None,
-        sharding_cfg: ShardingCfg | None = None,
     ) -> None:
         self.input_dim = input_dim
         layer_fn = partial(
@@ -903,7 +877,6 @@ class GaussianizationFlow(NormalizingFlow):
             3 * num_components,
             mixture_cdf_bijector,
             params_init=_gf_params_init,
-            sharding_cfg=sharding_cfg,
         )
         mixing = partial(Rotate, input_dim, learnable=True)
         transform = _build_transform_sequence(
@@ -912,10 +885,9 @@ class GaussianizationFlow(NormalizingFlow):
             rngs,
             mixing,
             None,
-            sharding_cfg,
         )
         q0 = self._standard_normal_base(input_dim)
-        super().__init__(q0, transform, name=name, sharding_cfg=sharding_cfg)
+        super().__init__(q0, transform, name=name)
 
 
 rv_frozen.register(NormalizingFlow)

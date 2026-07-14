@@ -10,7 +10,7 @@ from probjax.core.transformation import inverse_and_logabsdet
 from probjax.nn.layers.attention import flex_attention
 from probjax.nn.layers.encoding import PosEncode
 from probjax.nn.nets.simple import MaskedMLP
-from probjax.nn.sharding import ShardingCfg
+
 from probjax.nn.nets.transformer import Transformer
 from probjax.nn.pallas_kernels import CausalMask
 from probjax.utils.typing import ModuleLikeType
@@ -65,7 +65,6 @@ class AutoregressiveMLP(nnx.Module):
         init_last_layer_to_zero: bool = True,
         mlp_cls: ModuleLikeType = MaskedMLP,
         output_order: Literal["interleaved", "grouped"] = "grouped",
-        sharding_cfg: ShardingCfg | None = None,
         **kwargs,
     ):
         dims = [in_out_features] + list(hidden_dims) + [in_out_features * bijector_dim]
@@ -74,7 +73,6 @@ class AutoregressiveMLP(nnx.Module):
         self.bijector_dim = bijector_dim
         self.bijector = bijector
         self.bijector_inv = inverse_and_logabsdet(bijector, invertible_arg=1)
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         self.masked_mlp = mlp_cls(
             dims,
@@ -84,7 +82,6 @@ class AutoregressiveMLP(nnx.Module):
             norm_cls=norm_cls,
             activation=activation,
             activate_final=activate_final,
-            sharding_cfg=sharding_cfg,
             **kwargs,
         )
 
@@ -157,7 +154,6 @@ class AutoregressiveTransformer(nnx.Module):
         widening_factor: int = 2,
         pos_embed: Optional[nnx.Module] = None,
         context_dim: Optional[int] = None,
-        sharding_cfg: ShardingCfg | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -165,7 +161,6 @@ class AutoregressiveTransformer(nnx.Module):
         self.bijector_dim = bijector_dim
         self.bijector = bijector
         self.bijector_inv = inverse_and_logabsdet(bijector, invertible_arg=1)
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         if transformer is None:
             transformer = Transformer(
@@ -177,7 +172,6 @@ class AutoregressiveTransformer(nnx.Module):
                 attention_fn=partial(flex_attention, mask=CausalMask()),
                 rngs=rngs,
                 context_dim=context_dim,
-                sharding_cfg=sharding_cfg,
                 **kwargs,
             )
         self.transformer = transformer
@@ -198,7 +192,7 @@ class AutoregressiveTransformer(nnx.Module):
         self.encoder = encoder
         self.decoder = decoder
         if pos_embed is None:
-            pos_embed = PosEncode(model_dim, rngs=rngs, sharding_cfg=sharding_cfg)
+            pos_embed = PosEncode(model_dim, rngs=rngs)
         self.pos_embed = pos_embed
 
     def predict_bij_params(

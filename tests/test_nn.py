@@ -20,10 +20,8 @@ from probjax.nn import (
     DropPath,
     GatedFuse,
     InducedSelfAttention,
-    LinearShardingSpec,
     MaskedLinear,
     MLP,
-    MLPShardingSpec,
     Transformer,
     chunkify,
 )

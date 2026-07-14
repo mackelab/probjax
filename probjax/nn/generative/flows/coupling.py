@@ -6,7 +6,7 @@ from flax import nnx
 
 from probjax.nn.nets.simple import MLP
 from probjax.nn.nets.transformer import Transformer
-from probjax.nn.sharding import ShardingCfg
+
 
 from probjax.nn.utils import (
     filter_precision_kwargs,
@@ -76,7 +76,6 @@ class CouplingMLP(nnx.Module):
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
         mlp_cls: ModuleLikeType = MLP,
-        sharding_cfg: ShardingCfg | None = None,
         **kwargs,
     ):
         """Initialize the CouplingMLP module.
@@ -139,7 +138,6 @@ class CouplingMLP(nnx.Module):
         self.bijector = bijector
         self.split_fn = split_fn
         self.merge_fn = merge_fn
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         # Precision and dtype settings
         precision_kwargs = get_active_precision_kwargs(
@@ -160,7 +158,6 @@ class CouplingMLP(nnx.Module):
             activation=activation,
             activate_final=activate_final,
             context_dim=None,  # Context is handled manually in this layer
-            sharding_cfg=self.sharding_cfg,
             **filter_precision_kwargs(mlp_cls, **precision_kwargs),
             **kwargs,
         )
@@ -255,7 +252,6 @@ class CouplingTransformer(nnx.Module):
         attn_size: int = 8,
         widening_factor: int = 2,
         transformer: Optional[Transformer] = None,
-        sharding_cfg: ShardingCfg | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -274,7 +270,6 @@ class CouplingTransformer(nnx.Module):
         self.bijector = bijector
         self.split_fn = split_fn
         self.merge_fn = merge_fn
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         if transformer is None:
             transformer = Transformer(
@@ -284,7 +279,6 @@ class CouplingTransformer(nnx.Module):
                 attn_size=attn_size,
                 widening_factor=widening_factor,
                 context_dim=self.context_dim,
-                sharding_cfg=self.sharding_cfg,
                 rngs=rngs,
                 **kwargs,
             )
