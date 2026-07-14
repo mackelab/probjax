@@ -21,6 +21,7 @@ import jax.numpy as jnp
 from jaxtyping import Array
 
 from probjax.core import inverse_and_logabsdet
+from probjax.core.custom_primitives.sharded_primitive import batch_shard
 from probjax.stats.base import DistributionAPI
 from probjax.utils.typing import ArrayLike, RngKey
 
@@ -161,12 +162,14 @@ class TransformedDistribution(DistributionAPI):
             samples, (-1,) + tuple(samples.shape[samples.ndim - base_event_ndim :])
         )
         leading_shape = tuple(samples.shape[: samples.ndim - base_event_ndim])
-        transformed_flat = jax.vmap(self.transform)(flat)
+        transformed_flat = batch_shard(jax.vmap(self.transform))(flat)
         return jnp.reshape(transformed_flat, leading_shape + self._event_shape)
 
     def logpdf(self, x: ArrayLike) -> Array:
         x_flat, leading_shape = self._flatten(x)
-        inv_flat, logdet_flat = jax.vmap(self._invertible.inverse_and_logdet)(x_flat)
+        inv_flat, logdet_flat = batch_shard(
+            jax.vmap(self._invertible.inverse_and_logdet)
+        )(x_flat)
         inv = jnp.reshape(inv_flat, leading_shape + tuple(self.base.event_shape))
         logdet = jnp.reshape(logdet_flat, leading_shape)
         return self.base.logpdf(inv) + logdet

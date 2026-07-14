@@ -7,13 +7,10 @@ from flax import nnx
 
 from probjax.nn.layers.fuse import AffineFuse
 from probjax.nn.layers.masked import MaskedLinear
-from probjax.nn.sharding import (
-    MLPShardingSpec,
-    ShardingCfg,
-    normalize_mlp_sharding,
-)
+from probjax.nn.sharding import EMBED, HIDDEN, param_metadata
 from probjax.nn.utils import (
     filter_precision_kwargs,
+    filter_supported_kwargs,
     get_active_precision_kwargs,
     module_accepts_rng,
 )
@@ -29,17 +26,12 @@ from probjax.utils.typing import (
 
 
 class Sequential(nnx.Module):
-    def __init__(
-        self,
-        *layers,
-        sharding_cfg: ShardingCfg | None = None,
-    ):
+    def __init__(self, *layers):
         """Sequential module.
 
         Args:
             layers (nnx.Module): List of layers.
         """
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
         self.layers = nnx.List(layers)
 
     def __call__(self, x, *args, rng: Array | None = None, **kwargs) -> Array:
@@ -69,7 +61,6 @@ class MLP(nnx.Module):
         norm_cls: ModuleLikeType | None = None,
         linear_cls: ModuleLikeType | Sequence[ModuleLikeType] = nnx.Linear,
         context_fuse_cls: ModuleLikeType = AffineFuse,
-        sharding_cfg: ShardingCfg | MLPShardingSpec | None = None,
         rngs: nnx.Rngs,
         **kwargs,
     ):
@@ -104,20 +95,6 @@ class MLP(nnx.Module):
         self.feature_dims = feature_dims
         # Prefer explicit context_dim, fallback to alias if provided
         self.context_dim = context_dim if context_dim is not None else context_features
-        mesh, _, per_layer_sharding = normalize_mlp_sharding(
-            sharding_cfg,
-            len(feature_dims) - 1,
-        )
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(
-            ShardingCfg(mesh=mesh) if mesh is not None else None
-        )
-        if per_layer_sharding is not None:
-            self._activation_specs = [
-                spec.activation if spec is not None else None
-                for spec in per_layer_sharding
-            ]
-        else:
-            self._activation_specs = None
 
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
@@ -142,25 +119,34 @@ class MLP(nnx.Module):
             base_ctor = partial(linear_cls, rngs=rngs, **filtered, **kwargs)
             base_linears = [base_ctor for _ in range(num_layers)]
 
-        # Resolve norm sharding kwargs once for all norm layers.
-        _norm_kwargs = (
-            self.sharding_cfg.norm_kwargs(norm_cls) if norm_cls is not None else {}
-        )
-
         layers = []
         norm_layers = []
         context_fuses = []
         _ctx_dim = self.context_dim
         for i in range(num_layers):
             ctor = base_linears[i]
-            if per_layer_sharding is not None:
-                ctor = self.sharding_cfg.make_linear_ctor(ctor, per_layer_sharding[i])
-            layers.append(ctor(feature_dims[i], feature_dims[i + 1]))
+            # Megatron-style alternation: column-parallel then row-parallel.
+            if i % 2 == 0:
+                sharding_kwargs = dict(
+                    kernel_metadata=param_metadata(EMBED, HIDDEN),
+                    bias_metadata=param_metadata(HIDDEN),
+                )
+            else:
+                sharding_kwargs = dict(
+                    kernel_metadata=param_metadata(HIDDEN, EMBED),
+                    bias_metadata=param_metadata(EMBED),
+                )
+            sharding_kwargs = {k: v for k, v in sharding_kwargs.items() if v}
+            layers.append(
+                ctor(
+                    feature_dims[i],
+                    feature_dims[i + 1],
+                    **filter_supported_kwargs(ctor, **sharding_kwargs),
+                )
+            )
 
             if norm_cls is not None and i < num_layers - 1:
-                norm_layers.append(
-                    norm_cls(feature_dims[i + 1], rngs=rngs, **_norm_kwargs)
-                )
+                norm_layers.append(norm_cls(feature_dims[i + 1], rngs=rngs))
             if _ctx_dim is not None:
                 context_fuses.append(
                     context_fuse_cls(feature_dims[i + 1], _ctx_dim, rngs=rngs)
@@ -197,8 +183,6 @@ class MLP(nnx.Module):
             else self.layers[0](x)
         )
         h = self.activation(h)
-        if self._activation_specs is not None:
-            h = self.sharding_cfg.constrain(h, self._activation_specs[0])
         for i in range(1, len(self.layers) - 1):
             h = (
                 self.layers[i](h, rng=rng)
@@ -216,8 +200,6 @@ class MLP(nnx.Module):
                     h = self.context_fuses[i - 1](h, context, rng=rng)
                 else:
                     h = self.context_fuses[i - 1](h, context)
-            if self._activation_specs is not None:
-                h = self.sharding_cfg.constrain(h, self._activation_specs[i])
 
         if len(self.layers) > 1:
             out = (
@@ -230,8 +212,6 @@ class MLP(nnx.Module):
 
         if self.activate_final:
             out = self.activation(out)
-        if self._activation_specs is not None:
-            out = self.sharding_cfg.constrain(out, self._activation_specs[-1])
         return out
 
 
@@ -275,7 +255,6 @@ class ResNet(nnx.Module):
         context_fuse_cls: ModuleLikeType = AffineFuse,
         norm_cls: ModuleLikeType | None = None,
         linear_cls: ModuleLikeType = nnx.Linear,
-        sharding_cfg: ShardingCfg | MLPShardingSpec | None = None,
         rngs: nnx.Rngs,
         **kwargs,
     ):
@@ -321,20 +300,6 @@ class ResNet(nnx.Module):
             raise ValueError(f"context_dim must be positive, got {context_dim}")
         self.context_dim = context_dim
         num_layers = num_hidden_layers + 2
-        mesh, _, per_layer_sharding = normalize_mlp_sharding(
-            sharding_cfg,
-            num_layers,
-        )
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(
-            ShardingCfg(mesh=mesh) if mesh is not None else None
-        )
-        if per_layer_sharding is not None:
-            self._activation_specs = [
-                spec.activation if spec is not None else None
-                for spec in per_layer_sharding
-            ]
-        else:
-            self._activation_specs = None
 
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
@@ -342,28 +307,46 @@ class ResNet(nnx.Module):
         precision_kwargs = filter_precision_kwargs(linear_cls, **precision_kwargs)
         base_ctor = partial(linear_cls, rngs=rngs, **precision_kwargs, **kwargs)
 
-        # Resolve norm sharding kwargs once for all norm layers.
-        _norm_kwargs = (
-            self.sharding_cfg.norm_kwargs(norm_cls) if norm_cls is not None else {}
-        )
+        # Column-parallel in, row-parallel out; hidden kernels stay replicated
+        # so the residual additions keep a consistent activation sharding.
+        in_sharding = {
+            k: v
+            for k, v in dict(
+                kernel_metadata=param_metadata(EMBED, HIDDEN),
+                bias_metadata=param_metadata(HIDDEN),
+            ).items()
+            if v
+        }
+        out_sharding = {
+            k: v
+            for k, v in dict(
+                kernel_metadata=param_metadata(HIDDEN, EMBED),
+                bias_metadata=param_metadata(EMBED),
+            ).items()
+            if v
+        }
 
         hidden_layers = []
         norm_layers = []
         context_layers = []
         for i in range(num_layers):
-            ctor = base_ctor
-            if per_layer_sharding is not None:
-                ctor = self.sharding_cfg.make_linear_ctor(ctor, per_layer_sharding[i])
-
             if i == 0:
-                self.in_layer = ctor(in_features, hidden_dim)
+                self.in_layer = base_ctor(
+                    in_features,
+                    hidden_dim,
+                    **filter_supported_kwargs(base_ctor, **in_sharding),
+                )
             elif i == num_layers - 1:
-                self.out_layer = ctor(hidden_dim, out_features)
+                self.out_layer = base_ctor(
+                    hidden_dim,
+                    out_features,
+                    **filter_supported_kwargs(base_ctor, **out_sharding),
+                )
             else:
-                hidden_layers.append(ctor(hidden_dim, hidden_dim))
+                hidden_layers.append(base_ctor(hidden_dim, hidden_dim))
 
                 if norm_cls is not None:
-                    norm_layers.append(norm_cls(hidden_dim, rngs=rngs, **_norm_kwargs))
+                    norm_layers.append(norm_cls(hidden_dim, rngs=rngs))
                 if context_dim is not None:
                     context_layers.append(
                         context_fuse_cls(hidden_dim, context_dim, rngs=rngs)
@@ -418,8 +401,6 @@ class ResNet(nnx.Module):
             else self.in_layer(x)
         )
         h = self.activation(h)
-        if self._activation_specs is not None:
-            h = self.sharding_cfg.constrain(h, self._activation_specs[0])
         for i in range(len(self.hidden_layers)):
             h_old = h
             if self.norm_layers is not None:
@@ -438,8 +419,6 @@ class ResNet(nnx.Module):
                     h = self.context_layers[i](h, context, rng=rng)
                 else:
                     h = self.context_layers[i](h, context)
-            if self._activation_specs is not None:
-                h = self.sharding_cfg.constrain(h, self._activation_specs[i + 1])
 
             h = h + h_old
 
@@ -454,8 +433,6 @@ class ResNet(nnx.Module):
 
         if self.activate_final:
             out = self.activation(out)
-        if self._activation_specs is not None:
-            out = self.sharding_cfg.constrain(out, self._activation_specs[-1])
         return out
 
 
@@ -475,7 +452,6 @@ class DeepSet(nnx.Module):
         reduction: Callable = jnp.sum,
         axis: tuple[int] | int = -2,
         dropout_rate: float = 0.0,
-        sharding_cfg: ShardingCfg | None = None,
         rngs: nnx.Rngs,
     ):
         """Initialize the DeepSets module.
@@ -508,7 +484,6 @@ class DeepSet(nnx.Module):
         self.reduction = reduction
         self.axis = axis
         self.dropout_rate = dropout_rate
-        self.sharding_cfg = ShardingCfg.resolve_or_noop(sharding_cfg)
 
         if dropout_rate > 0.0:
             self.dropout = nnx.Dropout(rate=dropout_rate, rngs=rngs)

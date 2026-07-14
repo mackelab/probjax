@@ -13,6 +13,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.core import inverse_and_logabsdet
+from probjax.core.custom_primitives.sharded_primitive import batch_shard
 from probjax.stats.base import rv_continuous, rv_continuous_frozen
 from probjax.stats.constraints import distribution, real
 from probjax.utils.typing import ArrayLike, RngKey
@@ -64,8 +65,8 @@ class transformed_gen(rv_continuous):
     @classmethod
     @functools.cache
     def _get_vmapped_bijector(cls, bijector):
-        """Get a single-axis vmapped bijector."""
-        return jax.vmap(bijector)
+        """Get a single-axis vmapped bijector (per-shard under a mesh)."""
+        return batch_shard(jax.vmap(bijector))
 
     @classmethod
     def _get_inverse_and_logdet(cls, bijector):
@@ -82,8 +83,14 @@ class transformed_gen(rv_continuous):
 
     @classmethod
     def _get_vmapped_inverse_and_logdet(cls, bijector):
-        """Get a single-axis vmapped inverse+logabsdet function."""
-        return jax.vmap(cls._get_inverse_and_logdet(bijector))
+        """Get a single-axis vmapped inverse+logabsdet function.
+
+        Wrapped in :func:`batch_shard`: under an active mesh the inverse runs
+        per-shard on local batches (avoids GSPMD rematerialization in Auto
+        mode; required for Explicit-axes meshes, where sharded scans inside
+        flow inverses are unsupported).
+        """
+        return batch_shard(jax.vmap(cls._get_inverse_and_logdet(bijector)))
 
     @classmethod
     def _get_vmapped_inverse_and_logdet_with_override(
@@ -99,7 +106,7 @@ class transformed_gen(rv_continuous):
             inverse_and_logdet_fn = getattr(bijector, "inverse_and_logdet", None)
         if inverse_and_logdet_fn is None:
             return None
-        return jax.vmap(inverse_and_logdet_fn)
+        return batch_shard(jax.vmap(inverse_and_logdet_fn))
 
     @staticmethod
     def _flatten_by_event_shape(x: ArrayLike, event_shape: Tuple[int, ...]):

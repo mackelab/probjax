@@ -1,462 +1,186 @@
+"""Multi-device sharding tests for probjax.nn (flax eager sharding).
+
+Run with multiple host devices, e.g.::
+
+    XLA_FLAGS=--xla_force_host_platform_device_count=8 pytest -m mesh
+
+Models annotate their parameters with logical axis names; constructing them
+under ``jax.set_mesh(mesh)`` shards the parameters eagerly. These tests
+assert the exact kernel shardings (no permissive fallbacks) and the
+numerical equivalence of sharded and unsharded models.
+"""
+
 import jax
 import jax.numpy as jnp
 import pytest
 from flax import nnx
-from jax.sharding import NamedSharding, PartitionSpec as P
+from jax.sharding import AxisType, NamedSharding, PartitionSpec as P
 
-from probjax.nn import (
-    LinearShardingSpec,
-    MaskedLinear,
-    MLP,
-    MLPShardingSpec,
-    ShardingCfg,
-)
-
-pytest_plugins = ["test_problems.nns"]
+from probjax.nn import MLP, LRUModel, Transformer, UNet, maf
 
 
-def _sharding_spec_of(array: jax.Array) -> P:
-    sharding = array.sharding
-    return getattr(sharding, "spec", getattr(sharding, "partition_spec", P()))
+def _auto_mesh(shape):
+    total = 1
+    for dim in shape:
+        total *= dim
+    if jax.device_count() < total:
+        pytest.skip(f"mesh test requires at least {total} devices")
+    return jax.make_mesh(
+        shape,
+        ("data", "model"),
+        devices=jax.devices()[:total],
+        axis_types=(AxisType.Auto,) * len(shape),
+    )
 
 
-def _input_spec_for_shape(
-    mesh, shape, feature_axis: int = -1, allow_model: bool = True
-):
-    spec = [None] * len(shape)
-    spec[0] = "data"
-    model = mesh.shape.get("model", 1)
-    if allow_model and model > 1:
-        feat_dim = shape[feature_axis]
-        if feat_dim % model == 0:
-            spec[feature_axis] = "model"
-    return P(*spec)
-
-
-def _sharded_ones(shape, mesh, spec: P):
-    return jax.device_put(jnp.ones(shape), NamedSharding(mesh, spec))
-
-
-def _mesh_for_shape(shape: tuple[int, ...], axis_names: tuple[str, ...]):
-    device_count = jax.device_count()
-    if device_count < int(jnp.prod(jnp.asarray(shape))):
-        pytest.skip(
-            "mesh test requires at least %d devices" % int(jnp.prod(jnp.asarray(shape)))
-        )
-    devices = jax.devices()[: int(jnp.prod(jnp.asarray(shape)))]
-    return jax.make_mesh(shape, axis_names, devices=devices)
+def _batch(mesh, shape):
+    return jax.device_put(
+        jnp.ones(shape), NamedSharding(mesh, P("data", *([None] * (len(shape) - 1))))
+    )
 
 
 @pytest.mark.mesh
-@pytest.mark.parametrize("mesh_shape", [(4, 1), (1, 4), (2, 2)])
-def test_mlp_sharding_defaults_and_overrides(mesh_shape):
-    device_count = jax.device_count()
-    mesh = _mesh_for_shape(mesh_shape, ("data", "model"))
-    if mesh.shape.get("model", 1) > 1:
-        pytest.skip("skip model-axis sharding checks in CPU mesh tests")
-    expected_kernel = (
-        P(None, "model") if mesh.shape.get("model", 1) > 1 and device_count > 1 else P()
-    )
-    expected_bias = (
-        P(
-            "model",
-        )
-        if mesh.shape.get("model", 1) > 1 and device_count > 1
-        else P()
-    )
-    data_axis = mesh.shape["data"]
-    sharding_arg = None
-    sharding = MLPShardingSpec(
-        sharding_cfg=ShardingCfg(mesh=mesh),
-        default=LinearShardingSpec(kernel=P("model", None))
-        if mesh.shape.get("model", 1) > 1
-        else LinearShardingSpec(kernel=P()),
-    )
-    expected_override = (
-        P("model", None) if mesh.shape.get("model", 1) > 1 and device_count > 1 else P()
-    )
+def test_mlp_kernels_shard_megatron_style():
+    mesh = _auto_mesh((1, 4))
     with jax.set_mesh(mesh):
-        mlp = MLP(
-            feature_dims=[4, 8, 4],
-            sharding_cfg=sharding_arg,
-            activate_final=True,
-            rngs=nnx.Rngs(0),
-        )
-        if mesh.shape.get("model", 1) > 1:
-            assert _sharding_spec_of(mlp.layers[0].kernel.value) in (
-                expected_kernel,
-                P(),
-                P(None, None),
-            )
-        else:
-            assert _sharding_spec_of(mlp.layers[0].kernel.value) in (P(), P(None, None))
-        if mesh.shape.get("model", 1) > 1:
-            assert _sharding_spec_of(mlp.layers[0].bias.value) in (
-                expected_bias,
-                P(),
-                P(
-                    None,
-                ),
-            )
-        else:
-            assert _sharding_spec_of(mlp.layers[0].bias.value) in (
-                P(),
-                P(
-                    None,
-                ),
-            )
-        y = mlp(
-            _sharded_ones(
-                (data_axis, 4),
-                mesh,
-                _input_spec_for_shape(
-                    mesh, (data_axis, 4), allow_model=mesh.shape.get("model", 1) == 1
-                ),
-            )
-        )
-        mlp_override = MLP(
-            feature_dims=[4, 8, 4],
-            sharding_cfg=sharding if mesh.shape.get("model", 1) > 1 else None,
-            rngs=nnx.Rngs(1),
-        )
-        if mesh.shape.get("model", 1) > 1:
-            assert _sharding_spec_of(mlp_override.layers[0].kernel.value) in (
-                expected_override,
-                P(),
-                P(None, None),
-            )
-        else:
-            assert _sharding_spec_of(mlp_override.layers[0].kernel.value) in (
-                P(),
-                P(None, None),
-            )
-    expected_act = (
-        P("data", "model")
-        if mesh.shape.get("model", 1) > 1 and device_count > 1
-        else P("data", None)
-    )
-    assert _sharding_spec_of(y) in (expected_act, P())
+        model = MLP([8, 32, 32, 8], rngs=nnx.Rngs(0))
+        assert model.layers[0].kernel[...].sharding.spec == P(None, "model")
+        assert model.layers[0].bias[...].sharding.spec == P("model")
+        assert model.layers[1].kernel[...].sharding.spec == P("model", None)
+        assert model.layers[2].kernel[...].sharding.spec == P(None, "model")
 
 
 @pytest.mark.mesh
-@pytest.mark.parametrize("mesh_shape", [(4, 1), (1, 4), (2, 2)])
-def test_layers_forward_with_mesh(mesh_shape):
-    mesh = _mesh_for_shape(mesh_shape, ("data", "model"))
-    data_axis = mesh.shape["data"]
-    sharding_arg = None
-
-    mask = jnp.ones((4, 4))
-    from probjax.nn.layers import ConvBlock, InducedSelfAttention, SpatialSelfAttention
-
+def test_attention_kernels_shard_over_heads():
+    mesh = _auto_mesh((1, 4))
     with jax.set_mesh(mesh):
-        masked = MaskedLinear(4, 4, mask, sharding_cfg=sharding_arg, rngs=nnx.Rngs(0))
-        y = masked(
-            _sharded_ones(
-                (data_axis, 4),
-                mesh,
-                _input_spec_for_shape(
-                    mesh, (data_axis, 4), allow_model=mesh.shape.get("model", 1) == 1
-                ),
-            )
+        model = Transformer(
+            model_dim=16, num_heads=4, num_layers=2, attn_size=4, rngs=nnx.Rngs(0)
         )
-        assert y.shape == (data_axis, 4)
-
-        block = ConvBlock(
-            3, 3, sharding_cfg=sharding_arg, norm_cls=None, rngs=nnx.Rngs(2)
-        )
-        x = _sharded_ones(
-            (data_axis, 8, 8, 3),
-            mesh,
-            _input_spec_for_shape(
-                mesh, (data_axis, 8, 8, 3), allow_model=mesh.shape.get("model", 1) == 1
-            ),
-        )
-        y = block(x)
-        assert y.shape == x.shape
-
-        attn = SpatialSelfAttention(
-            32, sharding_cfg=sharding_arg, rngs=nnx.Rngs(3), num_heads=4
-        )
-        x = _sharded_ones(
-            (data_axis, 4, 4, 32),
-            mesh,
-            _input_spec_for_shape(
-                mesh, (data_axis, 4, 4, 32), allow_model=mesh.shape.get("model", 1) == 1
-            ),
-        )
-        y = attn(x)
-        assert y.shape == x.shape
-
-        induced_attn = InducedSelfAttention(
-            32,
-            num_inducing_points=4,
-            sharding_cfg=sharding_arg,
-            rngs=nnx.Rngs(4),
-            num_heads=4,
-            attn_size=8,
-        )
-        x = _sharded_ones(
-            (data_axis, 8, 32),
-            mesh,
-            _input_spec_for_shape(
-                mesh, (data_axis, 8, 32), allow_model=mesh.shape.get("model", 1) == 1
-            ),
-        )
-        y = induced_attn(x)
-        assert y.shape == x.shape
+        attn = model.attention_blocks[0]
+        assert attn.query.kernel[...].sharding.spec == P(None, "model", None)
+        assert attn.key.kernel[...].sharding.spec == P(None, "model", None)
+        assert attn.value.kernel[...].sharding.spec == P(None, "model", None)
+        assert attn.out.kernel[...].sharding.spec == P("model", None, None)
 
 
 @pytest.mark.mesh
-@pytest.mark.parametrize("mesh_shape", [(4, 1), (1, 4), (2, 2)])
-def test_resnet_forward_with_mesh(mesh_shape):
-    mesh = _mesh_for_shape(mesh_shape, ("data", "model"))
-    sharding_arg = None
-    data_axis = mesh.shape["data"]
-    from probjax.nn import ResNet
+def test_sharded_model_matches_unsharded_numerically():
+    mesh = _auto_mesh((2, 4))
+    x = jnp.ones((8, 8))
 
-    model = ResNet(
-        4,
-        4,
-        hidden_dim=8,
-        num_hidden_layers=2,
-        sharding_cfg=sharding_arg,
-        rngs=nnx.Rngs(4),
-    )
-    x = _sharded_ones(
-        (data_axis, 4),
-        mesh,
-        _input_spec_for_shape(
-            mesh, (data_axis, 4), allow_model=mesh.shape.get("model", 1) == 1
-        ),
-    )
+    reference = MLP([8, 32, 32, 8], rngs=nnx.Rngs(42))
+    y_ref = reference(x)
+
     with jax.set_mesh(mesh):
-        y = model(x)
-    assert y.shape == x.shape
+        sharded = MLP([8, 32, 32, 8], rngs=nnx.Rngs(42))
+        y_sharded = sharded(_batch(mesh, (8, 8)))
+    assert jnp.allclose(y_ref, jax.device_get(y_sharded), atol=1e-5)
+
+    t_ref = Transformer(
+        model_dim=16, num_heads=4, num_layers=2, attn_size=4, rngs=nnx.Rngs(7)
+    )
+    ty_ref = t_ref(jnp.ones((8, 5, 16)))
+    with jax.set_mesh(mesh):
+        t_sharded = Transformer(
+            model_dim=16, num_heads=4, num_layers=2, attn_size=4, rngs=nnx.Rngs(7)
+        )
+        ty_sharded = t_sharded(_batch(mesh, (8, 5, 16)))
+    assert jnp.allclose(ty_ref, jax.device_get(ty_sharded), atol=1e-4)
 
 
 @pytest.mark.mesh
-@pytest.mark.parametrize("mesh_shape", [(4, 1), (1, 4), (2, 2)])
-def test_mesh_nets_forward(mesh_shape):
-    mesh = _mesh_for_shape(mesh_shape, ("data", "model"))
-    data_axis = mesh.shape["data"]
-    sharding_arg = None
-
-    # CouplingMLP
-    from probjax.nn.generative.flows.coupling import CouplingMLP
-
-    def add_bijector(params, x):
-        return x + params[..., : x.shape[-1]]
-
+@pytest.mark.parametrize("mesh_shape", [(4, 1), (2, 2)])
+def test_data_parallel_forward(mesh_shape):
+    mesh = _auto_mesh(mesh_shape)
     with jax.set_mesh(mesh):
-        coupling = CouplingMLP(
-            split_index=2,
-            bij_params_dim=2,
-            bijector=add_bijector,
-            rngs=nnx.Rngs(0),
-            sharding_cfg=sharding_arg,
-        )
-        x = _sharded_ones(
-            (data_axis, 4),
-            mesh,
-            _input_spec_for_shape(
-                mesh, (data_axis, 4), allow_model=mesh.shape.get("model", 1) == 1
-            ),
-        )
-        y = coupling(x)
-        assert y.shape == x.shape
+        mlp = MLP([8, 32, 8], rngs=nnx.Rngs(0))
+        y = mlp(_batch(mesh, (8, 8)))
+        assert y.sharding.spec[0] == "data"
 
-        # AutoregressiveMLP uses lax.scan internally which conflicts with set_mesh.
-        # Normalizing flow
-        from probjax.nn.generative.flows.models import AdditiveCouplingFlow
+        jitted = jax.jit(mlp)
+        y_jit = jitted(_batch(mesh, (8, 8)))
+        assert jnp.allclose(y, y_jit, atol=1e-6)
 
-        flow = AdditiveCouplingFlow(
-            input_dim=4, num_transforms=2, rngs=nnx.Rngs(2), sharding_cfg=sharding_arg
+        transformer = Transformer(
+            model_dim=16, num_heads=2, num_layers=1, attn_size=8, rngs=nnx.Rngs(0)
         )
-        y = flow(
-            _sharded_ones(
-                (data_axis, 4),
-                mesh,
-                _input_spec_for_shape(
-                    mesh, (data_axis, 4), allow_model=mesh.shape.get("model", 1) == 1
-                ),
-            )
-        )
-        assert y.shape == (data_axis, 4)
-
-        # UNet
-        from probjax.nn.nets.unets import UNet
+        ty = transformer(_batch(mesh, (8, 5, 16)))
+        assert ty.sharding.spec[0] == "data"
 
         unet = UNet(
             4,
             [32, 32],
-            rngs=nnx.Rngs(3),
-            sharding_cfg=sharding_arg,
+            rngs=nnx.Rngs(0),
             kernel_size=(4, 4),
             strides=(2, 2),
             kernel_size_resnet=(3, 3),
             strides_resnet=(1, 1),
         )
-        x = _sharded_ones(
-            (data_axis, 8, 8, 4),
-            mesh,
-            _input_spec_for_shape(
-                mesh, (data_axis, 8, 8, 4), allow_model=mesh.shape.get("model", 1) == 1
-            ),
-        )
-        y = unet(x)
-        assert y.shape == x.shape
-
-        # Transformer
-        from probjax.nn.nets.transformer import Transformer
-
-        transformer = Transformer(
-            model_dim=8,
-            num_heads=2,
-            num_layers=2,
-            attn_size=4,
-            rngs=nnx.Rngs(8),
-            sharding_cfg=sharding_arg,
-        )
-        x = _sharded_ones(
-            (data_axis, 4, 8),
-            mesh,
-            _input_spec_for_shape(
-                mesh, (data_axis, 4, 8), allow_model=mesh.shape.get("model", 1) == 1
-            ),
-        )
-        y = transformer(x)
-        assert y.shape == x.shape
-
-        # LRUModel
-        from probjax.nn.nets.lru import LRUModel
+        uy = unet(_batch(mesh, (8, 8, 8, 4)))
+        assert uy.shape == (8, 8, 8, 4)
 
         lru = LRUModel(
-            input_dim=4,
-            model_dim=8,
-            output_dim=4,
-            num_layers=2,
-            rngs=nnx.Rngs(4),
-            sharding_cfg=sharding_arg,
+            input_dim=4, model_dim=8, output_dim=4, num_layers=1, rngs=nnx.Rngs(0)
         )
-        x = _sharded_ones((data_axis, 4, 4), mesh, P())
-        y = lru(x)
-        assert y.shape == (data_axis, 4, 4)
-
-        # FlowMatcher / LinearFlow
-        from probjax.nn.generative.flow_matching.model import LinearFlow
-
-        class TinyFlowNet(nnx.Module):
-            def __init__(self, rngs, *, sharding_cfg=None):
-                self._mesh = sharding_cfg
-                self.proj = nnx.Linear(2, 2, rngs=rngs)
-
-            def __call__(self, t, x, **kwargs):
-                return self.proj(x)
-
-        cfg = ShardingCfg(mesh=mesh) if mesh.shape.get("model", 1) > 1 else None
-        fm_net = TinyFlowNet(nnx.Rngs(5), sharding_cfg=cfg)
-        flow_matcher = LinearFlow(fm_net, sharding_cfg=cfg)
-        t = _sharded_ones(
-            (data_axis, 1),
-            mesh,
-            _input_spec_for_shape(mesh, (data_axis, 1), allow_model=False),
-        )
-        x = _sharded_ones(
-            (data_axis, 2),
-            mesh,
-            _input_spec_for_shape(mesh, (data_axis, 2), allow_model=False),
-        )
-        y = flow_matcher(t, x)
-        assert y.shape == x.shape
-
-        # MeanFlowMatcher / LinearMeanFlow
-        from probjax.nn.generative.mean_flow.model import LinearMeanFlow
-
-        mean_flow = LinearMeanFlow(fm_net, sharding_cfg=cfg)
-        y = mean_flow(t, x)
-        assert y.shape == x.shape
-
-        # DiffusionDenoiser
-        from probjax.nn.generative.diffusion.model import EDM
-
-        class TinyDenoiser(nnx.Module):
-            def __init__(self, rngs, *, sharding_cfg=None):
-                self._mesh = sharding_cfg
-                self.proj = nnx.Linear(2, 2, rngs=rngs)
-
-            def __call__(self, t_embed, x_embed):
-                return self.proj(x_embed)
-
-        den_net = TinyDenoiser(nnx.Rngs(6), sharding_cfg=cfg)
-        denoiser = EDM(den_net, rngs=nnx.Rngs(7), sharding_cfg=cfg)
-        y = denoiser(t, x)
-        assert y.shape == x.shape
+        ly = lru(_batch(mesh, (8, 6, 4)))
+        assert ly.shape == (8, 6, 4)
 
 
 @pytest.mark.mesh
-@pytest.mark.parametrize("mesh_shape", [(4, 1), (1, 4), (2, 2)])
-def test_mesh_jit_forward(mesh_shape):
-    mesh = _mesh_for_shape(mesh_shape, ("data", "model"))
-    data_axis = mesh.shape["data"]
-    sharding_arg = None
-
-    from probjax.nn.nets.transformer import Transformer
-    from probjax.nn.nets.unets import UNet
-    from probjax.nn.nets.lru import LRUModel
-
-    x_t = _sharded_ones(
-        (data_axis, 4, 8),
-        mesh,
-        _input_spec_for_shape(
-            mesh, (data_axis, 4, 8), allow_model=mesh.shape.get("model", 1) == 1
-        ),
-    )
-    x_u = _sharded_ones(
-        (data_axis, 8, 8, 4),
-        mesh,
-        _input_spec_for_shape(
-            mesh, (data_axis, 8, 8, 4), allow_model=mesh.shape.get("model", 1) == 1
-        ),
-    )
-    x_l = _sharded_ones(
-        (data_axis, 4, 4),
-        mesh,
-        _input_spec_for_shape(
-            mesh, (data_axis, 4, 4), allow_model=mesh.shape.get("model", 1) == 1
-        ),
-    )
-
+def test_explicit_axes_mesh_constrain_branch():
+    # jax.make_mesh defaults to Explicit axis types; constrain must take the
+    # reshard branch there.
+    total = 4
+    if jax.device_count() < total:
+        pytest.skip(f"mesh test requires at least {total} devices")
+    mesh = jax.make_mesh((4, 1), ("data", "model"), devices=jax.devices()[:total])
     with jax.set_mesh(mesh):
-        transformer = Transformer(
-            model_dim=8,
-            num_heads=2,
-            num_layers=2,
-            attn_size=4,
-            rngs=nnx.Rngs(10),
-            sharding_cfg=sharding_arg,
-        )
-        unet = UNet(
-            4,
-            [32, 32],
-            rngs=nnx.Rngs(11),
-            sharding_cfg=sharding_arg,
-            kernel_size=(4, 4),
-            strides=(2, 2),
-            kernel_size_resnet=(3, 3),
-            strides_resnet=(1, 1),
-        )
-        lru = LRUModel(
-            input_dim=4,
-            model_dim=8,
-            output_dim=4,
-            num_layers=2,
-            rngs=nnx.Rngs(12),
-            sharding_cfg=sharding_arg,
-        )
-        y_t = jax.jit(lambda x: transformer(x))(x_t)
-        y_u = jax.jit(lambda x: unet(x))(x_u)
-        y_l = jax.jit(lambda x: lru(x))(x_l)
+        mlp = MLP([8, 16, 8], rngs=nnx.Rngs(0))
+        x = jax.device_put(jnp.ones((8, 8)), NamedSharding(mesh, P("data", None)))
+        y = mlp(x)
+        assert y.shape == (8, 8)
 
-    assert y_t.shape == x_t.shape
-    assert y_u.shape == x_u.shape
-    assert y_l.shape == x_l.shape
+
+@pytest.mark.mesh
+def test_fit_under_mesh():
+    mesh = _auto_mesh((4, 1))
+    data = jax.random.normal(jax.random.key(0), (64, 2))
+    with jax.set_mesh(mesh):
+        flow = maf(2, 2, rngs=nnx.Rngs(0))
+        sharded_data = jax.device_put(data, NamedSharding(mesh, P("data", None)))
+        losses = flow.fit(jax.random.key(1), sharded_data, num_steps=5)
+        assert jnp.all(jnp.isfinite(losses))
+
+
+@pytest.mark.mesh
+def test_autoregressive_flow_logpdf_under_mesh():
+    # AutoregressiveMLP uses lax.scan internally; historically this conflicted
+    # with set_mesh under Explicit axis types. Verify it works with Auto axes.
+    mesh = _auto_mesh((4, 1))
+    with jax.set_mesh(mesh):
+        flow = maf(2, 2, rngs=nnx.Rngs(0))
+        x = jax.device_put(
+            jnp.ones((8, 2)), NamedSharding(mesh, P("data", None))
+        )
+        logprob = flow.logpdf(x)
+        assert logprob.shape == (8,)
+        assert jnp.all(jnp.isfinite(logprob))
+
+
+@pytest.mark.mesh
+def test_flow_logpdf_per_shard_no_allgather():
+    # batch_shard wraps the custom_inverse evaluation: the flow inverse runs
+    # per-shard under a batch-sharded mesh with no all-gathers.
+    mesh = _auto_mesh((4, 1))
+    flow = maf(2, 2, rngs=nnx.Rngs(0))
+    x = jnp.ones((8, 2))
+    lp_ref = flow.logpdf(x)
+    xs = jax.device_put(x, NamedSharding(mesh, P("data", None)))
+    with jax.set_mesh(mesh):
+        fn = jax.jit(flow.logpdf)
+        lp = fn(xs)
+        assert jnp.allclose(lp_ref, jax.device_get(lp), atol=1e-5)
+        assert lp.sharding.spec[0] == "data"
+        hlo = fn.lower(xs).compile().as_text()
+        assert "all-gather" not in hlo
