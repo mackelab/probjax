@@ -38,21 +38,42 @@ from jax import lax
 from jax.experimental import pallas as pl
 
 from ..kernel_utils import (
+    def_partition_compat,
     get_dot_precision,
     pallas_call_compat,
     use_interpret_mode,
 )
-from ..kernel_utils.kernel_primitive import (
-    KernelSpec,
-    Operand,
-    Output,
-    ct,
-    derive_bwd_spec,
-    grad,
-    make_kernel_primitive,
-    res,
-    shardable_kernel,
-)
+
+
+def _validate_ssd_sharding(sharding, name: str):
+    """Validate that *sharding* (a NamedSharding) does not shard unsupported dims.
+
+    Only batch (dim 0) and heads/groups (dim 1) sharding are supported for SSD.
+    Sharding on the sequence (dim 2) or dk/dv (dim 3) is rejected with an
+    informative error.
+    """
+    spec = getattr(sharding, "spec", None)
+    if spec is None:
+        return
+    for dim_idx, axis in enumerate(spec):
+        if axis is None:
+            continue
+        if dim_idx == 2:
+            raise ValueError(
+                f"Pallas SSD kernel does not support sharding on the "
+                f"sequence dimension (dim 2) of '{name}'. "
+                f"Got PartitionSpec{tuple(spec)} which shards dim 2 over "
+                f"mesh axis '{axis}'. "
+                f"Only batch (dim 0) and heads (dim 1) sharding are supported."
+            )
+        if dim_idx == 3:
+            raise ValueError(
+                f"Pallas SSD kernel does not support sharding on the "
+                f"dk/dv dimension (dim 3) of '{name}'. "
+                f"Got PartitionSpec{tuple(spec)} which shards dim 3 over "
+                f"mesh axis '{axis}'. "
+                f"Only batch (dim 0) and heads (dim 1) sharding are supported."
+            )
 
 
 def _bs(index_map, block_shape):
@@ -931,65 +952,101 @@ def _ssd_backward_impl(
     return _ssd_backward(residuals, do)
 
 
-# ---------------------------------------------------------------------------
-# SSD primitives
-# ---------------------------------------------------------------------------
-# One declarative spec drives the sharding rule, validator, batching rule,
-# and abstract eval; the backward spec (and thus its sharding rule) is
-# derived from the forward one so the two can never drift.
+def _make_ssd():
+    """Build a differentiable, SPMD-partitionable SSD op.
 
-_SSD_FWD_SPEC = KernelSpec(
-    name="ssd_fwd",
-    operands=(
-        Operand("q", ("batch", "groups", "seq", "dk")),
-        Operand("k", ("batch", "groups", "seq", "dk")),
-        Operand("v", ("batch", "heads", "seq", "dv")),
-        Operand("log_alpha", ("batch", "heads", "seq")),
-        Operand("h0", ("batch", "heads", "dk", "dv")),
-    ),
-    outputs=(Output(("batch", "heads", "seq", "dv"), dtype_like="v"),),
-)
+    Returns a function ``f(q, k, v, log_alpha, h0) -> o`` that:
+      - Uses ``custom_partitioning`` on the forward and backward Pallas kernels
+        so that GSPMD runs them per-shard without inserting all-gathers.
+      - Uses ``custom_vjp`` so that ``jax.grad`` works through the op.
+    """
+    from jax.experimental.custom_partitioning import custom_partitioning
 
-_SSD_BWD_SPEC = derive_bwd_spec(
-    _SSD_FWD_SPEC,
-    name="ssd_bwd",
-    operands=(
-        ct(0, name="do"),
-        res("q"),
-        res("k"),
-        res("v"),
-        res("log_alpha"),
-        res("h0"),
-    ),
-    outputs=(grad("q"), grad("k"), grad("v"), grad("log_alpha"), grad("h0")),
-)
+    # -- Forward kernel with custom_partitioning --------------------------
+    @custom_partitioning
+    def _fwd(q, k, v, log_alpha, h0):
+        return _ssd_forward_impl(q, k, v, log_alpha, h0)
 
-ssd_fwd_p = make_kernel_primitive(_SSD_FWD_SPEC, impl=_ssd_forward_impl)
-ssd_bwd_p = make_kernel_primitive(_SSD_BWD_SPEC, impl=_ssd_backward_impl)
+    def _fwd_partition(mesh, arg_shapes, result_shape):
+        names = ("q", "k", "v", "log_alpha", "h0")
+        for shape, name in zip(arg_shapes, names):
+            _validate_ssd_sharding(shape.sharding, name)
 
+        result_shardings = jax.tree.map(lambda s: s.sharding, result_shape)
+        arg_shardings = jax.tree.map(lambda s: s.sharding, arg_shapes)
 
-@jax.custom_vjp
-def _ssd_op(q, k, v, log_alpha, h0):
-    return shardable_kernel(
-        ssd_fwd_p, {"q": q, "k": k, "v": v, "log_alpha": log_alpha, "h0": h0}
+        def lower_fn(q, k, v, log_alpha, h0):
+            return _ssd_forward_impl(q, k, v, log_alpha, h0)
+
+        return mesh, lower_fn, result_shardings, arg_shardings
+
+    _fwd_partition._cp_raw_fn = lambda q, k, v, log_alpha, h0: _ssd_forward_impl(
+        q, k, v, log_alpha, h0
+    )  # type: ignore[attr-defined]
+
+    def_partition_compat(
+        _fwd.def_partition,
+        partition=_fwd_partition,
+        # q(B,G,L,Dk) k(B,G,L,Dk) v(B,H,L,Dv) log_alpha(B,H,L) h0(B,H,Dk,Dv)
+        # -> o(B,H,L,Dv)
+        # batch and heads/groups are shardable; seq, dk, dv must be replicated.
+        sharding_rule=(
+            "batch groups seq dk, batch groups seq dk, "
+            "batch heads seq dv, batch heads seq, batch heads dk dv "
+            "-> batch heads seq dv"
+        ),
+        need_replication_factors=("seq", "dk", "dv"),
     )
 
+    # -- Backward kernel with custom_partitioning -------------------------
+    @custom_partitioning
+    def _bwd(do, q, k, v, log_alpha, h0):
+        return _ssd_backward_impl(do, q, k, v, log_alpha, h0)
 
-def _ssd_op_fwd(q, k, v, log_alpha, h0):
-    return _ssd_op(q, k, v, log_alpha, h0), (q, k, v, log_alpha, h0)
+    def _bwd_partition(mesh, arg_shapes, result_shape):
+        result_shardings = jax.tree.map(lambda s: s.sharding, result_shape)
+        arg_shardings = jax.tree.map(lambda s: s.sharding, arg_shapes)
 
+        def lower_fn(do, q, k, v, log_alpha, h0):
+            return _ssd_backward_impl(do, q, k, v, log_alpha, h0)
 
-def _ssd_op_bwd(residuals, do):
-    q, k, v, log_alpha, h0 = residuals
-    return tuple(
-        shardable_kernel(
-            ssd_bwd_p,
-            {"do": do, "q": q, "k": k, "v": v, "log_alpha": log_alpha, "h0": h0},
-        )
+        return mesh, lower_fn, result_shardings, arg_shardings
+
+    _bwd_partition._cp_raw_fn = lambda do, q, k, v, log_alpha, h0: _ssd_backward_impl(
+        do, q, k, v, log_alpha, h0
+    )  # type: ignore[attr-defined]
+
+    def_partition_compat(
+        _bwd.def_partition,
+        partition=_bwd_partition,
+        # do(B,H,L,Dv) q(B,G,L,Dk) k(B,G,L,Dk) v(B,H,L,Dv)
+        #   log_alpha(B,H,L) h0(B,H,Dk,Dv)
+        # -> dq(B,G,L,Dk) dk(B,G,L,Dk) dv(B,H,L,Dv)
+        #    dlog_alpha(B,H,L) dh0(B,H,Dk,Dv)
+        sharding_rule=(
+            "batch heads seq dv, batch groups seq dk, batch groups seq dk, "
+            "batch heads seq dv, batch heads seq, batch heads dk dv "
+            "-> batch groups seq dk, batch groups seq dk, "
+            "batch heads seq dv, batch heads seq, batch heads dk dv"
+        ),
+        need_replication_factors=("seq", "dk", "dv"),
     )
 
+    # -- Differentiable wrapper using custom_vjp --------------------------
+    @jax.custom_vjp
+    def _op(q, k, v, log_alpha, h0):
+        return _fwd(q, k, v, log_alpha, h0)
 
-_ssd_op.defvjp(_ssd_op_fwd, _ssd_op_bwd)
+    def _op_fwd(q, k, v, log_alpha, h0):
+        o = _fwd(q, k, v, log_alpha, h0)
+        return o, (q, k, v, log_alpha, h0)
+
+    def _op_bwd(res, do):
+        q, k, v, log_alpha, h0 = res
+        return _bwd(do, q, k, v, log_alpha, h0)
+
+    _op.defvjp(_op_fwd, _op_bwd)
+    return _op
 
 
 @jax.named_call  # `named_call` ensures the name is used in tracing, which is useful for profiling.
@@ -1049,6 +1106,11 @@ def ssd(
             f"num_heads={nh}, dk={dk}, dv={dv}. "
             "Reference fallback on GPU is disabled."
         )
+
+    # Build a custom_partitioning-aware SSD op.
+    # When inputs are NamedSharded, GSPMD will call our partition()
+    # callback and run the Pallas kernel per-shard without all-gathers.
+    _ssd_op = _make_ssd()
 
     return _ssd_op(q, k, v, log_alpha, h0)
 

@@ -322,7 +322,7 @@ def test_mamba_scan_gpu_supported_config_uses_pallas_scan(monkeypatch):
     monkeypatch.setattr(
         mamba_kernel_mod, "_mamba_scan_reference", _unexpected_reference
     )
-    monkeypatch.setattr(mamba_kernel_mod, "_make_mamba_scan", lambda *args: _fake_scan)
+    monkeypatch.setattr(mamba_kernel_mod, "_mamba_scan_op", _fake_scan)
 
     out = compute_mamba_scan(
         x,
@@ -418,9 +418,7 @@ def test_mamba_scan_gpu_kernel_failure_raises_without_reference_fallback(monkeyp
     monkeypatch.setattr(
         mamba_kernel_mod, "_mamba_scan_reference", _unexpected_reference
     )
-    monkeypatch.setattr(
-        mamba_kernel_mod, "_make_mamba_scan", lambda *args: _failing_scan
-    )
+    monkeypatch.setattr(mamba_kernel_mod, "_mamba_scan_op", _failing_scan)
 
     with pytest.raises(RuntimeError, match="pallas compile failed"):
         compute_mamba_scan(
@@ -465,7 +463,7 @@ def test_ssd_gpu_supported_config_uses_pallas_kernel(monkeypatch):
         return jnp.full_like(v_arg, 5.0)
 
     monkeypatch.setattr(ssd_kernel_mod, "ssd_linear_scan", _unexpected_linear_scan)
-    monkeypatch.setattr(ssd_kernel_mod, "_make_ssd", lambda: _fake_ssd)
+    monkeypatch.setattr(ssd_kernel_mod, "_ssd_op", _fake_ssd)
 
     out = ssd(q, k, v, log_alpha)
 
@@ -533,7 +531,7 @@ def test_ssd_gpu_kernel_failure_raises_without_linear_scan_fallback(monkeypatch)
         raise RuntimeError("pallas launch failed")
 
     monkeypatch.setattr(ssd_kernel_mod, "ssd_linear_scan", _unexpected_linear_scan)
-    monkeypatch.setattr(ssd_kernel_mod, "_make_ssd", lambda: _failing_ssd)
+    monkeypatch.setattr(ssd_kernel_mod, "_ssd_op", _failing_ssd)
 
     with pytest.raises(RuntimeError, match="pallas launch failed"):
         ssd(q, k, v, log_alpha)

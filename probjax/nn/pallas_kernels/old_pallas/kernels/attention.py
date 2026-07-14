@@ -39,17 +39,15 @@ from ..kernel_utils import (
     get_dot_precision,
     get_dropout_mask,
 )
-from ..kernel_utils.kernel_primitive import (
-    KernelSpec,
-    Operand,
-    Output,
-    ct,
-    derive_bwd_spec,
-    grad,
-    make_kernel_primitive,
-    out_res,
-    res,
-    shardable_kernel,
+from ..kernel_utils.cp_utils import (
+    build_mha_sharding_rule_bwd,
+    build_mha_sharding_rule_fwd,
+    build_mha_sharding_rule_jvp,
+    make_cp_function,
+    or_sentinel,
+    try_cp_or_raw,
+    undo_sentinel,
+    validate_mha_sharding,
 )
 
 
@@ -1980,120 +1978,280 @@ def _unflatten_optional_pytree(treedef, leaves):
 # -- CP factory functions wrapping raw kernels -----------------------------
 
 
-# ---------------------------------------------------------------------------
-# MHA primitives
-# ---------------------------------------------------------------------------
-# Declarative specs replace the hand-written fwd/jvp/bwd sharding rules and
-# the sentinel plumbing for optional mask/bias arrays. Note q and k/v carry
-# distinct sequence factors (q_seq / kv_seq): unlike the previous shared
-# "seq" factor, this is correct for cross-attention with different lengths.
+def _make_cp_mha_fwd(
+    *,
+    has_b_data: bool,
+    has_q_id: bool,
+    has_k_id: bool,
+    has_dropout_mask: bool,
+    has_index: bool,
+    output_activations: bool = False,
+    # Kernel kwargs — closed over, not passed as CP positional args
+    sm_scale: float,
+    block_sizes: BlockSizes,
+    num_warps: int | None,
+    num_stages: int,
+    grid: tuple[int, ...] | None,
+    interpret: bool,
+    debug: bool,
+    dropout_rate: float,
+    mask_fn,
+    bias_fn,
+    b_spec,
+    q_id_spec,
+    k_id_spec,
+):
+    """Return a CP-wrapped forward function.
 
-_Q_DIMS = ("batch", "q_seq", "heads", "head_dim")
-_KV_DIMS = ("batch", "kv_seq", "heads", "head_dim")
-_LSE_DIMS = ("batch", "heads", "q_seq")
-
-_MHA_FWD_OPTIONALS = (
-    Operand("b_data", ("batch", "heads", "_", "_"), optional=True),
-    Operand("q_id", ("batch", "_", "_", "_"), optional=True),
-    Operand("k_id", ("batch", "_", "_", "_"), optional=True),
-    Operand("dropout_mask", ("batch", "heads", "_", "_"), optional=True),
-    Operand("index_offset", ("_", "_"), optional=True),
-    Operand("index_offset_size", ("_",), optional=True),
-)
-
-_MHA_FWD_SPEC = KernelSpec(
-    name="mha_fwd",
-    operands=(
-        Operand("q", _Q_DIMS),
-        Operand("k", _KV_DIMS),
-        Operand("v", _KV_DIMS),
-        Operand("rng_seed", ()),
+    Signature: f(q, k, v, rng_seed, b_data, q_id, k_id,
+                  dropout_mask, index_offset, index_offset_size)
+    Absent optional arrays must be passed as ``or_sentinel(arr)``.
+    """
+    present_flags = dict(
+        b_data=has_b_data,
+        q_id=has_q_id,
+        k_id=has_k_id,
+        dropout_mask=has_dropout_mask,
+        index_offset=has_index,
+        index_offset_size=has_index,
     )
-    + _MHA_FWD_OPTIONALS,
-    outputs=(Output(_Q_DIMS, dtype_like="q"),),
-    shardable=frozenset({"batch", "heads"}),
-)
-
-_MHA_FWD_RES_SPEC = KernelSpec(
-    name="mha_fwd_res",
-    operands=_MHA_FWD_SPEC.operands,
-    outputs=(
-        Output(_Q_DIMS, dtype_like="q"),
-        Output(_LSE_DIMS, dtype_like=jnp.float32),
-    ),
-    shardable=_MHA_FWD_SPEC.shardable,
-)
-
-_MHA_JVP_SPEC = KernelSpec(
-    name="mha_jvp",
-    operands=(
-        Operand("q", _Q_DIMS),
-        Operand("k", _KV_DIMS),
-        Operand("v", _KV_DIMS),
-        Operand("dq", _Q_DIMS),
-        Operand("dk", _KV_DIMS),
-        Operand("dv", _KV_DIMS),
-        Operand("lse", _LSE_DIMS),
-        Operand("rng_seed", ()),
+    rule, repl = build_mha_sharding_rule_fwd(
+        present_flags, output_activations=output_activations
     )
-    + _MHA_FWD_OPTIONALS,
-    outputs=(Output(_Q_DIMS, dtype_like="q"),),
-    shardable=_MHA_FWD_SPEC.shardable,
-)
 
-_MHA_BWD_SPEC = KernelSpec(
-    name="mha_bwd",
-    operands=(
-        Operand("do", _Q_DIMS),
-        Operand("q", _Q_DIMS),
-        Operand("k", _KV_DIMS),
-        Operand("v", _KV_DIMS),
-        Operand("rng_seed", ()),
-        Operand("out", _Q_DIMS),
-        Operand("lse", _LSE_DIMS),
-        Operand("b_data", ("batch", "heads", "_", "_"), optional=True),
-        Operand("q_data", ("batch", "_", "_", "_"), optional=True),
-        Operand("k_data", ("batch", "_", "_", "_"), optional=True),
-        Operand("dropout_mask", ("batch", "heads", "_", "_"), optional=True),
-        Operand("q_index_offset", ("_", "_"), optional=True),
-        Operand("q_index_offset_size", ("_",), optional=True),
-        Operand("kv_index_offset", ("_", "_"), optional=True),
-        Operand("kv_index_offset_size", ("_",), optional=True),
-    ),
-    outputs=(
-        Output(_Q_DIMS, dtype_like="q"),
-        Output(_KV_DIMS, dtype_like="k"),
-        Output(_KV_DIMS, dtype_like="v"),
-    ),
-    shardable=_MHA_FWD_SPEC.shardable,
-)
+    def _raw(
+        q,
+        k,
+        v,
+        rng_seed,
+        b_data,
+        q_id,
+        k_id,
+        dropout_mask,
+        index_offset,
+        index_offset_size,
+    ):
+        result = _mha_impl_raw(
+            q,
+            k,
+            v,
+            rng_seed,
+            b_data,
+            q_id,
+            k_id,
+            dropout_mask,
+            index_offset,
+            index_offset_size,
+            mask_fn=mask_fn,
+            bias_fn=bias_fn,
+            b_spec=b_spec,
+            q_id_spec=q_id_spec,
+            k_id_spec=k_id_spec,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            output_activations=output_activations,
+        )
+        if output_activations:
+            out, (_q, _k, _v, _seed, _out_res, lse) = result
+            return out, lse
+        return result
 
+    def _validate(flat_arg_shapes):
+        for shape, name in zip(flat_arg_shapes[:3], ("q", "k", "v")):
+            validate_mha_sharding(shape.sharding, name)
 
-def _mha_fwd_prim_impl(*args, **static):
-    return _mha_impl_raw(*args, output_activations=False, **static)
-
-
-def _mha_fwd_res_prim_impl(*args, **static):
-    out, (_q, _k, _v, _seed, _out_res, lse) = _mha_impl_raw(
-        *args, output_activations=True, **static
+    return make_cp_function(
+        _raw, present_flags, rule, repl, partition_validation_fn=_validate
     )
-    return out, lse
 
 
-def _mha_jvp_prim_impl(*args, **static):
-    # Late binding: _mha_impl_jvp_from_lse_raw is defined further down.
-    return _mha_impl_jvp_from_lse_raw(*args, **static)
+def _make_cp_mha_jvp(
+    *,
+    has_b_data: bool,
+    has_q_id: bool,
+    has_k_id: bool,
+    has_dropout_mask: bool,
+    has_index: bool,
+    # Kernel kwargs
+    sm_scale: float,
+    block_sizes: BlockSizes,
+    num_warps: int | None,
+    num_stages: int,
+    grid: tuple[int, ...] | None,
+    interpret: bool,
+    debug: bool,
+    dropout_rate: float,
+    mask_fn,
+    bias_fn,
+    bias_fn_grad,
+    b_spec,
+    q_id_spec,
+    k_id_spec,
+):
+    """Return a CP-wrapped JVP-from-LSE function.
+
+    Signature: f(q, k, v, dq, dk, dv, lse, rng_seed, b_data, q_id, k_id,
+                  dropout_mask, index_offset, index_offset_size)
+    """
+    present_flags = dict(
+        b_data=has_b_data,
+        q_id=has_q_id,
+        k_id=has_k_id,
+        dropout_mask=has_dropout_mask,
+        index_offset=has_index,
+        index_offset_size=has_index,
+    )
+    rule, repl = build_mha_sharding_rule_jvp(present_flags)
+
+    def _raw(
+        q,
+        k,
+        v,
+        dq,
+        dk,
+        dv,
+        lse,
+        rng_seed,
+        b_data,
+        q_id,
+        k_id,
+        dropout_mask,
+        index_offset,
+        index_offset_size,
+    ):
+        return _mha_impl_jvp_from_lse_raw(
+            q,
+            k,
+            v,
+            dq,
+            dk,
+            dv,
+            lse,
+            rng_seed,
+            b_data,
+            q_id,
+            k_id,
+            dropout_mask,
+            index_offset,
+            index_offset_size,
+            mask_fn=mask_fn,
+            bias_fn=bias_fn,
+            bias_fn_grad=bias_fn_grad,
+            b_spec=b_spec,
+            q_id_spec=q_id_spec,
+            k_id_spec=k_id_spec,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+        )
+
+    return make_cp_function(_raw, present_flags, rule, repl)
 
 
-def _mha_bwd_prim_impl(*args, **static):
-    # Late binding: _mha_backward_raw is defined further down.
-    return _mha_backward_raw(*args, **static)
+def _make_cp_mha_bwd(
+    *,
+    has_b_data: bool,
+    has_q_data: bool,
+    has_k_data: bool,
+    has_dropout_mask: bool,
+    has_q_index: bool,
+    has_kv_index: bool,
+    # Kernel kwargs
+    sm_scale: float,
+    block_sizes: BlockSizes,
+    backward_pass_impl: str,
+    num_warps: int | None,
+    num_stages: int,
+    interpret: bool,
+    debug: bool,
+    dropout_rate: float,
+    mask_fn,
+    bias_fn,
+    bias_fn_grad,
+    b_spec_bwd,
+    q_data_spec,
+    k_data_spec,
+):
+    """Return a CP-wrapped backward function.
 
+    Signature: f(do, q, k, v, rng_seed, out, lse, b_data, q_data, k_data,
+                  dropout_mask, q_index_offset, q_index_offset_size,
+                  kv_index_offset, kv_index_offset_size)
+    """
+    present_flags = dict(
+        b_data=has_b_data,
+        q_data=has_q_data,
+        k_data=has_k_data,
+        dropout_mask=has_dropout_mask,
+        q_index_offset=has_q_index,
+        q_index_offset_size=has_q_index,
+        kv_index_offset=has_kv_index,
+        kv_index_offset_size=has_kv_index,
+    )
+    rule, repl = build_mha_sharding_rule_bwd(present_flags)
 
-mha_fwd_p = make_kernel_primitive(_MHA_FWD_SPEC, impl=_mha_fwd_prim_impl)
-mha_fwd_res_p = make_kernel_primitive(_MHA_FWD_RES_SPEC, impl=_mha_fwd_res_prim_impl)
-mha_jvp_p = make_kernel_primitive(_MHA_JVP_SPEC, impl=_mha_jvp_prim_impl)
-mha_bwd_p = make_kernel_primitive(_MHA_BWD_SPEC, impl=_mha_bwd_prim_impl)
+    def _raw(
+        do,
+        q,
+        k,
+        v,
+        rng_seed,
+        out,
+        lse,
+        b_data,
+        q_data,
+        k_data,
+        dropout_mask,
+        q_index_offset,
+        q_index_offset_size,
+        kv_index_offset,
+        kv_index_offset_size,
+    ):
+        dq, dk, dv = _mha_backward_raw(
+            do,
+            q,
+            k,
+            v,
+            rng_seed,
+            out,
+            lse,
+            b_data,
+            q_data,
+            k_data,
+            dropout_mask,
+            q_index_offset,
+            q_index_offset_size,
+            kv_index_offset,
+            kv_index_offset_size,
+            mask_fn=mask_fn,
+            bias_fn=bias_fn,
+            bias_fn_grad=bias_fn_grad,
+            b_spec_bwd=b_spec_bwd,
+            q_data_spec=q_data_spec,
+            k_data_spec=k_data_spec,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+        )
+        return dq, dk, dv
+
+    return make_cp_function(_raw, present_flags, rule, repl)
 
 
 def mha(
@@ -2234,7 +2392,40 @@ def _make_mha_runners(
             dropout_impl=dropout_impl,
         )
 
-        static = dict(
+        cp_fwd = _make_cp_mha_fwd(
+            has_b_data=arrays["b_data"] is not None,
+            has_q_id=arrays["q_id"] is not None,
+            has_k_id=arrays["k_id"] is not None,
+            has_dropout_mask=arrays["dropout_mask"] is not None,
+            has_index=arrays["index_offset"] is not None,
+            output_activations=output_activations,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            mask_fn=specs["mask_fn"],
+            bias_fn=specs["bias_fn"],
+            b_spec=specs["b_spec"],
+            q_id_spec=specs["q_id_spec"],
+            k_id_spec=specs["k_id_spec"],
+        )
+        fwd_raw_args = (
+            q,
+            k,
+            v,
+            rng_seed,
+            arrays["b_data"],
+            arrays["q_id"],
+            arrays["k_id"],
+            arrays["dropout_mask"],
+            arrays["index_offset"],
+            arrays["index_offset_size"],
+        )
+        fwd_raw_kwargs = dict(
             mask_fn=specs["mask_fn"],
             bias_fn=specs["bias_fn"],
             b_spec=specs["b_spec"],
@@ -2248,12 +2439,43 @@ def _make_mha_runners(
             interpret=interpret,
             debug=debug,
             dropout_rate=dropout_rate,
+            output_activations=output_activations,
         )
-        operands = {"q": q, "k": k, "v": v, "rng_seed": rng_seed, **arrays}
+        fwd_cp_args = (
+            q,
+            k,
+            v,
+            rng_seed,
+            or_sentinel(arrays["b_data"]),
+            or_sentinel(arrays["q_id"]),
+            or_sentinel(arrays["k_id"]),
+            or_sentinel(arrays["dropout_mask"]),
+            or_sentinel(arrays["index_offset"]),
+            or_sentinel(arrays["index_offset_size"]),
+        )
         if output_activations:
-            out, lse = shardable_kernel(mha_fwd_res_p, operands, **static)
+            # Both CP path and raw path must return (out, lse).
+            # _mha_impl_raw returns (out, (q,k,v,seed,out_res,lse)) when
+            # output_activations=True, so wrap it to normalize to (out, lse).
+            def _raw_fwd_normalized(*args, **kwargs):
+                out, (_q, _k, _v, _seed, _out_res, lse) = _mha_impl_raw(*args, **kwargs)
+                return out, lse
+
+            out, lse = try_cp_or_raw(
+                cp_fwd,
+                fwd_cp_args,
+                _raw_fwd_normalized,
+                fwd_raw_args,
+                fwd_raw_kwargs,
+            )
             return out, rng_val, rng_seed, lse
-        return shardable_kernel(mha_fwd_p, operands, **static)
+        return try_cp_or_raw(
+            cp_fwd,
+            fwd_cp_args,
+            _mha_impl_raw,
+            fwd_raw_args,
+            fwd_raw_kwargs,
+        )
 
     def _run_backward(
         do,
@@ -2296,24 +2518,13 @@ def _make_mha_runners(
             dropout_impl=dropout_impl,
         )
 
-        return shardable_kernel(
-            mha_bwd_p,
-            {
-                "do": do,
-                "q": q,
-                "k": k,
-                "v": v,
-                "rng_seed": rng_seed,
-                "out": out,
-                "lse": lse,
-                **arrays,
-            },
-            mask_fn=specs["mask_fn"],
-            bias_fn=specs["bias_fn"],
-            bias_fn_grad=specs["bias_fn_grad"],
-            b_spec_bwd=specs["b_spec_bwd"],
-            q_data_spec=specs["q_data_spec"],
-            k_data_spec=specs["k_data_spec"],
+        cp_bwd = _make_cp_mha_bwd(
+            has_b_data=arrays["b_data"] is not None,
+            has_q_data=arrays["q_data"] is not None,
+            has_k_data=arrays["k_data"] is not None,
+            has_dropout_mask=arrays["dropout_mask"] is not None,
+            has_q_index=arrays["q_index_offset"] is not None,
+            has_kv_index=arrays["kv_index_offset"] is not None,
             sm_scale=sm_scale,
             block_sizes=block_sizes,
             backward_pass_impl=backward_pass_impl,
@@ -2322,6 +2533,67 @@ def _make_mha_runners(
             interpret=interpret,
             debug=debug,
             dropout_rate=dropout_rate,
+            mask_fn=specs["mask_fn"],
+            bias_fn=specs["bias_fn"],
+            bias_fn_grad=specs["bias_fn_grad"],
+            b_spec_bwd=specs["b_spec_bwd"],
+            q_data_spec=specs["q_data_spec"],
+            k_data_spec=specs["k_data_spec"],
+        )
+        bwd_raw_args = (
+            do,
+            q,
+            k,
+            v,
+            rng_seed,
+            out,
+            lse,
+            arrays["b_data"],
+            arrays["q_data"],
+            arrays["k_data"],
+            arrays["dropout_mask"],
+            arrays["q_index_offset"],
+            arrays["q_index_offset_size"],
+            arrays["kv_index_offset"],
+            arrays["kv_index_offset_size"],
+        )
+        return try_cp_or_raw(
+            cp_bwd,
+            (
+                do,
+                q,
+                k,
+                v,
+                rng_seed,
+                out,
+                lse,
+                or_sentinel(arrays["b_data"]),
+                or_sentinel(arrays["q_data"]),
+                or_sentinel(arrays["k_data"]),
+                or_sentinel(arrays["dropout_mask"]),
+                or_sentinel(arrays["q_index_offset"]),
+                or_sentinel(arrays["q_index_offset_size"]),
+                or_sentinel(arrays["kv_index_offset"]),
+                or_sentinel(arrays["kv_index_offset_size"]),
+            ),
+            _mha_backward_raw,
+            bwd_raw_args,
+            dict(
+                mask_fn=specs["mask_fn"],
+                bias_fn=specs["bias_fn"],
+                bias_fn_grad=specs["bias_fn_grad"],
+                b_spec_bwd=specs["b_spec_bwd"],
+                q_data_spec=specs["q_data_spec"],
+                k_data_spec=specs["k_data_spec"],
+                sm_scale=sm_scale,
+                block_sizes=block_sizes,
+                backward_pass_impl=backward_pass_impl,
+                num_warps=num_warps,
+                num_stages=num_stages,
+                interpret=interpret,
+                debug=debug,
+                dropout_rate=dropout_rate,
+            ),
         )
 
     return _reconstruct_mask_bias, _run_forward, _run_backward
@@ -2509,54 +2781,95 @@ def _make_mha_forward_jvp(
         dk = _tangent_or_zero(dk, k)
         dv = _tangent_or_zero(dv, v)
 
-        out, rng_val, rng_seed, lse_res = _run_forward(
-            q,
-            k,
-            v,
-            rng,
-            mask_leaves_tuple,
-            bias_leaves_tuple,
-            output_activations=True,
-        )
+        try:
+            out, rng_val, rng_seed, lse_res = _run_forward(
+                q,
+                k,
+                v,
+                rng,
+                mask_leaves_tuple,
+                bias_leaves_tuple,
+                output_activations=True,
+            )
 
-        batch_size, q_seq_len, num_heads, _head_dim = q.shape
-        kv_seq_len = k.shape[1]
-        block_q = min(block_sizes.block_q, q_seq_len)
-        block_k = min(block_sizes.block_k, kv_seq_len)
-        arrays, specs = _extract_fwd_data(
-            mask,
-            bias,
-            rng,
-            batch_size=batch_size,
-            q_seq_len=q_seq_len,
-            kv_seq_len=kv_seq_len,
-            num_heads=num_heads,
-            block_q=block_q,
-            block_k=block_k,
-            dropout_rate=dropout_rate,
-            dropout_impl=dropout_impl,
-        )
-        bias_fn_grad = bias.grad if (bias is not None) else None
+            batch_size, q_seq_len, num_heads, _head_dim = q.shape
+            kv_seq_len = k.shape[1]
+            block_q = min(block_sizes.block_q, q_seq_len)
+            block_k = min(block_sizes.block_k, kv_seq_len)
+            arrays, specs = _extract_fwd_data(
+                mask,
+                bias,
+                rng,
+                batch_size=batch_size,
+                q_seq_len=q_seq_len,
+                kv_seq_len=kv_seq_len,
+                num_heads=num_heads,
+                block_q=block_q,
+                block_k=block_k,
+                dropout_rate=dropout_rate,
+                dropout_impl=dropout_impl,
+            )
+            bias_fn_grad = bias.grad if (bias is not None) else None
 
-        tangent_out = shardable_kernel(
-            mha_jvp_p,
-            {
-                "q": q,
-                "k": k,
-                "v": v,
-                "dq": dq,
-                "dk": dk,
-                "dv": dv,
-                "lse": lse_res,
-                "rng_seed": rng_seed,
-                **arrays,
-            },
-            mask_fn=specs["mask_fn"],
-            bias_fn=specs["bias_fn"],
-            bias_fn_grad=bias_fn_grad,
-            b_spec=specs["b_spec"],
-            q_id_spec=specs["q_id_spec"],
-            k_id_spec=specs["k_id_spec"],
+            cp_jvp = _make_cp_mha_jvp(
+                has_b_data=arrays["b_data"] is not None,
+                has_q_id=arrays["q_id"] is not None,
+                has_k_id=arrays["k_id"] is not None,
+                has_dropout_mask=arrays["dropout_mask"] is not None,
+                has_index=arrays["index_offset"] is not None,
+                sm_scale=sm_scale,
+                block_sizes=block_sizes,
+                num_warps=num_warps,
+                num_stages=num_stages,
+                grid=grid,
+                interpret=interpret,
+                debug=debug,
+                dropout_rate=dropout_rate,
+                mask_fn=specs["mask_fn"],
+                bias_fn=specs["bias_fn"],
+                bias_fn_grad=bias_fn_grad,
+                b_spec=specs["b_spec"],
+                q_id_spec=specs["q_id_spec"],
+                k_id_spec=specs["k_id_spec"],
+            )
+            tangent_out = cp_jvp(
+                q,
+                k,
+                v,
+                dq,
+                dk,
+                dv,
+                lse_res,
+                rng_seed,
+                or_sentinel(arrays["b_data"]),
+                or_sentinel(arrays["q_id"]),
+                or_sentinel(arrays["k_id"]),
+                or_sentinel(arrays["dropout_mask"]),
+                or_sentinel(arrays["index_offset"]),
+                or_sentinel(arrays["index_offset_size"]),
+            )
+            return out, tangent_out
+        except NotImplementedError as err:
+            # Fall back to the non-CP fused JVP when the CP batching rule
+            # is not implemented (e.g. under vmap).
+            if "Batching rule for 'custom_partitioning' not implemented" not in str(
+                err
+            ):
+                raise
+
+        rng_val = rng if rng is not None else jax.random.key(0)
+        rng_seed = _rng_seed_from_key(rng_val)
+        return _mha_impl_fused_jvp(
+            q=q,
+            k=k,
+            v=v,
+            dq=dq,
+            dk=dk,
+            dv=dv,
+            mask=mask,
+            bias=bias,
+            rng=rng_val,
+            rng_seed=rng_seed,
             sm_scale=sm_scale,
             block_sizes=block_sizes,
             num_warps=num_warps,
@@ -2565,8 +2878,8 @@ def _make_mha_forward_jvp(
             interpret=interpret,
             debug=debug,
             dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
         )
-        return out, tangent_out
 
     return _mha_inner
 

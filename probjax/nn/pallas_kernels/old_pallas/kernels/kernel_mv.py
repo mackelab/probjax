@@ -10,13 +10,6 @@ from jax.experimental import pallas as pl
 from jax.experimental.pallas import triton as plgpu
 
 from ..kernel_utils import get_dot_precision, use_interpret_mode
-from ..kernel_utils.kernel_primitive import (
-    KernelSpec,
-    Operand,
-    Output,
-    make_kernel_primitive,
-    shardable_kernel,
-)
 from probjax.utils.typing import Array
 
 KernelFn = Callable[[Array, Array, Array], Array]
@@ -244,57 +237,6 @@ def _kernel_mv_pallas_impl(
     return out[:, :n_orig, :o_orig]
 
 
-@functools.lru_cache(maxsize=None)
-def _kernel_mv_fwd_primitive(params_rank: int):
-    """Forward primitive for kernel_mv; embarrassingly parallel over batch
-    and query rows (each output row consumes its q row and all of k/v).
-
-    Note: only the forward is sharding-aware. Gradients reduce over rows
-    (dk/dv/dparams), so under a rows-sharded mesh the backward falls back to
-    GSPMD's default handling (gather) rather than silently miscomputing.
-    """
-    spec = KernelSpec(
-        name=f"kernel_mv_fwd_r{params_rank}",
-        operands=(
-            Operand("q", ("batch", "rows", "d")),
-            Operand("k", ("batch", "cols", "d")),
-            Operand("v", ("batch", "cols", "feat")),
-            Operand("params", ("_",) * params_rank),
-        ),
-        outputs=(Output(("batch", "rows", "feat"), dtype_like=("q", "k", "v")),),
-        shardable=frozenset({"batch", "rows"}),
-    )
-
-    def _impl(q, k, v, params, *, kernel_fn, block_q, block_k, block_o, interpret):
-        return _kernel_mv_pallas_impl(
-            q,
-            k,
-            v,
-            params,
-            kernel_fn=kernel_fn,
-            block_q=block_q,
-            block_k=block_k,
-            block_o=block_o,
-            interpret=interpret,
-        )
-
-    return make_kernel_primitive(spec, impl=_impl)
-
-
-def _kernel_mv_forward(q, k, v, params, kernel_fn, block_q, block_k, block_o, interpret):
-    params = jnp.asarray(params)
-    prim = _kernel_mv_fwd_primitive(params.ndim)
-    return shardable_kernel(
-        prim,
-        {"q": q, "k": k, "v": v, "params": params},
-        kernel_fn=kernel_fn,
-        block_q=block_q,
-        block_k=block_k,
-        block_o=block_o,
-        interpret=interpret,
-    )
-
-
 @functools.partial(jax.custom_vjp, nondiff_argnums=(4, 5, 6, 7, 8, 9))
 def kernel_mv(
     q: Array,
@@ -325,16 +267,16 @@ def kernel_mv(
     Returns:
         Output y = K(q, k) @ v with shape [B, N, O].
     """
-    return _kernel_mv_forward(
+    return _kernel_mv_pallas_impl(
         q,
         k,
         v,
         params,
-        kernel_fn,
-        block_q,
-        block_k,
-        block_o,
-        _resolve_interpret_mode(interpret),
+        kernel_fn=kernel_fn,
+        block_q=block_q,
+        block_k=block_k,
+        block_o=block_o,
+        interpret=_resolve_interpret_mode(interpret),
     )
 
 
@@ -356,8 +298,16 @@ def _kernel_mv_fwd(
     v = jnp.asarray(v)
     params = jnp.asarray(params)
     use_interpret = _resolve_interpret_mode(interpret)
-    out = _kernel_mv_forward(
-        q, k, v, params, kernel_fn, block_q, block_k, block_o, use_interpret
+    out = _kernel_mv_pallas_impl(
+        q,
+        k,
+        v,
+        params,
+        kernel_fn=kernel_fn,
+        block_q=block_q,
+        block_k=block_k,
+        block_o=block_o,
+        interpret=use_interpret,
     )
     return out, (q, k, v, params, use_interpret)
 

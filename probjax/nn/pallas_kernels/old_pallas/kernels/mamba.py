@@ -19,22 +19,40 @@ from jax import numpy as jnp
 from jax import lax
 from jax.experimental import pallas as pl
 
-from ..kernel_utils.kernel_primitive import (
-    KernelSpec,
-    Operand,
-    Output,
-    ct,
-    derive_bwd_spec,
-    grad,
-    make_kernel_primitive,
-    res,
-    shardable_kernel,
-)
 from ..kernel_utils import (
+    def_partition_compat,
     get_dot_precision,
     pallas_call_compat,
     use_interpret_mode,
 )
+
+
+def _validate_mamba_sharding(sharding, name: str):
+    """Validate that *sharding* (a NamedSharding) does not shard unsupported dims.
+
+    Only batch (dim 0) sharding is supported for Mamba.  Sharding on the
+    sequence (dim 1) or inner_dim (dim 2) is rejected with an informative error.
+    """
+    spec = getattr(sharding, "spec", None)
+    if spec is None:
+        return
+    for dim_idx, axis in enumerate(spec):
+        if axis is None:
+            continue
+        if dim_idx == 1:
+            raise ValueError(
+                f"Pallas Mamba kernel does not support sharding on the "
+                f"sequence dimension (dim 1) of '{name}'. "
+                f"Got PartitionSpec{tuple(spec)} which shards dim 1 over "
+                f"mesh axis '{axis}'. Only batch (dim 0) sharding is supported."
+            )
+        if dim_idx == 2:
+            raise ValueError(
+                f"Pallas Mamba kernel does not support sharding on the "
+                f"inner_dim dimension (dim 2) of '{name}'. "
+                f"Got PartitionSpec{tuple(spec)} which shards dim 2 over "
+                f"mesh axis '{axis}'. Only batch (dim 0) sharding is supported."
+            )
 
 
 def _bs(index_map, block_shape):
@@ -871,91 +889,108 @@ def _loop_forward_pallas(
     return y
 
 
-# ---------------------------------------------------------------------------
-# Mamba scan primitives
-# ---------------------------------------------------------------------------
-# Only the batch dimension is shardable; seq/dim/state/one stay replicated.
-# The backward spec (and its sharding rule) is derived from the forward one.
+def _make_mamba_scan(seq_tile_size: int, dim_tile_size: int):
+    """Build a differentiable, SPMD-partitionable Mamba scan for the given tile sizes.
 
-_MAMBA_FWD_SPEC = KernelSpec(
-    name="mamba_scan_fwd",
-    operands=(
-        Operand("x", ("batch", "seq", "dim")),
-        Operand("a", ("state", "dim")),
-        Operand("b", ("batch", "seq", "state")),
-        Operand("c", ("batch", "seq", "state")),
-        Operand("delta", ("batch", "seq", "dim")),
-        Operand("d", ("one", "dim")),
-    ),
-    outputs=(Output(("batch", "seq", "dim"), dtype_like="x"),),
-    shardable=frozenset({"batch"}),
-)
+    Returns a function ``f(x, a, b, c, delta, d) -> y`` that:
+      - Uses ``custom_partitioning`` on the forward and backward Pallas kernels
+        so that GSPMD runs them per-shard without inserting all-gathers.
+      - Uses ``custom_vjp`` so that ``jax.grad`` works through the scan.
 
-_MAMBA_BWD_SPEC = derive_bwd_spec(
-    _MAMBA_FWD_SPEC,
-    name="mamba_scan_bwd",
-    operands=(
-        ct(0, name="dy"),
-        res("x"),
-        res("a"),
-        res("b"),
-        res("c"),
-        res("delta"),
-        res("d"),
-    ),
-    outputs=(
-        grad("x"),
-        grad("a"),
-        grad("b"),
-        grad("c"),
-        grad("delta"),
-        grad("d"),
-    ),
-)
+    The tile sizes are captured in the closure so that the returned function
+    accepts only array arguments (required by ``custom_partitioning``).
+    """
+    from jax.experimental.custom_partitioning import custom_partitioning
 
+    # -- Forward kernel with custom_partitioning --------------------------
+    @custom_partitioning
+    def _fwd(x, a, b, c, delta, d):
+        return _loop_forward_pallas(x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
 
-def _mamba_fwd_impl(x, a, b, c, delta, d, *, seq_tile_size, dim_tile_size):
-    return _loop_forward_pallas(x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
+    def _fwd_partition(mesh, arg_shapes, result_shape):
+        # Validate shardings: reject seq/inner_dim sharding.
+        names = ("x", "a", "b", "c", "delta", "d")
+        for shape, name in zip(arg_shapes, names):
+            _validate_mamba_sharding(shape.sharding, name)
 
+        result_shardings = jax.tree.map(lambda s: s.sharding, result_shape)
+        arg_shardings = jax.tree.map(lambda s: s.sharding, arg_shapes)
 
-def _mamba_bwd_impl(dy, x, a, b, c, delta, d, *, seq_tile_size, dim_tile_size):
-    return _loop_backward_pallas(
-        dy, x, a, b, c, delta, d, seq_tile_size, dim_tile_size
+        def lower_fn(x, a, b, c, delta, d):
+            return _loop_forward_pallas(
+                x, a, b, c, delta, d, seq_tile_size, dim_tile_size
+            )
+
+        return mesh, lower_fn, result_shardings, arg_shardings
+
+    _fwd_partition._cp_raw_fn = lambda x, a, b, c, delta, d: _loop_forward_pallas(
+        x, a, b, c, delta, d, seq_tile_size, dim_tile_size
+    )  # type: ignore[attr-defined]
+
+    def_partition_compat(
+        _fwd.def_partition,
+        partition=_fwd_partition,
+        # x(B,L,D) a(S,D) b(B,L,S) c(B,L,S) delta(B,L,D) d(O,D) -> y(B,L,D)
+        # Only batch dim is shardable; seq/dim/state/one must be replicated.
+        sharding_rule=(
+            "batch seq dim, state dim, batch seq state, "
+            "batch seq state, batch seq dim, one dim "
+            "-> batch seq dim"
+        ),
+        need_replication_factors=("seq", "dim", "state", "one"),
     )
 
-
-mamba_scan_fwd_p = make_kernel_primitive(_MAMBA_FWD_SPEC, impl=_mamba_fwd_impl)
-mamba_scan_bwd_p = make_kernel_primitive(_MAMBA_BWD_SPEC, impl=_mamba_bwd_impl)
-
-
-@functools.partial(jax.custom_vjp, nondiff_argnums=(6, 7))
-def _mamba_scan_op(x, a, b, c, delta, d, seq_tile_size, dim_tile_size):
-    return shardable_kernel(
-        mamba_scan_fwd_p,
-        {"x": x, "a": a, "b": b, "c": c, "delta": delta, "d": d},
-        seq_tile_size=seq_tile_size,
-        dim_tile_size=dim_tile_size,
-    )
-
-
-def _mamba_scan_op_fwd(x, a, b, c, delta, d, seq_tile_size, dim_tile_size):
-    y = _mamba_scan_op(x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
-    return y, (x, a, b, c, delta, d)
-
-
-def _mamba_scan_op_bwd(seq_tile_size, dim_tile_size, residuals, dy):
-    x, a, b, c, delta, d = residuals
-    return tuple(
-        shardable_kernel(
-            mamba_scan_bwd_p,
-            {"dy": dy, "x": x, "a": a, "b": b, "c": c, "delta": delta, "d": d},
-            seq_tile_size=seq_tile_size,
-            dim_tile_size=dim_tile_size,
+    # -- Backward kernel with custom_partitioning -------------------------
+    @custom_partitioning
+    def _bwd(dy, x, a, b, c, delta, d):
+        return _loop_backward_pallas(
+            dy, x, a, b, c, delta, d, seq_tile_size, dim_tile_size
         )
+
+    def _bwd_partition(mesh, arg_shapes, result_shape):
+        result_shardings = jax.tree.map(lambda s: s.sharding, result_shape)
+        arg_shardings = jax.tree.map(lambda s: s.sharding, arg_shapes)
+
+        def lower_fn(dy, x, a, b, c, delta, d):
+            return _loop_backward_pallas(
+                dy, x, a, b, c, delta, d, seq_tile_size, dim_tile_size
+            )
+
+        return mesh, lower_fn, result_shardings, arg_shardings
+
+    _bwd_partition._cp_raw_fn = lambda dy, x, a, b, c, delta, d: _loop_backward_pallas(
+        dy, x, a, b, c, delta, d, seq_tile_size, dim_tile_size
+    )  # type: ignore[attr-defined]
+
+    def_partition_compat(
+        _bwd.def_partition,
+        partition=_bwd_partition,
+        # dy(B,L,D) x(B,L,D) a(S,D) b(B,L,S) c(B,L,S) delta(B,L,D) d(O,D)
+        # -> dx(B,L,D) da(S,D) db(B,L,S) dc(B,L,S) ddelta(B,L,D) dd(O,D)
+        sharding_rule=(
+            "batch seq dim, batch seq dim, state dim, "
+            "batch seq state, batch seq state, batch seq dim, one dim "
+            "-> batch seq dim, state dim, batch seq state, "
+            "batch seq state, batch seq dim, one dim"
+        ),
+        need_replication_factors=("seq", "dim", "state", "one"),
     )
 
+    # -- Differentiable wrapper using custom_vjp --------------------------
+    @jax.custom_vjp
+    def _scan(x, a, b, c, delta, d):
+        return _fwd(x, a, b, c, delta, d)
 
-_mamba_scan_op.defvjp(_mamba_scan_op_fwd, _mamba_scan_op_bwd)
+    def _scan_fwd(x, a, b, c, delta, d):
+        y = _fwd(x, a, b, c, delta, d)
+        return y, (x, a, b, c, delta, d)
+
+    def _scan_bwd(res, dy):
+        x, a, b, c, delta, d = res
+        return _bwd(dy, x, a, b, c, delta, d)
+
+    _scan.defvjp(_scan_fwd, _scan_bwd)
+    return _scan
 
 
 def _pad_to_multiple(x: jax.Array, *, divisor: int, axis: int) -> jax.Array:
@@ -1089,6 +1124,11 @@ def compute_mamba_scan(
     )
     a, d = (_pad_to_multiple(arg, divisor=dim_tile_size, axis=1) for arg in [a, d])
 
-    y = _mamba_scan_op(x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
+    # Build a custom_partitioning-aware scan for these tile sizes.
+    # When inputs are NamedSharded, GSPMD will call our partition()
+    # callback and run the Pallas kernel per-shard without all-gathers.
+    _scan = _make_mamba_scan(seq_tile_size, dim_tile_size)
+
+    y = _scan(x, a, b, c, delta, d)
     # Remove zero-padding if any.
     return y[:, :seqlen, :inner]
