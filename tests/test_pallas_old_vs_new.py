@@ -195,3 +195,34 @@ def test_mha_sharded_no_allgather_gpu():
     new = fn(qs, ks_, vs)
     old = old_pallas.mha(q, k, v, **kwargs)
     assert jnp.allclose(jax.device_get(new), old, atol=1e-4)
+
+
+def test_ssd_jvp_matches_reference_gpu():
+    # Forward-mode SSD (composite-of-forwards jvp primitive) vs jax.jvp of
+    # the pure-JAX reference; and grad (via transpose -> fused bwd) vs old
+    # custom_vjp path.
+    _requires_accelerator()
+    from tests.test_ssd_ad import ssd_reference
+
+    key = jax.random.key(0)
+    ks = jax.random.split(key, 10)
+    q = jax.random.normal(ks[0], (2, 2, 128, 32))
+    k = jax.random.normal(ks[1], (2, 2, 128, 32))
+    v = jax.random.normal(ks[2], (2, 4, 128, 32))
+    la = -jnp.abs(jax.random.normal(ks[3], (2, 4, 128))) * 0.3
+    h0 = jnp.zeros((2, 4, 32, 32))
+    primals = (q, k, v, la, h0)
+    tangents = tuple(
+        jax.random.normal(kx, a.shape) * 0.5 for kx, a in zip(ks[4:], primals)
+    )
+
+    import importlib
+
+    ssd_mod = importlib.import_module("probjax.nn.pallas_kernels.kernels.ssd")
+    _, t_new = jax.jvp(ssd_mod._ssd_op, primals, tangents)
+    _, t_ref = jax.jvp(ssd_reference, primals, tangents)
+    assert jnp.allclose(t_new, t_ref, atol=1e-2)
+
+    g_new = jax.grad(lambda v: jnp.sum(ssd_mod._ssd_op(q, k, v, la, h0)))(v)
+    g_old = jax.grad(lambda v: jnp.sum(old_pallas.ssd(q, k, v, la)))(v)
+    assert jnp.allclose(g_new, g_old, atol=1e-3)

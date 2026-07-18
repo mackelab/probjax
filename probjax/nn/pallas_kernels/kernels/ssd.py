@@ -964,32 +964,114 @@ _SSD_BWD_SPEC = derive_bwd_spec(
     outputs=(grad("q"), grad("k"), grad("v"), grad("log_alpha"), grad("h0")),
 )
 
+# JVP spec: the tangent is a LINEAR map of (dq, dk, dv, dlog_alpha, dh0)
+# with (q, k, v, log_alpha, h0, o) as nonlinear residuals. Keeping it as one
+# primitive is what preserves backward efficiency: transposition replaces the
+# single ssd_jvp node with a single fused ssd_bwd call, instead of
+# decomposing the backward into unfused per-argument pieces.
+_SSD_JVP_SPEC = KernelSpec(
+    name="ssd_jvp",
+    operands=(
+        Operand("dq", ("batch", "groups", "seq", "dk")),
+        Operand("dk", ("batch", "groups", "seq", "dk")),
+        Operand("dv", ("batch", "heads", "seq", "dv")),
+        Operand("dlog_alpha", ("batch", "heads", "seq")),
+        Operand("dh0", ("batch", "heads", "dk", "dv")),
+        Operand("q", ("batch", "groups", "seq", "dk")),
+        Operand("k", ("batch", "groups", "seq", "dk")),
+        Operand("v", ("batch", "heads", "seq", "dv")),
+        Operand("log_alpha", ("batch", "heads", "seq")),
+        Operand("h0", ("batch", "heads", "dk", "dv")),
+        Operand("o", ("batch", "heads", "seq", "dv")),
+    ),
+    outputs=(Output(("batch", "heads", "seq", "dv"), dtype_like="o"),),
+)
+
+
+def _ssd_jvp_impl(dq, dk, dv, dlog_alpha, dh0, q, k, v, log_alpha, h0, o):
+    """Differential of SSD as three optimized forward-kernel calls.
+
+    With H_t = e^{a_t} H_{t-1} + k_t v_t^T and o_t = q_t^T H_t, the tangent is
+
+        do = ssd(dq, k, v, a, h0)                 # q is linear
+           + ssd(q, dk, v, a, 0)                  # k-sourced state tangent
+           + ssd(q, k, dv - C*v, a, dh0)          # v/h0 tangents and the
+           + C * o                                #   log-alpha coupling,
+                                                  #   C_t = cumsum(da)_t
+
+    (numerically verified against jax.jvp of a reference implementation and
+    against the adjoint identity with the fused backward kernel).
+    """
+    cum = jnp.cumsum(dlog_alpha, axis=-1)[..., None]  # (B, H, L, 1)
+    term_q = _ssd_forward_impl(dq, k, v, log_alpha, h0)
+    term_k = _ssd_forward_impl(q, dk, v, log_alpha, jnp.zeros_like(h0))
+    term_v = _ssd_forward_impl(q, k, dv - cum * v, log_alpha, dh0)
+    return term_q + term_k + term_v + cum * o
+
+
 ssd_fwd_p = make_kernel_primitive(_SSD_FWD_SPEC, impl=_ssd_forward_impl)
 ssd_bwd_p = make_kernel_primitive(_SSD_BWD_SPEC, impl=_ssd_backward_impl)
+ssd_jvp_p = make_kernel_primitive(_SSD_JVP_SPEC, impl=_ssd_jvp_impl)
 
 
-@jax.custom_vjp
 def _ssd_op(q, k, v, log_alpha, h0):
+    """Differentiable SSD: forward mode via ssd_jvp_p (4 forward-kernel
+    invocations total), reverse mode via transposition to the fused
+    ssd_bwd_p (one forward + one fused backward — identical cost to the
+    previous custom_vjp)."""
     return shardable_kernel(
         ssd_fwd_p, {"q": q, "k": k, "v": v, "log_alpha": log_alpha, "h0": h0}
     )
 
 
-def _ssd_op_fwd(q, k, v, log_alpha, h0):
-    return _ssd_op(q, k, v, log_alpha, h0), (q, k, v, log_alpha, h0)
+def _ssd_fwd_jvp(primals, tangents, *, present, **static):
+    from jax.interpreters import ad
 
-
-def _ssd_op_bwd(residuals, do):
-    q, k, v, log_alpha, h0 = residuals
-    return tuple(
-        shardable_kernel(
-            ssd_bwd_p,
-            {"do": do, "q": q, "k": k, "v": v, "log_alpha": log_alpha, "h0": h0},
-        )
+    del present, static
+    q, k, v, log_alpha, h0 = primals
+    dq, dk, dv, dla, dh0 = (
+        ad.instantiate_zeros(t) if isinstance(t, ad.Zero) else t for t in tangents
     )
+    o = _ssd_op(q, k, v, log_alpha, h0)
+    do = shardable_kernel(
+        ssd_jvp_p,
+        {
+            "dq": dq,
+            "dk": dk,
+            "dv": dv,
+            "dlog_alpha": dla,
+            "dh0": dh0,
+            "q": q,
+            "k": k,
+            "v": v,
+            "log_alpha": log_alpha,
+            "h0": h0,
+            "o": o,
+        },
+    )
+    return o, do
 
 
-_ssd_op.defvjp(_ssd_op_fwd, _ssd_op_bwd)
+def _ssd_jvp_transpose(ct, *operands, present, **static):
+    from jax.interpreters import ad
+
+    del present, static
+    # Operand order per _SSD_JVP_SPEC: 5 linear tangents, then 6 residuals.
+    _dq, _dk, _dv, _dla, _dh0, q, k, v, log_alpha, h0, o = operands
+    if isinstance(ct, ad.Zero):
+        ct = jnp.zeros(o.aval.shape, o.aval.dtype)
+    grads = shardable_kernel(
+        ssd_bwd_p,
+        {"do": ct, "q": q, "k": k, "v": v, "log_alpha": log_alpha, "h0": h0},
+    )
+    # Cotangents for the linear operands; None for the residuals.
+    return tuple(grads) + (None,) * 6
+
+
+from jax.interpreters import ad as _ad
+
+_ad.primitive_jvps[ssd_fwd_p] = _ssd_fwd_jvp
+_ad.primitive_transposes[ssd_jvp_p] = _ssd_jvp_transpose
 
 
 @jax.named_call  # `named_call` ensures the name is used in tracing, which is useful for profiling.

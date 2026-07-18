@@ -876,6 +876,14 @@ def _loop_forward_pallas(
 # ---------------------------------------------------------------------------
 # Only the batch dimension is shardable; seq/dim/state/one stay replicated.
 # The backward spec (and its sharding rule) is derived from the forward one.
+#
+# Reverse-mode only (custom_vjp). Unlike SSD, forward-mode cannot be
+# expressed as a composite of forward-kernel calls: the delta-tangent of the
+# decay exp(delta_t * A) contributes sum_s c_t[s] * C_t[s,d] * h_t[s,d] with
+# C the per-(state,dim) cumulative weight — it needs the hidden-state
+# trajectory h, which the kernel never materializes (and unlike SSD's
+# per-head scalar decay, C cannot be folded into c or x). Forward mode here
+# requires a dedicated fused tangent kernel.
 
 _MAMBA_FWD_SPEC = KernelSpec(
     name="mamba_scan_fwd",

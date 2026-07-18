@@ -742,6 +742,41 @@ def _cp_general_jvp(primals, tangents, *, call, **params):
     return jax.jvp(fn, tuple(primals), tuple(tangents))
 
 
+def _cp_general_transpose(cts, *args, call, **params):
+    """Transpose the inlined custom_partitioning body.
+
+    Linear operands arrive as UndefinedPrimal; the body's own primitives
+    (e.g. a kernel jvp primitive) supply their transpose rules — which is
+    how a CP-wrapped tangent computation transposes into the fused backward
+    kernel.
+    """
+    from jax.interpreters import ad
+
+    def fn(*xs):
+        return jax.core.eval_jaxpr(call.jaxpr, call.consts, *xs)
+
+    is_linear = [ad.is_undefined_primal(a) for a in args]
+    fixed = [a for a, lin in zip(args, is_linear) if not lin]
+    examples = [
+        jax.ShapeDtypeStruct(a.aval.shape, a.aval.dtype)
+        for a, lin in zip(args, is_linear)
+        if lin
+    ]
+
+    def linear_fn(linear_args):
+        lin_iter = iter(linear_args)
+        fixed_iter = iter(fixed)
+        full = [
+            next(lin_iter) if lin else next(fixed_iter) for lin in is_linear
+        ]
+        return fn(*full)
+
+    transpose_fn = jax.linear_transpose(linear_fn, examples)
+    (linear_cts,) = transpose_fn(list(cts))
+    lin_iter = iter(linear_cts)
+    return tuple(next(lin_iter) if lin else None for lin in is_linear)
+
+
 def register_general_cp_batching() -> None:
     """Register (or re-register) the general custom_partitioning vmap rule.
 
@@ -754,6 +789,7 @@ def register_general_cp_batching() -> None:
 
     batching.fancy_primitive_batchers[custom_partitioning_p] = _cp_general_batching
     ad.primitive_jvps[custom_partitioning_p] = _cp_general_jvp
+    ad.primitive_transposes[custom_partitioning_p] = _cp_general_transpose
 
 
 register_general_cp_batching()
