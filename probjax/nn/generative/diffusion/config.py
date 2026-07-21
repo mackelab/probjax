@@ -6,9 +6,7 @@ from typing import Callable, Mapping, Protocol, Tuple, runtime_checkable
 import jax
 import jax.numpy as jnp
 
-from probjax.utils.odeint import odeint
 from probjax.utils.functions import split_drift
-from probjax.utils.sdeint import sdeint
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 # =============================================================================
@@ -195,31 +193,6 @@ class SolverConfigProtocol(Protocol):
         Callable[[ArrayLike, PyTree[Array]], PyTree[Array]],
         Callable[[ArrayLike, PyTree[Array]], PyTree[Array]],
     ]: ...
-
-    def sample_ode(
-        self,
-        model: ScheduleAwareModelProtocol,
-        x_T: PyTree[Array],
-        t_min: float,
-        t_max: float,
-        num_steps: int | None = None,
-        collect_trace: bool = False,
-        *args,
-        **kwargs,
-    ) -> PyTree[Array]: ...
-
-    def sample_sde(
-        self,
-        model: ScheduleAwareModelProtocol,
-        rng: RngKey,
-        x_T: PyTree[Array],
-        t_min: float,
-        t_max: float,
-        num_steps: int | None = None,
-        collect_trace: bool = False,
-        *args,
-        **kwargs,
-    ) -> PyTree[Array]: ...
 
 
 # =============================================================================
@@ -1003,63 +976,6 @@ class BaseSolverConfig(SolverConfigProtocol):
             return _apply_state_mask(raw_diffusion, state_mask)
 
         return drift, diffusion
-
-    def sample_ode(
-        self,
-        model: ScheduleAwareModelProtocol,
-        x_T: PyTree[Array],
-        t_min: float,
-        t_max: float,
-        num_steps: int | None = None,
-        collect_trace: bool = False,
-        *args,
-        **kwargs,
-    ) -> PyTree[Array]:
-        state_mask = kwargs.pop("state_mask", None)
-        ts = self.solve_schedule(t_max=t_max, t_min=t_min, num_steps=num_steps)
-        drift = self.build_ode_drift(
-            model,
-            state_mask=state_mask,
-            *args,
-            **kwargs,
-        )
-        return odeint(
-            drift,
-            x_T,
-            ts,
-            collect_trace=collect_trace,
-            method=self.ode_method,
-        )
-
-    def sample_sde(
-        self,
-        model: ScheduleAwareModelProtocol,
-        rng: RngKey,
-        x_T: PyTree[Array],
-        t_min: float,
-        t_max: float,
-        num_steps: int | None = None,
-        collect_trace: bool = False,
-        *args,
-        **kwargs,
-    ) -> PyTree[Array]:
-        state_mask = kwargs.pop("state_mask", None)
-        ts = self.solve_schedule(t_max=t_max, t_min=t_min, num_steps=num_steps)
-        drift, diffusion = self.build_sde_drift_and_diffusion(
-            model,
-            state_mask=state_mask,
-            *args,
-            **kwargs,
-        )
-        return sdeint(
-            rng,
-            drift,
-            diffusion,
-            x_T,
-            ts,
-            collect_trace=collect_trace,
-            method=self.sde_method,
-        )
 
 
 # =============================================================================

@@ -3,7 +3,7 @@
 Every generative model in :mod:`probjax.nn.generative` — normalizing flows,
 flow matching, denoising diffusion, discrete diffusion — trains via
 ``loss(rng, data)`` and exposes itself as a
-:class:`probjax.stats.base.DistributionAPI` via ``as_distribution()``.
+:class:`probjax.stats.base.DistributionAPI` via ``as_dist()``.
 Training loops and inference adapters can target this protocol instead of a
 concrete family.
 """
@@ -24,6 +24,6 @@ class GenerativeModelProtocol(Protocol):
         """Monte-Carlo training loss for a batch of data."""
         ...
 
-    def as_distribution(self, event_shape=None, **kwargs) -> DistributionAPI:
+    def as_dist(self, event_spec, **kwargs) -> DistributionAPI:
         """View this model as a distribution (sampling, and density if tractable)."""
         ...

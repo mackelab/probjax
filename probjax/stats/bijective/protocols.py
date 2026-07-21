@@ -4,8 +4,8 @@ Transform protocols (:mod:`probjax.stats.bijective.protocols`)
 
 The transform contract used across probjax, plus an object-layer
 ``TransformedDistribution`` for composing transforms with any
-:class:`~probjax.stats.base.DistributionAPI` base (including neural ones
-such as ``NormalizingFlow`` or ``LearnedDistribution``).
+:class:`~probjax.stats.base.DistributionAPI` base, including learned-model
+views returned by ``model.as_dist()``.
 
 A transform is any forward callable ``y = T(x)``. If it additionally
 provides ``inverse`` / ``inverse_and_logdet`` methods (as the
@@ -105,8 +105,8 @@ class TransformedDistribution(DistributionAPI):
 
     Args:
         base: Base distribution (anything satisfying ``DistributionAPI`` —
-            scipy-style frozen dists, ``NormalizingFlow``,
-            ``LearnedDistribution``, or another ``TransformedDistribution``).
+            scipy-style frozen distributions, learned-model distribution
+            views, or another ``TransformedDistribution``).
         transform: Forward callable, optionally satisfying
             :class:`InvertibleTransformProtocol`.
         event_shape: Override when the transform changes the event shape;

@@ -395,13 +395,12 @@ def test_flows(flow):
     x = jnp.ones((input_dim,))
     y = model.transform(x)
 
-    # Freeze the model to get a distribution object
-    frozen_model = model
-    assert frozen_model.batch_shape == ()
-    assert frozen_model.event_shape == (input_dim,)
+    distribution = model.as_dist()
+    assert distribution.batch_shape == ()
+    assert distribution.event_shape == (input_dim,)
 
     def loss_fn(model):
-        return jnp.sum(frozen_model.logpdf(x))
+        return jnp.sum(model.as_dist().logpdf(x))
 
     # Can be differentiated
     _ = jax.grad(loss_fn)
@@ -421,12 +420,10 @@ def test_flows(flow):
     assert logabsdet.shape == ()
 
     # Sampling
-    samples = frozen_model.sample(rng=jax.random.PRNGKey(0), shape=(10,))
+    samples = distribution.sample(rng=jax.random.PRNGKey(0), shape=(10,))
     assert samples.shape == (10, input_dim)
-    samples_rvs = frozen_model.rvs(rng=jax.random.PRNGKey(1), shape=(10,))
-    assert samples_rvs.shape == (10, input_dim)
     # Log probability
-    logprob = frozen_model.logpdf(samples)
+    logprob = distribution.logpdf(samples)
     assert logprob.shape == (10,)
 
 
@@ -449,14 +446,17 @@ def test_conditional_flows_with_context(flow_ctor):
     y_inv = model_inv(y)
     assert jnp.allclose(x, y_inv, atol=1e-2, rtol=1e-1), "Inverse is not correct"
 
-    samples = model.sample(rng=jax.random.PRNGKey(0), shape=(8,), context=context)
+    distribution = model.as_dist(context_spec=(3,))
+    samples = distribution.sample(
+        rng=jax.random.PRNGKey(0), shape=(8,), context=context
+    )
     assert samples.shape == (8, 4)
 
-    logprob = model.logpdf(samples, context=context)
+    logprob = distribution.logpdf(samples, context=context)
     assert logprob.shape == (8,)
 
     context_2 = jnp.array([-0.5, 0.7, -0.9])
-    logprob_2 = model.logpdf(samples, context=context_2)
+    logprob_2 = distribution.logpdf(samples, context=context_2)
     assert logprob_2.shape == (8,)
 
 

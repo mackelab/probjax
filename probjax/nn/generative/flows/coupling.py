@@ -6,15 +6,11 @@ from flax import nnx
 
 from probjax.nn.nets.simple import MLP
 from probjax.nn.nets.transformer import Transformer
-
-
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
     module_accepts_rng,
 )
-
-
 from probjax.utils.typing import (
     Array,
     ArrayLike,

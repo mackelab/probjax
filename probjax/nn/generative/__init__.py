@@ -13,14 +13,58 @@ Each subpackage bundles its model class and configuration in one place:
 * :mod:`probjax.nn.generative.discrete` — categorical / multinomial
   diffusion for discrete data.
 
-All families satisfy :class:`GenerativeModelProtocol`: they train via
-``loss(rng, data)`` and expose themselves as distributions via
-``as_distribution()``. The functional ``build_*`` loss builders live in
-:mod:`probjax.nn.losses`.
+All families inherit :class:`GenerativeModel` (and hence satisfy
+:class:`GenerativeModelProtocol`): they train via ``loss(rng, data)``,
+expose themselves as distributions via ``as_dist()``, and share
+the cached shape-polymorphic sampler machinery from
+:mod:`probjax.nn.generative.base`. The functional ``build_*`` loss
+builders live in :mod:`probjax.nn.losses`.
 """
 
-from probjax.nn.generative.protocols import GenerativeModelProtocol
-from probjax.nn.generative.sampling import BuiltSampler
+from probjax.nn.generative.base import GenerativeModel
+from probjax.nn.generative.diffusion import (
+    EDM,
+    VE,
+    VP,
+    CosineDM,
+    DiffusionDenoiser,
+    build_denoising_loss,
+    build_denoising_score_matching_loss,
+    build_time_dependent_denoising_loss,
+    build_time_dependent_denoising_score_matching_loss,
+)
+from probjax.nn.generative.discrete import (
+    CategoricalEDMPreconditioning,
+    CategoricalPreconditioningProtocol,
+    CategoricalScheduleProtocol,
+    CategoricalTrainingConfigProtocol,
+    ImportanceContinuousTimeTrainingConfig,
+    MultinomialCosineDM,
+    MultinomialDiffusion,
+    MultinomialDiffusionSchedule,
+    MultinomialLogSNRDM,
+    UniformContinuousTimeTrainingConfig,
+    build_time_dependent_multinomial_diffusion_loss,
+)
+from probjax.nn.generative.flow_matching import (
+    AutodiffInterpolationSchedule,
+    CosineInterpolationSchedule,
+    FlowMatcher,
+    FlowPreconditioningProtocol,
+    FlowSolverConfigProtocol,
+    FlowTrainingConfigProtocol,
+    GaussianFlowPreconditioning,
+    GeneralInterpolationSchedule,
+    InterpolationScheduleProtocol,
+    LinearFlow,
+    LinearFlowSolverConfig,
+    LinearInterpolationSchedule,
+    LogitNormalFlowTrainingConfig,
+    QuadraticInterpolationSchedule,
+    RhoFlowSolverConfig,
+    UniformFlowTrainingConfig,
+    build_flow_matching_loss,
+)
 from probjax.nn.generative.flows import (
     AdditiveAutoregressiveFlow,
     AdditiveCouplingFlow,
@@ -45,36 +89,6 @@ from probjax.nn.generative.flows import (
     sospf,
     unaf,
 )
-from probjax.nn.generative.diffusion import (
-    EDM,
-    VE,
-    VP,
-    CosineDM,
-    DiffusionDenoiser,
-    build_denoising_loss,
-    build_denoising_score_matching_loss,
-    build_time_dependent_denoising_loss,
-    build_time_dependent_denoising_score_matching_loss,
-)
-from probjax.nn.generative.flow_matching import (
-    AutodiffInterpolationSchedule,
-    CosineInterpolationSchedule,
-    FlowMatcher,
-    FlowPreconditioningProtocol,
-    FlowSolverConfigProtocol,
-    FlowTrainingConfigProtocol,
-    GaussianFlowPreconditioning,
-    GeneralInterpolationSchedule,
-    InterpolationScheduleProtocol,
-    LinearFlow,
-    LinearFlowSolverConfig,
-    LinearInterpolationSchedule,
-    LogitNormalFlowTrainingConfig,
-    QuadraticInterpolationSchedule,
-    RhoFlowSolverConfig,
-    UniformFlowTrainingConfig,
-    build_flow_matching_loss,
-)
 from probjax.nn.generative.mean_flow import (
     FlowPairTrainingConfigProtocol,
     LinearMeanFlow,
@@ -83,16 +97,4 @@ from probjax.nn.generative.mean_flow import (
     build_mean_flow_matching_loss,
     build_mean_flow_matching_loss_from_schedule,
 )
-from probjax.nn.generative.discrete import (
-    CategoricalEDMPreconditioning,
-    CategoricalPreconditioningProtocol,
-    CategoricalScheduleProtocol,
-    CategoricalTrainingConfigProtocol,
-    ImportanceContinuousTimeTrainingConfig,
-    MultinomialCosineDM,
-    MultinomialDiffusion,
-    MultinomialDiffusionSchedule,
-    MultinomialLogSNRDM,
-    UniformContinuousTimeTrainingConfig,
-    build_time_dependent_multinomial_diffusion_loss,
-)
+from probjax.nn.generative.protocols import GenerativeModelProtocol

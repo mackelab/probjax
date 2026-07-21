@@ -21,8 +21,8 @@ from probjax.nn.generative.flow_matching.config import (
     RhoFlowSolverConfig,
     UniformFlowTrainingConfig,
 )
-from probjax.nn.losses.flow_matching import build_flow_matching_loss
 from probjax.nn.generative.flow_matching.model import FlowMatcher, LinearFlow
+from probjax.nn.losses.flow_matching import build_flow_matching_loss
 
 __all__ = [
     "FlowMatcher",

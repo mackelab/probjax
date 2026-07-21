@@ -26,16 +26,18 @@ def test_fit_functional_dict_batch():
 
 def test_flow_fit_trains_in_place_and_stays_normalized():
     flow = maf(2, 3, rngs=nnx.Rngs(0))
+    distribution = flow.as_dist()
     x_test = jnp.ones((4, 2))
-    lp_before = flow.logpdf(x_test)
+    lp_before = distribution.logpdf(x_test)
 
-    data = jax.random.normal(jax.random.key(0), (512, 2)) * jnp.array(
-        [1.5, 0.5]
-    ) + jnp.array([2.0, -1.0])
+    data = jax.random.normal(jax.random.key(0), (512, 2)) * jnp.array([
+        1.5,
+        0.5,
+    ]) + jnp.array([2.0, -1.0])
     losses = flow.fit(jax.random.key(1), data, num_steps=150, batch_size=128)
 
     assert losses[-1] < losses[0]
-    assert not jnp.allclose(lp_before, flow.logpdf(x_test))
+    assert not jnp.allclose(lp_before, distribution.logpdf(x_test))
 
     # logpdf must agree with brute-force change of variables at the trained
     # weights (regression for the nested-jit logdet accumulation bug).
@@ -46,7 +48,7 @@ def test_flow_fit_trains_in_place_and_stays_normalized():
     reference = jnp.sum(jax.scipy.stats.norm.logpdf(zs), axis=-1) - jnp.log(
         jnp.abs(jnp.linalg.det(jacs))
     )
-    assert jnp.allclose(flow.logpdf(ys), reference, atol=5e-3)
+    assert jnp.allclose(distribution.logpdf(ys), reference, atol=5e-3)
 
 
 def test_flow_fit_conditional():

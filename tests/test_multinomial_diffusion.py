@@ -112,7 +112,9 @@ def test_multinomial_diffusion_loss_and_sampling():
     assert jnp.isfinite(loss)
     assert jnp.isfinite(loss_rb)
 
-    samples = model.sample(jax.random.key(3), shape=(8, 3), num_sample_steps=4)
+    samples = model.as_dist((3,), num_sample_steps=4).sample(
+        jax.random.key(3), shape=(8,)
+    )
     assert samples.shape == (8, 3)
     assert jnp.logical_and(samples >= 0, samples < 6).all()
 

@@ -7,13 +7,15 @@ from flax import nnx
 from jax import Array
 from jax.typing import ArrayLike
 
+from probjax.nn.generative.base import GenerativeModel
 from probjax.nn.generative.flows.autoregressive import AutoregressiveMLP
 from probjax.nn.generative.flows.bijective import ElementwiseMonotone, Flip, Rotate
 from probjax.nn.generative.flows.coupling import CouplingMLP
+from probjax.nn.generative.sampling import (
+    _ExportedSampler,
+    make_map_sample_fn,
+)
 from probjax.nn.nets.simple import Sequential
-
-from probjax.stats.base import DistributionAPI, rv_frozen
-from probjax.stats.fit import FitMixin
 from probjax.stats.bijective import additive_bijector, affine_bijector
 from probjax.stats.bijective.monotone import (
     bernstein_bijector,
@@ -40,7 +42,6 @@ from probjax.stats.bijective.rational_quadratic import (
 from probjax.stats.continuous import norm
 from probjax.stats.indep import indep
 from probjax.stats.transformed import transformed
-
 
 # ---------------------------------------------------------------------------
 # Shared parameter normalization utilities
@@ -296,7 +297,11 @@ def monotone_hermite_cubic_spline(
 # ---------------------------------------------------------------------------
 
 
-class NormalizingFlow(nnx.Module, DistributionAPI, FitMixin):
+def _flow_transform(model, value, context):
+    return model.transform(value, context=context)
+
+
+class NormalizingFlow(GenerativeModel):
     def __init__(
         self,
         base_dist,
@@ -308,31 +313,19 @@ class NormalizingFlow(nnx.Module, DistributionAPI, FitMixin):
         self.name = name
         super().__init__()
 
-    # -- scipy-like stats API via transformed distribution --
-
-    @property
-    def dist(self):
-        """Frozen ``transformed`` distribution for full scipy-like API access."""
+    def _flow_distribution(self):
         return transformed(base_dist=self.base_dist, bijector=self.transformation)
 
-    def conditional_dist(self, context):
-        """Frozen transformed distribution conditioned on context."""
-
+    def _conditional_flow_distribution(self, context):
         def _bijector(x):
             return self.transformation(x, context)
 
         return transformed(base_dist=self.base_dist, bijector=_bijector)
 
-    def _dist_for_context(self, context=None):
-        return self.dist if context is None else self.conditional_dist(context)
-
-    @property
-    def batch_shape(self):
-        return self.dist.batch_shape
-
-    @property
-    def event_shape(self):
-        return self.dist.event_shape
+    def _flow_distribution_for_context(self, context=None):
+        if context is None:
+            return self._flow_distribution()
+        return self._conditional_flow_distribution(context)
 
     def transform(self, x, context=None, *, rng: jax.Array | None = None):
         if context is None:
@@ -342,68 +335,74 @@ class NormalizingFlow(nnx.Module, DistributionAPI, FitMixin):
     def __call__(self, x, context=None, *, rng: jax.Array | None = None):
         return self.transform(x, context=context, rng=rng)
 
-    def sample(self, rng, shape=(), context=None):
-        """Sample from the flow distribution."""
-        return self.rvs(rng, shape=shape, context=context)
+    def _distribution_sampler(
+        self,
+        event_spec=None,
+        *,
+        dtype=jnp.float32,
+        context_spec=None,
+    ) -> _ExportedSampler:
+        """Build and cache a shape-polymorphic flow sampler.
 
-    def rvs(self, rng, shape=(), name: Optional[str] = None, context=None, **kwargs):
-        return self._dist_for_context(context).rvs(
-            rng, shape=shape, name=name, **kwargs
+        ``event_spec`` defaults to the base distribution's intrinsic event
+        shape, but may be a pytree spec for structured base distributions.
+        ``context_spec`` may be a plain shape tuple or a pytree of shapes /
+        ``jax.ShapeDtypeStruct``.
+        """
+        if event_spec is None:
+            event_spec = tuple(int(size) for size in self.base_dist.event_shape)
+        make_sample_fn = partial(make_map_sample_fn, transform=_flow_transform)
+
+        return self._build_exported_sampler(
+            ("normalizing-flow-sampler",),
+            event_spec,
+            make_sample_fn,
+            dtype=dtype,
+            context_spec=context_spec,
         )
 
-    def logpdf(self, x, context=None):
-        return self._dist_for_context(context).logpdf(x)
+    def _sample_base(self, rng, sample_shape, spec):
+        del spec
+        return self.base_dist.rvs(rng, shape=sample_shape)
 
-    def pdf(self, x, context=None):
-        return self._dist_for_context(context).pdf(x)
+    def _distribution_logpdf(
+        self,
+        event_spec=None,
+        *,
+        dtype=jnp.float32,
+        context_spec=None,
+    ):
+        """Build and cache a shape-polymorphic flow log-density evaluator."""
+        if event_spec is None:
+            event_spec = tuple(int(size) for size in self.base_dist.event_shape)
 
-    def cdf(self, x, context=None):
-        return self._dist_for_context(context).cdf(x)
+        def make_logpdf_fn(graphdef):
+            if context_spec is None:
 
-    def ppf(self, q, context=None):
-        return self._dist_for_context(context).ppf(q)
+                def logpdf_fn(current_state, value):
+                    model = nnx.merge(graphdef, current_state)
+                    return jax.vmap(model._logpdf)(value)
 
-    def logcdf(self, x, context=None):
-        return self._dist_for_context(context).logcdf(x)
+            else:
 
-    def sf(self, x, context=None):
-        return self._dist_for_context(context).sf(x)
+                def logpdf_fn(current_state, value, context):
+                    model = nnx.merge(graphdef, current_state)
+                    return jax.vmap(
+                        lambda item, condition: model._logpdf(item, context=condition)
+                    )(value, context)
 
-    def logsf(self, x, context=None):
-        return self._dist_for_context(context).logsf(x)
+            return logpdf_fn
 
-    def isf(self, q, context=None):
-        return self._dist_for_context(context).isf(q)
+        return self._build_exported_logpdf(
+            ("normalizing-flow-logpdf",),
+            event_spec,
+            make_logpdf_fn,
+            dtype=dtype,
+            context_spec=context_spec,
+        )
 
-    def mean(self):
-        return self.dist.mean()
-
-    def mode(self):
-        return self.dist.mode()
-
-    def var(self):
-        return self.dist.var()
-
-    def std(self):
-        return self.dist.std()
-
-    def entropy(self):
-        return self.dist.entropy()
-
-    def median(self):
-        return self.dist.median()
-
-    def interval(self, confidence=None, context=None):
-        return self._dist_for_context(context).interval(confidence)
-
-    def moment(self, order: Optional[int] = None, context=None):
-        return self._dist_for_context(context).moment(order)
-
-    def stats(self, moments: str = "mv", context=None):
-        return self._dist_for_context(context).stats(moments=moments)
-
-    def support(self):
-        return self.dist.support()
+    def _logpdf(self, value, context=None):
+        return self._flow_distribution_for_context(context).logpdf(value)
 
     def loss(self, rng, data, *args, context=None, **kwargs):
         """Negative mean log-likelihood training loss.
@@ -413,21 +412,27 @@ class NormalizingFlow(nnx.Module, DistributionAPI, FitMixin):
         """
         del rng, args, kwargs
         if context is None:
-            return -jnp.mean(self.logpdf(data))
-        pair_logpdf = jax.vmap(lambda x, c: self.logpdf(x, context=c))
+            return -jnp.mean(self._logpdf(data))
+        pair_logpdf = jax.vmap(lambda x, c: self._logpdf(x, context=c))
         return -jnp.mean(pair_logpdf(data, context))
 
-    def as_distribution(self, event_shape=None, *, context=None):
-        """View this flow as a :class:`~probjax.stats.base.DistributionAPI`.
-
-        The flow already is one, so this returns ``self`` (or the frozen
-        conditional distribution when ``context`` is given). ``event_shape``
-        is accepted for protocol compatibility; it is fixed by the flow.
-        """
-        del event_shape
-        if context is None:
-            return self
-        return self.conditional_dist(context)
+    def as_dist(
+        self,
+        event_spec=None,
+        *,
+        context_spec=None,
+        context=None,
+        **kwargs,
+    ):
+        """Create a lazy compiled sampling and log-density view of this flow."""
+        if event_spec is None:
+            event_spec = tuple(int(size) for size in self.base_dist.event_shape)
+        return super().as_dist(
+            event_spec,
+            context_spec=context_spec,
+            context=context,
+            **kwargs,
+        )
 
     # -- Helper for building the standard normal base distribution --
 
@@ -888,9 +893,6 @@ class GaussianizationFlow(NormalizingFlow):
         )
         q0 = self._standard_normal_base(input_dim)
         super().__init__(q0, transform, name=name)
-
-
-rv_frozen.register(NormalizingFlow)
 
 
 # Lowercase aliases mirroring common flow naming conventions.

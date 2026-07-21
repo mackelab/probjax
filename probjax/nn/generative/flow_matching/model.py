@@ -1,3 +1,4 @@
+from functools import partial
 from typing import Mapping, Tuple
 
 import jax
@@ -5,6 +6,7 @@ import jax.numpy as jnp
 import jax.tree_util
 from flax import nnx
 
+from probjax.nn.generative.base import GenerativeModel
 from probjax.nn.generative.flow_matching.config import (
     FlowPreconditioningProtocol,
     FlowSolverConfigProtocol,
@@ -16,19 +18,20 @@ from probjax.nn.generative.flow_matching.config import (
     LogitNormalFlowTrainingConfig,
 )
 from probjax.nn.generative.sampling import (
-    BuiltSampler,
-    cached_sampler,
-    clear_sampler_cache,
-    export_sampler,
+    _ExportedSampler,
+    make_ode_sample_fn,
+    sample_normal,
 )
 from probjax.nn.losses.flow_matching import build_flow_matching_loss
-from probjax.stats.fit import FitMixin
 from probjax.utils.functions import generic_drift
-from probjax.utils.odeint import odeint
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
 
 
-class FlowMatcher(nnx.Module, FitMixin):
+def _flow_ode_drift(model, context):
+    return model._build_ode_drift(context)
+
+
+class FlowMatcher(GenerativeModel):
     """
     Composable flow matcher:
 
@@ -88,7 +91,7 @@ class FlowMatcher(nnx.Module, FitMixin):
         if not isinstance(solver_cfg, FlowSolverConfigProtocol):
             raise TypeError("solver_cfg must implement FlowSolverConfigProtocol")
         self.solver_cfg = solver_cfg
-        clear_sampler_cache(self)
+        self._clear_distribution_cache()
 
     def __call__(
         self,
@@ -100,18 +103,28 @@ class FlowMatcher(nnx.Module, FitMixin):
     ) -> PyTree[Array]:
         """Forward pass of the model - v-prediction.
 
-        We do a Gaussian closed-form preconditioning scheme. We know that
-        p0(x) = N(x; mu0, std0**2) and let's assume that p1(x) = N(x; mu1, std1**2).
-        Then the optimal v-prediction target is tractable and given by:
+        Uses a Gaussian closed-form preconditioning scheme. For endpoints
+        p0(x) = N(x; mu0, std0**2) and p1(x) = N(x; mu1, std1**2), the
+        marginal velocity field under the interpolation schedule is
 
         E[x1-x0|xt] = (mu1 - mu0) + s(t) * (xt - mu_t)
 
-        Where s(t) = d/dt log sigma(t), with sigma(t) defined by the
-        interpolation of the endpoint variances.
-        we have that s(t) = (t * std1**2) / ((1 - t) ** 2 * std0**2 + t**2 * std1**2)
+        where mu_t and sigma_t are the schedule's interpolated mean and
+        standard deviation, and s(t) = d/dt log sigma(t). For the linear
+        schedule this gives
 
-        We can plug in all the values for this but predict mu_t by the model.
+        s(t) = (t * std1**2 - (1 - t) * std0**2)
+               / ((1 - t)**2 * std0**2 + t**2 * std1**2).
 
+        The network operates on the normalized input ``x_normed = (x - mu_t)
+        / sigma_t`` and predicts a displacement correction ``v_out`` in the
+        same normalized space. The preconditioner maps it back to data space
+        as ``sigma_t * v_out`` and adds it inside the velocity-scaled term:
+
+        v(t, x) = (mu1 - mu0) + s(t) * ((x - mu_t) + sigma_t * v_out).
+
+        ``mu_t`` and ``sigma_t`` are computed analytically from the schedule;
+        the network never predicts them.
         """
         # With preconditioning
         mu0 = self.mu0.get_value()
@@ -122,10 +135,8 @@ class FlowMatcher(nnx.Module, FitMixin):
         x_normed, approx_mut, approx_stdt = self.preconditioning.normalize(
             self.schedule, t, x, mu0, mu1, std0, std1
         )
-        residual_pred = self.net(t, x_normed, *args, rng=rng, **kwargs)
-        residual_correction = jax.tree_util.tree_map(
-            lambda r: approx_stdt * r, residual_pred
-        )
+        v_out = self.net(t, x_normed, *args, rng=rng, **kwargs)
+        v_out_data = jax.tree_util.tree_map(lambda v: approx_stdt * v, v_out)
         return self.preconditioning.decode_velocity(
             self.schedule,
             t,
@@ -134,7 +145,7 @@ class FlowMatcher(nnx.Module, FitMixin):
             mu1,
             std0,
             std1,
-            residual_correction,
+            v_out_data,
         )
 
     def score(self, t: ArrayLike, x: PyTree[Array], *args, **kwargs) -> PyTree[Array]:
@@ -195,118 +206,63 @@ class FlowMatcher(nnx.Module, FitMixin):
             t_min=t_min, t_max=t_max, num_steps=num_steps
         )
 
-    def build_sampler(
+    def _sample_base(self, rng, sample_shape, spec):
+        return sample_normal(
+            rng,
+            sample_shape,
+            spec,
+            loc=self.mu0.get_value(),
+            scale=self.std0.get_value(),
+        )
+
+    def _build_ode_drift(self, context=None):
+        def drift(t, value):
+            if context is None:
+                return self(t, value)
+            return self(t, value, context=context)
+
+        return generic_drift(drift)
+
+    def _distribution_sampler(
         self,
-        event_shape: tuple[int, ...],
+        event_spec,
         *,
         num_steps: int | None = None,
         method: str = "rk4",
         t_min: float = 0.0,
         t_max: float = 1.0,
+        collect_trace: bool = False,
         dtype=jnp.float32,
-    ) -> BuiltSampler:
-        """Build and cache an ODE sampler with symbolic batch size."""
+        context_spec=None,
+    ) -> _ExportedSampler:
+        """Build and cache an ODE sampler with symbolic batch size.
+
+        ``event_spec`` may be a plain shape tuple or a pytree of shapes /
+        ``jax.ShapeDtypeStruct`` for structured data. ``context_spec`` uses
+        the same format and enables a required, batch-aligned context input.
+        """
         if self.solver_cfg is None:
             raise ValueError(
                 "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
             )
-        event_shape = tuple(int(size) for size in event_shape)
-        dtype = jnp.dtype(dtype)
         steps = self.solver_cfg.num_steps if num_steps is None else int(num_steps)
-        key = ("flow", event_shape, dtype.str, steps, method, t_min, t_max)
-
-        def build():
-            graphdef, state = nnx.split(self)
-            ts = self.solve_schedule(t_min=t_min, t_max=t_max, num_steps=steps)
-
-            def drift_fn(t, x, current_state):
-                model = nnx.merge(graphdef, current_state)
-                return model(t, x)
-
-            drift = generic_drift(drift_fn)
-
-            def sample_fn(current_state, eps):
-                return odeint(
-                    drift,
-                    eps,
-                    ts,
-                    current_state,
-                    method=method,
-                    dtype=dtype,
-                    collect_trace=False,
-                )
-
-            exported = export_sampler(state, event_shape, dtype, sample_fn)
-            return BuiltSampler(
-                self,
-                graphdef,
-                exported,
-                event_shape,
-                dtype,
-                base="flow",
-            )
-
-        return cached_sampler(self, key, build)
-
-    def sample(
-        self,
-        eps: Array,
-        *,
-        num_steps: int | None = None,
-        method: str = "rk4",
-    ) -> Array:
-        """Generate samples by integrating the velocity ODE from ``eps``.
-
-        Solves ``dx/dt = self(t, x)`` along the schedule returned by
-        :meth:`solve_schedule`, starting at ``x(t_0) = eps``, and returns
-        the terminal state.
-
-        Args:
-            eps: Starting noise of shape ``batch_shape + event_shape``,
-                typically drawn from the base distribution
-                ``N(mu0, std0**2)``.
-            num_steps: Grid resolution forwarded to ``solve_schedule``.
-            method: ODE method for :func:`probjax.utils.odeint`
-                (``"rk4"`` default; ``"tsit5"``/``"dopri5"`` for adaptive
-                integration when paired with a ``step_size_adaptor``).
-        """
-        from probjax.utils.odeint import odeint
-
-        kwargs = {} if num_steps is None else {"num_steps": num_steps}
-        ts = self.solve_schedule(**kwargs)
-        traj = odeint(lambda t, x: self(t, x), eps, ts, method=method)
-        return traj[-1]
-
-    def as_distribution(
-        self,
-        event_shape: tuple,
-        *,
-        num_steps: int | None = None,
-        method: str = "rk4",
-    ):
-        """Expose this flow matcher as a :class:`probjax.stats.base.DistributionAPI`.
-
-        ``rvs`` draws ``eps ~ N(mu0, std0**2)`` and integrates the velocity
-        ODE; ``logpdf`` raises (use Hutchinson + ODE for change-of-
-        variables — pass ``logpdf_fn`` to :class:`LearnedDistribution`
-        explicitly if you need it).
-        """
-        from probjax.nn.distribution import LearnedDistribution
-
-        event_shape = tuple(int(d) for d in event_shape)
-        sampler = self.build_sampler(
-            event_shape,
-            num_steps=num_steps,
+        ts = self.solve_schedule(t_min=t_min, t_max=t_max, num_steps=steps)
+        make_sample_fn = partial(
+            make_ode_sample_fn,
+            ts=ts,
+            prototype=self._build_ode_drift(),
+            build_drift=_flow_ode_drift,
             method=method,
+            collect_trace=collect_trace,
         )
 
-        def sampler_fn(rng, batch_shape):
-            return sampler(rng, tuple(batch_shape))
-
-        return LearnedDistribution(
-            event_shape=event_shape,
-            sampler_fn=sampler_fn,
-            name=f"{type(self).__name__}",
+        return self._build_exported_sampler(
+            ("flow", steps, method, t_min, t_max, collect_trace),
+            event_spec,
+            make_sample_fn,
+            dtype=dtype,
+            context_spec=context_spec,
+            trace=collect_trace,
         )
 
 

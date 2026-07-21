@@ -1,9 +1,7 @@
 import jax
 import jax.numpy as jnp
-import pytest
 from flax import nnx
 
-from probjax.nn import LearnedDistribution
 from probjax.nn.generative.flows import AutoregressiveMLP, nsf
 from probjax.stats import (
     InvertibleTransformProtocol,
@@ -40,7 +38,8 @@ def test_transformed_distribution_affine_matches_analytic():
 
 def test_transformed_distribution_round_trip_on_flow_base():
     flow = nsf(2, 2, rngs=nnx.Rngs(0))
-    dist = TransformedDistribution(flow, lambda x: x + 1.0)
+    flow_dist = flow.as_dist()
+    dist = TransformedDistribution(flow_dist, lambda x: x + 1.0)
 
     samples = dist.rvs(jax.random.key(0), shape=(8,))
     assert samples.shape == (8, 2)
@@ -49,7 +48,7 @@ def test_transformed_distribution_round_trip_on_flow_base():
     assert jnp.all(jnp.isfinite(logprob))
 
     # Shifting by a constant preserves density values at shifted points.
-    assert jnp.allclose(logprob, flow.logpdf(samples - 1.0), atol=1e-4)
+    assert jnp.allclose(logprob, flow_dist.logpdf(samples - 1.0), atol=1e-4)
 
 
 def test_transformed_distribution_stacks():
@@ -58,9 +57,7 @@ def test_transformed_distribution_stacks():
     outer = TransformedDistribution(inner, lambda x: x + 1.0)
 
     x = jax.random.normal(jax.random.key(2), (4, 2))
-    expected = jnp.sum(
-        norm.logpdf((x - 1.0) / 2.0, 0.0, 1.0) - jnp.log(2.0), axis=-1
-    )
+    expected = jnp.sum(norm.logpdf((x - 1.0) / 2.0, 0.0, 1.0) - jnp.log(2.0), axis=-1)
     assert jnp.allclose(outer.logpdf(x), expected, atol=1e-5)
 
 
@@ -102,38 +99,8 @@ def test_frozen_transformed_fast_path_matches_auto_inversion():
 
 def test_frozen_transformed_accepts_neural_bases():
     flow = nsf(2, 2, rngs=nnx.Rngs(0))
-    dist = transformed(base_dist=flow, bijector=lambda x: x + 2.0)
+    dist = transformed(base_dist=flow.as_dist(), bijector=lambda x: x + 2.0)
     samples = dist.rvs(jax.random.key(0), shape=(8,))
     assert samples.shape == (8, 2)
     logprob = dist.logpdf(samples)
     assert jnp.all(jnp.isfinite(logprob))
-
-    learned = LearnedDistribution(
-        event_shape=(2,),
-        sampler_fn=lambda rng, batch_shape: jax.random.normal(
-            rng, batch_shape + (2,)
-        ),
-        logpdf_fn=lambda x: jnp.sum(norm.logpdf(x, 0.0, 1.0), axis=-1),
-    )
-    dist = transformed(base_dist=learned, bijector=lambda x: 0.5 * x)
-    samples = dist.rvs(jax.random.key(1), shape=(8,))
-    assert samples.shape == (8, 2)
-    logprob = dist.logpdf(samples)
-    expected = jnp.sum(
-        norm.logpdf(samples / 0.5, 0.0, 1.0) + jnp.log(2.0), axis=-1
-    )
-    assert jnp.allclose(logprob, expected, atol=1e-5)
-
-
-def test_learned_distribution_as_transformed_base_object_layer():
-    learned = LearnedDistribution(
-        event_shape=(2,),
-        sampler_fn=lambda rng, batch_shape: jax.random.normal(
-            rng, batch_shape + (2,)
-        ),
-        logpdf_fn=lambda x: jnp.sum(norm.logpdf(x, 0.0, 1.0), axis=-1),
-    )
-    dist = TransformedDistribution(learned, lambda x: x - 4.0)
-    samples = dist.rvs(jax.random.key(0), shape=(500,))
-    assert jnp.allclose(jnp.mean(samples, axis=0), -4.0 * jnp.ones(2), atol=0.3)
-    assert jnp.all(jnp.isfinite(dist.logpdf(samples)))

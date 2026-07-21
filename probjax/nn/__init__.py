@@ -53,7 +53,6 @@ from flax.nnx.nn.activations import (
     tanh,
 )
 
-from probjax.nn.distribution import LearnedDistribution
 from probjax.nn.io_util import DataLoader, chunkify
 
 # Override specific imports with probjax implementations
@@ -136,6 +135,7 @@ from probjax.nn.generative.flows import (
 )
 from probjax.nn.generative import (
     EDM,
+    GenerativeModel,
     GenerativeModelProtocol,
     VE,
     VP,

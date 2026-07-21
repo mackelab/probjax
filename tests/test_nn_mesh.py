@@ -160,10 +160,9 @@ def test_autoregressive_flow_logpdf_under_mesh():
     mesh = _auto_mesh((4, 1))
     with jax.set_mesh(mesh):
         flow = maf(2, 2, rngs=nnx.Rngs(0))
-        x = jax.device_put(
-            jnp.ones((8, 2)), NamedSharding(mesh, P("data", None))
-        )
-        logprob = flow.logpdf(x)
+        distribution = flow.as_dist()
+        x = jax.device_put(jnp.ones((8, 2)), NamedSharding(mesh, P("data", None)))
+        logprob = distribution.logpdf(x)
         assert logprob.shape == (8,)
         assert jnp.all(jnp.isfinite(logprob))
 
@@ -174,11 +173,12 @@ def test_flow_logpdf_per_shard_no_allgather():
     # per-shard under a batch-sharded mesh with no all-gathers.
     mesh = _auto_mesh((4, 1))
     flow = maf(2, 2, rngs=nnx.Rngs(0))
+    distribution = flow.as_dist()
     x = jnp.ones((8, 2))
-    lp_ref = flow.logpdf(x)
+    lp_ref = distribution.logpdf(x)
     xs = jax.device_put(x, NamedSharding(mesh, P("data", None)))
     with jax.set_mesh(mesh):
-        fn = jax.jit(flow.logpdf)
+        fn = jax.jit(distribution.logpdf)
         lp = fn(xs)
         assert jnp.allclose(lp_ref, jax.device_get(lp), atol=1e-5)
         assert lp.sharding.spec[0] == "data"

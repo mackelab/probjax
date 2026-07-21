@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import Callable, Mapping
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from probjax.nn.generative.base import GenerativeModel
 from probjax.nn.generative.diffusion.config import (
     BaseSolverConfig,
     CosineNoiseSchedule,
@@ -25,21 +27,24 @@ from probjax.nn.generative.diffusion.config import (
     VSolverConfig,
 )
 from probjax.nn.generative.sampling import (
-    BuiltSampler,
-    cached_sampler,
-    clear_sampler_cache,
-    export_sampler,
+    _ExportedSampler,
+    make_ode_sample_fn,
+    make_sde_sample_fn,
 )
 from probjax.nn.losses.denoising import build_time_dependent_denoising_loss
 from probjax.nn.utils import module_accepts_rng
-from probjax.stats.fit import FitMixin
-from probjax.utils.functions import generic_drift, split_drift
-from probjax.utils.odeint import odeint
-from probjax.utils.sdeint import sdeint
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
 
 
-class DiffusionDenoiser(nnx.Module, FitMixin):
+def _diffusion_ode_drift(model, context):
+    return model._build_ode_drift(context)
+
+
+def _diffusion_sde_terms(model, context):
+    return model._build_sde_drift_and_diffusion(context)
+
+
+class DiffusionDenoiser(GenerativeModel):
     """
     Composable diffusion denoiser:
 
@@ -92,7 +97,7 @@ class DiffusionDenoiser(nnx.Module, FitMixin):
         self.solver_cfg = solver_cfg
         if hasattr(self.solver_cfg, "set_schedule"):
             self.solver_cfg.set_schedule(self.schedule)
-        clear_sampler_cache(self)
+        self._clear_distribution_cache()
 
     # ---- physical schedule adapters ----
 
@@ -345,227 +350,76 @@ class DiffusionDenoiser(nnx.Module, FitMixin):
 
     # ---- sampling (delegates to solver_cfg) ----
 
-    def build_sampler(
+    def _build_ode_drift(self, context=None):
+        kwargs = {} if context is None else {"context": context}
+        return self.solver_cfg.build_ode_drift(self, **kwargs)
+
+    def _build_sde_drift_and_diffusion(self, context=None):
+        kwargs = {} if context is None else {"context": context}
+        return self.solver_cfg.build_sde_drift_and_diffusion(self, **kwargs)
+
+    def _distribution_sampler(
         self,
-        event_shape: tuple[int, ...],
+        event_spec,
         *,
         mode: str = "ode",
         num_steps: int | None = None,
         t_min: float | None = None,
         t_max: float | None = None,
+        collect_trace: bool = False,
         dtype=jnp.float32,
-    ) -> BuiltSampler:
-        """Build and cache a shape-polymorphic diffusion sampler."""
+        context_spec=None,
+    ) -> _ExportedSampler:
+        """Build and cache a shape-polymorphic diffusion sampler.
+
+        ``event_spec`` may be a plain shape tuple or a pytree of shapes /
+        ``jax.ShapeDtypeStruct`` for structured data. ``context_spec`` uses
+        the same format and enables a required, batch-aligned context input.
+        """
         if mode not in ("ode", "sde"):
             raise ValueError(f"mode must be 'ode' or 'sde', got {mode!r}")
         if self.solver_cfg is None:
             raise ValueError(
                 "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
             )
-        event_shape = tuple(int(size) for size in event_shape)
-        dtype = jnp.dtype(dtype)
         steps = self.solver_cfg.num_steps if num_steps is None else int(num_steps)
         t_min = self.train_cfg.t_min if t_min is None else t_min
         t_max = self.train_cfg.t_max if t_max is None else t_max
         method = (
             self.solver_cfg.ode_method if mode == "ode" else self.solver_cfg.sde_method
         )
-        key = ("diffusion", mode, event_shape, dtype.str, steps, method, t_min, t_max)
 
-        def build():
-            graphdef, state = nnx.split(self)
-            ts = self.solver_cfg.solve_schedule(
-                t_min=t_min,
-                t_max=t_max,
-                num_steps=steps,
-            )
-
-            if mode == "ode":
-                prototype = self.solver_cfg.build_ode_drift(self)
-
-                def nonlin_fn(t, x, current_state):
-                    model = nnx.merge(graphdef, current_state)
-                    drift = model.solver_cfg.build_ode_drift(model)
-                    if isinstance(drift, split_drift):
-                        return drift.nonlin(t, x)
-                    return drift(t, x)
-
-                if isinstance(prototype, split_drift):
-                    drift = split_drift(prototype.lin_coeff, nonlin_fn)
-                else:
-                    drift = generic_drift(nonlin_fn)
-
-                def sample_fn(current_state, eps):
-                    return odeint(
-                        drift,
-                        eps,
-                        ts,
-                        current_state,
-                        method=method,
-                        dtype=dtype,
-                        collect_trace=False,
-                    )
-
-                exported = export_sampler(state, event_shape, dtype, sample_fn)
-            else:
-
-                def drift_fn(t, x, current_state):
-                    model = nnx.merge(graphdef, current_state)
-                    drift, _ = model.solver_cfg.build_sde_drift_and_diffusion(model)
-                    return drift(t, x)
-
-                def diffusion_fn(t, x, current_state):
-                    model = nnx.merge(graphdef, current_state)
-                    _, diffusion = model.solver_cfg.build_sde_drift_and_diffusion(model)
-                    return diffusion(t, x)
-
-                drift = generic_drift(drift_fn)
-                diffusion = generic_drift(diffusion_fn)
-
-                def one_sample(current_state, rng, eps):
-                    return sdeint(
-                        rng,
-                        drift,
-                        diffusion,
-                        eps,
-                        ts,
-                        current_state,
-                        method=method,
-                        dtype=dtype,
-                        collect_trace=False,
-                    )
-
-                def sample_fn(current_state, keys, eps):
-                    return jax.vmap(one_sample, in_axes=(None, 0, 0))(
-                        current_state, keys, eps
-                    )
-
-                exported = export_sampler(
-                    state,
-                    event_shape,
-                    dtype,
-                    sample_fn,
-                    stochastic=True,
-                )
-            return BuiltSampler(
-                self,
-                graphdef,
-                exported,
-                event_shape,
-                dtype,
-                base="standard",
-                stochastic=mode == "sde",
-            )
-
-        return cached_sampler(self, key, build)
-
-    def sample_ode(
-        self,
-        eps: PyTree[Array],
-        num_steps: int | None = None,
-        t_min: float | None = None,
-        t_max: float | None = None,
-        collect_trace: bool = False,
-        *args,
-        **kwargs,
-    ) -> PyTree[Array]:
-        if t_max is None:
-            t_max = self.train_cfg.t_max
-        if t_min is None:
-            t_min = self.train_cfg.t_min
-        if self.solver_cfg is None:
-            raise ValueError(
-                "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
-            )
-        return self.solver_cfg.sample_ode(
-            self,
-            eps,
-            t_max=t_max,
-            t_min=t_min,
-            num_steps=num_steps,
-            collect_trace=collect_trace,
-            *args,  # noqa: B026
-            **kwargs,
-        )
-
-    def sample_sde(
-        self,
-        rng: RngKey,
-        eps: PyTree[Array],
-        num_steps: int | None = None,
-        t_min: float | None = None,
-        t_max: float | None = None,
-        collect_trace: bool = False,
-        *args,
-        **kwargs,
-    ) -> PyTree[Array]:
-        if t_max is None:
-            t_max = self.train_cfg.t_max
-        if t_min is None:
-            t_min = self.train_cfg.t_min
-        if self.solver_cfg is None:
-            raise ValueError(
-                "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
-            )
-        return self.solver_cfg.sample_sde(
-            self,
-            rng,
-            eps,
+        ts = self.solver_cfg.solve_schedule(
             t_min=t_min,
             t_max=t_max,
-            num_steps=num_steps,
-            collect_trace=collect_trace,
-            *args,  # noqa: B026
-            **kwargs,
+            num_steps=steps,
         )
+        if mode == "ode":
+            make_sample_fn = partial(
+                make_ode_sample_fn,
+                ts=ts,
+                prototype=self._build_ode_drift(),
+                build_drift=_diffusion_ode_drift,
+                method=method,
+                collect_trace=collect_trace,
+            )
+        else:
+            make_sample_fn = partial(
+                make_sde_sample_fn,
+                ts=ts,
+                build_drift_and_diffusion=_diffusion_sde_terms,
+                method=method,
+                collect_trace=collect_trace,
+            )
 
-    def as_distribution(
-        self,
-        event_shape: tuple,
-        *,
-        mode: str = "ode",
-        num_steps: int | None = None,
-        t_min: float | None = None,
-        t_max: float | None = None,
-    ):
-        """Expose this model as a :class:`probjax.stats.base.DistributionAPI`.
-
-        Args:
-            event_shape: Trailing shape of one sample (e.g. ``(d,)`` for
-                vector data, ``(C, H, W)`` for images). The model's input
-                shape — kept here rather than on the model class because a
-                single trained denoiser can serve any compatible shape.
-            mode: ``"ode"`` (deterministic, faster) or ``"sde"``
-                (stochastic) sampling.
-            num_steps: Solver steps; defaults to the model's solver_cfg.
-            t_min, t_max: Integration endpoints; default to ``train_cfg``.
-
-        The returned distribution implements ``rvs`` via the chosen sampler
-        and ``logpdf`` raises (diffusion logpdf needs ODE-based change of
-        variables — pass ``logpdf_fn`` explicitly to
-        :class:`LearnedDistribution` if you need it).
-        """
-        from probjax.nn.distribution import LearnedDistribution
-
-        event_shape = tuple(int(d) for d in event_shape)
-        if mode not in ("ode", "sde"):
-            raise ValueError(f"mode must be 'ode' or 'sde', got {mode!r}")
-
-        sampler = self.build_sampler(
-            event_shape,
-            mode=mode,
-            num_steps=num_steps,
-            t_min=t_min,
-            t_max=t_max,
-        )
-
-        def sampler_fn(rng, batch_shape):
-            return sampler(rng, tuple(batch_shape))
-
-        return LearnedDistribution(
-            event_shape=event_shape,
-            sampler_fn=sampler_fn,
-            name=f"{type(self).__name__}({mode}-sampling)",
+        return self._build_exported_sampler(
+            ("diffusion", mode, steps, method, t_min, t_max, collect_trace),
+            event_spec,
+            make_sample_fn,
+            dtype=dtype,
+            stochastic=mode == "sde",
+            context_spec=context_spec,
+            trace=collect_trace,
         )
 
 

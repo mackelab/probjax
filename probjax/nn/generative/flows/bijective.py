@@ -3,7 +3,6 @@ import jax.numpy as jnp
 from flax import nnx
 from flax.typing import Initializer
 
-
 from probjax.stats.bijective import rotate
 from probjax.utils.typing import (
     Array,

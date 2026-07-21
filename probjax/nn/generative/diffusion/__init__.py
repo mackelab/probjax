@@ -5,16 +5,16 @@ Includes the model class hierarchy (``DiffusionDenoiser``, ``EDM``, ``VE``,
 denoising-score-matching variants), and configuration types.
 """
 
-from probjax.nn.losses.denoising import (
-    build_denoising_loss,
-    build_time_dependent_denoising_loss,
-)
 from probjax.nn.generative.diffusion.model import (
-    CosineDM,
-    DiffusionDenoiser,
     EDM,
     VE,
     VP,
+    CosineDM,
+    DiffusionDenoiser,
+)
+from probjax.nn.losses.denoising import (
+    build_denoising_loss,
+    build_time_dependent_denoising_loss,
 )
 from probjax.nn.losses.denoising_score_matching import (
     build_denoising_score_matching_loss,

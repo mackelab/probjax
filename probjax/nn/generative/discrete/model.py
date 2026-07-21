@@ -1,17 +1,13 @@
 from __future__ import annotations
 
+import weakref
 from typing import Optional
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.stats.fit import FitMixin
-
-from probjax.nn.losses.multinomial import (
-    build_time_dependent_multinomial_diffusion_loss,
-)
-from probjax.nn.utils import module_accepts_rng
+from probjax.nn.generative.base import GenerativeModel
 from probjax.nn.generative.discrete.config import (
     CategoricalEDMPreconditioning,
     CategoricalPreconditioningProtocol,
@@ -24,11 +20,42 @@ from probjax.nn.generative.discrete.config import (
     _require_float_time,
     _sample_categorical,
 )
-
+from probjax.nn.losses.multinomial import (
+    build_time_dependent_multinomial_diffusion_loss,
+)
+from probjax.nn.utils import module_accepts_rng
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, RngKey
 
 
-class MultinomialDiffusion(nnx.Module, FitMixin):
+class _DiscreteSampler:
+    def __init__(self, model, event_shape, num_sample_steps):
+        self._model_ref = weakref.ref(model)
+        self.event_shape = event_shape
+        self.num_sample_steps = num_sample_steps
+
+    @property
+    def invalidated(self):
+        return False
+
+    def __call__(self, rng, shape=(), *, context=None):
+        if context is not None:
+            raise ValueError("Multinomial diffusion does not accept context.")
+        model = self._model_ref()
+        if model is None:
+            raise RuntimeError("The model backing this distribution no longer exists.")
+        return model._sample_reverse_process(
+            rng,
+            tuple(shape) + self.event_shape,
+            num_sample_steps=self.num_sample_steps,
+        )
+
+    def from_noise(self, *args, **kwargs):
+        raise NotImplementedError(
+            "Multinomial diffusion does not support sampling from supplied noise."
+        )
+
+
+class MultinomialDiffusion(GenerativeModel):
     """
     Discrete diffusion model with denoising_diffusion_model-like composition:
       - schedule
@@ -346,7 +373,7 @@ class MultinomialDiffusion(nnx.Module, FitMixin):
             **model_kwargs,
         )
 
-    def sample(
+    def _sample_reverse_process(
         self,
         rng: RngKey,
         shape: tuple[int, ...],
@@ -388,40 +415,24 @@ class MultinomialDiffusion(nnx.Module, FitMixin):
         )
         return x_final
 
-    def as_distribution(
+    def _distribution_sampler(
         self,
-        event_shape: tuple,
+        event_spec,
         *,
         num_sample_steps: Optional[int] = None,
+        context_spec=None,
+        **kwargs,
     ):
-        """Expose this model as a :class:`probjax.stats.base.DistributionAPI`.
-
-        Args:
-            event_shape: Trailing shape of one categorical sample (e.g.
-                ``(seq_len, num_classes)``). The model itself is shape-
-                agnostic; we attach the shape here.
-            num_sample_steps: Reverse-process steps; defaults to
-                ``self.num_steps``.
-
-        ``rvs`` runs the multinomial reverse process; ``logpdf`` raises
-        (the variational log-likelihood bound is available separately via
-        the training loss).
-        """
-        from probjax.nn.distribution import LearnedDistribution
-
-        event_shape = tuple(int(d) for d in event_shape)
-
-        def sampler_fn(rng, batch_shape):
-            return self.sample(
-                rng,
-                tuple(batch_shape) + event_shape,
-                num_sample_steps=num_sample_steps,
-            )
-
-        return LearnedDistribution(
-            event_shape=event_shape,
-            sampler_fn=sampler_fn,
-            name=f"{type(self).__name__}",
+        del kwargs
+        if context_spec is not None:
+            raise ValueError("Multinomial diffusion does not accept context.")
+        leaves = jax.tree.leaves(event_spec)
+        if len(leaves) != 1:
+            raise TypeError("Multinomial diffusion requires a single-array event spec.")
+        return _DiscreteSampler(
+            self,
+            tuple(leaves[0].shape),
+            num_sample_steps,
         )
 
 

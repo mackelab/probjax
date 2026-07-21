@@ -9,13 +9,13 @@ from probjax.nn.generative.mean_flow.config import (
     FlowPairTrainingConfigProtocol,
     SigmoidPairFlowTrainingConfig,
 )
-from probjax.nn.losses.mean_flow import (
-    build_mean_flow_matching_loss,
-    build_mean_flow_matching_loss_from_schedule,
-)
 from probjax.nn.generative.mean_flow.model import (
     LinearMeanFlow,
     MeanFlowMatcher,
+)
+from probjax.nn.losses.mean_flow import (
+    build_mean_flow_matching_loss,
+    build_mean_flow_matching_loss_from_schedule,
 )
 
 __all__ = [

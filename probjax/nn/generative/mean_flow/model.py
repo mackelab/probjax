@@ -1,15 +1,12 @@
-from typing import Callable, Mapping
+from functools import partial
+from typing import Mapping
 
 import jax
 import jax.numpy as jnp
 import jax.tree_util
 from flax import nnx
 
-from probjax.stats.fit import FitMixin
-
-from probjax.nn.losses.mean_flow import build_mean_flow_matching_loss
-
-
+from probjax.nn.generative.base import GenerativeModel
 from probjax.nn.generative.flow_matching.config import (
     FlowPreconditioningProtocol,
     FlowSolverConfigProtocol,
@@ -22,10 +19,29 @@ from probjax.nn.generative.mean_flow.config import (
     FlowPairTrainingConfigProtocol,
     SigmoidPairFlowTrainingConfig,
 )
-from probjax.utils.typing import Array, ArrayLike, ModuleLike, RngKey
+from probjax.nn.generative.sampling import (
+    _ExportedSampler,
+    make_scan_sample_fn,
+    sample_normal,
+)
+from probjax.nn.losses.mean_flow import build_mean_flow_matching_loss
+from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
 
 
-class MeanFlowMatcher(nnx.Module, FitMixin):
+def _mean_flow_step(model, value, times, context):
+    t, r = times
+    if context is None:
+        velocity = model(t, value, r=r)
+    else:
+        velocity = model(t, value, r=r, context=context)
+    return jax.tree.map(
+        lambda current, update: current + (r - t) * update,
+        value,
+        velocity,
+    )
+
+
+class MeanFlowMatcher(GenerativeModel):
     def __init__(
         self,
         net: ModuleLike,
@@ -66,20 +82,44 @@ class MeanFlowMatcher(nnx.Module, FitMixin):
         self.train_cfg = train_cfg
         self.solver_cfg = solver_cfg
 
+    def set_solver_cfg(self, solver_cfg: FlowSolverConfigProtocol) -> None:
+        if not isinstance(solver_cfg, FlowSolverConfigProtocol):
+            raise TypeError("solver_cfg must implement FlowSolverConfigProtocol")
+        self.solver_cfg = solver_cfg
+        self._clear_distribution_cache()
+
     def __call__(
         self,
         t: ArrayLike,
-        x: Array,
+        x: PyTree[Array],
         r: ArrayLike | None = None,
         *args,
         rng: jax.Array | None = None,
         **kwargs,
-    ) -> Array:
+    ) -> PyTree[Array]:
         """
+        Predicted velocity to time r.
+
+        Uses a Gaussian closed-form preconditioning scheme. The marginal
+        mean-velocity field is
+
+        v(t, x) = (mu1 - mu0) + s(t) * (x - mu_t)
+
+        where s(t) = d/dt log sigma(t). The network operates on the
+        normalized input ``x_normed = (x - mu_t) / sigma_t`` and predicts a
+        displacement correction ``v_out`` in the same normalized space. The
+        preconditioner maps it back to data space as ``sigma_t * v_out`` and
+        adds it inside the velocity-scaled term:
+
+        v(t, x, r) = (mu1 - mu0) + s(t) * ((x - mu_t) + sigma_t * v_out).
+
+        ``mu_t`` and ``sigma_t`` are computed analytically from the schedule;
+        the network never predicts them.
+
         Args:
             t: Current time t.
             x: Data at time t.
-            r: Time at which to predict the mean (r > t)
+            r: Time at which to predict the mean (r > t).
 
         Returns:
             Predicted velocity to time r.
@@ -89,7 +129,7 @@ class MeanFlowMatcher(nnx.Module, FitMixin):
         mu1 = self.mu1.get_value()
         std1 = self.std1.get_value()
 
-        r: ArrayLike = t if r is None else jnp.clip(r, a_min=t, a_max=1.0)
+        r: ArrayLike = t if r is None else jnp.clip(r, min=t, max=1.0)
 
         eps = getattr(self.preconditioning, "eps", 1e-8)
         approx_mu_t = self.schedule.path_mean(t, mu0, mu1)
@@ -97,21 +137,19 @@ class MeanFlowMatcher(nnx.Module, FitMixin):
 
         x_normed = jax.tree_util.tree_map(lambda x: (x - approx_mu_t) / approx_std_t, x)
         std_t = approx_std_t
-        std_r = jnp.maximum(self.schedule.path_std(r, std0, std1), eps)
         a_t = self.schedule.a_t(t)
         b_t = self.schedule.b_t(t)
         denom = (a_t**2) * std0**2 + (b_t**2) * std1**2
         scale = (b_t * std1**2 - a_t * std0**2) / jnp.maximum(denom, eps)
 
-        def g(h):
-            return 1.0 + jnp.tanh(h / 0.1)
+        v_out = self.net(t, x_normed, *args, r=r, rng=rng, **kwargs)
+        v_out_data = jax.tree_util.tree_map(lambda v: std_t * v, v_out)
 
-        geo_std = jnp.sqrt(std_r * std_t)
-        scale_residual = geo_std * g(r - t)
-
-        pred_mu1 = self.net(t, x_normed, *args, r=r, rng=rng, **kwargs)
-
-        return mu1 - mu0 + scale * (x - approx_mu_t) + scale_residual * pred_mu1
+        return jax.tree.map(
+            lambda value, update: mu1 - mu0 + scale * (value - approx_mu_t + update),
+            x,
+            v_out_data,
+        )
 
     def loss(
         self,
@@ -161,61 +199,47 @@ class MeanFlowMatcher(nnx.Module, FitMixin):
             t_min=t_min, t_max=t_max, num_steps=num_steps
         )
 
-    def sample(
+    def _sample_base(self, rng, sample_shape, spec):
+        return sample_normal(
+            rng,
+            sample_shape,
+            spec,
+            loc=self.mu0.get_value(),
+            scale=self.std0.get_value(),
+        )
+
+    def _distribution_sampler(
         self,
-        eps: Array,
+        event_spec,
         *,
         num_steps: int | None = None,
-    ) -> Array:
-        """Generate samples by stepping the mean-flow displacement.
+        dtype=jnp.float32,
+        context_spec=None,
+    ) -> _ExportedSampler:
+        """Build and cache a mean-flow sampler with symbolic batch size.
 
-        Mean flow is **not** an ODE drift: ``self(t, x, r=...)`` returns the
-        average velocity over ``[t, r]``, so one call advances directly from
-        ``x_t`` to ``x_r`` via ``x_r = x_t + (r - t) · self(t, x, r=r)``.
-        We chain those over the integration grid in a single :func:`lax.scan`.
-
-        Args:
-            eps: Starting noise of shape ``batch_shape + event_shape``,
-                typically ``N(mu0, std0**2)``.
-            num_steps: Grid resolution forwarded to ``solve_schedule``.
+        ``event_spec`` may be a plain shape tuple or a pytree of shapes /
+        ``jax.ShapeDtypeStruct`` for structured data. ``context_spec`` uses
+        the same format and enables a required, batch-aligned context input.
         """
-        kwargs = {} if num_steps is None else {"num_steps": num_steps}
-        ts = self.solve_schedule(**kwargs)
+        if self.solver_cfg is None:
+            raise ValueError(
+                "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
+            )
+        steps = self.solver_cfg.num_steps if num_steps is None else int(num_steps)
+        ts = self.solve_schedule(num_steps=steps)
+        make_sample_fn = partial(
+            make_scan_sample_fn,
+            xs=(ts[:-1], ts[1:]),
+            step=_mean_flow_step,
+        )
 
-        def step(x, ts_pair):
-            t, r = ts_pair
-            return x + (r - t) * self(t, x, r=r), None
-
-        x_final, _ = jax.lax.scan(step, eps, (ts[:-1], ts[1:]))
-        return x_final
-
-    def as_distribution(
-        self,
-        event_shape: tuple,
-        *,
-        num_steps: int | None = None,
-    ):
-        """Expose this mean-flow matcher as a :class:`probjax.stats.base.DistributionAPI`.
-
-        ``rvs`` draws ``eps ~ N(mu0, std0**2)`` and chains mean-flow
-        displacements; ``logpdf`` raises (no closed-form path-density for
-        mean flow without further machinery).
-        """
-        from probjax.nn.distribution import LearnedDistribution
-
-        event_shape = tuple(int(d) for d in event_shape)
-        mu0 = self.mu0.get_value()
-        std0 = self.std0.get_value()
-
-        def sampler_fn(rng, batch_shape):
-            shape = tuple(batch_shape) + event_shape
-            eps = jax.random.normal(rng, shape) * std0 + mu0
-            return self.sample(eps, num_steps=num_steps)
-
-        return LearnedDistribution(
-            event_shape=event_shape,
-            sampler_fn=sampler_fn,
-            name=f"{type(self).__name__}",
+        return self._build_exported_sampler(
+            ("mean-flow", steps),
+            event_spec,
+            make_sample_fn,
+            dtype=dtype,
+            context_spec=context_spec,
         )
 
 

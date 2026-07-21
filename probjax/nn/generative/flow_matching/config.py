@@ -338,7 +338,7 @@ class GaussianFlowPreconditioning(FlowPreconditioningProtocol):
     ) -> Tuple[Array, Array, Array]:
         mean_t = schedule.path_mean(t, mu0, mu1)
         std_t = jnp.maximum(schedule.path_std(t, std0, std1), self.eps)
-        x_normed = jax.tree_util.tree_map(lambda xi, m: (xi - m) / std_t, x, mean_t)
+        x_normed = jax.tree_util.tree_map(lambda xi: (xi - mean_t) / std_t, x)
         return x_normed, mean_t, std_t
 
     def velocity_scale(
@@ -367,12 +367,13 @@ class GaussianFlowPreconditioning(FlowPreconditioningProtocol):
         residual_pred: Array,
     ) -> Array:
         mean_t = schedule.path_mean(t, mu0, mu1)
-        std_t = jnp.maximum(schedule.path_std(t, std0, std1), self.eps)
         scale = self.velocity_scale(schedule, t, std0, std1)
-        residual = jax.tree_util.tree_map(lambda r: std_t * r, residual_pred)
-        drift = jax.tree_util.tree_map(lambda xi, m: scale * (xi - m), x, mean_t)
         delta_mean = jnp.asarray(mu1) - jnp.asarray(mu0)
-        return jax.tree_util.tree_map(lambda res, dr: res + dr + delta_mean, residual, drift)
+        return jax.tree_util.tree_map(
+            lambda res, xi: delta_mean + scale * (xi - mean_t + res),
+            residual_pred,
+            x,
+        )
 
 
 @runtime_checkable

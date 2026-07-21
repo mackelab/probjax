@@ -9,13 +9,13 @@ from probjax.nn.generative.discrete.config import (
     MultinomialDiffusionSchedule,
     UniformContinuousTimeTrainingConfig,
 )
-from probjax.nn.losses.multinomial import (
-    build_time_dependent_multinomial_diffusion_loss,
-)
 from probjax.nn.generative.discrete.model import (
     MultinomialCosineDM,
     MultinomialDiffusion,
     MultinomialLogSNRDM,
+)
+from probjax.nn.losses.multinomial import (
+    build_time_dependent_multinomial_diffusion_loss,
 )
 
 __all__ = [
