@@ -3,6 +3,7 @@ import itertools
 import jax
 import jax.numpy as jnp
 import pytest
+from jax.flatten_util import ravel_pytree
 
 from probjax.stats import (
     # Discrete distributions
@@ -32,7 +33,12 @@ from probjax.stats import (
     uniform,
     vonmises,
 )
-from probjax.stats.constraint_registry import transform_to
+from probjax.stats.constraint_registry import biject_to, transform_to
+from probjax.stats.constraints import (
+    simplex,
+    strict_positive,
+    symmetric_positive_definite_matrix,
+)
 from probjax.stats.divergences import (
     kl_divergence,
     max_slice_wasserstein_distance,
@@ -383,6 +389,59 @@ def test_frozen_init_rejects_invalid_arguments():
 
     with pytest.raises(TypeError, match="multiple values for argument 'loc'"):
         norm(0.0, loc=1.0)
+
+
+def test_constraint_bijections_round_trip():
+    positive_value = jnp.array(2.5)
+    simplex_value = jnp.array([0.2, 0.3, 0.5])
+    covariance = jnp.array([[2.0, 0.3], [0.3, 1.0]])
+
+    for constraint, value in (
+        (strict_positive, positive_value),
+        (simplex, simplex_value),
+        (symmetric_positive_definite_matrix, covariance),
+    ):
+        transform = biject_to(constraint)
+        assert jnp.allclose(transform(transform.inv(value)), value, atol=1e-6)
+
+
+def test_frozen_parameter_round_trip():
+    dist = norm(loc=jnp.array(1.5), scale=jnp.array(2.0))
+
+    assert set(dist.params) == {"loc", "scale"}
+    assert jnp.allclose(dist.unconstrained_params["scale"], jnp.log(2.0))
+
+    rebuilt = norm.from_params(
+        norm.params_from_unconstrained(dist.unconstrained_params)
+    )
+    assert jnp.allclose(rebuilt.loc, dist.loc)
+    assert jnp.allclose(rebuilt.scale, dist.scale)
+
+
+def test_nested_mixture_parameter_round_trip():
+    dist = mixture(
+        jnp.array([0.25, 0.75]),
+        [norm(-1.0, 0.5), norm(2.0, 1.5)],
+    )
+
+    unconstrained = dist.unconstrained_params
+    flat, unravel = ravel_pytree(unconstrained)
+    rebuilt = mixture.from_params(mixture.params_from_unconstrained(unravel(flat)))
+
+    assert flat.shape == (6,)
+    assert jnp.allclose(rebuilt.mixing_probs, dist.mixing_probs)
+    assert jnp.allclose(rebuilt.components[0].scale, dist.components[0].scale)
+
+
+def test_fit_params_names_analytic_fit_results():
+    data = jnp.array([-2.0, 0.0, 1.0, 3.0])
+    loc, scale = norm.fit(data)
+
+    fitted = norm.fit_params(data)
+
+    assert set(fitted) == {"loc", "scale"}
+    assert jnp.allclose(fitted["loc"], loc)
+    assert jnp.allclose(fitted["scale"], scale)
 
 
 def test_frozen_init_rejects_invalid_special_distribution_keywords():

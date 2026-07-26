@@ -7,6 +7,7 @@ in JAX with a SciPy-like API.
 """
 
 from probjax.stats.base import (
+    DistributionParams,
     DistributionAPI,
     rv_continuous,
     rv_continuous_frozen,
@@ -68,6 +69,7 @@ from probjax.stats.transformed import transformed
 
 __all__ = [
     # Base classes
+    'DistributionParams',
     'DistributionAPI',
     'rv_frozen',
     'rv_generic',

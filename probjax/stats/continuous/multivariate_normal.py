@@ -94,6 +94,7 @@ class multivariate_normal_gen(rv_multivariate):
         "precision_matrix": symmetric_positive_definite_matrix,
         "scale_tril": symmetric_positive_definite_matrix,
     }
+    parameter_aliases = {"covariance_matrix": "cov"}
     multivariate = True
 
     @classmethod

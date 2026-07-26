@@ -2,8 +2,8 @@
 Mixture Distribution (:mod:`probjax.stats.mixture`)
 =================================================
 
-This module implements mixture distributions that combine multiple component distributions
-with mixing probabilities.
+This module implements mixture distributions that combine multiple component
+distributions with mixing probabilities.
 """
 
 from typing import Optional, Sequence, Tuple
@@ -172,7 +172,8 @@ class mixture_gen(rv_generic):
             _NORM_GEN and all(isinstance(comp.dist, _NORM_GEN) for comp in components)
         ):
             raise NotImplementedError(
-                "Mode computation currently implemented only for univariate Normal mixtures."
+                "Mode computation currently implemented only for univariate "
+                "Normal mixtures."
             )
 
         dtype = mixing_probs.dtype
@@ -281,16 +282,16 @@ class mixture_gen(rv_generic):
         tol: float = 1e-4,
         rng_key: Optional[RngKey] = None,
     ):
-        """Fit a finite mixture model using a plain EM loop."""
+        """Fit a finite mixture model with analytic weighted M-steps."""
         if not components:
             raise ValueError("mixture.fit requires at least one component.")
         if not all(isinstance(comp, rv_frozen) for comp in components):
             raise TypeError(
-                "mixture.fit expects frozen component distributions (e.g. ``norm(loc, scale)``)."
+                "mixture.fit expects frozen component distributions "
+                "(e.g. ``norm(loc, scale)``)."
             )
 
-        if rng_key is None:
-            rng_key = random.PRNGKey(0)
+        del rng_key
 
         data = jnp.asarray(x)
         event_shape = components[0].event_shape
@@ -304,11 +305,13 @@ class mixture_gen(rv_generic):
         if event_shape:
             if data.ndim < len(event_shape):
                 raise ValueError(
-                    "Observations must have enough trailing dimensions to match the component event shape."
+                    "Observations must have enough trailing dimensions to match the "
+                    "component event shape."
                 )
             if tuple(data.shape[-len(event_shape) :]) != event_shape:
                 raise ValueError(
-                    "Trailing dimensions of the observations must match the component event shape."
+                    "Trailing dimensions of the observations must match the component "
+                    "event shape."
                 )
             data = jnp.reshape(data, (-1,) + event_shape)
         else:
@@ -332,205 +335,92 @@ class mixture_gen(rv_generic):
             mixing_probs = mixing_probs / jnp.sum(mixing_probs)
 
         component_dists = tuple(comp.dist for comp in components)
-        component_params = [
-            (
-                tuple(comp.args),
-                dict(comp.kwds),
-            )
-            for comp in components
-        ]
-        component_params = tuple(component_params)
-
+        component_params = tuple(comp.params for comp in components)
         tol_value = jnp.asarray(tol, dtype=numeric_dtype)
         data = data.astype(numeric_dtype)
-        prev_log_likelihood = jnp.asarray(-jnp.inf, dtype=numeric_dtype)
 
         def em_step(carry, _):
-            mixing_probs_curr, params_curr, prev_ll_curr, key_curr, done_curr = carry
-
-            def no_op(state):
-                mixing_probs_state, params_state, prev_ll_state, key_state = state
-                diff_state = jnp.asarray(0.0, dtype=numeric_dtype)
-                return (
-                    mixing_probs_state,
-                    params_state,
-                    prev_ll_state,
-                    key_state,
-                ), diff_state
+            mixing_curr, params_curr, previous_ll, done = carry
 
             def update(state):
-                mixing_probs_state, params_state, prev_ll_state, key_state = state
-
+                mixing_state, params_state, previous_ll_state = state
                 log_pdfs = jnp.stack(
                     [
-                        dist.logpdf(data, *args_i, **kwds_i)
-                        for dist, (args_i, kwds_i) in zip(
+                        dist.logpdf(data, **params)
+                        for dist, params in zip(
                             component_dists, params_state, strict=False
                         )
                     ],
                     axis=1,
                 )
-                log_weights = jnp.log(jnp.clip(mixing_probs_state, 1e-12)) + log_pdfs
+                log_weights = jnp.log(jnp.clip(mixing_state, 1e-12)) + log_pdfs
                 log_norm = jax.scipy.special.logsumexp(
                     log_weights, axis=1, keepdims=True
                 )
                 responsibilities = jnp.exp(log_weights - log_norm)
+                component_weights = jnp.sum(responsibilities, axis=0)
+                mixing_next = jnp.clip(
+                    component_weights / jnp.sum(component_weights), 1e-12
+                )
+                mixing_next /= jnp.sum(mixing_next)
 
-                Nk = jnp.sum(responsibilities, axis=0)
-                mixing_probs_new = jnp.clip(Nk / jnp.sum(Nk), 1e-12)
-                mixing_probs_new = mixing_probs_new / jnp.sum(mixing_probs_new)
-
-                split_keys = random.split(key_state, n_components + 1)
-                key_new = split_keys[0]
-                component_keys = split_keys[1:]
-
-                new_params = []
-
-                for idx, (dist, (args_i, kwds_i)) in enumerate(
+                params_next = []
+                for index, (dist, params) in enumerate(
                     zip(component_dists, params_state, strict=False)
                 ):
-                    weights = jnp.asarray(responsibilities[:, idx])
-                    dtype = jnp.result_type(data.dtype, weights.dtype, jnp.float32)
-                    weights = weights.astype(dtype)
-                    typed_data = data.astype(dtype)
-                    total_weight = jnp.sum(weights)
+                    weights = responsibilities[:, index]
+                    total_weight = component_weights[index]
+                    normalized_weights = weights / jnp.maximum(total_weight, 1e-12)
 
-                    def coerce(value):
-                        if isinstance(value, jnp.ndarray):
-                            return value.astype(dtype)
-                        return value
-
-                    args_typed = tuple(coerce(arg) for arg in args_i)
-                    kwds_typed = {k: coerce(v) for k, v in kwds_i.items()}
-
-                    def apply_params(params_out):
-                        if isinstance(params_out, dict):
-                            updated_args = args_typed
-                            updated_kwds = dict(kwds_typed)
-                            for name, value in params_out.items():
-                                updated_kwds[name] = coerce(value)
-                            return updated_args, updated_kwds
-
-                        params_seq = (
-                            params_out
-                            if isinstance(params_out, tuple)
-                            else (params_out,)
-                        )
-                        updated_args_list = list(args_typed)
-                        max_pos = min(len(params_seq), len(updated_args_list))
-                        for pos in range(max_pos):
-                            updated_args_list[pos] = coerce(params_seq[pos])
-
-                        updated_kwds = dict(kwds_typed)
-                        remaining = params_seq[len(updated_args_list) :]
-                        if remaining:
-                            param_names = list(getattr(dist, "parameters", {}).keys())
-                            positional = param_names[: len(updated_args_list)]
-                            remaining_names = [
-                                name for name in param_names if name not in positional
-                            ]
-                            preferred = [
-                                name for name in remaining_names if name in updated_kwds
-                            ]
-                            fallback = [
-                                name
-                                for name in remaining_names
-                                if name not in updated_kwds
-                            ]
-                            ordered = (preferred + fallback)[: len(remaining)]
-                            if len(ordered) < len(remaining):
-                                extra = [
-                                    name
-                                    for name in param_names
-                                    if name not in positional and name not in ordered
-                                ]
-                                ordered += extra[: len(remaining) - len(ordered)]
-                            for name, value in zip(ordered, remaining, strict=False):
-                                updated_kwds[name] = coerce(value)
-
-                        return tuple(updated_args_list), updated_kwds
-
-                    def reinit_branch(key_inner):
-                        del (
-                            key_inner
-                        )  # PRNG key unused when returning current parameters
-                        return args_typed, kwds_typed
-
-                    def update_branch(key_inner):
-                        del key_inner
-                        normalised_weights = weights / jnp.asarray(
-                            jnp.maximum(total_weight, jnp.asarray(1e-12, dtype=dtype)),
-                            dtype=dtype,
-                        )
-
+                    def fit_component(
+                        _, dist=dist, normalized_weights=normalized_weights
+                    ):
                         try:
-                            params_out = dist.fit(
-                                typed_data, weights=normalised_weights
-                            )
+                            return dist.fit_params(data, weights=normalized_weights)
                         except TypeError:
-                            params_out = dist.fit(typed_data)
-                        return apply_params(params_out)
+                            return dist.fit_params(data)
 
-                    params_updated = lax.cond(
-                        total_weight <= jnp.asarray(1e-10, dtype=dtype),
-                        reinit_branch,
-                        update_branch,
-                        component_keys[idx],
+                    params_next.append(
+                        lax.cond(
+                            total_weight > 1e-10,
+                            fit_component,
+                            lambda _, params=params: params,
+                            operand=None,
+                        )
                     )
-                    new_params.append(params_updated)
-
-                params_next = tuple(new_params)
 
                 log_likelihood = jnp.mean(log_norm)
-                diff_next = jnp.abs(log_likelihood - prev_ll_state)
-                diff_next = jnp.where(
-                    jnp.isfinite(prev_ll_state),
-                    diff_next,
+                difference = jnp.where(
+                    jnp.isfinite(previous_ll_state),
+                    jnp.abs(log_likelihood - previous_ll_state),
                     jnp.asarray(jnp.inf, dtype=numeric_dtype),
                 )
                 return (
-                    mixing_probs_new,
-                    params_next,
+                    mixing_next,
+                    tuple(params_next),
                     log_likelihood,
-                    key_new,
-                ), diff_next
-
-            (mixing_probs_next, params_next, prev_ll_next, key_next), diff_next = (
-                lax.cond(
-                    done_curr,
-                    no_op,
-                    update,
-                    (mixing_probs_curr, params_curr, prev_ll_curr, key_curr),
+                    difference <= tol_value,
                 )
-            )
 
-            converged = jnp.isfinite(prev_ll_next) & (diff_next <= tol_value)
-            done_next = done_curr | converged
-            return (
-                mixing_probs_next,
-                params_next,
-                prev_ll_next,
-                key_next,
-                done_next,
-            ), diff_next
+            return lax.cond(
+                done,
+                lambda state: (*state, jnp.asarray(True)),
+                update,
+                (mixing_curr, params_curr, previous_ll),
+            ), None
 
-        init_carry = (
+        initial = (
             mixing_probs,
             component_params,
-            prev_log_likelihood,
-            rng_key,
+            jnp.asarray(-jnp.inf, dtype=numeric_dtype),
             jnp.asarray(False),
         )
-        final_carry, _ = lax.scan(em_step, init_carry, xs=None, length=int(max_iter))
-        mixing_probs_final, params_final, _, _, _ = final_carry
-
-        fitted_components = []
-        for dist, (args, kwds) in zip(component_dists, params_final, strict=False):
-            norm_args, norm_kwds = dist._parse_args(*args, **kwds)
-            component = dist(*norm_args, **norm_kwds)
-            component.args = norm_args
-            component.kwds = norm_kwds
-            fitted_components.append(component)
+        final, _ = lax.scan(em_step, initial, xs=None, length=int(max_iter))
+        mixing_probs_final, params_final, _, _ = final
+        fitted_components = [
+            dist.from_params(params)
+            for dist, params in zip(component_dists, params_final, strict=False)
+        ]
         return mixing_probs_final, fitted_components
 
 

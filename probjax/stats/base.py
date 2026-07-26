@@ -3,7 +3,7 @@ Statistical Distributions Base Classes (:mod:`probjax.stats.base`)
 =================================================================
 
 This module contains the base classes for continuous and discrete random variables
-that provide a SciPy-like API. This closely follows the structure of scipy.stats._distn_infrastructure.
+that provide a SciPy-like API. It follows scipy.stats._distn_infrastructure.
 """
 
 from __future__ import annotations
@@ -15,11 +15,13 @@ from typing import Any, ClassVar, Mapping, Optional, Tuple, cast
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.flatten_util import ravel_pytree
 
-from probjax.stats.constraints import Constraint
+import probjax.stats.constraints as stats_constraints
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = [
+    "DistributionParams",
     "rv_generic",
     "rv_continuous",
     "rv_multivariate",
@@ -39,11 +41,30 @@ class _FrozenArgs:
     parameter_values: dict[str, Any]
 
 
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class DistributionParams:
+    """Unconstrained parameters with a distribution stored as static metadata."""
+
+    dist: Any
+    params: Mapping[str, Any]
+
+    def tree_flatten(self):
+        return (dict(self.params),), self.dist
+
+    @classmethod
+    def tree_unflatten(cls, dist, children):
+        return cls(dist, children[0])
+
+    def constrain(self) -> "rv_frozen":
+        return self.dist.from_params(self.dist.params_from_unconstrained(self.params))
+
+
 class rv_generic(ABC):
     """Generic random variable class for common functionality."""
 
     name: ClassVar[Optional[str]] = None
-    parameters: ClassVar[Mapping[str, Constraint]] = {}
+    parameters: ClassVar[Mapping[str, stats_constraints.Constraint]] = {}
     parameter_aliases: ClassVar[Mapping[str, str]] = {}
     extra_frozen_kwds: ClassVar[frozenset[str]] = frozenset()
 
@@ -83,7 +104,7 @@ class rv_generic(ABC):
                 dist=self,
             ),
         )
-        setattr(self, "_frozen_cls_cache", frozen_cls)
+        self._frozen_cls_cache = frozen_cls
         return frozen_cls
 
     @staticmethod
@@ -125,9 +146,9 @@ class rv_generic(ABC):
         parameter_values = {
             name: value for name, value in zip(parameters, args, strict=False)
         }
-        parameter_values.update(
-            {name: kwds_dict[name] for name in parameters if name in kwds_dict}
-        )
+        parameter_values.update({
+            name: kwds_dict[name] for name in parameters if name in kwds_dict
+        })
         return _FrozenArgs(args=args, kwds=kwds_dict, parameter_values=parameter_values)
 
     def _freeze_as(
@@ -152,6 +173,69 @@ class rv_generic(ABC):
     def freeze(self, *args: Any, **kwds: Any) -> "rv_frozen":
         """Freeze the distribution for the given arguments."""
         return self._freeze_as(rv_frozen, *args, **kwds)
+
+    def from_params(
+        self, params: Optional[Mapping[str, Any]] = None, **kwds: Any
+    ) -> "rv_frozen":
+        """Create a frozen distribution from name-keyed parameters."""
+        values = dict(params or {})
+        values.update(kwds)
+        args = []
+        for name in self.parameters:
+            if name not in values:
+                break
+            args.append(values.pop(name))
+        return self.freeze(*args, **values)
+
+    @classmethod
+    def params_to_unconstrained(cls, params: Mapping[str, Any]) -> dict[str, Any]:
+        """Map constrained parameters to an optimization-friendly pytree."""
+        from probjax.stats.constraint_registry import biject_to
+
+        unconstrained = {}
+        for name, value in params.items():
+            constraint = cls.parameters.get(name)
+            if isinstance(constraint, stats_constraints.Distribution):
+                unconstrained[name] = jax.tree_util.tree_map(
+                    lambda component: DistributionParams(
+                        component.dist, component.unconstrained_params
+                    ),
+                    value,
+                    is_leaf=lambda component: isinstance(component, rv_frozen),
+                )
+                continue
+            if not isinstance(constraint, stats_constraints.Constraint):
+                unconstrained[name] = value
+                continue
+            try:
+                unconstrained[name] = biject_to(constraint).inv(value)
+            except NotImplementedError:
+                unconstrained[name] = value
+        return unconstrained
+
+    @classmethod
+    def params_from_unconstrained(cls, params: Mapping[str, Any]) -> dict[str, Any]:
+        """Map unconstrained parameters back to their declared supports."""
+        from probjax.stats.constraint_registry import biject_to
+
+        constrained = {}
+        for name, value in params.items():
+            constraint = cls.parameters.get(name)
+            if isinstance(constraint, stats_constraints.Distribution):
+                constrained[name] = jax.tree_util.tree_map(
+                    lambda component: component.constrain(),
+                    value,
+                    is_leaf=lambda component: isinstance(component, DistributionParams),
+                )
+                continue
+            if not isinstance(constraint, stats_constraints.Constraint):
+                constrained[name] = value
+                continue
+            try:
+                constrained[name] = biject_to(constraint)(value)
+            except NotImplementedError:
+                constrained[name] = value
+        return constrained
 
     def rvs(
         self,
@@ -181,7 +265,7 @@ class rv_generic(ABC):
 
     @classmethod
     @abstractmethod
-    def support(cls, *args, **kwds) -> Constraint:
+    def support(cls, *args, **kwds) -> stats_constraints.Constraint:
         """Support of the distribution."""
         ...
 
@@ -369,6 +453,38 @@ class rv_generic(ABC):
         """
         raise NotImplementedError("Not implemented for this distribution.")
 
+    @classmethod
+    def fit_params(cls, data: ArrayLike, **kwds: Any) -> dict[str, Any]:
+        """Fit and return parameters keyed by their declared names."""
+        fitted = cls.fit(data, **kwds)
+        values = fitted if isinstance(fitted, tuple) else (fitted,)
+        return dict(zip(cls.parameters, values, strict=False))
+
+    @classmethod
+    def _fit_mle(cls, data: ArrayLike, **kwds: Any) -> tuple[Array, ...]:
+        """Fit by optimizing the likelihood in unconstrained parameter space."""
+        from jax.scipy.optimize import minimize
+
+        init_params = {}
+        for name in cls.parameters:
+            if name not in kwds:
+                raise ValueError(f"Provide an initial value for parameter {name!r}.")
+            init_params[name] = jnp.asarray(kwds.pop(name))
+
+        initial, unravel = ravel_pytree(cls.params_to_unconstrained(init_params))
+
+        def objective(flat_params):
+            params = cls.params_from_unconstrained(unravel(flat_params))
+            return -jnp.sum(cls.logpdf(data, **params))
+
+        result = minimize(objective, initial, method="BFGS", **kwds)
+        if not bool(jnp.all(jnp.isfinite(result.x))):
+            message = getattr(result, "message", "unknown error")
+            raise ValueError(f"Optimization failed: {message}")
+
+        fitted = cls.params_from_unconstrained(unravel(result.x))
+        return tuple(fitted[name] for name in cls.parameters)
+
 
 class rv_exponential_family(rv_generic):
     """Base class for exponential family random variables."""
@@ -396,91 +512,8 @@ class rv_exponential_family(rv_generic):
 
     @classmethod
     def fit(cls, data: ArrayLike, **kwds: Any) -> tuple[Array, ...]:
-        """Maximum likelihood estimation of distribution parameters using sufficient
-        statistics.
-
-        For exponential family distributions, the MLE can be computed efficiently using
-        sufficient statistics. The natural parameters are found by solving the equation:
-
-            E[T(X)] = T(x)
-
-        where T(X) is the sufficient statistic and T(x) is the observed sufficient
-        statistic.
-
-        Parameters
-        ----------
-        data : array_like
-            Data to fit the distribution to
-        **kwds : dict, optional
-            Additional parameters for the optimization
-
-        Returns
-        -------
-        params : tuple
-            The fitted parameters of the distribution
-        """
-        data = jnp.asarray(data)
-
-        # Compute sufficient statistics
-        T = cls.sufficient_statistics(data)
-
-        # Get initial parameters from kwds or use defaults
-        init_params: dict[str, Array] = {}
-        for param_name, constraint in cls.parameters.items():
-            if param_name in kwds:
-                init_params[param_name] = kwds.pop(param_name)
-            else:
-                # Use default value from constraint
-                default_value = getattr(constraint, "default_value", None)
-                if default_value is None:
-                    raise ValueError(
-                        f"Constraint {constraint!r} lacks a default value for parameter"
-                        f" '{param_name}'. Provide an explicit initial value."
-                    )
-                init_params[param_name] = jnp.asarray(default_value)
-
-        # Convert to flat array for optimization
-        init_flat = jnp.concatenate([jnp.ravel(v) for v in init_params.values()])
-
-        def neg_log_likelihood(params_flat: Array) -> Array:
-            # Reshape parameters according to their original shapes
-            start_idx = 0
-            params: dict[str, Array] = {}
-            for param_name, param_value in init_params.items():
-                param_size = jnp.size(param_value)
-                param_shape = jnp.shape(param_value)
-                param = params_flat[start_idx : start_idx + param_size].reshape(
-                    param_shape
-                )
-                params[param_name] = param
-                start_idx += param_size
-
-            # Get natural parameters
-            eta = cls.natural_parameters(**params)
-
-            # Compute negative log likelihood using sufficient statistics
-            return -jnp.sum(eta * T - cls.log_partition(eta))
-
-        # Optimize
-        from jax.scipy.optimize import minimize
-
-        result = minimize(neg_log_likelihood, init_flat, method="BFGS", **kwds)
-
-        if not result.success:
-            message = getattr(result, "message", "unknown error")
-            raise ValueError(f"Optimization failed: {message}")
-
-        # Reshape parameters back to their original shapes
-        start_idx = 0
-        fitted_params: dict[str, Array] = {}
-        for param_name, param_value in init_params.items():
-            param_size = jnp.size(param_value)
-            param_shape = jnp.shape(param_value)
-            param = result.x[start_idx : start_idx + param_size].reshape(param_shape)
-            fitted_params[param_name] = param
-            start_idx += param_size
-
-        return tuple(fitted_params.values())
+        """Maximum likelihood estimation in unconstrained parameter space."""
+        return cls._fit_mle(data, **kwds)
 
 
 class rv_continuous(rv_generic):
@@ -506,79 +539,8 @@ class rv_continuous(rv_generic):
 
     @classmethod
     def fit(cls, data: ArrayLike, **kwds: Any) -> tuple[Array, ...]:
-        """Maximum likelihood estimation of distribution parameters.
-
-        For continuous distributions, the MLE is found by maximizing the log-likelihood
-        using the logpdf function.
-
-        Parameters
-        ----------
-        data : array_like
-            Data to fit the distribution to
-        **kwds : dict, optional
-            Additional parameters for the optimization
-
-        Returns
-        -------
-        params : tuple
-            The fitted parameters of the distribution
-        """
-        data = jnp.asarray(data)
-
-        # Get initial parameters from kwds or use defaults
-        init_params: dict[str, Array] = {}
-        for param_name, constraint in cls.parameters.items():
-            if param_name in kwds:
-                init_params[param_name] = kwds.pop(param_name)
-            else:
-                # Use default value from constraint
-                default_value = getattr(constraint, "default_value", None)
-                if default_value is None:
-                    raise ValueError(
-                        f"Constraint {constraint!r} lacks a default value for parameter"
-                        f" '{param_name}'. Provide an explicit initial value."
-                    )
-                init_params[param_name] = jnp.asarray(default_value)
-
-        # Convert to flat array for optimization
-        init_flat = jnp.concatenate([jnp.ravel(v) for v in init_params.values()])
-
-        def neg_log_likelihood(params_flat: Array) -> Array:
-            # Reshape parameters according to their original shapes
-            start_idx = 0
-            params: dict[str, Array] = {}
-            for param_name, param_value in init_params.items():
-                param_size = jnp.size(param_value)
-                param_shape = jnp.shape(param_value)
-                param = params_flat[start_idx : start_idx + param_size].reshape(
-                    param_shape
-                )
-                params[param_name] = param
-                start_idx += param_size
-
-            # Compute negative log likelihood using logpmf
-            return -jnp.sum(cls.logpdf(data, **params))
-
-        # Optimize
-        from jax.scipy.optimize import minimize
-
-        result = minimize(neg_log_likelihood, init_flat, method="BFGS", **kwds)
-
-        if not result.success:
-            message = getattr(result, "message", "unknown error")
-            raise ValueError(f"Optimization failed: {message}")
-
-        # Reshape parameters back to their original shapes
-        start_idx = 0
-        fitted_params: dict[str, Array] = {}
-        for param_name, param_value in init_params.items():
-            param_size = jnp.size(param_value)
-            param_shape = jnp.shape(param_value)
-            param = result.x[start_idx : start_idx + param_size].reshape(param_shape)
-            fitted_params[param_name] = param
-            start_idx += param_size
-
-        return tuple(fitted_params.values())
+        """Maximum likelihood estimation in unconstrained parameter space."""
+        return cls._fit_mle(data, **kwds)
 
 
 class rv_multivariate(rv_continuous):
@@ -807,7 +769,7 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
         self.dist = dist
 
         self._parameter_values = dict(frozen_args.parameter_values)
-        self._parameter_aliases = self._build_parameter_aliases()
+        self._parameter_aliases = dict(getattr(self.dist, "parameter_aliases", {}))
         self._call_kwds = self._build_call_kwargs()
 
         self._batch_shape, self._event_shape = self._compute_batch_and_event_shape(
@@ -821,35 +783,6 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
 
         super().__init__()
 
-    def _build_parameter_dict(self) -> dict[str, Any]:
-        """Bind parameter names to values based on the distribution signature."""
-        parameters = tuple(getattr(self.dist, "parameters", {}).keys())
-        values: dict[str, Any] = {}
-        for idx, name in enumerate(parameters):
-            if idx < len(self.args):
-                values[name] = self.args[idx]
-        for name in parameters:
-            if name in self.kwds:
-                values[name] = self.kwds[name]
-        return values
-
-    def _build_parameter_aliases(self) -> dict[str, str]:
-        """Build alias lookup table for distribution parameters."""
-        aliases = dict(getattr(self.dist, "parameter_aliases", {}))
-        if (
-            "alpha" in self._parameter_values
-            and "concentration" not in self._parameter_values
-        ):
-            aliases.setdefault("concentration", "alpha")
-        if "beta" in self._parameter_values and "rate" not in self._parameter_values:
-            aliases.setdefault("rate", "beta")
-        if (
-            "cov" in self._parameter_values
-            and "covariance_matrix" not in self._parameter_values
-        ):
-            aliases.setdefault("covariance_matrix", "cov")
-        return aliases
-
     def _build_call_kwargs(self) -> dict[str, Any]:
         """Build canonical kwargs for calling distribution methods."""
         call_kwds = dict(self.kwds)
@@ -859,15 +792,8 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
                 call_kwds[name] = self.args[idx]
         return call_kwds
 
-    def _refresh_parameter_state(self) -> None:
-        """Refresh cached parameter mappings after state updates."""
-        self._parameter_values = self._build_parameter_dict()
-        self._parameter_aliases = self._build_parameter_aliases()
-        self._call_kwds = self._build_call_kwargs()
-
     def _call_dist(self, method_name: str, *args: Any, **kwds: Any) -> Any:
         """Call a distribution method using canonical frozen parameters."""
-        self._refresh_parameter_state()
         method = getattr(self.dist, method_name)
         call_kwds = dict(self._call_kwds)
         call_kwds.update(kwds)
@@ -882,7 +808,6 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
     ) -> Array:
         from probjax.core.custom_primitives.random_variable import rv_p
 
-        self._refresh_parameter_state()
         call_kwds = dict(self._call_kwds)
         call_kwds.update(kwargs)
 
@@ -925,7 +850,8 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
 
         if len(batch_shapes) > num_params:
             raise ValueError(
-                f"Too many args/kwargs provided for distribution {self.dist.__class__.__name__}."
+                "Too many args/kwargs provided for distribution "
+                f"{self.dist.__class__.__name__}."
                 f"Expected {self.dist.parameters} shapes, got {len(batch_shapes)}."
             )
 
@@ -948,9 +874,18 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
     def event_shape(self) -> Tuple[int, ...]:
         return self._event_shape
 
+    @property
+    def params(self) -> dict[str, Any]:
+        """Name-keyed constrained parameters."""
+        return dict(self._parameter_values)
+
+    @property
+    def unconstrained_params(self) -> dict[str, Any]:
+        """Name-keyed parameters mapped through the constraint registry."""
+        return self.dist.params_to_unconstrained(self.params)
+
     def __getattr__(self, name: str) -> Any:
         """Expose frozen parameters as attributes for SciPy-like ergonomics."""
-        self._refresh_parameter_state()
         if name in self._parameter_values:
             return self._parameter_values[name]
         alias = self._parameter_aliases.get(name)
@@ -1047,7 +982,8 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
         Parameters
         ----------
         q : array_like
-            Probability at which to evaluate the inverse cumulative distribution function.
+            Probability at which to evaluate the inverse cumulative distribution
+            function.
 
         Returns
         -------
@@ -1261,7 +1197,8 @@ class rv_continuous_frozen(rv_frozen):
         Parameters
         ----------
         q : array_like
-            Probability at which to evaluate the inverse cumulative distribution function.
+            Probability at which to evaluate the inverse cumulative distribution
+            function.
 
         Returns
         -------

@@ -2,7 +2,8 @@
 Independent Distribution (:mod:`probjax.stats.indep`)
 ====================================================
 
-This module contains the Independent distribution, which treats a distribution as a batch of independent distributions.
+This module contains the Independent distribution, which treats a distribution as a
+batch of independent distributions.
 """
 
 from typing import Optional, Sequence, Tuple, Union
@@ -13,7 +14,7 @@ from jax import random
 from probjax.utils.typing import RngKey
 
 from .base import rv_continuous_frozen, rv_generic
-from .constraints import distribution
+from .constraints import distribution, non_negative_integer
 
 __all__ = ["indep"]
 
@@ -44,7 +45,7 @@ def determine_shapes(
         "Event dimensions must be equal for all base distributions."
     )
 
-    # For each distribution, reinterpret batch dimensions as event dimensions if applicable
+    # Reinterpret batch dimensions as event dimensions where applicable.
     new_event_shapes = []
     new_batch_shapes = []
 
@@ -94,9 +95,7 @@ class rv_frozen_indep(rv_continuous_frozen):
     """Frozen independent distribution."""
 
     def __init__(self, dist, base_dists, reinterpreted_batch_ndims, **kwargs):
-        super().__init__(dist, **kwargs)
-        self.args = (base_dists,)
-        self.kwds = {"reinterpreted_batch_ndims": reinterpreted_batch_ndims}
+        super().__init__(dist, base_dists, reinterpreted_batch_ndims, **kwargs)
         batch_shape, event_shape, split_dims, split_indices = determine_shapes(
             base_dists, reinterpreted_batch_ndims
         )
@@ -104,8 +103,14 @@ class rv_frozen_indep(rv_continuous_frozen):
         self._event_shape = event_shape
         self.split_dims = split_dims
         self.split_indices = split_indices
-        self.reinterpreted_batch_ndims = reinterpreted_batch_ndims
-        self.base_dists = base_dists
+
+    def _compute_batch_and_event_shape(
+        self, base_dists, reinterpreted_batch_ndims, **kwargs
+    ):
+        batch_shape, event_shape, _, _ = determine_shapes(
+            base_dists, reinterpreted_batch_ndims
+        )
+        return batch_shape, event_shape
 
 
 class indep_gen(rv_generic):
@@ -125,6 +130,7 @@ class indep_gen(rv_generic):
 
     parameters = {
         "base_dists": distribution,
+        "reinterpreted_batch_ndims": non_negative_integer,
     }
 
     def __init__(self, name: Optional[str] = None):
@@ -188,7 +194,9 @@ class indep_gen(rv_generic):
         split_value = jnp.split(x, split_indices, axis=-1)
 
         # Compute CDF for each base distribution
-        cdf = jnp.prod([d.cdf(v) for d, v in zip(base_dists, split_value, strict=False)])
+        cdf = jnp.prod([
+            d.cdf(v) for d, v in zip(base_dists, split_value, strict=False)
+        ])
 
         # Product up to be of shape reinterpreted_batch_ndims
         for _ in range(reinterpreted_batch_ndims):
@@ -276,10 +284,11 @@ class indep_gen(rv_generic):
         base_dists : Sequence[rv_continuous_frozen]
             The base distributions to fit.
         reinterpreted_batch_ndims : int, optional
-            The number of batch dimensions that should be considered as event dimensions.
+            The number of batch dimensions that should be considered as event
+            dimensions.
             Default is 1.
         **kwargs
-            Additional keyword arguments passed to the fit method of each base distribution.
+            Additional keyword arguments passed to each base distribution's fit method.
 
         Returns
         -------
@@ -294,7 +303,9 @@ class indep_gen(rv_generic):
         split_data = jnp.split(data, split_indices, axis=-1)
 
         # Fit each base distribution
-        fitted_dists = [d.fit(dat, **kwargs) for d, dat in zip(base_dists, split_data, strict=False)]
+        fitted_dists = [
+            d.fit(dat, **kwargs) for d, dat in zip(base_dists, split_data, strict=False)
+        ]
 
         return fitted_dists
 

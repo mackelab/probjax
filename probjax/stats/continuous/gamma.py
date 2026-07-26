@@ -37,6 +37,7 @@ class gamma_gen(rv_continuous, rv_exponential_family):
 
     # Define parameter constraints
     parameters = {'alpha': strict_positive, 'beta': strict_positive}
+    parameter_aliases = {'concentration': 'alpha', 'rate': 'beta'}
 
     @classmethod
     def support(cls, alpha=1.0, beta=1.0, **kwargs):

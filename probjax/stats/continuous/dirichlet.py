@@ -38,6 +38,7 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
 
     name = "dirichlet"
     parameters = {"alpha": positive}
+    parameter_aliases = {"concentration": "alpha"}
     multivariate = True
 
     @classmethod

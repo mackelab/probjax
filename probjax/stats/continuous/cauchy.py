@@ -395,6 +395,8 @@ class cauchy_gen(rv_continuous):
             return -jnp.sum(cls.logpdf(data, loc=loc, scale=scale))
 
         result = jax_minimize(neg_log_lik, init_flat, method="BFGS")
+        if not result.success or not bool(jnp.all(jnp.isfinite(result.x))):
+            return loc_init, scale_init
         fitted = result.x
         loc = fitted[0]
         scale = jnp.exp(fitted[1])
