@@ -1,6 +1,6 @@
 # Probjax
 
-[![Python Version](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE.txt)
 
 Probjax is a powerful library for probabilistic computation in JAX, designed to simplify the development of probabilistic models and inference algorithms. It provides a comprehensive set of tools for building, training, and deploying probabilistic models with high performance and flexibility.
@@ -38,23 +38,23 @@ Built on top of [Haiku](https://github.com/deepmind/dm-haiku), featuring:
 
 ### Basic Installation
 ```bash
-pip install -e probjax
+pip install probjax
 ```
 
 ### Installing with uv
 You can use [uv](https://github.com/astral-sh/uv) for faster and more reliable Python package management:
 ```bash
-uv pip install -e probjax
+uv pip install probjax
 ```
 
 For CUDA 12 support with GPU acceleration:
 ```bash
-pip install -e "probjax[cuda12]"
+pip install "probjax[cuda12]"
 ```
 
 For Apple Silicon (Metal) GPU acceleration:
 ```bash
-pip install -e "probjax[metal]"
+pip install "probjax[metal]"
 ```
 
 Then select the Metal backend at runtime (recommended via env var):
@@ -71,12 +71,14 @@ import jax
 print(jax.devices())  # should list Metal devices
 ```
 
-Requirements: macOS 12+ on Apple Silicon (M1/M2/M3), recent Xcode Command Line Tools, Python 3.9–3.12.
+Requirements: macOS 12+ on Apple Silicon, recent Xcode Command Line Tools, and Python 3.11 or later.
 
 ### Development Installation
 For development and testing:
 ```bash
-pip install -e "probjax[dev]"
+git clone https://github.com/mackelab/probjax.git
+cd probjax
+pip install -e ".[dev]"
 ```
 
 
@@ -126,6 +128,6 @@ If you use Probjax in your research, please cite:
   title = {Probjax: Probabilistic computation in JAX},
   year = {2024},
   publisher = {GitHub},
-  url = {https://github.com/yourusername/probjax}
+  url = {https://github.com/mackelab/probjax}
 }
 ```

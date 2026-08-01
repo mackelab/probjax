@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "probjax"
 description = "Jax library for probabilistic computations"
-version = "0.1.0"  # Update to match your version
+version = "0.1.1"
 requires-python = ">=3.11"
 authors = [
     { name = "Manuel Gloeckler", email = "manuel.gloeckler@uni-tuebingen.de" }
@@ -24,20 +24,20 @@ classifiers = [
     "Operating System :: MacOS :: MacOS X",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 keywords = ["probabilistic", "jax", "computation"]
 dependencies = [
     "numpy >= 2.0.0",
     "matplotlib",
-    "jax >= 0.4.34",
-    "jaxlib >= 0.4.34",
+    "jax >= 0.8.0, < 0.9",
+    "jaxlib >= 0.8.0, < 0.9",
     "chex",
     "einops",
     "optax",
-    "flax >= 0.12.0",
+    "flax >= 0.12.0, < 0.12.1",
     "jaxtyping",
     "ott-jax",
     "networkx",
@@ -50,13 +50,14 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-cov",
     "ruff",
     "pytest-xdist",
     "scipy",
 ]
 cuda12 = [
-    "jax[cuda12]>=0.4.34",
-    "jaxlib[cuda12]>=0.4.34",
+    "jax[cuda12]>=0.8.0,<0.9",
+    "jaxlib[cuda12]>=0.8.0,<0.9",
 ]
 metal = [
     "jax-metal",
@@ -65,7 +66,12 @@ metal = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-exclude = ["tests", "*.tests", "*.tests.*", "tests.*"]
+include = ["probjax*"]
+
+[project.urls]
+Homepage = "https://github.com/mackelab/probjax"
+Repository = "https://github.com/mackelab/probjax"
+Issues = "https://github.com/mackelab/probjax/issues"
 
 [tool.ruff]
 line-length = 88
