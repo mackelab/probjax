@@ -12,6 +12,14 @@ provides ``inverse`` / ``inverse_and_logdet`` methods (as the
 autoregressive flow modules do), those are used directly; otherwise the
 inverse is derived automatically from the forward jaxpr via
 :func:`probjax.core.inverse_and_logabsdet`.
+
+Note that the bijections in this package are *not* the fast path here: a
+:class:`~probjax.core.custom_inverse` object exposes ``inv`` /
+``inv_and_logdet`` / ``value_and_logdet``, not ``inverse`` /
+``inverse_and_logdet``, so :func:`ensure_invertible` always wraps them in
+``_AutoInvertedTransform``. That still resolves to the registered inverse —
+tracing the forward hits ``custom_inverse_call_p``, whose rule pulls the
+registered thunk — it just goes via the jaxpr rather than a direct method call.
 """
 
 from typing import Optional, Protocol, Tuple, runtime_checkable

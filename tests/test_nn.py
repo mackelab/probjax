@@ -478,7 +478,7 @@ def test_public_import_surface():
         "probjax.nn",
         "probjax.nn.losses",
         "probjax.nn.generative",
-        "probjax.nn.generative.flows",
+        "probjax.nn.generative.nflows",
         "probjax.nn.generative.diffusion",
         "probjax.nn.generative.flow_matching",
         "probjax.nn.generative.mean_flow",

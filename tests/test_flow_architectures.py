@@ -3,53 +3,58 @@ import jax.numpy as jnp
 import pytest
 from flax import nnx
 
+from probjax.core import inverse_and_logabsdet
 from probjax.nn import bpf, gf, naf, sospf, unaf
-from probjax.stats.bijective.monotone import (
-    _bernstein_value_and_logdet,
-    _dsf_value_and_logdet,
-    _mixture_cdf_value_and_logdet,
-    _sos_value_and_logdet,
-    _umnn_value_and_logdet,
-    bernstein_bijector,
-    deep_sigmoid_bijector,
-    mixture_cdf_bijector,
-    sos_polynomial_bijector,
-    unconstrained_monotone_bijector,
+from probjax.nn.generative.nflows import (
+    BernsteinBijectorConfig,
+    DeepSigmoidBijectorConfig,
+    MixtureCDFBijectorConfig,
+    SumOfSquaresBijectorConfig,
+    UMNNBijectorConfig,
+)
+from probjax.stats.bijective import (
+    inv_bernstein,
+    inv_deep_sigmoid,
+    inv_mixture_cdf,
+    inv_sos_polynomial,
+    inv_unconstrained_monotone,
 )
 
+# (name, bijector config, analytic data -> base direction)
 BIJECTORS = [
-    ("dsf", deep_sigmoid_bijector, _dsf_value_and_logdet, 9),
-    ("umnn", unconstrained_monotone_bijector, _umnn_value_and_logdet, 11),
-    ("sos", sos_polynomial_bijector, _sos_value_and_logdet, 9),
-    ("bernstein", bernstein_bijector, _bernstein_value_and_logdet, 8),
-    ("mixcdf", mixture_cdf_bijector, _mixture_cdf_value_and_logdet, 9),
+    ("dsf", DeepSigmoidBijectorConfig(num_components=3), inv_deep_sigmoid),
+    ("umnn", UMNNBijectorConfig(num_hidden=3), inv_unconstrained_monotone),
+    ("sos", SumOfSquaresBijectorConfig(num_polys=2, degree=3), inv_sos_polynomial),
+    ("bernstein", BernsteinBijectorConfig(degree=8), inv_bernstein),
+    ("mixcdf", MixtureCDFBijectorConfig(num_components=3), inv_mixture_cdf),
 ]
 
 FLOWS = [naf, unaf, sospf, bpf, gf]
 
 
-@pytest.mark.parametrize("name,forward,analytic,bijector_dim", BIJECTORS)
-def test_monotone_bijector_roundtrip_and_logdet(name, forward, analytic, bijector_dim):
+@pytest.mark.parametrize("name,config,analytic", BIJECTORS)
+def test_monotone_bijector_roundtrip_and_logdet(name, config, analytic):
     params = 0.3 * jax.random.normal(
-        jax.random.key(abs(hash(name)) % 100), (3, bijector_dim)
+        jax.random.key(abs(hash(name)) % 100), (3, config.params_dim())
     )
     x = jnp.array([-1.2, 0.1, 2.3])
 
     # forward (root solve) then analytic inverse recovers x
-    y = forward(params, x)
-    x_rec, logdet = analytic(params, y)
+    y = config(params, x)
+    x_rec, logdet = inverse_and_logabsdet(config, invertible_arg=1)(params, y)
     assert jnp.allclose(x_rec, x, atol=1e-3)
 
-    # analytic logdet matches autodiff of the analytic map
-    grad = jax.vmap(jax.grad(lambda t, p: analytic(p[None], t[None])[0][0], argnums=0))(
-        y, params
-    )
-    assert jnp.allclose(logdet, jnp.log(jnp.abs(grad)), atol=1e-4)
+    # the analytic log-det matches autodiff of the analytic map, summed over
+    # the batch (inverse_and_logabsdet reduces it)
+    def analytic_value(t, p):
+        return analytic(t, *config.unpack(p))[0]
 
-    # zero params give a well-conditioned (near-identity) map
-    _, logdet0 = analytic(jnp.zeros((3, bijector_dim)), x)
-    slope = jnp.exp(logdet0)
-    assert jnp.all(slope > 0.3) and jnp.all(slope < 3.0)
+    grad = jax.vmap(jax.grad(analytic_value))(y, params)
+    assert jnp.allclose(logdet, jnp.sum(jnp.log(jnp.abs(grad))), atol=1e-4)
+
+    # zero params give exactly the identity
+    zeros = jnp.zeros((3, config.params_dim()))
+    assert jnp.allclose(config(zeros, x), x, atol=1e-5)
 
 
 @pytest.mark.parametrize("ctor", FLOWS)

@@ -4,7 +4,7 @@ Architectures here are pure :class:`flax.nnx.Module` instances —
 ``MLP``, ``Transformer``, ``UNet``, ``ResNet``, ``LRUModel``,
 ``DeepSet``, ``MaskedMLP``, ``Sequential``. Generative-model wrappers
 (diffusion families, normalizing flows) live in
-:mod:`probjax.nn.generative` and :mod:`probjax.nn.generative.flows`.
+:mod:`probjax.nn.generative` and :mod:`probjax.nn.generative.nflows`.
 """
 
 from probjax.nn.nets.lru import LRUModel

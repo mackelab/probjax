@@ -67,6 +67,7 @@ class CouplingMLP(nnx.Module):
         hidden_dims: Sequence[int] = (50, 50),
         activation: Callable = jax.nn.gelu,
         activate_final: bool = False,
+        init_last_layer_to_zero: bool = True,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
@@ -93,6 +94,9 @@ class CouplingMLP(nnx.Module):
                 Defaults to jax.nn.gelu.
             activate_final (bool, optional): Whether to apply activation to the
                 final layer of the MLP. Defaults to False.
+            init_last_layer_to_zero (bool, optional): Zero the conditioner's last
+                kernel so the layer starts as the identity bijection.
+                Defaults to True.
             dtype (DTypeLike | None, optional): Computation dtype. Defaults to None.
             param_dtype (DTypeLike | None, optional): Parameter dtype.
                 Defaults to None.
@@ -157,6 +161,16 @@ class CouplingMLP(nnx.Module):
             **filter_precision_kwargs(mlp_cls, **precision_kwargs),
             **kwargs,
         )
+
+        if init_last_layer_to_zero:
+            if not hasattr(self.conditioner, "layers"):
+                raise ValueError(
+                    'mlp_cls must expose a "layers" attribute to zero-init its '
+                    "last layer; pass init_last_layer_to_zero=False otherwise."
+                )
+            last_kernel = self.conditioner.layers[-1].kernel
+            last_kernel[...] = jnp.zeros_like(last_kernel[...])
+
         self._conditioner_accepts_rng = module_accepts_rng(self.conditioner)
 
     def __call__(
@@ -280,7 +294,14 @@ class CouplingTransformer(nnx.Module):
             )
         self.transformer = transformer
         self.encoder = nnx.Linear(1, model_dim, rngs=rngs)
-        self.decoder = nnx.Linear(split_index * model_dim, bij_params_dim, rngs=rngs)
+        # Zero-init so the layer starts as the identity bijection, matching
+        # AutoregressiveTransformer's decoder.
+        self.decoder = nnx.Linear(
+            split_index * model_dim,
+            bij_params_dim,
+            kernel_init=nnx.initializers.zeros,
+            rngs=rngs,
+        )
 
     def __call__(
         self,

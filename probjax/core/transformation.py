@@ -22,6 +22,8 @@ from probjax.core.interpreters import (
     trace_state_reducer,
 )
 from probjax.core.jaxpr_propagation import interpret, propagate
+from probjax.core.jaxpr_propagation.utils import KnownessLevel
+from probjax.core.registry import invalid_inverse_value
 
 
 def _resolve_invertible_index(args, invertible_arg: int) -> int:
@@ -61,6 +63,23 @@ def _sum_log_dets_for_vars(log_dets: dict, vars_) -> jax.Array:
     for var in vars_:
         total = total + jnp.asarray(log_dets.get(var, 0.0))
     return total
+
+
+def _materialize_inverse_targets(values, target_vars, env):
+    materialized = []
+    complete = True
+    for value, var in zip(values, target_vars, strict=False):
+        if env.get_knowness_level(var) == KnownessLevel.COMPLETE and value is not None:
+            materialized.append(value)
+            continue
+        complete = False
+        materialized.append(
+            invalid_inverse_value(
+                var.aval,
+                message="inverse target could not be reconstructed completely",
+            )
+        )
+    return materialized, complete
 
 
 def _leaf_signature(leaf):
@@ -532,16 +551,21 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
             args,
             invertible_arg,
         )
-        out = propagate(
-            jaxpr.jaxpr,
-            jaxpr.consts,
-            known_invars + jaxpr.jaxpr.outvars,
-            args_for_propagate,
-            target_invars,
-            process_eqn=processing_rule,
-            cost_fn=inverse_cost_fn,
-            process_all_eqns=True,
+        out, env = cast(
+            tuple[list, Any],
+            propagate(
+                jaxpr.jaxpr,
+                jaxpr.consts,
+                known_invars + jaxpr.jaxpr.outvars,
+                args_for_propagate,
+                target_invars,
+                process_eqn=processing_rule,
+                cost_fn=inverse_cost_fn,
+                process_all_eqns=True,
+                return_env=True,
+            ),
         )
+        out, _ = _materialize_inverse_targets(out, target_invars, env)
 
         return out[0]
 
@@ -566,7 +590,7 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
         outvars = target_invars
 
         inverse_result = cast(
-            tuple[list, dict],
+            tuple[list, dict, Any],
             propagate(
                 jaxpr.jaxpr,
                 jaxpr.consts,
@@ -579,12 +603,16 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
                 reducer=inverse_and_logabsdet_state_reducer,
                 initial_state={},
                 return_state=True,
+                return_env=True,
                 state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
             ),
         )
-        out, log_dets = inverse_result
+        out, log_dets, env = inverse_result
+        out, complete = _materialize_inverse_targets(out, outvars, env)
 
         log_det = _sum_log_dets_for_vars(log_dets, outvars)
+        if not complete:
+            log_det = jnp.asarray(jnp.nan)
         return out[0], log_det
 
     return wrapped

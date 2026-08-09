@@ -225,7 +225,9 @@ class AutoregressiveTransformer(nnx.Module):
         rng: jax.Array | None = None,
         **kwargs,
     ):
-        y = autoregressive_transform(x, self, k, v, context, rng=rng, **kwargs)
+        # Order must match forward / inverse_and_logdet, which take
+        # (x, context, k, v) -- autoregressive_transform forwards *args as-is.
+        y = autoregressive_transform(x, self, context, k, v, rng=rng, **kwargs)
         return y
 
     def forward(
@@ -235,11 +237,9 @@ class AutoregressiveTransformer(nnx.Module):
 
             def scan_fn(carry, i):
                 x = carry
+                # (batch_dims..., seq_len, bijector_dim) -- the decoder already
+                # emits one parameter block per token.
                 bij_params = self.predict_bij_params(x, context, k, v, **kwargs)
-                # Reshape parameters to (batch_dims..., seq_len, bijector_dim)
-                bij_params = bij_params.reshape(
-                    bij_params.shape[:-1] + (x.shape[-2], -1)
-                )
                 # Get parameters for the i-th dimension using dynamic indexing
                 bij_params_i = jax.lax.dynamic_slice(
                     bij_params,

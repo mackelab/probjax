@@ -5,7 +5,7 @@ from flax import nnx
 
 from probjax.nn.generative.diffusion import EDM, VE, VP, CosineDM
 from probjax.nn.generative.flow_matching import LinearFlow, LinearFlowSolverConfig
-from probjax.nn.generative.flows.models import NormalizingFlow
+from probjax.nn.generative.nflows.models import NormalizingFlow
 from probjax.nn.generative.mean_flow import LinearMeanFlow
 from probjax.stats.continuous import norm
 from probjax.stats.indep import indep

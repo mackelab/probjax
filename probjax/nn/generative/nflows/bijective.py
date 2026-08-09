@@ -299,7 +299,7 @@ class Rotate(nnx.Module):
             rotation_matrix = rotation_matrix.astype(self.dtype)
             x = x.astype(self.dtype)
 
-        return rotate(rotation_matrix, x)
+        return rotate(x, rotation_matrix)
 
 
 class ElementwiseMonotone(nnx.Module):

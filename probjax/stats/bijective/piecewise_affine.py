@@ -212,4 +212,32 @@ def inv_piecewise_affine_spline(
 piecewise_affine_spline.definv_and_logdet(inv_piecewise_affine_spline)
 
 
-__all__ = ["piecewise_affine_spline", "inv_piecewise_affine_spline"]
+def piecewise_affine_spline_and_logdet(
+    x: ArrayLike,
+    x_pos: ArrayLike,
+    y_pos: ArrayLike,
+    x_min: Optional[float] = None,
+    x_max: Optional[float] = None,
+    y_min: Optional[float] = None,
+    y_max: Optional[float] = None,
+):
+    """Forward direction returning ``(y, logdet)``."""
+    return _piecewise_affine_spline_fwd(
+        x,
+        x_pos,
+        y_pos,
+        x_min=x_min,
+        x_max=x_max,
+        y_min=y_min,
+        y_max=y_max,
+    )
+
+
+piecewise_affine_spline.defvalue_and_logdet(piecewise_affine_spline_and_logdet)
+
+
+__all__ = [
+    "inv_piecewise_affine_spline",
+    "piecewise_affine_spline",
+    "piecewise_affine_spline_and_logdet",
+]

@@ -125,6 +125,7 @@ from probjax.nn import (
     MultinomialDiffusion,
     NeuralAutoregressiveFlow,
     NeuralSplineFlow,
+    NFlow,
     NormalizingFlow,
     SumOfSquaresPolynomialFlow,
     UnconstrainedNeuralAutoregressiveFlow,
@@ -268,6 +269,7 @@ __all__ = [
     "CouplingTransformer",
     "LRUModel",
     # Neural networks - flows
+    "NFlow",
     "NormalizingFlow",
     "AffineCouplingFlow",
     "AdditiveCouplingFlow",

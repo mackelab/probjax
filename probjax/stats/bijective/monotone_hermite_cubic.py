@@ -327,7 +327,34 @@ def inv_monotone_hermite_cubic_spline(
 monotone_hermite_cubic_spline.definv_and_logdet(inv_monotone_hermite_cubic_spline)
 
 
+def monotone_hermite_cubic_spline_and_logdet(
+    x: ArrayLike,
+    x_pos: ArrayLike,
+    y_pos: ArrayLike,
+    knot_slopes: ArrayLike,
+    x_min: Optional[float] = None,
+    x_max: Optional[float] = None,
+    y_min: Optional[float] = None,
+    y_max: Optional[float] = None,
+):
+    """Forward direction returning ``(y, logdet)``."""
+    return _monotone_hermite_cubic_spline_fwd(
+        x,
+        x_pos,
+        y_pos,
+        knot_slopes,
+        x_min=x_min,
+        x_max=x_max,
+        y_min=y_min,
+        y_max=y_max,
+    )
+
+
+monotone_hermite_cubic_spline.defvalue_and_logdet(monotone_hermite_cubic_spline_and_logdet)
+
+
 __all__ = [
-    "monotone_hermite_cubic_spline",
     "inv_monotone_hermite_cubic_spline",
+    "monotone_hermite_cubic_spline",
+    "monotone_hermite_cubic_spline_and_logdet",
 ]

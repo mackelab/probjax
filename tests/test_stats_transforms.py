@@ -2,7 +2,11 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.nn.generative.flows import AutoregressiveMLP, nsf
+from probjax.nn.generative.nflows import (
+    AffineBijectorConfig,
+    AutoregressiveMLP,
+    nsf,
+)
 from probjax.stats import (
     InvertibleTransformProtocol,
     TransformedDistribution,
@@ -12,7 +16,6 @@ from probjax.stats import (
     norm,
     transformed,
 )
-from probjax.stats.bijective import affine_bijector
 
 
 def _standard_normal_base(dim):
@@ -62,7 +65,7 @@ def test_transformed_distribution_stacks():
 
 
 def test_ensure_invertible_passthrough_and_wrap():
-    ar = AutoregressiveMLP(2, 2, affine_bijector, rngs=nnx.Rngs(0))
+    ar = AutoregressiveMLP(2, 2, AffineBijectorConfig(), rngs=nnx.Rngs(0))
     assert ensure_invertible(ar) is ar  # satisfies the protocol already
 
     # Scalar broadcast: the logdet must count once per output element.
@@ -85,7 +88,7 @@ def test_forward_and_logdet_matches_inverse():
 
 
 def test_frozen_transformed_fast_path_matches_auto_inversion():
-    ar = AutoregressiveMLP(2, 2, affine_bijector, rngs=nnx.Rngs(0))
+    ar = AutoregressiveMLP(2, 2, AffineBijectorConfig(), rngs=nnx.Rngs(0))
     base = _standard_normal_base(2)
 
     # `ar` has inverse_and_logdet -> protocol fast path.

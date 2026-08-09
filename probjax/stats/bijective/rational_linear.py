@@ -261,4 +261,34 @@ def inv_rational_linear_spline(
 rational_linear_spline.definv_and_logdet(inv_rational_linear_spline)
 
 
-__all__ = ["rational_linear_spline", "inv_rational_linear_spline"]
+def rational_linear_spline_and_logdet(
+    x: ArrayLike,
+    x_pos: ArrayLike,
+    y_pos: ArrayLike,
+    knot_slopes: ArrayLike,
+    x_min: Optional[float] = None,
+    x_max: Optional[float] = None,
+    y_min: Optional[float] = None,
+    y_max: Optional[float] = None,
+):
+    """Forward direction returning ``(y, logdet)``."""
+    return _rational_linear_spline_fwd(
+        x,
+        x_pos,
+        y_pos,
+        knot_slopes,
+        x_min=x_min,
+        x_max=x_max,
+        y_min=y_min,
+        y_max=y_max,
+    )
+
+
+rational_linear_spline.defvalue_and_logdet(rational_linear_spline_and_logdet)
+
+
+__all__ = [
+    "inv_rational_linear_spline",
+    "rational_linear_spline",
+    "rational_linear_spline_and_logdet",
+]

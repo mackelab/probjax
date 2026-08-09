@@ -2,7 +2,7 @@
 
 Each subpackage bundles its model class and configuration in one place:
 
-* :mod:`probjax.nn.generative.flows` — normalizing flows
+* :mod:`probjax.nn.generative.nflows` — normalizing flows
   (``NormalizingFlow``, ``realnvp``, ``maf``, ``nsf``, …) plus the
   bijective primitives and conditioner networks they're built from.
 * :mod:`probjax.nn.generative.diffusion` — denoising-diffusion / score-based
@@ -65,7 +65,7 @@ from probjax.nn.generative.flow_matching import (
     UniformFlowTrainingConfig,
     build_flow_matching_loss,
 )
-from probjax.nn.generative.flows import (
+from probjax.nn.generative.nflows import (
     AdditiveAutoregressiveFlow,
     AdditiveCouplingFlow,
     AffineAutoregressiveFlow,
@@ -75,6 +75,31 @@ from probjax.nn.generative.flows import (
     NeuralAutoregressiveFlow,
     NeuralSplineFlow,
     NormalizingFlow,
+    AffineBijectorConfig,
+    AutoregressiveNFlowConfig,
+    BernsteinBijectorConfig,
+    BijectorConfigProtocol,
+    ConditionerConfigProtocol,
+    CouplingNFlowConfig,
+    DeepSigmoidBijectorConfig,
+    ElementwiseNFlowConfig,
+    FlipMixingConfig,
+    MixingConfigProtocol,
+    MixtureCDFBijectorConfig,
+    MLPConditionerConfig,
+    MonotoneHermiteCubicSplineConfig,
+    NFlow,
+    NFlowConfig,
+    NoMixingConfig,
+    PermuteMixingConfig,
+    PiecewiseAffineSplineConfig,
+    RationalLinearSplineConfig,
+    RationalQuadraticSplineConfig,
+    RotationMixingConfig,
+    ShiftBijectorConfig,
+    SumOfSquaresBijectorConfig,
+    TransformerConditionerConfig,
+    UMNNBijectorConfig,
     SplineAutoregressiveFlow,
     SplineCouplingFlow,
     SumOfSquaresPolynomialFlow,

@@ -56,7 +56,7 @@ from flax.nnx.nn.activations import (
 from probjax.nn.io_util import DataLoader, chunkify
 
 # Override specific imports with probjax implementations
-from probjax.nn.generative.flows import (
+from probjax.nn.generative.nflows import (
     Affine,
     AutoregressiveMLP,
     AutoregressiveTransformer,
@@ -109,7 +109,7 @@ from probjax.nn.losses import (
     build_time_dependent_sliced_score_matching_loss,
     build_time_dependent_target_score_matching_loss,
 )
-from probjax.nn.generative.flows import (
+from probjax.nn.generative.nflows import (
     AdditiveAutoregressiveFlow,
     AdditiveCouplingFlow,
     AffineAutoregressiveFlow,
@@ -119,6 +119,31 @@ from probjax.nn.generative.flows import (
     NeuralAutoregressiveFlow,
     NeuralSplineFlow,
     NormalizingFlow,
+    AffineBijectorConfig,
+    AutoregressiveNFlowConfig,
+    BernsteinBijectorConfig,
+    BijectorConfigProtocol,
+    ConditionerConfigProtocol,
+    CouplingNFlowConfig,
+    DeepSigmoidBijectorConfig,
+    ElementwiseNFlowConfig,
+    FlipMixingConfig,
+    MixingConfigProtocol,
+    MixtureCDFBijectorConfig,
+    MLPConditionerConfig,
+    MonotoneHermiteCubicSplineConfig,
+    NFlow,
+    NFlowConfig,
+    NoMixingConfig,
+    PermuteMixingConfig,
+    PiecewiseAffineSplineConfig,
+    RationalLinearSplineConfig,
+    RationalQuadraticSplineConfig,
+    RotationMixingConfig,
+    ShiftBijectorConfig,
+    SumOfSquaresBijectorConfig,
+    TransformerConditionerConfig,
+    UMNNBijectorConfig,
     SplineAutoregressiveFlow,
     SplineCouplingFlow,
     SumOfSquaresPolynomialFlow,

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import math
+
 import jax
 import jax.numpy as jnp
 from jax.extend.core import Literal
@@ -11,6 +13,10 @@ from probjax.core.interpreters.inverse.rules import (
     _get_inverse_cost_fn,
     dot_general_left_inverse_and_logdet,
     dot_general_right_inverse_and_logdet,
+    invert_broadcast_in_dim,
+    invert_gather,
+    invert_squeeze,
+    invert_transpose,
     parse_scan_problem,
     parse_while_problem,
     prepare_cond_branch_problem,
@@ -27,8 +33,10 @@ from probjax.core.registry import (
     Context,
     ProcessedResult,
     REGISTRY,
+    invalid_inverse_value,
     register_univariate_inverse_logdet,
     register_bivariate_inverse_logdet,
+    validate_inverse_value,
 )
 
 INVERSE_AND_LOGABSDET_STATE_NAMESPACE = "inverse_and_logabsdet.log_dets"
@@ -144,6 +152,53 @@ def invert_rev_and_logdet(eqn, known_invars, known_outvars, context=None):
     return ProcessedResult(eqn.invars, [in_val], updates)
 
 
+# Rearranging primitives (squeeze, transpose, gather-as-permutation) move every
+# element exactly once, so log|Jacobian| = 0. They need an explicit rule rather
+# than the generic autodiff fallback: that fallback differentiates the inverse
+# elementwise under vmap, but these inverse rules need the whole array (they
+# reshape or scatter into it) and fail on a scalar tracer.
+def register_rearrangement_inverse_logdet(primitive, inverse_rule, *, strict=True):
+    """Register a zero-log-det INVERSE_LOGDET rule delegating to ``inverse_rule``.
+
+    With ``strict``, a primitive that does not preserve the element count is not
+    a bijection and its log-determinant is rejected rather than silently taken
+    as zero. ``broadcast_in_dim`` opts out: it legitimately duplicates elements,
+    and its inverse rule recovers the single distinct value, which contributes
+    nothing to the determinant.
+    """
+
+    @REGISTRY.rule(primitive, Context.INVERSE_LOGDET)
+    def rule(eqn, known_invars, known_outvars, context=None):
+        result = inverse_rule(eqn, known_invars, known_outvars)
+        if result is None:
+            return None
+
+        if strict:
+            in_size = math.prod(eqn.invars[0].aval.shape)
+            out_size = math.prod(eqn.outvars[0].aval.shape)
+            if in_size != out_size:
+                raise NotImplementedError(
+                    f"log-determinant of {primitive.name} is undefined here: it "
+                    f"maps {in_size} inputs to {out_size} outputs, so it is not "
+                    "a rearrangement of every element."
+                )
+
+        updates = {
+            var: jnp.asarray(0.0) for var in eqn.invars if not isinstance(var, Literal)
+        }
+        return ProcessedResult(result.resolved_vars, result.resolved_vals, updates)
+
+    return rule
+
+
+register_rearrangement_inverse_logdet(jax.lax.squeeze_p, invert_squeeze)
+register_rearrangement_inverse_logdet(jax.lax.transpose_p, invert_transpose)
+register_rearrangement_inverse_logdet(jax.lax.gather_p, invert_gather)
+register_rearrangement_inverse_logdet(
+    jax.lax.broadcast_in_dim_p, invert_broadcast_in_dim, strict=False
+)
+
+
 # sqrt: x = y^2, d/dy[y^2] = 2y => log|det| = sum(log(2) + log(|y|))
 def sqrt_inverse_fn(x, **params):
     params = dict(params)
@@ -179,7 +234,7 @@ register_univariate_inverse_logdet(
 register_univariate_inverse_logdet(
     jax.lax.tanh_p,
     jax.lax.atanh_p,
-    lambda out_val, in_val, params: jnp.sum(jnp.log(1.0 - out_val**2 + 1e-10)),
+    lambda out_val, in_val, params: -jnp.sum(jnp.log(1.0 - out_val**2)),
 )
 
 # logistic (sigmoid): d/dy[logit(y)] = 1/(y*(1-y))
@@ -189,7 +244,7 @@ register_univariate_inverse_logdet(
     jax.lax.logistic_p,
     lambda x, **params: jax.lax.log_p.bind(x) - jax.lax.log1p_p.bind(-x),
     lambda out_val, in_val, params: (
-        -jnp.sum(jnp.log(out_val + 1e-10) + jnp.log(1.0 - out_val + 1e-10))
+        -jnp.sum(jnp.log(out_val) + jnp.log1p(-out_val))
     ),
 )
 
@@ -305,16 +360,33 @@ def invert_dot_general_and_logdet(eqn, known_invars, known_outvars, context=None
             "dot_general inverse requires at least one known input"
         )
 
-    if lhs is None:
-        missing_var = eqn.invars[0]
-        missing_value, log_abs_det = dot_general_left_inverse_and_logdet(
-            out, rhs, **eqn.params
+    target_index = 0 if lhs is None else 1
+    missing_var = eqn.invars[target_index]
+    try:
+        if lhs is None:
+            missing_value, log_abs_det = dot_general_left_inverse_and_logdet(
+                out, rhs, **eqn.params
+            )
+            replayed = eqn.primitive.bind(missing_value, rhs, **eqn.params)
+        else:
+            missing_value, log_abs_det = dot_general_right_inverse_and_logdet(
+                out, lhs, **eqn.params
+            )
+            replayed = eqn.primitive.bind(lhs, missing_value, **eqn.params)
+        missing_value, valid = validate_inverse_value(
+            missing_value,
+            missing_var.aval,
+            replayed,
+            out,
+            message="dot_general output has no unique inverse",
         )
-    else:
-        missing_var = eqn.invars[1]
-        missing_value, log_abs_det = dot_general_right_inverse_and_logdet(
-            out, lhs, **eqn.params
+        log_abs_det = jnp.where(valid, log_abs_det, jnp.asarray(jnp.nan))
+    except NotImplementedError:
+        missing_value = invalid_inverse_value(
+            missing_var.aval,
+            message="dot_general shape does not define a unique inverse",
         )
+        log_abs_det = jnp.asarray(jnp.nan)
 
     updates = {}
     if not isinstance(missing_var, Literal):

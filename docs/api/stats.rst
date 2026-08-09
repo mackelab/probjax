@@ -81,9 +81,16 @@ Higher-Order Distributions
 Bijective Transforms
 --------------------
 
+Pure functions of ``x`` and *natural* parameters (knot positions, slopes,
+mixture log-weights), each registering its analytic inverse and
+log-determinant. Mapping an unconstrained parameter vector onto them is the job
+of the bijector configs in :mod:`probjax.nn.generative.nflows.config`.
+
 .. autosummary::
    :toctree: generated
 
+   bijective.affine
+   bijective.monotone
    bijective.monotone_hermite_cubic
    bijective.piecewise_affine
    bijective.rational_linear

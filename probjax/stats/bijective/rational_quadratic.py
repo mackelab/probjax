@@ -366,28 +366,6 @@ def _rational_quadratic_spline_inv(
     return x, logdet
 
 
-def rational_quadratic_spline_and_logdets(
-    x: ArrayLike,
-    x_pos: ArrayLike,
-    y_pos: ArrayLike,
-    knot_slopes: ArrayLike,
-    x_min: Optional[float] = None,
-    x_max: Optional[float] = None,
-    y_min: Optional[float] = None,
-    y_max: Optional[float] = None,
-) -> Tuple[ArrayLike, ArrayLike]:
-    return _rational_quadratic_spline_fwd(
-        x,
-        x_pos,
-        y_pos,
-        knot_slopes,
-        x_min=x_min,
-        x_max=x_max,
-        y_min=y_min,
-        y_max=y_max,
-    )
-
-
 @partial(custom_inverse, inv_argnum=0)
 def rational_quadratic_spline(
     x: ArrayLike,
@@ -437,8 +415,34 @@ def inv_rational_quadratic_spline(
 rational_quadratic_spline.definv_and_logdet(inv_rational_quadratic_spline)
 
 
+def rational_quadratic_spline_and_logdet(
+    x: ArrayLike,
+    x_pos: ArrayLike,
+    y_pos: ArrayLike,
+    knot_slopes: ArrayLike,
+    x_min: Optional[float] = None,
+    x_max: Optional[float] = None,
+    y_min: Optional[float] = None,
+    y_max: Optional[float] = None,
+):
+    """Forward direction returning ``(y, logdet)``."""
+    return _rational_quadratic_spline_fwd(
+        x,
+        x_pos,
+        y_pos,
+        knot_slopes,
+        x_min=x_min,
+        x_max=x_max,
+        y_min=y_min,
+        y_max=y_max,
+    )
+
+
+rational_quadratic_spline.defvalue_and_logdet(rational_quadratic_spline_and_logdet)
+
+
 __all__ = [
-    "rational_quadratic_spline",
     "inv_rational_quadratic_spline",
-    "rational_quadratic_spline_and_logdets",
+    "rational_quadratic_spline",
+    "rational_quadratic_spline_and_logdet",
 ]

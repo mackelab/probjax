@@ -39,6 +39,7 @@ Normalizing Flows
    :toctree: generated
 
    NormalizingFlow
+   NFlow
    AffineCouplingFlow
    AdditiveCouplingFlow
    SplineCouplingFlow
@@ -51,6 +52,42 @@ Normalizing Flows
    SumOfSquaresPolynomialFlow
    BernsteinPolynomialFlow
    GaussianizationFlow
+
+Normalizing Flow Configs
+------------------------
+
+Three orthogonal axes: the bijector config maps an unconstrained parameter
+vector onto the natural parameters of a bijection in
+:mod:`probjax.stats.bijective`, the conditioner config builds the network that
+emits it, and the mixing config builds the layer between transforms.
+
+.. autosummary::
+   :toctree: generated
+
+   BijectorConfigProtocol
+   ConditionerConfigProtocol
+   MixingConfigProtocol
+   NFlowConfig
+   CouplingNFlowConfig
+   AutoregressiveNFlowConfig
+   ElementwiseNFlowConfig
+   ShiftBijectorConfig
+   AffineBijectorConfig
+   RationalQuadraticSplineConfig
+   RationalLinearSplineConfig
+   MonotoneHermiteCubicSplineConfig
+   PiecewiseAffineSplineConfig
+   DeepSigmoidBijectorConfig
+   UMNNBijectorConfig
+   SumOfSquaresBijectorConfig
+   BernsteinBijectorConfig
+   MixtureCDFBijectorConfig
+   MLPConditionerConfig
+   TransformerConditionerConfig
+   FlipMixingConfig
+   PermuteMixingConfig
+   RotationMixingConfig
+   NoMixingConfig
 
 Flow Matching
 -------------

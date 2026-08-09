@@ -24,8 +24,10 @@ from probjax.core.registry import (
     Context,
     ProcessedResult,
     REGISTRY,
+    invalid_inverse_value,
     register_bivariate_inverse,
     register_univariate_inverse,
+    validate_inverse_value,
 )
 
 # =============================================================================
@@ -45,11 +47,6 @@ if pjit_p is None:
 # =============================================================================
 # Helper functions for inverse computation
 # =============================================================================
-
-
-def integer_pow_inverse(x, **params):
-    y = params.pop("y")
-    return jax.lax.pow_p.bind(x, 1 / y, **params)
 
 
 def logit(x, **params):
@@ -141,14 +138,60 @@ _UNIVARIATE_INVERSES = {
     jax.lax.erf_p: jax.lax.erf_inv_p,
     jax.lax.erf_inv_p: jax.lax.erf_p,
     jax.lax.conj_p: jax.lax.conj_p,
-    jax.lax.real_p: jax.lax.real_p,
-    jax.lax.imag_p: jax.lax.imag_p,
     jax.lax.logistic_p: logit,
-    jax.lax.integer_pow_p: integer_pow_inverse,
 }
 
 for forward_prim, inv_fn in _UNIVARIATE_INVERSES.items():
     register_univariate_inverse(forward_prim, inv_fn)
+
+
+@REGISTRY.rule(jax.lax.integer_pow_p, Context.INVERSE)
+def invert_integer_pow(eqn, known_invars, known_outvars):
+    del known_invars
+    out = known_outvars[0]
+    if out is None:
+        return None
+
+    exponent = eqn.params["y"]
+    aval = eqn.invars[0].aval
+    if exponent == 0:
+        value = invalid_inverse_value(
+            aval,
+            message="integer_pow with exponent zero has no unique inverse",
+        )
+    else:
+        value = jnp.power(out, 1.0 / exponent)
+        replayed = jax.lax.integer_pow_p.bind(value, **eqn.params)
+        value, _ = validate_inverse_value(
+            value,
+            aval,
+            replayed,
+            out,
+            message="invalid inverse output for integer_pow",
+        )
+    return ProcessedResult([eqn.invars[0]], [value])
+
+
+def _invert_complex_projection(eqn, known_outvars, name):
+    if known_outvars[0] is None:
+        return None
+    value = invalid_inverse_value(
+        eqn.invars[0].aval,
+        message=f"{name} discards one complex component and has no unique inverse",
+    )
+    return ProcessedResult([eqn.invars[0]], [value])
+
+
+@REGISTRY.rule(jax.lax.real_p, Context.INVERSE)
+def invert_real(eqn, known_invars, known_outvars):
+    del known_invars
+    return _invert_complex_projection(eqn, known_outvars, "real")
+
+
+@REGISTRY.rule(jax.lax.imag_p, Context.INVERSE)
+def invert_imag(eqn, known_invars, known_outvars):
+    del known_invars
+    return _invert_complex_projection(eqn, known_outvars, "imag")
 
 
 # =============================================================================
@@ -399,14 +442,40 @@ _BIVARIATE_INVERSES = {
         lambda x, y, **params: jax.lax.pow_p.bind(x, 1.0 / y, **params),
         lambda x, y, **params: jax.lax.log_p.bind(x) / jax.lax.log_p.bind(y),  # type: ignore
     ),
-    jax.lax.dot_general_p: (
-        dot_general_left_inverse,
-        dot_general_right_inverse,
-    ),
 }
 
 for prim, (left_inv, right_inv) in _BIVARIATE_INVERSES.items():
     register_bivariate_inverse(prim, left_inv, right_inv)
+
+
+@REGISTRY.rule(jax.lax.dot_general_p, Context.INVERSE)
+def invert_dot_general(eqn, known_invars, known_outvars):
+    out = known_outvars[0]
+    lhs, rhs = known_invars
+    if out is None or (lhs is None) == (rhs is None):
+        return None
+
+    target_index = 0 if lhs is None else 1
+    try:
+        if lhs is None:
+            value = dot_general_left_inverse(out, rhs, **eqn.params)
+            replayed = eqn.primitive.bind(value, rhs, **eqn.params)
+        else:
+            value = dot_general_right_inverse(out, lhs, **eqn.params)
+            replayed = eqn.primitive.bind(lhs, value, **eqn.params)
+        value, _ = validate_inverse_value(
+            value,
+            eqn.invars[target_index].aval,
+            replayed,
+            out,
+            message="dot_general output has no unique inverse",
+        )
+    except NotImplementedError:
+        value = invalid_inverse_value(
+            eqn.invars[target_index].aval,
+            message="dot_general shape does not define a unique inverse",
+        )
+    return ProcessedResult([eqn.invars[target_index]], [value])
 
 
 # =============================================================================
@@ -797,8 +866,30 @@ def invert_broadcast_in_dim(eqn, known_invars, known_outvars):
     out = known_outvars[0]
     if out is None:
         return None
-    in_shape = eqn.invars[0].aval.shape
-    return ProcessedResult([eqn.invars[0]], [out.reshape(in_shape)])
+    in_aval = eqn.invars[0].aval
+    in_shape = in_aval.shape
+    dimensions = tuple(eqn.params["broadcast_dimensions"])
+    mapped_axes = {out_axis: in_axis for in_axis, out_axis in enumerate(dimensions)}
+    index = []
+    for out_axis, out_size in enumerate(out.shape):
+        in_axis = mapped_axes.get(out_axis)
+        if in_axis is None:
+            index.append(0)
+        elif in_shape[in_axis] == 1 and out_size != 1:
+            index.append(slice(0, 1))
+        else:
+            index.append(slice(None))
+
+    candidate = jnp.reshape(out[tuple(index)], in_shape)
+    replayed = jax.lax.broadcast_in_dim(candidate, out.shape, dimensions)
+    candidate, _ = validate_inverse_value(
+        candidate,
+        in_aval,
+        replayed,
+        out,
+        message="broadcast output is inconsistent with a single input value",
+    )
+    return ProcessedResult([eqn.invars[0]], [candidate])
 
 
 @REGISTRY.rule(jax.lax.rev_p, Context.INVERSE)
@@ -821,7 +912,10 @@ def invert_gather(eqn, known_invars, known_outvars):
 
     if input_val is None:
         input_aval = eqn.invars[0].aval
-        input_val = jnp.zeros(input_aval.shape, input_aval.dtype)
+        if jnp.issubdtype(input_aval.dtype, jnp.inexact):
+            input_val = jnp.full(input_aval.shape, jnp.nan, input_aval.dtype)
+        else:
+            input_val = jnp.zeros(input_aval.shape, input_aval.dtype)
 
     primitive = eqn.primitive
     params = eqn.params
@@ -836,6 +930,15 @@ def invert_gather(eqn, known_invars, known_outvars):
 
     out = out.reshape(eqn.outvars[0].aval.shape)
     input_val = jax.lax.scatter(input_val, index, out, scatter_numdim)
+
+    replayed = primitive.bind(input_val, index, **bind_params)
+    input_val, _ = validate_inverse_value(
+        input_val,
+        eqn.invars[0].aval,
+        replayed,
+        out,
+        message="gather output is inconsistent with a unique input",
+    )
 
     return ProcessedResult([eqn.invars[0]], [input_val])
 
@@ -875,7 +978,17 @@ def invert_scatter(eqn, known_invars, known_outvars):
     update_val = jax.lax.gather(out, index, gather_numdim, tuple(slice_sizes))
     update_val = jnp.reshape(update_val, eqn.invars[2].aval.shape)
 
-    return ProcessedResult([eqn.invars[0], eqn.invars[2]], [out, update_val])
+    resolved_vars = []
+    resolved_vals = []
+    if known_invars[0] is None:
+        resolved_vars.append(eqn.invars[0])
+        resolved_vals.append(Knowness.partial(out))
+    if known_invars[2] is None:
+        resolved_vars.append(eqn.invars[2])
+        resolved_vals.append(update_val)
+    if not resolved_vars:
+        return None
+    return ProcessedResult(resolved_vars, resolved_vals)
 
 
 @REGISTRY.rule(jax.lax.select_n_p, Context.INVERSE)
@@ -963,6 +1076,17 @@ def invert_convert_element_type(eqn, known_invars, known_outvars):
     if out is None:
         return None
     in_aval = eqn.invars[0].aval
+    out_aval = eqn.outvars[0].aval
+    if not np.can_cast(in_aval.dtype, out_aval.dtype, casting="safe"):
+        value = invalid_inverse_value(
+            in_aval,
+            message=(
+                f"conversion from {in_aval.dtype} to {out_aval.dtype} "
+                "does not have a unique inverse"
+            ),
+        )
+        return ProcessedResult([eqn.invars[0]], [value])
+
     primitive = eqn.primitive
     params = eqn.params
     subfuns, bind_params = primitive_bind_params(primitive, params)
@@ -1029,12 +1153,20 @@ def invert_slice(eqn, known_invars, known_outvars):
     # Track if we're creating a partial reconstruction
     is_partial = input_val is None and not is_full_slice
     if input_val is None:
-        input_val = jnp.zeros(in_aval.shape, in_aval.dtype)
+        if jnp.issubdtype(in_aval.dtype, jnp.inexact):
+            input_val = jnp.full(in_aval.shape, jnp.nan, in_aval.dtype)
+        else:
+            input_val = jnp.zeros(in_aval.shape, in_aval.dtype)
 
-    out1 = out
-    while out1.ndim < input_val.ndim:
-        out1 = jnp.expand_dims(out1, axis=-1)
-    new_input = jax.lax.dynamic_update_slice(input_val, out1, start_index)
+    if strides is None:
+        strides = (1,) * len(start_index)
+    slices = tuple(
+        slice(start, limit, stride)
+        for start, limit, stride in zip(
+            start_index, limit_indices, strides, strict=False
+        )
+    )
+    new_input = input_val.at[slices].set(out)
 
     # Return PARTIAL if we created placeholder values, COMPLETE otherwise
     if is_partial:

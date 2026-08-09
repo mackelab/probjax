@@ -38,6 +38,8 @@ from typing import (
     runtime_checkable,
 )
 
+import jax.numpy as jnp
+from jax.experimental import checkify
 from jax.extend.core import ClosedJaxpr, JaxprEqn, Literal, Primitive, Var
 
 from probjax.core.jaxpr_propagation.utils import bind_primitive, sanitize_bind_params
@@ -318,6 +320,52 @@ class RuleRegistry:
 REGISTRY = RuleRegistry()
 
 
+def _normalize_inverse_value(value: Any, aval: Any) -> Any:
+    return jnp.asarray(value, dtype=aval.dtype)
+
+
+def _inverse_values_match(actual: Any, expected: Any) -> Any:
+    actual = jnp.asarray(actual)
+    expected = jnp.asarray(expected)
+    if actual.shape != expected.shape:
+        return jnp.asarray(False)
+    dtype = jnp.result_type(actual.dtype, expected.dtype)
+    if jnp.issubdtype(dtype, jnp.inexact):
+        return jnp.isclose(actual, expected, atol=1e-6, rtol=1e-6)
+    return actual == expected
+
+
+def validate_inverse_value(
+    value: Any,
+    aval: Any,
+    replayed_output: Any,
+    supplied_output: Any,
+    *,
+    message: str,
+) -> tuple[Any, Any]:
+    """Validate an inverse candidate by replaying the forward primitive."""
+    value = _normalize_inverse_value(value, aval)
+    valid = _inverse_values_match(replayed_output, supplied_output)
+    all_valid = jnp.all(valid)
+
+    if jnp.issubdtype(aval.dtype, jnp.inexact):
+        if jnp.shape(valid) != jnp.shape(value):
+            valid = all_valid
+        invalid = jnp.full(jnp.shape(value), jnp.nan, dtype=aval.dtype)
+        return jnp.where(valid, value, invalid), all_valid
+
+    checkify.check(all_valid, message)
+    return value, all_valid
+
+
+def invalid_inverse_value(aval: Any, *, message: str) -> Any:
+    """Materialize an invalid inverse while preserving the target aval."""
+    if jnp.issubdtype(aval.dtype, jnp.inexact):
+        return jnp.full(aval.shape, jnp.nan, dtype=aval.dtype)
+    checkify.check(jnp.asarray(False), message)
+    return jnp.zeros(aval.shape, dtype=aval.dtype)
+
+
 # =============================================================================
 # Registration Helpers
 # =============================================================================
@@ -355,6 +403,17 @@ def register_univariate_inverse(
             result = bind_primitive(inv_prim, eqn.params, out_val)
         else:
             result = inverse_prim_or_fn(out_val, **sanitize_bind_params(eqn.params))
+
+        replayed = bind_primitive(
+            forward_prim, eqn.params, result, params_from=eqn.primitive
+        )
+        result, _ = validate_inverse_value(
+            result,
+            eqn.invars[0].aval,
+            replayed,
+            out_val,
+            message=f"invalid inverse output for {forward_prim.name}",
+        )
 
         return ProcessedResult([eqn.invars[0]], [result])
 
@@ -412,6 +471,22 @@ def register_bivariate_inverse(
         else:
             result = inv_fn(out_val, other, **sanitize_bind_params(eqn.params))
 
+        if left_known:
+            replayed = bind_primitive(
+                prim, eqn.params, other, result, params_from=eqn.primitive
+            )
+        else:
+            replayed = bind_primitive(
+                prim, eqn.params, result, other, params_from=eqn.primitive
+            )
+        result, _ = validate_inverse_value(
+            result,
+            target_var.aval,
+            replayed,
+            out_val,
+            message=f"invalid inverse output for {prim.name}",
+        )
+
         return ProcessedResult([target_var], [result])
 
     registry.register(prim, Context.INVERSE, rule)
@@ -446,7 +521,19 @@ def register_univariate_inverse_logdet(
         else:
             in_val = inverse_prim_or_fn(out_val, **sanitize_bind_params(eqn.params))
 
+        replayed = bind_primitive(
+            forward_prim, eqn.params, in_val, params_from=eqn.primitive
+        )
+        in_val, valid = validate_inverse_value(
+            in_val,
+            eqn.invars[0].aval,
+            replayed,
+            out_val,
+            message=f"invalid inverse output for {forward_prim.name}",
+        )
+
         log_abs_det = logdet_fn(out_val, in_val, eqn.params)
+        log_abs_det = jnp.where(valid, log_abs_det, jnp.asarray(jnp.nan))
 
         # Build state updates
         updates = {}
@@ -499,7 +586,24 @@ def register_bivariate_inverse_logdet(
         else:
             result = inv_fn(out_val, other, **sanitize_bind_params(eqn.params))
 
+        if left_known:
+            replayed = bind_primitive(
+                prim, eqn.params, other, result, params_from=eqn.primitive
+            )
+        else:
+            replayed = bind_primitive(
+                prim, eqn.params, result, other, params_from=eqn.primitive
+            )
+        result, valid = validate_inverse_value(
+            result,
+            target_var.aval,
+            replayed,
+            out_val,
+            message=f"invalid inverse output for {prim.name}",
+        )
+
         log_abs_det = logdet_fn(out_val, result, other, eqn.params)
+        log_abs_det = jnp.where(valid, log_abs_det, jnp.asarray(jnp.nan))
 
         # Build state updates
         updates = {}
@@ -533,7 +637,7 @@ def forward_rule(
         return None
 
     primitive = eqn.primitive
-    result = bind_primitive(primitive, eqn.params, *known_in)
+    result = bind_primitive(primitive, eqn.params, *known_in, params_from=primitive)
 
     if primitive.multiple_results:
         return ProcessedResult(resolved_vars=eqn.outvars, resolved_vals=list(result))
