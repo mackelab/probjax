@@ -70,6 +70,33 @@ def _make_cp_double():
     return cp_double
 
 
+def _make_cp_half():
+    """A simple custom_partitioning function that halves its input."""
+
+    @custom_partitioning
+    def cp_half(x):
+        return x / 2
+
+    def infer(mesh, arg_shapes, result_shape):
+        return arg_shapes[0].sharding
+
+    def partition(mesh, arg_shapes, result_shape):
+        x_sharding = arg_shapes[0].sharding
+        out_sharding = result_shape.sharding
+
+        def lower_fn(x):
+            return x / 2
+
+        return mesh, lower_fn, out_sharding, (x_sharding,)
+
+    cp_half.def_partition(
+        partition=partition,
+        infer_sharding_from_operands=infer,
+        sharding_rule="i -> i",
+    )
+    return cp_half
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -164,6 +191,95 @@ class TestCPInCustomInverse:
         result = jax.jit(f)(x)
         expected = x * 2
         np.testing.assert_allclose(result, expected, rtol=1e-5)
+
+    def test_cp_in_custom_inverse_logdet_mesh(self):
+        """CP primitive inside definv_and_logdet, not just forward."""
+        from probjax.core import inverse_and_logabsdet
+
+        cp_double = _make_cp_double()
+        cp_half = _make_cp_half()
+
+        @custom_inverse
+        def f(x):
+            return cp_double(x)
+
+        f.definv_and_logdet(
+            lambda y: (cp_half(y), jnp.full_like(y, -jnp.log(jnp.array(2.0))))
+        )
+
+        mesh = _make_mesh()
+        n = len(jax.devices())
+        sharding = NamedSharding(mesh, P("x"))
+
+        x = jax.device_put(jnp.arange(float(n)), sharding)
+
+        with mesh:
+            y = jax.jit(
+                f, in_shardings=sharding, out_shardings=sharding
+            )(x)
+
+            inv_det = inverse_and_logabsdet(f)
+            jit_inv_det = jax.jit(
+                inv_det,
+                in_shardings=sharding,
+                out_shardings=(sharding, None),
+            )
+            x_rec, logdet = jit_inv_det(y)
+
+            np.testing.assert_allclose(x_rec, x, rtol=1e-5)
+            np.testing.assert_allclose(
+                logdet,
+                -jnp.log(jnp.array(2.0)) * x.shape[0],
+                rtol=1e-5,
+            )
+
+            lowered = jit_inv_det.lower(y)
+            mlir_text = lowered.as_text()
+            assert "CustomSPMDPartitioning" in mlir_text, (
+                "Expected custom_partitioning in inverse lowered MLIR. "
+                "MLIR text did not contain CustomSPMDPartitioning."
+            )
+
+    def test_cp_in_custom_inverse_sharded_vmap(self):
+        """jax.jit(jax.vmap(f)) over a sharded leading dimension."""
+        from probjax.core import inverse
+
+        cp_double = _make_cp_double()
+
+        @custom_inverse
+        def f(x):
+            return cp_double(x)
+
+        f.definv(lambda y: y / 2)
+
+        mesh = _make_mesh()
+        n = len(jax.devices())
+        sharding = NamedSharding(mesh, P("x"))
+
+        x = jax.device_put(
+            jnp.arange(2.0 * n).reshape(n, 2), sharding
+        )
+
+        with mesh:
+            vmapped_f = jax.jit(
+                jax.vmap(f, in_axes=0, out_axes=0),
+                in_shardings=sharding,
+                out_shardings=sharding,
+            )
+            y = vmapped_f(x)
+
+            inv_vmap = inverse(jax.vmap(f, in_axes=0, out_axes=0))
+            jit_inv = jax.jit(
+                inv_vmap,
+                in_shardings=sharding,
+                out_shardings=sharding,
+            )
+            x_rec = jit_inv(y)
+
+            np.testing.assert_allclose(x_rec, x, rtol=1e-5)
+            assert x_rec.sharding.is_equivalent_to(sharding, ndim=2), (
+                "Inverse output sharding should match input sharding."
+            )
 
 
 class TestDeviceRegistration:
