@@ -1,9 +1,12 @@
+from functools import partial
 from typing import Callable, Optional, Sequence
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from probjax.core.custom_primitives.custom_inverse import custom_inverse
+from probjax.core.transformation import inverse_and_logabsdet
 from probjax.nn.nets.simple import MLP
 from probjax.nn.nets.transformer import Transformer
 from probjax.nn.utils import (
@@ -45,7 +48,77 @@ def _broadcast_context_to_x1(context: ArrayLike, x1):
     return context
 
 
-class CouplingMLP(nnx.Module):
+class _CouplingMixin:
+    """Split / condition / merge shared by the coupling layers.
+
+    The inverse is analytic and cheap -- the untransformed half is exactly the
+    conditioner's input, so one forward pass recovers the parameters -- and it
+    is registered with :class:`~probjax.core.custom_inverse` so that inverting
+    a flow never has to reconstruct it from the jaxpr. That generic path has to
+    push the log-determinant back through the split/merge, where the
+    transformed half's contribution is currently lost, silently yielding an
+    unnormalized density for any bijector whose Jacobian is not 1 (RealNVP,
+    spline coupling); NICE is unaffected only because its log-det is zero.
+    """
+
+    def _split(self, x: Array) -> tuple[Array, Array]:
+        if x.shape[-1] <= self.split_index:
+            raise ValueError(
+                f"Input last dimension ({x.shape[-1]}) must be greater than "
+                f"split_index ({self.split_index})"
+            )
+        if self.split_fn is None:
+            return _default_split_fn(x, self.split_index)
+        x1, x2 = self.split_fn(x)
+        if x1.shape[-1] != self.split_index:
+            raise ValueError(
+                "split_fn must produce x1 with last dimension equal to "
+                f"split_index ({self.split_index}), got {x1.shape[-1]}"
+            )
+        return x1, x2
+
+    def _merge(self, y1: Array, y2: Array) -> Array:
+        if self.merge_fn is None:
+            return _default_merge_fn(y1, y2)
+        return self.merge_fn(y1, y2)
+
+    def forward(self, x: ArrayLike, context=None, *, rng=None, **bijector_kwargs):
+        x = jnp.asarray(x)
+        _validate_context(self.context_dim, context)
+        x1, x2 = self._split(x)
+        params = self.predict_bij_params(x1, context, rng=rng)
+        return self._merge(x1, self.bijector(params, x2, **bijector_kwargs))
+
+    def inverse_and_logdet(self, y: ArrayLike, context=None, *, rng=None, **kwargs):
+        y = jnp.asarray(y)
+        _validate_context(self.context_dim, context)
+        y1, y2 = self._split(y)
+        params = self.predict_bij_params(y1, context, rng=rng)
+        x2, logdet = self.bijector_inv(params, y2, **kwargs)
+        return self._merge(y1, x2), jnp.sum(logdet)
+
+    def inverse(self, y: ArrayLike, context=None, *, rng=None, **kwargs):
+        return self.inverse_and_logdet(y, context, rng=rng, **kwargs)[0]
+
+
+@partial(custom_inverse, inv_argnum=0)
+def coupling_transform(x, model, *args, **kwargs):
+    return model.forward(x, *args, **kwargs)
+
+
+def coupling_inv_and_logdet(y, model, *args, **kwargs):
+    return model.inverse_and_logdet(y, *args, **kwargs)
+
+
+def coupling_inv(y, model, *args, **kwargs):
+    return model.inverse(y, *args, **kwargs)
+
+
+coupling_transform.definv(coupling_inv)
+coupling_transform.definv_and_logdet(coupling_inv_and_logdet)
+
+
+class CouplingMLP(_CouplingMixin, nnx.Module):
     """Coupling layer using MLP for bijective transformations.
 
     This module implements a coupling layer that splits the input into two parts,
@@ -172,6 +245,17 @@ class CouplingMLP(nnx.Module):
             last_kernel[...] = jnp.zeros_like(last_kernel[...])
 
         self._conditioner_accepts_rng = module_accepts_rng(self.conditioner)
+        self.bijector_inv = inverse_and_logabsdet(bijector, invertible_arg=1)
+
+    def predict_bij_params(self, x1: Array, context=None, *, rng=None) -> Array:
+        """Bijector parameters for the transformed half, given the passthrough half."""
+        conditioner_input = x1
+        if context is not None:
+            ctx = _broadcast_context_to_x1(context, x1)
+            conditioner_input = jnp.concatenate([x1, ctx], axis=-1)
+        if self._conditioner_accepts_rng:
+            return self.conditioner(conditioner_input, rng=rng)
+        return self.conditioner(conditioner_input)
 
     def __call__(
         self,
@@ -198,51 +282,10 @@ class CouplingMLP(nnx.Module):
             ValueError: If context is required but not provided, if context is provided
                 but context_dim is None, or if input dimensions are invalid.
         """
-        x = jnp.asarray(x)
-
-        # Validate input dimensions
-        if x.shape[-1] <= self.split_index:
-            raise ValueError(
-                f"Input last dimension ({x.shape[-1]}) must be greater than "
-                f"split_index ({self.split_index})"
-            )
-
-        _validate_context(self.context_dim, context)
-
-        # Split the input
-        if self.split_fn is None:
-            x1, x2 = _default_split_fn(x, self.split_index)
-        else:
-            x1, x2 = self.split_fn(x)
-            if x1.shape[-1] != self.split_index:
-                raise ValueError(
-                    "split_fn must produce x1 with last dimension equal to "
-                    f"split_index ({self.split_index}), got {x1.shape[-1]}"
-                )
-
-        # Prepare input for conditioner
-        conditioner_input = x1
-        if context is not None:
-            ctx = _broadcast_context_to_x1(context, x1)
-            conditioner_input = jnp.concatenate([x1, ctx], axis=-1)
-
-        # Compute bijector parameters
-        if self._conditioner_accepts_rng:
-            bijector_params = self.conditioner(conditioner_input, rng=rng)
-        else:
-            bijector_params = self.conditioner(conditioner_input)
-
-        # Apply bijective transformation to x2, keeping x1 unchanged
-        y1 = x1
-        y2 = self.bijector(bijector_params, x2, **bijector_kwargs)
-
-        # Concatenate results
-        if self.merge_fn is None:
-            return _default_merge_fn(y1, y2)
-        return self.merge_fn(y1, y2)
+        return coupling_transform(x, self, context, rng=rng, **bijector_kwargs)
 
 
-class CouplingTransformer(nnx.Module):
+class CouplingTransformer(_CouplingMixin, nnx.Module):
     """Coupling layer with a Transformer conditioner."""
 
     def __init__(
@@ -278,6 +321,7 @@ class CouplingTransformer(nnx.Module):
                 f"context_dim must be positive when provided, got {self.context_dim}"
             )
         self.bijector = bijector
+        self.bijector_inv = inverse_and_logabsdet(bijector, invertible_arg=1)
         self.split_fn = split_fn
         self.merge_fn = merge_fn
 
@@ -303,6 +347,16 @@ class CouplingTransformer(nnx.Module):
             rngs=rngs,
         )
 
+    def predict_bij_params(self, x1: Array, context=None, *, rng=None) -> Array:
+        """Bijector parameters for the transformed half, given the passthrough half."""
+        tokens = self.encoder(x1[..., :, None])
+        ctx = None if context is None else _broadcast_context_to_x1(context, x1)
+        tokens = self.transformer(tokens, context=ctx, rng=rng)
+        flat_tokens = tokens.reshape(
+            tokens.shape[:-2] + (self.split_index * tokens.shape[-1],)
+        )
+        return self.decoder(flat_tokens)
+
     def __call__(
         self,
         x: ArrayLike,
@@ -310,39 +364,4 @@ class CouplingTransformer(nnx.Module):
         rng: jax.Array | None = None,
         **bijector_kwargs,
     ) -> Array:
-        x = jnp.asarray(x)
-        if x.shape[-1] <= self.split_index:
-            raise ValueError(
-                f"Input last dimension ({x.shape[-1]}) must be greater than "
-                f"split_index ({self.split_index})"
-            )
-
-        _validate_context(self.context_dim, context)
-
-        if self.split_fn is None:
-            x1, x2 = _default_split_fn(x, self.split_index)
-        else:
-            x1, x2 = self.split_fn(x)
-            if x1.shape[-1] != self.split_index:
-                raise ValueError(
-                    "split_fn must produce x1 with last dimension equal to "
-                    f"split_index ({self.split_index}), got {x1.shape[-1]}"
-                )
-
-        tokens = x1[..., :, None]
-        tokens = self.encoder(tokens)
-        ctx = None
-        if context is not None:
-            ctx = _broadcast_context_to_x1(context, x1)
-        tokens = self.transformer(tokens, context=ctx, rng=rng)
-
-        flat_tokens = tokens.reshape(
-            tokens.shape[:-2] + (self.split_index * tokens.shape[-1],)
-        )
-        bijector_params = self.decoder(flat_tokens)
-
-        y1 = x1
-        y2 = self.bijector(bijector_params, x2, **bijector_kwargs)
-        if self.merge_fn is None:
-            return _default_merge_fn(y1, y2)
-        return self.merge_fn(y1, y2)
+        return coupling_transform(x, self, context, rng=rng, **bijector_kwargs)

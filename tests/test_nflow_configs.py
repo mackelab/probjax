@@ -51,7 +51,9 @@ ALL_BIJECTORS = [
     pytest.param(AffineBijectorConfig(scale_transform="exp"), id="affine-exp"),
     pytest.param(RationalQuadraticSplineConfig(num_bins=5), id="rq-spline"),
     pytest.param(
-        RationalQuadraticSplineConfig(num_bins=5, bounded=True), id="rq-spline-bounded"
+        RationalQuadraticSplineConfig(num_bins=5, x_min=-3.0, x_max=3.0,
+                                      y_min=-2.0, y_max=4.0),
+        id="rq-spline-asymmetric",
     ),
     pytest.param(RationalLinearSplineConfig(num_bins=5), id="rl-spline"),
     pytest.param(MonotoneHermiteCubicSplineConfig(num_bins=5), id="hermite-spline"),
@@ -66,6 +68,14 @@ ALL_BIJECTORS = [
 
 def _params(cfg, key, batch=(), scale=0.5):
     return jax.random.normal(key, batch + (cfg.params_dim(),)) * scale
+
+
+def _can_be_identity(cfg):
+    """A spline whose x and y domains differ cannot be the identity map."""
+    return not (
+        hasattr(cfg, "x_min")
+        and (cfg.x_min, cfg.x_max) != (cfg.y_min, cfg.y_max)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +102,8 @@ def test_unpack_consumes_exactly_params_dim(cfg):
 @pytest.mark.parametrize("cfg", ALL_BIJECTORS)
 def test_identity_at_zero_params(cfg):
     """Zero-initialised conditioners must emit the identity bijection."""
+    if not _can_be_identity(cfg):
+        pytest.skip("asymmetric domain cannot map to the identity")
     zeros = jnp.zeros((cfg.params_dim(),))
     for x in (-1.7, -0.2, 0.0, 0.42, 2.3):
         assert jnp.allclose(cfg(zeros, jnp.array(x)), x, atol=1e-5)
@@ -255,6 +267,8 @@ def test_mixture_cdf_free_init_spreads_locations():
 def test_default_params_init_is_identity(cfg):
     if isinstance(cfg, MixtureCDFBijectorConfig):
         pytest.skip("deliberately spreads locations; covered separately")
+    if not _can_be_identity(cfg):
+        pytest.skip("asymmetric domain cannot map to the identity")
     init = cfg.params_init()
     params = init(jax.random.PRNGKey(0), (3, cfg.params_dim()), jnp.float32)
     x = jnp.array([0.5, -1.0, 2.0])
