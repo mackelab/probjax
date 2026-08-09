@@ -173,18 +173,27 @@ def register_rearrangement_inverse_logdet(primitive, inverse_rule, *, strict=Tru
         if result is None:
             return None
 
-        if strict:
-            in_size = math.prod(eqn.invars[0].aval.shape)
-            out_size = math.prod(eqn.outvars[0].aval.shape)
-            if in_size != out_size:
+        in_size = math.prod(eqn.invars[0].aval.shape)
+        out_size = math.prod(eqn.outvars[0].aval.shape)
+        if in_size != out_size:
+            if strict:
                 raise NotImplementedError(
                     f"log-determinant of {primitive.name} is undefined here: it "
                     f"maps {in_size} inputs to {out_size} outputs, so it is not "
                     "a rearrangement of every element."
                 )
+            local_logdet = jnp.asarray(jnp.nan)
+        else:
+            local_logdet = jnp.asarray(0.0)
+
+        for value in result.resolved_vals:
+            if jnp.issubdtype(jnp.asarray(value).dtype, jnp.inexact):
+                local_logdet = jnp.where(
+                    jnp.any(jnp.isnan(value)), jnp.asarray(jnp.nan), local_logdet
+                )
 
         updates = {
-            var: jnp.asarray(0.0) for var in eqn.invars if not isinstance(var, Literal)
+            var: local_logdet for var in eqn.invars if not isinstance(var, Literal)
         }
         return ProcessedResult(result.resolved_vars, result.resolved_vals, updates)
 
