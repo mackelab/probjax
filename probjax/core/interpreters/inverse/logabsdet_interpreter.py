@@ -206,16 +206,23 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         jaxpr = inverse_jaxpr.jaxpr
         consts = inverse_jaxpr.literals
 
-        # Build inputs: use known_invars where available, else use output value
-        inputs = [v if v is not None else known_outvars[0] for v in known_invars]
+        target_indices = set(custom_params.target_in_indices)
+        inputs = []
+        outputs_inserted = False
+        for index, value in enumerate(known_invars):
+            if index in target_indices:
+                if not outputs_inserted:
+                    inputs.extend(known_outvars)
+                    outputs_inserted = True
+                continue
+            if value is None:
+                return None
+            inputs.append(value)
 
         out = jax_core.eval_jaxpr(jaxpr, consts, *inputs)
 
-        # Return only the variables that were unknown
-        invars = [
-            eqn.invars[i] for i in range(len(eqn.invars)) if known_invars[i] is None
-        ]
-        result_vals = list(out[:-1])
+        invars = [eqn.invars[index] for index in custom_params.target_in_indices]
+        result_vals = list(out[: len(invars)])
 
         # Extract log-det from output (last element)
         log_abs_det = jnp.sum(out[-1])
@@ -223,8 +230,10 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         log_dets = self._read_log_dets(context)
         previous = self._sum_log_dets(log_dets, eqn.outvars)
 
-        updates = {
-            v: previous + log_abs_det for v in eqn.invars if not isinstance(v, Literal)
-        }
+        updates = {}
+        for index, var in enumerate(invars):
+            if isinstance(var, Literal):
+                continue
+            updates[var] = previous + log_abs_det if index == 0 else jnp.asarray(0.0)
 
         return ProcessedResult(invars, result_vals, updates)

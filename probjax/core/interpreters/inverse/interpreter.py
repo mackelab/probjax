@@ -39,7 +39,7 @@ def maybe_inverse_custom_inverse(
         return None
 
     configured_static = tuple(fun.static_argnums or ())
-    requested_static = tuple(static_argnums or ())
+    requested_static = tuple(sorted(static_argnums or ()))
     if requested_static and requested_static != configured_static:
         raise ValueError(
             "For custom_inverse inputs, static_argnums must match the "
@@ -220,15 +220,22 @@ class InverseProcessingRule(ProcessingRule):
         jaxpr = inverse_jaxpr.jaxpr
         consts = inverse_jaxpr.literals
 
-        # Build inputs: use known_invars where available, else use output value
-        inputs = [v if v is not None else known_outvars[0] for v in known_invars]
+        target_indices = set(custom_params.target_in_indices)
+        inputs = []
+        outputs_inserted = False
+        for index, value in enumerate(known_invars):
+            if index in target_indices:
+                if not outputs_inserted:
+                    inputs.extend(known_outvars)
+                    outputs_inserted = True
+                continue
+            if value is None:
+                return None
+            inputs.append(value)
 
         out = jax_core.eval_jaxpr(jaxpr, consts, *inputs)
 
-        # Return only the variables that were unknown
-        invars = [
-            eqn.invars[i] for i in range(len(eqn.invars)) if known_invars[i] is None
-        ]
-        vals = [out[0] for i in range(len(eqn.invars)) if known_invars[i] is None]
+        invars = [eqn.invars[index] for index in custom_params.target_in_indices]
+        vals = list(out[: len(invars)])
 
         return ProcessedResult(invars, vals)

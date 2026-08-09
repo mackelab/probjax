@@ -129,11 +129,6 @@ def test_logabsdet_cond_then_exp_does_not_double_count():
     assert jnp.allclose(logdet_false, expected_false, atol=1e-5, rtol=1e-5)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=jax.errors.ConcretizationTypeError,
-    reason="cond inverse uses int(branch_index.item()) which fails under JIT",
-)
 def test_inverse_cond_under_jit():
     def f(pred, x):
         return jax.lax.cond(
@@ -146,15 +141,13 @@ def test_inverse_cond_under_jit():
     inv_f = jax.jit(inverse(f, invertible_arg=1))
     x_true = jnp.array(0.7)
     y_true = f(True, x_true)
-    x_rec = inv_f(True, y_true)
-    assert jnp.allclose(x_true, x_rec, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(inv_f(True, y_true), x_true, atol=1e-6, rtol=1e-6)
+
+    x_false = jnp.array(-1.3)
+    y_false = f(False, x_false)
+    assert jnp.allclose(inv_f(False, y_false), x_false, atol=1e-6, rtol=1e-6)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=jax.errors.ConcretizationTypeError,
-    reason="switch inverse uses int(branch_index.item()) which fails under JIT",
-)
 def test_inverse_switch_under_jit():
     def f(index, x):
         return jax.lax.switch(
@@ -168,10 +161,106 @@ def test_inverse_switch_under_jit():
         )
 
     inv_f = jax.jit(inverse(f, invertible_arg=1))
-    x0 = jnp.array(0.2)
-    y0 = f(jnp.array(0, dtype=jnp.int32), x0)
-    x_rec = inv_f(jnp.array(0, dtype=jnp.int32), y0)
-    assert jnp.allclose(x0, x_rec, atol=1e-6, rtol=1e-6)
+    for index, x in enumerate((0.2, -0.4, 1.5)):
+        index = jnp.asarray(index, dtype=jnp.int32)
+        x = jnp.asarray(x)
+        assert jnp.allclose(inv_f(index, f(index, x)), x, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_and_logabsdet_cond_under_jit():
+    def f(pred, x):
+        return jax.lax.cond(
+            pred,
+            lambda value: jnp.exp(value),
+            lambda value: 3.0 * value - 1.0,
+            x,
+        )
+
+    inv_and_det = jax.jit(inverse_and_logabsdet(f, invertible_arg=1))
+
+    x_true = jnp.array(0.6)
+    recovered, logdet = inv_and_det(True, f(True, x_true))
+    assert jnp.allclose(recovered, x_true, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(logdet, -x_true, atol=1e-6, rtol=1e-6)
+
+    x_false = jnp.array(-0.2)
+    recovered, logdet = inv_and_det(False, f(False, x_false))
+    assert jnp.allclose(recovered, x_false, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(logdet, -jnp.log(3.0), atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_and_logabsdet_switch_under_jit():
+    def f(index, x):
+        return jax.lax.switch(
+            index,
+            (
+                lambda value: value + 1.0,
+                lambda value: jnp.exp(value),
+                lambda value: 2.0 * value - 1.0,
+            ),
+            x,
+        )
+
+    inv_and_det = jax.jit(inverse_and_logabsdet(f, invertible_arg=1))
+    expected_logdets = (0.0, -0.4, -jnp.log(2.0))
+    for index, expected_logdet in enumerate(expected_logdets):
+        index = jnp.asarray(index, dtype=jnp.int32)
+        x = jnp.asarray(0.4)
+        recovered, logdet = inv_and_det(index, f(index, x))
+        assert jnp.allclose(recovered, x, atol=1e-6, rtol=1e-6)
+        assert jnp.allclose(logdet, expected_logdet, atol=1e-6, rtol=1e-6)
+
+
+def test_inverse_and_logabsdet_identity_cond_branch_under_jit():
+    def f(pred, x):
+        return jax.lax.cond(pred, jnp.exp, lambda value: value, x)
+
+    inv_and_det = jax.jit(inverse_and_logabsdet(f, invertible_arg=1))
+    x = jnp.array(0.4)
+
+    recovered, logdet = inv_and_det(False, f(False, x))
+    assert jnp.allclose(recovered, x, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(logdet, 0.0, atol=1e-6, rtol=1e-6)
+
+    recovered, logdet = inv_and_det(True, f(True, x))
+    assert jnp.allclose(recovered, x, atol=1e-6, rtol=1e-6)
+    assert jnp.allclose(logdet, -x, atol=1e-6, rtol=1e-6)
+
+
+def test_nested_runtime_control_flow_under_jit():
+    def f(outer_index, inner_pred, x):
+        return jax.lax.switch(
+            outer_index,
+            (
+                lambda value: jax.lax.cond(
+                    inner_pred,
+                    jnp.exp,
+                    lambda operand: 3.0 * operand,
+                    value,
+                ),
+                lambda value: 2.0 * value - 1.0,
+            ),
+            x,
+        )
+
+    inv = jax.jit(inverse(f, invertible_arg=2))
+    inv_and_det = jax.jit(inverse_and_logabsdet(f, invertible_arg=2))
+    x = jnp.array(0.4)
+    cases = (
+        (0, False, -jnp.log(3.0)),
+        (0, True, -x),
+        (1, False, -jnp.log(2.0)),
+    )
+
+    for outer_index, inner_pred, expected_logdet in cases:
+        outer_index = jnp.asarray(outer_index, dtype=jnp.int32)
+        output = f(outer_index, inner_pred, x)
+        assert jnp.allclose(
+            inv(outer_index, inner_pred, output), x, atol=1e-6, rtol=1e-6
+        )
+        recovered, logdet = inv_and_det(outer_index, inner_pred, output)
+        assert jnp.allclose(recovered, x, atol=1e-6, rtol=1e-6)
+        assert jnp.allclose(logdet, expected_logdet, atol=1e-6, rtol=1e-6)
 
 
 # ---------------------------------------------------------------------------

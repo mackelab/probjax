@@ -19,12 +19,14 @@ from probjax.core.interpreters.inverse.rules import (
     invert_transpose,
     parse_scan_problem,
     parse_while_problem,
+    pack_cond_values,
+    prepare_cond_branches,
     prepare_cond_branch_problem,
     read_state_values,
     scan_reverse_indices,
-    select_cond_branch_jaxpr,
     solve_nested_values_and_state,
     state_from_vars,
+    unpack_cond_values,
     verify_while_candidate,
     _values_equal,
 )
@@ -407,66 +409,65 @@ def invert_dot_general_and_logdet(eqn, known_invars, known_outvars, context=None
 
 @REGISTRY.rule(jax.lax.cond_p, Context.INVERSE_LOGDET)
 def invert_cond_and_logdet(eqn, known_invars, known_outvars, context=None):
+    del context
     if any(out is None for out in known_outvars):
         return None
-    branch = select_cond_branch_jaxpr(eqn, known_invars)
-    target_sub_vars, target_outer_vars, known_vars, known_vals = (
-        prepare_cond_branch_problem(
-            eqn,
-            branch,
-            known_invars,
-            known_outvars,
-        )
+    branch_index, branches = prepare_cond_branches(eqn, known_invars)
+    target_sub_vars, target_outer_vars, _, _ = prepare_cond_branch_problem(
+        eqn, branches[0], known_invars, known_outvars
     )
 
     if not target_sub_vars:
         return ProcessedResult([], [], {})
 
-    outer_state = {}
-    if context is not None:
-        state = context.read_run_state(namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE)
-        if state is not None:
-            outer_state = state
-
-    initial_state = {}
-    for branch_outvar, outer_outvar in zip(
-        branch.jaxpr.outvars, eqn.outvars, strict=False
-    ):
-        if isinstance(outer_outvar, Literal):
-            continue
-        if outer_outvar in outer_state:
-            initial_state[branch_outvar] = outer_state[outer_outvar]
-
-    nested_values, nested_state = solve_nested_values_and_state(
-        jaxpr=branch.jaxpr,
-        consts=branch.consts,
-        known_vars=known_vars,
-        known_vals=known_vals,
-        target_vars=target_sub_vars,
-        process_eqn=_make_logabsdet_processing_rule(
-            INVERSE_AND_LOGABSDET_STATE_NAMESPACE
-        ),
-        cost_fn=_get_inverse_cost_fn(),
-        reducer=inverse_and_logabsdet_state_reducer,
-        initial_state=initial_state,
-        state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
-    )
-
-    if any(v is None for v in nested_values):
-        raise NotImplementedError("cond inverse+logdet could not recover branch inputs")
-
-    nested_state = {} if nested_state is None else nested_state
-    updates = {}
-    for sub_var, outer_var in zip(target_sub_vars, target_outer_vars, strict=False):
-        if isinstance(outer_var, Literal):
-            continue
-        if sub_var not in nested_state:
-            raise NotImplementedError(
-                "cond inverse+logdet missing branch logdet update"
+    def make_branch_solver(branch):
+        def solve(packed):
+            branch_inputs, branch_outputs = unpack_cond_values(
+                known_invars, known_outvars, packed
             )
-        updates[outer_var] = nested_state[sub_var]
+            branch_targets, _, known_vars, known_vals = prepare_cond_branch_problem(
+                eqn, branch, branch_inputs, branch_outputs
+            )
+            nested_values, nested_state = solve_nested_values_and_state(
+                jaxpr=branch.jaxpr,
+                consts=branch.consts,
+                known_vars=known_vars,
+                known_vals=known_vals,
+                target_vars=branch_targets,
+                process_eqn=_make_logabsdet_processing_rule(
+                    INVERSE_AND_LOGABSDET_STATE_NAMESPACE
+                ),
+                cost_fn=_get_inverse_cost_fn(),
+                reducer=inverse_and_logabsdet_state_reducer,
+                initial_state={},
+                state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
+            )
+            if any(value is None for value in nested_values):
+                raise NotImplementedError(
+                    "cond inverse+logdet could not recover branch inputs"
+                )
+            nested_state = {} if nested_state is None else nested_state
+            logdets = tuple(
+                jnp.asarray(nested_state.get(var, 0.0)) for var in branch_targets
+            )
+            return tuple(nested_values), logdets
 
-    return ProcessedResult(target_outer_vars, nested_values, updates)
+        return solve
+
+    nested_values, nested_logdets = jax.lax.switch(
+        branch_index,
+        tuple(make_branch_solver(branch) for branch in branches),
+        pack_cond_values(known_invars, known_outvars),
+    )
+    updates = {
+        outer_var: logdet
+        for outer_var, logdet in zip(
+            target_outer_vars, nested_logdets, strict=False
+        )
+        if not isinstance(outer_var, Literal)
+    }
+
+    return ProcessedResult(target_outer_vars, list(nested_values), updates)
 
 
 @REGISTRY.rule(jax.lax.scan_p, Context.INVERSE_LOGDET)

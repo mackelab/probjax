@@ -11,7 +11,9 @@ class CustomInverseCallParams:
     forward_jaxpr: ClosedJaxpr
     inverse_jaxpr_thunk: Callable[[], ClosedJaxpr]
     in_tree: Any
+    out_tree: Any
     inv_argnum: int
+    target_in_indices: tuple[int, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +62,13 @@ def parse_custom_inverse_call_params(
 
     _require_keys(
         params,
-        ("inverse_jaxpr_thunk", "in_tree", "inv_argnum"),
+        (
+            "inverse_jaxpr_thunk",
+            "in_tree",
+            "out_tree",
+            "inv_argnum",
+            "target_in_indices",
+        ),
         where="custom_inverse_call",
     )
 
@@ -72,7 +80,9 @@ def parse_custom_inverse_call_params(
 
     inverse_jaxpr_thunk = params["inverse_jaxpr_thunk"]
     in_tree = params["in_tree"]
+    out_tree = params["out_tree"]
     inv_argnum = params["inv_argnum"]
+    target_in_indices = tuple(params["target_in_indices"])
 
     if not isinstance(forward_jaxpr, ClosedJaxpr):
         raise TypeError("custom_inverse_call.forward_jaxpr must be a ClosedJaxpr.")
@@ -80,12 +90,20 @@ def parse_custom_inverse_call_params(
         raise TypeError("custom_inverse_call.inverse_jaxpr_thunk must be callable.")
     if not isinstance(inv_argnum, int):
         raise TypeError("custom_inverse_call.inv_argnum must be an int.")
+    if not target_in_indices or not all(
+        isinstance(index, int) for index in target_in_indices
+    ):
+        raise TypeError(
+            "custom_inverse_call.target_in_indices must be a non-empty int tuple."
+        )
 
     return CustomInverseCallParams(
         forward_jaxpr=forward_jaxpr,
         inverse_jaxpr_thunk=inverse_jaxpr_thunk,
         in_tree=in_tree,
+        out_tree=out_tree,
         inv_argnum=inv_argnum,
+        target_in_indices=target_in_indices,
     )
 
 

@@ -6,6 +6,8 @@ and public API edge cases.
 
 from __future__ import annotations
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -87,7 +89,7 @@ def test_inverse_of_custom_inverse_requires_registered_inverse():
 
 
 def test_inverse_vmap_custom_inverse():
-    @custom_inverse
+    @partial(custom_inverse, inv_argnum=1)
     def f(scale, x):
         return scale * x + 1.0
 
@@ -112,12 +114,8 @@ def test_inverse_vmap_custom_inverse():
     assert jnp.allclose(x_rec_jit, xs, atol=1e-6, rtol=1e-6)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="JAX batching bug: vmap'd custom_inverse logdet is not summed across batch",
-)
 def test_inverse_and_logabsdet_vmap_custom_inverse_logdet():
-    @custom_inverse
+    @partial(custom_inverse, inv_argnum=1)
     def f(scale, x):
         return scale * x + 1.0
 
@@ -160,10 +158,6 @@ def test_inverse_vmap_custom_inverse_nonzero_axis():
     assert jnp.allclose(x_rec_jit, xs, atol=1e-6, rtol=1e-6)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="inverse_and_logabsdet fails for non-trivial vmap axes with custom_inverse",
-)
 def test_inverse_and_logabsdet_vmap_custom_inverse_nonzero_axis():
     @custom_inverse
     def f(x):
@@ -187,21 +181,130 @@ def test_inverse_and_logabsdet_vmap_custom_inverse_nonzero_axis():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="multi-output custom_inverse is not explicitly rejected",
-)
-def test_custom_inverse_multi_output_rejected():
+def test_custom_inverse_multi_output():
     @custom_inverse
     def f(x):
         return 2.0 * x, x + 1.0
 
-    f.definv(lambda y: (y[0] / 2.0,))
+    f.definv_and_logdet(lambda y: (y[0] / 2.0, -jnp.log(2.0) * y[0].size))
 
     x = jnp.array([1.0, 2.0])
     y = f(x)
-    with pytest.raises(NotImplementedError, match="multi-output"):
-        inverse(f)(y)
+    x_rec = inverse(f)(y)
+    x_rec_ld, logdet = inverse_and_logabsdet(f)(y)
+
+    assert jnp.allclose(x_rec, x)
+    assert jnp.allclose(x_rec_ld, x)
+    assert jnp.allclose(logdet, -jnp.log(2.0) * x.size)
+
+
+def test_custom_inverse_changes_pytree_structure():
+    @custom_inverse
+    def f(x):
+        return {"scaled": 2.0 * x["a"], "shifted": x["b"] + 1.0}
+
+    f.definv_and_logdet(
+        lambda y: (
+            {"a": y["scaled"] / 2.0, "b": y["shifted"] - 1.0},
+            -jnp.log(2.0) * y["scaled"].size,
+        )
+    )
+
+    x = {"a": jnp.array([0.2, 0.5]), "b": jnp.array([-1.0, 3.0])}
+    y = f(x)
+    inv = jax.jit(inverse(f))
+    inv_and_det = jax.jit(inverse_and_logabsdet(f))
+
+    x_rec = inv(y)
+    x_rec_ld, logdet = inv_and_det(y)
+
+    assert jax.tree.all(jax.tree.map(jnp.allclose, x_rec, x))
+    assert jax.tree.all(jax.tree.map(jnp.allclose, x_rec_ld, x))
+    expected_logdet = -jnp.log(2.0) * x["a"].size
+    assert jnp.allclose(logdet, expected_logdet)
+
+
+def test_custom_inverse_multi_output_nested_vmap():
+    @custom_inverse
+    def f(x):
+        return 2.0 * x[0], 3.0 * x[1]
+
+    f.definv_and_logdet(
+        lambda y: (
+            (y[0] / 2.0, y[1] / 3.0),
+            (
+                jnp.full_like(y[0], -jnp.log(jnp.asarray(2.0))),
+                jnp.full_like(y[1], -jnp.log(jnp.asarray(3.0))),
+            ),
+        )
+    )
+
+    mapped_once = jax.vmap(f, in_axes=((1, 1),), out_axes=(1, 1))
+    mapped = jax.vmap(mapped_once, in_axes=((0, 0),), out_axes=(0, 0))
+    x = (
+        jnp.arange(24.0).reshape(2, 3, 4),
+        jnp.arange(24.0, 48.0).reshape(2, 3, 4),
+    )
+    y = mapped(x)
+
+    x_rec = jax.jit(inverse(mapped))(y)
+    x_rec_ld, logdet = jax.jit(inverse_and_logabsdet(mapped))(y)
+
+    assert jax.tree.all(jax.tree.map(jnp.allclose, x_rec, x))
+    assert jax.tree.all(jax.tree.map(jnp.allclose, x_rec_ld, x))
+    expected_logdet = -x[0].size * (jnp.log(2.0) + jnp.log(3.0))
+    assert jnp.allclose(logdet, expected_logdet)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="a reduced logdet cannot separate mapped and unmapped target terms",
+)
+def test_custom_inverse_vmap_mixed_target_axes_logdet():
+    @custom_inverse
+    def f(x):
+        return 2.0 * x[0], 3.0 * x[1]
+
+    f.definv_and_logdet(
+        lambda y: (
+            (y[0] / 2.0, y[1] / 3.0),
+            (
+                jnp.full_like(y[0], -jnp.log(jnp.asarray(2.0))),
+                jnp.full_like(y[1], -jnp.log(jnp.asarray(3.0))),
+            ),
+        )
+    )
+
+    mapped = jax.vmap(f, in_axes=((1, None),), out_axes=(1, None))
+    x = (jnp.arange(6.0).reshape(2, 3), jnp.arange(3.0))
+    y = mapped(x)
+
+    x_rec, logdet = jax.jit(inverse_and_logabsdet(mapped))(y)
+
+    assert jax.tree.all(jax.tree.map(jnp.allclose, x_rec, x))
+    expected_logdet = -x[0].size * jnp.log(2.0) - x[1].size * jnp.log(3.0)
+    assert jnp.allclose(logdet, expected_logdet)
+
+
+def test_custom_inverse_negative_static_argnum():
+    @partial(custom_inverse, inv_argnum=1, static_argnums=(-2,))
+    def f(mode, x):
+        return 2.0 * x if mode == "double" else x
+
+    f.definv_and_logdet(
+        lambda mode, y: (
+            y / 2.0 if mode == "double" else y,
+            -jnp.log(2.0) * y.size if mode == "double" else jnp.asarray(0.0),
+        )
+    )
+
+    x = jnp.array([1.0, 2.0])
+    y = f("double", x)
+    inv = jax.jit(
+        inverse(f, static_argnums=(-2,), invertible_arg=1), static_argnums=0
+    )
+
+    assert jnp.allclose(inv("double", y), x)
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +442,6 @@ def test_invertible_arg_negative_and_invalid():
         inverse(f, invertible_arg=2)(y, x)
 
 
-@pytest.mark.xfail(strict=True, reason="static_argnums not yet handled in _prepare_inverse_problem")
 def test_inverse_static_argnums_success():
     def f(mode, x, scale):
         return jax.lax.cond(
@@ -362,7 +464,6 @@ def test_inverse_static_argnums_success():
     assert jnp.allclose(x, x_rec_jit, atol=1e-6, rtol=1e-6)
 
 
-@pytest.mark.xfail(strict=True, reason="static_argnums not yet handled in _prepare_inverse_problem")
 def test_inverse_and_logabsdet_static_argnums_success():
     def f(mode, x, scale):
         return jax.lax.cond(
@@ -389,7 +490,31 @@ def test_inverse_and_logabsdet_static_argnums_success():
     assert jnp.allclose(logdet_jit, expected_logdet, atol=1e-6, rtol=1e-6)
 
 
-@pytest.mark.xfail(strict=True, reason="kwargs not yet handled in _prepare_inverse_problem")
+def test_inverse_apis_support_multiple_and_negative_static_argnums():
+    def f(mode, x, offset, scale):
+        if mode == "affine":
+            return scale * x + offset
+        return x
+
+    x = jnp.array([0.3, -1.2, 2.5])
+    offset = 1.25
+    scale = jnp.array(2.0)
+    output = f("affine", x, offset, scale)
+    static_argnums = (0, -2)
+
+    inv = inverse(f, static_argnums=static_argnums, invertible_arg=1)
+    inv_and_det = inverse_and_logabsdet(
+        f, static_argnums=static_argnums, invertible_arg=1
+    )
+    jit_inv = jax.jit(inv, static_argnums=(0, 2))
+    jit_inv_and_det = jax.jit(inv_and_det, static_argnums=(0, 2))
+
+    assert jnp.allclose(jit_inv("affine", output, offset, scale), x)
+    recovered, logdet = jit_inv_and_det("affine", output, offset, scale)
+    assert jnp.allclose(recovered, x)
+    assert jnp.allclose(logdet, -x.size * jnp.log(scale))
+
+
 def test_inverse_kwargs_scale_shift():
     def f(x, *, scale, shift):
         return scale * x + shift
@@ -408,7 +533,6 @@ def test_inverse_kwargs_scale_shift():
     assert jnp.allclose(x, x_rec_jit, atol=1e-6, rtol=1e-6)
 
 
-@pytest.mark.xfail(strict=True, reason="kwargs not yet handled in _prepare_inverse_problem")
 def test_inverse_and_logabsdet_kwargs():
     def f(x, *, scale, shift):
         return scale * x + shift
@@ -431,7 +555,6 @@ def test_inverse_and_logabsdet_kwargs():
     assert jnp.allclose(logdet_jit, expected_logdet, atol=1e-6, rtol=1e-6)
 
 
-@pytest.mark.xfail(strict=True, reason="pytree inputs crash inverse wrapper with safe_map length mismatch")
 def test_inverse_pytree_dict_input():
     def f(d):
         return jax.tree_util.tree_map(lambda x: 2.0 * x, d)

@@ -46,10 +46,16 @@ def has_registered_inverse(eqn, known_invars, known_outvars) -> bool:
 
     # Special case for custom_inverse_call_p
     if primitive is custom_inverse_call_p:
-        inv_argnum = eqn.params["inv_argnum"]
-        cond1 = known_invars[inv_argnum] is False
-        cond2 = all(known_invars[:inv_argnum]) and all(known_invars[inv_argnum + 1 :])
-        return cond1 and cond2
+        target_indices = set(eqn.params["target_in_indices"])
+        targets_unknown = all(
+            not known_invars[index] for index in target_indices
+        )
+        others_known = all(
+            known
+            for index, known in enumerate(known_invars)
+            if index not in target_indices
+        )
+        return targets_unknown and others_known
 
     # Check unified registry
     return REGISTRY.has_rule(primitive, Context.INVERSE)

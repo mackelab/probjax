@@ -582,7 +582,7 @@ def read_state_values(state, vars_, *, default_factory) -> list:
 # =============================================================================
 
 
-def select_cond_branch_jaxpr(eqn, known_invars):
+def prepare_cond_branches(eqn, known_invars):
     if "branches" not in eqn.params:
         raise NotImplementedError("cond inverse requires branch jaxprs")
     if not known_invars:
@@ -595,13 +595,22 @@ def select_cond_branch_jaxpr(eqn, known_invars):
     index_array = jnp.asarray(branch_index)
     if index_array.shape != ():
         raise NotImplementedError("cond inverse requires scalar branch index")
+    if not jnp.issubdtype(index_array.dtype, jnp.integer):
+        raise NotImplementedError("cond inverse requires an integer branch index")
+    return index_array, eqn.params["branches"]
 
-    index = int(index_array.item())
-    branches = eqn.params["branches"]
-    if index < 0 or index >= len(branches):
-        raise NotImplementedError("cond inverse branch index out of range")
 
-    return branches[index]
+def pack_cond_values(known_invars, known_outvars):
+    packed = [value for value in known_invars[1:] if value is not None]
+    packed.extend(known_outvars)
+    return tuple(packed)
+
+
+def unpack_cond_values(known_invars, known_outvars, packed):
+    iterator = iter(packed)
+    operands = [None if value is None else next(iterator) for value in known_invars[1:]]
+    outputs = [next(iterator) for _ in known_outvars]
+    return [known_invars[0], *operands], outputs
 
 
 def prepare_cond_branch_problem(eqn, branch, known_invars, known_outvars):
@@ -1235,33 +1244,46 @@ def invert_split_logdet(eqn, known_invars, known_outvars):
 def invert_cond(eqn, known_invars, known_outvars):
     if any(out is None for out in known_outvars):
         return None
-    branch = select_cond_branch_jaxpr(eqn, known_invars)
-    target_sub_vars, target_outer_vars, known_vars, known_vals = (
-        prepare_cond_branch_problem(
-            eqn,
-            branch,
-            known_invars,
-            known_outvars,
-        )
+    branch_index, branches = prepare_cond_branches(eqn, known_invars)
+    target_sub_vars, target_outer_vars, _, _ = prepare_cond_branch_problem(
+        eqn, branches[0], known_invars, known_outvars
     )
 
     if not target_sub_vars:
         return ProcessedResult([], [])
 
-    target_vals = solve_nested_values(
-        jaxpr=branch.jaxpr,
-        consts=branch.consts,
-        known_vars=known_vars,
-        known_vals=known_vals,
-        target_vars=target_sub_vars,
-        process_eqn=_make_inverse_processing_rule(),
-        cost_fn=_get_inverse_cost_fn(),
+    def make_branch_solver(branch):
+        def solve(packed):
+            branch_inputs, branch_outputs = unpack_cond_values(
+                known_invars, known_outvars, packed
+            )
+            branch_targets, _, known_vars, known_vals = prepare_cond_branch_problem(
+                eqn, branch, branch_inputs, branch_outputs
+            )
+            target_vals = solve_nested_values(
+                jaxpr=branch.jaxpr,
+                consts=branch.consts,
+                known_vars=known_vars,
+                known_vals=known_vals,
+                target_vars=branch_targets,
+                process_eqn=_make_inverse_processing_rule(),
+                cost_fn=_get_inverse_cost_fn(),
+            )
+            if any(value is None for value in target_vals):
+                raise NotImplementedError(
+                    "cond inverse could not recover branch inputs"
+                )
+            return tuple(target_vals)
+
+        return solve
+
+    target_vals = jax.lax.switch(
+        branch_index,
+        tuple(make_branch_solver(branch) for branch in branches),
+        pack_cond_values(known_invars, known_outvars),
     )
 
-    if any(v is None for v in target_vals):
-        raise NotImplementedError("cond inverse could not recover branch inputs")
-
-    return ProcessedResult(target_outer_vars, target_vals)
+    return ProcessedResult(target_outer_vars, list(target_vals))
 
 
 @REGISTRY.rule(jax.lax.scan_p, Context.INVERSE)

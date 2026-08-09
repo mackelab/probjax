@@ -26,13 +26,29 @@ from probjax.core.jaxpr_propagation.utils import KnownessLevel
 from probjax.core.registry import invalid_inverse_value
 
 
-def _resolve_invertible_index(args, invertible_arg: int) -> int:
-    flat_args, _ = jax.tree_util.tree_flatten(args)
-    n_args = len(flat_args)
+def _normalize_argnums(argnums, n_args: int, *, name: str) -> tuple[int, ...]:
+    if isinstance(argnums, int):
+        argnums = (argnums,)
+    normalized = []
+    for argnum in argnums:
+        index = n_args + argnum if argnum < 0 else argnum
+        if index < 0 or index >= n_args:
+            raise IndexError(f"{name}={argnum} is out of range for {n_args} args.")
+        if index not in normalized:
+            normalized.append(index)
+    return tuple(normalized)
+
+
+def _resolve_invertible_index(args, invertible_arg: int | None) -> int:
+    n_args = len(args)
+    if n_args == 0:
+        raise ValueError("inverse requires at least one positional argument")
+    if invertible_arg is None:
+        invertible_arg = 0
     index = n_args + invertible_arg if invertible_arg < 0 else invertible_arg
     if index < 0 or index >= n_args:
         raise IndexError(
-            f"invertible_arg={invertible_arg} is out of range for {n_args} flattened args."
+            f"invertible_arg={invertible_arg} is out of range for {n_args} args."
         )
     return index
 
@@ -40,22 +56,59 @@ def _resolve_invertible_index(args, invertible_arg: int) -> int:
 def _prepare_inverse_problem(
     jaxpr_invars,
     args,
+    kwargs,
     invertible_arg,
+    static_argnums,
 ):
-    if invertible_arg is None:
-        return [], list(jaxpr_invars), list(args)
+    target_index = _resolve_invertible_index(args, invertible_arg)
+    static_indices = set(
+        _normalize_argnums(static_argnums, len(args), name="static_argnums")
+    )
+    if target_index in static_indices:
+        raise ValueError("invertible_arg cannot also be listed in static_argnums")
 
-    adjusted_index = _resolve_invertible_index(args, invertible_arg)
-    flatten_args, _ = jax.tree_util.tree_flatten(args)
-    out_arg = [flatten_args[adjusted_index]]
-    args_for_propagate = list(
-        flatten_args[:adjusted_index] + flatten_args[adjusted_index + 1 :] + out_arg
+    dynamic_values = []
+    target_leaf_indices = []
+    target_tree = None
+    for index, arg in enumerate(args):
+        if index in static_indices:
+            continue
+        leaves, tree = jax.tree_util.tree_flatten(arg)
+        start = len(dynamic_values)
+        dynamic_values.extend(leaves)
+        if index == target_index:
+            target_leaf_indices.extend(range(start, len(dynamic_values)))
+            target_tree = tree
+
+    kwarg_values, _ = jax.tree_util.tree_flatten(kwargs)
+    dynamic_values.extend(kwarg_values)
+
+    if len(dynamic_values) != len(jaxpr_invars):
+        raise ValueError(
+            "Dynamic argument leaves do not match the traced JAXPR inputs: "
+            f"got {len(dynamic_values)} values for {len(jaxpr_invars)} variables."
+        )
+    if target_tree is None:
+        raise ValueError("invertible_arg did not identify a dynamic positional argument")
+
+    target_indices = set(target_leaf_indices)
+    known_invars = [
+        var for index, var in enumerate(jaxpr_invars) if index not in target_indices
+    ]
+    known_values = [
+        value
+        for index, value in enumerate(dynamic_values)
+        if index not in target_indices
+    ]
+    target_invars = [jaxpr_invars[index] for index in target_leaf_indices]
+    output_values, output_tree = jax.tree_util.tree_flatten(args[target_index])
+    return (
+        known_invars,
+        target_invars,
+        known_values + output_values,
+        target_tree,
+        output_tree,
     )
-    known_invars = list(
-        jaxpr_invars[:adjusted_index] + jaxpr_invars[adjusted_index + 1 :]
-    )
-    target_invars = [jaxpr_invars[adjusted_index]]
-    return known_invars, target_invars, args_for_propagate
 
 
 def _sum_log_dets_for_vars(log_dets: dict, vars_) -> jax.Array:
@@ -144,12 +197,17 @@ def _cached_jaxpr_and_tree_getter(fun: Callable, static_argnums=()):
 
 def _cached_jaxpr_getter(fun: Callable, static_argnums=()):
     """Create a cached getter for JAXPR only (backward compatible)."""
-    getter = _cached_jaxpr_and_tree_getter(fun, static_argnums)
+    def fun_snapshot(*args, **kwargs):
+        return fun(*args, **kwargs)
+
+    jaxpr_maker = jax.make_jaxpr(fun_snapshot, static_argnums=static_argnums)
+    cache: dict = {}
 
     def get_jaxpr(*args, **kwargs):
-        flat_inputs, cache_key = _flatten_and_signature(args, kwargs)
-        jaxpr, _ = getter(flat_inputs, cache_key, args, kwargs)
-        return jaxpr
+        _, cache_key = _flatten_and_signature(args, kwargs)
+        if cache_key not in cache:
+            cache[cache_key] = jaxpr_maker(*args, **kwargs)
+        return cache[cache_key]
 
     return get_jaxpr
 
@@ -546,11 +604,21 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
     def wrapped(*args, **kwargs):
         processing_rule = InverseProcessingRule()
         jaxpr = get_jaxpr(*args, **kwargs)
-        known_invars, target_invars, args_for_propagate = _prepare_inverse_problem(
+        (
+            known_invars,
+            target_invars,
+            args_for_propagate,
+            target_tree,
+            _,
+        ) = _prepare_inverse_problem(
             jaxpr.jaxpr.invars,
             args,
+            kwargs,
             invertible_arg,
+            static_argnums,
         )
+        if len(args_for_propagate) - len(known_invars) != len(jaxpr.jaxpr.outvars):
+            raise ValueError("Inverse output structure does not match function outputs")
         out, env = cast(
             tuple[list, Any],
             propagate(
@@ -567,12 +635,29 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
         )
         out, _ = _materialize_inverse_targets(out, target_invars, env)
 
-        return out[0]
+        return jax.tree_util.tree_unflatten(target_tree, out)
 
     return wrapped
 
 
 def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None):
+    maybe_custom = maybe_inverse_custom_inverse(
+        fun,
+        static_argnums=static_argnums,
+        invertible_arg=invertible_arg,
+    )
+    if maybe_custom is not None:
+        @wraps(fun)
+        def custom_wrapped(*args, **kwargs):
+            value, logdet = fun.inv_and_logdet(*args, **kwargs)
+            total_logdet = sum(
+                (jnp.sum(leaf) for leaf in jax.tree_util.tree_leaves(logdet)),
+                jnp.asarray(0.0),
+            )
+            return value, total_logdet
+
+        return custom_wrapped
+
     get_jaxpr = _cached_jaxpr_getter(fun, static_argnums=static_argnums)
 
     @wraps(fun)
@@ -581,11 +666,21 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
             state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE
         )
         jaxpr = get_jaxpr(*args, **kwargs)
-        known_invars, target_invars, args_for_propagate = _prepare_inverse_problem(
+        (
+            known_invars,
+            target_invars,
+            args_for_propagate,
+            target_tree,
+            _,
+        ) = _prepare_inverse_problem(
             jaxpr.jaxpr.invars,
             args,
+            kwargs,
             invertible_arg,
+            static_argnums,
         )
+        if len(args_for_propagate) - len(known_invars) != len(jaxpr.jaxpr.outvars):
+            raise ValueError("Inverse output structure does not match function outputs")
         invars = known_invars + jaxpr.jaxpr.outvars
         outvars = target_invars
 
@@ -613,6 +708,6 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
         log_det = _sum_log_dets_for_vars(log_dets, outvars)
         if not complete:
             log_det = jnp.asarray(jnp.nan)
-        return out[0], log_det
+        return jax.tree_util.tree_unflatten(target_tree, out), log_det
 
     return wrapped
