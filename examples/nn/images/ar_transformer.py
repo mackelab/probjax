@@ -23,7 +23,7 @@ from jax import tree_util
 
 from probjax.nn import LearnablePosEncode, Transformer
 from probjax.nn.io_util import DataLoader
-from probjax.nn.layers.attention import flex_attention
+from probjax.nn.layers.attention import dot_product_attention, flex_attention
 from probjax.nn.pallas_kernels import CausalMask
 
 NUM_PIXELS = 28 * 28
@@ -150,6 +150,7 @@ class Model(nnx.Module):
         dim: int,
         rngs: nnx.Rngs,
         dropout_rate: Optional[float] = 0.1,
+        attention_fn=flex_attention,
     ):
         self.dropout_rate = dropout_rate
         self.embed = nnx.Embed(self.vocab_size, dim, rngs=rngs)
@@ -159,7 +160,7 @@ class Model(nnx.Module):
             self.num_heads,
             self.num_heads,
             self.attn_size,
-            attention_fn=flex_attention,
+            attention_fn=attention_fn,
             widening_factor=self.widening_factor,
             dropout_rate=0.0,  # dropout_rate if dropout_rate else 0.0,
             rngs=rngs,
@@ -365,6 +366,8 @@ def run_training(
     eval_batch_size: int,
     dropout_rate: float = 0.1,
     label_smoothing: float = 0.1,
+    model_dim: int = 512,
+    attention: str = "flex",
 ) -> None:
     if batch_size % jax.local_device_count() != 0:
         raise ValueError(
@@ -374,7 +377,8 @@ def run_training(
     local_devices = jax.local_device_count()
     per_device_bsz = batch_size // local_devices
 
-    dataset = load_dataset("mnist", keep_in_memory=True)
+    # Namespaced repo id: datasets>=5 / huggingface_hub>=1 reject the bare "mnist" alias.
+    dataset = load_dataset("ylecun/mnist", keep_in_memory=True)
     dataset.set_format(type="numpy", columns=["image"])
     logger.info(
         "Loaded MNIST dataset with %s train / %s test samples",
@@ -389,11 +393,17 @@ def run_training(
         -1, NUM_PIXELS
     )
 
-    model = Model(dim=512, rngs=nnx.Rngs(0), dropout_rate=dropout_rate)
+    model = Model(
+        dim=model_dim,
+        rngs=nnx.Rngs(0),
+        dropout_rate=dropout_rate,
+        attention_fn=flex_attention if attention == "flex" else dot_product_attention,
+    )
     graphdef, params, state = nnx.split(model, nnx.Param, ...)
 
     # Improved optimizer with warmup and cosine decay
-    warmup_steps = 2000
+    # Cap the warmup so short (smoke-test) runs still get a valid decay window.
+    warmup_steps = min(2000, max(1, num_steps // 10))
     total_steps = num_steps
     schedule = optax.warmup_cosine_decay_schedule(
         init_value=0.0,
@@ -658,6 +668,19 @@ def parse_args() -> argparse.Namespace:
         default="transformer_mnist.log",
         help="Optional path to append logs.",
     )
+    parser.add_argument(
+        "--model-dim",
+        type=int,
+        default=512,
+        help="Residual stream width.",
+    )
+    parser.add_argument(
+        "--attention",
+        choices=("flex", "dense"),
+        default="flex",
+        help="Attention backend: the fused pallas kernel (GPU only) or the dense "
+        "reference implementation (needed to run anywhere else).",
+    )
     return parser.parse_args()
 
 
@@ -677,6 +700,8 @@ def main() -> None:
         eval_batch_size=args.eval_batch_size,
         dropout_rate=args.dropout_rate,
         label_smoothing=args.label_smoothing,
+        model_dim=args.model_dim,
+        attention=args.attention,
     )
 
 

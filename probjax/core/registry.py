@@ -42,7 +42,11 @@ import jax.numpy as jnp
 from jax.experimental import checkify
 from jax.extend.core import ClosedJaxpr, JaxprEqn, Literal, Primitive, Var
 
-from probjax.core.jaxpr_propagation.utils import bind_primitive, sanitize_bind_params
+from probjax.core.jaxpr_propagation.utils import (
+    bind_primitive,
+    rebind_primitive,
+    sanitize_bind_params,
+)
 
 # Atom is Var | Literal but not directly exported
 Atom = Union[Var, Literal]
@@ -67,7 +71,8 @@ class RuleFunction(Protocol):
         known_out: Values for output variables (None for unknowns)
 
     Returns:
-        ProcessedResult, tuple of (resolved_vars, resolved_vals), or None if rule doesn't apply
+        ProcessedResult, tuple of (resolved_vars, resolved_vals), or None if the
+        rule does not apply.
     """
 
     def __call__(
@@ -299,7 +304,8 @@ class RuleRegistry:
 
         if not isinstance(result, ProcessedResult):
             raise TypeError(
-                f"Rules must return ProcessedResult or None, got {type(result).__name__}"
+                "Rules must return ProcessedResult or None, got "
+                f"{type(result).__name__}"
             )
 
         return result
@@ -637,7 +643,7 @@ def forward_rule(
         return None
 
     primitive = eqn.primitive
-    result = bind_primitive(primitive, eqn.params, *known_in, params_from=primitive)
+    result = rebind_primitive(primitive, eqn.params, *known_in)
 
     if primitive.multiple_results:
         return ProcessedResult(resolved_vars=eqn.outvars, resolved_vals=list(result))

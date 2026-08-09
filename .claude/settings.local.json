@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import equinox; print\\('eqx', equinox.__version__\\)\")",
+      "Bash(python -c \"import flax; print\\('flax', flax.__version__\\)\")",
+      "Bash(python -m pytest tests/test_odeint.py -x --tb=short)",
+      "Bash(.venv/bin/pytest tests/test_odeint.py -x --tb=short)",
+      "Bash(.venv/bin/pytest tests/test_odeint.py --tb=short)",
+      "Bash(.venv/bin/python -c ':*)",
+      "Bash(.venv/bin/pytest tests/test_core_inverse_and_log_det.py --tb=short)",
+      "Bash(.venv/bin/grep:*)",
+      "Bash(.venv/bin/pytest tests/test_odeint.py tests/test_core_inverse_and_log_det.py --tb=short)",
+      "Bash(.venv/bin/pytest tests/ --tb=line -q)",
+      "Bash(wait)",
+      "Bash(.venv/bin/pytest tests/ -q --ignore=tests/test_odeint.py --ignore=tests/test_core_inverse_and_log_det.py)",
+      "Bash(python:*)",
+      "Bash(/Users/manug/src/probjax/.venv/bin/python:*)",
+      "Bash(.venv/bin/python -m pytest tests/ --co -q)",
+      "Bash(.venv/bin/python -m pytest tests/test_odeint.py --co -q)",
+      "Bash(.venv/bin/python -m pytest tests/test_odeint.py -x -q)",
+      "Bash(.venv/bin/python:*)",
+      "Bash(ls *.toml *.cfg setup.py)",
+      "Bash(python3 -c \"import pytest; print\\(pytest.__version__\\)\")",
+      "Bash(git *)",
+      "Bash(awk -F'::' '{print $2}')",
+      "Bash(awk -F'[' '{print $1}')",
+      "Bash(pkill -f \"pytest tests/test_odeint\")",
+      "Bash(tee /tmp/test_out.log)",
+      "Bash(tee /tmp/test.log)",
+      "Bash(grep -v \"^\\\\s*$\")",
+      "Bash(sed -i '' -e 's|from probjax.nn.loss_fn.denoising |from probjax.nn.diffusion.ddpm.denoising_loss |g' -e 's|from probjax.nn.loss_fn.denoising_score_matching |from probjax.nn.diffusion.ddpm.score_matching_loss |g' -e 's|from probjax.nn.diffusion.config.denoising_diffusion_configs |from probjax.nn.diffusion.ddpm.config |g' probjax/nn/diffusion/ddpm/model.py)",
+      "Bash(sed -i '' -e 's|from probjax.nn.loss_fn.flow_matching |from probjax.nn.diffusion.flow_matching.loss |g' -e 's|from probjax.nn.diffusion.config.flow_matching_configs |from probjax.nn.diffusion.flow_matching.config |g' probjax/nn/diffusion/flow_matching/model.py)",
+      "Bash(sed -i '' -e 's|from probjax.nn.loss_fn.mean_flow_matching |from probjax.nn.diffusion.mean_flow.loss |g' -e 's|from probjax.nn.diffusion.config.flow_matching_configs |from probjax.nn.diffusion.flow_matching.config |g' -e 's|from probjax.nn.diffusion.config.mean_flow_matching_configs |from probjax.nn.diffusion.mean_flow.config |g' probjax/nn/diffusion/mean_flow/model.py)",
+      "Bash(sed -i '' -e 's|from probjax.nn.loss_fn.multinomial_diffusion |from probjax.nn.diffusion.multinomial.loss |g' -e 's|from probjax.nn.diffusion.config.multinomial_diffusion_configs |from probjax.nn.diffusion.multinomial.config |g' probjax/nn/diffusion/multinomial/model.py)"
+    ]
+  }
+}

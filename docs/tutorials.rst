@@ -23,40 +23,37 @@ Working with probability distributions.
 .. toctree::
    :maxdepth: 1
 
-   /examples/stats/distirbutions
+   /examples/stats/distributions_basic
+   /examples/stats/distributions_highlevel
 
-Neural Networks
----------------
+Neural Networks: Architectures
+------------------------------
 
-Neural network architectures, normalizing flows, transformers, and diffusion models.
+Attention, transformers, the rest of ``probjax.nn.nets``, and multi-device sharding.
 
 .. toctree::
    :maxdepth: 1
 
-   /examples/nn/flows/normalizing_fows
-   /examples/nn/flows/normalizing_fows_mnist
-   /examples/nn/flows/ar
-   /examples/nn/flows/flow_matching
-   /examples/nn/flows/flow_matching_mnist
-   /examples/nn/flows/mean_flow_matching
+   /examples/nn/nets/attention
+   /examples/nn/nets/transformer
+   /examples/nn/nets/architectures
+   /examples/nn/nets/sharding
+
+Neural Networks: Generative Models
+----------------------------------
+
+Diffusion, flow matching, normalizing flows and autoregressive models.
+
+.. toctree::
+   :maxdepth: 1
+
+   /examples/nn/generative/normalizing_flows
+   /examples/nn/generative/diffusion
+   /examples/nn/generative/flow_matching
+   /examples/nn/generative/autoregressive
+   /examples/nn/generative/simformer
    /examples/nn/flows/mean_flow_matching_mnist
-   /examples/nn/bnns/bnn
-   /examples/nn/transformers/attention
-   /examples/nn/transformers/flex_attention
-   /examples/nn/transformers/transformers_mnist
-   /examples/nn/transformers/transformers_binary_mnist
-   /examples/nn/transformers/sorting_transformer
-   /examples/nn/transformers/simformer
-   /examples/nn/transformers/decoder_transformer
-   /examples/nn/transformers/sharding
-   /examples/nn/rnns/rnns
-   /examples/nn/rnns/sorting_lru
-   /examples/nn/diffusion/diffusion_model
-   /examples/nn/diffusion/diffusion_model_conditional
-   /examples/nn/diffusion/diffusion_mnist_transformer
-   /examples/nn/diffusion/diffusion_mnist_new
    /examples/nn/diffusion/discrete_diffusion
-   /examples/nn/diffusion/score_matching
 
 Inference
 ---------
@@ -69,8 +66,8 @@ MCMC, SMC, and filtering algorithms.
    /examples/inference/mcmc
    /examples/inference/smc
    /examples/inference/kalman_filter
-   /examples/inference/filtering_smoothing
-   /examples/basics/particle_filter
+   /examples/inference/filters
+   /examples/inference/bnn
 
 Utilities
 ---------
@@ -82,6 +79,4 @@ Utility functions for ODE/SDE integration and special functions.
 
    /examples/utils/odeint
    /examples/utils/sdeint
-   /examples/utils/bijective
    /examples/utils/betaincinv
-   /examples/utils/gammaincinv

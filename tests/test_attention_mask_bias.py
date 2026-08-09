@@ -216,6 +216,29 @@ def test_compose_mask_get_data_two_stateful_raises():
         composed.get_data(q_seq_len=6, kv_seq_len=6)
 
 
+@pytest.mark.parametrize("op", ["and", "or", "xor"])
+def test_compose_mask_dense_with_stateful_child(op):
+    """dense() on a composition with a stateful child must stay rank 4.
+
+    Regression: ComposeMask.dense() used to pre-fill seg_q/seg_k from
+    get_data(), which returns the (B, T, 1, 1) *kernel* payload layout. The
+    dense path treats those as per-position vectors, so the [Q, K] block came
+    out rank 4 and broadcasting blew up.
+    """
+    q_len = kv_len = 8
+    causal = CausalMask()
+    lengths = SeqLenMask(jnp.array([5], dtype=jnp.int32))
+    composed = ComposeMask(op, causal, lengths)
+
+    got = composed.dense(q_len, kv_len)
+    assert got.shape == (1, 1, q_len, kv_len)
+
+    left = causal.dense(q_len, kv_len)
+    right = lengths.dense(q_len, kv_len)
+    expected = {"and": left & right, "or": left | right, "xor": left ^ right}[op]
+    assert jnp.array_equal(got, expected)
+
+
 def test_sum_bias_adds_biases_without_double_counting_scores():
     q_idx = _idx(3)
     k_idx = _idx(4)

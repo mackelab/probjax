@@ -50,7 +50,7 @@ class SigmoidPairFlowTrainingConfig(FlowPairTrainingConfigProtocol):
             * self.scale_rt
             - self.mu_rt
         )
-        r1 = jnp.clip(t1 + r1, a_min=self.t_min, a_max=self.t_max)
+        r1 = jnp.clip(t1 + r1, min=self.t_min, max=self.t_max)
 
         t2 = r2 = jax.nn.sigmoid(
             jax.random.normal(rng_tr, (batch_size_same,) + shape[1:] + (1,))

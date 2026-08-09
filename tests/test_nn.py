@@ -615,3 +615,42 @@ def _unchunkify(tokens, x, metadata):
     if channel_axis_mod is not None and channel_axis_mod != x.ndim - 1:
         x_channel_last = jnp.moveaxis(x_channel_last, -1, channel_axis_mod)
     return x_channel_last
+
+
+@pytest.mark.parametrize(
+    ("spatial_ndim", "kernel_size", "input_shape"),
+    [
+        (1, 3, (2, 32, 1)),
+        (2, (3, 3), (2, 16, 16, 1)),
+    ],
+)
+def test_unet_builds_for_1d_and_2d(spatial_ndim, kernel_size, input_shape):
+    """UNet must construct for any spatial rank.
+
+    Regression: the ResnetBlock skip connection is a 1x1 Conv initialized with
+    ``identity_1x1``, which indexed ``shape[2:4]`` and so assumed a rank-4
+    (2-D) kernel. With the int ``kernel_size`` defaults flax builds a rank-3
+    (1-D) kernel and construction raised IndexError -- i.e. the documented
+    default constructor did not work at all.
+    """
+    from probjax.nn.nets import UNet
+
+    unet = UNet(
+        1,
+        [32, 64],
+        kernel_size=kernel_size,
+        kernel_size_resnet=kernel_size,
+        rngs=nnx.Rngs(0),
+    )
+    out = unet(jnp.ones(input_shape))
+    assert out.shape == input_shape
+
+
+@pytest.mark.parametrize("shape", [(1, 4, 6), (1, 1, 4, 6), (1, 1, 1, 6, 4)])
+def test_identity_1x1_is_rank_agnostic(shape):
+    from probjax.nn.utils import identity_1x1
+
+    kernel = identity_1x1(None, shape)
+    assert kernel.shape == shape
+    # Exactly min(C_in, C_out) ones, all on the channel diagonal at the origin.
+    assert float(kernel.sum()) == min(shape[-2], shape[-1])

@@ -30,6 +30,7 @@ from probjax.nn.generative.sampling import (
     _ExportedSampler,
     make_ode_sample_fn,
     make_sde_sample_fn,
+    sample_normal,
 )
 from probjax.nn.losses.denoising import build_time_dependent_denoising_loss
 from probjax.nn.utils import module_accepts_rng
@@ -309,6 +310,17 @@ class DiffusionDenoiser(GenerativeModel):
 
     def marginal_std(self, t: ArrayLike) -> Array:
         return self.schedule.marginal_std(t, self.std0.get_value())
+
+    def _sample_base(self, rng, sample_shape, spec):
+        """Draw the reverse process's starting noise, N(0, marginal_std(t_max)^2).
+
+        Overrides the base class's fixed unit-variance default: the reverse
+        ODE/SDE starts at ``t_max``, where the data has been diffused to
+        ``marginal_std(t_max)`` (e.g. ``~sigma_max`` for EDM), not to unit
+        variance.
+        """
+        scale = self.marginal_std(self.train_cfg.t_max)
+        return sample_normal(rng, sample_shape, spec, scale=scale)
 
     def drift(
         self,

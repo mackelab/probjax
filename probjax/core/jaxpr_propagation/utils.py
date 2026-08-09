@@ -28,27 +28,37 @@ def sanitize_bind_params(params) -> dict[str, Any]:
 
     Newer JAX attaches ``out_dtype=None`` to some nary primitives (e.g. mul).
     Inverse rules forward the forward eqn's params into a *different*
-    primitive's bind (e.g. div as mul's inverse); a foreign param stages an
-    eqn whose JVP rule rejects it.
-
-    Only ever apply this when re-binding a *different* primitive: dropping the
-    param is not a no-op for the primitive that owns it. ``mul_p`` binds
-    happily without ``out_dtype``, but stages an eqn missing it, and its
-    transpose rule then requires it -- so the failure surfaces much later, in
-    the backward pass of any ``grad`` through the reconstructed jaxpr.
+    primitive's bind (e.g. div as mul's inverse). That foreign primitive may
+    accept ``out_dtype`` in its own ``bind()`` yet have a hand-written JVP
+    rule (e.g. ``div_p``'s, registered via plain ``ad.defjvp`` with no
+    ``**kwargs``) that rejects it the moment the eqn is differentiated.
+    The parameter must be preserved when re-binding the original primitive,
+    however: ``mul_p``'s transpose rule requires the key during backpropagation.
     """
     return {k: v for k, v in params.items() if not (k == "out_dtype" and v is None)}
 
 
 def bind_primitive(primitive, params, *args, params_from=None):
-    """Bind ``primitive`` with ``params`` read off some equation.
+    """Bind ``primitive`` with params that may belong to another primitive.
 
-    ``params_from`` is the primitive those params came from. When it is the
-    primitive being bound the params are passed through untouched; otherwise
-    primitive-specific hints are stripped (see :func:`sanitize_bind_params`).
+    ``params_from`` identifies the primitive that supplied ``params``. Params
+    are preserved when replaying that same primitive and sanitized when they
+    cross to an inverse primitive (see :func:`sanitize_bind_params`).
     """
     if params_from is not primitive:
         params = sanitize_bind_params(params)
+    subfuns, bind_params = primitive_bind_params(primitive, params)
+    return primitive.bind(*subfuns, *args, **bind_params)
+
+
+def rebind_primitive(primitive, params, *args):
+    """Re-bind an eqn's primitive with its own params, unmodified.
+
+    Used for forward re-execution of an eqn (all inputs known): the eqn's
+    ``out_dtype`` (or similar) must be preserved verbatim, since e.g.
+    ``mul_p``'s bilinear transpose rule requires that key to be present in
+    the resulting eqn's params to work under ``jax.grad``.
+    """
     subfuns, bind_params = primitive_bind_params(primitive, params)
     return primitive.bind(*subfuns, *args, **bind_params)
 
@@ -349,9 +359,7 @@ class ForwardProcessingRule(ProcessingRule):
         from probjax.core.registry import ProcessedResult
 
         primitive = eqn.primitive
-        outvals = bind_primitive(
-            primitive, eqn.params, *known_inputs, params_from=primitive
-        )
+        outvals = rebind_primitive(primitive, eqn.params, *known_inputs)
         if not eqn.primitive.multiple_results:
             outvals = [outvals]
 

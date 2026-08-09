@@ -212,7 +212,7 @@ Detailed Documentation
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: probjax.nn.loss_fn
+.. automodule:: probjax.nn.losses
    :members:
    :undoc-members:
    :show-inheritance:

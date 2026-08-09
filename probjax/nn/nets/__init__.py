@@ -15,6 +15,7 @@ from probjax.nn.nets.simple import (
     ResNet,
     Sequential,
 )
+from probjax.nn.nets.time import TimeMLP
 from probjax.nn.nets.transformer import Transformer
 from probjax.nn.nets.unets import UNet
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "MaskedMLP",
     "ResNet",
     "Sequential",
+    "TimeMLP",
     "Transformer",
     "UNet",
 ]

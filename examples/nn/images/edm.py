@@ -50,7 +50,14 @@ from jax.sharding import PartitionSpec
 from probjax.nn import GaussianFourierEmbedding, GatedFuse, LearnablePosEncode, Transformer
 from probjax.nn.io_util import DataLoader, chunkify, unchunkify
 from probjax.nn.layers.attention import flex_attention
-from probjax.nn.nets.denoising_diffusion_model import EDM
+from probjax.nn.generative.diffusion import EDM
+
+# NOTE: this script predates the probjax.nn.generative refactor. The import
+# above was updated to the new EDM location, but `model.sample_ode(...)`
+# below is old-API and no longer exists on EDM/DiffusionDenoiser (see
+# `.as_dist(event_spec, mode="ode").sample(...)` in examples/nn/generative/
+# for the current sampling API). This is a large ImageNet-scale training
+# script kept here for reference/reuse, not verified end-to-end.
 
 
 def setup_logging(log_path: Path) -> None:

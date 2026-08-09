@@ -19,15 +19,17 @@ _RNG_SUPPORT_BY_TYPE: dict[type, bool] = {
 
 
 def identity_1x1(_, shape: Sequence[int], dtype=jnp.float32):
-    """Kernel init for a 1×1 Conv that starts as identity.
+    """Kernel init for an all-ones-kernel Conv that starts as identity.
 
-    Works for (1, 1, C_in, C_out).  If C_in ≠ C_out the extra
-    channels are zero-filled.
+    Shape is (*spatial, C_in, C_out) for any number of spatial dims — 1-D
+    convs give (1, C_in, C_out), 2-D give (1, 1, C_in, C_out). If C_in ≠ C_out
+    the extra channels are zero-filled.
     """
     k = jnp.zeros(shape, dtype)
-    diag = jnp.arange(min(shape[2], shape[3]))
-    # set W[0, 0, i, i] = 1
-    k = k.at[0, 0, diag, diag].set(1.0)
+    diag = jnp.arange(min(shape[-2], shape[-1]))
+    # set W[0, ..., 0, i, i] = 1
+    spatial_origin = (0,) * (len(shape) - 2)
+    k = k.at[(*spatial_origin, diag, diag)].set(1.0)
     return k
 
 

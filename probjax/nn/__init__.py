@@ -203,6 +203,7 @@ from probjax.nn.nets import (
     MaskedMLP,
     ResNet,
     Sequential,
+    TimeMLP,
     Transformer,
     UNet,
 )

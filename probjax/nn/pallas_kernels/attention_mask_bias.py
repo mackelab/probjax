@@ -355,8 +355,11 @@ class ComposeMask(AttentionMask):
         seg_q: Optional[Array] = None,
         seg_k: Optional[Array] = None,
     ) -> jax.Array:
-        if self.stateful and seg_q is None and seg_k is None:
-            seg_q, seg_k = self.get_data(q_seq_len=q_len, kv_seq_len=kv_len)
+        # No get_data() pre-fill here: get_data() returns the *kernel* payload
+        # layout (B, T, 1, 1), which the dense path would broadcast into a 4D
+        # per-position vector and produce a rank-4 [Q, K] block. Leaving
+        # seg_q/seg_k as None lets each stateful child fall back to the ids it
+        # already stores, which is what the dense path expects.
         return super().dense(
             q_len,
             kv_len,
