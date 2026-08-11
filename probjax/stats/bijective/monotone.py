@@ -25,7 +25,8 @@ Implemented families:
   fixed Gauss-Legendre quadrature (Wehenkel & Louppe, 2019). The weights
   ``(hidden_weights, hidden_biases, out_weights, out_bias, offset)`` are
   genuinely unconstrained; positivity is architectural (see below).
-* :func:`sos_polynomial` — sum-of-squares polynomial flow (Jaini et al., 2019).
+* :func:`sos_polynomial` — sum-of-squares polynomial flow (Jaini et al., 2019),
+  acting on ``x / bound`` with linear tails outside.
   ``(coefficients, constant)`` with ``coefficients`` of shape ``(..., K, r + 1)``.
 * :func:`bernstein` — monotone Bernstein polynomial on an interval with identity
   tails (Sick et al., 2021). ``theta`` increasing from 0 to 1, shape ``(..., m + 1)``.
@@ -66,12 +67,31 @@ __all__ = [
 _EPS = 1e-6
 
 
-def _solve_increasing(g, target, num_expansions: int = 40, num_bisections: int = 60):
+def _solve_increasing(
+    g,
+    target,
+    num_expansions: int = 24,
+    num_bisections: int = 60,
+    rtol: float = 1e-3,
+    atol: float = 1e-4,
+):
     """Solve ``g(t) = target`` elementwise for strictly increasing ``g``.
 
-    Doubles a symmetric bracket around 0 until it contains the root
-    (covers |t| up to ~2^40), then bisects. Not differentiable — callers
-    differentiate through the analytic inverse instead.
+    Doubles a symmetric bracket around 0 until it contains the root, then
+    bisects. Not differentiable — callers differentiate through the analytic
+    inverse instead.
+
+    Returns NaN where the solve did not converge. Comparisons are written so a
+    non-finite ``g`` counts as "did not bracket" rather than falling through:
+    with a bare ``g(lo) > target``, a NaN makes both directions read False, so
+    expansion stops immediately and bisection walks to the edge of the bracket,
+    returning a confidently wrong root. A NaN is recoverable information for the
+    caller; a silently wrong inverse is not.
+
+    ``num_expansions`` only has to cover the map's growth. Every family here has
+    linear or identity tails, so a reach of ``2**24`` is ample, and further
+    doubling would only produce brackets too wide for float32 bisection to
+    resolve.
     """
     target = jnp.asarray(target)
     lo = jnp.full_like(target, -1.0)
@@ -80,20 +100,28 @@ def _solve_increasing(g, target, num_expansions: int = 40, num_bisections: int =
     def expand(i, carry):
         lo, hi = carry
         width = 2.0**i
-        lo = jnp.where(g(lo) > target, lo - width, lo)
-        hi = jnp.where(g(hi) < target, hi + width, hi)
-        return lo, hi
+        g_lo, g_hi = g(lo), g(hi)
+        push_lo = jnp.where(jnp.isfinite(g_lo), g_lo > target, False)
+        push_hi = jnp.where(jnp.isfinite(g_hi), g_hi < target, False)
+        return jnp.where(push_lo, lo - width, lo), jnp.where(push_hi, hi + width, hi)
 
     lo, hi = jax.lax.fori_loop(0, num_expansions, expand, (lo, hi))
 
     def bisect(_, carry):
         lo, hi = carry
         mid = 0.5 * (lo + hi)
-        go_left = g(mid) > target
+        g_mid = g(mid)
+        # A non-finite midpoint cannot be trusted to pick a side; keep the
+        # bracket and let the residual check below flag the failure.
+        go_left = jnp.where(jnp.isfinite(g_mid), g_mid > target, False)
         return jnp.where(go_left, lo, mid), jnp.where(go_left, mid, hi)
 
     lo, hi = jax.lax.fori_loop(0, num_bisections, bisect, (lo, hi))
-    return 0.5 * (lo + hi)
+    root = 0.5 * (lo + hi)
+
+    residual = jnp.abs(g(root) - target)
+    converged = residual <= atol + rtol * jnp.abs(target)
+    return jnp.where(converged, root, jnp.nan)
 
 
 # ---------------------------------------------------------------------------
@@ -263,48 +291,77 @@ unconstrained_monotone.definv_and_logdet(inv_unconstrained_monotone)
 # ---------------------------------------------------------------------------
 
 
-def _sos_value_and_logdet(t, coefficients, constant):
+_SOS_BOUND = 5.0
+
+
+def _sos_value_and_logdet(t, coefficients, constant, bound=_SOS_BOUND):
     t = jnp.asarray(t)
     coeffs = jnp.asarray(coefficients)  # (..., K, r+1)
     degree = coeffs.shape[-1] - 1
 
-    # poly_k(t) = sum_l a_{kl} t^l ;  G'(t) = eps + sum_k poly_k(t)^2
-    powers = t[..., None] ** jnp.arange(degree + 1)  # (..., r+1)
-    poly_vals = jnp.sum(coeffs * powers[..., None, :], axis=-1)  # (..., K)
-    sq_sum = jnp.sum(poly_vals**2, axis=-1)
+    # The polynomial is evaluated in u = t / bound, clipped to [-1, 1]. Raw t
+    # would be raised to the power 2*degree+1 (t**7 by default), which overflows
+    # float32 above |t| ~ 340 and makes the derivative -- and hence the log-det
+    # -- infinite well before that; in u the powers stay O(1) everywhere.
+    u = t / bound
+    u_in = jnp.clip(u, -1.0, 1.0)
 
-    # Antiderivative of sum_k poly_k^2: squared-poly coefficients via
-    # anti-diagonal sums of the coefficient outer product.
-    outer = coeffs[..., :, None] * coeffs[..., None, :]  # (..., K, r+1, r+1)
-    degree2 = 2 * degree
-    t_pows = t[..., None] ** jnp.arange(1, degree2 + 2)  # t^{j+1}
-    integral = jnp.zeros_like(t)
-    for j in range(degree2 + 1):
-        b_j = jnp.zeros(t.shape) if t.ndim else jnp.asarray(0.0)
-        for l in range(max(0, j - degree), min(j, degree) + 1):
-            b_j = b_j + jnp.sum(outer[..., l, j - l], axis=-1)
-        integral = integral + b_j * t_pows[..., j] / (j + 1)
+    def slope(v):
+        """G'(t) = eps + sum_k poly_k(v)^2, positive by construction."""
+        powers = v[..., None] ** jnp.arange(degree + 1)  # (..., r+1)
+        poly_vals = jnp.sum(coeffs * powers[..., None, :], axis=-1)  # (..., K)
+        return _EPS + jnp.sum(poly_vals**2, axis=-1)
 
-    value = constant + _EPS * t + integral
-    log_grad = jnp.log(_EPS + sq_sum)
-    return value, log_grad
+    def antiderivative(v):
+        """int_0^v (eps + sum_k poly_k^2), via anti-diagonal sums of the
+        coefficient outer product (the squared polynomial's coefficients)."""
+        outer = coeffs[..., :, None] * coeffs[..., None, :]  # (..., K, r+1, r+1)
+        degree2 = 2 * degree
+        v_pows = v[..., None] ** jnp.arange(1, degree2 + 2)  # v^{j+1}
+        out = _EPS * v
+        for j in range(degree2 + 1):
+            b_j = jnp.zeros(v.shape) if v.ndim else jnp.asarray(0.0)
+            for l in range(max(0, j - degree), min(j, degree) + 1):
+                b_j = b_j + jnp.sum(outer[..., l, j - l], axis=-1)
+            out = out + b_j * v_pows[..., j] / (j + 1)
+        return out
+
+    # Inside the bound this is the local slope and the offset term vanishes;
+    # outside, both freeze at the boundary, giving a linear tail that is
+    # continuous in value *and* slope.
+    edge_slope = slope(u_in)
+    value = constant + bound * antiderivative(u_in) + (t - bound * u_in) * edge_slope
+    return value, jnp.log(edge_slope)
 
 
 @partial(custom_inverse, inv_argnum=0)
-def sos_polynomial(x: ArrayLike, coefficients: ArrayLike, constant: ArrayLike):
+def sos_polynomial(
+    x: ArrayLike,
+    coefficients: ArrayLike,
+    constant: ArrayLike,
+    bound: float = _SOS_BOUND,
+):
     """Sum-of-squares polynomial transform (sampling direction; root solve).
 
     ``coefficients`` has shape ``(..., num_polys, degree + 1)``; positivity of
     the derivative is structural, so no constraint is required on its entries.
+    The polynomial acts on ``x / bound`` within ``|x| <= bound`` and continues
+    linearly outside, so the map is a well-conditioned bijection on all of R.
     """
     return _solve_increasing(
-        lambda t: _sos_value_and_logdet(t, coefficients, constant)[0], jnp.asarray(x)
+        lambda t: _sos_value_and_logdet(t, coefficients, constant, bound)[0],
+        jnp.asarray(x),
     )
 
 
-def inv_sos_polynomial(y: ArrayLike, coefficients: ArrayLike, constant: ArrayLike):
+def inv_sos_polynomial(
+    y: ArrayLike,
+    coefficients: ArrayLike,
+    constant: ArrayLike,
+    bound: float = _SOS_BOUND,
+):
     """Analytic data -> base direction; returns ``(x, logdet)``."""
-    return _sos_value_and_logdet(y, coefficients, constant)
+    return _sos_value_and_logdet(y, coefficients, constant, bound)
 
 
 sos_polynomial.definv_and_logdet(inv_sos_polynomial)

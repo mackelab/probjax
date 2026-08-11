@@ -21,9 +21,10 @@ This is the object-layer counterpart of the scipy-style classmethod
 ``rv_generic.fit`` (closed-form / optimizer MLE for parametric families).
 """
 
+import warnings
 import weakref
 from functools import lru_cache
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -32,6 +33,41 @@ from jaxtyping import Array
 from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["fit", "FitMixin"]
+
+Schedule = Literal["constant", "warmup_cosine"]
+
+
+def _build_optimizer(learning_rate, num_steps, schedule: Schedule, clip_norm):
+    """Adam with optional warmup-cosine decay and global-norm clipping.
+
+    Clipping is on by default because a single bad step is otherwise
+    unrecoverable: the poisoned parameters persist for the rest of the run and
+    nothing downstream detects them. At the default norm it rarely binds on
+    healthy training.
+    """
+    import optax
+
+    if schedule == "constant":
+        lr = learning_rate
+    elif schedule == "warmup_cosine":
+        lr = optax.warmup_cosine_decay_schedule(
+            init_value=learning_rate / 100.0,
+            peak_value=learning_rate,
+            warmup_steps=max(1, num_steps // 20),
+            decay_steps=num_steps,
+            end_value=learning_rate / 1000.0,
+        )
+    else:
+        raise ValueError(
+            f"schedule must be 'constant' or 'warmup_cosine'; got {schedule!r}."
+        )
+
+    adam = optax.adam(lr)
+    if clip_norm is None:
+        return adam
+    if clip_norm <= 0:
+        raise ValueError(f"clip_norm must be positive or None; got {clip_norm}.")
+    return optax.chain(optax.clip_by_global_norm(clip_norm), adam)
 
 
 @lru_cache(maxsize=64)
@@ -58,6 +94,8 @@ def fit(
     num_steps: int = 1000,
     batch_size: Optional[int] = None,
     learning_rate: float = 1e-3,
+    schedule: Schedule = "constant",
+    clip_norm: Optional[float] = 10.0,
     optimizer=None,
 ) -> Tuple[object, Array]:
     """Minimize ``loss_fn`` over ``params`` with minibatch gradient descent.
@@ -73,21 +111,32 @@ def fit(
         num_steps: Number of gradient steps.
         batch_size: Minibatch size; ``None`` uses the full dataset each step.
         learning_rate: Adam learning rate, used when ``optimizer`` is None.
-        optimizer: Optional ``optax.GradientTransformation`` overriding the
-            default ``optax.adam(learning_rate)``.
+        schedule: ``"constant"`` or ``"warmup_cosine"`` (5% warmup, cosine decay
+            to ``learning_rate / 1000``). Ignored when ``optimizer`` is given.
+        clip_norm: Global gradient-norm clip; ``None`` disables. Ignored when
+            ``optimizer`` is given.
+        optimizer: Optional ``optax.GradientTransformation``. Supplying it takes
+            full control, bypassing ``learning_rate``, ``schedule`` and
+            ``clip_norm``.
 
     Returns:
         ``(trained_params, losses)`` where ``losses`` has shape ``(num_steps,)``.
-    """
-    import optax
 
+    Warns:
+        RuntimeWarning: if any step produced a non-finite loss. The parameters
+            are returned as-is rather than repaired -- once a NaN gradient has
+            been applied the run is dead, and silently continuing would hide it.
+    """
     batch = jax.tree.map(jnp.asarray, batch)
     leaves = jax.tree.leaves(batch)
     if not leaves:
         raise ValueError("batch must contain at least one array leaf.")
     num_examples = leaves[0].shape[0]
 
-    tx = optimizer if optimizer is not None else optax.adam(learning_rate)
+    if optimizer is not None:
+        tx = optimizer
+    else:
+        tx = _build_optimizer(learning_rate, num_steps, schedule, clip_norm)
     opt_state = tx.init(params)
     train_step = _jitted_train_step(loss_fn, tx)
 
@@ -102,7 +151,18 @@ def fit(
         params, opt_state, loss = train_step(params, opt_state, rng_loss, minibatch)
         losses.append(loss)
 
-    return params, jnp.stack(losses)
+    losses = jnp.stack(losses)
+    finite = jnp.isfinite(losses)
+    if not bool(jnp.all(finite)):
+        first = int(jnp.argmin(finite))
+        warnings.warn(
+            f"Training loss became non-finite at step {first} of {num_steps}; "
+            "the returned parameters are unusable. Lower the learning rate, "
+            "tighten clip_norm, or check the model for an unbounded transform.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    return params, losses
 
 
 # Per-model pure loss functions, built lazily once per instance so their
@@ -133,6 +193,15 @@ def _pure_loss_fn(model):
 class FitMixin:
     """Adds ``model.fit(rng, data, ...)`` for modules with a ``loss`` method."""
 
+    def _default_fit_kwargs(self) -> dict:
+        """Model-family defaults for :func:`fit`, overridable per subclass.
+
+        Anything the caller passes explicitly wins, so this only shifts the
+        starting point for a family whose loss landscape is known to want
+        something other than plain constant-rate Adam.
+        """
+        return {}
+
     def fit(
         self,
         rng: RngKey,
@@ -144,6 +213,7 @@ class FitMixin:
         """Train this model in place; returns per-step losses."""
         from flax import nnx
 
+        fit_kwargs = {**self._default_fit_kwargs(), **fit_kwargs}
         loss_fn = _pure_loss_fn(self)
         params = nnx.state(self, nnx.Param)
         batch = {"data": data} if context is None else {"data": data, "context": context}

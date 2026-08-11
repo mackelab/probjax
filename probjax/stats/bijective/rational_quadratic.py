@@ -192,7 +192,12 @@ def _safe_quadratic_root(a: Array, b: Array, c: Array) -> Array:
     # Choose the numerically stable solution.
     numerator = jnp.where(b >= 0, numerator_1, numerator_2)
     denominator = jnp.where(b >= 0, denominator_1, denominator_2)
-    return numerator / denominator
+    # (c) Both branches degenerate to 0 / 0 when b == 0 and the discriminant
+    # vanishes, which forces c == 0 as well -- and then z = 0 is the root we
+    # want. Left unguarded this returns NaN and poisons the whole inverse.
+    degenerate = denominator == 0.0
+    safe_denominator = jnp.where(degenerate, 1.0, denominator)
+    return jnp.where(degenerate, 0.0, numerator / safe_denominator)
 
 
 def _rational_quadratic_spline_inv(
@@ -334,7 +339,7 @@ def _rational_quadratic_spline_inv(
     # (y_pos[-1] -> x_pos[-1]) to (y_max -> x_max), and clamp at y >= y_max.
     if y_max is not None and x_max is not None:
         denom_above = y_max - y_pos[-1]
-        denom_above = jnp.where(denom_above == 0.0, 1e-12, denom_above)
+        denom_above = jnp.where(denom_above == 0.0, 1e-6, denom_above)
         slope_above_bounded = (x_max - x_pos[-1]) / denom_above
         x_above_bounded = x_pos[-1] + slope_above_bounded * (y - y_pos[-1])
         # Clamp x if y >= y_max

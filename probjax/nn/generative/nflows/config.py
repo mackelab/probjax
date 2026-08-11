@@ -147,9 +147,15 @@ def _bin_positions(raw_widths: Array, lo: float, hi: float, min_bin_size: float)
     return jnp.concatenate([lo_, lo + (hi - lo) * interior, hi_], axis=-1)
 
 
-def _knot_slopes(raw: Array, min_knot_slope: float) -> Array:
-    """``(..., num_bins + 1)`` strictly positive slopes, identity at ``raw == 0``."""
-    return _positive(raw, min_knot_slope)
+def _knot_slopes(raw: Array, min_knot_slope: float, max_knot_slope: float) -> Array:
+    """``(..., num_bins + 1)`` positive slopes in ``[1/max, max]``, 1 at ``raw == 0``.
+
+    Bounding matters most at the two ends: the spline's tails extrapolate
+    linearly with the boundary slopes, so an unbounded slope compounds to
+    ``s**L`` across ``L`` stacked transforms.
+    """
+    del min_knot_slope  # the tanh parameterization is symmetric in log space
+    return _positive(raw, 0.0, "tanh", max_knot_slope)
 
 
 def _log_simplex(raw: Array) -> Array:
@@ -307,15 +313,26 @@ class BaseSplineConfig(BaseBijectorConfig):
     suits roughly standardised data (a standard-normal base), and measurably
     beats a wider domain -- on a 2-D checkerboard, +-5 reaches 3.59 nats
     against 3.64 at +-10, and on a spiral 2.44 against 2.58.
+
+    Setting ``bounded`` replaces the linear tails with a clamp onto
+    ``[y_min, y_max]``, for modelling data on a genuinely compact domain. The
+    result is a bijection **only on** ``[x_min, x_max]``: outside it the map is
+    constant and the density is zero. Every value reaching the layer must
+    therefore lie inside the domain -- base samples and the outputs of all
+    preceding layers included -- so pair it with a bounded base distribution.
+    It is wrong with the default standard-normal base, whose samples are
+    unbounded, and it is off by default for that reason.
     """
 
-    num_bins: int = 8
+    num_bins: int = 16
     x_min: float = -5.0
     x_max: float = 5.0
     y_min: float = -5.0
     y_max: float = 5.0
     min_bin_size: float = 1e-4
     min_knot_slope: float = 1e-4
+    max_knot_slope: float = 10.0
+    bounded: bool = False
 
     _has_slopes: bool = field(default=True, init=False, repr=False)
 
@@ -330,6 +347,18 @@ class BaseSplineConfig(BaseBijectorConfig):
         if self.x_max <= self.x_min or self.y_max <= self.y_min:
             raise ValueError("Spline bounds must satisfy x_min < x_max and y_min < y_max.")
 
+    @property
+    def _bounds(self) -> dict:
+        """Domain bounds forwarded to the core spline only when clamping."""
+        if not self.bounded:
+            return {}
+        return {
+            "x_min": self.x_min,
+            "x_max": self.x_max,
+            "y_min": self.y_min,
+            "y_max": self.y_max,
+        }
+
     def params_dim(self) -> int:
         return 3 * self.num_bins + 1 if self._has_slopes else 2 * self.num_bins
 
@@ -340,7 +369,9 @@ class BaseSplineConfig(BaseBijectorConfig):
         y_pos = _bin_positions(raw_y, self.y_min, self.y_max, self.min_bin_size)
         if not self._has_slopes:
             return x_pos, y_pos
-        slopes = _knot_slopes(params[..., 2 * n :], self.min_knot_slope)
+        slopes = _knot_slopes(
+            params[..., 2 * n :], self.min_knot_slope, self.max_knot_slope
+        )
         return x_pos, y_pos, slopes
 
 
@@ -350,7 +381,7 @@ class RationalQuadraticSplineConfig(BaseSplineConfig):
     """Durkan et al. (2019) rational-quadratic spline."""
 
     def apply(self, x, x_pos, y_pos, knot_slopes):
-        return rational_quadratic_spline(x, x_pos, y_pos, knot_slopes)
+        return rational_quadratic_spline(x, x_pos, y_pos, knot_slopes, **self._bounds)
 
 
 @dataclass
@@ -358,7 +389,7 @@ class RationalLinearSplineConfig(BaseSplineConfig):
     """Degree-1/1 rational-linear spline (analytic inverse, no square root)."""
 
     def apply(self, x, x_pos, y_pos, knot_slopes):
-        return rational_linear_spline(x, x_pos, y_pos, knot_slopes)
+        return rational_linear_spline(x, x_pos, y_pos, knot_slopes, **self._bounds)
 
 
 @dataclass
@@ -367,7 +398,7 @@ class MonotoneHermiteCubicSplineConfig(BaseSplineConfig):
 
     def apply(self, x, x_pos, y_pos, knot_slopes):
         return monotone_hermite_cubic_spline(
-            x, x_pos, y_pos, knot_slopes
+            x, x_pos, y_pos, knot_slopes, **self._bounds
         )
 
 
@@ -378,7 +409,7 @@ class PiecewiseAffineSplineConfig(BaseSplineConfig):
     _has_slopes: bool = field(default=False, init=False, repr=False)
 
     def apply(self, x, x_pos, y_pos):
-        return piecewise_affine_spline(x, x_pos, y_pos)
+        return piecewise_affine_spline(x, x_pos, y_pos, **self._bounds)
 
 
 # ---- monotone networks ------------------------------------------------------
@@ -389,11 +420,14 @@ class DeepSigmoidBijectorConfig(BaseBijectorConfig):
     """NAF deep sigmoidal transform (Huang et al., 2018)."""
 
     num_components: int = 8
-    min_slope: float = 1e-6
+    min_slope: float = 1e-3
+    max_slope: float = 10.0
 
     def __post_init__(self) -> None:
         if self.num_components < 1:
             raise ValueError("num_components must be positive.")
+        if self.max_slope <= 1.0:
+            raise ValueError(f"max_slope must exceed 1; got {self.max_slope}.")
 
     def params_dim(self) -> int:
         return 3 * self.num_components
@@ -402,8 +436,13 @@ class DeepSigmoidBijectorConfig(BaseBijectorConfig):
         k = self.num_components
         raw_w, raw_a, b = params[..., :k], params[..., k : 2 * k], params[..., 2 * k :]
         # Unit slopes at zero params make the layer start as the identity:
-        # logit(mean_k sigmoid(t)) == t.
-        return _log_simplex(raw_w), _positive(raw_a, self.min_slope), b
+        # logit(mean_k sigmoid(t)) == t. The map's tail slope is min_k a_k, and
+        # log(a) enters the log-det directly, so bound a on both sides.
+        return (
+            _log_simplex(raw_w),
+            _positive(raw_a, self.min_slope, "tanh", self.max_slope),
+            b,
+        )
 
     def apply(self, x, log_weights, slopes, biases):
         return deep_sigmoid(x, log_weights, slopes, biases)
@@ -455,27 +494,29 @@ class UMNNBijectorConfig(BaseBijectorConfig):
 class SumOfSquaresBijectorConfig(BaseBijectorConfig):
     """Sum-of-squares polynomial flow (Jaini et al., 2019).
 
-    The derivative is ``eps + sum_k poly_k(x)^2``, so it is positive for any
-    coefficients. Two packing steps keep the map well-conditioned: a constant
-    added to the degree-0 coefficients makes zero params give slope 1, and
-    dividing by that same slope keeps it exactly 1 as the params move away.
+    The derivative is ``eps + sum_k poly_k(x / bound)^2``, so it is positive for
+    any coefficients. Two packing steps keep the map well-conditioned: a
+    constant added to the degree-0 coefficients makes zero params give slope 1,
+    and dividing by that same slope keeps it exactly 1 as the params move away.
 
-    This family is stiff by construction: the map grows like ``x**(2*degree+1)``,
-    so a modest parameter change that is harmless near the origin explodes in
-    the tails (at ``degree=3`` a 0.3-sigma perturbation already sends
-    ``G(6)`` past 270). Standardise the data and expect to need a smaller
-    learning rate than the spline families -- on a checkerboard spanning
-    ``[-4, 4]`` it diverges within ten steps at ``1e-3`` but trains at ``1e-4``.
-    Prefer :class:`RationalQuadraticSplineConfig` unless you specifically want a
-    polynomial flow.
+    ``bound`` is what makes the family usable at the default learning rate. The
+    polynomial acts on ``x / bound`` and continues linearly outside
+    ``|x| <= bound``, so the map grows linearly rather than as
+    ``x**(2*degree+1)``. Evaluated on raw ``x`` the degree-7 default overflows
+    float32 above ``|x| ~ 340`` and yields an infinite log-determinant, which
+    used to make this the one family that diverged out of the box. Set ``bound``
+    to cover the data, as for the spline families.
     """
 
     num_polys: int = 2
     degree: int = 3
+    bound: float = 5.0
 
     def __post_init__(self) -> None:
         if self.num_polys < 1 or self.degree < 0:
             raise ValueError("num_polys must be positive and degree non-negative.")
+        if self.bound <= 0.0:
+            raise ValueError(f"bound must be positive; got {self.bound}.")
 
     def params_dim(self) -> int:
         return self.num_polys * (self.degree + 1) + 1
@@ -490,7 +531,7 @@ class SumOfSquaresBijectorConfig(BaseBijectorConfig):
         return coeffs / norm[..., None, None], constant
 
     def apply(self, x, coefficients, constant):
-        return sos_polynomial(x, coefficients, constant)
+        return sos_polynomial(x, coefficients, constant, bound=self.bound)
 
 
 @dataclass
@@ -523,12 +564,15 @@ class BernsteinBijectorConfig(BaseBijectorConfig):
 class MixtureCDFBijectorConfig(BaseBijectorConfig):
     """Gaussianization kernel layer: logistic-mixture CDF then logistic quantile."""
 
-    num_components: int = 8
-    min_scale: float = 1e-6
+    num_components: int = 16
+    min_scale: float = 1e-3
+    max_scale: float = 10.0
 
     def __post_init__(self) -> None:
         if self.num_components < 1:
             raise ValueError("num_components must be positive.")
+        if self.max_scale <= 1.0:
+            raise ValueError(f"max_scale must exceed 1; got {self.max_scale}.")
 
     def params_init(self) -> Initializer:
         """Zeros except the location block, which is spread randomly.
@@ -556,8 +600,13 @@ class MixtureCDFBijectorConfig(BaseBijectorConfig):
             params[..., k : 2 * k],
             params[..., 2 * k :],
         )
-        # Unit scales at zero params give logit(mean_k sigmoid(t)) == t.
-        return _log_simplex(raw_w), mu, _positive(raw_s, self.min_scale)
+        # Unit scales at zero params give logit(mean_k sigmoid(t)) == t. The
+        # log-det carries -log(s) and the map divides by s, so bound it.
+        return (
+            _log_simplex(raw_w),
+            mu,
+            _positive(raw_s, self.min_scale, "tanh", self.max_scale),
+        )
 
     def apply(self, x, log_weights, locs, scales):
         return mixture_cdf(x, log_weights, locs, scales)
@@ -598,7 +647,7 @@ class ConditionerConfigProtocol(Protocol):
 class MLPConditionerConfig(ConditionerConfigProtocol):
     """Dense conditioner: a plain MLP for coupling, a MADE-masked one otherwise."""
 
-    hidden_dims: Sequence[int] = (50, 50)
+    hidden_dims: Sequence[int] = (128, 128)
     activation: Callable = jax.nn.gelu
     norm_cls: Optional[type] = None
     init_last_layer_to_zero: bool = True
@@ -796,7 +845,7 @@ class NFlowConfig:
     """Shape of a normalizing flow plus its three configuration axes."""
 
     input_dim: int
-    num_transforms: int = 5
+    num_transforms: int = 8
     context_features: Optional[int] = None
     bijector: BijectorConfigProtocol = field(default_factory=AffineBijectorConfig)
     conditioner: ConditionerConfigProtocol = field(default_factory=MLPConditionerConfig)

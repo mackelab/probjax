@@ -25,9 +25,11 @@ OPTIMAL_NLL = {
 }
 # Loose ceilings: comfortably above what the tuned defaults reach, but far
 # below what a broken log-determinant or a collapsed flow produces.
-# Affine coupling is genuinely weak on the spiral, hence the loose ceiling
-# there; it is still far below what a broken log-determinant produces.
-NLL_CEILING = {"checkerboard": 3.9, "crescent": 2.30, "spiral": 3.4}
+# Loose enough for the weakest architecture on each target -- NICE is
+# volume-preserving and Gaussianization is elementwise, so both are expected to
+# trail the spline flows by a wide margin. Still far below what a broken
+# log-determinant or a collapsed flow produces.
+NLL_CEILING = {"checkerboard": 5.1, "crescent": 2.45, "spiral": 4.5}
 
 
 def checkerboard(key, n):
@@ -61,10 +63,16 @@ DENSITIES = {"checkerboard": checkerboard, "spiral": spiral, "crescent": crescen
 # One representative per structural family: autoregressive, coupling, and a
 # monotone-network bijector whose analytic direction is data -> base.
 ARCHITECTURES = {
-    "nsf": lambda rngs: N.nsf(2, 5, rngs),
-    "nsf_coupling": lambda rngs: N.SplineCouplingFlow(2, 5, rngs),
+    "nice": lambda rngs: N.nice(2, 5, rngs),
     "realnvp": lambda rngs: N.realnvp(2, 5, rngs),
+    "nsf_coupling": lambda rngs: N.SplineCouplingFlow(2, 5, rngs),
+    "maf": lambda rngs: N.maf(2, 5, rngs),
+    "nsf": lambda rngs: N.nsf(2, 5, rngs),
+    "naf": lambda rngs: N.naf(2, 5, rngs),
+    "unaf": lambda rngs: N.unaf(2, 5, rngs),
+    "sospf": lambda rngs: N.sospf(2, 5, rngs),
     "bpf": lambda rngs: N.bpf(2, 5, rngs),
+    "gf": lambda rngs: N.gf(2, 5, rngs),
 }
 
 
@@ -87,9 +95,25 @@ def trained():
         test = sampler(jax.random.key(1), 2000)
         for aname, build in ARCHITECTURES.items():
             flow = build(nnx.Rngs(0))
-            losses = flow.fit(jax.random.key(2), train, num_steps=800, batch_size=512)
+            losses = flow.fit(jax.random.key(2), train, num_steps=600, batch_size=512)
             out[(aname, dname)] = (flow, test, losses)
     return out
+
+
+@pytest.mark.parametrize("arch", list(ARCHITECTURES))
+@pytest.mark.parametrize("density", list(DENSITIES))
+def test_trains_without_diverging(trained, arch, density):
+    """No supported architecture may blow up at its default settings.
+
+    ``sospf`` is the reason this is a test of its own: before the polynomial was
+    given a bounded domain it went non-finite within three steps at the default
+    learning rate.
+    """
+    _, _, losses = trained[(arch, density)]
+    assert jnp.all(jnp.isfinite(losses)), (
+        f"{arch} on {density}: loss went non-finite at step "
+        f"{int(jnp.argmin(jnp.isfinite(losses)))}"
+    )
 
 
 @pytest.mark.parametrize("arch", list(ARCHITECTURES))
