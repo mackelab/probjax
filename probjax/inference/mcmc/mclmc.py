@@ -34,17 +34,24 @@ def build_mclmc_step(
     logdensity_fn: Callable,
     integrator: Callable = blackjax.mcmc.integrators.isokinetic_mclachlan,
 ) -> Callable:
+    # blackjax >= 1.6 takes logdensity_fn and inverse_mass_matrix on the kernel
+    # rather than the builder, so the kernel no longer closes over per-step
+    # parameters and can be built once here.
+    kernel = blackjax.mclmc.build_kernel(integrator=integrator)
+
     def step(
         key: RngKey,
         state: IntegratorState,
         params: MCLMCParams,
     ) -> Tuple[IntegratorState, MCLMCInfo]:
-        kernel = blackjax.mclmc.build_kernel(
+        return kernel(
+            key,
+            state,
             logdensity_fn,
             inverse_mass_matrix=params.inverse_mass_matrix,
-            integrator=integrator,
+            L=params.L,
+            step_size=params.step_size,
         )
-        return kernel(key, state, params.L, params.step_size)
 
     return step
 
@@ -86,20 +93,27 @@ def build_step(
     integrator: Callable = blackjax.mcmc.integrators.isokinetic_mclachlan,
     divergence_threshold: float = 1000.0,
 ) -> Callable:
+    kernel = blackjax.adjusted_mclmc.build_kernel(
+        integrator=integrator,
+        divergence_threshold=divergence_threshold,
+    )
+
     def step(
         key: RngKey,
         state: HMCState,
         params: AdjustedMCLMCParams,
     ) -> Tuple[HMCState, HMCInfo]:
-        params_dict = params._asdict()
-        inverse_mass_matrix = params_dict.pop("inverse_mass_matrix")
-        kernel = blackjax.adjusted_mclmc.build_kernel(
-            logdensity_fn=logdensity_fn,
-            integrator=integrator,
-            divergence_threshold=divergence_threshold,
-            inverse_mass_matrix=inverse_mass_matrix,
+        return kernel(
+            key,
+            state,
+            logdensity_fn,
+            step_size=params.step_size,
+            # blackjax >= 1.6 passes the step count through a tuple that the
+            # kernel unpacks, so that it can be adapted without a rebuild.
+            integration_steps_params=(params.num_integration_steps,),
+            inverse_mass_matrix=params.inverse_mass_matrix,
+            L_proposal_factor=params.L_proposal_factor,
         )
-        return kernel(key, state, **params_dict)
 
     return step
 
@@ -202,25 +216,25 @@ def build_dynamic_step(
             "next_random_arg_fn must be provided when integration_steps_fn is set"
         )
 
+    kernel = blackjax.adjusted_mclmc_dynamic.build_kernel(
+        integration_steps_fn=integration_steps_fn,
+        integrator=integrator,
+        divergence_threshold=divergence_threshold,
+        next_random_arg_fn=random_arg_next_fn,
+    )
+
     def step(
         key: RngKey,
         state: DynamicHMCState,
         params: AdjustedMCLMCDynamicParams,
     ) -> Tuple[DynamicHMCState, HMCInfo]:
-        params_dict = params._asdict()
-        inverse_mass_matrix = params_dict.pop("inverse_mass_matrix")
-        kernel = blackjax.adjusted_mclmc_dynamic.build_kernel(
-            integration_steps_fn=integration_steps_fn,
-            integrator=integrator,
-            divergence_threshold=divergence_threshold,
-            next_random_arg_fn=random_arg_next_fn,
-            inverse_mass_matrix=inverse_mass_matrix,
-        )
         return kernel(
             key,
             state,
-            logdensity_fn=logdensity_fn,
-            **params_dict,
+            logdensity_fn,
+            step_size=params.step_size,
+            L_proposal_factor=params.L_proposal_factor,
+            inverse_mass_matrix=params.inverse_mass_matrix,
         )
 
     return step
