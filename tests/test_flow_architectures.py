@@ -52,9 +52,17 @@ def test_monotone_bijector_roundtrip_and_logdet(name, config, analytic):
     grad = jax.vmap(jax.grad(analytic_value))(y, params)
     assert jnp.allclose(logdet, jnp.sum(jnp.log(jnp.abs(grad))), atol=1e-4)
 
-    # zero params give exactly the identity
+    # Zero params give the identity, except for the heads that deliberately
+    # spread their components apart -- a mixture of identical components is one
+    # component, so those two properties cannot both hold. Those start *near*
+    # the identity instead; see test_nflow_configs for the exact bound.
     zeros = jnp.zeros((3, config.params_dim()))
-    assert jnp.allclose(config(zeros, x), x, atol=1e-5)
+    at_zero = config(zeros, x)
+    if getattr(config, "spread", 0.0):
+        assert jnp.all(jnp.isfinite(at_zero))
+        assert jnp.max(jnp.abs(at_zero - x)) < 0.5
+    else:
+        assert jnp.allclose(at_zero, x, atol=1e-5)
 
 
 @pytest.mark.parametrize("ctor", FLOWS)

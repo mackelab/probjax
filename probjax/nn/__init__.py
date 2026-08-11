@@ -109,6 +109,19 @@ from probjax.nn.losses import (
     build_time_dependent_sliced_score_matching_loss,
     build_time_dependent_target_score_matching_loss,
 )
+from probjax.nn.generative.autoregressive import (
+    ARConditionerConfig,
+    ARFamily,
+    AutoregressiveModel,
+    CategoricalAutoregressive,
+    HistogramAutoregressive,
+    MADE,
+    MixtureAutoregressive,
+    MLPARConditionerConfig,
+    SplineAutoregressive,
+    TransformerARConditionerConfig,
+    made,
+)
 from probjax.nn.generative.nflows import (
     AdditiveAutoregressiveFlow,
     AdditiveCouplingFlow,

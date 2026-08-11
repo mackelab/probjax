@@ -37,15 +37,21 @@ from probjax.stats.continuous.dirichlet import dirichlet
 from probjax.stats.continuous.expon import expon
 from probjax.stats.continuous.gamma import gamma
 from probjax.stats.continuous.gennorm import gennorm
+from probjax.stats.continuous.histogram import histogram, tailed_histogram
 from probjax.stats.continuous.genpareto import genpareto
 from probjax.stats.continuous.laplace import laplace
 from probjax.stats.continuous.logistic import logistic
+from probjax.stats.continuous.mixture_kernel import (
+    logistic_mixture_kernel,
+    mixture_kernel,
+)
 from probjax.stats.continuous.multivariate_normal import multivariate_normal
 
 # Import all implemented distributions
 from probjax.stats.continuous.norm import norm
 from probjax.stats.continuous.pareto import pareto
 from probjax.stats.continuous.skewnorm import skewnorm
+from probjax.stats.continuous.spline_normal import spline_normal
 from probjax.stats.continuous.t import t
 from probjax.stats.continuous.truncnorm import truncnorm
 from probjax.stats.continuous.uniform import uniform
@@ -86,6 +92,11 @@ __all__ = [
     'norm',
     'gamma',
     'gennorm',
+    'histogram',
+    'tailed_histogram',
+    'mixture_kernel',
+    'logistic_mixture_kernel',
+    'spline_normal',
     'genpareto',
     'beta',
     'expon',

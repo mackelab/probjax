@@ -57,7 +57,10 @@ class categorical_gen(rv_discrete, rv_exponential_family):
         event_shape = probs.shape[
             :-1
         ]  # Remove the last dimension which is the number of categories
-        return random.categorical(rng, probs, shape=shape + event_shape, axis=-1)
+        # random.categorical expects *logits*; passing probs straight in would
+        # silently sample from softmax(probs) instead of probs.
+        logits = jnp.log(jnp.clip(probs, jnp.finfo(probs.dtype).tiny))
+        return random.categorical(rng, logits, shape=shape + event_shape, axis=-1)
 
     @classmethod
     def mean(cls, probs, **kwds):

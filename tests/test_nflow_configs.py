@@ -71,7 +71,17 @@ def _params(cfg, key, batch=(), scale=0.5):
 
 
 def _can_be_identity(cfg):
-    """A spline whose x and y domains differ cannot be the identity map."""
+    """Whether zero parameters give back exactly the identity map.
+
+    Two families cannot. A spline whose x and y domains differ is a rescaling
+    by construction. And a mixture-like head deliberately spreads its
+    components apart at initialisation -- a mixture of *identical* components
+    is just one component, so breaking that symmetry and being exactly the
+    identity are mutually exclusive. Those heads are held to
+    ``test_near_identity_at_zero_params`` instead.
+    """
+    if getattr(cfg, "spread", 0.0):
+        return False
     return not (
         hasattr(cfg, "x_min")
         and (cfg.x_min, cfg.x_max) != (cfg.y_min, cfg.y_max)
@@ -107,6 +117,26 @@ def test_identity_at_zero_params(cfg):
     zeros = jnp.zeros((cfg.params_dim(),))
     for x in (-1.7, -0.2, 0.0, 0.42, 2.3):
         assert jnp.allclose(cfg(zeros, jnp.array(x)), x, atol=1e-5)
+
+
+@pytest.mark.parametrize("cfg", ALL_BIJECTORS)
+def test_near_identity_at_zero_params(cfg):
+    """Heads that spread their components must still start well-conditioned.
+
+    They give up the exact identity, but the map has to stay close to it: a
+    badly-scaled start compounds across stacked transforms.
+    """
+    if not getattr(cfg, "spread", 0.0):
+        pytest.skip("does not spread components; identity is covered above")
+    xs = jnp.linspace(-3.0, 3.0, 64)
+    params = jnp.zeros((xs.size, cfg.params_dim()))
+    ys = cfg(params, xs)
+
+    assert jnp.all(jnp.isfinite(ys))
+    assert jnp.all(jnp.diff(ys) > 0), "not monotone at initialisation"
+    assert jnp.max(jnp.abs(ys - xs)) < 0.5, "starts too far from the identity"
+    slopes = jnp.diff(ys) / jnp.diff(xs)
+    assert jnp.all((slopes > 0.5) & (slopes < 2.0)), "badly scaled at initialisation"
 
 
 @pytest.mark.parametrize("cfg", ALL_BIJECTORS)
@@ -441,10 +471,12 @@ def test_flow_starts_at_the_identity():
     base_nll = 0.5 * jnp.sum(x**2, axis=-1) + 0.5 * input_dim * jnp.log(2 * jnp.pi)
 
     for cfg_cls in (CouplingNFlowConfig, AutoregressiveNFlowConfig):
+        # DeepSigmoidBijectorConfig is excluded on purpose: it spreads its
+        # components at initialisation, so it starts near -- not at -- the
+        # identity. See test_near_identity_at_zero_params.
         for bijector in (
             AffineBijectorConfig(),
             RationalQuadraticSplineConfig(num_bins=6),
-            DeepSigmoidBijectorConfig(num_components=4),
         ):
             flow = NFlow(
                 cfg_cls(input_dim=input_dim, num_transforms=3, bijector=bijector),
