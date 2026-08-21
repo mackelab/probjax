@@ -6,12 +6,12 @@ A framework-agnostic training loop: :func:`fit` minimizes any
 ``loss_fn(params, rng, batch)`` over a params pytree with optax, where
 ``batch`` is an arbitrary pytree (e.g. ``{"data": x, "context": c}``) whose
 leaves share the leading example axis. Nothing here assumes a particular NN
-library.
+library. The loop is a single ``jax.lax.scan``: it compiles once no matter
+how many steps are requested, and runs end to end without returning to Python.
 
 Module-backed models (the families in :mod:`probjax.nn.generative`) get the
 convenient ``model.fit(rng, data)`` via :class:`FitMixin`, which lazily builds
-the pure ``loss_fn`` + params from the module once per instance — the stable
-function identity keeps the jitted train step cached across calls:
+the pure ``loss_fn`` + params from the module once per instance:
 
 >>> flow = maf(2, 5, rngs=nnx.Rngs(0))
 >>> losses = flow.fit(jax.random.key(0), samples)
@@ -23,7 +23,6 @@ This is the object-layer counterpart of the scipy-style classmethod
 
 import warnings
 import weakref
-from functools import lru_cache
 from typing import Literal, Optional, Tuple
 
 import jax
@@ -91,19 +90,38 @@ def _build_optimizer(learning_rate, num_steps, schedule: Schedule, clip_norm):
     return optax.chain(optax.clip_by_global_norm(clip_norm), adam)
 
 
-@lru_cache(maxsize=64)
-def _jitted_train_step(loss_fn, tx):
-    """Build (and cache) the jitted optimization step for a (loss_fn, optimizer) pair."""
+# =============================================================================
+# The scanned training loop
+# =============================================================================
+
+
+def _make_step(loss_fn, tx, fetch):
+    """One training step, written for ``lax.scan``.
+
+    ``fetch(key)`` returns the minibatch for the step.
+    """
     import optax
 
-    @jax.jit
-    def train_step(params, opt_state, rng, batch):
-        loss, grads = jax.value_and_grad(loss_fn)(params, rng, batch)
+    def body(carry, _):
+        params, opt_state, rng = carry
+        # Split in the same order and arity as the Python loop this replaces,
+        # so the scanned version reproduces it exactly for a given seed.
+        rng, rng_batch, rng_loss = jax.random.split(rng, 3)
+        minibatch = fetch(rng_batch)
+        loss, grads = jax.value_and_grad(loss_fn)(params, rng_loss, minibatch)
         updates, opt_state = tx.update(grads, opt_state, params)
-        params = optax.apply_updates(params, updates)
-        return params, opt_state, loss
+        return (optax.apply_updates(params, updates), opt_state, rng), loss
 
-    return train_step
+    return body
+
+
+def _array_fetch(batch, batch_size, num_examples):
+    """Minibatch by gathering on device; the dataset never leaves the accelerator."""
+    if batch_size is None or batch_size >= num_examples:
+        return lambda key: batch
+    return lambda key: jax.tree.map(
+        lambda a: a[jax.random.randint(key, (batch_size,), 0, num_examples)], batch
+    )
 
 
 def fit(
@@ -152,6 +170,12 @@ def fit(
         RuntimeWarning: if any step produced a non-finite loss. The parameters
             are returned as-is rather than repaired -- once a NaN gradient has
             been applied the run is dead, and silently continuing would hide it.
+
+    Note:
+        The loop is a single ``jax.lax.scan``, so it compiles once regardless of
+        ``num_steps`` and runs without returning to Python. Two consequences:
+        losses arrive only when the run finishes rather than step by step, and a
+        diverged run still executes its remaining iterations.
     """
     batch = jax.tree.map(jnp.asarray, batch)
     leaves = jax.tree.leaves(batch)
@@ -166,20 +190,14 @@ def fit(
     else:
         tx = _build_optimizer(learning_rate, num_steps, schedule, clip_norm)
     opt_state = tx.init(params)
-    train_step = _jitted_train_step(loss_fn, tx)
 
-    losses = []
-    for _ in range(num_steps):
-        rng, rng_batch, rng_loss = jax.random.split(rng, 3)
-        if batch_size is None or batch_size >= num_examples:
-            minibatch = batch
-        else:
-            idx = jax.random.randint(rng_batch, (batch_size,), 0, num_examples)
-            minibatch = jax.tree.map(lambda a: a[idx], batch)
-        params, opt_state, loss = train_step(params, opt_state, rng_loss, minibatch)
-        losses.append(loss)
+    body = _make_step(loss_fn, tx, _array_fetch(batch, batch_size, num_examples))
+    # Not wrapped in jit: the scan is one XLA computation either way, and
+    # jitting here would key the cache on a closure rebuilt every call.
+    (params, _, _), losses = jax.lax.scan(
+        body, (params, opt_state, rng), None, length=num_steps
+    )
 
-    losses = jnp.stack(losses)
     finite = jnp.isfinite(losses)
     if not bool(jnp.all(finite)):
         first = int(jnp.argmin(finite))
@@ -244,7 +262,9 @@ class FitMixin:
         fit_kwargs = {**self._default_fit_kwargs(), **fit_kwargs}
         loss_fn = _pure_loss_fn(self)
         params = nnx.state(self, nnx.Param)
-        batch = {"data": data} if context is None else {"data": data, "context": context}
+        batch = (
+            {"data": data} if context is None else {"data": data, "context": context}
+        )
         params, losses = fit(loss_fn, params, rng, batch, **fit_kwargs)
         nnx.update(self, params)
         return losses
