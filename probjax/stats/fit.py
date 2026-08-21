@@ -14,7 +14,7 @@ or an iterable of batches, for data that does not fit in memory:
 Nothing here assumes a particular NN library. The loop is a single
 ``jax.lax.scan``: it compiles once no matter how many steps are requested, and
 runs end to end without returning to Python -- a streamed batch arrives through
-an ordered ``io_callback``.
+an ordered ``io_callback``, and ``on_step`` reports progress the same way.
 
 Module-backed models (the families in :mod:`probjax.nn.generative`) get the
 convenient ``model.fit(rng, data)`` via :class:`FitMixin`, which lazily builds
@@ -34,6 +34,7 @@ from typing import Literal, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.experimental import io_callback
 from jaxtyping import Array
 
@@ -249,22 +250,62 @@ def _build_optimizer(learning_rate, num_steps, schedule: Schedule, clip_norm):
 # =============================================================================
 
 
-def _make_step(loss_fn, tx, fetch):
+def _make_step(loss_fn, tx, fetch, on_step, log_every: int):
     """One training step, written for ``lax.scan``.
 
-    ``fetch(key)`` returns the minibatch for the step.
+    ``fetch(key)`` returns the minibatch: an on-device gather for an array
+    dataset, or an ``io_callback`` into a host iterator for a stream.
     """
     import optax
 
+    want_callback = on_step is not None
+
+    def host_callback(step, loss):
+        result = on_step(int(step), float(loss))
+        return np.asarray(result is False)
+
     def body(carry, _):
-        params, opt_state, rng = carry
-        # Split in the same order and arity as the Python loop this replaces,
-        # so the scanned version reproduces it exactly for a given seed.
+        params, opt_state, rng, stop, step = carry
+        # Split in the same order and arity as the original Python loop so the
+        # scanned version reproduces it exactly for a given seed.
         rng, rng_batch, rng_loss = jax.random.split(rng, 3)
-        minibatch = fetch(rng_batch)
-        loss, grads = jax.value_and_grad(loss_fn)(params, rng_loss, minibatch)
-        updates, opt_state = tx.update(grads, opt_state, params)
-        return (optax.apply_updates(params, updates), opt_state, rng), loss
+
+        def run(_):
+            minibatch = fetch(rng_batch)
+            loss, grads = jax.value_and_grad(loss_fn)(params, rng_loss, minibatch)
+            updates, new_opt = tx.update(grads, opt_state, params)
+            return optax.apply_updates(params, updates), new_opt, loss
+
+        if not want_callback:
+            params, opt_state, loss = run(None)
+        else:
+
+            def skip(_):
+                # Early stopping cannot break a scan; the remaining iterations
+                # run but do no work, and the caller drops their losses.
+                nan = jnp.asarray(jnp.nan, jnp.result_type(float))
+                return params, opt_state, nan
+
+            params, opt_state, loss = jax.lax.cond(stop, skip, run, operand=None)
+
+        if want_callback:
+            fire = jnp.logical_and(~stop, (step % log_every) == 0)
+            stop = jnp.logical_or(
+                stop,
+                jax.lax.cond(
+                    fire,
+                    lambda: io_callback(
+                        host_callback,
+                        jax.ShapeDtypeStruct((), bool),
+                        step,
+                        loss,
+                        ordered=True,
+                    ),
+                    lambda: jnp.asarray(False),
+                ),
+            )
+
+        return (params, opt_state, rng, stop, step + 1), loss
 
     return body
 
@@ -316,6 +357,8 @@ def fit(
     schedule: Schedule = "constant",
     clip_norm: Optional[float] = 10.0,
     optimizer=None,
+    on_step=None,
+    log_every: int = 1,
 ) -> Tuple[object, Array]:
     """Minimize ``loss_fn`` over ``params`` with minibatch gradient descent.
 
@@ -352,9 +395,16 @@ def fit(
         optimizer: Optional ``optax.GradientTransformation``. Supplying it takes
             full control, bypassing ``learning_rate``, ``schedule`` and
             ``clip_norm``.
+        on_step: Optional ``on_step(step, loss) -> bool | None`` called on the
+            host every ``log_every`` steps. Returning ``False`` stops training
+            early. Parameters are deliberately not passed: the callback runs
+            inside the compiled loop, so handing it the tree would copy every
+            parameter back to the host on each call.
+        log_every: Cadence for ``on_step``. Ignored when ``on_step`` is None.
 
     Returns:
-        ``(trained_params, losses)`` where ``losses`` has shape ``(num_steps,)``.
+        ``(trained_params, losses)``. ``losses`` has shape ``(num_steps,)``,
+        or is truncated at the stopping step if ``on_step`` asked to stop.
 
     Warns:
         RuntimeWarning: if any step produced a non-finite loss. The parameters
@@ -364,9 +414,13 @@ def fit(
     Note:
         The loop is a single ``jax.lax.scan``, so it compiles once regardless of
         ``num_steps`` and runs without returning to Python. Two consequences:
-        losses arrive only when the run finishes rather than step by step, and a
-        diverged run still executes its remaining iterations.
+        losses arrive only when the run finishes rather than step by step (use
+        ``on_step`` to watch it live), and a diverged run still executes its
+        remaining iterations.
     """
+    if log_every < 1:
+        raise ValueError(f"log_every must be at least 1; got {log_every}.")
+
     if is_batch_stream(batch):
         if isinstance(batch_size, int):
             raise ValueError(
@@ -406,12 +460,13 @@ def fit(
         tx = _build_optimizer(learning_rate, num_steps, schedule, clip_norm)
     opt_state = tx.init(params)
 
-    body = _make_step(loss_fn, tx, fetch)
+    body = _make_step(loss_fn, tx, fetch, on_step, log_every)
+    init = (params, opt_state, rng, jnp.asarray(False), jnp.asarray(0, jnp.int32))
     try:
         # Not wrapped in jit: the scan is one XLA computation either way, and
         # jitting here would key the cache on a closure rebuilt every call.
-        (params, _, _), losses = jax.lax.scan(
-            body, (params, opt_state, rng), None, length=num_steps
+        (params, _, _, stopped, _), losses = jax.lax.scan(
+            body, init, None, length=num_steps
         )
     except Exception:
         # A bad batch fails inside the callback, where JAX wraps it in a
@@ -422,13 +477,20 @@ def fit(
             raise error from None
         raise
 
+    if on_step is not None and bool(stopped):
+        # Steps after the stop ran as no-ops and reported NaN; drop them rather
+        # than hand back losses that look like divergence.
+        ran = int(jnp.sum(jnp.asarray(~jnp.isnan(losses), jnp.int32)))
+        losses = losses[:ran]
+
     finite = jnp.isfinite(losses)
     if not bool(jnp.all(finite)):
         first = int(jnp.argmin(finite))
         warnings.warn(
-            f"Training loss became non-finite at step {first} of {num_steps}; "
-            "the returned parameters are unusable. Lower the learning rate, "
-            "tighten clip_norm, or check the model for an unbounded transform.",
+            f"Training loss became non-finite at step {first} of "
+            f"{losses.shape[0]}; the returned parameters are unusable. Lower "
+            "the learning rate, tighten clip_norm, or check the model for an "
+            "unbounded transform.",
             RuntimeWarning,
             stacklevel=2,
         )

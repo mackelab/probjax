@@ -104,8 +104,16 @@ def test_fit_does_not_unroll_over_num_steps():
 
     def program_size(num_steps):
         tx = _build_optimizer(1e-2, num_steps, "constant", 10.0)
-        body = _make_step(_quadratic_loss, tx, _array_fetch({"data": data}, 32, 128))
-        init = (params, tx.init(params), jax.random.key(0))
+        body = _make_step(
+            _quadratic_loss, tx, _array_fetch({"data": data}, 32, 128), None, 1
+        )
+        init = (
+            params,
+            tx.init(params),
+            jax.random.key(0),
+            jnp.asarray(False),
+            jnp.asarray(0, jnp.int32),
+        )
         run = jax.jit(lambda c: jax.lax.scan(body, c, None, length=num_steps))
         return len(run.lower(init).as_text())
 
@@ -345,3 +353,47 @@ def test_flow_fit_streams_a_list_of_arrays_rather_than_stacking_it():
     # check the model actually sees 2-D examples by evaluating it on one.
     assert jnp.all(jnp.isfinite(losses))
     assert jnp.isfinite(flow.as_dist().logpdf(jnp.zeros(2)))
+
+
+def test_fit_on_step_callback_fires_and_stops():
+    data = jax.random.normal(jax.random.key(0), (128, 2))
+    seen = []
+
+    def on_step(step, loss):
+        seen.append((step, loss))
+        return False if step >= 30 else None
+
+    _, losses = fit(
+        _quadratic_loss,
+        {"w": jnp.zeros(2)},
+        jax.random.key(1),
+        {"data": data},
+        num_steps=200,
+        batch_size=32,
+        learning_rate=1e-2,
+        on_step=on_step,
+        log_every=10,
+    )
+    assert [s for s, _ in seen] == [0, 10, 20, 30]
+    assert all(isinstance(loss, float) for _, loss in seen)
+    # Steps after the stop are no-ops and must not be reported as losses.
+    assert losses.shape == (31,)
+    assert jnp.all(jnp.isfinite(losses))
+
+
+def test_fit_on_step_runs_to_the_end_when_it_never_stops():
+    data = jax.random.normal(jax.random.key(0), (128, 2))
+    seen = []
+    _, losses = fit(
+        _quadratic_loss,
+        {"w": jnp.zeros(2)},
+        jax.random.key(1),
+        {"data": data},
+        num_steps=25,
+        batch_size=32,
+        learning_rate=1e-2,
+        on_step=lambda s, _: seen.append(s),
+        log_every=5,
+    )
+    assert seen == [0, 5, 10, 15, 20]
+    assert losses.shape == (25,)
