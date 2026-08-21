@@ -75,8 +75,16 @@ def test_flow_trains_and_normalizes(ctor):
     flow = ctor(2, 2, rngs=nnx.Rngs(0))
     losses = flow.fit(jax.random.key(1), data, num_steps=150, batch_size=128)
     distribution = flow.as_dist()
-    assert losses[-1] < losses[0]
     assert jnp.all(jnp.isfinite(losses))
+    # The target is a diagonal Gaussian, so once fit standardises the data the
+    # flow starts essentially at the optimum and the loss has nowhere to go --
+    # requiring it to strictly decrease would be testing noise. What matters is
+    # that it does not get worse, and that the density below is still correct.
+    entropy = float(
+        jnp.sum(jnp.log(jnp.array([1.5, 0.5]))) + 2 * 0.5 * jnp.log(2 * jnp.pi * jnp.e)
+    )
+    assert losses[-1] <= losses[0] + 0.05
+    assert losses[-1] < entropy + 0.3
 
     # density normalizes after training
     grid = jnp.linspace(-8.0, 10.0, 200)

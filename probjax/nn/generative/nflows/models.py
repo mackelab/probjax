@@ -37,6 +37,7 @@ from probjax.nn.generative.nflows.config import (
     SumOfSquaresBijectorConfig,
     UMNNBijectorConfig,
 )
+from probjax.nn.generative.standardize import StandardizingMixin
 from probjax.nn.generative.sampling import (
     _ExportedSampler,
     make_map_sample_fn,
@@ -79,19 +80,30 @@ __all__ = [
 
 
 def _flow_transform(model, value, context):
+    # `transform` already returns data-space samples.
     return model.transform(value, context=context)
 
 
-class NormalizingFlow(GenerativeModel):
+class NormalizingFlow(StandardizingMixin, GenerativeModel):
     def __init__(
         self,
         base_dist,
         transformation: Callable[..., Any],
         name: Optional[str] = None,
+        *,
+        standardize: bool = True,
     ):
         self.base_dist = base_dist
         self.transformation = transformation
         self.name = name
+        # Standardisation is a per-dimension affine map over a flat event, so
+        # it only applies to a base with a single flat event axis. A structured
+        # (pytree) base has no such shape; leave those models untouched.
+        event = getattr(base_dist, "event_shape", None)
+        flat = event is not None and len(tuple(event)) == 1
+        self._init_standardization(
+            int(tuple(event)[0]) if flat else 1, standardize and bool(flat)
+        )
         super().__init__()
 
     def _flow_distribution(self):
@@ -109,9 +121,17 @@ class NormalizingFlow(GenerativeModel):
         return self._conditional_flow_distribution(context)
 
     def transform(self, x, context=None, *, rng: jax.Array | None = None):
+        """Push a base sample through to the data space.
+
+        Data space, not standardised space: this has to agree with ``sample``
+        and ``logpdf``. ``self.transformation`` is the inner map and stays in
+        standardised coordinates, which is what ``_logpdf`` feeds it.
+        """
         if context is None:
-            return self.transformation(x, rng=rng)
-        return self.transformation(x, context, rng=rng)
+            out = self.transformation(x, rng=rng)
+        else:
+            out = self.transformation(x, context, rng=rng)
+        return self._unstandardize(out) if self.standardize else out
 
     def __call__(self, x, context=None, *, rng: jax.Array | None = None):
         return self.transform(x, context=context, rng=rng)
@@ -182,6 +202,14 @@ class NormalizingFlow(GenerativeModel):
             context_spec=context_spec,
         )
 
+    def fit(self, rng, data, **kwargs):
+        """Fit the standardising transform once, then train as usual."""
+        if self.standardize:
+            self.fit_standardization(data)
+        # `loss` goes through `_logpdf`, which standardises internally -- do not
+        # pre-transform the data here or it would be applied twice.
+        return super().fit(rng, data, **kwargs)
+
     def _default_fit_kwargs(self) -> dict:
         """Flows train better on a warm-started, decaying rate than a flat one.
 
@@ -192,7 +220,13 @@ class NormalizingFlow(GenerativeModel):
         return {"schedule": "warmup_cosine", "learning_rate": 3e-3}
 
     def _logpdf(self, value, context=None):
-        return self._flow_distribution_for_context(context).logpdf(value)
+        # Density of the *original* variable, so the standardising Jacobian has
+        # to come along; without it this is the density of z, not of x.
+        if not self.standardize:
+            return self._flow_distribution_for_context(context).logpdf(value)
+        z = self._standardize(value)
+        inner = self._flow_distribution_for_context(context).logpdf(z)
+        return inner - self._log_scale_correction()
 
     def loss(self, rng, data, *args, context=None, **kwargs):
         """Negative mean log-likelihood training loss.
@@ -345,6 +379,7 @@ class NFlow(NormalizingFlow):
         base_dist=None,
         last_transform: Optional[Callable] = None,
         name: Optional[str] = None,
+        standardize: bool = True,
     ) -> None:
         if not isinstance(config, NFlowConfig):
             raise TypeError("config must be an NFlowConfig")
@@ -363,7 +398,7 @@ class NFlow(NormalizingFlow):
         transform = _build_transform_sequence(config, rngs, last_transform)
         if base_dist is None:
             base_dist = self._standard_normal_base(config.input_dim)
-        super().__init__(base_dist, transform, name=name)
+        super().__init__(base_dist, transform, name=name, standardize=standardize)
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +425,7 @@ class _CouplingPreset(NFlow):
         base_dist=None,
         last_transform: Optional[Callable] = None,
         name: Optional[str] = None,
+        standardize: bool = True,
         **bijector_kwargs,
     ) -> None:
         super().__init__(
@@ -406,6 +442,7 @@ class _CouplingPreset(NFlow):
             base_dist=base_dist,
             last_transform=last_transform,
             name=name,
+            standardize=standardize,
         )
 
 
@@ -454,6 +491,7 @@ class _AutoregressivePreset(NFlow):
         base_dist=None,
         last_transform: Optional[Callable] = None,
         name: Optional[str] = None,
+        standardize: bool = True,
         **bijector_kwargs,
     ) -> None:
         super().__init__(
@@ -470,6 +508,7 @@ class _AutoregressivePreset(NFlow):
             base_dist=base_dist,
             last_transform=last_transform,
             name=name,
+            standardize=standardize,
         )
 
 
@@ -567,6 +606,7 @@ class GaussianizationFlow(NFlow):
         base_dist=None,
         last_transform: Optional[Callable] = None,
         name: Optional[str] = None,
+        standardize: bool = True,
     ) -> None:
         super().__init__(
             ElementwiseNFlowConfig(
@@ -581,6 +621,7 @@ class GaussianizationFlow(NFlow):
             base_dist=base_dist,
             last_transform=last_transform,
             name=name,
+            standardize=standardize,
         )
 
 

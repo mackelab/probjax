@@ -23,6 +23,7 @@ from probjax.nn.generative.autoregressive.config import (
 )
 from probjax.nn.generative.base import GenerativeModel
 from probjax.nn.generative.sampling import _ExportedSampler
+from probjax.nn.generative.standardize import StandardizingMixin
 
 __all__ = [
     "AutoregressiveModel",
@@ -95,7 +96,7 @@ class _KeyNormalizingSampler:
         return self._inner.from_noise(eps, rng=rng, context=context)
 
 
-class AutoregressiveModel(GenerativeModel):
+class AutoregressiveModel(StandardizingMixin, GenerativeModel):
     """Autoregressive density over ``input_dim`` variables.
 
     Parameters
@@ -120,6 +121,7 @@ class AutoregressiveModel(GenerativeModel):
         conditioner: Optional[ARConditionerConfig] = None,
         context_features: Optional[int] = None,
         name: Optional[str] = None,
+        standardize: bool = True,
     ) -> None:
         if input_dim < 1:
             raise ValueError(f"input_dim must be positive; got {input_dim}.")
@@ -154,6 +156,9 @@ class AutoregressiveModel(GenerativeModel):
             context_features=context_features,
             rngs=rngs,
         )
+        # A discrete family has no meaningful mean/std, and shifting integer
+        # labels would destroy them.
+        self._init_standardization(input_dim, standardize and not family.discrete)
         super().__init__()
 
     # -- parameters and density ---------------------------------------------
@@ -173,7 +178,11 @@ class AutoregressiveModel(GenerativeModel):
         return self.family.logpdf(jnp.asarray(x), natural)
 
     def _logpdf(self, value, context=None):
-        return jnp.sum(self.conditional_logpdfs(value, context), axis=-1)
+        # Density of the original variable: standardise, then carry the
+        # Jacobian of that map so this stays a density of x, not of z.
+        z = self._standardize(value) if self.standardize else value
+        inner = jnp.sum(self.conditional_logpdfs(z, context), axis=-1)
+        return inner - self._log_scale_correction()
 
     def __call__(self, x, context=None, *, rng=None):
         return self._logpdf(x, context)
@@ -184,6 +193,8 @@ class AutoregressiveModel(GenerativeModel):
         if bounds is None:
             return
         low, high = bounds
+        # The family sees standardised values, so that is what must be in range.
+        data = self._standardize(data) if self.standardize else data
         lo, hi = float(jnp.min(data)), float(jnp.max(data))
         if lo < low or hi > high:
             raise ValueError(
@@ -228,7 +239,7 @@ class AutoregressiveModel(GenerativeModel):
             return jnp.where(onehot, draw[..., None], carry), None
 
         x, _ = jax.lax.scan(step, x, (jnp.arange(self.input_dim), keys))
-        return x
+        return self._unstandardize(x) if self.standardize else x
 
     def _sample_base(self, rng, sample_shape, spec):
         """Unused noise; the per-dimension draws carry the randomness."""
@@ -311,6 +322,12 @@ class AutoregressiveModel(GenerativeModel):
                 (self.input_dim,), self.family.event_dtype
             )
         return super().as_dist(event_spec, **kwargs)
+
+    def fit(self, rng, data, **kwargs):
+        """Fit the standardising transform once, then train as usual."""
+        self.fit_standardization(data)
+        # `loss` goes through `_logpdf`, which standardises internally.
+        return super().fit(rng, data, **kwargs)
 
     def _default_fit_kwargs(self) -> dict:
         return {"schedule": "warmup_cosine"}

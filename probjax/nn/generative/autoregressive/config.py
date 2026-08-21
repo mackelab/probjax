@@ -30,6 +30,12 @@ from flax import nnx
 from flax.typing import Initializer
 from jax import Array
 
+from probjax.nn.generative.nflows.config import (
+    WidthRule,
+    default_hidden_dims,
+    default_model_dim,
+    resolve_hidden_dims,
+)
 from probjax.stats import constraints as _c
 from probjax.stats.base import rv_generic
 from probjax.stats.constraint_registry import biject_to
@@ -455,10 +461,12 @@ class MLPARConditionerConfig(ARConditionerConfig):
     parameters in a contiguous block at ``[i * p : (i + 1) * p]``.
     """
 
-    hidden_dims: Sequence[int] = (128, 128)
+    hidden_dims: "Sequence[int] | WidthRule" = default_hidden_dims
     activation: Callable = jax.nn.gelu
     norm_cls: Optional[type] = None
     init_last_layer_to_zero: bool = True
+    #: Training-set size, when known; the width rule scales with it.
+    num_examples: Optional[int] = None
 
     @property
     def exportable(self) -> bool:
@@ -467,7 +475,11 @@ class MLPARConditionerConfig(ARConditionerConfig):
     def build(self, input_dim, params_dim, *, in_features, context_features, rngs):
         from probjax.nn.nets.simple import MaskedMLP
 
-        dims = [in_features] + list(self.hidden_dims) + [input_dim * params_dim]
+        out_features = input_dim * params_dim
+        hidden = resolve_hidden_dims(
+            self.hidden_dims, in_features, out_features, self.num_examples
+        )
+        dims = [in_features] + list(hidden) + [out_features]
         masks = _autoregressive_masks(dims, input_dim)
         net = MaskedMLP(
             dims,
@@ -510,7 +522,8 @@ class TransformerARConditionerConfig(ARConditionerConfig):
     transformer conditioner carries).
     """
 
-    model_dim: int = 64
+    model_dim: "int | WidthRule" = default_model_dim
+    num_examples: Optional[int] = None
     num_heads: int = 4
     num_layers: int = 4
     attn_size: int = 8
@@ -519,6 +532,14 @@ class TransformerARConditionerConfig(ARConditionerConfig):
     @property
     def exportable(self) -> bool:
         return False
+
+    def _resolved_model_dim(self, params_dim: int) -> int:
+        """Token width, kept divisible by the head count."""
+        if callable(self.model_dim):
+            width = int(self.model_dim(1, params_dim, self.num_examples)[0])
+        else:
+            width = int(self.model_dim)
+        return max(self.num_heads, width - width % self.num_heads)
 
     def build(self, input_dim, params_dim, *, in_features, context_features, rngs):
         del in_features  # tokens are per-dimension scalars
@@ -532,7 +553,7 @@ class TransformerARConditionerConfig(ARConditionerConfig):
             lambda params, x: x,  # never called; only predict_bij_params is used
             rngs,
             context_dim=context_features,
-            model_dim=self.model_dim,
+            model_dim=self._resolved_model_dim(params_dim),
             num_heads=self.num_heads,
             num_layers=self.num_layers,
             attn_size=self.attn_size,

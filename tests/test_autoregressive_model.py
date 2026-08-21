@@ -337,7 +337,11 @@ def test_categorical_model_recovers_a_known_joint():
 
 
 def test_marginal_of_the_first_dimension_matches_the_data():
-    """The first conditional has no inputs, so it must fit the marginal exactly."""
+    """The first conditional has no inputs, so it must fit the marginal exactly.
+
+    Standardisation is off here: with it on the head works in standardised
+    coordinates and would report loc 0 / scale 1 whatever the data looks like.
+    """
     n = 20_000
     data = jnp.stack(
         [
@@ -346,7 +350,7 @@ def test_marginal_of_the_first_dimension_matches_the_data():
         ],
         -1,
     )
-    model = MADE(2, nnx.Rngs(0))
+    model = MADE(2, nnx.Rngs(0), standardize=False)
     model.fit(jax.random.PRNGKey(2), data, num_steps=600, batch_size=512)
 
     params = model.predict_params(jnp.zeros(2))

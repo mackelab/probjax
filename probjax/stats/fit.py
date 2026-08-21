@@ -36,6 +36,27 @@ __all__ = ["fit", "FitMixin"]
 
 Schedule = Literal["constant", "warmup_cosine"]
 
+#: Default minibatch size when ``batch_size="auto"``.
+_AUTO_BATCH = 512
+#: How many times ``num_steps="auto"`` aims to pass over the data.
+_AUTO_EPOCHS = 200
+_AUTO_MIN_STEPS, _AUTO_MAX_STEPS = 1000, 20000
+
+
+def _resolve_batch_size(batch_size, num_examples: int) -> Optional[int]:
+    """``"auto"`` -> a minibatch; ``None`` -> the full dataset, explicitly."""
+    if batch_size == "auto":
+        return min(num_examples, _AUTO_BATCH)
+    return batch_size
+
+
+def _resolve_num_steps(num_steps, num_examples: int, batch_size) -> int:
+    """``"auto"`` -> enough steps for a fixed number of passes over the data."""
+    if num_steps != "auto":
+        return int(num_steps)
+    per_epoch = max(1, num_examples // (batch_size or num_examples))
+    return int(min(max(_AUTO_EPOCHS * per_epoch, _AUTO_MIN_STEPS), _AUTO_MAX_STEPS))
+
 
 def _build_optimizer(learning_rate, num_steps, schedule: Schedule, clip_norm):
     """Adam with optional warmup-cosine decay and global-norm clipping.
@@ -91,8 +112,8 @@ def fit(
     rng: RngKey,
     batch: object,
     *,
-    num_steps: int = 1000,
-    batch_size: Optional[int] = None,
+    num_steps: "int | Literal['auto']" = "auto",
+    batch_size: "int | None | Literal['auto']" = "auto",
     learning_rate: float = 1e-3,
     schedule: Schedule = "constant",
     clip_norm: Optional[float] = 10.0,
@@ -108,8 +129,13 @@ def fit(
         rng: PRNG key consumed for minibatching and the per-step loss.
         batch: Pytree of training arrays (e.g. ``{"data": x, "context": c}``
             or a bare array); all leaves share the leading example axis.
-        num_steps: Number of gradient steps.
-        batch_size: Minibatch size; ``None`` uses the full dataset each step.
+        num_steps: Number of gradient steps, or ``"auto"`` (the default) to
+            scale with the dataset: enough steps for a fixed number of passes
+            over it, clamped to [1000, 20000].
+        batch_size: Minibatch size, or ``"auto"`` (the default) for
+            ``min(num_examples, 512)``. ``None`` still means the full dataset
+            every step, which was the previous default and stops being viable
+            as the dataset grows.
         learning_rate: Adam learning rate, used when ``optimizer`` is None.
         schedule: ``"constant"`` or ``"warmup_cosine"`` (5% warmup, cosine decay
             to ``learning_rate / 1000``). Ignored when ``optimizer`` is given.
@@ -132,6 +158,8 @@ def fit(
     if not leaves:
         raise ValueError("batch must contain at least one array leaf.")
     num_examples = leaves[0].shape[0]
+    batch_size = _resolve_batch_size(batch_size, num_examples)
+    num_steps = _resolve_num_steps(num_steps, num_examples, batch_size)
 
     if optimizer is not None:
         tx = optimizer
