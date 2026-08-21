@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import optax
+import pytest
 from flax import nnx
 
 from probjax.nn import LinearFlow, maf
@@ -156,3 +157,191 @@ def test_fit_reproduces_the_reference_update_sequence():
     )
     assert jnp.array_equal(jnp.stack(expected), got_losses)
     assert jnp.array_equal(reference["w"], got_params["w"])
+
+
+# ---------------------------------------------------------------------------
+# Iterable data sources
+# ---------------------------------------------------------------------------
+
+
+def _reference_batches(data, key, num_steps, batch_size):
+    """The exact minibatch sequence `fit` draws from an array, as a list.
+
+    Lets an array run and an iterable run be compared on identical data, which
+    is the only way the two paths can be held to the same numbers.
+    """
+    batches, rng = [], key
+    for _ in range(num_steps):
+        rng, rng_batch, _ = jax.random.split(rng, 3)
+        idx = jax.random.randint(rng_batch, (batch_size,), 0, data.shape[0])
+        batches.append({"data": data[idx]})
+    return batches
+
+
+def test_fit_array_and_iterable_agree_on_identical_batches():
+    data = jax.random.normal(jax.random.key(0), (256, 2)) + jnp.array([2.0, -1.0])
+    key, p0 = jax.random.key(1), {"w": jnp.zeros(2)}
+    batches = _reference_batches(data, key, 120, 64)
+
+    array_params, array_losses = fit(
+        _quadratic_loss,
+        p0,
+        key,
+        {"data": data},
+        num_steps=120,
+        batch_size=64,
+        learning_rate=1e-2,
+    )
+    stream_params, stream_losses = fit(
+        _quadratic_loss,
+        p0,
+        key,
+        batches,
+        num_steps=120,
+        learning_rate=1e-2,
+    )
+    # Same batches, same seed, same update rule -- these must not merely be
+    # close, and a drift here means one path is consuming randomness the other
+    # is not.
+    assert jnp.array_equal(array_losses, stream_losses)
+    assert jnp.array_equal(array_params["w"], stream_params["w"])
+
+
+def test_fit_restarts_a_short_iterable():
+    data = jax.random.normal(jax.random.key(0), (128, 2))
+    batches = [{"data": data[i : i + 32]} for i in range(0, 128, 32)]  # 4 batches
+    _, losses = fit(
+        _quadratic_loss,
+        {"w": jnp.zeros(2)},
+        jax.random.key(1),
+        batches,
+        num_steps=20,
+        learning_rate=1e-2,
+    )
+    assert losses.shape == (20,)
+    assert jnp.all(jnp.isfinite(losses))
+
+
+def test_fit_accepts_an_endless_generator():
+    data = jax.random.normal(jax.random.key(0), (128, 2))
+
+    def stream():
+        key = jax.random.key(7)
+        while True:
+            key, sub = jax.random.split(key)
+            yield {"data": data[jax.random.randint(sub, (32,), 0, 128)]}
+
+    _, losses = fit(
+        _quadratic_loss,
+        {"w": jnp.zeros(2)},
+        jax.random.key(1),
+        stream(),
+        num_steps=30,
+        learning_rate=1e-2,
+    )
+    assert losses.shape == (30,)
+    assert jnp.all(jnp.isfinite(losses))
+
+
+def test_fit_rejects_batch_size_for_an_iterable():
+    batches = [{"data": jnp.zeros((8, 2))}] * 4
+    with pytest.raises(ValueError, match="batch_size cannot be set"):
+        fit(
+            _quadratic_loss,
+            {"w": jnp.zeros(2)},
+            jax.random.key(0),
+            batches,
+            num_steps=4,
+            batch_size=4,
+        )
+
+
+def test_fit_reports_a_ragged_batch_clearly():
+    batches = [{"data": jnp.zeros((8, 2))}, {"data": jnp.zeros((3, 2))}]
+    # The failure happens inside an io_callback, where JAX would otherwise
+    # bury it under a JaxRuntimeError; fit is expected to surface the original.
+    with pytest.raises(ValueError, match="different shape or dtype"):
+        fit(
+            _quadratic_loss,
+            {"w": jnp.zeros(2)},
+            jax.random.key(0),
+            batches,
+            num_steps=2,
+        )
+
+
+def test_fit_reports_an_exhausted_iterator_clearly():
+    with pytest.raises(RuntimeError, match="could not be restarted"):
+        fit(
+            _quadratic_loss,
+            {"w": jnp.zeros(2)},
+            jax.random.key(0),
+            iter([{"data": jnp.zeros((8, 2))}]),
+            num_steps=5,
+        )
+
+
+def test_batch_stream_classification_is_fixed_not_inferred():
+    """A list of arrays streams; a dict of arrays does not.
+
+    Both readings are pytrees of arrays, so this cannot be inferred from
+    structure. Guessing it silently trained a flow on a stacked
+    ``(num_batches, batch, features)`` array once, which is why the rule is
+    pinned here rather than left to shape heuristics.
+    """
+    from probjax.stats.fit import is_batch_stream
+
+    arr = jnp.zeros((4, 2))
+    assert not is_batch_stream(arr)
+    assert not is_batch_stream({"data": arr, "context": arr})
+    assert is_batch_stream([arr, arr])
+    assert is_batch_stream((arr, arr))
+    assert is_batch_stream([{"data": arr}])
+    assert is_batch_stream(iter([arr]))
+
+
+def test_flow_fit_from_an_iterable_matches_an_array_run():
+    raw = jax.random.normal(jax.random.key(0), (512, 2)) * 20.0 + 100.0
+    batches = [raw[i : i + 128] for i in range(0, 512, 128)]
+
+    from_array = maf(2, 3, rngs=nnx.Rngs(0))
+    losses_array = from_array.fit(jax.random.key(1), raw, num_steps=100, batch_size=128)
+    from_stream = maf(2, 3, rngs=nnx.Rngs(0))
+    losses_stream = from_stream.fit(jax.random.key(1), batches, num_steps=100)
+
+    # The same 512 examples either way, so the standardising transform fitted
+    # from a handful of batches must be the one fitted from the whole array.
+    shift_a, scale_a = from_array.standardization
+    shift_s, scale_s = from_stream.standardization
+    assert jnp.allclose(shift_a, shift_s)
+    assert jnp.allclose(scale_a, scale_s)
+    assert jnp.all(jnp.isfinite(losses_stream))
+    assert abs(float(losses_stream[-1]) - float(losses_array[-1])) < 0.5
+
+
+def test_flow_fit_from_an_iterable_of_context_pairs():
+    context = jax.random.normal(jax.random.key(3), (256, 1))
+    data = jax.random.normal(jax.random.key(4), (256, 2)) + context
+    pairs = [(data[i : i + 64], context[i : i + 64]) for i in range(0, 256, 64)]
+
+    flow = maf(2, 2, rngs=nnx.Rngs(1), context_features=1)
+    losses = flow.fit(jax.random.key(5), pairs, num_steps=80)
+    assert jnp.all(jnp.isfinite(losses))
+    assert losses[-1] < losses[0]
+
+    with pytest.raises(ValueError, match="context cannot be passed"):
+        flow.fit(jax.random.key(5), pairs, context=context, num_steps=5)
+
+
+def test_flow_fit_streams_a_list_of_arrays_rather_than_stacking_it():
+    raw = jax.random.normal(jax.random.key(0), (256, 2))
+    batches = [raw[i : i + 64] for i in range(0, 256, 64)]
+
+    flow = maf(2, 3, rngs=nnx.Rngs(0))
+    losses = flow.fit(jax.random.key(1), batches, num_steps=30)
+
+    # Were the list stacked into (4, 64, 2), the loss would be computed over a
+    # 3-D "batch" and the standardisation would still look plausible -- so
+    # check the model actually sees 2-D examples by evaluating it on one.
+    assert jnp.all(jnp.isfinite(losses))
+    assert jnp.isfinite(flow.as_dist().logpdf(jnp.zeros(2)))

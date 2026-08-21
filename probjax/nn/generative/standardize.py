@@ -21,6 +21,24 @@ from flax import nnx
 __all__ = ["StandardizingMixin"]
 
 
+#: Batches consumed to estimate the standardising transform from a stream.
+_STD_BATCHES = 8
+
+
+def _standardization_sample(data, num_features: int):
+    """Examples to estimate shift and scale from, for an array or a stream."""
+    from probjax.stats.fit import is_batch_stream, take_batches
+
+    if is_batch_stream(data):
+        batches = take_batches(data, _STD_BATCHES)
+        parts = [b["data"] if isinstance(b, dict) else b for b in batches]
+        parts = [p[0] if isinstance(p, tuple) else p for p in parts]
+        data = jnp.concatenate([
+            jnp.asarray(p).reshape(-1, num_features) for p in parts
+        ])
+    return jnp.asarray(data, jnp.float32).reshape(-1, num_features)
+
+
 class StandardizingMixin:
     """Adds a fixed affine reparameterisation fitted once from the data.
 
@@ -73,10 +91,16 @@ class StandardizingMixin:
 
         Idempotent on purpose: a second ``fit`` call must not silently move the
         model's coordinate system out from under an already-trained density.
+
+        ``data`` may be an iterable of batches, in which case the shift and
+        scale are estimated from the first :data:`_STD_BATCHES` of them -- the
+        whole point of streaming is that the full dataset does not fit, and an
+        estimate from a few thousand examples is accurate enough for what this
+        transform is for.
         """
         if not self.standardize or self.is_standardized:
             return
-        data = jnp.asarray(data, jnp.float32).reshape(-1, self._std_shift.shape[0])
+        data = _standardization_sample(data, self._std_shift.shape[0])
         shift = jnp.mean(data, axis=0)
         scale = jnp.std(data, axis=0)
         # A constant column has zero spread and would divide by zero; leaving it

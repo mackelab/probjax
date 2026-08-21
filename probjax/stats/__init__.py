@@ -21,7 +21,7 @@ from probjax.stats.base import (
     rv_spherical,
     rv_spherical_frozen,
 )
-from probjax.stats.fit import FitMixin, fit
+from probjax.stats.fit import FitMixin, fit, is_batch_stream, take_batches
 from probjax.stats.bijective.protocols import (
     InvertibleTransformProtocol,
     TransformedDistribution,
@@ -135,5 +135,7 @@ __all__ = [
     'forward_and_logdet',
     # Gradient-based fitting
     'fit',
+    'is_batch_stream',
+    'take_batches',
     'FitMixin',
 ]
