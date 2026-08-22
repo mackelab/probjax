@@ -590,6 +590,41 @@ def trace(
 
 
 def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
+    """Return a function computing the inverse of ``fun``.
+
+    Traces ``fun`` to a jaxpr and walks it backwards, replacing each primitive
+    with its registered inverse rule, so the result is ordinary JAX code with no
+    interpreter left at runtime:
+
+    >>> inverse(lambda x: 2 * jnp.exp(x))(jnp.asarray(4.0))
+    Array(0.6931472, dtype=float32)
+
+    Args:
+        fun: The function to invert. May itself be a ``custom_inverse``, in
+            which case its registered inverse is used directly.
+        static_argnums: Positional arguments held fixed rather than inverted.
+        invertible_arg: Which positional argument to solve for (default 0).
+
+    Returns:
+        A callable mapping outputs back to the invertible argument.
+
+    Note:
+        **A failed inversion returns NaN, not an error.** The interpreter works
+        one equation at a time, so it inverts a *tree* of operations; it is not
+        a solver. These are silently unsupported and produce NaN:
+
+        * any value used more than once -- ``3 * x - x``, ``exp(x) * exp(x)``,
+          or a residual connection ``x + f(x)``. Each is invertible
+          mathematically, but recovering ``x`` means solving an equation rather
+          than applying rules backwards.
+        * ``lax.fori_loop``, and any ``lax.scan`` carrying something that is not
+          itself invertible (a counter, a running sum). Plain ``scan`` and
+          ``lax.cond`` do work.
+        * ``inverse(inverse(f))``.
+
+        ``lax.while_loop`` raises rather than returning NaN. Checking
+        ``jnp.isfinite`` on the result is the reliable way to detect the rest.
+    """
     maybe_custom = maybe_inverse_custom_inverse(
         fun,
         static_argnums=static_argnums,
@@ -641,6 +676,36 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
 
 
 def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None):
+    """Return a function computing the inverse of ``fun`` and its log-det.
+
+    The log-determinant is that of the **inverse** map -- ``log|d(inv)/dy|``,
+    summed over the event -- which is the term a change of variables needs:
+
+    >>> inverse_and_logabsdet(lambda x: 2 * jnp.exp(x))(jnp.asarray(4.0))
+    (Array(0.6931472, dtype=float32), Array(-1.3862944, dtype=float32))
+
+    Args:
+        fun: The function to invert, possibly a ``custom_inverse``.
+        static_argnums: Positional arguments held fixed rather than inverted.
+        invertible_arg: Which positional argument to solve for (default 0).
+
+    Returns:
+        ``(inverse_value, log_abs_det)``. Both are NaN if the inversion could
+        not be completed.
+
+    Raises:
+        NotImplementedError: if a primitive on the inverse path has no
+            log-determinant rule and is not elementwise. Guessing one by
+            differentiating the inverse elementwise -- the old behaviour --
+            silently returned a number that was not a log-determinant.
+
+    Note:
+        Everything :func:`inverse` cannot do applies here too, and the log-det
+        additionally requires a rule for every primitive involved. A primitive
+        that inverts fine may still have no log-det: ``dynamic_slice`` recovers
+        only its window, leaving the input partially known and no square
+        Jacobian to take a determinant of.
+    """
     maybe_custom = maybe_inverse_custom_inverse(
         fun,
         static_argnums=static_argnums,

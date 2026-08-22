@@ -240,10 +240,23 @@ class custom_inverse:
                     jnp.asarray(0.0),
                 )
                 # Preserve additive vmap semantics even when the registered
-                # logdet is numerically independent of mapped inputs.
+                # logdet is numerically independent of mapped inputs: the term
+                # is always zero, but referencing every dynamic argument makes
+                # vmap batch the log-det along with them.
+                #
+                # The obvious spelling, `0.0 * value`, is NaN whenever the
+                # argument is inf or NaN -- so a non-finite value in an argument
+                # the log-det provably does not use would poison it, far from
+                # wherever the NaN came from. Two alternatives do not work:
+                # `zeros_like` is folded to a literal while tracing, which drops
+                # the edge and un-batches the log-det, and a select with two
+                # zero branches crashes the XLA compiler on larger programs.
+                # Clamping the value finite first keeps a real edge and makes
+                # the multiply exact.
                 dependency = sum(
                     (
-                        jnp.asarray(0.0) * jnp.sum(jnp.asarray(value))
+                        jnp.asarray(0.0)
+                        * jnp.nan_to_num(jnp.sum(jnp.asarray(value)))
                         for value in tree_leaves(dyn_args_tuple)
                     ),
                     jnp.asarray(0.0),

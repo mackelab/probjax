@@ -594,13 +594,11 @@ def test_inverse_odeint_with_static_bool_control_flow_via_closure():
 def test_inverse_and_logabsdet_odeint_hutchinson_matches_exact_in_expectation():
     """Hutchinson trace estimator matches exact log-det in expectation."""
     ts = jnp.linspace(0.0, 1.0, 200)
-    A = jnp.array(
-        [
-            [-0.5, 0.1, 0.0],
-            [0.0, -0.3, 0.2],
-            [0.1, 0.0, -0.4],
-        ]
-    )
+    A = jnp.array([
+        [-0.5, 0.1, 0.0],
+        [0.0, -0.3, 0.2],
+        [0.1, 0.0, -0.4],
+    ])
 
     def drift(t, x, A):
         del t
@@ -661,14 +659,12 @@ def test_inverse_and_logabsdet_odeint_hutchinson_matches_exact_in_expectation():
 def test_inverse_and_logabsdet_odeint_hutchinson_num_samples_reduces_variance():
     """Increasing ``num_samples`` reduces per-trajectory variance."""
     ts = jnp.linspace(0.0, 1.0, 100)
-    A = jnp.array(
-        [
-            [-0.3, 0.2, 0.0, 0.1],
-            [0.1, -0.4, 0.3, 0.0],
-            [0.0, 0.1, -0.2, 0.2],
-            [0.2, 0.0, 0.1, -0.5],
-        ]
-    )
+    A = jnp.array([
+        [-0.3, 0.2, 0.0, 0.1],
+        [0.1, -0.4, 0.3, 0.0],
+        [0.0, 0.1, -0.2, 0.2],
+        [0.2, 0.0, 0.1, -0.5],
+    ])
 
     def drift(t, x, A):
         del t
@@ -728,13 +724,11 @@ def test_inverse_and_logabsdet_odeint_hutchinson_num_samples_reduces_variance():
 def test_inverse_and_logabsdet_odeint_hutchinson_normal_probes():
     """The ``sample_dist='normal'`` path is unbiased in expectation too."""
     ts = jnp.linspace(0.0, 1.0, 100)
-    A = jnp.array(
-        [
-            [-0.3, 0.1, 0.0],
-            [0.0, -0.2, 0.2],
-            [0.1, 0.0, -0.4],
-        ]
-    )
+    A = jnp.array([
+        [-0.3, 0.1, 0.0],
+        [0.0, -0.2, 0.2],
+        [0.1, 0.0, -0.4],
+    ])
 
     def drift(t, x, A):
         del t
@@ -860,3 +854,127 @@ def test_inverse_and_logabsdet_odeint_unknown_trace_estimator_raises():
     inv_and_det = inverse_and_logabsdet(forward)
     with pytest.raises(ValueError, match="Unknown trace_estimator"):
         inv_and_det(y)
+
+
+# ---------------------------------------------------------------------------
+# Guards, error channels and the fenced fallback
+# ---------------------------------------------------------------------------
+
+
+def test_logdet_is_not_poisoned_by_an_unrelated_nonfinite_argument():
+    """A log-det that provably ignores an argument must survive its NaN.
+
+    ``custom_inverse`` inserts a zero-valued term referencing every dynamic
+    argument so that ``vmap`` batches the log-det additively. It used to be
+    ``0.0 * value``, which is NaN for an inf or NaN argument -- so a non-finite
+    value anywhere poisoned a log-det that did not depend on it, and did so far
+    from wherever the NaN actually came from.
+    """
+    from probjax.core import custom_inverse
+
+    @custom_inverse
+    def scale(x, s, unused):
+        return x * s
+
+    @scale.definv_and_logdet
+    def _(y, s, unused):
+        del unused
+        return y / s, -jnp.log(jnp.abs(s))
+
+    def pipeline(y, s, unused):
+        return jnp.exp(scale(y, s, unused))
+
+    expected = None
+    for unused in (1.0, jnp.nan, jnp.inf):
+        _, logdet = inverse_and_logabsdet(pipeline)(
+            jnp.asarray(jnp.exp(4.0)), jnp.asarray(2.0), jnp.asarray(unused)
+        )
+        assert jnp.isfinite(logdet), f"log-det poisoned by unused={unused}"
+        if expected is None:
+            expected = float(logdet)
+        assert float(logdet) == pytest.approx(expected)
+
+
+def test_custom_inverse_logdet_still_batches_under_vmap():
+    """The zero-valued dependency term must keep its reason for existing."""
+    from probjax.core import custom_inverse
+
+    @custom_inverse
+    def scale(x, s):
+        return x * s
+
+    @scale.definv_and_logdet
+    def _(y, s):
+        # Constant in the mapped argument: without the dependency term, vmap
+        # would collapse this to a single scalar.
+        return y / s, -jnp.log(jnp.abs(s))
+
+    ys = jnp.asarray([2.0, 4.0, 6.0])
+    _, logdets = jax.vmap(
+        lambda y: inverse_and_logabsdet(lambda t: jnp.exp(scale(t, 2.0)))(y)
+    )(jnp.exp(ys))
+    assert logdets.shape == (3,)
+    assert jnp.all(jnp.isfinite(logdets))
+
+
+def test_integer_inverse_works_under_jit():
+    """Regression: the old validation emitted an unconditional checkify.check.
+
+    That cannot be staged out by a plain ``jit``, so every integer inverse died
+    with "Cannot abstractly evaluate a checkify.check which was not
+    functionalized".
+    """
+    f = lambda x: x * jnp.int32(3)  # noqa: E731
+    assert int(jax.jit(inverse(f))(jnp.int32(12))) == 4
+
+
+def test_guard_reports_through_checkify_when_asked():
+    """NaN by default; a real error under inverse_checks() + checkify."""
+    from jax.experimental import checkify
+
+    from probjax.core.registry import inverse_checks
+
+    f = lambda x: x * jnp.float32(0.0)  # noqa: E731
+    assert bool(jnp.isnan(inverse(f)(jnp.float32(5.0))))
+
+    with inverse_checks():
+        error, _ = checkify.checkify(inverse(f))(jnp.float32(5.0))
+    assert "no inverse at this value" in str(error.get())
+
+
+def test_missing_logdet_rule_raises_instead_of_guessing():
+    """The fence: a non-elementwise primitive with no log-det rule must refuse.
+
+    Every such primitive now has a rule, so the fence is exercised by removing
+    one. ``reshape`` is a rearrangement: differentiating its inverse
+    elementwise -- what the old fallback did -- produced a (4, 4) tangent for a
+    4-element array and failed MLIR verification rather than returning a
+    log-determinant.
+    """
+    from probjax.core.registry import REGISTRY, Context
+
+    rules = REGISTRY._rules[Context.INVERSE_LOGDET]
+    removed = rules.pop(jax.lax.reshape_p)
+    try:
+        with pytest.raises(NotImplementedError, match="reshape"):
+            inverse_and_logabsdet(lambda x: jnp.reshape(jnp.exp(x), (4,)))(
+                jnp.ones((2, 2))
+            )
+    finally:
+        rules[jax.lax.reshape_p] = removed
+
+    # Restored, and working again.
+    _, logdet = inverse_and_logabsdet(lambda x: jnp.reshape(jnp.exp(x), (4,)))(
+        jnp.ones((2, 2))
+    )
+    assert jnp.allclose(logdet, 0.0)
+
+
+def test_singular_jacobian_is_minus_inf_not_a_finite_floor():
+    """The fallback used log(|det| + 1e-10), turning -inf into -23.03.
+
+    A point where the map is not invertible must not come back as a
+    plausible-looking finite log-density.
+    """
+    _, logdet = inverse_and_logabsdet(lambda x: x**3)(jnp.asarray([0.0]))
+    assert jnp.isinf(logdet)
