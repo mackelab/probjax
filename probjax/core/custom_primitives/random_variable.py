@@ -18,8 +18,8 @@ from probjax.core.custom_primitives.call_primitive import (
 from probjax.core.custom_primitives.common import (
     batch_closed_jaxpr,
     ensure_hashable,
-    has_tracer,
     move_mapped_axes_to_front,
+    must_emit_primitive,
     trace_to_closed_jaxpr,
 )
 from probjax.core.custom_primitives.contracts import parse_random_variable_call_params
@@ -243,7 +243,11 @@ class RandomVariableCallPrimitive(Primitive):
                 )
             )
 
-        if not has_tracer((key, args, parsed_kwds)):
+        # Outside any trace, with no tracers, sample directly. Inside a trace
+        # the primitive must be emitted even for concrete arguments, or the
+        # random variable disappears from the jaxpr and every interpreter that
+        # looks for it -- trace, log_potential, intervene -- stops seeing it.
+        if not must_emit_primitive((key, args, parsed_kwds)):
             return rvs_fn(key, *args, shape=shape, **parsed_kwds)
 
         dyn_inputs = (key, *args)

@@ -20,7 +20,7 @@ from probjax.core.custom_primitives.common import (
     LazyClosedJaxpr,
     batch_closed_jaxpr,
     ensure_hashable,
-    has_tracer,
+    must_emit_primitive,
     move_mapped_axes_to_front,
     trace_to_closed_jaxpr,
 )
@@ -291,8 +291,9 @@ class custom_inverse:
                 f"use definv or definv_and_logdet first."
             )
 
-        # Fast path: no tracers -> plain Python
-        if not has_tracer((args, kwargs)):
+        # Fast path: outside any trace, with no tracers -> plain Python.
+        # Both conditions matter; see ``must_emit_primitive``.
+        if not must_emit_primitive((args, kwargs)):
             return self.fun(*args, **kwargs)
 
         # Enforce hashable kwargs (by assumption)

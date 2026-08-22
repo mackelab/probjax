@@ -62,6 +62,23 @@ def has_tracer(tree) -> bool:
     return any(isinstance(x, jax_core.Tracer) for x in tree_leaves(tree))
 
 
+def must_emit_primitive(tree) -> bool:
+    """Whether a call has to go through the primitive rather than run eagerly.
+
+    Scanning for tracers is not sufficient. ``tree_leaves`` only walks
+    registered pytree nodes, so a tracer held by a plain Python object is
+    invisible -- and then the call runs eagerly *inside* a trace, emits no
+    primitive at all, and the registered inverse silently becomes unreachable.
+    The forward value is still right, so nothing looks wrong until an inverse
+    is taken.
+
+    Asking whether any trace is active catches that case and every other one
+    like it. Outside a trace the eager path still applies, which is where it
+    earns its keep.
+    """
+    return has_tracer(tree) or not jax_core.trace_state_clean()
+
+
 def ensure_hashable(x, where: str):
     try:
         hash(x)
