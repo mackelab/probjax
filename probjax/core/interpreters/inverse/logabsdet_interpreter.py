@@ -16,6 +16,7 @@ from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
 from probjax.core.interpreters.inverse.interpreter import InverseProcessingRule
 from probjax.core.interpreters.inverse.logabsdet_rules import (
     INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
+    is_elementwise_primitive,
     value_and_log_det_diagonal,
 )
 from probjax.core.interpreters.inverse.utils import is_inexact_value
@@ -139,11 +140,26 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
 
         This is used as a fallback when no explicit INVERSE_LOGDET rule exists.
         """
+        if not is_elementwise_primitive(eqn.primitive):
+            raise NotImplementedError(
+                f"no usable INVERSE_LOGDET rule for '{eqn.primitive.name}'. The "
+                "autodiff fallback assumes a diagonal Jacobian, which is wrong "
+                "for a primitive that is not elementwise, so it is refused "
+                "rather than guessed. Register a rule with REGISTRY.rule("
+                f"<{eqn.primitive.name}_p>, Context.INVERSE_LOGDET), or "
+                "register_rearrangement_inverse_logdet if it only moves "
+                "elements around. (A rearrangement rule that declines because "
+                "the input is only partially recovered also lands here: "
+                "log-determinants under partial propagation are unsupported.)"
+            )
+
         resolved_vars = inverse_result.resolved_vars
         resolved_vals = inverse_result.resolved_vals
 
         log_dets = self._read_log_dets(context)
         previous = self._sum_log_dets(log_dets, eqn.outvars)
+
+
 
         # Compute log-det via autodiff if values are inexact
         if len(resolved_vals) == 1:

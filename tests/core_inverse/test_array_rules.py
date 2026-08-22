@@ -416,3 +416,109 @@ def test_logabsdet_reshape_chain():
     assert jnp.allclose(jnp.reshape(x_rec, x0.shape), x0, atol=1e-5, rtol=1e-5)
     assert jnp.allclose(log_det, expected, atol=1e-5, rtol=1e-5)
     assert jnp.allclose(log_det, expected_jac, atol=1e-5, rtol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Log-determinants of structural primitives
+# ---------------------------------------------------------------------------
+#
+# These rearrange elements without scaling any of them, so log|J| = 0. Before
+# they had explicit rules they fell through to the diagonal autodiff fallback,
+# which differentiates elementwise under nested vmap: reshape produced a (4, 4)
+# tangent for a 4-element array and failed MLIR verification, and concatenate
+# leaked the engine's internal Knowness wrapper out as a TypeError.
+
+
+@pytest.mark.parametrize(
+    "name,fn,y",
+    [
+        ("reshape", lambda x: jnp.reshape(jnp.exp(x), (4,)), jnp.exp(jnp.zeros((2, 2)))),
+        ("ravel", lambda x: jnp.exp(x).ravel(), jnp.exp(jnp.zeros((2, 2)))),
+        (
+            "concatenate",
+            lambda x: jnp.concatenate([jnp.exp(x[:1]), jnp.exp(x[1:])]),
+            jnp.ones(2),
+        ),
+        # A sliced passthrough recombined by concatenate: invertible overall,
+        # so the slice must contribute 0 rather than refusing because its
+        # element count changed.
+        (
+            "concat_with_passthrough",
+            lambda x: jnp.concatenate([jnp.exp(x[:1]), x[1:]]),
+            jnp.ones(2),
+        ),
+        ("slice", lambda x: jnp.exp(x)[:2], jnp.ones(2)),
+        ("transpose", lambda x: jnp.exp(x).T, jnp.exp(jnp.zeros((2, 3)))),
+    ],
+)
+def test_logabsdet_rearrangements_are_zero(name, fn, y):
+    x, logdet = inverse_and_logabsdet(fn)(y)
+    assert jnp.all(jnp.isfinite(x)), f"{name} lost the inverse"
+    assert jnp.allclose(logdet, 0.0), f"{name} gave log-det {logdet}, expected 0"
+
+
+def test_logabsdet_dynamic_slice_is_refused():
+    """dynamic_slice has no log-det rule, and says so rather than guessing.
+
+    Its inverse recovers only the window, leaving the operand partially known,
+    and a partially recovered input has no square Jacobian to take a
+    determinant of. This used to crash on the engine's internal Knowness
+    wrapper; a rearrangement rule that claimed a zero log-det instead made the
+    engine re-schedule the equation forever.
+    """
+
+    def f(x):
+        return jax.lax.dynamic_slice(jnp.exp(x), (1,), (2,))
+
+    # The plain inverse is unaffected -- only the log-det is unavailable.
+    assert jnp.all(jnp.isfinite(inverse(f)(jnp.ones(2))))
+    with pytest.raises(NotImplementedError, match="dynamic_slice"):
+        inverse_and_logabsdet(f)(jnp.ones(2))
+
+
+def test_logabsdet_scatter_is_zero():
+    base = jnp.arange(4.0)
+
+    def f(x):
+        return base.at[jnp.array([0, 2])].set(jnp.exp(x))
+
+    _, logdet = inverse_and_logabsdet(f)(jnp.ones(2))
+    assert jnp.allclose(logdet, 0.0)
+
+
+def test_logabsdet_convert_element_type_is_zero():
+    def f(x):
+        return jnp.exp(x).astype(jnp.float64 if jax.config.jax_enable_x64 else jnp.float32)
+
+    _, logdet = inverse_and_logabsdet(f)(jnp.ones(3))
+    assert jnp.allclose(logdet, 0.0)
+
+
+def test_logabsdet_bitcast_is_zero():
+    def f(x):
+        return jax.lax.bitcast_convert_type(x, jnp.int32)
+
+    _, logdet = inverse_and_logabsdet(f)(jax.lax.bitcast_convert_type(jnp.ones(3), jnp.int32))
+    assert jnp.allclose(logdet, 0.0)
+
+
+def test_logabsdet_conj_is_zero():
+    """Conjugation is volume preserving: its real Jacobian is diag(1, -1)."""
+
+    def f(x):
+        return jax.lax.conj(x)
+
+    y = jnp.array([1.0 + 2.0j, 3.0 - 1.0j])
+    _, logdet = inverse_and_logabsdet(f)(y)
+    assert jnp.allclose(logdet, 0.0)
+
+
+@pytest.mark.parametrize("proj", [jnp.real, jnp.imag])
+def test_logabsdet_projection_is_nan(proj):
+    """real/imag discard a component, so no determinant exists.
+
+    The input must be complex: on a real array these are the identity and JAX
+    does not emit the primitive at all.
+    """
+    _, logdet = inverse_and_logabsdet(proj)(jnp.array([1.0 + 2.0j, 3.0 - 1.0j]))
+    assert jnp.isnan(logdet)

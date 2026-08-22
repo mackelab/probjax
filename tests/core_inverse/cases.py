@@ -229,10 +229,46 @@ LOGDET_EXPLICIT_CASES: list[AtomicCase] = [
     AtomicCase("sub", jax.lax.sub_p, lambda x: x - 1.0, lambda: jnp.linspace(-0.5, 0.5, 7)),
     AtomicCase("mul", jax.lax.mul_p, lambda x: x * 2.0, lambda: jnp.linspace(-0.5, 0.5, 7)),
     AtomicCase("div", jax.lax.div_p, lambda x: x / 2.0, lambda: jnp.linspace(-0.5, 0.5, 7)),
+    # Elementwise transcendentals. These used to fall through to the diagonal
+    # autodiff fallback; each now has a closed-form rule, and this list is what
+    # holds them to the same autodiff reference the fallback approximated.
+    AtomicCase("sin", jax.lax.sin_p, jnp.sin, lambda: jnp.linspace(-1.0, 1.0, 7)),
+    AtomicCase("cos", jax.lax.cos_p, jnp.cos, lambda: jnp.linspace(0.2, 2.9, 7)),
+    AtomicCase("tan", jax.lax.tan_p, jnp.tan, lambda: jnp.linspace(-1.0, 1.0, 7)),
+    AtomicCase("asin", jax.lax.asin_p, jnp.arcsin, lambda: jnp.linspace(-0.9, 0.9, 7)),
+    AtomicCase("acos", jax.lax.acos_p, jnp.arccos, lambda: jnp.linspace(-0.9, 0.9, 7)),
+    AtomicCase("atan", jax.lax.atan_p, jnp.arctan, lambda: jnp.linspace(-3.0, 3.0, 7)),
+    AtomicCase("sinh", jax.lax.sinh_p, jnp.sinh, lambda: jnp.linspace(-0.4, 0.4, 7)),
+    AtomicCase("cosh", jax.lax.cosh_p, jnp.cosh, lambda: jnp.linspace(0.3, 1.2, 7)),
+    AtomicCase("asinh", jax.lax.asinh_p, jnp.arcsinh, lambda: jnp.linspace(-0.5, 0.5, 7)),
+    AtomicCase("acosh", jax.lax.acosh_p, lambda x: jax.lax.acosh_p.bind(x), lambda: jnp.linspace(1.1, 2.0, 7)),
+    AtomicCase("atanh", jax.lax.atanh_p, jnp.arctanh, lambda: jnp.linspace(-0.5, 0.5, 7)),
+    AtomicCase("erf", jax.lax.erf_p, jax.lax.erf, lambda: jnp.linspace(-0.9, 0.9, 7)),
+    AtomicCase("erf_inv", jax.lax.erf_inv_p, jax.lax.erf_inv, lambda: jnp.linspace(-0.7, 0.7, 7)),
+    AtomicCase("rsqrt", jax.lax.rsqrt_p, lambda x: jax.lax.rsqrt_p.bind(x), lambda: jnp.linspace(0.25, 2.0, 7)),
+    AtomicCase("exp2", jax.lax.exp2_p, jnp.exp2, lambda: jnp.linspace(-1.0, 1.0, 7)),
+    AtomicCase("integer_pow", jax.lax.integer_pow_p, lambda x: x**3, lambda: jnp.linspace(0.5, 2.0, 7)),
+    AtomicCase("pow", jax.lax.pow_p, lambda x: x**2.5, lambda: jnp.linspace(0.5, 2.0, 7)),
 ]
 
 
 MANUAL_COVERAGE: list[ManualCoverage] = [
+    # Structural log-det rules. These are rearrangements (log|J| = 0) that used
+    # to fall through to the diagonal autodiff fallback -- which crashed on
+    # reshape and concatenate rather than merely being wrong. They are covered
+    # manually because the shared autodiff reference needs a square elementwise
+    # Jacobian, which a rearrangement does not have.
+    ManualCoverage(jax.lax.reshape_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_rearrangements_are_zero"),
+    ManualCoverage(jax.lax.concatenate_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_rearrangements_are_zero"),
+    ManualCoverage(jax.lax.slice_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_rearrangements_are_zero"),
+    ManualCoverage(jax.lax.scatter_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_scatter_is_zero"),
+    ManualCoverage(jax.lax.select_n_p, Context.INVERSE_LOGDET, "partial", "test_logabsdet_select_n_is_zero"),
+    ManualCoverage(jax.lax.convert_element_type_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_convert_element_type_is_zero"),
+    ManualCoverage(jax.lax.bitcast_convert_type_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_bitcast_is_zero"),
+    ManualCoverage(jax.lax.conj_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_conj_is_zero"),
+    # Projections: no determinant is defined, so the rule reports NaN.
+    ManualCoverage(jax.lax.real_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_projection_is_nan"),
+    ManualCoverage(jax.lax.imag_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_projection_is_nan"),
     ManualCoverage(jax.lax.dot_general_p, Context.INVERSE, "dot", "test_inverse_dot_general_lhs"),
     ManualCoverage(jax.lax.concatenate_p, Context.INVERSE, "array", "test_inverse_split"),
     ManualCoverage(jax.lax.squeeze_p, Context.INVERSE, "array", "test_inverse_squeeze_broadcast"),

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 import jax
 import jax.numpy as jnp
 from jax.extend.core import Literal
@@ -16,7 +18,17 @@ from probjax.core.interpreters.inverse.rules import (
     invert_broadcast_in_dim,
     invert_gather,
     invert_squeeze,
+    invert_reshape,
+    invert_concat,
+    invert_slice,
+    invert_scatter,
+    invert_select_n,
     invert_transpose,
+    _UNIVARIATE_INVERSES,
+    _BIVARIATE_INVERSES,
+    invert_integer_pow,
+    invert_convert_element_type,
+    invert_bitcast_convert_type,
     _UNIVARIATE_GUARDS,
     parse_scan_problem,
     parse_while_problem,
@@ -31,7 +43,7 @@ from probjax.core.interpreters.inverse.rules import (
     verify_while_candidate,
     _values_equal,
 )
-from probjax.core.jaxpr_propagation.utils import ProcessingRuleFactory
+from probjax.core.jaxpr_propagation.utils import Knowness, ProcessingRuleFactory
 from probjax.core.registry import (
     Context,
     ProcessedResult,
@@ -73,8 +85,37 @@ def _sum_previous_log_dets(context, outvars):
     return total
 
 
+#: Primitives whose Jacobian is diagonal, so differentiating the inverse
+#: elementwise is exact. The autodiff fallback is valid only for these.
+#:
+#: Every primitive the fallback used to serve now has an explicit rule, so this
+#: is a safety net for primitives added later -- not a live code path. Anything
+#: absent raises rather than returning a diagonal guess, which is what silently
+#: produced wrong log-determinants for reshape, concatenate, slice and scatter.
+_ELEMENTWISE_PRIMITIVES = frozenset({
+    jax.lax.abs_p, jax.lax.acos_p, jax.lax.acosh_p, jax.lax.asin_p,
+    jax.lax.asinh_p, jax.lax.atan_p, jax.lax.atanh_p, jax.lax.cbrt_p,
+    jax.lax.cos_p, jax.lax.cosh_p, jax.lax.erf_p, jax.lax.erf_inv_p,
+    jax.lax.exp_p, jax.lax.exp2_p, jax.lax.expm1_p, jax.lax.integer_pow_p,
+    jax.lax.log_p, jax.lax.log1p_p, jax.lax.logistic_p, jax.lax.neg_p,
+    jax.lax.pow_p, jax.lax.rsqrt_p, jax.lax.sin_p, jax.lax.sinh_p,
+    jax.lax.sqrt_p, jax.lax.square_p, jax.lax.tan_p, jax.lax.tanh_p,
+})
+
+
+def is_elementwise_primitive(primitive) -> bool:
+    """Whether the diagonal autodiff fallback is valid for ``primitive``."""
+    return primitive in _ELEMENTWISE_PRIMITIVES
+
+
 def value_and_log_det_diagonal(f):
-    """Autodiff fallback for computing value and log-det of the Jacobian diagonal."""
+    """Autodiff fallback: value and log-det assuming a **diagonal** Jacobian.
+
+    Only correct for elementwise maps -- it differentiates under nested vmap, so
+    for anything that moves elements around it computes a quantity that is not
+    the log-determinant. Callers must gate on
+    :func:`is_elementwise_primitive` first.
+    """
     grad_fn = jax.value_and_grad(f)
 
     def log_det_fn(*args, **kwargs):
@@ -86,7 +127,10 @@ def value_and_log_det_diagonal(f):
             vmaped_grad_fn = jax.vmap(vmaped_grad_fn)
         value, det = vmaped_grad_fn(*args_arrays, **kwargs)
 
-        log_det = jnp.log(jnp.abs(det) + 1e-10)
+        # No epsilon: a singular Jacobian is -inf, not log(1e-10) = -23.03,
+        # which is a plausible-looking finite log-density for a point where the
+        # map is not invertible at all.
+        log_det = jnp.log(jnp.abs(det))
         while log_det.ndim > 0:
             log_det = jnp.sum(log_det, axis=-1)
         return value, log_det
@@ -161,7 +205,9 @@ def invert_rev_and_logdet(eqn, known_invars, known_outvars, context=None):
 # than the generic autodiff fallback: that fallback differentiates the inverse
 # elementwise under vmap, but these inverse rules need the whole array (they
 # reshape or scatter into it) and fail on a scalar tracer.
-def register_rearrangement_inverse_logdet(primitive, inverse_rule, *, strict=True):
+def register_rearrangement_inverse_logdet(
+    primitive, inverse_rule, *, strict=True, selects=False, multi_input=False
+):
     """Register a zero-log-det INVERSE_LOGDET rule delegating to ``inverse_rule``.
 
     With ``strict``, a primitive that does not preserve the element count is not
@@ -169,6 +215,14 @@ def register_rearrangement_inverse_logdet(primitive, inverse_rule, *, strict=Tru
     as zero. ``broadcast_in_dim`` opts out: it legitimately duplicates elements,
     and its inverse rule recovers the single distinct value, which contributes
     nothing to the determinant.
+
+    ``selects`` is for primitives that move a *subset* of elements -- ``slice``,
+    ``scatter``, ``select_n``. Their element counts differ by design, but they
+    still scale nothing, so the factor is 1 and the contribution 0. Whether the
+    dropped elements can be recovered is a question about completeness, which
+    the propagation engine already tracks and reports as NaN in
+    ``_materialize_inverse_targets``; answering it again here would NaN valid
+    log-dets, as it did for ``concatenate`` of a sliced passthrough.
     """
 
     @REGISTRY.rule(primitive, Context.INVERSE_LOGDET)
@@ -177,9 +231,20 @@ def register_rearrangement_inverse_logdet(primitive, inverse_rule, *, strict=Tru
         if result is None:
             return None
 
-        in_size = math.prod(eqn.invars[0].aval.shape)
+        if multi_input:
+            # concatenate builds its output from every input, so comparing only
+            # the first would call a valid rearrangement lossy. Not the default:
+            # gather and scatter carry index operands in invars that are not
+            # data and must not be counted.
+            in_size = sum(
+                math.prod(var.aval.shape)
+                for var in eqn.invars
+                if not isinstance(var, Literal)
+            )
+        else:
+            in_size = math.prod(eqn.invars[0].aval.shape)
         out_size = math.prod(eqn.outvars[0].aval.shape)
-        if in_size != out_size:
+        if in_size != out_size and not selects:
             if strict:
                 raise NotImplementedError(
                     f"log-determinant of {primitive.name} is undefined here: it "
@@ -191,6 +256,13 @@ def register_rearrangement_inverse_logdet(primitive, inverse_rule, *, strict=Tru
             local_logdet = jnp.asarray(0.0)
 
         for value in result.resolved_vals:
+            # A rule may hand back a Knowness wrapper rather than a bare array
+            # -- concatenate does, when only some inputs are resolved -- so
+            # unwrap before asking JAX about the dtype.
+            if isinstance(value, Knowness):
+                value = value.value
+            if value is None:
+                continue
             if jnp.issubdtype(jnp.asarray(value).dtype, jnp.inexact):
                 local_logdet = jnp.where(
                     jnp.any(jnp.isnan(value)), jnp.asarray(jnp.nan), local_logdet
@@ -209,6 +281,26 @@ register_rearrangement_inverse_logdet(jax.lax.transpose_p, invert_transpose)
 register_rearrangement_inverse_logdet(jax.lax.gather_p, invert_gather)
 register_rearrangement_inverse_logdet(
     jax.lax.broadcast_in_dim_p, invert_broadcast_in_dim, strict=False
+)
+
+# The remaining structural primitives. Without these they fell through to the
+# autodiff fallback, which differentiates elementwise under nested vmap: for
+# reshape that produced a (4,4) tangent for a 4-element array and failed MLIR
+# verification, and for concatenate it leaked the engine's internal partial
+# knowness into a TypeError. Both are rearrangements, so log|J| = 0.
+register_rearrangement_inverse_logdet(jax.lax.reshape_p, invert_reshape)
+register_rearrangement_inverse_logdet(
+    jax.lax.concatenate_p, invert_concat, multi_input=True
+)
+register_rearrangement_inverse_logdet(jax.lax.slice_p, invert_slice, selects=True)
+# dynamic_slice is deliberately absent: its inverse recovers only the window,
+# leaving the operand partially known, and a partially recovered input has no
+# square Jacobian to take a determinant of. Registering it anyway made the
+# engine re-schedule the equation forever. The fence in the log-det interpreter
+# reports it by name instead.
+register_rearrangement_inverse_logdet(jax.lax.scatter_p, invert_scatter, selects=True)
+register_rearrangement_inverse_logdet(
+    jax.lax.select_n_p, invert_select_n, selects=True
 )
 
 
@@ -243,6 +335,223 @@ register_univariate_inverse_logdet(
         jnp.log(3.0) + 2.0 * jnp.log(jnp.abs(out_val))
     ),
 )
+
+# ---------------------------------------------------------------------------
+# Elementwise transcendentals
+# ---------------------------------------------------------------------------
+#
+# These previously fell through to ``value_and_log_det_diagonal``, which
+# differentiates the inverse numerically. That is valid for an elementwise map
+# but strictly worse than the closed form: near a boundary it loses accuracy
+# (0.18 nats on tanh at 1e-7 from the edge) and it floors a singular Jacobian at
+# log(1e-10) instead of -inf.
+#
+# Each entry is log|d(inverse)/d(out)|, summed. ``out_val`` is the forward map's
+# output -- the point the inverse is evaluated at.
+
+_SQRT_PI = float(np.sqrt(np.pi))
+
+
+def _register_elementwise(forward_prim, inverse_prim_or_fn, logdet, **kwargs):
+    register_univariate_inverse_logdet(
+        forward_prim, inverse_prim_or_fn, logdet, **kwargs
+    )
+
+
+# sin/cos: inverse asin/acos, both with |d/dy| = 1/sqrt(1 - y^2)
+_register_elementwise(
+    jax.lax.sin_p,
+    _UNIVARIATE_INVERSES[jax.lax.sin_p],
+    lambda out_val, in_val, params: -0.5 * jnp.sum(jnp.log(1.0 - out_val**2)),
+)
+_register_elementwise(
+    jax.lax.cos_p,
+    _UNIVARIATE_INVERSES[jax.lax.cos_p],
+    lambda out_val, in_val, params: -0.5 * jnp.sum(jnp.log(1.0 - out_val**2)),
+)
+# tan: inverse atan, d/dy atan = 1/(1 + y^2)
+_register_elementwise(
+    jax.lax.tan_p,
+    _UNIVARIATE_INVERSES[jax.lax.tan_p],
+    lambda out_val, in_val, params: -jnp.sum(jnp.log1p(out_val**2)),
+)
+# asin: inverse sin, d/dy sin = cos(y)
+_register_elementwise(
+    jax.lax.asin_p,
+    _UNIVARIATE_INVERSES[jax.lax.asin_p],
+    lambda out_val, in_val, params: jnp.sum(jnp.log(jnp.abs(jnp.cos(out_val)))),
+    guard=_UNIVARIATE_GUARDS[jax.lax.asin_p],
+)
+# acos: inverse cos, d/dy cos = -sin(y)
+_register_elementwise(
+    jax.lax.acos_p,
+    _UNIVARIATE_INVERSES[jax.lax.acos_p],
+    lambda out_val, in_val, params: jnp.sum(jnp.log(jnp.abs(jnp.sin(out_val)))),
+    guard=_UNIVARIATE_GUARDS[jax.lax.acos_p],
+)
+# atan: inverse tan, d/dy tan = 1 + tan(y)^2
+_register_elementwise(
+    jax.lax.atan_p,
+    _UNIVARIATE_INVERSES[jax.lax.atan_p],
+    lambda out_val, in_val, params: jnp.sum(jnp.log1p(jnp.tan(out_val) ** 2)),
+    guard=_UNIVARIATE_GUARDS[jax.lax.atan_p],
+)
+# sinh: inverse asinh, d/dy asinh = 1/sqrt(1 + y^2)
+_register_elementwise(
+    jax.lax.sinh_p,
+    _UNIVARIATE_INVERSES[jax.lax.sinh_p],
+    lambda out_val, in_val, params: -0.5 * jnp.sum(jnp.log1p(out_val**2)),
+)
+# cosh: inverse acosh, d/dy acosh = 1/sqrt(y^2 - 1)
+_register_elementwise(
+    jax.lax.cosh_p,
+    _UNIVARIATE_INVERSES[jax.lax.cosh_p],
+    lambda out_val, in_val, params: -0.5 * jnp.sum(jnp.log(out_val**2 - 1.0)),
+)
+# asinh: inverse sinh, d/dy sinh = cosh(y)
+_register_elementwise(
+    jax.lax.asinh_p,
+    _UNIVARIATE_INVERSES[jax.lax.asinh_p],
+    lambda out_val, in_val, params: jnp.sum(jnp.log(jnp.cosh(out_val))),
+)
+# acosh: inverse cosh, d/dy cosh = sinh(y)
+_register_elementwise(
+    jax.lax.acosh_p,
+    _UNIVARIATE_INVERSES[jax.lax.acosh_p],
+    lambda out_val, in_val, params: jnp.sum(jnp.log(jnp.abs(jnp.sinh(out_val)))),
+    guard=_UNIVARIATE_GUARDS[jax.lax.acosh_p],
+)
+# atanh: inverse tanh, d/dy tanh = 1 - tanh(y)^2
+_register_elementwise(
+    jax.lax.atanh_p,
+    _UNIVARIATE_INVERSES[jax.lax.atanh_p],
+    lambda out_val, in_val, params: jnp.sum(jnp.log1p(-jnp.tanh(out_val) ** 2)),
+)
+# erf: inverse erf_inv, d/dy erf_inv = (sqrt(pi)/2) * exp(erf_inv(y)^2), and
+# in_val is exactly erf_inv(out_val).
+_register_elementwise(
+    jax.lax.erf_p,
+    _UNIVARIATE_INVERSES[jax.lax.erf_p],
+    lambda out_val, in_val, params: jnp.sum(
+        jnp.log(_SQRT_PI / 2.0) + in_val**2
+    ),
+)
+# erf_inv: inverse erf, d/dy erf = (2/sqrt(pi)) * exp(-y^2)
+_register_elementwise(
+    jax.lax.erf_inv_p,
+    _UNIVARIATE_INVERSES[jax.lax.erf_inv_p],
+    lambda out_val, in_val, params: jnp.sum(
+        jnp.log(2.0 / _SQRT_PI) - out_val**2
+    ),
+)
+# rsqrt: x = y^-2, d/dy = -2 y^-3
+_register_elementwise(
+    jax.lax.rsqrt_p,
+    _UNIVARIATE_INVERSES[jax.lax.rsqrt_p],
+    lambda out_val, in_val, params: jnp.sum(
+        jnp.log(2.0) - 3.0 * jnp.log(jnp.abs(out_val))
+    ),
+    guard=_UNIVARIATE_GUARDS[jax.lax.rsqrt_p],
+)
+
+
+# integer_pow: x = y^(1/n), d/dy = (1/n) y^(1/n - 1)
+@REGISTRY.rule(jax.lax.integer_pow_p, Context.INVERSE_LOGDET)
+def invert_integer_pow_and_logdet(eqn, known_invars, known_outvars, context=None):
+    result = invert_integer_pow(eqn, known_invars, known_outvars)
+    if result is None:
+        return None
+    exponent = eqn.params["y"]
+    out_val = jnp.asarray(known_outvars[0])
+    if exponent == 0:
+        local = jnp.asarray(jnp.nan)
+    else:
+        inv_n = 1.0 / exponent
+        local = jnp.sum(
+            jnp.log(jnp.abs(inv_n)) + (inv_n - 1.0) * jnp.log(jnp.abs(out_val))
+        )
+    previous = _sum_previous_log_dets(context, eqn.outvars)
+    updates = {
+        var: previous + local for var in result.resolved_vars
+        if not isinstance(var, Literal)
+    }
+    return ProcessedResult(result.resolved_vars, result.resolved_vals, updates)
+
+
+# exp2: x = log2(y), d/dy = 1/(y ln2)
+_register_elementwise(
+    jax.lax.exp2_p,
+    _UNIVARIATE_INVERSES[jax.lax.exp2_p],
+    lambda out_val, in_val, params: -jnp.sum(
+        jnp.log(jnp.abs(out_val)) + jnp.log(jnp.log(2.0))
+    ),
+)
+
+
+# pow (x ** y): solving for the base is a power, solving for the exponent is a
+# ratio of logs.
+def _pow_left_logdet(out_val, result, other, params):
+    # base = out ** (1/e); d/d(out) = (1/e) out ** (1/e - 1)
+    inv_e = 1.0 / jnp.asarray(other)
+    return jnp.sum(
+        jnp.log(jnp.abs(inv_e)) + (inv_e - 1.0) * jnp.log(jnp.abs(out_val))
+    )
+
+
+def _pow_right_logdet(out_val, result, other, params):
+    # exponent = log(out)/log(base); d/d(out) = 1/(out * log(base))
+    return -jnp.sum(jnp.log(jnp.abs(out_val)) + jnp.log(jnp.abs(jnp.log(other))))
+
+
+register_bivariate_inverse_logdet(
+    jax.lax.pow_p,
+    _BIVARIATE_INVERSES[jax.lax.pow_p][0],
+    _BIVARIATE_INVERSES[jax.lax.pow_p][1],
+    _pow_left_logdet,
+    _pow_right_logdet,
+)
+
+
+# real / imag discard a component outright: the inverse rules already return
+# NaN, and no determinant is defined for a projection.
+def _register_projection_logdet(primitive, inverse_rule):
+    @REGISTRY.rule(primitive, Context.INVERSE_LOGDET)
+    def rule(eqn, known_invars, known_outvars, context=None):
+        result = inverse_rule(eqn, known_invars, known_outvars)
+        if result is None:
+            return None
+        updates = {
+            var: jnp.asarray(jnp.nan)
+            for var in result.resolved_vars
+            if not isinstance(var, Literal)
+        }
+        return ProcessedResult(result.resolved_vars, result.resolved_vals, updates)
+
+    return rule
+
+
+for _projection in (jax.lax.real_p, jax.lax.imag_p):
+    _register_projection_logdet(
+        _projection, REGISTRY.get(_projection, Context.INVERSE)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dtype and complex reinterpretations: volume preserving, log|J| = 0
+# ---------------------------------------------------------------------------
+register_rearrangement_inverse_logdet(
+    jax.lax.convert_element_type_p, invert_convert_element_type
+)
+# conj is its own inverse and |det| = 1.
+_register_elementwise(
+    jax.lax.conj_p,
+    _UNIVARIATE_INVERSES[jax.lax.conj_p],
+    lambda out_val, in_val, params: jnp.asarray(0.0),
+)
+register_rearrangement_inverse_logdet(
+    jax.lax.bitcast_convert_type_p, invert_bitcast_convert_type, selects=True
+)
+
 
 # tanh/atanh: d/dy[tanh(y)] = sech^2(y) = 1 - tanh^2(y)
 # Since x = tanh(y), dx/dy = 1 - x^2, so log|det| = sum(log(1 - x^2))

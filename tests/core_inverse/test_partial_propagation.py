@@ -115,3 +115,15 @@ def test_inverse_nonuniform_select_n():
     inv_f = inverse(f)
     x_rec = inv_f(y)
     assert jnp.allclose(x0, x_rec, atol=1e-6, rtol=1e-6)
+
+
+def test_logabsdet_select_n_is_zero():
+    """select_n picks between operands elementwise; it scales nothing."""
+    import jax.numpy as _jnp
+    from probjax.core import inverse_and_logabsdet as _ild
+
+    def f(x):
+        return _jnp.where(_jnp.array([True, False]), _jnp.exp(x), _jnp.exp(x))
+
+    _, logdet = _ild(f)(_jnp.ones(2))
+    assert _jnp.allclose(logdet, 0.0)
