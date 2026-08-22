@@ -17,6 +17,7 @@ from probjax.core.interpreters.inverse.rules import (
     invert_gather,
     invert_squeeze,
     invert_transpose,
+    _UNIVARIATE_GUARDS,
     parse_scan_problem,
     parse_while_problem,
     pack_cond_values,
@@ -38,7 +39,8 @@ from probjax.core.registry import (
     invalid_inverse_value,
     register_univariate_inverse_logdet,
     register_bivariate_inverse_logdet,
-    validate_inverse_value,
+    apply_inverse_guard,
+    inverse_roundtrip_valid,
 )
 
 INVERSE_AND_LOGABSDET_STATE_NAMESPACE = "inverse_and_logabsdet.log_dets"
@@ -221,6 +223,9 @@ register_univariate_inverse_logdet(
     jax.lax.sqrt_p,
     sqrt_inverse_fn,
     lambda out_val, in_val, params: jnp.sum(jnp.log(2.0) + jnp.log(jnp.abs(out_val))),
+    # Same image guard as the INVERSE rule: a negative output has no preimage,
+    # and squaring it would otherwise return a finite, wrong answer.
+    guard=_UNIVARIATE_GUARDS[jax.lax.sqrt_p],
 )
 
 
@@ -384,11 +389,11 @@ def invert_dot_general_and_logdet(eqn, known_invars, known_outvars, context=None
                 out, lhs, **eqn.params
             )
             replayed = eqn.primitive.bind(lhs, missing_value, **eqn.params)
-        missing_value, valid = validate_inverse_value(
+        valid = jnp.all(inverse_roundtrip_valid(replayed, out))
+        missing_value = apply_inverse_guard(
             missing_value,
             missing_var.aval,
-            replayed,
-            out,
+            valid,
             message="dot_general output has no unique inverse",
         )
         log_abs_det = jnp.where(valid, log_abs_det, jnp.asarray(jnp.nan))

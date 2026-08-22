@@ -25,6 +25,7 @@ Usage:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import (
     Any,
@@ -39,6 +40,8 @@ from typing import (
 )
 
 import jax.numpy as jnp
+import numpy as np
+from jax._src import core as jax_core
 from jax.experimental import checkify
 from jax.extend.core import ClosedJaxpr, JaxprEqn, Literal, Primitive, Var
 
@@ -326,50 +329,122 @@ class RuleRegistry:
 REGISTRY = RuleRegistry()
 
 
-def _normalize_inverse_value(value: Any, aval: Any) -> Any:
-    return jnp.asarray(value, dtype=aval.dtype)
+# -----------------------------------------------------------------------------
+# Guards: how a rule reports that its inverse is undefined for the given values
+# -----------------------------------------------------------------------------
+#
+# Most inverse rules need no guard at all. An inverse that is exact wherever it
+# is defined -- log for exp, sub for add, the whole transcendental family --
+# reports a domain violation for free: IEEE already makes ``log(-1)`` and
+# ``atanh(2)`` NaN. Re-running the forward primitive to discover that costs
+# about six equations per equation and, measured on an 8-deep chain, 3.2x the
+# runtime of hand-written code.
+#
+# A guard is for the cases IEEE cannot express: dividing by a value that is only
+# zero at runtime, or a branch whose choice depends on data. Those rules declare
+# a predicate, and pay two ops rather than six.
+#
+# Note what a guard is *not* for: ``integer_pow(x, 2) = 4`` has two roots and no
+# predicate can pick between them. Replaying the forward map does not help there
+# either -- it confirms ``2**2 == 4`` and accepts the principal root -- so the
+# rule documents the branch it takes instead of pretending to check it.
+
+_INVERSE_CHECKS = False
 
 
-def _inverse_values_match(actual: Any, expected: Any) -> Any:
-    actual = jnp.asarray(actual)
-    expected = jnp.asarray(expected)
+@contextmanager
+def inverse_checks(enabled: bool = True):
+    """Make inverse guards raise through ``checkify`` instead of only NaN-ing.
+
+    Off by default, and it must be: ``checkify.check`` cannot be staged out by a
+    plain ``jit`` -- it raises "Cannot abstractly evaluate a checkify.check which
+    was not functionalized" -- and an active checkify trace is not detectable
+    from inside a rule. So the default is a NaN, which is always safe, and this
+    switch adds the error channel for callers who are wrapping in
+    ``checkify.checkify`` anyway:
+
+    >>> with inverse_checks():
+    ...     err, out = checkify.checkify(inverse(f))(y)
+    """
+    global _INVERSE_CHECKS
+    previous = _INVERSE_CHECKS
+    _INVERSE_CHECKS = enabled
+    try:
+        yield
+    finally:
+        _INVERSE_CHECKS = previous
+
+
+def inverse_checks_enabled() -> bool:
+    """Whether guards should additionally emit ``checkify.check``."""
+    return _INVERSE_CHECKS
+
+
+def guard_is_statically_satisfied(valid: Any) -> bool:
+    """Whether a guard is decidable now, and passes.
+
+    A guard on a literal operand -- ``2.0 * exp(x)``, where the 2.0 is baked
+    into the jaxpr -- is a compile-time fact. Emitting a comparison and a select
+    for it would put the per-primitive cost right back into every inverse, which
+    is what this module exists to remove.
+    """
+    if isinstance(valid, jax_core.Tracer):
+        return False
+    # numpy, not jnp: inside an active trace even ``jnp.all(True)`` is staged
+    # out, and the whole point here is to decide without emitting anything.
+    return bool(np.all(np.asarray(valid)))
+
+
+def apply_inverse_guard(value: Any, aval: Any, valid: Any, *, message: str) -> Any:
+    """Mask ``value`` where ``valid`` is False, the outcome of a rule's guard."""
+    if guard_is_statically_satisfied(valid):
+        return jnp.asarray(value, dtype=aval.dtype)
+
+    value = jnp.asarray(value, dtype=aval.dtype)
+    valid = jnp.asarray(valid)
+
+    if _INVERSE_CHECKS:
+        checkify.check(jnp.all(valid), message)
+
+    if not jnp.issubdtype(aval.dtype, jnp.inexact):
+        # No integer NaN to fall back on; the guard is only reportable through
+        # the checkify channel above.
+        return value
+
+    if jnp.shape(valid) != jnp.shape(value):
+        valid = jnp.all(valid)
+    return jnp.where(valid, value, jnp.asarray(jnp.nan, aval.dtype))
+
+
+def inverse_roundtrip_valid(replayed_output: Any, supplied_output: Any) -> Any:
+    """Guard predicate: did re-applying the forward map reproduce the output?
+
+    Only for the few rules whose validity genuinely cannot be decided any other
+    way -- a linear solve that may be inconsistent, a broadcast whose copies may
+    disagree, a gather whose indices may not cover the input. Elementwise rules
+    must not use this: it is the expensive check this module removed.
+    """
+    actual = jnp.asarray(replayed_output)
+    expected = jnp.asarray(supplied_output)
     if actual.shape != expected.shape:
         return jnp.asarray(False)
-    dtype = jnp.result_type(actual.dtype, expected.dtype)
-    if jnp.issubdtype(dtype, jnp.inexact):
+    if jnp.issubdtype(jnp.result_type(actual.dtype, expected.dtype), jnp.inexact):
         return jnp.isclose(actual, expected, atol=1e-6, rtol=1e-6)
     return actual == expected
 
 
-def validate_inverse_value(
-    value: Any,
-    aval: Any,
-    replayed_output: Any,
-    supplied_output: Any,
-    *,
-    message: str,
-) -> tuple[Any, Any]:
-    """Validate an inverse candidate by replaying the forward primitive."""
-    value = _normalize_inverse_value(value, aval)
-    valid = _inverse_values_match(replayed_output, supplied_output)
-    all_valid = jnp.all(valid)
-
-    if jnp.issubdtype(aval.dtype, jnp.inexact):
-        if jnp.shape(valid) != jnp.shape(value):
-            valid = all_valid
-        invalid = jnp.full(jnp.shape(value), jnp.nan, dtype=aval.dtype)
-        return jnp.where(valid, value, invalid), all_valid
-
-    checkify.check(all_valid, message)
-    return value, all_valid
-
-
 def invalid_inverse_value(aval: Any, *, message: str) -> Any:
-    """Materialize an invalid inverse while preserving the target aval."""
+    """Materialize an invalid inverse while preserving the target aval.
+
+    Called where the rule knows *statically* that no unique inverse exists, so
+    for integer dtypes -- which have no NaN to return -- this raises at trace
+    time rather than handing back zeros that would be silently wrong.
+    """
     if jnp.issubdtype(aval.dtype, jnp.inexact):
         return jnp.full(aval.shape, jnp.nan, dtype=aval.dtype)
-    checkify.check(jnp.asarray(False), message)
-    return jnp.zeros(aval.shape, dtype=aval.dtype)
+    raise NotImplementedError(
+        f"{message}; the result dtype {aval.dtype} has no NaN to signal it with."
+    )
 
 
 # =============================================================================
@@ -377,10 +452,27 @@ def invalid_inverse_value(aval: Any, *, message: str) -> Any:
 # =============================================================================
 
 
+def _resolve_branch_guard(guard, solving_for_left: bool):
+    """Pick the guard for the branch being solved.
+
+    ``guard`` mirrors ``left_inverse``/``right_inverse``: a pair is
+    ``(guard_when_solving_for_left, guard_when_solving_for_right)``, and a bare
+    callable applies to both. ``div`` needs the asymmetry -- recovering the
+    numerator is exact, recovering the denominator divides by the output.
+    """
+    if guard is None:
+        return None
+    if isinstance(guard, tuple):
+        return guard[0] if solving_for_left else guard[1]
+    return guard
+
+
 def register_univariate_inverse(
     forward_prim: Primitive,
     inverse_prim_or_fn: Union[Primitive, Callable],
     registry: RuleRegistry = REGISTRY,
+    *,
+    guard: Optional[Callable] = None,
 ) -> None:
     """
     Register a univariate inverse rule.
@@ -410,16 +502,13 @@ def register_univariate_inverse(
         else:
             result = inverse_prim_or_fn(out_val, **sanitize_bind_params(eqn.params))
 
-        replayed = bind_primitive(
-            forward_prim, eqn.params, result, params_from=eqn.primitive
-        )
-        result, _ = validate_inverse_value(
-            result,
-            eqn.invars[0].aval,
-            replayed,
-            out_val,
-            message=f"invalid inverse output for {forward_prim.name}",
-        )
+        if guard is not None:
+            result = apply_inverse_guard(
+                result,
+                eqn.invars[0].aval,
+                guard(out_val, eqn.params),
+                message=f"{forward_prim.name} has no inverse at this value",
+            )
 
         return ProcessedResult([eqn.invars[0]], [result])
 
@@ -431,6 +520,8 @@ def register_bivariate_inverse(
     left_inverse: Union[Primitive, Callable],
     right_inverse: Union[Primitive, Callable],
     registry: RuleRegistry = REGISTRY,
+    *,
+    guard: Optional[Callable] = None,
 ) -> None:
     """
     Register a bivariate inverse rule.
@@ -477,21 +568,14 @@ def register_bivariate_inverse(
         else:
             result = inv_fn(out_val, other, **sanitize_bind_params(eqn.params))
 
-        if left_known:
-            replayed = bind_primitive(
-                prim, eqn.params, other, result, params_from=eqn.primitive
+        branch_guard = _resolve_branch_guard(guard, solving_for_left=not left_known)
+        if branch_guard is not None:
+            result = apply_inverse_guard(
+                result,
+                target_var.aval,
+                branch_guard(out_val, other, eqn.params),
+                message=f"{prim.name} has no inverse at this value",
             )
-        else:
-            replayed = bind_primitive(
-                prim, eqn.params, result, other, params_from=eqn.primitive
-            )
-        result, _ = validate_inverse_value(
-            result,
-            target_var.aval,
-            replayed,
-            out_val,
-            message=f"invalid inverse output for {prim.name}",
-        )
 
         return ProcessedResult([target_var], [result])
 
@@ -508,6 +592,8 @@ def register_univariate_inverse_logdet(
     inverse_prim_or_fn: Union[Primitive, Callable],
     logdet_fn: Callable[[Any, Any, dict], Any],
     registry: RuleRegistry = REGISTRY,
+    *,
+    guard: Optional[Callable] = None,
 ) -> None:
     """
     Register a univariate inverse+logdet rule with explicit logdet.
@@ -527,19 +613,23 @@ def register_univariate_inverse_logdet(
         else:
             in_val = inverse_prim_or_fn(out_val, **sanitize_bind_params(eqn.params))
 
-        replayed = bind_primitive(
-            forward_prim, eqn.params, in_val, params_from=eqn.primitive
-        )
-        in_val, valid = validate_inverse_value(
-            in_val,
-            eqn.invars[0].aval,
-            replayed,
-            out_val,
-            message=f"invalid inverse output for {forward_prim.name}",
-        )
-
         log_abs_det = logdet_fn(out_val, in_val, eqn.params)
-        log_abs_det = jnp.where(valid, log_abs_det, jnp.asarray(jnp.nan))
+
+        if guard is not None:
+            # The value is masked elementwise -- only the offending entries have
+            # no preimage. The log-determinant is one scalar for the whole map,
+            # so a single bad element poisons it.
+            valid = guard(out_val, eqn.params)
+            in_val = apply_inverse_guard(
+                in_val,
+                eqn.invars[0].aval,
+                valid,
+                message=f"{forward_prim.name} has no inverse at this value",
+            )
+            if not guard_is_statically_satisfied(valid):
+                log_abs_det = jnp.where(
+                    jnp.all(valid), log_abs_det, jnp.asarray(jnp.nan)
+                )
 
         # Build state updates
         updates = {}
@@ -558,6 +648,8 @@ def register_bivariate_inverse_logdet(
     left_logdet_fn: Callable[[Any, Any, Any, dict], Any],
     right_logdet_fn: Callable[[Any, Any, Any, dict], Any],
     registry: RuleRegistry = REGISTRY,
+    *,
+    guard: Optional[Callable] = None,
 ) -> None:
     """
     Register a bivariate inverse+logdet rule with explicit logdet.
@@ -592,24 +684,21 @@ def register_bivariate_inverse_logdet(
         else:
             result = inv_fn(out_val, other, **sanitize_bind_params(eqn.params))
 
-        if left_known:
-            replayed = bind_primitive(
-                prim, eqn.params, other, result, params_from=eqn.primitive
-            )
-        else:
-            replayed = bind_primitive(
-                prim, eqn.params, result, other, params_from=eqn.primitive
-            )
-        result, valid = validate_inverse_value(
-            result,
-            target_var.aval,
-            replayed,
-            out_val,
-            message=f"invalid inverse output for {prim.name}",
-        )
-
         log_abs_det = logdet_fn(out_val, result, other, eqn.params)
-        log_abs_det = jnp.where(valid, log_abs_det, jnp.asarray(jnp.nan))
+
+        branch_guard = _resolve_branch_guard(guard, solving_for_left=not left_known)
+        if branch_guard is not None:
+            valid = branch_guard(out_val, other, eqn.params)
+            result = apply_inverse_guard(
+                result,
+                target_var.aval,
+                valid,
+                message=f"{prim.name} has no inverse at this value",
+            )
+            if not guard_is_statically_satisfied(valid):
+                log_abs_det = jnp.where(
+                    jnp.all(valid), log_abs_det, jnp.asarray(jnp.nan)
+                )
 
         # Build state updates
         updates = {}

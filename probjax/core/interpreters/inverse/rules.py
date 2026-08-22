@@ -27,7 +27,8 @@ from probjax.core.registry import (
     invalid_inverse_value,
     register_bivariate_inverse,
     register_univariate_inverse,
-    validate_inverse_value,
+    apply_inverse_guard,
+    inverse_roundtrip_valid,
 )
 
 # =============================================================================
@@ -141,8 +142,49 @@ _UNIVARIATE_INVERSES = {
     jax.lax.logistic_p: logit,
 }
 
+def _in_image(lo=None, hi=None):
+    """Guard for a forward map whose image is a bounded interval.
+
+    A value outside the image has no preimage, but the inverse expression does
+    not always say so: ``sqrt(x) = -1`` is impossible, yet the inverse squares
+    it to a perfectly finite ``1``, and ``asin(x) = 2`` inverts to
+    ``sin(2) = 0.909``. Where the inverse *does* go NaN on its own -- ``exp``
+    via ``log``, ``tanh`` via ``atanh``, ``cosh`` via ``acosh`` -- no guard is
+    registered and nothing is paid.
+    """
+
+    def guard(out_val, params):
+        del params
+        xp = jnp if isinstance(out_val, jax_core.Tracer) else np
+        value = xp.asarray(out_val)
+        valid = xp.asarray(True)
+        if lo is not None:
+            valid = valid & (value >= lo)
+        if hi is not None:
+            valid = valid & (value <= hi)
+        return valid
+
+    return guard
+
+
+# The image of each forward map, for the six whose inverse would otherwise
+# return a finite wrong answer outside it. Everything else is either unbounded
+# (log, cbrt, atanh, asinh, erf_inv, sinh, tan) or already NaN by IEEE.
+_HALF_PI = float(np.pi / 2)
+_UNIVARIATE_GUARDS = {
+    jax.lax.sqrt_p: _in_image(lo=0.0),
+    jax.lax.rsqrt_p: _in_image(lo=0.0),
+    jax.lax.asin_p: _in_image(lo=-_HALF_PI, hi=_HALF_PI),
+    jax.lax.acos_p: _in_image(lo=0.0, hi=float(np.pi)),
+    jax.lax.atan_p: _in_image(lo=-_HALF_PI, hi=_HALF_PI),
+    jax.lax.acosh_p: _in_image(lo=0.0),
+}
+
+
 for forward_prim, inv_fn in _UNIVARIATE_INVERSES.items():
-    register_univariate_inverse(forward_prim, inv_fn)
+    register_univariate_inverse(
+        forward_prim, inv_fn, guard=_UNIVARIATE_GUARDS.get(forward_prim)
+    )
 
 
 @REGISTRY.rule(jax.lax.integer_pow_p, Context.INVERSE)
@@ -160,15 +202,13 @@ def invert_integer_pow(eqn, known_invars, known_outvars):
             message="integer_pow with exponent zero has no unique inverse",
         )
     else:
+        # The principal root. For an even exponent the inverse is not unique
+        # (x and -x share an image) and no runtime check can choose between
+        # them -- replaying the forward map confirms the principal root just as
+        # readily as the negative one -- so the branch is documented, not
+        # checked. An out-of-range output (negative, even exponent) is NaN here
+        # by IEEE without help.
         value = jnp.power(out, 1.0 / exponent)
-        replayed = jax.lax.integer_pow_p.bind(value, **eqn.params)
-        value, _ = validate_inverse_value(
-            value,
-            aval,
-            replayed,
-            out,
-            message="invalid inverse output for integer_pow",
-        )
     return ProcessedResult([eqn.invars[0]], [value])
 
 
@@ -426,6 +466,38 @@ def dot_general_right_inverse(out, lhs, **params):
     return rhs
 
 
+# Guards: only for inverses whose validity depends on a runtime value.
+#
+# Everything else needs none. A domain violation already surfaces as NaN through
+# IEEE -- ``log(-1)``, ``atanh(2)``, ``asin(2)`` -- so re-deriving that with a
+# forward replay costs six equations per equation and tells us nothing new.
+
+
+def _compare(value, op):
+    """Evaluate a guard predicate, eagerly when the operand is concrete.
+
+    Inside an active trace ``jnp.asarray(2.0) != 0`` is *staged out* as an op
+    even though both sides are known, which would emit a comparison and a
+    select for every literal-scaled multiply. Numpy keeps it a compile-time
+    fact so ``apply_inverse_guard`` can drop the guard entirely.
+    """
+    if isinstance(value, jax_core.Tracer):
+        return op(jnp)(jnp.asarray(value))
+    return op(np)(np.asarray(value))
+
+
+def _nonzero_other(out_val, other, params):
+    """``out / other`` is only an inverse where ``other`` is non-zero."""
+    del out_val, params
+    return _compare(other, lambda xp: lambda v: v != 0)
+
+
+def _nonzero_out(out_val, other, params):
+    """Recovering a denominator divides by the output."""
+    del other, params
+    return _compare(out_val, lambda xp: lambda v: v != 0)
+
+
 # Map of binary primitive -> (left_inverse, right_inverse)
 _BIVARIATE_INVERSES = {
     jax.lax.mul_p: (jax.lax.div_p, jax.lax.div_p),
@@ -444,8 +516,17 @@ _BIVARIATE_INVERSES = {
     ),
 }
 
+# Guard per branch, mirroring (left_inverse, right_inverse). For div, recovering
+# the numerator (out * denom) is exact and needs no guard.
+_BIVARIATE_GUARDS = {
+    jax.lax.mul_p: _nonzero_other,
+    jax.lax.div_p: (None, _nonzero_out),
+}
+
 for prim, (left_inv, right_inv) in _BIVARIATE_INVERSES.items():
-    register_bivariate_inverse(prim, left_inv, right_inv)
+    register_bivariate_inverse(
+        prim, left_inv, right_inv, guard=_BIVARIATE_GUARDS.get(prim)
+    )
 
 
 @REGISTRY.rule(jax.lax.dot_general_p, Context.INVERSE)
@@ -463,11 +544,10 @@ def invert_dot_general(eqn, known_invars, known_outvars):
         else:
             value = dot_general_right_inverse(out, lhs, **eqn.params)
             replayed = eqn.primitive.bind(lhs, value, **eqn.params)
-        value, _ = validate_inverse_value(
+        value = apply_inverse_guard(
             value,
             eqn.invars[target_index].aval,
-            replayed,
-            out,
+            inverse_roundtrip_valid(replayed, out),
             message="dot_general output has no unique inverse",
         )
     except NotImplementedError:
@@ -891,11 +971,10 @@ def invert_broadcast_in_dim(eqn, known_invars, known_outvars):
 
     candidate = jnp.reshape(out[tuple(index)], in_shape)
     replayed = jax.lax.broadcast_in_dim(candidate, out.shape, dimensions)
-    candidate, _ = validate_inverse_value(
+    candidate = apply_inverse_guard(
         candidate,
         in_aval,
-        replayed,
-        out,
+        inverse_roundtrip_valid(replayed, out),
         message="broadcast output is inconsistent with a single input value",
     )
     return ProcessedResult([eqn.invars[0]], [candidate])
@@ -941,11 +1020,10 @@ def invert_gather(eqn, known_invars, known_outvars):
     input_val = jax.lax.scatter(input_val, index, out, scatter_numdim)
 
     replayed = primitive.bind(input_val, index, **bind_params)
-    input_val, _ = validate_inverse_value(
+    input_val = apply_inverse_guard(
         input_val,
         eqn.invars[0].aval,
-        replayed,
-        out,
+        inverse_roundtrip_valid(replayed, out),
         message="gather output is inconsistent with a unique input",
     )
 

@@ -334,18 +334,25 @@ def test_inverse_convert_element_type_narrowing():
     assert jnp.all(jnp.isnan(x_rec))
 
 
-def test_inverse_invalid_exact_conversion_uses_checkify():
+def test_inverse_invalid_exact_conversion_raises():
+    """A lossy cast is known at trace time, so it raises rather than deferring.
+
+    This used to be reported through ``checkify.check``, which meant the failure
+    was only visible under ``checkify.checkify`` -- and made every integer
+    inverse crash under a plain ``jit`` with "Cannot abstractly evaluate a
+    checkify.check which was not functionalized". Whether ``int32 -> float32``
+    is lossy is a property of the dtypes, not of the values, so a plain
+    exception is both correct and visible everywhere.
+    """
+
     def f(x):
         return x.astype(jnp.float32)
 
     x0 = jnp.array([1, 2], dtype=jnp.int32)
     eqn = jax.make_jaxpr(f)(x0).jaxpr.eqns[0]
     rule = REGISTRY.get(jax.lax.convert_element_type_p, Context.INVERSE)
-    checked = checkify.checkify(
-        lambda y: rule(eqn, [None], [y]).resolved_vals[0]
-    )
-    error, _ = checked(f(x0))
-    assert "does not have a unique inverse" in error.get()
+    with pytest.raises(NotImplementedError, match="does not have a unique inverse"):
+        rule(eqn, [None], [f(x0)])
 
 
 # ---------------------------------------------------------------------------
