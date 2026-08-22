@@ -1,3 +1,4 @@
+import warnings
 from functools import lru_cache, update_wrapper
 from typing import Any, Callable, Tuple
 
@@ -41,6 +42,52 @@ def _error_inverse_thunk(msg: str):
     return thunk
 
 
+def _check_inverse_avals(result_leaves, target_avals, fun_label: str) -> None:
+    """The inverse must reproduce the invertible argument's shapes and dtypes."""
+    # ``zip`` here is safe_zip, which already rejects a length mismatch; the
+    # tree check above guarantees they agree.
+    for position, (leaf, expected) in enumerate(zip(result_leaves, target_avals)):
+        got = shaped_abstractify(leaf)
+        if got.shape != expected.shape:
+            raise ValueError(
+                f"custom_inverse {fun_label}: the registered inverse returned "
+                f"shape {got.shape} at leaf {position}, but the invertible "
+                f"argument has shape {expected.shape}."
+            )
+        if jnp.issubdtype(got.dtype, jnp.inexact) != jnp.issubdtype(
+            expected.dtype, jnp.inexact
+        ):
+            raise ValueError(
+                f"custom_inverse {fun_label}: the registered inverse returned "
+                f"dtype {got.dtype} at leaf {position}, which is not compatible "
+                f"with the invertible argument's {expected.dtype}."
+            )
+
+
+def _abstractify_dynamic_arg(leaf, index: int, fun_name: str, static_argnums):
+    """Abstract one dynamic argument leaf, or say why it cannot be.
+
+    A plain Python object is a pytree *leaf*, so it reaches this point looking
+    like an array and fails deep inside JAX with "does not have a dtype
+    attribute". Naming the argument and the two ways out is considerably more
+    use than that.
+    """
+    try:
+        return shaped_abstractify(leaf)
+    except TypeError as exc:
+        hint = (
+            "list it in static_argnums"
+            if static_argnums is None
+            else f"add its position to static_argnums (currently {static_argnums})"
+        )
+        raise TypeError(
+            f"custom_inverse {fun_name}: dynamic argument {index} is a "
+            f"{type(leaf).__name__}, which is not an array or a pytree of "
+            f"arrays. Either {hint}, or register its type as a JAX pytree so "
+            "its arrays become visible."
+        ) from exc
+
+
 # ---------------------------------------------------------------------------
 # custom_inverse wrapper
 # ---------------------------------------------------------------------------
@@ -68,6 +115,7 @@ class custom_inverse:
 
         self.inv_fun = None
         self.inv_fun_and_log_det = None
+        self._logdet_registered = False
         self.value_and_logdet_fun = None
 
         # Per-instance cached builder.
@@ -93,8 +141,27 @@ class custom_inverse:
     def _clear_cache(self):
         self._trace.cache_clear()
 
+    def _warn_if_replacing(self, what: str, already: bool) -> None:
+        """Warn only on a genuine double registration.
+
+        Calling ``definv`` and then ``definv_and_logdet`` is the intended way to
+        supply both, so that pair must stay silent. Calling the *same* one twice
+        discards the first, which is almost always a module imported twice or a
+        decorator applied in a loop.
+        """
+        if not already:
+            return
+        name = getattr(self.fun, "__name__", str(self.fun))
+        warnings.warn(
+            f"{what} was called twice for {name}; the earlier inverse is "
+            "discarded.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+
     def definv(self, inv_fun: Callable) -> Callable:
         """Define inverse; log-det defaults to NaN."""
+        self._warn_if_replacing("definv", self.inv_fun is not None)
 
         def inv_and_ld(*a, **k):
             return inv_fun(*a, **k), jnp.nan
@@ -106,6 +173,10 @@ class custom_inverse:
 
     def definv_and_logdet(self, inv_fun_and_log_det: Callable) -> Callable:
         """Define inverse that returns (x, logdet)."""
+        self._warn_if_replacing(
+            "definv_and_logdet", getattr(self, "_logdet_registered", False)
+        )
+        self._logdet_registered = True
         self.inv_fun_and_log_det = inv_fun_and_log_det
         if self.inv_fun is None:
             self.inv_fun = lambda *a, **k: inv_fun_and_log_det(*a, **k)[0]
@@ -174,15 +245,28 @@ class custom_inverse:
                 full[dyn_idxs[j]] = v
             return tuple(full)
 
-        # Inverted arg must be dynamic
-        if self.inv_argnum not in dyn_idxs:
+        # Inverted arg must be dynamic. Negative indices count from the end,
+        # as they do for `inverse(..., invertible_arg=-1)`.
+        inv_argnum = self.inv_argnum
+        if inv_argnum < 0:
+            inv_argnum += n_args
+        if not 0 <= inv_argnum < n_args:
             raise ValueError(
-                "inv_argnum must refer to a non-static positional argument."
+                f"inv_argnum={self.inv_argnum} is out of range for a call with "
+                f"{n_args} positional arguments."
             )
-        inv_argnum_dyn_index = dyn_idxs.index(self.inv_argnum)
+        if inv_argnum not in dyn_idxs:
+            raise ValueError(
+                f"inv_argnum={self.inv_argnum} refers to argument {inv_argnum}, "
+                f"which is listed in static_argnums ({static_idxs}). The "
+                "argument being inverted has to be dynamic."
+            )
+        inv_argnum_dyn_index = dyn_idxs.index(inv_argnum)
         leaf_indices = tree_unflatten(in_tree, tuple(range(len(in_avals))))
         target_in_indices = tuple(tree_leaves(leaf_indices[inv_argnum_dyn_index]))
         target_tree = tree_structure(leaf_indices[inv_argnum_dyn_index])
+        target_avals = tuple(in_avals[i] for i in target_in_indices)
+        fun_label = getattr(self.fun, "__name__", str(self.fun))
 
         # ---------- lazy forward jaxpr ----------
         def forward_jaxpr_thunk():
@@ -228,9 +312,14 @@ class custom_inverse:
                 result_leaves, result_tree = tree_flatten(result)
                 if result_tree != target_tree:
                     raise ValueError(
-                        "custom_inverse result tree must match the invertible "
-                        "argument tree"
+                        f"custom_inverse {fun_label}: the registered inverse "
+                        f"returned {result_tree}, but the invertible argument "
+                        f"is {target_tree}. They must match."
                     )
+                # Shape and dtype too, not just structure. A tree-compatible
+                # result of the wrong shape used to be accepted, and the engine
+                # went on to hand back an inverse of the wrong size.
+                _check_inverse_avals(result_leaves, target_avals, fun_label)
 
                 logdet_leaves = tree_leaves(logdet)
                 if not logdet_leaves:
@@ -255,8 +344,7 @@ class custom_inverse:
                 # the multiply exact.
                 dependency = sum(
                     (
-                        jnp.asarray(0.0)
-                        * jnp.nan_to_num(jnp.sum(jnp.asarray(value)))
+                        jnp.asarray(0.0) * jnp.nan_to_num(jnp.sum(jnp.asarray(value)))
                         for value in tree_leaves(dyn_args_tuple)
                     ),
                     jnp.asarray(0.0),
@@ -303,12 +391,10 @@ class custom_inverse:
 
         n_args = len(args)
         static_idxs = tuple(
-            sorted(
-                {
-                    n_args + index if index < 0 else index
-                    for index in (self.static_argnums or ())
-                }
-            )
+            sorted({
+                n_args + index if index < 0 else index
+                for index in (self.static_argnums or ())
+            })
         )
         if any(index < 0 or index >= n_args for index in static_idxs):
             raise IndexError("static_argnums contains an out-of-range argument index")
@@ -321,16 +407,21 @@ class custom_inverse:
 
         # Flatten dynamic args & abstract
         args_flat, in_tree = tree_flatten(dyn_args)
-        in_avals = tuple(map(shaped_abstractify, args_flat))
+        in_avals = tuple(
+            _abstractify_dynamic_arg(leaf, index, name, self.static_argnums)
+            for index, leaf in enumerate(args_flat)
+        )
 
         # Lookup / build lazy jaxprs
-        lazy_forward, inv_argnum_dyn_index, target_in_indices, lazy_inverse = self._trace(
-            dyn_idxs,
-            static_idxs,
-            in_tree,
-            in_avals,
-            static_args,
-            params_items,
+        lazy_forward, inv_argnum_dyn_index, target_in_indices, lazy_inverse = (
+            self._trace(
+                dyn_idxs,
+                static_idxs,
+                in_tree,
+                in_avals,
+                static_args,
+                params_items,
+            )
         )
 
         # Resolve the output tree before binding so the inverse interpreter can
@@ -564,9 +655,7 @@ def batch_custom_inverse_call(
                     inserted_outputs = True
                 continue
             inverse_in_axes.append(axis)
-        batched_inv_cj, _ = batch_closed_jaxpr(
-            inv_cj, axis_data, inverse_in_axes
-        )
+        batched_inv_cj, _ = batch_closed_jaxpr(inv_cj, axis_data, inverse_in_axes)
         return batched_inv_cj
 
     # Re-emit the primitive so inverse() still sees it.

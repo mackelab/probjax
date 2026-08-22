@@ -80,10 +80,19 @@ def must_emit_primitive(tree) -> bool:
 
 
 def ensure_hashable(x, where: str):
+    if isinstance(x, jax_core.Tracer):
+        raise TypeError(
+            f"{where} is a traced value, so it cannot be held as a static "
+            "parameter. Pass it as a dynamic positional argument instead, or "
+            "compute it outside the traced function."
+        )
     try:
         hash(x)
     except TypeError as e:
-        raise TypeError(f"{where} must be hashable; got {type(x)}") from e
+        raise TypeError(
+            f"{where} must be hashable; got {type(x)}. Arrays are unhashable -- "
+            "pass them as dynamic positional arguments."
+        ) from e
     return x
 
 

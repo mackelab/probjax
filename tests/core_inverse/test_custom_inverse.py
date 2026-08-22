@@ -385,7 +385,10 @@ def test_custom_inverse_re_registration_invalidates_cache():
     _, logdet_a = jit_inv_a(y)
     assert jnp.allclose(logdet_a, jnp.asarray(-1.0), atol=1e-6, rtol=1e-6)
 
-    f.definv_and_logdet(lambda y: ((y - 1.0) / 2.0, jnp.asarray(-99.0)))
+    # Re-registering the same kind now warns; that is exactly what this test
+    # is doing on purpose, so accept it rather than let it leak into the run.
+    with pytest.warns(RuntimeWarning, match="called twice"):
+        f.definv_and_logdet(lambda y: ((y - 1.0) / 2.0, jnp.asarray(-99.0)))
 
     jit_inv_b = jax.jit(inverse_and_logabsdet(f))
     _, logdet_b = jit_inv_b(y)
