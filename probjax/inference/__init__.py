@@ -104,6 +104,13 @@ from probjax.inference.smc import (
     tuning,
 )
 from probjax.inference.smc_runner import SMC
+from probjax.inference.vi import (
+    FlowVIInfo,
+    FlowVIState,
+    NeuTraTransform,
+    flow_vi,
+    neutra,
+)
 
 __all__ = [
     "Kernel",
@@ -125,6 +132,11 @@ __all__ = [
     "slice_step_size_adaptor",
     "window_warmup",
     "pathfinder_warmup",
+    "flow_vi",
+    "neutra",
+    "FlowVIState",
+    "FlowVIInfo",
+    "NeuTraTransform",
     "mclmc_warmup",
     # MCMC kernels
     "hmc",
