@@ -76,8 +76,7 @@ tests/.mypy_cache
 
 
 # Sphinx documentation
-docs/_build/
-docs/api/generated/
+site/
 docs/.jupyter_cache/
 docs/__pycache__/
 docs/examples/

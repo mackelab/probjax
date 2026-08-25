@@ -159,7 +159,7 @@ def as_top_level_api(
 
     Args:
         logdensity_fn: the unnormalized target log-density, taking one position.
-        flow: a :class:`~probjax.nn.generative.nflows.NormalizingFlow` -- ``maf``,
+        flow (NormalizingFlow): a flow from :mod:`probjax.nn` -- ``maf``,
             ``nsf``, ``naf`` and the rest all work. Its parameters are the
             variational parameters; the flow itself is not mutated.
         optimizer: an optax ``GradientTransformation``.

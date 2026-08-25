@@ -1,305 +1,154 @@
----
-title: Troubleshooting
----
+# Troubleshooting
 
-# Troubleshooting Guide
+Every snippet on this page is executed by the test suite, so what is written
+here is what actually happens.
 
-This guide helps you resolve common issues when using ProbJax.
+## An inverse came back as NaN
 
-## Installation Issues
+Program inversion reports failure by returning NaN rather than raising. This is
+almost always one of the unsupported patterns:
 
-### JAX Installation Problems
-
-#### Issue: `ImportError: cannot import name 'jax'`
-
-**Solution:**
-```bash
-pip install jax "jaxlib>=0.4.34"
-```
-
-#### Issue: CUDA version mismatch
-
-**Solution:**
-Make sure your CUDA version matches the JAX wheel. For CUDA 12:
-```bash
-pip install jax[cuda12]
-```
-
-#### Issue: Metal (Apple Silicon) not working
-
-**Solution:**
-1. Install jax-metal:
-```bash
-pip install jax-metal
-```
-
-2. Set the environment variable:
-```bash
-export JAX_PLATFORMS=metal,cpu
-```
-
-3. Verify in Python:
-```python
-import jax
-print(jax.devices())  # Should show Metal devices
-```
-
-### Dependency Conflicts
-
-#### Issue: `pkg_resources.VersionConflict`
-
-**Solution:**
-Create a fresh virtual environment:
-```bash
-python -m venv probjax_env
-source probjax_env/bin/activate  # On Windows: probjax_env\Scripts\activate
-python -m pip install -e .
-```
-
-## Runtime Errors
-
-### Shape Errors
-
-#### Issue: `ValueError: Incompatible shapes`
-
-**Common causes:**
-- Input shape doesn't match expected shape
-- Batch dimensions not aligned
-- Tree structures don't match
-
-**Debug steps:**
-```python
-from jax import eval_shape
-import jax.tree_util as jtu
-
-# Check expected shapes
-print(eval_shape(fn, *args))
-
-# Check tree structure
-print(jtu.tree_structure(args))
-print(jtu.tree_structure(expected_structure))
-```
-
-### JAX Tracer Errors
-
-#### Issue: `TracerArrayConversionError`
-
-**Cause:** Trying to convert JAX tracers to NumPy arrays inside a JIT-compiled function.
-
-**Solution:**
-Move the conversion outside the JIT:
-```python
-# Bad
-@jax.jit
-def bad_fn(x):
-    return np.array(x)  # This fails
-
-# Good
-def good_fn(x):
-    return jnp.array(x)  # Use JAX arrays
-
-# Or convert outside JIT
-result = jax.jit(good_fn)(x)
-np_result = np.array(result)  # Convert after
-```
-
-### Numerical Issues
-
-#### Issue: `NaN` gradients or values
-
-**Common causes:**
-- Log(0) or division by zero
-- Overflow/underflow
-- Bad initialization
-
-**Solutions:**
-1. Add small epsilon to denominators:
-```python
-result = x / (y + 1e-8)
-```
-
-2. Use stable log-space operations:
-```python
-from jax.scipy.special import logsumexp
-```
-
-3. Check for NaN with `jax.debug.print`:
-```python
-jax.debug.print("x = {x}", x=x)
-```
-
-#### Issue: Divergent transitions in MCMC
-
-**Solutions:**
-1. Decrease step size:
-```python
-params = kernel.init_params(state, step_size=0.01)
-```
-
-2. Increase `num_integration_steps` when constructing an HMC kernel
-3. Use a warmup adaptor to tune HMC parameters
-4. Check your model for numerical issues
-
-### Memory Issues
-
-#### Issue: Out of memory (OOM)
-
-**Solutions:**
-1. Reduce batch size
-2. Use gradient checkpointing
-3. Use `jax.clear_caches()` to free memory
-4. Use XLA memory management:
-```python
-import os
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
-```
-
-#### Issue: Slow compilation
-
-**Solutions:**
-1. Use `jax.jit` with static arguments properly marked
-2. Cache compiled functions
-3. Simplify control flow
-
-## Distribution Issues
-
-### Issue: `NotImplementedError` for distribution methods
-
-**Cause:** Not all distributions implement all methods.
-
-**Solution:**
-Check available methods:
-```python
-from probjax.stats import norm
-
-normal = norm(loc=0.0, scale=1.0)
-print(normal.sample)
-print(normal.mean)  # Availability varies by distribution.
-```
-
-### Issue: Wrong results from transformed distributions
-
-**Cause:** Incorrect transformation function.
-
-**Solution:**
-Make sure your transformation is bijective (invertible):
 ```python
 import jax.numpy as jnp
-from probjax.stats import norm, transformed
+from probjax.core import inverse
 
-log_normal = transformed(
-    base_dist=norm(loc=0.0, scale=1.0),
-    bijector=jnp.exp,
-)
+assert jnp.isnan(inverse(lambda x: 3.0 * x - x)(jnp.asarray(4.0)))
 ```
 
-The bijector must be invertible on the base distribution's support. ProbJax
-can derive an inverse for supported JAX operations; custom bijectors can expose
-their own inverse-and-log-determinant implementation.
+The full list is in [Program inversion](guides/program-inversion.md#what-can-be-inverted).
+The short version: a variable used more than once, `fori_loop`, a `scan` with a
+non-invertible carry, or `inverse(inverse(f))`. Check `jnp.isfinite` on results
+you have not seen before.
 
-## Inference Issues
+If the NaN is only in *some* elements, that is a guard firing — the inverse does
+not exist at those values, which is different from being unsupported. Turn it
+into an error with `inverse_checks` plus `checkify`, as shown in the guide.
 
-### MCMC Issues
+## "no usable INVERSE_LOGDET rule for ..."
 
-#### Issue: Low acceptance rate
+The primitive inverts but has no log-determinant rule, and one is not guessed:
+differentiating an inverse elementwise is only valid for elementwise maps.
+Either avoid the primitive on the inverted path, or register a rule —
+`register_rearrangement_inverse_logdet` if it only moves elements around.
 
-**Solutions:**
-1. Decrease step size
-2. Tune mass matrix
-3. Use adaptive methods
+`inverse` alone still works in this case; only `inverse_and_logabsdet` refuses.
 
-#### Issue: High autocorrelation
+## "Cannot abstractly evaluate a checkify.check"
 
-**Solutions:**
-1. Increase thinning
-2. Run chain longer
-3. Try different sampler (e.g., NUTS instead of HMC)
+`checkify.check` cannot be staged out by a plain `jit`. If you enabled
+`inverse_checks()`, the call must be wrapped in `checkify.checkify`:
 
-### SMC Issues
-
-#### Issue: ESS (Effective Sample Size) drops to 1
-
-**Cause:** Tempering schedule too aggressive.
-
-**Solution:**
-Use `adaptive_smc` with a `GeometricPath`, prior and likelihood log densities,
-and an MCMC mutation kernel. Set `target_ess` when constructing that SMC kernel;
-it is not a standalone constructor argument without the model and path.
-
-## Neural Network Issues
-
-### Issue: Training loss not decreasing
-
-**Solutions:**
-1. Check learning rate (try 1e-4 to 1e-3)
-2. Verify data preprocessing
-3. Check for NaN/Inf in gradients
-4. Use gradient clipping:
 ```python
-from optax import clip_by_global_norm
+import jax.numpy as jnp
+from jax.experimental import checkify
+from probjax.core import inverse
+from probjax.core.registry import inverse_checks
 
-optimizer = optax.chain(
-    clip_by_global_norm(1.0),
-    optax.adam(learning_rate)
-)
+f = lambda x: x * jnp.float32(0.0)
+with inverse_checks():
+    error, _ = checkify.checkify(inverse(f))(jnp.float32(5.0))
 ```
 
-### Issue: Flow training unstable
+## "custom_inverse ...: dynamic argument N is a Foo"
 
-**Solutions:**
-1. Check that samples and `logpdf` values remain finite
-2. Use a smaller learning rate
-3. Check the base distribution and bijector parameter constraints
+An argument that is not an array or a pytree of arrays reached the primitive.
+Either register the type as a JAX pytree so its arrays become visible, or list
+its position in `static_argnums`.
 
-## Debugging Tips
+The related message "*is a traced value, so it cannot be held as a static
+parameter*" is the reverse: something traced was passed where a compile-time
+constant was expected. Pass it as a dynamic positional argument instead.
 
-### Enable Debug Mode
+## "definv was called twice"
+
+A second registration of the same kind discards the first. Usually a module
+imported twice, or a decorator applied in a loop. Registering `definv` and then
+`definv_and_logdet` is fine and does not warn — that is the intended way to
+supply both.
+
+## Training loss is NaN
+
+`fit` warns rather than failing silently, and returns the parameters as they
+are — once a NaN gradient has been applied the run is dead:
 
 ```python
 import jax
-jax.config.update("jax_debug_nans", True)
-jax.config.update("jax_disable_jit", True)  # Disable JIT for debugging
+import jax.numpy as jnp
+from probjax.stats import fit
+
+def loss_fn(params, rng, batch):
+    del rng
+    return jnp.mean((batch["data"] - params["w"]) ** 2)
+
+data = jax.random.normal(jax.random.key(0), (64, 2))
+params, losses = fit(
+    loss_fn, {"w": jnp.zeros(2)}, jax.random.key(1), {"data": data},
+    num_steps=20, learning_rate=1e-2,
+)
+assert jnp.all(jnp.isfinite(losses))
 ```
 
-### Print Intermediate Values
+Lower the learning rate, tighten `clip_norm` (10.0 by default), or look for an
+unbounded transform in the model. Flows bound their scales precisely to avoid
+this, so a NaN from a stock flow is worth reporting.
+
+## Losses only arrive at the end of `fit`
+
+That is by design. The loop is a single `jax.lax.scan` and never returns to
+Python, which is what makes it compile once regardless of `num_steps`. Use
+`on_step` to watch progress live, and return `False` from it to stop early.
+
+## A list of arrays was treated as several batches
+
+`fit` reads a list, tuple, generator or `DataLoader` as a **sequence of
+batches**, and a bare array or a dict of arrays as **one batch**. Both readings
+are pytrees of arrays, so this cannot be inferred — it is a fixed rule. A single
+batch that groups several arrays must be a dict:
 
 ```python
-from jax import debug
+import jax
+import jax.numpy as jnp
+from probjax.stats import is_batch_stream
 
-def f(x):
-    debug.print("x = {x}", x=x)
-    return x * 2
+array = jnp.zeros((4, 2))
+assert not is_batch_stream(array)
+assert not is_batch_stream({"data": array, "context": array})
+assert is_batch_stream([array, array])
 ```
 
-### Profile Your Code
+## "batch N has a different shape or dtype than the first one"
+
+One compiled step serves every batch from an iterable, so they must agree. Pass
+`drop_last=True` to the loader, or pad the final batch.
+
+## JAX picks the wrong backend
 
 ```python
-import jax.profiler
-
-with jax.profiler.trace("/tmp/prof"):
-    result = fn(x)
+import jax
+print(jax.devices())
 ```
 
-### Check Gradients
+Force one with `JAX_PLATFORMS=cpu` (or `metal,cpu`) before importing JAX. Metal
+covers fewer primitives than CPU and CUDA; if something fails only there,
+confirm against `JAX_PLATFORMS=cpu` before reporting it.
+
+## `TracerArrayConversionError`
+
+A traced value was used where Python needed a concrete one — `int()`, `float()`,
+`if`, or `.item()` inside a `jit`. Move the conversion outside the jitted
+function, or use `jax.lax.cond` and `jnp.where` for data-dependent branching.
+
+## Shape errors inside a model
+
+`jax.eval_shape` gives the shapes without running anything, which is usually
+faster to read than a traceback:
 
 ```python
-from jax import grad, value_and_grad
+import jax
+import jax.numpy as jnp
+from flax import nnx
+from probjax.nn import MLP
 
-# Check if gradients exist
-grad_fn = grad(fn)
-print(grad_fn(x))
-
-# Check gradient values
-value, grads = value_and_grad(fn)(x)
-print("Value:", value)
-print("Grads:", grads)
+model = MLP([4, 16, 2], rngs=nnx.Rngs(0))
+print(jax.eval_shape(model, jnp.ones((3, 4))))
 ```
-
-## Getting Help
-
-If you can't resolve your issue:
-
-1. **Check the FAQ**: See [FAQ](faq.md) for common questions
-2. **Check examples**: Look at the `examples/` directory
-3. **Open an issue**: Include a minimal reproducible example, the full error
-   traceback, environment details, and what you have tried.

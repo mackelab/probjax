@@ -1,7 +1,4 @@
-sphinx>=7.0
-sphinx-book-theme>=1.0
-myst-nb>=1.0
-myst-parser>=2.0
-sphinx-design
-sphinx-math-dollar
-sphinx-autodoc-typehints
+# Pinned deliberately: Zensical is pre-1.0 and ships every few days, so an
+# unpinned build would drift without anyone changing this repository.
+zensical==0.0.57
+mkdocstrings-python==2.0.7

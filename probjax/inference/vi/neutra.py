@@ -54,7 +54,7 @@ def neutra(logdensity_fn: Callable, flow) -> NeuTraTransform:
 
     Args:
         logdensity_fn: the unnormalized target log-density, taking one position.
-        flow: a normalizing flow, typically fitted with
+        flow (NormalizingFlow): a normalizing flow, typically fitted with
             :func:`probjax.inference.flow_vi`, but any flow works -- one trained
             on posterior samples from a previous run is equally valid.
 

@@ -1,0 +1,47 @@
+[project]
+site_name = "ProbJax"
+site_url = "https://probjax.readthedocs.io/"
+site_description = "Probabilistic programming, density estimation and inference in JAX"
+site_author = "Manuel Gloeckler"
+repo_url = "https://github.com/mackelab/probjax"
+repo_name = "mackelab/probjax"
+docs_dir = "docs"
+site_dir = "site"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Getting started" = "getting-started.md" },
+  { "Guides" = [
+    "guides/program-inversion.md",
+    "guides/density-estimation.md",
+    "guides/inference.md",
+  ] },
+  { "Reference" = [
+    "reference/core.md",
+    "reference/stats.md",
+    "reference/nn.md",
+    "reference/inference.md",
+    "reference/utils.md",
+  ] },
+  { "Troubleshooting" = "troubleshooting.md" },
+  { "Contributing" = "contributing.md" },
+  { "Changelog" = "https://github.com/mackelab/probjax/blob/main/CHANGELOG.md" },
+]
+
+[project.theme]
+variant = "modern"
+
+[project.plugins.mkdocstrings.handlers.python]
+# The package is at the repository root, alongside this file.
+paths = ["."]
+inventories = ["https://docs.python.org/3/objects.inv"]
+# The docstrings are Google-style throughout, which is what napoleon was
+# configured for under Sphinx -- no docstring rewriting was needed to migrate.
+options.docstring_style = "google"
+options.show_source = true
+options.show_root_heading = true
+options.show_symbol_type_heading = true
+options.members_order = "source"
+options.separate_signature = true
+options.signature_crossrefs = true
+options.filters = ["!^_"]
