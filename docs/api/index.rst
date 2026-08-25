@@ -1,7 +1,7 @@
 API Reference
 =============
 
-This section provides detailed documentation for all ProbJax modules and functions.
+This section documents the public ProbJax modules and their exported APIs.
 
 .. toctree::
    :maxdepth: 2
@@ -21,13 +21,16 @@ ProbJax consists of several main modules:
    Core functionality for tracing, inversion, and JAXPR manipulation.
 
 **probjax.stats**
-   Comprehensive set of probability distributions with SciPy-like API.
+   Probability distributions, fitting, constraints, and bijective transforms
+   with a SciPy-like frozen-distribution API.
 
 **probjax.nn**
-   Neural network layers, architectures, and normalizing flows.
+   Flax NNX layers and architectures, generative models, and training losses.
 
 **probjax.inference**
-   Inference algorithms including MCMC and SMC.
+   MCMC and SMC kernels and runners, filtering and smoothing, adaptation, and
+   rejection sampling.
 
 **probjax.utils**
-   Utility functions for ODE/SDE integration, linear algebra, and more.
+   ODE/SDE integration, linear algebra, interpolation, graph, solver, special,
+   JAX, and typing utilities.

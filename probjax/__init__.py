@@ -14,14 +14,14 @@ Key Modules
 Example
 -------
 >>> import jax
->>> from probjax import distributions as dist
+>>> from probjax.stats import norm
 >>>
 >>> # Create a normal distribution
->>> normal = dist.Normal(loc=0.0, scale=1.0)
+>>> normal = norm(loc=0.0, scale=1.0)
 >>>
 >>> # Sample from it
->>> key = jax.random.PRNGKey(0)
->>> samples = normal.sample(key, sample_shape=(1000,))
+>>> key = jax.random.key(0)
+>>> samples = normal.sample(key, shape=(1000,))
 """
 
 __version__ = "0.1.0"

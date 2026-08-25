@@ -66,5 +66,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optax, Chex, Einops
 - NetworkX, SymPy
 
-[Unreleased]: https://github.com/probjax/probjax/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/probjax/probjax/releases/tag/v0.1.0
+[Unreleased]: https://github.com/mackelab/probjax/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/mackelab/probjax/releases/tag/v0.1.0

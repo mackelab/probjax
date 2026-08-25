@@ -1,7 +1,18 @@
 Stats Module
 ============
 
-The stats module provides a comprehensive set of probability distributions with a SciPy-like API.
+The stats module provides probability distributions with a SciPy-like API.
+Calling a distribution freezes its parameters; frozen distributions expose
+``sample(key, shape=...)`` and density methods such as ``logpdf``.
+
+.. code-block:: python
+
+   import jax
+   from probjax.stats import norm
+
+   normal = norm(loc=0.0, scale=1.0)
+   samples = normal.sample(jax.random.key(0), shape=(100,))
+   log_density = normal.logpdf(samples)
 
 .. module:: probjax.stats
 
@@ -12,6 +23,7 @@ This module includes:
 - Transformed distributions
 - Mixture distributions
 - Indep distributions
+- Gradient-based distribution fitting
 
 Base Classes
 ------------
@@ -68,6 +80,24 @@ Discrete Distributions
    dirac
    empirical
 
+Flexible Univariate Families
+----------------------------
+
+Highly parameterised univariate densities, shaped so a neural network can emit
+their parameters directly: each carries its vector parameters in a trailing
+axis and reports the lengths through ``param_sizes``. Useful on their own, and
+the conditional heads for
+:class:`~probjax.nn.generative.autoregressive.AutoregressiveModel`.
+
+.. autosummary::
+   :toctree: generated
+
+   mixture_kernel
+   logistic_mixture_kernel
+   histogram
+   tailed_histogram
+   spline_normal
+
 Higher-Order Distributions
 --------------------------
 
@@ -76,7 +106,7 @@ Higher-Order Distributions
 
    transformed
    mixture
-    indep
+   indep
 
 Bijective Transforms
 --------------------

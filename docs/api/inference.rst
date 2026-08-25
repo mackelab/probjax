@@ -1,7 +1,8 @@
 Inference Module
 ================
 
-The inference module provides various inference algorithms for probabilistic models.
+The inference module provides composable kernels, adaptation rules, and
+compiled runners for probabilistic inference.
 
 .. module:: probjax.inference
 
@@ -12,32 +13,38 @@ This module includes:
 - Filtering and smoothing algorithms
 - Rejection sampling
 
+MCMC constructors return a kernel with ``init`` and ``init_params`` methods.
+The ``MCMC`` runner scans that kernel and can collect samples or selected
+diagnostics. SMC follows the same separation between kernels, parameters, and
+the ``SMC`` runner. Filtering constructors return ``FilterKernel`` values with
+``init`` and ``step`` callables.
+
 MCMC Kernels
 ------------
 
 .. autosummary::
    :toctree: generated
 
-   mcmc.hmc
-   mcmc.nuts
-   mcmc.mala
-   mcmc.mh
-   mcmc.gauss_rwmh
-   mcmc.imh
-   mcmc.gaussian_imh
-   mcmc.slice
-   mcmc.elliptical_slice
-   mcmc.latent_slice
-   mcmc.mclmc
-   mcmc.adjusted_mclmc
-   mcmc.adjusted_mclmc_dynamic
-   mcmc.dynamic_hmc
-   mcmc.arms
-   mcmc.a2rms
-   mcmc.pseudo_marginal
-   mcmc.sgld
-   mcmc.sghmc
-   mcmc.sgnht
+   hmc
+   nuts
+   mala
+   mh
+   gauss_rwmh
+   imh
+   gaussian_imh
+   slice
+   elliptical_slice
+   latent_slice
+   mclmc
+   adjusted_mclmc
+   adjusted_mclmc_dynamic
+   dynamic_hmc
+   arms
+   a2rms
+   pseudo_marginal
+   sgld
+   sghmc
+   sgnht
 
 MCMC Runner
 -----------
@@ -54,9 +61,9 @@ Adaptation and Warmup
 ---------------------
 
 Adaptors are local ``init/update/finalize`` rules. They can be applied after
-individual transitions with ``MCMC.adapt_step`` or scanned through a standard
-finite warmup with ``MCMC.adapt``. Warmup procedures are separate because they
-own a finite schedule or replace the chain state.
+individual transitions with ``MCMC.adapt_step`` or scanned through finite
+warmup. Warmup procedures are separate because they own a finite schedule or
+replace the chain state.
 
 .. autosummary::
    :toctree: generated
@@ -76,25 +83,43 @@ own a finite schedule or replace the chain state.
    pathfinder_warmup
    mclmc_warmup
 
+Variational Inference
+---------------------
+
+``flow_vi`` fits a normalizing flow to an unnormalized target by reparameterised
+reverse KL, following the shape of ``blackjax.vi.meanfield_vi``. ``neutra``
+reparameterises a target through such a flow so that any kernel above can sample
+it in better-conditioned coordinates -- a change of variables, so MCMC stays
+asymptotically exact however imperfect the flow is.
+
+.. autosummary::
+   :toctree: generated
+
+   flow_vi
+   neutra
+   FlowVIState
+   FlowVIInfo
+   NeuTraTransform
+
 SMC
 ---
 
 .. autosummary::
    :toctree: generated
 
-   smc.smc
-   smc.adaptive_smc
-   smc.adaptive_smc_kernel
-   smc.persistent_smc
-   smc.persistent_smc_kernel
-   smc.adaptive_persistent_smc
-   smc.adaptive_persistent_smc_kernel
-   smc.path_smc
-   smc.GeometricPath
-   smc.PartialPosteriorsPath
-   smc.tuning
-   smc.particle_adaptor
-   smc.acceptance_rate_adaptor
+   smc
+   adaptive_smc
+   adaptive_smc_kernel
+   persistent_smc
+   persistent_smc_kernel
+   adaptive_persistent_smc
+   adaptive_persistent_smc_kernel
+   path_smc
+   GeometricPath
+   PartialPosteriorsPath
+   tuning
+   particle_adaptor
+   acceptance_rate_adaptor
    SMC
 
 Filtering and Smoothing

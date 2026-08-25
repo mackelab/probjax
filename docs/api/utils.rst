@@ -1,7 +1,7 @@
 Utils Module
 ============
 
-The utils module provides utility functions for numerical computation, optimization, and more.
+The utils module exposes numerical helpers used throughout ProbJax.
 
 .. module:: probjax.utils
 
@@ -12,7 +12,11 @@ This module includes:
 - Interpolation functions
 - Graph utilities
 - Special mathematical functions
-- Root finding and solvers
+- Root finding
+
+The top-level module exports the functions listed below. Lower-level ODE and
+SDE solver configuration lives in ``probjax.utils.odeutil`` and
+``probjax.utils.sdeutil``.
 
 ODE/SDE Integration
 -------------------
@@ -60,8 +64,8 @@ Special Functions
    digammainv
    gammaincinv
 
-Solvers
--------
+Root Finding
+------------
 
 .. autosummary::
    :toctree: generated
@@ -84,19 +88,6 @@ JAX Utilities
    :toctree: generated
 
    ravel_args
-
-Typing
-------
-
-.. autosummary::
-   :toctree: generated
-
-   Array
-   ArrayLike
-   PyTree
-   RngKey
-
-
 
 Detailed Documentation
 ----------------------
@@ -137,11 +128,6 @@ Detailed Documentation
    :show-inheritance:
 
 .. automodule:: probjax.utils.jaxutils
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: probjax.utils.typing
    :members:
    :undoc-members:
    :show-inheritance:

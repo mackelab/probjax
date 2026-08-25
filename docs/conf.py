@@ -109,7 +109,7 @@ html_title = "ProbJax"
 html_logo = None  # Add logo path if available
 
 html_theme_options = {
-    "repository_url": "https://github.com/probjax/probjax",
+    "repository_url": "https://github.com/mackelab/probjax",
     "use_repository_button": True,
     "use_download_button": True,
     "repository_branch": "main",
@@ -117,7 +117,7 @@ html_theme_options = {
     "toc_title": "Navigation",
     "show_navbar_depth": 2,
     "show_toc_level": 3,
-    "pygment_dark_style": "github-dark",
+    "pygments_dark_style": "github-dark",
     "logo": {
         "text": "ProbJax",
     },
@@ -126,7 +126,7 @@ html_theme_options = {
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ["_static"]
+html_static_path = []
 
 # Custom CSS files
 html_css_files = []

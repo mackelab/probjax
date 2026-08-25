@@ -23,7 +23,7 @@ We welcome contributions to ProbJax! This guide will help you get started.
 
 4. **Install in development mode**:
    ```bash
-   pip install -e "probjax[dev]"
+   python -m pip install -e ".[dev]"
    ```
 
 ## Development Workflow
@@ -51,9 +51,6 @@ pytest
 
 # Run tests in parallel
 pytest -n auto
-
-# Run tests with coverage
-pytest --cov=probjax
 
 # Run specific test file
 pytest tests/test_specific.py

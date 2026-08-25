@@ -4,132 +4,135 @@ title: Quick Start
 
 # Quick Start
 
-This guide will help you get started with ProbJax quickly.
-
-## Basic Setup
-
-First, install ProbJax:
+Install ProbJax from the repository root before running these examples:
 
 ```bash
-pip install -e probjax
+python -m pip install -e .
 ```
 
-## Working with Distributions
+## Distributions
 
-ProbJax provides a comprehensive set of probability distributions:
+The recommended distribution API follows SciPy naming conventions. Lowercase
+objects such as `norm`, `gamma`, and `categorical` can be used directly or
+frozen with fixed parameters.
 
 ```python
 import jax
-import jax.numpy as jnp
-from probjax import distributions as dist
+from probjax.stats import norm
 
-# Create a normal distribution
-normal = dist.Normal(loc=0.0, scale=1.0)
+key = jax.random.key(0)
+normal = norm(loc=0.0, scale=1.0)
 
-# Sample from the distribution
-key = jax.random.PRNGKey(0)
-samples = normal.sample(key, sample_shape=(1000,))
-
-# Compute log probability
-log_prob = normal.log_prob(samples)
-
-# Compute mean and variance
+samples = normal.sample(key, shape=(1_000,))
+log_density = normal.logpdf(samples)
 mean = normal.mean()
 variance = normal.var()
 ```
 
-## Multiple Distributions
-
-ProbJax supports various distributions:
+The equivalent unfrozen calls are:
 
 ```python
-# Continuous distributions
-beta = dist.Beta(a=2.0, b=5.0)
-gamma = dist.Gamma(a=2.0, scale=1.0)
-uniform = dist.Uniform(low=0.0, high=1.0)
-
-# Discrete distributions
-bernoulli = dist.Bernoulli(probs=0.7)
-poisson = dist.Poisson(rate=5.0)
-
-# Multivariate distributions
-mvn = dist.MultivariateNormal(
-    loc=jnp.zeros(3),
-    covariance_matrix=jnp.eye(3)
-)
+samples = norm.rvs(key, 0.0, 1.0, shape=(1_000,))
+log_density = norm.logpdf(samples, 0.0, 1.0)
 ```
 
-## Transforming Distributions
+Distribution methods vary by family. Consult the [stats API](api/stats.rst)
+for the available continuous, discrete, multivariate, and higher-order
+distributions.
 
-Apply transformations to create new distributions:
+## Probabilistic Programs
+
+Distribution sampling creates a named site under ProbJax transformations.
+Outside a transformation, the same call remains an ordinary JAX sample.
 
 ```python
-from probjax.stats import transformed
+import jax
+import jax.numpy as jnp
+from probjax.core import condition, joint_sample, log_joint_fn, trace
+from probjax.stats import norm
 
-# Create a log-normal distribution
-log_normal = transformed(
-    dist.Normal(0.0, 1.0),
-    transform=jnp.exp
-)
+def model(key):
+    key_z, key_y = jax.random.split(key)
+    z = norm.rvs(key_z, 0.0, 1.0, name="z")
+    return norm.rvs(key_y, z, 0.5, name="y")
 
-# Sample from log-normal
-samples = log_normal.sample(key, sample_shape=(100,))
+key = jax.random.key(1)
+sites = joint_sample(model)(key)
+
+observed_model = condition(model, {"y": jnp.asarray(0.25)})
+latent = joint_sample(observed_model)(key)["z"]
+log_joint = log_joint_fn(observed_model)(z=latent)
+site_metadata = trace(observed_model, sites=True)(key)
 ```
 
-## Neural Networks
+Related transformations include `observe`, `intervene`/`do`, `substitute`,
+and `scope`.
 
-ProbJax includes neural network modules built on Flax:
+## Automatic Inversion
+
+ProbJax propagates known values backward through supported JAX primitives.
 
 ```python
-from probjax.nn import MLP, layers
+import jax
+import jax.numpy as jnp
+from probjax.core import inverse, inverse_and_logabsdet
 
-# Create a simple MLP
-mlp = MLP(features=[64, 32, 10])
+def transform(x):
+    return jnp.exp(2.0 * x + 1.0)
 
-# Initialize with random parameters
-key, subkey = jax.random.split(key)
-params = mlp.init(subkey, jnp.ones((1, 784)))
+x = jnp.asarray(0.4)
+y = transform(x)
 
-# Forward pass
-output = mlp.apply(params, jnp.ones((1, 784)))
+recovered = inverse(transform)(y)
+recovered, inverse_logdet = inverse_and_logabsdet(transform)(y)
+
+assert jnp.allclose(recovered, x)
 ```
 
-## Inference Algorithms
+Inverse transformations compose with `jax.jit` and support custom rules through
+`custom_inverse`. Inversion is rule-based; unsupported or non-injective
+operations may produce unresolved/NaN results rather than a symbolic inverse.
 
-ProbJax provides various inference methods:
+## Flax NNX Models
+
+ProbJax neural modules use Flax NNX rather than the older Linen `init/apply`
+pattern.
 
 ```python
-from probjax.inference import mcmc
+import jax.numpy as jnp
+from flax import nnx
+from probjax.nn import MLP
 
-# Example: MCMC sampling
-# See the examples directory for detailed tutorials
+model = MLP([4, 16, 2], rngs=nnx.Rngs(0))
+output = model(jnp.ones((3, 4)))
 ```
 
-## Core Transformations
+`probjax.nn.generative` provides normalizing flows, diffusion models,
+continuous and mean flow matching, and categorical diffusion. Generative-model
+families share training and distribution-view interfaces such as `loss(...)`
+and `as_dist(event_spec, ...)`; normalizing flows can infer their configured
+event shape.
 
-ProbJax provides powerful transformation capabilities:
+## Inference
+
+The inference package exposes pure kernels, adaptation utilities, and compiled
+runners:
 
 ```python
-from probjax.core import inverse, trace, log_prob_fn
-
-# Automatic function inversion
-def f(x):
-    return jnp.exp(x) + 1
-
-# Compute the inverse
-f_inv = inverse(f)
-result = f_inv(2.0)  # Should be log(1) = 0
-
-# Trace function execution
-traced_fn = trace(f)
-result, trace_info = traced_fn(1.0)
-
-# Compute log probability of transformed variables
-log_prob_transformed = log_prob_fn(f)(1.0, dist.Normal(0.0, 1.0))
+from probjax.inference import MCMC, SMC, hmc, nuts, adaptive_smc
 ```
+
+It also includes Kalman-family filters, particle filtering and smoothing,
+rejection sampling, stochastic-gradient MCMC, and multiple warmup strategies.
+See the [inference API](api/inference.rst) and curated examples for concrete
+kernel configuration.
 
 ## Next Steps
 
-- Explore the [API Reference](api/index.md) for detailed documentation
-- Check out the [Examples](examples.md) for more tutorials
-- Visit the `examples/` directory in the repository for Jupyter notebooks
+- Browse the [API overview](api/index.rst).
+- Review the [installation guide](installation.md) for accelerator options.
+- Explore the repository's `examples/core`, `examples/stats`,
+  `examples/inference`, `examples/nn`, and `examples/utils` directories.
+
+Some notebooks are still being migrated after API refactors. When a notebook
+disagrees with this guide, prefer this guide and the current API reference.

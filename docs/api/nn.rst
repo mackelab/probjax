@@ -1,7 +1,9 @@
 Neural Networks Module
 ======================
 
-The neural networks module provides layers, architectures, and normalizing flows built on top of Flax.
+The neural networks module is built on Flax NNX. It re-exports standard NNX
+layers and provides ProbJax architectures, generative models, and functional
+training-loss builders.
 
 .. module:: probjax.nn
 
@@ -10,8 +12,14 @@ This module includes:
 - Standard neural network architectures
 - Specialized layers for normalizing flows
 - Coupling and autoregressive layers
-- Diffusion models
+- Continuous and multinomial diffusion models
+- Continuous and mean flow matching
 - Custom layer implementations
+
+Generative models are NNX modules with model-specific ``loss(rng, data)``
+methods. ``GenerativeModel.as_dist(event_spec, ...)`` creates a distribution
+view backed by cached, shape-polymorphic exported sampling code; normalizing
+flows also provide tractable densities.
 
 Architectures
 -------------
@@ -89,6 +97,27 @@ emits it, and the mixing config builds the layer between transforms.
    RotationMixingConfig
    NoMixingConfig
 
+Autoregressive Density Models
+-----------------------------
+
+``p(x) = prod_i p(x_i | x_<i)`` with each conditional a univariate family from
+:mod:`probjax.stats`; hand the model a distribution class and the parameter
+count, constraints, density and sampler all follow from it.
+
+.. autosummary::
+   :toctree: generated
+
+   AutoregressiveModel
+   MADE
+   MixtureAutoregressive
+   SplineAutoregressive
+   HistogramAutoregressive
+   CategoricalAutoregressive
+   ARFamily
+   ARConditionerConfig
+   MLPARConditionerConfig
+   TransformerARConditionerConfig
+
 Flow Matching
 -------------
 
@@ -113,6 +142,15 @@ Diffusion Models
    MultinomialDiffusion
    MultinomialCosineDM
    MultinomialLogSNRDM
+
+Generative Model Interface
+--------------------------
+
+.. autosummary::
+   :toctree: generated
+
+   GenerativeModel
+   GenerativeModelProtocol
 
 Layers
 ------
@@ -157,6 +195,8 @@ Loss Functions
    :toctree: generated
 
    build_flow_matching_loss
+   build_mean_flow_matching_loss
+   build_mean_flow_matching_loss_from_schedule
    build_denoising_loss
    build_score_matching_loss
    build_sliced_score_matching_loss
@@ -213,6 +253,11 @@ Detailed Documentation
    :show-inheritance:
 
 .. automodule:: probjax.nn.losses
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: probjax.nn.generative
    :members:
    :undoc-members:
    :show-inheritance:

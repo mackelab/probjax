@@ -4,81 +4,84 @@ title: Installation
 
 # Installation
 
-## Basic Installation
+ProbJax requires Python 3.11 or newer. It is currently documented as a source
+installation rather than as a published-package workflow.
 
-Install ProbJax directly from the repository:
+## Source Installation
+
+Clone the repository and install it from the checkout root:
 
 ```bash
-pip install -e probjax
+git clone https://github.com/mackelab/probjax.git
+cd probjax
+python -m pip install -e .
 ```
 
-### Using uv (Recommended)
-
-For faster and more reliable Python package management, use [uv](https://github.com/astral-sh/uv):
+With [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv pip install -e probjax
+uv pip install -e .
 ```
 
-## GPU Support
+## Accelerator Backends
 
-### CUDA 12 (NVIDIA GPUs)
+JAX backend support depends on your operating system, accelerator, drivers,
+and the compatibility requirements published by JAX.
 
-For GPU acceleration with NVIDIA CUDA 12:
+### NVIDIA CUDA 12
 
 ```bash
-pip install -e "probjax[cuda12]"
+python -m pip install -e ".[cuda12]"
 ```
 
-### Metal (Apple Silicon)
-
-For Apple Silicon (M1/M2/M3) GPU acceleration:
+### Apple Silicon Metal
 
 ```bash
-pip install -e "probjax[metal]"
+python -m pip install -e ".[metal]"
 ```
 
-Then configure JAX to use the Metal backend:
+Select Metal before importing JAX:
 
 ```bash
-# Bash/Zsh
 export JAX_PLATFORMS=metal,cpu
 ```
 
-Or in Python before importing JAX modules:
+or:
 
 ```python
 import os
+
 os.environ["JAX_PLATFORMS"] = "metal,cpu"
 
 import jax
-print(jax.devices())  # Should list Metal devices
+
+print(jax.devices())
 ```
 
-**Requirements:**
-- macOS 12+ on Apple Silicon (M1/M2/M3)
-- Recent Xcode Command Line Tools
-- Python 3.9–3.12
+The Metal extra exposes `jax-metal`, but Metal is not covered by the
+repository's Linux test environment. Consult the current `jax-metal`
+compatibility documentation for supported macOS, Python, and JAX versions.
 
 ## Development Installation
 
-For development and testing:
-
 ```bash
-pip install -e "probjax[dev]"
+python -m pip install -e ".[dev]"
 ```
 
-This includes additional dependencies:
-- pytest
-- pytest-benchmark
-- ruff
-- pytest-xdist
-- scipy
+The development extra includes pytest, pytest-benchmark, pytest-xdist, Ruff,
+and SciPy. Common checks are:
 
-## Requirements
+```bash
+pytest
+ruff check .
+ruff format --check .
+```
+
+## Declared Requirements
 
 - Python >= 3.11
-- JAX >= 0.4.34
+- JAX and jaxlib >= 0.4.34
 - NumPy >= 2.0.0
+- Flax >= 0.12.0
 
-See `pyproject.toml` for the complete list of dependencies.
+See [`pyproject.toml`](../pyproject.toml) for the complete dependency set.

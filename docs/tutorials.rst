@@ -1,82 +1,46 @@
 Tutorials
 =========
 
-These tutorials demonstrate various features of ProbJax through Jupyter notebooks.
+The repository contains notebooks and scripts covering ProbJax's major
+subpackages. Some older notebooks are still being migrated after API refactors;
+the links below are limited to files currently present in the repository.
 
 Core Functionality
 ------------------
 
-Core ProbJax features including tracing, graph operations, and probabilistic programming.
+* `Tracing random variables <https://github.com/mackelab/probjax/blob/main/examples/core/trace_random.ipynb>`_
+* `Probabilistic programs <https://github.com/mackelab/probjax/blob/main/examples/core/ppl.ipynb>`_
+* `JAXPR graphs <https://github.com/mackelab/probjax/blob/main/examples/core/graph.ipynb>`_
 
-.. toctree::
-   :maxdepth: 1
+Statistics
+----------
 
-   /examples/core/graph
-   /examples/core/ppl
-   /examples/core/trace_random
-
-Distributions (Stats)
----------------------
-
-Working with probability distributions.
-
-.. toctree::
-   :maxdepth: 1
-
-   /examples/stats/distributions_basic
-   /examples/stats/distributions_highlevel
-
-Neural Networks: Architectures
-------------------------------
-
-Attention, transformers, the rest of ``probjax.nn.nets``, and multi-device sharding.
-
-.. toctree::
-   :maxdepth: 1
-
-   /examples/nn/nets/attention
-   /examples/nn/nets/transformer
-   /examples/nn/nets/architectures
-   /examples/nn/nets/sharding
-
-Neural Networks: Generative Models
-----------------------------------
-
-Diffusion, flow matching, normalizing flows and autoregressive models.
-
-.. toctree::
-   :maxdepth: 1
-
-   /examples/nn/generative/normalizing_flows
-   /examples/nn/generative/diffusion
-   /examples/nn/generative/flow_matching
-   /examples/nn/generative/autoregressive
-   /examples/nn/generative/simformer
-   /examples/nn/flows/mean_flow_matching_mnist
-   /examples/nn/diffusion/discrete_diffusion
+* `Distribution basics <https://github.com/mackelab/probjax/blob/main/examples/stats/distributions_basic.ipynb>`_
+* `High-level distributions <https://github.com/mackelab/probjax/blob/main/examples/stats/distributions_highlevel.ipynb>`_
 
 Inference
 ---------
 
-MCMC, SMC, and filtering algorithms.
+* `MCMC <https://github.com/mackelab/probjax/blob/main/examples/inference/mcmc.ipynb>`_
+* `SMC <https://github.com/mackelab/probjax/blob/main/examples/inference/smc.ipynb>`_
+* `Kalman filtering <https://github.com/mackelab/probjax/blob/main/examples/inference/kalman_filter.ipynb>`_
+* `Filtering <https://github.com/mackelab/probjax/blob/main/examples/inference/filters.ipynb>`_
+* `Bayesian neural networks <https://github.com/mackelab/probjax/blob/main/examples/inference/bnn.ipynb>`_
 
-.. toctree::
-   :maxdepth: 1
+Neural And Generative Models
+----------------------------
 
-   /examples/inference/mcmc
-   /examples/inference/smc
-   /examples/inference/kalman_filter
-   /examples/inference/filters
-   /examples/inference/bnn
+The ``examples/nn`` tree includes normalizing-flow, diffusion, flow-matching,
+attention, transformer, and sharding examples. These examples exercise rapidly
+evolving research APIs, so check imports against :mod:`probjax.nn` before using
+an older notebook as a template.
 
-Utilities
----------
+Numerical Utilities
+-------------------
 
-Utility functions for ODE/SDE integration and special functions.
+* `ODE integration <https://github.com/mackelab/probjax/blob/main/examples/utils/odeint.ipynb>`_
+* `SDE integration <https://github.com/mackelab/probjax/blob/main/examples/utils/sdeint.ipynb>`_
+* `Inverse incomplete beta <https://github.com/mackelab/probjax/blob/main/examples/utils/betaincinv.ipynb>`_
 
-.. toctree::
-   :maxdepth: 1
-
-   /examples/utils/odeint
-   /examples/utils/sdeint
-   /examples/utils/betaincinv
+Notebooks are kept outside the Sphinx source tree and are therefore referenced
+as repository paths rather than included in the documentation build.

@@ -8,11 +8,11 @@ title: Frequently Asked Questions
 
 ### What is ProbJax?
 
-ProbJax is a powerful library for probabilistic computation in JAX. It provides tools for:
-- Building probabilistic models with automatic inference
-- Working with probability distributions
-- Implementing neural networks and normalizing flows
-- Running MCMC, SMC, and filtering algorithms
+ProbJax is a library for probabilistic computation in JAX. It provides:
+- SciPy-like probability distributions
+- Transformations for tracing and manipulating probabilistic programs
+- Flax NNX neural networks and generative models
+- MCMC, SMC, filtering, smoothing, and rejection-sampling tools
 
 ### Why use ProbJax instead of NumPyro or other PPLs?
 
@@ -20,7 +20,6 @@ ProbJax offers:
 - Tight integration with JAX's functional programming paradigm
 - Advanced function tracing and automatic inversion capabilities
 - Custom primitives for probabilistic programming
-- Comprehensive set of inference algorithms
 - Focus on performance and flexibility
 
 ## Installation
@@ -33,12 +32,12 @@ ProbJax requires Python 3.11 or later.
 
 For NVIDIA GPUs with CUDA 12:
 ```bash
-pip install -e "probjax[cuda12]"
+python -m pip install -e ".[cuda12]"
 ```
 
 For Apple Silicon (Metal):
 ```bash
-pip install -e "probjax[metal]"
+python -m pip install -e ".[metal]"
 ```
 
 ### I get an error about JAX version
@@ -53,31 +52,31 @@ pip install --upgrade jax jaxlib
 ### How do I create a simple distribution?
 
 ```python
-from probjax import distributions as dist
-import jax.numpy as jnp
+import jax
+from probjax.stats import norm
 
-# Create a normal distribution
-normal = dist.Normal(loc=0.0, scale=1.0)
-
-# Or use the functional form
-samples = dist.norm.sample(key, sample_shape=(100,))
+normal = norm(loc=0.0, scale=1.0)
+key = jax.random.key(0)
+samples = normal.sample(key, shape=(100,))
 ```
 
 ### How do I compute log probabilities?
 
 ```python
-log_prob = normal.log_prob(samples)
+log_prob = normal.logpdf(samples)
 ```
 
 ### Can I create transformed distributions?
 
-Yes, use the `transformed` function:
+Yes. Pass a frozen base distribution and a bijective JAX callable to
+`transformed`:
 ```python
-from probjax import transformed
+import jax.numpy as jnp
+from probjax.stats import norm, transformed
 
 log_normal = transformed(
-    dist.Normal(0.0, 1.0),
-    transform=jnp.exp
+    base_dist=norm(loc=0.0, scale=1.0),
+    bijector=jnp.exp,
 )
 ```
 
@@ -97,42 +96,37 @@ Discrete: `bernoulli`, `binomial`, `categorical`, `poisson`, `geometric`, `dirac
 - Slice sampling
 - Elliptical slice sampling
 - MCLMC (Microcanonical Langevin Monte Carlo)
-- Gibbs sampling
-- And more...
+- Adaptive and stochastic-gradient MCMC variants
 
 ### How do I run MCMC?
 
 ```python
-from probjax.inference import mcmc, MCMC
+import jax
+from probjax.inference import MCMC, hmc
 
-# Create a kernel
-kernel = mcmc.hmc(logdensity_fn=lambda x: -0.5 * x**2, step_size=0.1, num_integration_steps=10)
+kernel = hmc(lambda x: -0.5 * x**2, num_integration_steps=10)
+init_key, sample_key = jax.random.split(jax.random.key(0))
+state = kernel.init(init_key, 0.0)
+params = kernel.init_params(state, step_size=0.1)
 
-# Create runner with progress bar
 runner = MCMC(kernel, verbose=True)
-
-# Run
-key = jax.random.PRNGKey(0)
-state = kernel.init_state(key, 0.0)
-final_state = runner.run(key, state, num_steps=1000)
+result = runner.sample(sample_key, state, num_samples=1000, params=params)
+samples = result.samples
 ```
 
 ### What is SMC?
 
-Sequential Monte Carlo (SMC) is a family of algorithms that use sequential importance sampling. ProbJax provides:
-- Standard SMC with geometric tempering
-- Adaptive SMC
-- Persistent SMC
-- Path SMC
+Sequential Monte Carlo (SMC) uses weighted particle populations. ProbJax
+provides fixed-schedule, adaptive geometric, persistent, adaptive persistent,
+and path SMC kernels, plus a compiled `SMC` runner and parameter adaptors.
 
 ### How do I use filtering algorithms?
 
-```python
-from probjax.inference import kalman_filter
-
-# Create filter
-kf = kalman_filter(...)
-```
+Construct one of the filter APIs, such as `kalman_filter`,
+`extended_kalman_filter`, `ukf`, or `ParticleFilter`, with the model functions
+required by that filter. The resulting `FilterKernel` exposes `init` and
+`step`; `smooth` and the dedicated particle and Rauch-Tung-Striebel smoothers
+operate on filtering results.
 
 ## Neural Networks
 
@@ -144,7 +138,7 @@ kf = kalman_filter(...)
 - U-Net
 - DeepSet
 - LRU (Linear Recurrent Unit)
-- And more...
+- Recurrent and attention-based components
 
 ### What normalizing flows are available?
 
@@ -153,21 +147,27 @@ kf = kalman_filter(...)
 - Neural Spline Flow (NSF)
 - Neural Autoregressive Flow (NAF)
 - Masked Autoregressive Flow (MAF)
-- RealNVP
+- RealNVP presets
 - Gaussianization Flow
-- And more...
+- Configurable coupling, autoregressive, and elementwise flows
 
 ### How do I create a normalizing flow?
 
 ```python
+from flax import nnx
 from probjax import nn
 
 flow = nn.AffineCouplingFlow(
-    event_shape=(28, 28),
-    num_layers=4,
-    hidden_features=[128, 128]
+    input_dim=8,
+    num_transforms=4,
+    rngs=nnx.Rngs(0),
 )
 ```
+
+ProbJax neural-network modules use Flax NNX. Generative families include
+normalizing flows, continuous and mean flow matching, continuous diffusion,
+and multinomial diffusion. They provide model-specific `loss(...)` methods and
+distribution views through `as_dist(event_spec, ...)`.
 
 ## Core Features
 
@@ -192,7 +192,7 @@ Tracing allows you to inspect the execution of probabilistic programs:
 from probjax import trace
 
 traced_fn = trace(f)
-result, trace_info = traced_fn(x)
+trace_info = traced_fn(x)
 ```
 
 ### What interventions are supported?
@@ -206,7 +206,7 @@ result, trace_info = traced_fn(x)
 ### How can I speed up my code?
 
 1. Use `jax.jit` on your functions
-2. Use the `vmap` for batching
+2. Use `jax.vmap` for batching
 3. Enable XLA optimizations
 4. Use appropriate hardware (GPU/TPU)
 
@@ -273,6 +273,6 @@ Open an issue on GitHub with:
 
 Yes! See existing distributions in `probjax/stats/` for examples. Make sure to:
 1. Inherit from appropriate base class (`rv_continuous`, `rv_discrete`, etc.)
-2. Implement required methods (`sample`, `log_prob`)
+2. Implement the required density or mass methods and sampling method
 3. Add tests
 4. Update documentation

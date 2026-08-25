@@ -14,7 +14,7 @@ This guide helps you resolve common issues when using ProbJax.
 
 **Solution:**
 ```bash
-pip install jax jaxlib>=0.4.34
+pip install jax "jaxlib>=0.4.34"
 ```
 
 #### Issue: CUDA version mismatch
@@ -23,11 +23,6 @@ pip install jax jaxlib>=0.4.34
 Make sure your CUDA version matches the JAX wheel. For CUDA 12:
 ```bash
 pip install jax[cuda12]
-```
-
-For CUDA 11:
-```bash
-pip install jax[cuda11_pip]
 ```
 
 #### Issue: Metal (Apple Silicon) not working
@@ -58,7 +53,7 @@ Create a fresh virtual environment:
 ```bash
 python -m venv probjax_env
 source probjax_env/bin/activate  # On Windows: probjax_env\Scripts\activate
-pip install -e probjax
+python -m pip install -e .
 ```
 
 ## Runtime Errors
@@ -108,25 +103,6 @@ result = jax.jit(good_fn)(x)
 np_result = np.array(result)  # Convert after
 ```
 
-#### Issue: `UnexpectedTracerError`
-
-**Cause:** Using a traced value outside its tracing context.
-
-**Solution:**
-Make sure all operations happen within the same JIT context or use `jax.lax` control flow:
-```python
-# Bad
-def bad_fn(x):
-    y = jax.jit(inner)(x)
-    return y + x  # x is a tracer, y is concrete
-
-# Good
-@jax.jit
-def good_fn(x):
-    y = inner(x)
-    return y + x
-```
-
 ### Numerical Issues
 
 #### Issue: `NaN` gradients or values
@@ -157,11 +133,11 @@ jax.debug.print("x = {x}", x=x)
 **Solutions:**
 1. Decrease step size:
 ```python
-kernel = mcmc.hmc(..., step_size=0.01)  # Smaller step size
+params = kernel.init_params(state, step_size=0.01)
 ```
 
-2. Increase number of integration steps
-3. Use adaptive HMC
+2. Increase `num_integration_steps` when constructing an HMC kernel
+3. Use a warmup adaptor to tune HMC parameters
 4. Check your model for numerical issues
 
 ### Memory Issues
@@ -194,12 +170,11 @@ os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 **Solution:**
 Check available methods:
 ```python
-from probjax import stats as dist
+from probjax.stats import norm
 
-# Check what's available
-dist = dist.Normal(0.0, 1.0)
-print(dist.sample)  # Should work
-print(dist.mean)    # May not be implemented for all distributions
+normal = norm(loc=0.0, scale=1.0)
+print(normal.sample)
+print(normal.mean)  # Availability varies by distribution.
 ```
 
 ### Issue: Wrong results from transformed distributions
@@ -209,15 +184,18 @@ print(dist.mean)    # May not be implemented for all distributions
 **Solution:**
 Make sure your transformation is bijective (invertible):
 ```python
-from probjax import transformed
+import jax.numpy as jnp
+from probjax.stats import norm, transformed
 
-# Good: exp is bijective on positive reals
 log_normal = transformed(
-    dist.Normal(0.0, 1.0),
-    transform=jnp.exp,
-    inverse_transform=jnp.log  # Provide inverse
+    base_dist=norm(loc=0.0, scale=1.0),
+    bijector=jnp.exp,
 )
 ```
+
+The bijector must be invertible on the base distribution's support. ProbJax
+can derive an inverse for supported JAX operations; custom bijectors can expose
+their own inverse-and-log-determinant implementation.
 
 ## Inference Issues
 
@@ -244,12 +222,9 @@ log_normal = transformed(
 **Cause:** Tempering schedule too aggressive.
 
 **Solution:**
-Use adaptive tempering:
-```python
-from probjax.inference.smc import adaptive_smc
-
-kernel = adaptive_smc(target_ess=0.5)  # Tune target ESS
-```
+Use `adaptive_smc` with a `GeometricPath`, prior and likelihood log densities,
+and an MCMC mutation kernel. Set `target_ess` when constructing that SMC kernel;
+it is not a standalone constructor argument without the model and path.
 
 ## Neural Network Issues
 
@@ -272,10 +247,9 @@ optimizer = optax.chain(
 ### Issue: Flow training unstable
 
 **Solutions:**
-1. Use bounded flows (e.g., Rational Quadratic Spline)
-2. Initialize with identity transformation
-3. Use smaller learning rate
-4. Add regularization
+1. Check that samples and `logpdf` values remain finite
+2. Use a smaller learning rate
+3. Check the base distribution and bijector parameter constraints
 
 ## Debugging Tips
 
@@ -327,8 +301,5 @@ If you can't resolve your issue:
 
 1. **Check the FAQ**: See [FAQ](faq.md) for common questions
 2. **Check examples**: Look at the `examples/` directory
-3. **Open an issue**: On GitHub with:
-   - Minimal reproducible example
-   - Full error traceback
-   - Environment details (Python, JAX, OS versions)
-   - What you've tried
+3. **Open an issue**: Include a minimal reproducible example, the full error
+   traceback, environment details, and what you have tried.

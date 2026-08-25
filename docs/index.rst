@@ -1,7 +1,15 @@
-Welcome to ProbJax's documentation!
-==================================
+ProbJax Documentation
+=====================
 
-ProbJax is a powerful library for probabilistic computation in JAX, designed to simplify the development of probabilistic models and inference algorithms. It provides a comprehensive set of tools for building, training, and deploying probabilistic models with high performance and flexibility.
+ProbJax is a JAX-native research toolbox for probabilistic computation. It
+brings together probabilistic-program transformations, SciPy-style
+distributions, automatic inversion, inference algorithms, Flax NNX generative
+models, and numerical solvers.
+
+.. note::
+
+   ProbJax is research software. APIs may evolve, and accelerator-specific
+   kernels and sharding features are experimental.
 
 .. toctree::
    :maxdepth: 2
@@ -32,39 +40,33 @@ ProbJax is a powerful library for probabilistic computation in JAX, designed to 
 
 .. toctree::
    :maxdepth: 1
-   :caption: Project Info
+   :caption: Project Information
 
    changelog
 
-Key Features
+Capabilities
 ------------
 
-**Core Functionality**
-  - Advanced function tracing and manipulation capabilities
-  - Robust automatic function inversion with support for complex transformations
-  - Efficient computation of log-probabilities and transformed distribution handling
+**Probabilistic programs**
+   Named random-variable sites, tracing, sampling, conditioning, observation,
+   intervention, replay, scopes, and joint log-density construction.
 
-**Distributions**
-  - Comprehensive set of probability distributions
-  - Support for sampling, log-probability computation, and distribution transformations
-  - Integration with JAX's functional programming paradigm
-
-**Neural Networks**
-  - Standard architectures (Transformers, ResNets, U-Nets)
-  - Specialized layers for normalizing flows
-  - Coupling and autoregressive layers
-  - Diffusion models and flow matching
-  - Custom layer implementations
+**Statistics**
+   Continuous, discrete, multivariate, mixture, independent, and transformed
+   distributions with SciPy-style methods, parameter fitting, bijections, and
+   divergences.
 
 **Inference**
-  - Various inference algorithms (MCMC, SMC, filtering)
-  - Support for variational inference
-  - Built-in progress bars and diagnostics
+   MCMC and adaptation, SMC and tempering, Kalman and particle filtering,
+   smoothing, and rejection sampling.
 
-**Utilities**
-  - Numerical computation tools (ODE/SDE integration)
-  - Optimization utilities
-  - Performance monitoring and benchmarking
+**Neural and generative models**
+   Flax NNX architectures, normalizing flows, diffusion and score models, flow
+   matching, categorical diffusion, sharding, and accelerator kernels.
+
+**Numerical utilities**
+   ODE/SDE integration, interpolation, root finding, special functions, graph
+   utilities, and linear algebra.
 
 Quick Example
 -------------
@@ -72,20 +74,13 @@ Quick Example
 .. code-block:: python
 
    import jax
-   import jax.numpy as jnp
-   from probjax import distributions as dist
+   from probjax.stats import norm
 
-   # Create a simple normal distribution
-   normal = dist.Normal(loc=0.0, scale=1.0)
+   normal = norm(loc=0.0, scale=1.0)
+   samples = normal.sample(jax.random.key(0), shape=(1_000,))
+   log_density = normal.logpdf(samples)
 
-   # Sample from the distribution
-   key = jax.random.PRNGKey(0)
-   samples = normal.sample(key, sample_shape=(1000,))
-
-   # Compute log probability
-   log_prob = normal.log_prob(samples)
-
-Indices and tables
+Indices and Tables
 ==================
 
 * :ref:`genindex`
