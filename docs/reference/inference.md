@@ -19,6 +19,7 @@ Pure kernels, adaptation utilities and compiled runners. See
 ::: probjax.inference.mh
 ::: probjax.inference.gauss_rwmh
 ::: probjax.inference.imh
+::: probjax.inference.neural_imh
 ::: probjax.inference.slice
 ::: probjax.inference.latent_slice
 ::: probjax.inference.elliptical_slice
@@ -41,6 +42,7 @@ Pure kernels, adaptation utilities and compiled runners. See
 ::: probjax.inference.window_warmup
 ::: probjax.inference.pathfinder_warmup
 ::: probjax.inference.mclmc_warmup
+::: probjax.inference.neural_imh_warmup
 ::: probjax.inference.step_size_adaptor
 ::: probjax.inference.mass_matrix_adaptor
 ::: probjax.inference.covariance_adaptor
