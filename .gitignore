@@ -100,7 +100,10 @@ target/
 *.code-workspace
 .vscode/
 .idea
-.claude/settings.local.json
+
+# Local AI assistant state and plans
+.opencode/
+.claude/
 
 # Class diagram
 *.pyns
