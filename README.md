@@ -1,11 +1,11 @@
 # ProbJax
 
 [![CI](https://github.com/mackelab/probjax/actions/workflows/ci.yml/badge.svg)](https://github.com/mackelab/probjax/actions/workflows/ci.yml)
-[![Documentation Status](https://readthedocs.org/projects/probjax/badge/?version=latest)](https://probjax.readthedocs.io/en/latest/)
+[![Docs](https://github.com/mackelab/probjax/actions/workflows/docs.yml/badge.svg)](https://mackelab.github.io/probjax/)
 [![Python Version](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE.txt)
 
-📖 **Documentation:** https://probjax.readthedocs.io/en/latest/
+📖 **Documentation:** https://mackelab.github.io/probjax/
 
 > [!WARNING]
 > ProbJax is a highly experimental research toolbox. Breaking API changes,
@@ -146,7 +146,7 @@ x, inverse_logdet = inverse_and_logabsdet(transform)(y)
 ## Examples And Documentation
 
 Full documentation (guides, API reference, troubleshooting) is hosted at
-https://probjax.readthedocs.io/en/latest/.
+https://mackelab.github.io/probjax/.
 
 - [`examples/core`](examples/core): tracing and probabilistic-program examples
 - [`examples/stats`](examples/stats): distribution examples
