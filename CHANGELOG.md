@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - FAQ and troubleshooting guides
 - Comprehensive tutorials section
 - `Autoregressive.sample` supports prefix conditioning (`prefix=`, `prefix_len=`)
-  and KV-cached decoding (`use_cache=`) for transformer conditioners
+  and KV-cached decoding (`use_cache=`) for transformer conditioners, with the
+  cached loop compiled to a single program via `nnx.scan`
 - `TransformerARConditionerConfig` accepts an `attention_fn` kernel and works
   with discrete families
 

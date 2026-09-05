@@ -534,17 +534,22 @@ class _TokenConditioner(nnx.Module):
         previous position's conditioner feature; at ``pos == 0`` its values
         are ignored (the inner start token is used) and only its batch
         shape is read. Returns ``(..., params_dim)``.
+
+        Written without Python branching on ``pos`` so the loop compiles
+        under ``nnx.scan`` as well as running eagerly.
         """
         inner = self.inner
-        if pos == 0:
-            token = inner.start_token.reshape(
+        start = jnp.broadcast_to(
+            inner.start_token.reshape(
                 (1,) * (prev_feat.ndim - 1) + (1, inner.transformer.model_dim)
-            )
-            token = jnp.broadcast_to(
-                token, prev_feat.shape[:-1] + (1, inner.transformer.model_dim)
-            )
-        else:
-            token = inner.encoder(prev_feat[..., None, :])
+            ),
+            prev_feat.shape[:-1] + (1, inner.transformer.model_dim),
+        )
+        token = jnp.where(
+            jnp.asarray(pos) == 0,
+            start,
+            inner.encoder(prev_feat[..., None, :]),
+        )
         return inner.decode_params(token, pos, context, rng=rng)
 
 

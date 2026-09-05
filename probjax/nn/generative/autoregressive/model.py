@@ -242,13 +242,13 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
         prefix at every step; ``False`` selects the naive loop, which is
         also what non-transformer conditioners always use. Both paths draw
         from the same per-dimension keys, so they agree up to the
-        floating-point dust between the compiled scan and the eager loop.
+        floating-point dust between the two compiled scans.
 
-        The cache does asymptotically less attention work (one growing
-        prefix row per step instead of a full matrix), which is what wins
-        at large sequence lengths and on accelerators. On small CPU models
-        the eager per-step loop is dispatch-bound and the compiled naive
-        scan can be faster wall-clock -- measure for your own sizes.
+        The cached loop is compiled to a single program and does
+        asymptotically less attention work (one growing prefix row per step
+        instead of a full matrix). Time both paths with
+        ``block_until_ready`` -- JAX dispatches asynchronously, so bare
+        ``time.time`` differences only measure enqueueing.
         """
         sample_shape = tuple(sample_shape)
         if not 0 <= prefix_len <= self.input_dim:
@@ -294,23 +294,44 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
         return self._unstandardize(x) if self.standardize else x
 
     def _sample_cached(self, keys, sample_shape, context, prefix_z, prefix_len):
-        """KV-cached ancestral sampling for transformer conditioners."""
+        """KV-cached ancestral sampling for transformer conditioners.
+
+        Compiled to a single program with :func:`flax.nnx.scan`: the
+        attention caches are threaded through as scan carry (the model is
+        passed explicitly so its ``Cache`` state is lifted) while the
+        parameters stay put. Cache updates apply to this model in place,
+        so every call starts with a fresh :meth:`init_decode`.
+        """
         dtype = self.family.event_dtype
-        conditioner = self.conditioner
-        conditioner.init_decode(sample_shape, dtype=jnp.float32)
-        feature_width = conditioner.feature_width
-        x = jnp.zeros(sample_shape + (self.input_dim,), dtype=dtype)
-        prev_feat = jnp.zeros(sample_shape + (feature_width,), dtype=dtype)
-        for i in range(self.input_dim):
-            params_i = conditioner.predict_next_params(prev_feat, i, context)
-            natural = self.family.unpack(params_i)
-            draw = self.family.rvs(keys[i], natural).astype(dtype)
+        family = self.family
+        feature_width = self.conditioner.feature_width
+        input_dim = self.input_dim
+        self.conditioner.init_decode(sample_shape, dtype=jnp.float32)
+        carry0 = (
+            jnp.zeros(sample_shape + (input_dim,), dtype=dtype),
+            # Encoder input space is floating point (one-hot for discrete).
+            jnp.zeros(sample_shape + (feature_width,), jnp.float32),
+        )
+
+        @nnx.scan(
+            in_axes=(nnx.Carry, 0, None), out_axes=(nnx.Carry, 0), length=input_dim
+        )
+        def step(carry, i, model):
+            x, prev_feat = carry
+            params_i = model.conditioner.predict_next_params(
+                prev_feat, i, context
+            )
+            natural = family.unpack(params_i)
+            draw = family.rvs(keys[i], natural).astype(dtype)
             value = draw
             if prefix_z is not None:
                 value = jnp.where(i < prefix_len, prefix_z[..., i], value)
             x = x.at[..., i].set(value)
-            encoded = self.family.encode(value)
+            encoded = family.encode(value)
             prev_feat = encoded[..., None] if feature_width == 1 else encoded
+            return (x, prev_feat), draw
+
+        (x, _), _ = step(carry0, jnp.arange(input_dim), self)
         return self._unstandardize(x) if self.standardize else x
 
     def _sample_base(self, rng, sample_shape, spec):
