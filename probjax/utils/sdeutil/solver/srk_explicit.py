@@ -1,9 +1,8 @@
-
 from functools import partial
 import jax
 import jax.numpy as jnp
 from probjax.utils.typing import Array, ArrayLike, Callable, RngKey
-from probjax.utils.brownian import get_iterated_integrals_fn
+from probjax.utils.sdeutil.brownian import get_iterated_integrals_fn
 from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
 
 
@@ -197,6 +196,7 @@ def build_srk_step(
     drift: Callable,
     diffusion: Callable,
     noise_type="diagonal",
+    noise_dim: int | None = None,
     sde_type="ito",
     iterated_integrals_fn=get_iterated_integrals_fn,
     stages: int = 3,
@@ -229,7 +229,11 @@ def build_srk_step(
 
         f0 = jnp.asarray(drift(t0, y0))
         g0 = jnp.asarray(diffusion(t0, y0))
-        dWt = jax.random.normal(rng1, y0.shape) * jnp.sqrt(jnp.abs(dt))
+        if noise_dim is None:
+            inferred_noise_dim = y0.shape[0] if g0.ndim <= 1 else g0.shape[-1]
+        else:
+            inferred_noise_dim = int(noise_dim)
+        dWt = jax.random.normal(rng1, (inferred_noise_dim,)) * jnp.sqrt(jnp.abs(dt))
         dWtdWs = iterated_integrals_fn(rng2, dWt, jnp.abs(dt))
 
         y1, f1, g1, (y1_error, k1, k2) = explicit_stochastic_runge_kutta_step(

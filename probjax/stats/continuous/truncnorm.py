@@ -80,7 +80,7 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         loc=0.0,

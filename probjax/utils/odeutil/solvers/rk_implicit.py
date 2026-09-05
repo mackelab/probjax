@@ -44,9 +44,7 @@ def build_implicit_euler_step(
 ) -> Callable[[ImpEulerState, ArrayLike], tuple[ODEState, ODEInfo]]:
     """Build implicit Euler step function."""
 
-    def step_fn(
-        state: ImpEulerState, dt: ArrayLike, *args
-    ) -> tuple[ODEState, ODEInfo]:
+    def step_fn(state: ImpEulerState, dt: ArrayLike, *args) -> tuple[ODEState, ODEInfo]:
         y0 = state.y0
         t0 = state.t0
         t1 = t0 + dt
@@ -110,7 +108,7 @@ def build_implicit_rk_step(
     ) -> tuple[ImpRKState, ImpRKInfo]:
         t0 = state.t0
         y0 = state.y0
-        f0 = state.f0 if not last_equals_next else drift(t0, y0)
+        f0 = state.f0 if not last_equals_next else drift(t0, y0, *args)
 
         ts = t0 + dt * c
         ts = ts.reshape(-1, 1)
@@ -133,7 +131,7 @@ def build_implicit_rk_step(
 
         # Compute solution
         y1 = y0 + dt * jnp.dot(b_sol, k)
-        f1 = k[-1] if last_equals_next else drift(t0 + dt, y1)
+        f1 = k[-1] if last_equals_next else drift(t0 + dt, y1, *args)
         y1_error = None if b_error is None else dt * jnp.dot(b_error, k)
         y1_mid = None if b_mid is None else dt * jnp.dot(b_mid, k) + y0
 
@@ -149,8 +147,8 @@ def build_imp_rk_method(
     build_butcher_tableau: Callable,
     last_equals_next: bool = False,
 ):
-    def init_method(t0, y0, drift):
-        f0 = drift(t0, y0) if not last_equals_next else None
+    def init_method(t0, y0, *args, drift=None):
+        f0 = drift(t0, y0, *args) if not last_equals_next else None
         return ImpRKState(t0, y0, f0)
 
     def build_step_method(drift: Callable, dtype: jnp.dtype = jnp.float32):

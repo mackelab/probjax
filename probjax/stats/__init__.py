@@ -7,12 +7,27 @@ in JAX with a SciPy-like API.
 """
 
 from probjax.stats.base import (
+    DistributionParams,
+    DistributionAPI,
     rv_continuous,
     rv_continuous_frozen,
     rv_discrete,
     rv_discrete_frozen,
     rv_exponential_family,
+    rv_frozen,
     rv_generic,
+    rv_multivariate,
+    rv_multivariate_frozen,
+    rv_spherical,
+    rv_spherical_frozen,
+)
+from probjax.stats.fit import FitMixin, fit, is_batch_stream, take_batches
+from probjax.stats.bijective.protocols import (
+    InvertibleTransformProtocol,
+    TransformedDistribution,
+    TransformProtocol,
+    ensure_invertible,
+    forward_and_logdet,
 )
 from probjax.stats.continuous.beta import beta
 from probjax.stats.continuous.bingham import bingham
@@ -21,17 +36,28 @@ from probjax.stats.continuous.chi2 import chi2
 from probjax.stats.continuous.dirichlet import dirichlet
 from probjax.stats.continuous.expon import expon
 from probjax.stats.continuous.gamma import gamma
+from probjax.stats.continuous.gennorm import gennorm
+from probjax.stats.continuous.histogram import histogram, tailed_histogram
+from probjax.stats.continuous.genpareto import genpareto
 from probjax.stats.continuous.laplace import laplace
+from probjax.stats.continuous.logistic import logistic
+from probjax.stats.continuous.mixture_kernel import (
+    logistic_mixture_kernel,
+    mixture_kernel,
+)
 from probjax.stats.continuous.multivariate_normal import multivariate_normal
 
 # Import all implemented distributions
 from probjax.stats.continuous.norm import norm
 from probjax.stats.continuous.pareto import pareto
+from probjax.stats.continuous.skewnorm import skewnorm
+from probjax.stats.continuous.spline_normal import spline_normal
 from probjax.stats.continuous.t import t
 from probjax.stats.continuous.truncnorm import truncnorm
 from probjax.stats.continuous.uniform import uniform
 from probjax.stats.continuous.vonmises import vonmises
 from probjax.stats.continuous.watson import watson
+from probjax.stats.continuous.wrapcauchy import wrapcauchy
 
 # Import discrete distributions
 from probjax.stats.discrete.bernoulli import bernoulli
@@ -40,27 +66,42 @@ from probjax.stats.discrete.categorical import categorical
 from probjax.stats.discrete.dirac import dirac
 from probjax.stats.discrete.geometric import geometric
 from probjax.stats.discrete.poisson import poisson
-from probjax.stats.empirical import empirical
+from probjax.stats.discrete.empirical import empirical
 
 # Import higher-order distributions
-from probjax.stats.independent import independent
+from probjax.stats.indep import indep
 from probjax.stats.mixture import mixture
 from probjax.stats.transformed import transformed
 
 __all__ = [
     # Base classes
+    'DistributionParams',
+    'DistributionAPI',
+    'rv_frozen',
     'rv_generic',
     'rv_continuous',
     'rv_discrete',
     'rv_exponential_family',
     'rv_continuous_frozen',
+    'rv_multivariate',
+    'rv_multivariate_frozen',
+    'rv_spherical',
+    'rv_spherical_frozen',
     'rv_discrete_frozen',
     # Continuous distributions
     'norm',
     'gamma',
+    'gennorm',
+    'histogram',
+    'tailed_histogram',
+    'mixture_kernel',
+    'logistic_mixture_kernel',
+    'spline_normal',
+    'genpareto',
     'beta',
     'expon',
     'laplace',
+    'logistic',
     'uniform',
     'chi2',
     't',
@@ -70,8 +111,10 @@ __all__ = [
     'vonmises',
     'truncnorm',
     'pareto',
+    'skewnorm',
     'watson',
     'bingham',
+    'wrapcauchy',
     # Discrete distributions
     'bernoulli',
     'binomial',
@@ -81,7 +124,18 @@ __all__ = [
     'dirac',
     'empirical',
     # Higher-order distributions
-    'independent',
+    'indep',
     'transformed',
     'mixture',
+    # Transforms
+    'TransformProtocol',
+    'InvertibleTransformProtocol',
+    'TransformedDistribution',
+    'ensure_invertible',
+    'forward_and_logdet',
+    # Gradient-based fitting
+    'fit',
+    'is_batch_stream',
+    'take_batches',
+    'FitMixin',
 ]

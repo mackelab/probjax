@@ -3,9 +3,11 @@
 /docs/docs/tutorial/*
 /docs/docs/examples/*
 /docs/site/*
-
+wandb/
+examples/nn/diffusion
 # Development files and python cache
 /*.pyc
+/*.pkl
 /*.egg
 /*.egg-info
 
@@ -74,7 +76,10 @@ tests/.mypy_cache
 
 
 # Sphinx documentation
-docs/_build/
+site/
+docs/.jupyter_cache/
+docs/__pycache__/
+docs/examples/
 
 # PyBuilder
 target/
@@ -95,6 +100,7 @@ target/
 *.code-workspace
 .vscode/
 .idea
+.claude/settings.local.json
 
 # Class diagram
 *.pyns

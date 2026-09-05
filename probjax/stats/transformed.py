@@ -13,11 +13,25 @@ import jax
 import jax.numpy as jnp
 
 from probjax.core import inverse_and_logabsdet
-from probjax.stats.base import rv_continuous
+from probjax.core.custom_primitives.sharded_primitive import batch_shard
+from probjax.stats.base import rv_continuous, rv_continuous_frozen
 from probjax.stats.constraints import distribution, real
 from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["transformed"]
+
+
+class transformed_frozen(rv_continuous_frozen):
+    """Frozen transformed distribution with base-shape metadata."""
+
+    def __init__(self, dist, base_dist, bijector, **kwds):
+        super().__init__(dist, base_dist=base_dist, bijector=bijector, **kwds)
+
+    def _compute_batch_and_event_shape(self, base_dist, bijector, **kwds):
+        del bijector, kwds
+        batch_shape = tuple(int(dim) for dim in base_dist.batch_shape)
+        event_shape = tuple(int(dim) for dim in base_dist.event_shape)
+        return batch_shape, event_shape
 
 
 class transformed_gen(rv_continuous):
@@ -25,8 +39,9 @@ class transformed_gen(rv_continuous):
 
     parameters = {
         "base_dist": distribution,
-        "bijector": callable,
+        "bijector": callable,  # type: ignore[dict-item]
     }
+    extra_frozen_kwds = frozenset({"inverse_and_logdet"})
 
     def __init__(self, name: Optional[str] = None):
         super().__init__(name=name)
@@ -36,6 +51,12 @@ class transformed_gen(rv_continuous):
         """Parse arguments for the transformed distribution."""
         return (base_dist, bijector), kwds
 
+    def freeze(self, base_dist, bijector, **kwargs):
+        """Freeze the transformed distribution with the given parameters."""
+        return transformed_frozen(
+            self, base_dist=base_dist, bijector=bijector, **kwargs
+        )
+
     @classmethod
     def support(cls, base_dist, bijector, **kwds):
         """Support of the transformed distribution."""
@@ -43,33 +64,108 @@ class transformed_gen(rv_continuous):
 
     @classmethod
     @functools.cache
-    def _get_vmapped_bijector(cls, batch_shape, bijector):
-        """Get the vmapped bijector."""
-        for _ in range(len(batch_shape)):
-            bijector = jax.vmap(bijector)
-        return bijector
+    def _get_vmapped_bijector(cls, bijector):
+        """Get a single-axis vmapped bijector (per-shard under a mesh)."""
+        return batch_shard(jax.vmap(bijector))
 
     @classmethod
-    @functools.cache
-    def _get_vmapped_inverse_and_logdet(
-        cls, batch_shape, bijector, inv_and_logdet=None
+    def _get_inverse_and_logdet(cls, bijector):
+        """Build inverse+logabsdet function for a bijector.
+
+        Deliberately NOT cached on the bijector object: for module-backed
+        bijectors (e.g. a trained flow's nnx transformation) the inverse
+        jaxpr bakes the current weights in as constants, so a cache keyed by
+        object identity would keep serving stale weights after in-place
+        training. Under ``jax.jit`` the tracing cost is paid once per
+        compilation anyway.
+        """
+        return inverse_and_logabsdet(bijector)
+
+    @classmethod
+    def _get_vmapped_inverse_and_logdet(cls, bijector):
+        """Get a single-axis vmapped inverse+logabsdet function.
+
+        Wrapped in :func:`batch_shard`: under an active mesh the inverse runs
+        per-shard on local batches (avoids GSPMD rematerialization in Auto
+        mode; required for Explicit-axes meshes, where sharded scans inside
+        flow inverses are unsupported).
+        """
+        return batch_shard(jax.vmap(cls._get_inverse_and_logdet(bijector)))
+
+    @classmethod
+    def _get_vmapped_inverse_and_logdet_with_override(
+        cls, bijector, inverse_and_logdet_fn=None
     ):
-        """Get the vmapped inverse and log determinant."""
-        if inv_and_logdet is None:
-            inv_and_logdet = inverse_and_logabsdet(bijector)
-        for _ in range(len(batch_shape)):
-            inv_and_logdet = jax.vmap(inv_and_logdet)
-        return inv_and_logdet
+        """Get vmapped inverse+logabsdet, optionally using a custom function.
+
+        Falls back to the bijector's own ``inverse_and_logdet`` method when
+        present (see :class:`probjax.stats.bijective.protocols.InvertibleTransformProtocol`),
+        skipping jaxpr auto-inversion.
+        """
+        if inverse_and_logdet_fn is None:
+            inverse_and_logdet_fn = getattr(bijector, "inverse_and_logdet", None)
+        if inverse_and_logdet_fn is None:
+            return None
+        return batch_shard(jax.vmap(inverse_and_logdet_fn))
+
+    @staticmethod
+    def _flatten_by_event_shape(x: ArrayLike, event_shape: Tuple[int, ...]):
+        """Flatten all leading dimensions into one axis while preserving event dims."""
+        x_arr = jnp.asarray(x)
+        event_shape = tuple(event_shape)
+
+        if event_shape:
+            event_ndim = len(event_shape)
+            if x_arr.ndim < event_ndim:
+                raise ValueError(
+                    "Input has fewer dimensions than the distribution event shape."
+                )
+            trailing_shape = tuple(x_arr.shape[-event_ndim:])
+            if trailing_shape != event_shape:
+                raise ValueError(
+                    "Trailing dimensions of the input must match the distribution event shape."
+                )
+            leading_shape = tuple(x_arr.shape[:-event_ndim])
+            x_flat = jnp.reshape(x_arr, (-1,) + event_shape)
+        else:
+            leading_shape = tuple(x_arr.shape)
+            x_flat = jnp.reshape(x_arr, (-1,))
+
+        return x_arr, x_flat, leading_shape
+
+    @staticmethod
+    def _unflatten_by_event_shape(x_flat, leading_shape: Tuple[int, ...], event_shape):
+        """Restore flattened values back to leading and event dimensions."""
+        event_shape = tuple(event_shape)
+        if event_shape:
+            return jnp.reshape(x_flat, leading_shape + event_shape)
+        return jnp.reshape(x_flat, leading_shape)
+
+    @staticmethod
+    def _ensure_univariate_event(event_shape: Tuple[int, ...]):
+        """Restrict operations that only support univariate events."""
+        if event_shape not in ((), (1,)):
+            raise NotImplementedError(
+                "This method currently supports only univariate transformed distributions."
+            )
 
     @classmethod
     def logpdf(cls, x: ArrayLike, base_dist, bijector, inverse_and_logdet=None, **kwds):
         """Log probability density function of the transformed distribution."""
-        event_shape = base_dist.event_shape
-        x = x.reshape(-1, *event_shape)
-        inverse_and_logdet = cls._get_vmapped_inverse_and_logdet(
-            x.shape[:1], bijector, inverse_and_logdet
+        event_shape = tuple(base_dist.event_shape)
+        _, x_flat, leading_shape = cls._flatten_by_event_shape(x, event_shape)
+
+        vmapped_inverse_and_logdet = cls._get_vmapped_inverse_and_logdet_with_override(
+            bijector, inverse_and_logdet
         )
-        inv_value, log_det = inverse_and_logdet(x)
+        if vmapped_inverse_and_logdet is None:
+            vmapped_inverse_and_logdet = cls._get_vmapped_inverse_and_logdet(bijector)
+
+        inv_flat, log_det_flat = vmapped_inverse_and_logdet(x_flat)
+        inv_value = cls._unflatten_by_event_shape(inv_flat, leading_shape, event_shape)
+        log_det = jnp.reshape(
+            log_det_flat, leading_shape + tuple(log_det_flat.shape[1:])
+        )
         return base_dist.logpdf(inv_value) + log_det
 
     @classmethod
@@ -80,27 +176,39 @@ class transformed_gen(rv_continuous):
     @classmethod
     def cdf(cls, x: ArrayLike, base_dist, bijector, inverse_and_logdet=None, **kwds):
         """Cumulative distribution function of the transformed distribution."""
-        batch_shape = base_dist.batch_shape
-        bijector = cls._get_vmapped_bijector(batch_shape, bijector)
-        inverse_and_logdet = cls._get_vmapped_inverse_and_logdet(
-            batch_shape, bijector, inverse_and_logdet
+        event_shape = tuple(base_dist.event_shape)
+        cls._ensure_univariate_event(event_shape)
+        _, x_flat, leading_shape = cls._flatten_by_event_shape(x, event_shape)
+
+        vmapped_inverse_and_logdet = cls._get_vmapped_inverse_and_logdet_with_override(
+            bijector, inverse_and_logdet
         )
-        inv_value, _ = inverse_and_logdet(x)
+        if vmapped_inverse_and_logdet is None:
+            vmapped_inverse_and_logdet = cls._get_vmapped_inverse_and_logdet(bijector)
+
+        inv_flat, _ = vmapped_inverse_and_logdet(x_flat)
+        inv_value = cls._unflatten_by_event_shape(inv_flat, leading_shape, event_shape)
         return base_dist.cdf(inv_value)
 
     @classmethod
     def ppf(cls, q: ArrayLike, base_dist, bijector, inverse_and_logdet=None, **kwds):
         """Percent point function of the transformed distribution."""
-        batch_shape = base_dist.batch_shape
-        bijector = cls._get_vmapped_bijector(batch_shape, bijector)
-        inverse_and_logdet = cls._get_vmapped_inverse_and_logdet(
-            batch_shape, bijector, inverse_and_logdet
+        del inverse_and_logdet, kwds
+        event_shape = tuple(base_dist.event_shape)
+        cls._ensure_univariate_event(event_shape)
+
+        base_ppf = base_dist.ppf(q)
+        _, base_ppf_flat, leading_shape = cls._flatten_by_event_shape(
+            base_ppf, event_shape
         )
-        inv_value, _ = inverse_and_logdet(q)
-        return bijector(inv_value)
+        vmapped_bijector = cls._get_vmapped_bijector(bijector)
+        transformed_flat = vmapped_bijector(base_ppf_flat)
+        return cls._unflatten_by_event_shape(
+            transformed_flat, leading_shape, event_shape
+        )
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         base_dist=None,
@@ -109,11 +217,18 @@ class transformed_gen(rv_continuous):
         **kwargs,
     ):
         """Random variates of the transformed distribution."""
-        batch_shape = base_dist.batch_shape
-        batch_shape = shape + batch_shape
-        bijector = cls._get_vmapped_bijector(batch_shape, bijector)
+        if base_dist is None or bijector is None:
+            raise ValueError("Both base_dist and bijector must be provided.")
         samples = base_dist.rvs(rng, shape=shape)
-        return bijector(samples)
+        event_shape = tuple(base_dist.event_shape)
+        _, samples_flat, leading_shape = cls._flatten_by_event_shape(
+            samples, event_shape
+        )
+        vmapped_bijector = cls._get_vmapped_bijector(bijector)
+        transformed_flat = vmapped_bijector(samples_flat)
+        return cls._unflatten_by_event_shape(
+            transformed_flat, leading_shape, event_shape
+        )
 
     @classmethod
     def mean(cls, base_dist, bijector, **kwds):

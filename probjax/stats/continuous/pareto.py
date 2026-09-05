@@ -67,7 +67,7 @@ class pareto_gen(rv_continuous, rv_exponential_family):
         return _pareto.ppf(q, b=alpha, scale=b)
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         b=1.0,

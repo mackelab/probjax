@@ -1,0 +1,4 @@
+# Pinned deliberately: Zensical is pre-1.0 and ships every few days, so an
+# unpinned build would drift without anyone changing this repository.
+zensical==0.0.57
+mkdocstrings-python==2.0.7

@@ -122,7 +122,7 @@ def build_kernel(
                 log_normalizer = jax.scipy.special.logsumexp(log_weights)
                 log_weights = log_weights - log_normalizer
             else:
-                new_log_weights = log_weights
+                pass
             log_likelihood = 0.0  # Without observation we don't have a logZ
 
         # Resample if necessary
@@ -141,7 +141,11 @@ def build_kernel(
             return new_particles, new_log_weights, idx
 
         def no_resample(key, log_weights, particles):
-            return particles, log_weights, jnp.arange(particles.shape[0])
+            return (
+                particles,
+                log_weights,
+                jnp.arange(particles.shape[0], dtype=jnp.int32),
+            )
 
         new_particles, new_log_weights, ancestors = jax.lax.cond(
             do_resample,
@@ -189,3 +193,7 @@ class ParticleFilter(FilterAPI):
 
     init = init
     build_kernel = build_kernel
+
+    @staticmethod
+    def default_unpack(state, info):
+        return state.particles

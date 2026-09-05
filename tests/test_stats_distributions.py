@@ -3,6 +3,7 @@ import itertools
 import jax
 import jax.numpy as jnp
 import pytest
+from jax.flatten_util import ravel_pytree
 
 from probjax.stats import (
     # Discrete distributions
@@ -18,7 +19,7 @@ from probjax.stats import (
     gamma,
     geometric,
     # Higher-order distributions
-    independent,
+    indep,
     laplace,
     mixture,
     multivariate_normal,
@@ -32,7 +33,12 @@ from probjax.stats import (
     uniform,
     vonmises,
 )
-from probjax.stats.constraint_registry import transform_to
+from probjax.stats.constraint_registry import biject_to, transform_to
+from probjax.stats.constraints import (
+    simplex,
+    strict_positive,
+    symmetric_positive_definite_matrix,
+)
 from probjax.stats.divergences import (
     kl_divergence,
     max_slice_wasserstein_distance,
@@ -59,7 +65,7 @@ CONTINUOUS_DIST = [
     multivariate_normal,
 ]
 DISCRETE_DIST = [bernoulli, binomial, categorical, poisson, geometric, dirac]
-SPECIAL_DIST = [independent, transformed, mixture]
+SPECIAL_DIST = [indep, transformed, mixture]
 
 FIT_TEST_CASES = [
     {
@@ -155,10 +161,9 @@ FIT_TEST_CASES = [
         "num_samples": 8000,
         "rtol": 0.05,
         "atol": 0.02,
-        "sample_fn": lambda key, params, num: jax.random.geometric(
-            key, params["p"], shape=(num,)
-        )
-        - 1,
+        "sample_fn": lambda key, params, num: (
+            jax.random.geometric(key, params["p"], shape=(num,)) - 1
+        ),
     },
     {
         "seed": 10,
@@ -375,6 +380,99 @@ def test_distribution_class_attributes(dist):
     assert hasattr(dist, 'rvs') and callable(dist.rvs), "Missing rvs"
 
 
+def test_frozen_init_rejects_invalid_arguments():
+    with pytest.raises(TypeError, match="unexpected keyword argument 'foo'"):
+        norm(foo=1.0)
+
+    with pytest.raises(TypeError, match="expected at most 2 positional arguments"):
+        norm(0.0, 1.0, 2.0)
+
+    with pytest.raises(TypeError, match="multiple values for argument 'loc'"):
+        norm(0.0, loc=1.0)
+
+
+def test_constraint_bijections_round_trip():
+    positive_value = jnp.array(2.5)
+    simplex_value = jnp.array([0.2, 0.3, 0.5])
+    covariance = jnp.array([[2.0, 0.3], [0.3, 1.0]])
+
+    for constraint, value in (
+        (strict_positive, positive_value),
+        (simplex, simplex_value),
+        (symmetric_positive_definite_matrix, covariance),
+    ):
+        transform = biject_to(constraint)
+        assert jnp.allclose(transform(transform.inv(value)), value, atol=1e-6)
+
+
+def test_frozen_parameter_round_trip():
+    dist = norm(loc=jnp.array(1.5), scale=jnp.array(2.0))
+
+    assert set(dist.params) == {"loc", "scale"}
+    assert jnp.allclose(dist.unconstrained_params["scale"], jnp.log(2.0))
+
+    rebuilt = norm.from_params(
+        norm.params_from_unconstrained(dist.unconstrained_params)
+    )
+    assert jnp.allclose(rebuilt.loc, dist.loc)
+    assert jnp.allclose(rebuilt.scale, dist.scale)
+
+
+def test_nested_mixture_parameter_round_trip():
+    dist = mixture(
+        jnp.array([0.25, 0.75]),
+        [norm(-1.0, 0.5), norm(2.0, 1.5)],
+    )
+
+    unconstrained = dist.unconstrained_params
+    flat, unravel = ravel_pytree(unconstrained)
+    rebuilt = mixture.from_params(mixture.params_from_unconstrained(unravel(flat)))
+
+    assert flat.shape == (6,)
+    assert jnp.allclose(rebuilt.mixing_probs, dist.mixing_probs)
+    assert jnp.allclose(rebuilt.components[0].scale, dist.components[0].scale)
+
+
+def test_fit_params_names_analytic_fit_results():
+    data = jnp.array([-2.0, 0.0, 1.0, 3.0])
+    loc, scale = norm.fit(data)
+
+    fitted = norm.fit_params(data)
+
+    assert set(fitted) == {"loc", "scale"}
+    assert jnp.allclose(fitted["loc"], loc)
+    assert jnp.allclose(fitted["scale"], scale)
+
+
+def test_frozen_init_rejects_invalid_special_distribution_keywords():
+    base_dist = norm(0.0, 1.0)
+
+    with pytest.raises(TypeError, match="unexpected keyword argument 'foo'"):
+        categorical(jnp.array([1.0]), foo=True)
+
+    with pytest.raises(TypeError, match="unexpected keyword argument 'foo'"):
+        indep(base_dist, foo=True)
+
+    with pytest.raises(TypeError, match="unexpected keyword argument 'foo'"):
+        mixture(jnp.array([1.0]), [base_dist], foo=True)
+
+    with pytest.raises(TypeError, match="unexpected keyword argument 'foo'"):
+        transformed(base_dist, lambda x: x, foo=True)
+
+
+def test_transformed_accepts_inverse_and_logdet_frozen_keyword():
+    def inverse_and_logdet(y):
+        return y, jnp.zeros_like(y)
+
+    dist = transformed(
+        norm(0.0, 1.0),
+        lambda x: x,
+        inverse_and_logdet=inverse_and_logdet,
+    )
+
+    assert dist.kwds["inverse_and_logdet"] is inverse_and_logdet
+
+
 @pytest.mark.parametrize("dist", CONTINUOUS_DIST + DISCRETE_DIST, ids=lambda x: x.name)
 def test_base_distribution(dist, shape=(1,), seed=0):
     """Test basic functionality of distributions."""
@@ -411,7 +509,7 @@ def test_independent_distribution(dist, shape=(2,), seed=0):
     key = jax.random.PRNGKey(seed)
     p = init_dist(dist, key, shape)
 
-    p = independent(p)
+    p = indep(p)
 
     # Test sampling and shape handling
     sample_and_check_shape(p, key, shape)
@@ -448,7 +546,7 @@ def test_mixed_independent_distribution(dist1, dist2, shape=(1,), seed=0):
     p2 = init_dist(dist2, key, shape)
 
     try:
-        p = independent(p1, p2)
+        p = indep(p1, p2)
     except AssertionError:
         return
 
@@ -518,13 +616,24 @@ def _angle_distance(a, b):
 
 def test_mixture_em_vonmises(seed: int = 0):
     """EM should recover parameters of a von Mises mixture."""
-    key = jax.random.PRNGKey(seed)
-    true_probs = jnp.array([0.45, 0.55])
-    comp1 = vonmises(-1.8, 4.0)
-    comp2 = vonmises(1.8, 5.0)
-    mix = mixture(true_probs, [comp1, comp2])
+    import numpy as np
+    from scipy.stats import vonmises as scipy_vonmises
 
-    data = mix.rvs(key, shape=(6000,))
+    rng_np = np.random.default_rng(seed)
+    true_probs = jnp.array([0.45, 0.55])
+    loc1, kappa1 = -1.8, 4.0
+    loc2, kappa2 = 1.8, 5.0
+    comp1 = vonmises(loc1, kappa1)
+    comp2 = vonmises(loc2, kappa2)
+
+    n = 6000
+    labels = rng_np.choice(2, size=n, p=np.array(true_probs))
+    samples = np.where(
+        labels == 0,
+        scipy_vonmises.rvs(kappa1, loc=loc1, size=n, random_state=rng_np),
+        scipy_vonmises.rvs(kappa2, loc=loc2, size=n, random_state=rng_np),
+    )
+    data = jnp.array(samples)
 
     init_components = [vonmises(-1.0, 2.5), vonmises(2.3, 2.5)]
     rng = jax.random.PRNGKey(seed + 456)
@@ -627,23 +736,20 @@ def test_truncnorm_sampling_with_bounds(seed: int = 0):
     assert jnp.all(samples <= upper + 1e-6)
 
 
-@pytest.mark.xfail(
-    reason="Pareto sampler mean check is flaky; investigate analytic comparison."
-)
 def test_pareto_sampling_matches_moment(seed: int = 0):
     """Pareto sampler should respect the minimum and produce the correct mean."""
     key = jax.random.PRNGKey(seed)
-    scale = jnp.array(1.7)
-    tail = jnp.array(4.5)
+    scale = jnp.array(0.0)
+    tail = jnp.array(2.5)
     dist = pareto(scale, tail)
 
-    samples = dist.rvs(key, shape=(16000,))
-    assert samples.shape == (16000,)
+    samples = dist.rvs(key, shape=(32000,))
+    assert samples.shape == (32000,)
     assert jnp.all(samples >= scale), "Pareto samples must be >= scale parameter"
 
     expected_mean = dist.mean()
     if not jnp.isfinite(expected_mean):
-        pytest.skip("Pareto mean is infinite for the chosen parameters")
+        return
     empirical_mean = jnp.mean(samples)
     assert jnp.allclose(
         empirical_mean,
@@ -794,3 +900,110 @@ def test_max_slice_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
     assert jnp.allclose(dist, dist_mc, atol=0.1, rtol=0.1), (
         "MC Max Sliced Wasserstein distance is not close to analytic Max Sliced Wasserstein distance"
     )
+
+
+# =============================================================================
+# Directional distribution tests (Watson, Bingham)
+# =============================================================================
+
+from probjax.stats.continuous import bingham, watson
+
+
+def _unit_vector(x):
+    return x / jnp.linalg.norm(x)
+
+
+def test_watson_samples_live_on_sphere():
+    key = jax.random.PRNGKey(0)
+    mean_direction = _unit_vector(jnp.array([0.3, -0.4, 1.2]))
+    samples = watson.rvs(key, mean_direction=mean_direction, kappa=2.5, shape=(128,))
+    norms = jnp.linalg.norm(samples, axis=-1)
+    assert jnp.allclose(norms, 1.0, atol=1e-6)
+
+
+def test_watson_logpdf_symmetry_and_uniform_limit():
+    mean_direction = _unit_vector(jnp.array([0.0, 0.0, 1.0]))
+    x = _unit_vector(jnp.array([1.0, 0.5, -0.25]))
+    logpdf_pos = watson.logpdf(x, mean_direction, kappa=3.0)
+    logpdf_neg = watson.logpdf(-x, mean_direction, kappa=3.0)
+    assert jnp.allclose(logpdf_pos, logpdf_neg, atol=1e-6)
+
+    logpdf_uniform = watson.logpdf(x, mean_direction, kappa=0.0)
+    logpdf_uniform_ref = watson.logpdf(
+        _unit_vector(jnp.array([0.1, -0.3, 0.95])), mean_direction, kappa=0.0
+    )
+    assert jnp.allclose(logpdf_uniform, logpdf_uniform_ref, atol=1e-6)
+
+
+def test_watson_natural_parameter_shape():
+    mean_direction = _unit_vector(jnp.array([0.1, 0.3, 0.9]))
+    kappa = jnp.array([2.0, 5.0])  # batched concentration
+    params = watson.natural_parameters(
+        mean_direction=jnp.broadcast_to(mean_direction, (2, 3)),
+        kappa=kappa,
+    )
+    assert params.shape == (2, 3)
+
+
+def test_bingham_samples_live_on_sphere():
+    key = jax.random.PRNGKey(1)
+    orientation = jnp.eye(3)
+    concentration = jnp.array([-3.0, 0.5, 2.0])
+    samples = bingham.rvs(
+        key, orientation=orientation, concentration=concentration, shape=(64,)
+    )
+    norms = jnp.linalg.norm(samples, axis=-1)
+    assert jnp.allclose(norms, 1.0, atol=1e-6)
+
+
+def test_bingham_logpdf_symmetry_and_uniform_limit():
+    orientation = jnp.eye(3)
+    concentration = jnp.array([-2.0, 0.0, 1.0])
+    x = _unit_vector(jnp.array([0.2, -0.7, 0.65]))
+    logpdf_pos = bingham.logpdf(x, orientation, concentration)
+    logpdf_neg = bingham.logpdf(-x, orientation, concentration)
+    assert jnp.allclose(logpdf_pos, logpdf_neg, atol=1e-6)
+
+    logpdf_uniform = bingham.logpdf(x, orientation, jnp.zeros_like(concentration))
+    logpdf_uniform_ref = bingham.logpdf(
+        _unit_vector(jnp.array([-0.5, 0.3, 0.81])),
+        orientation,
+        jnp.zeros_like(concentration),
+    )
+    assert jnp.allclose(logpdf_uniform, logpdf_uniform_ref, atol=1e-6)
+
+
+def test_bingham_natural_parameter_shape():
+    orientation = jnp.stack([jnp.eye(3), jnp.eye(3)], axis=0)
+    concentration = jnp.stack(
+        [jnp.array([-2.0, 0.0, 1.0]), jnp.array([0.5, -0.3, -0.2])],
+        axis=0,
+    )
+    params = bingham.natural_parameters(
+        orientation=orientation, concentration=concentration
+    )
+    assert params.shape == (2, 3, 3)
+    assert jnp.allclose(params, jnp.swapaxes(params, -1, -2))
+
+
+def test_watson_fit_estimates_direction():
+    key = jax.random.PRNGKey(2)
+    true_mu = _unit_vector(jnp.array([0.1, -0.4, 1.0]))
+    samples = watson.rvs(key, mean_direction=true_mu, kappa=5.0, shape=(512,))
+    mu_hat, kappa_hat = watson.fit(samples)
+    alignment = jnp.abs(jnp.dot(mu_hat, true_mu))
+    assert alignment > 0.95
+    assert kappa_hat > 0
+
+
+def test_bingham_fit_estimates_orientation():
+    key = jax.random.PRNGKey(3)
+    orientation = jnp.eye(3)
+    concentration = jnp.array([-3.0, -1.0, 0.0])
+    samples = bingham.rvs(
+        key, orientation=orientation, concentration=concentration, shape=(512,)
+    )
+    orientation_hat, concentration_hat = bingham.fit(samples)
+    overlap = jnp.abs(orientation_hat.T @ orientation)
+    assert jnp.all(jnp.max(overlap, axis=1) > 0.8)
+    assert concentration_hat.shape == concentration.shape

@@ -13,6 +13,7 @@ from jax import random
 
 from probjax.stats.base import rv_discrete, rv_discrete_frozen, rv_exponential_family
 from probjax.stats.constraints import simplex
+from probjax.stats.utils import flatten_samples, normalize_sample_weights
 from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["categorical"]
@@ -44,7 +45,7 @@ class categorical_gen(rv_discrete, rv_exponential_family):
         return log_probs
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         probs=None,
@@ -56,7 +57,10 @@ class categorical_gen(rv_discrete, rv_exponential_family):
         event_shape = probs.shape[
             :-1
         ]  # Remove the last dimension which is the number of categories
-        return random.categorical(rng, probs, shape=shape + event_shape, axis=-1)
+        # random.categorical expects *logits*; passing probs straight in would
+        # silently sample from softmax(probs) instead of probs.
+        logits = jnp.log(jnp.clip(probs, jnp.finfo(probs.dtype).tiny))
+        return random.categorical(rng, logits, shape=shape + event_shape, axis=-1)
 
     @classmethod
     def mean(cls, probs, **kwds):
@@ -117,25 +121,23 @@ class categorical_gen(rv_discrete, rv_exponential_family):
         params : tuple
             The fitted probabilities
         """
-        data = jnp.asarray(data)
+        data = flatten_samples(data)
         if num_classes is None:
-            num_classes = jnp.max(data) + 1
-        if weights is not None:
-            weights = jnp.asarray(weights, dtype=data.dtype)
-            if weights.ndim != 1 or weights.shape[0] != data.shape[0]:
-                raise ValueError("weights must have the same length as data")
-            weights = jnp.clip(weights, 0)
-            total = jnp.sum(weights)
-            total = jnp.where(
-                total > 0, total, jnp.asarray(data.shape[0], dtype=data.dtype)
-            )
-            weights = weights / total
-            counts = jnp.zeros((num_classes,), dtype=data.dtype)
-            counts = counts.at[data].add(weights)
+            num_classes = int(jnp.max(data)) + 1
+        count_dtype = jnp.result_type(data.dtype, jnp.float32)
+
+        weights_arr = normalize_sample_weights(
+            weights,
+            n_samples=data.shape[0],
+            dtype=count_dtype,
+        )
+        if weights_arr is not None:
+            counts = jnp.zeros((num_classes,), dtype=count_dtype)
+            counts = counts.at[data].add(weights_arr)
         else:
-            counts = jnp.bincount(data, length=num_classes)
+            counts = jnp.bincount(data, length=num_classes).astype(count_dtype)
             counts = counts / jnp.sum(counts)
-        probs = jnp.clip(counts, jnp.asarray(1e-12, dtype=data.dtype), None)
+        probs = jnp.clip(counts, jnp.asarray(1e-12, dtype=count_dtype), None)
         probs = probs / jnp.sum(probs)
         return (probs,)
 

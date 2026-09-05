@@ -33,6 +33,8 @@ class Benchmark:
         track_cpu=True,
         track_mem=True,
         track_disk=False,
+        live_utilization=False,
+        live_interval=0.5,
     ):
         if max_time <= 0:
             raise ValueError("max_time must be positive.")
@@ -40,6 +42,8 @@ class Benchmark:
             raise ValueError("min_iterations must be at least 1.")
         if max_iterations is not None and max_iterations < min_iterations:
             raise ValueError("max_iterations must be >= min_iterations.")
+        if live_interval <= 0:
+            raise ValueError("live_interval must be positive.")
 
         self.max_time = max_time
         self.min_iterations = min_iterations
@@ -48,6 +52,8 @@ class Benchmark:
         self.track_cpu = track_cpu
         self.track_mem = track_mem
         self.track_disk = track_disk
+        self.live_utilization = live_utilization
+        self.live_interval = live_interval
 
         self.elapsed = None
 
@@ -60,6 +66,7 @@ class Benchmark:
         self._duration_estimator = None
         self._warmup_duration = None
         self._iteration_durations = []
+        self._last_live_report = None
 
     def __enter__(self):
         self._prepare_trackers()
@@ -70,6 +77,7 @@ class Benchmark:
         self._duration_estimator = OnlineMeanStdEstimator()
         self._warmup_duration = None
         self._iteration_durations = []
+        self._last_live_report = self._start_time
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -80,6 +88,8 @@ class Benchmark:
         # Ensure trackers stop even when errors occur inside the context.
         self._stop_trackers()
         self._active = False
+        if self.live_utilization and self._trackers:
+            print()
         self._report_elapsed_time()
         return False
 
@@ -117,6 +127,19 @@ class Benchmark:
             else:
                 self._iteration_durations.append(duration)
                 self._duration_estimator.update(duration)
+            self._maybe_report_live_utilization(iteration_end)
+
+    def _maybe_report_live_utilization(self, now):
+        if not self.live_utilization or not self._trackers:
+            return
+        if self._last_live_report is None:
+            self._last_live_report = now
+            return
+        if now - self._last_live_report < self.live_interval:
+            return
+        summary = " | ".join(tracker.get_summary() for tracker in self._trackers)
+        print(summary, end="\r")
+        self._last_live_report = now
 
     def _report_elapsed_time(self):
         if self.elapsed is None:
@@ -209,6 +232,8 @@ def benchmark(
     track_cpu=True,
     track_mem=True,
     track_disk=False,
+    live_utilization=False,
+    live_interval=0.5,
 ):
     """Create a Benchmark context manager."""
     return Benchmark(
@@ -219,7 +244,102 @@ def benchmark(
         track_cpu=track_cpu,
         track_mem=track_mem,
         track_disk=track_disk,
+        live_utilization=live_utilization,
+        live_interval=live_interval,
     )
+
+
+def bmit(
+    fn,
+    *args,
+    max_time=5.0,
+    min_iterations=2,
+    max_iterations=None,
+    track_gpu=True,
+    track_cpu=True,
+    track_mem=True,
+    track_disk=False,
+    live_utilization=True,
+    live_interval=0.5,
+    **kwargs,
+):
+    """Run a function repeatedly and report time + resource utilization."""
+    result = None
+    with Benchmark(
+        max_time=max_time,
+        min_iterations=min_iterations,
+        max_iterations=max_iterations,
+        track_gpu=track_gpu,
+        track_cpu=track_cpu,
+        track_mem=track_mem,
+        track_disk=track_disk,
+        live_utilization=live_utilization,
+        live_interval=live_interval,
+    ) as bm:
+        for _ in bm:
+            result = fn(*args, **kwargs)
+    return result
+
+
+def register_bmit_magic():
+    """Register the %%bmit cell magic when running inside IPython."""
+    try:
+        from IPython import get_ipython
+        from IPython.core.magic import register_cell_magic
+    except Exception:
+        return False
+
+    ip = get_ipython()
+    if ip is None:
+        return False
+    if "bmit" in ip.magics_manager.magics.get("cell", {}):
+        return True
+
+    @register_cell_magic
+    def bmit(line, cell):
+        import argparse
+        import shlex
+
+        parser = argparse.ArgumentParser(prog="%%bmit", add_help=False)
+        parser.add_argument("-t", "--max-time", type=float, default=5.0)
+        parser.add_argument("-n", "--min-iterations", type=int, default=2)
+        parser.add_argument("--max-iterations", type=int, default=None)
+        parser.add_argument("--no-gpu", action="store_true")
+        parser.add_argument("--no-cpu", action="store_true")
+        parser.add_argument("--no-mem", action="store_true")
+        parser.add_argument("--disk", action="store_true")
+        parser.add_argument("--no-live", action="store_true")
+        parser.add_argument("--live-interval", type=float, default=0.5)
+
+        try:
+            args = parser.parse_args(shlex.split(line))
+        except SystemExit:
+            print(
+                "Usage: %%bmit [-t seconds] [-n min_iterations] [--max-iterations N] "
+                "[--no-gpu] [--no-cpu] [--no-mem] [--disk] [--no-live] "
+                "[--live-interval seconds]"
+            )
+            return None
+
+        with Benchmark(
+            max_time=args.max_time,
+            min_iterations=args.min_iterations,
+            max_iterations=args.max_iterations,
+            track_gpu=not args.no_gpu,
+            track_cpu=not args.no_cpu,
+            track_mem=not args.no_mem,
+            track_disk=args.disk,
+            live_utilization=not args.no_live,
+            live_interval=args.live_interval,
+        ) as bm:
+            for _ in bm:
+                exec(compile(cell, "<bmit>", "exec"), ip.user_ns, ip.user_ns)
+        return None
+
+    return True
+
+
+register_bmit_magic()
 
 
 class OnlineMeanStdEstimator:

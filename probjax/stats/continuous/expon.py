@@ -13,6 +13,7 @@ from jax.scipy.stats import expon as _expon
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import positive, strict_positive
+from probjax.stats.utils import flatten_samples, normalize_sample_weights
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["expon"]
@@ -133,7 +134,7 @@ class expon_gen(rv_continuous, rv_exponential_family):
         return _expon.ppf(q, loc=0.0, scale=scale)
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         rate=1.0,
@@ -182,7 +183,9 @@ class expon_gen(rv_continuous, rv_exponential_family):
         """
         q = jnp.asarray(q)
         rate_arr = jnp.asarray(rate)
-        return -jnp.log(jnp.clip(q, a_min=jnp.finfo(q.dtype).tiny, a_max=1.0)) / rate_arr
+        return (
+            -jnp.log(jnp.clip(q, a_min=jnp.finfo(q.dtype).tiny, a_max=1.0)) / rate_arr
+        )
 
     @classmethod
     def mean(cls, rate=1.0, **kwargs):
@@ -374,21 +377,18 @@ class expon_gen(rv_continuous, rv_exponential_family):
         params : tuple
             The fitted parameters (rate,)
         """
-        data = jnp.asarray(data)
-        data = jnp.reshape(data, (-1,))
+        data = flatten_samples(data)
         dtype = data.dtype
 
-        if weights is not None:
-            weights = jnp.asarray(weights, dtype=dtype).reshape((-1,))
-            if weights.shape[0] != data.shape[0]:
-                raise ValueError("weights must have the same length as data")
-            weights = jnp.clip(weights, 0)
-            total = jnp.sum(weights)
-            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=dtype))
-            weights = weights / total
-            mean = jnp.sum(weights * data)
-        else:
+        weights_arr = normalize_sample_weights(
+            weights,
+            n_samples=data.shape[0],
+            dtype=dtype,
+        )
+        if weights_arr is None:
             mean = jnp.mean(data)
+        else:
+            mean = jnp.sum(weights_arr * data)
         rate = 1.0 / jnp.maximum(mean, jnp.asarray(1e-12, dtype=dtype))
         return (rate,)
 

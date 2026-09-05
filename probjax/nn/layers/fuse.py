@@ -5,6 +5,8 @@ import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.layers.reg import DropPath
+
+
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
@@ -29,7 +31,9 @@ def identity(x: ArrayLike) -> ArrayLike:
 class ContextFuse(nnx.Module):
     """Base class for fusion modules."""
 
-    def __call__(self, x: Array, context: Array) -> Array: ...
+    def __call__(
+        self, x: Array, context: Array, *, rng: jax.Array | None = None
+    ) -> Array: ...
 
 
 class BinaryFuse(nnx.Module):
@@ -42,6 +46,7 @@ class BinaryFuse(nnx.Module):
         context: Array | None,
         *,
         deterministic: bool = True,
+        rng: jax.Array | None = None,
     ) -> Array: ...
 
 
@@ -91,7 +96,8 @@ class MLPConditioner(nnx.Module):
             **linear_kwargs,
         )
 
-    def __call__(self, x: Array) -> Array:
+    def __call__(self, x: Array, *, rng: jax.Array | None = None) -> Array:
+        del rng
         x = self.hidden(x)
         x = self.activation(x)
         return self.proj(x)
@@ -145,7 +151,9 @@ class AdditiveFuse(ContextFuse):
             **precision_kwargs,
         )
 
-    def __call__(self, x: Array, context: Array) -> Array:
+    def __call__(
+        self, x: Array, context: Array, *, rng: jax.Array | None = None
+    ) -> Array:
         """Apply additive fusion to input and context.
 
         Args:
@@ -155,6 +163,7 @@ class AdditiveFuse(ContextFuse):
         Returns:
             Array with same shape as x, with transformed context added.
         """
+        del rng
         return x + self.linear(context)
 
 
@@ -212,7 +221,9 @@ class AffineFuse(ContextFuse):
         )
         self.scale_activation = scale_activation
 
-    def __call__(self, x: Array, context: Array) -> Array:
+    def __call__(
+        self, x: Array, context: Array, *, rng: jax.Array | None = None
+    ) -> Array:
         """Apply affine fusion to input and context.
 
         Args:
@@ -222,6 +233,7 @@ class AffineFuse(ContextFuse):
         Returns:
             Array with same shape as x, with affine transformation applied.
         """
+        del rng
         scale_bias = self.linear_scale_bias(context)
         scale, bias = jnp.split(scale_bias, 2, axis=-1)
         scale = self.scale_activation(scale)
@@ -282,7 +294,9 @@ class ConcatFuse(ContextFuse):
             **precision_kwargs,
         )
 
-    def __call__(self, x: Array, context: Array) -> Array:
+    def __call__(
+        self, x: Array, context: Array, *, rng: jax.Array | None = None
+    ) -> Array:
         """Apply concatenation fusion to input and context.
 
         Args:
@@ -293,6 +307,7 @@ class ConcatFuse(ContextFuse):
             Array of shape [..., input_dim + input_dim] with transformed context
             concatenated to the input.
         """
+        del rng
         context = self.ctx_layer(context)
         # Ensure same leading dimensions as x
         context = jnp.broadcast_to(context, x.shape[:-1] + (context.shape[-1],))  # type: ignore
@@ -333,10 +348,11 @@ class AdditiveBinaryFuse(BinaryFuse):
         context: Array | None,
         *,
         deterministic: bool | None = None,
+        rng: jax.Array | None = None,
     ) -> Array:
         del context
         if self.drop_path is not None:
-            y = self.drop_path(y, deterministic=deterministic)
+            y = self.drop_path(y, deterministic=deterministic, rng=rng)
         return x + y
 
 
@@ -411,6 +427,7 @@ class GatedFuse(BinaryFuse):
         context: Array | None,
         *,
         deterministic: bool | None = None,
+        rng: jax.Array | None = None,
     ) -> Array:
         """Apply gated fusion to input and context.
 
@@ -425,7 +442,7 @@ class GatedFuse(BinaryFuse):
         if context is None:
             raise ValueError("Context must be provided for GatedFuse.")
         if self.drop_path is not None:
-            y = self.drop_path(y, deterministic=deterministic)
+            y = self.drop_path(y, deterministic=deterministic, rng=rng)
         # Ensure same leading dimensions as x
         context = jnp.broadcast_to(context, x.shape[:-1] + (context.shape[-1],))
         gate = self.gate_activation(self.gate_layer(context))

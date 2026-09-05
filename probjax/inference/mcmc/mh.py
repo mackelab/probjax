@@ -5,16 +5,10 @@ import blackjax
 import jax
 import jax.numpy as jnp
 from blackjax.mcmc.random_walk import RWInfo, RWState
-from chex import PRNGKey
 from jax.flatten_util import ravel_pytree
-from jax.typing import ArrayLike
-from jaxtyping import Array, PyTree
 
-from probjax.inference.mcmc.adaptation import (
-    step_size_adaption,
-    step_size_and_scale_adaption,
-)
-from probjax.inference.mcmc.base import MarkovKernelAPI
+from probjax.inference.mcmc.base import make_kernel_api
+from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 
 class RWParams(NamedTuple):
@@ -29,7 +23,7 @@ def build_mh_step(
     kernel = blackjax.rmh.build_kernel()
 
     def step(
-        key: PRNGKey,
+        key: RngKey,
         state: RWState,
         params: RWParams,
     ) -> Tuple[RWState, RWInfo]:
@@ -52,14 +46,16 @@ def build_mh_step(
     return step
 
 
-def init_params_mh(position: PyTree) -> RWParams:
+def init_params_mh(state: PyTree) -> RWParams:
     return RWParams()
 
 
-class MH(MarkovKernelAPI):
-    init = blackjax.rmh.init
-    build_kernel = build_mh_step
-    init_params = init_params_mh
+mh = make_kernel_api(
+    name="mh",
+    init_fn=blackjax.rmh.init,
+    init_params_fn=init_params_mh,
+    build_step_fn=build_mh_step,
+)
 
 
 class RWParamsGauss(NamedTuple):
@@ -68,8 +64,9 @@ class RWParamsGauss(NamedTuple):
 
 
 def init_params_gaussian_rw(
-    position: PyTree, step_size: float = 0.5, scale: Optional[Array] = None
+    state: PyTree, step_size: float = 0.5, scale: Optional[Array] = None
 ) -> RWParamsGauss:
+    position = state.position if hasattr(state, "position") else state
     flat_position, _ = ravel_pytree(position)
     dim = flat_position.shape[0]
     if scale is None:
@@ -92,55 +89,11 @@ def gaussian_transition_proposal(key, position, params: RWParamsGauss):
     return unflatten(new_position)
 
 
-def build_adaptation(
-    logdensity_fn: Callable,
-) -> Callable:
-    def adapt_parms(
-        key: PRNGKey,
-        position: PyTree,
-        params: RWParamsGauss,
-        num_steps: int = 100,
-        method: str = "step_size",
-        target_acceptance_rate: float = 0.235,
-        is_diagonal_matrix: bool = True,
-        t0: int = 10,
-        gamma: float = 0.05,
-        kappa: float = 0.75,
-    ) -> Tuple[RWState, RWInfo]:
-        if method == "step_size":
-            adaption_alg = step_size_adaption(
-                GaussRWMH,
-                logdensity_fn,
-                params,
-                target=target_acceptance_rate,
-                t0=t0,
-                gamma=gamma,
-                kappa=kappa,
-            )
-        elif method == "step_size_and_scale":
-            adaption_alg = step_size_and_scale_adaption(
-                GaussRWMH,
-                logdensity_fn,
-                params,
-                target_acceptance_rate=target_acceptance_rate,
-                is_diagonal_matrix=is_diagonal_matrix,
-                t0=t0,
-                gamma=gamma,
-                kappa=kappa,
-            )
-        else:
-            raise ValueError("Invalid method")
-
-        out, _ = adaption_alg.run(key, position, num_steps)
-        return out.state, out.parameters
-
-    return adapt_parms
-
-
-class GaussRWMH(MH):
-    init = blackjax.rmh.init
-    build_step = partial(
+gauss_rwmh = make_kernel_api(
+    name="gauss_rwmh",
+    init_fn=blackjax.rmh.init,
+    init_params_fn=init_params_gaussian_rw,
+    build_step_fn=partial(
         build_mh_step, transition_proposal_fn=gaussian_transition_proposal
-    )
-    init_params = init_params_gaussian_rw
-    build_adaptation = build_adaptation
+    ),
+)

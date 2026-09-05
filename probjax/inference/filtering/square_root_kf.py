@@ -72,7 +72,6 @@ def sqrt_kf_correct(
     # Construct QR decomposition block
     block = jnp.vstack((RL_padded, H @ CL))
     _, R = jnp.linalg.qr(block, mode="reduced")
-    print(block.shape, R.shape)
 
     # Extract submatrices
     SL = jnp.tril(R[:d, :d].T)  # Observation covariance sqrt
@@ -86,7 +85,6 @@ def sqrt_kf_correct(
     residual = y - y_hat
     Sinv_residual = jnp.linalg.solve(SL, residual)
 
-    print(R[:d, d:].T.shape, Sinv_residual.shape)
     m_new = m + jnp.dot(R[:d, d:].T, Sinv_residual)
     CL_new = CL_new_factor
 
@@ -112,7 +110,7 @@ def build_kernel(
         state: SqKalmanFilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng: Optional[jnp.ndarray] = None,
+        rng_key: Optional[jnp.ndarray] = None,
     ) -> Tuple[SqKalmanFilterState, SqKalmanFilterInfo]:
         mu0 = state.mean
         std = state.std
@@ -180,3 +178,7 @@ class sq_kalman_filter(FilterAPI):
 
     init = init
     build_kernel = build_kernel
+
+    @staticmethod
+    def default_unpack(state, info):
+        return (state.mean, state.std)

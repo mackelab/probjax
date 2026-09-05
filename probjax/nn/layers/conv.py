@@ -11,11 +11,13 @@ from probjax.nn.layers.attention import MultiHeadAttention
 from probjax.nn.layers.encoding import PosEncode, RotaryPosEncode
 from probjax.nn.layers.fuse import AffineFuse, GatedFuse
 from probjax.nn.layers.reg import DropPath
+from probjax.nn.sharding import replicate
 from probjax.nn.utils import (
     filter_precision_kwargs,
     get_active_precision_kwargs,
     identity_1x1,
 )
+
 from probjax.utils.typing import (
     Array,
     DTypeLike,
@@ -108,8 +110,9 @@ class ConvBlock(nnx.Module):
         )
         self.activation = activation
 
-    def __call__(self, x: Array) -> Array:
+    def __call__(self, x: Array, *, rng: jax.Array | None = None) -> Array:
         """Applies normalization, activation, and convolution."""
+        del rng
         if self.preactivation:
             if self.norm is not None:
                 x = self.norm(x)
@@ -175,8 +178,9 @@ class ResizeConv(nnx.Module):
         )
         self.preferred_element_type = preferred_element_type
 
-    def __call__(self, x: Array) -> Array:
+    def __call__(self, x: Array, *, rng: jax.Array | None = None) -> Array:
         """Resizes input and applies convolution."""
+        del rng
         x = jnp.asarray(x)
         shape = x.shape
         if shape[-1] != self.conv.in_features:
@@ -254,8 +258,9 @@ class RescaleConv(nnx.Module):
         )
         self.preferred_element_type = preferred_element_type
 
-    def __call__(self, x: Array) -> Array:
+    def __call__(self, x: Array, *, rng: jax.Array | None = None) -> Array:
         """Resizes input and applies convolution."""
+        del rng
         x = jnp.asarray(x)
         shape = x.shape
         if shape[-1] != self.conv.in_features:
@@ -340,6 +345,8 @@ class ResnetBlock(nnx.Module):
             self.context_fuse = context_fuse_cls(
                 out_features, context_features, rngs=rngs
             )
+        else:
+            self.context_fuse = None
 
         _conv_block = partial(
             conv_block_cls,
@@ -381,25 +388,26 @@ class ResnetBlock(nnx.Module):
         inputs: Array,
         context: Array | None = None,
         deterministic: bool = True,
+        rng: jax.Array | None = None,
     ) -> Array:
         """Forward pass with optional context fusion and skip connection."""
         # First convolutional layer
-        x = self.conv1(inputs)
+        x = self.conv1(inputs, rng=rng)
         # Fuse context if provided
-        if context is not None:
-            x = self.context_fuse(x, context)
+        if context is not None and self.context_fuse is not None:
+            x = self.context_fuse(x, context, rng=rng)
 
         if self.dropout:
-            x = self.dropout(x, deterministic=deterministic)
+            x = self.dropout(x, deterministic=deterministic, rngs=rng)
         # Second convolutional layer
-        x = self.conv2(x)
+        x = self.conv2(x, rng=rng)
 
         # Residual connection
         skip_connection = self.skip_connection(inputs).astype(
             self.preferred_element_type
         )
         if self.dropout_path:
-            x = self.dropout_path(x, deterministic=deterministic)
+            x = self.dropout_path(x, deterministic=deterministic, rng=rng)
         out = x + skip_connection
         if self.rescale_skip:
             # Scale by sqrt(2) to preserve variance when adding
@@ -440,7 +448,10 @@ class SpatialSelfAttention(nnx.Module):
         precision_kwargs = filter_precision_kwargs(mha_cls, **precision_kwargs)
 
         # Layers
-        self.norm = norm_cls(in_features, rngs=rngs)
+        self.norm = norm_cls(
+            in_features,
+            rngs=rngs,
+        )
         self.attn = mha_cls(
             num_heads=num_heads,
             in_features=in_features,
@@ -480,7 +491,11 @@ class SpatialSelfAttention(nnx.Module):
             self.dropout_path = None
 
     def __call__(
-        self, x: Array, context: Array | None = None, deterministic: bool = True
+        self,
+        x: Array,
+        context: Array | None = None,
+        deterministic: bool = True,
+        rng: jax.Array | None = None,
     ) -> Array:
         """Applies group normalization and multi-head self-attention.
 
@@ -488,21 +503,23 @@ class SpatialSelfAttention(nnx.Module):
         stochastic depth is controlled independently via `drop_path_rate`.
         """
         x = jnp.asarray(x)
+        # Spatial self-attention requires gathered (unsharded) inputs.
+        x = replicate(x)
         b = x.shape[: -self.num_spatial_dims - 1]
         spatial_dims = x.shape[-self.num_spatial_dims - 1 : -1]
         seq_len = math.prod(spatial_dims)
         c = x.shape[-1]
         x = x.reshape(*b, seq_len, c)
-        x = self.pos_emb(x)
+        x = self.pos_emb(x, rng=rng)
         x = x.reshape(*b, *spatial_dims, c)
         y = self.norm(x).reshape(*b, seq_len, c)  # →  (B, N, C)  with N = H·W
-        y = self.attn(y, deterministic=deterministic)  # MultiHeadAttention
+        y = self.attn(y, deterministic=deterministic, rng=rng)  # MultiHeadAttention
         y = y.reshape(*b, *spatial_dims, c)
         y = y.astype(self.preferred_element_type)
         if self.dropout_path:
-            y = self.dropout_path(y, deterministic=deterministic)
+            y = self.dropout_path(y, deterministic=deterministic, rng=rng)
         if self.context_fuse is not None and context is not None:
-            y = self.context_fuse(x, y, context)
+            y = self.context_fuse(x, y, context, deterministic=deterministic, rng=rng)
         else:
             y = x + y
         return y

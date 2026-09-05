@@ -3,18 +3,14 @@ from typing import Callable, NamedTuple, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-from jax import Array
-from jax.random import PRNGKey
-from jax.typing import ArrayLike
-from jaxtyping import PyTree
 
-from probjax.inference.mcmc.adaptation import step_size_adaption
-from probjax.inference.mcmc.base import MarkovKernelAPI
+from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 # Some utility functions for creating 1D slices through an N-dimensional space
 
 
-def sample_random_direction(key: PRNGKey, position: ArrayLike) -> Array:
+def sample_random_direction(key: RngKey, position: ArrayLike) -> Array:
     # Sample a random direction
     direction = jax.random.normal(key, shape=position.shape)
     direction = direction / jnp.linalg.norm(direction, axis=-1, keepdims=True)
@@ -30,7 +26,7 @@ def linear_slice_fn(position: ArrayLike, theta: ArrayLike) -> Callable:
 
 
 def sample_random_polynomial(
-    key: PRNGKey, position: ArrayLike, degree: int = 3
+    key: RngKey, position: ArrayLike, degree: int = 3
 ) -> Array:
     # Sample a random polynomial directions
     a = jax.random.normal(key, (degree,) + position.shape)
@@ -55,7 +51,7 @@ def polynomial_slice_fn(
     return polynomial_slice_fn
 
 
-def sample_random_index(key: PRNGKey, position: ArrayLike) -> Array:
+def sample_random_index(key: RngKey, position: ArrayLike) -> Array:
     idx = jax.random.randint(key, (), minval=0, maxval=position.shape[0])
     return idx
 
@@ -87,12 +83,12 @@ class SliceInfo(NamedTuple):
     proposal: SliceState
 
 
-def init(position: ArrayLike, logdensity_fn: Callable, rng_key: PRNGKey) -> SliceState:
+def init(position: ArrayLike, logdensity_fn: Callable, rng_key: RngKey) -> SliceState:
     log_density = logdensity_fn(position)
     return SliceState(position, log_density, rng_key)
 
 
-def init_params(position: ArrayLike, step_size: float = 0.5) -> SliceParams:
+def init_params(state: ArrayLike, step_size: float = 0.5) -> SliceParams:
     return SliceParams(step_size)
 
 
@@ -101,7 +97,7 @@ def build_kernel(
     slice_fn_arg: Callable = sample_random_direction,
 ):
     def kernel(
-        rng_key: PRNGKey,
+        rng_key: RngKey,
         state: SliceState,
         log_density_fn: Callable,
         max_evals: int = 100,
@@ -154,69 +150,20 @@ def build_step(
         else:
             raise ValueError("Invalid slice function")
 
-    kernel = build_kernel(slice_fn, slice_fn_arg)
-
-    def step_fn(rng_key: PRNGKey, state: SliceState, params: SliceParams):
-        return kernel(
-            rng_key,
-            state,
-            logdensity_fn,
-            step_size=params.step_size,
-            max_evals=max_evals,
-        )
-
-    return step_fn
+    kernel_builder = lambda: build_kernel(slice_fn, slice_fn_arg)
+    return make_step_from_kernel(
+        logdensity_fn,
+        kernel_builder,
+        call_defaults={"max_evals": max_evals},
+    )
 
 
-def build_adaptation(
-    logdensity_fn: Callable,
-    max_evals: int = 100,
-    slice_fn="linear",
-    slice_fn_arg: Optional[Callable] = None,
-) -> Callable:
-    def adapt_parms(
-        key: PRNGKey,
-        position: PyTree,
-        params: SliceParams,
-        num_steps: int = 100,
-        target_num_evals: int = 10,
-        method: str = "step_size",
-        t0: int = 10,
-        gamma: float = 0.05,
-        kappa: float = 0.75,
-    ) -> Tuple[SliceState, SliceParams]:
-        if method == "step_size":
-            key, rng_init = jax.random.split(key)
-            adaption_alg = step_size_adaption(
-                Slice,
-                logdensity_fn,
-                params,
-                target=float(target_num_evals) / max_evals,
-                target_from_info_fn=lambda info: info.num_evals / max_evals,
-                t0=t0,
-                gamma=gamma,
-                kappa=kappa,
-                init_kwargs={"rng_key": rng_init},
-                algorithm_kwargs={
-                    "max_evals": max_evals,
-                    "slice_fn": slice_fn,
-                    "slice_fn_arg": slice_fn_arg,
-                },
-            )
-        else:
-            raise ValueError("Invalid method")
-
-        out, _ = adaption_alg.run(key, position, num_steps)
-        return out.state, out.parameters
-
-    return adapt_parms
-
-
-class Slice(MarkovKernelAPI):
-    init = init
-    build_step = build_step
-    init_params = init_params
-    build_adaptation = build_adaptation
+slice = make_kernel_api(
+    name="slice",
+    init_fn=init,
+    init_params_fn=init_params,
+    build_step_fn=build_step,
+)
 
 
 def lower_upper_bracket(
@@ -255,7 +202,7 @@ def lower_upper_bracket(
 def accept_reject_slice(
     log_density_fn: Callable,
     slice_fn: Callable,
-    key: PRNGKey,
+    key: RngKey,
     t_lower: ArrayLike,
     t_upper: ArrayLike,
     log_density_bound: ArrayLike,

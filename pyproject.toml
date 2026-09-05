@@ -31,33 +31,42 @@ classifiers = [
 keywords = ["probabilistic", "jax", "computation"]
 dependencies = [
     "numpy >= 2.0.0",
-    "matplotlib",
-    "jax >= 0.8.0, < 0.9",
-    "jaxlib >= 0.8.0, < 0.9",
-    "chex",
+    "jax >= 0.9.0, < 0.10",
     "einops",
     "optax",
-    "flax >= 0.12.0, < 0.12.1",
+    "flax >= 0.12.6",
     "jaxtyping",
-    "ott-jax",
     "networkx",
-    "blackjax",
-    "sympy",
-    "psutil",
-    "pynvml",
+    "blackjax == 1.6.2",
 ]
 
 [project.optional-dependencies]
+wasserstein = [
+    "ott-jax",
+]
+plot = [
+    "matplotlib",
+]
+notebooks = [
+    "matplotlib",
+    "jupyter",
+    "ipykernel",
+    "ipywidgets",
+]
+benchmark = [
+    "psutil",
+    "pynvml",
+]
 dev = [
     "pytest",
     "pytest-cov",
+    "pytest-benchmark",
     "ruff",
     "pytest-xdist",
     "scipy",
 ]
-cuda12 = [
-    "jax[cuda12]>=0.8.0,<0.9",
-    "jaxlib[cuda12]>=0.8.0,<0.9",
+cuda13 = [
+    "jax[cuda13]>=0.9.0,<0.10",
 ]
 metal = [
     "jax-metal",
@@ -112,3 +121,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+addopts = "--benchmark-sort=name"
+filterwarnings = [
+    "ignore:Setting `jax_pmap_shmap_merge` is deprecated in JAX v0.9.0 and will be removed in JAX v0.10.0.:DeprecationWarning:jax._src.config",
+]

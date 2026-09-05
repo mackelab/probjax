@@ -1,19 +1,13 @@
-from typing import Callable, Tuple
+from typing import Callable
 
 import blackjax
 import jax
 import jax.numpy as jnp
-from blackjax.mcmc.dynamic_hmc import DynamicHMCState, halton_trajectory_length
-from blackjax.mcmc.hmc import HMCInfo
-from chex import PRNGKey
-from jaxtyping import Array
+from blackjax.mcmc.dynamic_hmc import halton_trajectory_length
 
-from probjax.inference.mcmc.hmc import (
-    HMC,
-    HMCParams,
-    build_hmc_family_adaption,
-    init_params,
-)
+from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
+from probjax.inference.mcmc.hmc import init_params
+from probjax.utils.typing import Array, RngKey
 
 
 def halton_trajectory_length_fns(average_trajectory_length: float):
@@ -60,6 +54,21 @@ def get_dynamic_stepping(integration_steps_sequence, average_integration_steps):
     return random_arg_next_fn, integration_steps_fn
 
 
+def init(
+    position,
+    logdensity_fn,
+    rng_key: RngKey,
+    integration_steps_sequence: str = "halton",
+):
+    if integration_steps_sequence == "random":
+        random_generator_arg = rng_key
+    else:
+        random_generator_arg = jax.random.randint(
+            rng_key, shape=(), minval=0, maxval=2**31 - 1, dtype=jnp.int32
+        )
+    return blackjax.dynamic_hmc.init(position, logdensity_fn, random_generator_arg)
+
+
 def build_dynamic_hmc_step(
     logdensity_fn: Callable,
     average_integration_steps: int = 10,
@@ -71,58 +80,21 @@ def build_dynamic_hmc_step(
         integration_steps_sequence, average_integration_steps
     )
 
-    kernel = blackjax.dynamic_hmc.build_kernel(
+    kernel_builder = lambda: blackjax.dynamic_hmc.build_kernel(
         next_random_arg_fn=random_arg_next_fn,
         integration_steps_fn=integration_steps_fn,
         integrator=integrator,
         divergence_threshold=divergence_threshold,
     )
-
-    def step(
-        key: PRNGKey,
-        state: DynamicHMCState,
-        params: HMCParams,
-    ) -> Tuple[DynamicHMCState, HMCInfo]:
-        return kernel(
-            key,
-            state,
-            logdensity_fn,
-            step_size=params.step_size,
-            inverse_mass_matrix=params.inverse_mass_matrix,
-        )
-
-    return step
-
-
-def build_adaption(
-    logdensity_fn: Callable,
-    average_integration_steps: int = 10,
-    integration_steps_sequence: str = "halton",
-    integrator: Callable = blackjax.mcmc.integrators.velocity_verlet,
-) -> Callable:
-    random_arg_next_fn, integration_steps_fn = get_dynamic_stepping(
-        integration_steps_sequence, average_integration_steps
-    )
-
-    _object = blackjax.dynamic_hmc.copy()
-    _object.build_kernel = lambda integrator: blackjax.dynamic_hmc.build_kernel(
-        next_random_arg_fn=random_arg_next_fn,
-        integration_steps_fn=integration_steps_fn,
-        integrator=integrator,
-    )
-
-    return build_hmc_family_adaption(
-        _object,
+    return make_step_from_kernel(
         logdensity_fn,
-        average_integration_steps=average_integration_steps,
-        next_random_arg_fn=random_arg_next_fn,
-        integration_steps_fn=integration_steps_fn,
-        integrator=integrator,
+        kernel_builder,
     )
 
 
-class dHMC(HMC):
-    init = blackjax.dynamic_hmc.init
-    init_params = init_params
-    build_step = build_dynamic_hmc_step
-    build_adaption = build_adaption
+dynamic_hmc = make_kernel_api(
+    name="dynamic_hmc",
+    init_fn=init,
+    init_params_fn=init_params,
+    build_step_fn=build_dynamic_hmc_step,
+)

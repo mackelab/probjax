@@ -1,6 +1,8 @@
+import concurrent.futures
 import math
+import sys
 from functools import partial
-from typing import Callable, Optional, Sequence, Tuple
+from typing import Callable, Dict, Optional, Sequence, Tuple
 
 import jax
 import jax.experimental
@@ -9,8 +11,31 @@ from jax._src import linear_util as lu
 from jax._src.api_util import debug_info
 from jax._src.core import eval_jaxpr
 from jax._src.flatten_util import ravel_pytree
-from jax.interpreters.partial_eval import partial_eval_jaxpr_nounits
+
+try:
+    from jax.interpreters.partial_eval import partial_eval_jaxpr_nounits
+except Exception:  # JAX internals moved across versions.
+    try:
+        from jax._src.interpreters.partial_eval import partial_eval_jaxpr_nounits
+    except Exception:
+        try:
+            from jax.interpreters.partial_eval import (
+                partial_eval_jaxpr as _partial_eval_jaxpr,
+            )
+        except Exception:
+            from jax._src.interpreters.partial_eval import (
+                partial_eval_jaxpr as _partial_eval_jaxpr,
+            )
+
+        def partial_eval_jaxpr_nounits(jaxpr, unknowns, instantiate):
+            return _partial_eval_jaxpr(jaxpr, unknowns, instantiate)
+
+
 from jaxtyping import Array, PyTree
+
+_progress_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="progress"
+)
 
 
 class API(type):
@@ -20,37 +45,113 @@ class API(type):
         return self.__doc__
 
     def __repr__(self):
-        text = self.__doc__
-        return text
+        return self.__doc__ or self.__name__
+
+
+_MISSING = object()
+
+
+def _resolve_attr(obj, dotted: str):
+    """Walk a dotted attribute path, returning ``_MISSING`` if any link is absent."""
+    if obj is None:
+        return _MISSING
+    for part in dotted.split("."):
+        obj = getattr(obj, part, _MISSING)
+        if obj is _MISSING or obj is None:
+            return _MISSING
+    return obj
 
 
 class WithProgressBarAPI:
+    """Mixin providing a JIT-friendly progress bar driven by tracked diagnostics.
+
+    Subclasses set ``_default_tracked_stats`` to a tuple of names. Each name is
+    looked up — at trace time — first on the per-step **state**, then on
+    **info**, then in the class-level ``_computed_stats`` registry, falling back
+    to ``NaN``. Subclasses with extra inspection sources (e.g. SMC's nested
+    ``info.update_info``) override :meth:`_stat_objects`. Names may be dotted
+    paths (``"update_info.acceptance_rate"``); array values are reduced to a
+    scalar via mean.
+    """
+
     _print_rate: int = 1000
     _print_length: int = 50
-    _running_stats = ()
+    _ema_gamma: float = 0.9
+    _default_tracked_stats: Tuple[str, ...] = ()
+    _computed_stats: Dict[str, Callable] = {}
 
     @staticmethod
-    def _print_progress(cls, iteration, total, stats):
-        print_rate = total // cls._print_rate + 1
-        percent = 100 * ((iteration + print_rate) / float(total))
+    def _write_progress(cls, iteration, total, stats, stat_names=()):
+        try:
+            i, t = int(iteration), int(total)
+        except Exception:
+            return
 
-        percent = min(percent, 100)
+        print_len = cls._print_length
+        pct = min(100.0, 100 * (i + 1) / t)
+        filled = int(print_len * (i + 1) // t)
+        bar = "█" * filled + "-" * (print_len - filled)
+        s = f"Progress: |{bar}| {pct:.2f}%"
+        for name, val in zip(stat_names, stats):
+            s += f" {name}: {float(val):.2f}"
 
-        percent = ("{0:." + str(2) + "f}").format(percent)
+        _progress_executor.submit(sys.stdout.write, f"\r{s}")
 
-        filled_length = int(cls._print_length * iteration // total + 1)
-        bar = '█' * filled_length + '-' * (cls._print_length - filled_length)
+    # ------------------------------------------------------------------
+    # Stat extraction — resolved at JAX trace time, no probe call.
+    # ------------------------------------------------------------------
 
-        progress_bar = f'\rProgress: |{bar}| {percent}%'
+    def _stat_objects(self, state, info):
+        """Return the tuple of objects to search, in order, for tracked stats."""
+        return (state, info)
 
-        progress_bar += " ".join(
-            f" {name}: {stat:.2f}" for name, stat in zip(cls._running_stats, stats, strict=False)
-        )
+    def _resolve_stat(self, name: str, state, info):
+        """Resolve a single tracked-stat name to a scalar float32 value."""
+        for obj in self._stat_objects(state, info):
+            val = _resolve_attr(obj, name)
+            if val is not _MISSING:
+                arr = jnp.asarray(val, dtype=jnp.float32)
+                return jnp.mean(arr) if arr.ndim > 0 else arr
+        fn = type(self)._computed_stats.get(name)
+        if fn is not None:
+            val = fn(state, info)
+            if val is not None:
+                arr = jnp.asarray(val, dtype=jnp.float32)
+                return jnp.mean(arr) if arr.ndim > 0 else arr
+        return jnp.float32(jnp.nan)
 
-        print(progress_bar, end="\r")
+    def _extract_stats(self, state, info) -> Tuple:
+        return tuple(self._resolve_stat(n, state, info) for n in self.tracked_stats)
 
-        if iteration == total:
-            print()
+    def _make_verbose_fns(
+        self,
+        num_steps: int,
+        stats_fn: Optional[Callable] = None,
+    ):
+        """Build (update_stats, print_fn, init_stats, print_rate) for ``print_scan``.
+
+        ``stats_fn(carry, y) -> tuple`` extracts the per-step stats tuple from
+        the scan output. Defaults to ``lambda _, y: y`` (the scan's ``y``
+        already is the stats tuple, as in :class:`MCMC`/:class:`SMC`).
+        """
+        gamma = self._ema_gamma
+        names = self.tracked_stats
+        n = len(names)
+        if stats_fn is None:
+            stats_fn = lambda _carry, y: y
+
+        def update_stats(stats, carry, y):
+            step_stats = stats_fn(carry, y)
+            return tuple(
+                gamma * stats[i] + (1 - gamma) * step_stats[i] for i in range(n)
+            )
+
+        def print_fn(i, total, stats):
+            type(self)._write_progress(type(self), i, total, stats, names)
+
+        init_stats = tuple(0.0 for _ in names)
+        print_rate = num_steps // self._print_rate + 1
+        return update_stats, print_fn, init_stats, print_rate
 
 
 @lu.transformation
@@ -224,7 +325,7 @@ def nested_checkpoint_scan(
 
     _scan_fn = partial(scan_fn, unroll=unroll)
 
-    sub_xs = jax.tree_map(nested_reshape, xs)
+    sub_xs = jax.tree_util.tree_map(nested_reshape, xs)
     return _inner_nested_scan(f, init, sub_xs, nested_lengths, _scan_fn, checkpoint_fn)
 
 
@@ -238,7 +339,7 @@ def _inner_nested_scan(f, init, xs, lengths, scan_fn, checkpoint_fn):
         return _inner_nested_scan(f, carry, xs, lengths[1:], scan_fn, checkpoint_fn)
 
     carry, out = scan_fn(sub_scans, init, xs, lengths[0])
-    stacked_out = jax.tree_map(jnp.concatenate, out)
+    stacked_out = jax.tree_util.tree_map(jnp.concatenate, out)
     return carry, stacked_out
 
 
@@ -261,7 +362,9 @@ def print_scan(
 
     """
     if length is None:
-        length = xs.shape[0]
+        # xs may be a pytree (e.g. tuple of arrays); grab the first leaf.
+        leaves = jax.tree_util.tree_leaves(xs)
+        length = leaves[0].shape[0]
 
     if print_rate is None:
         print_rate = length // 50 + 1
@@ -276,7 +379,7 @@ def print_scan(
 
         jax.lax.cond(
             i % print_rate == 0,
-            lambda: jax.experimental.io_callback(print_fn, None, i, length, stats),
+            lambda: jax.debug.callback(print_fn, i, length, stats),
             lambda: None,
         )
         i += 1

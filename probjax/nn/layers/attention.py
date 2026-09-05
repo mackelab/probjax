@@ -1,25 +1,473 @@
+from __future__ import annotations
+
 import math
-from typing import Optional
+from typing import Any, Optional, cast
 
 import jax
 import jax.numpy as jnp
+from flax import nnx
 from flax.nnx import MultiHeadAttention as FlaxMultiHeadAttention
 from flax.nnx import combine_masks, rnglib
 from flax.nnx import dot_product_attention as flax_dot_product_attention
 from flax.nnx.module import first_from
+from flax.typing import Dtype
 from jax import lax
 
-from probjax.nn.pallas_kernels.attention import BlockSizes, mha
-from probjax.nn.pallas_kernels.attention_mask_bias import (
+from probjax.nn.pallas_kernels import (
     AttentionBias,
     AttentionMask,
+    BlockSizes,
+    LearnedAlibiBias,
+    LowRankBias,
     QKVLengthMask,
+    SumBias,
+    mha,
 )
-from probjax.nn.utils import pad_to_power_of_2
-from probjax.utils.typing import Array, ArrayLike
+from probjax.nn.sharding import (
+    BATCH,
+    EMBED,
+    HEADS,
+    HEAD_DIM,
+    constrain,
+    param_metadata,
+)
+from probjax.nn.utils import (
+    filter_precision_kwargs,
+    get_active_precision_kwargs,
+    pad_to_power_of_2,
+)
+from probjax.utils.typing import (
+    Array,
+    ArrayLike,
+    DTypeLike,
+    ModuleLikeType,
+    PrecisionLike,
+)
+
+# ---------------------------------------------------------------------------
+# Query scaling modules (pre-kernel Q scaling for SSMax / QASSMax / etc.)
+# ---------------------------------------------------------------------------
+
+
+def _zero_init_last_layer(mlp: Any, bias_value: float | None = None) -> None:
+    """Zero the last layer's kernel of an MLP so it starts as a no-op.
+
+    Optionally set the last layer's bias to a constant (e.g. 1.0 so the
+    MLP initially outputs that constant everywhere).
+    """
+    last = mlp.layers[-1]
+    last.kernel[...] = jnp.zeros_like(last.kernel[...])
+    if bias_value is not None and last.bias is not None:
+        last.bias[...] = jnp.full_like(last.bias[...], bias_value)
+
+
+class SSMaxQueryScale(nnx.Module):
+    """Scalable-Softmax (SSMax) per-head query scaling.
+
+    Scales each query by ``s_h * log(n)`` where *s* is a learnable per-head
+    scalar and *n* is the number of keys (KV sequence length).  This
+    compensates for "attention fading" as the context grows.
+
+    At initialisation ``s = 1`` so the effective scaling is just ``log(n)``.
+
+    Reference: *Scalable Softmax* (https://arxiv.org/abs/2501.14222).
+
+    The module is designed to be passed to :class:`MultiHeadAttention` via
+    ``q_scale_cls`` (or the legacy ``query_scale`` argument)::
+
+        mha = MultiHeadAttention(
+            ...,
+            q_scale_cls=SSMaxQueryScale,
+        )
+
+    Args:
+        num_heads: number of attention heads.
+        min_scale: minimum allowed per-head scale.
+        max_scale: maximum allowed per-head scale.
+        param_dtype: dtype for the learnable scalar.
+        rngs: random number generators.
+    """
+
+    def __init__(
+        self,
+        num_heads: int,
+        head_dim: int | None = None,
+        *,
+        min_scale: float = 0.0,
+        max_scale: float = 4.0,
+        dtype: Dtype | None = None,
+        param_dtype: Dtype = jnp.float32,
+        rngs: rnglib.Rngs,
+    ):
+        del head_dim, dtype
+        if min_scale > max_scale:
+            raise ValueError("`min_scale` must be <= `max_scale`.")
+        self.min_scale = min_scale
+        self.max_scale = max_scale
+        self.s = nnx.Param(jnp.ones((num_heads,), dtype=param_dtype))
+
+    def __call__(self, query: Array, *, kv_len: int | Array) -> Array:
+        """Scale *query* by ``s * log(kv_len)``.
+
+        Args:
+            query: projected queries, shape ``[batch, length, num_heads, head_dim]``.
+            kv_len: number of keys the query will attend over.  Can be a
+                scalar (same for all examples) or a per-batch array of shape
+                ``[batch]`` / ``[batch, 1]`` for variable-length sequences.
+
+        Returns:
+            Scaled queries (same shape).
+        """
+        kv_len = jnp.asarray(kv_len, dtype=jnp.float32)
+        log_n = jnp.log(kv_len + 1.0)
+        # Reshape log_n so it broadcasts with query [B, L, H, D].
+        # scalar → works as-is; [B] → [B, 1, 1, 1]; [B, 1] → [B, 1, 1, 1]
+        if log_n.ndim >= 1:
+            log_n = log_n.reshape(-1, *([1] * (query.ndim - 1)))
+        # s: [H] → [1, 1, H, 1]
+        s = jnp.clip(self.s[...], self.min_scale, self.max_scale)
+        scale = s[None, None, :, None] * log_n
+        return query * scale
+
+
+class PerHeadQueryScale(nnx.Module):
+    """Simple learnable per-head query scaling.
+
+    Applies a learnable scalar ``s_h`` to each attention head:
+
+    ``q'[:, :, h, :] = s_h * q[:, :, h, :]``.
+
+    This module follows the same call signature as SSMax/QASSMax and can be
+    passed to :class:`MultiHeadAttention` via ``q_scale_cls``.
+
+    Args:
+        num_heads: number of attention heads.
+        init_value: initial value for each head scale.
+        min_scale: minimum allowed per-head scale.
+        max_scale: maximum allowed per-head scale.
+        param_dtype: dtype for the learnable scale parameters.
+        rngs: random number generators (accepted for API consistency).
+    """
+
+    def __init__(
+        self,
+        num_heads: int,
+        head_dim: int | None = None,
+        *,
+        init_value: float = 1.0,
+        min_scale: float = 0.0,
+        max_scale: float = 4.0,
+        dtype: Dtype | None = None,
+        param_dtype: Dtype = jnp.float32,
+        rngs: rnglib.Rngs,
+    ):
+        del head_dim, dtype, rngs
+        if min_scale > max_scale:
+            raise ValueError("`min_scale` must be <= `max_scale`.")
+        self.min_scale = min_scale
+        self.max_scale = max_scale
+        self.s = nnx.Param(jnp.full((num_heads,), init_value, dtype=param_dtype))
+
+    def __call__(self, query: Array, *, kv_len: int | Array) -> Array:
+        del kv_len
+        s = jnp.clip(self.s[...], self.min_scale, self.max_scale)
+        return query * s[None, None, :, None]
+
+
+class QASSMaxQueryScale(nnx.Module):
+    """Query-Aware Scalable Softmax (QASSMax) per-head query scaling.
+
+    A richer variant of SSMax where the scaling is both *per-element* and
+    *query-dependent*:
+
+    .. math::
+
+        \\tilde q_{h,i} = q_{h,i} \\odot \\text{base}_h(\\log n)
+                          \\odot (1 + \\tanh(\\text{gate}_h(q_{h,i})))
+
+    * ``base_h(log n)``: a per-head 2-layer MLP that maps the scalar
+      ``log(n)`` to a ``[num_heads * head_dim]`` vector (reshaped to
+      ``[num_heads, head_dim]``).  Zero-init output with bias = 1 so it
+      starts as identity scaling.
+    * ``gate_h(q)``: a 2-layer MLP operating on the last axis (``head_dim``)
+      of the query tensor.  Because query has shape
+      ``[batch, len, num_heads, head_dim]``, the MLP naturally broadcasts
+      over batch/length/heads and produces head-specific outputs (different
+      query → different gate).  Zero-init output so ``1 + tanh(0) = 1``
+      at initialisation.
+
+    Combined, at init: ``q' = q * 1 * 1 = q`` (identity).
+
+    Reference: *TabICLv2* (https://arxiv.org/abs/2506.05196).
+
+    Args:
+        num_heads: number of attention heads.
+        head_dim: dimension of each head.
+        hidden_dim: hidden dimension for both MLPs.
+        param_dtype: dtype for learnable parameters.
+        dtype: computation dtype (forwarded to MLP).
+        rngs: random number generators.
+    """
+
+    def __init__(
+        self,
+        num_heads: int,
+        head_dim: int,
+        *,
+        hidden_dim: int = 64,
+        use_checkpointing: bool = True,
+        param_dtype: DTypeLike | None = None,
+        dtype: DTypeLike | None = None,
+        rngs: rnglib.Rngs,
+    ):
+        self.num_heads = num_heads
+        self.head_dim = head_dim
+        self.use_checkpointing = bool(use_checkpointing)
+
+        # Lazy import to avoid circular dependency
+        # (attention → nets.simple → nets.__init__ → autoregressive → attention).
+        from probjax.nn.nets.simple import MLP
+
+        mlp_kwargs: dict[str, Any] = {}
+        if param_dtype is not None:
+            mlp_kwargs["param_dtype"] = param_dtype
+        if dtype is not None:
+            mlp_kwargs["dtype"] = dtype
+
+        # Base MLP: scalar log(n) → [num_heads * head_dim].
+        # Starts outputting 1.0 everywhere (identity scaling).
+        self.base_mlp = MLP(
+            feature_dims=[1, hidden_dim, num_heads * head_dim],
+            rngs=rngs,
+            **mlp_kwargs,
+        )
+        _zero_init_last_layer(self.base_mlp, bias_value=1.0)
+
+        # Gate MLP: [head_dim] → [head_dim], shared weights across heads.
+        # Applied to query of shape [..., num_heads, head_dim] — the Linear
+        # operates on the last axis and broadcasts over all leading dims,
+        # so each head gets a different output (different query vector in).
+        # Starts outputting 0.0 → 1 + tanh(0) = 1.0 (identity).
+        self.gate_mlp = MLP(
+            feature_dims=[head_dim, hidden_dim, head_dim],
+            rngs=rngs,
+            **mlp_kwargs,
+        )
+        _zero_init_last_layer(self.gate_mlp)
+
+    def _scale_query(self, query: Array, kv_len: int | Array) -> Array:
+        q_dtype = query.dtype
+        kv_len_f32 = jnp.asarray(kv_len, dtype=jnp.float32)
+        # Keep heavy elementwise/broadcast math in query dtype (typically bf16)
+        # to reduce temporary activation footprint under SPMD.
+        log_n = jnp.log(kv_len_f32 + 1.0).astype(q_dtype)
+
+        # Base MLP: f(log_n) -> per-head per-dim scale.
+        # Input: scalar -> [1, 1] or per-batch [B] -> [B, 1].
+        log_n_flat = log_n.reshape(-1, 1)  # [B, 1] or [1, 1]
+        base_flat = self.base_mlp(log_n_flat)  # [B, H*D] or [1, H*D]
+        # Reshape to [B, 1, H, D] (or [1, 1, H, D] for scalar kv_len)
+        # so it broadcasts with query [B, L, H, D].
+        base = jnp.asarray(base_flat, dtype=q_dtype).reshape(
+            -1, 1, self.num_heads, self.head_dim
+        )
+
+        scaled = query * base
+
+        # Gate: tanh(g(query)) in [-1, 1]. Rewriting
+        # query*base*(1 + tanh(.)) as scaled + scaled*tanh(.)
+        # avoids an explicit large "+1" broadcast in the forward graph.
+        gate_tanh = jnp.tanh(jnp.asarray(self.gate_mlp(query), dtype=q_dtype))
+        return scaled + scaled * gate_tanh
+
+    def __call__(self, query: Array, *, kv_len: int | Array) -> Array:
+        """Scale *query* using base and gate MLPs.
+
+        Args:
+            query: projected queries, shape ``[batch, length, num_heads, head_dim]``.
+            kv_len: number of keys the query will attend over.  Can be a
+                scalar (same for all examples) or a per-batch array of shape
+                ``[batch]`` / ``[batch, 1]`` for variable-length sequences.
+
+        Returns:
+            Scaled queries (same shape).
+        """
+        if self.use_checkpointing:
+            return jax.checkpoint(lambda q, n: self._scale_query(q, kv_len=n))(
+                query, kv_len
+            )
+        return self._scale_query(query, kv_len=kv_len)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_qk_norm(
+    *,
+    cls: ModuleLikeType | None,
+    head_dim: int,
+    dtype: Any,
+    param_dtype: Any,
+    promote_dtype: Any,
+    scale_metadata: dict,
+    rngs: rnglib.Rngs,
+) -> Any:
+    """Instantiate a normalization layer for query or key projections.
+
+    When *cls* is None, falls back to ``nnx.LayerNorm`` (the Flax default).
+    For ``nnx.LayerNorm`` specifically, ``use_bias=False`` and
+    ``scale_metadata`` are forwarded.
+    """
+    if cls is None:
+        return nnx.LayerNorm(
+            head_dim,
+            use_bias=False,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            promote_dtype=promote_dtype,
+            rngs=rngs,
+            scale_metadata=scale_metadata,
+        )
+
+    return cls(
+        head_dim,
+        dtype=dtype,
+        param_dtype=param_dtype,
+        promote_dtype=promote_dtype,
+        rngs=rngs,
+    )
+
+
+def _build_q_scale(
+    *,
+    cls: ModuleLikeType,
+    num_heads: int,
+    head_dim: int,
+    dtype: Any,
+    param_dtype: Any,
+    rngs: rnglib.Rngs,
+) -> Any:
+    """Instantiate a query-scaling module from a class.
+
+    The constructor is called with ``num_heads``, ``head_dim``, ``dtype``,
+    ``param_dtype``, and ``rngs``.
+    """
+    return cls(
+        num_heads=num_heads,
+        head_dim=head_dim,
+        dtype=dtype,
+        param_dtype=param_dtype,
+        rngs=rngs,
+    )
 
 
 class MultiHeadAttention(FlaxMultiHeadAttention):
+    """Multi-head attention with optional QK normalization and query scaling.
+
+    Extends Flax's ``MultiHeadAttention`` with sharding support, pluggable
+    QK normalization layers, and a pre-kernel *query scaling* hook.
+
+    **QK normalization** (``normalize_qk`` + ``normalize_{q,kv}_cls``)
+    lets you swap in any norm layer (e.g. ``LpNorm`` for cosine-similarity
+    attention).
+
+    **Query scaling** (``q_scale_cls``) is applied *after* QK normalisation
+    and *before* the attention kernel.  Because attention logits are linear
+    in Q, multiplying Q is equivalent to multiplying the logits — which is
+    exactly how SSMax and QASSMax are meant to be implemented.
+
+    Args:
+        normalize_qk: if True, normalize query and key projections before
+            computing attention weights.
+        normalize_q_cls: optional module *class* (constructor) used to build
+            the query normalizer.  It is instantiated inside MHA with
+            defaults (``rngs``, ``dtype``, ``param_dtype``, ``promote_dtype``).
+            When
+            ``None`` (default) and ``normalize_qk`` is True, falls back to
+            ``nnx.LayerNorm``.
+        normalize_k_cls: same as ``normalize_q_cls`` but for keys only.
+            Values are not normalized.
+        q_scale_cls: optional module class used to build the query scaling
+            module. If provided, it is instantiated inside MHA with ``rngs``,
+            ``num_heads``, ``head_dim``, ``dtype``, and ``param_dtype``.
+    """
+
+    def __init__(
+        self,
+        *args,
+        normalize_qk: bool = False,
+        normalize_q_cls: ModuleLikeType | None = None,
+        normalize_k_cls: ModuleLikeType | None = None,
+        normalize_kv_cls: ModuleLikeType | None = None,
+        q_scale_cls: ModuleLikeType | None = None,
+        **kwargs,
+    ):
+        if normalize_k_cls is not None and normalize_kv_cls is not None:
+            raise ValueError(
+                "Pass either `normalize_k_cls` or `normalize_kv_cls`, not both."
+            )
+        key_norm_cls = (
+            normalize_k_cls if normalize_k_cls is not None else normalize_kv_cls
+        )
+
+        # Head-parallel sharding metadata (no-op without an active mesh).
+        # qkv kernels: (in, heads, head_dim); out kernel: (heads, head_dim, out).
+        # out_* metadata must always be set alongside the qkv metadata:
+        # flax's MHA falls back out <- qkv otherwise, which has the wrong rank.
+        if md := param_metadata(EMBED, HEADS, HEAD_DIM):
+            kwargs.setdefault("kernel_metadata", md)
+            kwargs.setdefault("bias_metadata", param_metadata(HEADS, HEAD_DIM))
+            kwargs.setdefault(
+                "out_kernel_metadata", param_metadata(HEADS, HEAD_DIM, EMBED)
+            )
+            kwargs.setdefault(
+                "out_bias_metadata", param_metadata(EMBED) or {"sharding": (None,)}
+            )
+
+        # Grab rngs and metadata before passing kwargs to the parent.
+        rngs: rnglib.Rngs = kwargs["rngs"]
+        query_ln_scale_metadata = kwargs.get("query_ln_scale_metadata", {})
+        key_ln_scale_metadata = kwargs.get("key_ln_scale_metadata", {})
+
+        super().__init__(*args, normalize_qk=False, **kwargs)
+
+        # Build QK normalization layers ourselves so we can swap in any class.
+        if normalize_qk:
+            self.normalize_qk = True
+            self.query_ln = _build_qk_norm(  # type: ignore[assignment]
+                cls=normalize_q_cls,
+                head_dim=self.head_dim,
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+                promote_dtype=self.ln_promote_dtype,
+                scale_metadata=query_ln_scale_metadata,
+                rngs=rngs,
+            )
+            self.key_ln = _build_qk_norm(  # type: ignore[assignment]
+                cls=key_norm_cls,
+                head_dim=self.head_dim,
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+                promote_dtype=self.ln_promote_dtype,
+                scale_metadata=key_ln_scale_metadata,
+                rngs=rngs,
+            )
+
+        # Pre-kernel query scaling (SSMax, QASSMax, etc.).
+        if q_scale_cls is not None:
+            self._query_scale = _build_q_scale(
+                cls=q_scale_cls,
+                num_heads=self.num_heads,
+                head_dim=self.head_dim,
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+                rngs=rngs,
+            )
+        else:
+            self._query_scale = None
+
     def __call__(
         self,
         inputs_q: Array,
@@ -29,9 +477,11 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         mask: AttentionMask | ArrayLike | None = None,
         bias: AttentionBias | ArrayLike | None = None,
         deterministic: bool | None = None,
+        rng: jax.Array | None = None,
         rngs: rnglib.Rngs | rnglib.RngStream | None = None,
         sow_weights: bool = False,
         decode: bool | None = False,
+        kv_len: int | Array | None = None,
     ):
         """Applies multi-head dot product attention on the input data.
 
@@ -62,10 +512,20 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         decode: whether to prepare and use an autoregressive cache. The ``decode``
             flag passed into the call method will take precedence over the ``decode``
             flag passed into the constructor.
+        kv_len: effective number of keys each query attends over.  Used by
+            ``query_scale`` (SSMax / QASSMax) for the ``log(n)`` term.  Can be:
+
+            - ``None`` (default): inferred from the key tensor shape, or from
+              the cache index during autoregressive decoding.
+            - A scalar ``int`` or 0-d array: same length for every example.
+            - A 1-d array of shape ``[batch]``: per-example lengths for
+              variable-length sequences (e.g. in a padded batch).
 
         Returns:
         output of shape `[batch_sizes..., length, features]`.
         """
+        if rng is not None and rngs is None:
+            rngs = cast(rnglib.RngStream, lambda: rng)
         if rngs is None:
             rngs = self.rngs
         elif isinstance(rngs, rnglib.Rngs):
@@ -90,6 +550,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
 
         query = self.query(inputs_q)
         key = self.key(inputs_k)
+        assert inputs_v is not None
         value = self.value(inputs_v)
 
         if self.normalize_qk:
@@ -128,7 +589,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
                 max_length,
                 num_heads,
                 depth_per_head,
-            ) = self.cached_key.value.shape
+            ) = self.cached_key[...].shape
             # shape check of cached keys against query input
             expected_shape = tuple(batch_dims) + (1, num_heads, depth_per_head)
             if expected_shape != query.shape:
@@ -157,6 +618,24 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
                     tuple(batch_dims) + (1, 1, max_length),
                 ),
             )
+
+        # Per-head query scaling (SSMax, QASSMax, etc.).
+        # Applied after QK norm and after cache update so that kv_len
+        # reflects the actual number of keys being attended to.
+        # Because logits = Q @ K^T, scaling Q is equivalent to scaling
+        # the logits — this is the "pre-kernel" trick from the SSMax paper.
+        if self._query_scale is not None:
+            if kv_len is not None:
+                # Caller provided an explicit kv_len (scalar or [batch]).
+                effective_kv_len = kv_len
+            elif decode and self.cache_index is not None:
+                # During autoregressive decoding, use the number of keys
+                # actually filled in the cache (cur_index was incremented
+                # above, so cache_index already equals the count).
+                effective_kv_len = self.cache_index[...]
+            else:
+                effective_kv_len = key.shape[-3]
+            query = self._query_scale(query, kv_len=effective_kv_len)
 
         if self.dropout_rate > 0.0:  # Require `deterministic` only if using dropout.
             deterministic = first_from(
@@ -195,6 +674,308 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         )
         # back to the original inputs dimensions
         out = self.out(x)
+        return constrain(out, BATCH)
+
+
+class InducedSelfAttention(nnx.Module):
+    """Two-stage self-attention with learned inducing points (ISAB).
+
+    Implements the Set Transformer's Induced Self-Attention Block using two
+    Multihead Attention Blocks (MABs).  Each MAB is a full transformer-style
+    block consisting of multi-head attention followed by a row-wise
+    feedforward network, both with residual connections and layer
+    normalization (pre-norm convention):
+
+    .. code-block:: text
+
+        H = LayerNorm(X + Multihead(X, Y, Y))
+        MAB(X, Y) = LayerNorm(H + rFF(H))
+
+        ISAB(X) = MAB(X, MAB(I, X))
+
+    where *I* are the learned inducing points and *rFF* is a row-wise
+    feedforward (MLP) applied independently to each token.
+
+    Args:
+        in_features: input / output feature dimension.
+        num_inducing_points: number of learned inducing points.
+        num_heads: number of attention heads.
+        attn_size: per-head dimension (defaults to ``in_features // num_heads``).
+        widening_factor: expansion factor for the feedforward hidden dim.
+        mlp_cls: feedforward MLP class (default: ``probjax.nn.nets.simple.MLP``).
+        dropout_rate: dropout rate for MHA.
+        q_scale_cls: optional query-scaling class for the inducing MHA.
+        output_q_scale_cls: optional query-scaling class for the output MHA.
+        norm_cls: normalization layer class (``None`` to disable norms).
+        mha_cls: multi-head attention class.
+        dtype: computation dtype.
+        param_dtype: parameter dtype.
+        precision: computation precision.
+        preferred_element_type: output dtype cast.
+        checkpoint_inducing_ff: if True, rematerialize only the inducing MAB
+            feedforward branch during backward.
+        checkpoint_output_ff: if True, rematerialize only the output MAB
+            feedforward branch during backward.
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        *,
+        num_inducing_points: int,
+        rngs: nnx.Rngs,
+        num_heads: int = 8,
+        attn_size: int | None = None,
+        widening_factor: int = 4,
+        mlp_cls: ModuleLikeType | None = None,
+        dropout_rate: float = 0.0,
+        q_scale_cls: ModuleLikeType | None = None,
+        output_q_scale_cls: ModuleLikeType | None = None,
+        norm_cls: ModuleLikeType | None = nnx.LayerNorm,
+        mha_cls: ModuleLikeType = MultiHeadAttention,
+        dtype: DTypeLike | None = None,
+        param_dtype: DTypeLike = jnp.float32,
+        precision: PrecisionLike | None = None,
+        preferred_element_type: DTypeLike | None = None,
+        checkpoint_inducing_ff: bool = False,
+        checkpoint_output_ff: bool = False,
+    ):
+        if in_features <= 0:
+            raise ValueError(f"`in_features` must be positive, got {in_features}.")
+        if num_inducing_points <= 0:
+            raise ValueError(
+                f"`num_inducing_points` must be positive, got {num_inducing_points}."
+            )
+
+        self.in_features = in_features
+        self.num_heads = num_heads
+        self.num_inducing_points = num_inducing_points
+        self.preferred_element_type = preferred_element_type
+        self.checkpoint_inducing_ff = bool(checkpoint_inducing_ff)
+        self.checkpoint_output_ff = bool(checkpoint_output_ff)
+
+        qkv_features = (
+            in_features // num_heads if attn_size is None else attn_size * num_heads
+        )
+
+        # Precision and dtype settings.
+        precision_kwargs = get_active_precision_kwargs(
+            dtype,
+            precision,
+            param_dtype,
+            preferred_element_type,
+        )
+
+        # --- MHA sub-layers ---
+        self.inducing_attn = mha_cls(
+            num_heads=num_heads,
+            in_features=in_features,
+            qkv_features=qkv_features,
+            out_features=in_features,
+            dropout_rate=dropout_rate,
+            q_scale_cls=q_scale_cls,
+            rngs=rngs,
+            **filter_precision_kwargs(mha_cls, **precision_kwargs),
+        )
+        self.output_attn = mha_cls(
+            num_heads=num_heads,
+            in_features=in_features,
+            qkv_features=qkv_features,
+            out_features=in_features,
+            dropout_rate=dropout_rate,
+            q_scale_cls=output_q_scale_cls,
+            rngs=rngs,
+            **filter_precision_kwargs(mha_cls, **precision_kwargs),
+        )
+
+        # --- Row-wise feedforward (rFF) sub-layers ---
+        if mlp_cls is None:
+            from probjax.nn.nets.simple import MLP as _MLP
+
+            mlp_cls = _MLP
+
+        ff_dims = [in_features, widening_factor * in_features, in_features]
+        self.inducing_ff = mlp_cls(
+            ff_dims,
+            rngs=rngs,
+            **filter_precision_kwargs(mlp_cls, **precision_kwargs),
+        )
+        self.output_ff = mlp_cls(
+            ff_dims,
+            rngs=rngs,
+            **filter_precision_kwargs(mlp_cls, **precision_kwargs),
+        )
+
+        # --- Normalization layers ---
+        # Each MAB needs: pre-attn norm (on Q), pre-attn norm (on KV),
+        # post-attn norm (on H before rFF).
+        # MAB1 (inducing): inducing_norm (Q), input_norm (KV), inducing_ff_norm (pre-FF)
+        # MAB2 (output):   output_norm (Q), hidden_norm (KV), output_ff_norm (pre-FF)
+
+        if norm_cls is not None:
+            self.inducing_norm = norm_cls(in_features, rngs=rngs)
+            self.input_norm = norm_cls(in_features, rngs=rngs)
+            self.inducing_ff_norm = norm_cls(in_features, rngs=rngs)
+            self.output_norm = norm_cls(in_features, rngs=rngs)
+            self.hidden_norm = norm_cls(in_features, rngs=rngs)
+            self.output_ff_norm = norm_cls(in_features, rngs=rngs)
+        else:
+            self.inducing_norm = None
+            self.input_norm = None
+            self.inducing_ff_norm = None
+            self.output_norm = None
+            self.hidden_norm = None
+            self.output_ff_norm = None
+
+        init_dtype = jnp.float32 if param_dtype is None else param_dtype
+        inducing_init = nnx.initializers.normal(stddev=0.02)(
+            rngs.params(),
+            (num_inducing_points, in_features),
+            init_dtype,
+        )
+        self.inducing_points = nnx.Param(inducing_init)
+
+    @staticmethod
+    def _maybe_norm(norm: nnx.Module | None, x: Array) -> Array:
+        return x if norm is None else norm(x)
+
+    def _mab(
+        self,
+        x: Array,
+        y: Array,
+        *,
+        x_attn: Array | None,
+        attn: Any,
+        x_norm: Any,
+        y_norm: Any,
+        ff: Any,
+        ff_norm: Any,
+        checkpoint_ff: bool,
+        deterministic: bool,
+        rng: jax.Array | None,
+        kv_len: int | Array | None = None,
+    ) -> Array:
+        """Single Multihead Attention Block (MAB).
+
+        H = X + MHA(norm(X), norm(Y), norm(Y))   # attention + residual
+        MAB(X, Y) = H + rFF(norm(H))              # feedforward + residual
+        """
+        # Attention sub-block (pre-norm residual).
+        with jax.named_scope("attn_residual"):
+            y_n = self._maybe_norm(y_norm, y)
+            x_q = x_attn if x_attn is not None else self._maybe_norm(x_norm, x)
+            h = x + attn(
+                x_q,
+                y_n,
+                y_n,
+                deterministic=deterministic,
+                rng=rng,
+                kv_len=kv_len,
+            )
+        # Feedforward sub-block (pre-norm residual).
+        with jax.named_scope("ff_residual"):
+            ff_in = self._maybe_norm(ff_norm, h)
+            if checkpoint_ff:
+                # Targeted remat for only the feedforward branch.
+                ff_out = jax.checkpoint(lambda z: ff(z))(ff_in)
+            else:
+                ff_out = ff(ff_in)
+            out = h + ff_out
+        return out
+
+    def __call__(
+        self,
+        x: Array,
+        *,
+        x_kv: Array | None = None,
+        deterministic: bool = True,
+        rng: jax.Array | None = None,
+        kv_len: int | Array | None = None,
+    ) -> Array:
+        """Apply induced self-attention.
+
+        Args:
+            x: input of shape ``[..., seq_len, features]``.
+            x_kv: optional separate KV input for the inducing stage (MAB 1).
+                When provided, ``MAB1(I, x_kv)`` compresses only ``x_kv``
+                into the inducing hidden state, while ``MAB2(x, H)`` still
+                queries with the full ``x``.  This is useful when you want
+                the inducing bottleneck to capture information from a subset
+                (e.g. train rows) while broadcasting back to all rows
+                (e.g. test + train).  When ``None``, ``x`` is used for both
+                stages as in the standard ISAB.
+            deterministic: if ``True``, disable dropout.
+            rng: optional PRNG key for dropout.
+            kv_len: effective number of keys for query scaling
+                (SSMax / QASSMax).  Forwarded to the inducing MHA call.
+                Can be ``None`` (inferred from key shape), a scalar ``int``
+                or 0-d array, or a per-batch array of shape ``[batch]``.
+
+        Returns:
+            Output of same shape as *x*.
+        """
+        x = jnp.asarray(x)
+        if x.ndim < 2:
+            raise ValueError(
+                f"`x` must have shape [..., seq_len, features], got ndim={x.ndim}."
+            )
+        if x.shape[-1] != self.in_features:
+            raise ValueError(
+                f"Incompatible input dimension, got {x.shape[-1]} "
+                f"but module expects {self.in_features}."
+            )
+
+        kv_input = x if x_kv is None else jnp.asarray(x_kv)
+
+        inducing_points = self.inducing_points[...]
+
+        # MAB 1: inducing points attend to input  ->  H = MAB(I, X)
+        with jax.named_scope("inducing_mab"):
+            # Normalize inducing points before broadcasting. This avoids
+            # broadcast-then-reduce normalization work on the expanded tensor.
+            inducing_query = self._maybe_norm(self.inducing_norm, inducing_points)
+            inducing_points = jnp.broadcast_to(
+                inducing_points,
+                x.shape[:-2] + inducing_points.shape,
+            )
+            inducing_query = jnp.broadcast_to(
+                inducing_query,
+                x.shape[:-2] + inducing_query.shape,
+            )
+            inducing_hidden = self._mab(
+                inducing_points,
+                x,
+                x_attn=inducing_query,
+                attn=self.inducing_attn,
+                x_norm=None,
+                y_norm=self.input_norm,
+                ff=self.inducing_ff,
+                ff_norm=self.inducing_ff_norm,
+                checkpoint_ff=self.checkpoint_inducing_ff,
+                deterministic=deterministic,
+                rng=rng,
+                kv_len=kv_len,
+            )
+
+        # MAB 2: input attends to induced representation  ->  ISAB(X) = MAB(X, H)
+        with jax.named_scope("output_mab"):
+            out = self._mab(
+                x,
+                inducing_hidden,
+                x_attn=None,
+                attn=self.output_attn,
+                x_norm=self.output_norm,
+                y_norm=self.hidden_norm,
+                ff=self.output_ff,
+                ff_norm=self.output_ff_norm,
+                checkpoint_ff=self.checkpoint_output_ff,
+                deterministic=deterministic,
+                rng=rng,
+                kv_len=kv_len,
+            )
+
+        if self.preferred_element_type is not None:
+            out = out.astype(self.preferred_element_type)
         return out
 
 
@@ -236,6 +1017,25 @@ def dot_product_attention(
     )
 
 
+def _split_low_rank_bias(
+    bias: AttentionBias | None,
+) -> tuple[list[LowRankBias | LearnedAlibiBias], AttentionBias | None]:
+    """Separate low-rank terms so flex attention can fold them into Q/K."""
+    if isinstance(bias, (LowRankBias, LearnedAlibiBias)):
+        return [bias], None
+    if isinstance(bias, SumBias):
+        lhs_low_rank, lhs = _split_low_rank_bias(bias.lhs)
+        rhs_low_rank, rhs = _split_low_rank_bias(bias.rhs)
+        if lhs is None:
+            remainder = rhs
+        elif rhs is None:
+            remainder = lhs
+        else:
+            remainder = SumBias(lhs, rhs)
+        return lhs_low_rank + rhs_low_rank, remainder
+    return [], bias
+
+
 def flex_attention(
     query: Array,
     key: Array,
@@ -257,12 +1057,14 @@ def flex_attention(
     block_kv_dkv: int = 64,
     block_q_dq: int = 64,
     block_kv_dq: int = 64,
-    backward_pass_impl: str = "triton_fused",
+    backward_pass_impl: str = "auto",
     num_warps: int | None = None,
     num_stages: int = 2,
     grid: tuple[int, ...] | None = None,
     interpret: bool = False,
     debug: bool = False,
+    dropout_impl: str = "counter",
+    diff_mode: str = "reverse",
 ):
     # These can not be used by the pallas backend
     del (
@@ -309,9 +1111,51 @@ def flex_attention(
         sm_scale = 1.0 / math.sqrt(query.shape[-1])
 
     query = query[None] if query.ndim == 3 else query
+    key = key[None] if key.ndim == 3 else key
+    value = value[None] if value.ndim == 3 else value
 
-    *_, l_q, h, n = query.shape
+    low_rank_biases, bias = _split_low_rank_bias(bias)
+    if low_rank_biases:
+        if sm_scale <= 0:
+            raise ValueError("LowRankBias requires a positive sm_scale")
+        if enable_gqa and query.shape[-2] != key.shape[-2]:
+            repeats = query.shape[-2] // key.shape[-2]
+            key = jnp.repeat(key, repeats, axis=-2)
+            value = jnp.repeat(value, repeats, axis=-2)
+            enable_gqa = False
+
+        query_extras = []
+        key_extras = []
+        for low_rank_bias in low_rank_biases:
+            query_factors, key_factors = low_rank_bias.factors(
+                query.shape[-3],
+                key.shape[-3],
+                query.shape[-2],
+                dtype=query.dtype,
+            )
+            query_factors = jnp.broadcast_to(
+                query_factors,
+                query.shape[:-1] + (low_rank_bias.rank,),
+            )
+            key_factors = jnp.broadcast_to(
+                key_factors,
+                key.shape[:-1] + (low_rank_bias.rank,),
+            )
+            factor_scale = math.sqrt(low_rank_bias.scale / sm_scale)
+            query_extras.append(query_factors * factor_scale)
+            key_extras.append(key_factors * factor_scale)
+
+        extra_dim = sum(x.shape[-1] for x in query_extras)
+        query = jnp.concatenate((query, *query_extras), axis=-1)
+        key = jnp.concatenate((key, *key_extras), axis=-1)
+        value = jnp.concatenate(
+            (value, jnp.zeros(value.shape[:-1] + (extra_dim,), dtype=value.dtype)),
+            axis=-1,
+        )
+
+    *_, l_q, h, _ = query.shape
     *_, l_kv, _, _ = key.shape
+    output_dim = value.shape[-1] - sum(x.rank for x in low_rank_biases)
     query = pad_to_power_of_2(query, axis=(-3, -1))
     key = pad_to_power_of_2(key, axis=(-3, -1))
     value = pad_to_power_of_2(value, axis=(-3, -1))
@@ -350,6 +1194,15 @@ def flex_attention(
         not isinstance(query, jax.Array) and query.device.platform == "cpu"
     ):
         interpret = True
+    elif (
+        block_sizes.block_q_dkv < 16
+        or block_sizes.block_kv_dkv < 16
+        or block_sizes.block_q_dq < 16
+        or block_sizes.block_kv_dq < 16
+    ):
+        # Triton lowering requires matmul inner dims >= 16 for these kernels.
+        # Fall back to interpret mode for very small backward tiles.
+        interpret = True
 
     if deterministic:
         dropout_rate = 0.0
@@ -366,13 +1219,15 @@ def flex_attention(
         block_sizes=block_sizes,
         backward_pass_impl=backward_pass_impl,
         dropout_rate=dropout_rate,
+        dropout_impl=dropout_impl,
         num_warps=num_warps,
         num_stages=num_stages,
         grid=grid,
         interpret=interpret,
         debug=debug,
+        diff_mode=diff_mode,
     )
 
-    output = output[:, :l_q, :h, :n]
+    output = output[:, :l_q, :h, :output_dim]
 
     return output

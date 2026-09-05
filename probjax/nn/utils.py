@@ -6,23 +6,28 @@ import flax.nnx as nnx
 import jax.numpy as jnp
 from jax import lax
 from jax.ops import segment_max  # segment reduction (available in JAX)
-from ott.geometry import costs, pointcloud
-from ott.problems.linear import linear_problem
-from ott.solvers.linear import sinkhorn
 
+from probjax.utils.optional import require_ott
 from probjax.utils.typing import Array, ArrayLike, ModuleLikeType
 
 
-def identity_1x1(_, shape: Sequence[int], dtype=jnp.float32):
-    """Kernel init for a 1×1 Conv that starts as identity.
+_RNG_SUPPORT_BY_TYPE: dict[type, bool] = {
+    nnx.Linear: False,
+}
 
-    Works for (1, 1, C_in, C_out).  If C_in ≠ C_out the extra
-    channels are zero-filled.
+
+def identity_1x1(_, shape: Sequence[int], dtype=jnp.float32):
+    """Kernel init for an all-ones-kernel Conv that starts as identity.
+
+    Shape is (*spatial, C_in, C_out) for any number of spatial dims — 1-D
+    convs give (1, C_in, C_out), 2-D give (1, 1, C_in, C_out). If C_in ≠ C_out
+    the extra channels are zero-filled.
     """
     k = jnp.zeros(shape, dtype)
-    diag = jnp.arange(min(shape[2], shape[3]))
-    # set W[0, 0, i, i] = 1
-    k = k.at[0, 0, diag, diag].set(1.0)
+    diag = jnp.arange(min(shape[-2], shape[-1]))
+    # set W[0, ..., 0, i, i] = 1
+    spatial_origin = (0,) * (len(shape) - 2)
+    k = k.at[(*spatial_origin, diag, diag)].set(1.0)
     return k
 
 
@@ -96,6 +101,24 @@ def normalize_attn_bias(bias: Array | None) -> Array | None:
     raise ValueError(f"Bias must have ndim 2, 3, or 4; got {bias.ndim}.")
 
 
+def filter_supported_kwargs(ctor, **kwargs) -> dict:
+    """Keep only kwargs the constructor's signature accepts.
+
+    Works for classes, functions, and functools.partial wrappers. Used to
+    pass optional metadata (e.g. sharding) to layers that support it while
+    remaining compatible with custom layer classes that don't.
+    """
+    target = ctor
+    while isinstance(target, partial):
+        target = target.func
+    try:
+        fn = target.__init__ if isinstance(target, type) else target
+        param_names = inspect.signature(fn).parameters.keys()
+    except (ValueError, TypeError):
+        return {}
+    return {key: kwargs[key] for key in kwargs if key in param_names}
+
+
 def filter_precision_kwargs(cls: ModuleLikeType, **kwargs):
     """Utility function to filter out unsupported precision kwargs.
 
@@ -145,6 +168,35 @@ def get_active_precision_kwargs(
     if preferred_element_type is not None:
         precision_kwargs["preferred_element_type"] = preferred_element_type
     return precision_kwargs
+
+
+def call_with_optional_rng(module, *args, rng=None, **kwargs):
+    """Call a module/function and pass `rng` only if supported."""
+    if rng is None:
+        return module(*args, **kwargs)
+
+    if not module_accepts_rng(module):
+        return module(*args, **kwargs)
+
+    return module(*args, rng=rng, **kwargs)
+
+
+def module_accepts_rng(module) -> bool:
+    module_type = type(module)
+    cached = _RNG_SUPPORT_BY_TYPE.get(module_type)
+    if cached is not None:
+        return cached
+
+    call_target = module.__call__ if hasattr(module, "__call__") else module
+    try:
+        params = inspect.signature(call_target).parameters.values()
+        supports_rng = any(
+            p.name == "rng" or p.kind == inspect.Parameter.VAR_KEYWORD for p in params
+        )
+    except (TypeError, ValueError):
+        supports_rng = True
+    _RNG_SUPPORT_BY_TYPE[module_type] = supports_rng
+    return supports_rng
 
 
 def extract_permutation(M: jnp.ndarray) -> jnp.ndarray:
@@ -212,7 +264,7 @@ def ot_copula(
     min_iterations: int = 0,
     max_iterations: int = 100,
 ):
-    # (These objects are assumed to be defined/imported elsewhere.)
+    costs, pointcloud, _, linear_problem, sinkhorn = require_ott()
     geom = pointcloud.PointCloud(x, y, cost_fn=costs.PNormP(p), epsilon=epsilon)
     ot_prob = linear_problem.LinearProblem(geom)
     solver = sinkhorn.Sinkhorn(

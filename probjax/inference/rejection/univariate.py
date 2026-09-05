@@ -3,8 +3,8 @@ from typing import Callable, NamedTuple
 
 import jax
 import jax.numpy as jnp
-from jax.random import PRNGKey
-from jaxtyping import Array, ArrayLike
+
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 
 class ARSState(NamedTuple):
@@ -17,6 +17,25 @@ class ARSState(NamedTuple):
     num_points: int  # Number of points used to define the piecewise linear function
 
 
+def _build_envelope(x: Array, h: Array, hprime: Array, lb: ArrayLike, ub: ArrayLike):
+    z = (jnp.diff(h) + x[:-1] * hprime[:-1] - x[1:] * hprime[1:]) / -(
+        jnp.diff(hprime) + 1e-8
+    )
+    z = jnp.concatenate([jnp.array([lb]), z, jnp.array([ub])])
+
+    u = jnp.empty_like(z)
+    u = u.at[0].set(hprime[0] * (z[0] - x[0]) + h[0])
+    u = u.at[1:].set(hprime * (z[1:] - x) + h)
+
+    s = jnp.zeros_like(u)
+    s_sub = jnp.where(
+        jnp.abs(hprime) > 1e-5, jnp.diff(jnp.exp(u)) / hprime, z[1:] - z[:-1]
+    )
+    s = s.at[1:].set(jnp.cumsum(s_sub))
+    s = s.at[-1].set(jnp.clip(s[-1], 0, 1e8))
+    return z, u, s
+
+
 def init_ars_state(
     log_density_fn: Callable,
     xi: Array,
@@ -25,29 +44,12 @@ def init_ars_state(
     max_points: int = 50,
 ):
     num_initial_points = len(xi)
+    # Cheap ARS with fixed nodes better https://arxiv.org/pdf/1509.07985
 
     x = jnp.sort(xi)
     h, hprime = jax.vmap(jax.value_and_grad(log_density_fn))(x)
 
-    z = (jnp.diff(h) + x[:-1] * hprime[:-1] - x[1:] * hprime[1:]) / -(
-        jnp.diff(hprime) + 1e-8
-    )
-    z = jnp.concatenate([jnp.array([lb]), z, jnp.array([ub])])
-
-    u = jnp.empty_like(z)
-    # Log density values -> tangent lines
-    u = u.at[0].set(hprime[0] * (z[0] - x[0]) + h[0])
-    u = u.at[1:].set(hprime * (z[1:] - x) + h)
-
-    s = jnp.zeros_like(u)
-    # Integral of piecewise linear functions
-    s_sub = jnp.where(
-        jnp.abs(hprime) > 1e-5, jnp.diff(jnp.exp(u)) / hprime, z[1:] - z[:-1]
-    )
-    # Cumulative sum of the integrals
-    s = s.at[1:].set(jnp.cumsum(s_sub))
-    # Can be infinite for bad initial points at the end
-    s = s.at[-1].set(jnp.clip(s[-1], 0, 1e8))
+    z, u, s = _build_envelope(x, h, hprime, lb, ub)
 
     # Add infinities to the end of the arrays
     x = jnp.concatenate([x, jnp.full(max_points - num_initial_points, jnp.inf)])
@@ -76,23 +78,8 @@ def update_ars_state(state: ARSState, x: Array, h: Array, hprime: Array):
         xs = xs[idx]
         h = h[idx]
         hprime = hprime[idx]
-        z = (jnp.diff(h) + xs[:-1] * hprime[:-1] - xs[1:] * hprime[1:]) / -(
-            jnp.diff(hprime) + 1e-8
-        )
-        z = jnp.concatenate([jnp.array([-jnp.inf]), z, jnp.array([jnp.inf])])
-        z = z.at[new_index + 1].set(jnp.inf)
-
-        u = jnp.empty_like(z)
-        u = u.at[0].set(hprime[0] * (z[0] - xs[0]) + h[0])
-        u = u.at[1:].set(hprime * (z[1:] - xs) + h)
-
-        s = jnp.zeros_like(u)
-        s_sub = jnp.where(
-            jnp.abs(hprime) > 1e-5, jnp.diff(jnp.exp(u)) / hprime, z[1:] - z[:-1]
-        )
-        s_sub = s_sub.at[new_index].set(jnp.clip(s_sub[new_index], 0, 1e8))
-
-        s = s.at[1:].set(jnp.cumsum(s_sub))
+        z, u, s = _build_envelope(xs, h, hprime, -jnp.inf, jnp.inf)
+        s = s.at[new_index + 1].set(jnp.clip(s[new_index + 1], 0, 1e8))
 
         return ARSState(xs, h, hprime, z, u, s, state.num_points + 1)
 
@@ -127,7 +114,7 @@ def eval_lower(state: ARSState, x: Array):
     )
 
 
-def sample_upper(state: ARSState, key: PRNGKey):
+def sample_upper(state: ARSState, key: RngKey):
     u = jax.random.uniform(key)
     max_index = state.num_points
     # Choose a bin with probability proportional to its contained probability mass.
@@ -170,8 +157,21 @@ def sample_upper(state: ARSState, key: PRNGKey):
     return xt, i
 
 
+def _segment_index(state: ARSState, x: Array):
+    xs = state.x[: state.num_points]
+    idx = jnp.searchsorted(xs, x) - 1
+    return jnp.clip(idx, 0, state.num_points - 1)
+
+
+def _log_proposal(state: ARSState, x: Array):
+    i = _segment_index(state, x)
+    u = eval_upper(state, x, i)
+    s_max = state.s[state.num_points]
+    return u - jnp.log(s_max)
+
+
 @partial(jax.jit, static_argnums=(2, 3))
-def ars(state: ARSState, key: PRNGKey, num_samples: int, log_density_fn: Callable):
+def ars(state: ARSState, key: RngKey, num_samples: int, log_density_fn: Callable):
     samples = jnp.zeros(num_samples)
     n = 0
 
@@ -224,6 +224,3 @@ def ars(state: ARSState, key: PRNGKey, num_samples: int, log_density_fn: Callabl
     _, _, state, samples, iterations = jax.lax.while_loop(cond_fn, body_fn, carry)
 
     return samples, state, num_samples / iterations
-
-
-# TODO Add A2RMS

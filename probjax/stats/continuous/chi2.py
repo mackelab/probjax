@@ -7,6 +7,11 @@ from jax.scipy.stats import chi2 as _chi2
 
 from probjax.stats.base import rv_continuous
 from probjax.stats.constraints import real, strict_positive, strict_positive_integer
+from probjax.stats.utils import (
+    flatten_samples,
+    mean_and_var_1d,
+    normalize_sample_weights,
+)
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["chi2"]
@@ -55,7 +60,7 @@ class chi2_gen(rv_continuous):
         raise NotImplementedError("PPF not implemented for chi2 distribution")
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         df=1.0,
@@ -121,23 +126,15 @@ class chi2_gen(rv_continuous):
         params : tuple
             The fitted parameters (df, loc, scale)
         """
-        data = jnp.asarray(data)
-        data = jnp.reshape(data, (-1,))
+        data = flatten_samples(data)
         dtype = data.dtype
 
-        if weights is not None:
-            weights = jnp.asarray(weights, dtype=dtype).reshape((-1,))
-            if weights.shape[0] != data.shape[0]:
-                raise ValueError("weights must have the same length as data")
-            weights = jnp.clip(weights, 0)
-            total = jnp.sum(weights)
-            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=dtype))
-            weights = weights / total
-            mean = jnp.sum(weights * data)
-            var = jnp.sum(weights * (data - mean) ** 2)
-        else:
-            mean = jnp.mean(data)
-            var = jnp.var(data)
+        weights_arr = normalize_sample_weights(
+            weights,
+            n_samples=data.shape[0],
+            dtype=dtype,
+        )
+        mean, var = mean_and_var_1d(data, weights_arr)
 
         loc = jnp.asarray(0.0, dtype=dtype)
         df = mean**2 / jnp.maximum(var, jnp.asarray(1e-12, dtype=dtype))

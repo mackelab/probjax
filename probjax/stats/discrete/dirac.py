@@ -39,7 +39,7 @@ class dirac_gen(rv_discrete, rv_exponential_family):
         return jnp.where(k == loc, 0.0, -jnp.inf)
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         loc=None,

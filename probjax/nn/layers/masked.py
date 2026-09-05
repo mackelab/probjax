@@ -1,6 +1,8 @@
+import jax
 import jax.numpy as jnp
 from flax import nnx
 from jax.typing import ArrayLike
+
 
 
 class MaskedLinear(nnx.Linear):
@@ -19,9 +21,10 @@ class MaskedLinear(nnx.Linear):
             raise ValueError("Mask shape must be (in_features, out_features)")
         self.mask = nnx.Variable(mask)
 
-    def __call__(self, inputs):
-        kernel = jnp.where(self.mask.value, self.kernel.value, 0.0)
-        bias = self.bias.value if self.bias else None
+    def __call__(self, inputs, rng: jax.Array | None = None):
+        del rng
+        kernel = jnp.where(self.mask[...], self.kernel[...], 0.0)
+        bias = self.bias[...] if self.bias else None
 
         inputs, kernel, bias = self.promote_dtype(
             (inputs, kernel, bias), dtype=self.dtype

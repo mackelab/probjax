@@ -13,6 +13,7 @@ from probjax.nn.layers.attention import (
 )
 from probjax.nn.layers.fuse import AdditiveBinaryFuse, AffineFuse
 from probjax.nn.nets.simple import MLP
+from probjax.nn.sharding import BATCH, EMBED, SEQ, constrain
 from probjax.nn.utils import (
     filter_precision_kwargs,
     flatten_to_btd,
@@ -48,6 +49,7 @@ class Transformer(nnx.Module):
         normalize_qk_cross_attn: bool = False,
         context_dim: Optional[int] = None,
         dropout_rate: float = 0.0,
+        dropout_rate_attn: float | None = None,
         drop_path_rate: float | Sequence[float] = 0.0,
         widening_factor: int = 4,
         num_hidden_layers: int = 1,
@@ -79,6 +81,8 @@ class Transformer(nnx.Module):
                 Defaults to None.
             dropout_rate (float, optional): Dropout rate. If 0.0, dropout is disabled.
                 Defaults to 0.0.
+            dropout_rate_attn (float | None, optional): Dropout rate for attention if
+                None, uses `dropout_rate`.
             drop_path_rate (float | Sequence[float], optional): Drop-path rate(s) per
                 layer. Provide a single float to apply uniformly, or a sequence of
                 length `num_layers`. Defaults to 0.0.
@@ -108,6 +112,9 @@ class Transformer(nnx.Module):
         self.num_layers = num_layers
         self.attn_size = attn_size
         self.dropout_rate = dropout_rate
+        self.dropout_rate_attn = (
+            dropout_rate_attn if dropout_rate_attn is not None else dropout_rate
+        )
         if isinstance(drop_path_rate, Sequence) and not isinstance(
             drop_path_rate, (str, bytes)
         ):
@@ -130,7 +137,6 @@ class Transformer(nnx.Module):
         )
         self.act = act
         self.enable_cross_attention = enable_cross_attention
-
         # Precision and dtype settings.
         precision_kwargs = get_active_precision_kwargs(
             dtype,
@@ -139,7 +145,7 @@ class Transformer(nnx.Module):
             preferred_element_type,
         )
 
-        # Layer norms for the attention and dense blocks.
+        # Norm layers.
         self.layer_norms_attn = nnx.List([
             norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
         ])
@@ -164,7 +170,7 @@ class Transformer(nnx.Module):
                 out_features=model_dim,
                 rngs=rngs,
                 kernel_init=self.initializer,
-                dropout_rate=dropout_rate,
+                dropout_rate=self.dropout_rate_attn,
                 attention_fn=attention_fn,
                 normalize_qk=normalize_qk_attn,
                 **filter_precision_kwargs(mha_cls, **precision_kwargs),
@@ -187,7 +193,7 @@ class Transformer(nnx.Module):
                     in_kv_features=kv_in_features,
                     rngs=rngs,
                     kernel_init=self.initializer,
-                    dropout_rate=dropout_rate,
+                    dropout_rate=self.dropout_rate_attn,
                     attention_fn=cross_attention_fn,
                     normalize_qk=normalize_qk_cross_attn,
                     **filter_precision_kwargs(mha_cls, **precision_kwargs),
@@ -198,11 +204,19 @@ class Transformer(nnx.Module):
         # Context fusion if context is provided.
         if context_dim is not None:
             self.context_layers1 = nnx.List([
-                context_fusion_cls(model_dim, context_dim, rngs=rngs)
+                context_fusion_cls(
+                    model_dim,
+                    context_dim,
+                    rngs=rngs,
+                )
                 for _ in range(num_layers)
             ])
             self.context_layers2 = nnx.List([
-                context_fusion_cls(model_dim, context_dim, rngs=rngs)
+                context_fusion_cls(
+                    model_dim,
+                    context_dim,
+                    rngs=rngs,
+                )
                 for _ in range(num_layers)
             ])
 
@@ -278,6 +292,8 @@ class Transformer(nnx.Module):
         bias_cross: AttentionBias | Array | None = None,
         deterministic: bool | None = None,
         decode: bool = False,
+        kv_len: int | Array | None = None,
+        rng: jax.Array | None = None,
     ) -> Array:  # [B, T, D]
         """Transforms input embedding sequences to output embedding sequences."""
 
@@ -296,6 +312,8 @@ class Transformer(nnx.Module):
         k, _ = flatten_to_btd(k) if k is not None else (None, None)
         v, _ = flatten_to_btd(v) if v is not None else (None, None)
 
+        q = constrain(q, BATCH)
+
         # Ensure context has shape [B, 1, Dc] when provided
         if context is not None:
             context = context.reshape(-1, 1, context.shape[-1])
@@ -310,12 +328,19 @@ class Transformer(nnx.Module):
             q_res = q
             q = self.layer_norms_attn[i](q)
             if context is not None and self.context_dim is not None:
-                q = self.context_layers1[i](q, context)
+                q = self.context_layers1[i](q, context, rng=rng)
             q = self.attention_blocks[i](
-                q, mask=mask, bias=bias, deterministic=deterministic, decode=decode
+                q,
+                mask=mask,
+                bias=bias,
+                deterministic=deterministic,
+                decode=decode,
+                kv_len=kv_len,
+                rng=rng,
             )
+            q = constrain(q, BATCH, SEQ, EMBED)
             q = self.attn_skip_fuse[i](
-                q_res, q, context=context, deterministic=deterministic
+                q_res, q, context=context, deterministic=deterministic, rng=rng
             )
 
             # Then cross attention if wanted
@@ -330,25 +355,29 @@ class Transformer(nnx.Module):
                     bias=bias_cross,
                     deterministic=deterministic,
                     decode=False,
+                    rng=rng,
                 )
+                q = constrain(q, BATCH, SEQ, EMBED)
                 q = self.cross_skip_fuse[i](
-                    q_res, q, context=context, deterministic=deterministic
+                    q_res, q, context=context, deterministic=deterministic, rng=rng
                 )
 
             # Then the dense block and global context.
             q_res = q
             q = self.layer_norms_dense[i](q)
             if context is not None and self.context_dim is not None:
-                q = self.context_layers2[i](q, context)
+                q = self.context_layers2[i](q, context, rng=rng)
 
-            q = self.dense_blocks[i](q)
+            q = self.dense_blocks[i](q, rng=rng)
+            q = constrain(q, BATCH, SEQ, EMBED)
             if self.dropout_dense is not None:
-                q = self.dropout_dense[i](q, deterministic=deterministic)
+                q = self.dropout_dense[i](q, deterministic=deterministic, rngs=rng)
             q = self.mlp_skip_fuse[i](
                 q_res,
                 q,
                 context=context,
                 deterministic=deterministic,
+                rng=rng,
             )
 
         return restore_from_btd(q, q_shape)

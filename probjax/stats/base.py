@@ -3,35 +3,70 @@ Statistical Distributions Base Classes (:mod:`probjax.stats.base`)
 =================================================================
 
 This module contains the base classes for continuous and discrete random variables
-that provide a SciPy-like API. This closely follows the structure of scipy.stats._distn_infrastructure.
+that provide a SciPy-like API. It follows scipy.stats._distn_infrastructure.
 """
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import Any, ClassVar, Mapping, Optional, Tuple
+from abc import ABC, ABCMeta, abstractmethod
+from dataclasses import dataclass
+from typing import Any, ClassVar, Mapping, Optional, Tuple, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.flatten_util import ravel_pytree
 
-from probjax.stats.constraints import Constraint
+import probjax.stats.constraints as stats_constraints
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = [
+    "DistributionParams",
     "rv_generic",
     "rv_continuous",
+    "rv_multivariate",
+    "rv_spherical",
     "rv_discrete",
     "rv_continuous_frozen",
+    "rv_multivariate_frozen",
+    "rv_spherical_frozen",
     "rv_discrete_frozen",
 ]
+
+
+@dataclass(frozen=True)
+class _FrozenArgs:
+    args: tuple[Any, ...]
+    kwds: dict[str, Any]
+    parameter_values: dict[str, Any]
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class DistributionParams:
+    """Unconstrained parameters with a distribution stored as static metadata."""
+
+    dist: Any
+    params: Mapping[str, Any]
+
+    def tree_flatten(self):
+        return (dict(self.params),), self.dist
+
+    @classmethod
+    def tree_unflatten(cls, dist, children):
+        return cls(dist, children[0])
+
+    def constrain(self) -> "rv_frozen":
+        return self.dist.from_params(self.dist.params_from_unconstrained(self.params))
 
 
 class rv_generic(ABC):
     """Generic random variable class for common functionality."""
 
     name: ClassVar[Optional[str]] = None
-    parameters: ClassVar[Mapping[str, Constraint]] = {}
+    parameters: ClassVar[Mapping[str, stats_constraints.Constraint]] = {}
+    parameter_aliases: ClassVar[Mapping[str, str]] = {}
+    extra_frozen_kwds: ClassVar[frozenset[str]] = frozenset()
 
     def __init__(self, name: Optional[str] = None):
         if name is not None:
@@ -40,6 +75,88 @@ class rv_generic(ABC):
     def __call__(self, *args: Any, **kwds: Any) -> "rv_frozen":
         """Call the distribution with the given arguments."""
         return self.freeze(*args, **kwds)
+
+    @staticmethod
+    def _format_frozen_class_name(name: Optional[str], fallback: str) -> str:
+        """Create a stable class name for generated frozen distributions."""
+        raw_name = name or fallback
+        parts = "".join(ch if ch.isalnum() else "_" for ch in str(raw_name)).split("_")
+        camel = "".join(part.capitalize() for part in parts if part)
+        return f"Frozen{camel or 'Distribution'}"
+
+    def _get_or_create_frozen_class(
+        self, base_frozen_cls: type["rv_frozen"]
+    ) -> type["rv_frozen"]:
+        """Get a cached frozen class for this distribution instance."""
+        cache = getattr(self, "_frozen_cls_cache", None)
+        if cache is not None and issubclass(cache, base_frozen_cls):
+            return cast(type["rv_frozen"], cache)
+
+        class_name = self._format_frozen_class_name(
+            getattr(self, "name", None), self.__class__.__name__
+        )
+        frozen_cls = cast(
+            type["rv_frozen"],
+            FrozenDistributionMeta(
+                class_name,
+                (base_frozen_cls,),
+                {},
+                dist=self,
+            ),
+        )
+        self._frozen_cls_cache = frozen_cls
+        return frozen_cls
+
+    @staticmethod
+    def _distribution_display_name(dist: Any) -> str:
+        return (
+            getattr(dist, "name", None)
+            or getattr(dist, "__name__", None)
+            or dist.__class__.__name__
+        )
+
+    @classmethod
+    def _bind_frozen_args_for_dist(
+        cls, dist: Any, args: tuple[Any, ...], kwds: Mapping[str, Any]
+    ) -> _FrozenArgs:
+        """Validate and bind frozen distribution arguments."""
+        parameters = tuple(getattr(dist, "parameters", {}).keys())
+        extra_kwds = set(getattr(dist, "extra_frozen_kwds", ()))
+        kwds_dict = dict(kwds)
+        dist_name = cls._distribution_display_name(dist)
+
+        if len(args) > len(parameters):
+            raise TypeError(
+                f"{dist_name} expected at most {len(parameters)} positional "
+                f"arguments, got {len(args)}."
+            )
+
+        positional_names = set(parameters[: len(args)])
+        duplicate_names = sorted(positional_names.intersection(kwds_dict))
+        if duplicate_names:
+            names = ", ".join(repr(name) for name in duplicate_names)
+            raise TypeError(f"{dist_name} got multiple values for argument {names}.")
+
+        valid_kwds = set(parameters).union(extra_kwds)
+        unexpected = sorted(set(kwds_dict).difference(valid_kwds))
+        if unexpected:
+            names = ", ".join(repr(name) for name in unexpected)
+            raise TypeError(f"{dist_name} got unexpected keyword argument {names}.")
+
+        parameter_values = {
+            name: value for name, value in zip(parameters, args, strict=False)
+        }
+        parameter_values.update({
+            name: kwds_dict[name] for name in parameters if name in kwds_dict
+        })
+        return _FrozenArgs(args=args, kwds=kwds_dict, parameter_values=parameter_values)
+
+    def _freeze_as(
+        self, base_frozen_cls: type["rv_frozen"], *args: Any, **kwds: Any
+    ) -> "rv_frozen":
+        """Freeze a distribution into the requested frozen base class."""
+        frozen_cls = self._get_or_create_frozen_class(base_frozen_cls)
+        return frozen_cls(self, *args, **kwds)
 
     @classmethod
     def _parse_args(
@@ -55,22 +172,109 @@ class rv_generic(ABC):
 
     def freeze(self, *args: Any, **kwds: Any) -> "rv_frozen":
         """Freeze the distribution for the given arguments."""
-        # Create the frozen class
-        frozen_cls = type('FrozenDistribution', (rv_frozen,), {'dist': self})
-        return frozen_cls(self, *args, **kwds)
+        return self._freeze_as(rv_frozen, *args, **kwds)
+
+    def from_params(
+        self, params: Optional[Mapping[str, Any]] = None, **kwds: Any
+    ) -> "rv_frozen":
+        """Create a frozen distribution from name-keyed parameters."""
+        values = dict(params or {})
+        values.update(kwds)
+        args = []
+        for name in self.parameters:
+            if name not in values:
+                break
+            args.append(values.pop(name))
+        return self.freeze(*args, **values)
+
+    @classmethod
+    def params_to_unconstrained(cls, params: Mapping[str, Any]) -> dict[str, Any]:
+        """Map constrained parameters to an optimization-friendly pytree."""
+        from probjax.stats.constraint_registry import biject_to
+
+        unconstrained = {}
+        for name, value in params.items():
+            constraint = cls.parameters.get(name)
+            if isinstance(constraint, stats_constraints.Distribution):
+                unconstrained[name] = jax.tree_util.tree_map(
+                    lambda component: DistributionParams(
+                        component.dist, component.unconstrained_params
+                    ),
+                    value,
+                    is_leaf=lambda component: isinstance(component, rv_frozen),
+                )
+                continue
+            if not isinstance(constraint, stats_constraints.Constraint):
+                unconstrained[name] = value
+                continue
+            try:
+                unconstrained[name] = biject_to(constraint).inv(value)
+            except NotImplementedError:
+                unconstrained[name] = value
+        return unconstrained
+
+    @classmethod
+    def params_from_unconstrained(cls, params: Mapping[str, Any]) -> dict[str, Any]:
+        """Map unconstrained parameters back to their declared supports."""
+        from probjax.stats.constraint_registry import biject_to
+
+        constrained = {}
+        for name, value in params.items():
+            constraint = cls.parameters.get(name)
+            if isinstance(constraint, stats_constraints.Distribution):
+                constrained[name] = jax.tree_util.tree_map(
+                    lambda component: component.constrain(),
+                    value,
+                    is_leaf=lambda component: isinstance(component, DistributionParams),
+                )
+                continue
+            if not isinstance(constraint, stats_constraints.Constraint):
+                constrained[name] = value
+                continue
+            try:
+                constrained[name] = biject_to(constraint)(value)
+            except NotImplementedError:
+                constrained[name] = value
+        return constrained
+
+    def rvs(
+        self,
+        rng: RngKey,
+        *args: Any,
+        shape: Tuple[int, ...] = (),
+        name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Array:
+        """Random variates of given shape.
+
+        Calls through the `rv_p` primitive so traced execution records a random
+        variable site while eager execution remains a direct sample.
+        """
+        from probjax.core.custom_primitives.random_variable import rv_p
+
+        return rv_p.bind(
+            rng,
+            *args,
+            shape=shape,
+            dist=self,
+            name=name,
+            rvs_fn=type(self)._rvs_impl,
+            logpdf_fn=type(self).logpdf,
+            kwds=kwargs,
+        )
 
     @classmethod
     @abstractmethod
-    def support(cls, *args, **kwds) -> Constraint:
+    def support(cls, *args, **kwds) -> stats_constraints.Constraint:
         """Support of the distribution."""
         ...
 
     @classmethod
     @abstractmethod
-    def rvs(
+    def _rvs_impl(
         cls, rng: RngKey, *args: Any, shape: Tuple[int, ...] = (), **kwargs: Any
     ) -> Array:
-        """Random variates of given shape.
+        """Implementation for random variate sampling.
 
         Parameters
         ----------
@@ -80,6 +284,9 @@ class rv_generic(ABC):
             Shape parameters for the distribution
         shape : tuple of ints, optional
             The shape of the samples to draw
+        name : str, optional
+            Optional site name used when tracing probabilistic programs.
+            If omitted, a unique name is generated from the distribution name.
         **kwargs : dict, optional
             Additional parameters (loc, scale, etc.)
 
@@ -160,7 +367,9 @@ class rv_generic(ABC):
         return cls.ppf(0.5, *args, **kwds)
 
     @classmethod
-    def interval(cls, alpha: ArrayLike, *args: Any, **kwds: Any) -> tuple[ArrayLike, ArrayLike]:
+    def interval(
+        cls, alpha: ArrayLike, *args: Any, **kwds: Any
+    ) -> tuple[ArrayLike, ArrayLike]:
         """Confidence interval with equal areas around the median."""
         args, kwds = cls._parse_args(*args, **kwds)
         alpha = jnp.asarray(alpha)
@@ -244,6 +453,38 @@ class rv_generic(ABC):
         """
         raise NotImplementedError("Not implemented for this distribution.")
 
+    @classmethod
+    def fit_params(cls, data: ArrayLike, **kwds: Any) -> dict[str, Any]:
+        """Fit and return parameters keyed by their declared names."""
+        fitted = cls.fit(data, **kwds)
+        values = fitted if isinstance(fitted, tuple) else (fitted,)
+        return dict(zip(cls.parameters, values, strict=False))
+
+    @classmethod
+    def _fit_mle(cls, data: ArrayLike, **kwds: Any) -> tuple[Array, ...]:
+        """Fit by optimizing the likelihood in unconstrained parameter space."""
+        from jax.scipy.optimize import minimize
+
+        init_params = {}
+        for name in cls.parameters:
+            if name not in kwds:
+                raise ValueError(f"Provide an initial value for parameter {name!r}.")
+            init_params[name] = jnp.asarray(kwds.pop(name))
+
+        initial, unravel = ravel_pytree(cls.params_to_unconstrained(init_params))
+
+        def objective(flat_params):
+            params = cls.params_from_unconstrained(unravel(flat_params))
+            return -jnp.sum(cls.logpdf(data, **params))
+
+        result = minimize(objective, initial, method="BFGS", **kwds)
+        if not bool(jnp.all(jnp.isfinite(result.x))):
+            message = getattr(result, "message", "unknown error")
+            raise ValueError(f"Optimization failed: {message}")
+
+        fitted = cls.params_from_unconstrained(unravel(result.x))
+        return tuple(fitted[name] for name in cls.parameters)
+
 
 class rv_exponential_family(rv_generic):
     """Base class for exponential family random variables."""
@@ -271,91 +512,8 @@ class rv_exponential_family(rv_generic):
 
     @classmethod
     def fit(cls, data: ArrayLike, **kwds: Any) -> tuple[Array, ...]:
-        """Maximum likelihood estimation of distribution parameters using sufficient
-        statistics.
-
-        For exponential family distributions, the MLE can be computed efficiently using
-        sufficient statistics. The natural parameters are found by solving the equation:
-
-            E[T(X)] = T(x)
-
-        where T(X) is the sufficient statistic and T(x) is the observed sufficient
-        statistic.
-
-        Parameters
-        ----------
-        data : array_like
-            Data to fit the distribution to
-        **kwds : dict, optional
-            Additional parameters for the optimization
-
-        Returns
-        -------
-        params : tuple
-            The fitted parameters of the distribution
-        """
-        data = jnp.asarray(data)
-
-        # Compute sufficient statistics
-        T = cls.sufficient_statistics(data)
-
-        # Get initial parameters from kwds or use defaults
-        init_params: dict[str, Array] = {}
-        for param_name, constraint in cls.parameters.items():
-            if param_name in kwds:
-                init_params[param_name] = kwds.pop(param_name)
-            else:
-                # Use default value from constraint
-                default_value = getattr(constraint, "default_value", None)
-                if default_value is None:
-                    raise ValueError(
-                        f"Constraint {constraint!r} lacks a default value for parameter"
-                        f" '{param_name}'. Provide an explicit initial value."
-                    )
-                init_params[param_name] = jnp.asarray(default_value)
-
-        # Convert to flat array for optimization
-        init_flat = jnp.concatenate([jnp.ravel(v) for v in init_params.values()])
-
-        def neg_log_likelihood(params_flat: Array) -> Array:
-            # Reshape parameters according to their original shapes
-            start_idx = 0
-            params: dict[str, Array] = {}
-            for param_name, param_value in init_params.items():
-                param_size = jnp.size(param_value)
-                param_shape = jnp.shape(param_value)
-                param = params_flat[start_idx : start_idx + param_size].reshape(
-                    param_shape
-                )
-                params[param_name] = param
-                start_idx += param_size
-
-            # Get natural parameters
-            eta = cls.natural_parameters(**params)
-
-            # Compute negative log likelihood using sufficient statistics
-            return -jnp.sum(eta * T - cls.log_partition(eta))
-
-        # Optimize
-        from jax.scipy.optimize import minimize
-
-        result = minimize(neg_log_likelihood, init_flat, method="BFGS", **kwds)
-
-        if not result.success:
-            message = getattr(result, "message", "unknown error")
-            raise ValueError(f"Optimization failed: {message}")
-
-        # Reshape parameters back to their original shapes
-        start_idx = 0
-        fitted_params: dict[str, Array] = {}
-        for param_name, param_value in init_params.items():
-            param_size = jnp.size(param_value)
-            param_shape = jnp.shape(param_value)
-            param = result.x[start_idx : start_idx + param_size].reshape(param_shape)
-            fitted_params[param_name] = param
-            start_idx += param_size
-
-        return tuple(fitted_params.values())
+        """Maximum likelihood estimation in unconstrained parameter space."""
+        return cls._fit_mle(data, **kwds)
 
 
 class rv_continuous(rv_generic):
@@ -363,11 +521,10 @@ class rv_continuous(rv_generic):
 
     def freeze(self, *args: Any, **kwds: Any) -> "rv_continuous_frozen":
         """Freeze the distribution for the given arguments."""
-        # Create the frozen class
-        frozen_cls = type(
-            'FrozenContinuousDistribution', (rv_continuous_frozen,), {'dist': self}
+        return cast(
+            "rv_continuous_frozen",
+            self._freeze_as(rv_continuous_frozen, *args, **kwds),
         )
-        return frozen_cls(self, *args, **kwds)
 
     @classmethod
     def pdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
@@ -382,79 +539,73 @@ class rv_continuous(rv_generic):
 
     @classmethod
     def fit(cls, data: ArrayLike, **kwds: Any) -> tuple[Array, ...]:
-        """Maximum likelihood estimation of distribution parameters.
+        """Maximum likelihood estimation in unconstrained parameter space."""
+        return cls._fit_mle(data, **kwds)
 
-        For discrete distributions, the MLE is found by maximizing the log-likelihood
-        using the logpmf function.
 
-        Parameters
-        ----------
-        data : array_like
-            Data to fit the distribution to
-        **kwds : dict, optional
-            Additional parameters for the optimization
+class rv_multivariate(rv_continuous):
+    """Base class for multivariate continuous random variables."""
 
-        Returns
-        -------
-        params : tuple
-            The fitted parameters of the distribution
-        """
-        data = jnp.asarray(data)
+    multivariate: ClassVar[bool] = True
 
-        # Get initial parameters from kwds or use defaults
-        init_params: dict[str, Array] = {}
-        for param_name, constraint in cls.parameters.items():
-            if param_name in kwds:
-                init_params[param_name] = kwds.pop(param_name)
-            else:
-                # Use default value from constraint
-                default_value = getattr(constraint, "default_value", None)
-                if default_value is None:
-                    raise ValueError(
-                        f"Constraint {constraint!r} lacks a default value for parameter"
-                        f" '{param_name}'. Provide an explicit initial value."
-                    )
-                init_params[param_name] = jnp.asarray(default_value)
+    def freeze(self, *args: Any, **kwds: Any) -> "rv_continuous_frozen":
+        """Freeze the multivariate distribution for the given arguments."""
+        frozen_cls = cast(type["rv_frozen"], globals()["rv_multivariate_frozen"])
+        return cast(
+            "rv_continuous_frozen",
+            self._freeze_as(frozen_cls, *args, **kwds),
+        )
 
-        # Convert to flat array for optimization
-        init_flat = jnp.concatenate([jnp.ravel(v) for v in init_params.values()])
+    @classmethod
+    @abstractmethod
+    def _multivariate_batch_event_shape(
+        cls, *args: Any, **kwds: Any
+    ) -> tuple[Tuple[int, ...], Tuple[int, ...]]:
+        """Infer batch and event shape for multivariate distributions."""
+        ...
 
-        def neg_log_likelihood(params_flat: Array) -> Array:
-            # Reshape parameters according to their original shapes
-            start_idx = 0
-            params: dict[str, Array] = {}
-            for param_name, param_value in init_params.items():
-                param_size = jnp.size(param_value)
-                param_shape = jnp.shape(param_value)
-                param = params_flat[start_idx : start_idx + param_size].reshape(
-                    param_shape
-                )
-                params[param_name] = param
-                start_idx += param_size
 
-            # Compute negative log likelihood using logpmf
-            return -jnp.sum(cls.logpdf(data, **params))
+class rv_spherical(rv_multivariate):
+    """Base class for spherical distributions on the unit sphere."""
 
-        # Optimize
-        from jax.scipy.optimize import minimize
+    def freeze(self, *args: Any, **kwds: Any) -> "rv_continuous_frozen":
+        """Freeze the spherical distribution for the given arguments."""
+        frozen_cls = cast(type["rv_frozen"], globals()["rv_spherical_frozen"])
+        return cast(
+            "rv_continuous_frozen",
+            self._freeze_as(frozen_cls, *args, **kwds),
+        )
 
-        result = minimize(neg_log_likelihood, init_flat, method="BFGS", **kwds)
+    @classmethod
+    @abstractmethod
+    def mean_direction_vector(cls, *args: Any, **kwds: Any) -> ArrayLike:
+        """Representative principal direction of the spherical distribution."""
+        ...
 
-        if not result.success:
-            message = getattr(result, "message", "unknown error")
-            raise ValueError(f"Optimization failed: {message}")
+    @classmethod
+    @abstractmethod
+    def mean_direction_dyad(cls, *args: Any, **kwds: Any) -> Array:
+        """Expected dyadic product :math:`E[XX^T]` for spherical random vectors."""
+        ...
 
-        # Reshape parameters back to their original shapes
-        start_idx = 0
-        fitted_params: dict[str, Array] = {}
-        for param_name, param_value in init_params.items():
-            param_size = jnp.size(param_value)
-            param_shape = jnp.shape(param_value)
-            param = result.x[start_idx : start_idx + param_size].reshape(param_shape)
-            fitted_params[param_name] = param
-            start_idx += param_size
+    @classmethod
+    def dispersion(cls, *args: Any, **kwds: Any) -> Array:
+        """Dispersion matrix defined as :math:`E[XX^T] - I/d`."""
+        dyad = jnp.asarray(cls.mean_direction_dyad(*args, **kwds))
+        dim = dyad.shape[-1]
+        identity = jnp.eye(dim, dtype=dyad.dtype) / jnp.asarray(dim, dtype=dyad.dtype)
+        identity = jnp.broadcast_to(identity, dyad.shape)
+        return dyad - identity
 
-        return tuple(fitted_params.values())
+    @classmethod
+    def axial_dispersion(cls, *args: Any, **kwds: Any) -> Array:
+        """Dispersion along the principal axis :math:`1 - mu^T E[XX^T] mu`."""
+        mean_vec = jnp.asarray(cls.mean_direction_vector(*args, **kwds))
+        dyad = jnp.asarray(cls.mean_direction_dyad(*args, **kwds))
+        axial_moment = jnp.einsum("...i,...ij,...j->...", mean_vec, dyad, mean_vec)
+        one = jnp.asarray(1.0, dtype=axial_moment.dtype)
+        zero = jnp.asarray(0.0, dtype=axial_moment.dtype)
+        return jnp.maximum(zero, one - axial_moment)
 
 
 class rv_discrete(rv_generic):
@@ -462,11 +613,10 @@ class rv_discrete(rv_generic):
 
     def freeze(self, *args: Any, **kwds: Any) -> "rv_discrete_frozen":
         """Freeze the distribution for the given arguments."""
-        # Create the frozen class
-        frozen_cls = type(
-            'FrozenDiscreteDistribution', (rv_discrete_frozen,), {'dist': self}
+        return cast(
+            "rv_discrete_frozen",
+            self._freeze_as(rv_discrete_frozen, *args, **kwds),
         )
-        return frozen_cls(self, *args, **kwds)
 
     @classmethod
     @abstractmethod
@@ -490,39 +640,198 @@ class rv_discrete(rv_generic):
         return jnp.exp(cls.logpdf(x, *args, **kwds))
 
 
-class FrozenDistributionMeta(type):
+class DistributionAPI(ABC):
+    """Common distribution interface shared by frozen and module-backed dists."""
+
+    @property
+    @abstractmethod
+    def batch_shape(self) -> Tuple[int, ...]: ...
+
+    @property
+    @abstractmethod
+    def event_shape(self) -> Tuple[int, ...]: ...
+
+    @abstractmethod
+    def logpdf(self, x: ArrayLike) -> Array: ...
+
+    @abstractmethod
+    def rvs(
+        self,
+        rng: RngKey,
+        shape: Tuple[int, ...] = (),
+        name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Array: ...
+
+    def pdf(self, x: ArrayLike):
+        return jnp.exp(self.logpdf(x))
+
+    def cdf(self, x: ArrayLike):
+        raise NotImplementedError("CDF not implemented for this distribution")
+
+    def logcdf(self, x: ArrayLike):
+        return jnp.log(self.cdf(x))
+
+    def ppf(self, q: ArrayLike):
+        raise NotImplementedError("PPF not implemented for this distribution")
+
+    def sf(self, x: ArrayLike):
+        return 1.0 - self.cdf(x)
+
+    def logsf(self, x: ArrayLike):
+        return jnp.log(self.sf(x))
+
+    def isf(self, q: ArrayLike):
+        return self.ppf(1.0 - q)
+
+    def mean(self):
+        raise NotImplementedError("Mean not implemented for this distribution")
+
+    def mode(self):
+        raise NotImplementedError("Mode not implemented for this distribution")
+
+    def var(self):
+        raise NotImplementedError("Variance not implemented for this distribution")
+
+    def std(self):
+        return jnp.sqrt(self.var())
+
+    def entropy(self):
+        raise NotImplementedError("Entropy not implemented for this distribution")
+
+    def median(self):
+        return self.ppf(0.5)
+
+    def interval(self, confidence: Optional[ArrayLike] = None):
+        confidence = 0.95 if confidence is None else confidence
+        alpha = (1.0 - confidence) / 2.0
+        return self.ppf(alpha), self.ppf(1.0 - alpha)
+
+    def moment(self, order: Optional[int] = None):
+        raise NotImplementedError("Moment not implemented for this distribution")
+
+    def skew(self):
+        raise NotImplementedError("Skew not implemented for this distribution")
+
+    def kurtosis(self):
+        raise NotImplementedError("Kurtosis not implemented for this distribution")
+
+    def stats(self, moments: str = "mv"):
+        values = []
+        for m in moments:
+            if m == "m":
+                values.append(self.mean())
+            elif m == "v":
+                values.append(self.var())
+            elif m == "s":
+                values.append(self.skew())
+            elif m == "k":
+                values.append(self.kurtosis())
+            else:
+                raise ValueError(
+                    "moments must contain only the letters 'm', 'v', 's', and 'k'."
+                )
+        if not values:
+            return ()
+        return values[0] if len(values) == 1 else tuple(values)
+
+    def sample(self, rng: RngKey, shape: Tuple[int, ...] = ()) -> Array:
+        return self.rvs(rng, shape=shape)
+
+    def support(self):
+        raise NotImplementedError("Support not implemented for this distribution")
+
+
+class FrozenDistributionMeta(ABCMeta):
     """Metaclass for frozen distributions that inherits name and docstrings."""
 
-    def __new__(mcs, name, bases, namespace, dist=None):
+    def __new__(mcs, name, bases, namespace, dist=None, **kwargs):
         if dist is not None:
-            # Get the concrete implementation class
-            impl_class = dist.__class__
+            impl_class = dist if isinstance(dist, type) else dist.__class__
+            dist_name = getattr(dist, "name", None) or getattr(impl_class, "name", None)
+            if dist_name is not None:
+                namespace.setdefault("name", dist_name)
+            namespace.setdefault("dist", dist)
 
-            # Inherit name if available
-            if hasattr(impl_class, 'name'):
-                namespace['name'] = impl_class.name
-
-        return super().__new__(mcs, name, bases, namespace)
+        return super().__new__(mcs, name, bases, namespace, **kwargs)
 
 
-class rv_frozen(metaclass=FrozenDistributionMeta):
+class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
     def __init__(
         self,
         dist,
         *args,
         **kwds,
     ):
-        self.args = args
-        self.kwds = kwds
+        frozen_args = rv_generic._bind_frozen_args_for_dist(dist, tuple(args), kwds)
+        self.args = frozen_args.args
+        self.kwds = frozen_args.kwds
         self.dist = dist
 
+        self._parameter_values = dict(frozen_args.parameter_values)
+        self._parameter_aliases = dict(getattr(self.dist, "parameter_aliases", {}))
+        self._call_kwds = self._build_call_kwargs()
+
         self._batch_shape, self._event_shape = self._compute_batch_and_event_shape(
-            *args, **kwds
+            *self.args, **self.kwds
         )
+
+        for param_name, value in self._parameter_values.items():
+            if hasattr(type(self), param_name):
+                continue
+            object.__setattr__(self, param_name, value)
 
         super().__init__()
 
-    def _compute_batch_and_event_shape(self, *args, **kwds):
+    def _build_call_kwargs(self) -> dict[str, Any]:
+        """Build canonical kwargs for calling distribution methods."""
+        call_kwds = dict(self.kwds)
+        parameters = tuple(getattr(self.dist, "parameters", {}).keys())
+        for idx, name in enumerate(parameters):
+            if idx < len(self.args) and name not in call_kwds:
+                call_kwds[name] = self.args[idx]
+        return call_kwds
+
+    def _call_dist(self, method_name: str, *args: Any, **kwds: Any) -> Any:
+        """Call a distribution method using canonical frozen parameters."""
+        method = getattr(self.dist, method_name)
+        call_kwds = dict(self._call_kwds)
+        call_kwds.update(kwds)
+        return method(*args, **call_kwds)
+
+    def _bind_rvs(
+        self,
+        rng: RngKey,
+        shape: Tuple[int, ...],
+        name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Array:
+        from probjax.core.custom_primitives.random_variable import rv_p
+
+        call_kwds = dict(self._call_kwds)
+        call_kwds.update(kwargs)
+
+        rvs_fn = getattr(self.dist, "_rvs_impl", None)
+        if rvs_fn is None:
+            rvs_fn = self.dist.rvs
+
+        logpdf_fn = getattr(self.dist, "logpdf", None)
+        if logpdf_fn is None:
+            logpdf_fn = getattr(type(self.dist), "logpdf", None)
+
+        return rv_p.bind(
+            rng,
+            shape=shape,
+            dist=self.dist,
+            name=name,
+            rvs_fn=rvs_fn,
+            logpdf_fn=logpdf_fn,
+            kwds=call_kwds,
+        )
+
+    def _compute_batch_and_event_shape(
+        self, *args: Any, **kwds: Any
+    ) -> tuple[Tuple[int, ...], Tuple[int, ...]]:
         """Compute the batch and event shape of the distribution."""
         # Get shapes from the distribution arguments
         batch_shapes = []
@@ -541,7 +850,8 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
 
         if len(batch_shapes) > num_params:
             raise ValueError(
-                f"Too many args/kwargs provided for distribution {self.dist.__class__.__name__}."
+                "Too many args/kwargs provided for distribution "
+                f"{self.dist.__class__.__name__}."
                 f"Expected {self.dist.parameters} shapes, got {len(batch_shapes)}."
             )
 
@@ -552,7 +862,7 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
             batch_shape_raw = ()
 
         batch_shape: Tuple[int, ...] = tuple(int(dim) for dim in batch_shape_raw)
-        event_shape: Tuple[int, ...] = ()
+        event_shape: Tuple[int, ...] = tuple()
 
         return batch_shape, event_shape
 
@@ -563,6 +873,25 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
     @property
     def event_shape(self) -> Tuple[int, ...]:
         return self._event_shape
+
+    @property
+    def params(self) -> dict[str, Any]:
+        """Name-keyed constrained parameters."""
+        return dict(self._parameter_values)
+
+    @property
+    def unconstrained_params(self) -> dict[str, Any]:
+        """Name-keyed parameters mapped through the constraint registry."""
+        return self.dist.params_to_unconstrained(self.params)
+
+    def __getattr__(self, name: str) -> Any:
+        """Expose frozen parameters as attributes for SciPy-like ergonomics."""
+        if name in self._parameter_values:
+            return self._parameter_values[name]
+        alias = self._parameter_aliases.get(name)
+        if alias is not None and alias in self._parameter_values:
+            return self._parameter_values[alias]
+        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
     def _format_arg(self, arg):
         """Format argument for string representation, showing shapes for arrays."""
@@ -630,7 +959,7 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
         cdf : ndarray or scalar
             Cumulative distribution function evaluated at x
         """
-        return self.dist.cdf(x, *self.args, **self.kwds)
+        return self._call_dist("cdf", x)
 
     def logcdf(self, x: ArrayLike):
         """Log of the cumulative distribution function (i.e. log(P(X <= x))).
@@ -645,7 +974,7 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
         logcdf : ndarray or scalar
             Log of the cumulative distribution function evaluated at x
         """
-        return self.dist.logcdf(x, *self.args, **self.kwds)
+        return self._call_dist("logcdf", x)
 
     def ppf(self, q: ArrayLike):
         """Percent point function (inverse of cdf).
@@ -653,20 +982,27 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
         Parameters
         ----------
         q : array_like
-            Probability at which to evaluate the inverse cumulative distribution function.
+            Probability at which to evaluate the inverse cumulative distribution
+            function.
 
         Returns
         -------
         ppf : ndarray or scalar
             Percent point function evaluated at q
         """
-        return self.dist.ppf(q, *self.args, **self.kwds)
+        return self._call_dist("ppf", q)
 
     def isf(self, q: ArrayLike):
         """Inverse survival function (1 - ppf) of the frozen distribution."""
-        return self.dist.isf(q, *self.args, **self.kwds)
+        return self._call_dist("isf", q)
 
-    def rvs(self, rng: RngKey, shape: Tuple[int, ...] = (), **kwargs):
+    def rvs(
+        self,
+        rng: RngKey,
+        shape: Tuple[int, ...] = (),
+        name: Optional[str] = None,
+        **kwargs,
+    ):
         """Random variates of the frozen distribution.
 
         Parameters
@@ -675,21 +1011,23 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
             The random key used for sampling
         shape : tuple of ints, optional
             The shape of the samples to draw. Default is ().
+        name : str, optional
+            Optional site name used when tracing probabilistic programs.
 
         Returns
         -------
         rvs : ndarray or scalar
             Random variates of given shape
         """
-        return self.dist.rvs(rng, *self.args, shape=shape, **self.kwds)
+        return self._bind_rvs(rng, shape=shape, name=name, **kwargs)
 
     def sf(self, x: ArrayLike):
         """Survival function (1 - cdf)."""
-        return self.dist.sf(x, *self.args, **self.kwds)
+        return self._call_dist("sf", x)
 
     def logsf(self, x: ArrayLike):
         """Log of the survival function (1 - cdf)."""
-        return self.dist.logsf(x, *self.args, **self.kwds)
+        return self._call_dist("logsf", x)
 
     def stats(self, moments: str = 'mv'):
         """Returns mean, variance, skew, or kurtosis of the frozen distribution.
@@ -704,33 +1042,31 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
         stats : ndarray or scalar
             Mean, variance, skew, or kurtosis of the distribution
         """
-        kwds = self.kwds.copy()
-        kwds.update({'moments': moments})
-        return self.dist.stats(*self.args, **kwds)
+        return self._call_dist("stats", moments=moments)
 
     def median(self):
         """Median of the distribution."""
-        return self.dist.median(*self.args, **self.kwds)
+        return self._call_dist("median")
 
     def mean(self):
         """Mean of the distribution."""
-        return self.dist.mean(*self.args, **self.kwds)
+        return self._call_dist("mean")
 
     def var(self):
         """Variance of the distribution."""
-        return self.dist.var(*self.args, **self.kwds)
+        return self._call_dist("var")
 
     def std(self):
         """Standard deviation of the distribution."""
-        return self.dist.std(*self.args, **self.kwds)
+        return self._call_dist("std")
 
     def moment(self, order: Optional[int] = None):
         """Non-central moment of the distribution."""
-        return self.dist.moment(order, *self.args, **self.kwds)
+        return self._call_dist("moment", order)
 
     def entropy(self):
         """Entropy of the distribution."""
-        return self.dist.entropy(*self.args, **self.kwds)
+        return self._call_dist("entropy")
 
     def interval(self, confidence: Optional[ArrayLike] = None):
         """Confidence interval with equal areas around the median of the distribution.
@@ -742,11 +1078,11 @@ class rv_frozen(metaclass=FrozenDistributionMeta):
 
         Returns
         """
-        return self.dist.interval(confidence, *self.args, **self.kwds)
+        return self._call_dist("interval", confidence)
 
     def support(self):
         """Support of the frozen distribution."""
-        return self.dist.support(*self.args, **self.kwds)
+        return self._call_dist("support")
 
 
 class rv_discrete_frozen(rv_frozen):
@@ -763,7 +1099,7 @@ class rv_discrete_frozen(rv_frozen):
         pmf : ndarray or scalar
             Probability mass function evaluated at x
         """
-        return self.dist.pmf(x, *self.args, **self.kwds)
+        return self._call_dist("pmf", x)
 
     def logpmf(self, x: ArrayLike):
         """Log of the probability mass function of the distribution.
@@ -778,7 +1114,7 @@ class rv_discrete_frozen(rv_frozen):
         logpmf : ndarray or scalar
             Log of the probability mass function evaluated at x
         """
-        return self.dist.logpmf(x, *self.args, **self.kwds)
+        return self._call_dist("logpmf", x)
 
     def mode(self):
         """Mode of the distribution.
@@ -788,15 +1124,15 @@ class rv_discrete_frozen(rv_frozen):
         mode : ndarray or scalar
             Mode of the distribution
         """
-        return self.dist.mode(*self.args, **self.kwds)
+        return self._call_dist("mode")
 
     def logpdf(self, x: ArrayLike):
         """Log of the probability density function of the distribution."""
-        return self.dist.logpdf(x, *self.args, **self.kwds)
+        return self._call_dist("logpdf", x)
 
     def pdf(self, x: ArrayLike):
         """Probability density function of the distribution."""
-        return self.dist.pdf(x, *self.args, **self.kwds)
+        return self._call_dist("pdf", x)
 
 
 class rv_continuous_frozen(rv_frozen):
@@ -813,7 +1149,7 @@ class rv_continuous_frozen(rv_frozen):
         pdf : ndarray or scalar
             Probability density function evaluated at x
         """
-        return self.dist.pdf(x, *self.args, **self.kwds)
+        return self._call_dist("pdf", x)
 
     def logpdf(self, x: ArrayLike):
         """Log of the probability density function of the distribution.
@@ -828,7 +1164,7 @@ class rv_continuous_frozen(rv_frozen):
         logpdf : ndarray or scalar
             Log of the probability density function evaluated at x
         """
-        return self.dist.logpdf(x, *self.args, **self.kwds)
+        return self._call_dist("logpdf", x)
 
     def mode(self):
         """Mode of the distribution.
@@ -838,7 +1174,7 @@ class rv_continuous_frozen(rv_frozen):
         mode : ndarray or scalar
             Mode of the distribution
         """
-        return self.dist.mode(*self.args, **self.kwds)
+        return self._call_dist("mode")
 
     def cdf(self, x: ArrayLike):
         """Cumulative distribution function of the distribution.
@@ -853,7 +1189,7 @@ class rv_continuous_frozen(rv_frozen):
         cdf : ndarray or scalar
             Cumulative distribution function evaluated at x
         """
-        return self.dist.cdf(x, *self.args, **self.kwds)
+        return self._call_dist("cdf", x)
 
     def ppf(self, q: ArrayLike):
         """Percent point function (inverse of cdf) of the distribution.
@@ -861,16 +1197,24 @@ class rv_continuous_frozen(rv_frozen):
         Parameters
         ----------
         q : array_like
-            Probability at which to evaluate the inverse cumulative distribution function.
+            Probability at which to evaluate the inverse cumulative distribution
+            function.
 
         Returns
         -------
         ppf : ndarray or scalar
             Percent point function evaluated at q
         """
-        return self.dist.ppf(q, *self.args, **self.kwds)
+        return self._call_dist("ppf", q)
 
-    def rvs(self, rng: RngKey, *args, shape: Tuple[int, ...] = (), **kwargs):
+    def rvs(
+        self,
+        rng: RngKey,
+        *args,
+        shape: Tuple[int, ...] = (),
+        name: Optional[str] = None,
+        **kwargs,
+    ):
         """Random variates of the distribution.
 
         Parameters
@@ -879,16 +1223,63 @@ class rv_continuous_frozen(rv_frozen):
             The random key used for sampling
         shape : tuple of ints, optional
             The shape of the samples to draw. Default is ().
+        name : str, optional
+            Optional site name used when tracing probabilistic programs.
 
         Returns
         -------
         rvs : ndarray or scalar
             Random variates of given shape
         """
-        return self.dist.rvs(rng, *self.args, shape=shape, **self.kwds)
+        return self._bind_rvs(rng, shape=shape, name=name, **kwargs)
+
+
+class rv_multivariate_frozen(rv_continuous_frozen):
+    """Frozen multivariate distribution with explicit shape inference."""
+
+    def _compute_batch_and_event_shape(
+        self, *args: Any, **kwds: Any
+    ) -> tuple[Tuple[int, ...], Tuple[int, ...]]:
+        shape_fn = getattr(self.dist, "_multivariate_batch_event_shape", None)
+        if not callable(shape_fn):
+            raise NotImplementedError(
+                f"{self.dist.__class__.__name__} must implement "
+                "_multivariate_batch_event_shape for multivariate freezing."
+            )
+
+        batch_shape, event_shape = cast(
+            tuple[Tuple[int, ...], Tuple[int, ...]],
+            shape_fn(*args, **kwds),
+        )
+        return (
+            tuple(int(dim) for dim in batch_shape),
+            tuple(int(dim) for dim in event_shape),
+        )
+
+
+class rv_spherical_frozen(rv_multivariate_frozen):
+    """Frozen spherical distribution exposing directional statistics."""
+
+    def mean_direction_vector(self):
+        """Representative principal direction of the spherical distribution."""
+        return self._call_dist("mean_direction_vector")
+
+    def mean_direction_dyad(self):
+        """Expected dyadic product :math:`E[XX^T]` of the spherical distribution."""
+        return self._call_dist("mean_direction_dyad")
+
+    def dispersion(self):
+        """Dispersion matrix defined as :math:`E[XX^T] - I/d`."""
+        return self._call_dist("dispersion")
+
+    def axial_dispersion(self):
+        """Dispersion along the principal axis."""
+        return self._call_dist("axial_dispersion")
 
 
 # Register frozen classes as JAX PyTrees
 jax.tree_util.register_pytree_node_class(rv_frozen)
 jax.tree_util.register_pytree_node_class(rv_continuous_frozen)
+jax.tree_util.register_pytree_node_class(rv_multivariate_frozen)
+jax.tree_util.register_pytree_node_class(rv_spherical_frozen)
 jax.tree_util.register_pytree_node_class(rv_discrete_frozen)

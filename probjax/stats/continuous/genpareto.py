@@ -77,7 +77,7 @@ class genpareto_gen(rv_continuous, rv_exponential_family):
         return loc + scale * ((1 - q) ** (-c) - 1) / c
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         shape: Tuple[int, ...] = (),

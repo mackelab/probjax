@@ -120,7 +120,7 @@ class cauchy_gen(rv_continuous):
         return _cauchy.ppf(q, loc, scale)
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         loc=0.0,
@@ -367,15 +367,39 @@ class cauchy_gen(rv_continuous):
         weights: Optional[ArrayLike] = None,
         **kwargs,
     ):
-        """Closed-form estimator using the sample median and MAD."""
+        """Maximum likelihood estimation of Cauchy distribution parameters.
+
+        Uses the sample median and MAD for the initial estimate, then refines
+        via BFGS optimization of the negative log-likelihood.
+        """
         if weights is not None:
             raise NotImplementedError(
                 "Weighted fitting is not implemented for the Cauchy distribution."
             )
         data = jnp.asarray(data)
-        loc = jnp.median(data, axis=0)
-        scale = jnp.median(jnp.abs(data - loc), axis=0)
-        scale = jnp.maximum(scale, jnp.asarray(1e-6, dtype=data.dtype))
+        loc_init = jnp.median(data, axis=0)
+        scale_init = jnp.median(jnp.abs(data - loc_init), axis=0)
+        scale_init = jnp.maximum(scale_init, jnp.asarray(1e-6, dtype=data.dtype))
+
+        # Optimize log-likelihood via BFGS in unconstrained space (log scale)
+        from jax.scipy.optimize import minimize as jax_minimize
+
+        init_flat = jnp.concatenate([
+            jnp.atleast_1d(loc_init),
+            jnp.log(jnp.atleast_1d(scale_init)),
+        ])
+
+        def neg_log_lik(params_flat):
+            loc = params_flat[0]
+            scale = jnp.exp(params_flat[1])
+            return -jnp.sum(cls.logpdf(data, loc=loc, scale=scale))
+
+        result = jax_minimize(neg_log_lik, init_flat, method="BFGS")
+        if not result.success or not bool(jnp.all(jnp.isfinite(result.x))):
+            return loc_init, scale_init
+        fitted = result.x
+        loc = fitted[0]
+        scale = jnp.exp(fitted[1])
         return loc, scale
 
 

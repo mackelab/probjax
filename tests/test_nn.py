@@ -5,11 +5,25 @@ import pytest
 from flax import nnx
 
 from probjax.core import inverse, inverse_and_logabsdet
+from probjax.nn.layers.attention import (
+    PerHeadQueryScale,
+    QASSMaxQueryScale,
+    dot_product_attention,
+)
 from probjax.nn import (
+    AdditiveCouplingFlow,
     AdditiveBinaryFuse,
+    AffineAutoregressiveFlow,
+    AutoregressiveSSM,
+    AutoregressiveTransformer,
+    CouplingMLP,
+    CouplingTransformer,
     DropPath,
     GatedFuse,
+    InducedSelfAttention,
     MaskedLinear,
+    MLP,
+    Transformer,
     chunkify,
 )
 
@@ -80,6 +94,70 @@ def test_attention(multi_head_attention, seq_len, batch_shape):
     _, _ = jax.tree_util.tree_flatten(model)
 
 
+def test_induced_self_attention():
+    model = InducedSelfAttention(
+        16,
+        num_inducing_points=4,
+        num_heads=4,
+        attn_size=4,
+        q_scale_cls=PerHeadQueryScale,
+        output_q_scale_cls=PerHeadQueryScale,
+        rngs=nnx.Rngs(0),
+    )
+    x = jnp.ones((2, 7, 16))
+
+    y = model(x)
+    y_kv = model(x, kv_len=5)
+    y_kv_arr = model(x, kv_len=jnp.array([5, 3]))
+
+    assert y.shape == x.shape
+    assert y_kv.shape == x.shape
+    assert y_kv_arr.shape == x.shape
+
+    def loss_fn(m):
+        return jnp.sum(m(x, kv_len=5))
+
+    _ = jax.grad(loss_fn)
+    _, _ = jax.tree_util.tree_flatten(model)
+
+
+def test_qassmax_query_scale_checkpointing_matches_eager():
+    rngs = nnx.Rngs(0)
+    eager = QASSMaxQueryScale(
+        num_heads=2,
+        head_dim=4,
+        hidden_dim=8,
+        use_checkpointing=False,
+        rngs=rngs,
+    )
+    remat = QASSMaxQueryScale(
+        num_heads=2,
+        head_dim=4,
+        hidden_dim=8,
+        use_checkpointing=True,
+        rngs=nnx.Rngs(0),
+    )
+    query = jnp.arange(2 * 5 * 2 * 4, dtype=jnp.float32).reshape(2, 5, 2, 4)
+    kv_len = jnp.array([5, 3], dtype=jnp.int32)
+
+    eager_out = eager(query, kv_len=kv_len)
+    remat_out = remat(query, kv_len=kv_len)
+    np.testing.assert_allclose(np.asarray(remat_out), np.asarray(eager_out), rtol=1e-5)
+
+    def eager_loss(q):
+        return jnp.sum(eager(q, kv_len=kv_len))
+
+    def remat_loss(q):
+        return jnp.sum(remat(q, kv_len=kv_len))
+
+    np.testing.assert_allclose(
+        np.asarray(jax.grad(remat_loss)(query)),
+        np.asarray(jax.grad(eager_loss)(query)),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+
 def test_coupling(coupling_mlp, batch_shape):
     in_dim, out_dim, model = coupling_mlp
     x = jnp.ones(batch_shape + (in_dim,))
@@ -101,6 +179,59 @@ def test_coupling(coupling_mlp, batch_shape):
     assert jnp.allclose(x, y_inv), "Inverse is not correct"
 
 
+def test_coupling_mlp_custom_split_merge():
+    def add_bijector(params, x):
+        return x + params
+
+    def split_even_odd(x):
+        return x[..., ::2], x[..., 1::2]
+
+    def merge_even_odd(y1, y2):
+        y = jnp.stack([y1, y2], axis=-1)
+        return y.reshape(y.shape[:-2] + (y.shape[-2] * y.shape[-1],))
+
+    model = CouplingMLP(
+        split_index=2,
+        bij_params_dim=2,
+        bijector=add_bijector,
+        split_fn=split_even_odd,
+        merge_fn=merge_even_odd,
+        hidden_dims=[16, 16],
+        rngs=nnx.Rngs(0),
+    )
+
+    x = jnp.arange(8.0).reshape(2, 4)
+    y = model(x)
+    assert y.shape == x.shape
+
+
+def test_coupling_transformer_with_context():
+    def scale_bijector(params, x):
+        return x * jnp.exp(params)
+
+    model = CouplingTransformer(
+        split_index=2,
+        bij_params_dim=2,
+        bijector=scale_bijector,
+        context_features=3,
+        model_dim=16,
+        num_heads=2,
+        num_layers=1,
+        attn_size=8,
+        rngs=nnx.Rngs(0),
+    )
+
+    x = jnp.ones((5, 4))
+    context = jnp.ones((5, 3))
+    y = model(x, context=context)
+    assert y.shape == x.shape
+
+    def loss_fn(m):
+        return jnp.sum(m(x, context=context))
+
+    _ = jax.grad(loss_fn)(model)
+
+
 def test_autoregressive(autoregressive_mlp, batch_shape):
     in_dim, out_dim, model = autoregressive_mlp
     x = jnp.ones(batch_shape + (in_dim,))
@@ -120,6 +251,91 @@ def test_autoregressive(autoregressive_mlp, batch_shape):
     model_inv = inverse(model)
     y_inv = model_inv(y)
     assert jnp.allclose(x, y_inv), " Inverse is not correct"
+
+
+def test_autoregressive_transformer_kv_cache_matches_naive():
+    def additive_bijector(params, value):
+        return value + params[..., None, :]
+
+    transformer = Transformer(
+        model_dim=16,
+        num_heads=2,
+        num_layers=2,
+        attn_size=8,
+        attention_fn=dot_product_attention,
+        rngs=nnx.Rngs(0),
+    )
+    model = AutoregressiveTransformer(
+        in_out_dim=1,
+        bijector_dim=1,
+        bijector=additive_bijector,
+        transformer=transformer,
+        rngs=nnx.Rngs(0),
+    )
+    x = jax.random.normal(jax.random.key(1), (2, 8, 1))
+    mask = jnp.tril(jnp.ones((x.shape[-2] + 1, x.shape[-2] + 1), dtype=bool))
+
+    y_naive = x
+    for i in range(x.shape[-2]):
+        bij_params = model.predict_bij_params(y_naive, mask=mask)
+        bij_params_i = bij_params[..., i, :]
+        x_i = y_naive[..., i : i + 1, :]
+        x_new_i = model.bijector(bij_params_i, x_i)
+        y_naive = y_naive.at[..., i, :].set(x_new_i[..., 0, :])
+
+    y_kv_cache = model.forward(x, inverse_impl="kv_cache")
+
+    assert y_naive.shape == y_kv_cache.shape
+    assert jnp.allclose(y_naive, y_kv_cache, atol=1e-6, rtol=1e-6)
+
+
+def test_autoregressive_ssm_roundtrip():
+    def additive_bijector(params, value):
+        if params.ndim < value.ndim:
+            params = params[..., None, :]
+        return value + params
+
+    model = AutoregressiveSSM(
+        in_out_dim=1,
+        bijector_dim=1,
+        bijector=additive_bijector,
+        model_dim=8,
+        num_layers=1,
+        rngs=nnx.Rngs(0),
+    )
+    model.decoder.kernel[...] = jnp.ones_like(model.decoder.kernel[...])
+    x = jax.random.normal(jax.random.key(1), (2, 6, 1))
+
+    y = model(x)
+    x_inv = model.inverse(y)
+
+    assert y.shape == x.shape
+    assert jnp.allclose(x, x_inv, atol=1e-5, rtol=1e-5)
+
+
+def test_autoregressive_ssm_is_causal():
+    def additive_bijector(params, value):
+        if params.ndim < value.ndim:
+            params = params[..., None, :]
+        return value + params
+
+    model = AutoregressiveSSM(
+        in_out_dim=1,
+        bijector_dim=1,
+        bijector=additive_bijector,
+        model_dim=8,
+        num_layers=2,
+        rngs=nnx.Rngs(0),
+    )
+    model.decoder.kernel[...] = jnp.ones_like(model.decoder.kernel[...])
+    x = jax.random.normal(jax.random.key(1), (2, 6, 1))
+    changed = x.at[..., 3:, :].add(10.0)
+
+    params = model.predict_bij_params(x)
+    changed_params = model.predict_bij_params(changed)
+
+    assert jnp.allclose(params[..., :4, :], changed_params[..., :4, :])
+    assert not jnp.allclose(params[..., 4:, :], changed_params[..., 4:, :])
 
 
 def test_gaussian_fourier_embedding(gaussian_fourier_embedding, batch_shape):
@@ -190,8 +406,8 @@ def test_transformer_with_context_and_cross_attention(
     _, _ = jax.tree_util.tree_flatten(model)
 
 
-def test_lru(lru, seq_len):
-    in_dim, out_dim, model = lru
+def test_ssm(ssm, seq_len):
+    in_dim, out_dim, model = ssm
     batch_shape = ()  # Needs vmap
     x = jnp.ones(batch_shape + (seq_len, in_dim))
     y = model(x)
@@ -229,11 +445,12 @@ def test_flows(flow):
     x = jnp.ones((input_dim,))
     y = model.transform(x)
 
-    # Freeze the model to get a distribution object
-    frozen_model = model
+    distribution = model.as_dist()
+    assert distribution.batch_shape == ()
+    assert distribution.event_shape == (input_dim,)
 
     def loss_fn(model):
-        return jnp.sum(frozen_model.logpdf(x))
+        return jnp.sum(model.as_dist().logpdf(x))
 
     # Can be differentiated
     _ = jax.grad(loss_fn)
@@ -253,11 +470,74 @@ def test_flows(flow):
     assert logabsdet.shape == ()
 
     # Sampling
-    samples = frozen_model.sample(rng=jax.random.PRNGKey(0), shape=(10,))
+    samples = distribution.sample(rng=jax.random.PRNGKey(0), shape=(10,))
     assert samples.shape == (10, input_dim)
     # Log probability
-    logprob = frozen_model.logpdf(samples)
+    logprob = distribution.logpdf(samples)
     assert logprob.shape == (10,)
+
+
+@pytest.mark.parametrize(
+    "flow_ctor",
+    [
+        lambda rngs: AdditiveCouplingFlow(4, 2, rngs=rngs, context_features=3),
+        lambda rngs: AffineAutoregressiveFlow(4, 2, rngs=rngs, context_features=3),
+    ],
+)
+def test_conditional_flows_with_context(flow_ctor):
+    model = flow_ctor(nnx.Rngs(0))
+    x = jnp.ones((4,))
+    context = jnp.array([0.1, -0.2, 0.3])
+
+    y = model.transform(x, context=context)
+    assert y.shape == x.shape
+
+    model_inv = inverse(lambda z: model.transform(z, context=context))
+    y_inv = model_inv(y)
+    assert jnp.allclose(x, y_inv, atol=1e-2, rtol=1e-1), "Inverse is not correct"
+
+    distribution = model.as_dist(context_spec=(3,))
+    samples = distribution.sample(
+        rng=jax.random.PRNGKey(0), shape=(8,), context=context
+    )
+    assert samples.shape == (8, 4)
+
+    logprob = distribution.logpdf(samples, context=context)
+    assert logprob.shape == (8,)
+
+    context_2 = jnp.array([-0.5, 0.7, -0.9])
+    logprob_2 = distribution.logpdf(samples, context=context_2)
+    assert logprob_2.shape == (8,)
+
+
+def test_named_flow_aliases_construct():
+    from probjax.nn import NeuralSplineFlow, maf, nice, nsf, realnvp
+
+    aliases = [nice, realnvp, maf, nsf, NeuralSplineFlow]
+    for ctor in aliases:
+        model = ctor(2, 1, rngs=nnx.Rngs(0))
+        x = jnp.ones((2,))
+        y = model.transform(x)
+        assert y.shape == x.shape
+
+
+def test_public_import_surface():
+    import importlib
+
+    modules = [
+        "probjax.nn",
+        "probjax.nn.losses",
+        "probjax.nn.generative",
+        "probjax.nn.generative.nflows",
+        "probjax.nn.generative.diffusion",
+        "probjax.nn.generative.flow_matching",
+        "probjax.nn.generative.mean_flow",
+        "probjax.nn.generative.discrete",
+    ]
+    for module_name in modules:
+        module = importlib.import_module(module_name)
+        for name in getattr(module, "__all__", []):
+            assert hasattr(module, name), f"{module_name}.{name} does not resolve"
 
 
 def test_chunkify(chunkify_inputs):
@@ -273,8 +553,8 @@ def test_chunkify(chunkify_inputs):
 def test_masked_linear_forward(masked_linear_case):
     mask, kernel, bias, x, expected = masked_linear_case
     layer = MaskedLinear(2, 2, mask, rngs=nnx.Rngs(0))
-    layer.kernel.value = kernel
-    layer.bias.value = bias
+    layer.kernel[...] = kernel
+    layer.bias[...] = bias
     y = layer(x)
     assert jnp.allclose(y, expected)
 
@@ -385,3 +665,42 @@ def _unchunkify(tokens, x, metadata):
     if channel_axis_mod is not None and channel_axis_mod != x.ndim - 1:
         x_channel_last = jnp.moveaxis(x_channel_last, -1, channel_axis_mod)
     return x_channel_last
+
+
+@pytest.mark.parametrize(
+    ("spatial_ndim", "kernel_size", "input_shape"),
+    [
+        (1, 3, (2, 32, 1)),
+        (2, (3, 3), (2, 16, 16, 1)),
+    ],
+)
+def test_unet_builds_for_1d_and_2d(spatial_ndim, kernel_size, input_shape):
+    """UNet must construct for any spatial rank.
+
+    Regression: the ResnetBlock skip connection is a 1x1 Conv initialized with
+    ``identity_1x1``, which indexed ``shape[2:4]`` and so assumed a rank-4
+    (2-D) kernel. With the int ``kernel_size`` defaults flax builds a rank-3
+    (1-D) kernel and construction raised IndexError -- i.e. the documented
+    default constructor did not work at all.
+    """
+    from probjax.nn.nets import UNet
+
+    unet = UNet(
+        1,
+        [32, 64],
+        kernel_size=kernel_size,
+        kernel_size_resnet=kernel_size,
+        rngs=nnx.Rngs(0),
+    )
+    out = unet(jnp.ones(input_shape))
+    assert out.shape == input_shape
+
+
+@pytest.mark.parametrize("shape", [(1, 4, 6), (1, 1, 4, 6), (1, 1, 1, 6, 4)])
+def test_identity_1x1_is_rank_agnostic(shape):
+    from probjax.nn.utils import identity_1x1
+
+    kernel = identity_1x1(None, shape)
+    assert kernel.shape == shape
+    # Exactly min(C_in, C_out) ones, all on the channel diagonal at the origin.
+    assert float(kernel.sum()) == min(shape[-2], shape[-1])

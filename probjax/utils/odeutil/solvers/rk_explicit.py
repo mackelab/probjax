@@ -256,12 +256,23 @@ def build_bosh3_tablau(dtype: jnp.dtype):
     return c, A, b_sol, b_error, b_mid
 
 
-# Bogacki-Shampine method of 3rd order
+# Bogacki-Shampine method of 3rd order (FSAL - First Same As Last)
+# This is a 4-stage method where the 4th stage equals the first stage of the next step
 def build_bogacki_shampine_tablau(dtype: jnp.dtype):
-    c = jnp.array([0.0, 0.5, 0.75], dtype=dtype)
-    A = jnp.array([[0, 0, 0], [0.5, 0, 0], [0, 0.75, 0]], dtype=dtype)
-    b_sol = jnp.array([2.0 / 9.0, 1.0 / 3.0, 4.0 / 9.0], dtype=dtype)
-    b_error = jnp.array([7.0 / 24.0, 0.25, 1.0 / 3.0], dtype=dtype)
+    c = jnp.array([0.0, 0.5, 0.75, 1.0], dtype=dtype)
+    A = jnp.array(
+        [
+            [0.0, 0.0, 0.0, 0.0],
+            [0.5, 0.0, 0.0, 0.0],
+            [0.0, 0.75, 0.0, 0.0],
+            [2.0 / 9.0, 1.0 / 3.0, 4.0 / 9.0, 0.0],
+        ],
+        dtype=dtype,
+    )
+    # 3rd order solution (same as 4th row of A, making it FSAL)
+    b_sol = jnp.array([2.0 / 9.0, 1.0 / 3.0, 4.0 / 9.0, 0.0], dtype=dtype)
+    # 2nd order embedded solution for error estimation
+    b_error = jnp.array([7.0 / 24.0, 0.25, 1.0 / 3.0, 1.0 / 8.0], dtype=dtype)
     b_mid = None
 
     return c, A, b_sol, b_error, b_mid
@@ -324,7 +335,7 @@ bosh3 = build_rk_method("bosh3", build_bosh3_tablau, last_equals_next=False)
 bogacki_shampine = build_rk_method(
     "bogacki_shampine",
     build_bogacki_shampine_tablau,
-    last_equals_next=False,  # This might be wrong
+    last_equals_next=True,  # FSAL method - last stage equals first stage of next step
 )
 heun3 = build_rk_method("heun3", build_heun3_tablau, last_equals_next=False)
 vanderhouwen = build_rk_method(
@@ -513,6 +524,108 @@ def build_dopri5_tablau(dtype: jnp.dtype):
 dopri5 = build_rk_method("dopri5", build_dopri5_tablau, last_equals_next=True)
 
 
+# Tsitouras 5(4) FSAL pair — Tsitouras (2011), "Runge-Kutta pairs of order
+# 5(4) satisfying only the first column simplifying assumption", Computers
+# & Mathematics with Applications, 62(2), 770-775. Lower truncation
+# coefficients than dopri5 → typically the same accuracy at fewer steps.
+def build_tsit5_tablau(dtype: jnp.dtype):
+    c = jnp.array(
+        [0.0, 0.161, 0.327, 0.9, 0.9800255409045097, 1.0, 1.0],
+        dtype=dtype,
+    )
+    A = jnp.array(
+        [
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.161, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [-0.008480655492356989, 0.335480655492357, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [
+                2.8971530571054935,
+                -6.359448489975075,
+                4.3622954328695815,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ],
+            [
+                5.325864828439257,
+                -11.748883564062828,
+                7.4955393428898365,
+                -0.09249506636175525,
+                0.0,
+                0.0,
+                0.0,
+            ],
+            [
+                5.86145544294642,
+                -12.92096931784711,
+                8.159367898576159,
+                -0.071584973281401,
+                -0.028269050394068383,
+                0.0,
+                0.0,
+            ],
+            [
+                0.09646076681806523,
+                0.01,
+                0.4798896504144996,
+                1.379008574103742,
+                -3.290069515436081,
+                2.324710524099774,
+                0.0,
+            ],
+        ],
+        dtype=dtype,
+    )
+    # 5th-order solution; row 7 of A so the final stage is FSAL with the
+    # next step's first stage.
+    b_sol = jnp.array(
+        [
+            0.09646076681806523,
+            0.01,
+            0.4798896504144996,
+            1.379008574103742,
+            -3.290069515436081,
+            2.324710524099774,
+            0.0,
+        ],
+        dtype=dtype,
+    )
+    # b - b_hat (5th-minus-4th); used directly as the error estimate.
+    b_error = jnp.array(
+        [
+            -0.00178001105222887531,
+            -0.0008164344596567469,
+            0.007880878010261995,
+            -0.1447110071732629,
+            0.5823571654525552,
+            -0.45808210592918697,
+            0.015151515151515152,
+        ],
+        dtype=dtype,
+    )
+    # Native 4th-order dense output: b_mid[i] = b_i(θ=1/2) where b_i(θ)
+    # is the Tsitouras-Papakostas (2011) interpolation polynomial. Verified
+    # against b_sol via b_i(1) and against the consistency condition
+    # sum_i b_i(0.5) = 0.5 (constant-drift midpoint).
+    b_mid = jnp.array(
+        [
+            0.10741235230096878,
+            0.011356249999999998,
+            0.3956090305604531,
+            -0.3447521435259353,
+            1.316185364958165,
+            -1.017060854293625,
+            0.03125,
+        ],
+        dtype=dtype,
+    )
+    return c, A, b_sol, b_error, b_mid
+
+
+tsit5 = build_rk_method("tsit5", build_tsit5_tablau, last_equals_next=True)
+
+
 # Order 6
 # RK5
 def build_rk6_tablau(dtype: jnp.dtype):
@@ -657,7 +770,7 @@ register_method(
         "order": 3,
         "info": "Bogacki-Shampine method with error estimation",
         "adaptive": True,
-        "interpolation_order": 4,
+        "interpolation_order": 3,  # 3rd order interpolation (no midpoint available)
     },
 )
 
@@ -742,6 +855,20 @@ register_method(
         "order": 5,
         "info": "Dormand-Prince RK4(5) method with adaptive error control",
         "adaptive": True,
+        "interpolation_order": 4,
+    },
+)
+
+
+register_method(
+    "tsit5",
+    tsit5,
+    {
+        "explicit": True,
+        "order": 5,
+        "info": "Tsitouras 5(4) FSAL adaptive RK pair (Tsit5)",
+        "adaptive": True,
+        # 4th-order dense output via Tsit5's native b_mid (Tsitouras 2011).
         "interpolation_order": 4,
     },
 )

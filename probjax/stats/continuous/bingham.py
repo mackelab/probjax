@@ -19,8 +19,9 @@ from jax import lax, random
 from jax.numpy.linalg import eigh
 from jax.scipy.special import gammaln
 
-from probjax.stats.base import rv_continuous, rv_exponential_family
+from probjax.stats.base import rv_exponential_family, rv_spherical
 from probjax.stats.constraints import real, spherical, stiefel
+from probjax.stats.utils import normalize_sample_weights
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["bingham"]
@@ -231,7 +232,7 @@ def _sample_bingham_direction_mc(
     return lax.cond(accepted, lambda _: sample, lambda _: fallback, operand=None)
 
 
-class bingham_gen(rv_continuous, rv_exponential_family):
+class bingham_gen(rv_spherical, rv_exponential_family):
     """Bingham distribution on the unit sphere."""
 
     name = "bingham"
@@ -246,27 +247,21 @@ class bingham_gen(rv_continuous, rv_exponential_family):
     def pdf(cls, x: Array, orientation: Array, concentration: Array, **kwargs):
         return jnp.exp(cls.logpdf(x, orientation, concentration, **kwargs))
 
-    def freeze(
-        self,
+    @classmethod
+    def _multivariate_batch_event_shape(
+        cls,
         orientation: Array,
         concentration: Array,
         **kwargs,
     ):
-        rv = super().freeze(
-            orientation=orientation, concentration=concentration, **kwargs
-        )
         orientation_arr = jnp.asarray(orientation)
         if orientation_arr.ndim < 2:
             raise ValueError("orientation must be at least two-dimensional.")
         concentration_arr = jnp.asarray(concentration)
         conc_batch = concentration_arr.shape[:-1] if concentration_arr.ndim > 0 else ()
-        batch_shape = jax.lax.broadcast_shapes(
-            orientation_arr.shape[:-2], conc_batch
-        )
+        batch_shape = jax.lax.broadcast_shapes(orientation_arr.shape[:-2], conc_batch)
         event_shape = (int(orientation_arr.shape[-1]),)
-        object.__setattr__(rv, "_batch_shape", tuple(int(dim) for dim in batch_shape))
-        object.__setattr__(rv, "_event_shape", event_shape)
-        return rv
+        return tuple(int(dim) for dim in batch_shape), event_shape
 
     @classmethod
     def logpdf(cls, x: Array, orientation: Array, concentration: Array, **kwargs):
@@ -310,7 +305,7 @@ class bingham_gen(rv_continuous, rv_exponential_family):
         return quad - log_partition
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         orientation: Array,
@@ -491,23 +486,6 @@ class bingham_gen(rv_continuous, rv_exponential_family):
         return dyad
 
     @classmethod
-    def dispersion(cls, orientation: Array, concentration: Array, **kwargs):
-        """Dispersion matrix defined as :math:`E[XX^T] - I/d`."""
-        dyad = cls.mean_direction_dyad(orientation, concentration, **kwargs)
-        dim = dyad.shape[-1]
-        identity = jnp.eye(dim, dtype=dyad.dtype) / dim
-        identity = jnp.broadcast_to(identity, dyad.shape)
-        return dyad - identity
-
-    @classmethod
-    def axial_dispersion(cls, orientation: Array, concentration: Array, **kwargs):
-        """Dispersion along the principal axis :math:`1 - \\mu^T E[XX^T] \\mu`."""
-        mean_vec = cls.mean_direction_vector(orientation, concentration, **kwargs)
-        dyad = cls.mean_direction_dyad(orientation, concentration, **kwargs)
-        axial_moment = jnp.einsum("...i,...ij,...j->...", mean_vec, dyad, mean_vec)
-        return 1.0 - axial_moment
-
-    @classmethod
     def fit(
         cls,
         data: ArrayLike,
@@ -522,19 +500,16 @@ class bingham_gen(rv_continuous, rv_exponential_family):
         n = data.shape[0]
         dtype = data.dtype
 
-        if weights is not None:
-            weights = jnp.asarray(weights, dtype=dtype).reshape((n,))
-            if weights.shape[0] != n:
-                raise ValueError("weights must have the same number of rows as data")
-            weights = jnp.clip(weights, 0)
-        else:
-            weights = jnp.ones((n,), dtype=dtype)
+        weights_arr = normalize_sample_weights(
+            weights,
+            n_samples=n,
+            dtype=dtype,
+            mismatch_message="weights must have the same number of rows as data",
+        )
+        if weights_arr is None:
+            weights_arr = jnp.ones((n,), dtype=dtype) / jnp.asarray(n, dtype=dtype)
 
-        total = jnp.sum(weights)
-        total = jnp.where(total > 0, total, jnp.asarray(n, dtype=dtype))
-        weights = weights / total
-
-        scatter = (data * weights[:, None]).T @ data
+        scatter = (data * weights_arr[:, None]).T @ data
         scatter = 0.5 * (scatter + jnp.swapaxes(scatter, -1, -2))
 
         eigvals, eigvecs = jnp.linalg.eigh(scatter)

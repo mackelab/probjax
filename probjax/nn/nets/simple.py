@@ -7,9 +7,12 @@ from flax import nnx
 
 from probjax.nn.layers.fuse import AffineFuse
 from probjax.nn.layers.masked import MaskedLinear
+from probjax.nn.sharding import EMBED, HIDDEN, param_metadata
 from probjax.nn.utils import (
     filter_precision_kwargs,
+    filter_supported_kwargs,
     get_active_precision_kwargs,
+    module_accepts_rng,
 )
 from probjax.utils.typing import (
     Array,
@@ -31,7 +34,9 @@ class Sequential(nnx.Module):
         """
         self.layers = nnx.List(layers)
 
-    def __call__(self, x, *args, **kwargs) -> Array:
+    def __call__(self, x, *args, rng: Array | None = None, **kwargs) -> Array:
+        if rng is not None:
+            kwargs.setdefault("rng", rng)
         for layer in self.layers:
             x = layer(x, *args, **kwargs)
         return x
@@ -90,17 +95,17 @@ class MLP(nnx.Module):
         self.feature_dims = feature_dims
         # Prefer explicit context_dim, fallback to alias if provided
         self.context_dim = context_dim if context_dim is not None else context_features
+
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
         )
-        # Build per-layer linear constructors (support sequence of linear classes)
         num_layers = len(feature_dims) - 1
         if isinstance(linear_cls, Sequence) and not isinstance(linear_cls, type):
             if len(linear_cls) != num_layers:
                 raise ValueError(
                     f"linear_cls sequence must have length {num_layers}, got {len(linear_cls)}"
                 )
-            linears = [
+            base_linears = [
                 partial(
                     lcls,
                     rngs=rngs,
@@ -110,38 +115,60 @@ class MLP(nnx.Module):
                 for lcls in linear_cls
             ]
         else:
-            # Single class applied to all layers
             filtered = filter_precision_kwargs(linear_cls, **precision_kwargs)
-            ctor = partial(linear_cls, rngs=rngs, **filtered, **kwargs)
-            linears = [ctor for _ in range(num_layers)]
+            base_ctor = partial(linear_cls, rngs=rngs, **filtered, **kwargs)
+            base_linears = [base_ctor for _ in range(num_layers)]
 
-        self.layers = nnx.List([
-            linears[i](
-                feature_dims[i],
-                feature_dims[i + 1],
-            )
-            for i in range(num_layers)
-        ])
-        if norm_cls is not None:
-            self.norm_layers = nnx.List([
-                norm_cls(feature_dims[i + 1], rngs=rngs)
-                for i in range(len(feature_dims) - 2)
-            ])
-        else:
-            self.norm_layers = None
-        # Build context fuses if an effective context dimension is provided
+        layers = []
+        norm_layers = []
+        context_fuses = []
         _ctx_dim = self.context_dim
-        if _ctx_dim is not None:
-            self.context_fuses = nnx.List([
-                context_fuse_cls(feature_dims[i + 1], _ctx_dim, rngs=rngs)
-                for i in range(len(feature_dims) - 1)
-            ])
-        else:
-            self.context_fuses = None
+        for i in range(num_layers):
+            ctor = base_linears[i]
+            # Megatron-style alternation: column-parallel then row-parallel.
+            if i % 2 == 0:
+                sharding_kwargs = dict(
+                    kernel_metadata=param_metadata(EMBED, HIDDEN),
+                    bias_metadata=param_metadata(HIDDEN),
+                )
+            else:
+                sharding_kwargs = dict(
+                    kernel_metadata=param_metadata(HIDDEN, EMBED),
+                    bias_metadata=param_metadata(EMBED),
+                )
+            sharding_kwargs = {k: v for k, v in sharding_kwargs.items() if v}
+            layers.append(
+                ctor(
+                    feature_dims[i],
+                    feature_dims[i + 1],
+                    **filter_supported_kwargs(ctor, **sharding_kwargs),
+                )
+            )
+
+            if norm_cls is not None and i < num_layers - 1:
+                norm_layers.append(norm_cls(feature_dims[i + 1], rngs=rngs))
+            if _ctx_dim is not None:
+                context_fuses.append(
+                    context_fuse_cls(feature_dims[i + 1], _ctx_dim, rngs=rngs)
+                )
+
+        self.layers = nnx.List(layers)
+        self._layer_accepts_rng = tuple(
+            module_accepts_rng(layer) for layer in self.layers
+        )
+        self.norm_layers = nnx.List(norm_layers) if norm_cls is not None else None
+        self.context_fuses = nnx.List(context_fuses) if _ctx_dim is not None else None
+        self._context_fuse_accepts_rng = (
+            tuple(module_accepts_rng(fuse) for fuse in self.context_fuses)
+            if self.context_fuses is not None
+            else None
+        )
         self.activation = activation
         self.activate_final = activate_final
 
-    def __call__(self, x: Array, context: Array | None = None) -> Array:
+    def __call__(
+        self, x: Array, context: Array | None = None, *, rng: Array | None = None
+    ) -> Array:
         """Forward pass through the MLP.
 
         Args:
@@ -150,17 +177,38 @@ class MLP(nnx.Module):
         Returns:
             Output array of shape [..., output_dim].
         """
-        h = self.layers[0](x)
+        h = (
+            self.layers[0](x, rng=rng)
+            if self._layer_accepts_rng[0]
+            else self.layers[0](x)
+        )
         h = self.activation(h)
         for i in range(1, len(self.layers) - 1):
-            h = self.layers[i](h)
+            h = (
+                self.layers[i](h, rng=rng)
+                if self._layer_accepts_rng[i]
+                else self.layers[i](h)
+            )
             if self.norm_layers is not None:
                 h = self.norm_layers[i - 1](h)
             h = self.activation(h)
             if self.context_fuses is not None:
-                h = self.context_fuses[i - 1](h, context)
+                if (
+                    self._context_fuse_accepts_rng is not None
+                    and self._context_fuse_accepts_rng[i - 1]
+                ):
+                    h = self.context_fuses[i - 1](h, context, rng=rng)
+                else:
+                    h = self.context_fuses[i - 1](h, context)
 
-        out = self.layers[-1](h) if len(self.layers) > 1 else h
+        if len(self.layers) > 1:
+            out = (
+                self.layers[-1](h, rng=rng)
+                if self._layer_accepts_rng[-1]
+                else self.layers[-1](h)
+            )
+        else:
+            out = h
 
         if self.activate_final:
             out = self.activation(out)
@@ -248,48 +296,88 @@ class ResNet(nnx.Module):
 
         self.in_dim = in_features
         self.out_dim = out_features
+        if context_dim is not None and context_dim <= 0:
+            raise ValueError(f"context_dim must be positive, got {context_dim}")
         self.context_dim = context_dim
+        num_layers = num_hidden_layers + 2
 
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
         )
         precision_kwargs = filter_precision_kwargs(linear_cls, **precision_kwargs)
-        _linear = partial(linear_cls, rngs=rngs, **precision_kwargs, **kwargs)
-        self.in_layer = _linear(
-            in_features,
-            hidden_dim,
+        base_ctor = partial(linear_cls, rngs=rngs, **precision_kwargs, **kwargs)
+
+        # Column-parallel in, row-parallel out; hidden kernels stay replicated
+        # so the residual additions keep a consistent activation sharding.
+        in_sharding = {
+            k: v
+            for k, v in dict(
+                kernel_metadata=param_metadata(EMBED, HIDDEN),
+                bias_metadata=param_metadata(HIDDEN),
+            ).items()
+            if v
+        }
+        out_sharding = {
+            k: v
+            for k, v in dict(
+                kernel_metadata=param_metadata(HIDDEN, EMBED),
+                bias_metadata=param_metadata(EMBED),
+            ).items()
+            if v
+        }
+
+        hidden_layers = []
+        norm_layers = []
+        context_layers = []
+        for i in range(num_layers):
+            if i == 0:
+                self.in_layer = base_ctor(
+                    in_features,
+                    hidden_dim,
+                    **filter_supported_kwargs(base_ctor, **in_sharding),
+                )
+            elif i == num_layers - 1:
+                self.out_layer = base_ctor(
+                    hidden_dim,
+                    out_features,
+                    **filter_supported_kwargs(base_ctor, **out_sharding),
+                )
+            else:
+                hidden_layers.append(base_ctor(hidden_dim, hidden_dim))
+
+                if norm_cls is not None:
+                    norm_layers.append(norm_cls(hidden_dim, rngs=rngs))
+                if context_dim is not None:
+                    context_layers.append(
+                        context_fuse_cls(hidden_dim, context_dim, rngs=rngs)
+                    )
+
+        self.hidden_layers = nnx.List(hidden_layers)
+        self._in_layer_accepts_rng = module_accepts_rng(self.in_layer)
+        self._hidden_layer_accepts_rng = tuple(
+            module_accepts_rng(layer) for layer in self.hidden_layers
         )
-        self.out_layer = _linear(
-            hidden_dim,
-            out_features,
-        )
-        self.hidden_layers = nnx.List([
-            _linear(
-                hidden_dim,
-                hidden_dim,
-            )
-            for _ in range(num_hidden_layers)
-        ])
-        if norm_cls is not None:
-            self.norm_layers = nnx.List([
-                norm_cls(hidden_dim, rngs=rngs) for _ in range(num_hidden_layers)
-            ])
-        else:
-            self.norm_layers = None
+        self._out_layer_accepts_rng = module_accepts_rng(self.out_layer)
+        self.norm_layers = nnx.List(norm_layers) if norm_cls is not None else None
         self.activation = activation
         self.activate_final = activate_final
 
-        if context_dim is not None:
-            if context_dim <= 0:
-                raise ValueError(f"context_dim must be positive, got {context_dim}")
-            self.context_layers = nnx.List([
-                context_fuse_cls(hidden_dim, context_dim, rngs=rngs)
-                for _ in range(num_hidden_layers)
-            ])
-        else:
-            self.context_layers = None
+        self.context_layers = (
+            nnx.List(context_layers) if context_dim is not None else None
+        )
+        self._context_layer_accepts_rng = (
+            tuple(module_accepts_rng(layer) for layer in self.context_layers)
+            if self.context_layers is not None
+            else None
+        )
 
-    def __call__(self, x: ArrayLike, context: Optional[ArrayLike] = None) -> Array:
+    def __call__(
+        self,
+        x: ArrayLike,
+        context: Optional[ArrayLike] = None,
+        *,
+        rng: Array | None = None,
+    ) -> Array:
         """Forward pass through the ResNet.
 
         Args:
@@ -307,20 +395,41 @@ class ResNet(nnx.Module):
         if self.context_dim is None and context is not None:
             raise ValueError("context provided but context_dim is None")
 
-        h = self.in_layer(x)
+        h = (
+            self.in_layer(x, rng=rng)
+            if self._in_layer_accepts_rng
+            else self.in_layer(x)
+        )
         h = self.activation(h)
         for i in range(len(self.hidden_layers)):
             h_old = h
             if self.norm_layers is not None:
                 h = self.norm_layers[i](h)
-            h = self.hidden_layers[i](h)
+            h = (
+                self.hidden_layers[i](h, rng=rng)
+                if self._hidden_layer_accepts_rng[i]
+                else self.hidden_layers[i](h)
+            )
             h = self.activation(h)
             if self.context_layers is not None:
-                h = self.context_layers[i](h, context)
+                if (
+                    self._context_layer_accepts_rng is not None
+                    and self._context_layer_accepts_rng[i]
+                ):
+                    h = self.context_layers[i](h, context, rng=rng)
+                else:
+                    h = self.context_layers[i](h, context)
 
             h = h + h_old
 
-        out = self.out_layer(h) if len(self.hidden_layers) > 0 else h
+        if len(self.hidden_layers) > 0:
+            out = (
+                self.out_layer(h, rng=rng)
+                if self._out_layer_accepts_rng
+                else self.out_layer(h)
+            )
+        else:
+            out = h
 
         if self.activate_final:
             out = self.activation(out)
@@ -386,6 +495,7 @@ class DeepSet(nnx.Module):
         x: PyTree[ArrayLike],
         *,
         deterministic: bool = True,
+        rng: Array | None = None,
         phi_args: Optional[tuple] = None,
         rho_args: Optional[tuple] = None,
         phi_kwargs: Optional[dict] = None,
@@ -407,12 +517,15 @@ class DeepSet(nnx.Module):
         rho_args = rho_args if rho_args is not None else ()
         phi_kwargs = phi_kwargs if phi_kwargs is not None else {}
         rho_kwargs = rho_kwargs if rho_kwargs is not None else {}
+        if rng is not None:
+            phi_kwargs.setdefault("rng", rng)
+            rho_kwargs.setdefault("rng", rng)
         # Apply phi to each element
         phi_x = self.phi(x, *phi_args, **phi_kwargs)
 
         # Apply dropout if enabled
         if self.dropout is not None:
-            phi_x = self.dropout(phi_x, deterministic=deterministic)
+            phi_x = self.dropout(phi_x, deterministic=deterministic, rngs=rng)
 
         # Aggregate
         h = self.reduction(phi_x, axis=self.axis)

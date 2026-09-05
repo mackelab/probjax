@@ -150,7 +150,7 @@ class uniform_gen(rv_continuous):
         return _uniform.ppf(q, loc, scale)
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         low=0.0,

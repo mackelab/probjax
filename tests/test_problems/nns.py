@@ -19,7 +19,7 @@ from probjax.nn import (
     CouplingMLP,
     DeepSet,
     GaussianFourierEmbedding,
-    LRUModel,
+    SSMModel,
     MultiHeadAttention,
     ResNet,
     SplineAutoregressiveFlow,
@@ -291,9 +291,9 @@ def transformer_with_cross_attention_and_context():
         (3, 1, 3, 3, True),
     ]
 )
-def lru(request):
+def ssm(request):
     in_dim, out_dim, model_dim, num_layers, bidirectional = request.param
-    model = LRUModel(
+    model = SSMModel(
         in_dim,
         model_dim,
         out_dim,

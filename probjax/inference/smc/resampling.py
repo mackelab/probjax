@@ -1,10 +1,8 @@
 import jax
 import jax.numpy as jnp
 from blackjax.smc.resampling import multinomial, residual, systematic
-from ott.geometry import pointcloud
-from ott.initializers.linear.initializers import GaussianInitializer
-from ott.problems.linear import linear_problem
-from ott.solvers.linear import sinkhorn
+
+from probjax.utils.optional import require_ott
 
 
 def resample_systematic(key, log_weights, particles):
@@ -39,6 +37,7 @@ def resample_ot(
     inner_iterations=2,
     implicit_diff=None,
 ):
+    _, pointcloud, GaussianInitializer, linear_problem, sinkhorn = require_ott()
     N = log_weights.shape[0]
     weights = jnp.exp(log_weights)
     org_shape = particles.shape

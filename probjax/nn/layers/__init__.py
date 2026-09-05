@@ -1,5 +1,10 @@
-from probjax.nn.layers.attention import MultiHeadAttention
-from probjax.nn.layers.bijective import Affine, Flip, Permute, Rotate
+from probjax.nn.layers.attention import (
+    InducedSelfAttention,
+    MultiHeadAttention,
+    PerHeadQueryScale,
+    QASSMaxQueryScale,
+    SSMaxQueryScale,
+)
 from probjax.nn.layers.conv import (
     ConvBlock,
     RescaleConv,
@@ -23,7 +28,14 @@ from probjax.nn.layers.fuse import (
     ContextFuse,
     GatedFuse,
 )
-from probjax.nn.layers.lru import (
+from probjax.nn.layers.masked import MaskedLinear
+from probjax.nn.layers.rattention import (
+    GroupRMSNorm,
+    RAttention,
+    ResidualLinearAttention,
+)
+from probjax.nn.layers.reg import DropPath
+from probjax.nn.layers.ssm import (
     LRUCell,
     MambaCell,
     RecurrentCell,
@@ -31,5 +43,3 @@ from probjax.nn.layers.lru import (
     mamba_scan,
     ssd,
 )
-from probjax.nn.layers.masked import MaskedLinear
-from probjax.nn.layers.reg import DropPath

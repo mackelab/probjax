@@ -135,7 +135,7 @@ class t_gen(rv_continuous, rv_exponential_family):
         raise NotImplementedError("PPF not implemented for t distribution")
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         df=1.0,

@@ -1,7 +1,10 @@
+from dataclasses import dataclass
+from typing import Callable, Optional
+
 import jax
 import jax.numpy as jnp
-from jax import lax
 import jax.scipy.linalg as jsp_linalg
+from jax import lax
 
 from .constraints import (
     Constraint,
@@ -38,6 +41,7 @@ sqrtm = jsp_linalg.sqrtm
 if hasattr(jsp_linalg, "logm"):
     logm = jsp_linalg.logm  # type: ignore[attr-defined]
 else:
+
     def logm(matrix: jnp.ndarray) -> jnp.ndarray:
         """Logarithm of a symmetric positive definite matrix."""
         eigvals, eigvecs = jnp.linalg.eigh(matrix)
@@ -55,7 +59,7 @@ class ConstraintRegistry:
         self._registry = {}
         super().__init__()
 
-    def register(self, constraint, factory=None):
+    def register(self, constraint, factory=None, *, inverse=None):
         """
         Registers a :class:`~torch.distributions.constraints.Constraint`
         subclass in this registry. Usage::
@@ -86,16 +90,9 @@ class ConstraintRegistry:
                 "but got {}".format(constraint)
             )
 
-        def factory_wrapper(*args):
-            out = jax.tree_util.tree_map(factory, args)
-            if len(out) == 1:
-                return out[0]
-            else:
-                return out
-
-        self._registry[constraint] = factory_wrapper
-
-        return factory_wrapper
+        transform = ConstraintTransform(factory, inverse)
+        self._registry[constraint] = transform
+        return transform
 
     def __call__(self, constraint):
         """
@@ -118,12 +115,28 @@ class ConstraintRegistry:
         """
         # Look up by Constraint subclass.
         try:
-            factory = self._registry[type(constraint)]
+            transform = self._registry[type(constraint)]
         except KeyError:
             raise NotImplementedError(
                 f"Cannot transform {type(constraint).__name__} constraints"
             ) from None
-        return factory
+        return transform
+
+
+@dataclass(frozen=True)
+class ConstraintTransform:
+    """Callable transform between unconstrained and constrained values."""
+
+    forward: Callable
+    inverse: Optional[Callable] = None
+
+    def __call__(self, value):
+        return self.forward(value)
+
+    def inv(self, value):
+        if self.inverse is None:
+            raise NotImplementedError("This constraint transform has no inverse")
+        return self.inverse(value)
 
 
 biject_to = ConstraintRegistry()
@@ -145,7 +158,7 @@ def generate_pdm(x):
     return m
 
 
-biject_to.register(real)(identity)
+biject_to.register(real, identity, inverse=identity)
 transform_to.register(real)(identity)
 
 
@@ -160,27 +173,32 @@ transform_to.register(strict_negative_integer)(
 )
 
 transform_to.register(positive)(lax.abs)
-biject_to.register(positive)(lax.exp)
+biject_to.register(positive, lax.exp, inverse=lax.log)
 
 transform_to.register(strict_positive)(
     lambda x: jnp.maximum(lax.abs(x), jnp.finfo(x.dtype).eps)
 )
-biject_to.register(strict_positive)(lambda x: lax.exp(x) + jnp.finfo(x.dtype).eps)
+biject_to.register(strict_positive, lax.exp, inverse=lax.log)
 
 transform_to.register(negative)(lambda x: -lax.abs(x))
-biject_to.register(negative)(lambda x: -lax.exp(x))
+biject_to.register(negative, lambda x: -lax.exp(x), inverse=lambda x: lax.log(-x))
 
 transform_to.register(strict_negative)(
     lambda x: -jnp.maximum(lax.abs(x), jnp.finfo(x.dtype).eps)
 )
-biject_to.register(strict_negative)(lambda x: -lax.exp(x) - jnp.finfo(x.dtype).eps)
+biject_to.register(
+    strict_negative,
+    lambda x: -lax.exp(x),
+    inverse=lambda x: lax.log(-x),
+)
 
 transform_to.register(unit_interval)(jax.nn.sigmoid)
-biject_to.register(unit_interval)(jax.nn.sigmoid)
+biject_to.register(unit_interval, jax.nn.sigmoid, inverse=jax.scipy.special.logit)
 transform_to.register(unit_square)(lax.tanh)
-biject_to.register(unit_square)(lax.tanh)
+biject_to.register(unit_square, lax.tanh, inverse=jnp.arctanh)
 
 transform_to.register(simplex)(jax.nn.softmax)
+biject_to.register(simplex, jax.nn.softmax, inverse=jnp.log)
 transform_to.register(matrix)(generate_matrix)
 transform_to.register(square_matrix)(generate_matrix)
 transform_to.register(symmetric_positive_definite_matrix)(generate_pdm)
@@ -245,12 +263,22 @@ def spd_log_map(x, y):
 
 
 def spd_transform(x):
-    """Transform to SPD manifold."""
-    # Ensure symmetry
-    x = (x + x.T) / 2
-    # Add small diagonal term to ensure positive definiteness
-    x = x + jnp.eye(x.shape[0]) * 1e-6
-    return x
+    """Map an unconstrained square matrix to a positive-definite matrix."""
+    diagonal = jnp.exp(jnp.diagonal(x, axis1=-2, axis2=-1))
+    lower = (
+        jnp.tril(x, -1) + jnp.eye(x.shape[-1], dtype=x.dtype) * diagonal[..., None, :]
+    )
+    return lower @ jnp.swapaxes(lower, -1, -2)
+
+
+def spd_inverse(x):
+    """Return an unconstrained representative of a positive-definite matrix."""
+    lower = jnp.linalg.cholesky(x)
+    diagonal = jnp.log(jnp.diagonal(lower, axis1=-2, axis2=-1))
+    return (
+        jnp.tril(lower, -1)
+        + jnp.eye(x.shape[-1], dtype=x.dtype) * diagonal[..., None, :]
+    )
 
 
 # Lorentz manifold transformations
@@ -279,16 +307,20 @@ def lorentz_transform(x):
 
 # Register the new transformations
 transform_to.register(spherical)(spherical_transform)
-biject_to.register(spherical)(spherical_transform)
+biject_to.register(spherical, spherical_transform, inverse=identity)
 
 transform_to.register(stiefel)(stiefel_transform)
-biject_to.register(stiefel)(stiefel_transform)
+biject_to.register(stiefel, stiefel_transform, inverse=identity)
 
 transform_to.register(symmetric_positive_definite_matrix)(spd_transform)
-biject_to.register(symmetric_positive_definite_matrix)(spd_transform)
+biject_to.register(
+    symmetric_positive_definite_matrix,
+    spd_transform,
+    inverse=spd_inverse,
+)
 
 transform_to.register(lorentz)(lorentz_transform)
-biject_to.register(lorentz)(lorentz_transform)
+biject_to.register(lorentz, lorentz_transform, inverse=identity)
 
 
 # Add exponential and log maps to the registry

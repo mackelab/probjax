@@ -12,6 +12,7 @@ from jax import random
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
+from probjax.stats.utils import flatten_samples, normalize_sample_weights
 from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["wrapcauchy"]
@@ -81,7 +82,7 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
         ) % (2 * jnp.pi)
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         loc=0.0,
@@ -173,31 +174,53 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
         weights: Optional[ArrayLike] = None,
         **kwargs,
     ):
-        """Estimate parameters via the first circular moment."""
-        data = jnp.asarray(data)
-        data = jnp.reshape(data, (-1,))
+        """Maximum likelihood estimation of Wrapped Cauchy parameters.
+
+        Uses circular moment matching for the initial estimate, then refines
+        via BFGS optimization of the negative log-likelihood.
+        """
+        data = flatten_samples(data)
         dtype = data.dtype
 
         cos_vals = jnp.cos(data)
         sin_vals = jnp.sin(data)
 
-        if weights is not None:
-            weights = jnp.asarray(weights, dtype=dtype).reshape((-1,))
-            if weights.shape[0] != data.shape[0]:
-                raise ValueError("weights must have the same length as data")
-            weights = jnp.clip(weights, 0)
-            total = jnp.sum(weights)
-            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=dtype))
-            weights = weights / total
-            mean_cos = jnp.sum(weights * cos_vals)
-            mean_sin = jnp.sum(weights * sin_vals)
+        weights_arr = normalize_sample_weights(
+            weights,
+            n_samples=data.shape[0],
+            dtype=dtype,
+        )
+        if weights_arr is not None:
+            mean_cos = jnp.sum(weights_arr * cos_vals)
+            mean_sin = jnp.sum(weights_arr * sin_vals)
         else:
             mean_cos = jnp.mean(cos_vals)
             mean_sin = jnp.mean(sin_vals)
 
-        loc = jnp.arctan2(mean_sin, mean_cos)
-        gamma = jnp.sqrt(mean_cos**2 + mean_sin**2)
-        gamma = jnp.clip(gamma, jnp.asarray(1e-6, dtype=dtype), 1 - 1e-6)
+        loc_init = jnp.arctan2(mean_sin, mean_cos)
+        gamma_init = jnp.sqrt(mean_cos**2 + mean_sin**2)
+        gamma_init = jnp.clip(gamma_init, jnp.asarray(1e-6, dtype=dtype), 1 - 1e-6)
+
+        # Optimize log-likelihood via BFGS in unconstrained space
+        # gamma = sigmoid(logit_gamma), loc is already unconstrained
+        from jax.scipy.optimize import minimize as jax_minimize
+
+        if weights_arr is not None:
+            w = weights_arr
+        else:
+            w = jnp.ones(data.shape[0], dtype=dtype) / data.shape[0]
+
+        logit_gamma_init = jnp.log(gamma_init) - jnp.log1p(-gamma_init)
+        init_flat = jnp.array([loc_init, logit_gamma_init], dtype=dtype)
+
+        def neg_log_lik(params_flat):
+            loc = params_flat[0]
+            gamma = 1.0 / (1.0 + jnp.exp(-params_flat[1]))
+            return -jnp.sum(w * cls.logpdf(data, loc=loc, gamma=gamma))
+
+        result = jax_minimize(neg_log_lik, init_flat, method="BFGS")
+        loc = result.x[0]
+        gamma = 1.0 / (1.0 + jnp.exp(-result.x[1]))
         return loc, gamma
 
 

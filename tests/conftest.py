@@ -1,3 +1,47 @@
+import os
+import sys
+
+
+def _marker_expr_from_args(argv):
+    if "-m" in argv:
+        idx = argv.index("-m")
+        if idx + 1 < len(argv):
+            return argv[idx + 1]
+    for arg in argv:
+        if arg.startswith("-m") and len(arg) > 2:
+            return arg[2:]
+    return ""
+
+
+def _keyword_expr_from_args(argv):
+    if "-k" in argv:
+        idx = argv.index("-k")
+        if idx + 1 < len(argv):
+            return argv[idx + 1]
+    for arg in argv:
+        if arg.startswith("-k") and len(arg) > 2:
+            return arg[2:]
+    return ""
+
+
+def _mesh_marker_enabled():
+    expr = _marker_expr_from_args(sys.argv)
+    expr = expr.strip()
+    if not expr:
+        # Also enable when -k selects mesh tests.
+        kexpr = _keyword_expr_from_args(sys.argv).strip()
+        return "mesh" in kexpr if kexpr else False
+    return expr == "mesh"
+
+
+cpu_devices = 8
+enable_multi = _mesh_marker_enabled()
+if enable_multi and cpu_devices > 1:
+    xla_flags = os.environ.get("XLA_FLAGS", "")
+    flag = f"--xla_force_host_platform_device_count={cpu_devices}"
+    if flag not in xla_flags:
+        os.environ["XLA_FLAGS"] = f"{xla_flags} {flag}".strip()
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -6,6 +50,11 @@ from jax import random
 
 from probjax.utils.odeutil.solvers.base import get_methods as get_methods_ode
 from probjax.utils.sdeutil import get_methods as get_methods_sde
+
+try:
+    import pytest_benchmark.plugin as _pytest_benchmark_plugin
+except ImportError:
+    _pytest_benchmark_plugin = None
 
 # Remove the hardcoded CPU configuration
 jax.config.update("jax_platform_name", "cpu")
@@ -99,6 +148,12 @@ def pytest_addoption(parser):
         "--gpu", action="store_true", default=False, help="run tests requiring GPU"
     )
     parser.addoption(
+        "--run-benchmarks",
+        action="store_true",
+        default=False,
+        help="run benchmark tests (disabled by default)",
+    )
+    parser.addoption(
         "--device",
         action="store",
         default="cpu",
@@ -109,6 +164,10 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "gpu: requires GPU to run")
+    config.addinivalue_line("markers", "mesh: requires multi-device mesh to run")
+    config.addinivalue_line(
+        "markers", "benchmark: performance benchmark tests (opt-in)"
+    )
     # Set JAX platform based on device option
     device = config.getoption("--device")
     jax.config.update("jax_platform_name", device)
@@ -116,9 +175,42 @@ def pytest_configure(config):
 
 def pytest_collection_modifyitems(config, items):
     device = config.getoption("--device")
-    if device == "gpu":
-        return
-    skip_gpu = pytest.mark.skip(reason="need --device gpu option to run")
+    run_benchmarks = config.getoption("--run-benchmarks")
+
+    # Deselect items that shouldn't run, collect remaining items
+    selected = []
+    deselected = []
+
     for item in items:
-        if "gpu" in item.keywords:
-            item.add_marker(skip_gpu)
+        # Deselect benchmark tests unless --run-benchmarks is passed
+        if "benchmark" in item.keywords and not run_benchmarks:
+            deselected.append(item)
+            continue
+
+        # Deselect mesh tests unless -m mesh is explicitly requested
+        if "mesh" in item.keywords and not enable_multi:
+            deselected.append(item)
+            continue
+
+        # When running mesh tests, deselect non-mesh tests
+        if enable_multi and "mesh" not in item.keywords:
+            deselected.append(item)
+            continue
+
+        # Deselect GPU tests unless --device gpu is passed
+        if "gpu" in item.keywords and device != "gpu":
+            deselected.append(item)
+            continue
+
+        selected.append(item)
+
+    # Update the items list and report deselected
+    items[:] = selected
+    config.hook.pytest_deselected(items=deselected)
+
+
+if _pytest_benchmark_plugin is None:
+
+    @pytest.fixture
+    def benchmark():
+        pytest.skip("pytest-benchmark is not installed; install dev extras to run")

@@ -12,14 +12,20 @@ import jax.numpy as jnp
 from jax import random
 from jax.scipy.special import digamma, gammaln
 
-from probjax.stats.base import rv_continuous, rv_exponential_family
-from probjax.stats.constraints import positive
+from probjax.stats.base import rv_exponential_family, rv_multivariate
+from probjax.stats.constraints import (
+    positive,
+    simplex,
+    symmetric_positive_definite_matrix,
+)
+from probjax.stats.utils import normalize_sample_weights, row_mean_and_var
+from probjax.utils.stats import mle_dirichlet
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["dirichlet"]
 
 
-class dirichlet_gen(rv_continuous, rv_exponential_family):
+class dirichlet_gen(rv_multivariate, rv_exponential_family):
     """Dirichlet continuous random variable.
 
     The Dirichlet distribution parameterized by concentration parameters `alpha`.
@@ -32,6 +38,7 @@ class dirichlet_gen(rv_continuous, rv_exponential_family):
 
     name = "dirichlet"
     parameters = {"alpha": positive}
+    parameter_aliases = {"concentration": "alpha"}
     multivariate = True
 
     @classmethod
@@ -68,16 +75,14 @@ class dirichlet_gen(rv_continuous, rv_exponential_family):
         """
         return jnp.exp(cls.logpdf(x, alpha, **kwargs))
 
-    def freeze(self, alpha: Array, **kwargs):
-        rv = super().freeze(alpha=alpha, **kwargs)
+    @classmethod
+    def _multivariate_batch_event_shape(cls, alpha: Array, **kwargs):
         alpha_arr = jnp.asarray(alpha)
         if alpha_arr.ndim < 1:
             raise ValueError("alpha must be at least one-dimensional.")
         batch_shape = tuple(int(dim) for dim in alpha_arr.shape[:-1])
         event_shape = (int(alpha_arr.shape[-1]),)
-        object.__setattr__(rv, "_batch_shape", batch_shape)
-        object.__setattr__(rv, "_event_shape", event_shape)
-        return rv
+        return batch_shape, event_shape
 
     @classmethod
     def logpdf(cls, x: Array, alpha: Array, **kwargs):
@@ -105,7 +110,7 @@ class dirichlet_gen(rv_continuous, rv_exponential_family):
         return log_fn(x_arr, alpha_arr)
 
     @classmethod
-    def rvs(
+    def _rvs_impl(
         cls,
         rng: RngKey,
         alpha: Array,
@@ -317,32 +322,34 @@ class dirichlet_gen(rv_continuous, rv_exponential_family):
         weights: Optional[ArrayLike] = None,
         **kwargs,
     ):
-        """Method-of-moments estimate for the Dirichlet concentration vector."""
+        """Maximum likelihood estimation of Dirichlet concentration parameters.
+
+        Uses method of moments for the initial estimate, then refines via
+        fixed-point MLE iteration (Minka 2000).
+        """
         data = jnp.asarray(data)
         if data.ndim == 1:
             raise ValueError("Dirichlet fitting expects observations arranged by rows.")
         dtype = data.dtype
         eps = jnp.asarray(1e-6, dtype=dtype)
 
-        if weights is not None:
-            weights = jnp.asarray(weights, dtype=dtype).reshape((-1, 1))
-            if weights.shape[0] != data.shape[0]:
-                raise ValueError("weights must have the same number of rows as data")
-            weights = jnp.clip(weights, 0)
-            total = jnp.sum(weights)
-            total = jnp.where(total > 0, total, jnp.asarray(data.shape[0], dtype=dtype))
-            weights = weights / total
-            mean = jnp.sum(weights * data, axis=0)
-            var = jnp.sum(weights * (data - mean) ** 2, axis=0)
-        else:
-            mean = jnp.mean(data, axis=0)
-            var = jnp.var(data, axis=0)
+        weights_arr = normalize_sample_weights(
+            weights,
+            n_samples=data.shape[0],
+            dtype=dtype,
+            mismatch_message="weights must have the same number of rows as data",
+            column=True,
+        )
+        mean, var = row_mean_and_var(data, weights_arr)
 
         mean = jnp.clip(mean, eps, 1 - eps)
         var = jnp.maximum(var, eps)
         alpha0 = jnp.mean(mean * (1 - mean) / var - 1.0)
         alpha0 = jnp.maximum(alpha0, eps)
-        alpha = jnp.clip(mean * alpha0, eps, None)
+        alpha_init = jnp.clip(mean * alpha0, eps, None)
+
+        alpha = mle_dirichlet(data, alpha0=alpha_init)
+        alpha = jnp.maximum(alpha, eps)
         return (alpha,)
 
 

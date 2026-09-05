@@ -8,6 +8,7 @@ from flax import nnx
 from flax.nnx import rnglib
 from flax.nnx.module import Module, first_from
 
+
 from probjax.utils.typing import Array, ArrayLike
 
 __all__ = ["DropPath"]
@@ -57,6 +58,7 @@ class DropPath(Module):
         inputs: ArrayLike,
         *,
         deterministic: bool | None = None,
+        rng: jax.Array | None = None,
         rngs: rnglib.Rngs | rnglib.RngStream | jax.Array | None = None,
         scale_by_keep: bool | None = None,
     ) -> Array:
@@ -77,6 +79,9 @@ class DropPath(Module):
         # Drop entirely when drop_rate == 1.0 to avoid NaNs.
         if self.drop_rate == 1.0:
             return jnp.zeros_like(x)
+
+        if rng is not None and rngs is None:
+            rngs = rng
 
         rngs = first_from(
             rngs,

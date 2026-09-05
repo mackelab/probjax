@@ -1,7 +1,11 @@
-from probjax.utils.odeutil.adaptive import AdaptiveParams
+from probjax.utils.odeutil.adaptive import StepSizeAdaptor
 from probjax.utils.odeutil.core import _odeint
 from probjax.utils.odeutil.filters import TraceEverything, TraceFilter, TraceNothing
-from probjax.utils.odeutil.inversion import _inv_logdet_odeint, _inv_odeint
+from probjax.utils.odeutil.inversion import (
+    _inv_logdet_odeint,
+    _inv_odeint,
+    _odeint_custom,
+)
 from probjax.utils.odeutil.solvers import (
     ODEInfo,
     ODESolver,
@@ -19,9 +23,10 @@ __all__ = [
     "get_method",
     "get_methods",
     "_odeint",
+    "_odeint_custom",
     "_inv_odeint",
     "_inv_logdet_odeint",
-    "AdaptiveParams",
+    "StepSizeAdaptor",
     "euler",
     "implicit_euler",
     "TraceFilter",
