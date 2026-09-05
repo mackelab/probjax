@@ -382,6 +382,7 @@ def test_inverse_select_n():
     x_rec = inv_f(f(x0))
     assert jnp.allclose(x0, x_rec, atol=1e-6, rtol=1e-6)
 
+
 # =============================================================================
 # ODE integration tests
 # =============================================================================
@@ -991,6 +992,7 @@ def test_singular_jacobian_is_minus_inf_not_a_finite_floor():
 
 
 AFFINE_CASES = [
+    ("repeated_addition", lambda x: x + x, jnp.array([2.0, 4.0])),
     ("scaled_difference", lambda x: 3.0 * x - x, jnp.array([4.0, 6.0])),
     ("repeated_division", lambda x: x / 3.0 + x / 6.0, jnp.array([1.0, 2.0])),
     (
@@ -1032,6 +1034,11 @@ def test_affine_fan_out_log_determinant(name, fn, y):
     "name,fn,y",
     [
         ("residual", lambda x: x + jnp.tanh(x), jnp.array([1.0])),
+        (
+            "repeated_reciprocal",
+            lambda x: 1.0 / (x + 1.0) + 1.0 / (x + 1.0),
+            jnp.array([1.0]),
+        ),
         ("product", lambda x: jnp.exp(x) * jnp.exp(x), jnp.array([4.0])),
         ("square", lambda x: x * x, jnp.array([4.0])),
     ],
@@ -1072,3 +1079,278 @@ def test_affine_fan_out_composes_with_jit_and_vmap():
     ys = jnp.array([[4.0, 6.0], [2.0, 8.0]])
     assert jnp.allclose(jax.jit(inverse(fn))(ys[0]), jnp.array([2.0, 3.0]))
     assert jnp.allclose(jax.vmap(inverse(fn))(ys), ys / 2.0)
+
+
+def test_elementwise_fallback_needs_no_dense_jacobian():
+    """`x + x` must stage a handful of elementwise ops, not a Jacobian.
+
+    The old fallback differentiated through the forward program, which staged
+    O(n^2) work and OOMed past ~10k elements. The diagonal path is two forward
+    evaluations plus a division.
+    """
+    fn = lambda x: x + x  # noqa: E731
+    y = jnp.array([2.0, 4.0])
+    eqns = jax.make_jaxpr(inverse(fn))(y).jaxpr.eqns
+    assert len(eqns) < 15, f"{len(eqns)} equations for y / 2"
+    assert jnp.allclose(jax.jit(inverse(fn))(y), y / 2.0)
+
+
+def test_affine_fallback_solves_a_joint_linear_system():
+    """A coupled system over one tuple arg inverts jointly.
+
+    `(x + y, x - y)` is the multi-variable version of `x + x`: propagation
+    stalls on the fan-out, and the fallback solves the 2-leaf square system,
+    including the log-det of the full matrix.
+    """
+    fn = lambda xy: (xy[0] + xy[1], xy[0] - xy[1])  # noqa: E731
+    y = (jnp.array([4.0, 6.0]), jnp.array([-2.0, -2.0]))
+    expected = (jnp.array([1.0, 2.0]), jnp.array([3.0, 4.0]))
+    recovered = inverse(fn)(y)
+    assert jnp.allclose(recovered[0], expected[0])
+    assert jnp.allclose(recovered[1], expected[1])
+    assert jnp.allclose(jax.jit(inverse(fn))(y)[0], expected[0])
+    (rx, ry), logdet = inverse_and_logabsdet(fn)(y)
+    assert jnp.allclose(rx, expected[0]) and jnp.allclose(ry, expected[1])
+    # per element A = [[1, 1], [1, -1]], |det| = 2, two elements
+    assert float(logdet) == pytest.approx(float(-2 * jnp.log(2.0)), abs=1e-4)
+
+
+def test_affine_fallback_uses_known_parameters():
+    """Fan-out against a known argument solves with it held fixed."""
+    fn = lambda x, c: c * x + x  # noqa: E731
+    inv = inverse(fn, invertible_arg=0)
+    assert jnp.allclose(inv(jnp.array([6.0]), jnp.array([2.0])), jnp.array([2.0]))
+    assert jnp.allclose(
+        jax.jit(inv)(jnp.array([6.0]), jnp.array([2.0])), jnp.array([2.0])
+    )
+
+
+def test_input_template_recovers_padded_and_duplicated_inputs():
+    """Shape-changing maps invert once tracing sees the true input structure.
+
+    Without a template these trace the wrong program (and report NaN); with
+    one, padding is sliced off and duplications are solved by least squares.
+    """
+    x2 = jnp.array([1.0, 2.0])
+    assert jnp.allclose(
+        inverse(lambda t: jnp.tile(t, 2), input_template=x2)(jnp.tile(x2, 2)), x2
+    )
+    assert jnp.allclose(
+        inverse(lambda t: jnp.concatenate([t, t]), input_template=x2)(
+            jnp.concatenate([x2, x2])
+        ),
+        x2,
+    )
+    x4 = jnp.arange(1.0, 5.0)
+    assert jnp.allclose(
+        inverse(lambda t: jnp.pad(t, 1), input_template=x4)(jnp.pad(x4, 1)), x4
+    )
+    assert jnp.allclose(
+        jax.jit(inverse(lambda t: jnp.tile(t, 2), input_template=x2))(jnp.tile(x2, 2)),
+        x2,
+    )
+
+
+def test_input_template_split_recovers_by_concatenation():
+    """An array->tuple map cannot even be staged without a template."""
+    x4 = jnp.arange(1.0, 5.0)
+    recovered = inverse(lambda t: jnp.split(t, 2), input_template=x4)((
+        jnp.array([1.0, 2.0]),
+        jnp.array([3.0, 4.0]),
+    ))
+    assert jnp.allclose(recovered, x4)
+
+
+def test_input_template_reports_nan_for_foreign_outputs():
+    """Outputs that the templated program could not produce stay NaN."""
+    x2 = jnp.array([1.0, 2.0])
+    inconsistent = inverse(lambda t: jnp.tile(t, 2), input_template=x2)(
+        jnp.array([1.0, 2.0, 9.0, 9.0])
+    )
+    assert inconsistent.shape == (2,)
+    assert jnp.all(jnp.isnan(inconsistent))
+    mismatched = inverse(lambda t: jnp.tile(t, 2), input_template=x2)(
+        jnp.array([1.0, 2.0, 3.0])
+    )
+    assert mismatched.shape == (2,)
+    assert jnp.all(jnp.isnan(mismatched))
+
+
+def test_overdetermined_logdet_is_nan_by_design():
+    """A tall system has no square Jacobian; values carry, log-det refuses."""
+    x2 = jnp.array([1.0, 2.0])
+    recovered, logdet = inverse_and_logabsdet(
+        lambda t: jnp.tile(t, 2), input_template=x2
+    )(jnp.tile(x2, 2))
+    assert jnp.allclose(recovered, x2)
+    assert jnp.isnan(logdet)
+
+
+def test_joint_solve_over_two_arguments():
+    """invertible_arg=(0, 1) solves a square system across two arguments."""
+    fn = lambda x, y: (x + y, x - y)  # noqa: E731
+    x, y = inverse(fn, invertible_arg=(0, 1))(jnp.array([4.0]), jnp.array([2.0]))
+    assert jnp.allclose(x, jnp.array([3.0]))
+    assert jnp.allclose(y, jnp.array([1.0]))
+    x, y = jax.jit(inverse(fn, invertible_arg=(0, 1)))(
+        jnp.array([4.0]), jnp.array([2.0])
+    )
+    assert jnp.allclose(x, jnp.array([3.0]))
+    assert jnp.allclose(y, jnp.array([1.0]))
+
+
+def test_joint_solve_accepts_one_input_template_per_argument():
+    fn = lambda x, y: (jnp.split(x, 2), jnp.split(y, 2))  # noqa: E731
+    x = jnp.arange(4.0)
+    y = jnp.arange(4.0, 8.0)
+
+    recovered_x, recovered_y = inverse(
+        fn,
+        invertible_arg=(0, 1),
+        input_template=(x, y),
+    )(*fn(x, y))
+
+    assert jnp.allclose(recovered_x, x)
+    assert jnp.allclose(recovered_y, y)
+
+
+def test_elementwise_fallback_scales_without_a_matrix():
+    """A wide pointwise residual inverts exactly, with O(n) memory."""
+    fn = lambda x: x + x  # noqa: E731
+    y = jnp.arange(1.0, 8193.0)
+    recovered = jax.jit(inverse(fn))(y)
+    assert jnp.allclose(recovered, y / 2.0)
+    _, logdet = inverse_and_logabsdet(fn)(y[:4])
+    assert float(logdet) == pytest.approx(float(-4 * jnp.log(2.0)), abs=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# Volume-preserving fast path
+# ---------------------------------------------------------------------------
+#
+# A structurally volume-preserving program (|det J| = 1, proven from the jaxpr
+# rather than sampled) must stage no log-det arithmetic at all: the compiled
+# inverse_and_logabsdet matches the plain inverse equation for equation, so a
+# jitted VP inverse runs at hand-written speed by construction.
+
+
+VOLUME_PRESERVING_CASES = [
+    ("neg", lambda x: -x, jnp.array([1.0, -2.0])),
+    ("translation", lambda x: x + 1.0, jnp.array([2.0, 3.0])),
+    ("unit_scale", lambda x: x * 1.0, jnp.array([2.0, 4.0])),
+    ("flip_and_shift", lambda x: jnp.flip(x) + 1.0, jnp.array([3.0, 2.0, 1.0])),
+    (
+        "rearrange_chain",
+        lambda x: jnp.flip(jnp.transpose(jnp.reshape(x, (2, 2)))).reshape(-1),
+        jnp.arange(4.0),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "name,fn,y", VOLUME_PRESERVING_CASES, ids=[c[0] for c in VOLUME_PRESERVING_CASES]
+)
+def test_volume_preserving_logdet_is_zero(name, fn, y):
+    recovered, logdet = inverse_and_logabsdet(fn)(y)
+    assert jnp.allclose(fn(recovered), y), f"{name} failed to invert"
+    assert float(logdet) == pytest.approx(0.0, abs=1e-5), f"{name} logdet != 0"
+    assert jnp.allclose(jax.jit(inverse_and_logabsdet(fn))(y)[0], recovered)
+
+
+@pytest.mark.parametrize(
+    "name,fn,y", VOLUME_PRESERVING_CASES, ids=[c[0] for c in VOLUME_PRESERVING_CASES]
+)
+def test_volume_preserving_stages_no_logdet_arithmetic(name, fn, y):
+    """The parity claim: with log-det proven zero, nothing extra is staged."""
+    ild_eqns = jax.make_jaxpr(inverse_and_logabsdet(fn))(y).jaxpr.eqns
+    inv_eqns = jax.make_jaxpr(inverse(fn))(y).jaxpr.eqns
+    assert len(ild_eqns) == len(inv_eqns), (
+        f"{name}: {len(ild_eqns)} equations with log-det against "
+        f"{len(inv_eqns)} without"
+    )
+    assert not {"log", "reduce_sum"} & {str(eqn.primitive) for eqn in ild_eqns}, (
+        f"{name} stages log-det arithmetic"
+    )
+
+
+def _staged_count(fn, y, *, logdet):
+    target = inverse_and_logabsdet(fn) if logdet else inverse(fn)
+    return len(jax.make_jaxpr(target)(y).jaxpr.eqns)
+
+
+@pytest.mark.parametrize(
+    "name,base,mixed,y,expected_logdet",
+    [
+        (
+            "neg_and_shift",
+            lambda x: jnp.exp(x),
+            lambda x: -jnp.exp(x) + 1.0,
+            jnp.array([-1.0]),
+            float(-jnp.log(2.0)),  # inv is log(1-y); |d/dy| = 1/2 at y = -1
+        ),
+        (
+            "reversal",
+            lambda x: jnp.exp(x),
+            lambda x: jnp.flip(jnp.exp(x)),
+            jnp.array([3.0, 1.0]),
+            float(-jnp.log(3.0)),  # per-element exp log-det, flip adds nothing
+        ),
+    ],
+    ids=["neg_and_shift", "reversal"],
+)
+def test_vp_subgraph_stages_no_logdet_accumulation(
+    name, base, mixed, y, expected_logdet
+):
+    """Zero-contribution parts of a mixed program cost no equations.
+
+    The mixed inverse stages exactly the extra *inverse* ops over the base
+    program -- the log-det column adds nothing for its volume-preserving
+    stretch -- and the value matches the analytic log-det.
+    """
+    assert _staged_count(mixed, y, logdet=True) - _staged_count(
+        base, y, logdet=True
+    ) == _staged_count(mixed, y, logdet=False) - _staged_count(base, y, logdet=False), (
+        f"{name} accumulates log-det work for a VP subgraph"
+    )
+    xm, ldm = inverse_and_logabsdet(mixed)(y)
+    assert jnp.allclose(mixed(xm), y), f"{name} failed to invert"
+    assert float(ldm) == pytest.approx(expected_logdet, abs=1e-5)
+
+
+@pytest.mark.parametrize(
+    "name,fn,y",
+    [
+        ("scale", lambda x: 2.0 * x, jnp.array([4.0])),
+        ("shifted_scale", lambda x: x + x, jnp.array([2.0, 4.0])),
+        ("nonlinear", lambda x: jnp.exp(x), jnp.array([1.0, 2.0])),
+    ],
+    ids=["scale", "shifted_scale", "nonlinear"],
+)
+def test_non_volume_preserving_keeps_the_slow_path(name, fn, y):
+    """Maps that scale must not take the fast path: the log-det stays real."""
+    _, logdet = inverse_and_logabsdet(fn)(y)
+    assert float(logdet) < 0.0, f"{name} logdet should be nonzero, got {logdet}"
+    primitives = {
+        str(eqn.primitive)
+        for eqn in jax.make_jaxpr(inverse_and_logabsdet(fn))(y).jaxpr.eqns
+    }
+    assert "log" in primitives or "reduce_sum" in primitives, (
+        f"{name} should stage log-det arithmetic, staged {primitives}"
+    )
+
+
+def test_volume_preserving_pick_matches_plain_inverse_eager():
+    """A static-mask pick stages no log-det arithmetic and agrees with `inverse`.
+
+    Eager-only, and asserting parity rather than roundtrip: inverting through a
+    non-uniform `select_n` is an upstream engine gap (base commit returns a
+    wrong-but-complete value here), and under `jit` the shared inverse rule
+    itself fails on the traced selector. Both are independent of the log-det
+    path, which must only ever agree with the plain inverse and report zero.
+    """
+    mask = jnp.array([True, False])
+    fn = lambda x: jnp.where(mask, x, -x)  # noqa: E731
+    y = jnp.array([1.0, 2.0])
+    recovered, logdet = inverse_and_logabsdet(fn)(y)
+    assert jnp.allclose(recovered, inverse(fn)(y))
+    assert float(logdet) == pytest.approx(0.0, abs=1e-5)

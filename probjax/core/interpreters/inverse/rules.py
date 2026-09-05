@@ -21,14 +21,14 @@ from probjax.core.jaxpr_propagation.utils import (
     primitive_bind_params,
 )
 from probjax.core.registry import (
+    REGISTRY,
     Context,
     ProcessedResult,
-    REGISTRY,
+    apply_inverse_guard,
     invalid_inverse_value,
+    inverse_roundtrip_valid,
     register_bivariate_inverse,
     register_univariate_inverse,
-    apply_inverse_guard,
-    inverse_roundtrip_valid,
 )
 
 # =============================================================================
@@ -142,6 +142,7 @@ _UNIVARIATE_INVERSES = {
     jax.lax.logistic_p: logit,
 }
 
+
 def _in_image(lo=None, hi=None):
     """Guard for a forward map whose image is a bounded interval.
 
@@ -185,6 +186,38 @@ for forward_prim, inv_fn in _UNIVARIATE_INVERSES.items():
     register_univariate_inverse(
         forward_prim, inv_fn, guard=_UNIVARIATE_GUARDS.get(forward_prim)
     )
+
+
+_FFT_INVERSE_TYPE = {
+    jax.lax.FftType.FFT: jax.lax.FftType.IFFT,
+    jax.lax.FftType.IFFT: jax.lax.FftType.FFT,
+}
+
+
+def fft_inverse_type(fft_type):
+    """The fft_type inverting ``fft_type``, or None if it is not a bijection.
+
+    ``FFT`` and ``IFFT`` swap; ``RFFT``/``IRFFT`` change the element count
+    (real-to-complex with Hermitian redundancy), so they decline.
+    """
+    try:
+        return _FFT_INVERSE_TYPE[jax.lax.FftType(fft_type)]
+    except (ValueError, KeyError):
+        return None
+
+
+@REGISTRY.rule(jax.lax.fft_p, Context.INVERSE)
+def invert_fft(eqn, known_invars, known_outvars):
+    out = known_outvars[0]
+    if out is None:
+        return None
+    inverse_type = fft_inverse_type(eqn.params["fft_type"])
+    if inverse_type is None:
+        return None
+    _, bind_params = primitive_bind_params(jax.lax.fft_p, eqn.params)
+    bind_params = dict(bind_params, fft_type=inverse_type)
+    in_val = jax.lax.fft_p.bind(out, **bind_params)
+    return ProcessedResult([eqn.invars[0]], [in_val])
 
 
 @REGISTRY.rule(jax.lax.integer_pow_p, Context.INVERSE)
@@ -498,6 +531,36 @@ def _nonzero_out(out_val, other, params):
     return _compare(out_val, lambda xp: lambda v: v != 0)
 
 
+def _pass_through(out_val, other, **params):
+    """Inverse of an extremum on its active side: the output *is* the input."""
+    del other, params
+    return out_val
+
+
+def _extremum_valid(out_val, other, params, *, side):
+    """Validity of recovering an extremum's unknown side.
+
+    ``max(x, c)`` is ``x`` exactly where ``out > c`` (``min``: ``out < c``).
+    At ``out == c`` the preimage is a half-line, not a point, and beyond it
+    the output is impossible -- both report NaN through the guard. Concrete
+    comparisons stay compile-time facts via the tracer check.
+    """
+    del params
+    if isinstance(out_val, jax_core.Tracer) or isinstance(other, jax_core.Tracer):
+        out_arr, other_arr = jnp.asarray(out_val), jnp.asarray(other)
+    else:
+        out_arr, other_arr = np.asarray(out_val), np.asarray(other)
+    return out_arr > other_arr if side == "max" else out_arr < other_arr
+
+
+def _max_valid(out_val, other, params):
+    return _extremum_valid(out_val, other, params, side="max")
+
+
+def _min_valid(out_val, other, params):
+    return _extremum_valid(out_val, other, params, side="min")
+
+
 # Map of binary primitive -> (left_inverse, right_inverse)
 _BIVARIATE_INVERSES = {
     jax.lax.mul_p: (jax.lax.div_p, jax.lax.div_p),
@@ -514,6 +577,8 @@ _BIVARIATE_INVERSES = {
         lambda x, y, **params: jax.lax.pow_p.bind(x, 1.0 / y, **params),
         lambda x, y, **params: jax.lax.log_p.bind(x) / jax.lax.log_p.bind(y),  # type: ignore
     ),
+    jax.lax.max_p: (_pass_through, _pass_through),
+    jax.lax.min_p: (_pass_through, _pass_through),
 }
 
 # Guard per branch, mirroring (left_inverse, right_inverse). For div, recovering
@@ -521,6 +586,8 @@ _BIVARIATE_INVERSES = {
 _BIVARIATE_GUARDS = {
     jax.lax.mul_p: _nonzero_other,
     jax.lax.div_p: (None, _nonzero_out),
+    jax.lax.max_p: _max_valid,
+    jax.lax.min_p: _min_valid,
 }
 
 for prim, (left_inv, right_inv) in _BIVARIATE_INVERSES.items():
@@ -1030,6 +1097,26 @@ def invert_gather(eqn, known_invars, known_outvars):
     return ProcessedResult([eqn.invars[0]], [input_val])
 
 
+@REGISTRY.rule(jax.lax.scatter_add_p, Context.INVERSE)
+def invert_scatter_add(eqn, known_invars, known_outvars):
+    """Inverse of scatter-add with known indices and updates: subtract back.
+
+    Unlike scatter-set, scatter-add is a translation of the operand whatever
+    the indices and updates are -- duplicates, partial coverage and dropped
+    out-of-bounds updates only change *how much* is added where, never whether
+    the operand is recoverable. Only the operand itself is solved for.
+    """
+    operand_val, index, updates = known_invars
+    out = known_outvars[0]
+    if out is None or operand_val is not None:
+        return None
+    if index is None or updates is None:
+        return None
+    subfuns, bind_params = primitive_bind_params(eqn.primitive, eqn.params)
+    in_val = eqn.primitive.bind(*subfuns, out, index, -updates, **bind_params)
+    return ProcessedResult([eqn.invars[0]], [in_val])
+
+
 @REGISTRY.rule(jax.lax.scatter_p, Context.INVERSE)
 def invert_scatter(eqn, known_invars, known_outvars):
     index = known_invars[1]
@@ -1091,7 +1178,7 @@ def invert_select_n(eqn, known_invars, known_outvars):
     in_avals = safe_map(lambda x: x.aval, eqn.invars[1:])
 
     # For select_n(which, case0, case1, ...), we have: out = cases[which]
-    # When we know `which`, we can precisely set only the selected case to the output value.
+    # When `which` is known, set only the selected case to the output value.
     # Non-selected cases remain UNKNOWN - their values will be computed by FORWARD
     # from the now-known selected case value.
     #
@@ -1113,12 +1200,11 @@ def invert_select_n(eqn, known_invars, known_outvars):
         resolved_vals = []
 
         for i, (c, aval) in enumerate(zip(cases, in_avals, strict=False)):
-            if c is None:
-                if i == selected_idx:
-                    # This is THE selected case - set to COMPLETE output value
-                    resolved_vars.append(eqn.invars[1 + i])
-                    resolved_vals.append(out.astype(aval.dtype))
-                # Non-selected cases: leave as UNKNOWN (don't add to result)
+            if c is None and i == selected_idx:
+                # This is THE selected case - set to COMPLETE output value
+                resolved_vars.append(eqn.invars[1 + i])
+                resolved_vals.append(out.astype(aval.dtype))
+            # Non-selected cases: leave as UNKNOWN (don't add to result)
             # Already-known cases: don't overwrite
 
         if not resolved_vars:
@@ -1315,7 +1401,7 @@ def invert_split_logdet(eqn, known_invars, known_outvars):
         return None
     axis = params["axis"]
     concatenated = jnp.concatenate(known_outvars, axis=axis)
-    return ProcessedResult([invar], [concatenated], {invar: jnp.asarray(0.0)})
+    return ProcessedResult([invar], [concatenated], {invar: 0.0})
 
 
 @REGISTRY.rule(jax.lax.cond_p, Context.INVERSE)
