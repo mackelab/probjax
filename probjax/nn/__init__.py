@@ -113,7 +113,7 @@ from probjax.nn.losses import (
 from probjax.nn.generative.autoregressive import (
     ARConditionerConfig,
     ARFamily,
-    AutoregressiveModel,
+    Autoregressive,
     CategoricalAutoregressive,
     HistogramAutoregressive,
     MADE,

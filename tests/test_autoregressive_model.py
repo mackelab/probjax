@@ -13,13 +13,14 @@ from flax import nnx
 
 from probjax.nn.generative.autoregressive import (
     ARFamily,
-    AutoregressiveModel,
+    Autoregressive,
     CategoricalAutoregressive,
     HistogramAutoregressive,
     MADE,
     MixtureAutoregressive,
     MLPARConditionerConfig,
     SplineAutoregressive,
+    TransformerARConditionerConfig,
 )
 from probjax.stats import gennorm, laplace, logistic, norm, t
 
@@ -81,7 +82,7 @@ def test_any_univariate_stats_family_can_be_used_for_the_density():
     """
     x = jax.random.normal(jax.random.PRNGKey(0), (8, 3))
     for dist in (norm, laplace, logistic, gennorm):
-        model = AutoregressiveModel(3, ARFamily(dist), nnx.Rngs(0))
+        model = Autoregressive(3, ARFamily(dist), nnx.Rngs(0))
         lp = model._logpdf(x)
         assert lp.shape == (8,)
         assert jnp.all(jnp.isfinite(lp))
@@ -190,7 +191,7 @@ def _perturb(model, key, scale=0.4):
 
 @pytest.mark.parametrize("family", FAMILIES)
 def test_logpdf_and_sampling_are_finite(family):
-    model = AutoregressiveModel(3, family, nnx.Rngs(0))
+    model = Autoregressive(3, family, nnx.Rngs(0))
     x = jax.random.normal(jax.random.PRNGKey(0), (8, 3))
 
     lp = model._logpdf(x)
@@ -362,17 +363,112 @@ def test_marginal_of_the_first_dimension_matches_the_data():
 def test_conditioner_output_width_matches_the_family():
     """Regression guard: the head must emit exactly input_dim * params_dim."""
     for family in (ARFamily.normal(), ARFamily.mixture(7), ARFamily.spline(5)):
-        model = AutoregressiveModel(4, family, nnx.Rngs(0))
+        model = Autoregressive(4, family, nnx.Rngs(0))
         flat = model.conditioner(jnp.zeros(4))
         assert flat.shape == (4 * family.params_dim(),)
         assert model.predict_params(jnp.zeros(4)).shape == (4, family.params_dim())
 
 
 def test_custom_conditioner_depth_is_respected():
-    model = AutoregressiveModel(
+    model = Autoregressive(
         3,
         ARFamily.normal(),
         nnx.Rngs(0),
         conditioner=MLPARConditionerConfig(hidden_dims=(16, 16, 16)),
     )
     assert jnp.isfinite(model.loss(None, jnp.zeros((4, 3))))
+
+
+# ---------------------------------------------------------------------------
+# Transformer conditioner: discrete support, KV-cache parity, prefixes
+# ---------------------------------------------------------------------------
+
+
+def _tiny_transformer():
+    return TransformerARConditionerConfig(
+        num_layers=1, num_heads=2, model_dim=8, attn_size=4
+    )
+
+
+def test_transformer_conditioner_supports_categorical():
+    """One-hot inputs must stay one token per position, not widen into
+    one token per class."""
+    model = Autoregressive(
+        4, ARFamily.categorical(3), nnx.Rngs(1), conditioner=_tiny_transformer()
+    )
+    x = jnp.zeros((2, 4), jnp.int32)
+    assert model.predict_params(x).shape == (2, 4, 3)
+    assert model._logpdf(x).shape == (2,)
+    assert jnp.all(jnp.isfinite(model._logpdf(x)))
+    samples = model.sample(jax.random.key(0), (5,))
+    assert samples.shape == (5, 4)
+    assert samples.dtype == jnp.int32
+
+
+@pytest.mark.parametrize(
+    "family",
+    [
+        pytest.param(ARFamily.normal(), id="normal"),
+        pytest.param(ARFamily.categorical(3), id="categorical"),
+    ],
+)
+def test_cached_sampling_matches_naive(family):
+    """Both paths consume the same per-dimension keys, so they agree exactly."""
+    input_dim = 4
+    model = Autoregressive(
+        input_dim, family, nnx.Rngs(0), conditioner=_tiny_transformer()
+    )
+    key = jax.random.key(0)
+    assert jnp.array_equal(
+        model.sample(key, (3,)),
+        model.sample(key, (3,), use_cache=False),
+    )
+
+
+def test_trained_cached_matches_naive_up_to_float_dust():
+    """Untrained parity is vacuous (the zero-init head emits exact zeros),
+    so train briefly and compare parameters with tolerance: the compiled
+    scan and the eager loop order operations differently."""
+    model = Autoregressive(
+        4, ARFamily.categorical(3), nnx.Rngs(1), conditioner=_tiny_transformer()
+    )
+    data = (jax.random.uniform(jax.random.key(0), (256, 4)) > 0.5).astype(jnp.int32)
+    model.fit(jax.random.key(1), data, num_steps=10, batch_size=64)
+    x = (jax.random.uniform(jax.random.key(2), (3, 4)) > 0.5).astype(jnp.int32)
+    full = model.predict_params(x)
+    model.conditioner.init_decode((3,))
+    prev = jnp.zeros((3, 3), jnp.int32)
+    for i in range(4):
+        stepwise = model.conditioner.predict_next_params(prev, i, None)
+        assert jnp.allclose(stepwise, full[:, i, :], atol=1e-5)
+        prev = model.family.encode(x[:, i])
+
+
+def test_prefix_completion_clamps_and_matches_naive():
+    model = Autoregressive(
+        4, ARFamily.categorical(3), nnx.Rngs(1), conditioner=_tiny_transformer()
+    )
+    key = jax.random.key(0)
+    prefix = jnp.arange(12).reshape(3, 4) % 3
+    cached = model.sample(key, (3,), prefix=prefix, prefix_len=2)
+    naive = model.sample(key, (3,), prefix=prefix, prefix_len=2, use_cache=False)
+    assert jnp.array_equal(cached[:, :2], prefix[:, :2])
+    assert jnp.array_equal(cached, naive)
+    # prefix_len=0 reproduces plain sampling
+    assert jnp.array_equal(
+        model.sample(key, (3,), prefix=prefix, prefix_len=0),
+        model.sample(key, (3,)),
+    )
+
+
+def test_prefix_arguments_are_validated():
+    model = Autoregressive(
+        4, ARFamily.normal(), nnx.Rngs(0), conditioner=_tiny_transformer()
+    )
+    key = jax.random.key(0)
+    with pytest.raises(ValueError, match="prefix_len"):
+        model.sample(key, (2,), prefix_len=5)
+    with pytest.raises(ValueError, match="prefix_len"):
+        model.sample(key, (2,), prefix_len=1)
+    with pytest.raises(ValueError, match="prefix_len"):
+        model.sample(key, (2,), prefix=jnp.zeros((2, 4)), prefix_len=5)

@@ -12,6 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - API documentation generation from docstrings
 - FAQ and troubleshooting guides
 - Comprehensive tutorials section
+- `Autoregressive.sample` supports prefix conditioning (`prefix=`, `prefix_len=`)
+  and KV-cached decoding (`use_cache=`) for transformer conditioners
+- `TransformerARConditionerConfig` accepts an `attention_fn` kernel and works
+  with discrete families
+
+### Changed
+- Renamed `AutoregressiveModel` to `Autoregressive` (hard rename, no alias)
+
+### Fixed
+- Transformer conditioner full-forward path is now causal: the explicit
+  `mask=None` used to override the attention kernel's baked-in causal mask,
+  so every position read the future and the density was invalid. Cached
+  decoding, naive sampling, and training now agree
+- `flex_attention` no longer crashes on stateful masks (their data children
+  are not spatial dims and must not be padded)
 
 ## [0.1.0] - 2024
 

@@ -27,7 +27,7 @@ bijector configs); read the source for those.
 ::: probjax.nn.SplineAutoregressive
 ::: probjax.nn.HistogramAutoregressive
 ::: probjax.nn.CategoricalAutoregressive
-::: probjax.nn.AutoregressiveModel
+::: probjax.nn.Autoregressive
 ::: probjax.nn.ARFamily
 
 ## Diffusion and flow matching
