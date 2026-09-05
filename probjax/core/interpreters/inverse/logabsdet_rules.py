@@ -5,54 +5,64 @@ from __future__ import annotations
 
 import math
 
-import numpy as np
-
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.extend.core import Literal
 
 from probjax.core.interpreters.inverse.rules import (
+    _BIVARIATE_INVERSES,
+    _UNIVARIATE_GUARDS,
+    _UNIVARIATE_INVERSES,
     _get_inverse_cost_fn,
+    _max_valid,
+    _min_valid,
+    _pass_through,
+    _values_equal,
     dot_general_left_inverse_and_logdet,
     dot_general_right_inverse_and_logdet,
-    invert_broadcast_in_dim,
-    invert_gather,
-    invert_squeeze,
-    invert_reshape,
-    invert_concat,
-    invert_slice,
-    invert_scatter,
-    invert_select_n,
-    invert_transpose,
-    _UNIVARIATE_INVERSES,
-    _BIVARIATE_INVERSES,
-    invert_integer_pow,
-    invert_convert_element_type,
+    fft_inverse_type,
     invert_bitcast_convert_type,
-    _UNIVARIATE_GUARDS,
+    invert_broadcast_in_dim,
+    invert_concat,
+    invert_convert_element_type,
+    invert_gather,
+    invert_integer_pow,
+    invert_reshape,
+    invert_scatter,
+    invert_scatter_add,
+    invert_select_n,
+    invert_slice,
+    invert_squeeze,
+    invert_transpose,
+    pack_cond_values,
     parse_scan_problem,
     parse_while_problem,
-    pack_cond_values,
-    prepare_cond_branches,
     prepare_cond_branch_problem,
+    prepare_cond_branches,
     read_state_values,
     scan_reverse_indices,
     solve_nested_values_and_state,
     state_from_vars,
     unpack_cond_values,
     verify_while_candidate,
-    _values_equal,
 )
-from probjax.core.jaxpr_propagation.utils import Knowness, ProcessingRuleFactory
+from probjax.core.jaxpr_propagation.utils import (
+    Knowness,
+    ProcessingRuleFactory,
+    primitive_bind_params,
+)
 from probjax.core.registry import (
+    REGISTRY,
     Context,
     ProcessedResult,
-    REGISTRY,
-    invalid_inverse_value,
-    register_univariate_inverse_logdet,
-    register_bivariate_inverse_logdet,
     apply_inverse_guard,
+    chain_logdet_into,
+    invalid_inverse_value,
     inverse_roundtrip_valid,
+    is_static_zero,
+    register_bivariate_inverse_logdet,
+    register_univariate_inverse_logdet,
 )
 
 INVERSE_AND_LOGABSDET_STATE_NAMESPACE = "inverse_and_logabsdet.log_dets"
@@ -71,18 +81,29 @@ def _make_logabsdet_processing_rule(state_namespace):
 
 
 def _sum_previous_log_dets(context, outvars):
+    """Sum accumulated log-dets, skipping static zeros without staging.
+
+    Returns ``(total, nontrivial)`` like the interpreter's ``_sum_log_dets``;
+    hand-written rules chain through :func:`chain_logdet_into` so a
+    volume-preserving stretch stages no ``previous + 0.0`` additions.
+    """
     if context is None:
-        return jnp.asarray(0.0)
+        return jnp.asarray(0.0), False
     state = context.read_run_state(namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE)
     if state is None:
-        return jnp.asarray(0.0)
+        return jnp.asarray(0.0), False
 
     total = jnp.asarray(0.0)
+    nontrivial = False
     for var in outvars:
         if isinstance(var, Literal):
             continue
-        total = total + jnp.asarray(state.get(var, 0.0))
-    return total
+        term = state.get(var, 0.0)
+        if is_static_zero(term):
+            continue
+        nontrivial = True
+        total = total + jnp.asarray(term)
+    return total, nontrivial
 
 
 #: Primitives whose Jacobian is diagonal, so differentiating the inverse
@@ -93,13 +114,34 @@ def _sum_previous_log_dets(context, outvars):
 #: absent raises rather than returning a diagonal guess, which is what silently
 #: produced wrong log-determinants for reshape, concatenate, slice and scatter.
 _ELEMENTWISE_PRIMITIVES = frozenset({
-    jax.lax.abs_p, jax.lax.acos_p, jax.lax.acosh_p, jax.lax.asin_p,
-    jax.lax.asinh_p, jax.lax.atan_p, jax.lax.atanh_p, jax.lax.cbrt_p,
-    jax.lax.cos_p, jax.lax.cosh_p, jax.lax.erf_p, jax.lax.erf_inv_p,
-    jax.lax.exp_p, jax.lax.exp2_p, jax.lax.expm1_p, jax.lax.integer_pow_p,
-    jax.lax.log_p, jax.lax.log1p_p, jax.lax.logistic_p, jax.lax.neg_p,
-    jax.lax.pow_p, jax.lax.rsqrt_p, jax.lax.sin_p, jax.lax.sinh_p,
-    jax.lax.sqrt_p, jax.lax.square_p, jax.lax.tan_p, jax.lax.tanh_p,
+    jax.lax.abs_p,
+    jax.lax.acos_p,
+    jax.lax.acosh_p,
+    jax.lax.asin_p,
+    jax.lax.asinh_p,
+    jax.lax.atan_p,
+    jax.lax.atanh_p,
+    jax.lax.cbrt_p,
+    jax.lax.cos_p,
+    jax.lax.cosh_p,
+    jax.lax.erf_p,
+    jax.lax.erf_inv_p,
+    jax.lax.exp_p,
+    jax.lax.exp2_p,
+    jax.lax.expm1_p,
+    jax.lax.integer_pow_p,
+    jax.lax.log_p,
+    jax.lax.log1p_p,
+    jax.lax.logistic_p,
+    jax.lax.neg_p,
+    jax.lax.pow_p,
+    jax.lax.rsqrt_p,
+    jax.lax.sin_p,
+    jax.lax.sinh_p,
+    jax.lax.sqrt_p,
+    jax.lax.square_p,
+    jax.lax.tan_p,
+    jax.lax.tanh_p,
 })
 
 
@@ -160,7 +202,8 @@ register_univariate_inverse_logdet(
     lambda out_val, in_val, params: -jnp.sum(jnp.log(jnp.abs(out_val))),
 )
 
-# log: d/dy[exp(y)] = exp(y) = y (since x = exp(y)) => log|Jacobian| = log(|out|) = y_sum?
+# log: d/dy[exp(y)] = exp(y) = y (since x = exp(y)), so the
+# log|Jacobian| is log(|out|) = y_sum?
 # Actually: x = exp(y), dx/dy = exp(y) = x = out, so log|det| = sum(log(|out|))
 # But we want d(input)/d(output) for inverse. If forward is log, inverse is exp.
 # d/dy[exp(y)] = exp(y). So log|det| = sum(y) where y = output (of forward log)
@@ -171,17 +214,19 @@ register_univariate_inverse_logdet(
 )
 
 # neg: d/dy[-y] = -1 => log|Jacobian| = 0
+# conj: |det| = 1 => log|Jacobian| = 0
+# copy: identity => log|Jacobian| = 0
+# Plain `0.0` (not `jnp.asarray(0.0)`): the chaining helper skips staging for
+# Python-level zeros, so these contribute no equations at all.
 register_univariate_inverse_logdet(
     jax.lax.neg_p,
     jax.lax.neg_p,
-    lambda out_val, in_val, params: jnp.asarray(0.0),
+    lambda out_val, in_val, params: 0.0,
 )
-
-# copy: identity, log|Jacobian| = 0
 register_univariate_inverse_logdet(
     jax.lax.copy_p,
     jax.lax.copy_p,
-    lambda out_val, in_val, params: jnp.asarray(0.0),
+    lambda out_val, in_val, params: 0.0,
 )
 
 
@@ -196,7 +241,7 @@ def invert_rev_and_logdet(eqn, known_invars, known_outvars, context=None):
     updates = {}
     for var in eqn.invars:
         if not isinstance(var, Literal):
-            updates[var] = jnp.asarray(0.0)
+            updates[var] = 0.0
     return ProcessedResult(eqn.invars, [in_val], updates)
 
 
@@ -299,12 +344,59 @@ register_rearrangement_inverse_logdet(jax.lax.slice_p, invert_slice, selects=Tru
 # engine re-schedule the equation forever. The fence in the log-det interpreter
 # reports it by name instead.
 register_rearrangement_inverse_logdet(jax.lax.scatter_p, invert_scatter, selects=True)
-register_rearrangement_inverse_logdet(
-    jax.lax.select_n_p, invert_select_n, selects=True
-)
 
 
-# sqrt: x = y^2, d/dy[y^2] = 2y => log|det| = sum(log(2) + log(|y|))
+@REGISTRY.rule(jax.lax.scatter_add_p, Context.INVERSE_LOGDET)
+def invert_scatter_add_and_logdet(eqn, known_invars, known_outvars, context=None):
+    """Scatter-add is a translation of the operand: log-det zero, always."""
+    del context
+    result = invert_scatter_add(eqn, known_invars, known_outvars)
+    if result is None:
+        return None
+    updates = {}
+    for var in result.resolved_vars:
+        if not isinstance(var, Literal):
+            updates[var] = 0.0
+    return ProcessedResult(result.resolved_vars, result.resolved_vals, updates)
+
+
+register_rearrangement_inverse_logdet(jax.lax.select_n_p, invert_select_n, selects=True)
+
+
+# FFT/IFFT: the inverse map is the swapped transform, a complex-linear map
+# M = F/n (forward FFT) whose real Jacobian has |det| = n^-n, verified against
+# slogdet of the explicit matrix. Forward IFFT inverts by FFT: +n log n.
+# RFFT/IRFFT change the element count and decline in the inverse rule.
+def _fft_inverse_logdet(out_val, in_val, params):
+    n = math.prod(params["fft_lengths"])
+    if n <= 1:
+        return 0.0
+    sign = 1.0 if jax.lax.FftType(params["fft_type"]) == jax.lax.FftType.IFFT else -1.0
+    return sign * n * math.log(n)
+
+
+@REGISTRY.rule(jax.lax.fft_p, Context.INVERSE_LOGDET)
+def invert_fft_and_logdet(eqn, known_invars, known_outvars, context=None):
+    del known_invars
+    out = known_outvars[0]
+    if out is None:
+        return None
+    inverse_type = fft_inverse_type(eqn.params["fft_type"])
+    if inverse_type is None:
+        return None
+    _, bind_params = primitive_bind_params(
+        jax.lax.fft_p,
+        eqn.params,  # type: ignore[attr-defined]
+    )
+    in_val = jax.lax.fft_p.bind(out, **dict(bind_params, fft_type=inverse_type))
+    local_logdet = _fft_inverse_logdet(out, in_val, eqn.params)
+    updates = {}
+    for var in eqn.invars:
+        if not isinstance(var, Literal):
+            updates[var] = local_logdet
+    return ProcessedResult([eqn.invars[0]], [in_val], updates)
+
+
 def sqrt_inverse_fn(x, **params):
     params = dict(params)
     params.pop("accuracy", None)
@@ -425,24 +517,20 @@ _register_elementwise(
 _register_elementwise(
     jax.lax.atanh_p,
     _UNIVARIATE_INVERSES[jax.lax.atanh_p],
-    lambda out_val, in_val, params: jnp.sum(jnp.log1p(-jnp.tanh(out_val) ** 2)),
+    lambda out_val, in_val, params: jnp.sum(jnp.log1p(-(jnp.tanh(out_val) ** 2))),
 )
 # erf: inverse erf_inv, d/dy erf_inv = (sqrt(pi)/2) * exp(erf_inv(y)^2), and
 # in_val is exactly erf_inv(out_val).
 _register_elementwise(
     jax.lax.erf_p,
     _UNIVARIATE_INVERSES[jax.lax.erf_p],
-    lambda out_val, in_val, params: jnp.sum(
-        jnp.log(_SQRT_PI / 2.0) + in_val**2
-    ),
+    lambda out_val, in_val, params: jnp.sum(jnp.log(_SQRT_PI / 2.0) + in_val**2),
 )
 # erf_inv: inverse erf, d/dy erf = (2/sqrt(pi)) * exp(-y^2)
 _register_elementwise(
     jax.lax.erf_inv_p,
     _UNIVARIATE_INVERSES[jax.lax.erf_inv_p],
-    lambda out_val, in_val, params: jnp.sum(
-        jnp.log(2.0 / _SQRT_PI) - out_val**2
-    ),
+    lambda out_val, in_val, params: jnp.sum(jnp.log(2.0 / _SQRT_PI) - out_val**2),
 )
 # rsqrt: x = y^-2, d/dy = -2 y^-3
 _register_elementwise(
@@ -470,11 +558,11 @@ def invert_integer_pow_and_logdet(eqn, known_invars, known_outvars, context=None
         local = jnp.sum(
             jnp.log(jnp.abs(inv_n)) + (inv_n - 1.0) * jnp.log(jnp.abs(out_val))
         )
-    previous = _sum_previous_log_dets(context, eqn.outvars)
-    updates = {
-        var: previous + local for var in result.resolved_vars
-        if not isinstance(var, Literal)
-    }
+    previous, prev_nontrivial = _sum_previous_log_dets(context, eqn.outvars)
+    updates = {}
+    for var in result.resolved_vars:
+        if not isinstance(var, Literal):
+            chain_logdet_into(updates, var, previous, prev_nontrivial, local)
     return ProcessedResult(result.resolved_vars, result.resolved_vals, updates)
 
 
@@ -482,8 +570,8 @@ def invert_integer_pow_and_logdet(eqn, known_invars, known_outvars, context=None
 _register_elementwise(
     jax.lax.exp2_p,
     _UNIVARIATE_INVERSES[jax.lax.exp2_p],
-    lambda out_val, in_val, params: -jnp.sum(
-        jnp.log(jnp.abs(out_val)) + jnp.log(jnp.log(2.0))
+    lambda out_val, in_val, params: (
+        -jnp.sum(jnp.log(jnp.abs(out_val)) + jnp.log(jnp.log(2.0)))
     ),
 )
 
@@ -493,9 +581,7 @@ _register_elementwise(
 def _pow_left_logdet(out_val, result, other, params):
     # base = out ** (1/e); d/d(out) = (1/e) out ** (1/e - 1)
     inv_e = 1.0 / jnp.asarray(other)
-    return jnp.sum(
-        jnp.log(jnp.abs(inv_e)) + (inv_e - 1.0) * jnp.log(jnp.abs(out_val))
-    )
+    return jnp.sum(jnp.log(jnp.abs(inv_e)) + (inv_e - 1.0) * jnp.log(jnp.abs(out_val)))
 
 
 def _pow_right_logdet(out_val, result, other, params):
@@ -531,9 +617,7 @@ def _register_projection_logdet(primitive, inverse_rule):
 
 
 for _projection in (jax.lax.real_p, jax.lax.imag_p):
-    _register_projection_logdet(
-        _projection, REGISTRY.get(_projection, Context.INVERSE)
-    )
+    _register_projection_logdet(_projection, REGISTRY.get(_projection, Context.INVERSE))
 
 
 # ---------------------------------------------------------------------------
@@ -546,7 +630,7 @@ register_rearrangement_inverse_logdet(
 _register_elementwise(
     jax.lax.conj_p,
     _UNIVARIATE_INVERSES[jax.lax.conj_p],
-    lambda out_val, in_val, params: jnp.asarray(0.0),
+    lambda out_val, in_val, params: 0.0,
 )
 register_rearrangement_inverse_logdet(
     jax.lax.bitcast_convert_type_p, invert_bitcast_convert_type, selects=True
@@ -568,9 +652,7 @@ register_univariate_inverse_logdet(
 register_univariate_inverse_logdet(
     jax.lax.logistic_p,
     lambda x, **params: jax.lax.log_p.bind(x) - jax.lax.log1p_p.bind(-x),
-    lambda out_val, in_val, params: (
-        -jnp.sum(jnp.log(out_val) + jnp.log1p(-out_val))
-    ),
+    lambda out_val, in_val, params: -jnp.sum(jnp.log(out_val) + jnp.log1p(-out_val)),
 )
 
 # log1p/expm1: log1p inverse is expm1
@@ -648,22 +730,41 @@ register_bivariate_inverse_logdet(
 )
 
 # add: z = x + y. Solving for either: dx/dz = 1 => log|det| = 0
+# sub: z = x - y. Solving for x: x = z + y, dx/dz = 1
+# Solving for y: y = x - z, dy/dz = -1 => log|det| = 0
+# Plain `0.0`: the chaining helper skips staging for Python-level zeros.
 register_bivariate_inverse_logdet(
     jax.lax.add_p,
     jax.lax.sub_p,
     jax.lax.sub_p,
-    lambda out_val, result, other, params: jnp.asarray(0.0),
-    lambda out_val, result, other, params: jnp.asarray(0.0),
+    lambda out_val, result, other, params: 0.0,
+    lambda out_val, result, other, params: 0.0,
 )
-
-# sub: z = x - y. Solving for x: x = z + y, dx/dz = 1
-# Solving for y: y = x - z, dy/dz = -1 => log|det| = 0
 register_bivariate_inverse_logdet(
     jax.lax.sub_p,
     jax.lax.add_p.bind,
     lambda x, y, **params: jax.lax.sub_p.bind(y, x, **params),
-    lambda out_val, result, other, params: jnp.asarray(0.0),
-    lambda out_val, result, other, params: jnp.asarray(0.0),
+    lambda out_val, result, other, params: 0.0,
+    lambda out_val, result, other, params: 0.0,
+)
+
+# max/min: on the active side the output is the input, so dx/dz = 1 there and
+# the log-det is 0 -- with the same guard poisoning the clipped side to NaN.
+register_bivariate_inverse_logdet(
+    jax.lax.max_p,
+    _pass_through,
+    _pass_through,
+    lambda out_val, result, other, params: 0.0,
+    lambda out_val, result, other, params: 0.0,
+    guard=_max_valid,
+)
+register_bivariate_inverse_logdet(
+    jax.lax.min_p,
+    _pass_through,
+    _pass_through,
+    lambda out_val, result, other, params: 0.0,
+    lambda out_val, result, other, params: 0.0,
+    guard=_min_valid,
 )
 
 
@@ -715,8 +816,8 @@ def invert_dot_general_and_logdet(eqn, known_invars, known_outvars, context=None
 
     updates = {}
     if not isinstance(missing_var, Literal):
-        previous = _sum_previous_log_dets(context, eqn.outvars)
-        updates[missing_var] = previous + jnp.asarray(log_abs_det)
+        previous, prev_nontrivial = _sum_previous_log_dets(context, eqn.outvars)
+        chain_logdet_into(updates, missing_var, previous, prev_nontrivial, log_abs_det)
 
     return ProcessedResult([missing_var], [missing_value], updates)
 
@@ -775,9 +876,7 @@ def invert_cond_and_logdet(eqn, known_invars, known_outvars, context=None):
     )
     updates = {
         outer_var: logdet
-        for outer_var, logdet in zip(
-            target_outer_vars, nested_logdets, strict=False
-        )
+        for outer_var, logdet in zip(target_outer_vars, nested_logdets, strict=False)
         if not isinstance(outer_var, Literal)
     }
 

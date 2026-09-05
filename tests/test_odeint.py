@@ -9,7 +9,10 @@ from probjax.utils.odeutil import StepSizeAdaptor
 from probjax.utils.odeutil import TraceNothing
 from probjax.utils.sdeint import sdeint
 
-pytest_plugins = ["test_problems.ode_problems", "test_problems.sde_problems"]
+pytest_plugins = [
+    "tests.test_problems.ode_problems",
+    "tests.test_problems.sde_problems",
+]
 
 KNOWN_ERROR = []  # All methods should work now
 # Methods that require split_drift

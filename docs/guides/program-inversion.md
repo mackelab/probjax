@@ -19,7 +19,13 @@ x, log_det = inverse_and_logabsdet(forward)(y)
 ```
 
 `log_det` is the log-determinant of the **inverse** map, `log|d(inv)/dy|`, which
-is the term a change of variables needs.
+is the term a change of variables needs. When the program is structurally
+volume-preserving — rearrangements, translations, sign flips, `±1` scalings —
+the log-det is proven zero from the jaxpr and nothing is staged for it, so the
+compiled inverse matches a hand-written one equation for equation. The same
+holds piecemeal: a volume-preserving stretch inside a larger program (a
+negation or shift around an `exp`, a reversal) contributes no log-det equations
+of its own — only the parts that genuinely scale stage arithmetic.
 
 ## What can be inverted
 
@@ -32,6 +38,9 @@ because most of them fail **silently, by returning NaN**:
 | A tree of operations — each value used once | works |
 | `lax.scan` with an invertible carry, `lax.cond` | works |
 | A variable used twice, **affinely** — `3 * x - x`, `A @ x + b`, `sum(x) - x` | works, by linear solve |
+| An overdetermined affine map — `tile`, `concat([x, x])`, padding | works, with `input_template` (least squares; log-det is `nan`) |
+| A joint system over several arguments, `invertible_arg=(0, 1)` | works |
+| `jnp.fft.fft` / `ifft`, scatter-add, `maximum`/`minimum` on the active side | works |
 | A variable used twice, **nonlinearly** — `x * x`, a residual `x + f(x)` | `nan` |
 | `lax.fori_loop`, or `lax.scan` carrying anything not itself invertible | `nan` |
 | `inverse(inverse(f))` | `nan` |
@@ -71,14 +80,36 @@ A residual *is* invertible when its branch is a contraction — by fixed-point
 iteration, `x <- y - f(x)` — but nothing in a jaxpr states a Lipschitz bound, so
 that guarantee has to come from you. Register it with `custom_inverse` below.
 
-Two caveats on the affine path. It materialises the Jacobian, so it costs
-O(n²) in the target's size — around 2 ms at n=512, and unsuitable for very large
-inputs, where a hand-written `custom_inverse` is better. And it runs only after
+Two caveats on the affine path. Pointwise maps (`x + x`, `3 * x - x`) invert
+elementwise in O(n); small coupled maps build the matrix with one vmapped sweep;
+only large coupled maps pay for an iterative solve — and there the log-det comes
+back NaN, since it needs the dense matrix. For very large coupled inputs a
+hand-written `custom_inverse` is still better. And the path runs only after
 propagation fails, so ordinary inverses are untouched: `2 * x + 1` still goes
 through the rules and emits just a `sub` and a `div`.
 
 Check `jnp.isfinite` on the result if you are inverting something you have not
 inverted before.
+
+## Tracing with the wrong shape: `input_template`
+
+`inverse` traces your function with the outputs you pass in, which is exact
+whenever inputs and outputs share their structure. When they do not — `tile`,
+padding, `split` — pass an example input so the true program is staged:
+
+```python
+import jax.numpy as jnp
+from probjax.core import inverse
+
+x = jnp.array([1.0, 2.0])
+assert jnp.allclose(
+    inverse(lambda t: jnp.tile(t, 2), input_template=x)(jnp.tile(x, 2)), x
+)
+```
+
+The same idea solves several arguments jointly: `invertible_arg=(0, 1)`
+inverts `(x, y) -> (x + y, x - y)` back to `(x, y)`. Outputs the templated
+program could not have produced still report NaN rather than a value.
 
 ## Guards: when an inverse only exists for some values
 
