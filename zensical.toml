@@ -1,6 +1,6 @@
 [project]
 site_name = "ProbJax"
-site_url = "https://probjax.readthedocs.io/"
+site_url = "https://www.mackelab.org/probjax/"
 site_description = "Probabilistic programming, density estimation and inference in JAX"
 site_author = "Manuel Gloeckler"
 repo_url = "https://github.com/mackelab/probjax"

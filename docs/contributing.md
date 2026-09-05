@@ -132,9 +132,9 @@ def function(param1: int, param2: str) -> bool:
 ### Building Documentation Locally
 
 ```bash
-cd docs
-make html
-python -m http.server --directory _build/html
+python -m pip install -r docs/requirements.txt
+zensical build --strict
+zensical serve
 ```
 
 ### Documentation Style
