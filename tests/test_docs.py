@@ -182,7 +182,7 @@ def test_the_site_builds():
         pytest.skip("zensical is not installed")
 
     # `zensical build` has no destination flag -- it writes to `site_dir` from
-    # the config -- so this builds in place, exactly as Read the Docs does.
+    # the config -- so this builds in place, exactly as the deployment does.
     completed = subprocess.run(
         ["zensical", "build", "--strict"],
         cwd=DOCS.parent,
