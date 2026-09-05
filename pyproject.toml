@@ -31,7 +31,7 @@ classifiers = [
 keywords = ["probabilistic", "jax", "computation"]
 dependencies = [
     "numpy >= 2.0.0",
-    "jax >= 0.9.0, < 0.10",
+    "jax >= 0.9.0, < 0.11",
     "einops",
     "optax",
     "flax >= 0.12.6",
