@@ -447,6 +447,42 @@ def invalid_inverse_value(aval: Any, *, message: str) -> Any:
     )
 
 
+def is_static_zero(value: Any) -> bool:
+    """Whether a log-det term is a Python-level zero that needs no staging.
+
+    Rules report "no contribution" with a plain ``0.0``. Anything else --
+    including a traced zero -- must still be staged, because only Python
+    scalars are known at trace time. (``None`` is not used for this: it
+    already means "rule declines" in the registry protocol.)
+    """
+    return isinstance(value, (int, float, complex)) and value == 0
+
+
+def chain_logdet_into(
+    updates: dict, var: Any, previous: Any, prev_nontrivial: bool, local: Any
+) -> None:
+    """Chain-rule accumulation that stages nothing for static zeros.
+
+    This is the single place where ``previous + local`` is staged, so a
+    volume-preserving subgraph -- every local contribution a static zero --
+    flows through the log-det interpreter equation for equation without
+    emitting a single addition:
+
+    * local statically zero, previous statically zero: omit the key entirely.
+      Every reader defaults missing keys to ``0.0``, so nothing is staged.
+    * local statically zero: carry ``previous`` through (a dict op, free).
+    * previous statically zero: store ``local`` as-is (no ``0 +`` staged).
+    * otherwise: ``previous + local``, exactly as before.
+    """
+    if is_static_zero(local):
+        if prev_nontrivial:
+            updates[var] = previous
+    elif not prev_nontrivial:
+        updates[var] = jnp.asarray(local)
+    else:
+        updates[var] = previous + jnp.asarray(local)
+
+
 # =============================================================================
 # Registration Helpers
 # =============================================================================

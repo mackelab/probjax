@@ -27,9 +27,9 @@ from probjax.nn.generative.nflows.config import (
     DeepSigmoidBijectorConfig,
     ElementwiseNFlowConfig,
     FlipMixingConfig,
+    MLPConditionerConfig,
     MixingConfigProtocol,
     MixtureCDFBijectorConfig,
-    MLPConditionerConfig,
     NFlowConfig,
     RationalQuadraticSplineConfig,
     RotationMixingConfig,
@@ -37,11 +37,11 @@ from probjax.nn.generative.nflows.config import (
     SumOfSquaresBijectorConfig,
     UMNNBijectorConfig,
 )
-from probjax.nn.generative.standardize import StandardizingMixin
 from probjax.nn.generative.sampling import (
     _ExportedSampler,
     make_map_sample_fn,
 )
+from probjax.nn.generative.standardize import StandardizingMixin
 from probjax.nn.nets.simple import Sequential
 from probjax.stats.continuous import norm
 from probjax.stats.indep import indep
@@ -164,9 +164,11 @@ class NormalizingFlow(StandardizingMixin, GenerativeModel):
 
     def _sample_base(self, rng, sample_shape, spec):
         del spec
-        return self.base_dist.dist._rvs_impl(
-            rng, shape=sample_shape, **self.base_dist._call_kwds
-        )
+        if hasattr(self.base_dist, "dist") and hasattr(self.base_dist, "_call_kwds"):
+            return self.base_dist.dist._rvs_impl(
+                rng, shape=sample_shape, **self.base_dist._call_kwds
+            )
+        return self.base_dist.rvs(rng, shape=sample_shape)
 
     def _distribution_logpdf(
         self,
@@ -470,7 +472,9 @@ class SplineCouplingFlow(_CouplingPreset):
 
     _default_bijector = RationalQuadraticSplineConfig
 
-    def __init__(self, input_dim, num_transforms, rngs, *, num_bins: int = 16, **kwargs):
+    def __init__(
+        self, input_dim, num_transforms, rngs, *, num_bins: int = 16, **kwargs
+    ):
         super().__init__(input_dim, num_transforms, rngs, num_bins=num_bins, **kwargs)
 
 
@@ -526,7 +530,7 @@ class AdditiveAutoregressiveFlow(_AutoregressivePreset):
 
 
 class AffineAutoregressiveFlow(_AutoregressivePreset):
-    """MAF: masked autoregressive flow with affine transforms (Papamakarios et al., 2017)."""
+    """MAF with affine transforms (Papamakarios et al., 2017)."""
 
     _default_bijector = AffineBijectorConfig
 
@@ -536,7 +540,9 @@ class SplineAutoregressiveFlow(_AutoregressivePreset):
 
     _default_bijector = RationalQuadraticSplineConfig
 
-    def __init__(self, input_dim, num_transforms, rngs, *, num_bins: int = 16, **kwargs):
+    def __init__(
+        self, input_dim, num_transforms, rngs, *, num_bins: int = 16, **kwargs
+    ):
         super().__init__(input_dim, num_transforms, rngs, num_bins=num_bins, **kwargs)
 
 
@@ -568,7 +574,9 @@ class UnconstrainedNeuralAutoregressiveFlow(_AutoregressivePreset):
 
     _default_bijector = UMNNBijectorConfig
 
-    def __init__(self, input_dim, num_transforms, rngs, *, num_hidden: int = 8, **kwargs):
+    def __init__(
+        self, input_dim, num_transforms, rngs, *, num_hidden: int = 8, **kwargs
+    ):
         super().__init__(
             input_dim, num_transforms, rngs, num_hidden=num_hidden, **kwargs
         )
@@ -579,7 +587,9 @@ class SumOfSquaresPolynomialFlow(_AutoregressivePreset):
 
     _default_bijector = SumOfSquaresBijectorConfig
 
-    def __init__(self, input_dim, num_transforms, rngs, *, num_polys: int = 2, **kwargs):
+    def __init__(
+        self, input_dim, num_transforms, rngs, *, num_polys: int = 2, **kwargs
+    ):
         super().__init__(input_dim, num_transforms, rngs, num_polys=num_polys, **kwargs)
 
 
@@ -619,9 +629,8 @@ class GaussianizationFlow(NFlow):
             ElementwiseNFlowConfig(
                 input_dim=input_dim,
                 num_transforms=num_transforms,
-                bijector=bijector or MixtureCDFBijectorConfig(
-                    num_components=num_components
-                ),
+                bijector=bijector
+                or MixtureCDFBijectorConfig(num_components=num_components),
                 mixing=mixing or RotationMixingConfig(learnable=True),
             ),
             rngs,
