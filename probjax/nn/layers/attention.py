@@ -17,14 +17,17 @@ from probjax.nn.pallas_kernels import (
     AttentionBias,
     AttentionMask,
     BlockSizes,
+    LearnedAlibiBias,
+    LowRankBias,
     QKVLengthMask,
+    SumBias,
     mha,
 )
 from probjax.nn.sharding import (
     BATCH,
     EMBED,
-    HEAD_DIM,
     HEADS,
+    HEAD_DIM,
     constrain,
     param_metadata,
 )
@@ -40,7 +43,6 @@ from probjax.utils.typing import (
     ModuleLikeType,
     PrecisionLike,
 )
-
 
 # ---------------------------------------------------------------------------
 # Query scaling modules (pre-kernel Q scaling for SSMax / QASSMax / etc.)
@@ -291,9 +293,9 @@ class QASSMaxQueryScale(nnx.Module):
             Scaled queries (same shape).
         """
         if self.use_checkpointing:
-            return jax.checkpoint(
-                lambda q, n: self._scale_query(q, kv_len=n)
-            )(query, kv_len)
+            return jax.checkpoint(lambda q, n: self._scale_query(q, kv_len=n))(
+                query, kv_len
+            )
         return self._scale_query(query, kv_len=kv_len)
 
 
@@ -1015,6 +1017,25 @@ def dot_product_attention(
     )
 
 
+def _split_low_rank_bias(
+    bias: AttentionBias | None,
+) -> tuple[list[LowRankBias | LearnedAlibiBias], AttentionBias | None]:
+    """Separate low-rank terms so flex attention can fold them into Q/K."""
+    if isinstance(bias, (LowRankBias, LearnedAlibiBias)):
+        return [bias], None
+    if isinstance(bias, SumBias):
+        lhs_low_rank, lhs = _split_low_rank_bias(bias.lhs)
+        rhs_low_rank, rhs = _split_low_rank_bias(bias.rhs)
+        if lhs is None:
+            remainder = rhs
+        elif rhs is None:
+            remainder = lhs
+        else:
+            remainder = SumBias(lhs, rhs)
+        return lhs_low_rank + rhs_low_rank, remainder
+    return [], bias
+
+
 def flex_attention(
     query: Array,
     key: Array,
@@ -1090,9 +1111,51 @@ def flex_attention(
         sm_scale = 1.0 / math.sqrt(query.shape[-1])
 
     query = query[None] if query.ndim == 3 else query
+    key = key[None] if key.ndim == 3 else key
+    value = value[None] if value.ndim == 3 else value
 
-    *_, l_q, h, n = query.shape
+    low_rank_biases, bias = _split_low_rank_bias(bias)
+    if low_rank_biases:
+        if sm_scale <= 0:
+            raise ValueError("LowRankBias requires a positive sm_scale")
+        if enable_gqa and query.shape[-2] != key.shape[-2]:
+            repeats = query.shape[-2] // key.shape[-2]
+            key = jnp.repeat(key, repeats, axis=-2)
+            value = jnp.repeat(value, repeats, axis=-2)
+            enable_gqa = False
+
+        query_extras = []
+        key_extras = []
+        for low_rank_bias in low_rank_biases:
+            query_factors, key_factors = low_rank_bias.factors(
+                query.shape[-3],
+                key.shape[-3],
+                query.shape[-2],
+                dtype=query.dtype,
+            )
+            query_factors = jnp.broadcast_to(
+                query_factors,
+                query.shape[:-1] + (low_rank_bias.rank,),
+            )
+            key_factors = jnp.broadcast_to(
+                key_factors,
+                key.shape[:-1] + (low_rank_bias.rank,),
+            )
+            factor_scale = math.sqrt(low_rank_bias.scale / sm_scale)
+            query_extras.append(query_factors * factor_scale)
+            key_extras.append(key_factors * factor_scale)
+
+        extra_dim = sum(x.shape[-1] for x in query_extras)
+        query = jnp.concatenate((query, *query_extras), axis=-1)
+        key = jnp.concatenate((key, *key_extras), axis=-1)
+        value = jnp.concatenate(
+            (value, jnp.zeros(value.shape[:-1] + (extra_dim,), dtype=value.dtype)),
+            axis=-1,
+        )
+
+    *_, l_q, h, _ = query.shape
     *_, l_kv, _, _ = key.shape
+    output_dim = value.shape[-1] - sum(x.rank for x in low_rank_biases)
     query = pad_to_power_of_2(query, axis=(-3, -1))
     key = pad_to_power_of_2(key, axis=(-3, -1))
     value = pad_to_power_of_2(value, axis=(-3, -1))
@@ -1165,6 +1228,6 @@ def flex_attention(
         diff_mode=diff_mode,
     )
 
-    output = output[:, :l_q, :h, :n]
+    output = output[:, :l_q, :h, :output_dim]
 
     return output

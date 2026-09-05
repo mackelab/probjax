@@ -105,7 +105,7 @@ Absorbs `sorting_transformer.ipynb` and `decoder_transformer.ipynb`.
 
 Short tour so the folder is `nets`, not `transformers-in-disguise`: `MLP`, `ResNet`,
 `MaskedMLP` (autoregressive masking — show the Jacobian is triangular), `DeepSet`,
-`TimeMLP`, `UNet` (shape walkthrough on a 32×32 input, no training), `LRUModel` and the
+`TimeMLP`, `UNet` (shape walkthrough on a 32×32 input, no training), `SSMModel` and the
 `LRUCell`/`MambaCell`/`SSDCell` recurrent cells. One cell each, no training except where a
 plot needs it. This recovers coverage lost when `examples/nn/rnns/` was deleted (still
 referenced by `docs/tutorials.rst`).

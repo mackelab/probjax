@@ -31,7 +31,6 @@ classifiers = [
 keywords = ["probabilistic", "jax", "computation"]
 dependencies = [
     "numpy >= 2.0.0",
-    "matplotlib",
     "jax >= 0.4.34",
     "jaxlib >= 0.4.34",
     "chex",
@@ -39,15 +38,26 @@ dependencies = [
     "optax",
     "flax >= 0.12.0",
     "jaxtyping",
-    "ott-jax",
     "networkx",
-    "blackjax",
+    "blackjax == 1.6.2",
     "sympy",
     "psutil",
     "pynvml",
 ]
 
 [project.optional-dependencies]
+wasserstein = [
+    "ott-jax",
+]
+plot = [
+    "matplotlib",
+]
+notebooks = [
+    "matplotlib",
+    "jupyter",
+    "ipykernel",
+    "ipywidgets",
+]
 dev = [
     "pytest",
     "pytest-benchmark",

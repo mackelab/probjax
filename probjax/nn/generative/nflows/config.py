@@ -26,6 +26,7 @@ from functools import cached_property
 from typing import (
     Callable,
     Literal,
+    Mapping,
     Optional,
     Protocol,
     Sequence,
@@ -40,6 +41,7 @@ from flax.typing import Initializer
 from jax import Array
 from jax.typing import ArrayLike
 
+from probjax.nn.layers.ssm import LRUCell
 from probjax.stats.bijective import (
     affine,
     bernstein,
@@ -53,6 +55,7 @@ from probjax.stats.bijective import (
     sos_polynomial,
     unconstrained_monotone,
 )
+from probjax.utils.typing import ModuleLikeType
 
 __all__ = [
     # protocols
@@ -73,6 +76,7 @@ __all__ = [
     "UMNNBijectorConfig",
     # conditioner configs
     "MLPConditionerConfig",
+    "SSMConditionerConfig",
     "TransformerConditionerConfig",
     # mixing configs
     "FlipMixingConfig",
@@ -898,6 +902,51 @@ class TransformerConditionerConfig(ConditionerConfigProtocol):
                 num_layers=self.num_layers,
                 attn_size=self.attn_size,
                 widening_factor=self.widening_factor,
+            )
+        )
+
+
+@dataclass
+class SSMConditionerConfig(ConditionerConfigProtocol):
+    """Unidirectional LRU, Mamba, or SSD autoregressive conditioner."""
+
+    model_dim: int = 64
+    num_layers: int = 4
+    recurrent_cls: ModuleLikeType = LRUCell
+    recurrent_kwargs: Optional[Mapping] = None
+
+    def build_coupling(
+        self, split_index, params_dim, bijector, *, context_features, rngs
+    ):
+        raise NotImplementedError(
+            "SSMConditionerConfig only supports autoregressive flows"
+        )
+
+    def build_autoregressive(
+        self,
+        in_out_features,
+        params_dim,
+        bijector,
+        *,
+        context_features,
+        output_order,
+        rngs,
+    ):
+        del in_out_features  # sequence length is implicit in the input shape
+        del output_order  # unidirectional recurrence makes output order implicit
+        from probjax.nn.generative.nflows.autoregressive import AutoregressiveSSM
+
+        return _ScalarTokenConditioner(
+            AutoregressiveSSM(
+                1,
+                params_dim,
+                _scalar_token_bijector(bijector),
+                rngs,
+                context_dim=context_features,
+                model_dim=self.model_dim,
+                num_layers=self.num_layers,
+                recurrent_cls=self.recurrent_cls,
+                recurrent_kwargs=self.recurrent_kwargs,
             )
         )
 

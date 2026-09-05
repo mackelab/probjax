@@ -9,7 +9,12 @@ from probjax.inference.mcmc.arms import a2rms, arms
 from probjax.inference.mcmc.dynamic_hmc import dynamic_hmc
 from probjax.inference.mcmc.elliptical_slice import elliptical_slice
 from probjax.inference.mcmc.hmc import hmc, nuts
-from probjax.inference.mcmc.imh import gaussian_imh, imh
+from probjax.inference.mcmc.imh import (
+    gaussian_imh,
+    imh,
+    neural_imh,
+    neural_imh_warmup,
+)
 from probjax.inference.mcmc.latent_slice import latent_slice
 from probjax.inference.mcmc.mala import mala
 from probjax.inference.mcmc.mclmc import (

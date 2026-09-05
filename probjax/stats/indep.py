@@ -220,7 +220,10 @@ class indep_gen(rv_generic):
 
         # Generate samples for each base distribution
         samples = jnp.concatenate(
-            [d.rvs(k, shape=shape) for k, d in zip(keys, base_dists, strict=False)],
+            [
+                d.dist._rvs_impl(k, shape=shape, **d._call_kwds)
+                for k, d in zip(keys, base_dists, strict=False)
+            ],
             axis=-1,
         )
         return samples

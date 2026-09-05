@@ -157,7 +157,7 @@ class LRUCell(RecurrentCell):
         return constrain(out, BATCH)
 
 
-# ----------------------------- Mamba LRU ------------------------------------
+# -------------------------------- Mamba --------------------------------------
 
 
 def mamba_scan(

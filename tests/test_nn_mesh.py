@@ -16,7 +16,7 @@ import pytest
 from flax import nnx
 from jax.sharding import AxisType, NamedSharding, PartitionSpec as P
 
-from probjax.nn import MLP, LRUModel, Transformer, UNet, maf
+from probjax.nn import MLP, SSMModel, Transformer, UNet, maf
 
 
 def _auto_mesh(shape):
@@ -120,10 +120,10 @@ def test_data_parallel_forward(mesh_shape):
         uy = unet(_batch(mesh, (8, 8, 8, 4)))
         assert uy.shape == (8, 8, 8, 4)
 
-        lru = LRUModel(
+        ssm = SSMModel(
             input_dim=4, model_dim=8, output_dim=4, num_layers=1, rngs=nnx.Rngs(0)
         )
-        ly = lru(_batch(mesh, (8, 6, 4)))
+        ly = ssm(_batch(mesh, (8, 6, 4)))
         assert ly.shape == (8, 6, 4)
 
 

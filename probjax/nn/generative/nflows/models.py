@@ -164,7 +164,9 @@ class NormalizingFlow(StandardizingMixin, GenerativeModel):
 
     def _sample_base(self, rng, sample_shape, spec):
         del spec
-        return self.base_dist.rvs(rng, shape=sample_shape)
+        return self.base_dist.dist._rvs_impl(
+            rng, shape=sample_shape, **self.base_dist._call_kwds
+        )
 
     def _distribution_logpdf(
         self,
@@ -228,7 +230,7 @@ class NormalizingFlow(StandardizingMixin, GenerativeModel):
         inner = self._flow_distribution_for_context(context).logpdf(z)
         return inner - self._log_scale_correction()
 
-    def loss(self, rng, data, *args, context=None, **kwargs):
+    def loss(self, rng, data, *args, context=None, weights=None, **kwargs):
         """Negative mean log-likelihood training loss.
 
         With ``context``, each data row is scored against its own context row
@@ -236,9 +238,14 @@ class NormalizingFlow(StandardizingMixin, GenerativeModel):
         """
         del rng, args, kwargs
         if context is None:
-            return -jnp.mean(self._logpdf(data))
-        pair_logpdf = jax.vmap(lambda x, c: self._logpdf(x, context=c))
-        return -jnp.mean(pair_logpdf(data, context))
+            logpdf = self._logpdf(data)
+        else:
+            pair_logpdf = jax.vmap(lambda x, c: self._logpdf(x, context=c))
+            logpdf = pair_logpdf(data, context)
+        if weights is None:
+            return -jnp.mean(logpdf)
+        weights = jnp.asarray(weights)
+        return -jnp.sum(weights * logpdf) / jnp.sum(weights)
 
     def as_dist(
         self,

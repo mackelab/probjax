@@ -27,12 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Base classes: `rv_generic`, `rv_continuous`, `rv_discrete`, `rv_multivariate`, `rv_exponential_family`, `rv_spherical`
   - Continuous distributions: `norm`, `gamma`, `beta`, `uniform`, `expon`, `laplace`, `logistic`, `cauchy`, `chi2`, `t`, `pareto`, `skewnorm`, `truncnorm`, `gennorm`, `genpareto`, `vonmises`, `watson`, `bingham`, `wrapcauchy`, `dirichlet`, `multivariate_normal`
   - Discrete distributions: `bernoulli`, `binomial`, `categorical`, `poisson`, `geometric`, `dirac`, `empirical`
-  - Higher-order distributions: `transformed`, `mixture`, `independent`
+  - Higher-order distributions: `transformed`, `mixture`, `indep`
   - Bijective transforms for normalizing flows
 
 - Neural networks module:
-  - Architectures: `MLP`, `ResNet`, `Transformer`, `UNet`, `DeepSet`, `LRUModel`, `Sequential`
-  - Normalizing flows: `NormalizingFlow`, `AffineCouplingFlow`, `AdditiveCouplingFlow`, `NeuralSplineFlow`, `NeuralAutoregressiveFlow`, `GaussianizationFlow`, `LinearFlow`, `MAF`, `RealNVP`, `NSF`, `NAF`
+  - Architectures: `MLP`, `ResNet`, `Transformer`, `UNet`, `DeepSet`, `SSMModel`, `Sequential`
+  - Normalizing flows: `NormalizingFlow`, `AffineCouplingFlow`, `AdditiveCouplingFlow`, `NeuralSplineFlow`, `NeuralAutoregressiveFlow`, `GaussianizationFlow`, `LinearFlow`, `maf`, `realnvp`, `nsf`, `naf`
   - Diffusion models: `DiffusionDenoiser`, `EDM`, `VP`, `VE`, `MultinomialDiffusion`, `FlowMatcher`, `MeanFlowMatcher`
   - Layers: `MultiHeadAttention`, `MaskedLinear`, `ResnetBlock`, `ConvBlock`, `LRUCell`, `MambaCell`, and more
   - Loss functions for flow matching, score matching, and denoising
@@ -54,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Features
 - JAX-native implementation throughout
-- JIT-compatibility for all inference algorithms
+- JAX-native inference kernels and compiled runners
 - Support for both CPU and GPU (CUDA and Metal)
 - Type hints throughout
 - Comprehensive example notebooks

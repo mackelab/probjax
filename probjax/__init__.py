@@ -140,6 +140,7 @@ from probjax.nn import (
     RotaryPosEncode,
     Rotate,
     SSDCell,
+    SSMModel,
     Sequential,
     SpatialSelfAttention,
     Transformer,
@@ -268,6 +269,7 @@ __all__ = [
     "CouplingMLP",
     "CouplingTransformer",
     "LRUModel",
+    "SSMModel",
     # Neural networks - flows
     "NFlow",
     "NormalizingFlow",

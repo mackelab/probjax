@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Callable, Literal, Optional, Sequence
+from typing import Callable, Literal, Mapping, Optional, Sequence
 
 import flax.nnx as nnx
 import jax
@@ -9,6 +9,8 @@ from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.core.transformation import inverse_and_logabsdet
 from probjax.nn.layers.attention import flex_attention
 from probjax.nn.layers.encoding import PosEncode
+from probjax.nn.layers.ssm import LRUCell
+from probjax.nn.nets.ssm import SSMModel
 from probjax.nn.nets.simple import MaskedMLP
 from probjax.nn.nets.transformer import Transformer
 from probjax.nn.pallas_kernels import CausalMask
@@ -317,6 +319,152 @@ class AutoregressiveTransformer(nnx.Module):
 
     def inverse(self, Tx: jax.Array, context=None, k=None, v=None, **kwargs):
         return self.inverse_and_logdet(Tx, context, k, v, **kwargs)[0]
+
+
+class AutoregressiveSSM(nnx.Module):
+    """Autoregressive conditioner backed by a unidirectional recurrent model."""
+
+    def __init__(
+        self,
+        in_out_dim: int,
+        bijector_dim: int,
+        bijector: Callable,
+        rngs: nnx.Rngs,
+        *,
+        model: Optional[SSMModel] = None,
+        encoder: Optional[nnx.Module] = None,
+        decoder: Optional[nnx.Module] = None,
+        model_dim: int = 64,
+        num_layers: int = 4,
+        recurrent_cls: ModuleLikeType = LRUCell,
+        recurrent_kwargs: Optional[Mapping] = None,
+        context_dim: Optional[int] = None,
+        **kwargs,
+    ):
+        super().__init__()
+        self.in_out_dim = in_out_dim
+        self.bijector_dim = bijector_dim
+        self.bijector = bijector
+        self.bijector_inv = inverse_and_logabsdet(bijector, invertible_arg=1)
+
+        if model is None:
+            model = SSMModel(
+                input_dim=model_dim,
+                model_dim=model_dim,
+                output_dim=model_dim,
+                num_layers=num_layers,
+                bidirectional=False,
+                recurrent_cls=recurrent_cls,
+                recurrent_kwargs=recurrent_kwargs,
+                rngs=rngs,
+                **kwargs,
+            )
+        elif model.bidirectional:
+            raise ValueError("AutoregressiveSSM requires a unidirectional model")
+        self.model = model
+
+        self.start_token = nnx.Param(jnp.zeros((self.model.input_dim,)))
+        if encoder is None:
+            encoder = nnx.Linear(
+                in_out_dim, self.model.input_dim, rngs=rngs, use_bias=False
+            )
+        if decoder is None:
+            decoder = nnx.Linear(
+                self.model.output_dim,
+                bijector_dim,
+                rngs=rngs,
+                kernel_init=nnx.initializers.zeros,
+                use_bias=False,
+            )
+        self.encoder = encoder
+        self.decoder = decoder
+        self.context_proj = (
+            nnx.Linear(context_dim, self.model.input_dim, rngs=rngs, use_bias=False)
+            if context_dim is not None
+            else None
+        )
+
+    def predict_bij_params(
+        self,
+        x: jax.Array,
+        context=None,
+        *,
+        deterministic: bool | None = None,
+        rng: jax.Array | None = None,
+    ):
+        start_token = self.start_token.reshape((1,) * (x.ndim - 1) + (-1,))
+        start_token = jnp.broadcast_to(
+            start_token, x.shape[:-2] + (1, self.model.input_dim)
+        )
+        x = self.encoder(x)  # type: ignore
+        x = jnp.concatenate([start_token, x], axis=-2)
+        if context is not None:
+            if self.context_proj is None:
+                raise ValueError(
+                    "context was provided but context_dim is not configured"
+                )
+            x = x + self.context_proj(context)[..., None, :]  # type: ignore
+        h = self.model(x, deterministic=deterministic, rng=rng)[..., :-1, :]
+        return self.decoder(h)  # type: ignore
+
+    def __call__(
+        self,
+        x: jax.Array,
+        context=None,
+        *,
+        deterministic: bool | None = None,
+        rng: jax.Array | None = None,
+    ):
+        return autoregressive_transform(
+            x, self, context, deterministic=deterministic, rng=rng
+        )
+
+    def forward(
+        self,
+        x: jax.Array,
+        context=None,
+        *,
+        deterministic: bool | None = None,
+        rng: jax.Array | None = None,
+    ):
+        def scan_fn(carry, i):
+            x = carry
+            bij_params = self.predict_bij_params(
+                x, context, deterministic=deterministic, rng=rng
+            )
+            bij_params_i = jax.lax.dynamic_slice(
+                bij_params,
+                (0,) * (bij_params.ndim - 2) + (i, 0),
+                bij_params.shape[:-2] + (1, bij_params.shape[-1]),
+            )
+            bij_params_i = bij_params_i.reshape(bij_params_i.shape[:-2] + (-1,))
+            x_i = jax.lax.dynamic_slice(
+                x,
+                (0,) * (x.ndim - 2) + (i, 0),
+                x.shape[:-2] + (1, x.shape[-1]),
+            )
+            x_new_i = self.bijector(bij_params_i, x_i)
+            x = x.at[..., i, :].set(x_new_i[..., 0, :])
+            return x, None
+
+        Tx, _ = jax.lax.scan(scan_fn, x, jnp.arange(x.shape[-2]))
+        return Tx
+
+    def inverse_and_logdet(
+        self,
+        Tx: jax.Array,
+        context=None,
+        *,
+        deterministic: bool | None = None,
+        rng: jax.Array | None = None,
+    ):
+        bij_params = self.predict_bij_params(
+            Tx, context, deterministic=deterministic, rng=rng
+        )
+        return self.bijector_inv(bij_params, Tx)
+
+    def inverse(self, Tx: jax.Array, context=None, **kwargs):
+        return self.inverse_and_logdet(Tx, context, **kwargs)[0]
 
 
 @partial(custom_inverse)

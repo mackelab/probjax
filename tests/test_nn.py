@@ -14,6 +14,7 @@ from probjax.nn import (
     AdditiveCouplingFlow,
     AdditiveBinaryFuse,
     AffineAutoregressiveFlow,
+    AutoregressiveSSM,
     AutoregressiveTransformer,
     CouplingMLP,
     CouplingTransformer,
@@ -288,6 +289,55 @@ def test_autoregressive_transformer_kv_cache_matches_naive():
     assert jnp.allclose(y_naive, y_kv_cache, atol=1e-6, rtol=1e-6)
 
 
+def test_autoregressive_ssm_roundtrip():
+    def additive_bijector(params, value):
+        if params.ndim < value.ndim:
+            params = params[..., None, :]
+        return value + params
+
+    model = AutoregressiveSSM(
+        in_out_dim=1,
+        bijector_dim=1,
+        bijector=additive_bijector,
+        model_dim=8,
+        num_layers=1,
+        rngs=nnx.Rngs(0),
+    )
+    model.decoder.kernel[...] = jnp.ones_like(model.decoder.kernel[...])
+    x = jax.random.normal(jax.random.key(1), (2, 6, 1))
+
+    y = model(x)
+    x_inv = model.inverse(y)
+
+    assert y.shape == x.shape
+    assert jnp.allclose(x, x_inv, atol=1e-5, rtol=1e-5)
+
+
+def test_autoregressive_ssm_is_causal():
+    def additive_bijector(params, value):
+        if params.ndim < value.ndim:
+            params = params[..., None, :]
+        return value + params
+
+    model = AutoregressiveSSM(
+        in_out_dim=1,
+        bijector_dim=1,
+        bijector=additive_bijector,
+        model_dim=8,
+        num_layers=2,
+        rngs=nnx.Rngs(0),
+    )
+    model.decoder.kernel[...] = jnp.ones_like(model.decoder.kernel[...])
+    x = jax.random.normal(jax.random.key(1), (2, 6, 1))
+    changed = x.at[..., 3:, :].add(10.0)
+
+    params = model.predict_bij_params(x)
+    changed_params = model.predict_bij_params(changed)
+
+    assert jnp.allclose(params[..., :4, :], changed_params[..., :4, :])
+    assert not jnp.allclose(params[..., 4:, :], changed_params[..., 4:, :])
+
+
 def test_gaussian_fourier_embedding(gaussian_fourier_embedding, batch_shape):
     in_dim, out_dim, model = gaussian_fourier_embedding
     x = jnp.ones(batch_shape + (in_dim,))
@@ -356,8 +406,8 @@ def test_transformer_with_context_and_cross_attention(
     _, _ = jax.tree_util.tree_flatten(model)
 
 
-def test_lru(lru, seq_len):
-    in_dim, out_dim, model = lru
+def test_ssm(ssm, seq_len):
+    in_dim, out_dim, model = ssm
     batch_shape = ()  # Needs vmap
     x = jnp.ones(batch_shape + (seq_len, in_dim))
     y = model(x)

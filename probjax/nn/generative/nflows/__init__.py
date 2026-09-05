@@ -23,6 +23,7 @@ The parameter-producing networks live in
 
 from probjax.nn.generative.nflows.autoregressive import (
     AutoregressiveMLP,
+    AutoregressiveSSM,
     AutoregressiveTransformer,
 )
 from probjax.nn.generative.nflows.bijective import (
@@ -54,6 +55,7 @@ from probjax.nn.generative.nflows.config import (
     RationalQuadraticSplineConfig,
     RotationMixingConfig,
     ShiftBijectorConfig,
+    SSMConditionerConfig,
     SumOfSquaresBijectorConfig,
     TransformerConditionerConfig,
     UMNNBijectorConfig,
@@ -94,6 +96,7 @@ __all__ = [
     "Rotate",
     # parameter-producing networks
     "AutoregressiveMLP",
+    "AutoregressiveSSM",
     "AutoregressiveTransformer",
     "CouplingMLP",
     "CouplingTransformer",
@@ -115,6 +118,7 @@ __all__ = [
     "UMNNBijectorConfig",
     # conditioner configs
     "MLPConditionerConfig",
+    "SSMConditionerConfig",
     "TransformerConditionerConfig",
     # mixing configs
     "FlipMixingConfig",

@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.nn.layers.lru import LRUCell
+from probjax.nn.layers.ssm import LRUCell
 from probjax.nn.nets.simple import MLP
 
 
@@ -18,10 +18,10 @@ from probjax.utils.typing import (
 )
 
 
-class LRUModel(nnx.Module):
-    """Stacked LRU-style sequence model with optional bidirectionality.
+class SSMModel(nnx.Module):
+    """Stacked state-space sequence model with optional bidirectionality.
 
-    - Stacks recurrent cells (default: LRUCell) and MLP residual blocks.
+    - Stacks SSM cells (default: LRUCell) and MLP residual blocks.
     - Pre-norm architecture: each block is preceded by LayerNorm.
     - Optional alternating forward/backward passes for bidirectional context.
 
@@ -39,7 +39,7 @@ class LRUModel(nnx.Module):
     input_dim: int  # Input dimension
     model_dim: int  # Model hidden dimension
     output_dim: int  # Output dimension
-    num_layers: int  # Number of LRU layers
+    num_layers: int  # Number of SSM layers
     bidirectional: bool  # Whether to use bidirectional processing
     dropout_rate: float | None  # Dropout rate
 
@@ -54,7 +54,7 @@ class LRUModel(nnx.Module):
         dropout_rate: Optional[float] = None,
         mlp_widening_factor: int = 4,
         mlp_num_hidden_layers: int = 1,
-        skip_connection_lru: bool = True,
+        skip_connection_ssm: bool = True,
         skip_connection_mlp: bool = True,
         activation: Callable = jax.nn.gelu,
         norm_cls: ModuleLikeType = nnx.LayerNorm,
@@ -69,13 +69,13 @@ class LRUModel(nnx.Module):
         recurrent_kwargs: Optional[Mapping] = None,
         rngs: nnx.Rngs,
     ):
-        """Initialize an LRU model.
+        """Initialize an SSM model.
 
         Args:
             input_dim: Input dimension.
             model_dim: Model hidden dimension.
             output_dim: Output dimension.
-            num_layers: Number of LRU layers to stack.
+            num_layers: Number of SSM layers to stack.
             bidirectional: Whether to use bidirectional processing by alternating
                 forward and backward passes. Defaults to True.
             dropout_rate: Dropout rate. If None, no dropout is applied.
@@ -119,7 +119,7 @@ class LRUModel(nnx.Module):
         self.dropout_rate = dropout_rate
         self.recurrent_cls = recurrent_cls
         self.recurrent_kwargs = dict(recurrent_kwargs or {})
-        self.skip_connection_lru = skip_connection_lru
+        self.skip_connection_ssm = skip_connection_ssm
         self.skip_connection_mlp = skip_connection_mlp
 
         # Precision and dtype settings
@@ -146,8 +146,8 @@ class LRUModel(nnx.Module):
 
         # Norm sharding kwargs (default: replicate norm params).
 
-        # Layer norms for LRU and MLP blocks
-        self.layer_norms_lru = nnx.List([
+        # Layer norms for SSM and MLP blocks
+        self.layer_norms_ssm = nnx.List([
             norm_cls(model_dim, rngs=rngs) for _ in range(num_layers)
         ])
         self.layer_norms_mlp = nnx.List([
@@ -190,7 +190,7 @@ class LRUModel(nnx.Module):
         ])
         self.block_activation = activation
 
-        # MLP layers for processing between LRU blocks
+        # MLP layers for processing between SSM blocks
         mlp_dims = (
             [model_dim]
             + [mlp_widening_factor * model_dim] * mlp_num_hidden_layers
@@ -214,7 +214,7 @@ class LRUModel(nnx.Module):
         deterministic: bool | None = None,
         rng: jax.Array | None = None,
     ) -> Array:
-        """Forward pass through the LRU model.
+        """Forward pass through the SSM model.
 
         Args:
             inputs: Input array of shape [..., seq_len, input_dim].
@@ -231,17 +231,17 @@ class LRUModel(nnx.Module):
         h = self.in_layer(x)
 
         for i, mlp_layer in enumerate(self.mlp_layers):
-            # Apply layer norm before LRU layer
-            h_normed = self.layer_norms_lru[i](h)
+            # Apply layer norm before SSM layer
+            h_normed = self.layer_norms_ssm[i](h)
 
-            # Apply LRU layer, optionally with bidirectional processing
+            # Apply SSM layer, optionally with bidirectional processing
             if self.bidirectional:
                 # Alternate between forward and backward processing
                 if i % 2 == 0:
                     h_cell_in = self.block_norms[i](h_normed)
                     h_cell = self.recurrent_layers[i](h_cell_in, rng=rng)
                 else:
-                    # Reverse sequence, apply LRU, then reverse back
+                    # Reverse sequence, apply the SSM, then reverse back
                     h_reversed = h_normed[..., ::-1, :]
                     h_cell_in = self.block_norms[i](h_reversed)
                     h_cell = self.recurrent_layers[i](h_cell_in, rng=rng)
@@ -250,7 +250,7 @@ class LRUModel(nnx.Module):
                 h_cell_in = self.block_norms[i](h_normed)
                 h_cell = self.recurrent_layers[i](h_cell_in, rng=rng)
 
-            # Residual connection for LRU
+            # Residual connection for the SSM
             # GLU head: activation + optional dropout + gated linear
             x = self.block_activation(h_cell)
             if self.block_dropout1 is not None:
@@ -258,7 +258,7 @@ class LRUModel(nnx.Module):
             x = self.block_out1[i](x) * jax.nn.sigmoid(self.block_out2[i](x))
             if self.block_dropout2 is not None:
                 x = self.block_dropout2[i](x, deterministic=deterministic, rngs=rng)
-            h = h + x if self.skip_connection_lru else x
+            h = h + x if self.skip_connection_ssm else x
 
             # Apply layer norm before MLP layer
             h_normed = self.layer_norms_mlp[i](h)
@@ -273,3 +273,7 @@ class LRUModel(nnx.Module):
         h = self.out_layer_norm(h)
         h = self.out_layer(h)
         return h.reshape(shape[:-2] + (shape[-2], self.output_dim))
+
+
+# Compatibility alias for the previous public architecture name.
+LRUModel = SSMModel

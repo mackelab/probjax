@@ -540,6 +540,7 @@ class FitMixin:
         data: ArrayLike,
         *,
         context: Optional[ArrayLike] = None,
+        weights: Optional[ArrayLike] = None,
         **fit_kwargs,
     ) -> Array:
         """Train this model in place; returns per-step losses."""
@@ -549,6 +550,11 @@ class FitMixin:
         loss_fn = _pure_loss_fn(self)
         params = nnx.state(self, nnx.Param)
         if is_batch_stream(data):
+            if weights is not None:
+                raise ValueError(
+                    "weights cannot be passed alongside an iterable data source; "
+                    "include them in each batch dict instead."
+                )
             if context is not None:
                 raise ValueError(
                     "context cannot be passed alongside an iterable data "
@@ -557,11 +563,11 @@ class FitMixin:
                 )
             batch = _BatchAdapter(data)
         else:
-            batch = (
-                {"data": data}
-                if context is None
-                else {"data": data, "context": context}
-            )
+            batch = {"data": data}
+            if context is not None:
+                batch["context"] = context
+            if weights is not None:
+                batch["weights"] = weights
         params, losses = fit(loss_fn, params, rng, batch, **fit_kwargs)
         nnx.update(self, params)
         return losses

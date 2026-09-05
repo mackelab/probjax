@@ -1897,6 +1897,108 @@ class DenseBias(AttentionBias):
         return DenseBias(bias)
 
 
+@jax.tree_util.register_pytree_node_class
+class LowRankBias(AttentionBias):
+    """Factored positional logit bias ``scale * query_factors @ key_factors.T``.
+
+    Factors have shape ``[H|1, max_length, rank]``. The head dimension may be
+    shared by setting it to one. ``flex_attention`` recognizes this bias and
+    folds the factors into Q/K, avoiding a dense ``[H, Q, K]`` bias tensor.
+    """
+
+    def __init__(
+        self,
+        query_factors: Array,
+        key_factors: Array,
+        *,
+        scale: float = 1.0,
+    ):
+        query_factors = jnp.asarray(query_factors)
+        key_factors = jnp.asarray(key_factors)
+        if query_factors.ndim == 2:
+            query_factors = query_factors[None]
+        if key_factors.ndim == 2:
+            key_factors = key_factors[None]
+        if query_factors.ndim != 3 or key_factors.ndim != 3:
+            raise ValueError("factors must have shape [H|1, length, rank]")
+        if query_factors.shape[-1] != key_factors.shape[-1]:
+            raise ValueError("query and key factors must have the same rank")
+        if query_factors.shape[0] != key_factors.shape[0]:
+            raise ValueError("query and key factors must have the same head count")
+        if scale < 0:
+            raise ValueError("scale must be non-negative")
+        self.query_factors = query_factors
+        self.key_factors = key_factors
+        self.scale = float(scale)
+
+    @property
+    def rank(self) -> int:
+        return self.query_factors.shape[-1]
+
+    def factors(
+        self,
+        q_len: int,
+        kv_len: int,
+        num_heads: int,
+        *,
+        dtype=None,
+    ) -> tuple[Array, Array]:
+        """Return factors in attention layout ``[1, length, heads, rank]``."""
+        if q_len > self.query_factors.shape[1]:
+            raise ValueError(
+                f"q_len={q_len} exceeds maximum {self.query_factors.shape[1]}"
+            )
+        if kv_len > self.key_factors.shape[1]:
+            raise ValueError(
+                f"kv_len={kv_len} exceeds maximum {self.key_factors.shape[1]}"
+            )
+        factor_heads = self.query_factors.shape[0]
+        if factor_heads not in (1, num_heads):
+            raise ValueError(
+                f"factor head count {factor_heads} cannot broadcast to {num_heads}"
+            )
+        query_factors = self.query_factors[:, :q_len]
+        key_factors = self.key_factors[:, :kv_len]
+        if factor_heads == 1:
+            query_factors = jnp.broadcast_to(
+                query_factors, (num_heads, q_len, self.rank)
+            )
+            key_factors = jnp.broadcast_to(key_factors, (num_heads, kv_len, self.rank))
+        query_factors = jnp.swapaxes(query_factors, 0, 1)[None]
+        key_factors = jnp.swapaxes(key_factors, 0, 1)[None]
+        if dtype is not None:
+            query_factors = query_factors.astype(dtype)
+            key_factors = key_factors.astype(dtype)
+        return query_factors, key_factors
+
+    def __call__(
+        self,
+        scores: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        data: Optional[Array] = None,
+    ) -> Array:
+        del data
+        head = 0 if self.query_factors.shape[0] == 1 else h_idx
+        query_factors = jnp.take(self.query_factors, head, axis=0)
+        key_factors = jnp.take(self.key_factors, head, axis=0)
+        query_factors = jnp.take(query_factors, q_idx, axis=0)
+        key_factors = jnp.take(key_factors, k_idx, axis=0)
+        return scores + self.scale * (query_factors @ key_factors.T)
+
+    def tree_flatten(self):
+        return (
+            (self.query_factors, self.key_factors),
+            {"scale": self.scale},
+        )
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        query_factors, key_factors = children
+        return LowRankBias(query_factors, key_factors, scale=aux["scale"])
+
+
 # ---------------------- Class-based Stateless Biases -------------------------
 
 
@@ -1955,6 +2057,103 @@ class CausalAlibiBias(AttentionBias):
     @classmethod
     def tree_unflatten(cls, aux, children):
         return CausalAlibiBias()
+
+
+@jax.tree_util.register_pytree_node_class
+class LearnedAlibiBias(AttentionBias):
+    """Causal ALiBi with externally owned per-head slopes.
+
+    This bias assumes causal masking, where ``q_position >= k_position``. In
+    ``flex_attention`` it is represented as a rank-two Q/K augmentation so
+    gradients flow to ``slopes`` without materializing a dense bias tensor.
+    """
+
+    def __init__(
+        self,
+        slopes: Array,
+        *,
+        query_offset: int = 0,
+        key_offset: int = 0,
+    ):
+        slopes = jnp.asarray(slopes)
+        if slopes.ndim == 0:
+            slopes = slopes[None]
+        if slopes.ndim != 1:
+            raise ValueError("slopes must have shape [H|1]")
+        self.slopes = slopes
+        self.query_offset = int(query_offset)
+        self.key_offset = int(key_offset)
+
+    @property
+    def rank(self) -> int:
+        return 2
+
+    @property
+    def scale(self) -> float:
+        return 1.0
+
+    def factors(
+        self,
+        q_len: int,
+        kv_len: int,
+        num_heads: int,
+        *,
+        dtype=None,
+    ) -> tuple[Array, Array]:
+        if self.slopes.shape[0] not in (1, num_heads):
+            raise ValueError(
+                f"slope head count {self.slopes.shape[0]} cannot broadcast to {num_heads}"
+            )
+        slopes = self.slopes
+        if slopes.shape[0] == 1:
+            slopes = jnp.broadcast_to(slopes, (num_heads,))
+        q_position = jnp.arange(q_len, dtype=slopes.dtype) + self.query_offset
+        k_position = jnp.arange(kv_len, dtype=slopes.dtype) + self.key_offset
+        ones_q = jnp.ones((num_heads, q_len), dtype=slopes.dtype)
+        ones_k = jnp.ones((num_heads, kv_len), dtype=slopes.dtype)
+        query_factors = jnp.stack(
+            (-slopes[:, None] * q_position[None], ones_q), axis=-1
+        )
+        key_factors = jnp.stack((ones_k, slopes[:, None] * k_position[None]), axis=-1)
+        query_factors = jnp.swapaxes(query_factors, 0, 1)[None]
+        key_factors = jnp.swapaxes(key_factors, 0, 1)[None]
+        if dtype is not None:
+            query_factors = query_factors.astype(dtype)
+            key_factors = key_factors.astype(dtype)
+        return query_factors, key_factors
+
+    def __call__(
+        self,
+        scores: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        data: Optional[Array] = None,
+    ) -> Array:
+        del data
+        head = 0 if self.slopes.shape[0] == 1 else h_idx
+        slope = jnp.take(self.slopes, head, axis=0)
+        q_position = q_idx + self.query_offset
+        k_position = k_idx + self.key_offset
+        return scores - slope * (q_position[:, None] - k_position[None, :])
+
+    def tree_flatten(self):
+        return (
+            (self.slopes,),
+            {
+                "query_offset": self.query_offset,
+                "key_offset": self.key_offset,
+            },
+        )
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        (slopes,) = children
+        return LearnedAlibiBias(
+            slopes,
+            query_offset=aux["query_offset"],
+            key_offset=aux["key_offset"],
+        )
 
 
 @jax.tree_util.register_pytree_node_class
@@ -2098,8 +2297,8 @@ class T5RelativePositionBias(AttentionBias):
             max_distance=self.max_distance,
             bidirectional=self.bidirectional,
         )
-        hsel = 0 if self.bias_table.shape[0] == 1 else int(h_idx)
-        add = self.bias_table[hsel][buckets]
+        hsel = 0 if self.bias_table.shape[0] == 1 else h_idx
+        add = jnp.take(self.bias_table, hsel, axis=0)[buckets]
         return scores + add
 
     def tree_flatten(self):
@@ -2153,8 +2352,8 @@ class LearnedRelativePositionBias(AttentionBias):
         del data
         rel = k_idx[None, :] - q_idx[:, None]
         rel = jnp.clip(rel, -self.max_distance, self.max_distance) + self.max_distance
-        hsel = 0 if self.table.shape[0] == 1 else int(h_idx)
-        add = self.table[hsel][rel]
+        hsel = 0 if self.table.shape[0] == 1 else h_idx
+        add = jnp.take(self.table, hsel, axis=0)[rel]
         return scores + add
 
     def tree_flatten(self):
@@ -2229,8 +2428,9 @@ class PerHeadScaleBias(AttentionBias):
         data: Optional[Array] = None,
     ) -> Array:
         del q_idx, k_idx, data
-        hsel = 0 if self.scales.shape[0] == 1 else int(h_idx)
-        return scores * jnp.asarray(self.scales[hsel], dtype=scores.dtype)
+        hsel = 0 if self.scales.shape[0] == 1 else h_idx
+        scale = jnp.take(self.scales, hsel, axis=0)
+        return scores * jnp.asarray(scale, dtype=scores.dtype)
 
     def grad(
         self,
@@ -2241,8 +2441,8 @@ class PerHeadScaleBias(AttentionBias):
         data: Optional[Array] = None,
     ) -> Array:
         del scores, q_idx, k_idx, data
-        hsel = 0 if self.scales.shape[0] == 1 else int(h_idx)
-        return jnp.asarray(self.scales[hsel], dtype=jnp.float32)
+        hsel = 0 if self.scales.shape[0] == 1 else h_idx
+        return jnp.asarray(jnp.take(self.scales, hsel, axis=0), dtype=jnp.float32)
 
     def tree_flatten(self):
         return ((self.scales,), {})

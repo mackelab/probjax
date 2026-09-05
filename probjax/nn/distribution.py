@@ -42,11 +42,15 @@ class _ExportedLogPDF(NNXExportedFunction):
         self.context_spec = context_spec
 
     def __call__(self, value, *, context=None):
+        _, state = self.model_and_state()
+        return self.with_state(state, value, context=context)
+
+    def with_state(self, state, value, *, context=None):
+        """Evaluate the log density using an explicit model state."""
         batch_shape, flat_value = flatten_spec_batch(value, self.spec, name="value")
         flat_context = flatten_broadcast_batch(
             context, batch_shape, self.context_spec, name="context"
         )
-        _, state = self.model_and_state()
         call_args = (state, flat_value)
         if flat_context is not None:
             call_args += (flat_context,)
@@ -175,6 +179,42 @@ class _ModelDistribution(DistributionAPI):
             else:
                 raise ValueError(f"Unknown distribution operation {operation!r}.")
         return self
+
+    def model_state(self):
+        """Return the current model state for explicit-state evaluation."""
+        operation = self._get_logpdf() if self.has_logpdf else self._get_sampler()
+        _, state = operation.model_and_state()
+        return jax.tree.map(lambda value: value.copy(), state)
+
+    def sample_with_state(
+        self,
+        state,
+        rng: RngKey,
+        shape: tuple[int, ...] = (),
+        *,
+        context: PyTree[Array] | None = None,
+    ) -> PyTree[Array]:
+        """Draw samples using an explicit model state."""
+        return self._get_sampler().sample_with_state(
+            state,
+            rng,
+            tuple(shape),
+            context=self._resolve_context(context),
+        )
+
+    def logpdf_with_state(
+        self,
+        state,
+        value: PyTree[Array],
+        *,
+        context: PyTree[Array] | None = None,
+    ) -> Array:
+        """Evaluate the log density using an explicit model state."""
+        return self._get_logpdf().with_state(
+            state,
+            value,
+            context=self._resolve_context(context),
+        )
 
     def sample(
         self,

@@ -104,11 +104,22 @@ class _ExportedSampler(NNXExportedFunction):
         context: PyTree[Array] | None = None,
     ) -> PyTree[Array]:
         """Generate from initial noise with arbitrary leading batch dimensions."""
+        _, state = self.model_and_state()
+        return self.from_noise_with_state(state, eps, rng=rng, context=context)
+
+    def from_noise_with_state(
+        self,
+        state,
+        eps: PyTree[Array],
+        *,
+        rng: RngKey | None = None,
+        context: PyTree[Array] | None = None,
+    ) -> PyTree[Array]:
+        """Generate from noise using an explicit model state."""
         batch_shape, flat_eps = flatten_spec_batch(eps, self.spec, name="initial")
         flat_context = flatten_broadcast_batch(
             context, batch_shape, self.context_spec, name="context"
         )
-        _, state = self.model_and_state()
         if self.stochastic:
             if rng is None:
                 raise ValueError("rng is required for stochastic sampling.")
@@ -138,6 +149,26 @@ class _ExportedSampler(NNXExportedFunction):
             noise_key, sample_key = rng, None
         eps = model._sample_base(noise_key, sample_shape, self.spec)
         return self.from_noise(eps, rng=sample_key, context=context)
+
+    def sample_with_state(
+        self,
+        state,
+        rng: RngKey,
+        sample_shape: tuple[int, ...] = (),
+        *,
+        context: PyTree[Array] | None = None,
+    ) -> PyTree[Array]:
+        """Draw samples using an explicit model state."""
+        model = self._model_ref()
+        if model is None:
+            raise RuntimeError("The model used to build this export no longer exists.")
+        sample_shape = tuple(sample_shape)
+        if self.stochastic:
+            noise_key, sample_key = jax.random.split(rng)
+        else:
+            noise_key, sample_key = rng, None
+        eps = model._sample_base(noise_key, sample_shape, self.spec)
+        return self.from_noise_with_state(state, eps, rng=sample_key, context=context)
 
 
 def make_map_sample_fn(

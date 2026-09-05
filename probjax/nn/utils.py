@@ -6,10 +6,8 @@ import flax.nnx as nnx
 import jax.numpy as jnp
 from jax import lax
 from jax.ops import segment_max  # segment reduction (available in JAX)
-from ott.geometry import costs, pointcloud
-from ott.problems.linear import linear_problem
-from ott.solvers.linear import sinkhorn
 
+from probjax.utils.optional import require_ott
 from probjax.utils.typing import Array, ArrayLike, ModuleLikeType
 
 
@@ -266,7 +264,7 @@ def ot_copula(
     min_iterations: int = 0,
     max_iterations: int = 100,
 ):
-    # (These objects are assumed to be defined/imported elsewhere.)
+    costs, pointcloud, _, linear_problem, sinkhorn = require_ott()
     geom = pointcloud.PointCloud(x, y, cost_fn=costs.PNormP(p), epsilon=epsilon)
     ot_prob = linear_problem.LinearProblem(geom)
     solver = sinkhorn.Sinkhorn(

@@ -7,9 +7,6 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 from jax.scipy.optimize import minimize
-from ott.geometry import costs, pointcloud
-from ott.problems.linear import linear_problem
-from ott.solvers.linear import sinkhorn
 
 from probjax.stats import (
     # Discrete distributions
@@ -19,6 +16,7 @@ from probjax.stats import (
     rv_generic,
 )
 from probjax.stats.divergences.base import divergence, register_divergence
+from probjax.utils.optional import require_ott
 
 __all__ = [
     "wasserstein_distance",
@@ -123,6 +121,7 @@ def _1d_wasserstein_without_cdf(samples_p, samples_q, order=1):
 
 @partial(jax.jit, static_argnums=(2,))
 def _ot_cost(x, y, order: int = 2, epsilon: float = 0.1):
+    costs, pointcloud, _, linear_problem, sinkhorn = require_ott()
     geom = pointcloud.PointCloud(x, y, cost_fn=costs.PNormP(order), epsilon=epsilon)
     ot_prob = linear_problem.LinearProblem(geom)
     solver = sinkhorn.Sinkhorn()

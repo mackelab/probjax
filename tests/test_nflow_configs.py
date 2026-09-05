@@ -33,6 +33,7 @@ from probjax.nn.generative.nflows import (
     RationalQuadraticSplineConfig,
     RotationMixingConfig,
     ShiftBijectorConfig,
+    SSMConditionerConfig,
     SumOfSquaresBijectorConfig,
     TransformerConditionerConfig,
     UMNNBijectorConfig,
@@ -311,7 +312,12 @@ def test_default_params_init_is_identity(cfg):
 
 
 @pytest.mark.parametrize(
-    "cond", [MLPConditionerConfig(hidden_dims=(16,)), TransformerConditionerConfig(model_dim=8, num_heads=2, num_layers=1)]
+    "cond",
+    [
+        MLPConditionerConfig(hidden_dims=(16,)),
+        SSMConditionerConfig(model_dim=8, num_layers=1),
+        TransformerConditionerConfig(model_dim=8, num_heads=2, num_layers=1),
+    ],
 )
 def test_conditioner_satisfies_protocol(cond):
     assert isinstance(cond, ConditionerConfigProtocol)
@@ -355,6 +361,24 @@ def test_autoregressive_conditioner_width_matches_params_dim(num_bins):
     )
     params = net.predict_bij_params(jnp.zeros((input_dim,)))
     assert params.shape == (input_dim * bij.params_dim(),)
+
+
+def test_ssm_conditioner_builds_autoregressive_transform():
+    bij = ShiftBijectorConfig()
+    net = SSMConditionerConfig(model_dim=8, num_layers=1).build_autoregressive(
+        5,
+        bij.params_dim(),
+        bij,
+        context_features=None,
+        output_order="grouped",
+        rngs=nnx.Rngs(0),
+    )
+    x = jnp.arange(5, dtype=jnp.float32)
+
+    y = net(x)
+
+    assert y.shape == x.shape
+    assert jnp.allclose(y, x)
 
 
 @pytest.mark.parametrize(
@@ -443,6 +467,27 @@ def test_nflow_builds_and_round_trips(cfg_cls):
     samples = flow.as_dist().rvs(jax.random.PRNGKey(1), (16,))
     assert samples.shape == (16, input_dim)
     assert jnp.all(jnp.isfinite(flow.as_dist().logpdf(samples)))
+
+
+def test_ssm_autoregressive_flow_samples_and_evaluates_logpdf():
+    cfg = AutoregressiveNFlowConfig(
+        input_dim=4,
+        num_transforms=2,
+        conditioner=SSMConditionerConfig(model_dim=8, num_layers=1),
+    )
+    flow = NFlow(cfg, nnx.Rngs(0))
+    x = jax.random.normal(jax.random.PRNGKey(0), (8, cfg.input_dim))
+
+    assert jnp.isfinite(flow.loss(None, x))
+
+    distribution = flow.as_dist()
+    samples = distribution.rvs(jax.random.PRNGKey(1), (16,))
+    logpdf = distribution.logpdf(samples)
+
+    assert samples.shape == (16, cfg.input_dim)
+    assert logpdf.shape == (16,)
+    assert jnp.all(jnp.isfinite(samples))
+    assert jnp.all(jnp.isfinite(logpdf))
 
 
 def test_mixing_is_interleaved_not_appended():
