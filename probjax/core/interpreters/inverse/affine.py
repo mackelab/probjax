@@ -94,7 +94,11 @@ def is_affine_in(jaxpr: Jaxpr, target_vars: Sequence[Var]) -> bool:
             continue
         name = eqn.primitive.name
         if name in _AFFINE_PRIMITIVES:
-            pass
+            # inverse(f)(y) traces f with y's shape. A dimensionality-reducing
+            # sum therefore appears as a scalar no-op and must not be mistaken
+            # for an invertible identity map.
+            if name == "reduce_sum" and not eqn.params["axes"]:
+                return False
         elif name in _BILINEAR_PRIMITIVES:
             if len(touching) > 1:
                 return False  # e.g. x * x
