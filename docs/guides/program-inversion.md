@@ -29,24 +29,56 @@ because most of them fail **silently, by returning NaN**:
 
 | Pattern | Result |
 | --- | --- |
-| A variable used twice — `3 * x - x`, `exp(x) * exp(x)`, a residual `x + f(x)` | `nan` |
+| A tree of operations — each value used once | works |
+| `lax.scan` with an invertible carry, `lax.cond` | works |
+| A variable used twice, **affinely** — `3 * x - x`, `A @ x + b`, `sum(x) - x` | works, by linear solve |
+| A variable used twice, **nonlinearly** — `x * x`, a residual `x + f(x)` | `nan` |
 | `lax.fori_loop`, or `lax.scan` carrying anything not itself invertible | `nan` |
 | `inverse(inverse(f))` | `nan` |
 | `lax.while_loop` | raises |
-| `lax.scan` with an invertible carry, `lax.cond` | works |
 
-Each of the NaN cases is invertible in principle; recovering `x` from
-`3 * x - x` just means solving an equation rather than applying rules backwards.
-Check `jnp.isfinite` on the result if you are inverting something you have not
-inverted before.
+A variable used twice is what breaks local propagation: in `3 * x - x` the
+subtraction has two unknown operands, and the bivariate rules need exactly one.
+When the stalled program is affine in the target the inverse is a linear solve,
+so that case is handled automatically:
+
+```python
+import jax.numpy as jnp
+from probjax.core import inverse, inverse_and_logabsdet
+
+x = inverse(lambda t: 3.0 * t - t)(jnp.array([4.0, 6.0]))
+assert jnp.allclose(x, jnp.array([2.0, 3.0]))
+
+# including coupling between components, and the log-determinant
+x, log_det = inverse_and_logabsdet(lambda t: jnp.sum(t) * jnp.ones(2) - t)(
+    jnp.array([1.0, 2.0])
+)
+assert jnp.allclose(x, jnp.array([2.0, 1.0]))
+```
+
+Affinity is decided from the jaxpr rather than sampled, so it is a proof: a
+nonlinear fan-out cannot slip through by happening to look linear at a few
+points.
 
 ```python
 import jax.numpy as jnp
 from probjax.core import inverse
 
-fanned_out = inverse(lambda x: 3.0 * x - x)(jnp.asarray(4.0))
-assert jnp.isnan(fanned_out)          # invertible in principle, unsupported here
+assert jnp.isnan(inverse(lambda t: t + jnp.tanh(t))(jnp.asarray(1.0)))
 ```
+
+A residual *is* invertible when its branch is a contraction — by fixed-point
+iteration, `x <- y - f(x)` — but nothing in a jaxpr states a Lipschitz bound, so
+that guarantee has to come from you. Register it with `custom_inverse` below.
+
+Two caveats on the affine path. It materialises the Jacobian, so it costs
+O(n²) in the target's size — around 2 ms at n=512, and unsuitable for very large
+inputs, where a hand-written `custom_inverse` is better. And it runs only after
+propagation fails, so ordinary inverses are untouched: `2 * x + 1` still goes
+through the rules and emits just a `sub` and a `div`.
+
+Check `jnp.isfinite` on the result if you are inverting something you have not
+inverted before.
 
 ## Guards: when an inverse only exists for some values
 

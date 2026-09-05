@@ -21,6 +21,7 @@ from probjax.core.interpreters import (
     maybe_inverse_custom_inverse,
     trace_state_reducer,
 )
+from probjax.core.interpreters.inverse.affine import solve_affine_inverse
 from probjax.core.jaxpr_propagation import interpret, propagate
 from probjax.core.jaxpr_propagation.utils import KnownessLevel
 from probjax.core.registry import invalid_inverse_value
@@ -133,6 +134,25 @@ def _materialize_inverse_targets(values, target_vars, env):
             )
         )
     return materialized, complete
+
+
+def _affine_fallback(jaxpr, known_invars, args_for_propagate, target_invars):
+    """Try a linear solve where equation-by-equation propagation gave up.
+
+    Only reached when propagation could not reconstruct the target, so this can
+    never change an answer the interpreter already produced -- it replaces NaN
+    with a value, or returns None and leaves the NaN in place.
+    """
+    num_outputs = len(jaxpr.jaxpr.outvars)
+    known_values = args_for_propagate[: len(known_invars)]
+    output_values = args_for_propagate[len(args_for_propagate) - num_outputs :]
+    return solve_affine_inverse(
+        jaxpr.jaxpr,
+        jaxpr.consts,
+        target_invars,
+        dict(zip(known_invars, known_values, strict=False)),
+        output_values,
+    )
 
 
 def _leaf_signature(leaf):
@@ -610,13 +630,22 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
 
     Note:
         **A failed inversion returns NaN, not an error.** The interpreter works
-        one equation at a time, so it inverts a *tree* of operations; it is not
-        a solver. These are silently unsupported and produce NaN:
+        one equation at a time, so it inverts a *tree* of operations; a value
+        used twice stalls it, because the bivariate rules need exactly one
+        unknown operand.
 
-        * any value used more than once -- ``3 * x - x``, ``exp(x) * exp(x)``,
-          or a residual connection ``x + f(x)``. Each is invertible
-          mathematically, but recovering ``x`` means solving an equation rather
-          than applying rules backwards.
+        When the stalled program is **affine** in the target -- ``3 * x - x``,
+        ``A @ x + b``, ``sum(x) - x`` -- the inverse is recovered by a linear
+        solve, decided from the jaxpr structure rather than sampled. That path
+        materialises a Jacobian, so it costs O(n^2) in the target's size, and it
+        runs only after ordinary propagation has failed.
+
+        These remain silently unsupported and produce NaN:
+
+        * a value used more than once **nonlinearly** -- ``x * x``, or a
+          residual ``x + f(x)``. A residual is invertible by fixed-point
+          iteration when its branch is a contraction, but a jaxpr carries no
+          Lipschitz bound, so register it with :class:`custom_inverse` instead.
         * ``lax.fori_loop``, and any ``lax.scan`` carrying something that is not
           itself invertible (a counter, a running sum). Plain ``scan`` and
           ``lax.cond`` do work.
@@ -668,7 +697,13 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
                 return_env=True,
             ),
         )
-        out, _ = _materialize_inverse_targets(out, target_invars, env)
+        out, complete = _materialize_inverse_targets(out, target_invars, env)
+        if not complete:
+            solved = _affine_fallback(
+                jaxpr, known_invars, args_for_propagate, target_invars
+            )
+            if solved is not None:
+                out = solved[0]
 
         return jax.tree_util.tree_unflatten(target_tree, out)
 
@@ -772,7 +807,11 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
 
         log_det = _sum_log_dets_for_vars(log_dets, outvars)
         if not complete:
-            log_det = jnp.asarray(jnp.nan)
+            solved = _affine_fallback(jaxpr, known_invars, args_for_propagate, outvars)
+            if solved is not None:
+                out, log_det = solved
+            else:
+                log_det = jnp.asarray(jnp.nan)
         return jax.tree_util.tree_unflatten(target_tree, out), log_det
 
     return wrapped

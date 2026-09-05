@@ -12,13 +12,14 @@ almost always one of the unsupported patterns:
 import jax.numpy as jnp
 from probjax.core import inverse
 
-assert jnp.isnan(inverse(lambda x: 3.0 * x - x)(jnp.asarray(4.0)))
+assert jnp.isnan(inverse(lambda x: x + jnp.tanh(x))(jnp.asarray(1.0)))
 ```
 
 The full list is in [Program inversion](guides/program-inversion.md#what-can-be-inverted).
-The short version: a variable used more than once, `fori_loop`, a `scan` with a
-non-invertible carry, or `inverse(inverse(f))`. Check `jnp.isfinite` on results
-you have not seen before.
+The short version: a variable used more than once **nonlinearly**, `fori_loop`,
+a `scan` with a non-invertible carry, or `inverse(inverse(f))`. Affine reuse
+such as `3 * x - x` is solved automatically. Check `jnp.isfinite` on results you
+have not seen before.
 
 If the NaN is only in *some* elements, that is a guard firing — the inverse does
 not exist at those values, which is different from being unsupported. Turn it

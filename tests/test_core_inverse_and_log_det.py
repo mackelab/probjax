@@ -978,3 +978,97 @@ def test_singular_jacobian_is_minus_inf_not_a_finite_floor():
     """
     _, logdet = inverse_and_logabsdet(lambda x: x**3)(jnp.asarray([0.0]))
     assert jnp.isinf(logdet)
+
+
+# ---------------------------------------------------------------------------
+# Affine fan-out
+# ---------------------------------------------------------------------------
+#
+# Equation-by-equation propagation cannot invert a variable used twice: in
+# `3*x - x` the `sub` has two unknown operands and the bivariate rules need
+# exactly one. When the stalled program is affine in the target, the inverse is
+# a linear solve, and affinity is decided from the jaxpr rather than sampled.
+
+
+AFFINE_CASES = [
+    ("scaled_difference", lambda x: 3.0 * x - x, jnp.array([4.0, 6.0])),
+    ("repeated_division", lambda x: x / 3.0 + x / 6.0, jnp.array([1.0, 2.0])),
+    (
+        "matrix",
+        lambda x: jnp.array([[2.0, 1.0], [0.0, 3.0]]) @ x + jnp.ones(2),
+        jnp.array([5.0, 4.0]),
+    ),
+    (
+        "coupled_through_a_sum",
+        lambda x: jnp.sum(x) * jnp.ones(2) - x,
+        jnp.array([1.0, 2.0]),
+    ),
+    (
+        "reshaped",
+        lambda x: jnp.reshape(2.0 * x, (4,)) - jnp.reshape(x, (4,)),
+        jnp.arange(4.0),
+    ),
+]
+
+
+@pytest.mark.parametrize("name,fn,y", AFFINE_CASES, ids=[c[0] for c in AFFINE_CASES])
+def test_affine_fan_out_now_inverts(name, fn, y):
+    recovered = inverse(fn)(y)
+    assert jnp.all(jnp.isfinite(recovered)), f"{name} still unresolved"
+    assert jnp.allclose(fn(recovered), y, atol=1e-4)
+
+
+@pytest.mark.parametrize("name,fn,y", AFFINE_CASES, ids=[c[0] for c in AFFINE_CASES])
+def test_affine_fan_out_log_determinant(name, fn, y):
+    recovered, logdet = inverse_and_logabsdet(fn)(y)
+    reference = -jnp.log(
+        jnp.abs(jnp.linalg.det(jax.jacfwd(fn)(jnp.zeros_like(y)).reshape(y.size, -1)))
+    )
+    assert jnp.allclose(fn(recovered), y, atol=1e-4)
+    assert float(logdet) == pytest.approx(float(reference), abs=1e-4)
+
+
+@pytest.mark.parametrize(
+    "name,fn,y",
+    [
+        ("residual", lambda x: x + jnp.tanh(x), jnp.array([1.0])),
+        ("product", lambda x: jnp.exp(x) * jnp.exp(x), jnp.array([4.0])),
+        ("square", lambda x: x * x, jnp.array([4.0])),
+    ],
+)
+def test_nonlinear_fan_out_is_still_refused(name, fn, y):
+    """Affinity is proven, not guessed, so a nonlinear fan-out must not slip through.
+
+    These are invertible in principle -- a residual by fixed-point iteration when
+    the branch is a contraction -- but nothing in a jaxpr states a Lipschitz
+    bound, so they stay the author's job via `custom_inverse`.
+    """
+    assert jnp.all(jnp.isnan(inverse(fn)(y)))
+
+
+def test_a_singular_affine_map_reports_nan_rather_than_a_value():
+    """`x - x` is affine but not injective; the solve must not invent an answer."""
+    recovered = inverse(lambda x: x - x)(jnp.zeros(2))
+    assert jnp.all(jnp.isnan(recovered))
+
+
+def test_the_fallback_does_not_touch_what_already_worked():
+    """It runs only after propagation fails, so ordinary inverses are unchanged.
+
+    An affine chain like `2*x + 1` is invertible by the rules; it must keep
+    going through them rather than materialising a Jacobian.
+    """
+    fn = lambda x: 2.0 * x + 1.0  # noqa: E731
+    y = fn(jnp.arange(4.0))
+    primitives = {
+        str(eqn.primitive) for eqn in jax.make_jaxpr(inverse(fn))(y).jaxpr.eqns
+    }
+    assert primitives == {"sub", "div"}, primitives
+    assert jnp.allclose(inverse(fn)(y), jnp.arange(4.0))
+
+
+def test_affine_fan_out_composes_with_jit_and_vmap():
+    fn = lambda x: 3.0 * x - x  # noqa: E731
+    ys = jnp.array([[4.0, 6.0], [2.0, 8.0]])
+    assert jnp.allclose(jax.jit(inverse(fn))(ys[0]), jnp.array([2.0, 3.0]))
+    assert jnp.allclose(jax.vmap(inverse(fn))(ys), ys / 2.0)
