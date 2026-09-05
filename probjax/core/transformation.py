@@ -5,6 +5,7 @@ import jax
 from jax import numpy as jnp
 from jaxtyping import Array
 
+from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.core.custom_primitives.random_variable import name_stack
 from probjax.core.interpreters import (
     INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
@@ -21,10 +22,13 @@ from probjax.core.interpreters import (
     maybe_inverse_custom_inverse,
     trace_state_reducer,
 )
-from probjax.core.interpreters.inverse.affine import solve_affine_inverse
+from probjax.core.interpreters.inverse.affine import (
+    is_volume_preserving,
+    solve_affine_inverse,
+)
 from probjax.core.jaxpr_propagation import interpret, propagate
 from probjax.core.jaxpr_propagation.utils import KnownessLevel
-from probjax.core.registry import invalid_inverse_value
+from probjax.core.registry import invalid_inverse_value, is_static_zero
 
 
 def _normalize_argnums(argnums, n_args: int, *, name: str) -> tuple[int, ...]:
@@ -40,18 +44,32 @@ def _normalize_argnums(argnums, n_args: int, *, name: str) -> tuple[int, ...]:
     return tuple(normalized)
 
 
-def _resolve_invertible_index(args, invertible_arg: int | None) -> int:
+def _resolve_invertible_indices(args, invertible_arg) -> tuple[int, ...]:
     n_args = len(args)
     if n_args == 0:
         raise ValueError("inverse requires at least one positional argument")
     if invertible_arg is None:
         invertible_arg = 0
-    index = n_args + invertible_arg if invertible_arg < 0 else invertible_arg
-    if index < 0 or index >= n_args:
+    if isinstance(invertible_arg, int):
+        selections = (invertible_arg,)
+    else:
+        selections = tuple(invertible_arg)
+        if not selections:
+            raise ValueError("invertible_arg must select at least one argument")
+    indices = tuple(
+        n_args + selection if selection < 0 else selection for selection in selections
+    )
+    if any(index < 0 or index >= n_args for index in indices):
         raise IndexError(
             f"invertible_arg={invertible_arg} is out of range for {n_args} args."
         )
-    return index
+    if len(set(indices)) != len(indices):
+        raise ValueError(f"invertible_arg={invertible_arg} selects an argument twice")
+    return indices
+
+
+def _resolve_invertible_index(args, invertible_arg: int | None) -> int:
+    return _resolve_invertible_indices(args, invertible_arg)[0]
 
 
 def _prepare_inverse_problem(
@@ -60,26 +78,51 @@ def _prepare_inverse_problem(
     kwargs,
     invertible_arg,
     static_argnums,
+    input_template=None,
 ):
-    target_index = _resolve_invertible_index(args, invertible_arg)
+    """Split a traced inverse call into known inputs, targets, and outputs.
+
+    ``args`` carries the outputs at the target positions (and the known
+    inputs elsewhere). With ``input_template``, the jaxpr was instead traced
+    with the template at the target positions -- a shape-changing map's true
+    program -- so target leaves and trees come from the template while values
+    come from the call. ``invertible_arg`` may select several arguments for a
+    joint solve; their output leaves concatenate in argument order.
+    """
+    target_arg_indices = _resolve_invertible_indices(args, invertible_arg)
     static_indices = set(
         _normalize_argnums(static_argnums, len(args), name="static_argnums")
     )
-    if target_index in static_indices:
+    if set(target_arg_indices) & static_indices:
         raise ValueError("invertible_arg cannot also be listed in static_argnums")
 
+    templates = (
+        dict(
+            zip(
+                target_arg_indices,
+                _resolve_templates(target_arg_indices, input_template),
+                strict=False,
+            )
+        )
+        if input_template is not None
+        else {}
+    )
+
     dynamic_values = []
-    target_leaf_indices = []
-    target_tree = None
+    target_leaf_indices: list[int] = []
+    target_trees = []
     for index, arg in enumerate(args):
         if index in static_indices:
             continue
-        leaves, tree = jax.tree_util.tree_flatten(arg)
+        if index in templates:
+            leaves, tree = jax.tree_util.tree_flatten(templates[index])
+        else:
+            leaves, tree = jax.tree_util.tree_flatten(arg)
         start = len(dynamic_values)
         dynamic_values.extend(leaves)
-        if index == target_index:
+        if index in target_arg_indices:
             target_leaf_indices.extend(range(start, len(dynamic_values)))
-            target_tree = tree
+            target_trees.append(tree)
 
     kwarg_values, _ = jax.tree_util.tree_flatten(kwargs)
     dynamic_values.extend(kwarg_values)
@@ -89,8 +132,10 @@ def _prepare_inverse_problem(
             "Dynamic argument leaves do not match the traced JAXPR inputs: "
             f"got {len(dynamic_values)} values for {len(jaxpr_invars)} variables."
         )
-    if target_tree is None:
-        raise ValueError("invertible_arg did not identify a dynamic positional argument")
+    if len(target_trees) != len(target_arg_indices):
+        raise ValueError(
+            "invertible_arg did not identify a dynamic positional argument"
+        )
 
     target_indices = set(target_leaf_indices)
     known_invars = [
@@ -102,21 +147,126 @@ def _prepare_inverse_problem(
         if index not in target_indices
     ]
     target_invars = [jaxpr_invars[index] for index in target_leaf_indices]
-    output_values, output_tree = jax.tree_util.tree_flatten(args[target_index])
+    output_values: list = []
+    for index in target_arg_indices:
+        output_values.extend(jax.tree_util.tree_leaves(args[index]))
     return (
         known_invars,
         target_invars,
         known_values + output_values,
-        target_tree,
-        output_tree,
+        target_trees,
     )
 
 
 def _sum_log_dets_for_vars(log_dets: dict, vars_) -> jax.Array:
     total = jnp.asarray(0.0)
     for var in vars_:
-        total = total + jnp.asarray(log_dets.get(var, 0.0))
+        term = log_dets.get(var, 0.0)
+        if is_static_zero(term):
+            continue
+        total = total + jnp.asarray(term)
     return total
+
+
+def _resolve_templates(target_arg_indices, input_template):
+    """Align one template per invertible argument."""
+    if len(target_arg_indices) == 1:
+        return (input_template,)
+    try:
+        templates = tuple(input_template)
+    except TypeError as err:
+        raise ValueError(
+            "a joint solve over several arguments needs one input_template "
+            "per invertible argument"
+        ) from err
+    if len(templates) != len(target_arg_indices):
+        raise ValueError(
+            f"got {len(templates)} input templates for "
+            f"{len(target_arg_indices)} invertible arguments"
+        )
+    return templates
+
+
+def _trace_args_with_template(args, target_arg_indices, input_template):
+    """Call args with the invertible slots replaced by template values."""
+    trace_args = list(args)
+    for index, template in zip(
+        target_arg_indices,
+        _resolve_templates(target_arg_indices, input_template),
+        strict=False,
+    ):
+        trace_args[index] = template
+    return tuple(trace_args)
+
+
+def _outputs_match_program(output_values, outvars) -> bool:
+    """Whether supplied outputs fit the traced program's output avals.
+
+    Only meaningful with ``input_template``, where the trace is the true
+    program: a mismatch is unambiguous user error. Without a template the
+    trace is built from the outputs themselves, so shape-agnostic programs
+    (transpose, rev) legitimately differ here and must not be gated.
+    """
+    if len(output_values) != len(outvars):
+        return False
+    return all(
+        tuple(jnp.shape(value)) == tuple(var.aval.shape)
+        for value, var in zip(output_values, outvars, strict=False)
+    )
+
+
+def _unflatten_targets(target_trees, out):
+    """Rebuild target pytree(s) from flat inverse values in leaf order."""
+    parts, offset = [], 0
+    for tree in target_trees:
+        count = tree.num_leaves
+        parts.append(jax.tree_util.tree_unflatten(tree, out[offset : offset + count]))
+        offset += count
+    if len(parts) == 1:
+        return parts[0]
+    return tuple(parts)
+
+
+def _trace_inverse_program(
+    get_jaxpr, args, kwargs, invertible_arg, static_argnums, input_template
+):
+    """Trace the forward program and split the inverse problem.
+
+    Returns ``(jaxpr, known_invars, target_invars, args_for_propagate,
+    target_trees)``. Without ``input_template`` the program is traced with
+    the supplied outputs, which is exact for shape-preserving maps.
+    """
+    target_arg_indices = _resolve_invertible_indices(args, invertible_arg)
+    if input_template is None:
+        jaxpr = get_jaxpr(*args, **kwargs)
+    else:
+        trace_args = _trace_args_with_template(args, target_arg_indices, input_template)
+        jaxpr = get_jaxpr.for_inputs(trace_args, kwargs)
+    (
+        known_invars,
+        target_invars,
+        args_for_propagate,
+        target_trees,
+    ) = _prepare_inverse_problem(
+        jaxpr.jaxpr.invars,
+        args,
+        kwargs,
+        invertible_arg,
+        static_argnums,
+        input_template,
+    )
+    if len(args_for_propagate) - len(known_invars) != len(jaxpr.jaxpr.outvars):
+        raise ValueError("Inverse output structure does not match function outputs")
+    return jaxpr, known_invars, target_invars, args_for_propagate, target_trees
+
+
+def _unresolvable_targets(target_invars):
+    return [
+        invalid_inverse_value(
+            var.aval, message="supplied outputs do not match the inverse program"
+        )
+        for var in target_invars
+    ]
 
 
 def _materialize_inverse_targets(values, target_vars, env):
@@ -136,7 +286,9 @@ def _materialize_inverse_targets(values, target_vars, env):
     return materialized, complete
 
 
-def _affine_fallback(jaxpr, known_invars, args_for_propagate, target_invars):
+def _affine_fallback(
+    jaxpr, known_invars, args_for_propagate, target_invars, *, need_logdet=True
+):
     """Try a linear solve where equation-by-equation propagation gave up.
 
     Only reached when propagation could not reconstruct the target, so this can
@@ -152,6 +304,7 @@ def _affine_fallback(jaxpr, known_invars, args_for_propagate, target_invars):
         target_invars,
         dict(zip(known_invars, known_values, strict=False)),
         output_values,
+        need_logdet=need_logdet,
     )
 
 
@@ -217,18 +370,24 @@ def _cached_jaxpr_and_tree_getter(fun: Callable, static_argnums=()):
 
 def _cached_jaxpr_getter(fun: Callable, static_argnums=()):
     """Create a cached getter for JAXPR only (backward compatible)."""
+
     def fun_snapshot(*args, **kwargs):
         return fun(*args, **kwargs)
 
     jaxpr_maker = jax.make_jaxpr(fun_snapshot, static_argnums=static_argnums)
     cache: dict = {}
 
-    def get_jaxpr(*args, **kwargs):
+    def get_jaxpr_for(args, kwargs):
+        """Get cached JAXPR for explicit trace inputs (see input_template)."""
         _, cache_key = _flatten_and_signature(args, kwargs)
         if cache_key not in cache:
             cache[cache_key] = jaxpr_maker(*args, **kwargs)
         return cache[cache_key]
 
+    def get_jaxpr(*args, **kwargs):
+        return get_jaxpr_for(args, kwargs)
+
+    get_jaxpr.for_inputs = get_jaxpr_for  # type: ignore[attr-defined]
     return get_jaxpr
 
 
@@ -263,7 +422,7 @@ def _set_stochastic_maps(
     setattr(wrapped, _INTERVENTIONS_ATTR, dict(interventions))
     setattr(wrapped, _OBSERVATIONS_ATTR, dict(observations))
     setattr(wrapped, _REPLAY_ATTR, dict(replay))
-    setattr(wrapped, "_probjax_interventions", frozenset(interventions.keys()))
+    wrapped._probjax_interventions = frozenset(interventions.keys())
     return wrapped
 
 
@@ -304,7 +463,7 @@ def _apply_stochastic_substitution(
     substitutions = {**merged_replay, **merged_obs, **merged_int}
 
     wrapped = _make_substitution_wrapper(base_fun, substitutions)
-    setattr(wrapped, "_probjax_base_fun", base_fun)
+    wrapped._probjax_base_fun = base_fun
     return _set_stochastic_maps(
         wrapped,
         interventions=merged_int,
@@ -609,7 +768,7 @@ def trace(
     return wrapped
 
 
-def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
+def inverse(fun: Callable, static_argnums=(), invertible_arg=None, input_template=None):
     """Return a function computing the inverse of ``fun``.
 
     Traces ``fun`` to a jaxpr and walks it backwards, replacing each primitive
@@ -624,6 +783,16 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
             which case its registered inverse is used directly.
         static_argnums: Positional arguments held fixed rather than inverted.
         invertible_arg: Which positional argument to solve for (default 0).
+            A tuple of indices solves several arguments jointly -- e.g.
+            ``invertible_arg=(0, 1)`` inverts ``(x, y) -> (x + y, x - y)``
+            back to ``(x, y)`` -- and returns them as a tuple in order.
+        input_template: Example value for the invertible argument, used to
+            trace ``fun`` instead of the supplied outputs. Needed when the
+            input and output structures differ -- ``tile``, padding, ``split``
+            -- where tracing with the outputs would stage the wrong program.
+            Parts of the input that the outputs determine (unpadded elements,
+            one copy of each duplication) are then recovered; a mismatching
+            output still reports NaN rather than a value.
 
     Returns:
         A callable mapping outputs back to the invertible argument.
@@ -636,9 +805,11 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
 
         When the stalled program is **affine** in the target -- ``3 * x - x``,
         ``A @ x + b``, ``sum(x) - x`` -- the inverse is recovered by a linear
-        solve, decided from the jaxpr structure rather than sampled. That path
-        materialises a Jacobian, so it costs O(n^2) in the target's size, and it
-        runs only after ordinary propagation has failed.
+        solve, decided from the jaxpr structure rather than sampled. Pointwise
+        maps invert elementwise in O(n); small coupled maps build the matrix
+        with one vmapped sweep; large coupled maps solve matrix-free. It runs
+        only after ordinary propagation has failed, and the whole fallback is
+        staged JAX, so it traces under ``jit``/``vmap``.
 
         These remain silently unsupported and produce NaN:
 
@@ -654,6 +825,8 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
         ``lax.while_loop`` raises rather than returning NaN. Checking
         ``jnp.isfinite`` on the result is the reliable way to detect the rest.
     """
+    if input_template is not None and isinstance(fun, custom_inverse):
+        raise ValueError("input_template has no effect for custom_inverse inputs")
     maybe_custom = maybe_inverse_custom_inverse(
         fun,
         static_argnums=static_argnums,
@@ -667,22 +840,21 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
     @wraps(fun)
     def wrapped(*args, **kwargs):
         processing_rule = InverseProcessingRule()
-        jaxpr = get_jaxpr(*args, **kwargs)
         (
+            jaxpr,
             known_invars,
             target_invars,
             args_for_propagate,
-            target_tree,
-            _,
-        ) = _prepare_inverse_problem(
-            jaxpr.jaxpr.invars,
-            args,
-            kwargs,
-            invertible_arg,
-            static_argnums,
+            target_trees,
+        ) = _trace_inverse_program(
+            get_jaxpr, args, kwargs, invertible_arg, static_argnums, input_template
         )
-        if len(args_for_propagate) - len(known_invars) != len(jaxpr.jaxpr.outvars):
-            raise ValueError("Inverse output structure does not match function outputs")
+        if input_template is not None and not _outputs_match_program(
+            args_for_propagate[len(known_invars) :], jaxpr.jaxpr.outvars
+        ):
+            return _unflatten_targets(
+                target_trees, _unresolvable_targets(target_invars)
+            )
         out, env = cast(
             tuple[list, Any],
             propagate(
@@ -700,17 +872,23 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
         out, complete = _materialize_inverse_targets(out, target_invars, env)
         if not complete:
             solved = _affine_fallback(
-                jaxpr, known_invars, args_for_propagate, target_invars
+                jaxpr,
+                known_invars,
+                args_for_propagate,
+                target_invars,
+                need_logdet=False,
             )
             if solved is not None:
                 out = solved[0]
 
-        return jax.tree_util.tree_unflatten(target_tree, out)
+        return _unflatten_targets(target_trees, out)
 
     return wrapped
 
 
-def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None):
+def inverse_and_logabsdet(
+    fun: Callable, static_argnums=(), invertible_arg=None, input_template=None
+):
     """Return a function computing the inverse of ``fun`` and its log-det.
 
     The log-determinant is that of the **inverse** map -- ``log|d(inv)/dy|``,
@@ -723,6 +901,14 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
         fun: The function to invert, possibly a ``custom_inverse``.
         static_argnums: Positional arguments held fixed rather than inverted.
         invertible_arg: Which positional argument to solve for (default 0).
+            A tuple of indices solves several arguments jointly and returns
+            them as a tuple in order.
+        input_template: Example value for the invertible argument, used to
+            trace ``fun`` instead of the supplied outputs. Needed when input
+            and output structures differ -- ``tile``, padding, ``split``.
+            Overdetermined-consistent outputs then recover the input (with a
+            NaN log-det, which has no square Jacobian); mismatching outputs
+            report NaN rather than a value.
 
     Returns:
         ``(inverse_value, log_abs_det)``. Both are NaN if the inversion could
@@ -740,13 +926,22 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
         that inverts fine may still have no log-det: ``dynamic_slice`` recovers
         only its window, leaving the input partially known and no square
         Jacobian to take a determinant of.
+
+    Note:
+        When the program is structurally volume-preserving in the target --
+        rearrangements, translations, ``neg``, ``±1`` scalings -- the log-det
+        is proven zero from the jaxpr and no accumulation is staged at all, so
+        the compiled inverse matches a hand-written one equation for equation.
     """
+    if input_template is not None and isinstance(fun, custom_inverse):
+        raise ValueError("input_template has no effect for custom_inverse inputs")
     maybe_custom = maybe_inverse_custom_inverse(
         fun,
         static_argnums=static_argnums,
         invertible_arg=invertible_arg,
     )
     if maybe_custom is not None:
+
         @wraps(fun)
         def custom_wrapped(*args, **kwargs):
             value, logdet = fun.inv_and_logdet(*args, **kwargs)
@@ -765,24 +960,48 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
         processing_rule = InverseAndLogAbsDetProcessingRule(
             state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE
         )
-        jaxpr = get_jaxpr(*args, **kwargs)
         (
+            jaxpr,
             known_invars,
             target_invars,
             args_for_propagate,
-            target_tree,
-            _,
-        ) = _prepare_inverse_problem(
-            jaxpr.jaxpr.invars,
-            args,
-            kwargs,
-            invertible_arg,
-            static_argnums,
+            target_trees,
+        ) = _trace_inverse_program(
+            get_jaxpr, args, kwargs, invertible_arg, static_argnums, input_template
         )
-        if len(args_for_propagate) - len(known_invars) != len(jaxpr.jaxpr.outvars):
-            raise ValueError("Inverse output structure does not match function outputs")
         invars = known_invars + jaxpr.jaxpr.outvars
         outvars = target_invars
+
+        if input_template is not None and not _outputs_match_program(
+            args_for_propagate[len(known_invars) :], jaxpr.jaxpr.outvars
+        ):
+            return _unflatten_targets(
+                target_trees, _unresolvable_targets(target_invars)
+            ), jnp.asarray(jnp.nan)
+
+        if is_volume_preserving(jaxpr.jaxpr, target_invars):
+            # Proven |det J| = 1 from the jaxpr structure, so the log-det is
+            # exactly zero and the accumulation machinery below would only
+            # stage per-equation `+ 0.0`s. Run the plain inverse propagation
+            # instead; on incompleteness fall through to the full path so
+            # failure semantics (NaN, affine fallback) are unchanged.
+            out, env = cast(
+                tuple[list, Any],
+                propagate(
+                    jaxpr.jaxpr,
+                    jaxpr.consts,
+                    known_invars + jaxpr.jaxpr.outvars,
+                    args_for_propagate,
+                    target_invars,
+                    process_eqn=InverseProcessingRule(),
+                    cost_fn=inverse_cost_fn,
+                    process_all_eqns=True,
+                    return_env=True,
+                ),
+            )
+            out, complete = _materialize_inverse_targets(out, target_invars, env)
+            if complete:
+                return _unflatten_targets(target_trees, out), jnp.asarray(0.0)
 
         inverse_result = cast(
             tuple[list, dict, Any],
@@ -812,6 +1031,6 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
                 out, log_det = solved
             else:
                 log_det = jnp.asarray(jnp.nan)
-        return jax.tree_util.tree_unflatten(target_tree, out), log_det
+        return _unflatten_targets(target_trees, out), log_det
 
     return wrapped

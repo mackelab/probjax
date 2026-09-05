@@ -74,7 +74,7 @@ def default_solve(S, res, dense_mem_limit=200):
 
 
 def default_logdet(S, dense_mem_limit=200):
-    """Compute logdet of S. Uses Lanczos for large LinearOperator, dense slogdet otherwise.
+    """Compute the logdet with Lanczos for large operators, otherwise slogdet.
 
     Uses the same memory-based decision as default_solve: if materializing S
     would exceed dense_mem_limit MB, use matrix-free Lanczos SLQ instead.
@@ -201,12 +201,14 @@ def build_kernel(
         if is_observed:
             C, R = observation_model_fns(t)
 
-            assert isinstance(R, (ArrayLike, LinearOperator)) or R is None, (
-                "R must be an Array or None"
-            )
-            assert isinstance(C, (ArrayLike, LinearOperator)), (
-                "C must be an Array or LinearOperator"
-            )
+            assert (
+                R is None
+                or isinstance(R, LinearOperator)
+                or (hasattr(R, "shape") and hasattr(R, "dtype"))
+            ), "R must be an Array or None"
+            assert isinstance(C, LinearOperator) or (
+                hasattr(C, "shape") and hasattr(C, "dtype")
+            ), "C must be an Array or LinearOperator"
 
             y_ = C @ mu1_
             solve = default_solve if linear_solve is None else linear_solve

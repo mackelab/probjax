@@ -27,7 +27,7 @@ from probjax.nn import (
     chunkify,
 )
 
-pytest_plugins = ["test_problems.nns"]
+pytest_plugins = ["tests.test_problems.nns"]
 
 
 def test_mlp(mlp, batch_shape):

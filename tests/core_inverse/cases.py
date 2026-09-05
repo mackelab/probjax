@@ -18,7 +18,8 @@ from typing import Any, Callable, Literal
 
 import jax
 import jax.numpy as jnp
-from probjax.core.registry import Context, REGISTRY
+
+from probjax.core.registry import REGISTRY, Context
 
 # ---------------------------------------------------------------------------
 # Case dataclasses
@@ -80,35 +81,76 @@ ATOMIC_ROUNDTRIP_CASES: list[AtomicCase] = [
     # Hyperbolic
     AtomicCase("tanh", jax.lax.tanh_p, jnp.tanh, lambda: jnp.linspace(-0.5, 0.5, 7)),
     AtomicCase("sinh", jax.lax.sinh_p, jnp.sinh, lambda: jnp.linspace(-0.4, 0.4, 7)),
-    AtomicCase("asinh", jax.lax.asinh_p, jnp.arcsinh, lambda: jnp.linspace(-0.5, 0.5, 7)),
+    AtomicCase(
+        "asinh", jax.lax.asinh_p, jnp.arcsinh, lambda: jnp.linspace(-0.5, 0.5, 7)
+    ),
     # cosh is even: moved to principal branch cases
-    AtomicCase("acosh", jax.lax.acosh_p, lambda x: jax.lax.acosh_p.bind(x), lambda: jnp.linspace(1.1, 2.0, 7)),
-    AtomicCase("atanh", jax.lax.atanh_p, jnp.arctanh, lambda: jnp.linspace(-0.5, 0.5, 7)),
+    AtomicCase(
+        "acosh",
+        jax.lax.acosh_p,
+        lambda x: jax.lax.acosh_p.bind(x),
+        lambda: jnp.linspace(1.1, 2.0, 7),
+    ),
+    AtomicCase(
+        "atanh", jax.lax.atanh_p, jnp.arctanh, lambda: jnp.linspace(-0.5, 0.5, 7)
+    ),
     # Exponential / logarithmic
     AtomicCase("exp", jax.lax.exp_p, jnp.exp, lambda: jnp.linspace(-1.0, 1.0, 7)),
     AtomicCase("exp2", jax.lax.exp2_p, jnp.exp2, lambda: jnp.linspace(-1.0, 1.0, 7)),
     AtomicCase("log", jax.lax.log_p, jnp.log, lambda: jnp.linspace(0.1, 2.0, 7)),
-    AtomicCase("log1p", jax.lax.log1p_p, jnp.log1p, lambda: jnp.linspace(0.05, 0.95, 7)),
+    AtomicCase(
+        "log1p", jax.lax.log1p_p, jnp.log1p, lambda: jnp.linspace(0.05, 0.95, 7)
+    ),
     AtomicCase("expm1", jax.lax.expm1_p, jnp.expm1, lambda: jnp.linspace(-0.9, 0.9, 7)),
     # Roots / powers
     AtomicCase("sqrt", jax.lax.sqrt_p, jnp.sqrt, lambda: jnp.linspace(0.25, 2.0, 7)),
-    AtomicCase("rsqrt", jax.lax.rsqrt_p, lambda x: jax.lax.rsqrt_p.bind(x), lambda: jnp.linspace(0.25, 2.0, 7)),
+    AtomicCase(
+        "rsqrt",
+        jax.lax.rsqrt_p,
+        lambda x: jax.lax.rsqrt_p.bind(x),
+        lambda: jnp.linspace(0.25, 2.0, 7),
+    ),
     AtomicCase("cbrt", jax.lax.cbrt_p, jnp.cbrt, lambda: jnp.linspace(-8.0, 8.0, 7)),
     # Linear
     AtomicCase("neg", jax.lax.neg_p, jnp.negative, lambda: jnp.linspace(-0.5, 0.5, 7)),
     AtomicCase("copy", jax.lax.copy_p, jnp.copy, lambda: jnp.linspace(-0.5, 0.5, 7)),
     # Special
     AtomicCase("erf", jax.lax.erf_p, jax.lax.erf, lambda: jnp.linspace(-1.0, 1.0, 7)),
-    AtomicCase("erf_inv", jax.lax.erf_inv_p, jax.lax.erf_inv, lambda: jnp.linspace(-0.9, 0.9, 7)),
+    AtomicCase(
+        "erf_inv",
+        jax.lax.erf_inv_p,
+        jax.lax.erf_inv,
+        lambda: jnp.linspace(-0.9, 0.9, 7),
+    ),
     # Complex
-    AtomicCase("conj", jax.lax.conj_p, jnp.conj, lambda: jnp.array([1.0 + 2.0j, 3.0 - 1.0j])),
-    AtomicCase("logistic", jax.lax.logistic_p, jax.lax.logistic, lambda: jnp.linspace(-2.0, 2.0, 7)),
+    AtomicCase(
+        "conj", jax.lax.conj_p, jnp.conj, lambda: jnp.array([1.0 + 2.0j, 3.0 - 1.0j])
+    ),
+    AtomicCase(
+        "logistic",
+        jax.lax.logistic_p,
+        jax.lax.logistic,
+        lambda: jnp.linspace(-2.0, 2.0, 7),
+    ),
     # Bivariate (tested via binary tests)
-    AtomicCase("add", jax.lax.add_p, lambda x: x + 1.0, lambda: jnp.linspace(-0.5, 0.5, 7)),
-    AtomicCase("sub", jax.lax.sub_p, lambda x: x - 1.0, lambda: jnp.linspace(-0.5, 0.5, 7)),
-    AtomicCase("mul", jax.lax.mul_p, lambda x: x * 2.0, lambda: jnp.linspace(-0.5, 0.5, 7)),
-    AtomicCase("div", jax.lax.div_p, lambda x: x / 2.0, lambda: jnp.linspace(-0.5, 0.5, 7)),
-    AtomicCase("pow", jax.lax.pow_p, lambda x: jnp.power(x, 3.0), lambda: jnp.linspace(0.1, 1.0, 7)),
+    AtomicCase(
+        "add", jax.lax.add_p, lambda x: x + 1.0, lambda: jnp.linspace(-0.5, 0.5, 7)
+    ),
+    AtomicCase(
+        "sub", jax.lax.sub_p, lambda x: x - 1.0, lambda: jnp.linspace(-0.5, 0.5, 7)
+    ),
+    AtomicCase(
+        "mul", jax.lax.mul_p, lambda x: x * 2.0, lambda: jnp.linspace(-0.5, 0.5, 7)
+    ),
+    AtomicCase(
+        "div", jax.lax.div_p, lambda x: x / 2.0, lambda: jnp.linspace(-0.5, 0.5, 7)
+    ),
+    AtomicCase(
+        "pow",
+        jax.lax.pow_p,
+        lambda x: jnp.power(x, 3.0),
+        lambda: jnp.linspace(0.1, 1.0, 7),
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -120,7 +162,7 @@ PRINCIPAL_BRANCH_CASES: list[AtomicCase] = [
     AtomicCase(
         "integer_pow_even",
         jax.lax.integer_pow_p,
-        lambda x: x ** 2,
+        lambda x: x**2,
         lambda: jnp.array([-2.0, 3.0]),
         inverse_kind="principal",
     ),
@@ -221,14 +263,29 @@ LOGDET_EXPLICIT_CASES: list[AtomicCase] = [
     AtomicCase("sqrt", jax.lax.sqrt_p, jnp.sqrt, lambda: jnp.linspace(0.25, 2.0, 7)),
     AtomicCase("cbrt", jax.lax.cbrt_p, jnp.cbrt, lambda: jnp.linspace(-8.0, 8.0, 7)),
     AtomicCase("tanh", jax.lax.tanh_p, jnp.tanh, lambda: jnp.linspace(-0.5, 0.5, 7)),
-    AtomicCase("log1p", jax.lax.log1p_p, jnp.log1p, lambda: jnp.linspace(0.05, 0.95, 7)),
+    AtomicCase(
+        "log1p", jax.lax.log1p_p, jnp.log1p, lambda: jnp.linspace(0.05, 0.95, 7)
+    ),
     AtomicCase("expm1", jax.lax.expm1_p, jnp.expm1, lambda: jnp.linspace(-0.9, 0.9, 7)),
-    AtomicCase("logistic", jax.lax.logistic_p, jax.lax.logistic, lambda: jnp.linspace(-2.0, 2.0, 7)),
+    AtomicCase(
+        "logistic",
+        jax.lax.logistic_p,
+        jax.lax.logistic,
+        lambda: jnp.linspace(-2.0, 2.0, 7),
+    ),
     # Bivariate
-    AtomicCase("add", jax.lax.add_p, lambda x: x + 1.0, lambda: jnp.linspace(-0.5, 0.5, 7)),
-    AtomicCase("sub", jax.lax.sub_p, lambda x: x - 1.0, lambda: jnp.linspace(-0.5, 0.5, 7)),
-    AtomicCase("mul", jax.lax.mul_p, lambda x: x * 2.0, lambda: jnp.linspace(-0.5, 0.5, 7)),
-    AtomicCase("div", jax.lax.div_p, lambda x: x / 2.0, lambda: jnp.linspace(-0.5, 0.5, 7)),
+    AtomicCase(
+        "add", jax.lax.add_p, lambda x: x + 1.0, lambda: jnp.linspace(-0.5, 0.5, 7)
+    ),
+    AtomicCase(
+        "sub", jax.lax.sub_p, lambda x: x - 1.0, lambda: jnp.linspace(-0.5, 0.5, 7)
+    ),
+    AtomicCase(
+        "mul", jax.lax.mul_p, lambda x: x * 2.0, lambda: jnp.linspace(-0.5, 0.5, 7)
+    ),
+    AtomicCase(
+        "div", jax.lax.div_p, lambda x: x / 2.0, lambda: jnp.linspace(-0.5, 0.5, 7)
+    ),
     # Elementwise transcendentals. These used to fall through to the diagonal
     # autodiff fallback; each now has a closed-form rule, and this list is what
     # holds them to the same autodiff reference the fallback approximated.
@@ -240,15 +297,41 @@ LOGDET_EXPLICIT_CASES: list[AtomicCase] = [
     AtomicCase("atan", jax.lax.atan_p, jnp.arctan, lambda: jnp.linspace(-3.0, 3.0, 7)),
     AtomicCase("sinh", jax.lax.sinh_p, jnp.sinh, lambda: jnp.linspace(-0.4, 0.4, 7)),
     AtomicCase("cosh", jax.lax.cosh_p, jnp.cosh, lambda: jnp.linspace(0.3, 1.2, 7)),
-    AtomicCase("asinh", jax.lax.asinh_p, jnp.arcsinh, lambda: jnp.linspace(-0.5, 0.5, 7)),
-    AtomicCase("acosh", jax.lax.acosh_p, lambda x: jax.lax.acosh_p.bind(x), lambda: jnp.linspace(1.1, 2.0, 7)),
-    AtomicCase("atanh", jax.lax.atanh_p, jnp.arctanh, lambda: jnp.linspace(-0.5, 0.5, 7)),
+    AtomicCase(
+        "asinh", jax.lax.asinh_p, jnp.arcsinh, lambda: jnp.linspace(-0.5, 0.5, 7)
+    ),
+    AtomicCase(
+        "acosh",
+        jax.lax.acosh_p,
+        lambda x: jax.lax.acosh_p.bind(x),
+        lambda: jnp.linspace(1.1, 2.0, 7),
+    ),
+    AtomicCase(
+        "atanh", jax.lax.atanh_p, jnp.arctanh, lambda: jnp.linspace(-0.5, 0.5, 7)
+    ),
     AtomicCase("erf", jax.lax.erf_p, jax.lax.erf, lambda: jnp.linspace(-0.9, 0.9, 7)),
-    AtomicCase("erf_inv", jax.lax.erf_inv_p, jax.lax.erf_inv, lambda: jnp.linspace(-0.7, 0.7, 7)),
-    AtomicCase("rsqrt", jax.lax.rsqrt_p, lambda x: jax.lax.rsqrt_p.bind(x), lambda: jnp.linspace(0.25, 2.0, 7)),
+    AtomicCase(
+        "erf_inv",
+        jax.lax.erf_inv_p,
+        jax.lax.erf_inv,
+        lambda: jnp.linspace(-0.7, 0.7, 7),
+    ),
+    AtomicCase(
+        "rsqrt",
+        jax.lax.rsqrt_p,
+        lambda x: jax.lax.rsqrt_p.bind(x),
+        lambda: jnp.linspace(0.25, 2.0, 7),
+    ),
     AtomicCase("exp2", jax.lax.exp2_p, jnp.exp2, lambda: jnp.linspace(-1.0, 1.0, 7)),
-    AtomicCase("integer_pow", jax.lax.integer_pow_p, lambda x: x**3, lambda: jnp.linspace(0.5, 2.0, 7)),
-    AtomicCase("pow", jax.lax.pow_p, lambda x: x**2.5, lambda: jnp.linspace(0.5, 2.0, 7)),
+    AtomicCase(
+        "integer_pow",
+        jax.lax.integer_pow_p,
+        lambda x: x**3,
+        lambda: jnp.linspace(0.5, 2.0, 7),
+    ),
+    AtomicCase(
+        "pow", jax.lax.pow_p, lambda x: x**2.5, lambda: jnp.linspace(0.5, 2.0, 7)
+    ),
 ]
 
 
@@ -258,45 +341,228 @@ MANUAL_COVERAGE: list[ManualCoverage] = [
     # reshape and concatenate rather than merely being wrong. They are covered
     # manually because the shared autodiff reference needs a square elementwise
     # Jacobian, which a rearrangement does not have.
-    ManualCoverage(jax.lax.reshape_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_rearrangements_are_zero"),
-    ManualCoverage(jax.lax.concatenate_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_rearrangements_are_zero"),
-    ManualCoverage(jax.lax.slice_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_rearrangements_are_zero"),
-    ManualCoverage(jax.lax.scatter_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_scatter_is_zero"),
-    ManualCoverage(jax.lax.select_n_p, Context.INVERSE_LOGDET, "partial", "test_logabsdet_select_n_is_zero"),
-    ManualCoverage(jax.lax.convert_element_type_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_convert_element_type_is_zero"),
-    ManualCoverage(jax.lax.bitcast_convert_type_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_bitcast_is_zero"),
-    ManualCoverage(jax.lax.conj_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_conj_is_zero"),
+    ManualCoverage(
+        jax.lax.reshape_p,
+        Context.INVERSE_LOGDET,
+        "array",
+        "test_logabsdet_rearrangements_are_zero",
+    ),
+    ManualCoverage(
+        jax.lax.concatenate_p,
+        Context.INVERSE_LOGDET,
+        "array",
+        "test_logabsdet_rearrangements_are_zero",
+    ),
+    ManualCoverage(
+        jax.lax.slice_p,
+        Context.INVERSE_LOGDET,
+        "array",
+        "test_logabsdet_rearrangements_are_zero",
+    ),
+    ManualCoverage(
+        jax.lax.scatter_p,
+        Context.INVERSE_LOGDET,
+        "array",
+        "test_logabsdet_scatter_is_zero",
+    ),
+    ManualCoverage(
+        jax.lax.select_n_p,
+        Context.INVERSE_LOGDET,
+        "partial",
+        "test_logabsdet_select_n_is_zero",
+    ),
+    ManualCoverage(
+        jax.lax.convert_element_type_p,
+        Context.INVERSE_LOGDET,
+        "array",
+        "test_logabsdet_convert_element_type_is_zero",
+    ),
+    ManualCoverage(
+        jax.lax.bitcast_convert_type_p,
+        Context.INVERSE_LOGDET,
+        "array",
+        "test_logabsdet_bitcast_is_zero",
+    ),
+    ManualCoverage(
+        jax.lax.conj_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_conj_is_zero"
+    ),
     # Projections: no determinant is defined, so the rule reports NaN.
-    ManualCoverage(jax.lax.real_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_projection_is_nan"),
-    ManualCoverage(jax.lax.imag_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_projection_is_nan"),
-    ManualCoverage(jax.lax.dot_general_p, Context.INVERSE, "dot", "test_inverse_dot_general_lhs"),
-    ManualCoverage(jax.lax.concatenate_p, Context.INVERSE, "array", "test_inverse_split"),
-    ManualCoverage(jax.lax.squeeze_p, Context.INVERSE, "array", "test_inverse_squeeze_broadcast"),
-    ManualCoverage(jax.lax.broadcast_in_dim_p, Context.INVERSE, "array", "test_inverse_broadcast_scalar_to_vector_consistent"),
+    ManualCoverage(
+        jax.lax.real_p,
+        Context.INVERSE_LOGDET,
+        "array",
+        "test_logabsdet_projection_is_nan",
+    ),
+    ManualCoverage(
+        jax.lax.imag_p,
+        Context.INVERSE_LOGDET,
+        "array",
+        "test_logabsdet_projection_is_nan",
+    ),
+    ManualCoverage(
+        jax.lax.dot_general_p, Context.INVERSE, "dot", "test_inverse_dot_general_lhs"
+    ),
+    ManualCoverage(
+        jax.lax.concatenate_p, Context.INVERSE, "array", "test_inverse_split"
+    ),
+    ManualCoverage(
+        jax.lax.squeeze_p, Context.INVERSE, "array", "test_inverse_squeeze_broadcast"
+    ),
+    ManualCoverage(
+        jax.lax.broadcast_in_dim_p,
+        Context.INVERSE,
+        "array",
+        "test_inverse_broadcast_scalar_to_vector_consistent",
+    ),
     ManualCoverage(jax.lax.rev_p, Context.INVERSE, "array", "test_inverse_rev_reshape"),
-    ManualCoverage(jax.lax.gather_p, Context.INVERSE, "array", "test_inverse_gather_permutation"),
-    ManualCoverage(jax.lax.scatter_p, Context.INVERSE, "array", "test_inverse_scatter_overwrite_nonconstant"),
-    ManualCoverage(jax.lax.select_n_p, Context.INVERSE, "partial", "test_inverse_uniform_select_n"),
-    ManualCoverage(jax.lax.reshape_p, Context.INVERSE, "array", "test_inverse_rev_reshape"),
-    ManualCoverage(jax.lax.convert_element_type_p, Context.INVERSE, "array", "test_inverse_convert_element_type_widen"),
-    ManualCoverage(jax.lax.bitcast_convert_type_p, Context.INVERSE, "array", "test_inverse_bitcast_convert_type"),
-    ManualCoverage(jax.lax.transpose_p, Context.INVERSE, "array", "test_inverse_transpose"),
-    ManualCoverage(jax.lax.slice_p, Context.INVERSE, "array", "test_inverse_strided_slice"),
-    ManualCoverage(jax.lax.dynamic_slice_p, Context.INVERSE, "partial", "test_inverse_disjoint_slices_scheduling"),
+    ManualCoverage(
+        jax.lax.gather_p, Context.INVERSE, "array", "test_inverse_gather_permutation"
+    ),
+    ManualCoverage(
+        jax.lax.scatter_p,
+        Context.INVERSE,
+        "array",
+        "test_inverse_scatter_overwrite_nonconstant",
+    ),
+    ManualCoverage(
+        jax.lax.select_n_p, Context.INVERSE, "partial", "test_inverse_uniform_select_n"
+    ),
+    ManualCoverage(
+        jax.lax.reshape_p, Context.INVERSE, "array", "test_inverse_rev_reshape"
+    ),
+    ManualCoverage(
+        jax.lax.convert_element_type_p,
+        Context.INVERSE,
+        "array",
+        "test_inverse_convert_element_type_widen",
+    ),
+    ManualCoverage(
+        jax.lax.bitcast_convert_type_p,
+        Context.INVERSE,
+        "array",
+        "test_inverse_bitcast_convert_type",
+    ),
+    ManualCoverage(
+        jax.lax.transpose_p, Context.INVERSE, "array", "test_inverse_transpose"
+    ),
+    ManualCoverage(
+        jax.lax.slice_p, Context.INVERSE, "array", "test_inverse_strided_slice"
+    ),
+    ManualCoverage(
+        jax.lax.dynamic_slice_p,
+        Context.INVERSE,
+        "partial",
+        "test_inverse_disjoint_slices_scheduling",
+    ),
     ManualCoverage(jax.lax.split_p, Context.INVERSE, "array", "test_inverse_split"),
-    ManualCoverage(jax.lax.cond_p, Context.INVERSE, "control", "test_inverse_cond_with_known_branch"),
-    ManualCoverage(jax.lax.scan_p, Context.INVERSE, "control", "test_inverse_scan_carry_only"),
-    ManualCoverage(jax.lax.while_p, Context.INVERSE, "control", "test_inverse_while_rule_level"),
-    ManualCoverage(jax.lax.split_p, Context.INVERSE_LOGDET, "array", "test_inverse_and_logabsdet_split_rule"),
-    ManualCoverage(jax.lax.rev_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_nested_jit_flip"),
-    ManualCoverage(jax.lax.squeeze_p, Context.INVERSE_LOGDET, "array", "test_inverse_and_logabsdet_squeeze_rule"),
-    ManualCoverage(jax.lax.transpose_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_transpose_chain"),
-    ManualCoverage(jax.lax.gather_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_gather_permutation"),
-    ManualCoverage(jax.lax.broadcast_in_dim_p, Context.INVERSE_LOGDET, "array", "test_inverse_and_logabsdet_broadcast_is_undefined"),
-    ManualCoverage(jax.lax.dot_general_p, Context.INVERSE_LOGDET, "dot", "test_inverse_and_logabsdet_dot_general_lhs"),
-    ManualCoverage(jax.lax.cond_p, Context.INVERSE_LOGDET, "control", "test_inverse_and_logabsdet_cond_with_known_branch"),
-    ManualCoverage(jax.lax.scan_p, Context.INVERSE_LOGDET, "control", "test_inverse_and_logabsdet_scan_carry_only"),
-    ManualCoverage(jax.lax.while_p, Context.INVERSE_LOGDET, "control", "test_inverse_and_logabsdet_while_rule_level"),
+    ManualCoverage(
+        jax.lax.cond_p,
+        Context.INVERSE,
+        "control",
+        "test_inverse_cond_with_known_branch",
+    ),
+    ManualCoverage(
+        jax.lax.scan_p, Context.INVERSE, "control", "test_inverse_scan_carry_only"
+    ),
+    ManualCoverage(
+        jax.lax.while_p, Context.INVERSE, "control", "test_inverse_while_rule_level"
+    ),
+    ManualCoverage(
+        jax.lax.split_p,
+        Context.INVERSE_LOGDET,
+        "array",
+        "test_inverse_and_logabsdet_split_rule",
+    ),
+    ManualCoverage(
+        jax.lax.rev_p, Context.INVERSE_LOGDET, "array", "test_logabsdet_nested_jit_flip"
+    ),
+    ManualCoverage(
+        jax.lax.squeeze_p,
+        Context.INVERSE_LOGDET,
+        "array",
+        "test_inverse_and_logabsdet_squeeze_rule",
+    ),
+    ManualCoverage(
+        jax.lax.transpose_p,
+        Context.INVERSE_LOGDET,
+        "array",
+        "test_logabsdet_transpose_chain",
+    ),
+    ManualCoverage(
+        jax.lax.gather_p,
+        Context.INVERSE_LOGDET,
+        "array",
+        "test_logabsdet_gather_permutation",
+    ),
+    ManualCoverage(
+        jax.lax.broadcast_in_dim_p,
+        Context.INVERSE_LOGDET,
+        "array",
+        "test_inverse_and_logabsdet_broadcast_is_undefined",
+    ),
+    ManualCoverage(
+        jax.lax.dot_general_p,
+        Context.INVERSE_LOGDET,
+        "dot",
+        "test_inverse_and_logabsdet_dot_general_lhs",
+    ),
+    ManualCoverage(
+        jax.lax.cond_p,
+        Context.INVERSE_LOGDET,
+        "control",
+        "test_inverse_and_logabsdet_cond_with_known_branch",
+    ),
+    ManualCoverage(
+        jax.lax.scan_p,
+        Context.INVERSE_LOGDET,
+        "control",
+        "test_inverse_and_logabsdet_scan_carry_only",
+    ),
+    ManualCoverage(
+        jax.lax.while_p,
+        Context.INVERSE_LOGDET,
+        "control",
+        "test_inverse_and_logabsdet_while_rule_level",
+    ),
+    # Fourier: inverse by the swapped transform, log-det -/+n log n.
+    ManualCoverage(
+        jax.lax.fft_p, Context.INVERSE, "array", "test_fft_roundtrip_and_logdet"
+    ),
+    ManualCoverage(
+        jax.lax.fft_p, Context.INVERSE_LOGDET, "array", "test_fft_roundtrip_and_logdet"
+    ),
+    # Extrema recover their active side, NaN where clipped, log-det zero.
+    ManualCoverage(
+        jax.lax.max_p, Context.INVERSE, "array", "test_maximum_recovers_the_active_side"
+    ),
+    ManualCoverage(
+        jax.lax.max_p,
+        Context.INVERSE_LOGDET,
+        "array",
+        "test_maximum_recovers_the_active_side",
+    ),
+    ManualCoverage(
+        jax.lax.min_p, Context.INVERSE, "array", "test_minimum_recovers_the_active_side"
+    ),
+    ManualCoverage(
+        jax.lax.min_p,
+        Context.INVERSE_LOGDET,
+        "array",
+        "test_minimum_recovers_the_active_side",
+    ),
+    # Scatter-add is a translation of the operand, whatever the indices.
+    ManualCoverage(
+        jax.lax.scatter_add_p,
+        Context.INVERSE,
+        "array",
+        "test_scatter_add_roundtrip_and_logdet",
+    ),
+    ManualCoverage(
+        jax.lax.scatter_add_p,
+        Context.INVERSE_LOGDET,
+        "array",
+        "test_scatter_add_roundtrip_and_logdet",
+    ),
 ]
 
 
