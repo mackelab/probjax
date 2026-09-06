@@ -1,5 +1,6 @@
 from probjax.core.jaxpr_propagation.context import ExecutionContext
 from probjax.core.jaxpr_propagation.engine import (
+    StallRecoveryResult,
     identity_reducer,
     interpret,
     naive_cost_fn,
@@ -24,6 +25,7 @@ __all__ = [
     "InterpreterSpec",
     "Knowness",
     "KnownessLevel",
+    "StallRecoveryResult",
     "identity_reducer",
     "interpret",
     "naive_cost_fn",

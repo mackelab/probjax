@@ -26,6 +26,10 @@ from probjax.core.interpreters.inverse.affine import (
     is_volume_preserving,
     solve_affine_inverse,
 )
+from probjax.core.interpreters.inverse.recovery import (
+    cached_inverse_graph,
+    make_affine_recovery,
+)
 from probjax.core.jaxpr_propagation import interpret, propagate
 from probjax.core.jaxpr_propagation.utils import KnownessLevel
 from probjax.core.registry import invalid_inverse_value, is_static_zero
@@ -227,6 +231,25 @@ def _unflatten_targets(target_trees, out):
     return tuple(parts)
 
 
+def _validate_inverse_shapes(value, forward_output):
+    """The output is also the presumed input signature for automatic inversion."""
+    leaves, tree = jax.tree_util.tree_flatten_with_path(value)
+    expected, expected_tree = jax.tree_util.tree_flatten(forward_output)
+    if tree != expected_tree:
+        raise ValueError(
+            "Inverse output structure does not match function outputs; automatic "
+            "inversion requires matching input/output pytree structures."
+        )
+    for (path, leaf), output in zip(leaves, expected, strict=True):
+        shape = jnp.shape(leaf)
+        if shape != output.shape:
+            raise ValueError(
+                "Automatic inversion requires matching input/output shapes: "
+                f"leaf {jax.tree_util.keystr(path) or '<root>'} has presumed input "
+                f"shape {shape}, but the traced output has shape {output.shape}."
+            )
+
+
 def _trace_inverse_program(
     get_jaxpr, args, kwargs, invertible_arg, static_argnums, input_template
 ):
@@ -238,10 +261,10 @@ def _trace_inverse_program(
     """
     target_arg_indices = _resolve_invertible_indices(args, invertible_arg)
     if input_template is None:
-        jaxpr = get_jaxpr(*args, **kwargs)
+        jaxpr, output_shape = get_jaxpr(*args, **kwargs)
     else:
         trace_args = _trace_args_with_template(args, target_arg_indices, input_template)
-        jaxpr = get_jaxpr.for_inputs(trace_args, kwargs)
+        jaxpr, output_shape = get_jaxpr.for_inputs(trace_args, kwargs)
     (
         known_invars,
         target_invars,
@@ -255,6 +278,19 @@ def _trace_inverse_program(
         static_argnums,
         input_template,
     )
+    if input_template is not None:
+        _validate_inverse_shapes(input_template, output_shape)
+    selected = tuple(args[i] for i in target_arg_indices)
+    _validate_inverse_shapes(
+        selected[0] if len(selected) == 1 else selected, output_shape
+    )
+    if any(
+        tuple(v.aval.shape) != tuple(o.aval.shape)
+        for v, o in zip(target_invars, jaxpr.jaxpr.outvars, strict=False)
+    ) or len(target_invars) != len(jaxpr.jaxpr.outvars):
+        raise ValueError(
+            "Automatic inversion requires matching input/output shapes and structure"
+        )
     if len(args_for_propagate) - len(known_invars) != len(jaxpr.jaxpr.outvars):
         raise ValueError("Inverse output structure does not match function outputs")
     return jaxpr, known_invars, target_invars, args_for_propagate, target_trees
@@ -368,13 +404,15 @@ def _cached_jaxpr_and_tree_getter(fun: Callable, static_argnums=()):
     return get_jaxpr_and_tree
 
 
-def _cached_jaxpr_getter(fun: Callable, static_argnums=()):
+def _cached_jaxpr_getter(fun: Callable, static_argnums=(), *, return_shape=False):
     """Create a cached getter for JAXPR only (backward compatible)."""
 
     def fun_snapshot(*args, **kwargs):
         return fun(*args, **kwargs)
 
-    jaxpr_maker = jax.make_jaxpr(fun_snapshot, static_argnums=static_argnums)
+    jaxpr_maker = jax.make_jaxpr(
+        fun_snapshot, static_argnums=static_argnums, return_shape=return_shape
+    )
     cache: dict = {}
 
     def get_jaxpr_for(args, kwargs):
@@ -786,19 +824,19 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None, input_templat
             A tuple of indices solves several arguments jointly -- e.g.
             ``invertible_arg=(0, 1)`` inverts ``(x, y) -> (x + y, x - y)``
             back to ``(x, y)`` -- and returns them as a tuple in order.
-        input_template: Example value for the invertible argument, used to
-            trace ``fun`` instead of the supplied outputs. Needed when the
-            input and output structures differ -- ``tile``, padding, ``split``
-            -- where tracing with the outputs would stage the wrong program.
-            Parts of the input that the outputs determine (unpadded elements,
-            one copy of each duplication) are then recovered; a mismatching
-            output still reports NaN rather than a value.
+        input_template: Optional tracing example. It must preserve boundary shapes;
+            templates cannot enable expansion or other shape-changing inverses.
 
     Returns:
         A callable mapping outputs back to the invertible argument.
 
     Note:
-        **A failed inversion returns NaN, not an error.** The interpreter works
+        Detectable boundary shape/tree mismatches raise ValueError.
+        Elementwise affine sections use symbolic coefficients, without Jacobians.
+        Affine sections compose with nonlinear inverse rules; analysis and
+        schedules are cached, including normalized nested jit programs.
+
+        **An unresolved inversion returns NaN.** The interpreter works
         one equation at a time, so it inverts a *tree* of operations; a value
         used twice stalls it, because the bivariate rules need exactly one
         unknown operand.
@@ -835,7 +873,11 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None, input_templat
     if maybe_custom is not None:
         return maybe_custom
 
-    get_jaxpr = _cached_jaxpr_getter(fun, static_argnums=static_argnums)
+    get_jaxpr = _cached_jaxpr_getter(
+        fun, static_argnums=static_argnums, return_shape=True
+    )
+    recovery_cache = {}
+    schedule_cache = {}
 
     @wraps(fun)
     def wrapped(*args, **kwargs):
@@ -849,6 +891,7 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None, input_templat
         ) = _trace_inverse_program(
             get_jaxpr, args, kwargs, invertible_arg, static_argnums, input_template
         )
+        graph = cached_inverse_graph(jaxpr, target_invars, recovery_cache)
         if input_template is not None and not _outputs_match_program(
             args_for_propagate[len(known_invars) :], jaxpr.jaxpr.outvars
         ):
@@ -858,12 +901,25 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None, input_templat
         out, env = cast(
             tuple[list, Any],
             propagate(
-                jaxpr.jaxpr,
-                jaxpr.consts,
-                known_invars + jaxpr.jaxpr.outvars,
+                graph.jaxpr,
+                graph.consts,
+                known_invars + graph.jaxpr.outvars,
                 args_for_propagate,
                 target_invars,
                 process_eqn=processing_rule,
+                schedule_cache=schedule_cache,
+                stall_recovery=make_affine_recovery(
+                    graph,
+                    known_invars,
+                    args_for_propagate,
+                    target_invars,
+                    processing_rule,
+                    recovery_cache,
+                    schedule_cache=schedule_cache,
+                    with_logdet=isinstance(
+                        processing_rule, InverseAndLogAbsDetProcessingRule
+                    ),
+                ),
                 cost_fn=inverse_cost_fn,
                 process_all_eqns=True,
                 return_env=True,
@@ -903,12 +959,8 @@ def inverse_and_logabsdet(
         invertible_arg: Which positional argument to solve for (default 0).
             A tuple of indices solves several arguments jointly and returns
             them as a tuple in order.
-        input_template: Example value for the invertible argument, used to
-            trace ``fun`` instead of the supplied outputs. Needed when input
-            and output structures differ -- ``tile``, padding, ``split``.
-            Overdetermined-consistent outputs then recover the input (with a
-            NaN log-det, which has no square Jacobian); mismatching outputs
-            report NaN rather than a value.
+        input_template: Optional tracing example. It must preserve boundary shapes;
+            templates cannot enable expansion or other shape-changing inverses.
 
     Returns:
         ``(inverse_value, log_abs_det)``. Both are NaN if the inversion could
@@ -953,7 +1005,11 @@ def inverse_and_logabsdet(
 
         return custom_wrapped
 
-    get_jaxpr = _cached_jaxpr_getter(fun, static_argnums=static_argnums)
+    get_jaxpr = _cached_jaxpr_getter(
+        fun, static_argnums=static_argnums, return_shape=True
+    )
+    recovery_cache = {}
+    schedule_cache = {}
 
     @wraps(fun)
     def wrapped(*args, **kwargs):
@@ -969,7 +1025,8 @@ def inverse_and_logabsdet(
         ) = _trace_inverse_program(
             get_jaxpr, args, kwargs, invertible_arg, static_argnums, input_template
         )
-        invars = known_invars + jaxpr.jaxpr.outvars
+        graph = cached_inverse_graph(jaxpr, target_invars, recovery_cache)
+        invars = known_invars + graph.jaxpr.outvars
         outvars = target_invars
 
         if input_template is not None and not _outputs_match_program(
@@ -1006,12 +1063,25 @@ def inverse_and_logabsdet(
         inverse_result = cast(
             tuple[list, dict, Any],
             propagate(
-                jaxpr.jaxpr,
-                jaxpr.consts,
+                graph.jaxpr,
+                graph.consts,
                 invars,
                 args_for_propagate,
                 outvars,
                 process_eqn=processing_rule,
+                schedule_cache=schedule_cache,
+                stall_recovery=make_affine_recovery(
+                    graph,
+                    known_invars,
+                    args_for_propagate,
+                    target_invars,
+                    processing_rule,
+                    recovery_cache,
+                    schedule_cache=schedule_cache,
+                    with_logdet=isinstance(
+                        processing_rule, InverseAndLogAbsDetProcessingRule
+                    ),
+                ),
                 cost_fn=inverse_cost_fn,
                 process_all_eqns=True,
                 reducer=inverse_and_logabsdet_state_reducer,
