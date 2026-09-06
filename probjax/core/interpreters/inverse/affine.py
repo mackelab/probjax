@@ -147,12 +147,17 @@ def _mapped_sub_targets(eqn, sub, tainted: set) -> list | None:
     ]
 
 
-def is_affine_in(jaxpr: Jaxpr, target_vars: Sequence[Var]) -> bool:
-    """Whether ``jaxpr`` is affine in ``target_vars``, proven from its structure.
+def _walk_tainted(
+    jaxpr: Jaxpr, target_vars: Sequence[Var], decide, recurse, postcheck=None
+) -> bool:
+    """Shared taint-tracking walk over ``jaxpr`` equations.
 
-    Walks forward, tracking which variables depend on the target. An equation
-    whose inputs are all independent of the target is a constant subgraph and is
-    ignored however nonlinear it is -- ``exp(c) * x`` is affine in ``x``.
+    Tracks which variables depend on the target. Equations independent of the
+    target are constant subgraphs and are ignored. Nested subprograms recurse
+    via ``recurse``; otherwise ``decide(eqn, touching)`` verdicts each
+    tainted equation (False declines). Tainted outputs always extend the
+    taint, exactly as the three historical walks did. An optional
+    ``postcheck(jaxpr, tainted, target_vars)`` verdicts the final state.
     """
     tainted = set(target_vars)
     for eqn in jaxpr.eqns:
@@ -161,34 +166,55 @@ def is_affine_in(jaxpr: Jaxpr, target_vars: Sequence[Var]) -> bool:
             continue
         sub = _closed_sub_jaxpr(eqn)
         if sub is not None:
-            # A jitted (or otherwise nested) subprogram is affine exactly when
-            # the subprogram is affine in the operands carrying the target.
             mapped = _mapped_sub_targets(eqn, sub, tainted)
-            if mapped is None or not is_affine_in(sub.jaxpr, mapped):
+            if mapped is None or not recurse(sub.jaxpr, mapped):
                 return False
             tainted.update(v for v in eqn.outvars if isinstance(v, Var))
             continue
-        name = eqn.primitive.name
-        if name in _AFFINE_PRIMITIVES:
-            # When inverse() only receives a scalar reduction output, tracing
-            # loses the original input shape and produces reduce_sum[axes=()].
-            # Treating that apparent identity as invertible would invent a
-            # scalar inverse for an underdetermined vector reduction.
-            if name == "reduce_sum" and not eqn.params["axes"]:
-                return False
-        elif name in _BILINEAR_PRIMITIVES:
-            if len(touching) > 1:
-                return False  # e.g. x * x
-        elif name in _DATA_OPERAND_ONLY_PRIMITIVES:
-            if any(index != 0 for index in touching):
-                return False
-        elif name == "select_n":
-            if 0 in touching:
-                return False
-        else:
+        if not decide(eqn, touching):
             return False
         tainted.update(v for v in eqn.outvars if isinstance(v, Var))
+    if postcheck is not None:
+        return postcheck(jaxpr, tainted, target_vars)
     return True
+
+
+def _decide_affine(eqn, touching: list) -> bool:
+    name = eqn.primitive.name
+    if name in _AFFINE_PRIMITIVES:
+        # When inverse() only receives a scalar reduction output, tracing
+        # loses the original input shape and produces reduce_sum[axes=()].
+        # Treating that apparent identity as invertible would invent a
+        # scalar inverse for an underdetermined vector reduction.
+        return not (name == "reduce_sum" and not eqn.params["axes"])
+    if name in _BILINEAR_PRIMITIVES:
+        return len(touching) <= 1  # e.g. x * x is not affine
+    if name in _DATA_OPERAND_ONLY_PRIMITIVES:
+        return all(index == 0 for index in touching)
+    if name == "select_n":
+        return 0 not in touching
+    return False
+
+
+def is_affine_in(jaxpr: Jaxpr, target_vars: Sequence[Var]) -> bool:
+    """Whether ``jaxpr`` is affine in ``target_vars``, proven from its structure.
+
+    Walks forward, tracking which variables depend on the target. An equation
+    whose inputs are all independent of the target is a constant subgraph and is
+    ignored however nonlinear it is -- ``exp(c) * x`` is affine in ``x``.
+    """
+    return _walk_tainted(jaxpr, target_vars, _decide_affine, is_affine_in)
+
+
+def _decide_elementwise(eqn, touching: list) -> bool:
+    name = eqn.primitive.name
+    if name in _ELEMENTWISE_PRIMITIVES:
+        return True
+    if name == "mul":
+        return len(touching) <= 1
+    if name == "div":
+        return touching == [0]
+    return False
 
 
 def _is_elementwise_affine_in(jaxpr: Jaxpr, target_vars: Sequence[Var]) -> bool:
@@ -203,31 +229,9 @@ def _is_elementwise_affine_in(jaxpr: Jaxpr, target_vars: Sequence[Var]) -> bool:
     """
     if len(target_vars) != 1:
         return False
-    tainted = set(target_vars)
-    for eqn in jaxpr.eqns:
-        touching = _tainted_operands(eqn, tainted)
-        if not touching:
-            continue
-        sub = _closed_sub_jaxpr(eqn)
-        if sub is not None:
-            mapped = _mapped_sub_targets(eqn, sub, tainted)
-            if mapped is None or not _is_elementwise_affine_in(sub.jaxpr, mapped):
-                return False
-            tainted.update(v for v in eqn.outvars if isinstance(v, Var))
-            continue
-        name = eqn.primitive.name
-        if name in _ELEMENTWISE_PRIMITIVES:
-            pass
-        elif name == "mul":
-            if len(touching) > 1:
-                return False
-        elif name == "div":
-            if touching != [0]:
-                return False
-        else:
-            return False
-        tainted.update(v for v in eqn.outvars if isinstance(v, Var))
-    return True
+    return _walk_tainted(
+        jaxpr, target_vars, _decide_elementwise, _is_elementwise_affine_in
+    )
 
 
 #: Rearrangements that only move elements around: volume-preserving whenever
@@ -262,6 +266,40 @@ def _is_unit_literal(var) -> bool:
     return bool(np.all(magnitude == 1))
 
 
+def _decide_volume(eqn, touching: list) -> bool:
+    if len(eqn.outvars) != 1:
+        return False
+    out_size = math.prod(eqn.outvars[0].aval.shape)
+    name = eqn.primitive.name
+    if name in _VOLUME_REARRANGEMENTS or name in _VOLUME_POINTWISE:
+        return all(math.prod(eqn.invars[i].aval.shape) == out_size for i in touching)
+    if name in ("add", "add_any", "sub"):
+        if len(touching) > 1:
+            return False  # e.g. x + x scales by 2
+        # Broadcasting a scalar target is not square.
+        return math.prod(eqn.invars[touching[0]].aval.shape) == out_size
+    if name == "mul":
+        if len(touching) > 1 or len(eqn.invars) != 2:
+            return False
+        if not _is_unit_literal(eqn.invars[1 - touching[0]]):
+            return False
+        return math.prod(eqn.invars[touching[0]].aval.shape) == out_size
+    if name == "div":
+        if touching != [0]:
+            return False
+        if not _is_unit_literal(eqn.invars[1]):
+            return False
+        return math.prod(eqn.invars[0].aval.shape) == out_size
+    return False
+
+
+def _volume_postcheck(jaxpr: Jaxpr, tainted: set, target_vars: Sequence[Var]) -> bool:
+    output_vars = jaxpr.outvars
+    return all(isinstance(var, Var) and var in tainted for var in output_vars) and sum(
+        math.prod(var.aval.shape) for var in output_vars
+    ) == math.prod(target_vars[0].aval.shape)
+
+
 def is_volume_preserving(jaxpr: Jaxpr, target_vars: Sequence[Var]) -> bool:
     """Whether ``jaxpr`` has |det J| = 1 in ``target_vars``, proven structurally.
 
@@ -289,54 +327,9 @@ def is_volume_preserving(jaxpr: Jaxpr, target_vars: Sequence[Var]) -> bool:
     # conservative and let the general log-determinant path handle joint maps.
     if len(target_vars) != 1:
         return False
-    tainted = set(target_vars)
-    for eqn in jaxpr.eqns:
-        touching = _tainted_operands(eqn, tainted)
-        if not touching:
-            continue
-        sub = _closed_sub_jaxpr(eqn)
-        if sub is not None:
-            # A nested subprogram preserves volume exactly when it does so
-            # in the operands carrying the target; every tainted variable
-            # stays of the form ±target + const across the boundary.
-            mapped = _mapped_sub_targets(eqn, sub, tainted)
-            if mapped is None or not is_volume_preserving(sub.jaxpr, mapped):
-                return False
-            tainted.update(v for v in eqn.outvars if isinstance(v, Var))
-            continue
-        if len(eqn.outvars) != 1:
-            return False
-        out_size = math.prod(eqn.outvars[0].aval.shape)
-        name = eqn.primitive.name
-        if name in _VOLUME_REARRANGEMENTS or name in _VOLUME_POINTWISE:
-            if any(math.prod(eqn.invars[i].aval.shape) != out_size for i in touching):
-                return False
-        elif name in ("add", "add_any", "sub"):
-            if len(touching) > 1:
-                return False  # e.g. x + x scales by 2
-            if math.prod(eqn.invars[touching[0]].aval.shape) != out_size:
-                return False  # broadcasting a scalar target is not square
-        elif name == "mul":
-            if len(touching) > 1 or len(eqn.invars) != 2:
-                return False
-            if not _is_unit_literal(eqn.invars[1 - touching[0]]):
-                return False
-            if math.prod(eqn.invars[touching[0]].aval.shape) != out_size:
-                return False
-        elif name == "div":
-            if touching != [0]:
-                return False
-            if not _is_unit_literal(eqn.invars[1]):
-                return False
-            if math.prod(eqn.invars[0].aval.shape) != out_size:
-                return False
-        else:
-            return False
-        tainted.update(v for v in eqn.outvars if isinstance(v, Var))
-    output_vars = jaxpr.outvars
-    return all(isinstance(var, Var) and var in tainted for var in output_vars) and sum(
-        math.prod(var.aval.shape) for var in output_vars
-    ) == math.prod(target_vars[0].aval.shape)
+    return _walk_tainted(
+        jaxpr, target_vars, _decide_volume, is_volume_preserving, _volume_postcheck
+    )
 
 
 def _flat_size(var: Var) -> int:

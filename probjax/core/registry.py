@@ -503,6 +503,58 @@ def _resolve_branch_guard(guard, solving_for_left: bool):
     return guard
 
 
+_UNSET = object()
+
+
+def _evaluate_inverse(inverse_prim_or_fn, eqn_params, out_val, other=_UNSET):
+    """Evaluate an inverse given the forward output (and the known input)."""
+    if isinstance(inverse_prim_or_fn, Primitive):
+        if other is _UNSET:
+            return bind_primitive(inverse_prim_or_fn, eqn_params, out_val)
+        return bind_primitive(inverse_prim_or_fn, eqn_params, out_val, other)
+    clean_params = sanitize_bind_params(eqn_params)
+    if other is _UNSET:
+        return inverse_prim_or_fn(out_val, **clean_params)
+    return inverse_prim_or_fn(out_val, other, **clean_params)
+
+
+def _bivariate_branch(eqn, known_in, left_inverse, right_inverse):
+    """Pick the unknown side of a binary primitive.
+
+    Returns ``(target_var, other, inv_fn, left_known)`` or ``None`` when both
+    or neither input is known.
+    """
+    left_known = known_in[0] is not None
+    right_known = known_in[1] is not None
+
+    # Need exactly one known input to solve
+    if left_known == right_known:
+        return None
+
+    if left_known:
+        # Left is known, solve for right: right = right_inverse(out, left)
+        return eqn.invars[1], known_in[0], right_inverse, True
+    # Right is known, solve for left: left = left_inverse(out, right)
+    return eqn.invars[0], known_in[1], left_inverse, False
+
+
+def _poison_logdet_on_guard(valid, log_abs_det):
+    """Poison a scalar logdet with NaN where a guard is violated."""
+    # The value is masked elementwise -- only the offending entries have
+    # no preimage. The log-determinant is one scalar for the whole map,
+    # so a single bad element poisons it.
+    if not guard_is_statically_satisfied(valid):
+        return jnp.where(jnp.all(valid), log_abs_det, jnp.asarray(jnp.nan))
+    return log_abs_det
+
+
+def _single_var_updates(target_var, log_abs_det):
+    """Build state updates for a logdet attributed to one variable."""
+    if isinstance(target_var, Literal):
+        return {}
+    return {target_var: log_abs_det}
+
+
 def register_univariate_inverse(
     forward_prim: Primitive,
     inverse_prim_or_fn: Union[Primitive, Callable],
@@ -532,11 +584,7 @@ def register_univariate_inverse(
         if out_val is None:
             return None
 
-        if isinstance(inverse_prim_or_fn, Primitive):
-            inv_prim = inverse_prim_or_fn
-            result = bind_primitive(inv_prim, eqn.params, out_val)
-        else:
-            result = inverse_prim_or_fn(out_val, **sanitize_bind_params(eqn.params))
+        result = _evaluate_inverse(inverse_prim_or_fn, eqn.params, out_val)
 
         if guard is not None:
             result = apply_inverse_guard(
@@ -581,28 +629,12 @@ def register_bivariate_inverse(
         if out_val is None:
             return None
 
-        left_known = known_in[0] is not None
-        right_known = known_in[1] is not None
-
-        # Need exactly one known input to solve
-        if left_known == right_known:
+        branch = _bivariate_branch(eqn, known_in, left_inverse, right_inverse)
+        if branch is None:
             return None
+        target_var, other, inv_fn, left_known = branch
 
-        if left_known:
-            # Left is known, solve for right: right = right_inverse(out, left)
-            other = known_in[0]
-            inv_fn = right_inverse
-            target_var = eqn.invars[1]
-        else:
-            # Right is known, solve for left: left = left_inverse(out, right)
-            other = known_in[1]
-            inv_fn = left_inverse
-            target_var = eqn.invars[0]
-
-        if isinstance(inv_fn, Primitive):
-            result = bind_primitive(inv_fn, eqn.params, out_val, other)
-        else:
-            result = inv_fn(out_val, other, **sanitize_bind_params(eqn.params))
+        result = _evaluate_inverse(inv_fn, eqn.params, out_val, other)
 
         branch_guard = _resolve_branch_guard(guard, solving_for_left=not left_known)
         if branch_guard is not None:
@@ -634,7 +666,6 @@ def register_univariate_inverse_logdet(
     """
     Register a univariate inverse+logdet rule with explicit logdet.
     """
-    from jax.extend.core import Literal
 
     def rule(eqn: JaxprEqn, known_in: Sequence[Any], known_out: Sequence[Any]):
         del known_in
@@ -643,18 +674,11 @@ def register_univariate_inverse_logdet(
             return None
 
         # Compute inverse value
-        if isinstance(inverse_prim_or_fn, Primitive):
-            inv_prim = inverse_prim_or_fn
-            in_val = bind_primitive(inv_prim, eqn.params, out_val)
-        else:
-            in_val = inverse_prim_or_fn(out_val, **sanitize_bind_params(eqn.params))
+        in_val = _evaluate_inverse(inverse_prim_or_fn, eqn.params, out_val)
 
         log_abs_det = logdet_fn(out_val, in_val, eqn.params)
 
         if guard is not None:
-            # The value is masked elementwise -- only the offending entries have
-            # no preimage. The log-determinant is one scalar for the whole map,
-            # so a single bad element poisons it.
             valid = guard(out_val, eqn.params)
             in_val = apply_inverse_guard(
                 in_val,
@@ -662,15 +686,10 @@ def register_univariate_inverse_logdet(
                 valid,
                 message=f"{forward_prim.name} has no inverse at this value",
             )
-            if not guard_is_statically_satisfied(valid):
-                log_abs_det = jnp.where(
-                    jnp.all(valid), log_abs_det, jnp.asarray(jnp.nan)
-                )
+            log_abs_det = _poison_logdet_on_guard(valid, log_abs_det)
 
         # Build state updates
-        updates = {}
-        if not isinstance(eqn.invars[0], Literal):
-            updates[eqn.invars[0]] = log_abs_det
+        updates = _single_var_updates(eqn.invars[0], log_abs_det)
 
         return ProcessedResult([eqn.invars[0]], [in_val], updates)
 
@@ -690,35 +709,20 @@ def register_bivariate_inverse_logdet(
     """
     Register a bivariate inverse+logdet rule with explicit logdet.
     """
-    from jax.extend.core import Literal
 
     def rule(eqn: JaxprEqn, known_in: Sequence[Any], known_out: Sequence[Any]):
         out_val = known_out[0]
         if out_val is None:
             return None
 
-        left_known = known_in[0] is not None
-        right_known = known_in[1] is not None
-
-        if left_known == right_known:
+        branch = _bivariate_branch(eqn, known_in, left_inverse, right_inverse)
+        if branch is None:
             return None
-
-        if left_known:
-            other = known_in[0]
-            inv_fn = right_inverse
-            logdet_fn = right_logdet_fn
-            target_var = eqn.invars[1]
-        else:
-            other = known_in[1]
-            inv_fn = left_inverse
-            logdet_fn = left_logdet_fn
-            target_var = eqn.invars[0]
+        target_var, other, inv_fn, left_known = branch
+        logdet_fn = right_logdet_fn if left_known else left_logdet_fn
 
         # Compute inverse value
-        if isinstance(inv_fn, Primitive):
-            result = bind_primitive(inv_fn, eqn.params, out_val, other)
-        else:
-            result = inv_fn(out_val, other, **sanitize_bind_params(eqn.params))
+        result = _evaluate_inverse(inv_fn, eqn.params, out_val, other)
 
         log_abs_det = logdet_fn(out_val, result, other, eqn.params)
 
@@ -731,15 +735,10 @@ def register_bivariate_inverse_logdet(
                 valid,
                 message=f"{prim.name} has no inverse at this value",
             )
-            if not guard_is_statically_satisfied(valid):
-                log_abs_det = jnp.where(
-                    jnp.all(valid), log_abs_det, jnp.asarray(jnp.nan)
-                )
+            log_abs_det = _poison_logdet_on_guard(valid, log_abs_det)
 
         # Build state updates
-        updates = {}
-        if not isinstance(target_var, Literal):
-            updates[target_var] = log_abs_det
+        updates = _single_var_updates(target_var, log_abs_det)
 
         return ProcessedResult([target_var], [result], updates)
 

@@ -54,40 +54,42 @@ def logit(x, **params):
     return jax.lax.log_p.bind(x) - jax.lax.log1p_p.bind(-x)  # type: ignore
 
 
-def sqrt_inverse(x, **params):
+def _strip_accuracy(params):
     params = dict(params)
     params.pop("accuracy", None)
-    return jax.lax.pow_p.bind(x, 2.0, **params)
+    return params
+
+
+def _bind_without_accuracy(prim, x, params):
+    return prim.bind(x, **_strip_accuracy(params))
+
+
+def _pow_without_accuracy(x, power, params):
+    return jax.lax.pow_p.bind(x, power, **_strip_accuracy(params))
+
+
+def sqrt_inverse(x, **params):
+    return _pow_without_accuracy(x, 2.0, params)
 
 
 def rsqrt_inverse(x, **params):
-    params = dict(params)
-    params.pop("accuracy", None)
-    return 1.0 / jax.lax.pow_p.bind(x, 2.0, **params)
+    return 1.0 / _pow_without_accuracy(x, 2.0, params)
 
 
 def cbrt_inverse(x, **params):
-    params = dict(params)
-    params.pop("accuracy", None)
-    return jax.lax.pow_p.bind(x, 3.0, **params)
+    return _pow_without_accuracy(x, 3.0, params)
 
 
 def asin_inverse(x, **params):
-    params = dict(params)
-    params.pop("accuracy", None)
-    return jax.lax.asin_p.bind(x, **params)
+    return _bind_without_accuracy(jax.lax.asin_p, x, params)
 
 
 def acos_inverse(x, **params):
-    params = dict(params)
-    params.pop("accuracy", None)
-    return jax.lax.acos_p.bind(x, **params)
+    return _bind_without_accuracy(jax.lax.acos_p, x, params)
 
 
 def atan_inverse(x, **params):
-    params = dict(params)
-    params.pop("accuracy", None)
-    return jax.lax.atan_p.bind(x, **params)
+    return _bind_without_accuracy(jax.lax.atan_p, x, params)
 
 
 def sin_inverse(x, **params):
@@ -292,19 +294,27 @@ def _transpose_if_needed(x, permutation):
     return jnp.transpose(x, permutation)
 
 
-def _dot_general_left_shapes(out, rhs, dimension_numbers):
+def _check_dot_general_ranks(dimension_numbers):
+    """Validate matched contracting/batch ranks; return them as tuples."""
     (lhs_contracting, rhs_contracting), (lhs_batch, rhs_batch) = dimension_numbers
-    lhs_contracting = tuple(lhs_contracting)
-    rhs_contracting = tuple(rhs_contracting)
-    lhs_batch = tuple(lhs_batch)
-    rhs_batch = tuple(rhs_batch)
-
     if len(lhs_contracting) != len(rhs_contracting):
         raise NotImplementedError(
             "dot_general inverse requires matched contracting ranks"
         )
     if len(lhs_batch) != len(rhs_batch):
         raise NotImplementedError("dot_general inverse requires matched batch ranks")
+    return (
+        tuple(lhs_contracting),
+        tuple(rhs_contracting),
+        tuple(lhs_batch),
+        tuple(rhs_batch),
+    )
+
+
+def _dot_general_left_shapes(out, rhs, dimension_numbers):
+    lhs_contracting, rhs_contracting, lhs_batch, rhs_batch = _check_dot_general_ranks(
+        dimension_numbers
+    )
 
     rhs_free_axes = tuple(
         i for i in range(rhs.ndim) if i not in rhs_contracting and i not in rhs_batch
@@ -343,18 +353,9 @@ def _dot_general_left_shapes(out, rhs, dimension_numbers):
 
 
 def _dot_general_right_shapes(out, lhs, dimension_numbers):
-    (lhs_contracting, rhs_contracting), (lhs_batch, rhs_batch) = dimension_numbers
-    lhs_contracting = tuple(lhs_contracting)
-    rhs_contracting = tuple(rhs_contracting)
-    lhs_batch = tuple(lhs_batch)
-    rhs_batch = tuple(rhs_batch)
-
-    if len(lhs_contracting) != len(rhs_contracting):
-        raise NotImplementedError(
-            "dot_general inverse requires matched contracting ranks"
-        )
-    if len(lhs_batch) != len(rhs_batch):
-        raise NotImplementedError("dot_general inverse requires matched batch ranks")
+    lhs_contracting, rhs_contracting, lhs_batch, rhs_batch = _check_dot_general_ranks(
+        dimension_numbers
+    )
 
     lhs_free_axes = tuple(
         i for i in range(lhs.ndim) if i not in lhs_contracting and i not in lhs_batch
@@ -824,13 +825,15 @@ def parse_scan_problem(eqn, known_invars, known_outvars):
     known_ys_out_vals = list(known_outvars[num_carry:])
 
     if any(v is None for v in known_const_vals):
-        raise NotImplementedError("scan inverse requires known scan constants")
-    if any(v is None for v in known_xs_vals):
-        raise NotImplementedError("scan inverse requires known scan sequence inputs")
-    if any(v is None for v in known_carry_out_vals):
-        raise NotImplementedError("scan inverse requires known final carry")
-    if any(v is None for v in known_ys_out_vals):
-        raise NotImplementedError("scan inverse requires known scan outputs")
+        # Decline rather than raise: a stalled scan reports NaN like any
+        # other stalled equation.
+        return None
+    # Sequence inputs, outputs and final-carry lanes may be unknown: the
+    # nested body solve below arbitrates per step, so a counter lane or a
+    # dead output no longer vetoes the lanes that do invert. At least one
+    # known final-carry lane is still needed to seed the backward pass.
+    if num_carry and all(v is None for v in known_carry_out_vals):
+        return None
 
     body_invars = list(body.jaxpr.invars)
     body_outvars = list(body.jaxpr.outvars)
@@ -848,12 +851,11 @@ def parse_scan_problem(eqn, known_invars, known_outvars):
     body_carry_outvars = body_outvars[:num_carry]
     body_y_outvars = body_outvars[num_carry:]
 
-    for value in known_xs_vals:
+    for value in list(known_xs_vals) + list(known_ys_out_vals):
+        if value is None:
+            continue
         if jnp.asarray(value).shape[0] != length:
             raise NotImplementedError("scan inverse sequence length mismatch")
-    for value in known_ys_out_vals:
-        if jnp.asarray(value).shape[0] != length:
-            raise NotImplementedError("scan inverse output length mismatch")
 
     return {
         "body": body,
@@ -1450,52 +1452,122 @@ def invert_cond(eqn, known_invars, known_outvars):
     return ProcessedResult(target_outer_vars, list(target_vals))
 
 
+def _solve_scan_xs_per_step(problem):
+    """Solve every step's sequence inputs from its outputs; None on failure.
+
+    Only for carry-free scans (``lax.map`` shape): each step is an independent
+    body inversion, restacked along the sequence axis afterwards.
+    """
+    if problem["length"] == 0:
+        # Empty sequences contribute nothing; any correctly shaped value works.
+        return [
+            jnp.zeros(var.aval.shape, dtype=var.aval.dtype)
+            for var in problem["xs_invars"]
+        ]
+    lanes: dict[int, list] = {}
+    for index in range(problem["length"]):
+        y_step_vals = [value[index] for value in problem["known_ys_out_vals"]]
+        step_xs = solve_nested_values(
+            jaxpr=problem["body"].jaxpr,
+            consts=problem["body"].consts,
+            known_vars=list(problem["body_const_invars"])
+            + list(problem["body_y_outvars"]),
+            known_vals=list(problem["known_const_vals"]) + y_step_vals,
+            target_vars=problem["body_x_invars"],
+            process_eqn=_make_inverse_processing_rule(),
+            cost_fn=_get_inverse_cost_fn(),
+        )
+        if any(v is None for v in step_xs):
+            return None
+        for lane, value in enumerate(step_xs):
+            lanes.setdefault(lane, []).append(value)
+    return [jnp.stack(lanes[lane], axis=0) for lane in sorted(lanes)]
+
+
 @REGISTRY.rule(jax.lax.scan_p, Context.INVERSE)
 def invert_scan(eqn, known_invars, known_outvars):
-    if any(out is None for out in known_outvars):
+    # Partial outputs tolerated (see supports_partial_outputs below): the
+    # backward pass seeds from whichever final-carry lanes are known.
+    if all(out is None for out in known_outvars):
         return None
     problem = parse_scan_problem(eqn, known_invars, known_outvars)
+    if problem is None:
+        return None
 
     missing_indices = [
         i for i, value in enumerate(problem["known_carry_in_vals"]) if value is None
     ]
-    if not missing_indices:
+    xs_missing_indices = (
+        [i for i, value in enumerate(problem["known_xs_vals"]) if value is None]
+        if not problem["carry_invars"]
+        else []
+    )
+    if not missing_indices and not xs_missing_indices:
         return ProcessedResult([], [])
 
-    current_carry = list(problem["known_carry_out_vals"])
-    for index in scan_reverse_indices(problem["length"], problem["reverse"]):
-        x_step_vals = [value[index] for value in problem["known_xs_vals"]]
-        y_step_vals = [value[index] for value in problem["known_ys_out_vals"]]
+    output_vars: list = []
+    output_vals: list = []
+    if missing_indices:
+        # Unknown lanes (a dead counter, an unused output) flow through as
+        # None; lanes that do invert -- the target among them -- still
+        # resolve. Only a pass with no progress at all declines.
+        current_carry = list(problem["known_carry_out_vals"])
+        for index in scan_reverse_indices(problem["length"], problem["reverse"]):
+            x_step_vals = [
+                None if value is None else value[index]
+                for value in problem["known_xs_vals"]
+            ]
+            y_step_vals = [
+                None if value is None else value[index]
+                for value in problem["known_ys_out_vals"]
+            ]
 
-        known_vars = (
-            list(problem["body_const_invars"])
-            + list(problem["body_x_invars"])
-            + list(problem["body_carry_outvars"])
-            + list(problem["body_y_outvars"])
-        )
-        known_vals = (
-            list(problem["known_const_vals"])
-            + x_step_vals
-            + current_carry
-            + y_step_vals
-        )
+            known_vars = (
+                list(problem["body_const_invars"])
+                + list(problem["body_x_invars"])
+                + list(problem["body_carry_outvars"])
+                + list(problem["body_y_outvars"])
+            )
+            known_vals = (
+                list(problem["known_const_vals"])
+                + x_step_vals
+                + current_carry
+                + y_step_vals
+            )
 
-        recovered_carry = solve_nested_values(
-            jaxpr=problem["body"].jaxpr,
-            consts=problem["body"].consts,
-            known_vars=known_vars,
-            known_vals=known_vals,
-            target_vars=problem["body_carry_invars"],
-            process_eqn=_make_inverse_processing_rule(),
-            cost_fn=_get_inverse_cost_fn(),
-        )
-        if any(v is None for v in recovered_carry):
-            raise NotImplementedError("scan inverse could not recover carry inputs")
-        current_carry = list(recovered_carry)
+            recovered_carry = solve_nested_values(
+                jaxpr=problem["body"].jaxpr,
+                consts=problem["body"].consts,
+                known_vars=known_vars,
+                known_vals=known_vals,
+                target_vars=problem["body_carry_invars"],
+                process_eqn=_make_inverse_processing_rule(),
+                cost_fn=_get_inverse_cost_fn(),
+            )
+            current_carry = list(recovered_carry)
 
-    output_vars = [problem["carry_invars"][i] for i in missing_indices]
-    output_vals = [current_carry[i] for i in missing_indices]
+        if all(current_carry[i] is None for i in missing_indices):
+            return None
+        output_vars.extend(problem["carry_invars"][i] for i in missing_indices)
+        output_vals.extend(current_carry[i] for i in missing_indices)
+
+    if xs_missing_indices:
+        if any(v is None for v in problem["known_ys_out_vals"]):
+            return None
+        step_xs = _solve_scan_xs_per_step(problem)
+        if step_xs is None:
+            return None
+        for index in xs_missing_indices:
+            output_vars.append(problem["xs_invars"][index])
+            output_vals.append(step_xs[index])
     return ProcessedResult(output_vars, output_vals)
+
+
+# The scan backward pass seeds from whichever final-carry lanes are known, so
+# the interpreter may call it with partially unknown outputs (dead counter
+# lanes, unused sequence outputs). Every other rule assumes fully known
+# outputs; see InverseProcessingRule.
+invert_scan.supports_partial_outputs = True
 
 
 @REGISTRY.rule(jax.lax.while_p, Context.INVERSE)
