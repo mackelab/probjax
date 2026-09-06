@@ -6,6 +6,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
+from probjax.stats.bijective._spline_common import linear_tail, merge3, select_bin
 
 
 def _hermite_basis(z):
@@ -29,7 +30,8 @@ def _fc_monotone_normalize(bin_slope, m0, m1):
     """
     Fritsch–Carlson per-bin normalization to ensure monotone cubic.
     Works for strictly increasing bins (bin_slope > 0).
-    Returns normalized (a, b) where a = m0/bin_slope, b = m1/bin_slope, with constraints.
+    Returns normalized (a, b) where a = m0/bin_slope, b = m1/bin_slope,
+    with constraints.
     """
     eps = 1e-12
     s = bin_slope
@@ -72,20 +74,9 @@ def _monotone_hermite_cubic_spline_fwd(
     y_pos = jnp.asarray(y_pos)
     knot_slopes = jnp.asarray(knot_slopes)
 
-    below_range = x <= x_pos[0]
-    above_range = x >= x_pos[-1]
-
-    correct_bin = jnp.logical_and(x >= x_pos[:-1], x < x_pos[1:])
-    any_bin = jnp.any(correct_bin)
-    first_bin = jnp.concatenate([
-        jnp.array([True]),
-        jnp.zeros(len(correct_bin) - 1, dtype=bool),
-    ])
-    correct_bin = jnp.where(any_bin, correct_bin, first_bin)
-
-    params = jnp.stack([x_pos, y_pos, knot_slopes], axis=1)
-    left = jnp.sum(correct_bin[:, None] * params[:-1], axis=0)
-    right = jnp.sum(correct_bin[:, None] * params[1:], axis=0)
+    below_range, above_range, left, right = select_bin(
+        x, x_pos, (x_pos, y_pos, knot_slopes)
+    )
 
     x_l, y_l, m_l = left[0], left[1], left[2]
     x_r, y_r, m_r = right[0], right[1], right[2]
@@ -102,7 +93,8 @@ def _monotone_hermite_cubic_spline_fwd(
 
     (h00, h10, h01, h11), (dh00, dh10, dh01, dh11) = _hermite_basis(z)
 
-    # y = y_l + dy * [ h01 + a*h10 + b*h11 ]   (since h00 + h01 = 1, and dx*m = (m/s)*dy)
+    # y = y_l + dy * [ h01 + a*h10 + b*h11 ]
+    # (since h00 + h01 = 1, and dx*m = (m/s)*dy)
     R = h01 + a * h10 + b * h11
     y_mid = y_l + dy * R
 
@@ -113,39 +105,16 @@ def _monotone_hermite_cubic_spline_fwd(
     logdet_mid = jnp.log(jnp.abs(s)) + jnp.log(jnp.maximum(Rp, eps))
 
     # -------- tails: identical policy to your RQ/RL code --------
-    slope_below = knot_slopes[0]
-    y_below = (x - x_pos[0]) * slope_below + y_pos[0]
-    logdet_below = jnp.log(jnp.abs(slope_below))
-    if x_min is not None and y_min is not None:
-        denom = x_pos[0] - x_min
-        denom = jnp.where(denom == 0.0, 1e-6, denom)
-        slope_bl = (y_pos[0] - y_min) / denom
-        y_lin = y_min + slope_bl * (x - x_min)
-        y_lin = jnp.where(x <= x_min, y_min, y_lin)
-        y_below = jnp.where(jnp.isnan(slope_bl), y_below, y_lin)
-        logdet_below = jnp.where(
-            jnp.isnan(slope_bl), logdet_below, jnp.log(jnp.abs(slope_bl))
-        )
+    y_below, logdet_below = linear_tail(
+        x, x_pos[0], y_pos[0], x_min, y_min, knot_slopes[0], side="below"
+    )
 
-    slope_above = knot_slopes[-1]
-    y_above = (x - x_pos[-1]) * slope_above + y_pos[-1]
-    logdet_above = jnp.log(jnp.abs(slope_above))
-    if x_max is not None and y_max is not None:
-        denom = x_max - x_pos[-1]
-        denom = jnp.where(denom == 0.0, 1e-6, denom)
-        slope_ab = (y_max - y_pos[-1]) / denom
-        y_lin = y_pos[-1] + slope_ab * (x - x_pos[-1])
-        y_lin = jnp.where(x >= x_max, y_max, y_lin)
-        y_above = jnp.where(jnp.isnan(slope_ab), y_above, y_lin)
-        logdet_above = jnp.where(
-            jnp.isnan(slope_ab), logdet_above, jnp.log(jnp.abs(slope_ab))
-        )
+    y_above, logdet_above = linear_tail(
+        x, x_pos[-1], y_pos[-1], x_max, y_max, knot_slopes[-1], side="above"
+    )
 
-    y = jnp.where(below_range, y_below, y_mid)
-    y = jnp.where(above_range, y_above, y)
-
-    logdet = jnp.where(below_range, logdet_below, logdet_mid)
-    logdet = jnp.where(above_range, logdet_above, logdet)
+    y = merge3(below_range, above_range, y_below, y_mid, y_above)
+    logdet = merge3(below_range, above_range, logdet_below, logdet_mid, logdet_above)
     return y, logdet
 
 
@@ -177,20 +146,9 @@ def _monotone_hermite_cubic_spline_inv(
     y_pos = jnp.asarray(y_pos)
     knot_slopes = jnp.asarray(knot_slopes)
 
-    below_range = y <= y_pos[0]
-    above_range = y >= y_pos[-1]
-
-    correct_bin = jnp.logical_and(y >= y_pos[:-1], y < y_pos[1:])
-    any_bin = jnp.any(correct_bin)
-    first_bin = jnp.concatenate([
-        jnp.array([True]),
-        jnp.zeros(len(correct_bin) - 1, dtype=bool),
-    ])
-    correct_bin = jnp.where(any_bin, correct_bin, first_bin)
-
-    params = jnp.stack([x_pos, y_pos, knot_slopes], axis=1)
-    left = jnp.sum(correct_bin[:, None] * params[:-1], axis=0)
-    right = jnp.sum(correct_bin[:, None] * params[1:], axis=0)
+    below_range, above_range, left, right = select_bin(
+        y, y_pos, (x_pos, y_pos, knot_slopes)
+    )
 
     x_l, y_l, m_l = left[0], left[1], left[2]
     x_r, y_r, m_r = right[0], right[1], right[2]
@@ -253,39 +211,16 @@ def _monotone_hermite_cubic_spline_inv(
     logdet_mid = -(jnp.log(jnp.abs(s)) + jnp.log(jnp.maximum(Rp, 1e-12)))
 
     # -------- tails (same as forward) --------
-    slope_below = 1.0 / knot_slopes[0]
-    x_below = x_pos[0] + slope_below * (y - y_pos[0])
-    logdet_below = jnp.log(jnp.abs(slope_below))
-    if y_min is not None and x_min is not None:
-        denom = y_pos[0] - y_min
-        denom = jnp.where(denom == 0.0, 1e-6, denom)
-        slope_bl = (x_pos[0] - x_min) / denom
-        x_lin = x_min + slope_bl * (y - y_min)
-        x_lin = jnp.where(y <= y_min, x_min, x_lin)
-        x_below = jnp.where(jnp.isnan(slope_bl), x_below, x_lin)
-        logdet_below = jnp.where(
-            jnp.isnan(slope_bl), logdet_below, jnp.log(jnp.abs(slope_bl))
-        )
+    x_below, logdet_below = linear_tail(
+        y, y_pos[0], x_pos[0], y_min, x_min, 1.0 / knot_slopes[0], side="below"
+    )
 
-    slope_above = 1.0 / knot_slopes[-1]
-    x_above = x_pos[-1] + slope_above * (y - y_pos[-1])
-    logdet_above = jnp.log(jnp.abs(slope_above))
-    if y_max is not None and x_max is not None:
-        denom = y_max - y_pos[-1]
-        denom = jnp.where(denom == 0.0, 1e-6, denom)
-        slope_ab = (x_max - x_pos[-1]) / denom
-        x_lin = x_pos[-1] + slope_ab * (y - y_pos[-1])
-        x_lin = jnp.where(y >= y_max, x_max, x_lin)
-        x_above = jnp.where(jnp.isnan(slope_ab), x_above, x_lin)
-        logdet_above = jnp.where(
-            jnp.isnan(slope_ab), logdet_above, jnp.log(jnp.abs(slope_ab))
-        )
+    x_above, logdet_above = linear_tail(
+        y, y_pos[-1], x_pos[-1], y_max, x_max, 1.0 / knot_slopes[-1], side="above"
+    )
 
-    x_out = jnp.where(below_range, x_below, x_mid)
-    x_out = jnp.where(above_range, x_above, x_out)
-
-    logdet = jnp.where(below_range, logdet_below, logdet_mid)
-    logdet = jnp.where(above_range, logdet_above, logdet)
+    x_out = merge3(below_range, above_range, x_below, x_mid, x_above)
+    logdet = merge3(below_range, above_range, logdet_below, logdet_mid, logdet_above)
     return x_out, logdet
 
 
@@ -363,7 +298,9 @@ def monotone_hermite_cubic_spline_and_logdet(
     )
 
 
-monotone_hermite_cubic_spline.defvalue_and_logdet(monotone_hermite_cubic_spline_and_logdet)
+monotone_hermite_cubic_spline.defvalue_and_logdet(
+    monotone_hermite_cubic_spline_and_logdet
+)
 
 
 __all__ = [

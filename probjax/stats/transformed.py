@@ -154,16 +154,32 @@ class transformed_gen(rv_continuous):
             )
 
     @classmethod
+    def _resolve_inverse_and_logdet(cls, bijector, inverse_and_logdet_fn=None):
+        """Resolve vmapped inverse+logabsdet, preferring an explicit override."""
+        vmapped = cls._get_vmapped_inverse_and_logdet_with_override(
+            bijector, inverse_and_logdet_fn
+        )
+        if vmapped is None:
+            vmapped = cls._get_vmapped_inverse_and_logdet(bijector)
+        return vmapped
+
+    @classmethod
+    def _forward_flat(cls, bijector, flat, leading_shape, event_shape):
+        """Push flattened values through a vmapped bijector and unflatten."""
+        transformed_flat = cls._get_vmapped_bijector(bijector)(flat)
+        return cls._unflatten_by_event_shape(
+            transformed_flat, leading_shape, event_shape
+        )
+
+    @classmethod
     def logpdf(cls, x: ArrayLike, base_dist, bijector, inverse_and_logdet=None, **kwds):
         """Log probability density function of the transformed distribution."""
         event_shape = tuple(base_dist.event_shape)
         _, x_flat, leading_shape = cls._flatten_by_event_shape(x, event_shape)
 
-        vmapped_inverse_and_logdet = cls._get_vmapped_inverse_and_logdet_with_override(
+        vmapped_inverse_and_logdet = cls._resolve_inverse_and_logdet(
             bijector, inverse_and_logdet
         )
-        if vmapped_inverse_and_logdet is None:
-            vmapped_inverse_and_logdet = cls._get_vmapped_inverse_and_logdet(bijector)
 
         inv_flat, log_det_flat = vmapped_inverse_and_logdet(x_flat)
         inv_value = cls._unflatten_by_event_shape(inv_flat, leading_shape, event_shape)
@@ -179,11 +195,9 @@ class transformed_gen(rv_continuous):
         cls._ensure_univariate_event(event_shape)
         _, x_flat, leading_shape = cls._flatten_by_event_shape(x, event_shape)
 
-        vmapped_inverse_and_logdet = cls._get_vmapped_inverse_and_logdet_with_override(
+        vmapped_inverse_and_logdet = cls._resolve_inverse_and_logdet(
             bijector, inverse_and_logdet
         )
-        if vmapped_inverse_and_logdet is None:
-            vmapped_inverse_and_logdet = cls._get_vmapped_inverse_and_logdet(bijector)
 
         inv_flat, _ = vmapped_inverse_and_logdet(x_flat)
         inv_value = cls._unflatten_by_event_shape(inv_flat, leading_shape, event_shape)
@@ -200,11 +214,7 @@ class transformed_gen(rv_continuous):
         _, base_ppf_flat, leading_shape = cls._flatten_by_event_shape(
             base_ppf, event_shape
         )
-        vmapped_bijector = cls._get_vmapped_bijector(bijector)
-        transformed_flat = vmapped_bijector(base_ppf_flat)
-        return cls._unflatten_by_event_shape(
-            transformed_flat, leading_shape, event_shape
-        )
+        return cls._forward_flat(bijector, base_ppf_flat, leading_shape, event_shape)
 
     @classmethod
     def _rvs_impl(
@@ -223,11 +233,7 @@ class transformed_gen(rv_continuous):
         _, samples_flat, leading_shape = cls._flatten_by_event_shape(
             samples, event_shape
         )
-        vmapped_bijector = cls._get_vmapped_bijector(bijector)
-        transformed_flat = vmapped_bijector(samples_flat)
-        return cls._unflatten_by_event_shape(
-            transformed_flat, leading_shape, event_shape
-        )
+        return cls._forward_flat(bijector, samples_flat, leading_shape, event_shape)
 
     @classmethod
     def mean(cls, base_dist, bijector, **kwds):

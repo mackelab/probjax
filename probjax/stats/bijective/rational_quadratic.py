@@ -6,6 +6,7 @@ from jax import Array
 from jax.typing import ArrayLike
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
+from probjax.stats.bijective._spline_common import linear_tail, merge3, select_bin
 
 
 def _rational_quadratic_spline_fwd(
@@ -36,24 +37,11 @@ def _rational_quadratic_spline_fwd(
         where `y` is the spline output,
         and `logdet` is the log of the absolute first derivative at `x`.
     """
-    # Identify the regions outside and inside the main spline range
-    below_range = x <= x_pos[0]
-    above_range = x >= x_pos[-1]
-
-    # Identify the correct bin in which x lies
-    correct_bin = jnp.logical_and(x >= x_pos[:-1], x < x_pos[1:])
-    any_bin_in_range = jnp.any(correct_bin)
-    # If x does not fall into any bin, default to the first bin (avoids NaNs)
-    first_bin = jnp.concatenate([
-        jnp.array([True]),
-        jnp.zeros(len(correct_bin) - 1, dtype=bool),
-    ])
-    correct_bin = jnp.where(any_bin_in_range, correct_bin, first_bin)
-
-    # Collect (x_pos, y_pos, slopes) into a single array so we can dot with the mask
-    params = jnp.stack([x_pos, y_pos, knot_slopes], axis=1)
-    params_bin_left = jnp.sum(correct_bin[:, None] * params[:-1], axis=0)
-    params_bin_right = jnp.sum(correct_bin[:, None] * params[1:], axis=0)
+    # Identify the regions outside and inside the main spline range, and the
+    # bin in which x lies (defaults to the first bin to avoid NaNs).
+    below_range, above_range, params_bin_left, params_bin_right = select_bin(
+        x, x_pos, (x_pos, y_pos, knot_slopes)
+    )
 
     x_pos_bin = (params_bin_left[0], params_bin_right[0])
     y_pos_bin = (params_bin_left[1], params_bin_right[1])
@@ -88,82 +76,27 @@ def _rational_quadratic_spline_fwd(
     )
 
     # ------------------------------
-    # Below-range: bounded or unbounded?
+    # Below-range: bounded or unbounded linear tail.
     # ------------------------------
-    # Default unbounded slope below
-    slope_below_unbounded = knot_slopes[0]
-    y_below_unbounded = (x - x_pos[0]) * slope_below_unbounded + y_pos[0]
-    logdet_below_unbounded = jnp.log(slope_below_unbounded)
-
-    # If x_min, y_min are specified, we do a bounded linear mapping.
-    # That means for x <= x_min, we clamp to y_min,
-    # otherwise linearly interpolate up to x_pos[0], y_pos[0].
-    if x_min is not None and y_min is not None:
-        # Slope from (x_min -> y_min) to (x_pos[0] -> y_pos[0])
-        denom_below = x_pos[0] - x_min
-        # Avoid division by zero if x_min == x_pos[0]
-        denom_below = jnp.where(denom_below == 0.0, 1e-6, denom_below)
-        slope_below_bounded = (y_pos[0] - y_min) / denom_below
-        y_below_bounded = y_min + slope_below_bounded * (x - x_min)
-        logdet_below_bounded = jnp.log(jnp.abs(slope_below_bounded))
-
-        # Also clamp if x < x_min
-        y_below_bounded = jnp.where(x <= x_min, y_min, y_below_bounded)
-
-        # Choose which version (bounded or unbounded) to apply:
-        y_below = jnp.where(
-            jnp.isnan(slope_below_bounded), y_below_unbounded, y_below_bounded
-        )
-        logdet_below = jnp.where(
-            jnp.isnan(slope_below_bounded), logdet_below_unbounded, logdet_below_bounded
-        )
-    else:
-        # Fall back to the unbounded version
-        y_below = y_below_unbounded
-        logdet_below = logdet_below_unbounded
+    y_below, logdet_below = linear_tail(
+        x, x_pos[0], y_pos[0], x_min, y_min, knot_slopes[0], side="below"
+    )
 
     # ------------------------------
-    # Above-range: bounded or unbounded?
+    # Above-range: bounded or unbounded linear tail.
     # ------------------------------
-    # Default unbounded slope above
-    slope_above_unbounded = knot_slopes[-1]
-    y_above_unbounded = (x - x_pos[-1]) * slope_above_unbounded + y_pos[-1]
-    logdet_above_unbounded = jnp.log(slope_above_unbounded)
-
-    # If x_max, y_max are specified, we do a bounded linear mapping.
-    # That means for x >= x_max, we clamp to y_max,
-    # otherwise linearly interpolate from x_pos[-1], y_pos[-1].
-    if x_max is not None and y_max is not None:
-        # Slope from (x_pos[-1] -> y_pos[-1]) to (x_max -> y_max)
-        denom_above = x_max - x_pos[-1]
-        denom_above = jnp.where(denom_above == 0.0, 1e-6, denom_above)
-        slope_above_bounded = (y_max - y_pos[-1]) / denom_above
-        y_above_bounded = y_pos[-1] + slope_above_bounded * (x - x_pos[-1])
-        logdet_above_bounded = jnp.log(jnp.abs(slope_above_bounded))
-
-        # Also clamp if x >= x_max
-        y_above_bounded = jnp.where(x >= x_max, y_max, y_above_bounded)
-
-        y_above = jnp.where(
-            jnp.isnan(slope_above_bounded), y_above_unbounded, y_above_bounded
-        )
-        logdet_above = jnp.where(
-            jnp.isnan(slope_above_bounded), logdet_above_unbounded, logdet_above_bounded
-        )
-    else:
-        # Fall back to the unbounded version
-        y_above = y_above_unbounded
-        logdet_above = logdet_above_unbounded
+    y_above, logdet_above = linear_tail(
+        x, x_pos[-1], y_pos[-1], x_max, y_max, knot_slopes[-1], side="above"
+    )
 
     # ------------------------------
     # Merge the three regions:
     #   below_range, inside, above_range
     # ------------------------------
-    y = jnp.where(below_range, y_below, y_unclamped)
-    y = jnp.where(above_range, y_above, y)
-
-    logdet = jnp.where(below_range, logdet_below, logdet_unclamped)
-    logdet = jnp.where(above_range, logdet_above, logdet)
+    y = merge3(below_range, above_range, y_below, y_unclamped, y_above)
+    logdet = merge3(
+        below_range, above_range, logdet_below, logdet_unclamped, logdet_above
+    )
 
     return y, logdet
 
@@ -230,27 +163,12 @@ def _rational_quadratic_spline_inv(
         logdet is the log of the absolute first derivative of the inverse at `y`.
     """
     # --------------------------------------------------
-    # Identify whether y is below, above, or inside the spline range
+    # Identify whether y is below, above, or inside the spline range, and
+    # the correct bin for y (defaults to the first bin to avoid NaNs).
     # --------------------------------------------------
-    below_range = y <= y_pos[0]
-    above_range = y >= y_pos[-1]
-
-    # --------------------------------------------------
-    # Identify the correct bin for y if it's in [y_pos[0], y_pos[-1]]
-    # --------------------------------------------------
-    correct_bin = jnp.logical_and(y >= y_pos[:-1], y < y_pos[1:])
-    any_bin_in_range = jnp.any(correct_bin)
-    # If y does not fall into any bin, default to the first bin (avoids NaNs)
-    first_bin = jnp.concatenate([
-        jnp.array([True]),
-        jnp.zeros(len(correct_bin) - 1, dtype=bool),
-    ])
-    correct_bin = jnp.where(any_bin_in_range, correct_bin, first_bin)
-
-    # Dot-product mask to extract the bin's (x_pos, y_pos, slopes)
-    params = jnp.stack([x_pos, y_pos, knot_slopes], axis=1)
-    params_bin_left = jnp.sum(correct_bin[:, None] * params[:-1], axis=0)
-    params_bin_right = jnp.sum(correct_bin[:, None] * params[1:], axis=0)
+    below_range, above_range, params_bin_left, params_bin_right = select_bin(
+        y, y_pos, (x_pos, y_pos, knot_slopes)
+    )
 
     x_pos_bin = (params_bin_left[0], params_bin_right[0])
     y_pos_bin = (params_bin_left[1], params_bin_right[1])
@@ -294,79 +212,42 @@ def _rational_quadratic_spline_inv(
     )
 
     # --------------------------------------------------
-    # Below-range: bounded or unbounded?
+    # Below-range: bounded or unbounded linear tail.
+    # Unbounded: x = x_pos[0] + (y - y_pos[0]) / knot_slopes[0].
     # --------------------------------------------------
-    # Unbounded slope for y < y_pos[0]: x = x_pos[0] + (y - y_pos[0]) / knot_slopes[0]
-    slope_below_unbounded = 1.0 / knot_slopes[0]
-    x_below_unbounded = x_pos[0] + slope_below_unbounded * (y - y_pos[0])
-    logdet_below_unbounded = -jnp.log(
-        knot_slopes[0]
-    )  # = jnp.log(slope_below_unbounded)
-
-    # If (y_min, x_min) are provided, do a bounded linear mapping from
-    # (y_min -> x_min) to (y_pos[0] -> x_pos[0]), and clamp at y <= y_min.
-    if y_min is not None and x_min is not None:
-        denom_below = y_pos[0] - y_min
-        denom_below = jnp.where(denom_below == 0.0, 1e-6, denom_below)
-        slope_below_bounded = (x_pos[0] - x_min) / denom_below
-        x_below_bounded = x_min + slope_below_bounded * (y - y_min)
-        # Clamp x if y <= y_min
-        x_below_bounded = jnp.where(y <= y_min, x_min, x_below_bounded)
-
-        logdet_below_bounded = jnp.log(jnp.abs(slope_below_bounded))
-
-        # Decide which version to use (bounded vs unbounded)
-        x_below = jnp.where(
-            jnp.isnan(slope_below_bounded), x_below_unbounded, x_below_bounded
-        )
-        logdet_below = jnp.where(
-            jnp.isnan(slope_below_bounded), logdet_below_unbounded, logdet_below_bounded
-        )
-    else:
-        # Fallback to unbounded approach
-        x_below = x_below_unbounded
-        logdet_below = logdet_below_unbounded
+    x_below, logdet_below = linear_tail(
+        y,
+        y_pos[0],
+        x_pos[0],
+        y_min,
+        x_min,
+        1.0 / knot_slopes[0],
+        side="below",
+        unbounded_logdet=-jnp.log(knot_slopes[0]),
+    )
 
     # --------------------------------------------------
-    # Above-range: bounded or unbounded?
+    # Above-range: bounded or unbounded linear tail.
+    # Unbounded: x = x_pos[-1] + (y - y_pos[-1]) / knot_slopes[-1].
     # --------------------------------------------------
-    # Unbounded slope for y > y_pos[-1]: x = x_pos[-1] + (y - y_pos[-1]) / knot_slopes[-1]
-    slope_above_unbounded = 1.0 / knot_slopes[-1]
-    x_above_unbounded = x_pos[-1] + slope_above_unbounded * (y - y_pos[-1])
-    logdet_above_unbounded = -jnp.log(knot_slopes[-1])
-
-    # If (y_max, x_max) are provided, do a bounded linear mapping from
-    # (y_pos[-1] -> x_pos[-1]) to (y_max -> x_max), and clamp at y >= y_max.
-    if y_max is not None and x_max is not None:
-        denom_above = y_max - y_pos[-1]
-        denom_above = jnp.where(denom_above == 0.0, 1e-6, denom_above)
-        slope_above_bounded = (x_max - x_pos[-1]) / denom_above
-        x_above_bounded = x_pos[-1] + slope_above_bounded * (y - y_pos[-1])
-        # Clamp x if y >= y_max
-        x_above_bounded = jnp.where(y >= y_max, x_max, x_above_bounded)
-
-        logdet_above_bounded = jnp.log(jnp.abs(slope_above_bounded))
-
-        # Decide which version to use (bounded vs unbounded)
-        x_above = jnp.where(
-            jnp.isnan(slope_above_bounded), x_above_unbounded, x_above_bounded
-        )
-        logdet_above = jnp.where(
-            jnp.isnan(slope_above_bounded), logdet_above_unbounded, logdet_above_bounded
-        )
-    else:
-        # Fallback to unbounded approach
-        x_above = x_above_unbounded
-        logdet_above = logdet_above_unbounded
+    x_above, logdet_above = linear_tail(
+        y,
+        y_pos[-1],
+        x_pos[-1],
+        y_max,
+        x_max,
+        1.0 / knot_slopes[-1],
+        side="above",
+        unbounded_logdet=-jnp.log(knot_slopes[-1]),
+    )
 
     # --------------------------------------------------
     # Piecewise merge (below, inside, above)
     # --------------------------------------------------
-    x = jnp.where(below_range, x_below, x_unclamped)
-    x = jnp.where(above_range, x_above, x)
-
-    logdet = jnp.where(below_range, logdet_below, logdet_unclamped)
-    logdet = jnp.where(above_range, logdet_above, logdet)
+    x = merge3(below_range, above_range, x_below, x_unclamped, x_above)
+    logdet = merge3(
+        below_range, above_range, logdet_below, logdet_unclamped, logdet_above
+    )
 
     return x, logdet
 

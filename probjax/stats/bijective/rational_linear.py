@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
+from probjax.stats.bijective._spline_common import linear_tail, merge3, select_bin
 
 
 def _rational_linear_spline_fwd(
@@ -32,20 +33,9 @@ def _rational_linear_spline_fwd(
     knot_slopes = jnp.asarray(knot_slopes)
 
     # ------------------   region identification  ---------------------------
-    below_range = x <= x_pos[0]
-    above_range = x >= x_pos[-1]
-
-    correct_bin = jnp.logical_and(x >= x_pos[:-1], x < x_pos[1:])
-    any_bin = jnp.any(correct_bin)
-    first_bin_mask = jnp.concatenate([
-        jnp.array([True]),
-        jnp.zeros(len(correct_bin) - 1, dtype=bool),
-    ])
-    correct_bin = jnp.where(any_bin, correct_bin, first_bin_mask)
-
-    params = jnp.stack([x_pos, y_pos, knot_slopes], axis=1)
-    p_left = jnp.sum(correct_bin[:, None] * params[:-1], axis=0)
-    p_right = jnp.sum(correct_bin[:, None] * params[1:], axis=0)
+    below_range, above_range, p_left, p_right = select_bin(
+        x, x_pos, (x_pos, y_pos, knot_slopes)
+    )
 
     x_l, x_r = p_left[0], p_right[0]
     y_l, y_r = p_left[1], p_right[1]
@@ -69,41 +59,18 @@ def _rational_linear_spline_fwd(
     logdet_mid = jnp.log(jnp.abs(bin_slope)) + jnp.log(alpha) - 2.0 * jnp.log(denom)
 
     # ------------------   lower tail  --------------------------------------
-    slope_below = knot_slopes[0]
-    y_below = (x - x_pos[0]) * slope_below + y_pos[0]
-    logdet_below = jnp.log(slope_below)
-
-    if x_min is not None and y_min is not None:
-        denom_bl = x_pos[0] - x_min
-        denom_bl = jnp.where(denom_bl == 0.0, 1e-6, denom_bl)
-        slope_bl = (y_pos[0] - y_min) / denom_bl
-        y_bounded = y_min + slope_bl * (x - x_min)
-        y_bounded = jnp.where(x <= x_min, y_min, y_bounded)
-        logdet_bounded = jnp.log(jnp.abs(slope_bl))
-        y_below = jnp.where(jnp.isnan(slope_bl), y_below, y_bounded)
-        logdet_below = jnp.where(jnp.isnan(slope_bl), logdet_below, logdet_bounded)
+    y_below, logdet_below = linear_tail(
+        x, x_pos[0], y_pos[0], x_min, y_min, knot_slopes[0], side="below"
+    )
 
     # ------------------   upper tail  --------------------------------------
-    slope_above = knot_slopes[-1]
-    y_above = (x - x_pos[-1]) * slope_above + y_pos[-1]
-    logdet_above = jnp.log(slope_above)
-
-    if x_max is not None and y_max is not None:
-        denom_ab = x_max - x_pos[-1]
-        denom_ab = jnp.where(denom_ab == 0.0, 1e-6, denom_ab)
-        slope_ab = (y_max - y_pos[-1]) / denom_ab
-        y_bounded = y_pos[-1] + slope_ab * (x - x_pos[-1])
-        y_bounded = jnp.where(x >= x_max, y_max, y_bounded)
-        logdet_bounded = jnp.log(jnp.abs(slope_ab))
-        y_above = jnp.where(jnp.isnan(slope_ab), y_above, y_bounded)
-        logdet_above = jnp.where(jnp.isnan(slope_ab), logdet_above, logdet_bounded)
+    y_above, logdet_above = linear_tail(
+        x, x_pos[-1], y_pos[-1], x_max, y_max, knot_slopes[-1], side="above"
+    )
 
     # ------------------   piecewise merge  ----------------------------------
-    y = jnp.where(below_range, y_below, y_mid)
-    y = jnp.where(above_range, y_above, y)
-
-    logdet = jnp.where(below_range, logdet_below, logdet_mid)
-    logdet = jnp.where(above_range, logdet_above, logdet)
+    y = merge3(below_range, above_range, y_below, y_mid, y_above)
+    logdet = merge3(below_range, above_range, logdet_below, logdet_mid, logdet_above)
 
     return y, logdet
 
@@ -133,20 +100,9 @@ def _rational_linear_spline_inv(
     y_pos = jnp.asarray(y_pos)
     knot_slopes = jnp.asarray(knot_slopes)
 
-    below_range = y <= y_pos[0]
-    above_range = y >= y_pos[-1]
-
-    correct_bin = jnp.logical_and(y >= y_pos[:-1], y < y_pos[1:])
-    any_bin = jnp.any(correct_bin)
-    first_bin_mask = jnp.concatenate([
-        jnp.array([True]),
-        jnp.zeros(len(correct_bin) - 1, dtype=bool),
-    ])
-    correct_bin = jnp.where(any_bin, correct_bin, first_bin_mask)
-
-    params = jnp.stack([x_pos, y_pos, knot_slopes], axis=1)
-    p_left = jnp.sum(correct_bin[:, None] * params[:-1], axis=0)
-    p_right = jnp.sum(correct_bin[:, None] * params[1:], axis=0)
+    below_range, above_range, p_left, p_right = select_bin(
+        y, y_pos, (x_pos, y_pos, knot_slopes)
+    )
 
     x_l, x_r = p_left[0], p_right[0]
     y_l, y_r = p_left[1], p_right[1]
@@ -175,39 +131,30 @@ def _rational_linear_spline_inv(
     )
 
     # ---------------- tails: same policy as forward -------------------------
-    slope_below = 1.0 / knot_slopes[0]
-    x_below = x_pos[0] + slope_below * (y - y_pos[0])
-    logdet_below = -jnp.log(knot_slopes[0])
+    x_below, logdet_below = linear_tail(
+        y,
+        y_pos[0],
+        x_pos[0],
+        y_min,
+        x_min,
+        1.0 / knot_slopes[0],
+        side="below",
+        unbounded_logdet=-jnp.log(knot_slopes[0]),
+    )
 
-    if y_min is not None and x_min is not None:
-        denom_bl = y_pos[0] - y_min
-        denom_bl = jnp.where(denom_bl == 0.0, 1e-6, denom_bl)
-        slope_bl = (x_pos[0] - x_min) / denom_bl
-        x_bounded = x_min + slope_bl * (y - y_min)
-        x_bounded = jnp.where(y <= y_min, x_min, x_bounded)
-        logdet_bounded = jnp.log(jnp.abs(slope_bl))
-        x_below = jnp.where(jnp.isnan(slope_bl), x_below, x_bounded)
-        logdet_below = jnp.where(jnp.isnan(slope_bl), logdet_below, logdet_bounded)
+    x_above, logdet_above = linear_tail(
+        y,
+        y_pos[-1],
+        x_pos[-1],
+        y_max,
+        x_max,
+        1.0 / knot_slopes[-1],
+        side="above",
+        unbounded_logdet=-jnp.log(knot_slopes[-1]),
+    )
 
-    slope_above = 1.0 / knot_slopes[-1]
-    x_above = x_pos[-1] + slope_above * (y - y_pos[-1])
-    logdet_above = -jnp.log(knot_slopes[-1])
-
-    if y_max is not None and x_max is not None:
-        denom_ab = y_max - y_pos[-1]
-        denom_ab = jnp.where(denom_ab == 0.0, 1e-6, denom_ab)
-        slope_ab = (x_max - x_pos[-1]) / denom_ab
-        x_bounded = x_pos[-1] + slope_ab * (y - y_pos[-1])
-        x_bounded = jnp.where(y >= y_max, x_max, x_bounded)
-        logdet_bounded = jnp.log(jnp.abs(slope_ab))
-        x_above = jnp.where(jnp.isnan(slope_ab), x_above, x_bounded)
-        logdet_above = jnp.where(jnp.isnan(slope_ab), logdet_above, logdet_bounded)
-
-    x_out = jnp.where(below_range, x_below, x_mid)
-    x_out = jnp.where(above_range, x_above, x_out)
-
-    logdet = jnp.where(below_range, logdet_below, logdet_mid)
-    logdet = jnp.where(above_range, logdet_above, logdet)
+    x_out = merge3(below_range, above_range, x_below, x_mid, x_above)
+    logdet = merge3(below_range, above_range, logdet_below, logdet_mid, logdet_above)
 
     return x_out, logdet
 
