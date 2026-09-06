@@ -69,22 +69,6 @@ def optimal_step_size(
     return jnp.where(mean_error_ratio == 0, last_step * ifactor, last_step * factor)
 
 
-def fit_cubic_hermite(y0, y1, dy0, dy1, dt):
-    """Be f(t) = a * t**3 + b * t**2 + c * t + d, then this function returns the
-    coefficients a, b, c, d, which solve the system of equations:
-        f(0) = y0
-        f(1) = y1
-        f'(0) = dy0
-        f'(1) = dy1
-    """
-    h = dt
-    c = dy0
-    d = y0
-    a = (2 * (y0 - y1) + h * (dy0 + dy1)) / h**3
-    b = (3 * (y1 - y0) - h * (2 * dy0 + dy1)) / h**2
-    return a, b, c, d
-
-
 def fit_4th_order_polynomial(y0, y1, y_mid, dy0, dy1, dt):
     """Quartic Hermite polynomial in normalized time ``t ∈ [0, 1]``.
 
@@ -135,3 +119,10 @@ def interp_fit(y0, y1, f0, f1, dt, y_mid=None):
     else:
         # We can only use a 3rd order polynomial (2 points and 2 gradients)
         return jnp.asarray(fit_3rd_order_polynomial(y0, y1, f0, f1, dt))
+
+
+def phi1_scalar(z):
+    """Compute phi_1(z) = (exp(z) - 1) / z with numerical stability."""
+    small = jnp.abs(z) < 1e-4
+    series = 1.0 + 0.5 * z + (z * z) / 6.0 + (z * z * z) / 24.0
+    return jnp.where(small, series, jnp.expm1(z) / z)

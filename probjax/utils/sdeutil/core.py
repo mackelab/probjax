@@ -30,6 +30,20 @@ STATIC_NAMES = [
 ]
 
 
+def _as_full_matrix(value, flat_state_dim, what="Full diffusion"):
+    """Validate a full ``(state_dim, noise_dim)`` diffusion matrix."""
+    value = jnp.asarray(value)
+    if value.ndim != 2:
+        raise ValueError(
+            f"{what} must be a 2D matrix with shape (state_dim, noise_dim)."
+        )
+    if int(value.shape[0]) != flat_state_dim:
+        raise ValueError(
+            f"{what} must have leading dimension equal to state dimension."
+        )
+    return value
+
+
 def _bind_sde_function_args(
     drift: Callable,
     diffusion: Callable,
@@ -124,10 +138,13 @@ def _sdeint(
         method: Integration method
         dtype: Data type for computation
         sde_type: Type of SDE ("ito" or "stratonovich")
-        return_brownian: Whether to return Brownian motion paths (requires `collect_trace=True`)
+        return_brownian: Whether to return Brownian motion paths (requires
+            `collect_trace=True`)
         return_state: Whether to return solver state
-        filter_state: Optional filter applied to the state (and Brownian paths when requested)
-        collect_trace: Whether to record the filtered quantity at every time point (`True`)
+        filter_state: Optional filter applied to the state (and Brownian
+            paths when requested)
+        collect_trace: Whether to record the filtered quantity at every time
+            point (`True`)
             or return only the filtered terminal state (`False`). Must be `True` if
             `return_brownian` is requested.
         check_points: Optional sequence of indices for grid integration
@@ -136,7 +153,8 @@ def _sdeint(
         Depending on `return_brownian` and `collect_trace`:
         - If `return_brownian=False`: filtered trajectory when `collect_trace=True`
           or filtered terminal state when `collect_trace=False`.
-        - If `return_brownian=True`: tuple of (state trace, Brownian trace), both stacked
+        - If `return_brownian=True`: tuple of (state trace, Brownian trace),
+          both stacked
           over all time points.
         If `return_state=True`, the solver state is returned as the leading element of
         the tuple.
@@ -187,16 +205,7 @@ def _sdeint(
     else:
 
         def diffusion_solver(t, yi):
-            diffusion_value = jnp.asarray(diffusion_unraveled(t, yi))
-            if diffusion_value.ndim != 2:
-                raise ValueError(
-                    "Full diffusion must return a matrix with shape (state_dim, noise_dim)."
-                )
-            if int(diffusion_value.shape[0]) != flat_state_dim:
-                raise ValueError(
-                    "Full diffusion must have leading dimension equal to state dimension."
-                )
-            return diffusion_value
+            return _as_full_matrix(diffusion_unraveled(t, yi), flat_state_dim)
 
     if additive_marker is not None:
         if noise_type == "diagonal":
@@ -213,16 +222,7 @@ def _sdeint(
         else:
 
             def additive_dense(t):
-                diffusion_value = jnp.asarray(additive_marker.diffusion(t))
-                if diffusion_value.ndim != 2:
-                    raise ValueError(
-                        "Full diffusion must return a matrix with shape (state_dim, noise_dim)."
-                    )
-                if int(diffusion_value.shape[0]) != flat_state_dim:
-                    raise ValueError(
-                        "Full diffusion must have leading dimension equal to state dimension."
-                    )
-                return diffusion_value
+                return _as_full_matrix(additive_marker.diffusion(t), flat_state_dim)
 
             diffusion_solver = cast(
                 Callable,
@@ -239,15 +239,9 @@ def _sdeint(
             )
         else:
             # For full diffusion, keep G as 2D matrix
-            G_value = jnp.asarray(const_marker.G)
-            if G_value.ndim != 2:
-                raise ValueError(
-                    "Full diffusion const_diffusion.G must be a 2D matrix with shape (state_dim, noise_dim)."
-                )
-            if int(G_value.shape[0]) != flat_state_dim:
-                raise ValueError(
-                    "Full diffusion const_diffusion.G must have leading dimension equal to state dimension."
-                )
+            G_value = _as_full_matrix(
+                const_marker.G, flat_state_dim, what="Full diffusion const_diffusion.G"
+            )
             diffusion_solver = cast(
                 Callable,
                 const_diffusion(G=G_value),
@@ -350,7 +344,7 @@ def _sdeint(
             collect_trace=trace_enabled,
         )
 
-    state_y0 = getattr(state, "y0")
+    state_y0 = state.y0
     final_state = apply_filter(unravel(state_y0))
 
     trace_output: Optional[PyTree[Array]]
@@ -381,18 +375,13 @@ def _sdeint(
     payload: Union[
         Optional[PyTree[Array]], Tuple[Optional[PyTree[Array]], Optional[PyTree[Array]]]
     ]
-    if return_brownian:
-        payload = (trace_output, brownian_output)
-    else:
-        payload = trace_output
+    payload = (trace_output, brownian_output) if return_brownian else trace_output
 
     # Diagnostic for the adaptive path: total budget exhaustions across
     # output segments. Always returned as the last element so the public
     # ``sdeint`` wrapper can warn host-side without paying per-vmap-element
     # callback overhead. Zero on the fixed-step path.
-    diag_hits = (
-        _adaptive_total_hits if step_size_adaptor is not None else jnp.int32(0)
-    )
+    diag_hits = _adaptive_total_hits if step_size_adaptor is not None else jnp.int32(0)
 
     if return_state:
         frozen_state = jax.tree_util.tree_map(jax.lax.stop_gradient, state)

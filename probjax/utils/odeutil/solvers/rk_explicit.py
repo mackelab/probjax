@@ -5,6 +5,7 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 
+from probjax.utils._solver_common import make_trivial_init
 from probjax.utils.odeutil.solvers.base import (
     ODEInfo,
     ODESolverAPI,
@@ -34,11 +35,8 @@ class EulerState(ODEState):
     y0: Array
 
 
-def init_euler(t0: ArrayLike, y0: ArrayLike, *args, **kwargs) -> ODEState:
-    """Initialize Euler solver state."""
-    t0 = jnp.asarray(t0)
-    y0 = jnp.asarray(y0)
-    return EulerState(t0=t0, y0=y0)
+init_euler = make_trivial_init(EulerState)
+"""Initialize Euler solver state."""
 
 
 def build_euler_step(

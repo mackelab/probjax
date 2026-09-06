@@ -166,12 +166,8 @@ def _sample_trace_vectors(
     )
 
 
-def _make_exact_aug_drift(
-    drift: Callable,
-    x_example: PyTree[Array],
-    jac_fn: Callable = jax.jacrev,
-):
-    """Exact log-det: one full Jacobian per step."""
+def _flat_drift_pair(drift: Callable, x_example: PyTree[Array]):
+    """Flattened drift and its unravel fn for a pytree state example."""
     _, unravel = ravel_pytree(x_example)
 
     def drift_flat(t, x_flat, *args):
@@ -179,6 +175,17 @@ def _make_exact_aug_drift(
         dx = drift(t, x, *args)
         dx_flat, _ = ravel_pytree(dx)
         return dx_flat
+
+    return drift_flat, unravel
+
+
+def _make_exact_aug_drift(
+    drift: Callable,
+    x_example: PyTree[Array],
+    jac_fn: Callable = jax.jacrev,
+):
+    """Exact log-det: one full Jacobian per step."""
+    drift_flat, _ = _flat_drift_pair(drift, x_example)
 
     jac_flat = jac_fn(drift_flat, argnums=1)
 
@@ -205,13 +212,7 @@ def _make_hutchinson_aug_drift(
     (FFJORD's single-sample-per-path trick), so ``∫tr(J)dt`` is estimated
     without threading an RNG through each integration step.
     """
-    _, unravel = ravel_pytree(x_example)
-
-    def drift_flat(t, x_flat, *args):
-        x = unravel(x_flat)
-        dx = drift(t, x, *args)
-        dx_flat, _ = ravel_pytree(dx)
-        return dx_flat
+    drift_flat, _ = _flat_drift_pair(drift, x_example)
 
     def aug_drift(t, state, *args):
         x, _ = state
@@ -235,13 +236,7 @@ def _make_custom_aug_drift(
     trace_fn: Callable,
 ):
     """User-supplied ``trace_fn(drift_flat, t, x_flat, args) -> scalar`` hook."""
-    _, unravel = ravel_pytree(x_example)
-
-    def drift_flat(t, x_flat, *args):
-        x = unravel(x_flat)
-        dx = drift(t, x, *args)
-        dx_flat, _ = ravel_pytree(dx)
-        return dx_flat
+    drift_flat, _ = _flat_drift_pair(drift, x_example)
 
     def aug_drift(t, state, *args):
         x, _ = state
