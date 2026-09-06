@@ -6,6 +6,11 @@ import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Key, PyTree
 
+from probjax.utils._solver_common import (
+    ensure_dtype,
+    make_filter_wrapper,
+    stack_trace,
+)
 from probjax.utils.functions import (
     additive_diffusion,
     const_diffusion,
@@ -162,12 +167,8 @@ def _sdeint(
     if not collect_trace and return_brownian:
         raise ValueError("collect_trace must be True when returning Brownian paths.")
 
-    if dtype is not None:
-        ts = ts.astype(dtype)
-        y0 = jax.tree_util.tree_map(lambda x: x.astype(dtype), y0)
-
+    ts, y0 = ensure_dtype(ts, y0, dtype)
     y0 = jax.tree_util.tree_map(jnp.atleast_1d, y0)
-    ts = jnp.atleast_1d(ts)
 
     drift, diffusion = _bind_sde_function_args(drift, diffusion, sde_args)
 
@@ -247,11 +248,7 @@ def _sdeint(
                 const_diffusion(G=G_value),
             )
 
-    def apply_filter(tree: PyTree[Array]) -> Optional[PyTree[Array]]:
-        if filter_state is None:
-            return tree
-        return filter_state(tree)
-
+    apply_filter = make_filter_wrapper(filter_state)
     init_filtered = apply_filter(y0)
     trace_enabled = collect_trace and (init_filtered is not None)
 
@@ -350,25 +347,16 @@ def _sdeint(
     trace_output: Optional[PyTree[Array]]
     brownian_output: Optional[PyTree[Array]] = None
 
-    def _stack(init_tree, traced_tree):
-        return jax.tree_util.tree_map(
-            lambda init, tr: jnp.concatenate(
-                [jnp.asarray(init)[None], jnp.asarray(tr)], axis=0
-            ),
-            init_tree,
-            traced_tree,
-        )
-
     if trace_enabled and traced is not None:
         if return_brownian:
             state_traced, brownian_traced = traced
-            trace_output = _stack(init_filtered, state_traced)
+            trace_output = stack_trace(init_filtered, state_traced)
             brownian_init = jax.tree_util.tree_map(
                 lambda leaf: jnp.zeros_like(leaf[0]), brownian_traced
             )
-            brownian_output = _stack(brownian_init, brownian_traced)
+            brownian_output = stack_trace(brownian_init, brownian_traced)
         else:
-            trace_output = _stack(init_filtered, traced)
+            trace_output = stack_trace(init_filtered, traced)
     else:
         trace_output = final_state if not collect_trace else None
 

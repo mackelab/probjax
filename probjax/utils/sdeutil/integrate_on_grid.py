@@ -1,4 +1,3 @@
-from functools import partial
 from typing import Any, Callable, Optional, Sequence, Tuple
 
 import jax
@@ -6,7 +5,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from jaxtyping import Key
 
-from probjax.utils.jaxutils import nested_checkpoint_scan
+from probjax.utils._solver_common import scan_on_grid
 from probjax.utils.sdeutil import SDEState
 
 
@@ -39,34 +38,21 @@ def _sdeint_on_grid(
     t0 = ts[0]
     state = solver.init(t0, y0)
     keys = jax.random.split(rng, dts.shape[0])
-    if not collect_trace:
 
-        def body(i, carry):
-            dt = dts[i]
-            key = keys[i]
-            new_state, _ = solver.step(key, carry, dt)
-            return new_state
+    def body(i, carry):
+        dt = dts[i]
+        key = keys[i]
+        new_state, _ = solver.step(key, carry, dt)
+        return new_state
 
-        state = jax.lax.fori_loop(0, dts.shape[0], body, state)
-        traced = None
-    else:
-        if check_points is None:
-            state, traced = jax.lax.scan(
-                scan_fun,
-                state,
-                (dts, keys),
-                unroll=unroll,
-                _split_transpose=_split_transpose,
-            )
-        else:
-            state, traced = nested_checkpoint_scan(
-                scan_fun,
-                state,
-                (dts, keys),
-                nested_lengths=check_points,
-                scan_fn=partial(
-                    jax.lax.scan, unroll=unroll, _split_transpose=_split_transpose
-                ),
-            )
-
-    return state, traced
+    return scan_on_grid(
+        scan_fun,
+        body,
+        state,
+        (dts, keys),
+        dts.shape[0],
+        check_points=check_points,
+        unroll=unroll,
+        _split_transpose=_split_transpose,
+        collect_trace=collect_trace,
+    )
