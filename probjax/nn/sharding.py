@@ -53,6 +53,7 @@ __all__ = [
     "HIDDEN",
     "HEADS",
     "HEAD_DIM",
+    "EXPERT",
     "default_rules",
     "resolve_axes",
     "param_metadata",
@@ -67,16 +68,26 @@ EMBED = "embed"  # residual / feature axis (replicated by default)
 HIDDEN = "hidden"  # MLP hidden feature axis        -> model axis
 HEADS = "heads"  # attention heads axis            -> model axis
 HEAD_DIM = "head_dim"  # per-head feature axis (replicated)
+EXPERT = "expert"  # MoE expert axis               -> model axis by default
 
 
 def default_rules(
-    data_axis: str = "data", model_axis: str = "model"
+    data_axis: str = "data",
+    model_axis: str = "model",
+    expert_axis: Optional[str] = None,
 ) -> Tuple[Tuple[str, Optional[str]], ...]:
-    """Logical-to-mesh-axis rules for a standard ``("data", "model")`` mesh."""
+    """Logical-to-mesh-axis rules for a standard ``("data", "model")`` mesh.
+
+    The MoE expert axis maps to ``model_axis`` by default so experts shard
+    over the same model-parallel axis as heads/hidden dims. On a 3-D
+    ``("data", "model", "expert")`` mesh pass ``expert_axis="expert"`` to
+    shard experts over their own axis instead.
+    """
     return (
         (BATCH, data_axis),
         (HIDDEN, model_axis),
         (HEADS, model_axis),
+        (EXPERT, expert_axis or model_axis),
         (EMBED, None),
         (HEAD_DIM, None),
         (SEQ, None),

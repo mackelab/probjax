@@ -211,6 +211,14 @@ from probjax.nn.generative import (
     UniformContinuousTimeTrainingConfig,
     UniformFlowTrainingConfig,
 )
+from probjax.nn.moe import (
+    ExpertSwiGLU,
+    LocalDispatcher,
+    MoEAux,
+    MoELayer,
+    TopKRouter,
+    load_balance_loss,
+)
 from probjax.nn.nets import (
     MLP,
     DeepSet,
