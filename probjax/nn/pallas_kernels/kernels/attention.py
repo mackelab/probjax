@@ -22,10 +22,10 @@ from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
-from jax._src import ad_util
 from jax import lax
-from jax.experimental import pallas as pl
+from jax._src import ad_util
 from jax._src.pallas import primitives as pallas_primitives
+from jax.experimental import pallas as pl
 from jax.experimental.pallas import triton as plgpu
 from jax.interpreters import ad
 
@@ -43,12 +43,7 @@ from ..kernel_utils.kernel_primitive import (
     KernelSpec,
     Operand,
     Output,
-    ct,
-    derive_bwd_spec,
-    grad,
     make_kernel_primitive,
-    out_res,
-    res,
     shardable_kernel,
 )
 
@@ -249,7 +244,8 @@ class BlockSizes:
           to avoid tiny tile sizes that hurt performance
 
         For backward_pass_impl="triton_fused", forces fused backward and adjusts
-        block sizes to satisfy: ceil_div(q_len, block_q_dq) == ceil_div(kv_len, block_kv_dkv).
+        block sizes to satisfy: ceil_div(q_len, block_q_dq)
+        == ceil_div(kv_len, block_kv_dkv).
         This may create inefficient tiny tiles for asymmetric sequence lengths.
 
         For backward_pass_impl="triton_split", uses split backward with independent
@@ -433,7 +429,8 @@ def mha_forward_kernel(
     # blocks of q is carried out by the grid.
     def body(start_k, carry):
         if index_offset_ref is not None:
-            # We retrieve the dynamic indices for the current block if offset is provided.
+            # We retrieve the dynamic indices for the current block if offset is
+            # provided.
             start_k = jnp.sum(pallas_load(index_offset_ref, (pl.dslice(start_k, 1),)))
         o_prev, m_prev, l_prev = carry
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
@@ -1519,6 +1516,239 @@ def _resolve_attention_num_stages(num_stages: int, *, has_dense_bias: bool) -> i
     return num_stages
 
 
+# ---------------------------------------------------------------------------
+# Shared-memory-aware tuning for consumer GPUs.
+# ---------------------------------------------------------------------------
+# Defaults (block_q=128, block_k=128, num_stages=2) target A100 (164KB) / H100
+# (228KB). Consumer cards (e.g. Ampere/Ada, ~101KB opt-in) raise
+# RESOURCE_EXHAUSTED for large sequence lengths. Query the real limit via
+# libcuda when available and shrink tiles proactively (helps jit, where the
+# failure surfaces at runtime, after tracing) plus a reactive retry for eager
+# execution (exact, no estimation needed).
+
+_SMEM_LIMIT_CACHE: int | None | str = "uninitialized"
+# Above this limit we assume a datacenter GPU and keep requested configs.
+_DATACENTER_SMEM_THRESHOLD = 150 * 1024
+_MIN_TILE = 16
+
+
+def _query_triton_smem_limit() -> int | None:
+    """Return opt-in shared-memory-per-block limit, or None if unknown."""
+    global _SMEM_LIMIT_CACHE
+    if _SMEM_LIMIT_CACHE != "uninitialized":
+        return _SMEM_LIMIT_CACHE  # type: ignore[return-value]
+    limit: int | None = None
+    try:
+        import ctypes
+
+        for _name in ("libcuda.so.1", "libcuda.so"):
+            try:
+                lib = ctypes.CDLL(_name)
+                break
+            except OSError:
+                lib = None  # type: ignore[assignment]
+        else:
+            lib = None
+        if lib is not None and lib.cuInit(0) == 0:
+            dev = ctypes.c_int()
+            # CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN = 97,
+            # MAX_SHARED_MEMORY_PER_BLOCK = 8 (fallback).
+            if lib.cuDeviceGet(ctypes.byref(dev), 0) == 0:
+                val = ctypes.c_int()
+                if (
+                    lib.cuDeviceGetAttribute(ctypes.byref(val), 97, dev.value) == 0
+                    or lib.cuDeviceGetAttribute(ctypes.byref(val), 8, dev.value) == 0
+                ):
+                    limit = int(val.value)
+    except Exception:
+        limit = None
+    _SMEM_LIMIT_CACHE = limit
+    return limit
+
+
+def _is_smem_resource_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    if "shared memory" not in msg:
+        return False
+    return (
+        "exceeded" in msg
+        or "limit" in msg
+        or "resource_exhausted" in msg
+        or "resource exhausted" in msg
+    )
+
+
+def _next_pow2(n: int) -> int:
+    n = max(int(n), 1)
+    return 1 << (n - 1).bit_length()
+
+
+def _estimate_fwd_smem_bytes(
+    bq: int, bk: int, bd: int, stages: int, dtype_bytes: int
+) -> int:
+    """Conservative (over-estimating) forward shared-memory model.
+
+    Exact Triton accounting depends on pipelining/unrolling, so we deliberately
+    over-estimate: a config whose estimate fits is very likely to actually fit.
+    Only applied on small-SMEM devices; large GPUs keep requested configs.
+    """
+    return (bq * bd + 2 * stages * bk * bd + bq * bk) * dtype_bytes
+
+
+def _shrink_fwd_config(bq: int, bk: int, stages: int) -> tuple[int, int, int] | None:
+    """One shrink step: prefer dropping pipelining, then halving tiles."""
+    if stages > 1:
+        return (bq, bk, 1)
+    if bk >= bq and bk > _MIN_TILE:
+        return (bq, max(_MIN_TILE, bk // 2), stages)
+    if bq > _MIN_TILE:
+        return (max(_MIN_TILE, bq // 2), bk, stages)
+    if bk > _MIN_TILE:
+        return (bq, max(_MIN_TILE, bk // 2), stages)
+    return None
+
+
+def _adjust_fwd_config_for_smem(
+    bq: int,
+    bk: int,
+    bd: int,
+    stages: int,
+    dtype_bytes: int,
+    limit: int | None,
+) -> tuple[int, int, int]:
+    if limit is None or limit >= _DATACENTER_SMEM_THRESHOLD:
+        return (bq, bk, stages)
+    # Clamp to sequence-independent safe starting point; loop guards jit path.
+    while True:
+        est = _estimate_fwd_smem_bytes(bq, bk, bd, stages, dtype_bytes)
+        if est <= int(limit * 0.9):
+            return (bq, bk, stages)
+        nxt = _shrink_fwd_config(bq, bk, stages)
+        if nxt is None:
+            return (bq, bk, stages)
+        bq, bk, stages = nxt
+
+
+def _shrink_all_backward_blocks(
+    bq_dkv: int, bkv_dkv: int, bq_dq: int, bkv_dq: int, stages: int
+) -> tuple[int, int, int, int, int] | None:
+    if stages > 1:
+        return (bq_dkv, bkv_dkv, bq_dq, bkv_dq, 1)
+    nxt = max(bq_dkv, bkv_dkv, bq_dq, bkv_dq)
+    if nxt <= _MIN_TILE:
+        return None
+
+    def _half(v: int) -> int:
+        return max(_MIN_TILE, v // 2) if v > _MIN_TILE else v
+
+    return (_half(bq_dkv), _half(bkv_dkv), _half(bq_dq), _half(bkv_dq), stages)
+
+
+def _adjust_block_sizes_for_smem(
+    block_sizes: BlockSizes,
+    num_stages: int,
+    *,
+    q_seq_len: int,
+    kv_seq_len: int,
+    head_dim: int,
+    dtype_bytes: int,
+) -> tuple[BlockSizes, int]:
+    """Proactively shrink tiles so the kernel fits small-SMEM devices."""
+    limit = _query_triton_smem_limit()
+    if limit is None or limit >= _DATACENTER_SMEM_THRESHOLD:
+        return (block_sizes, num_stages)
+    bd = _next_pow2(head_dim)
+    bq = min(block_sizes.block_q, q_seq_len)
+    bk = min(block_sizes.block_k, kv_seq_len)
+    bq, bk, stages = _adjust_fwd_config_for_smem(
+        bq, bk, bd, num_stages, dtype_bytes, limit
+    )
+    # Scale backward tiles with the same shrink pressure: halve them until the
+    # forward-style estimate for each backward pair fits.
+    bq_dkv = min(block_sizes.block_q_dkv, q_seq_len)
+    bkv_dkv = min(block_sizes.block_kv_dkv, kv_seq_len)
+    bq_dq = min(block_sizes.block_q_dq, q_seq_len)
+    bkv_dq = min(block_sizes.block_kv_dq, kv_seq_len)
+    cur: tuple[int, int, int, int, int] | None = (
+        bq_dkv,
+        bkv_dkv,
+        bq_dq,
+        bkv_dq,
+        stages,
+    )
+    while cur is not None:
+        c_bq_dkv, c_bkv_dkv, c_bq_dq, c_bkv_dq, c_st = cur
+        est_dkv = _estimate_fwd_smem_bytes(c_bq_dkv, c_bkv_dkv, bd, c_st, dtype_bytes)
+        est_dq = _estimate_fwd_smem_bytes(c_bq_dq, c_bkv_dq, bd, c_st, dtype_bytes)
+        if max(est_dkv, est_dq) <= int(limit * 0.9):
+            break
+        cur = _shrink_all_backward_blocks(c_bq_dkv, c_bkv_dkv, c_bq_dq, c_bkv_dq, c_st)
+    if cur is not None:
+        bq_dkv, bkv_dkv, bq_dq, bkv_dq, stages = cur
+    # Rebuild full-size BlockSizes (min() with seq len happens at kernel entry).
+    # Preserve user intent when no shrink was needed by keeping original values
+    # if they are already <= the adjusted ones is unnecessary: just set the
+    # adjusted values, but never grow beyond the request.
+    return (
+        BlockSizes(
+            block_q=min(block_sizes.block_q, max(bq, _MIN_TILE)),
+            block_k=min(block_sizes.block_k, max(bk, _MIN_TILE)),
+            block_q_dkv=min(block_sizes.block_q_dkv, max(bq_dkv, _MIN_TILE)),
+            block_kv_dkv=min(block_sizes.block_kv_dkv, max(bkv_dkv, _MIN_TILE)),
+            block_q_dq=min(block_sizes.block_q_dq, max(bq_dq, _MIN_TILE)),
+            block_kv_dq=min(block_sizes.block_kv_dq, max(bkv_dq, _MIN_TILE)),
+        ),
+        stages,
+    )
+
+
+def _iter_smaller_block_configs(block_sizes: BlockSizes, num_stages: int) -> Any:
+    """Yield progressively smaller (BlockSizes, num_stages) for eager retry."""
+    cur_bs, cur_st = block_sizes, num_stages
+    yield (cur_bs, cur_st)
+    seen = {(cur_bs, cur_st)}
+    # First drop stages, then shrink fwd tiles, then shrink everything.
+    while True:
+        bq, bk, st = cur_bs.block_q, cur_bs.block_k, cur_st
+        nxt_fwd = _shrink_fwd_config(bq, bk, st)
+        if nxt_fwd is not None:
+            nbq, nbk, nst = nxt_fwd
+            cur_bs = dataclasses.replace(cur_bs, block_q=nbq, block_k=nbk)
+            cur_st = nst
+        else:
+            shrunk = _shrink_all_backward_blocks(
+                cur_bs.block_q_dkv,
+                cur_bs.block_kv_dkv,
+                cur_bs.block_q_dq,
+                cur_bs.block_kv_dq,
+                cur_st,
+            )
+            if shrunk is None:
+                return
+            bq_dkv, bkv_dkv, bq_dq, bkv_dq, nst = shrunk
+            # Fwd already at minimum; halve it stays, just drop stages already
+            # done — force-halve fwd too if still stuck.
+            nbq = max(_MIN_TILE, cur_bs.block_q // 2)
+            nbk = max(_MIN_TILE, cur_bs.block_k // 2)
+            if nbq == cur_bs.block_q and nbk == cur_bs.block_k:
+                return
+            cur_bs = dataclasses.replace(
+                cur_bs,
+                block_q=nbq,
+                block_k=nbk,
+                block_q_dkv=bq_dkv,
+                block_kv_dkv=bkv_dkv,
+                block_q_dq=bq_dq,
+                block_kv_dq=bkv_dq,
+            )
+            cur_st = nst
+        key = (cur_bs, cur_st)
+        if key in seen:
+            return
+        seen.add(key)
+        yield (cur_bs, cur_st)
+
+
 def _mha_impl_raw(
     q: jax.Array,
     k: jax.Array,
@@ -2141,21 +2371,100 @@ def mha(
         q, k, v, rng, mask_leaves, bias_leaves
     )
     factory = _make_mha_forward_jvp if force_forward_mode else _make_mha_custom_vjp
-    inner = factory(
-        mask_treedef=mask_treedef,
-        bias_treedef=bias_treedef,
-        sm_scale=sm_scale,
-        block_sizes=block_sizes,
-        backward_pass_impl=backward_pass_impl,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        grid=grid,
-        interpret=interpret,
-        debug=debug,
-        dropout_rate=dropout_rate,
-        dropout_impl=dropout_impl,
-    )
-    return inner(q, k, v, rng, mask_leaves, bias_leaves)
+
+    def _build_inner(bs: BlockSizes, st: int):
+        return factory(
+            mask_treedef=mask_treedef,
+            bias_treedef=bias_treedef,
+            sm_scale=sm_scale,
+            block_sizes=bs,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=st,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+        )
+
+    # Fast path (zero overhead, original behavior): datacenter GPUs, unknown
+    # devices (TPU/CPU/no libcuda), or interpret mode. Only confirmed-small
+    # NVIDIA GPUs (<150KB opt-in SMEM) take the adaptive slow path below.
+    try:
+        _smem_limit = None if interpret else _query_triton_smem_limit()
+    except Exception:
+        _smem_limit = None
+    if interpret or _smem_limit is None or _smem_limit >= _DATACENTER_SMEM_THRESHOLD:
+        return _build_inner(block_sizes, num_stages)(
+            q, k, v, rng, mask_leaves, bias_leaves
+        )
+
+    def _maybe_proactive() -> tuple[BlockSizes, int]:
+        try:
+            q_shape = tuple(q.shape)
+            k_shape = tuple(k.shape)
+            q_seq_len = int(q_shape[-3])
+            kv_seq_len = int(k_shape[-3])
+            head_dim = int(q_shape[-1])
+            dtype_bytes = int(jnp.dtype(q.dtype).itemsize)
+        except Exception:
+            return (block_sizes, num_stages)
+        try:
+            return _adjust_block_sizes_for_smem(
+                block_sizes,
+                num_stages,
+                q_seq_len=q_seq_len,
+                kv_seq_len=kv_seq_len,
+                head_dim=head_dim,
+                dtype_bytes=dtype_bytes,
+            )
+        except Exception:
+            return (block_sizes, num_stages)
+
+    start_bs, start_st = _maybe_proactive()
+
+    def _is_tracer_arg(x) -> bool:
+        try:
+            return isinstance(x, jax.core.Tracer)
+        except Exception:
+            return False
+
+    try:
+        leaves = jax.tree_util.tree_leaves((q, k, v, rng, mask_leaves, bias_leaves))
+    except Exception:
+        leaves = [q, k, v]
+    eager = not any(_is_tracer_arg(x) for x in leaves)
+    # Under jit/vmap/grad tracing the kernel runs later at runtime; the
+    # proactive config above is the best we can do there. For eager execution
+    # we can also retry with smaller tiles on RESOURCE_EXHAUSTED.
+    if not eager:
+        return _build_inner(start_bs, start_st)(q, k, v, rng, mask_leaves, bias_leaves)
+
+    last_exc: BaseException | None = None
+    for attempt_bs, attempt_st in _iter_smaller_block_configs(start_bs, start_st):
+        try:
+            out = _build_inner(attempt_bs, attempt_st)(
+                q, k, v, rng, mask_leaves, bias_leaves
+            )
+            # Force synchronization so async compilation/runtime errors surface
+            # inside this try block and can trigger fallback.
+            try:
+                jax.block_until_ready(out)
+            except Exception as sync_exc:
+                if _is_smem_resource_error(sync_exc):
+                    last_exc = sync_exc
+                    continue
+                raise
+            return out
+        except Exception as exc:  # noqa: BLE001 - must inspect for SMEM retry
+            if not _is_smem_resource_error(exc):
+                raise
+            last_exc = exc
+            continue
+    if last_exc is not None:
+        raise last_exc
+    return _build_inner(start_bs, start_st)(q, k, v, rng, mask_leaves, bias_leaves)
 
 
 def _is_direct_jvp_trace(*args) -> bool:
@@ -2716,7 +3025,7 @@ def _mha_backward_raw(
     kv_seq_len = k.shape[1]
     block_d = pl.next_power_of_2(head_dim)
     block_q = min(block_sizes.block_q, q_seq_len)
-    block_k = min(block_sizes.block_k, kv_seq_len)
+    _block_k = min(block_sizes.block_k, kv_seq_len)
     block_q_dkv = min(block_sizes.block_q_dkv, q_seq_len)
     block_kv_dkv = min(block_sizes.block_kv_dkv, kv_seq_len)
     block_q_dq = min(block_sizes.block_q_dq, q_seq_len)
