@@ -573,9 +573,9 @@ def test_inverse_pytree_dict_input():
 
 def test_inverse_unresolved_target_returns_nan():
     def f(x):
-        return jnp.sum(x)
+        return x + jnp.tanh(x)
 
     x = jnp.array([1.0, 2.0, 3.0])
     y = f(x)
 
-    assert jnp.isnan(inverse(f)(y))
+    assert jnp.all(jnp.isnan(inverse(f)(y)))

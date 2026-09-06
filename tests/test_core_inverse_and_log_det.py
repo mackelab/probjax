@@ -317,14 +317,14 @@ def test_inverse_rev_reshape():
     assert jnp.allclose(x0, x_rec)
 
 
-def test_inverse_transpose():
+@pytest.mark.parametrize("transform", [inverse, inverse_and_logabsdet])
+def test_inverse_transpose(transform):
     def f(x):
         return jnp.transpose(x, (2, 0, 1))
 
     x0 = jnp.arange(24, dtype=jnp.float32).reshape(2, 3, 4)
-    inv_f = inverse(f)
-    x_rec = inv_f(f(x0))
-    assert jnp.allclose(x0, x_rec)
+    with pytest.raises(ValueError, match="matching input/output shapes"):
+        transform(f)(f(x0))
 
 
 def test_inverse_slice_dynamic_slice():
@@ -957,16 +957,16 @@ def test_missing_logdet_rule_raises_instead_of_guessing():
     removed = rules.pop(jax.lax.reshape_p)
     try:
         with pytest.raises(NotImplementedError, match="reshape"):
-            inverse_and_logabsdet(lambda x: jnp.reshape(jnp.exp(x), (4,)))(
-                jnp.ones((2, 2))
-            )
+            inverse_and_logabsdet(
+                lambda x: jnp.reshape(jnp.exp(x).reshape(4), (2, 2))
+            )(jnp.ones((2, 2)))
     finally:
         rules[jax.lax.reshape_p] = removed
 
     # Restored, and working again.
-    _, logdet = inverse_and_logabsdet(lambda x: jnp.reshape(jnp.exp(x), (4,)))(
-        jnp.ones((2, 2))
-    )
+    _, logdet = inverse_and_logabsdet(
+        lambda x: jnp.reshape(jnp.exp(x).reshape(4), (2, 2))
+    )(jnp.ones((2, 2)))
     assert jnp.allclose(logdet, 0.0)
 
 

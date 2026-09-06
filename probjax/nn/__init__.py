@@ -120,6 +120,7 @@ from probjax.nn.generative.autoregressive import (
     MixtureAutoregressive,
     MLPARConditionerConfig,
     SplineAutoregressive,
+    SSMARConditionerConfig,
     TransformerARConditionerConfig,
     made,
 )

@@ -204,14 +204,14 @@ def test_inverse_rev_reshape():
     assert jnp.allclose(x0, x_rec)
 
 
-def test_inverse_transpose():
+@pytest.mark.parametrize("transform", [inverse, inverse_and_logabsdet])
+def test_inverse_transpose(transform):
     def f(x):
         return jnp.transpose(x, (2, 0, 1))
 
     x0 = jnp.arange(24, dtype=jnp.float32).reshape(2, 3, 4)
-    inv_f = inverse(f)
-    x_rec = inv_f(f(x0))
-    assert jnp.allclose(x0, x_rec)
+    with pytest.raises(ValueError, match="matching input/output shapes"):
+        transform(f)(f(x0))
 
 
 def test_logabsdet_nested_jit_flip():
@@ -432,8 +432,8 @@ def test_logabsdet_reshape_chain():
 @pytest.mark.parametrize(
     "name,fn,y",
     [
-        ("reshape", lambda x: jnp.reshape(jnp.exp(x), (4,)), jnp.exp(jnp.zeros((2, 2)))),
-        ("ravel", lambda x: jnp.exp(x).ravel(), jnp.exp(jnp.zeros((2, 2)))),
+        ("reshape", lambda x: jnp.exp(x).reshape(4).reshape(2, 2), jnp.ones((2, 2))),
+        ("ravel", lambda x: jnp.exp(x.reshape(2, 2)).ravel(), jnp.ones(4)),
         (
             "concatenate",
             lambda x: jnp.concatenate([jnp.exp(x[:1]), jnp.exp(x[1:])]),
@@ -448,7 +448,7 @@ def test_logabsdet_reshape_chain():
             jnp.ones(2),
         ),
         ("slice", lambda x: jnp.exp(x)[:2], jnp.ones(2)),
-        ("transpose", lambda x: jnp.exp(x).T, jnp.exp(jnp.zeros((2, 3)))),
+        ("transpose", lambda x: jnp.exp(x).T, jnp.ones((2, 2))),
     ],
 )
 def test_logabsdet_rearrangements_are_zero(name, fn, y):
@@ -477,13 +477,24 @@ def test_logabsdet_dynamic_slice_is_refused():
 
 
 def test_logabsdet_scatter_is_zero():
+    base = jnp.zeros(4)
+
+    def f(x):
+        return base.at[jnp.array([2, 0, 3, 1])].set(jnp.exp(x))
+
+    x, logdet = inverse_and_logabsdet(f)(jnp.ones(4))
+    assert jnp.allclose(x, 0.0)
+    assert jnp.allclose(logdet, 0.0)
+
+
+def test_logabsdet_shape_expanding_scatter_is_refused():
     base = jnp.arange(4.0)
 
     def f(x):
         return base.at[jnp.array([0, 2])].set(jnp.exp(x))
 
-    _, logdet = inverse_and_logabsdet(f)(jnp.ones(2))
-    assert jnp.allclose(logdet, 0.0)
+    with pytest.raises(ValueError, match="matching input/output shapes"):
+        inverse_and_logabsdet(f)(jnp.ones(2))
 
 
 def test_logabsdet_convert_element_type_is_zero():

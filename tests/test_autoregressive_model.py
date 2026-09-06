@@ -405,6 +405,28 @@ def test_transformer_conditioner_supports_categorical():
     assert samples.dtype == jnp.int32
 
 
+def test_ssm_conditioner_supports_categorical():
+    """The recurrent conditioner trains and samples without a cache."""
+    from probjax.nn.generative.autoregressive import SSMARConditionerConfig
+
+    model = Autoregressive(
+        4,
+        ARFamily.categorical(3),
+        nnx.Rngs(1),
+        conditioner=SSMARConditionerConfig(model_dim=16, num_layers=1),
+    )
+    x = jnp.zeros((2, 4), jnp.int32)
+    assert model.predict_params(x).shape == (2, 4, 3)
+    assert model._logpdf(x).shape == (2,)
+    assert jnp.all(jnp.isfinite(model._logpdf(x)))
+    data = (jax.random.uniform(jax.random.key(0), (256, 4)) > 0.5).astype(jnp.int32)
+    losses = model.fit(jax.random.key(1), data, num_steps=10, batch_size=64)
+    assert jnp.all(jnp.isfinite(losses))
+    samples = model.sample(jax.random.key(0), (5,))
+    assert samples.shape == (5, 4)
+    assert samples.dtype == jnp.int32
+
+
 @pytest.mark.parametrize(
     "family",
     [
@@ -413,16 +435,22 @@ def test_transformer_conditioner_supports_categorical():
     ],
 )
 def test_cached_sampling_matches_naive(family):
-    """Both paths consume the same per-dimension keys, so they agree exactly."""
+    """The compiled scan carries its KV cache and matches naive decoding."""
     input_dim = 4
     model = Autoregressive(
         input_dim, family, nnx.Rngs(0), conditioner=_tiny_transformer()
     )
-    key = jax.random.key(0)
-    assert jnp.array_equal(
-        model.sample(key, (3,)),
-        model.sample(key, (3,), use_cache=False),
+    decoder = model.conditioner.inner.decoder
+    decoder.kernel[...] = 0.1 * jax.random.normal(
+        jax.random.key(1), decoder.kernel.shape
     )
+    key = jax.random.key(0)
+    cached = model.sample(key, (3,))
+    naive = model.sample(key, (3,), use_cache=False)
+
+    for block in model.conditioner.inner.transformer.attention_blocks:
+        assert block.cache_index[...] == input_dim
+    assert jnp.allclose(cached, naive, atol=1e-5, rtol=1e-5)
 
 
 def test_trained_cached_matches_naive_up_to_float_dust():

@@ -6,9 +6,9 @@ has two unknown operands, because both depend on the ``x`` being solved for, and
 the bivariate rules need exactly one unknown. Propagation stalls and the target
 comes back NaN.
 
-That is a limitation of local propagation, not of the problem. When the stalled
-program is **affine** in the target -- ``y = A x + b`` -- the inverse is a linear
-solve, and both ``A`` and ``b`` can be extracted exactly:
+That is a limitation of local propagation, not of the problem. When a stalled
+program or section is **affine** in its input -- ``y = A x + b`` -- its inverse
+is a linear solve, and both ``A`` and ``b`` can be extracted exactly:
 
     b = f(0)                      the constant term
     A = jacfwd(f)(0)              constant, because f is affine
@@ -17,9 +17,9 @@ solve, and both ``A`` and ``b`` can be extracted exactly:
 
 Affinity is decided **structurally**, from the jaxpr, so it is a proof rather
 than a numerical guess: a program that samples as affine at a few points is not
-necessarily affine. This runs only as a fallback after propagation has failed,
-so it can never change an answer the interpreter already produced -- it only
-replaces NaN with a value.
+necessarily affine. The recovery interpreter uses these solvers on a stall,
+then resumes propagation through registered nonlinear inverses. Whole-program
+recovery remains available for coupled multiple-leaf affine inputs.
 
 Nonlinear fan-out (``x + tanh(x)``, a residual block) stays unsupported. It is
 invertible by fixed-point iteration when the residual branch is a contraction,
@@ -36,7 +36,9 @@ from typing import Any, Sequence
 import jax
 import jax.numpy as jnp
 from jax._src import core as jax_core
-from jax.extend.core import Jaxpr, Literal, Var
+from jax.extend.core import Jaxpr, Var
+
+from probjax.core.interpreters.inverse.diagonal import DiagonalAffineSystem
 
 __all__ = ["is_affine_in", "solve_affine_inverse"]
 
@@ -80,6 +82,35 @@ def _tainted_operands(eqn, tainted: set) -> list:
     return [v for v in eqn.invars if isinstance(v, Var) and v in tainted]
 
 
+def affine_equation(eqn, dependent: Sequence[bool]) -> bool:
+    """Prove affinity in data operands, never in indices or predicates."""
+    if eqn.effects:
+        return False
+    if not any(dependent):
+        return True
+    name = eqn.primitive.name
+    if name == "div":
+        return not dependent[1]
+    if name in {"dynamic_slice", "gather"}:
+        return not any(dependent[1:])
+    if name == "select_n":
+        return not dependent[0]
+    if name == "convert_element_type":
+        # Narrowing, integer conversion, and complex-to-real casts are lossy.
+        source = jnp.dtype(eqn.invars[0].aval.dtype)
+        target = jnp.dtype(eqn.outvars[0].aval.dtype)
+        return (
+            jnp.issubdtype(source, jnp.inexact)
+            and jnp.issubdtype(target, jnp.inexact)
+            and jnp.can_cast(source, target, casting="safe")
+            and source.kind == target.kind
+            and jnp.finfo(target).bits >= jnp.finfo(source).bits
+        )
+    if name in _BILINEAR_PRIMITIVES:
+        return sum(dependent) == 1
+    return name in _AFFINE_PRIMITIVES
+
+
 def is_affine_in(jaxpr: Jaxpr, target_vars: Sequence[Var]) -> bool:
     """Whether ``jaxpr`` is affine in ``target_vars``, proven from its structure.
 
@@ -92,13 +123,9 @@ def is_affine_in(jaxpr: Jaxpr, target_vars: Sequence[Var]) -> bool:
         touching = _tainted_operands(eqn, tainted)
         if not touching:
             continue
-        name = eqn.primitive.name
-        if name in _AFFINE_PRIMITIVES:
-            pass
-        elif name in _BILINEAR_PRIMITIVES:
-            if len(touching) > 1:
-                return False  # e.g. x * x
-        else:
+        if not affine_equation(
+            eqn, [isinstance(v, Var) and v in tainted for v in eqn.invars]
+        ):
             return False
         tainted.update(v for v in eqn.outvars if isinstance(v, Var))
     return True
@@ -117,6 +144,8 @@ def solve_affine_inverse(
     target_vars: Sequence[Var],
     known: dict,
     outputs: Sequence[Any],
+    *,
+    compute_logdet: bool = True,
 ) -> tuple[list, Any] | None:
     """Invert an affine ``jaxpr`` for ``target_vars`` by a linear solve.
 
@@ -126,6 +155,8 @@ def solve_affine_inverse(
         target_vars: the input variables being solved for.
         known: values for every other input variable.
         outputs: the values of ``jaxpr.outvars`` to invert.
+        compute_logdet: whether to emit a determinant calculation. False for
+            value-only inversion.
 
     Returns:
         ``(values, log_abs_det)`` where ``values`` aligns with ``target_vars``
@@ -140,42 +171,62 @@ def solve_affine_inverse(
     if not target_vars or not is_affine_in(jaxpr, target_vars):
         return None
 
-    shapes = [v.aval.shape for v in target_vars]
-    sizes = [_flat_size(v) for v in target_vars]
-    dtype = jnp.result_type(*[v.aval.dtype for v in target_vars])
-    total_in = sum(sizes)
-
-    flat_outputs = [jnp.asarray(o).reshape(-1) for o in outputs]
-    total_out = sum(o.size for o in flat_outputs)
-    if total_out != total_in:
-        # Not a square system, so not a bijection on these variables.
+    if sum(_flat_size(v) for v in target_vars) != sum(jnp.size(o) for o in outputs):
         return None
+    return AffineSystem(jaxpr, target_vars).solve(
+        consts, known, outputs, compute_logdet=compute_logdet
+    )
 
-    def evaluate(flat_target):
-        pieces, offset = [], 0
-        for shape, size in zip(shapes, sizes, strict=False):
-            pieces.append(flat_target[offset : offset + size].reshape(shape))
+
+class AffineSystem:
+    """Reusable evaluator for a structurally proven, square affine section.
+
+    Only graph/shape metadata is retained. Constants and coefficients are
+    explicit arguments so a cached evaluator never captures runtime tracers.
+    """
+
+    def __init__(self, jaxpr: Jaxpr, target_vars: Sequence[Var]):
+        self.targets = tuple(target_vars)
+        self.shapes = tuple(v.aval.shape for v in self.targets)
+        self.sizes = tuple(_flat_size(v) for v in self.targets)
+        self.size = sum(self.sizes)
+        self.dtype = jnp.result_type(*[v.aval.dtype for v in self.targets])
+        targets = set(self.targets)
+        self.known_vars = tuple(v for v in jaxpr.invars if v not in targets)
+        self.diagonal = DiagonalAffineSystem.try_build(jaxpr, self.targets)
+        if self.diagonal is not None:
+            return
+
+        def evaluate(flat_target, consts, known_values):
+            environment = dict(zip(self.known_vars, known_values, strict=True))
+            offset = 0
+            for var, shape, size in zip(
+                self.targets, self.shapes, self.sizes, strict=True
+            ):
+                environment[var] = flat_target[offset : offset + size].reshape(shape)
+                offset += size
+            result = jax_core.eval_jaxpr(
+                jaxpr, consts, *[environment[v] for v in jaxpr.invars]
+            )
+            return jnp.concatenate([jnp.asarray(r).reshape(-1) for r in result])
+
+        self.evaluate = evaluate
+        self.jacobian = jax.jacfwd(evaluate, argnums=0)
+
+    def solve(self, consts, known, outputs, *, compute_logdet):
+        if self.diagonal is not None:
+            return self.diagonal.solve(
+                consts, known, outputs, compute_logdet=compute_logdet
+            )
+        known_values = tuple(known[v] for v in self.known_vars)
+        zero = jnp.zeros((self.size,), self.dtype)
+        constant = self.evaluate(zero, consts, known_values)
+        matrix = self.jacobian(zero, consts, known_values)
+        rhs = jnp.concatenate([jnp.asarray(o).reshape(-1) for o in outputs]) - constant
+        solution = jnp.linalg.solve(matrix, rhs)
+        logdet = -jnp.linalg.slogdet(matrix)[1] if compute_logdet else None
+        values, offset = [], 0
+        for shape, size in zip(self.shapes, self.sizes, strict=True):
+            values.append(solution[offset : offset + size].reshape(shape))
             offset += size
-        environment = dict(known)
-        environment.update(dict(zip(target_vars, pieces, strict=False)))
-        args = [
-            v.val if isinstance(v, Literal) else environment[v] for v in jaxpr.invars
-        ]
-        result = jax_core.eval_jaxpr(jaxpr, consts, *args)
-        return jnp.concatenate([jnp.asarray(r).reshape(-1) for r in result])
-
-    zero = jnp.zeros((total_in,), dtype)
-    constant = evaluate(zero)
-    matrix = jax.jacfwd(evaluate)(zero)
-
-    rhs = jnp.concatenate(flat_outputs) - constant
-    solution = jnp.linalg.solve(matrix, rhs)
-    _, log_abs_det = jnp.linalg.slogdet(matrix)
-
-    values, offset = [], 0
-    for shape, size in zip(shapes, sizes, strict=False):
-        values.append(solution[offset : offset + size].reshape(shape))
-        offset += size
-    # log|d(inv)/dy| = -log|det A|; a singular A gives -inf here and NaN above,
-    # which is the correct report for a map that is not invertible.
-    return values, -log_abs_det
+        return values, logdet

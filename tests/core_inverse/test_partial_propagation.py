@@ -100,10 +100,6 @@ def test_inverse_uniform_select_n():
     assert jnp.allclose(inverse(f)(f(x)), x, atol=1e-6, rtol=1e-6)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="non-uniform select_n inverse sets all unknown cases to the same PARTIAL placeholder",
-)
 def test_inverse_nonuniform_select_n():
     def f(x):
         which = jnp.array([0, 1, 0, 1], dtype=jnp.int32)

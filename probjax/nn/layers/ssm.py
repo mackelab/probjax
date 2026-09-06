@@ -173,6 +173,9 @@ def mamba_scan(
 ) -> jax.Array:
     """Functional wrapper over the Pallas Mamba scan kernel.
 
+    On CPU (no Pallas backend) this runs the pure-JAX associative-scan
+    recurrence.
+
     Shapes follow the kernel contract:
     - x: [B, L, D]
     - a: [S, D]
@@ -191,6 +194,13 @@ class MambaCell(RecurrentCell):
     Wraps the Pallas Mamba scan kernel with token-wise projections to generate
     parameters and learnable recurrent matrices.
 
+    Parameterization and initialization follow the official implementation
+    (``mamba_ssm/modules/mamba_simple.py``): the decay matrix is stored as
+    ``a_log`` and used as ``a = -exp(a_log)`` so it stays negative (S4D
+    init), the step size is ``delta = softplus(to_delta(x))`` with the
+    projection bias set so ``softplus(bias)`` starts in
+    ``[dt_min, dt_max]``, and the skip parameter ``d`` starts at one.
+
     Reference: Gu & Dao, 2023 — Mamba: Linear-Time Sequence Modeling with
     Selective State Spaces.
     """
@@ -203,6 +213,9 @@ class MambaCell(RecurrentCell):
         state_dim: int | None = None,
         seq_tile_size: int = 64,
         dim_tile_size: int = 128,
+        dt_min: float = 0.001,
+        dt_max: float = 0.1,
+        dt_init_floor: float = 1e-4,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
@@ -214,17 +227,14 @@ class MambaCell(RecurrentCell):
         self.seq_tile_size = seq_tile_size
         self.dim_tile_size = dim_tile_size
 
-        # Recurrent parameters
-        self.a = nnx.Param(
-            matrix_init(
-                rngs.params(), (sd, model_dim), normalization=jnp.sqrt(model_dim)
-            )
+        # S4D real init: a = -(1..S), stored in log space to stay negative.
+        a = jnp.tile(
+            jnp.arange(1, sd + 1, dtype=jnp.float32)[:, None], (1, model_dim)
         )
-        self.d = nnx.Param(
-            matrix_init(
-                rngs.params(), (1, model_dim), normalization=jnp.sqrt(model_dim)
-            )
-        )
+        self.a_log = nnx.Param(jnp.log(a))
+
+        # Skip parameter starts at one.
+        self.d = nnx.Param(jnp.ones((1, model_dim), dtype=jnp.float32))
 
         # Precision/dtype kwargs for linear projections
         precision_kwargs = get_active_precision_kwargs(
@@ -237,6 +247,16 @@ class MambaCell(RecurrentCell):
         self.to_c = nnx.Linear(model_dim, sd, rngs=rngs, **precision_kwargs)
         self.to_delta = nnx.Linear(model_dim, model_dim, rngs=rngs, **precision_kwargs)
 
+        # Init the delta bias so softplus(bias) lands in [dt_min, dt_max].
+        key = rngs.params()
+        dt = jnp.exp(
+            jax.random.uniform(key, (model_dim,), dtype=jnp.float32)
+            * (jnp.log(dt_max) - jnp.log(dt_min))
+            + jnp.log(dt_min)
+        )
+        dt = jnp.maximum(dt, dt_init_floor)
+        self.to_delta.bias[...] = dt + jnp.log(-jnp.expm1(-dt))
+
     def __call__(self, inputs: jax.Array, *, rng: jax.Array | None = None) -> jax.Array:
         del rng
         added_batch = False
@@ -244,13 +264,14 @@ class MambaCell(RecurrentCell):
             inputs = inputs[None, ...]
             added_batch = True
 
+        a = -jnp.exp(self.a_log[...])  # [S, D], always negative
         b = self.to_b(inputs)  # [B, L, S]
         c = self.to_c(inputs)  # [B, L, S]
-        delta = self.to_delta(inputs)  # [B, L, D]
+        delta = jax.nn.softplus(self.to_delta(inputs))  # [B, L, D], positive
 
         y = mamba_scan(
             inputs,
-            self.a[...],
+            a,
             b,
             c,
             delta,

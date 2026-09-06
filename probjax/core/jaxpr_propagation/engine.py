@@ -2,19 +2,23 @@ from __future__ import annotations
 
 import math
 import weakref
+from dataclasses import dataclass
 from typing import (
     Any,
     Callable,
-    Literal as TypingLiteral,
     Mapping,
     Optional,
     Sequence,
     cast,
 )
+from typing import (
+    Literal as TypingLiteral,
+)
 
 from jax._src import core as jax_core
 from jax._src.util import safe_map as map
-from jax.extend.core import Jaxpr, JaxprEqn, Literal as JaxLiteral, Var
+from jax.extend.core import Jaxpr, JaxprEqn, Var
+from jax.extend.core import Literal as JaxLiteral
 from jaxtyping import Array
 
 from probjax.core.jaxpr_propagation.context import ExecutionContext
@@ -31,7 +35,6 @@ from probjax.core.jaxpr_propagation.utils import (
     KnownessLevel,
     ProcessingRule,
     ReducerFunction,
-    as_sequence,
     supports_context_argument,
 )
 from probjax.core.registry import ProcessedResult, parse_processed_result
@@ -44,6 +47,26 @@ CostFn = CostFunction
 Reducer = ReducerFunction
 ProcessResult = ProcessedResult | None
 ProcessEqn = ProcessingRule | Callable[..., ProcessResult]
+
+
+@dataclass(frozen=True)
+class StallRecoveryResult:
+    """Atomic recovery of a region, rather than an individual equation.
+
+    ``state_updates`` is merged into the active namespace's mapping state.
+    Consumed equations will not subsequently run or contribute state again.
+    Only incomplete variables may be resolved, and values must be complete.
+    """
+
+    resolved_vars: Sequence[Var]
+    resolved_vals: Sequence[Any]
+    consumed_eqn_ids: Sequence[EqnId] = ()
+    state_updates: Mapping[Any, Any] | None = None
+
+
+StallRecovery = Callable[
+    [ExecutionContext, Sequence[Var], set[Var]], StallRecoveryResult | None
+]
 
 
 def naive_cost_fn(
@@ -388,6 +411,10 @@ def _write_outputs(
     """
     written_vars: list[Any] = []
     for var, val in zip(outvars, outvals, strict=False):
+        # A nested interpreter can return an unresolved boundary. It must not
+        # become a present/complete variable merely because its value is None.
+        if val is None:
+            continue
         if isinstance(val, Knowness):
             env.write_knowness(var, val)
         else:
@@ -403,6 +430,7 @@ class _EquationQueue:
         env: Environment,
         equations: Sequence[ExtendedEquation],
         cost_fn: CostFn,
+        replay=None,
     ):
         self.neighbors = neighbors
         self.env = env
@@ -414,9 +442,12 @@ class _EquationQueue:
         self.processed_eqns: set[EqnId] = set()
         # Track equations that returned no results (can be re-processed)
         self.deferred_eqns: set[EqnId] = set()
-        self.queue = PriorityQueue()
-
-        self._initialize()
+        self.replay = replay
+        self.cursor = 0
+        self.recorded = []
+        self.queue = None if replay is not None else PriorityQueue()
+        if replay is None:
+            self._initialize()
 
     def _initialize(self):
         seed_eqn_ids: set[EqnId] = set()
@@ -443,6 +474,8 @@ class _EquationQueue:
         # Deferred equations CAN be re-added when new info is available
         if eqn_id in self.deferred_eqns:
             self.deferred_eqns.remove(eqn_id)
+        if self.replay is not None:
+            return
         cost = self._compute_cost(eqn_id)
         if eqn_id in self.queue:
             self.queue.update_cost(eqn_id, cost)
@@ -450,7 +483,10 @@ class _EquationQueue:
         self.queue.insert(eqn_id, cost)
 
     def pop(self) -> ExtendedEquation:
-        eqn_id = self.queue.pop()
+        eqn_id = (
+            self.replay[self.cursor][0]
+            if self.replay is not None else self.queue.pop()
+        )
         # Don't mark as processed yet - caller will call mark_processed or mark_deferred
         return self.equation_by_id[eqn_id]
 
@@ -464,7 +500,26 @@ class _EquationQueue:
         self.deferred_eqns.add(eqn_id)
 
     def is_empty(self) -> bool:
+        if self.replay is not None:
+            return self.cursor == len(self.replay) or self.replay[self.cursor][0] is None
         return self.queue.is_empty()
+
+    def record_step(self, eqn_id, written_vars, consumed=()):
+        """Replay decisions, never values; fall back if rule knownness changes."""
+        step = (
+            eqn_id,
+            tuple((v, self.env.get_knowness_level(v)) for v in written_vars),
+            tuple(consumed),
+        )
+        self.recorded.append(step)
+        if self.replay is not None:
+            if self.cursor >= len(self.replay) or self.replay[self.cursor] != step:
+                # Rebuild from the current environment. Already consumed or
+                # completed equations stay retired, including their state.
+                self.replay = None
+                self.queue = PriorityQueue()
+                self._initialize()
+        self.cursor += 1
 
 
 def _write_equation_state(
@@ -529,7 +584,11 @@ def run_jaxpr(
     path_prefix: EqnId = (),
     state_namespace: str = "default",
     extended_jaxpr: ExtendedJaxpr | None = None,
+    stall_recovery: StallRecovery | None = None,
+    schedule_cache: dict | None = None,
 ):
+    if stall_recovery is not None and scheduler != "priority":
+        raise ValueError("stall_recovery requires the priority scheduler")
     if _can_use_eval_jaxpr_fast_path(
         jaxpr,
         invars,
@@ -623,11 +682,68 @@ def run_jaxpr(
             return_env=return_env,
         )
 
+    schedule_key = None
+    if schedule_cache is not None and not jaxpr.effects:
+        schedule_key = (
+            jaxpr, tuple(invars), tuple(outvars), type(process_eqn), cost_fn,
+            path_prefix, state_namespace, process_all_eqns, recurse_policy,
+            bool(stall_recovery),
+        )
     equation_queue = _EquationQueue(
-        extended.neighbors, env, extended.equations, cost_fn
+        extended.neighbors, env, extended.equations, cost_fn,
+        replay=schedule_cache.get(schedule_key) if schedule_key is not None else None,
     )
 
-    while not equation_queue.is_empty():
+    changed_since_recovery = set(env) if stall_recovery is not None else None
+    while True:
+        if equation_queue.is_empty():
+            if stall_recovery is None or all(
+                env.get_knowness_level(var) == KnownessLevel.COMPLETE
+                for var in outvars
+            ):
+                break
+            recovery = stall_recovery(context, outvars, changed_since_recovery)
+            changed_since_recovery.clear()
+            if recovery is None or not recovery.resolved_vars:
+                if schedule_key is not None:
+                    equation_queue.record_step(None, ())
+                    if not equation_queue.is_empty():
+                        continue
+                break
+            if len(recovery.resolved_vars) != len(recovery.resolved_vals):
+                raise ValueError(
+                    "Recovery variables and values must have equal lengths"
+                )
+            if len(set(recovery.resolved_vars)) != len(recovery.resolved_vars):
+                raise ValueError("Recovery must resolve distinct variables")
+            for var, value in zip(
+                recovery.resolved_vars, recovery.resolved_vals, strict=True
+            ):
+                if env.get_knowness_level(var) == KnownessLevel.COMPLETE:
+                    raise ValueError("Recovery cannot overwrite a complete variable")
+                if value is None or isinstance(value, Knowness):
+                    raise ValueError("Recovery must provide complete, non-None values")
+            for eqn_id in recovery.consumed_eqn_ids:
+                if eqn_id not in extended.equation_lookup:
+                    raise ValueError("Recovery consumed an unknown equation")
+            if recovery.state_updates:
+                state = dict(state or {})
+                state.update(recovery.state_updates)
+                context.write_run_state(state, namespace=state_namespace)
+            for eqn_id in recovery.consumed_eqn_ids:
+                equation_queue.mark_processed(eqn_id)
+            for var, value in zip(
+                recovery.resolved_vars, recovery.resolved_vals, strict=True
+            ):
+                env.write(var, value)
+                changed_since_recovery.add(var)
+                for eqn_id in extended.neighbors.get(var, ()):
+                    equation_queue.push(eqn_id)
+            if schedule_key is not None:
+                equation_queue.record_step(
+                    None, recovery.resolved_vars, recovery.consumed_eqn_ids
+                )
+            continue
         extended_eqn = equation_queue.pop()
         context.set_current_equation(extended_eqn.eqn_id)
 
@@ -662,6 +778,8 @@ def run_jaxpr(
 
         # Write outputs FIRST, then determine processing status
         written_vars = _write_outputs(env, output_vars, output_vals)
+        if changed_since_recovery is not None:
+            changed_since_recovery.update(written_vars)
         _write_equation_state(env, extended_eqn, eqn_state, state_namespace)
         state = reducer_adapter(env, extended_eqn, state, eqn_state, context)
         context.write_run_state(state, namespace=state_namespace)
@@ -688,9 +806,14 @@ def run_jaxpr(
             for eqn_id in eqn_ids:
                 equation_queue.push(eqn_id)
 
+        if schedule_key is not None:
+            equation_queue.record_step(extended_eqn.eqn_id, written_vars)
+
         if not process_all_eqns and all(map(env.known, outvars)):
             break
 
+    if schedule_key is not None:
+        schedule_cache[schedule_key] = tuple(equation_queue.recorded)
     outputs = map(env.read, outvars)
     return _format_return(
         outputs,
@@ -754,6 +877,8 @@ def propagate(
     return_state: bool = False,
     return_env: bool = False,
     state_namespace: str = "default",
+    stall_recovery: StallRecovery | None = None,
+    schedule_cache: dict | None = None,
 ):
     """
     Propagate values through a JAXPR with priority-based scheduling.
@@ -764,6 +889,13 @@ def propagate(
     - run_post_nested_process=True: run process rule after nested recursion
 
     Suitable for inverse computation where some values need to be inferred.
+
+    ``stall_recovery(context, targets, changed_vars)`` optionally recovers
+    complete values when ordinary propagation stalls. ``changed_vars`` contains
+    boundary seeds on the first call and variables written since the previous
+    call thereafter. Return None to stop or a StallRecoveryResult to resume.
+    Recovery state updates merge into the active namespace's mapping state.
+    The callback is local to this run; nested interpreters do not inherit it.
     """
     return run_jaxpr(
         jaxpr,
@@ -782,4 +914,6 @@ def propagate(
         return_state=return_state,
         return_env=return_env,
         state_namespace=state_namespace,
+        stall_recovery=stall_recovery,
+        schedule_cache=schedule_cache,
     )

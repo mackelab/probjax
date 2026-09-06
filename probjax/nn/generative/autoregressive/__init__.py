@@ -19,6 +19,7 @@ from probjax.nn.generative.autoregressive.config import (
     ARConditionerConfig,
     ARFamily,
     MLPARConditionerConfig,
+    SSMARConditionerConfig,
     TransformerARConditionerConfig,
 )
 from probjax.nn.generative.autoregressive.model import (
@@ -36,6 +37,7 @@ __all__ = [
     "ARFamily",
     "ARConditionerConfig",
     "MLPARConditionerConfig",
+    "SSMARConditionerConfig",
     "TransformerARConditionerConfig",
     # models
     "Autoregressive",

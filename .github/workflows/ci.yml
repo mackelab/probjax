@@ -21,16 +21,39 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
 
+    - name: Restore testmon database
+      uses: actions/cache/restore@v4
+      with:
+        path: .testmondata
+        key: testmon-${{ runner.os }}-py${{ matrix.python-version }}-${{ github.sha }}
+        restore-keys: |
+          testmon-${{ runner.os }}-py${{ matrix.python-version }}-
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -e ".[dev]"
 
-    - name: Run tests
+    - name: Run affected tests
       run: |
-        pytest tests/ -v --cov=probjax --cov-report=xml
+        pytest tests/ -v --testmon -n auto
+
+    - name: Run full test suite with coverage
+      if: github.event_name == 'push'
+      run: |
+        pytest tests/ -v -n auto --cov=probjax --cov-report=xml
+
+    - name: Save testmon database
+      # Only save from main: the repo is public and PRs must not be able
+      # to poison the cache restored by other runs.
+      if: github.ref == 'refs/heads/main'
+      uses: actions/cache/save@v4
+      with:
+        path: .testmondata
+        key: testmon-${{ runner.os }}-py${{ matrix.python-version }}-${{ github.sha }}
 
     - name: Upload coverage to Codecov
+      if: github.event_name == 'push'
       uses: codecov/codecov-action@v5
       with:
         file: ./coverage.xml

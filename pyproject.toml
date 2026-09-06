@@ -63,6 +63,7 @@ dev = [
     "pytest-benchmark",
     "ruff",
     "pytest-xdist",
+    "pytest-testmon",
     "scipy",
 ]
 cuda13 = [

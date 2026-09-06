@@ -314,7 +314,15 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
         )
 
         @nnx.scan(
-            in_axes=(nnx.Carry, 0, None), out_axes=(nnx.Carry, 0), length=input_dim
+            in_axes=(
+                nnx.Carry,
+                0,
+                # Parameters are shared, but each step must see the caches
+                # written by the preceding step.
+                nnx.StateAxes({nnx.Cache: nnx.Carry, ...: None}),
+            ),
+            out_axes=(nnx.Carry, 0),
+            length=input_dim,
         )
         def step(carry, i, model):
             x, prev_feat = carry

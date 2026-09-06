@@ -25,6 +25,7 @@ from probjax.core.interpreters import (
     trace_state_reducer,
 )
 from probjax.core.interpreters.inverse.affine import solve_affine_inverse
+from probjax.core.interpreters.inverse.recovery import make_affine_recovery
 from probjax.core.jaxpr_propagation import interpret, propagate
 from probjax.core.jaxpr_propagation.utils import KnownessLevel
 from probjax.core.registry import invalid_inverse_value
@@ -93,7 +94,9 @@ def _prepare_inverse_problem(
             f"got {len(dynamic_values)} values for {len(jaxpr_invars)} variables."
         )
     if target_tree is None:
-        raise ValueError("invertible_arg did not identify a dynamic positional argument")
+        raise ValueError(
+            "invertible_arg did not identify a dynamic positional argument"
+        )
 
     target_indices = set(target_leaf_indices)
     known_invars = [
@@ -139,7 +142,9 @@ def _materialize_inverse_targets(values, target_vars, env):
     return materialized, complete
 
 
-def _affine_fallback(jaxpr, known_invars, args_for_propagate, target_invars):
+def _affine_fallback(
+    jaxpr, known_invars, args_for_propagate, target_invars, *, compute_logdet=True
+):
     """Try a linear solve where equation-by-equation propagation gave up.
 
     Only reached when propagation could not reconstruct the target, so this can
@@ -155,7 +160,27 @@ def _affine_fallback(jaxpr, known_invars, args_for_propagate, target_invars):
         target_invars,
         dict(zip(known_invars, known_values, strict=False)),
         output_values,
+        compute_logdet=compute_logdet,
     )
+
+
+def _validate_inverse_shapes(value, forward_output):
+    """The output is also the presumed input signature for automatic inversion."""
+    leaves, tree = jax.tree_util.tree_flatten_with_path(value)
+    expected, expected_tree = jax.tree_util.tree_flatten(forward_output)
+    if tree != expected_tree:
+        raise ValueError(
+            "Inverse output structure does not match function outputs; automatic "
+            "inversion requires matching input/output pytree structures."
+        )
+    for (path, leaf), output in zip(leaves, expected, strict=True):
+        shape = jnp.shape(leaf)
+        if shape != output.shape:
+            raise ValueError(
+                "Automatic inversion requires matching input/output shapes: "
+                f"leaf {jax.tree_util.keystr(path) or '<root>'} has presumed input "
+                f"shape {shape}, but the traced output has shape {output.shape}."
+            )
 
 
 def _leaf_signature(leaf):
@@ -218,12 +243,14 @@ def _cached_jaxpr_and_tree_getter(fun: Callable, static_argnums=()):
     return get_jaxpr_and_tree
 
 
-def _cached_jaxpr_getter(fun: Callable, static_argnums=()):
+def _cached_jaxpr_getter(fun: Callable, static_argnums=(), *, return_shape=False):
     """Create a cached getter for JAXPR only (backward compatible)."""
     def fun_snapshot(*args, **kwargs):
         return fun(*args, **kwargs)
 
-    jaxpr_maker = jax.make_jaxpr(fun_snapshot, static_argnums=static_argnums)
+    jaxpr_maker = jax.make_jaxpr(
+        fun_snapshot, static_argnums=static_argnums, return_shape=return_shape
+    )
     cache: dict = {}
 
     def get_jaxpr(*args, **kwargs):
@@ -635,17 +662,28 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
     Returns:
         A callable mapping outputs back to the invertible argument.
 
+    Raises:
+        ValueError: if traced input/output shapes or pytree structures differ.
+            Automatic inversion uses the supplied output as the presumed input
+            signature; it requires a shape-preserving function. Some violations
+            (such as a broadcast that becomes an identity at that signature)
+            cannot be detected without the original input specification.
+
     Note:
-        **A failed inversion returns NaN, not an error.** The interpreter works
+        **An unresolved inversion returns NaN.** The interpreter works
         one equation at a time, so it inverts a *tree* of operations; a value
         used twice stalls it, because the bivariate rules need exactly one
         unknown operand.
 
-        When the stalled program is **affine** in the target -- ``3 * x - x``,
-        ``A @ x + b``, ``sum(x) - x`` -- the inverse is recovered by a linear
-        solve, decided from the jaxpr structure rather than sampled. That path
-        materialises a Jacobian, so it costs O(n^2) in the target's size, and it
-        runs only after ordinary propagation has failed.
+        On a stall, structurally proven affine sections are recovered by linear
+        solves and propagation resumes. This supports ``exp(3*x-x)`` and
+        ``3*exp(x)-exp(x)``, including sequential compositions and nested jit.
+        Sections have one array-valued input and output with equal element
+        counts; internal shape changes are allowed. Whole-program affine solves
+        also support multiple input leaves. Analysis is lazy and cached; each
+        dense section Jacobian costs O(n^2) storage. Generated inverses are
+        ordinary JAX computations and can be jitted, vmapped, and differentiated.
+        Repeated eager calls still run the Python propagation interpreter.
 
         These remain silently unsupported and produce NaN:
 
@@ -669,12 +707,18 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
     if maybe_custom is not None:
         return maybe_custom
 
-    get_jaxpr = _cached_jaxpr_getter(fun, static_argnums=static_argnums)
+    get_jaxpr = _cached_jaxpr_getter(
+        fun, static_argnums=static_argnums, return_shape=True
+    )
+    recovery_cache = {}
 
     @wraps(fun)
     def wrapped(*args, **kwargs):
         processing_rule = InverseProcessingRule()
-        jaxpr = get_jaxpr(*args, **kwargs)
+        jaxpr, forward_output = get_jaxpr(*args, **kwargs)
+        _validate_inverse_shapes(
+            args[_resolve_invertible_index(args, invertible_arg)], forward_output
+        )
         (
             known_invars,
             target_invars,
@@ -699,6 +743,15 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
                 args_for_propagate,
                 target_invars,
                 process_eqn=processing_rule,
+                stall_recovery=make_affine_recovery(
+                    jaxpr,
+                    known_invars,
+                    args_for_propagate,
+                    target_invars,
+                    processing_rule,
+                    recovery_cache,
+                    with_logdet=False,
+                ),
                 cost_fn=inverse_cost_fn,
                 process_all_eqns=True,
                 return_env=True,
@@ -707,7 +760,11 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
         out, complete = _materialize_inverse_targets(out, target_invars, env)
         if not complete:
             solved = _affine_fallback(
-                jaxpr, known_invars, args_for_propagate, target_invars
+                jaxpr,
+                known_invars,
+                args_for_propagate,
+                target_invars,
+                compute_logdet=False,
             )
             if solved is not None:
                 out = solved[0]
@@ -736,6 +793,8 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
         not be completed.
 
     Raises:
+        ValueError: if traced boundary shapes or pytree structures differ,
+            with the same input-signature limitation as :func:`inverse`.
         NotImplementedError: if a primitive on the inverse path has no
             log-determinant rule and is not elementwise. Guessing one by
             differentiating the inverse elementwise -- the old behaviour --
@@ -765,14 +824,20 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
 
         return custom_wrapped
 
-    get_jaxpr = _cached_jaxpr_getter(fun, static_argnums=static_argnums)
+    get_jaxpr = _cached_jaxpr_getter(
+        fun, static_argnums=static_argnums, return_shape=True
+    )
+    recovery_cache = {}
 
     @wraps(fun)
     def wrapped(*args, **kwargs):
         processing_rule = InverseAndLogAbsDetProcessingRule(
             state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE
         )
-        jaxpr = get_jaxpr(*args, **kwargs)
+        jaxpr, forward_output = get_jaxpr(*args, **kwargs)
+        _validate_inverse_shapes(
+            args[_resolve_invertible_index(args, invertible_arg)], forward_output
+        )
         (
             known_invars,
             target_invars,
@@ -800,6 +865,15 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
                 args_for_propagate,
                 outvars,
                 process_eqn=processing_rule,
+                stall_recovery=make_affine_recovery(
+                    jaxpr,
+                    known_invars,
+                    args_for_propagate,
+                    target_invars,
+                    processing_rule,
+                    recovery_cache,
+                    with_logdet=True,
+                ),
                 cost_fn=inverse_cost_fn,
                 process_all_eqns=True,
                 reducer=inverse_and_logabsdet_state_reducer,
