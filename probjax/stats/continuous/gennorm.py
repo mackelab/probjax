@@ -58,7 +58,8 @@ class gennorm_gen(rv_continuous, rv_exponential_family):
 
     @classmethod
     def logpdf(cls, x, loc=0.0, scale=1.0, beta=2.0, **kwargs):
-        """Log of the probability density function of the generalized normal distribution."""
+        """Log of the probability density function of the generalized normal
+        distribution."""
         z = jnp.abs(x - loc) / scale
         return jnp.log(beta / (2 * scale * gamma(1 / beta))) - (z**beta)
 
@@ -70,7 +71,8 @@ class gennorm_gen(rv_continuous, rv_exponential_family):
 
     @classmethod
     def ppf(cls, q, loc=0.0, scale=1.0, beta=2.0, **kwargs):
-        """Percent point function (inverse of cdf) of the generalized normal distribution."""
+        """Percent point function (inverse of cdf) of the generalized normal
+        distribution."""
         # For beta=2, this is the normal distribution
         if beta == 2.0:
             return loc + scale * jnp.sqrt(2) * jax.scipy.special.erfinv(2 * q - 1)
@@ -108,21 +110,6 @@ class gennorm_gen(rv_continuous, rv_exponential_family):
             return z * scale + loc
 
         return _rejection_sampling(rng)
-
-    @classmethod
-    def sf(cls, x, loc=0.0, scale=1.0, beta=2.0, **kwargs):
-        """Survival function (1 - cdf) of the generalized normal distribution."""
-        return 1 - cls.cdf(x, loc, scale, beta)
-
-    @classmethod
-    def isf(cls, q, loc=0.0, scale=1.0, beta=2.0, **kwargs):
-        """Inverse survival function (inverse of sf) of the generalized normal distribution."""
-        return cls.ppf(1 - q, loc, scale, beta)
-
-    @classmethod
-    def logcdf(cls, x, loc=0.0, scale=1.0, beta=2.0, **kwargs):
-        """Log of the cumulative distribution function of the generalized normal distribution."""
-        return jnp.log(cls.cdf(x, loc, scale, beta))
 
     @classmethod
     def mean(cls, loc=0.0, scale=1.0, beta=2.0, **kwargs):

@@ -29,11 +29,6 @@ class dirac_gen(rv_discrete, rv_exponential_family):
         return (loc, loc)
 
     @classmethod
-    def pmf(cls, k: ArrayLike, loc, **kwds):
-        """Probability mass function of the Dirac distribution."""
-        return jnp.exp(cls.logpmf(k, loc, **kwds))
-
-    @classmethod
     def logpmf(cls, k: ArrayLike, loc, **kwds):
         """Log probability mass function of the Dirac distribution."""
         return jnp.where(k == loc, 0.0, -jnp.inf)

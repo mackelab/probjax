@@ -41,26 +41,6 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         return real
 
     @classmethod
-    def pdf(cls, x, loc=0.0, scale=1.0, **kwargs):
-        """Probability density function of the Laplace distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        pdf : ndarray
-            Probability density function evaluated at x
-        """
-        return jnp.exp(cls.logpdf(x, loc, scale, **kwargs))
-
-    @classmethod
     def logpdf(cls, x, loc=0.0, scale=1.0, **kwargs):
         """Log of the probability density function of the Laplace distribution.
 
@@ -346,7 +326,7 @@ class laplace_gen(rv_continuous, rv_exponential_family):
 
         even_mask = (k_int % 2 == 0).reshape(expand_shape)
         central_even = jnp.exp(gammaln(k_float + 1.0)).reshape(expand_shape) * (
-            scale_reshaped**k_float.reshape(expand_shape)
+            scale_reshaped ** k_float.reshape(expand_shape)
         )
         central = jnp.where(
             even_mask, central_even, jnp.zeros_like(central_even, dtype=scale_arr.dtype)
@@ -371,7 +351,9 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         skew : float
             Skewness of the distribution
         """
-        return jnp.zeros_like(jnp.asarray(loc))  # Skewness is always 0 (symmetric distribution)
+        return jnp.zeros_like(
+            jnp.asarray(loc)
+        )  # Skewness is always 0 (symmetric distribution)
 
     @classmethod
     def kurtosis(cls, loc=0.0, scale=1.0, **kwargs):

@@ -159,7 +159,6 @@ def _watson_moment_ratio(kappa, dim: int, dtype):
     abs_kappa = jnp.abs(kappa_arr)
     small_mask = abs_kappa < jnp.asarray(1e-4, dtype=calc_dtype)
     large_mask = abs_kappa > jnp.asarray(50.0, dtype=calc_dtype)
-    mid_mask = ~(small_mask | large_mask)
 
     def series():
         k = kappa_arr
@@ -414,10 +413,6 @@ class watson_gen(rv_spherical, rv_exponential_family):
         return spherical
 
     @classmethod
-    def pdf(cls, x: Array, mean_direction: Array, kappa: Array = 0.0, **kwargs):
-        return jnp.exp(cls.logpdf(x, mean_direction, kappa, **kwargs))
-
-    @classmethod
     def logpdf(cls, x: Array, mean_direction: Array, kappa: Array = 0.0, **kwargs):
         x = _normalize_vector(jnp.asarray(x))
         mean_direction = _normalize_vector(jnp.asarray(mean_direction))
@@ -615,10 +610,7 @@ class watson_gen(rv_spherical, rv_exponential_family):
 
         init_flat = jnp.concatenate([mu_init, jnp.atleast_1d(kappa_init)])
 
-        if weights_arr is None:
-            w = jnp.ones(n, dtype=dtype) / n
-        else:
-            w = weights_arr
+        w = jnp.ones(n, dtype=dtype) / n if weights_arr is None else weights_arr
 
         def neg_log_lik(params_flat):
             mu_raw = params_flat[:-1]

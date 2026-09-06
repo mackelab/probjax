@@ -44,26 +44,6 @@ class beta_gen(rv_continuous, rv_exponential_family):
         return unit_interval
 
     @classmethod
-    def pdf(cls, x, alpha=1.0, beta=1.0, **kwargs):
-        """Probability density function of the beta distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        alpha : float, optional
-            Concentration parameter alpha. Default is 1.
-        beta : float, optional
-            Concentration parameter beta. Default is 1.
-
-        Returns
-        -------
-        pdf : ndarray
-            Probability density function evaluated at x
-        """
-        return jnp.exp(cls.logpdf(x, alpha, beta, **kwargs))
-
-    @classmethod
     def logpdf(cls, x, alpha=1.0, beta=1.0, **kwargs):
         """Log of the probability density function of the beta distribution.
 
@@ -266,9 +246,6 @@ class beta_gen(rv_continuous, rv_exponential_family):
         # When alpha < 1, beta < 1, the mode is at both 0 and 1
         # conventionally, we return the average
         mode_bimodal = (alpha < 1) & (beta < 1)
-
-        # When alpha = beta = 1, the beta is uniform, mode is arbitrary
-        mode_uniform = (alpha == 1) & (beta == 1)
 
         return jnp.where(
             valid,

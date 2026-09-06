@@ -33,11 +33,6 @@ class poisson_gen(rv_discrete, rv_exponential_family):
         return (0, jnp.inf)
 
     @classmethod
-    def pmf(cls, k: ArrayLike, rate, **kwds):
-        """Probability mass function of the Poisson distribution."""
-        return jnp.exp(cls.logpmf(k, rate, **kwds))
-
-    @classmethod
     def logpmf(cls, k: ArrayLike, rate, **kwds):
         """Log probability mass function of the Poisson distribution."""
         return jax_poisson.logpmf(k, rate)
@@ -91,7 +86,7 @@ class poisson_gen(rv_discrete, rv_exponential_family):
 
         # Vectorize the function over the inputs
         q, rate = jnp.broadcast_arrays(q, rate)
-        for i in range(q.ndim):
+        for _i in range(q.ndim):
             ppf_single = jax.vmap(ppf_single)
         return ppf_single(q, rate)
 

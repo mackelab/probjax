@@ -21,13 +21,17 @@ __all__ = ["wrapcauchy"]
 class wrapcauchy_gen(rv_continuous, rv_exponential_family):
     """Wrapped Cauchy continuous random variable.
 
-    The wrapped Cauchy distribution is a continuous probability distribution on the circle.
-    It is the circular analogue of the Cauchy distribution. The probability density function is:
+    The wrapped Cauchy distribution is a continuous probability distribution
+    on the circle.
+    It is the circular analogue of the Cauchy distribution. The probability
+    density function is:
 
     .. math::
-        f(x; \\mu, \\gamma) = \frac{1}{2\\pi} \frac{1-\\gamma^2}{1+\\gamma^2-2\\gamma\\cos(x-\\mu)}
+        f(x; \\mu, \\gamma) = \\frac{1}{2\\pi}
+            \\frac{1-\\gamma^2}{1+\\gamma^2-2\\gamma\\cos(x-\\mu)}
 
-    where :math:`\\mu` is the location parameter and :math:`\\gamma` is the concentration parameter.
+    where :math:`\\mu` is the location parameter and :math:`\\gamma` is the
+    concentration parameter.
 
     Parameters
     ----------
@@ -54,7 +58,8 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
 
     @classmethod
     def logpdf(cls, x, loc=0.0, gamma=0.5, **kwargs):
-        """Log of the probability density function of the wrapped Cauchy distribution."""
+        """Log of the probability density function of the wrapped Cauchy
+        distribution."""
         return (
             jnp.log(1 - gamma**2)
             - jnp.log(2 * jnp.pi)
@@ -72,7 +77,8 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
 
     @classmethod
     def ppf(cls, q, loc=0.0, gamma=0.5, **kwargs):
-        """Percent point function (inverse of cdf) of the wrapped Cauchy distribution."""
+        """Percent point function (inverse of cdf) of the wrapped Cauchy
+        distribution."""
         z = 2 * jnp.pi * q
         return (
             jnp.arctan2(
@@ -95,21 +101,6 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
         return (2 * jnp.arctan(gamma * jnp.tan(jnp.pi * (u - 0.5))) + loc) % (
             2 * jnp.pi
         )
-
-    @classmethod
-    def sf(cls, x, loc=0.0, gamma=0.5, **kwargs):
-        """Survival function (1 - cdf) of the wrapped Cauchy distribution."""
-        return 1 - cls.cdf(x, loc, gamma)
-
-    @classmethod
-    def isf(cls, q, loc=0.0, gamma=0.5, **kwargs):
-        """Inverse survival function (inverse of sf) of the wrapped Cauchy distribution."""
-        return cls.ppf(1 - q, loc, gamma)
-
-    @classmethod
-    def logcdf(cls, x, loc=0.0, gamma=0.5, **kwargs):
-        """Log of the cumulative distribution function of the wrapped Cauchy distribution."""
-        return jnp.log(cls.cdf(x, loc, gamma))
 
     @classmethod
     def mean(cls, loc=0.0, gamma=0.5, **kwargs):

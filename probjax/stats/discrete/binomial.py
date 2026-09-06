@@ -34,11 +34,6 @@ class binomial_gen(rv_discrete, rv_exponential_family):
         return (0, n)
 
     @classmethod
-    def pmf(cls, k: ArrayLike, n, probs, **kwds):
-        """Probability mass function of the Binomial distribution."""
-        return jnp.exp(cls.logpmf(k, n, probs, **kwds))
-
-    @classmethod
     def logpmf(cls, k: ArrayLike, n, probs, **kwds):
         """Log probability mass function of the Binomial distribution."""
         return binom.logpmf(k, n, probs)
@@ -127,7 +122,8 @@ class binomial_gen(rv_discrete, rv_exponential_family):
             final_k, _ = jax.lax.while_loop(cond_fun, body_fun, init_state)
 
             # final_k could be n_single + 1 if q is 1 or very close to 1.
-            # If final_k is n_single + 1, it means the loop terminated because k > n_single,
+            # If final_k is n_single + 1, it means the loop terminated because
+            # k > n_single,
             # and the actual ppf should be n_single.
             # Otherwise, it's final_k - 1 because we incremented one too many times.
             return jnp.where(final_k > n_single, n_single, final_k - 1)

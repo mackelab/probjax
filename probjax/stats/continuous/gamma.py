@@ -22,6 +22,11 @@ from probjax.utils.typing import Array, ArrayLike, RngKey
 __all__ = ["gamma"]
 
 
+def _scale(beta):
+    """Convert rate to scale: the JAX implementation uses scale (1/rate)."""
+    return 1.0 / beta
+
+
 class gamma_gen(rv_continuous, rv_exponential_family):
     """Gamma continuous random variable.
 
@@ -45,26 +50,6 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         return strict_positive
 
     @classmethod
-    def pdf(cls, x, alpha=1.0, beta=1.0, **kwargs):
-        """Probability density function of the gamma distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        alpha : float, optional
-            Shape parameter. Default is 1.
-        beta : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        pdf : ndarray
-            Probability density function evaluated at x
-        """
-        return jnp.exp(cls.logpdf(x, alpha, beta, **kwargs))
-
-    @classmethod
     def logpdf(cls, x, alpha=1.0, beta=1.0, **kwargs):
         """Log of the probability density function of the gamma distribution.
 
@@ -82,8 +67,7 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         logpdf : ndarray
             Log of the probability density function evaluated at x
         """
-        # JAX implementation has scale (1/rate) parameter
-        scale = 1.0 / beta
+        scale = _scale(beta)
         return _gamma.logpdf(x, alpha, scale=scale)
 
     @classmethod
@@ -104,7 +88,7 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         cdf : ndarray
             Cumulative distribution function evaluated at x
         """
-        scale = 1.0 / beta
+        scale = _scale(beta)
         return _gamma.cdf(x, alpha, scale=scale)
 
     @classmethod
@@ -125,7 +109,7 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         logcdf : ndarray
             Log of the cumulative distribution function evaluated at x
         """
-        scale = 1.0 / beta
+        scale = _scale(beta)
         return _gamma.logcdf(x, alpha, scale=scale)
 
     @classmethod
@@ -146,7 +130,7 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         ppf : ndarray
             Quantile corresponding to the lower tail probability q
         """
-        scale = 1.0 / beta
+        scale = _scale(beta)
         return gammaincinv(alpha, q) * scale
 
     @classmethod
@@ -199,7 +183,7 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         sf : ndarray
             Survival function evaluated at x
         """
-        scale = 1.0 / beta
+        scale = _scale(beta)
         return _gamma.sf(x, alpha, scale=scale)
 
     @classmethod

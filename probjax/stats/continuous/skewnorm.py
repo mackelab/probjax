@@ -120,21 +120,6 @@ class skewnorm_gen(rv_continuous, rv_exponential_family):
         return _rejection_sampling(rng)
 
     @classmethod
-    def sf(cls, x, a=0.0, loc=0.0, scale=1.0, **kwargs):
-        """Survival function (1 - cdf) of the skew normal distribution."""
-        return 1 - cls.cdf(x, a, loc, scale)
-
-    @classmethod
-    def isf(cls, q, a=0.0, loc=0.0, scale=1.0, **kwargs):
-        """Inverse survival function (inverse of sf) of the skew normal distribution."""
-        return cls.ppf(1 - q, a, loc, scale)
-
-    @classmethod
-    def logcdf(cls, x, a=0.0, loc=0.0, scale=1.0, **kwargs):
-        """Log of the cumulative distribution function of the skew normal distribution."""
-        return jnp.log(cls.cdf(x, a, loc, scale))
-
-    @classmethod
     def mean(cls, a=0.0, loc=0.0, scale=1.0, **kwargs):
         """Mean of the skew normal distribution."""
         delta = a / jnp.sqrt(1 + a**2)

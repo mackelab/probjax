@@ -35,7 +35,8 @@ class transformed_frozen(rv_continuous_frozen):
 
 
 class transformed_gen(rv_continuous):
-    """A transformed distribution that applies a bijective transformation to a base distribution."""
+    """A transformed distribution that applies a bijective transformation to
+    a base distribution."""
 
     parameters = {
         "base_dist": distribution,
@@ -99,8 +100,9 @@ class transformed_gen(rv_continuous):
         """Get vmapped inverse+logabsdet, optionally using a custom function.
 
         Falls back to the bijector's own ``inverse_and_logdet`` method when
-        present (see :class:`probjax.stats.bijective.protocols.InvertibleTransformProtocol`),
-        skipping jaxpr auto-inversion.
+        present (see
+        :class:`probjax.stats.bijective.protocols.InvertibleTransformProtocol`
+        ), skipping jaxpr auto-inversion.
         """
         if inverse_and_logdet_fn is None:
             inverse_and_logdet_fn = getattr(bijector, "inverse_and_logdet", None)
@@ -123,7 +125,8 @@ class transformed_gen(rv_continuous):
             trailing_shape = tuple(x_arr.shape[-event_ndim:])
             if trailing_shape != event_shape:
                 raise ValueError(
-                    "Trailing dimensions of the input must match the distribution event shape."
+                    "Trailing dimensions of the input must match the "
+                    "distribution event shape."
                 )
             leading_shape = tuple(x_arr.shape[:-event_ndim])
             x_flat = jnp.reshape(x_arr, (-1,) + event_shape)
@@ -146,7 +149,8 @@ class transformed_gen(rv_continuous):
         """Restrict operations that only support univariate events."""
         if event_shape not in ((), (1,)):
             raise NotImplementedError(
-                "This method currently supports only univariate transformed distributions."
+                "This method currently supports only univariate transformed "
+                "distributions."
             )
 
     @classmethod
@@ -167,11 +171,6 @@ class transformed_gen(rv_continuous):
             log_det_flat, leading_shape + tuple(log_det_flat.shape[1:])
         )
         return base_dist.logpdf(inv_value) + log_det
-
-    @classmethod
-    def pdf(cls, x: ArrayLike, base_dist, bijector, **kwds):
-        """Probability density function of the transformed distribution."""
-        return jnp.exp(cls.logpdf(x, base_dist, bijector, **kwds))
 
     @classmethod
     def cdf(cls, x: ArrayLike, base_dist, bijector, inverse_and_logdet=None, **kwds):

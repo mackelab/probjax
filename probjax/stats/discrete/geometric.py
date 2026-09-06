@@ -31,11 +31,6 @@ class geometric_gen(rv_discrete, rv_exponential_family):
         return (0, jnp.inf)
 
     @classmethod
-    def pmf(cls, k: ArrayLike, p, **kwds):
-        """Probability mass function of the Geometric distribution."""
-        return jnp.exp(cls.logpmf(k, p, **kwds))
-
-    @classmethod
     def logpmf(cls, k: ArrayLike, p, **kwds):
         """Log probability mass function of the Geometric distribution."""
         k = jnp.asarray(k)

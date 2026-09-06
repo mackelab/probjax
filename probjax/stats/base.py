@@ -158,6 +158,11 @@ class rv_generic(ABC):
         frozen_cls = self._get_or_create_frozen_class(base_frozen_cls)
         return frozen_cls(self, *args, **kwds)
 
+    def _freeze_as_named(self, cls_name: str, *args: Any, **kwds: Any) -> "rv_frozen":
+        """Freeze using a frozen class looked up by name (avoids import cycles)."""
+        frozen_cls = cast(type["rv_frozen"], globals()[cls_name])
+        return self._freeze_as(frozen_cls, *args, **kwds)
+
     @classmethod
     def _parse_args(
         cls, *args: Any, **kwds: Any
@@ -550,10 +555,9 @@ class rv_multivariate(rv_continuous):
 
     def freeze(self, *args: Any, **kwds: Any) -> "rv_continuous_frozen":
         """Freeze the multivariate distribution for the given arguments."""
-        frozen_cls = cast(type["rv_frozen"], globals()["rv_multivariate_frozen"])
         return cast(
             "rv_continuous_frozen",
-            self._freeze_as(frozen_cls, *args, **kwds),
+            self._freeze_as_named("rv_multivariate_frozen", *args, **kwds),
         )
 
     @classmethod
@@ -570,10 +574,9 @@ class rv_spherical(rv_multivariate):
 
     def freeze(self, *args: Any, **kwds: Any) -> "rv_continuous_frozen":
         """Freeze the spherical distribution for the given arguments."""
-        frozen_cls = cast(type["rv_frozen"], globals()["rv_spherical_frozen"])
         return cast(
             "rv_continuous_frozen",
-            self._freeze_as(frozen_cls, *args, **kwds),
+            self._freeze_as_named("rv_spherical_frozen", *args, **kwds),
         )
 
     @classmethod
@@ -619,10 +622,9 @@ class rv_discrete(rv_generic):
         )
 
     @classmethod
-    @abstractmethod
     def pmf(cls, k: ArrayLike, *args: Any, **kwds: Any) -> Array:
         """Probability mass function at k of the given RV."""
-        ...
+        return jnp.exp(cls.logpmf(k, *args, **kwds))
 
     @classmethod
     def logpmf(cls, k: ArrayLike, *args: Any, **kwds: Any) -> Array:
