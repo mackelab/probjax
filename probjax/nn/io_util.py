@@ -81,10 +81,16 @@ class _AsyncPrefetchIterator:
         self._min_size = int(maxsize * min_fill) if maxsize > 0 else 0
         self._stop_event = threading.Event()
         self._sentinel = object()
-        self._error: BaseException | None = None
-        self._tb: str | None = None
+        self._error: _WorkerError | None = None
         self._thread = threading.Thread(target=self._worker_main, daemon=True)
         self._thread.start()
+
+    def _raise_if_worker_failed(self) -> None:
+        err = self._error
+        if err is not None:
+            raise RuntimeError(
+                f"Device prefetch worker failed:\n{err.traceback_text()}"
+            ) from err.exc
 
     def _force_put(self, item) -> None:
         while True:
@@ -121,8 +127,9 @@ class _AsyncPrefetchIterator:
                     except queue.Full:
                         continue
         except BaseException as exc:
-            self._error = exc
-            self._tb = traceback.format_exc()
+            # NOTE: no traceback formatting here (see _WorkerError); record
+            # immediately so the consumer fails fast.
+            self._error = _WorkerError(exc)
         finally:
             self._put_terminal()
 
@@ -130,19 +137,26 @@ class _AsyncPrefetchIterator:
         return self
 
     def __next__(self):
+        # Fail fast: surface background errors immediately instead of serving
+        # recycled batches while the sentinel propagates.
+        self._raise_if_worker_failed()
         item = self._queue.get()
         if item is self._sentinel:
             self.close()
-            if self._error is not None:
-                raise RuntimeError(
-                    f"Device prefetch worker failed:\n{self._tb}"
-                ) from self._error
+            self._raise_if_worker_failed()
             raise StopIteration
+        recycled = False
         while self._min_size > 0 and self._queue.qsize() < self._min_size and not self._queue.full():
             try:
                 self._queue.put_nowait(item)
+                recycled = True
             except queue.Full:
                 break
+        if recycled:
+            # The producer is lagging (or dead and the error is still being
+            # recorded). Yield the GIL so it gets a timeslice to catch up or
+            # deliver its error instead of being starved by this hot loop.
+            time.sleep(0)
         return item
 
     def close(self) -> None:
@@ -510,6 +524,9 @@ class SimulationDataset:
         self._tree_def = None
         self._write_ptr = 0
         self._pending_refresh = 0
+        # Background producer failure. Served stale data forever if ignored,
+        # so __getitem__ re-raises it (fail fast) instead.
+        self._producer_error: _WorkerError | None = None
 
         self._stats = {
             "batches_produced": 0,
@@ -536,6 +553,11 @@ class SimulationDataset:
     def __getitem__(self, index: Any) -> Any:
         idxs, squeeze = self._normalise_indices(index)
         with self._lock:
+            err = self._producer_error
+            if err is not None:
+                raise RuntimeError(
+                    f"SimulationDataset producer failed:\n{err.traceback_text()}"
+                ) from err.exc
             if self._buffer is None:
                 raise RuntimeError("Simulation buffer not initialised.")
             leaves = [leaf[idxs] for leaf in self._buffer_leaves]
@@ -663,6 +685,7 @@ class SimulationDataset:
             self._tree_def = tree_def
             self._write_ptr = 0
             self._pending_refresh = 0
+            self._producer_error = None
 
             # Update size bookkeeping to match the new buffer
             self._buffer_batches = buffer_batches
@@ -713,6 +736,7 @@ class SimulationDataset:
             self._buffer = buffer
             self._buffer_leaves = buffer_leaves
             self._tree_def = tree_def
+            self._producer_error = None
             self._stats["batches_produced"] += 1
             self._stats["production_time"] += duration
             self._stats["samples_written"] += self._batch_size
@@ -750,9 +774,15 @@ class SimulationDataset:
                 self._pending_refresh -= self._batch_size
             try:
                 batch, duration = self._produce_batch()
-            except Exception:
+            except Exception as exc:
+                # Record the failure so the next __getitem__ raises instead of
+                # serving stale data forever, then exit the thread cleanly.
+                # NOTE: no traceback formatting here (see _WorkerError).
+                with self._lock:
+                    if self._producer_error is None:
+                        self._producer_error = _WorkerError(exc)
                 self._stop_event.set()
-                raise
+                return
 
             batch_host = self._to_host(batch)
             with self._lock:
@@ -881,11 +911,30 @@ _STOP = object()
 
 
 class _WorkerError:
+    """A background-thread failure.
+
+    The exception is captured immediately (cheap) but the traceback text is
+    formatted lazily on first use: formatting walks the stack with a cold
+    linecache and can take tens of milliseconds, which must never block the
+    producer from signalling the error and stopping.
+    """
+
     __slots__ = ("exc", "tb")
 
-    def __init__(self, exc: BaseException, tb: str):
+    def __init__(self, exc: BaseException):
         self.exc = exc
-        self.tb = tb
+        self.tb: str | None = None
+
+    def traceback_text(self) -> str:
+        tb = self.tb
+        if tb is None:
+            tb = "".join(
+                traceback.format_exception(
+                    type(self.exc), self.exc, self.exc.__traceback__
+                )
+            )
+            self.tb = tb
+        return tb
 
 
 class DataLoader:
@@ -1021,8 +1070,12 @@ class DataLoader:
         self._closed = False
         self._iter_ref = None
         self._iter_token = None
+        self._dev_it = None
 
         # IMPORTANT: don't pass a bound method to weakref.finalize (can keep self alive)
+        # Note: weakref.finalize registers an atexit hook by default, so close()
+        # is guaranteed to run at interpreter exit even if the loader is stuck
+        # in a reference cycle (self -> _iter_ref -> generator frame -> self).
         self._finalizer_ref = weakref.finalize(
             self, DataLoader._finalize, weakref.ref(self)
         )
@@ -1096,13 +1149,22 @@ class DataLoader:
                     self._q.get_nowait()
 
     def _set_worker_error(self, exc: BaseException) -> None:
-        err = _WorkerError(exc, traceback.format_exc())
+        # NOTE: no traceback formatting here (see _WorkerError); this runs on
+        # the producer event loop and must return immediately.
+        err = _WorkerError(exc)
         with self._worker_error_lock:
             self._worker_error = err
 
     def _get_worker_error(self) -> Optional[_WorkerError]:
         with self._worker_error_lock:
             return self._worker_error
+
+    def _raise_if_worker_failed(self) -> None:
+        err = self._get_worker_error()
+        if err is not None:
+            raise RuntimeError(
+                f"DataLoader worker failed:\n{err.traceback_text()}"
+            ) from err.exc
 
     # ---------------- background producer ----------------------------- #
     def _producer_main(self):
@@ -1189,8 +1251,23 @@ class DataLoader:
                 t = pending.popleft()
                 t.cancel()
 
-            # Unblock consumer immediately. Clear queue so _STOP always lands.
-            self._force_put(_STOP, clear=True)
+            if self._stop_event.is_set() or self._get_worker_error() is not None:
+                # Abnormal end (error / close): unblock the consumer
+                # immediately. Clear queue so _STOP always lands.
+                self._force_put(_STOP, clear=True)
+            else:
+                # Clean exhaustion: queue _STOP behind the remaining batches
+                # so no produced data is lost. Bail out to a clearing put if
+                # a concurrent close() asks us to stop.
+                while True:
+                    if self._stop_event.is_set():
+                        self._force_put(_STOP, clear=True)
+                        break
+                    try:
+                        self._q.put(_STOP, timeout=0.05)
+                        break
+                    except queue.Full:
+                        continue
 
     def _process_batch(self, idxs):
         batch = self._fetch_batch(idxs)
@@ -1211,21 +1288,28 @@ class DataLoader:
             item = self._q.get()
 
             if item is _STOP:
-                err = self._get_worker_error()
-                if err is not None:
-                    raise RuntimeError(
-                        f"DataLoader worker failed:\n{err.tb}"
-                    ) from err.exc
-                raise StopIteration
+                self._raise_if_worker_failed()
+                # NOTE: plain `return`, not `raise StopIteration`: this is a
+                # generator body, where raising StopIteration becomes a
+                # RuntimeError (PEP 479).
+                return
 
             batch = item
 
             # recycle if below threshold (your original behavior)
+            recycled = False
             while min_size > 0 and self._q.qsize() < min_size and not self._q.full():
                 try:
                     self._q.put_nowait(batch)
+                    recycled = True
                 except queue.Full:
                     break
+            if recycled:
+                # The producer is lagging (or dead and the error is still
+                # being recorded). Yield the GIL so it gets a timeslice to
+                # catch up or deliver its error instead of being starved by
+                # this hot loop.
+                time.sleep(0)
 
             yield batch
 
@@ -1245,6 +1329,16 @@ class DataLoader:
     def __next__(self):
         if self._closed:
             raise StopIteration
+        # Fail fast: surface background errors immediately instead of serving
+        # recycled/prefetched stale batches while the error propagates. Close
+        # first: the suspended iterator generator below is never resumed, so
+        # it cannot clean up by itself.
+        err = self._get_worker_error()
+        if err is not None:
+            self.close()
+            raise RuntimeError(
+                f"DataLoader worker failed:\n{err.traceback_text()}"
+            ) from err.exc
         self._ensure_iter()
         return next(self._iter_ref)
 
@@ -1267,6 +1361,11 @@ class DataLoader:
                 else prefetch_to_device(host_it, self._prefetch_dev, self._devices)
             )
 
+        # Track the device iterator on self so close() can shut down its
+        # background thread directly, even if this generator is stuck in a
+        # reference cycle and its finally block never runs in time.
+        self._dev_it = dev_it
+
         # generator wrapper ensures close() runs on exception unwind (CPython refcount)
         def gen():
             try:
@@ -1277,7 +1376,10 @@ class DataLoader:
             finally:
                 close_dev_it = getattr(dev_it, "close", None)
                 if close_dev_it is not None:
-                    close_dev_it()
+                    with contextlib.suppress(Exception):
+                        close_dev_it()
+                if self._dev_it is dev_it:
+                    self._dev_it = None
                 # Avoid closing the loader if a newer iterator replaced this one.
                 if self._iter_token is token:
                     self.close()
@@ -1293,7 +1395,7 @@ class DataLoader:
 
     # ---------------- clean-up / context manager ----------------------- #
     def close(self):
-        if self._closed:
+        if getattr(self, "_closed", False):
             return
         self._closed = True
         self._iter_ref = None
@@ -1302,11 +1404,20 @@ class DataLoader:
         self._stop_event.set()
 
         # Unblock consumer immediately (and avoid deadlock if queue is full).
-        self._force_put(_STOP, clear=True)
+        with contextlib.suppress(Exception):
+            self._force_put(_STOP, clear=True)
+
+        # Shut down the device-side prefetch thread, which owns its own
+        # stop event unreachable from here otherwise.
+        dev_it, self._dev_it = getattr(self, "_dev_it", None), None
+        close_dev_it = getattr(dev_it, "close", None)
+        if close_dev_it is not None:
+            with contextlib.suppress(Exception):
+                close_dev_it()
 
         # Cancel the asyncio producer task thread-safely.
-        loop = self._loop_ref
-        task = self._task_ref
+        loop = getattr(self, "_loop_ref", None)
+        task = getattr(self, "_task_ref", None)
         if loop is not None and task is not None:
 
             def _cancel_task():
@@ -1316,11 +1427,14 @@ class DataLoader:
             with contextlib.suppress(Exception):
                 loop.call_soon_threadsafe(_cancel_task)
 
-        if self._producer_th.is_alive():
-            self._producer_th.join(timeout=1.0)
+        producer_th = getattr(self, "_producer_th", None)
+        if producer_th is not None and producer_th.is_alive():
+            with contextlib.suppress(Exception):
+                producer_th.join(timeout=1.0)
 
         # Don't wait: prevents hanging on long-running host transforms / dataset.
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        with contextlib.suppress(Exception):
+            self._executor.shutdown(wait=False, cancel_futures=True)
 
     def __del__(self):
         try:

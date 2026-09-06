@@ -20,7 +20,13 @@ from probjax.core.interpreters.inverse.logabsdet_rules import (
     value_and_log_det_diagonal,
 )
 from probjax.core.interpreters.inverse.utils import is_inexact_value
-from probjax.core.registry import Context, ProcessedResult, REGISTRY
+from probjax.core.registry import (
+    REGISTRY,
+    Context,
+    ProcessedResult,
+    chain_logdet_into,
+    is_static_zero,
+)
 
 
 class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
@@ -61,14 +67,24 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         return nested_state
 
     @staticmethod
-    def _sum_log_dets(log_dets: dict, vars_) -> jax.Array:
-        """Sum log-determinants for the given variables."""
+    def _sum_log_dets(log_dets: dict, vars_) -> tuple[jax.Array, bool]:
+        """Sum log-determinants for the given variables.
+
+        Returns ``(total, nontrivial)`` where ``nontrivial`` tells whether any
+        staged (non-static-zero) term was added, so callers can skip chaining
+        arithmetic that would only add ``0.0``.
+        """
         total = jnp.asarray(0.0)
+        nontrivial = False
         for v in vars_:
             if isinstance(v, Literal):
                 continue
-            total = total + jnp.asarray(log_dets.get(v, 0.0))
-        return total
+            term = log_dets.get(v, 0.0)
+            if is_static_zero(term):
+                continue
+            nontrivial = True
+            total = total + jnp.asarray(term)
+        return total, nontrivial
 
     def __call__(
         self, eqn, known_invars, known_outvars, context=None
@@ -121,14 +137,15 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         log|dy/dz| from the output variables.
         """
         log_dets = self._read_log_dets(context)
-        previous = self._sum_log_dets(log_dets, eqn.outvars)
+        previous, prev_nontrivial = self._sum_log_dets(log_dets, eqn.outvars)
 
         updated_state = {}
         for var in resolved_vars:
             if isinstance(var, Literal):
                 continue
-            local_logdet = state.get(var, jnp.asarray(0.0))
-            updated_state[var] = previous + jnp.asarray(local_logdet)
+            chain_logdet_into(
+                updated_state, var, previous, prev_nontrivial, state.get(var, 0.0)
+            )
 
         return ProcessedResult(resolved_vars, resolved_vals, updated_state)
 
@@ -157,9 +174,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         resolved_vals = inverse_result.resolved_vals
 
         log_dets = self._read_log_dets(context)
-        previous = self._sum_log_dets(log_dets, eqn.outvars)
-
-
+        previous, prev_nontrivial = self._sum_log_dets(log_dets, eqn.outvars)
 
         # Compute log-det via autodiff if values are inexact
         if len(resolved_vals) == 1:
@@ -183,17 +198,17 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
                     eval_fn = value_and_log_det_diagonal(inverse_fn)
                     _, log_abs_det = eval_fn(*known_outvars)
                 else:
-                    log_abs_det = jnp.asarray(0.0)
+                    log_abs_det = 0.0
             else:
-                log_abs_det = jnp.asarray(0.0)
+                log_abs_det = 0.0
         else:
-            log_abs_det = jnp.asarray(0.0)
+            log_abs_det = 0.0
 
         # Build updates
         updates = {}
         for var in resolved_vars:
             if not isinstance(var, Literal):
-                updates[var] = previous + log_abs_det
+                chain_logdet_into(updates, var, previous, prev_nontrivial, log_abs_det)
 
         return ProcessedResult(resolved_vars, resolved_vals, updates)
 
@@ -244,12 +259,17 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         log_abs_det = jnp.sum(out[-1])
 
         log_dets = self._read_log_dets(context)
-        previous = self._sum_log_dets(log_dets, eqn.outvars)
+        previous, prev_nontrivial = self._sum_log_dets(log_dets, eqn.outvars)
 
         updates = {}
         for index, var in enumerate(invars):
             if isinstance(var, Literal):
                 continue
-            updates[var] = previous + log_abs_det if index == 0 else jnp.asarray(0.0)
+            if index == 0:
+                chain_logdet_into(updates, var, previous, prev_nontrivial, log_abs_det)
+            else:
+                # Only the first target carries the custom log-det; the rest
+                # contribute nothing, exactly as before (a constant, folded).
+                updates[var] = jnp.asarray(0.0)
 
         return ProcessedResult(invars, result_vals, updates)

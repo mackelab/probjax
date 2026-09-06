@@ -11,16 +11,14 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
-import pytest
 
-from probjax.core import inverse, inverse_and_logabsdet
+from probjax.core import inverse
 from probjax.core.interpreters.inverse.rules import (
-    _make_inverse_processing_rule,
     _get_inverse_cost_fn,
+    _make_inverse_processing_rule,
 )
 from probjax.core.jaxpr_propagation.engine import propagate
 from probjax.core.registry import REGISTRY, Context
-
 
 # ---------------------------------------------------------------------------
 # Slice / dynamic_slice partial propagation
@@ -113,9 +111,11 @@ def test_inverse_nonuniform_select_n():
     assert jnp.allclose(x0, x_rec, atol=1e-6, rtol=1e-6)
 
 
+
 def test_logabsdet_select_n_is_zero():
     """select_n picks between operands elementwise; it scales nothing."""
     import jax.numpy as _jnp
+
     from probjax.core import inverse_and_logabsdet as _ild
 
     def f(x):

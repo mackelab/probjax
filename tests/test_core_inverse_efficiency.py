@@ -130,6 +130,28 @@ def test_generated_inverse_runs_at_hand_written_speed(generated, handwritten):
     assert ratio < 2.0, f"generated inverse is {ratio:.2f}x hand-written"
 
 
+def _vp_forward(x):
+    for _ in range(DEPTH):
+        x = jnp.flip(x + 1.0) - 2.0
+    return x
+
+
+def _vp_hand_written(y):
+    for _ in range(DEPTH):
+        y = jnp.flip(y + 2.0) - 1.0
+    return y, jnp.zeros(())
+
+
+def test_volume_preserving_inverse_runs_at_hand_written_speed():
+    """The fast path must leave no runtime residue: no `+ 0.0` accumulation,
+    no staged log-det arithmetic. Measured at ~1.0x; the bound is the file's
+    usual allowance for loaded machines."""
+    y = jax.jit(_vp_forward)(jnp.linspace(0.1, 0.5, 100_000))
+    generated = lambda v: inverse_and_logabsdet(_vp_forward)(v)  # noqa: E731
+    ratio = best_of(generated, y) / best_of(_vp_hand_written, y)
+    assert ratio < 2.0, f"generated VP inverse is {ratio:.2f}x hand-written"
+
+
 def test_no_guard_means_no_emitted_check():
     """A chain of exactly-invertible primitives emits only the inverse.
 

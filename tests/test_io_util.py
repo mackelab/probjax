@@ -352,3 +352,134 @@ def test_dataloader_named_sharding_2gpu_grid_stays_nonblocking_with_expensive_ho
     assert _sharding_spec_of(batch["labels"]) == P("data")
     assert max(measured_times) < 0.005
     assert len(transform_calls) >= 6
+
+
+def test_simulation_dataset_producer_failure_raises_with_cause():
+    """A dead background producer must fail fast, not serve stale data forever."""
+    calls = {"n": 0}
+
+    def flaky_simulator(key):
+        calls["n"] += 1
+        if calls["n"] > 4:
+            raise ValueError("boom from simulator")
+        return {"x": jax.numpy.ones((2,))}
+
+    ds = io_util.SimulationDataset(
+        flaky_simulator,
+        simulation_batch_size=4,
+        rng=jax.random.PRNGKey(0),
+        buffer_size=8,
+        jit_simulator=False,
+    )
+    try:
+        with pytest.raises(
+            RuntimeError, match="SimulationDataset producer failed"
+        ) as exc_info:
+            for _ in range(200):
+                ds[np.array([0, 1])]
+                time.sleep(0.001)
+    finally:
+        ds.close()
+    assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+def test_simulation_dataset_recovers_after_reset():
+    """reset() clears a recorded producer failure and restarts production."""
+    state = {"calls": 0, "fail": True}
+
+    def flaky_simulator(key):
+        state["calls"] += 1
+        if state["fail"] and state["calls"] > 4:
+            raise ValueError("boom from simulator")
+        return {"x": jax.numpy.ones((2,))}
+
+    ds = io_util.SimulationDataset(
+        flaky_simulator,
+        simulation_batch_size=4,
+        rng=jax.random.PRNGKey(0),
+        buffer_size=8,
+        jit_simulator=False,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="SimulationDataset producer failed"):
+            for _ in range(200):
+                ds[np.array([0, 1])]
+                time.sleep(0.001)
+        state["fail"] = False
+        ds.reset()
+        batch = ds[np.array([0, 1])]
+        assert np.asarray(batch["x"]).shape == (2, 2)
+    finally:
+        ds.close()
+
+
+def test_dataloader_host_transform_failure_raises_promptly():
+    """Worker errors must surface within a bounded number of takes, not be
+    masked indefinitely by recycled/prefetched batches."""
+    calls = {"n": 0}
+
+    def flaky_transform(batch):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise ValueError("boom from host transform")
+        return batch
+
+    with DataLoader(
+        _IndexDataset(n_samples=32),
+        batch_size=4,
+        shuffle=False,
+        loop=True,
+        host_transforms=flaky_transform,
+        num_prefetch_host=4,
+        num_prefetch_device=2,
+        num_async_workers=2,
+        max_in_flight=2,
+    ) as loader:
+        it = iter(loader)
+        with pytest.raises(
+            RuntimeError, match="DataLoader worker failed"
+        ) as exc_info:
+            for _ in range(20000):
+                next(it)
+    assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+def test_dataloader_loop_false_exhaustion_yields_exact_epoch():
+    """loop=False must terminate with exactly one epoch when recycling is off
+    (num_prefetch_host=1 rounds the min_fill threshold to 0)."""
+    with DataLoader(
+        _IndexDataset(n_samples=8),
+        batch_size=4,
+        shuffle=False,
+        loop=False,
+        num_prefetch_host=1,
+        num_prefetch_device=1,
+    ) as loader:
+        batches = list(loader)
+    assert len(batches) == 2
+    np.testing.assert_array_equal(np.asarray(batches[0]), [0, 1, 2, 3])
+    np.testing.assert_array_equal(np.asarray(batches[1]), [4, 5, 6, 7])
+
+
+def test_async_prefetch_iterator_surfaces_worker_error():
+    """A failing put_fn must surface as RuntimeError with the original cause."""
+    calls = {"n": 0}
+
+    def flaky_put(x):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise ValueError("boom in put_fn")
+        return x
+
+    it = io_util._AsyncPrefetchIterator(
+        iter([1, 2, 3, 4]), 1, flaky_put, queue_size=4, min_fill=0.5
+    )
+    try:
+        with pytest.raises(
+            RuntimeError, match="Device prefetch worker failed"
+        ) as exc_info:
+            for _ in range(100):
+                next(it)
+    finally:
+        it.close()
+    assert isinstance(exc_info.value.__cause__, ValueError)

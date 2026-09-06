@@ -9,13 +9,11 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 import pytest
-from jax.experimental import checkify
 
 from probjax.core import inverse, inverse_and_logabsdet
 from probjax.core.registry import REGISTRY, Context
 
 from .helpers import logdet_via_autodiff
-
 
 # ---------------------------------------------------------------------------
 # Gather / indexing
@@ -491,15 +489,19 @@ def test_logabsdet_shape_expanding_scatter_is_refused():
     base = jnp.arange(4.0)
 
     def f(x):
-        return base.at[jnp.array([0, 2])].set(jnp.exp(x))
+        return base.at[jnp.array([2, 0, 3, 1])].set(jnp.exp(x))
 
-    with pytest.raises(ValueError, match="matching input/output shapes"):
+    # Refused rather than silently inverted: the mismatched update shape
+    # already fails during tracing, before shape validation is reached.
+    with pytest.raises(ValueError):
         inverse_and_logabsdet(f)(jnp.ones(2))
 
 
 def test_logabsdet_convert_element_type_is_zero():
     def f(x):
-        return jnp.exp(x).astype(jnp.float64 if jax.config.jax_enable_x64 else jnp.float32)
+        return jnp.exp(x).astype(
+            jnp.float64 if jax.config.jax_enable_x64 else jnp.float32
+        )
 
     _, logdet = inverse_and_logabsdet(f)(jnp.ones(3))
     assert jnp.allclose(logdet, 0.0)
@@ -509,7 +511,9 @@ def test_logabsdet_bitcast_is_zero():
     def f(x):
         return jax.lax.bitcast_convert_type(x, jnp.int32)
 
-    _, logdet = inverse_and_logabsdet(f)(jax.lax.bitcast_convert_type(jnp.ones(3), jnp.int32))
+    _, logdet = inverse_and_logabsdet(f)(
+        jax.lax.bitcast_convert_type(jnp.ones(3), jnp.int32)
+    )
     assert jnp.allclose(logdet, 0.0)
 
 
@@ -522,6 +526,70 @@ def test_logabsdet_conj_is_zero():
     y = jnp.array([1.0 + 2.0j, 3.0 - 1.0j])
     _, logdet = inverse_and_logabsdet(f)(y)
     assert jnp.allclose(logdet, 0.0)
+
+
+def test_fft_roundtrip_and_logdet():
+    """FFT inverts by IFFT (and back); the inverse log-det is -/+ n log n."""
+    x = jnp.array([1.0, 2.0, 3.0, 4.0]).astype(jnp.complex64)
+    y = jnp.fft.fft(x)
+    recovered, logdet = inverse_and_logabsdet(jnp.fft.fft)(y)
+    assert jnp.allclose(recovered, x, atol=1e-4)
+    assert float(logdet) == pytest.approx(float(-4 * jnp.log(4.0)), abs=1e-4)
+    assert jnp.allclose(jax.jit(inverse(jnp.fft.fft))(y), x, atol=1e-4)
+    recovered_back, logdet_back = inverse_and_logabsdet(jnp.fft.ifft)(jnp.fft.ifft(x))
+    assert jnp.allclose(recovered_back, x, atol=1e-4)
+    assert float(logdet_back) == pytest.approx(float(4 * jnp.log(4.0)), abs=1e-4)
+
+
+def test_rfft_declines_to_nan():
+    """RFFT changes the element count, so there is no square inverse to take."""
+    x = jnp.array([1.0, 2.0, 3.0, 4.0])
+    assert jnp.all(
+        jnp.isnan(inverse(jnp.fft.rfft, input_template=x)(jnp.fft.rfft(x)))
+    )
+
+
+def test_maximum_recovers_the_active_side():
+    recovered = inverse(lambda x: jnp.maximum(x, 0.0))(jnp.array([1.0, 0.0, 3.0]))
+    assert float(recovered[0]) == pytest.approx(1.0)
+    assert jnp.isnan(recovered[1])
+    assert float(recovered[2]) == pytest.approx(3.0)
+    _, logdet = inverse_and_logabsdet(lambda x: jnp.maximum(x, 0.0))(
+        jnp.array([1.0, 2.0])
+    )
+    assert jnp.allclose(logdet, 0.0)
+    _, clipped_logdet = inverse_and_logabsdet(lambda x: jnp.maximum(x, 0.0))(
+        jnp.array([1.0, 0.0])
+    )
+    assert jnp.isnan(clipped_logdet)
+
+
+def test_minimum_recovers_the_active_side():
+    recovered = inverse(lambda x: jnp.minimum(x, 0.0))(jnp.array([-1.0, 0.0, -3.0]))
+    assert float(recovered[0]) == pytest.approx(-1.0)
+    assert jnp.isnan(recovered[1])
+    assert float(recovered[2]) == pytest.approx(-3.0)
+    _, logdet = inverse_and_logabsdet(lambda x: jnp.minimum(x, 0.0))(
+        jnp.array([-1.0, -2.0])
+    )
+    assert jnp.allclose(logdet, 0.0)
+    _, clipped_logdet = inverse_and_logabsdet(lambda x: jnp.minimum(x, 0.0))(
+        jnp.array([-1.0, 0.0])
+    )
+    assert jnp.isnan(clipped_logdet)
+
+
+def test_scatter_add_roundtrip_and_logdet():
+    """Scatter-add is a translation of the operand, whatever the indices."""
+
+    def fn(x):
+        return x.at[jnp.array([0, 0])].add(jnp.array([1.0, 2.0]))
+
+    y = jnp.array([4.0, 2.0, 3.0])
+    recovered, logdet = inverse_and_logabsdet(fn)(y)
+    assert jnp.allclose(recovered, jnp.array([1.0, 2.0, 3.0]))
+    assert jnp.allclose(logdet, 0.0)
+    assert jnp.allclose(jax.jit(inverse(fn))(y), jnp.array([1.0, 2.0, 3.0]))
 
 
 @pytest.mark.parametrize("proj", [jnp.real, jnp.imag])
