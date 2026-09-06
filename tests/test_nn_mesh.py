@@ -14,9 +14,11 @@ import jax
 import jax.numpy as jnp
 import pytest
 from flax import nnx
-from jax.sharding import AxisType, NamedSharding, PartitionSpec as P
+from jax.sharding import AxisType, NamedSharding
+from jax.sharding import PartitionSpec as P
 
-from probjax.nn import MLP, SSMModel, Transformer, UNet, maf
+from probjax.nn import MLP, MoELayer, SSMModel, Transformer, UNet, maf
+from probjax.nn import sharding as shd
 
 
 def _auto_mesh(shape):
@@ -62,6 +64,71 @@ def test_attention_kernels_shard_over_heads():
         assert attn.key.kernel[...].sharding.spec == P(None, "model", None)
         assert attn.value.kernel[...].sharding.spec == P(None, "model", None)
         assert attn.out.kernel[...].sharding.spec == P("model", None, None)
+
+
+@pytest.mark.mesh
+def test_moe_experts_shard_over_model_router_replicated():
+    mesh = _auto_mesh((1, 4))
+    with jax.set_mesh(mesh):
+        model = MoELayer(8, 16, 4, rngs=nnx.Rngs(0))
+        for name in ("w_gate", "w_up", "w_down"):
+            assert getattr(model.experts, name)[...].sharding.spec == P(
+                "model", None, None
+            )
+        assert model.router.w_router[...].sharding.spec == P()
+
+
+@pytest.mark.mesh
+@pytest.mark.parametrize("sparse", [True, False])
+def test_moe_sharded_matches_unsharded(sparse):
+    mesh = _auto_mesh((2, 2))
+    x = jax.random.normal(jax.random.key(0), (4, 6, 8))
+    kwargs = dict(d_model=8, d_hidden=16, num_experts=4, top_k=2)
+
+    reference = MoELayer(**kwargs, sparse=sparse, rngs=nnx.Rngs(42))
+    y_ref, aux_ref = reference(x, return_aux=True)
+
+    xs = jax.device_put(x, NamedSharding(mesh, P("data", None, None)))
+    with jax.set_mesh(mesh):
+        sharded = MoELayer(**kwargs, sparse=sparse, rngs=nnx.Rngs(42))
+        y = nnx.jit(lambda m, x: m(x))(sharded, xs)
+        # return_aux works under jit now that MoEAux is a pytree.
+        _, aux = nnx.jit(lambda m, x: m(x, return_aux=True))(sharded, xs)
+    assert jnp.allclose(y_ref, jax.device_get(y), atol=1e-5)
+    assert jnp.allclose(
+        aux_ref.load_balance_loss, jax.device_get(aux.load_balance_loss), atol=1e-5
+    )
+    # Output keeps its batch sharding (sparse path is re-constrained).
+    assert y.sharding.spec[0] == "data"
+
+    def loss_fn(model, x):
+        out, aux = model(x, return_aux=True)
+        return jnp.sum(out**2) + aux.load_balance_loss
+
+    with jax.set_mesh(mesh):
+        loss, grads = nnx.value_and_grad(loss_fn)(sharded, xs)
+    assert jnp.isfinite(jax.device_get(loss))
+    for leaf in jax.tree_util.tree_leaves(grads):
+        if isinstance(leaf, jax.Array):
+            assert jnp.all(jnp.isfinite(jax.device_get(leaf)))
+
+
+@pytest.mark.mesh
+def test_moe_expert_axis_on_3d_mesh():
+    if jax.device_count() < 4:
+        pytest.skip("mesh test requires at least 4 devices")
+    mesh = jax.make_mesh(
+        (2, 1, 2),
+        ("data", "model", "expert"),
+        devices=jax.devices()[:4],
+        axis_types=(AxisType.Auto,) * 3,
+    )
+    with (
+        jax.set_mesh(mesh),
+        nnx.logical_axis_rules(shd.default_rules(expert_axis="expert")),
+    ):
+        model = MoELayer(8, 16, 4, rngs=nnx.Rngs(0))
+        assert model.experts.w_gate[...].sharding.spec == P("expert", None, None)
 
 
 @pytest.mark.mesh

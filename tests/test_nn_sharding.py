@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.nn import MLP, Transformer
+from probjax.nn import MLP, MoELayer, Transformer
 from probjax.nn import sharding as shd
 
 
@@ -37,11 +37,48 @@ def test_no_mesh_construction_carries_no_sharding_annotation():
 
 def test_default_rules_cover_all_names():
     rules = dict(shd.default_rules())
-    for name in (shd.BATCH, shd.SEQ, shd.EMBED, shd.HIDDEN, shd.HEADS, shd.HEAD_DIM):
+    for name in (
+        shd.BATCH,
+        shd.SEQ,
+        shd.EMBED,
+        shd.HIDDEN,
+        shd.HEADS,
+        shd.HEAD_DIM,
+        shd.EXPERT,
+    ):
         assert name in rules
     assert rules[shd.BATCH] == "data"
     assert rules[shd.HIDDEN] == "model"
     assert rules[shd.HEADS] == "model"
+    # Experts shard over the model axis by default ...
+    assert rules[shd.EXPERT] == "model"
+    # ... or over a dedicated axis on a 3-D mesh.
+    assert dict(shd.default_rules(expert_axis="expert"))[shd.EXPERT] == "expert"
+
+
+def test_no_mesh_moe_carries_no_sharding_annotation():
+    moe = MoELayer(8, 16, 4, rngs=nnx.Rngs(0))
+    for name in ("w_gate", "w_up", "w_down"):
+        assert "sharding" not in getattr(moe.experts, name).get_metadata()
+    assert "sharding" not in moe.router.w_router.get_metadata()
+
+
+def test_moe_aux_is_jit_compatible_pytree():
+    moe = MoELayer(8, 16, 4, rngs=nnx.Rngs(0))
+    x = jnp.ones((4, 8))
+
+    def loss_fn(model, x):
+        _, aux = model(x, return_aux=True)
+        return jnp.sum(aux.expert_counts) + aux.load_balance_loss
+
+    leaves, treedef = jax.tree_util.tree_flatten(moe(x, return_aux=True)[1])
+    assert len(leaves) == 6  # capacity is static
+    assert jnp.isfinite(nnx.jit(loss_fn)(moe, x))
+
+    # return_aux itself works under jit.
+    y, aux = nnx.jit(lambda m, x: m(x, return_aux=True))(moe, x)
+    assert y.shape == (4, 8)
+    assert aux.capacity >= 1
 
 
 def test_size_one_axis_resolves_to_replicated():
