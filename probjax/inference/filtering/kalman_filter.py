@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from probjax.inference.filtering.base import FilterAPI
+from probjax.inference.filtering.base import FilterAPI, _gaussian_unpack
 from probjax.utils.linalg import batched_pcg_solve, lanczos_logdet
 from probjax.utils.linear_operator import LinearOperator
 
@@ -92,6 +92,17 @@ def default_logdet(S, dense_mem_limit=200):
     return jnp.linalg.slogdet(jnp.asarray(S)).logabsdet
 
 
+def _innovation_ll(residual, S, solve_fn=default_solve, logdet_fn=default_logdet):
+    """Gaussian innovation log-likelihood ``-0.5 * (logdet(S) + r' S^-1 r)``.
+
+    Shared by the KF/EKF update, the UKF and the rank-reduced KF so the
+    formula cannot drift between filters. ``solve_fn``/``logdet_fn`` default
+    to the dense/iterative-dispatched versions; callers with exact legacy
+    ops pass them explicitly.
+    """
+    return -0.5 * (logdet_fn(S) + residual.T @ solve_fn(S, residual))
+
+
 def _kalman_update(
     mu1_: ArrayLike,
     cov1_: ArrayLike,
@@ -155,8 +166,7 @@ def _kalman_update(
     else:
         cov1 = cov1_ - K @ C @ cov1_
 
-    logdet = logdet_fn_(S)
-    log_likelihood = -0.5 * (logdet + r.T @ solve_fn(S, r))
+    log_likelihood = _innovation_ll(r, S, solve_fn=solve_fn, logdet_fn=logdet_fn_)
 
     return jnp.asarray(mu1), jnp.asarray(cov1), log_likelihood
 
@@ -254,6 +264,4 @@ class kalman_filter(FilterAPI):
     init = init
     build_kernel = build_kernel
 
-    @staticmethod
-    def default_unpack(state, info):
-        return (state.mean, state.cov)
+    default_unpack = staticmethod(_gaussian_unpack)
