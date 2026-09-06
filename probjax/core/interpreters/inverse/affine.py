@@ -46,6 +46,8 @@ import numpy as np
 from jax._src import core as jax_core
 from jax.extend.core import Jaxpr, Literal, Var
 
+from probjax.core.interpreters.inverse.diagonal import DiagonalAffineSystem
+
 from probjax.core.registry import apply_inverse_guard, inverse_roundtrip_valid
 
 __all__ = ["is_affine_in", "is_volume_preserving", "solve_affine_inverse"]
@@ -147,6 +149,37 @@ def _mapped_sub_targets(eqn, sub, tainted: set) -> list | None:
     ]
 
 
+def affine_equation(eqn, dependent: Sequence[bool]) -> bool:
+    """Prove affinity in data operands, never in indices or predicates."""
+    if eqn.effects:
+        return False
+    if not any(dependent):
+        return True
+    name = eqn.primitive.name
+    if name == "reduce_sum" and not eqn.params["axes"]:
+        return False
+    if name == "div":
+        return not dependent[1]
+    if name in {"dynamic_slice", "gather"}:
+        return not any(dependent[1:])
+    if name == "select_n":
+        return not dependent[0]
+    if name == "convert_element_type":
+        # Narrowing, integer conversion, and complex-to-real casts are lossy.
+        source = jnp.dtype(eqn.invars[0].aval.dtype)
+        target = jnp.dtype(eqn.outvars[0].aval.dtype)
+        return (
+            jnp.issubdtype(source, jnp.inexact)
+            and jnp.issubdtype(target, jnp.inexact)
+            and jnp.can_cast(source, target, casting="safe")
+            and source.kind == target.kind
+            and jnp.finfo(target).bits >= jnp.finfo(source).bits
+        )
+    if name in _BILINEAR_PRIMITIVES:
+        return sum(dependent) == 1
+    return name in _AFFINE_PRIMITIVES
+
+
 def is_affine_in(jaxpr: Jaxpr, target_vars: Sequence[Var]) -> bool:
     """Whether ``jaxpr`` is affine in ``target_vars``, proven from its structure.
 
@@ -168,24 +201,7 @@ def is_affine_in(jaxpr: Jaxpr, target_vars: Sequence[Var]) -> bool:
                 return False
             tainted.update(v for v in eqn.outvars if isinstance(v, Var))
             continue
-        name = eqn.primitive.name
-        if name in _AFFINE_PRIMITIVES:
-            # When inverse() only receives a scalar reduction output, tracing
-            # loses the original input shape and produces reduce_sum[axes=()].
-            # Treating that apparent identity as invertible would invent a
-            # scalar inverse for an underdetermined vector reduction.
-            if name == "reduce_sum" and not eqn.params["axes"]:
-                return False
-        elif name in _BILINEAR_PRIMITIVES:
-            if len(touching) > 1:
-                return False  # e.g. x * x
-        elif name in _DATA_OPERAND_ONLY_PRIMITIVES:
-            if any(index != 0 for index in touching):
-                return False
-        elif name == "select_n":
-            if 0 in touching:
-                return False
-        else:
+        if not affine_equation(eqn, [i in touching for i in range(len(eqn.invars))]):
             return False
         tainted.update(v for v in eqn.outvars if isinstance(v, Var))
     return True
@@ -410,6 +426,10 @@ def solve_affine_inverse(
         # The dense matrix would be absurd; a custom_inverse serves this.
         return None
 
+    diagonal_system = DiagonalAffineSystem.try_build(jaxpr, target_vars)
+    if diagonal_system is not None and total_out == total_in:
+        return diagonal_system.solve(consts, known, outputs, compute_logdet=need_logdet)
+
     def evaluate(flat_target):
         pieces, offset = [], 0
         for shape, size in zip(shapes, sizes, strict=False):
@@ -502,3 +522,67 @@ def solve_affine_inverse(
     # log|d(inv)/dy| = -log|det A|; a singular A gives -inf here and NaN above,
     # which is the correct report for a map that is not invertible.
     return values, -log_abs_det
+
+
+class AffineSystem:
+    """Reusable evaluator for a structurally proven, square affine section.
+
+    Only graph/shape metadata is retained. Constants and coefficients are
+    explicit arguments so a cached evaluator never captures runtime tracers.
+    """
+
+    def __init__(self, jaxpr: Jaxpr, target_vars: Sequence[Var]):
+        self.jaxpr = jaxpr
+        self.targets = tuple(target_vars)
+        self.shapes = tuple(v.aval.shape for v in self.targets)
+        self.sizes = tuple(_flat_size(v) for v in self.targets)
+        self.size = sum(self.sizes)
+        self.dtype = jnp.result_type(*[v.aval.dtype for v in self.targets])
+        targets = set(self.targets)
+        self.known_vars = tuple(v for v in jaxpr.invars if v not in targets)
+        self.diagonal = DiagonalAffineSystem.try_build(jaxpr, self.targets)
+        if self.diagonal is not None:
+            return
+
+        def evaluate(flat_target, consts, known_values):
+            environment = dict(zip(self.known_vars, known_values, strict=True))
+            offset = 0
+            for var, shape, size in zip(
+                self.targets, self.shapes, self.sizes, strict=True
+            ):
+                environment[var] = flat_target[offset : offset + size].reshape(shape)
+                offset += size
+            result = jax_core.eval_jaxpr(
+                jaxpr, consts, *[environment[v] for v in jaxpr.invars]
+            )
+            return jnp.concatenate([jnp.asarray(r).reshape(-1) for r in result])
+
+        self.evaluate = evaluate
+        self.jacobian = jax.jacfwd(evaluate, argnums=0)
+
+    def solve(self, consts, known, outputs, *, compute_logdet):
+        if self.diagonal is not None:
+            return self.diagonal.solve(
+                consts, known, outputs, compute_logdet=compute_logdet
+            )
+        if self.size > _DENSE_THRESHOLD:
+            return solve_affine_inverse(
+                self.jaxpr,
+                consts,
+                self.targets,
+                known,
+                outputs,
+                need_logdet=compute_logdet,
+            )
+        known_values = tuple(known[v] for v in self.known_vars)
+        zero = jnp.zeros((self.size,), self.dtype)
+        constant = self.evaluate(zero, consts, known_values)
+        matrix = self.jacobian(zero, consts, known_values)
+        rhs = jnp.concatenate([jnp.asarray(o).reshape(-1) for o in outputs]) - constant
+        solution = jnp.linalg.solve(matrix, rhs)
+        logdet = -jnp.linalg.slogdet(matrix)[1] if compute_logdet else None
+        values, offset = [], 0
+        for shape, size in zip(self.shapes, self.sizes, strict=True):
+            values.append(solution[offset : offset + size].reshape(shape))
+            offset += size
+        return values, logdet

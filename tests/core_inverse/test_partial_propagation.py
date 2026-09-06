@@ -111,6 +111,7 @@ def test_inverse_nonuniform_select_n():
     assert jnp.allclose(x0, x_rec, atol=1e-6, rtol=1e-6)
 
 
+
 def test_logabsdet_select_n_is_zero():
     """select_n picks between operands elementwise; it scales nothing."""
     import jax.numpy as _jnp
