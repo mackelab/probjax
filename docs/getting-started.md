@@ -102,6 +102,24 @@ metadata = trace(observed, sites=True)(key)
 `observe`, `intervene`/`do`, `substitute` and `scope` transform programs the
 same way.
 
+Sampling records a site only while a transformation is tracing the model --
+everywhere else the same call is an ordinary JAX sample with no `rv`
+primitive in the jaxpr, so plain `jit`/`vmap` sampling stays cheap. If you
+inspect jaxprs for sites yourself (e.g. raw `jax.make_jaxpr`), opt in
+explicitly:
+
+```python
+from probjax import enable_rv_tracing
+
+with enable_rv_tracing():
+    jaxpr = jax.make_jaxpr(model)(key)
+```
+
+The flag is read at trace time (`make_jaxpr` caches per function, and `jit`
+compiles on first call), so enable it around the tracing call itself -- and
+avoid first-calling a jitted sampler inside the context unless you want the
+compiled artifact to keep the sites.
+
 ## Neural modules
 
 Neural components use Flax NNX, not the older Linen `init`/`apply` pattern:

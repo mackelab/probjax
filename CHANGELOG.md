@@ -17,9 +17,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cached loop compiled to a single program via `nnx.scan`
 - `TransformerARConditionerConfig` accepts an `attention_fn` kernel and works
   with discrete families
+- `probjax.enable_rv_tracing()` context manager (plus
+  `probjax.rv_tracing_enabled()` predicate) to opt sampling code into
+  traceable `random_variable` sites outside the PPL transformations
+- `probjax.disable_custom_inverse()` context manager (plus
+  `probjax.custom_inverse_enabled()` predicate) to opt out of
+  `custom_inverse` handling, e.g. for a buggy registered inverse: forward
+  calls run the plain function with no `custom_inverse_call_p` primitive,
+  and `inverse`/`inverse_and_logabsdet` fall back to structural inversion.
+  Set `PROBJAX_DISABLE_CUSTOM_INVERSE=1` to disable globally
 
 ### Changed
 - Renamed `AutoregressiveModel` to `Autoregressive` (hard rename, no alias)
+- Sampling is now primitive-free by default: `Distribution.rvs`/`sample`
+  no longer emit the `random_variable` primitive unless PPL tracing is
+  enabled. The PPL transformations (`trace`, `joint_sample`,
+  `log_joint_fn`/`log_potential_fn`/`log_prob_fn`, `intervene`/`do`,
+  `condition`/`observe`, `substitute`) enable it automatically around their
+  internal tracing, so probabilistic programs are unaffected, while plain
+  `jit`/`vmap`/`scan` sampling skips the forward-jaxpr trace and the
+  site-name counter. Raw `jax.make_jaxpr(model)` on sampling code no longer
+  contains `random_variable` equations -- wrap it in the new
+  `probjax.enable_rv_tracing()` context if you inspect jaxprs for sites or
+  call `interpret` manually. Set `PROBJAX_RV_TRACING=1` to restore the legacy
+  always-emit behaviour globally
 
 ### Fixed
 - Transformer conditioner full-forward path is now causal: the explicit

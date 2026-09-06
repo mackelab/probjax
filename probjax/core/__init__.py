@@ -1,4 +1,12 @@
-from probjax.core.custom_primitives.custom_inverse import custom_inverse
+from probjax.core.custom_primitives.custom_inverse import (
+    custom_inverse,
+    custom_inverse_enabled,
+    disable_custom_inverse,
+)
+from probjax.core.custom_primitives.random_variable import (
+    enable_rv_tracing,
+    rv_tracing_enabled,
+)
 from probjax.core.jaxpr_propagation.graph import JaxprGraph
 from probjax.core.transformation import (
     do,

@@ -5,7 +5,10 @@ import jax
 from jax import numpy as jnp
 from jaxtyping import Array
 
-from probjax.core.custom_primitives.random_variable import name_stack
+from probjax.core.custom_primitives.random_variable import (
+    enable_rv_tracing,
+    name_stack,
+)
 from probjax.core.interpreters import (
     INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
     IntervenedProcessingRule,
@@ -324,7 +327,8 @@ def _make_substitution_wrapper(
     def wrapped(*args, **kwargs):
         # Single flatten pass for both cache key and inputs
         flat_inputs, cache_key = _flatten_and_signature(args, kwargs)
-        jaxpr, out_tree = get_jaxpr_and_tree(flat_inputs, cache_key, args, kwargs)
+        with enable_rv_tracing():
+            jaxpr, out_tree = get_jaxpr_and_tree(flat_inputs, cache_key, args, kwargs)
         out_flat = interpret(
             jaxpr.jaxpr,
             jaxpr.consts,
@@ -365,7 +369,8 @@ def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
             fixed_values=fixed_values,
             fixed_names=legacy_fixed,
         )
-        jaxpr = get_jaxpr(*args, **kwargs)
+        with enable_rv_tracing():
+            jaxpr = get_jaxpr(*args, **kwargs)
         joint_result = cast(
             tuple[list, dict],
             interpret(
@@ -497,7 +502,8 @@ def log_potential_fn(
     interventions, observations, replay = _collect_stochastic_maps(fun)
     legacy_interventions = getattr(fun, "_probjax_interventions", None)
 
-    jaxpr = jax.make_jaxpr(base_fun)(jax.random.PRNGKey(0), *args, **kwargs)
+    with enable_rv_tracing():
+        jaxpr = jax.make_jaxpr(base_fun)(jax.random.PRNGKey(0), *args, **kwargs)
     model_inputs = _flatten_call_inputs((jax.random.PRNGKey(0),) + args, kwargs)
 
     def log_potential(**joint_samples):
@@ -587,7 +593,8 @@ def trace(
             replay=replay,
             kind_labels=kind_labels,
         )
-        jaxpr = get_jaxpr(*args, **kwargs)
+        with enable_rv_tracing():
+            jaxpr = get_jaxpr(*args, **kwargs)
         trace_result = cast(
             tuple[list, dict],
             interpret(

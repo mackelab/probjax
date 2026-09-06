@@ -1,4 +1,5 @@
-from contextlib import contextmanager
+import os
+from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
 from threading import local
 from typing import Any, cast
@@ -54,6 +55,58 @@ class NameStack(local):
 
 
 name_stack = NameStack()
+
+
+_RV_TRACING_ENV_VAR = "PROBJAX_RV_TRACING"
+
+# Read once at import: opting the whole process back into the legacy
+# always-emit behaviour. Tests can monkeypatch this module attribute.
+_ALWAYS_TRACE_RV = os.environ.get(_RV_TRACING_ENV_VAR, "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+
+class _RvTracingState(local):
+    def __init__(self):
+        self.depth = 0
+
+
+_rv_tracing_state = _RvTracingState()
+
+
+def rv_tracing_enabled() -> bool:
+    """Whether distribution sampling emits traceable ``rv_p`` sites.
+
+    Read at trace time: outside :func:`enable_rv_tracing` (and without
+    ``PROBJAX_RV_TRACING=1``) sampling is an ordinary JAX computation with no
+    primitive, no ``forward_jaxpr`` tracing, and no ``name_stack`` side effects.
+    """
+    return _ALWAYS_TRACE_RV or _rv_tracing_state.depth > 0
+
+
+class enable_rv_tracing(ContextDecorator):
+    """Emit traceable ``rv_p`` sites for distribution sampling.
+
+    Only needed when tracing a model whose jaxpr is inspected for random
+    variables outside the PPL transformations -- ``trace``,
+    ``joint_sample``, ``log_joint_fn``/``log_potential_fn``/``log_prob_fn``,
+    and ``intervene``/``condition``/``substitute`` enable it automatically
+    around their internal tracing. Everywhere else (``jit``, ``vmap``,
+    ``grad``, ``scan``, plain sampling) sampling stays primitive-free.
+
+    Reentrant and thread-local; safe to nest.
+    """
+
+    def __enter__(self) -> "enable_rv_tracing":
+        _rv_tracing_state.depth += 1
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        _rv_tracing_state.depth -= 1
+        return False
 
 
 @lru_cache(maxsize=4096)
@@ -230,11 +283,21 @@ class RandomVariableCallPrimitive(Primitive):
 
         if kwds is None:
             kwds = {} if kwds_items is None else dict(kwds_items)
+
+        args, parsed_kwds = dist_obj._parse_args(*args, **kwds)
+
+        # Opt-in PPL tracing: outside `enable_rv_tracing` (and without
+        # PROBJAX_RV_TRACING=1), sampling is an ordinary JAX computation.
+        # This skips the primitive, the forward-jaxpr trace, the site-name
+        # counter, and the static-param hashability checks -- so array-valued
+        # kwargs also pass straight through to `rvs_fn`.
+        if not rv_tracing_enabled():
+            return rvs_fn(key, *args, shape=shape, **parsed_kwds)
+
         if name is None:
             prefix = getattr(dist_obj, "name", "rv")
             name = name_stack.get_name(prefix)
 
-        args, parsed_kwds = dist_obj._parse_args(*args, **kwds)
         if kwds_items is None:
             kwds_items = tuple(
                 sorted(
@@ -243,10 +306,11 @@ class RandomVariableCallPrimitive(Primitive):
                 )
             )
 
-        # Outside any trace, with no tracers, sample directly. Inside a trace
-        # the primitive must be emitted even for concrete arguments, or the
-        # random variable disappears from the jaxpr and every interpreter that
-        # looks for it -- trace, log_potential, intervene -- stops seeing it.
+        # Inside PPL tracing: outside any trace, with no tracers, sample
+        # directly. Inside a trace the primitive must be emitted even for
+        # concrete arguments, or the random variable disappears from the jaxpr
+        # and every interpreter that looks for it -- trace, log_potential,
+        # intervene -- stops seeing it.
         if not must_emit_primitive((key, args, parsed_kwds)):
             return rvs_fn(key, *args, shape=shape, **parsed_kwds)
 
@@ -300,6 +364,8 @@ mark_primitive_requires_devices(rv_p)
 __all__ = [
     "NameStack",
     "call_rv_p",
+    "enable_rv_tracing",
     "name_stack",
     "rv_p",
+    "rv_tracing_enabled",
 ]
