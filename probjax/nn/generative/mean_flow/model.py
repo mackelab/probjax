@@ -131,23 +131,19 @@ class MeanFlowMatcher(GenerativeModel):
 
         r: ArrayLike = t if r is None else jnp.clip(r, min=t, max=1.0)
 
-        eps = getattr(self.preconditioning, "eps", 1e-8)
-        approx_mu_t = self.schedule.path_mean(t, mu0, mu1)
-        approx_std_t = jnp.maximum(self.schedule.path_std(t, std0, std1), eps)
-
-        x_normed = jax.tree_util.tree_map(lambda x: (x - approx_mu_t) / approx_std_t, x)
-        std_t = approx_std_t
-        a_t = self.schedule.a_t(t)
-        b_t = self.schedule.b_t(t)
-        denom = (a_t**2) * std0**2 + (b_t**2) * std1**2
-        scale = (b_t * std1**2 - a_t * std0**2) / jnp.maximum(denom, eps)
-
+        x_normed, _, approx_stdt = self.preconditioning.normalize(
+            self.schedule, t, x, mu0, mu1, std0, std1
+        )
         v_out = self.net(t, x_normed, *args, r=r, rng=rng, **kwargs)
-        v_out_data = jax.tree_util.tree_map(lambda v: std_t * v, v_out)
-
-        return jax.tree.map(
-            lambda value, update: mu1 - mu0 + scale * (value - approx_mu_t + update),
+        v_out_data = jax.tree_util.tree_map(lambda v: approx_stdt * v, v_out)
+        return self.preconditioning.decode_velocity(
+            self.schedule,
+            t,
             x,
+            mu0,
+            mu1,
+            std0,
+            std1,
             v_out_data,
         )
 

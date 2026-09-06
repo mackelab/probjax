@@ -33,7 +33,9 @@ class InterpolationScheduleProtocol(Protocol):
         self, t: ArrayLike, x0: Array, x1: Array
     ) -> Array | None: ...
 
-    def interpolation_velocity_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array: ...
+    def interpolation_velocity_fn(
+        self, t: ArrayLike, x0: Array, x1: Array
+    ) -> Array: ...
 
     def interpolation_noise_velocity_fn(
         self, t: ArrayLike, x0: Array, x1: Array
@@ -82,6 +84,7 @@ class GeneralInterpolationSchedule(InterpolationScheduleProtocol):
     ) -> Array | None:
         if self.noise_fn is None:
             return None
+
         def grad_fn(time, x_s, x_t):
             if self.noise_velocity_fn is not None:
                 return self.noise_velocity_fn(time, x_s, x_t)
@@ -115,7 +118,68 @@ class AutodiffInterpolationSchedule(GeneralInterpolationSchedule):
 
 
 @dataclass
-class LinearInterpolationSchedule(InterpolationScheduleProtocol):
+class AffineInterpolationSchedule(InterpolationScheduleProtocol):
+    """Base class for schedules of the form ``x_t = a(t) * x0 + b(t) * x1``.
+
+    Subclasses only define the scalar coefficient functions
+    (:meth:`a_t`, :meth:`b_t`, :meth:`da_dt`, :meth:`db_dt`); all
+    interpolation, velocity, noise and path-moment methods are shared.
+    """
+
+    noise_fn: Callable[[ArrayLike, Array, Array], Array] | None = None
+    noise_velocity_fn: Callable[[ArrayLike, Array, Array], Array] | None = None
+
+    def a_t(self, t: ArrayLike) -> Array:
+        raise NotImplementedError
+
+    def b_t(self, t: ArrayLike) -> Array:
+        raise NotImplementedError
+
+    def da_dt(self, t: ArrayLike) -> Array:
+        raise NotImplementedError
+
+    def db_dt(self, t: ArrayLike) -> Array:
+        raise NotImplementedError
+
+    def interpolation_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array:
+        a = self.a_t(t)
+        b = self.b_t(t)
+        return a * x0 + b * x1
+
+    def interpolation_noise_fn(
+        self, t: ArrayLike, x0: Array, x1: Array
+    ) -> Array | None:
+        if self.noise_fn is None:
+            return None
+        return self.noise_fn(t, x0, x1)
+
+    def interpolation_velocity_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array:
+        da = self.da_dt(t)
+        db = self.db_dt(t)
+        return da * x0 + db * x1
+
+    def interpolation_noise_velocity_fn(
+        self, t: ArrayLike, x0: Array, x1: Array
+    ) -> Array | None:
+        if self.noise_fn is None:
+            return None
+        if self.noise_velocity_fn is not None:
+            return self.noise_velocity_fn(t, x0, x1)
+        return _autodiff_time_gradient(self.noise_fn, t, x0, x1)
+
+    def path_mean(self, t: ArrayLike, mu0: ArrayLike, mu1: ArrayLike) -> Array:
+        return self.interpolation_fn(t, jnp.asarray(mu0), jnp.asarray(mu1))
+
+    def path_std(self, t: ArrayLike, std0: ArrayLike, std1: ArrayLike) -> Array:
+        a = self.a_t(t)
+        b = self.b_t(t)
+        return jnp.sqrt(
+            (a**2) * jnp.asarray(std0) ** 2 + (b**2) * jnp.asarray(std1) ** 2
+        )
+
+
+@dataclass
+class LinearInterpolationSchedule(AffineInterpolationSchedule):
     """
     Default linear interpolation schedule with optional additive noise.
     """
@@ -135,43 +199,9 @@ class LinearInterpolationSchedule(InterpolationScheduleProtocol):
     def db_dt(self, t: ArrayLike) -> Array:
         return jnp.ones_like(jnp.asarray(t))
 
-    def interpolation_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array:
-        a = self.a_t(t)
-        b = self.b_t(t)
-        return a * x0 + b * x1
-
-    def interpolation_noise_fn(
-        self, t: ArrayLike, x0: Array, x1: Array
-    ) -> Array | None:
-        if self.noise_fn is None:
-            return None
-        return self.noise_fn(t, x0, x1)
-
-    def interpolation_velocity_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array:
-        da = self.da_dt(t)
-        db = self.db_dt(t)
-        return da * x0 + db * x1
-
-    def interpolation_noise_velocity_fn(
-        self, t: ArrayLike, x0: Array, x1: Array
-    ) -> Array | None:
-        if self.noise_fn is None:
-            return None
-        if self.noise_velocity_fn is not None:
-            return self.noise_velocity_fn(t, x0, x1)
-        return _autodiff_time_gradient(self.noise_fn, t, x0, x1)
-
-    def path_mean(self, t: ArrayLike, mu0: ArrayLike, mu1: ArrayLike) -> Array:
-        return self.interpolation_fn(t, jnp.asarray(mu0), jnp.asarray(mu1))
-
-    def path_std(self, t: ArrayLike, std0: ArrayLike, std1: ArrayLike) -> Array:
-        a = self.a_t(t)
-        b = self.b_t(t)
-        return jnp.sqrt((a**2) * jnp.asarray(std0) ** 2 + (b**2) * jnp.asarray(std1) ** 2)
-
 
 @dataclass
-class CosineInterpolationSchedule(InterpolationScheduleProtocol):
+class CosineInterpolationSchedule(AffineInterpolationSchedule):
     """
     Cosine-eased interpolation: a_t = cos(pi/2 * t), b_t = sin(pi/2 * t).
     """
@@ -191,43 +221,9 @@ class CosineInterpolationSchedule(InterpolationScheduleProtocol):
     def db_dt(self, t: ArrayLike) -> Array:
         return (jnp.pi / 2.0) * jnp.cos(jnp.asarray(t) * jnp.pi / 2.0)
 
-    def interpolation_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array:
-        a = self.a_t(t)
-        b = self.b_t(t)
-        return a * x0 + b * x1
-
-    def interpolation_noise_fn(
-        self, t: ArrayLike, x0: Array, x1: Array
-    ) -> Array | None:
-        if self.noise_fn is None:
-            return None
-        return self.noise_fn(t, x0, x1)
-
-    def interpolation_velocity_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array:
-        da = self.da_dt(t)
-        db = self.db_dt(t)
-        return da * x0 + db * x1
-
-    def interpolation_noise_velocity_fn(
-        self, t: ArrayLike, x0: Array, x1: Array
-    ) -> Array | None:
-        if self.noise_fn is None:
-            return None
-        if self.noise_velocity_fn is not None:
-            return self.noise_velocity_fn(t, x0, x1)
-        return _autodiff_time_gradient(self.noise_fn, t, x0, x1)
-
-    def path_mean(self, t: ArrayLike, mu0: ArrayLike, mu1: ArrayLike) -> Array:
-        return self.interpolation_fn(t, jnp.asarray(mu0), jnp.asarray(mu1))
-
-    def path_std(self, t: ArrayLike, std0: ArrayLike, std1: ArrayLike) -> Array:
-        a = self.a_t(t)
-        b = self.b_t(t)
-        return jnp.sqrt((a**2) * jnp.asarray(std0) ** 2 + (b**2) * jnp.asarray(std1) ** 2)
-
 
 @dataclass
-class QuadraticInterpolationSchedule(InterpolationScheduleProtocol):
+class QuadraticInterpolationSchedule(AffineInterpolationSchedule):
     """
     Quadratic ease-out toward x1: a_t = (1 - t)^2, b_t = 1 - a_t.
     """
@@ -246,40 +242,6 @@ class QuadraticInterpolationSchedule(InterpolationScheduleProtocol):
 
     def db_dt(self, t: ArrayLike) -> Array:
         return -self.da_dt(t)
-
-    def interpolation_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array:
-        a = self.a_t(t)
-        b = self.b_t(t)
-        return a * x0 + b * x1
-
-    def interpolation_noise_fn(
-        self, t: ArrayLike, x0: Array, x1: Array
-    ) -> Array | None:
-        if self.noise_fn is None:
-            return None
-        return self.noise_fn(t, x0, x1)
-
-    def interpolation_velocity_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array:
-        da = self.da_dt(t)
-        db = self.db_dt(t)
-        return da * x0 + db * x1
-
-    def interpolation_noise_velocity_fn(
-        self, t: ArrayLike, x0: Array, x1: Array
-    ) -> Array | None:
-        if self.noise_fn is None:
-            return None
-        if self.noise_velocity_fn is not None:
-            return self.noise_velocity_fn(t, x0, x1)
-        return _autodiff_time_gradient(self.noise_fn, t, x0, x1)
-
-    def path_mean(self, t: ArrayLike, mu0: ArrayLike, mu1: ArrayLike) -> Array:
-        return self.interpolation_fn(t, jnp.asarray(mu0), jnp.asarray(mu1))
-
-    def path_std(self, t: ArrayLike, std0: ArrayLike, std1: ArrayLike) -> Array:
-        a = self.a_t(t)
-        b = self.b_t(t)
-        return jnp.sqrt((a**2) * jnp.asarray(std0) ** 2 + (b**2) * jnp.asarray(std1) ** 2)
 
 
 @runtime_checkable
