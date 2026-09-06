@@ -911,6 +911,10 @@ def propagate(
     call thereafter. Return None to stop or a StallRecoveryResult to resume.
     Recovery state updates merge into the active namespace's mapping state.
     The callback is local to this run; nested interpreters do not inherit it.
+
+    ``schedule_cache`` optionally reuses equation/recovery order for pure graphs.
+    Only variable identities and knownness levels are cached, never values or
+    tracers. A changed rule outcome rebuilds the queue from the current state.
     """
     return run_jaxpr(
         jaxpr,

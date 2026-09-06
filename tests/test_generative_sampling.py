@@ -7,6 +7,10 @@ from probjax.nn.generative.diffusion import EDM, VE, VP, CosineDM
 from probjax.nn.generative.flow_matching import LinearFlow, LinearFlowSolverConfig
 from probjax.nn.generative.nflows.models import NormalizingFlow
 from probjax.nn.generative.mean_flow import LinearMeanFlow
+from probjax.nn.generative.mean_flow.config import SigmoidPairFlowTrainingConfig
+from probjax.nn.generative.flow_matching.config import LinearInterpolationSchedule
+from probjax.nn.losses.mean_flow import build_mean_flow_matching_loss
+from probjax.nn import TimeMLP
 from probjax.stats.continuous import norm
 from probjax.stats.indep import indep
 
@@ -335,3 +339,100 @@ def test_distribution_rebuilds_after_cache_invalidation():
     samples = distribution.sample(jax.random.key(0), (2,))
 
     assert samples.shape == (2, 3)
+
+
+def test_sigmoid_pair_config_produces_interior_pairs():
+    cfg = SigmoidPairFlowTrainingConfig()
+    t, r = cfg.sample_times_pair(jax.random.key(0), (20_000,))
+
+    assert bool(jnp.all(t <= r))
+    assert bool(jnp.all((t >= cfg.t_min) & (r <= cfg.t_max)))
+    # Default percent_rt=0.25 distinct pairs, rest exactly r == t.
+    assert float((r == t).mean()) == pytest.approx(0.75, abs=0.01)
+    # Distinct pairs must be genuinely interior, not pinned at r == 1
+    # (the old additive clip put ~70% of them exactly at 1).
+    interior = (r > t) & (r < 1.0)
+    assert float(interior.mean()) == pytest.approx(0.25, abs=0.01)
+    assert float((r >= 1.0).mean()) < 0.01
+
+
+class RPassThroughNet(nnx.Module):
+    """Stub net returning its r conditioning, to probe the r-JVP path."""
+
+    def __call__(self, _t, x, r=None, **_kwargs):
+        assert r is not None
+        return jnp.broadcast_to(r, x.shape)
+
+
+def test_mean_flow_r_clip_has_no_tie_split():
+    # At r == t, jnp.maximum's JVP tie rule would blend t's tangent into r
+    # (0.5/0.5 split). The stop_gradient bound must make the r-tangent at a
+    # tie match the interior limit instead.
+    model = LinearMeanFlow(RPassThroughNet())
+    x = jnp.ones((2, 2))
+    t = jnp.full((2, 1), 0.3)
+
+    def call(r_, t_):
+        return model(t_, x, r=r_)
+
+    dr = jnp.ones_like(t)
+    zt = jnp.zeros_like(t)
+    _, tie_tangent = jax.jvp(call, (t, t), (dr, zt))
+    _, interior_tangent = jax.jvp(call, (t + 1e-3, t), (dr, zt))
+    assert jnp.all(jnp.isfinite(tie_tangent))
+    assert float(jnp.abs(tie_tangent - interior_tangent).max()) < 1e-2
+
+
+def test_mean_flow_loss_is_finite_with_new_sampler():
+    model = LinearMeanFlow(TinyFlowNet())
+    data = jax.random.normal(jax.random.key(0), (8, 3))
+    loss = model.loss(jax.random.key(1), data)
+    assert jnp.all(jnp.isfinite(loss))
+
+
+def _stub_velocity_fn(t, x, r=None):
+    rr = 0.0 if r is None else r
+    return x * t + rr
+
+
+def test_mean_flow_imf_matches_original_on_diagonal():
+    # At r == t both objectives reduce to ||v_t - u_t||^2 exactly.
+    schedule = LinearInterpolationSchedule()
+    imf_fn = build_mean_flow_matching_loss(_stub_velocity_fn, schedule, imf=True)
+    orig_fn = build_mean_flow_matching_loss(_stub_velocity_fn, schedule, imf=False)
+    x0 = jax.random.normal(jax.random.key(0), (32, 2))
+    x1 = jax.random.normal(jax.random.key(1), (32, 2))
+    t = jnp.full((32, 1), 0.4)
+    assert float(imf_fn(t, t, x0, x1)) == pytest.approx(
+        float(orig_fn(t, t, x0, x1)), rel=1e-6
+    )
+
+
+def test_mean_flow_imf_differs_off_diagonal():
+    # Off the diagonal the boundary-condition tangent changes the loss.
+    schedule = LinearInterpolationSchedule()
+    imf_fn = build_mean_flow_matching_loss(_stub_velocity_fn, schedule, imf=True)
+    orig_fn = build_mean_flow_matching_loss(_stub_velocity_fn, schedule, imf=False)
+    x0 = jax.random.normal(jax.random.key(0), (32, 2))
+    x1 = jax.random.normal(jax.random.key(1), (32, 2))
+    t = jnp.full((32, 1), 0.4)
+    r = jnp.full((32, 1), 0.8)
+    imf_loss = float(imf_fn(r, t, x0, x1))
+    orig_loss = float(orig_fn(r, t, x0, x1))
+    assert jnp.isfinite(imf_loss) and jnp.isfinite(orig_loss)
+    assert imf_loss != pytest.approx(orig_loss, rel=1e-3)
+
+
+def test_mean_flow_original_objective_still_available():
+    # imf=False must reproduce the pre-iMF fixed-seed losses exactly.
+    net = TimeMLP(2, rngs=nnx.Rngs(0))
+    model = LinearMeanFlow(net)
+    data = jax.random.normal(jax.random.key(42), (256, 2)) * 2.0
+    expected = [4.606965065002441, 5.016578197479248, 4.452657699584961]
+    for seed, want in zip([0, 1, 2], expected):
+        got = float(model.loss(jax.random.key(seed), data, imf=False))
+        assert got == pytest.approx(want, rel=1e-6)
+    # And the default (iMF) path is finite but different.
+    got_imf = float(model.loss(jax.random.key(0), data))
+    assert jnp.isfinite(got_imf)
+    assert got_imf != pytest.approx(expected[0], rel=1e-3)

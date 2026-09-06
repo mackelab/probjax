@@ -683,10 +683,13 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
         ``3*exp(x)-exp(x)``, including sequential compositions and nested jit.
         Sections have one array-valued input and output with equal element
         counts; internal shape changes are allowed. Whole-program affine solves
-        also support multiple input leaves. Analysis is lazy and cached; each
-        dense section Jacobian costs O(n^2) storage. Generated inverses are
+        also support multiple input leaves. Elementwise sections propagate
+        scale/offset coefficients with O(n) work and storage, without Jacobians.
+        Coupled sections use dense Jacobians with O(n^2) storage. Analysis and
+        scheduling decisions are cached; generated inverses are
         ordinary JAX computations and can be jitted, vmapped, and differentiated.
-        Repeated eager calls still run the Python propagation interpreter.
+        Repeated eager calls replay the interpreter's cached schedule. If a
+        rule changes which values it resolves, scheduling falls back safely.
 
         These remain silently unsupported and produce NaN:
 

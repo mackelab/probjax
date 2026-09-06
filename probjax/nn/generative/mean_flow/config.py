@@ -23,6 +23,12 @@ class FlowPairTrainingConfigProtocol(Protocol):
 class SigmoidPairFlowTrainingConfig(FlowPairTrainingConfigProtocol):
     """
     Pair sampling mirroring MeanFlowMatcher.noise_schedule.
+
+    A ``percent_rt`` fraction of the batch gets distinct pairs ``(t, r)``
+    with ``t <= r`` (min/max assignment of two independent logit-normal
+    draws, matching the MeanFlow paper); the rest gets ``r == t``. The
+    diagonal mass teaches instantaneous velocity while the distinct pairs
+    teach average velocity over the interval.
     """
 
     percent_rt: float = 0.25
@@ -50,7 +56,12 @@ class SigmoidPairFlowTrainingConfig(FlowPairTrainingConfigProtocol):
             * self.scale_rt
             - self.mu_rt
         )
-        r1 = jnp.clip(t1 + r1, min=self.t_min, max=self.t_max)
+        # Order so that t <= r: t is the early (noise-side) time, r the late
+        # (data-side) time, matching the repo's forward-integration convention
+        # and the paper's larger-to-t / smaller-to-r assignment (up to the
+        # convention flip). The old t1 + r1 additive form pinned ~70% of
+        # distinct pairs at exactly r = 1 and starved interior small-gap pairs.
+        t1, r1 = jnp.minimum(t1, r1), jnp.maximum(t1, r1)
 
         t2 = r2 = jax.nn.sigmoid(
             jax.random.normal(rng_tr, (batch_size_same,) + shape[1:] + (1,))

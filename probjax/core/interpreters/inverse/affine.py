@@ -15,6 +15,10 @@ is a linear solve, and both ``A`` and ``b`` can be extracted exactly:
     x = solve(A, y - b)
     log|d(inv)/dy| = -log|det A|
 
+Elementwise sections instead propagate symbolic scale/offset coefficients and
+emit division and summed logarithms. They never construct a Jacobian; the dense
+procedure above is reserved for sections that mix coordinates.
+
 Affinity is decided **structurally**, from the jaxpr, so it is a proof rather
 than a numerical guess: a program that samples as affine at a few points is not
 necessarily affine. The recovery interpreter uses these solvers on a stall,
@@ -163,10 +167,9 @@ def solve_affine_inverse(
         and ``log_abs_det`` is that of the *inverse* map, or None if the program
         is not affine in the target or the system is not square.
 
-    The Jacobian is materialised, which costs O(n^2) in the target's size. That
-    is acceptable here because this path runs only where the alternative is
-    NaN, but it does mean a very large affine fan-out is better served by a
-    hand-written :class:`~probjax.core.custom_inverse`.
+    Elementwise sections use O(n) work/storage. Other sections materialise a
+    Jacobian with O(n^2) storage and use a dense solve; very large coupled maps
+    may benefit from a hand-written :class:`~probjax.core.custom_inverse`.
     """
     if not target_vars or not is_affine_in(jaxpr, target_vars):
         return None

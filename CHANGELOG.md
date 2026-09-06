@@ -28,6 +28,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Set `PROBJAX_DISABLE_CUSTOM_INVERSE=1` to disable globally
 
 ### Changed
+- Mean-flow training objective now defaults to the Improved MeanFlow (iMF)
+  v-loss formulation (arXiv:2512.02012): the JVP tangent is the network's
+  own boundary-condition velocity `u(z_t, t, t)` (marginal-velocity
+  estimate, lower variance) instead of the conditional velocity, and the
+  regression target no longer depends on the network. Same optimum, more
+  stable optimization. The original objective remains available via
+  `loss_kwargs={"imf": False}` or `model.loss(..., imf=False)`. Results
+  will differ from previous versions
+- Mean-flow `(t, r)` pair sampling (`SigmoidPairFlowTrainingConfig`):
+  distinct pairs are now min/max of two independent logit-normal draws
+  (matching the MeanFlow paper) instead of `r = clip(t + r_raw)`, which
+  pinned ~70% of distinct pairs at exactly `r = 1` and starved interior
+  small-gap pairs needed for few-step sampling. This changes the training
+  distribution, so mean-flow results will differ from previous versions
 - Renamed `AutoregressiveModel` to `Autoregressive` (hard rename, no alias)
 - Sampling is now primitive-free by default: `Distribution.rvs`/`sample`
   no longer emit the `random_variable` primitive unless PPL tracing is
@@ -43,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   always-emit behaviour globally
 
 ### Fixed
+- `MeanFlowMatcher.__call__` no longer leaks `t`'s tangent into `r` through
+  `jnp.clip(r, min=t)` during the training-time JVP (`stop_gradient` on the
+  bound). Loss-neutral for `r == t` pairs (the corrupted term is multiplied
+  by `(t - r) = 0`), but removes a latent trap for custom pair configs
 - Transformer conditioner full-forward path is now causal: the explicit
   `mask=None` used to override the attention kernel's baked-in causal mask,
   so every position read the future and the density was invalid. Cached
