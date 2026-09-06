@@ -279,7 +279,7 @@ def _initial_guess_a_ge_1_smaller_30(a, p):
 
     w = alpha + beta * z
     # Avoid negative inside the cube if p << 0.5, or if a is moderate
-    w = jnp.maximum(w, 1e-6)
+    w = jnp.maximum(w, 1e-7)
     x_approx = a * (w**3)
 
     return jnp.clip(x_approx, 1e-10, a + 6 * jnp.sqrt(a))

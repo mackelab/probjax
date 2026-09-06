@@ -7,7 +7,7 @@ environment are per invocation; cached evaluators never retain dynamic values.
 from dataclasses import dataclass
 
 import jax.numpy as jnp
-from jax.extend.core import Jaxpr, Literal, Var
+from jax.extend.core import ClosedJaxpr, Jaxpr, Literal, Var
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
 from probjax.core.interpreters.inverse.affine import (
@@ -133,6 +133,7 @@ class AffineRecoveryPlan:
 
     def __init__(self, closed, targets):
         self.jaxpr, self.consts = normalize_inverse_graph(closed)
+        self.closed = ClosedJaxpr(self.jaxpr, self.consts)
         self.sections = []
         self.by_trigger = {}
         if self.jaxpr.effects:
@@ -231,7 +232,15 @@ class AffineRecoveryPlan:
 
 
 def make_affine_recovery(
-    closed, known_inputs, inputs, targets, processing_rule, cache, *, with_logdet=False
+    closed,
+    known_inputs,
+    inputs,
+    targets,
+    processing_rule,
+    cache,
+    *,
+    with_logdet=False,
+    schedule_cache=None,
 ):
     """Build a cheap per-call callback; perform/cache analysis only on a stall."""
 
@@ -240,7 +249,9 @@ def make_affine_recovery(
             return None
         key = (closed.jaxpr, tuple(targets))
         if key not in cache:
-            cache[key] = AffineRecoveryPlan(closed, targets)
+            plan = AffineRecoveryPlan(closed, targets)
+            cache[key] = plan
+            cache[(plan.jaxpr, tuple(targets))] = plan
         plan = cache[key]
         if plan.jaxpr is closed.jaxpr:
             return plan.recover(context, requested, changed, with_logdet=with_logdet)
@@ -272,6 +283,7 @@ def make_affine_recovery(
             return_state=True,
             return_env=True,
             stall_recovery=recover_normalized,
+            schedule_cache=schedule_cache,
             **options,
         )
         variables, values, updates = [], [], {}
@@ -294,3 +306,9 @@ def make_affine_recovery(
         )
 
     return recover
+
+
+def cached_inverse_graph(closed, targets, cache):
+    """After a normalization recovery, start subsequent runs on that graph."""
+    plan = cache.get((closed.jaxpr, tuple(targets)))
+    return plan.closed if plan is not None else closed

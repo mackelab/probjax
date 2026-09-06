@@ -298,6 +298,7 @@ def _run_nested(
     initial_state: State,
     state_namespace: str,
     context: ExecutionContext,
+    schedule_cache=None,
 ) -> tuple[Sequence[Any], Sequence[Any], State]:
     closed_sub_jaxpr = _get_closed_sub_jaxpr(extended_eqn)
     if closed_sub_jaxpr is None:
@@ -366,6 +367,7 @@ def _run_nested(
                 return_state=True,
                 path_prefix=extended_eqn.eqn_id,
                 state_namespace=state_namespace,
+                schedule_cache=schedule_cache,
             ),
         )
         target_vals, nested_state = nested_result
@@ -484,8 +486,7 @@ class _EquationQueue:
 
     def pop(self) -> ExtendedEquation:
         eqn_id = (
-            self.replay[self.cursor][0]
-            if self.replay is not None else self.queue.pop()
+            self.replay[self.cursor][0] if self.replay is not None else self.queue.pop()
         )
         # Don't mark as processed yet - caller will call mark_processed or mark_deferred
         return self.equation_by_id[eqn_id]
@@ -501,7 +502,9 @@ class _EquationQueue:
 
     def is_empty(self) -> bool:
         if self.replay is not None:
-            return self.cursor == len(self.replay) or self.replay[self.cursor][0] is None
+            return (
+                self.cursor == len(self.replay) or self.replay[self.cursor][0] is None
+            )
         return self.queue.is_empty()
 
     def record_step(self, eqn_id, written_vars, consumed=()):
@@ -512,13 +515,14 @@ class _EquationQueue:
             tuple(consumed),
         )
         self.recorded.append(step)
-        if self.replay is not None:
-            if self.cursor >= len(self.replay) or self.replay[self.cursor] != step:
-                # Rebuild from the current environment. Already consumed or
-                # completed equations stay retired, including their state.
-                self.replay = None
-                self.queue = PriorityQueue()
-                self._initialize()
+        if self.replay is not None and (
+            self.cursor >= len(self.replay) or self.replay[self.cursor] != step
+        ):
+            # Rebuild from the current environment. Already consumed or
+            # completed equations stay retired, including their state.
+            self.replay = None
+            self.queue = PriorityQueue()
+            self._initialize()
         self.cursor += 1
 
 
@@ -649,6 +653,7 @@ def run_jaxpr(
                     initial_state,
                     state_namespace,
                     context,
+                    schedule_cache=schedule_cache,
                 )
             else:
                 output_vars, output_vals, eqn_state = _run_process_rule(
@@ -685,12 +690,22 @@ def run_jaxpr(
     schedule_key = None
     if schedule_cache is not None and not jaxpr.effects:
         schedule_key = (
-            jaxpr, tuple(invars), tuple(outvars), type(process_eqn), cost_fn,
-            path_prefix, state_namespace, process_all_eqns, recurse_policy,
+            jaxpr,
+            tuple(invars),
+            tuple(outvars),
+            type(process_eqn),
+            cost_fn,
+            path_prefix,
+            state_namespace,
+            process_all_eqns,
+            recurse_policy,
             bool(stall_recovery),
         )
     equation_queue = _EquationQueue(
-        extended.neighbors, env, extended.equations, cost_fn,
+        extended.neighbors,
+        env,
+        extended.equations,
+        cost_fn,
         replay=schedule_cache.get(schedule_key) if schedule_key is not None else None,
     )
 
@@ -698,8 +713,7 @@ def run_jaxpr(
     while True:
         if equation_queue.is_empty():
             if stall_recovery is None or all(
-                env.get_knowness_level(var) == KnownessLevel.COMPLETE
-                for var in outvars
+                env.get_knowness_level(var) == KnownessLevel.COMPLETE for var in outvars
             ):
                 break
             recovery = stall_recovery(context, outvars, changed_since_recovery)
@@ -766,6 +780,7 @@ def run_jaxpr(
                 initial_state,
                 state_namespace,
                 context,
+                schedule_cache=schedule_cache,
             )
         else:
             output_vars, output_vals, eqn_state = _run_process_rule(

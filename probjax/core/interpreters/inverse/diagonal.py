@@ -10,10 +10,16 @@ from jax.extend.core import Literal, Var
 
 from probjax.core.jaxpr_propagation.utils import rebind_primitive
 
-
 _ELEMENTWISE = frozenset({
-    "add", "add_any", "sub", "neg", "mul", "div", "copy",
-    "convert_element_type", "select_n",
+    "add",
+    "add_any",
+    "sub",
+    "neg",
+    "mul",
+    "div",
+    "copy",
+    "convert_element_type",
+    "select_n",
 })
 _ORDER_PRESERVING = frozenset({"reshape", "squeeze", "broadcast_in_dim"})
 
@@ -44,6 +50,9 @@ def _mul(a, b):
 
 
 def _div(a, b):
+    if _is(b, 0):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.divide(a, b)
     return 0.0 if _is(a, 0) else a if _is(b, 1) else a / b
 
 
@@ -70,11 +79,18 @@ class DiagonalAffineSystem:
             return None
         dependent = {source}
         for eqn in jaxpr.eqns:
-            if not any(isinstance(v, Var) and v in dependent for v in eqn.invars):
+            touching = [isinstance(v, Var) and v in dependent for v in eqn.invars]
+            if not any(touching):
                 continue
             if len(eqn.outvars) != 1:
                 return None
             name = eqn.primitive.name
+            if (
+                (name == "mul" and sum(touching) != 1)
+                or (name == "div" and touching[1])
+                or (name == "select_n" and touching[0])
+            ):
+                return None
             if name not in _ELEMENTWISE | _ORDER_PRESERVING:
                 return None
             if math.prod(eqn.outvars[0].aval.shape) != size:
@@ -97,7 +113,9 @@ class DiagonalAffineSystem:
         inputs = (*jaxpr.constvars, *self.known_vars)
 
         def coefficients(*known_values):
-            env = {v: (None, value) for v, value in zip(inputs, known_values, strict=True)}
+            env = {
+                v: (None, value) for v, value in zip(inputs, known_values, strict=True)
+            }
             env[source] = (1.0, 0.0)
 
             def read(v):
@@ -110,14 +128,19 @@ class DiagonalAffineSystem:
                         eqn.primitive, eqn.params, *[b for _, b in pairs]
                     )
                     values = result if eqn.primitive.multiple_results else [result]
-                    env.update((v, (None, b)) for v, b in zip(eqn.outvars, values, strict=True))
+                    env.update(
+                        (v, (None, b)) for v, b in zip(eqn.outvars, values, strict=True)
+                    )
                     continue
                 name = eqn.primitive.name
                 a, b = pairs[0]
                 if name in {"add", "add_any", "sub"}:
                     c, d = pairs[1]
                     op = _sub if name == "sub" else _add
-                    pair = (op(0.0 if a is None else a, 0.0 if c is None else c), op(b, d))
+                    pair = (
+                        op(0.0 if a is None else a, 0.0 if c is None else c),
+                        op(b, d),
+                    )
                 elif name == "mul":
                     c, d = pairs[1]
                     pair = (_mul(a, d) if a is not None else _mul(c, b), _mul(b, d))
@@ -130,14 +153,26 @@ class DiagonalAffineSystem:
                     which = b
                     slopes, offsets = [], []
                     for v, (c, d) in zip(eqn.invars[1:], pairs[1:], strict=True):
-                        slopes.append(jnp.broadcast_to(0.0 if c is None else c, v.aval.shape))
-                        offsets.append(jnp.broadcast_to(d, v.aval.shape))
+                        slopes.append(
+                            jnp.broadcast_to(
+                                jnp.asarray(
+                                    0.0 if c is None else c, dtype=v.aval.dtype
+                                ),
+                                v.aval.shape,
+                            )
+                        )
+                        offsets.append(
+                            jnp.broadcast_to(
+                                jnp.asarray(d, dtype=v.aval.dtype), v.aval.shape
+                            )
+                        )
                     pair = (
                         rebind_primitive(eqn.primitive, eqn.params, which, *slopes),
                         rebind_primitive(eqn.primitive, eqn.params, which, *offsets),
                     )
                 elif name in _ORDER_PRESERVING:
-                    def rearrange(value):
+
+                    def rearrange(value, eqn=eqn):
                         if jnp.ndim(value) == 0:
                             return value
                         value = jnp.broadcast_to(value, eqn.invars[0].aval.shape)
@@ -145,34 +180,44 @@ class DiagonalAffineSystem:
 
                     pair = (rearrange(a), rearrange(b))
                 elif name == "convert_element_type":
-                    pair = tuple(rebind_primitive(eqn.primitive, eqn.params, v) for v in (a, b))
+                    pair = tuple(
+                        rebind_primitive(eqn.primitive, eqn.params, v) for v in (a, b)
+                    )
                 else:  # copy
                     pair = (a, b)
                 env[eqn.outvars[0]] = pair
             return env[jaxpr.outvars[0]]
 
         # Trace once from abstract parameters, never from captured runtime values.
-        self.program = jax.make_jaxpr(coefficients)(
-            *[jax.ShapeDtypeStruct(v.aval.shape, v.aval.dtype) for v in inputs]
-        )
+        self.program = jax.make_jaxpr(coefficients)(*[
+            jax.ShapeDtypeStruct(v.aval.shape, v.aval.dtype) for v in inputs
+        ])
 
     def solve(self, consts, known, outputs, *, compute_logdet):
         scale, offset = jax_core.eval_jaxpr(
-            self.program.jaxpr, self.program.consts,
-            *consts, *[known[v] for v in self.known_vars],
+            self.program.jaxpr,
+            self.program.consts,
+            *consts,
+            *[known[v] for v in self.known_vars],
         )
         y = jnp.asarray(outputs[0])
-        if _is(scale, 0):
+        if _static_scalar(scale):
+            scale = np.asarray(scale, dtype=y.dtype)
+        if _static_scalar(offset):
+            offset = np.asarray(offset, dtype=y.dtype)
+        if _static_scalar(scale) and (scale == 0 or not np.isfinite(scale)):
             value = jnp.full(self.shape, jnp.nan, dtype=y.dtype)
         else:
             value = _div(_sub(y, offset), scale)
             if not _static_scalar(scale):
-                value = jnp.where(scale == 0, jnp.nan, value)
+                value = jnp.where((scale == 0) | ~jnp.isfinite(scale), jnp.nan, value)
             value = value.reshape(self.shape)
         logdet = None
         if compute_logdet:
             if _static_scalar(scale):
-                total = -self.size * math.log(abs(float(scale))) if scale != 0 else math.inf
+                total = (
+                    -self.size * math.log(abs(float(scale))) if scale != 0 else math.inf
+                )
                 logdet = jnp.asarray(total, dtype=y.dtype)
             else:
                 multiplicity = self.size // jnp.size(scale)

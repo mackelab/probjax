@@ -25,7 +25,10 @@ from probjax.core.interpreters import (
     trace_state_reducer,
 )
 from probjax.core.interpreters.inverse.affine import solve_affine_inverse
-from probjax.core.interpreters.inverse.recovery import make_affine_recovery
+from probjax.core.interpreters.inverse.recovery import (
+    cached_inverse_graph,
+    make_affine_recovery,
+)
 from probjax.core.jaxpr_propagation import interpret, propagate
 from probjax.core.jaxpr_propagation.utils import KnownessLevel
 from probjax.core.registry import invalid_inverse_value
@@ -711,6 +714,7 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
         fun, static_argnums=static_argnums, return_shape=True
     )
     recovery_cache = {}
+    schedule_cache = {}
 
     @wraps(fun)
     def wrapped(*args, **kwargs):
@@ -734,22 +738,25 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None):
         )
         if len(args_for_propagate) - len(known_invars) != len(jaxpr.jaxpr.outvars):
             raise ValueError("Inverse output structure does not match function outputs")
+        graph = cached_inverse_graph(jaxpr, target_invars, recovery_cache)
         out, env = cast(
             tuple[list, Any],
             propagate(
-                jaxpr.jaxpr,
-                jaxpr.consts,
-                known_invars + jaxpr.jaxpr.outvars,
+                graph.jaxpr,
+                graph.consts,
+                known_invars + graph.jaxpr.outvars,
                 args_for_propagate,
                 target_invars,
                 process_eqn=processing_rule,
+                schedule_cache=schedule_cache,
                 stall_recovery=make_affine_recovery(
-                    jaxpr,
+                    graph,
                     known_invars,
                     args_for_propagate,
                     target_invars,
                     processing_rule,
                     recovery_cache,
+                    schedule_cache=schedule_cache,
                     with_logdet=False,
                 ),
                 cost_fn=inverse_cost_fn,
@@ -828,6 +835,7 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
         fun, static_argnums=static_argnums, return_shape=True
     )
     recovery_cache = {}
+    schedule_cache = {}
 
     @wraps(fun)
     def wrapped(*args, **kwargs):
@@ -853,25 +861,28 @@ def inverse_and_logabsdet(fun: Callable, static_argnums=(), invertible_arg=None)
         )
         if len(args_for_propagate) - len(known_invars) != len(jaxpr.jaxpr.outvars):
             raise ValueError("Inverse output structure does not match function outputs")
-        invars = known_invars + jaxpr.jaxpr.outvars
+        graph = cached_inverse_graph(jaxpr, target_invars, recovery_cache)
+        invars = known_invars + graph.jaxpr.outvars
         outvars = target_invars
 
         inverse_result = cast(
             tuple[list, dict, Any],
             propagate(
-                jaxpr.jaxpr,
-                jaxpr.consts,
+                graph.jaxpr,
+                graph.consts,
                 invars,
                 args_for_propagate,
                 outvars,
                 process_eqn=processing_rule,
+                schedule_cache=schedule_cache,
                 stall_recovery=make_affine_recovery(
-                    jaxpr,
+                    graph,
                     known_invars,
                     args_for_propagate,
                     target_invars,
                     processing_rule,
                     recovery_cache,
+                    schedule_cache=schedule_cache,
                     with_logdet=True,
                 ),
                 cost_fn=inverse_cost_fn,
