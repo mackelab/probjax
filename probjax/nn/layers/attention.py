@@ -17,6 +17,7 @@ from probjax.nn.pallas_kernels import (
     AttentionBias,
     AttentionMask,
     BlockSizes,
+    KeyPaddingMask,
     LearnedAlibiBias,
     LowRankBias,
     QKVLengthMask,
@@ -611,13 +612,28 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
             # our single query position should only attend to those key
             # positions that have already been generated and cached,
             # not the remaining zero elements.
-            mask = combine_masks(
-                mask,
-                jnp.broadcast_to(
-                    jnp.arange(max_length) <= cur_index,
-                    tuple(batch_dims) + (1, 1, max_length),
-                ),
+            filled_prefix = jnp.broadcast_to(
+                jnp.arange(max_length) <= cur_index,
+                tuple(batch_dims) + (1, 1, max_length),
             )
+            if mask is None:
+                # The fused kernel only accepts mask objects, and the
+                # filled prefix grows every step: KeyPaddingMask carries
+                # the counts as dynamic data (a pytree child of fixed
+                # shape), so every position traces the same program and
+                # it compiles once. A raw boolean array would hit the
+                # kernel's ``mask & QKVLengthMask`` path, which rejects
+                # arrays; a fresh QKVLengthMask per step would bake the
+                # count into static metadata and recompile every step.
+                # All batch elements share the count, so one entry each.
+                num_examples = 1
+                for dim in batch_dims:
+                    num_examples *= dim
+                mask = KeyPaddingMask(
+                    key_lengths=jnp.full((num_examples,), cur_index + 1)
+                )
+            else:
+                mask = combine_masks(mask, filled_prefix)
 
         # Per-head query scaling (SSMax, QASSMax, etc.).
         # Applied after QK norm and after cache update so that kv_len
@@ -1174,7 +1190,10 @@ def flex_attention(
             else mask & QKVLengthMask(q_length=l_q, kv_length=l_kv, block_sparse=False)
         )
 
-    mask = jax.tree_util.tree_map(pad_to_power_of_2, mask) if mask is not None else None
+    # Stateful masks carry data (lengths, segment ids), not spatial dims,
+    # so padding their children would corrupt them -- and crash on scalars.
+    if mask is not None and not getattr(mask, "stateful", False):
+        mask = jax.tree_util.tree_map(pad_to_power_of_2, mask)
 
     # Compute backward-compatible block sizes (no external BlockSizes input)
     block_sizes = BlockSizes.init_default(

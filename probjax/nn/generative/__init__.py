@@ -27,7 +27,7 @@ from probjax.nn.generative.base import GenerativeModel
 from probjax.nn.generative.autoregressive import (
     ARConditionerConfig,
     ARFamily,
-    AutoregressiveModel,
+    Autoregressive,
     CategoricalAutoregressive,
     HistogramAutoregressive,
     MADE,

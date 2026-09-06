@@ -113,13 +113,14 @@ from probjax.nn.losses import (
 from probjax.nn.generative.autoregressive import (
     ARConditionerConfig,
     ARFamily,
-    AutoregressiveModel,
+    Autoregressive,
     CategoricalAutoregressive,
     HistogramAutoregressive,
     MADE,
     MixtureAutoregressive,
     MLPARConditionerConfig,
     SplineAutoregressive,
+    SSMARConditionerConfig,
     TransformerARConditionerConfig,
     made,
 )
@@ -210,6 +211,14 @@ from probjax.nn.generative import (
     SigmoidPairFlowTrainingConfig,
     UniformContinuousTimeTrainingConfig,
     UniformFlowTrainingConfig,
+)
+from probjax.nn.moe import (
+    ExpertSwiGLU,
+    LocalDispatcher,
+    MoEAux,
+    MoELayer,
+    TopKRouter,
+    load_balance_loss,
 )
 from probjax.nn.nets import (
     MLP,

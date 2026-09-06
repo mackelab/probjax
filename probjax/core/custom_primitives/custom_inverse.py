@@ -1,5 +1,8 @@
+import os
 import warnings
+from contextlib import ContextDecorator
 from functools import lru_cache, update_wrapper
+from threading import local
 from typing import Any, Callable, Tuple
 
 import jax.numpy as jnp
@@ -28,6 +31,69 @@ from probjax.core.custom_primitives.common import (
 
 map = safe_map
 zip = safe_zip
+
+
+_CUSTOM_INVERSE_ENV_VAR = "PROBJAX_DISABLE_CUSTOM_INVERSE"
+
+# Read once at import: opting the whole process out of custom-inverse
+# handling, e.g. to work around a buggy registered inverse. Tests can
+# monkeypatch this module attribute.
+_DISABLE_CUSTOM_INVERSE = (
+    os.environ.get(_CUSTOM_INVERSE_ENV_VAR, "").strip().lower()
+    in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+)
+
+
+class _CustomInverseState(local):
+    def __init__(self):
+        self.disabled_depth = 0
+
+
+_custom_inverse_state = _CustomInverseState()
+
+
+def custom_inverse_enabled() -> bool:
+    """Whether ``custom_inverse`` wrappers take effect.
+
+    Read at trace time. Inside :func:`disable_custom_inverse` (or with
+    ``PROBJAX_DISABLE_CUSTOM_INVERSE=1``) a wrapper behaves as its plain
+    forward function: calls run eagerly without emitting
+    ``custom_inverse_call_p``, and ``inverse``/``inverse_and_logabsdet`` skip
+    the registered inverse in favour of structural inversion. Direct
+    ``.inv()``/``.inv_and_logdet()`` calls are unaffected.
+    """
+    return not _DISABLE_CUSTOM_INVERSE and _custom_inverse_state.disabled_depth == 0
+
+
+class disable_custom_inverse(ContextDecorator):
+    """Opt out of ``custom_inverse`` handling, e.g. for a buggy inverse.
+
+    Within the context the wrapper is transparent: forward calls execute the
+    plain function (still fully traceable by ``jit``/``vmap``/``grad``), and
+    ``inverse``/``inverse_and_logabsdet`` structurally invert the forward
+    operations instead of using the registered inverse -- which may then fail
+    with NaN or ``NotImplementedError`` where the registered rule used to
+    succeed, as with any structural inversion.
+
+    Hold the context around both ``inverse(f)`` construction *and* the call:
+    construction picks the inversion strategy, while the call traces the
+    forward operations.
+
+    Reentrant and thread-local; safe to nest.
+    """
+
+    def __enter__(self) -> "disable_custom_inverse":
+        _custom_inverse_state.disabled_depth += 1
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        _custom_inverse_state.disabled_depth -= 1
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -380,8 +446,10 @@ class custom_inverse:
             )
 
         # Fast path: outside any trace, with no tracers -> plain Python.
-        # Both conditions matter; see ``must_emit_primitive``.
-        if not must_emit_primitive((args, kwargs)):
+        # Both conditions matter; see ``must_emit_primitive``. An explicit
+        # opt-out takes the same path even inside a trace, so no
+        # ``custom_inverse_call_p`` is ever emitted while disabled.
+        if not custom_inverse_enabled() or not must_emit_primitive((args, kwargs)):
             return self.fun(*args, **kwargs)
 
         # Enforce hashable kwargs (by assumption)

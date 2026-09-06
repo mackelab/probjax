@@ -1129,19 +1129,22 @@ def test_affine_fallback_uses_known_parameters():
         lambda t: jnp.pad(t, 1),
     ],
 )
-def test_input_template_cannot_enable_expansion(transform, fn):
+def test_input_template_enables_expansion(transform, fn):
     x = jnp.array([1.0, 2.0])
     inv = transform(fn, input_template=x)
-    with pytest.raises(ValueError, match="matching input/output"):
-        inv(fn(x))
-    with pytest.raises(ValueError, match="matching input/output"):
-        jax.jit(inv)(fn(x))
+    out = inv(fn(x))
+    value = out[0] if isinstance(out, tuple) else out
+    assert jnp.allclose(value, x)
+    out_jit = jax.jit(inv)(fn(x))
+    value_jit = out_jit[0] if isinstance(out_jit, tuple) else out_jit
+    assert jnp.allclose(value_jit, x)
 
 
-def test_input_template_cannot_enable_structure_changes():
+def test_input_template_enables_structure_changes():
     x = jnp.arange(4.0)
-    with pytest.raises(ValueError, match="matching input/output"):
-        inverse(lambda t: jnp.split(t, 2), input_template=x)(jnp.split(x, 2))
+    assert jnp.allclose(
+        inverse(lambda t: jnp.split(t, 2), input_template=x)(jnp.split(x, 2)), x
+    )
 
 
 def test_input_template_rejects_foreign_output_shapes():
@@ -1149,12 +1152,14 @@ def test_input_template_rejects_foreign_output_shapes():
         inverse(lambda t: 2 * t, input_template=jnp.ones(2))(jnp.ones(3))
 
 
-def test_overdetermined_inverse_and_logdet_raises():
+def test_overdetermined_inverse_and_logdet_nan():
+    # No square Jacobian exists, so the value recovers while the log-det is
+    # NaN by design.
     x = jnp.array([1.0, 2.0])
-    with pytest.raises(ValueError, match="matching input/output"):
-        inverse_and_logabsdet(lambda t: jnp.tile(t, 2), input_template=x)(
-            jnp.tile(x, 2)
-        )
+    for fn in (lambda t: jnp.tile(t, 2), lambda t: jnp.pad(t, 1)):
+        value, logdet = inverse_and_logabsdet(fn, input_template=x)(fn(x))
+        assert jnp.allclose(value, x)
+        assert jnp.isnan(logdet)
 
 
 def test_joint_solve_over_two_arguments():

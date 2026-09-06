@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import pytest
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
-from probjax.core.custom_primitives.random_variable import rv_p
+from probjax.core.custom_primitives.random_variable import enable_rv_tracing, rv_p
 from probjax.stats import norm
 
 
@@ -205,3 +205,36 @@ def test_benchmark_rv_04_baseline_jit_steady(benchmark):
 
     out = benchmark(target)
     assert out.shape == ()
+
+
+def _rv_trace_target(*, traced: bool):
+    # Fresh function identity per call: make_jaxpr caches per function, so a
+    # shared model would only trace once and benchmark cache hits. Cold
+    # forward-jaxpr cache when tracing sites: the per-signature trace is paid
+    # once per program in practice, which is exactly the cost the gate saves.
+    from probjax.core.custom_primitives.random_variable import (
+        _trace_random_variable_jaxpr,
+    )
+
+    def model(key):
+        key_z, key_y = jax.random.split(key)
+        z = norm.rvs(key_z, 0.0, 1.0, name="z")
+        return norm.rvs(key_y, z, 0.5, name="y")
+
+    if traced:
+        _trace_random_variable_jaxpr.cache_clear()
+        with enable_rv_tracing():
+            return jax.make_jaxpr(model)(jax.random.key(0))
+    return jax.make_jaxpr(model)(jax.random.key(0))
+
+
+@pytest.mark.benchmark(group="rv_trace")
+def test_benchmark_rv_05_trace_no_sites(benchmark):
+    jaxpr = benchmark(lambda: _rv_trace_target(traced=False))
+    assert not any(str(eqn.primitive) == "random_variable" for eqn in jaxpr.jaxpr.eqns)
+
+
+@pytest.mark.benchmark(group="rv_trace")
+def test_benchmark_rv_06_trace_with_sites(benchmark):
+    jaxpr = benchmark(lambda: _rv_trace_target(traced=True))
+    assert sum(str(eqn.primitive) == "random_variable" for eqn in jaxpr.jaxpr.eqns) == 2

@@ -485,6 +485,18 @@ def test_logabsdet_scatter_is_zero():
     assert jnp.allclose(logdet, 0.0)
 
 
+def test_logabsdet_shape_expanding_scatter_is_refused():
+    base = jnp.arange(4.0)
+
+    def f(x):
+        return base.at[jnp.array([2, 0, 3, 1])].set(jnp.exp(x))
+
+    # Refused rather than silently inverted: the mismatched update shape
+    # already fails during tracing, before shape validation is reached.
+    with pytest.raises(ValueError):
+        inverse_and_logabsdet(f)(jnp.ones(2))
+
+
 def test_logabsdet_convert_element_type_is_zero():
     def f(x):
         return jnp.exp(x).astype(
@@ -532,8 +544,9 @@ def test_fft_roundtrip_and_logdet():
 def test_rfft_declines_to_nan():
     """RFFT changes the element count, so there is no square inverse to take."""
     x = jnp.array([1.0, 2.0, 3.0, 4.0])
-    with pytest.raises(ValueError, match="matching input/output"):
-        inverse(jnp.fft.rfft, input_template=x)(jnp.fft.rfft(x))
+    assert jnp.all(
+        jnp.isnan(inverse(jnp.fft.rfft, input_template=x)(jnp.fft.rfft(x)))
+    )
 
 
 def test_maximum_recovers_the_active_side():

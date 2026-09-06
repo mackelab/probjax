@@ -14,6 +14,7 @@ from probjax.core.custom_primitives.contracts import parse_custom_inverse_call_p
 from probjax.core.custom_primitives.custom_inverse import (
     custom_inverse,
     custom_inverse_call_p,
+    custom_inverse_enabled,
 )
 from probjax.core.jaxpr_propagation.utils import (
     KnownessLevel,
@@ -34,7 +35,12 @@ def maybe_inverse_custom_inverse(
     If `fun` is already a custom_inverse instance with defined inverse functions,
     this returns a new custom_inverse that inverts the inverse (i.e., recovers
     the original forward function behavior).
+
+    Returns None when custom-inverse handling is disabled (see
+    ``disable_custom_inverse``), so callers fall back to structural inversion.
     """
+    if not custom_inverse_enabled():
+        return None
     if not isinstance(fun, custom_inverse):
         return None
 

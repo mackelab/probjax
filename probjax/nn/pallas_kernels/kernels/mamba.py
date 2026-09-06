@@ -1020,6 +1020,43 @@ def _mamba_scan_reference(
     return jnp.swapaxes(y, 0, 1)
 
 
+def _mamba_scan_associative(
+    x: jax.Array,
+    a: jax.Array,
+    b: jax.Array,
+    c: jax.Array,
+    delta: jax.Array,
+    d: jax.Array,
+) -> jax.Array:
+    """Pure-JAX Mamba recurrence via an associative scan.
+
+    The step is a linear recurrence ``h' = p*h + q`` with
+    ``p = exp(delta * a)`` and ``q = delta * b * x``, so segments combine
+    as ``(p2*p1, p2*q1 + q2)`` -- the same operator the LRU cell uses.
+    The initial state is zero, which folds out of the prefix sums, and the
+    outputs read out as ``y = c.h + d*x`` per step.
+    """
+    dtype = x.dtype
+    x_f32 = x.astype(jnp.float32)
+    a_f32 = a.astype(jnp.float32)
+    b_f32 = b.astype(jnp.float32)
+    c_f32 = c.astype(jnp.float32)
+    delta_f32 = delta.astype(jnp.float32)
+    d_f32 = d.astype(jnp.float32)
+
+    p = jnp.exp(delta_f32[:, :, None, :] * a_f32[None, None, :, :])  # [B,L,S,D]
+    q = delta_f32[:, :, None, :] * b_f32[:, :, :, None] * x_f32[:, :, None, :]
+
+    def combine(pq_i, pq_j):
+        p_i, q_i = pq_i
+        p_j, q_j = pq_j
+        return p_j * p_i, p_j * q_i + q_j
+
+    _, h = jax.lax.associative_scan(combine, (p, q), axis=1)
+    y = jnp.einsum("bls,blsd->bld", c_f32, h, preferred_element_type=jnp.float32)
+    return (y + x_f32 * d_f32).astype(dtype)
+
+
 def compute_mamba_scan(
     x: jax.Array,
     a: jax.Array,
@@ -1051,6 +1088,14 @@ def compute_mamba_scan(
 
     Returns:
         A [batch_size, seqlen, inner_dim] jax.Array representing the Mamba scan's output.
+
+    Note:
+        Pallas has no CPU backend for this kernel, so on CPU this runs a
+        pure-JAX associative scan of the same recurrence (differentiated
+        through by autodiff) instead of raising. It is exact up to
+        floating-point reassociation, but sequential hardware cannot exploit
+        the scan's parallelism -- fine for development and tests, not for
+        large production runs.
     """
     _validate_mamba_runtime_inputs(
         x,
@@ -1066,7 +1111,7 @@ def compute_mamba_scan(
     backend = jax.default_backend()
     pallas_backend = _pallas_backend()
     if backend == "cpu":
-        raise RuntimeError("compute_mamba_scan requires an accelerator backend.")
+        return _mamba_scan_associative(x, a, b, c, delta, d)
     if backend not in ("tpu", "gpu"):
         raise RuntimeError(
             f"compute_mamba_scan only supports TPU and GPU backends, got {backend!r}."

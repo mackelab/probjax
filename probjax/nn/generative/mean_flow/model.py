@@ -116,6 +116,14 @@ class MeanFlowMatcher(GenerativeModel):
         ``mu_t`` and ``sigma_t`` are computed analytically from the schedule;
         the network never predicts them.
 
+        Note: this preconditioning uses the *instantaneous* Gaussian
+        ``s(t) = d/dt log sigma(t)``. For ``std0 == std1``, ``s(0.5) = 0``,
+        so at ``t = 0.5`` the output is exactly ``mu1 - mu0`` for every ``x``
+        and the network correction is annihilated (the true average-velocity
+        field to ``r = 1`` is still ``x``-dependent there). Fine for
+        ``r -> t``; a known limitation for large-gap pairs straddling the
+        midpoint.
+
         Args:
             t: Current time t.
             x: Data at time t.
@@ -129,7 +137,19 @@ class MeanFlowMatcher(GenerativeModel):
         mu1 = self.mu1.get_value()
         std1 = self.std1.get_value()
 
-        r: ArrayLike = t if r is None else jnp.clip(r, min=t, max=1.0)
+        # Safety floor/ceiling enforcing the t <= r <= 1 convention used by
+        # _mean_flow_step. Written with jnp.where (primal-identical to
+        # jnp.clip) so tangents stay one-sided: jnp.maximum's JVP tie rule
+        # would otherwise halve r's own tangent (and blend in t's tangent)
+        # at the r == t ties that make up most of the training batch.
+        # stop_gradient on the t bound keeps the training-time JVP of this
+        # __call__ (tangents dr=0, dt=1) from leaking t's tangent into r.
+        t_bound = jax.lax.stop_gradient(t)
+        if r is None:
+            r: ArrayLike = t
+        else:
+            r = jnp.where(r < t_bound, t_bound, r)
+            r = jnp.where(r > 1.0, 1.0, r)
 
         eps = getattr(self.preconditioning, "eps", 1e-8)
         approx_mu_t = self.schedule.path_mean(t, mu0, mu1)
@@ -158,13 +178,25 @@ class MeanFlowMatcher(GenerativeModel):
         *args,
         adaptive_weight_p: float = 0.3,
         adaptive_weight_eps: float = 1e-3,
+        imf: bool | None = None,
         **kwargs,
     ) -> Array:
+        """Mean flow matching loss (Improved MeanFlow v-loss by default).
+
+        Args:
+            imf: Use the Improved MeanFlow objective. Defaults to
+                ``loss_kwargs["imf"]`` if set, else True. Pass False (or
+                ``loss_kwargs={"imf": False}``) for the original objective.
+        """
+        if imf is None:
+            imf = self._loss_kwargs.get("imf", True)
+        build_kwargs = {k: v for k, v in self._loss_kwargs.items() if k != "imf"}
         loss_fn = build_mean_flow_matching_loss(
             self,
             schedule=self.schedule,
             weight_fn=None,
-            **self._loss_kwargs,
+            imf=imf,
+            **build_kwargs,
         )
 
         rng_source, rng_times = jax.random.split(rng, 2)

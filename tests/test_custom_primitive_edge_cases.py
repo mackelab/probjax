@@ -16,7 +16,7 @@ from jax.experimental import checkify
 
 from probjax.core import custom_inverse, inverse, inverse_and_logabsdet
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
-from probjax.core.custom_primitives.random_variable import rv_p
+from probjax.core.custom_primitives.random_variable import enable_rv_tracing, rv_p
 from probjax.stats import norm
 
 
@@ -58,11 +58,12 @@ def test_primitive_is_emitted_even_when_no_argument_exposes_a_tracer():
     assert any(eqn.primitive is custom_inverse_call_p for eqn in jaxpr.jaxpr.eqns)
 
 
-def test_random_variable_is_emitted_for_concrete_arguments_inside_a_trace():
-    """Same rule for rv_p: a random variable must not vanish from the jaxpr.
+def test_random_variable_is_not_emitted_without_rv_tracing():
+    """Default contract: sampling is an ordinary JAX computation.
 
-    Every interpreter built on it -- trace, log_potential, intervene -- finds
-    random variables by looking for this primitive.
+    Outside ``enable_rv_tracing`` no ``random_variable`` primitive appears in
+    the jaxpr, even inside a trace (``jit``/``vmap``/``make_jaxpr``). The
+    value is still correct -- only the site metadata is gone.
     """
     key = jax.random.key(0)
     loc, scale = jnp.zeros(3), jnp.ones(3)
@@ -71,6 +72,26 @@ def test_random_variable_is_emitted_for_concrete_arguments_inside_a_trace():
         return rv_p.bind(key, loc, scale, dist=norm, shape=(3,))
 
     jaxpr = jax.make_jaxpr(f)()
+    assert not any(str(eqn.primitive) == "random_variable" for eqn in jaxpr.jaxpr.eqns)
+    assert jnp.all(jnp.isfinite(f()))
+
+
+def test_random_variable_is_emitted_for_concrete_arguments_inside_a_trace():
+    """Opt-in rule for rv_p: with tracing enabled, a random variable must not
+    vanish from the jaxpr.
+
+    Every interpreter built on it -- trace, log_potential, intervene -- finds
+    random variables by looking for this primitive. (Distinct function object
+    from the test above: ``make_jaxpr`` caches per function identity.)
+    """
+    key = jax.random.key(0)
+    loc, scale = jnp.zeros(3), jnp.ones(3)
+
+    def g():
+        return rv_p.bind(key, loc, scale, dist=norm, shape=(3,))
+
+    with enable_rv_tracing():
+        jaxpr = jax.make_jaxpr(g)()
     assert any(str(eqn.primitive) == "random_variable" for eqn in jaxpr.jaxpr.eqns)
 
 

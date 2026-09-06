@@ -242,7 +242,23 @@ def test_mamba_scan_requires_supported_backend_config():
     delta = jax.random.normal(key, (batch, seq_len, inner_dim), dtype=jnp.float32)
     d = jax.random.normal(key, (1, inner_dim), dtype=jnp.float32)
 
-    if jax.default_backend() != "tpu":
+    if jax.default_backend() == "cpu":
+        # No Pallas backend on CPU: the associative-scan fallback runs
+        # instead, matching the sequential reference up to reassociation.
+        out = compute_mamba_scan(
+            x,
+            a,
+            b,
+            c,
+            delta,
+            d,
+            seq_tile_size=seq_tile_size,
+            dim_tile_size=dim_tile_size,
+        )
+        expected = mamba_kernel_mod._mamba_scan_reference(x, a, b, c, delta, d)
+        assert out.shape == (batch, seq_len, inner_dim)
+        assert jnp.allclose(out, expected, atol=1e-4, rtol=1e-4)
+    elif jax.default_backend() != "tpu":
         with pytest.raises(RuntimeError):
             compute_mamba_scan(
                 x,
@@ -266,6 +282,83 @@ def test_mamba_scan_requires_supported_backend_config():
             dim_tile_size=dim_tile_size,
         )
         assert out.shape == (batch, seq_len, inner_dim)
+
+
+def test_mamba_scan_matches_hand_rolled_recurrence():
+    """The scan output satisfies h' = exp(d*a)*h + d*b*x, y = c.h + d*x."""
+    if jax.default_backend() not in ("cpu", "tpu"):
+        pytest.skip("needs a backend the mamba scan runs on")
+    x = jnp.array([[[0.5, -0.25], [1.0, 0.75], [-0.5, 0.25]]], jnp.float32)
+    a = jnp.array([[-0.5, -1.0], [-0.25, -0.75]], jnp.float32)
+    b = jnp.array([[[1.0, 0.5], [0.25, -0.5], [0.75, 1.0]]], jnp.float32)
+    c = jnp.array([[[0.5, -1.0], [1.0, 0.25], [-0.75, 0.5]]], jnp.float32)
+    delta = jnp.array(
+        [[[0.1, 0.2], [0.3, 0.15], [0.25, 0.1]]], jnp.float32
+    )
+    d = jnp.array([[0.5, -0.5]], jnp.float32)
+
+    h = jnp.zeros((2, 2), jnp.float32)
+    ys = []
+    for t in range(3):
+        a_bar = jnp.exp(delta[0, t][None, :] * a)
+        h = a_bar * h + delta[0, t][None, :] * b[0, t][:, None] * x[0, t][None, :]
+        ys.append(jnp.sum(c[0, t][:, None] * h, axis=0) + x[0, t] * d[0])
+    expected = jnp.stack(ys)[None]
+
+    out = compute_mamba_scan(
+        x, a, b, c, delta, d, seq_tile_size=8, dim_tile_size=128
+    )
+    assert out.shape == (1, 3, 2)
+    assert jnp.allclose(out, expected, atol=1e-5, rtol=1e-5)
+
+
+def test_mamba_cell_uses_official_init_and_parameterization():
+    """S4D A_log, dt bias in [dt_min, dt_max] after softplus, D at one."""
+    from flax import nnx
+
+    from probjax.nn.layers.ssm import MambaCell
+
+    model_dim, state_dim = 32, 8
+    cell = MambaCell(model_dim, nnx.Rngs(0), state_dim=state_dim)
+    a = -jnp.exp(cell.a_log[...])
+    assert a.shape == (state_dim, model_dim)
+    assert bool(jnp.all(a < 0))
+    assert jnp.allclose(
+        cell.a_log[...],
+        jnp.log(
+            jnp.tile(
+                jnp.arange(1, state_dim + 1, dtype=jnp.float32)[:, None],
+                (1, model_dim),
+            )
+        ),
+    )
+    dt0 = jax.nn.softplus(cell.to_delta.bias[...])
+    assert bool(jnp.all(dt0 >= 0.001)) and bool(jnp.all(dt0 <= 0.1))
+    assert jnp.array_equal(cell.d[...], jnp.ones((1, model_dim)))
+
+
+def test_mamba_cell_forward_and_grad_run_on_cpu():
+    """MambaCell trains on CPU through the associative-scan fallback."""
+    if jax.default_backend() != "cpu":
+        pytest.skip("CPU fallback test")
+    from flax import nnx
+
+    from probjax.nn.layers.ssm import MambaCell
+
+    cell = MambaCell(16, nnx.Rngs(0))
+    x = jax.random.normal(jax.random.key(0), (4, 32, 16))
+    y = cell(x)
+    assert y.shape == (4, 32, 16)
+    assert jnp.all(jnp.isfinite(y))
+
+    def loss_fn(cell):
+        return jnp.mean(cell(x) ** 2)
+
+    _, grads = nnx.value_and_grad(loss_fn)(cell)
+    leaves = jax.tree.leaves(grads)
+    assert leaves and all(
+        bool(jnp.all(jnp.isfinite(g))) for g in leaves if isinstance(g, jax.Array)
+    )
 
 
 def test_ssd_requires_supported_backend_config():

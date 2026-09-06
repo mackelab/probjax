@@ -142,8 +142,8 @@ class AutoregressiveTransformer(nnx.Module):
         self,
         in_out_dim: int,
         bijector_dim: int,
-        bijector: Callable,
-        rngs: nnx.Rngs,
+        bijector: Optional[Callable] = None,
+        rngs: Optional[nnx.Rngs] = None,
         *,
         transformer: Optional[Transformer] = None,
         encoder: Optional[nnx.Module] = None,
@@ -155,13 +155,22 @@ class AutoregressiveTransformer(nnx.Module):
         widening_factor: int = 2,
         pos_embed: Optional[nnx.Module] = None,
         context_dim: Optional[int] = None,
+        attention_fn: Optional[Callable] = None,
         **kwargs,
     ):
         super().__init__()
+        if rngs is None:
+            raise ValueError("rngs is required.")
         self.in_out_dim = in_out_dim
         self.bijector_dim = bijector_dim
         self.bijector = bijector
-        self.bijector_inv = inverse_and_logabsdet(bijector, invertible_arg=1)
+        # A conditioner-only build (see TransformerARConditionerConfig) never
+        # invokes the bijection; only predict_bij_params is used.
+        self.bijector_inv = (
+            inverse_and_logabsdet(bijector, invertible_arg=1)
+            if bijector is not None
+            else None
+        )
 
         if transformer is None:
             transformer = Transformer(
@@ -170,7 +179,11 @@ class AutoregressiveTransformer(nnx.Module):
                 num_layers=num_layers,
                 attn_size=attn_size,
                 widening_factor=widening_factor,
-                attention_fn=partial(flex_attention, mask=CausalMask()),
+                attention_fn=(
+                    attention_fn
+                    if attention_fn is not None
+                    else partial(flex_attention, mask=CausalMask())
+                ),
                 rngs=rngs,
                 context_dim=context_dim,
                 **kwargs,
@@ -206,6 +219,14 @@ class AutoregressiveTransformer(nnx.Module):
         rng: jax.Array | None = None,
         **kwargs,
     ):
+        # Causality is the whole contract here: without an explicit mask the
+        # transformer's explicit mask=None would override the attention
+        # kernel's baked-in default and every position would read the
+        # future. The cached decode path is causal by construction, so the
+        # full forward must be too, or the two disagree (and the density
+        # is invalid).
+        if kwargs.get("mask") is None:
+            kwargs["mask"] = CausalMask()
         start_token = self.start_token.reshape((1,) * (x.ndim - 1) + (-1,))
         start_token = jnp.broadcast_to(
             start_token, x.shape[:-2] + (1,) + (self.transformer.model_dim,)
@@ -216,6 +237,48 @@ class AutoregressiveTransformer(nnx.Module):
         h = self.transformer(x, k, v, context=context, rng=rng, **kwargs)[..., :-1, :]  # type: ignore
         bij_params = self.decoder(h)  # type: ignore
         return bij_params
+
+    def init_decode(self, batch_shape, seq_len, dtype=jnp.float32):
+        """Reset self-attention KV caches for a cached decode run.
+
+        Shared by the flow ``kv_cache`` forward and autoregressive-model
+        sampling: both feed one token per position and read each position's
+        parameters back, so both need the same cache lifecycle.
+        """
+        cache_input_shape = tuple(batch_shape) + (
+            seq_len,
+            self.transformer.model_dim,
+        )
+        for block in self.transformer.attention_blocks:
+            block.init_cache(cache_input_shape, dtype=dtype)
+
+    def decode_hidden(self, token, pos, context=None, k=None, v=None, **kwargs):
+        """Single-token transformer forward with the KV cache.
+
+        ``token`` is a model-space ``(..., 1, model_dim)`` slice (the
+        broadcast ``start_token`` at ``pos == 0``); ``pos`` its sequence
+        position. Returns ``h`` of the same shape.
+        """
+        decode_kwargs = dict(kwargs)
+        decode_kwargs.pop("decode", None)
+        token = self.pos_embed(  # type: ignore
+            token,
+            idx=jnp.asarray([pos], dtype=jnp.int32),
+            rng=decode_kwargs.get("rng"),
+        )
+        return self.transformer(  # type: ignore
+            token, k, v, context=context, decode=True, **decode_kwargs
+        )
+
+    def decode_params(self, token, pos, context=None, k=None, v=None, **kwargs):
+        """Bijection parameters for one cached-decode position.
+
+        The per-position counterpart to :meth:`predict_bij_params`; returns
+        ``(..., bijector_dim)`` for the single position.
+        """
+        h = self.decode_hidden(token, pos, context, k, v, **kwargs)
+        bij_params = self.decoder(h)  # type: ignore
+        return bij_params.reshape(bij_params.shape[:-2] + (-1,))
 
     def __call__(
         self,
@@ -229,12 +292,22 @@ class AutoregressiveTransformer(nnx.Module):
     ):
         # Order must match forward / inverse_and_logdet, which take
         # (x, context, k, v) -- autoregressive_transform forwards *args as-is.
+        if self.bijector is None:
+            raise ValueError(
+                "This AutoregressiveTransformer was built without a bijector "
+                "(conditioner-only use); calling it as a transform is not available."
+            )
         y = autoregressive_transform(x, self, context, k, v, rng=rng, **kwargs)
         return y
 
     def forward(
         self, x: jax.Array, context=None, k=None, v=None, inverse_impl="naive", **kwargs
     ):
+        if self.bijector is None:
+            raise ValueError(
+                "This AutoregressiveTransformer was built without a bijector "
+                "(conditioner-only use); forward is not available."
+            )
         if inverse_impl == "naive":
 
             def scan_fn(carry, i):
@@ -265,11 +338,7 @@ class AutoregressiveTransformer(nnx.Module):
         elif inverse_impl == "kv_cache":
             seq_len = x.shape[-2]
             batch_shape = x.shape[:-2]
-
-            # Reset self-attention KV caches for this decode run.
-            cache_input_shape = batch_shape + (seq_len, self.transformer.model_dim)
-            for block in self.transformer.attention_blocks:
-                block.init_cache(cache_input_shape, dtype=x.dtype)
+            self.init_decode(batch_shape, seq_len, dtype=x.dtype)
 
             Tx = x
             start_token = self.start_token.reshape(
@@ -280,30 +349,11 @@ class AutoregressiveTransformer(nnx.Module):
                 batch_shape + (1, self.transformer.model_dim),
             )
 
-            transformer_kwargs = dict(kwargs)
-            transformer_kwargs.pop("decode", None)
-
             for i in range(seq_len):
-                if i == 0:
-                    token = start_token
-                else:
+                token = start_token
+                if i:
                     token = self.encoder(Tx[..., i - 1 : i, :])  # type: ignore
-
-                token = self.pos_embed(  # type: ignore
-                    token,
-                    idx=jnp.asarray([i], dtype=jnp.int32),
-                    rng=transformer_kwargs.get("rng"),
-                )
-                h = self.transformer(
-                    token,
-                    k,
-                    v,
-                    context=context,
-                    decode=True,
-                    **transformer_kwargs,
-                )
-                bij_params_i = self.decoder(h)  # type: ignore
-                bij_params_i = bij_params_i.reshape(bij_params_i.shape[:-2] + (-1,))
+                bij_params_i = self.decode_params(token, i, context, k, v, **kwargs)
 
                 x_i = Tx[..., i : i + 1, :]
                 x_new_i = self.bijector(bij_params_i, x_i)
@@ -315,6 +365,11 @@ class AutoregressiveTransformer(nnx.Module):
 
     def inverse_and_logdet(self, Tx: jax.Array, context=None, k=None, v=None, **kwargs):
         bij_params = self.predict_bij_params(Tx, context, k, v, **kwargs)
+        if self.bijector_inv is None:
+            raise ValueError(
+                "This AutoregressiveTransformer was built without a bijector "
+                "(conditioner-only use); inverse is not available."
+            )
         return self.bijector_inv(bij_params, Tx)
 
     def inverse(self, Tx: jax.Array, context=None, k=None, v=None, **kwargs):

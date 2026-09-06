@@ -275,6 +275,11 @@ def test_autoregressive_transformer_kv_cache_matches_naive():
     x = jax.random.normal(jax.random.key(1), (2, 8, 1))
     mask = jnp.tril(jnp.ones((x.shape[-2] + 1, x.shape[-2] + 1), dtype=bool))
 
+    # The decoder head is zero-initialised, which would make every parameter
+    # block exactly zero and the comparison vacuous -- any masking would
+    # agree. Randomise it so naive and cached paths must really match.
+    model.decoder.kernel[...] = jax.random.normal(jax.random.key(2), (16, 1))
+
     y_naive = x
     for i in range(x.shape[-2]):
         bij_params = model.predict_bij_params(y_naive, mask=mask)

@@ -26,7 +26,7 @@ from probjax.nn.generative.sampling import _ExportedSampler
 from probjax.nn.generative.standardize import StandardizingMixin
 
 __all__ = [
-    "AutoregressiveModel",
+    "Autoregressive",
     "MADE",
     "MixtureAutoregressive",
     "SplineAutoregressive",
@@ -96,7 +96,7 @@ class _KeyNormalizingSampler:
         return self._inner.from_noise(eps, rng=rng, context=context)
 
 
-class AutoregressiveModel(StandardizingMixin, GenerativeModel):
+class Autoregressive(StandardizingMixin, GenerativeModel):
     """Autoregressive density over ``input_dim`` variables.
 
     Parameters
@@ -216,16 +216,64 @@ class AutoregressiveModel(StandardizingMixin, GenerativeModel):
 
     # -- sampling ------------------------------------------------------------
 
-    def sample(self, rng, sample_shape=(), *, context=None):
+    def sample(
+        self,
+        rng,
+        sample_shape=(),
+        *,
+        context=None,
+        prefix=None,
+        prefix_len=0,
+        use_cache=True,
+    ):
         """Ancestral sampling: one conditioner pass per dimension.
 
-        The scan runs over the *event* dimension, which is static, so this
-        survives export with a symbolic batch size.
+        The naive loop scans over the *event* dimension, which is static,
+        so it survives export with a symbolic batch size.
+
+        ``prefix`` conditions the draw on known leading values: with
+        ``prefix`` of shape ``(..., input_dim)`` and ``prefix_len=k`` the
+        first ``k`` positions are clamped to ``prefix`` and only the rest
+        are sampled -- image completion from a top half, for example.
+        ``prefix_len`` may be any value in ``[0, input_dim]``.
+
+        With a transformer conditioner, ``use_cache=True`` (the default)
+        decodes with the attention KV cache instead of re-reading the whole
+        prefix at every step; ``False`` selects the naive loop, which is
+        also what non-transformer conditioners always use. Both paths draw
+        from the same per-dimension keys, so they agree up to the
+        floating-point dust between the two compiled scans.
+
+        The cached loop is compiled to a single program and does
+        asymptotically less attention work (one growing prefix row per step
+        instead of a full matrix). Time both paths with
+        ``block_until_ready`` -- JAX dispatches asynchronously, so bare
+        ``time.time`` differences only measure enqueueing.
         """
         sample_shape = tuple(sample_shape)
+        if not 0 <= prefix_len <= self.input_dim:
+            raise ValueError(
+                f"prefix_len must lie in [0, {self.input_dim}]; got {prefix_len}."
+            )
+        if prefix is None:
+            if prefix_len:
+                raise ValueError("prefix_len requires prefix.")
+            prefix_z = None
+        else:
+            prefix_z = (
+                self._standardize(prefix) if self.standardize else jnp.asarray(prefix)
+            )
+            prefix_z = jnp.broadcast_to(prefix_z, sample_shape + (self.input_dim,))
+        keys = jax.random.split(rng, self.input_dim)
+        if use_cache and hasattr(self.conditioner, "predict_next_params"):
+            return self._sample_cached(
+                keys, sample_shape, context, prefix_z, prefix_len
+            )
+        return self._sample_naive(keys, sample_shape, context, prefix_z, prefix_len)
+
+    def _sample_naive(self, keys, sample_shape, context, prefix_z, prefix_len):
         dtype = self.family.event_dtype
         x = jnp.zeros(sample_shape + (self.input_dim,), dtype=dtype)
-        keys = jax.random.split(rng, self.input_dim)
 
         def step(carry, inputs):
             i, key = inputs
@@ -233,12 +281,65 @@ class AutoregressiveModel(StandardizingMixin, GenerativeModel):
             params_i = jnp.take(params, i, axis=-2)
             natural = self.family.unpack(params_i)
             draw = self.family.rvs(key, natural).astype(dtype)
+            new = draw[..., None]
+            if prefix_z is not None:
+                given = prefix_z[..., i][..., None]
+                new = jnp.where(i < prefix_len, given, new)
             # Only dimension i is written; the mask guarantees the parameters
             # used here depended on x_<i alone.
             onehot = jnp.arange(self.input_dim) == i
-            return jnp.where(onehot, draw[..., None], carry), None
+            return jnp.where(onehot, new, carry), None
 
         x, _ = jax.lax.scan(step, x, (jnp.arange(self.input_dim), keys))
+        return self._unstandardize(x) if self.standardize else x
+
+    def _sample_cached(self, keys, sample_shape, context, prefix_z, prefix_len):
+        """KV-cached ancestral sampling for transformer conditioners.
+
+        Compiled to a single program with :func:`flax.nnx.scan`: the
+        attention caches are threaded through as scan carry (the model is
+        passed explicitly so its ``Cache`` state is lifted) while the
+        parameters stay put. Cache updates apply to this model in place,
+        so every call starts with a fresh :meth:`init_decode`.
+        """
+        dtype = self.family.event_dtype
+        family = self.family
+        feature_width = self.conditioner.feature_width
+        input_dim = self.input_dim
+        self.conditioner.init_decode(sample_shape, dtype=jnp.float32)
+        carry0 = (
+            jnp.zeros(sample_shape + (input_dim,), dtype=dtype),
+            # Encoder input space is floating point (one-hot for discrete).
+            jnp.zeros(sample_shape + (feature_width,), jnp.float32),
+        )
+
+        @nnx.scan(
+            in_axes=(
+                nnx.Carry,
+                0,
+                # Parameters are shared, but each step must see the caches
+                # written by the preceding step.
+                nnx.StateAxes({nnx.Cache: nnx.Carry, ...: None}),
+            ),
+            out_axes=(nnx.Carry, 0),
+            length=input_dim,
+        )
+        def step(carry, i, model):
+            x, prev_feat = carry
+            params_i = model.conditioner.predict_next_params(
+                prev_feat, i, context
+            )
+            natural = family.unpack(params_i)
+            draw = family.rvs(keys[i], natural).astype(dtype)
+            value = draw
+            if prefix_z is not None:
+                value = jnp.where(i < prefix_len, prefix_z[..., i], value)
+            x = x.at[..., i].set(value)
+            encoded = family.encode(value)
+            prev_feat = encoded[..., None] if feature_width == 1 else encoded
+            return (x, prev_feat), draw
+
+        (x, _), _ = step(carry0, jnp.arange(input_dim), self)
         return self._unstandardize(x) if self.standardize else x
 
     def _sample_base(self, rng, sample_shape, spec):
@@ -338,14 +439,14 @@ class AutoregressiveModel(StandardizingMixin, GenerativeModel):
 # ---------------------------------------------------------------------------
 
 
-class MADE(AutoregressiveModel):
+class MADE(Autoregressive):
     """Gaussian conditionals over a masked MLP (Germain et al., 2015)."""
 
     def __init__(self, input_dim, rngs, **kwargs):
         super().__init__(input_dim, ARFamily.normal(), rngs, **kwargs)
 
 
-class MixtureAutoregressive(AutoregressiveModel):
+class MixtureAutoregressive(Autoregressive):
     """Mixture-density conditionals: the KDE-like flexible head."""
 
     def __init__(self, input_dim, rngs, *, num_components: int = 10, **kwargs):
@@ -354,7 +455,7 @@ class MixtureAutoregressive(AutoregressiveModel):
         )
 
 
-class SplineAutoregressive(AutoregressiveModel):
+class SplineAutoregressive(Autoregressive):
     """Spline-warped normal conditionals.
 
     Distinct from ``SplineAutoregressiveFlow``: that composes spline bijections,
@@ -367,7 +468,7 @@ class SplineAutoregressive(AutoregressiveModel):
         )
 
 
-class HistogramAutoregressive(AutoregressiveModel):
+class HistogramAutoregressive(Autoregressive):
     """Piecewise-constant conditionals with exponential tails."""
 
     def __init__(
@@ -386,7 +487,7 @@ class HistogramAutoregressive(AutoregressiveModel):
         )
 
 
-class CategoricalAutoregressive(AutoregressiveModel):
+class CategoricalAutoregressive(Autoregressive):
     """Categorical conditionals over integer-valued data."""
 
     def __init__(self, input_dim, rngs, *, num_categories: int, **kwargs):

@@ -6,7 +6,10 @@ from jax import numpy as jnp
 from jaxtyping import Array
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
-from probjax.core.custom_primitives.random_variable import name_stack
+from probjax.core.custom_primitives.random_variable import (
+    enable_rv_tracing,
+    name_stack,
+)
 from probjax.core.interpreters import (
     INVERSE_AND_LOGABSDET_STATE_NAMESPACE,
     IntervenedProcessingRule,
@@ -231,25 +234,6 @@ def _unflatten_targets(target_trees, out):
     return tuple(parts)
 
 
-def _validate_inverse_shapes(value, forward_output):
-    """The output is also the presumed input signature for automatic inversion."""
-    leaves, tree = jax.tree_util.tree_flatten_with_path(value)
-    expected, expected_tree = jax.tree_util.tree_flatten(forward_output)
-    if tree != expected_tree:
-        raise ValueError(
-            "Inverse output structure does not match function outputs; automatic "
-            "inversion requires matching input/output pytree structures."
-        )
-    for (path, leaf), output in zip(leaves, expected, strict=True):
-        shape = jnp.shape(leaf)
-        if shape != output.shape:
-            raise ValueError(
-                "Automatic inversion requires matching input/output shapes: "
-                f"leaf {jax.tree_util.keystr(path) or '<root>'} has presumed input "
-                f"shape {shape}, but the traced output has shape {output.shape}."
-            )
-
-
 def _trace_inverse_program(
     get_jaxpr, args, kwargs, invertible_arg, static_argnums, input_template
 ):
@@ -278,16 +262,22 @@ def _trace_inverse_program(
         static_argnums,
         input_template,
     )
-    if input_template is not None:
-        _validate_inverse_shapes(input_template, output_shape)
+    # Note: the template is the *input* signature while output_shape is the
+    # *output* shape -- for shape-changing maps (tile, padding, split, the
+    # motivating use of input_template) these legitimately differ, so there
+    # is nothing to validate between them. Supplied outputs are still
+    # validated below.
     selected = tuple(args[i] for i in target_arg_indices)
     _validate_inverse_shapes(
         selected[0] if len(selected) == 1 else selected, output_shape
     )
-    if any(
-        tuple(v.aval.shape) != tuple(o.aval.shape)
-        for v, o in zip(target_invars, jaxpr.jaxpr.outvars, strict=False)
-    ) or len(target_invars) != len(jaxpr.jaxpr.outvars):
+    if input_template is None and (
+        any(
+            tuple(v.aval.shape) != tuple(o.aval.shape)
+            for v, o in zip(target_invars, jaxpr.jaxpr.outvars, strict=False)
+        )
+        or len(target_invars) != len(jaxpr.jaxpr.outvars)
+    ):
         raise ValueError(
             "Automatic inversion requires matching input/output shapes and structure"
         )
@@ -342,6 +332,25 @@ def _affine_fallback(
         output_values,
         need_logdet=need_logdet,
     )
+
+
+def _validate_inverse_shapes(value, forward_output):
+    """The output is also the presumed input signature for automatic inversion."""
+    leaves, tree = jax.tree_util.tree_flatten_with_path(value)
+    expected, expected_tree = jax.tree_util.tree_flatten(forward_output)
+    if tree != expected_tree:
+        raise ValueError(
+            "Inverse output structure does not match function outputs; automatic "
+            "inversion requires matching input/output pytree structures."
+        )
+    for (path, leaf), output in zip(leaves, expected, strict=True):
+        shape = jnp.shape(leaf)
+        if shape != output.shape:
+            raise ValueError(
+                "Automatic inversion requires matching input/output shapes: "
+                f"leaf {jax.tree_util.keystr(path) or '<root>'} has presumed input "
+                f"shape {shape}, but the traced output has shape {output.shape}."
+            )
 
 
 def _leaf_signature(leaf):
@@ -521,7 +530,8 @@ def _make_substitution_wrapper(
     def wrapped(*args, **kwargs):
         # Single flatten pass for both cache key and inputs
         flat_inputs, cache_key = _flatten_and_signature(args, kwargs)
-        jaxpr, out_tree = get_jaxpr_and_tree(flat_inputs, cache_key, args, kwargs)
+        with enable_rv_tracing():
+            jaxpr, out_tree = get_jaxpr_and_tree(flat_inputs, cache_key, args, kwargs)
         out_flat = interpret(
             jaxpr.jaxpr,
             jaxpr.consts,
@@ -562,7 +572,8 @@ def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
             fixed_values=fixed_values,
             fixed_names=legacy_fixed,
         )
-        jaxpr = get_jaxpr(*args, **kwargs)
+        with enable_rv_tracing():
+            jaxpr = get_jaxpr(*args, **kwargs)
         joint_result = cast(
             tuple[list, dict],
             interpret(
@@ -694,7 +705,8 @@ def log_potential_fn(
     interventions, observations, replay = _collect_stochastic_maps(fun)
     legacy_interventions = getattr(fun, "_probjax_interventions", None)
 
-    jaxpr = jax.make_jaxpr(base_fun)(jax.random.PRNGKey(0), *args, **kwargs)
+    with enable_rv_tracing():
+        jaxpr = jax.make_jaxpr(base_fun)(jax.random.PRNGKey(0), *args, **kwargs)
     model_inputs = _flatten_call_inputs((jax.random.PRNGKey(0),) + args, kwargs)
 
     def log_potential(**joint_samples):
@@ -784,7 +796,8 @@ def trace(
             replay=replay,
             kind_labels=kind_labels,
         )
-        jaxpr = get_jaxpr(*args, **kwargs)
+        with enable_rv_tracing():
+            jaxpr = get_jaxpr(*args, **kwargs)
         trace_result = cast(
             tuple[list, dict],
             interpret(
@@ -830,6 +843,13 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None, input_templat
     Returns:
         A callable mapping outputs back to the invertible argument.
 
+    Raises:
+        ValueError: if traced input/output shapes or pytree structures differ.
+            Automatic inversion uses the supplied output as the presumed input
+            signature; it requires a shape-preserving function. Some violations
+            (such as a broadcast that becomes an identity at that signature)
+            cannot be detected without the original input specification.
+
     Note:
         Detectable boundary shape/tree mismatches raise ValueError.
         Elementwise affine sections use symbolic coefficients, without Jacobians.
@@ -841,13 +861,16 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None, input_templat
         used twice stalls it, because the bivariate rules need exactly one
         unknown operand.
 
-        When the stalled program is **affine** in the target -- ``3 * x - x``,
-        ``A @ x + b``, ``sum(x) - x`` -- the inverse is recovered by a linear
-        solve, decided from the jaxpr structure rather than sampled. Pointwise
-        maps invert elementwise in O(n); small coupled maps build the matrix
-        with one vmapped sweep; large coupled maps solve matrix-free. It runs
-        only after ordinary propagation has failed, and the whole fallback is
-        staged JAX, so it traces under ``jit``/``vmap``.
+        On a stall, structurally proven affine sections are recovered by linear
+        solves and propagation resumes. This supports ``exp(3*x-x)`` and
+        ``3*exp(x)-exp(x)``, including sequential compositions and nested jit.
+        Pointwise maps invert elementwise in O(n); small coupled maps build
+        the matrix with one vmapped sweep; large coupled maps solve
+        matrix-free. When a stall cannot be sectioned, a whole-program affine
+        solve replaces NaN with a value. Analysis and scheduling decisions
+        are cached; generated inverses are ordinary JAX computations and can
+        be jitted, vmapped, and differentiated.
+
 
         These remain silently unsupported and produce NaN:
 
@@ -967,6 +990,8 @@ def inverse_and_logabsdet(
         not be completed.
 
     Raises:
+        ValueError: if traced boundary shapes or pytree structures differ,
+            with the same input-signature limitation as :func:`inverse`.
         NotImplementedError: if a primitive on the inverse path has no
             log-determinant rule and is not elementwise. Guessing one by
             differentiating the inverse elementwise -- the old behaviour --

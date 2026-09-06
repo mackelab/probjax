@@ -7,7 +7,7 @@ names, order and constraints, and ``logpdf`` / ``_rvs_impl`` give the density
 and the sampler:
 
     >>> from probjax.stats import norm
-    >>> model = AutoregressiveModel(4, norm, rngs=nnx.Rngs(0))
+    >>> model = Autoregressive(4, norm, rngs=nnx.Rngs(0))
 
 For heads flexible enough to model arbitrary conditionals, the same mechanism
 takes the distributions added for the purpose -- ``mixture_kernel`` (KDE-like),
@@ -19,10 +19,11 @@ from probjax.nn.generative.autoregressive.config import (
     ARConditionerConfig,
     ARFamily,
     MLPARConditionerConfig,
+    SSMARConditionerConfig,
     TransformerARConditionerConfig,
 )
 from probjax.nn.generative.autoregressive.model import (
-    AutoregressiveModel,
+    Autoregressive,
     CategoricalAutoregressive,
     HistogramAutoregressive,
     MADE,
@@ -36,9 +37,10 @@ __all__ = [
     "ARFamily",
     "ARConditionerConfig",
     "MLPARConditionerConfig",
+    "SSMARConditionerConfig",
     "TransformerARConditionerConfig",
     # models
-    "AutoregressiveModel",
+    "Autoregressive",
     "MADE",
     "MixtureAutoregressive",
     "SplineAutoregressive",

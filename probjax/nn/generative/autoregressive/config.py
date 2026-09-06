@@ -44,6 +44,7 @@ __all__ = [
     "ARConditionerConfig",
     "ARFamily",
     "MLPARConditionerConfig",
+    "SSMARConditionerConfig",
     "TransformerARConditionerConfig",
 ]
 
@@ -496,17 +497,61 @@ class MLPARConditionerConfig(ARConditionerConfig):
 
 
 class _TokenConditioner(nnx.Module):
-    """Causal transformer over one token per dimension."""
+    """Causal transformer over one token per dimension.
 
-    def __init__(self, inner: nnx.Module, input_dim: int, params_dim: int):
+    ``feature_width`` is the per-position feature size: 1 for continuous
+    data, the class count for one-hot encoded discrete data.
+    """
+
+    def __init__(
+        self, inner: nnx.Module, input_dim: int, params_dim: int, feature_width=1
+    ):
         self.inner = inner
         self.input_dim = input_dim
         self.params_dim = params_dim
+        self.feature_width = feature_width
 
     def __call__(self, x, context=None, *, rng=None):
-        tokens = jnp.asarray(x)[..., :, None]
+        # predict_params flattens discrete one-hots for the masked-MLP
+        # conditioner; restore the per-position structure here.
+        tokens = jnp.asarray(x)
+        if self.feature_width == 1:
+            tokens = tokens[..., None]
+        elif tokens.shape[-1] == self.input_dim * self.feature_width:
+            tokens = tokens.reshape(
+                tokens.shape[:-1] + (self.input_dim, self.feature_width)
+            )
         out = self.inner.predict_bij_params(tokens, context, rng=rng)
         return out.reshape(out.shape[:-2] + (self.input_dim * self.params_dim,))
+
+    def init_decode(self, batch_shape, dtype=jnp.float32):
+        """Reset the inner transformer's KV caches for a decode run."""
+        self.inner.init_decode(tuple(batch_shape), self.input_dim, dtype=dtype)
+
+    def predict_next_params(self, prev_feat, pos, context=None, *, rng=None):
+        """Flat parameter vector for one position during cached decoding.
+
+        ``prev_feat`` has shape ``(..., feature_width)`` and carries the
+        previous position's conditioner feature; at ``pos == 0`` its values
+        are ignored (the inner start token is used) and only its batch
+        shape is read. Returns ``(..., params_dim)``.
+
+        Written without Python branching on ``pos`` so the loop compiles
+        under ``nnx.scan`` as well as running eagerly.
+        """
+        inner = self.inner
+        start = jnp.broadcast_to(
+            inner.start_token.reshape(
+                (1,) * (prev_feat.ndim - 1) + (1, inner.transformer.model_dim)
+            ),
+            prev_feat.shape[:-1] + (1, inner.transformer.model_dim),
+        )
+        token = jnp.where(
+            jnp.asarray(pos) == 0,
+            start,
+            inner.encoder(prev_feat[..., None, :]),
+        )
+        return inner.decode_params(token, pos, context, rng=rng)
 
 
 @dataclass
@@ -514,8 +559,8 @@ class TransformerARConditionerConfig(ARConditionerConfig):
     """Causal-transformer conditioner.
 
     Wraps :class:`AutoregressiveTransformer` purely for its
-    ``predict_bij_params`` path; the bijector it is constructed with is never
-    invoked, so a trivial one is supplied.
+    ``predict_bij_params`` path; it is built conditioner-only
+    (``bijector=None``), so the bijection is unavailable by construction.
 
     Not exportable: attention's sharded primitive needs concrete shapes, so
     ``as_dist`` falls back to an eager sampler (the same limitation the flow
@@ -528,6 +573,10 @@ class TransformerARConditionerConfig(ARConditionerConfig):
     num_layers: int = 4
     attn_size: int = 8
     widening_factor: int = 2
+    #: Attention kernel for the inner transformer. Defaults to the fused
+    #: ``flex_attention`` path; pass ``dot_product_attention`` for exact
+    #: softmax on CPU, where the fused kernel runs in slow interpret mode.
+    attention_fn: Optional[Callable] = None
 
     @property
     def exportable(self) -> bool:
@@ -542,15 +591,20 @@ class TransformerARConditionerConfig(ARConditionerConfig):
         return max(self.num_heads, width - width % self.num_heads)
 
     def build(self, input_dim, params_dim, *, in_features, context_features, rngs):
-        del in_features  # tokens are per-dimension scalars
+        # One token per dimension; each token carries one scalar feature for
+        # continuous data or a one-hot class vector for discrete data.
+        feature_width = in_features // input_dim
         from probjax.nn.generative.nflows.autoregressive import (
             AutoregressiveTransformer,
         )
 
+        transformer_kwargs: dict = {}
+        if self.attention_fn is not None:
+            transformer_kwargs["attention_fn"] = self.attention_fn
         inner = AutoregressiveTransformer(
-            1,  # one scalar feature per token
+            feature_width,
             params_dim,
-            lambda params, x: x,  # never called; only predict_bij_params is used
+            None,  # conditioner-only build; only predict_bij_params is used
             rngs,
             context_dim=context_features,
             model_dim=self._resolved_model_dim(params_dim),
@@ -558,5 +612,102 @@ class TransformerARConditionerConfig(ARConditionerConfig):
             num_layers=self.num_layers,
             attn_size=self.attn_size,
             widening_factor=self.widening_factor,
+            **transformer_kwargs,
         )
-        return _TokenConditioner(inner, input_dim, params_dim)
+        return _TokenConditioner(inner, input_dim, params_dim, feature_width)
+
+
+class _SSMConditioner(nnx.Module):
+    """Unidirectional SSM over one token per dimension.
+
+    Shift-right with a learned start token, then a causal recurrent stack:
+    position ``i`` can only have seen ``x_<i`` by construction, so unlike the
+    masked MLP and the transformer no mask is needed. ``feature_width`` is
+    the per-position feature size: 1 for continuous data, the class count
+    for one-hot encoded discrete data.
+    """
+
+    def __init__(
+        self,
+        model: nnx.Module,
+        input_dim: int,
+        params_dim: int,
+        feature_width: int,
+        rngs: nnx.Rngs,
+    ):
+        self.input_dim = input_dim
+        self.params_dim = params_dim
+        self.feature_width = feature_width
+        self.encoder = nnx.Linear(feature_width, model.input_dim, rngs=rngs)
+        self.start_token = nnx.Param(jnp.zeros((model.input_dim,)))
+        self.model = model
+        self.decoder = nnx.Linear(
+            model.output_dim,
+            params_dim,
+            rngs=rngs,
+            kernel_init=nnx.initializers.zeros,
+        )
+
+    def __call__(self, x, context=None, *, rng=None):
+        # predict_params flattens discrete one-hots for the masked-MLP
+        # conditioner; restore the per-position structure here.
+        tokens = jnp.asarray(x)
+        if self.feature_width == 1:
+            tokens = tokens[..., None]
+        elif tokens.shape[-1] == self.input_dim * self.feature_width:
+            tokens = tokens.reshape(
+                tokens.shape[:-1] + (self.input_dim, self.feature_width)
+            )
+        h = self.encoder(tokens)
+        start = jnp.broadcast_to(
+            self.start_token.reshape((1,) * (h.ndim - 1) + (-1,)),
+            h.shape[:-2] + (1, h.shape[-1]),
+        )
+        h = jnp.concatenate([start, h[..., :-1, :]], axis=-2)
+        h = self.model(h)
+        out = self.decoder(h)
+        return out.reshape(out.shape[:-2] + (self.input_dim * self.params_dim,))
+
+
+@dataclass
+class SSMARConditionerConfig(ARConditionerConfig):
+    """Unidirectional state-space conditioner.
+
+    A recurrent stack (default: :class:`LRUCell`) over right-shifted tokens.
+    Sampling uses the naive ancestral loop -- there is no KV cache to carry,
+    so ``use_cache`` falls back to it automatically.
+    """
+
+    model_dim: int = 64
+    num_layers: int = 2
+    #: Recurrent cell class, called as ``recurrent_cls(model_dim, rngs=...,
+    #: **recurrent_kwargs)``. :class:`LRUCell` and :class:`MambaCell` both fit.
+    recurrent_cls: Optional[Callable] = None
+    recurrent_kwargs: Mapping = field(default_factory=dict)
+
+    @property
+    def exportable(self) -> bool:
+        return True
+
+    def build(self, input_dim, params_dim, *, in_features, context_features, rngs):
+        from probjax.nn.layers.ssm import LRUCell
+        from probjax.nn.nets.ssm import SSMModel
+
+        if context_features is not None:
+            raise ValueError(
+                "SSMARConditionerConfig does not support context yet."
+            )
+        model_dim = int(self.model_dim)
+        model = SSMModel(
+            input_dim=model_dim,
+            model_dim=model_dim,
+            output_dim=model_dim,
+            num_layers=self.num_layers,
+            bidirectional=False,
+            recurrent_cls=self.recurrent_cls or LRUCell,
+            recurrent_kwargs=dict(self.recurrent_kwargs),
+            rngs=rngs,
+        )
+        return _SSMConditioner(
+            model, input_dim, params_dim, in_features // input_dim, rngs
+        )
