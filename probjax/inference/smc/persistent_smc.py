@@ -1,22 +1,15 @@
 from typing import Callable, Dict, Optional
 
 import blackjax
-import jax
 from blackjax.smc import persistent_sampling as bj_persistent
 
 from probjax.inference.smc.base import (
-    _ensure_param_batch,
-    _filter_kwargs,
-    _params_to_dict,
+    init_mcmc_params_from_logdensity,
     make_mcmc_adapter,
     make_smc_api,
 )
 
 PersistentSMCState = bj_persistent.PersistentSMCState
-
-# Module-level storage for loglikelihood_fn, set during build_step.
-# Needed by init() to compute initial log-likelihoods for persistent state.
-_ll_fn_holder = [None]
 
 
 def build_step(
@@ -35,8 +28,6 @@ def build_step(
         raise ValueError(
             "logprior_fn and loglikelihood_fn must be provided for persistent SMC."
         )
-
-    _ll_fn_holder[0] = loglikelihood_fn
 
     mcmc_init_fn, mcmc_step_fn = make_mcmc_adapter(mcmc_kernel, **mcmc_kernel_kwargs)
     delegate = bj_persistent.build_kernel(
@@ -67,28 +58,22 @@ def init_params(
     mcmc_kernel_kwargs: Optional[Dict] = None,
     **mcmc_param_kwargs,
 ) -> Dict:
-    mcmc_kernel_kwargs = mcmc_kernel_kwargs or {}
-    mcmc_init_fn, _ = make_mcmc_adapter(mcmc_kernel, **mcmc_kernel_kwargs)
-    particle0 = jax.tree_util.tree_map(lambda x: x[0], particles)
-
     def tempered_logposterior_fn(position):
         return logprior_fn(position) + lmbda * loglikelihood_fn(position)
 
-    mcmc_state = mcmc_init_fn(particle0, tempered_logposterior_fn, rng_key=rng_key)
-    init_param_kwargs = _filter_kwargs(
-        mcmc_kernel.init_params, mcmc_param_kwargs, allow_kwargs=False
+    return init_mcmc_params_from_logdensity(
+        particles,
+        tempered_logposterior_fn,
+        mcmc_kernel,
+        rng_key=rng_key,
+        mcmc_kernel_kwargs=mcmc_kernel_kwargs,
+        **mcmc_param_kwargs,
     )
-    params = mcmc_kernel.init_params(mcmc_state, **init_param_kwargs)
-    return _ensure_param_batch(_params_to_dict(params), shared=True)
 
 
 def init(particles, *, logprior_fn=None, loglikelihood_fn=None, n_schedule: int = 100):
     if loglikelihood_fn is None:
-        loglikelihood_fn = _ll_fn_holder[0]
-    if loglikelihood_fn is None:
-        raise ValueError(
-            "loglikelihood_fn must be provided either directly or via build_step."
-        )
+        raise ValueError("loglikelihood_fn must be provided to persistent SMC init.")
     return bj_persistent.init(particles, loglikelihood_fn, n_schedule)
 
 

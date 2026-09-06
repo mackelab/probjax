@@ -149,6 +149,34 @@ def init_mcmc_params(
     return _ensure_param_batch(params, shared=True)
 
 
+def init_mcmc_params_from_logdensity(
+    particles: PyTree,
+    logdensity_fn: Callable,
+    mcmc_kernel,
+    rng_key: Optional[RngKey] = None,
+    mcmc_kernel_kwargs: Optional[Dict[str, Any]] = None,
+    allow_kwargs: bool = False,
+    **mcmc_param_kwargs,
+) -> Dict[str, Array]:
+    """Initialize MCMC params from the first particle under ``logdensity_fn``.
+
+    Shared body of the ``init_params`` functions in ``adaptive``,
+    ``persistent_smc``, ``adaptive_persistent_smc`` and ``path_smc``: take the
+    first particle, init the MCMC kernel on it, filter ``mcmc_param_kwargs``
+    down to what ``init_params`` accepts, and batch the result as shared
+    parameters.
+    """
+    mcmc_kernel_kwargs = mcmc_kernel_kwargs or {}
+    mcmc_init_fn, _ = make_mcmc_adapter(mcmc_kernel, **mcmc_kernel_kwargs)
+    particle0 = jax.tree_util.tree_map(lambda x: x[0], particles)
+    mcmc_state = mcmc_init_fn(particle0, logdensity_fn, rng_key=rng_key)
+    init_param_kwargs = _filter_kwargs(
+        mcmc_kernel.init_params, mcmc_param_kwargs, allow_kwargs=allow_kwargs
+    )
+    params = mcmc_kernel.init_params(mcmc_state, **init_param_kwargs)
+    return _ensure_param_batch(_params_to_dict(params), shared=True)
+
+
 def make_smc_api(
     *,
     name: str,
