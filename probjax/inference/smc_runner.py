@@ -4,9 +4,9 @@ from typing import Optional, Tuple
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.base import Adaptor, SMCResult
+from probjax.inference.base import Adaptor, RunnerMixin, SMCResult
 from probjax.inference.smc.base import SMCKernel
-from probjax.utils.jaxutils import WithProgressBarAPI, print_scan
+from probjax.utils.jaxutils import WithProgressBarAPI
 from probjax.utils.typing import RngKey
 
 
@@ -14,7 +14,49 @@ def _ess_from_weights(state, _info):
     return 1.0 / jnp.sum(state.weights**2)
 
 
-class SMC(WithProgressBarAPI):
+def _smc_run_body(kernel, params, collect, stats_fn=None):
+    """Single-step scan body shared by silent and verbose SMC ``run``."""
+
+    def one_step(state, xs):
+        tempering_param, step_key = xs
+        state, info = kernel.step(
+            step_key,
+            state,
+            tempering_param=tempering_param,
+            mcmc_parameters=params,
+        )
+        output = (state, info) if collect else None
+        if stats_fn is None:
+            return state, output
+        return state, (stats_fn(state, info), output)
+
+    return one_step
+
+
+def _smc_adapt_body(kernel, adaptor, collect, stats_fn=None):
+    """Single-step scan body shared by silent and verbose SMC ``adapt``."""
+
+    def one_step(carry, xs):
+        state, params, adapt_state = carry
+        tempering_param, step_key = xs
+        state, info = kernel.step(
+            step_key,
+            state,
+            tempering_param=tempering_param,
+            mcmc_parameters=params,
+        )
+        adapt_state, params, adapt_info = adaptor.update(
+            state, info, adapt_state, params
+        )
+        output = (state, info, adapt_info) if collect else None
+        if stats_fn is None:
+            return (state, params, adapt_state), output
+        return (state, params, adapt_state), (stats_fn(state, info), output)
+
+    return one_step
+
+
+class SMC(WithProgressBarAPI, RunnerMixin):
     """Compiled standard execution for an SMC kernel."""
 
     _default_tracked_stats = ("ess", "log_likelihood_increment", "acceptance_rate")
@@ -55,15 +97,7 @@ class SMC(WithProgressBarAPI):
         """Run a compiled SMC schedule without constructing a runner."""
         keys = jax.random.split(key, tempering_params.shape[0])
 
-        def one_step(state, xs):
-            tempering_param, step_key = xs
-            state, info = kernel.step(
-                step_key,
-                state,
-                tempering_param=tempering_param,
-                mcmc_parameters=params,
-            )
-            return state, (state, info) if collect else None
+        one_step = _smc_run_body(kernel, params, collect)
 
         state, trace = jax.lax.scan(one_step, state, (tempering_params, keys))
         return SMCResult(state, params, trace if collect else None)
@@ -87,20 +121,7 @@ class SMC(WithProgressBarAPI):
         adapt_state = adaptor.init(state, params)
         keys = jax.random.split(key, tempering_params.shape[0])
 
-        def one_step(carry, xs):
-            state, params, adapt_state = carry
-            tempering_param, step_key = xs
-            state, info = kernel.step(
-                step_key,
-                state,
-                tempering_param=tempering_param,
-                mcmc_parameters=params,
-            )
-            adapt_state, params, adapt_info = adaptor.update(
-                state, info, adapt_state, params
-            )
-            output = (state, info, adapt_info) if collect else None
-            return (state, params, adapt_state), output
+        one_step = _smc_adapt_body(kernel, adaptor, collect)
 
         (state, params, adapt_state), trace = jax.lax.scan(
             one_step,
@@ -111,47 +132,13 @@ class SMC(WithProgressBarAPI):
         info = (trace, final_info) if collect else None
         return SMCResult(state, params, info)
 
-    def _verbose_scan(self, f, init, xs, length, stats_fn):
-        """Run a scan with a rate-limited progress bar.
-
-        ``print_scan`` requires a tuple carry, so we wrap the kernel state.
-        """
-
-        def wrapped(carry, x):
-            state, y = f(carry[0], x)
-            return (state,), y
-
-        update_stats, print_fn, init_stats, print_rate = self._make_verbose_fns(
-            length, stats_fn=lambda carry, y: stats_fn(carry[0], y)
-        )
-        (state,), y = print_scan(
-            wrapped,
-            (init,),
-            init_stats,
-            xs=xs,
-            length=length,
-            update_stats=update_stats,
-            print_rate=print_rate,
-            print_fn=print_fn,
-        )
-        return state, y
-
     def _run_verbose(self, key, state, tempering_params, params, collect):
         keys = jax.random.split(key, tempering_params.shape[0])
         xs = (tempering_params, keys)
 
-        def one_step(state, xs):
-            tempering_param, step_key = xs
-            state, info = self.kernel.step(
-                step_key,
-                state,
-                tempering_param=tempering_param,
-                mcmc_parameters=params,
-            )
-            return state, (
-                self._extract_stats(state, info),
-                (state, info) if collect else None,
-            )
+        one_step = _smc_run_body(
+            self.kernel, params, collect, stats_fn=self._extract_stats
+        )
 
         state, (_, trace) = self._verbose_scan(
             one_step,
@@ -212,23 +199,9 @@ class SMC(WithProgressBarAPI):
         xs = (tempering_params, keys)
         adapt_state = adaptor.init(state, params)
 
-        def one_step(carry, xs):
-            state, params, adapt_state = carry
-            tempering_param, step_key = xs
-            state, info = self.kernel.step(
-                step_key,
-                state,
-                tempering_param=tempering_param,
-                mcmc_parameters=params,
-            )
-            adapt_state, params, adapt_info = adaptor.update(
-                state, info, adapt_state, params
-            )
-            output = (state, info, adapt_info) if self.collect else None
-            return (state, params, adapt_state), (
-                self._extract_stats(state, info),
-                output,
-            )
+        one_step = _smc_adapt_body(
+            self.kernel, adaptor, self.collect, stats_fn=self._extract_stats
+        )
 
         (state, params, adapt_state), (_, trace) = self._verbose_scan(
             one_step,

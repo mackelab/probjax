@@ -8,11 +8,12 @@ from probjax.inference.base import (
     AdaptationResult,
     Adaptor,
     MCMCResult,
+    RunnerMixin,
     Warmup,
     WarmupResult,
 )
 from probjax.inference.mcmc.base import MarkovKernel, Params, State
-from probjax.utils.jaxutils import WithProgressBarAPI, print_scan
+from probjax.utils.jaxutils import WithProgressBarAPI
 from probjax.utils.typing import RngKey
 
 
@@ -20,7 +21,69 @@ def _select(value, fields):
     return {field: getattr(value, field) for field in fields}
 
 
-class MCMC(WithProgressBarAPI):
+def _mcmc_run_body(kernel, params, args, collect_state, collect_info, stats_fn=None):
+    """Single-transition scan body shared by silent and verbose ``run``.
+
+    With ``stats_fn=None`` yields ``(selects)``; otherwise yields
+    ``(stats, *selects)`` where ``stats`` comes from ``stats_fn``.
+    """
+
+    def one_step(state, xs):
+        if args is None:
+            step_key, step_args = xs, ()
+        else:
+            step_key, step_args = xs
+        state, info = kernel(step_key, state, params, *step_args)
+        selects = (
+            _select(state, collect_state),
+            _select(info, collect_info),
+        )
+        if stats_fn is None:
+            return state, selects
+        return state, (stats_fn(state, info), *selects)
+
+    return one_step
+
+
+def _reshape_thin_args(args, num_samples, thin):
+    """Reshape leading axes of ``args`` to ``(num_samples, thin, ...)``."""
+    if args is None:
+        return None
+    return jax.tree.map(
+        lambda value: value.reshape((num_samples, thin) + value.shape[1:]),
+        args,
+    )
+
+
+def _mcmc_collect_body(kernel, params, step_args, collect_info, stats_fn=None):
+    """Two-level scan body shared by silent and verbose ``sample``."""
+
+    def transition(state, inner_xs):
+        if step_args is None:
+            step_key, current_args = inner_xs, ()
+        else:
+            step_key, current_args = inner_xs
+        state, info = kernel(step_key, state, params, *current_args)
+        return state, (info, _select(info, collect_info))
+
+    def collect_one(state, xs):
+        if step_args is None:
+            sample_keys, sample_args = xs, None
+        else:
+            sample_keys, sample_args = xs
+        inner_xs = sample_keys if sample_args is None else (sample_keys, sample_args)
+
+        state, (step_info, selected_info) = jax.lax.scan(transition, state, inner_xs)
+        diagnostics = jax.tree.map(lambda value: value[-1], selected_info)
+        if stats_fn is None:
+            return state, (state.position, diagnostics)
+        last_info = jax.tree.map(lambda value: value[-1], step_info)
+        return state, (stats_fn(state, last_info), state.position, diagnostics)
+
+    return collect_one
+
+
+class MCMC(WithProgressBarAPI, RunnerMixin):
     """Compiled standard execution for an MCMC kernel.
 
     The static methods are standalone compiled primitives. Instance methods
@@ -71,16 +134,7 @@ class MCMC(WithProgressBarAPI):
         keys = jax.random.split(key, num_steps)
         xs = keys if args is None else (keys, args)
 
-        def one_step(state, xs):
-            if args is None:
-                step_key, step_args = xs, ()
-            else:
-                step_key, step_args = xs
-            state, info = kernel(step_key, state, params, *step_args)
-            return state, (
-                _select(state, collect_state),
-                _select(info, collect_info),
-            )
+        one_step = _mcmc_run_body(kernel, params, args, collect_state, collect_info)
 
         state, (states, info) = jax.lax.scan(one_step, state, xs)
         trace = states if collect_state else None
@@ -110,36 +164,10 @@ class MCMC(WithProgressBarAPI):
     ) -> MCMCResult:
         """Collect positions from a compiled kernel scan."""
         keys = jax.random.split(key, (num_samples, thin))
-        step_args = None
-        if args is not None:
-            step_args = jax.tree.map(
-                lambda value: value.reshape((num_samples, thin) + value.shape[1:]),
-                args,
-            )
+        step_args = _reshape_thin_args(args, num_samples, thin)
         xs = keys if step_args is None else (keys, step_args)
 
-        def collect_one(state, xs):
-            if step_args is None:
-                sample_keys, sample_args = xs, None
-            else:
-                sample_keys, sample_args = xs
-            inner_xs = (
-                sample_keys if sample_args is None else (sample_keys, sample_args)
-            )
-
-            def transition(state, inner_xs):
-                if sample_args is None:
-                    step_key, current_args = inner_xs, ()
-                else:
-                    step_key, current_args = inner_xs
-                state, info = kernel(step_key, state, params, *current_args)
-                return state, (info, _select(info, collect_info))
-
-            state, (step_info, selected_info) = jax.lax.scan(
-                transition, state, inner_xs
-            )
-            diagnostics = jax.tree.map(lambda value: value[-1], selected_info)
-            return state, (state.position, diagnostics)
+        collect_one = _mcmc_collect_body(kernel, params, step_args, collect_info)
 
         state, (samples, info) = jax.lax.scan(collect_one, state, xs)
         return MCMCResult(state, samples, info if collect_info else None)
@@ -149,31 +177,6 @@ class MCMC(WithProgressBarAPI):
 
     def _prepare_params(self, state: State, params: Optional[Params]) -> Params:
         return self.kernel.init_params(state) if params is None else params
-
-    def _verbose_scan(self, f, init, xs, length, stats_fn):
-        """Run a scan with a rate-limited progress bar.
-
-        ``print_scan`` requires a tuple carry, so we wrap the kernel state.
-        """
-
-        def wrapped(carry, x):
-            state, y = f(carry[0], x)
-            return (state,), y
-
-        update_stats, print_fn, init_stats, print_rate = self._make_verbose_fns(
-            length, stats_fn=lambda carry, y: stats_fn(carry[0], y)
-        )
-        (state,), y = print_scan(
-            wrapped,
-            (init,),
-            init_stats,
-            xs=xs,
-            length=length,
-            update_stats=update_stats,
-            print_rate=print_rate,
-            print_fn=print_fn,
-        )
-        return state, y
 
     def run(
         self,
@@ -200,17 +203,14 @@ class MCMC(WithProgressBarAPI):
         keys = jax.random.split(key, num_steps)
         xs = keys if args is None else (keys, args)
 
-        def one_step(state, xs):
-            if args is None:
-                step_key, step_args = xs, ()
-            else:
-                step_key, step_args = xs
-            state, info = self.kernel(step_key, state, params, *step_args)
-            return state, (
-                self._extract_stats(state, info),
-                _select(state, self.collect_state),
-                _select(info, self.collect_info),
-            )
+        one_step = _mcmc_run_body(
+            self.kernel,
+            params,
+            args,
+            self.collect_state,
+            self.collect_info,
+            stats_fn=self._extract_stats,
+        )
 
         state, (_, states, info) = self._verbose_scan(
             one_step,
@@ -247,41 +247,16 @@ class MCMC(WithProgressBarAPI):
             )
 
         keys = jax.random.split(key, (num_samples, thin))
-        step_args = None
-        if args is not None:
-            step_args = jax.tree.map(
-                lambda value: value.reshape((num_samples, thin) + value.shape[1:]),
-                args,
-            )
+        step_args = _reshape_thin_args(args, num_samples, thin)
         xs = keys if step_args is None else (keys, step_args)
 
-        def collect_one(state, xs):
-            if step_args is None:
-                sample_keys, sample_args = xs, None
-            else:
-                sample_keys, sample_args = xs
-            inner_xs = (
-                sample_keys if sample_args is None else (sample_keys, sample_args)
-            )
-
-            def transition(state, inner_xs):
-                if sample_args is None:
-                    step_key, current_args = inner_xs, ()
-                else:
-                    step_key, current_args = inner_xs
-                state, info = self.kernel(step_key, state, params, *current_args)
-                return state, (info, _select(info, self.collect_info))
-
-            state, (step_info, selected_info) = jax.lax.scan(
-                transition, state, inner_xs
-            )
-            last_info = jax.tree.map(lambda value: value[-1], step_info)
-            diagnostics = jax.tree.map(lambda value: value[-1], selected_info)
-            return state, (
-                self._extract_stats(state, last_info),
-                state.position,
-                diagnostics,
-            )
+        collect_one = _mcmc_collect_body(
+            self.kernel,
+            params,
+            step_args,
+            self.collect_info,
+            stats_fn=self._extract_stats,
+        )
 
         state, (_, samples, info) = self._verbose_scan(
             collect_one,
