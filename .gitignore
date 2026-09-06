@@ -58,6 +58,7 @@ htmlcov/
 .tox/
 .benchmarks/
 .pytest_cache/
+.testmondata
 .coverage
 .coverage.*
 .cache
