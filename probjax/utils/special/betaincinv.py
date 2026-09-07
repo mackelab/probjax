@@ -63,24 +63,36 @@ def _initial_guess_large_ab(a, b, p):
     return jnp.clip(x_approx, 1e-10, 1.0 - 1e-10)
 
 
+def _beta_tail_guess(shape, other, q, log_q=None):
+    log_b = gammaln(shape) + gammaln(other) - gammaln(shape + other)
+    if log_q is None:
+        log_q = jnp.log(q)
+    return jnp.exp((jnp.log(shape) + log_b + log_q) / shape)
+
+
 def asymptotic_guess_p_to_1(a, b, p):
-    log_Bab = gammaln(a) + gammaln(b) - gammaln(a + b)
-    # 1 - x ~ [b * B(a,b) * (1-p)]^(1/b)
-    log_1mx = (1.0 / b) * (jnp.log(b) + log_Bab + jnp.log1p(-p))
-    one_minus_x = jnp.exp(log_1mx)
-    return 1.0 - one_minus_x
+    return 1.0 - _beta_tail_guess(b, a, 1.0 - p, log_q=jnp.log1p(-p))
 
 
 def asymptotic_guess_p_to_0(a, b, p):
-    log_Bab = gammaln(a) + gammaln(b) - gammaln(a + b)
-    # x ~ [a * B(a,b) * p]^(1/a)
-    log_x = (1.0 / a) * (jnp.log(a) + log_Bab + jnp.log(p))
-    return jnp.exp(log_x)
+    return _beta_tail_guess(a, b, p)
 
 
 # ------------------------------------------------------------
 # Root solver: Halley refinement + safeguarded bisection
 # ------------------------------------------------------------
+
+
+def _beta_log_pdf(a, b, x):
+    """Log of the Beta(a, b) density, clamped for stability at 0 and 1."""
+    eps = 1e-7
+    return (
+        (a - 1.0) * jnp.log(jnp.maximum(x, eps))
+        + (b - 1.0) * jnp.log1p(-jnp.minimum(x, 1.0 - eps))
+        - gammaln(a)
+        - gammaln(b)
+        + gammaln(a + b)
+    )
 
 
 def _safe_betaincinv_solve(a, b, p, x_init, max_halley_steps=6, max_bisection_steps=15):
@@ -97,13 +109,7 @@ def _safe_betaincinv_solve(a, b, p, x_init, max_halley_steps=6, max_bisection_st
         err = f_x - p
 
         # first derivative wrt x (beta pdf)
-        log_pdf = (
-            (a - 1.0) * jnp.log(x + eps)
-            + (b - 1.0) * jnp.log1p(-x + eps)
-            - gammaln(a)
-            - gammaln(b)
-            + gammaln(a + b)
-        )
+        log_pdf = _beta_log_pdf(a, b, x)
         deriv = jnp.exp(log_pdf)
 
         # second derivative wrt x
@@ -236,21 +242,14 @@ def _make_betaincinv_core(max_halley_steps, max_bisection_steps):
 
     # bwd rule: takes (residuals, g) and must return one cotangent
     # per original argument of _betaincinv_core (so: grad_a, grad_b, grad_p)
-    # We also include "None" for nondiff stuff if we had extra args, but here
-    # _betaincinv_core only has (a,b,p), so we just return 3 values. :contentReference[oaicite:1]{index=1}
+    # We also include "None" for nondiff stuff if we had extra args, but
+    # here _betaincinv_core only has (a,b,p), so we just return 3 values.
     def _betaincinv_core_bwd(res, g):
         a, b, p, y = res
         eps = 1e-7
 
         # dbetainc/dy = Beta(a,b) pdf at x=y
-        log_pdf = (
-            (a - 1.0) * jnp.log(jnp.maximum(y, eps))
-            + (b - 1.0) * jnp.log1p(-jnp.minimum(y, 1.0 - eps))
-            - gammaln(a)
-            - gammaln(b)
-            + gammaln(a + b)
-        )
-        dbetainc_dy = jnp.exp(log_pdf)
+        dbetainc_dy = jnp.exp(_beta_log_pdf(a, b, y))
 
         # dy/dp = 1 / (dbetainc/dy)
         dy_dp = 1.0 / (dbetainc_dy + eps)

@@ -15,15 +15,18 @@ from probjax.core.custom_primitives.call_primitive import (
     call_lowering,
     jvp_from_forward_jaxpr,
 )
-from probjax.core.custom_primitives.contracts import parse_custom_inverse_call_params
 from probjax.core.custom_primitives.common import (
     Lazy,
     LazyClosedJaxpr,
     batch_closed_jaxpr,
     ensure_hashable,
-    must_emit_primitive,
     move_mapped_axes_to_front,
+    must_emit_primitive,
     trace_to_closed_jaxpr,
+)
+from probjax.core.custom_primitives.contracts import (
+    _resolve_lazy_forward,
+    parse_custom_inverse_call_params,
 )
 
 map = safe_map
@@ -153,8 +156,7 @@ class custom_inverse:
             return
         name = getattr(self.fun, "__name__", str(self.fun))
         warnings.warn(
-            f"{what} was called twice for {name}; the earlier inverse is "
-            "discarded.",
+            f"{what} was called twice for {name}; the earlier inverse is discarded.",
             RuntimeWarning,
             stacklevel=3,
         )
@@ -216,7 +218,8 @@ class custom_inverse:
         static_args: Tuple[Any, ...],
         params: dict,
     ):
-        """Given a call signature (no concrete values), build lazy forward jaxpr + inverse thunk.
+        """Given a call signature (no concrete values), build lazy forward
+        jaxpr + inverse thunk.
 
         Both forward and inverse jaxprs are now lazy - they are only traced when
         actually needed (during impl/abstract_eval for forward, or during inverse
@@ -324,14 +327,11 @@ class custom_inverse:
                 logdet_leaves = tree_leaves(logdet)
                 if not logdet_leaves:
                     raise ValueError("custom_inverse logdet must contain a value")
-                total_logdet = sum(
-                    (jnp.sum(jnp.asarray(value)) for value in logdet_leaves),
-                    jnp.asarray(0.0),
-                )
+
                 # Preserve additive vmap semantics even when the registered
                 # logdet is numerically independent of mapped inputs: the term
-                # is always zero, but referencing every dynamic argument makes
-                # vmap batch the log-det along with them.
+                # is always zero, but referencing a value makes vmap batch
+                # the log-det along with it.
                 #
                 # The obvious spelling, `0.0 * value`, is NaN whenever the
                 # argument is inf or NaN -- so a non-finite value in an argument
@@ -342,16 +342,31 @@ class custom_inverse:
                 # zero branches crashes the XLA compiler on larger programs.
                 # Clamping the value finite first keeps a real edge and makes
                 # the multiply exact.
-                dependency = sum(
-                    (
-                        jnp.asarray(0.0) * jnp.nan_to_num(jnp.sum(jnp.asarray(value)))
-                        for value in tree_leaves(dyn_args_tuple)
-                    ),
-                    jnp.asarray(0.0),
-                )
-                return tree_unflatten(target_tree, result_leaves), (
-                    total_logdet + dependency
-                )
+                def _dependency(value):
+                    return jnp.asarray(0.0) * jnp.nan_to_num(
+                        jnp.sum(jnp.asarray(value))
+                    )
+
+                if tree_structure(logdet) == result_tree:
+                    # Per-event logdets aligned with the result leaves: drag
+                    # each leaf by its own event, so vmap batches mapped
+                    # leaves and leaves unmapped ones alone. A single combined
+                    # scalar would replicate unmapped parts once per slice.
+                    out_logdets = tuple(
+                        jnp.sum(jnp.asarray(leaf)) + _dependency(res)
+                        for leaf, res in zip(logdet_leaves, result_leaves)
+                    )
+                else:
+                    total_logdet = sum(
+                        (jnp.sum(jnp.asarray(value)) for value in logdet_leaves),
+                        jnp.asarray(0.0),
+                    )
+                    dependency = sum(
+                        (_dependency(value) for value in tree_leaves(dyn_args_tuple)),
+                        jnp.asarray(0.0),
+                    )
+                    out_logdets = (total_logdet + dependency,)
+                return tree_unflatten(target_tree, result_leaves), out_logdets
 
             inv_name = getattr(
                 self.inv_fun_and_log_det, "__name__", "custom_inverse inverse"
@@ -459,11 +474,32 @@ mark_primitive_requires_devices(custom_inverse_call_p)
 
 def _resolve_forward_jaxpr(lazy_forward) -> ClosedJaxpr:
     """Resolve lazy forward jaxpr to ClosedJaxpr, evaluating if needed."""
-    if isinstance(lazy_forward, Lazy):
-        forward_jaxpr, _, _ = lazy_forward.get()
-        return forward_jaxpr
-    # Backwards compatibility: if already a ClosedJaxpr
-    return lazy_forward
+    return _resolve_lazy_forward(lazy_forward)
+
+
+def _validated_forward_jaxpr(
+    lazy_forward,
+    inverse_jaxpr_thunk,
+    in_tree,
+    out_tree,
+    inv_argnum,
+    target_in_indices,
+):
+    """Resolve the lazy forward jaxpr and validate the call params.
+
+    Shared preamble of the impl/abstract-eval/lowering triplet so the three
+    cannot disagree on validation.
+    """
+    forward_jaxpr = _resolve_forward_jaxpr(lazy_forward)
+    _ = parse_custom_inverse_call_params({
+        "forward_jaxpr": forward_jaxpr,
+        "inverse_jaxpr_thunk": inverse_jaxpr_thunk,
+        "in_tree": in_tree,
+        "out_tree": out_tree,
+        "inv_argnum": inv_argnum,
+        "target_in_indices": target_in_indices,
+    })
+    return forward_jaxpr
 
 
 def custom_inverse_call_impl(
@@ -475,15 +511,14 @@ def custom_inverse_call_impl(
     inv_argnum: int,
     target_in_indices,
 ):
-    forward_jaxpr = _resolve_forward_jaxpr(lazy_forward)
-    _ = parse_custom_inverse_call_params({
-        "forward_jaxpr": forward_jaxpr,
-        "inverse_jaxpr_thunk": inverse_jaxpr_thunk,
-        "in_tree": in_tree,
-        "out_tree": out_tree,
-        "inv_argnum": inv_argnum,
-        "target_in_indices": target_in_indices,
-    })
+    forward_jaxpr = _validated_forward_jaxpr(
+        lazy_forward,
+        inverse_jaxpr_thunk,
+        in_tree,
+        out_tree,
+        inv_argnum,
+        target_in_indices,
+    )
     return call_impl(
         *args,
         forward_jaxpr=forward_jaxpr,
@@ -503,15 +538,14 @@ def custom_inverse_call_abstract_eval(
     inv_argnum: int,
     target_in_indices,
 ):
-    forward_jaxpr = _resolve_forward_jaxpr(lazy_forward)
-    _ = parse_custom_inverse_call_params({
-        "forward_jaxpr": forward_jaxpr,
-        "inverse_jaxpr_thunk": inverse_jaxpr_thunk,
-        "in_tree": in_tree,
-        "out_tree": out_tree,
-        "inv_argnum": inv_argnum,
-        "target_in_indices": target_in_indices,
-    })
+    forward_jaxpr = _validated_forward_jaxpr(
+        lazy_forward,
+        inverse_jaxpr_thunk,
+        in_tree,
+        out_tree,
+        inv_argnum,
+        target_in_indices,
+    )
     return call_abstract_eval(
         *avals,
         forward_jaxpr=forward_jaxpr,
@@ -536,15 +570,14 @@ def custom_inverse_call_lowering(
     inv_argnum,
     target_in_indices,
 ):
-    forward_jaxpr = _resolve_forward_jaxpr(lazy_forward)
-    _ = parse_custom_inverse_call_params({
-        "forward_jaxpr": forward_jaxpr,
-        "inverse_jaxpr_thunk": inverse_jaxpr_thunk,
-        "in_tree": in_tree,
-        "out_tree": out_tree,
-        "inv_argnum": inv_argnum,
-        "target_in_indices": target_in_indices,
-    })
+    forward_jaxpr = _validated_forward_jaxpr(
+        lazy_forward,
+        inverse_jaxpr_thunk,
+        in_tree,
+        out_tree,
+        inv_argnum,
+        target_in_indices,
+    )
     return call_lowering(
         ctx,
         *mlir_args,

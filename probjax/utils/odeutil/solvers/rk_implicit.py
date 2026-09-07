@@ -140,7 +140,9 @@ def build_imp_rk_method(
     build_butcher_tableau: Callable,
     last_equals_next: bool = False,
 ):
-    init_method = make_method_init(last_equals_next, init_imp_rk)
+    init_method = make_method_init(
+        last_equals_next, init_imp_rk, always_bind_drift=True
+    )
 
     def build_step_method(drift: Callable, dtype: jnp.dtype = jnp.float32):
         c, A, b_sol, b_error, b_mid = build_butcher_tableau(dtype)

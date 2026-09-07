@@ -107,6 +107,25 @@ def _infer_noise_layout(diffusion_shape: Any, state_dim: int) -> tuple[str, int]
     return "diagonal", state_dim
 
 
+def _flat_extractor(noise_type, flat_state_dim, what="Full diffusion"):
+    """Flatten a diffusion value according to the noise layout.
+
+    Diagonal noise ravel pytrees; full noise validates a 2D matrix.
+    """
+    if noise_type == "diagonal":
+
+        def extract(value):
+            flat, _ = ravel_args(value)
+            return flat
+
+    else:
+
+        def extract(value):
+            return _as_full_matrix(value, flat_state_dim, what=what)
+
+    return extract
+
+
 @partial(jax.jit, static_argnames=STATIC_NAMES)
 def _sdeint(
     rng: Key,
@@ -196,57 +215,30 @@ def _sdeint(
     additive_marker = diffusion if isinstance(diffusion, additive_diffusion) else None
     const_marker = diffusion if isinstance(diffusion, const_diffusion) else None
 
-    if noise_type == "diagonal":
+    extract = _flat_extractor(noise_type, flat_state_dim)
 
-        def diffusion_solver(t, yi):
-            diffusion_tree = diffusion_unraveled(t, yi)
-            diffusion_flat, _ = ravel_args(diffusion_tree)
-            return diffusion_flat
-
-    else:
-
-        def diffusion_solver(t, yi):
-            return _as_full_matrix(diffusion_unraveled(t, yi), flat_state_dim)
+    def diffusion_solver(t, yi):
+        return extract(diffusion_unraveled(t, yi))
 
     if additive_marker is not None:
-        if noise_type == "diagonal":
 
-            def additive_flat(t):
-                diffusion_tree = additive_marker.diffusion(t)
-                diffusion_flat, _ = ravel_args(diffusion_tree)
-                return diffusion_flat
+        def additive_fn(t):
+            return extract(additive_marker.diffusion(t))
 
-            diffusion_solver = cast(
-                Callable,
-                additive_diffusion(diffusion=additive_flat),
-            )
-        else:
-
-            def additive_dense(t):
-                return _as_full_matrix(additive_marker.diffusion(t), flat_state_dim)
-
-            diffusion_solver = cast(
-                Callable,
-                additive_diffusion(diffusion=additive_dense),
-            )
+        diffusion_solver = cast(
+            Callable,
+            additive_diffusion(diffusion=additive_fn),
+        )
 
     if const_marker is not None:
         # Preserve const_diffusion marker for specialized solvers
-        if noise_type == "diagonal":
-            G_flat, _ = ravel_args(const_marker.G)
-            diffusion_solver = cast(
-                Callable,
-                const_diffusion(G=G_flat),
-            )
-        else:
-            # For full diffusion, keep G as 2D matrix
-            G_value = _as_full_matrix(
-                const_marker.G, flat_state_dim, what="Full diffusion const_diffusion.G"
-            )
-            diffusion_solver = cast(
-                Callable,
-                const_diffusion(G=G_value),
-            )
+        G_value = _flat_extractor(
+            noise_type, flat_state_dim, "Full diffusion const_diffusion.G"
+        )(const_marker.G)
+        diffusion_solver = cast(
+            Callable,
+            const_diffusion(G=G_value),
+        )
 
     apply_filter = make_filter_wrapper(filter_state)
     init_filtered = apply_filter(y0)

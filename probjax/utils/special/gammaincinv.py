@@ -51,8 +51,7 @@ def gammaincinv(a, p):
 
 def _safe_gammaincinv_solve(a, p, x_init, max_halley_steps=6):
     """
-    Safe solver for gammaincinv using a mix of Halley's method
-    and bracketed bisection steps.
+    Safe solver for gammaincinv using bracket-clamped Halley steps.
     """
 
     def halley_step(carry, _):
@@ -72,7 +71,8 @@ def _safe_gammaincinv_solve(a, p, x_init, max_halley_steps=6):
         )
 
         # Second derivative of regularized gammainc(a, x) w.r.t. x:
-        #   d^2/dx^2 [gammainc(a, x)] = (a-1) * x^(a-2) * e^(-x) / Gamma(a) - x^(a-1) * e^(-x) / Gamma(a)
+        #   d^2/dx^2 [gammainc(a, x)] = (a-1) * x^(a-2) * e^(-x) / Gamma(a)
+        #       - x^(a-1) * e^(-x) / Gamma(a)
         second_deriv = jnp.where(
             x > 0.0,
             deriv * ((a - 1.0) / x - 1.0),
@@ -117,6 +117,10 @@ def _safe_gammaincinv_solve(a, p, x_init, max_halley_steps=6):
 
 
 # -------------------------------------------------------------------
+def _gamma_small_p_guess(a, p):
+    return (p * jax.scipy.special.gamma(1 + a)) ** (1 / a)
+
+
 # Initial Guess Function and bracket
 # -------------------------------------------------------------------
 def _bracket_gamma_inverse(a, p):
@@ -231,15 +235,7 @@ def _initial_approx_small_p(a, p):
 
     # Compute r as the initial approximation
     # Handle small p values separately to avoid numerical instability
-    small_p_threshold = 1e-10
-    x_small_p = (p * jax.scipy.special.gamma(1 + a)) ** (1 / a)
-
-    # Compute r as the initial approximation
-    r = jnp.where(
-        p < small_p_threshold,
-        x_small_p,
-        (p * jax.scipy.special.gamma(1 + a)) ** (1 / a),
-    )
+    r = _gamma_small_p_guess(a, p)
 
     # Coefficients for the series expansion
     c2 = 1.0 / (a + 1.0)

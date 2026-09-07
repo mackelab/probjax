@@ -122,10 +122,15 @@ def make_cached_init(state_cls):
     return init
 
 
-def make_method_init(last_equals_next, init_fn):
-    """Method-level init dispatching on FSAL (``last_equals_next``)."""
+def make_method_init(last_equals_next, init_fn, *, always_bind_drift=False):
+    """Method-level init dispatching on FSAL (``last_equals_next``).
 
-    if last_equals_next:
+    With ``always_bind_drift`` (implicit methods), ``drift`` is forwarded
+    even for non-FSAL methods, matching the historical implicit behavior
+    where ``f0`` is always evaluated at init.
+    """
+
+    if last_equals_next or always_bind_drift:
 
         def init_method(t0, y0, *args, drift=None, **kwargs):
             return init_fn(t0, y0, *args, drift=drift)
