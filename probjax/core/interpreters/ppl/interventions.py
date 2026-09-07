@@ -3,8 +3,7 @@ from typing import Any, Sequence
 from jax.extend.core import JaxprEqn
 from jaxtyping import Array
 
-from probjax.core.custom_primitives.contracts import parse_random_variable_call_params
-from probjax.core.custom_primitives.random_variable import rv_p
+from probjax.core.interpreters.ppl._common import rv_site_name
 from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
 from probjax.core.registry import ProcessedResult
 
@@ -21,9 +20,8 @@ class IntervenedProcessingRule(ForwardProcessingRule):
     def __call__(
         self, eqn: JaxprEqn, known_inputs: Sequence[Any | None], _: Sequence[Any | None]
     ) -> ProcessedResult:
-        if eqn.primitive is rv_p:
-            name = parse_random_variable_call_params(eqn.params).name
-            if name in self.interventions:
-                return ProcessedResult(eqn.outvars, [self.interventions[name]])
+        name = rv_site_name(eqn)
+        if name is not None and name in self.interventions:
+            return ProcessedResult(eqn.outvars, [self.interventions[name]])
 
         return super().__call__(eqn, known_inputs, _)

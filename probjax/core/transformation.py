@@ -28,7 +28,10 @@ from probjax.core.interpreters.inverse.affine import (
 )
 from probjax.core.jaxpr_propagation import interpret, propagate
 from probjax.core.jaxpr_propagation.utils import KnownessLevel
-from probjax.core.registry import invalid_inverse_value, is_static_zero
+from probjax.core.registry import (
+    invalid_inverse_value,
+    sum_logdet_terms,
+)
 
 
 def _normalize_argnums(argnums, n_args: int, *, name: str) -> tuple[int, ...]:
@@ -159,12 +162,7 @@ def _prepare_inverse_problem(
 
 
 def _sum_log_dets_for_vars(log_dets: dict, vars_) -> jax.Array:
-    total = jnp.asarray(0.0)
-    for var in vars_:
-        term = log_dets.get(var, 0.0)
-        if is_static_zero(term):
-            continue
-        total = total + jnp.asarray(term)
+    total, _ = sum_logdet_terms(log_dets, vars_)
     return total
 
 
@@ -353,15 +351,16 @@ def _cached_jaxpr_and_tree_getter(fun: Callable, static_argnums=()):
     def fun_snapshot(*args, **kwargs):
         return fun(*args, **kwargs)
 
-    jaxpr_maker = jax.make_jaxpr(fun_snapshot, static_argnums=static_argnums)
+    jaxpr_maker = jax.make_jaxpr(
+        fun_snapshot, static_argnums=static_argnums, return_shape=True
+    )
     cache: dict = {}
 
     def get_jaxpr_and_tree(flat_inputs, cache_key, args, kwargs):
         """Get cached JAXPR and output tree, tracing if needed."""
         if cache_key not in cache:
-            jaxpr = jaxpr_maker(*args, **kwargs)
-            out_template = jax.eval_shape(fun_snapshot, *args, **kwargs)
-            out_tree = jax.tree_util.tree_structure(out_template)
+            jaxpr, out_shape = jaxpr_maker(*args, **kwargs)
+            out_tree = jax.tree_util.tree_structure(out_shape)
             cache[cache_key] = (jaxpr, out_tree)
         return cache[cache_key]
 
@@ -370,19 +369,13 @@ def _cached_jaxpr_and_tree_getter(fun: Callable, static_argnums=()):
 
 def _cached_jaxpr_getter(fun: Callable, static_argnums=()):
     """Create a cached getter for JAXPR only (backward compatible)."""
-
-    def fun_snapshot(*args, **kwargs):
-        return fun(*args, **kwargs)
-
-    jaxpr_maker = jax.make_jaxpr(fun_snapshot, static_argnums=static_argnums)
-    cache: dict = {}
+    get_jaxpr_and_tree = _cached_jaxpr_and_tree_getter(fun, static_argnums)
 
     def get_jaxpr_for(args, kwargs):
         """Get cached JAXPR for explicit trace inputs (see input_template)."""
-        _, cache_key = _flatten_and_signature(args, kwargs)
-        if cache_key not in cache:
-            cache[cache_key] = jaxpr_maker(*args, **kwargs)
-        return cache[cache_key]
+        flat_inputs, cache_key = _flatten_and_signature(args, kwargs)
+        jaxpr, _ = get_jaxpr_and_tree(flat_inputs, cache_key, args, kwargs)
+        return jaxpr
 
     def get_jaxpr(*args, **kwargs):
         return get_jaxpr_for(args, kwargs)
@@ -817,9 +810,9 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None, input_templat
           residual ``x + f(x)``. A residual is invertible by fixed-point
           iteration when its branch is a contraction, but a jaxpr carries no
           Lipschitz bound, so register it with :class:`custom_inverse` instead.
-        * ``lax.fori_loop``, and any ``lax.scan`` carrying something that is not
-          itself invertible (a counter, a running sum). Plain ``scan`` and
-          ``lax.cond`` do work.
+        * ``lax.scan`` carrying a non-invertible accumulation (a running sum
+          of the target). Counter lanes are fine, and so is ``lax.fori_loop``
+          with an invertible body. Plain ``scan`` and ``lax.cond`` do work.
         * ``inverse(inverse(f))``.
 
         ``lax.while_loop`` raises rather than returning NaN. Checking

@@ -483,6 +483,27 @@ def chain_logdet_into(
         updates[var] = previous + jnp.asarray(local)
 
 
+def sum_logdet_terms(mapping: dict, vars_) -> tuple:
+    """Sum log-det terms for ``vars_``, skipping static zeros without staging.
+
+    Returns ``(total, nontrivial)`` where ``nontrivial`` tells whether any
+    staged (non-static-zero) term was added, so callers can skip chaining
+    arithmetic that would only add ``0.0``. Literals carry no state and are
+    skipped.
+    """
+    total = jnp.asarray(0.0)
+    nontrivial = False
+    for var in vars_:
+        if isinstance(var, Literal):
+            continue
+        term = mapping.get(var, 0.0)
+        if is_static_zero(term):
+            continue
+        nontrivial = True
+        total = total + jnp.asarray(term)
+    return total, nontrivial
+
+
 # =============================================================================
 # Registration Helpers
 # =============================================================================
