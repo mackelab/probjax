@@ -60,6 +60,22 @@ class DistributionParams:
         return self.dist.from_params(self.dist.params_from_unconstrained(self.params))
 
 
+def _rv_bind(rng, args, shape, dist, name, rvs_fn, logpdf_fn, kwds):
+    """Bind a sample through the ``rv_p`` primitive (tracing + eager paths)."""
+    from probjax.core.custom_primitives.random_variable import rv_p
+
+    return rv_p.bind(
+        rng,
+        *args,
+        shape=shape,
+        dist=dist,
+        name=name,
+        rvs_fn=rvs_fn,
+        logpdf_fn=logpdf_fn,
+        kwds=kwds,
+    )
+
+
 class rv_generic(ABC):
     """Generic random variable class for common functionality."""
 
@@ -193,54 +209,52 @@ class rv_generic(ABC):
         return self.freeze(*args, **values)
 
     @classmethod
-    def params_to_unconstrained(cls, params: Mapping[str, Any]) -> dict[str, Any]:
-        """Map constrained parameters to an optimization-friendly pytree."""
+    def _convert_params(cls, params: Mapping[str, Any], *, to_unconstrained: bool):
+        """Shared loop for ``params_to/from_unconstrained`` conversions."""
         from probjax.stats.constraint_registry import biject_to
 
-        unconstrained = {}
+        converted = {}
         for name, value in params.items():
             constraint = cls.parameters.get(name)
             if isinstance(constraint, stats_constraints.Distribution):
-                unconstrained[name] = jax.tree_util.tree_map(
-                    lambda component: DistributionParams(
-                        component.dist, component.unconstrained_params
-                    ),
-                    value,
-                    is_leaf=lambda component: isinstance(component, rv_frozen),
-                )
+                if to_unconstrained:
+                    converted[name] = jax.tree_util.tree_map(
+                        lambda component: DistributionParams(
+                            component.dist, component.unconstrained_params
+                        ),
+                        value,
+                        is_leaf=lambda component: isinstance(component, rv_frozen),
+                    )
+                else:
+                    converted[name] = jax.tree_util.tree_map(
+                        lambda component: component.constrain(),
+                        value,
+                        is_leaf=lambda component: isinstance(
+                            component, DistributionParams
+                        ),
+                    )
                 continue
             if not isinstance(constraint, stats_constraints.Constraint):
-                unconstrained[name] = value
+                converted[name] = value
                 continue
             try:
-                unconstrained[name] = biject_to(constraint).inv(value)
+                bijection = biject_to(constraint)
+                converted[name] = (
+                    bijection.inv(value) if to_unconstrained else bijection(value)
+                )
             except NotImplementedError:
-                unconstrained[name] = value
-        return unconstrained
+                converted[name] = value
+        return converted
+
+    @classmethod
+    def params_to_unconstrained(cls, params: Mapping[str, Any]) -> dict[str, Any]:
+        """Map constrained parameters to an optimization-friendly pytree."""
+        return cls._convert_params(params, to_unconstrained=True)
 
     @classmethod
     def params_from_unconstrained(cls, params: Mapping[str, Any]) -> dict[str, Any]:
         """Map unconstrained parameters back to their declared supports."""
-        from probjax.stats.constraint_registry import biject_to
-
-        constrained = {}
-        for name, value in params.items():
-            constraint = cls.parameters.get(name)
-            if isinstance(constraint, stats_constraints.Distribution):
-                constrained[name] = jax.tree_util.tree_map(
-                    lambda component: component.constrain(),
-                    value,
-                    is_leaf=lambda component: isinstance(component, DistributionParams),
-                )
-                continue
-            if not isinstance(constraint, stats_constraints.Constraint):
-                constrained[name] = value
-                continue
-            try:
-                constrained[name] = biject_to(constraint)(value)
-            except NotImplementedError:
-                constrained[name] = value
-        return constrained
+        return cls._convert_params(params, to_unconstrained=False)
 
     def rvs(
         self,
@@ -255,17 +269,15 @@ class rv_generic(ABC):
         Calls through the `rv_p` primitive so traced execution records a random
         variable site while eager execution remains a direct sample.
         """
-        from probjax.core.custom_primitives.random_variable import rv_p
-
-        return rv_p.bind(
+        return _rv_bind(
             rng,
-            *args,
-            shape=shape,
-            dist=self,
-            name=name,
-            rvs_fn=type(self)._rvs_impl,
-            logpdf_fn=type(self).logpdf,
-            kwds=kwargs,
+            args,
+            shape,
+            self,
+            name,
+            type(self)._rvs_impl,
+            type(self).logpdf,
+            kwargs,
         )
 
     @classmethod
@@ -808,8 +820,6 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
         name: Optional[str] = None,
         **kwargs: Any,
     ) -> Array:
-        from probjax.core.custom_primitives.random_variable import rv_p
-
         call_kwds = dict(self._call_kwds)
         call_kwds.update(kwargs)
 
@@ -821,15 +831,7 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
         if logpdf_fn is None:
             logpdf_fn = getattr(type(self.dist), "logpdf", None)
 
-        return rv_p.bind(
-            rng,
-            shape=shape,
-            dist=self.dist,
-            name=name,
-            rvs_fn=rvs_fn,
-            logpdf_fn=logpdf_fn,
-            kwds=call_kwds,
-        )
+        return _rv_bind(rng, (), shape, self.dist, name, rvs_fn, logpdf_fn, call_kwds)
 
     def _compute_batch_and_event_shape(
         self, *args: Any, **kwds: Any
@@ -1177,37 +1179,6 @@ class rv_continuous_frozen(rv_frozen):
             Mode of the distribution
         """
         return self._call_dist("mode")
-
-    def cdf(self, x: ArrayLike):
-        """Cumulative distribution function of the distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            Points at which to evaluate the cumulative distribution function.
-
-        Returns
-        -------
-        cdf : ndarray or scalar
-            Cumulative distribution function evaluated at x
-        """
-        return self._call_dist("cdf", x)
-
-    def ppf(self, q: ArrayLike):
-        """Percent point function (inverse of cdf) of the distribution.
-
-        Parameters
-        ----------
-        q : array_like
-            Probability at which to evaluate the inverse cumulative distribution
-            function.
-
-        Returns
-        -------
-        ppf : ndarray or scalar
-            Percent point function evaluated at q
-        """
-        return self._call_dist("ppf", q)
 
     def rvs(
         self,
