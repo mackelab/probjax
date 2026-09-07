@@ -440,7 +440,40 @@ class DiffusionDenoiser(GenerativeModel):
 # =============================================================================
 
 
-class EDM(DiffusionDenoiser):
+class _DiffusionPreset(DiffusionDenoiser):
+    """Shared constructor tail for the schedule preset models below.
+
+    Each preset builds its own ``schedule``/``train_cfg``/``solver_cfg`` from
+    its specific hyperparameters, then delegates here for the identical
+    ``EDMPreconditioning`` + ``DiffusionDenoiser.__init__`` wiring so the
+    argument order cannot drift between presets.
+    """
+
+    def _init_preset(
+        self,
+        net: ModuleLike,
+        schedule,
+        train_cfg,
+        solver_cfg,
+        std0,
+        last_layer,
+        rngs,
+    ) -> None:
+        precond = EDMPreconditioning()
+        DiffusionDenoiser.__init__(
+            self,
+            net=net,
+            schedule=schedule,
+            precond=precond,
+            train_cfg=train_cfg,
+            solver_cfg=solver_cfg,
+            std0=std0,
+            last_layer=last_layer,
+            rngs=rngs,
+        )
+
+
+class EDM(_DiffusionPreset):
     """
     EDM-style model:
       - EDMNoiseSchedule
@@ -467,7 +500,6 @@ class EDM(DiffusionDenoiser):
         solver: SolverConfigProtocol | None = None,
     ) -> None:
         schedule = EDMNoiseSchedule(t_min=t_min, t_max=t_max)
-        precond = EDMPreconditioning()
         train_cfg = EDMTrainingConfig(
             loss_type=loss_type,
             loss_kwargs=dict(loss_kwargs or {}),
@@ -481,10 +513,9 @@ class EDM(DiffusionDenoiser):
             num_steps=num_steps,
             rho=rho,
         )
-        super().__init__(
+        self._init_preset(
             net=net,
             schedule=schedule,
-            precond=precond,
             train_cfg=train_cfg,
             solver_cfg=solver_cfg,
             std0=std0,
@@ -493,7 +524,7 @@ class EDM(DiffusionDenoiser):
         )
 
 
-class VE(DiffusionDenoiser):
+class VE(_DiffusionPreset):
     """
     VE variant:
       - VENoiseSchedule(sigma_min, sigma_max)
@@ -524,7 +555,6 @@ class VE(DiffusionDenoiser):
             sigma_min=sigma_min,
             sigma_max=sigma_max,
         )
-        precond = EDMPreconditioning()
         train_cfg = UniformTTrainingConfig(
             loss_type=loss_type,
             loss_kwargs=dict(loss_kwargs or {}),
@@ -535,10 +565,9 @@ class VE(DiffusionDenoiser):
             schedule=schedule,
             num_steps=num_steps,
         )
-        super().__init__(
+        self._init_preset(
             net=net,
             schedule=schedule,
-            precond=precond,
             train_cfg=train_cfg,
             solver_cfg=solver_cfg,
             std0=std0,
@@ -547,7 +576,7 @@ class VE(DiffusionDenoiser):
         )
 
 
-class VP(DiffusionDenoiser):
+class VP(_DiffusionPreset):
     """
     VP variant:
       - VPNoiseSchedule(beta_min, beta_max)
@@ -582,7 +611,6 @@ class VP(DiffusionDenoiser):
             beta_max=beta_max,
             min_tau=min_tau,
         )
-        precond = EDMPreconditioning()
         train_cfg = SigmaEffEDMTrainingConfig(
             schedule=schedule,
             loss_type=loss_type,
@@ -596,10 +624,9 @@ class VP(DiffusionDenoiser):
             schedule=schedule,
             num_steps=num_steps,
         )
-        super().__init__(
+        self._init_preset(
             net=net,
             schedule=schedule,
-            precond=precond,
             train_cfg=train_cfg,
             solver_cfg=solver_cfg,
             std0=std0,
@@ -608,7 +635,7 @@ class VP(DiffusionDenoiser):
         )
 
 
-class CosineDM(DiffusionDenoiser):
+class CosineDM(_DiffusionPreset):
     """
     Cosine schedule variant:
       - CosineNoiseSchedule
@@ -650,7 +677,6 @@ class CosineDM(DiffusionDenoiser):
                 "Choose a wider [t_min, t_max] or adjust sigma_min/sigma_max."
             )
 
-        precond = EDMPreconditioning()
         train_cfg = LogSNRTrainingConfig(
             schedule=schedule,
             loss_type=loss_type,
@@ -662,10 +688,9 @@ class CosineDM(DiffusionDenoiser):
             schedule=schedule,
             num_steps=num_steps,
         )
-        super().__init__(
+        self._init_preset(
             net=net,
             schedule=schedule,
-            precond=precond,
             train_cfg=train_cfg,
             solver_cfg=solver_cfg,
             std0=std0,

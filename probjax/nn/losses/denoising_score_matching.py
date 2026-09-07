@@ -1,10 +1,15 @@
 from typing import Optional
 
-import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
+from probjax.nn.losses._common import (
+    _pop_axis,
+    _require_rng,
+    _resolve_weight,
+    _sample_eps,
+)
 from probjax.utils.protocols import (
     LossFn,
     ModelFn,
@@ -138,13 +143,11 @@ def build_denoising_score_matching_loss(
     """
 
     def loss_fn(*args, rng=None, **kwargs):
-        assert rng is not None, (
-            "loss_fn does require rngs, pass them to function kwargs."
-        )
+        _require_rng(rng)
         shape = args[argnums].shape
-        eps = jax.random.normal(rng, shape=shape)
+        eps = _sample_eps(rng, shape)
 
-        _axis = kwargs.pop("axis", axis)
+        _axis = _pop_axis(kwargs, axis)
 
         loss = base_denoising_score_matching_loss(
             model_fn, eps, std, weight, _axis, argnums, control_variate, *args, **kwargs
@@ -182,17 +185,15 @@ def build_time_dependent_denoising_score_matching_loss(
     """
 
     def loss_fn(times, *args, rng=None, **kwargs):
-        assert rng is not None, (
-            "loss_fn does require rngs, pass them to function kwargs."
-        )
+        _require_rng(rng)
         x = args[argnums]
         mean = mean_fn(times, x)
         std_t = std_fn(times, x)
-        eps = jax.random.normal(rng, shape=x.shape)
+        eps = _sample_eps(rng, x.shape)
         new_args = (times,) + args[:argnums] + (mean,) + args[argnums + 1 :]
-        weight = weight_fn(times) if weight_fn is not None else None
+        weight = _resolve_weight(weight_fn, times)
 
-        _axis = kwargs.pop("axis", axis)
+        _axis = _pop_axis(kwargs, axis)
 
         loss = base_denoising_score_matching_loss(
             model_fn,
