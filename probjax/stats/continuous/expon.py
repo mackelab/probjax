@@ -13,7 +13,7 @@ from jax.scipy.stats import expon as _expon
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import positive, strict_positive
-from probjax.stats.utils import flatten_samples, normalize_sample_weights
+from probjax.stats.utils import weighted_mean
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["expon"]
@@ -363,16 +363,8 @@ class expon_gen(rv_continuous, rv_exponential_family):
         params : tuple
             The fitted parameters (rate,)
         """
-        data = flatten_samples(data)
-        dtype = data.dtype
-
-        weights_arr = normalize_sample_weights(
-            weights,
-            n_samples=data.shape[0],
-            dtype=dtype,
-        )
-        mean = jnp.mean(data) if weights_arr is None else jnp.sum(weights_arr * data)
-        rate = 1.0 / jnp.maximum(mean, jnp.asarray(1e-12, dtype=dtype))
+        mean = weighted_mean(data, weights)
+        rate = 1.0 / jnp.maximum(mean, jnp.asarray(1e-12, dtype=data.dtype))
         return (rate,)
 
 

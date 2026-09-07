@@ -15,7 +15,7 @@ from jax.scipy.stats import beta as _beta
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import strict_positive, unit_interval
-from probjax.stats.utils import flatten_samples, normalize_sample_weights
+from probjax.stats.utils import clip_prob, flatten_samples, weighted_mean
 from probjax.utils.special import betaincinv
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
@@ -62,7 +62,7 @@ class beta_gen(rv_continuous, rv_exponential_family):
             Log of the probability density function evaluated at x
         """
         # Numerical stability clip values to avoid log(0)
-        x = jnp.clip(x, jnp.finfo(jnp.float32).eps, 1.0 - jnp.finfo(jnp.float32).eps)
+        x = clip_prob(x)
         return _beta.logpdf(x, alpha, beta)
 
     @classmethod
@@ -455,21 +455,10 @@ class beta_gen(rv_continuous, rv_exponential_family):
         log_data = jnp.log(data)
         log_1_minus_data = jnp.log(1 - data)
 
-        weights_arr = normalize_sample_weights(
-            weights,
-            n_samples=data.shape[0],
-            dtype=dtype,
-        )
-        if weights_arr is None:
-            mean_log_data = jnp.mean(log_data)
-            mean_log_1_minus_data = jnp.mean(log_1_minus_data)
-            mean_data = jnp.mean(data)
-            var_data = jnp.var(data)
-        else:
-            mean_data = jnp.sum(weights_arr * data)
-            mean_log_data = jnp.sum(weights_arr * log_data)
-            mean_log_1_minus_data = jnp.sum(weights_arr * log_1_minus_data)
-            var_data = jnp.sum(weights_arr * (data - mean_data) ** 2)
+        mean_data = weighted_mean(data, weights)
+        mean_log_data = weighted_mean(log_data, weights)
+        mean_log_1_minus_data = weighted_mean(log_1_minus_data, weights)
+        var_data = weighted_mean((data - mean_data) ** 2, weights)
         alpha = mean_data * (mean_data * (1 - mean_data) / var_data - 1)
         beta = (1 - mean_data) * (mean_data * (1 - mean_data) / var_data - 1)
 

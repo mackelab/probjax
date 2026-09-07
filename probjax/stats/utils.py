@@ -9,12 +9,38 @@ import jax.numpy as jnp
 from probjax.utils.typing import Array, ArrayLike
 
 __all__ = [
+    "clip_prob",
     "flatten_samples",
+    "loc_scale_sample",
     "normalize_sample_weights",
     "mean_and_var_1d",
     "row_mean_and_var",
     "row_mean_and_cov",
+    "weighted_mean",
 ]
+
+
+def clip_prob(q: ArrayLike) -> Array:
+    """Clip probabilities to ``[tiny, 1 - tiny]`` for the input dtype."""
+    q_arr = jnp.asarray(q)
+    eps = jnp.finfo(q_arr.dtype).tiny
+    return jnp.clip(q_arr, eps, 1.0 - eps)
+
+
+def loc_scale_sample(rng, sampler, *params, shape=(), loc=0.0, scale=1.0):
+    """Sample ``sampler(rng, *params) * scale + loc`` with broadcast shape.
+
+    Broadcasts ``params``/``loc``/``scale`` to a common event shape and draws
+    ``shape + event_shape`` samples from ``sampler``, which must accept a
+    ``shape`` keyword (e.g. ``jax.random.normal``).
+    """
+    loc = jnp.asarray(loc)
+    scale = jnp.asarray(scale)
+    params = [jnp.asarray(p) for p in params]
+    event_shape = jnp.broadcast_shapes(
+        *[p.shape for p in params], loc.shape, scale.shape
+    )
+    return sampler(rng, *params, shape=shape + event_shape) * scale + loc
 
 
 def flatten_samples(data: ArrayLike) -> Array:
@@ -56,6 +82,17 @@ def mean_and_var_1d(
     mean = jnp.sum(weights * data_arr)
     var = jnp.sum(weights * (data_arr - mean) ** 2)
     return mean, var
+
+
+def weighted_mean(data: ArrayLike, weights: Optional[ArrayLike] = None) -> Array:
+    """Flatten ``data`` and return its (optionally weighted) mean."""
+    data_arr = flatten_samples(data)
+    if weights is None:
+        return jnp.mean(data_arr)
+    weights_arr = normalize_sample_weights(
+        weights, n_samples=data_arr.shape[0], dtype=data_arr.dtype
+    )
+    return jnp.sum(weights_arr * data_arr)
 
 
 def row_mean_and_var(

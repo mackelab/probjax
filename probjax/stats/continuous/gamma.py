@@ -15,7 +15,7 @@ from jax.scipy.stats import gamma as _gamma
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import strict_positive
-from probjax.stats.utils import flatten_samples, normalize_sample_weights
+from probjax.stats.utils import flatten_samples, weighted_mean
 from probjax.utils.special import gammaincinv
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
@@ -441,17 +441,8 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         dtype = data.dtype
         log_data = jnp.log(data)
 
-        weights_arr = normalize_sample_weights(
-            weights,
-            n_samples=data.shape[0],
-            dtype=dtype,
-        )
-        if weights_arr is None:
-            mean_data = jnp.mean(data)
-            mean_log_data = jnp.mean(log_data)
-        else:
-            mean_data = jnp.sum(weights_arr * data)
-            mean_log_data = jnp.sum(weights_arr * log_data)
+        mean_data = weighted_mean(data, weights)
+        mean_log_data = weighted_mean(log_data, weights)
 
         # Initial guess for alpha
         alpha = 0.5 / (jnp.log(mean_data) - mean_log_data)

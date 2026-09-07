@@ -14,6 +14,7 @@ from jax.scipy.special import gamma, gammainc
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
+from probjax.stats.utils import loc_scale_sample
 from probjax.utils.typing import RngKey
 
 __all__ = ["gennorm"]
@@ -97,7 +98,9 @@ class gennorm_gen(rv_continuous, rv_exponential_family):
         """Random variates of the generalized normal distribution."""
         # For beta=2, use normal distribution
         if beta == 2.0:
-            return random.normal(rng, shape=shape) * scale + loc
+            return loc_scale_sample(
+                rng, random.normal, shape=shape, loc=loc, scale=scale
+            )
 
         # For other values, use rejection sampling
         def _rejection_sampling(key):

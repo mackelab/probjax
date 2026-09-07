@@ -14,6 +14,7 @@ from jax import random
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
 from probjax.stats.utils import (
+    clip_prob,
     flatten_samples,
     mean_and_var_1d,
     normalize_sample_weights,
@@ -84,8 +85,7 @@ class logistic_gen(rv_continuous, rv_exponential_family):
         q_arr = jnp.asarray(q)
         loc_arr = jnp.asarray(loc)
         scale_arr = jnp.asarray(scale)
-        eps = jnp.finfo(q_arr.dtype).tiny
-        q_clipped = jnp.clip(q_arr, a_min=eps, a_max=1.0 - eps)
+        q_clipped = clip_prob(q_arr)
         return loc_arr + scale_arr * jnp.log(q_clipped / (1.0 - q_clipped))
 
     @classmethod
@@ -102,8 +102,7 @@ class logistic_gen(rv_continuous, rv_exponential_family):
         scale_arr = jnp.asarray(scale)
         event_shape = jnp.broadcast_shapes(loc_arr.shape, scale_arr.shape)
         u = random.uniform(rng, shape=shape + event_shape, minval=0.0, maxval=1.0)
-        eps = jnp.finfo(u.dtype).tiny
-        u = jnp.clip(u, eps, 1.0 - eps)
+        u = clip_prob(u)
         return loc_arr + scale_arr * jnp.log(u / (1.0 - u))
 
     @classmethod

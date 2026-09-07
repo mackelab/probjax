@@ -15,6 +15,7 @@ from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
 from probjax.stats.utils import (
     flatten_samples,
+    loc_scale_sample,
     mean_and_var_1d,
     normalize_sample_weights,
 )
@@ -151,10 +152,7 @@ class norm_gen(rv_continuous, rv_exponential_family):
         rvs : ndarray or scalar
             Random variates of given shape
         """
-        loc = jnp.asarray(loc)
-        scale = jnp.asarray(scale)
-        event_shape = jnp.broadcast_shapes(loc.shape, scale.shape)
-        return random.normal(rng, shape=shape + event_shape) * scale + loc
+        return loc_scale_sample(rng, random.normal, shape=shape, loc=loc, scale=scale)
 
     @classmethod
     def sf(cls, x, loc=0.0, scale=1.0, **kwargs):

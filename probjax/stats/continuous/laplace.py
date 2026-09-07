@@ -14,6 +14,7 @@ from jax.scipy.stats import laplace as _laplace
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
+from probjax.stats.utils import clip_prob, loc_scale_sample
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["laplace"]
@@ -155,10 +156,7 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         rvs : ndarray or scalar
             Random variates of given shape
         """
-        loc = jnp.asarray(loc)
-        scale = jnp.asarray(scale)
-        event_shape = jnp.broadcast_shapes(loc.shape, scale.shape)
-        return random.laplace(rng, shape=shape + event_shape) * scale + loc
+        return loc_scale_sample(rng, random.laplace, shape=shape, loc=loc, scale=scale)
 
     @classmethod
     def sf(cls, x, loc=0.0, scale=1.0, **kwargs):
@@ -207,8 +205,7 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         q_arr = jnp.asarray(q)
         loc_arr = jnp.asarray(loc)
         scale_arr = jnp.asarray(scale)
-        eps = jnp.finfo(q_arr.dtype).tiny
-        q_clipped = jnp.clip(q_arr, a_min=eps, a_max=1.0 - eps)
+        q_clipped = clip_prob(q_arr)
         upper_branch = loc_arr + scale_arr * jnp.log(2.0 * (1.0 - q_clipped))
         lower_branch = loc_arr - scale_arr * jnp.log(2.0 * q_clipped)
         return jnp.where(q_clipped > 0.5, upper_branch, lower_branch)

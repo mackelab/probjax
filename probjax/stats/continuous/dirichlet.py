@@ -302,6 +302,10 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
         Uses method of moments for the initial estimate, then refines via
         fixed-point MLE iteration (Minka 2000).
         """
+        if weights is not None:
+            raise NotImplementedError(
+                "Weighted fitting is not implemented for the Dirichlet distribution."
+            )
         data = jnp.asarray(data)
         if data.ndim == 1:
             raise ValueError("Dirichlet fitting expects observations arranged by rows.")
