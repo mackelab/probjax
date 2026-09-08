@@ -140,3 +140,10 @@ output = model(jnp.ones((3, 4)))
 - [Density estimation](guides/density-estimation.md) — flows, autoregressive
   models, diffusion
 - [Inference](guides/inference.md) — MCMC, SMC, filtering, variational inference
+
+Prefer learning by running code? The [Tutorials](tutorials/ppl.md) render the
+example notebooks with outputs: [PPL basics](tutorials/ppl.md),
+[Distribution basics](tutorials/distributions_basic.md),
+[Kalman filtering](tutorials/kalman_filter.md),
+[Sequential Monte Carlo](tutorials/smc.md) and
+[Normalizing flows](tutorials/normalizing_flows.md).

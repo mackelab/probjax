@@ -207,4 +207,10 @@ try:
     inverse_and_logabsdet(windowed)(jnp.ones(2))
 except NotImplementedError as error:
     assert "dynamic_slice" in str(error)
-```
+    ```
+
+## Tutorials
+
+The probabilistic-programming side is worked through in
+[Tutorials](../tutorials/ppl.md): [PPL basics](../tutorials/ppl.md) and
+[Tracing random variables](../tutorials/trace_random.md).

@@ -2,3 +2,8 @@
 # unpinned build would drift without anyone changing this repository.
 zensical==0.0.58
 mkdocstrings-python==2.0.8
+# Notebook rendering: scripts/convert_notebooks.py pre-converts curated
+# examples/*.ipynb to docs/tutorials/*.md (no re-execution). Zensical cannot
+# run MkDocs plugins such as mkdocs-jupyter, so nbconvert is the tool used.
+nbconvert
+nbformat

@@ -140,3 +140,9 @@ flow.fit(
 Returning `False` from `on_step` stops training. Losses arrive when the run
 finishes rather than step by step, which is the trade for never leaving the
 compiled loop.
+
+## Tutorials
+
+A worked example is in [Tutorials](../tutorials/normalizing_flows.md):
+[Normalizing flows on 2D toy densities](../tutorials/normalizing_flows.md)
+trains `maf` end to end.
