@@ -34,6 +34,15 @@ jobs:
         python -m pip install --upgrade pip
         pip install -e ".[dev]"
 
+    - name: Generate tutorial pages
+      # scripts/convert_notebooks.py renders curated examples/ notebooks to
+      # docs/tutorials/ for the docs build. The test job needs them too:
+      # test_docs.py checks every nav entry exists and executes every page's
+      # python blocks, tutorials included. matplotlib covers tutorial plots.
+      run: |
+        pip install nbconvert nbformat matplotlib
+        python scripts/convert_notebooks.py
+
     - name: Run affected tests
       run: |
         pytest tests/ -v --testmon -n auto

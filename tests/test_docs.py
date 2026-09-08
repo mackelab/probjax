@@ -136,6 +136,9 @@ def test_every_python_block_runs(page):
             text=True,
             env={
                 "JAX_PLATFORMS": "cpu",
+                # Tutorial pages plot: use a headless backend so executing
+                # their blocks neither opens windows nor needs a display.
+                "MPLBACKEND": "Agg",
                 "PATH": "/usr/bin:/bin",
                 "HOME": str(pathlib.Path.home()),
             },

@@ -81,6 +81,8 @@ site/
 docs/.jupyter_cache/
 docs/__pycache__/
 docs/examples/
+# Generated tutorial pages (scripts/convert_notebooks.py output, built in CI)
+docs/tutorials/
 
 # PyBuilder
 target/
