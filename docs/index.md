@@ -75,14 +75,12 @@ Python 3.11 or newer. Accelerator options are in
 
 A curated set of example notebooks is rendered as part of these pages
 (generated from `examples/` without re-execution, so outputs are those
-committed in the notebooks):
+committed in the notebooks — each one is re-executed against current `main`
+before inclusion):
 
-- [Tracing random variables](tutorials/trace_random.md) and
-  [PPL basics](tutorials/ppl.md)
-- [Distribution basics](tutorials/distributions_basic.md)
-- [Kalman filtering](tutorials/kalman_filter.md) and
-  [Sequential Monte Carlo](tutorials/smc.md)
-- [Normalizing flows](tutorials/normalizing_flows.md)
+- [PPL basics](tutorials/ppl.md)
+- [Kalman filtering](tutorials/kalman_filter.md)
+- [Sequential Monte Carlo](tutorials/smc.md)
 
 All runnable notebooks live in
 [`examples/`](https://github.com/mackelab/probjax/tree/main/examples/)

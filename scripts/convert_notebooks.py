@@ -27,16 +27,14 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Curated subset rendered into the docs. Expand deliberately: each entry adds
-# conversion output plus review burden for stale outputs. Heavy notebooks
-# (MNIST, diffusion, transformers, sharding) stay out for now.
+# Curated subset rendered into the docs. Inclusion criteria: the notebook
+# re-executes cleanly against current main (CI executes every tutorial page's
+# code blocks via test_docs.py) and needs no sibling-helper imports. Expand
+# deliberately -- heavy or stale notebooks stay out until modernized.
 CURATED_NOTEBOOKS = [
-    "examples/core/trace_random.ipynb",
     "examples/core/ppl.ipynb",
-    "examples/stats/distributions_basic.ipynb",
     "examples/inference/kalman_filter.ipynb",
     "examples/inference/smc.ipynb",
-    "examples/nn/generative/normalizing_flows.ipynb",
 ]
 
 OUTPUT_DIR = REPO_ROOT / "docs" / "tutorials"

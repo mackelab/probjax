@@ -143,7 +143,5 @@ output = model(jnp.ones((3, 4)))
 
 Prefer learning by running code? The [Tutorials](tutorials/ppl.md) render the
 example notebooks with outputs: [PPL basics](tutorials/ppl.md),
-[Distribution basics](tutorials/distributions_basic.md),
-[Kalman filtering](tutorials/kalman_filter.md),
-[Sequential Monte Carlo](tutorials/smc.md) and
-[Normalizing flows](tutorials/normalizing_flows.md).
+[Kalman filtering](tutorials/kalman_filter.md) and
+[Sequential Monte Carlo](tutorials/smc.md).

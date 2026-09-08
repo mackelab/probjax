@@ -212,5 +212,4 @@ except NotImplementedError as error:
 ## Tutorials
 
 The probabilistic-programming side is worked through in
-[Tutorials](../tutorials/ppl.md): [PPL basics](../tutorials/ppl.md) and
-[Tracing random variables](../tutorials/trace_random.md).
+[PPL basics](../tutorials/ppl.md).
