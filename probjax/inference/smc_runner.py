@@ -1,21 +1,125 @@
+"""Compiled fixed and adaptive SMC execution with constant-memory summaries."""
+
 from functools import partial
 from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.base import Adaptor, SMCResult
-from probjax.inference.smc.base import SMCKernel
+from probjax.inference.base import SMCResult
 from probjax.utils.jaxutils import WithProgressBarAPI, print_scan
-from probjax.utils.typing import RngKey
+
+
+def _sampler_state(state):
+    return getattr(state, "sampler_state", state)
 
 
 def _ess_from_weights(state, _info):
-    return 1.0 / jnp.sum(state.weights**2)
+    state = _sampler_state(state)
+    if hasattr(state, "weights"):
+        return 1.0 / jnp.sum(state.weights**2)
+    weights = state.persistent_weights.ravel()
+    return weights.sum() ** 2 / jnp.sum(weights**2)
+
+
+def _increment(previous, state, info):
+    if hasattr(info, "log_likelihood_increment"):
+        return info.log_likelihood_increment
+    previous, state = _sampler_state(previous), _sampler_state(state)
+    if hasattr(state, "log_Z"):
+        return state.log_Z - previous.log_Z
+    return jnp.array(jnp.nan)  # A custom kernel did not supply evidence information.
+
+
+def _zero_info(fn, *args, **kwargs):
+    shape = jax.eval_shape(fn, *args, **kwargs)[1]
+    return jax.tree.map(lambda x: jnp.zeros(x.shape, x.dtype), shape)
+
+
+def _initial_evidence(state, supplied):
+    if supplied is not None:
+        return jnp.asarray(supplied)
+    return jnp.asarray(getattr(_sampler_state(state), "log_Z", 0.0))
+
+
+def _run_fixed(
+    key,
+    kernel,
+    state,
+    schedule,
+    params,
+    *,
+    collect=False,
+    adaptor=None,
+    verbose=None,
+    initial_log_evidence=None,
+):
+    schedule = jnp.asarray(schedule)
+    if schedule.ndim < 1:
+        raise ValueError("A schedule needs a leading step axis.")
+    n = schedule.shape[0]
+    prototype = jnp.zeros(schedule.shape[1:], schedule.dtype)
+    info = _zero_info(
+        kernel.step, key, state, tempering_param=prototype, mcmc_parameters=params
+    )
+    adaptation = () if adaptor is None else adaptor.init(state, params)
+    evidence = _initial_evidence(state, initial_log_evidence)
+
+    def step(carry, temperature):
+        key, state, params, adaptation, logz, _ = carry
+        key, step_key = jax.random.split(key)
+        previous = state
+        state, info = kernel.step(
+            step_key, state, tempering_param=temperature, mcmc_parameters=params
+        )
+        logz = logz + _increment(previous, state, info)
+        if adaptor is not None:
+            adaptation, params, adaptation_info = adaptor.update(
+                state, info, adaptation, params
+            )
+            trace = (state, info, adaptation_info) if collect else None
+        else:
+            trace = (state, info) if collect else None
+        carry = (key, state, params, adaptation, logz, info)
+        if verbose is not None:
+            return carry, (verbose._extract_stats(state, info), trace)
+        return carry, trace
+
+    carry = (key, state, params, adaptation, evidence, info)
+    if verbose is None:
+        (key, state, params, adaptation, logz, info), trace = jax.lax.scan(
+            step, carry, schedule
+        )
+    else:
+        (key, state, params, adaptation, logz, info), (_, trace) = (
+            verbose._verbose_scan(
+                step, carry, schedule, n, stats_fn=lambda _carry, y: y[0]
+            )
+        )
+    if adaptor is not None:
+        params, adaptation_info = adaptor.finalize(adaptation, params)
+        trace = (trace, adaptation_info) if collect else None
+    params = getattr(state, "parameter_override", params)
+    return SMCResult(
+        state,
+        params,
+        trace,
+        logz,
+        info if n else None,
+        jnp.array(n),
+        jnp.array(True),
+        key,
+    )
 
 
 class SMC(WithProgressBarAPI):
-    """Compiled standard execution for an SMC kernel."""
+    """Compiled SMC runners, retaining evidence and final diagnostics by default.
+
+    ``info`` remains the optional legacy trace. ``final_info`` is the last kernel
+    diagnostic, ``log_evidence`` the accumulated estimate. For a resumed fixed
+    run pass initial_log_evidence from the earlier result (persistent states
+    already carry it). Custom kernels without evidence diagnostics return NaN.
+    """
 
     _default_tracked_stats = ("ess", "log_likelihood_increment", "acceptance_rate")
     _computed_stats = {"ess": _ess_from_weights}
@@ -23,100 +127,139 @@ class SMC(WithProgressBarAPI):
 
     def __init__(
         self,
-        kernel: SMCKernel,
-        verbose: bool = False,
+        kernel,
+        verbose=False,
         tracked_stats: Optional[Tuple[str, ...]] = None,
-        collect: bool = False,
-    ) -> None:
-        self.kernel = kernel
-        self.verbose = verbose
+        collect=False,
+    ):
+        self.kernel, self.verbose, self.collect = kernel, verbose, collect
         self.tracked_stats = (
             self._default_tracked_stats if tracked_stats is None else tracked_stats
         )
-        self.collect = collect
 
     def _stat_objects(self, state, info):
-        return (state, info, getattr(info, "update_info", None))
+        return (_sampler_state(state), info, getattr(info, "update_info", None))
 
     @staticmethod
-    @partial(
-        jax.jit,
-        static_argnames=("kernel", "collect"),
-    )
+    @partial(jax.jit, static_argnames=("kernel", "collect"))
     def run_kernel(
-        key: RngKey,
-        kernel: SMCKernel,
+        key,
+        kernel,
         state,
-        tempering_params: jnp.ndarray,
+        tempering_params,
         params,
         *,
-        collect: bool = False,
-    ) -> SMCResult:
-        """Run a compiled SMC schedule without constructing a runner."""
-        keys = jax.random.split(key, tempering_params.shape[0])
-
-        def one_step(state, xs):
-            tempering_param, step_key = xs
-            state, info = kernel.step(
-                step_key,
-                state,
-                tempering_param=tempering_param,
-                mcmc_parameters=params,
-            )
-            return state, (state, info) if collect else None
-
-        state, trace = jax.lax.scan(one_step, state, (tempering_params, keys))
-        return SMCResult(state, params, trace if collect else None)
+        collect=False,
+        initial_log_evidence=None,
+    ):
+        return _run_fixed(
+            key,
+            kernel,
+            state,
+            tempering_params,
+            params,
+            collect=collect,
+            initial_log_evidence=initial_log_evidence,
+        )
 
     @staticmethod
-    @partial(
-        jax.jit,
-        static_argnames=("kernel", "adaptor", "collect"),
-    )
+    @partial(jax.jit, static_argnames=("kernel", "adaptor", "collect"))
     def adapt_kernel(
-        key: RngKey,
-        kernel: SMCKernel,
-        adaptor: Adaptor,
+        key,
+        kernel,
+        adaptor,
         state,
-        tempering_params: jnp.ndarray,
+        tempering_params,
         params,
         *,
-        collect: bool = False,
-    ) -> SMCResult:
-        """Run a compiled SMC schedule with parameter adaptation."""
-        adapt_state = adaptor.init(state, params)
-        keys = jax.random.split(key, tempering_params.shape[0])
-
-        def one_step(carry, xs):
-            state, params, adapt_state = carry
-            tempering_param, step_key = xs
-            state, info = kernel.step(
-                step_key,
-                state,
-                tempering_param=tempering_param,
-                mcmc_parameters=params,
-            )
-            adapt_state, params, adapt_info = adaptor.update(
-                state, info, adapt_state, params
-            )
-            output = (state, info, adapt_info) if collect else None
-            return (state, params, adapt_state), output
-
-        (state, params, adapt_state), trace = jax.lax.scan(
-            one_step,
-            (state, params, adapt_state),
-            (tempering_params, keys),
+        collect=False,
+        initial_log_evidence=None,
+    ):
+        return _run_fixed(
+            key,
+            kernel,
+            state,
+            tempering_params,
+            params,
+            collect=collect,
+            adaptor=adaptor,
+            initial_log_evidence=initial_log_evidence,
         )
-        params, final_info = adaptor.finalize(adapt_state, params)
-        info = (trace, final_info) if collect else None
-        return SMCResult(state, params, info)
+
+    @staticmethod
+    @partial(jax.jit, static_argnames=("kernel", "max_steps", "adaptor"))
+    def run_adaptive_kernel(
+        key,
+        kernel,
+        state,
+        params,
+        *,
+        max_steps=200,
+        adaptor=None,
+        initial_log_evidence=None,
+    ):
+        """Advance an adaptive kernel to temperature 1, with a fixed iteration cap.
+
+        No history is allocated. completed=False signals the cap, exhausted
+        persistent storage, nonfinite temperature/evidence, or stalled progress.
+        Key/state/params can be passed back to resume a capped run.
+        """
+        if not isinstance(max_steps, int) or max_steps < 1:
+            raise ValueError("max_steps must be a positive integer.")
+        info = _zero_info(kernel.step, key, state, mcmc_parameters=params)
+        adaptation = () if adaptor is None else adaptor.init(state, params)
+        evidence = _initial_evidence(state, initial_log_evidence)
+
+        def cond(carry):
+            _, state, _, _, _, _, count, valid = carry
+            raw = _sampler_state(state)
+            room = True
+            if hasattr(raw, "persistent_log_Z"):
+                room = raw.iteration + 1 < raw.persistent_log_Z.shape[0]
+            return (count < max_steps) & (raw.tempering_param < 1.0) & valid & room
+
+        def body(carry):
+            key, state, params, adaptation, logz, _, count, _ = carry
+            key, step_key = jax.random.split(key)
+            previous = state
+            state, info = kernel.step(step_key, state, mcmc_parameters=params)
+            logz += _increment(previous, state, info)
+            if adaptor is not None:
+                adaptation, params, _ = adaptor.update(state, info, adaptation, params)
+            old = _sampler_state(previous).tempering_param
+            new = _sampler_state(state).tempering_param
+            valid = jnp.isfinite(new) & jnp.isfinite(logz) & (new > old)
+            return key, state, params, adaptation, logz, info, count + 1, valid
+
+        key, state, params, adaptation, logz, info, count, valid = jax.lax.while_loop(
+            cond,
+            body,
+            (
+                key,
+                state,
+                params,
+                adaptation,
+                evidence,
+                info,
+                jnp.array(0),
+                jnp.array(True),
+            ),
+        )
+        if adaptor is not None:
+            params, _ = adaptor.finalize(adaptation, params)
+        params = getattr(state, "parameter_override", params)
+        return SMCResult(
+            state,
+            params,
+            None,
+            logz,
+            info,
+            count,
+            valid & (_sampler_state(state).tempering_param >= 1.0),
+            key,
+        )
 
     def _verbose_scan(self, f, init, xs, length, stats_fn):
-        """Run a scan with a rate-limited progress bar.
-
-        ``print_scan`` requires a tuple carry, so we wrap the kernel state.
-        """
-
         def wrapped(carry, x):
             state, y = f(carry[0], x)
             return (state,), y
@@ -128,44 +271,26 @@ class SMC(WithProgressBarAPI):
             wrapped,
             (init,),
             init_stats,
-            xs=xs,
-            length=length,
+            xs,
+            length,
             update_stats=update_stats,
-            print_rate=print_rate,
             print_fn=print_fn,
+            print_rate=print_rate,
         )
         return state, y
 
-    def _run_verbose(self, key, state, tempering_params, params, collect):
-        keys = jax.random.split(key, tempering_params.shape[0])
-        xs = (tempering_params, keys)
-
-        def one_step(state, xs):
-            tempering_param, step_key = xs
-            state, info = self.kernel.step(
-                step_key,
-                state,
-                tempering_param=tempering_param,
-                mcmc_parameters=params,
-            )
-            return state, (
-                self._extract_stats(state, info),
-                (state, info) if collect else None,
-            )
-
-        state, (_, trace) = self._verbose_scan(
-            one_step,
-            state,
-            xs,
-            tempering_params.shape[0],
-            stats_fn=lambda _carry, y: y[0],
-        )
-        return SMCResult(state, params, trace if collect else None)
-
-    def run(self, key, state, tempering_params, params) -> SMCResult:
-        """Run the schedule with this runner's configuration."""
+    def run(self, key, state, tempering_params, params, *, initial_log_evidence=None):
         if self.verbose:
-            return self._run_verbose(key, state, tempering_params, params, self.collect)
+            return _run_fixed(
+                key,
+                self.kernel,
+                state,
+                tempering_params,
+                params,
+                collect=self.collect,
+                verbose=self,
+                initial_log_evidence=initial_log_evidence,
+            )
         return self.run_kernel(
             key,
             self.kernel,
@@ -173,10 +298,12 @@ class SMC(WithProgressBarAPI):
             tempering_params,
             params,
             collect=self.collect,
+            initial_log_evidence=initial_log_evidence,
         )
 
-    def sample(self, key, state, tempering_params, params) -> SMCResult:
-        """Run and retain every population and transition diagnostic."""
+    def sample(
+        self, key, state, tempering_params, params, *, initial_log_evidence=None
+    ):
         if not self.verbose:
             return self.run_kernel(
                 key,
@@ -185,18 +312,29 @@ class SMC(WithProgressBarAPI):
                 tempering_params,
                 params,
                 collect=True,
+                initial_log_evidence=initial_log_evidence,
             )
-        return self._run_verbose(key, state, tempering_params, params, True)
+        return _run_fixed(
+            key,
+            self.kernel,
+            state,
+            tempering_params,
+            params,
+            collect=True,
+            verbose=self if self.verbose else None,
+            initial_log_evidence=initial_log_evidence,
+        )
 
     def adapt(
         self,
-        key: RngKey,
-        adaptor: Adaptor,
+        key,
+        adaptor,
         state,
-        tempering_params: jnp.ndarray,
+        tempering_params,
         params,
-    ) -> SMCResult:
-        """Run the schedule with a composable parameter adaptor."""
+        *,
+        initial_log_evidence=None,
+    ):
         if not self.verbose:
             return self.adapt_kernel(
                 key,
@@ -206,37 +344,36 @@ class SMC(WithProgressBarAPI):
                 tempering_params,
                 params,
                 collect=self.collect,
+                initial_log_evidence=initial_log_evidence,
             )
-
-        keys = jax.random.split(key, tempering_params.shape[0])
-        xs = (tempering_params, keys)
-        adapt_state = adaptor.init(state, params)
-
-        def one_step(carry, xs):
-            state, params, adapt_state = carry
-            tempering_param, step_key = xs
-            state, info = self.kernel.step(
-                step_key,
-                state,
-                tempering_param=tempering_param,
-                mcmc_parameters=params,
-            )
-            adapt_state, params, adapt_info = adaptor.update(
-                state, info, adapt_state, params
-            )
-            output = (state, info, adapt_info) if self.collect else None
-            return (state, params, adapt_state), (
-                self._extract_stats(state, info),
-                output,
-            )
-
-        (state, params, adapt_state), (_, trace) = self._verbose_scan(
-            one_step,
-            (state, params, adapt_state),
-            xs,
-            tempering_params.shape[0],
-            stats_fn=lambda _carry, y: y[0],
+        return _run_fixed(
+            key,
+            self.kernel,
+            state,
+            tempering_params,
+            params,
+            collect=self.collect,
+            adaptor=adaptor,
+            verbose=self if self.verbose else None,
+            initial_log_evidence=initial_log_evidence,
         )
-        params, final_info = adaptor.finalize(adapt_state, params)
-        info = (trace, final_info) if self.collect else None
-        return SMCResult(state, params, info)
+
+    def run_adaptive(
+        self,
+        key,
+        state,
+        params,
+        *,
+        max_steps=200,
+        adaptor=None,
+        initial_log_evidence=None,
+    ):
+        return self.run_adaptive_kernel(
+            key,
+            self.kernel,
+            state,
+            params,
+            max_steps=max_steps,
+            adaptor=adaptor,
+            initial_log_evidence=initial_log_evidence,
+        )

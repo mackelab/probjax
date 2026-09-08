@@ -52,13 +52,18 @@ def build_step(
     resampling_fn: Callable = blackjax.smc.resampling.systematic,
     update_strategy: Callable = blackjax.smc.base.update_and_take_last,
     path_kwargs: Optional[Dict] = None,
+    batch_size: int = 0,
     **mcmc_kernel_kwargs,
 ):
     if mcmc_kernel is None:
         raise ValueError("mcmc_kernel must be provided for SMC.")
     mcmc_init_fn, mcmc_step_fn = make_mcmc_adapter(mcmc_kernel, **mcmc_kernel_kwargs)
     delegate = bj_from_mcmc.build_kernel(
-        mcmc_step_fn, mcmc_init_fn, resampling_fn, update_strategy
+        mcmc_step_fn,
+        mcmc_init_fn,
+        resampling_fn,
+        update_strategy,
+        batch_size=batch_size,
     )
 
     if path_kwargs is None:

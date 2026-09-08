@@ -210,3 +210,91 @@ __all__ = [
     "update_ars_state",
     "RejectionSampler",
 ]
+
+from probjax.inference.filtering.temporal import (
+    TemporalFilter,
+    TemporalResult,
+    TemporalTrace,
+    kalman_backend,
+    particle_backend,
+    run_temporal_filter,
+)
+from probjax.inference.filtering.trajectory import (
+    particle_gibbs,
+    sample_gaussian_paths,
+    sample_particle_paths,
+    smooth_gaussian_path,
+)
+from probjax.inference.smc.temporal import (
+    ReplayData,
+    TemporalSMC,
+    TemporalSMCInfo,
+    TemporalSMCState,
+    run_temporal_smc,
+    temporal_smc,
+)
+
+__all__ += [
+    "TemporalFilter",
+    "TemporalResult",
+    "TemporalTrace",
+    "kalman_backend",
+    "particle_backend",
+    "run_temporal_filter",
+    "particle_gibbs",
+    "sample_gaussian_paths",
+    "sample_particle_paths",
+    "smooth_gaussian_path",
+    "ReplayData",
+    "TemporalSMC",
+    "TemporalSMCInfo",
+    "TemporalSMCState",
+    "run_temporal_smc",
+    "temporal_smc",
+]
+
+from probjax.inference.smc.ports import (
+    waste_free_strategy,
+    waste_free_smc,
+    tuned_smc,
+    pretuned_smc,
+)
+
+from probjax.inference.smc.temporal_utils import (
+    population_diagnostics,
+    likelihood_diagnostics,
+    summarize_replicates,
+)
+
+from probjax.inference.smc.particle_adaptation import (
+    recommend_particle_count,
+    exchange_filter_population,
+    adapt_particle_count,
+)
+
+from probjax.inference.filtering.streaming import (
+    init_streaming_window,
+    append_streaming_window,
+    streaming_window_trace,
+)
+
+from probjax.inference.filtering.joint import (
+    sample_joint_paths,
+)
+
+__all__ += [
+    'waste_free_strategy',
+    'waste_free_smc',
+    'tuned_smc',
+    'pretuned_smc',
+    'population_diagnostics',
+    'likelihood_diagnostics',
+    'summarize_replicates',
+    'recommend_particle_count',
+    'exchange_filter_population',
+    'adapt_particle_count',
+    'init_streaming_window',
+    'append_streaming_window',
+    'streaming_window_trace',
+    'sample_joint_paths',
+]

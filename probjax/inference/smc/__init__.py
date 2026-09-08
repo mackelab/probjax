@@ -36,3 +36,29 @@ def persistent_smc_kernel(**kwargs):
 def adaptive_persistent_smc_kernel(**kwargs):
     """Build an adaptive persistent SMC kernel (geometric path only)."""
     return adaptive_persistent_smc(**kwargs)
+
+
+from probjax.inference.smc.particle_adaptation import (
+    adapt_particle_count,
+    exchange_filter_population,
+    recommend_particle_count,
+)
+from probjax.inference.smc.ports import (
+    pretuned_smc,
+    tuned_smc,
+    waste_free_smc,
+    waste_free_strategy,
+)
+from probjax.inference.smc.temporal import (
+    ReplayData,
+    TemporalSMC,
+    TemporalSMCInfo,
+    TemporalSMCState,
+    run_temporal_smc,
+    temporal_smc,
+)
+from probjax.inference.smc.temporal_utils import (
+    likelihood_diagnostics,
+    population_diagnostics,
+    summarize_replicates,
+)

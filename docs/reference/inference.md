@@ -64,6 +64,48 @@ Pure kernels, adaptation utilities and compiled runners. See
 ::: probjax.inference.GeometricPath
 ::: probjax.inference.PartialPosteriorsPath
 
+## SMC extensions
+
+See the [SMC guide](../guides/smc.md) for BlackJAX presets and adaptive execution.
+
+::: probjax.inference.waste_free_strategy
+::: probjax.inference.waste_free_smc
+::: probjax.inference.tuned_smc
+::: probjax.inference.pretuned_smc
+::: probjax.inference.population_diagnostics
+::: probjax.inference.likelihood_diagnostics
+::: probjax.inference.summarize_replicates
+::: probjax.inference.recommend_particle_count
+::: probjax.inference.exchange_filter_population
+::: probjax.inference.adapt_particle_count
+::: probjax.inference.init_streaming_window
+::: probjax.inference.append_streaming_window
+::: probjax.inference.streaming_window_trace
+::: probjax.inference.sample_joint_paths
+
+## Temporal SMC and trajectory inference
+
+Temporal inference advances through physical observation times. See the
+[temporal SMC guide](../guides/temporal-smc.md) and the executable
+[example notebook](https://github.com/mackelab/probjax/blob/main/examples/inference/temporal_smc.ipynb).
+
+::: probjax.inference.kalman_backend
+::: probjax.inference.particle_backend
+::: probjax.inference.run_temporal_filter
+::: probjax.inference.temporal_smc
+::: probjax.inference.run_temporal_smc
+::: probjax.inference.sample_gaussian_paths
+::: probjax.inference.smooth_gaussian_path
+::: probjax.inference.sample_particle_paths
+::: probjax.inference.particle_gibbs
+::: probjax.inference.TemporalFilter
+::: probjax.inference.TemporalTrace
+::: probjax.inference.TemporalResult
+::: probjax.inference.TemporalSMC
+::: probjax.inference.TemporalSMCState
+::: probjax.inference.TemporalSMCInfo
+::: probjax.inference.ReplayData
+
 ## Filtering and smoothing
 
 ::: probjax.inference.kalman_filter

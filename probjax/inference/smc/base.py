@@ -34,7 +34,10 @@ class SMCKernelAPI(metaclass=API):
 
     def __new__(cls, logprior_fn: Callable, loglikelihood_fn: Callable, **kwargs):
         init = partial(
-            cls.init, logprior_fn=logprior_fn, loglikelihood_fn=loglikelihood_fn
+            cls.init,
+            logprior_fn=logprior_fn,
+            loglikelihood_fn=loglikelihood_fn,
+            **_filter_kwargs(cls.init, kwargs, allow_kwargs=False),
         )
         init_params = partial(
             cls.init_params, logprior_fn=logprior_fn, loglikelihood_fn=loglikelihood_fn

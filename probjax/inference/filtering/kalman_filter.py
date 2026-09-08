@@ -132,7 +132,7 @@ def _kalman_update(
         C_covT = jax.vmap(C.operator, in_axes=1, out_axes=1)(
             cov1_.T
         )  # (obs_dim, state_dim)
-        S = C_covT @ C_covT.T
+        S = jax.vmap(C.operator, in_axes=1, out_axes=1)(C_covT.T)
         # res = cov1_ @ C.T = (C @ cov1_.T).T = C_covT.T
         res = C_covT.T  # (state_dim, obs_dim)
     else:
@@ -156,7 +156,9 @@ def _kalman_update(
         cov1 = cov1_ - K @ C @ cov1_
 
     logdet = logdet_fn_(S)
-    log_likelihood = -0.5 * (logdet + r.T @ solve_fn(S, r))
+    log_likelihood = -0.5 * (
+        r.size * jnp.log(2 * jnp.pi) + logdet + r.T @ solve_fn(S, r)
+    )
 
     return jnp.asarray(mu1), jnp.asarray(cov1), log_likelihood
 

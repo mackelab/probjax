@@ -86,7 +86,6 @@ def build_kernel(
         particles = state.particles
         log_weights = state.log_weights
         rng_key, rng_key_predict, rng_key_resample = jax.random.split(rng_key, 3)
-        log_num_particles = jnp.log(particles.shape[0])
 
         # Predict new particles
         if proposal_logdensity_fn is None:
@@ -109,7 +108,8 @@ def build_kernel(
                 )
             log_normalizer = jax.scipy.special.logsumexp(log_weights)
             log_weights = log_weights - log_normalizer
-            log_likelihood = log_normalizer - log_num_particles
+            # Incoming weights sum to one: logsumexp already estimates p(y_t|y_<t).
+            log_likelihood = log_normalizer
 
         else:
             if (
@@ -121,9 +121,9 @@ def build_kernel(
                 ) - proposal_logdensity_fn(new_particles, particles, t)
                 log_normalizer = jax.scipy.special.logsumexp(log_weights)
                 log_weights = log_weights - log_normalizer
+                log_likelihood = log_normalizer
             else:
-                pass
-            log_likelihood = 0.0  # Without observation we don't have a logZ
+                log_likelihood = 0.0
 
         # Resample if necessary
         effective_samples_size = ess(log_weights)

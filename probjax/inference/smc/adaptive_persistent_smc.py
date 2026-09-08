@@ -15,8 +15,6 @@ from probjax.inference.smc.base import (
 
 PersistentSMCState = bj_persistent.PersistentSMCState
 
-_ll_fn_holder = [None]
-
 
 def build_step(
     logprior_fn: Optional[Callable],
@@ -28,6 +26,7 @@ def build_step(
     target_ess: float = 0.5,
     update_strategy: Callable = blackjax.smc.base.update_and_take_last,
     root_solver: Callable = blackjax.smc.solver.dichotomy,
+    batch_size: int = 0,
     **mcmc_kernel_kwargs,
 ):
     if mcmc_kernel is None:
@@ -37,8 +36,6 @@ def build_step(
             "logprior_fn and loglikelihood_fn must be provided for adaptive "
             "persistent SMC."
         )
-
-    _ll_fn_holder[0] = loglikelihood_fn
 
     mcmc_init_fn, mcmc_step_fn = make_mcmc_adapter(mcmc_kernel, **mcmc_kernel_kwargs)
     delegate = bj_adaptive_persistent.build_kernel(
@@ -50,6 +47,7 @@ def build_step(
         target_ess,
         update_strategy,
         root_solver,
+        batch_size=batch_size,
     )
 
     def step(rng_key, state, mcmc_parameters):
@@ -89,15 +87,16 @@ def init(
     *,
     logprior_fn=None,
     loglikelihood_fn=None,
+    batch_size=0,
     max_iterations: int = 200,
 ):
     if loglikelihood_fn is None:
-        loglikelihood_fn = _ll_fn_holder[0]
-    if loglikelihood_fn is None:
         raise ValueError(
-            "loglikelihood_fn must be provided either directly or via build_step."
+            "loglikelihood_fn must be supplied explicitly or bound by the constructor."
         )
-    return bj_adaptive_persistent.init(particles, loglikelihood_fn, max_iterations)
+    return bj_adaptive_persistent.init(
+        particles, loglikelihood_fn, max_iterations, batch_size=batch_size
+    )
 
 
 adaptive_persistent_smc = make_smc_api(

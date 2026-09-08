@@ -68,7 +68,7 @@ def _ffbsi_backward_step(
     Returns:
         New smoothed indices at time t, shape (N,).
     """
-    N = filter_particles_t.shape[0]
+    N = smoothed_indices.shape[0]
     # The smoothed particles at t+1
     x_tp1 = filter_particles_tp1[smoothed_indices]
 
@@ -101,6 +101,8 @@ def particle_smoother(
     filter_log_weights: Array,
     transition_logdensity_fn: Callable,
     ancestors: Optional[Array] = None,
+    *,
+    num_samples: Optional[int] = None,
 ) -> Tuple[Array, Array]:
     """Forward Filter-Backward Simulator (FFBSi) particle smoother.
 
@@ -120,19 +122,27 @@ def particle_smoother(
             Signature: (x_tp1, x_t, t, tp1) -> scalar log-density.
         ancestors (Optional[Array]): Ancestor indices from the filter,
             shape (T, N). Not used in FFBSi but accepted for API compatibility.
+        num_samples: Number M of joint trajectories to sample. Defaults to N.
 
     Returns:
         Tuple[Array, Array]:
-            - smoothed_particles: shape (T, N, D)
-            - smoothed_log_weights: shape (T, N), uniform weights (1/N)
+            - smoothed_particles: shape (T, M, D)
+            - smoothed_log_weights: shape (T, M), uniform weights (1/M)
     """
     T, N, D = filter_particles.shape
+    num_samples = N if num_samples is None else num_samples
+    if T < 1 or num_samples < 1:
+        raise ValueError(
+            "A smoother requires a nonempty trace and positive num_samples."
+        )
 
     # Initialize: at the last time step, smoothed = filter
     final_log_weights = filter_log_weights[-1]
     # Sample initial smoothed indices from the final filter distribution
     key, subkey = jax.random.split(key)
-    smoothed_indices_T = jax.random.categorical(subkey, final_log_weights, shape=(N,))
+    smoothed_indices_T = jax.random.categorical(
+        subkey, final_log_weights, shape=(num_samples,)
+    )
 
     # Backward scan from T-1 down to 0
     def backward_step(carry, data):
@@ -179,7 +189,7 @@ def particle_smoother(
     )
 
     # Smoothed weights are uniform
-    smoothed_log_weights = jnp.full((T, N), fill_value=-jnp.log(N))
+    smoothed_log_weights = jnp.full((T, num_samples), fill_value=-jnp.log(num_samples))
 
     return smoothed_particles, smoothed_log_weights
 
