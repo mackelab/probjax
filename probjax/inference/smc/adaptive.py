@@ -23,12 +23,14 @@ def build_step(
     resampling_fn: Callable = blackjax.smc.resampling.systematic,
     target_ess: float = 0.8,
     root_solver: Callable = blackjax.smc.solver.dichotomy,
+    update_strategy: Callable = blackjax.smc.base.update_and_take_last,
+    batch_size: int = 0,
     **mcmc_kernel_kwargs,
 ):
     if not hasattr(path, "logdensity_fn") or not hasattr(path, "initial_param"):
         raise TypeError("path must define logdensity_fn and initial_param")
     # Only geometric path is supported by BlackJAX adaptive_tempered.
-    if not hasattr(path, "is_geometric") and path.__class__.__name__ != "GeometricPath":
+    if getattr(path, "is_geometric", False) is not True:
         raise ValueError("adaptive SMC is only supported for the geometric path.")
 
     mcmc_init_fn, mcmc_step_fn = make_mcmc_adapter(mcmc_kernel, **mcmc_kernel_kwargs)
@@ -40,6 +42,8 @@ def build_step(
         resampling_fn,
         target_ess,
         root_solver=root_solver,
+        update_strategy=update_strategy,
+        batch_size=batch_size,
     )
 
     def step(rng_key, state, mcmc_parameters):
@@ -60,7 +64,7 @@ def init_params(
     path_kwargs: Optional[Dict] = None,
     **mcmc_param_kwargs,
 ) -> Dict:
-    if not hasattr(path, "is_geometric") and path.__class__.__name__ != "GeometricPath":
+    if getattr(path, "is_geometric", False) is not True:
         raise ValueError("adaptive SMC is only supported for the geometric path.")
     mcmc_kernel_kwargs = mcmc_kernel_kwargs or {}
     path_kwargs = path_kwargs or {}

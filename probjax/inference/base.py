@@ -58,6 +58,11 @@ class SMCResult(NamedTuple):
     state: Any
     params: Any
     info: Optional[Any] = None
+    log_evidence: Optional[Any] = None
+    final_info: Optional[Any] = None
+    num_steps: Optional[Any] = None
+    completed: Optional[Any] = None
+    key: Optional[Any] = None
 
 
 class FilteringResult(NamedTuple):

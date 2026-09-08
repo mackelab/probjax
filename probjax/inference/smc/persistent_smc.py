@@ -14,10 +14,6 @@ from probjax.inference.smc.base import (
 
 PersistentSMCState = bj_persistent.PersistentSMCState
 
-# Module-level storage for loglikelihood_fn, set during build_step.
-# Needed by init() to compute initial log-likelihoods for persistent state.
-_ll_fn_holder = [None]
-
 
 def build_step(
     logprior_fn: Optional[Callable],
@@ -27,6 +23,7 @@ def build_step(
     num_mcmc_steps: int = 10,
     resampling_fn: Callable = blackjax.smc.resampling.systematic,
     update_strategy: Callable = blackjax.smc.base.update_and_take_last,
+    batch_size: int = 0,
     **mcmc_kernel_kwargs,
 ):
     if mcmc_kernel is None:
@@ -36,8 +33,6 @@ def build_step(
             "logprior_fn and loglikelihood_fn must be provided for persistent SMC."
         )
 
-    _ll_fn_holder[0] = loglikelihood_fn
-
     mcmc_init_fn, mcmc_step_fn = make_mcmc_adapter(mcmc_kernel, **mcmc_kernel_kwargs)
     delegate = bj_persistent.build_kernel(
         logprior_fn,
@@ -46,6 +41,7 @@ def build_step(
         mcmc_init_fn,
         resampling_fn,
         update_strategy,
+        batch_size=batch_size,
     )
 
     def step(rng_key, state, tempering_param, mcmc_parameters):
@@ -82,14 +78,21 @@ def init_params(
     return _ensure_param_batch(_params_to_dict(params), shared=True)
 
 
-def init(particles, *, logprior_fn=None, loglikelihood_fn=None, n_schedule: int = 100):
-    if loglikelihood_fn is None:
-        loglikelihood_fn = _ll_fn_holder[0]
+def init(
+    particles,
+    *,
+    logprior_fn=None,
+    loglikelihood_fn=None,
+    n_schedule: int = 100,
+    batch_size=0,
+):
     if loglikelihood_fn is None:
         raise ValueError(
-            "loglikelihood_fn must be provided either directly or via build_step."
+            "loglikelihood_fn must be supplied explicitly or bound by the constructor."
         )
-    return bj_persistent.init(particles, loglikelihood_fn, n_schedule)
+    return bj_persistent.init(
+        particles, loglikelihood_fn, n_schedule, batch_size=batch_size
+    )
 
 
 persistent_smc = make_smc_api(
