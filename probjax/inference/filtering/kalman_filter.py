@@ -93,7 +93,7 @@ def default_logdet(S, dense_mem_limit=200):
 
 
 def _innovation_ll(residual, S, solve_fn=default_solve, logdet_fn=default_logdet):
-    """Gaussian innovation log-likelihood ``-0.5 * (logdet(S) + r' S^-1 r)``.
+    """Normalized Gaussian innovation log-likelihood, including ``n*log(2*pi)``.
 
     Shared by the KF/EKF update, the UKF and the rank-reduced KF so the
     formula cannot drift between filters. ``solve_fn``/``logdet_fn`` default

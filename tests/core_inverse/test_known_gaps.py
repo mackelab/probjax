@@ -77,7 +77,6 @@ def test_scan_with_a_counter_carry():
     _assert_roundtrip(fn, inverse(fn)(y), y)
 
 
-@_XFAIL
 def test_lax_map_of_an_affine_map():
     # Elementwise y = 2t + 1, so t = (y - 1) / 2 uniquely.
     fn = lambda t: lax.map(lambda u: 2.0 * u + 1.0, t)  # noqa: E731

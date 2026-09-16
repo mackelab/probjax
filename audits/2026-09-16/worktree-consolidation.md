@@ -47,3 +47,21 @@ hardware. The local NVIDIA driver is unavailable.
 Validation logs and final CI status are recorded in the PR. The initial strict
 docs build passed. The nested-inverse regression selection passed (7 tests),
 and the Mamba multi-tile dispatch/gradient regressions passed (2 tests).
+
+The consolidated CI run (35139676908) completed the full CPU suite and reported
+3,611 passes, 837 skips, 10 expected failures, one non-strict unexpected pass,
+and five stale test expectations. Two strict xfail markers covered newly
+supported inverse operations; three Mamba dispatch mocks assumed the former
+multi-tile Pallas path. The follow-up removes those two obsolete markers and
+uses single-tile inputs for the fused-dispatch tests, retaining the separate
+multi-tile value/gradient regressions. Coverage instrumentation reported 73.53%.
+
+The revised documentation harness executes each page once, preserving cumulative
+state and block-level error reporting; 12 checks passed and 3 skipped in 34.36s.
+The final multi-device attention selection passed both tests (5.82s).
+
+GitHub's main ruleset requires one approving review and approval of the latest
+push. Auto-merge is disabled. No repository protection settings were changed.
+
+Final affected-file regression suite: 58 passed, 3 skipped, 2 deselected,
+9 expected failures and 1 pre-existing non-strict unexpected pass (51.63s).
