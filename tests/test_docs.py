@@ -129,25 +129,31 @@ def test_every_python_block_runs(page):
     if not blocks:
         pytest.skip("no executable python blocks")
 
-    script = ""
-    for index, block in enumerate(blocks):
-        script += block + "\n"
-        completed = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True,
-            env={
-                "JAX_PLATFORMS": "cpu",
-                "PATH": "/usr/bin:/bin",
-                "HOME": str(pathlib.Path.home()),
-            },
-            timeout=900,
-        )
-        if completed.returncode != 0:
-            tail = [ln for ln in completed.stderr.strip().splitlines() if ln.strip()]
-            pytest.fail(
-                f"{page.name} block {index} failed:\n  " + "\n  ".join(tail[-6:])
-            )
+    # One interpreter per page preserves cumulative state without re-running
+    # earlier blocks (and recompiling JAX programs) for each subsequent block.
+    script = (
+        "namespace = {'__name__': '__main__'}\n"
+        f"blocks = {blocks!r}\n"
+        "for index, block in enumerate(blocks):\n"
+        "    try:\n"
+        f"        exec(compile(block, {str(page)!r} + f':block {{index}}', 'exec'), namespace)\n"
+        "    except Exception as error:\n"
+        "        raise RuntimeError(f'documentation block {index} failed') from error\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        env={
+            "JAX_PLATFORMS": "cpu",
+            "PATH": "/usr/bin:/bin",
+            "HOME": str(pathlib.Path.home()),
+        },
+        timeout=900,
+    )
+    if completed.returncode != 0:
+        tail = [ln for ln in completed.stderr.strip().splitlines() if ln.strip()]
+        pytest.fail(f"{page.name} failed:\n  " + "\n  ".join(tail[-12:]))
 
 
 # ---------------------------------------------------------------------------
