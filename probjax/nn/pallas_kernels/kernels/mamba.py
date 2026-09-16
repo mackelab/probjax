@@ -1090,12 +1090,11 @@ def compute_mamba_scan(
         A [batch_size, seqlen, inner_dim] jax.Array representing the Mamba scan's output.
 
     Note:
-        Pallas has no CPU backend for this kernel, so on CPU this runs a
-        pure-JAX associative scan of the same recurrence (differentiated
-        through by autodiff) instead of raising. It is exact up to
-        floating-point reassociation, but sequential hardware cannot exploit
-        the scan's parallelism -- fine for development and tests, not for
-        large production runs.
+        CPU and multi-tile GPU calls use a pure-JAX associative scan,
+        differentiated through by autodiff. GPU programs cannot safely share
+        the TPU kernel's carry across sequence or dimension tiles. Single-tile
+        GPU calls retain the fused kernel. These paths agree up to floating-
+        point reassociation; the GPU fallback's performance is unbenchmarked.
     """
     _validate_mamba_runtime_inputs(
         x,
@@ -1111,6 +1110,14 @@ def compute_mamba_scan(
     backend = jax.default_backend()
     pallas_backend = _pallas_backend()
     if backend == "cpu":
+        return _mamba_scan_associative(x, a, b, c, delta, d)
+    # GPU programs are unordered: the TPU kernel's shared carry cannot be
+    # handed from one sequence/dimension tile to another without a barrier.
+    # Keep the fused single-tile path; use a differentiable associative scan
+    # when multiple programs would race on that carry.
+    if backend == "gpu" and (
+        x.shape[1] > seq_tile_size or x.shape[2] > dim_tile_size
+    ):
         return _mamba_scan_associative(x, a, b, c, delta, d)
     if backend not in ("tpu", "gpu"):
         raise RuntimeError(

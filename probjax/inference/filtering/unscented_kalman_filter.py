@@ -4,7 +4,8 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from probjax.inference.filtering.base import FilterAPI
+from probjax.inference.filtering.base import FilterAPI, _gaussian_unpack
+from probjax.inference.filtering.kalman_filter import _innovation_ll
 
 
 class UnscentedKalmanFilterState(NamedTuple):
@@ -298,9 +299,11 @@ def build_kernel(
             cov1 = cov1_ - jnp.dot(K, jnp.dot(cov_y, K.T))
 
             # Compute the log-likelihood
-            log_likelihood = -0.5 * (
-                r.size * jnp.log(2 * jnp.pi)
-                + jnp.linalg.slogdet(cov_y)[1] + r.T @ jnp.linalg.solve(cov_y, r)
+            log_likelihood = _innovation_ll(
+                r,
+                cov_y,
+                solve_fn=lambda S, res: jnp.linalg.solve(S, res),
+                logdet_fn=lambda S: jnp.linalg.slogdet(S)[1],
             )
 
             return UnscentedKalmanFilterState(mu1, cov1, t), UnscentedKalmanFilterInfo(
@@ -335,6 +338,4 @@ class ukf(FilterAPI):
     init = init
     build_kernel = build_kernel
 
-    @staticmethod
-    def default_unpack(state, info):
-        return (state.mean, state.cov)
+    default_unpack = staticmethod(_gaussian_unpack)

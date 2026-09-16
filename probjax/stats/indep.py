@@ -167,31 +167,43 @@ class indep_gen(rv_generic):
         return jnp.exp(cls.logpdf(x, base_dists, reinterpreted_batch_ndims, **kwargs))
 
     @classmethod
-    def logpdf(cls, x, base_dists, reinterpreted_batch_ndims=1, **kwargs):
-        """Log of the probability density function of the independent distribution."""
-        batch_shape, event_shape, split_dims, split_indices = determine_shapes(
+    def _split_inputs(cls, x, base_dists, reinterpreted_batch_ndims=1):
+        """Split input along the last dimension into per-component pieces."""
+        _, _, _, split_indices = determine_shapes(base_dists, reinterpreted_batch_ndims)
+        return jnp.split(x, split_indices, axis=-1)
+
+    @classmethod
+    def _collapse(cls, value, reinterpreted_batch_ndims, op):
+        """Reduce stacked values up to reinterpreted batch ndims."""
+        for _ in range(reinterpreted_batch_ndims):
+            value = op(value, axis=-1)
+        return value
+
+    @classmethod
+    def _stack_stat(cls, base_dists, reinterpreted_batch_ndims, name, kwargs):
+        """Stack a per-component statistic and reshape to batch + event."""
+        batch_shape, event_shape, _, _ = determine_shapes(
             base_dists, reinterpreted_batch_ndims
         )
+        if len(base_dists) == 1:
+            return getattr(base_dists[0], name)(*kwargs)
+        stats = jnp.stack([getattr(d, name)(*kwargs) for d in base_dists], axis=-1)
+        return stats.reshape(batch_shape + event_shape)
 
-        # Split the input along the last dimension
-        split_value = jnp.split(x, split_indices, axis=-1)
+    @classmethod
+    def logpdf(cls, x, base_dists, reinterpreted_batch_ndims=1, **kwargs):
+        """Log of the probability density function of the independent distribution."""
+        split_value = cls._split_inputs(x, base_dists, reinterpreted_batch_ndims)
 
         # Compute logpdf for each base distribution
         logpdf = sum(d.logpdf(v) for d, v in zip(base_dists, split_value, strict=False))
         # Sum up to be of shape reinterpreted_batch_ndins
-        for _ in range(reinterpreted_batch_ndims):
-            logpdf = jnp.sum(logpdf, axis=-1)
-        return logpdf
+        return cls._collapse(logpdf, reinterpreted_batch_ndims, jnp.sum)
 
     @classmethod
     def cdf(cls, x, base_dists, reinterpreted_batch_ndims=1, **kwargs):
         """Cumulative distribution function of the independent distribution."""
-        batch_shape, event_shape, split_dims, split_indices = determine_shapes(
-            base_dists, reinterpreted_batch_ndims
-        )
-
-        # Split the input along the last dimension
-        split_value = jnp.split(x, split_indices, axis=-1)
+        split_value = cls._split_inputs(x, base_dists, reinterpreted_batch_ndims)
 
         # Compute CDF for each base distribution
         cdf = jnp.prod([
@@ -199,9 +211,7 @@ class indep_gen(rv_generic):
         ])
 
         # Product up to be of shape reinterpreted_batch_ndims
-        for _ in range(reinterpreted_batch_ndims):
-            cdf = jnp.prod(cdf, axis=-1)
-        return cdf
+        return cls._collapse(cdf, reinterpreted_batch_ndims, jnp.prod)
 
     @classmethod
     def _rvs_impl(
@@ -231,50 +241,22 @@ class indep_gen(rv_generic):
     @classmethod
     def mean(cls, base_dists, reinterpreted_batch_ndims=1, **kwargs):
         """Mean of the independent distribution."""
-        batch_shape, event_shape, split_dims, split_indices = determine_shapes(
-            base_dists, reinterpreted_batch_ndims
-        )
-        if len(base_dists) == 1:
-            return base_dists[0].mean(*kwargs)
-        else:
-            means = jnp.stack([d.mean(*kwargs) for d in base_dists], axis=-1)
-            return means.reshape(batch_shape + event_shape)
+        return cls._stack_stat(base_dists, reinterpreted_batch_ndims, "mean", kwargs)
 
     @classmethod
     def var(cls, base_dists, reinterpreted_batch_ndims=1, **kwargs):
         """Variance of the independent distribution."""
-        batch_shape, event_shape, split_dims, split_indices = determine_shapes(
-            base_dists, reinterpreted_batch_ndims
-        )
-        if len(base_dists) == 1:
-            return base_dists[0].var(*kwargs)
-        else:
-            variances = jnp.stack([d.var(*kwargs) for d in base_dists], axis=-1)
-            return variances.reshape(batch_shape + event_shape)
+        return cls._stack_stat(base_dists, reinterpreted_batch_ndims, "var", kwargs)
 
     @classmethod
     def entropy(cls, base_dists, reinterpreted_batch_ndims=1, **kwargs):
         """Entropy of the independent distribution."""
-        batch_shape, event_shape, split_dims, split_indices = determine_shapes(
-            base_dists, reinterpreted_batch_ndims
-        )
-        if len(base_dists) == 1:
-            return base_dists[0].entropy(*kwargs)
-        else:
-            entropies = jnp.stack([d.entropy(*kwargs) for d in base_dists], axis=-1)
-            return entropies.reshape(batch_shape + event_shape)
+        return cls._stack_stat(base_dists, reinterpreted_batch_ndims, "entropy", kwargs)
 
     @classmethod
     def mode(cls, base_dists, reinterpreted_batch_ndims=1, **kwargs):
         """Mode of the independent distribution."""
-        batch_shape, event_shape, split_dims, split_indices = determine_shapes(
-            base_dists, reinterpreted_batch_ndims
-        )
-        if len(base_dists) == 1:
-            return base_dists[0].mode(*kwargs)
-        else:
-            modes = jnp.stack([d.mode(*kwargs) for d in base_dists], axis=-1)
-            return modes.reshape(batch_shape + event_shape)
+        return cls._stack_stat(base_dists, reinterpreted_batch_ndims, "mode", kwargs)
 
     @classmethod
     def fit(cls, data, base_dists, reinterpreted_batch_ndims=1, **kwargs):

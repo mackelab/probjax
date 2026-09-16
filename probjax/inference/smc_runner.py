@@ -6,8 +6,8 @@ from typing import Optional, Tuple
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.base import SMCResult
-from probjax.utils.jaxutils import WithProgressBarAPI, print_scan
+from probjax.inference.base import SMCResult, RunnerMixin
+from probjax.utils.jaxutils import WithProgressBarAPI
 
 
 def _sampler_state(state):
@@ -112,7 +112,7 @@ def _run_fixed(
     )
 
 
-class SMC(WithProgressBarAPI):
+class SMC(WithProgressBarAPI, RunnerMixin):
     """Compiled SMC runners, retaining evidence and final diagnostics by default.
 
     ``info`` remains the optional legacy trace. ``final_info`` is the last kernel
@@ -259,25 +259,6 @@ class SMC(WithProgressBarAPI):
             key,
         )
 
-    def _verbose_scan(self, f, init, xs, length, stats_fn):
-        def wrapped(carry, x):
-            state, y = f(carry[0], x)
-            return (state,), y
-
-        update_stats, print_fn, init_stats, print_rate = self._make_verbose_fns(
-            length, stats_fn=lambda carry, y: stats_fn(carry[0], y)
-        )
-        (state,), y = print_scan(
-            wrapped,
-            (init,),
-            init_stats,
-            xs,
-            length,
-            update_stats=update_stats,
-            print_fn=print_fn,
-            print_rate=print_rate,
-        )
-        return state, y
 
     def run(self, key, state, tempering_params, params, *, initial_log_evidence=None):
         if self.verbose:

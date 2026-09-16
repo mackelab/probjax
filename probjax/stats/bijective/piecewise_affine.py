@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
+from probjax.stats.bijective._spline_common import linear_tail, merge3, select_bin
 
 
 def _piecewise_affine_spline_fwd(
@@ -25,21 +26,7 @@ def _piecewise_affine_spline_fwd(
     x_pos = jnp.asarray(x_pos)
     y_pos = jnp.asarray(y_pos)
 
-    below_range = x <= x_pos[0]
-    above_range = x >= x_pos[-1]
-
-    # Bin selection mask
-    correct_bin = jnp.logical_and(x >= x_pos[:-1], x < x_pos[1:])
-    any_bin_in_range = jnp.any(correct_bin)
-    first_bin = jnp.concatenate([
-        jnp.array([True]),
-        jnp.zeros(len(correct_bin) - 1, dtype=bool),
-    ])
-    correct_bin = jnp.where(any_bin_in_range, correct_bin, first_bin)
-
-    params = jnp.stack([x_pos, y_pos], axis=1)
-    left = jnp.sum(correct_bin[:, None] * params[:-1], axis=0)
-    right = jnp.sum(correct_bin[:, None] * params[1:], axis=0)
+    below_range, above_range, left, right = select_bin(x, x_pos, (x_pos, y_pos))
 
     x_l, y_l = left[0], left[1]
     x_r, y_r = right[0], right[1]
@@ -50,41 +37,18 @@ def _piecewise_affine_spline_fwd(
     y_mid = y_l + s * (x - x_l)
     logdet_mid = jnp.log(jnp.abs(s))
 
-    # ----- lower tail -----
-    slope_below = 1.0
-    y_below = (x - x_pos[0]) * slope_below + y_pos[0]
-    logdet_below = jnp.log(jnp.abs(slope_below))
-    if x_min is not None and y_min is not None:
-        denom = x_pos[0] - x_min
-        denom = jnp.where(denom == 0.0, 1e-6, denom)
-        slope_bl = (y_pos[0] - y_min) / denom
-        y_lin = y_min + slope_bl * (x - x_min)
-        y_lin = jnp.where(x <= x_min, y_min, y_lin)
-        y_below = jnp.where(jnp.isnan(slope_bl), y_below, y_lin)
-        logdet_below = jnp.where(
-            jnp.isnan(slope_bl), logdet_below, jnp.log(jnp.abs(slope_bl))
-        )
+    # ----- lower tail (unbounded slope 1.0) -----
+    y_below, logdet_below = linear_tail(
+        x, x_pos[0], y_pos[0], x_min, y_min, 1.0, side="below"
+    )
 
-    # ----- upper tail -----
-    slope_above = 1.0
-    y_above = (x - x_pos[-1]) * slope_above + y_pos[-1]
-    logdet_above = jnp.log(jnp.abs(slope_above))
-    if x_max is not None and y_max is not None:
-        denom = x_max - x_pos[-1]
-        denom = jnp.where(denom == 0.0, 1e-6, denom)
-        slope_ab = (y_max - y_pos[-1]) / denom
-        y_lin = y_pos[-1] + slope_ab * (x - x_pos[-1])
-        y_lin = jnp.where(x >= x_max, y_max, y_lin)
-        y_above = jnp.where(jnp.isnan(slope_ab), y_above, y_lin)
-        logdet_above = jnp.where(
-            jnp.isnan(slope_ab), logdet_above, jnp.log(jnp.abs(slope_ab))
-        )
+    # ----- upper tail (unbounded slope 1.0) -----
+    y_above, logdet_above = linear_tail(
+        x, x_pos[-1], y_pos[-1], x_max, y_max, 1.0, side="above"
+    )
 
-    y = jnp.where(below_range, y_below, y_mid)
-    y = jnp.where(above_range, y_above, y)
-
-    logdet = jnp.where(below_range, logdet_below, logdet_mid)
-    logdet = jnp.where(above_range, logdet_above, logdet)
+    y = merge3(below_range, above_range, y_below, y_mid, y_above)
+    logdet = merge3(below_range, above_range, logdet_below, logdet_mid, logdet_above)
     return y, logdet
 
 
@@ -105,20 +69,7 @@ def _piecewise_affine_spline_inv(
     x_pos = jnp.asarray(x_pos)
     y_pos = jnp.asarray(y_pos)
 
-    below_range = y <= y_pos[0]
-    above_range = y >= y_pos[-1]
-
-    correct_bin = jnp.logical_and(y >= y_pos[:-1], y < y_pos[1:])
-    any_bin_in_range = jnp.any(correct_bin)
-    first_bin = jnp.concatenate([
-        jnp.array([True]),
-        jnp.zeros(len(correct_bin) - 1, dtype=bool),
-    ])
-    correct_bin = jnp.where(any_bin_in_range, correct_bin, first_bin)
-
-    params = jnp.stack([x_pos, y_pos], axis=1)
-    left = jnp.sum(correct_bin[:, None] * params[:-1], axis=0)
-    right = jnp.sum(correct_bin[:, None] * params[1:], axis=0)
+    below_range, above_range, left, right = select_bin(y, y_pos, (x_pos, y_pos))
 
     x_l, y_l = left[0], left[1]
     x_r, y_r = right[0], right[1]
@@ -129,41 +80,18 @@ def _piecewise_affine_spline_inv(
     x_mid = x_l + (y - y_l) / s
     logdet_mid = -jnp.log(jnp.abs(s))
 
-    # lower tail (unbounded / bounded)
-    slope_below = 1.0  # / s[0]
-    x_below = x_pos[0] + slope_below * (y - y_pos[0])
-    logdet_below = jnp.log(jnp.abs(slope_below))
-    if y_min is not None and x_min is not None:
-        denom = y_pos[0] - y_min
-        denom = jnp.where(denom == 0.0, 1e-6, denom)
-        slope_bl = (x_pos[0] - x_min) / denom
-        x_lin = x_min + slope_bl * (y - y_min)
-        x_lin = jnp.where(y <= y_min, x_min, x_lin)
-        x_below = jnp.where(jnp.isnan(slope_bl), x_below, x_lin)
-        logdet_below = jnp.where(
-            jnp.isnan(slope_bl), logdet_below, jnp.log(jnp.abs(slope_bl))
-        )
+    # lower tail (unbounded slope 1.0)
+    x_below, logdet_below = linear_tail(
+        y, y_pos[0], x_pos[0], y_min, x_min, 1.0, side="below"
+    )
 
-    # upper tail
-    slope_above = 1.0  # / s[-1]
-    x_above = x_pos[-1] + slope_above * (y - y_pos[-1])
-    logdet_above = jnp.log(jnp.abs(slope_above))
-    if y_max is not None and x_max is not None:
-        denom = y_max - y_pos[-1]
-        denom = jnp.where(denom == 0.0, 1e-6, denom)
-        slope_ab = (x_max - x_pos[-1]) / denom
-        x_lin = x_pos[-1] + slope_ab * (y - y_pos[-1])
-        x_lin = jnp.where(y >= y_max, x_max, x_lin)
-        x_above = jnp.where(jnp.isnan(slope_ab), x_above, x_lin)
-        logdet_above = jnp.where(
-            jnp.isnan(slope_ab), logdet_above, jnp.log(jnp.abs(slope_ab))
-        )
+    # upper tail (unbounded slope 1.0)
+    x_above, logdet_above = linear_tail(
+        y, y_pos[-1], x_pos[-1], y_max, x_max, 1.0, side="above"
+    )
 
-    x_out = jnp.where(below_range, x_below, x_mid)
-    x_out = jnp.where(above_range, x_above, x_out)
-
-    logdet = jnp.where(below_range, logdet_below, logdet_mid)
-    logdet = jnp.where(above_range, logdet_above, logdet)
+    x_out = merge3(below_range, above_range, x_below, x_mid, x_above)
+    logdet = merge3(below_range, above_range, logdet_below, logdet_mid, logdet_above)
     return x_out, logdet
 
 

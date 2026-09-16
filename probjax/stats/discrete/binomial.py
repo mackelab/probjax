@@ -14,7 +14,8 @@ from jax.scipy.stats import binom
 
 from probjax.stats.base import rv_discrete, rv_exponential_family
 from probjax.stats.constraints import strict_positive_integer, unit_interval
-from probjax.stats.utils import flatten_samples, normalize_sample_weights
+from probjax.stats.discrete._ppf_search import ppf_by_cdf_search
+from probjax.stats.utils import weighted_mean
 from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["binomial"]
@@ -32,11 +33,6 @@ class binomial_gen(rv_discrete, rv_exponential_family):
     def support(cls, n, probs, **kwds):
         """Support of the Binomial distribution."""
         return (0, n)
-
-    @classmethod
-    def pmf(cls, k: ArrayLike, n, probs, **kwds):
-        """Probability mass function of the Binomial distribution."""
-        return jnp.exp(cls.logpmf(k, n, probs, **kwds))
 
     @classmethod
     def logpmf(cls, k: ArrayLike, n, probs, **kwds):
@@ -103,42 +99,7 @@ class binomial_gen(rv_discrete, rv_exponential_family):
         n = jnp.asarray(n, dtype=jnp.int32)  # Ensure n is an integer
         probs = jnp.asarray(probs)
 
-        # Ensure q is between 0 and 1
-        q = jnp.clip(q, 0, 1)
-
-        # Define the single-element version of the function
-        def ppf_single(q_single, n_single, probs_single):
-            def body_fun(state):
-                k, found = state
-                cdf_val = cls.cdf(k, n_single, probs_single)
-                found = found | (cdf_val >= q_single)
-                return (k + 1, found)
-
-            def cond_fun(state):
-                k, found = state
-                # Also check k <= n_single to prevent infinite loop if q is close to 1
-                # and cdf never quite reaches q due to floating point inaccuracies.
-                return ~found & (k <= n_single)
-
-            # Initialize with k=0 and found=False
-            init_state = (0, False)
-
-            # Use jax.lax.while_loop to find the smallest k
-            final_k, _ = jax.lax.while_loop(cond_fun, body_fun, init_state)
-
-            # final_k could be n_single + 1 if q is 1 or very close to 1.
-            # If final_k is n_single + 1, it means the loop terminated because k > n_single,
-            # and the actual ppf should be n_single.
-            # Otherwise, it's final_k - 1 because we incremented one too many times.
-            return jnp.where(final_k > n_single, n_single, final_k - 1)
-
-        # Vectorize the function over the inputs
-        # Ensure all inputs are broadcastable
-        q_b, n_b, probs_b = jnp.broadcast_arrays(q, n, probs)
-        for _ in range(q_b.ndim):
-            ppf_single = jax.vmap(ppf_single)
-
-        return ppf_single(q_b, n_b, probs_b)
+        return ppf_by_cdf_search(q, cls.cdf, n, probs, hi=n)
 
     @classmethod
     def _rvs_impl(
@@ -258,17 +219,7 @@ class binomial_gen(rv_discrete, rv_exponential_family):
         params : tuple
             The fitted parameters (n, p)
         """
-        data = flatten_samples(data)
-        dtype = data.dtype
-        weights_arr = normalize_sample_weights(
-            weights,
-            n_samples=data.shape[0],
-            dtype=dtype,
-        )
-        if weights_arr is not None:
-            mean_successes = jnp.sum(weights_arr * data)
-        else:
-            mean_successes = jnp.mean(data)
+        mean_successes = weighted_mean(data, weights)
         p = mean_successes / n
         return (n, p)
 

@@ -18,6 +18,11 @@ from probjax.utils.typing import Array, ArrayLike, RngKey
 __all__ = ["uniform"]
 
 
+def _loc_scale(low, high):
+    """Convert bounds to loc/scale: JAX uniform is [loc, loc + scale]."""
+    return low, high - low
+
+
 class uniform_gen(rv_continuous):
     """Uniform continuous random variable.
 
@@ -40,26 +45,6 @@ class uniform_gen(rv_continuous):
         return interval(low, high)
 
     @classmethod
-    def pdf(cls, x, low=0.0, high=1.0, **kwargs):
-        """Probability density function of the uniform distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        low : float, optional
-            Lower bound of the distribution. Default is 0.
-        high : float, optional
-            Upper bound of the distribution. Default is 1.
-
-        Returns
-        -------
-        pdf : ndarray
-            Probability density function evaluated at x
-        """
-        return jnp.exp(cls.logpdf(x, low, high, **kwargs))
-
-    @classmethod
     def logpdf(cls, x, low=0.0, high=1.0, **kwargs):
         """Log of the probability density function of the uniform distribution.
 
@@ -78,9 +63,7 @@ class uniform_gen(rv_continuous):
             Log of the probability density function evaluated at x
         """
         # Scale to [0, 1] for the JAX implementation
-        loc = low
-        scale = high - low
-        # JAX uniform is [loc, loc+scale]
+        loc, scale = _loc_scale(low, high)
         return _uniform.logpdf(x, loc, scale)
 
     @classmethod
@@ -101,8 +84,7 @@ class uniform_gen(rv_continuous):
         cdf : ndarray
             Cumulative distribution function evaluated at x
         """
-        loc = low
-        scale = high - low
+        loc, scale = _loc_scale(low, high)
         return _uniform.cdf(x, loc, scale)
 
     @classmethod
@@ -123,8 +105,7 @@ class uniform_gen(rv_continuous):
         logcdf : ndarray
             Log of the cumulative distribution function evaluated at x
         """
-        loc = low
-        scale = high - low
+        loc, scale = _loc_scale(low, high)
         return jnp.log(_uniform.cdf(x, loc, scale))
 
     @classmethod
@@ -145,8 +126,7 @@ class uniform_gen(rv_continuous):
         ppf : ndarray
             Quantile corresponding to the lower tail probability q
         """
-        loc = low
-        scale = high - low
+        loc, scale = _loc_scale(low, high)
         return _uniform.ppf(q, loc, scale)
 
     @classmethod
@@ -182,8 +162,7 @@ class uniform_gen(rv_continuous):
         sf : ndarray
             Survival function evaluated at x
         """
-        loc = low
-        scale = high - low
+        loc, scale = _loc_scale(low, high)
         return _uniform.sf(x, loc, scale)
 
     @classmethod
@@ -204,8 +183,7 @@ class uniform_gen(rv_continuous):
         isf : ndarray
             Quantile corresponding to the upper tail probability q
         """
-        loc = low
-        scale = high - low
+        loc, scale = _loc_scale(low, high)
         return _uniform.isf(q, loc, scale)
 
     @classmethod
@@ -242,7 +220,8 @@ class uniform_gen(rv_continuous):
         Returns
         -------
         mode : float
-            Mode of the distribution (technically any value in the range, we return the middle)
+            Mode of the distribution (technically any value in the range, we
+            return the middle)
         """
         return (
             low + high

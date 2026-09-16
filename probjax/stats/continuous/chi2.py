@@ -9,6 +9,7 @@ from probjax.stats.base import rv_continuous
 from probjax.stats.constraints import real, strict_positive, strict_positive_integer
 from probjax.stats.utils import (
     flatten_samples,
+    loc_scale_sample,
     mean_and_var_1d,
     normalize_sample_weights,
 )
@@ -20,7 +21,8 @@ __all__ = ["chi2"]
 class chi2_gen(rv_continuous):
     """Chi-squared continuous random variable.
 
-    The chi-squared distribution with degrees of freedom `df`, location `loc`, and scale `scale`.
+    The chi-squared distribution with degrees of freedom `df`, location
+    `loc`, and scale `scale`.
 
     Parameters
     ----------
@@ -70,11 +72,9 @@ class chi2_gen(rv_continuous):
         **kwargs,
     ) -> Array:
         """Random variates of the chi-squared distribution."""
-        df = jnp.asarray(df)
-        loc = jnp.asarray(loc)
-        scale = jnp.asarray(scale)
-        event_shape = jnp.broadcast_shapes(df.shape, loc.shape, scale.shape)
-        return random.chisquare(rng, df, shape=shape + event_shape) * scale + loc
+        return loc_scale_sample(
+            rng, random.chisquare, df, shape=shape, loc=loc, scale=scale
+        )
 
     @classmethod
     def mean(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):

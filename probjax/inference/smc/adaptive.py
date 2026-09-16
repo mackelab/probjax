@@ -1,13 +1,10 @@
 from typing import Callable, Dict, Optional
 
 import blackjax
-import jax
 from blackjax.smc import adaptive_tempered as bj_adaptive_tempered
 
 from probjax.inference.smc.base import (
-    _ensure_param_batch,
-    _filter_kwargs,
-    _params_to_dict,
+    init_mcmc_params_from_logdensity,
     make_mcmc_adapter,
     make_smc_api,
 )
@@ -66,21 +63,20 @@ def init_params(
 ) -> Dict:
     if getattr(path, "is_geometric", False) is not True:
         raise ValueError("adaptive SMC is only supported for the geometric path.")
-    mcmc_kernel_kwargs = mcmc_kernel_kwargs or {}
     path_kwargs = path_kwargs or {}
-    mcmc_init_fn, _ = make_mcmc_adapter(mcmc_kernel, **mcmc_kernel_kwargs)
-    particle0 = jax.tree_util.tree_map(lambda x: x[0], particles)
     logposterior_fn = path.logdensity_fn(
         path.initial_param(**path_kwargs),
         logprior_fn=logprior_fn,
         loglikelihood_fn=loglikelihood_fn,
     )
-    mcmc_state = mcmc_init_fn(particle0, logposterior_fn, rng_key=rng_key)
-    init_param_kwargs = _filter_kwargs(
-        mcmc_kernel.init_params, mcmc_param_kwargs, allow_kwargs=False
+    return init_mcmc_params_from_logdensity(
+        particles,
+        logposterior_fn,
+        mcmc_kernel,
+        rng_key=rng_key,
+        mcmc_kernel_kwargs=mcmc_kernel_kwargs,
+        **mcmc_param_kwargs,
     )
-    params = mcmc_kernel.init_params(mcmc_state, **init_param_kwargs)
-    return _ensure_param_batch(_params_to_dict(params), shared=True)
 
 
 def init(particles, **_):

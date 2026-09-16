@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from probjax.inference.filtering.base import FilterAPI
+from probjax.inference.filtering.base import FilterAPI, _gaussian_unpack
 from probjax.utils.linalg import batched_pcg_solve, lanczos_logdet
 from probjax.utils.linear_operator import LinearOperator
 
@@ -92,6 +92,17 @@ def default_logdet(S, dense_mem_limit=200):
     return jnp.linalg.slogdet(jnp.asarray(S)).logabsdet
 
 
+def _innovation_ll(residual, S, solve_fn=default_solve, logdet_fn=default_logdet):
+    """Gaussian innovation log-likelihood ``-0.5 * (logdet(S) + r' S^-1 r)``.
+
+    Shared by the KF/EKF update, the UKF and the rank-reduced KF so the
+    formula cannot drift between filters. ``solve_fn``/``logdet_fn`` default
+    to the dense/iterative-dispatched versions; callers with exact legacy
+    ops pass them explicitly.
+    """
+    return -0.5 * (residual.size * jnp.log(2 * jnp.pi) + logdet_fn(S) + residual.T @ solve_fn(S, residual))
+
+
 def _kalman_update(
     mu1_: ArrayLike,
     cov1_: ArrayLike,
@@ -155,12 +166,53 @@ def _kalman_update(
     else:
         cov1 = cov1_ - K @ C @ cov1_
 
-    logdet = logdet_fn_(S)
-    log_likelihood = -0.5 * (
-        r.size * jnp.log(2 * jnp.pi) + logdet + r.T @ solve_fn(S, r)
-    )
+    log_likelihood = _innovation_ll(r, S, solve_fn=solve_fn, logdet_fn=logdet_fn_)
 
     return jnp.asarray(mu1), jnp.asarray(cov1), log_likelihood
+
+
+def _gaussian_filter_template(
+    state,
+    t,
+    observed,
+    predict_fn,
+    observe_fn,
+    linear_solve=None,
+    logdet_fn=None,
+    symmetrize=False,
+):
+    """Shared predict/update skeleton for Gaussian (EKF-family) filters.
+
+    ``predict_fn(mu0, cov0, t_old, t)`` returns ``(mu1_, cov1_)``;
+    ``observe_fn(mu1_, cov1_, t)`` returns ``(y_, C, R)``. Everything else
+    (observed fork, solver defaulting, state/info construction) is shared.
+    """
+    mu0 = state.mean
+    cov0 = state.cov
+    t_old = state.t
+    is_observed = observed is not None
+
+    mu1_, cov1_ = predict_fn(mu0, cov0, t_old, t)
+
+    if is_observed:
+        y_, C, R = observe_fn(mu1_, cov1_, t)
+
+        solve = default_solve if linear_solve is None else linear_solve
+        _logdet_fn = logdet_fn if logdet_fn is not None else default_logdet
+
+        mu1, cov1, log_likelihood = _kalman_update(
+            mu1_, cov1_, y_, observed, C, R, solve, _logdet_fn
+        )
+        if symmetrize:
+            cov1 = 0.5 * (cov1 + cov1.T)
+
+        return KalmanFilterState(mu1, cov1, t), KalmanFilterInfo(
+            mu1_, cov1_, log_likelihood
+        )
+    else:
+        return KalmanFilterState(mu1_, cov1_, t), KalmanFilterInfo(
+            mu1_, cov1_, jnp.array(0.0)
+        )
 
 
 # This is the discrete time Kalman filter for a linear Gaussian model of the form:
@@ -177,30 +229,27 @@ def build_kernel(
         observed: Optional[ArrayLike] = None,
         rng_key: Optional[jnp.ndarray] = None,
     ) -> Tuple[KalmanFilterState, KalmanFilterInfo]:
-        mu0 = state.mean
-        cov0 = state.cov
-        t_old = state.t
-        is_observed = observed is not None
+        def predict(mu0, cov0, t_old, t):
+            # Phi - promised to be a linear mapping
+            # Q a positive definite matrix
+            Phi, Q = transition_model_fns(t_old, t)
 
-        # Phi - promised to be a linear mapping
-        # Q a positive definite matrix
-        Phi, Q = transition_model_fns(t_old, t)
+            assert isinstance(Q, (jnp.ndarray, LinearOperator)), (
+                "Q must be an Array or LinearOperator"
+            )
+            assert isinstance(Phi, (jnp.ndarray, LinearOperator)), (
+                "Phi must be an Array or LinearOperator"
+            )
 
-        assert isinstance(Q, (jnp.ndarray, LinearOperator)), (
-            "Q must be an Array or LinearOperator"
-        )
-        assert isinstance(Phi, (jnp.ndarray, LinearOperator)), (
-            "Phi must be an Array or LinearOperator"
-        )
+            # Predict
+            mu1_ = Phi @ mu0
+            cov1_ = Phi @ cov0 @ Phi.T + Q
+            # Materialize predicted covariance — needed for update and info
+            mu1_ = mu1_.as_array() if isinstance(mu1_, LinearOperator) else mu1_
+            cov1_ = cov1_.as_array() if isinstance(cov1_, LinearOperator) else cov1_
+            return mu1_, cov1_
 
-        # Predict
-        mu1_ = Phi @ mu0
-        cov1_ = Phi @ cov0 @ Phi.T + Q
-        # Materialize predicted covariance — needed for update and info
-        mu1_ = mu1_.as_array() if isinstance(mu1_, LinearOperator) else mu1_
-        cov1_ = cov1_.as_array() if isinstance(cov1_, LinearOperator) else cov1_
-
-        if is_observed:
+        def observe(mu1_, cov1_, t):
             C, R = observation_model_fns(t)
 
             assert (
@@ -212,21 +261,11 @@ def build_kernel(
                 hasattr(C, "shape") and hasattr(C, "dtype")
             ), "C must be an Array or LinearOperator"
 
-            y_ = C @ mu1_
-            solve = default_solve if linear_solve is None else linear_solve
-            _logdet_fn = logdet_fn if logdet_fn is not None else default_logdet
+            return C @ mu1_, C, R
 
-            mu1, cov1, log_likelihood = _kalman_update(
-                mu1_, cov1_, y_, observed, C, R, solve, _logdet_fn
-            )
-
-            return KalmanFilterState(mu1, cov1, t), KalmanFilterInfo(
-                mu1_, cov1_, log_likelihood
-            )
-        else:
-            return KalmanFilterState(mu1_, cov1_, t), KalmanFilterInfo(
-                mu1_, cov1_, jnp.array(0.0)
-            )
+        return _gaussian_filter_template(
+            state, t, observed, predict, observe, linear_solve, logdet_fn
+        )
 
     return kernel
 
@@ -256,6 +295,4 @@ class kalman_filter(FilterAPI):
     init = init
     build_kernel = build_kernel
 
-    @staticmethod
-    def default_unpack(state, info):
-        return (state.mean, state.cov)
+    default_unpack = staticmethod(_gaussian_unpack)

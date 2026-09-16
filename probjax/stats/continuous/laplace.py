@@ -14,6 +14,7 @@ from jax.scipy.stats import laplace as _laplace
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
+from probjax.stats.utils import clip_prob, loc_scale_sample
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["laplace"]
@@ -39,26 +40,6 @@ class laplace_gen(rv_continuous, rv_exponential_family):
     def support(cls, loc=0.0, scale=1.0, **kwargs):
         """Support of the Laplace distribution."""
         return real
-
-    @classmethod
-    def pdf(cls, x, loc=0.0, scale=1.0, **kwargs):
-        """Probability density function of the Laplace distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        pdf : ndarray
-            Probability density function evaluated at x
-        """
-        return jnp.exp(cls.logpdf(x, loc, scale, **kwargs))
 
     @classmethod
     def logpdf(cls, x, loc=0.0, scale=1.0, **kwargs):
@@ -175,10 +156,7 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         rvs : ndarray or scalar
             Random variates of given shape
         """
-        loc = jnp.asarray(loc)
-        scale = jnp.asarray(scale)
-        event_shape = jnp.broadcast_shapes(loc.shape, scale.shape)
-        return random.laplace(rng, shape=shape + event_shape) * scale + loc
+        return loc_scale_sample(rng, random.laplace, shape=shape, loc=loc, scale=scale)
 
     @classmethod
     def sf(cls, x, loc=0.0, scale=1.0, **kwargs):
@@ -227,8 +205,7 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         q_arr = jnp.asarray(q)
         loc_arr = jnp.asarray(loc)
         scale_arr = jnp.asarray(scale)
-        eps = jnp.finfo(q_arr.dtype).tiny
-        q_clipped = jnp.clip(q_arr, a_min=eps, a_max=1.0 - eps)
+        q_clipped = clip_prob(q_arr)
         upper_branch = loc_arr + scale_arr * jnp.log(2.0 * (1.0 - q_clipped))
         lower_branch = loc_arr - scale_arr * jnp.log(2.0 * q_clipped)
         return jnp.where(q_clipped > 0.5, upper_branch, lower_branch)
@@ -346,7 +323,7 @@ class laplace_gen(rv_continuous, rv_exponential_family):
 
         even_mask = (k_int % 2 == 0).reshape(expand_shape)
         central_even = jnp.exp(gammaln(k_float + 1.0)).reshape(expand_shape) * (
-            scale_reshaped**k_float.reshape(expand_shape)
+            scale_reshaped ** k_float.reshape(expand_shape)
         )
         central = jnp.where(
             even_mask, central_even, jnp.zeros_like(central_even, dtype=scale_arr.dtype)
@@ -371,7 +348,9 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         skew : float
             Skewness of the distribution
         """
-        return jnp.zeros_like(jnp.asarray(loc))  # Skewness is always 0 (symmetric distribution)
+        return jnp.zeros_like(
+            jnp.asarray(loc)
+        )  # Skewness is always 0 (symmetric distribution)
 
     @classmethod
     def kurtosis(cls, loc=0.0, scale=1.0, **kwargs):

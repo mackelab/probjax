@@ -4,13 +4,11 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from probjax.inference.filtering.base import FilterAPI
+from probjax.inference.filtering.base import FilterAPI, _gaussian_unpack
 from probjax.inference.filtering.kalman_filter import (
     KalmanFilterInfo,
     KalmanFilterState,
-    _kalman_update,
-    default_logdet,
-    default_solve,
+    _gaussian_filter_template,
     init,
 )
 from probjax.utils.linalg import matrix_fraction_decomposition
@@ -46,38 +44,28 @@ def build_kernel(
         observed: Optional[ArrayLike] = None,
         rng_key: Optional[jnp.ndarray] = None,
     ) -> Tuple[KalmanFilterState, KalmanFilterInfo]:
-        mu0 = state.mean
-        cov0 = state.cov
-        t_old = state.t
-        is_observed = observed is not None
+        def predict(mu0, cov0, t_old, t):
+            # Predict: nonlinear mean + linearized covariance
+            mu1_, Phi, Q = transition_model_fn(mu0, cov0, t_old, t)
+            cov1_ = Phi @ cov0 @ Phi.T + Q
+            # Materialize predicted covariance — needed for update step
+            if isinstance(cov1_, LinearOperator):
+                cov1_ = cov1_.as_array()
+            return mu1_, cov1_
 
-        # Predict: nonlinear mean + linearized covariance
-        mu1_, Phi, Q = transition_model_fn(mu0, cov0, t_old, t)
-        cov1_ = Phi @ cov0 @ Phi.T + Q
-        # Materialize predicted covariance — needed for update step
-        if isinstance(cov1_, LinearOperator):
-            cov1_ = cov1_.as_array()
+        def observe(mu1_, cov1_, t):
+            return observation_model_fn(mu1_, cov1_, t)
 
-        if is_observed:
-            y_, C, R = observation_model_fn(mu1_, cov1_, t)
-
-            solve = default_solve if linear_solve is None else linear_solve
-            _logdet_fn = logdet_fn if logdet_fn is not None else default_logdet
-
-            mu1, cov1, log_likelihood = _kalman_update(
-                mu1_, cov1_, y_, observed, C, R, solve, _logdet_fn
-            )
-
-            # Ensure symmetry (EKF linearization can introduce asymmetry)
-            cov1 = 0.5 * (cov1 + cov1.T)
-
-            return KalmanFilterState(mu1, cov1, t), KalmanFilterInfo(
-                mu1_, cov1_, log_likelihood
-            )
-        else:
-            return KalmanFilterState(mu1_, cov1_, t), KalmanFilterInfo(
-                mu1_, cov1_, jnp.array(0.0)
-            )
+        return _gaussian_filter_template(
+            state,
+            t,
+            observed,
+            predict,
+            observe,
+            linear_solve,
+            logdet_fn,
+            symmetrize=True,
+        )
 
     return kernel
 
@@ -241,12 +229,11 @@ class extended_kalman_filter(FilterAPI):
     Helpers for building these callables:
         - `make_linearized_transition(f, Q)`: wraps f(x,t_old,t)->x with auto-Jacobian
         - `make_linearized_observation(h, R)`: wraps h(x,t)->y with auto-Jacobian
-        - `make_continuous_transition(drift, B)`: continuous SDE via matrix fraction decomposition
+        - `make_continuous_transition(drift, B)`: continuous SDE via matrix
+          fraction decomposition
     """
 
     init = init
     build_kernel = build_kernel
 
-    @staticmethod
-    def default_unpack(state, info):
-        return (state.mean, state.cov)
+    default_unpack = staticmethod(_gaussian_unpack)

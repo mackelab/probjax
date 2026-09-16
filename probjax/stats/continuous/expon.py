@@ -13,10 +13,15 @@ from jax.scipy.stats import expon as _expon
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import positive, strict_positive
-from probjax.stats.utils import flatten_samples, normalize_sample_weights
+from probjax.stats.utils import weighted_mean
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["expon"]
+
+
+def _scale(rate):
+    """Convert rate to scale: the JAX implementation uses scale (1/rate)."""
+    return 1.0 / rate
 
 
 class expon_gen(rv_continuous, rv_exponential_family):
@@ -39,24 +44,6 @@ class expon_gen(rv_continuous, rv_exponential_family):
         return positive
 
     @classmethod
-    def pdf(cls, x, rate=1.0, **kwargs):
-        """Probability density function of the exponential distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        rate : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        pdf : ndarray
-            Probability density function evaluated at x
-        """
-        return jnp.exp(cls.logpdf(x, rate, **kwargs))
-
-    @classmethod
     def logpdf(cls, x, rate=1.0, **kwargs):
         """Log of the probability density function of the exponential distribution.
 
@@ -72,8 +59,7 @@ class expon_gen(rv_continuous, rv_exponential_family):
         logpdf : ndarray
             Log of the probability density function evaluated at x
         """
-        # JAX implementation uses scale (1/rate) parameter
-        scale = 1.0 / rate
+        scale = _scale(rate)
         return _expon.logpdf(x, loc=0.0, scale=scale)
 
     @classmethod
@@ -92,7 +78,7 @@ class expon_gen(rv_continuous, rv_exponential_family):
         cdf : ndarray
             Cumulative distribution function evaluated at x
         """
-        scale = 1.0 / rate
+        scale = _scale(rate)
         return _expon.cdf(x, loc=0.0, scale=scale)
 
     @classmethod
@@ -111,7 +97,7 @@ class expon_gen(rv_continuous, rv_exponential_family):
         logcdf : ndarray
             Log of the cumulative distribution function evaluated at x
         """
-        scale = 1.0 / rate
+        scale = _scale(rate)
         return _expon.logcdf(x, loc=0.0, scale=scale)
 
     @classmethod
@@ -130,7 +116,7 @@ class expon_gen(rv_continuous, rv_exponential_family):
         ppf : ndarray
             Quantile corresponding to the lower tail probability q
         """
-        scale = 1.0 / rate
+        scale = _scale(rate)
         return _expon.ppf(q, loc=0.0, scale=scale)
 
     @classmethod
@@ -162,7 +148,7 @@ class expon_gen(rv_continuous, rv_exponential_family):
         sf : ndarray
             Survival function evaluated at x
         """
-        scale = 1.0 / rate
+        scale = _scale(rate)
         return _expon.sf(x, loc=0.0, scale=scale)
 
     @classmethod
@@ -377,19 +363,8 @@ class expon_gen(rv_continuous, rv_exponential_family):
         params : tuple
             The fitted parameters (rate,)
         """
-        data = flatten_samples(data)
-        dtype = data.dtype
-
-        weights_arr = normalize_sample_weights(
-            weights,
-            n_samples=data.shape[0],
-            dtype=dtype,
-        )
-        if weights_arr is None:
-            mean = jnp.mean(data)
-        else:
-            mean = jnp.sum(weights_arr * data)
-        rate = 1.0 / jnp.maximum(mean, jnp.asarray(1e-12, dtype=dtype))
+        mean = weighted_mean(data, weights)
+        rate = 1.0 / jnp.maximum(mean, jnp.asarray(1e-12, dtype=data.dtype))
         return (rate,)
 
 

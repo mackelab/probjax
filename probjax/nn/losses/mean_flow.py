@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 
+from probjax.nn.losses._flow_shared import _prepare_xt_ut, _reduce_diff, _validate_time_batch_shapes
 from probjax.utils.protocols import InterpolationScheduleProtocol
 
 from probjax.utils.protocols import (
@@ -45,22 +46,7 @@ def base_mean_flow_matching_loss(
     original objective, more stable optimization. With ``imf=False``
     the original MeanFlow objective is used instead.
     """
-    xt = schedule.interpolation_fn(t, x0, x1)
-    noise_scale = schedule.interpolation_noise_fn(t, x0, x1)
-    if noise_scale is not None:
-        assert rng is not None, "rng is required when using interpolation_noise_fn"
-        eps = jax.random.normal(rng, shape=xt.shape)
-        xt += noise_scale * eps
-
-    u_t = schedule.interpolation_velocity_fn(t, x0, x1)
-
-    if noise_scale is not None:
-        noise_velocity = schedule.interpolation_noise_velocity_fn(t, x0, x1)
-        if noise_velocity is None:
-            raise ValueError(
-                "interpolation_noise_velocity_fn must be provided when noise is enabled."
-            )
-        u_t = u_t + noise_velocity * eps
+    xt, u_t = _prepare_xt_ut(schedule, t, x0, x1, rng)
 
     def v_fn(r, t, x):
         return model_fn(t, x, *args, r=r, **kwargs)
@@ -81,29 +67,19 @@ def base_mean_flow_matching_loss(
         pred = v_t
         target = jax.lax.stop_gradient(u_t - (t - r) * dv_dt)
 
-    if metric_fn is not None:
-        metric = metric_fn(xt, t)
-        diff = pred - target
-        if len(metric.shape) == 2:
-            metric = jnp.expand_dims(metric, 0)
-        loss = jnp.sum(diff * jnp.einsum("...ij,...j->...i", metric, diff), axis=axis)
-    else:
-        diff = pred - target
-        loss = jnp.sum(diff**2, axis=axis)
+    diff = pred - target
 
-    if adaptive_weight_p > 0:
-        weight = jax.lax.stop_gradient(
-            1 / (jnp.sum(diff**2, axis=axis) + adaptive_weight_eps) ** adaptive_weight_p
-        )
-        loss = loss * weight
-
-    if loss_mask is not None:
-        loss = jnp.where(~loss_mask, loss, 0.0)
-
-    if weight_fn:
-        loss = loss * weight_fn(t).reshape(loss.shape)
-
-    return loss
+    return _reduce_diff(
+        diff,
+        metric_fn,
+        xt,
+        t,
+        axis,
+        adaptive_weight_p,
+        adaptive_weight_eps,
+        loss_mask,
+        weight_fn,
+    )
 
 
 def build_mean_flow_matching_loss_from_schedule(
@@ -147,19 +123,7 @@ def build_mean_flow_matching_loss(
         axis=-1,
         **kwargs,
     ):
-        event_dims = 1 if isinstance(axis, int) else len(axis)
-        if x0.ndim > 1 + event_dims:
-            raise ValueError(
-                "x0 must have at most 1 batch dim + event_dims (len(axis)) dimensions"
-            )
-        if x1.ndim > 1 + event_dims:
-            raise ValueError(
-                "x1 must have at most 1 batch dim + event_dims (len(axis)) dimensions"
-            )
-        if t.ndim > 1 + event_dims and all(t.shape[i] == 1 for i in range(1, t.ndim)):
-            raise ValueError(
-                "t must have at most 1 batch dim + event_dims (len(axis)) dimensions"
-            )
+        axis = _validate_time_batch_shapes(x0, x1, t, axis)
 
         loss = base_mean_flow_matching_loss(
             model_fn,

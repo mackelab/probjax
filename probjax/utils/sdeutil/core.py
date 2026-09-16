@@ -6,6 +6,11 @@ import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Key, PyTree
 
+from probjax.utils._solver_common import (
+    ensure_dtype,
+    make_filter_wrapper,
+    stack_trace,
+)
 from probjax.utils.functions import (
     additive_diffusion,
     const_diffusion,
@@ -28,6 +33,20 @@ STATIC_NAMES = [
     "check_points",
     "step_size_adaptor",
 ]
+
+
+def _as_full_matrix(value, flat_state_dim, what="Full diffusion"):
+    """Validate a full ``(state_dim, noise_dim)`` diffusion matrix."""
+    value = jnp.asarray(value)
+    if value.ndim != 2:
+        raise ValueError(
+            f"{what} must be a 2D matrix with shape (state_dim, noise_dim)."
+        )
+    if int(value.shape[0]) != flat_state_dim:
+        raise ValueError(
+            f"{what} must have leading dimension equal to state dimension."
+        )
+    return value
 
 
 def _bind_sde_function_args(
@@ -88,6 +107,25 @@ def _infer_noise_layout(diffusion_shape: Any, state_dim: int) -> tuple[str, int]
     return "diagonal", state_dim
 
 
+def _flat_extractor(noise_type, flat_state_dim, what="Full diffusion"):
+    """Flatten a diffusion value according to the noise layout.
+
+    Diagonal noise ravel pytrees; full noise validates a 2D matrix.
+    """
+    if noise_type == "diagonal":
+
+        def extract(value):
+            flat, _ = ravel_args(value)
+            return flat
+
+    else:
+
+        def extract(value):
+            return _as_full_matrix(value, flat_state_dim, what=what)
+
+    return extract
+
+
 @partial(jax.jit, static_argnames=STATIC_NAMES)
 def _sdeint(
     rng: Key,
@@ -124,10 +162,13 @@ def _sdeint(
         method: Integration method
         dtype: Data type for computation
         sde_type: Type of SDE ("ito" or "stratonovich")
-        return_brownian: Whether to return Brownian motion paths (requires `collect_trace=True`)
+        return_brownian: Whether to return Brownian motion paths (requires
+            `collect_trace=True`)
         return_state: Whether to return solver state
-        filter_state: Optional filter applied to the state (and Brownian paths when requested)
-        collect_trace: Whether to record the filtered quantity at every time point (`True`)
+        filter_state: Optional filter applied to the state (and Brownian
+            paths when requested)
+        collect_trace: Whether to record the filtered quantity at every time
+            point (`True`)
             or return only the filtered terminal state (`False`). Must be `True` if
             `return_brownian` is requested.
         check_points: Optional sequence of indices for grid integration
@@ -136,7 +177,8 @@ def _sdeint(
         Depending on `return_brownian` and `collect_trace`:
         - If `return_brownian=False`: filtered trajectory when `collect_trace=True`
           or filtered terminal state when `collect_trace=False`.
-        - If `return_brownian=True`: tuple of (state trace, Brownian trace), both stacked
+        - If `return_brownian=True`: tuple of (state trace, Brownian trace),
+          both stacked
           over all time points.
         If `return_state=True`, the solver state is returned as the leading element of
         the tuple.
@@ -144,12 +186,8 @@ def _sdeint(
     if not collect_trace and return_brownian:
         raise ValueError("collect_trace must be True when returning Brownian paths.")
 
-    if dtype is not None:
-        ts = ts.astype(dtype)
-        y0 = jax.tree_util.tree_map(lambda x: x.astype(dtype), y0)
-
+    ts, y0 = ensure_dtype(ts, y0, dtype)
     y0 = jax.tree_util.tree_map(jnp.atleast_1d, y0)
-    ts = jnp.atleast_1d(ts)
 
     drift, diffusion = _bind_sde_function_args(drift, diffusion, sde_args)
 
@@ -177,87 +215,32 @@ def _sdeint(
     additive_marker = diffusion if isinstance(diffusion, additive_diffusion) else None
     const_marker = diffusion if isinstance(diffusion, const_diffusion) else None
 
-    if noise_type == "diagonal":
+    extract = _flat_extractor(noise_type, flat_state_dim)
 
-        def diffusion_solver(t, yi):
-            diffusion_tree = diffusion_unraveled(t, yi)
-            diffusion_flat, _ = ravel_args(diffusion_tree)
-            return diffusion_flat
-
-    else:
-
-        def diffusion_solver(t, yi):
-            diffusion_value = jnp.asarray(diffusion_unraveled(t, yi))
-            if diffusion_value.ndim != 2:
-                raise ValueError(
-                    "Full diffusion must return a matrix with shape (state_dim, noise_dim)."
-                )
-            if int(diffusion_value.shape[0]) != flat_state_dim:
-                raise ValueError(
-                    "Full diffusion must have leading dimension equal to state dimension."
-                )
-            return diffusion_value
+    def diffusion_solver(t, yi):
+        return extract(diffusion_unraveled(t, yi))
 
     if additive_marker is not None:
-        if noise_type == "diagonal":
 
-            def additive_flat(t):
-                diffusion_tree = additive_marker.diffusion(t)
-                diffusion_flat, _ = ravel_args(diffusion_tree)
-                return diffusion_flat
+        def additive_fn(t):
+            return extract(additive_marker.diffusion(t))
 
-            diffusion_solver = cast(
-                Callable,
-                additive_diffusion(diffusion=additive_flat),
-            )
-        else:
-
-            def additive_dense(t):
-                diffusion_value = jnp.asarray(additive_marker.diffusion(t))
-                if diffusion_value.ndim != 2:
-                    raise ValueError(
-                        "Full diffusion must return a matrix with shape (state_dim, noise_dim)."
-                    )
-                if int(diffusion_value.shape[0]) != flat_state_dim:
-                    raise ValueError(
-                        "Full diffusion must have leading dimension equal to state dimension."
-                    )
-                return diffusion_value
-
-            diffusion_solver = cast(
-                Callable,
-                additive_diffusion(diffusion=additive_dense),
-            )
+        diffusion_solver = cast(
+            Callable,
+            additive_diffusion(diffusion=additive_fn),
+        )
 
     if const_marker is not None:
         # Preserve const_diffusion marker for specialized solvers
-        if noise_type == "diagonal":
-            G_flat, _ = ravel_args(const_marker.G)
-            diffusion_solver = cast(
-                Callable,
-                const_diffusion(G=G_flat),
-            )
-        else:
-            # For full diffusion, keep G as 2D matrix
-            G_value = jnp.asarray(const_marker.G)
-            if G_value.ndim != 2:
-                raise ValueError(
-                    "Full diffusion const_diffusion.G must be a 2D matrix with shape (state_dim, noise_dim)."
-                )
-            if int(G_value.shape[0]) != flat_state_dim:
-                raise ValueError(
-                    "Full diffusion const_diffusion.G must have leading dimension equal to state dimension."
-                )
-            diffusion_solver = cast(
-                Callable,
-                const_diffusion(G=G_value),
-            )
+        G_value = _flat_extractor(
+            noise_type, flat_state_dim, "Full diffusion const_diffusion.G"
+        )(const_marker.G)
+        diffusion_solver = cast(
+            Callable,
+            const_diffusion(G=G_value),
+        )
 
-    def apply_filter(tree: PyTree[Array]) -> Optional[PyTree[Array]]:
-        if filter_state is None:
-            return tree
-        return filter_state(tree)
-
+    apply_filter = make_filter_wrapper(filter_state)
     init_filtered = apply_filter(y0)
     trace_enabled = collect_trace and (init_filtered is not None)
 
@@ -350,49 +333,35 @@ def _sdeint(
             collect_trace=trace_enabled,
         )
 
-    state_y0 = getattr(state, "y0")
+    state_y0 = state.y0
     final_state = apply_filter(unravel(state_y0))
 
     trace_output: Optional[PyTree[Array]]
     brownian_output: Optional[PyTree[Array]] = None
 
-    def _stack(init_tree, traced_tree):
-        return jax.tree_util.tree_map(
-            lambda init, tr: jnp.concatenate(
-                [jnp.asarray(init)[None], jnp.asarray(tr)], axis=0
-            ),
-            init_tree,
-            traced_tree,
-        )
-
     if trace_enabled and traced is not None:
         if return_brownian:
             state_traced, brownian_traced = traced
-            trace_output = _stack(init_filtered, state_traced)
+            trace_output = stack_trace(init_filtered, state_traced)
             brownian_init = jax.tree_util.tree_map(
                 lambda leaf: jnp.zeros_like(leaf[0]), brownian_traced
             )
-            brownian_output = _stack(brownian_init, brownian_traced)
+            brownian_output = stack_trace(brownian_init, brownian_traced)
         else:
-            trace_output = _stack(init_filtered, traced)
+            trace_output = stack_trace(init_filtered, traced)
     else:
         trace_output = final_state if not collect_trace else None
 
     payload: Union[
         Optional[PyTree[Array]], Tuple[Optional[PyTree[Array]], Optional[PyTree[Array]]]
     ]
-    if return_brownian:
-        payload = (trace_output, brownian_output)
-    else:
-        payload = trace_output
+    payload = (trace_output, brownian_output) if return_brownian else trace_output
 
     # Diagnostic for the adaptive path: total budget exhaustions across
     # output segments. Always returned as the last element so the public
     # ``sdeint`` wrapper can warn host-side without paying per-vmap-element
     # callback overhead. Zero on the fixed-step path.
-    diag_hits = (
-        _adaptive_total_hits if step_size_adaptor is not None else jnp.int32(0)
-    )
+    diag_hits = _adaptive_total_hits if step_size_adaptor is not None else jnp.int32(0)
 
     if return_state:
         frozen_state = jax.tree_util.tree_map(jax.lax.stop_gradient, state)

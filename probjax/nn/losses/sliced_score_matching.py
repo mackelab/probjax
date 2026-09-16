@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, ArrayLike
 
+from probjax.nn.losses._common import _perturb, _require_rng, _resolve_weight
 from probjax.utils.protocols import LossFn, ModelFn, TimeDependentModelFn, WeightFn
 
 __all__ = [
@@ -28,7 +29,8 @@ def base_sliced_score_matching_loss(
     """Base function for sliced score matching loss.
 
     Args:
-        model_fn_and_jvp: Function that predicts the score and its Jacobian-vector product
+        model_fn_and_jvp: Function that predicts the score and its Jacobian-vector
+        product
         slice_dist: Function that generates random slices
         vmap_in_args: Arguments to vectorize over
         weight: Optional weight for the loss
@@ -119,9 +121,7 @@ def build_sliced_score_matching_loss(
         Returns:
             Scalar loss value
         """
-        assert rng is not None, (
-            "loss_fn does require rngs, pass them to function kwargs."
-        )
+        _require_rng(rng)
         vmap_in_args = (0,) * len(args)
         losses = base_sliced_score_matching_loss(
             value_and_jvp,
@@ -182,17 +182,11 @@ def build_time_dependent_sliced_score_matching_loss(
         Returns:
             Scalar loss value
         """
-        assert rng is not None, (
-            "loss_fn does require rngs, pass them to function kwargs."
-        )
+        _require_rng(rng)
         rng_samples, rng_slices = jax.random.split(rng)
-        mean_t = mean_fn(times, xs_target)
-        std_t = std_fn(times, xs_target)
-        eps = jax.random.normal(rng_samples, shape=xs_target.shape)
+        xs_target, _eps = _perturb(mean_fn, std_fn, times, xs_target, rng_samples)
 
-        xs_target = mean_t + std_t * eps
-
-        weight = weight_fn(times) if weight_fn is not None else None
+        weight = _resolve_weight(weight_fn, times)
         vmap_in_args = (0,) * len(args)
 
         loss = base_sliced_score_matching_loss(

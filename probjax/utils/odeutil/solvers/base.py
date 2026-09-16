@@ -3,6 +3,8 @@ from __future__ import annotations
 from functools import partial
 from typing import Any, NamedTuple, Optional
 
+import jax.numpy as jnp
+
 from probjax.utils.jaxutils import API
 from probjax.utils.typing import ArrayLike, Callable
 
@@ -94,3 +96,48 @@ def get_method(name: str) -> tuple[ODESolverAPI, dict]:
 
 def get_methods():
     return list(METHOD_STEP_FN.keys())
+
+
+def rk_combine(dt, y0, k, b_sol, b_error, b_mid):
+    """Shared explicit/implicit Runge-Kutta tail.
+
+    Returns ``(y1, y1_error, y1_mid)`` from the stage matrix ``k``; callers
+    reshape and attach solver-specific state/info.
+    """
+    y1 = y0 + dt * jnp.dot(b_sol, k)
+    y1_error = None if b_error is None else dt * jnp.dot(b_error, k)
+    y1_mid = None if b_mid is None else dt * jnp.dot(b_mid, k) + y0
+    return y1, y1_error, y1_mid
+
+
+def make_cached_init(state_cls):
+    """Init caching ``f0`` for solver states carrying ``(t0, y0, f0)``."""
+
+    def init(t0, y0, *args, drift=None):
+        t0 = jnp.asarray(t0)
+        y0 = jnp.asarray(y0)
+        f0 = drift(t0, y0, *args) if drift is not None else None
+        return state_cls(t0=t0, y0=y0, f0=f0)
+
+    return init
+
+
+def make_method_init(last_equals_next, init_fn, *, always_bind_drift=False):
+    """Method-level init dispatching on FSAL (``last_equals_next``).
+
+    With ``always_bind_drift`` (implicit methods), ``drift`` is forwarded
+    even for non-FSAL methods, matching the historical implicit behavior
+    where ``f0`` is always evaluated at init.
+    """
+
+    if last_equals_next or always_bind_drift:
+
+        def init_method(t0, y0, *args, drift=None, **kwargs):
+            return init_fn(t0, y0, *args, drift=drift)
+
+    else:
+
+        def init_method(t0, y0, *args, **kwargs):
+            return init_fn(t0, y0, *args)
+
+    return init_method

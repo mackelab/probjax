@@ -34,6 +34,49 @@ def _is_array_like(v: Any) -> bool:
     return hasattr(v, "shape") and hasattr(v, "dtype")
 
 
+def wrap_if_plain_callable(fn: Callable) -> Callable:
+    """Wrap plain Python callables in :class:`generic_drift` so they flow as
+    a pytree through ``jax.jit`` / ``custom_inverse``.
+
+    Registered pytrees flow through unchanged.
+    """
+    leaves, _ = jax.tree_util.tree_flatten(fn)
+    if len(leaves) == 1 and leaves[0] is fn:
+        return generic_drift(fn=fn)
+    return fn
+
+
+def _bind_2(fn: Callable, args: tuple) -> Callable:
+    """Bind trailing ``*args`` onto a ``(t, y, *args)`` callable."""
+
+    def bound(t, y):
+        return fn(t, y, *args)
+
+    return bound
+
+
+def _bind_1(fn: Callable, args: tuple) -> Callable:
+    """Bind trailing ``*args`` onto a single-leading-arg callable."""
+
+    def bound(x):
+        return fn(x, *args)
+
+    return bound
+
+
+def _ravel_callable(fn: Callable, unravel: Callable[[Array], PyTree], index: int):
+    """Wrap ``fn`` to accept a flat array at positional ``index``."""
+    from probjax.utils.jaxutils import ravel_args
+
+    def raveled(*args):
+        args = _replace_positional_arg(args, index, unravel(args[index]))
+        value = fn(*args)
+        value_flat, _ = ravel_args(value)
+        return value_flat
+
+    return raveled
+
+
 def _replace_positional_arg(
     args: tuple[Any, ...], index: int, value: Any
 ) -> tuple[Any, ...]:
@@ -81,7 +124,7 @@ def register_drift(cls):
         aux_iter = iter(aux_values)
         kwargs = {
             name: next(children_iter) if is_leaf else next(aux_iter)
-            for name, is_leaf in zip(field_names, mask)
+            for name, is_leaf in zip(field_names, mask, strict=False)
         }
         return cls(**kwargs)
 
@@ -107,15 +150,7 @@ class Drift:
         raise NotImplementedError
 
     def ravel_arg(self, unravel: Callable[[Array], PyTree], index: int = 1):
-        from probjax.utils.jaxutils import ravel_args
-
-        def drift_raveled(*args):
-            args = _replace_positional_arg(args, index, unravel(args[index]))
-            value = self(*args)
-            value_flat, _ = ravel_args(value)
-            return value_flat
-
-        return drift_raveled
+        return _ravel_callable(self, unravel, index)
 
     def bind_args(self, *args: Any) -> "Drift":
         """Bind positional ``*args`` into the drift via closure.
@@ -126,13 +161,7 @@ class Drift:
         """
         if not args:
             return self
-
-        inner = self
-
-        def bound(t, y):
-            return inner(t, y, *args)
-
-        return generic_drift(fn=bound)
+        return generic_drift(fn=_bind_2(self, args))
 
 
 @register_drift
@@ -154,12 +183,7 @@ class generic_drift(Drift):
     def bind_args(self, *args: Any) -> "generic_drift":
         if not args:
             return self
-        inner_fn = self.fn
-
-        def bound(t, y):
-            return inner_fn(t, y, *args)
-
-        return generic_drift(fn=bound)
+        return generic_drift(fn=_bind_2(self.fn, args))
 
 
 @register_drift
@@ -183,27 +207,15 @@ class split_drift(Drift):
     def bind_args(self, *args: Any) -> "split_drift":
         if not args:
             return self
-        inner_nonlin = self.nonlin
-
-        def nonlin_bound(t, x):
-            return inner_nonlin(t, x, *args)
-
-        return split_drift(lin_coeff=self.lin_coeff, nonlin=nonlin_bound)
+        return split_drift(lin_coeff=self.lin_coeff, nonlin=_bind_2(self.nonlin, args))
 
     def ravel_arg(
         self, unravel: Callable[[Array], PyTree], index: int = 1
     ) -> "split_drift":
-        from probjax.utils.jaxutils import ravel_args
-
-        inner_nonlin = self.nonlin
-
-        def nonlin_raveled(*args):
-            args = _replace_positional_arg(args, index, unravel(args[index]))
-            value = inner_nonlin(*args)
-            value_flat, _ = ravel_args(value)
-            return value_flat
-
-        return split_drift(lin_coeff=self.lin_coeff, nonlin=nonlin_raveled)
+        return split_drift(
+            lin_coeff=self.lin_coeff,
+            nonlin=_ravel_callable(self.nonlin, unravel, index),
+        )
 
 
 @register_drift
@@ -220,12 +232,7 @@ class state_drift(Drift):
     def bind_args(self, *args: Any) -> "state_drift":
         if not args:
             return self
-        inner = self.drift
-
-        def bound(y):
-            return inner(y, *args)
-
-        return state_drift(drift=bound)
+        return state_drift(drift=_bind_1(self.drift, args))
 
 
 @register_drift
@@ -244,16 +251,9 @@ class affine_drift(Drift):
     def bind_args(self, *args: Any) -> "affine_drift":
         if not args:
             return self
-        inner_linear = self.linear
-        inner_bias = self.bias
-
-        def linear_bound(t, y):
-            return inner_linear(t, y, *args)
-
-        def bias_bound(t):
-            return inner_bias(t, *args)
-
-        return affine_drift(linear=linear_bound, bias=bias_bound)
+        return affine_drift(
+            linear=_bind_2(self.linear, args), bias=_bind_1(self.bias, args)
+        )
 
 
 @register_drift
@@ -274,12 +274,7 @@ class additive_diffusion(Drift):
     def bind_args(self, *args: Any) -> "additive_diffusion":
         if not args:
             return self
-        inner = self.diffusion
-
-        def bound(t):
-            return inner(t, *args)
-
-        return additive_diffusion(diffusion=bound)
+        return additive_diffusion(diffusion=_bind_1(self.diffusion, args))
 
 
 @register_drift
@@ -299,10 +294,7 @@ class linear_drift(Drift):
     def __call__(self, t: ArrayLike, y: PyTree, *args: Any) -> PyTree:
         import jax.numpy as jnp
 
-        if callable(self.A):
-            A_t = self.A(t)
-        else:
-            A_t = self.A
+        A_t = self.A(t) if callable(self.A) else self.A
 
         A_concrete = jnp.asarray(A_t)
         if A_concrete.ndim == 0:
@@ -318,12 +310,7 @@ class linear_drift(Drift):
     def bind_args(self, *args: Any) -> "linear_drift":
         if self.b is None or not args:
             return self
-        b_fn = self.b
-
-        def b_bound(t):
-            return b_fn(t, *args)
-
-        return linear_drift(A=self.A, b=b_bound)
+        return linear_drift(A=self.A, b=_bind_1(self.b, args))
 
     def ravel_arg(
         self, unravel: Callable[[Array], PyTree], index: int = 1

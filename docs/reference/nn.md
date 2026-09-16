@@ -435,3 +435,8 @@ still apply, including Flash3's compatible-GPU requirement.
 Numerical reference coverage lives in `tests/test_pallas_references.py`.
 Run its `mesh` tests explicitly to check sharded forward, gradients, and JVPs;
 on CPU these use interpreted Pallas kernels across host devices.
+
+Mamba uses an associative JAX scan for multi-tile GPU inputs because GPU
+programs cannot safely exchange the TPU kernel's sequential carry. Single-tile
+GPU inputs retain the fused Pallas kernel. The fallback supports autodiff;
+its GPU performance has not yet been benchmarked.

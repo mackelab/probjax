@@ -3,8 +3,8 @@ from typing import Dict, Optional
 import jax.numpy as jnp
 from blackjax.smc.tuning import from_kernel_info, from_particles
 
+from probjax.inference.adaptation import _stateless_adaptor
 from probjax.inference.base import Adaptor
-from probjax.inference.smc.base import _ensure_param_batch, _params_to_dict
 
 
 def tune_from_particles(
@@ -91,20 +91,11 @@ def tune_from_kernel_info(
 
 def particle_adaptor(*, updates: Optional[Dict[str, str]] = None) -> Adaptor:
     """Update MCMC geometry from the current SMC particle population."""
-
-    def init(_state, _params):
-        return ()
-
-    def update(state, _info, adaptor_state, params):
-        params = tune_from_particles(
-            _params_to_dict(params), state.particles, updates=updates
+    return _stateless_adaptor(
+        lambda params, state, _info: tune_from_particles(
+            params, state.particles, updates=updates
         )
-        return adaptor_state, _ensure_param_batch(params, shared=True), None
-
-    def finalize(_adaptor_state, params):
-        return params, None
-
-    return Adaptor(init, update, finalize)
+    )
 
 
 def acceptance_rate_adaptor(
@@ -114,20 +105,11 @@ def acceptance_rate_adaptor(
     info_fn=lambda info: info.update_info,
 ) -> Adaptor:
     """Update an SMC move-kernel scale from its acceptance diagnostics."""
-
-    def init(_state, _params):
-        return ()
-
-    def update(_state, info, adaptor_state, params):
-        params = tune_from_kernel_info(
-            _params_to_dict(params),
+    return _stateless_adaptor(
+        lambda params, _state, info: tune_from_kernel_info(
+            params,
             info_fn(info),
             target_acceptance_rate=target_acceptance_rate,
             scale_key=scale_key,
         )
-        return adaptor_state, _ensure_param_batch(params, shared=True), None
-
-    def finalize(_adaptor_state, params):
-        return params, None
-
-    return Adaptor(init, update, finalize)
+    )

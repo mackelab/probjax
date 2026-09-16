@@ -32,11 +32,6 @@ class categorical_gen(rv_discrete, rv_exponential_family):
         return (0, probs.shape[-1] - 1)
 
     @classmethod
-    def pmf(cls, k: ArrayLike, probs, **kwds):
-        """Probability mass function of the Categorical distribution."""
-        return jnp.exp(cls.logpmf(k, probs, **kwds))
-
-    @classmethod
     def logpmf(cls, k: ArrayLike, probs, **kwds):
         """Log probability mass function of the Categorical distribution."""
         k = jnp.asarray(k).astype(jnp.int32)

@@ -155,10 +155,10 @@ def test_ssd_matches_reference_gpu():
     _requires_accelerator()
     key = jax.random.key(0)
     ks = jax.random.split(key, 4)
-    q = jax.random.normal(ks[0], (2, 2, 128, 32))
-    k = jax.random.normal(ks[1], (2, 2, 128, 32))
-    v = jax.random.normal(ks[2], (2, 4, 128, 32))
-    log_alpha = -jnp.abs(jax.random.normal(ks[3], (2, 4, 128)))
+    q = jax.random.normal(ks[0], (2, 2, 256, 64))
+    k = jax.random.normal(ks[1], (2, 2, 256, 64))
+    v = jax.random.normal(ks[2], (2, 4, 256, 64))
+    log_alpha = -jnp.abs(jax.random.normal(ks[3], (2, 4, 256)))
 
     new = pk.ssd(q, k, v, log_alpha)
     reference = _ssd_reference(q, k, v, log_alpha)
@@ -173,7 +173,7 @@ def test_mamba_matches_reference_gpu():
     _requires_accelerator()
     key = jax.random.key(0)
     ks = jax.random.split(key, 6)
-    batch, seq, dim, state = 2, 128, 64, 16
+    batch, seq, dim, state = 2, 128, 128, 16
     x = jax.random.normal(ks[0], (batch, seq, dim))
     a = -jnp.abs(jax.random.normal(ks[1], (state, dim)))
     b = jax.random.normal(ks[2], (batch, seq, state))
@@ -181,7 +181,7 @@ def test_mamba_matches_reference_gpu():
     delta = jax.nn.softplus(jax.random.normal(ks[4], (batch, seq, dim)))
     d = jax.random.normal(ks[5], (1, dim))
 
-    new = pk.compute_mamba_scan(x, a, b, c, delta, d)
+    new = pk.compute_mamba_scan(x, a, b, c, delta, d, seq_tile_size=32, dim_tile_size=128)
     reference = _mamba_reference(x, a, b, c, delta, d)
     assert jnp.allclose(new, reference, atol=1e-4)
 
@@ -238,11 +238,11 @@ def test_ssd_jvp_matches_reference_gpu():
 
     key = jax.random.key(0)
     ks = jax.random.split(key, 10)
-    q = jax.random.normal(ks[0], (2, 2, 128, 32))
-    k = jax.random.normal(ks[1], (2, 2, 128, 32))
-    v = jax.random.normal(ks[2], (2, 4, 128, 32))
-    la = -jnp.abs(jax.random.normal(ks[3], (2, 4, 128))) * 0.3
-    h0 = jnp.zeros((2, 4, 32, 32))
+    q = jax.random.normal(ks[0], (2, 2, 256, 64))
+    k = jax.random.normal(ks[1], (2, 2, 256, 64))
+    v = jax.random.normal(ks[2], (2, 4, 256, 64))
+    la = -jnp.abs(jax.random.normal(ks[3], (2, 4, 256))) * 0.3
+    h0 = jnp.zeros((2, 4, 64, 64))
     primals = (q, k, v, la, h0)
     tangents = tuple(
         jax.random.normal(kx, a.shape) * 0.5 for kx, a in zip(ks[4:], primals)
@@ -361,3 +361,41 @@ def test_multitile_attention_jvp_with_bias_mask_dropout(causal, rate):
     for x, y in zip(actual, expected):
         assert jnp.all(jnp.isfinite(x))
         assert jnp.allclose(x, y, atol=1e-5, rtol=2e-4)
+
+
+@pytest.mark.parametrize("seq,dim", [(32, 128), (8, 256)])
+def test_mamba_gpu_multitile_dispatch_and_gradients(monkeypatch, seq, dim):
+    """GPU tile dependencies must not rely on ordering separate programs."""
+    import importlib
+
+    mamba = importlib.import_module("probjax.nn.pallas_kernels.kernels.mamba")
+    keys = jax.random.split(jax.random.key(31), 6)
+    args = (
+        jax.random.normal(keys[0], (1, seq, dim)) * 0.2,
+        -jax.nn.softplus(jax.random.normal(keys[1], (16, dim))),
+        jax.random.normal(keys[2], (1, seq, 16)) * 0.2,
+        jax.random.normal(keys[3], (1, seq, 16)) * 0.2,
+        jax.nn.softplus(jax.random.normal(keys[4], (1, seq, dim))),
+        jax.random.normal(keys[5], (1, dim)),
+    )
+    reference = mamba._mamba_scan_reference(*args)
+    reference_grads = jax.grad(
+        lambda *xs: jnp.sum(mamba._mamba_scan_reference(*xs) ** 2),
+        argnums=tuple(range(6)),
+    )(*args)
+    monkeypatch.setattr(jax, "default_backend", lambda: "gpu")
+    monkeypatch.setattr(mamba, "_pallas_backend", lambda: "triton")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("multi-tile GPU call entered the unordered carry kernel")
+
+    monkeypatch.setattr(mamba, "_mamba_scan_op", forbidden)
+
+    def scan(*xs):
+        return mamba.compute_mamba_scan(*xs, seq_tile_size=8, dim_tile_size=128)
+
+    assert jnp.allclose(scan(*args), reference, rtol=2e-5, atol=2e-5)
+    actual_grads = jax.grad(lambda *xs: jnp.sum(scan(*xs) ** 2), argnums=tuple(range(6)))(*args)
+    for actual, expected in zip(actual_grads, reference_grads, strict=True):
+        assert jnp.all(jnp.isfinite(actual))
+        assert jnp.allclose(actual, expected, rtol=2e-4, atol=2e-4)

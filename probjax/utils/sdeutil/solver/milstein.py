@@ -1,9 +1,16 @@
 import jax
 import jax.numpy as jnp
-from probjax.utils.typing import Array, ArrayLike, Callable, RngKey
-from probjax.utils.sdeutil.brownian import get_iterated_integrals_fn
+
+from probjax.utils._solver_common import make_trivial_init, sample_wiener_increment
 from probjax.utils.linalg import mv_diag_or_dense
-from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
+from probjax.utils.sdeutil.base import (
+    SDEInfo,
+    SDESolverAPI,
+    SDEState,
+    register_method,
+)
+from probjax.utils.sdeutil.brownian import get_iterated_integrals_fn
+from probjax.utils.typing import Array, Callable, RngKey
 
 
 class MilsteinInfo(SDEInfo):
@@ -16,10 +23,7 @@ class MilsteinState(SDEState):
     y0: Array
 
 
-def init_state(t0: ArrayLike, y0: ArrayLike, **kwargs) -> MilsteinState:
-    t0 = jnp.asarray(t0)
-    y0 = jnp.asarray(y0)
-    return MilsteinState(t0, y0)
+init_state = make_trivial_init(MilsteinState)
 
 
 def build_milstein_step(
@@ -51,12 +55,7 @@ def build_milstein_step(
         g0 = jnp.asarray(diffusion(t0, y0))
         g0_jac = g_jac(t0, y0)
 
-        if noise_dim is None:
-            inferred_noise_dim = y0.shape[0] if g0.ndim <= 1 else g0.shape[-1]
-        else:
-            inferred_noise_dim = int(noise_dim)
-
-        dWt = jax.random.normal(rng1, (inferred_noise_dim,)) * jnp.sqrt(jnp.abs(dt))
+        dWt = sample_wiener_increment(rng1, g0, y0.shape[0], dt, noise_dim)
         dWtdWs = iterated_integrals_fn(rng2, dWt, jnp.abs(dt))
 
         drift_term = dt * f0

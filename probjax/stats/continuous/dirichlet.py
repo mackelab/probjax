@@ -15,8 +15,6 @@ from jax.scipy.special import digamma, gammaln
 from probjax.stats.base import rv_exponential_family, rv_multivariate
 from probjax.stats.constraints import (
     positive,
-    simplex,
-    symmetric_positive_definite_matrix,
 )
 from probjax.stats.utils import normalize_sample_weights, row_mean_and_var
 from probjax.utils.stats import mle_dirichlet
@@ -56,24 +54,6 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
             Support of the distribution
         """
         return positive
-
-    @classmethod
-    def pdf(cls, x: Array, alpha: Array, **kwargs):
-        """Probability density function of the Dirichlet distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            Points at which to evaluate the probability density function
-        alpha : array_like
-            Concentration parameters
-
-        Returns
-        -------
-        pdf : ndarray
-            Probability density function evaluated at x
-        """
-        return jnp.exp(cls.logpdf(x, alpha, **kwargs))
 
     @classmethod
     def _multivariate_batch_event_shape(cls, alpha: Array, **kwargs):
@@ -136,12 +116,7 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
         assert jnp.ndim(alpha) >= 1, "alpha must be at least one-dimensional."
         assert jnp.all(alpha > 0), "alpha must be positive."
 
-        if alpha.ndim > 1:
-            batch_shape = jnp.shape(alpha)[:-1]
-            event_shape = jnp.shape(alpha)[-1:]
-        else:
-            batch_shape = ()
-            event_shape = jnp.shape(alpha)
+        batch_shape = jnp.shape(alpha)[:-1] if alpha.ndim > 1 else ()
 
         shape = shape + batch_shape
         return random.dirichlet(rng, alpha, shape)
@@ -327,6 +302,10 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
         Uses method of moments for the initial estimate, then refines via
         fixed-point MLE iteration (Minka 2000).
         """
+        if weights is not None:
+            raise NotImplementedError(
+                "Weighted fitting is not implemented for the Dirichlet distribution."
+            )
         data = jnp.asarray(data)
         if data.ndim == 1:
             raise ValueError("Dirichlet fitting expects observations arranged by rows.")

@@ -114,6 +114,8 @@ def reference_targets():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
+@pytest.mark.docs
 @pytest.mark.parametrize(
     "page", markdown_pages(), ids=lambda p: str(p.relative_to(DOCS))
 )
@@ -169,6 +171,8 @@ def test_every_reference_target_resolves(page, target):
     assert hasattr(module, attribute), f"{page}: {target} does not exist"
 
 
+@pytest.mark.slow
+@pytest.mark.docs
 def test_the_site_builds():
     """The build is the real check, and it is faster than reimplementing it.
 

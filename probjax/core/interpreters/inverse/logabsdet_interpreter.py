@@ -25,7 +25,7 @@ from probjax.core.registry import (
     Context,
     ProcessedResult,
     chain_logdet_into,
-    is_static_zero,
+    sum_logdet_terms,
 )
 
 
@@ -74,17 +74,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         staged (non-static-zero) term was added, so callers can skip chaining
         arithmetic that would only add ``0.0``.
         """
-        total = jnp.asarray(0.0)
-        nontrivial = False
-        for v in vars_:
-            if isinstance(v, Literal):
-                continue
-            term = log_dets.get(v, 0.0)
-            if is_static_zero(term):
-                continue
-            nontrivial = True
-            total = total + jnp.asarray(term)
-        return total, nontrivial
+        return sum_logdet_terms(log_dets, vars_)
 
     def __call__(
         self, eqn, known_invars, known_outvars, context=None
@@ -255,8 +245,12 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         invars = [eqn.invars[index] for index in custom_params.target_in_indices]
         result_vals = list(out[: len(invars)])
 
-        # Extract log-det from output (last element)
-        log_abs_det = jnp.sum(out[-1])
+        # Everything past the result leaves is log-det (one scalar per
+        # registered leaf, batched per leaf under vmap); sum them all.
+        log_abs_det = sum(
+            (jnp.sum(leaf) for leaf in out[len(invars) :]),
+            jnp.asarray(0.0),
+        )
 
         log_dets = self._read_log_dets(context)
         previous, prev_nontrivial = self._sum_log_dets(log_dets, eqn.outvars)

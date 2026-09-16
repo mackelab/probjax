@@ -1,57 +1,39 @@
 from typing import Callable
 
 import blackjax
-import jax
-import jax.numpy as jnp
 from blackjax.mcmc.dynamic_hmc import halton_trajectory_length
 
+from probjax.inference.mcmc._dynamic_stepping import (
+    get_dynamic_stepping as _resolve_dynamic_stepping,
+)
+from probjax.inference.mcmc._dynamic_stepping import (
+    halton_trajectory_length_fns as _halton_fns,
+)
+from probjax.inference.mcmc._dynamic_stepping import (
+    init_dynamic_arg,
+)
+from probjax.inference.mcmc._dynamic_stepping import (
+    random_trajectory_length_fns as _random_fns,
+)
 from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
 from probjax.inference.mcmc.hmc import init_params
-from probjax.utils.typing import Array, RngKey
+from probjax.utils.typing import RngKey
 
 
 def halton_trajectory_length_fns(average_trajectory_length: float):
-    def halton_next_random_arg_fn(index: Array):
-        return jnp.array(index + 1, dtype=jnp.int32)
-
-    def halton_next_integration_steps_fn(random_arg: Array, **kwargs):
-        return halton_trajectory_length(random_arg, average_trajectory_length)
-
-    return (
-        halton_next_random_arg_fn,
-        halton_next_integration_steps_fn,
-    )
+    return _halton_fns(halton_trajectory_length, average_trajectory_length)
 
 
 def random_trajectory_length_fns(average_trajectory_length: int):
-    def random_next_random_arg_fn(random_arg: Array):
-        return jax.random.split(random_arg)[1]
-
-    def random_next_integration_steps_fn(random_arg: Array, **kwargs):
-        return jax.random.randint(
-            random_arg, shape=(), minval=1, maxval=2 * average_trajectory_length
-        )
-
-    return (
-        random_next_random_arg_fn,
-        random_next_integration_steps_fn,
-    )
+    return _random_fns(average_trajectory_length)
 
 
 def get_dynamic_stepping(integration_steps_sequence, average_integration_steps):
-    if isinstance(integration_steps_sequence, str):
-        if integration_steps_sequence == "halton":
-            random_arg_next_fn, integration_steps_fn = halton_trajectory_length_fns(
-                average_integration_steps
-            )
-        elif integration_steps_sequence == "random":
-            random_arg_next_fn, integration_steps_fn = random_trajectory_length_fns(
-                average_integration_steps
-            )
-    else:
-        random_arg_next_fn, integration_steps_fn = integration_steps_sequence
-
-    return random_arg_next_fn, integration_steps_fn
+    return _resolve_dynamic_stepping(
+        integration_steps_sequence,
+        average_integration_steps,
+        length_fn=halton_trajectory_length,
+    )
 
 
 def init(
@@ -60,12 +42,7 @@ def init(
     rng_key: RngKey,
     integration_steps_sequence: str = "halton",
 ):
-    if integration_steps_sequence == "random":
-        random_generator_arg = rng_key
-    else:
-        random_generator_arg = jax.random.randint(
-            rng_key, shape=(), minval=0, maxval=2**31 - 1, dtype=jnp.int32
-        )
+    random_generator_arg = init_dynamic_arg(rng_key, integration_steps_sequence)
     return blackjax.dynamic_hmc.init(position, logdensity_fn, random_generator_arg)
 
 

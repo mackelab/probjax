@@ -2,9 +2,8 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from jax.extend.core import JaxprEqn
 
-from probjax.core.custom_primitives.contracts import parse_random_variable_call_params
-from probjax.core.custom_primitives.random_variable import rv_p
-from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
+from probjax.core.interpreters.ppl._common import rv_site_params
+from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule, merge_dict_state
 from probjax.core.registry import ProcessedResult
 
 
@@ -67,10 +66,10 @@ class TraceProcessingRule(ForwardProcessingRule):
         eqn_state: dict[str, Any] = {}
 
         if self.sites:
-            if eqn.primitive is not rv_p:
+            rv_params = rv_site_params(eqn)
+            if rv_params is None:
                 return ProcessedResult(outvars, outvals, eqn_state)
 
-            rv_params = parse_random_variable_call_params(eqn.params)
             name = rv_params.name
 
             if name in self.interventions:
@@ -125,9 +124,4 @@ class TraceProcessingRule(ForwardProcessingRule):
 
 
 def trace_state_reducer(env, eqn, state, eqn_state, context=None):
-    del env, eqn, context
-    if state is None:
-        state = {}
-    if not eqn_state:
-        return state
-    return state | eqn_state
+    return merge_dict_state(env, eqn, state, eqn_state, context)

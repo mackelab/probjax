@@ -341,7 +341,7 @@ def _run_nested(
     if isinstance(outer_state, Mapping):
         seeded = dict(initial_state or {})
         for sub_var, outer_var in zip(nested_vars, outer_vars, strict=False):
-            if outer_var in outer_state and sub_var not in seeded:
+            if isinstance(outer_var, Var) and isinstance(sub_var, Var) and outer_var in outer_state and sub_var not in seeded:
                 seeded[sub_var] = outer_state[outer_var]
         nested_initial_state = seeded or None
 
