@@ -111,3 +111,6 @@ target/
 
 *experimental_notebooks/
 *.ipynb filter=strip-notebook-output  # Strip notebook output
+
+# Version audit evidence referenced by checked-in reports.
+!audits/**/*.log

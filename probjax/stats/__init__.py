@@ -21,7 +21,18 @@ from probjax.stats.base import (
     rv_spherical,
     rv_spherical_frozen,
 )
-from probjax.stats.fit import FitMixin, fit, is_batch_stream, take_batches
+from probjax.stats.fit import (
+    FitInfo,
+    FitKernel,
+    build_fit_kernel,
+    FitCallback,
+    FitMixin,
+    FitResult,
+    FitState,
+    fit,
+    is_batch_stream,
+    take_batches,
+)
 from probjax.stats.bijective.protocols import (
     InvertibleTransformProtocol,
     TransformedDistribution,
@@ -74,6 +85,12 @@ from probjax.stats.mixture import mixture
 from probjax.stats.transformed import transformed
 
 __all__ = [
+    "FitInfo",
+    "FitKernel",
+    "build_fit_kernel",
+    "FitCallback",
+    "FitResult",
+    "FitState",
     # Base classes
     'DistributionParams',
     'DistributionAPI',

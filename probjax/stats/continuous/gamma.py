@@ -16,7 +16,7 @@ from jax.scipy.stats import gamma as _gamma
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import strict_positive
 from probjax.stats.utils import flatten_samples, normalize_sample_weights
-from probjax.utils.special import gammaincinv
+from probjax.utils.special import gammaincinv, gammainccinv
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["gamma"]
@@ -220,16 +220,7 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         isf : ndarray
             Quantile corresponding to the upper tail probability q
         """
-        q_arr = jnp.asarray(q)
-        alpha_arr = jnp.asarray(alpha)
-        beta_arr = jnp.asarray(beta)
-        q_clipped = jnp.clip(
-            q_arr,
-            a_min=jnp.finfo(q_arr.dtype).tiny,
-            a_max=1.0 - jnp.finfo(q_arr.dtype).eps,
-        )
-        inv = gammaincinv(alpha_arr, 1.0 - q_clipped)
-        return inv / beta_arr
+        return gammainccinv(alpha, q) / jnp.asarray(beta)
 
     @classmethod
     def mean(cls, alpha=1.0, beta=1.0, **kwargs):

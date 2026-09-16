@@ -338,7 +338,7 @@ def _run_nested(
     # are invisible inside the sub-jaxpr and silently dropped.
     nested_initial_state = initial_state
     outer_state = context.read_run_state(namespace=state_namespace)
-    if outer_state:
+    if isinstance(outer_state, Mapping):
         seeded = dict(initial_state or {})
         for sub_var, outer_var in zip(nested_vars, outer_vars, strict=False):
             if outer_var in outer_state and sub_var not in seeded:
@@ -377,13 +377,18 @@ def _run_nested(
     # than the outer jaxpr, even for corresponding positions
     eqn_state: State = None
     if nested_state is not None:
-        inner_to_outer = dict(zip(nested_vars, outer_vars, strict=False))
-        remapped_state = {}
-        for inner_var, val in nested_state.items():
-            outer_var = inner_to_outer.get(inner_var)
-            if outer_var is not None:
-                remapped_state[outer_var] = val
-        eqn_state = remapped_state if remapped_state else None
+        if isinstance(nested_state, Mapping) and any(
+            isinstance(key, Var) for key in nested_state
+        ):
+            inner_to_outer = dict(zip(nested_vars, outer_vars, strict=False))
+            remapped_state = {inner_to_outer[key]: value
+                              for key, value in nested_state.items()
+                              if key in inner_to_outer}
+            eqn_state = remapped_state or None
+        else:
+            # Named stochastic sites and scalar log potentials are aggregate
+            # state, not per-Var inverse metadata. Preserve them unchanged.
+            eqn_state = nested_state
         # Store remapped state for post-processing rules to access
         context.set_transient_state(state_namespace, eqn_state)
 

@@ -1,7 +1,7 @@
-from typing import Any, Optional, Protocol
+from typing import Any, Optional, Protocol, runtime_checkable
 
 import jax
-from jaxtyping import Array
+from jaxtyping import Array, ArrayLike
 
 __all__ = [
     "ModelFn",
@@ -10,6 +10,7 @@ __all__ = [
     "WeightFn",
     "ReductionFn",
     "LossFn",
+    "InterpolationScheduleProtocol",
     "InterpolationFn",
     "InterpolationNoiseFn",
 ]
@@ -160,3 +161,26 @@ class InterpolationNoiseFn(Protocol):
             Array of noise scales
         """
         ...
+
+
+@runtime_checkable
+class InterpolationScheduleProtocol(Protocol):
+    """Interpolation path + optional noise."""
+
+    def interpolation_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array: ...
+
+    def interpolation_noise_fn(
+        self, t: ArrayLike, x0: Array, x1: Array
+    ) -> Array | None: ...
+
+    def interpolation_velocity_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array: ...
+
+    def interpolation_noise_velocity_fn(
+        self, t: ArrayLike, x0: Array, x1: Array
+    ) -> Array | None: ...
+
+    def a_t(self, t: ArrayLike) -> Array: ...
+    def b_t(self, t: ArrayLike) -> Array: ...
+
+    def path_mean(self, t: ArrayLike, mu0: ArrayLike, mu1: ArrayLike) -> Array: ...
+    def path_std(self, t: ArrayLike, std0: ArrayLike, std1: ArrayLike) -> Array: ...

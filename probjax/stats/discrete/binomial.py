@@ -64,7 +64,7 @@ class binomial_gen(rv_discrete, rv_exponential_family):
         cdf : ndarray
             Cumulative distribution function evaluated at k
         """
-        k = jnp.asarray(k)
+        k = jnp.floor(jnp.asarray(k))
         n = jnp.asarray(n)
         probs = jnp.asarray(probs)
 
@@ -177,8 +177,43 @@ class binomial_gen(rv_discrete, rv_exponential_family):
 
     @classmethod
     def entropy(cls, n, probs, **kwds):
-        """Entropy of the Binomial distribution."""
-        return jnp.log(2) - probs * jnp.log(probs) - (1 - probs) * jnp.log(1 - probs)
+        """Entropy in nats, using a normalized central sum for variance <= 256.
+
+        Larger variances use the normal asymptotic expansion with its leading
+        binomial correction. The 1025-point sum has static shape under JIT.
+        """
+        # Sum a wide central window for small variance; above variance 256
+        # use the normal entropy with its leading binomial correction.
+        # Both paths have static shapes and support JIT/automatic differentiation.
+        n, probs = jnp.broadcast_arrays(jnp.asarray(n), jnp.asarray(probs))
+        variance = n * probs * (1 - probs)
+        # Normalize probabilities relative to the mode. This avoids subtracting
+        # large log-factorials when n is large but the variance is small.
+        mode = jnp.minimum(jnp.floor((n + 1) * probs), n)[..., None]
+        offset = jnp.arange(512)
+        p, q = probs[..., None], (1 - probs)[..., None]
+        upper_k, lower_k = mode + offset, mode - offset
+        up = jnp.where(
+            upper_k < n[..., None],
+            (n[..., None] - upper_k) / (upper_k + 1) * p / jnp.where(q > 0, q, 1),
+            0,
+        )
+        down = jnp.where(
+            lower_k > 0,
+            lower_k / (n[..., None] - lower_k + 1) * q / jnp.where(p > 0, p, 1),
+            0,
+        )
+        weights = jnp.concatenate(
+            (jnp.ones_like(mode), jnp.cumprod(up, axis=-1), jnp.cumprod(down, axis=-1)),
+            axis=-1,
+        )
+        mass = weights / jnp.sum(weights, axis=-1, keepdims=True)
+        exact = -jnp.sum(mass * jnp.log(jnp.where(mass > 0, mass, 1)), axis=-1)
+        v = jnp.maximum(variance, 1)
+        approx = 0.5 * jnp.log(2 * jnp.pi * jnp.e * v) + (
+            4 * probs * (1 - probs) - 1
+        ) / (12 * v)
+        return jnp.where(variance > 256, approx, exact)
 
     @classmethod
     def natural_parameters(cls, n, probs, **kwds):

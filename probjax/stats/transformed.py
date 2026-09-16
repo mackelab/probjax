@@ -174,6 +174,16 @@ class transformed_gen(rv_continuous):
         return jnp.exp(cls.logpdf(x, base_dist, bijector, **kwds))
 
     @classmethod
+    def _is_increasing(cls, base_dist, bijector):
+        # A continuous scalar bijection is strictly monotone. Compare two
+        # interior quantiles to avoid zero derivatives or infinite endpoints.
+        shape = tuple(base_dist.event_shape)
+        _, low, leading = cls._flatten_by_event_shape(base_dist.ppf(.25), shape)
+        _, high, _ = cls._flatten_by_event_shape(base_dist.ppf(.75), shape)
+        apply = cls._get_vmapped_bijector(bijector)
+        return cls._unflatten_by_event_shape(apply(high) > apply(low), leading, shape)
+
+    @classmethod
     def cdf(cls, x: ArrayLike, base_dist, bijector, inverse_and_logdet=None, **kwds):
         """Cumulative distribution function of the transformed distribution."""
         event_shape = tuple(base_dist.event_shape)
@@ -188,7 +198,8 @@ class transformed_gen(rv_continuous):
 
         inv_flat, _ = vmapped_inverse_and_logdet(x_flat)
         inv_value = cls._unflatten_by_event_shape(inv_flat, leading_shape, event_shape)
-        return base_dist.cdf(inv_value)
+        return jnp.where(cls._is_increasing(base_dist, bijector),
+                         base_dist.cdf(inv_value), base_dist.sf(inv_value))
 
     @classmethod
     def ppf(cls, q: ArrayLike, base_dist, bijector, inverse_and_logdet=None, **kwds):
@@ -197,7 +208,8 @@ class transformed_gen(rv_continuous):
         event_shape = tuple(base_dist.event_shape)
         cls._ensure_univariate_event(event_shape)
 
-        base_ppf = base_dist.ppf(q)
+        base_ppf = jnp.where(cls._is_increasing(base_dist, bijector),
+                             base_dist.ppf(q), base_dist.isf(q))
         _, base_ppf_flat, leading_shape = cls._flatten_by_event_shape(
             base_ppf, event_shape
         )

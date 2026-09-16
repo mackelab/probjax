@@ -84,7 +84,7 @@ class pareto_gen(rv_continuous, rv_exponential_family):
         size = shape + event_shape
         dtype = jnp.result_type(b, alpha)
         samples = random.pareto(rng, alpha, shape=size, dtype=dtype)
-        return (samples + 1.0) * b
+        return samples * b
 
     @classmethod
     def sf(cls, x, b=1.0, alpha=1.0, **kwargs):

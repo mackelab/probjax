@@ -87,10 +87,10 @@ class PosEncode(nnx.Module):
         # Reshape for broadcasting: [seq_len, 1] * [token_dim//2]
         pos_encoding = jnp.zeros((seq_len, token_dim), dtype=x.dtype)
         pos_encoding = pos_encoding.at[:, 0::2].set(
-            jnp.sin(idx[:, None] * div_term[None, :])
+            jnp.sin(idx[:, None] * div_term[None, :]).astype(x.dtype)
         )
         pos_encoding = pos_encoding.at[:, 1::2].set(
-            jnp.cos(idx[:, None] * div_term[None, :])
+            jnp.cos(idx[:, None] * div_term[None, : token_dim // 2]).astype(x.dtype)
         )
 
         # Reshape to match input dimensions

@@ -1,8 +1,10 @@
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array
+
+from probjax.utils.protocols import InterpolationScheduleProtocol
 
 from probjax.utils.protocols import (
     LossFn,
@@ -10,6 +12,8 @@ from probjax.utils.protocols import (
     TimeDependentModelFn,
     WeightFn,
 )
+
+
 
 def base_mean_flow_matching_loss(
     model_fn: TimeDependentModelFn,

@@ -367,7 +367,7 @@ def proposal_gaussian_logpdf(state, *, params: GaussianIMHParams):
     mean = params.mean
     cov = params.cov
     if cov.ndim == 1:
-        return jax.scipy.stats.norm.logpdf(flat_position, mean, cov).sum()
+        return jax.scipy.stats.norm.logpdf(flat_position, mean, jnp.sqrt(cov)).sum()
     else:
         return jax.scipy.stats.multivariate_normal.logpdf(flat_position, mean, cov)
 

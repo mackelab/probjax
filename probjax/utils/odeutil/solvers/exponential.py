@@ -35,6 +35,7 @@ class ExpSplitState(NamedTuple):
     f0: Optional[Array]
     nonlin_history: Array
     history_fill: Array
+    previous_dt: Array
 
 
 # =============================================================================
@@ -98,7 +99,14 @@ def init_exp_split(
         split = drift
     f0 = cast(Array, split.nonlin(t0, y0, *args))  # cache N(t0, y0)
     history, fill = _history_init(f0, history_size)
-    return ExpSplitState(t0=t0, y0=y0, f0=f0, nonlin_history=history, history_fill=fill)
+    return ExpSplitState(
+        t0=t0,
+        y0=y0,
+        f0=f0,
+        nonlin_history=history,
+        history_fill=fill,
+        previous_dt=jnp.zeros_like(t0),
+    )
 
 
 # =============================================================================
@@ -260,9 +268,11 @@ def _phi3_scalar(z: Array) -> Array:
 
 def build_exp_ab2_scalarL(split: split_drift | Callable):
     """
-    Exponential AB2 with scalar L. Signature matches your solvers:
-      step(state, dt, y_nm1, N_nm1, *user_args) -> (state', info)
-    where N_nm1 is the cached nonlinearity at (t_{n-1}, y_{n-1}).
+    Exponential AB2 with midpoint-frozen scalar L and variable step sizes.
+
+    ``step(state, dt, *user_args)`` returns the next state and diagnostics.
+    The state caches the previous nonlinearity and step size. Startup uses
+    exponential Euler; later steps integrate a linear extrapolation of N.
     """
 
     if not isinstance(split, split_drift):
@@ -283,13 +293,15 @@ def build_exp_ab2_scalarL(split: split_drift | Callable):
         fill = state.history_fill
         N_nm1 = _history_get(history, fill, 0, N_n)
 
-        c_np1 = split.lin_coeff(t_n + dt)
-        z = c_np1 * dt
+        # Midpoint freezing is second-order for a time-dependent scalar L.
+        z = split.lin_coeff(t_n + 0.5 * dt) * dt
         r = jnp.exp(z)
-        ph1 = _phi1_scalar(z)
-
-        # y_{n+1} = e^{z} y_n + dt φ1(z) [2 N_n - N_{n-1}]
-        y_np1 = r * y_n + dt * ph1 * (2.0 * N_n - N_nm1)
+        ph1, ph2 = _phi1_scalar(z), _phi2_scalar(z)
+        previous_dt = jnp.where(fill > 0, state.previous_dt, dt)
+        ratio = dt / previous_dt
+        # Integrate the linear extrapolation of N over the current interval.
+        # For L=0 and equal steps this reduces to 3/2 N_n - 1/2 N_{n-1}.
+        y_np1 = r * y_n + dt * (ph1 * N_n + ph2 * ratio * (N_n - N_nm1))
 
         N_np1 = cast(Array, split.nonlin(t_n + dt, y_np1, *args))
         history, fill = _history_push(history, fill, N_n)
@@ -300,6 +312,7 @@ def build_exp_ab2_scalarL(split: split_drift | Callable):
                 f0=N_np1,
                 nonlin_history=history,
                 history_fill=fill,
+                previous_dt=jnp.asarray(dt),
             ),
             ExpODEInfo(phi_products=None),
         )
@@ -359,6 +372,7 @@ def build_exp_ab3_scalarL(split: split_drift | Callable):
                 f0=N_np1,
                 nonlin_history=history,
                 history_fill=fill,
+                previous_dt=jnp.asarray(dt),
             ),
             ExpODEInfo(phi_products=None),
         )

@@ -77,7 +77,7 @@ def test_flow_matcher_fit():
         def __call__(self, t, x, **kwargs):
             return self.proj(x)
 
-    model = LinearFlow(TinyNet(nnx.Rngs(0)))
+    model = LinearFlow(TinyNet(nnx.Rngs(0)), event_spec=3)
     data = jax.random.normal(jax.random.key(1), (256, 3))
     losses = model.fit(jax.random.key(2), data, num_steps=30)
     assert losses.shape == (30,)

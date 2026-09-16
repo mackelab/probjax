@@ -83,7 +83,7 @@ class Velocity(nnx.Module):
         return self.net(x)
 
 data = jax.random.normal(jax.random.key(0), (256, 3))
-matcher = LinearFlow(Velocity(nnx.Rngs(0)))
+matcher = LinearFlow(Velocity(nnx.Rngs(0)), event_spec=3)
 losses = matcher.fit(jax.random.key(1), data, num_steps=50)
 ```
 

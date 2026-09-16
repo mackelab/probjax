@@ -208,7 +208,7 @@ def test_flow_matcher_model_loss():
         def __call__(self, t, x, **kwargs):
             return self.proj(x)
 
-    model = LinearFlow(TinyFlowNet(nnx.Rngs(0)))
+    model = LinearFlow(TinyFlowNet(nnx.Rngs(0)), event_spec=3)
     data = jax.random.normal(jax.random.key(1), (8, 3))
     loss = model.loss(jax.random.key(2), data)
 

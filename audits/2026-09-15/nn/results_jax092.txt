@@ -1,0 +1,5 @@
+JAX 0.9.2
+Explicit dropout keys across three blocks [Array([0, 8], dtype=uint32), Array([0, 8], dtype=uint32), Array([0, 8], dtype=uint32)]
+All keys equal True
+Mean-flow pair embeddings swap invariant True
+Flash3 forwarding function NameError name '_run_flash_forward_raw' is not defined

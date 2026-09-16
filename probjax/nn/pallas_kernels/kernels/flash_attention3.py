@@ -156,6 +156,32 @@ _FLASH_BWD_SPEC = derive_bwd_spec(
 )
 
 
+def _run_flash_forward_raw(q, k, v, *, config, save_residuals, use_pipeline_emitter):
+    if use_pipeline_emitter:
+        implementation = _attention_with_pipeline_emitter_impl
+    else:
+        implementation = _attention_forward_impl or _attention_impl
+    if implementation is None:
+        raise RuntimeError("This JAX build does not provide the Flash3 forward kernel.")
+    result = implementation(q, k, v, config=config, save_residuals=save_residuals)
+    if save_residuals:
+        out, (lse,) = result
+        return out, lse
+    return result
+
+
+def _run_flash_backward_raw(do, q, k, v, out, lse, *, config):
+    if _attention_backward_impl is None:
+        if _attention_impl is None:
+            raise RuntimeError("This JAX build does not provide the Flash3 backward kernel.")
+        _, pullback = jax.vjp(
+            lambda q, k, v: _attention_impl(q, k, v, config=config, save_residuals=False),
+            q, k, v,
+        )
+        return pullback(do)
+    return _attention_backward_impl(config, False, (q, k, v, out, lse), do)
+
+
 def _flash_fwd_impl(q, k, v, *, config, use_pipeline_emitter):
     return _run_flash_forward_raw(
         q,

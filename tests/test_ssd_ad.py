@@ -4,7 +4,7 @@ The design guarantee under test: forward mode costs 4 forward-kernel
 invocations (primal + the 3-call composite), and reverse mode stages exactly
 one fused ssd_bwd call — identical to the old custom_vjp path. The composite
 math is verified against jax.jvp of a pure-JAX reference; kernel-numerics
-comparisons are GPU-gated in tests/test_pallas_old_vs_new.py.
+comparisons are GPU-gated in tests/test_pallas_references.py.
 """
 
 import importlib

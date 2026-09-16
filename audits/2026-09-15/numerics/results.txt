@@ -1,0 +1,14 @@
+JAX 0.10.0
+entropy vasicek (Array(-0.06033699, dtype=float32), np.float32(-0.060336996))
+entropy van es (Array(-1.4365494, dtype=float32), np.float32(0.063872814))
+entropy ebrahimi (Array(-3.7350612, dtype=float32), np.float32(0.008048338))
+entropy correa (Array(nan, dtype=float32), np.float32(-0.031353008))
+entropy auto (Array(-3.7350612, dtype=float32), np.float32(0.008048338))
+PCG identity scale 1.0 (Array([[1.],
+       [1.]], dtype=float32), PCGInfo(converged=Array([ True], dtype=bool), rel_residual=Array([0.], dtype=float32), iters_per_block=Array([1], dtype=int32)))
+PCG identity scale 0.0001 (Array([[4.0000073e-10],
+       [4.0000073e-10]], dtype=float32), PCGInfo(converged=Array([False], dtype=bool), rel_residual=Array([0.999996], dtype=float32), iters_per_block=Array([200], dtype=int32)))
+logdet [[2]] expected .693147 -33.845627
+upper triangle expected True False
+batch diagonal expected [True True] [False False]
+full-step SLQ expected log3 (Array(2.1972244, dtype=float32), Array(1.0986123, dtype=float32))

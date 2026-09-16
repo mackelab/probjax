@@ -221,6 +221,7 @@ from probjax.nn.moe import (
     load_balance_loss,
 )
 from probjax.nn.nets import (
+    DiffusionTransformer,
     MLP,
     DeepSet,
     LRUModel,
@@ -262,4 +263,16 @@ from probjax.nn.pallas_kernels import (
     rbf_kde_density,
     rbf_kernel_mv,
     rbf_kernel_mv_naive,
+)
+
+# Shared training API for neural modules and functional parameter pytrees.
+from probjax.stats.fit import (
+    FitCallback,
+    FitMixin,
+    FitResult,
+    FitState,
+    FitInfo,
+    FitKernel,
+    build_fit_kernel,
+    fit,
 )

@@ -11,6 +11,7 @@ from probjax.nn.layers.conv import (
 )
 from probjax.nn.sharding import BATCH, constrain
 from probjax.nn.utils import (
+    DEFAULT_MODULE,
     filter_precision_kwargs,
     get_active_precision_kwargs,
     module_accepts_rng,
@@ -63,6 +64,12 @@ class UNet(nnx.Module):
     If a sequence is provided, it overrides the uniform rate.
     """
 
+    resnet_block_cls = ResnetBlock
+    conv_down_cls = nnx.Conv
+    conv_up_cls = nnx.ConvTranspose
+    attn_cls = SpatialSelfAttention
+    conv_cls = nnx.Conv
+
     def __init__(
         self,
         in_features: int,
@@ -84,13 +91,29 @@ class UNet(nnx.Module):
         param_dtype: jnp.dtype | None = None,
         preferred_element_type: jnp.dtype | None = None,
         # --- pluggable builders: classes ---
-        resnet_block_cls: ModuleLikeType = ResnetBlock,
-        conv_down_cls: ModuleLikeType | Sequence[ModuleLikeType] = nnx.Conv,
-        conv_up_cls: ModuleLikeType | Sequence[ModuleLikeType] = nnx.ConvTranspose,
-        attn_cls: ModuleLikeType = SpatialSelfAttention,
-        conv_cls: ModuleLikeType = nnx.Conv,
+        resnet_block_cls: ModuleLikeType = DEFAULT_MODULE,
+        conv_down_cls: ModuleLikeType | Sequence[ModuleLikeType] = DEFAULT_MODULE,
+        conv_up_cls: ModuleLikeType | Sequence[ModuleLikeType] = DEFAULT_MODULE,
+        attn_cls: ModuleLikeType = DEFAULT_MODULE,
+        conv_cls: ModuleLikeType = DEFAULT_MODULE,
         rngs: nnx.Rngs,
     ):
+        resnet_block_cls = (
+            type(self).resnet_block_cls
+            if resnet_block_cls is DEFAULT_MODULE
+            else resnet_block_cls
+        )
+        conv_down_cls = (
+            type(self).conv_down_cls
+            if conv_down_cls is DEFAULT_MODULE
+            else conv_down_cls
+        )
+        conv_up_cls = (
+            type(self).conv_up_cls if conv_up_cls is DEFAULT_MODULE else conv_up_cls
+        )
+        attn_cls = type(self).attn_cls if attn_cls is DEFAULT_MODULE else attn_cls
+        conv_cls = type(self).conv_cls if conv_cls is DEFAULT_MODULE else conv_cls
+
         assert len(out_features) >= 2, "Must have at least 2 output channels"
 
         self.in_features = in_features
@@ -137,7 +160,8 @@ class UNet(nnx.Module):
         ):
             if len(drop_path_rate) != total_blocks:
                 raise ValueError(
-                    f"drop_path_rate sequence length must be {total_blocks}, got {len(drop_path_rate)}"
+                    f"drop_path_rate sequence length must be {total_blocks}, "
+                    f"got {len(drop_path_rate)}"
                 )
             dpr_list = [float(x) for x in drop_path_rate]
         else:

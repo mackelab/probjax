@@ -16,7 +16,7 @@ from jax.scipy.stats import beta as _beta
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import strict_positive, unit_interval
 from probjax.stats.utils import flatten_samples, normalize_sample_weights
-from probjax.utils.special import betaincinv
+from probjax.utils.special import betaincinv, betainccinv
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["beta"]
@@ -216,7 +216,7 @@ class beta_gen(rv_continuous, rv_exponential_family):
             Quantile corresponding to the upper tail probability q
         """
         q = jnp.asarray(q)
-        return betaincinv(alpha, beta, 1.0 - q)
+        return betainccinv(alpha, beta, q)
 
     @classmethod
     def mean(cls, alpha=1.0, beta=1.0, **kwargs):

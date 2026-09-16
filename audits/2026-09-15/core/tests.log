@@ -1,0 +1,14 @@
+........................................................................ [ 15%]
+........................................................................ [ 31%]
+...............................................x..............x......... [ 46%]
+.....................xxxxxxxxxx......................................... [ 62%]
+........................................................................ [ 77%]
+........................................................................ [ 93%]
+..............................                                           [100%]
+=============================== warnings summary ===============================
+tests/test_core_inverse_and_log_det.py::test_inverse_convert_element_type
+  /home/manuel/.local/lib/python3.13/site-packages/jax/_src/numpy/array_methods.py:125: UserWarning: Explicitly requested dtype float64 requested in astype is not available, and will be truncated to dtype float32. To enable more dtypes, set the jax_enable_x64 configuration option or the JAX_ENABLE_X64 shell environment variable. See https://github.com/jax-ml/jax#current-gotchas for more.
+    return lax_numpy.astype(self, dtype, copy=copy, device=device)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+450 passed, 12 xfailed, 1 warning in 44.25s

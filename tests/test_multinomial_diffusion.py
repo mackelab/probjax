@@ -96,9 +96,10 @@ def test_multinomial_diffusion_loss_and_sampling():
         num_steps=6,
         num_classes=6,
     )
-    model = MultinomialDiffusion(Net(), schedule=schedule)
+    model = MultinomialDiffusion(Net(), schedule=schedule, event_spec=3)
     model_rb = MultinomialDiffusion(
         Net(),
+        event_spec=3,
         schedule=schedule,
         rao_blackwellize_xt=True,
         rao_blackwellize_xt_num_features=2,
@@ -160,7 +161,7 @@ def test_multinomial_reparameterized_score_is_finite():
         num_steps=12,
         num_classes=7,
     )
-    model = MultinomialDiffusion(Net(), schedule=schedule)
+    model = MultinomialDiffusion(Net(), schedule=schedule, event_spec=4)
 
     x_t = jax.random.randint(jax.random.key(10), (6, 4), minval=0, maxval=7)
     t = jnp.full((6, 1), 0.5, dtype=jnp.float32)

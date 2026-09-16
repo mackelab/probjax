@@ -47,7 +47,14 @@ def _diffusion_sde_terms(model, context):
 
 class DiffusionDenoiser(GenerativeModel):
     """
-    Composable diffusion denoiser:
+    Composable diffusion denoiser.
+
+    event_spec is required: an event dimension, shape, ShapeDtypeStruct, or
+    pytree of those. It excludes sample/batch axes and is only a sampling
+    default, not an input-shape restriction. Override with as_dist(event_spec)
+    or change it through set_event_spec. Backbone dimensions must be compatible.
+
+    Components:
 
       - schedule   : NoiseScheduleProtocol   (physical schedule)
       - precond    : PreconditioningProtocol (defines c_in/out/etc)
@@ -70,7 +77,10 @@ class DiffusionDenoiser(GenerativeModel):
         std0: ArrayLike = 1.0,
         last_layer: Callable[[Array], Array] | None = None,
         rngs: nnx.RngStream | None = None,
+        *,
+        event_spec,
     ) -> None:
+        self.set_event_spec(event_spec)
         if not isinstance(schedule, NoiseScheduleProtocol):
             raise TypeError("schedule must implement NoiseScheduleProtocol")
         if not isinstance(precond, PreconditioningProtocol):
@@ -91,6 +101,13 @@ class DiffusionDenoiser(GenerativeModel):
             self.solver_cfg.set_schedule(self.schedule)
         self.std0 = nnx.Variable(std0)
         self.last_layer = last_layer
+
+    def _normalize_event_spec(self, event_spec, dtype=None):
+        spec = super()._normalize_event_spec(event_spec, dtype)
+        if any(not jnp.issubdtype(leaf.dtype, jnp.floating)
+               for leaf in jax.tree.leaves(spec)):
+            raise TypeError("Continuous diffusion event dtypes must be floating point.")
+        return spec
 
     def set_solver_cfg(self, solver_cfg: SolverConfigProtocol) -> None:
         if not isinstance(solver_cfg, SolverConfigProtocol):
@@ -311,7 +328,7 @@ class DiffusionDenoiser(GenerativeModel):
     def marginal_std(self, t: ArrayLike) -> Array:
         return self.schedule.marginal_std(t, self.std0.get_value())
 
-    def _sample_base(self, rng, sample_shape, spec):
+    def _sample_base(self, rng, sample_shape, spec, *, t_max=None):
         """Draw the reverse process's starting noise, N(0, marginal_std(t_max)^2).
 
         Overrides the base class's fixed unit-variance default: the reverse
@@ -319,7 +336,8 @@ class DiffusionDenoiser(GenerativeModel):
         ``marginal_std(t_max)`` (e.g. ``~sigma_max`` for EDM), not to unit
         variance.
         """
-        scale = self.marginal_std(self.train_cfg.t_max)
+        t_max = self.train_cfg.t_max if t_max is None else t_max
+        scale = self.marginal_std(t_max)
         return sample_normal(rng, sample_shape, spec, scale=scale)
 
     def drift(
@@ -430,6 +448,7 @@ class DiffusionDenoiser(GenerativeModel):
             make_sample_fn,
             dtype=dtype,
             stochastic=mode == "sde",
+            base_sample_kwargs={"t_max": t_max},
             context_spec=context_spec,
             trace=collect_trace,
         )
@@ -453,6 +472,7 @@ class EDM(DiffusionDenoiser):
         self,
         net: ModuleLike,
         *,
+        event_spec,
         std0: float = 1.0,
         lognoise_mean: float = -1.2,
         lognoise_scale: float = 1.2,
@@ -483,6 +503,7 @@ class EDM(DiffusionDenoiser):
         )
         super().__init__(
             net=net,
+            event_spec=event_spec,
             schedule=schedule,
             precond=precond,
             train_cfg=train_cfg,
@@ -506,6 +527,7 @@ class VE(DiffusionDenoiser):
         self,
         net: ModuleLike,
         *,
+        event_spec,
         std0: float = 1.0,
         sigma_min: float = 1e-4,
         sigma_max: float = 80.0,
@@ -537,6 +559,7 @@ class VE(DiffusionDenoiser):
         )
         super().__init__(
             net=net,
+            event_spec=event_spec,
             schedule=schedule,
             precond=precond,
             train_cfg=train_cfg,
@@ -560,6 +583,7 @@ class VP(DiffusionDenoiser):
         self,
         net: ModuleLike,
         *,
+        event_spec,
         beta_min: float = 0.1,
         beta_max: float = 10.0,
         std0: float = 1.0,
@@ -598,6 +622,7 @@ class VP(DiffusionDenoiser):
         )
         super().__init__(
             net=net,
+            event_spec=event_spec,
             schedule=schedule,
             precond=precond,
             train_cfg=train_cfg,
@@ -621,6 +646,7 @@ class CosineDM(DiffusionDenoiser):
         self,
         net: ModuleLike,
         *,
+        event_spec,
         std0: float = 1.0,
         t_min: float = 1e-3,
         t_max: float = 1.0,
@@ -664,6 +690,7 @@ class CosineDM(DiffusionDenoiser):
         )
         super().__init__(
             net=net,
+            event_spec=event_spec,
             schedule=schedule,
             precond=precond,
             train_cfg=train_cfg,

@@ -6,9 +6,11 @@ from flax import nnx
 
 from probjax.nn.layers.ssm import LRUCell
 from probjax.nn.nets.simple import MLP
-
-
-from probjax.nn.utils import filter_precision_kwargs, get_active_precision_kwargs
+from probjax.nn.utils import (
+    DEFAULT_MODULE,
+    filter_precision_kwargs,
+    get_active_precision_kwargs,
+)
 from probjax.utils.typing import (
     Array,
     ArrayLike,
@@ -43,6 +45,12 @@ class SSMModel(nnx.Module):
     bidirectional: bool  # Whether to use bidirectional processing
     dropout_rate: float | None  # Dropout rate
 
+    norm_cls = nnx.LayerNorm
+    mlp_cls = MLP
+    linear_cls = nnx.Linear
+    dropout_cls = nnx.Dropout
+    recurrent_cls = LRUCell
+
     def __init__(
         self,
         input_dim: int,
@@ -57,15 +65,17 @@ class SSMModel(nnx.Module):
         skip_connection_ssm: bool = True,
         skip_connection_mlp: bool = True,
         activation: Callable = jax.nn.gelu,
-        norm_cls: ModuleLikeType = nnx.LayerNorm,
-        mlp_cls: ModuleLikeType = MLP,
+        norm_cls: ModuleLikeType = DEFAULT_MODULE,
+        mlp_cls: ModuleLikeType = DEFAULT_MODULE,
+        linear_cls: ModuleLikeType = DEFAULT_MODULE,
+        dropout_cls: ModuleLikeType = DEFAULT_MODULE,
         initializer: Optional[nnx.Initializer] = None,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
         # Recurrent cell choice and kwargs
-        recurrent_cls: ModuleLikeType = LRUCell,
+        recurrent_cls: ModuleLikeType = DEFAULT_MODULE,
         recurrent_kwargs: Optional[Mapping] = None,
         rngs: nnx.Rngs,
     ):
@@ -97,6 +107,20 @@ class SSMModel(nnx.Module):
                 ValueError: If any dimension is not positive or if num_layers is
                     negative.
         """
+        norm_cls = type(self).norm_cls if norm_cls is DEFAULT_MODULE else norm_cls
+        mlp_cls = type(self).mlp_cls if mlp_cls is DEFAULT_MODULE else mlp_cls
+        linear_cls = (
+            type(self).linear_cls if linear_cls is DEFAULT_MODULE else linear_cls
+        )
+        dropout_cls = (
+            type(self).dropout_cls if dropout_cls is DEFAULT_MODULE else dropout_cls
+        )
+        recurrent_cls = (
+            type(self).recurrent_cls
+            if recurrent_cls is DEFAULT_MODULE
+            else recurrent_cls
+        )
+
         if input_dim <= 0:
             raise ValueError(f"input_dim must be positive, got {input_dim}")
         if model_dim <= 0:
@@ -138,11 +162,11 @@ class SSMModel(nnx.Module):
             if initializer is None
             else initializer
         )
-        linear_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
+        linear_kwargs = filter_precision_kwargs(linear_cls, **precision_kwargs)
         linear_kwargs['kernel_init'] = init_default
 
-        self.in_layer = nnx.Linear(input_dim, model_dim, rngs=rngs, **linear_kwargs)
-        self.out_layer = nnx.Linear(model_dim, output_dim, rngs=rngs, **linear_kwargs)
+        self.in_layer = linear_cls(input_dim, model_dim, rngs=rngs, **linear_kwargs)
+        self.out_layer = linear_cls(model_dim, output_dim, rngs=rngs, **linear_kwargs)
 
         # Norm sharding kwargs (default: replicate norm params).
 
@@ -172,20 +196,20 @@ class SSMModel(nnx.Module):
         ])
         if dropout_rate is not None:
             self.block_dropout1 = nnx.List([
-                nnx.Dropout(dropout_rate, rngs=rngs) for _ in range(num_layers)
+                dropout_cls(dropout_rate, rngs=rngs) for _ in range(num_layers)
             ])
             self.block_dropout2 = nnx.List([
-                nnx.Dropout(dropout_rate, rngs=rngs) for _ in range(num_layers)
+                dropout_cls(dropout_rate, rngs=rngs) for _ in range(num_layers)
             ])
         else:
             self.block_dropout1 = None
             self.block_dropout2 = None
         self.block_out1 = nnx.List([
-            nnx.Linear(model_dim, model_dim, rngs=rngs, **linear_kwargs)
+            linear_cls(model_dim, model_dim, rngs=rngs, **linear_kwargs)
             for _ in range(num_layers)
         ])
         self.block_out2 = nnx.List([
-            nnx.Linear(model_dim, model_dim, rngs=rngs, **linear_kwargs)
+            linear_cls(model_dim, model_dim, rngs=rngs, **linear_kwargs)
             for _ in range(num_layers)
         ])
         self.block_activation = activation

@@ -1,0 +1,213 @@
+FFFFFFFFF                                                                [100%]
+=================================== FAILURES ===================================
+_____________________ test_logdet_gradient_scaled_identity _____________________
+
+    def test_logdet_gradient_scaled_identity():
+        with jax.enable_x64():
+            actual = jax.grad(lambda s: lanczos_logdet(s*jnp.eye(2), num_steps=2))(2.)
+>           np.testing.assert_allclose(actual, 1., atol=1e-12)
+E           AssertionError:
+E           Not equal to tolerance rtol=1e-07, atol=1e-12
+E
+E           nan location mismatch:
+E            ACTUAL: array(nan)
+E            DESIRED: array(1.)
+
+audits/2026-09-15/reaudit/test_new_findings.py:14: AssertionError
+_______________ test_genpareto_explicit_shape_parameter_sampling _______________
+
+    def test_genpareto_explicit_shape_parameter_sampling():
+>       sample = genpareto.rvs(jax.random.key(0), c=.5, shape=(5,))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+audits/2026-09-15/reaudit/test_new_findings.py:18:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+probjax/stats/base.py:255: in rvs
+    return rv_p.bind(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = random_variable, key = Array((), dtype=key<fry>) overlaying:
+[0 0]
+shape = (5,)
+dist = <probjax.stats.continuous.genpareto.genpareto_gen object at 0x7f59d023c590>
+name = None
+rvs_fn = <bound method genpareto_gen._rvs_impl of <class 'probjax.stats.continuous.genpareto.genpareto_gen'>>
+logpdf_fn = <bound method genpareto_gen.logpdf of <class 'probjax.stats.continuous.genpareto.genpareto_gen'>>
+kwds = {'c': 0.5}, forward_jaxpr = None, in_tree = None, kwds_items = None
+args = (0.5,), params = {}
+
+    def bind(
+        self,
+        key,
+        *args,
+        shape=(),
+        dist=None,
+        name=None,
+        rvs_fn=None,
+        logpdf_fn=None,
+        kwds=None,
+        forward_jaxpr=None,
+        in_tree=None,
+        kwds_items=None,
+        **params,
+    ):
+        if dist is None and (rvs_fn is None or logpdf_fn is None):
+            raise ValueError("dist must be provided when rvs_fn/logpdf_fn are not set")
+
+        dist_obj = cast(Any, dist)
+        if rvs_fn is None:
+            rvs_fn = getattr(dist_obj, "_rvs_impl", None)
+            if rvs_fn is None:
+                rvs_fn = dist_obj.rvs
+        if logpdf_fn is None:
+            logpdf_fn = dist_obj.logpdf
+
+        if kwds is None:
+            kwds = {} if kwds_items is None else dict(kwds_items)
+
+        args, parsed_kwds = dist_obj._parse_args(*args, **kwds)
+
+        # Opt-in PPL tracing: outside `enable_rv_tracing` (and without
+        # PROBJAX_RV_TRACING=1), sampling is an ordinary JAX computation.
+        # This skips the primitive, the forward-jaxpr trace, the site-name
+        # counter, and the static-param hashability checks -- so array-valued
+        # kwargs also pass straight through to `rvs_fn`.
+        if not rv_tracing_enabled():
+>           return rvs_fn(key, *args, shape=shape, **parsed_kwds)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           TypeError: genpareto_gen._rvs_impl() got multiple values for argument 'shape'
+
+probjax/core/custom_primitives/random_variable.py:295: TypeError
+____________________ test_truncnorm_small_positive_quantile ____________________
+
+    def test_truncnorm_small_positive_quantile():
+        with jax.enable_x64():
+            actual = truncnorm.ppf(1e-100, a=-1., b=1.)
+>           assert jnp.isfinite(actual)
+E           assert Array(False, dtype=bool)
+E            +  where Array(False, dtype=bool) = <PjitFunction of <function isfinite at 0x7f5ba68a6ca0>>(Array(nan, dtype=float64))
+E            +    where <PjitFunction of <function isfinite at 0x7f5ba68a6ca0>> = jnp.isfinite
+
+audits/2026-09-15/reaudit/test_new_findings.py:26: AssertionError
+__________________ test_truncnorm_quantile_second_derivative ___________________
+
+    def test_truncnorm_quantile_second_derivative():
+        with jax.enable_x64():
+            q = .7
+            actual = jax.grad(jax.grad(lambda p: truncnorm.ppf(p)))(q)
+            reference = sp.norm.ppf(q)/sp.norm.pdf(sp.norm.ppf(q))**2
+>           np.testing.assert_allclose(actual, reference, rtol=1e-8)
+E           AssertionError:
+E           Not equal to tolerance rtol=1e-08, atol=0
+E
+E           Mismatched elements: 1 / 1 (100%)
+E           Max absolute difference among violations: 8.44654601
+E           Max relative difference among violations: 1.94718392
+E            ACTUAL: array(-4.10872)
+E            DESIRED: array(4.337826)
+
+audits/2026-09-15/reaudit/test_new_findings.py:35: AssertionError
+____________________ test_truncnorm_one_sided_tail_variance ____________________
+
+    def test_truncnorm_one_sided_tail_variance():
+        actual = truncnorm.var(a=jnp.float32(20.), b=jnp.inf)
+>       np.testing.assert_allclose(actual, sp.truncnorm.var(20.,np.inf),rtol=1e-3)
+E       AssertionError:
+E       Not equal to tolerance rtol=0.001, atol=0
+E
+E       Mismatched elements: 1 / 1 (100%)
+E       Max absolute difference among violations: 0.00086315
+E       Max relative difference among violations: 0.35041118
+E        ACTUAL: array(0.003326, dtype=float32)
+E        DESIRED: array(0.002463)
+
+audits/2026-09-15/reaudit/test_new_findings.py:40: AssertionError
+_______________________ test_pcg_small_representable_rhs _______________________
+
+    def test_pcg_small_representable_rhs():
+        b = jnp.full((2,1),1e-20,dtype=jnp.float32)
+        actual,info = batched_pcg_solve(lambda x:x,b,block_size=1)
+        # Check in float64 on the host so the assertion itself cannot underflow.
+>       np.testing.assert_allclose(np.asarray(actual,dtype=np.float64),np.asarray(b,dtype=np.float64),rtol=1e-5,atol=0)
+E       AssertionError:
+E       Not equal to tolerance rtol=1e-05, atol=0
+E
+E       Mismatched elements: 2 / 2 (100%)
+E       Mismatch at indices:
+E        [0, 0]: 0.0 (ACTUAL), 9.999999682655225e-21 (DESIRED)
+E        [1, 0]: 0.0 (ACTUAL), 9.999999682655225e-21 (DESIRED)
+E       Max absolute difference among violations: 9.99999968e-21
+E       Max relative difference among violations: 1.
+E        ACTUAL: array([[0.],
+E              [0.]])
+E        DESIRED: array([[1.e-20],
+E              [1.e-20]])
+
+audits/2026-09-15/reaudit/test_new_findings.py:47: AssertionError
+_______________________ test_optional_rng_plain_function _______________________
+
+    def test_optional_rng_plain_function():
+>       assert call_with_optional_rng(lambda x:x+1,1.,rng=jax.random.key(0)) == 2.
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+audits/2026-09-15/reaudit/test_new_findings.py:52:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+module = <function test_optional_rng_plain_function.<locals>.<lambda> at 0x7f5958664220>
+rng = Array((), dtype=key<fry>) overlaying:
+[0 0], args = (1.0,), kwargs = {}
+
+    def call_with_optional_rng(module, *args, rng=None, **kwargs):
+        """Call a module/function and pass `rng` only if supported."""
+        if rng is None:
+            return module(*args, **kwargs)
+
+        if not module_accepts_rng(module):
+            return module(*args, **kwargs)
+
+>       return module(*args, rng=rng, **kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: test_optional_rng_plain_function.<locals>.<lambda>() got an unexpected keyword argument 'rng'
+
+probjax/nn/utils.py:185: TypeError
+______________________ test_forwarding_constructor_kwargs ______________________
+
+    def test_forwarding_constructor_kwargs():
+        class ForwardingLayer:
+            def __init__(self,**kwargs):
+                self.kwargs=kwargs
+        kwargs={'kernel_sharding':('data',None)}
+>       assert filter_supported_kwargs(ForwardingLayer,**kwargs)==kwargs
+E       AssertionError: assert {} == {'kernel_shar...'data', None)}
+E
+E         Right contains 1 more item:
+E         {'kernel_sharding': ('data', None)}
+E         Use -v to get more diff
+
+audits/2026-09-15/reaudit/test_new_findings.py:60: AssertionError
+______________________ test_genpareto_negative_shape_mode ______________________
+
+    def test_genpareto_negative_shape_mode():
+        # At c=-2, the density increases to a singularity at its upper endpoint.
+>       np.testing.assert_allclose(genpareto.mode(c=-2.),.5)
+E       AssertionError:
+E       Not equal to tolerance rtol=1e-07, atol=0
+E
+E       Mismatched elements: 1 / 1 (100%)
+E       Max absolute difference among violations: 0.5
+E       Max relative difference among violations: 1.
+E        ACTUAL: array(0., dtype=float32)
+E        DESIRED: array(0.5)
+
+audits/2026-09-15/reaudit/test_new_findings.py:65: AssertionError
+=========================== short test summary info ============================
+FAILED audits/2026-09-15/reaudit/test_new_findings.py::test_logdet_gradient_scaled_identity
+FAILED audits/2026-09-15/reaudit/test_new_findings.py::test_genpareto_explicit_shape_parameter_sampling
+FAILED audits/2026-09-15/reaudit/test_new_findings.py::test_truncnorm_small_positive_quantile
+FAILED audits/2026-09-15/reaudit/test_new_findings.py::test_truncnorm_quantile_second_derivative
+FAILED audits/2026-09-15/reaudit/test_new_findings.py::test_truncnorm_one_sided_tail_variance
+FAILED audits/2026-09-15/reaudit/test_new_findings.py::test_pcg_small_representable_rhs
+FAILED audits/2026-09-15/reaudit/test_new_findings.py::test_optional_rng_plain_function
+FAILED audits/2026-09-15/reaudit/test_new_findings.py::test_forwarding_constructor_kwargs
+FAILED audits/2026-09-15/reaudit/test_new_findings.py::test_genpareto_negative_shape_mode
+9 failed in 7.99s

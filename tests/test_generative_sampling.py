@@ -81,7 +81,7 @@ class PyTreeShiftTransform:
 
 
 def test_flow_distribution_supports_pytree_events():
-    distribution = LinearFlow(TinyPyTreeNet()).as_dist(
+    distribution = LinearFlow(TinyPyTreeNet(), event_spec={"a": (2,), "b": (3,)}).as_dist(
         {"a": (2,), "b": (3,)}, num_steps=4
     )
 
@@ -98,9 +98,9 @@ def test_flow_distribution_supports_pytree_events():
 @pytest.mark.parametrize(
     "model",
     [
-        pytest.param(LinearFlow(TinyConditionalPyTreeNet()), id="flow"),
-        pytest.param(LinearMeanFlow(TinyConditionalPyTreeNet()), id="mean-flow"),
-        pytest.param(EDM(TinyConditionalPyTreeNet(), num_steps=3), id="diffusion"),
+        pytest.param(LinearFlow(TinyConditionalPyTreeNet(), event_spec={"a": (2,), "b": (3,)}), id="flow"),
+        pytest.param(LinearMeanFlow(TinyConditionalPyTreeNet(), event_spec={"a": (2,), "b": (3,)}), id="mean-flow"),
+        pytest.param(EDM(TinyConditionalPyTreeNet(), event_spec={"a": (2,), "b": (3,)}, num_steps=3), id="diffusion"),
     ],
 )
 def test_distribution_supports_pytree_events_and_context(model):
@@ -117,7 +117,7 @@ def test_distribution_supports_pytree_events_and_context(model):
 
 
 def test_diffusion_sde_distribution_supports_pytree_context():
-    model = EDM(TinyConditionalPyTreeNet(), num_steps=3)
+    model = EDM(TinyConditionalPyTreeNet(), event_spec={"a": (2,), "b": (3,)}, num_steps=3)
     event_spec = {"a": (2,), "b": (3,)}
     distribution = model.as_dist(
         event_spec,
@@ -136,7 +136,7 @@ def test_diffusion_sde_distribution_supports_pytree_context():
 
 
 def test_diffusion_sde_trace_is_time_first_with_pytree_context():
-    model = EDM(TinyConditionalPyTreeNet(), num_steps=3)
+    model = EDM(TinyConditionalPyTreeNet(), event_spec={"a": (2,), "b": (3,)}, num_steps=3)
     event_spec = {"a": (2,), "b": (3,)}
     distribution = model.as_dist(
         event_spec,
@@ -153,7 +153,7 @@ def test_diffusion_sde_trace_is_time_first_with_pytree_context():
 
 
 def test_flow_distribution_is_batch_polymorphic():
-    distribution = LinearFlow(TinyFlowNet()).as_dist((3,), num_steps=4)
+    distribution = LinearFlow(TinyFlowNet(), event_spec=3).as_dist((3,), num_steps=4)
 
     assert distribution.sample_from(jnp.ones((2, 3))).shape == (2, 3)
     assert distribution.sample_from(jnp.ones((5, 3))).shape == (5, 3)
@@ -162,7 +162,7 @@ def test_flow_distribution_is_batch_polymorphic():
 
 
 def test_mean_flow_distribution_is_batch_polymorphic():
-    distribution = LinearMeanFlow(TinyFlowNet()).as_dist((3,), num_steps=4)
+    distribution = LinearMeanFlow(TinyFlowNet(), event_spec=3).as_dist((3,), num_steps=4)
 
     assert distribution.sample_from(jnp.ones((2, 3))).shape == (2, 3)
     assert distribution.sample_from(jnp.ones((5, 3))).shape == (5, 3)
@@ -205,7 +205,7 @@ def test_normalizing_flow_distribution_supports_pytree_events_and_context():
 
 
 def test_distribution_reads_current_model_state():
-    model = LinearFlow(TinyFlowNet())
+    model = LinearFlow(TinyFlowNet(), event_spec=3)
     distribution = model.as_dist((3,), num_steps=4)
     eps = jnp.ones((2, 3))
 
@@ -218,7 +218,7 @@ def test_distribution_reads_current_model_state():
 
 @pytest.mark.parametrize("mode", ["ode", "sde"])
 def test_diffusion_distribution_is_batch_polymorphic(mode):
-    model = EDM(TinyDiffusionNet(), num_steps=4)
+    model = EDM(TinyDiffusionNet(), event_spec=3, num_steps=4)
     distribution = model.as_dist((3,), mode=mode, num_steps=4)
 
     samples_2 = distribution.sample(jax.random.key(0), (2,))
@@ -232,7 +232,7 @@ def test_diffusion_distribution_is_batch_polymorphic(mode):
 
 @pytest.mark.parametrize("model_type", [EDM, VE, VP, CosineDM])
 def test_diffusion_ode_sampler_preserves_specialized_drift(model_type):
-    model = model_type(TinyDiffusionNet(features=2), num_steps=3)
+    model = model_type(TinyDiffusionNet(features=2), event_spec=2, num_steps=3)
 
     samples = model.as_dist((2,), num_steps=3).sample(jax.random.key(0), (2,))
 
@@ -241,7 +241,7 @@ def test_diffusion_ode_sampler_preserves_specialized_drift(model_type):
 
 
 def test_flow_distribution_exposes_paths_separately():
-    distribution = LinearFlow(TinyFlowNet()).as_dist((3,), num_steps=4)
+    distribution = LinearFlow(TinyFlowNet(), event_spec=3).as_dist((3,), num_steps=4)
 
     out = distribution.path_from(jnp.ones((2, 3)))
     assert out.shape == (4, 2, 3)
@@ -252,7 +252,7 @@ def test_flow_distribution_exposes_paths_separately():
 
 
 def test_diffusion_distribution_exposes_paths_separately():
-    distribution = EDM(TinyDiffusionNet(), num_steps=4).as_dist((3,), num_steps=4)
+    distribution = EDM(TinyDiffusionNet(), event_spec=3, num_steps=4).as_dist((3,), num_steps=4)
 
     out = distribution.path_from(jnp.ones((2, 3)))
     assert out.shape == (4, 2, 3)
@@ -260,9 +260,9 @@ def test_diffusion_distribution_exposes_paths_separately():
 
 
 def test_as_dist_is_the_inference_entry_point():
-    flow = LinearFlow(TinyFlowNet())
+    flow = LinearFlow(TinyFlowNet(), event_spec=3)
     flow_dist = flow.as_dist((3,), num_steps=4)
-    diffusion = EDM(TinyDiffusionNet(), num_steps=4)
+    diffusion = EDM(TinyDiffusionNet(), event_spec=3, num_steps=4)
     diffusion_dist = diffusion.as_dist((3,), mode="ode", num_steps=4)
     diffusion_sde_dist = diffusion.as_dist((3,), mode="sde", num_steps=4)
 
@@ -278,7 +278,7 @@ def test_as_dist_is_the_inference_entry_point():
 
 
 def test_distribution_binds_pytree_context():
-    model = LinearFlow(TinyConditionalPyTreeNet())
+    model = LinearFlow(TinyConditionalPyTreeNet(), event_spec={"a": (2,), "b": (3,)})
     event_spec = {"a": (2,), "b": (3,)}
     context = {"a": jnp.ones((2,)), "b": jnp.ones((3,))}
     distribution = model.as_dist(
@@ -322,7 +322,7 @@ def test_distribution_binds_context_for_sample_and_logpdf():
 
 
 def test_distribution_reports_missing_logpdf():
-    model = LinearFlow(TinyFlowNet())
+    model = LinearFlow(TinyFlowNet(), event_spec=3)
     distribution = model.as_dist((3,), num_steps=3)
 
     assert not distribution.has_logpdf
@@ -331,7 +331,7 @@ def test_distribution_reports_missing_logpdf():
 
 
 def test_distribution_rebuilds_after_cache_invalidation():
-    model = LinearFlow(TinyFlowNet())
+    model = LinearFlow(TinyFlowNet(), event_spec=3)
     distribution = model.as_dist((3,), num_steps=4)
     distribution.compile("sample")
 
@@ -368,7 +368,7 @@ def test_mean_flow_r_clip_has_no_tie_split():
     # At r == t, jnp.maximum's JVP tie rule would blend t's tangent into r
     # (0.5/0.5 split). The stop_gradient bound must make the r-tangent at a
     # tie match the interior limit instead.
-    model = LinearMeanFlow(RPassThroughNet())
+    model = LinearMeanFlow(RPassThroughNet(), event_spec=2)
     x = jnp.ones((2, 2))
     t = jnp.full((2, 1), 0.3)
 
@@ -384,7 +384,7 @@ def test_mean_flow_r_clip_has_no_tie_split():
 
 
 def test_mean_flow_loss_is_finite_with_new_sampler():
-    model = LinearMeanFlow(TinyFlowNet())
+    model = LinearMeanFlow(TinyFlowNet(), event_spec=3)
     data = jax.random.normal(jax.random.key(0), (8, 3))
     loss = model.loss(jax.random.key(1), data)
     assert jnp.all(jnp.isfinite(loss))
@@ -426,7 +426,7 @@ def test_mean_flow_imf_differs_off_diagonal():
 def test_mean_flow_original_objective_still_available():
     # imf=False must reproduce the pre-iMF fixed-seed losses exactly.
     net = TimeMLP(2, rngs=nnx.Rngs(0))
-    model = LinearMeanFlow(net)
+    model = LinearMeanFlow(net, event_spec=2)
     data = jax.random.normal(jax.random.key(42), (256, 2)) * 2.0
     expected = [4.606965065002441, 5.016578197479248, 4.452657699584961]
     for seed, want in zip([0, 1, 2], expected):

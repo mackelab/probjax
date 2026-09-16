@@ -89,12 +89,14 @@ class _ExportedSampler(NNXExportedFunction):
         stochastic: bool = False,
         context_spec: PyTree[jax.ShapeDtypeStruct] | None = None,
         trace: bool = False,
+        base_sample_kwargs=None,
     ) -> None:
         super().__init__(model, graphdef, exported)
         self.spec = spec
         self.stochastic = stochastic
         self.context_spec = context_spec
         self.trace = trace
+        self.base_sample_kwargs = dict(base_sample_kwargs or {})
 
     def from_noise(
         self,
@@ -147,7 +149,9 @@ class _ExportedSampler(NNXExportedFunction):
             noise_key, sample_key = jax.random.split(rng)
         else:
             noise_key, sample_key = rng, None
-        eps = model._sample_base(noise_key, sample_shape, self.spec)
+        eps = model._sample_base(
+            noise_key, sample_shape, self.spec, **self.base_sample_kwargs
+        )
         return self.from_noise(eps, rng=sample_key, context=context)
 
     def sample_with_state(
@@ -159,15 +163,17 @@ class _ExportedSampler(NNXExportedFunction):
         context: PyTree[Array] | None = None,
     ) -> PyTree[Array]:
         """Draw samples using an explicit model state."""
-        model = self._model_ref()
-        if model is None:
-            raise RuntimeError("The model used to build this export no longer exists.")
+        if self.invalidated:
+            raise RuntimeError("This compiled operation has been invalidated.")
+        model = nnx.merge(self._graphdef, state, copy=True)
         sample_shape = tuple(sample_shape)
         if self.stochastic:
             noise_key, sample_key = jax.random.split(rng)
         else:
             noise_key, sample_key = rng, None
-        eps = model._sample_base(noise_key, sample_shape, self.spec)
+        eps = model._sample_base(
+            noise_key, sample_shape, self.spec, **self.base_sample_kwargs
+        )
         return self.from_noise_with_state(state, eps, rng=sample_key, context=context)
 
 

@@ -206,13 +206,13 @@ class NormalizingFlow(StandardizingMixin, GenerativeModel):
             context_spec=context_spec,
         )
 
-    def fit(self, rng, data, **kwargs):
+    def _prepare_fit(self, data):
         """Fit the standardising transform once, then train as usual."""
         if self.standardize:
             self.fit_standardization(data)
         # `loss` goes through `_logpdf`, which standardises internally -- do not
         # pre-transform the data here or it would be applied twice.
-        return super().fit(rng, data, **kwargs)
+        return super()._prepare_fit(data)
 
     def _default_fit_kwargs(self) -> dict:
         """Flows train better on a warm-started, decaying rate than a flat one.

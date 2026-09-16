@@ -7,6 +7,7 @@ Architectures here are pure :class:`flax.nnx.Module` instances —
 :mod:`probjax.nn.generative` and :mod:`probjax.nn.generative.nflows`.
 """
 
+from probjax.nn.nets.diffusion_transformer import DiffusionTransformer
 from probjax.nn.nets.ssm import LRUModel, SSMModel
 from probjax.nn.nets.simple import (
     MLP,
@@ -21,6 +22,7 @@ from probjax.nn.nets.unets import UNet
 
 __all__ = [
     "DeepSet",
+    "DiffusionTransformer",
     "LRUModel",
     "MLP",
     "MaskedMLP",

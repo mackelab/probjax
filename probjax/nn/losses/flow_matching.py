@@ -4,11 +4,15 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 
+from probjax.utils.protocols import InterpolationScheduleProtocol
+
 from probjax.utils.protocols import (
     LossFn,
     TimeDependentModelFn,
     WeightFn,
 )
+
+
 
 
 def base_flow_matching_loss(

@@ -6,6 +6,7 @@ from typing import Callable, Protocol, Tuple, runtime_checkable
 import jax
 import jax.numpy as jnp
 
+from probjax.utils.protocols import InterpolationScheduleProtocol
 from probjax.utils.typing import Array, ArrayLike
 
 
@@ -23,27 +24,6 @@ def _autodiff_time_gradient(
     return jax.vmap(grad_fn, in_axes=(0, 0, 0))(t, x0, x1)
 
 
-@runtime_checkable
-class InterpolationScheduleProtocol(Protocol):
-    """Interpolation path + optional noise."""
-
-    def interpolation_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array: ...
-
-    def interpolation_noise_fn(
-        self, t: ArrayLike, x0: Array, x1: Array
-    ) -> Array | None: ...
-
-    def interpolation_velocity_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array: ...
-
-    def interpolation_noise_velocity_fn(
-        self, t: ArrayLike, x0: Array, x1: Array
-    ) -> Array | None: ...
-
-    def a_t(self, t: ArrayLike) -> Array: ...
-    def b_t(self, t: ArrayLike) -> Array: ...
-
-    def path_mean(self, t: ArrayLike, mu0: ArrayLike, mu1: ArrayLike) -> Array: ...
-    def path_std(self, t: ArrayLike, std0: ArrayLike, std1: ArrayLike) -> Array: ...
 
 
 @dataclass

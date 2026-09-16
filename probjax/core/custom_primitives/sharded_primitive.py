@@ -780,9 +780,8 @@ def _cp_general_transpose(cts, *args, call, **params):
 def register_general_cp_batching() -> None:
     """Register (or re-register) the general custom_partitioning vmap rule.
 
-    Idempotent. Called at import; ``old_pallas`` overwrites this table entry
-    with its legacy heuristic on import, so A/B comparisons should call this
-    again afterwards.
+    Idempotent and called at import. Explicit re-registration is supported
+    when another extension replaces a global custom-partitioning rule.
     """
     from jax._src.custom_partitioning import custom_partitioning_p
     from jax.interpreters import ad

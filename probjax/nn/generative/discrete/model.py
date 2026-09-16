@@ -57,17 +57,34 @@ class _DiscreteSampler:
 
 class MultinomialDiffusion(GenerativeModel):
     """
-    Discrete diffusion model with denoising_diffusion_model-like composition:
+    Discrete diffusion with required default event_spec (integer token shape).
+
+    The event excludes sample axes and the one-hot class axis. Use as_dist with
+    an explicit spec for a different shape, or set_event_spec to change the
+    default. The network must support the requested shape.
+
+    Components:
       - schedule
       - preconditioning
       - training config
     """
+
+    _event_dtype = jnp.int32
+
+    def _normalize_event_spec(self, event_spec, dtype=None):
+        spec = super()._normalize_event_spec(event_spec, dtype)
+        if not isinstance(spec, jax.ShapeDtypeStruct):
+            raise TypeError("Multinomial diffusion requires a single-array event spec.")
+        if not jnp.issubdtype(spec.dtype, jnp.integer):
+            raise TypeError("Multinomial diffusion event dtype must be integer.")
+        return spec
 
     def __init__(
         self,
         net: ModuleLike,
         schedule: CategoricalScheduleProtocol,
         *,
+        event_spec,
         preconditioning: Optional[CategoricalPreconditioningProtocol] = None,
         train_cfg: Optional[CategoricalTrainingConfigProtocol] = None,
         use_loss_weighting: bool = False,
@@ -77,6 +94,7 @@ class MultinomialDiffusion(GenerativeModel):
         rngs: nnx.RngStream | None = None,
         eps: float = 1e-12,
     ):
+        self.set_event_spec(event_spec)
         if not isinstance(schedule, CategoricalScheduleProtocol):
             raise TypeError("schedule must implement CategoricalScheduleProtocol")
 
@@ -447,6 +465,7 @@ class MultinomialCosineDM(MultinomialDiffusion):
         net: ModuleLike,
         num_classes: int,
         *,
+        event_spec,
         num_steps: int = 1000,
         t_min: float = 0.0,
         t_max: float = 1.0,
@@ -478,6 +497,7 @@ class MultinomialCosineDM(MultinomialDiffusion):
         super().__init__(
             net,
             schedule,
+            event_spec=event_spec,
             preconditioning=precond,
             train_cfg=cfg,
             use_loss_weighting=use_loss_weighting,
@@ -501,6 +521,7 @@ class MultinomialLogSNRDM(MultinomialDiffusion):
         net: ModuleLike,
         num_classes: int,
         *,
+        event_spec,
         num_steps: int = 1000,
         t_min: float = 0.0,
         t_max: float = 1.0,
@@ -536,6 +557,7 @@ class MultinomialLogSNRDM(MultinomialDiffusion):
         super().__init__(
             net,
             schedule,
+            event_spec=event_spec,
             preconditioning=precond,
             train_cfg=cfg,
             use_loss_weighting=use_loss_weighting,

@@ -33,7 +33,12 @@ def _flow_ode_drift(model, context):
 
 class FlowMatcher(GenerativeModel):
     """
-    Composable flow matcher:
+    Composable flow matcher with a required default ``event_spec``.
+
+    Override sampling shapes with ``as_dist(event_spec=...)`` or change the
+    default with ``set_event_spec``. The network must support those shapes.
+
+    Components:
 
       - schedule   : InterpolationScheduleProtocol
       - precond    : FlowPreconditioningProtocol
@@ -59,7 +64,10 @@ class FlowMatcher(GenerativeModel):
         std1: ArrayLike = 1.0,
         loss_kwargs: Mapping[str, object] | None = None,
         rngs: nnx.RngStream | None = None,
+        *,
+        event_spec,
     ):
+        self.set_event_spec(event_spec)
         if not isinstance(schedule, InterpolationScheduleProtocol):
             raise TypeError("schedule must implement InterpolationScheduleProtocol")
         if not isinstance(preconditioning, FlowPreconditioningProtocol):
@@ -86,6 +94,15 @@ class FlowMatcher(GenerativeModel):
         self.std1 = nnx.Variable(std1)
 
         self._loss_kwargs: dict[str, object] = dict(loss_kwargs or {})
+
+    def _normalize_event_spec(self, event_spec, dtype=None):
+        spec = super()._normalize_event_spec(event_spec, dtype)
+        if any(
+            not jnp.issubdtype(leaf.dtype, jnp.floating)
+            for leaf in jax.tree.leaves(spec)
+        ):
+            raise TypeError("Flow matching event dtypes must be floating point.")
+        return spec
 
     def set_solver_cfg(self, solver_cfg: FlowSolverConfigProtocol) -> None:
         if not isinstance(solver_cfg, FlowSolverConfigProtocol):
@@ -280,6 +297,8 @@ class LinearFlow(FlowMatcher):
         solver_cfg: FlowSolverConfigProtocol | None = None,
         schedule: InterpolationScheduleProtocol | None = None,
         preconditioning: FlowPreconditioningProtocol | None = None,
+        *,
+        event_spec,
     ):
         schedule = schedule or LinearInterpolationSchedule()
         preconditioning = preconditioning or GaussianFlowPreconditioning()
@@ -287,6 +306,7 @@ class LinearFlow(FlowMatcher):
         solver_cfg = solver_cfg or LinearFlowSolverConfig()
         super().__init__(
             net,
+            event_spec=event_spec,
             schedule=schedule,
             preconditioning=preconditioning,
             train_cfg=train_cfg,

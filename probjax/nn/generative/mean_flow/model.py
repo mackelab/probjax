@@ -42,6 +42,12 @@ def _mean_flow_step(model, value, times, context):
 
 
 class MeanFlowMatcher(GenerativeModel):
+    """Mean-flow model with a required default ``event_spec``.
+
+    Override sampling shapes with ``as_dist(event_spec=...)`` or change the
+    default with ``set_event_spec``. The network must support those shapes.
+    """
+
     def __init__(
         self,
         net: ModuleLike,
@@ -55,7 +61,10 @@ class MeanFlowMatcher(GenerativeModel):
         std1: ArrayLike = 1.0,
         rngs: nnx.RngStream | None = None,
         loss_kwargs: Mapping[str, object] | None = None,
+        *,
+        event_spec,
     ):
+        self.set_event_spec(event_spec)
         self.net: ModuleLike = net
         self.mu0 = nnx.Variable(mu0)
         self.std0 = nnx.Variable(std0)
@@ -81,6 +90,15 @@ class MeanFlowMatcher(GenerativeModel):
         self.preconditioning = preconditioning
         self.train_cfg = train_cfg
         self.solver_cfg = solver_cfg
+
+    def _normalize_event_spec(self, event_spec, dtype=None):
+        spec = super()._normalize_event_spec(event_spec, dtype)
+        if any(
+            not jnp.issubdtype(leaf.dtype, jnp.floating)
+            for leaf in jax.tree.leaves(spec)
+        ):
+            raise TypeError("Flow matching event dtypes must be floating point.")
+        return spec
 
     def set_solver_cfg(self, solver_cfg: FlowSolverConfigProtocol) -> None:
         if not isinstance(solver_cfg, FlowSolverConfigProtocol):
@@ -289,6 +307,8 @@ class LinearMeanFlow(MeanFlowMatcher):
         preconditioning: FlowPreconditioningProtocol | None = None,
         train_cfg: FlowPairTrainingConfigProtocol | None = None,
         solver_cfg: FlowSolverConfigProtocol | None = None,
+        *,
+        event_spec,
     ):
         schedule = schedule or LinearInterpolationSchedule()
         preconditioning = preconditioning or GaussianFlowPreconditioning()
@@ -296,6 +316,7 @@ class LinearMeanFlow(MeanFlowMatcher):
         solver_cfg = solver_cfg or LinearFlowSolverConfig()
         super().__init__(
             net,
+            event_spec=event_spec,
             schedule=schedule,
             preconditioning=preconditioning,
             train_cfg=train_cfg,

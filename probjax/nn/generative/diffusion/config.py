@@ -334,14 +334,14 @@ class BaseNoiseSchedule(NoiseScheduleProtocol):
         return jax.tree_util.tree_map(lambda xi: (s_dt / s) * xi, x)
 
     def diffusion(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
-        # diffusion = scale * sqrt(2 * std'(t) * std(t))
-        def _sum_std(tt):
-            return jnp.sum(self.std(tt))
-
-        s = self.scale(t)
-        sig = self.std(t)
-        sig_dt = jax.grad(_sum_std)(t)
-        diff = s * jnp.sqrt(jnp.maximum(2.0 * sig_dt * sig, 0.0))
+        # For x_t = a(t) x_0 + sigma(t) epsilon:
+        # g(t)^2 = d(sigma^2)/dt - 2 (a'/a) sigma^2.
+        t = jnp.asarray(t, dtype=jnp.result_type(t, 1.0))
+        variance, variance_dt = jax.jvp(
+            lambda tt: self.std(tt) ** 2, (t,), (jnp.ones_like(t),)
+        )
+        scale, scale_dt = jax.jvp(self.scale, (t,), (jnp.ones_like(t),))
+        diff = jnp.sqrt(jnp.maximum(variance_dt - 2 * scale_dt / scale * variance, 0))
         return jax.tree_util.tree_map(lambda xi: jnp.broadcast_to(diff, xi.shape), x)
 
 
@@ -430,6 +430,11 @@ class VENoiseSchedule(BaseNoiseSchedule):
         # Standard VE SDE: zero drift in many formulations.
         return jax.tree_util.tree_map(lambda xi: jnp.zeros_like(xi), x)
 
+    def diffusion(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
+        rate = jnp.log(self.sigma_max / self.sigma_min) / (self.t_max - self.t_min)
+        g = self.std(t) * jnp.sqrt(2.0 * rate)
+        return jax.tree.map(lambda xi: jnp.broadcast_to(g, xi.shape), x)
+
 
 @dataclass
 class VPNoiseSchedule(BaseNoiseSchedule):
@@ -470,7 +475,8 @@ class VPNoiseSchedule(BaseNoiseSchedule):
         """Instantaneous beta(t)."""
         tau = self._tau(t)
         db = self.beta_max - self.beta_min
-        return self.beta_min + db * tau
+        rate = (1.0 - self.min_tau) / (self.t_max - self.t_min)
+        return (self.beta_min + db * tau) * rate
 
     def _integral_beta(self, t: ArrayLike) -> Array:
         """Integral of beta from 0 to effective time (tau or t)."""
@@ -481,36 +487,24 @@ class VPNoiseSchedule(BaseNoiseSchedule):
     # ---- schedule ----
 
     def scale(self, t: ArrayLike) -> Array:
-        I = self._integral_beta(t)
-        alpha_bar = jnp.exp(-I)
-        alpha_bar = jnp.clip(alpha_bar, self.eps, 1.0)
-        return jnp.sqrt(alpha_bar)
+        return jnp.exp(-0.5 * self._integral_beta(t))
 
     def std(self, t: ArrayLike) -> Array:
-        I = self._integral_beta(t)
-        alpha_bar = jnp.exp(-I)
-        alpha_bar = jnp.clip(alpha_bar, self.eps, 1.0)
-        return jnp.sqrt(jnp.maximum(1.0 - alpha_bar, 0.0))
-
-    # ---- sigma_eff ----
+        return jnp.sqrt(-jnp.expm1(-self._integral_beta(t)))
 
     def sigma_eff(self, t: ArrayLike) -> Array:
-        # sigma_eff^2 = (1 - alpha_bar)/alpha_bar = e^{I} - 1
-        I = self._integral_beta(t)
-        se2 = jnp.maximum(jnp.exp(I) - 1.0, 0.0)
-        return jnp.sqrt(se2)
+        return jnp.sqrt(jnp.expm1(self._integral_beta(t)))
 
     def inv_sigma_eff(self, sigma_eff: ArrayLike) -> Array:
         se = jnp.asarray(sigma_eff)
         se2 = jnp.maximum(se**2, 0.0)
-        I = jnp.log1p(se2)  # I = log(1 + sigma_eff^2)
+        integral = jnp.log1p(se2)
         db = self.beta_max - self.beta_min
 
         # Solve beta_min * z + 0.5 db z^2 = I for z in [0,1], where z is tau or u.
-        a = 0.5 * db
         b = self.beta_min
-        disc = jnp.maximum(b**2 + 2.0 * db * I, 0.0)
-        z = (-b + jnp.sqrt(disc)) / jnp.maximum(db, self.eps)
+        disc = jnp.maximum(b**2 + 2.0 * db * integral, 0.0)
+        z = 2.0 * integral / (b + jnp.sqrt(disc))
         z = jnp.clip(z, 0.0, 1.0)
 
         # z is tau; map back to u in [0,1]
@@ -573,40 +567,50 @@ class CosineNoiseSchedule(BaseNoiseSchedule):
     def _cos_norm(self) -> Array:
         return jnp.maximum(jnp.cos(self._theta0()), self.eps)
 
+    def _variance(self, t: ArrayLike) -> Array:
+        # cos(theta0)^2 - cos(theta)^2, without subtracting nearby values.
+        delta = self._u(t) * (jnp.pi / 2) / (1 + self.s)
+        return jnp.clip(
+            jnp.sin(delta)
+            * jnp.sin(2 * self._theta0() + delta)
+            / self._cos_norm() ** 2,
+            0.0,
+            1.0,
+        )
+
     def _alpha_bar(self, t: ArrayLike) -> Array:
-        theta = self._theta(t)
-        cos_theta = jnp.cos(theta)
-        denom = self._cos_norm()
-        alpha_bar = (cos_theta / denom) ** 2
-        return jnp.clip(alpha_bar, self.eps, 1.0 - self.eps)
+        return self.scale(t) ** 2
 
     def scale(self, t: ArrayLike) -> Array:
-        return jnp.sqrt(self._alpha_bar(t))
+        # Clamp before the singular endpoint (cos(pi/2) can be negative in fp32).
+        return jnp.maximum(
+            jnp.cos(self._theta(t)) / self._cos_norm(), jnp.sqrt(self.eps)
+        )
 
     def std(self, t: ArrayLike) -> Array:
-        alpha_bar = self._alpha_bar(t)
-        return jnp.sqrt(jnp.maximum(1.0 - alpha_bar, self.eps))
+        return jnp.sqrt(self._variance(t))
 
     def sigma_eff(self, t: ArrayLike) -> Array:
-        alpha_bar = self._alpha_bar(t)
-        return jnp.sqrt(jnp.maximum(1.0 / alpha_bar - 1.0, 0.0))
+        return self.std(t) / self.scale(t)
 
     def inv_sigma_eff(self, sigma_eff: ArrayLike) -> Array:
-        sigma = jnp.asarray(sigma_eff)
-        alpha_bar = 1.0 / jnp.maximum(1.0 + sigma**2, self.eps)
-        cos_theta = jnp.sqrt(alpha_bar) * self._cos_norm()
-        cos_theta = jnp.clip(cos_theta, -1.0, 1.0)
-        theta = jnp.arccos(cos_theta)
-        frac = (2.0 * theta / jnp.pi) * (1.0 + self.s) - self.s
-        u = jnp.clip(frac, 0.0, 1.0)
+        sigma = jnp.maximum(jnp.asarray(sigma_eff), 0.0)
+        # Rationalized tan(theta - theta0) avoids arccos cancellation at t_min.
+        c0, s0 = self._cos_norm(), jnp.sin(self._theta0())
+        root = jnp.sqrt(sigma**2 + s0**2)
+        delta = jnp.arctan2(
+            c0 * sigma**2, jnp.maximum((root + s0) * (c0**2 + root * s0), self.eps)
+        )
+        u = jnp.clip(delta * (2 / jnp.pi) * (1 + self.s), 0.0, 1.0)
         return self.t_min + u * (self.t_max - self.t_min)
 
     def _beta(self, t: ArrayLike) -> Array:
-        span = jnp.maximum(self.t_max - self.t_min, self.eps)
+        span = self.t_max - self.t_min
         theta = self._theta(t)
-        dtheta_dt = (jnp.pi / 2.0) / ((1.0 + self.s) * span)
-        beta_t = 2.0 * jnp.tan(theta) * dtheta_dt
-        return jnp.maximum(beta_t, self.eps)
+        cosine = jnp.cos(theta)
+        rate = jnp.pi / ((1.0 + self.s) * span)
+        beta = rate * jnp.sin(theta) / jnp.maximum(cosine, jnp.sqrt(self.eps))
+        return jnp.where(cosine > jnp.sqrt(self.eps) * self._cos_norm(), beta, 0.0)
 
     def drift(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
         beta_t = self._beta(t)
@@ -648,7 +652,8 @@ class EDMPreconditioning(PreconditioningProtocol):
     ) -> Array:
         sigma_eff = self._sigma_eff(t, scale_fn, std_fn)
         denom = jnp.sqrt(std0**2 + sigma_eff**2)
-        return 1.0 / jnp.maximum(denom, self.eps)
+        scale = jnp.maximum(jnp.abs(scale_fn(t)), self.eps)
+        return 1.0 / (scale * jnp.maximum(denom, self.eps))
 
     def c_out(
         self,
@@ -683,7 +688,8 @@ class EDMPreconditioning(PreconditioningProtocol):
     ) -> Array | None:
         sigma_eff = self._sigma_eff(t, scale_fn, std_fn)
         denom = std0**2 + sigma_eff**2
-        return std0**2 / jnp.maximum(denom, self.eps)
+        scale = jnp.maximum(jnp.abs(scale_fn(t)), self.eps)
+        return std0**2 / (scale * jnp.maximum(denom, self.eps))
 
     def weight_x0(
         self,
@@ -915,15 +921,9 @@ class BaseSolverConfig(SolverConfigProtocol):
     ) -> split_drift:
         # probability flow ODE
 
-        def _sum_scale(tt):
-            return jnp.sum(model.scale_fn(tt))
-
         def linear_coeff(t: ArrayLike) -> Array:
             t_arr = jnp.atleast_1d(t)
-            scale = jnp.asarray(model.scale_fn(t_arr))
-            scale = jnp.where(jnp.abs(scale) < 1e-12, 1e-12, scale)
-            scale_grad = jax.grad(_sum_scale)(t_arr)
-            return scale_grad / scale
+            return model.drift(t_arr, jnp.ones_like(t_arr))
 
         def nonlin(t: ArrayLike, x: PyTree[Array]):
             t = jnp.atleast_1d(t)
@@ -1061,14 +1061,10 @@ class DDIMSolverConfig(BaseSolverConfig):
                 eps_hat,
             )
 
-            def _sum_alpha(tt):
-                return jnp.sum(model.scale_fn(tt))
-
-            def _sum_sigma(tt):
-                return jnp.sum(model.std_fn(tt))
-
-            alpha_p = jax.grad(_sum_alpha)(t)
-            sigma_p = jax.grad(_sum_sigma)(t)
+            f = model.drift(t, jnp.ones_like(t))
+            g2 = model.diffusion(t, jnp.ones_like(t)) ** 2
+            alpha_p = f * alpha_t
+            sigma_p = f * sigma_t + g2 / (2 * jnp.maximum(sigma_t, 1e-12))
 
             raw_drift = jax.tree_util.tree_map(
                 lambda x0_i, e_i: alpha_p * x0_i + sigma_p * e_i,
@@ -1091,7 +1087,7 @@ class DDIMSolverConfig(BaseSolverConfig):
     ):
         ode_drift = self.build_ode_drift(
             model,
-            state_mask=state_mask,
+            state_mask,
             *args,
             **kwargs,
         )
@@ -1126,34 +1122,18 @@ class VSolverConfig(BaseSolverConfig):
         self,
         model: ScheduleAwareModelProtocol,
     ) -> Callable[[ArrayLike], tuple[Array, Array]]:
-        def _sum_norm(tt):
-            a_tt = model.scale_fn(tt)
-            s_tt = model.std_fn(tt)
-            norm_tt = jnp.sqrt(jnp.maximum(a_tt**2 + s_tt**2, 1e-12))
-            return jnp.sum(norm_tt)
-
-        def _sum_alpha_hat(tt):
-            alpha_tt, _ = alpha_sigma_from_scale_std(model.scale_fn, model.std_fn, tt)
-            return jnp.sum(alpha_tt)
-
-        def _sum_sigma_hat(tt):
-            _, sigma_tt = alpha_sigma_from_scale_std(model.scale_fn, model.std_fn, tt)
-            return jnp.sum(sigma_tt)
-
         def coeffs(t: ArrayLike) -> tuple[Array, Array]:
+            # Derive from the physical SDE, avoiding derivatives of clipped
+            # schedules (JAX assigns half derivatives at clip boundaries).
+            t = jnp.atleast_1d(t)
             a = model.scale_fn(t)
             s = model.std_fn(t)
-            denom = jnp.maximum(a**2 + s**2, 1e-12)
-            norm = jnp.sqrt(denom)
-            alpha_hat, sigma_hat = alpha_sigma_from_scale_std(
-                model.scale_fn, model.std_fn, t
+            variance = jnp.maximum(a**2 + s**2, 1e-12)
+            f = model.drift(t, jnp.ones_like(t))
+            g2 = model.diffusion(t, jnp.ones_like(t)) ** 2
+            return f + g2 / (2 * variance), a * g2 / (
+                2 * jnp.maximum(s, 1e-12) * jnp.sqrt(variance)
             )
-            norm_p = jax.grad(_sum_norm)(t)
-            alpha_hat_p = jax.grad(_sum_alpha_hat)(t)
-            sigma_hat_p = jax.grad(_sum_sigma_hat)(t)
-            A_x = norm_p / jnp.maximum(norm, 1e-12)
-            A_v = norm * (alpha_hat * sigma_hat_p - sigma_hat * alpha_hat_p)
-            return A_x, A_v
 
         return coeffs
 
@@ -1198,17 +1178,4 @@ class VSolverConfig(BaseSolverConfig):
         *args,
         **kwargs,
     ):
-        split = self.build_ode_drift(
-            model,
-            state_mask=state_mask,
-            *args,
-            **kwargs,
-        )
-
-        def drift(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
-            return split(t, x, *args, **kwargs)
-
-        def diffusion(t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
-            return jax.tree_util.tree_map(lambda xi: jnp.zeros_like(xi), x)
-
-        return drift, diffusion
+        return super().build_sde_drift_and_diffusion(model, state_mask, *args, **kwargs)

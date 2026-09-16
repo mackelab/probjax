@@ -1,0 +1,5 @@
+JAX 0.9.2
+Explicit dropout keys across three blocks [Array([ 627942048, 1442266164], dtype=uint32), Array([ 657130675, 1632687494], dtype=uint32), Array([3613351553, 2158255254], dtype=uint32)]
+All keys equal False
+Mean-flow pair embeddings swap invariant True
+Flash3 forwarding function AttributeError 'NoneType' object has no attribute 'causal'

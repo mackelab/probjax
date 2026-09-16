@@ -93,9 +93,11 @@ def is_diagonal_matrix(A: Array, axis1=-2, axis2=-1) -> bool:
     Returns:
         bool: True if A is a diagonal matrix, or a batch of diagonal matrices
     """
-    return is_matrix(A) and jnp.all(
-        jnp.diag(jnp.diagonal(A, axis1=axis1, axis2=axis2)) == A, axis=(axis1, axis2)
-    )
+    if not is_matrix(A):
+        return False
+    matrix = jnp.moveaxis(A, (axis1, axis2), (-2, -1))
+    mask = jnp.eye(matrix.shape[-2], matrix.shape[-1], dtype=bool)
+    return jnp.all(jnp.where(mask, 0, matrix) == 0, axis=(-2, -1))
 
 
 def is_triangular_matrix(A: Array, lower: bool = True) -> bool:
@@ -109,7 +111,7 @@ def is_triangular_matrix(A: Array, lower: bool = True) -> bool:
         bool: True if A is a triangular matrix, or a batch of triangular matrices
     """
     return is_matrix(A) and jnp.all(
-        jnp.tril(A) == A if lower else jnp.triu(A), axis=(-2, -1)
+        jnp.tril(A) == A if lower else jnp.triu(A) == A, axis=(-2, -1)
     )
 
 
@@ -426,91 +428,92 @@ def solve_lyapunov_dlr(proc, Y, r0, dt, num_steps):
     return current_Y[0], chol_S
 
 
-def lanczos_logdet(S, num_steps=20, key=None):
-    """Estimate logdet of a symmetric positive definite matrix S using Lanczos.
+@jax.custom_jvp
+def _log_quadratic_form(matrix):
+    """e_0.T log(matrix) e_0 with a repeated-eigenvalue-safe first derivative."""
+    values, vectors = jnp.linalg.eigh(matrix)
+    return jnp.sum(vectors[0]**2 * jnp.log(values))
 
-    Uses stochastic Lanczos quadrature (SLQ) to estimate the log determinant.
-    Builds a tridiagonal matrix T via Lanczos iteration, then computes:
-        logdet(S) ~ dim * sum_i w_i * log(theta_i)
-    where theta_i are eigenvalues of T and w_i = Q[0,i]^2 are the squared
-    first components of the eigenvectors of T.
 
-    Requires only matrix-vector products with S.
+@_log_quadratic_form.defjvp
+def _log_quadratic_form_jvp(primals, tangents):
+    (matrix,), (tangent,) = primals, tangents
+    values, vectors = jnp.linalg.eigh(matrix)
+    left, right = values[:, None], values[None, :]
+    difference = left-right
+    equal = difference == 0
+    safe_difference = jnp.where(equal, 1, difference)
+    relative = difference/right
+    # Use log1p near equal eigenvalues to avoid cancellation.
+    close = jnp.abs(relative) < .5
+    numerator = jnp.where(close, jnp.log1p(jnp.where(close, relative, 0)),
+                          jnp.log(left)-jnp.log(right))
+    divided_difference = jnp.where(equal, 1/right, numerator/safe_difference)
+    weights = vectors[0]
+    derivative = jnp.sum(weights[:, None]*weights[None, :]*divided_difference
+                         * (vectors.T @ tangent @ vectors))
+    return _log_quadratic_form(matrix), derivative
 
-    Args:
-        S: Symmetric positive definite matrix. Either a dense array or an object
-           with an `operator` attribute (callable for matvec), or a callable itself.
-        num_steps: Number of Lanczos steps (set = dim(S) for exact result).
-        key: Optional JAX PRNG key for random probe vector. If None, uses a
-             deterministic normalized-ones vector (less accurate but reproducible).
 
-    Returns:
-        Estimated log determinant of S.
+def lanczos_logdet(S, num_steps=20, key=None, *, num_probes=16):
+    """Estimate an SPD log determinant using multi-probe Lanczos quadrature.
+
+    ``num_steps`` controls quadrature depth, not trace-estimation accuracy.
+    ``num_probes`` controls independent Rademacher probes; their average is a
+    stochastic trace estimate. With at least ``dim`` probes an orthogonal basis
+    is used instead, eliminating trace variance. A full basis and full depth
+    recover the exact log determinant up to floating-point error. Omitting
+    ``key`` uses seed zero for reproducibility, never a fixed all-ones probe.
     """
-    # Determine matvec function and dimension
-    if callable(S) and not hasattr(S, "shape"):
-        raise ValueError(
-            "Callable S must have a shape attribute or be an operator object"
-        )
-
+    if num_steps < 1 or num_probes < 1:
+        raise ValueError("num_steps and num_probes must be positive")
     if hasattr(S, "operator"):
-        # LinearOperator or similar
-        matvec = S.operator
-        dim = S.out_dim
+        matvec, dim = S.operator, S.out_dim
     elif callable(S):
-        # S is already a matvec callable with shape
-        matvec = S
-        dim = S.shape[0]
+        if not hasattr(S, "shape"):
+            raise ValueError("Callable S must have a shape attribute")
+        matvec, dim = S, S.shape[0]
     else:
-        # Dense matrix
-        S_arr = jnp.asarray(S)
-        dim = S_arr.shape[0]
-
-        def matvec(v):
-            return S_arr @ v
-
-    # Cap num_steps at dim to avoid repeating eigenvalues
-    num_steps = min(num_steps, dim)
-
-    # Lanczos iteration with probe vector
-    if key is not None:
-        v0 = jax.random.normal(key, (dim,))
-        v0 = v0 / jnp.linalg.norm(v0)
+        S = jnp.asarray(S)
+        # The estimator is defined on symmetric positive-definite matrices.
+        # Use the symmetric extension so dense entrywise gradients agree with
+        # slogdet, rather than depending on off-domain asymmetric perturbations.
+        S = (S + S.T) / 2
+        matvec, dim = lambda v: S @ v, S.shape[0]
+    if dim < 1:
+        raise ValueError("S must have positive dimension")
+    steps = min(num_steps, dim)
+    dtype = jnp.asarray(matvec(jnp.ones(dim))).dtype
+    if num_probes >= dim:
+        probes = jnp.eye(dim, dtype=dtype)
     else:
-        v0 = jnp.ones(dim) / jnp.sqrt(dim)
+        key = jax.random.key(0) if key is None else key
+        probes = jax.random.rademacher(key, (num_probes, dim), dtype=dtype) / jnp.sqrt(dim)
 
-    # First step
-    w0 = matvec(v0)
-    alpha0 = jnp.dot(v0, w0)
-    w0 = w0 - alpha0 * v0
-    beta0 = jnp.linalg.norm(w0)
-    v1 = jnp.where(beta0 > 1e-10, w0 / beta0, v0)
-
-    def step(carry, _):
-        v_curr, v_prev, beta_prev = carry
-        w = matvec(v_curr)
-        alpha = jnp.dot(v_curr, w)
-        w = w - alpha * v_curr - beta_prev * v_prev
-        beta = jnp.linalg.norm(w)
-        v_next = jnp.where(beta > 1e-10, w / beta, v_curr)
-        return (v_next, v_curr, beta), (alpha, beta)
-
-    init_carry = (v1, v0, beta0)
-    _, (alphas_full, betas_full) = jax.lax.scan(
-        step, init_carry, None, length=num_steps - 1
-    )
-
-    # Build tridiagonal matrix T
-    diag = jnp.concatenate([jnp.array([alpha0]), alphas_full])
-    off_diag = jnp.concatenate([jnp.array([beta0]), betas_full[:-1]])
-
-    T = jnp.diag(diag) + jnp.diag(off_diag, 1) + jnp.diag(off_diag, -1)
-
-    # SLQ estimate: logdet(S) ~ dim * sum_i w_i * log(theta_i)
-    # where w_i = Q[0,i]^2 (squared first components of eigenvectors of T)
-    eigvals, eigvecs = jnp.linalg.eigh(T)
-    weights = eigvecs[0, :] ** 2
-    return dim * jnp.sum(weights * jnp.log(jnp.maximum(eigvals, 1e-30)))
+    def quadrature(v0):
+        # Reorthogonalize to avoid spurious repeated Ritz values after
+        # Krylov convergence. Zero padding is decoupled from the first basis vector.
+        basis = jnp.zeros((steps, dim), dtype=dtype)
+        def body(carry, i):
+            v, previous, beta_previous, basis, active = carry
+            basis = basis.at[i].set(v)
+            w = matvec(v) - beta_previous * previous
+            alpha = jnp.dot(v, w)
+            w = w - alpha * v
+            w = w - basis.T @ (basis @ w)
+            squared_norm = jnp.dot(w, w)
+            beta = jnp.where(squared_norm > 0, jnp.sqrt(jnp.where(squared_norm > 0, squared_norm, 1)), 0)
+            threshold = jnp.finfo(dtype).eps * jnp.maximum(jnp.abs(alpha), jnp.finfo(dtype).tiny) * dim
+            next_active = active & (beta > threshold)
+            next_v = jnp.where(next_active, w / jnp.where(next_active, beta, 1), 0)
+            return (next_v, v, jnp.where(next_active, beta, 0), basis, next_active), (
+                jnp.where(active, alpha, 1), jnp.where(next_active, beta, 0))
+        _, (diag, beta) = jax.lax.scan(
+            body, (v0, jnp.zeros_like(v0), jnp.asarray(0, dtype), basis, True),
+            jnp.arange(steps))
+        T = jnp.diag(diag) + jnp.diag(beta[:-1], 1) + jnp.diag(beta[:-1], -1)
+        return dim * _log_quadratic_form(T)
+    return jnp.mean(jax.vmap(quadrature)(probes))
 
 
 # ---------------------------------------------------------------------------
@@ -559,13 +562,21 @@ def _solve_rhs_block_pcg(
     Returns:
         (X, iters, converged, rel_residual) where X is (n, bs).
     """
-    X = jnp.zeros_like(B) if x0 is None else x0
+    # Solve in units of each RHS magnitude so squared norms cannot underflow
+    # or overflow merely because the right-hand side has a different scale.
+    rhs_scale = jnp.max(jnp.abs(B), axis=0)
+    if x0 is not None:
+        rhs_scale = jnp.where(rhs_scale > 0, rhs_scale, jnp.max(jnp.abs(x0), axis=0))
+    rhs_scale = jnp.where(rhs_scale > 0, rhs_scale, 1)
+    B = B / rhs_scale[None, :]
+    X = jnp.zeros_like(B) if x0 is None else x0 / rhs_scale[None, :]
     R = B - _matmat_from_matvec(matvec, X)
     Z = M(R)
 
     b2 = jnp.sum(B * B, axis=0)
     b2_safe = jnp.where(b2 > 0, b2, 1.0)
-    tol2 = (tol**2) * b2_safe
+    # A zero RHS retains the original absolute-residual tolerance.
+    tol2 = jnp.where(b2 > 0, (tol**2) * b2_safe, (tol / rhs_scale)**2)
 
     # Zero-RHS columns are already converged
     active = jnp.sum(R * R, axis=0) > tol2
@@ -574,7 +585,6 @@ def _solve_rhs_block_pcg(
     P = Z
     rho = jnp.sum(R * Z, axis=0)
 
-    eps = jnp.finfo(B.dtype).eps
 
     def cond_fn(state):
         k, _X, _R, _Z, _P, _rho, active = state
@@ -585,7 +595,7 @@ def _solve_rhs_block_pcg(
 
         Q = _matmat_from_matvec(matvec, P)
         denom = jnp.sum(P * Q, axis=0)
-        denom = jnp.where(jnp.abs(denom) > eps, denom, 1.0)
+        denom = jnp.where(denom > 0, denom, 1.0)
 
         alpha = jnp.where(active, rho / denom, 0.0)
         X = X + P * alpha[None, :]
@@ -600,7 +610,7 @@ def _solve_rhs_block_pcg(
         Z = jnp.where(active_new[None, :], Z, 0.0)
 
         rho_new = jnp.sum(R * Z, axis=0)
-        rho_safe = jnp.where(jnp.abs(rho) > eps, rho, 1.0)
+        rho_safe = jnp.where(rho > 0, rho, 1.0)
         beta = jnp.where(active_new, rho_new / rho_safe, 0.0)
 
         P = Z + P * beta[None, :]
@@ -612,10 +622,13 @@ def _solve_rhs_block_pcg(
 
     # Recompute true final residual for accurate diagnostics
     R_true = B - _matmat_from_matvec(matvec, X)
-    rel_residual = jnp.sqrt(jnp.sum(R_true * R_true, axis=0) / b2_safe)
+    residual_scale = jnp.max(jnp.abs(R_true), axis=0)
+    normalized_residual = R_true / jnp.where(residual_scale > 0, residual_scale, 1)[None, :]
+    residual_norm = residual_scale * jnp.sqrt(jnp.sum(normalized_residual**2, axis=0))
+    rel_residual = jnp.where(b2 > 0, residual_norm / jnp.sqrt(b2_safe), residual_norm * rhs_scale)
     converged = rel_residual <= tol
 
-    return X, k, converged, rel_residual
+    return X * rhs_scale[None, :], k, converged, rel_residual
 
 
 def batched_pcg_solve(

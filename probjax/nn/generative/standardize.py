@@ -12,7 +12,7 @@ training history: they serialise with the model, travel through
 :meth:`StandardizingMixin.standardization`.
 """
 
-from typing import Optional, Tuple
+from typing import Tuple
 
 import jax
 import jax.numpy as jnp
@@ -79,13 +79,6 @@ class StandardizingMixin:
         self._std_fitted[...] = jnp.asarray(True)
         self._clear_distribution_cache()
 
-        # The pure loss closure captures the non-Param state, so a shift/scale
-        # set after it was built would be stale. Dropping it is cheap: it is
-        # rebuilt on the next fit.
-        from probjax.stats.fit import _PURE_LOSS_CACHE
-
-        _PURE_LOSS_CACHE.pop(self, None)
-
     def fit_standardization(self, data) -> None:
         """Fit the transform from data. A no-op once already fitted.
 
@@ -98,15 +91,32 @@ class StandardizingMixin:
         estimate from a few thousand examples is accurate enough for what this
         transform is for.
         """
-        if not self.standardize or self.is_standardized:
+        if not self.standardize:
             return
+        fitted = self._std_fitted.get_value()
+        traced = isinstance(fitted, jax.core.Tracer)
+        if not traced and bool(fitted):
+            return
+        if traced:
+            from probjax.stats.fit import is_batch_stream
+            if is_batch_stream(data):
+                raise ValueError("Jitted standardization requires an array batch.")
         data = _standardization_sample(data, self._std_shift.shape[0])
-        shift = jnp.mean(data, axis=0)
-        scale = jnp.std(data, axis=0)
-        # A constant column has zero spread and would divide by zero; leaving it
-        # at unit scale keeps the map invertible and the column simply unscaled.
-        scale = jnp.where(scale > 1e-6, scale, 1.0)
-        self.set_standardization(shift, scale)
+
+        def estimate():
+            shift = jnp.mean(data, axis=0)
+            scale = jnp.std(data, axis=0)
+            # Constant columns keep unit scale so the map remains invertible.
+            scale = jnp.where(scale > 1e-6, scale, 1.0)
+            return (shift.astype(self._std_shift.dtype),
+                    scale.astype(self._std_scale.dtype))
+
+        shift, scale = jax.lax.cond(fitted, lambda: self.standardization, estimate)
+        self._std_shift[...] = shift
+        self._std_scale[...] = scale
+        self._std_fitted[...] = jnp.asarray(True)
+        if not traced:
+            self._clear_distribution_cache()
 
     # -- the transform --------------------------------------------------------
 

@@ -144,8 +144,19 @@ class poisson_gen(rv_discrete, rv_exponential_family):
 
     @classmethod
     def entropy(cls, rate, **kwds):
-        """Entropy of the Poisson distribution."""
-        return rate * (1 - jnp.log(rate))
+        """Entropy in nats.
+
+        Sum the first 1024 masses for rates <= 256; larger rates use the
+        asymptotic expansion through the inverse-cubic term. Both branches
+        have static shapes under JIT.
+        """
+        rate = jnp.asarray(rate)
+        lp = jax_poisson.logpmf(jnp.arange(1024), rate[..., None])
+        exact = -jnp.sum(jnp.exp(lp) * jnp.where(jnp.isfinite(lp), lp, 0), axis=-1)
+        r = jnp.maximum(rate, 1)
+        approx = (.5 * jnp.log(2 * jnp.pi * jnp.e * r)
+                  - 1/(12*r) - 1/(24*r**2) - 19/(360*r**3))
+        return jnp.where(rate > 256, approx, exact)
 
     @classmethod
     def natural_parameters(cls, rate, **kwds):
