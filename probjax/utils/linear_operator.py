@@ -31,7 +31,7 @@ class LinearOperator:
 
     @property
     def shape(self) -> Tuple[int, int]:
-        return self.in_dim, self.out_dim
+        return self.out_dim, self.in_dim
 
     @property
     def dtype(self) -> Any:
@@ -43,7 +43,9 @@ class LinearOperator:
 
     @property
     def T(self):
-        transposed_fn = jax.linear_transpose(self.operator, jnp.ones((self.in_dim,)))
+        transposed_fn = jax.linear_transpose(
+            self.operator, jnp.ones((self.in_dim,), dtype=self.dtype)
+        )
 
         def adjoint_operator(x: ArrayLike) -> ArrayLike:
             return transposed_fn(x)[0]
@@ -88,42 +90,62 @@ class LinearOperator:
 
         return LinearOperator(scalar_mul_fn, self.in_dim, self.out_dim, self.dtype)
 
-    def __matmul__(self, other: 'LinearOperator' | ArrayLike) -> 'LinearOperator':
+    def __matmul__(self, other: 'LinearOperator' | ArrayLike):
         if isinstance(other, LinearOperator):
-            assert self.in_dim == other.out_dim, f"{self.out_dim} != {other.in_dim}"
+            if self.in_dim != other.out_dim:
+                raise ValueError(
+                    f"Incompatible matrix shapes: {self.shape} and {other.shape}"
+                )
 
-            def matmul_fn(x: ArrayLike) -> ArrayLike:
+            def composed(x):
                 return self.operator(other.operator(x))
 
-            return LinearOperator(matmul_fn, other.in_dim, self.out_dim, self.dtype)
-        elif isinstance(other, ArrayLike):
-            other = jnp.asarray(other)
-            if other.ndim == 1:
-                return self.operator(other)
-            else:
-
-                def matmul_fn(x: ArrayLike) -> ArrayLike:
-                    return other @ self.operator(x)
-
-                return LinearOperator(matmul_fn, self.in_dim, other.shape[-2])
-        else:
-            raise NotImplementedError(
-                f"Multiplication with {type(other)} not implemented"
+            return LinearOperator(
+                composed,
+                other.in_dim,
+                self.out_dim,
+                jnp.result_type(self.dtype, other.dtype),
             )
 
-    def __rmatmul__(self, other: 'LinearOperator' | ArrayLike) -> 'LinearOperator':
+        # ArrayLike is a typing alias, not a runtime test for JAX tracers.
+        other = jnp.asarray(other)
+        if other.ndim not in (1, 2) or other.shape[0] != self.in_dim:
+            raise ValueError(
+                f"Incompatible matrix shapes: {self.shape} and {other.shape}"
+            )
+        if other.ndim == 1:
+            return self.operator(other)
+
+        def composed(x):
+            return self.operator(other @ x)
+
+        return LinearOperator(
+            composed,
+            other.shape[1],
+            self.out_dim,
+            jnp.result_type(self.dtype, other.dtype),
+        )
+
+    def __rmatmul__(self, other: 'LinearOperator' | ArrayLike):
         if isinstance(other, LinearOperator):
             return other @ self
-        else:
-            other = jnp.asarray(other)
-            if other.ndim == 1:
-                return self.operator(other)
-            else:
+        other = jnp.asarray(other)
+        if other.ndim not in (1, 2) or other.shape[-1] != self.out_dim:
+            raise ValueError(
+                f"Incompatible matrix shapes: {other.shape} and {self.shape}"
+            )
+        if other.ndim == 1:
+            return self.T.operator(other)
 
-                def composed(x: ArrayLike) -> ArrayLike:
-                    return other @ self.operator(x)
+        def composed(x):
+            return other @ self.operator(x)
 
-                return LinearOperator(composed, self.in_dim, other.shape[-2])
+        return LinearOperator(
+            composed,
+            self.in_dim,
+            other.shape[0],
+            jnp.result_type(self.dtype, other.dtype),
+        )
 
     def __call__(self, x: ArrayLike) -> ArrayLike:
         return self.operator(x)
@@ -148,7 +170,7 @@ class LinearOperator:
         def operator(x: ArrayLike) -> ArrayLike:
             return jnp.dot(matrix, x)
 
-        return LinearOperator(operator, matrix.shape[1], matrix.shape[0])
+        return LinearOperator(operator, matrix.shape[1], matrix.shape[0], matrix.dtype)
 
     # Pytree registration
     def tree_flatten(self):

@@ -146,6 +146,7 @@ def test_every_python_block_runs(page):
         text=True,
         env={
             "JAX_PLATFORMS": "cpu",
+            "MPLBACKEND": "Agg",
             "PATH": "/usr/bin:/bin",
             "HOME": str(pathlib.Path.home()),
         },

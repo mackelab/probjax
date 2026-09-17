@@ -18,6 +18,11 @@ nav = [
     "guides/temporal-smc.md",
     "guides/smc.md",
   ] },
+  { "Tutorials" = [
+    "tutorials/ppl.md",
+    "tutorials/kalman_filter.md",
+    "tutorials/smc.md",
+  ] },
   { "Reference" = [
     "reference/core.md",
     "reference/stats.md",
