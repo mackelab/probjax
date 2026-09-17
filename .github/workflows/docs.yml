@@ -32,6 +32,9 @@ jobs:
           pip install -r docs/requirements.txt
           pip install -e .
 
+      - name: Convert tutorial notebooks
+        run: python scripts/convert_notebooks.py
+
       - name: Build documentation
         run: zensical build --strict
 

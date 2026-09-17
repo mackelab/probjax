@@ -130,3 +130,9 @@ of 601 against 168 for NUTS on the target directly, at the same budget.
 
 Because `neutra` returns a plain log-density and a map, it composes with every
 kernel, warmup and runner above without any special integration.
+
+## Tutorials
+
+Worked examples live in [Tutorials](../tutorials/smc.md): start with
+[Kalman filtering](../tutorials/kalman_filter.md) for the linear-Gaussian case,
+then [Sequential Monte Carlo](../tutorials/smc.md) for the general one.

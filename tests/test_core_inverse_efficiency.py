@@ -108,6 +108,7 @@ def test_inverse_and_logabsdet_stays_within_a_small_factor():
     assert generated < hand * 3, f"{generated} equations against {hand} hand-written"
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize(
     "generated,handwritten",
     [
@@ -142,6 +143,7 @@ def _vp_hand_written(y):
     return y, jnp.zeros(())
 
 
+@pytest.mark.benchmark
 def test_volume_preserving_inverse_runs_at_hand_written_speed():
     """The fast path must leave no runtime residue: no `+ 0.0` accumulation,
     no staged log-det arithmetic. Measured at ~1.0x; the bound is the file's

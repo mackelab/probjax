@@ -71,18 +71,23 @@ python -m pip install -e .
 Python 3.11 or newer. Accelerator options are in
 [Getting started](getting-started.md).
 
-## Examples
+## Tutorials
 
-Runnable notebooks live in the repository rather than in these pages:
+A curated set of example notebooks is rendered as part of these pages
+(generated from `examples/` without re-execution, so outputs are those
+committed in the notebooks — each one is re-executed against current `main`
+before inclusion):
 
-- [`examples/core`](https://github.com/mackelab/probjax/tree/main/examples/core) —
-  tracing random variables, probabilistic programs, jaxpr graphs
-- [`examples/stats`](https://github.com/mackelab/probjax/tree/main/examples/stats) —
-  distribution basics and higher-order distributions
-- [`examples/inference`](https://github.com/mackelab/probjax/tree/main/examples/inference) —
-  MCMC, SMC, Kalman filtering, Bayesian neural networks
-- [`examples/nn`](https://github.com/mackelab/probjax/tree/main/examples/nn) and
-  [`examples/utils`](https://github.com/mackelab/probjax/tree/main/examples/utils)
+- [PPL basics](tutorials/ppl.md)
+- [Kalman filtering](tutorials/kalman_filter.md)
+- [Sequential Monte Carlo](tutorials/smc.md)
 
-Some notebooks predate recent API refactors. Where a notebook disagrees with
-these pages, prefer these pages and the [Reference](reference/core.md).
+All runnable notebooks live in
+[`examples/`](https://github.com/mackelab/probjax/tree/main/examples/)
+(`core`, `stats`, `inference`, `nn`, `utils`). More tutorials are added
+gradually as notebook outputs are refreshed.
+
+The remaining notebooks under `examples/` may predate recent API refactors —
+the tutorial pages above are re-executed against current `main` and kept fresh.
+Where anything disagrees with these pages, prefer these pages and the
+[Reference](reference/core.md).
