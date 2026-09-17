@@ -65,3 +65,10 @@ def get_method(name: str):
 
 def get_methods():
     return list(METHOD_STEP_FN.keys())
+
+
+def infer_noise_dim(g0, default_dim: int, configured_dim: int | None = None) -> int:
+    """Infer Brownian dimension from diagonal or dense diffusion coefficients."""
+    if configured_dim is not None:
+        return int(configured_dim)
+    return int(default_dim if g0.ndim <= 1 else g0.shape[-1])

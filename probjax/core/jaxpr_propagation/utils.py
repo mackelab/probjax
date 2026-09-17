@@ -368,3 +368,12 @@ class ForwardProcessingRule(ProcessingRule):
 
 # Helper utilities intentionally kept minimal; runtime graph construction lives
 # in `extended.py` and execution logic lives in `engine.py`.
+
+
+def merge_dict_state(env, eqn, state, eqn_state, context=None):
+    """Merge equation metadata into an independent propagation state mapping."""
+    del env, eqn, context
+    merged = {} if state is None else dict(state)
+    if eqn_state:
+        merged.update(eqn_state)
+    return merged

@@ -1,12 +1,10 @@
 from typing import Any, Iterable, Optional, Sequence
 
+from jax.extend.core import JaxprEqn
 from jaxtyping import Array
 
-from jax.extend.core import JaxprEqn
-
-from probjax.core.custom_primitives.contracts import parse_random_variable_call_params
-from probjax.core.custom_primitives.random_variable import rv_p
-from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
+from probjax.core.interpreters.ppl._common import rv_site_name
+from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule, merge_dict_state
 from probjax.core.registry import ProcessedResult
 
 
@@ -36,9 +34,8 @@ class JointSampleProcessingRule(ForwardProcessingRule):
         result = super().__call__(eqn, known_inputs, _)
         outvars, outvals = result.resolved_vars, list(result.resolved_vals)
         eqn_state: dict[str, Any] = {}
-        if eqn.primitive is rv_p:
-            rv_params = parse_random_variable_call_params(eqn.params)
-            name = rv_params.name
+        name = rv_site_name(eqn)
+        if name is not None:
             if name in self.fixed_values:
                 return ProcessedResult(outvars, [self.fixed_values[name]], eqn_state)
 
@@ -49,9 +46,4 @@ class JointSampleProcessingRule(ForwardProcessingRule):
 
 
 def joint_sample_state_reducer(env, eqn, state, eqn_state, context=None):
-    del env, eqn, context
-    if state is None:
-        state = {}
-    if not eqn_state:
-        return state
-    return state | eqn_state
+    return merge_dict_state(env, eqn, state, eqn_state, context)

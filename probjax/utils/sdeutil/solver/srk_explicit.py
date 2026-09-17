@@ -1,9 +1,17 @@
 from functools import partial
+
 import jax
 import jax.numpy as jnp
-from probjax.utils.typing import Array, ArrayLike, Callable, RngKey
+
+from probjax.utils._solver_common import make_trivial_init, sample_wiener_increment
+from probjax.utils.sdeutil.base import (
+    SDEInfo,
+    SDESolverAPI,
+    SDEState,
+    register_method,
+)
 from probjax.utils.sdeutil.brownian import get_iterated_integrals_fn
-from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
+from probjax.utils.typing import Array, ArrayLike, Callable, RngKey
 
 
 class SRKInfo(SDEInfo):
@@ -18,10 +26,7 @@ class SRKState(SDEState):
     y0: Array
 
 
-def init_state(t0: ArrayLike, y0: ArrayLike, **kwargs) -> SRKState:
-    t0 = jnp.asarray(t0)
-    y0 = jnp.asarray(y0)
-    return SRKState(t0, y0)
+init_state = make_trivial_init(SRKState)
 
 
 def build_sri1_coefficients(
@@ -30,7 +35,8 @@ def build_sri1_coefficients(
     """Build the Butcher tableau coefficients for the SRI1 method.
 
     Args:
-        dtype (jnp.dtype, optional): Data type for the coefficients. Defaults to jnp.float32.
+        dtype (jnp.dtype, optional): Data type for the coefficients. Defaults
+            to jnp.float32.
 
     Returns:
         Tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array]:
@@ -55,7 +61,8 @@ def build_sri2_coefficients(
     """Build the Butcher tableau coefficients for the SRI2 method.
 
     Args:
-        dtype (jnp.dtype, optional): Data type for the coefficients. Defaults to jnp.float32.
+        dtype (jnp.dtype, optional): Data type for the coefficients. Defaults
+            to jnp.float32.
 
     Returns:
         Tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array]:
@@ -135,12 +142,8 @@ def explicit_stochastic_runge_kutta_step(
     m = dWt.shape[0]
     d = y0.shape[0]
 
-    if is_diagonal:
-        reduction_dWt = "s, smi, j -> i"
-    else:
-        reduction_dWt = (
-            "s, smij, j -> i"  # Average drift evaluation over s, then matmul with dWt
-        )
+    # Average drift evaluation over s, then matmul with dWt
+    reduction_dWt = "s, smi, j -> i" if is_diagonal else "s, smij, j -> i"
     diffusion_vec = jax.vmap(diffusion, in_axes=(None, 0))  # Vectorize diffusion
 
     def body_fun(i, data):
@@ -209,9 +212,11 @@ def build_srk_step(
         diffusion (Callable): Diffusion function
         noise_type (str, optional): Type of noise. Defaults to "diagonal".
         sde_type (str, optional): Type of SDE. Defaults to "ito".
-        iterated_integrals_fn (Callable, optional): Function to compute iterated integrals. Defaults to get_iterated_integrals_fn.
+        iterated_integrals_fn (Callable, optional): Function to compute
+            iterated integrals. Defaults to get_iterated_integrals_fn.
         stages (int, optional): Number of stages. Defaults to 3.
-        build_coefficients (Callable): Function that builds the Butcher tableau coefficients.
+        build_coefficients (Callable): Function that builds the Butcher
+            tableau coefficients.
 
     Returns:
         Callable: Step function for the SRK method
@@ -229,11 +234,7 @@ def build_srk_step(
 
         f0 = jnp.asarray(drift(t0, y0))
         g0 = jnp.asarray(diffusion(t0, y0))
-        if noise_dim is None:
-            inferred_noise_dim = y0.shape[0] if g0.ndim <= 1 else g0.shape[-1]
-        else:
-            inferred_noise_dim = int(noise_dim)
-        dWt = jax.random.normal(rng1, (inferred_noise_dim,)) * jnp.sqrt(jnp.abs(dt))
+        dWt = sample_wiener_increment(rng1, g0, y0.shape[0], dt, noise_dim)
         dWtdWs = iterated_integrals_fn(rng2, dWt, jnp.abs(dt))
 
         y1, f1, g1, (y1_error, k1, k2) = explicit_stochastic_runge_kutta_step(

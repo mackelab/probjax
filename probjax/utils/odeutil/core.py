@@ -4,6 +4,11 @@ from typing import Callable, Optional, Sequence, cast
 import jax
 import jax.numpy as jnp
 
+from probjax.utils._solver_common import (
+    ensure_dtype,
+    make_filter_wrapper,
+    stack_trace,
+)
 from probjax.utils.functions import Drift, generic_drift
 from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
 from probjax.utils.odeutil.adaptive import StepSizeAdaptor
@@ -65,11 +70,7 @@ def _odeint(
     if step_size_adaptor is None:
         step_size_adaptor = StepSizeAdaptor()
 
-    if dtype is not None:
-        ts = ts.astype(dtype)
-        y0 = jax.tree_util.tree_map(lambda x: jnp.asarray(x, dtype=dtype), y0)
-
-    ts = jnp.atleast_1d(ts)
+    ts, y0 = ensure_dtype(ts, y0, dtype)
 
     flat_y0, unravel = ravel_args(y0)
     ravel_arg = getattr(drift, "ravel_arg", None)
@@ -86,11 +87,7 @@ def _odeint(
     if not isinstance(drift, Drift):
         drift = generic_drift(fn=drift)
 
-    def _apply_filter(state_tree: PyTree[Array]) -> Optional[PyTree[Array]]:
-        if filter_state is None:
-            return state_tree
-        return filter_state(state_tree)
-
+    _apply_filter = make_filter_wrapper(filter_state)
     init_filtered = _apply_filter(y0)
     trace_enabled = collect_trace and init_filtered is not None
 
@@ -128,22 +125,11 @@ def _odeint(
         }
         state, ys = odeint_adaptive(solver, drift, kwargs, flat_y0, ts, *args)
 
-    state_y0 = getattr(state, "y0") if state is not None else flat_y0
+    state_y0 = state.y0 if state is not None else flat_y0
     final_state = unravel(state_y0)
     final_filtered = _apply_filter(final_state)
 
     if trace_enabled and ys is not None:
-
-        def _stack(init_leaf, trace_leaf):
-            init_leaf = jnp.asarray(init_leaf)
-            trace_leaf = jnp.asarray(trace_leaf)
-            return jnp.concatenate([init_leaf[None], trace_leaf], axis=0)
-
-        trace = jax.tree_util.tree_map(
-            _stack,
-            init_filtered,
-            ys,
-        )
-        return trace
+        return stack_trace(init_filtered, ys)
 
     return final_filtered

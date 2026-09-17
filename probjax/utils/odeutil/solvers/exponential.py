@@ -11,8 +11,10 @@ from probjax.utils.odeutil.solvers.base import (
     ODEInfo,
     ODESolverAPI,
     ODEState,
+    make_cached_init,
     register_method,
 )
+from probjax.utils.odeutil.util import phi1_scalar as _phi1_scalar
 from probjax.utils.typing import Array, ArrayLike, Callable
 
 
@@ -35,21 +37,16 @@ class ExpSplitState(NamedTuple):
     f0: Optional[Array]
     nonlin_history: Array
     history_fill: Array
+    previous_dt: Array
 
 
 # =============================================================================
 # INIT helpers
 # =============================================================================
-def init_exp(
-    t0: ArrayLike, y0: ArrayLike, *args, drift: Optional[Callable] = None
-) -> ExpODEState:
-    """Initialize state for general exponential integrators where
-    `drift(t, y, *args)` is used.
-    """
-    t0 = jnp.asarray(t0)
-    y0 = jnp.asarray(y0)
-    f0 = drift(t0, y0, *args) if drift is not None else None
-    return ExpODEState(t0=t0, y0=y0, f0=f0)
+init_exp = make_cached_init(ExpODEState)
+"""Initialize state for general exponential integrators where
+`drift(t, y, *args)` is used.
+"""
 
 
 def _history_init(f0: Array, history_size: int) -> Tuple[Array, Array]:
@@ -98,7 +95,14 @@ def init_exp_split(
         split = drift
     f0 = cast(Array, split.nonlin(t0, y0, *args))  # cache N(t0, y0)
     history, fill = _history_init(f0, history_size)
-    return ExpSplitState(t0=t0, y0=y0, f0=f0, nonlin_history=history, history_fill=fill)
+    return ExpSplitState(
+        t0=t0,
+        y0=y0,
+        f0=f0,
+        nonlin_history=history,
+        history_fill=fill,
+        previous_dt=jnp.zeros_like(t0),
+    )
 
 
 # =============================================================================
@@ -106,7 +110,8 @@ def init_exp_split(
 # =============================================================================
 def compute_phi_functions(A: Array, dt: ArrayLike, k: int = 1):
     """
-    Compute phi_0, phi_1, ..., phi_k for matrix A and step dt via block matrix exponential.
+    Compute phi_0, phi_1, ..., phi_k for matrix A and step dt via block
+    matrix exponential.
     Phi_k(z) = ∫_0^1 e^{z*(1-s)} s^{k-1}/(k-1)! ds
     """
     dt = jnp.asarray(dt)
@@ -118,9 +123,9 @@ def compute_phi_functions(A: Array, dt: ArrayLike, k: int = 1):
         aug = aug.at[i * n : (i + 1) * n, i * n : (i + 1) * n].set(A)
 
     # superdiagonal identities
-    I = jnp.eye(n, dtype=A.dtype)
+    eye = jnp.eye(n, dtype=A.dtype)
     for i in range(k):
-        aug = aug.at[i * n : (i + 1) * n, (i + 1) * n : (i + 2) * n].set(I)
+        aug = aug.at[i * n : (i + 1) * n, (i + 1) * n : (i + 2) * n].set(eye)
 
     exp_aug = jax.scipy.linalg.expm(aug * dt)
 
@@ -194,7 +199,7 @@ def build_exp_rk4_step(drift: Callable):
         state: ExpODEState, dt: ArrayLike, *args
     ) -> Tuple[ExpODEState, ExpODEInfo]:
         t0, y0 = state.t0, state.y0
-        f0 = state.f0 if state.f0 is not None else drift(t0, y0, *args)
+        _f0 = state.f0 if state.f0 is not None else drift(t0, y0, *args)
 
         jacobian_fn = jax.jacfwd(drift, argnums=1)
         A = jacobian_fn(t0, y0, *args)
@@ -218,7 +223,7 @@ def build_exp_rk4_step(drift: Callable):
         y3 = y2 + dt * (2 * (phi1 @ k3) - 4 * (phi2 @ k2) + (phi3 @ k1))
         r3 = nonlinear(t0 + dt, y3)
 
-        k4 = r3 - k3 - k2 - k1
+        _k4 = r3 - k3 - k2 - k1
 
         y_next = phi0 @ y0 + dt * (
             (phi1 @ (k1 + 2 * k2 + k3))
@@ -239,10 +244,6 @@ def build_exp_rk4_step(drift: Callable):
 #   - No Jacobian, no matrix expm; φ are scalars.
 #   - AB2 ~ DPM-Solver++-2M; AB3 ~ DPM-Solver++-3M.
 # =============================================================================
-def _phi1_scalar(z: Array) -> Array:
-    small = jnp.abs(z) < 1e-4
-    series = 1.0 + 0.5 * z + (z * z) / 6.0 + (z * z * z) / 24.0
-    return jnp.where(small, series, jnp.expm1(z) / z)
 
 
 def _phi2_scalar(z: Array) -> Array:
@@ -260,9 +261,11 @@ def _phi3_scalar(z: Array) -> Array:
 
 def build_exp_ab2_scalarL(split: split_drift | Callable):
     """
-    Exponential AB2 with scalar L. Signature matches your solvers:
-      step(state, dt, y_nm1, N_nm1, *user_args) -> (state', info)
-    where N_nm1 is the cached nonlinearity at (t_{n-1}, y_{n-1}).
+    Exponential AB2 with midpoint-frozen scalar L and variable step sizes.
+
+    ``step(state, dt, *user_args)`` returns the next state and diagnostics.
+    The state caches the previous nonlinearity and step size. Startup uses
+    exponential Euler; later steps integrate a linear extrapolation of N.
     """
 
     if not isinstance(split, split_drift):
@@ -283,13 +286,15 @@ def build_exp_ab2_scalarL(split: split_drift | Callable):
         fill = state.history_fill
         N_nm1 = _history_get(history, fill, 0, N_n)
 
-        c_np1 = split.lin_coeff(t_n + dt)
-        z = c_np1 * dt
+        # Midpoint freezing is second-order for a time-dependent scalar L.
+        z = split.lin_coeff(t_n + 0.5 * dt) * dt
         r = jnp.exp(z)
-        ph1 = _phi1_scalar(z)
-
-        # y_{n+1} = e^{z} y_n + dt φ1(z) [2 N_n - N_{n-1}]
-        y_np1 = r * y_n + dt * ph1 * (2.0 * N_n - N_nm1)
+        ph1, ph2 = _phi1_scalar(z), _phi2_scalar(z)
+        previous_dt = jnp.where(fill > 0, state.previous_dt, dt)
+        ratio = dt / previous_dt
+        # Integrate the linear extrapolation of N over the current interval.
+        # For L=0 and equal steps this reduces to 3/2 N_n - 1/2 N_{n-1}.
+        y_np1 = r * y_n + dt * (ph1 * N_n + ph2 * ratio * (N_n - N_nm1))
 
         N_np1 = cast(Array, split.nonlin(t_n + dt, y_np1, *args))
         history, fill = _history_push(history, fill, N_n)
@@ -300,6 +305,7 @@ def build_exp_ab2_scalarL(split: split_drift | Callable):
                 f0=N_np1,
                 nonlin_history=history,
                 history_fill=fill,
+                previous_dt=jnp.asarray(dt),
             ),
             ExpODEInfo(phi_products=None),
         )
@@ -359,6 +365,7 @@ def build_exp_ab3_scalarL(split: split_drift | Callable):
                 f0=N_np1,
                 nonlin_history=history,
                 history_fill=fill,
+                previous_dt=jnp.asarray(dt),
             ),
             ExpODEInfo(phi_products=None),
         )

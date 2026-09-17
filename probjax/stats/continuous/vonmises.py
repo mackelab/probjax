@@ -29,7 +29,8 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
     .. math::
         f(x; \\mu, \\kappa) = \frac{e^{\\kappa\\cos(x-\\mu)}}{2\\pi I_0(\\kappa)}
 
-    where :math:`\\mu` is the location parameter and :math:`\\kappa` is the concentration
+    where :math:`\\mu` is the location parameter and :math:`\\kappa` is the
+    concentration
     parameter, and :math:`I_0` is the modified Bessel function of order 0.
 
     Parameters
@@ -96,21 +97,6 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
             return jnp.where(v < c, jnp.arccos(f), jnp.pi - jnp.arccos(f)) + loc
 
         return _rejection_sampling(rng)
-
-    @classmethod
-    def sf(cls, x, loc=0.0, kappa=1.0, **kwargs):
-        """Survival function (1 - cdf) of the von Mises distribution."""
-        return 1 - cls.cdf(x, loc, kappa)
-
-    @classmethod
-    def isf(cls, q, loc=0.0, kappa=1.0, **kwargs):
-        """Inverse survival function (inverse of sf) of the von Mises distribution."""
-        return cls.ppf(1 - q, loc, kappa)
-
-    @classmethod
-    def logcdf(cls, x, loc=0.0, kappa=1.0, **kwargs):
-        """Log of the cumulative distribution function of the von Mises distribution."""
-        return jnp.log(cls.cdf(x, loc, kappa))
 
     @classmethod
     def mean(cls, loc=0.0, kappa=1.0, **kwargs):

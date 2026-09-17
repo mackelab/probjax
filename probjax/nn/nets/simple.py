@@ -9,6 +9,7 @@ from probjax.nn.layers.fuse import AffineFuse
 from probjax.nn.layers.masked import MaskedLinear
 from probjax.nn.sharding import EMBED, HIDDEN, param_metadata
 from probjax.nn.utils import (
+    DEFAULT_MODULE,
     filter_precision_kwargs,
     filter_supported_kwargs,
     get_active_precision_kwargs,
@@ -45,6 +46,10 @@ class Sequential(nnx.Module):
 class MLP(nnx.Module):
     """Multi-layer perceptron (MLP) module with configurable layers and activation."""
 
+    norm_cls = None
+    linear_cls = nnx.Linear
+    context_fuse_cls = AffineFuse
+
     def __init__(
         self,
         feature_dims: Sequence[int],
@@ -58,9 +63,9 @@ class MLP(nnx.Module):
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        norm_cls: ModuleLikeType | None = None,
-        linear_cls: ModuleLikeType | Sequence[ModuleLikeType] = nnx.Linear,
-        context_fuse_cls: ModuleLikeType = AffineFuse,
+        norm_cls: ModuleLikeType | None = DEFAULT_MODULE,
+        linear_cls: ModuleLikeType | Sequence[ModuleLikeType] = DEFAULT_MODULE,
+        context_fuse_cls: ModuleLikeType = DEFAULT_MODULE,
         rngs: nnx.Rngs,
         **kwargs,
     ):
@@ -85,6 +90,16 @@ class MLP(nnx.Module):
             ValueError: If dims has fewer than 2 elements or contains
                 non-positive values.
         """
+        norm_cls = type(self).norm_cls if norm_cls is DEFAULT_MODULE else norm_cls
+        linear_cls = (
+            type(self).linear_cls if linear_cls is DEFAULT_MODULE else linear_cls
+        )
+        context_fuse_cls = (
+            type(self).context_fuse_cls
+            if context_fuse_cls is DEFAULT_MODULE
+            else context_fuse_cls
+        )
+
         if len(feature_dims) < 2:
             raise ValueError(
                 f"dims must have at least 2 elements, got {len(feature_dims)}"
@@ -103,7 +118,8 @@ class MLP(nnx.Module):
         if isinstance(linear_cls, Sequence) and not isinstance(linear_cls, type):
             if len(linear_cls) != num_layers:
                 raise ValueError(
-                    f"linear_cls sequence must have length {num_layers}, got {len(linear_cls)}"
+                    f"linear_cls sequence must have length {num_layers}, "
+                    f"got {len(linear_cls)}"
                 )
             base_linears = [
                 partial(
@@ -238,6 +254,10 @@ class MaskedMLP(MLP):
 class ResNet(nnx.Module):
     """Residual neural network with optional context conditioning."""
 
+    context_fuse_cls = AffineFuse
+    norm_cls = None
+    linear_cls = nnx.Linear
+
     def __init__(
         self,
         in_features: int,
@@ -252,9 +272,9 @@ class ResNet(nnx.Module):
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        context_fuse_cls: ModuleLikeType = AffineFuse,
-        norm_cls: ModuleLikeType | None = None,
-        linear_cls: ModuleLikeType = nnx.Linear,
+        context_fuse_cls: ModuleLikeType = DEFAULT_MODULE,
+        norm_cls: ModuleLikeType | None = DEFAULT_MODULE,
+        linear_cls: ModuleLikeType = DEFAULT_MODULE,
         rngs: nnx.Rngs,
         **kwargs,
     ):
@@ -283,6 +303,16 @@ class ResNet(nnx.Module):
             ValueError: If input/output dimensions or hidden dimensions
                 are not positive.
         """
+        context_fuse_cls = (
+            type(self).context_fuse_cls
+            if context_fuse_cls is DEFAULT_MODULE
+            else context_fuse_cls
+        )
+        norm_cls = type(self).norm_cls if norm_cls is DEFAULT_MODULE else norm_cls
+        linear_cls = (
+            type(self).linear_cls if linear_cls is DEFAULT_MODULE else linear_cls
+        )
+
         if in_features <= 0:
             raise ValueError(f"in_dim must be positive, got {in_features}")
         if out_features <= 0:
@@ -444,6 +474,8 @@ class DeepSet(nnx.Module):
     f(X) = ρ(Σ φ(x_i)) where X = {x_1, ..., x_n}
     """
 
+    dropout_cls = nnx.Dropout
+
     def __init__(
         self,
         phi: ModuleLike,
@@ -452,6 +484,7 @@ class DeepSet(nnx.Module):
         reduction: Callable = jnp.sum,
         axis: tuple[int] | int = -2,
         dropout_rate: float = 0.0,
+        dropout_cls: ModuleLikeType = DEFAULT_MODULE,
         rngs: nnx.Rngs,
     ):
         """Initialize the DeepSets module.
@@ -474,6 +507,10 @@ class DeepSet(nnx.Module):
         Raises:
             ValueError: If phi or rho are None, or if dropout_rate is invalid.
         """
+        dropout_cls = (
+            type(self).dropout_cls if dropout_cls is DEFAULT_MODULE else dropout_cls
+        )
+
         if not (0.0 <= dropout_rate <= 1.0):
             raise ValueError(
                 f"dropout_rate must be between 0.0 and 1.0, got {dropout_rate}"
@@ -486,7 +523,7 @@ class DeepSet(nnx.Module):
         self.dropout_rate = dropout_rate
 
         if dropout_rate > 0.0:
-            self.dropout = nnx.Dropout(rate=dropout_rate, rngs=rngs)
+            self.dropout = dropout_cls(rate=dropout_rate, rngs=rngs)
         else:
             self.dropout = None
 
@@ -531,4 +568,4 @@ class DeepSet(nnx.Module):
         h = self.reduction(phi_x, axis=self.axis)
 
         # Apply rho
-        return self.rho(h, **(rho_kwargs if rho_kwargs is not None else {}))
+        return self.rho(h, *rho_args, **rho_kwargs)

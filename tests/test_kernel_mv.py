@@ -390,7 +390,7 @@ def test_mamba_scan_gpu_supported_config_uses_pallas_scan(monkeypatch):
     seq_len = 16
     inner_dim = 128
     state_dim = 16
-    seq_tile_size = 8
+    seq_tile_size = 16  # Exercise the fused single-tile GPU path.
     dim_tile_size = 128
 
     key = jax.random.PRNGKey(6)
@@ -419,6 +419,9 @@ def test_mamba_scan_gpu_supported_config_uses_pallas_scan(monkeypatch):
     monkeypatch.setattr(
         mamba_kernel_mod, "_mamba_scan_reference", _unexpected_reference
     )
+    monkeypatch.setattr(
+        mamba_kernel_mod, "_mamba_scan_associative", _unexpected_reference
+    )
     monkeypatch.setattr(mamba_kernel_mod, "_mamba_scan_op", _fake_scan)
 
     out = compute_mamba_scan(
@@ -443,7 +446,7 @@ def test_mamba_scan_gpu_unsupported_config_raises_without_reference_fallback(
     seq_len = 16
     inner_dim = 128
     state_dim = 16
-    seq_tile_size = 8
+    seq_tile_size = 16  # Exercise the fused single-tile GPU path.
     dim_tile_size = 128
 
     key = jax.random.PRNGKey(2)
@@ -468,6 +471,9 @@ def test_mamba_scan_gpu_unsupported_config_raises_without_reference_fallback(
     monkeypatch.setattr(
         mamba_kernel_mod, "_mamba_scan_reference", _unexpected_reference
     )
+    monkeypatch.setattr(
+        mamba_kernel_mod, "_mamba_scan_associative", _unexpected_reference
+    )
 
     with pytest.raises(RuntimeError, match="Reference fallback on GPU is disabled"):
         compute_mamba_scan(
@@ -487,7 +493,7 @@ def test_mamba_scan_gpu_kernel_failure_raises_without_reference_fallback(monkeyp
     seq_len = 16
     inner_dim = 128
     state_dim = 16
-    seq_tile_size = 8
+    seq_tile_size = 16  # Exercise the fused single-tile GPU path.
     dim_tile_size = 128
 
     key = jax.random.PRNGKey(3)
@@ -514,6 +520,9 @@ def test_mamba_scan_gpu_kernel_failure_raises_without_reference_fallback(monkeyp
 
     monkeypatch.setattr(
         mamba_kernel_mod, "_mamba_scan_reference", _unexpected_reference
+    )
+    monkeypatch.setattr(
+        mamba_kernel_mod, "_mamba_scan_associative", _unexpected_reference
     )
     monkeypatch.setattr(mamba_kernel_mod, "_mamba_scan_op", _failing_scan)
 

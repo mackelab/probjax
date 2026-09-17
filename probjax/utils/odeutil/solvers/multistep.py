@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # Coefficient functions (not initialized at import)
 def get_ab_coeffs(order: int, dtype) -> Array:
     import jax.numpy as jnp
@@ -31,7 +33,6 @@ def get_bdf_a(order: int, dtype) -> Array:
 def get_bdf_b(order: int) -> float:
     coeffs = {1: 1.0, 2: 2/3, 3: 6/11}
     return coeffs[order]
-from __future__ import annotations
 
 from typing import Optional
 

@@ -1,13 +1,12 @@
 """Distribution views for learned generative models.
 
-Most generative-model classes in :mod:`probjax.nn.generative` don't carry an
-intrinsic ``event_shape`` (a flow matcher trained on R^d looks the same as
-one trained on R^k), and their sampling pipelines have free parameters
-(``num_steps``, ``mode="ode"`` vs ``"sde"``). A model distribution binds
-those options and lazily compiles efficient sampling and density operations:
+Diffusion and flow matching models carry a default event specification; other
+generative families may require it when making a distribution view. Sampling options such as
+``num_steps`` and ``mode="ode"`` vs ``"sde"`` are bound by that view, which
+lazily compiles efficient sampling and density operations:
 
->>> ddpm = EDM(net, ...)              # already trained
->>> dist = ddpm.as_dist(event_spec=(d,), num_steps=50)
+>>> ddpm = EDM(net, event_spec=(d,))  # already trained
+>>> dist = ddpm.as_dist(num_steps=50)
 >>> samples = dist.sample(key, shape=(N,))
 
 Normalizing-flow views additionally compile ``logpdf``; diffusion and flow
@@ -184,7 +183,9 @@ class _ModelDistribution(DistributionAPI):
         """Return the current model state for explicit-state evaluation."""
         operation = self._get_logpdf() if self.has_logpdf else self._get_sampler()
         _, state = operation.model_and_state()
-        return jax.tree.map(lambda value: value.copy(), state)
+        return jax.tree.map(
+            lambda value: value.copy() if hasattr(value, "copy") else value, state
+        )
 
     def sample_with_state(
         self,

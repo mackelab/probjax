@@ -69,3 +69,34 @@ class FilteringResult(NamedTuple):
     initial_state: Any
     states: Any
     info: Optional[Any] = None
+
+
+class RunnerMixin:
+    """Shared progress reporting for compiled inference scans."""
+
+    def _verbose_scan(self, f, init, xs, length, stats_fn):
+        """Run a scan with a rate-limited progress bar.
+
+        ``print_scan`` requires a tuple carry, so we wrap the kernel state.
+        """
+
+        from probjax.utils.jaxutils import print_scan
+
+        def wrapped(carry, x):
+            state, y = f(carry[0], x)
+            return (state,), y
+
+        update_stats, print_fn, init_stats, print_rate = self._make_verbose_fns(
+            length, stats_fn=lambda carry, y: stats_fn(carry[0], y)
+        )
+        (state,), y = print_scan(
+            wrapped,
+            (init,),
+            init_stats,
+            xs=xs,
+            length=length,
+            update_stats=update_stats,
+            print_rate=print_rate,
+            print_fn=print_fn,
+        )
+        return state, y

@@ -11,6 +11,10 @@ from probjax.utils.optional import require_ott
 from probjax.utils.typing import Array, ArrayLike, ModuleLikeType
 
 
+# Distinguish an omitted builder from explicit None (which may disable it).
+DEFAULT_MODULE = object()
+
+
 _RNG_SUPPORT_BY_TYPE: dict[type, bool] = {
     nnx.Linear: False,
 }
@@ -108,15 +112,15 @@ def filter_supported_kwargs(ctor, **kwargs) -> dict:
     pass optional metadata (e.g. sharding) to layers that support it while
     remaining compatible with custom layer classes that don't.
     """
-    target = ctor
-    while isinstance(target, partial):
-        target = target.func
     try:
-        fn = target.__init__ if isinstance(target, type) else target
-        param_names = inspect.signature(fn).parameters.keys()
+        parameters = inspect.signature(ctor).parameters
     except (ValueError, TypeError):
         return {}
-    return {key: kwargs[key] for key in kwargs if key in param_names}
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return kwargs
+    return {key: value for key, value in kwargs.items()
+            if key in parameters and parameters[key].kind != inspect.Parameter.POSITIONAL_ONLY}
+
 
 
 def filter_precision_kwargs(cls: ModuleLikeType, **kwargs):
@@ -182,21 +186,24 @@ def call_with_optional_rng(module, *args, rng=None, **kwargs):
 
 
 def module_accepts_rng(module) -> bool:
+    # Functions, bound methods and partials can have different signatures even
+    # when they share a type. Inspect those directly, without a per-type cache.
+    variable_signature = inspect.isroutine(module) or isinstance(module, partial)
     module_type = type(module)
-    cached = _RNG_SUPPORT_BY_TYPE.get(module_type)
-    if cached is not None:
-        return cached
-
-    call_target = module.__call__ if hasattr(module, "__call__") else module
+    if not variable_signature and module_type in _RNG_SUPPORT_BY_TYPE:
+        return _RNG_SUPPORT_BY_TYPE[module_type]
     try:
-        params = inspect.signature(call_target).parameters.values()
+        params = inspect.signature(module).parameters.values()
         supports_rng = any(
-            p.name == "rng" or p.kind == inspect.Parameter.VAR_KEYWORD for p in params
+            (p.name == "rng" and p.kind != inspect.Parameter.POSITIONAL_ONLY)
+            or p.kind == inspect.Parameter.VAR_KEYWORD for p in params
         )
     except (TypeError, ValueError):
         supports_rng = True
-    _RNG_SUPPORT_BY_TYPE[module_type] = supports_rng
+    if not variable_signature:
+        _RNG_SUPPORT_BY_TYPE[module_type] = supports_rng
     return supports_rng
+
 
 
 def extract_permutation(M: jnp.ndarray) -> jnp.ndarray:

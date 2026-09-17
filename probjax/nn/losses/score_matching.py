@@ -7,6 +7,7 @@ from jaxtyping import Array
 
 __all__ = ["build_score_matching_loss", "build_time_dependent_score_matching_loss"]
 
+from probjax.nn.losses._common import _perturb, _require_rng, _resolve_weight
 from probjax.utils.protocols import LossFn, ModelFn, TimeDependentModelFn
 
 
@@ -155,16 +156,10 @@ def build_time_dependent_score_matching_loss(
         Returns:
             Scalar loss value
         """
-        assert rng is not None, (
-            "loss_fn does require rngs, pass them to function kwargs."
-        )
-        mean_t = mean_fn(times, xs_target)
-        std_t = std_fn(times, xs_target)
-        eps = jax.random.normal(rng, shape=xs_target.shape)
+        _require_rng(rng)
+        xs_t, _eps = _perturb(mean_fn, std_fn, times, xs_target, rng)
 
-        xs_t = mean_t + std_t * eps
-
-        weight = weight_fn(times) if weight_fn is not None else None
+        _weight = _resolve_weight(weight_fn, times)
         vmap_in_args = (0,) * len(args)
 
         losses = base_score_matching_loss(

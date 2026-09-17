@@ -1,0 +1,29 @@
+JAX 0.9.2
+pareto sample min/mean (expected min~1, mean1.5) (2.0000081062316895, 2.499702215194702)
+genpareto default pdf ZeroDivisionError float division by zero
+genpareto default logpdf ZeroDivisionError float division by zero
+genpareto default cdf ZeroDivisionError float division by zero
+genpareto default ppf nan
+genpareto default sf ZeroDivisionError float division by zero
+genpareto default isf nan
+genpareto c=.5 x=-1 pdf,cdf expected0,0 (8.0, -3.0)
+binomial cdf(0.5) actual,reference (Array(0.16046952, dtype=float32, weak_type=True), np.float64(0.0625))
+binomial entropy n=1,4 actual/reference [(Array(1.3862944, dtype=float32, weak_type=True), np.float64(0.6931471805599452)), (Array(1.3862944, dtype=float32, weak_type=True), np.float64(1.4075317407193153))]
+poisson entropy rate10 actual/reference (Array(-13.025851, dtype=float32, weak_type=True), np.float64(2.5614099352749125))
+truncnorm ppf AttributeError module 'jax.scipy.stats.truncnorm' has no attribute 'ppf'
+truncnorm isf AttributeError module 'jax.scipy.stats.truncnorm' has no attribute 'isf'
+truncnorm mean AttributeError module 'jax.scipy.stats.truncnorm' has no attribute 'mean'
+truncnorm var AttributeError module 'jax.scipy.stats.truncnorm' has no attribute 'var'
+truncnorm entropy AttributeError module 'jax.scipy.stats.truncnorm' has no attribute 'entropy'
+decreasing transform CDF(1), PPF(.9) (Array(0.15865527, dtype=float32), Array(-1.2815512, dtype=float32))
+merwe_sigma_point reconstructed covariance [[2.5       0.8660254]
+ [0.8660254 1.5      ]]
+julier_uhlmann_sigma_points reconstructed covariance [[2.5       0.8660254]
+ [0.8660254 1.5      ]]
+spherical_simplex_sigma_points reconstructed covariance [[ 1.3333333e+00 -3.6404895e-08]
+ [-5.6391631e-08  1.3333334e+00]]
+UKF identity P=Q=R=1 y=1 expected mean2/3,cov2/3 (UnscentedKalmanFilterState(mean=Array([0.5], dtype=float32), cov=Array([[1.5]], dtype=float32), t=1), UnscentedKalmanFilterInfo(mean_pred=Array([0.], dtype=float32), cov_pred=Array([[2.]], dtype=float32), log_likelihood=Array(-0.5965736, dtype=float32)))
+UKF likelihood Q=0 actual,reference (Array(-0.5965736, dtype=float32), np.float64(-1.5155121234846454))
+UKF callable R TypeError unsupported operand type(s) for +=: 'jaxlib._jax.ArrayImpl' and 'function'
+Gaussian IMH step (RWState(position=Array([2.0080285], dtype=float32), logdensity=Array(-2.0160892, dtype=float32)), RWInfo(acceptance_rate=Array(0.15105915, dtype=float32), is_accepted=Array(True, dtype=bool), proposal=RWState(position=Array([2.0080285], dtype=float32), logdensity=Array(-2.0160892, dtype=float32))))
+Gaussian proposal logpdf at0 cov4 actual,expected (Array(-2.305233, dtype=float32), np.float64(-1.612085713764618))

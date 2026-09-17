@@ -17,7 +17,6 @@ from probjax.nn.utils import (
     get_active_precision_kwargs,
     identity_1x1,
 )
-
 from probjax.utils.typing import (
     Array,
     DTypeLike,
@@ -25,6 +24,75 @@ from probjax.utils.typing import (
     ModuleLikeType,
     PrecisionLike,
 )
+
+
+def _conv_precision_kwargs(dtype, precision, param_dtype, preferred_element_type):
+    """Resolve active precision kwargs filtered to ``nnx.Conv``.
+
+    This ensures that if global precision rules are set, they are
+    respected, but if they are explicitly given, they are not overridden.
+    """
+    precision_kwargs = get_active_precision_kwargs(
+        dtype, precision, param_dtype, preferred_element_type
+    )
+    return filter_precision_kwargs(nnx.Conv, **precision_kwargs)
+
+
+def _make_conv(
+    in_features: int,
+    out_features: int,
+    *,
+    rngs: nnx.Rngs,
+    precision_kwargs,
+    kernel_size: int | Sequence[int] = 3,
+    strides: int | Sequence[int] = 1,
+    padding: str = "SAME",
+    input_dilation: int | Sequence[int] | None = 1,
+    kernel_dilation: int | Sequence[int] | None = 1,
+    feature_group_count: int = 1,
+    use_bias: bool = True,
+    mask: Array | None = None,
+    kernel_init: Initializer = nnx.initializers.lecun_normal(),
+    bias_init: Initializer = nnx.initializers.zeros,
+    **overrides,
+):
+    """Build an ``nnx.Conv`` with the shared kernel/stride/padding plumbing."""
+    return nnx.Conv(
+        in_features=in_features,
+        out_features=out_features,
+        kernel_size=kernel_size,
+        strides=strides,
+        padding=padding,
+        input_dilation=input_dilation,
+        kernel_dilation=kernel_dilation,
+        feature_group_count=feature_group_count,
+        use_bias=use_bias,
+        mask=mask,
+        kernel_init=kernel_init,
+        bias_init=bias_init,
+        rngs=rngs,
+        **precision_kwargs,
+        **overrides,
+    )
+
+
+class _BaseResizeConv(nnx.Module):
+    """Shared input checks + resize-then-convolve tail for resize convs."""
+
+    def _check_spatial_input(self, shape, num_spatial, spatial_desc):
+        if shape[-1] != self.conv.in_features:
+            raise ValueError(
+                f"Input shape {shape} does not match expected in_features"
+                f" {self.conv.in_features}"
+            )
+        if len(shape) < num_spatial + 1:
+            raise ValueError(
+                f"Input shape {shape} does not match expected spatial {spatial_desc}"
+            )
+
+    def _apply_resize_conv(self, x, new_shape):
+        x = jax.image.resize(x, shape=new_shape, method=self.resize_method)
+        return self.conv(x).astype(self.preferred_element_type)
 
 
 class ConvBlock(nnx.Module):
@@ -77,13 +145,14 @@ class ConvBlock(nnx.Module):
         # This ensures that if global precision rules are set, they
         # are respected, but if they are explicitly given, they are not
         # overridden.
-        precision_kwargs = get_active_precision_kwargs(
+        precision_kwargs = _conv_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
         )
-        precision_kwargs = filter_precision_kwargs(nnx.Conv, **precision_kwargs)
-        self.conv = nnx.Conv(
-            in_features=in_features,
-            out_features=out_features,
+        self.conv = _make_conv(
+            in_features,
+            out_features,
+            rngs=rngs,
+            precision_kwargs=precision_kwargs,
             kernel_size=kernel_size,
             strides=strides,
             padding=padding,
@@ -95,8 +164,6 @@ class ConvBlock(nnx.Module):
             kernel_init=kernel_init,
             bias_init=bias_init,
             conv_general_dilated=conv_general_dilated,
-            rngs=rngs,
-            **precision_kwargs,
         )
         self.preferred_element_type = preferred_element_type
         self.preactivation = preactivation
@@ -126,7 +193,7 @@ class ConvBlock(nnx.Module):
         return x
 
 
-class ResizeConv(nnx.Module):
+class ResizeConv(_BaseResizeConv):
     """Resize input spatially, then apply a convolution."""
 
     def __init__(
@@ -155,14 +222,15 @@ class ResizeConv(nnx.Module):
         self.resize_method = resize_method
         self.out_shape = out_shape
 
-        precision_kwargs = get_active_precision_kwargs(
+        precision_kwargs = _conv_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
         )
-        precision_kwargs = filter_precision_kwargs(nnx.Conv, **precision_kwargs)
 
-        self.conv = nnx.Conv(
-            in_features=in_features,
-            out_features=out_features,
+        self.conv = _make_conv(
+            in_features,
+            out_features,
+            rngs=rngs,
+            precision_kwargs=precision_kwargs,
             kernel_size=kernel_size,
             strides=strides,
             padding=padding,
@@ -173,8 +241,6 @@ class ResizeConv(nnx.Module):
             mask=mask,
             kernel_init=kernel_init,
             bias_init=bias_init,
-            rngs=rngs,
-            **precision_kwargs,
         )
         self.preferred_element_type = preferred_element_type
 
@@ -183,28 +249,17 @@ class ResizeConv(nnx.Module):
         del rng
         x = jnp.asarray(x)
         shape = x.shape
-        if shape[-1] != self.conv.in_features:
-            raise ValueError(
-                f"Input shape {shape} does not match expected in_features"
-                f" {self.conv.in_features}"
-            )
-        if len(shape) < len(self.out_shape) + 1:
-            raise ValueError(
-                f"Input shape {shape} does not match expected spatial shape"
-                f" {self.out_shape}"
-            )
+        self._check_spatial_input(shape, len(self.out_shape), f"shape {self.out_shape}")
         new_shape = (
             shape[: -len(self.out_shape) - 1]
             + tuple(self.out_shape)
             + (self.conv.in_features,)
         )
 
-        x = jax.image.resize(x, shape=new_shape, method=self.resize_method)
-        x = self.conv(x).astype(self.preferred_element_type)
-        return x
+        return self._apply_resize_conv(x, new_shape)
 
 
-class RescaleConv(nnx.Module):
+class RescaleConv(_BaseResizeConv):
     """Resize input spatially, then apply a convolution."""
 
     def __init__(
@@ -235,14 +290,15 @@ class RescaleConv(nnx.Module):
         self.resize_factor = resize_factor
         self.spatial_dims = spatial_dims
 
-        precision_kwargs = get_active_precision_kwargs(
+        precision_kwargs = _conv_precision_kwargs(
             dtype, precision, param_dtype, preferred_element_type
         )
-        precision_kwargs = filter_precision_kwargs(nnx.Conv, **precision_kwargs)
 
-        self.conv = nnx.Conv(
-            in_features=in_features,
-            out_features=out_features,
+        self.conv = _make_conv(
+            in_features,
+            out_features,
+            rngs=rngs,
+            precision_kwargs=precision_kwargs,
             kernel_size=kernel_size,
             strides=strides,
             padding=padding,
@@ -253,8 +309,6 @@ class RescaleConv(nnx.Module):
             mask=mask,
             kernel_init=kernel_init,
             bias_init=bias_init,
-            rngs=rngs,
-            **precision_kwargs,
         )
         self.preferred_element_type = preferred_element_type
 
@@ -263,16 +317,7 @@ class RescaleConv(nnx.Module):
         del rng
         x = jnp.asarray(x)
         shape = x.shape
-        if shape[-1] != self.conv.in_features:
-            raise ValueError(
-                f"Input shape {shape} does not match expected in_features"
-                f" {self.conv.in_features}"
-            )
-        if len(shape) < self.spatial_dims + 1:
-            raise ValueError(
-                f"Input shape {shape} does not match expected spatial dims"
-                f" {self.spatial_dims}"
-            )
+        self._check_spatial_input(shape, self.spatial_dims, f"dims {self.spatial_dims}")
         new_shape = (
             shape[: -self.spatial_dims - 1]
             + tuple(
@@ -282,9 +327,7 @@ class RescaleConv(nnx.Module):
             + (self.conv.in_features,)
         )
 
-        x = jax.image.resize(x, shape=new_shape, method=self.resize_method)
-        x = self.conv(x).astype(self.preferred_element_type)
-        return x
+        return self._apply_resize_conv(x, new_shape)
 
 
 class ResnetBlock(nnx.Module):

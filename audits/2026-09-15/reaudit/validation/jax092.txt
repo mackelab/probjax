@@ -1,0 +1,10 @@
+JAX 0.9.2
+test_logdet_gradient_scaled_identity PASS
+test_genpareto_explicit_shape_parameter_sampling PASS
+test_truncnorm_small_positive_quantile PASS
+test_truncnorm_quantile_second_derivative PASS
+test_truncnorm_one_sided_tail_variance PASS
+test_pcg_small_representable_rhs PASS
+test_optional_rng_plain_function PASS
+test_forwarding_constructor_kwargs PASS
+test_genpareto_negative_shape_mode PASS

@@ -1,10 +1,10 @@
 from typing import Callable, NamedTuple, Optional, Tuple
 
-import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
 from probjax.inference.filtering.base import FilterAPI
+from probjax.inference.filtering.kalman_filter import _innovation_ll, default_solve
 from probjax.utils.linalg import symmetrize_matrix
 
 
@@ -20,12 +20,6 @@ class RankReducedKalmanFilterInfo(NamedTuple):
     cov_factor_pred: ArrayLike
     cov_core_pred: ArrayLike
     log_likelihood: Optional[ArrayLike] = None
-
-
-def _default_solve(S: ArrayLike, res: ArrayLike) -> ArrayLike:
-    S = jnp.asarray(S)
-    res = jnp.asarray(res)
-    return jax.scipy.linalg.solve(S, res.T, assume_a="pos").T
 
 
 def _factor_to_cov(cov_factor: ArrayLike, cov_core: ArrayLike) -> ArrayLike:
@@ -253,7 +247,7 @@ def build_kernel(
 
             # K = U S M^T S_y^{-1}
             B = S_pred @ M.T
-            solve = _default_solve if linear_solve is None else linear_solve
+            solve = default_solve if linear_solve is None else linear_solve
             B_Sinv = solve(innovation, B)
             K = U_pred @ B_Sinv
 
@@ -279,8 +273,12 @@ def build_kernel(
             U = U_pred @ vecs
             S = jnp.diag(vals)
 
-            logdet = jnp.linalg.slogdet(jnp.asarray(innovation))[1]
-            log_likelihood = -0.5 * (logdet + residual.T @ solve(innovation, residual))
+            log_likelihood = _innovation_ll(
+                residual,
+                innovation,
+                solve_fn=solve,
+                logdet_fn=lambda S: jnp.linalg.slogdet(jnp.asarray(S))[1],
+            )
 
             return RankReducedKalmanFilterState(
                 mu, U, S, t

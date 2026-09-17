@@ -1,0 +1,48 @@
+{
+  "ssd.py": {
+    "missing_public_symbols": [],
+    "public_signature_changes": [],
+    "replaced_internals": [
+      "_make_ssd",
+      "_validate_ssd_sharding"
+    ]
+  },
+  "mamba.py": {
+    "missing_public_symbols": [],
+    "public_signature_changes": [],
+    "replaced_internals": [
+      "_make_mamba_scan",
+      "_validate_mamba_sharding"
+    ]
+  },
+  "kernel_mv.py": {
+    "missing_public_symbols": [],
+    "public_signature_changes": [],
+    "replaced_internals": []
+  },
+  "flash_attention3.py": {
+    "missing_public_symbols": [],
+    "public_signature_changes": [],
+    "replaced_internals": [
+      "_make_cp_flash_backward",
+      "_make_cp_flash_forward",
+      "_result_sharding_rule",
+      "_use_custom_partitioning",
+      "_validate_flash_sharding"
+    ]
+  },
+  "attention.py": {
+    "missing_public_symbols": [],
+    "public_signature_changes": [],
+    "replaced_internals": [
+      "_make_cp_mha_bwd",
+      "_make_cp_mha_fwd",
+      "_make_cp_mha_jvp"
+    ]
+  },
+  "__init__.py": {
+    "missing_public_symbols": [],
+    "public_signature_changes": [],
+    "replaced_internals": []
+  }
+}

@@ -7,8 +7,18 @@ from flax import nnx
 from probjax.nn.layers.encoding import GaussianFourierEmbedding
 from probjax.nn.layers.fuse import AffineFuse
 from probjax.nn.nets.simple import MLP, ResNet
-from probjax.nn.utils import filter_precision_kwargs, get_active_precision_kwargs
-from probjax.utils.typing import Array, ArrayLike, DTypeLike, ModuleLikeType, PrecisionLike
+from probjax.nn.utils import (
+    DEFAULT_MODULE,
+    filter_precision_kwargs,
+    get_active_precision_kwargs,
+)
+from probjax.utils.typing import (
+    Array,
+    ArrayLike,
+    DTypeLike,
+    ModuleLikeType,
+    PrecisionLike,
+)
 
 
 class TimeMLP(nnx.Module):
@@ -35,6 +45,12 @@ class TimeMLP(nnx.Module):
     flow, diffusion).
     """
 
+    norm_cls = nnx.LayerNorm
+    fourier_cls = GaussianFourierEmbedding
+    time_mlp_cls = MLP
+    body_cls = ResNet
+    context_fuse_cls = AffineFuse
+
     def __init__(
         self,
         features: int,
@@ -45,7 +61,11 @@ class TimeMLP(nnx.Module):
         fourier_dim: int = 64,
         context_dim: Optional[int] = None,
         activation=jax.nn.silu,
-        norm_cls: ModuleLikeType = nnx.LayerNorm,
+        norm_cls: ModuleLikeType = DEFAULT_MODULE,
+        fourier_cls: ModuleLikeType = DEFAULT_MODULE,
+        time_mlp_cls: ModuleLikeType = DEFAULT_MODULE,
+        body_cls: ModuleLikeType = DEFAULT_MODULE,
+        context_fuse_cls: ModuleLikeType = DEFAULT_MODULE,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
@@ -77,6 +97,20 @@ class TimeMLP(nnx.Module):
         Raises:
             ValueError: If any dimension argument is not positive.
         """
+        norm_cls = type(self).norm_cls if norm_cls is DEFAULT_MODULE else norm_cls
+        fourier_cls = (
+            type(self).fourier_cls if fourier_cls is DEFAULT_MODULE else fourier_cls
+        )
+        time_mlp_cls = (
+            type(self).time_mlp_cls if time_mlp_cls is DEFAULT_MODULE else time_mlp_cls
+        )
+        body_cls = type(self).body_cls if body_cls is DEFAULT_MODULE else body_cls
+        context_fuse_cls = (
+            type(self).context_fuse_cls
+            if context_fuse_cls is DEFAULT_MODULE
+            else context_fuse_cls
+        )
+
         if features <= 0:
             raise ValueError(f"features must be positive, got {features}")
         if hidden_dim <= 0:
@@ -97,21 +131,21 @@ class TimeMLP(nnx.Module):
             dtype, precision, param_dtype, preferred_element_type
         )
 
-        self.time_fourier = GaussianFourierEmbedding(
+        self.time_fourier = fourier_cls(
             1,
             fourier_dim,
             rngs=rngs,
-            **filter_precision_kwargs(GaussianFourierEmbedding, **precision_kwargs),
+            **filter_precision_kwargs(fourier_cls, **precision_kwargs),
         )
-        self.time_mlp = MLP(
+        self.time_mlp = time_mlp_cls(
             [fourier_dim, time_embed_dim, time_embed_dim],
             activation=activation,
             rngs=rngs,
-            **filter_precision_kwargs(MLP, **precision_kwargs),
+            **filter_precision_kwargs(time_mlp_cls, **precision_kwargs),
         )
 
         cond_dim = time_embed_dim + (context_dim or 0)
-        self.body = ResNet(
+        self.body = body_cls(
             features,
             features,
             hidden_dim=hidden_dim,
@@ -119,13 +153,16 @@ class TimeMLP(nnx.Module):
             context_dim=cond_dim,
             activation=activation,
             norm_cls=norm_cls,
-            context_fuse_cls=AffineFuse,
+            context_fuse_cls=context_fuse_cls,
             rngs=rngs,
-            **filter_precision_kwargs(ResNet, **precision_kwargs),
+            **filter_precision_kwargs(body_cls, **precision_kwargs),
         )
 
     def _time_embedding(self, t: ArrayLike, batch_shape: tuple[int, ...]) -> Array:
-        t = jnp.broadcast_to(jnp.asarray(t), batch_shape + (1,))
+        t = jnp.asarray(t)
+        if t.ndim <= len(batch_shape):
+            t = t[..., None]
+        t = jnp.broadcast_to(t, batch_shape + (1,))
         return self.time_mlp(self.time_fourier(t))
 
     def __call__(

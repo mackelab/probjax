@@ -123,6 +123,46 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "--benchmark-sort=name"
+markers = [
+    "slow: long-running tests (training loops, full ODE/SDE grids, docs build)",
+    "gpu: requires GPU to run",
+    "mesh: requires multi-device mesh to run",
+    "benchmark: performance benchmark tests (opt-in)",
+    "docs: documentation build and snippet tests",
+]
 filterwarnings = [
     "ignore:Setting `jax_pmap_shmap_merge` is deprecated in JAX v0.9.0 and will be removed in JAX v0.10.0.:DeprecationWarning:jax._src.config",
 ]
+
+[tool.coverage.run]
+source = ["probjax"]
+branch = true
+parallel = true
+omit = [
+    "tests/*",
+    "benchmarks/*",
+    "examples/*",
+    "docs/*",
+    "site/*",
+]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if TYPE_CHECKING:",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "@overload",
+    "@abc\\.abstractmethod",
+    "if __name__ == .__main__.:",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.coverage.xml]
+output = "coverage.xml"

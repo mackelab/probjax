@@ -1,0 +1,29 @@
+JAX 0.9.2
+pareto sample min/mean (expected min~1, mean1.5) (1.0000079870224, 1.4997023344039917)
+genpareto default pdf 0.60653067
+genpareto default logpdf -0.5
+genpareto default cdf 0.39346933
+genpareto default ppf 0.6931472
+genpareto default sf 0.60653067
+genpareto default isf 0.6931472
+genpareto c=.5 x=-1 pdf,cdf expected0,0 (Array(0., dtype=float32, weak_type=True), Array(-0., dtype=float32, weak_type=True))
+binomial cdf(0.5) actual,reference (Array(0.06249997, dtype=float32, weak_type=True), np.float64(0.0625))
+binomial entropy n=1,4 actual/reference [(Array(0.6931472, dtype=float32), np.float64(0.6931471805599452)), (Array(1.4075317, dtype=float32), np.float64(1.4075317407193153))]
+poisson entropy rate10 actual/reference (Array(2.5614073, dtype=float32), np.float64(2.5614099352749125))
+truncnorm ppf 1.3935004e-07
+truncnorm isf -1.3935004e-07
+truncnorm mean 2.9802322e-08
+truncnorm var 0.29112506
+truncnorm entropy 0.682786
+decreasing transform CDF(1), PPF(.9) (Array(0.8413447, dtype=float32), Array(1.2815512, dtype=float32))
+merwe_sigma_point reconstructed covariance [[2. 1.]
+ [1. 2.]]
+julier_uhlmann_sigma_points reconstructed covariance [[2. 1.]
+ [1. 2.]]
+spherical_simplex_sigma_points reconstructed covariance [[2.0000002 1.0000001]
+ [1.0000001 2.0000002]]
+UKF identity P=Q=R=1 y=1 expected mean2/3,cov2/3 (UnscentedKalmanFilterState(mean=Array([0.6666666], dtype=float32), cov=Array([[0.66666687]], dtype=float32), t=1), UnscentedKalmanFilterInfo(mean_pred=Array([0.], dtype=float32), cov_pred=Array([[2.]], dtype=float32), log_likelihood=Array(-1.6349113, dtype=float32)))
+UKF likelihood Q=0 actual,reference (Array(-1.5155121, dtype=float32), np.float64(-1.5155121234846454))
+UKF callable R (UnscentedKalmanFilterState(mean=Array([0.6666666], dtype=float32), cov=Array([[0.66666687]], dtype=float32), t=1), UnscentedKalmanFilterInfo(mean_pred=Array([0.], dtype=float32), cov_pred=Array([[2.]], dtype=float32), log_likelihood=Array(-1.6349113, dtype=float32)))
+Gaussian IMH step (RWState(position=Array([2.0080285], dtype=float32), logdensity=Array(-2.0160892, dtype=float32)), RWInfo(acceptance_rate=Array(0.22045386, dtype=float32), is_accepted=Array(True, dtype=bool), proposal=RWState(position=Array([2.0080285], dtype=float32), logdensity=Array(-2.0160892, dtype=float32))))
+Gaussian proposal logpdf at0 cov4 actual,expected (Array(-1.6120857, dtype=float32), np.float64(-1.612085713764618))

@@ -14,6 +14,7 @@ from jax.scipy.special import gammaln
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive, strict_positive_integer
+from probjax.stats.utils import loc_scale_sample
 from probjax.utils.typing import Array, RngKey
 
 __all__ = ["t"]
@@ -22,7 +23,8 @@ __all__ = ["t"]
 class t_gen(rv_continuous, rv_exponential_family):
     """Student's t-Distribution parameterized by `df`, `loc`, and `scale`.
 
-    The Student's t-distribution with degrees of freedom `df`, location `loc`, and scale `scale`.
+    The Student's t-distribution with degrees of freedom `df`, location
+    `loc`, and scale `scale`.
 
     Parameters
     ----------
@@ -164,11 +166,7 @@ class t_gen(rv_continuous, rv_exponential_family):
         rvs : ndarray or scalar
             Random variates of given shape
         """
-        df = jnp.asarray(df)
-        loc = jnp.asarray(loc)
-        scale = jnp.asarray(scale)
-        event_shape = jnp.broadcast_shapes(df.shape, loc.shape, scale.shape)
-        return random.t(rng, df, shape=shape + event_shape) * scale + loc
+        return loc_scale_sample(rng, random.t, df, shape=shape, loc=loc, scale=scale)
 
     @classmethod
     def sf(cls, x, df=1.0, loc=0.0, scale=1.0, **kwargs):

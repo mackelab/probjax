@@ -142,6 +142,6 @@ def test_neural_imh_rejects_sample_only_model():
     with pytest.raises(ValueError, match="tractable logpdf"):
         neural_imh(
             _normal_logdensity,
-            LinearFlow(ZeroNet()),
+            LinearFlow(ZeroNet(), event_spec=1),
             event_spec=(1,),
         )

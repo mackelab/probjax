@@ -1,0 +1,22 @@
+{
+  "core": {
+    "python_files": 33,
+    "source_lines": 11266
+  },
+  "utils": {
+    "python_files": 51,
+    "source_lines": 9429
+  },
+  "stats": {
+    "python_files": 54,
+    "source_lines": 16764
+  },
+  "inference": {
+    "python_files": 54,
+    "source_lines": 9498
+  },
+  "nn": {
+    "python_files": 88,
+    "source_lines": 39151
+  }
+}

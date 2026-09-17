@@ -1,0 +1,12 @@
+JAX 0.9.2
+genpareto batch sampling TypeError genpareto_gen._rvs_impl() got multiple values for argument 'shape'
+plain function optional rng TypeError <lambda>.<locals>.<lambda>() got an unexpected keyword argument 'rng'
+forwarding layer kwargs {}
+truncnorm moment 0 [0.9999999 0.9999999]
+truncnorm moment 1 [ 2.9802322e-08 -5.9604645e-08]
+genpareto endpoint vs returned mode -2.0 (Array(0., dtype=float32, weak_type=True), Array(1., dtype=float32, weak_type=True), Array(inf, dtype=float32, weak_type=True))
+genpareto endpoint vs returned mode -3.0 (Array(0., dtype=float32, weak_type=True), Array(1., dtype=float32, weak_type=True), Array(inf, dtype=float32, weak_type=True))
+fit stop on begin host 0
+fit stop on begin io 0
+truncnorm second derivative fp64 -4.1087195132347025
+truncnorm near endpoint small q (Array(nan, dtype=float64), Array(nan, dtype=float64))

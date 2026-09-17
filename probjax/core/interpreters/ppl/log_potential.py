@@ -3,8 +3,7 @@ from typing import Dict, Mapping, Sequence
 from jax.extend.core import JaxprEqn
 from jaxtyping import Array
 
-from probjax.core.custom_primitives.contracts import parse_random_variable_call_params
-from probjax.core.custom_primitives.random_variable import rv_p
+from probjax.core.interpreters.ppl._common import rv_site_params
 from probjax.core.jaxpr_propagation.utils import ForwardProcessingRule
 from probjax.core.registry import ProcessedResult
 
@@ -51,10 +50,8 @@ class LogPotentialProcessingRule(ForwardProcessingRule):
         in_known: Sequence[Array | None],
         out_known: Sequence[Array | None],
     ) -> ProcessedResult:
-        if eqn.primitive is rv_p:
-            rv_params = parse_random_variable_call_params(eqn.params)
+        if (rv_params := rv_site_params(eqn)) is not None:
             name = rv_params.name
-
             if name in self.intervention_values:
                 return ProcessedResult(
                     eqn.outvars, [self.intervention_values[name]], None

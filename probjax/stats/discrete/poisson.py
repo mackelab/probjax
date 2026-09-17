@@ -7,14 +7,14 @@ This module implements the Poisson distribution.
 
 from typing import Optional, Tuple
 
-import jax
 import jax.numpy as jnp
 from jax import random
 from jax.scipy.stats import poisson as jax_poisson
 
 from probjax.stats.base import rv_discrete, rv_exponential_family
 from probjax.stats.constraints import positive_integer
-from probjax.stats.utils import flatten_samples, normalize_sample_weights
+from probjax.stats.discrete._ppf_search import ppf_by_cdf_search
+from probjax.stats.utils import weighted_mean
 from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["poisson"]
@@ -31,11 +31,6 @@ class poisson_gen(rv_discrete, rv_exponential_family):
     def support(cls, rate, **kwds):
         """Support of the Poisson distribution."""
         return (0, jnp.inf)
-
-    @classmethod
-    def pmf(cls, k: ArrayLike, rate, **kwds):
-        """Probability mass function of the Poisson distribution."""
-        return jnp.exp(cls.logpmf(k, rate, **kwds))
 
     @classmethod
     def logpmf(cls, k: ArrayLike, rate, **kwds):
@@ -66,34 +61,7 @@ class poisson_gen(rv_discrete, rv_exponential_family):
         q = jnp.asarray(q)
         rate = jnp.asarray(rate)
 
-        # Ensure q is between 0 and 1
-        q = jnp.clip(q, 0, 1)
-
-        # Define the single-element version of the function
-        def ppf_single(q_single, rate_single):
-            def body_fun(state):
-                k, found = state
-                cdf_val = cls.cdf(k, rate_single)
-                found = found | (cdf_val >= q_single)
-                return (k + 1, found)
-
-            def cond_fun(state):
-                k, found = state
-                return ~found
-
-            # Initialize with k=0 and found=False
-            init_state = (0, False)
-
-            # Use jax.lax.while_loop to find the smallest k
-            final_k, _ = jax.lax.while_loop(cond_fun, body_fun, init_state)
-
-            return final_k - 1  # Subtract 1 because we incremented one too many times
-
-        # Vectorize the function over the inputs
-        q, rate = jnp.broadcast_arrays(q, rate)
-        for i in range(q.ndim):
-            ppf_single = jax.vmap(ppf_single)
-        return ppf_single(q, rate)
+        return ppf_by_cdf_search(q, cls.cdf, rate)
 
     @classmethod
     def _rvs_impl(
@@ -144,8 +112,19 @@ class poisson_gen(rv_discrete, rv_exponential_family):
 
     @classmethod
     def entropy(cls, rate, **kwds):
-        """Entropy of the Poisson distribution."""
-        return rate * (1 - jnp.log(rate))
+        """Entropy in nats.
+
+        Sum the first 1024 masses for rates <= 256; larger rates use the
+        asymptotic expansion through the inverse-cubic term. Both branches
+        have static shapes under JIT.
+        """
+        rate = jnp.asarray(rate)
+        lp = jax_poisson.logpmf(jnp.arange(1024), rate[..., None])
+        exact = -jnp.sum(jnp.exp(lp) * jnp.where(jnp.isfinite(lp), lp, 0), axis=-1)
+        r = jnp.maximum(rate, 1)
+        approx = (.5 * jnp.log(2 * jnp.pi * jnp.e * r)
+                  - 1/(12*r) - 1/(24*r**2) - 19/(360*r**3))
+        return jnp.where(rate > 256, approx, exact)
 
     @classmethod
     def natural_parameters(cls, rate, **kwds):
@@ -187,17 +166,7 @@ class poisson_gen(rv_discrete, rv_exponential_family):
         params : tuple
             The fitted parameter (rate,)
         """
-        data = flatten_samples(data)
-        dtype = data.dtype
-        weights_arr = normalize_sample_weights(
-            weights,
-            n_samples=data.shape[0],
-            dtype=dtype,
-        )
-        if weights_arr is not None:
-            rate = jnp.sum(weights_arr * data)
-        else:
-            rate = jnp.mean(data)
+        rate = weighted_mean(data, weights)
         return (rate,)
 
 

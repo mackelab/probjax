@@ -42,6 +42,12 @@ def _mean_flow_step(model, value, times, context):
 
 
 class MeanFlowMatcher(GenerativeModel):
+    """Mean-flow model with a required default ``event_spec``.
+
+    Override sampling shapes with ``as_dist(event_spec=...)`` or change the
+    default with ``set_event_spec``. The network must support those shapes.
+    """
+
     def __init__(
         self,
         net: ModuleLike,
@@ -55,7 +61,10 @@ class MeanFlowMatcher(GenerativeModel):
         std1: ArrayLike = 1.0,
         rngs: nnx.RngStream | None = None,
         loss_kwargs: Mapping[str, object] | None = None,
+        *,
+        event_spec,
     ):
+        self.set_event_spec(event_spec)
         self.net: ModuleLike = net
         self.mu0 = nnx.Variable(mu0)
         self.std0 = nnx.Variable(std0)
@@ -81,6 +90,15 @@ class MeanFlowMatcher(GenerativeModel):
         self.preconditioning = preconditioning
         self.train_cfg = train_cfg
         self.solver_cfg = solver_cfg
+
+    def _normalize_event_spec(self, event_spec, dtype=None):
+        spec = super()._normalize_event_spec(event_spec, dtype)
+        if any(
+            not jnp.issubdtype(leaf.dtype, jnp.floating)
+            for leaf in jax.tree.leaves(spec)
+        ):
+            raise TypeError("Flow matching event dtypes must be floating point.")
+        return spec
 
     def set_solver_cfg(self, solver_cfg: FlowSolverConfigProtocol) -> None:
         if not isinstance(solver_cfg, FlowSolverConfigProtocol):
@@ -151,23 +169,19 @@ class MeanFlowMatcher(GenerativeModel):
             r = jnp.where(r < t_bound, t_bound, r)
             r = jnp.where(r > 1.0, 1.0, r)
 
-        eps = getattr(self.preconditioning, "eps", 1e-8)
-        approx_mu_t = self.schedule.path_mean(t, mu0, mu1)
-        approx_std_t = jnp.maximum(self.schedule.path_std(t, std0, std1), eps)
-
-        x_normed = jax.tree_util.tree_map(lambda x: (x - approx_mu_t) / approx_std_t, x)
-        std_t = approx_std_t
-        a_t = self.schedule.a_t(t)
-        b_t = self.schedule.b_t(t)
-        denom = (a_t**2) * std0**2 + (b_t**2) * std1**2
-        scale = (b_t * std1**2 - a_t * std0**2) / jnp.maximum(denom, eps)
-
+        x_normed, _, approx_stdt = self.preconditioning.normalize(
+            self.schedule, t, x, mu0, mu1, std0, std1
+        )
         v_out = self.net(t, x_normed, *args, r=r, rng=rng, **kwargs)
-        v_out_data = jax.tree_util.tree_map(lambda v: std_t * v, v_out)
-
-        return jax.tree.map(
-            lambda value, update: mu1 - mu0 + scale * (value - approx_mu_t + update),
+        v_out_data = jax.tree_util.tree_map(lambda v: approx_stdt * v, v_out)
+        return self.preconditioning.decode_velocity(
+            self.schedule,
+            t,
             x,
+            mu0,
+            mu1,
+            std0,
+            std1,
             v_out_data,
         )
 
@@ -289,6 +303,8 @@ class LinearMeanFlow(MeanFlowMatcher):
         preconditioning: FlowPreconditioningProtocol | None = None,
         train_cfg: FlowPairTrainingConfigProtocol | None = None,
         solver_cfg: FlowSolverConfigProtocol | None = None,
+        *,
+        event_spec,
     ):
         schedule = schedule or LinearInterpolationSchedule()
         preconditioning = preconditioning or GaussianFlowPreconditioning()
@@ -296,6 +312,7 @@ class LinearMeanFlow(MeanFlowMatcher):
         solver_cfg = solver_cfg or LinearFlowSolverConfig()
         super().__init__(
             net,
+            event_spec=event_spec,
             schedule=schedule,
             preconditioning=preconditioning,
             train_cfg=train_cfg,

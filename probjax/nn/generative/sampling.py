@@ -89,12 +89,14 @@ class _ExportedSampler(NNXExportedFunction):
         stochastic: bool = False,
         context_spec: PyTree[jax.ShapeDtypeStruct] | None = None,
         trace: bool = False,
+        base_sample_kwargs=None,
     ) -> None:
         super().__init__(model, graphdef, exported)
         self.spec = spec
         self.stochastic = stochastic
         self.context_spec = context_spec
         self.trace = trace
+        self.base_sample_kwargs = dict(base_sample_kwargs or {})
 
     def from_noise(
         self,
@@ -147,7 +149,9 @@ class _ExportedSampler(NNXExportedFunction):
             noise_key, sample_key = jax.random.split(rng)
         else:
             noise_key, sample_key = rng, None
-        eps = model._sample_base(noise_key, sample_shape, self.spec)
+        eps = model._sample_base(
+            noise_key, sample_shape, self.spec, **self.base_sample_kwargs
+        )
         return self.from_noise(eps, rng=sample_key, context=context)
 
     def sample_with_state(
@@ -159,15 +163,17 @@ class _ExportedSampler(NNXExportedFunction):
         context: PyTree[Array] | None = None,
     ) -> PyTree[Array]:
         """Draw samples using an explicit model state."""
-        model = self._model_ref()
-        if model is None:
-            raise RuntimeError("The model used to build this export no longer exists.")
+        if self.invalidated:
+            raise RuntimeError("This compiled operation has been invalidated.")
+        model = nnx.merge(self._graphdef, state, copy=True)
         sample_shape = tuple(sample_shape)
         if self.stochastic:
             noise_key, sample_key = jax.random.split(rng)
         else:
             noise_key, sample_key = rng, None
-        eps = model._sample_base(noise_key, sample_shape, self.spec)
+        eps = model._sample_base(
+            noise_key, sample_shape, self.spec, **self.base_sample_kwargs
+        )
         return self.from_noise_with_state(state, eps, rng=sample_key, context=context)
 
 
@@ -178,19 +184,15 @@ def make_map_sample_fn(
     transform: Callable,
 ) -> Callable:
     """Build an exported function that maps a transform over samples."""
-    if with_context:
 
-        def sample_fn(current_state, samples, context):
-            model = nnx.merge(graphdef, current_state)
-            return jax.vmap(
-                lambda value, condition: transform(model, value, condition)
-            )(samples, context)
-
-    else:
-
-        def sample_fn(current_state, samples):
-            model = nnx.merge(graphdef, current_state)
+    def sample_fn(current_state, samples, *rest):
+        context = rest[0] if with_context else None
+        model = nnx.merge(graphdef, current_state)
+        if context is None:
             return jax.vmap(lambda value: transform(model, value, None))(samples)
+        return jax.vmap(lambda value, condition: transform(model, value, condition))(
+            samples, context
+        )
 
     return sample_fn
 
@@ -203,25 +205,16 @@ def make_scan_sample_fn(
     step: Callable,
 ) -> Callable:
     """Build an exported deterministic scan sampler."""
-    if with_context:
 
-        def sample_fn(current_state, initial, context):
-            def scan_step(value, item):
-                model = nnx.merge(graphdef, current_state)
-                return step(model, value, item, context), None
+    def sample_fn(current_state, initial, *rest):
+        context = rest[0] if with_context else None
 
-            final, _ = jax.lax.scan(scan_step, initial, xs)
-            return final
+        def scan_step(value, item):
+            model = nnx.merge(graphdef, current_state)
+            return step(model, value, item, context), None
 
-    else:
-
-        def sample_fn(current_state, initial):
-            def scan_step(value, item):
-                model = nnx.merge(graphdef, current_state)
-                return step(model, value, item, None), None
-
-            final, _ = jax.lax.scan(scan_step, initial, xs)
-            return final
+        final, _ = jax.lax.scan(scan_step, initial, xs)
+        return final
 
     return sample_fn
 
@@ -245,57 +238,29 @@ def make_ode_sample_fn(
             return drift.nonlin(t, value)
         return drift(t, value)
 
-    if isinstance(prototype, split_drift):
-        if with_context:
+    nonlinear = isinstance(prototype, split_drift)
 
-            def drift_fn(t, value, current_state, context):
-                return evaluate(t, value, current_state, context, nonlinear=True)
+    def drift_fn(t, value, current_state, *rest):
+        context = rest[0] if with_context else None
+        return evaluate(t, value, current_state, context, nonlinear=nonlinear)
 
-        else:
-
-            def drift_fn(t, value, current_state):
-                return evaluate(t, value, current_state, nonlinear=True)
-
+    if nonlinear:
         drift = split_drift(prototype.lin_coeff, drift_fn)
     else:
-        if with_context:
-
-            def drift_fn(t, value, current_state, context):
-                return evaluate(t, value, current_state, context)
-
-        else:
-
-            def drift_fn(t, value, current_state):
-                return evaluate(t, value, current_state)
-
         drift = generic_drift(drift_fn)
 
-    if with_context:
-
-        def sample_fn(current_state, initial, context):
-            return odeint(
-                drift,
-                initial,
-                ts,
-                current_state,
-                context,
-                method=method,
-                dtype=None,
-                collect_trace=collect_trace,
-            )
-
-    else:
-
-        def sample_fn(current_state, initial):
-            return odeint(
-                drift,
-                initial,
-                ts,
-                current_state,
-                method=method,
-                dtype=None,
-                collect_trace=collect_trace,
-            )
+    def sample_fn(current_state, initial, *rest):
+        extra = (rest[0],) if with_context else ()
+        return odeint(
+            drift,
+            initial,
+            ts,
+            current_state,
+            *extra,
+            method=method,
+            dtype=None,
+            collect_trace=collect_trace,
+        )
 
     return sample_fn
 
@@ -324,56 +289,31 @@ def make_sde_sample_fn(
     drift = generic_drift(drift_fn)
     diffusion = generic_drift(diffusion_fn)
 
-    if with_context:
+    def one_sample(current_state, rng, initial, *rest):
+        extra = (rest[0],) if with_context else ()
+        return sdeint(
+            rng,
+            drift,
+            diffusion,
+            initial,
+            ts,
+            current_state,
+            *extra,
+            method=method,
+            dtype=None,
+            collect_trace=collect_trace,
+        )
 
-        def one_sample(current_state, rng, initial, context):
-            return sdeint(
-                rng,
-                drift,
-                diffusion,
-                initial,
-                ts,
-                current_state,
-                context,
-                method=method,
-                dtype=None,
-                collect_trace=collect_trace,
-            )
-
-        def sample_fn(current_state, rng, initial, context):
-            batch_size = jax.tree.leaves(initial)[0].shape[0]
-            keys = jax.random.split(rng, batch_size)
-            result = jax.vmap(one_sample, in_axes=(None, 0, 0, 0))(
-                current_state, keys, initial, context
-            )
-            if collect_trace:
-                return jax.tree.map(lambda value: jnp.moveaxis(value, 0, 1), result)
-            return result
-
-    else:
-
-        def one_sample(current_state, rng, initial):
-            return sdeint(
-                rng,
-                drift,
-                diffusion,
-                initial,
-                ts,
-                current_state,
-                method=method,
-                dtype=None,
-                collect_trace=collect_trace,
-            )
-
-        def sample_fn(current_state, rng, initial):
-            batch_size = jax.tree.leaves(initial)[0].shape[0]
-            keys = jax.random.split(rng, batch_size)
-            result = jax.vmap(one_sample, in_axes=(None, 0, 0))(
-                current_state, keys, initial
-            )
-            if collect_trace:
-                return jax.tree.map(lambda value: jnp.moveaxis(value, 0, 1), result)
-            return result
+    def sample_fn(current_state, rng, initial, *rest):
+        batch_size = jax.tree.leaves(initial)[0].shape[0]
+        keys = jax.random.split(rng, batch_size)
+        in_axes = (None, 0, 0, 0) if with_context else (None, 0, 0)
+        result = jax.vmap(one_sample, in_axes=in_axes)(
+            current_state, keys, initial, *rest
+        )
+        if collect_trace:
+            return jax.tree.map(lambda value: jnp.moveaxis(value, 0, 1), result)
+        return result
 
     return sample_fn
 

@@ -69,7 +69,50 @@ def _apply_scale_bias(
     return jnp.asarray(y, out_dtype)
 
 
-class LpNorm(Module):
+class _LpNormBase(Module):
+    """Shared scale/bias params and input preparation for Lp norm layers."""
+
+    def _init_scale_bias(
+        self,
+        num_features: int,
+        *,
+        use_scale: bool,
+        use_bias: bool,
+        scale_init: Initializer,
+        bias_init: Initializer,
+        param_dtype: Dtype,
+        rngs: rnglib.Rngs,
+    ) -> None:
+        feature_shape = (num_features,)
+        if use_scale:
+            key = rngs.params()
+            self.scale = nnx.Param(scale_init(key, feature_shape, param_dtype))
+        else:
+            self.scale = nnx.data(None)
+        if use_bias:
+            key = rngs.params()
+            self.bias = nnx.Param(bias_init(key, feature_shape, param_dtype))
+        else:
+            self.bias = nnx.data(None)
+
+    def _prepared_inputs(self, x: Array):
+        """Promote dtypes, canonicalize axes and compute the Lp norm."""
+        scale = self.scale[...] if self.scale else None
+        bias = self.bias[...] if self.bias else None
+        x, scale, bias = self.promote_dtype((x, scale, bias), dtype=self.dtype)
+
+        # Promote to at least float32 for numerical stability.
+        compute_dtype = jnp.promote_types(jnp.result_type(x), jnp.float32)
+        x_f = jnp.asarray(x, compute_dtype)
+
+        reduction_axes = _canonicalize_axes(x_f.ndim, self.reduction_axes)
+        feature_axes = _canonicalize_axes(x_f.ndim, self.feature_axes)
+
+        norm = _lp_norm(x_f, self.p, reduction_axes, self.epsilon)
+        return x, x_f, scale, bias, reduction_axes, feature_axes, norm
+
+
+class LpNorm(_LpNormBase):
     """Lp normalization layer.
 
     Normalizes the input by dividing by the Lp norm along the reduction axes,
@@ -118,21 +161,17 @@ class LpNorm(Module):
         if p <= 0:
             raise ValueError(f"p must be positive, got {p}")
 
-        feature_shape = (num_features,)
-
         self.scale: nnx.Param[jax.Array] | None
-        if use_scale:
-            key = rngs.params()
-            self.scale = nnx.Param(scale_init(key, feature_shape, param_dtype))
-        else:
-            self.scale = nnx.data(None)
-
         self.bias: nnx.Param[jax.Array] | None
-        if use_bias:
-            key = rngs.params()
-            self.bias = nnx.Param(bias_init(key, feature_shape, param_dtype))
-        else:
-            self.bias = nnx.data(None)
+        self._init_scale_bias(
+            num_features,
+            use_scale=use_scale,
+            use_bias=use_bias,
+            scale_init=scale_init,
+            bias_init=bias_init,
+            param_dtype=param_dtype,
+            rngs=rngs,
+        )
 
         self.num_features = num_features
         self.p = p
@@ -161,24 +200,13 @@ class LpNorm(Module):
         """
         del mask
 
-        scale = self.scale[...] if self.scale else None
-        bias = self.bias[...] if self.bias else None
-        x, scale, bias = self.promote_dtype((x, scale, bias), dtype=self.dtype)
-
-        # Promote to at least float32 for numerical stability.
-        compute_dtype = jnp.promote_types(jnp.result_type(x), jnp.float32)
-        x_f = jnp.asarray(x, compute_dtype)
-
-        reduction_axes = _canonicalize_axes(x_f.ndim, self.reduction_axes)
-        feature_axes = _canonicalize_axes(x_f.ndim, self.feature_axes)
-
-        norm = _lp_norm(x_f, self.p, reduction_axes, self.epsilon)
+        x, x_f, scale, bias, _, feature_axes, norm = self._prepared_inputs(x)
         y = x_f / norm
 
         return _apply_scale_bias(y, x, scale, bias, feature_axes, self.dtype)
 
 
-class LpNormClip(Module):
+class LpNormClip(_LpNormBase):
     """Lp norm clipping layer.
 
     Clips the Lp norm of the input to lie within
@@ -252,21 +280,17 @@ class LpNormClip(Module):
         if max_norm < min_norm:
             raise ValueError(f"max_norm ({max_norm}) must be >= min_norm ({min_norm})")
 
-        feature_shape = (num_features,)
-
         self.scale: nnx.Param[jax.Array] | None
-        if use_scale:
-            key = rngs.params()
-            self.scale = nnx.Param(scale_init(key, feature_shape, param_dtype))
-        else:
-            self.scale = nnx.data(None)
-
         self.bias: nnx.Param[jax.Array] | None
-        if use_bias:
-            key = rngs.params()
-            self.bias = nnx.Param(bias_init(key, feature_shape, param_dtype))
-        else:
-            self.bias = nnx.data(None)
+        self._init_scale_bias(
+            num_features,
+            use_scale=use_scale,
+            use_bias=use_bias,
+            scale_init=scale_init,
+            bias_init=bias_init,
+            param_dtype=param_dtype,
+            rngs=rngs,
+        )
 
         self.num_features = num_features
         self.p = p
@@ -302,18 +326,9 @@ class LpNormClip(Module):
         """
         del mask
 
-        scale = self.scale[...] if self.scale else None
-        bias = self.bias[...] if self.bias else None
-        x, scale, bias = self.promote_dtype((x, scale, bias), dtype=self.dtype)
-
-        # Promote to at least float32 for numerical stability.
-        compute_dtype = jnp.promote_types(jnp.result_type(x), jnp.float32)
-        x_f = jnp.asarray(x, compute_dtype)
-
-        reduction_axes = _canonicalize_axes(x_f.ndim, self.reduction_axes)
-        feature_axes = _canonicalize_axes(x_f.ndim, self.feature_axes)
-
-        norm = _lp_norm(x_f, self.p, reduction_axes, self.epsilon)
+        x, x_f, scale, bias, reduction_axes, feature_axes, norm = self._prepared_inputs(
+            x
+        )
 
         # Compute effective bounds, optionally scaled by d^(1/p).
         lo = self.min_norm

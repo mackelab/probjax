@@ -4,7 +4,8 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from probjax.inference.filtering.base import FilterAPI
+from probjax.inference.filtering.base import FilterAPI, _gaussian_unpack
+from probjax.inference.filtering.kalman_filter import _innovation_ll
 
 
 class UnscentedKalmanFilterState(NamedTuple):
@@ -60,8 +61,8 @@ def merwe_sigma_point(
 
     sqrt_cov = jnp.linalg.cholesky((D + lambda_) * cov0)
     sigma_points_0 = mu0[None, :]
-    sigma_points_1_L = mu0 + sqrt_cov
-    sigma_points_L_2L = mu0 - sqrt_cov
+    sigma_points_1_L = mu0 + sqrt_cov.T
+    sigma_points_L_2L = mu0 - sqrt_cov.T
     sigma_points = jnp.concatenate(
         [sigma_points_0, sigma_points_1_L, sigma_points_L_2L], axis=0
     )
@@ -95,8 +96,8 @@ def julier_uhlmann_sigma_points(
 
     # Sigma points
     sigma_points_0 = mu0[None, :]
-    sigma_points_pos = mu0 + sqrt_cov
-    sigma_points_neg = mu0 - sqrt_cov
+    sigma_points_pos = mu0 + sqrt_cov.T
+    sigma_points_neg = mu0 - sqrt_cov.T
     sigma_points = jnp.concatenate(
         [sigma_points_0, sigma_points_pos, sigma_points_neg], axis=0
     )
@@ -133,29 +134,14 @@ def spherical_simplex_sigma_points(
         weights_cov (jnp.ndarray): (D+1,)
     """
     D = mu0.shape[0]
-    sqrt_val = jnp.sqrt(D + 1)
-
-    # Create a (D+1, D) array filled with -√(D+1)
-    base_points = jnp.full((D + 1, D), -sqrt_val)
-
-    # Create row and column indices
-    rows = jnp.arange(D + 1)[:, None]  # Shape (D+1,1)
-    cols = jnp.arange(D)[None, :]  # Shape (1,D)
-
-    # Set a diagonal pattern: for (i+1, i), set to +√(D+1)
-    mask = (rows - 1) == cols
-    base_points = jnp.where(mask, sqrt_val, base_points)
-
-    # Ensure the points have zero mean
-    base_points = base_points - jnp.mean(base_points, axis=0, keepdims=True)
-
-    # Scale to achieve unit covariance before transforming by cov0
-    scale = jnp.sqrt(D / (2 * (D + 1)))
-    base_points = base_points * scale
-
-    # Apply the covariance transformation
-    A = jnp.linalg.cholesky(cov0)
-    sigma_points = mu0[None, :] + base_points @ A
+    # A Helmert basis spans the subspace orthogonal to the all-ones
+    # vector. Its columns are orthonormal, so equal weights recover I.
+    rows = jnp.arange(D + 1)[:, None]
+    cols = jnp.arange(D)[None, :]
+    denominator = jnp.sqrt((cols + 1) * (cols + 2))
+    basis = jnp.where(rows <= cols, 1.0, jnp.where(rows == cols + 1, -(cols + 1), 0.0))
+    points = jnp.sqrt(D + 1) * basis / denominator
+    sigma_points = mu0[None, :] + points @ jnp.linalg.cholesky(cov0).T
 
     # Equal weights for mean and covariance
     weights_mean = jnp.ones(D + 1) / (D + 1)
@@ -282,6 +268,12 @@ def build_kernel(
         )
 
         if is_observed:
+            # Include process noise in the observation and cross-covariance.
+            predicted_sigma_points, weights_mean, weights_cov = sigma_point_fn(
+                mu1_, cov1_
+            )
+            R = (observation_covariance(t) if callable(observation_covariance)
+                 else observation_covariance)
             # Observed steps
             y_sigma_points = jax.vmap(observation_fn, in_axes=(0, None))(
                 predicted_sigma_points, t
@@ -290,7 +282,7 @@ def build_kernel(
                 y_sigma_points,
                 weights_mean,
                 weights_cov,
-                noise_cov=observation_covariance,
+                noise_cov=R,
             )
 
             # Compute the cross-covariance
@@ -307,8 +299,11 @@ def build_kernel(
             cov1 = cov1_ - jnp.dot(K, jnp.dot(cov_y, K.T))
 
             # Compute the log-likelihood
-            log_likelihood = -0.5 * (
-                jnp.linalg.slogdet(cov_y)[1] + r.T @ jnp.linalg.solve(cov_y, r)
+            log_likelihood = _innovation_ll(
+                r,
+                cov_y,
+                solve_fn=lambda S, res: jnp.linalg.solve(S, res),
+                logdet_fn=lambda S: jnp.linalg.slogdet(S)[1],
             )
 
             return UnscentedKalmanFilterState(mu1, cov1, t), UnscentedKalmanFilterInfo(
@@ -343,6 +338,4 @@ class ukf(FilterAPI):
     init = init
     build_kernel = build_kernel
 
-    @staticmethod
-    def default_unpack(state, info):
-        return (state.mean, state.cov)
+    default_unpack = staticmethod(_gaussian_unpack)

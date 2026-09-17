@@ -424,11 +424,11 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
             )
         return super().as_dist(event_spec, **kwargs)
 
-    def fit(self, rng, data, **kwargs):
+    def _prepare_fit(self, data):
         """Fit the standardising transform once, then train as usual."""
         self.fit_standardization(data)
         # `loss` goes through `_logpdf`, which standardises internally.
-        return super().fit(rng, data, **kwargs)
+        return super()._prepare_fit(data)
 
     def _default_fit_kwargs(self) -> dict:
         return {"schedule": "warmup_cosine"}

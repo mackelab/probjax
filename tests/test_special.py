@@ -19,8 +19,9 @@ from probjax.utils.stats import differential_entropy, mle_dirichlet
     "a, b",
     list(
         zip(
-            np.random.uniform(0.0001, 10.0, size=(100,)),
-            np.random.uniform(0.0001, 10.0, size=(100,)), strict=False,
+            np.random.default_rng(0).uniform(0.0001, 10.0, size=(100,)),
+            np.random.default_rng(1).uniform(0.0001, 10.0, size=(100,)),
+            strict=False,
         )
     ),
 )
@@ -44,7 +45,9 @@ def test_betaincinv(a, b):
     )
 
 
-@pytest.mark.parametrize("a", np.random.uniform(0.001, 20.0, size=(100,)))
+@pytest.mark.parametrize(
+    "a", np.random.default_rng(2).uniform(0.001, 20.0, size=(100,))
+)
 def test_gammaincinv(a):
     """
     Tests that gammaincinv(a, p) produces an x-value such that
@@ -98,7 +101,11 @@ def test_digammainv():
 
 @pytest.mark.parametrize(
     "alpha",
-    [jnp.ones(4), jnp.ones(4) * 0.1, np.random.uniform(0.0001, 10.0, size=(4,))],
+    [
+        jnp.ones(4),
+        jnp.ones(4) * 0.1,
+        np.random.default_rng(3).uniform(0.0001, 10.0, size=(4,)),
+    ],
 )
 def test_mle_dirichlet(alpha):
     xs = jax.random.dirichlet(jax.random.key(0), alpha, (100000,))

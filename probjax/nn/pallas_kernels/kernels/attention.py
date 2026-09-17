@@ -557,10 +557,12 @@ def mha_jvp_from_lse_kernel(
     span_q = start_q * block_q + jnp.arange(block_q)
     LOG2E = 1.4426950408889634  # log2(e)
 
-    lse = pallas_load(lse_ref, (curr_q_slice,))
+    # BlockSpec already selects this query tile. Index relative to the tile.
+    lse = pallas_load(lse_ref, (slice(None),))
     do = jnp.zeros((block_q, block_d), dtype=jnp.float32)
 
-    def body_jvp(start_k, do_acc):
+    def body_jvp(start_k, carry):
+        do_acc, out_acc, row_acc = carry
         if index_offset_ref is not None:
             start_k = jnp.sum(pallas_load(index_offset_ref, (pl.dslice(start_k, 1),)))
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
@@ -619,23 +621,25 @@ def mha_jvp_from_lse_kernel(
         else:
             p_drop = p
 
-        row_sum = jnp.sum(dqk * p, axis=-1)
-        dP = p * (dqk - row_sum[:, None])
-        if dropout_rate > 0:
-            dP = jnp.where(dmask, 0, dP / (1 - dropout_rate))
-
-        do_acc = do_acc + pl.dot(dP.astype(v.dtype), v, precision=precision)
+        # Softmax normalization couples ALL key tiles. Accumulate its global
+        # directional mean, then subtract mean * output after the key loop.
+        row_acc = row_acc + jnp.sum(dqk * p, axis=-1)
+        do_acc = do_acc + pl.dot((p_drop*dqk).astype(v.dtype), v, precision=precision)
         do_acc = do_acc + pl.dot(p_drop.astype(v.dtype), dv, precision=precision)
-        return do_acc
+        out_acc = out_acc + pl.dot(p_drop.astype(v.dtype), v, precision=precision)
+        return do_acc, out_acc, row_acc
 
+    carry = (do, jnp.zeros_like(do), jnp.zeros((block_q,), dtype=jnp.float32))
     lower_bound = 0
     upper_bound = pl.cdiv(seq_len, block_k)
     if index_offset_size_ref is not None:
         iters = index_offset_size_ref[...]
-        do = lax.fori_loop(lower_bound, iters, body_jvp, do)
+        carry = lax.fori_loop(lower_bound, iters, body_jvp, carry)
     else:
-        do = lax.fori_loop(lower_bound, upper_bound, body_jvp, do)
+        carry = lax.fori_loop(lower_bound, upper_bound, body_jvp, carry)
 
+    do, out, row_sum = carry
+    do = do - row_sum[:, None]*out
     pallas_store(
         do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask
     )

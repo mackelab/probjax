@@ -2,7 +2,8 @@
 Empirical Distribution (:mod:`probjax.stats.empirical`)
 ===================================================
 
-This module implements the Empirical distribution, which puts probability mass on observed data points.
+This module implements the Empirical distribution, which puts probability
+mass on observed data points.
 """
 
 from typing import Optional, Tuple
@@ -15,6 +16,13 @@ from probjax.stats.constraints import simplex
 from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["empirical", "empirical_frozen"]
+
+
+def _default_weights(values, weights=None):
+    """Uniform weights over rows when none are provided."""
+    if weights is None:
+        weights = jnp.ones(values.shape[0]) / values.shape[0]
+    return weights
 
 
 class empirical(rv_discrete):
@@ -32,7 +40,7 @@ class empirical(rv_discrete):
     def _parse_args(cls, values, weights=None, **kwds):
         """Parse arguments for the Empirical distribution."""
         if weights is None:
-            weights = jnp.ones(values.shape[0]) / values.shape[0]
+            weights = _default_weights(values, weights)
         return (values, weights), kwds
 
     @classmethod
@@ -60,7 +68,7 @@ class empirical(rv_discrete):
         """Probability mass function of the Empirical distribution."""
         x = jnp.asarray(x)
         if weights is None:
-            weights = jnp.ones(values.shape[0]) / values.shape[0]
+            weights = _default_weights(values, weights)
         return jnp.sum(weights * (x == values), axis=0)
 
     @classmethod
@@ -74,7 +82,7 @@ class empirical(rv_discrete):
         """Cumulative distribution function of the Empirical distribution."""
         x = jnp.asarray(x)
         if weights is None:
-            weights = jnp.ones(values.shape[0]) / values.shape[0]
+            weights = _default_weights(values, weights)
         return jnp.sum(weights * (values <= x), axis=0)
 
     @classmethod
@@ -82,7 +90,7 @@ class empirical(rv_discrete):
         """Percent point function of the Empirical distribution."""
         q = jnp.asarray(q)
         if weights is None:
-            weights = jnp.ones(values.shape[0]) / values.shape[0]
+            weights = _default_weights(values, weights)
         sorted_idx = jnp.argsort(values)
         sorted_values = values[sorted_idx]
         sorted_weights = weights[sorted_idx]
@@ -100,7 +108,7 @@ class empirical(rv_discrete):
     ):
         """Random variates of the Empirical distribution."""
         if weights is None:
-            weights = jnp.ones(values.shape[0]) / values.shape[0]
+            weights = _default_weights(values, weights)
         idx = random.categorical(rng, weights, shape)
         return values[idx]
 
@@ -108,14 +116,14 @@ class empirical(rv_discrete):
     def mean(cls, values, weights=None, **kwds):
         """Mean of the Empirical distribution."""
         if weights is None:
-            weights = jnp.ones(values.shape[0]) / values.shape[0]
+            weights = _default_weights(values, weights)
         return jnp.sum(weights * values, axis=0)
 
     @classmethod
     def var(cls, values, weights=None, **kwds):
         """Variance of the Empirical distribution."""
         if weights is None:
-            weights = jnp.ones(values.shape[0]) / values.shape[0]
+            weights = _default_weights(values, weights)
         mean = cls.mean(values, weights, **kwds)
         return jnp.sum(weights * (values - mean) ** 2, axis=0)
 
@@ -123,14 +131,14 @@ class empirical(rv_discrete):
     def entropy(cls, values, weights=None, **kwds):
         """Entropy of the Empirical distribution."""
         if weights is None:
-            weights = jnp.ones(values.shape[0]) / values.shape[0]
+            weights = _default_weights(values, weights)
         return -jnp.sum(weights * jnp.log(weights))
 
     @classmethod
     def mode(cls, values, weights=None, **kwds):
         """Mode of the Empirical distribution."""
         if weights is None:
-            weights = jnp.ones(values.shape[0]) / values.shape[0]
+            weights = _default_weights(values, weights)
         return values[jnp.argmax(weights)]
 
     def freeze(self, values, weights=None, **kwds):

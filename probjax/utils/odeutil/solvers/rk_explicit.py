@@ -5,11 +5,15 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 
+from probjax.utils._solver_common import make_trivial_init
 from probjax.utils.odeutil.solvers.base import (
     ODEInfo,
     ODESolverAPI,
     ODEState,
+    make_cached_init,
+    make_method_init,
     register_method,
+    rk_combine,
 )
 from probjax.utils.typing import Array, ArrayLike, Callable, DTypeLike
 
@@ -34,11 +38,8 @@ class EulerState(ODEState):
     y0: Array
 
 
-def init_euler(t0: ArrayLike, y0: ArrayLike, *args, **kwargs) -> ODEState:
-    """Initialize Euler solver state."""
-    t0 = jnp.asarray(t0)
-    y0 = jnp.asarray(y0)
-    return EulerState(t0=t0, y0=y0)
+init_euler = make_trivial_init(EulerState)
+"""Initialize Euler solver state."""
 
 
 def build_euler_step(
@@ -78,14 +79,8 @@ class RKInfo(ODEInfo):
     y1_mid: Optional[Array]  # Midpoint
 
 
-def init_rk(
-    t0: ArrayLike, y0: ArrayLike, *args, drift: Optional[Callable] = None
-) -> ODEState:
-    """Initialize Runge-Kutta solver state."""
-    t0 = jnp.asarray(t0)
-    y0 = jnp.asarray(y0)
-    f0 = drift(t0, y0, *args) if drift is not None else None
-    return RKState(t0=t0, y0=y0, f0=f0)
+init_rk = make_cached_init(RKState)
+"""Initialize Runge-Kutta solver state."""
 
 
 def build_rk_step(
@@ -116,12 +111,9 @@ def build_rk_step(
         k = jnp.zeros((stages, d), f0.dtype).at[0, :].set(f0)
         k = jax.lax.fori_loop(1, stages + 1, body_fun, k)
 
-        y1 = (dt * jnp.dot(b_sol, k) + y0).reshape(y0.shape)
+        y1, y1_error, y1_mid = rk_combine(dt, y0, k, b_sol, b_error, b_mid)
+        y1 = y1.reshape(y0.shape)
         f1 = k[-1].reshape(f0.shape) if last_equals_next else None
-
-        y1_error = None if b_error is None else dt * jnp.dot(b_error, k)
-
-        y1_mid = None if b_mid is None else dt * jnp.dot(b_mid, k) + y0
 
         state = RKState(t0=t0 + dt, y0=y1, f0=f1)
         info = RKInfo(k=k, y1_error=y1_error, y1_mid=y1_mid)
@@ -135,15 +127,7 @@ def build_rk_method(
     build_butcher_tableau: Callable,
     last_equals_next: bool = False,
 ):
-    if last_equals_next:
-
-        def init_method(t0, y0, *args, drift=None, **kwargs):
-            return init_rk(t0, y0, *args, drift=drift)
-
-    else:
-
-        def init_method(t0, y0, *args, **kwargs):
-            return init_rk(t0, y0, *args)
+    init_method = make_method_init(last_equals_next, init_rk)
 
     def build_step_method(drift: Callable, dtype: jnp.dtype = jnp.float32):
         c, A, b_sol, b_error, b_mid = build_butcher_tableau(dtype)

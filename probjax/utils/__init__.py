@@ -46,6 +46,10 @@ from probjax.utils.graph import (
 # Special functions
 from probjax.utils.special import (
     betaincinv,
+    betainccinv,
+    gammainccinv,
+    log1mexp,
+    logdiffexp,
     digammainv,
     gammaincinv,
 )
@@ -89,6 +93,10 @@ __all__ = [
     "faithfull_mask",
     # Special functions
     "betaincinv",
+    "betainccinv",
+    "gammainccinv",
+    "log1mexp",
+    "logdiffexp",
     "digammainv",
     "gammaincinv",
     # Solvers

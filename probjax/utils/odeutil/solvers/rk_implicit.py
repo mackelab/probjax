@@ -5,14 +5,18 @@ from typing import Any, Optional
 import jax
 import jax.numpy as jnp
 
+from probjax.utils._solver_common import make_trivial_init
 from probjax.utils.odeutil.solvers.base import (
     ODEInfo,
     ODESolverAPI,
     ODEState,
+    make_cached_init,
+    make_method_init,
     register_method,
+    rk_combine,
 )
 from probjax.utils.solver import root
-from probjax.utils.typing import Array, ArrayLike, Callable, DTypeLike
+from probjax.utils.typing import Array, ArrayLike, Callable
 
 info = {
     "explicit": False,
@@ -32,11 +36,8 @@ class ImpEulerState(ODEState):
     y0: Array
 
 
-def init_implicit_euler(t0: ArrayLike, y0: ArrayLike, *args, **kwargs) -> ODEState:
-    """Initialize implicit Euler solver state."""
-    t0 = jnp.asarray(t0)
-    y0 = jnp.asarray(y0)
-    return ImpEulerState(t0=t0, y0=y0)
+init_implicit_euler = make_trivial_init(ImpEulerState)
+"""Initialize implicit Euler solver state."""
 
 
 def build_implicit_euler_step(
@@ -81,14 +82,8 @@ class ImpRKInfo(ODEInfo):
     solver_info: Any
 
 
-def init_imp_rk(
-    t0: ArrayLike, y0: ArrayLike, *args, drift: Optional[Callable] = None
-) -> ODEState:
-    """Initialize implicit Runge-Kutta solver state."""
-    t0 = jnp.asarray(t0)
-    y0 = jnp.asarray(y0)
-    f0 = drift(t0, y0, *args) if drift is not None else None
-    return ImpRKState(t0=t0, y0=y0, f0=f0)
+init_imp_rk = make_cached_init(ImpRKState)
+"""Initialize implicit Runge-Kutta solver state."""
 
 
 def build_implicit_rk_step(
@@ -130,10 +125,8 @@ def build_implicit_rk_step(
         k, info = root(f, k0)
 
         # Compute solution
-        y1 = y0 + dt * jnp.dot(b_sol, k)
+        y1, y1_error, y1_mid = rk_combine(dt, y0, k, b_sol, b_error, b_mid)
         f1 = k[-1] if last_equals_next else drift(t0 + dt, y1, *args)
-        y1_error = None if b_error is None else dt * jnp.dot(b_error, k)
-        y1_mid = None if b_mid is None else dt * jnp.dot(b_mid, k) + y0
 
         state = ImpRKState(t0=t0 + dt, y0=y1, f0=f1)
         info = ImpRKInfo(k=k, y1_error=y1_error, y1_mid=y1_mid, solver_info=info)
@@ -147,9 +140,9 @@ def build_imp_rk_method(
     build_butcher_tableau: Callable,
     last_equals_next: bool = False,
 ):
-    def init_method(t0, y0, *args, drift=None):
-        f0 = drift(t0, y0, *args) if not last_equals_next else None
-        return ImpRKState(t0, y0, f0)
+    init_method = make_method_init(
+        last_equals_next, init_imp_rk, always_bind_drift=True
+    )
 
     def build_step_method(drift: Callable, dtype: jnp.dtype = jnp.float32):
         c, A, b_sol, b_error, b_mid = build_butcher_tableau(dtype)

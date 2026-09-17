@@ -374,7 +374,7 @@ def denoising_diffusion(request):
         def __call__(self, t, x):
             return x
 
-    model = sde_type(BaseNet())
+    model = sde_type(BaseNet(), event_spec=input_dim)
     return input_dim, model
 
 

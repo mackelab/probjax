@@ -19,6 +19,7 @@ from probjax.core.interpreters.inverse.rules import (
     _min_valid,
     _pass_through,
     _values_equal,
+    cbrt_inverse,
     dot_general_left_inverse_and_logdet,
     dot_general_right_inverse_and_logdet,
     fft_inverse_type,
@@ -43,6 +44,7 @@ from probjax.core.interpreters.inverse.rules import (
     read_state_values,
     scan_reverse_indices,
     solve_nested_values_and_state,
+    sqrt_inverse,
     state_from_vars,
     unpack_cond_values,
     verify_while_candidate,
@@ -50,6 +52,7 @@ from probjax.core.interpreters.inverse.rules import (
 from probjax.core.jaxpr_propagation.utils import (
     Knowness,
     ProcessingRuleFactory,
+    merge_dict_state,
     primitive_bind_params,
 )
 from probjax.core.registry import (
@@ -60,9 +63,9 @@ from probjax.core.registry import (
     chain_logdet_into,
     invalid_inverse_value,
     inverse_roundtrip_valid,
-    is_static_zero,
     register_bivariate_inverse_logdet,
     register_univariate_inverse_logdet,
+    sum_logdet_terms,
 )
 
 INVERSE_AND_LOGABSDET_STATE_NAMESPACE = "inverse_and_logabsdet.log_dets"
@@ -92,18 +95,7 @@ def _sum_previous_log_dets(context, outvars):
     state = context.read_run_state(namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE)
     if state is None:
         return jnp.asarray(0.0), False
-
-    total = jnp.asarray(0.0)
-    nontrivial = False
-    for var in outvars:
-        if isinstance(var, Literal):
-            continue
-        term = state.get(var, 0.0)
-        if is_static_zero(term):
-            continue
-        nontrivial = True
-        total = total + jnp.asarray(term)
-    return total, nontrivial
+    return sum_logdet_terms(state, outvars)
 
 
 #: Primitives whose Jacobian is diagonal, so differentiating the inverse
@@ -182,13 +174,7 @@ def value_and_log_det_diagonal(f):
 
 def inverse_and_logabsdet_state_reducer(env, eqn, state, eqn_state, context=None):
     """State reducer for accumulating log-determinants."""
-    del env, eqn, context
-    base_state = {} if state is None else dict(state)
-    if not eqn_state:
-        return base_state
-    merged_state = dict(base_state)
-    merged_state.update(eqn_state)
-    return merged_state
+    return merge_dict_state(env, eqn, state, eqn_state, context)
 
 
 # =============================================================================
@@ -397,15 +383,9 @@ def invert_fft_and_logdet(eqn, known_invars, known_outvars, context=None):
     return ProcessedResult([eqn.invars[0]], [in_val], updates)
 
 
-def sqrt_inverse_fn(x, **params):
-    params = dict(params)
-    params.pop("accuracy", None)
-    return jax.lax.pow_p.bind(x, 2.0, **params)
-
-
 register_univariate_inverse_logdet(
     jax.lax.sqrt_p,
-    sqrt_inverse_fn,
+    sqrt_inverse,
     lambda out_val, in_val, params: jnp.sum(jnp.log(2.0) + jnp.log(jnp.abs(out_val))),
     # Same image guard as the INVERSE rule: a negative output has no preimage,
     # and squaring it would otherwise return a finite, wrong answer.
@@ -414,15 +394,9 @@ register_univariate_inverse_logdet(
 
 
 # cbrt: x = y^3, d/dy[y^3] = 3y^2 => log|det| = sum(log(3) + 2*log(|y|))
-def cbrt_inverse_fn(x, **params):
-    params = dict(params)
-    params.pop("accuracy", None)
-    return jax.lax.pow_p.bind(x, 3.0, **params)
-
-
 register_univariate_inverse_logdet(
     jax.lax.cbrt_p,
-    cbrt_inverse_fn,
+    cbrt_inverse,
     lambda out_val, in_val, params: jnp.sum(
         jnp.log(3.0) + 2.0 * jnp.log(jnp.abs(out_val))
     ),
@@ -888,6 +862,8 @@ def invert_scan_and_logdet(eqn, known_invars, known_outvars, context=None):
     if any(out is None for out in known_outvars):
         return None
     problem = parse_scan_problem(eqn, known_invars, known_outvars)
+    if problem is None:
+        return None
     if problem["ys_outvars"]:
         raise NotImplementedError(
             "scan inverse+logdet currently supports carry-only scans"
@@ -914,7 +890,10 @@ def invert_scan_and_logdet(eqn, known_invars, known_outvars, context=None):
     ]
 
     for index in scan_reverse_indices(problem["length"], problem["reverse"]):
-        x_step_vals = [value[index] for value in problem["known_xs_vals"]]
+        x_step_vals = [
+            None if value is None else value[index]
+            for value in problem["known_xs_vals"]
+        ]
 
         known_vars = (
             list(problem["body_const_invars"])

@@ -25,6 +25,7 @@ Usage::
     state = mcmc.run(key, state, num_steps, params=params, args=(batches,))
 """
 
+from functools import partial
 from typing import Callable, NamedTuple
 
 import blackjax
@@ -83,9 +84,67 @@ def grad_estimator(
 # ---------------------------------------------------------------------------
 
 
-class SGLDParams(NamedTuple):
+class SGMCMCParams(NamedTuple):
+    """Shared step_size/temperature params for SGLD / SGHMC / SGNHT."""
+
     step_size: float = 1e-3
     temperature: float = 1.0
+
+
+SGLDParams = SGMCMCParams
+SGHMCParams = SGMCMCParams
+SGNHTParams = SGMCMCParams
+
+
+def _make_sgmcmc_kernel(
+    grad_estimator_fn,
+    build_kernel_fn,
+    blackjax_init=None,
+    state_init=None,
+    extra_step_kwargs=None,
+):
+    """Shared constructor for the SGLD/SGHMC/SGNHT MarkovKernels.
+
+    ``state_init(key, position, rng_key)`` defaults to wrapping
+    ``blackjax_init(position)`` in :class:`SGMCMCState`; SGNHT supplies its
+    own (momentum-carrying) version. Raw (non-``SGMCMCState``) states pass
+    through ``step`` unwrapped, preserving SGNHT behavior.
+    """
+    kernel = build_kernel_fn()
+    extra_step_kwargs = extra_step_kwargs or {}
+
+    if state_init is None:
+
+        def state_init(key, position, rng_key):
+            if position is None:
+                position = key
+            return SGMCMCState(position=blackjax_init(position))
+
+    def init(key, position=None, rng_key=None):
+        return state_init(key, position, rng_key)
+
+    def step(key: RngKey, state, params, *args):
+        position = state.position if isinstance(state, SGMCMCState) else state
+        new_position = kernel(
+            key,
+            position,
+            grad_estimator_fn,
+            minibatch=args[0] if args else None,
+            step_size=params.step_size,
+            temperature=params.temperature,
+            **extra_step_kwargs,
+        )
+        if isinstance(state, SGMCMCState):
+            return SGMCMCState(position=new_position), SGMCMCInfo()
+        return new_position, SGMCMCInfo()
+
+    return MarkovKernel(
+        init,
+        step,
+        lambda state, step_size=1e-3, temperature=1.0: SGMCMCParams(
+            step_size=step_size, temperature=temperature
+        ),
+    )
 
 
 def sgld(grad_estimator: Callable, temperature: float = 1.0) -> MarkovKernel:
@@ -96,41 +155,17 @@ def sgld(grad_estimator: Callable, temperature: float = 1.0) -> MarkovKernel:
             estimates the gradient of the log-posterior.
         temperature: Temperature parameter (default 1.0).
     """
-    kernel = blackjax.sgld.build_kernel()
-
-    def init(key, position=None, rng_key=None):
-        if position is None:
-            position = key
-        return SGMCMCState(position=blackjax.sgld.init(position))
-
-    def step(key: RngKey, state: SGMCMCState, params, *args):
-        new_position = kernel(
-            key,
-            state.position,
-            grad_estimator,
-            minibatch=args[0] if args else None,
-            step_size=params.step_size,
-            temperature=params.temperature,
-        )
-        return SGMCMCState(position=new_position), SGMCMCInfo()
-
-    return MarkovKernel(
-        init,
-        step,
-        lambda state, step_size=1e-3, temperature=1.0: SGLDParams(
-            step_size=step_size, temperature=temperature
-        ),
+    kernel = _make_sgmcmc_kernel(
+        grad_estimator,
+        blackjax.sgld.build_kernel,
+        blackjax_init=blackjax.sgld.init,
     )
+    return kernel
 
 
 # ---------------------------------------------------------------------------
 # SGHMC  –  Stochastic Gradient Hamiltonian Monte Carlo
 # ---------------------------------------------------------------------------
-
-
-class SGHMCParams(NamedTuple):
-    step_size: float = 1e-3
-    temperature: float = 1.0
 
 
 def sghmc(
@@ -150,42 +185,17 @@ def sghmc(
         beta: Noise scaling.
         temperature: Temperature parameter.
     """
-    kernel = blackjax.sghmc.build_kernel(alpha=alpha, beta=beta)
-
-    def init(key, position=None, rng_key=None):
-        if position is None:
-            position = key
-        return SGMCMCState(position=blackjax.sghmc.init(position))
-
-    def step(key: RngKey, state: SGMCMCState, params, *args):
-        new_position = kernel(
-            key,
-            state.position,
-            grad_estimator,
-            minibatch=args[0] if args else None,
-            step_size=params.step_size,
-            temperature=params.temperature,
-            num_integration_steps=num_integration_steps,
-        )
-        return SGMCMCState(position=new_position), SGMCMCInfo()
-
-    return MarkovKernel(
-        init,
-        step,
-        lambda state, step_size=1e-3, temperature=1.0: SGHMCParams(
-            step_size=step_size, temperature=temperature
-        ),
+    return _make_sgmcmc_kernel(
+        grad_estimator,
+        partial(blackjax.sghmc.build_kernel, alpha=alpha, beta=beta),
+        blackjax_init=blackjax.sghmc.init,
+        extra_step_kwargs={"num_integration_steps": num_integration_steps},
     )
 
 
 # ---------------------------------------------------------------------------
 # SGNHT  –  Stochastic Gradient Nosé-Hoover Thermostat
 # ---------------------------------------------------------------------------
-
-
-class SGNHTParams(NamedTuple):
-    step_size: float = 1e-3
-    temperature: float = 1.0
 
 
 def _sgnht_init(position, rng_key=None, alpha: float = 0.01):
@@ -220,26 +230,13 @@ def sgnht(
     """
     kernel = blackjax.sgnht.build_kernel(alpha=alpha, beta=beta)
 
-    def step(key: RngKey, state, params, *args):
-        new_state = kernel(
-            key,
-            state,
-            grad_estimator,
-            minibatch=args[0] if args else None,
-            step_size=params.step_size,
-            temperature=params.temperature,
-        )
-        return new_state, SGMCMCInfo()
-
-    def init(key, position=None, rng_key=None):
+    def sgnht_state_init(key, position, rng_key):
         if position is None:
             position, key = key, rng_key
         return _sgnht_init(position, rng_key=key, alpha=alpha)
 
-    return MarkovKernel(
-        init,
-        step,
-        lambda state, step_size=1e-3, temperature=1.0: SGNHTParams(
-            step_size=step_size, temperature=temperature
-        ),
+    return _make_sgmcmc_kernel(
+        grad_estimator,
+        lambda: kernel,
+        state_init=sgnht_state_init,
     )

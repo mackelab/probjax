@@ -91,3 +91,8 @@ def make_filter_api(
         attrs["default_unpack"] = staticmethod(default_unpack_fn)
 
     return type(name, (FilterAPI,), attrs)
+
+
+def _gaussian_unpack(state, info):
+    """Return the posterior mean and covariance from a Gaussian filter state."""
+    return state.mean, state.cov

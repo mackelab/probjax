@@ -168,6 +168,10 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "benchmark: performance benchmark tests (opt-in)"
     )
+    config.addinivalue_line(
+        "markers", "slow: long-running tests (training loops, full grids)"
+    )
+    config.addinivalue_line("markers", "docs: documentation tests")
     # Set JAX platform based on device option
     device = config.getoption("--device")
     jax.config.update("jax_platform_name", device)

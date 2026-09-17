@@ -15,8 +15,8 @@ from jax.scipy.stats import beta as _beta
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import strict_positive, unit_interval
-from probjax.stats.utils import flatten_samples, normalize_sample_weights
-from probjax.utils.special import betaincinv
+from probjax.stats.utils import clip_prob, flatten_samples, weighted_mean
+from probjax.utils.special import betaincinv, betainccinv
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["beta"]
@@ -44,26 +44,6 @@ class beta_gen(rv_continuous, rv_exponential_family):
         return unit_interval
 
     @classmethod
-    def pdf(cls, x, alpha=1.0, beta=1.0, **kwargs):
-        """Probability density function of the beta distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        alpha : float, optional
-            Concentration parameter alpha. Default is 1.
-        beta : float, optional
-            Concentration parameter beta. Default is 1.
-
-        Returns
-        -------
-        pdf : ndarray
-            Probability density function evaluated at x
-        """
-        return jnp.exp(cls.logpdf(x, alpha, beta, **kwargs))
-
-    @classmethod
     def logpdf(cls, x, alpha=1.0, beta=1.0, **kwargs):
         """Log of the probability density function of the beta distribution.
 
@@ -82,7 +62,7 @@ class beta_gen(rv_continuous, rv_exponential_family):
             Log of the probability density function evaluated at x
         """
         # Numerical stability clip values to avoid log(0)
-        x = jnp.clip(x, jnp.finfo(jnp.float32).eps, 1.0 - jnp.finfo(jnp.float32).eps)
+        x = clip_prob(x)
         return _beta.logpdf(x, alpha, beta)
 
     @classmethod
@@ -216,7 +196,7 @@ class beta_gen(rv_continuous, rv_exponential_family):
             Quantile corresponding to the upper tail probability q
         """
         q = jnp.asarray(q)
-        return betaincinv(alpha, beta, 1.0 - q)
+        return betainccinv(alpha, beta, q)
 
     @classmethod
     def mean(cls, alpha=1.0, beta=1.0, **kwargs):
@@ -266,9 +246,6 @@ class beta_gen(rv_continuous, rv_exponential_family):
         # When alpha < 1, beta < 1, the mode is at both 0 and 1
         # conventionally, we return the average
         mode_bimodal = (alpha < 1) & (beta < 1)
-
-        # When alpha = beta = 1, the beta is uniform, mode is arbitrary
-        mode_uniform = (alpha == 1) & (beta == 1)
 
         return jnp.where(
             valid,
@@ -478,21 +455,10 @@ class beta_gen(rv_continuous, rv_exponential_family):
         log_data = jnp.log(data)
         log_1_minus_data = jnp.log(1 - data)
 
-        weights_arr = normalize_sample_weights(
-            weights,
-            n_samples=data.shape[0],
-            dtype=dtype,
-        )
-        if weights_arr is None:
-            mean_log_data = jnp.mean(log_data)
-            mean_log_1_minus_data = jnp.mean(log_1_minus_data)
-            mean_data = jnp.mean(data)
-            var_data = jnp.var(data)
-        else:
-            mean_data = jnp.sum(weights_arr * data)
-            mean_log_data = jnp.sum(weights_arr * log_data)
-            mean_log_1_minus_data = jnp.sum(weights_arr * log_1_minus_data)
-            var_data = jnp.sum(weights_arr * (data - mean_data) ** 2)
+        mean_data = weighted_mean(data, weights)
+        mean_log_data = weighted_mean(log_data, weights)
+        mean_log_1_minus_data = weighted_mean(log_1_minus_data, weights)
+        var_data = weighted_mean((data - mean_data) ** 2, weights)
         alpha = mean_data * (mean_data * (1 - mean_data) / var_data - 1)
         beta = (1 - mean_data) * (mean_data * (1 - mean_data) / var_data - 1)
 

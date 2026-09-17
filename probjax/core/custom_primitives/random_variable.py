@@ -6,7 +6,7 @@ from typing import Any, cast
 
 from jax._src.core import shaped_abstractify
 from jax._src.interpreters import ad as ad_src
-from jax.extend.core import ClosedJaxpr, Primitive
+from jax.extend.core import Primitive
 from jax.interpreters import ad, batching, mlir
 from jax.tree_util import tree_flatten, tree_unflatten
 
@@ -135,6 +135,29 @@ def _trace_random_variable_jaxpr(
     return forward_jaxpr
 
 
+def _validated_rv_params(
+    forward_jaxpr,
+    in_tree,
+    shape,
+    dist,
+    name,
+    rvs_fn,
+    logpdf_fn,
+    kwds_items,
+):
+    """Validate random-variable call params (shared impl/abstract preamble)."""
+    _ = parse_random_variable_call_params({
+        "forward_jaxpr": forward_jaxpr,
+        "in_tree": in_tree,
+        "shape": shape,
+        "dist": dist,
+        "name": name,
+        "rvs_fn": rvs_fn,
+        "logpdf_fn": logpdf_fn,
+        "kwds_items": kwds_items,
+    })
+
+
 def _rv_impl(
     *flat_inputs,
     forward_jaxpr,
@@ -146,16 +169,9 @@ def _rv_impl(
     logpdf_fn,
     kwds_items,
 ):
-    _ = parse_random_variable_call_params({
-        "forward_jaxpr": forward_jaxpr,
-        "in_tree": in_tree,
-        "shape": shape,
-        "dist": dist,
-        "name": name,
-        "rvs_fn": rvs_fn,
-        "logpdf_fn": logpdf_fn,
-        "kwds_items": kwds_items,
-    })
+    _validated_rv_params(
+        forward_jaxpr, in_tree, shape, dist, name, rvs_fn, logpdf_fn, kwds_items
+    )
     return call_impl(
         *flat_inputs,
         forward_jaxpr=forward_jaxpr,
@@ -181,16 +197,9 @@ def _rv_abstract_eval(
     logpdf_fn,
     kwds_items,
 ):
-    _ = parse_random_variable_call_params({
-        "forward_jaxpr": forward_jaxpr,
-        "in_tree": in_tree,
-        "shape": shape,
-        "dist": dist,
-        "name": name,
-        "rvs_fn": rvs_fn,
-        "logpdf_fn": logpdf_fn,
-        "kwds_items": kwds_items,
-    })
+    _validated_rv_params(
+        forward_jaxpr, in_tree, shape, dist, name, rvs_fn, logpdf_fn, kwds_items
+    )
     return call_abstract_eval(
         *flat_avals,
         forward_jaxpr=forward_jaxpr,
@@ -247,7 +256,7 @@ def _rv_jvp(primals, tangents, **params):
 
 
 def _rv_transpose_rule(*args, **kwargs):
-    call_transpose = getattr(ad_src, "call_transpose")
+    call_transpose = ad_src.call_transpose
     return call_transpose(rv_p, *args, **kwargs)
 
 

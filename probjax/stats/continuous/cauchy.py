@@ -13,6 +13,7 @@ from jax import random
 
 from probjax.stats.base import rv_continuous
 from probjax.stats.constraints import real, strict_positive
+from probjax.stats.utils import loc_scale_sample
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["cauchy"]
@@ -146,10 +147,7 @@ class cauchy_gen(rv_continuous):
         rvs : ndarray or scalar
             Random variates of given shape
         """
-        loc = jnp.asarray(loc)
-        scale = jnp.asarray(scale)
-        event_shape = jnp.broadcast_shapes(loc.shape, scale.shape)
-        return random.cauchy(rng, shape=shape + event_shape) * scale + loc
+        return loc_scale_sample(rng, random.cauchy, shape=shape, loc=loc, scale=scale)
 
     @classmethod
     def sf(cls, x, loc=0.0, scale=1.0, **kwargs):

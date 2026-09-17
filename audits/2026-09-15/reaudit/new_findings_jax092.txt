@@ -1,0 +1,43 @@
+JAX 0.9.2
+test_logdet_gradient_scaled_identity AssertionError Not equal to tolerance rtol=1e-07, atol=1e-12
+
+nan location mismatch:
+ ACTUAL: array(nan)
+ DESIRED: array(1.)
+test_genpareto_explicit_shape_parameter_sampling TypeError genpareto_gen._rvs_impl() got multiple values for argument 'shape'
+test_truncnorm_small_positive_quantile AssertionError
+test_truncnorm_quantile_second_derivative AssertionError Not equal to tolerance rtol=1e-08, atol=0
+
+Mismatched elements: 1 / 1 (100%)
+Max absolute difference among violations: 8.44654601
+Max relative difference among violations: 1.94718392
+ ACTUAL: array(-4.10872)
+ DESIRED: array(4.337826)
+test_truncnorm_one_sided_tail_variance AssertionError Not equal to tolerance rtol=0.001, atol=0
+
+Mismatched elements: 1 / 1 (100%)
+Max absolute difference among violations: 0.00086315
+Max relative difference among violations: 0.35041118
+ ACTUAL: array(0.003326, dtype=float32)
+ DESIRED: array(0.002463)
+test_pcg_small_representable_rhs AssertionError Not equal to tolerance rtol=1e-05, atol=0
+
+Mismatched elements: 2 / 2 (100%)
+Mismatch at indices:
+ [0, 0]: 0.0 (ACTUAL), 9.999999682655225e-21 (DESIRED)
+ [1, 0]: 0.0 (ACTUAL), 9.999999682655225e-21 (DESIRED)
+Max absolute difference among violations: 9.99999968e-21
+Max relative difference among violations: 1.
+ ACTUAL: array([[0.],
+       [0.]])
+ DESIRED: array([[1.e-20],
+       [1.e-20]])
+test_optional_rng_plain_function TypeError test_optional_rng_plain_function.<locals>.<lambda>() got an unexpected keyword argument 'rng'
+test_forwarding_constructor_kwargs AssertionError
+test_genpareto_negative_shape_mode AssertionError Not equal to tolerance rtol=1e-07, atol=0
+
+Mismatched elements: 1 / 1 (100%)
+Max absolute difference among violations: 0.5
+Max relative difference among violations: 1.
+ ACTUAL: array(0., dtype=float32)
+ DESIRED: array(0.5)

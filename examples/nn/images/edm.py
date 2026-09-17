@@ -593,7 +593,7 @@ def build_model(
         chunk_size=chunk_size,
         sharding=sharding,
     )
-    return EDM(net, loss_type=loss_type)
+    return EDM(net, event_spec=(image_size, image_size, num_channels), loss_type=loss_type)
 
 
 def create_model(

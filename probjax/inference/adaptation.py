@@ -70,6 +70,28 @@ def compose_adaptors(**adaptors) -> Adaptor:
     return Adaptor(init, update, finalize)
 
 
+def _stateless_adaptor(tune_fn) -> Adaptor:
+    """Adaptor that retunes shared-batched params from each transition.
+
+    ``tune_fn(params_dict, state, info)`` computes the tuned parameter dict;
+    init/finalize are no-ops. Used by the SMC tuning adaptors.
+    """
+    # Deferred import: smc.base's parent package re-imports this module.
+    from probjax.inference.smc.base import _ensure_param_batch, _params_to_dict
+
+    def init(_state, _params):
+        return ()
+
+    def update(state, info, adaptor_state, params):
+        tuned = tune_fn(_params_to_dict(params), state, info)
+        return adaptor_state, _ensure_param_batch(tuned, shared=True), None
+
+    def finalize(_adaptor_state, params):
+        return params, None
+
+    return Adaptor(init, update, finalize)
+
+
 @partial(jax.jit, static_argnames=("kernel", "adaptor"))
 def adapt_step(
     key, kernel: Kernel, adaptor: Adaptor, state, params, adaptor_state, *args

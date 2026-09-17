@@ -256,10 +256,6 @@ def test_custom_inverse_multi_output_nested_vmap():
     assert jnp.allclose(logdet, expected_logdet)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="a reduced logdet cannot separate mapped and unmapped target terms",
-)
 def test_custom_inverse_vmap_mixed_target_axes_logdet():
     @custom_inverse
     def f(x):

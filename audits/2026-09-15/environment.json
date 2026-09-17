@@ -1,0 +1,23 @@
+{
+  "python": "3.13.12",
+  "packages": {
+    "jax": "0.10.0",
+    "jaxlib": "0.10.0",
+    "flax": "0.12.8",
+    "numpy": "2.4.4",
+    "scipy": "1.17.1",
+    "optax": "0.2.8",
+    "blackjax": "1.6.2",
+    "pytest": "9.1.1"
+  },
+  "head": "629d9da6cbf8bd2cb8c11f7b9845af6d56383523",
+  "scope": "Current isolated worktree including uncommitted session changes; read-only production audit.",
+  "reproduction_environment_packages": {
+    "jax": "0.9.2",
+    "jaxlib": "0.9.2",
+    "flax": "0.12.6",
+    "numpy": "2.4.6",
+    "scipy": "1.17.1",
+    "blackjax": "1.6.2"
+  }
+}

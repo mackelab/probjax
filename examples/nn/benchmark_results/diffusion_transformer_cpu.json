@@ -1,0 +1,107 @@
+{
+  "jax": "0.10.0",
+  "devices": [
+    "cpu:0"
+  ],
+  "batch": 8,
+  "repeats": 5,
+  "results": [
+    {
+      "dtype": "float32",
+      "tokens": 32,
+      "operation": "forward",
+      "cold_s": 0.39953998290002346,
+      "warm_ms": 2.9151085764169693,
+      "finite": true
+    },
+    {
+      "dtype": "float32",
+      "tokens": 32,
+      "operation": "backward",
+      "cold_s": 0.7622880693525076,
+      "warm_ms": 6.256835535168648,
+      "finite": true
+    },
+    {
+      "dtype": "float32",
+      "tokens": 128,
+      "operation": "forward",
+      "cold_s": 0.2112531904131174,
+      "warm_ms": 6.368367001414299,
+      "finite": true
+    },
+    {
+      "dtype": "float32",
+      "tokens": 128,
+      "operation": "backward",
+      "cold_s": 0.6816029753535986,
+      "warm_ms": 14.935459941625595,
+      "finite": true
+    },
+    {
+      "dtype": "float32",
+      "tokens": 512,
+      "operation": "forward",
+      "cold_s": 0.25776583328843117,
+      "warm_ms": 51.30094289779663,
+      "finite": true
+    },
+    {
+      "dtype": "float32",
+      "tokens": 512,
+      "operation": "backward",
+      "cold_s": 0.7279027197510004,
+      "warm_ms": 153.39630469679832,
+      "finite": true
+    },
+    {
+      "dtype": "bfloat16",
+      "tokens": 32,
+      "operation": "forward",
+      "cold_s": 0.42487119883298874,
+      "warm_ms": 3.042764961719513,
+      "finite": true
+    },
+    {
+      "dtype": "bfloat16",
+      "tokens": 32,
+      "operation": "backward",
+      "cold_s": 0.8163590580224991,
+      "warm_ms": 6.696002557873726,
+      "finite": true
+    },
+    {
+      "dtype": "bfloat16",
+      "tokens": 128,
+      "operation": "forward",
+      "cold_s": 0.2729868218302727,
+      "warm_ms": 6.533397361636162,
+      "finite": true
+    },
+    {
+      "dtype": "bfloat16",
+      "tokens": 128,
+      "operation": "backward",
+      "cold_s": 0.7298400830477476,
+      "warm_ms": 16.82957448065281,
+      "finite": true
+    },
+    {
+      "dtype": "bfloat16",
+      "tokens": 512,
+      "operation": "forward",
+      "cold_s": 0.31824337132275105,
+      "warm_ms": 47.65540361404419,
+      "finite": true
+    },
+    {
+      "dtype": "bfloat16",
+      "tokens": 512,
+      "operation": "backward",
+      "cold_s": 0.8961646147072315,
+      "warm_ms": 155.10709397494793,
+      "finite": true
+    }
+  ],
+  "cpu_model": "AMD Ryzen 9 5900X 12-Core Processor"
+}

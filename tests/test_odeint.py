@@ -29,7 +29,7 @@ def test_odeint_basic_linear_ode(linear_ode_problem, ode_method):
 
     # Exponential split methods need split_drift - tested separately
     if ode_method in SPLIT_DRIFT_METHODS:
-        return
+        pytest.skip("requires split_drift method")
 
     x0, drift, f_true = linear_ode_problem
     step_size_adaptor = StepSizeAdaptor(atol=1e-2, rtol=1e-2)
@@ -49,7 +49,7 @@ def test_odeint_basic_linear_ode(linear_ode_problem, ode_method):
 def test_odeint_split_drift_ode(split_drift_ode_problem, ode_method):
     """Test exponential methods that require split_drift."""
     if ode_method not in SPLIT_DRIFT_METHODS:
-        return
+        pytest.skip("requires non-split_drift method")
 
     x0, drift, f_true = split_drift_ode_problem
     step_size_adaptor = StepSizeAdaptor(atol=1e-2, rtol=1e-2)
@@ -73,7 +73,7 @@ def test_odeint_nonlienar_ode(nonlinear_ode_problem, ode_method):
 
     # Specialized methods require specific drift types - tested separately
     if ode_method in SPLIT_DRIFT_METHODS + ["linear_exact"]:
-        return
+        pytest.skip("requires generic method")
 
     x0, drift, f_true = nonlinear_ode_problem
     step_size_adaptor = StepSizeAdaptor(atol=1e-2, rtol=1e-2)
@@ -97,7 +97,7 @@ def test_odeint_with_pytree(ode_method):
 
     # Specialized methods require specific drift types
     if ode_method in SPLIT_DRIFT_METHODS + ["linear_exact"]:
-        return
+        pytest.skip("requires generic method")
 
     x0 = {"x": jnp.ones(1) * 10.0, "y": jnp.ones(1) * 5.0}
     ts = jnp.linspace(0, 1, 100)
@@ -124,7 +124,7 @@ def test_odeint_with_pytree_filter_state(ode_method):
 
     # Specialized methods require specific drift types
     if ode_method in SPLIT_DRIFT_METHODS + ["linear_exact"]:
-        return
+        pytest.skip("requires generic method")
 
     x0 = {"x": jnp.ones(1) * 10.0, "y": jnp.ones(1) * 5.0}
     ts = jnp.linspace(0, 1, 100)
@@ -164,7 +164,7 @@ def test_odeint_trace_nothing(ode_method):
 
     # Specialized methods require specific drift types
     if ode_method in SPLIT_DRIFT_METHODS + ["linear_exact"]:
-        return
+        pytest.skip("requires generic method")
 
     x0 = jnp.ones(2)
     ts = jnp.linspace(0, 0.5, 10)
@@ -206,7 +206,7 @@ def test_odeint_supports_drift_args(ode_method):
 
     # Specialized methods require specific drift types
     if ode_method in SPLIT_DRIFT_METHODS + ["linear_exact"]:
-        return
+        pytest.skip("requires generic method")
 
     x0 = jnp.array([1.0, -2.0])
     ts = jnp.linspace(0.0, 1.0, 50)
@@ -272,7 +272,7 @@ def test_odeint_supports_drift_args(ode_method):
 
 def test_odeint_split_drift_supports_args(ode_method):
     if ode_method not in SPLIT_DRIFT_METHODS:
-        return
+        pytest.skip("requires non-split_drift method")
 
     x0 = jnp.array([1.0])
     ts = jnp.linspace(0.0, 1.0, 40)
@@ -461,7 +461,7 @@ def test_sdeint_scalar(sde_method, scalar_sde_problem):
 def test_sdeint_split_drift(sde_method, split_drift_sde_problem):
     """Test exponential SDE methods that require split_drift."""
     if sde_method not in SPLIT_DRIFT_SDE_METHODS:
-        return
+        pytest.skip("requires split_drift SDE method")
 
     x0, f, g, f_true = split_drift_sde_problem
     key = jax.random.PRNGKey(0)
@@ -478,7 +478,7 @@ def test_sdeint_collect_trace_false(sde_method, scalar_sde_problem):
     """Test SDE solvers with collect_trace=False."""
     # Specialized methods require specific drift type wrappers
     if sde_method in SPLIT_DRIFT_SDE_METHODS + ["linear_exact_sde"]:
-        return
+        pytest.skip("requires generic SDE method")
 
     x0, f, g, _ = scalar_sde_problem
     key = jax.random.PRNGKey(1)
@@ -514,7 +514,7 @@ def test_sdeint_2d(sde_method, two_dimensional_sde_problem):
     """Test SDE solvers with 2D problem."""
     # Specialized methods require specific drift type wrappers
     if sde_method in SPLIT_DRIFT_SDE_METHODS + ["linear_exact_sde"]:
-        return
+        pytest.skip("requires generic SDE method")
 
     x0, f, g, f_true = two_dimensional_sde_problem
     key = jax.random.PRNGKey(0)
@@ -535,7 +535,7 @@ def test_sdeint_supports_args(sde_method, scalar_sde_problem):
     """
     # Specialized methods require specific drift type wrappers
     if sde_method in SPLIT_DRIFT_SDE_METHODS + ["linear_exact_sde"]:
-        return
+        pytest.skip("requires generic SDE method")
 
     x0, base_drift, base_diffusion, _ = scalar_sde_problem
     key = jax.random.PRNGKey(3)
@@ -572,7 +572,7 @@ def test_sdeint_supports_args(sde_method, scalar_sde_problem):
 
 def test_sdeint_split_drift_supports_args(sde_method):
     if sde_method not in SPLIT_DRIFT_SDE_METHODS:
-        return
+        pytest.skip("requires split_drift SDE method")
 
     key = jax.random.PRNGKey(7)
     x0 = jnp.array([1.0])
@@ -660,7 +660,7 @@ def test_sdeint_rectangular_diffusion_is_supported(sde_method):
     """Test SDE solvers support rectangular diffusion matrices."""
     # Specialized methods require specific drift type wrappers
     if sde_method in SPLIT_DRIFT_SDE_METHODS + ["linear_exact_sde"]:
-        return
+        pytest.skip("requires generic SDE method")
 
     key = jax.random.PRNGKey(4)
     ts = jnp.linspace(0.0, 1.0, 64)

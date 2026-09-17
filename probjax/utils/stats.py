@@ -56,14 +56,14 @@ def differential_entropy(values, window_length=None, base=None, axis=0, method="
     # Only move axis if the array has enough dimensions
     if values.ndim > 1:
         values = jnp.moveaxis(values, axis, -1)
-    elif axis != 0:
+    elif axis not in (0, -1):
         # If it's 1D and axis != 0, raise an error
         raise ValueError(f"Cannot move axis {axis} in 1D array")
 
     n = values.shape[-1]
 
     if window_length is None:
-        window_length = int(jnp.sqrt(n) + 0.5)
+        window_length = int(n**0.5 + 0.5)
 
     if not (2 <= 2 * window_length < n):
         raise ValueError(
@@ -71,7 +71,7 @@ def differential_entropy(values, window_length=None, base=None, axis=0, method="
             "the sample size ({n})."
         )
 
-    if base is not None and base <= 0:
+    if base is not None and (base <= 0 or base == 1):
         raise ValueError("`base` must be a positive number or None.")
 
     # Sort the data along the last axis
@@ -127,7 +127,7 @@ def _vasicek_entropy(X, m, n):
 def _van_es_entropy(X, m, n):
     differences = X[..., m:] - X[..., :-m]
     term1 = jnp.mean(jnp.log((n + 1) / m * differences), axis=-1)
-    harmonic_sum = logsumexp(-jnp.log(jnp.arange(m, n + 1)))
+    harmonic_sum = jnp.sum(1.0 / jnp.arange(m, n + 1))
     return term1 + harmonic_sum + jnp.log(m) - jnp.log(n + 1)
 
 
@@ -136,18 +136,17 @@ def _ebrahimi_entropy(X, m, n):
     """
     Ebrahimi entropy estimator based on differences between order statistics.
     """
-    differences = X[..., 1:] - X[..., :-1]  # Consecutive differences
-    ci = jnp.where(
-        jnp.arange(1, n) <= m,
-        1 + (jnp.arange(1, n) - 1) / m,
-        1 + (n - jnp.arange(1, n)) / m,
-    )
-    logs = jnp.log(n * differences / (ci * m))
-    return jnp.mean(logs, axis=-1)
+    padded = _pad_along_last_axis(X, m)
+    differences = padded[..., 2*m:] - padded[..., :-2*m]
+    i = jnp.arange(1, n+1)
+    ci = jnp.where(i <= m, 1 + (i-1)/m,
+                   jnp.where(i >= n-m+1, 1 + (n-i)/m, 2.0))
+    return jnp.mean(jnp.log(n * differences / (ci * m)), axis=-1)
 
 
 # Correa entropy estimation
 def _correa_entropy(X, m, n):
+    X = _pad_along_last_axis(X, m)
     i = jnp.arange(1, n + 1, dtype=jnp.int32)
     dj = jnp.arange(-m, m + 1)[:, None]
     j = i + dj

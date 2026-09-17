@@ -11,7 +11,11 @@ import jax.numpy as jnp
 from jax import random
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
-from probjax.stats.constraints import interval as interval_constraint, real, strict_positive
+from probjax.stats.constraints import (
+    interval as interval_constraint,
+    real,
+    strict_positive,
+)
 from probjax.utils.typing import RngKey
 
 __all__ = ["genpareto"]
@@ -54,58 +58,87 @@ class genpareto_gen(rv_continuous, rv_exponential_family):
         return interval_constraint(loc_val, upper, closed_right=False)
 
     @classmethod
+    def _logsf(cls, x, c, loc, scale):
+        z = (jnp.asarray(x) - loc) / scale
+        c = jnp.asarray(c)
+        u = c * z
+        safe_u = jnp.where((u > -1) & (u != 0), u, 1.0)
+        ratio = jnp.where(
+            jnp.abs(u) < 1e-4, 1 - u / 2 + u * u / 3, jnp.log1p(safe_u) / safe_u
+        )
+        value = -z * ratio
+        return jnp.where(
+            z < 0,
+            0.0,
+            jnp.where(jnp.isposinf(z) | ((c < 0) & (1 + c * z <= 0)), -jnp.inf, value),
+        )
+
+    @classmethod
     def pdf(cls, x, c=0.0, loc=0.0, scale=1.0, **kwargs):
-        """Probability density function of the generalized Pareto distribution."""
-        z = (x - loc) / scale
-        return (1 / scale) * (1 + c * z) ** (-1 - 1 / c)
+        return jnp.exp(cls.logpdf(x, c, loc, scale))
 
     @classmethod
     def logpdf(cls, x, c=0.0, loc=0.0, scale=1.0, **kwargs):
-        """Log of the probability density function of the generalized Pareto distribution."""
-        z = (x - loc) / scale
-        return -jnp.log(scale) - (1 + 1 / c) * jnp.log(1 + c * z)
+        z = (jnp.asarray(x) - loc) / scale
+        c = jnp.asarray(c)
+        logsf = cls._logsf(x, c, loc, scale)
+        value = -jnp.log(scale) + (1 + c) * jnp.where(c == -1, 0.0, logsf)
+        endpoint = jnp.where(
+            c == -1, -jnp.log(scale), jnp.where(c < -1, jnp.inf, -jnp.inf)
+        )
+        value = jnp.where((c < 0) & (1 + c * z == 0), endpoint, value)
+        return jnp.where((z < 0) | ((c < 0) & (1 + c * z < 0)), -jnp.inf, value)
 
     @classmethod
     def cdf(cls, x, c=0.0, loc=0.0, scale=1.0, **kwargs):
-        """Cumulative distribution function of the generalized Pareto distribution."""
-        z = (x - loc) / scale
-        return 1 - (1 + c * z) ** (-1 / c)
+        return -jnp.expm1(cls._logsf(x, c, loc, scale))
+
+    @classmethod
+    def _inverse_logsf(cls, logq, c, loc, scale):
+        finite_logq = jnp.where(jnp.isfinite(logq), logq, 0.0)
+        w = -c * finite_logq
+        small = jnp.abs(w) < 1e-4
+        safe_w = jnp.where(small, 1.0, w)
+        ratio = jnp.where(small, 1 + w / 2 + w * w / 6, jnp.expm1(safe_w) / safe_w)
+        value = loc - scale * finite_logq * ratio
+        endpoint = jnp.where(c < 0, loc - scale / jnp.where(c < 0, c, -1.0), jnp.inf)
+        return jnp.where(jnp.isneginf(logq), endpoint, value)
 
     @classmethod
     def ppf(cls, q, c=0.0, loc=0.0, scale=1.0, **kwargs):
-        """Percent point function (inverse of cdf) of the generalized Pareto distribution."""
-        return loc + scale * ((1 - q) ** (-c) - 1) / c
+        q, c = jnp.asarray(q), jnp.asarray(c)
+        value = cls._inverse_logsf(jnp.log1p(-q), c, loc, scale)
+        return jnp.where((q >= 0) & (q <= 1), value, jnp.nan)
 
     @classmethod
     def _rvs_impl(
         cls,
         rng: RngKey,
-        shape: Tuple[int, ...] = (),
         c=0.0,
         loc=0.0,
         scale=1.0,
+        shape: Tuple[int, ...] = (),
         **kwargs,
     ):
         """Random variates of the generalized Pareto distribution."""
-        u = random.uniform(rng, shape=shape)
+        c, loc, scale = jnp.broadcast_arrays(c, loc, scale)
+        dtype = jnp.result_type(c, loc, scale, float)
+        u = random.uniform(rng, shape=tuple(shape) + c.shape, dtype=dtype)
         return cls.ppf(u, c, loc, scale)
 
     @classmethod
     def sf(cls, x, c=0.0, loc=0.0, scale=1.0, **kwargs):
-        """Survival function (1 - cdf) of the generalized Pareto distribution."""
-        z = (x - loc) / scale
-        return (1 + c * z) ** (-1 / c)
+        return jnp.exp(cls._logsf(x, c, loc, scale))
 
     @classmethod
     def isf(cls, q, c=0.0, loc=0.0, scale=1.0, **kwargs):
-        """Inverse survival function (inverse of sf) of the generalized Pareto distribution."""
-        return loc + scale * (q ** (-c) - 1) / c
+        q, c = jnp.asarray(q), jnp.asarray(c)
+        value = cls._inverse_logsf(jnp.log(q), c, loc, scale)
+        return jnp.where((q >= 0) & (q <= 1), value, jnp.nan)
 
     @classmethod
     def logcdf(cls, x, c=0.0, loc=0.0, scale=1.0, **kwargs):
-        """Log of the cumulative distribution function of the generalized Pareto distribution."""
-        z = (x - loc) / scale
-        return jnp.log(1 - (1 + c * z) ** (-1 / c))
+        return jnp.log(-jnp.expm1(cls._logsf(x, c, loc, scale)))
 
     @classmethod
     def mean(cls, c=0.0, loc=0.0, scale=1.0, **kwargs):
@@ -115,7 +148,8 @@ class genpareto_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def mode(cls, c=0.0, loc=0.0, scale=1.0, **kwargs):
         """Mode of the generalized Pareto distribution."""
-        return jnp.asarray(loc)
+        c, loc, scale = jnp.broadcast_arrays(c, loc, scale)
+        return jnp.where(c < -1, loc - scale / jnp.where(c < -1, c, -1), loc)
 
     @classmethod
     def var(cls, c=0.0, loc=0.0, scale=1.0, **kwargs):

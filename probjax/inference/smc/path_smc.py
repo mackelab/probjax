@@ -6,9 +6,8 @@ import jax.numpy as jnp
 from blackjax.smc import from_mcmc as bj_from_mcmc
 
 from probjax.inference.smc.base import (
-    _ensure_param_batch,
     _filter_kwargs,
-    _params_to_dict,
+    init_mcmc_params_from_logdensity,
     make_mcmc_adapter,
     make_smc_api,
 )
@@ -118,8 +117,6 @@ def init_params(
         )
     else:
         path_kwargs = path_kwargs
-    mcmc_init_fn, _ = make_mcmc_adapter(mcmc_kernel, **mcmc_kernel_kwargs)
-    particle0 = jax.tree_util.tree_map(lambda x: x[0], particles)
     if initial_path_param is None:
         initial_path_param = path.initial_param(**path_kwargs)
     logdensity_kwargs = _filter_kwargs(
@@ -131,15 +128,20 @@ def init_params(
         loglikelihood_fn=loglikelihood_fn,
         **{**path_kwargs, **logdensity_kwargs},
     )
-    mcmc_state = mcmc_init_fn(particle0, logposterior_fn, rng_key=rng_key)
-    init_param_kwargs = _filter_kwargs(mcmc_kernel.init_params, mcmc_param_kwargs)
-    params = mcmc_kernel.init_params(mcmc_state, **init_param_kwargs)
-    params_dict = _params_to_dict(params)
+    params_dict = init_mcmc_params_from_logdensity(
+        particles,
+        logposterior_fn,
+        mcmc_kernel,
+        rng_key=rng_key,
+        mcmc_kernel_kwargs=mcmc_kernel_kwargs,
+        allow_kwargs=True,
+        **mcmc_param_kwargs,
+    )
     if "inverse_mass_matrix" in params_dict:
         imm = jnp.asarray(params_dict["inverse_mass_matrix"])
         if imm.ndim == 1 and imm.shape[0] == 1:
             params_dict["inverse_mass_matrix"] = imm[None, ...]
-    return _ensure_param_batch(params_dict, shared=True)
+    return params_dict
 
 
 def init(particles, *, path, initial_path_param=None, **path_kwargs):

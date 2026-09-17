@@ -1,0 +1,29 @@
+JAX 0.10.0
+logdet scaled identity gradient dim1 (Array(0.6931472, dtype=float32), Array(nan, dtype=float32, weak_type=True))
+logdet scaled identity gradient dim2 (Array(1.3862944, dtype=float32), Array(nan, dtype=float32, weak_type=True))
+logdet scaled identity gradient dim3 (Array(2.0794415, dtype=float32), Array(nan, dtype=float32, weak_type=True))
+logdet scaled identity gradient dim20 (Array(13.862946, dtype=float32), Array(nan, dtype=float32, weak_type=True))
+truncnorm second derivative q1e-20 (Array(-inf, dtype=float32, weak_type=True), np.float64(-1.0554414389339037e+39))
+truncnorm second derivative q0.1 (Array(-56.980618, dtype=float32, weak_type=True), np.float64(-41.60927029199775))
+truncnorm second derivative q0.7 (Array(-4.108719, dtype=float32, weak_type=True), np.float64(4.337826493638951))
+truncnorm second derivative q0.99999999 (Array(0., dtype=float32, weak_type=True), np.float64(1679617367687207.8))
+truncnorm tail (20.0, inf) (Array(20.049711, dtype=float32), Array(0.00332642, dtype=float32), np.float64(20.049753068528293), np.float64(0.002463261606154954))
+truncnorm tail (8.0, inf) (Array(8.121361, dtype=float32), Array(0.01438904, dtype=float32), np.float64(8.12136811223618), np.float64(0.014324883442787484))
+truncnorm tail (1.0, 1.001) (Array(1.0004997, dtype=float32), Array(8.334112e-08, dtype=float32), np.float64(1.0004999166252446), np.float64(8.333301204643817e-08))
+genpareto nan input c-2.0 nan
+genpareto mode c-2.0 0.0
+genpareto kurtosis c-2.0 (Array(-0.85714287, dtype=float32, weak_type=True), np.float64(-0.8571428571428572))
+genpareto nan input c0.0 nan
+genpareto mode c0.0 0.0
+genpareto kurtosis c0.0 (Array(6., dtype=float32, weak_type=True), np.float64(6.0))
+genpareto nan input c0.5 nan
+genpareto mode c0.5 0.0
+genpareto kurtosis c0.5 (Array(inf, dtype=float32, weak_type=True), np.float64(nan))
+pcg extreme scale1e-20 (Array([[0.],
+       [0.]], dtype=float32), PCGInfo(converged=Array([ True], dtype=bool), rel_residual=Array([0.], dtype=float32), iters_per_block=Array([0], dtype=int32)))
+pcg extreme scale1e+20 (Array([[0.],
+       [0.]], dtype=float32), PCGInfo(converged=Array([False], dtype=bool), rel_residual=Array([nan], dtype=float32), iters_per_block=Array([0], dtype=int32)))
+unused nested sample {'ignored': Array(1.6226422, dtype=float32)}
+unused nested logjoint -2.9189386
+nested dependent sites {'x': Array(1.0040143, dtype=float32), 'y': Array(-1.4384415, dtype=float32)}
+nested dependent logjoint (Array(-4.3378773, dtype=float32), np.float64(-4.337877066409345))

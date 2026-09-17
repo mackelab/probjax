@@ -56,7 +56,8 @@ def _build_parameter_matrix(orientation: Array, concentration: Array) -> Array:
     event_dim = orientation.shape[-1]
     if concentration.shape[-1] != event_dim:
         raise ValueError(
-            "concentration vector must have the same length as the orientation dimension."
+            "concentration vector must have the same length as the "
+            "orientation dimension."
         )
 
     batch_shape = jax.lax.broadcast_shapes(
@@ -242,10 +243,6 @@ class bingham_gen(rv_spherical, rv_exponential_family):
     @classmethod
     def support(cls, orientation=None, **kwargs):
         return spherical
-
-    @classmethod
-    def pdf(cls, x: Array, orientation: Array, concentration: Array, **kwargs):
-        return jnp.exp(cls.logpdf(x, orientation, concentration, **kwargs))
 
     @classmethod
     def _multivariate_batch_event_shape(
@@ -452,7 +449,8 @@ class bingham_gen(rv_spherical, rv_exponential_family):
         dim = orientation.shape[-1]
         if concentration.ndim == 0 or concentration.shape[-1] != dim:
             raise ValueError(
-                "concentration must have trailing dimension equal to orientation dimension."
+                "concentration must have trailing dimension equal to "
+                "orientation dimension."
             )
 
         dtype = jnp.result_type(orientation.dtype, concentration.dtype, jnp.float32)

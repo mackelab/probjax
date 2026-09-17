@@ -1,0 +1,211 @@
+[
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 45,
+      "row": 16
+    },
+    "filename": "/tmp/probjax-complementary-special/probjax/nn/losses/flow_matching.py",
+    "fix": null,
+    "location": {
+      "column": 16,
+      "row": 16
+    },
+    "message": "Undefined name `InterpolationScheduleProtocol`",
+    "name": "undefined-name",
+    "noqa_row": 16,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 45,
+      "row": 102
+    },
+    "filename": "/tmp/probjax-complementary-special/probjax/nn/losses/flow_matching.py",
+    "fix": null,
+    "location": {
+      "column": 16,
+      "row": 102
+    },
+    "message": "Undefined name `InterpolationScheduleProtocol`",
+    "name": "undefined-name",
+    "noqa_row": 102,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 45,
+      "row": 16
+    },
+    "filename": "/tmp/probjax-complementary-special/probjax/nn/losses/mean_flow.py",
+    "fix": null,
+    "location": {
+      "column": 16,
+      "row": 16
+    },
+    "message": "Undefined name `InterpolationScheduleProtocol`",
+    "name": "undefined-name",
+    "noqa_row": 16,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 45,
+      "row": 107
+    },
+    "filename": "/tmp/probjax-complementary-special/probjax/nn/losses/mean_flow.py",
+    "fix": null,
+    "location": {
+      "column": 16,
+      "row": 107
+    },
+    "message": "Undefined name `InterpolationScheduleProtocol`",
+    "name": "undefined-name",
+    "noqa_row": 107,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 45,
+      "row": 120
+    },
+    "filename": "/tmp/probjax-complementary-special/probjax/nn/losses/mean_flow.py",
+    "fix": null,
+    "location": {
+      "column": 16,
+      "row": 120
+    },
+    "message": "Undefined name `InterpolationScheduleProtocol`",
+    "name": "undefined-name",
+    "noqa_row": 120,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 34,
+      "row": 160
+    },
+    "filename": "/tmp/probjax-complementary-special/probjax/nn/pallas_kernels/kernels/flash_attention3.py",
+    "fix": null,
+    "location": {
+      "column": 12,
+      "row": 160
+    },
+    "message": "Undefined name `_run_flash_forward_raw`",
+    "name": "undefined-name",
+    "noqa_row": 160,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 34,
+      "row": 171
+    },
+    "filename": "/tmp/probjax-complementary-special/probjax/nn/pallas_kernels/kernels/flash_attention3.py",
+    "fix": null,
+    "location": {
+      "column": 12,
+      "row": 171
+    },
+    "message": "Undefined name `_run_flash_forward_raw`",
+    "name": "undefined-name",
+    "noqa_row": 171,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 35,
+      "row": 182
+    },
+    "filename": "/tmp/probjax-complementary-special/probjax/nn/pallas_kernels/kernels/flash_attention3.py",
+    "fix": null,
+    "location": {
+      "column": 12,
+      "row": 182
+    },
+    "message": "Undefined name `_run_flash_backward_raw`",
+    "name": "undefined-name",
+    "noqa_row": 182,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 46,
+      "row": 2
+    },
+    "filename": "/tmp/probjax-complementary-special/probjax/utils/odeutil/solvers/multistep.py",
+    "fix": null,
+    "location": {
+      "column": 41,
+      "row": 2
+    },
+    "message": "Undefined name `Array`",
+    "name": "undefined-name",
+    "noqa_row": 2,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 46,
+      "row": 12
+    },
+    "filename": "/tmp/probjax-complementary-special/probjax/utils/odeutil/solvers/multistep.py",
+    "fix": null,
+    "location": {
+      "column": 41,
+      "row": 12
+    },
+    "message": "Undefined name `Array`",
+    "name": "undefined-name",
+    "noqa_row": 12,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 42,
+      "row": 22
+    },
+    "filename": "/tmp/probjax-complementary-special/probjax/utils/odeutil/solvers/multistep.py",
+    "fix": null,
+    "location": {
+      "column": 37,
+      "row": 22
+    },
+    "message": "Undefined name `Array`",
+    "name": "undefined-name",
+    "noqa_row": 22,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  }
+]

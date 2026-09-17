@@ -11,14 +11,14 @@ or an iterable of batches, for data that does not fit in memory:
 >>> params, losses = fit(loss_fn, params, key, {"data": x})   # whole array
 >>> params, losses = fit(loss_fn, params, key, my_dataloader)  # streamed
 
-Nothing here assumes a particular NN library. The loop is a single
-``jax.lax.scan``: it compiles once no matter how many steps are requested, and
-runs end to end without returning to Python -- a streamed batch arrives through
-an ordered ``io_callback``, and ``on_step`` reports progress the same way.
+Nothing here assumes a particular NN library. Without general callbacks the
+loop is a single ``jax.lax.scan``. General callbacks run between compiled scan
+chunks; streamed batches and the legacy loss-only ``on_step`` hook use ordered
+``io_callback`` calls. Optional EMA stays on the device alongside raw parameters.
 
 Module-backed models (the families in :mod:`probjax.nn.generative`) get the
-convenient ``model.fit(rng, data)`` via :class:`FitMixin`, which lazily builds
-the pure ``loss_fn`` + params from the module once per instance:
+convenient ``model.fit(rng, data)`` via :class:`FitMixin`, which snapshots
+the current module graph and carries non-parameter state through each update:
 
 >>> flow = maf(2, 5, rngs=nnx.Rngs(0))
 >>> losses = flow.fit(jax.random.key(0), samples)
@@ -29,8 +29,9 @@ This is the object-layer counterpart of the scipy-style classmethod
 """
 
 import warnings
-import weakref
-from typing import Literal, Optional, Tuple
+from dataclasses import dataclass
+from functools import partial
+from typing import Literal, NamedTuple, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -40,7 +41,18 @@ from jaxtyping import Array
 
 from probjax.utils.typing import ArrayLike, RngKey
 
-__all__ = ["fit", "FitMixin", "is_batch_stream", "take_batches"]
+__all__ = [
+    "fit",
+    "FitMixin",
+    "FitState",
+    "FitInfo",
+    "FitKernel",
+    "build_fit_kernel",
+    "FitResult",
+    "FitCallback",
+    "is_batch_stream",
+    "take_batches",
+]
 
 Schedule = Literal["constant", "warmup_cosine"]
 
@@ -61,7 +73,13 @@ def _resolve_batch_size(batch_size, num_examples: int) -> Optional[int]:
 def _resolve_num_steps(num_steps, num_examples: int, batch_size) -> int:
     """``"auto"`` -> enough steps for a fixed number of passes over the data."""
     if num_steps != "auto":
-        return int(num_steps)
+        if (
+            not isinstance(num_steps, int)
+            or isinstance(num_steps, bool)
+            or num_steps < 0
+        ):
+            raise ValueError("num_steps must be a nonnegative integer or 'auto'.")
+        return num_steps
     per_epoch = max(1, num_examples // (batch_size or num_examples))
     return int(min(max(_AUTO_EPOCHS * per_epoch, _AUTO_MIN_STEPS), _AUTO_MAX_STEPS))
 
@@ -222,7 +240,7 @@ def _build_optimizer(learning_rate, num_steps, schedule: Schedule, clip_norm):
     """
     import optax
 
-    if schedule == "constant":
+    if schedule == "constant" or schedule == "warmup_cosine" and num_steps <= 1:
         lr = learning_rate
     elif schedule == "warmup_cosine":
         lr = optax.warmup_cosine_decay_schedule(
@@ -250,64 +268,314 @@ def _build_optimizer(learning_rate, num_steps, schedule: Schedule, clip_norm):
 # =============================================================================
 
 
-def _make_step(loss_fn, tx, fetch, on_step, log_every: int):
-    """One training step, written for ``lax.scan``.
+class FitState(NamedTuple):
+    """Training snapshot. Arrays stay on device unless a callback copies them.
 
-    ``fetch(key)`` returns the minibatch: an on-device gather for an array
-    dataset, or an ``io_callback`` into a host iterator for a stream.
+    ``step`` counts completed updates. EMA starts at the initial parameters
+    and is updated after each optimizer step. ``params`` always holds the raw
+    optimizer parameters, even when EMA is selected for the returned model.
+    """
+
+    params: object
+    opt_state: object
+    rng: object
+    step: object
+    ema_params: object = None
+    model_state: object = None
+    stopped: object = False
+
+
+class FitInfo(NamedTuple):
+    """Per-update diagnostics; metrics may be any fixed-structure array pytree.
+
+    Both loss and metrics describe the pre-update loss evaluation. Scanning
+    stacks every array leaf along a leading update axis.
+    """
+
+    loss: Array
+    metrics: object = None
+
+
+class FitKernel(NamedTuple):
+    """Pure init/step interface, suitable for JIT and lax.scan.
+
+    init(params, rng, model_state=None) -> FitState
+    step(key, state, batch) -> (FitState, FitInfo)
+
+    Each step must advance state.step by one. Custom kernels own their update,
+    EMA and state policy; fit only supplies batches, callbacks and history.
+    """
+
+    init: object
+    step: object
+
+
+def build_fit_kernel(loss_fn, optimizer, *, ema_decay=None, has_aux=False):
+    """Construct a pure Optax update with BlackJAX-style state/info separation.
+
+    With has_aux=True, a stateless loss returns (loss, metrics). With mutable
+    model state it returns (loss, (new_model_state, metrics)); otherwise the
+    stateful return remains (loss, new_model_state). Auxiliary state and metrics
+    are not differentiated. Each step splits its key into next, batch and loss
+    keys, matching fit's minibatch sequence; the batch key is reserved for fit.
     """
     import optax
 
-    want_callback = on_step is not None
+    if ema_decay is not None and not 0 <= ema_decay < 1:
+        raise ValueError("ema_decay must be in [0, 1) or None.")
+
+    def init(params, rng, model_state=None):
+        return FitState(
+            params,
+            optimizer.init(params),
+            rng,
+            jnp.asarray(0, jnp.int32),
+            params if ema_decay is not None else None,
+            model_state,
+            jnp.asarray(False),
+        )
+
+    def step(key, state, batch):
+        next_key, _, loss_key = jax.random.split(key, 3)
+        args = (state.params, loss_key, batch)
+        stateful = state.model_state is not None
+        if stateful:
+            args += (state.model_state,)
+        if stateful or has_aux:
+            (loss, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(*args)
+            if stateful:
+                model_state, metrics = aux if has_aux else (aux, None)
+            else:
+                model_state, metrics = None, aux
+        else:
+            loss, grads = jax.value_and_grad(loss_fn)(*args)
+            model_state, metrics = None, None
+        updates, opt_state = optimizer.update(grads, state.opt_state, state.params)
+        params = optax.apply_updates(state.params, updates)
+        ema = (
+            None
+            if ema_decay is None
+            else jax.tree.map(
+                lambda old, new: (ema_decay * old + (1 - ema_decay) * new).astype(
+                    new.dtype
+                ),
+                state.ema_params,
+                params,
+            )
+        )
+        return FitState(
+            params, opt_state, next_key, state.step + 1, ema, model_state, state.stopped
+        ), FitInfo(loss, metrics)
+
+    return FitKernel(init, step)
+
+
+@partial(
+    jax.tree_util.register_dataclass,
+    data_fields=("state", "losses", "info", "valid_steps"),
+    meta_fields=("use_ema",),
+)
+@dataclass(frozen=True)
+class FitResult:
+    """Final state and stacked diagnostics from functional or module fitting.
+
+    losses aliases info.loss; state.step is absolute. valid_steps counts this
+    call's updates, and valid masks any padding in a fixed-shape JIT history.
+    params selects raw or EMA weights. use_ema is static pytree metadata.
+    """
+
+    state: FitState
+    losses: Array
+    use_ema: bool = False
+    info: FitInfo | None = None
+    valid_steps: object = None
+
+    @property
+    def valid(self):
+        """Mask identifying executed updates, including in padded JIT histories."""
+        count = self.losses.shape[0] if self.valid_steps is None else self.valid_steps
+        return jnp.arange(self.losses.shape[0]) < count
+
+    @property
+    def params(self):
+        """Parameters selected by ``use_ema`` for inference."""
+        return self.state.ema_params if self.use_ema else self.state.params
+
+
+class FitCallback:
+    """Host hooks for validation, logging, checkpoints and early stopping.
+
+    Override any hook. ``on_fit_begin`` and ``on_step_end`` may return False
+    to stop. Snapshots are read-only: mutate neither their containers nor the
+    training model. Hooks run outside JIT, so they can evaluate JAX programs
+    or save parameters. Only explicit host conversions copy parameter arrays.
+    Exceptions propagate normally; ``on_fit_end`` runs on successful completion
+    (including early stopping), not after a failed hook or training step.
+    """
+
+    def on_fit_begin(self, state: FitState):
+        pass
+
+    def on_step_end(self, state: FitState, info: FitInfo):
+        pass
+
+    def on_fit_end(self, result: FitResult):
+        pass
+
+
+def _make_step(
+    loss_fn,
+    tx,
+    fetch,
+    on_step,
+    log_every: int,
+    *,
+    ema_decay=None,
+    extended=False,
+    loss_dtype=None,
+    kernel=None,
+    info_spec=None,
+    allow_stop=False,
+):
+    """Adapt a pure kernel to a scanned loop, retaining legacy loss callbacks."""
+    kernel = kernel or build_fit_kernel(loss_fn, tx, ema_decay=ema_decay)
 
     def host_callback(step, loss):
         result = on_step(int(step), float(loss))
-        return np.asarray(result is False)
+        return np.asarray(result is not None and not bool(result))
 
-    def body(carry, _):
-        params, opt_state, rng, stop, step = carry
-        # Split in the same order and arity as the original Python loop so the
-        # scanned version reproduces it exactly for a given seed.
-        rng, rng_batch, rng_loss = jax.random.split(rng, 3)
+    def body(state, _):
+        def run(state):
+            _, batch_key, _ = jax.random.split(state.rng, 3)
+            return kernel.step(state.rng, state, fetch(batch_key))
 
-        def run(_):
-            minibatch = fetch(rng_batch)
-            loss, grads = jax.value_and_grad(loss_fn)(params, rng_loss, minibatch)
-            updates, new_opt = tx.update(grads, opt_state, params)
-            return optax.apply_updates(params, updates), new_opt, loss
-
-        if not want_callback:
-            params, opt_state, loss = run(None)
+        if on_step is None and not allow_stop:
+            new_state, info = run(state)
         else:
 
-            def skip(_):
-                # Early stopping cannot break a scan; the remaining iterations
-                # run but do no work, and the caller drops their losses.
-                nan = jnp.asarray(jnp.nan, jnp.result_type(float))
-                return params, opt_state, nan
+            def skip(state):
+                if info_spec is None:
+                    return state, FitInfo(jnp.asarray(jnp.nan, loss_dtype))
+                return state, jax.tree.map(
+                    lambda spec: jnp.zeros(spec.shape, spec.dtype), info_spec
+                )
 
-            params, opt_state, loss = jax.lax.cond(stop, skip, run, operand=None)
-
-        if want_callback:
-            fire = jnp.logical_and(~stop, (step % log_every) == 0)
-            stop = jnp.logical_or(
-                stop,
-                jax.lax.cond(
-                    fire,
-                    lambda: io_callback(
-                        host_callback,
-                        jax.ShapeDtypeStruct((), bool),
-                        step,
-                        loss,
-                        ordered=True,
-                    ),
-                    lambda: jnp.asarray(False),
+            new_state, info = jax.lax.cond(state.stopped, skip, run, state)
+        if on_step is not None:
+            fire = ~state.stopped & ((state.step % log_every) == 0)
+            stop = jax.lax.cond(
+                fire,
+                lambda: io_callback(
+                    host_callback,
+                    jax.ShapeDtypeStruct((), bool),
+                    state.step,
+                    info.loss,
+                    ordered=True,
                 ),
+                lambda: jnp.asarray(False),
             )
+            new_state = new_state._replace(stopped=state.stopped | stop)
+        return new_state, info
 
-        return (params, opt_state, rng, stop, step + 1), loss
+    if extended:
+        return body
 
-    return body
+    def legacy_body(carry, item):
+        params, opt_state, rng, stop, step = carry
+        state, info = body(FitState(params, opt_state, rng, step, stopped=stop), item)
+        return (
+            state.params,
+            state.opt_state,
+            state.rng,
+            state.stopped,
+            state.step,
+        ), info.loss
+
+    return legacy_body
+
+
+def _call_callbacks(callbacks, method, *args):
+    stop = False
+    for callback in callbacks:
+        hook = getattr(callback, method, None)
+        if hook is None and method == "on_step_end" and callable(callback):
+            hook = callback
+        if hook is not None:
+            result = hook(*args)
+            stop |= result is not None and not bool(result)
+    return stop
+
+
+def _io_callbacks(callbacks, method, *args):
+    """Explicit host boundary; serialize typed PRNG keys without losing their impl."""
+
+    def has_hook(callback):
+        hook = getattr(callback, method, None)
+        if isinstance(callback, FitCallback) and (
+            getattr(type(callback), method) is getattr(FitCallback, method)
+        ):
+            return False
+        return callable(hook) or (method == "on_step_end" and callable(callback))
+
+    selected = tuple(c for c in callbacks if has_hook(c))
+    if not selected:
+        return jnp.asarray(False)
+    leaves, tree = jax.tree.flatten(args)
+    impls = [
+        jax.random.key_impl(x)
+        if hasattr(x, "dtype") and jax.dtypes.issubdtype(x.dtype, jax.dtypes.prng_key)
+        else None
+        for x in leaves
+    ]
+    buffers = [
+        jax.random.key_data(x) if impl is not None else x
+        for x, impl in zip(leaves, impls, strict=True)
+    ]
+    cpu = jax.devices("cpu")[0]
+
+    def invoke(*buffers):
+        # Host snapshots are NumPy arrays. Typed keys alone are reconstructed
+        # on CPU because their dtype cannot cross the io_callback ABI directly.
+        with jax.default_device(cpu):
+            restored = [
+                jax.random.wrap_key_data(jnp.asarray(x), impl=impl)
+                if impl is not None
+                else np.asarray(x)
+                for x, impl in zip(buffers, impls, strict=True)
+            ]
+            values = jax.tree.unflatten(tree, restored)
+            return np.asarray(_call_callbacks(selected, method, *values))
+
+    return io_callback(invoke, jax.ShapeDtypeStruct((), bool), *buffers, ordered=True)
+
+
+def _compiled_fit(state, body, num_steps, callbacks, callback_every, use_ema):
+    """Fixed-shape execution with optional, explicitly requested host effects."""
+    start = state.step
+    stop = _io_callbacks(callbacks, "on_fit_begin", state)
+    state = state._replace(stopped=state.stopped | stop)
+
+    def step(state, _):
+        updated, info = body(state, None)
+        if callbacks:
+            completed = updated.step - start
+            fire = ~state.stopped & (
+                (completed % callback_every == 0)
+                | (completed == num_steps)
+                | updated.stopped
+            )
+            requested = jax.lax.cond(
+                fire,
+                lambda: _io_callbacks(callbacks, "on_step_end", updated, info),
+                lambda: jnp.asarray(False),
+            )
+            updated = updated._replace(stopped=updated.stopped | requested)
+        return updated, info
+
+    state, info = jax.lax.scan(step, state, None, length=num_steps)
+    result = FitResult(state, info.loss, use_ema, info, state.step - start)
+    _io_callbacks(callbacks, "on_fit_end", result)
+    return result
 
 
 def _array_fetch(batch, batch_size, num_examples):
@@ -359,13 +627,24 @@ def fit(
     optimizer=None,
     on_step=None,
     log_every: int = 1,
-) -> Tuple[object, Array]:
+    ema_decay: Optional[float] = None,
+    use_ema: bool = False,
+    callbacks=(),
+    callback_every: int = 1,
+    callback_mode: Literal["host", "io"] = "host",
+    return_result: bool = False,
+    model_state=None,
+    has_aux: bool = False,
+    initial_state: FitState | None = None,
+    kernel: FitKernel | None = None,
+) -> Tuple[object, Array] | FitResult:
     """Minimize ``loss_fn`` over ``params`` with minibatch gradient descent.
 
     Args:
-        loss_fn: ``loss_fn(params, rng, batch) -> scalar``. Must be a stable
-            function object across calls to benefit from the cached jitted
-            step (avoid rebuilding it per call).
+        loss_fn: ``loss_fn(params, rng, batch) -> scalar``. With model_state,
+            accepts a fourth state argument and returns ``(loss, new_state)``.
+            With has_aux, also returns metrics as described below. Ignored
+            when a complete kernel is supplied.
         params: Pytree of trainable parameters.
         rng: PRNG key consumed for minibatching and the per-step loss.
         batch: Either one batch -- a bare array, or a dict of arrays such as
@@ -400,27 +679,93 @@ def fit(
             early. Parameters are deliberately not passed: the callback runs
             inside the compiled loop, so handing it the tree would copy every
             parameter back to the host on each call.
-        log_every: Cadence for ``on_step``. Ignored when ``on_step`` is None.
+        log_every: Cadence for the legacy loss-only ``on_step`` callback.
+        ema_decay: Optional fixed EMA decay in [0, 1). Starts at initial params
+            and averages after each update. Disabled by default, with no extra
+            parameter copy or averaging work.
+        use_ema: Return/apply EMA parameters instead of raw optimizer parameters.
+            Requires ``ema_decay``. Raw and averaged weights remain separately
+            available through ``return_result=True``.
+        callbacks: Sequence of :class:`FitCallback` objects or callables
+            ``callback(state, info)``. Run on the host after each chunk of
+            ``callback_every`` updates and after the final partial chunk.
+            Returning False stops before the next chunk. Hooks receive device
+            arrays and may run validation or save checkpoints. They observe
+            snapshots; change the update rule through ``optimizer`` or ``kernel``.
+        callback_every: Number of updates between general callbacks. Larger
+            values reduce Python dispatch overhead. With no general callbacks,
+            the entire run remains a single scan.
+        callback_mode: "host" (default) runs general callbacks between scan
+            chunks outside JIT, with device-array snapshots. "io" explicitly
+            stages ordered Python callbacks inside a single compiled scan and
+            transfers snapshots to the host (NumPy arrays; typed keys are
+            reconstructed on CPU). Use "io" for general callbacks under JIT.
+            This callback path does not support autodiff or vmap; use host mode
+            outside JIT for callbacks that run substantial JAX computations.
+        return_result: Return a :class:`FitResult` instead of the legacy tuple.
+        model_state: Optional non-parameter state. When supplied, loss_fn must
+            accept ``(params, rng, batch, model_state)`` and return
+            ``(loss, updated_model_state)``. State updates are carried between
+            steps without differentiating them. Available in FitResult.state.
+        has_aux: Forward auxiliary loss outputs into FitInfo.metrics. Stateless
+            losses return ``(loss, metrics)``; stateful losses return
+            ``(loss, (updated_model_state, metrics))``. Metrics may be any fixed
+            pytree of arrays; all leaves are stacked in the returned history.
+        initial_state: Continue from this FitState, preserving raw parameters,
+            optimizer state, RNG, EMA and module state. params/rng are ignored
+            and may be None. num_steps is the number of additional updates.
+            The stopped flag is cleared. Supply the same optimizer/kernel and
+            EMA settings; state does not store or validate their configuration.
+            Iterable sources resume at their current position, not a saved one.
+        kernel: Optional FitKernel with init(params, rng, model_state=None) and
+            step(key, state, batch) -> (FitState, FitInfo). Owns the optimizer,
+            loss, EMA and RNG update policy; optimizer may not also be supplied.
+            Other optimizer/loss configuration arguments are ignored. Each step
+            must increment state.step once and preserve the state/info structure.
+            Use this for custom updates and reuse it when resuming schedules.
 
     Returns:
-        ``(trained_params, losses)``. ``losses`` has shape ``(num_steps,)``,
-        or is truncated at the stopping step if ``on_step`` asked to stop.
+        ``(trained_params, losses)``, or FitResult when return_result=True.
+        Outside JIT in host mode, histories are trimmed to completed updates.
+        Under JIT or in io mode, histories have fixed length num_steps and
+        skipped entries are zero-filled. Use return_result=True and result.valid
+        or result.valid_steps to identify actual updates after early stopping.
+        FitResult.info contains stacked FitInfo diagnostics; result.losses is
+        the same array as result.info.loss. A general callback observes the
+        post-update state and the last pre-update FitInfo in its chunk.
 
     Warns:
-        RuntimeWarning: if any step produced a non-finite loss. The parameters
+        RuntimeWarning: in eager host mode, if a loss is non-finite. No Python
+            checks or warnings are emitted from the pure JIT path; inspect
+            result.losses with result.valid to check losses there. The parameters
             are returned as-is rather than repaired -- once a NaN gradient has
             been applied the run is dead, and silently continuing would hide it.
 
     Note:
-        The loop is a single ``jax.lax.scan``, so it compiles once regardless of
-        ``num_steps`` and runs without returning to Python. Two consequences:
-        losses arrive only when the run finishes rather than step by step (use
-        ``on_step`` to watch it live), and a diverged run still executes its
-        remaining iterations.
+        Array-data fitting can be enclosed in jax.jit. Keep configuration such
+        as num_steps, batch_size, callbacks and EMA options static (e.g. close
+        over them). FitResult is a pytree. Python iterables remain host-only.
+        No callbacks means no host effects, and the fit can be differentiated.
+        The explicit legacy on_step hook uses io_callback under JIT too.
+        Custom kernels must obey the documented state-step contract; runtime
+        Python validation of that contract only occurs in eager host mode.
     """
-    if log_every < 1:
-        raise ValueError(f"log_every must be at least 1; got {log_every}.")
-
+    for name, value in (("log_every", log_every), ("callback_every", callback_every)):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(f"{name} must be a positive integer; got {value!r}.")
+    if ema_decay is not None and not 0 <= ema_decay < 1:
+        raise ValueError("ema_decay must be in [0, 1) or None.")
+    if use_ema and ema_decay is None and kernel is None:
+        raise ValueError("use_ema requires ema_decay.")
+    if callback_mode not in ("host", "io"):
+        raise ValueError("callback_mode must be 'host' or 'io'.")
+    callbacks = tuple(callbacks)
+    for callback in callbacks:
+        if not callable(callback) and not any(
+            callable(getattr(callback, name, None))
+            for name in ("on_fit_begin", "on_step_end", "on_fit_end")
+        ):
+            raise TypeError("callbacks must contain callables or FitCallback hooks.")
     if is_batch_stream(batch):
         if isinstance(batch_size, int):
             raise ValueError(
@@ -436,7 +781,11 @@ def fit(
             raise ValueError("batch must contain at least one array leaf.")
         # Only the *stream* length tells us the dataset size; a bare iterator
         # has no such information and "auto" falls back to the floor.
+        if any(a.ndim == 0 for a in leaves):
+            raise ValueError("batch leaves must have a leading example axis.")
         per_batch = leaves[0].shape[0]
+        if per_batch == 0 or any(a.shape[0] != per_batch for a in leaves):
+            raise ValueError("batch leaves must share a nonempty leading example axis.")
         source_len = _maybe_len(batch)
         num_steps = _resolve_num_steps(
             num_steps,
@@ -449,40 +798,144 @@ def fit(
         leaves = jax.tree.leaves(batch)
         if not leaves:
             raise ValueError("batch must contain at least one array leaf.")
+        if any(a.ndim == 0 for a in leaves):
+            raise ValueError("batch leaves must have a leading example axis.")
         num_examples = leaves[0].shape[0]
+        if num_examples == 0 or any(a.shape[0] != num_examples for a in leaves):
+            raise ValueError("batch leaves must share a nonempty leading example axis.")
+        if batch_size not in (None, "auto") and (
+            not isinstance(batch_size, int)
+            or isinstance(batch_size, bool)
+            or batch_size < 1
+        ):
+            raise ValueError("batch_size must be positive, None, or 'auto'.")
         batch_size = _resolve_batch_size(batch_size, num_examples)
         num_steps = _resolve_num_steps(num_steps, num_examples, batch_size)
         fetch = _array_fetch(batch, batch_size, num_examples)
 
-    if optimizer is not None:
-        tx = optimizer
-    else:
-        tx = _build_optimizer(learning_rate, num_steps, schedule, clip_norm)
-    opt_state = tx.init(params)
+    if num_steps < 0:
+        raise ValueError("num_steps must be nonnegative.")
 
-    body = _make_step(loss_fn, tx, fetch, on_step, log_every)
-    init = (params, opt_state, rng, jnp.asarray(False), jnp.asarray(0, jnp.int32))
-    try:
-        # Not wrapped in jit: the scan is one XLA computation either way, and
-        # jitting here would key the cache on a closure rebuilt every call.
-        (params, _, _, stopped, _), losses = jax.lax.scan(
-            body, init, None, length=num_steps
+    if kernel is not None and optimizer is not None:
+        raise ValueError("Supply kernel or optimizer, not both.")
+    if (
+        kernel is None
+        and initial_state is not None
+        and ((initial_state.ema_params is not None) != (ema_decay is not None))
+    ):
+        raise ValueError(
+            "Resuming requires the same EMA configuration as initialization."
         )
+    if initial_state is not None and model_state is not None:
+        raise ValueError("model_state is already supplied by initial_state.")
+    if kernel is None:
+        tx = (
+            optimizer
+            if optimizer is not None
+            else _build_optimizer(learning_rate, num_steps, schedule, clip_norm)
+        )
+        kernel = build_fit_kernel(loss_fn, tx, ema_decay=ema_decay, has_aux=has_aux)
+    if initial_state is None:
+        state = kernel.init(params, rng, model_state)
+    else:
+        state = initial_state._replace(stopped=jnp.asarray(False))
+    if use_ema and state.ema_params is None:
+        raise ValueError("use_ema requires EMA parameters in the training state.")
+    if initial_state is not None and ema_decay is not None and state.ema_params is None:
+        raise ValueError("Cannot resume EMA without an EMA accumulator.")
+    traced = any(isinstance(x, jax.core.Tracer) for x in jax.tree.leaves(state))
+    if traced and is_batch_stream(batch):
+        raise ValueError(
+            "Jitted fit requires array batches; iterate data loaders outside JIT."
+        )
+    if traced and callbacks and callback_mode != "io":
+        raise ValueError(
+            "Use callback_mode='io' for explicit Python callbacks inside JIT."
+        )
+    example = first if is_batch_stream(batch) else batch
+    info_spec = jax.eval_shape(kernel.step, state.rng, state, example)[1]
+    if not isinstance(info_spec, FitInfo) or info_spec.loss.shape != ():
+        raise ValueError("kernel.step must return FitInfo with a scalar loss.")
+    body = _make_step(
+        loss_fn,
+        None,
+        fetch,
+        on_step,
+        log_every,
+        extended=True,
+        kernel=kernel,
+        info_spec=info_spec,
+        allow_stop=bool(callbacks) and callback_mode == "io",
+    )
+    if traced or callback_mode == "io":
+        result = _compiled_fit(
+            state, body, num_steps, callbacks, callback_every, use_ema
+        )
+        return result if return_result else (result.params, result.losses)
+    start_step = int(state.step)
+    target_step = start_step + num_steps
+    chunks = []
+    stop = _call_callbacks(callbacks, "on_fit_begin", state)
+    # Reuse the same compiled chunk across callbacks; only a shorter final
+    # chunk needs another compilation. No parameter transfer is required.
+    run = jax.jit(
+        lambda state, length: jax.lax.scan(body, state, None, length=length),
+        static_argnums=(1,),
+    )
+    try:
+        if not callbacks:
+            state, info = run(state, num_steps)
+            completed = int(state.step) - start_step
+            if not 0 <= completed <= num_steps or (
+                not bool(state.stopped) and completed != num_steps
+            ):
+                raise ValueError(
+                    "kernel.step must advance state.step by one per update."
+                )
+        else:
+            while int(state.step) < target_step and not stop:
+                length = min(callback_every, target_step - int(state.step))
+                before = int(state.step)
+                state, chunk = run(state, length)
+                completed = int(state.step) - before
+                if not 1 <= completed <= length or (
+                    not bool(state.stopped) and completed != length
+                ):
+                    raise ValueError(
+                        "kernel.step must advance state.step by one per update."
+                    )
+                chunks.append(
+                    jax.tree.map(lambda x, completed=completed: x[:completed], chunk)
+                )
+                # Ensure callback exceptions and side effects finish here.
+                jax.block_until_ready(state)
+                requested_stop = _call_callbacks(
+                    callbacks,
+                    "on_step_end",
+                    state,
+                    jax.tree.map(
+                        lambda x, completed=completed: x[completed - 1], chunk
+                    ),
+                )
+                stop = requested_stop or bool(state.stopped)
+            info = (
+                jax.tree.map(lambda *xs: jnp.concatenate(xs), *chunks)
+                if chunks
+                else jax.tree.map(
+                    lambda spec: jnp.empty((0, *spec.shape), spec.dtype), info_spec
+                )
+            )
+            state = state._replace(stopped=jnp.asarray(stop))
+        # Also surface asynchronous iterator failures inside this try block.
+        jax.block_until_ready((state, info))
     except Exception:
-        # A bad batch fails inside the callback, where JAX wraps it in a
-        # JaxRuntimeError over a traceback through the whole scan machinery.
-        # The stream's own error is the one the user can act on.
         error = getattr(fetch, "stream_state", {}).get("error")
         if error is not None:
             raise error from None
         raise
 
-    if on_step is not None and bool(stopped):
-        # Steps after the stop ran as no-ops and reported NaN; drop them rather
-        # than hand back losses that look like divergence.
-        ran = int(jnp.sum(jnp.asarray(~jnp.isnan(losses), jnp.int32)))
-        losses = losses[:ran]
-
+    info = jax.tree.map(lambda x: x[: int(state.step) - start_step], info)
+    losses = info.loss
     finite = jnp.isfinite(losses)
     if not bool(jnp.all(finite)):
         first = int(jnp.argmin(finite))
@@ -494,32 +947,9 @@ def fit(
             RuntimeWarning,
             stacklevel=2,
         )
-    return params, losses
-
-
-# Per-model pure loss functions, built lazily once per instance so their
-# identity is stable (keeps _jitted_train_step's cache warm across fit calls).
-_PURE_LOSS_CACHE: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
-
-
-def _pure_loss_fn(model):
-    from flax import nnx  # the only flax-aware spot: split/merge boundary
-
-    cached = _PURE_LOSS_CACHE.get(model)
-    if cached is not None:
-        return cached
-
-    graphdef, _, rest = nnx.split(model, nnx.Param, ...)
-
-    def loss_fn(params, rng, batch):
-        m = nnx.merge(graphdef, params, rest)
-        if isinstance(batch, dict):
-            kwargs = {k: v for k, v in batch.items() if k != "data"}
-            return m.loss(rng, batch["data"], **kwargs)
-        return m.loss(rng, batch)
-
-    _PURE_LOSS_CACHE[model] = loss_fn
-    return loss_fn
+    result = FitResult(state, losses, use_ema, info, state.step - start_step)
+    _call_callbacks(callbacks, "on_fit_end", result)
+    return result if return_result else (result.params, losses)
 
 
 class FitMixin:
@@ -534,6 +964,28 @@ class FitMixin:
         """
         return {}
 
+    def _prepare_fit(self, data):
+        """Prepare model state before splitting, e.g. fit standardization."""
+        return data
+
+    def _fit_loss(self, rng, batch):
+        """Override batch-to-loss dispatch without replacing the fit loop."""
+        if isinstance(batch, dict):
+            return self.loss(
+                rng, batch["data"], **{k: v for k, v in batch.items() if k != "data"}
+            )
+        return self.loss(rng, batch)
+
+    def _fit_param_filter(self):
+        """NNX filter selecting trainable parameters (default: all Param)."""
+        from flax import nnx
+
+        return nnx.Param
+
+    def _fit_callbacks(self):
+        """Model callbacks prepended to those explicitly supplied by the caller."""
+        return ()
+
     def fit(
         self,
         rng: RngKey,
@@ -542,13 +994,40 @@ class FitMixin:
         context: Optional[ArrayLike] = None,
         weights: Optional[ArrayLike] = None,
         **fit_kwargs,
-    ) -> Array:
-        """Train this model in place; returns per-step losses."""
+    ) -> Array | FitResult:
+        """Train in place; return losses, or FitResult with return_result=True.
+
+        ``ema_decay`` enables averaging; ``use_ema=True`` installs the averaged
+        parameters at completion. Non-parameter state (e.g. BatchNorm statistics
+        and RNG counters) is carried through training and installed without EMA.
+        Existing train/eval flags are respected; call ``model.train()`` first
+        when needed. With has_aux=True, loss returns (loss, metrics). Each call
+        starts a fresh optimizer and EMA unless initial_state is supplied.
+        Resuming uses that snapshot's variables, not subsequent model edits.
+        Compatible with nnx.jit when preprocessing hooks are traceable and data
+        is an array pytree; custom host preprocessing should run before JIT.
+        """
         from flax import nnx
 
         fit_kwargs = {**self._default_fit_kwargs(), **fit_kwargs}
-        loss_fn = _pure_loss_fn(self)
-        params = nnx.state(self, nnx.Param)
+        data = self._prepare_fit(data)
+        param_filter = self._fit_param_filter()
+        graphdef, params, rest = nnx.split(self, param_filter, ...)
+
+        def loss_fn(params, rng, batch, model_state):
+            model = nnx.merge(graphdef, params, model_state, copy=True)
+            output = model._fit_loss(rng, batch)
+            rest = nnx.state(model, nnx.Not(param_filter))
+            if fit_kwargs.get("has_aux", False):
+                loss, metrics = output
+                return loss, (rest, metrics)
+            return output, rest
+
+        fit_kwargs["callbacks"] = (
+            *self._fit_callbacks(),
+            *fit_kwargs.get("callbacks", ()),
+        )
+        want_result = fit_kwargs.pop("return_result", False)
         if is_batch_stream(data):
             if weights is not None:
                 raise ValueError(
@@ -568,6 +1047,14 @@ class FitMixin:
                 batch["context"] = context
             if weights is not None:
                 batch["weights"] = weights
-        params, losses = fit(loss_fn, params, rng, batch, **fit_kwargs)
-        nnx.update(self, params)
-        return losses
+        result = fit(
+            loss_fn,
+            params,
+            rng,
+            batch,
+            model_state=None if fit_kwargs.get("initial_state") is not None else rest,
+            return_result=True,
+            **fit_kwargs,
+        )
+        nnx.update(self, result.params, result.state.model_state)
+        return result if want_result else result.losses

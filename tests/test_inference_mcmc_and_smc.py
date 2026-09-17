@@ -59,9 +59,10 @@ SHAPES = [(1,), (2,), (2, 3), (4, 5, 6)]
 )
 def test_markov_kernel_vector_input(kernel_type, in_shape):
     if kernel_type is mclmc and in_shape == (1,):
-        return
-    i = np.random.randint(0, 2**16)
-    xs = np.random.randn(*in_shape)
+        pytest.skip("mclmc does not support 1-d input")
+    rng = np.random.default_rng(0)
+    i = int(rng.integers(0, 2**16))
+    xs = rng.standard_normal(in_shape)
 
     def logdensity(x):
         return -jnp.sum(x**2)
@@ -117,14 +118,15 @@ def test_markov_kernel_adaptation_sanity(kernel_type):
 )
 def test_markov_kernel_invariance(kernel_type, in_shape):
     if kernel_type is mclmc:
-        return
+        pytest.skip("mclmc is not invariant in this setup")
 
-    i = np.random.randint(0, 2**16)
+    rng = np.random.default_rng(1)
+    i = int(rng.integers(0, 2**16))
     key = jax.random.PRNGKey(i)
 
     N = 5000
 
-    positions = np.random.randn(N, *in_shape)
+    positions = rng.standard_normal((N, *in_shape))
     if kernel_type is elliptical_slice:
         # Elliptical slice uses a Gaussian prior; use a flat likelihood so
         # the target is the prior N(0, I).
