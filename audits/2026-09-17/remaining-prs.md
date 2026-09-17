@@ -26,3 +26,12 @@ documentation checks passed after the fix. The earlier full documentation run
 passed 240 cases and skipped four, with only the now-fixed tutorial failing.
 New regressions cover rectangular vector/matrix products in eager/JIT mode,
 and compiled operator-vs-dense Kalman predictions, updates, and gradients.
+
+The first PR #30 coverage run passed 3,623 tests (837 skipped, 10 xfailed,
+1 non-strict xpassed). Python 3.13 exposed two wall-clock test flakes:
+a 2.47x microbenchmark ratio and a 3 ms read against a 0.5 ms deadline.
+Inverse runtime comparisons now use the existing opt-in benchmark marker;
+structural arithmetic checks remain in normal CI. Prefetch readiness and
+recycling checks use worker synchronization rather than sub-ms deadlines.
+All eight affected normal checks pass locally. A broader local run was
+interrupted after stalling; full validation is delegated to GitHub CI.

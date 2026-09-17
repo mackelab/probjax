@@ -1,4 +1,5 @@
 import time
+import threading
 
 import jax
 import numpy as np
@@ -185,7 +186,6 @@ def test_prefetch_sharding_serves_ready_batches(monkeypatch):
 
     def fake_block_until_ready(x):
         ready_calls.append(x)
-        time.sleep(0.05)
         return x
 
     monkeypatch.setattr(
@@ -205,28 +205,34 @@ def test_prefetch_sharding_serves_ready_batches(monkeypatch):
         sharding,
     )
     try:
-        time.sleep(0.12)
+        # All three batches and the terminal marker fit in the queue.
+        it._thread.join(timeout=10)
+        assert not it._thread.is_alive(), "prefetch worker did not finish"
+        assert len(ready_calls) == 3
         _ = next(it)
-        start = time.perf_counter()
         batch = next(it)
-        elapsed = time.perf_counter() - start
     finally:
         it.close()
 
     assert batch["x"] == ("global", 2)
-    assert elapsed < 5e-4
     assert len(ready_calls) >= 2
 
 
 def test_prefetch_sharding_recycles_ready_batches_when_worker_lags(monkeypatch):
     mesh = jax.make_mesh((1,), ("data",), devices=jax.devices()[:1])
     sharding = {"x": jax.sharding.NamedSharding(mesh, P("data", None))}
+    worker_waiting = threading.Event()
+    release_worker = threading.Event()
+    consumer_done = threading.Event()
+    results = []
 
     def fake_host_local_array_to_global_array(x, global_mesh, pspecs):
         return ("global", int(np.asarray(x).reshape(-1)[0]))
 
     def fake_block_until_ready(x):
-        time.sleep(0.05)
+        if x["x"] == ("global", 2):
+            worker_waiting.set()
+            assert release_worker.wait(10), "test did not release the worker"
         return x
 
     monkeypatch.setattr(
@@ -244,22 +250,28 @@ def test_prefetch_sharding_recycles_ready_batches_when_worker_lags(monkeypatch):
         1,
         sharding,
     )
-    try:
-        time.sleep(0.06)
-        first = next(it)
-        start = time.perf_counter()
-        recycled = next(it)
-        elapsed = time.perf_counter() - start
-        time.sleep(0.06)
-        third = next(it)
-        fourth = next(it)
-    finally:
-        it.close()
 
-    assert first["x"] == ("global", 0)
-    assert recycled["x"] == ("global", 0)
-    assert {third["x"], fourth["x"]} == {("global", 0), ("global", 2)}
-    assert elapsed < 5e-4
+    def consume():
+        results.extend([next(it), next(it)])
+        consumer_done.set()
+
+    consumer = threading.Thread(target=consume, daemon=True)
+    try:
+        assert worker_waiting.wait(10), "worker did not reach the second transfer"
+        consumer.start()
+        # Both reads must finish while the second transfer is still blocked.
+        # This checks independence from the worker, without sub-ms timing gates.
+        assert consumer_done.wait(5), "consumer blocked on the unfinished transfer"
+        assert [batch["x"] for batch in results] == [("global", 0), ("global", 0)]
+        release_worker.set()
+        remaining = list(it)
+        assert remaining[-1]["x"] == ("global", 2)
+        assert {batch["x"] for batch in remaining} <= {("global", 0), ("global", 2)}
+    finally:
+        release_worker.set()
+        it.close()
+        if consumer.ident is not None:
+            consumer.join(timeout=10)
 
 
 def test_dataloader_mesh_sharding_overlaps_expensive_host_transform():
