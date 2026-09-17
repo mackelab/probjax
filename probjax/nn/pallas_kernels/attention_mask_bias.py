@@ -1999,6 +1999,161 @@ class LowRankBias(AttentionBias):
         return LowRankBias(query_factors, key_factors, scale=aux["scale"])
 
 
+@jax.tree_util.register_pytree_node_class
+class BatchedLowRankBias(AttentionBias):
+    """Per-EXAMPLE factored bias ``scale * query_factors @ key_factors.T``.
+
+    Same folding trick as :class:`LowRankBias` -- ``flex_attention``
+    concatenates the factors onto Q and K so the bias is expressed inside the
+    dot product and no dense ``[B, H, Q, K]`` tensor is ever built -- but the
+    factors carry a BATCH axis, shape ``[B, length, rank]``.
+
+    ``LowRankBias`` is positional: its factors are ``[H|1, length, rank]``,
+    shared across the batch, so it cannot express a bias that differs per
+    example.  Proportional attention after token merging needs exactly that:
+    key ``j`` of example ``b`` stands for ``m[b, j]`` merged rows and must be
+    biased by ``log m[b, j]``, and the mass differs per task.
+
+    Such a per-key bias is rank ONE: ``log m[b, j]`` is the outer product of a
+    ones vector over queries with the log-mass vector over keys, so folding it
+    costs a single extra feature column on Q and K rather than a Q x K matrix.
+    Use :meth:`from_key_bias` to build it.
+    """
+
+    def __init__(
+        self,
+        query_factors: Array,
+        key_factors: Array,
+        *,
+        scale: float = 1.0,
+    ):
+        query_factors = jnp.asarray(query_factors)
+        key_factors = jnp.asarray(key_factors)
+        if query_factors.ndim != 3 or key_factors.ndim != 3:
+            raise ValueError("factors must have shape [B, length, rank]")
+        if query_factors.shape[-1] != key_factors.shape[-1]:
+            raise ValueError("query and key factors must have the same rank")
+        if query_factors.shape[0] != key_factors.shape[0]:
+            raise ValueError("query and key factors must have the same batch size")
+        if scale < 0:
+            raise ValueError("scale must be non-negative")
+        self.query_factors = query_factors
+        self.key_factors = key_factors
+        self.scale = float(scale)
+
+    @classmethod
+    def from_key_bias(cls, key_bias: Array, q_len: int) -> "BatchedLowRankBias":
+        """Rank-1 bias that adds ``key_bias[b, j]`` to every logit of key ``j``.
+
+        ``key_bias`` has shape ``[B, kv_len]``.  The query factor is all ones,
+        so the outer product is constant along the query axis -- which is what
+        "per-key" means.
+        """
+        key_bias = jnp.asarray(key_bias)
+        if key_bias.ndim != 2:
+            raise ValueError("key_bias must have shape [B, kv_len]")
+        batch = key_bias.shape[0]
+        ones = jnp.ones((batch, q_len, 1), dtype=key_bias.dtype)
+        return cls(ones, key_bias[..., None])
+
+    @property
+    def rank(self) -> int:
+        return self.query_factors.shape[-1]
+
+    def factors(
+        self,
+        q_len: int,
+        kv_len: int,
+        num_heads: int,
+        *,
+        dtype=None,
+    ) -> tuple[Array, Array]:
+        """Return factors in attention layout ``[B, length, heads, rank]``.
+
+        That is precisely ``query.shape[:-1] + (rank,)``, so flex_attention's
+        existing broadcast-and-concatenate path accepts these unchanged.
+        """
+        if q_len > self.query_factors.shape[1]:
+            raise ValueError(
+                f"q_len={q_len} exceeds maximum {self.query_factors.shape[1]}"
+            )
+        if kv_len > self.key_factors.shape[1]:
+            raise ValueError(
+                f"kv_len={kv_len} exceeds maximum {self.key_factors.shape[1]}"
+            )
+        query_factors = self.query_factors[:, :q_len, None, :]
+        key_factors = self.key_factors[:, :kv_len, None, :]
+        query_factors = jnp.broadcast_to(
+            query_factors, query_factors.shape[:2] + (num_heads, self.rank)
+        )
+        key_factors = jnp.broadcast_to(
+            key_factors, key_factors.shape[:2] + (num_heads, self.rank)
+        )
+        if dtype is not None:
+            query_factors = query_factors.astype(dtype)
+            key_factors = key_factors.astype(dtype)
+        return query_factors, key_factors
+
+    def __call__(
+        self,
+        scores: Array,
+        h_idx: Array,
+        q_idx: Array,
+        k_idx: Array,
+        data: Optional[Array] = None,
+    ) -> Array:
+        """Scalar-kernel fallback; the flex path never reaches this.
+
+        The callback carries no BATCH index, so a per-example bias cannot be
+        applied here for B > 1 -- ``DenseBias`` raises for the same reason when
+        it has no block data.  ``flex_attention`` folds the factors into Q/K via
+        :meth:`factors` and never calls this, which is the intended path.
+        """
+        del data
+        if self.query_factors.shape[0] != 1:
+            raise ValueError(
+                "BatchedLowRankBias.__call__ has no batch index and so supports "
+                "only batch size 1; use flex_attention, which folds the factors "
+                "into Q/K via `factors()`."
+            )
+        del h_idx  # factors are shared across heads
+        query_factors = jnp.take(self.query_factors[0], q_idx, axis=0)
+        key_factors = jnp.take(self.key_factors[0], k_idx, axis=0)
+        return scores + self.scale * (query_factors @ key_factors.T)
+
+    def dense(
+        self,
+        q_len: int,
+        kv_len: int,
+        *,
+        batch_size: int = 1,
+        num_heads: int = 1,
+    ) -> jax.Array:
+        """Materialised fallback for kernels that cannot fold the factors.
+
+        Correct but defeats the purpose: prefer the flex path, which folds this
+        into Q/K.  Provided so the bias still works on the dense attention
+        implementation rather than failing there.
+        """
+        qf = self.query_factors[:, :q_len]
+        kf = self.key_factors[:, :kv_len]
+        per_b = self.scale * jnp.einsum("bqr,bkr->bqk", qf, kf)
+        return jnp.broadcast_to(
+            per_b[:, None], (per_b.shape[0], num_heads, q_len, kv_len)
+        )
+
+    def tree_flatten(self):
+        return (
+            (self.query_factors, self.key_factors),
+            {"scale": self.scale},
+        )
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        query_factors, key_factors = children
+        return BatchedLowRankBias(query_factors, key_factors, scale=aux["scale"])
+
+
 # ---------------------- Class-based Stateless Biases -------------------------
 
 
