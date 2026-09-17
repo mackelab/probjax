@@ -1,6 +1,7 @@
 from .attention_mask_bias import (
     AttentionBias,
     AttentionMask,
+    BatchedLowRankBias,
     BlockDiagonalCausalMask,
     BlockDiagonalMask,
     CausalAlibiBias,
@@ -64,6 +65,7 @@ from .kernels.ssd import (
 __all__ = [
     "AttentionBias",
     "AttentionMask",
+    "BatchedLowRankBias",
     "BlockDiagonalCausalMask",
     "BlockDiagonalMask",
     "BlockSizes",

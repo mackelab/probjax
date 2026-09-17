@@ -16,6 +16,7 @@ from jax import lax
 from probjax.nn.pallas_kernels import (
     AttentionBias,
     AttentionMask,
+    BatchedLowRankBias,
     BlockSizes,
     KeyPaddingMask,
     LearnedAlibiBias,
@@ -749,6 +750,7 @@ class InducedSelfAttention(nnx.Module):
         output_q_scale_cls: ModuleLikeType | None = None,
         norm_cls: ModuleLikeType | None = nnx.LayerNorm,
         mha_cls: ModuleLikeType = MultiHeadAttention,
+        attention_fn: Any | None = None,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike = jnp.float32,
         precision: PrecisionLike | None = None,
@@ -783,10 +785,18 @@ class InducedSelfAttention(nnx.Module):
         )
 
         # --- MHA sub-layers ---
+        # `attention_fn` is opt-in: omitted, both MABs keep flax's default
+        # (dense, materialising) kernel, so existing models are unchanged.
+        # Passing `flex_attention` lets a LowRankBias / BatchedLowRankBias be
+        # folded into Q/K instead of building a [B, H, Q, K] tensor -- which
+        # matters most here, since MAB 1 attends m inducing queries over the
+        # full row axis.
+        attn_fn_kwargs = {} if attention_fn is None else {"attention_fn": attention_fn}
         self.inducing_attn = mha_cls(
             num_heads=num_heads,
             in_features=in_features,
             qkv_features=qkv_features,
+            **attn_fn_kwargs,
             out_features=in_features,
             dropout_rate=dropout_rate,
             q_scale_cls=q_scale_cls,
@@ -796,6 +806,7 @@ class InducedSelfAttention(nnx.Module):
         self.output_attn = mha_cls(
             num_heads=num_heads,
             in_features=in_features,
+            **attn_fn_kwargs,
             qkv_features=qkv_features,
             out_features=in_features,
             dropout_rate=dropout_rate,
@@ -871,6 +882,7 @@ class InducedSelfAttention(nnx.Module):
         rng: jax.Array | None,
         kv_len: int | Array | None = None,
         mask: AttentionMask | ArrayLike | None = None,
+        bias: AttentionBias | ArrayLike | None = None,
     ) -> Array:
         """Single Multihead Attention Block (MAB).
 
@@ -880,6 +892,14 @@ class InducedSelfAttention(nnx.Module):
         ``mask`` masks the KEYS (``y``).  ``kv_len`` does NOT: it only scales the
         queries (SSMax / QASSMax), so a padded ``y`` still contributes to the
         attention unless a mask says otherwise.
+
+        ``bias`` is ADDED to the attention logits over the same keys, and is
+        forwarded unchanged to the MHA, which hands it to flax's
+        ``dot_product_attention`` (``attn_weights = attn_weights + bias``).
+        Its intended use here is proportional attention: a key that stands for
+        ``m`` merged tokens gets ``log m``, making attention behave as if that
+        key were still present ``m`` times.  A CONSTANT bias is a no-op, since
+        softmax is shift-invariant -- only differences between keys matter.
         """
         # Attention sub-block (pre-norm residual).
         with jax.named_scope("attn_residual"):
@@ -890,6 +910,7 @@ class InducedSelfAttention(nnx.Module):
                 y_n,
                 y_n,
                 mask=mask,
+                bias=bias,
                 deterministic=deterministic,
                 rng=rng,
                 kv_len=kv_len,
@@ -914,6 +935,7 @@ class InducedSelfAttention(nnx.Module):
         rng: jax.Array | None = None,
         kv_len: int | Array | None = None,
         mask: AttentionMask | ArrayLike | None = None,
+        bias: AttentionBias | ArrayLike | None = None,
     ) -> Array:
         """Apply induced self-attention.
 
@@ -944,6 +966,20 @@ class InducedSelfAttention(nnx.Module):
                 every valid position.  Measured on a 2-layer stack with 5 rows
                 of which 1-2 were padding: perturbing only the padded rows moved
                 the VALID outputs by 1.8e-3, and by 0 once masked.
+
+            bias: additive bias over the KEYS of MAB 1, broadcastable to the
+                attention logits ``[batch, heads, queries, keys]``.  Applied to
+                the inducing stage ONLY, for the same reason as ``mask``: MAB 2
+                attends over the learned inducing points, which carry no
+                per-key weight of their own.
+
+                The motivating use is proportional attention after token
+                merging -- a key standing for ``m`` merged tokens gets
+                ``log m``, so attention behaves as if it were still present
+                ``m`` times.  Note a CONSTANT bias changes nothing, because
+                softmax is shift-invariant; only differences between keys
+                matter.  That is why uniformly-merged inputs need no
+                correction and unevenly-merged ones do.
 
         Returns:
             Output of same shape as *x*.
@@ -990,6 +1026,7 @@ class InducedSelfAttention(nnx.Module):
                 rng=rng,
                 kv_len=kv_len,
                 mask=mask,
+                bias=bias,
             )
 
         # MAB 2: input attends to induced representation  ->  ISAB(X) = MAB(X, H)
@@ -1054,9 +1091,16 @@ def dot_product_attention(
 
 def _split_low_rank_bias(
     bias: AttentionBias | None,
-) -> tuple[list[LowRankBias | LearnedAlibiBias], AttentionBias | None]:
-    """Separate low-rank terms so flex attention can fold them into Q/K."""
-    if isinstance(bias, (LowRankBias, LearnedAlibiBias)):
+) -> tuple[
+    list[LowRankBias | BatchedLowRankBias | LearnedAlibiBias], AttentionBias | None
+]:
+    """Separate low-rank terms so flex attention can fold them into Q/K.
+
+    `BatchedLowRankBias` folds identically: its `factors()` already returns the
+    `[B, length, heads, rank]` layout the caller broadcasts against, so the only
+    difference is that its bias may vary per example.
+    """
+    if isinstance(bias, (LowRankBias, BatchedLowRankBias, LearnedAlibiBias)):
         return [bias], None
     if isinstance(bias, SumBias):
         lhs_low_rank, lhs = _split_low_rank_bias(bias.lhs)
