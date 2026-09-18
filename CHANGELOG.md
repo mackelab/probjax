@@ -5,13 +5,21 @@ All notable changes to ProbJax will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased] — preparing 0.2.0
 
 ### Added
-- Initial documentation structure with Sphinx
-- API documentation generation from docstrings
-- FAQ and troubleshooting guides
-- Comprehensive tutorials section
+- Zensical documentation with executable examples, rendered PPL/Kalman/SMC
+  tutorials, migration notes and a release checklist
+- Stateful training with `FitState`/`FitInfo`, resumable optimizer/RNG state,
+  optional EMA, callbacks, auxiliary metrics and explicit JIT IO callbacks
+- Required, overridable event specifications for diffusion and flow matching;
+  `DiffusionTransformer` with time and optional global-context conditioning
+- Adaptive diagonal-noise SDE step doubling with weak and strong Brownian
+  controllers; ODE inverse log-determinants with exact or Hutchinson traces
+- Complementary inverse beta/gamma functions (`betainccinv`, `gammainccinv`)
+  and stable log-space helpers (`log1mexp`, `logdiffexp`)
+- Temporal SMC, BlackJAX-backed adaptation controls, and shared inference runners
+- ISAB key masks and per-example attention biases folded into query/key features
 - `Autoregressive.sample` supports prefix conditioning (`prefix=`, `prefix_len=`)
   and KV-cached decoding (`use_cache=`) for transformer conditioners, with the
   cached loop compiled to a single program via `nnx.scan`
@@ -28,6 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Set `PROBJAX_DISABLE_CUSTOM_INVERSE=1` to disable globally
 
 ### Changed
+- Target Python 3.11–3.13 and JAX 0.9.x; require Flax >=0.12.6 and BlackJAX 1.6.2
+- Migrate legacy Pallas features to `probjax.nn.pallas_kernels` and remove the
+  old package; use an associative-scan fallback for multi-tile GPU Mamba
+- Require `event_spec` on diffusion and flow-matching constructors; allow
+  per-distribution overrides without changing existing views
+- Expose architecture builder overrides and shared training hooks on NN modules
+- Keep runtime microbenchmarks opt-in; retain structural/correctness checks in CI
 - Mean-flow training objective now defaults to the Improved MeanFlow (iMF)
   v-loss formulation (arXiv:2512.02012): the JVP tangent is the network's
   own boundary-condition velocity `u(z_t, t, t)` (marginal-velocity
@@ -57,6 +72,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   always-emit behaviour globally
 
 ### Fixed
+- Correct the classical RK4 third-stage tableau and stop the stage loop at its
+  actual bound; add accuracy and parameter-gradient regressions
+- VP/cosine preconditioning, time-rescaled SDE coefficients, stochastic reverse
+  V-solver sampling and nonuniform exponential AB2 integration
+- `LinearOperator` rectangular shapes, dense composition order, transpose dtype
+  and JIT-tracer support; compiled Kalman operator/dense parity
+- Upper-tail quantile cancellation, numerical edge cases across distributions,
+  inverse propagation, filtering and SMC evidence/resume handling
+- Background data-loader error propagation and deterministic prefetch regression
+  checks; preserve coverage artifacts when the external Codecov upload fails
 - `MeanFlowMatcher.__call__` no longer leaks `t`'s tangent into `r` through
   `jnp.clip(r, min=t)` during the training-time JVP (`stop_gradient` on the
   bound). Loss-neutral for `r == t` pairs (the corrupted term is multiplied
@@ -68,7 +93,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `flex_attention` no longer crashes on stateful masks (their data children
   are not spatial dims and must not be padded)
 
-## [0.1.0] - 2024
+### Compatibility and validation
+
+See [migration notes](docs/guides/migration.md) before upgrading. Adaptive ODEs
+still use a custom reverse-mode adjoint; a gradient-mode selector and Jacobian
+stride controls are not public APIs in this release. GPU performance of the
+multi-tile Mamba fallback remains unverified. Beta shape gradients use finite
+differences and beta inverse forward AD is unsupported. Codecov upload currently
+requires repository setup independently of the passing coverage test suite.
+
+## [0.1.1] - 2026-08-01
+
+Published release preceding the changes above. See the tagged source for its
+API and dependency versions.
+
+## 0.1.0 development history - 2024
 
 ### Added
 - Core functionality:
@@ -121,5 +160,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optax, Chex, Einops
 - NetworkX, SymPy
 
-[Unreleased]: https://github.com/mackelab/probjax/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/mackelab/probjax/releases/tag/v0.1.0
+[Unreleased]: https://github.com/mackelab/probjax/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/mackelab/probjax/releases/tag/v0.1.1

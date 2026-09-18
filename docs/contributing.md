@@ -46,8 +46,12 @@ ruff check --fix .
 ### Running Tests
 
 ```bash
-# Run all tests
-pytest
+# Generate tutorial pages before running documentation tests
+python -m pip install -r docs/requirements.txt matplotlib
+python scripts/convert_notebooks.py
+
+# Run the default CPU suite (GPU, mesh and benchmarks are opt-in)
+JAX_PLATFORMS=cpu pytest
 
 # Run tests in parallel
 pytest -n auto
@@ -93,7 +97,8 @@ pytest tests/test_specific.py
 
 ### Docstrings
 
-Use NumPy-style docstrings:
+The reference renderer currently uses Google-style docstrings. Match that style
+for new API documentation (some older functions still use NumPy-style sections):
 
 ```python
 def function(param1: int, param2: str) -> bool:
@@ -101,22 +106,16 @@ def function(param1: int, param2: str) -> bool:
 
     Longer description if needed.
 
-    Parameters
-    ----------
-    param1 : int
-        Description of param1.
-    param2 : str
-        Description of param2.
+    Args:
+        param1: Description of param1.
+        param2: Description of param2.
 
-    Returns
-    -------
-    bool
+    Returns:
         Description of return value.
 
-    Examples
-    --------
-    >>> function(1, "hello")
-    True
+    Examples:
+        >>> function(1, "hello")
+        True
     """
 ```
 
@@ -132,7 +131,10 @@ def function(param1: int, param2: str) -> bool:
 ### Building Documentation Locally
 
 ```bash
-python -m pip install -r docs/requirements.txt
+python -m pip install -r docs/requirements.txt matplotlib
+python scripts/convert_notebooks.py
+python scripts/convert_notebooks.py --check
+pytest tests/test_docs.py --benchmark-disable
 zensical build --strict
 zensical serve
 ```
@@ -175,3 +177,8 @@ If you have questions about contributing, feel free to:
 - Reach out to the maintainers
 
 Thank you for contributing to ProbJax!
+
+## Preparing a release
+
+Follow the [release checklist](releasing.md), including version consistency,
+documentation execution and distribution artifact checks.

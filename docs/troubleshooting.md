@@ -69,8 +69,9 @@ supply both.
 
 ## Training loss is NaN
 
-`fit` warns rather than failing silently, and returns the parameters as they
-are — once a NaN gradient has been applied the run is dead:
+Eager `fit` warns about non-finite losses and returns its current parameters.
+The JIT path does not issue Python value-check warnings, so inspect valid losses
+explicitly. Restart from a finite snapshot after correcting the cause:
 
 ```python
 import jax
@@ -95,9 +96,10 @@ this, so a NaN from a stock flow is worth reporting.
 
 ## Losses only arrive at the end of `fit`
 
-That is by design. The loop is a single `jax.lax.scan` and never returns to
-Python, which is what makes it compile once regardless of `num_steps`. Use
-`on_step` to watch progress live, and return `False` from it to stop early.
+The returned history is available after `fit` finishes. Use `on_step` for live
+scalar logging, or general `callbacks` for state/info snapshots between compiled
+chunks. Return `False` to stop early. Under JIT, general callbacks require
+`callback_mode="io"`; see [the training reference](reference/nn.md#jit-and-explicit-python-callbacks).
 
 ## A list of arrays was treated as several batches
 
