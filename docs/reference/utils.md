@@ -4,6 +4,9 @@ Numerical solvers, linear-algebra helpers and shared type aliases.
 
 ## Solvers
 
+See [ODE and SDE integration](../guides/numerical-solvers.md) for adaptive
+controllers, gradients and inverse log-determinants.
+
 ::: probjax.utils.odeint
 ::: probjax.utils.sdeint
 ::: probjax.utils.root

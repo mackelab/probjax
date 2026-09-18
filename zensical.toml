@@ -12,6 +12,8 @@ nav = [
   { "Home" = "index.md" },
   { "Getting started" = "getting-started.md" },
   { "Guides" = [
+    "guides/migration.md",
+    "guides/numerical-solvers.md",
     "guides/program-inversion.md",
     "guides/density-estimation.md",
     "guides/inference.md",
@@ -32,6 +34,7 @@ nav = [
   ] },
   { "Troubleshooting" = "troubleshooting.md" },
   { "Contributing" = "contributing.md" },
+  { "Release checklist" = "releasing.md" },
   { "Changelog" = "https://github.com/mackelab/probjax/blob/main/CHANGELOG.md" },
 ]
 

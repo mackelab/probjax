@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "probjax"
 description = "Jax library for probabilistic computations"
-version = "0.1.1"
+version = "0.2.0"
 requires-python = ">=3.11"
 authors = [
     { name = "Manuel Gloeckler", email = "manuel.gloeckler@uni-tuebingen.de" }
@@ -80,6 +80,7 @@ include = ["probjax*"]
 
 [project.urls]
 Homepage = "https://github.com/mackelab/probjax"
+Documentation = "https://www.mackelab.org/probjax/"
 Repository = "https://github.com/mackelab/probjax"
 Issues = "https://github.com/mackelab/probjax/issues"
 

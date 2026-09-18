@@ -109,7 +109,7 @@ def build_rk_step(
         f0 = drift(t0, y0, *args) if f0 is None else f0
         d = f0.shape[0] if f0.ndim > 0 else 1
         k = jnp.zeros((stages, d), f0.dtype).at[0, :].set(f0)
-        k = jax.lax.fori_loop(1, stages + 1, body_fun, k)
+        k = jax.lax.fori_loop(1, stages, body_fun, k)
 
         y1, y1_error, y1_mid = rk_combine(dt, y0, k, b_sol, b_error, b_mid)
         y1 = y1.reshape(y0.shape)
@@ -336,7 +336,7 @@ ssprk3 = build_rk_method("ssprk3", build_ssprk3_tablau, last_equals_next=True)
 def build_rk4_tablau(dtype: jnp.dtype):
     c = jnp.array([0, 0.5, 0.5, 1], dtype=dtype)
     A = jnp.array(
-        [[0, 0, 0, 0], [0.5, 0, 0, 0], [0, 1, 0.5, 0], [0, 0, 1.0, 0]], dtype=dtype
+        [[0, 0, 0, 0], [0.5, 0, 0, 0], [0, 0.5, 0, 0], [0, 0, 1.0, 0]], dtype=dtype
     )
     b_sol = jnp.array([1.0 / 6.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 6.0], dtype=dtype)
     b_error = None
