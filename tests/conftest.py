@@ -46,7 +46,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jax import random
 
 from probjax.utils.odeutil.solvers.base import get_methods as get_methods_ode
 from probjax.utils.sdeutil import get_methods as get_methods_sde
@@ -56,12 +55,8 @@ try:
 except ImportError:
     _pytest_benchmark_plugin = None
 
-# Remove the hardcoded CPU configuration
-jax.config.update("jax_platform_name", "cpu")
 # Set a fixed random key for all tests
 np.random.seed(0)
-
-key = random.PRNGKey(0)
 
 
 # Invertile function testcase fixtures
@@ -156,7 +151,7 @@ def pytest_addoption(parser):
     parser.addoption(
         "--device",
         action="store",
-        default="cpu",
+        default=None,
         choices=["cpu", "gpu"],
         help="device to run tests on (cpu or gpu)",
     )
@@ -174,6 +169,12 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "docs: documentation tests")
     # Set JAX platform based on device option
     device = config.getoption("--device")
+    if config.getoption("--gpu"):
+        if device == "cpu":
+            raise pytest.UsageError("--gpu conflicts with --device cpu")
+        device = "gpu"
+    device = device or "cpu"
+    config.option.device = device
     jax.config.update("jax_platform_name", device)
 
 

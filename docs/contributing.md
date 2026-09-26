@@ -182,3 +182,27 @@ Thank you for contributing to ProbJax!
 
 Follow the [release checklist](releasing.md), including version consistency,
 documentation execution and distribution artifact checks.
+
+### Test quality and runtime
+
+Prefer an independent analytic or SciPy oracle over comparing two paths through
+ProbJax. Round trips alone can miss matching forward/inverse bugs. Include finite
+value checks before timing numerical code, warm compiled functions outside the
+timed section, and block on device results. Runtime comparisons are opt-in:
+
+```bash
+JAX_PLATFORMS=cpu pytest tests/test_core_inverse_efficiency.py --run-benchmarks --benchmark-disable
+pytest tests/test_attention.py --device gpu
+# --gpu is an alias for --device gpu; combining it with --device cpu is an error.
+pytest -m mesh
+```
+
+Use synchronization events to test asynchronous ordering instead of tight wall
+clock limits. Preserve broad numerical parameter coverage unless measurements
+show it is wasteful. Expected failures should have a specific reason and be
+strict, so a repaired test cannot silently remain marked. Do not turn a known
+incorrect numerical result into the expected result.
+
+CI records the slowest 25 tests and retains JUnit reports for each Python version.
+Use those reports to target expensive tests; local timings are not proof of a
+full-suite speedup. A failure on one Python version does not cancel the others.

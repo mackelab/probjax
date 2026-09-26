@@ -16,6 +16,7 @@ import time
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from probjax.core import inverse, inverse_and_logabsdet
@@ -25,22 +26,22 @@ DEPTH = 8
 
 def forward(x):
     for _ in range(DEPTH):
-        x = 2.0 * jnp.exp(x) + 1.0
+        x = 2.0 * jnp.exp(x) - 2.0
     return x
 
 
 def hand_written_inverse(y):
     for _ in range(DEPTH):
-        y = jnp.log((y - 1.0) / 2.0)
+        y = jnp.log((y + 2.0) / 2.0)
     return y
 
 
 def hand_written_inverse_and_logdet(y):
     logdet = jnp.zeros(())
     for _ in range(DEPTH):
-        # d/dy log((y - 1) / 2) = 1 / (y - 1)
-        logdet = logdet - jnp.sum(jnp.log(jnp.abs(y - 1.0)))
-        y = jnp.log((y - 1.0) / 2.0)
+        # d/dy log((y + 2) / 2) = 1 / (y + 2)
+        logdet = logdet - jnp.sum(jnp.log(jnp.abs(y + 2.0)))
+        y = jnp.log((y + 2.0) / 2.0)
     return y, logdet
 
 
@@ -69,21 +70,49 @@ def all_primitives(fn, *args):
     return {str(eqn.primitive) for eqn in _walk(jax.make_jaxpr(fn)(*args).jaxpr)}
 
 
-def best_of(fn, arg, repeats=40):
-    compiled = jax.jit(fn)
-    jax.block_until_ready(compiled(arg))
-    timings = []
-    for _ in range(repeats):
-        start = time.perf_counter()
-        jax.block_until_ready(compiled(arg))
-        timings.append(time.perf_counter() - start)
-    return min(timings)
+def runtime_ratio(generated, handwritten, arg, repeats=40):
+    """Warm both executables, then interleave timings to reduce machine drift."""
+    compiled = [jax.jit(generated), jax.jit(handwritten)]
+    outputs = [jax.block_until_ready(fn(arg)) for fn in compiled]
+    for output in outputs:
+        for leaf in jax.tree.leaves(output):
+            assert np.isfinite(np.asarray(leaf)).all()
+    for actual, expected in zip(
+        jax.tree.leaves(outputs[0]), jax.tree.leaves(outputs[1]), strict=True
+    ):
+        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
+    timings = [[], []]
+    for repeat in range(repeats):
+        for index in (0, 1) if repeat % 2 == 0 else (1, 0):
+            start = time.perf_counter()
+            jax.block_until_ready(compiled[index](arg))
+            timings[index].append(time.perf_counter() - start)
+    return np.median(timings[0]) / np.median(timings[1])
+
+
+@pytest.mark.parametrize("with_logdet", [False, True])
+def test_benchmark_workload_is_finite_and_inverts(with_logdet):
+    x = jnp.linspace(-0.001, 0.001, 32)
+    y = forward(x)
+    assert bool(jnp.all(jnp.isfinite(y)))
+    if with_logdet:
+        recovered, logdet = jax.jit(inverse_and_logabsdet(forward))(y)
+        # Independent analytic derivative accumulated along the forward path.
+        value = x
+        expected_logdet = jnp.zeros(())
+        for _ in range(DEPTH):
+            expected_logdet -= jnp.sum(jnp.log(2.0) + value)
+            value = 2.0 * jnp.exp(value) - 2.0
+        np.testing.assert_allclose(logdet, expected_logdet, rtol=1e-6)
+    else:
+        recovered = jax.jit(inverse(forward))(y)
+    np.testing.assert_allclose(recovered, x, atol=2e-7, rtol=1e-4)
 
 
 def test_inverse_emits_exactly_the_hand_written_arithmetic():
     """The strong claim: the same op count, not merely a similar one.
 
-    ``2*exp(x)+1`` inverts to ``log((y-1)/2)`` -- one sub, one div and one log
+    ``2*exp(x)-2`` inverts to ``log((y+2)/2)`` -- one add, one div and one log
     per layer, nothing else. Validation-by-replay used to add a forward bind, an
     isclose, a reduce_and and a select on top of every one of them.
     """
@@ -120,14 +149,14 @@ def test_inverse_and_logabsdet_stays_within_a_small_factor():
 def test_generated_inverse_runs_at_hand_written_speed(generated, handwritten):
     """The criterion that matters: cost after jit, not jaxpr size.
 
-    Measured across 40 runs the ratio sits at 0.8-1.1x for both variants, i.e.
-    parity within noise. The bound is set well above that because a loaded
-    machine skews the minimum -- ten repeats under a concurrent test run
-    produced 1.57x for the same code. It still catches the regression it exists
-    for: validation-by-replay was 3.2x.
+    Both variants are warmed before alternating timed calls. The median
+    reduces sensitivity to isolated scheduling spikes. Run these opt-in checks
+    without concurrent workloads; the 2x bound is a coarse regression guard,
+    not a hardware-independent performance guarantee.
     """
-    y = jax.jit(forward)(jnp.linspace(0.1, 0.5, 100_000))
-    ratio = best_of(generated, y) / best_of(handwritten, y)
+    y = jax.jit(forward)(jnp.linspace(-0.001, 0.001, 100_000))
+    assert bool(jnp.all(jnp.isfinite(y)))
+    ratio = runtime_ratio(generated, handwritten, y)
     assert ratio < 2.0, f"generated inverse is {ratio:.2f}x hand-written"
 
 
@@ -150,7 +179,7 @@ def test_volume_preserving_inverse_runs_at_hand_written_speed():
     usual allowance for loaded machines."""
     y = jax.jit(_vp_forward)(jnp.linspace(0.1, 0.5, 100_000))
     generated = lambda v: inverse_and_logabsdet(_vp_forward)(v)  # noqa: E731
-    ratio = best_of(generated, y) / best_of(_vp_hand_written, y)
+    ratio = runtime_ratio(generated, _vp_hand_written, y)
     assert ratio < 2.0, f"generated VP inverse is {ratio:.2f}x hand-written"
 
 
@@ -162,7 +191,7 @@ def test_no_guard_means_no_emitted_check():
     domain violation surfaces as NaN through IEEE for free.
     """
     primitives = all_primitives(inverse(forward), jnp.asarray([0.5]))
-    assert primitives == {"sub", "div", "log"}, primitives
+    assert primitives == {"add", "div", "log"}, primitives
 
 
 def test_guard_on_a_literal_costs_nothing():
