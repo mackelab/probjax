@@ -8,8 +8,8 @@ from probjax.nn.layers.reg import DropPath
 
 
 from probjax.nn.utils import (
+    PrecisionMixin,
     filter_precision_kwargs,
-    get_active_precision_kwargs,
 )
 from probjax.utils.typing import (
     Array,
@@ -50,7 +50,7 @@ class BinaryFuse(nnx.Module):
     ) -> Array: ...
 
 
-class MLPConditioner(nnx.Module):
+class MLPConditioner(PrecisionMixin, nnx.Module):
     """Two-layer MLP used as the default fusion projection."""
 
     def __init__(
@@ -71,14 +71,17 @@ class MLPConditioner(nnx.Module):
         if out_features <= 0:
             raise ValueError("out_features must be positive")
 
-        super().__init__()
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
+        )
         hidden_features = hidden_features or max(in_features, out_features)
         if hidden_features <= 0:
             raise ValueError("hidden_features must be positive")
 
-        precision_kwargs = get_active_precision_kwargs(
-            dtype, precision, param_dtype, preferred_element_type
-        )
+        precision_kwargs = self.active_precision_kwargs()
         linear_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
 
         self.activation = activation
@@ -103,7 +106,7 @@ class MLPConditioner(nnx.Module):
         return self.proj(x)
 
 
-class AdditiveFuse(ContextFuse):
+class AdditiveFuse(PrecisionMixin, ContextFuse):
     """Additive fusion module for combining input and context."""
 
     def __init__(
@@ -138,10 +141,13 @@ class AdditiveFuse(ContextFuse):
         if context_features <= 0:
             raise ValueError("context_features must be positive")
 
-        super().__init__()
-        precision_kwargs = get_active_precision_kwargs(
-            dtype, precision, param_dtype, preferred_element_type
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
         )
+        precision_kwargs = self.active_precision_kwargs()
         precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
 
         self.linear = layer_cls(
@@ -167,7 +173,7 @@ class AdditiveFuse(ContextFuse):
         return x + self.linear(context)
 
 
-class AffineFuse(ContextFuse):
+class AffineFuse(PrecisionMixin, ContextFuse):
     """Affine fusion module that applies scale and bias transformations."""
 
     def __init__(
@@ -207,10 +213,13 @@ class AffineFuse(ContextFuse):
         if context_features <= 0:
             raise ValueError("context_features must be positive")
 
-        super().__init__()
-        precision_kwargs = get_active_precision_kwargs(
-            dtype, precision, param_dtype, preferred_element_type
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
         )
+        precision_kwargs = self.active_precision_kwargs()
         precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
 
         self.linear_scale_bias = layer_cls(
@@ -240,7 +249,7 @@ class AffineFuse(ContextFuse):
         return x * scale + bias
 
 
-class ConcatFuse(ContextFuse):
+class ConcatFuse(PrecisionMixin, ContextFuse):
     """Concatenation fusion module that combines input and context features."""
 
     def __init__(
@@ -275,10 +284,13 @@ class ConcatFuse(ContextFuse):
         if context_features <= 0:
             raise ValueError("context_features must be positive")
 
-        super().__init__()
-        precision_kwargs = get_active_precision_kwargs(
-            dtype, precision, param_dtype, preferred_element_type
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
         )
+        precision_kwargs = self.active_precision_kwargs()
         precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
 
         self.ctx_layer = layer_cls(
@@ -356,7 +368,7 @@ class AdditiveBinaryFuse(BinaryFuse):
         return x + y
 
 
-class GatedFuse(BinaryFuse):
+class GatedFuse(PrecisionMixin, BinaryFuse):
     """Gated fusion module that combines input and context features."""
 
     def __init__(
@@ -394,11 +406,14 @@ class GatedFuse(BinaryFuse):
         if context_features <= 0:
             raise ValueError("context_features must be positive")
 
-        super().__init__()
-
-        precision_kwargs = get_active_precision_kwargs(
-            dtype, precision, param_dtype, preferred_element_type
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
         )
+
+        precision_kwargs = self.active_precision_kwargs()
         precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
 
         self.mode = mode

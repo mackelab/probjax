@@ -26,6 +26,7 @@ from typing import Any, Callable, Optional, Union
 
 import jax
 
+from probjax.utils.jaxutils import ravel_args
 from probjax.utils.typing import Array, ArrayLike, PyTree
 
 
@@ -64,15 +65,32 @@ def _bind_1(fn: Callable, args: tuple) -> Callable:
     return bound
 
 
+def _ravel_state_arg(
+    inner: Callable,
+    unravel: Callable[[Array], PyTree],
+    index: int,
+    t: ArrayLike,
+    y_flat: Array,
+    *args: Any,
+) -> Array:
+    """Evaluate ``inner`` on the unraveled flat state; ravel the output.
+
+    Shared core behind :func:`_ravel_callable` and
+    :meth:`RaveledDrift.__call__`: replaces the flat-state argument at
+    positional ``index`` of ``(t, y_flat, *args)`` with the unraveled tree,
+    calls ``inner``, and ravels the result back to a flat array.
+    """
+    call_args = _replace_positional_arg((t, y_flat, *args), index, unravel(y_flat))
+    value = inner(*call_args)
+    value_flat, _ = ravel_args(value)
+    return value_flat
+
+
 def _ravel_callable(fn: Callable, unravel: Callable[[Array], PyTree], index: int):
     """Wrap ``fn`` to accept a flat array at positional ``index``."""
-    from probjax.utils.jaxutils import ravel_args
 
     def raveled(*args):
-        args = _replace_positional_arg(args, index, unravel(args[index]))
-        value = fn(*args)
-        value_flat, _ = ravel_args(value)
-        return value_flat
+        return _ravel_state_arg(fn, unravel, index, *args)
 
     return raveled
 
@@ -143,7 +161,8 @@ class Drift:
       at position ``index`` (used by solvers that ravel pytree states).
     - :meth:`bind_args` — returns a new instance with positional args bound
       via closure. The default wraps in a :class:`generic_drift`, which
-      loses the marker's type; marker subclasses override to preserve it.
+      loses the marker's type; marker subclasses implement
+      :meth:`_bind_args_impl` to preserve it.
     """
 
     def __call__(self, t: ArrayLike, y: PyTree, *args: Any) -> PyTree:
@@ -157,12 +176,18 @@ class Drift:
     def bind_args(self, *args: Any) -> "Drift":
         """Bind positional ``*args`` into the drift via closure.
 
-        Default wraps in :class:`generic_drift` (loses marker type). Markers
-        override to preserve their dataclass identity so specialized solvers
-        can still ``isinstance``-dispatch.
+        The ``if not args: return self`` guard lives here; subclasses only
+        implement :meth:`_bind_args_impl`. Default wraps in
+        :class:`generic_drift` (loses marker type). Markers implement
+        ``_bind_args_impl`` to preserve their dataclass identity so
+        specialized solvers can still ``isinstance``-dispatch.
         """
         if not args:
             return self
+        return self._bind_args_impl(args)
+
+    def _bind_args_impl(self, args: tuple[Any, ...]) -> "Drift":
+        """Bind a non-empty ``args`` tuple; the default loses marker type."""
         return generic_drift(fn=_bind_2(self, args))
 
 
@@ -188,14 +213,9 @@ class RaveledDrift(Drift):
         self._index = index
 
     def __call__(self, t: ArrayLike, y_flat: Array, *args: Any) -> Array:
-        from probjax.utils.jaxutils import ravel_args
-
-        call_args = _replace_positional_arg(
-            (t, y_flat, *args), self._index, self._unravel(y_flat)
+        return _ravel_state_arg(
+            self._inner, self._unravel, self._index, t, y_flat, *args
         )
-        out = self._inner(*call_args)
-        out_flat, _ = ravel_args(out)
-        return out_flat
 
 
 def _raveled_drift_flatten(obj: RaveledDrift):
@@ -230,9 +250,7 @@ class generic_drift(Drift):
     def __call__(self, t: ArrayLike, y: PyTree, *args: Any) -> PyTree:
         return self.fn(t, y, *args)
 
-    def bind_args(self, *args: Any) -> "generic_drift":
-        if not args:
-            return self
+    def _bind_args_impl(self, args: tuple[Any, ...]) -> "generic_drift":
         return generic_drift(fn=_bind_2(self.fn, args))
 
 
@@ -254,9 +272,7 @@ class split_drift(Drift):
         nonlin = self.nonlin(t, x, *args)
         return jax.tree_util.tree_map(lambda li, ni: li + ni, linear, nonlin)
 
-    def bind_args(self, *args: Any) -> "split_drift":
-        if not args:
-            return self
+    def _bind_args_impl(self, args: tuple[Any, ...]) -> "split_drift":
         return split_drift(lin_coeff=self.lin_coeff, nonlin=_bind_2(self.nonlin, args))
 
     def ravel_arg(
@@ -279,9 +295,7 @@ class state_drift(Drift):
         del t
         return self.drift(y, *args)
 
-    def bind_args(self, *args: Any) -> "state_drift":
-        if not args:
-            return self
+    def _bind_args_impl(self, args: tuple[Any, ...]) -> "state_drift":
         return state_drift(drift=_bind_1(self.drift, args))
 
 
@@ -298,9 +312,7 @@ class affine_drift(Drift):
         bias_part = self.bias(t, *args)
         return jax.tree_util.tree_map(lambda li, bi: li + bi, linear_part, bias_part)
 
-    def bind_args(self, *args: Any) -> "affine_drift":
-        if not args:
-            return self
+    def _bind_args_impl(self, args: tuple[Any, ...]) -> "affine_drift":
         return affine_drift(
             linear=_bind_2(self.linear, args), bias=_bind_1(self.bias, args)
         )
@@ -321,9 +333,7 @@ class additive_diffusion(Drift):
         del y
         return self.diffusion(t, *args)
 
-    def bind_args(self, *args: Any) -> "additive_diffusion":
-        if not args:
-            return self
+    def _bind_args_impl(self, args: tuple[Any, ...]) -> "additive_diffusion":
         return additive_diffusion(diffusion=_bind_1(self.diffusion, args))
 
 
@@ -357,8 +367,8 @@ class linear_drift(Drift):
         bias_part = self.b(t, *args)
         return jax.tree_util.tree_map(lambda li, bi: li + bi, linear_part, bias_part)
 
-    def bind_args(self, *args: Any) -> "linear_drift":
-        if self.b is None or not args:
+    def _bind_args_impl(self, args: tuple[Any, ...]) -> "linear_drift":
+        if self.b is None:
             return self
         return linear_drift(A=self.A, b=_bind_1(self.b, args))
 
@@ -386,6 +396,6 @@ class const_diffusion(Drift):
         del t, y, args
         return self.G
 
-    def bind_args(self, *args: Any) -> "const_diffusion":
+    def _bind_args_impl(self, args: tuple[Any, ...]) -> "const_diffusion":
         del args
         return self

@@ -249,11 +249,6 @@ class tailed_histogram_gen(histogram_gen):
         }
 
     @classmethod
-    def support(cls, **kwargs):
-        """Support is the whole real line."""
-        return real
-
-    @classmethod
     def _split_mass(cls, tail_logit):
         """(mass in the two tails each, mass in the binned region)."""
         tail = jax.nn.sigmoid(jnp.asarray(tail_logit))

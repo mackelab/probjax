@@ -12,6 +12,7 @@ from probjax.utils._solver_common import (
     stack_trace,
 )
 from probjax.utils.functions import (
+    RaveledDrift,
     additive_diffusion,
     const_diffusion,
 )
@@ -198,12 +199,10 @@ def _sdeint(
     if callable(ravel_arg):
         drift_raveled = cast(Callable, ravel_arg(unravel, index=1))
     else:
-
-        def drift_raveled(t, yi):
-            yi_tree = unravel(yi)
-            drift_tree = drift(t, yi_tree)
-            drift_flat, _ = ravel_args(drift_tree)
-            return drift_flat
+        # Plain callable or non-Drift pytree: keep array leaves as explicit
+        # pytree children via RaveledDrift so they stay differentiable,
+        # same as the ODE side.
+        drift_raveled = RaveledDrift(drift, unravel, index=1)
 
     def diffusion_unraveled(t, yi):
         yi_tree = unravel(yi)
