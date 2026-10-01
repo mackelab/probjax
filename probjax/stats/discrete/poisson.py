@@ -44,20 +44,7 @@ class poisson_gen(rv_discrete, rv_exponential_family):
 
     @classmethod
     def ppf(cls, q: ArrayLike, rate, **kwds):
-        """Percent point function of the Poisson distribution.
-
-        Parameters
-        ----------
-        q : array_like
-            Quantile, must be between 0 and 1
-        rate : float or array_like
-            Rate parameter of the Poisson distribution
-
-        Returns
-        -------
-        k : ndarray
-            The smallest integer k such that CDF(k) ≥ q
-        """
+        """Percent point function of the Poisson distribution."""
         q = jnp.asarray(q)
         rate = jnp.asarray(rate)
 
@@ -93,16 +80,6 @@ class poisson_gen(rv_discrete, rv_exponential_family):
         For a Poisson distribution with rate λ:
         - If λ is an integer, both λ and λ-1 are modes
         - If λ is not an integer, the mode is floor(λ)
-
-        Parameters
-        ----------
-        rate : float or array_like
-            Rate parameter of the Poisson distribution
-
-        Returns
-        -------
-        mode : ndarray
-            Mode of the Poisson distribution
         """
         rate = jnp.asarray(rate)
         # For non-integer rates, mode is floor(rate)
@@ -153,18 +130,6 @@ class poisson_gen(rv_discrete, rv_exponential_family):
 
         The MLE for the Poisson distribution is simply the sample mean:
         rate = mean(data)
-
-        Parameters
-        ----------
-        data : array_like
-            Data to fit the distribution to
-        **kwds : dict, optional
-            Additional parameters (ignored)
-
-        Returns
-        -------
-        params : tuple
-            The fitted parameter (rate,)
         """
         rate = weighted_mean(data, weights)
         return (rate,)
