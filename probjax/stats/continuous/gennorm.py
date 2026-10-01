@@ -47,11 +47,6 @@ class gennorm_gen(rv_continuous, rv_exponential_family):
     parameters = {'loc': real, 'scale': strict_positive, 'beta': strict_positive}
 
     @classmethod
-    def support(cls, loc=0.0, scale=1.0, beta=2.0, **kwargs):
-        """Support of the generalized normal distribution."""
-        return real
-
-    @classmethod
     def pdf(cls, x, loc=0.0, scale=1.0, beta=2.0, **kwargs):
         """Probability density function of the generalized normal distribution."""
         z = jnp.abs(x - loc) / scale
