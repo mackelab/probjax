@@ -14,7 +14,7 @@ from jax.scipy.stats import laplace as _laplace
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
-from probjax.stats.utils import clip_prob, loc_scale_sample
+from probjax.stats.utils import _require_unweighted_fit, clip_prob, loc_scale_sample
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["laplace"]
@@ -37,88 +37,23 @@ class laplace_gen(rv_continuous, rv_exponential_family):
     parameters = {'loc': real, 'scale': strict_positive}
 
     @classmethod
-    def support(cls, loc=0.0, scale=1.0, **kwargs):
-        """Support of the Laplace distribution."""
-        return real
-
-    @classmethod
     def logpdf(cls, x, loc=0.0, scale=1.0, **kwargs):
-        """Log of the probability density function of the Laplace distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        logpdf : ndarray
-            Log of the probability density function evaluated at x
-        """
+        """Log of the probability density function of the Laplace distribution."""
         return _laplace.logpdf(x, loc, scale)
 
     @classmethod
     def cdf(cls, x, loc=0.0, scale=1.0, **kwargs):
-        """Cumulative distribution function of the Laplace distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        cdf : ndarray
-            Cumulative distribution function evaluated at x
-        """
+        """Cumulative distribution function of the Laplace distribution."""
         return _laplace.cdf(x, loc, scale)
 
     @classmethod
     def logcdf(cls, x, loc=0.0, scale=1.0, **kwargs):
-        """Log of the cumulative distribution function of the Laplace distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        logcdf : ndarray
-            Log of the cumulative distribution function evaluated at x
-        """
+        """Log of the cumulative distribution function of the Laplace distribution."""
         return jnp.log(_laplace.cdf(x, loc, scale))
 
     @classmethod
     def ppf(cls, q, loc=0.0, scale=1.0, **kwargs):
-        """Percent point function (inverse of cdf) of the Laplace distribution.
-
-        Parameters
-        ----------
-        q : array_like
-            lower tail probability
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        ppf : ndarray
-            Quantile corresponding to the lower tail probability q
-        """
+        """Percent point function (inverse of cdf) of the Laplace distribution."""
         # For Laplace distribution, ppf(q) = loc + scale * sign(q-0.5) * ln(1-2|q-0.5|)
         q = jnp.asarray(q)
         # For q <= 0.5: loc + scale * log(2q)
@@ -138,44 +73,12 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         shape: Tuple[int, ...] = (),
         **kwargs,
     ) -> Array:
-        """Random variates of the Laplace distribution.
-
-        Parameters
-        ----------
-        rng : RngKey
-            JAX PRNG key for random number generation
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-        shape : tuple of ints, optional
-            Output shape. Default is (), meaning a single value.
-
-        Returns
-        -------
-        rvs : ndarray or scalar
-            Random variates of given shape
-        """
+        """Random variates of the Laplace distribution."""
         return loc_scale_sample(rng, random.laplace, shape=shape, loc=loc, scale=scale)
 
     @classmethod
     def sf(cls, x, loc=0.0, scale=1.0, **kwargs):
-        """Survival function (1 - cdf) of the Laplace distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        sf : ndarray
-            Survival function evaluated at x
-        """
+        """Survival function (1 - cdf) of the Laplace distribution."""
         x_arr = jnp.asarray(x)
         loc_arr = jnp.asarray(loc)
         scale_arr = jnp.asarray(scale)
@@ -186,22 +89,7 @@ class laplace_gen(rv_continuous, rv_exponential_family):
 
     @classmethod
     def isf(cls, q, loc=0.0, scale=1.0, **kwargs):
-        """Inverse survival function (inverse of sf) of the Laplace distribution.
-
-        Parameters
-        ----------
-        q : array_like
-            upper tail probability
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        isf : ndarray
-            Quantile corresponding to the upper tail probability q
-        """
+        """Inverse survival function (inverse of sf) of the Laplace distribution."""
         q_arr = jnp.asarray(q)
         loc_arr = jnp.asarray(loc)
         scale_arr = jnp.asarray(scale)
@@ -212,96 +100,29 @@ class laplace_gen(rv_continuous, rv_exponential_family):
 
     @classmethod
     def mean(cls, loc=0.0, scale=1.0, **kwargs):
-        """Mean of the Laplace distribution.
-
-        Parameters
-        ----------
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        mean : float
-            Mean of the distribution
-        """
+        """Mean of the Laplace distribution."""
         return jnp.asarray(loc)
 
     @classmethod
     def mode(cls, loc=0.0, scale=1.0, **kwargs):
-        """Mode of the Laplace distribution.
-
-        Parameters
-        ----------
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        mode : float
-            Mode of the distribution
-        """
+        """Mode of the Laplace distribution."""
         return jnp.asarray(loc)
 
     @classmethod
     def var(cls, loc=0.0, scale=1.0, **kwargs):
-        """Variance of the Laplace distribution.
-
-        Parameters
-        ----------
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        var : float
-            Variance of the distribution
-        """
+        """Variance of the Laplace distribution."""
         scale_arr = jnp.asarray(scale)
         return jnp.asarray(2.0) * (scale_arr**2)
 
     @classmethod
     def entropy(cls, loc=0.0, scale=1.0, **kwargs):
-        """Entropy of the Laplace distribution.
-
-        Parameters
-        ----------
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        entropy : float
-            Entropy of the distribution
-        """
+        """Entropy of the Laplace distribution."""
         scale_arr = jnp.asarray(scale)
         return jnp.asarray(1.0) + jnp.log(2.0 * scale_arr)
 
     @classmethod
     def moment(cls, n, loc=0.0, scale=1.0, **kwargs):
-        """n-th non-central moment of the Laplace distribution.
-
-        Parameters
-        ----------
-        n : int
-            Order of the moment
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        moment : float
-            n-th non-central moment
-        """
+        """n-th non-central moment of the Laplace distribution."""
         n_int = int(jnp.asarray(n))
         scale_arr = jnp.asarray(scale)
         loc_arr = jnp.asarray(loc)
@@ -334,96 +155,33 @@ class laplace_gen(rv_continuous, rv_exponential_family):
 
     @classmethod
     def skew(cls, loc=0.0, scale=1.0, **kwargs):
-        """Skewness of the Laplace distribution.
-
-        Parameters
-        ----------
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        skew : float
-            Skewness of the distribution
-        """
+        """Skewness of the Laplace distribution."""
         return jnp.zeros_like(
             jnp.asarray(loc)
         )  # Skewness is always 0 (symmetric distribution)
 
     @classmethod
     def kurtosis(cls, loc=0.0, scale=1.0, **kwargs):
-        """Excess kurtosis of the Laplace distribution.
-
-        Parameters
-        ----------
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        kurtosis : float
-            Excess kurtosis of the distribution
-        """
+        """Excess kurtosis of the Laplace distribution."""
         loc_arr = jnp.asarray(loc)
         return jnp.asarray(3.0) * jnp.ones_like(loc_arr)
 
     @classmethod
     def natural_parameters(cls, loc=0.0, scale=1.0, **kwargs):
-        """Natural parameters of the Laplace distribution.
-
-        Parameters
-        ----------
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        natural_parameters : tuple
-            Natural parameters of the distribution
-        """
+        """Natural parameters of the Laplace distribution."""
         loc_arr = jnp.asarray(loc)
         scale_arr = jnp.asarray(scale)
         return jnp.stack((loc_arr, -1.0 / scale_arr))
 
     @classmethod
     def sufficient_statistics(cls, x, **kwargs):
-        """Sufficient statistics of the Laplace distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            Data points
-
-        Returns
-        -------
-        sufficient_statistics : tuple
-            Sufficient statistics of the distribution
-        """
+        """Sufficient statistics of the Laplace distribution."""
         x_arr = jnp.asarray(x)
         return jnp.stack((x_arr, jnp.abs(x_arr)))
 
     @classmethod
     def log_partition(cls, loc=0.0, scale=1.0, **kwargs):
-        """Log partition function of the Laplace distribution.
-
-        Parameters
-        ----------
-        loc : float, optional
-            Location parameter. Default is 0.
-        scale : float, optional
-            Scale parameter. Default is 1.
-
-        Returns
-        -------
-        log_partition : float
-            Log partition function of the distribution
-        """
+        """Log partition function of the Laplace distribution."""
         loc_arr = jnp.asarray(loc)
         scale_arr = jnp.asarray(scale)
         return jnp.log(2.0 * scale_arr) + jnp.abs(loc_arr) / scale_arr
@@ -441,23 +199,8 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         The MLE for the Laplace distribution has a closed-form solution:
         - loc = median(data)
         - scale = mean(|data - loc|)
-
-        Parameters
-        ----------
-        data : array_like
-            Data to fit the distribution to
-        **kwds : dict, optional
-            Additional parameters (ignored)
-
-        Returns
-        -------
-        params : tuple
-            The fitted parameters (loc, scale)
         """
-        if weights is not None:
-            raise NotImplementedError(
-                "Weighted fitting is not implemented for the Laplace distribution."
-            )
+        _require_unweighted_fit(weights, "Laplace")
         data = jnp.asarray(data)
         loc = jnp.median(data)
         scale = jnp.mean(jnp.abs(data - loc))

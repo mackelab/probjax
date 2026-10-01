@@ -1,14 +1,14 @@
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.linalg import expm
 
 from probjax.utils.functions import linear_drift, split_drift
 
 A1 = jnp.array([[0.0, 1.0], [-1.0, 0.0]])  # Peridoic
 A2 = jnp.array([[0.0, 1.0], [-1.0, -1.0]])  # Stable
 A3 = jnp.array([[0.0, 1.0], [-1.0, 1.0]])  # Unstable
-A4 = jnp.array(np.random.normal(0, 1, (5, 5)) * 0.1)  # Random
+A4 = jnp.array(np.random.RandomState(0).normal(0, 1, (5, 5)) * 0.1)  # Random
 
 
 @pytest.fixture(
@@ -24,10 +24,11 @@ def linear_ode_problem(request):
     drift = linear_drift(A=A)
 
     def true_f(t, x0):
-        E = A.reshape((1,) + A.shape)
-        t = t.reshape(t.shape + (1,) * len(A.shape))
-        Phi = jax.scipy.linalg.expm(E * t)
-        return jnp.dot(Phi, x0)
+        # Independent CPU oracle: avoid compiling a JAX matrix exponential
+        # for every solver/configuration just to obtain the expected answer.
+        matrix = np.asarray(A, dtype=np.float64)
+        times = np.asarray(t, dtype=np.float64)
+        return expm(times[..., None, None] * matrix) @ np.asarray(x0)
 
     return x0, drift, true_f
 
@@ -57,10 +58,11 @@ def split_drift_ode_problem(request):
     drift = split_drift(lin_coeff=lin_coeff, nonlin=nonlin)
 
     def true_f(t, x0):
-        E = A.reshape((1,) + A.shape)
-        t = t.reshape(t.shape + (1,) * len(A.shape))
-        Phi = jax.scipy.linalg.expm(E * t)
-        return jnp.dot(Phi, x0)
+        # Independent CPU oracle: avoid compiling a JAX matrix exponential
+        # for every solver/configuration just to obtain the expected answer.
+        matrix = np.asarray(A, dtype=np.float64)
+        times = np.asarray(t, dtype=np.float64)
+        return expm(times[..., None, None] * matrix) @ np.asarray(x0)
 
     return x0, drift, true_f
 

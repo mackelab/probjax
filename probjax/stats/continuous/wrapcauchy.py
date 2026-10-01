@@ -45,11 +45,6 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
     parameters = {'loc': real, 'gamma': strict_positive}
 
     @classmethod
-    def support(cls, loc=0.0, gamma=0.5, **kwargs):
-        """Support of the wrapped Cauchy distribution."""
-        return real
-
-    @classmethod
     def pdf(cls, x, loc=0.0, gamma=0.5, **kwargs):
         """Probability density function of the wrapped Cauchy distribution."""
         return (1 - gamma**2) / (

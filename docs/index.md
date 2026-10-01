@@ -2,8 +2,9 @@
 
 A JAX-native research toolbox for probabilistic computation: probabilistic-program
 transformations, SciPy-style distributions, automatic program inversion, a large
-inference suite, and Flax NNX generative models — all `jit`-able and `vmap`-able
-together.
+inference suite, and Flax NNX generative models. Core array computations compose
+with JAX transformations; host callbacks, data loaders and some solver gradient
+paths have additional restrictions described in their guides.
 
 !!! note
 
@@ -54,7 +55,7 @@ log_joint = log_joint_fn(posterior)(z=latent)
 
 -   **Inference**
 
-    Ten MCMC kernels, SMC, Kalman-family filters and particle filtering, plus
+    MCMC kernels, SMC, Kalman-family filters and particle filtering, plus
     flow-based variational inference and NeuTra preconditioning. See
     [Inference](guides/inference.md).
 
@@ -68,15 +69,18 @@ cd probjax
 python -m pip install -e .
 ```
 
-Python 3.11 or newer. Accelerator options are in
+These pages track `main`; the published package can lag behind them. For the
+next release, see [migration notes](guides/migration.md).
+
+Python 3.11–3.13 and JAX 0.9.x. Accelerator options are in
 [Getting started](getting-started.md).
 
 ## Tutorials
 
 A curated set of example notebooks is rendered as part of these pages
 (generated from `examples/` without re-execution, so outputs are those
-committed in the notebooks — each one is re-executed against current `main`
-before inclusion):
+committed in the notebooks; CI executes the generated Python examples, but
+does not regenerate their displayed outputs):
 
 - [PPL basics](tutorials/ppl.md)
 - [Kalman filtering](tutorials/kalman_filter.md)
@@ -88,6 +92,7 @@ All runnable notebooks live in
 gradually as notebook outputs are refreshed.
 
 The remaining notebooks under `examples/` may predate recent API refactors —
-the tutorial pages above are re-executed against current `main` and kept fresh.
+the tutorial pages above have executable examples checked by CI. Stored plots
+and other notebook outputs may still reflect an earlier execution.
 Where anything disagrees with these pages, prefer these pages and the
 [Reference](reference/core.md).

@@ -86,11 +86,6 @@ class spline_normal_gen(rv_continuous):
         }
 
     @classmethod
-    def support(cls, **kwargs):
-        """Linear tails, so the support is all of R."""
-        return real
-
-    @classmethod
     def _to_latent(cls, x, x_pos, y_pos, knot_slopes):
         """``(z, log|dz/dx|)`` -- the spline runs latent -> data, so invert."""
         num_knots = jnp.asarray(x_pos).shape[-1]

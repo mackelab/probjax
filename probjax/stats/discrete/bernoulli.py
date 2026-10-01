@@ -50,20 +50,7 @@ class bernoulli_gen(rv_discrete, rv_exponential_family):
 
     @classmethod
     def ppf(cls, q: ArrayLike, p, **kwds):
-        """Percent point function of the Bernoulli distribution.
-
-        Parameters
-        ----------
-        q : array_like
-            Lower tail probability
-        p : float
-            Probability of success
-
-        Returns
-        -------
-        ppf : ndarray
-            Quantile corresponding to the lower tail probability q
-        """
+        """Percent point function of the Bernoulli distribution."""
         q = jnp.asarray(q)
         p = jnp.asarray(p)
         # For q < 1-p, return 0
@@ -131,18 +118,6 @@ class bernoulli_gen(rv_discrete, rv_exponential_family):
 
         The MLE for the Bernoulli distribution is simply the sample mean:
         p = mean(data)
-
-        Parameters
-        ----------
-        data : array_like
-            Data to fit the distribution to
-        **kwds : dict, optional
-            Additional parameters (ignored)
-
-        Returns
-        -------
-        params : tuple
-            The fitted parameter (p,)
         """
         p = weighted_mean(data, weights)
         return (p,)

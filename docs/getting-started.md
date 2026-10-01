@@ -2,7 +2,9 @@
 
 ## Install
 
-ProbJax requires Python 3.11 or newer and is installed from a checkout:
+ProbJax supports Python 3.11–3.13 and requires JAX `>=0.9.0,<0.10`.
+Install the published version with `python -m pip install probjax`. These pages
+track `main`, so use a source checkout for unreleased APIs:
 
 ```bash
 git clone https://github.com/mackelab/probjax.git

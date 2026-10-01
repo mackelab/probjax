@@ -34,8 +34,8 @@ from probjax.nn.sharding import (
     param_metadata,
 )
 from probjax.nn.utils import (
+    PrecisionMixin,
     filter_precision_kwargs,
-    get_active_precision_kwargs,
     pad_to_power_of_2,
 )
 from probjax.utils.typing import (
@@ -694,7 +694,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         return constrain(out, BATCH)
 
 
-class InducedSelfAttention(nnx.Module):
+class InducedSelfAttention(PrecisionMixin, nnx.Module):
     """Two-stage self-attention with learned inducing points (ISAB).
 
     Implements the Set Transformer's Induced Self-Attention Block using two
@@ -758,6 +758,12 @@ class InducedSelfAttention(nnx.Module):
         checkpoint_inducing_ff: bool = False,
         checkpoint_output_ff: bool = False,
     ):
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
+        )
         if in_features <= 0:
             raise ValueError(f"`in_features` must be positive, got {in_features}.")
         if num_inducing_points <= 0:
@@ -768,7 +774,6 @@ class InducedSelfAttention(nnx.Module):
         self.in_features = in_features
         self.num_heads = num_heads
         self.num_inducing_points = num_inducing_points
-        self.preferred_element_type = preferred_element_type
         self.checkpoint_inducing_ff = bool(checkpoint_inducing_ff)
         self.checkpoint_output_ff = bool(checkpoint_output_ff)
 
@@ -777,12 +782,7 @@ class InducedSelfAttention(nnx.Module):
         )
 
         # Precision and dtype settings.
-        precision_kwargs = get_active_precision_kwargs(
-            dtype,
-            precision,
-            param_dtype,
-            preferred_element_type,
-        )
+        precision_kwargs = self.active_precision_kwargs()
 
         # --- MHA sub-layers ---
         # `attention_fn` is opt-in: omitted, both MABs keep flax's default
@@ -1046,8 +1046,7 @@ class InducedSelfAttention(nnx.Module):
                 kv_len=kv_len,
             )
 
-        if self.preferred_element_type is not None:
-            out = out.astype(self.preferred_element_type)
+        out = self.cast_output(out)
         return out
 
 

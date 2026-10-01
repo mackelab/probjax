@@ -5,7 +5,6 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 
 from probjax.inference.filtering.base import FilterAPI, _gaussian_unpack
-from probjax.utils.linalg import batched_pcg_solve, lanczos_logdet
 from probjax.utils.linear_operator import LinearOperator
 
 
@@ -47,30 +46,14 @@ def default_solve(S, res, dense_mem_limit=200):
             corresponding to obs_dim ~ 5000 in f64 or ~7000 in f32.
     """
     if isinstance(S, LinearOperator):
-        obs_dim = S.out_dim
-    else:
-        S = jnp.asarray(S)
-        obs_dim = S.shape[0]
-
+        # LinearOperator.solve takes rhs as (obs_dim, nrhs); the Kalman
+        # convention here is (nrhs, obs_dim), hence the transposes.
+        return S.solve(
+            jnp.asarray(res).T, assume_a="pos", dense_mem_limit=dense_mem_limit
+        ).T
+    S = jnp.asarray(S)
     res = jnp.asarray(res)
-
-    # Estimate S memory in MB (use f64 = 8 bytes as upper bound)
-    s_mem_mb = obs_dim * obs_dim * 8 / (1024 * 1024)
-
-    if isinstance(S, LinearOperator) and s_mem_mb > dense_mem_limit:
-        # Batched PCG — no materialization
-        matvec = S.operator
-        rhs = res.T  # (obs_dim, nrhs)
-        if rhs.ndim == 1:
-            return jax.scipy.sparse.linalg.cg(matvec, rhs, tol=1e-4)[0]
-        else:
-            X, _info = batched_pcg_solve(matvec, rhs, tol=1e-4, block_size=128)
-            return X.T
-    else:
-        # Dense solve — materialize S if needed, then factorize once
-        if isinstance(S, LinearOperator):
-            S = S.as_array()
-        return jax.scipy.linalg.solve(S, res.T, assume_a="pos").T
+    return jax.scipy.linalg.solve(S, res.T, assume_a="pos").T
 
 
 def default_logdet(S, dense_mem_limit=200):
@@ -84,11 +67,7 @@ def default_logdet(S, dense_mem_limit=200):
     O(n^3) factorization.
     """
     if isinstance(S, LinearOperator):
-        dim = S.out_dim
-        s_mem_mb = dim * dim * 8 / (1024 * 1024)
-        if s_mem_mb > dense_mem_limit:
-            return lanczos_logdet(S, num_steps=min(500, dim))
-        S = S.as_array()
+        return S.logdet(dense_mem_limit=dense_mem_limit)
     return jnp.linalg.slogdet(jnp.asarray(S)).logabsdet
 
 
@@ -134,18 +113,13 @@ def _kalman_update(
     r = observed - y_
 
     # Materialize S and res for solve. C can stay as a LinearOperator —
-    # we use its matvec to build the dense matrices S and res without
-    # materializing C itself.
+    # we use operator composition to build the dense matrices S and res
+    # without materializing C itself.
     if isinstance(C, LinearOperator):
         # S = C @ cov1_ @ C.T  (obs_dim x obs_dim)
-        # cov1_ @ C.T = (C @ cov1_.T).T
-        # C @ cov1_.T: apply C to each column of cov1_.T (= each row of cov1_)
-        C_covT = jax.vmap(C.operator, in_axes=1, out_axes=1)(
-            cov1_.T
-        )  # (obs_dim, state_dim)
-        S = jax.vmap(C.operator, in_axes=1, out_axes=1)(C_covT.T)
-        # res = cov1_ @ C.T = (C @ cov1_.T).T = C_covT.T
-        res = C_covT.T  # (state_dim, obs_dim)
+        S = (C @ cov1_ @ C.T).as_array()
+        # res = cov1_ @ C.T  (state_dim x obs_dim)
+        res = (cov1_ @ C.T).as_array()
     else:
         C = jnp.asarray(C)
         S = C @ cov1_ @ C.T
@@ -159,9 +133,8 @@ def _kalman_update(
 
     # cov1 = cov1_ - K @ C @ cov1_  =  cov1_ - K @ (C @ cov1_)
     if isinstance(C, LinearOperator):
-        C_cov1 = jax.vmap(C.operator, in_axes=1, out_axes=1)(
-            cov1_
-        )  # (obs_dim, state_dim)
+        # C_cov1 = C @ cov1_  (obs_dim x state_dim)
+        C_cov1 = (C @ cov1_).as_array()
         cov1 = cov1_ - K @ C_cov1
     else:
         cov1 = cov1_ - K @ C @ cov1_

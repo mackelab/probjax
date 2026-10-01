@@ -6,11 +6,17 @@ on:
   pull_request:
     branches: [ main ]
 
+# Cancel superseded PR runs; preserve complete main-branch validation.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
 
@@ -46,7 +52,15 @@ jobs:
 
     - name: Run affected tests
       run: |
-        pytest tests/ -q -n auto --testmon --benchmark-disable
+        pytest tests/ -q -n auto --testmon --benchmark-disable --durations=25 --junitxml=test-results.xml
+
+    - name: Preserve test results
+      if: always() && hashFiles('test-results.xml') != ''
+      uses: actions/upload-artifact@v7
+      with:
+        name: test-results-py${{ matrix.python-version }}
+        path: test-results.xml
+        retention-days: 14
 
     - name: Save testmon database
       # Only save from main: the repo is public and PRs must not be able
@@ -88,14 +102,16 @@ jobs:
       # No --testmon here: coverage must see the full suite, otherwise
       # Codecov project/patch gates compare partial numbers.
       run: |
-        pytest tests/ -q -n auto --benchmark-disable --cov=probjax --cov-report=xml --cov-report=term-missing
+        pytest tests/ -q -n auto --benchmark-disable --durations=25 --junitxml=coverage-test-results.xml --cov=probjax --cov-report=xml --cov-report=term-missing
 
     - name: Preserve coverage report
       if: always() && hashFiles('coverage.xml') != ''
       uses: actions/upload-artifact@v7
       with:
         name: coverage-report
-        path: coverage.xml
+        path: |
+          coverage.xml
+          coverage-test-results.xml
         retention-days: 14
 
     - name: Upload coverage to Codecov

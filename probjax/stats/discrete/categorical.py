@@ -101,20 +101,6 @@ class categorical_gen(rv_discrete, rv_exponential_family):
 
         The MLE for the Categorical distribution has a closed-form solution:
         probs = empirical probabilities of each category
-
-        Parameters
-        ----------
-        data : array_like
-            Data to fit the distribution to
-        num_classes : int, optional
-            Number of classes. If None, inferred from data.
-        **kwds : dict, optional
-            Additional parameters (ignored)
-
-        Returns
-        -------
-        params : tuple
-            The fitted probabilities
         """
         data = flatten_samples(data)
         if num_classes is None:

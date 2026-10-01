@@ -41,7 +41,7 @@ algorithms, Flax NNX models, and numerical solvers in one composable codebase.
 
 ## Installation
 
-ProbJax currently targets Python 3.11 or newer. From a source checkout:
+ProbJax targets Python 3.11–3.13 and JAX 0.9.x. Install the published package:
 
 ```bash
 pip install probjax
@@ -145,6 +145,10 @@ x, inverse_logdet = inverse_and_logabsdet(transform)(y)
 
 ## Examples And Documentation
 
+The website tracks `main` and may describe changes newer than the published
+package. See the [migration guide](docs/guides/migration.md) and
+[release notes](CHANGELOG.md) when upgrading.
+
 Full documentation (guides, API reference, troubleshooting) is hosted at
 https://www.mackelab.org/probjax/.
 
@@ -163,6 +167,8 @@ example disagrees with the current package.
 
 ```bash
 python -m pip install -e ".[dev]"
+python -m pip install -r docs/requirements.txt matplotlib
+python scripts/convert_notebooks.py
 pytest
 ruff check .
 ruff format --check .

@@ -1,6 +1,8 @@
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
+from scipy.linalg import expm
 from typing import Any, cast
 
 from probjax.utils.functions import const_diffusion, linear_drift, split_drift
@@ -15,29 +17,50 @@ pytest_plugins = [
 ]
 
 KNOWN_ERROR = []  # All methods should work now
-# Methods that require split_drift
-SPLIT_DRIFT_METHODS = ["exp_ab2_scalarL", "exp_ab3_scalarL"]
 
 
 ts_dense = jnp.linspace(0, 1, 100)
 
 
-def test_odeint_basic_linear_ode(linear_ode_problem, ode_method):
-    """Test linear ODE solvers with linear_drift wrapper."""
-    if ode_method in KNOWN_ERROR:
-        pytest.xfail(f"{ode_method} method has known error")
+# Same matrix as ``A1`` in tests/test_problems/ode_problems.py (periodic 2D),
+# defined locally so this module does not import the plugin module at top
+# level (which would defeat pytest's assertion rewriting for the plugin).
+_PERIODIC_A = jnp.array([[0.0, 1.0], [-1.0, 0.0]])
 
-    # Exponential split methods need split_drift - tested separately
-    if ode_method in SPLIT_DRIFT_METHODS:
-        pytest.skip("requires split_drift method")
 
-    x0, drift, f_true = linear_ode_problem
+@pytest.fixture(params=[_PERIODIC_A], ids=["linear_periodic_2d"])
+def single_linear_ode_problem(request):
+    """One representative linear problem for the full 26-method sweep.
+
+    Mirrors the ``linear_ode_problem`` plugin fixture restricted to ``A1``;
+    the remaining problems are covered by ``test_odeint_basic_linear_ode``.
+    """
+    A = request.param
+    x0 = jnp.ones((A.shape[0],))
+    drift = linear_drift(A=A)
+
+    def true_f(t, x0):
+        # Independent CPU oracle: avoid compiling a JAX matrix exponential
+        # for every solver/configuration just to obtain the expected answer.
+        matrix = np.asarray(A, dtype=np.float64)
+        times = np.asarray(t, dtype=np.float64)
+        return expm(times[..., None, None] * matrix) @ np.asarray(x0)
+
+    return x0, drift, true_f
+
+
+def _check_basic_linear_ode(problem, method):
+    """Shared body for the basic linear ODE tests."""
+    if method in KNOWN_ERROR:
+        pytest.xfail(f"{method} method has known error")
+
+    x0, drift, f_true = problem
     step_size_adaptor = StepSizeAdaptor(atol=1e-2, rtol=1e-2)
     f_approx = odeint(
         drift,
         x0,
         ts_dense,
-        method=ode_method,
+        method=method,
         step_size_adaptor=step_size_adaptor,
         collect_trace=True,
     )
@@ -46,18 +69,28 @@ def test_odeint_basic_linear_ode(linear_ode_problem, ode_method):
     assert error < 1e-1, "Solver failed on dense grid to match true solution"
 
 
-def test_odeint_split_drift_ode(split_drift_ode_problem, ode_method):
-    """Test exponential methods that require split_drift."""
-    if ode_method not in SPLIT_DRIFT_METHODS:
-        pytest.skip("requires non-split_drift method")
+@pytest.mark.parametrize("method", ["euler", "rk4"])
+def test_odeint_basic_linear_ode(linear_ode_problem, method):
+    """Problem coverage: all 4 linear problems x 2 representative methods."""
+    _check_basic_linear_ode(linear_ode_problem, method)
 
+
+def test_odeint_basic_linear_ode_all_methods(
+    single_linear_ode_problem, generic_ode_method
+):
+    """Method coverage: full 26-method sweep on one representative problem."""
+    _check_basic_linear_ode(single_linear_ode_problem, generic_ode_method)
+
+
+def test_odeint_split_drift_ode(split_drift_ode_problem, split_drift_ode_method):
+    """Test exponential methods that require split_drift."""
     x0, drift, f_true = split_drift_ode_problem
     step_size_adaptor = StepSizeAdaptor(atol=1e-2, rtol=1e-2)
     f_approx = odeint(
         drift,
         x0,
         ts_dense,
-        method=ode_method,
+        method=split_drift_ode_method,
         step_size_adaptor=step_size_adaptor,
         collect_trace=True,
     )
@@ -66,14 +99,10 @@ def test_odeint_split_drift_ode(split_drift_ode_problem, ode_method):
     assert error < 1e-1, "Solver failed on dense grid to match true solution"
 
 
-def test_odeint_nonlienar_ode(nonlinear_ode_problem, ode_method):
+def test_odeint_nonlienar_ode(nonlinear_ode_problem, plain_ode_method):
     """Test nonlinear ODE solvers with plain functions."""
-    if ode_method in KNOWN_ERROR:
-        pytest.xfail(f"{ode_method} method has known error")
-
-    # Specialized methods require specific drift types - tested separately
-    if ode_method in SPLIT_DRIFT_METHODS + ["linear_exact"]:
-        pytest.skip("requires generic method")
+    if plain_ode_method in KNOWN_ERROR:
+        pytest.xfail(f"{plain_ode_method} method has known error")
 
     x0, drift, f_true = nonlinear_ode_problem
     step_size_adaptor = StepSizeAdaptor(atol=1e-2, rtol=1e-2)
@@ -81,7 +110,7 @@ def test_odeint_nonlienar_ode(nonlinear_ode_problem, ode_method):
         drift,
         x0,
         ts_dense,
-        method=ode_method,
+        method=plain_ode_method,
         step_size_adaptor=step_size_adaptor,
         collect_trace=True,
     )
@@ -90,14 +119,10 @@ def test_odeint_nonlienar_ode(nonlinear_ode_problem, ode_method):
     assert error < 1e-1, "Solver failed on dense grid to match true solution"
 
 
-def test_odeint_with_pytree(ode_method):
+def test_odeint_with_pytree(plain_ode_method):
     """Test ODE solvers with PyTree states."""
-    if ode_method in KNOWN_ERROR:
-        pytest.xfail(f"{ode_method} method has known error")
-
-    # Specialized methods require specific drift types
-    if ode_method in SPLIT_DRIFT_METHODS + ["linear_exact"]:
-        pytest.skip("requires generic method")
+    if plain_ode_method in KNOWN_ERROR:
+        pytest.xfail(f"{plain_ode_method} method has known error")
 
     x0 = {"x": jnp.ones(1) * 10.0, "y": jnp.ones(1) * 5.0}
     ts = jnp.linspace(0, 1, 100)
@@ -105,8 +130,8 @@ def test_odeint_with_pytree(ode_method):
     def drift(t, x):
         return {"x": x["x"] * x["y"], "y": x["y"] * x["x"]}
 
-    trace = odeint(drift, x0, ts, method=ode_method, collect_trace=True)
-    final_state = odeint(drift, x0, ts, method=ode_method, collect_trace=False)
+    trace = odeint(drift, x0, ts, method=plain_ode_method, collect_trace=True)
+    final_state = odeint(drift, x0, ts, method=plain_ode_method, collect_trace=False)
 
     # Test that pytree is preserved
     assert isinstance(trace, dict)
@@ -117,14 +142,10 @@ def test_odeint_with_pytree(ode_method):
     assert final_state["y"].shape == (1,)
 
 
-def test_odeint_with_pytree_filter_state(ode_method):
+def test_odeint_with_pytree_filter_state(plain_ode_method):
     """Test ODE solvers with PyTree states and filtering."""
-    if ode_method in KNOWN_ERROR:
-        pytest.xfail(f"{ode_method} method has known error")
-
-    # Specialized methods require specific drift types
-    if ode_method in SPLIT_DRIFT_METHODS + ["linear_exact"]:
-        pytest.skip("requires generic method")
+    if plain_ode_method in KNOWN_ERROR:
+        pytest.xfail(f"{plain_ode_method} method has known error")
 
     x0 = {"x": jnp.ones(1) * 10.0, "y": jnp.ones(1) * 5.0}
     ts = jnp.linspace(0, 1, 100)
@@ -139,7 +160,7 @@ def test_odeint_with_pytree_filter_state(ode_method):
         drift,
         x0,
         ts,
-        method=ode_method,
+        method=plain_ode_method,
         filter_state=filter_state,
         collect_trace=True,
     )
@@ -147,7 +168,7 @@ def test_odeint_with_pytree_filter_state(ode_method):
         drift,
         x0,
         ts,
-        method=ode_method,
+        method=plain_ode_method,
         filter_state=filter_state,
         collect_trace=False,
     )
@@ -157,14 +178,10 @@ def test_odeint_with_pytree_filter_state(ode_method):
     assert final_filtered.shape == (1,)
 
 
-def test_odeint_trace_nothing(ode_method):
+def test_odeint_trace_nothing(plain_ode_method):
     """Test ODE solvers with TraceNothing filter."""
-    if ode_method in KNOWN_ERROR:
-        pytest.xfail(f"{ode_method} method has known error")
-
-    # Specialized methods require specific drift types
-    if ode_method in SPLIT_DRIFT_METHODS + ["linear_exact"]:
-        pytest.skip("requires generic method")
+    if plain_ode_method in KNOWN_ERROR:
+        pytest.xfail(f"{plain_ode_method} method has known error")
 
     x0 = jnp.ones(2)
     ts = jnp.linspace(0, 0.5, 10)
@@ -177,7 +194,7 @@ def test_odeint_trace_nothing(ode_method):
         drift,
         x0,
         ts,
-        method=ode_method,
+        method=plain_ode_method,
         filter_state=TraceNothing(),
         collect_trace=True,
     )
@@ -187,26 +204,22 @@ def test_odeint_trace_nothing(ode_method):
         drift,
         x0,
         ts,
-        method=ode_method,
+        method=plain_ode_method,
         filter_state=TraceNothing(),
         collect_trace=False,
     )
     assert final_none is None
 
 
-def test_odeint_supports_drift_args(ode_method):
+def test_odeint_supports_drift_args(plain_ode_method):
     """Test ODE solvers forward positional ``*args`` to plain-callable drifts.
 
     The public API no longer accepts drift keyword arguments — users pass
     parameters positionally via ``*args`` or bind them with
     ``functools.partial`` / ``drift.bind_args(...)``.
     """
-    if ode_method in KNOWN_ERROR:
-        pytest.xfail(f"{ode_method} method has known error")
-
-    # Specialized methods require specific drift types
-    if ode_method in SPLIT_DRIFT_METHODS + ["linear_exact"]:
-        pytest.skip("requires generic method")
+    if plain_ode_method in KNOWN_ERROR:
+        pytest.xfail(f"{plain_ode_method} method has known error")
 
     x0 = jnp.array([1.0, -2.0])
     ts = jnp.linspace(0.0, 1.0, 50)
@@ -223,7 +236,7 @@ def test_odeint_supports_drift_args(ode_method):
         ts,
         rate,
         bias,
-        method=ode_method,
+        method=plain_ode_method,
         collect_trace=True,
     )
 
@@ -236,7 +249,7 @@ def test_odeint_supports_drift_args(ode_method):
         drift_partial,
         x0,
         ts,
-        method=ode_method,
+        method=plain_ode_method,
         collect_trace=True,
     )
 
@@ -251,7 +264,7 @@ def test_odeint_supports_drift_args(ode_method):
             ts,
             r,
             b,
-            method=ode_method,
+            method=plain_ode_method,
             collect_trace=False,
         )
     )
@@ -261,7 +274,7 @@ def test_odeint_supports_drift_args(ode_method):
         ts,
         rate,
         bias,
-        method=ode_method,
+        method=plain_ode_method,
         collect_trace=False,
     )
     terminal_jit = jitted_terminal(x0, rate, bias)
@@ -270,9 +283,7 @@ def test_odeint_supports_drift_args(ode_method):
     assert jnp.allclose(terminal_jit, terminal_ref, atol=1e-6, rtol=1e-6)
 
 
-def test_odeint_split_drift_supports_args(ode_method):
-    if ode_method not in SPLIT_DRIFT_METHODS:
-        pytest.skip("requires non-split_drift method")
+def test_odeint_split_drift_supports_args(split_drift_ode_method):
 
     x0 = jnp.array([1.0])
     ts = jnp.linspace(0.0, 1.0, 40)
@@ -295,7 +306,7 @@ def test_odeint_split_drift_supports_args(ode_method):
         ts,
         scale,
         bias,
-        method=ode_method,
+        method=split_drift_ode_method,
         collect_trace=True,
     )
 
@@ -306,7 +317,7 @@ def test_odeint_split_drift_supports_args(ode_method):
         drift_bound,
         x0,
         ts,
-        method=ode_method,
+        method=split_drift_ode_method,
         collect_trace=True,
     )
 
@@ -438,19 +449,18 @@ def _sde_trace_and_brownian(*args: Any, **kwargs: Any) -> tuple[jax.Array, jax.A
     return cast(jax.Array, trace), cast(jax.Array, brownian)
 
 
-def test_sdeint_scalar(sde_method, scalar_sde_problem):
+def test_sdeint_scalar(sde_method, scalar_sde_problem, rng):
     """Test SDE solvers with scalar problem."""
     # Exponential methods need split_drift (see test_sdeint_split_drift)
     if sde_method in SPLIT_DRIFT_SDE_METHODS:
-        return
+        pytest.skip("requires split_drift SDE method; see test_sdeint_split_drift")
     # linear_exact_sde needs linear_drift + const_diffusion (tested separately)
     if sde_method == "linear_exact_sde":
-        return
+        pytest.skip("tested separately; see test_linear_exact_sde_*")
 
     x0, f, g, f_true = scalar_sde_problem
-    key = jax.random.PRNGKey(0)
     f_approx, dWt = _sde_trace_and_brownian(
-        key, f, g, x0, t, method=sde_method, return_brownian=True
+        rng, f, g, x0, t, method=sde_method, return_brownian=True
     )
     Wt = jnp.cumsum(dWt, axis=0)
     f_sol = f_true(Wt, t, x0)
@@ -458,15 +468,13 @@ def test_sdeint_scalar(sde_method, scalar_sde_problem):
     assert error < 1e-1, "Solver failed on dense grid to match true solution"
 
 
-def test_sdeint_split_drift(sde_method, split_drift_sde_problem):
+def test_sdeint_split_drift(split_drift_sde_method, split_drift_sde_problem, rng):
     """Test exponential SDE methods that require split_drift."""
-    if sde_method not in SPLIT_DRIFT_SDE_METHODS:
-        pytest.skip("requires split_drift SDE method")
 
     x0, f, g, f_true = split_drift_sde_problem
-    key = jax.random.PRNGKey(0)
+    key = rng
     f_approx, dWt = _sde_trace_and_brownian(
-        key, f, g, x0, t, method=sde_method, return_brownian=True
+        key, f, g, x0, t, method=split_drift_sde_method, return_brownian=True
     )
     Wt = jnp.cumsum(dWt, axis=0)
     f_sol = f_true(Wt, t, x0)
@@ -474,11 +482,8 @@ def test_sdeint_split_drift(sde_method, split_drift_sde_problem):
     assert error < 1e-1, "Solver failed on dense grid to match true solution"
 
 
-def test_sdeint_collect_trace_false(sde_method, scalar_sde_problem):
+def test_sdeint_collect_trace_false(generic_sde_method, scalar_sde_problem):
     """Test SDE solvers with collect_trace=False."""
-    # Specialized methods require specific drift type wrappers
-    if sde_method in SPLIT_DRIFT_SDE_METHODS + ["linear_exact_sde"]:
-        pytest.skip("requires generic SDE method")
 
     x0, f, g, _ = scalar_sde_problem
     key = jax.random.PRNGKey(1)
@@ -488,7 +493,7 @@ def test_sdeint_collect_trace_false(sde_method, scalar_sde_problem):
         g,
         x0,
         t,
-        method=sde_method,
+        method=generic_sde_method,
         collect_trace=False,
         return_brownian=False,
     )
@@ -510,16 +515,13 @@ def test_sdeint_return_brownian_requires_trace(scalar_sde_problem):
         )
 
 
-def test_sdeint_2d(sde_method, two_dimensional_sde_problem):
+def test_sdeint_2d(generic_sde_method, two_dimensional_sde_problem, rng):
     """Test SDE solvers with 2D problem."""
-    # Specialized methods require specific drift type wrappers
-    if sde_method in SPLIT_DRIFT_SDE_METHODS + ["linear_exact_sde"]:
-        pytest.skip("requires generic SDE method")
 
     x0, f, g, f_true = two_dimensional_sde_problem
-    key = jax.random.PRNGKey(0)
+    key = rng
     f_approx, dWt = _sde_trace_and_brownian(
-        key, f, g, x0, t, method=sde_method, return_brownian=True
+        key, f, g, x0, t, method=generic_sde_method, return_brownian=True
     )
     Wt = jnp.cumsum(dWt, axis=0)
     f_sol = f_true(Wt, t, x0)
@@ -527,15 +529,12 @@ def test_sdeint_2d(sde_method, two_dimensional_sde_problem):
     assert error < 1e-1, "Solver failed on dense grid to match true solution"
 
 
-def test_sdeint_supports_args(sde_method, scalar_sde_problem):
+def test_sdeint_supports_args(generic_sde_method, scalar_sde_problem):
     """SDE solvers forward ``*args`` to drift and diffusion.
 
     The public API no longer accepts per-function kwargs; parameters are
     passed positionally or bound via ``functools.partial``.
     """
-    # Specialized methods require specific drift type wrappers
-    if sde_method in SPLIT_DRIFT_SDE_METHODS + ["linear_exact_sde"]:
-        pytest.skip("requires generic SDE method")
 
     x0, base_drift, base_diffusion, _ = scalar_sde_problem
     key = jax.random.PRNGKey(3)
@@ -551,7 +550,7 @@ def test_sdeint_supports_args(sde_method, scalar_sde_problem):
         return scale * base_diffusion(t, x)
 
     positional = _sde_trace(
-        key, drift, diffusion, x0, t, scale, bias, method=sde_method
+        key, drift, diffusion, x0, t, scale, bias, method=generic_sde_method
     )
 
     from functools import partial
@@ -564,15 +563,13 @@ def test_sdeint_supports_args(sde_method, scalar_sde_problem):
         diffusion_bound,
         x0,
         t,
-        method=sde_method,
+        method=generic_sde_method,
     )
 
     assert jnp.allclose(positional, bound, atol=1e-6, rtol=1e-6)
 
 
-def test_sdeint_split_drift_supports_args(sde_method):
-    if sde_method not in SPLIT_DRIFT_SDE_METHODS:
-        pytest.skip("requires split_drift SDE method")
+def test_sdeint_split_drift_supports_args(split_drift_sde_method):
 
     key = jax.random.PRNGKey(7)
     x0 = jnp.array([1.0])
@@ -595,7 +592,7 @@ def test_sdeint_split_drift_supports_args(sde_method):
     drift = split_drift(lin_coeff=lin_coeff, nonlin=nonlin)
 
     positional = _sde_trace(
-        key, drift, diffusion, x0, ts, scale, bias, method=sde_method
+        key, drift, diffusion, x0, ts, scale, bias, method=split_drift_sde_method
     )
 
     drift_bound = drift.bind_args(scale, bias)
@@ -608,7 +605,7 @@ def test_sdeint_split_drift_supports_args(sde_method):
         diffusion_bound,
         x0,
         ts,
-        method=sde_method,
+        method=split_drift_sde_method,
     )
 
     assert jnp.allclose(positional, bound, atol=1e-6, rtol=1e-6)
@@ -656,11 +653,8 @@ def test_exp_euler_maruyama_weights_diffusion_with_linear_coeff():
     assert jnp.allclose(brownian_step, expected_increment, atol=1e-6, rtol=1e-6)
 
 
-def test_sdeint_rectangular_diffusion_is_supported(sde_method):
+def test_sdeint_rectangular_diffusion_is_supported(generic_sde_method):
     """Test SDE solvers support rectangular diffusion matrices."""
-    # Specialized methods require specific drift type wrappers
-    if sde_method in SPLIT_DRIFT_SDE_METHODS + ["linear_exact_sde"]:
-        pytest.skip("requires generic SDE method")
 
     key = jax.random.PRNGKey(4)
     ts = jnp.linspace(0.0, 1.0, 64)
@@ -685,7 +679,7 @@ def test_sdeint_rectangular_diffusion_is_supported(sde_method):
         x0,
         ts,
         0.8,
-        method=sde_method,
+        method=generic_sde_method,
         return_brownian=True,
     )
 

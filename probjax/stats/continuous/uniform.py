@@ -13,6 +13,7 @@ from jax.scipy.stats import uniform as _uniform
 
 from probjax.stats.base import rv_continuous
 from probjax.stats.constraints import interval, real
+from probjax.stats.utils import _require_unweighted_fit
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["uniform"]
@@ -46,86 +47,26 @@ class uniform_gen(rv_continuous):
 
     @classmethod
     def logpdf(cls, x, low=0.0, high=1.0, **kwargs):
-        """Log of the probability density function of the uniform distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        low : float, optional
-            Lower bound of the distribution. Default is 0.
-        high : float, optional
-            Upper bound of the distribution. Default is 1.
-
-        Returns
-        -------
-        logpdf : ndarray
-            Log of the probability density function evaluated at x
-        """
+        """Log of the probability density function of the uniform distribution."""
         # Scale to [0, 1] for the JAX implementation
         loc, scale = _loc_scale(low, high)
         return _uniform.logpdf(x, loc, scale)
 
     @classmethod
     def cdf(cls, x, low=0.0, high=1.0, **kwargs):
-        """Cumulative distribution function of the uniform distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        low : float, optional
-            Lower bound of the distribution. Default is 0.
-        high : float, optional
-            Upper bound of the distribution. Default is 1.
-
-        Returns
-        -------
-        cdf : ndarray
-            Cumulative distribution function evaluated at x
-        """
+        """Cumulative distribution function of the uniform distribution."""
         loc, scale = _loc_scale(low, high)
         return _uniform.cdf(x, loc, scale)
 
     @classmethod
     def logcdf(cls, x, low=0.0, high=1.0, **kwargs):
-        """Log of the cumulative distribution function of the uniform distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        low : float, optional
-            Lower bound of the distribution. Default is 0.
-        high : float, optional
-            Upper bound of the distribution. Default is 1.
-
-        Returns
-        -------
-        logcdf : ndarray
-            Log of the cumulative distribution function evaluated at x
-        """
+        """Log of the cumulative distribution function of the uniform distribution."""
         loc, scale = _loc_scale(low, high)
         return jnp.log(_uniform.cdf(x, loc, scale))
 
     @classmethod
     def ppf(cls, q, low=0.0, high=1.0, **kwargs):
-        """Percent point function (inverse of cdf) of the uniform distribution.
-
-        Parameters
-        ----------
-        q : array_like
-            lower tail probability
-        low : float, optional
-            Lower bound of the distribution. Default is 0.
-        high : float, optional
-            Upper bound of the distribution. Default is 1.
-
-        Returns
-        -------
-        ppf : ndarray
-            Quantile corresponding to the lower tail probability q
-        """
+        """Percent point function (inverse of cdf) of the uniform distribution."""
         loc, scale = _loc_scale(low, high)
         return _uniform.ppf(q, loc, scale)
 
@@ -146,198 +87,61 @@ class uniform_gen(rv_continuous):
 
     @classmethod
     def sf(cls, x, low=0.0, high=1.0, **kwargs):
-        """Survival function (1 - cdf) of the uniform distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        low : float, optional
-            Lower bound of the distribution. Default is 0.
-        high : float, optional
-            Upper bound of the distribution. Default is 1.
-
-        Returns
-        -------
-        sf : ndarray
-            Survival function evaluated at x
-        """
+        """Survival function (1 - cdf) of the uniform distribution."""
         loc, scale = _loc_scale(low, high)
         return _uniform.sf(x, loc, scale)
 
     @classmethod
     def isf(cls, q, low=0.0, high=1.0, **kwargs):
-        """Inverse survival function (inverse of sf) of the uniform distribution.
-
-        Parameters
-        ----------
-        q : array_like
-            upper tail probability
-        low : float, optional
-            Lower bound of the distribution. Default is 0.
-        high : float, optional
-            Upper bound of the distribution. Default is 1.
-
-        Returns
-        -------
-        isf : ndarray
-            Quantile corresponding to the upper tail probability q
-        """
+        """Inverse survival function (inverse of sf) of the uniform distribution."""
         loc, scale = _loc_scale(low, high)
         return _uniform.isf(q, loc, scale)
 
     @classmethod
     def mean(cls, low=0.0, high=1.0, **kwargs):
-        """Mean of the uniform distribution.
-
-        Parameters
-        ----------
-        low : float, optional
-            Lower bound of the distribution. Default is 0.
-        high : float, optional
-            Upper bound of the distribution. Default is 1.
-
-        Returns
-        -------
-        mean : float
-            Mean of the distribution
-        """
+        """Mean of the uniform distribution."""
         low = jnp.asarray(low)
         high = jnp.asarray(high)
         return (low + high) / 2.0
 
     @classmethod
     def mode(cls, low=0.0, high=1.0, **kwargs):
-        """Mode of the uniform distribution.
-
-        Parameters
-        ----------
-        low : float, optional
-            Lower bound of the distribution. Default is 0.
-        high : float, optional
-            Upper bound of the distribution. Default is 1.
-
-        Returns
-        -------
-        mode : float
-            Mode of the distribution (technically any value in the range, we
-            return the middle)
-        """
+        """Mode of the uniform distribution."""
         return (
             low + high
         ) / 2.0  # Note: This is arbitrary, any value in the range is a mode
 
     @classmethod
     def median(cls, low=0.0, high=1.0, **kwargs):
-        """Median of the uniform distribution.
-
-        Parameters
-        ----------
-        low : float, optional
-            Lower bound of the distribution. Default is 0.
-        high : float, optional
-            Upper bound of the distribution. Default is 1.
-
-        Returns
-        -------
-        median : float
-            Median of the distribution
-        """
+        """Median of the uniform distribution."""
         return (low + high) / 2.0
 
     @classmethod
     def var(cls, low=0.0, high=1.0, **kwargs):
-        """Variance of the uniform distribution.
-
-        Parameters
-        ----------
-        low : float, optional
-            Lower bound of the distribution. Default is 0.
-        high : float, optional
-            Upper bound of the distribution. Default is 1.
-
-        Returns
-        -------
-        var : float
-            Variance of the distribution
-        """
+        """Variance of the uniform distribution."""
         return (high - low) ** 2 / 12.0
 
     @classmethod
     def entropy(cls, low=0.0, high=1.0, **kwargs):
-        """Entropy of the uniform distribution.
-
-        Parameters
-        ----------
-        low : float, optional
-            Lower bound of the distribution. Default is 0.
-        high : float, optional
-            Upper bound of the distribution. Default is 1.
-
-        Returns
-        -------
-        entropy : float
-            Entropy of the distribution
-        """
+        """Entropy of the uniform distribution."""
         return jnp.log(high - low)
 
     @classmethod
     def moment(cls, n, low=0.0, high=1.0, **kwargs):
-        """n-th non-central moment of the uniform distribution.
-
-        Parameters
-        ----------
-        n : int
-            Order of the moment
-        low : float, optional
-            Lower bound of the distribution. Default is 0.
-        high : float, optional
-            Upper bound of the distribution. Default is 1.
-
-        Returns
-        -------
-        moment : float
-            n-th non-central moment
-        """
+        """n-th non-central moment of the uniform distribution."""
         n = jnp.asarray(n)
         return (high ** (n + 1) - low ** (n + 1)) / ((n + 1) * (high - low))
 
     @classmethod
     def skew(cls, low=0.0, high=1.0, **kwargs):
-        """Skewness of the uniform distribution.
-
-        Parameters
-        ----------
-        low : float, optional
-            Lower bound of the distribution. Default is 0.
-        high : float, optional
-            Upper bound of the distribution. Default is 1.
-
-        Returns
-        -------
-        skew : float
-            Skewness of the distribution
-        """
+        """Skewness of the uniform distribution."""
         return jnp.zeros_like(
             jnp.asarray(low)
         )  # Skewness is always 0 (symmetric distribution)
 
     @classmethod
     def kurtosis(cls, low=0.0, high=1.0, **kwargs):
-        """Excess kurtosis of the uniform distribution.
-
-        Parameters
-        ----------
-        low : float, optional
-            Lower bound of the distribution. Default is 0.
-        high : float, optional
-            Upper bound of the distribution. Default is 1.
-
-        Returns
-        -------
-        kurtosis : float
-            Excess kurtosis of the distribution
-        """
+        """Excess kurtosis of the uniform distribution."""
         return -1.2 * jnp.ones_like(low)
 
     @classmethod
@@ -353,23 +157,8 @@ class uniform_gen(rv_continuous):
         The MLE for the uniform distribution has a closed-form solution:
         - low = min(data)
         - high = max(data)
-
-        Parameters
-        ----------
-        data : array_like
-            Data to fit the distribution to
-        **kwds : dict, optional
-            Additional parameters (ignored)
-
-        Returns
-        -------
-        params : tuple
-            The fitted parameters (low, high)
         """
-        if weights is not None:
-            raise NotImplementedError(
-                "Weighted fitting is not implemented for the uniform distribution."
-            )
+        _require_unweighted_fit(weights, "uniform")
         data = jnp.asarray(data)
         low = jnp.min(data)
         high = jnp.max(data)

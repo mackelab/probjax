@@ -12,7 +12,8 @@ from jax import random
 from jax.scipy.stats import pareto as _pareto
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
-from probjax.stats.constraints import real, strict_positive
+from probjax.stats.constraints import interval, strict_positive
+from probjax.stats.utils import _require_unweighted_fit
 from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["pareto"]
@@ -44,7 +45,7 @@ class pareto_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def support(cls, b=1.0, alpha=1.0, **kwargs):
         """Support of the Pareto distribution."""
-        return real
+        return interval(b, jnp.inf)
 
     @classmethod
     def pdf(cls, x, b=1.0, alpha=1.0, **kwargs):
@@ -183,23 +184,8 @@ class pareto_gen(rv_continuous, rv_exponential_family):
         The MLE for the Pareto distribution has a closed-form solution:
         - b = min(data)
         - alpha = n / sum(log(data/b))
-
-        Parameters
-        ----------
-        data : array_like
-            Data to fit the distribution to
-        **kwds : dict, optional
-            Additional parameters (ignored)
-
-        Returns
-        -------
-        params : tuple
-            The fitted parameters (b, alpha)
         """
-        if weights is not None:
-            raise NotImplementedError(
-                "Weighted fitting is not implemented for the Pareto distribution."
-            )
+        _require_unweighted_fit(weights, "Pareto")
         data = jnp.asarray(data)
         b = jnp.min(data)
         alpha = len(data) / jnp.sum(jnp.log(data / b))

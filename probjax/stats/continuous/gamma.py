@@ -51,85 +51,25 @@ class gamma_gen(rv_continuous, rv_exponential_family):
 
     @classmethod
     def logpdf(cls, x, alpha=1.0, beta=1.0, **kwargs):
-        """Log of the probability density function of the gamma distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        alpha : float, optional
-            Shape parameter. Default is 1.
-        beta : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        logpdf : ndarray
-            Log of the probability density function evaluated at x
-        """
+        """Log of the probability density function of the gamma distribution."""
         scale = _scale(beta)
         return _gamma.logpdf(x, alpha, scale=scale)
 
     @classmethod
     def cdf(cls, x, alpha=1.0, beta=1.0, **kwargs):
-        """Cumulative distribution function of the gamma distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        alpha : float, optional
-            Shape parameter. Default is 1.
-        beta : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        cdf : ndarray
-            Cumulative distribution function evaluated at x
-        """
+        """Cumulative distribution function of the gamma distribution."""
         scale = _scale(beta)
         return _gamma.cdf(x, alpha, scale=scale)
 
     @classmethod
     def logcdf(cls, x, alpha=1.0, beta=1.0, **kwargs):
-        """Log of the cumulative distribution function of the gamma distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        alpha : float, optional
-            Shape parameter. Default is 1.
-        beta : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        logcdf : ndarray
-            Log of the cumulative distribution function evaluated at x
-        """
+        """Log of the cumulative distribution function of the gamma distribution."""
         scale = _scale(beta)
         return _gamma.logcdf(x, alpha, scale=scale)
 
     @classmethod
     def ppf(cls, q, alpha=1.0, beta=1.0, **kwargs):
-        """Percent point function (inverse of cdf) of the gamma distribution.
-
-        Parameters
-        ----------
-        q : array_like
-            lower tail probability
-        alpha : float, optional
-            Shape parameter. Default is 1.
-        beta : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        ppf : ndarray
-            Quantile corresponding to the lower tail probability q
-        """
+        """Percent point function (inverse of cdf) of the gamma distribution."""
         scale = _scale(beta)
         return gammaincinv(alpha, q) * scale
 
@@ -142,24 +82,7 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         shape: Tuple[int, ...] = (),
         **kwargs,
     ) -> Array:
-        """Random variates of the gamma distribution.
-
-        Parameters
-        ----------
-        rng : RngKey
-            JAX PRNG key for random number generation
-        alpha : float, optional
-            Shape parameter. Default is 1.
-        beta : float, optional
-            Rate parameter. Default is 1.
-        shape : tuple of ints, optional
-            Output shape. Default is (), meaning a single value.
-
-        Returns
-        -------
-        rvs : ndarray or scalar
-            Random variates of given shape
-        """
+        """Random variates of the gamma distribution."""
         alpha = jnp.asarray(alpha)
         beta = jnp.asarray(beta)
         event_shape = jnp.broadcast_shapes(alpha.shape, beta.shape)
@@ -167,118 +90,36 @@ class gamma_gen(rv_continuous, rv_exponential_family):
 
     @classmethod
     def sf(cls, x, alpha=1.0, beta=1.0, **kwargs):
-        """Survival function (1 - cdf) of the gamma distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            quantiles
-        alpha : float, optional
-            Shape parameter. Default is 1.
-        beta : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        sf : ndarray
-            Survival function evaluated at x
-        """
+        """Survival function (1 - cdf) of the gamma distribution."""
         scale = _scale(beta)
         return _gamma.sf(x, alpha, scale=scale)
 
     @classmethod
     def isf(cls, q, alpha=1.0, beta=1.0, **kwargs):
-        """Inverse survival function (inverse of sf) of the gamma distribution.
-
-        Parameters
-        ----------
-        q : array_like
-            upper tail probability
-        alpha : float, optional
-            Shape parameter. Default is 1.
-        beta : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        isf : ndarray
-            Quantile corresponding to the upper tail probability q
-        """
+        """Inverse survival function (inverse of sf) of the gamma distribution."""
         return gammainccinv(alpha, q) / jnp.asarray(beta)
 
     @classmethod
     def mean(cls, alpha=1.0, beta=1.0, **kwargs):
-        """Mean of the gamma distribution.
-
-        Parameters
-        ----------
-        alpha : float, optional
-            Shape parameter. Default is 1.
-        beta : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        mean : float
-            Mean of the distribution
-        """
+        """Mean of the gamma distribution."""
         return jnp.asarray(alpha) / jnp.asarray(beta)
 
     @classmethod
     def mode(cls, alpha=1.0, beta=1.0, **kwargs):
-        """Mode of the gamma distribution.
-
-        Parameters
-        ----------
-        alpha : float, optional
-            Shape parameter. Default is 1.
-        beta : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        mode : float
-            Mode of the distribution
-        """
+        """Mode of the gamma distribution."""
         valid = alpha >= 1
         return jnp.where(valid, (alpha - 1) / beta, jnp.zeros_like(alpha))
 
     @classmethod
     def var(cls, alpha=1.0, beta=1.0, **kwargs):
-        """Variance of the gamma distribution.
-
-        Parameters
-        ----------
-        alpha : float, optional
-            Shape parameter. Default is 1.
-        beta : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        var : float
-            Variance of the distribution
-        """
+        """Variance of the gamma distribution."""
         alpha_arr = jnp.asarray(alpha)
         beta_arr = jnp.asarray(beta)
         return alpha_arr / (beta_arr**2)
 
     @classmethod
     def entropy(cls, alpha=1.0, beta=1.0, **kwargs):
-        """Entropy of the gamma distribution.
-
-        Parameters
-        ----------
-        alpha : float, optional
-            Shape parameter. Default is 1.
-        beta : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        entropy : float
-            Entropy of the distribution
-        """
+        """Entropy of the gamma distribution."""
         alpha_arr = jnp.asarray(alpha)
         beta_arr = jnp.asarray(beta)
         return (
@@ -290,22 +131,7 @@ class gamma_gen(rv_continuous, rv_exponential_family):
 
     @classmethod
     def moment(cls, n, alpha=1.0, beta=1.0, **kwargs):
-        """n-th non-central moment of the gamma distribution.
-
-        Parameters
-        ----------
-        n : int
-            Order of the moment
-        alpha : float, optional
-            Shape parameter. Default is 1.
-        beta : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        moment : float
-            n-th non-central moment
-        """
+        """n-th non-central moment of the gamma distribution."""
         # n-th moment: E[X^n] = Γ(α+n)/Γ(α) * β^(-n)
         n = jnp.asarray(n)
         alpha_arr = jnp.asarray(alpha)
@@ -314,90 +140,27 @@ class gamma_gen(rv_continuous, rv_exponential_family):
 
     @classmethod
     def skew(cls, alpha=1.0, beta=1.0, **kwargs):
-        """Skewness of the gamma distribution.
-
-        Parameters
-        ----------
-        alpha : float, optional
-            Shape parameter. Default is 1.
-        beta : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        skew : float
-            Skewness of the distribution
-        """
+        """Skewness of the gamma distribution."""
         return 2.0 / jnp.sqrt(alpha)
 
     @classmethod
     def kurtosis(cls, alpha=1.0, beta=1.0, **kwargs):
-        """Excess kurtosis of the gamma distribution.
-
-        Parameters
-        ----------
-        alpha : float, optional
-            Shape parameter. Default is 1.
-        beta : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        kurtosis : float
-            Excess kurtosis of the distribution
-        """
+        """Excess kurtosis of the gamma distribution."""
         return 6.0 / alpha
 
     @classmethod
     def natural_parameters(cls, alpha=1.0, beta=1.0, **kwargs):
-        """Natural parameters of the gamma distribution.
-
-        Parameters
-        ----------
-        alpha : float, optional
-            Shape parameter. Default is 1.
-        beta : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        natural_parameters : tuple
-            Natural parameters of the distribution
-        """
+        """Natural parameters of the gamma distribution."""
         return jnp.array([alpha - 1, -beta])
 
     @classmethod
     def sufficient_statistics(cls, x, **kwargs):
-        """Sufficient statistics of the gamma distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            Data points
-
-        Returns
-        -------
-        sufficient_statistics : tuple
-            Sufficient statistics of the distribution
-        """
+        """Sufficient statistics of the gamma distribution."""
         return jnp.array([jnp.log(x), x])
 
     @classmethod
     def log_partition(cls, alpha=1.0, beta=1.0, **kwargs):
-        """Log partition function of the gamma distribution.
-
-        Parameters
-        ----------
-        alpha : float, optional
-            Shape parameter. Default is 1.
-        beta : float, optional
-            Rate parameter. Default is 1.
-
-        Returns
-        -------
-        log_partition : float
-            Log partition function of the distribution
-        """
+        """Log partition function of the gamma distribution."""
         return gammaln(alpha) - alpha * jnp.log(beta)
 
     @classmethod
@@ -415,18 +178,6 @@ class gamma_gen(rv_continuous, rv_exponential_family):
 
         For alpha, we need to solve the equation:
         log(alpha) - digamma(alpha) = log(mean(data)) - mean(log(data))
-
-        Parameters
-        ----------
-        data : array_like
-            Data to fit the distribution to
-        **kwds : dict, optional
-            Additional parameters (ignored)
-
-        Returns
-        -------
-        params : tuple
-            The fitted parameters (alpha, beta)
         """
         data = flatten_samples(data)
         dtype = data.dtype

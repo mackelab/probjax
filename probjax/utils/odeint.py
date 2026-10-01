@@ -1,30 +1,12 @@
 from typing import Any, Callable, Optional, Sequence
 
-import jax
 import jax.numpy as jnp
 from jax import Array
 from jaxtyping import PyTree
 
-from probjax.utils.functions import generic_drift
+from probjax.utils.functions import wrap_if_plain_callable
 from probjax.utils.odeutil import StepSizeAdaptor, _odeint_custom
 from probjax.utils.odeutil.inversion import SampleDist, TraceEstimator
-
-
-def _wrap_if_plain_callable(
-    drift: Callable[..., PyTree[Array]],
-) -> Callable[..., PyTree[Array]]:
-    """Wrap plain Python callables in :class:`generic_drift` so they flow as
-    a pytree through ``jax.jit`` / ``custom_inverse``.
-
-    If ``drift`` already is a registered pytree (marker subclasses,
-    ``eqx.Module``, user-registered dataclasses, ...) it flows through
-    unchanged — its array leaves participate in transformations, its
-    callable/config leaves ride along as aux.
-    """
-    leaves, _ = jax.tree_util.tree_flatten(drift)
-    if len(leaves) == 1 and leaves[0] is drift:
-        return generic_drift(fn=drift)
-    return drift
 
 
 def odeint(
@@ -117,7 +99,7 @@ def odeint(
         >>> ys = odeint(lotka_volterra, y0, ts, 1.0, 0.1, 0.075, 0.5,
         ...             method="dopri5")
     """
-    drift = _wrap_if_plain_callable(drift)
+    drift = wrap_if_plain_callable(drift)
     return _odeint_custom(
         y0,
         drift,

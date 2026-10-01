@@ -5,23 +5,10 @@ import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Key, PyTree
 
-from probjax.utils.functions import generic_drift
+from probjax.utils.functions import wrap_if_plain_callable
 from probjax.utils.sdeutil.adaptive import SDEStepSizeAdaptor
 from probjax.utils.sdeutil.core import _sdeint
 from probjax.utils.sdeutil.integrate_adaptive import warn_boundary_hits
-
-
-def _wrap_if_plain_callable(
-    fn: Callable[..., PyTree[Array]],
-) -> Callable[..., PyTree[Array]]:
-    """Wrap plain Python callables as :class:`generic_drift` so they flow as
-    pytrees through ``jax.jit``. Marker drifts/diffusions and other
-    pytree-registered callables flow through unchanged.
-    """
-    leaves, _ = jax.tree_util.tree_flatten(fn)
-    if len(leaves) == 1 and leaves[0] is fn:
-        return generic_drift(fn=fn)
-    return fn
 
 
 def sdeint(
@@ -128,8 +115,8 @@ def sdeint(
         >>> ts = jnp.linspace(0, 1, 100)
         >>> ys = sdeint(rng, drift, diffusion, y0, ts, 0.1, 0.2)
     """
-    drift = _wrap_if_plain_callable(drift)
-    diffusion = _wrap_if_plain_callable(diffusion)
+    drift = wrap_if_plain_callable(drift)
+    diffusion = wrap_if_plain_callable(diffusion)
     result = _sdeint(
         rng,
         drift,

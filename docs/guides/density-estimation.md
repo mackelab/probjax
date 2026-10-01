@@ -3,7 +3,8 @@
 All the generative families share one interface: construct with `nnx.Rngs`, call
 `fit` to train, and `as_dist()` for a frozen distribution with `logpdf` and
 `sample`. Swapping a flow for an autoregressive model or a diffusion model means
-changing the constructor and nothing else.
+a common training workflow. Sampling options, event shapes and the cost or
+availability of likelihood evaluation still depend on the family.
 
 ## Normalizing flows
 
@@ -92,9 +93,9 @@ families; `FlowMatcher` and `MeanFlowMatcher` the flow-matching ones.
 
 ## Training
 
-`fit` takes either the whole dataset or an iterable of batches. The loop is a
-single `jax.lax.scan`, so it compiles once regardless of how many steps are
-requested:
+`fit` takes either the whole dataset or an iterable of batches. Without general
+callbacks, updates run in a compiled `jax.lax.scan`; iterable batches are fetched
+through host callbacks. Array-only fitting can be wrapped in JIT:
 
 ```python
 import jax
@@ -137,6 +138,13 @@ flow.fit(
 )
 ```
 
-Returning `False` from `on_step` stops training. Losses arrive when the run
-finishes rather than step by step, which is the trade for never leaving the
-compiled loop.
+Returning `False` from `on_step` stops training. The hook runs during training;
+the returned loss history becomes available when `fit` finishes.
+
+For EMA, validation, checkpoints or additional diagnostics, use `ema_decay`,
+`return_result=True`, and `callbacks=[...]`. General callbacks receive
+`(state, info)` between compiled chunks. Resume from `initial_state=result.state`
+to preserve optimizer, RNG and EMA state. Under JIT, general Python callbacks
+require explicit `callback_mode="io"`; this path does not support autodiff or
+`vmap`. See [Training and EMA](../reference/nn.md#training-and-ema) for executable
+examples, callback cadence and padded histories after early stopping.

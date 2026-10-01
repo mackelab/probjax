@@ -67,6 +67,24 @@ CONTINUOUS_DIST = [
 DISCRETE_DIST = [bernoulli, binomial, categorical, poisson, geometric, dirac]
 SPECIAL_DIST = [indep, transformed, mixture]
 
+# P1-11: collapsed divergence covering set. The full C(17, 2) = 136 pairwise
+# grid recompiles the same Monte-Carlo code path per pair; instead exercise
+# all-vs-``norm`` (16 pairs) plus one representative cross-family pair per
+# family (8 pairs). Pair order follows ``itertools.combinations`` ordering
+# (earlier list position first). Every family still appears at least once.
+DIVERGENCE_PAIRS = [
+    (norm, dist) for dist in CONTINUOUS_DIST + DISCRETE_DIST if dist is not norm
+] + [
+    (gamma, expon),  # positive-support family
+    (beta, uniform),  # bounded-support family
+    (laplace, t),  # location-scale family
+    (t, cauchy),  # heavy-tail family
+    (dirichlet, multivariate_normal),  # multivariate family
+    (bernoulli, binomial),  # binary discrete family
+    (poisson, geometric),  # count discrete family
+    (categorical, dirac),  # categorical/degenerate family
+]
+
 FIT_TEST_CASES = [
     {
         "seed": 0,
@@ -794,9 +812,10 @@ def test_transformed_distribution(dist, shape=(1,), seed=0):
     )
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "dist1, dist2",
-    itertools.combinations(CONTINUOUS_DIST + DISCRETE_DIST, 2),
+    DIVERGENCE_PAIRS,
     ids=lambda x: f"{x.name}",
 )
 def test_kl_divergence(dist1, dist2, shape=(1,), seed=0):
@@ -822,9 +841,8 @@ def test_kl_divergence(dist1, dist2, shape=(1,), seed=0):
     )
 
 
-@pytest.mark.parametrize(
-    "dist1, dist2", itertools.combinations(CONTINUOUS_DIST + DISCRETE_DIST, 2)
-)
+@pytest.mark.slow
+@pytest.mark.parametrize("dist1, dist2", DIVERGENCE_PAIRS)
 def test_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
     """Test Wasserstein distance computation."""
     key1 = jax.random.PRNGKey(seed)
@@ -848,9 +866,8 @@ def test_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
     )
 
 
-@pytest.mark.parametrize(
-    "dist1, dist2", itertools.combinations(CONTINUOUS_DIST + DISCRETE_DIST, 2)
-)
+@pytest.mark.slow
+@pytest.mark.parametrize("dist1, dist2", DIVERGENCE_PAIRS)
 def test_sliced_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
     """Test Sliced Wasserstein distance computation."""
     key1 = jax.random.PRNGKey(seed)
@@ -876,9 +893,8 @@ def test_sliced_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
     )
 
 
-@pytest.mark.parametrize(
-    "dist1, dist2", itertools.combinations(CONTINUOUS_DIST + DISCRETE_DIST, 2)
-)
+@pytest.mark.slow
+@pytest.mark.parametrize("dist1, dist2", DIVERGENCE_PAIRS)
 def test_max_slice_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
     """Test Max Sliced Wasserstein distance computation."""
     key1 = jax.random.PRNGKey(seed)

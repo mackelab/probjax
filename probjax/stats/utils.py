@@ -71,6 +71,16 @@ def normalize_sample_weights(
     return normalized / total
 
 
+def _require_unweighted_fit(
+    weights: Optional[ArrayLike], dist_name: str
+) -> None:
+    """Raise unless ``weights`` is None (weighted fit not implemented)."""
+    if weights is not None:
+        raise NotImplementedError(
+            f"Weighted fitting is not implemented for the {dist_name} distribution."
+        )
+
+
 def mean_and_var_1d(
     data: ArrayLike, weights: Optional[Array] = None
 ) -> tuple[Array, Array]:

@@ -46,8 +46,12 @@ ruff check --fix .
 ### Running Tests
 
 ```bash
-# Run all tests
-pytest
+# Generate tutorial pages before running documentation tests
+python -m pip install -r docs/requirements.txt matplotlib
+python scripts/convert_notebooks.py
+
+# Run the default CPU suite (GPU, mesh and benchmarks are opt-in)
+JAX_PLATFORMS=cpu pytest
 
 # Run tests in parallel
 pytest -n auto
@@ -93,7 +97,8 @@ pytest tests/test_specific.py
 
 ### Docstrings
 
-Use NumPy-style docstrings:
+The reference renderer currently uses Google-style docstrings. Match that style
+for new API documentation (some older functions still use NumPy-style sections):
 
 ```python
 def function(param1: int, param2: str) -> bool:
@@ -101,22 +106,16 @@ def function(param1: int, param2: str) -> bool:
 
     Longer description if needed.
 
-    Parameters
-    ----------
-    param1 : int
-        Description of param1.
-    param2 : str
-        Description of param2.
+    Args:
+        param1: Description of param1.
+        param2: Description of param2.
 
-    Returns
-    -------
-    bool
+    Returns:
         Description of return value.
 
-    Examples
-    --------
-    >>> function(1, "hello")
-    True
+    Examples:
+        >>> function(1, "hello")
+        True
     """
 ```
 
@@ -132,7 +131,10 @@ def function(param1: int, param2: str) -> bool:
 ### Building Documentation Locally
 
 ```bash
-python -m pip install -r docs/requirements.txt
+python -m pip install -r docs/requirements.txt matplotlib
+python scripts/convert_notebooks.py
+python scripts/convert_notebooks.py --check
+pytest tests/test_docs.py --benchmark-disable
 zensical build --strict
 zensical serve
 ```
@@ -175,3 +177,32 @@ If you have questions about contributing, feel free to:
 - Reach out to the maintainers
 
 Thank you for contributing to ProbJax!
+
+## Preparing a release
+
+Follow the [release checklist](releasing.md), including version consistency,
+documentation execution and distribution artifact checks.
+
+### Test quality and runtime
+
+Prefer an independent analytic or SciPy oracle over comparing two paths through
+ProbJax. Round trips alone can miss matching forward/inverse bugs. Include finite
+value checks before timing numerical code, warm compiled functions outside the
+timed section, and block on device results. Runtime comparisons are opt-in:
+
+```bash
+JAX_PLATFORMS=cpu pytest tests/test_core_inverse_efficiency.py --run-benchmarks --benchmark-disable
+pytest tests/test_attention.py --device gpu
+# --gpu is an alias for --device gpu; combining it with --device cpu is an error.
+pytest -m mesh
+```
+
+Use synchronization events to test asynchronous ordering instead of tight wall
+clock limits. Preserve broad numerical parameter coverage unless measurements
+show it is wasteful. Expected failures should have a specific reason and be
+strict, so a repaired test cannot silently remain marked. Do not turn a known
+incorrect numerical result into the expected result.
+
+CI records the slowest 25 tests and retains JUnit reports for each Python version.
+Use those reports to target expensive tests; local timings are not proof of a
+full-suite speedup. A failure on one Python version does not cancel the others.

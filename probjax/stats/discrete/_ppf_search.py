@@ -5,18 +5,7 @@ import jax.numpy as jnp
 
 
 def ppf_by_cdf_search(q, cdf_fn, *cdf_params, hi=None):
-    """Smallest ``k`` with ``cdf_fn(k, *cdf_params) >= q`` via linear scan.
-
-    Args:
-        q: Quantiles in [0, 1] (clipped).
-        cdf_fn: Callable ``(k, *cdf_params) -> cdf value``.
-        *cdf_params: Per-element CDF parameters, broadcast with ``q``.
-        hi: Optional per-element search cap (e.g. binomial ``n``); the
-            result is clamped to ``hi`` and the scan stops past it.
-
-    Returns:
-        Array of quantiles broadcast to the inputs' shape.
-    """
+    """Smallest ``k`` with ``cdf_fn(k, *cdf_params) >= q`` via linear scan."""
     q = jnp.clip(jnp.asarray(q), 0, 1)
     operands = (q, *cdf_params) if hi is None else (q, *cdf_params, hi)
     flat = jnp.broadcast_arrays(*operands)

@@ -45,20 +45,6 @@ class binomial_gen(rv_discrete, rv_exponential_family):
 
         The CDF is computed using the regularized incomplete beta function:
         F(k; n, p) = I_{1-p}(n-k, k+1)
-
-        Parameters
-        ----------
-        k : array_like
-            Quantiles
-        n : int or array_like
-            Number of trials
-        probs : float or array_like
-            Probability of success
-
-        Returns
-        -------
-        cdf : ndarray
-            Cumulative distribution function evaluated at k
         """
         k = jnp.floor(jnp.asarray(k))
         n = jnp.asarray(n)
@@ -79,22 +65,7 @@ class binomial_gen(rv_discrete, rv_exponential_family):
 
     @classmethod
     def ppf(cls, q: ArrayLike, n, probs, **kwds):
-        """Percent point function of the Binomial distribution.
-
-        Parameters
-        ----------
-        q : array_like
-            Quantiles
-        n : int or array_like
-            Number of trials
-        probs : float or array_like
-            Probability of success
-
-        Returns
-        -------
-        ppf : ndarray
-            Percent point function evaluated at q
-        """
+        """Percent point function of the Binomial distribution."""
         q = jnp.asarray(q)
         n = jnp.asarray(n, dtype=jnp.int32)  # Ensure n is an integer
         probs = jnp.asarray(probs)
@@ -204,20 +175,6 @@ class binomial_gen(rv_discrete, rv_exponential_family):
 
         The MLE for the Binomial distribution is:
         p = mean(data) / n
-
-        Parameters
-        ----------
-        data : array_like
-            Data to fit the distribution to
-        n : int
-            Number of trials (must be provided)
-        **kwds : dict, optional
-            Additional parameters (ignored)
-
-        Returns
-        -------
-        params : tuple
-            The fitted parameters (n, p)
         """
         mean_successes = weighted_mean(data, weights)
         p = mean_successes / n

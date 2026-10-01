@@ -95,11 +95,6 @@ class mixture_kernel_gen(rv_continuous):
         }
 
     @classmethod
-    def support(cls, log_weights=None, locs=None, scales=None, **kwargs):
-        """Support of the kernel mixture."""
-        return real
-
-    @classmethod
     def _standardise(cls, x, locs, scales):
         x = jnp.asarray(x)
         locs = jnp.asarray(locs)

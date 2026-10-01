@@ -12,14 +12,14 @@ from probjax.nn.layers.conv import (
 from probjax.nn.sharding import BATCH, constrain
 from probjax.nn.utils import (
     DEFAULT_MODULE,
+    PrecisionMixin,
     filter_precision_kwargs,
-    get_active_precision_kwargs,
     module_accepts_rng,
 )
 from probjax.utils.typing import Array, ModuleLikeType, PrecisionLike
 
 
-class UNet(nnx.Module):
+class UNet(PrecisionMixin, nnx.Module):
     """Flexible U-Net with pluggable submodules and per-layer drop-path.
 
     Pluggable builders:
@@ -98,6 +98,12 @@ class UNet(nnx.Module):
         conv_cls: ModuleLikeType = DEFAULT_MODULE,
         rngs: nnx.Rngs,
     ):
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
+        )
         resnet_block_cls = (
             type(self).resnet_block_cls
             if resnet_block_cls is DEFAULT_MODULE
@@ -120,13 +126,7 @@ class UNet(nnx.Module):
         self.out_features = list(out_features)
         self.num_stages = len(out_features)
         self.resize_method = resize_method  # Triggered if user shapes do not mat
-        self.preferred_element_type = preferred_element_type
-        precision_kwargs = get_active_precision_kwargs(
-            dtype,
-            precision,
-            param_dtype,
-            preferred_element_type,
-        )
+        precision_kwargs = self.active_precision_kwargs()
 
         # Normalize/validate attention mask
         if isinstance(use_attention, Sequence):
@@ -350,11 +350,11 @@ class UNet(nnx.Module):
             if i < self.num_stages - 1:
                 if verbose:
                     print("Down:", x.shape)
-                x = (
+                x = self.cast_output(
                     self.downsampling_layers[i](x, rng=rng)
                     if self._downsampling_accepts_rng[i]
                     else self.downsampling_layers[i](x)
-                ).astype(self.preferred_element_type)
+                )
                 x = _constrain(x)
 
         # 3) Middle
@@ -384,11 +384,11 @@ class UNet(nnx.Module):
             x = _constrain(x)
 
             if idx < self.num_stages - 1:
-                x = (
+                x = self.cast_output(
                     self.upsampling_layers[idx](x, rng=rng)
                     if self._upsampling_accepts_rng[idx]
                     else self.upsampling_layers[idx](x)
-                ).astype(self.preferred_element_type)
+                )
                 x = _constrain(x)
                 if verbose:
                     print("Up:", x.shape)
