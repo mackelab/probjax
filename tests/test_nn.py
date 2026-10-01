@@ -13,9 +13,12 @@ from probjax.nn.layers.attention import (
 from probjax.nn import (
     AdditiveCouplingFlow,
     AdditiveBinaryFuse,
+    AdditiveFuse,
     AffineAutoregressiveFlow,
+    AffineFuse,
     AutoregressiveSSM,
     AutoregressiveTransformer,
+    ConcatFuse,
     CouplingMLP,
     CouplingTransformer,
     DropPath,
@@ -28,6 +31,74 @@ from probjax.nn import (
 )
 
 pytest_plugins = ["tests.test_problems.nns"]
+
+
+# P1-11: collapsed covering sets for the heavy fixture-product grids.
+# Each grid below previously ran configs x seq_lens x batch_shapes (up to
+# 108 combos, one JIT compile each). The covering set runs every config once
+# on a fixed shape plus the first config on six diverse shapes (~12 items).
+# Config tuples mirror the fixture params in tests/test_problems/nns.py.
+_FIXED_GRID_SHAPE = (2, (2,))  # (seq_len, batch_shape)
+_GRID_SHAPES = [
+    (1, ()),
+    (2, (1,)),
+    (10, (2,)),
+    (2, (1, 1)),
+    (1, (1, 2)),
+    (10, (2, 1, 1)),
+]
+
+
+def _grid_cover(configs):
+    """Build (cases, ids): every config once + first config on all shapes."""
+    seq_len, batch_shape = _FIXED_GRID_SHAPE
+    cases = [(cfg, seq_len, batch_shape) for cfg in configs]
+    ids = [f"config-{i}" for i in range(len(configs))]
+    for sl, bs in _GRID_SHAPES:
+        cases.append((configs[0], sl, bs))
+        ids.append(f"shape-seq{sl}-batch{bs}")
+    return cases, ids
+
+
+_DEEPSET_CONFIGS = [
+    (1, 1, 1, [1, 2]),
+    (1, 10, 1, [10, 3]),
+    (1, 1, 2, [1, 2, 1, 2]),
+    (2, 1, 1, [5, 1]),
+]
+_DEEPSET_CASES, _DEEPSET_IDS = _grid_cover(_DEEPSET_CONFIGS)
+
+_ATTENTION_CONFIGS = [
+    (1, 1),
+    (2, 1),
+    (1, 2),
+    (2, 2),
+    (1, 3),
+    (3, 1),
+]
+_ATTENTION_CASES, _ATTENTION_IDS = _grid_cover(_ATTENTION_CONFIGS)
+
+_TRANSFORMER_CONFIGS = [
+    (1, 1, 1, 1),
+    (2, 1, 1, 2),
+    (1, 2, 1, 5),
+    (2, 2, 2, 10),
+    (1, 3, 1, 3),
+    (3, 2, 3, 2),
+]
+_TRANSFORMER_CASES, _TRANSFORMER_IDS = _grid_cover(_TRANSFORMER_CONFIGS)
+
+_CONTEXT_TRANSFORMER_CONFIGS = [
+    (1, AffineFuse),
+    (2, AdditiveFuse),
+    (1, ConcatFuse),
+    (2, AffineFuse),
+    (1, AdditiveFuse),
+    (2, ConcatFuse),
+]
+_CONTEXT_TRANSFORMER_CASES, _CONTEXT_TRANSFORMER_IDS = _grid_cover(
+    _CONTEXT_TRANSFORMER_CONFIGS
+)
 
 
 def test_mlp(mlp, batch_shape):
@@ -62,6 +133,10 @@ def test_resnet(resnet, batch_shape):
     _, _ = jax.tree_util.tree_flatten(model)
 
 
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    "deepset,seq_len,batch_shape", _DEEPSET_CASES, ids=_DEEPSET_IDS, indirect=True
+)
 def test_deepset(deepset, seq_len, batch_shape):
     in_dim, out_dim, model = deepset
     x = jnp.ones(batch_shape + (seq_len, in_dim))
@@ -78,6 +153,13 @@ def test_deepset(deepset, seq_len, batch_shape):
     _, _ = jax.tree_util.tree_flatten(model)
 
 
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    "multi_head_attention,seq_len,batch_shape",
+    _ATTENTION_CASES,
+    ids=_ATTENTION_IDS,
+    indirect=True,
+)
 def test_attention(multi_head_attention, seq_len, batch_shape):
     in_dim, out_dim, model = multi_head_attention
     x = jnp.ones(batch_shape + (seq_len, in_dim))
@@ -359,6 +441,13 @@ def test_gaussian_fourier_embedding(gaussian_fourier_embedding, batch_shape):
     _, _ = jax.tree_util.tree_flatten(model)
 
 
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    "transformer,seq_len,batch_shape",
+    _TRANSFORMER_CASES,
+    ids=_TRANSFORMER_IDS,
+    indirect=True,
+)
 def test_transformer(transformer, seq_len, batch_shape):
     model_dim, model = transformer
     x = jnp.ones(batch_shape + (seq_len, model_dim))
@@ -375,6 +464,13 @@ def test_transformer(transformer, seq_len, batch_shape):
     _, _ = jax.tree_util.tree_flatten(model)
 
 
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    "transformer_with_context,seq_len,batch_shape",
+    _CONTEXT_TRANSFORMER_CASES,
+    ids=_CONTEXT_TRANSFORMER_IDS,
+    indirect=True,
+)
 def test_transformer_with_context(transformer_with_context, seq_len, batch_shape):
     model_dim, context_dim, model = transformer_with_context
     x = jnp.ones(batch_shape + (seq_len, model_dim))
