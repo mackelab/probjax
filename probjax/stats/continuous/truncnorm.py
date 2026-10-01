@@ -18,7 +18,7 @@ from probjax.utils.special.logspace import logdiffexp
 from jax.scipy.stats import truncnorm as _truncnorm
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
-from probjax.stats.constraints import real, strict_positive
+from probjax.stats.constraints import interval, real, strict_positive
 from probjax.utils.typing import RngKey
 
 __all__ = ["truncnorm"]
@@ -187,7 +187,7 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
     @classmethod
     def support(cls, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
         """Support of the truncated normal distribution."""
-        return real
+        return interval(a, b)
 
     @classmethod
     def pdf(cls, x, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):

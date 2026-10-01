@@ -16,9 +16,9 @@ from probjax.nn.nets.simple import MLP
 from probjax.nn.sharding import BATCH, EMBED, SEQ, constrain
 from probjax.nn.utils import (
     DEFAULT_MODULE,
+    PrecisionMixin,
     filter_precision_kwargs,
     flatten_to_btd,
-    get_active_precision_kwargs,
     normalize_attn_bias,
     normalize_attn_mask,
     restore_from_btd,
@@ -26,7 +26,7 @@ from probjax.nn.utils import (
 from probjax.utils.typing import DTypeLike, ModuleLikeType, PrecisionLike
 
 
-class Transformer(nnx.Module):
+class Transformer(PrecisionMixin, nnx.Module):
     """A transformer stack."""
 
     model_dim: int  # Dimensionality of the embedding vectors.
@@ -140,7 +140,12 @@ class Transformer(nnx.Module):
         )
         mha_cls = type(self).mha_cls if mha_cls is DEFAULT_MODULE else mha_cls
 
-        super().__init__()
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
+        )
         self.model_dim = model_dim
         self.context_dim = context_dim
         self.num_heads = num_heads
@@ -173,12 +178,7 @@ class Transformer(nnx.Module):
         self.act = act
         self.enable_cross_attention = enable_cross_attention
         # Precision and dtype settings.
-        precision_kwargs = get_active_precision_kwargs(
-            dtype,
-            precision,
-            param_dtype,
-            preferred_element_type,
-        )
+        precision_kwargs = self.active_precision_kwargs()
 
         # Norm layers.
         self.layer_norms_attn = nnx.List([

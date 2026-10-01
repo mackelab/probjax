@@ -10,9 +10,9 @@ from probjax.nn.layers.masked import MaskedLinear
 from probjax.nn.sharding import EMBED, HIDDEN, param_metadata
 from probjax.nn.utils import (
     DEFAULT_MODULE,
+    PrecisionMixin,
     filter_precision_kwargs,
     filter_supported_kwargs,
-    get_active_precision_kwargs,
     module_accepts_rng,
 )
 from probjax.utils.typing import (
@@ -43,7 +43,7 @@ class Sequential(nnx.Module):
         return x
 
 
-class MLP(nnx.Module):
+class MLP(PrecisionMixin, nnx.Module):
     """Multi-layer perceptron (MLP) module with configurable layers and activation."""
 
     norm_cls = None
@@ -90,6 +90,12 @@ class MLP(nnx.Module):
             ValueError: If dims has fewer than 2 elements or contains
                 non-positive values.
         """
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
+        )
         norm_cls = type(self).norm_cls if norm_cls is DEFAULT_MODULE else norm_cls
         linear_cls = (
             type(self).linear_cls if linear_cls is DEFAULT_MODULE else linear_cls
@@ -111,9 +117,7 @@ class MLP(nnx.Module):
         # Prefer explicit context_dim, fallback to alias if provided
         self.context_dim = context_dim if context_dim is not None else context_features
 
-        precision_kwargs = get_active_precision_kwargs(
-            dtype, precision, param_dtype, preferred_element_type
-        )
+        precision_kwargs = self.active_precision_kwargs()
         num_layers = len(feature_dims) - 1
         if isinstance(linear_cls, Sequence) and not isinstance(linear_cls, type):
             if len(linear_cls) != num_layers:
@@ -251,7 +255,7 @@ class MaskedMLP(MLP):
         )
 
 
-class ResNet(nnx.Module):
+class ResNet(PrecisionMixin, nnx.Module):
     """Residual neural network with optional context conditioning."""
 
     context_fuse_cls = AffineFuse
@@ -303,6 +307,12 @@ class ResNet(nnx.Module):
             ValueError: If input/output dimensions or hidden dimensions
                 are not positive.
         """
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
+        )
         context_fuse_cls = (
             type(self).context_fuse_cls
             if context_fuse_cls is DEFAULT_MODULE
@@ -331,9 +341,7 @@ class ResNet(nnx.Module):
         self.context_dim = context_dim
         num_layers = num_hidden_layers + 2
 
-        precision_kwargs = get_active_precision_kwargs(
-            dtype, precision, param_dtype, preferred_element_type
-        )
+        precision_kwargs = self.active_precision_kwargs()
         precision_kwargs = filter_precision_kwargs(linear_cls, **precision_kwargs)
         base_ctor = partial(linear_cls, rngs=rngs, **precision_kwargs, **kwargs)
 

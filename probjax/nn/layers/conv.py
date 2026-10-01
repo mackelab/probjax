@@ -13,6 +13,7 @@ from probjax.nn.layers.fuse import AffineFuse, GatedFuse
 from probjax.nn.layers.reg import DropPath
 from probjax.nn.sharding import replicate
 from probjax.nn.utils import (
+    PrecisionMixin,
     filter_precision_kwargs,
     get_active_precision_kwargs,
     identity_1x1,
@@ -76,7 +77,7 @@ def _make_conv(
     )
 
 
-class _BaseResizeConv(nnx.Module):
+class _BaseResizeConv(PrecisionMixin, nnx.Module):
     """Shared input checks + resize-then-convolve tail for resize convs."""
 
     def _check_spatial_input(self, shape, num_spatial, spatial_desc):
@@ -92,10 +93,10 @@ class _BaseResizeConv(nnx.Module):
 
     def _apply_resize_conv(self, x, new_shape):
         x = jax.image.resize(x, shape=new_shape, method=self.resize_method)
-        return self.conv(x).astype(self.preferred_element_type)
+        return self.cast_output(self.conv(x))
 
 
-class ConvBlock(nnx.Module):
+class ConvBlock(PrecisionMixin, nnx.Module):
     """A convolutional block with optional normalization and activation."""
 
     def __init__(
@@ -142,6 +143,12 @@ class ConvBlock(nnx.Module):
             **kwargs: Additional keyword arguments for the convolutional layer.
 
         """
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
+        )
         # This ensures that if global precision rules are set, they
         # are respected, but if they are explicitly given, they are not
         # overridden.
@@ -165,7 +172,6 @@ class ConvBlock(nnx.Module):
             bias_init=bias_init,
             conv_general_dilated=conv_general_dilated,
         )
-        self.preferred_element_type = preferred_element_type
         self.preactivation = preactivation
         self.norm = (
             norm_cls(
@@ -184,11 +190,11 @@ class ConvBlock(nnx.Module):
             if self.norm is not None:
                 x = self.norm(x)
             x = self.activation(x)
-            x = self.conv(x).astype(self.preferred_element_type)
+            x = self.cast_output(self.conv(x))
         else:
             if self.norm is not None:
                 x = self.norm(x)
-            x = self.conv(x).astype(self.preferred_element_type)
+            x = self.cast_output(self.conv(x))
             x = self.activation(x)
         return x
 
@@ -219,6 +225,12 @@ class ResizeConv(_BaseResizeConv):
         bias_init: Initializer = nnx.initializers.zeros,
         rngs: nnx.Rngs,
     ):
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
+        )
         self.resize_method = resize_method
         self.out_shape = out_shape
 
@@ -242,7 +254,6 @@ class ResizeConv(_BaseResizeConv):
             kernel_init=kernel_init,
             bias_init=bias_init,
         )
-        self.preferred_element_type = preferred_element_type
 
     def __call__(self, x: Array, *, rng: jax.Array | None = None) -> Array:
         """Resizes input and applies convolution."""
@@ -286,6 +297,12 @@ class RescaleConv(_BaseResizeConv):
         bias_init: Initializer = nnx.initializers.zeros,
         rngs: nnx.Rngs,
     ):
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
+        )
         self.resize_method = resize_method
         self.resize_factor = resize_factor
         self.spatial_dims = spatial_dims
@@ -310,7 +327,6 @@ class RescaleConv(_BaseResizeConv):
             kernel_init=kernel_init,
             bias_init=bias_init,
         )
-        self.preferred_element_type = preferred_element_type
 
     def __call__(self, x: Array, *, rng: jax.Array | None = None) -> Array:
         """Resizes input and applies convolution."""
@@ -330,7 +346,7 @@ class RescaleConv(_BaseResizeConv):
         return self._apply_resize_conv(x, new_shape)
 
 
-class ResnetBlock(nnx.Module):
+class ResnetBlock(PrecisionMixin, nnx.Module):
     """A residual block with two convolutional layers and optional context."""
 
     def __init__(
@@ -371,17 +387,20 @@ class ResnetBlock(nnx.Module):
             strides: Strides for the convolution.
             **kwargs: Additional keyword arguments for the convolutional block.
         """
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
+        )
         self.in_features = in_features
         self.out_features = out_features
         self.context_features = context_features
-        self.preferred_element_type = preferred_element_type
         self.dropout_rate = dropout_rate
         self.drop_path_rate = drop_path_rate
         self.rescale_skip = rescale_skip
 
-        precision_kwargs = get_active_precision_kwargs(
-            dtype, precision, param_dtype, preferred_element_type
-        )
+        precision_kwargs = self.active_precision_kwargs()
         precision_kwargs = filter_precision_kwargs(conv_block_cls, **precision_kwargs)
 
         if context_features is not None:
@@ -446,9 +465,7 @@ class ResnetBlock(nnx.Module):
         x = self.conv2(x, rng=rng)
 
         # Residual connection
-        skip_connection = self.skip_connection(inputs).astype(
-            self.preferred_element_type
-        )
+        skip_connection = self.cast_output(self.skip_connection(inputs))
         if self.dropout_path:
             x = self.dropout_path(x, deterministic=deterministic, rng=rng)
         out = x + skip_connection
@@ -460,7 +477,7 @@ class ResnetBlock(nnx.Module):
         return out
 
 
-class SpatialSelfAttention(nnx.Module):
+class SpatialSelfAttention(PrecisionMixin, nnx.Module):
     """Full-image self-attention for (B, H, W, C) tensors."""
 
     def __init__(
@@ -483,7 +500,12 @@ class SpatialSelfAttention(nnx.Module):
         norm_cls: ModuleLikeType = nnx.GroupNorm,
         mha_cls: ModuleLikeType = MultiHeadAttention,
     ):
-        self.preferred_element_type = preferred_element_type
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
+        )
         self.num_spatial_dims = num_spatial_dims
         precision_kwargs = get_active_precision_kwargs(
             dtype, precision, param_dtype, None
@@ -558,7 +580,7 @@ class SpatialSelfAttention(nnx.Module):
         y = self.norm(x).reshape(*b, seq_len, c)  # →  (B, N, C)  with N = H·W
         y = self.attn(y, deterministic=deterministic, rng=rng)  # MultiHeadAttention
         y = y.reshape(*b, *spatial_dims, c)
-        y = y.astype(self.preferred_element_type)
+        y = self.cast_output(y)
         if self.dropout_path:
             y = self.dropout_path(y, deterministic=deterministic, rng=rng)
         if self.context_fuse is not None and context is not None:
