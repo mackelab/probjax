@@ -536,6 +536,11 @@ class rv_exponential_family(rv_generic):
 class rv_continuous(rv_generic):
     """Base class for continuous random variables."""
 
+    @classmethod
+    def support(cls, *args: Any, **kwds: Any) -> stats_constraints.Constraint:
+        """Support of the distribution; the whole real line unless overridden."""
+        return stats_constraints.real
+
     def freeze(self, *args: Any, **kwds: Any) -> "rv_continuous_frozen":
         """Freeze the distribution for the given arguments."""
         return cast(
