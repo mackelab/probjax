@@ -6,7 +6,12 @@ from jax import random
 from jax.scipy.stats import chi2 as _chi2
 
 from probjax.stats.base import rv_continuous
-from probjax.stats.constraints import real, strict_positive, strict_positive_integer
+from probjax.stats.constraints import (
+    interval,
+    real,
+    strict_positive,
+    strict_positive_integer,
+)
 from probjax.stats.utils import (
     flatten_samples,
     loc_scale_sample,
@@ -39,7 +44,7 @@ class chi2_gen(rv_continuous):
     @classmethod
     def support(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
         """Support of the chi-squared distribution."""
-        return real
+        return interval(loc, jnp.inf)
 
     @classmethod
     def pdf(cls, x, df=1.0, loc=0.0, scale=1.0, **kwargs):
@@ -113,18 +118,6 @@ class chi2_gen(rv_continuous):
         - loc = 0 (fixed)
         - scale = mean(data) / df
         - df = mean(data) / var(data)
-
-        Parameters
-        ----------
-        data : array_like
-            Data to fit the distribution to
-        **kwds : dict, optional
-            Additional parameters (ignored)
-
-        Returns
-        -------
-        params : tuple
-            The fitted parameters (df, loc, scale)
         """
         data = flatten_samples(data)
         dtype = data.dtype
