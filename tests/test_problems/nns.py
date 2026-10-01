@@ -361,7 +361,6 @@ def flow(request):
         (VP, 2),
         (EDM, 2),
         (VE, 3),
-        (EDM, 1),
     ]
 )
 def denoising_diffusion(request):

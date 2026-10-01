@@ -7,8 +7,8 @@ import jax.numpy as jnp
 from probjax.nn.pallas_kernels import compute_mamba_scan, ssd as pallas_ssd
 from probjax.nn.sharding import BATCH, constrain, replicate
 from probjax.nn.utils import (
+    PrecisionMixin,
     filter_precision_kwargs,
-    get_active_precision_kwargs,
 )
 from probjax.utils.typing import DTypeLike, PrecisionLike
 
@@ -188,7 +188,7 @@ def mamba_scan(
     )
 
 
-class MambaCell(RecurrentCell):
+class MambaCell(PrecisionMixin, RecurrentCell):
     """Mamba cell mapping [B, L, D] → [B, L, D].
 
     Wraps the Pallas Mamba scan kernel with token-wise projections to generate
@@ -221,6 +221,12 @@ class MambaCell(RecurrentCell):
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
     ):
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
+        )
         sd = state_dim or model_dim
         self.model_dim = model_dim
         self.state_dim = sd
@@ -237,9 +243,7 @@ class MambaCell(RecurrentCell):
         self.d = nnx.Param(jnp.ones((1, model_dim), dtype=jnp.float32))
 
         # Precision/dtype kwargs for linear projections
-        precision_kwargs = get_active_precision_kwargs(
-            dtype, precision, param_dtype, preferred_element_type
-        )
+        precision_kwargs = self.active_precision_kwargs()
         precision_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
 
         # Token-wise generators for b, c, delta
@@ -306,7 +310,7 @@ def ssd(
     return pallas_ssd(q, k, v, log_alpha, h0)
 
 
-class SSDCell(RecurrentCell):
+class SSDCell(PrecisionMixin, RecurrentCell):
     """SSD (Mamba-2 style) cell mapping [B, L, D] → [B, L, D].
 
     Uses the Pallas SSD kernel with single group and `num_heads` value pathways.
@@ -328,6 +332,12 @@ class SSDCell(RecurrentCell):
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
     ):
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
+        )
         sd = state_dim or model_dim
         self.model_dim = model_dim
         self.state_dim = sd
@@ -336,9 +346,7 @@ class SSDCell(RecurrentCell):
             raise ValueError("reduce must be 'sum' or 'mean'")
         self.reduce = reduce
 
-        precision_kwargs = get_active_precision_kwargs(
-            dtype, precision, param_dtype, preferred_element_type
-        )
+        precision_kwargs = self.active_precision_kwargs()
         precision_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
 
         self.to_q = nnx.Linear(model_dim, sd, rngs=rngs, **precision_kwargs)

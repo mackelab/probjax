@@ -34,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   calls run the plain function with no `custom_inverse_call_p` primitive,
   and `inverse`/`inverse_and_logabsdet` fall back to structural inversion.
   Set `PROBJAX_DISABLE_CUSTOM_INVERSE=1` to disable globally
+- `LinearOperator.solve(rhs, ...)` and `LinearOperator.logdet(...)`
+  encapsulating the dense-vs-iterative (CG/Lanczos) dispatch previously
+  hand-rolled by each consumer; `default_solve`/`default_logdet` in the
+  Kalman filter are now thin wrappers with unchanged signatures
+- `probjax.nn.utils.PrecisionMixin`: stores the
+  dtype/precision/param_dtype/preferred_element_type quartet and exposes
+  `cast_output(x)`; adopted by 22 NN module classes
 
 ### Changed
 - Target Python 3.11–3.13 and JAX 0.9.x; require Flax >=0.12.6 and BlackJAX 1.6.2
@@ -70,6 +77,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `probjax.enable_rv_tracing()` context if you inspect jaxprs for sites or
   call `interpret` manually. Set `PROBJAX_RV_TRACING=1` to restore the legacy
   always-emit behaviour globally
+- `LinearOperator` arithmetic now propagates dtypes truthfully via
+  `jnp.result_type` (previously `__add__`/`__mul__`/`__neg__`/`__sub__`
+  kept `self.dtype` verbatim, e.g. `(f32_op * 2.0)` reported float32 while
+  materializing float64); construction infers dtype by probing the operator
+  once, falling back to the global default when probing is impossible
+- `LinearOperator` supports `2 * A`, `A / c`, `c - A`, and 0-d operands as
+  `c * I` in `__add__`/`__sub__`; shape violations now raise `ValueError`
+  at construction instead of deferred XLA errors or `AssertionError`
+  (asserts are compiled out under `python -O`)
+- `LinearOperator.T` is cached per instance instead of retracing
+  `jax.linear_transpose` on every access
+- `rv_continuous.support` is now a concrete default returning the
+  whole-real-line constraint; the 13 whole-real-line distributions inherit
+  it instead of repeating the body
+- Distribution per-method docstrings trimmed to one-liners (parameter docs
+  stay on the class docstring)
+- CI: tests marked `slow` are skipped on PR runs (full suite on `main`),
+  the 3-Python version matrix runs on `main` only (PRs use 3.12), the
+  coverage job runs on `main` only, and a persistent JAX compilation cache
+  is shared across CI runs
+
+### Removed
+- The unused, misnamed `linear_operator()` factory function (zero call
+  sites repo-wide; pre-1.0 API cleanup)
+- Dead ravel/flatten helpers in `probjax.utils.jaxutils`
+  (`ravel_first_arg_`, `ravel_args_`, `flatten_args_`, `flatten_fun`,
+  `ravel_fun`, `ravel_first_arg_fun`); the live `ravel_arg_fun` and public
+  `ravel_args` are unchanged
 
 ### Fixed
 - Correct the classical RK4 third-stage tableau and stop the stage loop at its
@@ -92,6 +127,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decoding, naive sampling, and training now agree
 - `flex_attention` no longer crashes on stateful masks (their data children
   are not spatial dims and must not be padded)
+- `pareto.support(b)` returned the whole-real-line constraint; now returns
+  the `[b, ∞)` interval (also fixes `chi2.support` → `[loc, ∞)` and
+  `truncnorm.support` → `[a, b]`, the same copy-paste bug). This repairs
+  `biject_to` transforms and support-aware validation for these families
+- `preferred_element_type=None` (the default) is now a true no-op in all NN
+  modules via `PrecisionMixin.cast_output`: previously the unguarded
+  `.astype(None)` silently corrupted dtypes on JAX 0.9.x and raises
+  `TypeError` on newer JAX (7 sites in conv/unet layers)
+- SDE integration of plain-callable drifts now routes through
+  `RaveledDrift`, so non-`Drift` pytrees keep array leaves as explicit
+  differentiable pytree children on the SDE side, matching the ODE side
 
 ### Compatibility and validation
 

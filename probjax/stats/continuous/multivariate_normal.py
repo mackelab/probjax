@@ -98,22 +98,6 @@ class multivariate_normal_gen(rv_multivariate):
     multivariate = True
 
     @classmethod
-    def support(cls, loc=None, **kwargs):
-        """Support of the multivariate normal distribution.
-
-        Parameters
-        ----------
-        loc : array_like, optional
-            Mean of the distribution. Default is None.
-
-        Returns
-        -------
-        support : constraint
-            Support of the distribution
-        """
-        return real
-
-    @classmethod
     def pdf(
         cls,
         x: Array,
@@ -123,26 +107,7 @@ class multivariate_normal_gen(rv_multivariate):
         scale_tril: Optional[Array] = None,
         **kwargs,
     ):
-        """Probability density function of the multivariate normal distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            Points at which to evaluate the probability density function
-        loc : array_like
-            Mean of the distribution
-        cov : array_like, optional
-            Covariance matrix
-        precision_matrix : array_like, optional
-            Precision matrix
-        scale_tril : array_like, optional
-            Lower triangular matrix with positive diagonal
-
-        Returns
-        -------
-        pdf : ndarray
-            Probability density function evaluated at x
-        """
+        """Probability density function of the multivariate normal distribution."""
         return jnp.exp(
             cls.logpdf(
                 x,
@@ -165,28 +130,7 @@ class multivariate_normal_gen(rv_multivariate):
         shape: Tuple[int, ...] = (),
         **kwargs,
     ):
-        """Random variates of the multivariate normal distribution.
-
-        Parameters
-        ----------
-        rng : jax.random.PRNGKey
-            The random key used for sampling
-        loc : array_like
-            Mean of the distribution
-        cov : array_like, optional
-            Covariance matrix
-        precision_matrix : array_like, optional
-            Precision matrix
-        scale_tril : array_like, optional
-            Lower triangular matrix with positive diagonal
-        shape : tuple of ints, optional
-            The shape of the samples to draw. Default is ().
-
-        Returns
-        -------
-        rvs : ndarray
-            Random variates of given shape
-        """
+        """Random variates of the multivariate normal distribution."""
         loc_arr, scale_arr, batch_shape = _resolve_scale_tril(
             loc, cov, precision_matrix, scale_tril
         )
@@ -229,26 +173,8 @@ class multivariate_normal_gen(rv_multivariate):
         scale_tril: Optional[Array] = None,
         **kwargs,
     ):
-        """Log of the probability density function of the multivariate normal distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            Points at which to evaluate the log probability density function
-        loc : array_like
-            Mean of the distribution
-        cov : array_like, optional
-            Covariance matrix
-        precision_matrix : array_like, optional
-            Precision matrix
-        scale_tril : array_like, optional
-            Lower triangular matrix with positive diagonal
-
-        Returns
-        -------
-        logpdf : ndarray
-            Log of the probability density function evaluated at x
-        """
+        """Log of the probability density function of the multivariate normal
+        distribution."""
         x_arr = jnp.asarray(x)
         loc_arr = jnp.asarray(loc)
         precision_arr = _asarray_optional(precision_matrix)
@@ -288,34 +214,12 @@ class multivariate_normal_gen(rv_multivariate):
 
     @classmethod
     def mean(cls, loc: Array, **kwargs):
-        """Mean of the multivariate normal distribution.
-
-        Parameters
-        ----------
-        loc : array_like
-            Mean of the distribution
-
-        Returns
-        -------
-        mean : ndarray
-            Mean of the distribution
-        """
+        """Mean of the multivariate normal distribution."""
         return loc
 
     @classmethod
     def mode(cls, loc: Array, **kwargs):
-        """Mode of the multivariate normal distribution.
-
-        Parameters
-        ----------
-        loc : array_like
-            Mean of the distribution
-
-        Returns
-        -------
-        mode : ndarray
-            Mode of the distribution
-        """
+        """Mode of the multivariate normal distribution."""
         return loc
 
     @classmethod
@@ -327,24 +231,7 @@ class multivariate_normal_gen(rv_multivariate):
         scale_tril: Optional[Array] = None,
         **kwargs,
     ):
-        """Variance of the multivariate normal distribution.
-
-        Parameters
-        ----------
-        loc : array_like
-            Mean of the distribution
-        cov : array_like, optional
-            Covariance matrix
-        precision_matrix : array_like, optional
-            Precision matrix
-        scale_tril : array_like, optional
-            Lower triangular matrix with positive diagonal
-
-        Returns
-        -------
-        var : ndarray
-            Variance of the distribution
-        """
+        """Variance of the multivariate normal distribution."""
         cov_arr = _asarray_optional(cov)
         precision_arr = _asarray_optional(precision_matrix)
         scale_arr = _asarray_optional(scale_tril)
@@ -371,24 +258,7 @@ class multivariate_normal_gen(rv_multivariate):
         scale_tril: Optional[Array] = None,
         **kwargs,
     ):
-        """Entropy of the multivariate normal distribution.
-
-        Parameters
-        ----------
-        loc : array_like
-            Mean of the distribution
-        cov : array_like, optional
-            Covariance matrix
-        precision_matrix : array_like, optional
-            Precision matrix
-        scale_tril : array_like, optional
-            Lower triangular matrix with positive diagonal
-
-        Returns
-        -------
-        entropy : ndarray
-            Entropy of the distribution
-        """
+        """Entropy of the multivariate normal distribution."""
         cov_arr = _asarray_optional(cov)
         precision_arr = _asarray_optional(precision_matrix)
         scale_arr = _asarray_optional(scale_tril)

@@ -9,7 +9,7 @@ from jax import lax
 from jax.ops import segment_max  # segment reduction (available in JAX)
 
 from probjax.utils.optional import require_ott
-from probjax.utils.typing import Array, ArrayLike, ModuleLikeType
+from probjax.utils.typing import Array, ArrayLike, DTypeLike, ModuleLikeType, PrecisionLike
 
 
 # Distinguish an omitted builder from explicit None (which may disable it).
@@ -181,6 +181,45 @@ def get_active_precision_kwargs(
     if preferred_element_type is not None:
         precision_kwargs["preferred_element_type"] = preferred_element_type
     return precision_kwargs
+
+
+class PrecisionMixin:
+    """Mixin storing the four precision/dtype kwargs for nn modules.
+
+    Mix into ``nnx.Module`` subclasses as ``class Foo(PrecisionMixin, nnx.Module)``
+    and call ``super().__init__(dtype=dtype, precision=precision,
+    param_dtype=param_dtype, preferred_element_type=preferred_element_type)``
+    in ``__init__``. The values are stored as plain attributes; :meth:`cast_output`
+    performs the single None-guarded output cast shared by all layers (a ``None``
+    ``preferred_element_type`` means "don't cast", and must never reach
+    ``x.astype(None)``).
+    """
+
+    def __init__(
+        self,
+        *,
+        dtype: DTypeLike | None = None,
+        precision: PrecisionLike | None = None,
+        param_dtype: DTypeLike | None = None,
+        preferred_element_type: DTypeLike | None = None,
+    ) -> None:
+        super().__init__()
+        self.dtype = dtype
+        self.precision = precision
+        self.param_dtype = param_dtype
+        self.preferred_element_type = preferred_element_type
+
+    def cast_output(self, x: ArrayLike) -> Array:
+        """Cast ``x`` to ``preferred_element_type``; no-op when it is None."""
+        if self.preferred_element_type is None:
+            return x
+        return x.astype(self.preferred_element_type)
+
+    def active_precision_kwargs(self) -> dict:
+        """Non-None precision kwargs, ready to forward to submodules."""
+        return get_active_precision_kwargs(
+            self.dtype, self.precision, self.param_dtype, self.preferred_element_type
+        )
 
 
 def call_with_optional_rng(module, *args, rng=None, **kwargs):
