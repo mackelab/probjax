@@ -119,23 +119,85 @@ def invertible_function_1d(request):
 # SDE problems fixtures ---------------------------------------------------------
 
 
-METHODS = get_methods_sde()
+SDE_METHODS = get_methods_sde()
+# Methods that require split_drift-wrapped drift (dedicated tests only).
+SPLIT_DRIFT_SDE_METHODS = ["exp_euler_maruyama"]
+# linear_exact_sde requires linear_drift + const_diffusion; covered by its own tests.
+GENERIC_SDE_METHODS = [
+    m for m in SDE_METHODS if m not in SPLIT_DRIFT_SDE_METHODS + ["linear_exact_sde"]
+]
 
 
-@pytest.fixture(params=METHODS, ids=METHODS)
+@pytest.fixture(params=SDE_METHODS, ids=SDE_METHODS)
 def sde_method(request):
+    return request.param
+
+
+@pytest.fixture(params=GENERIC_SDE_METHODS, ids=GENERIC_SDE_METHODS)
+def generic_sde_method(request):
+    """SDE methods that accept plain drift/diffusion callables."""
+    return request.param
+
+
+@pytest.fixture(params=SPLIT_DRIFT_SDE_METHODS, ids=SPLIT_DRIFT_SDE_METHODS)
+def split_drift_sde_method(request):
+    """SDE methods that require a split_drift-wrapped drift."""
     return request.param
 
 
 # ODE problems fixtures ---------------------------------------------------------
 
 
-METHODS = get_methods_ode()
+ODE_METHODS = get_methods_ode()
+# Exponential methods that require a split_drift-wrapped drift.
+SPLIT_DRIFT_ODE_METHODS = ["exp_ab2_scalarL", "exp_ab3_scalarL"]
+# linear_exact requires a linear_drift-wrapped drift; plain-callable tests
+# (nonlinear, pytree, ...) cannot run it.
+GENERIC_ODE_METHODS = [m for m in ODE_METHODS if m not in SPLIT_DRIFT_ODE_METHODS]
+PLAIN_ODE_METHODS = [m for m in GENERIC_ODE_METHODS if m != "linear_exact"]
+
+assert len(ODE_METHODS) == 28, ODE_METHODS
+assert len(GENERIC_ODE_METHODS) + len(SPLIT_DRIFT_ODE_METHODS) == 28
 
 
-@pytest.fixture(params=METHODS, ids=METHODS)
-def ode_method(request):
+@pytest.fixture(params=GENERIC_ODE_METHODS, ids=GENERIC_ODE_METHODS)
+def generic_ode_method(request):
+    """ODE methods usable with linear_drift (excl. split_drift-only methods)."""
     return request.param
+
+
+@pytest.fixture(params=PLAIN_ODE_METHODS, ids=PLAIN_ODE_METHODS)
+def plain_ode_method(request):
+    """ODE methods usable with plain callables (excl. split_drift, linear_exact)."""
+    return request.param
+
+
+@pytest.fixture(params=SPLIT_DRIFT_ODE_METHODS, ids=SPLIT_DRIFT_ODE_METHODS)
+def split_drift_ode_method(request):
+    """ODE methods that require a split_drift-wrapped drift."""
+    return request.param
+
+
+# Shared PRNG fixtures ----------------------------------------------------------
+
+
+@pytest.fixture
+def rng():
+    """Shared base PRNG key (identical to ``jax.random.PRNGKey(0)``)."""
+    return jax.random.key(0)
+
+
+@pytest.fixture
+def rng_split(rng):
+    """Yield fresh subkeys derived from the shared ``rng`` fixture key."""
+    state = {"n": 0}
+
+    def _next():
+        key = jax.random.fold_in(rng, state["n"])
+        state["n"] += 1
+        return key
+
+    return _next
 
 
 def pytest_addoption(parser):

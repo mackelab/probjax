@@ -45,11 +45,6 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
     parameters = {'loc': real, 'kappa': strict_positive}
 
     @classmethod
-    def support(cls, loc=0.0, kappa=1.0, **kwargs):
-        """Support of the von Mises distribution."""
-        return real
-
-    @classmethod
     def pdf(cls, x, loc=0.0, kappa=1.0, **kwargs):
         """Probability density function of the von Mises distribution."""
         return jnp.exp(kappa * jnp.cos(x - loc)) / (2 * jnp.pi * i0(kappa))

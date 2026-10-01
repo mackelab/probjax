@@ -16,7 +16,11 @@ from probjax.stats.base import rv_exponential_family, rv_multivariate
 from probjax.stats.constraints import (
     positive,
 )
-from probjax.stats.utils import normalize_sample_weights, row_mean_and_var
+from probjax.stats.utils import (
+    _require_unweighted_fit,
+    normalize_sample_weights,
+    row_mean_and_var,
+)
 from probjax.utils.stats import mle_dirichlet
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
@@ -41,18 +45,7 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
 
     @classmethod
     def support(cls, alpha=None, **kwargs):
-        """Support of the Dirichlet distribution.
-
-        Parameters
-        ----------
-        alpha : array_like, optional
-            Concentration parameters. Default is None.
-
-        Returns
-        -------
-        support : constraint
-            Support of the distribution
-        """
+        """Support of the Dirichlet distribution."""
         return positive
 
     @classmethod
@@ -66,20 +59,7 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
 
     @classmethod
     def logpdf(cls, x: Array, alpha: Array, **kwargs):
-        """Log of the probability density function of the Dirichlet distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            Points at which to evaluate the log probability density function
-        alpha : array_like
-            Concentration parameters
-
-        Returns
-        -------
-        logpdf : ndarray
-            Log of the probability density function evaluated at x
-        """
+        """Log of the probability density function of the Dirichlet distribution."""
         alpha_arr, x_arr = jnp.broadcast_arrays(alpha, x)
         x_arr = jnp.asarray(x_arr)
         if x_arr.ndim == 1:
@@ -97,22 +77,7 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
         shape: Tuple[int, ...] = (),
         **kwargs,
     ):
-        """Random variates of the Dirichlet distribution.
-
-        Parameters
-        ----------
-        rng : jax.random.PRNGKey
-            The random key used for sampling
-        alpha : array_like
-            Concentration parameters
-        shape : tuple of ints, optional
-            The shape of the samples to draw. Default is ().
-
-        Returns
-        -------
-        rvs : ndarray
-            Random variates of given shape
-        """
+        """Random variates of the Dirichlet distribution."""
         assert jnp.ndim(alpha) >= 1, "alpha must be at least one-dimensional."
         assert jnp.all(alpha > 0), "alpha must be positive."
 
@@ -123,35 +88,13 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
 
     @classmethod
     def mean(cls, alpha: Array, **kwargs):
-        """Mean of the Dirichlet distribution.
-
-        Parameters
-        ----------
-        alpha : array_like
-            Concentration parameters
-
-        Returns
-        -------
-        mean : ndarray
-            Mean of the distribution
-        """
+        """Mean of the Dirichlet distribution."""
         alpha_sum = jnp.sum(alpha, axis=-1, keepdims=True)
         return alpha / alpha_sum
 
     @classmethod
     def mode(cls, alpha: Array, **kwargs):
-        """Mode of the Dirichlet distribution.
-
-        Parameters
-        ----------
-        alpha : array_like
-            Concentration parameters
-
-        Returns
-        -------
-        mode : ndarray
-            Mode of the distribution
-        """
+        """Mode of the Dirichlet distribution."""
         alpha_sum = jnp.sum(alpha, axis=-1, keepdims=True)
         valid = alpha > 1
         mode = jnp.where(valid, (alpha - 1) / (alpha_sum - alpha.shape[-1]), 1e-20)
@@ -160,35 +103,13 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
 
     @classmethod
     def var(cls, alpha: Array, **kwargs):
-        """Variance of the Dirichlet distribution.
-
-        Parameters
-        ----------
-        alpha : array_like
-            Concentration parameters
-
-        Returns
-        -------
-        var : ndarray
-            Variance of the distribution
-        """
+        """Variance of the Dirichlet distribution."""
         alpha_sum = jnp.sum(alpha, axis=-1, keepdims=True)
         return alpha * (alpha_sum - alpha) / (alpha_sum**2 * (alpha_sum + 1))
 
     @classmethod
     def entropy(cls, alpha: Array, **kwargs):
-        """Entropy of the Dirichlet distribution.
-
-        Parameters
-        ----------
-        alpha : array_like
-            Concentration parameters
-
-        Returns
-        -------
-        entropy : ndarray
-            Entropy of the distribution
-        """
+        """Entropy of the Dirichlet distribution."""
         alpha_sum = jnp.sum(alpha, axis=-1, keepdims=True)
         return (
             gammaln(alpha_sum)
@@ -199,18 +120,7 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
 
     @classmethod
     def skew(cls, alpha: Array, **kwargs):
-        """Skewness of the Dirichlet distribution.
-
-        Parameters
-        ----------
-        alpha : array_like
-            Concentration parameters
-
-        Returns
-        -------
-        skew : ndarray
-            Skewness of the distribution
-        """
+        """Skewness of the Dirichlet distribution."""
         alpha_sum = jnp.sum(alpha, axis=-1, keepdims=True)
         return (
             2
@@ -221,18 +131,7 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
 
     @classmethod
     def kurtosis(cls, alpha: Array, **kwargs):
-        """Excess kurtosis of the Dirichlet distribution.
-
-        Parameters
-        ----------
-        alpha : array_like
-            Concentration parameters
-
-        Returns
-        -------
-        kurtosis : ndarray
-            Excess kurtosis of the distribution
-        """
+        """Excess kurtosis of the Dirichlet distribution."""
         alpha_sum = jnp.sum(alpha, axis=-1, keepdims=True)
         return 6 * (
             (alpha_sum**2 * (alpha_sum + 1))
@@ -242,50 +141,17 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
 
     @classmethod
     def natural_parameters(cls, alpha: Array, **kwargs):
-        """Natural parameters of the Dirichlet distribution.
-
-        Parameters
-        ----------
-        alpha : array_like
-            Concentration parameters
-
-        Returns
-        -------
-        natural_parameters : ndarray
-            Natural parameters of the distribution
-        """
+        """Natural parameters of the Dirichlet distribution."""
         return alpha - 1
 
     @classmethod
     def sufficient_statistics(cls, x: Array, **kwargs):
-        """Sufficient statistics of the Dirichlet distribution.
-
-        Parameters
-        ----------
-        x : array_like
-            Data points
-
-        Returns
-        -------
-        sufficient_statistics : ndarray
-            Sufficient statistics of the distribution
-        """
+        """Sufficient statistics of the Dirichlet distribution."""
         return jnp.log(x)
 
     @classmethod
     def log_partition(cls, alpha: Array, **kwargs):
-        """Log partition function of the Dirichlet distribution.
-
-        Parameters
-        ----------
-        alpha : array_like
-            Concentration parameters
-
-        Returns
-        -------
-        log_partition : ndarray
-            Log partition function of the distribution
-        """
+        """Log partition function of the Dirichlet distribution."""
         alpha_sum = jnp.sum(alpha, axis=-1, keepdims=True)
         return gammaln(alpha_sum) - jnp.sum(gammaln(alpha), axis=-1)
 
@@ -302,10 +168,7 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
         Uses method of moments for the initial estimate, then refines via
         fixed-point MLE iteration (Minka 2000).
         """
-        if weights is not None:
-            raise NotImplementedError(
-                "Weighted fitting is not implemented for the Dirichlet distribution."
-            )
+        _require_unweighted_fit(weights, "Dirichlet")
         data = jnp.asarray(data)
         if data.ndim == 1:
             raise ValueError("Dirichlet fitting expects observations arranged by rows.")

@@ -9,8 +9,8 @@ from probjax.nn.layers.fuse import AffineFuse
 from probjax.nn.nets.simple import MLP, ResNet
 from probjax.nn.utils import (
     DEFAULT_MODULE,
+    PrecisionMixin,
     filter_precision_kwargs,
-    get_active_precision_kwargs,
 )
 from probjax.utils.typing import (
     Array,
@@ -21,7 +21,7 @@ from probjax.utils.typing import (
 )
 
 
-class TimeMLP(nnx.Module):
+class TimeMLP(PrecisionMixin, nnx.Module):
     """Time-conditioned residual MLP for flow-matching / diffusion nets.
 
     Time (and, for mean-flow-style ``(t, r)`` pairs, the second time ``r``) is
@@ -124,12 +124,16 @@ class TimeMLP(nnx.Module):
         if context_dim is not None and context_dim <= 0:
             raise ValueError(f"context_dim must be positive, got {context_dim}")
 
+        super().__init__(
+            dtype=dtype,
+            precision=precision,
+            param_dtype=param_dtype,
+            preferred_element_type=preferred_element_type,
+        )
         self.features = features
         self.context_dim = context_dim
 
-        precision_kwargs = get_active_precision_kwargs(
-            dtype, precision, param_dtype, preferred_element_type
-        )
+        precision_kwargs = self.active_precision_kwargs()
 
         self.time_fourier = fourier_cls(
             1,

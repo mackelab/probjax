@@ -48,11 +48,6 @@ class skewnorm_gen(rv_continuous, rv_exponential_family):
     parameters = {'a': real, 'loc': real, 'scale': strict_positive}
 
     @classmethod
-    def support(cls, a=0.0, loc=0.0, scale=1.0, **kwargs):
-        """Support of the skew normal distribution."""
-        return real
-
-    @classmethod
     def pdf(cls, x, a=0.0, loc=0.0, scale=1.0, **kwargs):
         """Probability density function of the skew normal distribution."""
         z = (x - loc) / scale

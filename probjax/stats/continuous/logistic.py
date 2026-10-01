@@ -46,11 +46,6 @@ class logistic_gen(rv_continuous, rv_exponential_family):
     parameters = {'loc': real, 'scale': strict_positive}
 
     @classmethod
-    def support(cls, loc=0.0, scale=1.0, **kwargs):
-        """Support of the logistic distribution."""
-        return real
-
-    @classmethod
     def pdf(cls, x, loc=0.0, scale=1.0, **kwargs):
         """Probability density function of the logistic distribution."""
         x_arr = jnp.asarray(x)
