@@ -1,4 +1,5 @@
 import inspect
+import warnings
 from functools import partial
 from typing import Optional, Sequence, Tuple
 
@@ -152,6 +153,14 @@ def filter_precision_kwargs(cls: ModuleLikeType, **kwargs):
         param_names = {"dtype", "precision", "param_dtype", "preferred_element_type"}
 
     if target_cls in BUGGED and "preferred_element_type" in param_names:
+        if "preferred_element_type" in kwargs:
+            warnings.warn(
+                f"Ignoring preferred_element_type={kwargs['preferred_element_type']!r} for "
+                f"{target_cls.__name__}: JAX does not support a backward pass with "
+                "preferred_element_type != input dtype (see jax-ml/jax#31592).",
+                UserWarning,
+                stacklevel=2,
+            )
         kwargs.pop("preferred_element_type", None)
 
     # Filter out unsupported precision kwargs

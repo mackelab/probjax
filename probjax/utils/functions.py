@@ -150,7 +150,9 @@ class Drift:
         raise NotImplementedError
 
     def ravel_arg(self, unravel: Callable[[Array], PyTree], index: int = 1):
-        return _ravel_callable(self, unravel, index)
+        if index != 1:
+            return _ravel_callable(self, unravel, index)
+        return RaveledDrift(self, unravel, index=index)
 
     def bind_args(self, *args: Any) -> "Drift":
         """Bind positional ``*args`` into the drift via closure.
@@ -162,6 +164,54 @@ class Drift:
         if not args:
             return self
         return generic_drift(fn=_bind_2(self, args))
+
+
+class RaveledDrift(Drift):
+    """Drift adapter that accepts a flat-array state, preserving array leaves.
+
+    Unlike the plain closure built by :func:`_ravel_callable`, this is a
+    proper JAX pytree node whose children are the wrapped drift's array
+    leaves. Parameters therefore stay explicit differentiable arguments
+    instead of being closed over, which is required for ``custom_vjp``
+    rules (e.g. the adaptive ODE adjoint) — differentiating a
+    ``custom_vjp`` with respect to a closed-over value is not supported.
+    """
+
+    def __init__(
+        self,
+        inner: Callable[..., PyTree],
+        unravel: Callable[[Array], PyTree],
+        index: int = 1,
+    ):
+        self._inner = inner
+        self._unravel = unravel
+        self._index = index
+
+    def __call__(self, t: ArrayLike, y_flat: Array, *args: Any) -> Array:
+        from probjax.utils.jaxutils import ravel_args
+
+        call_args = _replace_positional_arg(
+            (t, y_flat, *args), self._index, self._unravel(y_flat)
+        )
+        out = self._inner(*call_args)
+        out_flat, _ = ravel_args(out)
+        return out_flat
+
+
+def _raveled_drift_flatten(obj: RaveledDrift):
+    leaves, treedef = jax.tree_util.tree_flatten(obj._inner)
+    return tuple(leaves), (treedef, obj._unravel, obj._index)
+
+
+def _raveled_drift_unflatten(aux, leaves):
+    treedef, unravel, index = aux
+    inner = jax.tree_util.tree_unflatten(treedef, list(leaves))
+    return RaveledDrift(inner, unravel, index=index)
+
+
+jax.tree_util.register_pytree_node(
+    RaveledDrift, _raveled_drift_flatten, _raveled_drift_unflatten
+)
 
 
 @register_drift

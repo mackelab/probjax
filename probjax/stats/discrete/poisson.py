@@ -12,7 +12,7 @@ from jax import random
 from jax.scipy.stats import poisson as jax_poisson
 
 from probjax.stats.base import rv_discrete, rv_exponential_family
-from probjax.stats.constraints import positive_integer
+from probjax.stats.constraints import strict_positive
 from probjax.stats.discrete._ppf_search import ppf_by_cdf_search
 from probjax.stats.utils import weighted_mean
 from probjax.utils.typing import ArrayLike, RngKey
@@ -24,7 +24,7 @@ class poisson_gen(rv_discrete, rv_exponential_family):
     """A Poisson distribution."""
 
     parameters = {
-        "rate": positive_integer,
+        "rate": strict_positive,
     }
 
     @classmethod

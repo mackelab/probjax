@@ -9,7 +9,7 @@ from probjax.utils._solver_common import (
     make_filter_wrapper,
     stack_trace,
 )
-from probjax.utils.functions import Drift, generic_drift
+from probjax.utils.functions import Drift, RaveledDrift, generic_drift
 from probjax.utils.jaxutils import ravel_arg_fun, ravel_args
 from probjax.utils.odeutil.adaptive import StepSizeAdaptor
 from probjax.utils.odeutil.filters import TraceFilter
@@ -76,8 +76,18 @@ def _odeint(
     ravel_arg = getattr(drift, "ravel_arg", None)
     if callable(ravel_arg):
         drift = cast(Callable, ravel_arg(unravel, index=1))
+    elif isinstance(drift, Drift):
+        drift = RaveledDrift(drift, unravel, index=1)
     else:
-        drift = ravel_arg_fun(drift, unravel, 1)
+        # Plain callable or non-Drift pytree (e.g. a @register_drift dataclass
+        # not subclassing Drift). If it carries array leaves, keep them as
+        # explicit pytree children via RaveledDrift so they stay
+        # differentiable: custom_vjp cannot differentiate closed-over values.
+        leaves, _ = jax.tree_util.tree_flatten(drift)
+        if leaves:
+            drift = RaveledDrift(drift, unravel, index=1)
+        else:
+            drift = ravel_arg_fun(drift, unravel, 1)
 
     # Ensure drift flows as a registered pytree so ``odeint_adaptive``'s
     # custom_vjp can tree-flatten it. Plain closures (e.g. from
