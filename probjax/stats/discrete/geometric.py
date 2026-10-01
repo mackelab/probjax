@@ -105,18 +105,6 @@ class geometric_gen(rv_discrete, rv_exponential_family):
 
         The MLE for the Geometric distribution has a closed-form solution:
         p = 1 / (1 + mean(data))
-
-        Parameters
-        ----------
-        data : array_like
-            Data to fit the distribution to
-        **kwds : dict, optional
-            Additional parameters (ignored)
-
-        Returns
-        -------
-        params : tuple
-            The fitted parameter p
         """
         mean_data = weighted_mean(data, weights)
         p = 1.0 / (1.0 + mean_data)
