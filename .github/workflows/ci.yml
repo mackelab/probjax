@@ -1,10 +1,8 @@
 name: CI
 
+# Automatic runs disabled: too expensive. Trigger manually from the Actions tab.
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:
 
 # Cancel superseded PR runs; preserve complete main-branch validation.
 concurrency:
