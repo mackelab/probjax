@@ -27,7 +27,7 @@ jobs:
         python-version: ${{ matrix.python-version }}
 
     - name: Restore testmon database
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: .testmondata
         key: testmon-${{ runner.os }}-py${{ matrix.python-version }}-${{ github.sha }}
@@ -64,7 +64,7 @@ jobs:
       # Only save from main: the repo is public and PRs must not be able
       # to poison the cache restored by other runs.
       if: github.ref == 'refs/heads/main'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: .testmondata
         key: testmon-${{ runner.os }}-py${{ matrix.python-version }}-${{ github.sha }}
