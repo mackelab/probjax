@@ -500,3 +500,19 @@ def test_multinomial_diffusion_loss_builder_rao_blackwellized_vector_subset_matc
     estimate = jnp.mean(vals)
 
     assert jnp.abs(estimate - exact) < 2e-2
+
+
+def test_denoising_loss_rebalance_averages_over_unmasked():
+    from probjax.nn.losses.denoising import build_denoising_loss
+
+    loss_fn = build_denoising_loss(lambda x: x, 1.0, 0.1)
+    x = jnp.ones((4, 6))
+    mask = jnp.broadcast_to(jnp.arange(6) < 3, (4, 6))  # True = excluded
+    key = jax.random.PRNGKey(0)
+
+    summed = loss_fn(x, rng=key, loss_mask=mask)
+    rebalanced = loss_fn(x, rng=key, loss_mask=mask, rebalance_loss=True)
+    assert jnp.allclose(rebalanced, summed / 3)
+
+    all_masked = jnp.ones((4, 6), dtype=bool)
+    assert loss_fn(x, rng=key, loss_mask=all_masked, rebalance_loss=True) == 0.0
