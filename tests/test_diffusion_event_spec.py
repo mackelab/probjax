@@ -26,9 +26,12 @@ class Net(nnx.Module):
 
 
 @pytest.mark.parametrize('cls', [EDM, VE, VP, CosineDM])
-def test_required_default_and_sampling_override(cls):
+def test_optional_default_and_sampling_override(cls):
+    undeclared = cls(Net())
+    assert undeclared.event_shape is None
     with pytest.raises(TypeError, match='event_spec'):
-        cls(Net())
+        undeclared.as_dist()
+    assert undeclared.as_dist(3, num_steps=3).event_shape == (3,)
     model = cls(Net(), event_spec=3, num_steps=3)
     assert model.event_shape == (3,)
     assert model.as_dist().event_shape == (3,)
@@ -37,10 +40,10 @@ def test_required_default_and_sampling_override(cls):
     assert model.event_shape == (3,)
 
 
-def test_composable_diffusion_requires_spec():
+def test_composable_diffusion_spec_is_optional():
     args = (Net(), EDMNoiseSchedule(), EDMPreconditioning(), EDMTrainingConfig())
     with pytest.raises(TypeError, match='event_spec'):
-        DiffusionDenoiser(*args)
+        DiffusionDenoiser(*args).as_dist()
     assert DiffusionDenoiser(*args, event_spec=(2,)).event_shape == (2,)
 
 
@@ -92,7 +95,7 @@ def test_default_dtype_can_be_overridden_for_a_distribution():
         assert dist.sample(jax.random.key(0), (2,)).dtype == jnp.float64
 
 
-@pytest.mark.parametrize('spec', [None, 0, -2, (3, 0), (None, 3), {}, True])
+@pytest.mark.parametrize('spec', [0, -2, (3, 0), (None, 3), {}, True])
 def test_invalid_specs_fail_at_construction(spec):
     with pytest.raises((ValueError, TypeError)):
         EDM(Net(), event_spec=spec)

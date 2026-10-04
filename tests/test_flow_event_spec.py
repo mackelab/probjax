@@ -14,9 +14,13 @@ class Net(nnx.Module):
 
 
 @pytest.mark.parametrize("cls", [LinearFlow, LinearMeanFlow])
-def test_required_default_and_polymorphic_sampling(cls):
-    with pytest.raises(TypeError, match="event_spec"):
-        cls(Net())
+def test_default_and_polymorphic_sampling(cls):
+    if cls is LinearMeanFlow:
+        with pytest.raises(TypeError, match="event_spec"):
+            cls(Net())
+    else:
+        with pytest.raises(TypeError, match="event_spec"):
+            cls(Net()).as_dist()
     model = cls(Net(), event_spec=3)
     dist = model.as_dist(num_steps=3)
     assert dist.sample(jax.random.key(0), (2,)).shape == (2, 3)
@@ -35,6 +39,8 @@ def test_required_default_and_polymorphic_sampling(cls):
     "spec", [None, 0, (3, 0), {}, jax.ShapeDtypeStruct((2,), jnp.int32)]
 )
 def test_invalid_defaults(cls, spec):
+    if spec is None and cls is LinearFlow:
+        pytest.skip("event_spec=None means no default for LinearFlow")
     with pytest.raises((TypeError, ValueError)):
         cls(Net(), event_spec=spec)
 
@@ -79,12 +85,15 @@ def test_default_dtype_can_be_overridden_for_a_distribution(cls):
 
 
 @pytest.mark.parametrize('cls', [LinearFlow, LinearMeanFlow])
-def test_composable_base_requires_default(cls):
+def test_composable_base_default(cls):
     preset = cls(Net(), event_spec=2)
     base = cls.__bases__[0]
     args = (Net(), preset.schedule, preset.preconditioning, preset.train_cfg)
     with pytest.raises(TypeError, match='event_spec'):
-        base(*args)
+        if cls is LinearMeanFlow:
+            base(*args)
+        else:
+            base(*args).as_dist()
     assert base(*args, event_spec=(2, 4)).event_shape == (2, 4)
 
 
