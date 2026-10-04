@@ -23,6 +23,10 @@ def test_bind(test_case):
     value = rv_p.bind(key, *args, dist=dist)
     assert isinstance(value, jax.Array)
     assert value.shape == ()
+    if dist in (poisson, binomial):
+        assert jnp.all(value >= 0), "discrete samples must be non-negative"
+    else:
+        assert jnp.all(jnp.isfinite(value.astype(jnp.float32)))
 
 
 @pytest.mark.parametrize("test_case", dist_params)
@@ -51,6 +55,12 @@ def test_jit(test_case):
     value = jitted_f(key)
     assert isinstance(value, jax.Array)
     assert value.shape == ()
+    assert jnp.all(jnp.isfinite(value.astype(jnp.float32))) or value.dtype in (
+        jnp.int32,
+        jnp.int64,
+    )
+    # jit must preserve values, not just shapes
+    assert jnp.allclose(value.astype(jnp.float32), f(key).astype(jnp.float32))
 
 
 @pytest.mark.parametrize("test_case", dist_params)
@@ -66,6 +76,9 @@ def test_vmap(test_case):
     values = vmapped_f(keys)
     assert isinstance(values, jax.Array)
     assert values.shape == (10,)
+    # vmap over split keys must match sequential binds
+    expected = jnp.stack([f(k) for k in keys])
+    assert jnp.allclose(values.astype(jnp.float32), expected.astype(jnp.float32))
 
 
 @pytest.mark.parametrize("test_case", dist_params)
@@ -110,6 +123,7 @@ def test_grad(test_case):
     assert isinstance(value, jax.Array)
     assert value.shape == ()
     assert jnp.issubdtype(value.dtype, jnp.floating)
+    assert jnp.all(jnp.isfinite(value))
 
 
 @pytest.mark.parametrize("test_case", dist_params)

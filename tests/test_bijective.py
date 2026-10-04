@@ -7,7 +7,6 @@ separately in ``test_nflow_configs.py``.
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 import pytest
 
 from probjax.core import inverse, inverse_and_logabsdet
@@ -101,7 +100,7 @@ def _knots(rng, num_bins, scale=1.0):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("seed", np.random.randint(0, 1000, 2))
+@pytest.mark.parametrize("seed", [0, 1])
 @pytest.mark.parametrize("scale", [1.0, 2.0])
 @pytest.mark.parametrize("num_bins", [4, 8, 16])
 @pytest.mark.parametrize("forward,backward,fwd_logdet,has_slopes", SPLINES)

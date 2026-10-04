@@ -189,25 +189,33 @@ def test_mha_flash_named_sharding_jit_forward_and_grad_or_expected_incompatibili
 )
 def mask_fn(request):
     def mask_builder(q_len, k_len):
+        # Deterministic per (mask type, shapes): independent of global
+        # np.random consumption order so results are reproducible under xdist.
+        import zlib
+
+        seed = zlib.crc32(
+            f"{request.param.__name__}-{int(q_len)}-{int(k_len)}".encode()
+        )
+        rng = np.random.default_rng(seed)
         if request.param in {CausalMask, NoMask}:
             return request.param()
         elif request.param == LocalWindowMask:
-            left_window_size = int(np.random.randint(1, q_len))
-            right_window_size = int(np.random.randint(1, k_len))
+            left_window_size = int(rng.integers(1, q_len))
+            right_window_size = int(rng.integers(1, k_len))
             return request.param(left_window_size, right_window_size)
         elif request.param == QKVLengthMask:
-            q_lengths = int(np.random.randint(1, q_len + 1))
-            k_lengths = int(np.random.randint(1, k_len + 1))
+            q_lengths = int(rng.integers(1, q_len + 1))
+            k_lengths = int(rng.integers(1, k_len + 1))
             return request.param(q_lengths, k_lengths)
         elif request.param == KeyPaddingMask:
-            key_lengths = np.random.randint(1, k_len + 1, size=(k_len,))
+            key_lengths = rng.integers(1, k_len + 1, size=(k_len,))
             return request.param(jnp.asarray(key_lengths))
         elif request.param == SameSegmentMask:
-            segment_ids = jnp.asarray(np.random.randint(0, 5, size=(q_len,)))
-            segment_ids_k = jnp.asarray(np.random.randint(0, 5, size=(k_len,)))
+            segment_ids = jnp.asarray(rng.integers(0, 5, size=(q_len,)))
+            segment_ids_k = jnp.asarray(rng.integers(0, 5, size=(k_len,)))
             return request.param(segment_ids, segment_ids_k)
         elif request.param == MarginalizationMask:
-            marginalize = np.random.choice([True, False], size=(q_len,))
+            marginalize = rng.choice([True, False], size=(q_len,))
             return request.param(jnp.asarray(marginalize))
 
     return mask_builder

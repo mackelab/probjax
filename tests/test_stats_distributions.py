@@ -237,7 +237,7 @@ def check_mean_and_var(dist, key, *args, **kwargs):
         ), "Standard deviation is not close to sample standard deviation"
 
     except NotImplementedError:
-        pass
+        pytest.skip("not implemented for this distribution")
 
 
 def check_cdf_icdf(dist, key, *args, **kwargs):
@@ -265,7 +265,7 @@ def check_cdf_icdf(dist, key, *args, **kwargs):
         except NotImplementedError:
             pass
     except NotImplementedError:
-        pass
+        pytest.skip("not implemented for this distribution")
 
 
 def check_mode(dist, key, *args, **kwargs):
@@ -287,7 +287,7 @@ def check_mode(dist, key, *args, **kwargs):
             dist.mode(*args, **kwargs), *args, **kwargs
         ), "Mode log_prob is not maximum"
     except NotImplementedError:
-        pass
+        pytest.skip("not implemented for this distribution")
 
 
 def _get_tol(case, tol_key, name, default):
@@ -536,9 +536,9 @@ def test_independent_distribution(dist, shape=(2,), seed=0):
 def test_mixed_independent_distribution(dist1, dist2, shape=(1,), seed=0):
     """Test mixed independent distribution functionality."""
     if dist1 == multivariate_normal or dist1 == dirichlet or dist1 == categorical:
-        return
+        pytest.skip("unsupported mixed independent combination")
     if dist2 == multivariate_normal or dist2 == dirichlet or dist2 == categorical:
-        return
+        pytest.skip("unsupported mixed independent combination")
 
     key = jax.random.PRNGKey(seed)
 
@@ -548,7 +548,7 @@ def test_mixed_independent_distribution(dist1, dist2, shape=(1,), seed=0):
     try:
         p = indep(p1, p2)
     except AssertionError:
-        return
+        pytest.skip("indep() rejects this combination")
 
     sample_and_check_shape(p, key, shape)
     check_mean_and_var(p, key)
@@ -749,7 +749,7 @@ def test_pareto_sampling_matches_moment(seed: int = 0):
 
     expected_mean = dist.mean()
     if not jnp.isfinite(expected_mean):
-        return
+        pytest.skip("mean is not finite for this parameterisation")
     empirical_mean = jnp.mean(samples)
     assert jnp.allclose(
         empirical_mean,
@@ -809,7 +809,7 @@ def test_kl_divergence(dist1, dist2, shape=(1,), seed=0):
     try:
         dist = kl_divergence(p, q, mc_samples=10000, key=key1)
     except (AssertionError, ValueError, NotImplementedError):
-        return
+        pytest.skip("unsupported distribution pair")
 
     # Monte Carlo estimation of KL divergence
     samples = p.rvs(key1, shape=(10000,))
@@ -835,7 +835,7 @@ def test_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
     try:
         dist = wasserstein_distance(p, q, mc_samples=1000, key=key1)
     except (AssertionError, ValueError, NotImplementedError):
-        return
+        pytest.skip("unsupported distribution pair")
 
     # Monte Carlo estimation of Wasserstein distance
     samples_p = p.rvs(key1, shape=(1000,))
@@ -861,7 +861,7 @@ def test_sliced_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
     try:
         dist = sliced_wasserstein_distance(p, q, mc_samples=1000, key=key1)
     except (AssertionError, ValueError, NotImplementedError):
-        return
+        pytest.skip("unsupported distribution pair")
 
     # Monte Carlo estimation of Sliced Wasserstein distance
     samples_p = p.rvs(key1, shape=(1000,))
@@ -889,7 +889,7 @@ def test_max_slice_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
     try:
         dist = max_slice_wasserstein_distance(p, q, mc_samples=1000, key=key1)
     except (AssertionError, ValueError, NotImplementedError):
-        return
+        pytest.skip("unsupported distribution pair")
 
     # Monte Carlo estimation of Max Sliced Wasserstein distance
     samples_p = p.rvs(key1, shape=(1000,))

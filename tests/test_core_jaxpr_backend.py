@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from probjax.core import (
     do,
@@ -74,13 +75,18 @@ def test_trace_wrappers_do_not_share_state():
     traced_mul = trace(lambda x: x * 2.0)
 
     traced_add_out = traced_add(jnp.array(3.0))
-    snapshot = {key: value for key, value in traced_add_out.items()}
+    snapshot = {key: np.asarray(value) for key, value in traced_add_out.items()}
 
     _ = traced_mul(jnp.array(3.0))
 
     assert list(traced_add_out.keys()) == list(snapshot.keys())
     for key in snapshot:
         assert jnp.allclose(traced_add_out[key], snapshot[key])
+    # Re-invoking after the other wrapper must still give the same result,
+    # proving no shared mutable state leaked between wrappers.
+    rerun = traced_add(jnp.array(3.0))
+    for key in snapshot:
+        assert jnp.allclose(rerun[key], snapshot[key])
 
 
 def test_intervene_overrides_random_variable_value():
