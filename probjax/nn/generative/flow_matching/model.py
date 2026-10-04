@@ -33,7 +33,9 @@ def _flow_ode_drift(model, context):
 
 class FlowMatcher(GenerativeModel):
     """
-    Composable flow matcher with a required default ``event_spec``.
+    Composable flow matcher with an optional default ``event_spec``.
+
+    If omitted, pass ``event_spec`` to ``as_dist`` (or call ``set_event_spec``).
 
     Override sampling shapes with ``as_dist(event_spec=...)`` or change the
     default with ``set_event_spec``. The network must support those shapes.
@@ -65,9 +67,10 @@ class FlowMatcher(GenerativeModel):
         loss_kwargs: Mapping[str, object] | None = None,
         rngs: nnx.RngStream | None = None,
         *,
-        event_spec,
+        event_spec=None,
     ):
-        self.set_event_spec(event_spec)
+        if event_spec is not None:
+            self.set_event_spec(event_spec)
         if not isinstance(schedule, InterpolationScheduleProtocol):
             raise TypeError("schedule must implement InterpolationScheduleProtocol")
         if not isinstance(preconditioning, FlowPreconditioningProtocol):
@@ -298,7 +301,7 @@ class LinearFlow(FlowMatcher):
         schedule: InterpolationScheduleProtocol | None = None,
         preconditioning: FlowPreconditioningProtocol | None = None,
         *,
-        event_spec,
+        event_spec=None,
     ):
         schedule = schedule or LinearInterpolationSchedule()
         preconditioning = preconditioning or GaussianFlowPreconditioning()

@@ -49,10 +49,10 @@ class DiffusionDenoiser(GenerativeModel):
     """
     Composable diffusion denoiser.
 
-    event_spec is required: an event dimension, shape, ShapeDtypeStruct, or
+    event_spec is optional: an event dimension, shape, ShapeDtypeStruct, or
     pytree of those. It excludes sample/batch axes and is only a sampling
-    default, not an input-shape restriction. Override with as_dist(event_spec)
-    or change it through set_event_spec. Backbone dimensions must be compatible.
+    default, not an input-shape restriction. If omitted, it must be passed to
+    as_dist(event_spec) (or set later via set_event_spec). Backbone dimensions must be compatible.
 
     Components:
 
@@ -78,9 +78,10 @@ class DiffusionDenoiser(GenerativeModel):
         last_layer: Callable[[Array], Array] | None = None,
         rngs: nnx.RngStream | None = None,
         *,
-        event_spec,
+        event_spec=None,
     ) -> None:
-        self.set_event_spec(event_spec)
+        if event_spec is not None:
+            self.set_event_spec(event_spec)
         if not isinstance(schedule, NoiseScheduleProtocol):
             raise TypeError("schedule must implement NoiseScheduleProtocol")
         if not isinstance(precond, PreconditioningProtocol):
@@ -478,7 +479,7 @@ class _DiffusionPreset(DiffusionDenoiser):
         last_layer,
         rngs,
         *,
-        event_spec,
+        event_spec=None,
     ) -> None:
         precond = EDMPreconditioning()
         DiffusionDenoiser.__init__(
@@ -508,7 +509,7 @@ class EDM(_DiffusionPreset):
         self,
         net: ModuleLike,
         *,
-        event_spec,
+        event_spec=None,
         std0: float = 1.0,
         lognoise_mean: float = -1.2,
         lognoise_scale: float = 1.2,
@@ -561,7 +562,7 @@ class VE(_DiffusionPreset):
         self,
         net: ModuleLike,
         *,
-        event_spec,
+        event_spec=None,
         std0: float = 1.0,
         sigma_min: float = 1e-4,
         sigma_max: float = 80.0,
@@ -615,7 +616,7 @@ class VP(_DiffusionPreset):
         self,
         net: ModuleLike,
         *,
-        event_spec,
+        event_spec=None,
         beta_min: float = 0.1,
         beta_max: float = 10.0,
         std0: float = 1.0,
@@ -676,7 +677,7 @@ class CosineDM(_DiffusionPreset):
         self,
         net: ModuleLike,
         *,
-        event_spec,
+        event_spec=None,
         std0: float = 1.0,
         t_min: float = 1e-3,
         t_max: float = 1.0,

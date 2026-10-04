@@ -241,8 +241,9 @@ class GenerativeModel(nnx.Module, FitMixin):
         if event_spec is None:
             event_spec = self.event_spec
             if event_spec is None:
-                raise ValueError(
-                    "event_spec is required when the model has no default."
+                raise TypeError(
+                    "event_spec is required: pass it to as_dist() or set a "
+                    "default at construction / via set_event_spec()."
                 )
             if kwargs.get("dtype") is not None:
                 event_spec = jax.tree.map(
