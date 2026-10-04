@@ -133,6 +133,8 @@ markers = [
 ]
 filterwarnings = [
     "ignore:Setting `jax_pmap_shmap_merge` is deprecated in JAX v0.9.0 and will be removed in JAX v0.10.0.:DeprecationWarning:jax._src.config",
+    "ignore:probjax\\.core\\.(observe|intervene|log_potential_fn|log_prob_fn) is deprecated:DeprecationWarning",
+    "ignore:probjax\\.core\\.trace\\(kind_labels='legacy'\\) is deprecated:DeprecationWarning",
 ]
 
 [tool.coverage.run]
