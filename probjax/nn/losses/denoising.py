@@ -51,12 +51,20 @@ def _finalize_loss(
     axis: int | tuple[int, ...] | None,
     adaptive_weight_p: float,
     adaptive_weight_eps: float,
+    rebalance_loss: bool = False,
 ) -> Array:
     if loss_mask is not None:
         loss = jnp.where(~loss_mask, loss, jnp.zeros_like(loss))
     if weight is not None:
         loss = loss * weight
-    loss = jnp.sum(loss, axis=axis)
+    if rebalance_loss and loss_mask is not None:
+        keep = jnp.broadcast_to(~jnp.asarray(loss_mask, dtype=bool), loss.shape)
+        num_elements = jnp.sum(keep, axis=axis)
+        loss = jnp.where(
+            num_elements > 0, jnp.sum(loss, axis=axis) / jnp.maximum(num_elements, 1), 0.0
+        )
+    else:
+        loss = jnp.sum(loss, axis=axis)
     if adaptive_weight_p > 0:
         adaptive_weight = jax.lax.stop_gradient(
             1 / (loss + adaptive_weight_eps) ** adaptive_weight_p
@@ -80,6 +88,7 @@ def _compute_prediction_loss(
     axis: int | tuple[int, ...] | None,
     adaptive_weight_p: float,
     adaptive_weight_eps: float,
+    rebalance_loss: bool = False,
 ) -> Array:
     prediction = model_fn(*args_with_noisy, **model_kwargs)
     target = _compute_target(prediction_target, x0=x0, eps=eps, scale=scale, std=std)
@@ -91,6 +100,7 @@ def _compute_prediction_loss(
         axis=axis,
         adaptive_weight_p=adaptive_weight_p,
         adaptive_weight_eps=adaptive_weight_eps,
+        rebalance_loss=rebalance_loss,
     )
 
 
@@ -155,6 +165,8 @@ def build_denoising_loss(
         weight: Optional multiplicative weight applied before reduction.
         adaptive_weight_p: Power for adaptive re-weighting; set to 0.0 to disable.
         adaptive_weight_eps: Stabiliser added before adaptive re-weighting.
+        rebalance_loss (call-time kwarg): if True and a ``loss_mask`` is given,
+            average over the unmasked entries along ``axis`` instead of summing.
         argnums: Index of the argument corresponding to the clean sample.
         axis: Axis (or tuple of axes) reduced after computing element-wise losses.
         reduction_fn: Function applied to the batch of losses.
@@ -176,6 +188,7 @@ def build_denoising_loss(
         noise_mask=None,
         adaptive_weight_p=0.0,
         adaptive_weight_eps=1e-3,
+        rebalance_loss=False,
         **kwargs,
     ):
         if rng is None:
@@ -217,6 +230,7 @@ def build_denoising_loss(
             axis=axis_override,
             adaptive_weight_p=adaptive_weight_p,
             adaptive_weight_eps=adaptive_weight_eps,
+            rebalance_loss=rebalance_loss,
         )
 
         return reduction_fn(loss)
@@ -242,6 +256,8 @@ def build_time_dependent_denoising_loss(
         weight_fn: Function producing weights evaluated at ``t``.
         adaptive_weight_p: Power for adaptive re-weighting; set to 0.0 to disable.
         adaptive_weight_eps: Stabiliser added before adaptive re-weighting.
+        rebalance_loss (call-time kwarg): if True and a ``loss_mask`` is given,
+            average over the unmasked entries along ``axis`` instead of summing.
         argnums: Index of the clean sample within ``*args`` (after ``t``).
         reduction_fn: Function applied to the batch of losses.
         prediction_target: One of ``"x0"``, ``"eps"``, or ``"v"``.
@@ -260,6 +276,7 @@ def build_time_dependent_denoising_loss(
         noise_mask=None,
         adaptive_weight_p=0.0,
         adaptive_weight_eps=1e-3,
+        rebalance_loss=False,
         **kwargs,
     ):
         if rng is None:
@@ -304,6 +321,7 @@ def build_time_dependent_denoising_loss(
             axis=axis,
             adaptive_weight_p=adaptive_weight_p,
             adaptive_weight_eps=adaptive_weight_eps,
+            rebalance_loss=rebalance_loss,
         )
 
         return reduction_fn(loss)
