@@ -61,9 +61,10 @@ inside JIT. See [training and EMA](../reference/nn.md#training-and-ema).
   dense linear algebra, including under JIT.
 
 ODE/SDE gradient behavior is described in the [solver guide](numerical-solvers.md).
-In particular, adaptive ODEs still use a reverse-mode adjoint; this release does
-not introduce a selectable checkpointed adaptive ODE gradient mode. The adaptive
-backward path currently has an [open release blocker](../releasing.md#open-release-blocker).
+In particular, adaptive ODEs still use a custom reverse-mode adjoint, and there
+is currently no selectable checkpointed adaptive ODE gradient mode. The
+backward path is unreliable for adaptive gradients; use a converged fixed-grid
+solve when you need differentiable integration.
 
 ## Sampling traces and kernels
 
