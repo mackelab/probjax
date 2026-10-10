@@ -60,6 +60,18 @@ pytest -n auto
 pytest tests/test_specific.py
 ```
 
+`scripts/convert_notebooks.py` renders the curated `examples/` notebooks
+(`examples/core/ppl.ipynb`, `examples/inference/kalman_filter.ipynb` and
+`examples/inference/smc.ipynb`) to `docs/tutorials/` with
+`nbconvert`. Those pages are generated, git-ignored, and absent on a clean
+checkout, so run the converter before the documentation tests:
+`tests/test_docs.py::test_every_nav_entry_exists` checks the tutorial nav
+entries and `test_every_python_block_runs` executes the generated Python
+examples. The step needs `nbconvert`, `nbformat` and `matplotlib` (as CI
+installs). Use `python scripts/convert_notebooks.py --check` to verify the
+generated output is current without rewriting it. CI runs the converter before
+`pytest`, and the docs workflow runs it before `zensical build --strict`.
+
 ### Making Changes
 
 1. **Create a new branch** for your feature or bugfix:
@@ -138,6 +150,21 @@ pytest tests/test_docs.py --benchmark-disable
 zensical build --strict
 zensical serve
 ```
+
+The `scripts/convert_notebooks.py` step renders the curated `examples/`
+notebooks into `docs/tutorials/`. Run it first: the tutorial pages are
+git-ignored and generated, and both the nav test and the executable-block test
+in `tests/test_docs.py` depend on them (see "Running Tests" above). `--check`
+fails when the generated pages are stale relative to their notebooks, without
+rewriting them.
+
+Notebook outputs are those committed in the source notebooks, not regenerated
+by the build. Stored plots and other displayed outputs may therefore reflect an
+earlier execution; where a displayed output disagrees with the written page or
+the [Reference](reference/core.md), the written page is authoritative.
+
+If a doc test or the site build fails, see
+[Troubleshooting](troubleshooting.md) for the common causes.
 
 ### Documentation Style
 
