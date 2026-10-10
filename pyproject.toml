@@ -1,6 +1,6 @@
 [build-system]
 requires = [
-    "setuptools>=65",
+    "setuptools>=77",
     "wheel"
 ]
 build-backend = "setuptools.build_meta"
@@ -14,9 +14,10 @@ authors = [
     { name = "Manuel Gloeckler", email = "manuel.gloeckler@uni-tuebingen.de" }
 ]
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE.txt"]
 classifiers = [
-    "License :: OSI Approved :: MIT License",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Education",
     "Intended Audience :: Science/Research",
@@ -27,8 +28,22 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-keywords = ["probabilistic", "jax", "computation"]
+keywords = [
+    "probabilistic",
+    "jax",
+    "computation",
+    "probabilistic-programming",
+    "bayesian-inference",
+    "machine-learning",
+    "differentiable-programming",
+    "simulation-based-inference",
+    "mcmc",
+    "normalizing-flows",
+]
 dependencies = [
     "numpy >= 2.0.0",
     "jax >= 0.9.0, < 0.12",
@@ -103,7 +118,7 @@ ignore = [
 case-sensitive = true
 lines-between-types = 0  # like isort default.
 relative-imports-order = "furthest-to-closest"  # like isort default.
-known-first-party = ["sbi", "tests", "tutorials"]
+known-first-party = ["probjax"]
 
 [tool.ruff.format]
 exclude = ["*.ipynb"]
