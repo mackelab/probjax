@@ -61,6 +61,14 @@ log_joint = log_joint_fn(posterior)(z=latent)
 
 </div>
 
+## New here?
+
+Start with the [Overview](overview.md) for how the modules fit together and the
+[Glossary](glossary.md) for the vocabulary. Then follow
+[Getting started](getting-started.md); if something breaks, check
+[Troubleshooting](troubleshooting.md), and to work on ProbJax itself see
+[Contributing](contributing.md).
+
 ## Install
 
 ```bash
@@ -68,9 +76,6 @@ git clone https://github.com/mackelab/probjax.git
 cd probjax
 python -m pip install -e .
 ```
-
-These pages track `main`; the published package can lag behind them. For the
-next release, see [migration notes](guides/migration.md).
 
 Python 3.11–3.13 and JAX 0.9.x. Accelerator options are in
 [Getting started](getting-started.md).
@@ -88,11 +93,4 @@ does not regenerate their displayed outputs):
 
 All runnable notebooks live in
 [`examples/`](https://github.com/mackelab/probjax/tree/main/examples/)
-(`core`, `stats`, `inference`, `nn`, `utils`). More tutorials are added
-gradually as notebook outputs are refreshed.
-
-The remaining notebooks under `examples/` may predate recent API refactors —
-the tutorial pages above have executable examples checked by CI. Stored plots
-and other notebook outputs may still reflect an earlier execution.
-Where anything disagrees with these pages, prefer these pages and the
-[Reference](reference/core.md).
+(`core`, `stats`, `inference`, `nn`, `utils`).
