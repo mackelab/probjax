@@ -11,14 +11,21 @@ site_dir = "site"
 nav = [
   { "Home" = "index.md" },
   { "Getting started" = "getting-started.md" },
+  { "Concepts" = [
+    "overview.md",
+    "glossary.md",
+  ] },
   { "Guides" = [
-    "guides/migration.md",
-    "guides/numerical-solvers.md",
     "guides/program-inversion.md",
     "guides/density-estimation.md",
+    "guides/autoregressive-models.md",
+    "guides/diffusion-models.md",
+    "guides/flow-matching.md",
     "guides/inference.md",
-    "guides/temporal-smc.md",
     "guides/smc.md",
+    "guides/temporal-smc.md",
+    "guides/numerical-solvers.md",
+    "guides/migration.md",
   ] },
   { "Tutorials" = [
     "tutorials/ppl.md",
