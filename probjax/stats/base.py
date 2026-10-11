@@ -664,14 +664,43 @@ class DistributionAPI(ABC):
 
     @property
     @abstractmethod
-    def batch_shape(self) -> Tuple[int, ...]: ...
+    def batch_shape(self) -> Tuple[int, ...]:
+        """Shape of the batch (non-event) dimensions of the distribution.
+
+        Returns
+        -------
+        tuple of int
+            Batch dimensions of the distribution.
+        """
+        ...
 
     @property
     @abstractmethod
-    def event_shape(self) -> Tuple[int, ...]: ...
+    def event_shape(self) -> Tuple[int, ...]:
+        """Shape of the event dimensions of the distribution.
+
+        Returns
+        -------
+        tuple of int
+            Event dimensions of the distribution.
+        """
+        ...
 
     @abstractmethod
-    def logpdf(self, x: ArrayLike) -> Array: ...
+    def logpdf(self, x: ArrayLike) -> Array:
+        """Log probability density (or mass) function.
+
+        Parameters
+        ----------
+        x : array_like
+            Points at which to evaluate the log density.
+
+        Returns
+        -------
+        Array
+            Log probability density evaluated at ``x``.
+        """
+        ...
 
     @abstractmethod
     def rvs(
@@ -680,62 +709,259 @@ class DistributionAPI(ABC):
         shape: Tuple[int, ...] = (),
         name: Optional[str] = None,
         **kwargs: Any,
-    ) -> Array: ...
+    ) -> Array:
+        """Draw random variates from the distribution.
+
+        Parameters
+        ----------
+        rng : jax.random.PRNGKey
+            Random key used for sampling.
+        shape : tuple of int, optional
+            Shape of the sample to draw. Default is ``()``.
+        name : str, optional
+            Optional site name used when tracing probabilistic programs.
+        **kwargs : Any
+            Additional distribution-specific sampling arguments.
+
+        Returns
+        -------
+        Array
+            Random variates of the requested shape.
+        """
+        ...
 
     def pdf(self, x: ArrayLike):
+        """Probability density (or mass) function.
+
+        Parameters
+        ----------
+        x : array_like
+            Points at which to evaluate the density.
+
+        Returns
+        -------
+        Array
+            Probability density evaluated at ``x``.
+        """
         return jnp.exp(self.logpdf(x))
 
     def cdf(self, x: ArrayLike):
+        """Cumulative distribution function, ``P(X <= x)``.
+
+        Parameters
+        ----------
+        x : array_like
+            Points at which to evaluate the CDF.
+
+        Returns
+        -------
+        Array
+            Cumulative probability evaluated at ``x``.
+        """
         raise NotImplementedError("CDF not implemented for this distribution")
 
     def logcdf(self, x: ArrayLike):
+        """Log of the cumulative distribution function, ``log P(X <= x)``.
+
+        Parameters
+        ----------
+        x : array_like
+            Points at which to evaluate the log CDF.
+
+        Returns
+        -------
+        Array
+            Log cumulative probability evaluated at ``x``.
+        """
         return jnp.log(self.cdf(x))
 
     def ppf(self, q: ArrayLike):
+        """Percent point function (inverse of the CDF).
+
+        Parameters
+        ----------
+        q : array_like
+            Probabilities at which to evaluate the inverse CDF.
+
+        Returns
+        -------
+        Array
+            Inverse CDF values.
+        """
         raise NotImplementedError("PPF not implemented for this distribution")
 
     def sf(self, x: ArrayLike):
+        """Survival function, ``1 - cdf(x)``.
+
+        Parameters
+        ----------
+        x : array_like
+            Points at which to evaluate the survival function.
+
+        Returns
+        -------
+        Array
+            Survival probability evaluated at ``x``.
+        """
         return 1.0 - self.cdf(x)
 
     def logsf(self, x: ArrayLike):
+        """Log of the survival function, ``log(1 - cdf(x))``.
+
+        Parameters
+        ----------
+        x : array_like
+            Points at which to evaluate the log survival function.
+
+        Returns
+        -------
+        Array
+            Log survival probability evaluated at ``x``.
+        """
         return jnp.log(self.sf(x))
 
     def isf(self, q: ArrayLike):
+        """Inverse survival function (inverse of ``sf``).
+
+        Parameters
+        ----------
+        q : array_like
+            Probabilities at which to evaluate the inverse survival function.
+
+        Returns
+        -------
+        Array
+            Inverse survival function values.
+        """
         return self.ppf(1.0 - q)
 
     def mean(self):
+        """Mean of the distribution.
+
+        Returns
+        -------
+        ArrayLike
+            Distribution mean.
+        """
         raise NotImplementedError("Mean not implemented for this distribution")
 
     def mode(self):
+        """Mode of the distribution.
+
+        Returns
+        -------
+        ArrayLike
+            Distribution mode.
+        """
         raise NotImplementedError("Mode not implemented for this distribution")
 
     def var(self):
+        """Variance of the distribution.
+
+        Returns
+        -------
+        ArrayLike
+            Distribution variance.
+        """
         raise NotImplementedError("Variance not implemented for this distribution")
 
     def std(self):
+        """Standard deviation of the distribution.
+
+        Returns
+        -------
+        ArrayLike
+            Distribution standard deviation.
+        """
         return jnp.sqrt(self.var())
 
     def entropy(self):
+        """Differential entropy of the distribution.
+
+        Returns
+        -------
+        ArrayLike
+            Differential entropy.
+        """
         raise NotImplementedError("Entropy not implemented for this distribution")
 
     def median(self):
+        """Median of the distribution.
+
+        Returns
+        -------
+        ArrayLike
+            Distribution median.
+        """
         return self.ppf(0.5)
 
     def interval(self, confidence: Optional[ArrayLike] = None):
+        """Confidence interval with equal areas around the median.
+
+        Parameters
+        ----------
+        confidence : array_like, optional
+            Confidence level for the interval. Default is 0.95.
+
+        Returns
+        -------
+        tuple
+            Lower and upper bounds of the confidence interval.
+        """
         confidence = 0.95 if confidence is None else confidence
         alpha = (1.0 - confidence) / 2.0
         return self.ppf(alpha), self.ppf(1.0 - alpha)
 
     def moment(self, order: Optional[int] = None):
+        """Raw (non-central) moment of the distribution.
+
+        Parameters
+        ----------
+        order : int, optional
+            Order of the moment to compute.
+
+        Returns
+        -------
+        ArrayLike
+            Raw moment of the requested order.
+        """
         raise NotImplementedError("Moment not implemented for this distribution")
 
     def skew(self):
+        """Skewness of the distribution.
+
+        Returns
+        -------
+        ArrayLike
+            Distribution skewness.
+        """
         raise NotImplementedError("Skew not implemented for this distribution")
 
     def kurtosis(self):
+        """Excess kurtosis of the distribution.
+
+        Returns
+        -------
+        ArrayLike
+            Distribution excess kurtosis.
+        """
         raise NotImplementedError("Kurtosis not implemented for this distribution")
 
     def stats(self, moments: str = "mv"):
+        """Compute several summary statistics at once.
+
+        Parameters
+        ----------
+        moments : str, optional
+            String selecting which moments to compute. Each character selects
+            one moment: ``"m"`` (mean), ``"v"`` (variance), ``"s"`` (skew),
+            ``"k"`` (kurtosis). Default is ``"mv"``.
+
+        Returns
+        -------
+        tuple
+            Requested moment values in the order they appear in ``moments``.
+        """
         values = []
         for m in moments:
             if m == "m":
@@ -755,9 +981,32 @@ class DistributionAPI(ABC):
         return values[0] if len(values) == 1 else tuple(values)
 
     def sample(self, rng: RngKey, shape: Tuple[int, ...] = ()) -> Array:
+        """Draw random samples from the distribution.
+
+        Alias of :meth:`rvs` that omits the optional ``name`` argument.
+
+        Parameters
+        ----------
+        rng : jax.random.PRNGKey
+            Random key used for sampling.
+        shape : tuple of int, optional
+            Shape of the sample to draw. Default is ``()``.
+
+        Returns
+        -------
+        Array
+            Random samples of the requested shape.
+        """
         return self.rvs(rng, shape=shape)
 
     def support(self):
+        """Support (domain) of the distribution.
+
+        Returns
+        -------
+        Constraint
+            Constraint describing the support of the parameters.
+        """
         raise NotImplementedError("Support not implemented for this distribution")
 
 
@@ -776,6 +1025,23 @@ class FrozenDistributionMeta(ABCMeta):
 
 
 class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
+    """Frozen distribution with fixed parameter values.
+
+    Wraps an unfrozen :class:`rv_generic` distribution together with concrete
+    parameter values, exposing the SciPy-like :class:`DistributionAPI`. Create
+    instances by calling an unfrozen distribution with its parameters rather
+    than by constructing this class directly.
+
+    Parameters
+    ----------
+    dist : rv_generic
+        The unfrozen distribution instance to freeze.
+    *args : array_like
+        Positional parameter values for the distribution.
+    **kwds : dict, optional
+        Keyword parameter values for the distribution.
+    """
+
     def __init__(
         self,
         dist,
@@ -1086,6 +1352,9 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
             Confidence level for the interval. Default is 0.95.
 
         Returns
+        -------
+        interval : tuple of ndarray or scalar
+            Lower and upper bounds of the confidence interval.
         """
         return self._call_dist("interval", confidence)
 
@@ -1095,6 +1364,8 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
 
 
 class rv_discrete_frozen(rv_frozen):
+    """Frozen discrete distribution with pmf/logpmf support."""
+
     def pmf(self, x: ArrayLike):
         """Probability mass function of the distribution.
 
@@ -1145,6 +1416,8 @@ class rv_discrete_frozen(rv_frozen):
 
 
 class rv_continuous_frozen(rv_frozen):
+    """Frozen continuous distribution with pdf/logpdf support."""
+
     def pdf(self, x: ArrayLike):
         """Probability density function of the distribution.
 

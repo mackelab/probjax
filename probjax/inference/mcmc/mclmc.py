@@ -26,6 +26,18 @@ from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 
 class MCLMCParams(NamedTuple):
+    """Static parameters of the unadjusted MCLMC sampler.
+
+    Attributes
+    ----------
+    step_size : float
+        Integrator step size.
+    L : float
+        Trajectory length.
+    inverse_mass_matrix : ArrayLike
+        Inverse mass matrix used to precondition the dynamics.
+    """
+
     step_size: float
     L: float
     inverse_mass_matrix: ArrayLike
@@ -37,6 +49,25 @@ def init_mclmc_params(
     L: float = 1.0,
     inverse_mass_matrix: Optional[Array] = None,
 ) -> MCLMCParams:
+    """Initialize the parameters of the unadjusted MCLMC sampler.
+
+    Parameters
+    ----------
+    state : PyTree
+        Initial state, used to pick a default inverse mass matrix and to scale
+        the step size by the gradient magnitude.
+    step_size : float, optional
+        Initial integrator step size. Default is 0.1.
+    L : float, optional
+        Trajectory length. Default is 1.0.
+    inverse_mass_matrix : Array, optional
+        Inverse mass matrix. Inferred from ``state`` when ``None``.
+
+    Returns
+    -------
+    MCLMCParams
+        Resolved sampler parameters.
+    """
     inverse_mass_matrix = _init_hmc_like_params(state, inverse_mass_matrix)
     step_size = _scale_step_size_by_grad(state, step_size)
     return MCLMCParams(
@@ -48,6 +79,21 @@ def build_mclmc_step(
     logdensity_fn: Callable,
     integrator: Callable = blackjax.mcmc.integrators.isokinetic_mclachlan,
 ) -> Callable:
+    """Build a step function for the unadjusted MCLMC sampler.
+
+    Parameters
+    ----------
+    logdensity_fn : callable
+        Function returning the (unnormalized) log density at a position.
+    integrator : callable, optional
+        Symplectic integrator used to propagate the dynamics. Defaults to the
+        isokinetic MCLachlan integrator.
+
+    Returns
+    -------
+    callable
+        Step function mapping ``(key, state, params)`` to a new state and info.
+    """
     # blackjax >= 1.6 takes logdensity_fn and inverse_mass_matrix on the kernel
     # rather than the builder, so the kernel no longer closes over per-step
     # parameters and can be built once here.
@@ -79,6 +125,20 @@ mclmc = make_kernel_api(
 
 
 class AdjustedMCLMCParams(NamedTuple):
+    """Static parameters of the adjusted MCLMC sampler.
+
+    Attributes
+    ----------
+    step_size : float
+        Integrator step size.
+    num_integration_steps : int
+        Number of integration steps per proposal.
+    inverse_mass_matrix : ArrayLike
+        Inverse mass matrix used to precondition the dynamics.
+    L_proposal_factor : float
+        Factor controlling the proposal trajectory length.
+    """
+
     step_size: float
     num_integration_steps: int
     inverse_mass_matrix: ArrayLike
@@ -92,6 +152,27 @@ def init_params(
     inverse_mass_matrix: Optional[Array] = None,
     L_proposal_factor: float = jnp.inf,
 ) -> AdjustedMCLMCParams:
+    """Initialize the parameters of the adjusted MCLMC sampler.
+
+    Parameters
+    ----------
+    state : PyTree
+        Initial state, used to pick a default inverse mass matrix and to scale
+        the step size by the gradient magnitude.
+    step_size : float, optional
+        Initial integrator step size. Default is 0.5.
+    num_integration_steps : int, optional
+        Number of integration steps per proposal. Default is 10.
+    inverse_mass_matrix : Array, optional
+        Inverse mass matrix. Inferred from ``state`` when ``None``.
+    L_proposal_factor : float, optional
+        Factor controlling the proposal trajectory length. Default is ``inf``.
+
+    Returns
+    -------
+    AdjustedMCLMCParams
+        Resolved sampler parameters.
+    """
     inverse_mass_matrix = _init_hmc_like_params(state, inverse_mass_matrix)
     step_size = _scale_step_size_by_grad(state, step_size)
     return AdjustedMCLMCParams(
@@ -107,6 +188,24 @@ def build_step(
     integrator: Callable = blackjax.mcmc.integrators.isokinetic_mclachlan,
     divergence_threshold: float = 1000.0,
 ) -> Callable:
+    """Build a step function for the adjusted MCLMC sampler.
+
+    Parameters
+    ----------
+    logdensity_fn : callable
+        Function returning the (unnormalized) log density at a position.
+    integrator : callable, optional
+        Symplectic integrator used to propagate the dynamics. Defaults to the
+        isokinetic MCLachlan integrator.
+    divergence_threshold : float, optional
+        Energy error above which a transition is flagged as divergent. Default
+        is 1000.0.
+
+    Returns
+    -------
+    callable
+        Step function mapping ``(key, state, params)`` to a new state and info.
+    """
     kernel = blackjax.adjusted_mclmc.build_kernel(
         integrator=integrator,
         divergence_threshold=divergence_threshold,
@@ -141,6 +240,18 @@ adjusted_mclmc = make_kernel_api(
 
 
 class AdjustedMCLMCDynamicParams(NamedTuple):
+    """Static parameters of the adjusted MCLMC dynamic sampler.
+
+    Attributes
+    ----------
+    step_size : float
+        Integrator step size.
+    inverse_mass_matrix : ArrayLike
+        Inverse mass matrix used to precondition the dynamics.
+    L_proposal_factor : float
+        Factor controlling the proposal trajectory length.
+    """
+
     step_size: float
     inverse_mass_matrix: ArrayLike
     L_proposal_factor: float
@@ -152,6 +263,25 @@ def init_dynamic_params(
     inverse_mass_matrix: Optional[Array] = None,
     L_proposal_factor: float = jnp.inf,
 ) -> AdjustedMCLMCDynamicParams:
+    """Initialize the parameters of the adjusted MCLMC dynamic sampler.
+
+    Parameters
+    ----------
+    state : PyTree
+        Initial state, used to pick a default inverse mass matrix and to scale
+        the step size by the gradient magnitude.
+    step_size : float, optional
+        Initial integrator step size. Default is 0.5.
+    inverse_mass_matrix : Array, optional
+        Inverse mass matrix. Inferred from ``state`` when ``None``.
+    L_proposal_factor : float, optional
+        Factor controlling the proposal trajectory length. Default is ``inf``.
+
+    Returns
+    -------
+    AdjustedMCLMCDynamicParams
+        Resolved sampler parameters.
+    """
     inverse_mass_matrix = _init_hmc_like_params(state, inverse_mass_matrix)
     step_size = _scale_step_size_by_grad(state, step_size)
     return AdjustedMCLMCDynamicParams(
@@ -162,14 +292,52 @@ def init_dynamic_params(
 
 
 def halton_trajectory_length_fns(average_integration_steps: int):
+    """Build Halton-sequence trajectory-length and stepping functions.
+
+    Parameters
+    ----------
+    average_integration_steps : int
+        Average number of integration steps.
+
+    Returns
+    -------
+    tuple
+        Trajectory-length functions based on a Halton sequence.
+    """
     return _halton_fns(trajectory_length, average_integration_steps)
 
 
 def random_trajectory_length_fns(average_integration_steps: int):
+    """Build random trajectory-length and stepping functions.
+
+    Parameters
+    ----------
+    average_integration_steps : int
+        Average number of integration steps.
+
+    Returns
+    -------
+    tuple
+        Randomly generated trajectory-length functions.
+    """
     return _random_fns(average_integration_steps)
 
 
 def get_dynamic_stepping(integration_steps_sequence, average_integration_steps):
+    """Resolve the dynamic stepping functions for the MCLMC dynamic sampler.
+
+    Parameters
+    ----------
+    integration_steps_sequence : str
+        Name of the integration-step sequence (e.g. ``"halton"``).
+    average_integration_steps : int
+        Average number of integration steps.
+
+    Returns
+    -------
+    tuple
+        ``(random_arg_next_fn, integration_steps_fn)`` used by the kernel.
+    """
     return _resolve_dynamic_stepping(
         integration_steps_sequence,
         average_integration_steps,
@@ -186,6 +354,35 @@ def build_dynamic_step(
     next_random_arg_fn: Optional[Callable] = None,
     integration_steps_fn: Optional[Callable] = None,
 ) -> Callable:
+    """Build a step function for the adjusted MCLMC dynamic sampler.
+
+    Parameters
+    ----------
+    logdensity_fn : callable
+        Function returning the (unnormalized) log density at a position.
+    average_integration_steps : int, optional
+        Average number of integration steps. Default is 10.
+    integration_steps_sequence : str, optional
+        Name of the integration-step sequence (e.g. ``"halton"``). Default is
+        ``"halton"``.
+    divergence_threshold : float, optional
+        Energy error above which a transition is flagged as divergent. Default
+        is 1000.0.
+    integrator : callable, optional
+        Symplectic integrator used to propagate the dynamics. Defaults to the
+        isokinetic MCLachlan integrator.
+    next_random_arg_fn : callable, optional
+        Function advancing the random generator argument. Required when
+        ``integration_steps_fn`` is provided.
+    integration_steps_fn : callable, optional
+        Function selecting the number of integration steps. When ``None`` it is
+        derived from ``integration_steps_sequence``.
+
+    Returns
+    -------
+    callable
+        Step function mapping ``(key, state, params)`` to a new state and info.
+    """
     if integration_steps_fn is None:
         random_arg_next_fn, integration_steps_fn = get_dynamic_stepping(
             integration_steps_sequence, average_integration_steps
@@ -228,6 +425,25 @@ def init_dynamic(
     rng_key: RngKey,
     integration_steps_sequence: str = "halton",
 ):
+    """Initialize the state of the adjusted MCLMC dynamic sampler.
+
+    Parameters
+    ----------
+    position : array_like
+        Initial position of the chain.
+    logdensity_fn : callable
+        Function returning the (unnormalized) log density at a position.
+    rng_key : jax.random.PRNGKey
+        Random key used to initialize the random generator argument.
+    integration_steps_sequence : str, optional
+        Name of the integration-step sequence (e.g. ``"halton"``). Default is
+        ``"halton"``.
+
+    Returns
+    -------
+    DynamicHMCState
+        Initial sampler state.
+    """
     random_generator_arg = init_dynamic_arg(rng_key, integration_steps_sequence)
     return blackjax.adjusted_mclmc_dynamic.init(
         position, logdensity_fn, random_generator_arg=random_generator_arg
