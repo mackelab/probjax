@@ -419,8 +419,10 @@ its GPU performance has not yet been benchmarked.
 
 ### Block sizes and tuning
 
+`TuningConfig` is JAX's `jax.experimental.pallas.ops.gpu.attention_mgpu.TuningConfig`,
+re-exported for convenience and documented there.
+
 ::: probjax.nn.pallas_kernels.BlockSizes
-::: probjax.nn.pallas_kernels.TuningConfig
 
 ### Attention kernels
 
