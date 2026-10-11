@@ -82,6 +82,28 @@ class ExpertSwiGLU(nnx.Module):
             y = y.astype(self.dtype)
         return y
 
+    def ragged_forward(self, x: Array, group_sizes: Array) -> Array:
+        """Apply expert ``e`` to its contiguous group of rows: ``[M, D] -> [M, D]``.
+
+        ``x`` holds the routed rows sorted by expert and ``group_sizes[e]`` how
+        many belong to expert ``e`` (summing to ``M``).  One grouped matmul per
+        weight via :func:`jax.lax.ragged_dot`: each row costs exactly one
+        expert, with no capacity padding and nothing dropped.
+        """
+        if x.ndim != 2 or x.shape[1] != self.d_model:
+            raise ValueError(f"Expected [M, D={self.d_model}], got {x.shape}")
+        # Same promotion as the einsum paths, so all three agree numerically.
+        cdt = jnp.result_type(x.dtype, self.w_gate[...].dtype)
+        x = x.astype(cdt)
+        group_sizes = group_sizes.astype(jnp.int32)
+        gate = jax.lax.ragged_dot(x, self.w_gate[...].astype(cdt), group_sizes)
+        up = jax.lax.ragged_dot(x, self.w_up[...].astype(cdt), group_sizes)
+        h = jax.nn.silu(gate) * up
+        y = jax.lax.ragged_dot(h, self.w_down[...].astype(cdt), group_sizes)
+        if self.dtype is not None:
+            y = y.astype(self.dtype)
+        return y
+
     def dense_forward(self, x: Array) -> Array:
         """Evaluate every expert on every token: ``[N, D] -> [N, E, D]``.
 

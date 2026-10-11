@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -73,6 +74,7 @@ class MoELayer(nnx.Module):
         capacity_factor: float = 1.25,
         *,
         sparse: bool = True,
+        routing: Literal["capacity", "dense", "dropless"] | None = None,
         kernel_init: Initializer | None = None,
         router_init: Initializer | None = None,
         dtype: Dtype | None = None,
@@ -89,12 +91,24 @@ class MoELayer(nnx.Module):
             raise ValueError(f"top_k must be in [1, {num_experts}], got {top_k}")
         if capacity_factor <= 0:
             raise ValueError(f"capacity_factor must be positive, got {capacity_factor}")
+        if routing is None:
+            routing = "capacity" if sparse else "dense"
+        if routing not in ("capacity", "dense", "dropless"):
+            raise ValueError(
+                f"routing must be 'capacity', 'dense' or 'dropless', got {routing!r}"
+            )
+        # "capacity": fixed slots per expert, overflow dropped -- cheap, but a
+        #   token's output then depends on every other token in the call.
+        # "dense": every expert on every token; exact, E/top_k x the compute.
+        # "dropless": tokens sorted by expert and one grouped matmul
+        #   (`ragged_dot`); exact like dense at top_k experts per token.
+        self.routing = routing
         self.d_model = d_model
         self.d_hidden = d_hidden
         self.num_experts = num_experts
         self.top_k = top_k
         self.capacity_factor = capacity_factor
-        self.sparse = sparse
+        self.sparse = routing != "dense"
 
         self.experts = ExpertSwiGLU(
             num_experts,
@@ -175,6 +189,24 @@ class MoELayer(nnx.Module):
         )
         return y_flat, aux
 
+    def _dropless_forward(
+        self, x_flat: Array, routed: RouterOutput
+    ) -> tuple[Array, MoEAux]:
+        n, k = routed.expert_ids.shape
+        expert_flat = routed.expert_ids.reshape(-1)  # [N*K]
+        order = jnp.argsort(expert_flat, stable=True)
+        token_of = order // k  # flat assignment index -> token
+        group_sizes = jnp.bincount(expert_flat, length=self.num_experts)
+        y_sorted = self.experts.ragged_forward(x_flat[token_of], group_sizes)
+        y_assign = jnp.zeros_like(y_sorted).at[order].set(y_sorted)  # [N*K, D]
+        y_flat = jnp.sum(
+            y_assign.reshape(n, k, -1)
+            * routed.route_weights[..., None].astype(y_assign.dtype),
+            axis=1,
+        )
+        # No capacity: an expert may take every token (capacity N), none dropped.
+        return y_flat, self._aux_stats(routed, n, n, jnp.zeros(()))
+
     def __call__(
         self, x: Array, *, return_aux: bool = False
     ) -> Array | tuple[Array, MoEAux]:
@@ -193,7 +225,9 @@ class MoELayer(nnx.Module):
         x_flat = x.reshape(-1, self.d_model)  # [N, D]
         routed = self.router(x_flat, top_k=self.top_k)
 
-        if self.sparse:
+        if self.routing == "dropless":
+            y_flat, aux = self._dropless_forward(x_flat, routed)
+        elif self.routing == "capacity":
             y_flat, aux = self._sparse_forward(x_flat, routed)
         else:
             y_flat = self._dense_forward(x_flat, routed)
