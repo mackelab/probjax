@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import tomllib
 
 import pytest
 
@@ -85,6 +86,20 @@ UNDOCUMENTED = {
         "Params",
     },
 }
+
+#: Docs that state (or gate) the supported JAX range. Absolute paths so the
+#: scan is independent of pytest's working directory.
+SUPPORT_DOCS = [
+    pathlib.Path(__file__).resolve().parent.parent / name
+    for name in (
+        "README.md",
+        "CHANGELOG.md",
+        "docs/index.md",
+        "docs/getting-started.md",
+        "docs/guides/migration.md",
+        "pyproject.toml",
+    )
+]
 
 
 def markdown_pages():
@@ -250,3 +265,87 @@ def test_every_nav_entry_exists():
     config = (DOCS.parent / "zensical.toml").read_text()
     for relative in re.findall(r'"((?:[\w./-]+)\.md)"', config):
         assert (DOCS / relative).is_file(), f"nav references missing page {relative}"
+
+
+# ---------------------------------------------------------------------------
+# Support policy
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.docs
+def test_readme_and_docs_agree_on_jax_support():
+    """README, guides, changelog and pyproject agree on the JAX policy.
+
+    The negative scan catches the stale "JAX 0.9.x" spelling anywhere in the
+    tracked docs; the positive scan keeps the documented range in step with
+    pyproject.toml's bounds.
+    """
+    # (a) No tracked doc still advertises the stale "JAX 0.9.x" spelling.
+    for path in SUPPORT_DOCS:
+        text = path.read_text()
+        assert "JAX 0.9.x" not in text, (
+            f"{path.name} still advertises 'JAX 0.9.x'; use the documented "
+            "support range instead."
+        )
+
+    # (b) README and docs/getting-started.md both state the supported range.
+    def _doc_range(path):
+        # Case-sensitive 'JAX <spec>' only, so 'JAX-native' prose does not
+        # match and only version operators count.
+        return re.findall(r"JAX `?((?:>=?|<=?|==|~=)\s*[\d.]+[^`\n]*)", path.read_text())
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    readme_range = _doc_range(root / "README.md")
+    getting_started_range = _doc_range(root / "docs" / "getting-started.md")
+    assert any("0.9.0" in s and "0.10" in s for s in readme_range), readme_range
+    assert any("0.9.0" in s and "0.10" in s for s in getting_started_range), (
+        getting_started_range
+    )
+
+    # (c) pyproject.toml's installable constraint must cover the documented
+    #     range: same lower bound, and an upper bound that does not exclude it.
+    #     (The package is intentionally installable on newer JAX than the
+    #     documented/tested policy; it must never be narrower than the policy.)
+    data = tomllib.loads((root / "pyproject.toml").read_text())
+    jax_deps = [d for d in data["project"]["dependencies"] if d.startswith("jax ")]
+    assert len(jax_deps) == 1, (
+        f"expected one 'jax ' dependency, got {data['project']['dependencies']}"
+    )
+    dep = jax_deps[0]
+    lower = re.search(r">=\s*([\d.]+)", dep)
+    upper = re.search(r"<\s*([\d.]+)", dep)
+    assert lower and lower.group(1) == "0.9.0", dep
+    assert upper and tuple(map(int, upper.group(1).split("."))) >= (0, 10), (
+        f"pyproject.toml upper bound {upper.group(1)} excludes the documented "
+        "'<0.10' support range."
+    )
+
+
+@pytest.mark.docs
+def test_citation_key_matches_year():
+    """The BibTeX citation key year matches the `year` field (both 2026)."""
+    readme = (pathlib.Path(__file__).resolve().parent.parent / "README.md").read_text()
+    key = re.search(r"@software\{probjax(\d{4})", readme)
+    year = re.search(r"year\s*=\s*\{(\d{4})\}", readme)
+    assert key, "no '@software{probjaxYYYY' citation key found"
+    assert year, "no 'year = {YYYY}' citation field found"
+    assert key.group(1) == year.group(1), (key.group(1), year.group(1))
+    assert year.group(1) == "2026", f"citation year {year.group(1)} should be 2026"
+
+
+@pytest.mark.docs
+def test_notebook_disclaimer_consistency_between_readme_and_index():
+    """README and docs/index.md agree on the notebook disclaimer.
+
+    Either both carry it or neither does, so a future one-sided removal (after
+    the notebooks are actually fixed) cannot leave readers misled.
+    """
+    root = pathlib.Path(__file__).resolve().parent.parent
+    readme = (root / "README.md").read_text().lower()
+    index = (root / "docs" / "index.md").read_text().lower()
+    has_readme = "predate" in readme and "refactor" in readme
+    has_index = "predate" in index and "refactor" in index
+    assert has_readme == has_index, (
+        f"README {'has' if has_readme else 'lacks'} the 'predate refactors' note "
+        f"but docs/index.md {'has' if has_index else 'lacks'} it; keep them in step."
+    )

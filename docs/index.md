@@ -72,7 +72,7 @@ python -m pip install -e .
 These pages track `main`; the published package can lag behind them. For the
 next release, see [migration notes](guides/migration.md).
 
-Python 3.11–3.13 and JAX 0.9.x. Accelerator options are in
+Python 3.11–3.13 and JAX `>=0.9.0,<0.10`. Accelerator options are in
 [Getting started](getting-started.md).
 
 ## Tutorials

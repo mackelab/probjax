@@ -41,7 +41,8 @@ algorithms, Flax NNX models, and numerical solvers in one composable codebase.
 
 ## Installation
 
-ProbJax targets Python 3.11–3.13 and JAX 0.9.x. Install the published package:
+ProbJax targets Python 3.11–3.13 and JAX `>=0.9.0, <0.10`. Install the
+published package:
 
 ```bash
 pip install probjax
@@ -53,7 +54,7 @@ With [uv](https://docs.astral.sh/uv/):
 uv pip install probjax
 ```
 
-Optional environments:
+Optional accelerator environments build on the installed base package:
 
 ```bash
 # NVIDIA CUDA 13
@@ -61,8 +62,11 @@ python -m pip install "probjax[cuda13]"
 
 # Apple Silicon via jax-metal
 python -m pip install "probjax[metal]"
+```
 
-# Source checkout with tests and development tools
+For development or unreleased APIs, use a source checkout:
+
+```bash
 git clone https://github.com/mackelab/probjax.git
 cd probjax
 python -m pip install -e ".[dev]"
@@ -184,10 +188,10 @@ ProbJax is licensed under the MIT License. See [LICENSE.txt](LICENSE.txt).
 ## Citation
 
 ```bibtex
-@software{probjax2024,
+@software{probjax2026,
   author = {Manuel Gloeckler},
   title = {ProbJax: Probabilistic computation in JAX},
-  year = {2024},
+  year = {2026},
   publisher = {GitHub},
   url = {https://github.com/mackelab/probjax}
 }
