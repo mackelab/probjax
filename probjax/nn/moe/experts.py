@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -103,6 +105,47 @@ class ExpertSwiGLU(nnx.Module):
         if self.dtype is not None:
             y = y.astype(self.dtype)
         return y
+
+    def grouped_forward(
+        self,
+        x: Array,
+        group_sizes: Array,
+        *,
+        block_m: int = 64,
+        interpret: bool | None = None,
+    ) -> Array:
+        """:meth:`ragged_forward` through a Pallas grouped-GEMM kernel: jax's
+        Mosaic-GPU kernel on Hopper, probjax's Triton kernel on other GPUs.
+
+        Computes in ``self.dtype`` (or ``x.dtype``) with fp32 accumulation, so
+        a bf16 model runs bf16 tensor-core matmuls.
+        """
+        from probjax.nn.moe.grouped_matmul import (
+            gather_from_layout,
+            grouped_backend,
+            grouped_matmul,
+            make_group_layout,
+            ragged_matmul_hopper,
+            scatter_to_layout,
+        )
+
+        if x.ndim != 2 or x.shape[1] != self.d_model:
+            raise ValueError(f"Expected [M, D={self.d_model}], got {x.shape}")
+        cdt = self.dtype if self.dtype is not None else x.dtype
+        if grouped_backend() == "mosaic" and not interpret:
+            # Hopper: jax's Mosaic-GPU kernels take the sorted rows directly.
+            mm = functools.partial(ragged_matmul_hopper, group_sizes=group_sizes)
+            xs = x.astype(cdt)
+            h = jax.nn.silu(mm(xs, self.w_gate[...])) * mm(xs, self.w_up[...])
+            return mm(h, self.w_down[...]).astype(cdt)
+        layout = make_group_layout(group_sizes, x.shape[0], block_m)
+        xp = scatter_to_layout(x.astype(cdt), layout)
+        mm = functools.partial(grouped_matmul, layout=layout, block_m=block_m,
+                               interpret=interpret)
+        # Padding rows are zero, so silu(0) * 0 keeps them zero downstream.
+        h = jax.nn.silu(mm(xp, self.w_gate[...])) * mm(xp, self.w_up[...])
+        y = gather_from_layout(mm(h, self.w_down[...]), layout)
+        return y.astype(cdt)
 
     def dense_forward(self, x: Array) -> Array:
         """Evaluate every expert on every token: ``[N, D] -> [N, E, D]``.
