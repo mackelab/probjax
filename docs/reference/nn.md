@@ -308,31 +308,6 @@ Continuous defaults use `float32`; use a `ShapeDtypeStruct` or
 `as_dist(dtype=...)` to select another floating dtype. `model.event_spec` exposes
 the normalized default, and `model.event_shape` exposes just its shape(s).
 
-**Migration:** replace `EDM(net)` with `EDM(net, event_spec=features)` (or an
-appropriate shape/pytree). Existing explicit `as_dist(event_spec=...)` overrides
-continue to work.
-
-Flow matching and mean-flow use the same defaults and overrides:
-
-```python
-from probjax.nn import LinearFlow, LinearMeanFlow
-
-class FlexibleVelocity(nnx.Module):
-    def __call__(self, t, x, r=None, **kwargs):
-        return 0.1 * x
-
-flow = LinearFlow(FlexibleVelocity(), event_spec=3)
-flow_view = flow.as_dist(num_steps=4)
-sequence_flow = flow.as_dist(event_spec=(8, 3), num_steps=4)
-flow.set_event_spec((16, 3))
-mean_flow = LinearMeanFlow(FlexibleVelocity(), event_spec=3)
-mean_flow_view = mean_flow.as_dist(num_steps=4)
-```
-
-Migrate existing `LinearFlow(net)` and `LinearMeanFlow(net)` constructors by
-passing `event_spec=features` (or the event shape/pytree). Event metadata does
-not resize network weights; the network must support each requested shape.
-
 ::: probjax.nn.EDM
 ::: probjax.nn.VP
 ::: probjax.nn.VE
@@ -384,41 +359,6 @@ encoding for permutation-equivariant inputs.
 
 ::: probjax.nn.DiffusionTransformer
 
-### Continuous schedule audit
-
-EDM, VE, VP and cosine are checked against their forward marginal/SDE identities,
-inverse effective-noise maps, all three training targets and Gaussian-oracle
-reverse ODE/SDE sampling. VP now includes the time-domain rescaling in its SDE
-coefficients. VP/cosine low-noise calculations avoid float32 cancellation.
-Generic schedules use `g² = d(std²)/dt - 2 (scale′/scale) std²`.
-
-EDM preconditioning now normalizes by the signal scale for VP/cosine, including
-the denoiser skip connection. Existing VP/cosine checkpoints used different
-coefficients and may need retraining. Cosine's singular endpoint is bounded;
-use the preset's finite effective-noise bounds for sampling. Numerical checks
-with an exact Gaussian denoiser validate solver behavior, not learned sample
-quality on arbitrary datasets.
-
-`VSolverConfig` now uses the reverse SDE for `mode="sde"`; previously that path
-had zero diffusion and was deterministic. Explicit DDIM remains deterministic.
-Categorical linear, cosine, sigmoid and log-SNR schedules are also checked for
-monotone retention and normalized, nonnegative transition probabilities.
-The categorical linear/sigmoid factory defaults retain about 95% of the initial
-signal at terminal time; choose stronger rates when a nearly independent base
-prior is required. Their probability checks alone do not establish mixing.
-
-
-Further sampling fixes: an overridden `t_max` now also selects the base-noise
-scale. `sample_with_state` uses the supplied state for both initialization and
-integration, and `model_state()` handles Python scalar leaves. Call
-`dist.compile()` before wrapping sampling in an outer `jax.jit`; constructing
-an export lazily during tracing is currently unsupported.
-
-Exponential AB2 now handles nonuniform step sizes and uses the correct
-phi-function weights and midpoint linear coefficient. Gaussian and nonlinear
-mixture benchmarks, transformer scaling measurements, and remaining limitations
-are recorded in `examples/nn/benchmark_results/diffusion_audit.md`.
-
 ## Pallas kernels
 
 Use `probjax.nn.pallas_kernels` for attention, Flash3, kernel matrix products,
@@ -440,3 +380,75 @@ Mamba uses an associative JAX scan for multi-tile GPU inputs because GPU
 programs cannot safely exchange the TPU kernel's sequential carry. Single-tile
 GPU inputs retain the fused Pallas kernel. The fallback supports autodiff;
 its GPU performance has not yet been benchmarked.
+
+### Attention mask and bias types
+
+::: probjax.nn.pallas_kernels.AttentionBias
+::: probjax.nn.pallas_kernels.AttentionMask
+::: probjax.nn.pallas_kernels.BatchedLowRankBias
+::: probjax.nn.pallas_kernels.BlockDiagonalCausalMask
+::: probjax.nn.pallas_kernels.BlockDiagonalMask
+::: probjax.nn.pallas_kernels.CausalAlibiBias
+::: probjax.nn.pallas_kernels.CausalFromBottomRightMask
+::: probjax.nn.pallas_kernels.CausalLocalWindowMask
+::: probjax.nn.pallas_kernels.CausalMask
+::: probjax.nn.pallas_kernels.ComposeMask
+::: probjax.nn.pallas_kernels.ConstantBias
+::: probjax.nn.pallas_kernels.DenseBias
+::: probjax.nn.pallas_kernels.DistanceDecayBias
+::: probjax.nn.pallas_kernels.FeatureMap
+::: probjax.nn.pallas_kernels.IdentityBias
+::: probjax.nn.pallas_kernels.KVLenMask
+::: probjax.nn.pallas_kernels.KeyPaddingMask
+::: probjax.nn.pallas_kernels.LearnedAlibiBias
+::: probjax.nn.pallas_kernels.LearnedRelativePositionBias
+::: probjax.nn.pallas_kernels.LocalWindowMask
+::: probjax.nn.pallas_kernels.LowRankBias
+::: probjax.nn.pallas_kernels.MarginalizationMask
+::: probjax.nn.pallas_kernels.NoMask
+::: probjax.nn.pallas_kernels.NotMask
+::: probjax.nn.pallas_kernels.PerHeadScaleBias
+::: probjax.nn.pallas_kernels.PrefixLMMask
+::: probjax.nn.pallas_kernels.QKVLengthMask
+::: probjax.nn.pallas_kernels.SameSegmentMask
+::: probjax.nn.pallas_kernels.SeqLenMask
+::: probjax.nn.pallas_kernels.SoftCappingBias
+::: probjax.nn.pallas_kernels.SumBias
+::: probjax.nn.pallas_kernels.SymmetricAlibiBias
+::: probjax.nn.pallas_kernels.T5RelativePositionBias
+
+### Block sizes and tuning
+
+::: probjax.nn.pallas_kernels.BlockSizes
+::: probjax.nn.pallas_kernels.TuningConfig
+
+### Attention kernels
+
+::: probjax.nn.pallas_kernels.attention
+::: probjax.nn.pallas_kernels.attention_with_pipeline_emitter
+::: probjax.nn.pallas_kernels.mha
+::: probjax.nn.pallas_kernels.mha_flash
+
+### Mamba and SSD kernels
+
+::: probjax.nn.pallas_kernels.compute_mamba_scan
+::: probjax.nn.pallas_kernels.ssd
+::: probjax.nn.pallas_kernels.ssd_linear_scan
+::: probjax.nn.pallas_kernels.ssd_linear_scan_w_hidden_states
+::: probjax.nn.pallas_kernels.ssd_linear_scan_w_timestep
+
+### Kernel matrix products and KDE
+
+::: probjax.nn.pallas_kernels.kernel_mv
+::: probjax.nn.pallas_kernels.kernel_mv_naive
+::: probjax.nn.pallas_kernels.rbf_kernel_mv
+::: probjax.nn.pallas_kernels.rbf_kernel_mv_naive
+::: probjax.nn.pallas_kernels.kde_density
+::: probjax.nn.pallas_kernels.rbf_kde_density
+
+### Linear attention
+
+::: probjax.nn.pallas_kernels.residual_linear_attention
+::: probjax.nn.pallas_kernels.residual_linear_attention_pallas
+::: probjax.nn.pallas_kernels.residual_linear_attention_scan
+::: probjax.nn.pallas_kernels.right_shift_and_zero_pad

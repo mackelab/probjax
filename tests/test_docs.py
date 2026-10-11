@@ -210,13 +210,16 @@ def test_the_site_builds():
 
 @pytest.mark.parametrize(
     "module_name",
-    ["probjax.core", "probjax.stats", "probjax.inference", "probjax.utils"],
+    ["probjax.core", "probjax.stats", "probjax.inference", "probjax.utils", "probjax.nn"],
 )
 def test_public_api_is_documented_or_explicitly_excluded(module_name):
     """Every name in ``__all__`` is either in the reference or excluded by hand.
 
-    ``probjax.nn`` is out of scope: it exports 235 names, most of them building
-    blocks rather than API, and the reference curates the user-facing subset.
+    ``probjax.nn`` is included but declares no ``__all__``, so it is skipped by
+    the guard ``if not public: pytest.skip()``. Coverage for ``probjax.nn`` is
+    enforced through ``test_every_reference_target_resolves``, which verifies that
+    every ``:::`` directive in ``docs/reference/nn.md`` resolves to an existing
+    symbol.
     """
     module = importlib.import_module(module_name)
     public = set(getattr(module, "__all__", []))

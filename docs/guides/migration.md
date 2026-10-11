@@ -76,3 +76,76 @@ The Pallas migration preserves supported features, with JAX fallbacks where
 needed. Multi-tile GPU Mamba uses an associative scan; its GPU runtime has not
 been benchmarked. See [kernel coverage](../reference/nn.md#pallas-kernels) before
 choosing a backend for an existing experiment.
+
+## Special function accuracy and domain notes
+
+`betainccinv(a, b, q)` and `gammainccinv(a, q)` invert the complementary
+regularized incomplete beta and gamma functions. They accept the upper-tail
+probability directly, avoiding the loss of tiny probabilities when forming
+`1 - q`. Beta and gamma distribution `isf` methods use them directly.
+
+```python
+from probjax.utils import gammainccinv, log1mexp, logdiffexp
+
+x = gammainccinv(1.0, 1e-30)  # Approximately 69.07755, including in float32.
+log_survival = log1mexp(-1e-8)
+log_difference = logdiffexp(1000.0, 999.0)
+```
+
+Inverse functions require finite positive shapes and clip probabilities to
+[0, 1]. Invalid shapes return NaN. At upper-tail probabilities zero and one,
+beta returns one and zero; gamma returns infinity and zero.
+
+Beta inversion uses cached safeguarded Halley solvers, reflecting according
+to the root's location. Its total iteration budget is
+`2 + max_halley_steps + max_bisection_steps`. Reverse differentiation uses the
+inverse density for probability gradients and central differences for shape
+gradients; forward AD and higher shape derivatives are unsupported.
+Gamma uses log-space initialization and an implicit JVP, avoiding differentiation
+through solver iterations. Higher shape derivatives depend on JAX's
+`igamma_grad_a` support.
+
+FP32 accuracy remains limited by the underlying CDF for some extremely unequal
+beta shapes: the seeded stress test includes a case near `a=0.051, b=784` with
+about 2% relative quantile error. Increasing the iteration budget does not fix
+that case. Use FP64 for demanding tail calculations. The originally identified
+FP32 regression near `a=0.070, b=626` is covered separately at 0.5% tolerance.
+
+`log1mexp(x)` computes `log(1-exp(x))` for `x <= 0`; `logdiffexp(a, b)` computes
+`log(exp(a)-exp(b))` for `a >= b`. They avoid cancellation and intermediate
+overflow, support broadcasting, and differentiate on the finite interior.
+Zero differences return negative infinity; invalid domains return NaN.
+
+## Continuous diffusion schedule audit
+
+EDM, VE, VP and cosine are checked against their forward marginal/SDE identities,
+inverse effective-noise maps, all three training targets and Gaussian-oracle
+reverse ODE/SDE sampling. VP now includes the time-domain rescaling in its SDE
+coefficients. VP/cosine low-noise calculations avoid float32 cancellation.
+Generic schedules use `g² = d(std²)/dt - 2 (scale′/scale) std²`.
+
+EDM preconditioning now normalizes by the signal scale for VP/cosine, including
+the denoiser skip connection. Existing VP/cosine checkpoints used different
+coefficients and may need retraining. Cosine's singular endpoint is bounded;
+use the preset's finite effective-noise bounds for sampling. Numerical checks
+with an exact Gaussian denoiser validate solver behavior, not learned sample
+quality on arbitrary datasets.
+
+`VSolverConfig` now uses the reverse SDE for `mode="sde"`; previously that path
+had zero diffusion and was deterministic. Explicit DDIM remains deterministic.
+Categorical linear, cosine, sigmoid and log-SNR schedules are also checked for
+monotone retention and normalized, nonnegative transition probabilities.
+The categorical linear/sigmoid factory defaults retain about 95% of the initial
+signal at terminal time; choose stronger rates when a nearly independent base
+prior is required. Their probability checks alone do not establish mixing.
+
+Further sampling fixes: an overridden `t_max` now also selects the base-noise
+scale. `sample_with_state` uses the supplied state for both initialization and
+integration, and `model_state()` handles Python scalar leaves. Call
+`dist.compile()` before wrapping sampling in an outer `jax.jit`; constructing
+an export lazily during tracing is currently unsupported.
+
+Exponential AB2 now handles nonuniform step sizes and uses the correct
+phi-function weights and midpoint linear coefficient. Gaussian and nonlinear
+mixture benchmarks, transformer scaling measurements, and remaining limitations
+are recorded in `examples/nn/benchmark_results/diffusion_audit.md`.
