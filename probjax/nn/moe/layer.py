@@ -75,6 +75,7 @@ class MoELayer(nnx.Module):
         *,
         sparse: bool = True,
         routing: Literal["capacity", "dense", "dropless"] | None = None,
+        dropless_impl: Literal["auto", "pallas", "ragged_dot"] = "auto",
         kernel_init: Initializer | None = None,
         router_init: Initializer | None = None,
         dtype: Dtype | None = None,
@@ -103,6 +104,12 @@ class MoELayer(nnx.Module):
         # "dropless": tokens sorted by expert and one grouped matmul
         #   (`ragged_dot`); exact like dense at top_k experts per token.
         self.routing = routing
+        # "auto": the Pallas grouped-GEMM kernel on GPU, ragged_dot elsewhere.
+        # On an A100 ragged_dot took 134 ms fwd+bwd per layer at 65k tokens,
+        # slower than dense (74 ms); see probjax.nn.moe.grouped_matmul.
+        if dropless_impl not in ("auto", "pallas", "ragged_dot"):
+            raise ValueError(f"unknown dropless_impl {dropless_impl!r}")
+        self.dropless_impl = dropless_impl
         self.d_model = d_model
         self.d_hidden = d_hidden
         self.num_experts = num_experts
@@ -197,7 +204,13 @@ class MoELayer(nnx.Module):
         order = jnp.argsort(expert_flat, stable=True)
         token_of = order // k  # flat assignment index -> token
         group_sizes = jnp.bincount(expert_flat, length=self.num_experts)
-        y_sorted = self.experts.ragged_forward(x_flat[token_of], group_sizes)
+        impl = self.dropless_impl
+        if impl == "auto":
+            impl = "pallas" if jax.default_backend() == "gpu" else "ragged_dot"
+        if impl == "pallas":
+            y_sorted = self.experts.grouped_forward(x_flat[token_of], group_sizes)
+        else:
+            y_sorted = self.experts.ragged_forward(x_flat[token_of], group_sizes)
         y_assign = jnp.zeros_like(y_sorted).at[order].set(y_sorted)  # [N*K, D]
         y_flat = jnp.sum(
             y_assign.reshape(n, k, -1)
