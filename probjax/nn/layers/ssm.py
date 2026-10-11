@@ -4,7 +4,8 @@ import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
 
-from probjax.nn.pallas_kernels import compute_mamba_scan, ssd as pallas_ssd
+from probjax.nn.pallas_kernels import compute_mamba_scan
+from probjax.nn.pallas_kernels import ssd as pallas_ssd
 from probjax.nn.sharding import BATCH, constrain, replicate
 from probjax.nn.utils import (
     PrecisionMixin,
@@ -234,9 +235,7 @@ class MambaCell(PrecisionMixin, RecurrentCell):
         self.dim_tile_size = dim_tile_size
 
         # S4D real init: a = -(1..S), stored in log space to stay negative.
-        a = jnp.tile(
-            jnp.arange(1, sd + 1, dtype=jnp.float32)[:, None], (1, model_dim)
-        )
+        a = jnp.tile(jnp.arange(1, sd + 1, dtype=jnp.float32)[:, None], (1, model_dim))
         self.a_log = nnx.Param(jnp.log(a))
 
         # Skip parameter starts at one.

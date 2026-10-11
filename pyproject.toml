@@ -91,6 +91,7 @@ exclude = ["*.ipynb"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "B", "SIM", "I"]
 ignore = [
+    "E501",  # let Ruff's formatter handle wrapping; allow long prose and strings.
     "E731",  # allow naming lambda functions.
     "B008"  # allow function calls in default args.
 ]

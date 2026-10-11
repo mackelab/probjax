@@ -24,8 +24,6 @@ def _autodiff_time_gradient(
     return jax.vmap(grad_fn, in_axes=(0, 0, 0))(t, x0, x1)
 
 
-
-
 @dataclass
 class GeneralInterpolationSchedule(InterpolationScheduleProtocol):
     """Generic schedule wrapper that derives velocities via autodiff."""

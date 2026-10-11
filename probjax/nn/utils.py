@@ -9,8 +9,13 @@ from jax import lax
 from jax.ops import segment_max  # segment reduction (available in JAX)
 
 from probjax.utils.optional import require_ott
-from probjax.utils.typing import Array, ArrayLike, DTypeLike, ModuleLikeType, PrecisionLike
-
+from probjax.utils.typing import (
+    Array,
+    ArrayLike,
+    DTypeLike,
+    ModuleLikeType,
+    PrecisionLike,
+)
 
 # Distinguish an omitted builder from explicit None (which may disable it).
 DEFAULT_MODULE = object()
@@ -119,9 +124,12 @@ def filter_supported_kwargs(ctor, **kwargs) -> dict:
         return {}
     if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
         return kwargs
-    return {key: value for key, value in kwargs.items()
-            if key in parameters and parameters[key].kind != inspect.Parameter.POSITIONAL_ONLY}
-
+    return {
+        key: value
+        for key, value in kwargs.items()
+        if key in parameters
+        and parameters[key].kind != inspect.Parameter.POSITIONAL_ONLY
+    }
 
 
 def filter_precision_kwargs(cls: ModuleLikeType, **kwargs):
@@ -244,14 +252,14 @@ def module_accepts_rng(module) -> bool:
         params = inspect.signature(module).parameters.values()
         supports_rng = any(
             (p.name == "rng" and p.kind != inspect.Parameter.POSITIONAL_ONLY)
-            or p.kind == inspect.Parameter.VAR_KEYWORD for p in params
+            or p.kind == inspect.Parameter.VAR_KEYWORD
+            for p in params
         )
     except (TypeError, ValueError):
         supports_rng = True
     if not variable_signature:
         _RNG_SUPPORT_BY_TYPE[module_type] = supports_rng
     return supports_rng
-
 
 
 def extract_permutation(M: jnp.ndarray) -> jnp.ndarray:

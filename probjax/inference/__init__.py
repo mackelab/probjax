@@ -253,33 +253,29 @@ __all__ += [
     "temporal_smc",
 ]
 
-from probjax.inference.smc.ports import (
-    waste_free_strategy,
-    waste_free_smc,
-    tuned_smc,
-    pretuned_smc,
-)
-
-from probjax.inference.smc.temporal_utils import (
-    population_diagnostics,
-    likelihood_diagnostics,
-    summarize_replicates,
-)
-
-from probjax.inference.smc.particle_adaptation import (
-    recommend_particle_count,
-    exchange_filter_population,
-    adapt_particle_count,
-)
-
-from probjax.inference.filtering.streaming import (
-    init_streaming_window,
-    append_streaming_window,
-    streaming_window_trace,
-)
-
 from probjax.inference.filtering.joint import (
     sample_joint_paths,
+)
+from probjax.inference.filtering.streaming import (
+    append_streaming_window,
+    init_streaming_window,
+    streaming_window_trace,
+)
+from probjax.inference.smc.particle_adaptation import (
+    adapt_particle_count,
+    exchange_filter_population,
+    recommend_particle_count,
+)
+from probjax.inference.smc.ports import (
+    pretuned_smc,
+    tuned_smc,
+    waste_free_smc,
+    waste_free_strategy,
+)
+from probjax.inference.smc.temporal_utils import (
+    likelihood_diagnostics,
+    population_diagnostics,
+    summarize_replicates,
 )
 
 __all__ += [

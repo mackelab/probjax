@@ -11,6 +11,8 @@ import jax.numpy as jnp
 
 from probjax.utils.odeutil.util import (
     initial_step_size as _initial_step_size,
+)
+from probjax.utils.odeutil.util import (
     mean_error_ratio,
     optimal_step_size,
 )
@@ -97,9 +99,7 @@ class StepSizeAdaptor:
 
     def error_ratio(self, error, y, y_next):
         """Compute ``||error / (atol + rtol·max(|y|,|y_next|))||_p``."""
-        return mean_error_ratio(
-            error, y, y_next, self.rtol, self.atol, self.error_norm
-        )
+        return mean_error_ratio(error, y, y_next, self.rtol, self.atol, self.error_norm)
 
     def next_step_size(self, dt, error_ratio):
         """Hairer–Wanner optimal step, clipped to ``[dtmin, dtmax]``."""
@@ -119,8 +119,4 @@ class StepSizeAdaptor:
 
     def accept_step(self, error_ratio, dt):
         """Accept iff the error is below ``maxerror`` or ``dt`` hit a clip."""
-        return (
-            (error_ratio <= self.maxerror)
-            | (dt == self.dtmin)
-            | (dt == self.dtmax)
-        )
+        return (error_ratio <= self.maxerror) | (dt == self.dtmin) | (dt == self.dtmax)

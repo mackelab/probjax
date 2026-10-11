@@ -5,8 +5,6 @@ import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.layers.reg import DropPath
-
-
 from probjax.nn.utils import (
     PrecisionMixin,
     filter_precision_kwargs,

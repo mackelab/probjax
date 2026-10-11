@@ -995,7 +995,7 @@ class InducedSelfAttention(PrecisionMixin, nnx.Module):
                 f"but module expects {self.in_features}."
             )
 
-        kv_input = x if x_kv is None else jnp.asarray(x_kv)
+        x if x_kv is None else jnp.asarray(x_kv)
 
         inducing_points = self.inducing_points[...]
 

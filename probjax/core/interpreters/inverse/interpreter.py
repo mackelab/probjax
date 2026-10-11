@@ -6,7 +6,6 @@ equations to compute inverse values using rules registered in the global
 REGISTRY.
 """
 
-import jax
 import jax.numpy as jnp
 from jax._src import core as jax_core
 
@@ -20,7 +19,7 @@ from probjax.core.jaxpr_propagation.utils import (
     KnownessLevel,
     ProcessingRule,
 )
-from probjax.core.registry import Context, ProcessedResult, REGISTRY
+from probjax.core.registry import REGISTRY, Context, ProcessedResult
 
 
 def maybe_inverse_custom_inverse(

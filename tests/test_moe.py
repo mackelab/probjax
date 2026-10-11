@@ -3,13 +3,7 @@ import jax.numpy as jnp
 import pytest
 from flax import nnx
 
-from probjax.nn.moe import (
-    ExpertSwiGLU,
-    LocalDispatcher,
-    MoELayer,
-    TopKRouter,
-    load_balance_loss,
-)
+from probjax.nn.layers.moe import ExpertSwiGLU, MoELayer, load_balance_loss
 
 
 def _make_layer(
@@ -39,16 +33,6 @@ def test_top_k_1():
     y = moe(x)
     assert y.shape == (6, 8)
     assert jnp.all(jnp.isfinite(y))
-
-
-def test_routing_weights_sum_to_one():
-    router = TopKRouter(8, 4, rngs=nnx.Rngs(0))
-    x = jax.random.normal(jax.random.key(2), (10, 8))
-    out = router(x, top_k=2)
-    assert out.expert_ids.shape == (10, 2)
-    assert out.route_weights.shape == (10, 2)
-    assert jnp.allclose(jnp.sum(out.route_weights, axis=-1), jnp.ones((10,)), atol=1e-6)
-    assert jnp.allclose(jnp.sum(out.router_probs, axis=-1), jnp.ones((10,)), atol=1e-6)
 
 
 def test_finite_gradients():
@@ -102,10 +86,10 @@ def test_dense_against_manual():
     y = moe(x)
 
     # Manual SwiGLU over all experts + top-k gather.
-    w_gate = moe.experts.w_gate[...]
-    w_up = moe.experts.w_up[...]
-    w_down = moe.experts.w_down[...]
-    logits = x @ moe.router.w_router[...]
+    w_gate = moe.experts.gate.kernel[...]
+    w_up = moe.experts.up.kernel[...]
+    w_down = moe.experts.down.kernel[...]
+    logits = x @ moe.router.kernel[...]
     top_logits, expert_ids = jax.lax.top_k(logits, top_k)
     weights = jax.nn.softmax(top_logits, axis=-1)
     gate = jnp.einsum("nd,edh->neh", x, w_gate)
@@ -123,11 +107,7 @@ def test_sparse_matches_dense_without_dropping():
     kwargs = dict(d_model=8, d_hidden=16, num_experts=4, top_k=2)
     sparse = MoELayer(**kwargs, capacity_factor=4.0, sparse=True, rngs=nnx.Rngs(0))
     dense = MoELayer(**kwargs, sparse=False, rngs=nnx.Rngs(0))
-    # Share parameters between the two instances.
-    dense.experts.w_gate[...] = sparse.experts.w_gate[...]
-    dense.experts.w_up[...] = sparse.experts.w_up[...]
-    dense.experts.w_down[...] = sparse.experts.w_down[...]
-    dense.router.w_router[...] = sparse.router.w_router[...]
+    # Same rngs -> identical parameters.
 
     x = jax.random.normal(jax.random.key(7), (8, 8))
     y_sparse, aux = sparse(x, return_aux=True)
@@ -148,6 +128,14 @@ def test_aux_statistics():
     assert 0.0 <= float(aux.overflow_fraction) <= 1.0
     assert float(aux.load_balance_loss) >= 1.0 - 1e-5  # E*sum(p f) >= 1
     assert aux.capacity >= 1
+    assert float(aux.router_z_loss) >= 0.0
+
+
+def test_router_runs_in_float32_under_bf16():
+    moe = MoELayer(8, 16, 4, dtype=jnp.bfloat16, rngs=nnx.Rngs(0))
+    x = jax.random.normal(jax.random.key(11), (6, 8), dtype=jnp.bfloat16)
+    assert moe.router(x).dtype == jnp.float32
+    assert moe(x).dtype == jnp.bfloat16
 
 
 def test_expert_contract():
@@ -158,16 +146,16 @@ def test_expert_contract():
         experts(jnp.ones((2, 5, 8)))  # wrong expert axis
 
 
-def test_dispatcher_roundtrip_single_expert():
-    disp = LocalDispatcher(num_experts=1, capacity_factor=1.0)
-    x = jnp.arange(6, dtype=jnp.float32).reshape(3, 2)
-    expert_ids = jnp.zeros((3, 2), dtype=jnp.int32)
-    weights = jnp.full((3, 2), 0.5)
-    routed = disp.dispatch(x, expert_ids, weights)
-    assert routed.tokens.shape == (1, 6, 2)
-    # Identity experts: combine should recover x (0.5 + 0.5 per token).
-    y = disp.combine(routed.tokens, routed)
-    assert jnp.allclose(y, x, atol=1e-5)
+def test_capacity_overflow_drops_assignments():
+    moe = _make_layer(top_k=1, capacity_factor=0.25)
+    x = jax.random.normal(jax.random.key(10), (16, 8))
+    y, aux = moe(x, return_aux=True)
+    assert aux.capacity == 1
+    assert float(aux.overflow_fraction) > 0.0
+    assert jnp.all(aux.capacity_utilization <= 1.0)
+    # Dropped tokens produce zero output.
+    n_zero_rows = int(jnp.sum(jnp.all(y == 0, axis=-1)))
+    assert n_zero_rows == round(float(aux.overflow_fraction) * 16)
 
 
 def test_load_balance_loss_uniform():

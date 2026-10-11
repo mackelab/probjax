@@ -2,10 +2,10 @@ from typing import Callable, NamedTuple, Tuple
 
 import jax
 import jax.numpy as jnp
-from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 from probjax.inference.mcmc.base import make_kernel_api
 from probjax.inference.rejection import univariate as uni
+from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 
 class ARMSParams(NamedTuple):
@@ -52,7 +52,9 @@ def init(
             raise ValueError("Provide rng_key or init_points for ARMS initialization")
         init_points = _init_points(position, rng_key)
     init_points = jnp.asarray(init_points)
-    env = uni.init_ars_state(logdensity_fn, init_points, lb=lb, ub=ub, max_points=max_points)
+    env = uni.init_ars_state(
+        logdensity_fn, init_points, lb=lb, ub=ub, max_points=max_points
+    )
     logdensity = logdensity_fn(position)
     return ARMSState(position, logdensity, env)
 
@@ -62,7 +64,9 @@ def init_params(state: PyTree) -> ARMSParams:
 
 
 def _arms_step(logdensity_fn: Callable, *, control: bool) -> Callable:
-    def step(key: RngKey, state: ARMSState, params: ARMSParams) -> Tuple[ARMSState, ARMSInfo]:
+    def step(
+        key: RngKey, state: ARMSState, params: ARMSParams
+    ) -> Tuple[ARMSState, ARMSInfo]:
         key, sample_key, accept_key, control_key = jax.random.split(key, 4)
         xt, _ = uni.sample_upper(state.envelope, sample_key)
         log_xt, grad_xt = jax.value_and_grad(logdensity_fn)(xt)

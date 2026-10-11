@@ -432,7 +432,7 @@ def solve_lyapunov_dlr(proc, Y, r0, dt, num_steps):
 def _log_quadratic_form(matrix):
     """e_0.T log(matrix) e_0 with a repeated-eigenvalue-safe first derivative."""
     values, vectors = jnp.linalg.eigh(matrix)
-    return jnp.sum(vectors[0]**2 * jnp.log(values))
+    return jnp.sum(vectors[0] ** 2 * jnp.log(values))
 
 
 @_log_quadratic_form.defjvp
@@ -440,18 +440,23 @@ def _log_quadratic_form_jvp(primals, tangents):
     (matrix,), (tangent,) = primals, tangents
     values, vectors = jnp.linalg.eigh(matrix)
     left, right = values[:, None], values[None, :]
-    difference = left-right
+    difference = left - right
     equal = difference == 0
     safe_difference = jnp.where(equal, 1, difference)
-    relative = difference/right
+    relative = difference / right
     # Use log1p near equal eigenvalues to avoid cancellation.
-    close = jnp.abs(relative) < .5
-    numerator = jnp.where(close, jnp.log1p(jnp.where(close, relative, 0)),
-                          jnp.log(left)-jnp.log(right))
-    divided_difference = jnp.where(equal, 1/right, numerator/safe_difference)
+    close = jnp.abs(relative) < 0.5
+    numerator = jnp.where(
+        close, jnp.log1p(jnp.where(close, relative, 0)), jnp.log(left) - jnp.log(right)
+    )
+    divided_difference = jnp.where(equal, 1 / right, numerator / safe_difference)
     weights = vectors[0]
-    derivative = jnp.sum(weights[:, None]*weights[None, :]*divided_difference
-                         * (vectors.T @ tangent @ vectors))
+    derivative = jnp.sum(
+        weights[:, None]
+        * weights[None, :]
+        * divided_difference
+        * (vectors.T @ tangent @ vectors)
+    )
     return _log_quadratic_form(matrix), derivative
 
 
@@ -488,12 +493,15 @@ def lanczos_logdet(S, num_steps=20, key=None, *, num_probes=16):
         probes = jnp.eye(dim, dtype=dtype)
     else:
         key = jax.random.key(0) if key is None else key
-        probes = jax.random.rademacher(key, (num_probes, dim), dtype=dtype) / jnp.sqrt(dim)
+        probes = jax.random.rademacher(key, (num_probes, dim), dtype=dtype) / jnp.sqrt(
+            dim
+        )
 
     def quadrature(v0):
         # Reorthogonalize to avoid spurious repeated Ritz values after
         # Krylov convergence. Zero padding is decoupled from the first basis vector.
         basis = jnp.zeros((steps, dim), dtype=dtype)
+
         def body(carry, i):
             v, previous, beta_previous, basis, active = carry
             basis = basis.at[i].set(v)
@@ -502,17 +510,31 @@ def lanczos_logdet(S, num_steps=20, key=None, *, num_probes=16):
             w = w - alpha * v
             w = w - basis.T @ (basis @ w)
             squared_norm = jnp.dot(w, w)
-            beta = jnp.where(squared_norm > 0, jnp.sqrt(jnp.where(squared_norm > 0, squared_norm, 1)), 0)
-            threshold = jnp.finfo(dtype).eps * jnp.maximum(jnp.abs(alpha), jnp.finfo(dtype).tiny) * dim
+            beta = jnp.where(
+                squared_norm > 0,
+                jnp.sqrt(jnp.where(squared_norm > 0, squared_norm, 1)),
+                0,
+            )
+            threshold = (
+                jnp.finfo(dtype).eps
+                * jnp.maximum(jnp.abs(alpha), jnp.finfo(dtype).tiny)
+                * dim
+            )
             next_active = active & (beta > threshold)
             next_v = jnp.where(next_active, w / jnp.where(next_active, beta, 1), 0)
             return (next_v, v, jnp.where(next_active, beta, 0), basis, next_active), (
-                jnp.where(active, alpha, 1), jnp.where(next_active, beta, 0))
+                jnp.where(active, alpha, 1),
+                jnp.where(next_active, beta, 0),
+            )
+
         _, (diag, beta) = jax.lax.scan(
-            body, (v0, jnp.zeros_like(v0), jnp.asarray(0, dtype), basis, True),
-            jnp.arange(steps))
+            body,
+            (v0, jnp.zeros_like(v0), jnp.asarray(0, dtype), basis, True),
+            jnp.arange(steps),
+        )
         T = jnp.diag(diag) + jnp.diag(beta[:-1], 1) + jnp.diag(beta[:-1], -1)
         return dim * _log_quadratic_form(T)
+
     return jnp.mean(jax.vmap(quadrature)(probes))
 
 
@@ -576,7 +598,7 @@ def _solve_rhs_block_pcg(
     b2 = jnp.sum(B * B, axis=0)
     b2_safe = jnp.where(b2 > 0, b2, 1.0)
     # A zero RHS retains the original absolute-residual tolerance.
-    tol2 = jnp.where(b2 > 0, (tol**2) * b2_safe, (tol / rhs_scale)**2)
+    tol2 = jnp.where(b2 > 0, (tol**2) * b2_safe, (tol / rhs_scale) ** 2)
 
     # Zero-RHS columns are already converged
     active = jnp.sum(R * R, axis=0) > tol2
@@ -584,7 +606,6 @@ def _solve_rhs_block_pcg(
     Z = jnp.where(active[None, :], Z, 0.0)
     P = Z
     rho = jnp.sum(R * Z, axis=0)
-
 
     def cond_fn(state):
         k, _X, _R, _Z, _P, _rho, active = state
@@ -623,9 +644,13 @@ def _solve_rhs_block_pcg(
     # Recompute true final residual for accurate diagnostics
     R_true = B - _matmat_from_matvec(matvec, X)
     residual_scale = jnp.max(jnp.abs(R_true), axis=0)
-    normalized_residual = R_true / jnp.where(residual_scale > 0, residual_scale, 1)[None, :]
+    normalized_residual = (
+        R_true / jnp.where(residual_scale > 0, residual_scale, 1)[None, :]
+    )
     residual_norm = residual_scale * jnp.sqrt(jnp.sum(normalized_residual**2, axis=0))
-    rel_residual = jnp.where(b2 > 0, residual_norm / jnp.sqrt(b2_safe), residual_norm * rhs_scale)
+    rel_residual = jnp.where(
+        b2 > 0, residual_norm / jnp.sqrt(b2_safe), residual_norm * rhs_scale
+    )
     converged = rel_residual <= tol
 
     return X * rhs_scale[None, :], k, converged, rel_residual

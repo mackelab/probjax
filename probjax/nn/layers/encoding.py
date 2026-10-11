@@ -254,7 +254,10 @@ class RotaryPosEncode(nnx.Module):
             2. 2D image grid::
 
                    h, w = 16, 16
-                   coords = jnp.stack(jnp.meshgrid(jnp.arange(h), jnp.arange(w), indexing="ij"), axis=-1)
+                   coords = jnp.stack(
+                       jnp.meshgrid(jnp.arange(h), jnp.arange(w), indexing="ij"),
+                       axis=-1,
+                   )
                    coords = coords.reshape(h * w, 2)
                    x = jnp.zeros((batch, h * w, model_dim))
                    rope = RotaryPosEncode(model_dim, rotary_dim=64)

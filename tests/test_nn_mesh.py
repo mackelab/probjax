@@ -71,11 +71,11 @@ def test_moe_experts_shard_over_model_router_replicated():
     mesh = _auto_mesh((1, 4))
     with jax.set_mesh(mesh):
         model = MoELayer(8, 16, 4, rngs=nnx.Rngs(0))
-        for name in ("w_gate", "w_up", "w_down"):
-            assert getattr(model.experts, name)[...].sharding.spec == P(
+        for name in ("gate", "up", "down"):
+            assert getattr(model.experts, name).kernel[...].sharding.spec == P(
                 "model", None, None
             )
-        assert model.router.w_router[...].sharding.spec == P()
+        assert model.router.kernel[...].sharding.spec == P()
 
 
 @pytest.mark.mesh
@@ -128,7 +128,7 @@ def test_moe_expert_axis_on_3d_mesh():
         nnx.logical_axis_rules(shd.default_rules(expert_axis="expert")),
     ):
         model = MoELayer(8, 16, 4, rngs=nnx.Rngs(0))
-        assert model.experts.w_gate[...].sharding.spec == P("expert", None, None)
+        assert model.experts.gate.kernel[...].sharding.spec == P("expert", None, None)
 
 
 @pytest.mark.mesh
