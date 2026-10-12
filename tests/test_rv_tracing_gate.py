@@ -143,6 +143,7 @@ def test_log_joint_is_finite(model):
 
 
 @pytest.mark.parametrize("model", [_dist_model, _direct_model], ids=["dist", "direct"])
+@pytest.mark.filterwarnings("ignore:probjax.core.intervene:DeprecationWarning")
 def test_intervene_and_do_override(model):
     fixed = {"z": jnp.asarray(1.5), "y": jnp.asarray(-0.5)}
     for transform in (intervene, do):
