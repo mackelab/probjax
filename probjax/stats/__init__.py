@@ -7,8 +7,8 @@ in JAX with a SciPy-like API.
 """
 
 from probjax.stats.base import (
-    DistributionParams,
     DistributionAPI,
+    DistributionParams,
     rv_continuous,
     rv_continuous_frozen,
     rv_discrete,
@@ -21,22 +21,10 @@ from probjax.stats.base import (
     rv_spherical,
     rv_spherical_frozen,
 )
-from probjax.stats.fit import (
-    FitInfo,
-    FitKernel,
-    build_fit_kernel,
-    FitCallback,
-    FitMixin,
-    FitResult,
-    FitState,
-    fit,
-    is_batch_stream,
-    take_batches,
-)
 from probjax.stats.bijective.protocols import (
     InvertibleTransformProtocol,
-    TransformedDistribution,
     TransformProtocol,
+    TransformedDistribution,
     ensure_invertible,
     forward_and_logdet,
 )
@@ -48,8 +36,8 @@ from probjax.stats.continuous.dirichlet import dirichlet
 from probjax.stats.continuous.expon import expon
 from probjax.stats.continuous.gamma import gamma
 from probjax.stats.continuous.gennorm import gennorm
-from probjax.stats.continuous.histogram import histogram, tailed_histogram
 from probjax.stats.continuous.genpareto import genpareto
+from probjax.stats.continuous.histogram import histogram, tailed_histogram
 from probjax.stats.continuous.laplace import laplace
 from probjax.stats.continuous.logistic import logistic
 from probjax.stats.continuous.mixture_kernel import (
@@ -75,9 +63,21 @@ from probjax.stats.discrete.bernoulli import bernoulli
 from probjax.stats.discrete.binomial import binomial
 from probjax.stats.discrete.categorical import categorical
 from probjax.stats.discrete.dirac import dirac
+from probjax.stats.discrete.empirical import empirical
 from probjax.stats.discrete.geometric import geometric
 from probjax.stats.discrete.poisson import poisson
-from probjax.stats.discrete.empirical import empirical
+from probjax.stats.fit import (
+    FitCallback,
+    FitInfo,
+    FitKernel,
+    FitMixin,
+    FitResult,
+    FitState,
+    build_fit_kernel,
+    fit,
+    is_batch_stream,
+    take_batches,
+)
 
 # Import higher-order distributions
 from probjax.stats.indep import indep

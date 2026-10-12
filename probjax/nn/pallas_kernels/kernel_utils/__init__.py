@@ -1,7 +1,7 @@
 from .common import (
     DEFAULT_MASK_VALUE,
-    KVOffsetInfo,
     NEG_INF,
+    KVOffsetInfo,
     ceil_div,
     def_partition_compat,
     def_partition_supports_need_replication_factors,

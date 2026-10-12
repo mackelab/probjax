@@ -23,10 +23,10 @@ from probjax.nn.generative.autoregressive.config import (
     TransformerARConditionerConfig,
 )
 from probjax.nn.generative.autoregressive.model import (
+    MADE,
     Autoregressive,
     CategoricalAutoregressive,
     HistogramAutoregressive,
-    MADE,
     MixtureAutoregressive,
     SplineAutoregressive,
     made,

@@ -11,8 +11,8 @@ import pytest
 from flax import nnx
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 
-from probjax.nn.moe import MoELayer
-from probjax.nn.moe.grouped_matmul import (
+from probjax.nn.layers.moe import MoELayer
+from probjax.nn.layers.grouped_matmul import (
     gather_from_layout,
     grouped_matmul,
     make_group_layout,
@@ -112,7 +112,7 @@ def test_sharded_weights_match_replicated():
     reason="Mosaic-GPU ragged dot needs an sm_90 GPU",
 )
 def test_hopper_mosaic_path_matches_ragged_dot():
-    from probjax.nn.moe.grouped_matmul import ragged_matmul_hopper
+    from probjax.nn.layers.grouped_matmul import ragged_matmul_hopper
 
     gs = jnp.array([100, 0, 300, 112], jnp.int32)
     x = jax.random.normal(jax.random.key(0), (512, 256), jnp.bfloat16)

@@ -15,6 +15,7 @@ from flax.nnx import rnglib
 from flax.nnx.module import first_from
 
 from probjax.nn.layers.attention import MultiHeadAttention, dot_product_attention
+from probjax.nn.layers.encoding import RotaryPosEncode
 from probjax.nn.pallas_kernels import (
     AttentionBias,
     AttentionMask,
@@ -158,21 +159,6 @@ class ResidualLinearAttention(nnx.Module):
         return jnp.swapaxes(output, 1, 2)
 
 
-def _apply_rope(x: Array, theta: float) -> Array:
-    """Apply RoFormer-style rotary embeddings to ``[B, T, H, D]``."""
-    head_dim = x.shape[-1]
-    if head_dim % 2:
-        raise ValueError("RAttention requires an even head dimension for RoPE")
-    dtype = jnp.float32
-    inv_freq = theta ** (-jnp.arange(0, head_dim, 2, dtype=dtype) / head_dim)
-    angles = jnp.arange(x.shape[1], dtype=dtype)[:, None] * inv_freq[None, :]
-    cos = jnp.concatenate((jnp.cos(angles), jnp.cos(angles)), axis=-1)[None, :, None, :]
-    sin = jnp.concatenate((jnp.sin(angles), jnp.sin(angles)), axis=-1)[None, :, None, :]
-    first, second = jnp.split(x.astype(dtype), 2, axis=-1)
-    rotated = jnp.concatenate((-second, first), axis=-1)
-    return (x.astype(dtype) * cos + rotated * sin).astype(x.dtype)
-
-
 class RAttention(MultiHeadAttention):
     """Residual linear attention combined with causal sliding-window attention.
 
@@ -201,8 +187,7 @@ class RAttention(MultiHeadAttention):
         kwargs.setdefault("attention_fn", dot_product_attention)
         super().__init__(*args, **kwargs)
         self.sliding_window_size = sliding_window_size
-        self.rope_theta = rope_theta
-        self.residual_la_enabled = residual_la
+        self.rope = RotaryPosEncode(self.head_dim, base=rope_theta)
 
         if residual_la:
             self.residual_linear_attention = ResidualLinearAttention(
@@ -239,6 +224,11 @@ class RAttention(MultiHeadAttention):
             )
         else:
             self.swa_norm = None
+
+    def _apply_rope(self, x: Array) -> Array:
+        """RoPE over the sequence axis of ``[B, T, H, D]``."""
+        rotated = self.rope(jnp.swapaxes(x, 1, 2))
+        return jnp.swapaxes(rotated, 1, 2).astype(x.dtype)
 
     def __call__(
         self,
@@ -318,8 +308,8 @@ class RAttention(MultiHeadAttention):
                 dropout_rng = None
 
             swa_output = self.attention_fn(
-                _apply_rope(query, self.rope_theta),
-                _apply_rope(key, self.rope_theta),
+                self._apply_rope(query),
+                self._apply_rope(key),
                 value,
                 mask=mask,
                 bias=bias,

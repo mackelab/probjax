@@ -173,7 +173,9 @@ class InterpolationScheduleProtocol(Protocol):
         self, t: ArrayLike, x0: Array, x1: Array
     ) -> Array | None: ...
 
-    def interpolation_velocity_fn(self, t: ArrayLike, x0: Array, x1: Array) -> Array: ...
+    def interpolation_velocity_fn(
+        self, t: ArrayLike, x0: Array, x1: Array
+    ) -> Array: ...
 
     def interpolation_noise_velocity_fn(
         self, t: ArrayLike, x0: Array, x1: Array

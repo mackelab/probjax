@@ -173,10 +173,16 @@ def _run_flash_forward_raw(q, k, v, *, config, save_residuals, use_pipeline_emit
 def _run_flash_backward_raw(do, q, k, v, out, lse, *, config):
     if _attention_backward_impl is None:
         if _attention_impl is None:
-            raise RuntimeError("This JAX build does not provide the Flash3 backward kernel.")
+            raise RuntimeError(
+                "This JAX build does not provide the Flash3 backward kernel."
+            )
         _, pullback = jax.vjp(
-            lambda q, k, v: _attention_impl(q, k, v, config=config, save_residuals=False),
-            q, k, v,
+            lambda q, k, v: _attention_impl(
+                q, k, v, config=config, save_residuals=False
+            ),
+            q,
+            k,
+            v,
         )
         return pullback(do)
     return _attention_backward_impl(config, False, (q, k, v, out, lse), do)
@@ -279,6 +285,7 @@ def _validate_no_unsupported_sharding(arr: jax.Array, name: str) -> None:
     Batch (dim 0) and heads (dim 2) sharding are allowed (JAX handles them).
     """
     from ..kernel_utils.kernel_primitive import _validate_shardings
+
     class _Shape:
         def __init__(self, sharding):
             self.sharding = sharding

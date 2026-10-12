@@ -96,8 +96,7 @@ def odeint(
         >>>
         >>> y0 = jnp.array([40.0, 9.0])
         >>> ts = jnp.linspace(0, 10, 100)
-        >>> ys = odeint(lotka_volterra, y0, ts, 1.0, 0.1, 0.075, 0.5,
-        ...             method="dopri5")
+        >>> ys = odeint(lotka_volterra, y0, ts, 1.0, 0.1, 0.075, 0.5, method="dopri5")
     """
     drift = wrap_if_plain_callable(drift)
     return _odeint_custom(

@@ -79,7 +79,11 @@ def _innovation_ll(residual, S, solve_fn=default_solve, logdet_fn=default_logdet
     to the dense/iterative-dispatched versions; callers with exact legacy
     ops pass them explicitly.
     """
-    return -0.5 * (residual.size * jnp.log(2 * jnp.pi) + logdet_fn(S) + residual.T @ solve_fn(S, residual))
+    return -0.5 * (
+        residual.size * jnp.log(2 * jnp.pi)
+        + logdet_fn(S)
+        + residual.T @ solve_fn(S, residual)
+    )
 
 
 def _kalman_update(

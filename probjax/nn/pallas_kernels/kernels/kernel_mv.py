@@ -9,6 +9,8 @@ from jax import lax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import triton as plgpu
 
+from probjax.utils.typing import Array
+
 from ..kernel_utils import get_dot_precision, use_interpret_mode
 from ..kernel_utils.kernel_primitive import (
     KernelSpec,
@@ -17,7 +19,6 @@ from ..kernel_utils.kernel_primitive import (
     make_kernel_primitive,
     shardable_kernel,
 )
-from probjax.utils.typing import Array
 
 KernelFn = Callable[[Array, Array, Array], Array]
 KernelVjpFn = Callable[[Array, Array, Array, Array], tuple[Array, Array, Array]]
@@ -230,12 +231,16 @@ def _kernel_mv_pallas_impl(
         kernel,
         grid=(pl.cdiv(q_pad.shape[1], block_q), bsz, pl.cdiv(v_pad.shape[2], block_o)),
         in_specs=[
-            pl.BlockSpec((None, block_q, d), lambda i, j, l: (j, i, 0)),
-            pl.BlockSpec((None, k_pad.shape[1], d), lambda i, j, l: (j, 0, 0)),
-            pl.BlockSpec((None, v_pad.shape[1], block_o), lambda i, j, l: (j, 0, l)),
+            pl.BlockSpec((None, block_q, d), lambda i, j, tile: (j, i, 0)),
+            pl.BlockSpec((None, k_pad.shape[1], d), lambda i, j, tile: (j, 0, 0)),
+            pl.BlockSpec(
+                (None, v_pad.shape[1], block_o), lambda i, j, tile: (j, 0, tile)
+            ),
             _broadcast_block_spec(params.shape),
         ],
-        out_specs=pl.BlockSpec((None, block_q, block_o), lambda i, j, l: (j, i, l)),
+        out_specs=pl.BlockSpec(
+            (None, block_q, block_o), lambda i, j, tile: (j, i, tile)
+        ),
         out_shape=jax.ShapeDtypeStruct((bsz, q_pad.shape[1], v_pad.shape[2]), dtype),
         interpret=interpret,
         compiler_params=plgpu.CompilerParams(num_warps=4, num_stages=2),
@@ -281,7 +286,9 @@ def _kernel_mv_fwd_primitive(params_rank: int):
     return make_kernel_primitive(spec, impl=_impl)
 
 
-def _kernel_mv_forward(q, k, v, params, kernel_fn, block_q, block_k, block_o, interpret):
+def _kernel_mv_forward(
+    q, k, v, params, kernel_fn, block_q, block_k, block_o, interpret
+):
     params = jnp.asarray(params)
     prim = _kernel_mv_fwd_primitive(params.ndim)
     return shardable_kernel(

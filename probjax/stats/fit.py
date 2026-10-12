@@ -8,7 +8,7 @@ A framework-agnostic training loop: :func:`fit` minimizes any
 ``{"data": x, "context": c}`` whose leaves share the leading example axis --
 or an iterable of batches, for data that does not fit in memory:
 
->>> params, losses = fit(loss_fn, params, key, {"data": x})   # whole array
+>>> params, losses = fit(loss_fn, params, key, {"data": x})  # whole array
 >>> params, losses = fit(loss_fn, params, key, my_dataloader)  # streamed
 
 Nothing here assumes a particular NN library. Without general callbacks the

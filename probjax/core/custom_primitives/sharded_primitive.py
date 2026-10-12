@@ -49,9 +49,9 @@ from typing import Any, Callable, Mapping, Sequence
 
 import jax
 import jax.numpy as jnp
+from jax._src.interpreters import batching
 from jax.extend.core import Primitive
 from jax.interpreters import mlir
-from jax._src.interpreters import batching
 
 __all__ = [
     "in_per_shard_body",
@@ -110,9 +110,7 @@ def _per_shard_body():
 def _def_partition_supports_need_replication_factors(def_partition) -> bool:
     """Whether ``custom_partitioning.def_partition`` accepts the kwarg."""
     try:
-        return (
-            "need_replication_factors" in inspect.signature(def_partition).parameters
-        )
+        return "need_replication_factors" in inspect.signature(def_partition).parameters
     except (TypeError, ValueError):
         return False
 
@@ -285,9 +283,7 @@ def derive_bwd_spec(
 # ---------------------------------------------------------------------------
 
 
-def _validate_shardings(
-    spec: KernelSpec, present: tuple[str, ...], arg_shapes
-) -> None:
+def _validate_shardings(spec: KernelSpec, present: tuple[str, ...], arg_shapes) -> None:
     for op, shape in zip(spec.present_operands(present), arg_shapes, strict=True):
         sharding = getattr(shape, "sharding", None)
         pspec = getattr(sharding, "spec", None)
@@ -331,7 +327,7 @@ def _resolve_factors(
                 f"{spec.name}: operand '{op.name}' expected rank {len(dims)} "
                 f"({dims}), got shape {tuple(shape)}."
             )
-        for factor, size in zip(dims, shape):
+        for factor, size in zip(dims, shape, strict=False):
             previous = sizes.setdefault(factor, int(size))
             if previous != int(size):
                 raise ValueError(
@@ -716,9 +712,7 @@ def _cp_general_batching(axis_data, vals_in, dims_in, *, call, **params):
         return out
 
     in_axes = tuple(None if d is not_mapped else int(d) for d in dims_in)
-    out = jax.vmap(fn, in_axes=in_axes, out_axes=0, axis_size=axis_data.size)(
-        *vals_in
-    )
+    out = jax.vmap(fn, in_axes=in_axes, out_axes=0, axis_size=axis_data.size)(*vals_in)
     return out, [0] * len(out)
 
 
@@ -756,19 +750,17 @@ def _cp_general_transpose(cts, *args, call, **params):
         return jax.core.eval_jaxpr(call.jaxpr, call.consts, *xs)
 
     is_linear = [ad.is_undefined_primal(a) for a in args]
-    fixed = [a for a, lin in zip(args, is_linear) if not lin]
+    fixed = [a for a, lin in zip(args, is_linear, strict=False) if not lin]
     examples = [
         jax.ShapeDtypeStruct(a.aval.shape, a.aval.dtype)
-        for a, lin in zip(args, is_linear)
+        for a, lin in zip(args, is_linear, strict=False)
         if lin
     ]
 
     def linear_fn(linear_args):
         lin_iter = iter(linear_args)
         fixed_iter = iter(fixed)
-        full = [
-            next(lin_iter) if lin else next(fixed_iter) for lin in is_linear
-        ]
+        full = [next(lin_iter) if lin else next(fixed_iter) for lin in is_linear]
         return fn(*full)
 
     transpose_fn = jax.linear_transpose(linear_fn, examples)

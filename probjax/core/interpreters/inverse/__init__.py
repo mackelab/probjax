@@ -11,6 +11,10 @@ The main classes are:
 All rules are registered in the unified REGISTRY from probjax.core.registry.
 """
 
+import probjax.core.interpreters.inverse.logabsdet_rules  # noqa: F401
+
+# Import rules modules to trigger registration
+import probjax.core.interpreters.inverse.rules  # noqa: F401
 from probjax.core.interpreters.inverse.interpreter import (
     InverseProcessingRule,
     maybe_inverse_custom_inverse,
@@ -32,10 +36,6 @@ from probjax.core.interpreters.inverse.rules import (
     set_inverse_cost_fn,
     set_inverse_processing_rule_factory,
 )
-
-# Import rules modules to trigger registration
-import probjax.core.interpreters.inverse.rules  # noqa: F401
-import probjax.core.interpreters.inverse.logabsdet_rules  # noqa: F401
 
 _WIRED = False
 

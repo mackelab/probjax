@@ -1,7 +1,7 @@
 """Grouped matmul (GPU, Triton backend): each row block times its group's matrix.
 
 Rows are laid out block-aligned by group (see
-:mod:`probjax.nn.moe.grouped_matmul`), so every ``block_m`` rows belong to one
+:mod:`probjax.nn.layers.grouped_matmul`), so every ``block_m`` rows belong to one
 group and ``block_group[i]`` names it.  Two kernels:
 
 * ``gmm``:  ``out[rows of block i] = x[rows of block i] @ w[block_group[i]]``
@@ -23,6 +23,8 @@ from jax import lax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import triton as plgpu
 
+from probjax.utils.typing import Array
+
 from ..kernel_utils.kernel_primitive import (
     KernelSpec,
     Operand,
@@ -30,8 +32,6 @@ from ..kernel_utils.kernel_primitive import (
     make_kernel_primitive,
     shardable_kernel,
 )
-from probjax.utils.typing import Array
-
 
 _ALIGN = 16  # smallest Triton dot tile
 
