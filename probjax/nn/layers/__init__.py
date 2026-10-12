@@ -19,6 +19,7 @@ from probjax.nn.layers.encoding import (
     PosEncode,
     RotaryPosEncode,
 )
+from probjax.nn.layers.feedforward import FeedForward
 from probjax.nn.layers.fuse import (
     AdditiveBinaryFuse,
     AdditiveFuse,
@@ -29,6 +30,13 @@ from probjax.nn.layers.fuse import (
     GatedFuse,
 )
 from probjax.nn.layers.masked import MaskedLinear
+from probjax.nn.layers.moe import (
+    ExpertSwiGLU,
+    MoEAux,
+    MoELayer,
+    load_balance_loss,
+)
+from probjax.nn.layers.norm import LpNorm, LpNormClip
 from probjax.nn.layers.rattention import (
     GroupRMSNorm,
     RAttention,

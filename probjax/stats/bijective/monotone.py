@@ -321,8 +321,8 @@ def _sos_value_and_logdet(t, coefficients, constant, bound=_SOS_BOUND):
         out = _EPS * v
         for j in range(degree2 + 1):
             b_j = jnp.zeros(v.shape) if v.ndim else jnp.asarray(0.0)
-            for l in range(max(0, j - degree), min(j, degree) + 1):
-                b_j = b_j + jnp.sum(outer[..., l, j - l], axis=-1)
+            for power in range(max(0, j - degree), min(j, degree) + 1):
+                b_j = b_j + jnp.sum(outer[..., power, j - power], axis=-1)
             out = out + b_j * v_pows[..., j] / (j + 1)
         return out
 

@@ -5,12 +5,13 @@ from typing import Optional, Sequence, Tuple
 
 import flax.nnx as nnx
 import jax.numpy as jnp
-from jax import lax
-from jax.ops import segment_max  # segment reduction (available in JAX)
 
-from probjax.utils.optional import require_ott
-from probjax.utils.typing import Array, ArrayLike, DTypeLike, ModuleLikeType, PrecisionLike
-
+from probjax.utils.typing import (
+    Array,
+    ArrayLike,
+    DTypeLike,
+    ModuleLikeType,
+)
 
 # Distinguish an omitted builder from explicit None (which may disable it).
 DEFAULT_MODULE = object()
@@ -119,118 +120,50 @@ def filter_supported_kwargs(ctor, **kwargs) -> dict:
         return {}
     if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
         return kwargs
-    return {key: value for key, value in kwargs.items()
-            if key in parameters and parameters[key].kind != inspect.Parameter.POSITIONAL_ONLY}
+    return {
+        key: value
+        for key, value in kwargs.items()
+        if key in parameters
+        and parameters[key].kind != inspect.Parameter.POSITIONAL_ONLY
+    }
 
 
+def filter_precision_kwargs(cls: ModuleLikeType, **kwargs) -> dict:
+    """Precision kwargs (``dtype``, ``param_dtype``, ...) to construct ``cls`` with.
 
-def filter_precision_kwargs(cls: ModuleLikeType, **kwargs):
-    """Utility function to filter out unsupported precision kwargs.
-
-    Note:
-      - We unwrap functools.partial only for the BUGGED-class check.
-      - We inspect the callable (class or partial) directly to get the effective parameters.
+    Drops ``None`` values (so ``cls`` keeps its own defaults) and anything
+    ``cls`` does not accept, since layer classes are pluggable and e.g.
+    ``nnx.LayerNorm`` takes no ``precision``.
     """
+    target_cls = cls
+    while isinstance(target_cls, partial):
+        target_cls = target_cls.func
 
-    # Unwrap only for BUGGED membership check
-    def unpack(cls):
-        while isinstance(cls, partial):
-            cls = cls.func
-        return cls
-
-    target_cls = unpack(cls)
-
-    # Unsupported precision kwargs due to bug
-    # JAX does not support backward pass with preferred_element_type!=input dtype
-    # see JAX #31592
-    BUGGED = {nnx.Conv, nnx.ConvTranspose}
-
-    # Inspect the callable to get its effective parameters (works for class and partial)
-    try:
-        param_names = inspect.signature(target_cls.__init__).parameters.keys()
-    except (ValueError, TypeError):
-        # Fallback to known precision-related keys
-        param_names = {"dtype", "precision", "param_dtype", "preferred_element_type"}
-
-    if target_cls in BUGGED and "preferred_element_type" in param_names:
-        if "preferred_element_type" in kwargs:
-            warnings.warn(
-                f"Ignoring preferred_element_type={kwargs['preferred_element_type']!r} for "
-                f"{target_cls.__name__}: JAX does not support a backward pass with "
-                "preferred_element_type != input dtype (see jax-ml/jax#31592).",
-                UserWarning,
-                stacklevel=2,
-            )
-        kwargs.pop("preferred_element_type", None)
-
-    # Filter out unsupported precision kwargs
-    return {key: kwargs[key] for key in kwargs if key in param_names}
-
-
-def get_active_precision_kwargs(
-    dtype, precision, param_dtype, preferred_element_type
-) -> dict:
-    """Utility function to get the active precision kwargs."""
-    precision_kwargs = {}
-    if dtype is not None:
-        precision_kwargs["dtype"] = dtype
-    if precision is not None:
-        precision_kwargs["precision"] = precision
-    if param_dtype is not None:
-        precision_kwargs["param_dtype"] = param_dtype
-    if preferred_element_type is not None:
-        precision_kwargs["preferred_element_type"] = preferred_element_type
-    return precision_kwargs
-
-
-class PrecisionMixin:
-    """Mixin storing the four precision/dtype kwargs for nn modules.
-
-    Mix into ``nnx.Module`` subclasses as ``class Foo(PrecisionMixin, nnx.Module)``
-    and call ``super().__init__(dtype=dtype, precision=precision,
-    param_dtype=param_dtype, preferred_element_type=preferred_element_type)``
-    in ``__init__``. The values are stored as plain attributes; :meth:`cast_output`
-    performs the single None-guarded output cast shared by all layers (a ``None``
-    ``preferred_element_type`` means "don't cast", and must never reach
-    ``x.astype(None)``).
-    """
-
-    def __init__(
-        self,
-        *,
-        dtype: DTypeLike | None = None,
-        precision: PrecisionLike | None = None,
-        param_dtype: DTypeLike | None = None,
-        preferred_element_type: DTypeLike | None = None,
-    ) -> None:
-        super().__init__()
-        self.dtype = dtype
-        self.precision = precision
-        self.param_dtype = param_dtype
-        self.preferred_element_type = preferred_element_type
-
-    def cast_output(self, x: ArrayLike) -> Array:
-        """Cast ``x`` to ``preferred_element_type``; no-op when it is None."""
-        if self.preferred_element_type is None:
-            return x
-        return x.astype(self.preferred_element_type)
-
-    def active_precision_kwargs(self) -> dict:
-        """Non-None precision kwargs, ready to forward to submodules."""
-        return get_active_precision_kwargs(
-            self.dtype, self.precision, self.param_dtype, self.preferred_element_type
+    # JAX does not support a backward pass with preferred_element_type != input
+    # dtype for convolutions (jax-ml/jax#31592), so it is dropped for them.
+    if (
+        target_cls in (nnx.Conv, nnx.ConvTranspose)
+        and kwargs.get("preferred_element_type") is not None
+    ):
+        warnings.warn(
+            f"Ignoring preferred_element_type={kwargs['preferred_element_type']!r} for "
+            f"{target_cls.__name__}: JAX does not support a backward pass with "
+            "preferred_element_type != input dtype (see jax-ml/jax#31592).",
+            UserWarning,
+            stacklevel=2,
         )
+        kwargs.pop("preferred_element_type")
+
+    try:
+        accepted = inspect.signature(target_cls.__init__).parameters.keys()
+    except (ValueError, TypeError):
+        accepted = kwargs.keys()
+    return {k: v for k, v in kwargs.items() if v is not None and k in accepted}
 
 
-def call_with_optional_rng(module, *args, rng=None, **kwargs):
-    """Call a module/function and pass `rng` only if supported."""
-    if rng is None:
-        return module(*args, **kwargs)
-
-    if not module_accepts_rng(module):
-        return module(*args, **kwargs)
-
-    return module(*args, rng=rng, **kwargs)
+def cast_output(x: ArrayLike, dtype: DTypeLike | None) -> Array:
+    """Cast ``x`` to ``dtype`` (a layer's ``preferred_element_type``); no-op for None."""
+    return x if dtype is None else x.astype(dtype)
 
 
 def module_accepts_rng(module) -> bool:
@@ -244,93 +177,11 @@ def module_accepts_rng(module) -> bool:
         params = inspect.signature(module).parameters.values()
         supports_rng = any(
             (p.name == "rng" and p.kind != inspect.Parameter.POSITIONAL_ONLY)
-            or p.kind == inspect.Parameter.VAR_KEYWORD for p in params
+            or p.kind == inspect.Parameter.VAR_KEYWORD
+            for p in params
         )
     except (TypeError, ValueError):
         supports_rng = True
     if not variable_signature:
         _RNG_SUPPORT_BY_TYPE[module_type] = supports_rng
     return supports_rng
-
-
-
-def extract_permutation(M: jnp.ndarray) -> jnp.ndarray:
-    """
-    Given a square matrix M (e.g. a Sinkhorn coupling),
-    returns a permutation (as a vector of column indices) for the rows.
-
-    For each row we precompute a sorted list (in descending order) of candidate columns.
-    Then we assign each row its best candidate. In case multiple rows choose the same column,
-    only the row with the highest score (with a small tie–breaker) keeps it; the others
-    move on to their next candidate.
-    """
-    n = M.shape[0]
-    # For each row, sort the candidate column indices in descending order of M.
-    sorted_indices = jnp.argsort(-M, axis=1)  # shape (n, n)
-    # For each row, candidate pointer (initially 0 = best candidate)
-    candidate_idx = jnp.zeros(n, dtype=jnp.int32)
-    # Current assignment: for each row i, assignment[i] is its candidate column.
-    assignment = sorted_indices[jnp.arange(n), candidate_idx]
-
-    # We define the loop condition: while the assignment is not a permutation.
-    def cond_fn(state):
-        _, assignment = state
-        # Check if assignment is a permutation by comparing sorted(assignments) to 0,1,...,n-1.
-        return ~jnp.all(jnp.sort(assignment) == jnp.arange(n))
-
-    def body_fn(state):
-        candidate_idx, assignment = state
-        row_indices = jnp.arange(n)
-        # Compute a "score" for each row's candidate.
-        # We subtract a very small multiple of the row index so that if two rows have
-        # the same value for a column, the row with the smaller index wins.
-        candidate_scores = (
-            M[row_indices, assignment] - row_indices.astype(M.dtype) * 1e-6
-        )
-        # For each column, compute the maximum candidate score among rows that selected that column.
-        # (Rows that did not select a given column do not contribute.)
-        best_score_per_col = segment_max(candidate_scores, assignment, num_segments=n)
-        # For each row, get the best candidate score for the column it chose.
-        best_for_row = best_score_per_col[assignment]
-        # Identify rows that lost the conflict (i.e. whose candidate score is not the maximum
-        # for the chosen column).
-        conflict = candidate_scores < best_for_row
-        # For rows in conflict, advance to their next candidate.
-        candidate_idx = candidate_idx + conflict.astype(jnp.int32)
-        # (Clip candidate indices so they remain in [0, n-1].)
-        candidate_idx = jnp.minimum(candidate_idx, n - 1)
-        # Update the assignment accordingly.
-        assignment = sorted_indices[jnp.arange(n), candidate_idx]
-        return candidate_idx, assignment
-
-    candidate_idx, assignment = lax.while_loop(
-        cond_fn, body_fn, (candidate_idx, assignment)
-    )
-    return assignment
-
-
-def ot_copula(
-    x,
-    y,
-    p: float = 2,
-    epsilon: float = 1e-1,
-    threshold: float = 0.1,
-    inner_iterations: int = 4,
-    min_iterations: int = 0,
-    max_iterations: int = 100,
-):
-    costs, pointcloud, _, linear_problem, sinkhorn = require_ott()
-    geom = pointcloud.PointCloud(x, y, cost_fn=costs.PNormP(p), epsilon=epsilon)
-    ot_prob = linear_problem.LinearProblem(geom)
-    solver = sinkhorn.Sinkhorn(
-        threshold=threshold,
-        min_iterations=min_iterations,
-        max_iterations=max_iterations,
-        inner_iterations=inner_iterations,
-    )
-    ot = solver(ot_prob)
-    # Instead of simply taking argmax along axis=1 (which can assign the same y multiple times),
-    # we extract a valid permutation.
-    permutation = extract_permutation(ot.matrix)
-    y_permuted = y[permutation]
-    return x, y_permuted

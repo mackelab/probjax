@@ -92,7 +92,7 @@ class WithProgressBarAPI:
         filled = int(print_len * (i + 1) // t)
         bar = "█" * filled + "-" * (print_len - filled)
         s = f"Progress: |{bar}| {pct:.2f}%"
-        for name, val in zip(stat_names, stats):
+        for name, val in zip(stat_names, stats, strict=False):
             s += f" {name}: {float(val):.2f}"
 
         _progress_executor.submit(sys.stdout.write, f"\r{s}")

@@ -58,9 +58,9 @@ def test_default_rules_cover_all_names():
 
 def test_no_mesh_moe_carries_no_sharding_annotation():
     moe = MoELayer(8, 16, 4, rngs=nnx.Rngs(0))
-    for name in ("w_gate", "w_up", "w_down"):
-        assert "sharding" not in getattr(moe.experts, name).get_metadata()
-    assert "sharding" not in moe.router.w_router.get_metadata()
+    for name in ("gate", "up", "down"):
+        assert "sharding" not in getattr(moe.experts, name).kernel.get_metadata()
+    assert "sharding" not in moe.router.kernel.get_metadata()
 
 
 def test_moe_aux_is_jit_compatible_pytree():
@@ -72,7 +72,7 @@ def test_moe_aux_is_jit_compatible_pytree():
         return jnp.sum(aux.expert_counts) + aux.load_balance_loss
 
     leaves, treedef = jax.tree_util.tree_flatten(moe(x, return_aux=True)[1])
-    assert len(leaves) == 6  # capacity is static
+    assert len(leaves) == 7  # capacity is static
     assert jnp.isfinite(nnx.jit(loss_fn)(moe, x))
 
     # return_aux itself works under jit.

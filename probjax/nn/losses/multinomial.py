@@ -69,16 +69,16 @@ def build_time_dependent_multinomial_diffusion_loss(
         x0_idx = jnp.asarray(x0, dtype=jnp.int32)
         if rao_blackwellize_xt:
             if rao_blackwellize_xt_num_samples < 1:
-                raise ValueError(
-                    "rao_blackwellize_xt_num_samples must be >= 1."
-                )
+                raise ValueError("rao_blackwellize_xt_num_samples must be >= 1.")
             if (
                 rao_blackwellize_xt_num_features is not None
                 and int(rao_blackwellize_xt_num_features) < 1
             ):
                 raise ValueError("rao_blackwellize_xt_num_features must be >= 1.")
             if base_probs is None:
-                raise ValueError("base_probs is required when rao_blackwellize_xt=True.")
+                raise ValueError(
+                    "base_probs is required when rao_blackwellize_xt=True."
+                )
             pi = jnp.asarray(base_probs, dtype=jnp.float32)
             if pi.ndim != 1:
                 raise ValueError("base_probs must be a 1D probability vector.")
@@ -96,16 +96,22 @@ def build_time_dependent_multinomial_diffusion_loss(
                         "Need alpha_bar_fn or q_xt_given_x0_probs_fn when "
                         "rao_blackwellize_xt=True."
                     )
-                q_probs = jnp.asarray(q_xt_given_x0_probs_fn(x0_idx, t), dtype=jnp.float32)
+                q_probs = jnp.asarray(
+                    q_xt_given_x0_probs_fn(x0_idx, t), dtype=jnp.float32
+                )
                 if q_probs.shape[-1] != k:
                     raise ValueError(
                         "q_xt_given_x0_probs_fn returned mismatched class dimension."
                     )
                 pi_x0 = jnp.take(pi, x0_idx)
-                q_self = jnp.take_along_axis(q_probs, x0_idx[..., None], axis=-1).squeeze(-1)
+                q_self = jnp.take_along_axis(
+                    q_probs, x0_idx[..., None], axis=-1
+                ).squeeze(-1)
                 alpha = (q_self - pi_x0) / jnp.maximum(1.0 - pi_x0, 1e-6)
 
-            alpha = _broadcast_weight_like(jnp.clip(alpha, 0.0, 1.0), x0_idx.astype(jnp.float32))
+            alpha = _broadcast_weight_like(
+                jnp.clip(alpha, 0.0, 1.0), x0_idx.astype(jnp.float32)
+            )
 
             # Scalar-categorical case: exact two-component mixture in one variable.
             if x0_idx.ndim == 1:
@@ -208,12 +214,12 @@ def build_time_dependent_multinomial_diffusion_loss(
                 targets = jnp.broadcast_to(
                     x0_idx[None, ..., None], logits_all.shape[:-1] + (1,)
                 )
-                ce_all = -jnp.take_along_axis(log_probs_all, targets, axis=-1).squeeze(-1)
+                ce_all = -jnp.take_along_axis(log_probs_all, targets, axis=-1).squeeze(
+                    -1
+                )
 
                 ce_all_flat = ce_all.reshape((r + m * r, b, num_feat))
-                feat_idx_keep = jnp.broadcast_to(
-                    feat_idx[:, None, None], (r, b, 1)
-                )
+                feat_idx_keep = jnp.broadcast_to(feat_idx[:, None, None], (r, b, 1))
                 ce_keep = jnp.swapaxes(
                     jnp.take_along_axis(
                         ce_all_flat[:r], feat_idx_keep, axis=-1

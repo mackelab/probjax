@@ -105,8 +105,10 @@ class DiffusionDenoiser(GenerativeModel):
 
     def _normalize_event_spec(self, event_spec, dtype=None):
         spec = super()._normalize_event_spec(event_spec, dtype)
-        if any(not jnp.issubdtype(leaf.dtype, jnp.floating)
-               for leaf in jax.tree.leaves(spec)):
+        if any(
+            not jnp.issubdtype(leaf.dtype, jnp.floating)
+            for leaf in jax.tree.leaves(spec)
+        ):
             raise TypeError("Continuous diffusion event dtypes must be floating point.")
         return spec
 

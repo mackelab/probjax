@@ -10,7 +10,6 @@ from probjax.core.transformation import inverse_and_logabsdet
 from probjax.nn.nets.simple import MLP
 from probjax.nn.nets.transformer import Transformer
 from probjax.nn.utils import (
-    PrecisionMixin,
     filter_precision_kwargs,
     module_accepts_rng,
 )
@@ -118,7 +117,7 @@ coupling_transform.definv(coupling_inv)
 coupling_transform.definv_and_logdet(coupling_inv_and_logdet)
 
 
-class CouplingMLP(_CouplingMixin, PrecisionMixin, nnx.Module):
+class CouplingMLP(_CouplingMixin, nnx.Module):
     """Coupling layer using MLP for bijective transformations.
 
     This module implements a coupling layer that splits the input into two parts,
@@ -186,7 +185,7 @@ class CouplingMLP(_CouplingMixin, PrecisionMixin, nnx.Module):
                 positive, hidden_dims is empty, or context_dim is not positive
                 when provided.
         """
-        super().__init__(
+        precision_kwargs = dict(
             dtype=dtype,
             precision=precision,
             param_dtype=param_dtype,
@@ -218,7 +217,6 @@ class CouplingMLP(_CouplingMixin, PrecisionMixin, nnx.Module):
         self.merge_fn = merge_fn
 
         # Precision and dtype settings
-        precision_kwargs = self.active_precision_kwargs()
 
         # Build MLP dimensions
         in_dim = split_index + (self.context_dim if self.context_dim is not None else 0)

@@ -22,7 +22,15 @@ degenerate.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, runtime_checkable
+from typing import (
+    Any,
+    Callable,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    runtime_checkable,
+)
 
 import jax
 import jax.numpy as jnp
@@ -320,7 +328,11 @@ class ARFamily:
 
     @classmethod
     def histogram(
-        cls, num_bins: int = 32, low: float = -5.0, high: float = 5.0, tails: bool = True
+        cls,
+        num_bins: int = 32,
+        low: float = -5.0,
+        high: float = 5.0,
+        tails: bool = True,
     ) -> "ARFamily":
         """Piecewise-constant head; ``tails`` keeps the support unbounded."""
         from probjax.stats import histogram as _hist
@@ -430,7 +442,9 @@ def _autoregressive_masks(dims: Sequence[int], num_vars: int) -> list:
                 raise ValueError(
                     "final layer size must be a multiple of the variable count."
                 )
-            x2 = jnp.repeat(jnp.arange(num_vars), out_dim // num_vars).reshape(1, -1) + 1
+            x2 = (
+                jnp.repeat(jnp.arange(num_vars), out_dim // num_vars).reshape(1, -1) + 1
+            )
         else:
             x2 = jnp.arange(out_dim).reshape(1, -1) % num_vars + 1
         # strict at the input so dimension i never sees x_i
@@ -694,9 +708,7 @@ class SSMARConditionerConfig(ARConditionerConfig):
         from probjax.nn.nets.ssm import SSMModel
 
         if context_features is not None:
-            raise ValueError(
-                "SSMARConditionerConfig does not support context yet."
-            )
+            raise ValueError("SSMARConditionerConfig does not support context yet.")
         model_dim = int(self.model_dim)
         model = SSMModel(
             input_dim=model_dim,

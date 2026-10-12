@@ -6,7 +6,7 @@ import numpy as np
 from scipy import stats as sp
 from probjax.utils.linalg import lanczos_logdet, batched_pcg_solve
 from probjax.stats import genpareto, truncnorm
-from probjax.nn.utils import call_with_optional_rng, filter_supported_kwargs
+from probjax.nn.utils import filter_supported_kwargs
 
 
 def test_logdet_gradient_scaled_identity():
@@ -54,10 +54,6 @@ def test_pcg_small_representable_rhs():
         atol=0,
     )
     assert jnp.all(info.converged)
-
-
-def test_optional_rng_plain_function():
-    assert call_with_optional_rng(lambda x: x + 1, 1.0, rng=jax.random.key(0)) == 2.0
 
 
 def test_forwarding_constructor_kwargs():
@@ -187,26 +183,23 @@ def test_genpareto_sampling_variants():
     np.testing.assert_array_equal(named, model(key))
 
 
-def test_optional_rng_distinct_functions_and_partials():
-    key = jax.random.key(0)
-
+def test_module_accepts_rng_functions_and_partials():
     def plain(x):
         return x + 1
 
     def stochastic(x, *, rng):
         return x + jax.random.normal(rng)
 
+    from probjax.nn.utils import module_accepts_rng
+
+    # Repeated to exercise the per-type cache: functions must not share it.
     for _ in range(2):
-        assert call_with_optional_rng(plain, 1.0, rng=key) == 2.0
-        assert call_with_optional_rng(partial(plain), 1.0, rng=key) == 2.0
-        np.testing.assert_array_equal(
-            call_with_optional_rng(stochastic, 1.0, rng=key), stochastic(1.0, rng=key)
-        )
+        assert not module_accepts_rng(plain)
+        assert not module_accepts_rng(partial(plain))
+        assert module_accepts_rng(stochastic)
 
     def positional_only(rng, /, x):
         return x
-
-    from probjax.nn.utils import module_accepts_rng
 
     assert not module_accepts_rng(positional_only)
 

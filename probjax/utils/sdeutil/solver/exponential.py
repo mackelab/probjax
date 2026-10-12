@@ -70,10 +70,7 @@ def init_state(
         raise TypeError("exp_euler_maruyama requires `drift` to be a `split_drift`")
 
     f0 = jnp.asarray(drift.nonlin(t0, y0, *args))
-    if diffusion is None:
-        g0 = None
-    else:
-        g0 = jnp.asarray(diffusion(t0, y0, *args))
+    g0 = None if diffusion is None else jnp.asarray(diffusion(t0, y0, *args))
 
     return ExpEulerMaruyamaState(t0=t0, y0=y0, f0=f0, g0=g0)
 
@@ -104,10 +101,7 @@ def build_exp_euler_maruyama_step(
 
         y_det = r * y0 + dt * ph1 * N_n
 
-        if state.g0 is None:
-            g_n = jnp.asarray(diffusion(t0, y0))
-        else:
-            g_n = state.g0
+        g_n = jnp.asarray(diffusion(t0, y0)) if state.g0 is None else state.g0
 
         inferred_noise_dim = _infer_noise_dim(g_n, y0.shape[0], noise_dim)
         noise_var = _weighted_noise_variance(c_np1, dt)

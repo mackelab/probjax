@@ -40,9 +40,7 @@ class LinearOperator:
         self._dtype = dtype
 
     @staticmethod
-    def _infer_dtype(
-        operator: Callable[[ArrayLike], ArrayLike], in_dim: int
-    ) -> Any:
+    def _infer_dtype(operator: Callable[[ArrayLike], ArrayLike], in_dim: int) -> Any:
         """Infer the output dtype by probing the operator once on a zero vector.
 
         If probing is unsafe for the callable (it raises on a zero input),
@@ -211,9 +209,7 @@ class LinearOperator:
         # True division promotes integer inputs to float, which
         # jnp.result_type alone would not capture; probe the composed
         # function so the dtype attribute stays truthful.
-        out_dtype = jnp.result_type(
-            div_fn(jnp.zeros((self.in_dim,), dtype=self.dtype))
-        )
+        out_dtype = jnp.result_type(div_fn(jnp.zeros((self.in_dim,), dtype=self.dtype)))
         return LinearOperator(div_fn, self.in_dim, self.out_dim, out_dtype)
 
     def __matmul__(self, other: 'LinearOperator' | ArrayLike):
@@ -330,9 +326,7 @@ class LinearOperator:
                 f"Unknown solve method {method!r}; expected 'auto', 'dense' or 'iterative'"
             )
         if self.in_dim != self.out_dim:
-            raise ValueError(
-                f"Can only solve square operators, got shape {self.shape}"
-            )
+            raise ValueError(f"Can only solve square operators, got shape {self.shape}")
         rhs = jnp.asarray(rhs)
         if rhs.ndim == 1 or rhs.ndim == 2:
             if rhs.shape[0] != self.out_dim:
@@ -340,9 +334,7 @@ class LinearOperator:
                     f"Incompatible rhs shape {rhs.shape} for operator of shape {self.shape}"
                 )
         else:
-            raise ValueError(
-                f"rhs must be a vector or a matrix, got shape {rhs.shape}"
-            )
+            raise ValueError(f"rhs must be a vector or a matrix, got shape {rhs.shape}")
 
         dim = self.out_dim
         # Estimate materialized memory in MB (f64 = 8 bytes as upper bound).

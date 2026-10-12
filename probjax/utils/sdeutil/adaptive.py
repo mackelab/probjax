@@ -109,9 +109,7 @@ class SDEStepSizeAdaptor(StepSizeAdaptor):
     def init_brownian(self, rng, t0, t_end, noise_shape: Tuple[int, ...]):
         raise NotImplementedError
 
-    def propose_increments(
-        self, state, t_curr, dt, noise_shape: Tuple[int, ...]
-    ):
+    def propose_increments(self, state, t_curr, dt, noise_shape: Tuple[int, ...]):
         """Return ``(committed_state, dW_full, dW_first_half, dW_second_half)``.
 
         The two halves satisfy ``dW_first_half + dW_second_half == dW_full``

@@ -89,10 +89,7 @@ def build_linear_exact_step(drift: linear_drift) -> Callable:
             expm_A = compute_expm(dt)
 
             if drift.b is None:
-                if is_scalar or is_diag:
-                    y1 = expm_A * y0
-                else:
-                    y1 = expm_A @ y0
+                y1 = expm_A * y0 if is_scalar or is_diag else expm_A @ y0
             else:
                 b = drift.b(t0 + dt, *args)
                 phi1 = _phi1_scalar(A * dt)

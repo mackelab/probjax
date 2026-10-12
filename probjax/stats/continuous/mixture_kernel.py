@@ -15,7 +15,7 @@ Because the components are a fixed location-scale family the density, CDF and
 sampler are all closed form; only the quantile function needs a solve.
 """
 
-from typing import Optional, Tuple
+from typing import Tuple
 
 import jax
 import jax.numpy as jnp
@@ -23,7 +23,7 @@ from jax import random
 
 from probjax.stats.base import rv_continuous
 from probjax.stats.constraints import real, strict_positive
-from probjax.utils.typing import Array, ArrayLike, RngKey
+from probjax.utils.typing import Array, RngKey
 
 __all__ = ["mixture_kernel", "logistic_mixture_kernel"]
 

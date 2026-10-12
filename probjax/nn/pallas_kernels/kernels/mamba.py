@@ -15,10 +15,15 @@ import os
 from typing import NamedTuple
 
 import jax
-from jax import numpy as jnp
 from jax import lax
+from jax import numpy as jnp
 from jax.experimental import pallas as pl
 
+from ..kernel_utils import (
+    get_dot_precision,
+    pallas_call_compat,
+    use_interpret_mode,
+)
 from ..kernel_utils.kernel_primitive import (
     KernelSpec,
     Operand,
@@ -29,11 +34,6 @@ from ..kernel_utils.kernel_primitive import (
     make_kernel_primitive,
     res,
     shardable_kernel,
-)
-from ..kernel_utils import (
-    get_dot_precision,
-    pallas_call_compat,
-    use_interpret_mode,
 )
 
 
@@ -233,9 +233,7 @@ def _gpu_supports_mamba_pallas_for_shape(
         return False
     if seq_tile_size <= 0 or seq_tile_size % 8 != 0:
         return False
-    if dim_tile_size <= 0 or dim_tile_size % 128 != 0:
-        return False
-    return True
+    return not (dim_tile_size <= 0 or dim_tile_size % 128 != 0)
 
 
 # pylint: disable=invalid-name
@@ -927,9 +925,7 @@ def _mamba_fwd_impl(x, a, b, c, delta, d, *, seq_tile_size, dim_tile_size):
 
 
 def _mamba_bwd_impl(dy, x, a, b, c, delta, d, *, seq_tile_size, dim_tile_size):
-    return _loop_backward_pallas(
-        dy, x, a, b, c, delta, d, seq_tile_size, dim_tile_size
-    )
+    return _loop_backward_pallas(dy, x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
 
 
 mamba_scan_fwd_p = make_kernel_primitive(_MAMBA_FWD_SPEC, impl=_mamba_fwd_impl)
@@ -1115,9 +1111,7 @@ def compute_mamba_scan(
     # handed from one sequence/dimension tile to another without a barrier.
     # Keep the fused single-tile path; use a differentiable associative scan
     # when multiple programs would race on that carry.
-    if backend == "gpu" and (
-        x.shape[1] > seq_tile_size or x.shape[2] > dim_tile_size
-    ):
+    if backend == "gpu" and (x.shape[1] > seq_tile_size or x.shape[2] > dim_tile_size):
         return _mamba_scan_associative(x, a, b, c, delta, d)
     if backend not in ("tpu", "gpu"):
         raise RuntimeError(

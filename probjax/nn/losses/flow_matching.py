@@ -1,18 +1,19 @@
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import Callable, Optional
 
 import jax.numpy as jnp
 from jaxtyping import Array
 
-from probjax.nn.losses._flow_shared import _prepare_xt_ut, _reduce_diff, _validate_time_batch_shapes
-from probjax.utils.protocols import InterpolationScheduleProtocol
-
+from probjax.nn.losses._flow_shared import (
+    _prepare_xt_ut,
+    _reduce_diff,
+    _validate_time_batch_shapes,
+)
 from probjax.utils.protocols import (
+    InterpolationScheduleProtocol,
     LossFn,
     TimeDependentModelFn,
     WeightFn,
 )
-
-
 
 
 def base_flow_matching_loss(

@@ -99,6 +99,7 @@ class StandardizingMixin:
             return
         if traced:
             from probjax.stats.fit import is_batch_stream
+
             if is_batch_stream(data):
                 raise ValueError("Jitted standardization requires an array batch.")
         data = _standardization_sample(data, self._std_shift.shape[0])
@@ -108,8 +109,10 @@ class StandardizingMixin:
             scale = jnp.std(data, axis=0)
             # Constant columns keep unit scale so the map remains invertible.
             scale = jnp.where(scale > 1e-6, scale, 1.0)
-            return (shift.astype(self._std_shift.dtype),
-                    scale.astype(self._std_scale.dtype))
+            return (
+                shift.astype(self._std_shift.dtype),
+                scale.astype(self._std_scale.dtype),
+            )
 
         shift, scale = jax.lax.cond(fitted, lambda: self.standardization, estimate)
         self._std_shift[...] = shift

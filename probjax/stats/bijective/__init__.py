@@ -47,8 +47,8 @@ from probjax.stats.bijective.piecewise_affine import (
 )
 from probjax.stats.bijective.protocols import (
     InvertibleTransformProtocol,
-    TransformedDistribution,
     TransformProtocol,
+    TransformedDistribution,
     ensure_invertible,
     forward_and_logdet,
 )

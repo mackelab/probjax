@@ -101,7 +101,7 @@ class ConstraintRegistry:
 
             constraint = Normal.arg_constraints['scale']
             scale = transform_to(constraint)(torch.zeros(1))  # constrained
-            u = transform_to(constraint).inv(scale)           # unconstrained
+            u = transform_to(constraint).inv(scale)  # unconstrained
 
         Args:
             constraint (:class:`~torch.distributions.constraints.Constraint`):
