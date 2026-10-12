@@ -163,3 +163,62 @@ def test_load_balance_loss_uniform():
     ids = jnp.tile(jnp.arange(4)[None, :], (10, 1))[:, :2]
     loss = load_balance_loss(probs, ids, 4)
     assert loss == pytest.approx(1.0)
+
+
+def _routing_pair(routing, **kw):
+    """Two layers with identical parameters: `routing` and the dense reference."""
+    a = MoELayer(8, 16, 4, routing=routing, rngs=nnx.Rngs(0), **kw)
+    b = MoELayer(8, 16, 4, routing="dense", rngs=nnx.Rngs(0), **kw)
+    return a, b
+
+
+def test_dropless_matches_dense():
+    moe, ref = _routing_pair("dropless")
+    x = jax.random.normal(jax.random.key(3), (3, 7, 8))
+    assert jnp.allclose(moe(x), ref(x), atol=1e-5)
+
+
+def test_dropless_gradients_match_dense():
+    moe, ref = _routing_pair("dropless")
+    x = jax.random.normal(jax.random.key(4), (12, 8))
+
+    def loss(m):
+        return jnp.sum(m(x) ** 2)
+
+    ga = nnx.grad(loss)(moe)
+    gb = nnx.grad(loss)(ref)
+    for la, lb in zip(jax.tree.leaves(ga), jax.tree.leaves(gb)):
+        assert jnp.allclose(la, lb, atol=1e-4)
+
+
+def test_dropless_never_drops_even_when_every_token_picks_one_expert():
+    moe = MoELayer(8, 16, 4, top_k=1, routing="dropless", rngs=nnx.Rngs(0))
+    # Bias the router so all tokens pick expert 0.
+    moe.router.kernel[...] = jnp.zeros_like(moe.router.kernel[...]).at[:, 0].set(10.0)
+    x = jnp.abs(jax.random.normal(jax.random.key(5), (32, 8)))
+    y, aux = moe(x, return_aux=True)
+    assert float(aux.overflow_fraction) == 0.0
+    ref = MoELayer(8, 16, 4, top_k=1, routing="dense", rngs=nnx.Rngs(0))
+    ref.router.kernel[...] = moe.router.kernel[...]
+    assert jnp.allclose(y, ref(x), atol=1e-5)
+
+
+def test_capacity_routing_couples_tokens_but_dropless_does_not():
+    """With capacity, a token's output depends on the other tokens in the call
+    (they compete for slots); dropless keeps every token independent."""
+    x = jax.random.normal(jax.random.key(6), (64, 8))
+    diffs = {}
+    for routing in ("capacity", "dropless"):
+        moe = MoELayer(8, 16, 4, top_k=2, capacity_factor=0.5, routing=routing,
+                       rngs=nnx.Rngs(0))
+        diffs[routing] = float(jnp.max(jnp.abs(moe(x[:4]) - moe(x)[:4])))
+    # Dropless differs only by matmul rounding across call sizes (GPU tiling).
+    assert diffs["dropless"] < 1e-4, diffs
+    assert diffs["capacity"] > 1e-2, diffs
+
+
+def test_dropless_under_jit_and_bf16():
+    moe = MoELayer(8, 16, 4, routing="dropless", dtype=jnp.bfloat16, rngs=nnx.Rngs(0))
+    x = jax.random.normal(jax.random.key(7), (10, 8)).astype(jnp.bfloat16)
+    y = nnx.jit(lambda m, v: m(v))(moe, x)
+    assert y.dtype == jnp.bfloat16 and bool(jnp.isfinite(y).all())
