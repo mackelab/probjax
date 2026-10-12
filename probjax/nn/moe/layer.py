@@ -48,6 +48,32 @@ jax.tree_util.register_dataclass(
 )
 
 
+@jax.custom_vjp
+def _permute(x: Array, perm: Array, inverse: Array) -> Array:
+    """``x[perm]`` whose backward is the gather ``g[inverse]``.
+
+    A plain gather differentiates to a scatter-add, and putting the expert
+    outputs back with ``zeros.at[order].set(...)`` is a scatter too.  Around
+    the grouped-GEMM kernel those scatters kept every layer's buffers alive
+    under the caller's remat: a stack of remat'd dropless layers at 262k
+    tokens grew 5.5 GiB per layer (21.3 GiB at 4) while the expert block
+    alone grew ~1 GiB per layer.  A permutation needs neither.
+    """
+    return x[perm]
+
+
+def _permute_fwd(x, perm, inverse):
+    return x[perm], (perm, inverse)
+
+
+def _permute_bwd(res, g):
+    perm, inverse = res
+    return g[inverse], None, None
+
+
+_permute.defvjp(_permute_fwd, _permute_bwd)
+
+
 class MoELayer(nnx.Module):
     """Top-k MoE layer with SwiGLU experts.
 
@@ -202,16 +228,19 @@ class MoELayer(nnx.Module):
         n, k = routed.expert_ids.shape
         expert_flat = routed.expert_ids.reshape(-1)  # [N*K]
         order = jnp.argsort(expert_flat, stable=True)
-        token_of = order // k  # flat assignment index -> token
+        inverse = jnp.argsort(order)
         group_sizes = jnp.bincount(expert_flat, length=self.num_experts)
+        # Each token repeated per assignment, then permuted into expert order.
+        x_rep = jnp.broadcast_to(x_flat[:, None, :], (n, k, x_flat.shape[-1]))
+        x_sorted = _permute(x_rep.reshape(n * k, -1), order, inverse)
         impl = self.dropless_impl
         if impl == "auto":
             impl = "pallas" if jax.default_backend() == "gpu" else "ragged_dot"
         if impl == "pallas":
-            y_sorted = self.experts.grouped_forward(x_flat[token_of], group_sizes)
+            y_sorted = self.experts.grouped_forward(x_sorted, group_sizes)
         else:
-            y_sorted = self.experts.ragged_forward(x_flat[token_of], group_sizes)
-        y_assign = jnp.zeros_like(y_sorted).at[order].set(y_sorted)  # [N*K, D]
+            y_sorted = self.experts.ragged_forward(x_sorted, group_sizes)
+        y_assign = _permute(y_sorted, inverse, order)  # back to [N*K] order
         y_flat = jnp.sum(
             y_assign.reshape(n, k, -1)
             * routed.route_weights[..., None].astype(y_assign.dtype),

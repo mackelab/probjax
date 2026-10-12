@@ -121,12 +121,9 @@ class ExpertSwiGLU(nnx.Module):
         a bf16 model runs bf16 tensor-core matmuls.
         """
         from probjax.nn.moe.grouped_matmul import (
-            gather_from_layout,
             grouped_backend,
-            grouped_matmul,
-            make_group_layout,
+            grouped_swiglu,
             ragged_matmul_hopper,
-            scatter_to_layout,
         )
 
         if x.ndim != 2 or x.shape[1] != self.d_model:
@@ -138,13 +135,16 @@ class ExpertSwiGLU(nnx.Module):
             xs = x.astype(cdt)
             h = jax.nn.silu(mm(xs, self.w_gate[...])) * mm(xs, self.w_up[...])
             return mm(h, self.w_down[...]).astype(cdt)
-        layout = make_group_layout(group_sizes, x.shape[0], block_m)
-        xp = scatter_to_layout(x.astype(cdt), layout)
-        mm = functools.partial(grouped_matmul, layout=layout, block_m=block_m,
-                               interpret=interpret)
-        # Padding rows are zero, so silu(0) * 0 keeps them zero downstream.
-        h = jax.nn.silu(mm(xp, self.w_gate[...])) * mm(xp, self.w_up[...])
-        y = gather_from_layout(mm(h, self.w_down[...]), layout)
+        # One VJP for the whole block, saving only inputs: see grouped_swiglu.
+        y = grouped_swiglu(
+            x.astype(cdt),
+            self.w_gate[...].astype(cdt),
+            self.w_up[...].astype(cdt),
+            self.w_down[...].astype(cdt),
+            group_sizes,
+            block_m,
+            interpret,
+        )
         return y.astype(cdt)
 
     def dense_forward(self, x: Array) -> Array:
