@@ -2,7 +2,7 @@
 
 ## Install
 
-ProbJax supports Python 3.11–3.13 and requires JAX `>=0.9.0,<0.10`.
+ProbJax supports Python 3.11–3.13 and requires JAX `>=0.9.0,<0.12`.
 Install the published version with `python -m pip install probjax`. To use the
 development version, install from a source checkout:
 

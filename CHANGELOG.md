@@ -45,11 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Prefer `condition`, `do`, and `log_joint_fn`; their legacy aliases and
   `trace(kind_labels="legacy")` now emit `DeprecationWarning`.
-- Target Python 3.11–3.13 and JAX 0.9.x; require Flax >=0.12.6 and BlackJAX 1.6.2
+- Target Python 3.11–3.13 and JAX `>=0.9.0,<0.12`; require Flax >=0.12.6 and BlackJAX 1.6.2
 - Migrate legacy Pallas features to `probjax.nn.pallas_kernels` and remove the
   old package; use an associative-scan fallback for multi-tile GPU Mamba
-- Require `event_spec` on diffusion and flow-matching constructors; allow
-  per-distribution overrides without changing existing views
+- Accept optional `event_spec` defaults for continuous diffusion and flow
+  matching, with per-distribution overrides; mean-flow and categorical diffusion
+  still require a constructor default
 - Expose architecture builder overrides and shared training hooks on NN modules
 - Keep runtime microbenchmarks opt-in; retain structural/correctness checks in CI
 - Mean-flow training objective now defaults to the Improved MeanFlow (iMF)
@@ -135,7 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `biject_to` transforms and support-aware validation for these families
 - `preferred_element_type=None` (the default) is now a true no-op in all NN
   modules via `PrecisionMixin.cast_output`: previously the unguarded
-  `.astype(None)` silently corrupted dtypes on JAX 0.9.x and raises
+  `.astype(None)` silently corrupted dtypes on older JAX releases and raises
   `TypeError` on newer JAX (7 sites in conv/unet layers)
 - SDE integration of plain-callable drifts now routes through
   `RaveledDrift`, so non-`Drift` pytrees keep array leaves as explicit

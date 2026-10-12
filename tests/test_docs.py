@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import tomllib
 import types
 
 import pytest
@@ -143,6 +144,20 @@ UNDOCUMENTED = {
         "Params",
     },
 }
+
+#: Docs that state (or gate) the supported JAX range. Absolute paths so the
+#: scan is independent of pytest's working directory.
+SUPPORT_DOCS = [
+    pathlib.Path(__file__).resolve().parent.parent / name
+    for name in (
+        "README.md",
+        "CHANGELOG.md",
+        "docs/index.md",
+        "docs/getting-started.md",
+        "docs/guides/migration.md",
+        "presentation/intro.md",
+    )
+]
 
 
 def markdown_pages():
@@ -349,3 +364,55 @@ def test_every_nav_entry_exists():
             "generated pages absent; run docs/scripts/convert_notebooks.py "
             f"(see docs/contributing.md): {generated_missing}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Support policy
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.docs
+def test_readme_and_docs_agree_on_jax_support():
+    """Documented JAX bounds match the dependency metadata exactly."""
+    data = tomllib.loads((DOCS.parent / "pyproject.toml").read_text())
+    jax_deps = [d for d in data["project"]["dependencies"] if d.startswith("jax ")]
+    assert len(jax_deps) == 1, jax_deps
+    expected = jax_deps[0].removeprefix("jax ").replace(" ", "")
+    for path in SUPPORT_DOCS:
+        text = path.read_text()
+        assert "JAX 0.9.x" not in text, f"{path}: stale JAX support wording"
+        ranges = re.findall(r"JAX `([^`]+)`", text)
+        assert ranges, f"{path}: missing JAX dependency range"
+        assert all(value.replace(" ", "") == expected for value in ranges), (
+            f"{path}: documented {ranges}, dependency specifies {expected}"
+        )
+
+
+@pytest.mark.docs
+def test_citation_key_matches_year():
+    """The BibTeX citation key year matches the `year` field (both 2026)."""
+    readme = (pathlib.Path(__file__).resolve().parent.parent / "README.md").read_text()
+    key = re.search(r"@software\{probjax(\d{4})", readme)
+    year = re.search(r"year\s*=\s*\{(\d{4})\}", readme)
+    assert key, "no '@software{probjaxYYYY' citation key found"
+    assert year, "no 'year = {YYYY}' citation field found"
+    assert key.group(1) == year.group(1), (key.group(1), year.group(1))
+    assert year.group(1) == "2026", f"citation year {year.group(1)} should be 2026"
+
+
+@pytest.mark.docs
+def test_notebook_disclaimer_consistency_between_readme_and_index():
+    """README and docs/index.md agree on the notebook disclaimer.
+
+    Either both carry it or neither does, so a future one-sided removal (after
+    the notebooks are actually fixed) cannot leave readers misled.
+    """
+    root = pathlib.Path(__file__).resolve().parent.parent
+    readme = (root / "README.md").read_text().lower()
+    index = (root / "docs" / "index.md").read_text().lower()
+    has_readme = "predate" in readme and "refactor" in readme
+    has_index = "predate" in index and "refactor" in index
+    assert has_readme == has_index, (
+        f"README {'has' if has_readme else 'lacks'} the 'predate refactors' note "
+        f"but docs/index.md {'has' if has_index else 'lacks'} it; keep them in step."
+    )
