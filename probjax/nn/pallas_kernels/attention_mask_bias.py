@@ -642,10 +642,7 @@ class LocalWindowMask(AttentionMask):
     ) -> Array:
         del seg_q, seg_k
         dqk = q_idx[:, None] - k_idx[None, :]
-        if self.right_window is None:
-            right_window = 0
-        else:
-            right_window = int(self.right_window)
+        right_window = 0 if self.right_window is None else int(self.right_window)
         return jnp.logical_and(dqk >= -right_window, dqk <= self.left_window)
 
     def block_mask(
@@ -655,10 +652,7 @@ class LocalWindowMask(AttentionMask):
         block_q: int,
         block_k: int,
     ) -> Array:
-        if self.right_window is None:
-            rw = 0
-        else:
-            rw = int(self.right_window)
+        rw = 0 if self.right_window is None else int(self.right_window)
         return fast_blockmask_local_window(
             q_len=q_len,
             kv_len=kv_len,

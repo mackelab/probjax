@@ -71,9 +71,7 @@ def normalize_sample_weights(
     return normalized / total
 
 
-def _require_unweighted_fit(
-    weights: Optional[ArrayLike], dist_name: str
-) -> None:
+def _require_unweighted_fit(weights: Optional[ArrayLike], dist_name: str) -> None:
     """Raise unless ``weights`` is None (weighted fit not implemented)."""
     if weights is not None:
         raise NotImplementedError(

@@ -225,17 +225,3 @@ def _kl_cauchy_cauchy(p, q, mc_samples=0, key=None):
     t1 = jnp.log((scale_p + scale_q) ** 2 + (loc_p - loc_q) ** 2)
     t2 = jnp.log(4 * scale_p * scale_q)
     return t1 - t2
-
-
-@register_divergence(NAME, dirichlet, dirichlet)
-def _kl_dirichlet_dirichlet(p, q, mc_samples=0, key=None):
-    alpha_p = p.concentration
-    alpha_q = q.concentration
-    t1 = jax.scipy.special.gammaln(alpha_p.sum(-1)) - jax.scipy.special.gammaln(
-        alpha_q.sum(-1)
-    )
-    t2 = jax.scipy.special.gammaln(alpha_q).sum(-1) - jax.scipy.special.gammaln(
-        alpha_p
-    ).sum(-1)
-    t3 = ((alpha_p - alpha_q) * (1 / alpha_q - 1 / alpha_p)).sum(-1)
-    return t1 + t2 + t3

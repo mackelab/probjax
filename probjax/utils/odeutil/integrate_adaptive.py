@@ -39,9 +39,7 @@ def odeint_adaptive(
     cleanly; its static (callable / config) leaves ride as aux data.
     """
     leaves, treedef = jax.tree_util.tree_flatten(drift)
-    return _odeint_adaptive_cvjp(
-        method, treedef, kwargs, tuple(leaves), y0, ts, *args
-    )
+    return _odeint_adaptive_cvjp(method, treedef, kwargs, tuple(leaves), y0, ts, *args)
 
 
 @partial(jax.custom_vjp, nondiff_argnums=(0, 1, 2))
@@ -137,6 +135,7 @@ def _odeint_adaptive(
     if collect_trace:
         final_carry, ys = jax.lax.scan(scan_fun, init_carry, targets)
     else:
+
         def body(i, carry):
             target = targets[i]
             carry, _ = scan_fun(carry, target)

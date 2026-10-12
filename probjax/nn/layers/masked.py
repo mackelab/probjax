@@ -4,7 +4,6 @@ from flax import nnx
 from jax.typing import ArrayLike
 
 
-
 class MaskedLinear(nnx.Linear):
     def __init__(
         self,

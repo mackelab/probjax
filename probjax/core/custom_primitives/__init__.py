@@ -1,5 +1,5 @@
-from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.core.custom_primitives.custom_inverse import (
+    custom_inverse,
     custom_inverse_enabled,
     disable_custom_inverse,
 )

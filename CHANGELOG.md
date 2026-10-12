@@ -43,11 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cast_output(x)`; adopted by 22 NN module classes
 
 ### Changed
-- Target Python 3.11–3.13 and JAX `>=0.9.0,<0.10`; require Flax >=0.12.6 and BlackJAX 1.6.2
+- Prefer `condition`, `do`, and `log_joint_fn`; their legacy aliases and
+  `trace(kind_labels="legacy")` now emit `DeprecationWarning`.
+- Target Python 3.11–3.13 and JAX `>=0.9.0,<0.12`; require Flax >=0.12.6 and BlackJAX 1.6.2
 - Migrate legacy Pallas features to `probjax.nn.pallas_kernels` and remove the
   old package; use an associative-scan fallback for multi-tile GPU Mamba
-- Require `event_spec` on diffusion and flow-matching constructors; allow
-  per-distribution overrides without changing existing views
+- Accept optional `event_spec` defaults for continuous diffusion and flow
+  matching, with per-distribution overrides; mean-flow and categorical diffusion
+  still require a constructor default
 - Expose architecture builder overrides and shared training hooks on NN modules
 - Keep runtime microbenchmarks opt-in; retain structural/correctness checks in CI
 - Mean-flow training objective now defaults to the Improved MeanFlow (iMF)

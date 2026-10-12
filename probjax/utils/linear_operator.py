@@ -40,9 +40,7 @@ class LinearOperator:
         self._dtype = dtype
 
     @staticmethod
-    def _infer_dtype(
-        operator: Callable[[ArrayLike], ArrayLike], in_dim: int
-    ) -> Any:
+    def _infer_dtype(operator: Callable[[ArrayLike], ArrayLike], in_dim: int) -> Any:
         """Infer the output dtype by probing the operator once on a zero vector.
 
         If probing is unsafe for the callable (it raises on a zero input),
@@ -80,6 +78,19 @@ class LinearOperator:
         return LinearOperator(adjoint_operator, self.out_dim, self.in_dim, self.dtype)
 
     def __add__(self, other: 'LinearOperator' | ArrayLike) -> 'LinearOperator':
+        """Add another operator or array to this operator.
+
+        Parameters
+        ----------
+        other : LinearOperator or array_like
+            A compatible operator, a scalar (interpreted as ``c * I``), or a
+            dense ``(out_dim, in_dim)`` array.
+
+        Returns
+        -------
+        LinearOperator
+            The elementwise sum as a new operator.
+        """
         if isinstance(other, LinearOperator):
             if self.in_dim != other.in_dim or self.out_dim != other.out_dim:
                 raise ValueError(
@@ -131,12 +142,33 @@ class LinearOperator:
         return self.__add__(other)
 
     def __neg__(self) -> 'LinearOperator':
+        """Negate this operator.
+
+        Returns
+        -------
+        LinearOperator
+            Operator mapping ``x`` to ``-self(x)``.
+        """
+
         def neg_fn(x: ArrayLike) -> ArrayLike:
             return -self.operator(x)
 
         return LinearOperator(neg_fn, self.in_dim, self.out_dim, self.dtype)
 
     def __sub__(self, other: 'LinearOperator' | ArrayLike) -> 'LinearOperator':
+        """Subtract another operator or array from this operator.
+
+        Parameters
+        ----------
+        other : LinearOperator or array_like
+            A compatible operator, a scalar (interpreted as ``c * I``), or a
+            dense ``(out_dim, in_dim)`` array.
+
+        Returns
+        -------
+        LinearOperator
+            The elementwise difference as a new operator.
+        """
         neg = -other if isinstance(other, LinearOperator) else -jnp.asarray(other)
         return self + neg
 
@@ -175,6 +207,19 @@ class LinearOperator:
         )
 
     def __mul__(self, other: ArrayLike) -> 'LinearOperator':
+        """Scale the output of this operator.
+
+        Parameters
+        ----------
+        other : array_like
+            A scalar or an array of shape ``(out_dim,)`` applied to the
+            operator output elementwise.
+
+        Returns
+        -------
+        LinearOperator
+            The scaled operator.
+        """
         other = jnp.asarray(other)
         if other.ndim != 0 and other.shape != (self.out_dim,):
             raise ValueError(
@@ -198,6 +243,19 @@ class LinearOperator:
         return self.__mul__(other)
 
     def __truediv__(self, other: ArrayLike) -> 'LinearOperator':
+        """Divide the output of this operator by a scalar or array.
+
+        Parameters
+        ----------
+        other : array_like
+            A scalar or an array of shape ``(out_dim,)`` dividing the operator
+            output elementwise.
+
+        Returns
+        -------
+        LinearOperator
+            The scaled operator.
+        """
         other = jnp.asarray(other)
         if other.ndim != 0 and other.shape != (self.out_dim,):
             raise ValueError(
@@ -211,12 +269,23 @@ class LinearOperator:
         # True division promotes integer inputs to float, which
         # jnp.result_type alone would not capture; probe the composed
         # function so the dtype attribute stays truthful.
-        out_dtype = jnp.result_type(
-            div_fn(jnp.zeros((self.in_dim,), dtype=self.dtype))
-        )
+        out_dtype = jnp.result_type(div_fn(jnp.zeros((self.in_dim,), dtype=self.dtype)))
         return LinearOperator(div_fn, self.in_dim, self.out_dim, out_dtype)
 
     def __matmul__(self, other: 'LinearOperator' | ArrayLike):
+        """Compose or apply this operator on the right.
+
+        Parameters
+        ----------
+        other : LinearOperator or array_like
+            A compatible operator, a vector of shape ``(in_dim,)``, or a dense
+            ``(in_dim, k)`` array.
+
+        Returns
+        -------
+        LinearOperator or ArrayLike
+            A composed operator, or the applied result for a vector operand.
+        """
         if isinstance(other, LinearOperator):
             if self.in_dim != other.out_dim:
                 raise ValueError(
@@ -253,6 +322,19 @@ class LinearOperator:
         )
 
     def __rmatmul__(self, other: 'LinearOperator' | ArrayLike):
+        """Compose or apply this operator on the left.
+
+        Parameters
+        ----------
+        other : LinearOperator or array_like
+            A compatible operator, a vector of shape ``(out_dim,)``, or a dense
+            ``(k, out_dim)`` array.
+
+        Returns
+        -------
+        LinearOperator or ArrayLike
+            A composed operator, or the applied result for a vector operand.
+        """
         if isinstance(other, LinearOperator):
             return other @ self
         other = jnp.asarray(other)
@@ -330,9 +412,7 @@ class LinearOperator:
                 f"Unknown solve method {method!r}; expected 'auto', 'dense' or 'iterative'"
             )
         if self.in_dim != self.out_dim:
-            raise ValueError(
-                f"Can only solve square operators, got shape {self.shape}"
-            )
+            raise ValueError(f"Can only solve square operators, got shape {self.shape}")
         rhs = jnp.asarray(rhs)
         if rhs.ndim == 1 or rhs.ndim == 2:
             if rhs.shape[0] != self.out_dim:
@@ -340,9 +420,7 @@ class LinearOperator:
                     f"Incompatible rhs shape {rhs.shape} for operator of shape {self.shape}"
                 )
         else:
-            raise ValueError(
-                f"rhs must be a vector or a matrix, got shape {rhs.shape}"
-            )
+            raise ValueError(f"rhs must be a vector or a matrix, got shape {rhs.shape}")
 
         dim = self.out_dim
         # Estimate materialized memory in MB (f64 = 8 bytes as upper bound).

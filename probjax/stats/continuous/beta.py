@@ -16,7 +16,7 @@ from jax.scipy.stats import beta as _beta
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import strict_positive, unit_interval
 from probjax.stats.utils import clip_prob, flatten_samples, weighted_mean
-from probjax.utils.special import betaincinv, betainccinv
+from probjax.utils.special import betainccinv, betaincinv
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["beta"]

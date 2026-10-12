@@ -24,8 +24,6 @@ def _autodiff_time_gradient(
     return jax.vmap(grad_fn, in_axes=(0, 0, 0))(t, x0, x1)
 
 
-
-
 @dataclass
 class GeneralInterpolationSchedule(InterpolationScheduleProtocol):
     """Generic schedule wrapper that derives velocities via autodiff."""
@@ -328,6 +326,18 @@ class FlowTrainingConfigProtocol(Protocol):
 
 @dataclass
 class UniformFlowTrainingConfig(FlowTrainingConfigProtocol):
+    """Uniformly sample interpolation times for flow matching training.
+
+    Samples are drawn from a uniform distribution on ``[t_min, t_max]``.
+
+    Parameters
+    ----------
+    t_min : float, default=0.0
+        Lower bound of the interpolation time interval.
+    t_max : float, default=1.0
+        Upper bound of the interpolation time interval.
+    """
+
     t_min: float = 0.0
     t_max: float = 1.0
 
@@ -365,6 +375,17 @@ class FlowSolverConfigProtocol(Protocol):
 
 @dataclass
 class LinearFlowSolverConfig(FlowSolverConfigProtocol):
+    """Fixed-step linear solver for flow matching ODE integration.
+
+    Uses equally spaced time steps between ``t_min`` and ``t_max``.
+
+    Parameters
+    ----------
+    num_steps : int, default=50
+        Number of integration steps. When ``num_steps`` <= 1 the solver
+        returns only ``t_max``.
+    """
+
     num_steps: int = 50
 
     def solve_schedule(

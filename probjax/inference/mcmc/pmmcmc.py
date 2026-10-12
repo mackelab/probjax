@@ -23,9 +23,11 @@ Usage::
     from probjax.inference.mcmc import hmc
     from probjax.inference.mcmc.pmmcmc import pseudo_marginal
 
+
     def stochastic_logdensity(position, rng_key):
         # e.g. run a particle filter / importance sampler
         return unbiased_log_marginal_likelihood_estimate
+
 
     kernel = pseudo_marginal(hmc, stochastic_logdensity, num_integration_steps=10)
     state = kernel.init(position, rng_key=key)

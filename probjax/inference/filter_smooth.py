@@ -2,12 +2,15 @@ from typing import Any, Callable, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
+import optax
 from jax.random import PRNGKey
 from jax.typing import ArrayLike
 
 from probjax.inference.filtering.base import FilterInfo, FilterKernel, FilterState
 from probjax.inference.filtering.smoothing import (
     particle_smoother,
+)
+from probjax.inference.filtering.smoothing import (
     smooth as smooth_gaussian,
 )
 from probjax.utils.jaxutils import (
@@ -524,11 +527,10 @@ class Filter(WithProgressBarAPI):
             ...     return kalman_filter(transition_model, observation_model)
             >>>
             >>> filt = Filter(make_kernel)
-            >>> params, ll = filt.fit(key, ts, obs, mu0, cov0,
-            ...                       params_init={'log_Q': 0.0, 'log_R': 0.0})
+            >>> params, ll = filt.fit(
+            ...     key, ts, obs, mu0, cov0, params_init={'log_Q': 0.0, 'log_R': 0.0}
+            ... )
         """
-        import optax
-
         if params_init is None:
             raise ValueError("Must provide params_init dict for optimization.")
 

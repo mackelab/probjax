@@ -26,7 +26,7 @@ same traced function can be sampled, conditioned, inverted, scored, and fit.
 ## Core idea 1 — PPL + invertible programs
 
 **Probabilistic programs.** Write an ordinary JAX function; `trace`, `condition`,
-`observe`, `intervene`, and `joint_sample` it. Sampling a distribution inside a
+`do`, and `joint_sample` it. Sampling a distribution inside a
 transformation records a named random-variable site; outside one it is a plain
 JAX sample.
 
@@ -63,8 +63,8 @@ samplers.
 A curated set rendered as part of the docs:
 
 - `examples/core/ppl.ipynb` — named sites, tracing, conditioning, joint sampling.
-- `examples/nn/generative/diffusion.ipynb` — Flax NNX diffusion model.
-- `examples/stats/distributions_basic.ipynb` — SciPy-style distributions.
+- `examples/inference/kalman_filter.ipynb` — linear operators and Kalman filtering.
+- `examples/inference/smc.ipynb` — sequential Monte Carlo.
 
 All runnable notebooks live under `examples/`. See the repository README for the
 current state of the remaining examples.
@@ -80,4 +80,4 @@ pip install probjax
 - **Docs:** https://www.mackelab.org/probjax/
 - **Source:** https://github.com/mackelab/probjax
 
-ProbJax targets Python 3.11–3.13 and JAX `>=0.9.0,<0.10`.
+ProbJax targets Python 3.11–3.13 and JAX `>=0.9.0,<0.12`.

@@ -41,7 +41,7 @@ algorithms, Flax NNX models, and numerical solvers in one composable codebase.
 
 ## Installation
 
-ProbJax targets Python 3.11–3.13 and JAX `>=0.9.0, <0.10`. Install the
+ProbJax targets Python 3.11–3.13 and JAX `>=0.9.0, <0.12`. Install the
 published package:
 
 ```bash
@@ -172,7 +172,7 @@ example disagrees with the current package.
 ```bash
 python -m pip install -e ".[dev]"
 python -m pip install -r docs/requirements.txt matplotlib
-python scripts/convert_notebooks.py
+python docs/scripts/convert_notebooks.py
 pytest
 ruff check .
 ruff format --check .

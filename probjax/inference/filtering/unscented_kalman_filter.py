@@ -272,8 +272,11 @@ def build_kernel(
             predicted_sigma_points, weights_mean, weights_cov = sigma_point_fn(
                 mu1_, cov1_
             )
-            R = (observation_covariance(t) if callable(observation_covariance)
-                 else observation_covariance)
+            R = (
+                observation_covariance(t)
+                if callable(observation_covariance)
+                else observation_covariance
+            )
             # Observed steps
             y_sigma_points = jax.vmap(observation_fn, in_axes=(0, None))(
                 predicted_sigma_points, t

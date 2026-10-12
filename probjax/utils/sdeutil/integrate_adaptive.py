@@ -136,9 +136,7 @@ def _adaptive_to_target(
         dW_full = jax.lax.stop_gradient(dW_full)
         dW1 = jax.lax.stop_gradient(dW1)
         dW2 = jax.lax.stop_gradient(dW2)
-        y_new, err = _step_double_em(
-            drift, diffusion, t, y, dt_eff, dW_full, dW1, dW2
-        )
+        y_new, err = _step_double_em(drift, diffusion, t, y, dt_eff, dW_full, dW1, dW2)
         # The controller's accept/reject decision should not propagate
         # gradients either — its inputs (norm of err, error_ratio**(-1/p))
         # have NaN derivatives at zero, and under vmap ``lax.cond``
