@@ -45,7 +45,10 @@ from typing import Optional, Tuple
 
 import jax
 from flax.core import spmd as _flax_spmd
+from jax._src.interpreters import batching as _batching
 from jax.sharding import AxisType, PartitionSpec
+
+from probjax.core.custom_primitives.sharded_primitive import in_per_shard_body
 
 __all__ = [
     "BATCH",
@@ -108,8 +111,6 @@ def resolve_axes(*axes: Optional[str]) -> Optional[Tuple[Optional[str], ...]]:
     that axis exists in the active mesh and has size > 1. Returns ``None``
     when no mesh is active or nothing resolves.
     """
-    from probjax.core.custom_primitives.sharded_primitive import in_per_shard_body
-
     mesh = _active_mesh()
     if mesh is None or in_per_shard_body():
         return None
@@ -146,8 +147,6 @@ def _is_vmap_batched(x) -> bool:
     Constraints written for the unbatched call signature would land on the
     wrong dimensions after vmap moves axes, so constrain/replicate no-op.
     """
-    from jax._src.interpreters import batching as _batching
-
     return isinstance(x, _batching.BatchTracer)
 
 
@@ -172,8 +171,6 @@ def replicate(x: jax.Array) -> jax.Array:
     For modules whose implementation requires unsharded inputs (e.g. the
     LRU scan and spatial self-attention). No-op without an active mesh.
     """
-    from probjax.core.custom_primitives.sharded_primitive import in_per_shard_body
-
     if _active_mesh() is None or in_per_shard_body() or _is_vmap_batched(x):
         return x
     return _apply_spec(x, PartitionSpec(*(None,) * x.ndim))

@@ -180,7 +180,7 @@ def test_def_partition_compat_passes_replication_factors_when_supported(
 
 def test_mamba_backend_prefers_triton_without_unsafe_mosaic_opt_in(monkeypatch):
     monkeypatch.setattr(mamba_mod.jax, "default_backend", lambda: "gpu")
-    monkeypatch.setattr(mamba_mod, "_is_hopper_or_newer_gpu", lambda: True)
+    monkeypatch.setattr(common_mod, "_is_hopper_or_newer_gpu", lambda: True)
     monkeypatch.setenv("PROBJAX_PALLAS_PREFER_MOSAIC_GPU", "1")
     monkeypatch.delenv("PROBJAX_PALLAS_UNSAFE_ENABLE_MOSAIC_GPU", raising=False)
 
@@ -189,7 +189,7 @@ def test_mamba_backend_prefers_triton_without_unsafe_mosaic_opt_in(monkeypatch):
 
 def test_mamba_backend_allows_mosaic_with_unsafe_opt_in(monkeypatch):
     monkeypatch.setattr(mamba_mod.jax, "default_backend", lambda: "gpu")
-    monkeypatch.setattr(mamba_mod, "_is_hopper_or_newer_gpu", lambda: True)
+    monkeypatch.setattr(common_mod, "_is_hopper_or_newer_gpu", lambda: True)
     monkeypatch.setenv("PROBJAX_PALLAS_PREFER_MOSAIC_GPU", "1")
     monkeypatch.setenv("PROBJAX_PALLAS_UNSAFE_ENABLE_MOSAIC_GPU", "1")
 
@@ -198,7 +198,7 @@ def test_mamba_backend_allows_mosaic_with_unsafe_opt_in(monkeypatch):
 
 def test_ssd_backend_prefers_triton_without_unsafe_mosaic_opt_in(monkeypatch):
     monkeypatch.setattr(ssd_mod.jax, "default_backend", lambda: "gpu")
-    monkeypatch.setattr(ssd_mod, "_is_hopper_or_newer_gpu", lambda: True)
+    monkeypatch.setattr(common_mod, "_is_hopper_or_newer_gpu", lambda: True)
     monkeypatch.setenv("PROBJAX_PALLAS_PREFER_MOSAIC_GPU", "1")
     monkeypatch.delenv("PROBJAX_PALLAS_UNSAFE_ENABLE_MOSAIC_GPU", raising=False)
 
@@ -207,7 +207,7 @@ def test_ssd_backend_prefers_triton_without_unsafe_mosaic_opt_in(monkeypatch):
 
 def test_ssd_backend_allows_mosaic_with_unsafe_opt_in(monkeypatch):
     monkeypatch.setattr(ssd_mod.jax, "default_backend", lambda: "gpu")
-    monkeypatch.setattr(ssd_mod, "_is_hopper_or_newer_gpu", lambda: True)
+    monkeypatch.setattr(common_mod, "_is_hopper_or_newer_gpu", lambda: True)
     monkeypatch.setenv("PROBJAX_PALLAS_PREFER_MOSAIC_GPU", "1")
     monkeypatch.setenv("PROBJAX_PALLAS_UNSAFE_ENABLE_MOSAIC_GPU", "1")
 

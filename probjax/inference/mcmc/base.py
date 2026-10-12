@@ -8,15 +8,6 @@ from probjax.utils.jaxutils import API
 from probjax.utils.typing import RngKey
 
 
-def ignore_kwargs(fn: Callable, *keys) -> Callable:
-    def wrapped_fn(*args, **kwargs):
-        for key in keys:
-            kwargs.pop(key, None)
-        return fn(*args, **kwargs)
-
-    return wrapped_fn
-
-
 class Params(NamedTuple):
     """BlackJAX only distinguishes between State and Info, but we will add Params for
     convenience.
@@ -92,11 +83,10 @@ def make_step_from_kernel(
     logdensity_fn: Callable,
     kernel_builder: Callable,
     *,
-    builder_kwargs: Optional[dict] = None,
     call_defaults: Optional[dict] = None,
 ) -> Callable:
     """Build a step function from a BlackJAX-style kernel builder."""
-    kernel = kernel_builder(**builder_kwargs) if builder_kwargs else kernel_builder()
+    kernel = kernel_builder()
 
     def step(key: RngKey, state: State, params: Params, *args):
         params_kwargs = params._asdict() if hasattr(params, "_asdict") else {}

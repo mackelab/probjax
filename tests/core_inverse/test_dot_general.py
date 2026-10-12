@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.core import inverse, inverse_and_logabsdet
-from probjax.core.registry import Context, REGISTRY
+from probjax.core.registry import REGISTRY, Context
 
 
 def test_inverse_dot_general_lhs():

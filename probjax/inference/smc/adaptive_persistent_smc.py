@@ -2,15 +2,12 @@ from typing import Callable, Dict, Optional
 
 import blackjax
 from blackjax.smc import adaptive_persistent_sampling as bj_adaptive_persistent
-from blackjax.smc import persistent_sampling as bj_persistent
 
 from probjax.inference.smc.base import (
     init_mcmc_params_from_logdensity,
     make_mcmc_adapter,
     make_smc_api,
 )
-
-PersistentSMCState = bj_persistent.PersistentSMCState
 
 
 def build_step(

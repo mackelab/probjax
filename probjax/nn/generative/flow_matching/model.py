@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import jax.tree_util
 from flax import nnx
 
-from probjax.nn.generative.base import GenerativeModel
+from probjax.nn.generative.base import GenerativeModel, _affine_sample_base
 from probjax.nn.generative.flow_matching.config import (
     FlowPreconditioningProtocol,
     FlowSolverConfigProtocol,
@@ -20,7 +20,6 @@ from probjax.nn.generative.flow_matching.config import (
 from probjax.nn.generative.sampling import (
     _ExportedSampler,
     make_ode_sample_fn,
-    sample_normal,
 )
 from probjax.nn.losses.flow_matching import build_flow_matching_loss
 from probjax.utils.functions import generic_drift
@@ -226,14 +225,7 @@ class FlowMatcher(GenerativeModel):
             t_min=t_min, t_max=t_max, num_steps=num_steps
         )
 
-    def _sample_base(self, rng, sample_shape, spec):
-        return sample_normal(
-            rng,
-            sample_shape,
-            spec,
-            loc=self.mu0.get_value(),
-            scale=self.std0.get_value(),
-        )
+    _sample_base = _affine_sample_base
 
     def _build_ode_drift(self, context=None):
         def drift(t, value):

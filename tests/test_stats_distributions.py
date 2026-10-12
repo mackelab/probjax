@@ -39,6 +39,7 @@ from probjax.stats.constraints import (
     strict_positive,
     symmetric_positive_definite_matrix,
 )
+from probjax.stats.continuous import bingham, watson
 from probjax.stats.divergences import (
     kl_divergence,
     max_slice_wasserstein_distance,
@@ -921,8 +922,6 @@ def test_max_slice_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
 # =============================================================================
 # Directional distribution tests (Watson, Bingham)
 # =============================================================================
-
-from probjax.stats.continuous import bingham, watson
 
 
 def _unit_vector(x):

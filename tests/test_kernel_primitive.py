@@ -10,7 +10,8 @@ import jax
 import jax.numpy as jnp
 import pytest
 from jax.experimental import pallas as pl
-from jax.sharding import NamedSharding, PartitionSpec as P
+from jax.sharding import NamedSharding
+from jax.sharding import PartitionSpec as P
 
 from probjax.nn.pallas_kernels.kernel_utils.kernel_primitive import (
     KernelSpec,

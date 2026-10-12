@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+import pytest
 from flax import nnx
 
 from probjax.nn.generative.discrete.model import (
@@ -64,7 +65,7 @@ def test_multinomial_time_bounds_and_float_only():
 
     try:
         _ = schedule.q_xt_given_x0_probs(x0, jnp.array([[5], [5]], dtype=jnp.int32))
-        assert False, "Expected TypeError for integer time input."
+        pytest.fail("Expected TypeError for integer time input.")
     except TypeError:
         pass
 

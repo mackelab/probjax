@@ -11,6 +11,7 @@ from ..kernel_utils.kernel_primitive import (
     KernelSpec,
     Operand,
     Output,
+    _validate_shardings,
     ct,
     derive_bwd_spec,
     grad,
@@ -284,7 +285,6 @@ def _validate_no_unsupported_sharding(arr: jax.Array, name: str) -> None:
     NamedSharding that would cause XLA to insert all-gathers on unsupported axes.
     Batch (dim 0) and heads (dim 2) sharding are allowed (JAX handles them).
     """
-    from ..kernel_utils.kernel_primitive import _validate_shardings
 
     class _Shape:
         def __init__(self, sharding):

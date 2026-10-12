@@ -63,7 +63,7 @@ def _validate_inputs(q: Array, k: Array, v: Array) -> None:
 
 
 def _resolve_interpret_mode(interpret: bool) -> bool:
-    return bool(interpret or use_interpret_mode() or jax.default_backend() == "cpu")
+    return bool(interpret or use_interpret_mode())
 
 
 def kernel_mv_naive(

@@ -79,32 +79,28 @@ def restore_from_btd(x: Array, orig_shape: Optional[tuple[int, ...]]) -> Array:
     return x.reshape(orig_shape)
 
 
+def _normalize_attn_array(x: Array | None, kind: str) -> Array | None:
+    """Expand a 2/3/4-D attention mask or bias to broadcast with [B, H, T, T]."""
+    if x is None:
+        return None
+    x = jnp.asarray(x)
+    if x.ndim == 2:
+        return x[None, None, :, :]
+    if x.ndim == 3:
+        return x[:, None, :, :]
+    if x.ndim == 4:
+        return x
+    raise ValueError(f"{kind} must have ndim 2, 3, or 4; got {x.ndim}.")
+
+
 def normalize_attn_mask(mask: Array | None) -> Array | None:
     """Normalize attention mask shapes to broadcast with [B, H, T, T]."""
-    if mask is None:
-        return None
-    mask = jnp.asarray(mask)
-    if mask.ndim == 2:
-        return mask[None, None, :, :]
-    if mask.ndim == 3:
-        return mask[:, None, :, :]
-    if mask.ndim == 4:
-        return mask
-    raise ValueError(f"Mask must have ndim 2, 3, or 4; got {mask.ndim}.")
+    return _normalize_attn_array(mask, "Mask")
 
 
 def normalize_attn_bias(bias: Array | None) -> Array | None:
     """Normalize attention bias shapes to broadcast with attention logits [B, H, T, T]."""
-    if bias is None:
-        return None
-    bias = jnp.asarray(bias)
-    if bias.ndim == 2:
-        return bias[None, None, :, :]
-    if bias.ndim == 3:
-        return bias[:, None, :, :]
-    if bias.ndim == 4:
-        return bias
-    raise ValueError(f"Bias must have ndim 2, 3, or 4; got {bias.ndim}.")
+    return _normalize_attn_array(bias, "Bias")
 
 
 def filter_supported_kwargs(ctor, **kwargs) -> dict:

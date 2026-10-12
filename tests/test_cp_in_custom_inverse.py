@@ -23,7 +23,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax.experimental.custom_partitioning import custom_partitioning
-from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 
 from probjax.core import custom_inverse
 
@@ -287,6 +288,7 @@ class TestDeviceRegistration:
 
     def test_primitive_in_requires_devices_set(self):
         from jax._src.dispatch import prim_requires_devices_during_lowering
+
         from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
 
         assert custom_inverse_call_p in prim_requires_devices_during_lowering

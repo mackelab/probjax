@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+from dataclasses import replace
 from functools import partial
 
 import jax
@@ -29,8 +30,6 @@ def replace_params(params, **updates):
     if hasattr(params, "_replace"):
         return params._replace(**updates)
     try:
-        from dataclasses import replace
-
         return replace(params, **updates)
     except TypeError as error:
         raise TypeError("params must be a mapping, NamedTuple, or dataclass") from error

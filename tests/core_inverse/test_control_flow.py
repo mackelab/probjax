@@ -11,11 +11,10 @@ import pytest
 
 from probjax.core import inverse, inverse_and_logabsdet
 from probjax.core.interpreters.inverse.rules import (
-    _make_inverse_processing_rule,
     _get_inverse_cost_fn,
+    _make_inverse_processing_rule,
 )
 from probjax.core.registry import REGISTRY, Context
-
 
 # ---------------------------------------------------------------------------
 # cond / switch

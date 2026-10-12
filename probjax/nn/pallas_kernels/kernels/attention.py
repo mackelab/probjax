@@ -36,6 +36,7 @@ from ..attention_mask_bias import (
 from ..kernel_utils import (
     DEFAULT_MASK_VALUE,
     NEG_INF,
+    ceil_div,
     get_dot_precision,
     get_dropout_mask,
 )
@@ -194,12 +195,9 @@ class BlockSizes:
             True if split backward should be used for efficiency
         """
 
-        def cdiv(a: int, b: int) -> int:
-            return (a + b - 1) // b if b > 0 else 0
-
         # Calculate what tile counts would be with current block sizes
-        nq = max(cdiv(q_len, max(block_q_dq, 1)), 1)
-        nkv = max(cdiv(kv_len, max(block_kv_dkv, 1)), 1)
+        nq = max(ceil_div(q_len, max(block_q_dq, 1)), 1)
+        nkv = max(ceil_div(kv_len, max(block_kv_dkv, 1)), 1)
 
         # If tile counts already match, fused is fine
         if nq == nkv:
@@ -252,10 +250,6 @@ class BlockSizes:
         tile sizes optimized for each pass.
         """
 
-        # Helper for ceil-div without importing pallas utilities here.
-        def cdiv(a: int, b: int) -> int:
-            return (a + b - 1) // b if b > 0 else 0
-
         # Start from requested specs
         bq = block_q
         bk = block_k
@@ -276,14 +270,14 @@ class BlockSizes:
 
         # Handle backward compatibility: "triton_fused" was the old default
         if backward_pass_impl in ["triton_fused", "fused"]:
-            nq = max(cdiv(q_len, max(bq_dq, 1)), 1)
-            nkv = max(cdiv(kv_len, max(bkv_dkv, 1)), 1)
+            nq = max(ceil_div(q_len, max(bq_dq, 1)), 1)
+            nkv = max(ceil_div(kv_len, max(bkv_dkv, 1)), 1)
             if nq != nkv:
                 # Target a common number of tiles. Choose the larger to avoid
                 # decreasing parallelism unnecessarily.
                 n = max(nq, nkv)
                 # Derive block sizes that yield exactly `n` tiles.
-                # Using ceil_div ensures cdiv(len, block) == n.
+                # Using ceil_div ensures ceil_div(len, block) == n.
                 bq_dq = max((q_len + n - 1) // n, 1)
                 bkv_dkv = max((kv_len + n - 1) // n, 1)
 
@@ -2031,171 +2025,6 @@ def _mha_impl_jvp_from_lse_raw(
         index_offset,
         index_offset_size,
     )
-
-
-def _mha_impl_fused_jvp(
-    q: jax.Array,
-    k: jax.Array,
-    v: jax.Array,
-    dq: jax.Array,
-    dk: jax.Array,
-    dv: jax.Array,
-    mask: AttentionMask | None,
-    bias: AttentionBias | None,
-    rng: jax.Array | None,
-    rng_seed: jax.Array,
-    sm_scale: float,
-    block_sizes: BlockSizes,
-    num_warps: int | None,
-    num_stages: int,
-    grid: Any,
-    interpret: bool,
-    debug: bool,
-    dropout_rate: float,
-    dropout_impl: str,
-):
-    batch_size, q_seq_len, num_heads, head_dim = q.shape
-    kv_seq_len = k.shape[1]
-    block_q = min(block_sizes.block_q, q_seq_len)
-    block_k = min(block_sizes.block_k, kv_seq_len)
-    block_d = pl.next_power_of_2(head_dim)
-    grid_ = grid or (pl.cdiv(q_seq_len, block_q), batch_size, num_heads)
-    num_warps_ = num_warps or (4 if block_d <= 64 else 8)
-
-    index_offset = index_offset_size = None
-    if mask is not None:
-        index_offset, index_offset_size = mask.query_iterator_indices(
-            q_seq_len, kv_seq_len, block_q, block_k
-        )
-
-    b_data = bias.get_data() if bias is not None else None
-    effective_num_stages = _resolve_attention_num_stages(
-        num_stages, has_dense_bias=b_data is not None
-    )
-
-    if mask is not None:
-        q_id, k_id = mask.get_data(q_seq_len=q_seq_len, kv_seq_len=kv_seq_len)
-    else:
-        q_id = k_id = None
-
-    if dropout_rate > 0:
-        assert rng is not None, "prng_key must be provided when dropout_rate>0"
-        if dropout_impl == "materialize":
-            dropout_mask = get_dropout_mask(
-                (batch_size, num_heads, q_seq_len, kv_seq_len),
-                prng_key=rng,
-                rate=dropout_rate,
-            )
-        elif dropout_impl == "counter":
-            dropout_mask = None
-        else:
-            raise ValueError(f"Unsupported dropout_impl={dropout_impl!r}")
-    else:
-        dropout_mask = None
-
-    bias_fn_grad = bias.grad if (bias is not None) else None
-
-    kernel = functools.partial(
-        mha_forward_jvp_kernel,
-        sm_scale=sm_scale,
-        head_dim=head_dim,
-        block_q=block_q,
-        block_k=block_k,
-        block_d=block_d,
-        mask_fn=mask.__call__ if mask is not None else None,
-        bias_fn=bias.__call__ if bias is not None else None,
-        bias_fn_grad=bias_fn_grad,
-        dropout_rate=dropout_rate,
-    )
-
-    in_specs = [
-        pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
-        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
-        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
-        pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
-        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
-        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
-    ]
-
-    if b_data is not None:
-        b_specs = bias.get_block_spec(
-            q_len=q_seq_len, kv_len=kv_seq_len, block_q=block_q, block_kv=block_k
-        )
-        in_specs.append(b_specs)
-    else:
-        in_specs.append(None)
-
-    if q_id is not None or k_id is not None:
-        q_id_spec, k_id_spec = mask.get_data_block_spec(
-            q_seq_len, kv_seq_len, block_q, block_k
-        )
-        in_specs.append(q_id_spec)
-        in_specs.append(k_id_spec)
-    else:
-        in_specs.append(None)
-        in_specs.append(None)
-
-    if dropout_mask is not None:
-        in_specs.append(
-            pl.BlockSpec(
-                (None, None, block_q, kv_seq_len), lambda i, j, k_: (j, k_, i, 0)
-            )
-        )
-    else:
-        in_specs.append(None)
-    in_specs.append(pl.BlockSpec((), lambda *_: ()))
-
-    if index_offset is not None and index_offset_size is not None:
-        index_offset_spec = pl.BlockSpec(
-            index_map=(lambda i, _, k: (i, 0)), block_shape=((None, block_k))
-        )
-        index_offset_size_spec = pl.BlockSpec(
-            index_map=(lambda i, _, k: i), block_shape=((None,))
-        )
-        in_specs.append(index_offset_spec)
-        in_specs.append(index_offset_size_spec)
-    else:
-        in_specs.append(None)
-        in_specs.append(None)
-
-    out_shape = [
-        jax.ShapeDtypeStruct(shape=q.shape, dtype=q.dtype),
-        jax.ShapeDtypeStruct(shape=q.shape, dtype=q.dtype),
-    ]
-    out_specs = [
-        pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
-        pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
-    ]
-
-    out, tangent_out = pl.pallas_call(
-        kernel,
-        grid=grid_,
-        in_specs=in_specs,
-        out_specs=out_specs,
-        compiler_params=plgpu.CompilerParams(
-            num_warps=num_warps_, num_stages=effective_num_stages
-        ),
-        out_shape=out_shape,
-        debug=debug,
-        interpret=interpret,
-        name="mha_forward_jvp",
-    )(
-        q,
-        k,
-        v,
-        dq,
-        dk,
-        dv,
-        b_data,
-        q_id,
-        k_id,
-        dropout_mask,
-        rng_seed,
-        index_offset,
-        index_offset_size,
-    )
-
-    return out, tangent_out
 
 
 def _flatten_optional_pytree(value):

@@ -104,7 +104,7 @@ ignore = [
 case-sensitive = true
 lines-between-types = 0  # like isort default.
 relative-imports-order = "furthest-to-closest"  # like isort default.
-known-first-party = ["sbi", "tests", "tutorials"]
+known-first-party = ["probjax", "tests"]
 
 [tool.ruff.format]
 exclude = ["*.ipynb"]
@@ -114,10 +114,6 @@ quote-style = "preserve"
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
-
-[tool.pycodestyle]
-max-line-length = 88
-ignore = ["E203", "W503"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -142,7 +138,6 @@ branch = true
 parallel = true
 omit = [
     "tests/*",
-    "benchmarks/*",
     "examples/*",
     "docs/*",
     "site/*",

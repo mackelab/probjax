@@ -64,7 +64,7 @@ class SSMaxQueryScale(nnx.Module):
     Reference: *Scalable Softmax* (https://arxiv.org/abs/2501.14222).
 
     The module is designed to be passed to :class:`MultiHeadAttention` via
-    ``q_scale_cls`` (or the legacy ``query_scale`` argument)::
+    ``q_scale_cls``::
 
         mha = MultiHeadAttention(
             ...,

@@ -3,14 +3,14 @@ import jax.numpy as jnp
 import pytest
 from flax import nnx
 
+from probjax.nn import TimeMLP
 from probjax.nn.generative.diffusion import EDM, VE, VP, CosineDM
 from probjax.nn.generative.flow_matching import LinearFlow, LinearFlowSolverConfig
-from probjax.nn.generative.nflows.models import NormalizingFlow
+from probjax.nn.generative.flow_matching.config import LinearInterpolationSchedule
 from probjax.nn.generative.mean_flow import LinearMeanFlow
 from probjax.nn.generative.mean_flow.config import SigmoidPairFlowTrainingConfig
-from probjax.nn.generative.flow_matching.config import LinearInterpolationSchedule
+from probjax.nn.generative.nflows.models import NormalizingFlow
 from probjax.nn.losses.mean_flow import build_mean_flow_matching_loss
-from probjax.nn import TimeMLP
 from probjax.stats.continuous import norm
 from probjax.stats.indep import indep
 

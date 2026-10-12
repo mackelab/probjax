@@ -3,14 +3,14 @@ import jax.numpy as jnp
 import numpy as np
 
 from probjax.core import (
-    do,
     condition,
+    do,
     intervene,
     inverse,
     joint_sample,
     log_joint_fn,
-    log_prob_fn,
     log_potential_fn,
+    log_prob_fn,
     observe,
     scope,
     substitute,

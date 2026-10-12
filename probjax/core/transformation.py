@@ -78,10 +78,6 @@ def _resolve_invertible_indices(args, invertible_arg) -> tuple[int, ...]:
     return indices
 
 
-def _resolve_invertible_index(args, invertible_arg: int | None) -> int:
-    return _resolve_invertible_indices(args, invertible_arg)[0]
-
-
 def _prepare_inverse_problem(
     jaxpr_invars,
     args,
@@ -401,7 +397,7 @@ def _cached_jaxpr_and_tree_getter(fun: Callable, static_argnums=()):
     )
     cache: dict = {}
 
-    def get_jaxpr_and_tree(flat_inputs, cache_key, args, kwargs):
+    def get_jaxpr_and_tree(cache_key, args, kwargs):
         """Get cached JAXPR and output tree, tracing if needed."""
         if cache_key not in cache:
             jaxpr, out_shape = jaxpr_maker(*args, **kwargs)
@@ -530,7 +526,7 @@ def _make_substitution_wrapper(
         # Single flatten pass for both cache key and inputs
         flat_inputs, cache_key = _flatten_and_signature(args, kwargs)
         with enable_rv_tracing():
-            jaxpr, out_tree = get_jaxpr_and_tree(flat_inputs, cache_key, args, kwargs)
+            jaxpr, out_tree = get_jaxpr_and_tree(cache_key, args, kwargs)
         out_flat = interpret(
             jaxpr.jaxpr,
             jaxpr.consts,

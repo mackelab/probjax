@@ -191,7 +191,8 @@ def test_mamba_matches_reference_gpu():
 def test_mha_sharded_no_allgather_mesh(axis):
     if jax.device_count() < 2:
         pytest.skip("requires >= 2 devices")
-    from jax.sharding import NamedSharding, PartitionSpec as P
+    from jax.sharding import NamedSharding
+    from jax.sharding import PartitionSpec as P
 
     mesh = jax.make_mesh((2,), ("data",), axis_types=(jax.sharding.AxisType.Auto,))
     q, k, v = _qkv(jax.random.key(0))

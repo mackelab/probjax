@@ -171,7 +171,7 @@ def _monotone_hermite_cubic_spline_inv(
         return R, Rp
 
     # Clamped Newton with bisection fallback inside [0,1]
-    def newton(z0):
+    def newton():
         def body(carry, _):
             z, lo, hi = carry
             R, Rp = H_and_dH(z)
@@ -203,7 +203,7 @@ def _monotone_hermite_cubic_spline_inv(
         err_mid = jnp.abs(H_and_dH(mid)[0] - w)
         return jnp.where(err_mid < err_final, mid, z_final)
 
-    z = newton(w)
+    z = newton()
     x_mid = x_l + z * dx
 
     # log|dx/dy| = -log|dy/dx| = -[ log s + log Rp(z) ]

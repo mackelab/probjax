@@ -1,25 +1,26 @@
+import itertools
+
 import jax
 import jax.numpy as jnp
 import pytest
-import itertools
 
 from probjax.nn.generative.diffusion import (
     build_denoising_loss,
     build_denoising_score_matching_loss,
     build_time_dependent_denoising_loss,
 )
-from probjax.nn.generative.flow_matching import build_flow_matching_loss
 from probjax.nn.generative.discrete import (
     build_time_dependent_multinomial_diffusion_loss,
+)
+from probjax.nn.generative.flow_matching import build_flow_matching_loss
+from probjax.nn.generative.flow_matching.config import (
+    AutodiffInterpolationSchedule,
+    LinearInterpolationSchedule,
 )
 from probjax.nn.losses import (
     build_score_matching_loss,
     build_sliced_score_matching_loss,
     build_target_score_matching_loss,
-)
-from probjax.nn.generative.flow_matching.config import (
-    AutodiffInterpolationSchedule,
-    LinearInterpolationSchedule,
 )
 
 

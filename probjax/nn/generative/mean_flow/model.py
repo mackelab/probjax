@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import jax.tree_util
 from flax import nnx
 
-from probjax.nn.generative.base import GenerativeModel
+from probjax.nn.generative.base import GenerativeModel, _affine_sample_base
 from probjax.nn.generative.flow_matching.config import (
     FlowPreconditioningProtocol,
     FlowSolverConfigProtocol,
@@ -22,7 +22,6 @@ from probjax.nn.generative.mean_flow.config import (
 from probjax.nn.generative.sampling import (
     _ExportedSampler,
     make_scan_sample_fn,
-    sample_normal,
 )
 from probjax.nn.losses.mean_flow import build_mean_flow_matching_loss
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
@@ -97,7 +96,7 @@ class MeanFlowMatcher(GenerativeModel):
             not jnp.issubdtype(leaf.dtype, jnp.floating)
             for leaf in jax.tree.leaves(spec)
         ):
-            raise TypeError("Flow matching event dtypes must be floating point.")
+            raise TypeError("Mean-flow event dtypes must be floating point.")
         return spec
 
     def set_solver_cfg(self, solver_cfg: FlowSolverConfigProtocol) -> None:
@@ -245,14 +244,7 @@ class MeanFlowMatcher(GenerativeModel):
             t_min=t_min, t_max=t_max, num_steps=num_steps
         )
 
-    def _sample_base(self, rng, sample_shape, spec):
-        return sample_normal(
-            rng,
-            sample_shape,
-            spec,
-            loc=self.mu0.get_value(),
-            scale=self.std0.get_value(),
-        )
+    _sample_base = _affine_sample_base
 
     def _distribution_sampler(
         self,

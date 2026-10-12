@@ -16,8 +16,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.flatten_util import ravel_pytree
+from jax.scipy.optimize import minimize
 
 import probjax.stats.constraints as stats_constraints
+from probjax.stats.constraint_registry import biject_to
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = [
@@ -38,7 +40,7 @@ __all__ = [
 class _FrozenArgs:
     args: tuple[Any, ...]
     kwds: dict[str, Any]
-    parameter_values: dict[str, Any]
+    parameter_values: dict[str, ArrayLike]
 
 
 @jax.tree_util.register_pytree_node_class
@@ -46,8 +48,8 @@ class _FrozenArgs:
 class DistributionParams:
     """Unconstrained parameters with a distribution stored as static metadata."""
 
-    dist: Any
-    params: Mapping[str, Any]
+    dist: rv_generic
+    params: Mapping[str, ArrayLike]
 
     def tree_flatten(self):
         return (dict(self.params),), self.dist
@@ -211,8 +213,6 @@ class rv_generic(ABC):
     @classmethod
     def _convert_params(cls, params: Mapping[str, Any], *, to_unconstrained: bool):
         """Shared loop for ``params_to/from_unconstrained`` conversions."""
-        from probjax.stats.constraint_registry import biject_to
-
         converted = {}
         for name, value in params.items():
             constraint = cls.parameters.get(name)
@@ -480,8 +480,6 @@ class rv_generic(ABC):
     @classmethod
     def _fit_mle(cls, data: ArrayLike, **kwds: Any) -> tuple[Array, ...]:
         """Fit by optimizing the likelihood in unconstrained parameter space."""
-        from jax.scipy.optimize import minimize
-
         init_params = {}
         for name in cls.parameters:
             if name not in kwds:
@@ -688,19 +686,19 @@ class DistributionAPI(ABC):
     def cdf(self, x: ArrayLike):
         raise NotImplementedError("CDF not implemented for this distribution")
 
-    def logcdf(self, x: ArrayLike):
+    def logcdf(self, x: ArrayLike) -> Array:
         return jnp.log(self.cdf(x))
 
-    def ppf(self, q: ArrayLike):
+    def ppf(self, q: ArrayLike) -> ArrayLike:
         raise NotImplementedError("PPF not implemented for this distribution")
 
-    def sf(self, x: ArrayLike):
+    def sf(self, x: ArrayLike) -> Array:
         return 1.0 - self.cdf(x)
 
-    def logsf(self, x: ArrayLike):
+    def logsf(self, x: ArrayLike) -> Array:
         return jnp.log(self.sf(x))
 
-    def isf(self, q: ArrayLike):
+    def isf(self, q: ArrayLike) -> ArrayLike:
         return self.ppf(1.0 - q)
 
     def mean(self):
