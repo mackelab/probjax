@@ -107,6 +107,20 @@ generated output is current without rewriting it. CI runs the converter before
 - Write docstrings for all public functions and classes
 - Keep functions small and focused
 
+### Terminology
+
+Use one word per concept, so that an argument name tells you what it is:
+
+- **`params`**: the trainable parameters of a model, as a pytree. This holds for
+  network layers, bijectors and distributions alike, and for `ema_params`.
+  Avoid "weights" for these.
+- **`weights`**: statistical weights only: particle or mixture-component weights
+  (and their `log_weights`), and per-example loss weights. A layer's
+  `weights`/`biases` pair is the one place the word names a parameter, because
+  that pairing is idiomatic.
+- **`model_state`**: non-trainable variables that evolve during training, such as
+  BatchNorm statistics and RNG counters.
+
 ### Docstrings
 
 The reference renderer currently uses Google-style docstrings. Match that style

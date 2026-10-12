@@ -50,7 +50,7 @@ class FitResult:
 
     losses aliases info.loss; state.step is absolute. valid_steps counts this
     call's updates, and valid masks any padding in a fixed-shape JIT history.
-    params selects raw or EMA weights. use_ema is static pytree metadata.
+    params selects raw or EMA params. use_ema is static pytree metadata.
     """
 
     state: FitState
@@ -320,7 +320,7 @@ def fit(
             and averages after each update. Disabled by default, with no extra
             parameter copy or averaging work.
         use_ema: Return/apply EMA parameters instead of raw optimizer parameters.
-            Requires ``ema_decay``. Raw and averaged weights remain separately
+            Requires ``ema_decay``. Raw and averaged params remain separately
             available through ``return_result=True``.
         callbacks: Sequence of :class:`FitCallback` objects or callables
             ``callback(state, info)``. Run on the host after each chunk of

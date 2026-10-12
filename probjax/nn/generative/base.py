@@ -152,7 +152,7 @@ class GenerativeModel(nnx.Module, FitMixin):
         return None if spec is None else jax.tree.map(lambda leaf: leaf.shape, spec)
 
     def set_event_spec(self, event_spec):
-        """Change the default for future views without resizing network weights.
+        """Change the default for future views without resizing network params.
 
         Existing distribution views keep their bound event specs. Cached exports
         are invalidated because this changes static model metadata.
