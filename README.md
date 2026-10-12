@@ -168,7 +168,7 @@ example disagrees with the current package.
 ```bash
 python -m pip install -e ".[dev]"
 python -m pip install -r docs/requirements.txt matplotlib
-python scripts/convert_notebooks.py
+python docs/scripts/convert_notebooks.py
 pytest
 ruff check .
 ruff format --check .
