@@ -41,8 +41,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `probjax.nn.utils.PrecisionMixin`: stores the
   dtype/precision/param_dtype/preferred_element_type quartet and exposes
   `cast_output(x)`; adopted by 22 NN module classes
+- `fit(schedule=...)` also accepts any optax schedule; `FitMixin` gains a
+  `_fit_batch` hook so a model decides what its batches look like
 
 ### Changed
+- Gradient-based training moved from `probjax.stats.fit` to
+  `probjax.nn.training` (`batches`, `kernel`, `loop`, `mixin`), so
+  `probjax.stats` no longer depends on flax or optax. `probjax.nn` still
+  exports `fit`, `FitMixin` and the `Fit*` types
+- `FitMixin` no longer assumes a batch layout: by default `model.fit(rng, data)`
+  trains on `data` as given and calls `loss(rng, batch)`. The
+  `{"data", "context", "weights"}` convention now belongs to `GenerativeModel`
 - Prefer `condition`, `do`, and `log_joint_fn`; their legacy aliases and
   `trace(kind_labels="legacy")` now emit `DeprecationWarning`.
 - Target Python 3.11–3.13 and JAX `>=0.9.0,<0.12`; require Flax >=0.12.6 and BlackJAX 1.6.2

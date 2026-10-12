@@ -68,13 +68,6 @@ or as flexible marginals in their own right.
 ::: probjax.stats.mixture
 ::: probjax.stats.indep
 
-## Fitting
-
-::: probjax.stats.fit
-::: probjax.stats.FitMixin
-::: probjax.stats.is_batch_stream
-::: probjax.stats.take_batches
-
 ## Transform protocols
 
 Used to build higher-order distributions and normalizing flows.

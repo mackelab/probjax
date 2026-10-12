@@ -66,18 +66,6 @@ from probjax.stats.discrete.dirac import dirac
 from probjax.stats.discrete.empirical import empirical
 from probjax.stats.discrete.geometric import geometric
 from probjax.stats.discrete.poisson import poisson
-from probjax.stats.fit import (
-    FitCallback,
-    FitInfo,
-    FitKernel,
-    FitMixin,
-    FitResult,
-    FitState,
-    build_fit_kernel,
-    fit,
-    is_batch_stream,
-    take_batches,
-)
 
 # Import higher-order distributions
 from probjax.stats.indep import indep
@@ -85,12 +73,6 @@ from probjax.stats.mixture import mixture
 from probjax.stats.transformed import transformed
 
 __all__ = [
-    "FitInfo",
-    "FitKernel",
-    "build_fit_kernel",
-    "FitCallback",
-    "FitResult",
-    "FitState",
     # Base classes
     'DistributionParams',
     'DistributionAPI',
@@ -150,9 +132,4 @@ __all__ = [
     'TransformedDistribution',
     'ensure_invertible',
     'forward_and_logdet',
-    # Gradient-based fitting
-    'fit',
-    'is_batch_stream',
-    'take_batches',
-    'FitMixin',
 ]
