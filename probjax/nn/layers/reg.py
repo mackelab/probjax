@@ -8,7 +8,6 @@ from flax import nnx
 from flax.nnx import rnglib
 from flax.nnx.module import Module, first_from
 
-
 from probjax.utils.typing import Array, ArrayLike
 
 __all__ = ["DropPath"]

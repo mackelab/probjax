@@ -1,3 +1,4 @@
+import warnings
 from functools import wraps
 from typing import Any, Callable, Iterable, Mapping, Optional, cast
 
@@ -39,6 +40,30 @@ from probjax.core.registry import (
     invalid_inverse_value,
     sum_logdet_terms,
 )
+
+# Live canonical-name table. Each deprecated spelling maps to the canonical
+# name preferred by the probabilistic vocabulary used by ``trace``. Shims read
+# this table on every call, so flipping a pair is a one-line edit.
+_CANONICAL_ALIASES = {
+    "observe": "condition",
+    "intervene": "do",
+    "log_potential_fn": "log_joint_fn",
+    "log_prob_fn": "log_joint_fn",
+}
+
+
+def _warn_deprecated(old: str, *, new: str | None = None, stacklevel: int = 3) -> None:
+    """Emit a ``DeprecationWarning`` for a deprecated public name.
+
+    ``stacklevel=3`` by default points at the user call site for the common
+    helper -> shim -> user chain.
+    """
+    canonical = new or _CANONICAL_ALIASES[old]
+    warnings.warn(
+        f"probjax.core.{old} is deprecated; use probjax.core.{canonical} instead.",
+        DeprecationWarning,
+        stacklevel=stacklevel,
+    )
 
 
 def _normalize_argnums(argnums, n_args: int, *, name: str) -> tuple[int, ...]:
@@ -484,7 +509,7 @@ def _apply_stochastic_substitution(
     update_observations: Optional[Mapping[str, Any]] = None,
     update_replay: Optional[Mapping[str, Any]] = None,
 ) -> Callable:
-    """Unified substitution logic for intervene/condition/substitute.
+    """Unified substitution logic for do/condition/substitute.
 
     Priority order: interventions > observations > replay.
     Sites in higher priority categories are excluded from lower priority categories.
@@ -594,11 +619,29 @@ def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
     return wrapped
 
 
+def do(fun: Callable, interventions: Mapping[str, Array]) -> Callable:
+    """Apply a causal ``do`` intervention to stochastic sites.
+
+    This is the canonical name. It fixes stochastic sites to the given values
+    without sampling them, using interpreter-level overrides for the selected
+    random variables while leaving all other equations unchanged.
+
+    Args:
+        fun (Callable): A function to transform.
+        interventions (dict[str, Array]): A dictionary of random variable names
+            and values to intervene on.
+
+    Returns:
+        Callable: Wrapped probabilistic function with interventions.
+    """
+    return _apply_stochastic_substitution(fun, update_interventions=interventions)
+
+
 def intervene(fun: Callable, rvs: Mapping[str, Array]) -> Callable:
     """Fix stochastic sites via intervention values.
 
-    This is equivalent to a causal ``do`` operation. The name ``do`` is the
-    probabilistic alias for this function.
+    .. deprecated::
+        Use :func:`do` instead; ``intervene`` is the legacy spelling.
 
     This does not sample the random variables, but fixes them to the given values.
 
@@ -613,21 +656,23 @@ def intervene(fun: Callable, rvs: Mapping[str, Array]) -> Callable:
     Returns:
         Callable: Wrapped probabilistic function with interventions.
     """
-    return _apply_stochastic_substitution(fun, update_interventions=rvs)
-
-
-def do(fun: Callable, interventions: Mapping[str, Array]) -> Callable:
-    """Apply a causal ``do`` intervention to stochastic sites.
-
-    This is a probabilistic alias for :func:`intervene`.
-    """
-    return intervene(fun, interventions)
+    _warn_deprecated("intervene")
+    return do(fun, rvs)
 
 
 def condition(fun: Callable, observations: Mapping[str, Array]) -> Callable:
     """Condition a probabilistic program on observed site values.
 
-    The preferred probabilistic name is :func:`observe`.
+    This is the canonical name. Observed sites are fixed to the given values
+    and contribute their log-density at those values.
+
+    Args:
+        fun (Callable): A function to transform.
+        observations (dict[str, Array]): A dictionary of random variable names
+            and observed values.
+
+    Returns:
+        Callable: Wrapped probabilistic function with observations.
     """
     return _apply_stochastic_substitution(fun, update_observations=observations)
 
@@ -635,8 +680,10 @@ def condition(fun: Callable, observations: Mapping[str, Array]) -> Callable:
 def observe(fun: Callable, observations: Mapping[str, Array]) -> Callable:
     """Observe stochastic sites in a probabilistic program.
 
-    This is a probabilistic alias for :func:`condition`.
+    .. deprecated::
+        Use :func:`condition` instead; ``observe`` is the legacy spelling.
     """
+    _warn_deprecated("observe")
     return condition(fun, observations)
 
 
@@ -671,7 +718,7 @@ def substitute(
         return _apply_stochastic_substitution(fun, update_replay=values)
 
     if normalized_mode == "do":
-        return intervene(fun, values)
+        return do(fun, values)
 
     raise AssertionError("unreachable")
 
@@ -681,24 +728,23 @@ def scope(name: str):
     return name_stack.scope(name)
 
 
-def log_potential_fn(
+def log_joint_fn(
     fun: Callable,
     *args,
     strict: bool = True,
     allow_partial: bool = False,
     **kwargs,
 ):
-    """Compute the unnormalized log density of a probabilistic function.
+    """Compute the model log-joint (up to a constant).
 
-    This is the legacy name for :func:`log_joint_fn`.
-
-    This does not include the normalizing constant.
+    This is the canonical name. It computes the model log-joint up to a
+    constant (the normalizing constant is not included).
 
     Args:
         fun (Callable): Probabilistic function
 
     Returns:
-        Callable: Log potential function
+        Callable: Log joint function
     """
     base_fun = _get_base_fun(fun)
     interventions, observations, replay = _collect_stochastic_maps(fun)
@@ -708,7 +754,7 @@ def log_potential_fn(
         jaxpr = jax.make_jaxpr(base_fun)(jax.random.PRNGKey(0), *args, **kwargs)
     model_inputs = _flatten_call_inputs((jax.random.PRNGKey(0),) + args, kwargs)
 
-    def log_potential(**joint_samples):
+    def log_joint(**joint_samples):
         intervention_config = interventions if interventions else legacy_interventions
         processing_rule = LogPotentialProcessingRule(
             joint_samples=joint_samples,
@@ -737,18 +783,32 @@ def log_potential_fn(
 
         return jnp.nan_to_num(log_prob, nan=-jnp.inf, posinf=jnp.inf, neginf=-jnp.inf)
 
-    return log_potential
+    return log_joint
 
 
-def log_joint_fn(
+def log_potential_fn(
     fun: Callable,
     *args,
     strict: bool = True,
     allow_partial: bool = False,
     **kwargs,
 ):
-    """Compute the model log-joint (up to a constant)."""
-    return log_potential_fn(
+    """Compute the unnormalized log density of a probabilistic function.
+
+    .. deprecated::
+        Use :func:`log_joint_fn` instead; ``log_potential_fn`` is the legacy
+        spelling.
+
+    This does not include the normalizing constant.
+
+    Args:
+        fun (Callable): Probabilistic function
+
+    Returns:
+        Callable: Log potential function
+    """
+    _warn_deprecated("log_potential_fn")
+    return log_joint_fn(
         fun,
         *args,
         strict=strict,
@@ -764,7 +824,13 @@ def log_prob_fn(
     allow_partial: bool = False,
     **kwargs,
 ):
-    """Backward-compatible alias for :func:`log_joint_fn`."""
+    """Backward-compatible alias for :func:`log_joint_fn`.
+
+    .. deprecated::
+        Use :func:`log_joint_fn` instead; ``log_prob_fn`` is the legacy
+        spelling.
+    """
+    _warn_deprecated("log_prob_fn")
     return log_joint_fn(
         fun,
         *args,
@@ -781,6 +847,14 @@ def trace(
     sites: bool = False,
     kind_labels: str = "probabilistic",
 ):
+    if kind_labels == "legacy":
+        warnings.warn(
+            "probjax.core.trace(kind_labels='legacy') is deprecated; "
+            "use kind_labels='probabilistic' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     base_fun = _get_base_fun(fun)
     get_jaxpr = _cached_jaxpr_getter(base_fun)
     interventions, observations, replay = _collect_stochastic_maps(fun)

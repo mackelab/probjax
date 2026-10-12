@@ -47,7 +47,6 @@ from jax._src import core as jax_core
 from jax.extend.core import Jaxpr, Literal, Var
 
 from probjax.core.interpreters.inverse.diagonal import DiagonalAffineSystem
-
 from probjax.core.registry import apply_inverse_guard, inverse_roundtrip_valid
 
 __all__ = ["is_affine_in", "is_volume_preserving", "solve_affine_inverse"]

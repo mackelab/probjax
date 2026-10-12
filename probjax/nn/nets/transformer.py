@@ -16,7 +16,6 @@ from probjax.nn.nets.simple import MLP
 from probjax.nn.sharding import BATCH, EMBED, SEQ, constrain
 from probjax.nn.utils import (
     DEFAULT_MODULE,
-    PrecisionMixin,
     filter_precision_kwargs,
     flatten_to_btd,
     normalize_attn_bias,
@@ -26,7 +25,7 @@ from probjax.nn.utils import (
 from probjax.utils.typing import DTypeLike, ModuleLikeType, PrecisionLike
 
 
-class Transformer(PrecisionMixin, nnx.Module):
+class Transformer(nnx.Module):
     """A transformer stack."""
 
     model_dim: int  # Dimensionality of the embedding vectors.
@@ -140,7 +139,7 @@ class Transformer(PrecisionMixin, nnx.Module):
         )
         mha_cls = type(self).mha_cls if mha_cls is DEFAULT_MODULE else mha_cls
 
-        super().__init__(
+        precision_kwargs = dict(
             dtype=dtype,
             precision=precision,
             param_dtype=param_dtype,
@@ -178,7 +177,6 @@ class Transformer(PrecisionMixin, nnx.Module):
         self.act = act
         self.enable_cross_attention = enable_cross_attention
         # Precision and dtype settings.
-        precision_kwargs = self.active_precision_kwargs()
 
         # Norm layers.
         self.layer_norms_attn = nnx.List([
@@ -361,8 +359,11 @@ class Transformer(PrecisionMixin, nnx.Module):
         for i in range(self.num_layers):
             # Stable independent keys for each stochastic operation. Stored
             # RNG streams remain responsible for randomness when rng is None.
-            keys = ([None] * 9 if rng is None else
-                    list(jax.random.split(jax.random.fold_in(rng, i), 9)))
+            keys = (
+                [None] * 9
+                if rng is None
+                else list(jax.random.split(jax.random.fold_in(rng, i), 9))
+            )
             key_iter = iter(keys)
             # First the attention block.
             q_res = q
@@ -380,7 +381,11 @@ class Transformer(PrecisionMixin, nnx.Module):
             )
             q = constrain(q, BATCH, SEQ, EMBED)
             q = self.attn_skip_fuse[i](
-                q_res, q, context=context, deterministic=deterministic, rng=next(key_iter)
+                q_res,
+                q,
+                context=context,
+                deterministic=deterministic,
+                rng=next(key_iter),
             )
 
             # Then cross attention if wanted
@@ -399,7 +404,11 @@ class Transformer(PrecisionMixin, nnx.Module):
                 )
                 q = constrain(q, BATCH, SEQ, EMBED)
                 q = self.cross_skip_fuse[i](
-                    q_res, q, context=context, deterministic=deterministic, rng=next(key_iter)
+                    q_res,
+                    q,
+                    context=context,
+                    deterministic=deterministic,
+                    rng=next(key_iter),
                 )
 
             # Then the dense block and global context.
@@ -411,7 +420,9 @@ class Transformer(PrecisionMixin, nnx.Module):
             q = self.dense_blocks[i](q, rng=next(key_iter))
             q = constrain(q, BATCH, SEQ, EMBED)
             if self.dropout_dense is not None:
-                q = self.dropout_dense[i](q, deterministic=deterministic, rngs=next(key_iter))
+                q = self.dropout_dense[i](
+                    q, deterministic=deterministic, rngs=next(key_iter)
+                )
             q = self.mlp_skip_fuse[i](
                 q_res,
                 q,

@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional, Union
 
 import jax
+import jax.numpy as jnp
 
 from probjax.utils.jaxutils import ravel_args
 from probjax.utils.typing import Array, ArrayLike, PyTree
@@ -352,7 +353,6 @@ class linear_drift(Drift):
     b: Optional[Callable[..., Array]] = None
 
     def __call__(self, t: ArrayLike, y: PyTree, *args: Any) -> PyTree:
-        import jax.numpy as jnp
 
         A_t = self.A(t) if callable(self.A) else self.A
 

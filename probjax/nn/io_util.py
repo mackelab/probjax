@@ -17,7 +17,7 @@ import jax.numpy as jnp
 import numpy as np
 from flax.jax_utils import prefetch_to_device
 from jax.experimental import multihost_utils
-from jax.sharding import Mesh, NamedSharding, PartitionSpec, Sharding
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
 from probjax.utils.typing import Device, RngKey
 
@@ -146,7 +146,11 @@ class _AsyncPrefetchIterator:
             self._raise_if_worker_failed()
             raise StopIteration
         recycled = False
-        while self._min_size > 0 and self._queue.qsize() < self._min_size and not self._queue.full():
+        while (
+            self._min_size > 0
+            and self._queue.qsize() < self._min_size
+            and not self._queue.full()
+        ):
             try:
                 self._queue.put_nowait(item)
                 recycled = True
@@ -166,10 +170,8 @@ class _AsyncPrefetchIterator:
             self._thread.join(timeout=1.0)
 
     def __del__(self):
-        try:
+        with contextlib.suppress(Exception):
             self.close()
-        except Exception:
-            pass
 
 
 def _prefetch_sharding(iterator, size, sharding, min_fill: float = 0.5):
@@ -541,11 +543,9 @@ class SimulationDataset:
 
     def __del__(self) -> None:
         """Cleanup: stop producer thread when object is deleted."""
-        try:
+        # Suppress exceptions during cleanup to avoid errors in __del__.
+        with contextlib.suppress(Exception):
             self.close()
-        except Exception:
-            # Suppress exceptions during cleanup to avoid errors in __del__
-            pass
 
     def __len__(self) -> int:
         return self._dataset_size
@@ -581,10 +581,7 @@ class SimulationDataset:
         if rng is not None and seed is not None:
             raise ValueError("Provide either rng or seed, not both.")
         if rng is None:
-            if seed is None:
-                rng = self._initial_rng
-            else:
-                rng = jax.random.PRNGKey(int(seed))
+            rng = self._initial_rng if seed is None else jax.random.PRNGKey(int(seed))
         else:
             rng = jax.random.PRNGKey(int(rng)) if isinstance(rng, int) else rng
         self._initial_rng = rng
@@ -1437,10 +1434,8 @@ class DataLoader:
             self._executor.shutdown(wait=False, cancel_futures=True)
 
     def __del__(self):
-        try:
+        with contextlib.suppress(Exception):
             self.close()
-        except Exception:
-            pass
 
     def __enter__(self):
         return self

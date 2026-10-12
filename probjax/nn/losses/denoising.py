@@ -61,7 +61,9 @@ def _finalize_loss(
         keep = jnp.broadcast_to(~jnp.asarray(loss_mask, dtype=bool), loss.shape)
         num_elements = jnp.sum(keep, axis=axis)
         loss = jnp.where(
-            num_elements > 0, jnp.sum(loss, axis=axis) / jnp.maximum(num_elements, 1), 0.0
+            num_elements > 0,
+            jnp.sum(loss, axis=axis) / jnp.maximum(num_elements, 1),
+            0.0,
         )
     else:
         loss = jnp.sum(loss, axis=axis)

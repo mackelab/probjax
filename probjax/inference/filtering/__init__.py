@@ -72,14 +72,13 @@ __all__ += [
     "smooth_gaussian_path",
 ]
 
-from probjax.inference.filtering.streaming import (
-    init_streaming_window,
-    append_streaming_window,
-    streaming_window_trace,
-)
-
 from probjax.inference.filtering.joint import (
     sample_joint_paths,
+)
+from probjax.inference.filtering.streaming import (
+    append_streaming_window,
+    init_streaming_window,
+    streaming_window_trace,
 )
 
 __all__ += [

@@ -143,7 +143,9 @@ def _positive(
     raise ValueError(f"Unknown positivity transform {transform!r}.")
 
 
-def _bin_positions(raw_widths: Array, lo: float, hi: float, min_bin_size: float) -> Array:
+def _bin_positions(
+    raw_widths: Array, lo: float, hi: float, min_bin_size: float
+) -> Array:
     """``(..., num_bins)`` raw widths -> ``(..., num_bins + 1)`` boundaries.
 
     The endpoints land on ``lo`` / ``hi`` exactly, and every bin is at least
@@ -439,7 +441,9 @@ class BaseSplineConfig(BaseBijectorConfig):
                 f"{self.min_bin_size} * {self.num_bins}."
             )
         if self.x_max <= self.x_min or self.y_max <= self.y_min:
-            raise ValueError("Spline bounds must satisfy x_min < x_max and y_min < y_max.")
+            raise ValueError(
+                "Spline bounds must satisfy x_min < x_max and y_min < y_max."
+            )
 
     @property
     def _bounds(self) -> dict:
@@ -467,7 +471,6 @@ class BaseSplineConfig(BaseBijectorConfig):
             params[..., 2 * n :], self.min_knot_slope, self.max_knot_slope
         )
         return x_pos, y_pos, slopes
-
 
 
 @dataclass
@@ -631,9 +634,7 @@ class SumOfSquaresBijectorConfig(BaseBijectorConfig):
 
     def unpack(self, params: Array) -> Tuple[Array, ...]:
         raw, constant = params[..., :-1], params[..., -1]
-        coeffs = jnp.reshape(
-            raw, raw.shape[:-1] + (self.num_polys, self.degree + 1)
-        )
+        coeffs = jnp.reshape(raw, raw.shape[:-1] + (self.num_polys, self.degree + 1))
         coeffs = coeffs.at[..., 0].add(math.sqrt(1.0 / self.num_polys))
         norm = jnp.sqrt(_EPS + jnp.sum(coeffs[..., 0] ** 2, axis=-1))
         return coeffs / norm[..., None, None], constant
@@ -786,7 +787,14 @@ class MLPConditionerConfig(ConditionerConfigProtocol):
         )
 
     def build_autoregressive(
-        self, in_out_features, params_dim, bijector, *, context_features, output_order, rngs
+        self,
+        in_out_features,
+        params_dim,
+        bijector,
+        *,
+        context_features,
+        output_order,
+        rngs,
     ):
         from probjax.nn.generative.nflows.autoregressive import AutoregressiveMLP
 
@@ -884,11 +892,20 @@ class TransformerConditionerConfig(ConditionerConfigProtocol):
         )
 
     def build_autoregressive(
-        self, in_out_features, params_dim, bijector, *, context_features, output_order, rngs
+        self,
+        in_out_features,
+        params_dim,
+        bijector,
+        *,
+        context_features,
+        output_order,
+        rngs,
     ):
         del in_out_features  # sequence length is implicit in the input shape
         del output_order  # causal attention makes the output order implicit
-        from probjax.nn.generative.nflows.autoregressive import AutoregressiveTransformer
+        from probjax.nn.generative.nflows.autoregressive import (
+            AutoregressiveTransformer,
+        )
 
         return _ScalarTokenConditioner(
             AutoregressiveTransformer(

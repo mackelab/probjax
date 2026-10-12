@@ -10,7 +10,7 @@ dimension, drawing ``x_i`` from the family before moving on.
 """
 
 import weakref
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Optional
 
 import jax
 import jax.numpy as jnp
@@ -22,7 +22,6 @@ from probjax.nn.generative.autoregressive.config import (
     MLPARConditionerConfig,
 )
 from probjax.nn.generative.base import GenerativeModel
-from probjax.nn.generative.sampling import _ExportedSampler
 from probjax.nn.generative.standardize import StandardizingMixin
 
 __all__ = [
@@ -169,7 +168,9 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
         if self.family.discrete:
             encoded = encoded.reshape(encoded.shape[:-2] + (-1,))
         flat = self.conditioner(encoded, context, rng=rng)
-        return flat.reshape(flat.shape[:-1] + (self.input_dim, self.family.params_dim()))
+        return flat.reshape(
+            flat.shape[:-1] + (self.input_dim, self.family.params_dim())
+        )
 
     def conditional_logpdfs(self, x, context=None):
         """``log p(x_i | x_<i)`` for every ``i``, shape ``(..., input_dim)``."""
@@ -326,9 +327,7 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
         )
         def step(carry, i, model):
             x, prev_feat = carry
-            params_i = model.conditioner.predict_next_params(
-                prev_feat, i, context
-            )
+            params_i = model.conditioner.predict_next_params(prev_feat, i, context)
             natural = family.unpack(params_i)
             draw = family.rvs(keys[i], natural).astype(dtype)
             value = draw
@@ -450,9 +449,7 @@ class MixtureAutoregressive(Autoregressive):
     """Mixture-density conditionals: the KDE-like flexible head."""
 
     def __init__(self, input_dim, rngs, *, num_components: int = 10, **kwargs):
-        super().__init__(
-            input_dim, ARFamily.mixture(num_components), rngs, **kwargs
-        )
+        super().__init__(input_dim, ARFamily.mixture(num_components), rngs, **kwargs)
 
 
 class SplineAutoregressive(Autoregressive):
@@ -462,10 +459,10 @@ class SplineAutoregressive(Autoregressive):
     this predicts a spline-warped *distribution* per dimension.
     """
 
-    def __init__(self, input_dim, rngs, *, num_bins: int = 8, bound: float = 5.0, **kwargs):
-        super().__init__(
-            input_dim, ARFamily.spline(num_bins, bound), rngs, **kwargs
-        )
+    def __init__(
+        self, input_dim, rngs, *, num_bins: int = 8, bound: float = 5.0, **kwargs
+    ):
+        super().__init__(input_dim, ARFamily.spline(num_bins, bound), rngs, **kwargs)
 
 
 class HistogramAutoregressive(Autoregressive):

@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.base import SMCResult, RunnerMixin
+from probjax.inference.base import RunnerMixin, SMCResult
 from probjax.utils.jaxutils import WithProgressBarAPI
 
 
@@ -258,7 +258,6 @@ class SMC(WithProgressBarAPI, RunnerMixin):
             valid & (_sampler_state(state).tempering_param >= 1.0),
             key,
         )
-
 
     def run(self, key, state, tempering_params, params, *, initial_log_evidence=None):
         if self.verbose:
