@@ -437,7 +437,6 @@ def make_kernel_primitive(
 
     # -- batching (scoped to this primitive) --------------------------------
     def _batching(axis_data, vals_in, dims_in, *, present, **static):
-        from jax._src.interpreters.batching import not_mapped
 
         vmap_size = axis_data.size
         operands = spec.present_operands(present)
@@ -445,7 +444,7 @@ def make_kernel_primitive(
         merged = []
         for op, val, dim in zip(operands, vals_in, dims_in, strict=True):
             has_batch = len(op.dims) > 0 and op.dims[0] == "batch"
-            if dim is not not_mapped:
+            if dim is not None:
                 if not has_batch:
                     raise NotImplementedError(
                         f"{spec.name}: cannot vmap over operand '{op.name}' "
@@ -679,13 +678,11 @@ def batch_shard(fn: Callable) -> Callable:
 
 
 def _cp_general_batching(axis_data, vals_in, dims_in, *, call, **params):
-    from jax._src.interpreters.batching import not_mapped
-
     def fn(*args):
         out = jax.core.eval_jaxpr(call.jaxpr, call.consts, *args)
         return out
 
-    in_axes = tuple(None if d is not_mapped else int(d) for d in dims_in)
+    in_axes = tuple(None if d is None else int(d) for d in dims_in)
     out = jax.vmap(fn, in_axes=in_axes, out_axes=0, axis_size=axis_data.size)(*vals_in)
     return out, [0] * len(out)
 

@@ -334,6 +334,14 @@ LOGDET_EXPLICIT_CASES: list[AtomicCase] = [
     ),
 ]
 
+# JAX >= 0.11 has a dedicated log2 primitive (older versions decompose it).
+if hasattr(jax.lax, "log2_p"):
+    _LOG2_CASE = AtomicCase(
+        "log2", jax.lax.log2_p, jnp.log2, lambda: jnp.linspace(0.1, 2.0, 7)
+    )
+    ATOMIC_ROUNDTRIP_CASES.append(_LOG2_CASE)
+    LOGDET_EXPLICIT_CASES.append(_LOG2_CASE)
+
 
 MANUAL_COVERAGE: list[ManualCoverage] = [
     # Structural log-det rules. These are rearrangements (log|J| = 0) that used

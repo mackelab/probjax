@@ -424,6 +424,16 @@ def _register_elementwise(forward_prim, inverse_prim_or_fn, logdet, **kwargs):
     )
 
 
+# log2 (primitive in JAX >= 0.11): x = 2**y, dx/dy = ln2 * 2**y
+if hasattr(jax.lax, "log2_p"):
+    _register_elementwise(
+        jax.lax.log2_p,
+        _UNIVARIATE_INVERSES[jax.lax.log2_p],
+        lambda out_val, in_val, params: (
+            jnp.sum(out_val * jnp.log(2.0)) + out_val.size * jnp.log(jnp.log(2.0))
+        ),
+    )
+
 # sin/cos: inverse asin/acos, both with |d/dy| = 1/sqrt(1 - y^2)
 _register_elementwise(
     jax.lax.sin_p,

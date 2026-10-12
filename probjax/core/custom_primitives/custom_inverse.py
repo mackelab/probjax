@@ -728,7 +728,7 @@ def batch_custom_inverse_call(
             inv_argnum=inv_argnum,
             target_in_indices=target_in_indices,
         )
-        out_dims = [batching.not_mapped] * len(outs)
+        out_dims = [None] * len(outs)
         return outs, out_dims
 
     # Batch the forward jaxpr.

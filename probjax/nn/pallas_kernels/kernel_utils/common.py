@@ -18,6 +18,20 @@ NEG_INF = -1e15
 DEFAULT_MASK_VALUE = NEG_INF
 
 
+def dot(a, b, precision=None):
+    """2D matmul with float32 (int32 for ints) accumulation.
+
+    Replaces ``pl.dot``, removed in JAX 0.12.
+    """
+    integer = jnp.issubdtype(jnp.promote_types(a.dtype, b.dtype), jnp.integer)
+    return jnp.dot(
+        a,
+        b,
+        precision=precision,
+        preferred_element_type=jnp.int32 if integer else jnp.float32,
+    )
+
+
 def use_interpret_mode() -> bool:
     """Check if we should use interpret mode for pallas kernels.
 

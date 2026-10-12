@@ -13,6 +13,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
+from probjax.core.interpreters.inverse.utils import scan_arity
 from probjax.core.registry import REGISTRY, Context
 
 # pjit primitive import (varies by JAX version)
@@ -76,8 +77,7 @@ def inverse_cost_fn(eqn, known_invars, known_outvars):
         return jnp.inf
 
     if eqn.primitive is jax.lax.scan_p:
-        num_consts = eqn.params["num_consts"]
-        num_carry = eqn.params["num_carry"]
+        num_consts, num_carry = scan_arity(eqn.params)
         known_const = all(known_invars[:num_consts])
         known_xs = all(known_invars[num_consts + num_carry :])
         known_carry_out = all(known_outvars[:num_carry])

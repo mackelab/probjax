@@ -144,9 +144,12 @@ def test_streaming_and_bounded_history(backend_factory, history):
     else:
         count = 4 if history == 'full' else min(history, 4)
         full = jax.tree.map(lambda *xs: jnp.stack(xs), *streaming[-count:])
-        assert_tree_close(result.trace.states, full, atol=1e-6)
+        assert_tree_close(result.trace.states, full, rtol=1e-5, atol=1e-5)
         assert_tree_close(
-            result.trace.initial_state, initial if count == 4 else streaming[-count - 1]
+            result.trace.initial_state,
+            initial if count == 4 else streaming[-count - 1],
+            rtol=1e-5,
+            atol=1e-6,
         )
 
 

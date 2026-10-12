@@ -9,7 +9,6 @@ from jax._src.api_util import debug_info, flatten_fun_nokwargs
 from jax._src.interpreters import batching as batching_src
 from jax._src.interpreters import partial_eval as pe
 from jax.extend.core import ClosedJaxpr
-from jax.interpreters import batching
 from jax.tree_util import tree_leaves
 
 T = TypeVar("T")
@@ -147,12 +146,12 @@ def move_mapped_axes_to_front(args, in_dims):
     new_args = []
     in_axes = []
     for x, d in zip(args, in_dims, strict=False):
-        if d is batching.not_mapped:
+        if d is None:
             new_args.append(x)
-            in_axes.append(batching.not_mapped)
+            in_axes.append(None)
         else:
             new_args.append(jnp.moveaxis(x, d, 0) if d != 0 else x)
             in_axes.append(0)
 
-    any_batched = any(d is not batching.not_mapped for d in in_axes)
+    any_batched = any(d is not None for d in in_axes)
     return new_args, in_axes, any_batched

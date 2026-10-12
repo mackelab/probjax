@@ -234,7 +234,7 @@ def _rv_batching_rule(axis_data, batched_args, batch_dims, **params):
     new_args, in_axes, any_batched = move_mapped_axes_to_front(batched_args, batch_dims)
     if not any_batched:
         out = Primitive.bind(rv_p, *new_args, **params)
-        return out, batching.not_mapped
+        return out, None
 
     batched_forward_jaxpr, out_axes = batch_closed_jaxpr(
         forward_jaxpr, axis_data, in_axes
@@ -242,7 +242,7 @@ def _rv_batching_rule(axis_data, batched_args, batch_dims, **params):
 
     rebound_params = dict(params, forward_jaxpr=batched_forward_jaxpr)
     out = Primitive.bind(rv_p, *new_args, **rebound_params)
-    out_axis = out_axes[0] if out_axes else batching.not_mapped
+    out_axis = out_axes[0] if out_axes else None
     return out, out_axis
 
 
