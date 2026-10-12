@@ -13,6 +13,7 @@ from flax.nnx.module import first_from
 from flax.typing import Dtype
 from jax import lax
 
+from probjax.nn.layers.feedforward import FeedForward
 from probjax.nn.pallas_kernels import (
     AttentionBias,
     AttentionMask,
@@ -34,7 +35,7 @@ from probjax.nn.sharding import (
     param_metadata,
 )
 from probjax.nn.utils import (
-    PrecisionMixin,
+    cast_output,
     filter_precision_kwargs,
     pad_to_power_of_2,
 )
@@ -49,18 +50,6 @@ from probjax.utils.typing import (
 # ---------------------------------------------------------------------------
 # Query scaling modules (pre-kernel Q scaling for SSMax / QASSMax / etc.)
 # ---------------------------------------------------------------------------
-
-
-def _zero_init_last_layer(mlp: Any, bias_value: float | None = None) -> None:
-    """Zero the last layer's kernel of an MLP so it starts as a no-op.
-
-    Optionally set the last layer's bias to a constant (e.g. 1.0 so the
-    MLP initially outputs that constant everywhere).
-    """
-    last = mlp.layers[-1]
-    last.kernel[...] = jnp.zeros_like(last.kernel[...])
-    if bias_value is not None and last.bias is not None:
-        last.bias[...] = jnp.full_like(last.bias[...], bias_value)
 
 
 class SSMaxQueryScale(nnx.Module):
@@ -226,36 +215,33 @@ class QASSMaxQueryScale(nnx.Module):
         self.head_dim = head_dim
         self.use_checkpointing = bool(use_checkpointing)
 
-        # Lazy import to avoid circular dependency
-        # (attention → nets.simple → nets.__init__ → autoregressive → attention).
-        from probjax.nn.nets.simple import MLP
-
-        mlp_kwargs: dict[str, Any] = {}
+        mlp_kwargs: dict[str, Any] = dict(dtype=dtype, rngs=rngs)
         if param_dtype is not None:
             mlp_kwargs["param_dtype"] = param_dtype
-        if dtype is not None:
-            mlp_kwargs["dtype"] = dtype
 
         # Base MLP: scalar log(n) → [num_heads * head_dim].
         # Starts outputting 1.0 everywhere (identity scaling).
-        self.base_mlp = MLP(
-            feature_dims=[1, hidden_dim, num_heads * head_dim],
-            rngs=rngs,
+        self.base_mlp = FeedForward(
+            1,
+            num_heads * head_dim,
+            hidden_features=hidden_dim,
+            out_kernel_init=nnx.initializers.zeros,
+            out_bias_init=nnx.initializers.ones,
             **mlp_kwargs,
         )
-        _zero_init_last_layer(self.base_mlp, bias_value=1.0)
 
         # Gate MLP: [head_dim] → [head_dim], shared weights across heads.
         # Applied to query of shape [..., num_heads, head_dim] — the Linear
         # operates on the last axis and broadcasts over all leading dims,
         # so each head gets a different output (different query vector in).
         # Starts outputting 0.0 → 1 + tanh(0) = 1.0 (identity).
-        self.gate_mlp = MLP(
-            feature_dims=[head_dim, hidden_dim, head_dim],
-            rngs=rngs,
+        self.gate_mlp = FeedForward(
+            head_dim,
+            head_dim,
+            hidden_features=hidden_dim,
+            out_kernel_init=nnx.initializers.zeros,
             **mlp_kwargs,
         )
-        _zero_init_last_layer(self.gate_mlp)
 
     def _scale_query(self, query: Array, kv_len: int | Array) -> Array:
         q_dtype = query.dtype
@@ -694,7 +680,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         return constrain(out, BATCH)
 
 
-class InducedSelfAttention(PrecisionMixin, nnx.Module):
+class InducedSelfAttention(nnx.Module):
     """Two-stage self-attention with learned inducing points (ISAB).
 
     Implements the Set Transformer's Induced Self-Attention Block using two
@@ -719,7 +705,8 @@ class InducedSelfAttention(PrecisionMixin, nnx.Module):
         num_heads: number of attention heads.
         attn_size: per-head dimension (defaults to ``in_features // num_heads``).
         widening_factor: expansion factor for the feedforward hidden dim.
-        mlp_cls: feedforward MLP class (default: ``probjax.nn.nets.simple.MLP``).
+        mlp_cls: feedforward class called as ``mlp_cls(feature_dims, ...)``
+            like :class:`probjax.nn.MLP` (default: :class:`FeedForward`).
         dropout_rate: dropout rate for MHA.
         q_scale_cls: optional query-scaling class for the inducing MHA.
         output_q_scale_cls: optional query-scaling class for the output MHA.
@@ -758,12 +745,13 @@ class InducedSelfAttention(PrecisionMixin, nnx.Module):
         checkpoint_inducing_ff: bool = False,
         checkpoint_output_ff: bool = False,
     ):
-        super().__init__(
+        precision_kwargs = dict(
             dtype=dtype,
             precision=precision,
             param_dtype=param_dtype,
             preferred_element_type=preferred_element_type,
         )
+        self.preferred_element_type = preferred_element_type
         if in_features <= 0:
             raise ValueError(f"`in_features` must be positive, got {in_features}.")
         if num_inducing_points <= 0:
@@ -782,7 +770,6 @@ class InducedSelfAttention(PrecisionMixin, nnx.Module):
         )
 
         # Precision and dtype settings.
-        precision_kwargs = self.active_precision_kwargs()
 
         # --- MHA sub-layers ---
         # `attention_fn` is opt-in: omitted, both MABs keep flax's default
@@ -816,22 +803,25 @@ class InducedSelfAttention(PrecisionMixin, nnx.Module):
         )
 
         # --- Row-wise feedforward (rFF) sub-layers ---
-        if mlp_cls is None:
-            from probjax.nn.nets.simple import MLP as _MLP
+        hidden_features = widening_factor * in_features
 
-            mlp_cls = _MLP
+        def make_ff():
+            if mlp_cls is None:
+                return FeedForward(
+                    in_features,
+                    in_features,
+                    hidden_features=hidden_features,
+                    rngs=rngs,
+                    **filter_precision_kwargs(FeedForward, **precision_kwargs),
+                )
+            return mlp_cls(
+                [in_features, hidden_features, in_features],
+                rngs=rngs,
+                **filter_precision_kwargs(mlp_cls, **precision_kwargs),
+            )
 
-        ff_dims = [in_features, widening_factor * in_features, in_features]
-        self.inducing_ff = mlp_cls(
-            ff_dims,
-            rngs=rngs,
-            **filter_precision_kwargs(mlp_cls, **precision_kwargs),
-        )
-        self.output_ff = mlp_cls(
-            ff_dims,
-            rngs=rngs,
-            **filter_precision_kwargs(mlp_cls, **precision_kwargs),
-        )
+        self.inducing_ff = make_ff()
+        self.output_ff = make_ff()
 
         # --- Normalization layers ---
         # Each MAB needs: pre-attn norm (on Q), pre-attn norm (on KV),
@@ -1046,7 +1036,7 @@ class InducedSelfAttention(PrecisionMixin, nnx.Module):
                 kv_len=kv_len,
             )
 
-        out = self.cast_output(out)
+        out = cast_output(out, self.preferred_element_type)
         return out
 
 

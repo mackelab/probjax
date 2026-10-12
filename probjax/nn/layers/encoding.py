@@ -8,7 +8,6 @@ from flax import nnx
 from flax.typing import Initializer
 
 from probjax.nn.sharding import BATCH, constrain
-from probjax.nn.utils import PrecisionMixin
 from probjax.utils.typing import (
     Array,
     ArrayLike,
@@ -373,7 +372,7 @@ class RotaryPosEncode(nnx.Module):
         return self(x, idx=coords, offset=offset)
 
 
-class LearnablePosEncode(PrecisionMixin, nnx.Module):
+class LearnablePosEncode(nnx.Module):
     """Learned positional embedding module."""
 
     def __init__(
@@ -401,13 +400,8 @@ class LearnablePosEncode(PrecisionMixin, nnx.Module):
             rngs: Random number generators.
         """
         # precision / preferred_element_type are accepted for API consistency
-        # and stored by PrecisionMixin, but not used by this layer.
-        super().__init__(
-            dtype=dtype,
-            precision=precision,
-            param_dtype=param_dtype,
-            preferred_element_type=preferred_element_type,
-        )
+        # but not used by this layer.
+        del precision, preferred_element_type
         if in_out_features <= 0:
             raise ValueError("in_out_features must be positive")
         if max_seq_len <= 0:
@@ -471,7 +465,7 @@ class LearnablePosEncode(PrecisionMixin, nnx.Module):
         return constrain(out, BATCH)
 
 
-class GaussianFourierEmbedding(PrecisionMixin, nnx.Module):
+class GaussianFourierEmbedding(nnx.Module):
     """Gaussian Fourier embedding module for continuous inputs like time."""
 
     def __init__(
@@ -506,12 +500,9 @@ class GaussianFourierEmbedding(PrecisionMixin, nnx.Module):
         Raises:
             ValueError: If input_dim or output_dim are not positive.
         """
-        super().__init__(
-            dtype=dtype,
-            precision=precision,
-            param_dtype=param_dtype,
-            preferred_element_type=preferred_element_type,
-        )
+        self.dtype = dtype
+        self.precision = precision
+        self.preferred_element_type = preferred_element_type
         if in_features <= 0:
             raise ValueError("input_dim must be positive")
         if out_features <= 0:
@@ -562,8 +553,6 @@ class GaussianFourierEmbedding(PrecisionMixin, nnx.Module):
             precision=self.precision,
             preferred_element_type=self.preferred_element_type,
         )
-        # Ensure correct preferred element type
-        frequencies = self.cast_output(frequencies)
 
         # Apply sin and cos
         cos_features = jnp.cos(frequencies)

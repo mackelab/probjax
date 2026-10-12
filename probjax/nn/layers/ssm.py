@@ -8,7 +8,6 @@ from probjax.nn.pallas_kernels import compute_mamba_scan
 from probjax.nn.pallas_kernels import ssd as pallas_ssd
 from probjax.nn.sharding import BATCH, constrain, replicate
 from probjax.nn.utils import (
-    PrecisionMixin,
     filter_precision_kwargs,
 )
 from probjax.utils.typing import DTypeLike, PrecisionLike
@@ -189,7 +188,7 @@ def mamba_scan(
     )
 
 
-class MambaCell(PrecisionMixin, RecurrentCell):
+class MambaCell(RecurrentCell):
     """Mamba cell mapping [B, L, D] → [B, L, D].
 
     Wraps the Pallas Mamba scan kernel with token-wise projections to generate
@@ -222,7 +221,7 @@ class MambaCell(PrecisionMixin, RecurrentCell):
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
     ):
-        super().__init__(
+        precision_kwargs = dict(
             dtype=dtype,
             precision=precision,
             param_dtype=param_dtype,
@@ -242,7 +241,6 @@ class MambaCell(PrecisionMixin, RecurrentCell):
         self.d = nnx.Param(jnp.ones((1, model_dim), dtype=jnp.float32))
 
         # Precision/dtype kwargs for linear projections
-        precision_kwargs = self.active_precision_kwargs()
         precision_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
 
         # Token-wise generators for b, c, delta
@@ -309,7 +307,7 @@ def ssd(
     return pallas_ssd(q, k, v, log_alpha, h0)
 
 
-class SSDCell(PrecisionMixin, RecurrentCell):
+class SSDCell(RecurrentCell):
     """SSD (Mamba-2 style) cell mapping [B, L, D] → [B, L, D].
 
     Uses the Pallas SSD kernel with single group and `num_heads` value pathways.
@@ -331,7 +329,7 @@ class SSDCell(PrecisionMixin, RecurrentCell):
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
     ):
-        super().__init__(
+        precision_kwargs = dict(
             dtype=dtype,
             precision=precision,
             param_dtype=param_dtype,
@@ -345,7 +343,6 @@ class SSDCell(PrecisionMixin, RecurrentCell):
             raise ValueError("reduce must be 'sum' or 'mean'")
         self.reduce = reduce
 
-        precision_kwargs = self.active_precision_kwargs()
         precision_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
 
         self.to_q = nnx.Linear(model_dim, sd, rngs=rngs, **precision_kwargs)
@@ -358,7 +355,6 @@ class SSDCell(PrecisionMixin, RecurrentCell):
         self.to_alpha = nnx.Linear(
             model_dim, self.num_heads, rngs=rngs, **precision_kwargs
         )
-        self.post = None  # by construction preserves model_dim
 
     def __call__(self, inputs: jax.Array, *, rng: jax.Array | None = None) -> jax.Array:
         del rng

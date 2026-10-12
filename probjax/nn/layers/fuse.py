@@ -1,12 +1,13 @@
+from functools import partial
 from typing import Callable, Literal
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from probjax.nn.layers.feedforward import FeedForward
 from probjax.nn.layers.reg import DropPath
 from probjax.nn.utils import (
-    PrecisionMixin,
     filter_precision_kwargs,
 )
 from probjax.utils.typing import (
@@ -48,63 +49,11 @@ class BinaryFuse(nnx.Module):
     ) -> Array: ...
 
 
-class MLPConditioner(PrecisionMixin, nnx.Module):
-    """Two-layer MLP used as the default fusion projection."""
-
-    def __init__(
-        self,
-        in_features: int,
-        out_features: int,
-        *,
-        hidden_features: int | None = None,
-        activation: Callable[[Array], Array] = jax.nn.gelu,
-        dtype: DTypeLike | None = None,
-        param_dtype: DTypeLike | None = None,
-        precision: PrecisionLike | None = None,
-        preferred_element_type: DTypeLike | None = None,
-        rngs: nnx.Rngs,
-    ):
-        if in_features <= 0:
-            raise ValueError("in_features must be positive")
-        if out_features <= 0:
-            raise ValueError("out_features must be positive")
-
-        super().__init__(
-            dtype=dtype,
-            precision=precision,
-            param_dtype=param_dtype,
-            preferred_element_type=preferred_element_type,
-        )
-        hidden_features = hidden_features or max(in_features, out_features)
-        if hidden_features <= 0:
-            raise ValueError("hidden_features must be positive")
-
-        precision_kwargs = self.active_precision_kwargs()
-        linear_kwargs = filter_precision_kwargs(nnx.Linear, **precision_kwargs)
-
-        self.activation = activation
-        self.hidden = nnx.Linear(
-            in_features,
-            hidden_features,
-            rngs=rngs,
-            **linear_kwargs,
-        )
-        self.proj = nnx.Linear(
-            hidden_features,
-            out_features,
-            rngs=rngs,
-            kernel_init=nnx.initializers.zeros,
-            **linear_kwargs,
-        )
-
-    def __call__(self, x: Array, *, rng: jax.Array | None = None) -> Array:
-        del rng
-        x = self.hidden(x)
-        x = self.activation(x)
-        return self.proj(x)
+# Default context projection: starts as a no-op so fused blocks begin at identity.
+ZeroInitFeedForward = partial(FeedForward, out_kernel_init=nnx.initializers.zeros)
 
 
-class AdditiveFuse(PrecisionMixin, ContextFuse):
+class AdditiveFuse(ContextFuse):
     """Additive fusion module for combining input and context."""
 
     def __init__(
@@ -116,7 +65,7 @@ class AdditiveFuse(PrecisionMixin, ContextFuse):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        layer_cls: ModuleLikeType = MLPConditioner,
+        layer_cls: ModuleLikeType = ZeroInitFeedForward,
         rngs: nnx.Rngs,
     ):
         """Additive fusion module that applies linear transformation to context
@@ -139,13 +88,12 @@ class AdditiveFuse(PrecisionMixin, ContextFuse):
         if context_features <= 0:
             raise ValueError("context_features must be positive")
 
-        super().__init__(
+        precision_kwargs = dict(
             dtype=dtype,
             precision=precision,
             param_dtype=param_dtype,
             preferred_element_type=preferred_element_type,
         )
-        precision_kwargs = self.active_precision_kwargs()
         precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
 
         self.linear = layer_cls(
@@ -171,7 +119,7 @@ class AdditiveFuse(PrecisionMixin, ContextFuse):
         return x + self.linear(context)
 
 
-class AffineFuse(PrecisionMixin, ContextFuse):
+class AffineFuse(ContextFuse):
     """Affine fusion module that applies scale and bias transformations."""
 
     def __init__(
@@ -184,7 +132,7 @@ class AffineFuse(PrecisionMixin, ContextFuse):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        layer_cls: ModuleLikeType = MLPConditioner,
+        layer_cls: ModuleLikeType = ZeroInitFeedForward,
         rngs: nnx.Rngs,
     ):
         """Affine fusion module that applies scale and bias to the input
@@ -211,13 +159,12 @@ class AffineFuse(PrecisionMixin, ContextFuse):
         if context_features <= 0:
             raise ValueError("context_features must be positive")
 
-        super().__init__(
+        precision_kwargs = dict(
             dtype=dtype,
             precision=precision,
             param_dtype=param_dtype,
             preferred_element_type=preferred_element_type,
         )
-        precision_kwargs = self.active_precision_kwargs()
         precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
 
         self.linear_scale_bias = layer_cls(
@@ -247,7 +194,7 @@ class AffineFuse(PrecisionMixin, ContextFuse):
         return x * scale + bias
 
 
-class ConcatFuse(PrecisionMixin, ContextFuse):
+class ConcatFuse(ContextFuse):
     """Concatenation fusion module that combines input and context features."""
 
     def __init__(
@@ -259,7 +206,7 @@ class ConcatFuse(PrecisionMixin, ContextFuse):
         param_dtype: DTypeLike | None = None,
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
-        layer_cls: ModuleLikeType = MLPConditioner,
+        layer_cls: ModuleLikeType = ZeroInitFeedForward,
         rngs: nnx.Rngs,
     ):
         """Concatenation fusion module that linearly transforms context
@@ -282,13 +229,12 @@ class ConcatFuse(PrecisionMixin, ContextFuse):
         if context_features <= 0:
             raise ValueError("context_features must be positive")
 
-        super().__init__(
+        precision_kwargs = dict(
             dtype=dtype,
             precision=precision,
             param_dtype=param_dtype,
             preferred_element_type=preferred_element_type,
         )
-        precision_kwargs = self.active_precision_kwargs()
         precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
 
         self.ctx_layer = layer_cls(
@@ -366,7 +312,7 @@ class AdditiveBinaryFuse(BinaryFuse):
         return x + y
 
 
-class GatedFuse(PrecisionMixin, BinaryFuse):
+class GatedFuse(BinaryFuse):
     """Gated fusion module that combines input and context features."""
 
     def __init__(
@@ -381,7 +327,7 @@ class GatedFuse(PrecisionMixin, BinaryFuse):
         precision: PrecisionLike | None = None,
         preferred_element_type: DTypeLike | None = None,
         mode: Literal["convex", "left", "right"] = "right",
-        layer_cls: ModuleLikeType = MLPConditioner,
+        layer_cls: ModuleLikeType = ZeroInitFeedForward,
         rngs: nnx.Rngs,
     ):
         """Gated fusion module that linearly transforms context
@@ -404,14 +350,13 @@ class GatedFuse(PrecisionMixin, BinaryFuse):
         if context_features <= 0:
             raise ValueError("context_features must be positive")
 
-        super().__init__(
+        precision_kwargs = dict(
             dtype=dtype,
             precision=precision,
             param_dtype=param_dtype,
             preferred_element_type=preferred_element_type,
         )
 
-        precision_kwargs = self.active_precision_kwargs()
         precision_kwargs = filter_precision_kwargs(layer_cls, **precision_kwargs)
 
         self.mode = mode

@@ -8,7 +8,6 @@ from probjax.nn.layers.ssm import LRUCell
 from probjax.nn.nets.simple import MLP
 from probjax.nn.utils import (
     DEFAULT_MODULE,
-    PrecisionMixin,
     filter_precision_kwargs,
 )
 from probjax.utils.typing import (
@@ -20,7 +19,7 @@ from probjax.utils.typing import (
 )
 
 
-class SSMModel(PrecisionMixin, nnx.Module):
+class SSMModel(nnx.Module):
     """Stacked state-space sequence model with optional bidirectionality.
 
     - Stacks SSM cells (default: LRUCell) and MLP residual blocks.
@@ -134,7 +133,7 @@ class SSMModel(PrecisionMixin, nnx.Module):
                 f"dropout_rate must be between 0.0 and 1.0, got {dropout_rate}"
             )
 
-        super().__init__(
+        precision_kwargs = dict(
             dtype=dtype,
             precision=precision,
             param_dtype=param_dtype,
@@ -152,7 +151,6 @@ class SSMModel(PrecisionMixin, nnx.Module):
         self.skip_connection_mlp = skip_connection_mlp
 
         # Precision and dtype settings
-        precision_kwargs = self.active_precision_kwargs()
 
         # Initialize linear layers with precision kwargs
         init_default = (
