@@ -27,7 +27,19 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from probjax.utils.typing import PyTree, Array
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    Union,
+    runtime_checkable,
+)
+
+from probjax.utils.typing import Array, PyTree
 
 import jax.numpy as jnp
 import numpy as np

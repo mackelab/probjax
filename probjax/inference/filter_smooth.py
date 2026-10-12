@@ -6,6 +6,8 @@ import optax
 from jax.random import PRNGKey
 from jax.typing import ArrayLike
 
+from probjax.utils.typing import PyTree
+
 from probjax.inference.filtering.base import FilterInfo, FilterKernel, FilterState
 from probjax.inference.filtering.smoothing import (
     particle_smoother,

@@ -2,7 +2,7 @@ import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Protocol, Sequence, PyTree
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Protocol, Sequence
 
 from jax.extend.core import JaxprEqn, Literal
 from jaxtyping import Array

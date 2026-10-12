@@ -10,7 +10,7 @@ from blackjax.smc import base as bj_smc_base
 
 from probjax.inference.base import Kernel
 from probjax.utils.jaxutils import API
-from probjax.utils.typing import Array, PyTree, RngKey
+from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 SMCState = bj_smc_base.SMCState
 
