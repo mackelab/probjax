@@ -117,9 +117,7 @@ def step(
     """
 
     def objective(flow_params):
-        samples = _draw(
-            graphdef, flow_params, rest, rng_key, event_dim, num_samples
-        )
+        samples = _draw(graphdef, flow_params, rest, rng_key, event_dim, num_samples)
         # Sticking the landing: with the entropy term's parameters detached the
         # score-function part of the gradient drops out, and it is exactly zero
         # in expectation -- so this removes variance without adding bias.

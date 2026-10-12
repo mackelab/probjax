@@ -48,7 +48,7 @@ ruff check --fix .
 ```bash
 # Generate tutorial pages before running documentation tests
 python -m pip install -r docs/requirements.txt matplotlib
-python scripts/convert_notebooks.py
+python docs/scripts/convert_notebooks.py
 
 # Run the default CPU suite (GPU, mesh and benchmarks are opt-in)
 JAX_PLATFORMS=cpu pytest
@@ -132,8 +132,8 @@ def function(param1: int, param2: str) -> bool:
 
 ```bash
 python -m pip install -r docs/requirements.txt matplotlib
-python scripts/convert_notebooks.py
-python scripts/convert_notebooks.py --check
+python docs/scripts/convert_notebooks.py
+python docs/scripts/convert_notebooks.py --check
 pytest tests/test_docs.py --benchmark-disable
 zensical build --strict
 zensical serve

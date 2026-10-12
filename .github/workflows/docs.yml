@@ -33,7 +33,7 @@ jobs:
           pip install -e .
 
       - name: Convert tutorial notebooks
-        run: python scripts/convert_notebooks.py
+        run: python docs/scripts/convert_notebooks.py
 
       - name: Build documentation
         run: zensical build --strict

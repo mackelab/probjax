@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import weakref
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
-import weakref
 
 from jax.extend.core import Jaxpr, JaxprEqn, Literal
 

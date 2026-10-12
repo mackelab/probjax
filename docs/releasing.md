@@ -23,8 +23,8 @@ by the release regression tests. This candidate is not yet publication-ready.
 ```bash
 python -m pip install -e ".[dev]"
 python -m pip install -r docs/requirements.txt matplotlib
-python scripts/convert_notebooks.py
-python scripts/convert_notebooks.py --check
+python docs/scripts/convert_notebooks.py
+python docs/scripts/convert_notebooks.py --check
 JAX_PLATFORMS=cpu pytest tests/test_docs.py --benchmark-disable
 zensical build --strict
 ```

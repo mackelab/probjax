@@ -4,6 +4,7 @@ from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 import jax
 import jax.numpy as jnp
 from blackjax.base import Info, SamplingAlgorithm, State
+
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 
@@ -100,7 +101,7 @@ def build_kernel(
             if num_steps > 1:
                 carry = (new_inner_state, new_inner_info)
 
-                def one_step(carry, key):
+                def one_step(carry, key, k=k, logdensity_k=logdensity_k, kwargs=kwargs):
                     state, info = carry
                     kernel_step = _kernel_builders[k](logdensity_k, **kwargs)
                     params = (
@@ -109,9 +110,9 @@ def build_kernel(
                         else None
                     )
                     try:
-                        state, info = kernel_step(key, state, params)  # noqa: B023
+                        state, info = kernel_step(key, state, params)
                     except TypeError:
-                        state, info = kernel_step(key, state)  # noqa: B023
+                        state, info = kernel_step(key, state)
                     return (state, info), None
 
                 (new_inner_state, new_inner_info), _ = jax.lax.scan(
