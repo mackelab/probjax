@@ -26,9 +26,9 @@ from probjax.nn.generative.nflows.config import (
     SumOfSquaresBijectorConfig,
     UMNNBijectorConfig,
 )
+from probjax.nn.training import fit
 from probjax.stats.bijective.monotone import _solve_increasing
 from probjax.stats.bijective.rational_quadratic import _safe_quadratic_root
-from probjax.stats.fit import fit
 
 ALL_CONFIGS = [
     pytest.param(ShiftBijectorConfig(), id="shift"),
@@ -253,7 +253,7 @@ def test_fit_clips_gradients_by_default():
 
 def test_fit_schedule_decays_the_learning_rate():
     """warmup_cosine must actually end below where it started."""
-    from probjax.stats.fit import _build_optimizer
+    from probjax.nn.training.kernel import _build_optimizer
 
     tx = _build_optimizer(1e-2, 100, "warmup_cosine", None)
     params = {"w": jnp.zeros(1)}

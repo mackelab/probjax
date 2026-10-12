@@ -18,7 +18,7 @@ from probjax.nn.generative.nflows.config import (
     default_hidden_dims,
     resolve_hidden_dims,
 )
-from probjax.stats.fit import _resolve_batch_size, _resolve_num_steps
+from probjax.nn.training.batches import _resolve_batch_size, _resolve_num_steps
 
 # ---------------------------------------------------------------------------
 # The width rule

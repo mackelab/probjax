@@ -11,7 +11,8 @@ from Flax NNX use the [Flax API reference](https://flax.readthedocs.io/en/latest
 ## Training and EMA
 
 Generative models share `FitMixin`; other NNX modules can inherit it alongside
-`nnx.Module` and implement `loss(rng, data, ...)`. The functional `probjax.nn.fit`
+`nnx.Module` and implement `loss(rng, batch)`, where a batch is whatever pytree
+you pass to `fit`. The functional `probjax.nn.fit`
 also works with plain parameter pytrees. Existing return values are unchanged:
 module fitting returns losses, and functional fitting returns `(params, losses)`.
 
@@ -70,7 +71,7 @@ propagate to the caller. End hooks run after successful completion, including
 early stopping, but not after an exception. Snapshots are read-only; modify the
 update rule through an Optax optimizer or a custom kernel rather than mutating
 callback state.
-The model itself receives final weights only after training; evaluate snapshots
+The model itself receives final params only after training; evaluate snapshots
 rather than the original model inside callbacks.
 
 `state.step` counts completed updates. Step callbacks receive post-update
@@ -184,7 +185,8 @@ Subclass hooks let families customize training without overriding `fit`:
 | Hook | Purpose |
 | --- | --- |
 | `_prepare_fit(data)` | Prepare model state and return the data to train on |
-| `_fit_loss(rng, batch)` | Customize batch-to-loss dispatch |
+| `_fit_batch(data, **extras)` | Build the batch from `fit`'s data; extra `fit` keywords arrive as `extras` (default: `data` unchanged, extras rejected) |
+| `_fit_loss(rng, batch)` | Customize batch-to-loss dispatch (default: `loss(rng, batch)`) |
 | `_fit_param_filter()` | Select trainable NNX variables; defaults to `nnx.Param` |
 | `_default_fit_kwargs()` | Supply defaults; explicit caller options win |
 | `_fit_callbacks()` | Prepend model-specific callbacks |
@@ -195,6 +197,7 @@ are carried between steps. Normalizing flows and autoregressive models use
 module graph, so replacing a submodule or changing non-parameter state between
 calls is reflected in the next fit.
 
+::: probjax.nn.training
 ::: probjax.nn.fit
 ::: probjax.nn.FitMixin
 ::: probjax.nn.FitCallback
@@ -203,6 +206,8 @@ calls is reflected in the next fit.
 ::: probjax.nn.FitKernel
 ::: probjax.nn.build_fit_kernel
 ::: probjax.nn.FitResult
+::: probjax.nn.training.is_batch_stream
+::: probjax.nn.training.take_batches
 
 ## Overriding architecture components
 
@@ -354,7 +359,7 @@ batch entry, including trailing singleton axes used by diffusion losses.
 Global context excludes token axes and is required when `context_dim` is set.
 Attention masks, biases, cross-attention inputs and deterministic/dropout flags
 are forwarded to `Transformer`. Token counts can change without rebuilding
-weights. Images need an external patch/token embedding.
+params. Images need an external patch/token embedding.
 
 Subclass the existing Transformer factories or `projection_cls`, `fourier_cls`,
 `time_mlp_cls`, and `position_cls` to customize the architecture. Explicit

@@ -18,7 +18,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.stats.fit import is_batch_stream, take_batches
+from probjax.nn.training import is_batch_stream, take_batches
 
 __all__ = ["StandardizingMixin"]
 

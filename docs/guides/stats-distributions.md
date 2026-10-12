@@ -116,7 +116,7 @@ documented in the [stats reference](../reference/stats.md).
 
 There are two fitting entry points.
 
-The functional `probjax.stats.fit` minimises any
+The functional `probjax.nn.training.fit` minimises any
 `loss_fn(params, rng, batch)` over a params pytree with Optax. The batch is
 either one batch (a bare array, or a dict whose leaves share a leading example
 axis) or an iterable of batches:
@@ -125,7 +125,7 @@ axis) or an iterable of batches:
 import jax
 import jax.numpy as jnp
 
-from probjax.stats import fit
+from probjax.nn.training import fit
 
 
 def loss_fn(params, rng, batch):
@@ -152,10 +152,10 @@ result = fit(
 assert result.params["w"].shape == (2,)
 ```
 
-The object-layer counterpart is `FitMixin.fit(rng, data, *, context=None,
-weights=None, **fit_kwargs)`, which the `nn` generative models use so a fitted
-module can train in place (`flow.fit(key, samples)`). Generative models are
-covered in [Density estimation](density-estimation.md).
+The object-layer counterpart is `FitMixin.fit(rng, data, **fit_kwargs)`, which
+the `nn` generative models use so a fitted module can train in place
+(`flow.fit(key, samples)`); they also accept `context=` and `weights=`.
+Generative models are covered in [Density estimation](density-estimation.md).
 
 Parametric families additionally offer a generator-level MLE:
 `norm.fit(data)` returns fitted parameters in the family's canonical order
