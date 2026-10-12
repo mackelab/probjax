@@ -13,6 +13,7 @@ from jax._src import core as jax_core
 from jax._src.util import safe_map
 from jax.extend.core import Literal
 
+from probjax.core.interpreters.inverse.utils import scan_arity
 from probjax.core.jaxpr_propagation import propagate
 from probjax.core.jaxpr_propagation.utils import (
     CostFunction,
@@ -183,6 +184,10 @@ _UNIVARIATE_GUARDS = {
     jax.lax.acosh_p: _in_image(lo=0.0),
 }
 
+
+# JAX >= 0.11 has a dedicated log2 primitive (older versions decompose it).
+if hasattr(jax.lax, "log2_p"):
+    _UNIVARIATE_INVERSES[jax.lax.log2_p] = lambda x, **params: jnp.exp2(x)
 
 for forward_prim, inv_fn in _UNIVARIATE_INVERSES.items():
     register_univariate_inverse(
@@ -806,8 +811,7 @@ def parse_scan_problem(eqn, known_invars, known_outvars):
         raise NotImplementedError("scan inverse requires nested jaxpr")
 
     body = params["jaxpr"]
-    num_consts = params["num_consts"]
-    num_carry = params["num_carry"]
+    num_consts, num_carry = scan_arity(params)
     length = params["length"]
     reverse = params["reverse"]
 

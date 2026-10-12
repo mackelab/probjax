@@ -12,6 +12,18 @@ from typing import Any
 import jax.numpy as jnp
 
 
+def scan_arity(params: dict) -> tuple[int, int]:
+    """Return ``(num_consts, num_carry)`` of a ``scan`` equation.
+
+    JAX < 0.11 stores them as params; newer versions only keep the
+    ``ft_in`` layout of (consts, carry, xs).
+    """
+    if "num_consts" in params:
+        return params["num_consts"], params["num_carry"]
+    consts, carry, _ = params["ft_in"].unpack()
+    return len(consts), len(carry)
+
+
 def is_inexact_value(value: Any) -> bool:
     """
     Check if a value has an inexact (floating-point or complex) dtype.

@@ -37,6 +37,7 @@ from ..kernel_utils import (
     DEFAULT_MASK_VALUE,
     NEG_INF,
     ceil_div,
+    dot,
     get_dot_precision,
     get_dropout_mask,
 )
@@ -430,7 +431,7 @@ def mha_forward_kernel(
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
 
         k = pallas_load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
-        qk = pl.dot(q, k.T, precision=precision)  # [block_q, block_k]
+        qk = dot(q, k.T, precision=precision)  # [block_q, block_k]
 
         # Scale this by user-provided factor (1 / sqrt(d_k) for original transformer).
         if sm_scale != 1.0:
@@ -480,7 +481,7 @@ def mha_forward_kernel(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
             s_curr = jnp.where(dmask, 0, s_curr / (1 - dropout_rate))
-        o_curr = pl.dot(s_curr.astype(v.dtype), v, precision=precision)
+        o_curr = dot(s_curr.astype(v.dtype), v, precision=precision)
         o_next = o_prev_corr + o_curr
         return o_next, m_next, l_next
 
@@ -566,10 +567,8 @@ def mha_jvp_from_lse_kernel(
         v = pallas_load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
         dv = pallas_load(dv_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
 
-        qk = pl.dot(q, k.T, precision=precision)
-        dqk = pl.dot(dq, k.T, precision=precision) + pl.dot(
-            q, dk.T, precision=precision
-        )
+        qk = dot(q, k.T, precision=precision)
+        dqk = dot(dq, k.T, precision=precision) + dot(q, dk.T, precision=precision)
         if sm_scale != 1.0:
             qk *= sm_scale
             dqk *= sm_scale
@@ -618,9 +617,9 @@ def mha_jvp_from_lse_kernel(
         # Softmax normalization couples ALL key tiles. Accumulate its global
         # directional mean, then subtract mean * output after the key loop.
         row_acc = row_acc + jnp.sum(dqk * p, axis=-1)
-        do_acc = do_acc + pl.dot((p_drop * dqk).astype(v.dtype), v, precision=precision)
-        do_acc = do_acc + pl.dot(p_drop.astype(v.dtype), dv, precision=precision)
-        out_acc = out_acc + pl.dot(p_drop.astype(v.dtype), v, precision=precision)
+        do_acc = do_acc + dot((p_drop * dqk).astype(v.dtype), v, precision=precision)
+        do_acc = do_acc + dot(p_drop.astype(v.dtype), dv, precision=precision)
+        out_acc = out_acc + dot(p_drop.astype(v.dtype), v, precision=precision)
         return do_acc, out_acc, row_acc
 
     carry = (do, jnp.zeros_like(do), jnp.zeros((block_q,), dtype=jnp.float32))
@@ -692,7 +691,7 @@ def mha_forward_jvp_kernel(
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
 
         k = pallas_load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
-        qk = pl.dot(q, k.T, precision=precision)
+        qk = dot(q, k.T, precision=precision)
         if sm_scale != 1.0:
             qk *= sm_scale
 
@@ -733,7 +732,7 @@ def mha_forward_jvp_kernel(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
             s_curr = jnp.where(dmask, 0, s_curr / (1 - dropout_rate))
-        o_curr = pl.dot(s_curr.astype(v.dtype), v, precision=precision)
+        o_curr = dot(s_curr.astype(v.dtype), v, precision=precision)
         o_next = o_prev_corr + o_curr
         return o_next, m_next, l_next
 
@@ -761,10 +760,8 @@ def mha_forward_jvp_kernel(
         v = pallas_load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
         dv = pallas_load(dv_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0.0)
 
-        qk = pl.dot(q, k.T, precision=precision)
-        dqk = pl.dot(dq, k.T, precision=precision) + pl.dot(
-            q, dk.T, precision=precision
-        )
+        qk = dot(q, k.T, precision=precision)
+        dqk = dot(dq, k.T, precision=precision) + dot(q, dk.T, precision=precision)
         if sm_scale != 1.0:
             qk *= sm_scale
             dqk *= sm_scale
@@ -815,8 +812,8 @@ def mha_forward_jvp_kernel(
         if dropout_rate > 0:
             dP = jnp.where(dmask, 0, dP / (1 - dropout_rate))
 
-        do_acc = do_acc + pl.dot(dP.astype(v.dtype), v, precision=precision)
-        do_acc = do_acc + pl.dot(p_drop.astype(v.dtype), dv, precision=precision)
+        do_acc = do_acc + dot(dP.astype(v.dtype), v, precision=precision)
+        do_acc = do_acc + dot(p_drop.astype(v.dtype), dv, precision=precision)
         return do_acc
 
     if index_offset_size_ref is not None:
@@ -983,7 +980,7 @@ def mha_backward_kernel(
         span_q = start_q * block_q_dkv + jnp.arange(block_q_dkv)
 
         q = pallas_load(q_ref, (curr_q_slice, slice(None)), mask=mask_d, other=0.0)
-        qk = pl.dot(q, k.T)
+        qk = dot(q, k.T)
         if sm_scale != 1.0:
             qk *= sm_scale
         qk_pre_mod = qk
@@ -1008,7 +1005,7 @@ def mha_backward_kernel(
         do = pallas_load(do_scaled_ref, (curr_q_slice, slice(None)))
 
         p = jnp.exp2(qk - lse[:, None])
-        dp_dropped = pl.dot(do, v.T)
+        dp_dropped = dot(do, v.T)
 
         if dropout_rate > 0:
             if dropout_mask_ref is not None:
@@ -1027,7 +1024,7 @@ def mha_backward_kernel(
             dp = jnp.zeros((block_q_dkv, block_kv_dkv), dtype=jnp.float32) - di[:, None]
             dp = dp + dp_dropped
 
-        dv = dv + pl.dot(p_drop.astype(do.dtype).T, do)
+        dv = dv + dot(p_drop.astype(do.dtype).T, do)
         ds = p * dp
         if sm_scale != 1.0:
             ds = ds * sm_scale
@@ -1038,7 +1035,7 @@ def mha_backward_kernel(
                 0.0,
             )
             ds = ds * grad_score_mod
-        dk = dk + pl.dot(ds.astype(q_ref.dtype).T, q)
+        dk = dk + dot(ds.astype(q_ref.dtype).T, q)
 
         return dv, dk
 
@@ -1085,7 +1082,7 @@ def mha_backward_kernel(
         k = pallas_load(k_ref, (curr_k_slice, slice(None)), mask=mask_d, other=0.0)
         v = pallas_load(v_ref, (curr_k_slice, slice(None)), mask=mask_d, other=0.0)
 
-        qk = pl.dot(q, k.T)
+        qk = dot(q, k.T)
         if sm_scale != 1.0:
             qk *= sm_scale
         qk_pre_mod = qk
@@ -1114,7 +1111,7 @@ def mha_backward_kernel(
                 qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
         qk *= LOG2E
         p = jnp.exp2(qk - lse[:, None])
-        dp_dropped = pl.dot(do, v.T)
+        dp_dropped = dot(do, v.T)
 
         if dropout_rate > 0:
             if dropout_mask_ref is not None:
@@ -1143,7 +1140,7 @@ def mha_backward_kernel(
             )
             ds = ds * grad_score_mod
 
-        dq = dq + pl.dot(ds.astype(k.dtype), k).astype(dq.dtype)
+        dq = dq + dot(ds.astype(k.dtype), k).astype(dq.dtype)
 
         return dq
 
@@ -1228,7 +1225,7 @@ def mha_backward_kernel_split_dkdv(
         dv_acc, dk_acc = carry
         curr_q_slice = pl.dslice(start_q * block_q_dkv, block_q_dkv)
         q = pallas_load(q_ref, (curr_q_slice, slice(None)), mask=block_mask, other=0.0)
-        qk = pl.dot(q, k.T)
+        qk = dot(q, k.T)
         if sm_scale != 1.0:
             qk *= sm_scale
         qk_pre = qk
@@ -1250,7 +1247,7 @@ def mha_backward_kernel_split_dkdv(
         do = pallas_load(do_scaled_ref, (curr_q_slice, slice(None)))
 
         p = jnp.exp2(qk - lse[:, None])
-        dp_dropped = pl.dot(do, v.T)
+        dp_dropped = dot(do, v.T)
 
         if dropout_rate > 0:
             if dropout_mask_ref is not None:
@@ -1273,7 +1270,7 @@ def mha_backward_kernel_split_dkdv(
             dp = dp + dp_dropped
 
         # Accumulate dV: use dropout-scaled probabilities
-        dv_acc = dv_acc + pl.dot(p_drop.astype(do.dtype).T, do)
+        dv_acc = dv_acc + dot(p_drop.astype(do.dtype).T, do)
         # Softmax Jacobian: use ORIGINAL probabilities (not dropout-scaled)
         ds = p * dp
         if sm_scale != 1.0:
@@ -1285,7 +1282,7 @@ def mha_backward_kernel_split_dkdv(
                 0.0,
             )
             ds = ds * grad_mod
-        dk_acc = dk_acc + pl.dot(ds.astype(q_ref.dtype).T, q)
+        dk_acc = dk_acc + dot(ds.astype(q_ref.dtype).T, q)
         return dv_acc, dk_acc
 
     if index_offset_size_ref is not None:
@@ -1355,7 +1352,7 @@ def mha_backward_kernel_split_dq(
         curr_k_slice = pl.dslice(start_k * block_kv_dq, block_kv_dq)
         k = pallas_load(k_ref, (curr_k_slice, slice(None)), mask=block_mask, other=0.0)
         v = pallas_load(v_ref, (curr_k_slice, slice(None)), mask=block_mask, other=0.0)
-        qk = pl.dot(q, k.T)
+        qk = dot(q, k.T)
         if sm_scale != 1.0:
             qk *= sm_scale
         qk_pre = qk
@@ -1379,7 +1376,7 @@ def mha_backward_kernel_split_dq(
 
         qk *= LOG2E
         p = jnp.exp2(qk - lse[:, None])
-        dp_dropped = pl.dot(do, v.T)
+        dp_dropped = dot(do, v.T)
 
         if dropout_rate > 0:
             if dropout_mask_ref is not None:
@@ -1409,7 +1406,7 @@ def mha_backward_kernel_split_dq(
                 0.0,
             )
             ds = ds * grad_mod
-        dq_c = dq_c + pl.dot(ds.astype(k.dtype), k).astype(dq_c.dtype)
+        dq_c = dq_c + dot(ds.astype(k.dtype), k).astype(dq_c.dtype)
         return dq_c
 
     if index_offset_size_ref is not None:

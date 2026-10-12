@@ -5,9 +5,10 @@ environment are per invocation; cached evaluators never retain dynamic values.
 """
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import jax.numpy as jnp
-from jax.extend.core import ClosedJaxpr, Jaxpr, Literal, Var
+from jax.extend.core import Jaxpr, Literal, Var
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
 from probjax.core.interpreters.inverse.affine import (
@@ -133,7 +134,8 @@ class AffineRecoveryPlan:
 
     def __init__(self, closed, targets):
         self.jaxpr, self.consts = normalize_inverse_graph(closed)
-        self.closed = ClosedJaxpr(self.jaxpr, self.consts)
+        # Not a ClosedJaxpr: JAX >= 0.11 rebuilds the jaxpr, breaking identity keys.
+        self.closed = SimpleNamespace(jaxpr=self.jaxpr, consts=self.consts)
         self.sections = []
         self.by_trigger = {}
         if self.jaxpr.effects:

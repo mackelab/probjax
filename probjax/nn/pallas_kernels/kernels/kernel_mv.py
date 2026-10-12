@@ -11,7 +11,7 @@ from jax.experimental.pallas import triton as plgpu
 
 from probjax.utils.typing import Array
 
-from ..kernel_utils import get_dot_precision, use_interpret_mode
+from ..kernel_utils import dot, get_dot_precision, use_interpret_mode
 from ..kernel_utils.kernel_primitive import (
     KernelSpec,
     Operand,
@@ -112,7 +112,7 @@ def _kernel_mv_forward_kernel(
         k = k_ref[curr_k_slice, :]
         v = v_ref[curr_k_slice, :]
         w = kernel_fn(q, k, params_ref[...])
-        acc = acc + pl.dot(w.astype(v.dtype), v, precision=precision)
+        acc = acc + dot(w.astype(v.dtype), v, precision=precision)
         return acc
 
     out = lax.fori_loop(0, pl.cdiv(k_ref.shape[0], block_k), body, out)
@@ -145,7 +145,7 @@ def _kernel_mv_dq_dparams_kernel(
         k = k_ref[curr_k_slice, :]
         v = v_ref[curr_k_slice, :]
 
-        coeff = pl.dot(dy, v.T, precision=precision)
+        coeff = dot(dy, v.T, precision=precision)
         dq_block, _, dparams_block = kernel_vjp_fn(q, k, params_ref[...], coeff)
         dq_acc = dq_acc + dq_block.astype(dq_acc.dtype)
         dparams_acc = dparams_acc + jnp.reshape(
@@ -183,7 +183,7 @@ def _kernel_mv_dk_kernel(
         q = q_ref[curr_q_slice, :]
         dy = dy_ref[curr_q_slice, :]
 
-        coeff = pl.dot(dy, v.T, precision=precision)
+        coeff = dot(dy, v.T, precision=precision)
         _, dk_block, _ = kernel_vjp_fn(q, k, params_ref[...], coeff)
         dk_acc = dk_acc + dk_block.astype(dk_acc.dtype)
         return dk_acc
