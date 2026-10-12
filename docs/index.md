@@ -94,3 +94,8 @@ does not regenerate their displayed outputs):
 All runnable notebooks live in
 [`examples/`](https://github.com/mackelab/probjax/tree/main/examples/)
 (`core`, `stats`, `inference`, `nn`, `utils`).
+
+The remaining notebooks may predate recent API refactors. The curated tutorial
+pages have executable examples checked by CI; stored plots and other outputs
+may reflect an earlier execution. Prefer the guides and reference when they
+disagree with an older notebook.

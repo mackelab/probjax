@@ -3,8 +3,10 @@
 Flow matching learns a velocity field that transports noise to data along a
 probability path. Like every generative family in `probjax.nn`, matchers train
 with `fit` and expose `as_dist()` for a frozen distribution with `logpdf` and
-`sample`. They require an [`event_spec`](../glossary.md#event_spec) — the shape
-of one event, excluding sample and batch axes.
+`sample`. An [`event_spec`](../glossary.md#event_spec) describes the shape
+of one event, excluding sample and batch axes. `FlowMatcher` and `LinearFlow`
+accept it at construction or later through `as_dist`; mean-flow models require
+it at construction.
 
 ```python
 import jax

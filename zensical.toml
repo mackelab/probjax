@@ -16,6 +16,8 @@ nav = [
     "glossary.md",
   ] },
   { "Guides" = [
+    "guides/ppl.md",
+    "guides/stats-distributions.md",
     "guides/program-inversion.md",
     "guides/density-estimation.md",
     "guides/autoregressive-models.md",

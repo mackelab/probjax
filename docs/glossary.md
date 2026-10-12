@@ -28,9 +28,10 @@ key = jax.random.key(0)
 z = norm.rvs(key, 0.0, 1.0, name="z")
 ```
 
-Without `name=`, the draw is anonymous: it samples normally but cannot be
-conditioned on or referenced by the transformations. Under `scope("outer")` an
-unnamed draw gets an auto-generated name such as `outer__norm_0`.
+Without `name=`, a draw under a transformation gets an auto-generated name.
+Under `scope("outer")` that name is prefixed, for example `outer__norm_0`.
+Use explicit names when conditioning or referencing sites so they remain
+stable when the model changes.
 
 ## frozen / view
 
@@ -60,7 +61,9 @@ sense — a distribution view of a trained module with its own `logpdf` and
 
 The shape/spec describing **one event**, excluding the sample and batch axes.
 An integer is shorthand for a feature vector; a tuple describes an image or
-sequence event. Diffusion and flow-matching constructors require it:
+sequence event. Continuous diffusion and flow matching accept it as an optional
+sampling default; without one, pass it to `as_dist(event_spec=...)`.
+Mean-flow and categorical diffusion constructors require it:
 
 ```python
 from flax import nnx

@@ -14,10 +14,11 @@ vocabulary used throughout.
 
 A model is an ordinary JAX function. When it draws a named value under a ProbJax
 transformation, the draw records a **site**; the transformations then rewire the
-program: condition on data (`condition`/`observe`), intervene causally
-(`intervene`/`do`), fix values (`substitute`), or group auto-named draws
+program: condition on data (`condition`), intervene causally
+(`do`), fix values (`substitute`), or group auto-named draws
 (`scope`). Sampling and scoring use `joint_sample`, `log_joint_fn` and
-`log_potential_fn`, and `trace(..., sites=True)` reports every site it saw.
+`trace(..., sites=True)` reports every site it saw. `observe`, `intervene`, and
+`log_potential_fn` are deprecated aliases.
 
 The module also holds **automatic program inversion** — `inverse`,
 `inverse_and_logabsdet` and `custom_inverse` walk a jaxpr backwards, with
@@ -53,7 +54,8 @@ distribution with `logpdf` and `sample`.
 
 MCMC kernels, sequential Monte Carlo, Kalman-family filters, particle filtering
 and flow-based variational inference, with NeuTra preconditioning. The inference
-algorithms take a `log_potential_fn` (or a model) and a key.
+algorithms take a log-density callable (such as one built by `log_joint_fn`) and
+a key, with model-specific adapters where supported.
 
 - [Inference](guides/inference.md) — MCMC and variational inference
 - [Sequential Monte Carlo](guides/smc.md) and

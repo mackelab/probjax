@@ -3,8 +3,10 @@
 Diffusion models learn a denoising process that maps noise to data. Like every
 generative family in `probjax.nn`, they train with `fit` and expose `as_dist()`
 for a frozen distribution with `logpdf` and `sample`. Continuous and
-categorical diffusion require an [`event_spec`](../glossary.md#event_spec) — the
-shape of one event, excluding sample and batch axes.
+categorical diffusion use an [`event_spec`](../glossary.md#event_spec) — the
+shape of one event, excluding sample and batch axes. For continuous diffusion
+it may be supplied at construction or later to `as_dist`; categorical diffusion
+requires it at construction.
 
 ```python
 import jax

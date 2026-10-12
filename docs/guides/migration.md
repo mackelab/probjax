@@ -17,8 +17,8 @@ have additional hardware constraints; CPU tests do not certify GPU performance.
 | Previous usage | Current usage |
 | --- | --- |
 | `AutoregressiveModel` | `Autoregressive`; the old name has no compatibility alias |
-| `EDM(net)`, `VP(net)`, `VE(net)` | Supply `event_spec=features` or the shape of one event |
-| `LinearFlow(net)`, `LinearMeanFlow(net)` | Supply `event_spec` here too |
+| Sampling from `EDM(net)`, `VP(net)`, `VE(net)`, or `LinearFlow(net)` | Supply `event_spec` at construction or to `as_dist(event_spec=...)` |
+| `LinearMeanFlow(net)` | Supply `event_spec` at construction |
 | Categorical diffusion without event metadata | Supply token-position shape, excluding the class axis |
 | Imports from `probjax.nn.pallas_kernels.old_pallas` | Use `probjax.nn.pallas_kernels`; the legacy implementation was removed |
 | Inspecting named sites with raw `jax.make_jaxpr(model)` | Trace inside `probjax.enable_rv_tracing()` |
