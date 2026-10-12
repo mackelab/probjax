@@ -11,15 +11,14 @@ import probjax.nn.generative.nflows as N
 from probjax.nn.generative.autoregressive import MADE, MixtureAutoregressive
 from probjax.nn.generative.autoregressive.config import MLPARConditionerConfig
 from probjax.nn.generative.nflows.config import (
-    MLPConditionerConfig,
     _DEFAULT_WIDTH,
     _WIDTH_MAX,
     _WIDTH_MIN,
+    MLPConditionerConfig,
     default_hidden_dims,
     resolve_hidden_dims,
 )
-from probjax.stats.fit import _resolve_batch_size, _resolve_num_steps
-
+from probjax.nn.training.batches import _resolve_batch_size, _resolve_num_steps
 
 # ---------------------------------------------------------------------------
 # The width rule

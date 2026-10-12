@@ -93,11 +93,6 @@ _BDF_A_TEMPLATE: dict[int, list[float]] = {
 _BDF_B: dict[int, float] = {1: 1.0, 2: 2 / 3, 3: 6 / 11}
 
 
-def _get_coeffs(order: int, coeff_dict: dict[int, list[float]], dtype) -> Array:
-    """Get coefficients with proper dtype."""
-    return jnp.array(coeff_dict[order], dtype=dtype)
-
-
 # ============================================================================
 # Utilities
 # ============================================================================
@@ -130,18 +125,6 @@ def _append_history(
 def _need_bootstrap(state: LMSState, order: int) -> bool:
     """Check if bootstrap steps are needed to build up history."""
     return len(state.hist_f or []) < order
-
-
-def build_bootstrapper(
-    one_step: Callable,
-) -> Callable[[LMSState, ArrayLike], tuple[LMSState, ODEInfo]]:
-    """Build a bootstrap function from a single-step method."""
-
-    def bootstrap(state: LMSState, dt: ArrayLike, *args) -> tuple[LMSState, ODEInfo]:
-        # one_step must take (state_like, dt, *args) -> (state_like, info)
-        return one_step(state, dt, *args)
-
-    return bootstrap
 
 
 # ============================================================================

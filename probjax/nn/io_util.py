@@ -10,7 +10,7 @@ import time
 import traceback
 import weakref
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, Union
+from typing import Any, Callable, Optional, Sequence, Union
 
 import jax
 import jax.numpy as jnp
@@ -20,9 +20,6 @@ from jax.experimental import multihost_utils
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
 from probjax.utils.typing import Device, RngKey
-
-if TYPE_CHECKING:
-    pass
 
 
 # ------------------------- small helpers ----------------------------- #

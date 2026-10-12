@@ -52,47 +52,9 @@ def kl_divergence(p, q, mc_samples=0, key=None):
 
 
 @register_divergence(NAME, rv_generic, rv_generic)
-def _kl_generic(p, q, mc_samples=0, key=None):
-    if p.event_shape != q.event_shape:
-        raise ValueError(
-            "KL divergence between distributions with different event shapes not"
-            "supported"
-        )
-
-    assert mc_samples >= 0, (
-        "For general distributions we require mc_samples >= 0, to evaluate a Monte "
-        "Carlo approximation of the KL divergence."
-    )
-    assert key is not None, "Key must be provided if mc_samples > 0"
-
-    samples = p.rvs(key, (mc_samples,))
-    log_prob_p = p.logpdf(samples)
-    log_prob_q = q.logpdf(samples)
-    return (log_prob_p - log_prob_q).mean(0)
-
-
 @register_divergence(NAME, rv_continuous, rv_continuous)
-def _kl_continuous_continuous(p, q, mc_samples=0, key=None):
-    if p.event_shape != q.event_shape:
-        raise ValueError(
-            "KL divergence between distributions with different event shapes not"
-            "supported"
-        )
-
-    assert mc_samples >= 0, (
-        "For general distributions we require mc_samples >= 0, to evaluate a Monte "
-        "Carlo approximation of the KL divergence."
-    )
-    assert key is not None, "Key must be provided if mc_samples > 0"
-
-    samples = p.rvs(key, (mc_samples,))
-    log_prob_p = p.logpdf(samples)
-    log_prob_q = q.logpdf(samples)
-    return (log_prob_p - log_prob_q).mean(0)
-
-
 @register_divergence(NAME, rv_discrete, rv_discrete)
-def _kl_discrete_discrete(p, q, mc_samples=0, key=None):
+def _kl_monte_carlo(p, q, mc_samples=0, key=None):
     if p.event_shape != q.event_shape:
         raise ValueError(
             "KL divergence between distributions with different event shapes not"

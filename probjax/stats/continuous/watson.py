@@ -15,6 +15,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import lax, random
+from jax.scipy.optimize import minimize as jax_minimize
 from jax.scipy.special import gammaln, hyp1f1
 
 from probjax.stats.base import rv_exponential_family, rv_spherical
@@ -606,8 +607,6 @@ class watson_gen(rv_spherical, rv_exponential_family):
         kappa_init = _solve_watson_kappa(axial_moment, dim, dtype)
 
         # Refine via BFGS optimization in unconstrained space
-        from jax.scipy.optimize import minimize as jax_minimize
-
         init_flat = jnp.concatenate([mu_init, jnp.atleast_1d(kappa_init)])
 
         w = jnp.ones(n, dtype=dtype) / n if weights_arr is None else weights_arr

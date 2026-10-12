@@ -16,7 +16,7 @@ def init_params(state: PyTree) -> EllipticalSliceParams:
     return EllipticalSliceParams()
 
 
-def build_eliptical_slice_step(
+def build_elliptical_slice_step(
     logdensity_fn: Callable,
     *,
     cov_matrix: Array,
@@ -63,5 +63,5 @@ elliptical_slice = make_kernel_api(
     name="elliptical_slice",
     init_fn=blackjax.elliptical_slice.init,
     init_params_fn=init_params,
-    build_step_fn=build_eliptical_slice_step,
+    build_step_fn=build_elliptical_slice_step,
 )

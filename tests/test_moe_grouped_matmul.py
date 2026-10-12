@@ -9,15 +9,16 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from flax import nnx
-from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 
-from probjax.nn.layers.moe import MoELayer
 from probjax.nn.layers.grouped_matmul import (
     gather_from_layout,
     grouped_matmul,
     make_group_layout,
     scatter_to_layout,
 )
+from probjax.nn.layers.moe import MoELayer
 
 TOL = 2e-3  # tf32/bf16-class accumulation on GPU
 

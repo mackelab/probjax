@@ -2,7 +2,8 @@ import jax
 import jax.numpy as jnp
 import pytest
 from jax.experimental.shard_map import shard_map
-from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 
 from probjax.nn.layers.attention import dot_product_attention, flex_attention
 from probjax.nn.pallas_kernels import (
@@ -16,7 +17,6 @@ from probjax.nn.pallas_kernels import (
     ssd_linear_scan,
 )
 from probjax.nn.pallas_kernels.kernels.mamba import _mamba_scan_reference
-
 
 BATCH_SIZE = 32
 SEQ_LEN = 1024

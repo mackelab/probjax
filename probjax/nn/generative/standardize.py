@@ -18,6 +18,8 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from probjax.nn.training import is_batch_stream, take_batches
+
 __all__ = ["StandardizingMixin"]
 
 
@@ -27,8 +29,6 @@ _STD_BATCHES = 8
 
 def _standardization_sample(data, num_features: int):
     """Examples to estimate shift and scale from, for an array or a stream."""
-    from probjax.stats.fit import is_batch_stream, take_batches
-
     if is_batch_stream(data):
         batches = take_batches(data, _STD_BATCHES)
         parts = [b["data"] if isinstance(b, dict) else b for b in batches]
@@ -97,11 +97,8 @@ class StandardizingMixin:
         traced = isinstance(fitted, jax.core.Tracer)
         if not traced and bool(fitted):
             return
-        if traced:
-            from probjax.stats.fit import is_batch_stream
-
-            if is_batch_stream(data):
-                raise ValueError("Jitted standardization requires an array batch.")
+        if traced and is_batch_stream(data):
+            raise ValueError("Jitted standardization requires an array batch.")
         data = _standardization_sample(data, self._std_shift.shape[0])
 
         def estimate():

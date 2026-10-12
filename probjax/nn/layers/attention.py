@@ -64,7 +64,7 @@ class SSMaxQueryScale(nnx.Module):
     Reference: *Scalable Softmax* (https://arxiv.org/abs/2501.14222).
 
     The module is designed to be passed to :class:`MultiHeadAttention` via
-    ``q_scale_cls`` (or the legacy ``query_scale`` argument)::
+    ``q_scale_cls``::
 
         mha = MultiHeadAttention(
             ...,
@@ -230,7 +230,7 @@ class QASSMaxQueryScale(nnx.Module):
             **mlp_kwargs,
         )
 
-        # Gate MLP: [head_dim] → [head_dim], shared weights across heads.
+        # Gate MLP: [head_dim] → [head_dim], params shared across heads.
         # Applied to query of shape [..., num_heads, head_dim] — the Linear
         # operates on the last axis and broadcasts over all leading dims,
         # so each head gets a different output (different query vector in).

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Generic, Sequence, TypeVar
 
+import jax.numpy as jnp
 from jax._src import core as jax_core
 from jax._src import linear_util as lu
 from jax._src.api_util import debug_info, flatten_fun_nokwargs
@@ -143,8 +144,6 @@ def batch_closed_jaxpr(
 
 
 def move_mapped_axes_to_front(args, in_dims):
-    import jax.numpy as jnp
-
     new_args = []
     in_axes = []
     for x, d in zip(args, in_dims, strict=False):

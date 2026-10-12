@@ -1,5 +1,7 @@
 from typing import Any, Callable, NamedTuple, Optional
 
+from probjax.utils.jaxutils import print_scan
+
 
 class Kernel(NamedTuple):
     """A pure transition and the functions needed to initialize it."""
@@ -79,8 +81,6 @@ class RunnerMixin:
 
         ``print_scan`` requires a tuple carry, so we wrap the kernel state.
         """
-
-        from probjax.utils.jaxutils import print_scan
 
         def wrapped(carry, x):
             state, y = f(carry[0], x)

@@ -32,10 +32,55 @@ from probjax.nn.generative.sampling import (
     _export_sampler,
     sample_normal,
 )
-from probjax.stats.fit import FitMixin
+from probjax.nn.training import FitMixin, FitResult, is_batch_stream
 from probjax.utils.typing import Array, PyTree, RngKey
 
 __all__ = ["GenerativeModel"]
+
+
+def _affine_sample_base(self, rng, sample_shape, spec):
+    """Gaussian base ``N(mu0, std0**2)``; flow models assign this as ``_sample_base``."""
+    return sample_normal(
+        rng,
+        sample_shape,
+        spec,
+        loc=self.mu0.get_value(),
+        scale=self.std0.get_value(),
+    )
+
+
+class _DataContextBatches:
+    """Normalises what a loader yields into the ``{"data": ..., ...}`` batch dict.
+
+    Loaders come in three shapes and all three are worth supporting: a bare
+    array of examples, a ``(data, context)`` tuple, and a dict that is already
+    a batch. Re-iterable and length-preserving, so restarting and
+    ``num_steps="auto"`` keep working through the wrapper.
+    """
+
+    def __init__(self, source, context_key: str = "context"):
+        self._source = source
+        self._context_key = context_key
+
+    def __len__(self):
+        # Deliberately propagates the source's TypeError: reporting a length
+        # the source does not have would make num_steps="auto" invent one.
+        return len(self._source)
+
+    def __iter__(self):
+        for item in self._source:
+            yield self._as_batch(item)
+
+    def _as_batch(self, item):
+        if isinstance(item, dict):
+            if "data" not in item:
+                raise ValueError(
+                    f"a batch dict must have a 'data' key; got keys {sorted(item)}."
+                )
+            return item
+        if isinstance(item, tuple) and len(item) == 2:
+            return {"data": item[0], self._context_key: item[1]}
+        return {"data": item}
 
 
 class GenerativeModel(nnx.Module, FitMixin):
@@ -107,7 +152,7 @@ class GenerativeModel(nnx.Module, FitMixin):
         return None if spec is None else jax.tree.map(lambda leaf: leaf.shape, spec)
 
     def set_event_spec(self, event_spec):
-        """Change the default for future views without resizing network weights.
+        """Change the default for future views without resizing network params.
 
         Existing distribution views keep their bound event specs. Cached exports
         are invalidated because this changes static model metadata.
@@ -120,6 +165,57 @@ class GenerativeModel(nnx.Module, FitMixin):
     def loss(self, rng: RngKey, data: PyTree[Array], *args, **kwargs) -> Array:
         """Monte-Carlo training loss for a batch of data."""
         raise NotImplementedError
+
+    def fit(
+        self,
+        rng: RngKey,
+        data,
+        *,
+        context=None,
+        weights=None,
+        **fit_kwargs,
+    ) -> Array | FitResult:
+        """Train in place on ``data``: an array pytree or a stream of batches.
+
+        ``context`` conditions the model and ``weights`` weight the examples;
+        both are passed to :meth:`loss` as keyword arguments. With a stream,
+        yield ``(data, context)`` pairs or dicts with a ``"data"`` key instead.
+        The remaining arguments are those of :func:`probjax.nn.training.fit`.
+        """
+        extras = {
+            name: value
+            for name, value in (("context", context), ("weights", weights))
+            if value is not None
+        }
+        return super().fit(rng, data, **extras, **fit_kwargs)
+
+    def _fit_batch(self, data, *, context=None, weights=None):
+        """Batches are ``{"data": ..., "context": ..., "weights": ...}`` dicts."""
+        if is_batch_stream(data):
+            if weights is not None:
+                raise ValueError(
+                    "weights cannot be passed alongside an iterable data source; "
+                    "include them in each batch dict instead."
+                )
+            if context is not None:
+                raise ValueError(
+                    "context cannot be passed alongside an iterable data "
+                    "source; yield (data, context) pairs or batch dicts from "
+                    "the iterable instead."
+                )
+            return _DataContextBatches(data)
+        batch = {"data": data}
+        if context is not None:
+            batch["context"] = context
+        if weights is not None:
+            batch["weights"] = weights
+        return batch
+
+    def _fit_loss(self, rng, batch):
+        if isinstance(batch, dict):
+            extras = {k: v for k, v in batch.items() if k != "data"}
+            return self.loss(rng, batch["data"], **extras)
+        return self.loss(rng, batch)
 
     def _distribution_sampler(self, event_spec, **kwargs) -> _ExportedSampler:
         """Build the family-specific sampling operation."""

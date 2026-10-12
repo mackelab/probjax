@@ -86,7 +86,7 @@ flow = LinearFlow(Velocity(), event_spec=3)
 ```
 
 `model.as_dist(event_spec=...)` overrides one distribution view; `event_spec`
-does not resize network weights. See
+does not resize network params. See
 [Diffusion and flow matching](reference/nn.md#diffusion-and-flow-matching).
 
 ## trace / jaxpr

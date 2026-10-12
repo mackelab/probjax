@@ -22,6 +22,7 @@ import jax.numpy as jnp
 from jax import random
 
 from probjax.stats.base import rv_continuous
+from probjax.stats.bijective.monotone import _solve_increasing
 from probjax.stats.constraints import real, strict_positive
 from probjax.utils.typing import Array, RngKey
 
@@ -141,8 +142,6 @@ class mixture_kernel_gen(rv_continuous):
         monotone bijectors use, so it inherits their NaN-safety and residual
         check rather than silently returning a bracket edge.
         """
-        from probjax.stats.bijective.monotone import _solve_increasing
-
         q = jnp.asarray(q)
 
         def cdf_at(t):

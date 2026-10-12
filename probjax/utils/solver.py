@@ -1,5 +1,3 @@
-from functools import partial
-
 import jax
 import jax.numpy as jnp
 
@@ -77,55 +75,3 @@ def root(fun, x0, args=(), method="newton-raphson", tol=1e-3, max_iter=20):
         return newton_raphson(_f, x0, tol=tol, max_iter=max_iter)
     else:
         raise NotImplementedError(f"Method {method} not implemented.")
-
-
-# Scalar root-finding algorithm
-
-
-def root_scalar(
-    fun, x0=None, args=(), bracket=None, method="bisection", tol=1e-3, max_iter=100
-):
-    # dtype = x0.dtype
-    # precission = jnp.finfo(dtype).precision
-    # tol = max(tol, precission)
-
-    _f = lambda x: fun(x, *args)
-
-    if bracket is None:
-        # Automatically bracket the root
-        raise NotImplementedError("Automatic bracketing not implemented.")
-
-    if method == "bisection":
-        assert bracket is not None, "Bracket must be provided for bisection method."
-        return bisection_method(_f, bracket, tol=tol, max_iter=max_iter)
-
-
-@partial(jax.jit, static_argnums=(0, 2, 3))
-def bisection_method(f, bracket, tol=1e-3, max_iter=100):
-    a, b = bracket
-    a = jnp.asarray(a)
-    b = jnp.asarray(b)
-
-    def scan_fn(carry, i):
-        tol_reached, a, b = carry
-
-        def true_fn(a, b):
-            return a, b, jnp.inf
-
-        def false_fn(a, b):
-            c = (a + b) / 2
-            y = f(c)
-            mask = jnp.sign(f(a)) * jnp.sign(y) < 0
-            a = jnp.where(mask, a, c)
-            b = jnp.where(mask, c, b)
-            error = jnp.linalg.norm(y)
-            return a, b, error
-
-        a, b, error = jax.lax.cond(tol_reached, true_fn, false_fn, a, b)
-        tol_reached = error < tol
-        return (tol_reached, a, b), a
-
-    tol_reached = True
-    _, roots = jax.lax.scan(scan_fn, (tol_reached, a, b), jnp.arange(max_iter))
-
-    return roots[-1]

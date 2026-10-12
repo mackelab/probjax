@@ -38,13 +38,34 @@ from flax import nnx
 from flax.typing import Initializer
 from jax import Array
 
+from probjax.nn.generative.nflows.autoregressive import AutoregressiveTransformer
 from probjax.nn.generative.nflows.config import (
     WidthRule,
+    _bin_positions,
+    _knot_slopes,
+    _positive,
+    _resolved_model_dim,
     default_hidden_dims,
     default_model_dim,
     resolve_hidden_dims,
 )
+from probjax.nn.layers.ssm import LRUCell
+from probjax.nn.nets.simple import MaskedMLP
+from probjax.nn.nets.ssm import SSMModel
+from probjax.stats import (
+    categorical,
+    logistic_mixture_kernel,
+    mixture_kernel,
+    norm,
+    spline_normal,
+)
 from probjax.stats import constraints as _c
+from probjax.stats import (
+    histogram as _hist,
+)
+from probjax.stats import (
+    tailed_histogram as _thist,
+)
 from probjax.stats.base import rv_generic
 from probjax.stats.constraint_registry import biject_to
 
@@ -84,8 +105,6 @@ def _default_constrainer(name: str, constraint) -> _Constrainer:
     unbounded above -- the failure mode removed from the affine flow scale.
     These reuse the bounded, identity-at-zero constrainers from the flow config.
     """
-    from probjax.nn.generative.nflows.config import _positive
-
     if isinstance(constraint, _c.Simplex):
         # The constraint says "probability vector", so emit probabilities --
         # families that want log-weights declare them as `real` instead.
@@ -117,8 +136,6 @@ def _default_constrainer(name: str, constraint) -> _Constrainer:
 
 def _spline_knot_constrainer(lo: float, hi: float, min_bin_size: float = 1e-4):
     """Knot positions spanning ``[lo, hi]`` exactly, from ``n - 1`` raw widths."""
-    from probjax.nn.generative.nflows.config import _bin_positions
-
     return _Constrainer(
         lambda raw: _bin_positions(raw, lo, hi, min_bin_size),
         raw_size=lambda n: n - 1,
@@ -126,9 +143,7 @@ def _spline_knot_constrainer(lo: float, hi: float, min_bin_size: float = 1e-4):
 
 
 def _spline_slope_constrainer(max_slope: float = 10.0):
-    from probjax.nn.generative.nflows.config import _knot_slopes
-
-    return _Constrainer(lambda raw: _knot_slopes(raw, 1e-3, max_slope))
+    return _Constrainer(lambda raw: _knot_slopes(raw, max_slope))
 
 
 # =============================================================================
@@ -296,8 +311,6 @@ class ARFamily:
 
     @classmethod
     def normal(cls) -> "ARFamily":
-        from probjax.stats import norm
-
         return cls(norm)
 
     @classmethod
@@ -316,8 +329,6 @@ class ARFamily:
         deterministically makes each component see a different gradient from
         the first step, at no cost to the neutral density being sensible.
         """
-        from probjax.stats import logistic_mixture_kernel, mixture_kernel
-
         dist = mixture_kernel if kernel == "norm" else logistic_mixture_kernel
         offsets = jnp.linspace(-spread, spread, num_components)
         return cls(
@@ -335,9 +346,6 @@ class ARFamily:
         tails: bool = True,
     ) -> "ARFamily":
         """Piecewise-constant head; ``tails`` keeps the support unbounded."""
-        from probjax.stats import histogram as _hist
-        from probjax.stats import tailed_histogram as _thist
-
         dist = _thist if tails else _hist
         constrain = {}
         if tails:
@@ -362,8 +370,6 @@ class ARFamily:
         matching knots with unit slopes -- an identity spline, i.e. exactly a
         standard normal.
         """
-        from probjax.stats import spline_normal
-
         return cls(
             spline_normal,
             hyper={"num_bins": num_bins},
@@ -376,8 +382,6 @@ class ARFamily:
 
     @classmethod
     def categorical(cls, num_categories: int) -> "ARFamily":
-        from probjax.stats import categorical
-
         return cls(
             categorical,
             sizes={"probs": num_categories},
@@ -488,8 +492,6 @@ class MLPARConditionerConfig(ARConditionerConfig):
         return True
 
     def build(self, input_dim, params_dim, *, in_features, context_features, rngs):
-        from probjax.nn.nets.simple import MaskedMLP
-
         out_features = input_dim * params_dim
         hidden = resolve_hidden_dims(
             self.hidden_dims, in_features, out_features, self.num_examples
@@ -510,6 +512,20 @@ class MLPARConditionerConfig(ARConditionerConfig):
         return _MaskedConditioner(net, input_dim, params_dim)
 
 
+def _per_position_tokens(x, input_dim: int, feature_width: int):
+    """Restore the per-position token axis.
+
+    predict_params flattens discrete one-hots for the masked-MLP conditioner;
+    the token models need ``(..., input_dim, feature_width)`` back.
+    """
+    tokens = jnp.asarray(x)
+    if feature_width == 1:
+        return tokens[..., None]
+    if tokens.shape[-1] == input_dim * feature_width:
+        return tokens.reshape(tokens.shape[:-1] + (input_dim, feature_width))
+    return tokens
+
+
 class _TokenConditioner(nnx.Module):
     """Causal transformer over one token per dimension.
 
@@ -526,15 +542,7 @@ class _TokenConditioner(nnx.Module):
         self.feature_width = feature_width
 
     def __call__(self, x, context=None, *, rng=None):
-        # predict_params flattens discrete one-hots for the masked-MLP
-        # conditioner; restore the per-position structure here.
-        tokens = jnp.asarray(x)
-        if self.feature_width == 1:
-            tokens = tokens[..., None]
-        elif tokens.shape[-1] == self.input_dim * self.feature_width:
-            tokens = tokens.reshape(
-                tokens.shape[:-1] + (self.input_dim, self.feature_width)
-            )
+        tokens = _per_position_tokens(x, self.input_dim, self.feature_width)
         out = self.inner.predict_bij_params(tokens, context, rng=rng)
         return out.reshape(out.shape[:-2] + (self.input_dim * self.params_dim,))
 
@@ -596,21 +604,10 @@ class TransformerARConditionerConfig(ARConditionerConfig):
     def exportable(self) -> bool:
         return False
 
-    def _resolved_model_dim(self, params_dim: int) -> int:
-        """Token width, kept divisible by the head count."""
-        if callable(self.model_dim):
-            width = int(self.model_dim(1, params_dim, self.num_examples)[0])
-        else:
-            width = int(self.model_dim)
-        return max(self.num_heads, width - width % self.num_heads)
-
     def build(self, input_dim, params_dim, *, in_features, context_features, rngs):
         # One token per dimension; each token carries one scalar feature for
         # continuous data or a one-hot class vector for discrete data.
         feature_width = in_features // input_dim
-        from probjax.nn.generative.nflows.autoregressive import (
-            AutoregressiveTransformer,
-        )
 
         transformer_kwargs: dict = {}
         if self.attention_fn is not None:
@@ -621,7 +618,7 @@ class TransformerARConditionerConfig(ARConditionerConfig):
             None,  # conditioner-only build; only predict_bij_params is used
             rngs,
             context_dim=context_features,
-            model_dim=self._resolved_model_dim(params_dim),
+            model_dim=_resolved_model_dim(self, 1, params_dim),
             num_heads=self.num_heads,
             num_layers=self.num_layers,
             attn_size=self.attn_size,
@@ -663,15 +660,7 @@ class _SSMConditioner(nnx.Module):
         )
 
     def __call__(self, x, context=None, *, rng=None):
-        # predict_params flattens discrete one-hots for the masked-MLP
-        # conditioner; restore the per-position structure here.
-        tokens = jnp.asarray(x)
-        if self.feature_width == 1:
-            tokens = tokens[..., None]
-        elif tokens.shape[-1] == self.input_dim * self.feature_width:
-            tokens = tokens.reshape(
-                tokens.shape[:-1] + (self.input_dim, self.feature_width)
-            )
+        tokens = _per_position_tokens(x, self.input_dim, self.feature_width)
         h = self.encoder(tokens)
         start = jnp.broadcast_to(
             self.start_token.reshape((1,) * (h.ndim - 1) + (-1,)),
@@ -704,9 +693,6 @@ class SSMARConditionerConfig(ARConditionerConfig):
         return True
 
     def build(self, input_dim, params_dim, *, in_features, context_features, rngs):
-        from probjax.nn.layers.ssm import LRUCell
-        from probjax.nn.nets.ssm import SSMModel
-
         if context_features is not None:
             raise ValueError("SSMARConditionerConfig does not support context yet.")
         model_dim = int(self.model_dim)

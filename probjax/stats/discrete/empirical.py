@@ -54,16 +54,6 @@ class empirical(rv_discrete):
         return cls._get_support(values, weights, **kwds)
 
     @classmethod
-    def _get_batch_shape(cls, values, weights=None, **kwds):
-        """Get the batch shape of the Empirical distribution."""
-        return values.shape[1:]
-
-    @classmethod
-    def _get_event_shape(cls, values, weights=None, **kwds):
-        """Get the event shape of the Empirical distribution."""
-        return ()
-
-    @classmethod
     def pmf(cls, x: ArrayLike, values, weights=None, **kwds):
         """Probability mass function of the Empirical distribution."""
         x = jnp.asarray(x)

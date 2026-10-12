@@ -21,14 +21,13 @@ from probjax.nn.layers.attention import InducedSelfAttention
 from probjax.nn.layers.conv import (
     ConvBlock,
     RescaleConv,
-    ResnetBlock,
     ResizeConv,
+    ResnetBlock,
     SpatialSelfAttention,
 )
 from probjax.nn.layers.encoding import GaussianFourierEmbedding
 from probjax.nn.nets.unets import UNet
 from probjax.nn.utils import cast_output, filter_precision_kwargs
-
 
 # ---------------------------------------------------------------------------
 # Helper behavior

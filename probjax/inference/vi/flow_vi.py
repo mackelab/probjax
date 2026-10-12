@@ -68,7 +68,7 @@ class FlowVIInfo(NamedTuple):
 def _split(flow):
     """Separate a flow into (static graph, trainable params, everything else).
 
-    The same boundary ``probjax.stats.fit`` uses, so a flow can be handed to
+    The same boundary ``probjax.nn.training`` uses, so a flow can be handed to
     either without conversion.
     """
     return nnx.split(flow, nnx.Param, ...)

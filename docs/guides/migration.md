@@ -28,7 +28,7 @@ An event shape excludes all sample and batch axes. `event_spec=3` means a
 three-feature vector; `(16, 3)` means sixteen tokens with three features.
 `as_dist(event_spec=...)` overrides one distribution view;
 `model.set_event_spec(...)` changes future defaults. Existing views keep their
-bound shapes, and changing metadata does not resize a network's weights.
+bound shapes, and changing metadata does not resize a network's params.
 See [event specifications](../reference/nn.md#diffusion-and-flow-matching).
 
 ## Training and checkpoints

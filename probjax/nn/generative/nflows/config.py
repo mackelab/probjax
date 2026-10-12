@@ -41,6 +41,13 @@ from flax.typing import Initializer
 from jax import Array
 from jax.typing import ArrayLike
 
+from probjax.nn.generative.nflows.autoregressive import (
+    AutoregressiveMLP,
+    AutoregressiveSSM,
+    AutoregressiveTransformer,
+)
+from probjax.nn.generative.nflows.bijective import Flip, Permute, Rotate
+from probjax.nn.generative.nflows.coupling import CouplingMLP, CouplingTransformer
 from probjax.nn.layers.ssm import LRUCell
 from probjax.stats.bijective import (
     affine,
@@ -162,14 +169,13 @@ def _bin_positions(
     return jnp.concatenate([lo_, lo + (hi - lo) * interior, hi_], axis=-1)
 
 
-def _knot_slopes(raw: Array, min_knot_slope: float, max_knot_slope: float) -> Array:
+def _knot_slopes(raw: Array, max_knot_slope: float) -> Array:
     """``(..., num_bins + 1)`` positive slopes in ``[1/max, max]``, 1 at ``raw == 0``.
 
     Bounding matters most at the two ends: the spline's tails extrapolate
     linearly with the boundary slopes, so an unbounded slope compounds to
     ``s**L`` across ``L`` stacked transforms.
     """
-    del min_knot_slope  # the tanh parameterization is symmetric in log space
     return _positive(raw, 0.0, "tanh", max_knot_slope)
 
 
@@ -239,6 +245,15 @@ def resolve_hidden_dims(
     if not dims or any(d <= 0 for d in dims):
         raise ValueError(f"hidden_dims must be non-empty and positive; got {dims}.")
     return dims
+
+
+def _resolved_model_dim(cfg, in_features: int, out_features: int) -> int:
+    """Token width for a transformer conditioner, kept divisible by the head count."""
+    if callable(cfg.model_dim):
+        width = int(cfg.model_dim(in_features, out_features, cfg.num_examples)[0])
+    else:
+        width = int(cfg.model_dim)
+    return max(cfg.num_heads, width - width % cfg.num_heads)
 
 
 def _component_offsets(num: int, spread: float, dtype=None) -> Array:
@@ -467,9 +482,7 @@ class BaseSplineConfig(BaseBijectorConfig):
         y_pos = _bin_positions(raw_y, self.y_min, self.y_max, self.min_bin_size)
         if not self._has_slopes:
             return x_pos, y_pos
-        slopes = _knot_slopes(
-            params[..., 2 * n :], self.min_knot_slope, self.max_knot_slope
-        )
+        slopes = _knot_slopes(params[..., 2 * n :], self.max_knot_slope)
         return x_pos, y_pos, slopes
 
 
@@ -771,8 +784,6 @@ class MLPConditionerConfig(ConditionerConfigProtocol):
     def build_coupling(
         self, split_index, params_dim, bijector, *, context_features, rngs
     ):
-        from probjax.nn.generative.nflows.coupling import CouplingMLP
-
         return CouplingMLP(
             split_index,
             params_dim,
@@ -796,8 +807,6 @@ class MLPConditionerConfig(ConditionerConfigProtocol):
         output_order,
         rngs,
     ):
-        from probjax.nn.generative.nflows.autoregressive import AutoregressiveMLP
-
         return AutoregressiveMLP(
             in_out_features,
             params_dim,
@@ -865,26 +874,16 @@ class TransformerConditionerConfig(ConditionerConfigProtocol):
     widening_factor: int = 2
     num_examples: Optional[int] = None
 
-    def _resolved_model_dim(self, in_features: int, out_features: int) -> int:
-        """Token width, kept divisible by the head count."""
-        if callable(self.model_dim):
-            width = int(self.model_dim(in_features, out_features, self.num_examples)[0])
-        else:
-            width = int(self.model_dim)
-        return max(self.num_heads, width - width % self.num_heads)
-
     def build_coupling(
         self, split_index, params_dim, bijector, *, context_features, rngs
     ):
-        from probjax.nn.generative.nflows.coupling import CouplingTransformer
-
         return CouplingTransformer(
             split_index,
             params_dim,
             bijector,
             rngs,
             context_dim=context_features,
-            model_dim=self._resolved_model_dim(split_index, params_dim),
+            model_dim=_resolved_model_dim(self, split_index, params_dim),
             num_heads=self.num_heads,
             num_layers=self.num_layers,
             attn_size=self.attn_size,
@@ -903,10 +902,6 @@ class TransformerConditionerConfig(ConditionerConfigProtocol):
     ):
         del in_out_features  # sequence length is implicit in the input shape
         del output_order  # causal attention makes the output order implicit
-        from probjax.nn.generative.nflows.autoregressive import (
-            AutoregressiveTransformer,
-        )
-
         return _ScalarTokenConditioner(
             AutoregressiveTransformer(
                 1,  # one scalar feature per token
@@ -914,7 +909,7 @@ class TransformerConditionerConfig(ConditionerConfigProtocol):
                 _scalar_token_bijector(bijector),
                 rngs,
                 context_dim=context_features,
-                model_dim=self._resolved_model_dim(1, params_dim),
+                model_dim=_resolved_model_dim(self, 1, params_dim),
                 num_heads=self.num_heads,
                 num_layers=self.num_layers,
                 attn_size=self.attn_size,
@@ -951,8 +946,6 @@ class SSMConditionerConfig(ConditionerConfigProtocol):
     ):
         del in_out_features  # sequence length is implicit in the input shape
         del output_order  # unidirectional recurrence makes output order implicit
-        from probjax.nn.generative.nflows.autoregressive import AutoregressiveSSM
-
         return _ScalarTokenConditioner(
             AutoregressiveSSM(
                 1,
@@ -995,8 +988,6 @@ class FlipMixingConfig(MixingConfigProtocol):
     axis: int = -1
 
     def build(self, input_dim, *, rngs):
-        from probjax.nn.generative.nflows.bijective import Flip
-
         return Flip(axis=self.axis, rngs=rngs)
 
 
@@ -1007,8 +998,6 @@ class PermuteMixingConfig(MixingConfigProtocol):
     mode: Literal["random", "reverse"] = "random"
 
     def build(self, input_dim, *, rngs):
-        from probjax.nn.generative.nflows.bijective import Permute
-
         if self.mode == "reverse":
             permutation = jnp.arange(input_dim)[::-1]
         elif self.mode == "random":
@@ -1025,8 +1014,6 @@ class RotationMixingConfig(MixingConfigProtocol):
     learnable: bool = False
 
     def build(self, input_dim, *, rngs):
-        from probjax.nn.generative.nflows.bijective import Rotate
-
         return Rotate(input_dim, learnable=self.learnable, rngs=rngs)
 
 

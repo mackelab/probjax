@@ -840,8 +840,3 @@ class LazyJaxpr:
     def __repr__(self) -> str:
         status = "materialized" if self.is_materialized else "lazy"
         return f"LazyJaxpr({status})"
-
-
-def lazy_jaxpr(thunk: Callable[[], ClosedJaxpr]) -> LazyJaxpr:
-    """Create a lazy JAXPR from a thunk."""
-    return LazyJaxpr(_thunk=thunk)

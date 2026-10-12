@@ -4,34 +4,34 @@ Tests all filters against a simple 1D linear Gaussian model where
 analytical solutions are known. Also tests the filter_smooth orchestration.
 """
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from functools import partial
 
 from probjax.inference.filtering.base import FilterKernel, make_filter_api
+from probjax.inference.filtering.extended_kalman_filter import extended_kalman_filter
 from probjax.inference.filtering.kalman_filter import (
     KalmanFilterState,
     kalman_filter,
 )
-from probjax.inference.filtering.extended_kalman_filter import extended_kalman_filter
-from probjax.inference.filtering.unscented_kalman_filter import (
-    ukf,
-    merwe_sigma_point,
-    julier_uhlmann_sigma_points,
-    spherical_simplex_sigma_points,
-)
-from probjax.inference.filtering.square_root_kf import sq_kalman_filter
+from probjax.inference.filtering.particle_filter import ParticleFilter
 from probjax.inference.filtering.rank_reduced_kalman_filter import (
     rank_reduced_kalman_filter,
 )
-from probjax.inference.filtering.particle_filter import ParticleFilter
 from probjax.inference.filtering.smoothing import (
     particle_smoother,
     rauch_tung_stribel_smoother,
 )
-
+from probjax.inference.filtering.square_root_kf import sq_kalman_filter
+from probjax.inference.filtering.unscented_kalman_filter import (
+    julier_uhlmann_sigma_points,
+    merwe_sigma_point,
+    spherical_simplex_sigma_points,
+    ukf,
+)
 
 # ---------------------------------------------------------------------------
 # Shared test fixtures: 1D linear Gaussian model
@@ -784,20 +784,20 @@ class TestImports:
     def test_filtering_init_exports(self):
         """All key symbols should be importable from the filtering package."""
         from probjax.inference.filtering import (
-            FilterAPI,
-            FilterInfo,
+            FilterAPI,  # noqa: F401
+            FilterInfo,  # noqa: F401
             FilterKernel,
-            FilterState,
-            make_filter_api,
-            kalman_filter,
-            extended_kalman_filter,
-            ukf,
-            sq_kalman_filter,
-            rank_reduced_kalman_filter,
-            ParticleFilter,
-            particle_smoother,
-            rauch_tung_stribel_smoother,
-            smooth,
+            FilterState,  # noqa: F401
+            ParticleFilter,  # noqa: F401
+            extended_kalman_filter,  # noqa: F401
+            kalman_filter,  # noqa: F401
+            make_filter_api,  # noqa: F401
+            particle_smoother,  # noqa: F401
+            rank_reduced_kalman_filter,  # noqa: F401
+            rauch_tung_stribel_smoother,  # noqa: F401
+            smooth,  # noqa: F401
+            sq_kalman_filter,  # noqa: F401
+            ukf,  # noqa: F401
         )
 
         # Just check they imported without error
