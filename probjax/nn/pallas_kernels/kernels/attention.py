@@ -624,7 +624,7 @@ def mha_jvp_from_lse_kernel(
         # Softmax normalization couples ALL key tiles. Accumulate its global
         # directional mean, then subtract mean * output after the key loop.
         row_acc = row_acc + jnp.sum(dqk * p, axis=-1)
-        do_acc = do_acc + pl.dot((p_drop*dqk).astype(v.dtype), v, precision=precision)
+        do_acc = do_acc + pl.dot((p_drop * dqk).astype(v.dtype), v, precision=precision)
         do_acc = do_acc + pl.dot(p_drop.astype(v.dtype), dv, precision=precision)
         out_acc = out_acc + pl.dot(p_drop.astype(v.dtype), v, precision=precision)
         return do_acc, out_acc, row_acc
@@ -639,7 +639,7 @@ def mha_jvp_from_lse_kernel(
         carry = lax.fori_loop(lower_bound, upper_bound, body_jvp, carry)
 
     do, out, row_sum = carry
-    do = do - row_sum[:, None]*out
+    do = do - row_sum[:, None] * out
     pallas_store(
         do_ref, (slice(None), slice(None)), val=do.astype(do_ref.dtype), mask=d_mask
     )

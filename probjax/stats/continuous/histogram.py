@@ -140,7 +140,9 @@ class histogram_gen(rv_continuous):
         edge = jnp.asarray(low) + width * idx
         frac = jnp.clip((x - edge) / width, 0.0, 1.0)
         inner = cum_below + mass_at * frac
-        return jnp.where(x <= jnp.asarray(low), 0.0, jnp.where(x >= jnp.asarray(high), 1.0, inner))
+        return jnp.where(
+            x <= jnp.asarray(low), 0.0, jnp.where(x >= jnp.asarray(high), 1.0, inner)
+        )
 
     @classmethod
     def ppf(cls, q, logits=None, low=0.0, high=1.0, **kwargs):

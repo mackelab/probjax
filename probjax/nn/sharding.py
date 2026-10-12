@@ -11,13 +11,14 @@ Usage::
 
     # Auto axis types are recommended for model parallelism: GSPMD then
     # propagates shardings through contractions automatically.
-    mesh = jax.make_mesh((2, 4), ("data", "model"),
-                         axis_types=(AxisType.Auto, AxisType.Auto))
+    mesh = jax.make_mesh(
+        (2, 4), ("data", "model"), axis_types=(AxisType.Auto, AxisType.Auto)
+    )
 
     with jax.set_mesh(mesh):
-        model = Transformer(...)          # params sharded eagerly
+        model = Transformer(...)  # params sharded eagerly
         batch = jax.device_put(batch, NamedSharding(mesh, P("data")))
-        model.fit(rng, batch)             # jit propagates shardings
+        model.fit(rng, batch)  # jit propagates shardings
 
     # Custom logical->mesh mapping (defaults to default_rules()):
     with jax.set_mesh(mesh), nnx.logical_axis_rules(default_rules()):

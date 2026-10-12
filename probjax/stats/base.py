@@ -1005,7 +1005,7 @@ class DistributionAPI(ABC):
         Returns
         -------
         Constraint
-            Constraint describing the support of the parameters.
+            Constraint describing valid values of the random variable.
         """
         raise NotImplementedError("Support not implemented for this distribution")
 

@@ -1,9 +1,8 @@
 from typing import Optional, Tuple
 
-import jax
 import jax.numpy as jnp
-from jax import random
 from jax import core as jax_core
+from jax import random
 
 from probjax.stats.base import rv_multivariate
 from probjax.stats.constraints import real, symmetric_positive_definite_matrix

@@ -41,15 +41,14 @@ _CUSTOM_INVERSE_ENV_VAR = "PROBJAX_DISABLE_CUSTOM_INVERSE"
 # Read once at import: opting the whole process out of custom-inverse
 # handling, e.g. to work around a buggy registered inverse. Tests can
 # monkeypatch this module attribute.
-_DISABLE_CUSTOM_INVERSE = (
-    os.environ.get(_CUSTOM_INVERSE_ENV_VAR, "").strip().lower()
-    in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-)
+_DISABLE_CUSTOM_INVERSE = os.environ.get(
+    _CUSTOM_INVERSE_ENV_VAR, ""
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 class _CustomInverseState(local):

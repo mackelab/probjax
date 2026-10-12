@@ -107,7 +107,9 @@ class CategoricalPreconditioningProtocol(Protocol):
     def c_out(self, t: ArrayLike, schedule: CategoricalScheduleProtocol) -> Array: ...
     def c_skip(self, t: ArrayLike, schedule: CategoricalScheduleProtocol) -> Array: ...
     def c_t(self, t: ArrayLike, schedule: CategoricalScheduleProtocol) -> Array: ...
-    def weight_ce(self, t: ArrayLike, schedule: CategoricalScheduleProtocol) -> Array: ...
+    def weight_ce(
+        self, t: ArrayLike, schedule: CategoricalScheduleProtocol
+    ) -> Array: ...
 
 
 @runtime_checkable
@@ -172,7 +174,9 @@ class MultinomialDiffusionSchedule(CategoricalScheduleProtocol):
             return float(self.params[name])
         if default is not None:
             return float(default)
-        raise ValueError(f"Missing required schedule parameter '{name}' for kind='{self.kind}'.")
+        raise ValueError(
+            f"Missing required schedule parameter '{name}' for kind='{self.kind}'."
+        )
 
     def _alpha_bar_unit(self, u: Array) -> Array:
         u = jnp.clip(jnp.asarray(u, dtype=jnp.float32), 0.0, 1.0)
@@ -561,8 +565,6 @@ class ImportanceContinuousTimeTrainingConfig(CategoricalTrainingConfigProtocol):
         t_right = t_edges[bin_idx + 1]
         t = t_left + u_local * (t_right - t_left)
         return t.reshape(shape)
-
-
 
 
 __all__ = [

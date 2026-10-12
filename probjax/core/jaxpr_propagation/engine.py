@@ -341,7 +341,12 @@ def _run_nested(
     if isinstance(outer_state, Mapping):
         seeded = dict(initial_state or {})
         for sub_var, outer_var in zip(nested_vars, outer_vars, strict=False):
-            if isinstance(outer_var, Var) and isinstance(sub_var, Var) and outer_var in outer_state and sub_var not in seeded:
+            if (
+                isinstance(outer_var, Var)
+                and isinstance(sub_var, Var)
+                and outer_var in outer_state
+                and sub_var not in seeded
+            ):
                 seeded[sub_var] = outer_state[outer_var]
         nested_initial_state = seeded or None
 
@@ -381,9 +386,11 @@ def _run_nested(
             isinstance(key, Var) for key in nested_state
         ):
             inner_to_outer = dict(zip(nested_vars, outer_vars, strict=False))
-            remapped_state = {inner_to_outer[key]: value
-                              for key, value in nested_state.items()
-                              if key in inner_to_outer}
+            remapped_state = {
+                inner_to_outer[key]: value
+                for key, value in nested_state.items()
+                if key in inner_to_outer
+            }
             eqn_state = remapped_state or None
         else:
             # Named stochastic sites and scalar log potentials are aggregate

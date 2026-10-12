@@ -578,9 +578,6 @@ class CosineNoiseSchedule(BaseNoiseSchedule):
             1.0,
         )
 
-    def _alpha_bar(self, t: ArrayLike) -> Array:
-        return self.scale(t) ** 2
-
     def scale(self, t: ArrayLike) -> Array:
         # Clamp before the singular endpoint (cos(pi/2) can be negative in fp32).
         return jnp.maximum(

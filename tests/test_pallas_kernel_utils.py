@@ -1,8 +1,8 @@
 import importlib
 import types
 
-
 common_mod = importlib.import_module("probjax.nn.pallas_kernels.kernel_utils.common")
+jaxutils_mod = importlib.import_module("probjax.utils.jaxutils")
 mamba_mod = importlib.import_module("probjax.nn.pallas_kernels.kernels.mamba")
 ssd_mod = importlib.import_module("probjax.nn.pallas_kernels.kernels.ssd")
 
@@ -31,8 +31,8 @@ def test_pallas_call_compat_omits_backend_when_unsupported(monkeypatch):
     assert captured["kwargs"]["out_shape"] == "shape"
     assert captured["kwargs"]["grid"] == (1,)
     assert "backend" not in captured["kwargs"]
-    assert (
-        type(captured["kwargs"]["compiler_params"]).__module__.endswith("triton.core")
+    assert type(captured["kwargs"]["compiler_params"]).__module__.endswith(
+        "triton.core"
     )
 
 
@@ -129,12 +129,12 @@ def test_def_partition_compat_omits_replication_factors_when_unsupported(monkeyp
         return "ok"
 
     monkeypatch.setattr(
-        common_mod,
+        jaxutils_mod,
         "def_partition_supports_need_replication_factors",
         lambda _: False,
     )
 
-    result = common_mod.def_partition_compat(
+    result = jaxutils_mod.def_partition_compat(
         _fake_def_partition,
         partition="partition",
         sharding_rule="rule",
@@ -158,12 +158,12 @@ def test_def_partition_compat_passes_replication_factors_when_supported(
         return "ok"
 
     monkeypatch.setattr(
-        common_mod,
+        jaxutils_mod,
         "def_partition_supports_need_replication_factors",
         lambda _: True,
     )
 
-    result = common_mod.def_partition_compat(
+    result = jaxutils_mod.def_partition_compat(
         _fake_def_partition,
         partition="partition",
         sharding_rule="rule",

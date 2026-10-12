@@ -5,13 +5,13 @@ import jax.numpy as jnp
 from jax.scipy.optimize import minimize
 from jaxtyping import Array
 
-from probjax.stats.base import rv_generic as Distribution
 from probjax.inference.rejection.univariate import (
-    ars,
     ARSState,
+    ars,
     init_ars_state,
     update_ars_state,
 )
+from probjax.stats.base import rv_generic as Distribution
 
 
 def estimate_ratio_bound(

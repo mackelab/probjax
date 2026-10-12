@@ -7,8 +7,8 @@ from jax._src import linear_util as lu
 from jax._src.api_util import debug_info, flatten_fun_nokwargs
 from jax._src.interpreters import batching as batching_src
 from jax._src.interpreters import partial_eval as pe
-from jax.interpreters import batching
 from jax.extend.core import ClosedJaxpr
+from jax.interpreters import batching
 from jax.tree_util import tree_leaves
 
 T = TypeVar("T")
