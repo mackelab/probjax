@@ -9,16 +9,8 @@ from blackjax.mcmc.integrators import IntegratorState
 from blackjax.mcmc.mclmc import MCLMCInfo
 
 from probjax.inference.mcmc._dynamic_stepping import (
-    get_dynamic_stepping as _resolve_dynamic_stepping,
-)
-from probjax.inference.mcmc._dynamic_stepping import (
-    halton_trajectory_length_fns as _halton_fns,
-)
-from probjax.inference.mcmc._dynamic_stepping import (
+    get_dynamic_stepping,
     init_dynamic_arg,
-)
-from probjax.inference.mcmc._dynamic_stepping import (
-    random_trajectory_length_fns as _random_fns,
 )
 from probjax.inference.mcmc.base import make_kernel_api
 from probjax.inference.mcmc.hmc import _init_hmc_like_params, _scale_step_size_by_grad
@@ -161,22 +153,6 @@ def init_dynamic_params(
     )
 
 
-def halton_trajectory_length_fns(average_integration_steps: int):
-    return _halton_fns(trajectory_length, average_integration_steps)
-
-
-def random_trajectory_length_fns(average_integration_steps: int):
-    return _random_fns(average_integration_steps)
-
-
-def get_dynamic_stepping(integration_steps_sequence, average_integration_steps):
-    return _resolve_dynamic_stepping(
-        integration_steps_sequence,
-        average_integration_steps,
-        length_fn=trajectory_length,
-    )
-
-
 def build_dynamic_step(
     logdensity_fn: Callable,
     average_integration_steps: int = 10,
@@ -188,7 +164,9 @@ def build_dynamic_step(
 ) -> Callable:
     if integration_steps_fn is None:
         random_arg_next_fn, integration_steps_fn = get_dynamic_stepping(
-            integration_steps_sequence, average_integration_steps
+            integration_steps_sequence,
+            average_integration_steps,
+            length_fn=trajectory_length,
         )
     else:
         random_arg_next_fn = next_random_arg_fn

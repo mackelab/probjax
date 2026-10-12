@@ -1,6 +1,7 @@
 """Small adapters exposing BlackJAX's SMC update strategies and tuning."""
 
 import blackjax
+import jax
 from blackjax.smc import from_mcmc, inner_kernel_tuning, pretuning
 from blackjax.smc.base import extend_params
 from blackjax.smc.waste_free import waste_free_smc as _waste_free_strategy
@@ -102,8 +103,6 @@ def pretuned_smc(
     )
 
     def update(key, state, num_steps, parameters, logdensity, logweights):
-        import jax
-
         pilot_key, move_key = jax.random.split(key)
         parameters = pilot(
             pilot_key,
@@ -121,8 +120,6 @@ def pretuned_smc(
         kwargs['target_ess'] = target_ess
 
     def init(particles):
-        import jax
-
         if jax.tree.leaves(particles)[0].shape[0] != num_particles:
             raise ValueError("num_particles must match the initial population.")
         return inner_kernel_tuning.StateWithParameterOverride(

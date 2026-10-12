@@ -1,7 +1,8 @@
 import concurrent.futures
+import inspect
 import math
 import sys
-from functools import partial
+from functools import lru_cache, partial
 from typing import Callable, Dict, Optional, Sequence, Tuple
 
 import jax
@@ -335,3 +336,25 @@ def print_scan(
     )
     carry = carry[1 + num_stats :]
     return carry, y
+
+
+@lru_cache(maxsize=1)
+def def_partition_supports_need_replication_factors(def_partition) -> bool:
+    """Whether ``custom_partitioning.def_partition`` accepts the kwarg."""
+    try:
+        return "need_replication_factors" in inspect.signature(def_partition).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def def_partition_compat(def_partition, /, **kwargs):
+    """Call ``def_partition`` across JAX versions.
+
+    Older JAX builds do not accept ``need_replication_factors``.
+    """
+    if (
+        "need_replication_factors" in kwargs
+        and not def_partition_supports_need_replication_factors(def_partition)
+    ):
+        kwargs.pop("need_replication_factors")
+    return def_partition(**kwargs)

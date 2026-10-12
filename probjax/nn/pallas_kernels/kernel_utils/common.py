@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import os
 from typing import NamedTuple
 
 import jax
@@ -82,26 +83,38 @@ def pallas_call_compat(*args, backend=None, **kwargs):
     return pl.pallas_call(*args, **kwargs)
 
 
-@functools.lru_cache(maxsize=1)
-def def_partition_supports_need_replication_factors(def_partition) -> bool:
-    """Whether ``custom_partitioning.def_partition`` accepts the kwarg."""
-    try:
-        return "need_replication_factors" in inspect.signature(def_partition).parameters
-    except (TypeError, ValueError):
+def _bs(index_map, block_shape):
+    """Compatibility wrapper for BlockSpec(index_map, block_shape) call sites."""
+    return pl.BlockSpec(block_shape=block_shape, index_map=index_map)
+
+
+def _tpu_compiler_params(*, dimension_semantics):
+    """Returns TPU compiler params when running on TPU, else None."""
+    if use_interpret_mode() or jax.default_backend() != "tpu":
+        return None
+    from jax.experimental.pallas import tpu as pltpu
+
+    return pltpu.CompilerParams(dimension_semantics=dimension_semantics)
+
+
+def _is_hopper_or_newer_gpu() -> bool:
+    if jax.default_backend() != "gpu":
         return False
+    kind = jax.devices()[0].device_kind.lower()
+    return any(
+        tag in kind for tag in ("h100", "h200", "b100", "b200", "hopper", "blackwell")
+    )
 
 
-def def_partition_compat(def_partition, /, **kwargs):
-    """Call ``def_partition`` across JAX versions.
+def _prefer_mosaic_gpu() -> bool:
+    val = os.environ.get("PROBJAX_PALLAS_PREFER_MOSAIC_GPU", "0").strip().lower()
+    return val in ("1", "true", "yes", "on")
 
-    Older JAX builds do not accept ``need_replication_factors``.
-    """
-    if (
-        "need_replication_factors" in kwargs
-        and not def_partition_supports_need_replication_factors(def_partition)
-    ):
-        kwargs.pop("need_replication_factors")
-    return def_partition(**kwargs)
+
+def _unsafe_enable_mosaic_gpu() -> bool:
+    """Explicit opt-in for the unstable Mosaic GPU path."""
+    val = os.environ.get("PROBJAX_PALLAS_UNSAFE_ENABLE_MOSAIC_GPU", "0")
+    return val.strip().lower() in ("1", "true", "yes", "on")
 
 
 # ------------------------ Block Sparsity Helpers -----------------------------

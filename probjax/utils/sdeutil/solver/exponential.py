@@ -8,6 +8,7 @@ import jax.numpy as jnp
 from probjax.utils.functions import additive_diffusion, split_drift
 from probjax.utils.linalg import mv_diag_or_dense
 from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
+from probjax.utils.special.phi1 import phi1_scalar
 from probjax.utils.typing import Array, ArrayLike, Callable, RngKey
 
 
@@ -23,12 +24,6 @@ class ExpEulerMaruyamaInfo(SDEInfo):
     lin_coeff: Array
 
 
-def _phi1_scalar(z: Array) -> Array:
-    small = jnp.abs(z) < 1e-4
-    series = 1.0 + 0.5 * z + (z * z) / 6.0 + (z * z * z) / 24.0
-    return jnp.where(small, series, jnp.expm1(z) / z)
-
-
 def _as_scalar_coeff(c: Array) -> Array:
     c = jnp.asarray(c)
     if c.ndim == 0:
@@ -42,7 +37,7 @@ def _weighted_noise_variance(c: Array, dt: ArrayLike) -> Array:
     """Variance of the exponential-weighted Ito noise increment."""
     dt_abs = jnp.abs(jnp.asarray(dt))
     z = c * dt_abs
-    var = dt_abs * _phi1_scalar(2.0 * z)
+    var = dt_abs * phi1_scalar(2.0 * z)
     return jnp.maximum(var, 0.0)
 
 
@@ -97,7 +92,7 @@ def build_exp_euler_maruyama_step(
 
         z = c_np1 * dt
         r = jnp.exp(z)
-        ph1 = _phi1_scalar(z)
+        ph1 = phi1_scalar(z)
 
         y_det = r * y0 + dt * ph1 * N_n
 

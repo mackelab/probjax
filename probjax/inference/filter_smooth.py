@@ -2,6 +2,7 @@ from typing import Any, Callable, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
+import optax
 from jax.random import PRNGKey
 from jax.typing import ArrayLike
 
@@ -530,8 +531,6 @@ class Filter(WithProgressBarAPI):
             ...     key, ts, obs, mu0, cov0, params_init={'log_Q': 0.0, 'log_R': 0.0}
             ... )
         """
-        import optax
-
         if params_init is None:
             raise ValueError("Must provide params_init dict for optimization.")
 

@@ -44,7 +44,6 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-import inspect
 from typing import Any, Callable, Mapping, Sequence
 
 import jax
@@ -52,6 +51,8 @@ import jax.numpy as jnp
 from jax._src.interpreters import batching
 from jax.extend.core import Primitive
 from jax.interpreters import mlir
+
+from probjax.utils.jaxutils import def_partition_compat
 
 __all__ = [
     "in_per_shard_body",
@@ -99,33 +100,6 @@ def _per_shard_body():
         yield
     finally:
         _PER_SHARD.active = previous
-
-
-# ---------------------------------------------------------------------------
-# JAX version shims
-# ---------------------------------------------------------------------------
-
-
-@functools.lru_cache(maxsize=1)
-def _def_partition_supports_need_replication_factors(def_partition) -> bool:
-    """Whether ``custom_partitioning.def_partition`` accepts the kwarg."""
-    try:
-        return "need_replication_factors" in inspect.signature(def_partition).parameters
-    except (TypeError, ValueError):
-        return False
-
-
-def def_partition_compat(def_partition, /, **kwargs):
-    """Call ``def_partition`` across JAX versions.
-
-    Older JAX builds do not accept ``need_replication_factors``.
-    """
-    if (
-        "need_replication_factors" in kwargs
-        and not _def_partition_supports_need_replication_factors(def_partition)
-    ):
-        kwargs.pop("need_replication_factors")
-    return def_partition(**kwargs)
 
 
 # ---------------------------------------------------------------------------

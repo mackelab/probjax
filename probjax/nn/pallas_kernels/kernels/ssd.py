@@ -28,7 +28,6 @@ and the original implementation.
 """
 
 import functools
-import os
 from typing import Optional, Tuple, Union
 
 import jax
@@ -43,6 +42,13 @@ from ..kernel_utils import (
     pallas_call_compat,
     use_interpret_mode,
 )
+from ..kernel_utils.common import (
+    _bs,
+    _is_hopper_or_newer_gpu,
+    _prefer_mosaic_gpu,
+    _tpu_compiler_params,
+    _unsafe_enable_mosaic_gpu,
+)
 from ..kernel_utils.kernel_primitive import (
     KernelSpec,
     Operand,
@@ -54,40 +60,6 @@ from ..kernel_utils.kernel_primitive import (
     res,
     shardable_kernel,
 )
-
-
-def _bs(index_map, block_shape):
-    """Compatibility wrapper for BlockSpec(index_map, block_shape) call sites."""
-    return pl.BlockSpec(block_shape=block_shape, index_map=index_map)
-
-
-def _tpu_compiler_params(*, dimension_semantics):
-    """Returns TPU compiler params when running on TPU, else None."""
-    if use_interpret_mode() or jax.default_backend() != "tpu":
-        return None
-    from jax.experimental.pallas import tpu as pltpu
-
-    return pltpu.CompilerParams(dimension_semantics=dimension_semantics)
-
-
-def _is_hopper_or_newer_gpu() -> bool:
-    if jax.default_backend() != "gpu":
-        return False
-    kind = jax.devices()[0].device_kind.lower()
-    return any(
-        tag in kind for tag in ("h100", "h200", "b100", "b200", "hopper", "blackwell")
-    )
-
-
-def _prefer_mosaic_gpu() -> bool:
-    val = os.environ.get("PROBJAX_PALLAS_PREFER_MOSAIC_GPU", "0").strip().lower()
-    return val in ("1", "true", "yes", "on")
-
-
-def _unsafe_enable_mosaic_gpu() -> bool:
-    """Explicit opt-in for the unstable Mosaic GPU path for SSD."""
-    val = os.environ.get("PROBJAX_PALLAS_UNSAFE_ENABLE_MOSAIC_GPU", "0")
-    return val.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _pallas_backend(prefer_mosaic_gpu: bool | None = None) -> str | None:

@@ -8,6 +8,7 @@ import jax.scipy.linalg
 
 from probjax.utils.functions import const_diffusion, linear_drift
 from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
+from probjax.utils.special.phi1 import phi1_scalar
 from probjax.utils.typing import Array, ArrayLike, Callable, RngKey
 
 
@@ -18,12 +19,6 @@ class LinearExactSDEState(SDEState):
 
 class LinearExactSDEInfo(SDEInfo):
     dWt: Array
-
-
-def _phi1_scalar(z: Array) -> Array:
-    small = jnp.abs(z) < 1e-4
-    series = 1.0 + 0.5 * z + (z * z) / 6.0 + (z * z * z) / 24.0
-    return jnp.where(small, series, jnp.expm1(z) / z)
 
 
 def init_state(
@@ -99,7 +94,7 @@ def build_linear_exact_sde_step(
             y_mean = expm_A * y0 if is_scalar else expm_A @ y0
         else:
             b = drift.b(t0 + dt)
-            phi1 = _phi1_scalar(A_t * dt)
+            phi1 = phi1_scalar(A_t * dt)
             if is_scalar:
                 y_mean = expm_A * y0 + dt * phi1 * b
             else:

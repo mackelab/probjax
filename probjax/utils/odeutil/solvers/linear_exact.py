@@ -13,6 +13,7 @@ from probjax.utils.odeutil.solvers.base import (
     ODEState,
     register_method,
 )
+from probjax.utils.special.phi1 import phi1_scalar
 from probjax.utils.typing import Array, ArrayLike, Callable
 
 
@@ -23,13 +24,6 @@ class LinearExactState(ODEState):
 
 class LinearExactInfo(ODEInfo):
     pass
-
-
-def _phi1_scalar(z: Array) -> Array:
-    """Compute phi_1(z) = (exp(z) - 1) / z with numerical stability."""
-    small = jnp.abs(z) < 1e-4
-    series = 1.0 + 0.5 * z + (z * z) / 6.0 + (z * z * z) / 24.0
-    return jnp.where(small, series, jnp.expm1(z) / z)
 
 
 def init_linear_exact(
@@ -92,7 +86,7 @@ def build_linear_exact_step(drift: linear_drift) -> Callable:
                 y1 = expm_A * y0 if is_scalar or is_diag else expm_A @ y0
             else:
                 b = drift.b(t0 + dt, *args)
-                phi1 = _phi1_scalar(A * dt)
+                phi1 = phi1_scalar(A * dt)
                 if is_scalar or is_diag:
                     y1 = expm_A * y0 + dt * phi1 * b
                 else:
