@@ -4,9 +4,9 @@ Flax NNX modules. The generative families share one interface — construct with
 `nnx.Rngs`, `fit` to train, `as_dist()` for a frozen distribution — so they are
 interchangeable. See [Density estimation](../guides/density-estimation.md).
 
-This page covers the user-facing surface. `probjax.nn` also exports the building
-blocks those models are assembled from (attention masks, block sizes, individual
-bijector configs); read the source for those.
+This page covers the ProbJax public models and their building blocks. Standard
+layers, activations, pooling functions, and initializers re-exported unchanged
+from Flax NNX use the [Flax API reference](https://flax.readthedocs.io/en/latest/api_reference/flax.nnx/index.html).
 
 ## Training and EMA
 
@@ -264,11 +264,15 @@ layers) remain supported.
 
 Flow matching (`FlowMatcher`, `LinearFlow`), mean-flow (`MeanFlowMatcher`,
 `LinearMeanFlow`), continuous diffusion (`DiffusionDenoiser`, `EDM`, `VP`, `VE`, `CosineDM`) and
-categorical diffusion (`MultinomialDiffusion` and its presets) now require
-`event_spec` at construction. It describes **one event**, excluding sample and
+categorical diffusion (`MultinomialDiffusion` and its presets) use
+`event_spec` to describe **one event**, excluding sample and
 batch axes. An integer is shorthand for a feature vector; tuples describe image
 or sequence events. Continuous diffusion and flow matching also accept pytrees of shapes and
 `jax.ShapeDtypeStruct` leaves to specify dtypes.
+
+Continuous diffusion and flow matching accept an optional constructor default;
+without one, pass `event_spec` to `as_dist`. Mean-flow and categorical diffusion
+require the default at construction.
 
 ```python
 from probjax.nn import EDM
@@ -454,3 +458,149 @@ re-exported for convenience and documented there.
 ::: probjax.nn.pallas_kernels.residual_linear_attention_pallas
 ::: probjax.nn.pallas_kernels.residual_linear_attention_scan
 ::: probjax.nn.pallas_kernels.right_shift_and_zero_pad
+
+## Layers and architectures
+
+::: probjax.nn.AdditiveBinaryFuse
+::: probjax.nn.AdditiveFuse
+::: probjax.nn.AffineFuse
+::: probjax.nn.BinaryFuse
+::: probjax.nn.ConcatFuse
+::: probjax.nn.ContextFuse
+::: probjax.nn.ConvBlock
+::: probjax.nn.DropPath
+::: probjax.nn.ExpertSwiGLU
+::: probjax.nn.FeedForward
+::: probjax.nn.GatedFuse
+::: probjax.nn.GaussianFourierEmbedding
+::: probjax.nn.InducedSelfAttention
+::: probjax.nn.LRUCell
+::: probjax.nn.LRUModel
+::: probjax.nn.LearnablePosEncode
+::: probjax.nn.LpNorm
+::: probjax.nn.LpNormClip
+::: probjax.nn.MambaCell
+::: probjax.nn.MaskedLinear
+::: probjax.nn.MaskedMLP
+::: probjax.nn.MoEAux
+::: probjax.nn.MoELayer
+::: probjax.nn.MultiHeadAttention
+::: probjax.nn.OneHot
+::: probjax.nn.PosEncode
+::: probjax.nn.RecurrentCell
+::: probjax.nn.RescaleConv
+::: probjax.nn.ResizeConv
+::: probjax.nn.ResnetBlock
+::: probjax.nn.RotaryPosEncode
+::: probjax.nn.SSDCell
+::: probjax.nn.SSMModel
+::: probjax.nn.Sequential
+::: probjax.nn.SpatialSelfAttention
+::: probjax.nn.TimeMLP
+::: probjax.nn.load_balance_loss
+
+## Flow building blocks and configuration
+
+::: probjax.nn.AdditiveAutoregressiveFlow
+::: probjax.nn.AdditiveCouplingFlow
+::: probjax.nn.Affine
+::: probjax.nn.AffineAutoregressiveFlow
+::: probjax.nn.AffineBijectorConfig
+::: probjax.nn.AffineCouplingFlow
+::: probjax.nn.AutoregressiveMLP
+::: probjax.nn.AutoregressiveNFlowConfig
+::: probjax.nn.AutoregressiveSSM
+::: probjax.nn.AutoregressiveTransformer
+::: probjax.nn.BernsteinBijectorConfig
+::: probjax.nn.BernsteinPolynomialFlow
+::: probjax.nn.BijectorConfigProtocol
+::: probjax.nn.ConditionerConfigProtocol
+::: probjax.nn.CouplingMLP
+::: probjax.nn.CouplingNFlowConfig
+::: probjax.nn.CouplingTransformer
+::: probjax.nn.DeepSigmoidBijectorConfig
+::: probjax.nn.ElementwiseNFlowConfig
+::: probjax.nn.Flip
+::: probjax.nn.FlipMixingConfig
+::: probjax.nn.GaussianizationFlow
+::: probjax.nn.MLPConditionerConfig
+::: probjax.nn.MixingConfigProtocol
+::: probjax.nn.MixtureCDFBijectorConfig
+::: probjax.nn.MonotoneHermiteCubicSplineConfig
+::: probjax.nn.NFlow
+::: probjax.nn.NeuralAutoregressiveFlow
+::: probjax.nn.NeuralSplineFlow
+::: probjax.nn.NoMixingConfig
+::: probjax.nn.Permute
+::: probjax.nn.PermuteMixingConfig
+::: probjax.nn.PiecewiseAffineSplineConfig
+::: probjax.nn.RationalLinearSplineConfig
+::: probjax.nn.RationalQuadraticSplineConfig
+::: probjax.nn.Rotate
+::: probjax.nn.RotationMixingConfig
+::: probjax.nn.SSMConditionerConfig
+::: probjax.nn.ShiftBijectorConfig
+::: probjax.nn.SplineAutoregressiveFlow
+::: probjax.nn.SplineCouplingFlow
+::: probjax.nn.SumOfSquaresBijectorConfig
+::: probjax.nn.SumOfSquaresPolynomialFlow
+::: probjax.nn.TransformerConditionerConfig
+::: probjax.nn.UMNNBijectorConfig
+::: probjax.nn.UnconstrainedNeuralAutoregressiveFlow
+::: probjax.nn.nice
+::: probjax.nn.realnvp
+
+## Generative extension points and schedules
+
+::: probjax.nn.ARConditionerConfig
+::: probjax.nn.AutodiffInterpolationSchedule
+::: probjax.nn.CategoricalEDMPreconditioning
+::: probjax.nn.CategoricalPreconditioningProtocol
+::: probjax.nn.CategoricalScheduleProtocol
+::: probjax.nn.CategoricalTrainingConfigProtocol
+::: probjax.nn.CosineInterpolationSchedule
+::: probjax.nn.FlowPairTrainingConfigProtocol
+::: probjax.nn.FlowPreconditioningProtocol
+::: probjax.nn.FlowSolverConfigProtocol
+::: probjax.nn.FlowTrainingConfigProtocol
+::: probjax.nn.GaussianFlowPreconditioning
+::: probjax.nn.GeneralInterpolationSchedule
+::: probjax.nn.GenerativeModel
+::: probjax.nn.GenerativeModelProtocol
+::: probjax.nn.ImportanceContinuousTimeTrainingConfig
+::: probjax.nn.InterpolationScheduleProtocol
+::: probjax.nn.LinearFlowSolverConfig
+::: probjax.nn.LinearInterpolationSchedule
+::: probjax.nn.LinearMeanFlow
+::: probjax.nn.LogitNormalFlowTrainingConfig
+::: probjax.nn.MLPARConditionerConfig
+::: probjax.nn.MultinomialCosineDM
+::: probjax.nn.MultinomialDiffusionSchedule
+::: probjax.nn.MultinomialLogSNRDM
+::: probjax.nn.QuadraticInterpolationSchedule
+::: probjax.nn.RhoFlowSolverConfig
+::: probjax.nn.SSMARConditionerConfig
+::: probjax.nn.SigmoidPairFlowTrainingConfig
+::: probjax.nn.TransformerARConditionerConfig
+::: probjax.nn.UniformContinuousTimeTrainingConfig
+::: probjax.nn.UniformFlowTrainingConfig
+::: probjax.nn.made
+
+## Loss builders and data utilities
+
+::: probjax.nn.build_denoising_loss
+::: probjax.nn.build_denoising_score_matching_loss
+::: probjax.nn.build_flow_matching_loss
+::: probjax.nn.build_mean_flow_matching_loss
+::: probjax.nn.build_mean_flow_matching_loss_from_schedule
+::: probjax.nn.build_score_matching_loss
+::: probjax.nn.build_sliced_score_matching_loss
+::: probjax.nn.build_target_score_matching_loss
+::: probjax.nn.build_time_dependent_denoising_loss
+::: probjax.nn.build_time_dependent_denoising_score_matching_loss
+::: probjax.nn.build_time_dependent_multinomial_diffusion_loss
+::: probjax.nn.build_time_dependent_score_matching_loss
+::: probjax.nn.build_time_dependent_sliced_score_matching_loss
+::: probjax.nn.build_time_dependent_target_score_matching_loss
+::: probjax.nn.DataLoader
+::: probjax.nn.chunkify

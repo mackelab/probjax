@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import types
 
 import pytest
 
@@ -34,6 +35,55 @@ GENERATED_PAGES = {
 #: Keeping this explicit means new public API cannot slip in undocumented, and
 #: every omission is a decision someone made rather than an oversight.
 UNDOCUMENTED = {
+    "probjax.nn": {
+        # Unmodified Flax NNX re-exports; their API reference lives with Flax.
+        "BatchNorm",
+        "Bidirectional",
+        "Conv",
+        "ConvTranspose",
+        "Dropout",
+        "Einsum",
+        "Embed",
+        "GRUCell",
+        "GroupNorm",
+        "InstanceNorm",
+        "LSTMCell",
+        "LayerNorm",
+        "Linear",
+        "LinearGeneral",
+        "LoRA",
+        "LoRALinear",
+        "OptimizedLSTMCell",
+        "PReLU",
+        "RMSNorm",
+        "RNN",
+        "SpectralNorm",
+        "WeightNorm",
+        "avg_pool",
+        "celu",
+        "elu",
+        "gelu",
+        "glu",
+        "hard_sigmoid",
+        "hard_silu",
+        "hard_swish",
+        "hard_tanh",
+        "leaky_relu",
+        "log_sigmoid",
+        "log_softmax",
+        "max_pool",
+        "min_pool",
+        "relu",
+        "relu6",
+        "selu",
+        "sigmoid",
+        "silu",
+        "soft_sign",
+        "softmax",
+        "softplus",
+        "swish",
+        "tanh",
+    },
     "probjax.core": {
         # Submodules, reachable but not API surface in their own right.
         "custom_primitives",
@@ -218,23 +268,38 @@ def test_the_site_builds():
 
 @pytest.mark.parametrize(
     "module_name",
-    ["probjax.core", "probjax.stats", "probjax.inference", "probjax.utils", "probjax.nn"],
+    [
+        "probjax.core",
+        "probjax.stats",
+        "probjax.inference",
+        "probjax.utils",
+        "probjax.nn",
+    ],
 )
 def test_public_api_is_documented_or_explicitly_excluded(module_name):
-    """Every name in ``__all__`` is either in the reference or excluded by hand.
+    """Public exports have a reference entry or an explicit exclusion.
 
-    ``probjax.nn`` is included but declares no ``__all__``, so it is skipped by
-    the guard ``if not public: pytest.skip()``. Coverage for ``probjax.nn`` is
-    enforced through ``test_every_reference_target_resolves``, which verifies that
-    every ``:::`` directive in ``docs/reference/nn.md`` resolves to an existing
-    symbol.
+    For ``probjax.nn``, which has no ``__all__``, inspect public non-module
+    attributes. Flax re-exports are explicitly excluded above.
     """
     module = importlib.import_module(module_name)
     public = set(getattr(module, "__all__", []))
+    if module_name == "probjax.nn":
+        public = {
+            name
+            for name, value in vars(module).items()
+            if not name.startswith("_") and not isinstance(value, types.ModuleType)
+        }
     if not public:
         pytest.skip(f"{module_name} declares no __all__")
 
-    referenced = {target.rpartition(".")[2] for _, target in reference_targets()}
+    referenced = set()
+    for _, target in reference_targets():
+        target_module, _, name = target.rpartition(".")
+        if name in public and getattr(
+            importlib.import_module(target_module), name
+        ) is getattr(module, name):
+            referenced.add(name)
     excluded = UNDOCUMENTED.get(module_name, set())
     missing = sorted(public - referenced - excluded)
     assert not missing, (
