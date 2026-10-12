@@ -43,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cast_output(x)`; adopted by 22 NN module classes
 
 ### Changed
+- Prefer `condition`, `do`, and `log_joint_fn`; their legacy aliases and
+  `trace(kind_labels="legacy")` now emit `DeprecationWarning`.
 - Target Python 3.11–3.13 and JAX 0.9.x; require Flax >=0.12.6 and BlackJAX 1.6.2
 - Migrate legacy Pallas features to `probjax.nn.pallas_kernels` and remove the
   old package; use an associative-scan fallback for multi-tile GPU Mamba
