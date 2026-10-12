@@ -13,7 +13,7 @@ from jax import random
 from probjax.stats.base import rv_discrete, rv_exponential_family
 from probjax.stats.constraints import unit_interval
 from probjax.stats.utils import weighted_mean
-from probjax.utils.typing import ArrayLike, RngKey
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["bernoulli"]
 

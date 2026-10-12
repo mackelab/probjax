@@ -10,7 +10,7 @@ from flax import nnx
 
 from probjax.inference.base import Kernel, Warmup, WarmupResult
 from probjax.inference.mcmc.base import make_kernel_api
-from probjax.utils.typing import Array, PyTree, RngKey
+from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 
 class IMHParams(NamedTuple):
