@@ -758,22 +758,7 @@ class DistributionAPI(ABC):
         """
         raise NotImplementedError("CDF not implemented for this distribution")
 
-<<<<<<< HEAD
     def logcdf(self, x: ArrayLike) -> Array:
-        return jnp.log(self.cdf(x))
-
-    def ppf(self, q: ArrayLike) -> ArrayLike:
-        raise NotImplementedError("PPF not implemented for this distribution")
-
-    def sf(self, x: ArrayLike) -> Array:
-        return 1.0 - self.cdf(x)
-
-    def logsf(self, x: ArrayLike) -> Array:
-        return jnp.log(self.sf(x))
-
-    def isf(self, q: ArrayLike) -> ArrayLike:
-=======
-    def logcdf(self, x: ArrayLike):
         """Log of the cumulative distribution function, ``log P(X <= x)``.
 
         Parameters
@@ -788,7 +773,7 @@ class DistributionAPI(ABC):
         """
         return jnp.log(self.cdf(x))
 
-    def ppf(self, q: ArrayLike):
+    def ppf(self, q: ArrayLike) -> ArrayLike:
         """Percent point function (inverse of the CDF).
 
         Parameters
@@ -803,7 +788,7 @@ class DistributionAPI(ABC):
         """
         raise NotImplementedError("PPF not implemented for this distribution")
 
-    def sf(self, x: ArrayLike):
+    def sf(self, x: ArrayLike) -> Array:
         """Survival function, ``1 - cdf(x)``.
 
         Parameters
@@ -818,7 +803,7 @@ class DistributionAPI(ABC):
         """
         return 1.0 - self.cdf(x)
 
-    def logsf(self, x: ArrayLike):
+    def logsf(self, x: ArrayLike) -> Array:
         """Log of the survival function, ``log(1 - cdf(x))``.
 
         Parameters
@@ -833,7 +818,7 @@ class DistributionAPI(ABC):
         """
         return jnp.log(self.sf(x))
 
-    def isf(self, q: ArrayLike):
+    def isf(self, q: ArrayLike) -> ArrayLike:
         """Inverse survival function (inverse of ``sf``).
 
         Parameters
@@ -846,7 +831,6 @@ class DistributionAPI(ABC):
         Array
             Inverse survival function values.
         """
->>>>>>> origin/main
         return self.ppf(1.0 - q)
 
     def mean(self):
