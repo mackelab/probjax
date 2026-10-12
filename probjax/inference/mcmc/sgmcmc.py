@@ -29,6 +29,7 @@ from functools import partial
 from typing import Callable, NamedTuple
 
 import blackjax
+from blackjax.sgmcmc.sgnht import SGNHTState
 from blackjax.types import ArrayTree
 from blackjax.util import generate_gaussian_noise
 
@@ -199,7 +200,6 @@ def sghmc(
 
 
 def _sgnht_init(position, rng_key=None, alpha: float = 0.01):
-    from blackjax.sgmcmc.sgnht import SGNHTState
 
     momentum = generate_gaussian_noise(rng_key, position)
     return SGNHTState(position, momentum, alpha)

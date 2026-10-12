@@ -16,8 +16,6 @@ from probjax.utils.typing import Array, ArrayLike, Callable
 
 # Coefficient functions (not initialized at import)
 def get_ab_coeffs(order: int, dtype) -> Array:
-    import jax.numpy as jnp
-
     coeffs = {
         1: [1.0],
         2: [3 / 2, -1 / 2],
@@ -28,8 +26,6 @@ def get_ab_coeffs(order: int, dtype) -> Array:
 
 
 def get_am_coeffs(order: int, dtype) -> Array:
-    import jax.numpy as jnp
-
     coeffs = {
         1: [1.0],
         2: [1 / 2, 1 / 2],
@@ -40,8 +36,6 @@ def get_am_coeffs(order: int, dtype) -> Array:
 
 
 def get_bdf_a(order: int, dtype) -> Array:
-    import jax.numpy as jnp
-
     coeffs = {
         1: [1.0],
         2: [1.0, -4 / 3, 1 / 3],
