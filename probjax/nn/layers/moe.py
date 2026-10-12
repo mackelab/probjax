@@ -61,7 +61,10 @@ jax.tree_util.register_dataclass(
 
 
 def load_balance_loss(
-    router_probs: Array, expert_ids: Array, num_experts: int
+    router_probs: Array,
+    expert_ids: Array,
+    num_experts: int,
+    token_mask: Array | None = None,
 ) -> Array:
     """Switch-style balancing objective ``E * sum_e p_e * f_e``.
 
@@ -69,10 +72,31 @@ def load_balance_loss(
         router_probs: ``[N, E]`` full softmax probabilities.
         expert_ids: ``[N, K]`` selected expert ids.
         num_experts: ``E``.
+        token_mask: optional ``[N]`` bool; only these tokens enter ``p_e`` and
+            ``f_e``.  Padding is routed like any other token and, being
+            near-identical, piles onto a few experts: 2000 identical pads on
+            2000 balanced tokens moved the loss from 1.00 to 1.45 and gave two
+            experts 31% of the load each.
     """
-    p_e = jnp.mean(router_probs, axis=0)
-    f_e = jnp.bincount(expert_ids.reshape(-1), length=num_experts) / expert_ids.size
+    p_e = _masked_mean(router_probs, token_mask)
+    f_e = expert_fractions(expert_ids, num_experts, token_mask)
     return num_experts * jnp.sum(p_e * f_e)
+
+
+def expert_fractions(
+    expert_ids: Array, num_experts: int, token_mask: Array | None = None
+) -> Array:
+    """Share of the (masked) top-k assignments each expert received, ``[E]``."""
+    one_hot = jax.nn.one_hot(expert_ids, num_experts, dtype=jnp.float32)  # [N, K, E]
+    return _masked_mean(jnp.mean(one_hot, axis=1), token_mask)
+
+
+def _masked_mean(values: Array, token_mask: Array | None) -> Array:
+    values = values.astype(jnp.float32)
+    if token_mask is None:
+        return jnp.mean(values, axis=0)
+    w = token_mask.reshape(-1).astype(jnp.float32)[:, None]
+    return jnp.sum(values * w, axis=0) / jnp.maximum(jnp.sum(w), 1.0)
 
 
 def compute_capacity(
@@ -339,9 +363,20 @@ class MoELayer(nnx.Module):
         return jnp.sum(y * weights[..., None].astype(y.dtype), axis=1)
 
     def __call__(
-        self, x: Array, *, return_aux: bool = False
+        self,
+        x: Array,
+        *,
+        return_aux: bool = False,
+        token_mask: Array | None = None,
     ) -> Array | tuple[Array, MoEAux]:
-        """Map ``[..., d_model] -> [..., d_model]``, optionally with :class:`MoEAux`."""
+        """Map ``[..., d_model] -> [..., d_model]``, optionally with :class:`MoEAux`.
+
+        ``token_mask`` (bool, broadcastable to ``x.shape[:-1]``) restricts the
+        balance loss, router z-loss, ``expert_utilization`` and
+        ``router_probabilities`` to real tokens.  Masked tokens are still routed
+        and computed, so outputs are unchanged; ``expert_counts`` and the
+        capacity figures stay over all tokens, as the kernels see them.
+        """
         if x.shape[-1] != self.d_model:
             raise ValueError(f"Last dim must be d_model={self.d_model}, got {x.shape}")
         x_flat = x.reshape(-1, self.d_model)
@@ -373,14 +408,18 @@ class MoELayer(nnx.Module):
 
         router_probs = jax.nn.softmax(logits, axis=-1)
         total = n_tokens * self.top_k
+        if token_mask is not None:
+            token_mask = jnp.broadcast_to(token_mask, x.shape[:-1]).reshape(-1)
         aux = MoEAux(
             load_balance_loss=load_balance_loss(
-                router_probs, expert_ids, self.num_experts
+                router_probs, expert_ids, self.num_experts, token_mask
             ),
-            router_z_loss=jnp.mean(jax.nn.logsumexp(logits, axis=-1) ** 2),
+            router_z_loss=_masked_mean(
+                jax.nn.logsumexp(logits, axis=-1)[:, None] ** 2, token_mask
+            )[0],
             expert_counts=counts.astype(jnp.float32),
-            expert_utilization=counts / total,
-            router_probabilities=jnp.mean(router_probs, axis=0),
+            expert_utilization=expert_fractions(expert_ids, self.num_experts, token_mask),
+            router_probabilities=_masked_mean(router_probs, token_mask),
             overflow_fraction=jnp.sum(counts - kept) / total,
             capacity_utilization=kept / capacity,
             capacity=capacity,
