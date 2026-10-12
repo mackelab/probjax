@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import pytest
+import numpy as np
 from flax import nnx
 
 from probjax.nn.layers.moe import ExpertSwiGLU, MoELayer, load_balance_loss
@@ -222,3 +223,40 @@ def test_dropless_under_jit_and_bf16():
     x = jax.random.normal(jax.random.key(7), (10, 8)).astype(jnp.bfloat16)
     y = nnx.jit(lambda m, v: m(v))(moe, x)
     assert y.dtype == jnp.bfloat16 and bool(jnp.isfinite(y).all())
+
+
+@pytest.mark.parametrize("routing", ["dropless", "capacity", "dense"])
+def test_token_mask_keeps_padding_out_of_the_balance_stats(routing):
+    """Identical pad tokens pile onto a few experts; masked, they must not
+    move the balance loss or the load, and outputs must not change."""
+    layer = MoELayer(16, 32, 4, top_k=2, routing=routing, capacity_factor=8.0,
+                     rngs=nnx.Rngs(0))
+    real = jax.random.normal(jax.random.key(0), (40, 16))
+    pads = jnp.broadcast_to(jax.random.normal(jax.random.key(1), (1, 16)), (40, 16))
+    x = jnp.concatenate([real, pads])
+    mask = jnp.arange(80) < 40
+
+    _, aux_real = layer(real, return_aux=True)
+    y_all, aux_all = layer(x, return_aux=True)
+    y_masked, aux_masked = layer(x, return_aux=True, token_mask=mask)
+
+    np.testing.assert_allclose(y_masked, y_all, atol=1e-6)
+    np.testing.assert_allclose(aux_masked.load_balance_loss, aux_real.load_balance_loss, rtol=1e-5)
+    np.testing.assert_allclose(aux_masked.expert_utilization, aux_real.expert_utilization, atol=1e-6)
+    np.testing.assert_allclose(aux_masked.router_probabilities, aux_real.router_probabilities, atol=1e-6)
+    # Guard: unmasked, the pads do distort it.
+    assert abs(float(aux_all.load_balance_loss) - float(aux_real.load_balance_loss)) > 1e-3
+    # And the loss still trains the router through the masked mean.
+    g = nnx.grad(lambda m: m(x, return_aux=True, token_mask=mask)[1].load_balance_loss)(layer)
+    assert float(jnp.abs(g.router.kernel[...]).max()) > 0
+
+
+def test_token_mask_broadcasts_over_leading_axes():
+    layer = MoELayer(8, 16, 4, top_k=1, routing="dropless", rngs=nnx.Rngs(0))
+    x = jax.random.normal(jax.random.key(2), (2, 5, 8))
+    mask = jnp.array([True, True, True, False, False])
+    _, a = layer(x, return_aux=True, token_mask=mask)
+    _, b = layer(x[:, :3], return_aux=True)
+    # 1e-4: the router matmul runs at default (TF32) precision on GPU, and a
+    # different token count changes its tiling (measured 2e-5).
+    np.testing.assert_allclose(a.load_balance_loss, b.load_balance_loss, rtol=1e-4)
