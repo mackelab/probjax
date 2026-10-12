@@ -18,7 +18,7 @@ from probjax.nn.layers.grouped_matmul import (
     ragged_matmul_hopper,
 )
 from probjax.nn.sharding import BATCH, EXPERT, constrain, param_metadata
-from probjax.utils.typing import Array
+from probjax.utils.typing import Array, DTypeLike
 
 # Fan-in over the per-expert input dim only; without ``batch_axis`` the expert
 # axis would be folded into the fan and shrink the init scale by ``1/sqrt(E)``.
@@ -123,8 +123,8 @@ class ExpertSwiGLU(nnx.Module):
         d_hidden: int,
         *,
         kernel_init: Initializer = _expert_init,
-        dtype: Dtype | None = None,
-        param_dtype: Dtype = jnp.float32,
+        dtype: DTypeLike | None = None,
+        param_dtype: DTypeLike = jnp.float32,
         rngs: nnx.Rngs,
     ):
         self.num_experts = num_experts
@@ -249,8 +249,8 @@ class MoELayer(nnx.Module):
         dropless_impl: Literal["auto", "pallas", "ragged_dot"] = "auto",
         kernel_init: Initializer = _expert_init,
         router_init: Initializer = nnx.initializers.lecun_normal(),
-        dtype: Dtype | None = None,
-        param_dtype: Dtype = jnp.float32,
+        dtype: DTypeLike | None = None,
+        param_dtype: DTypeLike = jnp.float32,
         rngs: nnx.Rngs,
     ):
         if not 1 <= top_k <= num_experts:

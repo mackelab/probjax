@@ -2,7 +2,7 @@ import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Protocol, Sequence, PyTree
 
 from jax.extend.core import JaxprEqn, Literal
 from jaxtyping import Array
@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from probjax.core.registry import ProcessedResult
 
 
-def primitive_bind_params(primitive, params) -> tuple[tuple[Any, ...], dict[str, Any]]:
+def primitive_bind_params(primitive: Any, params: Any) -> tuple[tuple[Any, ...], dict[str, Any]]:
     bind_params = primitive.get_bind_params(params)
     if (
         isinstance(bind_params, tuple)
@@ -23,7 +23,7 @@ def primitive_bind_params(primitive, params) -> tuple[tuple[Any, ...], dict[str,
     return (), dict(bind_params)
 
 
-def sanitize_bind_params(params) -> dict[str, Any]:
+def sanitize_bind_params(params: Any) -> dict[str, Any]:
     """Drop default-valued dtype-hint params that not all primitives accept.
 
     Newer JAX attaches ``out_dtype=None`` to some nary primitives (e.g. mul).

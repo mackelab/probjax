@@ -24,7 +24,7 @@ class FilterInfo(NamedTuple):
     pass
 
 
-def _default_unpack(state, info):
+def _default_unpack(state: FilterState, info: FilterInfo) -> Tuple[FilterState, FilterInfo]:
     return (state, info)
 
 
@@ -47,11 +47,11 @@ class FilterKernel(NamedTuple):
 
 class FilterAPI(metaclass=API):
     @staticmethod
-    def init(*args, **kwargs) -> Any:
+    def init(*args, **kwargs) -> FilterState:
         raise NotImplementedError("init method must be implemented")
 
     @staticmethod
-    def build_kernel(*args, **kwargs) -> Any:
+    def build_kernel(*args, **kwargs) -> FilterKernel:
         raise NotImplementedError("build_kernel method must be implemented")
 
     default_unpack = staticmethod(_default_unpack)
@@ -90,6 +90,6 @@ def make_filter_api(
     return type(name, (FilterAPI,), attrs)
 
 
-def _gaussian_unpack(state, info):
+def _gaussian_unpack(state: FilterState, info: FilterInfo) -> Tuple[ArrayLike, ArrayLike]:
     """Return the posterior mean and covariance from a Gaussian filter state."""
     return state.mean, state.cov

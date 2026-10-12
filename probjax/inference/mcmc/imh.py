@@ -43,7 +43,7 @@ class NeuralIMHWarmupInfo(NamedTuple):
 def wrap_logpdf(logpdf: Callable) -> Callable:
     """Wrap the logpdf function to work with the IMH kernel."""
 
-    def wrapped_logpdf(x: Any, y: Any, *args, **kwargs) -> Array:
+    def wrapped_logpdf(x: ArrayLike, y: ArrayLike, *args, **kwargs) -> Array:
         return logpdf(y, *args, **kwargs)
 
     return wrapped_logpdf

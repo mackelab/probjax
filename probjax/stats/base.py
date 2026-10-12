@@ -40,7 +40,7 @@ __all__ = [
 class _FrozenArgs:
     args: tuple[Any, ...]
     kwds: dict[str, Any]
-    parameter_values: dict[str, Any]
+    parameter_values: dict[str, ArrayLike]
 
 
 @jax.tree_util.register_pytree_node_class
@@ -48,8 +48,8 @@ class _FrozenArgs:
 class DistributionParams:
     """Unconstrained parameters with a distribution stored as static metadata."""
 
-    dist: Any
-    params: Mapping[str, Any]
+    dist: rv_generic
+    params: Mapping[str, ArrayLike]
 
     def tree_flatten(self):
         return (dict(self.params),), self.dist
@@ -758,6 +758,21 @@ class DistributionAPI(ABC):
         """
         raise NotImplementedError("CDF not implemented for this distribution")
 
+<<<<<<< HEAD
+    def logcdf(self, x: ArrayLike) -> Array:
+        return jnp.log(self.cdf(x))
+
+    def ppf(self, q: ArrayLike) -> ArrayLike:
+        raise NotImplementedError("PPF not implemented for this distribution")
+
+    def sf(self, x: ArrayLike) -> Array:
+        return 1.0 - self.cdf(x)
+
+    def logsf(self, x: ArrayLike) -> Array:
+        return jnp.log(self.sf(x))
+
+    def isf(self, q: ArrayLike) -> ArrayLike:
+=======
     def logcdf(self, x: ArrayLike):
         """Log of the cumulative distribution function, ``log P(X <= x)``.
 
@@ -831,6 +846,7 @@ class DistributionAPI(ABC):
         Array
             Inverse survival function values.
         """
+>>>>>>> origin/main
         return self.ppf(1.0 - q)
 
     def mean(self):

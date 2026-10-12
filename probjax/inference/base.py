@@ -1,6 +1,15 @@
-from typing import Any, Callable, NamedTuple, Optional
+from typing import Any, Callable, Generic, NamedTuple, Optional, TypeVar
 
 from probjax.utils.jaxutils import print_scan
+
+S = TypeVar("S")
+P = TypeVar("P")
+I = TypeVar("I")
+T = TypeVar("T")
+
+
+class Kernel(NamedTuple):
+    """A pure transition and the functions needed to initialize it."""
 
 
 class Kernel(NamedTuple):
@@ -26,11 +35,11 @@ class Adaptor(NamedTuple):
     finalize: Callable
 
 
-class AdaptationResult(NamedTuple):
-    state: Any
-    params: Any
+class AdaptationResult(NamedTuple, Generic[S, P, I]):
+    state: S
+    params: P
     trace: Optional[Any] = None
-    final_info: Optional[Any] = None
+    final_info: Optional[I] = None
 
 
 class AdaptationTrace(NamedTuple):
@@ -44,33 +53,33 @@ class Warmup(NamedTuple):
     run: Callable
 
 
-class WarmupResult(NamedTuple):
-    state: Any
-    params: Any
-    info: Optional[Any] = None
+class WarmupResult(NamedTuple, Generic[S, P, I]):
+    state: S
+    params: P
+    info: Optional[I] = None
 
 
-class MCMCResult(NamedTuple):
-    state: Any
+class MCMCResult(NamedTuple, Generic[S, I]):
+    state: S
     samples: Optional[Any] = None
-    info: Optional[Any] = None
+    info: Optional[I] = None
 
 
-class SMCResult(NamedTuple):
-    state: Any
-    params: Any
-    info: Optional[Any] = None
+class SMCResult(NamedTuple, Generic[S, P, I]):
+    state: S
+    params: P
+    info: Optional[I] = None
     log_evidence: Optional[Any] = None
-    final_info: Optional[Any] = None
+    final_info: Optional[I] = None
     num_steps: Optional[Any] = None
     completed: Optional[Any] = None
     key: Optional[Any] = None
 
 
-class FilteringResult(NamedTuple):
-    initial_state: Any
+class FilteringResult(NamedTuple, Generic[S, I]):
+    initial_state: S
     states: Any
-    info: Optional[Any] = None
+    info: Optional[I] = None
 
 
 class RunnerMixin:
