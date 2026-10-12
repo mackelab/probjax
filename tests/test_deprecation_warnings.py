@@ -29,11 +29,13 @@ from probjax.stats import norm
 
 def _make_model():
     """Build a simple two-site model."""
+
     def model(key):
         k1, k2 = jax.random.split(key)
         z = rv_p.bind(k1, 0.0, 1.0, dist=norm, name="z")
         y = rv_p.bind(k2, z, 0.5, dist=norm, name="y")
         return y
+
     return model
 
 

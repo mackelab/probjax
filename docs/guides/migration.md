@@ -67,6 +67,12 @@ backward path currently has an [open release blocker](../releasing.md#open-relea
 
 ## Sampling traces and kernels
 
+Prefer `condition`, `do`, and `log_joint_fn` for probabilistic-program
+transformations. Their legacy aliases `observe`, `intervene`,
+`log_potential_fn`, and `log_prob_fn` still work but emit `DeprecationWarning`.
+Use `trace(..., kind_labels="probabilistic")` instead of the deprecated
+`kind_labels="legacy"` option.
+
 Ordinary distribution sampling no longer emits random-variable primitives.
 ProbJax PPL transformations enable tracing automatically. Opt in explicitly only
 when inspecting sampling jaxprs or writing a custom interpreter; the flag is
