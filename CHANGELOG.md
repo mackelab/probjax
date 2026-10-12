@@ -43,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cast_output(x)`; adopted by 22 NN module classes
 - `fit(schedule=...)` also accepts any optax schedule; `FitMixin` gains a
   `_fit_batch` hook so a model decides what its batches look like
+- `tests/test_layering.py` guards the package layering: `stats` and `core`
+  never import flax or optax, and the flax-free training modules stay so
 
 ### Changed
 - Gradient-based training moved from `probjax.stats.fit` to
