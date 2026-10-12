@@ -10,6 +10,7 @@ from typing import Optional, Tuple
 import jax.numpy as jnp
 import jax.scipy.stats.cauchy as _cauchy
 from jax import random
+from jax.scipy.optimize import minimize as jax_minimize
 
 from probjax.stats.base import rv_continuous
 from probjax.stats.constraints import real, strict_positive
@@ -144,8 +145,6 @@ class cauchy_gen(rv_continuous):
         scale_init = jnp.maximum(scale_init, jnp.asarray(1e-6, dtype=data.dtype))
 
         # Optimize log-likelihood via BFGS in unconstrained space (log scale)
-        from jax.scipy.optimize import minimize as jax_minimize
-
         init_flat = jnp.concatenate([
             jnp.atleast_1d(loc_init),
             jnp.log(jnp.atleast_1d(scale_init)),

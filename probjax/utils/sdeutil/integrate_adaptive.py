@@ -14,6 +14,7 @@ Scope:
     path without step doubling — left for a follow-up.
 """
 
+import warnings
 from typing import Callable, Tuple
 
 import jax
@@ -40,8 +41,6 @@ def warn_boundary_hits(adaptor, total_hits, n_segments: int) -> None:
     """
     if not adaptor.warn_on_boundary or n_segments == 0:
         return
-
-    import warnings
 
     threshold = max(2, n_segments // 4)
     max_steps = int(adaptor.max_inner_steps)

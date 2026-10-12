@@ -10,6 +10,7 @@ from typing import Optional, Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
+import jax.scipy.optimize
 from jax import lax, random
 
 from probjax.stats.base import (
@@ -19,14 +20,8 @@ from probjax.stats.base import (
     rv_generic,
 )
 from probjax.stats.constraints import distribution, simplex
+from probjax.stats.continuous.norm import norm
 from probjax.utils.typing import ArrayLike, RngKey
-
-try:
-    from probjax.stats.continuous.norm import norm as _norm_distribution
-except ImportError:  # pragma: no cover
-    _norm_distribution = None
-
-_NORM_GEN = _norm_distribution.__class__ if _norm_distribution is not None else None
 
 __all__ = ["mixture"]
 
@@ -168,9 +163,7 @@ class mixture_gen(rv_generic):
             )
 
         # Restrict implementation to mixtures of univariate Normal components for now.
-        if not (
-            _NORM_GEN and all(isinstance(comp.dist, _NORM_GEN) for comp in components)
-        ):
+        if not all(isinstance(comp.dist, type(norm)) for comp in components):
             raise NotImplementedError(
                 "Mode computation currently implemented only for univariate "
                 "Normal mixtures."

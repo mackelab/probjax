@@ -5,6 +5,8 @@ from typing import Any, Callable, Mapping, Sequence
 
 from jax.extend.core import ClosedJaxpr
 
+from probjax.core.custom_primitives.common import Lazy
+
 
 @dataclass(frozen=True, slots=True)
 class CustomInverseCallParams:
@@ -38,7 +40,6 @@ def _require_keys(
 
 def _resolve_lazy_forward(lazy_forward) -> ClosedJaxpr:
     """Resolve lazy forward jaxpr, evaluating the thunk if needed."""
-    from probjax.core.custom_primitives.common import Lazy
 
     if isinstance(lazy_forward, Lazy):
         forward_jaxpr, _, _ = lazy_forward.get()

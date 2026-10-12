@@ -268,6 +268,7 @@ def test_flash3_backend_adapters(monkeypatch):
 
 def test_transformer_distinct_reproducible_dropout_keys():
     from flax import nnx
+
     from probjax.nn import Transformer
 
     seen = []

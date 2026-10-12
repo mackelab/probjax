@@ -1,4 +1,6 @@
+import argparse
 import os
+import shlex
 import threading
 import time
 from contextlib import suppress
@@ -297,9 +299,6 @@ def register_bmit_magic():
 
     @register_cell_magic
     def bmit(line, cell):
-        import argparse
-        import shlex
-
         parser = argparse.ArgumentParser(prog="%%bmit", add_help=False)
         parser.add_argument("-t", "--max-time", type=float, default=5.0)
         parser.add_argument("-n", "--min-iterations", type=int, default=2)

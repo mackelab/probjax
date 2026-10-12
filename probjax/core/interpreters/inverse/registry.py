@@ -1,12 +1,9 @@
 """
 Inverse registry utilities.
 
-This module provides cost functions and utility functions for the inverse
-interpreter. The actual rule registration is done in the unified REGISTRY
-from probjax.core.registry.
-
-For backwards compatibility, this module exports shim objects that wrap
-the unified REGISTRY to provide the old API.
+Defines has_registered_inverse and inverse_cost_fn for the inverse
+interpreter. Rule registration lives in the unified REGISTRY from
+probjax.core.registry.
 """
 
 import importlib

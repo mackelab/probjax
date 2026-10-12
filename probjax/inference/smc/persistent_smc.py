@@ -9,8 +9,6 @@ from probjax.inference.smc.base import (
     make_smc_api,
 )
 
-PersistentSMCState = bj_persistent.PersistentSMCState
-
 
 def build_step(
     logprior_fn: Optional[Callable],

@@ -3,6 +3,7 @@ Base classes and utilities for statistical divergences.
 """
 
 import warnings
+from functools import total_ordering
 from typing import Callable, Dict, Optional, Tuple, Type
 
 import jax
@@ -15,62 +16,30 @@ _DIV_REGISTRY: Dict[str, Dict[Tuple[Type, Type], Callable]] = {}
 _DIV_MEMOIZE: Dict[str, Dict[Tuple[Type, Type], Callable]] = {}
 
 
+@total_ordering
 class Match:
-    """A class for finding the most specific match in a registry of functions.
+    """Orders (type_p, type_q) registrations by how specific they are.
 
-    This class is used to find the most specific match for a given set of types
-    in a registry of functions. The most specific match is determined by the
-    inheritance hierarchy of the types.
-
-    Attributes:
-        registry (Dict[Tuple[Type, ...], Callable]): A dictionary mapping type tuples to functions.
+    ``a <= b`` when each type of ``a`` is a subclass of the matching type of
+    ``b``, comparing left to right and stopping at the first strictly more
+    specific type. ``_dispatch`` takes the ``min`` of these.
     """
 
-    def __init__(self):
-        self.registry = {}
+    __slots__ = ["types"]
 
-    def register(self, types: Tuple[Type, ...], func: Callable) -> None:
-        """Register a function for a given tuple of types.
+    def __init__(self, *types):
+        self.types = types
 
-        Args:
-            types (Tuple[Type, ...]): A tuple of types to register the function for.
-            func (Callable): The function to register.
-        """
-        self.registry[types] = func
+    def __eq__(self, other):
+        return self.types == other.types
 
-    def find_match(self, types: Tuple[Type, ...]) -> Optional[Callable]:
-        """Find the most specific match for a given tuple of types.
-
-        Args:
-            types (Tuple[Type, ...]): A tuple of types to find a match for.
-
-        Returns:
-            Optional[Callable]: The most specific matching function, or None if no match is found.
-        """
-        if types in self.registry:
-            return self.registry[types]
-
-        # Find all matches
-        matches = []
-        for reg_types, func in self.registry.items():
-            if len(reg_types) != len(types):
-                continue
-            if all(issubclass(t, rt) for t, rt in zip(types, reg_types, strict=False)):
-                matches.append((reg_types, func))
-
-        if not matches:
-            return None
-
-        # Find the most specific match
-        best_match = matches[0]
-        for match in matches[1:]:
-            if all(
-                issubclass(rt1, rt2)
-                for rt1, rt2 in zip(match[0], best_match[0], strict=False)
-            ):
-                best_match = match
-
-        return best_match[1]
+    def __le__(self, other):
+        for x, y in zip(self.types, other.types, strict=True):
+            if not issubclass(x, y):
+                return False
+            if x is not y:
+                break
+        return True
 
 
 def register_divergence(name: str, type_p: Type, type_q: Type):

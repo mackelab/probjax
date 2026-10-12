@@ -38,6 +38,17 @@ from probjax.utils.typing import Array, PyTree, RngKey
 __all__ = ["GenerativeModel"]
 
 
+def _affine_sample_base(self, rng, sample_shape, spec):
+    """Gaussian base ``N(mu0, std0**2)``; flow models assign this as ``_sample_base``."""
+    return sample_normal(
+        rng,
+        sample_shape,
+        spec,
+        loc=self.mu0.get_value(),
+        scale=self.std0.get_value(),
+    )
+
+
 class GenerativeModel(nnx.Module, FitMixin):
     """Shared base for generative families with cached exported samplers."""
 

@@ -5,12 +5,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from probjax.utils.linear_operator import LinearOperator
 from probjax.inference.filtering.kalman_filter import (
     default_logdet,
     default_solve,
     kalman_filter,
 )
+from probjax.utils.linear_operator import LinearOperator
 
 
 @pytest.mark.parametrize("compiled", [False, True])

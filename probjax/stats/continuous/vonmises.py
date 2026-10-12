@@ -9,6 +9,7 @@ from typing import Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
+from jax.scipy.optimize import minimize as jax_minimize
 from jax.scipy.special import i0, i1
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
@@ -192,8 +193,6 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
         kappa_init = jnp.where(tiny > R, tiny, approx_kappa(R))
 
         # Refine kappa via BFGS (loc MLE is the circular mean, keep it fixed)
-        from jax.scipy.optimize import minimize as jax_minimize
-
         if weights_arr is not None:
             w = weights_arr
         else:

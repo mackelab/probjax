@@ -14,7 +14,6 @@ import pytest
 
 from probjax.core import custom_inverse, inverse, inverse_and_logabsdet
 
-
 # ---------------------------------------------------------------------------
 # Basic custom inverse
 # ---------------------------------------------------------------------------

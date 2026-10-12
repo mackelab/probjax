@@ -7,7 +7,13 @@ import jax.numpy as jnp
 
 from probjax.utils.functions import additive_diffusion, split_drift
 from probjax.utils.linalg import mv_diag_or_dense
-from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
+from probjax.utils.sdeutil.base import (
+    SDEInfo,
+    SDESolverAPI,
+    SDEState,
+    infer_noise_dim,
+    register_method,
+)
 from probjax.utils.special.phi1 import phi1_scalar
 from probjax.utils.typing import Array, ArrayLike, Callable, RngKey
 
@@ -39,14 +45,6 @@ def _weighted_noise_variance(c: Array, dt: ArrayLike) -> Array:
     z = c * dt_abs
     var = dt_abs * phi1_scalar(2.0 * z)
     return jnp.maximum(var, 0.0)
-
-
-def _infer_noise_dim(g0: Array, default_dim: int, configured_dim: int | None) -> int:
-    if configured_dim is not None:
-        return int(configured_dim)
-    if g0.ndim <= 1:
-        return int(default_dim)
-    return int(g0.shape[-1])
 
 
 def init_state(
@@ -98,7 +96,7 @@ def build_exp_euler_maruyama_step(
 
         g_n = jnp.asarray(diffusion(t0, y0)) if state.g0 is None else state.g0
 
-        inferred_noise_dim = _infer_noise_dim(g_n, y0.shape[0], noise_dim)
+        inferred_noise_dim = infer_noise_dim(g_n, y0.shape[0], noise_dim)
         noise_var = _weighted_noise_variance(c_np1, dt)
         noise_std = jnp.sqrt(noise_var)
 

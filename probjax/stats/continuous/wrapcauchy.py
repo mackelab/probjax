@@ -9,6 +9,7 @@ from typing import Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
+from jax.scipy.optimize import minimize as jax_minimize
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
@@ -189,8 +190,6 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
 
         # Optimize log-likelihood via BFGS in unconstrained space
         # gamma = sigmoid(logit_gamma), loc is already unconstrained
-        from jax.scipy.optimize import minimize as jax_minimize
-
         if weights_arr is not None:
             w = weights_arr
         else:

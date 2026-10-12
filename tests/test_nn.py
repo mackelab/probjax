@@ -5,14 +5,10 @@ import pytest
 from flax import nnx
 
 from probjax.core import inverse, inverse_and_logabsdet
-from probjax.nn.layers.attention import (
-    PerHeadQueryScale,
-    QASSMaxQueryScale,
-    dot_product_attention,
-)
 from probjax.nn import (
-    AdditiveCouplingFlow,
+    MLP,
     AdditiveBinaryFuse,
+    AdditiveCouplingFlow,
     AdditiveFuse,
     AffineAutoregressiveFlow,
     AffineFuse,
@@ -25,9 +21,13 @@ from probjax.nn import (
     GatedFuse,
     InducedSelfAttention,
     MaskedLinear,
-    MLP,
     Transformer,
     chunkify,
+)
+from probjax.nn.layers.attention import (
+    PerHeadQueryScale,
+    QASSMaxQueryScale,
+    dot_product_attention,
 )
 
 pytest_plugins = ["tests.test_problems.nns"]

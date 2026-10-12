@@ -1,10 +1,8 @@
-from functools import partial
-
 import jax.numpy as jnp
 
 from probjax.utils._solver_common import make_trivial_init, sample_wiener_increment
 from probjax.utils.linalg import mv_diag_or_dense
-from probjax.utils.odeutil.solvers.rk_explicit import RKInfo, RKState, heun
+from probjax.utils.odeutil.solvers.rk_explicit import RKInfo, RKState
 from probjax.utils.sdeutil.base import (
     SDEInfo,
     SDESolverAPI,
@@ -97,8 +95,3 @@ def build_rkm_step(
         return new_state, info
 
     return step_fn
-
-
-class heun_maruyama(SDESolverAPI):
-    init = heun.init
-    build_step = partial(build_rkm_step, heun)

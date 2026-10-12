@@ -45,6 +45,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax._src import core as jax_core
 from jax.extend.core import Jaxpr, Literal, Var
+from jax.scipy.sparse.linalg import gmres as _gmres
 
 from probjax.core.interpreters.inverse.diagonal import DiagonalAffineSystem
 from probjax.core.registry import apply_inverse_guard, inverse_roundtrip_valid
@@ -82,10 +83,6 @@ _BILINEAR_PRIMITIVES = frozenset({
     "dot_general",
     "conv_general_dilated",
 })
-
-# These are affine only when target dependence is confined to the listed
-# operands. A target-dependent divisor, index, or selector is nonlinear.
-_DATA_OPERAND_ONLY_PRIMITIVES = frozenset({"div", "dynamic_slice", "gather"})
 
 #: Pointwise primitives: with a single target variable these map each output
 #: element from the same-index input element, so the linear part is diagonal.
@@ -502,7 +499,6 @@ def solve_affine_inverse(
     else:
         # Large coupled map: matrix-free gmres, O(n) memory. The log-det
         # needs the dense matrix, so it comes back NaN by design.
-        from jax.scipy.sparse.linalg import gmres as _gmres
 
         solution, info = _gmres(matvec, rhs, tol=1e-8, atol=1e-8)
         residual = matvec(solution) - rhs

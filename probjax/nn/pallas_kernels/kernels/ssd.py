@@ -45,9 +45,8 @@ from ..kernel_utils import (
 from ..kernel_utils.common import (
     _bs,
     _is_hopper_or_newer_gpu,
-    _prefer_mosaic_gpu,
+    _pallas_backend,
     _tpu_compiler_params,
-    _unsafe_enable_mosaic_gpu,
 )
 from ..kernel_utils.kernel_primitive import (
     KernelSpec,
@@ -60,24 +59,6 @@ from ..kernel_utils.kernel_primitive import (
     res,
     shardable_kernel,
 )
-
-
-def _pallas_backend(prefer_mosaic_gpu: bool | None = None) -> str | None:
-    """Selects the explicit Pallas backend for the current JAX platform."""
-    if prefer_mosaic_gpu is None:
-        prefer_mosaic_gpu = _prefer_mosaic_gpu()
-    backend = jax.default_backend()
-    if backend == "gpu":
-        if (
-            prefer_mosaic_gpu
-            and _unsafe_enable_mosaic_gpu()
-            and _is_hopper_or_newer_gpu()
-        ):
-            return "mosaic_gpu"
-        return "triton"
-    if backend == "tpu":
-        return "mosaic_tpu"
-    return None
 
 
 def _ssd_tiling_config() -> tuple[int, int, int]:
@@ -102,8 +83,6 @@ def _gpu_supports_ssd_pallas_for_shape(
     """Cheap/static capability check for SSD Pallas on GPU."""
     if jax.default_backend() != "gpu":
         return False
-    if use_interpret_mode():
-        return True
     if pallas_backend not in ("triton", "mosaic_gpu"):
         return False
     if pallas_backend == "mosaic_gpu" and not _is_hopper_or_newer_gpu():
@@ -996,12 +975,10 @@ def _ssd_op(q, k, v, log_alpha, h0):
 
 
 def _ssd_fwd_jvp(primals, tangents, *, present, **static):
-    from jax.interpreters import ad
-
     del present, static
     q, k, v, log_alpha, h0 = primals
     dq, dk, dv, dla, dh0 = (
-        ad.instantiate_zeros(t) if isinstance(t, ad.Zero) else t for t in tangents
+        _ad.instantiate_zeros(t) if isinstance(t, _ad.Zero) else t for t in tangents
     )
     o = _ssd_op(q, k, v, log_alpha, h0)
     do = shardable_kernel(
@@ -1024,12 +1001,10 @@ def _ssd_fwd_jvp(primals, tangents, *, present, **static):
 
 
 def _ssd_jvp_transpose(ct, *operands, present, **static):
-    from jax.interpreters import ad
-
     del present, static
     # Operand order per _SSD_JVP_SPEC: 5 linear tangents, then 6 residuals.
     _dq, _dk, _dv, _dla, _dh0, q, k, v, log_alpha, h0, o = operands
-    if isinstance(ct, ad.Zero):
+    if isinstance(ct, _ad.Zero):
         ct = jnp.zeros(o.aval.shape, o.aval.dtype)
     grads = shardable_kernel(
         ssd_bwd_p,

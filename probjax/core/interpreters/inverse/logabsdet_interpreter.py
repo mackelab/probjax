@@ -6,7 +6,6 @@ JAXPR equations to compute inverse values along with log-determinant tracking
 using rules registered in the global REGISTRY.
 """
 
-import jax
 import jax.numpy as jnp
 from jax._src import core as jax_core
 from jax.extend.core import Literal
@@ -66,16 +65,6 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
             return {}
         return nested_state
 
-    @staticmethod
-    def _sum_log_dets(log_dets: dict, vars_) -> tuple[jax.Array, bool]:
-        """Sum log-determinants for the given variables.
-
-        Returns ``(total, nontrivial)`` where ``nontrivial`` tells whether any
-        staged (non-static-zero) term was added, so callers can skip chaining
-        arithmetic that would only add ``0.0``.
-        """
-        return sum_logdet_terms(log_dets, vars_)
-
     def __call__(
         self, eqn, known_invars, known_outvars, context=None
     ) -> ProcessedResult | None:
@@ -127,7 +116,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         log|dy/dz| from the output variables.
         """
         log_dets = self._read_log_dets(context)
-        previous, prev_nontrivial = self._sum_log_dets(log_dets, eqn.outvars)
+        previous, prev_nontrivial = sum_logdet_terms(log_dets, eqn.outvars)
 
         updated_state = {}
         for var in resolved_vars:
@@ -164,7 +153,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         resolved_vals = inverse_result.resolved_vals
 
         log_dets = self._read_log_dets(context)
-        previous, prev_nontrivial = self._sum_log_dets(log_dets, eqn.outvars)
+        previous, prev_nontrivial = sum_logdet_terms(log_dets, eqn.outvars)
 
         # Compute log-det via autodiff if values are inexact
         if len(resolved_vals) == 1:
@@ -253,7 +242,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
         )
 
         log_dets = self._read_log_dets(context)
-        previous, prev_nontrivial = self._sum_log_dets(log_dets, eqn.outvars)
+        previous, prev_nontrivial = sum_logdet_terms(log_dets, eqn.outvars)
 
         updates = {}
         for index, var in enumerate(invars):

@@ -13,7 +13,6 @@ from probjax.utils.jaxutils import API
 from probjax.utils.typing import Array, PyTree, RngKey
 
 SMCState = bj_smc_base.SMCState
-SMCInfo = bj_smc_base.SMCInfo
 
 
 SMCKernel = Kernel
@@ -127,29 +126,6 @@ def make_mcmc_adapter(mcmc_kernel, **kernel_kwargs):
         return step(rng_key, state, _wrap_params(step_parameters))
 
     return mcmc_init_fn, mcmc_step_fn
-
-
-def init_mcmc_params(
-    particles: PyTree,
-    logprior_fn: Callable,
-    loglikelihood_fn: Callable,
-    mcmc_kernel,
-    rng_key: Optional[RngKey] = None,
-    lmbda: float = 0.0,
-    mcmc_kernel_kwargs: Optional[Dict[str, Any]] = None,
-    **mcmc_param_kwargs,
-) -> Dict[str, Array]:
-    """Initialize MCMC params from the first particle at tempering level lmbda."""
-    particle0 = jax.tree_util.tree_map(lambda x: x[0], particles)
-
-    def tempered_logposterior_fn(position):
-        return logprior_fn(position) + lmbda * loglikelihood_fn(position)
-
-    mcmc_kernel_kwargs = mcmc_kernel_kwargs or {}
-    mcmc_init_fn, _ = make_mcmc_adapter(mcmc_kernel, **mcmc_kernel_kwargs)
-    mcmc_state = mcmc_init_fn(particle0, tempered_logposterior_fn, rng_key=rng_key)
-    params = mcmc_kernel.init_params(mcmc_state, **mcmc_param_kwargs)
-    return _ensure_param_batch(params, shared=True)
 
 
 def init_mcmc_params_from_logdensity(

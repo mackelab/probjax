@@ -346,19 +346,6 @@ def closed_form_S_step_lyapunov(drift_matrix, U_hat, diffusion_matrix, S_hat_n, 
     return Snext
 
 
-# def solve_lyapunov_dlr_with_factor(proc, Y, r0, t_span, num_steps):
-#     # This corresponds to the first solve_lyapunov_dlr definition
-#     # In Julia:
-#     # QR_L = qr(Y.factor)
-#     # Q_L = Matrix(QR_L.Q)
-#     # R_L = Matrix(QR_L.R)
-#     # Y_tpl = (Q_L, symmetrize_matrix(R_L * R_L'))
-#     # solve_lyapunov_dlr(proc, Y_tpl, r0, t_span, num_steps)
-#     Q_L, R_L = np.linalg.qr(Y.factor)
-#     Y_tpl = (Q_L, symmetrize_matrix(R_L @ R_L.T))
-#     return solve_lyapunov_dlr(proc, Y_tpl, r0, t_span, num_steps)
-
-
 def solve_lyapunov_dlr(proc, Y, r0, dt, num_steps):
     # If num_steps == 1, splitting_integrator_steps = [dt], else use linspace and skip
     if num_steps == 1:
@@ -376,15 +363,12 @@ def solve_lyapunov_dlr(proc, Y, r0, dt, num_steps):
     U_init, S_init = Y
     assert U_init.shape[1] == S_init.shape[0] == S_init.shape[1] == r0
 
-    # small_matexp = exp(proc.drift_matrix_1d * h)
     # If drift_matrix_1d is scalar:
     small_matexp = jnp.exp(proc.drift_matrix_1d * h)
 
-    # eAh = kronecker(I(wiener_process_dimension(proc)), small_matexp)
     w_dim = proc.wiener_process_dimension()
     eAh = jnp.kron(jnp.eye(w_dim), small_matexp)
 
-    # phi_factor = kronecker(I(w_dim), (small_matexp - I) / (proc.drift_matrix_1d * h))
     phi_factor = jnp.kron(
         jnp.eye(w_dim), (small_matexp - 1.0) / (proc.drift_matrix_1d * h)
     )

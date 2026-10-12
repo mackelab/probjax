@@ -13,7 +13,7 @@ from jax.experimental import pallas as pl
 from probjax.utils.typing import Array
 
 # A very negative value used to mask logits safely in float32.
-# Keep consistent with pallas_kernels/flash_attention.py
+# Keep consistent with kernels/attention.py
 NEG_INF = -1e15
 DEFAULT_MASK_VALUE = NEG_INF
 
@@ -115,6 +115,24 @@ def _unsafe_enable_mosaic_gpu() -> bool:
     """Explicit opt-in for the unstable Mosaic GPU path."""
     val = os.environ.get("PROBJAX_PALLAS_UNSAFE_ENABLE_MOSAIC_GPU", "0")
     return val.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _pallas_backend(prefer_mosaic_gpu: bool | None = None) -> str | None:
+    """Selects the explicit Pallas backend for the current JAX platform."""
+    if prefer_mosaic_gpu is None:
+        prefer_mosaic_gpu = _prefer_mosaic_gpu()
+    backend = jax.default_backend()
+    if backend == "gpu":
+        if (
+            prefer_mosaic_gpu
+            and _unsafe_enable_mosaic_gpu()
+            and _is_hopper_or_newer_gpu()
+        ):
+            return "mosaic_gpu"
+        return "triton"
+    if backend == "tpu":
+        return "mosaic_tpu"
+    return None
 
 
 # ------------------------ Block Sparsity Helpers -----------------------------

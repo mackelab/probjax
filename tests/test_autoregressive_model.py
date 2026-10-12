@@ -12,13 +12,13 @@ import pytest
 from flax import nnx
 
 from probjax.nn.generative.autoregressive import (
+    MADE,
     ARFamily,
     Autoregressive,
     CategoricalAutoregressive,
     HistogramAutoregressive,
-    MADE,
-    MixtureAutoregressive,
     MLPARConditionerConfig,
+    MixtureAutoregressive,
     SplineAutoregressive,
     TransformerARConditionerConfig,
 )

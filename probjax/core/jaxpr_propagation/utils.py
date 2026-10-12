@@ -302,12 +302,6 @@ class ReducerFunction(Protocol):
     def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
-def as_sequence(value: Any) -> Sequence[Any]:
-    if isinstance(value, (list, tuple)):
-        return value
-    return (value,)
-
-
 def supports_context_argument(func: Callable, required_positional: int) -> bool:
     try:
         signature = inspect.signature(func)

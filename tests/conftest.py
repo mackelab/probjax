@@ -42,13 +42,16 @@ if enable_multi and cpu_devices > 1:
     if flag not in xla_flags:
         os.environ["XLA_FLAGS"] = f"{xla_flags} {flag}".strip()
 
-import jax
-import jax.numpy as jnp
-import numpy as np
-import pytest
+# XLA_FLAGS must be set before jax is imported, hence E402 is expected below.
+import jax  # noqa: E402
+import jax.numpy as jnp  # noqa: E402
+import numpy as np  # noqa: E402
+import pytest  # noqa: E402
 
-from probjax.utils.odeutil.solvers.base import get_methods as get_methods_ode
-from probjax.utils.sdeutil import get_methods as get_methods_sde
+from probjax.utils.odeutil.solvers.base import (  # noqa: E402
+    get_methods as get_methods_ode,
+)
+from probjax.utils.sdeutil import get_methods as get_methods_sde  # noqa: E402
 
 try:
     import pytest_benchmark.plugin as _pytest_benchmark_plugin

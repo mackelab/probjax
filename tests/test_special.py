@@ -7,8 +7,6 @@ from scipy.special import betaincinv as scipy_betaincinv
 from scipy.special import gammaincinv as scipy_gammaincinv
 
 from probjax.stats.continuous import gamma, norm, uniform
-
-# Import your betaincinv function here
 from probjax.utils.special.betaincinv import betaincinv
 from probjax.utils.special.digammainv import digammainv
 from probjax.utils.special.gammaincinv import gammaincinv

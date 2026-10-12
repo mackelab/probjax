@@ -1,14 +1,14 @@
+from typing import Any, cast
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from scipy.linalg import expm
-from typing import Any, cast
 
 from probjax.utils.functions import const_diffusion, linear_drift, split_drift
 from probjax.utils.odeint import odeint
-from probjax.utils.odeutil import StepSizeAdaptor
-from probjax.utils.odeutil import TraceNothing
+from probjax.utils.odeutil import StepSizeAdaptor, TraceNothing
 from probjax.utils.sdeint import sdeint
 
 pytest_plugins = [

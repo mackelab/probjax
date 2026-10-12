@@ -54,10 +54,7 @@ class FilterAPI(metaclass=API):
     def build_kernel(*args, **kwargs) -> Any:
         raise NotImplementedError("build_kernel method must be implemented")
 
-    @staticmethod
-    def default_unpack(state, info):
-        """Default unpack function. Override in subclasses to customize."""
-        return (state, info)
+    default_unpack = staticmethod(_default_unpack)
 
     def __new__(cls, *args, **kwargs) -> FilterKernel:
         return FilterKernel(

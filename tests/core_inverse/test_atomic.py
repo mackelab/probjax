@@ -18,9 +18,9 @@ from probjax.core.registry import REGISTRY, Context
 
 from .cases import (
     ATOMIC_ROUNDTRIP_CASES,
-    PRINCIPAL_BRANCH_CASES,
     INVALID_OUTPUT_CASES,
     LOGDET_EXPLICIT_CASES,
+    PRINCIPAL_BRANCH_CASES,
     STRUCTURALLY_INVALID_CASES,
 )
 from .helpers import logdet_via_autodiff

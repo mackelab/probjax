@@ -130,10 +130,6 @@ quote-style = "preserve"
 venvPath = "."
 venv = ".venv"
 
-[tool.pycodestyle]
-max-line-length = 88
-ignore = ["E203", "W503"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
@@ -159,7 +155,6 @@ branch = true
 parallel = true
 omit = [
     "tests/*",
-    "benchmarks/*",
     "examples/*",
     "docs/*",
     "site/*",

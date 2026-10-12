@@ -26,9 +26,8 @@ from ..kernel_utils import (
 from ..kernel_utils.common import (
     _bs,
     _is_hopper_or_newer_gpu,
-    _prefer_mosaic_gpu,
+    _pallas_backend,
     _tpu_compiler_params,
-    _unsafe_enable_mosaic_gpu,
 )
 from ..kernel_utils.kernel_primitive import (
     KernelSpec,
@@ -162,24 +161,6 @@ def _matmul_precision(dtype: jnp.dtype):
     return get_dot_precision(jax.default_backend(), dtype)
 
 
-def _pallas_backend(prefer_mosaic_gpu: bool | None = None) -> str | None:
-    """Selects the explicit Pallas backend for the current JAX platform."""
-    if prefer_mosaic_gpu is None:
-        prefer_mosaic_gpu = _prefer_mosaic_gpu()
-    backend = jax.default_backend()
-    if backend == "gpu":
-        if (
-            prefer_mosaic_gpu
-            and _unsafe_enable_mosaic_gpu()
-            and _is_hopper_or_newer_gpu()
-        ):
-            return "mosaic_gpu"
-        return "triton"
-    if backend == "tpu":
-        return "mosaic_tpu"
-    return None
-
-
 @functools.lru_cache(maxsize=128)
 def _gpu_supports_mamba_pallas_for_shape(
     *,
@@ -193,8 +174,6 @@ def _gpu_supports_mamba_pallas_for_shape(
     """Cheap/static capability check for Mamba Pallas on GPU."""
     if jax.default_backend() != "gpu":
         return False
-    if use_interpret_mode():
-        return True
     if pallas_backend not in ("triton", "mosaic_gpu"):
         return False
     if pallas_backend == "mosaic_gpu" and not _is_hopper_or_newer_gpu():

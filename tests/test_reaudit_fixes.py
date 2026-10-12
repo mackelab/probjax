@@ -1,12 +1,16 @@
 """Regression coverage for the nine re-audit findings."""
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from scipy import stats as sp
-from probjax.utils.linalg import lanczos_logdet, batched_pcg_solve
-from probjax.stats import genpareto, truncnorm
+
 from probjax.nn.utils import filter_supported_kwargs
+from probjax.stats import genpareto, truncnorm
+from probjax.utils.linalg import batched_pcg_solve, lanczos_logdet
 
 
 def test_logdet_gradient_scaled_identity():
@@ -68,10 +72,6 @@ def test_forwarding_constructor_kwargs():
 def test_genpareto_negative_shape_mode():
     # At c=-2, the density increases to a singularity at its upper endpoint.
     np.testing.assert_allclose(genpareto.mode(c=-2.0), 0.5)
-
-
-import pytest
-from functools import partial
 
 
 @pytest.mark.parametrize('dimension', [1, 3, 20])
@@ -206,6 +206,7 @@ def test_module_accepts_rng_functions_and_partials():
 
 def test_custom_mlp_receives_forwarded_metadata(monkeypatch):
     from flax import nnx
+
     from probjax.nn.nets import simple
 
     seen = []

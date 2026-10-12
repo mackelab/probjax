@@ -43,6 +43,7 @@ rather than as probabilities: every closed form below consumes them through
 from __future__ import annotations
 
 from functools import partial
+from math import comb
 
 import jax
 import jax.numpy as jnp
@@ -375,8 +376,6 @@ _BERNSTEIN_BOUND = 5.0
 
 
 def _binom(n):
-    from math import comb
-
     return jnp.asarray([comb(n, i) for i in range(n + 1)], dtype=jnp.float32)
 
 

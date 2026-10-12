@@ -16,7 +16,6 @@ from .cases import (
     registered_logdet_primitives,
 )
 
-
 _MANUAL_MODULES = {
     "array": test_array_rules,
     "control": test_control_flow,
