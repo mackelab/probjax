@@ -41,13 +41,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `probjax.nn.utils.PrecisionMixin`: stores the
   dtype/precision/param_dtype/preferred_element_type quartet and exposes
   `cast_output(x)`; adopted by 22 NN module classes
+- `fit(schedule=...)` also accepts any optax schedule; `FitMixin` gains a
+  `_fit_batch` hook so a model decides what its batches look like
+- `tests/test_layering.py` guards the package layering: `stats` and `core`
+  never import flax or optax, and the flax-free training modules stay so
 
 ### Changed
-- Target Python 3.11–3.13 and JAX 0.9.x; require Flax >=0.12.6 and BlackJAX 1.6.2
+- Gradient-based training moved from `probjax.stats.fit` to
+  `probjax.nn.training` (`batches`, `kernel`, `loop`, `mixin`), so
+  `probjax.stats` no longer depends on flax or optax. `probjax.nn` still
+  exports `fit`, `FitMixin` and the `Fit*` types
+- `FitMixin` no longer assumes a batch layout: by default `model.fit(rng, data)`
+  trains on `data` as given and calls `loss(rng, batch)`. The
+  `{"data", "context", "weights"}` convention now belongs to `GenerativeModel`
+- Prefer `condition`, `do`, and `log_joint_fn`; their legacy aliases and
+  `trace(kind_labels="legacy")` now emit `DeprecationWarning`.
+- Target Python 3.11–3.13 and JAX `>=0.9.0,<0.12`; require Flax >=0.12.6 and BlackJAX 1.6.2
 - Migrate legacy Pallas features to `probjax.nn.pallas_kernels` and remove the
   old package; use an associative-scan fallback for multi-tile GPU Mamba
-- Require `event_spec` on diffusion and flow-matching constructors; allow
-  per-distribution overrides without changing existing views
+- Accept optional `event_spec` defaults for continuous diffusion and flow
+  matching, with per-distribution overrides; mean-flow and categorical diffusion
+  still require a constructor default
 - Expose architecture builder overrides and shared training hooks on NN modules
 - Keep runtime microbenchmarks opt-in; retain structural/correctness checks in CI
 - Mean-flow training objective now defaults to the Improved MeanFlow (iMF)
@@ -133,7 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `biject_to` transforms and support-aware validation for these families
 - `preferred_element_type=None` (the default) is now a true no-op in all NN
   modules via `PrecisionMixin.cast_output`: previously the unguarded
-  `.astype(None)` silently corrupted dtypes on JAX 0.9.x and raises
+  `.astype(None)` silently corrupted dtypes on older JAX releases and raises
   `TypeError` on newer JAX (7 sites in conv/unet layers)
 - SDE integration of plain-callable drifts now routes through
   `RaveledDrift`, so non-`Drift` pytrees keep array leaves as explicit

@@ -5,7 +5,7 @@ import pytest
 from flax import nnx
 
 from probjax.nn import LinearFlow, maf
-from probjax.stats import fit
+from probjax.nn.training import fit
 
 
 def test_fit_functional_dict_batch():
@@ -97,7 +97,9 @@ def test_fit_does_not_unroll_over_num_steps():
     (rather than `fit` itself, which finishes with a host-side finiteness
     check) is what pins the property down.
     """
-    from probjax.stats.fit import _array_fetch, _build_optimizer, _make_step
+    from probjax.nn.training.batches import _array_fetch
+    from probjax.nn.training.kernel import _build_optimizer
+    from probjax.nn.training.loop import _make_step
 
     data = jnp.zeros((128, 2))
     params = {"w": jnp.zeros(2)}
@@ -129,7 +131,7 @@ def test_fit_reproduces_the_reference_update_sequence():
     Any change to how keys are drawn silently changes every trained model, so
     the sequence is spelled out here rather than left to the implementation.
     """
-    from probjax.stats.fit import _build_optimizer
+    from probjax.nn.training.kernel import _build_optimizer
 
     data = jax.random.normal(jax.random.key(0), (256, 2)) + jnp.array([2.0, -1.0])
     key, params = jax.random.key(1), {"w": jnp.zeros(2)}
@@ -297,7 +299,7 @@ def test_batch_stream_classification_is_fixed_not_inferred():
     ``(num_batches, batch, features)`` array once, which is why the rule is
     pinned here rather than left to shape heuristics.
     """
-    from probjax.stats.fit import is_batch_stream
+    from probjax.nn.training import is_batch_stream
 
     arr = jnp.zeros((4, 2))
     assert not is_batch_stream(arr)

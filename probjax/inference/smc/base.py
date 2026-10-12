@@ -46,8 +46,8 @@ class SMCKernelAPI(metaclass=API):
 
 
 def _filter_kwargs(
-    fn: Callable, kwargs: Dict[str, Any], *, allow_kwargs: bool = True
-) -> Dict[str, Any]:
+    fn: Callable, kwargs: Dict[str, ArrayLike], *, allow_kwargs: bool = True
+) -> Dict[str, ArrayLike]:
     sig = inspect.signature(fn)
     accepts_kwargs = any(
         param.kind == inspect.Parameter.VAR_KEYWORD for param in sig.parameters.values()
@@ -77,7 +77,7 @@ def _ensure_param_batch(params, *, shared: bool) -> Dict[str, Array]:
     return batched
 
 
-def _params_to_dict(params) -> Dict[str, Any]:
+def _params_to_dict(params) -> Dict[str, ArrayLike]:
     if params is None:
         return {}
     if hasattr(params, "_asdict"):
@@ -90,16 +90,16 @@ def _params_to_dict(params) -> Dict[str, Any]:
 
 
 class _ParamsProxy:
-    def __init__(self, params: Dict[str, Any]):
+    def __init__(self, params: Dict[str, ArrayLike]):
         self._params = params
         for k, v in params.items():
             setattr(self, k, v)
 
-    def _asdict(self) -> Dict[str, Any]:
+    def _asdict(self) -> Dict[str, ArrayLike]:
         return self._params
 
 
-def _wrap_params(params: Dict[str, Any]):
+def _wrap_params(params: Dict[str, ArrayLike]):
     if params is None:
         return _ParamsProxy({})
     if hasattr(params, "_asdict"):
@@ -133,7 +133,7 @@ def init_mcmc_params_from_logdensity(
     logdensity_fn: Callable,
     mcmc_kernel,
     rng_key: Optional[RngKey] = None,
-    mcmc_kernel_kwargs: Optional[Dict[str, Any]] = None,
+    mcmc_kernel_kwargs: Optional[Dict[str, ArrayLike]] = None,
     allow_kwargs: bool = False,
     **mcmc_param_kwargs,
 ) -> Dict[str, Array]:

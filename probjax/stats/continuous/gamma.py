@@ -5,7 +5,7 @@ Gamma Distribution (:mod:`probjax.stats.gamma`)
 This module contains the Gamma distribution.
 """
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -45,30 +45,30 @@ class gamma_gen(rv_continuous, rv_exponential_family):
     parameter_aliases = {'concentration': 'alpha', 'rate': 'beta'}
 
     @classmethod
-    def support(cls, alpha=1.0, beta=1.0, **kwargs):
+    def support(cls, alpha: ArrayLike = 1.0, beta: ArrayLike = 1.0, **kwargs: Any) -> Any:
         """Support of the gamma distribution."""
         return strict_positive
 
     @classmethod
-    def logpdf(cls, x, alpha=1.0, beta=1.0, **kwargs):
+    def logpdf(cls, x: ArrayLike, alpha: ArrayLike = 1.0, beta: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Log of the probability density function of the gamma distribution."""
         scale = _scale(beta)
         return _gamma.logpdf(x, alpha, scale=scale)
 
     @classmethod
-    def cdf(cls, x, alpha=1.0, beta=1.0, **kwargs):
+    def cdf(cls, x: ArrayLike, alpha: ArrayLike = 1.0, beta: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Cumulative distribution function of the gamma distribution."""
         scale = _scale(beta)
         return _gamma.cdf(x, alpha, scale=scale)
 
     @classmethod
-    def logcdf(cls, x, alpha=1.0, beta=1.0, **kwargs):
+    def logcdf(cls, x: ArrayLike, alpha: ArrayLike = 1.0, beta: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Log of the cumulative distribution function of the gamma distribution."""
         scale = _scale(beta)
         return _gamma.logcdf(x, alpha, scale=scale)
 
     @classmethod
-    def ppf(cls, q, alpha=1.0, beta=1.0, **kwargs):
+    def ppf(cls, q: ArrayLike, alpha: ArrayLike = 1.0, beta: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Percent point function (inverse of cdf) of the gamma distribution."""
         scale = _scale(beta)
         return gammaincinv(alpha, q) * scale
@@ -89,36 +89,36 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         return random.gamma(rng, alpha, shape=shape + event_shape) / beta
 
     @classmethod
-    def sf(cls, x, alpha=1.0, beta=1.0, **kwargs):
+    def sf(cls, x: ArrayLike, alpha: ArrayLike = 1.0, beta: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Survival function (1 - cdf) of the gamma distribution."""
         scale = _scale(beta)
         return _gamma.sf(x, alpha, scale=scale)
 
     @classmethod
-    def isf(cls, q, alpha=1.0, beta=1.0, **kwargs):
+    def isf(cls, q: ArrayLike, alpha: ArrayLike = 1.0, beta: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Inverse survival function (inverse of sf) of the gamma distribution."""
         return gammainccinv(alpha, q) / jnp.asarray(beta)
 
     @classmethod
-    def mean(cls, alpha=1.0, beta=1.0, **kwargs):
+    def mean(cls, alpha: ArrayLike = 1.0, beta: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Mean of the gamma distribution."""
         return jnp.asarray(alpha) / jnp.asarray(beta)
 
     @classmethod
-    def mode(cls, alpha=1.0, beta=1.0, **kwargs):
+    def mode(cls, alpha: ArrayLike = 1.0, beta: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Mode of the gamma distribution."""
         valid = alpha >= 1
         return jnp.where(valid, (alpha - 1) / beta, jnp.zeros_like(alpha))
 
     @classmethod
-    def var(cls, alpha=1.0, beta=1.0, **kwargs):
+    def var(cls, alpha: ArrayLike = 1.0, beta: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Variance of the gamma distribution."""
         alpha_arr = jnp.asarray(alpha)
         beta_arr = jnp.asarray(beta)
         return alpha_arr / (beta_arr**2)
 
     @classmethod
-    def entropy(cls, alpha=1.0, beta=1.0, **kwargs):
+    def entropy(cls, alpha: ArrayLike = 1.0, beta: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Entropy of the gamma distribution."""
         alpha_arr = jnp.asarray(alpha)
         beta_arr = jnp.asarray(beta)
@@ -130,7 +130,7 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def moment(cls, n, alpha=1.0, beta=1.0, **kwargs):
+    def moment(cls, n: int, alpha: ArrayLike = 1.0, beta: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """n-th non-central moment of the gamma distribution."""
         # n-th moment: E[X^n] = Γ(α+n)/Γ(α) * β^(-n)
         n = jnp.asarray(n)
@@ -139,27 +139,27 @@ class gamma_gen(rv_continuous, rv_exponential_family):
         return jnp.exp(gammaln(alpha_arr + n) - gammaln(alpha_arr)) / (beta_arr**n)
 
     @classmethod
-    def skew(cls, alpha=1.0, beta=1.0, **kwargs):
+    def skew(cls, alpha: ArrayLike = 1.0, beta: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Skewness of the gamma distribution."""
         return 2.0 / jnp.sqrt(alpha)
 
     @classmethod
-    def kurtosis(cls, alpha=1.0, beta=1.0, **kwargs):
+    def kurtosis(cls, alpha: ArrayLike = 1.0, beta: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Excess kurtosis of the gamma distribution."""
         return 6.0 / alpha
 
     @classmethod
-    def natural_parameters(cls, alpha=1.0, beta=1.0, **kwargs):
+    def natural_parameters(cls, alpha: ArrayLike = 1.0, beta: ArrayLike = 1.0, **kwargs: Any) -> Array:
         """Natural parameters of the gamma distribution."""
         return jnp.array([alpha - 1, -beta])
 
     @classmethod
-    def sufficient_statistics(cls, x, **kwargs):
+    def sufficient_statistics(cls, x: ArrayLike, **kwargs: Any) -> Array:
         """Sufficient statistics of the gamma distribution."""
         return jnp.array([jnp.log(x), x])
 
     @classmethod
-    def log_partition(cls, alpha=1.0, beta=1.0, **kwargs):
+    def log_partition(cls, alpha: ArrayLike = 1.0, beta: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Log partition function of the gamma distribution."""
         return gammaln(alpha) - alpha * jnp.log(beta)
 

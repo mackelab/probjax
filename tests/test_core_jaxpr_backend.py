@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from probjax.core import (
     condition,
@@ -29,6 +30,12 @@ from probjax.core.registry import ProcessedResult
 from probjax.stats import norm
 
 
+@pytest.mark.filterwarnings(
+    "ignore:probjax\\.core\\.(observe|intervene|log_potential_fn|log_prob_fn):DeprecationWarning"
+)
+@pytest.mark.filterwarnings(
+    "ignore:probjax\\.core\\.trace\\(kind_labels='legacy'\\):DeprecationWarning"
+)
 def test_interpret_and_propagate_match_nested_jit():
     def f(x):
         def inner(z):

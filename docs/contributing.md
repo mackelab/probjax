@@ -48,7 +48,7 @@ ruff check --fix .
 ```bash
 # Generate tutorial pages before running documentation tests
 python -m pip install -r docs/requirements.txt matplotlib
-python scripts/convert_notebooks.py
+python docs/scripts/convert_notebooks.py
 
 # Run the default CPU suite (GPU, mesh and benchmarks are opt-in)
 JAX_PLATFORMS=cpu pytest
@@ -59,6 +59,18 @@ pytest -n auto
 # Run specific test file
 pytest tests/test_specific.py
 ```
+
+`docs/scripts/convert_notebooks.py` renders the curated `examples/` notebooks
+(`examples/core/ppl.ipynb`, `examples/inference/kalman_filter.ipynb` and
+`examples/inference/smc.ipynb`) to `docs/tutorials/` with
+`nbconvert`. Those pages are generated, git-ignored, and absent on a clean
+checkout, so run the converter before the documentation tests:
+`tests/test_docs.py::test_every_nav_entry_exists` checks the tutorial nav
+entries and `test_every_python_block_runs` executes the generated Python
+examples. The step needs `nbconvert`, `nbformat` and `matplotlib` (as CI
+installs). Use `python docs/scripts/convert_notebooks.py --check` to verify the
+generated output is current without rewriting it. CI runs the converter before
+`pytest`, and the docs workflow runs it before `zensical build --strict`.
 
 ### Making Changes
 
@@ -94,6 +106,20 @@ pytest tests/test_specific.py
 - Use type hints for function signatures
 - Write docstrings for all public functions and classes
 - Keep functions small and focused
+
+### Terminology
+
+Use one word per concept, so that an argument name tells you what it is:
+
+- **`params`**: the trainable parameters of a model, as a pytree. This holds for
+  network layers, bijectors and distributions alike, and for `ema_params`.
+  Avoid "weights" for these.
+- **`weights`**: statistical weights only: particle or mixture-component weights
+  (and their `log_weights`), and per-example loss weights. A layer's
+  `weights`/`biases` pair is the one place the word names a parameter, because
+  that pairing is idiomatic.
+- **`model_state`**: non-trainable variables that evolve during training, such as
+  BatchNorm statistics and RNG counters.
 
 ### Docstrings
 
@@ -132,12 +158,27 @@ def function(param1: int, param2: str) -> bool:
 
 ```bash
 python -m pip install -r docs/requirements.txt matplotlib
-python scripts/convert_notebooks.py
-python scripts/convert_notebooks.py --check
+python docs/scripts/convert_notebooks.py
+python docs/scripts/convert_notebooks.py --check
 pytest tests/test_docs.py --benchmark-disable
 zensical build --strict
 zensical serve
 ```
+
+The `docs/scripts/convert_notebooks.py` step renders the curated `examples/`
+notebooks into `docs/tutorials/`. Run it first: the tutorial pages are
+git-ignored and generated, and both the nav test and the executable-block test
+in `tests/test_docs.py` depend on them (see "Running Tests" above). `--check`
+fails when the generated pages are stale relative to their notebooks, without
+rewriting them.
+
+Notebook outputs are those committed in the source notebooks, not regenerated
+by the build. Stored plots and other displayed outputs may therefore reflect an
+earlier execution; where a displayed output disagrees with the written page or
+the [Reference](reference/core.md), the written page is authoritative.
+
+If a doc test or the site build fails, see
+[Troubleshooting](troubleshooting.md) for the common causes.
 
 ### Documentation Style
 

@@ -367,7 +367,7 @@ class Filter(WithProgressBarAPI):
         smoother: Optional[Callable] = None,
         key: Optional[PRNGKey] = None,
         transition_logdensity_fn: Optional[Callable] = None,
-    ) -> Any:
+    ) -> Union[Tuple[ArrayLike, ArrayLike], Tuple[PyTree, ArrayLike]]:
         """Smooth a filtering trace.
 
         Auto-detects the appropriate smoothing algorithm based on trace content:

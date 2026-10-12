@@ -19,11 +19,11 @@ from flax.jax_utils import prefetch_to_device
 from jax.experimental import multihost_utils
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
-from probjax.utils.typing import Device, RngKey
+from probjax.utils.typing import Device, RngKey, PyTree, Array
 
 
 # ------------------------- small helpers ----------------------------- #
-def _tree_to_jnp(batch, host_device: Device):
+def _tree_to_jnp(batch: PyTree[Array], host_device: Device) -> PyTree[Array]:
     """Materialize batch leaves as JAX arrays on `host_device`."""
 
     def to_host(x):
@@ -32,13 +32,15 @@ def _tree_to_jnp(batch, host_device: Device):
     return jax.tree_util.tree_map(to_host, batch)
 
 
-def _tree_to_host(batch):
+
+def _tree_to_host(batch: PyTree[Array]) -> PyTree[Array]:
     """Normalize batch leaves to host-backed arrays."""
 
     return jax.tree_util.tree_map(np.asarray, batch)
 
 
-def _shard(batch, n_dev):
+
+def _shard(batch: PyTree[Array], n_dev: int) -> PyTree[Array]:
     def split(x):
         b = x.shape[0]
         if b % n_dev:
@@ -66,7 +68,7 @@ class _AsyncPrefetchIterator:
         self,
         iterator,
         size: int,
-        put_fn: Callable[[Any], Any],
+        put_fn: Callable[[PyTree[Array]], PyTree[Array]],
         *,
         queue_size: int | None = None,
         min_fill: float = 0.5,
@@ -547,7 +549,7 @@ class SimulationDataset:
     def __len__(self) -> int:
         return self._dataset_size
 
-    def __getitem__(self, index: Any) -> Any:
+    def __getitem__(self, index: Union[int, slice, np.ndarray]) -> PyTree[Array]:
         idxs, squeeze = self._normalise_indices(index)
         with self._lock:
             err = self._producer_error
@@ -962,7 +964,7 @@ class DataLoader:
     # ------------------------- init ----------------------------------- #
     def __init__(
         self,
-        dataset: Any,
+        dataset: Union[SimulationDataset, Sequence[PyTree[Array]]],
         *,
         batch_size: int,
         drop_last: bool = False,
@@ -1076,10 +1078,10 @@ class DataLoader:
 
     @staticmethod
     def _resolve_sharding(
-        sharding,
+        sharding: Any,
         mesh: Mesh | None,
-        batch_spec,
-    ):
+        batch_spec: Any,
+    ) -> Any:
         if sharding is not None:
             if mesh is not None or batch_spec is not None:
                 raise ValueError(

@@ -306,7 +306,7 @@ class ElementwiseMonotone(nnx.Module):
     """Per-dimension monotone bijector with directly learnable parameters.
 
     Unlike the coupling/autoregressive conditioners, the bijector parameters
-    are plain trainable weights (one parameter vector per dimension) — the
+    are plain trainable params (one vector per dimension) — the
     building block of Gaussianization flows, where expressivity comes from
     alternating elementwise layers with rotations.
     """

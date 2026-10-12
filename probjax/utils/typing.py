@@ -74,6 +74,14 @@ Leaf: TypeAlias = Array | float | int | bool
 AnyTree: TypeAlias = PyTree[Leaf]
 
 
+SDEIntResult: TypeAlias = Union[
+    PyTree[Array],
+    tuple[PyTree[Array], PyTree[Array]],
+    tuple[Any, PyTree[Array], PyTree[Array]],
+    tuple[Any, PyTree[Array], PyTree[Array], Array],
+]
+
+
 def is_typed_key(x: Any) -> bool:
     """True if x has a PRNG key dtype (typed keys made by jax.random.key)."""
     return isinstance(x, jax.Array) and jnp.issubdtype(x.dtype, jax.dtypes.prng_key)

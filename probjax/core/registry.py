@@ -27,17 +27,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    Optional,
-    Protocol,
-    Sequence,
-    Tuple,
-    Union,
-    runtime_checkable,
-)
+from probjax.utils.typing import PyTree, Array
 
 import jax.numpy as jnp
 import numpy as np
@@ -128,8 +118,8 @@ class ProcessedResult:
     """Result from processing an equation through a rule."""
 
     resolved_vars: Sequence[Atom]  # Can be Var or Literal
-    resolved_vals: Sequence[Any]
-    state: Any = None
+    resolved_vals: PyTree[Array]
+    state: PyTree[Any] = None
 
 
 def parse_processed_result(

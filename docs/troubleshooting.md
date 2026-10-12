@@ -76,7 +76,7 @@ explicitly. Restart from a finite snapshot after correcting the cause:
 ```python
 import jax
 import jax.numpy as jnp
-from probjax.stats import fit
+from probjax.nn.training import fit
 
 def loss_fn(params, rng, batch):
     del rng
@@ -111,11 +111,11 @@ batch that groups several arrays must be a dict:
 ```python
 import jax
 import jax.numpy as jnp
-from probjax.stats import is_batch_stream
+from probjax.nn.training import is_batch_stream
 
 array = jnp.zeros((4, 2))
 assert not is_batch_stream(array)
-assert not is_batch_stream({"data": array, "context": array})
+assert not is_batch_stream({"x": array, "y": array})
 assert is_batch_stream([array, array])
 ```
 
@@ -155,3 +155,9 @@ from probjax.nn import MLP
 model = MLP([4, 16, 2], rngs=nnx.Rngs(0))
 print(jax.eval_shape(model, jnp.ones((3, 4))))
 ```
+
+## See also
+
+- [Contributing](contributing.md) — development workflow and the documentation build
+- [Overview](overview.md) — how the modules fit together
+- [Glossary](glossary.md) — the vocabulary these pages use

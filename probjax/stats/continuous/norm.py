@@ -5,7 +5,7 @@ Normal Distribution (:mod:`probjax.stats.norm`)
 This module contains the Normal (Gaussian) distribution.
 """
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
@@ -41,22 +41,22 @@ class norm_gen(rv_continuous, rv_exponential_family):
     parameters = {'loc': real, 'scale': strict_positive}
 
     @classmethod
-    def pdf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def pdf(cls, x: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Probability density function of the normal distribution."""
         return _norm.pdf(x, loc, scale)
 
     @classmethod
-    def logpdf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def logpdf(cls, x: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Log of the probability density function of the normal distribution."""
         return _norm.logpdf(x, loc, scale)
 
     @classmethod
-    def cdf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def cdf(cls, x: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Cumulative distribution function of the normal distribution."""
         return _norm.cdf(x, loc, scale)
 
     @classmethod
-    def ppf(cls, q, loc=0.0, scale=1.0, **kwargs):
+    def ppf(cls, q: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Percent point function (inverse of cdf) of the normal distribution."""
         return _norm.ppf(q, loc, scale)
 
@@ -64,51 +64,51 @@ class norm_gen(rv_continuous, rv_exponential_family):
     def _rvs_impl(
         cls,
         rng: RngKey,
-        loc=0.0,
-        scale=1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
         shape: Tuple[int, ...] = (),
-        **kwargs,
+        **kwargs: Any,
     ) -> Array:
         """Random variates of the normal distribution."""
         return loc_scale_sample(rng, random.normal, shape=shape, loc=loc, scale=scale)
 
     @classmethod
-    def sf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def sf(cls, x: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Survival function (1 - cdf) of the normal distribution."""
         return _norm.sf(x, loc, scale)
 
     @classmethod
-    def isf(cls, q, loc=0.0, scale=1.0, **kwargs):
+    def isf(cls, q: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Inverse survival function (inverse of sf) of the normal distribution."""
         return _norm.isf(q, loc, scale)
 
     @classmethod
-    def logcdf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def logcdf(cls, x: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Log of the cumulative distribution function of the normal distribution."""
         return _norm.logcdf(x, loc, scale)
 
     @classmethod
-    def mean(cls, loc=0.0, scale=1.0, **kwargs):
+    def mean(cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Mean of the normal distribution."""
         return jnp.asarray(loc)
 
     @classmethod
-    def mode(cls, loc=0.0, scale=1.0, **kwargs):
+    def mode(cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Mode of the normal distribution."""
         return jnp.asarray(loc)
 
     @classmethod
-    def var(cls, loc=0.0, scale=1.0, **kwargs):
+    def var(cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Variance of the normal distribution."""
         return jnp.asarray(scale) ** 2
 
     @classmethod
-    def entropy(cls, loc=0.0, scale=1.0, **kwargs):
+    def entropy(cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Entropy of the normal distribution."""
         return 0.5 * jnp.log(2 * jnp.pi * jnp.e * scale**2)
 
     @classmethod
-    def moment(cls, n, loc=0.0, scale=1.0, **kwargs):
+    def moment(cls, n: int, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """n-th non-central moment of the normal distribution."""
         # Use Hermite polynomials to compute moments efficiently
         if n == 0:
@@ -147,33 +147,33 @@ class norm_gen(rv_continuous, rv_exponential_family):
             ])
 
     @classmethod
-    def skew(cls, loc=0.0, scale=1.0, **kwargs):
+    def skew(cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Skewness of the normal distribution."""
         return jnp.zeros_like(loc)
 
     @classmethod
-    def kurtosis(cls, loc=0.0, scale=1.0, **kwargs):
+    def kurtosis(cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Excess kurtosis of the normal distribution."""
         return jnp.zeros_like(loc)
 
     @classmethod
-    def natural_parameters(cls, loc=0.0, scale=1.0, **kwargs):
+    def natural_parameters(cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> Array:
         """Natural parameters of the normal distribution."""
         var = scale**2
         return jnp.array([loc / var, -1.0 / (2.0 * var)])
 
     @classmethod
-    def sufficient_statistics(cls, x, **kwargs):
+    def sufficient_statistics(cls, x: ArrayLike, **kwargs: Any) -> Array:
         """Sufficient statistics of the normal distribution."""
         return jnp.array([x, x**2])
 
     @classmethod
-    def log_partition(cls, loc=0.0, scale=1.0, **kwargs):
+    def log_partition(cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
         """Log partition function of the normal distribution."""
         return 0.5 * (loc**2 / scale**2 + jnp.log(2 * jnp.pi * scale**2))
 
     @classmethod
-    def fit(cls, data: ArrayLike, weights: Optional[ArrayLike] = None, **kwds):
+    def fit(cls, data: ArrayLike, weights: Optional[ArrayLike] = None, **kwds: Any) -> Tuple[ArrayLike, ArrayLike]:
         """Maximum likelihood estimation of normal distribution parameters.
 
         The MLE for the normal distribution has a closed-form solution:
