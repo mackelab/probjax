@@ -161,3 +161,79 @@ def ragged_matmul_hopper(x_sorted: Array, w: Array, group_sizes: Array) -> Array
 def grouped_backend() -> str:
     """"mosaic" on Hopper, "triton" on other GPUs (and in interpret mode)."""
     return "mosaic" if is_hopper() else "triton"
+
+
+# ---------------------------------------------------------- fused SwiGLU
+
+
+def _swiglu_layout(group_sizes, n_rows, block_m):
+    return make_group_layout(group_sizes, n_rows, block_m)
+
+
+@functools.partial(jax.custom_vjp, nondiff_argnums=(5, 6))
+def grouped_swiglu(x, w_gate, w_up, w_down, group_sizes, block_m=64, interpret=None):
+    """``(silu(x Wg_e) * (x Wu_e)) Wd_e`` for sorted rows ``x`` of group ``e``.
+
+    One custom VJP for the whole expert block that saves only its INPUTS and
+    recomputes gate/up in the backward.  With per-matmul VJPs, XLA kept every
+    layer's ``[P, H]`` intermediates alive under the caller's remat: a stack of
+    remat'd layers at 262k tokens grew 5.5 GiB per layer (23.8 GiB at 4 layers,
+    against 15.8 for capacity routing), and the v8 decoder's update step asked
+    for 33 GiB.  The backward recompute is tied to the incoming cotangent with
+    an optimization barrier, so the scheduler cannot hoist it ahead of the
+    backward pass and keep it alive.
+    """
+    y, _ = _grouped_swiglu_fwd(x, w_gate, w_up, w_down, group_sizes, block_m, interpret)
+    return y
+
+
+def _resolve_interpret(interpret):
+    return use_interpret_mode() if interpret is None else interpret
+
+
+def _gmm_l(xp, w, layout, block_m, interpret):
+    return gmm(layout.block_expert, xp, w, block_m=block_m, interpret=interpret)
+
+
+def _grouped_swiglu_fwd(x, w_gate, w_up, w_down, group_sizes, block_m, interpret):
+    interpret = _resolve_interpret(interpret)
+    layout = _swiglu_layout(group_sizes, x.shape[0], block_m)
+    xp = scatter_to_layout(x, layout)
+    gate = _gmm_l(xp, w_gate, layout, block_m, interpret)
+    up = _gmm_l(xp, w_up, layout, block_m, interpret)
+    h = jax.nn.silu(gate) * up  # zero padding rows stay zero
+    y = gather_from_layout(_gmm_l(h, w_down, layout, block_m, interpret), layout)
+    return y, (x, w_gate, w_up, w_down, group_sizes)
+
+
+def _grouped_swiglu_bwd(block_m, interpret, res, dy):
+    interpret = _resolve_interpret(interpret)
+    x, w_gate, w_up, w_down, group_sizes = res
+    # Recompute only once the cotangent exists (see grouped_swiglu).
+    x, dy = jax.lax.optimization_barrier((x, dy.astype(x.dtype)))
+    layout = _swiglu_layout(group_sizes, x.shape[0], block_m)
+    xp = scatter_to_layout(x, layout)
+    gate = _gmm_l(xp, w_gate, layout, block_m, interpret)
+    up = _gmm_l(xp, w_up, layout, block_m, interpret)
+    sig = jax.nn.sigmoid(gate.astype(jnp.float32))
+    silu = gate.astype(jnp.float32) * sig
+    h = (silu * up.astype(jnp.float32)).astype(x.dtype)
+
+    dyp = scatter_to_layout(dy, layout)
+    t = functools.partial(tgmm, layout.block_start, layout.block_end,
+                          block_m=block_m, interpret=interpret)
+    dw_down = t(h, dyp)
+    dh = _gmm_l(dyp, jnp.swapaxes(w_down, 1, 2), layout, block_m, interpret)
+    dh = dh.astype(jnp.float32)
+    dgate = (dh * up.astype(jnp.float32) * sig * (1.0 + gate.astype(jnp.float32) * (1.0 - sig))).astype(x.dtype)
+    dup = (dh * silu).astype(x.dtype)
+    dw_gate = t(xp, dgate)
+    dw_up = t(xp, dup)
+    dxp = (_gmm_l(dgate, jnp.swapaxes(w_gate, 1, 2), layout, block_m, interpret)
+           + _gmm_l(dup, jnp.swapaxes(w_up, 1, 2), layout, block_m, interpret))
+    dx = gather_from_layout(dxp, layout)
+    return (dx, dw_gate.astype(w_gate.dtype), dw_up.astype(w_up.dtype),
+            dw_down.astype(w_down.dtype), None)
+
+
+grouped_swiglu.defvjp(_grouped_swiglu_fwd, _grouped_swiglu_bwd)
