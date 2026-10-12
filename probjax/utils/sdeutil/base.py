@@ -54,6 +54,8 @@ def register_method(name: str, step_fn: SDESolverAPI, info: Optional[dict] = Non
     Returns:
         _type_: _description_
     """
+    if info is None:
+        info = {}
     METHOD_STEP_FN[name] = step_fn
     METHOD_INFO[name] = info
     return step_fn

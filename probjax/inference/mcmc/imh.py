@@ -4,7 +4,9 @@ from typing import Any, Callable, NamedTuple, Optional, Tuple
 import blackjax
 import jax
 import jax.numpy as jnp
+import optax
 from blackjax.mcmc.random_walk import RWInfo, RWState
+from flax import nnx
 
 from probjax.inference.base import Kernel, Warmup, WarmupResult
 from probjax.inference.mcmc.base import make_kernel_api
@@ -238,13 +240,9 @@ def neural_imh_warmup(
         raise ValueError("max_buffer_size must be positive or None.")
     fit_optimizer = optimizer
     if fit_optimizer is None:
-        import optax
-
         fit_optimizer = optax.adam(learning_rate)
 
     def run(key, kernel, state, params, num_steps):
-        from flax import nnx
-
         from probjax.inference.mcmc_runner import MCMC
 
         if not isinstance(params, NeuralIMHParams):

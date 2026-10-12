@@ -16,7 +16,7 @@ from jax.scipy.stats import gamma as _gamma
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import strict_positive
 from probjax.stats.utils import flatten_samples, weighted_mean
-from probjax.utils.special import gammaincinv, gammainccinv
+from probjax.utils.special import gammainccinv, gammaincinv
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["gamma"]

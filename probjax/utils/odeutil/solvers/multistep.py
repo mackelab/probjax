@@ -1,39 +1,5 @@
 from __future__ import annotations
 
-# Coefficient functions (not initialized at import)
-def get_ab_coeffs(order: int, dtype) -> Array:
-    import jax.numpy as jnp
-    coeffs = {
-        1: [1.0],
-        2: [3/2, -1/2],
-        3: [23/12, -16/12, 5/12],
-        4: [55/24, -59/24, 37/24, -9/24],
-    }
-    return jnp.array(coeffs[order], dtype=dtype)
-
-def get_am_coeffs(order: int, dtype) -> Array:
-    import jax.numpy as jnp
-    coeffs = {
-        1: [1.0],
-        2: [1/2, 1/2],
-        3: [5/12, 2/3, -1/12],
-        4: [3/8, 19/24, -5/24, 1/24],
-    }
-    return jnp.array(coeffs[order], dtype=dtype)
-
-def get_bdf_a(order: int, dtype) -> Array:
-    import jax.numpy as jnp
-    coeffs = {
-        1: [1.0],
-        2: [1.0, -4/3, 1/3],
-        3: [1.0, -18/11, 9/11, -2/11],
-    }
-    return jnp.array(coeffs[order], dtype=dtype)
-
-def get_bdf_b(order: int) -> float:
-    coeffs = {1: 1.0, 2: 2/3, 3: 6/11}
-    return coeffs[order]
-
 from typing import Optional
 
 import jax
@@ -47,51 +13,90 @@ from probjax.utils.odeutil.solvers.base import (
 )
 from probjax.utils.typing import Array, ArrayLike, Callable
 
+
+# Coefficient functions (not initialized at import)
+def get_ab_coeffs(order: int, dtype) -> Array:
+    coeffs = {
+        1: [1.0],
+        2: [3 / 2, -1 / 2],
+        3: [23 / 12, -16 / 12, 5 / 12],
+        4: [55 / 24, -59 / 24, 37 / 24, -9 / 24],
+    }
+    return jnp.array(coeffs[order], dtype=dtype)
+
+
+def get_am_coeffs(order: int, dtype) -> Array:
+    coeffs = {
+        1: [1.0],
+        2: [1 / 2, 1 / 2],
+        3: [5 / 12, 2 / 3, -1 / 12],
+        4: [3 / 8, 19 / 24, -5 / 24, 1 / 24],
+    }
+    return jnp.array(coeffs[order], dtype=dtype)
+
+
+def get_bdf_a(order: int, dtype) -> Array:
+    coeffs = {
+        1: [1.0],
+        2: [1.0, -4 / 3, 1 / 3],
+        3: [1.0, -18 / 11, 9 / 11, -2 / 11],
+    }
+    return jnp.array(coeffs[order], dtype=dtype)
+
+
+def get_bdf_b(order: int) -> float:
+    coeffs = {1: 1.0, 2: 2 / 3, 3: 6 / 11}
+    return coeffs[order]
+
+
 # ============================================================================
 # Shared state + info
 # ============================================================================
 class LMSState(ODEState):
     t0: Array
     y0: Array
-    f0: Optional[Array]       # f(t0, y0)
+    f0: Optional[Array]  # f(t0, y0)
     hist_t: Optional[list[Array]] = None
     hist_f: Optional[list[Array]] = None
     hist_y: Optional[list[Array]] = None
+
 
 class LMSInfo(ODEInfo):
     newton_iters: int = 0
     converged: bool = True
 
+
 # ============================================================================
 # Adams–Bashforth coefficients (constant step) - templates (will be cast to dtype)
 # ============================================================================
 _AB_COEFFS_TEMPLATE: dict[int, list[float]] = {
-    1: [1.0],                                  # Euler
-    2: [3/2, -1/2],
-    3: [23/12, -16/12, 5/12],
-    4: [55/24, -59/24, 37/24, -9/24],
+    1: [1.0],  # Euler
+    2: [3 / 2, -1 / 2],
+    3: [23 / 12, -16 / 12, 5 / 12],
+    4: [55 / 24, -59 / 24, 37 / 24, -9 / 24],
 }
 
 # Adams–Moulton (implicit) predictor-corrector coefficients
 _AM_COEFFS_TEMPLATE: dict[int, list[float]] = {
-    1: [1.0],                                  # Implicit Euler (trapezoid has k=2)
-    2: [1/2, 1/2],                             # Trapezoid: 0.5*f_{n+1} + 0.5*f_n
-    3: [5/12, 2/3, -1/12],
-    4: [3/8, 19/24, -5/24, 1/24],
+    1: [1.0],  # Implicit Euler (trapezoid has k=2)
+    2: [1 / 2, 1 / 2],  # Trapezoid: 0.5*f_{n+1} + 0.5*f_n
+    3: [5 / 12, 2 / 3, -1 / 12],
+    4: [3 / 8, 19 / 24, -5 / 24, 1 / 24],
 }
 
 # Backward Differentiation (BDF) coefficients for y_{n+1} - sum a_j y_{n-j} = h * b * f_{n+1}
 _BDF_A_TEMPLATE: dict[int, list[float]] = {
-    1: [1.0],                                  # y_{n+1} - y_n = h f_{n+1}
-    2: [1.0, -4/3, 1/3],
-    3: [1.0, -18/11, 9/11, -2/11],
+    1: [1.0],  # y_{n+1} - y_n = h f_{n+1}
+    2: [1.0, -4 / 3, 1 / 3],
+    3: [1.0, -18 / 11, 9 / 11, -2 / 11],
 }
-_BDF_B: dict[int, float] = {1: 1.0, 2: 2/3, 3: 6/11}
+_BDF_B: dict[int, float] = {1: 1.0, 2: 2 / 3, 3: 6 / 11}
 
 
 def _get_coeffs(order: int, coeff_dict: dict[int, list[float]], dtype) -> Array:
     """Get coefficients with proper dtype."""
     return jnp.array(coeff_dict[order], dtype=dtype)
+
 
 # ============================================================================
 # Utilities
@@ -121,6 +126,7 @@ def _append_history(
     ht, hf, hy = ht[-kmax:], hf[-kmax:], hy[-kmax:]
     return state._replace(hist_t=ht, hist_f=hf, hist_y=hy)
 
+
 def _need_bootstrap(state: LMSState, order: int) -> bool:
     """Check if bootstrap steps are needed to build up history."""
     return len(state.hist_f or []) < order
@@ -131,9 +137,7 @@ def build_bootstrapper(
 ) -> Callable[[LMSState, ArrayLike], tuple[LMSState, ODEInfo]]:
     """Build a bootstrap function from a single-step method."""
 
-    def bootstrap(
-        state: LMSState, dt: ArrayLike, *args
-    ) -> tuple[LMSState, ODEInfo]:
+    def bootstrap(state: LMSState, dt: ArrayLike, *args) -> tuple[LMSState, ODEInfo]:
         # one_step must take (state_like, dt, *args) -> (state_like, info)
         return one_step(state, dt, *args)
 
@@ -155,25 +159,36 @@ def build_ab(
         t_n, y_n = state.t0, state.y0
         if _need_bootstrap(state, order):
             if bootstrap_step is None:
-                raise ValueError("AB needs a bootstrap single-step method to fill history.")
+                raise ValueError(
+                    "AB needs a bootstrap single-step method to fill history."
+                )
             # do one single-step bootstrap
             new_state, _ = bootstrap_step(state, dt, *args)
-            return _append_history(new_state, new_state.t0, new_state.y0, new_state.f0, order), LMSInfo()
+            return _append_history(
+                new_state, new_state.t0, new_state.y0, new_state.f0, order
+            ), LMSInfo()
 
         # Get coefficients with proper dtype
         beta = get_ab_coeffs(order, y_n.dtype)
         Fs = state.hist_f[::-1]  # [f_n, f_{n-1}, ...]
-        incr = sum(b * f for b, f in zip(beta, Fs))
+        incr = sum(b * f for b, f in zip(beta, Fs, strict=False))
         y_np1 = y_n + dt * incr
         t_np1 = t_n + dt
         f_np1 = drift(t_np1, y_np1, *args)
 
-        new_state = LMSState(t0=t_np1, y0=y_np1, f0=f_np1,
-                             hist_t=state.hist_t, hist_f=state.hist_f, hist_y=state.hist_y)
+        new_state = LMSState(
+            t0=t_np1,
+            y0=y_np1,
+            f0=f_np1,
+            hist_t=state.hist_t,
+            hist_f=state.hist_f,
+            hist_y=state.hist_y,
+        )
         new_state = _append_history(new_state, t_np1, y_np1, f_np1, order)
         return new_state, LMSInfo()
 
     return step
+
 
 # ============================================================================
 # AM(k) implicit multistep (single Newton/fixed-point corrector)
@@ -191,12 +206,16 @@ def build_am(
     assert order in (1, 2, 3, 4), "AM order must be 1-4"
 
     def step(state: LMSState, dt: ArrayLike, *args) -> tuple[LMSState, LMSInfo]:
-        t_n, y_n, f_n = state.t0, state.y0, state.f0
+        t_n, y_n, _f_n = state.t0, state.y0, state.f0
         if _need_bootstrap(state, order):
             if bootstrap_step is None:
-                raise ValueError("AM needs a bootstrap single-step method to fill history.")
+                raise ValueError(
+                    "AM needs a bootstrap single-step method to fill history."
+                )
             new_state, _ = bootstrap_step(state, dt, *args)
-            return _append_history(new_state, new_state.t0, new_state.y0, new_state.f0, order), LMSInfo()
+            return _append_history(
+                new_state, new_state.t0, new_state.y0, new_state.f0, order
+            ), LMSInfo()
 
         # Get coefficients with proper dtype
         a = get_am_coeffs(order, y_n.dtype)
@@ -210,8 +229,8 @@ def build_am(
         y_new = y_pred
         iters = 0
         converged = True
-        for it in range(max(1, newton_iters)):
-            rhs_hist = sum(a_j * f for a_j, f in zip(a_hist, Fs))
+        for _it in range(max(1, newton_iters)):
+            rhs_hist = sum(a_j * f for a_j, f in zip(a_hist, Fs, strict=False))
             g = y_n + dt * (rhs_hist + a_m1 * drift(t_np1, y_new, *args)) - y_new
             # simple fixed-point if no tol/iters specified
             if newton_iters <= 1 and tol <= 0:
@@ -219,21 +238,35 @@ def build_am(
             else:
                 # Jacobian: I - h a_{-1} J_f
                 J = jax.jacfwd(lambda yy: drift(t_np1, yy, *args))(y_new)
-                mat = jnp.eye(y_new.size, dtype=y_new.dtype).reshape(y_new.shape + y_new.shape) - dt * a_m1 * J
+                mat = (
+                    jnp.eye(y_new.size, dtype=y_new.dtype).reshape(
+                        y_new.shape + y_new.shape
+                    )
+                    - dt * a_m1 * J
+                )
                 # solve mat * delta = g
-                delta = jnp.linalg.solve(mat.reshape(y_new.size, y_new.size), g.reshape(-1)).reshape(y_new.shape)
+                delta = jnp.linalg.solve(
+                    mat.reshape(y_new.size, y_new.size), g.reshape(-1)
+                ).reshape(y_new.shape)
                 y_new = y_new + delta
                 iters += 1
                 if jnp.linalg.norm(delta) < tol:
                     break
 
         f_np1 = drift(t_np1, y_new, *args)
-        new_state = LMSState(t0=t_np1, y0=y_new, f0=f_np1,
-                             hist_t=state.hist_t, hist_f=state.hist_f, hist_y=state.hist_y)
+        new_state = LMSState(
+            t0=t_np1,
+            y0=y_new,
+            f0=f_np1,
+            hist_t=state.hist_t,
+            hist_f=state.hist_f,
+            hist_y=state.hist_y,
+        )
         new_state = _append_history(new_state, t_np1, y_new, f_np1, order)
         return new_state, LMSInfo(newton_iters=iters, converged=converged)
 
     return step
+
 
 # ============================================================================
 # BDF(k) implicit (k=1..3 here)
@@ -254,15 +287,21 @@ def build_bdf(
         t_n, y_n = state.t0, state.y0
         if _need_bootstrap(state, order):
             if bootstrap_step is None:
-                raise ValueError("BDF needs a bootstrap single-step method to fill history.")
+                raise ValueError(
+                    "BDF needs a bootstrap single-step method to fill history."
+                )
             new_state, _ = bootstrap_step(state, dt, *args)
-            return _append_history(new_state, new_state.t0, new_state.y0, new_state.f0, order), LMSInfo()
+            return _append_history(
+                new_state, new_state.t0, new_state.y0, new_state.f0, order
+            ), LMSInfo()
 
         # Get coefficients with proper dtype
         a = get_bdf_a(order, y_n.dtype)
         # form RHS with history y_n, y_{n-1}, ...
         Ys = state.hist_y[::-1]  # [y_n, y_{n-1}, ...]
-        rhs = -sum(a_j * y for a_j, y in zip(a[1:], Ys))  # move known terms to RHS
+        rhs = -sum(
+            a_j * y for a_j, y in zip(a[1:], Ys, strict=False)
+        )  # move known terms to RHS
 
         # implicit equation: a0 * y_{n+1} = rhs + h b f(t_{n+1}, y_{n+1})
         a0 = a[0]
@@ -271,26 +310,41 @@ def build_bdf(
         # predictor: last y
         y_new = y_n
         iters = 0
-        for it in range(max(1, newton_iters)):
+        for _it in range(max(1, newton_iters)):
             g = a0 * y_new - (rhs + dt * b * drift(t_np1, y_new, *args))
             if newton_iters <= 1 and tol <= 0:
-                y_new = y_new - g / a0     # fixed-point-ish (good if mildly stiff)
+                y_new = y_new - g / a0  # fixed-point-ish (good if mildly stiff)
             else:
                 J = jax.jacfwd(lambda yy: drift(t_np1, yy, *args))(y_new)
-                mat = a0 * jnp.eye(y_new.size, dtype=y_new.dtype).reshape(y_new.shape + y_new.shape) - dt * b * J
-                delta = jnp.linalg.solve(mat.reshape(y_new.size, y_new.size), g.reshape(-1)).reshape(y_new.shape)
+                mat = (
+                    a0
+                    * jnp.eye(y_new.size, dtype=y_new.dtype).reshape(
+                        y_new.shape + y_new.shape
+                    )
+                    - dt * b * J
+                )
+                delta = jnp.linalg.solve(
+                    mat.reshape(y_new.size, y_new.size), g.reshape(-1)
+                ).reshape(y_new.shape)
                 y_new = y_new - delta
                 iters += 1
                 if jnp.linalg.norm(delta) < tol:
                     break
 
         f_np1 = drift(t_np1, y_new, *args)
-        new_state = LMSState(t0=t_np1, y0=y_new, f0=f_np1,
-                             hist_t=state.hist_t, hist_f=state.hist_f, hist_y=state.hist_y)
+        new_state = LMSState(
+            t0=t_np1,
+            y0=y_new,
+            f0=f_np1,
+            hist_t=state.hist_t,
+            hist_f=state.hist_f,
+            hist_y=state.hist_y,
+        )
         new_state = _append_history(new_state, t_np1, y_new, f_np1, order)
         return new_state, LMSInfo(newton_iters=iters, converged=True)
 
     return step
+
 
 # ============================================================================
 # Thin solver classes to match your registry
@@ -299,47 +353,102 @@ class ab2(ODESolverAPI):
     init = staticmethod(init_lms)
     build_step = staticmethod(lambda drift, **kw: build_ab(drift, order=2, **kw))
 
+
 class ab3(ODESolverAPI):
     init = staticmethod(init_lms)
     build_step = staticmethod(lambda drift, **kw: build_ab(drift, order=3, **kw))
+
 
 class ab4(ODESolverAPI):
     init = staticmethod(init_lms)
     build_step = staticmethod(lambda drift, **kw: build_ab(drift, order=4, **kw))
 
+
 class am2(ODESolverAPI):
     init = staticmethod(init_lms)
     build_step = staticmethod(lambda drift, **kw: build_am(drift, order=2, **kw))
+
 
 class am3(ODESolverAPI):
     init = staticmethod(init_lms)
     build_step = staticmethod(lambda drift, **kw: build_am(drift, order=3, **kw))
 
+
 class am4(ODESolverAPI):
     init = staticmethod(init_lms)
     build_step = staticmethod(lambda drift, **kw: build_am(drift, order=4, **kw))
+
 
 class bdf1(ODESolverAPI):
     init = staticmethod(init_lms)
     build_step = staticmethod(lambda drift, **kw: build_bdf(drift, order=1, **kw))
 
+
 class bdf2(ODESolverAPI):
     init = staticmethod(init_lms)
     build_step = staticmethod(lambda drift, **kw: build_bdf(drift, order=2, **kw))
+
 
 class bdf3(ODESolverAPI):
     init = staticmethod(init_lms)
     build_step = staticmethod(lambda drift, **kw: build_bdf(drift, order=3, **kw))
 
+
 # Register
-register_method("ab2", ab2,  info={"explicit": True,  "order": 2, "info": "Adams–Bashforth 2", "adaptive": False})
-register_method("ab3", ab3,  info={"explicit": True,  "order": 3, "info": "Adams–Bashforth 3", "adaptive": False})
-register_method("ab4", ab4,  info={"explicit": True,  "order": 4, "info": "Adams–Bashforth 4", "adaptive": False})
+register_method(
+    "ab2",
+    ab2,
+    info={"explicit": True, "order": 2, "info": "Adams–Bashforth 2", "adaptive": False},
+)
+register_method(
+    "ab3",
+    ab3,
+    info={"explicit": True, "order": 3, "info": "Adams–Bashforth 3", "adaptive": False},
+)
+register_method(
+    "ab4",
+    ab4,
+    info={"explicit": True, "order": 4, "info": "Adams–Bashforth 4", "adaptive": False},
+)
 
-register_method("am2", am2,  info={"explicit": False, "order": 2, "info": "Adams–Moulton 2 (trapezoid)", "adaptive": False})
-register_method("am3", am3,  info={"explicit": False, "order": 3, "info": "Adams–Moulton 3", "adaptive": False})
-register_method("am4", am4,  info={"explicit": False, "order": 4, "info": "Adams–Moulton 4", "adaptive": False})
+register_method(
+    "am2",
+    am2,
+    info={
+        "explicit": False,
+        "order": 2,
+        "info": "Adams–Moulton 2 (trapezoid)",
+        "adaptive": False,
+    },
+)
+register_method(
+    "am3",
+    am3,
+    info={"explicit": False, "order": 3, "info": "Adams–Moulton 3", "adaptive": False},
+)
+register_method(
+    "am4",
+    am4,
+    info={"explicit": False, "order": 4, "info": "Adams–Moulton 4", "adaptive": False},
+)
 
-register_method("bdf1", bdf1, info={"explicit": False, "order": 1, "info": "BDF1 (implicit Euler)", "adaptive": False})
-register_method("bdf2", bdf2, info={"explicit": False, "order": 2, "info": "BDF2", "adaptive": False})
-register_method("bdf3", bdf3, info={"explicit": False, "order": 3, "info": "BDF3", "adaptive": False})
+register_method(
+    "bdf1",
+    bdf1,
+    info={
+        "explicit": False,
+        "order": 1,
+        "info": "BDF1 (implicit Euler)",
+        "adaptive": False,
+    },
+)
+register_method(
+    "bdf2",
+    bdf2,
+    info={"explicit": False, "order": 2, "info": "BDF2", "adaptive": False},
+)
+register_method(
+    "bdf3",
+    bdf3,
+    info={"explicit": False, "order": 3, "info": "BDF3", "adaptive": False},
+)

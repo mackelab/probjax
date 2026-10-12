@@ -99,8 +99,12 @@ class poisson_gen(rv_discrete, rv_exponential_family):
         lp = jax_poisson.logpmf(jnp.arange(1024), rate[..., None])
         exact = -jnp.sum(jnp.exp(lp) * jnp.where(jnp.isfinite(lp), lp, 0), axis=-1)
         r = jnp.maximum(rate, 1)
-        approx = (.5 * jnp.log(2 * jnp.pi * jnp.e * r)
-                  - 1/(12*r) - 1/(24*r**2) - 19/(360*r**3))
+        approx = (
+            0.5 * jnp.log(2 * jnp.pi * jnp.e * r)
+            - 1 / (12 * r)
+            - 1 / (24 * r**2)
+            - 19 / (360 * r**3)
+        )
         return jnp.where(rate > 256, approx, exact)
 
     @classmethod

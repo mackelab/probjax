@@ -1,10 +1,13 @@
-from .common import (
-    DEFAULT_MASK_VALUE,
-    KVOffsetInfo,
-    NEG_INF,
-    ceil_div,
+from probjax.utils.jaxutils import (
     def_partition_compat,
     def_partition_supports_need_replication_factors,
+)
+
+from .common import (
+    DEFAULT_MASK_VALUE,
+    NEG_INF,
+    KVOffsetInfo,
+    ceil_div,
     fast_blockmask_causal,
     fast_blockmask_local_window,
     get_dot_precision,

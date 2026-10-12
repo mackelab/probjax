@@ -3,8 +3,8 @@
 ## Install
 
 ProbJax supports Python 3.11–3.13 and requires JAX `>=0.9.0,<0.10`.
-Install the published version with `python -m pip install probjax`. These pages
-track `main`, so use a source checkout for unreleased APIs:
+Install the published version with `python -m pip install probjax`. To use the
+development version, install from a source checkout:
 
 ```bash
 git clone https://github.com/mackelab/probjax.git
@@ -137,6 +137,9 @@ output = model(jnp.ones((3, 4)))
 
 ## Where next
 
+- [Overview](overview.md) — how the modules fit together
+- [Glossary](glossary.md) — the vocabulary these pages use
+- [Probabilistic programs](guides/ppl.md) — sites and transformations
 - [Program inversion](guides/program-inversion.md) — the part of ProbJax with no
   direct equivalent elsewhere
 - [Density estimation](guides/density-estimation.md) — flows, autoregressive

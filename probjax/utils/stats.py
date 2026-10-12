@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from jax.scipy.special import digamma, logsumexp
+from jax.scipy.special import digamma
 
 from probjax.utils.special import digammainv
 
@@ -137,10 +137,11 @@ def _ebrahimi_entropy(X, m, n):
     Ebrahimi entropy estimator based on differences between order statistics.
     """
     padded = _pad_along_last_axis(X, m)
-    differences = padded[..., 2*m:] - padded[..., :-2*m]
-    i = jnp.arange(1, n+1)
-    ci = jnp.where(i <= m, 1 + (i-1)/m,
-                   jnp.where(i >= n-m+1, 1 + (n-i)/m, 2.0))
+    differences = padded[..., 2 * m :] - padded[..., : -2 * m]
+    i = jnp.arange(1, n + 1)
+    ci = jnp.where(
+        i <= m, 1 + (i - 1) / m, jnp.where(i >= n - m + 1, 1 + (n - i) / m, 2.0)
+    )
     return jnp.mean(jnp.log(n * differences / (ci * m)), axis=-1)
 
 
@@ -181,7 +182,7 @@ def mutual_information(x, y, method="kraskov", **kwargs):
         float: Estimated mutual information.
     """
     x, y = jnp.asarray(x), jnp.asarray(y)
-    n = x.shape[0]
+    x.shape[0]
 
     if method == "kraskov":
         return mutual_information_knn_jax(x, y)

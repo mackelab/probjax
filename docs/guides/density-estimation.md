@@ -48,48 +48,17 @@ flow = maf(2, 3, rngs=nnx.Rngs(0), context_features=1)
 losses = flow.fit(jax.random.key(2), data, context=context, num_steps=100)
 ```
 
-## Autoregressive models
+## Families
 
-An autoregressive model factorises `p(x) = prod_i p(x_i | x_<i)` and takes any
-univariate family from `probjax.stats` as its conditional:
+Every family below shares the `fit` / `as_dist` interface above; they differ in
+the model class and the density they represent:
 
-```python
-import jax
-from flax import nnx
-from probjax.nn import MADE, MixtureAutoregressive
-
-data = jax.random.normal(jax.random.key(0), (256, 3))
-
-gaussian_head = MADE(3, rngs=nnx.Rngs(0))
-flexible_head = MixtureAutoregressive(3, rngs=nnx.Rngs(0))
-
-losses = flexible_head.fit(jax.random.key(1), data, num_steps=100)
-```
-
-`SplineAutoregressive`, `HistogramAutoregressive` and `CategoricalAutoregressive`
-cover flexible continuous and discrete conditionals.
-
-## Diffusion and flow matching
-
-```python
-import jax
-from flax import nnx
-from probjax.nn import MLP, LinearFlow
-
-class Velocity(nnx.Module):
-    def __init__(self, rngs):
-        self.net = MLP([3, 32, 3], rngs=rngs)
-
-    def __call__(self, t, x, **kwargs):
-        return self.net(x)
-
-data = jax.random.normal(jax.random.key(0), (256, 3))
-matcher = LinearFlow(Velocity(nnx.Rngs(0)), event_spec=3)
-losses = matcher.fit(jax.random.key(1), data, num_steps=50)
-```
-
-`EDM`, `VP`, `VE` and `MultinomialDiffusion` provide the denoising-diffusion
-families; `FlowMatcher` and `MeanFlowMatcher` the flow-matching ones.
+- [Autoregressive models](autoregressive-models.md) — `MADE`, `MixtureAutoregressive`,
+  `SplineAutoregressive`, `HistogramAutoregressive`, `CategoricalAutoregressive`
+- [Diffusion models](diffusion-models.md) — `EDM`, `VP`, `VE`, `CosineDM`,
+  `MultinomialDiffusion`
+- [Flow matching](flow-matching.md) — `FlowMatcher`, `MeanFlowMatcher`,
+  `LinearFlow`, `LinearMeanFlow`
 
 ## Training
 

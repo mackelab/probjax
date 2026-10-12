@@ -16,7 +16,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
-from probjax.core.registry import Context, REGISTRY
+from probjax.core.registry import REGISTRY, Context
 
 # pjit primitive import (varies by JAX version)
 try:
@@ -47,9 +47,7 @@ def has_registered_inverse(eqn, known_invars, known_outvars) -> bool:
     # Special case for custom_inverse_call_p
     if primitive is custom_inverse_call_p:
         target_indices = set(eqn.params["target_in_indices"])
-        targets_unknown = all(
-            not known_invars[index] for index in target_indices
-        )
+        targets_unknown = all(not known_invars[index] for index in target_indices)
         others_known = all(
             known
             for index, known in enumerate(known_invars)

@@ -8,6 +8,7 @@ from probjax.inference.base import (
     AdaptationTrace,
     Adaptor,
     Kernel,
+    Warmup,
 )
 
 
@@ -152,7 +153,6 @@ def adaptor_warmup(
 
 def as_warmup(adaptor: Adaptor, *, collect: bool = False):
     """Create the standard fixed-length warmup policy from a local adaptor."""
-    from probjax.inference.base import Warmup
 
     def run(key, kernel, state, params, num_steps, args=None):
         return adaptor_warmup(

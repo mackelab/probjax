@@ -14,8 +14,7 @@ class TraceFilter(Protocol):
     recorded over time or ``None`` to disable tracing entirely.
     """
 
-    def __call__(self, state: PyTree[Array]) -> Optional[PyTree[Array]]:
-        ...
+    def __call__(self, state: PyTree[Array]) -> Optional[PyTree[Array]]: ...
 
 
 class TraceEverything:
@@ -30,4 +29,3 @@ class TraceNothing:
 
     def __call__(self, state: PyTree[Array]) -> None:  # type: ignore[override]
         return None
-

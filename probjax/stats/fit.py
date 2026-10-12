@@ -8,7 +8,7 @@ A framework-agnostic training loop: :func:`fit` minimizes any
 ``{"data": x, "context": c}`` whose leaves share the leading example axis --
 or an iterable of batches, for data that does not fit in memory:
 
->>> params, losses = fit(loss_fn, params, key, {"data": x})   # whole array
+>>> params, losses = fit(loss_fn, params, key, {"data": x})  # whole array
 >>> params, losses = fit(loss_fn, params, key, my_dataloader)  # streamed
 
 Nothing here assumes a particular NN library. Without general callbacks the
@@ -36,6 +36,8 @@ from typing import Literal, NamedTuple, Optional, Tuple
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
+from flax import nnx
 from jax.experimental import io_callback
 from jaxtyping import Array
 
@@ -238,8 +240,6 @@ def _build_optimizer(learning_rate, num_steps, schedule: Schedule, clip_norm):
     nothing downstream detects them. At the default norm it rarely binds on
     healthy training.
     """
-    import optax
-
     if schedule == "constant" or schedule == "warmup_cosine" and num_steps <= 1:
         lr = learning_rate
     elif schedule == "warmup_cosine":
@@ -319,8 +319,6 @@ def build_fit_kernel(loss_fn, optimizer, *, ema_decay=None, has_aux=False):
     are not differentiated. Each step splits its key into next, batch and loss
     keys, matching fit's minibatch sequence; the batch key is reserved for fit.
     """
-    import optax
-
     if ema_decay is not None and not 0 <= ema_decay < 1:
         raise ValueError("ema_decay must be in [0, 1) or None.")
 
@@ -978,8 +976,6 @@ class FitMixin:
 
     def _fit_param_filter(self):
         """NNX filter selecting trainable parameters (default: all Param)."""
-        from flax import nnx
-
         return nnx.Param
 
     def _fit_callbacks(self):
@@ -1007,8 +1003,6 @@ class FitMixin:
         Compatible with nnx.jit when preprocessing hooks are traceable and data
         is an array pytree; custom host preprocessing should run before JIT.
         """
-        from flax import nnx
-
         fit_kwargs = {**self._default_fit_kwargs(), **fit_kwargs}
         data = self._prepare_fit(data)
         param_filter = self._fit_param_filter()

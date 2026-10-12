@@ -17,8 +17,8 @@ have additional hardware constraints; CPU tests do not certify GPU performance.
 | Previous usage | Current usage |
 | --- | --- |
 | `AutoregressiveModel` | `Autoregressive`; the old name has no compatibility alias |
-| `EDM(net)`, `VP(net)`, `VE(net)` | Supply `event_spec=features` or the shape of one event |
-| `LinearFlow(net)`, `LinearMeanFlow(net)` | Supply `event_spec` here too |
+| Sampling from `EDM(net)`, `VP(net)`, `VE(net)`, or `LinearFlow(net)` | Supply `event_spec` at construction or to `as_dist(event_spec=...)` |
+| `LinearMeanFlow(net)` | Supply `event_spec` at construction |
 | Categorical diffusion without event metadata | Supply token-position shape, excluding the class axis |
 | Imports from `probjax.nn.pallas_kernels.old_pallas` | Use `probjax.nn.pallas_kernels`; the legacy implementation was removed |
 | Inspecting named sites with raw `jax.make_jaxpr(model)` | Trace inside `probjax.enable_rv_tracing()` |
@@ -61,11 +61,18 @@ inside JIT. See [training and EMA](../reference/nn.md#training-and-ema).
   dense linear algebra, including under JIT.
 
 ODE/SDE gradient behavior is described in the [solver guide](numerical-solvers.md).
-In particular, adaptive ODEs still use a reverse-mode adjoint; this release does
-not introduce a selectable checkpointed adaptive ODE gradient mode. The adaptive
-backward path currently has an [open release blocker](../releasing.md#open-release-blocker).
+In particular, adaptive ODEs still use a custom reverse-mode adjoint, and there
+is currently no selectable checkpointed adaptive ODE gradient mode. The
+backward path is unreliable for adaptive gradients; use a converged fixed-grid
+solve when you need differentiable integration.
 
 ## Sampling traces and kernels
+
+Prefer `condition`, `do`, and `log_joint_fn` for probabilistic-program
+transformations. Their legacy aliases `observe`, `intervene`,
+`log_potential_fn`, and `log_prob_fn` still work but emit `DeprecationWarning`.
+Use `trace(..., kind_labels="probabilistic")` instead of the deprecated
+`kind_labels="legacy"` option.
 
 Ordinary distribution sampling no longer emits random-variable primitives.
 ProbJax PPL transformations enable tracing automatically. Opt in explicitly only

@@ -1,14 +1,13 @@
 import io
 import re
+from contextlib import suppress
 from typing import Callable, Sequence
 
 import jax.numpy as jnp
 import networkx as nx
 
-try:
+with suppress(ImportError):
     from IPython.display import SVG, display  # type: ignore
-except ImportError:
-    pass
 
 try:
     from jax.experimental.pjit import pjit_p

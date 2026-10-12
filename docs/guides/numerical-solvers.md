@@ -44,12 +44,11 @@ Fixed-grid integration differentiates the discrete stepping computation and
 supports the `check_points` option for checkpointed grid scans when collecting
 the trajectory. Its entries are nested scan lengths whose product equals the
 number of grid intervals, not checkpoint indices. Adaptive ODE
-integration currently uses a custom reverse-mode adjoint, but release preparation
-found failures in its backward path (controller residuals and filtered-state
-handling). Treat adaptive gradients as a release blocker; use a converged
-fixed-grid solve for differentiable examples below. There is **no public
-`adjoint=` or gradient-mode selector** in this release, and forward-mode AD
-through that custom VJP is unsupported. Any repaired adjoint also needs gradient convergence checks separate from the
+integration currently uses a custom reverse-mode adjoint, whose backward path is
+unreliable (controller residuals and filtered-state handling). Treat adaptive
+gradients as unsupported; use a converged fixed-grid solve for differentiable
+examples below. There is **no public `adjoint=` or gradient-mode selector**, and
+forward-mode AD through that custom VJP is unsupported. Any repaired adjoint also needs gradient convergence checks separate from the
 forward solution.
 
 ```python

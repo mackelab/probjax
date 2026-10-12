@@ -8,7 +8,6 @@ Architectures here are pure :class:`flax.nnx.Module` instances —
 """
 
 from probjax.nn.nets.diffusion_transformer import DiffusionTransformer
-from probjax.nn.nets.ssm import LRUModel, SSMModel
 from probjax.nn.nets.simple import (
     MLP,
     DeepSet,
@@ -16,6 +15,7 @@ from probjax.nn.nets.simple import (
     ResNet,
     Sequential,
 )
+from probjax.nn.nets.ssm import LRUModel, SSMModel
 from probjax.nn.nets.time import TimeMLP
 from probjax.nn.nets.transformer import Transformer
 from probjax.nn.nets.unets import UNet

@@ -22,10 +22,10 @@ Nothing here is a new kernel, so every existing kernel, warmup and runner works
 unchanged:
 
 >>> transform = neutra(logdensity_fn, flow)
->>> kernel = nuts(transform.logdensity)          # or mala, hmc, mclmc, slice...
+>>> kernel = nuts(transform.logdensity)  # or mala, hmc, mclmc, slice...
 >>> state = kernel.init(key, jnp.zeros(dim))
 >>> result = MCMC(kernel).sample(key, state, 4000, kernel.init_params(state))
->>> draws = transform.forward(result.samples)    # back in the target's space
+>>> draws = transform.forward(result.samples)  # back in the target's space
 """
 
 from typing import Callable, NamedTuple

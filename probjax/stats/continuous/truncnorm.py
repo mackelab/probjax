@@ -5,20 +5,19 @@ Truncated Normal Distribution (:mod:`probjax.stats.truncnorm`)
 This module contains the Truncated Normal distribution.
 """
 
-from typing import Tuple
 import math
+from typing import Tuple
 
 import jax
-import numpy as np
-
 import jax.numpy as jnp
+import numpy as np
 from jax import random
 from jax.scipy.special import log_ndtr
-from probjax.utils.special.logspace import logdiffexp
 from jax.scipy.stats import truncnorm as _truncnorm
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import interval, real, strict_positive
+from probjax.utils.special.logspace import logdiffexp
 from probjax.utils.typing import RngKey
 
 __all__ = ["truncnorm"]
@@ -151,9 +150,9 @@ def _standard_moments(alpha, beta, order):
     for k in range(2, order + 1):
         moments.append((k - 1) * moments[k - 2] + a ** (k - 1) * pa - b ** (k - 1) * pb)
     use, raw, _, quad_log_z, _ = _interval_quadrature(alpha, beta, order)
-    return [jnp.where(use, q, m) for q, m in zip(raw, moments)], jnp.where(
-        use, quad_log_z, log_z
-    )
+    return [
+        jnp.where(use, q, m) for q, m in zip(raw, moments, strict=False)
+    ], jnp.where(use, quad_log_z, log_z)
 
 
 class truncnorm_gen(rv_continuous, rv_exponential_family):

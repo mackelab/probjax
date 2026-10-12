@@ -13,6 +13,8 @@ from jax import random
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import (
     interval as interval_constraint,
+)
+from probjax.stats.constraints import (
     real,
     strict_positive,
 )

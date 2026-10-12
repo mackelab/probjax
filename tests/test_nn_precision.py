@@ -1,8 +1,9 @@
-"""Tests for probjax.nn.utils.PrecisionMixin (P0-2 / P1-7).
+"""Tests for the precision kwargs plumbing in probjax.nn (P0-2 / P1-7).
 
 Covers:
 - cast_output semantics (None is a strict no-op; explicit dtype casts).
-- The four precision kwargs are stored and forwarded.
+- filter_precision_kwargs drops None and unsupported kwargs.
+- The four precision kwargs are forwarded.
 - The Conv/ConvTranspose UserWarning for silently discarded
   preferred_element_type (added in PR #32) is preserved.
 - Regression: constructing/running layers with preferred_element_type=None
@@ -26,44 +27,35 @@ from probjax.nn.layers.conv import (
 )
 from probjax.nn.layers.encoding import GaussianFourierEmbedding
 from probjax.nn.nets.unets import UNet
-from probjax.nn.utils import PrecisionMixin
+from probjax.nn.utils import cast_output, filter_precision_kwargs
 
 
 # ---------------------------------------------------------------------------
-# PrecisionMixin unit behavior
+# Helper behavior
 # ---------------------------------------------------------------------------
 
 
 def test_cast_output_none_is_noop():
-    m = PrecisionMixin()
     x = jnp.ones(3)
     # Identity: astype must never be invoked with None.
-    assert m.cast_output(x) is x
-    assert (m.dtype, m.precision, m.param_dtype, m.preferred_element_type) == (
-        None,
-        None,
-        None,
-        None,
-    )
-    assert m.active_precision_kwargs() == {}
+    assert cast_output(x, None) is x
 
 
 def test_cast_output_casts_when_set():
-    m = PrecisionMixin(preferred_element_type=jnp.float16)
-    x = jnp.ones(3, dtype=jnp.float32)
-    out = m.cast_output(x)
+    out = cast_output(jnp.ones(3, dtype=jnp.float32), jnp.float16)
     assert out.dtype == jnp.float16
 
 
-def test_active_precision_kwargs_omits_nones():
-    m = PrecisionMixin(dtype=jnp.float16, preferred_element_type=jnp.float32)
-    assert m.active_precision_kwargs() == {
-        "dtype": jnp.float16,
-        "preferred_element_type": jnp.float32,
-    }
+def test_filter_precision_kwargs_drops_nones_and_unsupported():
+    kwargs = dict(dtype=jnp.float16, precision=None, preferred_element_type=None)
+    assert filter_precision_kwargs(nnx.Linear, **kwargs) == {"dtype": jnp.float16}
+    # LayerNorm takes no `precision`.
+    assert filter_precision_kwargs(
+        nnx.LayerNorm, dtype=jnp.float16, precision="highest"
+    ) == {"dtype": jnp.float16}
 
 
-def test_subclass_stores_precision_kwargs():
+def test_subclass_forwards_precision_kwargs():
     blk = ConvBlock(
         8,
         8,
@@ -73,11 +65,9 @@ def test_subclass_stores_precision_kwargs():
         preferred_element_type=jnp.float32,
         rngs=nnx.Rngs(0),
     )
-    assert isinstance(blk, PrecisionMixin)
-    assert blk.dtype == jnp.float16
-    assert blk.param_dtype == jnp.float32
+    assert blk.conv.dtype == jnp.float16
+    assert blk.conv.param_dtype == jnp.float32
     assert blk.preferred_element_type == jnp.float32
-    assert blk.active_precision_kwargs()["dtype"] == jnp.float16
 
 
 # ---------------------------------------------------------------------------

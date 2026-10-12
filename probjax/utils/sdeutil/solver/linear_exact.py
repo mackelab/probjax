@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from typing import NamedTuple, Optional
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
 import jax.scipy.linalg
-import numpy as np
 
 from probjax.utils.functions import const_diffusion, linear_drift
-from probjax.utils.linalg import is_diagonal_matrix, matrix_fraction_decomposition
 from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
+from probjax.utils.special.phi1 import phi1_scalar
 from probjax.utils.typing import Array, ArrayLike, Callable, RngKey
 
 
@@ -20,12 +19,6 @@ class LinearExactSDEState(SDEState):
 
 class LinearExactSDEInfo(SDEInfo):
     dWt: Array
-
-
-def _phi1_scalar(z: Array) -> Array:
-    small = jnp.abs(z) < 1e-4
-    series = 1.0 + 0.5 * z + (z * z) / 6.0 + (z * z * z) / 24.0
-    return jnp.where(small, series, jnp.expm1(z) / z)
 
 
 def init_state(
@@ -64,7 +57,6 @@ def build_linear_exact_sde_step(
         )
 
     G = diffusion.G
-    G_shape = G.shape
     if G.ndim == 1:
         state_dim = G.shape[0]
         noise_dim_actual = state_dim
@@ -78,9 +70,7 @@ def build_linear_exact_sde_step(
         # Pytree-flowing drifts arrive with ``A`` as a traced array, so we
         # branch on its static shape info (ndim) rather than on values.
         A_sym = jnp.asarray(A)
-        is_scalar = A_sym.ndim == 0 or (
-            A_sym.ndim == 1 and A_sym.shape[0] == 1
-        )
+        is_scalar = A_sym.ndim == 0 or (A_sym.ndim == 1 and A_sym.shape[0] == 1)
     else:
         A = None
         is_scalar = False
@@ -91,10 +81,7 @@ def build_linear_exact_sde_step(
         t0, y0 = state.t0, state.y0
         dt = jnp.asarray(dt)
 
-        if is_const:
-            A_t = A
-        else:
-            A_t = drift.A(t0)
+        A_t = A if is_const else drift.A(t0)
 
         # Compute exp(A * dt) - handle scalar case
         if is_scalar:
@@ -104,13 +91,10 @@ def build_linear_exact_sde_step(
             expm_A = jax.scipy.linalg.expm(A_t * dt)
 
         if drift.b is None:
-            if is_scalar:
-                y_mean = expm_A * y0
-            else:
-                y_mean = expm_A @ y0
+            y_mean = expm_A * y0 if is_scalar else expm_A @ y0
         else:
             b = drift.b(t0 + dt)
-            phi1 = _phi1_scalar(A_t * dt)
+            phi1 = phi1_scalar(A_t * dt)
             if is_scalar:
                 y_mean = expm_A * y0 + dt * phi1 * b
             else:

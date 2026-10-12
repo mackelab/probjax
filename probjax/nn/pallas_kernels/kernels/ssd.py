@@ -28,7 +28,6 @@ and the original implementation.
 """
 
 import functools
-import os
 from typing import Optional, Tuple, Union
 
 import jax
@@ -36,11 +35,19 @@ import jax.numpy as jnp
 from einops import rearrange, repeat
 from jax import lax
 from jax.experimental import pallas as pl
+from jax.interpreters import ad as _ad
 
 from ..kernel_utils import (
     get_dot_precision,
     pallas_call_compat,
     use_interpret_mode,
+)
+from ..kernel_utils.common import (
+    _bs,
+    _is_hopper_or_newer_gpu,
+    _prefer_mosaic_gpu,
+    _tpu_compiler_params,
+    _unsafe_enable_mosaic_gpu,
 )
 from ..kernel_utils.kernel_primitive import (
     KernelSpec,
@@ -53,40 +60,6 @@ from ..kernel_utils.kernel_primitive import (
     res,
     shardable_kernel,
 )
-
-
-def _bs(index_map, block_shape):
-    """Compatibility wrapper for BlockSpec(index_map, block_shape) call sites."""
-    return pl.BlockSpec(block_shape=block_shape, index_map=index_map)
-
-
-def _tpu_compiler_params(*, dimension_semantics):
-    """Returns TPU compiler params when running on TPU, else None."""
-    if use_interpret_mode() or jax.default_backend() != "tpu":
-        return None
-    from jax.experimental.pallas import tpu as pltpu
-
-    return pltpu.CompilerParams(dimension_semantics=dimension_semantics)
-
-
-def _is_hopper_or_newer_gpu() -> bool:
-    if jax.default_backend() != "gpu":
-        return False
-    kind = jax.devices()[0].device_kind.lower()
-    return any(
-        tag in kind for tag in ("h100", "h200", "b100", "b200", "hopper", "blackwell")
-    )
-
-
-def _prefer_mosaic_gpu() -> bool:
-    val = os.environ.get("PROBJAX_PALLAS_PREFER_MOSAIC_GPU", "0").strip().lower()
-    return val in ("1", "true", "yes", "on")
-
-
-def _unsafe_enable_mosaic_gpu() -> bool:
-    """Explicit opt-in for the unstable Mosaic GPU path for SSD."""
-    val = os.environ.get("PROBJAX_PALLAS_UNSAFE_ENABLE_MOSAIC_GPU", "0")
-    return val.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _pallas_backend(prefer_mosaic_gpu: bool | None = None) -> str | None:
@@ -144,9 +117,7 @@ def _gpu_supports_ssd_pallas_for_shape(
         return False
     if dk % singleton_dim != 0 or dv % singleton_dim != 0:
         return False
-    if num_heads % num_groups != 0:
-        return False
-    return True
+    return num_heads % num_groups == 0
 
 
 def _matmul_fp32(lhs: jax.Array, rhs: jax.Array) -> jax.Array:
@@ -391,7 +362,7 @@ def _ssd_forward(
     bs, num_qk_heads, seq_len, k_head_dim = q.shape
     _, num_v_heads, _, v_head_dim = v.shape
     singleton_dim, chunk_size, subchunk_size = _ssd_tiling_config()
-    acc_dtype, orig_dtype = jnp.float32, q.dtype
+    _acc_dtype, orig_dtype = jnp.float32, q.dtype
 
     assert seq_len % chunk_size == 0 and chunk_size % subchunk_size == 0
 
@@ -1068,8 +1039,6 @@ def _ssd_jvp_transpose(ct, *operands, present, **static):
     return tuple(grads) + (None,) * 6
 
 
-from jax.interpreters import ad as _ad
-
 _ad.primitive_jvps[ssd_fwd_p] = _ssd_fwd_jvp
 _ad.primitive_transposes[ssd_jvp_p] = _ssd_jvp_transpose
 
@@ -1315,15 +1284,15 @@ def ssd_linear_scan_w_timestep(
         hidden_states: [batch_size, num_heads, dk, dv]
 
     """
-    bs, ng, l, dk = q.shape
-    bs, nh, l, dv = v.shape
+    bs, ng, seq_len, dk = q.shape
+    bs, nh, seq_len, dv = v.shape
     assert nh % ng == 0
 
     num_head_per_group = nh // ng
     q = repeat(q, "b ng l dk -> b (ng nhg) l dk", nhg=num_head_per_group)
     k = repeat(k, "b ng l dk -> b (ng nhg) l dk", nhg=num_head_per_group)
 
-    timestep_mask = jnp.arange(l)[None, :] >= timestep[:, None]
+    timestep_mask = jnp.arange(seq_len)[None, :] >= timestep[:, None]
     k = jnp.where(timestep_mask[:, None, :, None], 0.0, k)
     v = jnp.where(timestep_mask[:, None, :, None], 0.0, v)
     log_alpha = jnp.where(timestep_mask[:, None, :], 0.0, log_alpha)

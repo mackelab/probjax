@@ -578,9 +578,6 @@ class CosineNoiseSchedule(BaseNoiseSchedule):
             1.0,
         )
 
-    def _alpha_bar(self, t: ArrayLike) -> Array:
-        return self.scale(t) ** 2
-
     def scale(self, t: ArrayLike) -> Array:
         # Clamp before the singular endpoint (cos(pi/2) can be negative in fp32).
         return jnp.maximum(
@@ -629,6 +626,19 @@ class CosineNoiseSchedule(BaseNoiseSchedule):
 
 @dataclass
 class EDMPreconditioning(PreconditioningProtocol):
+    """EDM-style preconditioning weights for diffusion training.
+
+    Computes the standardisation coefficients (c_in, c_out, c_t, c_skip)
+    and loss weights following the "Elucidating the Design Space of
+    Diffusion-Based Generative Models" (EDM) paper.
+
+    Parameters
+    ----------
+    eps : float, default=1e-6
+        Numerical safety constant used to avoid division by zero in
+        sigma_eff computation.
+    """
+
     eps: float = 1e-6  # numerical safety
 
     def _sigma_eff(
