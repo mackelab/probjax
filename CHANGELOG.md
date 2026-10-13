@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] — preparing 0.2.0
 
 ### Added
+- Structured linear operators `Diagonal`, `Dense` and matrix-free `Function`
+  over arbitrary input/output shapes, with `solve`/`logdet` choosing the method
+  by structure (`psd=` selects Cholesky/CG), `expm`/`phi` matrix functions,
+  matrix-free `Jacobian(fn, x, args)`, and optional lineax solvers
+  (`pip install 'probjax[lineax]'`)
 - `DiffusionTransformer` accepts an optional per-token `local_context` of shape
   `[..., tokens, local_context_dim]`, concatenated to the tokens at the input,
   next to the global `context`
@@ -55,6 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never import flax or optax, and the flax-free training modules stay so
 
 ### Changed
+- **Breaking:** `LinearOperator(fn, in_dim, out_dim)` is now
+  `Function(fn, in_shape)`, `LinearOperator.from_array` is `Dense`, `.operator`
+  is `.mv`, operators scale by scalars only, and `solve`/`logdet` take
+  `solver=`/`psd=` instead of size-based `method=`/`dense_mem_limit=`
+  (see the migration guide)
 - Gradient-based training moved from `probjax.stats.fit` to
   `probjax.nn.training` (`batches`, `kernel`, `loop`, `mixin`), so
   `probjax.stats` no longer depends on flax or optax. `probjax.nn` still

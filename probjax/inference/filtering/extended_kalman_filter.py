@@ -12,7 +12,7 @@ from probjax.inference.filtering.kalman_filter import (
     init,
 )
 from probjax.utils.linalg import matrix_fraction_decomposition
-from probjax.utils.linear_operator import LinearOperator
+from probjax.utils.linear_operator import Jacobian, LinearOperator
 
 # ---------------------------------------------------------------------------
 # EKF kernel
@@ -75,20 +75,6 @@ def build_kernel(
 # ---------------------------------------------------------------------------
 
 
-def _jacobian_as_linear_operator(fn, *fixed_args, in_dim, out_dim):
-    """Wrap fn as a LinearOperator Jacobian without materializing it.
-
-    Forward:  J @ v   via jax.jvp.
-    Adjoint:  J.T @ w via jax.vjp.
-    """
-
-    def operator(v):
-        _primals, tangents = jax.jvp(fn, fixed_args, (v,))
-        return tangents
-
-    return LinearOperator(operator, in_dim, out_dim)
-
-
 def make_linearized_transition(
     transition_fn, Q_fn, in_dim, out_dim=None, materialize=False
 ):
@@ -102,28 +88,21 @@ def make_linearized_transition(
         transition_fn: f(x, t_old, t) -> x_new.  Nonlinear transition.
         Q_fn: Either a callable (t_old, t) -> Q returning the process noise
             covariance, or a fixed array / LinearOperator.
-        in_dim: State dimension.
-        out_dim: Output dimension. Defaults to in_dim.
+        in_dim: State dimension. Unused (shapes are inferred from the state);
+            kept for backward compatibility.
+        out_dim: Output dimension. Unused; kept for backward compatibility.
         materialize: If True, return Phi as a dense array via jax.jacfwd.
             If False (default), return Phi as a matrix-free LinearOperator.
 
     Returns:
         transition_model_fn: (x, cov, t_old, t) -> (x_pred, Phi, Q)
     """
-    if out_dim is None:
-        out_dim = in_dim
-
     def transition_model_fn(x, cov, t_old, t):
         x_pred = transition_fn(x, t_old, t)
         if materialize:
             Phi = jax.jacfwd(transition_fn)(x, t_old, t)
         else:
-            Phi = _jacobian_as_linear_operator(
-                lambda x: transition_fn(x, t_old, t),
-                x,
-                in_dim=in_dim,
-                out_dim=out_dim,
-            )
+            Phi = Jacobian(transition_fn, x, (t_old, t))
         Q = Q_fn(t_old, t) if callable(Q_fn) else Q_fn
         return x_pred, Phi, Q
 
@@ -142,8 +121,10 @@ def make_linearized_observation(
         observation_fn: h(x, t) -> y.  Nonlinear observation.
         R_fn: Either a callable (t,) -> R returning the observation noise
             covariance, or a fixed array / LinearOperator.
-        in_dim: State (input) dimension.
-        out_dim: Observation (output) dimension.
+        in_dim: State (input) dimension. Unused; kept for backward
+            compatibility.
+        out_dim: Observation (output) dimension. Unused; kept for backward
+            compatibility.
         materialize: If True, return C as a dense array via jax.jacfwd.
             If False (default), return C as a matrix-free LinearOperator.
 
@@ -156,12 +137,7 @@ def make_linearized_observation(
         if materialize:
             C = jax.jacfwd(observation_fn)(x, t)
         else:
-            C = _jacobian_as_linear_operator(
-                lambda x: observation_fn(x, t),
-                x,
-                in_dim=in_dim,
-                out_dim=out_dim,
-            )
+            C = Jacobian(observation_fn, x, (t,))
         R = R_fn(t) if callable(R_fn) else R_fn
         return y_pred, C, R
 

@@ -77,13 +77,13 @@ def test_genpareto_negative_shape_mode():
 @pytest.mark.parametrize('dimension', [1, 3, 20])
 @pytest.mark.parametrize('operator', [False, True])
 def test_logdet_repeated_spectrum_gradients(dimension, operator):
-    from probjax.utils.linear_operator import LinearOperator
+    from probjax.utils.linear_operator import Function
 
     with jax.enable_x64():
 
         def objective(scale):
             a = scale * jnp.eye(dimension)
-            s = LinearOperator(lambda x: a @ x, dimension, dimension) if operator else a
+            s = Function(lambda x: a @ x, dimension) if operator else a
             return lanczos_logdet(s, num_steps=dimension)
 
         np.testing.assert_allclose(
@@ -235,10 +235,10 @@ def test_pcg_zero_rhs_absolute_diagnostics(guess, converged):
 
 def test_filter_matrix_free_solve_and_logdet_gradient():
     from probjax.inference.filtering.kalman_filter import default_logdet, default_solve
-    from probjax.utils.linear_operator import LinearOperator
+    from probjax.utils.linear_operator import Function
 
     a = jnp.array([[2.0, 0.3], [0.3, 1.0]])
-    operator = LinearOperator(lambda x: a @ x, 2, 2)
+    operator = Function(lambda x: a @ x, 2)
     rhs = jnp.array([[1e-20, 2e-20], [1e20, 2e20]])
     actual = jax.jit(lambda rhs: default_solve(operator, rhs, dense_mem_limit=0))(rhs)
     expected = np.linalg.solve(
@@ -249,7 +249,7 @@ def test_filter_matrix_free_solve_and_logdet_gradient():
     )
     derivative = jax.grad(
         lambda scale: default_logdet(
-            LinearOperator(lambda x: scale * x, 2, 2), dense_mem_limit=0
+            Function(lambda x: scale * x, 2), dense_mem_limit=0
         )
     )(2.0)
     np.testing.assert_allclose(derivative, 1.0, rtol=1e-6)

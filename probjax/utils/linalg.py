@@ -456,8 +456,8 @@ def lanczos_logdet(S, num_steps=20, key=None, *, num_probes=16):
     """
     if num_steps < 1 or num_probes < 1:
         raise ValueError("num_steps and num_probes must be positive")
-    if hasattr(S, "operator"):
-        matvec, dim = S.operator, S.out_dim
+    if hasattr(S, "mv"):
+        matvec, dim = S.mv, S.shape[0]
     elif callable(S):
         if not hasattr(S, "shape"):
             raise ValueError("Callable S must have a shape attribute")
