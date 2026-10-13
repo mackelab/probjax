@@ -28,6 +28,7 @@ from probjax.nn.generative.nflows.autoregressive import (
 )
 from probjax.nn.generative.nflows.bijective import (
     Affine,
+    CirculantDiagonal,
     ElementwiseMonotone,
     Flip,
     Permute,
@@ -38,6 +39,8 @@ from probjax.nn.generative.nflows.config import (
     AutoregressiveNFlowConfig,
     BernsteinBijectorConfig,
     BijectorConfigProtocol,
+    CirculantDiagonalMixingConfig,
+    CompositeMixingConfig,
     ConditionerConfigProtocol,
     CouplingNFlowConfig,
     DeepSigmoidBijectorConfig,
@@ -90,6 +93,7 @@ from probjax.nn.generative.nflows.models import (
 __all__ = [
     # bijective primitives
     "Affine",
+    "CirculantDiagonal",
     "ElementwiseMonotone",
     "Flip",
     "Permute",
@@ -121,6 +125,8 @@ __all__ = [
     "SSMConditionerConfig",
     "TransformerConditionerConfig",
     # mixing configs
+    "CirculantDiagonalMixingConfig",
+    "CompositeMixingConfig",
     "FlipMixingConfig",
     "NoMixingConfig",
     "PermuteMixingConfig",

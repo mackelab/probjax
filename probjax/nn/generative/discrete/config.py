@@ -129,8 +129,11 @@ class CategoricalTrainingConfigProtocol(Protocol):
 @dataclass
 class MultinomialDiffusionSchedule(CategoricalScheduleProtocol):
     """
-    Forward categorical diffusion with:
-      Q_t = (1 - beta_t) I + beta_t 1 pi^T
+    Continuous-time categorical replacement noise with rate beta(t).
+
+    Interval transitions use Q(s, t) = (1 - beta_eff) I + beta_eff 1 pi^T,
+    where beta_eff = 1 - alpha_bar(t) / alpha_bar(s). Rates may exceed one;
+    beta_eff is the bounded transition probability.
     """
 
     num_steps: int
@@ -259,8 +262,8 @@ class MultinomialDiffusionSchedule(CategoricalScheduleProtocol):
         num_steps: int,
         num_classes: int,
         *,
-        beta_start: float = 1e-4,
-        beta_end: float = 0.1,
+        beta_start: float = 0.1,
+        beta_end: float = 20.0,
         base_probs: Optional[ArrayLike] = None,
         t_min: float = 0.0,
         t_max: float = 1.0,
@@ -283,7 +286,7 @@ class MultinomialDiffusionSchedule(CategoricalScheduleProtocol):
         num_classes: int,
         *,
         s: float = 0.008,
-        max_beta: float = 0.999,
+        max_beta: float = 50.0,
         base_probs: Optional[ArrayLike] = None,
         t_min: float = 0.0,
         t_max: float = 1.0,
@@ -305,8 +308,8 @@ class MultinomialDiffusionSchedule(CategoricalScheduleProtocol):
         num_steps: int,
         num_classes: int,
         *,
-        beta_start: float = 1e-4,
-        beta_end: float = 0.1,
+        beta_start: float = 0.1,
+        beta_end: float = 20.0,
         start: float = -3.0,
         end: float = 3.0,
         base_probs: Optional[ArrayLike] = None,

@@ -877,7 +877,7 @@ class BaseSolverConfig(SolverConfigProtocol):
     """
     Default solver config:
 
-      - solve_schedule: linear between t_start and t_end
+      - solve_schedule: logarithmic spacing in effective noise, mapped back to time
       - build_ode_drift: probability flow ODE
       - build_sde_drift_and_diffusion: reverse SDE
     """

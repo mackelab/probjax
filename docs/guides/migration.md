@@ -38,6 +38,33 @@ See [event specifications](../reference/nn.md#diffusion-and-flow-matching).
 
 ## Training and checkpoints
 
+### Neural configuration defaults
+
+Transformer stacks and AR/flow transformer conditioners now default to model
+width 256, eight 32D heads, four layers, and 4× FFN expansion. Explicit smaller
+profiles remain supported. Reconstruct older checkpoints with their original
+`model_dim`, `num_heads`, `attn_size`, `num_layers`, and `widening_factor`;
+previously implicit adaptive widths should be supplied explicitly or through
+the original callable width rule. See [profile comparisons](../benchmarks/nn_defaults.md).
+
+Input-adaptive induced and spatial attention now pass the full input width as
+total QKV width, fixing a second division by the head count. For an accepted
+old adaptive projection, pass `attn_size=in_features // num_heads**2` explicitly
+to reproduce its smaller head dimensions.
+
+Categorical linear/sigmoid defaults now use continuous replacement rates 0.1
+to 20. To reproduce the old weak-noise process, pass `beta_start=1e-4` and
+`beta_end=0.1`. Cosine's continuous rate cap is now 50; pass `max_beta=0.999`
+to reproduce the old cap. The [categorical control](../benchmarks/diffusion_configs.md#updated-categorical-defaults)
+records the resulting prior-mismatch correction.
+
+Spline flow boundary-slope logits now use `tail_logit_scale=0.1` by default.
+The tails remain learnable and start at unit slope; interior knot slopes are
+unchanged. Pass `tail_logit_scale=1.0` to reproduce the previous undamped
+behavior, including when reconstructing a flow for an older checkpoint.
+`SplineAutoregressive` and `ARFamily.spline` expose the same damping option for
+their distribution-head boundary slopes.
+
 Existing module `fit` calls still return losses; functional `fit` returns
 `(params, losses)`. Request `return_result=True` for `FitState`, `FitInfo`,
 metrics and resume state. EMA is opt-in with `ema_decay`; `use_ema=True` installs
@@ -166,4 +193,4 @@ an export lazily during tracing is currently unsupported.
 Exponential AB2 now handles nonuniform step sizes and uses the correct
 phi-function weights and midpoint linear coefficient. Gaussian and nonlinear
 mixture benchmarks, transformer scaling measurements, and remaining limitations
-are recorded in `examples/nn/benchmark_results/diffusion_audit.md`.
+are recorded in the [diffusion audit](../benchmarks/diffusion_audit.md).

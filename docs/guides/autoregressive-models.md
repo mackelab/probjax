@@ -22,5 +22,17 @@ losses = flexible_head.fit(jax.random.key(1), data, num_steps=100)
 `CategoricalAutoregressive` cover flexible continuous and discrete conditionals,
 while `Autoregressive` accepts an `ARFamily` head directly.
 
+## Transformer conditioner defaults
+
+`TransformerARConditionerConfig()` uses model width 256, eight 32D attention
+heads, four layers, and 4× FFN expansion. Use explicit width 128 for a compact
+profile; smaller test dimensions and callable width rules remain configurable.
+On CPU, `attention_fn=dot_product_attention` selects the dense softmax kernel.
+See [profile timings and examples](../benchmarks/nn_defaults.md).
+
+Spline distribution heads also damp boundary logits with
+`tail_logit_scale=0.1`; pass one to restore undamped predictions. Initial slopes
+are one and remain learnable. This matches the spline-flow tail convention.
+
 - [Density estimation](density-estimation.md) — the shared `fit` / `as_dist` interface
 - [Reference](../reference/nn.md) — every autoregressive family

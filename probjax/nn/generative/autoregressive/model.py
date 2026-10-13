@@ -467,9 +467,21 @@ class SplineAutoregressive(Autoregressive):
     """
 
     def __init__(
-        self, input_dim, rngs, *, num_bins: int = 8, bound: float = 5.0, **kwargs
+        self,
+        input_dim,
+        rngs,
+        *,
+        num_bins: int = 8,
+        bound: float = 5.0,
+        tail_logit_scale: float = 0.1,
+        **kwargs,
     ):
-        super().__init__(input_dim, ARFamily.spline(num_bins, bound), rngs, **kwargs)
+        super().__init__(
+            input_dim,
+            ARFamily.spline(num_bins, bound, tail_logit_scale=tail_logit_scale),
+            rngs,
+            **kwargs,
+        )
 
 
 class HistogramAutoregressive(Autoregressive):

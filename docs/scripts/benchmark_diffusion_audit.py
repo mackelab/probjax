@@ -1,6 +1,7 @@
 """CPU/GPU-selectable audit: Gaussian accuracy and synchronized sampler runtime.
 
-Run with PYTHONPATH=. JAX_PLATFORMS=cpu python examples/nn/benchmark_diffusion_audit.py.
+Run from the repository root with
+JAX_PLATFORMS=cpu python -m docs.scripts.benchmark_diffusion_audit --output result.json.
 Compilation/first execution is measured separately from five warm calls.
 The exact Gaussian denoiser isolates solver error from model training error.
 """

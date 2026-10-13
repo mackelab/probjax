@@ -154,6 +154,12 @@ def function(param1: int, param2: str) -> bool:
 
 ## Documentation
 
+Configuration benchmarks are documented under `docs/benchmarks/`; their
+reproducible runners live in `docs/scripts/`. See the
+[benchmark index](benchmarks/index.md) for smoke commands and full studies.
+Record hardware, seeds, shapes, budgets, and compilation/warm timings when
+adding a comparison, and keep historical and changed-default results separate.
+
 ### Building Documentation Locally
 
 ```bash

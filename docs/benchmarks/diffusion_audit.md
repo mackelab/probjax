@@ -64,9 +64,9 @@ Exact posterior denoiser for an equal mixture of N(-3, 0.5²) and N(3, 0.5²). T
 ## Reproduce
 
 ```bash
-PYTHONPATH=. JAX_PLATFORMS=cpu python examples/nn/benchmark_diffusion_audit.py --output /tmp/gaussian.json
-PYTHONPATH=. JAX_PLATFORMS=cpu python examples/nn/benchmark_diffusion_audit.py --profile mixture --output /tmp/mixture.json
-PYTHONPATH=. JAX_PLATFORMS=cpu python examples/nn/benchmark_transformer_audit.py --output /tmp/transformer.json
+JAX_PLATFORMS=cpu python -m docs.scripts.benchmark_diffusion_audit --output /tmp/gaussian.json
+JAX_PLATFORMS=cpu python -m docs.scripts.benchmark_diffusion_audit --profile mixture --output /tmp/mixture.json
+JAX_PLATFORMS=cpu python -m docs.scripts.benchmark_transformer_audit --output /tmp/transformer.json
 ```
 
 Raw measurements are stored alongside this report as JSON, including the Gaussian baseline taken before this audit’s fixes.

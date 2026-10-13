@@ -444,7 +444,9 @@ class ResnetBlock(nnx.Module):
         x = self.conv2(x, rng=rng)
 
         # Residual connection
-        skip_connection = cast_output(self.skip_connection(inputs), self.preferred_element_type)
+        skip_connection = cast_output(
+            self.skip_connection(inputs), self.preferred_element_type
+        )
         if self.dropout_path:
             x = self.dropout_path(x, deterministic=deterministic, rng=rng)
         out = x + skip_connection
@@ -498,9 +500,7 @@ class SpatialSelfAttention(nnx.Module):
         self.attn = mha_cls(
             num_heads=num_heads,
             in_features=in_features,
-            qkv_features=in_features // num_heads
-            if attn_size is None
-            else attn_size * num_heads,
+            qkv_features=in_features if attn_size is None else attn_size * num_heads,
             out_features=in_features,
             dropout_rate=dropout_rate,
             rngs=rngs,

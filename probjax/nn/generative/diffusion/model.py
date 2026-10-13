@@ -556,7 +556,7 @@ class VE(_DiffusionPreset):
       - VENoiseSchedule(sigma_min, sigma_max)
       - EDMPreconditioning
       - UniformTTrainingConfig
-      - BaseSolverConfig by default
+      - VSolverConfig by default
     """
 
     def __init__(

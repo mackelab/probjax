@@ -45,3 +45,23 @@ for the full event-spec semantics.
 
 - [Density estimation](density-estimation.md) — the shared `fit` / `as_dist` interface
 - [Reference](../reference/nn.md#diffusion-and-flow-matching) — every diffusion family
+
+## Configuration benchmarks
+
+The [diffusion config matrix](../benchmarks/diffusion_configs.md) compares all
+concrete schedule, time-sampling, solver, preconditioning, and prediction-target
+types with oracle and learned-model controls. Short commands and raw results
+are linked from the [benchmark index](../benchmarks/index.md).
+
+Continuous preset curricula remain the established EDM/VE/VP/cosine choices;
+the small learned-mixture results are tuning evidence rather than a universal
+default ranking. `DiffusionTransformer` uses the standard width-256, eight-32D-
+head profile; [runtime comparisons](../benchmarks/nn_defaults.md) cover the
+width-128 compact alternative.
+
+Categorical linear/sigmoid factories use continuous rates from 0.1 to 20, which
+leave only about 4.32e-5 terminal signal. This keeps their sampling base prior
+close to the noised target, unlike the old weak-noise defaults. The cosine rate
+cap is 50. These rates are not per-step probabilities: interval transition
+probabilities are derived from `alpha_bar` ratios. See
+[the before/after control](../benchmarks/diffusion_configs.md#updated-categorical-defaults).

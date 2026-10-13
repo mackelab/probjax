@@ -26,7 +26,7 @@ from probjax.utils.typing import DTypeLike, ModuleLikeType, PrecisionLike
 
 
 class Transformer(nnx.Module):
-    """A transformer stack."""
+    """A transformer stack, defaulting to width 256 and eight 32D heads."""
 
     model_dim: int  # Dimensionality of the embedding vectors.
     num_heads: int  # Number of attention heads.
@@ -47,10 +47,10 @@ class Transformer(nnx.Module):
 
     def __init__(
         self,
-        model_dim: int,
-        num_heads: int,
-        num_layers: int,
-        attn_size: int,
+        model_dim: int = 256,
+        num_heads: int = 8,
+        num_layers: int = 4,
+        attn_size: int = 32,
         *,
         enable_cross_attention: bool = False,
         kv_in_features: Optional[int] = None,
@@ -116,6 +116,14 @@ class Transformer(nnx.Module):
                 initializer. If None, uses truncated normal with variance scaling.
                 Defaults to None.
         """
+        for name, value in {
+            "model_dim": model_dim,
+            "num_heads": num_heads,
+            "num_layers": num_layers,
+            "attn_size": attn_size,
+        }.items():
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
         norm_cls = type(self).norm_cls if norm_cls is DEFAULT_MODULE else norm_cls
         context_fusion_cls = (
             type(self).context_fusion_cls
@@ -150,6 +158,7 @@ class Transformer(nnx.Module):
         self.num_heads = num_heads
         self.num_layers = num_layers
         self.attn_size = attn_size
+        self.widening_factor = widening_factor
         self.dropout_rate = dropout_rate
         self.dropout_rate_attn = (
             dropout_rate_attn if dropout_rate_attn is not None else dropout_rate

@@ -8,6 +8,11 @@ This page covers the ProbJax public models and their building blocks. Standard
 layers, activations, pooling functions, and initializers re-exported unchanged
 from Flax NNX use the [Flax API reference](https://flax.readthedocs.io/en/latest/api_reference/flax.nnx/index.html).
 
+For measured configuration comparisons and short runnable scripts, see
+[Configuration benchmarks](../benchmarks/index.md). The
+[transformer profile table](../benchmarks/nn_defaults.md) explains the standard
+256-wide, eight-head defaults and the explicit compact options.
+
 ## Training and EMA
 
 Generative models share `FitMixin`; other NNX modules can inherit it alongside
@@ -510,6 +515,9 @@ re-exported for convenience and documented there.
 
 ## Flow building blocks and configuration
 
+::: probjax.nn.CirculantDiagonal
+::: probjax.nn.CirculantDiagonalMixingConfig
+::: probjax.nn.CompositeMixingConfig
 ::: probjax.nn.AdditiveAutoregressiveFlow
 ::: probjax.nn.AdditiveCouplingFlow
 ::: probjax.nn.Affine

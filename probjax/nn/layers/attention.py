@@ -765,9 +765,7 @@ class InducedSelfAttention(nnx.Module):
         self.checkpoint_inducing_ff = bool(checkpoint_inducing_ff)
         self.checkpoint_output_ff = bool(checkpoint_output_ff)
 
-        qkv_features = (
-            in_features // num_heads if attn_size is None else attn_size * num_heads
-        )
+        qkv_features = in_features if attn_size is None else attn_size * num_heads
 
         # Precision and dtype settings.
 

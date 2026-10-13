@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fit(..., context=)` keyword is gone, `weights=` stays a loss option), `dist.sample(rng, shape, local_context=...)`,
   `as_dist(inputs_spec={...}, inputs={...})` and `dist.condition(...)` forward
   them to the network as keyword arguments (`context=` stays as sugar)
+- Spline `tail_logit_scale` option to damp boundary-slope predictions while
+  retaining learnable tails and identity initialization.
+- Composable normalizing-flow mixing with `CompositeMixingConfig`, FFT-based
+  `CirculantDiagonalMixingConfig`, and explicit fixed feature permutations.
 - Zensical documentation with executable examples, rendered PPL/Kalman/SMC
   tutorials, migration notes and a release checklist
 - Stateful training with `FitState`/`FitInfo`, resumable optimizer/RNG state,
@@ -121,6 +125,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is `.mv`, operators scale by scalars only, and `solve`/`logdet` take
   `solver=`/`psd=` instead of size-based `method=`/`dense_mem_limit=`
   (see the migration guide)
+- Declare tailed histogram support as the real line so AR support validation
+  accepts observations outside the central bin region.
+- Standardize transformer/AR/flow-transformer defaults to width 256, eight 32D
+  heads, four layers, and 4× FFN expansion, retaining explicit compact overrides.
+- Correct induced/spatial attention's adaptive total QKV width so the head
+  dimension is not divided by the head count twice.
+- Use categorical linear/sigmoid continuous-rate defaults 0.1 to 20 and cosine
+  rate cap 50, correcting weak terminal mixing with the sampling base prior.
+- Apply learnable boundary-logit damping to AR spline distribution heads too.
+- Publish configuration benchmark runners under `docs/scripts/` and measured
+  tables/raw results under `docs/benchmarks/`.
 - Gradient-based training moved from `probjax.stats.fit` to
   `probjax.nn.training` (`batches`, `kernel`, `loop`, `mixin`), so
   `probjax.stats` no longer depends on flax or optax. `probjax.nn` still
@@ -128,6 +143,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `FitMixin` no longer assumes a batch layout: by default `model.fit(rng, data)`
   trains on `data` as given and calls `loss(rng, batch)`. The
   `{"data", "context", "weights"}` convention now belongs to `GenerativeModel`
+- Default spline boundary-logit scale to 0.1, damping learnable tail predictions
+  while preserving identity initialization. Set `tail_logit_scale=1.0` for the
+  previous undamped behavior.
 - Prefer `condition`, `do`, and `log_joint_fn`; their legacy aliases and
   `trace(kind_labels="legacy")` now emit `DeprecationWarning`.
 - Target Python 3.11–3.13 and JAX `>=0.9.0,<0.12`; require Flax >=0.12.6 and BlackJAX 1.7.1
