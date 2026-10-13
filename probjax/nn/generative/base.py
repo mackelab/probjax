@@ -169,24 +169,37 @@ class GenerativeModel(nnx.Module, FitMixin):
         """Monte-Carlo training loss for a batch of data."""
         raise NotImplementedError
 
-    def fit(self, rng: RngKey, data, **fit_kwargs) -> Array | FitResult:
+    def fit(
+        self, rng: RngKey, data, *, weights=None, **fit_kwargs
+    ) -> Array | FitResult:
         """Train in place on ``data``.
 
         ``data`` is an array pytree, a dict with a ``"data"`` entry plus any
-        named model inputs (``{"data": x, "context": c, "weights": w}``), or a
-        stream of either. The inputs reach :meth:`loss`, and so the network, as
-        keyword arguments. The keyword arguments are the training options of
+        named model inputs (``{"data": x, "context": c}``), or a stream of
+        either. The inputs reach :meth:`loss`, and so the network, as keyword
+        arguments. ``weights`` weight the examples in the loss; they are not
+        data. The remaining keywords are the training options of
         :func:`probjax.nn.training.fit`.
         """
+        if weights is not None:
+            fit_kwargs["weights"] = weights
         return super().fit(rng, data, **fit_kwargs)
 
-    def _fit_batch(self, data, **extras):
+    def _fit_batch(self, data, *, weights=None, **extras):
         if extras:
             raise ValueError(
                 f"unexpected fit arguments {sorted(extras)}; pass named model "
                 "inputs inside data, e.g. fit(rng, {'data': x, 'context': c})."
             )
-        return _Batches(data) if is_batch_stream(data) else _as_batch(data)
+        if is_batch_stream(data):
+            if weights is not None:
+                raise ValueError(
+                    "weights cannot be passed alongside an iterable data source; "
+                    "give each batch dict a 'weights' entry instead."
+                )
+            return _Batches(data)
+        batch = _as_batch(data)
+        return batch if weights is None else {**batch, "weights": weights}
 
     def _fit_loss(self, rng, batch):
         if isinstance(batch, dict):

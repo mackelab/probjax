@@ -12,8 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[..., tokens, local_context_dim]`, concatenated to the tokens at the input,
   next to the global `context`
 - Generative models take any named model input, not only `context`: `fit(rng,
-  {"data": x, "local_context": l})` (the data dict carries every input; the old
-  `fit(..., context=, weights=)` keywords are gone), `dist.sample(rng, shape, local_context=...)`,
+  {"data": x, "local_context": l})` (the data dict carries every model input; the old
+  `fit(..., context=)` keyword is gone, `weights=` stays a loss option), `dist.sample(rng, shape, local_context=...)`,
   `as_dist(inputs_spec={...}, inputs={...})` and `dist.condition(...)` forward
   them to the network as keyword arguments (`context=` stays as sugar)
 - Zensical documentation with executable examples, rendered PPL/Kalman/SMC
