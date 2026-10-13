@@ -59,6 +59,9 @@ dependencies = [
 wasserstein = [
     "ott-jax",
 ]
+lineax = [
+    "lineax",
+]
 plot = [
     "matplotlib",
 ]

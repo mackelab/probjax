@@ -22,7 +22,7 @@ from probjax.inference import (
 )
 from probjax.inference.filtering.kalman_filter import kalman_filter
 from probjax.inference.filtering.particle_filter import ParticleFilter
-from probjax.utils.linear_operator import LinearOperator
+from probjax.utils.linear_operator import Function
 
 TS = jnp.array([0.2, 0.7, 1.4, 2.0])
 YS = jnp.array([[0.4], [-0.1], [0.8], [0.5]])
@@ -177,7 +177,7 @@ def test_pf_likelihood_estimate_is_unbiased(threshold):
 
 def test_linear_operator_matches_dense_kalman():
     c = jnp.array([[1.0, 0.4]])
-    operator = LinearOperator(lambda x: c @ x, 2, 1)
+    operator = Function(lambda x: c @ x, 2)
 
     def make(obs):
         return kalman_filter(

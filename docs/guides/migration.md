@@ -23,6 +23,11 @@ have additional hardware constraints; CPU tests do not certify GPU performance.
 | Imports from `probjax.nn.pallas_kernels.old_pallas` | Use `probjax.nn.pallas_kernels`; the legacy implementation was removed |
 | Inspecting named sites with raw `jax.make_jaxpr(model)` | Trace inside `probjax.enable_rv_tracing()` |
 | Drift/diffusion keyword arguments passed to solvers | Pass positional arguments, or bind configuration in the callable |
+| `LinearOperator(fn, in_dim, out_dim)` | `Function(fn, in_shape)`; `Dense(matrix)` and `Diagonal(diag, shape)` keep structure |
+| `LinearOperator.from_array(m)` / `op.operator` | `Dense(m)` / `op.mv` |
+| `op * vector` (row scaling) | `Diagonal(vector) @ op`; `*` and `/` accept scalars only |
+| `op.solve(b, method=..., dense_mem_limit=..., assume_a="pos")` | `op.solve(b, solver="auto", psd=True)`; materialize with `op.as_dense()` to force a dense solve |
+| `op.logdet(method=..., dense_mem_limit=...)` | `op.logdet(psd=True)`; matrix-free operators require `psd=True` |
 
 An event shape excludes all sample and batch axes. `event_spec=3` means a
 three-feature vector; `(16, 3)` means sixteen tokens with three features.
@@ -59,6 +64,12 @@ inside JIT. See [training and EMA](../reference/nn.md#training-and-ema).
   substantially where that subtraction previously rounded to one.
 - Rectangular `LinearOperator` shape metadata and multiplication order now match
   dense linear algebra, including under JIT.
+- Linear operators choose solvers by structure rather than size: Diagonal
+  divides elementwise, Dense uses Cholesky (`psd=True`) or LU, and matrix-free
+  Function operators use CG (`psd=True`) or GMRES. Pass `solver=` to override,
+  including any lineax solver (`pip install 'probjax[lineax]'`). Operators
+  map arrays of `in_shape` to `out_shape`; `shape` is the flattened matrix
+  shape.
 
 ODE/SDE gradient behavior is described in the [solver guide](numerical-solvers.md).
 In particular, adaptive ODEs still use a custom reverse-mode adjoint, and there

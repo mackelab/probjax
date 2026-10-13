@@ -26,18 +26,23 @@ def init(
     return KalmanFilterState(mean, cov, t)
 
 
+def _densify_if_small(S: LinearOperator, dense_mem_limit: float) -> LinearOperator:
+    """Materialize S when its dense matrix fits in ``dense_mem_limit`` MB."""
+    mem_mb = S.shape[0] * S.shape[1] * jnp.dtype(S.dtype).itemsize / 1024**2
+    return S.as_dense() if mem_mb <= dense_mem_limit else S
+
+
 def default_solve(S, res, dense_mem_limit=200):
     """Solve S @ x = res for the Kalman gain and residual.
 
-    Chooses between dense factorization and batched PCG based on total memory
-    required. Dense needs to materialize S (obs_dim^2) on top of the already-
-    materialized res (nrhs * obs_dim). PCG avoids materializing S entirely.
+    Chooses between dense Cholesky and matrix-free CG based on the memory
+    needed to materialize S. Dense needs S (obs_dim^2) on top of the already-
+    materialized res (nrhs * obs_dim). CG avoids materializing S entirely.
 
-    Decision rule: use dense when obs_dim^2 * 8 bytes < dense_mem_limit MB,
-    i.e. when the materialized S matrix fits comfortably in memory. This
-    naturally accounts for the RHS shape: for small obs_dim, dense factorization
-    is O(obs_dim^3) and amortizes over all nrhs columns cheaply. For large
-    obs_dim, PCG avoids the O(obs_dim^3) factorization and O(obs_dim^2) memory.
+    Decision rule: use dense when the materialized S fits in dense_mem_limit
+    MB. For small obs_dim, the O(obs_dim^3) factorization amortizes over all
+    nrhs columns cheaply. For large obs_dim, CG avoids the factorization and
+    the O(obs_dim^2) memory.
 
     Args:
         S: SPD system matrix (obs_dim x obs_dim), array or LinearOperator.
@@ -48,9 +53,8 @@ def default_solve(S, res, dense_mem_limit=200):
     if isinstance(S, LinearOperator):
         # LinearOperator.solve takes rhs as (obs_dim, nrhs); the Kalman
         # convention here is (nrhs, obs_dim), hence the transposes.
-        return S.solve(
-            jnp.asarray(res).T, assume_a="pos", dense_mem_limit=dense_mem_limit
-        ).T
+        S = _densify_if_small(S, dense_mem_limit)
+        return S.solve(jnp.asarray(res).T, psd=True).T
     S = jnp.asarray(S)
     res = jnp.asarray(res)
     return jax.scipy.linalg.solve(S, res.T, assume_a="pos").T
@@ -67,7 +71,8 @@ def default_logdet(S, dense_mem_limit=200):
     O(n^3) factorization.
     """
     if isinstance(S, LinearOperator):
-        return S.logdet(dense_mem_limit=dense_mem_limit)
+        S = _densify_if_small(S, dense_mem_limit)
+        return S.logdet(psd=True, num_steps=500)
     return jnp.linalg.slogdet(jnp.asarray(S)).logabsdet
 
 
