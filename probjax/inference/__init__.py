@@ -214,21 +214,20 @@ __all__ = [
 ]
 
 from probjax.inference.filtering.temporal import (
+    LinearGaussianModel,
+    StateSpaceModel,
     TemporalFilter,
     TemporalResult,
     TemporalTrace,
-    kalman_backend,
-    particle_backend,
     run_temporal_filter,
+    temporal_filter,
 )
 from probjax.inference.filtering.trajectory import (
     particle_gibbs,
-    sample_gaussian_paths,
-    sample_particle_paths,
+    sample_paths,
     smooth_gaussian_path,
 )
 from probjax.inference.smc.temporal import (
-    ReplayData,
     TemporalSMC,
     TemporalSMCInfo,
     TemporalSMCState,
@@ -237,17 +236,16 @@ from probjax.inference.smc.temporal import (
 )
 
 __all__ += [
+    "LinearGaussianModel",
+    "StateSpaceModel",
     "TemporalFilter",
     "TemporalResult",
     "TemporalTrace",
-    "kalman_backend",
-    "particle_backend",
     "run_temporal_filter",
+    "temporal_filter",
     "particle_gibbs",
-    "sample_gaussian_paths",
-    "sample_particle_paths",
+    "sample_paths",
     "smooth_gaussian_path",
-    "ReplayData",
     "TemporalSMC",
     "TemporalSMCInfo",
     "TemporalSMCState",
@@ -272,16 +270,6 @@ from probjax.inference.diagnostics import (
 from probjax.inference.filtering.joint import (
     sample_joint_paths,
 )
-from probjax.inference.filtering.streaming import (
-    append_streaming_window,
-    init_streaming_window,
-    streaming_window_trace,
-)
-from probjax.inference.smc.particle_adaptation import (
-    adapt_particle_count,
-    exchange_filter_population,
-    recommend_particle_count,
-)
 from probjax.inference.smc.ports import (
     pretuned_smc,
     tuned_smc,
@@ -289,7 +277,6 @@ from probjax.inference.smc.ports import (
     waste_free_strategy,
 )
 from probjax.inference.smc.temporal_utils import (
-    likelihood_diagnostics,
     population_diagnostics,
     summarize_replicates,
 )
@@ -300,14 +287,7 @@ __all__ += [
     'tuned_smc',
     'pretuned_smc',
     'population_diagnostics',
-    'likelihood_diagnostics',
     'summarize_replicates',
-    'recommend_particle_count',
-    'exchange_filter_population',
-    'adapt_particle_count',
-    'init_streaming_window',
-    'append_streaming_window',
-    'streaming_window_trace',
     'sample_joint_paths',
     'effective_sample_size',
     'potential_scale_reduction',

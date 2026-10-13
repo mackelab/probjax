@@ -1,44 +1,35 @@
-"""Shared replay, population statistics and diagnostics for temporal SMC."""
+"""Prefix replay, population statistics and diagnostics for temporal SMC."""
 
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
-from blackjax.smc.base import map_fn
 from jax.flatten_util import ravel_pytree
 
 from probjax.inference.smc.ess import ess
 
 
-def replay_filter(backend, key, theta, t0, data, count, *, differentiable=False):
-    """Replay a prefix, returning terminal state, log likelihood, and prefix-minus-one.
+def replay_filter(filt, key, theta, t0, data, count):
+    """Filter the first ``count`` observations of ``data = (ts, ys, observed)``.
 
-    Dynamic loops avoid visiting future data. A masked static scan enables reverse
-    mode for exact-likelihood MCMC; the ignored suffix never contributes a density.
+    Returns the final filter state and the log likelihood. The loop stops at
+    ``count``, so later observations in ``data`` are never read.
     """
+    ts, observations, observed = data
     key, init_key = jax.random.split(key)
-    initial = backend.init(init_key, theta, t0)
+    initial = filt.init(init_key, theta, t0)
     zero = jnp.array(0.0, dtype=jnp.result_type(jax.tree.leaves(initial)[0], 0.0))
 
     def step(i, carry):
-        key, state, logz, _ = carry
+        key, state, logz = carry
         key, step_key = jax.random.split(key)
-        state, info = backend.step(
-            step_key, state, theta, data.ts[i], data.observations[i], data.observed[i]
+        state, info = filt.step(
+            step_key, state, theta, ts[i], observations[i], observed[i]
         )
-        return key, state, logz + info.log_likelihood, logz
+        return key, state, logz + info.log_likelihood
 
-    carry = (key, initial, zero, zero)
-    if differentiable:
-
-        def masked(carry, i):
-            return jax.lax.cond(i < count, lambda: step(i, carry), lambda: carry), None
-
-        carry, _ = jax.lax.scan(masked, carry, jnp.arange(data.ts.shape[0]))
-    else:
-        carry = jax.lax.fori_loop(0, count, step, carry)
-    _, state, logz, previous = carry
-    return state, logz, previous
+    _, state, logz = jax.lax.fori_loop(0, count, step, (key, initial, zero))
+    return state, logz
 
 
 def population_matrix(particles):
@@ -76,29 +67,6 @@ def population_diagnostics(particles, log_weights, ancestors=None):
         unique_ancestors = 1 + jnp.sum(jnp.diff(labels) != 0)
     return PopulationDiagnostics(
         ess(log_weights), unique, unique_ancestors, jax.nn.softmax(log_weights).max()
-    )
-
-
-class LikelihoodDiagnostics(NamedTuple):
-    log_likelihoods: jax.Array
-    log_variance: jax.Array
-    log_mean_likelihood: jax.Array
-
-
-def likelihood_diagnostics(
-    backend, key, theta, t0, data, count=None, *, num_replicates=8, batch_size=0
-):
-    """Replicate likelihood estimates at one fixed theta, not across theta values."""
-    if num_replicates < 2:
-        raise ValueError("At least two likelihood replicates are required.")
-    count = data.ts.shape[0] if count is None else count
-    estimates = map_fn(
-        lambda k: replay_filter(backend, k, theta, t0, data, count)[1], batch_size
-    )(jax.random.split(key, num_replicates))
-    return LikelihoodDiagnostics(
-        estimates,
-        jnp.var(estimates, ddof=1),
-        jax.scipy.special.logsumexp(estimates) - jnp.log(num_replicates),
     )
 
 
