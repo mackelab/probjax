@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Structured linear operators `Diagonal`, `Dense` and matrix-free `Function`
   over arbitrary input/output shapes, with `solve`/`logdet` choosing the method
   by structure (`psd=` selects Cholesky/CG), `expm`/`phi` matrix functions,
-  matrix-free Jacobians via `Function.jvp`, and optional lineax solvers
+  matrix-free `Jacobian(fn, x, args)`, and optional lineax solvers
   (`pip install 'probjax[lineax]'`)
 - `DiffusionTransformer` accepts an optional per-token `local_context` of shape
   `[..., tokens, local_context_dim]`, concatenated to the tokens at the input,

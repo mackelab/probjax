@@ -1,7 +1,8 @@
 """Structured linear operators with pluggable solvers.
 
 Three structures cover the library's needs: :class:`Diagonal` (including a
-scalar ``c * I``), :class:`Dense` and matrix-free :class:`Function`. The
+scalar ``c * I``), :class:`Dense` and matrix-free :class:`Function` (plus
+:class:`Jacobian` for matrix-free derivatives). The
 structure, not the problem size, decides how ``solve``/``logdet``/``expm`` are
 computed, and cheap structure is preserved under ``+`` and ``@``.
 
@@ -297,28 +298,130 @@ class Function(LinearOperator):
         if self.dtype is None:
             object.__setattr__(self, "dtype", out.dtype)
 
-    @classmethod
-    def jvp(cls, fn: Callable, x: ArrayLike) -> "Function":
-        """Matrix-free Jacobian of ``fn`` at ``x``.
-
-        Linearizes once, so each application costs one JVP without
-        re-evaluating ``fn``.
-        """
-        x = jnp.asarray(x)
-        out, jvp_fn = jax.linearize(fn, x)
-        return cls(jvp_fn, x.shape, out.shape, jnp.result_type(out))
-
     @property
-    def T(self) -> "Function":
-        transpose = jax.linear_transpose(
-            self.matvec, jax.ShapeDtypeStruct(self.in_shape, self.dtype)
-        )
-        return Function(
-            lambda y: transpose(y)[0], self.out_shape, self.in_shape, self.dtype
-        )
+    def T(self) -> "LinearOperator":
+        return _Transpose(self)
 
     def _mv(self, x):
         return self.matvec(x)
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class Jacobian(LinearOperator):
+    """Matrix-free Jacobian of ``fn(x, *args)`` with respect to ``x``.
+
+    Each application costs one JVP. ``x`` and ``args`` are pytree leaves and
+    ``fn`` is static, so rebuilding the Jacobian at a new point inside a
+    jitted function does not retrace.
+    """
+
+    fn: Callable = _static()
+    x: jax.Array
+    args: tuple = ()
+    out_shape: Shape = _static(default=None)
+    dtype: Any = _static(default=None)
+
+    def __post_init__(self):
+        if self.out_shape is None or self.dtype is None:
+            out = jax.eval_shape(self.fn, self.x, *self.args)
+            object.__setattr__(self, "out_shape", out.shape)
+            object.__setattr__(self, "dtype", out.dtype)
+
+    @property
+    def in_shape(self) -> Shape:
+        return jnp.shape(self.x)
+
+    @property
+    def T(self) -> "LinearOperator":
+        return _Transpose(self)
+
+    def _mv(self, v):
+        return jax.jvp(lambda x: self.fn(x, *self.args), (self.x,), (v,))[1]
+
+
+# Composite operators are pytree nodes over their parts, never closures: a new
+# closure per composition would be fresh static data and retrace every jit.
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class _Sum(LinearOperator):
+    a: LinearOperator
+    b: LinearOperator
+
+    @property
+    def in_shape(self) -> Shape:
+        return self.a.in_shape
+
+    @property
+    def out_shape(self) -> Shape:
+        return self.a.out_shape
+
+    @property
+    def dtype(self):
+        return jnp.result_type(self.a.dtype, self.b.dtype)
+
+    @property
+    def T(self) -> "LinearOperator":
+        return _Sum(self.a.T, self.b.T)
+
+    def _mv(self, x):
+        return self.a._mv(x) + self.b._mv(x)
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class _Product(LinearOperator):
+    """``a @ b``."""
+
+    a: LinearOperator
+    b: LinearOperator
+
+    @property
+    def in_shape(self) -> Shape:
+        return self.b.in_shape
+
+    @property
+    def out_shape(self) -> Shape:
+        return self.a.out_shape
+
+    @property
+    def dtype(self):
+        return jnp.result_type(self.a.dtype, self.b.dtype)
+
+    @property
+    def T(self) -> "LinearOperator":
+        return _Product(self.b.T, self.a.T)
+
+    def _mv(self, x):
+        return self.a._mv(self.b._mv(x))
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class _Transpose(LinearOperator):
+    op: LinearOperator
+
+    @property
+    def in_shape(self) -> Shape:
+        return self.op.out_shape
+
+    @property
+    def out_shape(self) -> Shape:
+        return self.op.in_shape
+
+    @property
+    def dtype(self):
+        return self.op.dtype
+
+    @property
+    def T(self) -> "LinearOperator":
+        return self.op
+
+    def _mv(self, y):
+        primal = jax.ShapeDtypeStruct(self.op.in_shape, self.op.dtype)
+        return jax.linear_transpose(self.op._mv, primal)(y)[0]
 
 
 def _phi_matrices(z: jax.Array, k: int) -> list[jax.Array]:
@@ -340,12 +443,7 @@ def _add(a: LinearOperator, b: LinearOperator) -> LinearOperator:
         return Diagonal(a.diag + b.diag, a.in_shape)
     if isinstance(a, (Dense, Diagonal)) and isinstance(b, (Dense, Diagonal)):
         return Dense(a.as_array() + b.as_array(), a.in_shape, a.out_shape)
-    return Function(
-        lambda x: a._mv(x) + b._mv(x),
-        a.in_shape,
-        a.out_shape,
-        jnp.result_type(a.dtype, b.dtype),
-    )
+    return _Sum(a, b)
 
 
 def _compose(a: LinearOperator, b: LinearOperator) -> LinearOperator:
@@ -362,12 +460,7 @@ def _compose(a: LinearOperator, b: LinearOperator) -> LinearOperator:
         return Dense(a.matrix * b._full_diag()[None, :], b.in_shape, a.out_shape)
     if isinstance(a, Dense) and isinstance(b, Dense):
         return Dense(a.matrix @ b.matrix, b.in_shape, a.out_shape)
-    return Function(
-        lambda x: a._mv(b._mv(x)),
-        b.in_shape,
-        a.out_shape,
-        jnp.result_type(a.dtype, b.dtype),
-    )
+    return _Product(a, b)
 
 
 def _symmetric_part(matrix: jax.Array) -> jax.Array:

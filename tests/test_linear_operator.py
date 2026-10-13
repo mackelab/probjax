@@ -14,6 +14,7 @@ from probjax.utils.linear_operator import (
     Dense,
     Diagonal,
     Function,
+    Jacobian,
     LinearOperator,
     logdet,
     solve,
@@ -81,8 +82,9 @@ def test_structure_is_preserved_where_cheap():
     assert isinstance(D @ A, Dense)
     assert isinstance(A - 1.0, Dense)
     assert isinstance(A @ A, Dense)
-    assert isinstance(F + A, Function)
-    assert isinstance(F @ A, Function)
+    # Anything involving a matrix-free operator stays matrix-free.
+    for op in (F + A, F @ A, A @ F, F.T, 2.0 * F):
+        assert not isinstance(op, (Dense, Diagonal))
 
 
 def test_scalar_diagonal():
@@ -131,7 +133,7 @@ def test_arbitrary_in_and_out_shapes():
     jac = jax.jacfwd(lambda v: jnp.sin(v).sum(axis=0))(x)
     for op in (
         Dense.jacfwd(lambda v: jnp.sin(v).sum(axis=0), x),
-        Function.jvp(lambda v: jnp.sin(v).sum(axis=0), x),
+        Jacobian(lambda v: jnp.sin(v).sum(axis=0), x),
     ):
         assert (op.in_shape, op.out_shape) == ((2, 3), (3,))
         np.testing.assert_allclose(op.as_array(), jac.reshape(3, 6), rtol=1e-6)
@@ -197,6 +199,51 @@ def test_pytree_leaves_are_the_arrays():
     leaves, treedef = jax.tree.flatten(A)
     B = jax.tree.unflatten(treedef, leaves)
     np.testing.assert_allclose(B.as_array(), SQUARE)
+
+
+def test_rebuilt_operators_do_not_retrace():
+    traces = []
+
+    @jax.jit
+    def apply(op, x):
+        traces.append(None)
+        return op @ x
+
+    def matvec(v):
+        return 2.0 * v
+
+    def fn(v, scale):
+        return scale * jnp.sin(v)
+
+    x = jnp.ones(3)
+    builders = {
+        "sum": lambda m: Function(matvec, 3) + Dense(m),
+        "product": lambda m: Dense(m) @ Function(matvec, 3),
+        "transpose": lambda m: (Function(matvec, 3) @ Dense(m)).T,
+        "jacobian": lambda m: Jacobian(fn, m[0], (m[1, 1],)),
+    }
+    for name, build in builders.items():
+        traces.clear()
+        for scale in (1.0, 2.0, 3.0):
+            out = apply(build(scale * jnp.eye(3)), x)
+        assert len(traces) == 1, name
+        # Arrays inside composites are traced inputs, not baked-in constants.
+        np.testing.assert_allclose(out, build(3.0 * jnp.eye(3)) @ x, rtol=1e-6)
+
+
+def test_jacobian_and_transpose_match_dense():
+    x = jnp.array([0.3, -1.2, 2.0])
+
+    def fn(v, t):
+        return jnp.stack([t * v[0] * v[1], jnp.sin(v[2]), v.sum()])
+
+    jac = jax.jacfwd(fn)(x, 1.5)
+    J = Jacobian(fn, x, (1.5,))
+    np.testing.assert_allclose(J.as_array(), jac, rtol=1e-6)
+    np.testing.assert_allclose(J.T.as_array(), jac.T, rtol=1e-6)
+    np.testing.assert_allclose((J.T @ J).as_array(), jac.T @ jac, rtol=1e-5)
+    grad = jax.grad(lambda t: jnp.sum(Jacobian(fn, x, (t,)) @ jnp.ones(3)))(1.5)
+    np.testing.assert_allclose(grad, x[0] + x[1], rtol=1e-6)
 
 
 def test_jit_grad_and_vmap_through_operators():

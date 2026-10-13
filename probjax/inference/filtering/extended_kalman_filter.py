@@ -12,7 +12,7 @@ from probjax.inference.filtering.kalman_filter import (
     init,
 )
 from probjax.utils.linalg import matrix_fraction_decomposition
-from probjax.utils.linear_operator import Function, LinearOperator
+from probjax.utils.linear_operator import Jacobian, LinearOperator
 
 # ---------------------------------------------------------------------------
 # EKF kernel
@@ -102,7 +102,7 @@ def make_linearized_transition(
         if materialize:
             Phi = jax.jacfwd(transition_fn)(x, t_old, t)
         else:
-            Phi = Function.jvp(lambda x: transition_fn(x, t_old, t), x)
+            Phi = Jacobian(transition_fn, x, (t_old, t))
         Q = Q_fn(t_old, t) if callable(Q_fn) else Q_fn
         return x_pred, Phi, Q
 
@@ -137,7 +137,7 @@ def make_linearized_observation(
         if materialize:
             C = jax.jacfwd(observation_fn)(x, t)
         else:
-            C = Function.jvp(lambda x: observation_fn(x, t), x)
+            C = Jacobian(observation_fn, x, (t,))
         R = R_fn(t) if callable(R_fn) else R_fn
         return y_pred, C, R
 
