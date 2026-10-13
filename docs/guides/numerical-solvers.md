@@ -61,18 +61,31 @@ assert jnp.allclose(gradient, -jnp.sum(y0) * jnp.exp(-0.5), rtol=1e-3)
 
 ## SDEs and adaptive noise
 
-For fixed-step integration, select a method such as `euler_maruyama` or
-`milstein`. Diffusion outputs determine noise layout: scalar/vector outputs
-represent diagonal noise; matrices can represent full, rectangular noise.
+For fixed-step integration, select a method such as `euler_maruyama`,
+`milstein` or the stochastic Runge–Kutta methods `sri1`/`sri2` (`srk` is an
+alias of `sri1`). Diffusion outputs determine noise layout: scalar/vector
+outputs represent diagonal noise; matrices can represent full, rectangular
+noise.
+
+`sde_type="stratonovich"` is implemented by `milstein`. For state-dependent
+noise the other solvers (and adaptive stepping) raise `NotImplementedError`
+instead of silently solving the Itô equation; for additive noise
+(`additive_diffusion`, `const_diffusion`) both conventions agree and every
+solver works.
 
 Supplying an SDE adaptor enables adaptive Euler–Maruyama step doubling,
 regardless of `method`. This adaptive path currently supports diagonal noise
 only.
 
-| Controller | Behavior on rejection | Use |
+Steps are never rejected on their own noise: the error estimate of a step
+depends on that step's Brownian increment, so keeping only low-error steps
+biases the path's quadratic variation and loses part of the Itô correction.
+Every step is accepted and its error only sets the *next* step size.
+
+| Controller | Brownian increments | Use |
 | --- | --- | --- |
-| `StrongStepSizeAdaptor` | Refines one keyed Brownian path | Pathwise comparisons and sample-wise objectives |
-| `WeakStepSizeAdaptor` | Draws fresh noise | Distributional experiments; check bias and convergence for your problem |
+| `StrongStepSizeAdaptor` | One keyed virtual Brownian tree | Pathwise comparisons and sample-wise objectives |
+| `WeakStepSizeAdaptor` | Fresh draws from the key | Distributional experiments (moments, terminal densities) |
 
 ```python
 from probjax.utils import sdeint
@@ -93,8 +106,9 @@ The adaptive SDE inner loop is bounded by `max_inner_steps` and supports reverse
 AD through its scan. A larger budget costs more work, even after an interval
 finishes. Budget or step-size boundary hits can force completion outside the
 requested tolerance. Inspect eager warnings and test convergence; host warnings
-are skipped while tracing under `jit`/`vmap`. Reusing a key alone does not make
-weak-controller retries path-consistent.
+are skipped while tracing under `jit`/`vmap`. The strong controller never steps
+below `64` leaf widths of its Brownian tree (`tree_depth`, default `20`), since
+the path inside a leaf is interpolated smoothly and carries no noise.
 
 Use `return_brownian=True` with `collect_trace=True` to also return the Brownian
 trace. Low-level Brownian paths and iterated stochastic integrals live in

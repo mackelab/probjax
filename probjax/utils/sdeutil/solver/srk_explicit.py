@@ -295,3 +295,10 @@ register_method(
     sri2,
     info={"order": 1, "strong_order": 1.0, "weak_order": 1.0, "adaptive": False},
 )
+
+# "srk" is the generic name used in the docs; it selects SRI1.
+register_method(
+    "srk",
+    sri1,
+    info={"order": 1, "strong_order": 1.0, "weak_order": 1.0, "adaptive": False},
+)

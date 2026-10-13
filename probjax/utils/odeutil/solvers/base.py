@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from functools import partial
 from typing import Any, NamedTuple, Optional
 
@@ -54,16 +55,23 @@ class ODESolverAPI(metaclass=API):
         """
         raise NotImplementedError("build_step method must be implemented")
 
-    def __new__(cls, drift: Callable[..., Any], **kwargs) -> ODESolver:
+    def __new__(
+        cls, drift: Callable[..., Any], dtype: Any = None, **kwargs
+    ) -> ODESolver:
         """Create an ODESolver instance.
 
         Args:
             drift: Drift function f(t, y, *args) -> dy/dt
+            dtype: Computation dtype. Forwarded to ``build_step`` for methods
+                that build coefficient tableaux in a given dtype (otherwise
+                they would stay in float32 and cap the attainable accuracy).
             **kwargs: Additional keyword arguments for build_step
 
         Returns:
             ODESolver instance with init and step functions
         """
+        if dtype is not None and "dtype" in inspect.signature(cls.build_step).parameters:
+            kwargs["dtype"] = dtype
         return ODESolver(
             init=partial(cls.init, drift=drift),
             step=cls.build_step(drift, **kwargs),

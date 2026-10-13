@@ -40,11 +40,6 @@ def test_rk4_parameter_gradient_matches_analytic_decay(collect_trace):
     np.testing.assert_allclose(gradient, -expected, rtol=1e-6)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=TypeError,
-    reason="Release blocker: adaptive custom VJP retains a non-JAX controller residual",
-)
 def test_adaptive_decay_gradients_match_analytic_solution():
     """Exercise the promised gradient, not an assertion that freezes the error."""
     times = jnp.linspace(0.0, 1.0, 17)

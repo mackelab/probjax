@@ -214,6 +214,19 @@ def _sdeint(
     additive_marker = diffusion if isinstance(diffusion, additive_diffusion) else None
     const_marker = diffusion if isinstance(diffusion, const_diffusion) else None
 
+    # Only Milstein implements Stratonovich integrals. For additive noise the
+    # Ito and Stratonovich interpretations coincide, so any solver is fine.
+    if (
+        sde_type == "stratonovich"
+        and method != "milstein"
+        and additive_marker is None
+        and const_marker is None
+    ):
+        raise NotImplementedError(
+            f"method={method!r} (or adaptive stepping) only supports Ito SDEs; "
+            "use method='milstein' for sde_type='stratonovich'."
+        )
+
     extract = _flat_extractor(noise_type, flat_state_dim)
 
     def diffusion_solver(t, yi):

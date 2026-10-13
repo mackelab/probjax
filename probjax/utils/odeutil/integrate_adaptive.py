@@ -73,7 +73,7 @@ def _odeint_adaptive(
     **kwargs,
 ):
     y0 = jnp.asarray(y0)
-    solver = method(drift)
+    solver = method(drift, dtype=y0.dtype)
     adaptor = step_size_adaptor
 
     def scan_fun(carry, target_t):
@@ -137,14 +137,19 @@ def _odeint_adaptive(
     else:
 
         def body(i, carry):
-            target = targets[i]
-            carry, _ = scan_fun(carry, target)
-            return carry
+            solver_carry, _ = carry
+            return scan_fun(solver_carry, targets[i])
 
-        final_carry = jax.lax.fori_loop(0, targets.shape[0], body, init_carry)
+        final_carry, y_last = jax.lax.fori_loop(
+            0, targets.shape[0], body, (init_carry, y0)
+        )
         ys = None
 
     state = final_carry[0]
+    if not collect_trace:
+        # The solver state has stepped past ``ts[-1]``; report the
+        # interpolated value at the requested terminal time instead.
+        state = state._replace(t0=ts[-1], y0=y_last)
     return state, ys
 
 

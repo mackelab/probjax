@@ -291,7 +291,7 @@ def build_vanderhouwen_tablau(dtype: jnp.dtype):
 
 # Ralston's third-order method
 def build_ralston3_tablau(dtype: jnp.dtype):
-    c = jnp.array([0.0, 1.0 / 3.0, 2.0 / 3.0], dtype=dtype)
+    c = jnp.array([0.0, 1.0 / 2.0, 3.0 / 4.0], dtype=dtype)
     A = jnp.array(
         [[0.0, 0.0, 0.0], [1.0 / 2.0, 0.0, 0.0], [0.0, 3.0 / 4.0, 0.0]], dtype=dtype
     )
@@ -304,8 +304,8 @@ def build_ralston3_tablau(dtype: jnp.dtype):
 
 # SSPRK3
 def build_ssprk3_tablau(dtype: jnp.dtype):
-    c = jnp.array([0.0, 0.5, 1.0], dtype=dtype)
-    A = jnp.array([[0, 0, 0], [0.5, 0, 0], [0.5, 0.5, 0]], dtype=dtype)
+    c = jnp.array([0.0, 1.0, 0.5], dtype=dtype)
+    A = jnp.array([[0, 0, 0], [1.0, 0, 0], [0.25, 0.25, 0]], dtype=dtype)
     b_sol = jnp.array([1.0 / 6.0, 1.0 / 6.0, 2.0 / 3.0], dtype=dtype)
     b_error = None
     b_mid = None
@@ -382,19 +382,19 @@ def build_ssprk4_tablau(dtype: jnp.dtype):
 
 
 def build_ralston4_tablau(dtype: jnp.dtype):
-    c = jnp.array([0.0, 0.4, 0.455737, 1.0], dtype=dtype)
+    c = jnp.array([0.0, 0.4, 0.45573725, 1.0], dtype=dtype)
     A = jnp.array(
         [
             [0.0, 0.0, 0.0, 0.0],
             [0.4, 0.0, 0.0, 0.0],
             [0.29697761, 0.15875964, 0.0, 0.0],
-            [0.2181004, -3.0509652, 3.83286476, 0.0],
+            [0.2181004, -3.05096516, 3.83286476, 0.0],
         ],
         dtype=dtype,
     )
-    b_sol = jnp.array([0.17476028, 0.55148066, 0.27404808, 0.0], dtype=dtype)
+    b_sol = jnp.array([0.17476028, -0.55148066, 1.20553560, 0.17118478], dtype=dtype)
     b_error = None  # Non-adaptive
-    b_mid = jnp.array([0.4, 0.6, 0.0, 0.0], dtype=dtype)
+    b_mid = None
 
     return c, A, b_sol, b_error, b_mid
 
@@ -611,22 +611,24 @@ tsit5 = build_rk_method("tsit5", build_tsit5_tablau, last_equals_next=True)
 
 
 # Order 6
-# RK5
+# Butcher's 7-stage, 6th-order method
 def build_rk6_tablau(dtype: jnp.dtype):
-    c = jnp.array([0.0, 1.0 / 3.0, 1.0 / 3.0, 0.5, 1.0, 5.0 / 6.0], dtype=dtype)
+    c = jnp.array([0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0 / 3.0, 0.5, 0.5, 1.0], dtype=dtype)
     A = jnp.array(
         [
-            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            [1.0 / 3.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            [1.0 / 6.0, 1.0 / 6.0, 0.0, 0.0, 0.0, 0.0],
-            [1.0 / 8.0, 0.0, 3.0 / 8.0, 0.0, 0.0, 0.0],
-            [1.0 / 2.0, 0.0, -3.0 / 2.0, 3.0 / 2.0, 0.0, 0.0],
-            [-3.0 / 7.0, 2.0, 12.0 / 7.0, -12.0 / 7.0, 8.0 / 7.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [1.0 / 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 2.0 / 3.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [1.0 / 12.0, 1.0 / 3.0, -1.0 / 12.0, 0.0, 0.0, 0.0, 0.0],
+            [-1.0 / 16.0, 9.0 / 8.0, -3.0 / 16.0, -3.0 / 8.0, 0.0, 0.0, 0.0],
+            [0.0, 9.0 / 8.0, -3.0 / 8.0, -3.0 / 4.0, 1.0 / 2.0, 0.0, 0.0],
+            [9.0 / 44.0, -9.0 / 11.0, 63.0 / 44.0, 18.0 / 11.0, 0.0, -16.0 / 11.0, 0.0],
         ],
         dtype=dtype,
     )
     b_sol = jnp.array(
-        [7.0 / 90.0, 0.0, 16.0 / 45.0, 2.0 / 15.0, 16.0 / 45.0, 7.0 / 90.0], dtype=dtype
+        [11.0 / 120.0, 0.0, 27.0 / 40.0, 27.0 / 40.0, -4.0 / 15.0, -4.0 / 15.0, 11.0 / 120.0],
+        dtype=dtype,
     )
     b_error = None  # Non-adaptive
     b_mid = None

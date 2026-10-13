@@ -1,27 +1,33 @@
 """Step-size adaptors for adaptive SDE integration.
 
-Two flavors are exposed, distinguished by their treatment of the Brownian path
-under step rejection:
+Unlike for ODEs, SDE steps are **never rejected on their own noise**. The local
+error estimate of a step depends on the Brownian increment drawn for it (for
+step doubling it is roughly ``g g' dW1 dW2``), so accepting only steps with a
+small error keeps only the "quiet" increments, biases the quadratic variation
+of the path downwards and loses part of the Ito correction at every tolerance.
+Instead every step is accepted and its error only sets the *next* step size,
+which keeps each step size predictable (known before its increment is drawn).
 
-- :class:`WeakStepSizeAdaptor` — draws fresh noise on each retry. Within a
-  single proposed step, the increment is split into two bridge-consistent
-  halves so step-doubling gives an unbiased local error estimate **for that
-  step**. Across rejections the realized trajectory is no longer a sample
-  from a single Brownian path — only its distributional / weak quantities
-  (moments, terminal-state densities) are valid.
+Two flavors are exposed, distinguished by how they draw the Brownian increments:
+
+- :class:`WeakStepSizeAdaptor` — draws fresh increments from a PRNG key. The
+  trajectory is a sample of the process, but not of a particular Brownian
+  path, so only distributional / weak quantities (moments, terminal-state
+  densities) are meaningful.
 
 - :class:`StrongStepSizeAdaptor` — backed by a virtual Brownian tree
   (:func:`probjax.utils.sdeutil.brownian.brownian_tree`). Every increment is
-  derived from a single keyed path, so refinements on rejection share that
-  path and the realized trajectory is a sample from one consistent ``W``.
-  Required for per-path quantities (filtering, parameter inference,
-  sample-wise loss).
+  derived from a single keyed path, so the realized trajectory is a sample from
+  one consistent ``W`` and runs at different tolerances are comparable
+  path by path. Required for per-path quantities (filtering, parameter
+  inference, sample-wise loss).
 
 Both inherit the controller machinery from :class:`StepSizeAdaptor`
-(``error_ratio`` / ``next_step_size`` / ``accept_step``) so the integrator
-itself stays adaptor-agnostic.
+(``error_ratio`` / ``next_step_size``) so the integrator itself stays
+adaptor-agnostic.
 """
 
+import copy
 from typing import NamedTuple, Optional, Tuple
 
 import jax
@@ -106,6 +112,16 @@ class SDEStepSizeAdaptor(StepSizeAdaptor):
         self.unroll = int(unroll)
         self.warn_on_boundary = bool(warn_on_boundary)
 
+    def bind_interval(self, t0, t_end) -> "SDEStepSizeAdaptor":
+        """Return the adaptor to use for integrating over ``[t0, t_end]``."""
+        del t0, t_end
+        return self
+
+    def accept_step(self, error_ratio, dt):
+        """Always accept: the error only steers the next step (see module docs)."""
+        del dt
+        return jnp.ones_like(error_ratio, dtype=bool)
+
     def init_brownian(self, rng, t0, t_end, noise_shape: Tuple[int, ...]):
         raise NotImplementedError
 
@@ -127,12 +143,12 @@ class SDEStepSizeAdaptor(StepSizeAdaptor):
 
 
 class WeakStepSizeAdaptor(SDEStepSizeAdaptor):
-    """Free resampling on rejection — valid for distributional quantities only.
+    """Fresh PRNG increments — valid for distributional quantities only.
 
-    The trajectory is *not* a sample from a single Brownian path: each rejected
-    step's noise is discarded and the next attempt draws fresh randomness.
-    Suitable for diffusion-model sampling or any setting where you only care
-    about moments / densities of the terminal state.
+    The trajectory is *not* a sample from a single Brownian path. Suitable for
+    diffusion-model sampling or any setting where you only care about moments /
+    densities of the terminal state. Use :class:`StrongStepSizeAdaptor` for
+    per-path quantities.
     """
 
     is_path_consistent = False
@@ -161,39 +177,37 @@ class WeakStepSizeAdaptor(SDEStepSizeAdaptor):
         committed = WeakBrownianState(key=k_next)
         return committed, dW_full, dW1, dW2
 
-    def on_reject(self, state: WeakBrownianState) -> WeakBrownianState:
-        # Advance the key so the next attempt draws fresh noise.
-        new_key, _ = jax.random.split(state.key)
-        return WeakBrownianState(key=new_key)
-
 
 class StrongStepSizeAdaptor(SDEStepSizeAdaptor):
     """Path-consistent sampling via a virtual Brownian tree.
 
-    All increments come from a single keyed path, so rejected steps refine
-    the same trajectory and the integrator's output is a sample from one
-    consistent ``W``. Use this whenever per-path quantities matter (state
+    All increments come from a single keyed path, so the integrator's output
+    is a sample from one consistent ``W``. Use this whenever per-path quantities matter (state
     estimation, log-likelihood under a given path, gradient methods that
     assume realized-path consistency).
 
     Args:
         tree_depth: Static refinement depth for the underlying virtual
             Brownian tree. Per-query cost is ``O(tree_depth)``. Default
-            ``14`` ≈ 6e-5 leaf width on a unit interval — fine enough for
-            any controller dt above ``T·2^-14``. Increase only if you set
-            ``rtol``/``atol`` so tight that the controller wants steps
-            below that.
+            ``20`` ≈ 1e-6 leaf width on a unit interval. Inside a leaf the
+            path is interpolated smoothly and carries no quadratic variation,
+            so the controller step is kept at least ``MIN_STEP_IN_LEAVES``
+            leaf widths: below that the integrator would see too little noise
+            and lose the Ito correction. Raise it if the tolerances need
+            smaller steps (the time dtype's resolution is the practical
+            limit).
         tree_tol: Backward-compatibility alias; converted to
             ``ceil(-log2(tree_tol))`` at construction time. Mutually
             exclusive with ``tree_depth``.
     """
 
     is_path_consistent = True
+    MIN_STEP_IN_LEAVES = 64
 
     def __init__(
         self,
         *,
-        tree_depth: int = 14,
+        tree_depth: int = 20,
         tree_tol: Optional[float] = None,
         **kwargs,
     ):
@@ -201,6 +215,12 @@ class StrongStepSizeAdaptor(SDEStepSizeAdaptor):
         if tree_tol is not None:
             tree_depth = max(1, int(jnp.ceil(-jnp.log2(jnp.asarray(tree_tol)))))
         self.tree_depth = int(tree_depth)
+
+    def bind_interval(self, t0, t_end) -> "StrongStepSizeAdaptor":
+        leaf_width = (t_end - t0) * 2.0 ** (-self.tree_depth)
+        bound = copy.copy(self)
+        bound.dtmin = jnp.maximum(self.dtmin, self.MIN_STEP_IN_LEAVES * leaf_width)
+        return bound
 
     def init_brownian(
         self, rng, t0, t_end, noise_shape: Tuple[int, ...]
