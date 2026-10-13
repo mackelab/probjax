@@ -112,7 +112,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCMC and SMC kernels (`hmc`, `nuts`, `mala`, `adaptive_smc`, ...) are
   explicit `MarkovKernelAPI`/`SMCKernelAPI` subclasses with their own
   docstrings, so `help(hmc)`, IDE hover and the API reference describe each
-  kernel and its options. The internal `make_kernel_api`/`make_smc_api`
+  kernel and its options. Built kernels are instances of a per-algorithm
+  `Kernel` subclass (`hmc.kernel_type`), so `help(kernel)` and `repr(kernel)`
+  show the algorithm too. The internal `make_kernel_api`/`make_smc_api`
   factories are gone; subclass the API classes instead
 - **Breaking:** `LinearOperator(fn, in_dim, out_dim)` is now
   `Function(fn, in_shape)`, `LinearOperator.from_array` is `Dense`, `.operator`

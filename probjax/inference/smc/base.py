@@ -40,6 +40,16 @@ class SMCKernelAPI(metaclass=API):
     def build_step(*args, **kwargs) -> Callable:
         raise NotImplementedError("build_step method must be implemented")
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        # Built kernels are instances of a per-algorithm Kernel subclass, so
+        # help(kernel) and repr(kernel) show this algorithm, not Kernel.
+        cls.kernel_type = type(
+            cls.__name__,
+            (SMCKernel,),
+            {"__doc__": cls.__doc__, "__module__": cls.__module__, "__slots__": ()},
+        )
+
     def __new__(cls, logprior_fn: Callable, loglikelihood_fn: Callable, **kwargs):
         init = partial(
             cls.init,
@@ -51,7 +61,7 @@ class SMCKernelAPI(metaclass=API):
             cls.init_params, logprior_fn=logprior_fn, loglikelihood_fn=loglikelihood_fn
         )
         step = cls.build_step(logprior_fn, loglikelihood_fn, **kwargs)
-        return SMCKernel(init, step, init_params)
+        return cls.kernel_type(init, step, init_params)
 
 
 def filter_kwargs(

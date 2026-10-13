@@ -61,6 +61,13 @@ class MarkovKernelAPI(metaclass=API):
             for p in params
         ):
             cls.init = staticmethod(lambda *args, rng_key=None, **kw: init(*args, **kw))
+        # Built kernels are instances of a per-algorithm Kernel subclass, so
+        # help(kernel) and repr(kernel) show this algorithm, not Kernel.
+        cls.kernel_type = type(
+            cls.__name__,
+            (MarkovKernel,),
+            {"__doc__": cls.__doc__, "__module__": cls.__module__, "__slots__": ()},
+        )
 
     def __new__(cls, logdensity_fn: Callable, **kwargs) -> MarkovKernel:
         def init_fn(key, position=None, **init_kwargs):
@@ -77,7 +84,9 @@ class MarkovKernelAPI(metaclass=API):
         def step(key, state, params, *args):
             return raw_step(key, state, params)
 
-        return MarkovKernel(init_fn, step, cls.init_params, cls.default_adaptation_fn)
+        return cls.kernel_type(
+            init_fn, step, cls.init_params, cls.default_adaptation_fn
+        )
 
 
 def make_step_from_kernel(
