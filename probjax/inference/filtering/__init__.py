@@ -44,46 +44,32 @@ __all__ = [
     "smooth",
 ]
 
+from probjax.inference.filtering.joint import sample_joint_paths
 from probjax.inference.filtering.temporal import (
+    LinearGaussianModel,
+    StateSpaceModel,
     TemporalFilter,
     TemporalResult,
     TemporalTrace,
-    kalman_backend,
-    particle_backend,
     run_temporal_filter,
+    temporal_filter,
 )
 from probjax.inference.filtering.trajectory import (
     particle_gibbs,
-    sample_gaussian_paths,
-    sample_particle_paths,
+    sample_paths,
     smooth_gaussian_path,
 )
 
 __all__ += [
+    "LinearGaussianModel",
+    "StateSpaceModel",
     "TemporalFilter",
     "TemporalResult",
     "TemporalTrace",
-    "kalman_backend",
-    "particle_backend",
     "run_temporal_filter",
+    "temporal_filter",
     "particle_gibbs",
-    "sample_gaussian_paths",
-    "sample_particle_paths",
+    "sample_paths",
     "smooth_gaussian_path",
-]
-
-from probjax.inference.filtering.joint import (
-    sample_joint_paths,
-)
-from probjax.inference.filtering.streaming import (
-    append_streaming_window,
-    init_streaming_window,
-    streaming_window_trace,
-)
-
-__all__ += [
-    'init_streaming_window',
-    'append_streaming_window',
-    'streaming_window_trace',
-    'sample_joint_paths',
+    "sample_joint_paths",
 ]

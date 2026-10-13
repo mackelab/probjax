@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.inference.filtering.smoothing import particle_smoother
-from probjax.inference.filtering.temporal import _observations
+from probjax.inference.filtering.temporal import LinearGaussianModel, _observations
 
 
 def _prepend(initial, history):
@@ -23,17 +23,22 @@ def _genealogies(key, particles, log_weights, ancestors, num_samples):
     return jnp.concatenate((paths, particles[-1, final][None]))
 
 
-def sample_particle_paths(
-    key, trace, *, num_samples=1, method="backward", transition_logdensity_fn=None
-):
-    """Return joint paths (time INCLUDING initial state, samples, dimension).
+def sample_paths(key, trace, model, theta, *, num_samples=1, method=None):
+    """Draw joint latent paths from a filter trace at fixed ``theta``.
 
-    'ancestry' traces stored discrete parents in O(T*M); 'backward' uses FFBSi
-    in O(T*N*M), requiring log p(x_next|x_previous, t_previous, t_next).
-    Traces must come from discrete resampling, as in particle_backend.
+    Paths have shape ``(len(trace.ts) + 1, num_samples, D)``, including the
+    initial state. A :class:`LinearGaussianModel` trace is sampled exactly
+    backward. A particle trace uses ``method='backward'`` (FFBSi, cost
+    O(T*N*M), needs ``model.transition_logdensity``) or ``'ancestry'``
+    (stored parents, O(T*M), prone to path collapse). By default backward
+    sampling is used whenever the model has a transition density.
     """
     if num_samples < 1:
         raise ValueError("num_samples must be positive.")
+    if isinstance(model, LinearGaussianModel):
+        return _sample_gaussian_paths(key, trace, model, theta, num_samples)
+    if method is None:
+        method = "ancestry" if model.transition_logdensity is None else "backward"
     states = _prepend(trace.initial_state, trace.states)
     if method == "ancestry":
         return _genealogies(
@@ -43,7 +48,7 @@ def sample_particle_paths(
             trace.infos.ancestors,
             num_samples,
         )
-    if method != "backward" or transition_logdensity_fn is None:
+    if method != "backward" or model.transition_logdensity is None:
         raise ValueError("Choose 'ancestry', or 'backward' with a transition density.")
     times = jnp.concatenate((jnp.asarray(trace.initial_state.t)[None], trace.ts))
     paths, _ = particle_smoother(
@@ -51,25 +56,30 @@ def sample_particle_paths(
         times,
         states.particles,
         states.log_weights,
-        transition_logdensity_fn,
+        lambda new, old, a, b: model.transition_logdensity(theta, new, old, a, b),
         num_samples=num_samples,
     )
     return paths
 
 
-def _gaussian_backward_data(trace, transition_fn):
+def _gaussian_backward_data(trace, model, theta):
     states = _prepend(trace.initial_state, trace.states)
     times = jnp.concatenate((jnp.asarray(trace.initial_state.t)[None], trace.ts))
-    phis = jax.vmap(transition_fn)(times[:-1], times[1:])
+    phis = jax.vmap(lambda a, b: model.transition(theta, a, b)[0])(
+        times[:-1], times[1:]
+    )
     gains = jax.vmap(lambda p, a, pred: jnp.linalg.solve(pred, a @ p).T)(
         states.cov[:-1], phis, trace.infos.cov_pred
     )
     return states, gains
 
 
-def smooth_gaussian_path(trace, transition_fn):
-    """RTS means/covariances including the initial state; transition_fn(t0,t1)->Phi."""
-    states, gains = _gaussian_backward_data(trace, transition_fn)
+def smooth_gaussian_path(trace, model, theta):
+    """RTS smoothed means and covariances of a :class:`LinearGaussianModel` trace.
+
+    Both include the initial state, so they have ``len(trace.ts) + 1`` entries.
+    """
+    states, gains = _gaussian_backward_data(trace, model, theta)
 
     def backward(carry, data):
         next_mean, next_cov = carry
@@ -104,11 +114,9 @@ def _normal(key, mean, cov, num_samples):
     return mean + jax.random.normal(key, (num_samples, cov.shape[-1])) @ factor.T
 
 
-def sample_gaussian_paths(key, trace, transition_fn, *, num_samples=1):
-    """Sample joint Gaussian trajectories, preserving cross-time dependence."""
-    if num_samples < 1:
-        raise ValueError("num_samples must be positive.")
-    states, gains = _gaussian_backward_data(trace, transition_fn)
+def _sample_gaussian_paths(key, trace, model, theta, num_samples):
+    # Backward conditionals keep the cross-time dependence of the joint law.
+    states, gains = _gaussian_backward_data(trace, model, theta)
     key, final_key = jax.random.split(key)
     final = _normal(final_key, states.mean[-1], states.cov[-1], num_samples)
 
@@ -139,43 +147,43 @@ def sample_gaussian_paths(key, trace, transition_fn, *, num_samples=1):
 def particle_gibbs(
     key,
     reference_path,
+    model,
     theta,
-    t0,
     ts,
     observations,
     *,
-    initial_fn,
-    transition_fn,
-    transition_logdensity_fn,
-    log_likelihood_fn,
+    t0=0.0,
     num_particles=32,
     observed=None,
     ancestor_sampling=True,
 ):
-    """One bootstrap conditional-SMC/PGAS update, returning a new joint path.
+    """One conditional-SMC update (PGAS by default), returning a new joint path.
 
-    reference_path has shape (len(ts)+1, D), including x(t0). Callback signatures
-    match particle_backend; the transition density takes scalar states and returns
-    a scalar: (theta, x_next, x_previous, t_previous, t_next). initial_fn samples
-    exactly num_particles independent draws from the initial law. Observation
-    likelihoods are batched. Multinomial resampling at every step is intentional:
-    conditioning ordinary systematic resampling by pinning one index is invalid.
+    ``reference_path`` has shape ``(len(ts) + 1, D)``, including ``x(t0)``, and
+    ``model`` is a :class:`StateSpaceModel` with array states. Ancestor
+    sampling needs ``model.transition_logdensity``. Multinomial resampling at
+    every step is intentional: pinning one index in systematic resampling is
+    not a valid conditional resampler.
 
-    The kernel preserves the full smoothing target for a fixed theta. Repeated
-    calls form an MCMC chain; one call is not an independent posterior draw.
+    The update preserves the smoothing law at fixed ``theta``. Repeated calls
+    form an MCMC chain; one call is not an independent posterior draw.
     """
     ts, observations, observed = _observations(ts, observations, observed)
     if num_particles < 2:
         raise ValueError("Conditional SMC requires at least two particles.")
     if reference_path.ndim != 2 or reference_path.shape[0] != ts.shape[0] + 1:
         raise ValueError("reference_path must have shape (len(ts)+1, D).")
+    if ancestor_sampling and model.transition_logdensity is None:
+        raise ValueError("Ancestor sampling needs model.transition_logdensity.")
     key, initial_key = jax.random.split(key)
-    particles = initial_fn(initial_key, theta, t0)
-    if particles.shape != (num_particles, reference_path.shape[1]):
-        raise ValueError("initial_fn must return (num_particles, path_dimension).")
+    particles = jax.vmap(model.init, (0, None))(
+        jax.random.split(initial_key, num_particles), theta
+    )
     particles = particles.at[0].set(reference_path[0])
     initial_particles = particles
     weights = jnp.full((num_particles,), -jnp.log(num_particles))
+    transition = jax.vmap(model.step, (0, None, 0, None, None))
+    likelihood = jax.vmap(model.log_likelihood, (None, 0, None, None))
 
     def step(carry, data):
         key, particles, weights, previous = carry
@@ -184,17 +192,18 @@ def particle_gibbs(
         parents = jax.random.categorical(resample_key, weights, shape=(num_particles,))
         if ancestor_sampling:
             ancestor_weights = weights + jax.vmap(
-                lambda x: transition_logdensity_fn(theta, reference, x, previous, t)
+                lambda x: model.transition_logdensity(theta, reference, x, previous, t)
             )(particles)
             reference_parent = jax.random.categorical(ancestor_key, ancestor_weights)
         else:
             reference_parent = 0
         parents = parents.at[0].set(reference_parent)
-        particles = transition_fn(predict_key, theta, particles[parents], previous, t)
+        keys = jax.random.split(predict_key, num_particles)
+        particles = transition(keys, theta, particles[parents], previous, t)
         particles = particles.at[0].set(reference)
         weights = jax.lax.cond(
             mask,
-            lambda: log_likelihood_fn(theta, particles, y, t),
+            lambda: likelihood(theta, particles, y, t),
             lambda: jnp.zeros_like(weights),
         )
         weights = weights - jax.scipy.special.logsumexp(weights)

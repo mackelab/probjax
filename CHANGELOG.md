@@ -31,7 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   controllers; ODE inverse log-determinants with exact or Hutchinson traces
 - Complementary inverse beta/gamma functions (`betainccinv`, `gammainccinv`)
   and stable log-space helpers (`log1mexp`, `logdiffexp`)
-- Temporal SMC, BlackJAX-backed adaptation controls, and shared inference runners
+- Temporal inference over physical time: per-particle `StateSpaceModel`s (pytree
+  latent states) or exact `LinearGaussianModel`s, `run_temporal_filter`, joint
+  path sampling and particle Gibbs, and SMC² via `temporal_smc` with a default
+  adaptive random-walk move; runs continue by passing the longer dataset
+- BlackJAX-backed adaptation controls and shared inference runners
 - ISAB key masks and per-example attention biases folded into query/key features
 - `Autoregressive.sample` supports prefix conditioning (`prefix=`, `prefix_len=`)
   and KV-cached decoding (`use_cache=`) for transformer conditioners, with the

@@ -105,81 +105,13 @@ keys and forwards production `batch_size`. BlackJAX's pilot itself currently map
 the population together. It incurs additional computation and should be benchmarked
 against the simpler existing geometry/acceptance adaptors.
 
-## Temporal proposal adaptation and existing MCMC kernels
-
-`temporal_smc(..., adaptive_proposal=True)` supplies a Gaussian random walk using
-weighted population covariance and an acceptance-tuned scale. Geometry is frozen
-within each sweep. `adaptive_num_steps=True` adjusts the next observation's move
-budget toward `target_accepted_moves`, capped by `max_rejuvenation_steps`.
-These are practical population adaptation heuristics, not convergence guarantees.
-Do not also supply a custom `proposal_fn` or an MCMC kernel with this option.
-
-With an exact likelihood backend, `mcmc_kernel=hmc` (or another compatible probjax
-kernel), `mcmc_parameters`, and `mcmc_kernel_kwargs` reuse our existing MCMC adapter.
-A masked static scan makes full-prefix likelihood replay differentiable; its
-suffix performs no model updates. The returned filter state is recomputed for the
-accepted parameter. Stochastic particle likelihoods cannot use this ordinary MCMC
-route; they use the dedicated pseudo-marginal proposal path instead.
-
-## Tempering a difficult observation
-
-Set `tempering_ess` in `(0,1)` to choose observation bridge increments using weighted
-conditional ESS and BlackJAX's dichotomy solver. The latent filter propagates once;
-bridging subsequently reweights/resamples the parameter/filter population and can
-rejuvenate at intermediate stages. Prefix replay is still needed for proposals.
-`info.num_tempering_steps` and `info.tempering_param` expose progress.
-
-For an exact backend the bridge log target is
-`logprior(theta) + logL_previous(theta) + beta*log_increment(theta)`.
-For particle likelihoods the same expression defines an **extended-space** target
-that retains the auxiliary filter estimate. Candidate replay supplies both the
-previous-prefix and current-prefix estimates for the Metropolis ratio. Intermediate
-marginals are not claimed to equal the exact fractional marginalized likelihood;
-at beta=1 the target is the ordinary SMC² endpoint. Re-estimating just the current
-noisy likelihood at every bridge would not implement this construction.
-
-If `max_tempering_steps` is exhausted, the entire observation step is rolled back
-and `info.valid=False`. Increase the cap and retry from the unchanged state. Hard
-support mismatches/all-impossible observations may still prevent progress.
-
-## Adapting inner particle counts
-
-`likelihood_diagnostics` runs independent likelihood replicates at **one fixed
-parameter** and reports log-likelihood variance and the log of the mean likelihood.
-It never substitutes the mean log likelihood for a log mean likelihood.
-`recommend_particle_count` uses a `variance ~ 1/N` heuristic to select the next
-nondecreasing bucket; its `at_capacity` flag reports unmet requested capacity.
-
-`adapt_particle_count` is a host controller: it samples parameter values using the
-outer weights, estimates their likelihood noise, selects a bucket, and replays fresh
-filters if needed. It caches compiled diagnostic/exchange functions by backend
-factory and capacity. The full data prefix is required. After a change, build/use
-the temporal kernel associated with `backend_factory(result.particle_count)`.
-Its state can be passed directly to that kernel; retain its continuation key.
-
-A particle-count change applies the importance correction `L_new/L_old` to outer
-weights and accumulates its evidence correction. Simply swapping filter states
-would change the extended target. `exchange_filter_population` exposes this pure,
-JIT-compatible operation for a fixed old/new capacity pair. Its output has the
-new shape even on failure, so check `info.valid` before committing it. The host
-controller raises on failure. This is an importance exchange, not an MH move.
-
-The controller intentionally runs outside JIT because a loop carry cannot change
-array shape. Propagation, diagnostics, replay, and exchanges remain compiled.
-For a fully compiled application, manage fixed-capacity phases explicitly using
-the lower-level functions. Variance estimates from a few replicates can be noisy;
-particle growth does not guarantee that parameter proposals mix well.
-
 ## Diagnostics beyond weight ESS
 
-- `population_diagnostics`: weight ESS, maximum weight, exact number of distinct
-  particles, and distinct ancestry labels. The diversity calculations use sorting.
-- `state.lineages` in temporal SMC composes ancestry back to initial parameter
-  particles; it can expose collapse hidden by uniform post-resampling weights.
-- `likelihood_diagnostics`: independent estimator noise at fixed parameters.
+- `population_diagnostics`: weight ESS, maximum weight, the exact number of
+  distinct particles, and distinct ancestry labels. The diversity calculations
+  use sorting.
 - `summarize_replicates`: mean and Monte Carlo standard error across independent
   run-level estimates. Do not feed it correlated particles from one run.
 
-The [temporal guide](temporal-smc.md) also covers persistent streaming windows and
-joint parameter/path sampling. The [notebook](https://github.com/mackelab/probjax/blob/main/examples/inference/temporal_smc.ipynb)
-includes exact posterior references and examples of the adaptive controls.
+Inference over physical time (filtering, SMC²) is covered in the
+[temporal guide](temporal-smc.md).

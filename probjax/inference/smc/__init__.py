@@ -38,11 +38,6 @@ def adaptive_persistent_smc_kernel(**kwargs):
     return adaptive_persistent_smc(**kwargs)
 
 
-from probjax.inference.smc.particle_adaptation import (
-    adapt_particle_count,
-    exchange_filter_population,
-    recommend_particle_count,
-)
 from probjax.inference.smc.ports import (
     pretuned_smc,
     tuned_smc,
@@ -50,7 +45,6 @@ from probjax.inference.smc.ports import (
     waste_free_strategy,
 )
 from probjax.inference.smc.temporal import (
-    ReplayData,
     TemporalSMC,
     TemporalSMCInfo,
     TemporalSMCState,
@@ -58,7 +52,6 @@ from probjax.inference.smc.temporal import (
     temporal_smc,
 )
 from probjax.inference.smc.temporal_utils import (
-    likelihood_diagnostics,
     population_diagnostics,
     summarize_replicates,
 )

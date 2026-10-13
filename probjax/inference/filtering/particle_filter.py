@@ -29,8 +29,8 @@ def init(
     t: Optional[ArrayLike] = None,
     log_weights: Optional[ArrayLike] = None,
 ) -> ParticleFilterState:
-    # Initialize state for a particle filter
-    num_particles = particles.shape[0]
+    # Particles may be a pytree with a leading particle axis.
+    num_particles = jax.tree.leaves(particles)[0].shape[0]
     if log_weights is None:
         log_weights = jnp.full((num_particles,), fill_value=-jnp.log(num_particles))
     else:
@@ -144,7 +144,7 @@ def build_kernel(
             return (
                 particles,
                 log_weights,
-                jnp.arange(particles.shape[0], dtype=jnp.int32),
+                jnp.arange(log_weights.shape[0], dtype=jnp.int32),
             )
 
         new_particles, new_log_weights, ancestors = jax.lax.cond(
