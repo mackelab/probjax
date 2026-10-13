@@ -4,6 +4,9 @@ import jax.numpy as jnp
 from jax import Array
 from jax.typing import ArrayLike
 
+# Re-exported for existing ``odeutil.util`` importers.
+from probjax.utils.special.phi1 import phi1_scalar  # noqa: F401
+
 
 def initial_step_size(
     drift: Callable,
@@ -119,10 +122,3 @@ def interp_fit(y0, y1, f0, f1, dt, y_mid=None):
     else:
         # We can only use a 3rd order polynomial (2 points and 2 gradients)
         return jnp.asarray(fit_3rd_order_polynomial(y0, y1, f0, f1, dt))
-
-
-def phi1_scalar(z):
-    """Compute phi_1(z) = (exp(z) - 1) / z with numerical stability."""
-    small = jnp.abs(z) < 1e-4
-    series = 1.0 + 0.5 * z + (z * z) / 6.0 + (z * z * z) / 24.0
-    return jnp.where(small, series, jnp.expm1(z) / z)
