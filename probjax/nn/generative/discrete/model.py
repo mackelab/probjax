@@ -37,9 +37,9 @@ class _DiscreteSampler:
     def invalidated(self):
         return False
 
-    def __call__(self, rng, shape=(), *, context=None):
-        if context is not None:
-            raise ValueError("Multinomial diffusion does not accept context.")
+    def __call__(self, rng, shape=(), *, inputs=None):
+        if inputs is not None:
+            raise ValueError("Multinomial diffusion does not accept model inputs.")
         model = self._model_ref()
         if model is None:
             raise RuntimeError("The model backing this distribution no longer exists.")
@@ -438,12 +438,12 @@ class MultinomialDiffusion(GenerativeModel):
         event_spec,
         *,
         num_sample_steps: Optional[int] = None,
-        context_spec=None,
+        inputs_spec=None,
         **kwargs,
     ):
         del kwargs
-        if context_spec is not None:
-            raise ValueError("Multinomial diffusion does not accept context.")
+        if inputs_spec is not None:
+            raise ValueError("Multinomial diffusion does not accept model inputs.")
         leaves = jax.tree.leaves(event_spec)
         if len(leaves) != 1:
             raise TypeError("Multinomial diffusion requires a single-array event spec.")

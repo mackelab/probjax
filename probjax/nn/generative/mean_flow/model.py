@@ -27,12 +27,9 @@ from probjax.nn.losses.mean_flow import build_mean_flow_matching_loss
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
 
 
-def _mean_flow_step(model, value, times, context):
+def _mean_flow_step(model, value, times, inputs):
     t, r = times
-    if context is None:
-        velocity = model(t, value, r=r)
-    else:
-        velocity = model(t, value, r=r, context=context)
+    velocity = model(t, value, r=r, **(inputs or {}))
     return jax.tree.map(
         lambda current, update: current + (r - t) * update,
         value,
@@ -252,13 +249,14 @@ class MeanFlowMatcher(GenerativeModel):
         *,
         num_steps: int | None = None,
         dtype=jnp.float32,
-        context_spec=None,
+        inputs_spec=None,
     ) -> _ExportedSampler:
         """Build and cache a mean-flow sampler with symbolic batch size.
 
         ``event_spec`` may be a plain shape tuple or a pytree of shapes /
-        ``jax.ShapeDtypeStruct`` for structured data. ``context_spec`` uses
-        the same format and enables a required, batch-aligned context input.
+        ``jax.ShapeDtypeStruct`` for structured data. ``inputs_spec`` maps each
+        named model input (``context``, ...) to a spec in the same format and
+        enables a required, batch-aligned input of that name.
         """
         if self.solver_cfg is None:
             raise ValueError(
@@ -277,7 +275,7 @@ class MeanFlowMatcher(GenerativeModel):
             event_spec,
             make_sample_fn,
             dtype=dtype,
-            context_spec=context_spec,
+            inputs_spec=inputs_spec,
         )
 
 

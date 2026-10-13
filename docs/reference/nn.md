@@ -337,7 +337,9 @@ the normalized default, and `model.event_shape` exposes just its shape(s).
 
 ### DiffusionTransformer
 
-`DiffusionTransformer` adapts `Transformer` to `net(t, x, r=None, context=None)`.
+`DiffusionTransformer` adapts `Transformer` to
+`net(t, x, r=None, context=None, local_context=None)`; `local_context` has shape
+`[..., tokens, local_context_dim]` and is concatenated to the tokens at the input.
 It projects token features into the model width, embeds time with Fourier
 features and an MLP, and modulates each attention/MLP block using time plus
 optional global context. Modulation starts at the identity and learns during

@@ -42,6 +42,7 @@ from probjax.nn.generative.sampling import (
     make_map_sample_fn,
 )
 from probjax.nn.generative.standardize import StandardizingMixin
+from probjax.nn.inputs import context_only
 from probjax.nn.nets.simple import Sequential
 from probjax.stats.continuous import norm
 from probjax.stats.indep import indep
@@ -79,9 +80,9 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-def _flow_transform(model, value, context):
+def _flow_transform(model, value, inputs):
     # `transform` already returns data-space samples.
-    return model.transform(value, context=context)
+    return model.transform(value, context=context_only(inputs, "Normalizing flow"))
 
 
 class NormalizingFlow(StandardizingMixin, GenerativeModel):
@@ -141,13 +142,13 @@ class NormalizingFlow(StandardizingMixin, GenerativeModel):
         event_spec=None,
         *,
         dtype=jnp.float32,
-        context_spec=None,
+        inputs_spec=None,
     ) -> _ExportedSampler:
         """Build and cache a shape-polymorphic flow sampler.
 
         ``event_spec`` defaults to the base distribution's intrinsic event
         shape, but may be a pytree spec for structured base distributions.
-        ``context_spec`` may be a plain shape tuple or a pytree of shapes /
+        ``inputs_spec`` may be a plain shape tuple or a pytree of shapes /
         ``jax.ShapeDtypeStruct``.
         """
         if event_spec is None:
@@ -159,7 +160,7 @@ class NormalizingFlow(StandardizingMixin, GenerativeModel):
             event_spec,
             make_sample_fn,
             dtype=dtype,
-            context_spec=context_spec,
+            inputs_spec=inputs_spec,
         )
 
     def _sample_base(self, rng, sample_shape, spec):
@@ -175,14 +176,14 @@ class NormalizingFlow(StandardizingMixin, GenerativeModel):
         event_spec=None,
         *,
         dtype=jnp.float32,
-        context_spec=None,
+        inputs_spec=None,
     ):
         """Build and cache a shape-polymorphic flow log-density evaluator."""
         if event_spec is None:
             event_spec = tuple(int(size) for size in self.base_dist.event_shape)
 
         def make_logpdf_fn(graphdef):
-            if context_spec is None:
+            if inputs_spec is None:
 
                 def logpdf_fn(current_state, value):
                     model = nnx.merge(graphdef, current_state)
@@ -190,8 +191,9 @@ class NormalizingFlow(StandardizingMixin, GenerativeModel):
 
             else:
 
-                def logpdf_fn(current_state, value, context):
+                def logpdf_fn(current_state, value, inputs):
                     model = nnx.merge(graphdef, current_state)
+                    context = context_only(inputs, "Normalizing flow")
                     return jax.vmap(
                         lambda item, condition: model._logpdf(item, context=condition)
                     )(value, context)
@@ -203,7 +205,7 @@ class NormalizingFlow(StandardizingMixin, GenerativeModel):
             event_spec,
             make_logpdf_fn,
             dtype=dtype,
-            context_spec=context_spec,
+            inputs_spec=inputs_spec,
         )
 
     def _prepare_fit(self, data):
@@ -252,20 +254,12 @@ class NormalizingFlow(StandardizingMixin, GenerativeModel):
     def as_dist(
         self,
         event_spec=None,
-        *,
-        context_spec=None,
-        context=None,
         **kwargs,
     ):
         """Create a lazy compiled sampling and log-density view of this flow."""
         if event_spec is None:
             event_spec = tuple(int(size) for size in self.base_dist.event_shape)
-        return super().as_dist(
-            event_spec,
-            context_spec=context_spec,
-            context=context,
-            **kwargs,
-        )
+        return super().as_dist(event_spec, **kwargs)
 
     # -- Helper for building the standard normal base distribution --
 
