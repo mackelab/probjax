@@ -207,9 +207,12 @@ class ExpertSwiGLU(nnx.Module):
         *,
         block_m: int = 64,
         interpret: bool | None = None,
+        backend: Literal["mosaic", "triton"] | None = None,
     ) -> Array:
         """:meth:`ragged_forward` through a Pallas grouped-GEMM kernel: jax's
         Mosaic-GPU kernel on Hopper, probjax's Triton kernel on other GPUs.
+        ``backend`` forces one of the two (``None``: pick by GPU); Triton runs
+        on Hopper too, and Mosaic needs a readable ``libdevice`` at compile.
 
         Computes in ``self.dtype`` (or ``x.dtype``) with fp32 accumulation, so
         a bf16 model runs bf16 tensor-core matmuls.
@@ -217,7 +220,11 @@ class ExpertSwiGLU(nnx.Module):
         self._check_rows(x)
         w_gate, w_up, w_down = (m.kernel[...] for m in (self.gate, self.up, self.down))
         cdt = self.dtype if self.dtype is not None else x.dtype
-        if grouped_backend() == "mosaic" and not interpret:
+        if backend is None:
+            backend = grouped_backend()
+        if backend not in ("mosaic", "triton"):
+            raise ValueError(f"backend must be 'mosaic', 'triton' or None, got {backend!r}")
+        if backend == "mosaic" and not interpret:
             # Hopper: jax's Mosaic-GPU kernels take the sorted rows directly.
             mm = functools.partial(ragged_matmul_hopper, group_sizes=group_sizes)
             xs = x.astype(cdt)
@@ -252,7 +259,8 @@ class MoELayer(nnx.Module):
     * ``"dropless"``: rows sorted by expert and one grouped matmul — exact
       like dense at ``top_k`` experts per token. ``dropless_impl="auto"``
       uses the Pallas grouped-GEMM kernel on GPU and ``ragged_dot``
-      elsewhere (on an A100 ``ragged_dot`` took 134 ms fwd+bwd per layer at
+      elsewhere; ``"pallas"`` is that kernel with its per-GPU choice (Mosaic
+      on Hopper, Triton otherwise), ``"triton"`` / ``"mosaic"`` force one (on an A100 ``ragged_dot`` took 134 ms fwd+bwd per layer at
       65k tokens, slower than dense at 74 ms; see
       :mod:`probjax.nn.layers.grouped_matmul`).
 
@@ -270,7 +278,7 @@ class MoELayer(nnx.Module):
         *,
         sparse: bool = True,
         routing: Literal["capacity", "dense", "dropless"] | None = None,
-        dropless_impl: Literal["auto", "pallas", "ragged_dot"] = "auto",
+        dropless_impl: Literal["auto", "pallas", "triton", "mosaic", "ragged_dot"] = "auto",
         kernel_init: Initializer = _expert_init,
         router_init: Initializer = nnx.initializers.lecun_normal(),
         dtype: DTypeLike | None = None,
@@ -291,7 +299,7 @@ class MoELayer(nnx.Module):
             raise ValueError(
                 f"routing must be 'capacity', 'dense' or 'dropless', got {routing!r}"
             )
-        if dropless_impl not in ("auto", "pallas", "ragged_dot"):
+        if dropless_impl not in ("auto", "pallas", "triton", "mosaic", "ragged_dot"):
             raise ValueError(f"unknown dropless_impl {dropless_impl!r}")
         self.routing = routing
         self.dropless_impl = dropless_impl
@@ -355,8 +363,9 @@ class MoELayer(nnx.Module):
         impl = self.dropless_impl
         if impl == "auto":
             impl = "pallas" if jax.default_backend() == "gpu" else "ragged_dot"
-        if impl == "pallas":
-            y_sorted = self.experts.grouped_forward(x_sorted, counts)
+        if impl in ("pallas", "triton", "mosaic"):
+            backend = None if impl == "pallas" else impl
+            y_sorted = self.experts.grouped_forward(x_sorted, counts, backend=backend)
         else:
             y_sorted = self.experts.ragged_forward(x_sorted, counts)
         y = _permute(y_sorted, inverse, order).reshape(n_tokens, self.top_k, -1)

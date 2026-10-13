@@ -192,6 +192,37 @@ def test_dropless_gradients_match_dense():
         assert jnp.allclose(la, lb, atol=1e-4)
 
 
+@pytest.mark.parametrize("impl", ["triton", "ragged_dot", "pallas"])
+def test_dropless_impls_match_dense(impl):
+    """Every dropless backend computes the dense reference; "triton" forces the
+    Triton grouped GEMM (interpret mode off-GPU), on Hopper too."""
+    if impl == "pallas" and jax.default_backend() == "gpu":
+        pytest.skip("pallas picks Mosaic on Hopper; covered by the GPU suite")
+    moe, ref = _routing_pair("dropless", dropless_impl=impl)
+    x = jax.random.normal(jax.random.key(5), (3, 7, 8))
+    assert jnp.allclose(moe(x), ref(x), atol=1e-4)
+
+
+def test_dropless_triton_gradients_match_dense():
+    moe, ref = _routing_pair("dropless", dropless_impl="triton")
+    x = jax.random.normal(jax.random.key(6), (12, 8))
+
+    def loss(m):
+        return jnp.sum(m(x) ** 2)
+
+    for la, lb in zip(jax.tree.leaves(nnx.grad(loss)(moe)), jax.tree.leaves(nnx.grad(loss)(ref))):
+        assert jnp.allclose(la, lb, atol=1e-3)
+
+
+def test_dropless_impl_and_backend_are_validated():
+    with pytest.raises(ValueError, match="dropless_impl"):
+        MoELayer(8, 16, 4, routing="dropless", dropless_impl="cuda", rngs=nnx.Rngs(0))
+    moe = MoELayer(8, 16, 4, routing="dropless", rngs=nnx.Rngs(0))
+    x = jnp.ones((4, 8))
+    with pytest.raises(ValueError, match="backend"):
+        moe.experts.grouped_forward(x, jnp.array([1, 1, 1, 1], jnp.int32), backend="cuda")
+
+
 def test_dropless_never_drops_even_when_every_token_picks_one_expert():
     moe = MoELayer(8, 16, 4, top_k=1, routing="dropless", rngs=nnx.Rngs(0))
     # Bias the router so all tokens pick expert 0.
