@@ -1,68 +1,103 @@
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 
+from probjax.utils.linear_operator import Dense, Function, Jacobian, solve
 
-# General root-finding algorithm
-def newton_raphson(f, x0, tol=1e-6, max_iter=50):
-    """
-    Newton-Raphson root-finding algorithm for a vector-valued function.
+
+def newton_raphson(
+    f,
+    x0,
+    tol=1e-6,
+    max_iter=50,
+    *,
+    jacobian: str = "dense",
+    linear_solver: Any = "auto",
+):
+    """Newton-Raphson root finding for ``f(x) = 0`` with ``f(x).shape == x.shape``.
+
+    Gradients of the returned root use the implicit function theorem
+    (``jax.lax.custom_root``) instead of differentiating through the
+    iterations, so they cost one extra linear solve.
 
     Args:
-    - f: A function that takes a vector x and returns a vector of the same shape.
-    - x0: Initial guess for the root.
-    - tol: Tolerance for stopping criterion (default: 1e-6).
-    - max_iter: Maximum number of iterations (default: 100).
+        f: Function whose root is sought.
+        x0: Initial guess.
+        tol: Stop once a Newton step is shorter than this (in 2-norm).
+        max_iter: Maximum number of Newton steps.
+        jacobian: ``"dense"`` materializes the Jacobian with forward mode,
+            which is best for small states. ``"matrix_free"`` applies it with
+            one JVP per product, for large states with an iterative solver.
+        linear_solver: Solver for each Newton step, passed to
+            :func:`probjax.utils.linear_operator.solve`: ``"auto"`` (LU for
+            dense, GMRES for matrix-free Jacobians), another solver name or a
+            lineax solver.
 
     Returns:
-    - x: The estimated root of the function.
+        ``(x, converged)``: the root estimate and whether a step was shorter
+        than ``tol``.
     """
-    x = x0
-    shape = x.shape
+    if jacobian not in ("dense", "matrix_free"):
+        raise ValueError(f"jacobian must be 'dense' or 'matrix_free', got {jacobian!r}")
+    x0 = jnp.asarray(x0)
+    shape = x0.shape
 
-    # Flatten
-    def _f(x):
-        y = f(x.reshape(shape))
-        return y.reshape(-1)
+    def flat_f(x):
+        return f(x.reshape(shape)).ravel()
 
-    f_jax = jax.jacobian(_f)
+    def jacobian_at(g, x):
+        return Dense.jacfwd(g, x) if jacobian == "dense" else Jacobian(g, x)
 
-    x = x.reshape(-1)
+    def newton_solve(g, x):
+        def scan_fn(carry, _):
+            converged, x = carry
 
-    def scan_fn(carry, _):
-        tol_reached, x = carry
+            def newton_step(x):
+                delta = solve(jacobian_at(g, x), -g(x), linear_solver)
+                return x + delta, jnp.linalg.norm(delta)
 
-        def true_fn(x):
-            return x, 0.0
+            x, step_size = jax.lax.cond(converged, lambda x: (x, 0.0), newton_step, x)
+            return (converged | (step_size < tol), x), None
 
-        def false_fn(x):
-            y = _f(x)
-            J = f_jax(x)
-            delta_x = jax.scipy.linalg.solve(J, -y)
-            x = x + delta_x
-            return x, jnp.linalg.norm(delta_x)
+        (converged, x), _ = jax.lax.scan(
+            scan_fn, (jnp.asarray(False), x), None, length=max_iter
+        )
+        return x, converged
 
-        x, delta_x = jax.lax.cond(tol_reached, true_fn, false_fn, x)
-        # Once converged, stay converged (the skipped step reports zero change).
-        tol_reached = tol_reached | (delta_x < tol)
-        return (tol_reached, x), None
+    def tangent_solve(g, y):
+        # g is the Jacobian-vector product of f at the root.
+        op = Function(g, y.shape)
+        return solve(op.as_dense() if jacobian == "dense" else op, y, linear_solver)
 
-    tol_reached = False
-    (converged, x), _ = jax.lax.scan(scan_fn, (tol_reached, x), None, length=max_iter)
+    x, converged = jax.lax.custom_root(
+        flat_f, x0.ravel(), newton_solve, tangent_solve, has_aux=True
+    )
     return x.reshape(shape), converged
 
 
-def root(fun, x0, args=(), method="newton-raphson", tol=1e-3, max_iter=20):
-    """Find a root of a function, using a fixed point iteration.
+def root(
+    fun,
+    x0,
+    args=(),
+    method="newton-raphson",
+    tol=1e-3,
+    max_iter=20,
+    **newton_kwargs,
+):
+    """Find a root of ``fun(x, *args)``.
 
     Args:
         fun (Callable): Function to find root of.
         x0 (Array): Initial value.
         args (tuple, optional): Extra arguments to pass to function. Defaults to ().
-        method (str, optional): Method to use. Defaults to 'fixpoint'.
-        tol (float, optional): Tolerance. Defaults to 1e-3.
+        method (str, optional): Method to use. Only ``"newton-raphson"``.
+        tol (float, optional): Tolerance, floored at machine epsilon. Defaults to 1e-3.
+        max_iter (int, optional): Maximum number of iterations. Defaults to 20.
+        **newton_kwargs: ``jacobian``/``linear_solver`` for :func:`newton_raphson`.
 
     Returns:
-        Array: Root of function.
+        ``(x, converged)``.
     """
 
     # Dtype constraints on tolerance
@@ -72,6 +107,6 @@ def root(fun, x0, args=(), method="newton-raphson", tol=1e-3, max_iter=20):
     _f = lambda x: fun(x, *args)
 
     if method == "newton-raphson":
-        return newton_raphson(_f, x0, tol=tol, max_iter=max_iter)
+        return newton_raphson(_f, x0, tol=tol, max_iter=max_iter, **newton_kwargs)
     else:
         raise NotImplementedError(f"Method {method} not implemented.")

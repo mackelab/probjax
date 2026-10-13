@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
-import jax
 import jax.numpy as jnp
 
 from probjax.utils.odeutil.solvers.base import (
@@ -11,6 +10,7 @@ from probjax.utils.odeutil.solvers.base import (
     ODEState,
     register_method,
 )
+from probjax.utils.solver import newton_raphson
 from probjax.utils.typing import Array, ArrayLike, Callable
 
 
@@ -184,8 +184,15 @@ def build_am(
     newton_iters: int = 1,
     tol: float = 0.0,
     bootstrap_step: Optional[Callable] = None,
+    jacobian: str = "dense",
+    linear_solver: Any = "auto",
 ) -> Callable[[LMSState, ArrayLike], tuple[LMSState, LMSInfo]]:
-    """Build Adams-Moulton implicit multistep method."""
+    """Build Adams-Moulton implicit multistep method.
+
+    The corrector runs ``newton_iters`` Newton steps (fewer once a step is
+    shorter than ``tol``); ``jacobian``/``linear_solver`` configure them as in
+    :func:`probjax.utils.solver.newton_raphson`.
+    """
     assert order in (1, 2, 3, 4), "AM order must be 1-4"
 
     def step(state: LMSState, dt: ArrayLike, *args) -> tuple[LMSState, LMSInfo]:
@@ -207,29 +214,22 @@ def build_am(
         # predictor: AB1 (Euler) or use the explicit Adams formula of matching order
         y_pred = y_n + dt * Fs[0]  # cheap predictor
 
-        # corrector: Newton iterations (fixed-point diverges on stiff problems).
-        # Runs a fixed number of iterations so the step stays jit-compatible.
+        # corrector: Newton (fixed-point iteration diverges on stiff problems)
         t_np1 = t_n + dt
-        y_new = y_pred
-        iters = 0
-        for _it in range(max(1, newton_iters)):
-            rhs_hist = sum(a_j * f for a_j, f in zip(a_hist, Fs, strict=False))
-            g = y_n + dt * (rhs_hist + a_m1 * drift(t_np1, y_new, *args)) - y_new
-            # Jacobian: I - h a_{-1} J_f
-            J = jax.jacfwd(lambda yy: drift(t_np1, yy, *args))(y_new)
-            mat = (
-                jnp.eye(y_new.size, dtype=y_new.dtype).reshape(
-                    y_new.shape + y_new.shape
-                )
-                - dt * a_m1 * J
-            )
-            # solve mat * delta = g
-            delta = jnp.linalg.solve(
-                mat.reshape(y_new.size, y_new.size), g.reshape(-1)
-            ).reshape(y_new.shape)
-            y_new = y_new + delta
-            iters += 1
-        converged = jnp.linalg.norm(delta) < tol
+        rhs_hist = sum(a_j * f for a_j, f in zip(a_hist, Fs, strict=False))
+
+        def residual(y):
+            return y - y_n - dt * (rhs_hist + a_m1 * drift(t_np1, y, *args))
+
+        y_new, converged = newton_raphson(
+            residual,
+            y_pred,
+            tol=tol,
+            max_iter=max(1, newton_iters),
+            jacobian=jacobian,
+            linear_solver=linear_solver,
+        )
+        iters = max(1, newton_iters)
 
         f_np1 = drift(t_np1, y_new, *args)
         new_state = LMSState(
@@ -256,8 +256,13 @@ def build_bdf(
     newton_iters: int = 1,
     tol: float = 0.0,
     bootstrap_step: Optional[Callable] = None,
+    jacobian: str = "dense",
+    linear_solver: Any = "auto",
 ) -> Callable[[LMSState, ArrayLike], tuple[LMSState, LMSInfo]]:
-    """Build Backward Differentiation Formula (BDF) implicit method."""
+    """Build Backward Differentiation Formula (BDF) implicit method.
+
+    Newton options are as in :func:`build_am`.
+    """
     assert order in (1, 2, 3), "BDF order must be 1-3"
     b = get_bdf_b(order)
 
@@ -285,27 +290,19 @@ def build_bdf(
         a0 = a[0]
         t_np1 = t_n + dt
 
-        # predictor: last y
-        # Newton iterations (fixed-point diverges on stiff problems). Runs a
-        # fixed number of iterations so the step stays jit-compatible.
-        y_new = y_n
-        iters = 0
-        for _it in range(max(1, newton_iters)):
-            g = a0 * y_new - (rhs + dt * b * drift(t_np1, y_new, *args))
-            J = jax.jacfwd(lambda yy: drift(t_np1, yy, *args))(y_new)
-            mat = (
-                a0
-                * jnp.eye(y_new.size, dtype=y_new.dtype).reshape(
-                    y_new.shape + y_new.shape
-                )
-                - dt * b * J
-            )
-            delta = jnp.linalg.solve(
-                mat.reshape(y_new.size, y_new.size), g.reshape(-1)
-            ).reshape(y_new.shape)
-            y_new = y_new - delta
-            iters += 1
-        converged = jnp.linalg.norm(delta) < tol
+        # predictor: last y; corrector: Newton on the implicit equation
+        def residual(y):
+            return a0 * y - (rhs + dt * b * drift(t_np1, y, *args))
+
+        y_new, converged = newton_raphson(
+            residual,
+            y_n,
+            tol=tol,
+            max_iter=max(1, newton_iters),
+            jacobian=jacobian,
+            linear_solver=linear_solver,
+        )
+        iters = max(1, newton_iters)
 
         f_np1 = drift(t_np1, y_new, *args)
         new_state = LMSState(
