@@ -174,9 +174,12 @@ def temporal_smc(
             return theta, filter_state, log_likelihood, accepted / num_moves
 
         n = state.log_weights.shape[0]
-        parameters, filter_states, log_likelihoods, rates = map_fn(moves, batch_size)(
-            (jax.random.split(key, n), parameters, filter_states, log_likelihoods)
-        )
+        parameters, filter_states, log_likelihoods, rates = map_fn(moves, batch_size)((
+            jax.random.split(key, n),
+            parameters,
+            filter_states,
+            log_likelihoods,
+        ))
         return parameters, filter_states, log_likelihoods, rates.mean()
 
     def step(key, state, ts, observations, observed=None):
@@ -203,8 +206,13 @@ def temporal_smc(
             state.filter_states,
             state.parameters,
         ))
-        log_likelihoods = state.log_likelihoods + infos.log_likelihood
-        log_weights = state.log_weights + infos.log_likelihood
+        # A NaN increment (e.g. a simulator diverging at extreme parameters)
+        # gives that particle zero weight instead of poisoning the population.
+        increments = jnp.where(
+            jnp.isnan(infos.log_likelihood), -jnp.inf, infos.log_likelihood
+        )
+        log_likelihoods = state.log_likelihoods + increments
+        log_weights = state.log_weights + increments
         increment = jax.scipy.special.logsumexp(log_weights)
         # The data must extend what the state has seen: its last assimilated
         # time is state.t.
@@ -227,24 +235,22 @@ def temporal_smc(
         log_weights = jnp.where(resampled, -jnp.log(n), log_weights)
         acceptance_rate = jnp.zeros((), log_weights.dtype)
         if num_moves > 0:
-            parameters, filter_states, log_likelihoods, acceptance_rate = (
-                jax.lax.cond(
-                    resampled,
-                    lambda: rejuvenate(
-                        move_key,
-                        weighted,
-                        parameters,
-                        filter_states,
-                        log_likelihoods,
-                        data,
-                    ),
-                    lambda: (
-                        parameters,
-                        filter_states,
-                        log_likelihoods,
-                        acceptance_rate,
-                    ),
-                )
+            parameters, filter_states, log_likelihoods, acceptance_rate = jax.lax.cond(
+                resampled,
+                lambda: rejuvenate(
+                    move_key,
+                    weighted,
+                    parameters,
+                    filter_states,
+                    log_likelihoods,
+                    data,
+                ),
+                lambda: (
+                    parameters,
+                    filter_states,
+                    log_likelihoods,
+                    acceptance_rate,
+                ),
             )
         proposal_scale = state.proposal_scale
         if adaptive and num_moves > 0:

@@ -438,6 +438,21 @@ def test_all_impossible_observations_report_failure():
     assert_tree_close(next_state, state)
 
 
+def test_nan_likelihoods_get_zero_weight():
+    # E.g. a simulator diverging for some parameters.
+    model = particle_model()._replace(
+        log_likelihood=lambda p, x, y, t: jnp.where(
+            p > 0, jnp.nan, particle_model().log_likelihood(p, x, y, t)
+        )
+    )
+    kernel = temporal_smc(model, norm.logpdf, num_particles=8, num_moves=0)
+    state = kernel.init(KEY, jnp.array([-1.0, -0.5, 0.5, 1.0]))
+    next_state, info = jax.jit(kernel.step)(KEY, state, TS, YS)
+    assert info.valid
+    assert jnp.isfinite(next_state.log_evidence)
+    assert (next_state.parameters[jnp.isfinite(next_state.log_weights)] < 0).all()
+
+
 @pytest.mark.parametrize("factory,num_particles", MODELS)
 def test_integer_initial_time_with_fractional_intervals(factory, num_particles):
     model = factory()
