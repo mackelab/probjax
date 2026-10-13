@@ -4,6 +4,12 @@ from probjax.inference.smc.adaptive_persistent_smc import adaptive_persistent_sm
 from probjax.inference.smc.path import GeometricPath, PartialPosteriorsPath
 from probjax.inference.smc.path_smc import path_smc
 from probjax.inference.smc.persistent_smc import persistent_smc
+from probjax.inference.smc.pretrained_twist import (
+    PretrainedTwistInfo,
+    PretrainedTwistState,
+    run_pretrained_diffusion_smc,
+)
+from probjax.inference.smc.rdsmc import RDSMCInfo, RDSMCState, run_rdsmc
 from probjax.inference.smc.tuning import acceptance_rate_adaptor, particle_adaptor
 
 
