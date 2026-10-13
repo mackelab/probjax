@@ -6,8 +6,8 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 from blackjax.smc.base import map_fn
-from blackjax.smc.ess import ess
 
+from probjax.inference.smc.ess import ess
 from probjax.inference.smc.temporal_utils import likelihood_diagnostics, replay_filter
 
 

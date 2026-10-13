@@ -58,6 +58,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_fit_batch` hook so a model decides what its batches look like
 - `tests/test_layering.py` guards the package layering: `stats` and `core`
   never import flax or optax, and the flax-free training modules stay so
+- MCMC convergence diagnostics in `probjax.inference.diagnostics`
+  (`effective_sample_size`, `potential_scale_reduction`/`rhat`, `ess_bulk`,
+  `ess_tail`, `pareto_khat`, and the HMC `divergence_concentration*`
+  report), re-exported from BlackJAX 1.7 so future bumps track upstream
+- Kernelized Stein discrepancy (`imq_kernel`, `kernelized_stein_discrepancy`
+  with V- and U-statistics, PyTree-native inputs), vendored from unreleased
+  BlackJAX main until the pin reaches a release containing it
+- SMC numerics vendored from unreleased BlackJAX main (remove on the next
+  BlackJAX bump): offset-stabilized `ess`/`log_ess` with a stopped-gradient
+  max-subtraction, and boundary-safe systematic resampling that never selects
+  zero-weight particles; all `ess` call sites and `systematic` defaults now
+  use the probjax copies
 
 ### Changed
 - **Breaking:** `LinearOperator(fn, in_dim, out_dim)` is now
@@ -74,7 +86,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{"data", "context", "weights"}` convention now belongs to `GenerativeModel`
 - Prefer `condition`, `do`, and `log_joint_fn`; their legacy aliases and
   `trace(kind_labels="legacy")` now emit `DeprecationWarning`.
-- Target Python 3.11–3.13 and JAX `>=0.9.0,<0.12`; require Flax >=0.12.6 and BlackJAX 1.6.2
+- Target Python 3.11–3.13 and JAX `>=0.9.0,<0.12`; require Flax >=0.12.6 and BlackJAX 1.7.1
+- BlackJAX 1.6.2 → 1.7.1: compiled `lax.scan` loops (faster NUTS/HMC), the
+  MCLMC `L=inf` fix for constant coordinates, and the isokinetic-integrator
+  and slice stepping-out corrections arrive automatically through the
+  delegated kernels; the native slice implementation already evaluates its
+  slice test in the loop body so the `vmap` non-termination fix does not
+  apply. `window_warmup` keeps using the `window_adaptation.base`
+  init/update/final primitives (the bound `window_adaptation` /
+  `staged_adaptation` replacements don't fit the `Warmup` protocol) and
+  silences the upstream deprecation until the protocol migrates
 - Migrate legacy Pallas features to `probjax.nn.pallas_kernels` and remove the
   old package; use an associative-scan fallback for multi-tile GPU Mamba
 - Accept optional `event_spec` defaults for continuous diffusion and flow

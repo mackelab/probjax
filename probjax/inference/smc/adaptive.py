@@ -8,6 +8,7 @@ from probjax.inference.smc.base import (
     make_mcmc_adapter,
     make_smc_api,
 )
+from probjax.inference.smc.resampling import systematic
 
 
 def build_step(
@@ -17,7 +18,7 @@ def build_step(
     path,
     mcmc_kernel,
     num_mcmc_steps: int = 10,
-    resampling_fn: Callable = blackjax.smc.resampling.systematic,
+    resampling_fn: Callable = systematic,
     target_ess: float = 0.8,
     root_solver: Callable = blackjax.smc.solver.dichotomy,
     update_strategy: Callable = blackjax.smc.base.update_and_take_last,

@@ -5,8 +5,9 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 from blackjax.smc.base import map_fn
-from blackjax.smc.ess import ess
 from jax.flatten_util import ravel_pytree
+
+from probjax.inference.smc.ess import ess
 
 
 def replay_filter(backend, key, theta, t0, data, count, *, differentiable=False):

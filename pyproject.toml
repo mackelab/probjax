@@ -52,7 +52,7 @@ dependencies = [
     "flax >= 0.12.6",
     "jaxtyping",
     "networkx",
-    "blackjax == 1.6.2",
+    "blackjax == 1.7.1",
 ]
 
 [project.optional-dependencies]

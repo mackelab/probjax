@@ -11,6 +11,7 @@ from probjax.inference.smc.base import (
     make_mcmc_adapter,
     make_smc_api,
 )
+from probjax.inference.smc.resampling import systematic
 
 
 class PathSMCState(NamedTuple):
@@ -48,7 +49,7 @@ def build_step(
     path,
     mcmc_kernel,
     num_mcmc_steps: int = 10,
-    resampling_fn: Callable = blackjax.smc.resampling.systematic,
+    resampling_fn: Callable = systematic,
     update_strategy: Callable = blackjax.smc.base.update_and_take_last,
     path_kwargs: Optional[Dict] = None,
     batch_size: int = 0,
