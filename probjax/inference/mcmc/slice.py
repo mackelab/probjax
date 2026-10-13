@@ -349,11 +349,21 @@ def build_step(
     )
 
 
+def _slice_adaptation(
+    *, target_num_evaluations=5, max_evaluations=100, **kwargs
+):
+    """Default adaptation; ``max_evaluations`` must match the kernel's ``max_evals``."""
+    from probjax.inference.mcmc.adaptation import slice_step_size_adaptor
+
+    return slice_step_size_adaptor(target_num_evaluations, max_evaluations, **kwargs)
+
+
 slice = make_kernel_api(
     name="slice",
     init_fn=init,
     init_params_fn=init_params,
     build_step_fn=build_step,
+    default_adaptation_fn=_slice_adaptation,
 )
 
 

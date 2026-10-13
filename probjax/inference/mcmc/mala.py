@@ -2,6 +2,7 @@ from typing import Callable, NamedTuple
 
 import blackjax
 
+from probjax.inference.mcmc.adaptation import step_size_adaptor
 from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
 from probjax.inference.mcmc.hmc import _scale_step_size_by_grad
 from probjax.utils.typing import PyTree
@@ -28,4 +29,5 @@ mala = make_kernel_api(
     init_fn=blackjax.mala.init,
     init_params_fn=init_params,
     build_step_fn=build_step,
+    default_adaptation_fn=step_size_adaptor,
 )

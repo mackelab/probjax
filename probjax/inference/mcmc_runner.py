@@ -1,9 +1,9 @@
 from functools import partial
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import jax
 
-from probjax.inference.adaptation import adapt_step, adaptor_warmup
+from probjax.inference.adaptation import adapt_step, adaptor_warmup, as_warmup
 from probjax.inference.base import (
     AdaptationResult,
     Adaptor,
@@ -291,23 +291,63 @@ class MCMC(WithProgressBarAPI, RunnerMixin):
         )
 
     @staticmethod
+    def _resolve_policy(policy: Union[Adaptor, Warmup]) -> Warmup:
+        """Accept a bare adaptor (auto-wrapped) or a warmup policy."""
+        if isinstance(policy, Adaptor):
+            return as_warmup(policy)
+        if isinstance(policy, Warmup):
+            return policy
+        raise TypeError(
+            "adaptation must be an Adaptor or a Warmup, "
+            f"got {type(policy).__name__}."
+        )
+
+    @staticmethod
     def warmup_kernel(
         key: RngKey,
         kernel: MarkovKernel,
-        warmup: Warmup,
+        adaptation: Union[Adaptor, Warmup],
         state: State,
         params: Params,
         num_steps: int,
     ) -> WarmupResult:
-        return warmup.run(key, kernel, state, params, num_steps)
+        return MCMC._resolve_policy(adaptation).run(
+            key, kernel, state, params, num_steps
+        )
 
     def warmup(
         self,
         key: RngKey,
-        warmup: Warmup,
-        state: State,
-        params: Params,
-        num_steps: int,
+        adaptation: Union[Adaptor, Warmup, None] = None,
+        state: Optional[State] = None,
+        params: Optional[Params] = None,
+        num_steps: Optional[int] = None,
+        **adaptation_kwargs,
     ) -> WarmupResult:
-        """Run a specialized state-producing warmup procedure."""
-        return self.warmup_kernel(key, self.kernel, warmup, state, params, num_steps)
+        """Run a specialized state-producing warmup procedure.
+
+        An explicitly passed ``adaptation`` (an ``Adaptor`` or a ``Warmup``)
+        always wins; ``adaptation=None`` uses the kernel's attached default
+        (``kernel.default_adaptation``). ``adaptation_kwargs`` are forwarded
+        to the default factory.
+        """
+        if state is None or params is None or num_steps is None:
+            raise TypeError(
+                "warmup() missing required arguments: state, params, num_steps"
+            )
+        if adaptation is None:
+            default = self.kernel.default_adaptation
+            if default is None:
+                raise ValueError(
+                    "This kernel has no default adaptation; "
+                    "pass adaptation= explicitly."
+                )
+            adaptation = default(**adaptation_kwargs)
+        elif adaptation_kwargs:
+            raise ValueError(
+                "adaptation_kwargs need adaptation=None "
+                "(they configure the default)."
+            )
+        return self.warmup_kernel(
+            key, self.kernel, adaptation, state, params, num_steps
+        )

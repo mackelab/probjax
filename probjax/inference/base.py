@@ -9,15 +9,18 @@ T = TypeVar("T")
 
 
 class Kernel(NamedTuple):
-    """A pure transition and the functions needed to initialize it."""
+    """A pure transition and the functions needed to initialize it.
 
-
-class Kernel(NamedTuple):
-    """A pure transition and the functions needed to initialize it."""
+    ``default_adaptation`` is an optional factory returning the kernel's
+    recommended adaptation policy (an ``Adaptor`` or a ``Warmup``).
+    Runners use it when no explicit policy is passed; an explicitly
+    passed policy always wins.
+    """
 
     init: Callable
     step: Callable
     init_params: Callable
+    default_adaptation: Optional[Callable[..., Any]] = None
 
     def __call__(self, key, state, params=None, *args, **kwargs):
         return self.step(key, state, params, *args, **kwargs)
