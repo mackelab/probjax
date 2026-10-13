@@ -79,7 +79,7 @@ def test_linear_exact_dense_affine_constant_a():
             drift,
             jnp.asarray(x0),
             jnp.asarray(ts),
-            method="linear_exact",
+            solver="linear_exact",
             dtype=jnp.float64,
         )
     assert np.allclose(result, _affine_reference(A, b, x0, ts), atol=1e-10)
@@ -98,7 +98,7 @@ def test_linear_exact_dense_affine_time_varying_a():
             drift,
             jnp.asarray(x0),
             jnp.asarray(ts),
-            method="linear_exact",
+            solver="linear_exact",
             dtype=jnp.float64,
         )
     assert np.allclose(result, _affine_reference(A, b, x0, ts), atol=1e-10)

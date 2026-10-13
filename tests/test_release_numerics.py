@@ -16,7 +16,7 @@ def test_rk4_one_step_matches_classical_stability_polynomial():
         lambda t, y: -rate * y,
         jnp.array([1.0, 2.0]),
         jnp.array([0.0, 1.0]),
-        method="rk4",
+        solver="rk4",
     )
     np.testing.assert_allclose(result[-1], np.array([1.0, 2.0]) * expected, rtol=1e-6)
 
@@ -30,7 +30,7 @@ def test_rk4_parameter_gradient_matches_analytic_decay(collect_trace):
         result = odeint(
             lambda t, y, r: -r * y,
             initial, times, rate,
-            method="rk4", collect_trace=collect_trace,
+            solver="rk4", collect_trace=collect_trace,
         )
         return jnp.sum(result[-1] if collect_trace else result)
 
@@ -46,7 +46,7 @@ def test_adaptive_decay_gradients_match_analytic_solution():
 
     def objective(initial, rate):
         return odeint(
-            lambda t, y, r: -r * y, initial, times, rate, method="dopri5"
+            lambda t, y, r: -r * y, initial, times, rate, solver="dopri5"
         )[-1].sum()
 
     initial = jnp.array([1.0, 2.0])

@@ -24,13 +24,28 @@ def decay(t, y, rate):
 ts = jnp.linspace(0.0, 1.0, 17)
 y0 = jnp.array([1.0, 2.0])
 trajectory = odeint(
-    decay, y0, ts, 0.5, method="dopri5",
+    decay, y0, ts, 0.5, solver="dopri5",
     step_size_adaptor=StepSizeAdaptor(rtol=1e-4, atol=1e-5),
 )
 assert trajectory.shape == (17, 2)
 assert jnp.allclose(trajectory[-1], y0 * jnp.exp(-0.5), rtol=1e-3)
 terminal = odeint(decay, y0, ts, 0.5, collect_trace=False)
 assert terminal.shape == y0.shape
+```
+
+`solver=` takes a registered name, a solver class, or a configured solver:
+calling a solver class with only options configures it. Implicit solvers accept
+Newton options, for example a matrix-free Jacobian with an iterative linear
+solve (any `linear_solver` of `probjax.utils.linear_operator.solve`, including
+lineax solvers). Configured solvers compare by value, so they are safe static
+arguments under `jit`.
+
+```python
+from probjax.utils.odeutil import implicit_euler
+
+stiff_solver = implicit_euler(jacobian="matrix_free", linear_solver="gmres")
+stiff_trajectory = odeint(decay, y0, ts, 50.0, solver=stiff_solver)
+assert jnp.all(jnp.abs(stiff_trajectory[-1]) <= jnp.abs(y0))
 ```
 
 The default computation dtype is float32. For float64, enable JAX x64 before

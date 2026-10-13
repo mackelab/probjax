@@ -216,15 +216,16 @@ def _sdeint(
 
     # Only Milstein implements Stratonovich integrals. For additive noise the
     # Ito and Stratonovich interpretations coincide, so any solver is fine.
+    solver_api, solver_info = get_method(method)
     if (
         sde_type == "stratonovich"
-        and method != "milstein"
+        and not solver_info.get("stratonovich", False)
         and additive_marker is None
         and const_marker is None
     ):
         raise NotImplementedError(
-            f"method={method!r} (or adaptive stepping) only supports Ito SDEs; "
-            "use method='milstein' for sde_type='stratonovich'."
+            f"solver={method!r} (or adaptive stepping) only supports Ito SDEs; "
+            "use solver='milstein' for sde_type='stratonovich'."
         )
 
     extract = _flat_extractor(noise_type, flat_state_dim)
@@ -261,8 +262,6 @@ def _sdeint(
             "filter_state must return a value when collect_trace=True and "
             "return_brownian=True."
         )
-
-    solver_api, _ = get_method(method)
 
     solver_method = partial(
         solver_api,

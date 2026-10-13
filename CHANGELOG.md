@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `linear_exact_sde` dispatch `expm`/`phi_1` on the operator, and
   `linear_exact_sde` now supports diagonal (vector) drifts with a closed-form
   process-noise covariance
+- `odeint`/`sdeint` take `solver=` as a registered name, a solver class or a
+  configured solver: calling a solver class with only options configures it,
+  e.g. `odeint(f, y0, ts, solver=implicit_euler(jacobian="matrix_free"))`
 - `newton_raphson`/`root` take `jacobian="dense" | "matrix_free"` and any
   `linear_solver` accepted by `probjax.utils.linear_operator.solve` (including
   lineax solvers); the implicit Runge-Kutta, implicit Euler and Adams-Moulton/BDF
@@ -103,6 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (re-exposed on the runner unchanged), so kernels no longer import the runner
 - `odeutil.solvers.exponential.compute_phi_functions(A, dt, k)` is replaced by
   `probjax.utils.linear_operator.phi_matrices(A * dt, k)`
+- `odeint(method=...)`/`sdeint(method=...)` are deprecated aliases of `solver=`
 - Newton roots (and so implicit ODE steps) are differentiated with the implicit
   function theorem via `jax.lax.custom_root` instead of through the iterations
 - **Breaking:** `LinearOperator(fn, in_dim, out_dim)` is now

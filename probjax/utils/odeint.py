@@ -1,9 +1,10 @@
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence, Union
 
 import jax.numpy as jnp
 from jax import Array
 from jaxtyping import PyTree
 
+from probjax.utils._solver_common import ConfiguredSolver, solver_or_legacy_method
 from probjax.utils.functions import wrap_if_plain_callable
 from probjax.utils.odeutil import StepSizeAdaptor, _odeint_custom
 from probjax.utils.odeutil.inversion import SampleDist, TraceEstimator
@@ -14,7 +15,8 @@ def odeint(
     y0: PyTree[Array],
     ts: Array,
     *args: Any,
-    method: str = "rk4",
+    solver: Union[str, type, ConfiguredSolver] = "rk4",
+    method: Optional[str] = None,
     dtype: Optional[jnp.dtype] = jnp.float32,
     filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
     collect_trace: bool = True,
@@ -46,7 +48,10 @@ def odeint(
         y0: Initial state. Single array or pytree of arrays.
         ts: Time points at which to evaluate the solution.
         *args: Positional arguments forwarded to ``drift``.
-        method: Integration method name.
+        solver: Integration method: a registered name (``"rk4"``,
+            ``"dopri5"``, ``"bdf2"``, ...), a solver class, or a configured
+            solver such as ``bdf2(newton_iters=3, jacobian="matrix_free")``.
+        method: Deprecated alias of ``solver``.
         dtype: Computation dtype (default ``float32``).
         filter_state: Optional function to filter the state during integration.
         collect_trace: If ``True`` (default) return the filtered state at
@@ -96,8 +101,9 @@ def odeint(
         >>>
         >>> y0 = jnp.array([40.0, 9.0])
         >>> ts = jnp.linspace(0, 10, 100)
-        >>> ys = odeint(lotka_volterra, y0, ts, 1.0, 0.1, 0.075, 0.5, method="dopri5")
+        >>> ys = odeint(lotka_volterra, y0, ts, 1.0, 0.1, 0.075, 0.5, solver="dopri5")
     """
+    solver = solver_or_legacy_method(solver, method, "odeint")
     drift = wrap_if_plain_callable(drift)
     return _odeint_custom(
         y0,
@@ -105,7 +111,7 @@ def odeint(
         ts,
         tuple(args),
         logdet_rng,
-        method=method,
+        method=solver,
         dtype=dtype,
         filter_state=filter_state,
         collect_trace=collect_trace,

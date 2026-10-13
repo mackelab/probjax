@@ -3,6 +3,7 @@ from typing import Callable, NamedTuple, Optional, Tuple
 
 from jax.typing import ArrayLike
 
+from probjax.utils._solver_common import ConfiguredSolver, resolve_solver
 from probjax.utils.jaxutils import API
 
 METHOD_STEP_FN = {}
@@ -34,7 +35,18 @@ class SDESolverAPI(metaclass=API):
     def build_step(*args, **kwargs) -> Callable:
         raise NotImplementedError("build_step method must be implemented")
 
-    def __new__(cls, drift: Callable, diffusion: Callable, **kwargs) -> SDESolver:
+    info: dict = {}  # set by register_method
+
+    def __new__(
+        cls,
+        drift: Optional[Callable] = None,
+        diffusion: Optional[Callable] = None,
+        **kwargs,
+    ):
+        """``cls(**options)`` configures the solver for ``sdeint(..., solver=...)``;
+        ``cls(drift, diffusion, **options)`` builds it."""
+        if drift is None:
+            return ConfiguredSolver(cls, tuple(sorted(kwargs.items())))
         return SDESolver(
             init=partial(cls.init, drift=drift, diffusion=diffusion),
             step=cls.build_step(drift, diffusion, **kwargs),
@@ -58,11 +70,13 @@ def register_method(name: str, step_fn: SDESolverAPI, info: Optional[dict] = Non
         info = {}
     METHOD_STEP_FN[name] = step_fn
     METHOD_INFO[name] = info
+    step_fn.info = info
     return step_fn
 
 
-def get_method(name: str):
-    return METHOD_STEP_FN[name], METHOD_INFO[name]
+def get_method(solver):
+    """``(solver_factory, info)`` for a name, solver class or configured solver."""
+    return resolve_solver(solver, METHOD_STEP_FN, METHOD_INFO)
 
 
 def get_methods():
