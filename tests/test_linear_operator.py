@@ -277,6 +277,19 @@ def test_solve_gradient_matches_dense(solver):
     )
 
 
+def test_cholesky_gradient_is_symmetric():
+    # Cholesky reads one triangle; the gradient must not depend on which.
+    grads = [
+        jax.grad(lambda m, fn=fn: jnp.sum(fn(Dense(m))))(jnp.asarray(SPD))
+        for fn in (
+            lambda op: solve(op, jnp.arange(4.0), "cholesky"),
+            lambda op: logdet(op, psd=True),
+        )
+    ]
+    for grad in grads:
+        np.testing.assert_allclose(grad, grad.T, rtol=1e-5, atol=1e-6)
+
+
 def test_logdet_vs_slogdet():
     oracle = np.linalg.slogdet(SPD.astype(np.float64))[1]
     S = Dense(jnp.asarray(SPD))

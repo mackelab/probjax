@@ -370,6 +370,12 @@ def _compose(a: LinearOperator, b: LinearOperator) -> LinearOperator:
     )
 
 
+def _symmetric_part(matrix: jax.Array) -> jax.Array:
+    # Cholesky reads one triangle only; factoring the symmetric part keeps the
+    # gradient symmetric instead of concentrating it in that triangle.
+    return (matrix + matrix.T) / 2
+
+
 def _check_square(op: LinearOperator):
     if op.in_shape != op.out_shape:
         raise ValueError(
@@ -434,19 +440,21 @@ def solve(
     elif solver == "lu":
         x = jnp.linalg.solve(op.as_array(), rhs)
     elif solver == "cholesky":
-        factor = jax.scipy.linalg.cho_factor(op.as_array())
+        factor = jax.scipy.linalg.cho_factor(_symmetric_part(op.as_array()))
         x = jax.scipy.linalg.cho_solve(factor, rhs)
     elif solver in _ITERATIVE_SOLVERS:
         method = _ITERATIVE_SOLVERS[solver]
-        # Krylov methods square residual norms, which overflows float32 for
-        # |b| > ~1e19; solving for the max-abs-normalized rhs avoids that.
-        scale = jnp.max(jnp.abs(rhs), axis=0)
-        scale = jnp.where(scale > 0, scale, 1)
-        x = jax.vmap(
-            lambda column: method(op._flat_mv, column, tol=tol, maxiter=maxiter)[0],
-            in_axes=1,
-            out_axes=1,
-        )(rhs / scale) * scale
+
+        def solve_column(column):
+            # Krylov methods square residual norms, which over/underflows
+            # float32 for extreme |b|; solve at unit scale instead.
+            scale = jnp.max(jnp.abs(column))
+            scale = jnp.where(scale > 0, scale, 1)
+            return method(op._mv, column / scale, tol=tol, maxiter=maxiter)[0] * scale
+
+        # The jax.scipy solvers accept shaped vectors, so no flattening is needed.
+        columns = rhs.reshape(op.out_shape + (-1,))
+        x = jax.vmap(solve_column, in_axes=-1, out_axes=-1)(columns)
     else:
         raise ValueError(f"Unknown solver {solver!r}")
     return x.reshape(op.in_shape + batch_shape)
@@ -477,7 +485,7 @@ def logdet(op: LinearOperator, *, psd: bool = False, **lanczos_kwargs) -> jax.Ar
         return jnp.sum(jnp.log(jnp.abs(op._full_diag())))
     if isinstance(op, Dense):
         if psd:
-            factor = jnp.linalg.cholesky(op.matrix)
+            factor = jnp.linalg.cholesky(_symmetric_part(op.matrix))
             return 2 * jnp.sum(jnp.log(jnp.diagonal(factor)))
         return jnp.linalg.slogdet(op.matrix).logabsdet
     if not psd:
