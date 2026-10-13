@@ -147,9 +147,20 @@ def window_warmup(
     first_window_size: int = 25,
 ) -> Warmup:
     """Finite Stan-style warmup using BlackJAX's window-adaptation base."""
-    init_window, update_window, final_window = window_adaptation_base(
-        diagonal, target_acceptance_rate
-    )
+    import warnings
+
+    # `window_adaptation.base` is deprecated upstream in favor of the bound
+    # `window_adaptation`/`staged_adaptation` algorithms, but those don't expose
+    # the init/update/final triple this Warmup protocol needs. Keep using the
+    # base primitives and silence the deprecation until the protocol migrates
+    # to the staged engine.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message=".*window_adaptation.base.*", category=DeprecationWarning
+        )
+        init_window, update_window, final_window = window_adaptation_base(
+            diagonal, target_acceptance_rate
+        )
 
     def run(key, kernel, state, params, num_steps, args=None):
         if args is not None:

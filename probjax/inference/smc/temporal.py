@@ -6,13 +6,13 @@ import jax
 import jax.numpy as jnp
 from blackjax.mcmc.proposal import static_binomial_sampling
 from blackjax.smc.base import map_fn
-from blackjax.smc.ess import ess as effective_sample_size
-from blackjax.smc.resampling import systematic
 from blackjax.smc.solver import dichotomy
 from blackjax.smc.tuning.from_kernel_info import update_scale_from_acceptance_rate
 from jax.flatten_util import ravel_pytree
 
 from probjax.inference.smc.base import make_mcmc_adapter
+from probjax.inference.smc.ess import ess as effective_sample_size
+from probjax.inference.smc.resampling import systematic
 from probjax.inference.smc.temporal_utils import population_covariance, replay_filter
 
 

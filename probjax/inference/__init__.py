@@ -62,8 +62,8 @@ from probjax.inference.mcmc import (
     mala,
     mass_matrix_adaptor,
     mclmc,
-    mean_adaptor,
     mclmc_warmup,
+    mean_adaptor,
     mh,
     neural_imh,
     neural_imh_warmup,
@@ -255,6 +255,20 @@ __all__ += [
     "temporal_smc",
 ]
 
+from probjax.inference.diagnostics import (
+    DivergenceConcentrationReport,
+    divergence_concentration,
+    divergence_concentration_from_counts,
+    effective_sample_size,
+    ess_bulk,
+    ess_tail,
+    format_divergence_warning,
+    imq_kernel,
+    kernelized_stein_discrepancy,
+    pareto_khat,
+    potential_scale_reduction,
+    rhat,
+)
 from probjax.inference.filtering.joint import (
     sample_joint_paths,
 )
@@ -295,4 +309,16 @@ __all__ += [
     'append_streaming_window',
     'streaming_window_trace',
     'sample_joint_paths',
+    'effective_sample_size',
+    'potential_scale_reduction',
+    'rhat',
+    'ess_bulk',
+    'ess_tail',
+    'pareto_khat',
+    'divergence_concentration',
+    'divergence_concentration_from_counts',
+    'format_divergence_warning',
+    'DivergenceConcentrationReport',
+    'imq_kernel',
+    'kernelized_stein_discrepancy',
 ]

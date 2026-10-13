@@ -8,7 +8,7 @@ experiment.
 ## Environment
 
 Use Python 3.11–3.13 and JAX `>=0.9.0,<0.12`. The package requires Flax
-`>=0.12.6` and pins BlackJAX to `1.6.2`. Install accelerator dependencies through
+`>=0.12.6` and pins BlackJAX to `1.7.1`. Install accelerator dependencies through
 the `cuda13` or `metal` extras and check `jax.devices()`. Accelerator kernels
 have additional hardware constraints; CPU tests do not certify GPU performance.
 

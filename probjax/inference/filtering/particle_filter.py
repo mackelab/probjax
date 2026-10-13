@@ -2,10 +2,10 @@ from typing import Callable, NamedTuple, Optional
 
 import jax
 import jax.numpy as jnp
-from blackjax.smc.ess import ess
 from jax.typing import ArrayLike
 
 from probjax.inference.filtering.base import FilterAPI
+from probjax.inference.smc.ess import ess
 from probjax.inference.smc.resampling import (
     resample_systematic,
 )

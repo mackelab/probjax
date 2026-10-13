@@ -8,6 +8,7 @@ from blackjax.smc.waste_free import waste_free_smc as _waste_free_strategy
 
 from probjax.inference.base import Kernel
 from probjax.inference.smc.base import make_mcmc_adapter
+from probjax.inference.smc.resampling import systematic
 
 
 def tuned_smc(
@@ -21,7 +22,7 @@ def tuned_smc(
     num_mcmc_steps=10,
     target_ess=0.8,
     batch_size=0,
-    resampling_fn=blackjax.smc.resampling.systematic,
+    resampling_fn=systematic,
     **mcmc_kernel_kwargs,
 ):
     """Wrap BlackJAX inner-kernel tuning with a probjax MCMC kernel.
@@ -75,7 +76,7 @@ def pretuned_smc(
     positive_parameters=None,
     natural_parameters=None,
     performance_of_chain_measure_factory=pretuning.default_measure_factory,
-    resampling_fn=blackjax.smc.resampling.systematic,
+    resampling_fn=systematic,
     **mcmc_kernel_kwargs,
 ):
     """BlackJAX pilot-move pretuning, retaining a distribution of move parameters.

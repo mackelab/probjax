@@ -1,6 +1,6 @@
 # SMC presets, adaptation, and diagnostics
 
-The library reuses BlackJAX 1.6.2 for stationary SMC updates, resampling, ESS,
+The library reuses BlackJAX 1.7.1 for stationary SMC updates, resampling, ESS,
 root finding, waste-free updates, MCMC tuning, and Metropolis acceptance. The
 additional probjax code supplies runner/result conventions and temporal composition.
 
