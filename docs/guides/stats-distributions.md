@@ -154,8 +154,8 @@ assert result.params["w"].shape == (2,)
 
 The object-layer counterpart is `FitMixin.fit(rng, data, **fit_kwargs)`, which
 the `nn` generative models use so a fitted module can train in place
-(`flow.fit(key, samples)`); any other keyword (`context=`, `local_context=`, `weights=`, ...) is a named
-model input, batched with the data and forwarded to the network.
+(`flow.fit(key, samples)`); `data` may be a dict (`{"data": x, "context": c, "weights": w}`) whose other
+entries are named model inputs, batched together and forwarded to the network.
 Generative models are covered in [Density estimation](density-estimation.md).
 
 Parametric families additionally offer a generator-level MLE:

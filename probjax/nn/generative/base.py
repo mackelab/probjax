@@ -14,6 +14,7 @@ are pytree specs, so structured data works like a single flat array.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from numbers import Integral
 from typing import Callable
 
@@ -50,18 +51,30 @@ def _affine_sample_base(self, rng, sample_shape, spec):
     )
 
 
-class _DataContextBatches:
-    """Normalises what a loader yields into the ``{"data": ..., ...}`` batch dict.
+def _as_batch(item):
+    """A batch is a dict whose ``"data"`` entry is what the model generates.
 
-    Loaders come in three shapes and all three are worth supporting: a bare
-    array of examples, a ``(data, context)`` tuple, and a dict that is already
-    a batch. Re-iterable and length-preserving, so restarting and
-    ``num_steps="auto"`` keep working through the wrapper.
+    Every other entry is a named model input (``context``, ``local_context``,
+    ``weights``, ...); a bare array or pytree is shorthand for ``{"data": item}``.
+    """
+    if isinstance(item, Mapping):
+        if "data" not in item:
+            raise ValueError(
+                f"a batch dict must have a 'data' key; got keys {sorted(item)}."
+            )
+        return dict(item)
+    return {"data": item}
+
+
+class _Batches:
+    """Normalises what a loader yields into batch dicts (see ``_as_batch``).
+
+    Re-iterable and length-preserving, so restarting and ``num_steps="auto"``
+    keep working through the wrapper.
     """
 
-    def __init__(self, source, context_key: str = "context"):
+    def __init__(self, source):
         self._source = source
-        self._context_key = context_key
 
     def __len__(self):
         # Deliberately propagates the source's TypeError: reporting a length
@@ -70,18 +83,7 @@ class _DataContextBatches:
 
     def __iter__(self):
         for item in self._source:
-            yield self._as_batch(item)
-
-    def _as_batch(self, item):
-        if isinstance(item, dict):
-            if "data" not in item:
-                raise ValueError(
-                    f"a batch dict must have a 'data' key; got keys {sorted(item)}."
-                )
-            return item
-        if isinstance(item, tuple) and len(item) == 2:
-            return {"data": item[0], self._context_key: item[1]}
-        return {"data": item}
+            yield _as_batch(item)
 
 
 class GenerativeModel(nnx.Module, FitMixin):
@@ -167,29 +169,24 @@ class GenerativeModel(nnx.Module, FitMixin):
         """Monte-Carlo training loss for a batch of data."""
         raise NotImplementedError
 
-    def fit(self, rng: RngKey, data, **kwargs) -> Array | FitResult:
-        """Train in place on ``data``: an array pytree or a stream of batches.
+    def fit(self, rng: RngKey, data, **fit_kwargs) -> Array | FitResult:
+        """Train in place on ``data``.
 
-        Every keyword that is not a training option is a named model input
-        (``context``, ``local_context``, ``weights``, ...). It is batched with
-        ``data`` and reaches :meth:`loss`, and so the network, as a keyword
-        argument. With a stream, yield ``(data, context)`` pairs or dicts with
-        a ``"data"`` key plus the input names instead. The training options are
-        those of :func:`probjax.nn.training.fit`.
+        ``data`` is an array pytree, a dict with a ``"data"`` entry plus any
+        named model inputs (``{"data": x, "context": c, "weights": w}``), or a
+        stream of either. The inputs reach :meth:`loss`, and so the network, as
+        keyword arguments. The keyword arguments are the training options of
+        :func:`probjax.nn.training.fit`.
         """
-        return super().fit(rng, data, **kwargs)
+        return super().fit(rng, data, **fit_kwargs)
 
-    def _fit_batch(self, data, **inputs):
-        """Batches are ``{"data": ..., **named_inputs}`` dicts."""
-        if is_batch_stream(data):
-            if inputs:
-                raise ValueError(
-                    f"{', '.join(sorted(inputs))} cannot be passed alongside an "
-                    "iterable data source; yield (data, context) pairs or batch "
-                    "dicts from the iterable instead."
-                )
-            return _DataContextBatches(data)
-        return {"data": data, **inputs}
+    def _fit_batch(self, data, **extras):
+        if extras:
+            raise ValueError(
+                f"unexpected fit arguments {sorted(extras)}; pass named model "
+                "inputs inside data, e.g. fit(rng, {'data': x, 'context': c})."
+            )
+        return _Batches(data) if is_batch_stream(data) else _as_batch(data)
 
     def _fit_loss(self, rng, batch):
         if isinstance(batch, dict):

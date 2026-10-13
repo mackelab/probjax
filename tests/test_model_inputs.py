@@ -36,16 +36,19 @@ def test_fit_forwards_any_named_input(data):
     x, local = data
     model = EDM(make_net(), event_spec=(TOKENS, FEATURES), num_steps=2)
     losses = model.fit(
-        jax.random.key(2), x, local_context=local, num_steps=2, batch_size=8
+        jax.random.key(2),
+        {"data": x, "local_context": local},
+        num_steps=2,
+        batch_size=8,
     )
     assert jnp.all(jnp.isfinite(losses))
 
 
-def test_fit_stream_rejects_loose_inputs(data):
+def test_fit_rejects_loose_inputs(data):
     x, local = data
     model = EDM(make_net(), event_spec=(TOKENS, FEATURES), num_steps=2)
-    with pytest.raises(ValueError, match="local_context cannot be passed alongside"):
-        model.fit(jax.random.key(2), iter([{"data": x}]), local_context=local)
+    with pytest.raises(ValueError, match="pass named model inputs inside data"):
+        model.fit(jax.random.key(2), x, local_context=local)
 
 
 def test_sampling_and_conditioning_with_named_inputs(data):

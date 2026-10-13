@@ -303,8 +303,7 @@ def neural_imh_warmup(
                 fit_weights = jnp.concatenate((jnp.ones(num_seed), fit_weights))
             round_losses = proposal.fit(
                 fit_key,
-                fit_data,
-                weights=fit_weights,
+                {"data": fit_data, "weights": fit_weights},
                 num_steps=fit_steps,
                 batch_size=batch_size,
                 learning_rate=learning_rate,
