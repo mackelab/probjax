@@ -16,7 +16,9 @@ class DiffusionTransformer(Transformer):
     Inputs have shape ``[..., tokens, features]``. Token counts can change;
     feature widths are fixed. Time is scalar, ``[...]``, or ``[..., 1]``.
     Global context has shape ``[..., context_dim]`` and is required when that
-    constructor dimension is set. Optional ``r`` adds a second time embedding
+    constructor dimension is set. Optional local context has shape
+    ``[..., tokens, local_context_dim]`` (one vector per token) and is fused
+    in every block. Optional ``r`` adds a second time embedding
     for mean-flow models. Masks, cross-attention and dropout options are
     forwarded to :class:`Transformer`.
 
@@ -41,6 +43,7 @@ class DiffusionTransformer(Transformer):
         time_embed_dim: int = 128,
         fourier_dim: int = 64,
         context_dim: int | None = None,
+        local_context_dim: int | None = None,
         projection_cls=DEFAULT_MODULE,
         fourier_cls=DEFAULT_MODULE,
         time_mlp_cls=DEFAULT_MODULE,
@@ -59,8 +62,12 @@ class DiffusionTransformer(Transformer):
         ).items():
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
-        if context_dim is not None and context_dim <= 0:
-            raise ValueError("context_dim must be positive")
+        for name, value in (
+            ("context_dim", context_dim),
+            ("local_context_dim", local_context_dim),
+        ):
+            if value is not None and value <= 0:
+                raise ValueError(f"{name} must be positive")
         factories = dict(
             projection_cls=projection_cls,
             fourier_cls=fourier_cls,
@@ -81,6 +88,7 @@ class DiffusionTransformer(Transformer):
             num_layers,
             attn_size,
             context_dim=time_embed_dim + (context_dim or 0),
+            local_context_dim=local_context_dim,
             rngs=rngs,
             **kwargs,
         )
@@ -126,7 +134,9 @@ class DiffusionTransformer(Transformer):
         t = jnp.broadcast_to(t, batch_shape + (1,))
         return self.time_mlp(self.time_fourier(t))
 
-    def __call__(self, t, x, r=None, context=None, *, rng=None, **kwargs):
+    def __call__(
+        self, t, x, r=None, context=None, local_context=None, *, rng=None, **kwargs
+    ):
         if x.ndim < 2 or x.shape[-1] != self.features:
             raise ValueError("x must have shape [..., tokens, features]")
         batch_shape = x.shape[:-2]
@@ -146,5 +156,11 @@ class DiffusionTransformer(Transformer):
         hidden = self.input_projection(x)
         if self.position is not None:
             hidden = self.position(hidden)
-        hidden = super().__call__(hidden, context=condition, rng=rng, **kwargs)
+        hidden = super().__call__(
+            hidden,
+            context=condition,
+            local_context=local_context,
+            rng=rng,
+            **kwargs,
+        )
         return self.output_projection(hidden)

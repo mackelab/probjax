@@ -59,6 +59,7 @@ class TimeMLP(nnx.Module):
         time_embed_dim: int = 128,
         fourier_dim: int = 64,
         context_dim: Optional[int] = None,
+        local_context_dim: Optional[int] = None,
         activation=jax.nn.silu,
         norm_cls: ModuleLikeType = DEFAULT_MODULE,
         fourier_cls: ModuleLikeType = DEFAULT_MODULE,
@@ -84,6 +85,9 @@ class TimeMLP(nnx.Module):
                 ``time_embed_dim``.
             context_dim: Optional dimensionality of an auxiliary conditioning
                 vector, concatenated with the time embedding.
+            local_context_dim: Optional features of a per-position
+                ``local_context`` of shape ``[..., local_context_dim]`` (same
+                leading axes as ``x``), fused in every body block.
             activation: Activation function used throughout.
             norm_cls: Normalization layer applied before each block's AdaLN
                 modulation. Defaults to ``nnx.LayerNorm``.
@@ -122,6 +126,10 @@ class TimeMLP(nnx.Module):
             raise ValueError(f"fourier_dim must be positive, got {fourier_dim}")
         if context_dim is not None and context_dim <= 0:
             raise ValueError(f"context_dim must be positive, got {context_dim}")
+        if local_context_dim is not None and local_context_dim <= 0:
+            raise ValueError(
+                f"local_context_dim must be positive, got {local_context_dim}"
+            )
 
         precision_kwargs = dict(
             dtype=dtype,
@@ -131,7 +139,7 @@ class TimeMLP(nnx.Module):
         )
         self.features = features
         self.context_dim = context_dim
-
+        self.local_context_dim = local_context_dim
 
         self.time_fourier = fourier_cls(
             1,
@@ -153,6 +161,12 @@ class TimeMLP(nnx.Module):
             hidden_dim=hidden_dim,
             num_hidden_layers=depth,
             context_dim=cond_dim,
+            # Only passed when used, so custom bodies need no new argument.
+            **(
+                {}
+                if local_context_dim is None
+                else {"local_context_dim": local_context_dim}
+            ),
             activation=activation,
             norm_cls=norm_cls,
             context_fuse_cls=context_fuse_cls,
@@ -173,6 +187,7 @@ class TimeMLP(nnx.Module):
         x: Array,
         r: Optional[ArrayLike] = None,
         context: Optional[Array] = None,
+        local_context: Optional[Array] = None,
         *,
         rng: jax.Array | None = None,
         **kwargs,
@@ -186,6 +201,9 @@ class TimeMLP(nnx.Module):
                 embedding is added to ``t``'s.
             context: Optional auxiliary conditioning of shape
                 ``[..., context_dim]``. Required iff ``context_dim`` was set.
+            local_context: Optional per-position conditioning of shape
+                ``[..., local_context_dim]``. Required iff ``local_context_dim``
+                was set.
             rng: Optional RNG, forwarded to the residual body.
 
         Returns:
@@ -206,4 +224,6 @@ class TimeMLP(nnx.Module):
         elif context is not None:
             raise ValueError("context provided but context_dim is None")
 
-        return self.body(x, temb, rng=rng)
+        if local_context is None:
+            return self.body(x, temb, rng=rng)
+        return self.body(x, temb, local_context=local_context, rng=rng)

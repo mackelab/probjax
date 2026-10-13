@@ -11,7 +11,11 @@ from probjax.nn.layers.attention import (
     MultiHeadAttention,
     dot_product_attention,
 )
-from probjax.nn.layers.fuse import AdditiveBinaryFuse, AffineFuse
+from probjax.nn.layers.fuse import (
+    AdditiveBinaryFuse,
+    AffineFuse,
+    validate_local_context,
+)
 from probjax.nn.nets.simple import MLP
 from probjax.nn.sharding import BATCH, EMBED, SEQ, constrain
 from probjax.nn.utils import (
@@ -38,6 +42,7 @@ class Transformer(nnx.Module):
 
     norm_cls = nnx.LayerNorm
     context_fusion_cls = AffineFuse
+    local_fusion_cls = AffineFuse
     attn_fuse_cls = AdditiveBinaryFuse
     mlp_fuse_cls = AdditiveBinaryFuse
     mlp_cls = MLP
@@ -57,6 +62,7 @@ class Transformer(nnx.Module):
         normalize_qk_attn: bool = False,
         normalize_qk_cross_attn: bool = False,
         context_dim: Optional[int] = None,
+        local_context_dim: Optional[int] = None,
         dropout_rate: float = 0.0,
         dropout_rate_attn: float | None = None,
         drop_path_rate: float | Sequence[float] = 0.0,
@@ -72,6 +78,7 @@ class Transformer(nnx.Module):
         preferred_element_type: DTypeLike | None = None,
         norm_cls: ModuleLikeType = DEFAULT_MODULE,
         context_fusion_cls: ModuleLikeType = DEFAULT_MODULE,
+        local_fusion_cls: ModuleLikeType = DEFAULT_MODULE,
         attn_fuse_cls: ModuleLikeType = DEFAULT_MODULE,
         mlp_fuse_cls: ModuleLikeType = DEFAULT_MODULE,
         mlp_cls: ModuleLikeType = DEFAULT_MODULE,
@@ -122,6 +129,11 @@ class Transformer(nnx.Module):
             if context_fusion_cls is DEFAULT_MODULE
             else context_fusion_cls
         )
+        local_fusion_cls = (
+            type(self).local_fusion_cls
+            if local_fusion_cls is DEFAULT_MODULE
+            else local_fusion_cls
+        )
         attn_fuse_cls = (
             type(self).attn_fuse_cls
             if attn_fuse_cls is DEFAULT_MODULE
@@ -147,6 +159,7 @@ class Transformer(nnx.Module):
         )
         self.model_dim = model_dim
         self.context_dim = context_dim
+        self.local_context_dim = local_context_dim
         self.num_heads = num_heads
         self.num_layers = num_layers
         self.attn_size = attn_size
@@ -253,6 +266,17 @@ class Transformer(nnx.Module):
                 for _ in range(num_layers)
             ])
 
+        # Per-token fusion of local context (same layout as the global one).
+        if local_context_dim is not None:
+            self.local_layers1 = nnx.List([
+                local_fusion_cls(model_dim, local_context_dim, rngs=rngs)
+                for _ in range(num_layers)
+            ])
+            self.local_layers2 = nnx.List([
+                local_fusion_cls(model_dim, local_context_dim, rngs=rngs)
+                for _ in range(num_layers)
+            ])
+
         # Dense block.
         dims = (
             [model_dim]
@@ -326,6 +350,7 @@ class Transformer(nnx.Module):
         deterministic: bool | None = None,
         decode: bool = False,
         kv_len: int | Array | None = None,
+        local_context: Optional[Array] = None,  # [B, T, D_local]
         rng: jax.Array | None = None,
     ) -> Array:  # [B, T, D]
         """Transforms input embedding sequences to output embedding sequences."""
@@ -340,11 +365,15 @@ class Transformer(nnx.Module):
         if isinstance(bias_cross, jax.Array):
             bias_cross = normalize_attn_bias(bias_cross)
 
+        local_context = validate_local_context(q, local_context, self.local_context_dim)
+
         # Flatten to (B, T, D)
         q, q_shape = flatten_to_btd(q)
         k, _ = flatten_to_btd(k) if k is not None else (None, None)
         v, _ = flatten_to_btd(v) if v is not None else (None, None)
 
+        if local_context is not None:
+            local_context, _ = flatten_to_btd(local_context)
         q = constrain(q, BATCH)
 
         # Ensure context has shape [B, 1, Dc] when provided
@@ -365,11 +394,22 @@ class Transformer(nnx.Module):
                 else list(jax.random.split(jax.random.fold_in(rng, i), 9))
             )
             key_iter = iter(keys)
+            # Extra keys for local-context fusion leave the streams above intact.
+            local_keys = (
+                [None] * 2
+                if rng is None
+                else [
+                    jax.random.fold_in(jax.random.fold_in(rng, i), 9 + j)
+                    for j in range(2)
+                ]
+            )
             # First the attention block.
             q_res = q
             q = self.layer_norms_attn[i](q)
             if context is not None and self.context_dim is not None:
                 q = self.context_layers1[i](q, context, rng=next(key_iter))
+            if local_context is not None:
+                q = self.local_layers1[i](q, local_context, rng=local_keys[0])
             q = self.attention_blocks[i](
                 q,
                 mask=mask,
@@ -416,6 +456,8 @@ class Transformer(nnx.Module):
             q = self.layer_norms_dense[i](q)
             if context is not None and self.context_dim is not None:
                 q = self.context_layers2[i](q, context, rng=next(key_iter))
+            if local_context is not None:
+                q = self.local_layers2[i](q, local_context, rng=local_keys[1])
 
             q = self.dense_blocks[i](q, rng=next(key_iter))
             q = constrain(q, BATCH, SEQ, EMBED)
