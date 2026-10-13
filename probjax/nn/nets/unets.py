@@ -9,7 +9,6 @@ from probjax.nn.layers.conv import (
     ResnetBlock,
     SpatialSelfAttention,
 )
-from probjax.nn.layers.fuse import validate_local_context
 from probjax.nn.sharding import BATCH, constrain
 from probjax.nn.utils import (
     DEFAULT_MODULE,
@@ -63,11 +62,6 @@ class UNet(nnx.Module):
         [num_stages+1]            Middle block 2
         [num_stages+2 .. end]     Up path ResNet blocks (from bottom to top)
     If a sequence is provided, it overrides the uniform rate.
-
-    Local context (``local_context_features`` channels) is an array matching
-    the input on all but the channel axis; it is concatenated to the input, so
-    every resolution sees it through the convolutions. Global ``context``
-    stays a vector fused inside the blocks.
     """
 
     resnet_block_cls = ResnetBlock
@@ -88,7 +82,6 @@ class UNet(nnx.Module):
         strides_resnet: int | Sequence[int] = 1,
         use_attention: bool | Sequence[bool] = False,
         context_features: int | None = None,
-        local_context_features: int | None = None,
         resize_method: str = "bilinear",
         dropout_rate: float = 0.0,
         drop_path_rate: float | Sequence[float] = 0.0,
@@ -131,7 +124,6 @@ class UNet(nnx.Module):
         assert len(out_features) >= 2, "Must have at least 2 output channels"
 
         self.in_features = in_features
-        self.local_context_features = local_context_features
         self.out_features = list(out_features)
         self.num_stages = len(out_features)
         self.resize_method = resize_method  # Triggered if user shapes do not mat
@@ -307,9 +299,7 @@ class UNet(nnx.Module):
                 )
 
         # Initial and final 1x1 projections
-        self.conv_initial = _init_final(
-            in_features + (local_context_features or 0), self.out_features[0]
-        )
+        self.conv_initial = _init_final(in_features, self.out_features[0])
         self.conv_final = _init_final(
             self.out_features[0] * 2,
             in_features,
@@ -328,19 +318,12 @@ class UNet(nnx.Module):
         self,
         inputs: Array,
         context: Optional[Array] = None,
-        local_context: Optional[Array] = None,
         verbose: bool = False,
         deterministic: bool = True,
         rng: jax.Array | None = None,
     ) -> Array:
         def _constrain(x: Array) -> Array:
             return constrain(x, BATCH)
-
-        local_context = validate_local_context(
-            inputs, local_context, self.local_context_features
-        )
-        if local_context is not None:
-            inputs = jnp.concatenate([inputs, local_context], axis=-1)
 
         # 1) Initial projection
         x = (

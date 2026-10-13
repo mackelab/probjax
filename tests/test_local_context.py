@@ -6,10 +6,7 @@ import pytest
 from flax import nnx
 
 from probjax.nn.nets.diffusion_transformer import DiffusionTransformer
-from probjax.nn.nets.simple import MLP, ResNet
-from probjax.nn.nets.time import TimeMLP
 from probjax.nn.nets.transformer import Transformer
-from probjax.nn.nets.unets import UNet
 
 LOCAL_DIM = 3
 KEY = jax.random.key(0)
@@ -18,34 +15,13 @@ KEY = jax.random.key(0)
 def _call(net, x, local_context=None):
     """Nets differ only in whether time comes first."""
     kwargs = {} if local_context is None else {"local_context": local_context}
-    if isinstance(net, (TimeMLP, DiffusionTransformer)):
+    if isinstance(net, DiffusionTransformer):
         return net(0.5, x, **kwargs)
     return net(x, **kwargs)
 
 
 # name -> (builder taking local_context_dim, x shape)
 NETS = {
-    "mlp": (
-        lambda dim: MLP([4, 8, 8, 2], local_context_dim=dim, rngs=nnx.Rngs(0)),
-        (5, 4),
-    ),
-    "resnet": (
-        lambda dim: ResNet(
-            4,
-            2,
-            hidden_dim=8,
-            num_hidden_layers=2,
-            local_context_dim=dim,
-            rngs=nnx.Rngs(0),
-        ),
-        (5, 4),
-    ),
-    "time_mlp": (
-        lambda dim: TimeMLP(
-            4, hidden_dim=8, depth=2, local_context_dim=dim, rngs=nnx.Rngs(0)
-        ),
-        (5, 4),
-    ),
     "transformer": (
         lambda dim: Transformer(16, 2, 2, 8, local_context_dim=dim, rngs=nnx.Rngs(0)),
         (2, 6, 16),
@@ -62,10 +38,6 @@ NETS = {
         ),
         (2, 6, 4),
     ),
-    "unet": (
-        lambda dim: UNet(2, [32, 64], local_context_features=dim, rngs=nnx.Rngs(0)),
-        (2, 8, 8, 2),
-    ),
 }
 
 
@@ -80,7 +52,7 @@ def _randomize(net, key):
             tree,
             [
                 leaf + 0.5 * jax.random.normal(k, leaf.shape)
-                for leaf, k in zip(leaves, keys)
+                for leaf, k in zip(leaves, keys, strict=True)
             ],
         ),
     )

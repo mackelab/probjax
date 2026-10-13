@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.nn.layers.fuse import AffineFuse, validate_local_context
+from probjax.nn.layers.fuse import AffineFuse
 from probjax.nn.layers.masked import MaskedLinear
 from probjax.nn.sharding import EMBED, HIDDEN, param_metadata
 from probjax.nn.utils import (
@@ -48,7 +48,6 @@ class MLP(nnx.Module):
     norm_cls = None
     linear_cls = nnx.Linear
     context_fuse_cls = AffineFuse
-    local_fuse_cls = AffineFuse
 
     def __init__(
         self,
@@ -59,7 +58,6 @@ class MLP(nnx.Module):
         context_dim: Optional[int] = None,
         # Accept alias used elsewhere in the codebase
         context_features: Optional[int] = None,
-        local_context_dim: Optional[int] = None,
         precision: PrecisionLike | None = None,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
@@ -67,7 +65,6 @@ class MLP(nnx.Module):
         norm_cls: ModuleLikeType | None = DEFAULT_MODULE,
         linear_cls: ModuleLikeType | Sequence[ModuleLikeType] = DEFAULT_MODULE,
         context_fuse_cls: ModuleLikeType = DEFAULT_MODULE,
-        local_fuse_cls: ModuleLikeType = DEFAULT_MODULE,
         rngs: nnx.Rngs,
         **kwargs,
     ):
@@ -75,9 +72,6 @@ class MLP(nnx.Module):
 
         Args:
             dims: Sequence of layer dimensions. Length must be >= 2.
-            local_context_dim: Features of the optional ``local_context``, which
-                shares every axis of ``x`` but the last (unlike the global
-                ``context``) and is fused after each hidden layer.
             rngs: Random number generators.
             linear: Linear layer module to use. Defaults to nnx.Linear.
             norm: Optional normalization layer. If provided, applied after
@@ -110,11 +104,6 @@ class MLP(nnx.Module):
             if context_fuse_cls is DEFAULT_MODULE
             else context_fuse_cls
         )
-        local_fuse_cls = (
-            type(self).local_fuse_cls
-            if local_fuse_cls is DEFAULT_MODULE
-            else local_fuse_cls
-        )
 
         if len(feature_dims) < 2:
             raise ValueError(
@@ -126,7 +115,6 @@ class MLP(nnx.Module):
         self.feature_dims = feature_dims
         # Prefer explicit context_dim, fallback to alias if provided
         self.context_dim = context_dim if context_dim is not None else context_features
-        self.local_context_dim = local_context_dim
 
         num_layers = len(feature_dims) - 1
         if isinstance(linear_cls, Sequence) and not isinstance(linear_cls, type):
@@ -152,7 +140,6 @@ class MLP(nnx.Module):
         layers = []
         norm_layers = []
         context_fuses = []
-        local_fuses = []
         _ctx_dim = self.context_dim
         for i in range(num_layers):
             ctor = base_linears[i]
@@ -182,10 +169,6 @@ class MLP(nnx.Module):
                 context_fuses.append(
                     context_fuse_cls(feature_dims[i + 1], _ctx_dim, rngs=rngs)
                 )
-            if local_context_dim is not None:
-                local_fuses.append(
-                    local_fuse_cls(feature_dims[i + 1], local_context_dim, rngs=rngs)
-                )
 
         self.layers = nnx.List(layers)
         self._layer_accepts_rng = tuple(
@@ -198,33 +181,20 @@ class MLP(nnx.Module):
             if self.context_fuses is not None
             else None
         )
-        self.local_fuses = nnx.List(local_fuses) if local_fuses else None
-        self._local_fuse_accepts_rng = tuple(
-            module_accepts_rng(fuse) for fuse in local_fuses
-        )
         self.activation = activation
         self.activate_final = activate_final
 
     def __call__(
-        self,
-        x: Array,
-        context: Array | None = None,
-        local_context: Array | None = None,
-        *,
-        rng: Array | None = None,
+        self, x: Array, context: Array | None = None, *, rng: Array | None = None
     ) -> Array:
         """Forward pass through the MLP.
 
         Args:
             x: Input array of shape [..., input_dim].
-            context: Optional global context of shape [..., context_dim].
-            local_context: Optional context of shape [..., local_context_dim]
-                matching ``x`` on all but the last axis.
 
         Returns:
             Output array of shape [..., output_dim].
         """
-        local_context = validate_local_context(x, local_context, self.local_context_dim)
         h = (
             self.layers[0](x, rng=rng)
             if self._layer_accepts_rng[0]
@@ -248,12 +218,6 @@ class MLP(nnx.Module):
                     h = self.context_fuses[i - 1](h, context, rng=rng)
                 else:
                     h = self.context_fuses[i - 1](h, context)
-            if self.local_fuses is not None:
-                fuse = self.local_fuses[i - 1]
-                if self._local_fuse_accepts_rng[i - 1]:
-                    h = fuse(h, local_context, rng=rng)
-                else:
-                    h = fuse(h, local_context)
 
         if len(self.layers) > 1:
             out = (
@@ -290,14 +254,9 @@ class MaskedMLP(MLP):
 
 
 class ResNet(nnx.Module):
-    """Residual neural network with optional context conditioning.
-
-    ``context`` is global (``[..., context_dim]``); ``local_context`` shares
-    every axis of ``x`` but the last (``[..., local_context_dim]``).
-    """
+    """Residual neural network with optional context conditioning."""
 
     context_fuse_cls = AffineFuse
-    local_fuse_cls = AffineFuse
     norm_cls = None
     linear_cls = nnx.Linear
 
@@ -309,7 +268,6 @@ class ResNet(nnx.Module):
         hidden_dim: int = 50,
         num_hidden_layers: int = 2,
         context_dim: Optional[int] = None,
-        local_context_dim: Optional[int] = None,
         activation=jax.nn.gelu,
         activate_final: bool = False,
         precision: PrecisionLike | None = None,
@@ -317,7 +275,6 @@ class ResNet(nnx.Module):
         param_dtype: DTypeLike | None = None,
         preferred_element_type: DTypeLike | None = None,
         context_fuse_cls: ModuleLikeType = DEFAULT_MODULE,
-        local_fuse_cls: ModuleLikeType = DEFAULT_MODULE,
         norm_cls: ModuleLikeType | None = DEFAULT_MODULE,
         linear_cls: ModuleLikeType = DEFAULT_MODULE,
         rngs: nnx.Rngs,
@@ -331,8 +288,6 @@ class ResNet(nnx.Module):
             hidden_dim: Hidden layer dimension. Defaults to 50.
             num_hidden_layers: Number of hidden layers. Defaults to 2.
             context_dim: Optional context dimension for conditioning.
-            local_context_dim: Optional features of a per-position
-                ``local_context`` (same leading axes as ``x``).
             activation: Activation function. Defaults to GELU.
             activate_final: Whether to apply activation to final layer output.
                 Defaults to False.
@@ -361,11 +316,6 @@ class ResNet(nnx.Module):
             if context_fuse_cls is DEFAULT_MODULE
             else context_fuse_cls
         )
-        local_fuse_cls = (
-            type(self).local_fuse_cls
-            if local_fuse_cls is DEFAULT_MODULE
-            else local_fuse_cls
-        )
         norm_cls = type(self).norm_cls if norm_cls is DEFAULT_MODULE else norm_cls
         linear_cls = (
             type(self).linear_cls if linear_cls is DEFAULT_MODULE else linear_cls
@@ -387,7 +337,6 @@ class ResNet(nnx.Module):
         if context_dim is not None and context_dim <= 0:
             raise ValueError(f"context_dim must be positive, got {context_dim}")
         self.context_dim = context_dim
-        self.local_context_dim = local_context_dim
         num_layers = num_hidden_layers + 2
 
         precision_kwargs = filter_precision_kwargs(linear_cls, **precision_kwargs)
@@ -415,7 +364,6 @@ class ResNet(nnx.Module):
         hidden_layers = []
         norm_layers = []
         context_layers = []
-        local_layers = []
         for i in range(num_layers):
             if i == 0:
                 self.in_layer = base_ctor(
@@ -438,10 +386,6 @@ class ResNet(nnx.Module):
                     context_layers.append(
                         context_fuse_cls(hidden_dim, context_dim, rngs=rngs)
                     )
-                if local_context_dim is not None:
-                    local_layers.append(
-                        local_fuse_cls(hidden_dim, local_context_dim, rngs=rngs)
-                    )
 
         self.hidden_layers = nnx.List(hidden_layers)
         self._in_layer_accepts_rng = module_accepts_rng(self.in_layer)
@@ -461,16 +405,11 @@ class ResNet(nnx.Module):
             if self.context_layers is not None
             else None
         )
-        self.local_layers = nnx.List(local_layers) if local_layers else None
-        self._local_layer_accepts_rng = tuple(
-            module_accepts_rng(layer) for layer in local_layers
-        )
 
     def __call__(
         self,
         x: ArrayLike,
         context: Optional[ArrayLike] = None,
-        local_context: Optional[ArrayLike] = None,
         *,
         rng: Array | None = None,
     ) -> Array:
@@ -479,8 +418,6 @@ class ResNet(nnx.Module):
         Args:
             x: Input array of shape [..., in_dim].
             context: Optional context array of shape [..., context_dim].
-            local_context: Optional array of shape [..., local_context_dim]
-                matching ``x`` on all but the last axis.
 
         Returns:
             Output array of shape [..., out_dim].
@@ -492,9 +429,6 @@ class ResNet(nnx.Module):
             raise ValueError("context is required when context_dim is specified")
         if self.context_dim is None and context is not None:
             raise ValueError("context provided but context_dim is None")
-        local_context = validate_local_context(
-            jnp.asarray(x), local_context, self.local_context_dim
-        )
 
         h = (
             self.in_layer(x, rng=rng)
@@ -520,12 +454,6 @@ class ResNet(nnx.Module):
                     h = self.context_layers[i](h, context, rng=rng)
                 else:
                     h = self.context_layers[i](h, context)
-            if self.local_layers is not None:
-                layer = self.local_layers[i]
-                if self._local_layer_accepts_rng[i]:
-                    h = layer(h, local_context, rng=rng)
-                else:
-                    h = layer(h, local_context)
 
             h = h + h_old
 
