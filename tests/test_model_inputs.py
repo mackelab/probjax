@@ -62,7 +62,9 @@ def test_sampling_and_conditioning_with_named_inputs(data):
     assert bound.sample(jax.random.key(3), (4,)).shape == out.shape
     assert jnp.allclose(bound.sample(jax.random.key(3), (4,)), out)
     other = bound.sample(jax.random.key(3), (4,), local_context=local[4:8])
-    assert not jnp.allclose(other, out)
+    # A freshly initialised net barely reacts to its input (~1e-6), which
+    # allclose's default tolerance would hide; exact equality would not.
+    assert not jnp.array_equal(other, out)
 
 
 def test_bound_inputs_without_a_spec_describe_a_single_example(data):

@@ -63,7 +63,7 @@ def _gmm_kernel(bg_ref, x_ref, w_ref, o_ref, *, block_m, block_n, block_k):
         ks = pl.dslice(kk * block_k, block_k)
         a = plgpu.load(x_ref.at[rows, ks])
         b = plgpu.load(w_ref.at[g, ks, cols])
-        return acc + plgpu.dot(a, b)
+        return acc + jnp.dot(a, b)
 
     acc = lax.fori_loop(
         0, x_ref.shape[1] // block_k, body, jnp.zeros((block_m, block_n), jnp.float32)
@@ -80,7 +80,7 @@ def _tgmm_kernel(bs_ref, be_ref, x_ref, dy_ref, o_ref, *, block_m, block_k, bloc
         rows = pl.dslice(b * block_m, block_m)
         a = plgpu.load(x_ref.at[rows, ks])
         d = plgpu.load(dy_ref.at[rows, ns])
-        return acc + plgpu.dot(a.T, d)
+        return acc + jnp.dot(a.T, d)
 
     acc = lax.fori_loop(
         bs_ref[g], be_ref[g], body, jnp.zeros((block_k, block_n), jnp.float32)

@@ -72,11 +72,17 @@ def effective_sample_size(chain):
     return jnp.asarray(out)
 
 
-def run_chain(logdensity, initial, num_steps=4000, seed=0, kernel_fn=nuts):
+def run_chain(
+    logdensity, initial, num_steps=4000, seed=0, kernel_fn=nuts, warmup_steps=0
+):
     kernel = kernel_fn(logdensity)
     state = kernel.init(jax.random.key(seed), initial)
     params = kernel.init_params(state)
-    return MCMC(kernel).sample(jax.random.key(seed + 1), state, num_steps, params)
+    mcmc = MCMC(kernel)
+    if warmup_steps:
+        warm = mcmc.warmup(jax.random.key(seed + 2), None, state, params, warmup_steps)
+        state, params = warm.state, warm.params
+    return mcmc.sample(jax.random.key(seed + 1), state, num_steps, params)
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +208,11 @@ def test_both_gradient_estimators_train(stl):
 
 
 def test_neutra_improves_mixing_on_the_funnel():
-    """The efficiency claim. Measured 3.6x; asserted at 1.5x for headroom.
+    """The efficiency claim. Measured 5-40x over seeds; asserted at 1.5x.
+
+    Both chains are warmed up with the kernel's default adaptation: unadapted,
+    the starting step size is set by the gradient at the start point, which
+    says nothing about how well either geometry mixes.
 
     Note this is a statement about *mixing*, not accuracy. Reverse-KL VI is
     mode-seeking and the fitted flow under-covers the funnel's neck, so neither
@@ -215,8 +225,10 @@ def test_neutra_improves_mixing_on_the_funnel():
     fitted = rebuild(flow, state)
     transform = neutra(funnel_logdensity, fitted)
 
-    plain = run_chain(funnel_logdensity, jnp.zeros(dim), seed=3)
-    latent = run_chain(transform.logdensity, jnp.zeros(dim), seed=3)
+    plain = run_chain(funnel_logdensity, jnp.zeros(dim), seed=3, warmup_steps=500)
+    latent = run_chain(
+        transform.logdensity, jnp.zeros(dim), seed=3, warmup_steps=500
+    )
     mapped = transform.forward(latent.samples)
 
     assert jnp.all(jnp.isfinite(mapped))
