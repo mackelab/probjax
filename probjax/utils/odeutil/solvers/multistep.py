@@ -207,34 +207,29 @@ def build_am(
         # predictor: AB1 (Euler) or use the explicit Adams formula of matching order
         y_pred = y_n + dt * Fs[0]  # cheap predictor
 
-        # corrector: single Newton or fixed-point
+        # corrector: Newton iterations (fixed-point diverges on stiff problems).
+        # Runs a fixed number of iterations so the step stays jit-compatible.
         t_np1 = t_n + dt
         y_new = y_pred
         iters = 0
-        converged = True
         for _it in range(max(1, newton_iters)):
             rhs_hist = sum(a_j * f for a_j, f in zip(a_hist, Fs, strict=False))
             g = y_n + dt * (rhs_hist + a_m1 * drift(t_np1, y_new, *args)) - y_new
-            # simple fixed-point if no tol/iters specified
-            if newton_iters <= 1 and tol <= 0:
-                y_new = y_new + g  # Picard-like
-            else:
-                # Jacobian: I - h a_{-1} J_f
-                J = jax.jacfwd(lambda yy: drift(t_np1, yy, *args))(y_new)
-                mat = (
-                    jnp.eye(y_new.size, dtype=y_new.dtype).reshape(
-                        y_new.shape + y_new.shape
-                    )
-                    - dt * a_m1 * J
+            # Jacobian: I - h a_{-1} J_f
+            J = jax.jacfwd(lambda yy: drift(t_np1, yy, *args))(y_new)
+            mat = (
+                jnp.eye(y_new.size, dtype=y_new.dtype).reshape(
+                    y_new.shape + y_new.shape
                 )
-                # solve mat * delta = g
-                delta = jnp.linalg.solve(
-                    mat.reshape(y_new.size, y_new.size), g.reshape(-1)
-                ).reshape(y_new.shape)
-                y_new = y_new + delta
-                iters += 1
-                if jnp.linalg.norm(delta) < tol:
-                    break
+                - dt * a_m1 * J
+            )
+            # solve mat * delta = g
+            delta = jnp.linalg.solve(
+                mat.reshape(y_new.size, y_new.size), g.reshape(-1)
+            ).reshape(y_new.shape)
+            y_new = y_new + delta
+            iters += 1
+        converged = jnp.linalg.norm(delta) < tol
 
         f_np1 = drift(t_np1, y_new, *args)
         new_state = LMSState(
@@ -291,28 +286,26 @@ def build_bdf(
         t_np1 = t_n + dt
 
         # predictor: last y
+        # Newton iterations (fixed-point diverges on stiff problems). Runs a
+        # fixed number of iterations so the step stays jit-compatible.
         y_new = y_n
         iters = 0
         for _it in range(max(1, newton_iters)):
             g = a0 * y_new - (rhs + dt * b * drift(t_np1, y_new, *args))
-            if newton_iters <= 1 and tol <= 0:
-                y_new = y_new - g / a0  # fixed-point-ish (good if mildly stiff)
-            else:
-                J = jax.jacfwd(lambda yy: drift(t_np1, yy, *args))(y_new)
-                mat = (
-                    a0
-                    * jnp.eye(y_new.size, dtype=y_new.dtype).reshape(
-                        y_new.shape + y_new.shape
-                    )
-                    - dt * b * J
+            J = jax.jacfwd(lambda yy: drift(t_np1, yy, *args))(y_new)
+            mat = (
+                a0
+                * jnp.eye(y_new.size, dtype=y_new.dtype).reshape(
+                    y_new.shape + y_new.shape
                 )
-                delta = jnp.linalg.solve(
-                    mat.reshape(y_new.size, y_new.size), g.reshape(-1)
-                ).reshape(y_new.shape)
-                y_new = y_new - delta
-                iters += 1
-                if jnp.linalg.norm(delta) < tol:
-                    break
+                - dt * b * J
+            )
+            delta = jnp.linalg.solve(
+                mat.reshape(y_new.size, y_new.size), g.reshape(-1)
+            ).reshape(y_new.shape)
+            y_new = y_new - delta
+            iters += 1
+        converged = jnp.linalg.norm(delta) < tol
 
         f_np1 = drift(t_np1, y_new, *args)
         new_state = LMSState(
@@ -324,7 +317,7 @@ def build_bdf(
             hist_y=state.hist_y,
         )
         new_state = _append_history(new_state, t_np1, y_new, f_np1, order)
-        return new_state, LMSInfo(newton_iters=iters, converged=True)
+        return new_state, LMSInfo(newton_iters=iters, converged=converged)
 
     return step
 

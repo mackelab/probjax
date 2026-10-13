@@ -11,3 +11,15 @@ def require_ott():
             "`pip install 'probjax[wasserstein]'`."
         ) from error
     return costs, pointcloud, GaussianInitializer, linear_problem, sinkhorn
+
+
+def require_lineax():
+    """Import lineax, used for optional lineax solvers in linear operators."""
+    try:
+        import lineax
+    except ImportError as error:
+        raise ImportError(
+            "This operation requires lineax. Install it with "
+            "`pip install 'probjax[lineax]'`."
+        ) from error
+    return lineax

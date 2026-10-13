@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import jax.scipy.linalg
 
 from probjax.utils.functions import const_diffusion, linear_drift
+from probjax.utils.odeutil.solvers.exponential import compute_phi_functions
 from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
 from probjax.utils.special.phi1 import phi1_scalar
 from probjax.utils.typing import Array, ArrayLike, Callable, RngKey
@@ -58,6 +59,8 @@ def build_linear_exact_sde_step(
 
     G = diffusion.G
     if G.ndim == 1:
+        # Diagonal noise: use diag(G) so the covariance below still includes A.
+        G = jnp.diag(G)
         state_dim = G.shape[0]
         noise_dim_actual = state_dim
     else:
@@ -94,43 +97,34 @@ def build_linear_exact_sde_step(
             y_mean = expm_A * y0 if is_scalar else expm_A @ y0
         else:
             b = drift.b(t0 + dt)
-            phi1 = phi1_scalar(A_t * dt)
             if is_scalar:
-                y_mean = expm_A * y0 + dt * phi1 * b
+                y_mean = expm_A * y0 + dt * phi1_scalar(A_t * dt) * b
             else:
+                phi1 = compute_phi_functions(A_t, dt, k=1)[1]
                 y_mean = expm_A @ y0 + dt * (phi1 @ b)
 
         d = state_dim
 
-        if G.ndim == 1:
-            GGt_scalar = G**2
-            Q_diag = jnp.abs(dt) * GGt_scalar
-            y_sample = y_mean + jax.random.normal(rng, (d,)) * jnp.sqrt(Q_diag)
+        GGt = G @ G.T
+        if is_scalar:
+            # For scalar A, Q = integral_0^dt exp(2*A*s) ds * GGt
+            #                 = (exp(2*A*dt) - 1) / (2*A) * GGt
+            scalar_A = jnp.asarray(A_t).reshape(())
+            small_A = jnp.abs(scalar_A) < 1e-6
+            # When A is near zero: Q ≈ dt * GGt
+            Q_small = dt * GGt
+            Q_large = (jnp.exp(2 * scalar_A * dt) - 1.0) / (2 * scalar_A) * GGt
+            new_cov = jnp.where(small_A, Q_small, Q_large)
         else:
-            GGt = G @ G.T
-            if is_scalar:
-                # For scalar A with 2D G, use simplified covariance formula
-                # Q = integral_0^dt exp(2*A*s) ds * GGt
-                # For scalar A: Q = (exp(2*A*dt) - 1) / (2*A) * GGt
-                scalar_A = jnp.asarray(A_t).reshape(())
-                small_A = jnp.abs(scalar_A) < 1e-6
-                # When A is near zero: Q ≈ dt * GGt
-                Q_small = dt * GGt
-                # When A is not small: Q = (exp(2*A*dt) - 1) / (2*A) * GGt
-                Q_large = (jnp.exp(2 * scalar_A * dt) - 1.0) / (2 * scalar_A) * GGt
-                new_cov = jnp.where(small_A, Q_small, Q_large)
+            # Van Loan: the top-right block of expm(dt * [[A, GGt], [0, -A^T]])
+            # times exp(A^T dt) is Q = integral_0^dt exp(A s) GGt exp(A^T s) ds.
+            block = jnp.block([[A_t, GGt], [jnp.zeros((d, d)), -A_t.T]])
+            M = jax.scipy.linalg.expm(block * dt)
+            Phi = M[:d, :d]
+            new_cov = M[:d, d:] @ Phi.T
 
-                L = jnp.linalg.cholesky(new_cov + 1e-8 * jnp.eye(d))
-                y_sample = y_mean + L @ jax.random.normal(rng, (d,))
-            else:
-                block = jnp.block([[A_t, GGt], [jnp.zeros((d, d)), -A_t.T]])
-                M = jax.scipy.linalg.expm(block * dt)
-                Phi = M[:d, :d]
-                Q_block = M[:d, d:] @ Phi.T
-                new_cov = jnp.abs(dt) * Q_block
-
-                L = jnp.linalg.cholesky(new_cov + 1e-8 * jnp.eye(d))
-                y_sample = y_mean + L @ jax.random.normal(rng, (d,))
+        L = jnp.linalg.cholesky(new_cov + 1e-8 * jnp.eye(d))
+        y_sample = y_mean + L @ jax.random.normal(rng, (d,))
 
         return (
             LinearExactSDEState(t0=t0 + dt, y0=y_sample),

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] — preparing 0.2.0
 
 ### Added
+- Structured linear operators `Diagonal`, `Dense` and matrix-free `Function`
+  over arbitrary input/output shapes, with `solve`/`logdet` choosing the method
+  by structure (`psd=` selects Cholesky/CG), `expm`/`phi` matrix functions,
+  matrix-free `Jacobian(fn, x, args)`, and optional lineax solvers
+  (`pip install 'probjax[lineax]'`)
 - `DiffusionTransformer` accepts an optional per-token `local_context` of shape
   `[..., tokens, local_context_dim]`, concatenated to the tokens at the input,
   next to the global `context`
@@ -55,6 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never import flax or optax, and the flax-free training modules stay so
 
 ### Changed
+- **Breaking:** `LinearOperator(fn, in_dim, out_dim)` is now
+  `Function(fn, in_shape)`, `LinearOperator.from_array` is `Dense`, `.operator`
+  is `.mv`, operators scale by scalars only, and `solve`/`logdet` take
+  `solver=`/`psd=` instead of size-based `method=`/`dense_mem_limit=`
+  (see the migration guide)
 - Gradient-based training moved from `probjax.stats.fit` to
   `probjax.nn.training` (`batches`, `kernel`, `loop`, `mixin`), so
   `probjax.stats` no longer depends on flax or optax. `probjax.nn` still
@@ -129,6 +139,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ravel_args` are unchanged
 
 ### Fixed
+- Newton root finding: the tolerance floor used `finfo.precision` (a digit
+  count, 6 for float32), convergence flipped back and forth, and the second
+  return value was the solution instead of a convergence flag
+- Adams–Moulton/BDF correctors use Newton steps by default (the fixed-point
+  default diverged on stiff problems) and no longer break under `jit` with `tol>0`
+- `compute_phi_functions` returned `dt * exp(A dt)` instead of `phi_k(A dt)`,
+  which made the general exponential Euler/midpoint/RK4 integrators inexact
+- Exact linear ODE/SDE solvers use the matrix `phi_1` for dense drifts with a
+  bias, include the drift in the diagonal-noise covariance, and drop an extra
+  `dt` factor from the Van Loan covariance
 - Run on JAX 0.11: batching rules no longer use the removed `batching.not_mapped`,
   Pallas kernels no longer use the removed `pl.dot`, `scan` inverses read the new
   `ft_in` layout, and the new `log2` primitive is invertible; JAX 0.9–0.11 are

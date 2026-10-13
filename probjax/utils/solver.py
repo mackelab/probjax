@@ -28,11 +28,11 @@ def newton_raphson(f, x0, tol=1e-6, max_iter=50):
 
     x = x.reshape(-1)
 
-    def scan_fn(carry, i):
+    def scan_fn(carry, _):
         tol_reached, x = carry
 
         def true_fn(x):
-            return x, jnp.inf
+            return x, 0.0
 
         def false_fn(x):
             y = _f(x)
@@ -42,12 +42,13 @@ def newton_raphson(f, x0, tol=1e-6, max_iter=50):
             return x, jnp.linalg.norm(delta_x)
 
         x, delta_x = jax.lax.cond(tol_reached, true_fn, false_fn, x)
-        tol_reached = delta_x < tol
-        return (tol_reached, x), x
+        # Once converged, stay converged (the skipped step reports zero change).
+        tol_reached = tol_reached | (delta_x < tol)
+        return (tol_reached, x), None
 
     tol_reached = False
-    converged, x = jax.lax.scan(scan_fn, (tol_reached, x), jnp.arange(max_iter))
-    return x[-1].reshape(shape), converged[-1]
+    (converged, x), _ = jax.lax.scan(scan_fn, (tol_reached, x), None, length=max_iter)
+    return x.reshape(shape), converged
 
 
 def root(fun, x0, args=(), method="newton-raphson", tol=1e-3, max_iter=20):
@@ -66,8 +67,7 @@ def root(fun, x0, args=(), method="newton-raphson", tol=1e-3, max_iter=20):
 
     # Dtype constraints on tolerance
     dtype = x0.dtype
-    precission = jnp.finfo(dtype).precision
-    tol = max(tol, precission)
+    tol = max(tol, jnp.finfo(dtype).eps)
 
     _f = lambda x: fun(x, *args)
 

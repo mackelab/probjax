@@ -112,22 +112,20 @@ def compute_phi_functions(A: Array, dt: ArrayLike, k: int = 1):
     """
     Compute phi_0, phi_1, ..., phi_k for matrix A and step dt via block
     matrix exponential.
-    Phi_k(z) = ∫_0^1 e^{z*(1-s)} s^{k-1}/(k-1)! ds
+    Phi_k(z) = ∫_0^1 e^{z*(1-s)} s^{k-1}/(k-1)! ds, evaluated at z = A*dt.
     """
     dt = jnp.asarray(dt)
     n = A.shape[0]
     aug = jnp.zeros((n * (k + 1), n * (k + 1)), dtype=A.dtype)
 
-    # block diagonal A
-    for i in range(k + 1):
-        aug = aug.at[i * n : (i + 1) * n, i * n : (i + 1) * n].set(A)
-
-    # superdiagonal identities
+    # Only the first block carries A; the superdiagonal identities stay unscaled
+    # so the top block row of expm(aug) is [phi_0, phi_1, ..., phi_k](A dt).
+    aug = aug.at[:n, :n].set(A * dt)
     eye = jnp.eye(n, dtype=A.dtype)
     for i in range(k):
         aug = aug.at[i * n : (i + 1) * n, (i + 1) * n : (i + 2) * n].set(eye)
 
-    exp_aug = jax.scipy.linalg.expm(aug * dt)
+    exp_aug = jax.scipy.linalg.expm(aug)
 
     phi = []
     for i in range(k + 1):
