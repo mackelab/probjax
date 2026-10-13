@@ -13,6 +13,7 @@ from probjax.utils.odeutil.solvers.base import (
     ODEState,
     register_method,
 )
+from probjax.utils.odeutil.solvers.exponential import compute_phi_functions
 from probjax.utils.special.phi1 import phi1_scalar
 from probjax.utils.typing import Array, ArrayLike, Callable
 
@@ -86,10 +87,10 @@ def build_linear_exact_step(drift: linear_drift) -> Callable:
                 y1 = expm_A * y0 if is_scalar or is_diag else expm_A @ y0
             else:
                 b = drift.b(t0 + dt, *args)
-                phi1 = phi1_scalar(A * dt)
                 if is_scalar or is_diag:
-                    y1 = expm_A * y0 + dt * phi1 * b
+                    y1 = expm_A * y0 + dt * phi1_scalar(A * dt) * b
                 else:
+                    phi1 = compute_phi_functions(A, dt, k=1)[1]
                     y1 = expm_A @ y0 + dt * (phi1 @ b)
 
             return (
@@ -115,9 +116,8 @@ def build_linear_exact_step(drift: linear_drift) -> Callable:
             y1 = expm_A @ y0
         else:
             b = drift.b(t0 + dt, *args)
-            # Use general matrix case
-            phi1_mat = jax.scipy.linalg.expm(A_t * dt) - jnp.eye(A_t.shape[0])
-            y1 = expm_A @ y0 + phi1_mat @ b
+            phi1 = compute_phi_functions(A_t, dt, k=1)[1]
+            y1 = expm_A @ y0 + dt * (phi1 @ b)
 
         return (
             LinearExactState(t0=t0 + dt, y0=y1),
