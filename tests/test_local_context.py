@@ -6,7 +6,6 @@ import pytest
 from flax import nnx
 
 from probjax.nn.nets.diffusion_transformer import DiffusionTransformer
-from probjax.nn.nets.transformer import Transformer
 
 LOCAL_DIM = 3
 KEY = jax.random.key(0)
@@ -22,10 +21,6 @@ def _call(net, x, local_context=None):
 
 # name -> (builder taking local_context_dim, x shape)
 NETS = {
-    "transformer": (
-        lambda dim: Transformer(16, 2, 2, 8, local_context_dim=dim, rngs=nnx.Rngs(0)),
-        (2, 6, 16),
-    ),
     "diffusion_transformer": (
         lambda dim: DiffusionTransformer(
             4,

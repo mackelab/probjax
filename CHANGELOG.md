@@ -8,9 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] — preparing 0.2.0
 
 ### Added
-- `DiffusionTransformer` (and `Transformer`) accept an optional per-token
-  `local_context` of shape `[..., tokens, local_context_dim]`, fused in every
-  block, next to the global `context`
+- `DiffusionTransformer` accepts an optional per-token `local_context` of shape
+  `[..., tokens, local_context_dim]`, concatenated to the tokens at the input,
+  next to the global `context`
 - Zensical documentation with executable examples, rendered PPL/Kalman/SMC
   tutorials, migration notes and a release checklist
 - Stateful training with `FitState`/`FitInfo`, resumable optimizer/RNG state,
