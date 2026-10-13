@@ -7,8 +7,8 @@ import jax.numpy as jnp
 import jax.scipy.linalg
 
 from probjax.utils.functions import const_diffusion, linear_drift
-from probjax.utils.guards import call_if_callable
-from probjax.utils.odeutil.solvers.exponential import compute_phi_functions
+from probjax.utils.linear_operator import Diagonal
+from probjax.utils.odeutil.solvers.linear_exact import affine_flow
 from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
 from probjax.utils.special.phi1 import phi1_scalar
 from probjax.utils.typing import Array, ArrayLike, Callable, RngKey
@@ -58,81 +58,54 @@ def build_linear_exact_sde_step(
             "linear_exact_sde requires `diffusion` to be a `const_diffusion`"
         )
 
-    G = diffusion.G
-    if G.ndim == 1:
-        # Diagonal noise: use diag(G) so the covariance below still includes A.
-        G = jnp.diag(G)
-        state_dim = G.shape[0]
-        noise_dim_actual = state_dim
-    else:
-        state_dim = G.shape[0]
-        noise_dim_actual = G.shape[1] if noise_dim is None else noise_dim
-
-    is_const = drift.is_constant
-    if is_const:
-        A = call_if_callable(drift.A, jnp.asarray(0.0))
-        # Pytree-flowing drifts arrive with ``A`` as a traced array, so we
-        # branch on its static shape info (ndim) rather than on values.
-        A_sym = jnp.asarray(A)
-        is_scalar = A_sym.ndim == 0 or (A_sym.ndim == 1 and A_sym.shape[0] == 1)
-    else:
-        A = None
-        is_scalar = False
+    G = jnp.asarray(diffusion.G)
+    diagonal_noise = G.ndim <= 1
+    if not diagonal_noise and noise_dim is None:
+        noise_dim = G.shape[1]
 
     def step_fn(
         rng: RngKey, state: LinearExactSDEState, dt: ArrayLike
     ) -> tuple[LinearExactSDEState, LinearExactSDEInfo]:
         t0, y0 = state.t0, state.y0
         dt = jnp.asarray(dt)
+        A = drift.operator(t0, y0.shape)
+        b = None if drift.b is None else drift.b(t0 + dt)
+        y_mean = affine_flow(A, b, y0, dt)
 
-        A_t = A if is_const else drift.A(t0)
-
-        # Compute exp(A * dt) - handle scalar case
-        if is_scalar:
-            scalar_A = jnp.asarray(A_t).reshape(())
-            expm_A = jnp.exp(scalar_A * dt)
+        noise = jax.random.normal(rng, y0.shape)
+        if isinstance(A, Diagonal) and diagonal_noise:
+            # Independent coordinates: Q_ii = g_i^2 * dt * phi_1(2 a_i dt).
+            a = jnp.broadcast_to(A.diag, y0.shape)
+            variance = jnp.broadcast_to(G, y0.shape) ** 2 * dt * phi1_scalar(2 * a * dt)
+            y_sample = y_mean + jnp.sqrt(jnp.maximum(variance, 0)) * noise
         else:
-            expm_A = jax.scipy.linalg.expm(A_t * dt)
+            cov = _process_noise_cov(A, G, dt, y0.size)
+            L = jnp.linalg.cholesky(cov + 1e-8 * jnp.eye(y0.size))
+            y_sample = y_mean + (L @ noise.ravel()).reshape(y0.shape)
 
-        if drift.b is None:
-            y_mean = expm_A * y0 if is_scalar else expm_A @ y0
-        else:
-            b = drift.b(t0 + dt)
-            if is_scalar:
-                y_mean = expm_A * y0 + dt * phi1_scalar(A_t * dt) * b
-            else:
-                phi1 = compute_phi_functions(A_t, dt, k=1)[1]
-                y_mean = expm_A @ y0 + dt * (phi1 @ b)
-
-        d = state_dim
-
-        GGt = G @ G.T
-        if is_scalar:
-            # For scalar A, Q = integral_0^dt exp(2*A*s) ds * GGt
-            #                 = (exp(2*A*dt) - 1) / (2*A) * GGt
-            scalar_A = jnp.asarray(A_t).reshape(())
-            small_A = jnp.abs(scalar_A) < 1e-6
-            # When A is near zero: Q ≈ dt * GGt
-            Q_small = dt * GGt
-            Q_large = (jnp.exp(2 * scalar_A * dt) - 1.0) / (2 * scalar_A) * GGt
-            new_cov = jnp.where(small_A, Q_small, Q_large)
-        else:
-            # Van Loan: the top-right block of expm(dt * [[A, GGt], [0, -A^T]])
-            # times exp(A^T dt) is Q = integral_0^dt exp(A s) GGt exp(A^T s) ds.
-            block = jnp.block([[A_t, GGt], [jnp.zeros((d, d)), -A_t.T]])
-            M = jax.scipy.linalg.expm(block * dt)
-            Phi = M[:d, :d]
-            new_cov = M[:d, d:] @ Phi.T
-
-        L = jnp.linalg.cholesky(new_cov + 1e-8 * jnp.eye(d))
-        y_sample = y_mean + L @ jax.random.normal(rng, (d,))
-
+        dWt = jax.random.normal(rng, (y0.size if diagonal_noise else noise_dim,))
         return (
             LinearExactSDEState(t0=t0 + dt, y0=y_sample),
-            LinearExactSDEInfo(dWt=jax.random.normal(rng, (noise_dim_actual,))),
+            LinearExactSDEInfo(dWt=dWt),
         )
 
     return step_fn
+
+
+def _process_noise_cov(A, G: Array, dt: Array, size: int) -> Array:
+    """``Q = integral_0^dt exp(A s) G G^T exp(A^T s) ds``."""
+    if G.ndim <= 1:
+        G = jnp.diag(jnp.broadcast_to(G, (size,)))
+    GGt = G @ G.T
+    if isinstance(A, Diagonal):
+        a = jnp.broadcast_to(A.diag, (size,))
+        return GGt * dt * phi1_scalar((a[:, None] + a[None, :]) * dt)
+    # Van Loan: expm(dt * [[A, GGt], [0, -A^T]]) has F12 in its top-right
+    # block and Q = F12 @ exp(A dt)^T.
+    A = A.as_array()
+    block = jnp.block([[A, GGt], [jnp.zeros_like(A), -A.T]])
+    M = jax.scipy.linalg.expm(block * dt)
+    return M[:size, size:] @ M[:size, :size].T
 
 
 class linear_exact_sde(SDESolverAPI):

@@ -38,6 +38,33 @@ creating arrays and pass `dtype=jnp.float64`. Tight tolerances alone cannot
 recover precision unavailable in the chosen dtype. Compare against a finer grid
 or tighter tolerances for the quantity you actually need.
 
+## Linear drifts
+
+Wrap linear dynamics `dy/dt = A y + b(t)` in `linear_drift` to use the exact
+solvers `linear_exact` (ODE) and `linear_exact_sde` (SDE). `A` can be an array
+(0-d or 1-d for a diagonal, 2-d for a dense matrix), a structured
+`LinearOperator`, or a function of time returning either. The structure decides
+the cost: a `Diagonal` drift exponentiates elementwise, a `Dense` drift uses a
+matrix exponential, and a matrix-free `Function` must be densified with
+`as_dense()` first.
+
+```python
+import jax.numpy as jnp
+from probjax.utils import odeint
+from probjax.utils.functions import linear_drift
+from probjax.utils.linear_operator import Dense, Diagonal
+
+grid = jnp.linspace(0.0, 1.0, 5)
+start = jnp.array([1.0, 2.0])
+diagonal_decay = linear_drift(A=Diagonal(jnp.array([-1.0, -0.5])))
+trajectory = odeint(diagonal_decay, start, grid, method="linear_exact")
+assert jnp.allclose(trajectory[-1], start * jnp.exp(jnp.array([-1.0, -0.5])))
+
+rotation = linear_drift(A=Dense(jnp.array([[0.0, 1.0], [-1.0, 0.0]])))
+terminal = odeint(rotation, start, grid, method="linear_exact", collect_trace=False)
+assert jnp.allclose(jnp.linalg.norm(terminal), jnp.linalg.norm(start), rtol=1e-5)
+```
+
 ## Gradients
 
 Fixed-grid integration differentiates the discrete stepping computation and

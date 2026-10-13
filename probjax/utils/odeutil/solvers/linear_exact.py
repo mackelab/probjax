@@ -2,20 +2,16 @@ from __future__ import annotations
 
 from typing import Optional
 
-import jax
 import jax.numpy as jnp
-import jax.scipy.linalg
 
 from probjax.utils.functions import linear_drift
-from probjax.utils.guards import call_if_callable
+from probjax.utils.linear_operator import LinearOperator
 from probjax.utils.odeutil.solvers.base import (
     ODEInfo,
     ODESolverAPI,
     ODEState,
     register_method,
 )
-from probjax.utils.odeutil.solvers.exponential import compute_phi_functions
-from probjax.utils.special.phi1 import phi1_scalar
 from probjax.utils.typing import Array, ArrayLike, Callable
 
 
@@ -44,86 +40,30 @@ def init_linear_exact(
     return LinearExactState(t0=t0, y0=y0)
 
 
+def affine_flow(A: LinearOperator, b: Optional[Array], y0: Array, dt: Array) -> Array:
+    """Solution of ``dy/dt = A y + b`` after ``dt``, for constant ``A`` and ``b``:
+    ``exp(A dt) y0 + dt * phi_1(A dt) b``."""
+    if b is None:
+        return A.expm(dt) @ y0
+    phi0, phi1 = A.phi(dt, k=1)
+    return phi0 @ y0 + dt * (phi1 @ jnp.broadcast_to(b, y0.shape))
+
+
 def build_linear_exact_step(drift: linear_drift) -> Callable:
     if not isinstance(drift, linear_drift):
         raise TypeError("linear_exact requires a `linear_drift`")
 
-    is_const = drift.is_constant
-
-    if is_const:
-        A = call_if_callable(drift.A, jnp.asarray(0.0))
-        # Pytree-flowing drifts arrive with ``A`` as a traced array, so we
-        # branch on its static shape info (ndim) rather than on values. A
-        # vector ``A`` (ndim == 1) is interpreted as the diagonal of a
-        # diagonal matrix; a full 2D ``A`` uses the dense matrix exponential.
-        A_sym = jnp.asarray(A)
-        is_scalar = A_sym.ndim == 0 or (A_sym.ndim == 1 and A_sym.shape[0] == 1)
-        is_diag = (not is_scalar) and A_sym.ndim == 1
-
-        if is_scalar:
-
-            def compute_expm(dt):
-                scalar_A = jnp.asarray(A).reshape(())
-                return jnp.exp(scalar_A * dt)
-
-        elif is_diag:
-
-            def compute_expm(dt):
-                return jnp.exp(A * dt)
-
-        else:
-
-            def compute_expm(dt):
-                return jax.scipy.linalg.expm(A * dt)
-
-        def step_fn(
-            state: LinearExactState, dt: ArrayLike, *args
-        ) -> tuple[LinearExactState, LinearExactInfo]:
-            t0, y0 = state.t0, state.y0
-            dt = jnp.asarray(dt)
-
-            expm_A = compute_expm(dt)
-
-            if drift.b is None:
-                y1 = expm_A * y0 if is_scalar or is_diag else expm_A @ y0
-            else:
-                b = drift.b(t0 + dt, *args)
-                if is_scalar or is_diag:
-                    y1 = expm_A * y0 + dt * phi1_scalar(A * dt) * b
-                else:
-                    phi1 = compute_phi_functions(A, dt, k=1)[1]
-                    y1 = expm_A @ y0 + dt * (phi1 @ b)
-
-            return (
-                LinearExactState(t0=t0 + dt, y0=y1),
-                LinearExactInfo(),
-            )
-
-        return step_fn
-
-    # Non-constant A case - need to handle dynamic shapes
-    # For simplicity, assume matrix case and let JAX handle it
     def step_fn(
         state: LinearExactState, dt: ArrayLike, *args
     ) -> tuple[LinearExactState, LinearExactInfo]:
         t0, y0 = state.t0, state.y0
         dt = jnp.asarray(dt)
-
-        A_t = drift.A(t0)
-        # For time-varying A, use general matrix exponential
-        expm_A = jax.scipy.linalg.expm(A_t * dt)
-
-        if drift.b is None:
-            y1 = expm_A @ y0
-        else:
-            b = drift.b(t0 + dt, *args)
-            phi1 = compute_phi_functions(A_t, dt, k=1)[1]
-            y1 = expm_A @ y0 + dt * (phi1 @ b)
-
-        return (
-            LinearExactState(t0=t0 + dt, y0=y1),
-            LinearExactInfo(),
-        )
+        # A time-varying A is frozen at the step start (exact for constant A).
+        A = drift.operator(t0, y0.shape)
+        b = None if drift.b is None else drift.b(t0 + dt, *args)
+        return LinearExactState(
+            t0=t0 + dt, y0=affine_flow(A, b, y0, dt)
+        ), LinearExactInfo()
 
     return step_fn
 

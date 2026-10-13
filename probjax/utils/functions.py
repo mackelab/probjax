@@ -27,8 +27,9 @@ from typing import Any, Callable, Optional, Union
 import jax
 import jax.numpy as jnp
 
-from probjax.utils.guards import call_if_callable, is_array_like
+from probjax.utils.guards import is_array_like
 from probjax.utils.jaxutils import ravel_args
+from probjax.utils.linear_operator import LinearOperator, as_operator
 from probjax.utils.typing import Array, ArrayLike, PyTree
 
 
@@ -344,29 +345,28 @@ class additive_diffusion(Drift):
 class linear_drift(Drift):
     """Marker for linear drift ``dy/dt = A(t) y + b(t)``.
 
-    If ``A`` is an array the matrix exponential can be computed once; if
-    ``A`` is a callable it's evaluated at each step. Flows as a pytree: an
-    array ``A`` becomes a traced leaf; a callable ``A`` or ``b`` rides as
-    aux data.
+    ``A`` is a :class:`~probjax.utils.linear_operator.LinearOperator`, an
+    array (0-d/1-d: diagonal, 2-d: dense) or a callable ``t -> A`` returning
+    either. Flows as a pytree: an array or operator ``A`` becomes traced
+    leaves; a callable ``A`` or ``b`` rides as aux data.
     """
 
-    A: Union[Array, Callable[[ArrayLike], Array]]
+    A: Union[Array, LinearOperator, Callable[[ArrayLike], Any]]
     b: Optional[Callable[..., Array]] = None
 
     def __call__(self, t: ArrayLike, y: PyTree, *args: Any) -> PyTree:
-
-        A_t = call_if_callable(self.A, t)
-
-        A_concrete = jnp.asarray(A_t)
-        if A_concrete.ndim == 0:
-            linear_part = jax.tree_util.tree_map(lambda yi: A_t * yi, y)
-        else:
-            linear_part = jax.tree_util.tree_map(lambda yi: A_t @ yi, y)
-
+        linear_part = jax.tree_util.tree_map(
+            lambda yi: self.operator(t, jnp.shape(yi)) @ yi, y
+        )
         if self.b is None:
             return linear_part
         bias_part = self.b(t, *args)
         return jax.tree_util.tree_map(lambda li, bi: li + bi, linear_part, bias_part)
+
+    def operator(self, t: ArrayLike, shape: tuple[int, ...]) -> LinearOperator:
+        """``A(t)`` as an operator on states of ``shape``."""
+        A_t = self.A if self.is_constant else self.A(t)
+        return as_operator(A_t, shape)
 
     def _bind_args_impl(self, args: tuple[Any, ...]) -> "linear_drift":
         if self.b is None:
@@ -383,7 +383,8 @@ class linear_drift(Drift):
 
     @property
     def is_constant(self) -> bool:
-        return not callable(self.A)
+        # Operators are callable (they apply themselves), so test for them first.
+        return isinstance(self.A, LinearOperator) or not callable(self.A)
 
 
 @register_drift
