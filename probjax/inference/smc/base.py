@@ -19,6 +19,15 @@ SMCKernel = Kernel
 
 
 class SMCKernelAPI(metaclass=API):
+    """Base class for SMC kernels.
+
+    Subclass it and set ``init``, ``init_params`` and ``build_step`` as static
+    methods. Document the kernel in the subclass docstring:
+    ``cls(logprior_fn, loglikelihood_fn, **options)`` forwards ``options`` to
+    ``build_step`` (and the ones ``init`` accepts to ``init``) and returns an
+    ``SMCKernel``.
+    """
+
     @staticmethod
     def init(particles, rng_key: Optional[RngKey] = None, **kwargs) -> SMCState:
         raise NotImplementedError("init method must be implemented")
@@ -145,18 +154,3 @@ def init_mcmc_params_from_logdensity(
     )
     params = mcmc_kernel.init_params(mcmc_state, **init_param_kwargs)
     return _ensure_param_batch(_params_to_dict(params), shared=True)
-
-
-def make_smc_api(
-    *,
-    name: str,
-    init_fn: Callable,
-    init_params_fn: Callable,
-    build_step_fn: Callable,
-):
-    attrs = {
-        "init": staticmethod(init_fn),
-        "init_params": staticmethod(init_params_fn),
-        "build_step": staticmethod(build_step_fn),
-    }
-    return type(name, (SMCKernelAPI,), attrs)

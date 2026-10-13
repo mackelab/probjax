@@ -10,20 +10,40 @@ Pure kernels, adaptation utilities and compiled runners. See
 
 ## MCMC kernels
 
-::: probjax.inference.hmc
+::: probjax.inference.mcmc.hmc.hmc
+    options:
+      heading: probjax.inference.hmc
 ::: probjax.inference.nuts
-::: probjax.inference.dynamic_hmc
-::: probjax.inference.mala
-::: probjax.inference.mclmc
+::: probjax.inference.mcmc.dynamic_hmc.dynamic_hmc
+    options:
+      heading: probjax.inference.dynamic_hmc
+::: probjax.inference.mcmc.mala.mala
+    options:
+      heading: probjax.inference.mala
+::: probjax.inference.mcmc.mclmc.mclmc
+    options:
+      heading: probjax.inference.mclmc
 ::: probjax.inference.adjusted_mclmc
-::: probjax.inference.mh
+::: probjax.inference.mcmc.mh.mh
+    options:
+      heading: probjax.inference.mh
 ::: probjax.inference.gauss_rwmh
-::: probjax.inference.imh
+::: probjax.inference.mcmc.imh.imh
+    options:
+      heading: probjax.inference.imh
 ::: probjax.inference.neural_imh
-::: probjax.inference.slice
-::: probjax.inference.latent_slice
-::: probjax.inference.elliptical_slice
-::: probjax.inference.arms
+::: probjax.inference.mcmc.slice.slice
+    options:
+      heading: probjax.inference.slice
+::: probjax.inference.mcmc.latent_slice.latent_slice
+    options:
+      heading: probjax.inference.latent_slice
+::: probjax.inference.mcmc.elliptical_slice.elliptical_slice
+    options:
+      heading: probjax.inference.elliptical_slice
+::: probjax.inference.mcmc.arms.arms
+    options:
+      heading: probjax.inference.arms
 ::: probjax.inference.a2rms
 ::: probjax.inference.ars
 ::: probjax.inference.gaussian_imh
@@ -72,11 +92,19 @@ Pure kernels, adaptation utilities and compiled runners. See
 
 ## Sequential Monte Carlo
 
-::: probjax.inference.smc
+::: probjax.inference.smc.smc
+    options:
+      heading: probjax.inference.smc
 ::: probjax.inference.adaptive_smc
-::: probjax.inference.persistent_smc
-::: probjax.inference.adaptive_persistent_smc
-::: probjax.inference.path_smc
+::: probjax.inference.smc.persistent_smc.persistent_smc
+    options:
+      heading: probjax.inference.persistent_smc
+::: probjax.inference.smc.adaptive_persistent_smc.adaptive_persistent_smc
+    options:
+      heading: probjax.inference.adaptive_persistent_smc
+::: probjax.inference.smc.path_smc.path_smc
+    options:
+      heading: probjax.inference.path_smc
 ::: probjax.inference.GeometricPath
 ::: probjax.inference.PartialPosteriorsPath
 
@@ -125,11 +153,17 @@ Temporal inference advances through physical observation times. See the
 
 ## Filtering and smoothing
 
-::: probjax.inference.kalman_filter
-::: probjax.inference.extended_kalman_filter
+::: probjax.inference.filtering.kalman_filter.kalman_filter
+    options:
+      heading: probjax.inference.kalman_filter
+::: probjax.inference.filtering.extended_kalman_filter.extended_kalman_filter
+    options:
+      heading: probjax.inference.extended_kalman_filter
 ::: probjax.inference.filtering.unscented_kalman_filter
 ::: probjax.inference.filtering.square_root_kf
-::: probjax.inference.rank_reduced_kalman_filter
+::: probjax.inference.filtering.rank_reduced_kalman_filter.rank_reduced_kalman_filter
+    options:
+      heading: probjax.inference.rank_reduced_kalman_filter
 ::: probjax.inference.sq_kalman_filter
 ::: probjax.inference.ParticleFilter
 ::: probjax.inference.particle_smoother
@@ -139,7 +173,9 @@ Temporal inference advances through physical observation times. See the
 ## Variational inference
 
 ::: probjax.inference.flow_vi
-::: probjax.inference.neutra
+::: probjax.inference.vi.neutra.neutra
+    options:
+      heading: probjax.inference.neutra
 ::: probjax.inference.FlowVIState
 ::: probjax.inference.FlowVIInfo
 ::: probjax.inference.NeuTraTransform

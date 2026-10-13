@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.inference.mcmc.adaptation import slice_step_size_adaptor
-from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
+from probjax.inference.mcmc.base import MarkovKernelAPI, make_step_from_kernel
 from probjax.utils.typing import Array, PyTree, RngKey
 
 
@@ -90,13 +90,24 @@ def _latent_slice_adaptation(
     return slice_step_size_adaptor(target_num_evaluations, max_evaluations, **kwargs)
 
 
-latent_slice = make_kernel_api(
-    name="latent_slice",
-    init_fn=init,
-    init_params_fn=init_params,
-    build_step_fn=build_step,
-    default_adaptation_fn=_latent_slice_adaptation,
-)
+class latent_slice(MarkovKernelAPI):
+    """Latent slice sampling with an auxiliary, per-coordinate bracket width.
+
+    The bracket width is resampled every step from an exponential with rate
+    ``step_size``, so it adapts to the local scale. Tunable parameters come
+    from ``kernel.init_params(state, step_size=0.5)`` (see
+    :class:`LatentSliceParams`). Default adaptation: step size towards a
+    target number of density evaluations.
+
+    Args:
+        logdensity_fn: Log density of the target.
+        max_evals: Maximum number of density evaluations per step.
+    """
+
+    init = staticmethod(init)
+    init_params = staticmethod(init_params)
+    build_step = staticmethod(build_step)
+    default_adaptation_fn = staticmethod(_latent_slice_adaptation)
 
 
 def accept_reject_proposal(

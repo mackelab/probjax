@@ -13,8 +13,8 @@ from probjax.inference.mcmc._dynamic_stepping import (
     init_dynamic_arg,
 )
 from probjax.inference.mcmc.base import (
+    MarkovKernelAPI,
     init_hmc_like_params,
-    make_kernel_api,
     scale_step_size_by_grad,
 )
 from probjax.inference.mcmc.warmup import mclmc_warmup
@@ -75,21 +75,7 @@ def build_mclmc_step(
     logdensity_fn: Callable,
     integrator: Callable = blackjax.mcmc.integrators.isokinetic_mclachlan,
 ) -> Callable:
-    """Build a step function for the unadjusted MCLMC sampler.
-
-    Parameters
-    ----------
-    logdensity_fn : callable
-        Function returning the (unnormalized) log density at a position.
-    integrator : callable, optional
-        Symplectic integrator used to propagate the dynamics. Defaults to the
-        isokinetic MCLachlan integrator.
-
-    Returns
-    -------
-    callable
-        Step function mapping ``(key, state, params)`` to a new state and info.
-    """
+    """Build the step; see :class:`mclmc` for the arguments."""
     # blackjax >= 1.6 takes logdensity_fn and inverse_mass_matrix on the kernel
     # rather than the builder, so the kernel no longer closes over per-step
     # parameters and can be built once here.
@@ -112,18 +98,36 @@ def build_mclmc_step(
     return step
 
 
-mclmc = make_kernel_api(
-    name="mclmc",
-    init_fn=blackjax.mclmc.init,
-    init_params_fn=init_mclmc_params,
-    build_step_fn=build_mclmc_step,
+def _mclmc_adaptation(*, mclmc_kernel=None, adjusted=False, **kwargs):
     # Defaults to a standard blackjax MCLMC kernel; pass mclmc_kernel=
     # explicitly to match custom integrator settings.
-    default_adaptation_fn=lambda *, mclmc_kernel=None, **kwargs: mclmc_warmup(
-        blackjax.mclmc.build_kernel() if mclmc_kernel is None else mclmc_kernel,
-        **kwargs,
-    ),
-)
+    if mclmc_kernel is None:
+        mclmc_kernel = blackjax.mclmc.build_kernel()
+    return mclmc_warmup(mclmc_kernel, adjusted=adjusted, **kwargs)
+
+
+def _adjusted_mclmc_adaptation(**kwargs):
+    return _mclmc_adaptation(adjusted=True, **kwargs)
+
+
+class mclmc(MarkovKernelAPI):
+    """Microcanonical Langevin Monte Carlo without Metropolis adjustment.
+
+    Isokinetic dynamics with partial momentum refreshment; asymptotically
+    biased, so tune ``step_size`` and ``L`` with :func:`mclmc_warmup` (the
+    default adaptation). Tunable parameters come from
+    ``kernel.init_params(state, step_size=0.1, L=1.0,
+    inverse_mass_matrix=None)`` (see :class:`MCLMCParams`).
+
+    Args:
+        logdensity_fn: Log density of the target.
+        integrator: Isokinetic integrator from ``blackjax.mcmc.integrators``.
+    """
+
+    init = staticmethod(blackjax.mclmc.init)
+    init_params = staticmethod(init_mclmc_params)
+    build_step = staticmethod(build_mclmc_step)
+    default_adaptation_fn = staticmethod(_mclmc_adaptation)
 
 
 class AdjustedMCLMCParams(NamedTuple):
@@ -190,24 +194,7 @@ def build_step(
     integrator: Callable = blackjax.mcmc.integrators.isokinetic_mclachlan,
     divergence_threshold: float = 1000.0,
 ) -> Callable:
-    """Build a step function for the adjusted MCLMC sampler.
-
-    Parameters
-    ----------
-    logdensity_fn : callable
-        Function returning the (unnormalized) log density at a position.
-    integrator : callable, optional
-        Symplectic integrator used to propagate the dynamics. Defaults to the
-        isokinetic MCLachlan integrator.
-    divergence_threshold : float, optional
-        Energy error above which a transition is flagged as divergent. Default
-        is 1000.0.
-
-    Returns
-    -------
-    callable
-        Step function mapping ``(key, state, params)`` to a new state and info.
-    """
+    """Build the step; see :class:`adjusted_mclmc` for the arguments."""
     kernel = blackjax.adjusted_mclmc.build_kernel(
         integrator=integrator,
         divergence_threshold=divergence_threshold,
@@ -233,19 +220,25 @@ def build_step(
     return step
 
 
-adjusted_mclmc = make_kernel_api(
-    name="adjusted_mclmc",
-    init_fn=blackjax.adjusted_mclmc.init,
-    init_params_fn=init_params,
-    build_step_fn=build_step,
-    # Defaults to a standard blackjax MCLMC kernel; pass mclmc_kernel=
-    # explicitly to match custom integrator settings.
-    default_adaptation_fn=lambda *, mclmc_kernel=None, **kwargs: mclmc_warmup(
-        blackjax.mclmc.build_kernel() if mclmc_kernel is None else mclmc_kernel,
-        adjusted=True,
-        **kwargs,
-    ),
-)
+class adjusted_mclmc(MarkovKernelAPI):
+    """Metropolis-adjusted MCLMC with a fixed number of integration steps.
+
+    Tunable parameters come from ``kernel.init_params(state, step_size=0.5,
+    num_integration_steps=10, inverse_mass_matrix=None,
+    L_proposal_factor=inf)`` (see :class:`AdjustedMCLMCParams`). Default
+    adaptation: :func:`mclmc_warmup` with ``adjusted=True``.
+
+    Args:
+        logdensity_fn: Log density of the target.
+        integrator: Isokinetic integrator from ``blackjax.mcmc.integrators``.
+        divergence_threshold: Energy error above which a transition is
+            flagged as divergent.
+    """
+
+    init = staticmethod(blackjax.adjusted_mclmc.init)
+    init_params = staticmethod(init_params)
+    build_step = staticmethod(build_step)
+    default_adaptation_fn = staticmethod(_adjusted_mclmc_adaptation)
 
 
 class AdjustedMCLMCDynamicParams(NamedTuple):
@@ -309,35 +302,7 @@ def build_dynamic_step(
     next_random_arg_fn: Optional[Callable] = None,
     integration_steps_fn: Optional[Callable] = None,
 ) -> Callable:
-    """Build a step function for the adjusted MCLMC dynamic sampler.
-
-    Parameters
-    ----------
-    logdensity_fn : callable
-        Function returning the (unnormalized) log density at a position.
-    average_integration_steps : int, optional
-        Average number of integration steps. Default is 10.
-    integration_steps_sequence : str, optional
-        Name of the integration-step sequence (e.g. ``"halton"``). Default is
-        ``"halton"``.
-    divergence_threshold : float, optional
-        Energy error above which a transition is flagged as divergent. Default
-        is 1000.0.
-    integrator : callable, optional
-        Symplectic integrator used to propagate the dynamics. Defaults to the
-        isokinetic MCLachlan integrator.
-    next_random_arg_fn : callable, optional
-        Function advancing the random generator argument. Required when
-        ``integration_steps_fn`` is provided.
-    integration_steps_fn : callable, optional
-        Function selecting the number of integration steps. When ``None`` it is
-        derived from ``integration_steps_sequence``.
-
-    Returns
-    -------
-    callable
-        Step function mapping ``(key, state, params)`` to a new state and info.
-    """
+    """Build the step; see :class:`adjusted_mclmc_dynamic` for the arguments."""
     if integration_steps_fn is None:
         random_arg_next_fn, integration_steps_fn = get_dynamic_stepping(
             integration_steps_sequence,
@@ -407,16 +372,30 @@ def init_dynamic(
     )
 
 
-adjusted_mclmc_dynamic = make_kernel_api(
-    name="adjusted_mclmc_dynamic",
-    init_fn=init_dynamic,
-    init_params_fn=init_dynamic_params,
-    build_step_fn=build_dynamic_step,
-    # Defaults to a standard blackjax MCLMC kernel; pass mclmc_kernel=
-    # explicitly to match custom integrator settings.
-    default_adaptation_fn=lambda *, mclmc_kernel=None, **kwargs: mclmc_warmup(
-        blackjax.mclmc.build_kernel() if mclmc_kernel is None else mclmc_kernel,
-        adjusted=True,
-        **kwargs,
-    ),
-)
+class adjusted_mclmc_dynamic(MarkovKernelAPI):
+    """Metropolis-adjusted MCLMC with a varying number of integration steps.
+
+    Tunable parameters come from ``kernel.init_params(state, step_size=0.5,
+    inverse_mass_matrix=None, L_proposal_factor=inf)`` (see
+    :class:`AdjustedMCLMCDynamicParams`). Default adaptation:
+    :func:`mclmc_warmup` with ``adjusted=True``.
+
+    Args:
+        logdensity_fn: Log density of the target.
+        average_integration_steps: Mean number of integrator steps.
+        integration_steps_sequence: How the step counts are drawn:
+            ``"halton"``, ``"random"`` or a ``(next_random_arg_fn,
+            integration_steps_fn)`` pair.
+        divergence_threshold: Energy error above which a transition is
+            flagged as divergent.
+        integrator: Isokinetic integrator from ``blackjax.mcmc.integrators``.
+        next_random_arg_fn: Advances the random argument; required with
+            ``integration_steps_fn``.
+        integration_steps_fn: Custom step-count function, overriding
+            ``integration_steps_sequence``.
+    """
+
+    init = staticmethod(init_dynamic)
+    init_params = staticmethod(init_dynamic_params)
+    build_step = staticmethod(build_dynamic_step)
+    default_adaptation_fn = staticmethod(_adjusted_mclmc_adaptation)

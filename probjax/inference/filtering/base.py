@@ -75,8 +75,6 @@ def make_filter_api(
 ):
     """Create a FilterAPI subclass with minimal boilerplate.
 
-    Analogous to make_kernel_api() in the MCMC module.
-
     Args:
         name: Name for the new class.
         init_fn: Function to initialize filter state.

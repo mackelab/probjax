@@ -4,7 +4,7 @@ import blackjax
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
+from probjax.inference.mcmc.base import MarkovKernelAPI, make_step_from_kernel
 from probjax.utils.typing import Array, PyTree
 
 
@@ -59,9 +59,20 @@ def _make_loglikelihood(
     return loglikelihood_fn
 
 
-elliptical_slice = make_kernel_api(
-    name="elliptical_slice",
-    init_fn=blackjax.elliptical_slice.init,
-    init_params_fn=init_params,
-    build_step_fn=build_elliptical_slice_step,
-)
+class elliptical_slice(MarkovKernelAPI):
+    """Elliptical slice sampling for targets with a Gaussian prior.
+
+    The target is split as ``N(mean, cov_matrix) * likelihood``. Rejection
+    free and without tunable parameters.
+
+    Args:
+        logdensity_fn: Log density of the full target.
+        cov_matrix: Prior covariance, a diagonal (vector) or a dense matrix.
+        mean: Prior mean.
+        loglikelihood_fn: Log likelihood. Defaults to ``logdensity_fn`` minus
+            the Gaussian prior log density.
+    """
+
+    init = staticmethod(blackjax.elliptical_slice.init)
+    init_params = staticmethod(init_params)
+    build_step = staticmethod(build_elliptical_slice_step)

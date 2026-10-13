@@ -8,7 +8,7 @@ from probjax.inference.mcmc._dynamic_stepping import (
     init_dynamic_arg,
 )
 from probjax.inference.mcmc.adaptation import window_warmup
-from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
+from probjax.inference.mcmc.base import MarkovKernelAPI, make_step_from_kernel
 from probjax.inference.mcmc.hmc import init_params
 from probjax.utils.typing import RngKey
 
@@ -48,10 +48,27 @@ def build_dynamic_hmc_step(
     )
 
 
-dynamic_hmc = make_kernel_api(
-    name="dynamic_hmc",
-    init_fn=init,
-    init_params_fn=init_params,
-    build_step_fn=build_dynamic_hmc_step,
-    default_adaptation_fn=window_warmup,
-)
+class dynamic_hmc(MarkovKernelAPI):
+    """HMC whose number of integration steps changes from step to step.
+
+    The step count follows a deterministic or random sequence with the given
+    average, which avoids the periodicity of fixed-length HMC. Tunable
+    parameters are the same as for :class:`hmc`. Default adaptation:
+    :func:`window_warmup`.
+
+    Args:
+        logdensity_fn: Log density of the target.
+        average_integration_steps: Mean number of integrator steps.
+        integration_steps_sequence: How the step counts are drawn:
+            ``"halton"`` (low-discrepancy sequence), ``"random"`` (uniform in
+            ``[1, 2 * average)``) or a ``(next_random_arg_fn,
+            integration_steps_fn)`` pair.
+        divergence_threshold: Energy error above which a transition is
+            flagged as divergent.
+        integrator: Symplectic integrator from ``blackjax.mcmc.integrators``.
+    """
+
+    init = staticmethod(init)
+    init_params = staticmethod(init_params)
+    build_step = staticmethod(build_dynamic_hmc_step)
+    default_adaptation_fn = staticmethod(window_warmup)

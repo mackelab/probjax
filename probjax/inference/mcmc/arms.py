@@ -3,7 +3,7 @@ from typing import Callable, NamedTuple, Tuple
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.mcmc.base import make_kernel_api
+from probjax.inference.mcmc.base import MarkovKernelAPI
 from probjax.inference.rejection import univariate as uni
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
@@ -98,17 +98,39 @@ def _arms_step(logdensity_fn: Callable, *, control: bool) -> Callable:
     return step
 
 
-arms = make_kernel_api(
-    name="arms",
-    init_fn=init,
-    init_params_fn=init_params,
-    build_step_fn=lambda logdensity_fn, **_: _arms_step(logdensity_fn, control=False),
-)
+class arms(MarkovKernelAPI):
+    """Adaptive rejection Metropolis sampling for scalar targets.
+
+    Proposes from a piecewise-exponential envelope of the log density and
+    corrects with Metropolis-Hastings; rejected proposals refine the
+    envelope. The envelope is set up by ``kernel.init(key, position,
+    init_points=None, lb=-inf, ub=inf, max_points=50)``. No tunable
+    parameters.
+
+    Args:
+        logdensity_fn: Log density of the scalar target.
+    """
+
+    init = staticmethod(init)
+    init_params = staticmethod(init_params)
+    build_step = staticmethod(
+        lambda logdensity_fn, **_: _arms_step(logdensity_fn, control=False)
+    )
 
 
-a2rms = make_kernel_api(
-    name="a2rms",
-    init_fn=init,
-    init_params_fn=init_params,
-    build_step_fn=lambda logdensity_fn, **_: _arms_step(logdensity_fn, control=True),
-)
+class a2rms(MarkovKernelAPI):
+    """ARMS that also refines the envelope after some accepted proposals.
+
+    Like :class:`arms`, but an accepted proposal still updates the envelope
+    with a probability that grows with the envelope's gap to the target, so
+    the envelope keeps improving where ARMS would stop.
+
+    Args:
+        logdensity_fn: Log density of the scalar target.
+    """
+
+    init = staticmethod(init)
+    init_params = staticmethod(init_params)
+    build_step = staticmethod(
+        lambda logdensity_fn, **_: _arms_step(logdensity_fn, control=True)
+    )

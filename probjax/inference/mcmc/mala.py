@@ -4,7 +4,7 @@ import blackjax
 
 from probjax.inference.mcmc.adaptation import step_size_adaptor
 from probjax.inference.mcmc.base import (
-    make_kernel_api,
+    MarkovKernelAPI,
     make_step_from_kernel,
     scale_step_size_by_grad,
 )
@@ -27,10 +27,20 @@ def init_params(state: PyTree, step_size: float = 1e-2) -> MALAParams:
     return MALAParams(step_size=step_size)
 
 
-mala = make_kernel_api(
-    name="mala",
-    init_fn=blackjax.mala.init,
-    init_params_fn=init_params,
-    build_step_fn=build_step,
-    default_adaptation_fn=step_size_adaptor,
-)
+class mala(MarkovKernelAPI):
+    """Metropolis-adjusted Langevin algorithm.
+
+    Proposes a gradient step plus Gaussian noise and accepts it with a
+    Metropolis-Hastings correction. Tunable parameters come from
+    ``kernel.init_params(state, step_size=1e-2)`` (see :class:`MALAParams`);
+    the step size is scaled by the initial gradient norm. Default adaptation:
+    :func:`step_size_adaptor`.
+
+    Args:
+        logdensity_fn: Log density of the target.
+    """
+
+    init = staticmethod(blackjax.mala.init)
+    init_params = staticmethod(init_params)
+    build_step = staticmethod(build_step)
+    default_adaptation_fn = staticmethod(step_size_adaptor)
