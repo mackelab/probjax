@@ -3,10 +3,11 @@
 Step doubling: at every attempt, compute one full ``dt`` Euler-Maruyama step
 and two ``dt/2`` steps that share the same Brownian increment
 (``dW_full = dW_first_half + dW_second_half``). The difference between the
-two solutions is an estimate of the local truncation error. The step is
-accepted iff the controller is happy with that error and dt is updated via
-the standard Hairer–Wanner formula carried by
-:class:`~probjax.utils.sdeutil.adaptive.SDEStepSizeAdaptor`.
+two solutions is an estimate of the local truncation error, which updates
+dt via the standard Hairer–Wanner formula carried by
+:class:`~probjax.utils.sdeutil.adaptive.SDEStepSizeAdaptor`. Steps are not
+rejected on their own noise (that biases the path's quadratic variation); see
+:mod:`probjax.utils.sdeutil.adaptive`.
 
 Scope:
     Diagonal noise + Euler-Maruyama. SRK / Milstein already emit embedded
@@ -204,6 +205,7 @@ def _sdeint_adaptive(
             return only the terminal state.
     """
     t0 = ts[0]
+    adaptor = adaptor.bind_interval(t0, ts[-1])
     f0 = drift(t0, y0)
     dt_init = adaptor.initial_step_size(drift, (), t0, y0, f0)
     bs_init = adaptor.init_brownian(rng, t0, ts[-1], noise_shape)

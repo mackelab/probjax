@@ -72,30 +72,46 @@ def iterated_stochastic_integral_diagonal(key: PRNGKey, dW: Array, dt: Array, **
     return I_diag
 
 
+def iterated_stratonovich_integral_diagonal(
+    key: PRNGKey, dW: Array, dt: Array, **kwargs
+):
+    return 0.5 * jnp.square(dW)
+
+
 def iterated_stochastic_integral_commutative_noise(
     key: PRNGKey, dW: Array, dt: Array, **kwargs
 ):
-    I = jnp.outer(dW, dW) - dt * jnp.eye(dW.shape[0])  # noqa: E741
-    return I
+    """Ito iterated integrals ``I_ij = (dW_i dW_j - delta_ij dt) / 2``."""
+    return 0.5 * (jnp.outer(dW, dW) - dt * jnp.eye(dW.shape[0]))
+
+
+def iterated_stratonovich_integral_commutative_noise(
+    key: PRNGKey, dW: Array, dt: Array, **kwargs
+):
+    """Stratonovich iterated integrals ``J_ij = dW_i dW_j / 2``."""
+    return 0.5 * jnp.outer(dW, dW)
 
 
 def get_iterated_integrals_fn(noise_type: str, sde_type: str):
     """Returns the iterated integrals function for a given noise type and sde type."""
+    if sde_type not in ("ito", "stratonovich"):
+        raise NotImplementedError(f"Unknown sde_type {sde_type!r}.")
     if noise_type == "diagonal":
-        return iterated_stochastic_integral_diagonal
+        if sde_type == "ito":
+            return iterated_stochastic_integral_diagonal
+        return iterated_stratonovich_integral_diagonal
     elif noise_type == "commutative":
-        return iterated_stochastic_integral_commutative_noise
+        if sde_type == "ito":
+            return iterated_stochastic_integral_commutative_noise
+        return iterated_stratonovich_integral_commutative_noise
     elif noise_type == "general":
         if sde_type == "ito":
             return lambda *args, **kwargs: iterated_ito_integral_general(
                 *args, **kwargs
             )[0]
-        elif sde_type == "stratonovich":
-            return lambda *args, **kwargs: iterated_stratowich_integral_general(
-                *args, **kwargs
-            )[0]
-        else:
-            raise NotImplementedError
+        return lambda *args, **kwargs: iterated_stratowich_integral_general(
+            *args, **kwargs
+        )[0]
     else:
         raise NotImplementedError
 
@@ -183,25 +199,33 @@ def brownian_tree(
     key, init_key = jrandom.split(key, 2)
     shape = w0.shape
 
+    # Every tree interval owns a key; its midpoint noise and its two children's
+    # keys are derived from it, so each node of the tree draws independent noise.
+    def split_interval_key(interval_key):
+        mid_key, left_key, right_key = jrandom.split(interval_key, 3)
+        return mid_key, left_key, right_key
+
     t_half = t0 + 0.5 * (t1 - t0)
     w1 = jrandom.normal(init_key, shape) * jnp.sqrt(t1 - t0)
-    w_half = brownian_bridge(key, t_half, t0, t1, w0, w1)
+    mid_key, _, _ = split_interval_key(key)
+    w_half = brownian_bridge(mid_key, t_half, t0, t1, w0, w1)
 
     def body(_, state):
-        s0, sh, s1, ws0, wsh, ws1 = state
-        k1, k2 = jrandom.split(key, 2)
+        s0, sh, s1, ws0, wsh, ws1, interval_key = state
+        _, left_key, right_key = split_interval_key(interval_key)
         cond = t > sh
         s = jnp.where(cond, sh, s0)
         u = jnp.where(cond, s1, sh)
         w_s = jnp.where(cond, wsh, ws0)
         w_u = jnp.where(cond, ws1, wsh)
-        kk = jnp.where(cond, k1, k2)
+        child_key = jnp.where(cond, right_key, left_key)
+        mid_key, _, _ = split_interval_key(child_key)
         new_t = s + 0.5 * (u - s)
-        new_w = brownian_bridge(kk, new_t, s, u, w_s, w_u)
-        return (s, new_t, u, w_s, new_w, w_u)
+        new_w = brownian_bridge(mid_key, new_t, s, u, w_s, w_u)
+        return (s, new_t, u, w_s, new_w, w_u, child_key)
 
-    init_state = (t0, t_half, t1, w0, w_half, w1)
-    t0, t_half, t1, w0, w_half, w1 = lax.fori_loop(0, depth, body, init_state)
+    init_state = (t0, t_half, t1, w0, w_half, w1, key)
+    t0, t_half, t1, w0, w_half, w1, _ = lax.fori_loop(0, depth, body, init_state)
 
     rescale_t = (t - t0) / (t1 - t0)
     A = jnp.array([[2, -4, 2], [-3, 4, -1], [1, 0, 0]])

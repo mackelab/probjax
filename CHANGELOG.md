@@ -170,6 +170,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Exact linear ODE/SDE solvers use the matrix `phi_1` for dense drifts with a
   bias, include the drift in the diagonal-noise covariance, and drop an extra
   `dt` factor from the Van Loan covariance
+- Explicit Runge-Kutta tableaux: `ralston3`, `ssprk3`, `ralston4` and `rk6` had
+  wrong coefficients and only converged at first order; `rk6` is now Butcher's
+  7-stage order-6 method. All registered fixed-step methods are tested against
+  their nominal order
+- `odeint(..., dtype=jnp.float64)` now builds the Runge-Kutta coefficients in
+  that dtype (they stayed float32, flooring the error of `rk3`/`rk4` near 1e-8)
+- Adaptive ODE solvers (`dopri5`, `tsit5`, ...) with `collect_trace=False` returned
+  the internal solver state, which overshoots `ts[-1]`, instead of the solution
+  at `ts[-1]`
+- `sdeint(..., sde_type="stratonovich")` was silently treated as Ito for
+  diagonal noise. `milstein` now implements it; solvers that cannot
+  (Euler-Maruyama, SRI, exponential, adaptive stepping) raise
+  `NotImplementedError` unless the noise is additive
+- Adaptive SDE stepping rejected steps on their own noise, which biased the
+  quadratic variation (and so the Ito correction) at every tolerance: the weak
+  adaptor's variance collapsed as `rtol` tightened and the strong adaptor kept
+  a constant ~15% bias. Steps are now always accepted and the error only sets
+  the next step size
+- `brownian_tree` reused one key for every node, giving wrong variances
+  (e.g. `Var W(0.1) = 0.30`); each node now draws independent noise. The
+  default `tree_depth` of `StrongStepSizeAdaptor` is now 20, and its step
+  size is kept above 64 leaf widths
+- Commutative-noise iterated integrals were missing a factor 1/2 (Milstein
+  converged at order 0.5); Stratonovich is now supported for them too
+- `method="srk"`, documented but never registered, is now an alias of `sri1`
 - Run on JAX 0.11: batching rules no longer use the removed `batching.not_mapped`,
   Pallas kernels no longer use the removed `pl.dot`, `scan` inverses read the new
   `ft_in` layout, and the new `log2` primitive is invertible; JAX 0.9–0.11 are

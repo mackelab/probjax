@@ -19,7 +19,7 @@ def _odeint_on_grid(
     collect_trace: bool = True,
 ) -> Tuple[ODEState, Any]:
     # Time steps
-    solver = method(drift)  # type: ignore
+    solver = method(drift, dtype=ts.dtype)  # type: ignore
     dts = ts[1:] - ts[:-1]
 
     t0 = ts[0]

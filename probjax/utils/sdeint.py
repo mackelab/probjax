@@ -65,7 +65,11 @@ def sdeint(
             - ``"exp_euler_maruyama"``: Exponential Euler-Maruyama
               (requires :class:`~probjax.utils.functions.split_drift`)
             - ``"milstein"``: Milstein (order 1.0)
-            - ``"srk"``: Stochastic Runge-Kutta methods
+            - ``"sri1"``, ``"sri2"``: Stochastic Runge-Kutta methods
+              (strong order 1.0); ``"srk"`` is an alias of ``"sri1"``
+            - ``"linear_exact_sde"``: exact transition sampling for linear SDEs
+              (requires :class:`~probjax.utils.functions.linear_drift` and
+              :class:`~probjax.utils.functions.const_diffusion`)
         dtype: Computation dtype (default ``float32``).
         sde_type: ``"ito"`` (default) or ``"stratonovich"``. Noise layout
             is inferred from the diffusion output shape — scalar/vector
@@ -85,12 +89,13 @@ def sdeint(
             adaptive step-doubling Euler-Maruyama scheme driven by the
             given controller. Pass
             :class:`~probjax.utils.sdeutil.adaptive.WeakStepSizeAdaptor`
-            for distributional / weak quantities (resamples noise on
-            rejection — cheaper) or
-            :class:`~probjax.utils.sdeutil.adaptive.StrongStepSizeAdaptor`
-            for per-path consistency (refines a single Brownian path via
-            a virtual tree). Currently restricted to **diagonal noise**
-            and ignores ``method`` (always uses Euler-Maruyama with
+            for distributional / weak quantities (fresh noise from the key)
+            or :class:`~probjax.utils.sdeutil.adaptive.StrongStepSizeAdaptor`
+            for per-path consistency (increments from a single virtual
+            Brownian tree, so runs at different tolerances are comparable
+            per path). Steps are never rejected on their own noise; the
+            local error only sets the next step size. Currently restricted to
+            **diagonal noise** and ignores ``method`` (always uses Euler-Maruyama with
             step-doubling error estimation). Defaults to ``None``
             (fixed-step integration via ``method``).
 
