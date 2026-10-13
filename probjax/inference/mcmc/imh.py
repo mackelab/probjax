@@ -8,7 +8,9 @@ import optax
 from blackjax.mcmc.random_walk import RWInfo, RWState
 from flax import nnx
 
+from probjax.inference.adaptation import compose_adaptors
 from probjax.inference.base import Kernel, Warmup, WarmupResult
+from probjax.inference.mcmc.adaptation import covariance_adaptor, mean_adaptor
 from probjax.inference.mcmc.base import make_kernel_api
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
@@ -174,7 +176,9 @@ def neural_imh(logdensity_fn: Callable, proposal, *, event_spec=None) -> Kernel:
         )
         return next_state, RWInfo(acceptance_rate, is_accepted, proposed_state)
 
-    return Kernel(init, step, init_params)
+    return Kernel(
+        init, step, init_params, lambda: neural_imh_warmup(proposal)
+    )
 
 
 def _concatenate_data(left, right):
@@ -326,11 +330,10 @@ def neural_imh_warmup(
 
 
 class GaussianIMHParams(NamedTuple):
-    """Parameters for the Gaussian IMH kernel."""
+    """Parameters for the Gaussian IMH kernel (arrays only, JIT-safe)."""
 
     mean: Array
     cov: Array
-    unflatten: Callable
 
 
 def init_gaussian_imh_params(
@@ -338,15 +341,15 @@ def init_gaussian_imh_params(
 ) -> GaussianIMHParams:
     """Initialize the parameters for the Gaussian IMH kernel."""
     position = state.position if hasattr(state, "position") else state
-    flat_position, unflatten = jax.flatten_util.ravel_pytree(position)
+    flat_position, _ = jax.flatten_util.ravel_pytree(position)
     if mean is None:
         mean = flat_position
     if cov is None:
         cov = jnp.ones_like(flat_position)
-    return GaussianIMHParams(mean=mean, cov=cov, unflatten=unflatten)
+    return GaussianIMHParams(mean=mean, cov=cov)
 
 
-def proposal_gaussian(key: RngKey, *, params: GaussianIMHParams):
+def proposal_gaussian(key: RngKey, *, params: GaussianIMHParams, unflatten: Callable):
     """Generate a new position from a Gaussian proposal."""
     mean = params.mean
     cov = params.cov
@@ -355,7 +358,32 @@ def proposal_gaussian(key: RngKey, *, params: GaussianIMHParams):
         new_position = mean + jnp.sqrt(cov) * eps
     else:
         new_position = mean + jnp.dot(jnp.linalg.cholesky(cov), eps)
-    return params.unflatten(new_position)
+    return unflatten(new_position)
+
+
+def build_gaussian_imh_step(logdensity_fn: Callable) -> Callable:
+    """Build the Gaussian IMH step, deriving the unravel fn from state.
+
+    The pytree structure is static, so ``ravel_pytree`` runs fine inside the
+    compiled step — and no Python callable ends up in the JIT-traced params.
+    """
+    kernel = blackjax.irmh.build_kernel()
+
+    def step(
+        key: RngKey, state: RWState, params: GaussianIMHParams
+    ) -> Tuple[RWState, RWInfo]:
+        _, unflatten = jax.flatten_util.ravel_pytree(state.position)
+        _proposal_fn = partial(proposal_gaussian, params=params, unflatten=unflatten)
+        _proposal_logpdf = partial(wrap_logpdf(proposal_gaussian_logpdf), params=params)
+        return kernel(
+            key,
+            state,
+            logdensity_fn,
+            proposal_distribution=_proposal_fn,
+            proposal_logdensity_fn=_proposal_logpdf,
+        )
+
+    return step
 
 
 def proposal_gaussian_logpdf(state, *, params: GaussianIMHParams):
@@ -370,13 +398,17 @@ def proposal_gaussian_logpdf(state, *, params: GaussianIMHParams):
         return jax.scipy.stats.multivariate_normal.logpdf(flat_position, mean, cov)
 
 
+def _gaussian_imh_adaptation():
+    return compose_adaptors(
+        mean=mean_adaptor(field="mean"),
+        cov=covariance_adaptor(field="cov", output="covariance"),
+    )
+
+
 gaussian_imh = make_kernel_api(
     name="gaussian_imh",
     init_fn=blackjax.irmh.init,
     init_params_fn=init_gaussian_imh_params,
-    build_step_fn=partial(
-        build_imh_step,
-        proposal_fn=proposal_gaussian,
-        proposal_logpdf=proposal_gaussian_logpdf,
-    ),
+    build_step_fn=build_gaussian_imh_step,
+    default_adaptation_fn=_gaussian_imh_adaptation,
 )

@@ -3,11 +3,13 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.adaptation import compose_adaptors
-from probjax.inference.mcmc import gauss_rwmh, hmc, mala
+from probjax.inference.adaptation import as_warmup, compose_adaptors
+from probjax.inference.base import Adaptor, Warmup
+from probjax.inference.mcmc import arms, gaussian_imh, gauss_rwmh, hmc, mala
 from probjax.inference.mcmc.adaptation import (
     covariance_adaptor,
     mass_matrix_adaptor,
+    mean_adaptor,
     step_size_adaptor,
     window_warmup,
 )
@@ -100,6 +102,84 @@ def test_window_warmup_ports_blackjax_window_state_machine():
     assert jnp.isfinite(result.params.step_size)
     assert result.params.inverse_mass_matrix.shape == (2,)
     assert jnp.all(jnp.isfinite(result.params.inverse_mass_matrix))
+
+
+def test_mean_adaptor_tracks_running_mean():
+    class State(NamedTuple):
+        position: jax.Array
+
+    adaptor = mean_adaptor()
+    params = {"mean": jnp.zeros(2)}
+    adaptor_state = adaptor.init(State(jnp.zeros(2)), params)
+    for value in (jnp.array([1.0, 2.0]), jnp.array([3.0, 4.0])):
+        adaptor_state, params, _ = adaptor.update(
+            State(value), None, adaptor_state, params
+        )
+    params, _ = adaptor.finalize(adaptor_state, params)
+
+    assert params["mean"].shape == (2,)
+    assert jnp.allclose(params["mean"], jnp.array([2.0, 3.0]))
+
+
+def test_warmup_accepts_bare_adaptor_like_as_warmup():
+    kernel = mala(_logdensity)
+    state = kernel.init(jax.random.key(0), jnp.zeros(2))
+    params = kernel.init_params(state)
+    runner = MCMC(kernel, verbose=False)
+
+    auto = runner.warmup(jax.random.key(1), step_size_adaptor(), state, params, 10)
+    explicit = runner.warmup(
+        jax.random.key(1), as_warmup(step_size_adaptor()), state, params, 10
+    )
+
+    assert isinstance(kernel.default_adaptation(), Adaptor)
+    assert float(auto.params.step_size) == float(explicit.params.step_size)
+
+
+def test_warmup_uses_kernel_default_when_omitted():
+    kernel = hmc(_logdensity, num_integration_steps=3)
+    state = kernel.init(jax.random.key(0), jnp.ones(2))
+    params = kernel.init_params(state, step_size=0.1)
+    runner = MCMC(kernel, verbose=False)
+
+    assert isinstance(kernel.default_adaptation(), Warmup)
+    defaulted = runner.warmup(jax.random.key(1), state=state, params=params, num_steps=30)
+    explicit = runner.warmup(
+        jax.random.key(1), window_warmup(), state, params, 30
+    )
+
+    assert float(defaulted.params.step_size) == float(explicit.params.step_size)
+
+
+def test_warmup_without_default_raises_informatively():
+    kernel = arms(lambda x: -0.5 * x**2)
+    state = kernel.init(jnp.array(0.0), rng_key=jax.random.key(0))
+    params = kernel.init_params(state)
+
+    assert kernel.default_adaptation is None
+    try:
+        MCMC(kernel, verbose=False).warmup(
+            jax.random.key(1), state=state, params=params, num_steps=5
+        )
+    except ValueError as error:
+        assert "no default adaptation" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_gaussian_imh_default_adaptation_tunes_mean_and_cov():
+    kernel = gaussian_imh(_logdensity)
+    state = kernel.init(jax.random.key(0), jnp.zeros(2))
+    params = kernel.init_params(state, cov=50.0 * jnp.ones(2))
+
+    result = MCMC(kernel, verbose=False).warmup(
+        jax.random.key(1), state=state, params=params, num_steps=10
+    )
+
+    assert result.params.mean.shape == (2,)
+    assert result.params.cov.shape == (2,)
+    assert jnp.all(jnp.isfinite(result.params.mean))
+    assert jnp.all(jnp.isfinite(result.params.cov))
 
 
 def test_smc_acceptance_adaptor_preserves_shared_shape():

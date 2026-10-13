@@ -100,6 +100,31 @@ def covariance_adaptor(
     return Adaptor(init, update, finalize)
 
 
+def mean_adaptor(
+    *,
+    field: str = "mean",
+    diagonal: bool = True,
+) -> Adaptor:
+    """Local proposal-mean estimator backed by BlackJAX Welford updates."""
+    init_mean, update_mean, final_mean = welford_algorithm(diagonal)
+
+    def init(state, params):
+        position, _ = jax.flatten_util.ravel_pytree(state.position)
+        get_param(params, field)
+        return CovarianceAdaptorState(init_mean(position.size))
+
+    def update(state, _info, adaptor_state, params):
+        position, _ = jax.flatten_util.ravel_pytree(state.position)
+        state_out = update_mean(adaptor_state.welford_state, position)
+        return CovarianceAdaptorState(state_out), params, None
+
+    def finalize(adaptor_state, params):
+        _, _, mean = final_mean(adaptor_state.welford_state)
+        return replace_params(params, **{field: mean}), None
+
+    return Adaptor(init, update, finalize)
+
+
 def slice_step_size_adaptor(
     target_num_evaluations: float,
     max_evaluations: int,

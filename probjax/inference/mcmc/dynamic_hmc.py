@@ -7,6 +7,7 @@ from probjax.inference.mcmc._dynamic_stepping import (
     get_dynamic_stepping,
     init_dynamic_arg,
 )
+from probjax.inference.mcmc.adaptation import window_warmup
 from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
 from probjax.inference.mcmc.hmc import init_params
 from probjax.utils.typing import RngKey
@@ -52,4 +53,5 @@ dynamic_hmc = make_kernel_api(
     init_fn=init,
     init_params_fn=init_params,
     build_step_fn=build_dynamic_hmc_step,
+    default_adaptation_fn=window_warmup,
 )

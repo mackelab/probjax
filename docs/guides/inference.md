@@ -47,7 +47,12 @@ tuned = MCMC(kernel).adapt(jax.random.key(1), step_size_adaptor(), state, params
 
 `window_warmup`, `pathfinder_warmup` and `mclmc_warmup` cover the usual
 strategies; `step_size_adaptor`, `mass_matrix_adaptor` and `covariance_adaptor`
-compose for custom ones.
+compose for custom ones. Each kernel also carries its recommended policy as
+`kernel.default_adaptation` — either an `Adaptor` or a `Warmup`
+(`None` when there is nothing to tune), so
+`MCMC(kernel).warmup(key, state=state, params=params, num_steps=n)` just works.
+`warmup()` accepts a bare adaptor (auto-wrapped) or a full warmup policy;
+pass `adaptation=` explicitly to override the default.
 
 ## Sequential Monte Carlo and filtering
 

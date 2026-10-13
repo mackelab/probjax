@@ -82,11 +82,21 @@ def build_step(logdensity_fn: Callable, max_evals: int = 100) -> Callable:
     )
 
 
+def _latent_slice_adaptation(
+    *, target_num_evaluations=5, max_evaluations=100, **kwargs
+):
+    """Default adaptation; ``max_evaluations`` must match the kernel's ``max_evals``."""
+    from probjax.inference.mcmc.adaptation import slice_step_size_adaptor
+
+    return slice_step_size_adaptor(target_num_evaluations, max_evaluations, **kwargs)
+
+
 latent_slice = make_kernel_api(
     name="latent_slice",
     init_fn=init,
     init_params_fn=init_params,
     build_step_fn=build_step,
+    default_adaptation_fn=_latent_slice_adaptation,
 )
 
 

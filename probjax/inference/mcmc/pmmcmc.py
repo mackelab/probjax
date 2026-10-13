@@ -138,4 +138,7 @@ def pseudo_marginal(
     def init_params(state, *args, **kwargs):
         return inner_kernel_cls.init_params(state, *args, **kwargs)
 
-    return MarkovKernel(init, step, init_params)
+    # Inherit the inner kernel's recommended warmup (None if it has none).
+    return MarkovKernel(
+        init, step, init_params, getattr(inner_kernel_cls, "default_adaptation_fn", None)
+    )

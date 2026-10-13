@@ -1,6 +1,7 @@
 from probjax.inference.mcmc.adaptation import (
     covariance_adaptor,
     mass_matrix_adaptor,
+    mean_adaptor,
     slice_step_size_adaptor,
     step_size_adaptor,
     window_warmup,

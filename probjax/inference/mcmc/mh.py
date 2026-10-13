@@ -7,6 +7,8 @@ import jax.numpy as jnp
 from blackjax.mcmc.random_walk import RWInfo, RWState
 from jax.flatten_util import ravel_pytree
 
+from probjax.inference.adaptation import compose_adaptors
+from probjax.inference.mcmc.adaptation import covariance_adaptor, step_size_adaptor
 from probjax.inference.mcmc.base import make_kernel_api
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
@@ -89,6 +91,13 @@ def gaussian_transition_proposal(key, position, params: RWParamsGauss):
     return unflatten(new_position)
 
 
+def _gauss_rwmh_adaptation():
+    return compose_adaptors(
+        step=step_size_adaptor(target=0.234),
+        scale=covariance_adaptor(field="scale", output="standard_deviation"),
+    )
+
+
 gauss_rwmh = make_kernel_api(
     name="gauss_rwmh",
     init_fn=blackjax.rmh.init,
@@ -96,4 +105,5 @@ gauss_rwmh = make_kernel_api(
     build_step_fn=partial(
         build_mh_step, transition_proposal_fn=gaussian_transition_proposal
     ),
+    default_adaptation_fn=_gauss_rwmh_adaptation,
 )

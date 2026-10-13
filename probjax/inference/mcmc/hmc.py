@@ -4,6 +4,7 @@ import blackjax
 import jax.numpy as jnp
 from jax.flatten_util import ravel_pytree
 
+from probjax.inference.mcmc.adaptation import window_warmup
 from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
 from probjax.utils.typing import Array, ArrayLike, PyTree
 
@@ -108,6 +109,7 @@ hmc = make_kernel_api(
     init_fn=blackjax.hmc.init,
     init_params_fn=init_params,
     build_step_fn=build_step,
+    default_adaptation_fn=window_warmup,
 )
 
 
@@ -132,4 +134,5 @@ nuts = make_kernel_api(
     init_fn=blackjax.hmc.init,
     init_params_fn=init_params,
     build_step_fn=build_kernel_nuts,
+    default_adaptation_fn=window_warmup,
 )

@@ -22,6 +22,11 @@ MarkovKernel = Kernel
 
 
 class MarkovKernelAPI(metaclass=API):
+    #: Optional factory returning this kernel's recommended adaptation
+    #: policy (an Adaptor or a Warmup). Attached to built kernels;
+    #: wrappers (e.g. pseudo-marginal) inherit it.
+    default_adaptation_fn: Optional[Callable[..., object]] = None
+
     @staticmethod
     def init(position, rng_key: Optional[RngKey] = None, **kwargs) -> State:
         raise NotImplementedError("init method must be implemented")
@@ -49,7 +54,9 @@ class MarkovKernelAPI(metaclass=API):
         def step(key, state, params, *args):
             return raw_step(key, state, params)
 
-        return MarkovKernel(init_fn, step, cls.init_params)
+        return MarkovKernel(
+            init_fn, step, cls.init_params, cls.default_adaptation_fn
+        )
 
 
 def make_kernel_api(
@@ -58,6 +65,7 @@ def make_kernel_api(
     init_fn: Callable,
     init_params_fn: Callable,
     build_step_fn: Callable,
+    default_adaptation_fn: Optional[Callable[..., object]] = None,
 ):
     """Create a MarkovKernelAPI subclass with minimal boilerplate."""
     sig = inspect.signature(init_fn)
@@ -76,6 +84,9 @@ def make_kernel_api(
         "init_params": staticmethod(init_params_fn),
         "build_step": staticmethod(build_step_fn),
     }
+    if default_adaptation_fn is not None:
+        # staticmethod: the factory must not bind the API class as self.
+        attrs["default_adaptation_fn"] = staticmethod(default_adaptation_fn)
     return type(name, (MarkovKernelAPI,), attrs)
 
 

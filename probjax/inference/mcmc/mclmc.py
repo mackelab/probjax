@@ -14,6 +14,7 @@ from probjax.inference.mcmc._dynamic_stepping import (
 )
 from probjax.inference.mcmc.base import make_kernel_api
 from probjax.inference.mcmc.hmc import _init_hmc_like_params, _scale_step_size_by_grad
+from probjax.inference.mcmc.warmup import mclmc_warmup
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 
@@ -113,6 +114,12 @@ mclmc = make_kernel_api(
     init_fn=blackjax.mclmc.init,
     init_params_fn=init_mclmc_params,
     build_step_fn=build_mclmc_step,
+    # Defaults to a standard blackjax MCLMC kernel; pass mclmc_kernel=
+    # explicitly to match custom integrator settings.
+    default_adaptation_fn=lambda *, mclmc_kernel=None, **kwargs: mclmc_warmup(
+        blackjax.mclmc.build_kernel() if mclmc_kernel is None else mclmc_kernel,
+        **kwargs,
+    ),
 )
 
 
@@ -228,6 +235,13 @@ adjusted_mclmc = make_kernel_api(
     init_fn=blackjax.adjusted_mclmc.init,
     init_params_fn=init_params,
     build_step_fn=build_step,
+    # Defaults to a standard blackjax MCLMC kernel; pass mclmc_kernel=
+    # explicitly to match custom integrator settings.
+    default_adaptation_fn=lambda *, mclmc_kernel=None, **kwargs: mclmc_warmup(
+        blackjax.mclmc.build_kernel() if mclmc_kernel is None else mclmc_kernel,
+        adjusted=True,
+        **kwargs,
+    ),
 )
 
 
@@ -395,4 +409,11 @@ adjusted_mclmc_dynamic = make_kernel_api(
     init_fn=init_dynamic,
     init_params_fn=init_dynamic_params,
     build_step_fn=build_dynamic_step,
+    # Defaults to a standard blackjax MCLMC kernel; pass mclmc_kernel=
+    # explicitly to match custom integrator settings.
+    default_adaptation_fn=lambda *, mclmc_kernel=None, **kwargs: mclmc_warmup(
+        blackjax.mclmc.build_kernel() if mclmc_kernel is None else mclmc_kernel,
+        adjusted=True,
+        **kwargs,
+    ),
 )
