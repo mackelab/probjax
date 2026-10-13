@@ -27,6 +27,34 @@ def identity(x: ArrayLike) -> ArrayLike:
     return x
 
 
+def validate_local_context(
+    x: Array, local_context: Array | None, local_context_dim: int | None
+) -> Array | None:
+    """Check a ``local_context`` against the input ``x``.
+
+    Unlike global ``context`` (``[..., context_dim]``, broadcast over events),
+    local context shares every axis of ``x`` except the last: ``x`` of shape
+    ``[..., tokens, features]`` takes ``[..., tokens, local_context_dim]``.
+    """
+    if local_context_dim is None:
+        if local_context is not None:
+            raise ValueError("local_context provided but local_context_dim is None")
+        return None
+    if local_context is None:
+        raise ValueError("local_context is required when local_context_dim is set")
+    if local_context.shape[-1] != local_context_dim:
+        raise ValueError(
+            f"local_context must have {local_context_dim} features, "
+            f"got shape {local_context.shape}"
+        )
+    if local_context.shape[:-1] != x.shape[:-1]:
+        raise ValueError(
+            "local_context must match x on all but the last axis: "
+            f"x {x.shape} vs local_context {local_context.shape}"
+        )
+    return local_context
+
+
 class ContextFuse(nnx.Module):
     """Base class for fusion modules."""
 

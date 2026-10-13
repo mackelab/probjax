@@ -12,6 +12,7 @@ training history: they serialise with the model, travel through
 :meth:`StandardizingMixin.standardization`.
 """
 
+from collections.abc import Mapping
 from typing import Tuple
 
 import jax
@@ -28,14 +29,15 @@ _STD_BATCHES = 8
 
 
 def _standardization_sample(data, num_features: int):
-    """Examples to estimate shift and scale from, for an array or a stream."""
+    """Examples to estimate shift and scale from an array, a dict or a stream."""
     if is_batch_stream(data):
         batches = take_batches(data, _STD_BATCHES)
-        parts = [b["data"] if isinstance(b, dict) else b for b in batches]
-        parts = [p[0] if isinstance(p, tuple) else p for p in parts]
+        parts = [b["data"] if isinstance(b, Mapping) else b for b in batches]
         data = jnp.concatenate([
             jnp.asarray(p).reshape(-1, num_features) for p in parts
         ])
+    elif isinstance(data, Mapping):
+        data = data["data"]
     return jnp.asarray(data, jnp.float32).reshape(-1, num_features)
 
 

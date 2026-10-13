@@ -111,12 +111,17 @@ def test_loop_arguments_are_not_mistaken_for_batch_extras():
     assert not loop_arguments & {"loss_fn", "params", "rng", "batch", "context"}
 
 
-def test_generative_models_keep_the_data_context_weights_convention():
+def test_generative_models_take_one_data_dict_of_named_inputs():
     from probjax.nn.generative import maf
 
     model = maf(2, 2, rngs=nnx.Rngs(0))
     x = jnp.zeros((4, 2))
-    batch = model._fit_batch(x, context=x, weights=jnp.ones(4))
+    batch = model._fit_batch({"data": x, "context": x}, weights=jnp.ones(4))
     assert set(batch) == {"data", "context", "weights"}
     with pytest.raises(ValueError, match="alongside an iterable"):
-        model._fit_batch([x], context=x)
+        model._fit_batch([x], weights=jnp.ones(4))
+    assert set(model._fit_batch(x)) == {"data"}
+    with pytest.raises(ValueError, match="inside data"):
+        model._fit_batch(x, context=x)
+    with pytest.raises(ValueError, match="'data' key"):
+        model._fit_batch({"context": x})

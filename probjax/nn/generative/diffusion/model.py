@@ -383,13 +383,11 @@ class DiffusionDenoiser(GenerativeModel):
 
     # ---- sampling (delegates to solver_cfg) ----
 
-    def _build_ode_drift(self, context=None):
-        kwargs = {} if context is None else {"context": context}
-        return self.solver_cfg.build_ode_drift(self, **kwargs)
+    def _build_ode_drift(self, inputs=None):
+        return self.solver_cfg.build_ode_drift(self, **(inputs or {}))
 
-    def _build_sde_drift_and_diffusion(self, context=None):
-        kwargs = {} if context is None else {"context": context}
-        return self.solver_cfg.build_sde_drift_and_diffusion(self, **kwargs)
+    def _build_sde_drift_and_diffusion(self, inputs=None):
+        return self.solver_cfg.build_sde_drift_and_diffusion(self, **(inputs or {}))
 
     def _distribution_sampler(
         self,
@@ -401,13 +399,14 @@ class DiffusionDenoiser(GenerativeModel):
         t_max: float | None = None,
         collect_trace: bool = False,
         dtype=jnp.float32,
-        context_spec=None,
+        inputs_spec=None,
     ) -> _ExportedSampler:
         """Build and cache a shape-polymorphic diffusion sampler.
 
         ``event_spec`` may be a plain shape tuple or a pytree of shapes /
-        ``jax.ShapeDtypeStruct`` for structured data. ``context_spec`` uses
-        the same format and enables a required, batch-aligned context input.
+        ``jax.ShapeDtypeStruct`` for structured data. ``inputs_spec`` maps each
+        named model input (``context``, ...) to a spec in the same format and
+        enables a required, batch-aligned input of that name.
         """
         if mode not in ("ode", "sde"):
             raise ValueError(f"mode must be 'ode' or 'sde', got {mode!r}")
@@ -452,7 +451,7 @@ class DiffusionDenoiser(GenerativeModel):
             dtype=dtype,
             stochastic=mode == "sde",
             base_sample_kwargs={"t_max": t_max},
-            context_spec=context_spec,
+            inputs_spec=inputs_spec,
             trace=collect_trace,
         )
 

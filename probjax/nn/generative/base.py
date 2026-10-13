@@ -14,6 +14,7 @@ are pytree specs, so structured data works like a single flat array.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from numbers import Integral
 from typing import Callable
 
@@ -32,6 +33,7 @@ from probjax.nn.generative.sampling import (
     _export_sampler,
     sample_normal,
 )
+from probjax.nn.inputs import as_inputs
 from probjax.nn.training import FitMixin, FitResult, is_batch_stream
 from probjax.utils.typing import Array, PyTree, RngKey
 
@@ -49,18 +51,30 @@ def _affine_sample_base(self, rng, sample_shape, spec):
     )
 
 
-class _DataContextBatches:
-    """Normalises what a loader yields into the ``{"data": ..., ...}`` batch dict.
+def _as_batch(item):
+    """A batch is a dict whose ``"data"`` entry is what the model generates.
 
-    Loaders come in three shapes and all three are worth supporting: a bare
-    array of examples, a ``(data, context)`` tuple, and a dict that is already
-    a batch. Re-iterable and length-preserving, so restarting and
-    ``num_steps="auto"`` keep working through the wrapper.
+    Every other entry is a named model input (``context``, ``local_context``,
+    ``weights``, ...); a bare array or pytree is shorthand for ``{"data": item}``.
+    """
+    if isinstance(item, Mapping):
+        if "data" not in item:
+            raise ValueError(
+                f"a batch dict must have a 'data' key; got keys {sorted(item)}."
+            )
+        return dict(item)
+    return {"data": item}
+
+
+class _Batches:
+    """Normalises what a loader yields into batch dicts (see ``_as_batch``).
+
+    Re-iterable and length-preserving, so restarting and ``num_steps="auto"``
+    keep working through the wrapper.
     """
 
-    def __init__(self, source, context_key: str = "context"):
+    def __init__(self, source):
         self._source = source
-        self._context_key = context_key
 
     def __len__(self):
         # Deliberately propagates the source's TypeError: reporting a length
@@ -69,18 +83,7 @@ class _DataContextBatches:
 
     def __iter__(self):
         for item in self._source:
-            yield self._as_batch(item)
-
-    def _as_batch(self, item):
-        if isinstance(item, dict):
-            if "data" not in item:
-                raise ValueError(
-                    f"a batch dict must have a 'data' key; got keys {sorted(item)}."
-                )
-            return item
-        if isinstance(item, tuple) and len(item) == 2:
-            return {"data": item[0], self._context_key: item[1]}
-        return {"data": item}
+            yield _as_batch(item)
 
 
 class GenerativeModel(nnx.Module, FitMixin):
@@ -167,49 +170,36 @@ class GenerativeModel(nnx.Module, FitMixin):
         raise NotImplementedError
 
     def fit(
-        self,
-        rng: RngKey,
-        data,
-        *,
-        context=None,
-        weights=None,
-        **fit_kwargs,
+        self, rng: RngKey, data, *, weights=None, **fit_kwargs
     ) -> Array | FitResult:
-        """Train in place on ``data``: an array pytree or a stream of batches.
+        """Train in place on ``data``.
 
-        ``context`` conditions the model and ``weights`` weight the examples;
-        both are passed to :meth:`loss` as keyword arguments. With a stream,
-        yield ``(data, context)`` pairs or dicts with a ``"data"`` key instead.
-        The remaining arguments are those of :func:`probjax.nn.training.fit`.
+        ``data`` is an array pytree, a dict with a ``"data"`` entry plus any
+        named model inputs (``{"data": x, "context": c}``), or a stream of
+        either. The inputs reach :meth:`loss`, and so the network, as keyword
+        arguments. ``weights`` weight the examples in the loss; they are not
+        data. The remaining keywords are the training options of
+        :func:`probjax.nn.training.fit`.
         """
-        extras = {
-            name: value
-            for name, value in (("context", context), ("weights", weights))
-            if value is not None
-        }
-        return super().fit(rng, data, **extras, **fit_kwargs)
+        if weights is not None:
+            fit_kwargs["weights"] = weights
+        return super().fit(rng, data, **fit_kwargs)
 
-    def _fit_batch(self, data, *, context=None, weights=None):
-        """Batches are ``{"data": ..., "context": ..., "weights": ...}`` dicts."""
+    def _fit_batch(self, data, *, weights=None, **extras):
+        if extras:
+            raise ValueError(
+                f"unexpected fit arguments {sorted(extras)}; pass named model "
+                "inputs inside data, e.g. fit(rng, {'data': x, 'context': c})."
+            )
         if is_batch_stream(data):
             if weights is not None:
                 raise ValueError(
                     "weights cannot be passed alongside an iterable data source; "
-                    "include them in each batch dict instead."
+                    "give each batch dict a 'weights' entry instead."
                 )
-            if context is not None:
-                raise ValueError(
-                    "context cannot be passed alongside an iterable data "
-                    "source; yield (data, context) pairs or batch dicts from "
-                    "the iterable instead."
-                )
-            return _DataContextBatches(data)
-        batch = {"data": data}
-        if context is not None:
-            batch["context"] = context
-        if weights is not None:
-            batch["weights"] = weights
-        return batch
+            return _Batches(data)
+        batch = _as_batch(data)
+        return batch if weights is None else {**batch, "weights": weights}
 
     def _fit_loss(self, rng, batch):
         if isinstance(batch, dict):
@@ -237,24 +227,24 @@ class GenerativeModel(nnx.Module, FitMixin):
         *,
         dtype=jax.numpy.float32,
         stochastic: bool = False,
-        context_spec=None,
+        inputs_spec=None,
         trace: bool = False,
         base_sample_kwargs=None,
     ) -> _ExportedSampler:
         """Normalize shapes and export a specialized sampler once per key.
 
-        ``make_sample_fn`` receives the model graphdef and whether context is
-        present, then returns the
-        function ``(state, [rng,] eps, [context]) -> samples`` to export,
-        where data and context may both be pytrees.
+        ``make_sample_fn`` receives the model graphdef and whether named inputs
+        are present, then returns the function
+        ``(state, [rng,] eps, [inputs]) -> samples`` to export, where data
+        and the inputs dict may both be pytrees.
         """
         spec = normalize_spec(event_spec, dtype)
-        context_spec = (
-            None if context_spec is None else normalize_spec(context_spec, dtype)
+        inputs_spec = (
+            None if inputs_spec is None else normalize_spec(inputs_spec, dtype)
         )
         key = key + (
             spec_cache_key(spec),
-            spec_cache_key(context_spec),
+            spec_cache_key(inputs_spec),
             stochastic,
             trace,
             tuple(sorted((base_sample_kwargs or {}).items())),
@@ -265,9 +255,9 @@ class GenerativeModel(nnx.Module, FitMixin):
             exported = _export_sampler(
                 state,
                 spec,
-                make_sample_fn(graphdef, context_spec is not None),
+                make_sample_fn(graphdef, inputs_spec is not None),
                 stochastic=stochastic,
-                context_spec=context_spec,
+                inputs_spec=inputs_spec,
             )
             return _ExportedSampler(
                 self,
@@ -275,7 +265,7 @@ class GenerativeModel(nnx.Module, FitMixin):
                 exported,
                 spec,
                 stochastic=stochastic,
-                context_spec=context_spec,
+                inputs_spec=inputs_spec,
                 trace=trace,
                 base_sample_kwargs=base_sample_kwargs,
             )
@@ -289,14 +279,14 @@ class GenerativeModel(nnx.Module, FitMixin):
         make_logpdf_fn: Callable[[nnx.GraphDef], Callable],
         *,
         dtype=jax.numpy.float32,
-        context_spec=None,
+        inputs_spec=None,
     ) -> _ExportedLogPDF:
         """Export ``make_logpdf_fn(graphdef)`` once per ``key`` and cache it."""
         spec = normalize_spec(event_spec, dtype)
-        context_spec = (
-            None if context_spec is None else normalize_spec(context_spec, dtype)
+        inputs_spec = (
+            None if inputs_spec is None else normalize_spec(inputs_spec, dtype)
         )
-        key = key + (spec_cache_key(spec), spec_cache_key(context_spec))
+        key = key + (spec_cache_key(spec), spec_cache_key(inputs_spec))
 
         def build():
             graphdef, state = nnx.split(self)
@@ -304,14 +294,14 @@ class GenerativeModel(nnx.Module, FitMixin):
                 state,
                 spec,
                 make_logpdf_fn(graphdef),
-                context_spec=context_spec,
+                inputs_spec=inputs_spec,
             )
             return _ExportedLogPDF(
                 self,
                 graphdef,
                 exported,
                 spec,
-                context_spec=context_spec,
+                inputs_spec=inputs_spec,
             )
 
         return get_cached_export(self, key, build)
@@ -322,6 +312,8 @@ class GenerativeModel(nnx.Module, FitMixin):
         *,
         context_spec=None,
         context=None,
+        inputs_spec=None,
+        inputs=None,
         **kwargs,
     ):
         """Create a lazy compiled distribution view of this model.
@@ -329,9 +321,13 @@ class GenerativeModel(nnx.Module, FitMixin):
         Args:
             event_spec: Shape or pytree specification for one event. Omit to
                 use the model's default. Overrides only this distribution view.
-            context_spec: Context specification including optional per-leaf
-                dtypes.
+            context_spec: Specification of ``context`` including optional
+                per-leaf dtypes.
             context: Optional context to bind to the returned distribution.
+            inputs_spec: ``{name: spec}`` for any further named model inputs
+                (e.g. ``local_context``); they are forwarded to the network as
+                keyword arguments. ``context`` is sugar for ``inputs["context"]``.
+            inputs: ``{name: value}`` to bind to the returned distribution.
             **kwargs: Static sampling options such as ``num_steps`` or ``mode``.
         """
         if event_spec is None:
@@ -350,8 +346,8 @@ class GenerativeModel(nnx.Module, FitMixin):
         return _ModelDistribution(
             self,
             event_spec,
-            context_spec=context_spec,
-            context=context,
+            inputs_spec=as_inputs(context_spec, inputs_spec),
+            inputs=as_inputs(context, inputs),
             sampler_options=kwargs,
             name=type(self).__name__,
         )

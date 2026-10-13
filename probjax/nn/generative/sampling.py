@@ -87,14 +87,14 @@ class _ExportedSampler(NNXExportedFunction):
         spec: PyTree[jax.ShapeDtypeStruct],
         *,
         stochastic: bool = False,
-        context_spec: PyTree[jax.ShapeDtypeStruct] | None = None,
+        inputs_spec: PyTree[jax.ShapeDtypeStruct] | None = None,
         trace: bool = False,
         base_sample_kwargs=None,
     ) -> None:
         super().__init__(model, graphdef, exported)
         self.spec = spec
         self.stochastic = stochastic
-        self.context_spec = context_spec
+        self.inputs_spec = inputs_spec
         self.trace = trace
         self.base_sample_kwargs = dict(base_sample_kwargs or {})
 
@@ -103,11 +103,11 @@ class _ExportedSampler(NNXExportedFunction):
         eps: PyTree[Array],
         *,
         rng: RngKey | None = None,
-        context: PyTree[Array] | None = None,
+        inputs: PyTree[Array] | None = None,
     ) -> PyTree[Array]:
         """Generate from initial noise with arbitrary leading batch dimensions."""
         _, state = self.model_and_state()
-        return self.from_noise_with_state(state, eps, rng=rng, context=context)
+        return self.from_noise_with_state(state, eps, rng=rng, inputs=inputs)
 
     def from_noise_with_state(
         self,
@@ -115,12 +115,12 @@ class _ExportedSampler(NNXExportedFunction):
         eps: PyTree[Array],
         *,
         rng: RngKey | None = None,
-        context: PyTree[Array] | None = None,
+        inputs: PyTree[Array] | None = None,
     ) -> PyTree[Array]:
         """Generate from noise using an explicit model state."""
         batch_shape, flat_eps = flatten_spec_batch(eps, self.spec, name="initial")
-        flat_context = flatten_broadcast_batch(
-            context, batch_shape, self.context_spec, name="context"
+        flat_inputs = flatten_broadcast_batch(
+            inputs, batch_shape, self.inputs_spec, name="inputs"
         )
         if self.stochastic:
             if rng is None:
@@ -128,8 +128,8 @@ class _ExportedSampler(NNXExportedFunction):
             call_args = (state, rng, flat_eps)
         else:
             call_args = (state, flat_eps)
-        if flat_context is not None:
-            call_args += (flat_context,)
+        if flat_inputs is not None:
+            call_args += (flat_inputs,)
         output = self.exported.call(*call_args)
         if self.trace:
             return _unflatten_trace(output, batch_shape)
@@ -140,7 +140,7 @@ class _ExportedSampler(NNXExportedFunction):
         rng: RngKey,
         sample_shape: tuple[int, ...] = (),
         *,
-        context: PyTree[Array] | None = None,
+        inputs: PyTree[Array] | None = None,
     ) -> PyTree[Array]:
         """Draw base noise and generate ``sample_shape`` samples."""
         model, _ = self.model_and_state()
@@ -152,7 +152,7 @@ class _ExportedSampler(NNXExportedFunction):
         eps = model._sample_base(
             noise_key, sample_shape, self.spec, **self.base_sample_kwargs
         )
-        return self.from_noise(eps, rng=sample_key, context=context)
+        return self.from_noise(eps, rng=sample_key, inputs=inputs)
 
     def sample_with_state(
         self,
@@ -160,7 +160,7 @@ class _ExportedSampler(NNXExportedFunction):
         rng: RngKey,
         sample_shape: tuple[int, ...] = (),
         *,
-        context: PyTree[Array] | None = None,
+        inputs: PyTree[Array] | None = None,
     ) -> PyTree[Array]:
         """Draw samples using an explicit model state."""
         if self.invalidated:
@@ -174,24 +174,24 @@ class _ExportedSampler(NNXExportedFunction):
         eps = model._sample_base(
             noise_key, sample_shape, self.spec, **self.base_sample_kwargs
         )
-        return self.from_noise_with_state(state, eps, rng=sample_key, context=context)
+        return self.from_noise_with_state(state, eps, rng=sample_key, inputs=inputs)
 
 
 def make_map_sample_fn(
     graphdef: nnx.GraphDef,
-    with_context: bool,
+    with_inputs: bool,
     *,
     transform: Callable,
 ) -> Callable:
     """Build an exported function that maps a transform over samples."""
 
     def sample_fn(current_state, samples, *rest):
-        context = rest[0] if with_context else None
+        inputs = rest[0] if with_inputs else None
         model = nnx.merge(graphdef, current_state)
-        if context is None:
+        if inputs is None:
             return jax.vmap(lambda value: transform(model, value, None))(samples)
         return jax.vmap(lambda value, condition: transform(model, value, condition))(
-            samples, context
+            samples, inputs
         )
 
     return sample_fn
@@ -199,7 +199,7 @@ def make_map_sample_fn(
 
 def make_scan_sample_fn(
     graphdef: nnx.GraphDef,
-    with_context: bool,
+    with_inputs: bool,
     *,
     xs: PyTree[Array],
     step: Callable,
@@ -207,11 +207,11 @@ def make_scan_sample_fn(
     """Build an exported deterministic scan sampler."""
 
     def sample_fn(current_state, initial, *rest):
-        context = rest[0] if with_context else None
+        inputs = rest[0] if with_inputs else None
 
         def scan_step(value, item):
             model = nnx.merge(graphdef, current_state)
-            return step(model, value, item, context), None
+            return step(model, value, item, inputs), None
 
         final, _ = jax.lax.scan(scan_step, initial, xs)
         return final
@@ -221,7 +221,7 @@ def make_scan_sample_fn(
 
 def make_ode_sample_fn(
     graphdef: nnx.GraphDef,
-    with_context: bool,
+    with_inputs: bool,
     *,
     ts: Array,
     prototype,
@@ -231,9 +231,9 @@ def make_ode_sample_fn(
 ) -> Callable:
     """Build an exported ODE sampler while preserving specialized drifts."""
 
-    def evaluate(t, value, current_state, context=None, *, nonlinear=False):
+    def evaluate(t, value, current_state, inputs=None, *, nonlinear=False):
         model = nnx.merge(graphdef, current_state)
-        drift = build_drift(model, context)
+        drift = build_drift(model, inputs)
         if nonlinear:
             return drift.nonlin(t, value)
         return drift(t, value)
@@ -241,8 +241,8 @@ def make_ode_sample_fn(
     nonlinear = isinstance(prototype, split_drift)
 
     def drift_fn(t, value, current_state, *rest):
-        context = rest[0] if with_context else None
-        return evaluate(t, value, current_state, context, nonlinear=nonlinear)
+        inputs = rest[0] if with_inputs else None
+        return evaluate(t, value, current_state, inputs, nonlinear=nonlinear)
 
     if nonlinear:
         drift = split_drift(prototype.lin_coeff, drift_fn)
@@ -250,7 +250,7 @@ def make_ode_sample_fn(
         drift = generic_drift(drift_fn)
 
     def sample_fn(current_state, initial, *rest):
-        extra = (rest[0],) if with_context else ()
+        extra = (rest[0],) if with_inputs else ()
         return odeint(
             drift,
             initial,
@@ -267,7 +267,7 @@ def make_ode_sample_fn(
 
 def make_sde_sample_fn(
     graphdef: nnx.GraphDef,
-    with_context: bool,
+    with_inputs: bool,
     *,
     ts: Array,
     build_drift_and_diffusion: Callable,
@@ -276,21 +276,21 @@ def make_sde_sample_fn(
 ) -> Callable:
     """Build an exported SDE sampler with one independent path per sample."""
 
-    def drift_fn(t, value, current_state, context=None):
+    def drift_fn(t, value, current_state, inputs=None):
         model = nnx.merge(graphdef, current_state)
-        drift, _ = build_drift_and_diffusion(model, context)
+        drift, _ = build_drift_and_diffusion(model, inputs)
         return drift(t, value)
 
-    def diffusion_fn(t, value, current_state, context=None):
+    def diffusion_fn(t, value, current_state, inputs=None):
         model = nnx.merge(graphdef, current_state)
-        _, diffusion = build_drift_and_diffusion(model, context)
+        _, diffusion = build_drift_and_diffusion(model, inputs)
         return diffusion(t, value)
 
     drift = generic_drift(drift_fn)
     diffusion = generic_drift(diffusion_fn)
 
     def one_sample(current_state, rng, initial, *rest):
-        extra = (rest[0],) if with_context else ()
+        extra = (rest[0],) if with_inputs else ()
         return sdeint(
             rng,
             drift,
@@ -307,7 +307,7 @@ def make_sde_sample_fn(
     def sample_fn(current_state, rng, initial, *rest):
         batch_size = jax.tree.leaves(initial)[0].shape[0]
         keys = jax.random.split(rng, batch_size)
-        in_axes = (None, 0, 0, 0) if with_context else (None, 0, 0)
+        in_axes = (None, 0, 0, 0) if with_inputs else (None, 0, 0)
         result = jax.vmap(one_sample, in_axes=in_axes)(
             current_state, keys, initial, *rest
         )
@@ -324,18 +324,18 @@ def _export_sampler(
     sample_fn: Callable,
     *,
     stochastic: bool = False,
-    context_spec: PyTree[jax.ShapeDtypeStruct] | None = None,
+    inputs_spec: PyTree[jax.ShapeDtypeStruct] | None = None,
 ):
-    """Export ``sample_fn(state, [rng,] eps, [context])`` with a symbolic
-    leading batch axis shared by every ``eps`` and ``context`` leaf."""
+    """Export ``sample_fn(state, [rng,] eps, [inputs])`` with a symbolic
+    leading batch axis shared by every ``eps`` and ``inputs`` leaf."""
     if stochastic:
         args = (state, jax.random.key(0), zeros_from_spec(spec))
         shape_specs = (None, None, "b, ...")
     else:
         args = (state, zeros_from_spec(spec))
         shape_specs = (None, "b, ...")
-    if context_spec is not None:
-        args += (zeros_from_spec(context_spec),)
+    if inputs_spec is not None:
+        args += (zeros_from_spec(inputs_spec),)
         shape_specs += ("b, ...",)
     return export_symbolic_batch(
         sample_fn,

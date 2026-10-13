@@ -106,7 +106,10 @@ def test_autoregressive_monotone_flow_conditional(ctor):
     context = jax.random.normal(jax.random.key(1), (128, 1))
     data = jax.random.normal(jax.random.key(2), (128, 2)) + context
     losses = flow.fit(
-        jax.random.key(3), data, context=context, num_steps=40, batch_size=64
+        jax.random.key(3),
+        {"data": data, "context": context},
+        num_steps=40,
+        batch_size=64,
     )
     assert jnp.all(jnp.isfinite(losses))
     assert losses[-1] < losses[0]

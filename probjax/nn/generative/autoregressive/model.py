@@ -23,6 +23,7 @@ from probjax.nn.generative.autoregressive.config import (
 )
 from probjax.nn.generative.base import GenerativeModel
 from probjax.nn.generative.standardize import StandardizingMixin
+from probjax.nn.inputs import context_only
 
 __all__ = [
     "Autoregressive",
@@ -51,11 +52,13 @@ class _EagerARSampler:
     def invalidated(self) -> bool:
         return False
 
-    def __call__(self, rng, shape=(), *, context=None):
+    def __call__(self, rng, shape=(), *, inputs=None):
         model = self._model_ref()
         if model is None:
             raise RuntimeError("The model backing this distribution no longer exists.")
-        return model.sample(rng, tuple(shape), context=context)
+        return model.sample(
+            rng, tuple(shape), context=context_only(inputs, "Autoregressive")
+        )
 
     def from_noise(self, *args, **kwargs):
         raise NotImplementedError(
@@ -86,13 +89,13 @@ class _KeyNormalizingSampler:
             return rng
         return jax.random.wrap_key_data(jnp.asarray(rng, dtype=jnp.uint32))
 
-    def __call__(self, rng, shape=(), *, context=None):
-        return self._inner(self._as_typed(rng), shape, context=context)
+    def __call__(self, rng, shape=(), *, inputs=None):
+        return self._inner(self._as_typed(rng), shape, inputs=inputs)
 
-    def from_noise(self, eps, *, rng=None, context=None):
+    def from_noise(self, eps, *, rng=None, inputs=None):
         if rng is not None:
             rng = self._as_typed(rng)
-        return self._inner.from_noise(eps, rng=rng, context=context)
+        return self._inner.from_noise(eps, rng=rng, inputs=inputs)
 
 
 class Autoregressive(StandardizingMixin, GenerativeModel):
@@ -351,7 +354,7 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
         event_spec=None,
         *,
         dtype=None,
-        context_spec=None,
+        inputs_spec=None,
     ):
         if event_spec is None:
             event_spec = (self.input_dim,)
@@ -361,10 +364,12 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
         if not self.conditioner_config.exportable:
             return _EagerARSampler(self, (self.input_dim,))
 
-        def make_sample_fn(graphdef, with_context):
+        def make_sample_fn(graphdef, with_inputs):
             def sample_fn(state, rng, eps, *rest):
                 model = nnx.merge(graphdef, state)
-                context = rest[0] if with_context else None
+                context = (
+                    context_only(rest[0], "Autoregressive") if with_inputs else None
+                )
                 batch = eps.shape[0]
                 return model.sample(rng, (batch,), context=context)
 
@@ -377,7 +382,7 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
                 make_sample_fn,
                 dtype=dtype,
                 stochastic=True,
-                context_spec=context_spec,
+                inputs_spec=inputs_spec,
             )
         )
 
@@ -386,13 +391,13 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
         event_spec=None,
         *,
         dtype=jnp.float32,
-        context_spec=None,
+        inputs_spec=None,
     ):
         if event_spec is None:
             event_spec = (self.input_dim,)
 
         def make_logpdf_fn(graphdef):
-            if context_spec is None:
+            if inputs_spec is None:
 
                 def logpdf_fn(current_state, value):
                     model = nnx.merge(graphdef, current_state)
@@ -400,8 +405,9 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
 
             else:
 
-                def logpdf_fn(current_state, value, context):
+                def logpdf_fn(current_state, value, inputs):
                     model = nnx.merge(graphdef, current_state)
+                    context = context_only(inputs, "Autoregressive")
                     return jax.vmap(
                         lambda item, cond: model._logpdf(item, context=cond)
                     )(value, context)
@@ -413,7 +419,7 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
             event_spec,
             make_logpdf_fn,
             dtype=dtype,
-            context_spec=context_spec,
+            inputs_spec=inputs_spec,
         )
 
     def as_dist(self, event_spec=None, **kwargs):

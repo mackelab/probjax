@@ -63,7 +63,10 @@ def test_flow_fit_conditional():
     context = jax.random.normal(jax.random.key(3), (256, 1))
     data = jax.random.normal(jax.random.key(4), (256, 2)) + context
     losses = flow.fit(
-        jax.random.key(5), data, context=context, num_steps=60, batch_size=64
+        jax.random.key(5),
+        {"data": data, "context": context},
+        num_steps=60,
+        batch_size=64,
     )
     assert losses[-1] < losses[0]
     assert jnp.all(jnp.isfinite(losses))
@@ -329,17 +332,20 @@ def test_flow_fit_from_an_iterable_matches_an_array_run():
     assert abs(float(losses_stream[-1]) - float(losses_array[-1])) < 0.5
 
 
-def test_flow_fit_from_an_iterable_of_context_pairs():
+def test_flow_fit_from_an_iterable_of_batch_dicts():
     context = jax.random.normal(jax.random.key(3), (256, 1))
     data = jax.random.normal(jax.random.key(4), (256, 2)) + context
-    pairs = [(data[i : i + 64], context[i : i + 64]) for i in range(0, 256, 64)]
+    pairs = [
+        {"data": data[i : i + 64], "context": context[i : i + 64]}
+        for i in range(0, 256, 64)
+    ]
 
     flow = maf(2, 2, rngs=nnx.Rngs(1), context_features=1)
     losses = flow.fit(jax.random.key(5), pairs, num_steps=80)
     assert jnp.all(jnp.isfinite(losses))
     assert losses[-1] < losses[0]
 
-    with pytest.raises(ValueError, match="context cannot be passed"):
+    with pytest.raises(ValueError, match="pass named model inputs inside data"):
         flow.fit(jax.random.key(5), pairs, context=context, num_steps=5)
 
 

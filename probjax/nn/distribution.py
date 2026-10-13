@@ -30,37 +30,38 @@ from probjax.nn.export import (
     spec_from_value,
     zeros_from_spec,
 )
+from probjax.nn.inputs import as_inputs, merge_inputs
 from probjax.stats.base import DistributionAPI
 from probjax.utils.typing import Array, PyTree, RngKey
 
 
 class _ExportedLogPDF(NNXExportedFunction):
-    def __init__(self, model, graphdef, exported, spec, *, context_spec=None):
+    def __init__(self, model, graphdef, exported, spec, *, inputs_spec=None):
         super().__init__(model, graphdef, exported)
         self.spec = spec
-        self.context_spec = context_spec
+        self.inputs_spec = inputs_spec
 
-    def __call__(self, value, *, context=None):
+    def __call__(self, value, *, inputs=None):
         _, state = self.model_and_state()
-        return self.with_state(state, value, context=context)
+        return self.with_state(state, value, inputs=inputs)
 
-    def with_state(self, state, value, *, context=None):
+    def with_state(self, state, value, *, inputs=None):
         """Evaluate the log density using an explicit model state."""
         batch_shape, flat_value = flatten_spec_batch(value, self.spec, name="value")
-        flat_context = flatten_broadcast_batch(
-            context, batch_shape, self.context_spec, name="context"
+        flat_inputs = flatten_broadcast_batch(
+            inputs, batch_shape, self.inputs_spec, name="inputs"
         )
         call_args = (state, flat_value)
-        if flat_context is not None:
-            call_args += (flat_context,)
+        if flat_inputs is not None:
+            call_args += (flat_inputs,)
         return restore_batch(self.exported.call(*call_args), batch_shape)
 
 
-def _export_logpdf(state, spec, logpdf_fn, *, context_spec=None):
+def _export_logpdf(state, spec, logpdf_fn, *, inputs_spec=None):
     args = (state, zeros_from_spec(spec))
     axis_specs = (None, "b, ...")
-    if context_spec is not None:
-        args += (zeros_from_spec(context_spec),)
+    if inputs_spec is not None:
+        args += (zeros_from_spec(inputs_spec),)
         axis_specs += ("b, ...",)
     return export_symbolic_batch(logpdf_fn, args, axis_specs)
 
@@ -69,7 +70,7 @@ class _ModelDistribution(DistributionAPI):
     """Lazy, compiled distribution view of a generative model.
 
     Sampling and density exports are built on first use and then served from
-    the model's export cache. Events and optional context may both be pytrees.
+    the model's export cache. Events and the optional named inputs (``context``, ...) may be pytrees.
     """
 
     def __init__(
@@ -77,8 +78,8 @@ class _ModelDistribution(DistributionAPI):
         model,
         event_spec,
         *,
-        context_spec=None,
-        context=None,
+        inputs_spec=None,
+        inputs=None,
         sampler_options: dict[str, Any] | None = None,
         logpdf_options: dict[str, Any] | None = None,
         name: str | None = None,
@@ -90,15 +91,15 @@ class _ModelDistribution(DistributionAPI):
                 "or path_from()."
             )
         dtype = options.get("dtype", jnp.float32)
-        if context_spec is None and context is not None:
-            context_spec = spec_from_value(context)
+        if inputs_spec is None and inputs is not None:
+            inputs_spec = spec_from_value(inputs)
 
         self._model_instance = model
         self._event_spec = normalize_spec(event_spec, dtype)
-        self._context_spec = (
-            None if context_spec is None else normalize_spec(context_spec, dtype)
+        self._inputs_spec = (
+            None if inputs_spec is None else normalize_spec(inputs_spec, dtype)
         )
-        self._context = context
+        self._inputs = inputs
         self._sampler_options = options
         self._logpdf_options = dict(logpdf_options or {})
         self._name = name or type(model).__name__
@@ -114,8 +115,12 @@ class _ModelDistribution(DistributionAPI):
         return self._event_spec
 
     @property
+    def inputs_spec(self):
+        return self._inputs_spec
+
+    @property
     def context_spec(self):
-        return self._context_spec
+        return (self._inputs_spec or {}).get("context")
 
     @property
     def event_shape(self):
@@ -129,8 +134,9 @@ class _ModelDistribution(DistributionAPI):
     def has_logpdf(self) -> bool:
         return callable(getattr(self._model(), "_distribution_logpdf", None))
 
-    def _resolve_context(self, context):
-        return self._context if context is None else context
+    def _resolve_inputs(self, context, inputs):
+        """Per-call inputs (``context`` is sugar for one) override bound ones."""
+        return merge_inputs(self._inputs, as_inputs(context, inputs))
 
     def _get_sampler(self, *, path=False):
         attribute = "_path_sampler" if path else "_sampler"
@@ -143,7 +149,7 @@ class _ModelDistribution(DistributionAPI):
                 options["collect_trace"] = True
             sampler = self._model()._distribution_sampler(
                 self._event_spec,
-                context_spec=self._context_spec,
+                inputs_spec=self._inputs_spec,
                 **options,
             )
             setattr(self, attribute, sampler)
@@ -158,7 +164,7 @@ class _ModelDistribution(DistributionAPI):
             options = dict(self._logpdf_options)
             self._logpdf = self._model()._distribution_logpdf(
                 self._event_spec,
-                context_spec=self._context_spec,
+                inputs_spec=self._inputs_spec,
                 **options,
             )
         return self._logpdf
@@ -194,13 +200,14 @@ class _ModelDistribution(DistributionAPI):
         shape: tuple[int, ...] = (),
         *,
         context: PyTree[Array] | None = None,
+        **inputs: PyTree[Array],
     ) -> PyTree[Array]:
         """Draw samples using an explicit model state."""
         return self._get_sampler().sample_with_state(
             state,
             rng,
             tuple(shape),
-            context=self._resolve_context(context),
+            inputs=self._resolve_inputs(context, inputs),
         )
 
     def logpdf_with_state(
@@ -209,12 +216,13 @@ class _ModelDistribution(DistributionAPI):
         value: PyTree[Array],
         *,
         context: PyTree[Array] | None = None,
+        **inputs: PyTree[Array],
     ) -> Array:
         """Evaluate the log density using an explicit model state."""
         return self._get_logpdf().with_state(
             state,
             value,
-            context=self._resolve_context(context),
+            inputs=self._resolve_inputs(context, inputs),
         )
 
     def sample(
@@ -223,11 +231,12 @@ class _ModelDistribution(DistributionAPI):
         shape: tuple[int, ...] = (),
         *,
         context: PyTree[Array] | None = None,
+        **inputs: PyTree[Array],
     ) -> PyTree[Array]:
         return self._get_sampler()(
             rng,
             tuple(shape),
-            context=self._resolve_context(context),
+            inputs=self._resolve_inputs(context, inputs),
         )
 
     def sample_from(
@@ -236,11 +245,12 @@ class _ModelDistribution(DistributionAPI):
         *,
         rng: RngKey | None = None,
         context: PyTree[Array] | None = None,
+        **inputs: PyTree[Array],
     ) -> PyTree[Array]:
         return self._get_sampler().from_noise(
             initial,
             rng=rng,
-            context=self._resolve_context(context),
+            inputs=self._resolve_inputs(context, inputs),
         )
 
     def sample_path(
@@ -249,11 +259,12 @@ class _ModelDistribution(DistributionAPI):
         shape: tuple[int, ...] = (),
         *,
         context: PyTree[Array] | None = None,
+        **inputs: PyTree[Array],
     ) -> PyTree[Array]:
         return self._get_sampler(path=True)(
             rng,
             tuple(shape),
-            context=self._resolve_context(context),
+            inputs=self._resolve_inputs(context, inputs),
         )
 
     def path_from(
@@ -262,11 +273,12 @@ class _ModelDistribution(DistributionAPI):
         *,
         rng: RngKey | None = None,
         context: PyTree[Array] | None = None,
+        **inputs: PyTree[Array],
     ) -> PyTree[Array]:
         return self._get_sampler(path=True).from_noise(
             initial,
             rng=rng,
-            context=self._resolve_context(context),
+            inputs=self._resolve_inputs(context, inputs),
         )
 
     def rvs(
@@ -276,23 +288,21 @@ class _ModelDistribution(DistributionAPI):
         name: str | None = None,
         *,
         context: PyTree[Array] | None = None,
-        **kwargs: Any,
+        **inputs: PyTree[Array],
     ) -> PyTree[Array]:
         del name
-        if kwargs:
-            names = ", ".join(sorted(kwargs))
-            raise TypeError(f"Unexpected sampling arguments: {names}.")
-        return self.sample(rng, shape, context=context)
+        return self.sample(rng, shape, context=context, **inputs)
 
     def logpdf(
         self,
         value: PyTree[Array],
         *,
         context: PyTree[Array] | None = None,
+        **inputs: PyTree[Array],
     ) -> Array:
         return self._get_logpdf()(
             value,
-            context=self._resolve_context(context),
+            inputs=self._resolve_inputs(context, inputs),
         )
 
     def pdf(
@@ -300,15 +310,17 @@ class _ModelDistribution(DistributionAPI):
         value: PyTree[Array],
         *,
         context: PyTree[Array] | None = None,
+        **inputs: PyTree[Array],
     ) -> Array:
-        return jnp.exp(self.logpdf(value, context=context))
+        return jnp.exp(self.logpdf(value, context=context, **inputs))
 
-    def condition(self, context) -> "_ModelDistribution":
+    def condition(self, context=None, **inputs) -> "_ModelDistribution":
+        """Bind named inputs (overriding already bound ones)."""
         return _ModelDistribution(
             self._model(),
             self._event_spec,
-            context_spec=self._context_spec,
-            context=context,
+            inputs_spec=self._inputs_spec,
+            inputs=self._resolve_inputs(context, inputs),
             sampler_options=self._sampler_options,
             logpdf_options=self._logpdf_options,
             name=self._name,

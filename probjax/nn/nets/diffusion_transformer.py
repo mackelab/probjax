@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.layers.encoding import GaussianFourierEmbedding, PosEncode
+from probjax.nn.layers.fuse import validate_local_context
 from probjax.nn.nets.simple import MLP
 from probjax.nn.nets.transformer import Transformer
 from probjax.nn.utils import DEFAULT_MODULE, filter_precision_kwargs
@@ -16,7 +17,9 @@ class DiffusionTransformer(Transformer):
     Inputs have shape ``[..., tokens, features]``. Token counts can change;
     feature widths are fixed. Time is scalar, ``[...]``, or ``[..., 1]``.
     Global context has shape ``[..., context_dim]`` and is required when that
-    constructor dimension is set. Optional ``r`` adds a second time embedding
+    constructor dimension is set. Optional local context has shape
+    ``[..., tokens, local_context_dim]`` (one vector per token) and is
+    concatenated to the tokens at the input. Optional ``r`` adds a second time embedding
     for mean-flow models. Masks, cross-attention and dropout options are
     forwarded to :class:`Transformer`.
 
@@ -41,6 +44,7 @@ class DiffusionTransformer(Transformer):
         time_embed_dim: int = 128,
         fourier_dim: int = 64,
         context_dim: int | None = None,
+        local_context_dim: int | None = None,
         projection_cls=DEFAULT_MODULE,
         fourier_cls=DEFAULT_MODULE,
         time_mlp_cls=DEFAULT_MODULE,
@@ -59,8 +63,12 @@ class DiffusionTransformer(Transformer):
         ).items():
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
-        if context_dim is not None and context_dim <= 0:
-            raise ValueError("context_dim must be positive")
+        for name, value in (
+            ("context_dim", context_dim),
+            ("local_context_dim", local_context_dim),
+        ):
+            if value is not None and value <= 0:
+                raise ValueError(f"{name} must be positive")
         factories = dict(
             projection_cls=projection_cls,
             fourier_cls=fourier_cls,
@@ -91,8 +99,9 @@ class DiffusionTransformer(Transformer):
             for k in ('dtype', 'param_dtype', 'precision', 'preferred_element_type')
             if k in kwargs
         }
+        self.local_context_dim = local_context_dim
         self.input_projection = projection_cls(
-            features,
+            features + (local_context_dim or 0),
             model_dim,
             rngs=rngs,
             **filter_precision_kwargs(projection_cls, **precision),
@@ -126,7 +135,9 @@ class DiffusionTransformer(Transformer):
         t = jnp.broadcast_to(t, batch_shape + (1,))
         return self.time_mlp(self.time_fourier(t))
 
-    def __call__(self, t, x, r=None, context=None, *, rng=None, **kwargs):
+    def __call__(
+        self, t, x, r=None, context=None, local_context=None, *, rng=None, **kwargs
+    ):
         if x.ndim < 2 or x.shape[-1] != self.features:
             raise ValueError("x must have shape [..., tokens, features]")
         batch_shape = x.shape[:-2]
@@ -143,6 +154,9 @@ class DiffusionTransformer(Transformer):
             condition = jnp.concatenate([condition, context], axis=-1)
         elif context is not None:
             raise ValueError("context provided but context_dim is None")
+        local_context = validate_local_context(x, local_context, self.local_context_dim)
+        if local_context is not None:
+            x = jnp.concatenate([x, local_context], axis=-1)
         hidden = self.input_projection(x)
         if self.position is not None:
             hidden = self.position(hidden)

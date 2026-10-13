@@ -33,7 +33,8 @@ does not need pre-scaling.
 
 ## Conditional densities
 
-Pass `context_features` at construction and `context=` to `fit`. This gives
+Pass `context_features` at construction and put the context in the `data` dict
+of `fit`. This gives
 `q(x | c)`, which is what amortized inference is built on:
 
 ```python
@@ -45,7 +46,8 @@ context = jax.random.normal(jax.random.key(0), (256, 1))
 data = jax.random.normal(jax.random.key(1), (256, 2)) + context
 
 flow = maf(2, 3, rngs=nnx.Rngs(0), context_features=1)
-losses = flow.fit(jax.random.key(2), data, context=context, num_steps=100)
+batch = {"data": data, "context": context}
+losses = flow.fit(jax.random.key(2), batch, num_steps=100)
 ```
 
 ## Families
