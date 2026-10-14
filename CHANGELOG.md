@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `linear_exact_sde` dispatch `expm`/`phi_1` on the operator, and
   `linear_exact_sde` now supports diagonal (vector) drifts with a closed-form
   process-noise covariance
+- `newton_raphson`/`root` take `jacobian="dense" | "matrix_free"` and any
+  `linear_solver` accepted by `probjax.utils.linear_operator.solve` (including
+  lineax solvers); the implicit Runge-Kutta, implicit Euler and Adams-Moulton/BDF
+  builders forward these options to their Newton solves
 - Structured linear operators `Diagonal`, `Dense` and matrix-free `Function`
   over arbitrary input/output shapes, with `solve`/`logdet` choosing the method
   by structure (`psd=` selects Cholesky/CG), `expm`/`phi` matrix functions,
@@ -99,6 +103,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (re-exposed on the runner unchanged), so kernels no longer import the runner
 - `odeutil.solvers.exponential.compute_phi_functions(A, dt, k)` is replaced by
   `probjax.utils.linear_operator.phi_matrices(A * dt, k)`
+- Newton roots (and so implicit ODE steps) are differentiated with the implicit
+  function theorem via `jax.lax.custom_root` instead of through the iterations
 - **Breaking:** `LinearOperator(fn, in_dim, out_dim)` is now
   `Function(fn, in_shape)`, `LinearOperator.from_array` is `Dense`, `.operator`
   is `.mv`, operators scale by scalars only, and `solve`/`logdet` take
@@ -187,6 +193,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ravel_args` are unchanged
 
 ### Fixed
+- Iterative `linear_operator.solve` is structurally linear in the right-hand
+  side again (needed to transpose it, e.g. inside `custom_root`)
 - Newton root finding: the tolerance floor used `finfo.precision` (a digit
   count, 6 for float32), convergence flipped back and forth, and the second
   return value was the solution instead of a convergence flag

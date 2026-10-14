@@ -337,6 +337,20 @@ def test_cholesky_gradient_is_symmetric():
         np.testing.assert_allclose(grad, grad.T, rtol=1e-5, atol=1e-6)
 
 
+@pytest.mark.parametrize("solver", ["cg", "gmres", "bicgstab"])
+def test_iterative_solve_is_transposable_in_rhs(solver):
+    # lax.custom_root tangent solves need structural linearity in b, which the
+    # unit-scale rescaling would break without custom_linear_solve.
+    op = _as_function(Dense(jnp.asarray(SPD)))
+    transpose = jax.linear_transpose(
+        lambda b: solve(op, b, solver, psd=True, tol=1e-7), jnp.ones(4)
+    )
+    cotangent = jnp.arange(4.0)
+    np.testing.assert_allclose(
+        transpose(cotangent)[0], np.linalg.solve(SPD.T, cotangent), rtol=1e-3, atol=1e-4
+    )
+
+
 def test_logdet_vs_slogdet():
     oracle = np.linalg.slogdet(SPD.astype(np.float64))[1]
     S = Dense(jnp.asarray(SPD))

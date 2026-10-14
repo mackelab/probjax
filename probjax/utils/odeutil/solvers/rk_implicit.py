@@ -41,9 +41,17 @@ init_implicit_euler = make_trivial_init(ImpEulerState)
 
 
 def build_implicit_euler_step(
-    drift: Callable, solver: Callable = root
+    drift: Callable, solver: Callable = root, **newton_kwargs
 ) -> Callable[[ImpEulerState, ArrayLike], tuple[ODEState, ODEInfo]]:
-    """Build implicit Euler step function."""
+    """Build implicit Euler step function.
+
+    ``newton_kwargs`` (``jacobian``, ``linear_solver``) go to ``solver``,
+    which must therefore be the default :func:`root`.
+    """
+    if newton_kwargs and solver is not root:
+        raise ValueError(
+            "newton_kwargs (jacobian, linear_solver) require the default solver."
+        )
 
     def step_fn(state: ImpEulerState, dt: ArrayLike, *args) -> tuple[ODEState, ODEInfo]:
         y0 = state.y0
@@ -54,7 +62,7 @@ def build_implicit_euler_step(
             y_pred = y0 + dt * drift(t1, y_next, *args)
             return y_next - y_pred
 
-        y1, info = solver(f, y0)
+        y1, info = solver(f, y0, **newton_kwargs)
 
         return ImpEulerState(t0=t1, y0=y1), ImpEulerInfo(solver_info=info)
 
@@ -94,8 +102,13 @@ def build_implicit_rk_step(
     b_error: Optional[Array] = None,
     b_mid: Optional[Array] = None,
     last_equals_next: bool = False,
+    **newton_kwargs,
 ) -> Callable[[ImpRKState, ArrayLike], tuple[ImpRKState, ImpRKInfo]]:
-    """Build implicit Runge-Kutta step function."""
+    """Build implicit Runge-Kutta step function.
+
+    ``newton_kwargs`` (``jacobian``, ``linear_solver``) configure the stage
+    solve, see :func:`probjax.utils.solver.newton_raphson`.
+    """
     stages = c.shape[0]
 
     def imp_rk_step_fn(
@@ -122,7 +135,7 @@ def build_implicit_rk_step(
 
         # Uses root finding to solve implicit equation
         k0 = jnp.ones((stages, f0.shape[0]), f0.dtype) * f0
-        k, info = root(f, k0)
+        k, info = root(f, k0, **newton_kwargs)
 
         # Compute solution
         y1, y1_error, y1_mid = rk_combine(dt, y0, k, b_sol, b_error, b_mid)
@@ -144,7 +157,9 @@ def build_imp_rk_method(
         last_equals_next, init_imp_rk, always_bind_drift=True
     )
 
-    def build_step_method(drift: Callable, dtype: jnp.dtype = jnp.float32):
+    def build_step_method(
+        drift: Callable, dtype: jnp.dtype = jnp.float32, **newton_kwargs
+    ):
         c, A, b_sol, b_error, b_mid = build_butcher_tableau(dtype)
 
         return build_implicit_rk_step(
@@ -155,6 +170,7 @@ def build_imp_rk_method(
             b_error=b_error,
             b_mid=b_mid,
             last_equals_next=last_equals_next,
+            **newton_kwargs,
         )
 
     class ImpRKMethod(ODESolverAPI):

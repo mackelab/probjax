@@ -620,12 +620,23 @@ def solve(
     elif solver in _ITERATIVE_SOLVERS:
         method = _ITERATIVE_SOLVERS[solver]
 
-        def solve_column(column):
+        def unit_scale_solve(matvec, column):
             # Krylov methods square residual norms, which over/underflows
             # float32 for extreme |b|; solve at unit scale instead.
             scale = jnp.max(jnp.abs(column))
             scale = jnp.where(scale > 0, scale, 1)
-            return method(op._mv, column / scale, tol=tol, maxiter=maxiter)[0] * scale
+            return method(matvec, column / scale, tol=tol, maxiter=maxiter)[0] * scale
+
+        def solve_column(column):
+            # The rescaling is nonlinear in b; declaring the solve linear keeps
+            # it transposable (e.g. inside lax.custom_root tangent solves).
+            return jax.lax.custom_linear_solve(
+                op._mv,
+                column,
+                unit_scale_solve,
+                transpose_solve=unit_scale_solve,
+                symmetric=solver == "cg",
+            )
 
         # The jax.scipy solvers accept shaped vectors, so no flattening is needed.
         columns = rhs.reshape(op.out_shape + (-1,))
