@@ -90,11 +90,45 @@ def test_method_is_a_deprecated_alias():
     with pytest.warns(DeprecationWarning, match="solver="):
         legacy = odeint(stiff, Y0, TS, method="rk4")
     np.testing.assert_allclose(legacy, odeint(stiff, Y0, TS, solver="rk4"))
+    key = jax.random.key(0)
+    diffusion = lambda t, y: y
     with pytest.warns(DeprecationWarning, match="solver="):
-        sdeint(jax.random.key(0), stiff, lambda t, y: y, Y0, TS, method="milstein")
+        legacy_sde = sdeint(key, stiff, diffusion, Y0, TS, method="milstein")
+    np.testing.assert_allclose(
+        legacy_sde, sdeint(key, stiff, diffusion, Y0, TS, solver="milstein")
+    )
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         odeint(stiff, Y0, TS, solver="rk4")
+
+
+def test_passing_both_solver_and_method_raises():
+    with pytest.raises(ValueError, match="not both"):
+        odeint(stiff, Y0, TS, solver="dopri5", method="rk4")
+    with pytest.raises(ValueError, match="not both"):
+        sdeint(
+            jax.random.key(0),
+            stiff,
+            lambda t, y: y,
+            Y0,
+            TS,
+            solver="milstein",
+            method="euler_maruyama",
+        )
+
+
+def test_invalid_solver_type_raises():
+    with pytest.raises(TypeError, match="solver name"):
+        odeint(stiff, Y0, TS, solver=123)
+    with pytest.raises(ValueError, match="milstein|available"):
+        sdeint(
+            jax.random.key(0),
+            stiff,
+            lambda t, y: y,
+            Y0,
+            TS,
+            solver="not_a_solver",
+        )
 
 
 def test_unknown_solver_name_lists_available():

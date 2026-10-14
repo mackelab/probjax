@@ -124,7 +124,7 @@ def sdeint(
         >>> ts = jnp.linspace(0, 1, 100)
         >>> ys = sdeint(rng, drift, diffusion, y0, ts, 0.1, 0.2)
     """
-    solver = solver_or_legacy_method(solver, method, "sdeint")
+    solver = solver_or_legacy_method(solver, method, "sdeint", default="euler_maruyama")
     drift = wrap_if_plain_callable(drift)
     diffusion = wrap_if_plain_callable(diffusion)
     result = _sdeint(

@@ -54,10 +54,19 @@ def resolve_solver(solver, registry: dict, infos: dict):
     )
 
 
-def solver_or_legacy_method(solver, method, function_name: str):
-    """Honour the deprecated ``method=`` alias of ``solver=``."""
+def solver_or_legacy_method(solver, method, function_name: str, *, default):
+    """Honour the deprecated ``method=`` alias of ``solver=``.
+
+    ``default`` is the function default of ``solver``: passing both
+    arguments (with ``solver`` differing from its default) is ambiguous
+    and raises instead of silently preferring one.
+    """
     if method is None:
         return solver
+    if solver != default:
+        raise ValueError(
+            f"Pass either solver= or method= to {function_name}, not both."
+        )
     warnings.warn(
         f"{function_name}(method=...) is deprecated; pass solver=... instead",
         DeprecationWarning,

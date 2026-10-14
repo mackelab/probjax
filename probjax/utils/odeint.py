@@ -103,7 +103,7 @@ def odeint(
         >>> ts = jnp.linspace(0, 10, 100)
         >>> ys = odeint(lotka_volterra, y0, ts, 1.0, 0.1, 0.075, 0.5, solver="dopri5")
     """
-    solver = solver_or_legacy_method(solver, method, "odeint")
+    solver = solver_or_legacy_method(solver, method, "odeint", default="rk4")
     drift = wrap_if_plain_callable(drift)
     return _odeint_custom(
         y0,
