@@ -52,6 +52,53 @@ RULES = [
         ),
         (),
     ),
+    (
+        "filtering leaves import nothing above utils",
+        (
+            "inference/filtering/base.py",
+            "inference/filtering/state_space.py",
+            "inference/filtering/observations.py",
+            "inference/filtering/gaussian.py",
+            "inference/filtering/smoothing.py",
+        ),
+        (
+            "probjax.inference.filtering.kalman_filter",
+            "probjax.inference.filtering.extended_kalman_filter",
+            "probjax.inference.filtering.unscented_kalman_filter",
+            "probjax.inference.filtering.square_root_kf",
+            "probjax.inference.filtering.rank_reduced_kalman_filter",
+            "probjax.inference.filtering.particle_filter",
+            "probjax.inference.filtering.temporal",
+            "probjax.inference.filtering.trajectory",
+            "probjax.inference.filtering.joint",
+            "probjax.inference.smc",
+        ),
+        (),
+    ),
+    (
+        "concrete filters stay below orchestration",
+        (
+            "inference/filtering/kalman_filter.py",
+            "inference/filtering/extended_kalman_filter.py",
+            "inference/filtering/unscented_kalman_filter.py",
+            "inference/filtering/square_root_kf.py",
+            "inference/filtering/rank_reduced_kalman_filter.py",
+            "inference/filtering/particle_filter.py",
+        ),
+        (
+            "probjax.inference.filtering.temporal",
+            "probjax.inference.filtering.trajectory",
+            "probjax.inference.filtering.joint",
+            "probjax.inference.smc.temporal",
+        ),
+        (),
+    ),
+    (
+        "no filtering module reaches smc.temporal (the old cycle)",
+        "inference/filtering/",
+        ("probjax.inference.smc.temporal",),
+        (),
+    ),
 ]
 
 

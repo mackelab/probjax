@@ -225,12 +225,14 @@ __all__ = [
     "RejectionSampler",
 ]
 
-from probjax.inference.filtering.temporal import (
+from probjax.inference.filtering.state_space import (
     LinearGaussianModel,
     StateSpaceModel,
     TemporalFilter,
     TemporalResult,
     TemporalTrace,
+)
+from probjax.inference.filtering.temporal import (
     run_temporal_filter,
     temporal_filter,
 )

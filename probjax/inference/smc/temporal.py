@@ -11,12 +11,9 @@ from blackjax.smc.resampling import systematic
 from blackjax.smc.tuning.from_kernel_info import update_scale_from_acceptance_rate
 from jax.flatten_util import ravel_pytree
 
-from probjax.inference.filtering.temporal import (
-    TemporalResult,
-    _observations,
-    _scan,
-    temporal_filter,
-)
+from probjax.inference.filtering.observations import validate_observations
+from probjax.inference.filtering.state_space import TemporalResult
+from probjax.inference.filtering.temporal import scan_history, temporal_filter
 from probjax.inference.smc.temporal_utils import population_covariance, replay_filter
 from probjax.utils.guards import ensure_int
 
@@ -188,7 +185,7 @@ def temporal_smc(
         Pass the whole dataset seen so far: the new observation is read at
         index ``state.num_observations`` and moves replay the prefix before it.
         """
-        data = _observations(ts, observations, observed)
+        data = validate_observations(ts, observations, observed)
         ts, observations, observed = data
         count = state.num_observations
         n = state.log_weights.shape[0]
@@ -299,7 +296,7 @@ def run_temporal_smc(
     the same result as one. ``history`` is ``'none'``, ``'full'`` or a window
     size; ``result.log_likelihood`` covers only this call's observations.
     """
-    data = _observations(ts, observations, observed)
+    data = validate_observations(ts, observations, observed)
     ts = data[0]
     zero = jnp.zeros((), state.log_weights.dtype)
     if ts.shape[0] == 0:
@@ -322,4 +319,4 @@ def run_temporal_smc(
             lambda: kernel.step(key, state, *data),
         )
 
-    return _scan(step, key, state, ts, jnp.arange(ts.shape[0]), history)
+    return scan_history(step, key, state, ts, jnp.arange(ts.shape[0]), history)

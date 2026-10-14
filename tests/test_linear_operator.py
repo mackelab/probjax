@@ -5,11 +5,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from probjax.inference.filtering.kalman_filter import (
+from probjax.inference.filtering.gaussian import (
     default_logdet,
     default_solve,
-    kalman_filter,
 )
+from probjax.inference.filtering.kalman_filter import kalman_filter
 from probjax.utils.linear_operator import (
     Dense,
     Diagonal,

@@ -94,13 +94,6 @@ def make_filter_api(
     return type(name, (FilterAPI,), attrs)
 
 
-def _gaussian_unpack(
-    state: FilterState, info: FilterInfo
-) -> Tuple[ArrayLike, ArrayLike]:
-    """Return the posterior mean and covariance from a Gaussian filter state."""
-    return state.mean, state.cov
-
-
 def is_particle_state(states: Any) -> bool:
     """True if ``states`` carries particles + log weights."""
     return has_attrs(states, "particles", "log_weights")

@@ -76,6 +76,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   use the probjax copies
 
 ### Changed
+- **Breaking:** filtering internals re-layered to remove circular imports
+  (no aliases): model types live in `filtering.state_space`, observation
+  validation in `filtering.observations` (`validate_observations`), and shared
+  Gaussian math in `filtering.gaussian` (`GaussianFilterState/Info`,
+  `gaussian_unpack`, `innovation_loglik`, `kalman_update`,
+  `gaussian_filter_template`, `default_solve`/`default_logdet`,
+  `scan_history` lives on `filtering.temporal`). Update imports that reached
+  into `filtering.temporal._observations`/`_scan` or
+  `filtering.kalman_filter.{default_solve, default_logdet, _innovation_ll}`.
+  `filtering` and `smc` package roots are now lazy (PEP 562) with unchanged
+  symbol surfaces
 - **Breaking:** `LinearOperator(fn, in_dim, out_dim)` is now
   `Function(fn, in_shape)`, `LinearOperator.from_array` is `Dense`, `.operator`
   is `.mv`, operators scale by scalars only, and `solve`/`logdet` take

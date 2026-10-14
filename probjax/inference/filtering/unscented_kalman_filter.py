@@ -4,8 +4,8 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from probjax.inference.filtering.base import FilterAPI, _gaussian_unpack
-from probjax.inference.filtering.kalman_filter import _innovation_ll
+from probjax.inference.filtering.base import FilterAPI
+from probjax.inference.filtering.gaussian import gaussian_unpack, innovation_loglik
 from probjax.utils.guards import call_if_callable
 
 
@@ -296,7 +296,7 @@ def build_kernel(
             cov1 = cov1_ - jnp.dot(K, jnp.dot(cov_y, K.T))
 
             # Compute the log-likelihood
-            log_likelihood = _innovation_ll(
+            log_likelihood = innovation_loglik(
                 r,
                 cov_y,
                 solve_fn=lambda S, res: jnp.linalg.solve(S, res),
@@ -335,4 +335,4 @@ class ukf(FilterAPI):
     init = init
     build_kernel = build_kernel
 
-    default_unpack = staticmethod(_gaussian_unpack)
+    default_unpack = staticmethod(gaussian_unpack)

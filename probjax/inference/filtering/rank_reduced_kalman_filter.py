@@ -4,7 +4,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 
 from probjax.inference.filtering.base import FilterAPI
-from probjax.inference.filtering.kalman_filter import _innovation_ll, default_solve
+from probjax.inference.filtering.gaussian import default_solve, innovation_loglik
 from probjax.utils.linalg import symmetrize_matrix
 
 
@@ -273,7 +273,7 @@ def build_kernel(
             U = U_pred @ vecs
             S = jnp.diag(vals)
 
-            log_likelihood = _innovation_ll(
+            log_likelihood = innovation_loglik(
                 residual,
                 innovation,
                 solve_fn=solve,
