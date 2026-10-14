@@ -1,7 +1,9 @@
 from typing import Any, Callable, NamedTuple, Optional, Tuple
 
+import jax
 from jax.typing import ArrayLike
 
+from probjax.utils.guards import has_attrs
 from probjax.utils.jaxutils import API
 
 
@@ -24,7 +26,9 @@ class FilterInfo(NamedTuple):
     pass
 
 
-def _default_unpack(state: FilterState, info: FilterInfo) -> Tuple[FilterState, FilterInfo]:
+def _default_unpack(
+    state: FilterState, info: FilterInfo
+) -> Tuple[FilterState, FilterInfo]:
     return (state, info)
 
 
@@ -90,6 +94,51 @@ def make_filter_api(
     return type(name, (FilterAPI,), attrs)
 
 
-def _gaussian_unpack(state: FilterState, info: FilterInfo) -> Tuple[ArrayLike, ArrayLike]:
+def _gaussian_unpack(
+    state: FilterState, info: FilterInfo
+) -> Tuple[ArrayLike, ArrayLike]:
     """Return the posterior mean and covariance from a Gaussian filter state."""
     return state.mean, state.cov
+
+
+def is_particle_state(states: Any) -> bool:
+    """True if ``states`` carries particles + log weights."""
+    return has_attrs(states, "particles", "log_weights")
+
+
+def extract_mean(states: Any) -> ArrayLike:
+    """Mean for Gaussian states, particles for particle states."""
+    if hasattr(states, "mean"):
+        return states.mean
+    if hasattr(states, "particles"):
+        return states.particles
+    raise ValueError("Trace states have no 'mean' or 'particles' attribute.")
+
+
+def extract_covariance(states: Any) -> ArrayLike:
+    """Covariance for Gaussian states (``cov`` / ``std`` / factor-core)."""
+    if hasattr(states, "cov"):
+        return states.cov
+    if hasattr(states, "std"):
+        return jax.vmap(lambda s: s @ s.T)(states.std)
+    if has_attrs(states, "cov_factor", "cov_core"):
+        return jax.vmap(lambda u, s: u @ s @ u.T)(states.cov_factor, states.cov_core)
+    raise ValueError(
+        "Filtering states must have either `cov`, `std`, or (`cov_factor`, `cov_core`)."
+    )
+
+
+def extract_pred_covariance(infos: Any) -> ArrayLike:
+    """Predicted covariance for Gaussian infos."""
+    if hasattr(infos, "cov_pred"):
+        return infos.cov_pred
+    if hasattr(infos, "std_pred"):
+        return jax.vmap(lambda s: s @ s.T)(infos.std_pred)
+    if has_attrs(infos, "cov_factor_pred", "cov_core_pred"):
+        return jax.vmap(lambda u, s: u @ s @ u.T)(
+            infos.cov_factor_pred, infos.cov_core_pred
+        )
+    raise ValueError(
+        "Filtering infos must have either `cov_pred`, `std_pred`, "
+        "or (`cov_factor_pred`, `cov_core_pred`)."
+    )

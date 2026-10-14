@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import jax.scipy.linalg
 
 from probjax.utils.functions import const_diffusion, linear_drift
+from probjax.utils.guards import call_if_callable
 from probjax.utils.odeutil.solvers.exponential import compute_phi_functions
 from probjax.utils.sdeutil.base import SDEInfo, SDESolverAPI, SDEState, register_method
 from probjax.utils.special.phi1 import phi1_scalar
@@ -69,7 +70,7 @@ def build_linear_exact_sde_step(
 
     is_const = drift.is_constant
     if is_const:
-        A = drift.A if not callable(drift.A) else drift.A(jnp.asarray(0.0))
+        A = call_if_callable(drift.A, jnp.asarray(0.0))
         # Pytree-flowing drifts arrive with ``A`` as a traced array, so we
         # branch on its static shape info (ndim) rather than on values.
         A_sym = jnp.asarray(A)

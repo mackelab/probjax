@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import jax.scipy.linalg
 
 from probjax.utils.functions import linear_drift
+from probjax.utils.guards import call_if_callable
 from probjax.utils.odeutil.solvers.base import (
     ODEInfo,
     ODESolverAPI,
@@ -50,7 +51,7 @@ def build_linear_exact_step(drift: linear_drift) -> Callable:
     is_const = drift.is_constant
 
     if is_const:
-        A = drift.A if not callable(drift.A) else drift.A(jnp.asarray(0.0))
+        A = call_if_callable(drift.A, jnp.asarray(0.0))
         # Pytree-flowing drifts arrive with ``A`` as a traced array, so we
         # branch on its static shape info (ndim) rather than on values. A
         # vector ``A`` (ndim == 1) is interpreted as the diagonal of a

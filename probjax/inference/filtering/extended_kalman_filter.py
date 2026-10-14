@@ -11,8 +11,9 @@ from probjax.inference.filtering.kalman_filter import (
     _gaussian_filter_template,
     init,
 )
+from probjax.utils.guards import call_if_callable
 from probjax.utils.linalg import matrix_fraction_decomposition
-from probjax.utils.linear_operator import Jacobian, LinearOperator
+from probjax.utils.linear_operator import Jacobian, as_array
 
 # ---------------------------------------------------------------------------
 # EKF kernel
@@ -49,9 +50,7 @@ def build_kernel(
             mu1_, Phi, Q = transition_model_fn(mu0, cov0, t_old, t)
             cov1_ = Phi @ cov0 @ Phi.T + Q
             # Materialize predicted covariance — needed for update step
-            if isinstance(cov1_, LinearOperator):
-                cov1_ = cov1_.as_array()
-            return mu1_, cov1_
+            return mu1_, as_array(cov1_)
 
         def observe(mu1_, cov1_, t):
             return observation_model_fn(mu1_, cov1_, t)
@@ -103,7 +102,7 @@ def make_linearized_transition(
             Phi = jax.jacfwd(transition_fn)(x, t_old, t)
         else:
             Phi = Jacobian(transition_fn, x, (t_old, t))
-        Q = Q_fn(t_old, t) if callable(Q_fn) else Q_fn
+        Q = call_if_callable(Q_fn, t_old, t)
         return x_pred, Phi, Q
 
     return transition_model_fn
@@ -138,7 +137,7 @@ def make_linearized_observation(
             C = jax.jacfwd(observation_fn)(x, t)
         else:
             C = Jacobian(observation_fn, x, (t,))
-        R = R_fn(t) if callable(R_fn) else R_fn
+        R = call_if_callable(R_fn, t)
         return y_pred, C, R
 
     return observation_model_fn

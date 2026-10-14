@@ -1,11 +1,11 @@
 from typing import Any, Callable, Optional, Sequence, Tuple, Union
 
-import jax
 import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Key, PyTree
 
 from probjax.utils.functions import wrap_if_plain_callable
+from probjax.utils.guards import is_tracing
 from probjax.utils.sdeutil.adaptive import SDEStepSizeAdaptor
 from probjax.utils.sdeutil.core import _sdeint
 from probjax.utils.sdeutil.integrate_adaptive import warn_boundary_hits
@@ -155,7 +155,7 @@ def sdeint(
     # surface from the outermost concrete invocation. ``jax.core.Tracer``
     # check costs nothing under vmap and avoids the per-element callback
     # dispatch we'd pay if the warn lived inside the JIT graph.
-    if step_size_adaptor is not None and not isinstance(diag_hits, jax.core.Tracer):
+    if step_size_adaptor is not None and not is_tracing(diag_hits):
         n_segments = int(jnp.atleast_1d(jnp.asarray(ts)).shape[0]) - 1
         warn_boundary_hits(step_size_adaptor, diag_hits, n_segments)
     return out

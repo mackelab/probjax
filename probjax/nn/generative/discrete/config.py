@@ -19,6 +19,11 @@ def _require_float_time(t: ArrayLike, *, name: str = "t") -> Array:
     return t_arr.astype(jnp.float32)
 
 
+def clip_to_time_range(t: ArrayLike, t_min: float, t_max: float) -> Array:
+    """Validate float time and clip it into ``[t_min, t_max]``."""
+    return jnp.clip(_require_float_time(t).astype(jnp.float32), t_min, t_max)
+
+
 def _default_base_probs(num_classes: int) -> Array:
     return jnp.ones((num_classes,), dtype=jnp.float32) / float(num_classes)
 
@@ -369,9 +374,7 @@ class MultinomialDiffusionSchedule(CategoricalScheduleProtocol):
         return jnp.clip(u, 0.0, 1.0)
 
     def _to_continuous_time(self, t: ArrayLike) -> Array:
-        t_arr = _require_float_time(t)
-        t_cont = t_arr.astype(jnp.float32)
-        return jnp.clip(t_cont, self.t_min, self.t_max)
+        return clip_to_time_range(t, self.t_min, self.t_max)
 
     def _broadcast_time_like(self, t: ArrayLike, ref: Array) -> Array:
         t_cont = self._to_continuous_time(t)

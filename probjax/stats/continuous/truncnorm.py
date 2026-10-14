@@ -17,6 +17,7 @@ from jax.scipy.stats import truncnorm as _truncnorm
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import interval, real, strict_positive
+from probjax.utils.guards import ensure_int
 from probjax.utils.special.logspace import logdiffexp
 from probjax.utils.typing import RngKey
 
@@ -336,8 +337,7 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
     def moment(cls, n, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
         """n-th non-central moment of the truncated normal distribution."""
         loc, scale, a, b = jnp.broadcast_arrays(loc, scale, a, b)
-        if not isinstance(n, int) or n < 0:
-            raise ValueError("n must be a nonnegative static integer")
+        ensure_int("n", n, min_value=0)
         moments, _ = _standard_moments(
             _standardize_bound(a, loc, scale), _standardize_bound(b, loc, scale), n
         )

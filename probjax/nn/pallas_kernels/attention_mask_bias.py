@@ -19,6 +19,16 @@ from .kernel_utils import (
     query_iterator_indices,
 )
 
+
+def _aux_field(aux, key, index=0):
+    """Read pytree aux data stored as a dict (current) or tuple/scalar (legacy)."""
+    if isinstance(aux, dict):
+        return aux.get(key)
+    if isinstance(aux, (tuple, list)):
+        return aux[index]
+    return aux
+
+
 # ---------------------------- Base Classes -----------------------------------
 
 
@@ -671,8 +681,8 @@ class LocalWindowMask(AttentionMask):
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        lw = aux.get("left_window") if isinstance(aux, dict) else aux[0]
-        rw = aux.get("right_window") if isinstance(aux, dict) else aux[1]
+        lw = _aux_field(aux, "left_window", 0)
+        rw = _aux_field(aux, "right_window", 1)
         return LocalWindowMask(left_window=lw, right_window=rw)
 
 
@@ -718,7 +728,7 @@ class CausalLocalWindowMask(AttentionMask):
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        lw = aux.get("left_window") if isinstance(aux, dict) else aux
+        lw = _aux_field(aux, "left_window")
         return CausalLocalWindowMask(left_window=lw)
 
 
@@ -749,8 +759,8 @@ class CausalFromBottomRightMask(AttentionMask):
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        ql = aux.get("q_length") if isinstance(aux, dict) else aux[0]
-        kl = aux.get("kv_length") if isinstance(aux, dict) else aux[1]
+        ql = _aux_field(aux, "q_length", 0)
+        kl = _aux_field(aux, "kv_length", 1)
         return CausalFromBottomRightMask(q_length=ql, kv_length=kl)
 
 
@@ -1096,8 +1106,8 @@ class QKVLengthMask(AttentionMask):
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        q_len = aux.get("q_length") if isinstance(aux, dict) else aux[0]
-        kv_len = aux.get("kv_length") if isinstance(aux, dict) else aux[1]
+        q_len = _aux_field(aux, "q_length", 0)
+        kv_len = _aux_field(aux, "kv_length", 1)
         return QKVLengthMask(q_length=q_len, kv_length=kv_len)
 
 
@@ -1769,7 +1779,7 @@ class ConstantBias(AttentionBias):
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        val = aux.get("value") if isinstance(aux, dict) else aux
+        val = _aux_field(aux, "value")
         return ConstantBias(val)
 
 
@@ -2364,7 +2374,7 @@ class DistanceDecayBias(AttentionBias):
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        a = aux.get("alpha") if isinstance(aux, dict) else aux
+        a = _aux_field(aux, "alpha")
         return DistanceDecayBias(alpha=a)
 
 

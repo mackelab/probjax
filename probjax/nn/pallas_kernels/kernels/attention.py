@@ -29,6 +29,8 @@ from jax.experimental import pallas as pl
 from jax.experimental.pallas import triton as plgpu
 from jax.interpreters import ad
 
+from probjax.utils.guards import is_tracing
+
 from ..attention_mask_bias import (
     AttentionBias,
     AttentionMask,
@@ -2256,7 +2258,7 @@ def mha(
 
     def _is_tracer_arg(x) -> bool:
         try:
-            return isinstance(x, jax.core.Tracer)
+            return is_tracing(x)
         except Exception:
             return False
 

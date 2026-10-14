@@ -39,7 +39,36 @@ def _static(**kwargs):
 
 
 def _as_shape(shape) -> Shape:
-    return (shape,) if isinstance(shape, int) else tuple(shape)
+    from probjax.utils.guards import ensure_tuple
+
+    return ensure_tuple("shape", shape)
+
+
+def is_operator(x: Any) -> bool:
+    """True if ``x`` is a structured :class:`LinearOperator`."""
+    return isinstance(x, LinearOperator)
+
+
+def as_array(x: Any) -> jax.Array:
+    """Materialize operators via ``as_array()``; arrays via ``jnp.asarray``."""
+    if isinstance(x, LinearOperator):
+        return x.as_array()
+    return jnp.asarray(x)
+
+
+def densify_if_small(S: Any, dense_mem_limit: float = 200) -> Any:
+    """Materialize ``S`` when its dense matrix fits in ``dense_mem_limit`` MB."""
+    if not isinstance(S, LinearOperator):
+        return jnp.asarray(S)
+    mem_mb = S.shape[0] * S.shape[1] * jnp.dtype(S.dtype).itemsize / 1024**2
+    return S.as_dense() if mem_mb <= dense_mem_limit else S
+
+
+def is_array_or_operator(x: Any) -> bool:
+    """True for dense arrays or :class:`LinearOperator` values."""
+    from probjax.utils.guards import is_array_like
+
+    return isinstance(x, LinearOperator) or is_array_like(x)
 
 
 class LinearOperator:
@@ -94,7 +123,9 @@ class LinearOperator:
             return Diagonal(other, self.out_shape)
         if other.shape == self.shape:
             return Dense(other, self.in_shape, self.out_shape)
-        raise ValueError(f"Cannot combine shape {other.shape} with operator {self.shape}")
+        raise ValueError(
+            f"Cannot combine shape {other.shape} with operator {self.shape}"
+        )
 
     def __add__(self, other) -> "LinearOperator":
         other = self._coerce(other)
@@ -119,7 +150,9 @@ class LinearOperator:
     def __mul__(self, scalar) -> "LinearOperator":
         scalar = jnp.asarray(scalar)
         if scalar.ndim != 0:
-            raise ValueError("Operators can only be scaled by scalars; use Diagonal @ A")
+            raise ValueError(
+                "Operators can only be scaled by scalars; use Diagonal @ A"
+            )
         return Diagonal(scalar, self.out_shape) @ self
 
     __rmul__ = __mul__
@@ -137,7 +170,9 @@ class LinearOperator:
         # A 2-D array right of a vector-input operator is a matrix to compose.
         if len(self.in_shape) == 1 and other.ndim == 2:
             return _compose(self, Dense(other))
-        raise ValueError(f"Incompatible shapes: operator {self.shape} and {other.shape}")
+        raise ValueError(
+            f"Incompatible shapes: operator {self.shape} and {other.shape}"
+        )
 
     def __rmatmul__(self, other):
         other = jnp.asarray(other)
@@ -145,7 +180,9 @@ class LinearOperator:
             return self.T._mv(other)
         if len(self.out_shape) == 1 and other.ndim == 2:
             return _compose(Dense(other), self)
-        raise ValueError(f"Incompatible shapes: {other.shape} and operator {self.shape}")
+        raise ValueError(
+            f"Incompatible shapes: {other.shape} and operator {self.shape}"
+        )
 
     # Linear algebra ---------------------------------------------------------
 
@@ -257,7 +294,9 @@ class Dense(LinearOperator):
         return self.matrix
 
     def expm(self, t=1.0):
-        return Dense(jax.scipy.linalg.expm(t * self.matrix), self.in_shape, self.in_shape)
+        return Dense(
+            jax.scipy.linalg.expm(t * self.matrix), self.in_shape, self.in_shape
+        )
 
     def phi(self, t=1.0, k=1):
         return [
@@ -507,7 +546,9 @@ def solve(
     b = jnp.asarray(b)
     batch_shape = b.shape[len(op.out_shape) :]
     if b.shape[: len(op.out_shape)] != op.out_shape or len(batch_shape) > 1:
-        raise ValueError(f"Expected rhs of shape {op.out_shape} (+ (k,)), got {b.shape}")
+        raise ValueError(
+            f"Expected rhs of shape {op.out_shape} (+ (k,)), got {b.shape}"
+        )
     rhs = b.reshape(op.out_size, -1)
 
     if not isinstance(solver, str):

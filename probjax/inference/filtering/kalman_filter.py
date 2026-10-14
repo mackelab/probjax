@@ -5,7 +5,12 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 
 from probjax.inference.filtering.base import FilterAPI, _gaussian_unpack
-from probjax.utils.linear_operator import LinearOperator
+from probjax.utils.linear_operator import (
+    as_array,
+    densify_if_small,
+    is_array_or_operator,
+    is_operator,
+)
 
 
 class KalmanFilterState(NamedTuple):
@@ -26,10 +31,9 @@ def init(
     return KalmanFilterState(mean, cov, t)
 
 
-def _densify_if_small(S: LinearOperator, dense_mem_limit: float) -> LinearOperator:
-    """Materialize S when its dense matrix fits in ``dense_mem_limit`` MB."""
-    mem_mb = S.shape[0] * S.shape[1] * jnp.dtype(S.dtype).itemsize / 1024**2
-    return S.as_dense() if mem_mb <= dense_mem_limit else S
+def _densify_if_small(S, dense_mem_limit: float = 200):
+    """Back-compat alias for :func:`densify_if_small`."""
+    return densify_if_small(S, dense_mem_limit)
 
 
 def default_solve(S, res, dense_mem_limit=200):
@@ -50,10 +54,10 @@ def default_solve(S, res, dense_mem_limit=200):
         dense_mem_limit: Max MB for the materialized S matrix. Default 200 MB,
             corresponding to obs_dim ~ 5000 in f64 or ~7000 in f32.
     """
-    if isinstance(S, LinearOperator):
+    if is_operator(S):
         # LinearOperator.solve takes rhs as (obs_dim, nrhs); the Kalman
         # convention here is (nrhs, obs_dim), hence the transposes.
-        S = _densify_if_small(S, dense_mem_limit)
+        S = densify_if_small(S, dense_mem_limit)
         return S.solve(jnp.asarray(res).T, psd=True).T
     S = jnp.asarray(S)
     res = jnp.asarray(res)
@@ -70,8 +74,8 @@ def default_logdet(S, dense_mem_limit=200):
     until dim ~2000. Above that, Lanczos avoids O(n^2) materialization and
     O(n^3) factorization.
     """
-    if isinstance(S, LinearOperator):
-        S = _densify_if_small(S, dense_mem_limit)
+    if is_operator(S):
+        S = densify_if_small(S, dense_mem_limit)
         return S.logdet(psd=True, num_steps=500)
     return jnp.linalg.slogdet(jnp.asarray(S)).logabsdet
 
@@ -124,15 +128,10 @@ def _kalman_update(
     # Materialize S and res for solve. C can stay as a LinearOperator —
     # we use operator composition to build the dense matrices S and res
     # without materializing C itself.
-    if isinstance(C, LinearOperator):
-        # S = C @ cov1_ @ C.T  (obs_dim x obs_dim)
-        S = (C @ cov1_ @ C.T).as_array()
-        # res = cov1_ @ C.T  (state_dim x obs_dim)
-        res = (cov1_ @ C.T).as_array()
-    else:
+    S = as_array(C @ cov1_ @ C.T)  # (obs_dim x obs_dim)
+    res = as_array(cov1_ @ C.T)  # (state_dim x obs_dim)
+    if not is_operator(C):
         C = jnp.asarray(C)
-        S = C @ cov1_ @ C.T
-        res = cov1_ @ C.T
 
     S = S + R if R is not None else S
 
@@ -141,12 +140,8 @@ def _kalman_update(
     mu1 = mu1_ + K @ r
 
     # cov1 = cov1_ - K @ C @ cov1_  =  cov1_ - K @ (C @ cov1_)
-    if isinstance(C, LinearOperator):
-        # C_cov1 = C @ cov1_  (obs_dim x state_dim)
-        C_cov1 = (C @ cov1_).as_array()
-        cov1 = cov1_ - K @ C_cov1
-    else:
-        cov1 = cov1_ - K @ C @ cov1_
+    C_cov1 = as_array(C @ cov1_)  # (obs_dim x state_dim)
+    cov1 = cov1_ - K @ C_cov1
 
     log_likelihood = _innovation_ll(r, S, solve_fn=solve_fn, logdet_fn=logdet_fn_)
 
@@ -216,32 +211,20 @@ def build_kernel(
             # Q a positive definite matrix
             Phi, Q = transition_model_fns(t_old, t)
 
-            assert isinstance(Q, (jnp.ndarray, LinearOperator)), (
-                "Q must be an Array or LinearOperator"
-            )
-            assert isinstance(Phi, (jnp.ndarray, LinearOperator)), (
-                "Phi must be an Array or LinearOperator"
-            )
+            assert is_array_or_operator(Q), "Q must be an Array or LinearOperator"
+            assert is_array_or_operator(Phi), "Phi must be an Array or LinearOperator"
 
             # Predict
             mu1_ = Phi @ mu0
             cov1_ = Phi @ cov0 @ Phi.T + Q
             # Materialize predicted covariance — needed for update and info
-            mu1_ = mu1_.as_array() if isinstance(mu1_, LinearOperator) else mu1_
-            cov1_ = cov1_.as_array() if isinstance(cov1_, LinearOperator) else cov1_
-            return mu1_, cov1_
+            return as_array(mu1_), as_array(cov1_)
 
         def observe(mu1_, cov1_, t):
             C, R = observation_model_fns(t)
 
-            assert (
-                R is None
-                or isinstance(R, LinearOperator)
-                or (hasattr(R, "shape") and hasattr(R, "dtype"))
-            ), "R must be an Array or None"
-            assert isinstance(C, LinearOperator) or (
-                hasattr(C, "shape") and hasattr(C, "dtype")
-            ), "C must be an Array or LinearOperator"
+            assert R is None or is_array_or_operator(R), "R must be an Array or None"
+            assert is_array_or_operator(C), "C must be an Array or LinearOperator"
 
             return C @ mu1_, C, R
 

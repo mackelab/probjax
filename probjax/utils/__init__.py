@@ -34,6 +34,22 @@ from probjax.utils.graph import (
     find_ancestors_jax,
 )
 
+# Runtime type guards
+from probjax.utils.guards import (
+    call_if_callable,
+    ensure_int,
+    ensure_tuple,
+    get_field,
+    has_attrs,
+    is_array_like,
+    is_mapping,
+    is_tracing,
+    normalize_devices,
+    normalize_rng,
+    params_to_dict,
+    replace_field,
+)
+
 # Interpolation
 from probjax.utils.interpolation import (
     linear_interpolation,

@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.inference.base import RunnerMixin, SMCResult
+from probjax.utils.guards import ensure_int
 from probjax.utils.jaxutils import WithProgressBarAPI
 
 
@@ -204,8 +205,7 @@ class SMC(WithProgressBarAPI, RunnerMixin):
         persistent storage, nonfinite temperature/evidence, or stalled progress.
         Key/state/params can be passed back to resume a capped run.
         """
-        if not isinstance(max_steps, int) or max_steps < 1:
-            raise ValueError("max_steps must be a positive integer.")
+        ensure_int("max_steps", max_steps, min_value=1)
         info = _zero_info(kernel.step, key, state, mcmc_parameters=params)
         adaptation = () if adaptor is None else adaptor.init(state, params)
         evidence = _initial_evidence(state, initial_log_evidence)
