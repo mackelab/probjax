@@ -206,34 +206,30 @@ def test_linear_exact_preserves_float64():
 
 def test_linear_exact_sde_matches_moments_with_full_noise():
     # Empirical mean/covariance over keys match the exact flow and Van Loan Q.
+    # Deliberately float32 like the rest of this file: Monte Carlo noise
+    # (~1e-2 at 2000 samples) dominates solver precision, and staying in one
+    # precision keeps the test independent of whatever earlier tests compiled.
     from probjax.utils.odeutil.solvers.linear_exact import affine_flow
 
-    # Hermetic against executables compiled by earlier tests: on JAX 0.9.x a
-    # jitted float32 scalar-times-matrix (e.g. from a time-dependent drift
-    # above) can poison the cache for the float64 vmapped solve below
-    # (fixed upstream by 0.11; CI runs latest).
-    jax.clear_caches()
-
-    with jax.enable_x64():
-        dt = 0.3
-        G = np.array([[0.5, 0.1], [0.0, 0.4]])
-        drift = linear_drift(A=jnp.asarray(A_DENSE))
-        diffusion = const_diffusion(G=jnp.asarray(G))
-        state = LinearExactSDEState(t0=jnp.asarray(0.0), y0=jnp.asarray(X0))
-        step = build_linear_exact_sde_step(drift, diffusion)
-        keys = jax.random.split(jax.random.key(1), 2000)
-        samples = jax.vmap(lambda k: step(k, state, dt)[0].y0)(keys)
-        samples = np.asarray(samples)
-        mean = samples.mean(axis=0)
-        cov = np.cov(samples, rowvar=False)
-        expected_mean = np.asarray(
-            affine_flow(Dense(jnp.asarray(A_DENSE)), None, jnp.asarray(X0), dt)
-        )
-        expected_cov = _process_noise_cov(
-            Dense(jnp.asarray(A_DENSE)), jnp.asarray(G), dt, 2
-        )
-        np.testing.assert_allclose(mean, expected_mean, rtol=0.1, atol=0.05)
-        np.testing.assert_allclose(cov, np.asarray(expected_cov), rtol=0.2, atol=0.05)
+    dt = 0.3
+    G = np.array([[0.5, 0.1], [0.0, 0.4]])
+    drift = linear_drift(A=jnp.asarray(A_DENSE))
+    diffusion = const_diffusion(G=jnp.asarray(G))
+    state = LinearExactSDEState(t0=jnp.asarray(0.0), y0=jnp.asarray(X0))
+    step = build_linear_exact_sde_step(drift, diffusion)
+    keys = jax.random.split(jax.random.key(1), 2000)
+    samples = jax.vmap(lambda k: step(k, state, dt)[0].y0)(keys)
+    samples = np.asarray(samples)
+    mean = samples.mean(axis=0)
+    cov = np.cov(samples, rowvar=False)
+    expected_mean = np.asarray(
+        affine_flow(Dense(jnp.asarray(A_DENSE)), None, jnp.asarray(X0), dt)
+    )
+    expected_cov = _process_noise_cov(
+        Dense(jnp.asarray(A_DENSE)), jnp.asarray(G), dt, 2
+    )
+    np.testing.assert_allclose(mean, expected_mean, rtol=0.1, atol=0.05)
+    np.testing.assert_allclose(cov, np.asarray(expected_cov), rtol=0.2, atol=0.05)
 
 
 def test_diagonal_phi_higher_order_matches_scalar_formula():
