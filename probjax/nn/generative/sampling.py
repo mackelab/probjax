@@ -257,7 +257,7 @@ def make_ode_sample_fn(
             ts,
             current_state,
             *extra,
-            method=method,
+            solver=method,
             dtype=None,
             collect_trace=collect_trace,
         )
@@ -299,7 +299,7 @@ def make_sde_sample_fn(
             ts,
             current_state,
             *extra,
-            method=method,
+            solver=method,
             dtype=None,
             collect_trace=collect_trace,
         )

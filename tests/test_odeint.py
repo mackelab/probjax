@@ -60,7 +60,7 @@ def _check_basic_linear_ode(problem, method):
         drift,
         x0,
         ts_dense,
-        method=method,
+        solver=method,
         step_size_adaptor=step_size_adaptor,
         collect_trace=True,
     )
@@ -90,7 +90,7 @@ def test_odeint_split_drift_ode(split_drift_ode_problem, split_drift_ode_method)
         drift,
         x0,
         ts_dense,
-        method=split_drift_ode_method,
+        solver=split_drift_ode_method,
         step_size_adaptor=step_size_adaptor,
         collect_trace=True,
     )
@@ -110,7 +110,7 @@ def test_odeint_nonlienar_ode(nonlinear_ode_problem, plain_ode_method):
         drift,
         x0,
         ts_dense,
-        method=plain_ode_method,
+        solver=plain_ode_method,
         step_size_adaptor=step_size_adaptor,
         collect_trace=True,
     )
@@ -130,8 +130,8 @@ def test_odeint_with_pytree(plain_ode_method):
     def drift(t, x):
         return {"x": x["x"] * x["y"], "y": x["y"] * x["x"]}
 
-    trace = odeint(drift, x0, ts, method=plain_ode_method, collect_trace=True)
-    final_state = odeint(drift, x0, ts, method=plain_ode_method, collect_trace=False)
+    trace = odeint(drift, x0, ts, solver=plain_ode_method, collect_trace=True)
+    final_state = odeint(drift, x0, ts, solver=plain_ode_method, collect_trace=False)
 
     # Test that pytree is preserved
     assert isinstance(trace, dict)
@@ -160,7 +160,7 @@ def test_odeint_with_pytree_filter_state(plain_ode_method):
         drift,
         x0,
         ts,
-        method=plain_ode_method,
+        solver=plain_ode_method,
         filter_state=filter_state,
         collect_trace=True,
     )
@@ -168,7 +168,7 @@ def test_odeint_with_pytree_filter_state(plain_ode_method):
         drift,
         x0,
         ts,
-        method=plain_ode_method,
+        solver=plain_ode_method,
         filter_state=filter_state,
         collect_trace=False,
     )
@@ -194,7 +194,7 @@ def test_odeint_trace_nothing(plain_ode_method):
         drift,
         x0,
         ts,
-        method=plain_ode_method,
+        solver=plain_ode_method,
         filter_state=TraceNothing(),
         collect_trace=True,
     )
@@ -204,7 +204,7 @@ def test_odeint_trace_nothing(plain_ode_method):
         drift,
         x0,
         ts,
-        method=plain_ode_method,
+        solver=plain_ode_method,
         filter_state=TraceNothing(),
         collect_trace=False,
     )
@@ -236,7 +236,7 @@ def test_odeint_supports_drift_args(plain_ode_method):
         ts,
         rate,
         bias,
-        method=plain_ode_method,
+        solver=plain_ode_method,
         collect_trace=True,
     )
 
@@ -249,7 +249,7 @@ def test_odeint_supports_drift_args(plain_ode_method):
         drift_partial,
         x0,
         ts,
-        method=plain_ode_method,
+        solver=plain_ode_method,
         collect_trace=True,
     )
 
@@ -264,7 +264,7 @@ def test_odeint_supports_drift_args(plain_ode_method):
             ts,
             r,
             b,
-            method=plain_ode_method,
+            solver=plain_ode_method,
             collect_trace=False,
         )
     )
@@ -274,7 +274,7 @@ def test_odeint_supports_drift_args(plain_ode_method):
         ts,
         rate,
         bias,
-        method=plain_ode_method,
+        solver=plain_ode_method,
         collect_trace=False,
     )
     terminal_jit = jitted_terminal(x0, rate, bias)
@@ -306,7 +306,7 @@ def test_odeint_split_drift_supports_args(split_drift_ode_method):
         ts,
         scale,
         bias,
-        method=split_drift_ode_method,
+        solver=split_drift_ode_method,
         collect_trace=True,
     )
 
@@ -317,7 +317,7 @@ def test_odeint_split_drift_supports_args(split_drift_ode_method):
         drift_bound,
         x0,
         ts,
-        method=split_drift_ode_method,
+        solver=split_drift_ode_method,
         collect_trace=True,
     )
 
@@ -339,12 +339,12 @@ def test_linear_exact_supports_linear_drift_bind_args():
 
     drift = linear_drift(A=A, b=b).bind_args(bias)
 
-    result = odeint(drift, x0, ts, method="linear_exact")
+    result = odeint(drift, x0, ts, solver="linear_exact")
 
     def b_bound(t):
         return b(t, bias)
 
-    expected = odeint(linear_drift(A=A, b=b_bound), x0, ts, method="linear_exact")
+    expected = odeint(linear_drift(A=A, b=b_bound), x0, ts, solver="linear_exact")
     assert result is not None
     assert expected is not None
     assert jnp.allclose(result, expected, atol=1e-6, rtol=1e-6)
@@ -356,7 +356,7 @@ def test_linear_exact_scalar():
     ts = jnp.linspace(0.0, 1.0, 20)
 
     drift = linear_drift(A=A)
-    result = odeint(drift, x0, ts, method="linear_exact")
+    result = odeint(drift, x0, ts, solver="linear_exact")
     expected = (x0 * jnp.exp(A * ts)).reshape(-1, 1)  # Shape (20, 1) to match result
     assert jnp.allclose(result, expected, atol=1e-6)
 
@@ -367,7 +367,7 @@ def test_linear_exact_dense():
     ts = jnp.linspace(0.0, 1.0, 20)
 
     drift = linear_drift(A=A)
-    result = odeint(drift, x0, ts, method="linear_exact")
+    result = odeint(drift, x0, ts, solver="linear_exact")
 
     def true_solution(t, x0):
         return jax.scipy.linalg.expm(A * t) @ x0
@@ -386,7 +386,7 @@ def test_linear_exact_with_bias():
     ts = jnp.linspace(0.0, 1.0, 20)
 
     drift = linear_drift(A=A, b=b)
-    result = odeint(drift, x0, ts, method="linear_exact")
+    result = odeint(drift, x0, ts, solver="linear_exact")
 
     dt = ts[1] - ts[0]
     z = A * dt
@@ -403,8 +403,8 @@ def test_linear_exact_matches_rk4():
     ts = jnp.linspace(0.0, 0.5, 10)
 
     drift = linear_drift(A=A)
-    result_exact = odeint(drift, x0, ts, method="linear_exact")
-    result_rk4 = odeint(drift, x0, ts, method="rk4")
+    result_exact = odeint(drift, x0, ts, solver="linear_exact")
+    result_rk4 = odeint(drift, x0, ts, solver="rk4")
 
     # RK4 has discretization error, so use a looser tolerance
     assert jnp.allclose(result_exact, result_rk4, atol=0.05)
@@ -419,7 +419,7 @@ def test_linear_exact_requires_linear_drift():
         return A * x
 
     with pytest.raises(TypeError, match="linear_exact requires"):
-        odeint(bad_drift, x0, ts, method="linear_exact")
+        odeint(bad_drift, x0, ts, solver="linear_exact")
 
 
 # Scalar sde with ground truth solution
@@ -460,7 +460,7 @@ def test_sdeint_scalar(sde_method, scalar_sde_problem, rng):
 
     x0, f, g, f_true = scalar_sde_problem
     f_approx, dWt = _sde_trace_and_brownian(
-        rng, f, g, x0, t, method=sde_method, return_brownian=True
+        rng, f, g, x0, t, solver=sde_method, return_brownian=True
     )
     Wt = jnp.cumsum(dWt, axis=0)
     f_sol = f_true(Wt, t, x0)
@@ -474,7 +474,7 @@ def test_sdeint_split_drift(split_drift_sde_method, split_drift_sde_problem, rng
     x0, f, g, f_true = split_drift_sde_problem
     key = rng
     f_approx, dWt = _sde_trace_and_brownian(
-        key, f, g, x0, t, method=split_drift_sde_method, return_brownian=True
+        key, f, g, x0, t, solver=split_drift_sde_method, return_brownian=True
     )
     Wt = jnp.cumsum(dWt, axis=0)
     f_sol = f_true(Wt, t, x0)
@@ -493,7 +493,7 @@ def test_sdeint_collect_trace_false(generic_sde_method, scalar_sde_problem):
         g,
         x0,
         t,
-        method=generic_sde_method,
+        solver=generic_sde_method,
         collect_trace=False,
         return_brownian=False,
     )
@@ -521,7 +521,7 @@ def test_sdeint_2d(generic_sde_method, two_dimensional_sde_problem, rng):
     x0, f, g, f_true = two_dimensional_sde_problem
     key = rng
     f_approx, dWt = _sde_trace_and_brownian(
-        key, f, g, x0, t, method=generic_sde_method, return_brownian=True
+        key, f, g, x0, t, solver=generic_sde_method, return_brownian=True
     )
     Wt = jnp.cumsum(dWt, axis=0)
     f_sol = f_true(Wt, t, x0)
@@ -550,7 +550,7 @@ def test_sdeint_supports_args(generic_sde_method, scalar_sde_problem):
         return scale * base_diffusion(t, x)
 
     positional = _sde_trace(
-        key, drift, diffusion, x0, t, scale, bias, method=generic_sde_method
+        key, drift, diffusion, x0, t, scale, bias, solver=generic_sde_method
     )
 
     from functools import partial
@@ -563,7 +563,7 @@ def test_sdeint_supports_args(generic_sde_method, scalar_sde_problem):
         diffusion_bound,
         x0,
         t,
-        method=generic_sde_method,
+        solver=generic_sde_method,
     )
 
     assert jnp.allclose(positional, bound, atol=1e-6, rtol=1e-6)
@@ -592,7 +592,7 @@ def test_sdeint_split_drift_supports_args(split_drift_sde_method):
     drift = split_drift(lin_coeff=lin_coeff, nonlin=nonlin)
 
     positional = _sde_trace(
-        key, drift, diffusion, x0, ts, scale, bias, method=split_drift_sde_method
+        key, drift, diffusion, x0, ts, scale, bias, solver=split_drift_sde_method
     )
 
     drift_bound = drift.bind_args(scale, bias)
@@ -605,7 +605,7 @@ def test_sdeint_split_drift_supports_args(split_drift_sde_method):
         diffusion_bound,
         x0,
         ts,
-        method=split_drift_sde_method,
+        solver=split_drift_sde_method,
     )
 
     assert jnp.allclose(positional, bound, atol=1e-6, rtol=1e-6)
@@ -637,7 +637,7 @@ def test_exp_euler_maruyama_weights_diffusion_with_linear_coeff():
         diffusion,
         x0,
         ts,
-        method="exp_euler_maruyama",
+        solver="exp_euler_maruyama",
         return_brownian=True,
     )
 
@@ -679,7 +679,7 @@ def test_sdeint_rectangular_diffusion_is_supported(generic_sde_method):
         x0,
         ts,
         0.8,
-        method=generic_sde_method,
+        solver=generic_sde_method,
         return_brownian=True,
     )
 
@@ -697,7 +697,7 @@ def test_linear_exact_sde_scalar():
     drift = linear_drift(A=A)
     diffusion = const_diffusion(G=G)
 
-    result = _sde_trace(key, drift, diffusion, x0, ts, method="linear_exact_sde")
+    result = _sde_trace(key, drift, diffusion, x0, ts, solver="linear_exact_sde")
     assert result.shape == (ts.shape[0], x0.shape[0])
 
 
@@ -711,7 +711,7 @@ def test_linear_exact_sde_dense():
     drift = linear_drift(A=A)
     diffusion = const_diffusion(G=G)
 
-    result = _sde_trace(key, drift, diffusion, x0, ts, method="linear_exact_sde")
+    result = _sde_trace(key, drift, diffusion, x0, ts, solver="linear_exact_sde")
     assert result.shape == (ts.shape[0], x0.shape[0])
 
 
@@ -725,7 +725,7 @@ def test_linear_exact_sde_mean_matches_analytical():
     drift = linear_drift(A=A)
     diffusion = const_diffusion(G=G)
 
-    result = _sde_trace(key, drift, diffusion, x0, ts, method="linear_exact_sde")
+    result = _sde_trace(key, drift, diffusion, x0, ts, solver="linear_exact_sde")
     expected_mean = x0 * jnp.exp(A * ts)
     empirical_mean = result[:, 0]
     assert jnp.allclose(empirical_mean, expected_mean, atol=0.1)
@@ -741,10 +741,10 @@ def test_linear_exact_sde_matches_euler_maruyama():
     drift = linear_drift(A=A)
     diffusion = const_diffusion(G=G)
 
-    result_exact = _sde_trace(key, drift, diffusion, x0, ts, method="linear_exact_sde")
+    result_exact = _sde_trace(key, drift, diffusion, x0, ts, solver="linear_exact_sde")
 
     key = jax.random.PRNGKey(99)
-    result_em = _sde_trace(key, drift, diffusion, x0, ts, method="euler_maruyama")
+    result_em = _sde_trace(key, drift, diffusion, x0, ts, solver="euler_maruyama")
 
     assert jnp.allclose(result_exact, result_em, atol=0.15)
 
@@ -763,7 +763,7 @@ def test_linear_exact_sde_requires_markers():
         return G
 
     with pytest.raises(TypeError, match="linear_exact_sde requires.*linear_drift"):
-        sdeint(key, plain_drift, plain_diffusion, x0, ts, method="linear_exact_sde")
+        sdeint(key, plain_drift, plain_diffusion, x0, ts, solver="linear_exact_sde")
 
 
 def test_linear_exact_sde_supports_linear_drift_bind_args():
@@ -787,7 +787,7 @@ def test_linear_exact_sde_supports_linear_drift_bind_args():
         diffusion,
         x0,
         ts,
-        method="linear_exact_sde",
+        solver="linear_exact_sde",
     )
 
     def b_bound(t):
@@ -799,7 +799,7 @@ def test_linear_exact_sde_supports_linear_drift_bind_args():
         diffusion,
         x0,
         ts,
-        method="linear_exact_sde",
+        solver="linear_exact_sde",
     )
 
     assert jnp.allclose(result, expected, atol=1e-6, rtol=1e-6)
@@ -829,7 +829,7 @@ def test_odeint_with_equinox_neural_drift():
     x0 = jnp.array([1.0, 2.0])
     ts = jnp.linspace(0.0, 1.0, 20)
 
-    trace = odeint(drift, x0, ts, method="rk4", collect_trace=True)
+    trace = odeint(drift, x0, ts, solver="rk4", collect_trace=True)
     assert trace is not None
     assert trace.shape == (ts.shape[0], x0.shape[0])
 
@@ -837,7 +837,7 @@ def test_odeint_with_equinox_neural_drift():
     # pytree-native drifts: parameters participate in transformations).
     def loss(A_, b_, x0_):
         d = LinearDrift(A=A_, b=b_)
-        out = odeint(d, x0_, ts, method="rk4", collect_trace=False)
+        out = odeint(d, x0_, ts, solver="rk4", collect_trace=False)
         return jnp.sum(out ** 2)
 
     gA = jax.grad(loss, argnums=0)(A, b, x0)
@@ -861,7 +861,7 @@ def test_odeint_plain_closure_captures_are_constant_only():
     x0 = jnp.array([1.0, -2.0])
     ts = jnp.linspace(0.0, 1.0, 25)
 
-    trace = odeint(drift, x0, ts, method="rk4", collect_trace=True)
+    trace = odeint(drift, x0, ts, solver="rk4", collect_trace=True)
     assert trace is not None
     assert trace.shape == (ts.shape[0], x0.shape[0])
 
@@ -879,7 +879,7 @@ def test_odeint_with_partial_drift():
     x0 = jnp.array([1.5, -0.25])
     ts = jnp.linspace(0.0, 1.0, 20)
 
-    trace = odeint(bound, x0, ts, method="rk4", collect_trace=True)
+    trace = odeint(bound, x0, ts, solver="rk4", collect_trace=True)
     assert trace is not None
     assert trace.shape == (ts.shape[0], x0.shape[0])
 
@@ -912,7 +912,7 @@ def test_odeint_with_pytree_dataclass_drift():
     x0 = jnp.array([1.0, 1.0])
     ts = jnp.linspace(0.0, 1.0, 20)
 
-    trace = odeint(drift, x0, ts, method="rk4", collect_trace=True)
+    trace = odeint(drift, x0, ts, solver="rk4", collect_trace=True)
     assert trace is not None
     assert trace.shape == (ts.shape[0], x0.shape[0])
 
@@ -935,7 +935,7 @@ def test_odeint_traced_args_under_outer_jit():
             ts,
             rate,
             bias,
-            method="rk4",
+            solver="rk4",
             collect_trace=False,
         )
 
@@ -945,7 +945,7 @@ def test_odeint_traced_args_under_outer_jit():
         ts,
         jnp.array(-0.3),
         jnp.array(0.1),
-        method="rk4",
+        solver="rk4",
         collect_trace=False,
     )
     out_jit = run(x0, jnp.array(-0.3), jnp.array(0.1))
@@ -974,7 +974,7 @@ def test_odeint_inverse_still_works_with_neural_drift():
     ts = jnp.linspace(0.0, 1.0, 200)
 
     def forward(y0):
-        return odeint(drift, y0, ts, method="rk4", collect_trace=False)
+        return odeint(drift, y0, ts, solver="rk4", collect_trace=False)
 
     y = forward(x0)
     inv_forward = inverse(forward, invertible_arg=0)

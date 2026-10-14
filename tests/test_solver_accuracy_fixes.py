@@ -48,7 +48,7 @@ def test_fixed_step_methods_converge_at_their_order(method, order):
             _pendulum,
             y0,
             jnp.linspace(0, 1, n + 1),
-            method=method,
+            solver=method,
             dtype=jnp.float64,
             collect_trace=False,
         )
@@ -72,7 +72,7 @@ def test_tableau_coefficients_follow_requested_dtype():
             lambda t, y: -y,
             jnp.array([1.0]),
             jnp.linspace(0, 1, 65),
-            method="rk4",
+            solver="rk4",
             dtype=jnp.float64,
             collect_trace=False,
         )[0]
@@ -84,8 +84,8 @@ def test_adaptive_terminal_state_matches_trace_end(method):
     ts = jnp.linspace(0, 1, 17)
     y0 = jnp.array([1.0])
     drift = lambda t, y: -y  # noqa: E731
-    terminal = odeint(drift, y0, ts, method=method, collect_trace=False)
-    trace = odeint(drift, y0, ts, method=method)
+    terminal = odeint(drift, y0, ts, solver=method, collect_trace=False)
+    trace = odeint(drift, y0, ts, solver=method)
     np.testing.assert_allclose(terminal, trace[-1], rtol=1e-6)
     np.testing.assert_allclose(terminal, np.exp(-1.0), rtol=1e-4)
 
@@ -102,7 +102,7 @@ def _gbm_strong_error(n_steps, sde_type, n_paths=200):
             lambda t, y: sigma * y,
             y0,
             ts,
-            method="milstein",
+            solver="milstein",
             sde_type=sde_type,
             return_brownian=True,
             dtype=jnp.float64,
@@ -134,7 +134,7 @@ def test_stratonovich_requires_milstein_for_multiplicative_noise():
     with pytest.raises(NotImplementedError, match="Stratonovich|stratonovich"):
         sdeint(*args, sde_type="stratonovich")
     with pytest.raises(NotImplementedError):
-        sdeint(*args, sde_type="stratonovich", method="sri1")
+        sdeint(*args, sde_type="stratonovich", solver="sri1")
     with pytest.raises(NotImplementedError):
         sdeint(
             *args, sde_type="stratonovich", step_size_adaptor=WeakStepSizeAdaptor()
@@ -266,4 +266,4 @@ def test_srk_is_an_alias_of_sri1():
         jnp.ones(1),
         jnp.linspace(0.0, 1.0, 20),
     )
-    np.testing.assert_allclose(sdeint(*args, method="srk"), sdeint(*args, method="sri1"))
+    np.testing.assert_allclose(sdeint(*args, solver="srk"), sdeint(*args, solver="sri1"))

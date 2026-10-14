@@ -83,5 +83,12 @@ class milstein(SDESolverAPI):
 register_method(
     "milstein",
     milstein,
-    info={"order": 1, "strong_order": 1.0, "weak_order": 1.0, "adaptive": False},
+    info={
+        "order": 1,
+        "strong_order": 1.0,
+        "weak_order": 1.0,
+        "adaptive": False,
+        # The only solver implementing Stratonovich integrals.
+        "stratonovich": True,
+    },
 )

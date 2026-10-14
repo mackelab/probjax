@@ -447,7 +447,7 @@ def test_inverse_odeint_with_traced_drift_args():
             rate,
             bias,
             collect_trace=False,
-            method="rk4",
+            solver="rk4",
         )
 
     x0 = jnp.array([1.0, -2.0, 0.5])
@@ -478,7 +478,7 @@ def test_inverse_and_logabsdet_odeint_with_traced_drift_args():
             rate,
             bias,
             collect_trace=False,
-            method="rk4",
+            solver="rk4",
         )
 
     x0 = jnp.array([1.2, -0.3, 0.8])
@@ -522,7 +522,7 @@ def test_inverse_odeint_with_partial_bound_drift():
             rate,
             bias,
             collect_trace=False,
-            method="rk4",
+            solver="rk4",
         )
 
     x0 = jnp.array([1.0, -2.0, 0.5])
@@ -559,7 +559,7 @@ def test_inverse_odeint_with_static_bool_control_flow_via_closure():
             rate,
             bias,
             collect_trace=False,
-            method="rk4",
+            solver="rk4",
         )
 
     def forward_false(x, rate):
@@ -571,7 +571,7 @@ def test_inverse_odeint_with_static_bool_control_flow_via_closure():
             rate,
             bias,
             collect_trace=False,
-            method="rk4",
+            solver="rk4",
         )
 
     x0 = jnp.array([1.0, -2.0, 0.5])
@@ -612,7 +612,7 @@ def test_inverse_and_logabsdet_odeint_hutchinson_matches_exact_in_expectation():
             ts,
             A,
             collect_trace=False,
-            method="rk4",
+            solver="rk4",
             trace_estimator="exact",
         )
 
@@ -623,7 +623,7 @@ def test_inverse_and_logabsdet_odeint_hutchinson_matches_exact_in_expectation():
             ts,
             A,
             collect_trace=False,
-            method="rk4",
+            solver="rk4",
             trace_estimator="hutchinson",
             num_samples=1,
             logdet_rng=rng,
@@ -678,7 +678,7 @@ def test_inverse_and_logabsdet_odeint_hutchinson_num_samples_reduces_variance():
             ts,
             A,
             collect_trace=False,
-            method="rk4",
+            solver="rk4",
             trace_estimator="hutchinson",
             num_samples=1,
             logdet_rng=rng,
@@ -691,7 +691,7 @@ def test_inverse_and_logabsdet_odeint_hutchinson_num_samples_reduces_variance():
             ts,
             A,
             collect_trace=False,
-            method="rk4",
+            solver="rk4",
             trace_estimator="hutchinson",
             num_samples=16,
             logdet_rng=rng,
@@ -742,7 +742,7 @@ def test_inverse_and_logabsdet_odeint_hutchinson_normal_probes():
             ts,
             A,
             collect_trace=False,
-            method="rk4",
+            solver="rk4",
             trace_estimator="hutchinson",
             num_samples=4,
             sample_dist="normal",
@@ -789,7 +789,7 @@ def test_inverse_and_logabsdet_odeint_custom_trace_fn():
             ts,
             rate,
             collect_trace=False,
-            method="rk4",
+            solver="rk4",
             trace_estimator=trace_fn,
         )
 

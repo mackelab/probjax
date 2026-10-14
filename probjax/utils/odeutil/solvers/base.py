@@ -6,6 +6,7 @@ from typing import Any, NamedTuple, Optional
 
 import jax.numpy as jnp
 
+from probjax.utils._solver_common import ConfiguredSolver, resolve_solver
 from probjax.utils.jaxutils import API
 from probjax.utils.typing import ArrayLike, Callable
 
@@ -55,22 +56,34 @@ class ODESolverAPI(metaclass=API):
         """
         raise NotImplementedError("build_step method must be implemented")
 
+    info: dict = {}  # set by register_method
+
     def __new__(
-        cls, drift: Callable[..., Any], dtype: Any = None, **kwargs
-    ) -> ODESolver:
-        """Create an ODESolver instance.
+        cls, drift: Optional[Callable[..., Any]] = None, dtype: Any = None, **kwargs
+    ):
+        """Configure or build the solver.
+
+        ``cls(**options)`` returns a :class:`ConfiguredSolver` to pass as
+        ``odeint(..., solver=...)``, e.g. ``bdf2(newton_iters=3)``.
+        ``cls(drift, **options)`` builds the :class:`ODESolver` for ``drift``.
 
         Args:
             drift: Drift function f(t, y, *args) -> dy/dt
             dtype: Computation dtype. Forwarded to ``build_step`` for methods
                 that build coefficient tableaux in a given dtype (otherwise
                 they would stay in float32 and cap the attainable accuracy).
-            **kwargs: Additional keyword arguments for build_step
+            **kwargs: Options for build_step
 
         Returns:
-            ODESolver instance with init and step functions
+            ConfiguredSolver without ``drift``, else ODESolver with init and
+            step functions
         """
-        if dtype is not None and "dtype" in inspect.signature(cls.build_step).parameters:
+        if drift is None:
+            return ConfiguredSolver(cls, tuple(sorted(kwargs.items())))
+        if (
+            dtype is not None
+            and "dtype" in inspect.signature(cls.build_step).parameters
+        ):
             kwargs["dtype"] = dtype
         return ODESolver(
             init=partial(cls.init, drift=drift),
@@ -95,11 +108,13 @@ def register_method(name: str, step_fn: ODESolverAPI, info: Optional[dict] = Non
         info = {}
     METHOD_STEP_FN[name] = step_fn
     METHOD_INFO[name] = info
+    step_fn.info = info
     return step_fn
 
 
-def get_method(name: str) -> tuple[ODESolverAPI, dict]:
-    return METHOD_STEP_FN[name], METHOD_INFO[name]
+def get_method(solver) -> tuple[Any, dict]:
+    """``(solver_factory, info)`` for a name, solver class or configured solver."""
+    return resolve_solver(solver, METHOD_STEP_FN, METHOD_INFO)
 
 
 def get_methods():

@@ -4,6 +4,7 @@ import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Key, PyTree
 
+from probjax.utils._solver_common import ConfiguredSolver, solver_or_legacy_method
 from probjax.utils.functions import wrap_if_plain_callable
 from probjax.utils.guards import is_tracing
 from probjax.utils.sdeutil.adaptive import SDEStepSizeAdaptor
@@ -18,7 +19,8 @@ def sdeint(
     y0: PyTree[Array],
     ts: Array,
     *args: Any,
-    method: str = "euler_maruyama",
+    solver: Union[str, type, ConfiguredSolver] = "euler_maruyama",
+    method: Optional[str] = None,
     dtype: Optional[jnp.dtype] = jnp.float32,
     sde_type: str = "ito",
     return_brownian: bool = False,
@@ -59,7 +61,8 @@ def sdeint(
         y0: Initial state. Single array or pytree of arrays.
         ts: Strictly increasing 1D array of time points.
         *args: Positional arguments forwarded to both drift and diffusion.
-        method: Integration method name. Available:
+        solver: Integration method: a registered name, a solver class or a
+            configured solver (``milstein(...)``). Registered names include:
 
             - ``"euler_maruyama"``: Euler-Maruyama (order 0.5)
             - ``"exp_euler_maruyama"``: Exponential Euler-Maruyama
@@ -70,6 +73,7 @@ def sdeint(
             - ``"linear_exact_sde"``: exact transition sampling for linear SDEs
               (requires :class:`~probjax.utils.functions.linear_drift` and
               :class:`~probjax.utils.functions.const_diffusion`)
+        method: Deprecated alias of ``solver``.
         dtype: Computation dtype (default ``float32``).
         sde_type: ``"ito"`` (default) or ``"stratonovich"``. Noise layout
             is inferred from the diffusion output shape — scalar/vector
@@ -95,9 +99,9 @@ def sdeint(
             Brownian tree, so runs at different tolerances are comparable
             per path). Steps are never rejected on their own noise; the
             local error only sets the next step size. Currently restricted to
-            **diagonal noise** and ignores ``method`` (always uses Euler-Maruyama with
+            **diagonal noise** and ignores ``solver`` (always uses Euler-Maruyama with
             step-doubling error estimation). Defaults to ``None``
-            (fixed-step integration via ``method``).
+            (fixed-step integration via ``solver``).
 
     Returns:
         When ``return_brownian=False``: the filtered trajectory (if
@@ -120,6 +124,7 @@ def sdeint(
         >>> ts = jnp.linspace(0, 1, 100)
         >>> ys = sdeint(rng, drift, diffusion, y0, ts, 0.1, 0.2)
     """
+    solver = solver_or_legacy_method(solver, method, "sdeint", default="euler_maruyama")
     drift = wrap_if_plain_callable(drift)
     diffusion = wrap_if_plain_callable(diffusion)
     result = _sdeint(
@@ -129,7 +134,7 @@ def sdeint(
         y0,
         ts,
         tuple(args),
-        method=method,
+        method=solver,
         dtype=dtype,
         sde_type=sde_type,
         return_brownian=return_brownian,

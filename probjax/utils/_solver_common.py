@@ -6,12 +6,73 @@ live here so the two families cannot drift apart. Import paths of the
 existing ``odeutil.solvers.base`` / ``sdeutil.base`` modules are unchanged.
 """
 
+import warnings
+from dataclasses import dataclass
 from functools import partial
+from typing import Any
 
 import jax
 import jax.numpy as jnp
 
 from probjax.utils.jaxutils import nested_checkpoint_scan
+
+
+@dataclass(frozen=True)
+class ConfiguredSolver:
+    """A solver class with options, e.g. ``bdf2(newton_iters=3)``.
+
+    Pass it as ``solver=`` to ``odeint``/``sdeint``. It is hashable and
+    compares by value, so it can be a static ``jit`` argument without
+    retracing; option values must be hashable too.
+    """
+
+    api: type
+    options: tuple[tuple[str, Any], ...] = ()
+
+    @property
+    def info(self) -> dict:
+        return self.api.info
+
+    def __call__(self, *functions, **kwargs):
+        """Build the solver for ``functions`` (drift, plus diffusion for SDEs)."""
+        return self.api(*functions, **dict(self.options), **kwargs)
+
+
+def resolve_solver(solver, registry: dict, infos: dict):
+    """``(solver_factory, info)`` for a registered name, solver class or
+    configured solver."""
+    if isinstance(solver, str):
+        if solver not in registry:
+            raise ValueError(
+                f"Unknown solver {solver!r}; available: {sorted(registry)}"
+            )
+        return registry[solver], infos[solver]
+    if isinstance(solver, (ConfiguredSolver, type)):
+        return solver, solver.info
+    raise TypeError(
+        f"Expected a solver name, solver class or configured solver, got {solver!r}"
+    )
+
+
+def solver_or_legacy_method(solver, method, function_name: str, *, default):
+    """Honour the deprecated ``method=`` alias of ``solver=``.
+
+    ``default`` is the function default of ``solver``: passing both
+    arguments (with ``solver`` differing from its default) is ambiguous
+    and raises instead of silently preferring one.
+    """
+    if method is None:
+        return solver
+    if solver != default:
+        raise ValueError(
+            f"Pass either solver= or method= to {function_name}, not both."
+        )
+    warnings.warn(
+        f"{function_name}(method=...) is deprecated; pass solver=... instead",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    return method
 
 
 def make_trivial_init(state_cls):

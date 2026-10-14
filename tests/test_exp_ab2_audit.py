@@ -19,7 +19,7 @@ def test_exp_ab2_second_order_on_variable_scalar_linear_ode(reverse, nonuniform)
         if reverse:
             times = times[::-1]
         initial = jnp.array([jnp.expm1(0.5) if reverse else 0.0])
-        result = odeint(drift, initial, times, method='exp_ab2_scalarL')[-1, 0]
+        result = odeint(drift, initial, times, solver='exp_ab2_scalarL')[-1, 0]
         target = 0.0 if reverse else jnp.expm1(0.5)
         errors.append(abs(float(result - target)))
     assert errors[-1] < errors[0] / 8, errors
