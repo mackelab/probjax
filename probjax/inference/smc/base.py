@@ -44,6 +44,8 @@ class SMCKernelAPI(metaclass=API):
         super().__init_subclass__(**kwargs)
         # Built kernels are instances of a per-algorithm Kernel subclass, so
         # help(kernel) and repr(kernel) show this algorithm, not Kernel.
+        # The subclass is display-only: dispatch on Kernel, not on it, and
+        # do not pickle kernels (they close over jit-compiled steps).
         cls.kernel_type = type(
             cls.__name__,
             (SMCKernel,),

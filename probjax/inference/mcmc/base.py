@@ -1,5 +1,5 @@
 import inspect
-from functools import partial
+from functools import partial, wraps
 from typing import Callable, NamedTuple, Optional, Tuple
 
 import jax
@@ -60,9 +60,16 @@ class MarkovKernelAPI(metaclass=API):
             p.name == "rng_key" or p.kind == inspect.Parameter.VAR_KEYWORD
             for p in params
         ):
-            cls.init = staticmethod(lambda *args, rng_key=None, **kw: init(*args, **kw))
+
+            @wraps(init)
+            def init_with_rng(*args, rng_key=None, **kw):
+                return init(*args, **kw)
+
+            cls.init = staticmethod(init_with_rng)
         # Built kernels are instances of a per-algorithm Kernel subclass, so
         # help(kernel) and repr(kernel) show this algorithm, not Kernel.
+        # The subclass is display-only: dispatch on Kernel, not on it, and
+        # do not pickle kernels (they close over jit-compiled steps).
         cls.kernel_type = type(
             cls.__name__,
             (MarkovKernel,),

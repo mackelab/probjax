@@ -13,7 +13,9 @@ Pure kernels, adaptation utilities and compiled runners. See
 ::: probjax.inference.mcmc.hmc.hmc
     options:
       heading: probjax.inference.hmc
-::: probjax.inference.nuts
+::: probjax.inference.mcmc.hmc.nuts
+    options:
+      heading: probjax.inference.nuts
 ::: probjax.inference.mcmc.dynamic_hmc.dynamic_hmc
     options:
       heading: probjax.inference.dynamic_hmc
@@ -23,11 +25,15 @@ Pure kernels, adaptation utilities and compiled runners. See
 ::: probjax.inference.mcmc.mclmc.mclmc
     options:
       heading: probjax.inference.mclmc
-::: probjax.inference.adjusted_mclmc
+::: probjax.inference.mcmc.mclmc.adjusted_mclmc
+    options:
+      heading: probjax.inference.adjusted_mclmc
 ::: probjax.inference.mcmc.mh.mh
     options:
       heading: probjax.inference.mh
-::: probjax.inference.gauss_rwmh
+::: probjax.inference.mcmc.mh.gauss_rwmh
+    options:
+      heading: probjax.inference.gauss_rwmh
 ::: probjax.inference.mcmc.imh.imh
     options:
       heading: probjax.inference.imh
@@ -44,10 +50,16 @@ Pure kernels, adaptation utilities and compiled runners. See
 ::: probjax.inference.mcmc.arms.arms
     options:
       heading: probjax.inference.arms
-::: probjax.inference.a2rms
+::: probjax.inference.mcmc.arms.a2rms
+    options:
+      heading: probjax.inference.a2rms
 ::: probjax.inference.ars
-::: probjax.inference.gaussian_imh
-::: probjax.inference.adjusted_mclmc_dynamic
+::: probjax.inference.mcmc.imh.gaussian_imh
+    options:
+      heading: probjax.inference.gaussian_imh
+::: probjax.inference.mcmc.mclmc.adjusted_mclmc_dynamic
+    options:
+      heading: probjax.inference.adjusted_mclmc_dynamic
 ::: probjax.inference.RejectionSampler
 ::: probjax.inference.pseudo_marginal
 
@@ -95,7 +107,9 @@ Pure kernels, adaptation utilities and compiled runners. See
 ::: probjax.inference.smc.smc
     options:
       heading: probjax.inference.smc
-::: probjax.inference.adaptive_smc
+::: probjax.inference.smc.adaptive.adaptive_smc
+    options:
+      heading: probjax.inference.adaptive_smc
 ::: probjax.inference.smc.persistent_smc.persistent_smc
     options:
       heading: probjax.inference.persistent_smc
