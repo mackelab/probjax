@@ -44,10 +44,56 @@ def test_newton_on_shaped_state_and_under_vmap():
     np.testing.assert_allclose(batched, a ** (1 / 3), rtol=1e-5)
 
 
+def test_newton_raw_gradient_matches_finite_differences():
+    # Gradient of raw newton_raphson (not just through a solver step).
+    def total(a):
+        x, _ = newton_raphson(lambda x: x**3 - 2.0 * x - a, jnp.ones(3))
+        return x.sum()
+
+    with jax.enable_x64():
+        a = jnp.asarray([1.0, 2.0, 3.0])
+        grad = jax.grad(total)(a)
+        eps = 1e-6
+        basis = np.eye(3)
+        finite = np.array(
+            [(total(a + eps * b) - total(a - eps * b)) / (2 * eps) for b in basis]
+        )
+        np.testing.assert_allclose(grad, finite, rtol=1e-6)
+
+
 def test_newton_with_lineax_solver():
     lx = pytest.importorskip("lineax")
     x, _ = _cube_root(jnp.array([2.0, 5.0]), linear_solver=lx.LU())
     np.testing.assert_allclose(x, jnp.array([2.0, 5.0]) ** (1 / 3), rtol=1e-5)
+
+
+def test_newton_with_lineax_solver_gradient():
+    lx = pytest.importorskip("lineax")
+
+    def total(a):
+        x, _ = _cube_root(a, linear_solver=lx.LU())
+        return x.sum()
+
+    with jax.enable_x64():
+        a = jnp.asarray([2.0, 5.0])
+        grad = jax.grad(total)(a)
+        np.testing.assert_allclose(grad, a ** (-2 / 3) / 3, rtol=1e-4)
+
+
+def test_non_converged_root_reports_flag_without_error():
+    # One iteration cannot solve x^3 - 50 from ones: the flag (not an
+    # exception) reports it, and callers keep stepping. Gradients are only
+    # valid when converged (see newton_raphson docstring).
+    x, converged = newton_raphson(
+        lambda x: x**3 - 50.0, jnp.ones(2), tol=1e-12, max_iter=1
+    )
+    assert not bool(converged)
+    assert bool(jnp.all(jnp.isfinite(x)))
+
+
+def test_newton_rejects_non_positive_max_iter():
+    with pytest.raises(ValueError, match="max_iter"):
+        newton_raphson(lambda x: x, jnp.ones(2), max_iter=0)
 
 
 def test_newton_rejects_unknown_jacobian_mode():

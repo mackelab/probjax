@@ -45,8 +45,13 @@ def build_implicit_euler_step(
 ) -> Callable[[ImpEulerState, ArrayLike], tuple[ODEState, ODEInfo]]:
     """Build implicit Euler step function.
 
-    ``newton_kwargs`` (``jacobian``, ``linear_solver``) go to ``solver``.
+    ``newton_kwargs`` (``jacobian``, ``linear_solver``) go to ``solver``,
+    which must therefore be the default :func:`root`.
     """
+    if newton_kwargs and solver is not root:
+        raise ValueError(
+            "newton_kwargs (jacobian, linear_solver) require the default solver."
+        )
 
     def step_fn(state: ImpEulerState, dt: ArrayLike, *args) -> tuple[ODEState, ODEInfo]:
         y0 = state.y0

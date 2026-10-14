@@ -189,8 +189,10 @@ def build_am(
 ) -> Callable[[LMSState, ArrayLike], tuple[LMSState, LMSInfo]]:
     """Build Adams-Moulton implicit multistep method.
 
-    The corrector runs ``newton_iters`` Newton steps (fewer once a step is
-    shorter than ``tol``); ``jacobian``/``linear_solver`` configure them as in
+    The corrector runs up to ``newton_iters`` Newton steps, freezing once a
+    step is shorter than ``tol`` (the scan always runs the full count, so
+    ``LMSInfo(newton_iters=...)`` reports the cap, not the used count);
+    ``jacobian``/``linear_solver`` configure them as in
     :func:`probjax.utils.solver.newton_raphson`.
     """
     assert order in (1, 2, 3, 4), "AM order must be 1-4"

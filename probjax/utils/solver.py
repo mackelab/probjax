@@ -19,20 +19,26 @@ def newton_raphson(
 
     Gradients of the returned root use the implicit function theorem
     (``jax.lax.custom_root``) instead of differentiating through the
-    iterations, so they cost one extra linear solve.
+    iterations, so they cost one extra linear solve. The gradient is only
+    valid when the solve converged: always check the returned flag before
+    differentiating (callers that keep stepping, like the implicit ODE
+    solvers, record it in their info).
 
     Args:
         f: Function whose root is sought.
         x0: Initial guess.
-        tol: Stop once a Newton step is shorter than this (in 2-norm).
-        max_iter: Maximum number of Newton steps.
+        tol: Stop once a Newton step is shorter than this (in 2-norm),
+            floored at machine epsilon.
+        max_iter: Maximum number of Newton steps (at least 1).
         jacobian: ``"dense"`` materializes the Jacobian with forward mode,
             which is best for small states. ``"matrix_free"`` applies it with
             one JVP per product, for large states with an iterative solver.
         linear_solver: Solver for each Newton step, passed to
             :func:`probjax.utils.linear_operator.solve`: ``"auto"`` (LU for
             dense, GMRES for matrix-free Jacobians), another solver name or a
-            lineax solver.
+            lineax solver. Inner solves use :func:`solve` defaults. Newton
+            Jacobians are generally nonsymmetric, so ``"cg"``/``"cholesky"``
+            are opt-in at the caller's risk.
 
     Returns:
         ``(x, converged)``: the root estimate and whether a step was shorter
@@ -40,7 +46,10 @@ def newton_raphson(
     """
     if jacobian not in ("dense", "matrix_free"):
         raise ValueError(f"jacobian must be 'dense' or 'matrix_free', got {jacobian!r}")
+    if max_iter < 1:
+        raise ValueError(f"max_iter must be at least 1, got {max_iter}.")
     x0 = jnp.asarray(x0)
+    tol = max(tol, jnp.finfo(x0.dtype).eps)
     shape = x0.shape
 
     def flat_f(x):
@@ -67,7 +76,7 @@ def newton_raphson(
 
     def tangent_solve(g, y):
         # g is the Jacobian-vector product of f at the root.
-        op = Function(g, y.shape)
+        op = Function(g, y.shape, dtype=y.dtype)
         return solve(op.as_dense() if jacobian == "dense" else op, y, linear_solver)
 
     x, converged = jax.lax.custom_root(
