@@ -4,12 +4,13 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from probjax.inference.filtering.base import FilterAPI, _gaussian_unpack
-from probjax.inference.filtering.kalman_filter import (
-    KalmanFilterInfo,
-    KalmanFilterState,
-    _gaussian_filter_template,
-    init,
+from probjax.inference.filtering.base import FilterAPI
+from probjax.inference.filtering.gaussian import (
+    GaussianFilterInfo,
+    GaussianFilterState,
+    gaussian_filter_template,
+    gaussian_init,
+    gaussian_unpack,
 )
 from probjax.utils.guards import call_if_callable
 from probjax.utils.linalg import matrix_fraction_decomposition
@@ -40,11 +41,11 @@ def build_kernel(
     """
 
     def kernel(
-        state: KalmanFilterState,
+        state: GaussianFilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
         rng_key: Optional[jnp.ndarray] = None,
-    ) -> Tuple[KalmanFilterState, KalmanFilterInfo]:
+    ) -> Tuple[GaussianFilterState, GaussianFilterInfo]:
         def predict(mu0, cov0, t_old, t):
             # Predict: nonlinear mean + linearized covariance
             mu1_, Phi, Q = transition_model_fn(mu0, cov0, t_old, t)
@@ -55,7 +56,7 @@ def build_kernel(
         def observe(mu1_, cov1_, t):
             return observation_model_fn(mu1_, cov1_, t)
 
-        return _gaussian_filter_template(
+        return gaussian_filter_template(
             state,
             t,
             observed,
@@ -96,6 +97,7 @@ def make_linearized_transition(
     Returns:
         transition_model_fn: (x, cov, t_old, t) -> (x_pred, Phi, Q)
     """
+
     def transition_model_fn(x, cov, t_old, t):
         x_pred = transition_fn(x, t_old, t)
         if materialize:
@@ -208,7 +210,7 @@ class extended_kalman_filter(FilterAPI):
           fraction decomposition
     """
 
-    init = init
+    init = gaussian_init
     build_kernel = build_kernel
 
-    default_unpack = staticmethod(_gaussian_unpack)
+    default_unpack = staticmethod(gaussian_unpack)

@@ -5,7 +5,8 @@ from typing import NamedTuple
 import jax
 from blackjax.smc.base import map_fn
 
-from probjax.inference.filtering.temporal import _observations, run_temporal_filter
+from probjax.inference.filtering.observations import validate_observations
+from probjax.inference.filtering.temporal import run_temporal_filter
 from probjax.inference.filtering.trajectory import sample_paths
 from probjax.utils.guards import is_tracing
 
@@ -43,7 +44,7 @@ def sample_joint_paths(
     if is_tracing(state.num_observations):
         raise ValueError("sample_joint_paths must be called outside jit.")
     count = int(state.num_observations)
-    ts, observations, observed = _observations(ts, observations, observed)
+    ts, observations, observed = validate_observations(ts, observations, observed)
     data = (ts[:count], observations[:count], observed[:count])
     select_key, path_key = jax.random.split(key)
     indices = jax.random.categorical(
@@ -64,9 +65,7 @@ def sample_joint_paths(
             num_particles=num_particles,
             observed=data[2],
         )
-        return sample_paths(sample_key, result.trace, model, theta, method=method)[
-            :, 0
-        ]
+        return sample_paths(sample_key, result.trace, model, theta, method=method)[:, 0]
 
     paths = map_fn(draw, batch_size)((
         jax.random.split(path_key, num_samples),

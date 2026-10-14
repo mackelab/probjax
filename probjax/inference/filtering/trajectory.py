@@ -3,8 +3,9 @@
 import jax
 import jax.numpy as jnp
 
+from probjax.inference.filtering.observations import validate_observations
 from probjax.inference.filtering.smoothing import particle_smoother
-from probjax.inference.filtering.temporal import LinearGaussianModel, _observations
+from probjax.inference.filtering.state_space import LinearGaussianModel
 
 
 def _prepend(initial, history):
@@ -168,7 +169,7 @@ def particle_gibbs(
     The update preserves the smoothing law at fixed ``theta``. Repeated calls
     form an MCMC chain; one call is not an independent posterior draw.
     """
-    ts, observations, observed = _observations(ts, observations, observed)
+    ts, observations, observed = validate_observations(ts, observations, observed)
     if num_particles < 2:
         raise ValueError("Conditional SMC requires at least two particles.")
     if reference_path.ndim != 2 or reference_path.shape[0] != ts.shape[0] + 1:

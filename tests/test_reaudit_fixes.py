@@ -234,7 +234,7 @@ def test_pcg_zero_rhs_absolute_diagnostics(guess, converged):
 
 
 def test_filter_matrix_free_solve_and_logdet_gradient():
-    from probjax.inference.filtering.kalman_filter import default_logdet, default_solve
+    from probjax.inference.filtering.gaussian import default_logdet, default_solve
     from probjax.utils.linear_operator import Function
 
     a = jnp.array([[2.0, 0.3], [0.3, 1.0]])

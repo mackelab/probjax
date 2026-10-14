@@ -94,6 +94,10 @@ from probjax.inference.rejection import (
 from probjax.inference.smc import (
     GeometricPath,
     PartialPosteriorsPath,
+    PretrainedTwistInfo,
+    PretrainedTwistState,
+    RDSMCInfo,
+    RDSMCState,
     acceptance_rate_adaptor,
     adaptive_persistent_smc,
     adaptive_persistent_smc_kernel,
@@ -103,6 +107,8 @@ from probjax.inference.smc import (
     path_smc,
     persistent_smc,
     persistent_smc_kernel,
+    run_pretrained_diffusion_smc,
+    run_rdsmc,
     smc,
     tuning,
 )
@@ -179,6 +185,12 @@ __all__ = [
     "persistent_smc_kernel",
     "adaptive_persistent_smc",
     "adaptive_persistent_smc_kernel",
+    "run_pretrained_diffusion_smc",
+    "run_rdsmc",
+    "PretrainedTwistInfo",
+    "PretrainedTwistState",
+    "RDSMCInfo",
+    "RDSMCState",
     "path_smc",
     "GeometricPath",
     "PartialPosteriorsPath",
@@ -213,12 +225,14 @@ __all__ = [
     "RejectionSampler",
 ]
 
-from probjax.inference.filtering.temporal import (
+from probjax.inference.filtering.state_space import (
     LinearGaussianModel,
     StateSpaceModel,
     TemporalFilter,
     TemporalResult,
     TemporalTrace,
+)
+from probjax.inference.filtering.temporal import (
     run_temporal_filter,
     temporal_filter,
 )
