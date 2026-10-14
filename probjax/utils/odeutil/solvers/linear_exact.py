@@ -79,7 +79,8 @@ register_method(
     info={
         "explicit": False,
         "order": 1,
-        "info": "Exact solver for linear ODEs dy/dt = A y + b (constant or time-varying A)",
+        "info": "Exact solver for linear ODEs dy/dt = A y + b with constant A; "
+        "time-varying A is frozen at each step start",
         "adaptive": False,
     },
 )

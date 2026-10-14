@@ -20,6 +20,9 @@ class LinearExactSDEState(SDEState):
 
 
 class LinearExactSDEInfo(SDEInfo):
+    # Standard-normal draws behind the reported sample (not sqrt(dt)-scaled
+    # Brownian increments): identical for the diagonal fast path and the
+    # dense Van Loan path up to their different shapes.
     dWt: Array
 
 
@@ -72,7 +75,8 @@ def build_linear_exact_sde_step(
         b = None if drift.b is None else drift.b(t0 + dt)
         y_mean = affine_flow(A, b, y0, dt)
 
-        noise = jax.random.normal(rng, y0.shape)
+        rng, rng_noise, rng_dwt = jax.random.split(rng, 3)
+        noise = jax.random.normal(rng_noise, y0.shape)
         if isinstance(A, Diagonal) and diagonal_noise:
             # Independent coordinates: Q_ii = g_i^2 * dt * phi_1(2 a_i dt).
             a = jnp.broadcast_to(A.diag, y0.shape)
@@ -80,10 +84,10 @@ def build_linear_exact_sde_step(
             y_sample = y_mean + jnp.sqrt(jnp.maximum(variance, 0)) * noise
         else:
             cov = _process_noise_cov(A, G, dt, y0.size)
-            L = jnp.linalg.cholesky(cov + 1e-8 * jnp.eye(y0.size))
+            L = jnp.linalg.cholesky(cov + 1e-8 * jnp.eye(y0.size, dtype=cov.dtype))
             y_sample = y_mean + (L @ noise.ravel()).reshape(y0.shape)
 
-        dWt = jax.random.normal(rng, (y0.size if diagonal_noise else noise_dim,))
+        dWt = jax.random.normal(rng_dwt, (y0.size if diagonal_noise else noise_dim,))
         return (
             LinearExactSDEState(t0=t0 + dt, y0=y_sample),
             LinearExactSDEInfo(dWt=dWt),
@@ -121,6 +125,7 @@ register_method(
         "strong_order": 1.0,
         "weak_order": 1.0,
         "adaptive": False,
-        "info": "Exact solver for linear SDEs dy/dt = A y + b, dX = G dW (constant A, G)",
+        "info": "Exact solver for linear SDEs dy/dt = A y + b, dX = G dW with "
+        "constant A and G; time-varying A is frozen at each step start",
     },
 )

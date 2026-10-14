@@ -46,7 +46,9 @@ solvers `linear_exact` (ODE) and `linear_exact_sde` (SDE). `A` can be an array
 `LinearOperator`, or a function of time returning either. The structure decides
 the cost: a `Diagonal` drift exponentiates elementwise, a `Dense` drift uses a
 matrix exponential, and a matrix-free `Function` must be densified with
-`as_dense()` first.
+`as_dense()` first. Both solvers are exact for constant `A` and freeze
+time-varying `A` at each step start; dense drifts need vector states (calling
+the drift itself still acts by matmul on shaped states).
 
 ```python
 import jax.numpy as jnp
