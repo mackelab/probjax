@@ -209,6 +209,13 @@ def test_linear_exact_sde_matches_moments_with_full_noise():
     # Deliberately float32 like the rest of this file: Monte Carlo noise
     # (~1e-2 at 2000 samples) dominates solver precision, and staying in one
     # precision keeps the test independent of whatever earlier tests compiled.
+    # (A float64 vmapped variant failed here on JAX 0.9.x with an E0102
+    # buffer mismatch after float32 tests ran first in the process — an
+    # upstream executable-cache bug, not a dtype error on our side: all
+    # arrays were provably float64, and a 6-line pure-JAX repro
+    # [jit a const-folded sum, then expm under enable_x64] fails on 0.9.2
+    # and passes on 0.11. So: JAX bug, fixed upstream; single precision
+    # here sidesteps it.)
     from probjax.utils.odeutil.solvers.linear_exact import affine_flow
 
     dt = 0.3
