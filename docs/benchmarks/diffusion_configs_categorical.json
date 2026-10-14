@@ -1,0 +1,742 @@
+{
+  "settings": {
+    "phase": "categorical",
+    "train_steps": 400,
+    "seeds": 2,
+    "sample_steps": [
+      32,
+      128
+    ],
+    "samples": 2048,
+    "learned_samples": 512,
+    "learned_sample_steps": 64,
+    "repeats": 3
+  },
+  "jax": "0.9.2",
+  "python": "3.12.11",
+  "devices": [
+    "TFRT_CPU_0"
+  ],
+  "rows": [
+    {
+      "case": {
+        "kind": "linear",
+        "steps": 32,
+        "oracle": true,
+        "matched_terminal": false
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.9511818885803223,
+      "frequencies": [
+        0.21728515625,
+        0.23828125,
+        0.263671875,
+        0.28076171875
+      ],
+      "total_variation": 0.2555664088577032,
+      "cold_seconds": 0.2405388340121135,
+      "warm_ms": 4.806166980415583
+    },
+    {
+      "case": {
+        "kind": "linear",
+        "steps": 32,
+        "oracle": true,
+        "matched_terminal": true
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.9511818885803223,
+      "frequencies": [
+        0.04736328125,
+        0.1533203125,
+        0.29638671875,
+        0.5029296875
+      ],
+      "total_variation": 0.006250003352761269,
+      "cold_seconds": 0.212754332984332,
+      "warm_ms": 4.7390839899890125
+    },
+    {
+      "case": {
+        "kind": "linear",
+        "steps": 128,
+        "oracle": true,
+        "matched_terminal": false
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.9511818885803223,
+      "frequencies": [
+        0.2177734375,
+        0.2392578125,
+        0.26611328125,
+        0.27685546875
+      ],
+      "total_variation": 0.2570312526077032,
+      "cold_seconds": 0.22362408402841538,
+      "warm_ms": 14.076166960876435
+    },
+    {
+      "case": {
+        "kind": "linear",
+        "steps": 128,
+        "oracle": true,
+        "matched_terminal": true
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.9511818885803223,
+      "frequencies": [
+        0.0439453125,
+        0.15380859375,
+        0.30029296875,
+        0.501953125
+      ],
+      "total_variation": 0.0060546789318323135,
+      "cold_seconds": 0.24852058303076774,
+      "warm_ms": 13.83283396717161
+    },
+    {
+      "case": {
+        "kind": "cosine",
+        "steps": 32,
+        "oracle": true,
+        "matched_terminal": false
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 9.999999960041972e-13,
+      "frequencies": [
+        0.05126953125,
+        0.150390625,
+        0.29248046875,
+        0.505859375
+      ],
+      "total_variation": 0.007519533857703209,
+      "cold_seconds": 0.20139699999708682,
+      "warm_ms": 4.673082963563502
+    },
+    {
+      "case": {
+        "kind": "cosine",
+        "steps": 32,
+        "oracle": true,
+        "matched_terminal": true
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 9.999999960041972e-13,
+      "frequencies": [
+        0.05126953125,
+        0.150390625,
+        0.29248046875,
+        0.505859375
+      ],
+      "total_variation": 0.007519533857703209,
+      "cold_seconds": 0.21619345800718293,
+      "warm_ms": 3.9029159815981984
+    },
+    {
+      "case": {
+        "kind": "cosine",
+        "steps": 128,
+        "oracle": true,
+        "matched_terminal": false
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 9.999999960041972e-13,
+      "frequencies": [
+        0.0498046875,
+        0.16064453125,
+        0.30517578125,
+        0.484375
+      ],
+      "total_variation": 0.015820303931832314,
+      "cold_seconds": 0.22994037496391684,
+      "warm_ms": 13.46345798810944
+    },
+    {
+      "case": {
+        "kind": "cosine",
+        "steps": 128,
+        "oracle": true,
+        "matched_terminal": true
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 9.999999960041972e-13,
+      "frequencies": [
+        0.0498046875,
+        0.16064453125,
+        0.30517578125,
+        0.484375
+      ],
+      "total_variation": 0.015820303931832314,
+      "cold_seconds": 0.22877037496073171,
+      "warm_ms": 14.544082980137318
+    },
+    {
+      "case": {
+        "kind": "sigmoid",
+        "steps": 32,
+        "oracle": true,
+        "matched_terminal": false
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.9511818885803223,
+      "frequencies": [
+        0.21728515625,
+        0.2392578125,
+        0.26220703125,
+        0.28125
+      ],
+      "total_variation": 0.2565429713577032,
+      "cold_seconds": 0.20993700000690296,
+      "warm_ms": 4.634292039554566
+    },
+    {
+      "case": {
+        "kind": "sigmoid",
+        "steps": 32,
+        "oracle": true,
+        "matched_terminal": true
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.9511818885803223,
+      "frequencies": [
+        0.04736328125,
+        0.15283203125,
+        0.29638671875,
+        0.50341796875
+      ],
+      "total_variation": 0.006250003352761269,
+      "cold_seconds": 0.24478516698582098,
+      "warm_ms": 4.496915964409709
+    },
+    {
+      "case": {
+        "kind": "sigmoid",
+        "steps": 128,
+        "oracle": true,
+        "matched_terminal": false
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.9511818885803223,
+      "frequencies": [
+        0.21923828125,
+        0.23779296875,
+        0.26708984375,
+        0.27587890625
+      ],
+      "total_variation": 0.2570312526077032,
+      "cold_seconds": 0.23274566599866375,
+      "warm_ms": 13.495167018845677
+    },
+    {
+      "case": {
+        "kind": "sigmoid",
+        "steps": 128,
+        "oracle": true,
+        "matched_terminal": true
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.9511818885803223,
+      "frequencies": [
+        0.04443359375,
+        0.154296875,
+        0.30029296875,
+        0.5009765625
+      ],
+      "total_variation": 0.0055663976818323135,
+      "cold_seconds": 0.2296137919765897,
+      "warm_ms": 13.88479198794812
+    },
+    {
+      "case": {
+        "kind": "logsnr",
+        "steps": 32,
+        "oracle": true,
+        "matched_terminal": false
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.0024726230185478926,
+      "frequencies": [
+        0.04541015625,
+        0.15966796875,
+        0.298828125,
+        0.49609375
+      ],
+      "total_variation": 0.009667972102761269,
+      "cold_seconds": 0.21484058297937736,
+      "warm_ms": 3.8940830272622406
+    },
+    {
+      "case": {
+        "kind": "logsnr",
+        "steps": 32,
+        "oracle": true,
+        "matched_terminal": true
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.0024726230185478926,
+      "frequencies": [
+        0.04541015625,
+        0.15966796875,
+        0.298828125,
+        0.49609375
+      ],
+      "total_variation": 0.009667972102761269,
+      "cold_seconds": 0.21433975000400096,
+      "warm_ms": 4.630042007192969
+    },
+    {
+      "case": {
+        "kind": "logsnr",
+        "steps": 128,
+        "oracle": true,
+        "matched_terminal": false
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.0024726230185478926,
+      "frequencies": [
+        0.0576171875,
+        0.158203125,
+        0.30615234375,
+        0.47802734375
+      ],
+      "total_variation": 0.021972646936774254,
+      "cold_seconds": 0.22919562499737367,
+      "warm_ms": 13.60366604058072
+    },
+    {
+      "case": {
+        "kind": "logsnr",
+        "steps": 128,
+        "oracle": true,
+        "matched_terminal": true
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.0024726230185478926,
+      "frequencies": [
+        0.0576171875,
+        0.158203125,
+        0.30615234375,
+        0.47802734375
+      ],
+      "total_variation": 0.021972646936774254,
+      "cold_seconds": 0.22317383298650384,
+      "warm_ms": 13.87020800029859
+    },
+    {
+      "case": {
+        "kind": "linear",
+        "steps": 64,
+        "oracle": false,
+        "training": "uniform",
+        "seed": 0
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.9511818885803223,
+      "training_seconds": 0.4273626250214875,
+      "finite_losses": true,
+      "final_loss": 0.08529146760702133,
+      "validation_ce": 0.06466957926750183,
+      "bayes_ce": 0.06556236743927002,
+      "excess_ce": -0.0008927881717681885,
+      "frequencies": [
+        0.22998046875,
+        0.23583984375,
+        0.265625,
+        0.2685546875
+      ],
+      "total_variation": 0.2658203151077032,
+      "cold_seconds": 0.2587962080142461,
+      "warm_ms": 15.186042001005262
+    },
+    {
+      "case": {
+        "kind": "linear",
+        "steps": 64,
+        "oracle": false,
+        "training": "uniform",
+        "seed": 1
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.9511818885803223,
+      "training_seconds": 0.4212783330003731,
+      "finite_losses": true,
+      "final_loss": 0.011833373457193375,
+      "validation_ce": 0.07200469821691513,
+      "bayes_ce": 0.07050850242376328,
+      "excess_ce": 0.0014961957931518555,
+      "frequencies": [
+        0.22119140625,
+        0.23583984375,
+        0.2626953125,
+        0.2802734375
+      ],
+      "total_variation": 0.2570312526077032,
+      "cold_seconds": 0.24127595796016976,
+      "warm_ms": 15.091416949871927
+    },
+    {
+      "case": {
+        "kind": "linear",
+        "steps": 64,
+        "oracle": false,
+        "training": "importance",
+        "seed": 0
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.9511818885803223,
+      "training_seconds": 0.5008186249760911,
+      "finite_losses": true,
+      "final_loss": 0.08209116011857986,
+      "validation_ce": 0.0648927316069603,
+      "bayes_ce": 0.06556236743927002,
+      "excess_ce": -0.0006696358323097229,
+      "frequencies": [
+        0.22705078125,
+        0.23681640625,
+        0.267578125,
+        0.2685546875
+      ],
+      "total_variation": 0.2638671901077032,
+      "cold_seconds": 0.24822458298876882,
+      "warm_ms": 15.034666983410716
+    },
+    {
+      "case": {
+        "kind": "linear",
+        "steps": 64,
+        "oracle": false,
+        "training": "importance",
+        "seed": 1
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.9511818885803223,
+      "training_seconds": 0.4929260829812847,
+      "finite_losses": true,
+      "final_loss": 0.0896606594324112,
+      "validation_ce": 0.07198174297809601,
+      "bayes_ce": 0.07050850242376328,
+      "excess_ce": 0.0014732405543327332,
+      "frequencies": [
+        0.2216796875,
+        0.2353515625,
+        0.26123046875,
+        0.28173828125
+      ],
+      "total_variation": 0.2570312526077032,
+      "cold_seconds": 0.24267758399946615,
+      "warm_ms": 14.028333011083305
+    },
+    {
+      "case": {
+        "kind": "cosine",
+        "steps": 64,
+        "oracle": false,
+        "training": "uniform",
+        "seed": 0
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 9.999999960041972e-13,
+      "training_seconds": 0.45001824997598305,
+      "finite_losses": true,
+      "final_loss": 0.6544968485832214,
+      "validation_ce": 0.8264967799186707,
+      "bayes_ce": 0.8221867680549622,
+      "excess_ce": 0.004310011863708496,
+      "frequencies": [
+        0.08984375,
+        0.1669921875,
+        0.287109375,
+        0.4560546875
+      ],
+      "total_variation": 0.05683594010770321,
+      "cold_seconds": 0.2593093339819461,
+      "warm_ms": 13.898833014536649
+    },
+    {
+      "case": {
+        "kind": "cosine",
+        "steps": 64,
+        "oracle": false,
+        "training": "uniform",
+        "seed": 1
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 9.999999960041972e-13,
+      "training_seconds": 0.45900183299090713,
+      "finite_losses": true,
+      "final_loss": 0.6810919046401978,
+      "validation_ce": 0.7642863988876343,
+      "bayes_ce": 0.7602081894874573,
+      "excess_ce": 0.004078209400177002,
+      "frequencies": [
+        0.08251953125,
+        0.162109375,
+        0.28662109375,
+        0.46875
+      ],
+      "total_variation": 0.04462890885770321,
+      "cold_seconds": 0.25064987497171387,
+      "warm_ms": 13.59820895595476
+    },
+    {
+      "case": {
+        "kind": "cosine",
+        "steps": 64,
+        "oracle": false,
+        "training": "importance",
+        "seed": 0
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 9.999999960041972e-13,
+      "training_seconds": 0.5028415420092642,
+      "finite_losses": true,
+      "final_loss": 0.78572016954422,
+      "validation_ce": 0.8263598084449768,
+      "bayes_ce": 0.8221867680549622,
+      "excess_ce": 0.0041730403900146484,
+      "frequencies": [
+        0.09033203125,
+        0.166015625,
+        0.2880859375,
+        0.45556640625
+      ],
+      "total_variation": 0.05634765885770321,
+      "cold_seconds": 0.24072337499819696,
+      "warm_ms": 13.341875048354268
+    },
+    {
+      "case": {
+        "kind": "cosine",
+        "steps": 64,
+        "oracle": false,
+        "training": "importance",
+        "seed": 1
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 9.999999960041972e-13,
+      "training_seconds": 0.5037370409700088,
+      "finite_losses": true,
+      "final_loss": 0.7162320017814636,
+      "validation_ce": 0.7643284797668457,
+      "bayes_ce": 0.7602081894874573,
+      "excess_ce": 0.004120290279388428,
+      "frequencies": [
+        0.0810546875,
+        0.16259765625,
+        0.28271484375,
+        0.4736328125
+      ],
+      "total_variation": 0.04365234635770321,
+      "cold_seconds": 0.2497658749925904,
+      "warm_ms": 13.817334023769945
+    },
+    {
+      "case": {
+        "kind": "sigmoid",
+        "steps": 64,
+        "oracle": false,
+        "training": "uniform",
+        "seed": 0
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.9511818885803223,
+      "training_seconds": 0.437128291989211,
+      "finite_losses": true,
+      "final_loss": 0.08662591129541397,
+      "validation_ce": 0.06527172774076462,
+      "bayes_ce": 0.06602805852890015,
+      "excess_ce": -0.0007563307881355286,
+      "frequencies": [
+        0.22998046875,
+        0.23681640625,
+        0.26416015625,
+        0.26904296875
+      ],
+      "total_variation": 0.2667968776077032,
+      "cold_seconds": 0.2954557500197552,
+      "warm_ms": 15.239082975313067
+    },
+    {
+      "case": {
+        "kind": "sigmoid",
+        "steps": 64,
+        "oracle": false,
+        "training": "uniform",
+        "seed": 1
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.9511818885803223,
+      "training_seconds": 0.42470183299155906,
+      "finite_losses": true,
+      "final_loss": 0.011579066514968872,
+      "validation_ce": 0.07194247841835022,
+      "bayes_ce": 0.070374995470047,
+      "excess_ce": 0.0015674829483032227,
+      "frequencies": [
+        0.22216796875,
+        0.2353515625,
+        0.2607421875,
+        0.28173828125
+      ],
+      "total_variation": 0.2575195338577032,
+      "cold_seconds": 0.28269945801002905,
+      "warm_ms": 15.232792007736862
+    },
+    {
+      "case": {
+        "kind": "sigmoid",
+        "steps": 64,
+        "oracle": false,
+        "training": "importance",
+        "seed": 0
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.9511818885803223,
+      "training_seconds": 0.5031027920194902,
+      "finite_losses": true,
+      "final_loss": 0.08209086954593658,
+      "validation_ce": 0.0654989629983902,
+      "bayes_ce": 0.06602805852890015,
+      "excess_ce": -0.0005290955305099487,
+      "frequencies": [
+        0.22705078125,
+        0.23779296875,
+        0.26708984375,
+        0.26806640625
+      ],
+      "total_variation": 0.2648437526077032,
+      "cold_seconds": 0.26969191699754447,
+      "warm_ms": 13.82270798785612
+    },
+    {
+      "case": {
+        "kind": "sigmoid",
+        "steps": 64,
+        "oracle": false,
+        "training": "importance",
+        "seed": 1
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.9511818885803223,
+      "training_seconds": 0.5014529160107486,
+      "finite_losses": true,
+      "final_loss": 0.08966030180454254,
+      "validation_ce": 0.07191852480173111,
+      "bayes_ce": 0.070374995470047,
+      "excess_ce": 0.0015435293316841125,
+      "frequencies": [
+        0.22314453125,
+        0.234375,
+        0.2607421875,
+        0.28173828125
+      ],
+      "total_variation": 0.2575195338577032,
+      "cold_seconds": 0.25484262499958277,
+      "warm_ms": 14.833082968834788
+    },
+    {
+      "case": {
+        "kind": "logsnr",
+        "steps": 64,
+        "oracle": false,
+        "training": "uniform",
+        "seed": 0
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.0024726230185478926,
+      "training_seconds": 0.46829729195451364,
+      "finite_losses": true,
+      "final_loss": 0.567887544631958,
+      "validation_ce": 0.6075151562690735,
+      "bayes_ce": 0.6059514880180359,
+      "excess_ce": 0.0015636682510375977,
+      "frequencies": [
+        0.09375,
+        0.1708984375,
+        0.28515625,
+        0.4501953125
+      ],
+      "total_variation": 0.06464844010770321,
+      "cold_seconds": 0.24599475000286475,
+      "warm_ms": 15.027125016786158
+    },
+    {
+      "case": {
+        "kind": "logsnr",
+        "steps": 64,
+        "oracle": false,
+        "training": "uniform",
+        "seed": 1
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.0024726230185478926,
+      "training_seconds": 0.45646358298836276,
+      "finite_losses": true,
+      "final_loss": 0.5382218360900879,
+      "validation_ce": 0.55897456407547,
+      "bayes_ce": 0.5578790307044983,
+      "excess_ce": 0.0010955333709716797,
+      "frequencies": [
+        0.099609375,
+        0.17333984375,
+        0.27880859375,
+        0.4482421875
+      ],
+      "total_variation": 0.07294922135770321,
+      "cold_seconds": 0.24612008401891217,
+      "warm_ms": 14.724374981597066
+    },
+    {
+      "case": {
+        "kind": "logsnr",
+        "steps": 64,
+        "oracle": false,
+        "training": "importance",
+        "seed": 0
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.0024726230185478926,
+      "training_seconds": 0.498579167004209,
+      "finite_losses": true,
+      "final_loss": 1.0135196447372437,
+      "validation_ce": 0.6092057228088379,
+      "bayes_ce": 0.6059514880180359,
+      "excess_ce": 0.003254234790802002,
+      "frequencies": [
+        0.1171875,
+        0.177734375,
+        0.2802734375,
+        0.4248046875
+      ],
+      "total_variation": 0.09492187760770321,
+      "cold_seconds": 0.24959929194301367,
+      "warm_ms": 15.065499988850206
+    },
+    {
+      "case": {
+        "kind": "logsnr",
+        "steps": 64,
+        "oracle": false,
+        "training": "importance",
+        "seed": 1
+      },
+      "status": "ok",
+      "terminal_alpha_bar": 0.0024726230185478926,
+      "training_seconds": 0.5043487090151757,
+      "finite_losses": true,
+      "final_loss": 0.9987914562225342,
+      "validation_ce": 0.5639774799346924,
+      "bayes_ce": 0.5578790307044983,
+      "excess_ce": 0.006098449230194092,
+      "frequencies": [
+        0.138671875,
+        0.19384765625,
+        0.27392578125,
+        0.3935546875
+      ],
+      "total_variation": 0.1325195338577032,
+      "cold_seconds": 0.24193758401088417,
+      "warm_ms": 14.412582968361676
+    }
+  ]
+}

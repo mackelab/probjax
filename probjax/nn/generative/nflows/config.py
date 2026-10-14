@@ -86,6 +86,8 @@ __all__ = [
     "SSMConditionerConfig",
     "TransformerConditionerConfig",
     # mixing configs
+    "CirculantDiagonalMixingConfig",
+    "CompositeMixingConfig",
     "FlipMixingConfig",
     "NoMixingConfig",
     "PermuteMixingConfig",
@@ -433,6 +435,13 @@ class BaseSplineConfig(BaseBijectorConfig):
     preceding layers included -- so pair it with a bounded base distribution.
     It is wrong with the default standard-normal base, whose samples are
     unbounded, and it is off by default for that reason.
+
+    ``tail_logit_scale`` damps the conditioner logits for the two boundary
+    slopes before their positive parameterization. Values below one reduce
+    sensitivity and gradient magnitude near initialization, while keeping the
+    tails learnable and their asymptotic slope range unchanged. Interior knot
+    slopes are unaffected. It scales both conditional and bias contributions.
+    The default is 0.1; use 1.0 to restore undamped boundary predictions.
     """
 
     num_bins: int = 16
@@ -444,10 +453,13 @@ class BaseSplineConfig(BaseBijectorConfig):
     min_knot_slope: float = 1e-4
     max_knot_slope: float = 10.0
     bounded: bool = False
+    tail_logit_scale: float = 0.1
 
     _has_slopes: bool = field(default=True, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if not math.isfinite(self.tail_logit_scale) or self.tail_logit_scale <= 0:
+            raise ValueError("tail_logit_scale must be finite and positive.")
         if self.num_bins < 1:
             raise ValueError(f"num_bins must be positive; got {self.num_bins}.")
         if self.min_bin_size * self.num_bins >= 1.0:
@@ -482,7 +494,11 @@ class BaseSplineConfig(BaseBijectorConfig):
         y_pos = _bin_positions(raw_y, self.y_min, self.y_max, self.min_bin_size)
         if not self._has_slopes:
             return x_pos, y_pos
-        slopes = _knot_slopes(params[..., 2 * n :], self.max_knot_slope)
+        raw_slopes = params[..., 2 * n :]
+        if self.tail_logit_scale != 1.0:
+            raw_slopes = raw_slopes.at[..., 0].multiply(self.tail_logit_scale)
+            raw_slopes = raw_slopes.at[..., -1].multiply(self.tail_logit_scale)
+        slopes = _knot_slopes(raw_slopes, self.max_knot_slope)
         return x_pos, y_pos, slopes
 
 
@@ -867,11 +883,11 @@ class TransformerConditionerConfig(ConditionerConfigProtocol):
     flow, when you need the exported sampler.
     """
 
-    model_dim: "int | WidthRule" = default_model_dim
-    num_heads: int = 4
+    model_dim: "int | WidthRule" = 256
+    num_heads: int = 8
     num_layers: int = 4
-    attn_size: int = 8
-    widening_factor: int = 2
+    attn_size: int = 32
+    widening_factor: int = 4
     num_examples: Optional[int] = None
 
     def build_coupling(
@@ -993,12 +1009,28 @@ class FlipMixingConfig(MixingConfigProtocol):
 
 @dataclass
 class PermuteMixingConfig(MixingConfigProtocol):
-    """Fixed permutation of the features, either reversed or drawn from ``rngs``."""
+    """Fixed feature permutation, explicit or drawn once from ``rngs``.
+
+    ``permutation`` overrides ``mode`` when supplied. Random permutations are
+    sampled at construction, remain fixed during training, and differ across
+    mixing layers built from the same RNG stream.
+    """
 
     mode: Literal["random", "reverse"] = "random"
+    permutation: Optional[Tuple[int, ...]] = None
 
     def build(self, input_dim, *, rngs):
-        if self.mode == "reverse":
+        if self.permutation is not None:
+            permutation = jnp.asarray(self.permutation)
+            if (
+                not jnp.issubdtype(permutation.dtype, jnp.integer)
+                or permutation.shape != (input_dim,)
+                or not jnp.array_equal(jnp.sort(permutation), jnp.arange(input_dim))
+            ):
+                raise ValueError(
+                    "permutation must contain each feature index exactly once"
+                )
+        elif self.mode == "reverse":
             permutation = jnp.arange(input_dim)[::-1]
         elif self.mode == "random":
             permutation = jax.random.permutation(rngs.params(), input_dim)
@@ -1015,6 +1047,76 @@ class RotationMixingConfig(MixingConfigProtocol):
 
     def build(self, input_dim, *, rngs):
         return Rotate(input_dim, learnable=self.learnable, rngs=rngs)
+
+
+@dataclass
+class CirculantDiagonalMixingConfig(MixingConfigProtocol):
+    """Near-identity FFT-based mixing, with bounded per-factor log-scales."""
+
+    num_diagonals: int = 2
+    init_std: float = 0.05
+    max_log_scale: float = 3.0
+
+    def __post_init__(self) -> None:
+        if self.num_diagonals < 1:
+            raise ValueError(
+                f"num_diagonals must be positive; got {self.num_diagonals}."
+            )
+        if not math.isfinite(self.init_std) or self.init_std < 0:
+            raise ValueError(
+                f"init_std must be finite and non-negative; got {self.init_std}."
+            )
+        if not math.isfinite(self.max_log_scale) or self.max_log_scale <= 0:
+            raise ValueError(
+                f"max_log_scale must be finite and positive; got {self.max_log_scale}."
+            )
+
+    def build(self, input_dim, *, rngs):
+        from probjax.nn.generative.nflows.bijective import CirculantDiagonal
+
+        return CirculantDiagonal(
+            input_dim,
+            num_diagonals=self.num_diagonals,
+            init_std=self.init_std,
+            max_log_scale=self.max_log_scale,
+            rngs=rngs,
+        )
+
+
+@dataclass
+class CompositeMixingConfig(MixingConfigProtocol):
+    """Apply mixing configs in the supplied order; omit no-op configs.
+
+    For example, ``CompositeMixingConfig((PermuteMixingConfig(),
+    CirculantDiagonalMixingConfig()))`` permutes features before learned mixing.
+    Each flow block builds its own layers and parameters.
+    """
+
+    configs: Sequence[MixingConfigProtocol]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.configs, Sequence) or isinstance(
+            self.configs, (str, bytes)
+        ):
+            raise TypeError("configs must be a sequence of mixing configs.")
+        for config in self.configs:
+            if not isinstance(config, MixingConfigProtocol):
+                raise TypeError(
+                    "Each config must implement MixingConfigProtocol,"
+                    f" got {type(config).__name__}."
+                )
+
+    def build(self, input_dim, *, rngs):
+        from probjax.nn.nets.simple import Sequential
+
+        layers = []
+        for config in self.configs:
+            if not isinstance(config, MixingConfigProtocol):
+                raise TypeError("Each config must implement MixingConfigProtocol")
+            layer = config.build(input_dim, rngs=rngs)
+            if layer is not None:
+                layers.append(layer)
+        return Sequential(*layers) if layers else None
 
 
 # =============================================================================

@@ -1,4 +1,4 @@
-"""Synchronized forward/backward timing for DiffusionTransformer token scaling."""
+"""Synchronized DiffusionTransformer timing; run as a docs.scripts module."""
 
 import argparse
 import json

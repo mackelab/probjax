@@ -31,6 +31,79 @@ does not change.
 Flows standardise their input inside `fit`, so data with a large mean or scale
 does not need pre-scaling.
 
+### Combining feature mixers
+
+Use `CompositeMixingConfig` to apply several mixers between flow transforms.
+The configs run in the order listed, so a fixed permutation can precede or
+follow learnable circulant–diagonal mixing:
+
+```python
+from probjax.nn import (
+    CirculantDiagonalMixingConfig,
+    CompositeMixingConfig,
+    PermuteMixingConfig,
+    nsf,
+)
+
+mixing = CompositeMixingConfig((
+    PermuteMixingConfig(permutation=(2, 0, 3, 1)),
+    CirculantDiagonalMixingConfig(num_diagonals=2),
+))
+mixed_flow = nsf(4, 3, mixing=mixing, rngs=nnx.Rngs(0))
+mixed_samples = mixed_flow.as_dist().sample(jax.random.key(3), (8,))
+assert mixed_samples.shape == (8, 4)
+assert jnp.all(jnp.isfinite(mixed_flow.as_dist().logpdf(mixed_samples)))
+```
+
+`PermuteMixingConfig()` without explicit indices draws a random permutation
+once for each mixing layer at construction. Those permutations remain fixed
+during training. Supplying indices uses the same ordering in every flow block.
+Each block has its own learned circulant–diagonal parameters; reversing the
+config order generally gives a different transform.
+
+Circulant–diagonal mixing alternates per-feature scaling with circular
+convolution, evaluated through FFTs. `num_diagonals=2` applies a diagonal,
+a circulant, and a second diagonal in that order. Inversion reverses those
+operations. The permutation contributes zero log-absolute-determinant, while
+the learned factors contribute their scale and Fourier-amplitude terms.
+The mixer initializes near the identity; `init_std=0` starts exactly at it.
+Per-factor log-scales are bounded by `max_log_scale`, but products of many
+factors can still become ill-conditioned. Small factor counts restrict the
+linear maps it can represent. See [CDFlow](https://arxiv.org/abs/2510.25323)
+for the structured-matrix approach; this implementation uses positive diagonal
+scales and positive real DC/Nyquist eigenvalues.
+
+`CompositeMixingConfig` also works with flips, rotations, and custom configs
+implementing `MixingConfigProtocol`. `NoMixingConfig` entries are omitted.
+
+### Learnable spline tails
+
+Spline presets accept domain bounds and `tail_logit_scale` to control boundary
+slope predictions. For example:
+
+```python
+tail_controlled_flow = nsf(
+    4, 3, rngs=nnx.Rngs(1), mixing=mixing,
+    x_min=-6.0, x_max=6.0, y_min=-6.0, y_max=6.0,
+    tail_logit_scale=0.1,
+)
+```
+
+The default domain is `[-5, 5]`; wider bounds put more values inside the spline
+but reduce knot resolution at a fixed bin count. `tail_logit_scale` defaults
+to 0.1. It damps only the two boundary-slope logits, including their
+bias contributions. The tails still start at unit slope and remain learnable;
+their asymptotic slope limits do not change. Boundary slopes affect the edge
+bins as well as extrapolation outside the domain. These are tuning options,
+not a guarantee that a stack of learned inverses remains well-conditioned.
+Use `tail_logit_scale=1.0` to restore undamped boundary predictions, or a smaller
+positive value for stronger damping.
+
+The [mixing/tail study](../benchmarks/flow_mixing.md) and
+[representative workloads](../benchmarks/flow_mixing_realistic.md) include
+held-out likelihoods, runtime, and tail diagnostics. Small reproducible commands
+are in the [benchmark index](../benchmarks/index.md).
+
 ## Conditional densities
 
 Pass `context_features` at construction and put the context in the `data` dict

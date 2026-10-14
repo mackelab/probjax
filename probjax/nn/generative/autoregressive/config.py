@@ -21,6 +21,7 @@ degenerate.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import (
     Any,
@@ -46,7 +47,6 @@ from probjax.nn.generative.nflows.config import (
     _positive,
     _resolved_model_dim,
     default_hidden_dims,
-    default_model_dim,
     resolve_hidden_dims,
 )
 from probjax.nn.layers.ssm import LRUCell
@@ -142,8 +142,17 @@ def _spline_knot_constrainer(lo: float, hi: float, min_bin_size: float = 1e-4):
     )
 
 
-def _spline_slope_constrainer(max_slope: float = 10.0):
-    return _Constrainer(lambda raw: _knot_slopes(raw, max_slope))
+def _spline_slope_constrainer(max_slope: float = 10.0, tail_logit_scale: float = 0.1):
+    if not math.isfinite(tail_logit_scale) or tail_logit_scale <= 0:
+        raise ValueError("tail_logit_scale must be finite and positive.")
+
+    def constrain(raw):
+        if tail_logit_scale != 1.0:
+            raw = raw.at[..., 0].multiply(tail_logit_scale)
+            raw = raw.at[..., -1].multiply(tail_logit_scale)
+        return _knot_slopes(raw, max_slope)
+
+    return _Constrainer(constrain)
 
 
 # =============================================================================
@@ -362,13 +371,19 @@ class ARFamily:
 
     @classmethod
     def spline(
-        cls, num_bins: int = 8, bound: float = 5.0, latent_bound: float = 5.0
+        cls,
+        num_bins: int = 8,
+        bound: float = 5.0,
+        latent_bound: float = 5.0,
+        *,
+        tail_logit_scale: float = 0.1,
     ) -> "ARFamily":
         """Spline-warped normal head; knots span the given ranges exactly.
 
         ``latent_bound`` defaults to ``bound`` so that zero parameters give
         matching knots with unit slopes -- an identity spline, i.e. exactly a
-        standard normal.
+        standard normal. Boundary logits are damped by ``tail_logit_scale``;
+        use 1.0 for undamped, learnable tails.
         """
         return cls(
             spline_normal,
@@ -376,7 +391,9 @@ class ARFamily:
             constrain={
                 "x_pos": _spline_knot_constrainer(-latent_bound, latent_bound),
                 "y_pos": _spline_knot_constrainer(-bound, bound),
-                "knot_slopes": _spline_slope_constrainer(),
+                "knot_slopes": _spline_slope_constrainer(
+                    tail_logit_scale=tail_logit_scale
+                ),
             },
         )
 
@@ -589,12 +606,12 @@ class TransformerARConditionerConfig(ARConditionerConfig):
     transformer conditioner carries).
     """
 
-    model_dim: "int | WidthRule" = default_model_dim
+    model_dim: "int | WidthRule" = 256
     num_examples: Optional[int] = None
-    num_heads: int = 4
+    num_heads: int = 8
     num_layers: int = 4
-    attn_size: int = 8
-    widening_factor: int = 2
+    attn_size: int = 32
+    widening_factor: int = 4
     #: Attention kernel for the inner transformer. Defaults to the fused
     #: ``flex_attention`` path; pass ``dot_product_attention`` for exact
     #: softmax on CPU, where the fused kernel runs in slow interpret mode.

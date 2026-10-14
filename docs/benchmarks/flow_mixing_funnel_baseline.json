@@ -1,0 +1,47 @@
+{
+  "settings": {
+    "suite": "realistic",
+    "summary_only": false,
+    "resume": false,
+    "steps": 600,
+    "learning_rate": 0.001,
+    "seeds": 1,
+    "transforms": 5,
+    "bins": 16,
+    "batch_size": 256,
+    "train_size": 8000,
+    "test_size": 5000,
+    "targets": ["funnel8"],
+    "mixers": ["flip"],
+    "output": "examples/nn/benchmark_results/flow_mixing_funnel_baseline.json"
+  },
+  "platform": "macOS-26.3-arm64-arm-64bit",
+  "jax_version": "0.9.2",
+  "backend": "cpu",
+  "devices": ["TFRT_CPU_0"],
+  "rows": [
+    {
+      "target": "funnel8",
+      "seed": 0,
+      "mixer": "flip",
+      "parameters": 151080,
+      "nll": 12.230033874511719,
+      "reference_nll": 11.76188850402832,
+      "excess_nll": 0.46814537048339844,
+      "train_nll": 11.8551664352417,
+      "median_nll": 11.334989547729492,
+      "p99_nll": 39.781307220458984,
+      "worst_nll": 96.55426788330078,
+      "mean_without_worst": 12.213167190551758,
+      "finite_logpdf": true,
+      "sample_support_violation_fraction": null,
+      "spline_options": {},
+      "finite_losses": true,
+      "finite_samples": true,
+      "fit_seconds": 13.918792959011625,
+      "train_step_ms": 14.697313017677516,
+      "logpdf_ms": 19.379540986847132,
+      "sample_ms": 36.494415951892734
+    }
+  ]
+}
