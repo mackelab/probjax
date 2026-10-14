@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, Callable, NamedTuple, Optional, Tuple
+from typing import Callable, NamedTuple, Optional, Tuple
 
 import blackjax
 import jax
@@ -11,7 +11,7 @@ from flax import nnx
 from probjax.inference.adaptation import compose_adaptors
 from probjax.inference.base import Kernel, Warmup, WarmupResult
 from probjax.inference.mcmc.adaptation import covariance_adaptor, mean_adaptor
-from probjax.inference.mcmc.base import make_kernel_api, sample_kernel
+from probjax.inference.mcmc.base import MarkovKernelAPI, sample_kernel
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 
@@ -56,16 +56,6 @@ def build_imh_step(
     proposal_fn: Callable,
     proposal_logpdf: Callable,
 ) -> Callable:
-    """A function to build the Independent Metropolis-Hastings kernel.
-
-    Args:
-        logdensity_fn (Callable): The log density function.
-        proposal_fn (Callable): Proposal function.
-        proposal_logpdf (Callable): Proposal log pdf.
-
-    Returns:
-        Callable: Step function for the IMH kernel.
-    """
     kernel = blackjax.irmh.build_kernel()
 
     def step(
@@ -89,12 +79,23 @@ def init_imh_params(state: PyTree, rng_key=None) -> IMHParams:
     return IMHParams()
 
 
-imh = make_kernel_api(
-    name="imh",
-    init_fn=blackjax.irmh.init,
-    init_params_fn=init_imh_params,
-    build_step_fn=build_imh_step,
-)
+class imh(MarkovKernelAPI):
+    r"""Independent Metropolis-Hastings with a user-supplied proposal.
+
+    Proposals ignore the current position. The kernel params are passed to
+    both proposal functions as ``params=``; the default ``init_params``
+    returns the empty :class:`IMHParams`.
+
+    Args:
+        logdensity_fn: Log density of the target.
+        proposal_fn: ``(key, params) -> position``.
+        proposal_logpdf: ``(state, params) -> log q(state.position)``,
+            evaluated on BlackJAX ``RWState``\ s.
+    """
+
+    init = staticmethod(blackjax.irmh.init)
+    init_params = staticmethod(init_imh_params)
+    build_step = staticmethod(build_imh_step)
 
 
 def neural_imh(logdensity_fn: Callable, proposal, *, event_spec=None) -> Kernel:
@@ -403,10 +404,20 @@ def _gaussian_imh_adaptation():
     )
 
 
-gaussian_imh = make_kernel_api(
-    name="gaussian_imh",
-    init_fn=blackjax.irmh.init,
-    init_params_fn=init_gaussian_imh_params,
-    build_step_fn=build_gaussian_imh_step,
-    default_adaptation_fn=_gaussian_imh_adaptation,
-)
+class gaussian_imh(MarkovKernelAPI):
+    """Independent Metropolis-Hastings with a Gaussian proposal.
+
+    Tunable parameters come from ``kernel.init_params(state, mean=None,
+    cov=None)`` (see :class:`GaussianIMHParams`); ``mean`` defaults to the
+    initial position and ``cov`` (a diagonal vector or a dense matrix) to the
+    identity. Default adaptation: running estimates of the mean and
+    covariance.
+
+    Args:
+        logdensity_fn: Log density of the target.
+    """
+
+    init = staticmethod(blackjax.irmh.init)
+    init_params = staticmethod(init_gaussian_imh_params)
+    build_step = staticmethod(build_gaussian_imh_step)
+    default_adaptation_fn = staticmethod(_gaussian_imh_adaptation)

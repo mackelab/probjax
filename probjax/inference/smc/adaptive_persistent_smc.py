@@ -4,9 +4,9 @@ import blackjax
 from blackjax.smc import adaptive_persistent_sampling as bj_adaptive_persistent
 
 from probjax.inference.smc.base import (
+    SMCKernelAPI,
     init_mcmc_params_from_logdensity,
     make_mcmc_adapter,
-    make_smc_api,
 )
 from probjax.inference.smc.resampling import systematic
 
@@ -92,9 +92,31 @@ def init(
     )
 
 
-adaptive_persistent_smc = make_smc_api(
-    name="adaptive_persistent_smc",
-    init_fn=init,
-    init_params_fn=init_params,
-    build_step_fn=build_step,
-)
+class adaptive_persistent_smc(SMCKernelAPI):
+    """Persistent sampling with adaptively chosen temperatures.
+
+    Like :class:`persistent_smc`, but every temperature is chosen so the ESS
+    of the persistent population is ``target_ess``.
+
+    Args:
+        logprior_fn: Log prior.
+        loglikelihood_fn: Log likelihood.
+        mcmc_kernel: MCMC kernel class used to move the particles, e.g.
+            :class:`hmc` (the class, not a built kernel).
+        target_ess: Target effective sample size as a fraction of the
+            particles.
+        root_solver: Solver for the next temperature.
+        num_mcmc_steps: MCMC steps per SMC iteration.
+        resampling_fn: BlackJAX resampling function.
+        update_strategy: BlackJAX particle update strategy.
+        batch_size: Particles per batch in the MCMC update; ``0`` updates all
+            at once.
+        max_iterations: Maximum number of tempering steps, forwarded to
+            ``init``.
+        **mcmc_kernel_kwargs: Options for ``mcmc_kernel``, e.g.
+            ``num_integration_steps``.
+    """
+
+    init = staticmethod(init)
+    init_params = staticmethod(init_params)
+    build_step = staticmethod(build_step)

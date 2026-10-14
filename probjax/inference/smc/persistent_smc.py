@@ -4,9 +4,9 @@ import blackjax
 from blackjax.smc import persistent_sampling as bj_persistent
 
 from probjax.inference.smc.base import (
+    SMCKernelAPI,
     init_mcmc_params_from_logdensity,
     make_mcmc_adapter,
-    make_smc_api,
 )
 from probjax.inference.smc.resampling import systematic
 
@@ -89,9 +89,29 @@ def init(
     )
 
 
-persistent_smc = make_smc_api(
-    name="persistent_smc",
-    init_fn=init,
-    init_params_fn=init_params,
-    build_step_fn=build_step,
-)
+class persistent_smc(SMCKernelAPI):
+    """Persistent sampling: tempered SMC that reuses all past particles.
+
+    Particles from every earlier temperature stay in the population and are
+    reweighted, which lowers the variance for a fixed budget. Follows a fixed
+    schedule of ``n_schedule`` temperatures; initial MCMC parameters come from
+    ``kernel.init_params(particles, **mcmc_params)``.
+
+    Args:
+        logprior_fn: Log prior.
+        loglikelihood_fn: Log likelihood.
+        mcmc_kernel: MCMC kernel class used to move the particles, e.g.
+            :class:`hmc` (the class, not a built kernel).
+        num_mcmc_steps: MCMC steps per SMC iteration.
+        resampling_fn: BlackJAX resampling function.
+        update_strategy: BlackJAX particle update strategy.
+        batch_size: Particles per batch in the MCMC update; ``0`` updates all
+            at once.
+        n_schedule: Number of tempering steps, forwarded to ``init``.
+        **mcmc_kernel_kwargs: Options for ``mcmc_kernel``, e.g.
+            ``num_integration_steps``.
+    """
+
+    init = staticmethod(init)
+    init_params = staticmethod(init_params)
+    build_step = staticmethod(build_step)

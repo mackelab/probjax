@@ -4,8 +4,8 @@ import blackjax
 
 from probjax.inference.mcmc.adaptation import window_warmup
 from probjax.inference.mcmc.base import (
+    MarkovKernelAPI,
     init_hmc_like_params,
-    make_kernel_api,
     make_step_from_kernel,
     scale_step_size_by_grad,
 )
@@ -51,18 +51,6 @@ def build_step(
     integrator: Callable = blackjax.mcmc.integrators.velocity_verlet,
     divergence_threshold: float = 1000.0,
 ):
-    """Build the HMC kernel.
-
-    Args:
-        logdensity_fn (Callable): The log density function.
-        num_integration_steps (int, optional): Number of integration steps.
-            Defaults to 10.
-        integrator (Callable, optional): The integrator to use. Defaults to
-            blackjax.integrators.velocity_verlet.
-        divergence_threshold (float, optional): The threshold for the divergence
-            check. Defaults to 1000.0.
-
-    """
     kernel_builder = lambda: blackjax.hmc.build_kernel(integrator, divergence_threshold)
     return make_step_from_kernel(
         logdensity_fn,
@@ -71,13 +59,26 @@ def build_step(
     )
 
 
-hmc = make_kernel_api(
-    name="hmc",
-    init_fn=blackjax.hmc.init,
-    init_params_fn=init_params,
-    build_step_fn=build_step,
-    default_adaptation_fn=window_warmup,
-)
+class hmc(MarkovKernelAPI):
+    """Hamiltonian Monte Carlo with a fixed number of integration steps.
+
+    Tunable parameters come from ``kernel.init_params(state, step_size=0.5,
+    inverse_mass_matrix=None)`` (see :class:`HMCParams`); the step size is
+    scaled by the initial gradient norm. Default adaptation:
+    :func:`window_warmup`.
+
+    Args:
+        logdensity_fn: Log density of the target.
+        num_integration_steps: Number of integrator steps per proposal.
+        integrator: Symplectic integrator from ``blackjax.mcmc.integrators``.
+        divergence_threshold: Energy error above which a transition is
+            flagged as divergent.
+    """
+
+    init = staticmethod(blackjax.hmc.init)
+    init_params = staticmethod(init_params)
+    build_step = staticmethod(build_step)
+    default_adaptation_fn = staticmethod(window_warmup)
 
 
 def build_kernel_nuts(
@@ -96,10 +97,23 @@ def build_kernel_nuts(
     )
 
 
-nuts = make_kernel_api(
-    name="nuts",
-    init_fn=blackjax.hmc.init,
-    init_params_fn=init_params,
-    build_step_fn=build_kernel_nuts,
-    default_adaptation_fn=window_warmup,
-)
+class nuts(MarkovKernelAPI):
+    """No-U-Turn sampler: HMC with an adaptively chosen trajectory length.
+
+    Tunable parameters are the same as for :class:`hmc`
+    (``step_size``, ``inverse_mass_matrix``). Default adaptation:
+    :func:`window_warmup`.
+
+    Args:
+        logdensity_fn: Log density of the target.
+        max_num_doublings: Maximum tree depth; a trajectory has at most
+            ``2**max_num_doublings`` integrator steps.
+        divergence_threshold: Energy error above which a transition is
+            flagged as divergent.
+        integrator: Symplectic integrator from ``blackjax.mcmc.integrators``.
+    """
+
+    init = staticmethod(blackjax.hmc.init)
+    init_params = staticmethod(init_params)
+    build_step = staticmethod(build_kernel_nuts)
+    default_adaptation_fn = staticmethod(window_warmup)

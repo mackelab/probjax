@@ -6,10 +6,10 @@ import jax.numpy as jnp
 from blackjax.smc import from_mcmc as bj_from_mcmc
 
 from probjax.inference.smc.base import (
+    SMCKernelAPI,
     filter_kwargs,
     init_mcmc_params_from_logdensity,
     make_mcmc_adapter,
-    make_smc_api,
 )
 from probjax.inference.smc.resampling import systematic
 
@@ -153,9 +153,32 @@ def init(particles, *, path, initial_path_param=None, **path_kwargs):
     return PathSMCState(particles, weights, initial_path_param)
 
 
-path_smc = make_smc_api(
-    name="path_smc",
-    init_fn=init,
-    init_params_fn=init_params,
-    build_step_fn=build_step,
-)
+class path_smc(SMCKernelAPI):
+    """SMC along a user-defined path of intermediate targets.
+
+    The runner supplies the path parameter for each step (e.g. a temperature
+    schedule); ``path`` turns it into a log density and incremental weights.
+    Usually built through :func:`smc`. Initial MCMC parameters come from
+    ``kernel.init_params(particles, **mcmc_params)``.
+
+    Args:
+        logprior_fn: Log prior.
+        loglikelihood_fn: Log likelihood.
+        path: Path object, e.g. :class:`GeometricPath` or
+            :class:`PartialPosteriorsPath`.
+        mcmc_kernel: MCMC kernel class used to move the particles, e.g.
+            :class:`hmc` (the class, not a built kernel).
+        num_mcmc_steps: MCMC steps per SMC iteration.
+        resampling_fn: BlackJAX resampling function.
+        update_strategy: BlackJAX particle update strategy.
+        path_kwargs: Extra arguments for ``path``; inferred from
+            ``mcmc_kernel_kwargs`` when ``None``.
+        batch_size: Particles per batch in the MCMC update; ``0`` updates all
+            at once.
+        **mcmc_kernel_kwargs: Options for ``mcmc_kernel``, e.g.
+            ``num_integration_steps``.
+    """
+
+    init = staticmethod(init)
+    init_params = staticmethod(init_params)
+    build_step = staticmethod(build_step)

@@ -1,5 +1,5 @@
 import inspect
-from functools import partial
+from functools import partial, wraps
 from typing import Callable, NamedTuple, Optional, Tuple
 
 import jax
@@ -26,6 +26,14 @@ MarkovKernel = Kernel
 
 
 class MarkovKernelAPI(metaclass=API):
+    """Base class for MCMC kernels.
+
+    Subclass it and set ``init``, ``init_params`` and ``build_step`` as static
+    methods. Document the kernel in the subclass docstring: ``cls(logdensity_fn,
+    **options)`` forwards ``options`` to ``build_step`` and returns a
+    :class:`Kernel`.
+    """
+
     #: Optional factory returning this kernel's recommended adaptation
     #: policy (an Adaptor or a Warmup). Attached to built kernels;
     #: wrappers (e.g. pseudo-marginal) inherit it.
@@ -43,6 +51,31 @@ class MarkovKernelAPI(metaclass=API):
     def build_step(*args, **kwargs) -> Callable:
         raise NotImplementedError("build_kernel method must be implemented")
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        # Callers always pass rng_key, but many BlackJAX inits take none.
+        init = cls.init
+        params = inspect.signature(init).parameters.values()
+        if not any(
+            p.name == "rng_key" or p.kind == inspect.Parameter.VAR_KEYWORD
+            for p in params
+        ):
+
+            @wraps(init)
+            def init_with_rng(*args, rng_key=None, **kw):
+                return init(*args, **kw)
+
+            cls.init = staticmethod(init_with_rng)
+        # Built kernels are instances of a per-algorithm Kernel subclass, so
+        # help(kernel) and repr(kernel) show this algorithm, not Kernel.
+        # The subclass is display-only: dispatch on Kernel, not on it, and
+        # do not pickle kernels (they close over jit-compiled steps).
+        cls.kernel_type = type(
+            cls.__name__,
+            (MarkovKernel,),
+            {"__doc__": cls.__doc__, "__module__": cls.__module__, "__slots__": ()},
+        )
+
     def __new__(cls, logdensity_fn: Callable, **kwargs) -> MarkovKernel:
         def init_fn(key, position=None, **init_kwargs):
             # Accept the old position-first form while internal SMC composition
@@ -58,38 +91,9 @@ class MarkovKernelAPI(metaclass=API):
         def step(key, state, params, *args):
             return raw_step(key, state, params)
 
-        return MarkovKernel(init_fn, step, cls.init_params, cls.default_adaptation_fn)
-
-
-def make_kernel_api(
-    *,
-    name: str,
-    init_fn: Callable,
-    init_params_fn: Callable,
-    build_step_fn: Callable,
-    default_adaptation_fn: Optional[Callable[..., object]] = None,
-):
-    """Create a MarkovKernelAPI subclass with minimal boilerplate."""
-    sig = inspect.signature(init_fn)
-    accepts_kwargs = any(
-        param.kind == inspect.Parameter.VAR_KEYWORD for param in sig.parameters.values()
-    )
-    accepts_rng_key = "rng_key" in sig.parameters or accepts_kwargs
-
-    def _init_with_rng(*args, rng_key=None, **kwargs):
-        if accepts_rng_key:
-            return init_fn(*args, rng_key=rng_key, **kwargs)
-        return init_fn(*args, **kwargs)
-
-    attrs = {
-        "init": staticmethod(_init_with_rng),
-        "init_params": staticmethod(init_params_fn),
-        "build_step": staticmethod(build_step_fn),
-    }
-    if default_adaptation_fn is not None:
-        # staticmethod: the factory must not bind the API class as self.
-        attrs["default_adaptation_fn"] = staticmethod(default_adaptation_fn)
-    return type(name, (MarkovKernelAPI,), attrs)
+        return cls.kernel_type(
+            init_fn, step, cls.init_params, cls.default_adaptation_fn
+        )
 
 
 def make_step_from_kernel(

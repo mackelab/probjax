@@ -4,9 +4,9 @@ import blackjax
 from blackjax.smc import adaptive_tempered as bj_adaptive_tempered
 
 from probjax.inference.smc.base import (
+    SMCKernelAPI,
     init_mcmc_params_from_logdensity,
     make_mcmc_adapter,
-    make_smc_api,
 )
 from probjax.inference.smc.resampling import systematic
 
@@ -84,9 +84,32 @@ def init(particles, **_):
     return bj_adaptive_tempered.init(particles)
 
 
-adaptive_smc = make_smc_api(
-    name="adaptive_smc",
-    init_fn=init,
-    init_params_fn=init_params,
-    build_step_fn=build_step,
-)
+class adaptive_smc(SMCKernelAPI):
+    """Tempered SMC that picks each temperature to hit a target ESS.
+
+    Moves along the geometric path ``logprior + t * loglikelihood`` from
+    ``t = 0`` to ``1``, choosing every increment so the effective sample size
+    after reweighting is ``target_ess``. Initial MCMC parameters come from
+    ``kernel.init_params(particles, **mcmc_params)``.
+
+    Args:
+        logprior_fn: Log prior.
+        loglikelihood_fn: Log likelihood.
+        path: Tempering path; must be :class:`GeometricPath`.
+        mcmc_kernel: MCMC kernel class used to move the particles, e.g.
+            :class:`hmc` (the class, not a built kernel).
+        target_ess: Target effective sample size as a fraction of the
+            particles.
+        root_solver: Solver for the next temperature.
+        num_mcmc_steps: MCMC steps per SMC iteration.
+        resampling_fn: BlackJAX resampling function.
+        update_strategy: BlackJAX particle update strategy.
+        batch_size: Particles per batch in the MCMC update; ``0`` updates all
+            at once.
+        **mcmc_kernel_kwargs: Options for ``mcmc_kernel``, e.g.
+            ``num_integration_steps``.
+    """
+
+    init = staticmethod(init)
+    init_params = staticmethod(init_params)
+    build_step = staticmethod(build_step)

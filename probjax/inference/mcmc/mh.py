@@ -9,7 +9,7 @@ from jax.flatten_util import ravel_pytree
 
 from probjax.inference.adaptation import compose_adaptors
 from probjax.inference.mcmc.adaptation import covariance_adaptor, step_size_adaptor
-from probjax.inference.mcmc.base import make_kernel_api
+from probjax.inference.mcmc.base import MarkovKernelAPI
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 
@@ -52,12 +52,23 @@ def init_params_mh(state: PyTree) -> RWParams:
     return RWParams()
 
 
-mh = make_kernel_api(
-    name="mh",
-    init_fn=blackjax.rmh.init,
-    init_params_fn=init_params_mh,
-    build_step_fn=build_mh_step,
-)
+class mh(MarkovKernelAPI):
+    r"""Metropolis-Hastings with a user-supplied proposal.
+
+    The kernel params are passed to the proposal as ``params=``; the default
+    ``init_params`` returns the empty :class:`RWParams`.
+
+    Args:
+        logdensity_fn: Log density of the target.
+        transition_proposal_fn: ``(key, position, params) -> new_position``.
+        transition_proposal_logpdf: ``(new_state, state, params) -> log q``,
+            evaluated on BlackJAX ``RWState``\ s; needed only for asymmetric
+            proposals.
+    """
+
+    init = staticmethod(blackjax.rmh.init)
+    init_params = staticmethod(init_params_mh)
+    build_step = staticmethod(build_mh_step)
 
 
 class RWParamsGauss(NamedTuple):
@@ -98,12 +109,23 @@ def _gauss_rwmh_adaptation():
     )
 
 
-gauss_rwmh = make_kernel_api(
-    name="gauss_rwmh",
-    init_fn=blackjax.rmh.init,
-    init_params_fn=init_params_gaussian_rw,
-    build_step_fn=partial(
-        build_mh_step, transition_proposal_fn=gaussian_transition_proposal
-    ),
-    default_adaptation_fn=_gauss_rwmh_adaptation,
-)
+class gauss_rwmh(MarkovKernelAPI):
+    """Gaussian random-walk Metropolis-Hastings.
+
+    Proposes ``x + step_size * scale @ eps`` with standard normal ``eps``.
+    Tunable parameters come from ``kernel.init_params(state, step_size=0.5,
+    scale=None)`` (see :class:`RWParamsGauss`); ``scale`` is a diagonal
+    (vector) or a dense matrix square root and defaults to the identity.
+    Default adaptation: step size towards a 0.234 acceptance rate plus a
+    covariance estimate for ``scale``.
+
+    Args:
+        logdensity_fn: Log density of the target.
+    """
+
+    init = staticmethod(blackjax.rmh.init)
+    init_params = staticmethod(init_params_gaussian_rw)
+    build_step = staticmethod(
+        partial(build_mh_step, transition_proposal_fn=gaussian_transition_proposal)
+    )
+    default_adaptation_fn = staticmethod(_gauss_rwmh_adaptation)

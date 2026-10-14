@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.inference.mcmc.adaptation import slice_step_size_adaptor
-from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
+from probjax.inference.mcmc.base import MarkovKernelAPI, make_step_from_kernel
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 # Some utility functions for creating 1D slices through an N-dimensional space
@@ -303,29 +303,7 @@ def build_step(
     slice_fn_arg: Optional[Callable] = None,
     **kwargs,
 ) -> Callable:
-    """Build a slice-sampling step function.
-
-    Parameters
-    ----------
-    logdensity_fn : callable
-        Function returning the (unnormalized) log density at a position.
-    max_evals : int, optional
-        Maximum number of density evaluations per slice. Default is 100.
-    slice_fn : str or callable, optional
-        Slice geometry. One of ``"linear"``, ``"poly"``, ``"axis"`` or
-        ``"none"``, or a custom slice builder. Default is ``"linear"``.
-    slice_fn_arg : callable, optional
-        Function sampling the slice argument. Inferred from ``slice_fn`` when
-        given as a string.
-    **kwargs : Any
-        Extra keyword arguments forwarded to the slice-argument sampler.
-
-    Returns
-    -------
-    callable
-        Step function mapping ``(rng_key, state, params)`` to a new state and
-        info pair.
-    """
+    """Build the slice-sampling step; see :class:`slice` for the arguments."""
     if isinstance(slice_fn, str):
         if slice_fn == "linear":
             slice_fn = linear_slice_fn
@@ -355,13 +333,31 @@ def _slice_adaptation(*, target_num_evaluations=5, max_evaluations=100, **kwargs
     return slice_step_size_adaptor(target_num_evaluations, max_evaluations, **kwargs)
 
 
-slice = make_kernel_api(
-    name="slice",
-    init_fn=init,
-    init_params_fn=init_params,
-    build_step_fn=build_step,
-    default_adaptation_fn=_slice_adaptation,
-)
+class slice(MarkovKernelAPI):
+    """Slice sampling along random one-dimensional slices.
+
+    Each step brackets the slice by stepping out with ``step_size`` and then
+    shrinks it until a point is accepted. Tunable parameters come from
+    ``kernel.init_params(state, step_size=0.5)`` (see :class:`SliceParams`).
+    Default adaptation: step size towards a target number of density
+    evaluations.
+
+    Args:
+        logdensity_fn: Log density of the target.
+        max_evals: Maximum number of density evaluations per step.
+        slice_fn: Slice geometry: ``"linear"`` (random direction), ``"poly"``
+            (random polynomial curve), ``"axis"`` (random coordinate),
+            ``"none"`` or a custom ``(position, arg) -> (t -> position)``
+            builder.
+        slice_fn_arg: ``(key, position) -> arg`` sampling the slice argument;
+            inferred when ``slice_fn`` is a string.
+        **kwargs: Options for the ``"poly"`` slice-argument sampler.
+    """
+
+    init = staticmethod(init)
+    init_params = staticmethod(init_params)
+    build_step = staticmethod(build_step)
+    default_adaptation_fn = staticmethod(_slice_adaptation)
 
 
 def lower_upper_bracket(
