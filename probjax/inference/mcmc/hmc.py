@@ -1,53 +1,20 @@
 from typing import Callable, NamedTuple, Optional
 
 import blackjax
-import jax.numpy as jnp
-from jax.flatten_util import ravel_pytree
 
 from probjax.inference.mcmc.adaptation import window_warmup
-from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
+from probjax.inference.mcmc.base import (
+    init_hmc_like_params,
+    make_kernel_api,
+    make_step_from_kernel,
+    scale_step_size_by_grad,
+)
 from probjax.utils.typing import Array, ArrayLike, PyTree
 
 
 class HMCParams(NamedTuple):
     step_size: ArrayLike
     inverse_mass_matrix: ArrayLike
-
-
-def _init_hmc_like_params(state: PyTree, inverse_mass_matrix: Optional[Array]) -> Array:
-    position = state.position if hasattr(state, "position") else state
-    flat_position, _ = ravel_pytree(position)
-    dim = flat_position.shape[0]
-    if inverse_mass_matrix is None:
-        return jnp.ones((dim,))
-    if inverse_mass_matrix.shape[0] != dim:
-        raise ValueError(
-            "The dimension of the inverse mass matrix must match the dimension"
-            " of the position."
-        )
-    return inverse_mass_matrix
-
-
-def _scale_step_size_by_grad(
-    state: PyTree, step_size: float, inverse_mass_matrix: Optional[Array] = None
-) -> ArrayLike:
-    grad = getattr(state, "logdensity_grad", None)
-    if grad is None:
-        return step_size
-    flat_grad, _ = ravel_pytree(grad)
-    if inverse_mass_matrix is not None:
-        inv = inverse_mass_matrix
-        if inv.ndim == 0:
-            grad_norm = jnp.sqrt(inv) * jnp.linalg.norm(flat_grad)
-        elif inv.ndim == 1:
-            grad_norm = jnp.sqrt(jnp.sum(inv * flat_grad**2))
-        elif inv.ndim == 2:
-            grad_norm = jnp.sqrt(flat_grad @ (inv @ flat_grad))
-        else:
-            raise ValueError("Invalid inverse_mass_matrix shape")
-    else:
-        grad_norm = jnp.linalg.norm(flat_grad)
-    return step_size / jnp.where(grad_norm == 0, 1.0, grad_norm)
 
 
 def init_params(
@@ -70,8 +37,8 @@ def init_params(
     Returns:
         HMCParams: Parameters for the HMC kernel.
     """
-    inverse_mass_matrix = _init_hmc_like_params(state, inverse_mass_matrix)
-    step_size = _scale_step_size_by_grad(state, step_size, inverse_mass_matrix)
+    inverse_mass_matrix = init_hmc_like_params(state, inverse_mass_matrix)
+    step_size = scale_step_size_by_grad(state, step_size, inverse_mass_matrix)
     return HMCParams(
         step_size=step_size,
         inverse_mass_matrix=inverse_mass_matrix,

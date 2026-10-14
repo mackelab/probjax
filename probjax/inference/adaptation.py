@@ -9,6 +9,7 @@ from probjax.inference.base import (
     Kernel,
     Warmup,
 )
+from probjax.inference.smc.base import _ensure_param_batch, _params_to_dict
 from probjax.utils import guards as _guards
 
 __all__ = ["get_param", "replace_params"]
@@ -65,8 +66,6 @@ def _stateless_adaptor(tune_fn) -> Adaptor:
     ``tune_fn(params_dict, state, info)`` computes the tuned parameter dict;
     init/finalize are no-ops. Used by the SMC tuning adaptors.
     """
-    # Deferred import: smc.base's parent package re-imports this module.
-    from probjax.inference.smc.base import _ensure_param_batch, _params_to_dict
 
     def init(_state, _params):
         return ()

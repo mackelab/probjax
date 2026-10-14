@@ -99,6 +99,23 @@ RULES = [
         ("probjax.inference.smc.temporal",),
         (),
     ),
+    (
+        "smc/adaptation edges stay acyclic and public",
+        (
+            "inference/adaptation.py",
+            "inference/smc/tuning.py",
+            "inference/smc/base.py",
+            "inference/smc/path_smc.py",
+        ),
+        ("probjax.inference.smc.temporal", "probjax.inference.smc.ports"),
+        (),
+    ),
+    (
+        "kernels stay runner-free",
+        "inference/mcmc/",
+        ("probjax.inference.mcmc_runner", "probjax.inference.smc_runner"),
+        (),
+    ),
 ]
 
 

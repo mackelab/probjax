@@ -3,8 +3,11 @@ from typing import Callable, NamedTuple
 import blackjax
 
 from probjax.inference.mcmc.adaptation import step_size_adaptor
-from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
-from probjax.inference.mcmc.hmc import _scale_step_size_by_grad
+from probjax.inference.mcmc.base import (
+    make_kernel_api,
+    make_step_from_kernel,
+    scale_step_size_by_grad,
+)
 from probjax.utils.typing import PyTree
 
 
@@ -20,7 +23,7 @@ def build_step(logdensity_fn: Callable) -> Callable:
 
 
 def init_params(state: PyTree, step_size: float = 1e-2) -> MALAParams:
-    step_size = _scale_step_size_by_grad(state, step_size)
+    step_size = scale_step_size_by_grad(state, step_size)
     return MALAParams(step_size=step_size)
 
 

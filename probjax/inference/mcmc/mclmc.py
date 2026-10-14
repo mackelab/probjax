@@ -12,8 +12,11 @@ from probjax.inference.mcmc._dynamic_stepping import (
     get_dynamic_stepping,
     init_dynamic_arg,
 )
-from probjax.inference.mcmc.base import make_kernel_api
-from probjax.inference.mcmc.hmc import _init_hmc_like_params, _scale_step_size_by_grad
+from probjax.inference.mcmc.base import (
+    init_hmc_like_params,
+    make_kernel_api,
+    scale_step_size_by_grad,
+)
 from probjax.inference.mcmc.warmup import mclmc_warmup
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
@@ -61,8 +64,8 @@ def init_mclmc_params(
     MCLMCParams
         Resolved sampler parameters.
     """
-    inverse_mass_matrix = _init_hmc_like_params(state, inverse_mass_matrix)
-    step_size = _scale_step_size_by_grad(state, step_size)
+    inverse_mass_matrix = init_hmc_like_params(state, inverse_mass_matrix)
+    step_size = scale_step_size_by_grad(state, step_size)
     return MCLMCParams(
         step_size=step_size, L=L, inverse_mass_matrix=inverse_mass_matrix
     )
@@ -172,8 +175,8 @@ def init_params(
     AdjustedMCLMCParams
         Resolved sampler parameters.
     """
-    inverse_mass_matrix = _init_hmc_like_params(state, inverse_mass_matrix)
-    step_size = _scale_step_size_by_grad(state, step_size)
+    inverse_mass_matrix = init_hmc_like_params(state, inverse_mass_matrix)
+    step_size = scale_step_size_by_grad(state, step_size)
     return AdjustedMCLMCParams(
         step_size=step_size,
         num_integration_steps=num_integration_steps,
@@ -288,8 +291,8 @@ def init_dynamic_params(
     AdjustedMCLMCDynamicParams
         Resolved sampler parameters.
     """
-    inverse_mass_matrix = _init_hmc_like_params(state, inverse_mass_matrix)
-    step_size = _scale_step_size_by_grad(state, step_size)
+    inverse_mass_matrix = init_hmc_like_params(state, inverse_mass_matrix)
+    step_size = scale_step_size_by_grad(state, step_size)
     return AdjustedMCLMCDynamicParams(
         step_size=step_size,
         inverse_mass_matrix=inverse_mass_matrix,

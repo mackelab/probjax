@@ -6,7 +6,7 @@ import jax.numpy as jnp
 from blackjax.smc import from_mcmc as bj_from_mcmc
 
 from probjax.inference.smc.base import (
-    _filter_kwargs,
+    filter_kwargs,
     init_mcmc_params_from_logdensity,
     make_mcmc_adapter,
     make_smc_api,
@@ -67,7 +67,7 @@ def build_step(
     )
 
     if path_kwargs is None:
-        path_kwargs = _filter_kwargs(
+        path_kwargs = filter_kwargs(
             path.logdensity_fn, mcmc_kernel_kwargs, allow_kwargs=False
         )
     else:
@@ -113,14 +113,14 @@ def init_params(
 ) -> Dict:
     mcmc_kernel_kwargs = mcmc_kernel_kwargs or {}
     if path_kwargs is None:
-        path_kwargs = _filter_kwargs(
+        path_kwargs = filter_kwargs(
             path.initial_param, mcmc_param_kwargs, allow_kwargs=False
         )
     else:
         path_kwargs = path_kwargs
     if initial_path_param is None:
         initial_path_param = path.initial_param(**path_kwargs)
-    logdensity_kwargs = _filter_kwargs(
+    logdensity_kwargs = filter_kwargs(
         path.logdensity_fn, mcmc_param_kwargs, allow_kwargs=False
     )
     logposterior_fn = path.logdensity_fn(
