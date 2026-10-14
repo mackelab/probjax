@@ -42,7 +42,7 @@ def newton_raphson(
 
     Returns:
         ``(x, converged)``: the root estimate and whether a step was shorter
-        than ``tol``.
+        than ``tol`` (a boolean array).
     """
     if jacobian not in ("dense", "matrix_free"):
         raise ValueError(f"jacobian must be 'dense' or 'matrix_free', got {jacobian!r}")
@@ -72,7 +72,12 @@ def newton_raphson(
         (converged, x), _ = jax.lax.scan(
             scan_fn, (jnp.asarray(False), x), None, length=max_iter
         )
-        return x, converged
+        # Aux crosses custom_root as a float: JAX < 0.10 builds bool aux
+        # tangents as bool arrays instead of zero tangents, which fails
+        # custom_jvp validation under grad. The comparison below restores
+        # the boolean flag (a no-op for differentiation: aux tangents are
+        # zero on every supported version).
+        return x, jnp.asarray(converged, dtype=jnp.float32)
 
     def tangent_solve(g, y):
         # g is the Jacobian-vector product of f at the root.
@@ -82,7 +87,7 @@ def newton_raphson(
     x, converged = jax.lax.custom_root(
         flat_f, x0.ravel(), newton_solve, tangent_solve, has_aux=True
     )
-    return x.reshape(shape), converged
+    return x.reshape(shape), converged > 0.5
 
 
 def root(
