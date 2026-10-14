@@ -91,6 +91,15 @@ See the [SMC guide](../guides/smc.md) for BlackJAX presets and adaptive executio
 ::: probjax.inference.population_diagnostics
 ::: probjax.inference.summarize_replicates
 
+## Twisted SMC for diffusion models
+
+::: probjax.inference.run_pretrained_diffusion_smc
+::: probjax.inference.PretrainedTwistState
+::: probjax.inference.PretrainedTwistInfo
+::: probjax.inference.run_rdsmc
+::: probjax.inference.RDSMCState
+::: probjax.inference.RDSMCInfo
+
 ## Temporal SMC and trajectory inference
 
 Temporal inference advances through physical observation times. See the
