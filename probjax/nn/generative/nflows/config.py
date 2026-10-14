@@ -1057,6 +1057,20 @@ class CirculantDiagonalMixingConfig(MixingConfigProtocol):
     init_std: float = 0.05
     max_log_scale: float = 3.0
 
+    def __post_init__(self) -> None:
+        if self.num_diagonals < 1:
+            raise ValueError(
+                f"num_diagonals must be positive; got {self.num_diagonals}."
+            )
+        if not math.isfinite(self.init_std) or self.init_std < 0:
+            raise ValueError(
+                f"init_std must be finite and non-negative; got {self.init_std}."
+            )
+        if not math.isfinite(self.max_log_scale) or self.max_log_scale <= 0:
+            raise ValueError(
+                f"max_log_scale must be finite and positive; got {self.max_log_scale}."
+            )
+
     def build(self, input_dim, *, rngs):
         from probjax.nn.generative.nflows.bijective import CirculantDiagonal
 
@@ -1079,6 +1093,18 @@ class CompositeMixingConfig(MixingConfigProtocol):
     """
 
     configs: Sequence[MixingConfigProtocol]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.configs, Sequence) or isinstance(
+            self.configs, (str, bytes)
+        ):
+            raise TypeError("configs must be a sequence of mixing configs.")
+        for config in self.configs:
+            if not isinstance(config, MixingConfigProtocol):
+                raise TypeError(
+                    "Each config must implement MixingConfigProtocol,"
+                    f" got {type(config).__name__}."
+                )
 
     def build(self, input_dim, *, rngs):
         from probjax.nn.nets.simple import Sequential

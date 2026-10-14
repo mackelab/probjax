@@ -47,6 +47,11 @@ profiles remain supported. Reconstruct older checkpoints with their original
 previously implicit adaptive widths should be supplied explicitly or through
 the original callable width rule. See [profile comparisons](../benchmarks/nn_defaults.md).
 
+| Conditioner | Old defaults (`model_dim`, `num_heads`, `num_layers`, `attn_size`, `widening_factor`) | New defaults |
+|---|---|---|
+| `CouplingTransformer` | 32, 2, 2, 8, 2 | 256, 8, 4, 32, 4 |
+| `AutoregressiveTransformer` | 64, 4, 4, 8, 2 | 256, 8, 4, 32, 4 |
+
 Input-adaptive induced and spatial attention now pass the full input width as
 total QKV width, fixing a second division by the head count. For an accepted
 old adaptive projection, pass `attn_size=in_features // num_heads**2` explicitly

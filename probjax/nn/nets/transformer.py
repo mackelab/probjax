@@ -121,6 +121,7 @@ class Transformer(nnx.Module):
             "num_heads": num_heads,
             "num_layers": num_layers,
             "attn_size": attn_size,
+            "widening_factor": widening_factor,
         }.items():
             if value <= 0:
                 raise ValueError(f"{name} must be positive")

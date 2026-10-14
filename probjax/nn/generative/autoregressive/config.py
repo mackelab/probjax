@@ -147,8 +147,9 @@ def _spline_slope_constrainer(max_slope: float = 10.0, tail_logit_scale: float =
         raise ValueError("tail_logit_scale must be finite and positive.")
 
     def constrain(raw):
-        raw = raw.at[..., 0].multiply(tail_logit_scale)
-        raw = raw.at[..., -1].multiply(tail_logit_scale)
+        if tail_logit_scale != 1.0:
+            raw = raw.at[..., 0].multiply(tail_logit_scale)
+            raw = raw.at[..., -1].multiply(tail_logit_scale)
         return _knot_slopes(raw, max_slope)
 
     return _Constrainer(constrain)
@@ -382,7 +383,7 @@ class ARFamily:
         ``latent_bound`` defaults to ``bound`` so that zero parameters give
         matching knots with unit slopes -- an identity spline, i.e. exactly a
         standard normal. Boundary logits are damped by ``tail_logit_scale``;
-        use one for undamped, learnable tails.
+        use 1.0 for undamped, learnable tails.
         """
         return cls(
             spline_normal,
