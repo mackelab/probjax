@@ -29,6 +29,17 @@ controllers, gradients and inverse log-determinants.
 ::: probjax.utils.cholesky_update
 ::: probjax.utils.mv_diag_or_dense
 
+## Linear operators
+
+::: probjax.utils.linear_operator.Diagonal
+::: probjax.utils.linear_operator.Dense
+::: probjax.utils.linear_operator.Function
+::: probjax.utils.linear_operator.Jacobian
+::: probjax.utils.linear_operator.solve
+::: probjax.utils.linear_operator.logdet
+::: probjax.utils.linear_operator.as_operator
+::: probjax.utils.linear_operator.phi_matrices
+
 ## ODE integration internals
 
 ::: probjax.utils.odeutil.ODEInfo

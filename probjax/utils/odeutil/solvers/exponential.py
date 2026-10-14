@@ -4,9 +4,9 @@ from typing import NamedTuple, Optional, Tuple, cast
 
 import jax
 import jax.numpy as jnp
-import jax.scipy.linalg
 
 from probjax.utils.functions import split_drift
+from probjax.utils.linear_operator import phi_matrices
 from probjax.utils.odeutil.solvers.base import (
     ODEInfo,
     ODESolverAPI,
@@ -106,34 +106,6 @@ def init_exp_split(
 
 
 # =============================================================================
-# GENERAL exponential integrator utilities (matrix φ via block expm)
-# =============================================================================
-def compute_phi_functions(A: Array, dt: ArrayLike, k: int = 1):
-    """
-    Compute phi_0, phi_1, ..., phi_k for matrix A and step dt via block
-    matrix exponential.
-    Phi_k(z) = ∫_0^1 e^{z*(1-s)} s^{k-1}/(k-1)! ds, evaluated at z = A*dt.
-    """
-    dt = jnp.asarray(dt)
-    n = A.shape[0]
-    aug = jnp.zeros((n * (k + 1), n * (k + 1)), dtype=A.dtype)
-
-    # Only the first block carries A; the superdiagonal identities stay unscaled
-    # so the top block row of expm(aug) is [phi_0, phi_1, ..., phi_k](A dt).
-    aug = aug.at[:n, :n].set(A * dt)
-    eye = jnp.eye(n, dtype=A.dtype)
-    for i in range(k):
-        aug = aug.at[i * n : (i + 1) * n, (i + 1) * n : (i + 2) * n].set(eye)
-
-    exp_aug = jax.scipy.linalg.expm(aug)
-
-    phi = []
-    for i in range(k + 1):
-        phi.append(exp_aug[0:n, i * n : (i + 1) * n])
-    return phi
-
-
-# =============================================================================
 # ORIGINAL (general) exponential Euler / Midpoint / RK4
 #   (light refactors: minor naming, comments, dtype removal that was unused)
 # =============================================================================
@@ -151,7 +123,7 @@ def build_exp_euler_step(
         # Jacobian and φ
         jacobian_fn = jax.jacfwd(drift, argnums=1)
         A = jacobian_fn(t0, y0, *args)
-        phi0, phi1 = compute_phi_functions(A, dt, k=1)
+        phi0, phi1 = phi_matrices(A * dt, k=1)
 
         # y1 = φ0 y0 + dt φ1 (f0 - A y0)
         y1 = phi0 @ y0 + dt * (phi1 @ (f0 - A @ y0))
@@ -175,11 +147,11 @@ def build_exp_midpoint_step(drift: Callable):
         jacobian_fn = jax.jacfwd(drift, argnums=1)
         A = jacobian_fn(t0, y0, *args)
 
-        phi0_half, phi1_half = compute_phi_functions(A, dt / 2, k=1)
+        phi0_half, phi1_half = phi_matrices(A * (dt / 2), k=1)
         y_mid = phi0_half @ y0 + (dt / 2) * (phi1_half @ (f0 - A @ y0))
         f_mid = drift(t0 + dt / 2, y_mid, *args)
 
-        phi0, phi1 = compute_phi_functions(A, dt, k=1)
+        phi0, phi1 = phi_matrices(A * dt, k=1)
         y1 = phi0 @ y0 + dt * (phi1 @ (f_mid - A @ y0))
         f1 = drift(t0 + dt, y1, *args)
 
@@ -202,7 +174,7 @@ def build_exp_rk4_step(drift: Callable):
         jacobian_fn = jax.jacfwd(drift, argnums=1)
         A = jacobian_fn(t0, y0, *args)
 
-        phi0, phi1, phi2, phi3 = compute_phi_functions(A, dt, k=3)
+        phi0, phi1, phi2, phi3 = phi_matrices(A * dt, k=3)
 
         def nonlinear(t, y):
             return drift(t, y, *args) - A @ y

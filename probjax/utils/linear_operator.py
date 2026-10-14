@@ -249,7 +249,7 @@ class Diagonal(LinearOperator):
             # Higher phi_k by a tiny block expm per entry; the scalar
             # recursion phi_{k+1} = (phi_k - 1/k!) / z cancels badly near 0.
             per_entry = jax.vmap(
-                lambda zi: jnp.stack(_phi_matrices(zi.reshape(1, 1), k)).ravel()
+                lambda zi: jnp.stack(phi_matrices(zi.reshape(1, 1), k)).ravel()
             )
             values = [v.reshape(z.shape) for v in per_entry(z.ravel()).T]
         return [Diagonal(v, self.in_shape) for v in values]
@@ -301,7 +301,7 @@ class Dense(LinearOperator):
     def phi(self, t=1.0, k=1):
         return [
             Dense(m, self.in_shape, self.in_shape)
-            for m in _phi_matrices(t * self.matrix, k)
+            for m in phi_matrices(t * self.matrix, k)
         ]
 
 
@@ -463,11 +463,52 @@ class _Transpose(LinearOperator):
         return jax.linear_transpose(self.op._mv, primal)(y)[0]
 
 
-def _phi_matrices(z: jax.Array, k: int) -> list[jax.Array]:
+def as_operator(A: LinearOperator | ArrayLike, shape: Shape) -> LinearOperator:
+    """Interpret ``A`` as a square operator on arrays of ``shape``.
+
+    Operators pass through (their domain must equal ``shape``); a 0-d array
+    or 1-d array broadcastable to ``shape`` is a diagonal, and a square 2-d
+    array a dense matrix on vector states of matching dimension. Anything
+    else raises a clear error: the exact solvers need a flattened square
+    system, so dense drifts support vector states only (evaluate the drift
+    itself for matmul-broadcast behavior on shaped states).
+    """
+    shape = _as_shape(shape)
+    if isinstance(A, LinearOperator):
+        if tuple(A.in_shape) != tuple(shape) or tuple(A.out_shape) != tuple(shape):
+            raise ValueError(
+                f"Operator with domain {A.in_shape} -> {A.out_shape} cannot act"
+                f" on states of shape {shape}."
+            )
+        return A
+    A = jnp.asarray(A)
+    if A.ndim <= 1:
+        try:
+            jnp.broadcast_shapes(A.shape, shape)
+        except ValueError:
+            raise ValueError(
+                f"Diagonal of shape {A.shape} cannot broadcast to state"
+                f" shape {shape}."
+            ) from None
+        return Diagonal(A, shape)
+    if A.ndim == 2:
+        if A.shape[0] != A.shape[1]:
+            raise ValueError(f"Dense drift must be square, got shape {A.shape}.")
+        if tuple(shape) != (A.shape[0],):
+            raise ValueError(
+                f"Dense drift of shape {A.shape} needs vector states of shape"
+                f" ({A.shape[0]},), got {shape}."
+            )
+        return Dense(A, shape, shape)
+    raise ValueError(f"Expected a 0-d, 1-d or 2-d array, got shape {A.shape}")
+
+
+def phi_matrices(z: jax.Array, k: int) -> list[jax.Array]:
     """``[phi_0(Z), ..., phi_k(Z)]`` from one block matrix exponential.
 
-    expm of [[Z, I, 0], [0, 0, I], [0, 0, 0]] (Z only in the first block) has
-    phi_j(Z) in its j-th top-row block.
+    expm of the ``(k+1)``-block-bidiagonal augmentation (``Z`` in the first
+    block, identities on the first superdiagonal) has ``phi_j(Z)`` in its
+    j-th top-row block.
     """
     n = z.shape[0]
     aug = jnp.zeros((n * (k + 1), n * (k + 1)), dtype=z.dtype)

@@ -5,11 +5,11 @@ import pytest
 from scipy.linalg import expm
 
 from probjax.utils.functions import const_diffusion, linear_drift
+from probjax.utils.linear_operator import phi_matrices
 from probjax.utils.odeint import odeint
 from probjax.utils.odeutil.solvers.exponential import (
     ExpODEState,
     build_exp_euler_step,
-    compute_phi_functions,
 )
 from probjax.utils.odeutil.solvers.multistep import build_am, build_bdf, init_lms
 from probjax.utils.sdeutil.solver.linear_exact import (
@@ -153,11 +153,11 @@ def test_linear_exact_sde_dense_mean_with_bias():
     assert np.allclose(y1, _affine_reference(A, b, x0, [dt])[0], atol=1e-3)
 
 
-def test_compute_phi_functions_matches_scalar_formulas():
+def test_phi_matrices_match_scalar_formulas():
     z = -0.5
     dt = 0.5
     A = jnp.array([[z / dt]])  # A * dt = z
-    phi0, phi1, phi2 = compute_phi_functions(A, dt, k=2)
+    phi0, phi1, phi2 = phi_matrices(A * dt, k=2)
     assert jnp.allclose(phi0, np.exp(z), atol=1e-6)
     assert jnp.allclose(phi1, (np.exp(z) - 1) / z, atol=1e-6)
     assert jnp.allclose(phi2, (np.exp(z) - 1 - z) / z**2, atol=1e-6)
