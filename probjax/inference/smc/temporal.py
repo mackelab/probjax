@@ -14,6 +14,7 @@ from probjax.inference.smc.base import make_mcmc_adapter
 from probjax.inference.smc.ess import ess as effective_sample_size
 from probjax.inference.smc.resampling import systematic
 from probjax.inference.smc.temporal_utils import population_covariance, replay_filter
+from probjax.utils.guards import ensure_int, is_tracing
 
 
 class ReplayData(NamedTuple):
@@ -103,18 +104,17 @@ def temporal_smc(
         )
     if not 0 <= ess_threshold <= 1:
         raise ValueError('ess_threshold must lie in [0, 1].')
-    if not isinstance(num_rejuvenation_steps, int) or num_rejuvenation_steps < 0:
-        raise ValueError('num_rejuvenation_steps must be a nonnegative integer.')
+    ensure_int('num_rejuvenation_steps', num_rejuvenation_steps, min_value=0)
     if adaptive_num_steps and (
         not isinstance(max_rejuvenation_steps, int)
+        or isinstance(max_rejuvenation_steps, bool)
         or max_rejuvenation_steps < num_rejuvenation_steps
         or target_accepted_moves <= 0
     ):
         raise ValueError('Invalid adaptive move-count budget.')
     if tempering_ess is not None and not 0 < tempering_ess < 1:
         raise ValueError('tempering_ess must lie strictly between zero and one.')
-    if not isinstance(max_tempering_steps, int) or max_tempering_steps < 1:
-        raise ValueError('max_tempering_steps must be positive.')
+    ensure_int('max_tempering_steps', max_tempering_steps, min_value=1)
     if proposal_scale <= 0 or not 0 < target_acceptance < 1:
         raise ValueError('proposal_scale and target_acceptance must be positive/valid.')
     if sum((proposal_fn is not None, adaptive_proposal, mcmc_kernel is not None)) > 1:
@@ -189,7 +189,7 @@ def temporal_smc(
             ):
                 raise ValueError('ReplayData arrays must share their time dimension.')
             replay_valid = (count <= replay.ts.shape[0]) & (replay.ts[count - 1] == t)
-            if not isinstance(replay_valid, jax.core.Tracer) and not bool(replay_valid):
+            if not is_tracing(replay_valid) and not bool(replay_valid):
                 raise ValueError(
                     'ReplayData must contain the full prefix through this time.'
                 )
@@ -484,7 +484,7 @@ def run_temporal_smc(
     if replay is None:
         if (
             kernel.requires_replay
-            and not isinstance(state.num_observations, jax.core.Tracer)
+            and not is_tracing(state.num_observations)
             and int(state.num_observations) != 0
         ):
             raise ValueError(

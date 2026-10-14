@@ -1,14 +1,14 @@
 import inspect
-from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from functools import partial
-from typing import Any, Callable, Dict, Optional
+from typing import Callable, Dict, Optional
 
 import jax
 import jax.numpy as jnp
 from blackjax.smc import base as bj_smc_base
 
 from probjax.inference.base import Kernel
+from probjax.utils.guards import has_attrs, params_to_dict
 from probjax.utils.jaxutils import API
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
@@ -78,15 +78,8 @@ def _ensure_param_batch(params, *, shared: bool) -> Dict[str, Array]:
 
 
 def _params_to_dict(params) -> Dict[str, ArrayLike]:
-    if params is None:
-        return {}
-    if hasattr(params, "_asdict"):
-        return params._asdict()
-    if isinstance(params, Mapping):
-        return dict(params)
-    if is_dataclass(params):
-        return asdict(params)
-    raise TypeError("mcmc_params must be a mapping, NamedTuple, or dataclass")
+    """Back-compat alias for :func:`params_to_dict`."""
+    return params_to_dict(params)
 
 
 class _ParamsProxy:
@@ -102,7 +95,7 @@ class _ParamsProxy:
 def _wrap_params(params: Dict[str, ArrayLike]):
     if params is None:
         return _ParamsProxy({})
-    if hasattr(params, "_asdict"):
+    if has_attrs(params, "_asdict"):
         return params
     if is_dataclass(params):
         return _ParamsProxy(asdict(params))
@@ -111,7 +104,7 @@ def _wrap_params(params: Dict[str, ArrayLike]):
 
 def make_mcmc_adapter(mcmc_kernel, **kernel_kwargs):
     """Adapt a probjax MCMC API into BlackJAX SMC mcmc_init_fn/mcmc_step_fn."""
-    if not hasattr(mcmc_kernel, "build_step") or not hasattr(mcmc_kernel, "init"):
+    if not has_attrs(mcmc_kernel, "build_step", "init"):
         raise TypeError("mcmc_kernel must be a probjax MCMC API (not an instance).")
 
     def mcmc_init_fn(position, logdensity_fn, rng_key: Optional[RngKey] = None):

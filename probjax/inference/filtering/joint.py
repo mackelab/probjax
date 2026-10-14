@@ -11,6 +11,7 @@ from probjax.inference.filtering.trajectory import (
     sample_gaussian_paths,
     sample_particle_paths,
 )
+from probjax.utils.guards import is_tracing
 
 
 class JointPathSamples(NamedTuple):
@@ -44,7 +45,7 @@ def sample_joint_paths(
     if num_samples < 1:
         raise ValueError('num_samples must be positive.')
     if (
-        not isinstance(state.num_observations, jax.core.Tracer)
+        not is_tracing(state.num_observations)
         and int(state.num_observations) != replay.ts.shape[0]
     ):
         raise ValueError('Joint sampling requires exactly the assimilated data prefix.')

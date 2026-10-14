@@ -6,20 +6,28 @@ import optax
 from jax.random import PRNGKey
 from jax.typing import ArrayLike
 
-from probjax.utils.typing import PyTree
-
-from probjax.inference.filtering.base import FilterInfo, FilterKernel, FilterState
+from probjax.inference.filtering.base import (
+    FilterInfo,
+    FilterKernel,
+    FilterState,
+    extract_covariance,
+    extract_mean,
+    extract_pred_covariance,
+    is_particle_state,
+)
 from probjax.inference.filtering.smoothing import (
     particle_smoother,
 )
 from probjax.inference.filtering.smoothing import (
     smooth as smooth_gaussian,
 )
+from probjax.utils.guards import has_attrs
 from probjax.utils.jaxutils import (
     WithProgressBarAPI,
     nested_checkpoint_scan,
     print_scan,
 )
+from probjax.utils.typing import PyTree
 
 
 class FilteringTrace(NamedTuple):
@@ -48,12 +56,7 @@ class FilteringTrace(NamedTuple):
             Array of shape (T-1, state_dim) for Gaussian filters,
             or (T-1, num_particles, state_dim) for particle filters.
         """
-        if hasattr(self.states, "mean"):
-            return self.states.mean
-        elif hasattr(self.states, "particles"):
-            return self.states.particles
-        else:
-            raise ValueError("Trace states have no 'mean' or 'particles' attribute.")
+        return extract_mean(self.states)
 
     def get_cov(self) -> ArrayLike:
         """Extract state covariances from the trace.
@@ -64,7 +67,7 @@ class FilteringTrace(NamedTuple):
         """
         if hasattr(self.states, "cov"):
             return self.states.cov
-        elif hasattr(self.states, "particles") and hasattr(self.states, "log_weights"):
+        elif is_particle_state(self.states):
             # Compute weighted empirical covariance for particles
             particles = self.states.particles  # (T, N, D)
             log_weights = self.states.log_weights  # (T, N)
@@ -118,30 +121,13 @@ class FilteringTrace(NamedTuple):
 
 
 def _extract_covariance(states):
-    if hasattr(states, "cov"):
-        return states.cov
-    elif hasattr(states, "std"):
-        return jax.vmap(lambda s: s @ s.T)(states.std)
-    elif hasattr(states, "cov_factor") and hasattr(states, "cov_core"):
-        return jax.vmap(lambda u, s: u @ s @ u.T)(states.cov_factor, states.cov_core)
-    raise ValueError(
-        "Filtering states must have either `cov`, `std`, or (`cov_factor`, `cov_core`)."
-    )
+    """Back-compat alias for :func:`extract_covariance`."""
+    return extract_covariance(states)
 
 
 def _extract_pred_covariance(infos):
-    if hasattr(infos, "cov_pred"):
-        return infos.cov_pred
-    elif hasattr(infos, "std_pred"):
-        return jax.vmap(lambda s: s @ s.T)(infos.std_pred)
-    elif hasattr(infos, "cov_factor_pred") and hasattr(infos, "cov_core_pred"):
-        return jax.vmap(lambda u, s: u @ s @ u.T)(
-            infos.cov_factor_pred, infos.cov_core_pred
-        )
-    raise ValueError(
-        "Filtering infos must have either `cov_pred`, `std_pred`, "
-        "or (`cov_factor_pred`, `cov_core_pred`)."
-    )
+    """Back-compat alias for :func:`extract_pred_covariance`."""
+    return extract_pred_covariance(infos)
 
 
 def _trace_ts(trace: FilteringTrace):
@@ -398,9 +384,7 @@ class Filter(WithProgressBarAPI):
         states = trace.states
 
         # Auto-detect: check if this is a particle filter trace
-        is_particle = hasattr(states, "particles") and hasattr(states, "log_weights")
-
-        if is_particle:
+        if is_particle_state(states):
             # Particle filter: use FFBSi
             if key is None:
                 raise ValueError(
@@ -415,7 +399,7 @@ class Filter(WithProgressBarAPI):
                 )
             ts = _trace_ts(trace)
             ancestors = (
-                trace.infos.ancestors if hasattr(trace.infos, "ancestors") else None
+                trace.infos.ancestors if has_attrs(trace.infos, "ancestors") else None
             )
             return particle_smoother(
                 key,

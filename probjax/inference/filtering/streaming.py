@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.inference.filtering.temporal import TemporalTrace
+from probjax.utils.guards import ensure_int
 
 
 class StreamingWindow(NamedTuple):
@@ -23,8 +24,7 @@ def init_streaming_window(state, info, capacity):
     initial state must precede the first appended state. All time points must be
     chronological; failed outer SMC steps must not be appended.
     """
-    if not isinstance(capacity, int) or capacity < 1:
-        raise ValueError('capacity must be a positive integer.')
+    ensure_int('capacity', capacity, min_value=1)
     allocate = lambda x: jnp.zeros((capacity,) + x.shape, x.dtype)
     return StreamingWindow(
         state,

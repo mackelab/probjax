@@ -17,8 +17,8 @@ from probjax.nn.generative.discrete.config import (
     MultinomialDiffusionSchedule,
     UniformContinuousTimeTrainingConfig,
     _one_hot,
-    _require_float_time,
     _sample_categorical,
+    clip_to_time_range,
 )
 from probjax.nn.losses.multinomial import (
     build_time_dependent_multinomial_diffusion_loss,
@@ -136,9 +136,7 @@ class MultinomialDiffusion(GenerativeModel):
         return self.schedule.num_steps
 
     def _to_continuous_time(self, t: ArrayLike) -> Array:
-        t_array = _require_float_time(t)
-        t_cont = t_array.astype(jnp.float32)
-        return jnp.clip(t_cont, self.schedule.t_min, self.schedule.t_max)
+        return clip_to_time_range(t, self.schedule.t_min, self.schedule.t_max)
 
     def c_in(self, t: ArrayLike) -> Array:
         t_cont = self._to_continuous_time(t)

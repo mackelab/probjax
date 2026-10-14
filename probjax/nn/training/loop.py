@@ -30,6 +30,7 @@ from probjax.nn.training.kernel import (
     _build_optimizer,
     build_fit_kernel,
 )
+from probjax.utils.guards import ensure_int, is_tracing
 from probjax.utils.typing import RngKey
 
 __all__ = [
@@ -387,8 +388,7 @@ def fit(
         Python validation of that contract only occurs in eager host mode.
     """
     for name, value in (("log_every", log_every), ("callback_every", callback_every)):
-        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-            raise ValueError(f"{name} must be a positive integer; got {value!r}.")
+        ensure_int(name, value, min_value=1)
     if ema_decay is not None and not 0 <= ema_decay < 1:
         raise ValueError("ema_decay must be in [0, 1) or None.")
     if use_ema and ema_decay is None and kernel is None:
@@ -479,7 +479,7 @@ def fit(
         raise ValueError("use_ema requires EMA parameters in the training state.")
     if initial_state is not None and ema_decay is not None and state.ema_params is None:
         raise ValueError("Cannot resume EMA without an EMA accumulator.")
-    traced = any(isinstance(x, jax.core.Tracer) for x in jax.tree.leaves(state))
+    traced = any(is_tracing(x) for x in jax.tree.leaves(state))
     if traced and is_batch_stream(batch):
         raise ValueError(
             "Jitted fit requires array batches; iterate data loaders outside JIT."

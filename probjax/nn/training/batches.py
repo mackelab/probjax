@@ -11,6 +11,8 @@ import jax
 import jax.numpy as jnp
 from jax.experimental import io_callback
 
+from probjax.utils.guards import is_array_like
+
 __all__ = [
     "is_batch_stream",
     "take_batches",
@@ -65,7 +67,7 @@ def is_batch_stream(data) -> bool:
     So a single batch that groups several arrays must be a dict (or another
     pytree that is not a list or tuple) -- ``{"x": x, "y": y}`` -- not a tuple.
     """
-    if hasattr(data, "shape") or isinstance(data, (dict, int, float, complex)):
+    if is_array_like(data) or isinstance(data, (dict, int, float, complex)):
         return False
     return hasattr(data, "__iter__") or hasattr(data, "__next__")
 

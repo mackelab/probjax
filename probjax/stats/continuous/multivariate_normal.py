@@ -1,12 +1,12 @@
 from typing import Optional, Tuple
 
 import jax.numpy as jnp
-from jax import core as jax_core
 from jax import random
 
 from probjax.stats.base import rv_multivariate
 from probjax.stats.constraints import real, symmetric_positive_definite_matrix
 from probjax.stats.utils import normalize_sample_weights, row_mean_and_cov
+from probjax.utils.guards import is_tracing
 from probjax.utils.linalg import batch_mahalanobis
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
@@ -187,7 +187,7 @@ class multivariate_normal_gen(rv_multivariate):
             M = jnp.einsum("...i,...ij,...j->...", diff, precision_arr, diff)
             sign, logdet = jnp.linalg.slogdet(precision_arr)
             sign_nonpos = jnp.any(sign <= 0)
-            if not isinstance(sign_nonpos, jax_core.Tracer) and bool(sign_nonpos):
+            if not is_tracing(sign_nonpos) and bool(sign_nonpos):
                 raise ValueError("precision_matrix must be positive definite.")
             half_log_det = 0.5 * logdet
         elif scale_arr is not None:
@@ -201,7 +201,7 @@ class multivariate_normal_gen(rv_multivariate):
             M = batch_mahalanobis(chol, diff)
             sign, logdet = jnp.linalg.slogdet(cov_arr)
             sign_nonpos = jnp.any(sign <= 0)
-            if not isinstance(sign_nonpos, jax_core.Tracer) and bool(sign_nonpos):
+            if not is_tracing(sign_nonpos) and bool(sign_nonpos):
                 raise ValueError("covariance matrix must be positive definite.")
             half_log_det = 0.5 * logdet
         else:

@@ -6,6 +6,7 @@ from jax.typing import ArrayLike
 
 from probjax.inference.filtering.base import FilterAPI, _gaussian_unpack
 from probjax.inference.filtering.kalman_filter import _innovation_ll
+from probjax.utils.guards import call_if_callable
 
 
 class UnscentedKalmanFilterState(NamedTuple):
@@ -257,10 +258,7 @@ def build_kernel(
         predicted_sigma_points = jax.vmap(transition_fn, in_axes=(0, None, None))(
             sigma_points, t_old, t
         )
-        if isinstance(transition_covariance_matrix, Callable):
-            Q = transition_covariance_matrix(t_old, t)
-        else:
-            Q = transition_covariance_matrix
+        Q = call_if_callable(transition_covariance_matrix, t_old, t)
 
         # Prediction step
         mu1_, cov1_ = unscented_transform(
@@ -272,11 +270,7 @@ def build_kernel(
             predicted_sigma_points, weights_mean, weights_cov = sigma_point_fn(
                 mu1_, cov1_
             )
-            R = (
-                observation_covariance(t)
-                if callable(observation_covariance)
-                else observation_covariance
-            )
+            R = call_if_callable(observation_covariance, t)
             # Observed steps
             y_sigma_points = jax.vmap(observation_fn, in_axes=(0, None))(
                 predicted_sigma_points, t

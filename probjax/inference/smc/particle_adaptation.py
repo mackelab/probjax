@@ -9,6 +9,7 @@ from blackjax.smc.base import map_fn
 
 from probjax.inference.smc.ess import ess
 from probjax.inference.smc.temporal_utils import likelihood_diagnostics, replay_filter
+from probjax.utils.guards import is_tracing
 
 
 class ParticleCountInfo(NamedTuple):
@@ -122,7 +123,7 @@ def adapt_particle_count(
         raise ValueError(
             'current_count must be in buckets and num_parameters positive.'
         )
-    if isinstance(state.num_observations, jax.core.Tracer):
+    if is_tracing(state.num_observations):
         raise ValueError(
             'adapt_particle_count selects shapes on the host; '
             'use its compiled primitives inside JIT.'

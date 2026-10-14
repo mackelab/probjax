@@ -12,7 +12,6 @@ training history: they serialise with the model, travel through
 :meth:`StandardizingMixin.standardization`.
 """
 
-from collections.abc import Mapping
 from typing import Tuple
 
 import jax
@@ -20,6 +19,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.training import is_batch_stream, take_batches
+from probjax.utils.guards import is_mapping, is_tracing
 
 __all__ = ["StandardizingMixin"]
 
@@ -32,11 +32,11 @@ def _standardization_sample(data, num_features: int):
     """Examples to estimate shift and scale from an array, a dict or a stream."""
     if is_batch_stream(data):
         batches = take_batches(data, _STD_BATCHES)
-        parts = [b["data"] if isinstance(b, Mapping) else b for b in batches]
+        parts = [b["data"] if is_mapping(b) else b for b in batches]
         data = jnp.concatenate([
             jnp.asarray(p).reshape(-1, num_features) for p in parts
         ])
-    elif isinstance(data, Mapping):
+    elif is_mapping(data):
         data = data["data"]
     return jnp.asarray(data, jnp.float32).reshape(-1, num_features)
 
@@ -96,7 +96,7 @@ class StandardizingMixin:
         if not self.standardize:
             return
         fitted = self._std_fitted.get_value()
-        traced = isinstance(fitted, jax.core.Tracer)
+        traced = is_tracing(fitted)
         if not traced and bool(fitted):
             return
         if traced and is_batch_stream(data):
