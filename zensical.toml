@@ -57,6 +57,8 @@ inventories = ["https://docs.python.org/3/objects.inv"]
 # The docstrings are Google-style throughout, which is what napoleon was
 # configured for under Sphinx -- no docstring rewriting was needed to migrate.
 options.docstring_style = "google"
+# Diagnostics are re-exported from BlackJAX; load it so those aliases resolve.
+options.preload_modules = ["blackjax"]
 options.show_source = true
 options.show_root_heading = true
 options.show_symbol_type_heading = true

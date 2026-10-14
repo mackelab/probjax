@@ -237,6 +237,11 @@ class tailed_histogram_gen(histogram_gen):
     }
 
     @classmethod
+    def support(cls, **kwargs):
+        """The tails extend the support to all of R (not ``[low, high]``)."""
+        return real
+
+    @classmethod
     def param_sizes(cls, num_bins: int = 32, **kwargs) -> dict:
         del kwargs
         if num_bins < 1:

@@ -155,7 +155,6 @@ SUPPORT_DOCS = [
         "docs/index.md",
         "docs/getting-started.md",
         "docs/guides/migration.md",
-        "presentation/intro.md",
     )
 ]
 

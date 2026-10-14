@@ -46,6 +46,7 @@ Pure kernels, adaptation utilities and compiled runners. See
 ::: probjax.inference.step_size_adaptor
 ::: probjax.inference.mass_matrix_adaptor
 ::: probjax.inference.covariance_adaptor
+::: probjax.inference.mean_adaptor
 ::: probjax.inference.compose_adaptors
 ::: probjax.inference.acceptance_rate_adaptor
 ::: probjax.inference.slice_step_size_adaptor
@@ -53,6 +54,21 @@ Pure kernels, adaptation utilities and compiled runners. See
 ::: probjax.inference.adapt
 ::: probjax.inference.adapt_step
 ::: probjax.inference.as_warmup
+
+## Convergence diagnostics
+
+::: probjax.inference.effective_sample_size
+::: probjax.inference.ess_bulk
+::: probjax.inference.ess_tail
+::: probjax.inference.potential_scale_reduction
+::: probjax.inference.rhat
+::: probjax.inference.pareto_khat
+::: probjax.inference.kernelized_stein_discrepancy
+::: probjax.inference.imq_kernel
+::: probjax.inference.divergence_concentration
+::: probjax.inference.divergence_concentration_from_counts
+::: probjax.inference.format_divergence_warning
+::: probjax.inference.DivergenceConcentrationReport
 
 ## Sequential Monte Carlo
 
@@ -74,6 +90,15 @@ See the [SMC guide](../guides/smc.md) for BlackJAX presets and adaptive executio
 ::: probjax.inference.pretuned_smc
 ::: probjax.inference.population_diagnostics
 ::: probjax.inference.summarize_replicates
+
+## Twisted SMC for diffusion models
+
+::: probjax.inference.run_pretrained_diffusion_smc
+::: probjax.inference.PretrainedTwistState
+::: probjax.inference.PretrainedTwistInfo
+::: probjax.inference.run_rdsmc
+::: probjax.inference.RDSMCState
+::: probjax.inference.RDSMCInfo
 
 ## Temporal SMC and trajectory inference
 

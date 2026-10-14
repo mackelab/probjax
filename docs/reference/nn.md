@@ -325,6 +325,8 @@ the normalized default, and `model.event_shape` exposes just its shape(s).
 ::: probjax.nn.FlowMatcher
 ::: probjax.nn.MeanFlowMatcher
 ::: probjax.nn.LinearFlow
+::: probjax.nn.DenoisedPotentialTwist
+::: probjax.nn.NullTwist
 
 ## Architectures
 
