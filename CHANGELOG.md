@@ -225,7 +225,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tailed_histogram` reported the bounded support `[low, high]` of `histogram`, so
   autoregressive models with tails rejected out-of-range data
 - The dropless grouped-matmul Pallas kernels called `pallas.triton.dot`, which no
-  longer exists; they use `pallas.dot` (this broke them on CPU interpret mode)
+  longer exists; they use `jnp.dot` (this broke them on CPU interpret mode)
 - Run on JAX 0.11: batching rules no longer use the removed `batching.not_mapped`,
   Pallas kernels no longer use the removed `pl.dot`, `scan` inverses read the new
   `ft_in` layout, and the new `log2` primitive is invertible; JAX 0.9–0.11 are
