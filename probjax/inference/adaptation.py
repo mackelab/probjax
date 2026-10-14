@@ -1,5 +1,3 @@
-from collections.abc import Mapping
-from dataclasses import replace
 from functools import partial
 
 import jax
@@ -11,28 +9,19 @@ from probjax.inference.base import (
     Kernel,
     Warmup,
 )
+from probjax.utils import guards as _guards
+
+__all__ = ["get_param", "replace_params"]
 
 
 def get_param(params, name):
-    if isinstance(params, Mapping):
-        if name not in params:
-            raise ValueError(f"params must have a {name} field")
-        return params[name]
-    if not hasattr(params, name):
-        raise ValueError(f"params must have a {name} field")
-    return getattr(params, name)
+    """Read ``params[name]`` for mappings, else ``params.<name>``."""
+    return _guards.get_field(params, name)
 
 
 def replace_params(params, **updates):
     """Replace fields in a NamedTuple, dataclass, or mapping parameter PyTree."""
-    if isinstance(params, Mapping):
-        return type(params)(params, **updates)
-    if hasattr(params, "_replace"):
-        return params._replace(**updates)
-    try:
-        return replace(params, **updates)
-    except TypeError as error:
-        raise TypeError("params must be a mapping, NamedTuple, or dataclass") from error
+    return _guards.replace_field(params, **updates)
 
 
 def compose_adaptors(**adaptors) -> Adaptor:

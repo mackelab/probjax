@@ -18,6 +18,7 @@ from probjax.inference.filtering.temporal import (
     temporal_filter,
 )
 from probjax.inference.smc.temporal_utils import population_covariance, replay_filter
+from probjax.utils.guards import ensure_int
 
 # Optimal-scaling constants for the default Gaussian random-walk proposal.
 _TARGET_ACCEPTANCE = 0.234
@@ -95,8 +96,7 @@ def temporal_smc(
         raise ValueError("temporal_smc needs an exact or unbiased likelihood.")
     if not 0 <= ess_threshold <= 1:
         raise ValueError("ess_threshold must lie in [0, 1].")
-    if not isinstance(num_moves, int) or num_moves < 0:
-        raise ValueError("num_moves must be a nonnegative integer.")
+    ensure_int("num_moves", num_moves, min_value=0)
     adaptive = proposal_fn is None
 
     def init(key, parameters, t0=0.0):

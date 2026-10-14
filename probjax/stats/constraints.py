@@ -36,8 +36,19 @@ class Constraint:
     def __lt__(self, __value: object) -> bool:
         return issubclass(self.__class__, __value.__class__)
 
-    @abstractmethod
     def _is_contained(self, x: ConstraintLike) -> bool:
+        """Dispatch on runtime kind; subclasses only implement the two checks."""
+        if isinstance(x, Array):
+            return self._check_array(x)
+        if isinstance(x, Constraint):
+            return self._check_constraint(x)
+        return False
+
+    def _check_array(self, x: Array) -> bool:
+        return False
+
+    @abstractmethod
+    def _check_constraint(self, x: Constraint) -> bool:
         pass
 
     def __repr__(self) -> str:
@@ -50,43 +61,38 @@ class Constraint:
 class Distribution(Constraint):
     """A constraint that checks if a value is a distribution."""
 
-    def _is_contained(self, x: ConstraintLike) -> bool:
-        if isinstance(x, Constraint):
-            return isinstance(x, Distribution)
-        return False
+    def _check_constraint(self, x: Constraint) -> bool:
+        return isinstance(x, Distribution)
 
 
 class Real(Constraint):
     """A constraint that checks if a value is real."""
 
-    def _is_contained(self, x: ConstraintLike) -> bool:
-        if isinstance(x, Array):
-            return bool(jnp.all(jnp.isreal(x)))
-        if isinstance(x, Constraint):
-            return isinstance(x, Real)
-        raise TypeError(f"Cannot check if {x} of type {type(x)} is real.")
+    def _check_array(self, x: Array) -> bool:
+        return bool(jnp.all(jnp.isreal(x)))
+
+    def _check_constraint(self, x: Constraint) -> bool:
+        return isinstance(x, Real)
 
 
 class Integer(Real):
     """A constraint that checks if a value is an integer."""
 
-    def _is_contained(self, x: ConstraintLike) -> bool:
-        if isinstance(x, Array):
-            return bool(jnp.issubdtype(x.dtype, jnp.integer))
-        if isinstance(x, Constraint):
-            return isinstance(x, (Integer, Boolean))
-        return False
+    def _check_array(self, x: Array) -> bool:
+        return bool(jnp.issubdtype(x.dtype, jnp.integer))
+
+    def _check_constraint(self, x: Constraint) -> bool:
+        return isinstance(x, (Integer, Boolean))
 
 
 class Boolean(Integer):
     """A constraint that checks if a value is boolean."""
 
-    def _is_contained(self, x: ConstraintLike) -> bool:
-        if isinstance(x, Array):
-            return bool(jnp.issubdtype(x.dtype, jnp.bool_))
-        if isinstance(x, Constraint):
-            return isinstance(x, Boolean)
-        return False
+    def _check_array(self, x: Array) -> bool:
+        return bool(jnp.issubdtype(x.dtype, jnp.bool_))
+
+    def _check_constraint(self, x: Constraint) -> bool:
+        return isinstance(x, Boolean)
 
 
 class Interval(Real):
@@ -104,22 +110,19 @@ class Interval(Real):
         self.closed_left = closed_left
         self.closed_right = closed_right
 
-    def _is_contained(self, x: ConstraintLike) -> bool:
-        if isinstance(x, Array):
-            term1 = x >= self.lower if self.closed_left else x > self.lower
-            term2 = x <= self.upper if self.closed_right else x < self.upper
-            return (
-                Real._is_contained(self, x)
-                and bool(jnp.all(term1))
-                and bool(jnp.all(term2))
-            )
-        if isinstance(x, Constraint):
-            if not isinstance(x, Interval):
-                return False
-            term1 = x.lower >= self.lower if self.closed_left else x.lower > self.lower
-            term2 = x.upper <= self.upper if self.closed_right else x.upper < self.upper
-            return term1 and term2
-        return False
+    def _check_array(self, x: Array) -> bool:
+        term1 = x >= self.lower if self.closed_left else x > self.lower
+        term2 = x <= self.upper if self.closed_right else x < self.upper
+        return (
+            Real._check_array(self, x) and bool(jnp.all(term1)) and bool(jnp.all(term2))
+        )
+
+    def _check_constraint(self, x: Constraint) -> bool:
+        if not isinstance(x, Interval):
+            return False
+        term1 = x.lower >= self.lower if self.closed_left else x.lower > self.lower
+        term2 = x.upper <= self.upper if self.closed_right else x.upper < self.upper
+        return term1 and term2
 
 
 class UnitInterval(Interval):
@@ -132,15 +135,13 @@ class UnitInterval(Interval):
 class Simplex(UnitInterval):
     """A constraint that checks if a value is in the simplex."""
 
-    def _is_contained(self, x: ConstraintLike) -> bool:
-        if isinstance(x, Array):
-            if not UnitInterval._is_contained(self, x):
-                return False
-            sum_to_one = jnp.isclose(jnp.sum(x), 1.0)
-            return bool(sum_to_one)
-        if isinstance(x, Constraint):
-            return isinstance(x, Simplex)
-        return False
+    def _check_array(self, x: Array) -> bool:
+        if not UnitInterval._check_array(self, x):
+            return False
+        return bool(jnp.isclose(jnp.sum(x), 1.0))
+
+    def _check_constraint(self, x: Constraint) -> bool:
+        return isinstance(x, Simplex)
 
 
 class Positive(Interval):
@@ -178,16 +179,15 @@ class IntegerInterval(Integer, Interval):
         self.lower = lower
         self.upper = upper
 
-    def _is_contained(self, x: ConstraintLike) -> bool:
-        if isinstance(x, Array):
-            lower_ok = bool(jnp.all(x >= self.lower))
-            upper_ok = bool(jnp.all(x <= self.upper))
-            return Integer._is_contained(self, x) and lower_ok and upper_ok
-        if isinstance(x, Constraint):
-            if not isinstance(x, IntegerInterval):
-                return False
-            return x.lower >= self.lower and x.upper <= self.upper
-        return False
+    def _check_array(self, x: Array) -> bool:
+        lower_ok = bool(jnp.all(x >= self.lower))
+        upper_ok = bool(jnp.all(x <= self.upper))
+        return Integer._check_array(self, x) and lower_ok and upper_ok
+
+    def _check_constraint(self, x: Constraint) -> bool:
+        if not isinstance(x, IntegerInterval):
+            return False
+        return x.lower >= self.lower and x.upper <= self.upper
 
 
 class PositiveInteger(IntegerInterval):
@@ -231,17 +231,17 @@ class FiniteSet(Constraint):
     def __init__(self, values: Array) -> None:
         self.values = values
 
-    def _is_contained(self, x: ConstraintLike) -> bool:
+    def _check_array(self, x: Array) -> bool:
+        return bool(jnp.all(jnp.isin(x, jnp.asarray(self.values))))
+
+    def _check_constraint(self, x: Constraint) -> bool:
         values = jnp.asarray(self.values)
-        if isinstance(x, Array):
-            return bool(jnp.all(jnp.isin(x, values)))
-        if isinstance(x, Constraint):
-            if isinstance(x, FiniteSet):
-                return bool(jnp.all(jnp.isin(x.values, values)))
-            if isinstance(x, Interval):
-                min_val = float(jnp.min(values))
-                max_val = float(jnp.max(values))
-                return x.lower >= min_val and x.upper <= max_val
+        if isinstance(x, FiniteSet):
+            return bool(jnp.all(jnp.isin(x.values, values)))
+        if isinstance(x, Interval):
+            min_val = float(jnp.min(values))
+            max_val = float(jnp.max(values))
+            return x.lower >= min_val and x.upper <= max_val
         return False
 
 
@@ -251,96 +251,90 @@ class UnitSquare(Interval):
 
 
 class Matrix(Real):
-    def _is_contained(self, x: ConstraintLike) -> bool:
-        if isinstance(x, Array):
-            return Real._is_contained(self, x) and x.ndim >= 2
-        if isinstance(x, Constraint):
-            return isinstance(x, Matrix)
-        return False
+    def _check_array(self, x: Array) -> bool:
+        return Real._check_array(self, x) and x.ndim >= 2
+
+    def _check_constraint(self, x: Constraint) -> bool:
+        return isinstance(x, Matrix)
 
 
 class SquareMatrix(Matrix):
-    def _is_contained(self, x: ConstraintLike) -> bool:
-        if isinstance(x, Array):
-            return Matrix._is_contained(self, x) and x.shape[-1] == x.shape[-2]
-        if isinstance(x, Constraint):
-            return isinstance(x, SquareMatrix)
-        return False
+    def _check_array(self, x: Array) -> bool:
+        return Matrix._check_array(self, x) and x.shape[-1] == x.shape[-2]
+
+    def _check_constraint(self, x: Constraint) -> bool:
+        return isinstance(x, SquareMatrix)
 
 
 class SymmetricMatrix(SquareMatrix):
-    def _is_contained(self, x: ConstraintLike) -> bool:
-        if isinstance(x, Array):
-            is_square = SquareMatrix._is_contained(self, x)
-            return bool(is_square and jnp.allclose(x, jnp.swapaxes(x, -1, -2)))
-        if isinstance(x, Constraint):
-            return isinstance(x, SymmetricMatrix)
-        return False
+    def _check_array(self, x: Array) -> bool:
+        is_square = SquareMatrix._check_array(self, x)
+        return bool(is_square and jnp.allclose(x, jnp.swapaxes(x, -1, -2)))
+
+    def _check_constraint(self, x: Constraint) -> bool:
+        return isinstance(x, SymmetricMatrix)
 
 
 class SymmetricPositiveDefiniteMatrix(SymmetricMatrix):
     """A constraint that checks if a value is a symmetric positive definite matrix."""
 
-    def _is_contained(self, x: ConstraintLike) -> bool:
-        if isinstance(x, Array):
-            if not SymmetricMatrix._is_contained(self, x):
-                return False
-            eigvals = jnp.linalg.eigvalsh(x)
-            return bool(jnp.all(eigvals > 0))
-        if isinstance(x, Constraint):
-            return isinstance(x, SymmetricPositiveDefiniteMatrix)
-        return False
+    def _check_array(self, x: Array) -> bool:
+        if not SymmetricMatrix._check_array(self, x):
+            return False
+        eigvals = jnp.linalg.eigvalsh(x)
+        return bool(jnp.all(eigvals > 0))
+
+    def _check_constraint(self, x: Constraint) -> bool:
+        return isinstance(x, SymmetricPositiveDefiniteMatrix)
+
+
+def _is_orthonormal_columns(x: Array) -> bool:
+    gram = jnp.swapaxes(x, -1, -2) @ x
+    identity = jnp.eye(x.shape[-1], dtype=x.dtype)
+    return bool(jnp.allclose(gram, identity))
 
 
 class Spherical(Constraint):
     """A constraint that checks if a value lies on a unit sphere."""
 
-    def _is_contained(self, x: ConstraintLike) -> bool:
-        if isinstance(x, Array):
-            squared_norm = jnp.sum(x**2, axis=-1)
-            return bool(jnp.allclose(squared_norm, 1.0))
-        if isinstance(x, Constraint):
-            return isinstance(x, Spherical)
-        return False
+    def _check_array(self, x: Array) -> bool:
+        squared_norm = jnp.sum(x**2, axis=-1)
+        return bool(jnp.allclose(squared_norm, 1.0))
+
+    def _check_constraint(self, x: Constraint) -> bool:
+        return isinstance(x, Spherical)
 
 
 class Stiefel(Constraint):
     """A constraint that checks if a value is a Stiefel matrix (orthogonal matrix)."""
 
-    def _is_contained(self, x: ConstraintLike) -> bool:
-        if isinstance(x, Array):
-            gram = jnp.swapaxes(x, -1, -2) @ x
-            identity = jnp.eye(x.shape[-1], dtype=x.dtype)
-            return bool(jnp.allclose(gram, identity))
-        if isinstance(x, Constraint):
-            return isinstance(x, Stiefel)
-        return False
+    def _check_array(self, x: Array) -> bool:
+        return _is_orthonormal_columns(x)
+
+    def _check_constraint(self, x: Constraint) -> bool:
+        return isinstance(x, Stiefel)
 
 
 class Grassmannian(Constraint):
     """A constraint that checks if a value is a Grassmannian matrix (subspace)."""
 
-    def _is_contained(self, x: ConstraintLike) -> bool:
-        if isinstance(x, Array):
-            gram = jnp.swapaxes(x, -1, -2) @ x
-            identity = jnp.eye(x.shape[-1], dtype=x.dtype)
-            return bool(jnp.allclose(gram, identity))
-        if isinstance(x, Constraint):
-            return isinstance(x, Grassmannian)
-        return False
+    def _check_array(self, x: Array) -> bool:
+        return _is_orthonormal_columns(x)
+
+    def _check_constraint(self, x: Constraint) -> bool:
+        return isinstance(x, Grassmannian)
 
 
 class Lorentz(Constraint):
     """A constraint that checks if a value lies on the Lorentz manifold."""
 
-    def _is_contained(self, x: ConstraintLike) -> bool:
-        if isinstance(x, Array):
-            time_component = x[..., 0] ** 2
-            spatial_component = jnp.sum(x[..., 1:] ** 2, axis=-1)
-            return bool(jnp.allclose(time_component - spatial_component, 1.0))
-        if isinstance(x, Constraint):
-            return isinstance(x, Lorentz)
-        return False
+    def _check_array(self, x: Array) -> bool:
+        time_component = x[..., 0] ** 2
+        spatial_component = jnp.sum(x[..., 1:] ** 2, axis=-1)
+        return bool(jnp.allclose(time_component - spatial_component, 1.0))
+
+    def _check_constraint(self, x: Constraint) -> bool:
+        return isinstance(x, Lorentz)
 
 
 # Numerical constraints

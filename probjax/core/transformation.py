@@ -40,6 +40,7 @@ from probjax.core.registry import (
     invalid_inverse_value,
     sum_logdet_terms,
 )
+from probjax.utils.guards import is_array_like
 
 # Live canonical-name table. Each deprecated spelling maps to the canonical
 # name preferred by the probabilistic vocabulary used by ``trace``. Shims read
@@ -378,7 +379,7 @@ def _leaf_signature(leaf):
     if isinstance(leaf, jax.Array):
         return ("array", leaf.shape, leaf.dtype)
     # NumPy arrays or similar
-    if hasattr(leaf, "shape") and hasattr(leaf, "dtype"):
+    if is_array_like(leaf):
         return ("array", tuple(leaf.shape), str(leaf.dtype))
     # Hashable Python objects
     try:

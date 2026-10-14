@@ -7,6 +7,7 @@ from blackjax.smc.base import map_fn
 
 from probjax.inference.filtering.temporal import _observations, run_temporal_filter
 from probjax.inference.filtering.trajectory import sample_paths
+from probjax.utils.guards import is_tracing
 
 
 class JointPathSamples(NamedTuple):
@@ -39,7 +40,7 @@ def sample_joint_paths(
     """
     if num_samples < 1:
         raise ValueError("num_samples must be positive.")
-    if isinstance(state.num_observations, jax.core.Tracer):
+    if is_tracing(state.num_observations):
         raise ValueError("sample_joint_paths must be called outside jit.")
     count = int(state.num_observations)
     ts, observations, observed = _observations(ts, observations, observed)

@@ -14,7 +14,6 @@ are pytree specs, so structured data works like a single flat array.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from numbers import Integral
 from typing import Callable
 
@@ -35,6 +34,7 @@ from probjax.nn.generative.sampling import (
 )
 from probjax.nn.inputs import as_inputs
 from probjax.nn.training import FitMixin, FitResult, is_batch_stream
+from probjax.utils.guards import is_mapping
 from probjax.utils.typing import Array, PyTree, RngKey
 
 __all__ = ["GenerativeModel"]
@@ -57,7 +57,7 @@ def _as_batch(item):
     Every other entry is a named model input (``context``, ``local_context``,
     ``weights``, ...); a bare array or pytree is shorthand for ``{"data": item}``.
     """
-    if isinstance(item, Mapping):
+    if is_mapping(item):
         if "data" not in item:
             raise ValueError(
                 f"a batch dict must have a 'data' key; got keys {sorted(item)}."
@@ -202,7 +202,7 @@ class GenerativeModel(nnx.Module, FitMixin):
         return batch if weights is None else {**batch, "weights": weights}
 
     def _fit_loss(self, rng, batch):
-        if isinstance(batch, dict):
+        if is_mapping(batch):
             extras = {k: v for k, v in batch.items() if k != "data"}
             return self.loss(rng, batch["data"], **extras)
         return self.loss(rng, batch)

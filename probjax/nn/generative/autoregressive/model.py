@@ -24,6 +24,7 @@ from probjax.nn.generative.autoregressive.config import (
 from probjax.nn.generative.base import GenerativeModel
 from probjax.nn.generative.standardize import StandardizingMixin
 from probjax.nn.inputs import context_only
+from probjax.utils.guards import is_tracing
 
 __all__ = [
     "Autoregressive",
@@ -211,7 +212,7 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
     def loss(self, rng, data, *args, context=None, **kwargs):
         """Negative mean joint log-likelihood."""
         del rng, args, kwargs
-        if not isinstance(jnp.asarray(data), jax.core.Tracer):
+        if not is_tracing(jnp.asarray(data)):
             self._check_support(jnp.asarray(data))
         if context is None:
             return -jnp.mean(self._logpdf(data))

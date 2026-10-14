@@ -14,12 +14,12 @@ from typing import Any, ClassVar, Mapping, Optional, Tuple, cast
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax.flatten_util import ravel_pytree
 from jax.scipy.optimize import minimize
 
 import probjax.stats.constraints as stats_constraints
 from probjax.stats.constraint_registry import biject_to
+from probjax.utils.guards import is_array_like
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = [
@@ -60,6 +60,28 @@ class DistributionParams:
 
     def constrain(self) -> "rv_frozen":
         return self.dist.from_params(self.dist.params_from_unconstrained(self.params))
+
+
+def _is_frozen_dist(component: Any) -> bool:
+    """PyTree leaf predicate: a frozen distribution instance."""
+    # Deferred reference: ``rv_frozen`` is defined below.
+    return isinstance(component, _RV_FROZEN_TYPES)
+
+
+def _is_distribution_params(component: Any) -> bool:
+    """PyTree leaf predicate: unconstrained distribution parameters."""
+    return isinstance(component, DistributionParams)
+
+
+def _frozen_to_unconstrained(component: Any) -> DistributionParams:
+    return DistributionParams(component.dist, component.unconstrained_params)
+
+
+def _unconstrained_to_frozen(component: DistributionParams) -> Any:
+    return component.constrain()
+
+
+_RV_FROZEN_TYPES: tuple = ()
 
 
 def _rv_bind(rng, args, shape, dist, name, rvs_fn, logpdf_fn, kwds):
@@ -219,19 +241,15 @@ class rv_generic(ABC):
             if isinstance(constraint, stats_constraints.Distribution):
                 if to_unconstrained:
                     converted[name] = jax.tree_util.tree_map(
-                        lambda component: DistributionParams(
-                            component.dist, component.unconstrained_params
-                        ),
+                        _frozen_to_unconstrained,
                         value,
-                        is_leaf=lambda component: isinstance(component, rv_frozen),
+                        is_leaf=_is_frozen_dist,
                     )
                 else:
                     converted[name] = jax.tree_util.tree_map(
-                        lambda component: component.constrain(),
+                        _unconstrained_to_frozen,
                         value,
-                        is_leaf=lambda component: isinstance(
-                            component, DistributionParams
-                        ),
+                        is_leaf=_is_distribution_params,
                     )
                 continue
             if not isinstance(constraint, stats_constraints.Constraint):
@@ -1113,12 +1131,12 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
 
         # Check args for shapes
         for arg in args:
-            if isinstance(arg, (jnp.ndarray, np.ndarray)):
+            if is_array_like(arg):
                 batch_shapes.append(arg.shape)
 
         # Check kwargs for shapes
         for v in kwds.values():
-            if isinstance(v, (jnp.ndarray, np.ndarray)):
+            if is_array_like(v):
                 batch_shapes.append(v.shape)
 
         if len(batch_shapes) > num_params:
@@ -1169,7 +1187,7 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
     def _format_arg(self, arg):
         """Format argument for string representation, showing shapes for arrays."""
         # Check if arg is a JAX array
-        if isinstance(arg, (jnp.ndarray, np.ndarray)):
+        if is_array_like(arg):
             return f"array(shape={arg.shape}, dtype={arg.dtype})"
         # For other types, just use normal string representation
         return str(arg)
@@ -1532,3 +1550,5 @@ jax.tree_util.register_pytree_node_class(rv_continuous_frozen)
 jax.tree_util.register_pytree_node_class(rv_multivariate_frozen)
 jax.tree_util.register_pytree_node_class(rv_spherical_frozen)
 jax.tree_util.register_pytree_node_class(rv_discrete_frozen)
+
+_RV_FROZEN_TYPES = (rv_frozen,)

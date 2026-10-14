@@ -19,7 +19,13 @@ from flax.jax_utils import prefetch_to_device
 from jax.experimental import multihost_utils
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
-from probjax.utils.typing import Device, RngKey, PyTree, Array
+from probjax.utils.guards import ensure_tuple, normalize_devices, normalize_rng
+from probjax.utils.typing import Array, Device, PyTree, RngKey
+
+
+def _normalize_chunk_shape(chunk_shape: Union[int, Sequence[int]]) -> tuple:
+    """Shared ``chunkify``/``unchunkify`` chunk-shape validation."""
+    return ensure_tuple("chunk_shape", chunk_shape, positive=True)
 
 
 # ------------------------- small helpers ----------------------------- #
@@ -235,16 +241,7 @@ def chunkify(
     """
 
     x = jnp.asarray(x)
-    if isinstance(chunk_shape, int):
-        if chunk_shape <= 0:
-            raise ValueError("chunk_shape must be positive.")
-        chunk_shape = (chunk_shape,)
-    else:
-        chunk_shape = tuple(int(cs) for cs in chunk_shape)
-        if not chunk_shape:
-            raise ValueError("chunk_shape must be non-empty.")
-        if any(cs <= 0 for cs in chunk_shape):
-            raise ValueError("All entries in chunk_shape must be positive.")
+    chunk_shape = _normalize_chunk_shape(chunk_shape)
 
     spatial_ndim = len(chunk_shape)
 
@@ -356,16 +353,7 @@ def unchunkify(
     """
 
     tokens = jnp.asarray(tokens)
-    if isinstance(chunk_shape, int):
-        if chunk_shape <= 0:
-            raise ValueError("chunk_shape must be positive.")
-        chunk_shape = (chunk_shape,)
-    else:
-        chunk_shape = tuple(int(cs) for cs in chunk_shape)
-        if not chunk_shape:
-            raise ValueError("chunk_shape must be non-empty.")
-        if any(cs <= 0 for cs in chunk_shape):
-            raise ValueError("All entries in chunk_shape must be positive.")
+    chunk_shape = _normalize_chunk_shape(chunk_shape)
 
     spatial_shape = tuple(int(s) for s in spatial_shape)
     if any(s <= 0 for s in spatial_shape):
@@ -475,17 +463,7 @@ class SimulationDataset:
         jit_simulator: bool = True,
         buffer_size: int = 8192,
     ) -> None:
-        if simulation_devices is None:
-            try:
-                cpu_devices = jax.devices("cpu")
-            except Exception:
-                cpu_devices = []
-            simulation_devices = cpu_devices[0] if cpu_devices else jax.devices()[0]
-
-        if isinstance(simulation_devices, (list, tuple)):
-            self._simulation_devices = list(simulation_devices)
-        else:
-            self._simulation_devices = [simulation_devices]
+        self._simulation_devices = normalize_devices(simulation_devices)
 
         self._n_sim_devices = len(self._simulation_devices)
         self._simulation_device = self._simulation_devices[0]
@@ -508,8 +486,8 @@ class SimulationDataset:
         self._buffer_batches = max(1, math.ceil(int(buffer_size) / self._batch_size))
         self._dataset_size = self._buffer_batches * self._batch_size
 
-        self._initial_rng = rng
-        self._sim_rng = jax.random.PRNGKey(0) if isinstance(rng, int) else rng
+        self._initial_rng = normalize_rng(rng)
+        self._sim_rng = self._initial_rng
         # Keep RNG state on the simulation device so split/dispatch follows it.
         self._sim_rng = self._pin_sim_key(self._sim_rng)
 
@@ -582,9 +560,9 @@ class SimulationDataset:
         if rng is None:
             rng = self._initial_rng if seed is None else jax.random.PRNGKey(int(seed))
         else:
-            rng = jax.random.PRNGKey(int(rng)) if isinstance(rng, int) else rng
-        self._initial_rng = rng
-        self._sim_rng = jax.random.PRNGKey(0) if isinstance(rng, int) else rng
+            rng = normalize_rng(rng)
+        self._initial_rng = normalize_rng(rng)
+        self._sim_rng = self._initial_rng
         self._sim_rng = self._pin_sim_key(self._sim_rng)
         self._stop_producer()
         with self._lock:

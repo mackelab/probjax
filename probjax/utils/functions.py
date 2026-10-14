@@ -27,13 +27,14 @@ from typing import Any, Callable, Optional, Union
 import jax
 import jax.numpy as jnp
 
+from probjax.utils.guards import call_if_callable, is_array_like
 from probjax.utils.jaxutils import ravel_args
 from probjax.utils.typing import Array, ArrayLike, PyTree
 
 
 def _is_array_like(v: Any) -> bool:
     """Duck-type check: is ``v`` an array-like JAX value (including tracers)?"""
-    return hasattr(v, "shape") and hasattr(v, "dtype")
+    return is_array_like(v)
 
 
 def wrap_if_plain_callable(fn: Callable) -> Callable:
@@ -354,7 +355,7 @@ class linear_drift(Drift):
 
     def __call__(self, t: ArrayLike, y: PyTree, *args: Any) -> PyTree:
 
-        A_t = self.A(t) if callable(self.A) else self.A
+        A_t = call_if_callable(self.A, t)
 
         A_concrete = jnp.asarray(A_t)
         if A_concrete.ndim == 0:
