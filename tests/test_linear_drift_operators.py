@@ -208,6 +208,12 @@ def test_linear_exact_sde_matches_moments_with_full_noise():
     # Empirical mean/covariance over keys match the exact flow and Van Loan Q.
     from probjax.utils.odeutil.solvers.linear_exact import affine_flow
 
+    # Hermetic against executables compiled by earlier tests: on JAX 0.9.x a
+    # jitted float32 scalar-times-matrix (e.g. from a time-dependent drift
+    # above) can poison the cache for the float64 vmapped solve below
+    # (fixed upstream by 0.11; CI runs latest).
+    jax.clear_caches()
+
     with jax.enable_x64():
         dt = 0.3
         G = np.array([[0.5, 0.1], [0.0, 0.4]])
