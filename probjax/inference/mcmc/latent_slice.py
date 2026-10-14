@@ -3,6 +3,7 @@ from typing import Callable, NamedTuple
 import jax
 import jax.numpy as jnp
 
+from probjax.inference.mcmc.adaptation import slice_step_size_adaptor
 from probjax.inference.mcmc.base import make_kernel_api, make_step_from_kernel
 from probjax.utils.typing import Array, PyTree, RngKey
 
@@ -86,8 +87,6 @@ def _latent_slice_adaptation(
     *, target_num_evaluations=5, max_evaluations=100, **kwargs
 ):
     """Default adaptation; ``max_evaluations`` must match the kernel's ``max_evals``."""
-    from probjax.inference.mcmc.adaptation import slice_step_size_adaptor
-
     return slice_step_size_adaptor(target_num_evaluations, max_evaluations, **kwargs)
 
 

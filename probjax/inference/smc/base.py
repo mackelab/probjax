@@ -36,7 +36,7 @@ class SMCKernelAPI(metaclass=API):
             cls.init,
             logprior_fn=logprior_fn,
             loglikelihood_fn=loglikelihood_fn,
-            **_filter_kwargs(cls.init, kwargs, allow_kwargs=False),
+            **filter_kwargs(cls.init, kwargs, allow_kwargs=False),
         )
         init_params = partial(
             cls.init_params, logprior_fn=logprior_fn, loglikelihood_fn=loglikelihood_fn
@@ -45,7 +45,7 @@ class SMCKernelAPI(metaclass=API):
         return SMCKernel(init, step, init_params)
 
 
-def _filter_kwargs(
+def filter_kwargs(
     fn: Callable, kwargs: Dict[str, ArrayLike], *, allow_kwargs: bool = True
 ) -> Dict[str, ArrayLike]:
     sig = inspect.signature(fn)
@@ -108,13 +108,11 @@ def make_mcmc_adapter(mcmc_kernel, **kernel_kwargs):
         raise TypeError("mcmc_kernel must be a probjax MCMC API (not an instance).")
 
     def mcmc_init_fn(position, logdensity_fn, rng_key: Optional[RngKey] = None):
-        init_kwargs = _filter_kwargs(
-            mcmc_kernel.init, kernel_kwargs, allow_kwargs=False
-        )
+        init_kwargs = filter_kwargs(mcmc_kernel.init, kernel_kwargs, allow_kwargs=False)
         return mcmc_kernel.init(position, logdensity_fn, rng_key=rng_key, **init_kwargs)
 
     def mcmc_step_fn(rng_key, state, logdensity_fn, **step_parameters):
-        build_kwargs = _filter_kwargs(mcmc_kernel.build_step, kernel_kwargs)
+        build_kwargs = filter_kwargs(mcmc_kernel.build_step, kernel_kwargs)
         step = mcmc_kernel.build_step(logdensity_fn, **build_kwargs)
         return step(rng_key, state, _wrap_params(step_parameters))
 
@@ -142,7 +140,7 @@ def init_mcmc_params_from_logdensity(
     mcmc_init_fn, _ = make_mcmc_adapter(mcmc_kernel, **mcmc_kernel_kwargs)
     particle0 = jax.tree_util.tree_map(lambda x: x[0], particles)
     mcmc_state = mcmc_init_fn(particle0, logdensity_fn, rng_key=rng_key)
-    init_param_kwargs = _filter_kwargs(
+    init_param_kwargs = filter_kwargs(
         mcmc_kernel.init_params, mcmc_param_kwargs, allow_kwargs=allow_kwargs
     )
     params = mcmc_kernel.init_params(mcmc_state, **init_param_kwargs)

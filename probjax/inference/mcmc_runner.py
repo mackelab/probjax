@@ -12,13 +12,17 @@ from probjax.inference.base import (
     Warmup,
     WarmupResult,
 )
-from probjax.inference.mcmc.base import MarkovKernel, Params, State
+from probjax.inference.mcmc.base import (
+    MarkovKernel,
+    Params,
+    State,
+    _mcmc_collect_body,
+    _reshape_thin_args,
+    _select,
+    sample_kernel,
+)
 from probjax.utils.jaxutils import WithProgressBarAPI
 from probjax.utils.typing import RngKey
-
-
-def _select(value, fields):
-    return {field: getattr(value, field) for field in fields}
 
 
 def _mcmc_run_body(kernel, params, args, collect_state, collect_info, stats_fn=None):
@@ -43,44 +47,6 @@ def _mcmc_run_body(kernel, params, args, collect_state, collect_info, stats_fn=N
         return state, (stats_fn(state, info), *selects)
 
     return one_step
-
-
-def _reshape_thin_args(args, num_samples, thin):
-    """Reshape leading axes of ``args`` to ``(num_samples, thin, ...)``."""
-    if args is None:
-        return None
-    return jax.tree.map(
-        lambda value: value.reshape((num_samples, thin) + value.shape[1:]),
-        args,
-    )
-
-
-def _mcmc_collect_body(kernel, params, step_args, collect_info, stats_fn=None):
-    """Two-level scan body shared by silent and verbose ``sample``."""
-
-    def transition(state, inner_xs):
-        if step_args is None:
-            step_key, current_args = inner_xs, ()
-        else:
-            step_key, current_args = inner_xs
-        state, info = kernel(step_key, state, params, *current_args)
-        return state, (info, _select(info, collect_info))
-
-    def collect_one(state, xs):
-        if step_args is None:
-            sample_keys, sample_args = xs, None
-        else:
-            sample_keys, sample_args = xs
-        inner_xs = sample_keys if sample_args is None else (sample_keys, sample_args)
-
-        state, (step_info, selected_info) = jax.lax.scan(transition, state, inner_xs)
-        diagnostics = jax.tree.map(lambda value: value[-1], selected_info)
-        if stats_fn is None:
-            return state, (state.position, diagnostics)
-        last_info = jax.tree.map(lambda value: value[-1], step_info)
-        return state, (stats_fn(state, last_info), state.position, diagnostics)
-
-    return collect_one
 
 
 class MCMC(WithProgressBarAPI, RunnerMixin):
@@ -141,36 +107,8 @@ class MCMC(WithProgressBarAPI, RunnerMixin):
         diagnostics = info if collect_info else None
         return MCMCResult(state, trace, diagnostics)
 
-    @staticmethod
-    @partial(
-        jax.jit,
-        static_argnames=(
-            "kernel",
-            "num_samples",
-            "thin",
-            "collect_info",
-        ),
-    )
-    def sample_kernel(
-        key: RngKey,
-        kernel: MarkovKernel,
-        state: State,
-        num_samples: int,
-        params: Params,
-        args: Optional[Tuple] = None,
-        *,
-        thin: int = 1,
-        collect_info: Tuple[str, ...] = (),
-    ) -> MCMCResult:
-        """Collect positions from a compiled kernel scan."""
-        keys = jax.random.split(key, (num_samples, thin))
-        step_args = _reshape_thin_args(args, num_samples, thin)
-        xs = keys if step_args is None else (keys, step_args)
-
-        collect_one = _mcmc_collect_body(kernel, params, step_args, collect_info)
-
-        state, (samples, info) = jax.lax.scan(collect_one, state, xs)
-        return MCMCResult(state, samples, info if collect_info else None)
+    # Re-exposed from mcmc.base so kernels can sample without importing the runner.
+    sample_kernel = staticmethod(sample_kernel)
 
     adaptor_warmup = staticmethod(adaptor_warmup)
     adapt_step = staticmethod(adapt_step)
@@ -298,8 +236,7 @@ class MCMC(WithProgressBarAPI, RunnerMixin):
         if isinstance(policy, Warmup):
             return policy
         raise TypeError(
-            "adaptation must be an Adaptor or a Warmup, "
-            f"got {type(policy).__name__}."
+            f"adaptation must be an Adaptor or a Warmup, got {type(policy).__name__}."
         )
 
     @staticmethod
@@ -345,8 +282,7 @@ class MCMC(WithProgressBarAPI, RunnerMixin):
             adaptation = default(**adaptation_kwargs)
         elif adaptation_kwargs:
             raise ValueError(
-                "adaptation_kwargs need adaptation=None "
-                "(they configure the default)."
+                "adaptation_kwargs need adaptation=None (they configure the default)."
             )
         return self.warmup_kernel(
             key, self.kernel, adaptation, state, params, num_steps

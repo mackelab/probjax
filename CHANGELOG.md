@@ -87,6 +87,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `filtering.kalman_filter.{default_solve, default_logdet, _innovation_ll}`.
   `filtering` and `smc` package roots are now lazy (PEP 562) with unchanged
   symbol surfaces
+- **Breaking:** inference helper renames (no aliases): `smc.base._filter_kwargs`
+  is now `filter_kwargs`; `hmc._init_hmc_like_params`/`_scale_step_size_by_grad`
+  are now `mcmc.base.init_hmc_like_params`/`scale_step_size_by_grad`; the
+  compiled `MCMC.sample_kernel` scan now lives in `mcmc.base.sample_kernel`
+  (re-exposed on the runner unchanged), so kernels no longer import the runner
 - **Breaking:** `LinearOperator(fn, in_dim, out_dim)` is now
   `Function(fn, in_shape)`, `LinearOperator.from_array` is `Dense`, `.operator`
   is `.mv`, operators scale by scalars only, and `solve`/`logdet` take

@@ -11,7 +11,7 @@ from flax import nnx
 from probjax.inference.adaptation import compose_adaptors
 from probjax.inference.base import Kernel, Warmup, WarmupResult
 from probjax.inference.mcmc.adaptation import covariance_adaptor, mean_adaptor
-from probjax.inference.mcmc.base import make_kernel_api
+from probjax.inference.mcmc.base import make_kernel_api, sample_kernel
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 
@@ -247,8 +247,6 @@ def neural_imh_warmup(
         fit_optimizer = optax.adam(learning_rate)
 
     def run(key, kernel, state, params, num_steps):
-        from probjax.inference.mcmc_runner import MCMC
-
         if not isinstance(params, NeuralIMHParams):
             raise TypeError("neural_imh_warmup requires a neural_imh kernel.")
         if num_steps < num_adaptations:
@@ -274,7 +272,7 @@ def neural_imh_warmup(
                 if rao_blackwellize
                 else ("acceptance_rate",)
             )
-            result = MCMC.sample_kernel(
+            result = sample_kernel(
                 sample_key,
                 kernel,
                 state,
