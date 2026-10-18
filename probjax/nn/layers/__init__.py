@@ -29,6 +29,8 @@ from probjax.nn.layers.fuse import (
     ContextFuse,
     GatedFuse,
 )
+from probjax.nn.layers.latent_attention import MultiHeadLatentAttention
+from probjax.nn.layers.lowrank import LowRankLinear
 from probjax.nn.layers.masked import MaskedLinear
 from probjax.nn.layers.moe import (
     ExpertSwiGLU,
