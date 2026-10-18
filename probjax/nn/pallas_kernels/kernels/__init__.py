@@ -13,6 +13,7 @@ from .kernel_mv import (
     rbf_kernel_mv,
     rbf_kernel_mv_naive,
 )
+from .latent_attention import mla
 from .linear_attention import (
     FeatureMap,
     residual_linear_attention,
@@ -40,6 +41,7 @@ __all__ = [
     "kernel_mv_naive",
     "mha",
     "mha_flash",
+    "mla",
     "rbf_kde_density",
     "rbf_kernel_mv",
     "rbf_kernel_mv_naive",

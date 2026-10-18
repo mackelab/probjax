@@ -1089,8 +1089,10 @@ def mha_backward_kernel(
             qk *= sm_scale
         qk_pre_mod = qk
 
+        # Needed by the mask/bias path AND by counter-based dropout below, so
+        # it must be defined unconditionally.
+        span_k = start_k * block_kv_dq + jnp.arange(block_kv_dq)
         if (bias_fn is not None) or (mask_fn is not None) or (b_ref is not None):
-            span_k = start_k * block_kv_dq + jnp.arange(block_kv_dq)
             # boolean mask for the current qk slice
             if bias_fn is not None:
                 b_chunk = (
