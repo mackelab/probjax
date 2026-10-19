@@ -54,6 +54,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 from flax.nnx import rnglib
+from flax.nnx.module import first_from
 
 from probjax.nn.layers.attention import _build_q_scale, flex_attention
 from probjax.nn.layers.lowrank import LowRankLinear
@@ -176,6 +177,13 @@ class MultiHeadLatentAttention(nnx.Module):
             :class:`~probjax.nn.layers.attention.QASSMaxQueryScale` or
             ``SSMaxQueryScale``), built as in :class:`MultiHeadAttention` and fed
             ``kv_len``.
+        dropout_rate: attention dropout probability; must be in ``[0, 1)``.
+        deterministic: whether to disable dropout.  When ``dropout_rate > 0``
+            this must be set either here, at the call, or via an ``nnx.flag``
+            (as in :class:`MultiHeadAttention`); a silent default is refused.
+        keep_rngs: keep a dropout stream for calls that do not thread a key, so
+            ``layer(x)`` works in training mode as with
+            :class:`MultiHeadAttention`.
     """
 
     def __init__(
@@ -201,6 +209,7 @@ class MultiHeadLatentAttention(nnx.Module):
         query_scale_cls: ModuleLikeType | None = None,
         dropout_rate: float = 0.0,
         deterministic: bool | None = None,
+        keep_rngs: bool = True,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike = jnp.float32,
         precision: PrecisionLike | None = None,
@@ -210,6 +219,12 @@ class MultiHeadLatentAttention(nnx.Module):
             raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
         if num_heads <= 0 or kv_lora_rank <= 0:
             raise ValueError("num_heads and kv_lora_rank must be positive")
+        if not 0.0 <= dropout_rate < 1.0:
+            raise ValueError(
+                f"dropout_rate must be in [0, 1), got {dropout_rate}; "
+                "a rate of 1 or more zeroes the output and a negative rate "
+                "biases it"
+            )
         if not value_projection and mode != "absorbed":
             raise ValueError(
                 "value_projection=False is only supported in absorbed mode "
@@ -387,6 +402,12 @@ class MultiHeadLatentAttention(nnx.Module):
             dtype=dtype,
             param_dtype=param_dtype,
             precision=precision,
+        )
+
+        # Keep a dropout stream so training can call ``layer(x)`` without
+        # threading a key, exactly as ``MultiHeadAttention`` does.
+        self.rngs = (
+            rngs.dropout.fork() if keep_rngs and self.dropout_rate > 0.0 else None
         )
 
     # ------------------------------------------------------------------
@@ -578,16 +599,28 @@ class MultiHeadLatentAttention(nnx.Module):
         if self.dropout_rate == 0.0:
             deterministic = True
         else:
-            if deterministic is None:
-                deterministic = self.deterministic
+            deterministic = first_from(
+                deterministic,
+                self.deterministic,
+                error_msg=(
+                    "No `deterministic` argument was provided to "
+                    "MultiHeadLatentAttention as either a __call__ argument, "
+                    "class attribute, or nnx.flag."
+                ),
+            )
             if not deterministic:
                 stream = rngs.dropout if isinstance(rngs, rnglib.Rngs) else rngs
                 if rng is not None:
                     dropout_rng = rng
                 elif stream is not None:
                     dropout_rng = stream()
+                elif self.rngs is not None:
+                    dropout_rng = self.rngs()
                 else:
-                    raise ValueError("rng or rngs required when dropout is enabled")
+                    raise ValueError(
+                        "'rng'/'rngs' must be provided to __call__, or the layer "
+                        "built with keep_rngs=True, when dropout is enabled"
+                    )
 
         if self.use_kernel:
             # Fused path: the kernel forms K/V from the latent in SRAM, so the
