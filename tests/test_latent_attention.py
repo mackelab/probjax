@@ -787,6 +787,37 @@ def test_layer_folded_heads_falls_back_with_mask():
     assert jnp.allclose(folded(x, mask=mask), unfolded(x, mask=mask), atol=1e-5)
 
 
+@pytest.mark.parametrize("seq", [48, 32])
+def test_layer_folded_kernel_handles_non_tiling_query_length(seq):
+    """Folding multiplies Q by H; the kernel needs that to tile block_q.
+
+    With Q=48 and H=4 the folded length is 192, which does not tile the default
+    block_q=128, so the layer must fall back to the unfolded kernel instead of
+    raising. The fallback must still match the unfolded layer exactly.
+    """
+    folded = MultiHeadLatentAttention(
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        fold_heads=True,
+        use_kernel=True,
+        rngs=nnx.Rngs(0),
+    )
+    unfolded = MultiHeadLatentAttention(
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        fold_heads=False,
+        use_kernel=True,
+        rngs=nnx.Rngs(1),
+    )
+    nnx.update(unfolded, nnx.state(folded))
+    x = jax.random.normal(jax.random.key(1), (2, seq, 32))
+    out = folded(x)  # must not raise
+    assert out.shape == x.shape
+    assert jnp.allclose(out, unfolded(x), atol=1e-4)
+
+
 # ---------------------------------------------------------------------------
 # No value projection (absorbed): attended latent maps straight to out
 # ---------------------------------------------------------------------------
@@ -839,6 +870,20 @@ def test_layer_value_projection_requires_absorbed_mode():
             kv_lora_rank=16,
             mode="materialized",
             qk_head_dim=8,
+            v_head_dim=8,
+            value_projection=False,
+            rngs=nnx.Rngs(0),
+        )
+
+
+def test_layer_without_value_projection_rejects_mismatched_v_head_dim():
+    """Without wv the output stays kv_lora_rank-wide; a different v_head_dim
+    cannot be honoured, so it must raise at construction (not reshape at run)."""
+    with pytest.raises(ValueError, match="v_head_dim must equal"):
+        MultiHeadLatentAttention(
+            num_heads=4,
+            in_features=32,
+            kv_lora_rank=16,
             v_head_dim=8,
             value_projection=False,
             rngs=nnx.Rngs(0),

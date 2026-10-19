@@ -148,8 +148,11 @@ class MultiHeadLatentAttention(nnx.Module):
         fold_heads: in ``absorbed`` mode (and when no mask/bias is given), fold
             the heads into the query axis so the shared cache is read as a single
             head -- neither training nor inference broadcasts ``K``/``V`` over
-            heads.  The folded and unfolded forms are numerically identical;
-            masks/biases use the unfolded form.
+            heads.  The folded and unfolded forms agree exactly without dropout;
+            with dropout the attention mask is indexed over ``[Q*H, 1, S]``
+            instead of ``[Q, H, S]``, so the outputs are equivalent in
+            distribution but not elementwise.  Masks/biases use the unfolded
+            form.
         value_projection: in ``absorbed`` mode, apply ``wv`` to the attention
             output.  Set ``False`` to drop ``wv`` entirely so the attended latent
             maps straight through the shared ``out`` projection (stricter cache
@@ -242,6 +245,16 @@ class MultiHeadLatentAttention(nnx.Module):
             if v_head_dim is not None
             else (self.qk_head_dim if mode == "materialized" else self.kv_lora_rank)
         )
+        if not self.value_projection and self.v_head_dim != self.kv_lora_rank:
+            # Without ``wv`` the attended latent stays ``kv_lora_rank``-wide, so
+            # ``out`` reads ``num_heads * kv_lora_rank``; a different v_head_dim
+            # cannot be honoured.  Same contract as absorbed ``qk_head_dim``.
+            raise ValueError(
+                "value_projection=False leaves the attention output at "
+                f"kv_lora_rank={self.kv_lora_rank}, so v_head_dim must equal it; "
+                f"got v_head_dim={self.v_head_dim}.  Keep the value projection to "
+                "use a different v_head_dim"
+            )
 
         # --- shared latent cache encoder: C = f_KV(inputs_kv) ---------------
         # A bank shared across layers is encoded once; the following layers set
@@ -278,7 +291,6 @@ class MultiHeadLatentAttention(nnx.Module):
                     "q_projection_cls requires q_lora_rank (there is no factor to "
                     "project through); pass q_lora_rank or drop q_projection_cls"
                 )
-            self.wq: Any = None
             self.q_projection: Any = _linear(
                 self.in_features,
                 query_out,
@@ -288,7 +300,6 @@ class MultiHeadLatentAttention(nnx.Module):
                 precision=precision,
             )
         else:
-            self.wq = None
             projection_cls = q_projection_cls or LowRankLinear
             self.q_projection = projection_cls(
                 self.in_features,
@@ -573,6 +584,14 @@ class MultiHeadLatentAttention(nnx.Module):
             # them into the batch axis here and restore the shape afterwards.
             absorbed = self.mode == "absorbed"
             fold_kernel = absorbed and self.fold_heads and mask is None and bias is None
+            if fold_kernel:
+                # Folding multiplies the query length by the head count, and the
+                # kernel requires that length to tile ``block_q``.  Fold only when
+                # it does; otherwise fall back to the unfolded (identical) form,
+                # which tiles per-token as usual.
+                folded_q = query.shape[-3] * self.num_heads
+                block_q = min(self.block_sizes.block_q, folded_q)
+                fold_kernel = folded_q % block_q == 0
             if fold_kernel:
                 # Fold heads into the query axis so the kernel's cache is read
                 # once as a single shared head (no per-head broadcast).
