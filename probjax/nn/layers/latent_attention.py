@@ -386,7 +386,7 @@ class MultiHeadLatentAttention(nnx.Module):
         if self.wkv_a is None:
             raise RuntimeError(
                 "encode_latent is unavailable when kv_encoder=False; this layer "
-                "expects a precomputed bank passed as the `latent` argument."
+                "expects a precomputed bank passed as its `inputs_kv` argument."
             )
         latent = self.wkv_a(inputs_kv)
         if self.latent_norm is not None:
