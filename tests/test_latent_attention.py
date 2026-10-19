@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import pytest
 from flax import nnx
 
+from probjax.nn.layers.attention import QASSMaxQueryScale
 from probjax.nn.layers.latent_attention import MultiHeadLatentAttention
 from probjax.nn.layers.lowrank import LowRankLinear
 from probjax.nn.pallas_kernels import (
@@ -621,12 +622,300 @@ def test_layer_kernel_accepts_bias_like_flex():
     assert jnp.allclose(dense(x, bias=bias), fused(x, bias=bias), atol=1e-4)
 
 
-def test_layer_kv_len_raises():
-    """kv_len has no effect here; passing it must not be silently ignored."""
+def test_layer_kv_len_is_accepted_without_query_scale():
+    """kv_len is now consumed by the optional query-scale module.
+
+    With no query-scale module it is a no-op (it must not raise), so layers can
+    be called uniformly whether or not they scale queries.
+    """
     layer = _layer(use_kernel=True, block_sizes=_block_sizes(32))
     x = jax.random.normal(jax.random.key(1), (2, 32, 32))
-    with pytest.raises(NotImplementedError, match="kv_len"):
-        layer(x, kv_len=32)
+    assert jnp.allclose(layer(x, kv_len=32), layer(x), atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Bank sharing: one encoder, several consuming layers
+# ---------------------------------------------------------------------------
+
+
+def _absorbed_layer(kv_encoder=True, seed=0, **kwargs):
+    return MultiHeadLatentAttention(
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        kv_encoder=kv_encoder,
+        rngs=nnx.Rngs(seed),
+        **kwargs,
+    )
+
+
+def _copy_shared_params(dst, src):
+    """Copy only the parameters the two layers share.
+
+    A ``kv_encoder=False`` layer has no ``wkv_a``/``latent_norm``, so a plain
+    ``nnx.update`` would try to set those (None) subtrees and fail.
+    """
+    src_state = nnx.state(src)
+    dst_state = nnx.state(dst)
+    shared = {k: v for k, v in src_state.items() if k in dst_state}
+    nnx.update(dst, shared)
+
+
+def _absorbed_reference(layer, x, latent=None, num_heads=4):
+    """Plain softmax attention over the shared latent (K = V = C)."""
+    lat = layer.encode_latent(x) if latent is None else latent
+    q = layer._project_queries(x)
+    rank = lat.shape[-1]
+    kv = jnp.broadcast_to(lat[..., None, :], lat.shape[:-1] + (num_heads, rank))
+    logits = jnp.einsum("bqhd,bkhd->bhqk", q, kv) / math.sqrt(q.shape[-1])
+    attn = jnp.einsum("bhqk,bkhd->bqhd", jax.nn.softmax(logits, -1), kv)
+    return layer._out_from_attention(attn)
+
+
+def test_layer_consumer_has_no_encoder_params():
+    layer = _absorbed_layer(kv_encoder=False)
+    assert layer.wkv_a is None
+    assert layer.latent_norm is None
+    with pytest.raises(RuntimeError, match="kv_encoder=False"):
+        layer.encode_latent(jax.random.normal(jax.random.key(0), (2, 5, 32)))
+
+
+def test_layer_shared_bank_matches_encoding_layer():
+    """A consumer fed a precomputed bank equals one that encodes it itself."""
+    encoder = _absorbed_layer()
+    consumer = _absorbed_layer(kv_encoder=False)
+    _copy_shared_params(consumer, encoder)  # same q/out weights
+
+    x = jax.random.normal(jax.random.key(1), (2, 5, 32))
+    latent = encoder.encode_latent(x)
+    out = consumer(x, latent)
+    assert jnp.allclose(out, _absorbed_reference(encoder, x), atol=1e-5)
+    assert jnp.allclose(out, encoder(x), atol=1e-5)
+
+
+def test_layer_consumer_rejects_wrong_bank_width():
+    layer = _absorbed_layer(kv_encoder=False)
+    x = jax.random.normal(jax.random.key(1), (2, 5, 32))
+    with pytest.raises(ValueError, match="latent dimension"):
+        layer(x, jax.random.normal(jax.random.key(2), (2, 5, 8)))
+
+
+def test_two_layers_share_one_bank():
+    """The point of sharing: encode once, attend from two distinct layers."""
+    encoder = _absorbed_layer()
+    layer_a = _absorbed_layer(kv_encoder=False, seed=1)
+    layer_b = _absorbed_layer(kv_encoder=False, seed=2)
+    x = jax.random.normal(jax.random.key(1), (2, 5, 32))
+    latent = encoder.encode_latent(x)
+
+    out_a = layer_a(x, latent)
+    out_b = layer_b(x, latent)
+    assert out_a.shape == x.shape and out_b.shape == x.shape
+    assert jnp.isfinite(out_a).all() and jnp.isfinite(out_b).all()
+    # Distinct layers must produce distinct outputs from the same bank.
+    assert not jnp.allclose(out_a, out_b)
+
+
+# ---------------------------------------------------------------------------
+# Head folding: folded and unfolded absorbed forms are identical
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("use_kernel", [False, True])
+def test_layer_folded_heads_match_unfolded(use_kernel):
+    """Folding heads into the query axis must not change the result."""
+    kwargs = dict(
+        block_sizes=_block_sizes(32),
+        use_kernel=use_kernel,
+    )
+    folded = MultiHeadLatentAttention(
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        fold_heads=True,
+        rngs=nnx.Rngs(0),
+        **kwargs,
+    )
+    unfolded = MultiHeadLatentAttention(
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        fold_heads=False,
+        rngs=nnx.Rngs(1),
+        **kwargs,
+    )
+    nnx.update(unfolded, nnx.state(folded))
+    x = jax.random.normal(jax.random.key(1), (2, 32, 32))
+    assert jnp.allclose(folded(x), unfolded(x), atol=1e-5)
+
+    g_fold = nnx.grad(lambda m, z: m(z).sum(), argnums=1)(folded, x)
+    g_unfold = nnx.grad(lambda m, z: m(z).sum(), argnums=1)(unfolded, x)
+    assert jnp.allclose(g_fold, g_unfold, atol=1e-5)
+
+
+def test_layer_folded_heads_pack_roundtrip():
+    """_pack_heads / _unpack_heads are exact inverses in the documented order."""
+    layer = _absorbed_layer()
+    q = jax.random.normal(jax.random.key(0), (2, 5, 4, 16))
+    packed = layer._pack_heads(q)
+    assert packed.shape == (2, 20, 16)
+    # head-major within a token: packed[i*H + h] == q[i, h]
+    assert jnp.allclose(packed[0, 2 * 4 + 3], q[0, 2, 3])
+    restored = layer._unpack_heads(packed, 5)
+    assert jnp.allclose(restored, q)
+
+
+def test_layer_folded_heads_falls_back_with_mask():
+    """Masks live in token space, so they force the unfolded form (same answer)."""
+    folded = MultiHeadLatentAttention(
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        fold_heads=True,
+        rngs=nnx.Rngs(0),
+    )
+    unfolded = MultiHeadLatentAttention(
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        fold_heads=False,
+        rngs=nnx.Rngs(1),
+    )
+    nnx.update(unfolded, nnx.state(folded))
+    x = jax.random.normal(jax.random.key(1), (2, 5, 32))
+    mask = CausalMask()
+    assert jnp.allclose(folded(x, mask=mask), unfolded(x, mask=mask), atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# No value projection (absorbed): attended latent maps straight to out
+# ---------------------------------------------------------------------------
+
+
+def test_layer_without_value_projection_matches_reference():
+    layer = MultiHeadLatentAttention(
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        value_projection=False,
+        rngs=nnx.Rngs(0),
+    )
+    assert layer.wv is None
+    x = jax.random.normal(jax.random.key(1), (2, 5, 32))
+    out = layer(x)
+    assert out.shape == x.shape and jnp.isfinite(out).all()
+    # Reference: attended latent (no wv) -> out.
+    latent = layer.encode_latent(x)
+    q = layer._project_queries(x)
+    kv = jnp.broadcast_to(latent[..., None, :], latent.shape[:-1] + (4, 16))
+    logits = jnp.einsum("bqhd,bkhd->bhqk", q, kv) / math.sqrt(16)
+    attn = jnp.einsum("bhqk,bkhd->bqhd", jax.nn.softmax(logits, -1), kv)
+    expected = layer.out(attn.reshape(2, 5, 4 * 16))
+    assert jnp.allclose(out, expected, atol=1e-5)
+
+
+def test_layer_without_value_projection_has_fewer_params():
+    def nparams(m):
+        return sum(p.size for p in jax.tree.leaves(nnx.state(m, nnx.Param)))
+
+    with_wv = MultiHeadLatentAttention(
+        num_heads=4, in_features=32, kv_lora_rank=16, rngs=nnx.Rngs(0)
+    )
+    without = MultiHeadLatentAttention(
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        value_projection=False,
+        rngs=nnx.Rngs(0),
+    )
+    assert nparams(without) < nparams(with_wv)
+
+
+def test_layer_value_projection_requires_absorbed_mode():
+    with pytest.raises(ValueError, match="value_projection=False"):
+        MultiHeadLatentAttention(
+            num_heads=4,
+            in_features=32,
+            kv_lora_rank=16,
+            mode="materialized",
+            qk_head_dim=8,
+            v_head_dim=8,
+            value_projection=False,
+            rngs=nnx.Rngs(0),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Query scaling (QASSMax)
+# ---------------------------------------------------------------------------
+
+
+def test_layer_qassmax_is_identity_at_init():
+    plain = _absorbed_layer()
+    scaled = MultiHeadLatentAttention(
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        query_scale_cls=QASSMaxQueryScale,
+        rngs=nnx.Rngs(0),
+    )
+    nnx.update(scaled, nnx.state(plain))
+    x = jax.random.normal(jax.random.key(1), (2, 5, 32))
+    # Zero-init base/gate: scaling must be exactly identity at init.
+    assert jnp.allclose(plain(x), scaled(x, kv_len=5), atol=1e-6)
+
+
+def test_layer_qassmax_changes_output_when_scales_move():
+    scaled = MultiHeadLatentAttention(
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        query_scale_cls=QASSMaxQueryScale,
+        rngs=nnx.Rngs(0),
+    )
+    x = jax.random.normal(jax.random.key(1), (2, 5, 32))
+    before = scaled(x)
+    # Nudge the scale parameters away from identity.
+    scaled._query_scale.base_mlp.proj.kernel[...] += 0.5
+    after = scaled(x, kv_len=5)
+    assert not jnp.allclose(before, after)
+
+
+def test_layer_qassmax_uses_kv_len_from_bank():
+    """With a shared bank, kv_len defaults to the bank length."""
+    scaled = MultiHeadLatentAttention(
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        kv_encoder=False,
+        query_scale_cls=QASSMaxQueryScale,
+        rngs=nnx.Rngs(0),
+    )
+    x = jax.random.normal(jax.random.key(1), (2, 5, 32))
+    bank = jax.random.normal(jax.random.key(2), (2, 9, 16))
+    # Should not need an explicit kv_len and must run with the bank's length.
+    assert scaled(x, bank).shape == x.shape
+
+
+def test_layer_qassmax_scale_receives_supplied_kv_len():
+    """An explicit kv_len must reach the scaling module."""
+    seen = {}
+
+    class SpyScale(QASSMaxQueryScale):
+        def __call__(self, query, *, kv_len):
+            seen["kv_len"] = kv_len
+            return super().__call__(query, kv_len=kv_len)
+
+    layer = MultiHeadLatentAttention(
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        query_scale_cls=SpyScale,
+        rngs=nnx.Rngs(0),
+    )
+    x = jax.random.normal(jax.random.key(1), (2, 5, 32))
+    layer(x, kv_len=11)
+    assert int(seen["kv_len"]) == 11
 
 
 def test_layer_kernel_dropout_gradients_run():
