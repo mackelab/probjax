@@ -390,6 +390,9 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         normalize_k_cls: ModuleLikeType | None = None,
         normalize_kv_cls: ModuleLikeType | None = None,
         q_scale_cls: ModuleLikeType | None = None,
+        dtype: Dtype | None = None,
+        param_dtype: Dtype = jnp.float32,
+        precision: PrecisionLike | None = None,
         **kwargs,
     ):
         if normalize_k_cls is not None and normalize_kv_cls is not None:
@@ -399,6 +402,16 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         key_norm_cls = (
             normalize_k_cls if normalize_k_cls is not None else normalize_kv_cls
         )
+
+        # Name the precision kwargs explicitly so ``filter_precision_kwargs`` --
+        # which introspects the signature -- forwards them instead of dropping
+        # them for this ``**kwargs`` constructor.  They are then passed on to
+        # flax's MHA below.
+        if dtype is not None:
+            kwargs.setdefault("dtype", dtype)
+        kwargs.setdefault("param_dtype", param_dtype)
+        if precision is not None:
+            kwargs.setdefault("precision", precision)
 
         # Head-parallel sharding metadata (no-op without an active mesh).
         # qkv kernels: (in, heads, head_dim); out kernel: (heads, head_dim, out).
@@ -828,12 +841,20 @@ class InducedSelfAttention(nnx.Module):
         # MAB2 (output):   output_norm (Q), hidden_norm (KV), output_ff_norm (pre-FF)
 
         if norm_cls is not None:
-            self.inducing_norm = norm_cls(in_features, rngs=rngs)
-            self.input_norm = norm_cls(in_features, rngs=rngs)
-            self.inducing_ff_norm = norm_cls(in_features, rngs=rngs)
-            self.output_norm = norm_cls(in_features, rngs=rngs)
-            self.hidden_norm = norm_cls(in_features, rngs=rngs)
-            self.output_ff_norm = norm_cls(in_features, rngs=rngs)
+            # Build the norms with the layer's dtype too.  A norm defaulting to
+            # ``dtype=None`` promotes bf16 activations (+ fp32 scale) back to
+            # fp32, which then feeds every Q/K/V and feedforward input -- so the
+            # whole block silently runs in fp32.  ``filter_precision_kwargs``
+            # drops kwargs the (pluggable) norm class does not accept.
+            norm_kwargs = filter_precision_kwargs(
+                norm_cls, dtype=dtype, param_dtype=param_dtype
+            )
+            self.inducing_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
+            self.input_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
+            self.inducing_ff_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
+            self.output_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
+            self.hidden_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
+            self.output_ff_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
         else:
             self.inducing_norm = None
             self.input_norm = None
