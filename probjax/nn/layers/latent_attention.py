@@ -470,7 +470,6 @@ class MultiHeadLatentAttention(nnx.Module):
                 deterministic=deterministic,
                 dtype=self.dtype,
                 precision=self.precision,
-                module=self,
             )
             attn = attn[..., 0, :]  # [..., Q*H, R]
             return self._unpack_heads(attn, num_q)
@@ -490,7 +489,6 @@ class MultiHeadLatentAttention(nnx.Module):
             deterministic=deterministic,
             dtype=self.dtype,
             precision=self.precision,
-            module=self,
         )
 
     # ------------------------------------------------------------------
@@ -637,7 +635,6 @@ class MultiHeadLatentAttention(nnx.Module):
                 deterministic=deterministic,
                 dtype=self.dtype,
                 precision=self.precision,
-                module=self,
             )
         else:
             attn = self._absorbed_attention(
