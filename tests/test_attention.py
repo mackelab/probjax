@@ -1295,3 +1295,138 @@ class TestRematCompatibility:
             assert jnp.allclose(gp, gr, atol=1e-4), (
                 f"remat changed grads, max err={jnp.max(jnp.abs(gp - gr))}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Grouped-query attention (GQA / MQA)
+# ---------------------------------------------------------------------------
+# ``enable_gqa=True`` lets ``flex_attention`` take fewer KV heads than query
+# heads.  The fused backward used to index K/V by the query-head grid without
+# reducing over the head group, so dK/dV came from a single head only.  These
+# tests pin both the forward and the gradients against an explicit repeat of
+# K/V (the grouping GQA is defined by), with and without masks/bias.
+
+
+def _gqa_repeat_reference(query, key, value, *, mask=None, bias=None):
+    """GQA by construction: repeat each KV head over its query-head group."""
+    hq = query.shape[-2]
+    hkv = key.shape[-2]
+    repeats = hq // hkv
+    key = jnp.repeat(key, repeats, axis=-2)
+    value = jnp.repeat(value, repeats, axis=-2)
+    return flex_attention(
+        query, key, value, mask=mask, bias=bias, block_q=8, block_k=8, interpret=True
+    )
+
+
+@pytest.mark.parametrize("num_kv_heads", [1, 2])
+def test_flex_attention_gqa_forward_matches_repeat(num_kv_heads):
+    batch_size, seq_len, num_heads, head_dim = 2, 16, 4, 8
+    q = jax.random.normal(
+        jax.random.PRNGKey(0), (batch_size, seq_len, num_heads, head_dim)
+    )
+    k = jax.random.normal(
+        jax.random.PRNGKey(1), (batch_size, seq_len, num_kv_heads, head_dim)
+    )
+    v = jax.random.normal(
+        jax.random.PRNGKey(2), (batch_size, seq_len, num_kv_heads, head_dim)
+    )
+    want = _gqa_repeat_reference(q, k, v)
+    got = flex_attention(q, k, v, enable_gqa=True, block_q=8, block_k=8, interpret=True)
+    assert jnp.allclose(want, got, atol=1e-5), float(jnp.abs(want - got).max())
+
+
+@pytest.mark.parametrize("num_kv_heads", [1, 2])
+def test_flex_attention_gqa_gradients_match_repeat(num_kv_heads):
+    """The whole bug: dK/dV must be the sum over the query heads in each group."""
+    batch_size, seq_len, num_heads, head_dim = 2, 16, 4, 8
+    q = jax.random.normal(
+        jax.random.PRNGKey(0), (batch_size, seq_len, num_heads, head_dim)
+    )
+    k = jax.random.normal(
+        jax.random.PRNGKey(1), (batch_size, seq_len, num_kv_heads, head_dim)
+    )
+    v = jax.random.normal(
+        jax.random.PRNGKey(2), (batch_size, seq_len, num_kv_heads, head_dim)
+    )
+
+    def ref(q, k, v):
+        return _gqa_repeat_reference(q, k, v).sum()
+
+    def gqa(q, k, v):
+        return flex_attention(
+            q, k, v, enable_gqa=True, block_q=8, block_k=8, interpret=True
+        ).sum()
+
+    g_ref = jax.grad(ref, argnums=(0, 1, 2))(q, k, v)
+    g_gqa = jax.grad(gqa, argnums=(0, 1, 2))(q, k, v)
+    for name, wanted, got in zip(("dq", "dk", "dv"), g_ref, g_gqa, strict=True):
+        assert jnp.allclose(wanted, got, atol=1e-4), (
+            f"{name} mismatch, max err={float(jnp.abs(wanted - got).max())}"
+        )
+
+
+@pytest.mark.parametrize(
+    "mask,bias",
+    [
+        (CausalMask(), None),
+        (KeyPaddingMask(np.array([16, 12])), None),
+        (None, DenseBias(jax.random.normal(jax.random.PRNGKey(3), (1, 1, 16, 16)))),
+        (
+            CausalMask(),
+            DenseBias(jax.random.normal(jax.random.PRNGKey(4), (1, 1, 16, 16))),
+        ),
+    ],
+)
+def test_flex_attention_gqa_gradients_with_mask_or_bias(mask, bias):
+    batch_size, seq_len, num_heads, num_kv_heads, head_dim = 2, 16, 4, 2, 8
+    q = jax.random.normal(
+        jax.random.PRNGKey(0), (batch_size, seq_len, num_heads, head_dim)
+    )
+    k = jax.random.normal(
+        jax.random.PRNGKey(1), (batch_size, seq_len, num_kv_heads, head_dim)
+    )
+    v = jax.random.normal(
+        jax.random.PRNGKey(2), (batch_size, seq_len, num_kv_heads, head_dim)
+    )
+
+    def ref(k, v):
+        return _gqa_repeat_reference(q, k, v, mask=mask, bias=bias).sum()
+
+    def gqa(k, v):
+        return flex_attention(
+            q,
+            k,
+            v,
+            enable_gqa=True,
+            mask=mask,
+            bias=bias,
+            block_q=8,
+            block_k=8,
+            interpret=True,
+        ).sum()
+
+    g_ref = jax.grad(ref, argnums=(0, 1))(k, v)
+    g_gqa = jax.grad(gqa, argnums=(0, 1))(k, v)
+    for name, wanted, got in zip(("dk", "dv"), g_ref, g_gqa, strict=True):
+        assert jnp.allclose(wanted, got, atol=1e-4), (
+            f"{name} mismatch, max err={float(jnp.abs(wanted - got).max())}"
+        )
+
+
+def test_flex_attention_gqa_rejects_non_multiple_heads():
+    q = jnp.zeros((1, 8, 4, 8))
+    k = jnp.zeros((1, 8, 3, 8))
+    with pytest.raises(ValueError, match="multiple of kv heads"):
+        flex_attention(q, k, k, enable_gqa=True, interpret=True)
+
+
+def test_flex_attention_gqa_rank3_matches_repeat():
+    """Unbatched (rank-3) inputs take the same path."""
+    seq_len, num_heads, num_kv_heads, head_dim = 16, 4, 1, 8
+    q = jax.random.normal(jax.random.PRNGKey(0), (seq_len, num_heads, head_dim))
+    k = jax.random.normal(jax.random.PRNGKey(1), (seq_len, num_kv_heads, head_dim))
+    v = jax.random.normal(jax.random.PRNGKey(2), (seq_len, num_kv_heads, head_dim))
+    want = _gqa_repeat_reference(q, k, v)
+    got = flex_attention(q, k, v, enable_gqa=True, block_q=8, block_k=8, interpret=True)
+    assert jnp.allclose(want, got, atol=1e-5)
