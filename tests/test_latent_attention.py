@@ -594,6 +594,49 @@ def test_layer_use_kernel_with_custom_attention_fn_raises():
         )
 
 
+def test_layer_does_not_sow_attention_weights():
+    """MLA must not pass ``module=self`` to the attention function.
+
+    Flax attention would then sow the attention weights into the module, which
+    fails under ``jax.checkpoint`` / ``lax.scan`` (the module is a trace-level
+    mismatch).  Weight sowing is unsupported here, so the layer must not opt in.
+    """
+    from probjax.nn.layers.attention import dot_product_attention
+
+    layer = MultiHeadLatentAttention(
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        attention_fn=dot_product_attention,
+        rngs=nnx.Rngs(0),
+    )
+    x = jax.random.normal(jax.random.key(0), (3, 2, 8, 32))
+
+    def step(carry, z):
+        return carry, layer(z)
+
+    _, ys = jax.lax.scan(step, None, x)
+    assert ys.shape == (3, 2, 8, 32)
+
+    # Materialized mode takes the same call path and must also survive scan.
+    materialized = MultiHeadLatentAttention(
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        mode="materialized",
+        qk_head_dim=8,
+        v_head_dim=8,
+        attention_fn=dot_product_attention,
+        rngs=nnx.Rngs(0),
+    )
+
+    def step_m(carry, z):
+        return carry, materialized(z)
+
+    _, ys_m = jax.lax.scan(step_m, None, x)
+    assert ys_m.shape == (3, 2, 8, 32)
+
+
 def test_layer_kernel_accepts_bias_like_flex():
     """The kernel handles additive bias, so the layer must forward it."""
     dense = MultiHeadLatentAttention(
