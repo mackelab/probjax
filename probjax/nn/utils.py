@@ -151,10 +151,27 @@ def filter_precision_kwargs(cls: ModuleLikeType, **kwargs) -> dict:
         kwargs.pop("preferred_element_type")
 
     try:
-        accepted = inspect.signature(target_cls.__init__).parameters.keys()
+        params = inspect.signature(target_cls.__init__).parameters
+        accepted = params.keys()
+        # A ``**kwargs`` constructor accepts any precision kwarg, but they are
+        # invisible to a name check.  Forward the core precision kwargs
+        # (``dtype``, ``param_dtype``, ``precision``) so they are not silently
+        # dropped; ``preferred_element_type`` is *not* a standard Flax kwarg and
+        # is left out (a strict parent would reject it), so it is only passed
+        # when the signature names it.
+        takes_var_kwargs = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
     except (ValueError, TypeError):
         accepted = kwargs.keys()
-    return {k: v for k, v in kwargs.items() if v is not None and k in accepted}
+        takes_var_kwargs = False
+    var_kwarg_names = {"dtype", "param_dtype", "precision"}
+    return {
+        k: v
+        for k, v in kwargs.items()
+        if v is not None
+        and (k in accepted or (takes_var_kwargs and k in var_kwarg_names))
+    }
 
 
 def cast_output(x: ArrayLike, dtype: DTypeLike | None) -> Array:
