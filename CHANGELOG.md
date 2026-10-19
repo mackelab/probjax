@@ -53,6 +53,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adaptive random-walk move; runs continue by passing the longer dataset
 - BlackJAX-backed adaptation controls and shared inference runners
 - ISAB key masks and per-example attention biases folded into query/key features
+- `MultiHeadLatentAttention` (DeepSeek-style MLA): one `kv_lora_rank`-wide latent
+  per token is the shared cache, with `mode="absorbed"` (`K = V = C`) or
+  `mode="materialized"` (per-head `K`/`V` up-projections). One encoder can be
+  shared across several layers via `kv_encoder=False` (the layer then treats its
+  `inputs_kv` as the bank directly); absorbed mode
+  folds the heads into the query axis so neither training nor inference
+  broadcasts `K`/`V`, drops the value projection with `value_projection=False`,
+  and takes an optional `query_scale_cls` (e.g. `QASSMaxQueryScale`) fed
+  `kv_len`
 - `Autoregressive.sample` supports prefix conditioning (`prefix=`, `prefix_len=`)
   and KV-cached decoding (`use_cache=`) for transformer conditioners, with the
   cached loop compiled to a single program via `nnx.scan`
