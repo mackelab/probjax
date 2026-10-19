@@ -70,6 +70,19 @@ from probjax.utils.typing import (
 MODES = ("materialized", "absorbed")
 
 
+def _foldable_mask(mask: Any) -> bool:
+    """Can heads be folded onto the query axis with this mask?
+
+    Folding stacks per-head queries so every head reads the shared cache as a
+    single attention row, which is only valid if each row's key pattern is the
+    same as the token's.  That holds for no mask and for query-independent masks
+    (e.g. :class:`~probjax.nn.pallas_kernels.KVLenMask`), but not for
+    query-dependent ones (causal, local window, segment, ...), which must keep
+    the per-token query index.
+    """
+    return mask is None or getattr(mask, "query_independent", False)
+
+
 def _linear(
     in_features: int,
     out_features: int,
@@ -456,14 +469,15 @@ class MultiHeadLatentAttention(nnx.Module):
         numerically identical and only differs in how the cache is read.
         """
         num_q = query.shape[-3]
-        if self.fold_heads and mask is None and bias is None:
+        fold = self.fold_heads and bias is None and _foldable_mask(mask)
+        if fold:
             q_folded = self._pack_heads(query)[..., None, :]  # [..., Q*H, 1, R]
             kv = latent[..., None, :]  # [..., S, 1, R]: one shared head
             attn = self.attention_fn(
                 q_folded,
                 kv,
                 kv,
-                mask=None,
+                mask=mask,
                 bias=None,
                 dropout_rng=dropout_rng,
                 dropout_rate=self.dropout_rate,
@@ -581,7 +595,9 @@ class MultiHeadLatentAttention(nnx.Module):
             # [B,S,R]; the flex path accepts any leading batch dims, so fold
             # them into the batch axis here and restore the shape afterwards.
             absorbed = self.mode == "absorbed"
-            fold_kernel = absorbed and self.fold_heads and mask is None and bias is None
+            fold_kernel = (
+                absorbed and self.fold_heads and bias is None and _foldable_mask(mask)
+            )
             if fold_kernel:
                 # Folding multiplies the query length by the head count, and the
                 # kernel requires that length to tile ``block_q``.  Fold only when

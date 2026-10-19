@@ -14,7 +14,10 @@ import pytest
 from flax import nnx
 
 from probjax.nn.layers.attention import QASSMaxQueryScale
-from probjax.nn.layers.latent_attention import MultiHeadLatentAttention
+from probjax.nn.layers.latent_attention import (
+    MultiHeadLatentAttention,
+    _foldable_mask,
+)
 from probjax.nn.layers.lowrank import LowRankLinear
 from probjax.nn.pallas_kernels import (
     BlockDiagonalMask,
@@ -808,8 +811,8 @@ def test_layer_folded_heads_pack_roundtrip():
     assert jnp.allclose(restored, q)
 
 
-def test_layer_folded_heads_falls_back_with_mask():
-    """Masks live in token space, so they force the unfolded form (same answer)."""
+def test_layer_folded_heads_falls_back_with_query_dependent_mask():
+    """Query-dependent masks (causal) must not fold; the answer is unchanged."""
     folded = MultiHeadLatentAttention(
         num_heads=4,
         in_features=32,
@@ -828,6 +831,52 @@ def test_layer_folded_heads_falls_back_with_mask():
     x = jax.random.normal(jax.random.key(1), (2, 5, 32))
     mask = CausalMask()
     assert jnp.allclose(folded(x, mask=mask), unfolded(x, mask=mask), atol=1e-5)
+
+
+@pytest.mark.parametrize("use_kernel", [False, True])
+def test_layer_folds_with_query_independent_mask(use_kernel):
+    """A key-only (length) mask must not force the broadcast form.
+
+    ``KVLenMask`` does not depend on the query, so heads can still be folded onto
+    the query axis.  Folded and unfolded must agree on both the layer and fused
+    paths, and the layer must actually take the folded branch.
+    """
+    from probjax.nn.pallas_kernels import KVLenMask
+
+    kwargs = dict(block_sizes=_block_sizes(32), use_kernel=use_kernel)
+    folded = MultiHeadLatentAttention(
+        num_heads=4, in_features=32, kv_lora_rank=16, fold_heads=True,
+        rngs=nnx.Rngs(0), **kwargs,
+    )
+    unfolded = MultiHeadLatentAttention(
+        num_heads=4, in_features=32, kv_lora_rank=16, fold_heads=False,
+        rngs=nnx.Rngs(1), **kwargs,
+    )
+    nnx.update(unfolded, nnx.state(folded))
+
+    x = jax.random.normal(jax.random.key(1), (2, 32, 32))
+    mask = KVLenMask(jnp.array([32, 24]))
+    # The gate must classify this mask as foldable (it is query-independent).
+    assert _foldable_mask(mask) is True
+    assert jnp.allclose(folded(x, mask=mask), unfolded(x, mask=mask), atol=1e-4)
+
+    g_fold = nnx.grad(lambda m, z: (m(z, mask=mask) ** 2).sum(), argnums=1)(folded, x)
+    g_unfold = nnx.grad(lambda m, z: (m(z, mask=mask) ** 2).sum(), argnums=1)(unfolded, x)
+    assert jnp.allclose(g_fold, g_unfold, atol=1e-4)
+
+
+def test_foldable_mask_classification():
+    """Only query-independent masks may fold; composition requires both sides."""
+    from probjax.nn.pallas_kernels import KVLenMask
+
+    kl = jnp.array([8, 6])
+    assert _foldable_mask(None) is True
+    assert _foldable_mask(KVLenMask(kl)) is True
+    assert _foldable_mask(CausalMask()) is False
+    # AND of two query-independent masks stays query-independent...
+    assert _foldable_mask(KVLenMask(kl) & KVLenMask(kl)) is True
+    # ...but combining with a query-dependent mask does not.
+    assert _foldable_mask(KVLenMask(kl) & CausalMask()) is False
 
 
 @pytest.mark.parametrize("seq", [48, 32])
