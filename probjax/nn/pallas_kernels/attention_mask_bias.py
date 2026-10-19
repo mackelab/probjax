@@ -43,6 +43,14 @@ class AttentionMask(ABC):
 
     stateful: bool = False  # True if mask uses stored data (e.g., lengths, segment ids)
 
+    # True when the mask entries do not depend on the query index (e.g. a
+    # key-padding / KV-length mask).  Such a mask can be applied to a cache that
+    # is shared across query heads even after the heads are folded onto the query
+    # axis, because every folded row that came from the same token sees the same
+    # key pattern.  Query-dependent masks (causal, local window, segment, ...)
+    # cannot be folded this way.
+    query_independent: bool = False
+
     @abstractmethod
     def __call__(
         self,
@@ -322,6 +330,13 @@ class ComposeMask(AttentionMask):
 
     def __post_init__(self):
         object.__setattr__(self, "stateful", self.lhs.stateful or self.rhs.stateful)
+        # A composition is query-independent only if both sides are.
+        object.__setattr__(
+            self,
+            "query_independent",
+            getattr(self.lhs, "query_independent", False)
+            and getattr(self.rhs, "query_independent", False),
+        )
 
     def __call__(
         self,
@@ -1391,6 +1406,9 @@ class KVLenMask(AttentionMask):
 
     kv_lengths: Array  # Per-batch KV lengths [B]
     stateful: bool = True
+    # Keys are masked by length only, so the pattern is the same for every query
+    # row of a token; a head-folded cache can still be masked correctly.
+    query_independent = True
 
     def dense(
         self,
