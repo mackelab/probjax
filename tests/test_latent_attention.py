@@ -574,6 +574,63 @@ def test_layer_kernel_training_uses_rng():
     assert jnp.isfinite(layer(x, deterministic=False, rng=jax.random.key(2))).all()
 
 
+def _dropout_layer(**kwargs):
+    return MultiHeadLatentAttention(
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        dropout_rate=0.3,
+        rngs=nnx.Rngs(0),
+        **kwargs,
+    )
+
+
+def test_layer_dropout_requires_deterministic():
+    """Unlike a silent default, MLA must require `deterministic` (as MHA does).
+
+    Passing an rng but no `deterministic` used to run dropout silently, so an
+    eval loop that threaded a key would get dropout without noticing.
+    """
+    layer = _dropout_layer()
+    x = jax.random.normal(jax.random.key(1), (2, 8, 32))
+    with pytest.raises(ValueError, match="deterministic"):
+        layer(x, rng=jax.random.key(2))
+    with pytest.raises(ValueError, match="deterministic"):
+        layer(x)
+
+
+def test_layer_dropout_uses_kept_rngs():
+    """In training mode the layer falls back to the rngs kept at construction."""
+    layer = _dropout_layer(deterministic=False)
+    assert layer.rngs is not None
+    x = jax.random.normal(jax.random.key(1), (2, 8, 32))
+    a, b = layer(x), layer(x)
+    assert jnp.isfinite(a).all()
+    assert not jnp.allclose(a, b)  # fresh masks per call
+
+
+def test_layer_dropout_keep_rngs_false_requires_rng():
+    layer = _dropout_layer(deterministic=False, keep_rngs=False)
+    assert layer.rngs is None
+    x = jax.random.normal(jax.random.key(1), (2, 8, 32))
+    with pytest.raises(ValueError, match="rng"):
+        layer(x)
+    assert jnp.isfinite(layer(x, rng=jax.random.key(2))).all()
+
+
+@pytest.mark.parametrize("rate", [1.0, 1.5, -0.1, -1.0])
+def test_layer_rejects_invalid_dropout_rate(rate):
+    """1.0/1.5 zero the output; a negative rate biases it. Reject both."""
+    with pytest.raises(ValueError, match="dropout_rate"):
+        MultiHeadLatentAttention(
+            num_heads=4,
+            in_features=32,
+            kv_lora_rank=16,
+            dropout_rate=rate,
+            rngs=nnx.Rngs(0),
+        )
+
+
 def test_layer_kernel_handles_extra_batch_dims():
     """The kernel takes rank-4 q / rank-3 cache; leading dims must fold in."""
     layer = _layer(use_kernel=True, block_sizes=_block_sizes(32))
