@@ -158,14 +158,16 @@ class MultiHeadLatentAttention(nnx.Module):
             positional ``inputs_kv`` is taken to *be* the bank.  Because
             ``latent_norm`` is dropped too, the bank must already be normalized
             (the encoder layer does this via its own ``latent_norm``).
-        fold_heads: in ``absorbed`` mode (and when no mask/bias is given), fold
-            the heads into the query axis so the shared cache is read as a single
-            head -- neither training nor inference broadcasts ``K``/``V`` over
-            heads.  The folded and unfolded forms agree exactly without dropout;
-            with dropout the attention mask is indexed over ``[Q*H, 1, S]``
-            instead of ``[Q, H, S]``, so the outputs are equivalent in
-            distribution but not elementwise.  Masks/biases use the unfolded
-            form.
+        fold_heads: in ``absorbed`` mode (and when no bias and no query-dependent
+            mask is given), fold the heads into the query axis so the shared cache
+            is read as a single head -- neither training nor inference broadcasts
+            ``K``/``V`` over heads.  Query-independent masks (e.g.
+            :class:`~probjax.nn.pallas_kernels.KVLenMask`) still fold; masks whose
+            pattern varies with the query (causal, window, segment, ...) and
+            biases use the unfolded form.  The folded and unfolded forms agree
+            exactly without dropout; with dropout the attention mask is indexed
+            over ``[Q*H, 1, S]`` instead of ``[Q, H, S]``, so the outputs are
+            equivalent in distribution but not elementwise.
         value_projection: in ``absorbed`` mode, apply ``wv`` to the attention
             output.  Set ``False`` to drop ``wv`` entirely so the attended latent
             maps straight through the shared ``out`` projection (stricter cache
@@ -461,12 +463,14 @@ class MultiHeadLatentAttention(nnx.Module):
     ) -> Array:
         """Attention with ``K = V = C`` in absorbed mode.
 
-        With ``fold_heads`` (and no mask/bias, which are expressed in token-index
-        space) the head axis is folded into the query axis so that a single
-        ``[..., S, R]`` cache serves every head in one single-head attention
-        call: neither training nor inference broadcasts ``K``/``V`` over heads.
-        Masks and biases force the unfolded (broadcast) form, which is
-        numerically identical and only differs in how the cache is read.
+        With ``fold_heads`` (and no bias and no query-dependent mask) the head
+        axis is folded into the query axis so that a single ``[..., S, R]`` cache
+        serves every head in one single-head attention call: neither training nor
+        inference broadcasts ``K``/``V`` over heads.  Query-independent masks
+        (e.g. :class:`~probjax.nn.pallas_kernels.KVLenMask`) still fold; masks
+        whose pattern varies with the query (causal, window, segment, ...) and
+        biases force the unfolded (broadcast) form, which is numerically
+        identical and only differs in how the cache is read.
         """
         num_q = query.shape[-3]
         fold = self.fold_heads and bias is None and _foldable_mask(mask)
