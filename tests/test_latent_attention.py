@@ -834,35 +834,86 @@ def test_layer_folded_heads_falls_back_with_query_dependent_mask():
 
 
 @pytest.mark.parametrize("use_kernel", [False, True])
-def test_layer_folds_with_query_independent_mask(use_kernel):
+def test_layer_folds_with_query_independent_mask(use_kernel, monkeypatch):
     """A key-only (length) mask must not force the broadcast form.
 
     ``KVLenMask`` does not depend on the query, so heads can still be folded onto
     the query axis.  Folded and unfolded must agree on both the layer and fused
-    paths, and the layer must actually take the folded branch.
+    paths, and the layer must actually take the folded branch (checked by
+    counting ``_pack_heads`` calls -- matching outputs alone would also pass if
+    the fold silently fell back).
     """
     from probjax.nn.pallas_kernels import KVLenMask
 
     kwargs = dict(block_sizes=_block_sizes(32), use_kernel=use_kernel)
     folded = MultiHeadLatentAttention(
-        num_heads=4, in_features=32, kv_lora_rank=16, fold_heads=True,
-        rngs=nnx.Rngs(0), **kwargs,
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        fold_heads=True,
+        rngs=nnx.Rngs(0),
+        **kwargs,
     )
     unfolded = MultiHeadLatentAttention(
-        num_heads=4, in_features=32, kv_lora_rank=16, fold_heads=False,
-        rngs=nnx.Rngs(1), **kwargs,
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        fold_heads=False,
+        rngs=nnx.Rngs(1),
+        **kwargs,
     )
     nnx.update(unfolded, nnx.state(folded))
 
+    calls = {"n": 0}
+    original = MultiHeadLatentAttention._pack_heads
+
+    def counting_pack_heads(self, query):
+        calls["n"] += 1
+        return original(self, query)
+
+    monkeypatch.setattr(MultiHeadLatentAttention, "_pack_heads", counting_pack_heads)
+
     x = jax.random.normal(jax.random.key(1), (2, 32, 32))
     mask = KVLenMask(jnp.array([32, 24]))
-    # The gate must classify this mask as foldable (it is query-independent).
     assert _foldable_mask(mask) is True
-    assert jnp.allclose(folded(x, mask=mask), unfolded(x, mask=mask), atol=1e-4)
+
+    calls["n"] = 0
+    out_fold = folded(x, mask=mask)
+    assert calls["n"] > 0, "query-independent mask did not take the folded branch"
+
+    calls["n"] = 0
+    out_unfold = unfolded(x, mask=mask)
+    assert calls["n"] == 0
+
+    assert jnp.allclose(out_fold, out_unfold, atol=1e-4)
 
     g_fold = nnx.grad(lambda m, z: (m(z, mask=mask) ** 2).sum(), argnums=1)(folded, x)
-    g_unfold = nnx.grad(lambda m, z: (m(z, mask=mask) ** 2).sum(), argnums=1)(unfolded, x)
+    g_unfold = nnx.grad(lambda m, z: (m(z, mask=mask) ** 2).sum(), argnums=1)(
+        unfolded, x
+    )
     assert jnp.allclose(g_fold, g_unfold, atol=1e-4)
+
+
+def test_layer_query_dependent_mask_does_not_fold(monkeypatch):
+    """A causal mask must fall back to the unfolded branch (no ``_pack_heads``)."""
+    layer = MultiHeadLatentAttention(
+        num_heads=4,
+        in_features=32,
+        kv_lora_rank=16,
+        fold_heads=True,
+        rngs=nnx.Rngs(0),
+    )
+    calls = {"n": 0}
+    original = MultiHeadLatentAttention._pack_heads
+
+    def counting_pack_heads(self, query):
+        calls["n"] += 1
+        return original(self, query)
+
+    monkeypatch.setattr(MultiHeadLatentAttention, "_pack_heads", counting_pack_heads)
+    x = jax.random.normal(jax.random.key(1), (2, 8, 32))
+    layer(x, mask=CausalMask())
+    assert calls["n"] == 0
 
 
 def test_foldable_mask_classification():
