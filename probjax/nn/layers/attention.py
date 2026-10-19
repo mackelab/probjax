@@ -1165,13 +1165,24 @@ def flex_attention(
         )
 
     if enable_gqa:
-        Hq = query.shape[2]
-        Hkv = key.shape[2]
+        Hq = query.shape[-2]
+        Hkv = key.shape[-2]
         if Hq % Hkv != 0:
             raise ValueError(
                 f"Expect number of query heads to be a multiple of kv heads for GQA "
                 f"but got Hq={Hq} and Hkv={Hkv}."
             )
+        # Expand K/V over the head groups up front so the kernel only ever sees
+        # equal head counts.  The fused backward stores dK/dV per query head and
+        # does not reduce over a head group, so handing it mismatched heads gives
+        # gradients from a single head only; repeating here lets `repeat`'s VJP
+        # sum the group contributions.  This is the same expansion the low-rank
+        # bias path below applies.
+        if Hq != Hkv:
+            repeats = Hq // Hkv
+            key = jnp.repeat(key, repeats, axis=-2)
+            value = jnp.repeat(value, repeats, axis=-2)
+            enable_gqa = False
 
     if sm_scale is None:
         sm_scale = 1.0 / math.sqrt(query.shape[-1])
