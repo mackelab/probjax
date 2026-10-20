@@ -99,6 +99,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   max-subtraction, and boundary-safe systematic resampling that never selects
   zero-weight particles; all `ess` call sites and `systematic` defaults now
   use the probjax copies
+- Shared helper modules for the patterns that were inlined in more than one
+  place: `probjax.inference.particles` (`take_batch`, `normalize_log_weights`),
+  `probjax.stats.spherical` (`normalize_vector`, `sphere_area`,
+  `sample_sphere`, `sample_uniform_sphere`), plus helpers in
+  `probjax.stats.utils`, `probjax.utils.jaxutils`, `probjax.nn.utils` and
+  `probjax.inference.filtering.base`
 
 ### Changed
 - One kernel API for every algorithm family. `probjax.utils.KernelAPI` is the
@@ -249,6 +255,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `rv_continuous.support` is now a concrete default returning the
   whole-real-line constraint; the 13 whole-real-line distributions inherit
   it instead of repeating the body
+- `symmetrize_matrix` transposes the last two axes instead of using `.T`, so
+  a batch of matrices is symmetrized correctly (`A.T` reverses *all* axes of a
+  3-D array)
+- A one-component `ARFamily.mixture` is centred on the data: the component
+  offsets are now computed from the shared helper, so a single component is
+  not shifted by the spread
+- `ensure_tuple` accepts any `numbers.Integral` (so NumPy integers work) and
+  `ensure_int`/`ensure_tuple` take a `message=` override for callers whose
+  error text mentions alternatives the check does not cover
+- `nn.io_util.ensure_tuple` rejects an empty `spatial_shape` instead of
+  silently accepting it
+- `probjax.utils.functions.ravel_callable` is public (it was the private
+  `_ravel_callable`); `probjax.utils.jaxutils.filter_kwargs` gained
+  `exclude_positional_only`, and the `nn`-local copy of that filter now
+  delegates to it
+- `probjax.utils.jaxutils` exposes `pjit_p` (the `pjit` primitive, whose
+  location moved between JAX releases) and `leading_dim` (the size of the
+  leading axis of a pytree of arrays)
 - Distribution per-method docstrings trimmed to one-liners (parameter docs
   stay on the class docstring)
 - CI: tests marked `slow` are skipped on PR runs (full suite on `main`),
@@ -263,8 +287,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`ravel_first_arg_`, `ravel_args_`, `flatten_args_`, `flatten_fun`,
   `ravel_fun`, `ravel_first_arg_fun`); the live `ravel_arg_fun` and public
   `ravel_args` are unchanged
+- Dead code with no call sites: `probjax.core.registry.LazyJaxpr`,
+  `probjax.stats.constraint_registry.generate_pdm` (and the registration it
+  overwrote), the `rk43` solver and its `build_rk43_tablau` helper in
+  `probjax.utils.odeutil.solvers.rk_explicit`, and the unused
+  `probjax.utils.guards.ensure_array`/`as_concrete_bool`
 
 ### Fixed
+- Every method of `empirical_frozen` raised `TypeError`: its ten overrides
+  passed the frozen `values`/`weights` to the base class *and* to the
+  overridden method. The overrides are gone; the frozen distribution now
+  inherits the base implementations
+- `empirical.sample` raised `IndexError`: the requested number of samples was
+  passed in `jax.random.categorical`'s `axis` slot instead of its `shape` slot
 - `mixture.ppf` raised `AttributeError` (`jax.scipy.optimize.root` does not
   exist); it now bisects on the CDF, like `mixture_kernel` already did
 - `norm.moment` raised `AttributeError` (`jnp.math.comb` never existed) and
