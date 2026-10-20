@@ -1,9 +1,10 @@
 import concurrent.futures
+import importlib
 import inspect
 import math
 import sys
 from functools import lru_cache, partial
-from typing import Callable, Dict, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 import jax
 import jax.experimental
@@ -12,27 +13,34 @@ from jax._src import linear_util as lu
 from jax._src.api_util import debug_info
 from jax._src.core import eval_jaxpr
 from jax._src.flatten_util import ravel_pytree
-
-try:
-    from jax.interpreters.partial_eval import partial_eval_jaxpr_nounits
-except Exception:  # JAX internals moved across versions.
-    try:
-        from jax._src.interpreters.partial_eval import partial_eval_jaxpr_nounits
-    except Exception:
-        try:
-            from jax.interpreters.partial_eval import (
-                partial_eval_jaxpr as _partial_eval_jaxpr,
-            )
-        except Exception:
-            from jax._src.interpreters.partial_eval import (
-                partial_eval_jaxpr as _partial_eval_jaxpr,
-            )
-
-        def partial_eval_jaxpr_nounits(jaxpr, unknowns, instantiate):
-            return _partial_eval_jaxpr(jaxpr, unknowns, instantiate)
-
-
 from jaxtyping import Array, PyTree
+
+from probjax.utils.typing import ArrayLike
+
+
+def _resolve_partial_eval_jaxpr_nounits() -> Callable:
+    """Find the partial-evaluation helper; its name moved across JAX releases."""
+    for module_name in (
+        "jax.interpreters.partial_eval",
+        "jax._src.interpreters.partial_eval",
+    ):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        nounits = getattr(module, "partial_eval_jaxpr_nounits", None)
+        if nounits is not None:
+            return nounits
+        legacy = getattr(module, "partial_eval_jaxpr", None)
+        if legacy is not None:
+            return lambda jaxpr, unknowns, instantiate: legacy(
+                jaxpr, unknowns, instantiate
+            )
+    raise ImportError("JAX exposes no usable partial-evaluation helper.")
+
+
+partial_eval_jaxpr_nounits = _resolve_partial_eval_jaxpr_nounits()
+
 
 _progress_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="progress"
@@ -43,7 +51,7 @@ class API(type):
     """API class for algorithms"""
 
     def __str__(self):
-        return self.__doc__
+        return self.__doc__ or ""
 
     def __repr__(self):
         return self.__doc__ or self.__name__
@@ -80,15 +88,17 @@ class WithProgressBarAPI:
     _ema_gamma: float = 0.9
     _default_tracked_stats: Tuple[str, ...] = ()
     _computed_stats: Dict[str, Callable] = {}
+    #: Names of the diagnostics to display; set per instance by the runners.
+    tracked_stats: Tuple[str, ...] = ()
 
     @staticmethod
-    def _write_progress(cls, iteration, total, stats, stat_names=()):
+    def _write_progress(owner, iteration, total, stats, stat_names=()):
         try:
             i, t = int(iteration), int(total)
         except Exception:
             return
 
-        print_len = cls._print_length
+        print_len = owner._print_length
         pct = min(100.0, 100 * (i + 1) / t)
         filled = int(print_len * (i + 1) // t)
         bar = "█" * filled + "-" * (print_len - filled)
@@ -102,7 +112,7 @@ class WithProgressBarAPI:
     # Stat extraction — resolved at JAX trace time, no probe call.
     # ------------------------------------------------------------------
 
-    def _stat_objects(self, state, info):
+    def _stat_objects(self, state: Any, info: Any) -> tuple[Any, ...]:
         """Return the tuple of objects to search, in order, for tracked stats."""
         return (state, info)
 
@@ -153,6 +163,16 @@ class WithProgressBarAPI:
         init_stats = tuple(0.0 for _ in names)
         print_rate = num_steps // self._print_rate + 1
         return update_stats, print_fn, init_stats, print_rate
+
+
+def where(condition: ArrayLike, x: ArrayLike, y: ArrayLike) -> Array:
+    """``jnp.where`` with a precise return type.
+
+    JAX types ``jnp.where`` as ``Array | tuple[Array, ...]`` because it also
+    has a pytree form; the numerical helpers here always mean the array
+    form, and the union otherwise poisons every downstream expression.
+    """
+    return jnp.where(condition, x, y)
 
 
 @lu.transformation
@@ -293,11 +313,11 @@ def print_scan(
     f,
     init,
     init_stats,
-    xs: Optional[Array] = None,
+    xs: Any = None,
     length: Optional[int] = None,
     *,
     unroll: int = 1,
-    update_stats: Callable = None,
+    update_stats: Callable,
     print_rate: Optional[int] = None,
     print_fn: Callable = print,
 ):
@@ -310,7 +330,7 @@ def print_scan(
     if length is None:
         # xs may be a pytree (e.g. tuple of arrays); grab the first leaf.
         leaves = jax.tree_util.tree_leaves(xs)
-        length = leaves[0].shape[0]
+        length = int(leaves[0].shape[0])
 
     if print_rate is None:
         print_rate = length // 50 + 1

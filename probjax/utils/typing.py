@@ -2,13 +2,11 @@
 # Minimal typing helpers for JAX PyTrees and RNG keys (typed & legacy).
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import (
+    TYPE_CHECKING,
     Any,
-    Callable,
-    Iterable,
-    Mapping,
     Protocol,
-    Sequence,
     TypeAlias,
     TypeGuard,
     TypeVar,
@@ -22,12 +20,19 @@ import jax.numpy as jnp
 __all__ = [
     "Array",
     "ArrayLike",
+    "ArrayTree",
+    "ArrayLikeTree",
     "DTypeLike",
+    "PrecisionLike",
+    "Scalar",
+    "ScalarLike",
+    "Shape",
     "RngKey",
     "RngKeyLike",
     "PyTree",
     "Leaf",
     "AnyTree",
+    "SDEIntResult",
     "is_typed_key",
     "is_legacy_key",
     "is_key",
@@ -55,7 +60,19 @@ PrecisionLike: TypeAlias = Union[
     tuple[str, str],
     tuple[jax.lax.Precision, jax.lax.Precision],
 ]
-Device: TypeAlias = jax.Device
+if TYPE_CHECKING:
+    # ``jax.Device`` is a nanobind class that type checkers resolve to a plain
+    # variable through the public alias, so point them at the defining module.
+    from jaxlib._jax import Device
+else:
+    Device = jax.Device
+
+# Scalars: a Python number or a 0-d JAX array. Traced JAX scalars are
+# ``Array``s, so anything that may be staged under ``jit`` should be typed
+# as ``Scalar`` rather than ``float``.
+Scalar: TypeAlias = float | int | Array
+ScalarLike: TypeAlias = float | int | ArrayLike
+Shape: TypeAlias = tuple[int, ...] | Sequence[int]
 
 # Keys: support both typed-key dtype and legacy uint32[..., key_bits]
 RngKey: TypeAlias = Array  # use runtime guards below to distinguish
@@ -66,12 +83,17 @@ _KEY_BITS_SHAPE = jax.random.key_data(jax.random.key(0)).shape[-1]  # usually 2
 
 # ---------------- PyTree typing ----------------
 T = TypeVar("T")
-U = TypeVar("U")
-PyTree: TypeAlias = (
-    T | None | tuple["PyTree[T]", ...] | list["PyTree[T]"] | Mapping[Any, "PyTree[T]"]
-)
+#: A pytree whose leaves have type ``T``.
+#:
+#: The container branches are deliberately loose: a recursive generic alias
+#: (the textbook ``tuple["PyTree[T]", ...] | ...``) cannot be resolved by
+#: type checkers, which then rejects every pytree at the call site. Naming
+#: the leaf type and keeping the containers permissive keeps the alias usable.
+PyTree: TypeAlias = Union[T, None, tuple[Any, ...], list[Any], Mapping[Any, Any]]
 Leaf: TypeAlias = Array | float | int | bool
 AnyTree: TypeAlias = PyTree[Leaf]
+ArrayTree: TypeAlias = PyTree[Array]
+ArrayLikeTree: TypeAlias = PyTree[ArrayLike]
 
 
 SDEIntResult: TypeAlias = Union[
