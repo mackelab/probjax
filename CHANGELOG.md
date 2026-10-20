@@ -101,6 +101,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   use the probjax copies
 
 ### Changed
+- The packages below are now fully annotated and pass `pyright` cleanly:
+  `probjax.utils`, `probjax.core`, `probjax.inference` and `probjax.stats`
+  (368 pyright errors before, 0 after). The shared `PyTree` alias is no
+  longer a recursive generic (which no type checker could resolve, so
+  `PyTree[Array]` rejected every pytree at every call site); it now names
+  the leaf type and keeps the containers permissive. `probjax.utils` also
+  gains the `Scalar`, `ScalarLike`, `Shape`, `ArrayTree` and `ArrayLikeTree`
+  aliases
 - **Breaking:** filtering internals re-layered to remove circular imports
   (no aliases): model types live in `filtering.state_space`, observation
   validation in `filtering.observations` (`validate_observations`), and shared
@@ -231,6 +239,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ravel_args` are unchanged
 
 ### Fixed
+- `mixture.ppf` raised `AttributeError` (`jax.scipy.optimize.root` does not
+  exist); it now bisects on the CDF, like `mixture_kernel` already did
+- `norm.moment` raised `AttributeError` (`jnp.math.comb` never existed) and
+  passed a list to `jnp.sum`
+- The 1-D Wasserstein distance raised `AttributeError` (`jnp.trapz` was
+  removed from JAX; it is now `jnp.trapezoid`)
+- `t.sf`/`t.isf`/`t.logcdf`, `uniform.sf`/`uniform.isf` and `pareto.isf`
+  raised `AttributeError`: those functions are not in `jax.scipy.stats`. The
+  t-distribution has no CDF in probjax, so its `sf`/`isf`/`logcdf` now raise
+  the same clear `NotImplementedError` as its `cdf`/`ppf`; the uniform and
+  Pareto compute theirs from `cdf`/`ppf`
+- `inverse(fun, static_argnums=1)` raised `TypeError` because
+  `static_argnums` was sorted as if it were a sequence
 - Iterative `linear_operator.solve` is structurally linear in the right-hand
   side again (needed to transpose it, e.g. inside `custom_root`)
 - Newton root finding: the tolerance floor used `finfo.precision` (a digit
