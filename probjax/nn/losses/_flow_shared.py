@@ -6,27 +6,27 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 
+from probjax.utils.jaxutils import where
+
 
 def _prepare_xt_ut(schedule, t: Array, x0: Array, x1: Array, rng) -> tuple:
     """Interpolate inputs and target velocity, injecting schedule noise."""
     xt = schedule.interpolation_fn(t, x0, x1)
 
     noise_scale = schedule.interpolation_noise_fn(t, x0, x1)
-    if noise_scale is not None:
-        assert rng is not None, "rng is required when using interpolation_noise_fn"
-        eps = jax.random.normal(rng, shape=xt.shape)
-        xt = xt + noise_scale * eps
+    if noise_scale is None:
+        return xt, schedule.interpolation_velocity_fn(t, x0, x1)
 
-    u_t = schedule.interpolation_velocity_fn(t, x0, x1)
+    assert rng is not None, "rng is required when using interpolation_noise_fn"
+    eps = jax.random.normal(rng, shape=xt.shape)
+    xt = xt + noise_scale * eps
 
-    if noise_scale is not None:
-        noise_velocity = schedule.interpolation_noise_velocity_fn(t, x0, x1)
-        if noise_velocity is None:
-            raise ValueError(
-                "interpolation_noise_velocity_fn must be provided when noise is "
-                "enabled."
-            )
-        u_t = u_t + noise_velocity * eps
+    noise_velocity = schedule.interpolation_noise_velocity_fn(t, x0, x1)
+    if noise_velocity is None:
+        raise ValueError(
+            "interpolation_noise_velocity_fn must be provided when noise is enabled."
+        )
+    u_t = schedule.interpolation_velocity_fn(t, x0, x1) + noise_velocity * eps
 
     return xt, u_t
 
@@ -63,7 +63,7 @@ def _reduce_diff(
         loss = loss * weight
 
     if loss_mask is not None:
-        loss = jnp.where(~loss_mask, loss, 0.0)
+        loss = where(~loss_mask, loss, 0.0)
 
     if weight_fn:
         loss = loss * weight_fn(t).reshape(loss.shape)

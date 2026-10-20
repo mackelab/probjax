@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
@@ -36,7 +36,7 @@ class FeedForward(nnx.Module):
         rngs: nnx.Rngs,
     ):
         hidden_features = hidden_features or max(in_features, out_features)
-        linear_kwargs = dict(
+        linear_kwargs: dict[str, Any] = dict(
             dtype=dtype,
             param_dtype=param_dtype,
             precision=precision,

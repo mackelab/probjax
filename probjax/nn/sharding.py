@@ -41,7 +41,7 @@ model parallelism.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax
 from flax.core import spmd as _flax_spmd
@@ -103,7 +103,11 @@ def _active_mesh():
     return None if mesh.empty else mesh
 
 
-def resolve_axes(*axes: Optional[str]) -> Optional[Tuple[Optional[str], ...]]:
+#: A physical mesh axis: a name, or a tuple of names for a multi-axis mesh.
+MeshAxis = Any
+
+
+def resolve_axes(*axes: Optional[str]) -> Optional[Tuple[Optional[MeshAxis], ...]]:
     """Map logical axis names to physical mesh axes.
 
     Uses the active :func:`flax.nnx.logical_axis_rules` when set, else
@@ -118,7 +122,7 @@ def resolve_axes(*axes: Optional[str]) -> Optional[Tuple[Optional[str], ...]]:
     rules = dict(_flax_spmd.get_logical_axis_rules() or default_rules())
     resolved = tuple(
         mesh_axis
-        if (mesh_axis := rules.get(name)) is not None
+        if (mesh_axis := rules.get(name) if name is not None else None) is not None
         and mesh.shape.get(mesh_axis, 1) > 1
         else None
         for name in axes

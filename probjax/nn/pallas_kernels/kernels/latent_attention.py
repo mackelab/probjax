@@ -29,13 +29,15 @@ from __future__ import annotations
 
 import functools
 import math
-from typing import Any
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
 from jax import lax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import triton as plgpu
+
+from probjax.utils.jaxutils import where
 
 from ..kernel_utils import (
     DEFAULT_MASK_VALUE,
@@ -160,7 +162,7 @@ def _mla_forward_kernel(
             else:
                 id_k = None
             mask = mask_fn(span_q, span_k, id_q, id_k)
-            qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
+            qk = where(mask, qk, DEFAULT_MASK_VALUE)
 
         qk *= LOG2E
         m_curr = qk.max(axis=-1)
@@ -181,14 +183,14 @@ def _mla_forward_kernel(
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
-            s_curr = jnp.where(dmask, 0, s_curr / (1 - dropout_rate))
+            s_curr = where(dmask, 0, s_curr / (1 - dropout_rate))
         o_curr = dot(s_curr.astype(v.dtype), v, precision=precision)
         o_next = o_prev_corr + o_curr
         return o_next, m_next, l_next
 
     o, _m_i, l_i = lax.fori_loop(0, pl.cdiv(seq_len, block_k), body, (o, m_i, l_i))
 
-    l_i = jnp.where(l_i == 0.0, 1, l_i)
+    l_i = where(l_i == 0.0, 1, l_i)
     o /= l_i[:, None]
     pallas_store(
         o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask_v
@@ -443,22 +445,25 @@ def _materialized_mla(
     v_head_dim = wv.shape[1] if wv is not None else cache.shape[-1]
     key, value = _materialize_kv(cache, wk, wv, num_heads)
     common = max(key.shape[-1], value.shape[-1])
-    out = mha(
-        q=_pad_head_dim(q, common),
-        k=_pad_head_dim(key, common),
-        v=_pad_head_dim(value, common),
-        mask=mask,
-        bias=bias,
-        rng=rng,
-        sm_scale=sm_scale,
-        block_sizes=block_sizes,
-        backward_pass_impl=backward_pass_impl,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        interpret=interpret,
-        debug=debug,
-        dropout_rate=dropout_rate,
-        dropout_impl=dropout_impl,
+    out = cast(
+        jax.Array,
+        mha(
+            q=_pad_head_dim(q, common),
+            k=_pad_head_dim(key, common),
+            v=_pad_head_dim(value, common),
+            mask=mask,
+            bias=bias,
+            rng=rng,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+        ),
     )
     return out[..., :v_head_dim]
 

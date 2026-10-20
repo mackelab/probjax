@@ -300,9 +300,12 @@ class RAttention(MultiHeadAttention):
                     self.deterministic,
                     error_msg="deterministic is required when dropout is enabled",
                 )
-                if not deterministic and rngs is None:
-                    raise ValueError("rngs is required when dropout is enabled")
-                dropout_rng = None if deterministic else rngs()
+                if deterministic:
+                    dropout_rng = None
+                else:
+                    if rngs is None:
+                        raise ValueError("rngs is required when dropout is enabled")
+                    dropout_rng = rngs()
             else:
                 deterministic = True
                 dropout_rng = None

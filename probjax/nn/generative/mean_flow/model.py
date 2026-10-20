@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Mapping
+from typing import Any, Mapping
 
 import jax
 import jax.numpy as jnp
@@ -24,7 +24,8 @@ from probjax.nn.generative.sampling import (
     make_scan_sample_fn,
 )
 from probjax.nn.losses.mean_flow import build_mean_flow_matching_loss
-from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
+from probjax.utils.jaxutils import where
+from probjax.utils.typing import Array, ArrayLike, ModuleLike, RngKey
 
 
 def _mean_flow_step(model, value, times, inputs):
@@ -67,7 +68,7 @@ class MeanFlowMatcher(GenerativeModel):
         self.mu1 = nnx.Variable(mu1)
         self.std1 = nnx.Variable(std1)
         self.rngs = rngs
-        self._loss_kwargs: dict[str, object] = dict(loss_kwargs or {})
+        self._loss_kwargs: dict[str, Any] = dict(loss_kwargs or {})
 
         if not isinstance(schedule, InterpolationScheduleProtocol):
             raise TypeError("schedule must implement InterpolationScheduleProtocol")
@@ -105,12 +106,12 @@ class MeanFlowMatcher(GenerativeModel):
     def __call__(
         self,
         t: ArrayLike,
-        x: PyTree[Array],
+        x: Array,
         r: ArrayLike | None = None,
         *args,
         rng: jax.Array | None = None,
         **kwargs,
-    ) -> PyTree[Array]:
+    ) -> Array:
         """
         Predicted velocity to time r.
 
@@ -158,12 +159,11 @@ class MeanFlowMatcher(GenerativeModel):
         # at the r == t ties that make up most of the training batch.
         # stop_gradient on the t bound keeps the training-time JVP of this
         # __call__ (tangents dr=0, dt=1) from leaking t's tangent into r.
-        t_bound = jax.lax.stop_gradient(t)
-        if r is None:
-            r: ArrayLike = t
-        else:
-            r = jnp.where(r < t_bound, t_bound, r)
-            r = jnp.where(r > 1.0, 1.0, r)
+        t_bound = jax.lax.stop_gradient(jnp.asarray(t))
+        r_arr = jnp.asarray(t if r is None else r)
+        r_arr = where(r_arr < t_bound, t_bound, r_arr)
+        r_arr = where(r_arr > 1.0, 1.0, r_arr)
+        r = r_arr
 
         x_normed, _, approx_stdt = self.preconditioning.normalize(
             self.schedule, t, x, mu0, mu1, std0, std1
@@ -198,14 +198,15 @@ class MeanFlowMatcher(GenerativeModel):
                 ``loss_kwargs["imf"]`` if set, else True. Pass False (or
                 ``loss_kwargs={"imf": False}``) for the original objective.
         """
-        if imf is None:
-            imf = self._loss_kwargs.get("imf", True)
+        use_imf = (
+            bool(imf) if imf is not None else bool(self._loss_kwargs.get("imf", True))
+        )
         build_kwargs = {k: v for k, v in self._loss_kwargs.items() if k != "imf"}
         loss_fn = build_mean_flow_matching_loss(
             self,
             schedule=self.schedule,
             weight_fn=None,
-            imf=imf,
+            imf=use_imf,
             **build_kwargs,
         )
 
@@ -237,6 +238,10 @@ class MeanFlowMatcher(GenerativeModel):
         t_max: float = 1.0,
         num_steps: int | None = None,
     ) -> Array:
+        if self.solver_cfg is None:
+            raise ValueError(
+                "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
+            )
         return self.solver_cfg.solve_schedule(
             t_min=t_min, t_max=t_max, num_steps=num_steps
         )
@@ -250,6 +255,7 @@ class MeanFlowMatcher(GenerativeModel):
         num_steps: int | None = None,
         dtype=jnp.float32,
         inputs_spec=None,
+        **kwargs,
     ) -> _ExportedSampler:
         """Build and cache a mean-flow sampler with symbolic batch size.
 
@@ -315,6 +321,8 @@ class LinearMeanFlow(MeanFlowMatcher):
             loss_kwargs=loss_kwargs,
         )
 
-    def solve_schedule(self, num_steps: int = 50) -> Array:
-        ts = jnp.linspace(0, 1, num_steps)
-        return ts
+    def solve_schedule(
+        self, t_min: float = 0.0, t_max: float = 1.0, num_steps: int | None = None
+    ) -> Array:
+        steps = 50 if num_steps is None else num_steps
+        return jnp.linspace(t_min, t_max, steps)

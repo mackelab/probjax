@@ -1,4 +1,5 @@
 import math
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -136,7 +137,7 @@ class Flip(nnx.Module):
         self,
         axis: int = -1,
         *,
-        rngs: nnx.Rngs = None,
+        rngs: Optional[nnx.Rngs] = None,
     ):
         """Flip module that reverses elements along a specified axis.
 
@@ -171,7 +172,7 @@ class Permute(nnx.Module):
         permutation: Array,
         axis: int = -1,
         *,
-        rngs: nnx.Rngs = None,
+        rngs: Optional[nnx.Rngs] = None,
     ):
         """Permutation module that reorders elements along a specified axis.
 

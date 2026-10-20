@@ -89,7 +89,7 @@ def build_score_matching_loss(
     """
     model_jac_fn = jac_fn(model_fn)
 
-    def loss_fn(*args, rng=None, **kwargs):
+    def loss_fn(*args, rng: Array | None = None, **kwargs):
         """Compute score matching loss.
 
         Args:
@@ -143,7 +143,9 @@ def build_time_dependent_score_matching_loss(
     """
     model_jac_fn = jac_fn(model_fn)
 
-    def loss_fn(times: Array, xs_target: Array, *args, rng=None, **kwargs):
+    def loss_fn(
+        times: Array, xs_target: Array, *args, rng: Array | None = None, **kwargs
+    ):
         """Compute time-dependent score matching loss.
 
         Args:
@@ -156,7 +158,7 @@ def build_time_dependent_score_matching_loss(
         Returns:
             Scalar loss value
         """
-        _require_rng(rng)
+        rng = _require_rng(rng)
         xs_t, _eps = _perturb(mean_fn, std_fn, times, xs_target, rng)
 
         _weight = _resolve_weight(weight_fn, times)

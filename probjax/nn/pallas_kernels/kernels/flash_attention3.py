@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import functools
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import jax
 import jax.numpy as jnp
@@ -26,7 +26,7 @@ try:
 except Exception:  # pragma: no cover - depends on local jax build
     cuda_versions = None
 
-try:
+if TYPE_CHECKING:
     from jax.experimental.pallas.ops.gpu import attention_mgpu as _attention_mgpu
     from jax.experimental.pallas.ops.gpu.attention_mgpu import (
         TuningConfig,
@@ -38,13 +38,27 @@ try:
         attention_with_pipeline_emitter as _attention_with_pipeline_emitter_impl,
     )
 
-    _FLASH3_IMPORT_ERROR = None
-except Exception as exc:  # pragma: no cover - depends on local jax build
-    _attention_mgpu = None
-    TuningConfig = Any  # type: ignore[assignment]
-    _attention_impl = None
-    _attention_with_pipeline_emitter_impl = None
-    _FLASH3_IMPORT_ERROR = exc
+    _FLASH3_IMPORT_ERROR: Exception | None = None
+else:
+    try:
+        from jax.experimental.pallas.ops.gpu import attention_mgpu as _attention_mgpu
+        from jax.experimental.pallas.ops.gpu.attention_mgpu import (
+            TuningConfig,
+        )
+        from jax.experimental.pallas.ops.gpu.attention_mgpu import (
+            attention as _attention_impl,
+        )
+        from jax.experimental.pallas.ops.gpu.attention_mgpu import (
+            attention_with_pipeline_emitter as _attention_with_pipeline_emitter_impl,
+        )
+
+        _FLASH3_IMPORT_ERROR = None
+    except Exception as exc:  # pragma: no cover - depends on local jax build
+        _attention_mgpu = None
+        TuningConfig = Any
+        _attention_impl = None
+        _attention_with_pipeline_emitter_impl = None
+        _FLASH3_IMPORT_ERROR = exc
 
 
 _attention_forward_impl = (
@@ -164,7 +178,7 @@ def _run_flash_forward_raw(q, k, v, *, config, save_residuals, use_pipeline_emit
         implementation = _attention_forward_impl or _attention_impl
     if implementation is None:
         raise RuntimeError("This JAX build does not provide the Flash3 forward kernel.")
-    result = implementation(q, k, v, config=config, save_residuals=save_residuals)
+    result: Any = implementation(q, k, v, config=config, save_residuals=save_residuals)
     if save_residuals:
         out, (lse,) = result
         return out, lse
@@ -173,12 +187,13 @@ def _run_flash_forward_raw(q, k, v, *, config, save_residuals, use_pipeline_emit
 
 def _run_flash_backward_raw(do, q, k, v, out, lse, *, config):
     if _attention_backward_impl is None:
-        if _attention_impl is None:
+        attention_impl = _attention_impl
+        if attention_impl is None:
             raise RuntimeError(
                 "This JAX build does not provide the Flash3 backward kernel."
             )
         _, pullback = jax.vjp(
-            lambda q, k, v: _attention_impl(
+            lambda q, k, v: attention_impl(
                 q, k, v, config=config, save_residuals=False
             ),
             q,

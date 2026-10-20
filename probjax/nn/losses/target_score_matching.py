@@ -47,8 +47,8 @@ def build_target_score_matching_loss(
     axis: int = -1,
     reduction_fn: Callable = jnp.mean,
 ):
-    def loss_fn(*args, rng=None, **kwargs):
-        _require_rng(rng)
+    def loss_fn(*args, rng: Array | None = None, **kwargs):
+        rng = _require_rng(rng)
         shape = args[argnums].shape
         eps = _sample_eps(rng, shape)
 
@@ -79,8 +79,8 @@ def build_time_dependent_target_score_matching_loss(
     axis: int = -1,
     reduction_fn: Callable = jnp.mean,
 ) -> Callable:
-    def loss_fn(times, *args, rng=None, **kwargs):
-        _require_rng(rng)
+    def loss_fn(times, *args, rng: Array | None = None, **kwargs):
+        rng = _require_rng(rng)
         x = args[argnums]
         mean = mean_fn(times, x)
         std_t = std_fn(times, x)

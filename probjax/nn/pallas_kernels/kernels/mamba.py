@@ -11,7 +11,7 @@
 """Pallas kernels for use with Mamba models."""
 
 import functools
-from typing import NamedTuple
+from typing import NamedTuple, cast
 
 import jax
 from jax import lax
@@ -894,7 +894,9 @@ def _mamba_scan_op(x, a, b, c, delta, d, seq_tile_size, dim_tile_size):
 
 
 def _mamba_scan_op_fwd(x, a, b, c, delta, d, seq_tile_size, dim_tile_size):
-    y = _mamba_scan_op(x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
+    y = cast(
+        jax.Array, _mamba_scan_op(x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
+    )
     return y, (x, a, b, c, delta, d)
 
 
@@ -1094,6 +1096,8 @@ def compute_mamba_scan(
     )
     a, d = (_pad_to_multiple(arg, divisor=dim_tile_size, axis=1) for arg in [a, d])
 
-    y = _mamba_scan_op(x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
+    y = cast(
+        jax.Array, _mamba_scan_op(x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
+    )
     # Remove zero-padding if any.
     return y[:, :seqlen, :inner]

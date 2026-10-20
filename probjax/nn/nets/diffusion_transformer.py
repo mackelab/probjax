@@ -135,7 +135,9 @@ class DiffusionTransformer(Transformer):
         t = jnp.broadcast_to(t, batch_shape + (1,))
         return self.time_mlp(self.time_fourier(t))
 
-    def __call__(
+    # The diffusion transformer is called as (t, x), not with the base class's
+    # (q, k, v) convention, so the override deliberately narrows the signature.
+    def __call__(  # pyright: ignore[reportIncompatibleMethodOverride]
         self, t, x, r=None, context=None, local_context=None, *, rng=None, **kwargs
     ):
         if x.ndim < 2 or x.shape[-1] != self.features:

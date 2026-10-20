@@ -60,7 +60,7 @@ class AutoregressiveMLP(nnx.Module):
         *,
         context_features: Optional[int] = None,
         hidden_dims: Sequence[int] = [50, 50],
-        norm_cls: Optional[nnx.LayerNorm | nnx.BatchNorm | nnx.Module] = None,
+        norm_cls: Optional[type[nnx.Module]] = None,
         activation=jax.nn.gelu,
         activate_final: bool = False,
         init_last_layer_to_zero: bool = True,
@@ -87,8 +87,9 @@ class AutoregressiveMLP(nnx.Module):
         )
 
         if init_last_layer_to_zero:
-            assert hasattr(self.masked_mlp, "layers"), 'mlp_cls must have a "layers"'
-            last_kernel = self.masked_mlp.layers[-1].kernel
+            layers = getattr(self.masked_mlp, "layers", None)
+            assert layers is not None, 'mlp_cls must have a "layers"'
+            last_kernel = layers[-1].kernel
             last_kernel[...] = jnp.zeros_like(last_kernel[...])
 
     def predict_bij_params(
@@ -250,7 +251,7 @@ class AutoregressiveTransformer(nnx.Module):
             self.transformer.model_dim,
         )
         for block in self.transformer.attention_blocks:
-            block.init_cache(cache_input_shape, dtype=dtype)
+            block.init_cache(cache_input_shape, dtype=dtype)  # type: ignore
 
     def decode_hidden(self, token, pos, context=None, k=None, v=None, **kwargs):
         """Single-token transformer forward with the KV cache.
@@ -303,7 +304,8 @@ class AutoregressiveTransformer(nnx.Module):
     def forward(
         self, x: jax.Array, context=None, k=None, v=None, inverse_impl="naive", **kwargs
     ):
-        if self.bijector is None:
+        bijector = self.bijector
+        if bijector is None:
             raise ValueError(
                 "This AutoregressiveTransformer was built without a bijector "
                 "(conditioner-only use); forward is not available."
@@ -328,7 +330,7 @@ class AutoregressiveTransformer(nnx.Module):
                     (0,) * (x.ndim - 2) + (i, 0),
                     (1,) * (x.ndim - 2) + (1, x.shape[-1]),
                 )
-                x_new_i = self.bijector(bij_params_i, x_i)
+                x_new_i = bijector(bij_params_i, x_i)
                 x = x.at[..., i, :].set(x_new_i[..., 0, :])
                 return x, None
 
@@ -356,7 +358,7 @@ class AutoregressiveTransformer(nnx.Module):
                 bij_params_i = self.decode_params(token, i, context, k, v, **kwargs)
 
                 x_i = Tx[..., i : i + 1, :]
-                x_new_i = self.bijector(bij_params_i, x_i)
+                x_new_i = bijector(bij_params_i, x_i)
                 Tx = Tx.at[..., i, :].set(x_new_i[..., 0, :])
 
             return Tx

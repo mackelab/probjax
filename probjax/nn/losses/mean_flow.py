@@ -15,6 +15,7 @@ from probjax.utils.protocols import (
     ReductionFn,
     TimeDependentModelFn,
     WeightFn,
+    mean_reduction,
 )
 
 
@@ -102,7 +103,7 @@ def build_mean_flow_matching_loss(
     schedule: "InterpolationScheduleProtocol",
     weight_fn: WeightFn | None = None,
     metric_fn: Callable[[Array, Array], Array] | None = None,
-    reduction_fn: ReductionFn = jnp.mean,
+    reduction_fn: ReductionFn = mean_reduction,
     imf: bool = True,
 ) -> LossFn:
     """Build a mean flow matching loss function.
@@ -119,7 +120,7 @@ def build_mean_flow_matching_loss(
         x0,
         x1,
         *args,
-        rng=None,
+        rng: Array | None = None,
         loss_mask=None,
         adaptive_weight_p: float = 0.0,
         adaptive_weight_eps: float = 1e-3,

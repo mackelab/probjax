@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional, cast
 
 import jax
 import jax.numpy as jnp
@@ -15,9 +15,9 @@ __all__ = [
 
 
 def base_sliced_score_matching_loss(
-    model_fn_and_jvp: ModelFn | TimeDependentModelFn,
+    model_fn_and_jvp: Callable[..., tuple[Array, Array, Array | None]],
     slice_dist: Callable,
-    vmap_in_args: Sequence[int],
+    vmap_in_args: tuple[int, ...],
     weight: Optional[ArrayLike],
     axis: int,
     argnums: int,
@@ -110,7 +110,7 @@ def build_sliced_score_matching_loss(
         reg = tikhonov * jnp.sum((jvp * v) ** 2, axis) if tikhonov is not None else None
         return sliced_value, sliced_jvp, reg
 
-    def loss_fn(*args, rng=None, **kwargs):
+    def loss_fn(*args, rng: Array | None = None, **kwargs):
         """Compute sliced score matching loss.
 
         Args:
@@ -121,7 +121,7 @@ def build_sliced_score_matching_loss(
         Returns:
             Scalar loss value
         """
-        _require_rng(rng)
+        rng = _require_rng(rng)
         vmap_in_args = (0,) * len(args)
         losses = base_sliced_score_matching_loss(
             value_and_jvp,
@@ -169,7 +169,9 @@ def build_time_dependent_sliced_score_matching_loss(
         A loss function that takes time and inputs and returns a scalar loss value
     """
 
-    def loss_fn(times: Array, xs_target: Array, *args, rng=None, **kwargs):
+    def loss_fn(
+        times: Array, xs_target: Array, *args, rng: Array | None = None, **kwargs
+    ):
         """Compute time-dependent sliced score matching loss.
 
         Args:
@@ -182,15 +184,17 @@ def build_time_dependent_sliced_score_matching_loss(
         Returns:
             Scalar loss value
         """
-        _require_rng(rng)
+        rng = _require_rng(rng)
         rng_samples, rng_slices = jax.random.split(rng)
         xs_target, _eps = _perturb(mean_fn, std_fn, times, xs_target, rng_samples)
 
         weight = _resolve_weight(weight_fn, times)
         vmap_in_args = (0,) * len(args)
 
+        # The base helper unpacks a (value, jvp, reg) triple, so the model
+        # handed to it has to return one.
         loss = base_sliced_score_matching_loss(
-            model,
+            cast(Callable[..., tuple[Array, Array, Array | None]], model),
             slice_dist,
             vmap_in_args,
             weight,

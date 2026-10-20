@@ -1,6 +1,6 @@
 import math
 import numbers
-from typing import Optional, Sequence
+from typing import Optional, Sequence, cast
 
 import jax
 import jax.numpy as jnp
@@ -146,7 +146,9 @@ class RotaryPosEncode(nnx.Module):
             if isinstance(spatial_shape, numbers.Integral):
                 parsed_shape = (int(spatial_shape),)
             else:
-                parsed_shape = tuple(int(dim) for dim in spatial_shape)
+                parsed_shape = tuple(
+                    int(dim) for dim in cast(Sequence[int], spatial_shape)
+                )
             if not parsed_shape:
                 raise ValueError("spatial_shape must contain at least one dimension")
             if spatial_ndims is not None and int(spatial_ndims) != len(parsed_shape):
@@ -348,7 +350,7 @@ class RotaryPosEncode(nnx.Module):
         elif isinstance(spatial_shape, numbers.Integral):
             dims = (int(spatial_shape),)
         else:
-            dims = tuple(int(d) for d in spatial_shape)
+            dims = tuple(int(d) for d in cast(Sequence[int], spatial_shape))
         if not dims:
             raise ValueError("spatial_shape must contain at least one dimension")
         if len(dims) != self.spatial_ndims:

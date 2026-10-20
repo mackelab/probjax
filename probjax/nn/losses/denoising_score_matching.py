@@ -17,6 +17,7 @@ from probjax.utils.protocols import (
     TimeDependentFn,
     TimeDependentModelFn,
     WeightFn,
+    mean_reduction,
 )
 
 __all__ = [
@@ -64,7 +65,7 @@ def base_denoising_score_matching_loss(
         cv = control_variate_taylor(model_fn, eps, std, axis, argnums, *args, **kwargs)
         beta = control_variate_scaling(loss, cv)
         loss = loss - beta * cv
-    loss = loss * weight if weight is not None else std**2 * loss
+    loss = loss * weight if weight is not None else jnp.asarray(std) ** 2 * loss
     return loss
 
 
@@ -125,7 +126,7 @@ def build_denoising_score_matching_loss(
     argnums: int = 0,
     axis: int = -1,
     control_variate: bool = False,
-    reduction_fn: ReductionFn = jnp.mean,
+    reduction_fn: ReductionFn = mean_reduction,
 ) -> LossFn:
     """Build a denoising score matching loss function.
 
@@ -142,8 +143,8 @@ def build_denoising_score_matching_loss(
         A loss function that takes inputs and returns a scalar loss value
     """
 
-    def loss_fn(*args, rng=None, **kwargs):
-        _require_rng(rng)
+    def loss_fn(*args, rng: Array | None = None, **kwargs):
+        rng = _require_rng(rng)
         shape = args[argnums].shape
         eps = _sample_eps(rng, shape)
 
@@ -166,7 +167,7 @@ def build_time_dependent_denoising_score_matching_loss(
     argnums: int = 0,
     axis: int = -1,
     control_variate: bool = False,
-    reduction_fn: ReductionFn = jnp.mean,
+    reduction_fn: ReductionFn = mean_reduction,
 ) -> LossFn:
     """Build a time-dependent denoising score matching loss function.
 
@@ -184,8 +185,8 @@ def build_time_dependent_denoising_score_matching_loss(
         A loss function that takes time and inputs and returns a scalar loss value
     """
 
-    def loss_fn(times, *args, rng=None, **kwargs):
-        _require_rng(rng)
+    def loss_fn(times, *args, rng: Array | None = None, **kwargs):
+        rng = _require_rng(rng)
         x = args[argnums]
         mean = mean_fn(times, x)
         std_t = std_fn(times, x)

@@ -12,7 +12,7 @@ training history: they serialise with the model, travel through
 :meth:`StandardizingMixin.standardization`.
 """
 
-from typing import Tuple
+from typing import Callable, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -20,6 +20,7 @@ from flax import nnx
 
 from probjax.nn.training import is_batch_stream, take_batches
 from probjax.utils.guards import is_mapping, is_tracing
+from probjax.utils.jaxutils import where
 
 __all__ = ["StandardizingMixin"]
 
@@ -52,6 +53,9 @@ class StandardizingMixin:
     which is what keeps ``logpdf`` a proper density rather than a density of
     the standardised variable.
     """
+
+    # Provided by the generative model base class.
+    _clear_distribution_cache: Callable[[], None]
 
     def _init_standardization(self, input_dim: int, standardize: bool = True) -> None:
         self.standardize = bool(standardize)
@@ -107,7 +111,7 @@ class StandardizingMixin:
             shift = jnp.mean(data, axis=0)
             scale = jnp.std(data, axis=0)
             # Constant columns keep unit scale so the map remains invertible.
-            scale = jnp.where(scale > 1e-6, scale, 1.0)
+            scale = where(scale > 1e-6, scale, 1.0)
             return (
                 shift.astype(self._std_shift.dtype),
                 scale.astype(self._std_scale.dtype),

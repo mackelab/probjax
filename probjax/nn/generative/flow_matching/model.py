@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Mapping, Tuple
+from typing import Any, Mapping, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -95,7 +95,7 @@ class FlowMatcher(GenerativeModel):
         self.mu1 = nnx.Variable(mu1)
         self.std1 = nnx.Variable(std1)
 
-        self._loss_kwargs: dict[str, object] = dict(loss_kwargs or {})
+        self._loss_kwargs: dict[str, Any] = dict(loss_kwargs or {})
 
     def _normalize_event_spec(self, event_spec, dtype=None):
         spec = super()._normalize_event_spec(event_spec, dtype)
@@ -115,11 +115,11 @@ class FlowMatcher(GenerativeModel):
     def __call__(
         self,
         t: ArrayLike,
-        x: PyTree[Array],
+        x: Array,
         *args,
         rng: jax.Array | None = None,
         **kwargs,
-    ) -> PyTree[Array]:
+    ) -> Array:
         """Forward pass of the model - v-prediction.
 
         Uses a Gaussian closed-form preconditioning scheme. For endpoints
@@ -173,7 +173,7 @@ class FlowMatcher(GenerativeModel):
             "Implemented only for specific implementation of this base class"
         )
 
-    def denoise(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
+    def denoise(self, t: ArrayLike, x: Array) -> Array:
         """Denoise the input x at time t."""
         raise NotImplementedError(
             "Implemented only for specific implementation of this base class"
@@ -244,6 +244,7 @@ class FlowMatcher(GenerativeModel):
         collect_trace: bool = False,
         dtype=jnp.float32,
         inputs_spec=None,
+        **kwargs,
     ) -> _ExportedSampler:
         """Build and cache an ODE sampler with symbolic batch size.
 
@@ -313,7 +314,7 @@ class LinearFlow(FlowMatcher):
             loss_kwargs=loss_kwargs,
         )
 
-    def denoise(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
+    def denoise(self, t: ArrayLike, x: Array) -> Array:
         # x0 is noise
         # x1 is data
         # xt = (1 - t) * x0 + t * x1
@@ -329,9 +330,7 @@ class LinearFlow(FlowMatcher):
 
         return jax.tree_util.tree_map(denoise_leaf, x, v)
 
-    def score(
-        self, t: ArrayLike, x: PyTree[Array], max_t: float = 1 - 1e-3
-    ) -> PyTree[Array]:
+    def score(self, t: ArrayLike, x: Array, max_t: float = 1 - 1e-3) -> Array:
         # We can recover a "denoiser" so we can use it to get the score
         # using Tweedie's formula
         # Pertubration kernel is given by

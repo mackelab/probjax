@@ -49,6 +49,8 @@ def _gaussian_logpdf_sum(x: PyTree[Array], mean: PyTree[Array], std: Array) -> A
         term = -0.5 * ((xl - ml) / std) ** 2 - jnp.log(std) - 0.5 * _LOG_2PI
         reduced = _sum_event_dims(term)
         total = reduced if total is None else total + reduced
+    if total is None:
+        raise ValueError("x and mean must contain at least one leaf.")
     return total
 
 

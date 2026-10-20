@@ -5,12 +5,14 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
+from probjax.utils.jaxutils import where
 from probjax.utils.protocols import (
     LossFn,
     ModelFn,
     ReductionFn,
     TimeDependentModelFn,
     WeightFn,
+    mean_reduction,
 )
 
 __all__ = ["build_denoising_loss", "build_time_dependent_denoising_loss"]
@@ -54,13 +56,13 @@ def _finalize_loss(
     rebalance_loss: bool = False,
 ) -> Array:
     if loss_mask is not None:
-        loss = jnp.where(~loss_mask, loss, jnp.zeros_like(loss))
+        loss = where(~jnp.asarray(loss_mask), loss, jnp.zeros_like(loss))
     if weight is not None:
         loss = loss * weight
     if rebalance_loss and loss_mask is not None:
         keep = jnp.broadcast_to(~jnp.asarray(loss_mask, dtype=bool), loss.shape)
         num_elements = jnp.sum(keep, axis=axis)
-        loss = jnp.where(
+        loss = where(
             num_elements > 0,
             jnp.sum(loss, axis=axis) / jnp.maximum(num_elements, 1),
             0.0,
@@ -124,8 +126,8 @@ def _apply_noise_mask(
             "noise_mask must be broadcastable to the clean sample shape"
         ) from exc
 
-    x_noisy_masked = jnp.where(mask, x_noisy, x0)
-    eps_masked = jnp.where(mask, eps, jnp.zeros_like(eps))
+    x_noisy_masked = where(mask, x_noisy, x0)
+    eps_masked = where(mask, eps, jnp.zeros_like(eps))
     return x_noisy_masked, eps_masked
 
 
@@ -155,7 +157,7 @@ def build_denoising_loss(
     weight: Optional[ArrayLike] = None,
     argnums: int = 0,
     axis: int | tuple[int, ...] | None = -1,
-    reduction_fn: ReductionFn = jnp.mean,
+    reduction_fn: ReductionFn = mean_reduction,
     prediction_target: str = "x0",
 ) -> LossFn:
     """Build a denoising loss function with configurable prediction targets.
@@ -185,7 +187,7 @@ def build_denoising_loss(
 
     def loss_fn(
         *args,
-        rng=None,
+        rng: Array | None = None,
         loss_mask=None,
         noise_mask=None,
         adaptive_weight_p=0.0,
@@ -246,7 +248,7 @@ def build_time_dependent_denoising_loss(
     std_fn: Callable[[ArrayLike], Array],
     weight_fn: WeightFn,
     argnums: int = 0,
-    reduction_fn: ReductionFn = jnp.mean,
+    reduction_fn: ReductionFn = mean_reduction,
     prediction_target: str = "x0",
 ) -> LossFn:
     """Build a time-dependent denoising loss with shared prediction logic.
@@ -273,7 +275,7 @@ def build_time_dependent_denoising_loss(
     def loss_fn(
         t,
         *args,
-        rng=None,
+        rng: Array | None = None,
         loss_mask=None,
         noise_mask=None,
         adaptive_weight_p=0.0,

@@ -132,7 +132,6 @@ class TimeMLP(nnx.Module):
         self.features = features
         self.context_dim = context_dim
 
-
         self.time_fourier = fourier_cls(
             1,
             fourier_dim,

@@ -9,7 +9,7 @@ accepting explicit ``bijector`` / ``conditioner`` / ``mixing`` overrides.
 """
 
 from functools import partial
-from typing import Any, Callable, Optional
+from typing import Any, Callable, ClassVar, Literal, Optional
 
 import jax
 import jax.numpy as jnp
@@ -103,7 +103,8 @@ class NormalizingFlow(StandardizingMixin, GenerativeModel):
         event = getattr(base_dist, "event_shape", None)
         flat = event is not None and len(tuple(event)) == 1
         self._init_standardization(
-            int(tuple(event)[0]) if flat else 1, standardize and bool(flat)
+            int(tuple(event)[0]) if event is not None and flat else 1,
+            standardize and bool(flat),
         )
         super().__init__()
 
@@ -143,6 +144,7 @@ class NormalizingFlow(StandardizingMixin, GenerativeModel):
         *,
         dtype=jnp.float32,
         inputs_spec=None,
+        **kwargs,
     ) -> _ExportedSampler:
         """Build and cache a shape-polymorphic flow sampler.
 
@@ -183,20 +185,14 @@ class NormalizingFlow(StandardizingMixin, GenerativeModel):
             event_spec = tuple(int(size) for size in self.base_dist.event_shape)
 
         def make_logpdf_fn(graphdef):
-            if inputs_spec is None:
-
-                def logpdf_fn(current_state, value):
-                    model = nnx.merge(graphdef, current_state)
+            def logpdf_fn(current_state, value, inputs=None):
+                model = nnx.merge(graphdef, current_state)
+                if inputs is None:
                     return jax.vmap(model._logpdf)(value)
-
-            else:
-
-                def logpdf_fn(current_state, value, inputs):
-                    model = nnx.merge(graphdef, current_state)
-                    context = context_only(inputs, "Normalizing flow")
-                    return jax.vmap(
-                        lambda item, condition: model._logpdf(item, context=condition)
-                    )(value, context)
+                context = context_only(inputs, "Normalizing flow")
+                return jax.vmap(
+                    lambda item, condition: model._logpdf(item, context=condition)
+                )(value, context)
 
             return logpdf_fn
 
@@ -309,21 +305,26 @@ def _build_layer_fn(config: NFlowConfig) -> Callable[..., nnx.Module]:
     params_dim = bijector.params_dim()
 
     if isinstance(config, CouplingNFlowConfig):
-        transformed_dims = config.input_dim - config.split_index
+        split_index = config.split_index
+        if split_index is None:
+            split_index = config.input_dim // 2
+        transformed_dims = config.input_dim - split_index
         blocked = _blockwise(bijector, transformed_dims)
 
-        def layer_fn(*, rngs):
+        def coupling_layer_fn(*, rngs):
             return config.conditioner.build_coupling(
-                config.split_index,
+                split_index,
                 transformed_dims * params_dim,
                 blocked,
                 context_features=config.context_features,
                 rngs=rngs,
             )
 
-    elif isinstance(config, AutoregressiveNFlowConfig):
+        return coupling_layer_fn
 
-        def layer_fn(*, rngs):
+    if isinstance(config, AutoregressiveNFlowConfig):
+
+        def autoregressive_layer_fn(*, rngs):
             return config.conditioner.build_autoregressive(
                 config.input_dim,
                 params_dim,
@@ -333,9 +334,11 @@ def _build_layer_fn(config: NFlowConfig) -> Callable[..., nnx.Module]:
                 rngs=rngs,
             )
 
-    elif isinstance(config, ElementwiseNFlowConfig):
+        return autoregressive_layer_fn
 
-        def layer_fn(*, rngs):
+    if isinstance(config, ElementwiseNFlowConfig):
+
+        def elementwise_layer_fn(*, rngs):
             return ElementwiseMonotone(
                 config.input_dim,
                 params_dim,
@@ -344,13 +347,12 @@ def _build_layer_fn(config: NFlowConfig) -> Callable[..., nnx.Module]:
                 rngs=rngs,
             )
 
-    else:
-        raise TypeError(
-            "config must be a CouplingNFlowConfig, AutoregressiveNFlowConfig or "
-            f"ElementwiseNFlowConfig; got {type(config).__name__}."
-        )
+        return elementwise_layer_fn
 
-    return layer_fn
+    raise TypeError(
+        "config must be a CouplingNFlowConfig, AutoregressiveNFlowConfig or "
+        f"ElementwiseNFlowConfig; got {type(config).__name__}."
+    )
 
 
 def _build_transform_sequence(config: NFlowConfig, rngs, last_transform):
@@ -412,7 +414,7 @@ class NFlow(NormalizingFlow):
 class _CouplingPreset(NFlow):
     """Shared preset constructor for coupling flows."""
 
-    _default_bijector: Callable[[], BijectorConfigProtocol]
+    _default_bijector: ClassVar[Callable[..., BijectorConfigProtocol]]
 
     def __init__(
         self,
@@ -480,7 +482,7 @@ class SplineCouplingFlow(_CouplingPreset):
 class _AutoregressivePreset(NFlow):
     """Shared preset constructor for autoregressive flows."""
 
-    _default_bijector: Callable[[], BijectorConfigProtocol]
+    _default_bijector: ClassVar[Callable[..., BijectorConfigProtocol]]
 
     def __init__(
         self,
@@ -489,7 +491,7 @@ class _AutoregressivePreset(NFlow):
         rngs,
         *,
         context_features: Optional[int] = None,
-        output_order: str = "grouped",
+        output_order: Literal["interleaved", "grouped"] = "grouped",
         bijector: Optional[BijectorConfigProtocol] = None,
         conditioner: Optional[ConditionerConfigProtocol] = None,
         mixing: Optional[MixingConfigProtocol] = None,

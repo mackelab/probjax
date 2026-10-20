@@ -28,6 +28,7 @@ from probjax.nn.export import (
     spec_cache_key,
 )
 from probjax.nn.generative.sampling import (
+    SamplerLike,
     _ExportedSampler,
     _export_sampler,
     sample_normal,
@@ -207,8 +208,12 @@ class GenerativeModel(nnx.Module, FitMixin):
             return self.loss(rng, batch["data"], **extras)
         return self.loss(rng, batch)
 
-    def _distribution_sampler(self, event_spec, **kwargs) -> _ExportedSampler:
-        """Build the family-specific sampling operation."""
+    def _distribution_sampler(self, event_spec, **kwargs) -> SamplerLike:
+        """Build the family-specific sampling operation.
+
+        Each family returns its own sampler type; ``SamplerLike`` is the
+        common contract the distribution view relies on.
+        """
         raise NotImplementedError
 
     def _clear_distribution_cache(self) -> None:

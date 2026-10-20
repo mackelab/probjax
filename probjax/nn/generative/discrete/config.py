@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from probjax.utils.jaxutils import where
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 
@@ -87,7 +88,7 @@ def _sample_unit_interval(
 class CategoricalScheduleProtocol(Protocol):
     num_steps: int
     num_classes: int
-    base_probs: Array
+    base_probs: ArrayLike
     t_min: float
     t_max: float
 
@@ -119,8 +120,6 @@ class CategoricalPreconditioningProtocol(Protocol):
 
 @runtime_checkable
 class CategoricalTrainingConfigProtocol(Protocol):
-    t_min: float
-    t_max: float
     loss_kwargs: Mapping[str, object]
 
     def sample_times(self, rng: RngKey, shape: tuple[int, ...]) -> Array: ...
@@ -408,7 +407,7 @@ class MultinomialDiffusionSchedule(CategoricalScheduleProtocol):
     def q_xt_given_x0_probs(self, x0: Array, t: ArrayLike) -> Array:
         x0_oh = _one_hot(jnp.asarray(x0, dtype=jnp.int32), self.num_classes)
         alpha_bar_t = jnp.asarray(self.alpha_bar(t), dtype=jnp.float32)[..., None]
-        pi = self.base_probs.reshape((1,) * (x0_oh.ndim - 1) + (-1,))
+        pi = jnp.asarray(self.base_probs).reshape((1,) * (x0_oh.ndim - 1) + (-1,))
         return alpha_bar_t * x0_oh + (1.0 - alpha_bar_t) * pi
 
     def q_sample(self, rng: RngKey, x0: Array, t: ArrayLike) -> Array:
@@ -445,7 +444,7 @@ class MultinomialDiffusionSchedule(CategoricalScheduleProtocol):
         alpha_prev = self.alpha_bar(t_prev_flat)[:, None]
         beta_eff = self.beta_between(t_prev_flat, t_flat)[:, None]
 
-        pi = self.base_probs
+        pi = jnp.asarray(self.base_probs)
         pi_j = pi[x_t_flat][:, None]
         onehot_j = jax.nn.one_hot(x_t_flat, self.num_classes, dtype=jnp.float32)
 
@@ -562,7 +561,7 @@ class ImportanceContinuousTimeTrainingConfig(CategoricalTrainingConfigProtocol):
         bin_idx = jnp.searchsorted(cdf, u, side="right")
         bin_idx = jnp.clip(bin_idx, 0, n_bins - 1)
 
-        cdf_prev = jnp.where(bin_idx == 0, 0.0, cdf[bin_idx - 1])
+        cdf_prev = where(bin_idx == 0, 0.0, cdf[bin_idx - 1])
         cdf_curr = cdf[bin_idx]
         u_local = (u - cdf_prev) / jnp.maximum(cdf_curr - cdf_prev, 1e-12)
         u_local = jnp.clip(u_local, 0.0, 1.0 - 1e-7)

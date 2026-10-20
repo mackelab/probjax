@@ -15,6 +15,8 @@ import jax.numpy as jnp
 from jax._src.pallas import primitives as pallas_primitives
 from jax.experimental import pallas as pl
 
+from probjax.utils.jaxutils import where
+
 from ..kernel_utils import pallas_call_compat, use_interpret_mode
 
 
@@ -72,7 +74,7 @@ def _relu2(x: jax.Array) -> jax.Array:
 def _relu2_bwd(y: jax.Array, dy: jax.Array) -> jax.Array:
     y_pos, y_neg = jnp.split(y, 2, axis=-1)
     dy_pos, dy_neg = jnp.split(dy, 2, axis=-1)
-    return jnp.where(y_pos > 0, dy_pos, 0) - jnp.where(y_neg > 0, dy_neg, 0)
+    return where(y_pos > 0, dy_pos, 0) - where(y_neg > 0, dy_neg, 0)
 
 
 def get_feature_map(feature_map: FeatureMap | str) -> FeatureMapFn:

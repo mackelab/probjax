@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 import math
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 import jax
 import jax.numpy as jnp
@@ -223,7 +223,9 @@ class ExpertSwiGLU(nnx.Module):
         if backend is None:
             backend = grouped_backend()
         if backend not in ("mosaic", "triton"):
-            raise ValueError(f"backend must be 'mosaic', 'triton' or None, got {backend!r}")
+            raise ValueError(
+                f"backend must be 'mosaic', 'triton' or None, got {backend!r}"
+            )
         if backend == "mosaic" and not interpret:
             # Hopper: jax's Mosaic-GPU kernels take the sorted rows directly.
             mm = functools.partial(ragged_matmul_hopper, group_sizes=group_sizes)
@@ -231,14 +233,17 @@ class ExpertSwiGLU(nnx.Module):
             h = jax.nn.silu(mm(xs, w_gate)) * mm(xs, w_up)
             return mm(h, w_down).astype(cdt)
         # One VJP for the whole block, saving only inputs: see grouped_swiglu.
-        y = grouped_swiglu(
-            x.astype(cdt),
-            w_gate.astype(cdt),
-            w_up.astype(cdt),
-            w_down.astype(cdt),
-            group_sizes,
-            block_m,
-            interpret,
+        y = cast(
+            Array,
+            grouped_swiglu(
+                x.astype(cdt),
+                w_gate.astype(cdt),
+                w_up.astype(cdt),
+                w_down.astype(cdt),
+                group_sizes,
+                block_m,
+                interpret,
+            ),
         )
         return y.astype(cdt)
 
@@ -278,7 +283,9 @@ class MoELayer(nnx.Module):
         *,
         sparse: bool = True,
         routing: Literal["capacity", "dense", "dropless"] | None = None,
-        dropless_impl: Literal["auto", "pallas", "triton", "mosaic", "ragged_dot"] = "auto",
+        dropless_impl: Literal[
+            "auto", "pallas", "triton", "mosaic", "ragged_dot"
+        ] = "auto",
         kernel_init: Initializer = _expert_init,
         router_init: Initializer = nnx.initializers.lecun_normal(),
         dtype: DTypeLike | None = None,
@@ -427,7 +434,9 @@ class MoELayer(nnx.Module):
                 jax.nn.logsumexp(logits, axis=-1)[:, None] ** 2, token_mask
             )[0],
             expert_counts=counts.astype(jnp.float32),
-            expert_utilization=expert_fractions(expert_ids, self.num_experts, token_mask),
+            expert_utilization=expert_fractions(
+                expert_ids, self.num_experts, token_mask
+            ),
             router_probabilities=_masked_mean(router_probs, token_mask),
             overflow_fraction=jnp.sum(counts - kept) / total,
             capacity_utilization=kept / capacity,

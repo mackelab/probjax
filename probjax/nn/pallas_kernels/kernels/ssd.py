@@ -37,6 +37,8 @@ from jax import lax
 from jax.experimental import pallas as pl
 from jax.interpreters import ad as _ad
 
+from probjax.utils.jaxutils import where
+
 from ..kernel_utils import (
     get_dot_precision,
     pallas_call_compat,
@@ -1085,7 +1087,7 @@ def ssd_linear_scan(
     v: jax.Array,
     log_alpha: jax.Array,
     h0: Union[jax.Array, None] = None,
-) -> jax.Array:
+) -> tuple[jax.Array, jax.Array]:
     """LinearScan based reference implementations for testing SSD kernels.
 
     Args:
@@ -1167,7 +1169,7 @@ def ssd_linear_scan_w_hidden_states(
     v: jax.Array,
     log_alpha: jax.Array,
     h0: Union[jax.Array, None] = None,
-) -> jax.Array:
+) -> tuple[jax.Array, jax.Array]:
     """LinearScan based reference implementations for testing SSD kernels.
 
     This version additionally returns the hidden states of all tokens.
@@ -1241,7 +1243,7 @@ def ssd_linear_scan_w_timestep(
     log_alpha: jax.Array,
     timestep: jax.Array,
     h0=None,
-) -> jax.Array:
+) -> tuple[jax.Array, jax.Array]:
     """LinearScan that takes timestep as input and masks useless k/v based on timestep.
 
     This function is used during inference where decoding might start from different timesteps.
@@ -1268,9 +1270,9 @@ def ssd_linear_scan_w_timestep(
     k = repeat(k, "b ng l dk -> b (ng nhg) l dk", nhg=num_head_per_group)
 
     timestep_mask = jnp.arange(seq_len)[None, :] >= timestep[:, None]
-    k = jnp.where(timestep_mask[:, None, :, None], 0.0, k)
-    v = jnp.where(timestep_mask[:, None, :, None], 0.0, v)
-    log_alpha = jnp.where(timestep_mask[:, None, :], 0.0, log_alpha)
+    k = where(timestep_mask[:, None, :, None], 0.0, k)
+    v = where(timestep_mask[:, None, :, None], 0.0, v)
+    log_alpha = where(timestep_mask[:, None, :], 0.0, log_alpha)
 
     if h0 is None:
         h0 = jnp.zeros((bs, nh, dv, dk), dtype=jnp.float32)

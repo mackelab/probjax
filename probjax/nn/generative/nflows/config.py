@@ -249,7 +249,17 @@ def resolve_hidden_dims(
     return dims
 
 
-def _resolved_model_dim(cfg, in_features: int, out_features: int) -> int:
+class ModelDimConfigProtocol(Protocol):
+    """The fields the token-width rule needs from a transformer config."""
+
+    model_dim: "int | WidthRule"
+    num_heads: int
+    num_examples: Optional[int]
+
+
+def _resolved_model_dim(
+    cfg: ModelDimConfigProtocol, in_features: int, out_features: int
+) -> int:
     """Token width for a transformer conditioner, kept divisible by the head count."""
     if callable(cfg.model_dim):
         width = int(cfg.model_dim(in_features, out_features, cfg.num_examples)[0])
@@ -369,7 +379,8 @@ class ShiftBijectorConfig(BaseBijectorConfig):
     def unpack(self, params: Array) -> Tuple[Array, ...]:
         return (params[..., 0],)
 
-    def apply(self, x: Array, loc: Array) -> Array:
+    def apply(self, x: Array, *natural: Array) -> Array:
+        (loc,) = natural
         return shift(x, loc)
 
 
@@ -404,7 +415,8 @@ class AffineBijectorConfig(BaseBijectorConfig):
             raw_scale, self.min_scale, self.scale_transform, self.max_scale
         )
 
-    def apply(self, x: Array, loc: Array, scale: Array) -> Array:
+    def apply(self, x: Array, *natural: Array) -> Array:
+        loc, scale = natural
         return affine(x, loc, scale)
 
 
@@ -506,7 +518,8 @@ class BaseSplineConfig(BaseBijectorConfig):
 class RationalQuadraticSplineConfig(BaseSplineConfig):
     """Durkan et al. (2019) rational-quadratic spline."""
 
-    def apply(self, x, x_pos, y_pos, knot_slopes):
+    def apply(self, x: Array, *natural: Array) -> Array:
+        x_pos, y_pos, knot_slopes = natural
         return rational_quadratic_spline(x, x_pos, y_pos, knot_slopes, **self._bounds)
 
 
@@ -514,7 +527,8 @@ class RationalQuadraticSplineConfig(BaseSplineConfig):
 class RationalLinearSplineConfig(BaseSplineConfig):
     """Degree-1/1 rational-linear spline (analytic inverse, no square root)."""
 
-    def apply(self, x, x_pos, y_pos, knot_slopes):
+    def apply(self, x: Array, *natural: Array) -> Array:
+        x_pos, y_pos, knot_slopes = natural
         return rational_linear_spline(x, x_pos, y_pos, knot_slopes, **self._bounds)
 
 
@@ -522,7 +536,8 @@ class RationalLinearSplineConfig(BaseSplineConfig):
 class MonotoneHermiteCubicSplineConfig(BaseSplineConfig):
     """Fritsch-Carlson monotone cubic Hermite spline."""
 
-    def apply(self, x, x_pos, y_pos, knot_slopes):
+    def apply(self, x: Array, *natural: Array) -> Array:
+        x_pos, y_pos, knot_slopes = natural
         return monotone_hermite_cubic_spline(
             x, x_pos, y_pos, knot_slopes, **self._bounds
         )
@@ -534,7 +549,8 @@ class PiecewiseAffineSplineConfig(BaseSplineConfig):
 
     _has_slopes: bool = field(default=False, init=False, repr=False)
 
-    def apply(self, x, x_pos, y_pos):
+    def apply(self, x: Array, *natural: Array) -> Array:
+        x_pos, y_pos = natural
         return piecewise_affine_spline(x, x_pos, y_pos, **self._bounds)
 
 
@@ -582,7 +598,8 @@ class DeepSigmoidBijectorConfig(BaseBijectorConfig):
             b + _component_offsets(self.num_components, self.spread, b.dtype),
         )
 
-    def apply(self, x, log_weights, slopes, biases):
+    def apply(self, x: Array, *natural: Array) -> Array:
+        log_weights, slopes, biases = natural
         return deep_sigmoid(x, log_weights, slopes, biases)
 
 
@@ -618,7 +635,8 @@ class UMNNBijectorConfig(BaseBijectorConfig):
             params[..., 3 * k + 1],  # offset
         )
 
-    def apply(self, x, hidden_weights, hidden_biases, out_weights, out_bias, offset):
+    def apply(self, x: Array, *natural: Array) -> Array:
+        hidden_weights, hidden_biases, out_weights, out_bias, offset = natural
         return unconstrained_monotone(
             x,
             hidden_weights,
@@ -668,7 +686,8 @@ class SumOfSquaresBijectorConfig(BaseBijectorConfig):
         norm = jnp.sqrt(_EPS + jnp.sum(coeffs[..., 0] ** 2, axis=-1))
         return coeffs / norm[..., None, None], constant
 
-    def apply(self, x, coefficients, constant):
+    def apply(self, x: Array, *natural: Array) -> Array:
+        coefficients, constant = natural
         return sos_polynomial(x, coefficients, constant, bound=self.bound)
 
 
@@ -694,7 +713,8 @@ class BernsteinBijectorConfig(BaseBijectorConfig):
         # theta: increasing from 0 to 1, length degree + 1
         return (jnp.concatenate([zero, jnp.cumsum(weights, axis=-1)], axis=-1),)
 
-    def apply(self, x, theta):
+    def apply(self, x: Array, *natural: Array) -> Array:
+        (theta,) = natural
         return bernstein(x, theta, bound=self.bound)
 
 
@@ -750,7 +770,8 @@ class MixtureCDFBijectorConfig(BaseBijectorConfig):
             _positive(raw_s, self.min_scale, "tanh", self.max_scale),
         )
 
-    def apply(self, x, log_weights, locs, scales):
+    def apply(self, x: Array, *natural: Array) -> Array:
+        log_weights, locs, scales = natural
         return mixture_cdf(x, log_weights, locs, scales)
 
 
@@ -780,7 +801,7 @@ class ConditionerConfigProtocol(Protocol):
         bijector: Callable,
         *,
         context_features: Optional[int],
-        output_order: str,
+        output_order: Literal["interleaved", "grouped"],
         rngs: nnx.Rngs,
     ) -> nnx.Module: ...
 
