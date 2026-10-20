@@ -4,7 +4,7 @@ from typing import Any, Callable, NamedTuple, Optional, Tuple
 from jax.typing import ArrayLike
 
 from probjax.utils._solver_common import ConfiguredSolver, resolve_solver
-from probjax.utils.jaxutils import API
+from probjax.utils.jaxutils import KernelAPI
 
 METHOD_STEP_FN = {}
 METHOD_INFO = {}
@@ -26,10 +26,25 @@ class SDESolver(NamedTuple):
         return self.step(key, state, dt)
 
 
-class SDESolverAPI(metaclass=API):
+class SDESolverAPI(KernelAPI):
+    """Base class for SDE solvers.
+
+    Subclass it and set ``init`` and ``build_step`` as static methods.
+    ``cls(drift, diffusion, **options)`` builds the solver; ``cls(**options)``
+    returns a :class:`~probjax.utils.jaxutils.Configured` solver to pass as
+    ``sdeint(..., solver=...)``.
+    """
+
+    _kernel_type = SDESolver
+
     @staticmethod
     def init(*args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("init method must be implemented")
+
+    @staticmethod
+    def init_params(*args: Any, **kwargs: Any) -> Any:
+        """SDE solvers have no tunable parameters."""
+        return None
 
     @staticmethod
     def build_step(*args: Any, **kwargs: Any) -> Any:
@@ -47,7 +62,7 @@ class SDESolverAPI(metaclass=API):
         ``cls(drift, diffusion, **options)`` builds it."""
         if drift is None:
             return ConfiguredSolver(cls, tuple(sorted(kwargs.items())))
-        return SDESolver(
+        return cls.kernel_type(
             init=partial(cls.init, drift=drift, diffusion=diffusion),
             step=cls.build_step(drift, diffusion, **kwargs),
         )

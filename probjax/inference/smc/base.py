@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 from dataclasses import asdict, is_dataclass
 from functools import partial
 from typing import Any, Callable
@@ -11,7 +10,11 @@ from blackjax.smc import base as bj_smc_base
 
 from probjax.inference.base import Kernel
 from probjax.utils.guards import has_attrs, params_to_dict
-from probjax.utils.jaxutils import API
+from probjax.utils.jaxutils import (
+    KernelAPI,
+    as_configured,
+    filter_kwargs,
+)
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 SMCState = bj_smc_base.SMCState
@@ -20,15 +23,18 @@ SMCState = bj_smc_base.SMCState
 SMCKernel = Kernel
 
 
-class SMCKernelAPI(metaclass=API):
+class SMCKernelAPI(KernelAPI):
     """Base class for SMC kernels.
 
     Subclass it and set ``init``, ``init_params`` and ``build_step`` as static
     methods. Document the kernel in the subclass docstring:
     ``cls(logprior_fn, loglikelihood_fn, **options)`` forwards ``options`` to
     ``build_step`` (and the ones ``init`` accepts to ``init``) and returns an
-    ``SMCKernel``.
+    ``SMCKernel``. Use ``cls.configure(**options)`` to bind the options before
+    the model's functions are known.
     """
+
+    _kernel_type = SMCKernel
 
     @staticmethod
     def init(*args: Any, **kwargs: Any) -> Any:
@@ -42,18 +48,6 @@ class SMCKernelAPI(metaclass=API):
     def build_step(*args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("build_step method must be implemented")
 
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        # Built kernels are instances of a per-algorithm Kernel subclass, so
-        # help(kernel) and repr(kernel) show this algorithm, not Kernel.
-        # The subclass is display-only: dispatch on Kernel, not on it, and
-        # do not pickle kernels (they close over jit-compiled steps).
-        cls.kernel_type = type(
-            cls.__name__,
-            (SMCKernel,),
-            {"__doc__": cls.__doc__, "__module__": cls.__module__, "__slots__": ()},
-        )
-
     def __new__(cls, logprior_fn: Callable, loglikelihood_fn: Callable, **kwargs: Any):
         init = partial(
             cls.init,
@@ -66,18 +60,6 @@ class SMCKernelAPI(metaclass=API):
         )
         step = cls.build_step(logprior_fn, loglikelihood_fn, **kwargs)
         return cls.kernel_type(init, step, init_params)
-
-
-def filter_kwargs(
-    fn: Callable, kwargs: dict[str, Any], *, allow_kwargs: bool = True
-) -> dict[str, Any]:
-    sig = inspect.signature(fn)
-    accepts_kwargs = any(
-        param.kind == inspect.Parameter.VAR_KEYWORD for param in sig.parameters.values()
-    )
-    if accepts_kwargs and allow_kwargs:
-        return dict(kwargs)
-    return {k: v for k, v in kwargs.items() if k in sig.parameters}
 
 
 def _ensure_param_batch(params: Any, *, shared: bool) -> dict[str, Array]:
@@ -128,8 +110,14 @@ def _wrap_params(params: dict[str, ArrayLike]) -> Any:
 def make_mcmc_adapter(
     mcmc_kernel: Any, **kernel_kwargs: Any
 ) -> tuple[Callable, Callable]:
-    """Adapt a probjax MCMC API into BlackJAX SMC mcmc_init_fn/mcmc_step_fn."""
-    if not has_attrs(mcmc_kernel, "build_step", "init"):
+    """Adapt a probjax MCMC API into BlackJAX SMC mcmc_init_fn/mcmc_step_fn.
+
+    ``mcmc_kernel`` is a MCMC API class (``hmc``) or a configured one
+    (``hmc.configure(num_integration_steps=10)``). Options passed here are
+    merged into the configured ones, which win.
+    """
+    configured = as_configured(mcmc_kernel, **kernel_kwargs)
+    if not has_attrs(configured.api, "build_step", "init"):
         raise TypeError("mcmc_kernel must be a probjax MCMC API (not an instance).")
 
     def mcmc_init_fn(
@@ -137,14 +125,12 @@ def make_mcmc_adapter(
         logdensity_fn: Callable,
         rng_key: RngKey | None = None,
     ) -> Any:
-        init_kwargs = filter_kwargs(mcmc_kernel.init, kernel_kwargs, allow_kwargs=False)
-        return mcmc_kernel.init(position, logdensity_fn, rng_key=rng_key, **init_kwargs)
+        return configured.init(position, logdensity_fn, rng_key=rng_key)
 
     def mcmc_step_fn(
         rng_key: RngKey, state: Any, logdensity_fn: Callable, **step_parameters: Any
     ) -> Any:
-        build_kwargs = filter_kwargs(mcmc_kernel.build_step, kernel_kwargs)
-        step = mcmc_kernel.build_step(logdensity_fn, **build_kwargs)
+        step = configured.build_step(logdensity_fn)
         return step(rng_key, state, _wrap_params(step_parameters))
 
     return mcmc_init_fn, mcmc_step_fn
@@ -171,8 +157,9 @@ def init_mcmc_params_from_logdensity(
     mcmc_init_fn, _ = make_mcmc_adapter(mcmc_kernel, **mcmc_kernel_kwargs)
     particle0 = jax.tree_util.tree_map(lambda x: x[0], particles)
     mcmc_state = mcmc_init_fn(particle0, logdensity_fn, rng_key=rng_key)
+    configured = as_configured(mcmc_kernel)
     init_param_kwargs = filter_kwargs(
-        mcmc_kernel.init_params, mcmc_param_kwargs, allow_kwargs=allow_kwargs
+        configured.api.init_params, mcmc_param_kwargs, allow_kwargs=allow_kwargs
     )
-    params = mcmc_kernel.init_params(mcmc_state, **init_param_kwargs)
+    params = configured.init_params(mcmc_state, **init_param_kwargs)
     return _ensure_param_batch(_params_to_dict(params), shared=True)

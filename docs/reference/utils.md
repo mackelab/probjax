@@ -2,6 +2,14 @@
 
 Numerical solvers, linear-algebra helpers and shared type aliases.
 
+## Kernel API
+
+The base class every algorithm API derives from, and the value that binds an
+API's options before the model is known.
+
+::: probjax.utils.KernelAPI
+::: probjax.utils.Configured
+
 ## Solvers
 
 See [ODE and SDE integration](../guides/numerical-solvers.md) for adaptive

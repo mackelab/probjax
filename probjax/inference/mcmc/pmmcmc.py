@@ -41,6 +41,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.inference.mcmc.base import MarkovKernel
+from probjax.utils.jaxutils import as_configured
 from probjax.utils.typing import RngKey
 
 
@@ -79,17 +80,18 @@ def pseudo_marginal(
 
     Args:
         inner_kernel_cls: A probjax kernel class (e.g. ``hmc``, ``mala``,
-            ``gauss_rwmh``) that exposes ``build_step``, ``init``, and
-            ``init_params``.
+            ``gauss_rwmh``) or a configured one (e.g.
+            ``hmc.configure(num_integration_steps=10)``) that exposes
+            ``build_step``, ``init`` and ``init_params``.
         stochastic_logdensity_fn: A callable
             ``(position, rng_key) -> float`` that returns an unbiased
             estimate of the log-density (or log-marginal-likelihood)
             given auxiliary randomness from *rng_key*.
         num_samples: Number of independent keys to evaluate and average
             for variance reduction (default 1).
-        **inner_kernel_kwargs: Forwarded to
-            ``inner_kernel_cls.build_step`` (e.g. ``num_integration_steps``
-            for HMC).
+        **inner_kernel_kwargs: Options for the inner kernel. They are routed
+            to whichever of ``init``, ``init_params`` and ``build_step``
+            accepts them.
 
     Returns:
         A :class:`MarkovKernel` whose ``step`` splits the PRNG key,
@@ -98,6 +100,8 @@ def pseudo_marginal(
     """
     if num_samples < 1:
         raise ValueError("num_samples must be >= 1")
+
+    configured = as_configured(inner_kernel_cls, **inner_kernel_kwargs)
 
     # ------------------------------------------------------------------
     # init: evaluate the stochastic logdensity once to populate state
@@ -113,7 +117,7 @@ def pseudo_marginal(
         )
         # The inner kernel's underlying init (e.g. blackjax.hmc.init)
         # takes (position, logdensity_fn) and evaluates at position.
-        return inner_kernel_cls.init(
+        return configured.init(
             position, logdensity_fn=fixed_logdensity, rng_key=key_init
         )
 
@@ -126,18 +130,21 @@ def pseudo_marginal(
             stochastic_logdensity_fn, key_logdensity, num_samples
         )
         # build_step returns a raw step(key, state, params) closure
-        inner_step = inner_kernel_cls.build_step(
-            fixed_logdensity, **inner_kernel_kwargs
-        )
+        inner_step = configured.build_step(fixed_logdensity)
         return inner_step(key_kernel, state, params, *args)
 
     def init_params(state, *args, **kwargs):
-        return inner_kernel_cls.init_params(state, *args, **kwargs)
+        return configured.init_params(state, *args, **kwargs)
 
     # Inherit the inner kernel's recommended warmup (None if it has none).
-    return MarkovKernel(
-        init,
-        step,
-        init_params,
-        getattr(inner_kernel_cls, "default_adaptation_fn", None),
+    return pseudo_marginal_type(
+        init, step, init_params, configured.default_adaptation_fn
     )
+
+
+#: The built kernel carries this type, so repr(kernel) names the algorithm.
+pseudo_marginal_type = type(
+    "pseudo_marginal",
+    (MarkovKernel,),
+    {"__doc__": pseudo_marginal.__doc__, "__module__": __name__, "__slots__": ()},
+)

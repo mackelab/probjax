@@ -1,6 +1,6 @@
 """The pure training step: optimizer construction and the init/step kernel."""
 
-from typing import Literal, NamedTuple, Union
+from typing import Callable, Literal, NamedTuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -92,8 +92,12 @@ class FitKernel(NamedTuple):
     EMA and state policy; fit only supplies batches, callbacks and history.
     """
 
-    init: object
-    step: object
+    init: Callable[..., FitState]
+    step: Callable[..., tuple[FitState, FitInfo]]
+
+    def __call__(self, key, state, batch):
+        """One update: the same as ``kernel.step(key, state, batch)``."""
+        return self.step(key, state, batch)
 
 
 def build_fit_kernel(loss_fn, optimizer, *, ema_decay=None, has_aux=False):

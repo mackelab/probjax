@@ -101,6 +101,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   use the probjax copies
 
 ### Changed
+- One kernel API for every algorithm family. `probjax.utils.KernelAPI` is the
+  shared base of the MCMC, SMC, filtering, ODE and SDE API classes, and
+  `probjax.utils.Configured` is the value that binds an API's options before
+  the model is known: `hmc.configure(num_integration_steps=10)` returns a
+  hashable, comparable-by-value `Configured` that can be applied to the model
+  later and passed to anything that expects a kernel API (`path_smc`,
+  `adaptive_smc`, `pseudo_marginal`). Bound options are routed to whichever of
+  `init`, `init_params` and `build_step` accepts them. `ConfiguredSolver` is
+  now an alias of `Configured`
+- Built kernels carry their algorithm's name and docstring everywhere, not just
+  for MCMC and SMC: a built filter is a `FilterKernel` subclass named after the
+  filter, and likewise for ODE and SDE solvers
+- `build_step` is the canonical name for building a filter's step function;
+  `build_kernel` still works on every filter class
+- `Filter` shares the runners' progress machinery (`RunnerMixin`) with `MCMC`
+  and `SMC`, and the temporal filter/SMC and training kernels are callable
+  like every other kernel
 - The packages below are now fully annotated and pass `pyright` cleanly:
   `probjax.utils`, `probjax.core`, `probjax.inference` and `probjax.stats`
   (368 pyright errors before, 0 after). The shared `PyTree` alias is no

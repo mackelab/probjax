@@ -7,35 +7,17 @@ existing ``odeutil.solvers.base`` / ``sdeutil.base`` modules are unchanged.
 """
 
 import warnings
-from dataclasses import dataclass
 from functools import partial
-from typing import Any
 
 import jax
 import jax.numpy as jnp
 
-from probjax.utils.jaxutils import nested_checkpoint_scan
+from probjax.utils.jaxutils import Configured, nested_checkpoint_scan
 
-
-@dataclass(frozen=True)
-class ConfiguredSolver:
-    """A solver class with options, e.g. ``bdf2(newton_iters=3)``.
-
-    Pass it as ``solver=`` to ``odeint``/``sdeint``. It is hashable and
-    compares by value, so it can be a static ``jit`` argument without
-    retracing; option values must be hashable too.
-    """
-
-    api: type
-    options: tuple[tuple[str, Any], ...] = ()
-
-    @property
-    def info(self) -> dict:
-        return self.api.info
-
-    def __call__(self, *functions, **kwargs):
-        """Build the solver for ``functions`` (drift, plus diffusion for SDEs)."""
-        return self.api(*functions, **dict(self.options), **kwargs)
+#: A solver class with its options bound. The name predates the generalization
+#: of :class:`~probjax.utils.jaxutils.Configured` to every kernel API, and is
+#: kept so existing imports keep working.
+ConfiguredSolver = Configured
 
 
 def resolve_solver(solver, registry: dict, infos: dict):
