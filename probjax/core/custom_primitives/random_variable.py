@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
@@ -20,10 +19,12 @@ from probjax.core.custom_primitives.call_primitive import (
     jvp_from_forward_jaxpr,
 )
 from probjax.core.custom_primitives.common import (
+    ThreadLocalDepth,
     batch_closed_jaxpr,
     ensure_hashable,
     move_mapped_axes_to_front,
     must_emit_primitive,
+    parse_env_flag,
     trace_to_closed_jaxpr,
 )
 from probjax.core.custom_primitives.contracts import (
@@ -66,20 +67,9 @@ _RV_TRACING_ENV_VAR = "PROBJAX_RV_TRACING"
 
 # Read once at import: opting the whole process back into the legacy
 # always-emit behaviour. Tests can monkeypatch this module attribute.
-_ALWAYS_TRACE_RV = os.environ.get(_RV_TRACING_ENV_VAR, "").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
+_ALWAYS_TRACE_RV = parse_env_flag(_RV_TRACING_ENV_VAR)
 
-
-class _RvTracingState(local):
-    def __init__(self) -> None:
-        self.depth = 0
-
-
-_rv_tracing_state = _RvTracingState()
+_rv_tracing_state = ThreadLocalDepth()
 
 
 def rv_tracing_enabled() -> bool:
@@ -106,14 +96,14 @@ class enable_rv_tracing(ContextDecorator):
     """
 
     def __enter__(self) -> "enable_rv_tracing":
-        _rv_tracing_state.depth += 1
+        _rv_tracing_state.__enter__()
         return self
 
     def __exit__(self, *exc: Any) -> Literal[False]:
         # ``Literal[False]`` (rather than ``bool``) tells type checkers that
         # the block never swallows an exception, so names bound inside it are
         # definitely bound afterwards.
-        _rv_tracing_state.depth -= 1
+        _rv_tracing_state.__exit__(*exc)
         return False
 
 

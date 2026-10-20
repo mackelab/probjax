@@ -11,10 +11,8 @@ from __future__ import annotations
 from typing import Any
 
 import jax.numpy as jnp
-from jax._src import core as jax_core
 from jax.extend.core import Literal
 
-from probjax.core.custom_primitives.contracts import parse_custom_inverse_call_params
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
 from probjax.core.interpreters.inverse.interpreter import InverseProcessingRule
 from probjax.core.interpreters.inverse.logabsdet_rules import (
@@ -22,7 +20,10 @@ from probjax.core.interpreters.inverse.logabsdet_rules import (
     is_elementwise_primitive,
     value_and_log_det_diagonal,
 )
-from probjax.core.interpreters.inverse.utils import is_inexact_value
+from probjax.core.interpreters.inverse.utils import (
+    eval_custom_inverse_jaxpr,
+    is_inexact_value,
+)
 from probjax.core.registry import (
     REGISTRY,
     Context,
@@ -216,28 +217,10 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
                     )
             return None
 
-        custom_params = parse_custom_inverse_call_params(eqn.params)
-        inverse_jaxpr = custom_params.inverse_jaxpr_thunk()
-
-        jaxpr = inverse_jaxpr.jaxpr
-        consts = inverse_jaxpr.literals
-
-        target_indices = set(custom_params.target_in_indices)
-        inputs = []
-        outputs_inserted = False
-        for index, value in enumerate(known_invars):
-            if index in target_indices:
-                if not outputs_inserted:
-                    inputs.extend(known_outvars)
-                    outputs_inserted = True
-                continue
-            if value is None:
-                return None
-            inputs.append(value)
-
-        out = jax_core.eval_jaxpr(jaxpr, consts, *inputs)
-
-        invars = [eqn.invars[index] for index in custom_params.target_in_indices]
+        evaluated = eval_custom_inverse_jaxpr(eqn, known_invars, known_outvars)
+        if evaluated is None:
+            return None
+        invars, out = evaluated
         result_vals = list(out[: len(invars)])
 
         # Everything past the result leaves is log-det (one scalar per

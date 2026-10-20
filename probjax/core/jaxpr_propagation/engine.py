@@ -35,11 +35,11 @@ from probjax.core.jaxpr_propagation.utils import (
     KnownessLevel,
     ProcessingRule,
     ReducerFunction,
+    get_closed_sub_jaxpr,
     supports_context_argument,
 )
 from probjax.core.registry import ProcessedResult, parse_processed_result
 from probjax.utils.containers import PriorityQueue
-from probjax.utils.guards import has_attrs
 
 Scheduler = TypingLiteral["topological", "priority"]
 RecursePolicy = TypingLiteral["always", "missing_inputs", "never"]
@@ -235,22 +235,6 @@ def _can_use_eval_jaxpr_fast_path(
     )
 
 
-def _get_closed_sub_jaxpr(eqn: Any) -> Any:
-    primitive_name = getattr(getattr(eqn, "primitive", None), "name", None)
-    if primitive_name == "scan":
-        return None
-
-    candidate = eqn.params.get("jaxpr")
-    if candidate is not None and has_attrs(candidate, "jaxpr", "consts"):
-        return candidate
-
-    candidate = eqn.params.get("call_jaxpr")
-    if candidate is not None and has_attrs(candidate, "jaxpr", "consts"):
-        return candidate
-
-    return None
-
-
 def _should_recurse(
     eqn: Any,
     recurse_policy: RecursePolicy,
@@ -258,7 +242,7 @@ def _should_recurse(
 ) -> bool:
     if recurse_policy == "never":
         return False
-    if _get_closed_sub_jaxpr(eqn) is None:
+    if get_closed_sub_jaxpr(eqn) is None:
         return False
     if recurse_policy == "always":
         return True
@@ -293,7 +277,7 @@ def _run_nested(
     context: ExecutionContext,
     schedule_cache=None,
 ) -> tuple[Sequence[Any], Sequence[Any], State]:
-    closed_sub_jaxpr = _get_closed_sub_jaxpr(extended_eqn)
+    closed_sub_jaxpr = get_closed_sub_jaxpr(extended_eqn)
     if closed_sub_jaxpr is None:
         return (), (), None
 

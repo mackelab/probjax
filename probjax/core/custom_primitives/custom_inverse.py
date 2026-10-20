@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import os
 import warnings
 from collections.abc import Sequence
 from contextlib import ContextDecorator
 from functools import lru_cache, update_wrapper
-from threading import local
 from typing import Any, Callable, Tuple, cast
 
 import jax.numpy as jnp
@@ -25,10 +23,12 @@ from probjax.core.custom_primitives.call_primitive import (
 from probjax.core.custom_primitives.common import (
     Lazy,
     LazyClosedJaxpr,
+    ThreadLocalDepth,
     batch_closed_jaxpr,
     ensure_hashable,
     move_mapped_axes_to_front,
     must_emit_primitive,
+    parse_env_flag,
     trace_to_closed_jaxpr,
 )
 from probjax.core.custom_primitives.contracts import (
@@ -47,22 +47,9 @@ _CUSTOM_INVERSE_ENV_VAR = "PROBJAX_DISABLE_CUSTOM_INVERSE"
 # Read once at import: opting the whole process out of custom-inverse
 # handling, e.g. to work around a buggy registered inverse. Tests can
 # monkeypatch this module attribute.
-_DISABLE_CUSTOM_INVERSE = os.environ.get(
-    _CUSTOM_INVERSE_ENV_VAR, ""
-).strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
+_DISABLE_CUSTOM_INVERSE = parse_env_flag(_CUSTOM_INVERSE_ENV_VAR)
 
-
-class _CustomInverseState(local):
-    def __init__(self) -> None:
-        self.disabled_depth = 0
-
-
-_custom_inverse_state = _CustomInverseState()
+_custom_inverse_state = ThreadLocalDepth()
 
 
 def custom_inverse_enabled() -> bool:
@@ -75,7 +62,7 @@ def custom_inverse_enabled() -> bool:
     the registered inverse in favour of structural inversion. Direct
     ``.inv()``/``.inv_and_logdet()`` calls are unaffected.
     """
-    return not _DISABLE_CUSTOM_INVERSE and _custom_inverse_state.disabled_depth == 0
+    return not _DISABLE_CUSTOM_INVERSE and _custom_inverse_state.depth == 0
 
 
 class disable_custom_inverse(ContextDecorator):
@@ -96,11 +83,11 @@ class disable_custom_inverse(ContextDecorator):
     """
 
     def __enter__(self) -> "disable_custom_inverse":
-        _custom_inverse_state.disabled_depth += 1
+        _custom_inverse_state.__enter__()
         return self
 
     def __exit__(self, *exc) -> bool:
-        _custom_inverse_state.disabled_depth -= 1
+        _custom_inverse_state.__exit__(*exc)
         return False
 
 

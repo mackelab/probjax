@@ -17,6 +17,8 @@ from jax._src import core as jax_core
 from jax.extend.core import JaxprEqn, Literal
 from jaxtyping import Array
 
+from probjax.utils.guards import has_attrs
+
 if TYPE_CHECKING:
     from probjax.core.registry import ProcessedResult
 
@@ -419,3 +421,23 @@ def merge_dict_state(
     if eqn_state:
         merged.update(eqn_state)
     return merged
+
+
+def get_closed_sub_jaxpr(eqn: Any) -> Any:
+    """The nested program carried by ``eqn``, if it has one.
+
+    ``scan`` is excluded (carry semantics need more than inlining), as is
+    anything without a ``jaxpr`` / ``call_jaxpr`` parameter (``cond``
+    branches, ``while_loop`` bodies) -- those are left to the default-deny
+    below.
+    """
+    primitive_name = getattr(getattr(eqn, "primitive", None), "name", None)
+    if primitive_name == "scan":
+        return None
+
+    for key in ("jaxpr", "call_jaxpr"):
+        candidate = eqn.params.get(key)
+        if candidate is not None and has_attrs(candidate, "jaxpr", "consts"):
+            return candidate
+
+    return None

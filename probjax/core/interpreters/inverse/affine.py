@@ -48,9 +48,8 @@ from jax.extend.core import Jaxpr, Literal, Var
 from jax.scipy.sparse.linalg import gmres as _gmres
 
 from probjax.core.interpreters.inverse.diagonal import DiagonalAffineSystem
-from probjax.core.jaxpr_propagation.utils import shaped_aval
+from probjax.core.jaxpr_propagation.utils import get_closed_sub_jaxpr, shaped_aval
 from probjax.core.registry import apply_inverse_guard, inverse_roundtrip_valid
-from probjax.utils.guards import has_attrs
 from probjax.utils.typing import Array
 
 __all__ = ["is_affine_in", "is_volume_preserving", "solve_affine_inverse"]
@@ -107,23 +106,6 @@ _DENSE_THRESHOLD = 512
 
 def _tainted_operands(eqn, tainted: set) -> list:
     return [i for i, v in enumerate(eqn.invars) if isinstance(v, Var) and v in tainted]
-
-
-def _closed_sub_jaxpr(eqn: Any) -> Any:
-    """A nested program carried by ``eqn``, mirroring the engine's descent.
-
-    Same policy as the propagation engine: ``scan`` is excluded (carry
-    semantics need more than inlining), anything without a ``jaxpr`` /
-    ``call_jaxpr`` parameter (``cond`` branches, ``while_loop`` bodies) is
-    left to the default-deny below.
-    """
-    if eqn.primitive.name == "scan":
-        return None
-    for key in ("jaxpr", "call_jaxpr"):
-        candidate = eqn.params.get(key)
-        if candidate is not None and has_attrs(candidate, "jaxpr", "consts"):
-            return candidate
-    return None
 
 
 def _mapped_sub_targets(eqn, sub, tainted: set) -> list | None:
@@ -192,7 +174,7 @@ def _walk_tainted(
         touching = _tainted_operands(eqn, tainted)
         if not touching:
             continue
-        sub = _closed_sub_jaxpr(eqn)
+        sub = get_closed_sub_jaxpr(eqn)
         if sub is not None:
             mapped = _mapped_sub_targets(eqn, sub, tainted)
             if mapped is None or not recurse(sub.jaxpr, mapped):
