@@ -25,21 +25,17 @@ Usage:
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import (
     Any,
     Callable,
-    Dict,
     Optional,
-    Protocol,
     Sequence,
-    Tuple,
     Union,
-    runtime_checkable,
+    cast,
 )
-
-from probjax.utils.typing import Array, PyTree
 
 import jax.numpy as jnp
 import numpy as np
@@ -52,6 +48,7 @@ from probjax.core.jaxpr_propagation.utils import (
     rebind_primitive,
     sanitize_bind_params,
 )
+from probjax.utils.typing import PyTree
 
 # Atom is Var | Literal but not directly exported
 Atom = Union[Var, Literal]
@@ -62,34 +59,18 @@ Atom = Union[Var, Literal]
 # =============================================================================
 
 
-@runtime_checkable
-class RuleFunction(Protocol):
-    """
-    Protocol for rule functions.
-
-    Rules take an equation and known input/output values, returning resolved
-    variables and their values, or None if the rule cannot be applied.
-
-    Args:
-        eqn: The JAXPR equation being processed
-        known_in: Values for input variables (None for unknowns)
-        known_out: Values for output variables (None for unknowns)
-
-    Returns:
-        ProcessedResult, tuple of (resolved_vars, resolved_vals), or None if the
-        rule does not apply.
-    """
-
-    def __call__(
-        self,
-        eqn: JaxprEqn,
-        known_in: Sequence[Any],
-        known_out: Sequence[Any],
-    ) -> Optional["ProcessedResult"]: ...
-
-
 # Rule result type
 RuleResult = Union[None, "ProcessedResult"]
+
+#: A rule: ``(eqn, known_in, known_out[, context]) -> ProcessedResult | None``.
+#:
+#: Rules take an equation and the known input/output values and return the
+#: variables they resolve and their values, or ``None`` if the rule does not
+#: apply. A rule may take a fourth ``context`` argument; the engine detects
+#: that by signature (see
+#: :func:`probjax.core.jaxpr_propagation.utils.supports_context_argument`) and
+#: only then passes the context.
+RuleFunction = Callable[..., RuleResult]
 
 
 # =============================================================================
@@ -130,13 +111,13 @@ class ProcessedResult:
     """Result from processing an equation through a rule."""
 
     resolved_vars: Sequence[Atom]  # Can be Var or Literal
-    resolved_vals: PyTree[Array]
+    resolved_vals: Sequence[Any]
     state: PyTree[Any] = None
 
 
 def parse_processed_result(
     result: Optional["ProcessedResult"],
-) -> Tuple[Sequence[Any], Sequence[Any], Any]:
+) -> tuple[Sequence[Any], Sequence[Any], Any]:
     """Parse a ProcessedResult into (vars, vals, state) tuple.
 
     This is a shared utility for engine.py and pipeline.py to avoid
@@ -167,7 +148,7 @@ def parse_processed_result(
     if not isinstance(resolved_vars, (list, tuple)):
         resolved_vars = [resolved_vars]
     if not isinstance(resolved_vals, (list, tuple)):
-        resolved_vals = [resolved_vals]
+        resolved_vals = cast("Sequence[Any]", [resolved_vals])
 
     return tuple(resolved_vars), tuple(resolved_vals), result.state
 
@@ -198,17 +179,17 @@ class RuleRegistry:
         result = registry.process(eqn, known_in, known_out, Context.INVERSE)
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         # {context: {primitive: rule}}
-        self._rules: Dict[str, Dict[Primitive, RuleFunction]] = {}
+        self._rules: dict[str, dict[Primitive, RuleFunction]] = {}
         # Fallback rules: {context: rule}
-        self._fallbacks: Dict[str, RuleFunction] = {}
+        self._fallbacks: dict[str, RuleFunction] = {}
 
     def register(
         self,
         primitive: Primitive,
         context: str,
-        rule: Callable[..., RuleResult],
+        rule: RuleFunction,
     ) -> None:
         """
         Register a rule for a primitive in a context.
@@ -220,7 +201,7 @@ class RuleRegistry:
         """
         if context not in self._rules:
             self._rules[context] = {}
-        self._rules[context][primitive] = rule  # type: ignore[assignment]
+        self._rules[context][primitive] = rule
 
     def rule(
         self,
@@ -254,7 +235,7 @@ class RuleRegistry:
         self,
         primitive: Primitive,
         context: str,
-    ) -> Optional[RuleFunction]:
+    ) -> RuleFunction | None:
         """
         Get the rule for a primitive in a context.
 
@@ -267,7 +248,7 @@ class RuleRegistry:
         self,
         primitive: Primitive,
         context: str,
-    ) -> Optional[RuleFunction]:
+    ) -> RuleFunction | None:
         """
         Get rule for a primitive, falling back to context default if not found.
         """
@@ -286,7 +267,7 @@ class RuleRegistry:
         known_in: Sequence[Any],
         known_out: Sequence[Any],
         context: str,
-    ) -> Optional[ProcessedResult]:
+    ) -> ProcessedResult | None:
         """
         Process an equation using the appropriate rule.
 
@@ -355,7 +336,7 @@ _INVERSE_CHECKS = False
 
 
 @contextmanager
-def inverse_checks(enabled: bool = True):
+def inverse_checks(enabled: bool = True) -> Iterator[None]:
     """Make inverse guards raise through ``checkify`` instead of only NaN-ing.
 
     Off by default, and it must be: ``checkify.check`` cannot be staged out by a
@@ -511,7 +492,7 @@ def sum_logdet_terms(mapping: dict, vars_) -> tuple:
 # =============================================================================
 
 
-def _resolve_branch_guard(guard, solving_for_left: bool):
+def _resolve_branch_guard(guard: Any, solving_for_left: bool) -> Callable | None:
     """Pick the guard for the branch being solved.
 
     ``guard`` mirrors ``left_inverse``/``right_inverse``: a pair is
@@ -529,7 +510,12 @@ def _resolve_branch_guard(guard, solving_for_left: bool):
 _UNSET = object()
 
 
-def _evaluate_inverse(inverse_prim_or_fn, eqn_params, out_val, other=_UNSET):
+def _evaluate_inverse(
+    inverse_prim_or_fn: Primitive | Callable,
+    eqn_params: Mapping[str, Any],
+    out_val: Any,
+    other: Any = _UNSET,
+) -> Any:
     """Evaluate an inverse given the forward output (and the known input)."""
     if isinstance(inverse_prim_or_fn, Primitive):
         if other is _UNSET:
@@ -541,7 +527,12 @@ def _evaluate_inverse(inverse_prim_or_fn, eqn_params, out_val, other=_UNSET):
     return inverse_prim_or_fn(out_val, other, **clean_params)
 
 
-def _bivariate_branch(eqn, known_in, left_inverse, right_inverse):
+def _bivariate_branch(
+    eqn: JaxprEqn,
+    known_in: Sequence[Any],
+    left_inverse: Primitive | Callable,
+    right_inverse: Primitive | Callable,
+) -> tuple[Atom, Any, Primitive | Callable, bool] | None:
     """Pick the unknown side of a binary primitive.
 
     Returns ``(target_var, other, inv_fn, left_known)`` or ``None`` when both
@@ -561,7 +552,7 @@ def _bivariate_branch(eqn, known_in, left_inverse, right_inverse):
     return eqn.invars[0], known_in[1], left_inverse, False
 
 
-def _poison_logdet_on_guard(valid, log_abs_det):
+def _poison_logdet_on_guard(valid: Any, log_abs_det: Any) -> Any:
     """Poison a scalar logdet with NaN where a guard is violated."""
     # The value is masked elementwise -- only the offending entries have
     # no preimage. The log-determinant is one scalar for the whole map,
@@ -571,7 +562,7 @@ def _poison_logdet_on_guard(valid, log_abs_det):
     return log_abs_det
 
 
-def _single_var_updates(target_var, log_abs_det):
+def _single_var_updates(target_var: Atom, log_abs_det: Any) -> dict[Atom, Any]:
     """Build state updates for a logdet attributed to one variable."""
     if isinstance(target_var, Literal):
         return {}
@@ -580,10 +571,10 @@ def _single_var_updates(target_var, log_abs_det):
 
 def register_univariate_inverse(
     forward_prim: Primitive,
-    inverse_prim_or_fn: Union[Primitive, Callable],
+    inverse_prim_or_fn: Primitive | Callable,
     registry: RuleRegistry = REGISTRY,
     *,
-    guard: Optional[Callable] = None,
+    guard: Callable | None = None,
 ) -> None:
     """
     Register a univariate inverse rule.
@@ -601,7 +592,9 @@ def register_univariate_inverse(
         register_univariate_inverse(jax.lax.sqrt_p, lambda x, **p: x**2)
     """
 
-    def rule(eqn: JaxprEqn, known_in: Sequence[Any], known_out: Sequence[Any]):
+    def rule(
+        eqn: JaxprEqn, known_in: Sequence[Any], known_out: Sequence[Any]
+    ) -> ProcessedResult | None:
         del known_in  # Not needed for univariate inverse
         out_val = known_out[0]
         if out_val is None:
@@ -624,11 +617,11 @@ def register_univariate_inverse(
 
 def register_bivariate_inverse(
     prim: Primitive,
-    left_inverse: Union[Primitive, Callable],
-    right_inverse: Union[Primitive, Callable],
+    left_inverse: Primitive | Callable,
+    right_inverse: Primitive | Callable,
     registry: RuleRegistry = REGISTRY,
     *,
-    guard: Optional[Callable] = None,
+    guard: Callable | None = None,
 ) -> None:
     """
     Register a bivariate inverse rule.
@@ -647,7 +640,9 @@ def register_bivariate_inverse(
         register_bivariate_inverse(jax.lax.add_p, jax.lax.sub_p, jax.lax.sub_p)
     """
 
-    def rule(eqn: JaxprEqn, known_in: Sequence[Any], known_out: Sequence[Any]):
+    def rule(
+        eqn: JaxprEqn, known_in: Sequence[Any], known_out: Sequence[Any]
+    ) -> ProcessedResult | None:
         out_val = known_out[0]
         if out_val is None:
             return None
@@ -680,17 +675,19 @@ def register_bivariate_inverse(
 
 def register_univariate_inverse_logdet(
     forward_prim: Primitive,
-    inverse_prim_or_fn: Union[Primitive, Callable],
+    inverse_prim_or_fn: Primitive | Callable,
     logdet_fn: Callable[[Any, Any, dict], Any],
     registry: RuleRegistry = REGISTRY,
     *,
-    guard: Optional[Callable] = None,
+    guard: Callable | None = None,
 ) -> None:
     """
     Register a univariate inverse+logdet rule with explicit logdet.
     """
 
-    def rule(eqn: JaxprEqn, known_in: Sequence[Any], known_out: Sequence[Any]):
+    def rule(
+        eqn: JaxprEqn, known_in: Sequence[Any], known_out: Sequence[Any]
+    ) -> ProcessedResult | None:
         del known_in
         out_val = known_out[0]
         if out_val is None:
@@ -721,19 +718,21 @@ def register_univariate_inverse_logdet(
 
 def register_bivariate_inverse_logdet(
     prim: Primitive,
-    left_inverse: Union[Primitive, Callable],
-    right_inverse: Union[Primitive, Callable],
+    left_inverse: Primitive | Callable,
+    right_inverse: Primitive | Callable,
     left_logdet_fn: Callable[[Any, Any, Any, dict], Any],
     right_logdet_fn: Callable[[Any, Any, Any, dict], Any],
     registry: RuleRegistry = REGISTRY,
     *,
-    guard: Optional[Callable] = None,
+    guard: Callable | None = None,
 ) -> None:
     """
     Register a bivariate inverse+logdet rule with explicit logdet.
     """
 
-    def rule(eqn: JaxprEqn, known_in: Sequence[Any], known_out: Sequence[Any]):
+    def rule(
+        eqn: JaxprEqn, known_in: Sequence[Any], known_out: Sequence[Any]
+    ) -> ProcessedResult | None:
         out_val = known_out[0]
         if out_val is None:
             return None

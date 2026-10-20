@@ -48,7 +48,9 @@ from jax.extend.core import Jaxpr, Literal, Var
 from jax.scipy.sparse.linalg import gmres as _gmres
 
 from probjax.core.interpreters.inverse.diagonal import DiagonalAffineSystem
+from probjax.core.jaxpr_propagation.utils import shaped_aval
 from probjax.core.registry import apply_inverse_guard, inverse_roundtrip_valid
+from probjax.utils.typing import Array
 
 __all__ = ["is_affine_in", "is_volume_preserving", "solve_affine_inverse"]
 
@@ -106,7 +108,7 @@ def _tainted_operands(eqn, tainted: set) -> list:
     return [i for i, v in enumerate(eqn.invars) if isinstance(v, Var) and v in tainted]
 
 
-def _closed_sub_jaxpr(eqn):
+def _closed_sub_jaxpr(eqn: Any) -> Any:
     """A nested program carried by ``eqn``, mirroring the engine's descent.
 
     Same policy as the propagation engine: ``scan`` is excluded (carry
@@ -305,15 +307,15 @@ def _decide_volume(eqn, touching: list) -> bool:
             return False
         if not _is_unit_literal(eqn.invars[1]):
             return False
-        return math.prod(eqn.invars[0].aval.shape) == out_size
+        return math.prod(shaped_aval(eqn.invars[0].aval).shape) == out_size
     return False
 
 
 def _volume_postcheck(jaxpr: Jaxpr, tainted: set, target_vars: Sequence[Var]) -> bool:
     output_vars = jaxpr.outvars
     return all(isinstance(var, Var) and var in tainted for var in output_vars) and sum(
-        math.prod(var.aval.shape) for var in output_vars
-    ) == math.prod(target_vars[0].aval.shape)
+        math.prod(shaped_aval(var.aval).shape) for var in output_vars
+    ) == math.prod(shaped_aval(target_vars[0].aval).shape)
 
 
 def is_volume_preserving(jaxpr: Jaxpr, target_vars: Sequence[Var]) -> bool:
@@ -352,7 +354,7 @@ def _flat_size(var: Var) -> int:
     # math.prod, not jnp: a shape is a compile-time quantity, and inside an
     # active trace even `jnp.prod` of a literal tuple is staged out, which then
     # fails the `int()` with a ConcretizationTypeError under jit.
-    return math.prod(var.aval.shape)
+    return math.prod(shaped_aval(var.aval).shape)
 
 
 def solve_affine_inverse(
@@ -395,14 +397,16 @@ def solve_affine_inverse(
     if not target_vars or not is_affine_in(jaxpr, target_vars):
         return None
 
-    shapes = [v.aval.shape for v in target_vars]
+    shapes = [shaped_aval(v.aval).shape for v in target_vars]
     sizes = [_flat_size(v) for v in target_vars]
-    dtype = jnp.result_type(*[v.aval.dtype for v in target_vars])
+    dtype = jnp.result_type(*[shaped_aval(v.aval).dtype for v in target_vars])
     total_in = sum(sizes)
 
     flat_outputs = [jnp.asarray(o).reshape(-1) for o in outputs]
     total_out = sum(o.size for o in flat_outputs)
-    traced_out = sum(_flat_size(v) for v in jaxpr.outvars)
+    # ``Jaxpr.outvars`` is typed as a list of atoms, but JAX only ever puts
+    # variables there.
+    traced_out = sum(_flat_size(v) for v in jaxpr.outvars if isinstance(v, Var))
     if total_out != traced_out:
         # The supplied outputs do not belong to the traced program -- e.g. a
         # shape-changing map traced at the wrong shape. There is nothing sound
@@ -423,7 +427,7 @@ def solve_affine_inverse(
     if diagonal_system is not None and total_out == total_in:
         return diagonal_system.solve(consts, known, outputs, compute_logdet=need_logdet)
 
-    def evaluate(flat_target):
+    def evaluate(flat_target: Array) -> Array:
         pieces, offset = [], 0
         for shape, size in zip(shapes, sizes, strict=False):
             pieces.append(flat_target[offset : offset + size].reshape(shape))
@@ -439,7 +443,7 @@ def solve_affine_inverse(
     zero = jnp.zeros((total_in,), dtype)
     constant = evaluate(zero)
 
-    def matvec(v):
+    def matvec(v: Array) -> Array:
         return evaluate(v) - constant
 
     rhs = jnp.concatenate(flat_outputs) - constant
@@ -504,7 +508,9 @@ def solve_affine_inverse(
         residual = matvec(solution) - rhs
         scale = 1 + jnp.linalg.norm(rhs)
         converged = (info == 0) & (jnp.linalg.norm(residual) <= 1e-6 * scale)
-        solution = jnp.where(converged, solution, jnp.full_like(solution, jnp.nan))
+        solution = jnp.asarray(
+            jnp.where(converged, solution, jnp.full_like(solution, jnp.nan))
+        )
         log_abs_det = jnp.asarray(jnp.nan)
 
     values, offset = [], 0
@@ -523,20 +529,22 @@ class AffineSystem:
     explicit arguments so a cached evaluator never captures runtime tracers.
     """
 
-    def __init__(self, jaxpr: Jaxpr, target_vars: Sequence[Var]):
+    def __init__(self, jaxpr: Jaxpr, target_vars: Sequence[Var]) -> None:
         self.jaxpr = jaxpr
         self.targets = tuple(target_vars)
-        self.shapes = tuple(v.aval.shape for v in self.targets)
+        self.shapes = tuple(shaped_aval(v.aval).shape for v in self.targets)
         self.sizes = tuple(_flat_size(v) for v in self.targets)
         self.size = sum(self.sizes)
-        self.dtype = jnp.result_type(*[v.aval.dtype for v in self.targets])
+        self.dtype = jnp.result_type(*[shaped_aval(v.aval).dtype for v in self.targets])
         targets = set(self.targets)
         self.known_vars = tuple(v for v in jaxpr.invars if v not in targets)
         self.diagonal = DiagonalAffineSystem.try_build(jaxpr, self.targets)
         if self.diagonal is not None:
             return
 
-        def evaluate(flat_target, consts, known_values):
+        def evaluate(
+            flat_target: Array, consts: Sequence[Any], known_values: Sequence[Any]
+        ) -> Array:
             environment = dict(zip(self.known_vars, known_values, strict=True))
             offset = 0
             for var, shape, size in zip(
@@ -552,7 +560,14 @@ class AffineSystem:
         self.evaluate = evaluate
         self.jacobian = jax.jacfwd(evaluate, argnums=0)
 
-    def solve(self, consts, known, outputs, *, compute_logdet):
+    def solve(
+        self,
+        consts: Sequence[Any],
+        known: dict[Any, Any],
+        outputs: Sequence[Any],
+        *,
+        compute_logdet: bool,
+    ) -> tuple[list[Any], Any] | None:
         if self.diagonal is not None:
             return self.diagonal.solve(
                 consts, known, outputs, compute_logdet=compute_logdet

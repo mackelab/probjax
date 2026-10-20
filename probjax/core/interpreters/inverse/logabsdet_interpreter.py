@@ -6,6 +6,10 @@ JAXPR equations to compute inverse values along with log-determinant tracking
 using rules registered in the global REGISTRY.
 """
 
+from __future__ import annotations
+
+from typing import Any
+
 import jax.numpy as jnp
 from jax._src import core as jax_core
 from jax.extend.core import Literal
@@ -43,7 +47,9 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
     4. Handle custom_inverse_call_p specially using its inverse+logdet jaxpr
     """
 
-    def __init__(self, state_namespace: str = INVERSE_AND_LOGABSDET_STATE_NAMESPACE):
+    def __init__(
+        self, state_namespace: str = INVERSE_AND_LOGABSDET_STATE_NAMESPACE
+    ) -> None:
         super().__init__()
         self.state_namespace = state_namespace
 
@@ -165,7 +171,7 @@ class InverseAndLogAbsDetProcessingRule(InverseProcessingRule):
                 rule = REGISTRY.get(eqn.primitive, Context.INVERSE)
                 if rule is not None:
 
-                    def inverse_fn(*args):
+                    def inverse_fn(*args: Any) -> Any:
                         # Re-execute the inverse to get value for autodiff
                         result = rule(eqn, known_invars, args)
                         if isinstance(result, ProcessedResult):

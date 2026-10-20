@@ -1,11 +1,18 @@
+from __future__ import annotations
+
+from typing import Any, Sequence
+
 from jax._src import ad_util
 from jax._src import core as jax_core
 from jax._src.dispatch import prim_requires_devices_during_lowering
 from jax._src.interpreters import ad as ad_src
+from jax.extend.core import ClosedJaxpr
 from jax.interpreters import mlir
 
 
-def call_impl(*args, forward_jaxpr, single_result: bool = False, **params):
+def call_impl(
+    *args: Any, forward_jaxpr: ClosedJaxpr, single_result: bool = False, **params: Any
+) -> Any:
     del params
     outs = jax_core.eval_jaxpr(forward_jaxpr.jaxpr, forward_jaxpr.consts, *args)
     if single_result:
@@ -13,14 +20,22 @@ def call_impl(*args, forward_jaxpr, single_result: bool = False, **params):
     return outs
 
 
-def call_abstract_eval(*avals, forward_jaxpr, single_result: bool = False, **params):
+def call_abstract_eval(
+    *avals: Any, forward_jaxpr: ClosedJaxpr, single_result: bool = False, **params: Any
+) -> Any:
     del avals, params
     if single_result:
         return forward_jaxpr.out_avals[0]
     return tuple(forward_jaxpr.out_avals)
 
 
-def call_lowering(ctx, *mlir_args, forward_jaxpr, lowering_name: str, **params):
+def call_lowering(
+    ctx: Any,
+    *mlir_args: Any,
+    forward_jaxpr: ClosedJaxpr,
+    lowering_name: str,
+    **params: Any,
+) -> Any:
     del params
     return mlir.core_call_lowering(
         ctx,
@@ -49,7 +64,9 @@ def mark_primitive_requires_devices(primitive: jax_core.Primitive) -> None:
     prim_requires_devices_during_lowering.add(primitive)
 
 
-def jvp_from_forward_jaxpr(forward_jaxpr, primals, tangents):
+def jvp_from_forward_jaxpr(
+    forward_jaxpr: ClosedJaxpr, primals: Sequence[Any], tangents: Sequence[Any]
+) -> tuple[Any, ...]:
     nonzeros = [not isinstance(t, ad_util.Zero) for t in tangents]
     jvp_cj, out_nonzeros = ad_src.jvp_jaxpr(forward_jaxpr, nonzeros, instantiate=False)
     nonzero_tangents = [t for t in tangents if not isinstance(t, ad_util.Zero)]

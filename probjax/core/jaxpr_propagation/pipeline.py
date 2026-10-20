@@ -23,7 +23,7 @@ class NamespacedStatePayload(Mapping[str, Any]):
     def __getitem__(self, key: str) -> Any:
         return self.state_values[self.name_to_index[key]]
 
-    def __iter__(self):
+    def __iter__(self) -> Any:
         return iter(self.names)
 
     def __len__(self) -> int:
@@ -42,12 +42,22 @@ def _compile_rule(
     use_context = supports_context_argument(rule, 4)
     if use_context:
 
-        def call(equation, known_inputs, known_outputs, context):
+        def call(
+            equation: Any,
+            known_inputs: Sequence[Any],
+            known_outputs: Sequence[Any],
+            context: Any,
+        ) -> Any:
             return rule(equation, known_inputs, known_outputs, context)
 
     else:
 
-        def call(equation, known_inputs, known_outputs, context):
+        def call(
+            equation: Any,
+            known_inputs: Sequence[Any],
+            known_outputs: Sequence[Any],
+            context: Any,
+        ) -> Any:
             del context
             return rule(equation, known_inputs, known_outputs)
 

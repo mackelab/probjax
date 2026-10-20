@@ -4,11 +4,15 @@ Analysis is cached per forward trace. Only the recovery callback and its
 environment are per invocation; cached evaluators never retain dynamic values.
 """
 
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from types import SimpleNamespace
+from typing import Any
 
 import jax.numpy as jnp
-from jax.extend.core import Jaxpr, Literal, Var
+from jax.extend.core import ClosedJaxpr, Jaxpr, Literal, Var
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
 from probjax.core.interpreters.inverse.affine import (
@@ -24,7 +28,7 @@ from probjax.core.jaxpr_propagation.engine import StallRecoveryResult, propagate
 from probjax.core.jaxpr_propagation.utils import KnownessLevel
 
 
-def _parameter_key(value):
+def _parameter_key(value: Any) -> Any:
     if isinstance(value, dict):
         return tuple((k, _parameter_key(v)) for k, v in sorted(value.items()))
     if isinstance(value, (list, tuple)):
@@ -33,13 +37,13 @@ def _parameter_key(value):
     return value
 
 
-def _atom_key(var):
+def _atom_key(var: Any) -> Any:
     if isinstance(var, Literal):
         return (var.aval, str(var.val))
     return var
 
 
-def normalize_inverse_graph(closed):
+def normalize_inverse_graph(closed: ClosedJaxpr) -> tuple[Jaxpr, tuple[Any, ...]]:
     """Inline pure jit calls, share pure expressions, and remove dead code.
 
     Custom inverses and control flow remain opaque. Fresh variables keep two
@@ -50,10 +54,10 @@ def normalize_inverse_graph(closed):
     equations, expressions = [], {}
     changed = False
 
-    def visit(jaxpr, substitutions):
+    def visit(jaxpr: Any, substitutions: dict[Any, Any]) -> Any:
         nonlocal changed
 
-        def resolve(var):
+        def resolve(var: Any) -> Any:
             return var if isinstance(var, Literal) else substitutions.get(var, var)
 
         for eqn in jaxpr.eqns:
@@ -132,7 +136,7 @@ class AffineSection:
 class AffineRecoveryPlan:
     """Indexed disjoint sections with a single unknown array at each boundary."""
 
-    def __init__(self, closed, targets):
+    def __init__(self, closed: ClosedJaxpr, targets: Sequence[Var]) -> None:
         self.jaxpr, self.consts = normalize_inverse_graph(closed)
         # Not a ClosedJaxpr: JAX >= 0.11 rebuilds the jaxpr, breaking identity keys.
         self.closed = SimpleNamespace(jaxpr=self.jaxpr, consts=self.consts)
@@ -150,7 +154,9 @@ class AffineRecoveryPlan:
             if not any(dependent):
                 continue
             sources = {
-                roots[v] for v, dep in zip(eqn.invars, dependent, strict=True) if dep
+                roots[v]
+                for v, dep in zip(eqn.invars, dependent, strict=True)
+                if dep and isinstance(v, Var)
             }
             if len(sources) == 1 and affine_equation(eqn, dependent):
                 root = next(iter(sources))
@@ -205,7 +211,14 @@ class AffineRecoveryPlan:
             for var in [sink, *side_inputs]:
                 self.by_trigger.setdefault(var, []).append(section_index)
 
-    def recover(self, context, targets, changed, *, with_logdet):
+    def recover(
+        self,
+        context: Any,
+        targets: Sequence[Var],
+        changed: set[Var],
+        *,
+        with_logdet: bool,
+    ) -> Any:
         del targets
         env = context.env
         candidates = {i for v in changed for i in self.by_trigger.get(v, ())}
@@ -234,19 +247,19 @@ class AffineRecoveryPlan:
 
 
 def make_affine_recovery(
-    closed,
-    known_inputs,
-    inputs,
-    targets,
-    processing_rule,
-    cache,
+    closed: ClosedJaxpr,
+    known_inputs: Sequence[Any],
+    inputs: Sequence[Any],
+    targets: Sequence[Var],
+    processing_rule: Any,
+    cache: Any,
     *,
-    with_logdet=False,
-    schedule_cache=None,
-):
+    with_logdet: bool = False,
+    schedule_cache: dict | None = None,
+) -> Callable[..., Any] | None:
     """Build a cheap per-call callback; perform/cache analysis only on a stall."""
 
-    def recover(context, requested, changed):
+    def recover(context: Any, requested: Sequence[Var], changed: set[Var]) -> Any:
         if closed.jaxpr.effects:
             return None
         key = (closed.jaxpr, tuple(targets))
@@ -261,7 +274,9 @@ def make_affine_recovery(
         # Normalization may replace intermediate variables. Restart against the
         # original boundary seeds, then commit only newly recovered targets to
         # the outer environment. Never mix state from the two graph versions.
-        def recover_normalized(inner_context, inner_targets, inner_changed):
+        def recover_normalized(
+            inner_context: Any, inner_targets: Sequence[Var], inner_changed: set[Var]
+        ) -> Any:
             return plan.recover(
                 inner_context, inner_targets, inner_changed, with_logdet=with_logdet
             )
@@ -310,7 +325,9 @@ def make_affine_recovery(
     return recover
 
 
-def cached_inverse_graph(closed, targets, cache):
+def cached_inverse_graph(
+    closed: ClosedJaxpr, targets: Sequence[Var], cache: Any
+) -> Any:
     """After a normalization recovery, start subsequent runs on that graph."""
     plan = cache.get((closed.jaxpr, tuple(targets)))
     return plan.closed if plan is not None else closed

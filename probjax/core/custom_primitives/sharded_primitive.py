@@ -48,8 +48,9 @@ from typing import Any, Callable, Mapping, Sequence
 
 import jax
 import jax.numpy as jnp
+from jax._src import core as jax_core
 from jax._src.interpreters import batching
-from jax.extend.core import Primitive
+from jax.extend.core import ClosedJaxpr, Primitive
 from jax.interpreters import mlir
 
 from probjax.utils.jaxutils import def_partition_compat
@@ -93,7 +94,7 @@ def in_per_shard_body() -> bool:
 
 
 @contextlib.contextmanager
-def _per_shard_body():
+def _per_shard_body() -> Any:
     previous = in_per_shard_body()
     _PER_SHARD.active = True
     try:
@@ -129,7 +130,7 @@ class KernelSpec:
     outputs: tuple[Output, ...]
     shardable: frozenset[str] = frozenset({"batch", "heads", "groups"})
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         for out in self.outputs:
             if "_" in out.dims:
                 raise ValueError(
@@ -326,13 +327,13 @@ class _IdKey:
 
     __slots__ = ("obj",)
 
-    def __init__(self, obj):
+    def __init__(self, obj: Any) -> None:
         self.obj = obj
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return id(self.obj)
 
-    def __eq__(self, other):
+    def __eq__(self, other: Any) -> bool:
         return isinstance(other, _IdKey) and self.obj is other.obj
 
 
@@ -392,18 +393,20 @@ def make_kernel_primitive(
     prim.multiple_results = len(spec.outputs) > 1
     _SPEC_BY_PRIM[prim] = spec
 
-    def _call_impl(args, present, static):
+    def _call_impl(
+        args: Sequence[Any], present: tuple[str, ...], static: dict[str, Any]
+    ) -> Any:
         full = _reconstruct_args(spec, present, args)
         return impl(*full, **_unwrap_statics(static))
 
     # -- impl: eager / single-device path (no custom_partitioning) --------
-    def _impl(*args, present, **static):
+    def _impl(*args: Any, present: tuple[str, ...], **static: Any) -> Any:
         return _call_impl(args, present, static)
 
     prim.def_impl(_impl)
 
     # -- abstract eval -----------------------------------------------------
-    def _abstract_eval(*avals, present, **static):
+    def _abstract_eval(*avals: Any, present: tuple[str, ...], **static: Any) -> Any:
         del static
         sizes = _resolve_factors(spec, present, [a.shape for a in avals])
         dtypes = {
@@ -419,7 +422,7 @@ def make_kernel_primitive(
                 dtype = jnp.result_type(*(dtypes[n] for n in out.dtype_like))
             else:
                 dtype = jnp.dtype(out.dtype_like)
-            results.append(jax.core.ShapedArray(shape, dtype))
+            results.append(jax_core.ShapedArray(shape, dtype))
         return results if prim.multiple_results else results[0]
 
     prim.def_abstract_eval(_abstract_eval)
@@ -428,7 +431,7 @@ def make_kernel_primitive(
     # (Sharding is handled by shardable_kernel's trace-time
     # custom_partitioning wrapper; a lowering-time wrapper is impossible —
     # the nested lowering context loses the device assignment.)
-    def _lowered(*args, present, **static):
+    def _lowered(*args: Any, present: tuple[str, ...], **static: Any) -> Any:
         return _call_impl(args, present, static)
 
     mlir.register_lowering(
@@ -436,7 +439,14 @@ def make_kernel_primitive(
     )
 
     # -- batching (scoped to this primitive) --------------------------------
-    def _batching(axis_data, vals_in, dims_in, *, present, **static):
+    def _batching(
+        axis_data: Any,
+        vals_in: Sequence[Any],
+        dims_in: Sequence[int | None],
+        *,
+        present: tuple[str, ...],
+        **static: Any,
+    ) -> Any:
 
         vmap_size = axis_data.size
         operands = spec.present_operands(present)
@@ -501,25 +511,27 @@ def bind_kernel(prim: Primitive, arrays: Mapping[str, Any], **static) -> Any:
 
 
 @functools.lru_cache(maxsize=None)
-def _cp_for(prim: Primitive, present: tuple[str, ...], static_items: tuple):
+def _cp_for(prim: Primitive, present: tuple[str, ...], static_items: tuple) -> Any:
     """Memoized custom_partitioning wrapper binding *prim* per-shard."""
     from jax.experimental.custom_partitioning import custom_partitioning
 
     spec = _SPEC_BY_PRIM[prim]
     static = dict(static_items)
 
-    def _fn(*args):
+    def _fn(*args: Any) -> Any:
         return prim.bind(*args, present=present, **static)
 
     cp = custom_partitioning(_fn)
     rule, replication_factors = sharding_rule(spec, present)
 
-    def _partition(mesh, arg_shapes, result_shape):
+    def _partition(
+        mesh: Any, arg_shapes: Sequence[Any], result_shape: Sequence[int]
+    ) -> Any:
         _validate_shardings(spec, present, jax.tree.leaves(arg_shapes))
         result_shardings = jax.tree.map(lambda s: s.sharding, result_shape)
         arg_shardings = jax.tree.map(lambda s: s.sharding, arg_shapes)
 
-        def lower_fn(*args):
+        def lower_fn(*args: Any) -> Any:
             with _per_shard_body():
                 return _fn(*args)
 
@@ -544,7 +556,7 @@ def shardable_kernel(prim: Primitive, arrays: Mapping[str, Any], **static) -> An
     spec = _SPEC_BY_PRIM[prim]
     present, args = _split_present(spec, arrays)
     wrapped = _wrap_statics(static)
-    if not any(isinstance(arg, jax.core.Tracer) for arg in args):
+    if not any(isinstance(arg, jax_core.Tracer) for arg in args):
         return prim.bind(*args, present=present, **wrapped)
     cp = _cp_for(prim, present, tuple(sorted(wrapped.items())))
     return cp(*args)
@@ -606,11 +618,11 @@ def batch_shard(fn: Callable) -> Callable:
     from jax.experimental.custom_partitioning import custom_partitioning
 
     @functools.wraps(fn)
-    def wrapped(*args):
+    def wrapped(*args: Any) -> Any:
         from jax.sharding import AxisType
 
         mesh = jax.sharding.get_abstract_mesh()
-        has_tracer = any(isinstance(a, jax.core.Tracer) for a in args)
+        has_tracer = any(isinstance(a, jax_core.Tracer) for a in args)
         if mesh.empty or not has_tracer:
             return fn(*args)
         if AxisType.Explicit in set(mesh.axis_types):
@@ -629,8 +641,8 @@ def batch_shard(fn: Callable) -> Callable:
         out_struct = jax.eval_shape(fn, *args)
         out_tree = jax.tree.structure(out_struct)
 
-        def _positional(*xs):
-            flat = jax.core.eval_jaxpr(
+        def _positional(*xs: Any) -> Any:
+            flat = jax_core.eval_jaxpr(
                 closed.jaxpr, list(xs[num_batch:]), *xs[:num_batch]
             )
             return jax.tree.unflatten(out_tree, flat)
@@ -641,11 +653,13 @@ def batch_shard(fn: Callable) -> Callable:
 
         cp = custom_partitioning(_positional)
 
-        def _partition(mesh, arg_shapes, result_shape):
+        def _partition(
+            mesh: Any, arg_shapes: Sequence[Any], result_shape: Sequence[int]
+        ) -> Any:
             result_shardings = jax.tree.map(lambda s: s.sharding, result_shape)
             arg_shardings = jax.tree.map(lambda s: s.sharding, arg_shapes)
 
-            def lower_fn(*xs):
+            def lower_fn(*xs: Any) -> Any:
                 # Re-trace the original fn at the LOCAL (per-shard) shapes:
                 # the hoisted-const jaxpr is shape-specialized to the global
                 # batch and cannot be evaluated on shards. Closure consts are
@@ -677,9 +691,16 @@ def batch_shard(fn: Callable) -> Callable:
 # kernel-specific merge/tile heuristic it replaces.
 
 
-def _cp_general_batching(axis_data, vals_in, dims_in, *, call, **params):
-    def fn(*args):
-        out = jax.core.eval_jaxpr(call.jaxpr, call.consts, *args)
+def _cp_general_batching(
+    axis_data: Any,
+    vals_in: Sequence[Any],
+    dims_in: Sequence[int | None],
+    *,
+    call: ClosedJaxpr,
+    **params: Any,
+) -> Any:
+    def fn(*args: Any) -> Any:
+        out = jax_core.eval_jaxpr(call.jaxpr, call.consts, *args)
         return out
 
     in_axes = tuple(None if d is None else int(d) for d in dims_in)
@@ -687,7 +708,13 @@ def _cp_general_batching(axis_data, vals_in, dims_in, *, call, **params):
     return out, [0] * len(out)
 
 
-def _cp_general_jvp(primals, tangents, *, call, **params):
+def _cp_general_jvp(
+    primals: Sequence[Any],
+    tangents: Sequence[Any],
+    *,
+    call: ClosedJaxpr,
+    **params: Any,
+) -> Any:
     """Inline the custom_partitioning body under differentiation.
 
     custom_partitioning has no AD rule; since it is semantically the
@@ -698,8 +725,8 @@ def _cp_general_jvp(primals, tangents, *, call, **params):
     """
     from jax.interpreters import ad
 
-    def fn(*args):
-        return jax.core.eval_jaxpr(call.jaxpr, call.consts, *args)
+    def fn(*args: Any) -> Any:
+        return jax_core.eval_jaxpr(call.jaxpr, call.consts, *args)
 
     tangents = [
         ad.instantiate_zeros(t) if isinstance(t, ad.Zero) else t for t in tangents
@@ -707,7 +734,9 @@ def _cp_general_jvp(primals, tangents, *, call, **params):
     return jax.jvp(fn, tuple(primals), tuple(tangents))
 
 
-def _cp_general_transpose(cts, *args, call, **params):
+def _cp_general_transpose(
+    cts: Any, *args: Any, call: ClosedJaxpr, **params: Any
+) -> Any:
     """Transpose the inlined custom_partitioning body.
 
     Linear operands arrive as UndefinedPrimal; the body's own primitives
@@ -717,8 +746,8 @@ def _cp_general_transpose(cts, *args, call, **params):
     """
     from jax.interpreters import ad
 
-    def fn(*xs):
-        return jax.core.eval_jaxpr(call.jaxpr, call.consts, *xs)
+    def fn(*xs: Any) -> Any:
+        return jax_core.eval_jaxpr(call.jaxpr, call.consts, *xs)
 
     is_linear = [ad.is_undefined_primal(a) for a in args]
     fixed = [a for a, lin in zip(args, is_linear, strict=False) if not lin]
@@ -728,7 +757,7 @@ def _cp_general_transpose(cts, *args, call, **params):
         if lin
     ]
 
-    def linear_fn(linear_args):
+    def linear_fn(linear_args: Sequence[Any]) -> Any:
         lin_iter = iter(linear_args)
         fixed_iter = iter(fixed)
         full = [next(lin_iter) if lin else next(fixed_iter) for lin in is_linear]

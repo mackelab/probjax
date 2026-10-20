@@ -1,4 +1,6 @@
-from typing import Dict, Mapping, Sequence
+from __future__ import annotations
+
+from typing import Any, Callable, Dict, Mapping, Sequence
 
 from jax.extend.core import JaxprEqn
 from jaxtyping import Array
@@ -20,7 +22,7 @@ class LogPotentialProcessingRule(ForwardProcessingRule):
         replay: Mapping[str, Array] | None = None,
         strict: bool = True,
         allow_partial: bool = False,
-    ):
+    ) -> None:
         self.joint_samples = dict(joint_samples)
         self.strict = bool(strict)
         self.allow_partial = bool(allow_partial)
@@ -39,7 +41,9 @@ class LogPotentialProcessingRule(ForwardProcessingRule):
         self.replay_values = {} if replay is None else dict(replay)
 
     @staticmethod
-    def _logpdf_from_inputs(logpdf_fn, in_known, value):
+    def _logpdf_from_inputs(
+        logpdf_fn: Callable, in_known: Sequence[Any], value: Any
+    ) -> Any:
         in_known_values = list(in_known)
         in_known_values[0] = value
         return logpdf_fn(*in_known_values)
@@ -96,7 +100,9 @@ class LogPotentialProcessingRule(ForwardProcessingRule):
         return ProcessedResult(result.resolved_vars, list(result.resolved_vals), None)
 
 
-def log_potential_state_reducer(env, eqn, state, eqn_state, context=None):
+def log_potential_state_reducer(
+    env: Any, eqn: Any, state: Any, eqn_state: Any, context: Any = None
+) -> Any:
     del env, eqn, context
     if state is None:
         state = 0.0

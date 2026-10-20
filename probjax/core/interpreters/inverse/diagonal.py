@@ -1,6 +1,10 @@
 """Symbolic elementwise affine coefficients, without Jacobians or matrices."""
 
+from __future__ import annotations
+
 import math
+from collections.abc import Sequence
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -24,32 +28,32 @@ _ELEMENTWISE = frozenset({
 _ORDER_PRESERVING = frozenset({"reshape", "squeeze", "broadcast_in_dim"})
 
 
-def _static_scalar(value):
+def _static_scalar(value: Any) -> bool:
     return isinstance(value, (int, float, np.number)) or (
         isinstance(value, np.ndarray) and value.ndim == 0
     )
 
 
-def _is(value, scalar):
+def _is(value: Any, scalar: Any) -> bool:
     # Never inspect a runtime array or tracer to simplify an expression.
     return _static_scalar(value) and value == scalar
 
 
-def _add(a, b):
+def _add(a: Any, b: Any) -> Any:
     return b if _is(a, 0) else a if _is(b, 0) else a + b
 
 
-def _sub(a, b):
+def _sub(a: Any, b: Any) -> Any:
     return a if _is(b, 0) else -b if _is(a, 0) else a - b
 
 
-def _mul(a, b):
+def _mul(a: Any, b: Any) -> Any:
     if _is(a, 0) or _is(b, 0):
         return 0.0
     return b if _is(a, 1) else a if _is(b, 1) else a * b
 
 
-def _div(a, b):
+def _div(a: Any, b: Any) -> Any:
     if _is(b, 0):
         with np.errstate(divide="ignore", invalid="ignore"):
             return np.divide(a, b)
@@ -66,7 +70,9 @@ class DiagonalAffineSystem:
     """
 
     @classmethod
-    def try_build(cls, jaxpr, targets):
+    def try_build(
+        cls, jaxpr: Any, targets: Sequence[Any]
+    ) -> DiagonalAffineSystem | None:
         if len(targets) != 1 or len(jaxpr.outvars) != 1 or jaxpr.effects:
             return None
         source, sink = targets[0], jaxpr.outvars[0]
@@ -106,19 +112,19 @@ class DiagonalAffineSystem:
             return None
         return cls(jaxpr, source)
 
-    def __init__(self, jaxpr, source):
+    def __init__(self, jaxpr: Any, source: Any) -> None:
         self.shape = source.aval.shape
         self.size = math.prod(self.shape)
         self.known_vars = tuple(v for v in jaxpr.invars if v != source)
         inputs = (*jaxpr.constvars, *self.known_vars)
 
-        def coefficients(*known_values):
-            env = {
+        def coefficients(*known_values: Any) -> Any:
+            env: dict[Any, tuple[Any, Any]] = {
                 v: (None, value) for v, value in zip(inputs, known_values, strict=True)
             }
             env[source] = (1.0, 0.0)
 
-            def read(v):
+            def read(v: Any) -> tuple[Any, Any]:
                 return (None, v.val) if isinstance(v, Literal) else env[v]
 
             for eqn in jaxpr.eqns:
@@ -148,6 +154,9 @@ class DiagonalAffineSystem:
                     d = pairs[1][1]
                     pair = (_div(a, d), _div(b, d))
                 elif name == "neg":
+                    # ``neg`` is unary, so an unknown scale was already
+                    # handled by the all-unknown branch above.
+                    assert a is not None
                     pair = (-a, -b)
                 elif name == "select_n":
                     which = b
@@ -172,7 +181,7 @@ class DiagonalAffineSystem:
                     )
                 elif name in _ORDER_PRESERVING:
 
-                    def rearrange(value, eqn=eqn):
+                    def rearrange(value: Any, eqn: Any = eqn) -> Any:
                         if jnp.ndim(value) == 0:
                             return value
                         value = jnp.broadcast_to(value, eqn.invars[0].aval.shape)
@@ -193,7 +202,14 @@ class DiagonalAffineSystem:
             jax.ShapeDtypeStruct(v.aval.shape, v.aval.dtype) for v in inputs
         ])
 
-    def solve(self, consts, known, outputs, *, compute_logdet):
+    def solve(
+        self,
+        consts: Sequence[Any],
+        known: dict[Any, Any],
+        outputs: Sequence[Any],
+        *,
+        compute_logdet: bool,
+    ) -> tuple[list[Any], Any] | None:
         scale, offset = jax_core.eval_jaxpr(
             self.program.jaxpr,
             self.program.consts,
@@ -210,7 +226,9 @@ class DiagonalAffineSystem:
         else:
             value = _div(_sub(y, offset), scale)
             if not _static_scalar(scale):
-                value = jnp.where((scale == 0) | ~jnp.isfinite(scale), jnp.nan, value)
+                value = jnp.asarray(
+                    jnp.where((scale == 0) | ~jnp.isfinite(scale), jnp.nan, value)
+                )
             value = value.reshape(self.shape)
         logdet = None
         if compute_logdet:

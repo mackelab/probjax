@@ -7,7 +7,7 @@ probjax.core.registry.
 """
 
 import importlib
-from typing import Any, cast
+from typing import Any, Sequence, cast
 
 import jax
 import jax.numpy as jnp
@@ -62,7 +62,9 @@ def has_registered_inverse(eqn, known_invars, known_outvars) -> bool:
 # =============================================================================
 
 
-def inverse_cost_fn(eqn, known_invars, known_outvars):
+def inverse_cost_fn(
+    eqn: Any, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> float:
     """
     Cost function for inverse propagation.
 
