@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence, cast
 
 from jax.extend.core import ClosedJaxpr
 
@@ -100,7 +100,7 @@ def parse_custom_inverse_call_params(
 
     return CustomInverseCallParams(
         forward_jaxpr=forward_jaxpr,
-        inverse_jaxpr_thunk=inverse_jaxpr_thunk,
+        inverse_jaxpr_thunk=cast(Callable[[], ClosedJaxpr], inverse_jaxpr_thunk),
         in_tree=in_tree,
         out_tree=out_tree,
         inv_argnum=inv_argnum,

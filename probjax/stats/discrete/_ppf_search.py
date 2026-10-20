@@ -3,6 +3,8 @@
 import jax
 import jax.numpy as jnp
 
+from probjax.utils.jaxutils import where
+
 
 def ppf_by_cdf_search(q, cdf_fn, *cdf_params, hi=None):
     """Smallest ``k`` with ``cdf_fn(k, *cdf_params) >= q`` via linear scan."""
@@ -34,7 +36,7 @@ def ppf_by_cdf_search(q, cdf_fn, *cdf_params, hi=None):
         final_k, _ = jax.lax.while_loop(cond_fun, body_fun, (0, False))
         if hi_single is None:
             return final_k - 1
-        return jnp.where(final_k > hi_single, hi_single, final_k - 1)
+        return where(final_k > hi_single, hi_single, final_k - 1)
 
     for _ in range(flat[0].ndim):
         ppf_single = jax.vmap(ppf_single)

@@ -117,6 +117,7 @@ def build_implicit_rk_step(
         t0 = state.t0
         y0 = state.y0
         f0 = state.f0 if not last_equals_next else drift(t0, y0, *args)
+        assert f0 is not None
 
         ts = t0 + dt * c
         ts = ts.reshape(-1, 1)

@@ -5,7 +5,7 @@ Categorical Distribution (:mod:`probjax.stats.categorical`)
 This module implements the Categorical distribution.
 """
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -32,8 +32,10 @@ class categorical_gen(rv_discrete, rv_exponential_family):
         return (0, probs.shape[-1] - 1)
 
     @classmethod
-    def logpmf(cls, k: ArrayLike, probs, **kwds):
+    def logpmf(cls, k: ArrayLike, probs: ArrayLike, **kwds: Any) -> ArrayLike:
         """Log probability mass function of the Categorical distribution."""
+        k = jnp.asarray(k)
+        probs = jnp.asarray(probs)
         k = jnp.asarray(k).astype(jnp.int32)
         k = jax.nn.one_hot(k, probs.shape[-1])
         log_probs = jax.scipy.special.xlogy(k, probs).sum(axis=-1)
@@ -58,33 +60,42 @@ class categorical_gen(rv_discrete, rv_exponential_family):
         return random.categorical(rng, logits, shape=shape + event_shape, axis=-1)
 
     @classmethod
-    def mean(cls, probs, **kwds):
+    def mean(cls, probs: ArrayLike, **kwds: Any) -> ArrayLike:
         """Mean of the Categorical distribution."""
+        probs = jnp.asarray(probs)
         return jnp.sum(probs * jnp.arange(probs.shape[-1]), axis=-1)
 
     @classmethod
-    def var(cls, probs, **kwds):
+    def var(cls, probs: ArrayLike, **kwds: Any) -> ArrayLike:
         """Variance of the Categorical distribution."""
+        probs = jnp.asarray(probs)
         mean = cls.mean(probs, **kwds)
         return jnp.sum(probs * (jnp.arange(probs.shape[-1]) - mean) ** 2, axis=-1)
 
     @classmethod
-    def entropy(cls, probs, **kwds):
+    def entropy(cls, probs: ArrayLike, **kwds: Any) -> ArrayLike:
         """Entropy of the Categorical distribution."""
         return -jnp.sum(probs * jnp.log(probs), axis=-1)
 
     @classmethod
-    def natural_parameters(cls, probs, **kwds):
+    def natural_parameters(cls, probs: ArrayLike, **kwds: Any) -> ArrayLike:
         """Natural parameters of the Categorical distribution."""
         return jnp.log(probs)
 
     @classmethod
-    def sufficient_statistics(cls, x, probs, **kwds):
+    def sufficient_statistics(
+        cls,
+        x: ArrayLike,
+        probs: ArrayLike,
+        **kwds: Any,
+    ) -> ArrayLike:
         """Sufficient statistics of the Categorical distribution."""
+        x = jnp.asarray(x)
+        probs = jnp.asarray(probs)
         return jax.nn.one_hot(x, probs.shape[-1])
 
     @classmethod
-    def log_partition(cls, probs, **kwds):
+    def log_partition(cls, probs: ArrayLike, **kwds: Any) -> ArrayLike:
         """Log partition function of the Categorical distribution."""
         return 0.0
 

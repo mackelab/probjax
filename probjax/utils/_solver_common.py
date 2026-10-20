@@ -100,9 +100,9 @@ def scan_on_grid(
     xs,
     length,
     check_points=None,
-    unroll=False,
-    _split_transpose=False,
-    collect_trace=True,
+    unroll: int | bool = False,
+    _split_transpose: bool = False,
+    collect_trace: bool = True,
 ):
     """Run a grid integration: ``fori_loop`` or (checkpointed) ``scan``.
 

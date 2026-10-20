@@ -10,7 +10,7 @@ from probjax.utils.sdeutil.base import (
     register_method,
 )
 from probjax.utils.sdeutil.brownian import get_iterated_integrals_fn
-from probjax.utils.typing import Array, Callable, RngKey
+from probjax.utils.typing import Array, ArrayLike, Callable, RngKey
 
 
 class MilsteinInfo(SDEInfo):
@@ -46,7 +46,7 @@ def build_milstein_step(
         g_jac = jac_fn(lambda t, x: jnp.asarray(diffusion(t, x)), argnums=1)
 
     def step_fn(
-        rng: RngKey, state: MilsteinState, dt: float
+        rng: RngKey, state: MilsteinState, dt: ArrayLike
     ) -> tuple[MilsteinState, MilsteinInfo]:
         dt = jnp.asarray(dt)
         t0, y0 = state.t0, state.y0

@@ -1,7 +1,10 @@
-from typing import Any, Optional, Protocol, runtime_checkable
+from __future__ import annotations
 
-import jax
+from typing import Any, Protocol, runtime_checkable
+
 from jaxtyping import Array, ArrayLike
+
+from probjax.utils.typing import RngKey
 
 __all__ = [
     "ModelFn",
@@ -19,9 +22,7 @@ __all__ = [
 class ModelFn(Protocol):
     """A callable that predicts output at a given position."""
 
-    def __call__(
-        self, *args: Any, rng: Optional[jax.random.PRNGKey] = None, **kwargs: Any
-    ) -> Array:
+    def __call__(self, *args: Any, rng: RngKey | None = None, **kwargs: Any) -> Array:
         """Predict output at a given position.
 
         Args:
@@ -42,7 +43,7 @@ class TimeDependentModelFn(Protocol):
         self,
         t: Array,
         *args: Any,
-        rng: Optional[jax.random.PRNGKey] = None,
+        rng: RngKey | None = None,
         **kwargs: Any,
     ) -> Array:
         """Predict velocity field at a given position and time.
@@ -94,7 +95,7 @@ class WeightFn(Protocol):
 class ReductionFn(Protocol):
     """A callable that reduces an array to a scalar or smaller array."""
 
-    def __call__(self, x: Array, *args, **kwargs: Any) -> Array:
+    def __call__(self, x: Array, *args: Any, **kwargs: Any) -> Array:
         """Reduce array to scalar or smaller array.
 
         Args:
@@ -110,9 +111,7 @@ class ReductionFn(Protocol):
 class LossFn(Protocol):
     """A callable that computes a scalar loss value."""
 
-    def __call__(
-        self, *args: Any, rng: Optional[jax.random.PRNGKey] = None, **kwargs: Any
-    ) -> Array:
+    def __call__(self, *args: Any, rng: RngKey | None = None, **kwargs: Any) -> Array:
         """Compute scalar loss value.
 
         Args:

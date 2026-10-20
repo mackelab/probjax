@@ -6,6 +6,8 @@ Concrete filters (``kalman_filter``, ``particle_filter``) and orchestration
 reverse.
 """
 
+from __future__ import annotations
+
 from typing import Any, Callable, NamedTuple, Optional
 
 

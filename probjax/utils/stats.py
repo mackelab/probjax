@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.special import digamma
 
+from probjax.utils.jaxutils import where
 from probjax.utils.special import digammainv
 
 # MLE for dirichlet distribution
@@ -14,7 +15,7 @@ def mle_dirichlet(xs, alpha0=None, maxiter=100):
     # Ensure that log(xs) is finite
     log_xs = jnp.log(xs)
     log_xs_is_finite = jnp.isfinite(log_xs)
-    log_xs = jnp.where(log_xs_is_finite, log_xs, 0.0)
+    log_xs = where(log_xs_is_finite, log_xs, 0.0)
     suff_stat = jnp.sum(log_xs, axis=0) / jnp.sum(log_xs_is_finite, axis=0)
 
     def fixed_point_iteration(alpha, _):
@@ -139,9 +140,7 @@ def _ebrahimi_entropy(X, m, n):
     padded = _pad_along_last_axis(X, m)
     differences = padded[..., 2 * m :] - padded[..., : -2 * m]
     i = jnp.arange(1, n + 1)
-    ci = jnp.where(
-        i <= m, 1 + (i - 1) / m, jnp.where(i >= n - m + 1, 1 + (n - i) / m, 2.0)
-    )
+    ci = where(i <= m, 1 + (i - 1) / m, where(i >= n - m + 1, 1 + (n - i) / m, 2.0))
     return jnp.mean(jnp.log(n * differences / (ci * m)), axis=-1)
 
 

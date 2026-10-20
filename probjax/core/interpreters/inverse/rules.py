@@ -4,22 +4,25 @@
 from __future__ import annotations
 
 import importlib
-from typing import Any, cast
+from typing import Any, Callable, Sequence, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax._src import core as jax_core
 from jax._src.util import safe_map
-from jax.extend.core import Literal
+from jax.extend.core import ClosedJaxpr, JaxprEqn, Literal
 
 from probjax.core.interpreters.inverse.utils import scan_arity
 from probjax.core.jaxpr_propagation import propagate
 from probjax.core.jaxpr_propagation.utils import (
     CostFunction,
     Knowness,
+    ProcessingRule,
     ProcessingRuleFactory,
     primitive_bind_params,
+    shaped_aval,
+    shaped_dtype,
 )
 from probjax.core.registry import (
     REGISTRY,
@@ -51,61 +54,61 @@ if pjit_p is None:
 # =============================================================================
 
 
-def logit(x, **params):
+def logit(x: Any, **params: Any) -> Any:
     return jax.lax.log_p.bind(x) - jax.lax.log1p_p.bind(-x)  # type: ignore
 
 
-def _strip_accuracy(params):
+def _strip_accuracy(params: Any) -> Any:
     params = dict(params)
     params.pop("accuracy", None)
     return params
 
 
-def _bind_without_accuracy(prim, x, params):
+def _bind_without_accuracy(prim: Any, x: Any, params: Any) -> Any:
     return prim.bind(x, **_strip_accuracy(params))
 
 
-def _pow_without_accuracy(x, power, params):
+def _pow_without_accuracy(x: Any, power: Any, params: Any) -> Any:
     return jax.lax.pow_p.bind(x, power, **_strip_accuracy(params))
 
 
-def sqrt_inverse(x, **params):
+def sqrt_inverse(x: Any, **params: Any) -> Any:
     return _pow_without_accuracy(x, 2.0, params)
 
 
-def rsqrt_inverse(x, **params):
+def rsqrt_inverse(x: Any, **params: Any) -> Any:
     return 1.0 / _pow_without_accuracy(x, 2.0, params)
 
 
-def cbrt_inverse(x, **params):
+def cbrt_inverse(x: Any, **params: Any) -> Any:
     return _pow_without_accuracy(x, 3.0, params)
 
 
-def asin_inverse(x, **params):
+def asin_inverse(x: Any, **params: Any) -> Any:
     return _bind_without_accuracy(jax.lax.asin_p, x, params)
 
 
-def acos_inverse(x, **params):
+def acos_inverse(x: Any, **params: Any) -> Any:
     return _bind_without_accuracy(jax.lax.acos_p, x, params)
 
 
-def atan_inverse(x, **params):
+def atan_inverse(x: Any, **params: Any) -> Any:
     return _bind_without_accuracy(jax.lax.atan_p, x, params)
 
 
-def sin_inverse(x, **params):
+def sin_inverse(x: Any, **params: Any) -> Any:
     params = dict(params)
     params.setdefault("accuracy", None)
     return jax.lax.sin_p.bind(x, **params)
 
 
-def cos_inverse(x, **params):
+def cos_inverse(x: Any, **params: Any) -> Any:
     params = dict(params)
     params.setdefault("accuracy", None)
     return jax.lax.cos_p.bind(x, **params)
 
 
-def tan_inverse(x, **params):
+def tan_inverse(x: Any, **params: Any) -> Any:
     params = dict(params)
     params.setdefault("accuracy", None)
     return jax.lax.tan_p.bind(x, **params)
@@ -116,6 +119,9 @@ def tan_inverse(x, **params):
 # =============================================================================
 
 # Map of forward primitive -> inverse function/primitive
+#: Marker attribute for rules that tolerate partially unknown outputs.
+_SUPPORTS_PARTIAL_OUTPUTS_ATTR = "supports_partial_outputs"
+
 _UNIVARIATE_INVERSES = {
     jax.lax.sin_p: asin_inverse,
     jax.lax.asin_p: sin_inverse,
@@ -146,7 +152,7 @@ _UNIVARIATE_INVERSES = {
 }
 
 
-def _in_image(lo=None, hi=None):
+def _in_image(lo: float | None = None, hi: float | None = None) -> Callable[..., Any]:
     """Guard for a forward map whose image is a bounded interval.
 
     A value outside the image has no preimage, but the inverse expression does
@@ -157,7 +163,7 @@ def _in_image(lo=None, hi=None):
     registered and nothing is paid.
     """
 
-    def guard(out_val, params):
+    def guard(out_val: Any, params: Any) -> Any:
         del params
         xp = jnp if isinstance(out_val, jax_core.Tracer) else np
         value = xp.asarray(out_val)
@@ -186,8 +192,9 @@ _UNIVARIATE_GUARDS = {
 
 
 # JAX >= 0.11 has a dedicated log2 primitive (older versions decompose it).
-if hasattr(jax.lax, "log2_p"):
-    _UNIVARIATE_INVERSES[jax.lax.log2_p] = lambda x, **params: jnp.exp2(x)
+_LOG2_PRIMITIVE = getattr(jax.lax, "log2_p", None)
+if _LOG2_PRIMITIVE is not None:
+    _UNIVARIATE_INVERSES[_LOG2_PRIMITIVE] = lambda x, **params: jnp.exp2(x)
 
 for forward_prim, inv_fn in _UNIVARIATE_INVERSES.items():
     register_univariate_inverse(
@@ -201,7 +208,7 @@ _FFT_INVERSE_TYPE = {
 }
 
 
-def fft_inverse_type(fft_type):
+def fft_inverse_type(fft_type: Any) -> Any:
     """The fft_type inverting ``fft_type``, or None if it is not a bijection.
 
     ``FFT`` and ``IFFT`` swap; ``RFFT``/``IRFFT`` change the element count
@@ -214,7 +221,9 @@ def fft_inverse_type(fft_type):
 
 
 @REGISTRY.rule(jax.lax.fft_p, Context.INVERSE)
-def invert_fft(eqn, known_invars, known_outvars):
+def invert_fft(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     out = known_outvars[0]
     if out is None:
         return None
@@ -228,7 +237,9 @@ def invert_fft(eqn, known_invars, known_outvars):
 
 
 @REGISTRY.rule(jax.lax.integer_pow_p, Context.INVERSE)
-def invert_integer_pow(eqn, known_invars, known_outvars):
+def invert_integer_pow(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     del known_invars
     out = known_outvars[0]
     if out is None:
@@ -252,7 +263,9 @@ def invert_integer_pow(eqn, known_invars, known_outvars):
     return ProcessedResult([eqn.invars[0]], [value])
 
 
-def _invert_complex_projection(eqn, known_outvars, name):
+def _invert_complex_projection(
+    eqn: JaxprEqn, known_outvars: Sequence[Any], name: str
+) -> Any:
     if known_outvars[0] is None:
         return None
     value = invalid_inverse_value(
@@ -263,13 +276,17 @@ def _invert_complex_projection(eqn, known_outvars, name):
 
 
 @REGISTRY.rule(jax.lax.real_p, Context.INVERSE)
-def invert_real(eqn, known_invars, known_outvars):
+def invert_real(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     del known_invars
     return _invert_complex_projection(eqn, known_outvars, "real")
 
 
 @REGISTRY.rule(jax.lax.imag_p, Context.INVERSE)
-def invert_imag(eqn, known_invars, known_outvars):
+def invert_imag(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     del known_invars
     return _invert_complex_projection(eqn, known_outvars, "imag")
 
@@ -279,27 +296,29 @@ def invert_imag(eqn, known_invars, known_outvars):
 # =============================================================================
 
 
-def _inverse_permutation(permutation):
+def _inverse_permutation(permutation: Any) -> Any:
     inverse = [0] * len(permutation)
     for i, axis in enumerate(permutation):
         inverse[axis] = i
     return tuple(inverse)
 
 
-def _prod(shape):
+def _prod(shape: Sequence[int]) -> int:
     result = 1
     for value in shape:
         result *= int(value)
     return result
 
 
-def _transpose_if_needed(x, permutation):
+def _transpose_if_needed(x: Any, permutation: Any) -> Any:
     if permutation == tuple(range(x.ndim)):
         return x
     return jnp.transpose(x, permutation)
 
 
-def _check_dot_general_ranks(dimension_numbers):
+def _check_dot_general_ranks(
+    dimension_numbers: Any,
+) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
     """Validate matched contracting/batch ranks; return them as tuples."""
     (lhs_contracting, rhs_contracting), (lhs_batch, rhs_batch) = dimension_numbers
     if len(lhs_contracting) != len(rhs_contracting):
@@ -316,7 +335,9 @@ def _check_dot_general_ranks(dimension_numbers):
     )
 
 
-def _dot_general_left_shapes(out, rhs, dimension_numbers):
+def _dot_general_left_shapes(
+    out: Any, rhs: Any, dimension_numbers: Any
+) -> dict[str, Any]:
     lhs_contracting, rhs_contracting, lhs_batch, rhs_batch = _check_dot_general_ranks(
         dimension_numbers
     )
@@ -357,7 +378,9 @@ def _dot_general_left_shapes(out, rhs, dimension_numbers):
     }
 
 
-def _dot_general_right_shapes(out, lhs, dimension_numbers):
+def _dot_general_right_shapes(
+    out: Any, lhs: Any, dimension_numbers: Any
+) -> dict[str, Any]:
     lhs_contracting, rhs_contracting, lhs_batch, rhs_batch = _check_dot_general_ranks(
         dimension_numbers
     )
@@ -393,7 +416,7 @@ def _dot_general_right_shapes(out, lhs, dimension_numbers):
     }
 
 
-def dot_general_left_inverse_and_logdet(out, rhs, **params):
+def dot_general_left_inverse_and_logdet(out: Any, rhs: Any, **params: Any) -> Any:
     shapes = _dot_general_left_shapes(out, rhs, params["dimension_numbers"])
     batch_shape = shapes["batch_shape"]
     lhs_free_shape = shapes["lhs_free_shape"]
@@ -444,7 +467,7 @@ def dot_general_left_inverse_and_logdet(out, rhs, **params):
     return lhs, log_abs_det
 
 
-def dot_general_right_inverse_and_logdet(out, lhs, **params):
+def dot_general_right_inverse_and_logdet(out: Any, lhs: Any, **params: Any) -> Any:
     shapes = _dot_general_right_shapes(out, lhs, params["dimension_numbers"])
     batch_shape = shapes["batch_shape"]
     lhs_free_shape = shapes["lhs_free_shape"]
@@ -495,12 +518,12 @@ def dot_general_right_inverse_and_logdet(out, lhs, **params):
     return rhs, log_abs_det
 
 
-def dot_general_left_inverse(out, rhs, **params):
+def dot_general_left_inverse(out: Any, rhs: Any, **params: Any) -> Any:
     lhs, _ = dot_general_left_inverse_and_logdet(out, rhs, **params)
     return lhs
 
 
-def dot_general_right_inverse(out, lhs, **params):
+def dot_general_right_inverse(out: Any, lhs: Any, **params: Any) -> Any:
     rhs, _ = dot_general_right_inverse_and_logdet(out, lhs, **params)
     return rhs
 
@@ -512,7 +535,7 @@ def dot_general_right_inverse(out, lhs, **params):
 # forward replay costs six equations per equation and tells us nothing new.
 
 
-def _compare(value, op):
+def _compare(value: Any, op: Callable[[Any], Callable[[Any], Any]]) -> Any:
     """Evaluate a guard predicate, eagerly when the operand is concrete.
 
     Inside an active trace ``jnp.asarray(2.0) != 0`` is *staged out* as an op
@@ -525,25 +548,25 @@ def _compare(value, op):
     return op(np)(np.asarray(value))
 
 
-def _nonzero_other(out_val, other, params):
+def _nonzero_other(out_val: Any, other: Any, params: Any) -> Any:
     """``out / other`` is only an inverse where ``other`` is non-zero."""
     del out_val, params
     return _compare(other, lambda xp: lambda v: v != 0)
 
 
-def _nonzero_out(out_val, other, params):
+def _nonzero_out(out_val: Any, other: Any, params: Any) -> Any:
     """Recovering a denominator divides by the output."""
     del other, params
     return _compare(out_val, lambda xp: lambda v: v != 0)
 
 
-def _pass_through(out_val, other, **params):
+def _pass_through(out_val: Any, other: Any, **params: Any) -> Any:
     """Inverse of an extremum on its active side: the output *is* the input."""
     del other, params
     return out_val
 
 
-def _extremum_valid(out_val, other, params, *, side):
+def _extremum_valid(out_val: Any, other: Any, params: Any, *, side: str) -> Any:
     """Validity of recovering an extremum's unknown side.
 
     ``max(x, c)`` is ``x`` exactly where ``out > c`` (``min``: ``out < c``).
@@ -559,11 +582,11 @@ def _extremum_valid(out_val, other, params, *, side):
     return out_arr > other_arr if side == "max" else out_arr < other_arr
 
 
-def _max_valid(out_val, other, params):
+def _max_valid(out_val: Any, other: Any, params: Any) -> Any:
     return _extremum_valid(out_val, other, params, side="max")
 
 
-def _min_valid(out_val, other, params):
+def _min_valid(out_val: Any, other: Any, params: Any) -> Any:
     return _extremum_valid(out_val, other, params, side="min")
 
 
@@ -603,7 +626,9 @@ for prim, (left_inv, right_inv) in _BIVARIATE_INVERSES.items():
 
 
 @REGISTRY.rule(jax.lax.dot_general_p, Context.INVERSE)
-def invert_dot_general(eqn, known_invars, known_outvars):
+def invert_dot_general(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     out = known_outvars[0]
     lhs, rhs = known_invars
     if out is None or (lhs is None) == (rhs is None):
@@ -639,23 +664,25 @@ _INVERSE_PROCESSING_RULE_FACTORY: ProcessingRuleFactory | None = None
 _INVERSE_COST_FN: CostFunction | None = None
 
 
-def set_inverse_processing_rule_factory(factory):
+def set_inverse_processing_rule_factory(factory: ProcessingRuleFactory) -> None:
     global _INVERSE_PROCESSING_RULE_FACTORY
     _INVERSE_PROCESSING_RULE_FACTORY = factory
 
 
-def set_inverse_cost_fn(cost_fn):
+def set_inverse_cost_fn(cost_fn: CostFunction) -> None:
     global _INVERSE_COST_FN
     _INVERSE_COST_FN = cost_fn
 
 
-def _make_inverse_processing_rule():
+def _make_inverse_processing_rule() -> (
+    ProcessingRule | Callable[..., ProcessedResult | None]
+):
     if _INVERSE_PROCESSING_RULE_FACTORY is None:
         raise RuntimeError("Inverse processing rule factory has not been configured.")
     return _INVERSE_PROCESSING_RULE_FACTORY()
 
 
-def _get_inverse_cost_fn():
+def _get_inverse_cost_fn() -> CostFunction:
     if _INVERSE_COST_FN is None:
         raise RuntimeError("Inverse cost function has not been configured.")
     return _INVERSE_COST_FN
@@ -735,7 +762,7 @@ def read_state_values(state, vars_, *, default_factory) -> list:
 # =============================================================================
 
 
-def prepare_cond_branches(eqn, known_invars):
+def prepare_cond_branches(eqn: JaxprEqn, known_invars: Sequence[Any]) -> Any:
     if "branches" not in eqn.params:
         raise NotImplementedError("cond inverse requires branch jaxprs")
     if not known_invars:
@@ -753,20 +780,27 @@ def prepare_cond_branches(eqn, known_invars):
     return index_array, eqn.params["branches"]
 
 
-def pack_cond_values(known_invars, known_outvars):
+def pack_cond_values(known_invars: Sequence[Any], known_outvars: Sequence[Any]) -> Any:
     packed = [value for value in known_invars[1:] if value is not None]
     packed.extend(known_outvars)
     return tuple(packed)
 
 
-def unpack_cond_values(known_invars, known_outvars, packed):
+def unpack_cond_values(
+    known_invars: Sequence[Any], known_outvars: Sequence[Any], packed: Any
+) -> Any:
     iterator = iter(packed)
     operands = [None if value is None else next(iterator) for value in known_invars[1:]]
     outputs = [next(iterator) for _ in known_outvars]
     return [known_invars[0], *operands], outputs
 
 
-def prepare_cond_branch_problem(eqn, branch, known_invars, known_outvars):
+def prepare_cond_branch_problem(
+    eqn: JaxprEqn,
+    branch: Any,
+    known_invars: Sequence[Any],
+    known_outvars: Sequence[Any],
+) -> Any:
     known_operands = known_invars[1:]
     branch_invars = branch.jaxpr.invars
     branch_outvars = branch.jaxpr.outvars
@@ -799,13 +833,15 @@ def prepare_cond_branch_problem(eqn, branch, known_invars, known_outvars):
     return target_sub_vars, target_outer_vars, known_vars, known_vals
 
 
-def scan_reverse_indices(length, reverse):
+def scan_reverse_indices(length: int, reverse: bool) -> range:
     if reverse:
         return range(length)
     return range(length - 1, -1, -1)
 
 
-def parse_scan_problem(eqn, known_invars, known_outvars):
+def parse_scan_problem(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> dict[str, Any] | None:
     params = eqn.params
     if "jaxpr" not in params:
         raise NotImplementedError("scan inverse requires nested jaxpr")
@@ -885,7 +921,9 @@ def parse_scan_problem(eqn, known_invars, known_outvars):
     }
 
 
-def parse_while_problem(eqn, known_invars, known_outvars):
+def parse_while_problem(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> dict[str, Any]:
     params = eqn.params
     if "body_jaxpr" not in params or "cond_jaxpr" not in params:
         raise NotImplementedError("while inverse requires body and cond jaxprs")
@@ -945,14 +983,14 @@ def parse_while_problem(eqn, known_invars, known_outvars):
     }
 
 
-def _as_python_bool(value):
+def _as_python_bool(value: Any) -> bool:
     array = jnp.asarray(value)
     if array.shape != ():
         raise NotImplementedError("while inverse requires scalar cond predicate")
     return bool(array.item())
 
 
-def _values_equal(left, right):
+def _values_equal(left: Any, right: Any) -> bool:
     left_array = jnp.asarray(left)
     right_array = jnp.asarray(right)
     if left_array.shape != right_array.shape:
@@ -964,11 +1002,13 @@ def _values_equal(left, right):
     return bool(jnp.array_equal(left_array, right_array))
 
 
-def _evaluate_closed_jaxpr(closed_jaxpr, *args):
+def _evaluate_closed_jaxpr(closed_jaxpr: ClosedJaxpr, *args: Any) -> Any:
     return jax_core.eval_jaxpr(closed_jaxpr.jaxpr, closed_jaxpr.consts, *args)
 
 
-def verify_while_candidate(problem, candidate_state, num_steps):
+def verify_while_candidate(
+    problem: dict[str, Any], candidate_state: Sequence[Any], num_steps: int
+) -> bool:
     cond = problem["cond"]
     body = problem["body"]
     cond_consts = problem["known_cond_const_vals"]
@@ -998,14 +1038,15 @@ def verify_while_candidate(problem, candidate_state, num_steps):
 
 
 @REGISTRY.rule(jax.lax.concatenate_p, Context.INVERSE)
-def invert_concat(eqn, known_invars, known_outvars):
+def invert_concat(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     del known_invars
     dim = eqn.params["dimension"]
     out = known_outvars[0]
     if out is None:
         return None
-    in_avals = safe_map(lambda x: x.aval, eqn.invars)
-    split_dimensions = safe_map(lambda x: x.shape[dim], in_avals)
+    split_dimensions = safe_map(lambda x: shaped_aval(x.aval).shape[dim], eqn.invars)
     split_indices = np.cumsum(split_dimensions)[:-1].tolist()
 
     in_vars = jnp.split(out, split_indices, axis=dim)
@@ -1013,22 +1054,26 @@ def invert_concat(eqn, known_invars, known_outvars):
 
 
 @REGISTRY.rule(jax.lax.squeeze_p, Context.INVERSE)
-def invert_squeeze(eqn, known_invars, known_outvars):
+def invert_squeeze(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     del known_invars
     out = known_outvars[0]
     if out is None:
         return None
-    in_shape = eqn.invars[0].aval.shape
+    in_shape = shaped_aval(eqn.invars[0].aval).shape
     return ProcessedResult([eqn.invars[0]], [out.reshape(in_shape)])
 
 
 @REGISTRY.rule(jax.lax.broadcast_in_dim_p, Context.INVERSE)
-def invert_broadcast_in_dim(eqn, known_invars, known_outvars):
+def invert_broadcast_in_dim(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     del known_invars
     out = known_outvars[0]
     if out is None:
         return None
-    in_aval = eqn.invars[0].aval
+    in_aval = shaped_aval(eqn.invars[0].aval)
     in_shape = in_aval.shape
     dimensions = tuple(eqn.params["broadcast_dimensions"])
     mapped_axes = {out_axis: in_axis for in_axis, out_axis in enumerate(dimensions)}
@@ -1054,7 +1099,9 @@ def invert_broadcast_in_dim(eqn, known_invars, known_outvars):
 
 
 @REGISTRY.rule(jax.lax.rev_p, Context.INVERSE)
-def invert_rev(eqn, known_invars, known_outvars):
+def invert_rev(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     del known_invars
     if known_outvars[0] is None:
         return None
@@ -1064,7 +1111,9 @@ def invert_rev(eqn, known_invars, known_outvars):
 
 
 @REGISTRY.rule(jax.lax.gather_p, Context.INVERSE)
-def invert_gather(eqn, known_invars, known_outvars):
+def invert_gather(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     input_val, index = known_invars
     out = known_outvars[0]
 
@@ -1072,11 +1121,12 @@ def invert_gather(eqn, known_invars, known_outvars):
         return None
 
     if input_val is None:
-        input_aval = eqn.invars[0].aval
-        if jnp.issubdtype(input_aval.dtype, jnp.inexact):
-            input_val = jnp.full(input_aval.shape, jnp.nan, input_aval.dtype)
+        input_aval = shaped_aval(eqn.invars[0].aval)
+        input_dtype = shaped_dtype(input_aval)
+        if jnp.issubdtype(input_dtype, jnp.inexact):
+            input_val = jnp.full(input_aval.shape, jnp.nan, input_dtype)
         else:
-            input_val = jnp.zeros(input_aval.shape, input_aval.dtype)
+            input_val = jnp.zeros(input_aval.shape, input_dtype)
 
     primitive = eqn.primitive
     params = eqn.params
@@ -1089,7 +1139,7 @@ def invert_gather(eqn, known_invars, known_outvars):
         gather_numdim.collapsed_slice_dims,
     )
 
-    out = out.reshape(eqn.outvars[0].aval.shape)
+    out = out.reshape(shaped_aval(eqn.outvars[0].aval).shape)
     input_val = jax.lax.scatter(input_val, index, out, scatter_numdim)
 
     replayed = primitive.bind(input_val, index, **bind_params)
@@ -1104,7 +1154,9 @@ def invert_gather(eqn, known_invars, known_outvars):
 
 
 @REGISTRY.rule(jax.lax.scatter_add_p, Context.INVERSE)
-def invert_scatter_add(eqn, known_invars, known_outvars):
+def invert_scatter_add(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     """Inverse of scatter-add with known indices and updates: subtract back.
 
     Unlike scatter-set, scatter-add is a translation of the operand whatever
@@ -1124,7 +1176,9 @@ def invert_scatter_add(eqn, known_invars, known_outvars):
 
 
 @REGISTRY.rule(jax.lax.scatter_p, Context.INVERSE)
-def invert_scatter(eqn, known_invars, known_outvars):
+def invert_scatter(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     index = known_invars[1]
     assert index is not None, "Cannot invert scatter without index!"
 
@@ -1144,7 +1198,7 @@ def invert_scatter(eqn, known_invars, known_outvars):
 
     collapsed_dims = set(gather_numdim.collapsed_slice_dims)
     window_operand_dims = [i for i in range(operand_ndim) if i not in collapsed_dims]
-    update_shape = eqn.invars[2].aval.shape
+    update_shape = shaped_aval(eqn.invars[2].aval).shape
     update_window_dims = tuple(sorted(scatter_numdim.update_window_dims))
 
     for operand_dim, update_dim in zip(
@@ -1156,7 +1210,7 @@ def invert_scatter(eqn, known_invars, known_outvars):
             slice_sizes[operand_dim] = update_shape[update_dim]
 
     update_val = jax.lax.gather(out, index, gather_numdim, tuple(slice_sizes))
-    update_val = jnp.reshape(update_val, eqn.invars[2].aval.shape)
+    update_val = jnp.reshape(update_val, shaped_aval(eqn.invars[2].aval).shape)
 
     resolved_vars = []
     resolved_vals = []
@@ -1172,7 +1226,9 @@ def invert_scatter(eqn, known_invars, known_outvars):
 
 
 @REGISTRY.rule(jax.lax.select_n_p, Context.INVERSE)
-def invert_select_n(eqn, known_invars, known_outvars):
+def invert_select_n(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     out = known_outvars[0]
     if out is None:
         return None
@@ -1181,7 +1237,7 @@ def invert_select_n(eqn, known_invars, known_outvars):
         # Can't invert without knowing which case was selected
         return None
     cases = known_invars[1:]
-    in_avals = safe_map(lambda x: x.aval, eqn.invars[1:])
+    in_avals = safe_map(lambda x: shaped_aval(x.aval), eqn.invars[1:])
 
     # For select_n(which, case0, case1, ...), we have: out = cases[which]
     # When `which` is known, set only the selected case to the output value.
@@ -1233,12 +1289,14 @@ def invert_select_n(eqn, known_invars, known_outvars):
 
 
 @REGISTRY.rule(jax.lax.reshape_p, Context.INVERSE)
-def invert_reshape(eqn, known_invars, known_outvars):
+def invert_reshape(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     del known_invars
     out = known_outvars[0]
     if out is None:
         return None
-    in_aval = eqn.invars[0].aval
+    in_aval = shaped_aval(eqn.invars[0].aval)
     primitive = eqn.primitive
     params = eqn.params
     subfuns, bind_params = primitive_bind_params(primitive, params)
@@ -1249,14 +1307,16 @@ def invert_reshape(eqn, known_invars, known_outvars):
 
 
 @REGISTRY.rule(jax.lax.convert_element_type_p, Context.INVERSE)
-def invert_convert_element_type(eqn, known_invars, known_outvars):
+def invert_convert_element_type(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     del known_invars
     out = known_outvars[0]
     if out is None:
         return None
-    in_aval = eqn.invars[0].aval
-    out_aval = eqn.outvars[0].aval
-    if not np.can_cast(in_aval.dtype, out_aval.dtype, casting="safe"):
+    in_aval = shaped_aval(eqn.invars[0].aval)
+    out_aval = shaped_aval(eqn.outvars[0].aval)
+    if not np.can_cast(shaped_dtype(in_aval), shaped_dtype(out_aval), casting="safe"):
         value = invalid_inverse_value(
             in_aval,
             message=(
@@ -1269,30 +1329,34 @@ def invert_convert_element_type(eqn, known_invars, known_outvars):
     primitive = eqn.primitive
     params = eqn.params
     subfuns, bind_params = primitive_bind_params(primitive, params)
-    bind_params["new_dtype"] = in_aval.dtype
+    bind_params["new_dtype"] = shaped_dtype(in_aval)
     return ProcessedResult(
         [eqn.invars[0]], [primitive.bind(*subfuns, out, **bind_params)]
     )
 
 
 @REGISTRY.rule(jax.lax.bitcast_convert_type_p, Context.INVERSE)
-def invert_bitcast_convert_type(eqn, known_invars, known_outvars):
+def invert_bitcast_convert_type(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     del known_invars
     out = known_outvars[0]
     if out is None:
         return None
-    in_aval = eqn.invars[0].aval
+    in_aval = shaped_aval(eqn.invars[0].aval)
     primitive = eqn.primitive
     params = eqn.params
     subfuns, bind_params = primitive_bind_params(primitive, params)
-    bind_params["new_dtype"] = in_aval.dtype
+    bind_params["new_dtype"] = shaped_dtype(in_aval)
     return ProcessedResult(
         [eqn.invars[0]], [primitive.bind(*subfuns, out, **bind_params)]
     )
 
 
 @REGISTRY.rule(jax.lax.transpose_p, Context.INVERSE)
-def invert_transpose(eqn, known_invars, known_outvars):
+def invert_transpose(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     del known_invars
     out = known_outvars[0]
     if out is None:
@@ -1309,7 +1373,9 @@ def invert_transpose(eqn, known_invars, known_outvars):
 
 
 @REGISTRY.rule(jax.lax.slice_p, Context.INVERSE)
-def invert_slice(eqn, known_invars, known_outvars):
+def invert_slice(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     input_val = known_invars[0]
     out = known_outvars[0]
     if out is None:
@@ -1318,7 +1384,7 @@ def invert_slice(eqn, known_invars, known_outvars):
     limit_indices = eqn.params["limit_indices"]
     strides = eqn.params.get("strides")
     invar = eqn.invars[0]
-    in_aval = invar.aval
+    in_aval = shaped_aval(invar.aval)
 
     # Check if this is a full slice (covers the entire input)
     # A full slice has start_index all zeros, limit_indices equal to input shape,
@@ -1332,10 +1398,10 @@ def invert_slice(eqn, known_invars, known_outvars):
     # Track if we're creating a partial reconstruction
     is_partial = input_val is None and not is_full_slice
     if input_val is None:
-        if jnp.issubdtype(in_aval.dtype, jnp.inexact):
-            input_val = jnp.full(in_aval.shape, jnp.nan, in_aval.dtype)
+        if jnp.issubdtype(shaped_dtype(in_aval), jnp.inexact):
+            input_val = jnp.full(in_aval.shape, jnp.nan, shaped_dtype(in_aval))
         else:
-            input_val = jnp.zeros(in_aval.shape, in_aval.dtype)
+            input_val = jnp.zeros(in_aval.shape, shaped_dtype(in_aval))
 
     if strides is None:
         strides = (1,) * len(start_index)
@@ -1354,7 +1420,9 @@ def invert_slice(eqn, known_invars, known_outvars):
 
 
 @REGISTRY.rule(jax.lax.dynamic_slice_p, Context.INVERSE)
-def invert_dynamic_slice(eqn, known_invars, known_outvars):
+def invert_dynamic_slice(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     input_val = known_invars[0]
     start_indices = known_invars[1:]
     out = known_outvars[0]
@@ -1362,12 +1430,12 @@ def invert_dynamic_slice(eqn, known_invars, known_outvars):
         return None
 
     invar = eqn.invars[0]
-    in_aval = invar.aval
+    in_aval = shaped_aval(invar.aval)
 
     # Track if we're creating a partial reconstruction
     is_partial = input_val is None
     if input_val is None:
-        input_val = jnp.full(in_aval.shape, jnp.nan, dtype=in_aval.dtype)
+        input_val = jnp.full(in_aval.shape, jnp.nan, dtype=shaped_dtype(in_aval))
 
     new_input = jax.lax.dynamic_update_slice(input_val, out, start_indices)
 
@@ -1378,7 +1446,9 @@ def invert_dynamic_slice(eqn, known_invars, known_outvars):
 
 
 @REGISTRY.rule(jax.lax.split_p, Context.INVERSE)
-def invert_split(eqn, known_invars, known_outvars):
+def invert_split(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     del known_invars
     params = eqn.params
     invar = eqn.invars[0]
@@ -1398,7 +1468,9 @@ def invert_split(eqn, known_invars, known_outvars):
 
 
 @REGISTRY.rule(jax.lax.split_p, Context.INVERSE_LOGDET)
-def invert_split_logdet(eqn, known_invars, known_outvars):
+def invert_split_logdet(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     """Inverse of split with log-det = 0 (volume-preserving)."""
     del known_invars
     params = eqn.params
@@ -1411,7 +1483,9 @@ def invert_split_logdet(eqn, known_invars, known_outvars):
 
 
 @REGISTRY.rule(jax.lax.cond_p, Context.INVERSE)
-def invert_cond(eqn, known_invars, known_outvars):
+def invert_cond(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     if any(out is None for out in known_outvars):
         return None
     branch_index, branches = prepare_cond_branches(eqn, known_invars)
@@ -1422,8 +1496,8 @@ def invert_cond(eqn, known_invars, known_outvars):
     if not target_sub_vars:
         return ProcessedResult([], [])
 
-    def make_branch_solver(branch):
-        def solve(packed):
+    def make_branch_solver(branch: Any) -> Callable[[Any], Any]:
+        def solve(packed: Any) -> Any:
             branch_inputs, branch_outputs = unpack_cond_values(
                 known_invars, known_outvars, packed
             )
@@ -1456,7 +1530,7 @@ def invert_cond(eqn, known_invars, known_outvars):
     return ProcessedResult(target_outer_vars, list(target_vals))
 
 
-def _solve_scan_xs_per_step(problem):
+def _solve_scan_xs_per_step(problem: dict[str, Any]) -> list[Any] | None:
     """Solve every step's sequence inputs from its outputs; None on failure.
 
     Only for carry-free scans (``lax.map`` shape): each step is an independent
@@ -1465,7 +1539,10 @@ def _solve_scan_xs_per_step(problem):
     if problem["length"] == 0:
         # Empty sequences contribute nothing; any correctly shaped value works.
         return [
-            jnp.zeros(var.aval.shape, dtype=var.aval.dtype)
+            jnp.zeros(
+                shaped_aval(var.aval).shape,
+                dtype=cast(Any, shaped_aval(var.aval).dtype),
+            )
             for var in problem["xs_invars"]
         ]
     lanes: dict[int, list] = {}
@@ -1489,7 +1566,9 @@ def _solve_scan_xs_per_step(problem):
 
 
 @REGISTRY.rule(jax.lax.scan_p, Context.INVERSE)
-def invert_scan(eqn, known_invars, known_outvars):
+def invert_scan(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     # Partial outputs tolerated (see supports_partial_outputs below): the
     # backward pass seeds from whichever final-carry lanes are known.
     if all(out is None for out in known_outvars):
@@ -1571,11 +1650,13 @@ def invert_scan(eqn, known_invars, known_outvars):
 # the interpreter may call it with partially unknown outputs (dead counter
 # lanes, unused sequence outputs). Every other rule assumes fully known
 # outputs; see InverseProcessingRule.
-invert_scan.supports_partial_outputs = True
+setattr(invert_scan, _SUPPORTS_PARTIAL_OUTPUTS_ATTR, True)
 
 
 @REGISTRY.rule(jax.lax.while_p, Context.INVERSE)
-def invert_while(eqn, known_invars, known_outvars):
+def invert_while(
+    eqn: JaxprEqn, known_invars: Sequence[Any], known_outvars: Sequence[Any]
+) -> ProcessedResult | None:
     if any(out is None for out in known_outvars):
         return None
     problem = parse_while_problem(eqn, known_invars, known_outvars)

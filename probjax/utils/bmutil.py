@@ -7,7 +7,7 @@ from contextlib import suppress
 
 import jax
 import psutil
-from pynvml import (
+from pynvml import (  # type: ignore[import-not-found]
     NVMLError,
     nvmlDeviceGetHandleByIndex,
     nvmlDeviceGetUtilizationRates,
@@ -65,7 +65,7 @@ class Benchmark:
         self._end_time = None
         self._iteration_count = 0
         self._active = False
-        self._duration_estimator = None
+        self._duration_estimator: OnlineMeanStdEstimator | None = None
         self._warmup_duration = None
         self._iteration_durations = []
         self._last_live_report = None
@@ -109,9 +109,12 @@ class Benchmark:
     def _iteration_generator(self):
         while True:
             now = time.time()
+            started = self._start_time
+            if started is None:
+                break
             if (
                 self._iteration_count >= self.min_iterations
-                and now - self._start_time >= self.max_time
+                and now - started >= self.max_time
             ):
                 break
             if (
@@ -128,6 +131,7 @@ class Benchmark:
                 self._warmup_duration = duration
             else:
                 self._iteration_durations.append(duration)
+                assert self._duration_estimator is not None
                 self._duration_estimator.update(duration)
             self._maybe_report_live_utilization(iteration_end)
 
@@ -158,6 +162,7 @@ class Benchmark:
             )
             return
 
+        assert self._duration_estimator is not None
         mean = self._duration_estimator.get_mean()
         std = self._duration_estimator.get_std()
         unit, multiplier = self._duration_unit(mean)

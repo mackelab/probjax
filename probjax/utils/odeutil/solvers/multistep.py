@@ -138,7 +138,7 @@ def build_ab(
     """Build Adams-Bashforth explicit multistep method."""
     assert order in (1, 2, 3, 4), "AB order must be 1-4"
 
-    def step(state: LMSState, dt: ArrayLike, *args) -> tuple[LMSState, LMSInfo]:
+    def step(state: Any, dt: ArrayLike, *args: Any) -> tuple[LMSState, LMSInfo]:
         t_n, y_n = state.t0, state.y0
         if _need_bootstrap(state, order):
             if bootstrap_step is None:
@@ -153,7 +153,9 @@ def build_ab(
 
         # Get coefficients with proper dtype
         beta = get_ab_coeffs(order, y_n.dtype)
-        Fs = state.hist_f[::-1]  # [f_n, f_{n-1}, ...]
+        f_history = state.hist_f
+        assert f_history is not None
+        Fs = f_history[::-1]  # [f_n, f_{n-1}, ...]
         incr = sum(b * f for b, f in zip(beta, Fs, strict=False))
         y_np1 = y_n + dt * incr
         t_np1 = t_n + dt
@@ -197,7 +199,7 @@ def build_am(
     """
     assert order in (1, 2, 3, 4), "AM order must be 1-4"
 
-    def step(state: LMSState, dt: ArrayLike, *args) -> tuple[LMSState, LMSInfo]:
+    def step(state: Any, dt: ArrayLike, *args: Any) -> tuple[LMSState, LMSInfo]:
         t_n, y_n, _f_n = state.t0, state.y0, state.f0
         if _need_bootstrap(state, order):
             if bootstrap_step is None:
@@ -212,7 +214,9 @@ def build_am(
         # Get coefficients with proper dtype
         a = get_am_coeffs(order, y_n.dtype)
         a_m1, a_hist = a[0], a[1:]  # a_{-1}, [a_0, ..., a_{k-1}]
-        Fs = state.hist_f[::-1]  # [f_n, f_{n-1}, ...]
+        f_history = state.hist_f
+        assert f_history is not None
+        Fs = f_history[::-1]  # [f_n, f_{n-1}, ...]
         # predictor: AB1 (Euler) or use the explicit Adams formula of matching order
         y_pred = y_n + dt * Fs[0]  # cheap predictor
 
@@ -268,7 +272,7 @@ def build_bdf(
     assert order in (1, 2, 3), "BDF order must be 1-3"
     b = get_bdf_b(order)
 
-    def step(state: LMSState, dt: ArrayLike, *args) -> tuple[LMSState, LMSInfo]:
+    def step(state: Any, dt: ArrayLike, *args: Any) -> tuple[LMSState, LMSInfo]:
         t_n, y_n = state.t0, state.y0
         if _need_bootstrap(state, order):
             if bootstrap_step is None:
@@ -283,7 +287,9 @@ def build_bdf(
         # Get coefficients with proper dtype
         a = get_bdf_a(order, y_n.dtype)
         # form RHS with history y_n, y_{n-1}, ...
-        Ys = state.hist_y[::-1]  # [y_n, y_{n-1}, ...]
+        y_history = state.hist_y
+        assert y_history is not None
+        Ys = y_history[::-1]  # [y_n, y_{n-1}, ...]
         rhs = -sum(
             a_j * y for a_j, y in zip(a[1:], Ys, strict=False)
         )  # move known terms to RHS

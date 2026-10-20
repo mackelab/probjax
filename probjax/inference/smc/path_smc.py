@@ -1,4 +1,6 @@
-from typing import Callable, Dict, NamedTuple, Optional
+from __future__ import annotations
+
+from typing import Any, Callable, NamedTuple
 
 import blackjax
 import jax
@@ -12,17 +14,24 @@ from probjax.inference.smc.base import (
     make_mcmc_adapter,
 )
 from probjax.inference.smc.resampling import systematic
+from probjax.utils.typing import Array, RngKey
 
 
 class PathSMCState(NamedTuple):
-    particles: jnp.ndarray
-    weights: jnp.ndarray
-    tempering_param: jnp.ndarray
+    particles: Array
+    weights: Array
+    tempering_param: Array
 
 
 def _log_weights_fn(
-    path, prev_param, next_param, *, logprior_fn, loglikelihood_fn, **path_kwargs
-):
+    path: Any,
+    prev_param: Any,
+    next_param: Any,
+    *,
+    logprior_fn: Callable | None,
+    loglikelihood_fn: Callable | None,
+    **path_kwargs: Any,
+) -> tuple[Callable, Callable]:
     logdensity_prev = path.logdensity_fn(
         prev_param,
         logprior_fn=logprior_fn,
@@ -36,25 +45,25 @@ def _log_weights_fn(
         **path_kwargs,
     )
 
-    def log_weights(x):
+    def log_weights(x: Any) -> Array:
         return logdensity_next(x) - logdensity_prev(x)
 
     return log_weights, logdensity_next
 
 
 def build_step(
-    logprior_fn: Optional[Callable],
-    loglikelihood_fn: Optional[Callable],
+    logprior_fn: Callable | None,
+    loglikelihood_fn: Callable | None,
     *,
-    path,
-    mcmc_kernel,
+    path: Any,
+    mcmc_kernel: Any,
     num_mcmc_steps: int = 10,
     resampling_fn: Callable = systematic,
     update_strategy: Callable = blackjax.smc.base.update_and_take_last,
-    path_kwargs: Optional[Dict] = None,
+    path_kwargs: dict[str, Any] | None = None,
     batch_size: int = 0,
-    **mcmc_kernel_kwargs,
-):
+    **mcmc_kernel_kwargs: Any,
+) -> Callable:
     if mcmc_kernel is None:
         raise ValueError("mcmc_kernel must be provided for SMC.")
     mcmc_init_fn, mcmc_step_fn = make_mcmc_adapter(mcmc_kernel, **mcmc_kernel_kwargs)
@@ -73,7 +82,9 @@ def build_step(
     else:
         path_kwargs = path_kwargs
 
-    def step(rng_key, state, tempering_param, mcmc_parameters):
+    def step(
+        rng_key: RngKey, state: Any, tempering_param: Any, mcmc_parameters: Any
+    ) -> Any:
         log_weights_fn, logposterior_fn = _log_weights_fn(
             path,
             state.tempering_param,
@@ -99,18 +110,18 @@ def build_step(
 
 
 def init_params(
-    particles,
+    particles: Any,
     *,
-    path,
-    logprior_fn: Optional[Callable],
-    loglikelihood_fn: Optional[Callable],
-    mcmc_kernel,
-    rng_key=None,
-    initial_path_param=None,
-    mcmc_kernel_kwargs: Optional[Dict] = None,
-    path_kwargs: Optional[Dict] = None,
-    **mcmc_param_kwargs,
-) -> Dict:
+    path: Any,
+    logprior_fn: Callable | None,
+    loglikelihood_fn: Callable | None,
+    mcmc_kernel: Any,
+    rng_key: RngKey | None = None,
+    initial_path_param: Any = None,
+    mcmc_kernel_kwargs: dict[str, Any] | None = None,
+    path_kwargs: dict[str, Any] | None = None,
+    **mcmc_param_kwargs: Any,
+) -> dict[str, Array]:
     mcmc_kernel_kwargs = mcmc_kernel_kwargs or {}
     if path_kwargs is None:
         path_kwargs = filter_kwargs(
@@ -145,7 +156,13 @@ def init_params(
     return params_dict
 
 
-def init(particles, *, path, initial_path_param=None, **path_kwargs):
+def init(
+    particles: Any,
+    *,
+    path: Any,
+    initial_path_param: Any = None,
+    **path_kwargs: Any,
+) -> PathSMCState:
     if initial_path_param is None:
         initial_path_param = path.initial_param(**path_kwargs)
     num_particles = jax.tree_util.tree_flatten(particles)[0][0].shape[0]

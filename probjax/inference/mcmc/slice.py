@@ -1,17 +1,19 @@
+from __future__ import annotations
+
 from functools import partial
-from typing import Callable, NamedTuple, Optional, Tuple
+from typing import Any, Callable, NamedTuple
 
 import jax
 import jax.numpy as jnp
 
 from probjax.inference.mcmc.adaptation import slice_step_size_adaptor
 from probjax.inference.mcmc.base import MarkovKernelAPI, make_step_from_kernel
-from probjax.utils.typing import Array, ArrayLike, RngKey
+from probjax.utils.typing import Array, ArrayLike, RngKey, Scalar
 
 # Some utility functions for creating 1D slices through an N-dimensional space
 
 
-def sample_random_direction(key: RngKey, position: ArrayLike) -> Array:
+def sample_random_direction(key: RngKey, position: Array) -> Array:
     """Sample a random unit direction in the space of ``position``.
 
     Parameters
@@ -32,7 +34,9 @@ def sample_random_direction(key: RngKey, position: ArrayLike) -> Array:
     return direction
 
 
-def linear_slice_fn(position: ArrayLike, theta: ArrayLike) -> Callable:
+def linear_slice_fn(
+    position: ArrayLike, theta: ArrayLike
+) -> Callable[[float], ArrayLike]:
     """Build a linear slice through ``position`` in direction ``theta``.
 
     Parameters
@@ -49,15 +53,13 @@ def linear_slice_fn(position: ArrayLike, theta: ArrayLike) -> Callable:
     """
 
     # Linear slice from position in direction theta
-    def linear_slice(t: float):
+    def linear_slice(t: float) -> ArrayLike:
         return position + t * theta
 
     return linear_slice
 
 
-def sample_random_polynomial(
-    key: RngKey, position: ArrayLike, degree: int = 3
-) -> Array:
+def sample_random_polynomial(key: RngKey, position: Array, degree: int = 3) -> Array:
     """Sample random polynomial directions with the shape of ``position``.
 
     Parameters
@@ -82,7 +84,7 @@ def sample_random_polynomial(
 
 def polynomial_slice_fn(
     position: ArrayLike, theta: ArrayLike, degree: int = 3
-) -> Callable:
+) -> Callable[[float], ArrayLike]:
     """Build a polynomial slice through ``position`` in directions ``theta``.
 
     Parameters
@@ -106,14 +108,14 @@ def polynomial_slice_fn(
     # Factors
     factors = 1.0 / factorial
 
-    def polynomial_slice_fn(t: float):
+    def polynomial_slice_fn(t: float) -> ArrayLike:
         t_powers = jnp.power(t, degrees) * factors
         return position + jnp.sum(theta * t_powers[:, None], axis=0)
 
     return polynomial_slice_fn
 
 
-def sample_random_index(key: RngKey, position: ArrayLike) -> Array:
+def sample_random_index(key: RngKey, position: Array) -> Array:
     """Sample a random coordinate index in the first axis of ``position``.
 
     Parameters
@@ -132,7 +134,7 @@ def sample_random_index(key: RngKey, position: ArrayLike) -> Array:
     return idx
 
 
-def axis_slice_fn(position: ArrayLike, theta: ArrayLike) -> Callable:
+def axis_slice_fn(position: Array, theta: Array) -> Callable[[float], Array]:
     """Build a slice that moves ``position`` along a single coordinate.
 
     Parameters
@@ -149,7 +151,7 @@ def axis_slice_fn(position: ArrayLike, theta: ArrayLike) -> Callable:
     """
 
     # Slice along an axis
-    def axis_slice_fn(t: float):
+    def axis_slice_fn(t: float) -> Array:
         new_position = position.at[theta].add(t)
         return new_position
 
@@ -168,7 +170,7 @@ class SliceParams(NamedTuple):
         Initial bracket expansion step size.
     """
 
-    step_size: float
+    step_size: Scalar
 
 
 class SliceState(NamedTuple):
@@ -204,7 +206,7 @@ class SliceInfo(NamedTuple):
     proposal: SliceState
 
 
-def init(position: ArrayLike, logdensity_fn: Callable, rng_key: RngKey) -> SliceState:
+def init(position: Array, logdensity_fn: Callable, rng_key: RngKey) -> SliceState:
     """Initialize the slice sampler state.
 
     Parameters
@@ -225,7 +227,7 @@ def init(position: ArrayLike, logdensity_fn: Callable, rng_key: RngKey) -> Slice
     return SliceState(position, log_density, rng_key)
 
 
-def init_params(state: ArrayLike, step_size: float = 0.5) -> SliceParams:
+def init_params(state: Any, step_size: float = 0.5) -> SliceParams:
     """Initialize the static parameters of the slice sampler.
 
     Parameters
@@ -271,8 +273,8 @@ def build_kernel(
         log_density_fn: Callable,
         max_evals: int = 100,
         step_size: float = 0.5,
-        **kwargs,
-    ) -> Tuple[SliceState, SliceInfo]:
+        **kwargs: Any,
+    ) -> tuple[SliceState, SliceInfo]:
         rng_key, key_slice, key_rejections = jax.random.split(rng_key, 3)
         direction = slice_fn_arg(key_slice, state.position, **kwargs)
         log_density = state.logdensity
@@ -299,9 +301,9 @@ def build_kernel(
 def build_step(
     logdensity_fn: Callable,
     max_evals: int = 100,
-    slice_fn="linear",
-    slice_fn_arg: Optional[Callable] = None,
-    **kwargs,
+    slice_fn: str | Callable = "linear",
+    slice_fn_arg: Callable | None = None,
+    **kwargs: Any,
 ) -> Callable:
     """Build the slice-sampling step; see :class:`slice` for the arguments."""
     if isinstance(slice_fn, str):
@@ -320,6 +322,8 @@ def build_step(
         else:
             raise ValueError("Invalid slice function")
 
+    if slice_fn_arg is None:
+        raise ValueError("A slice function needs a slice argument sampler.")
     kernel_builder = lambda: build_kernel(slice_fn, slice_fn_arg)
     return make_step_from_kernel(
         logdensity_fn,
@@ -328,7 +332,9 @@ def build_step(
     )
 
 
-def _slice_adaptation(*, target_num_evaluations=5, max_evaluations=100, **kwargs):
+def _slice_adaptation(
+    *, target_num_evaluations: float = 5, max_evaluations: int = 100, **kwargs: Any
+):
     """Default adaptation; ``max_evaluations`` must match the kernel's ``max_evals``."""
     return slice_step_size_adaptor(target_num_evaluations, max_evaluations, **kwargs)
 
@@ -366,7 +372,7 @@ def lower_upper_bracket(
     log_density_bound: ArrayLike,
     step_size: float,
     max_steps: int,
-) -> Tuple[Array, Array, int]:
+) -> tuple[Array, Array, int]:
     """Expand a bracket around a slice until it leaves the target level set.
 
     Parameters
@@ -423,7 +429,7 @@ def accept_reject_slice(
     t_upper: ArrayLike,
     log_density_bound: ArrayLike,
     max_steps: int,
-) -> Tuple[Array, Array, int]:
+) -> tuple[Array, Array, int]:
     """Draw a slice sample by rejection within a bracket.
 
     Parameters

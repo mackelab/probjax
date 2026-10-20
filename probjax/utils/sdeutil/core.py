@@ -288,6 +288,7 @@ def _sdeint(
     else:
         trace_fn = None
 
+    _adaptive_total_hits = jnp.int32(0)
     if step_size_adaptor is not None:
         if noise_type != "diagonal":
             raise NotImplementedError(
@@ -344,7 +345,9 @@ def _sdeint(
             collect_trace=trace_enabled,
         )
 
-    state_y0 = state.y0
+    state_y0 = getattr(state, "y0", None)
+    if state_y0 is None:
+        state_y0 = flat_y0
     final_state = apply_filter(unravel(state_y0))
 
     trace_output: Optional[PyTree[Array]]

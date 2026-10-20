@@ -87,7 +87,9 @@ def build_linear_exact_sde_step(
             L = jnp.linalg.cholesky(cov + 1e-8 * jnp.eye(y0.size, dtype=cov.dtype))
             y_sample = y_mean + (L @ noise.ravel()).reshape(y0.shape)
 
-        dWt = jax.random.normal(rng_dwt, (y0.size if diagonal_noise else noise_dim,))
+        noise_size = y0.size if diagonal_noise else noise_dim
+        assert noise_size is not None
+        dWt = jax.random.normal(rng_dwt, (noise_size,))
         return (
             LinearExactSDEState(t0=t0 + dt, y0=y_sample),
             LinearExactSDEInfo(dWt=dWt),

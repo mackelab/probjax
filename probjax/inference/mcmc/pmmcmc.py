@@ -56,19 +56,15 @@ def _make_fixed_logdensity(
     stochastic estimator is evaluated in parallel, and the results are
     averaged (variance reduction).
     """
-    if num_samples == 1:
 
-        def fixed_logdensity(position):
+    def fixed_logdensity(position):
+        if num_samples == 1:
             return stochastic_logdensity_fn(position, key_logdensity)
-
-    else:
-
-        def fixed_logdensity(position):
-            keys = jax.random.split(key_logdensity, num_samples)
-            estimates = jax.vmap(stochastic_logdensity_fn, in_axes=(None, 0))(
-                position, keys
-            )
-            return jnp.mean(estimates)
+        keys = jax.random.split(key_logdensity, num_samples)
+        estimates = jax.vmap(stochastic_logdensity_fn, in_axes=(None, 0))(
+            position, keys
+        )
+        return jnp.mean(estimates)
 
     return fixed_logdensity
 
@@ -140,5 +136,8 @@ def pseudo_marginal(
 
     # Inherit the inner kernel's recommended warmup (None if it has none).
     return MarkovKernel(
-        init, step, init_params, getattr(inner_kernel_cls, "default_adaptation_fn", None)
+        init,
+        step,
+        init_params,
+        getattr(inner_kernel_cls, "default_adaptation_fn", None),
     )

@@ -5,7 +5,7 @@ Logistic Distribution (:mod:`probjax.stats.logistic`)
 This module contains the Logistic distribution.
 """
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -46,7 +46,13 @@ class logistic_gen(rv_continuous, rv_exponential_family):
     parameters = {'loc': real, 'scale': strict_positive}
 
     @classmethod
-    def pdf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def pdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Probability density function of the logistic distribution."""
         x_arr = jnp.asarray(x)
         loc_arr = jnp.asarray(loc)
@@ -57,7 +63,13 @@ class logistic_gen(rv_continuous, rv_exponential_family):
         return exp_neg_z / denom
 
     @classmethod
-    def logpdf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the probability density function of the logistic distribution."""
         x_arr = jnp.asarray(x)
         loc_arr = jnp.asarray(loc)
@@ -66,7 +78,13 @@ class logistic_gen(rv_continuous, rv_exponential_family):
         return -z - jnp.log(scale_arr) - 2.0 * jax.nn.softplus(-z)
 
     @classmethod
-    def cdf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Cumulative distribution function of the logistic distribution."""
         x_arr = jnp.asarray(x)
         loc_arr = jnp.asarray(loc)
@@ -75,7 +93,13 @@ class logistic_gen(rv_continuous, rv_exponential_family):
         return jax.nn.sigmoid(z)
 
     @classmethod
-    def ppf(cls, q, loc=0.0, scale=1.0, **kwargs):
+    def ppf(
+        cls,
+        q: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Percent point function (inverse of cdf) of the logistic distribution."""
         q_arr = jnp.asarray(q)
         loc_arr = jnp.asarray(loc)
@@ -101,17 +125,35 @@ class logistic_gen(rv_continuous, rv_exponential_family):
         return loc_arr + scale_arr * jnp.log(u / (1.0 - u))
 
     @classmethod
-    def sf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def sf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Survival function (1 - cdf) of the logistic distribution."""
         return 1.0 - cls.cdf(x, loc=loc, scale=scale, **kwargs)
 
     @classmethod
-    def isf(cls, q, loc=0.0, scale=1.0, **kwargs):
+    def isf(
+        cls,
+        q: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Inverse survival function (inverse of sf) of the logistic distribution."""
         return cls.ppf(1.0 - jnp.asarray(q), loc=loc, scale=scale, **kwargs)
 
     @classmethod
-    def logcdf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def logcdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the cumulative distribution function of the logistic distribution."""
         x_arr = jnp.asarray(x)
         loc_arr = jnp.asarray(loc)
@@ -120,30 +162,55 @@ class logistic_gen(rv_continuous, rv_exponential_family):
         return -jax.nn.softplus(-z)
 
     @classmethod
-    def mean(cls, loc=0.0, scale=1.0, **kwargs):
+    def mean(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mean of the logistic distribution."""
         return jnp.asarray(loc)
 
     @classmethod
-    def mode(cls, loc=0.0, scale=1.0, **kwargs):
+    def mode(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mode of the logistic distribution."""
         return jnp.asarray(loc)
 
     @classmethod
-    def var(cls, loc=0.0, scale=1.0, **kwargs):
+    def var(
+        cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Variance of the logistic distribution."""
         scale_arr = jnp.asarray(scale)
         return (jnp.pi * scale_arr) ** 2 / 3.0
 
     @classmethod
-    def entropy(cls, loc=0.0, scale=1.0, **kwargs):
+    def entropy(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Entropy of the logistic distribution."""
         scale_arr = jnp.asarray(scale)
         return jnp.log(scale_arr) + 2.0
 
     @classmethod
-    def moment(cls, n, loc=0.0, scale=1.0, **kwargs):
+    def moment(
+        cls,
+        n: int,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """n-th non-central moment of the logistic distribution."""
+        loc = jnp.asarray(loc)
+        scale = jnp.asarray(scale)
         n_int = int(n)
         loc_arr = jnp.asarray(loc)
         scale_arr = jnp.asarray(scale)
@@ -156,31 +223,51 @@ class logistic_gen(rv_continuous, rv_exponential_family):
         raise NotImplementedError(f"Moment of order {n_int} not implemented")
 
     @classmethod
-    def skew(cls, loc=0.0, scale=1.0, **kwargs):
+    def skew(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Skewness of the logistic distribution."""
         return jnp.zeros_like(jnp.asarray(loc))
 
     @classmethod
-    def kurtosis(cls, loc=0.0, scale=1.0, **kwargs):
+    def kurtosis(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Excess kurtosis of the logistic distribution."""
         loc_arr = jnp.asarray(loc)
         return jnp.ones_like(loc_arr) * 1.2
 
     @classmethod
-    def natural_parameters(cls, loc=0.0, scale=1.0, **kwargs):
+    def natural_parameters(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Natural parameters of the logistic distribution."""
         loc_arr = jnp.asarray(loc)
         scale_arr = jnp.asarray(scale)
         return jnp.stack((loc_arr / scale_arr, -1.0 / scale_arr))
 
     @classmethod
-    def sufficient_statistics(cls, x, **kwargs):
+    def sufficient_statistics(cls, x: ArrayLike, **kwargs: Any) -> ArrayLike:
         """Sufficient statistics of the logistic distribution."""
         x_arr = jnp.asarray(x)
         return jnp.stack((x_arr, jnp.abs(x_arr)))
 
     @classmethod
-    def log_partition(cls, loc=0.0, scale=1.0, **kwargs):
+    def log_partition(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log partition function of the logistic distribution."""
         loc_arr = jnp.asarray(loc)
         scale_arr = jnp.asarray(scale)

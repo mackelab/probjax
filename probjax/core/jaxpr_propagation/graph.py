@@ -1,22 +1,31 @@
+import importlib
 import io
 import re
-from contextlib import suppress
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence, cast
 
 import jax.numpy as jnp
 import networkx as nx
 
-with suppress(ImportError):
-    from IPython.display import SVG, display  # type: ignore
-
 try:
-    from jax.experimental.pjit import pjit_p
-except ImportError:
-    # JaX 0.7
-    from jax._src.pjit import jit_p as pjit_p
-from jax.extend.core import Jaxpr, Literal
+    from IPython.display import SVG, display
+except ImportError:  # IPython is optional
+    SVG = None
+    display = None
 
-from probjax.core.custom_primitives.random_variable import rv_p
+# The pjit primitive moved between JAX versions.
+try:
+    pjit_mod = importlib.import_module("jax.experimental.pjit")
+except ImportError:
+    pjit_mod = None
+
+pjit_p = getattr(cast(Any, pjit_mod), "pjit_p", None)
+if pjit_p is None:
+    # JAX 0.7+
+    from jax._src.pjit import jit_p as pjit_p
+
+from jax.extend.core import Jaxpr, Literal  # noqa: E402
+
+from probjax.core.custom_primitives.random_variable import rv_p  # noqa: E402
 
 COMPUTE_GRAPH_NODE_STYLES = {
     "const": dict(
@@ -87,7 +96,7 @@ def to_networkx(
     var_name_fn: Callable,
     compute_name_fn: Callable,
     level=0,
-    maxlevel: int = jnp.inf,
+    maxlevel: int | float = jnp.inf,
 ) -> nx.DiGraph:
     """Converts a Jaxpr to a networkx graph.
 
@@ -285,7 +294,7 @@ class JaxprGraph:
     def __init__(
         self,
         jaxpr: Jaxpr,
-        maxlevel: int = jnp.inf,
+        maxlevel: int | float = jnp.inf,
         graph: nx.DiGraph | None = None,
     ) -> None:
         self._jaxpr = jaxpr
@@ -295,17 +304,17 @@ class JaxprGraph:
             )
 
     @property
-    def eqns(self):
+    def eqns(self) -> dict[str, Any]:
         eqn_names = [f"f{i}" for i in range(len(self._jaxpr.eqns))]
         return dict(zip(eqn_names, self._jaxpr.eqns, strict=False))
 
     @property
-    def vars(self):
+    def vars(self) -> dict[str, Any]:
         var_names = [n for n in self._graph.nodes if not re.match(r"f\d+", n)]
         vars = [self._graph.nodes[n] for n in var_names]
         return dict(zip(var_names, vars, strict=False))
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         AGraph = nx.nx_agraph.to_agraph(self._graph)
         # Node styles by tag
         nodes = AGraph.nodes()
@@ -334,6 +343,8 @@ class JaxprGraph:
         svg = io.BytesIO()
         AGraph.draw(svg, format="svg")
         svg.seek(0)
+        if display is None or SVG is None:
+            raise RuntimeError("Rendering a JaxprGraph requires IPython.")
         display(SVG(svg.read()))
         return ""
 
@@ -342,9 +353,6 @@ class DirectedVariableGraph(JaxprGraph):
     def __init__(self, jaxpr, maxlevel=jnp.inf, graph=None) -> None:
         super(DirectedVariableGraph, self).__init__(jaxpr, maxlevel, graph)
         self._graph = nx.bipartite.projected_graph(self._graph, list(self.vars.keys()))
-
-    def eqns(self):
-        return self._jaxpr.eqns
 
 
 class UndirectedVariableGraph(DirectedVariableGraph):

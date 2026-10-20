@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Sequence, cast
 
 import jax
 import jax.numpy as jnp
@@ -34,7 +34,13 @@ _ITERATIVE_SOLVERS = {
 }
 
 
-def _static(**kwargs):
+def _static(**kwargs: Any) -> Any:
+    """A dataclass field that JAX treats as static pytree data.
+
+    ``dataclasses.field`` is used directly where the field has no default:
+    a helper call would hide that from type checkers, which then assume the
+    field is defaulted and reject the required fields that follow it.
+    """
     return field(metadata=dict(static=True), **kwargs)
 
 
@@ -77,6 +83,16 @@ class LinearOperator:
     Subclasses provide ``in_shape``, ``out_shape``, ``dtype``, ``_mv`` (apply
     to a single input of exactly ``in_shape``) and ``T``.
     """
+
+    #: Provided by the subclasses; declared here so the base class can use
+    #: them. The types are loose because the subclasses provide them either
+    #: as dataclass fields or as properties, and a base-class property would
+    #: break the field-based ones.
+    in_shape: Any
+    out_shape: Any
+    dtype: Any
+    _mv: Callable[[jax.Array], jax.Array]
+    T: Any
 
     @property
     def in_size(self) -> int:
@@ -160,7 +176,7 @@ class LinearOperator:
     def __truediv__(self, scalar) -> "LinearOperator":
         return self * (1 / jnp.asarray(scalar))
 
-    def __matmul__(self, other):
+    def __matmul__(self, other: Any) -> Any:
         """``A @ B`` composes; ``A @ x`` with ``x`` of ``in_shape`` applies."""
         if isinstance(other, LinearOperator):
             return _compose(self, other)
@@ -198,7 +214,7 @@ class LinearOperator:
             f"{type(self).__name__} has no expm; call as_dense() first"
         )
 
-    def phi(self, t: ArrayLike = 1.0, k: int = 1) -> list["LinearOperator"]:
+    def phi(self, t: ArrayLike = 1.0, k: int = 1) -> Sequence["LinearOperator"]:
         """``[phi_0(tA), ..., phi_k(tA)]`` with ``phi_j(z) = sum_m z^m / (m+j)!``."""
         raise NotImplementedError(
             f"{type(self).__name__} has no phi; call as_dense() first"
@@ -241,8 +257,8 @@ class Diagonal(LinearOperator):
     def expm(self, t=1.0):
         return Diagonal(jnp.exp(t * self.diag), self.in_shape)
 
-    def phi(self, t=1.0, k=1):
-        z = t * jnp.asarray(self.diag)
+    def phi(self, t: ArrayLike = 1.0, k: int = 1) -> Sequence["LinearOperator"]:
+        z = cast(jax.Array, t * jnp.asarray(self.diag))
         if k == 1:
             values = [jnp.exp(z), phi1_scalar(z)]
         else:
@@ -298,10 +314,10 @@ class Dense(LinearOperator):
             jax.scipy.linalg.expm(t * self.matrix), self.in_shape, self.in_shape
         )
 
-    def phi(self, t=1.0, k=1):
+    def phi(self, t: ArrayLike = 1.0, k: int = 1) -> Sequence["LinearOperator"]:
         return [
             Dense(m, self.in_shape, self.in_shape)
-            for m in phi_matrices(t * self.matrix, k)
+            for m in phi_matrices(cast(jax.Array, t * self.matrix), k)
         ]
 
 
@@ -316,8 +332,8 @@ class Function(LinearOperator):
     them across ``jit``/``scan`` boundaries.
     """
 
-    matvec: Callable = _static()
-    in_shape: Shape = _static()
+    matvec: Callable = field(metadata=dict(static=True))
+    in_shape: Shape = field(metadata=dict(static=True))
     out_shape: Shape = _static(default=None)
     dtype: Any = _static(default=None)
 
@@ -355,7 +371,7 @@ class Jacobian(LinearOperator):
     jitted function does not retrace.
     """
 
-    fn: Callable = _static()
+    fn: Callable = field(metadata=dict(static=True))
     x: jax.Array
     args: tuple = ()
     out_shape: Shape = _static(default=None)
@@ -487,8 +503,7 @@ def as_operator(A: LinearOperator | ArrayLike, shape: Shape) -> LinearOperator:
             jnp.broadcast_shapes(A.shape, shape)
         except ValueError:
             raise ValueError(
-                f"Diagonal of shape {A.shape} cannot broadcast to state"
-                f" shape {shape}."
+                f"Diagonal of shape {A.shape} cannot broadcast to state shape {shape}."
             ) from None
         return Diagonal(A, shape)
     if A.ndim == 2:
@@ -611,6 +626,7 @@ def solve(
             solver = "cg" if psd else "gmres"
 
     if solver == "diagonal":
+        assert isinstance(op, Diagonal)
         x = rhs / op._full_diag()[:, None]
     elif solver == "lu":
         x = jnp.linalg.solve(op.as_array(), rhs)

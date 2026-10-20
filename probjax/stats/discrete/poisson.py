@@ -5,7 +5,7 @@ Poisson Distribution (:mod:`probjax.stats.poisson`)
 This module implements the Poisson distribution.
 """
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
@@ -15,6 +15,7 @@ from probjax.stats.base import rv_discrete, rv_exponential_family
 from probjax.stats.constraints import strict_positive
 from probjax.stats.discrete._ppf_search import ppf_by_cdf_search
 from probjax.stats.utils import weighted_mean
+from probjax.utils.jaxutils import where
 from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["poisson"]
@@ -33,17 +34,17 @@ class poisson_gen(rv_discrete, rv_exponential_family):
         return (0, jnp.inf)
 
     @classmethod
-    def logpmf(cls, k: ArrayLike, rate, **kwds):
+    def logpmf(cls, k: ArrayLike, rate: ArrayLike, **kwds: Any) -> ArrayLike:
         """Log probability mass function of the Poisson distribution."""
         return jax_poisson.logpmf(k, rate)
 
     @classmethod
-    def cdf(cls, k: ArrayLike, rate, **kwds):
+    def cdf(cls, k: ArrayLike, rate: ArrayLike, **kwds: Any) -> ArrayLike:
         """Cumulative distribution function of the Poisson distribution."""
         return jax_poisson.cdf(k, rate)
 
     @classmethod
-    def ppf(cls, q: ArrayLike, rate, **kwds):
+    def ppf(cls, q: ArrayLike, rate: ArrayLike, **kwds: Any) -> ArrayLike:
         """Percent point function of the Poisson distribution."""
         q = jnp.asarray(q)
         rate = jnp.asarray(rate)
@@ -64,17 +65,17 @@ class poisson_gen(rv_discrete, rv_exponential_family):
         return random.poisson(rng, rate, shape=shape + event_shape)
 
     @classmethod
-    def mean(cls, rate, **kwds):
+    def mean(cls, rate: ArrayLike, **kwds: Any) -> ArrayLike:
         """Mean of the Poisson distribution."""
         return rate
 
     @classmethod
-    def var(cls, rate, **kwds):
+    def var(cls, rate: ArrayLike, **kwds: Any) -> ArrayLike:
         """Variance of the Poisson distribution."""
         return rate
 
     @classmethod
-    def mode(cls, rate, **kwds):
+    def mode(cls, rate: ArrayLike, **kwds: Any) -> ArrayLike:
         """Mode of the Poisson distribution.
 
         For a Poisson distribution with rate λ:
@@ -88,7 +89,7 @@ class poisson_gen(rv_discrete, rv_exponential_family):
         return jnp.floor(rate)
 
     @classmethod
-    def entropy(cls, rate, **kwds):
+    def entropy(cls, rate: ArrayLike, **kwds: Any) -> ArrayLike:
         """Entropy in nats.
 
         Sum the first 1024 masses for rates <= 256; larger rates use the
@@ -97,7 +98,7 @@ class poisson_gen(rv_discrete, rv_exponential_family):
         """
         rate = jnp.asarray(rate)
         lp = jax_poisson.logpmf(jnp.arange(1024), rate[..., None])
-        exact = -jnp.sum(jnp.exp(lp) * jnp.where(jnp.isfinite(lp), lp, 0), axis=-1)
+        exact = -jnp.sum(jnp.exp(lp) * where(jnp.isfinite(lp), lp, 0), axis=-1)
         r = jnp.maximum(rate, 1)
         approx = (
             0.5 * jnp.log(2 * jnp.pi * jnp.e * r)
@@ -105,20 +106,20 @@ class poisson_gen(rv_discrete, rv_exponential_family):
             - 1 / (24 * r**2)
             - 19 / (360 * r**3)
         )
-        return jnp.where(rate > 256, approx, exact)
+        return where(rate > 256, approx, exact)
 
     @classmethod
-    def natural_parameters(cls, rate, **kwds):
+    def natural_parameters(cls, rate: ArrayLike, **kwds: Any) -> ArrayLike:
         """Natural parameters of the Poisson distribution."""
         return jnp.array([jnp.log(rate)])
 
     @classmethod
-    def sufficient_statistics(cls, x, **kwds):
+    def sufficient_statistics(cls, x: ArrayLike, **kwds: Any) -> ArrayLike:
         """Sufficient statistics of the Poisson distribution."""
         return jnp.array([x])
 
     @classmethod
-    def log_partition(cls, rate, **kwds):
+    def log_partition(cls, rate: ArrayLike, **kwds: Any) -> ArrayLike:
         """Log partition function of the Poisson distribution."""
         return rate
 

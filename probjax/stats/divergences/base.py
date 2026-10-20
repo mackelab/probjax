@@ -4,7 +4,7 @@ Base classes and utilities for statistical divergences.
 
 import warnings
 from functools import total_ordering
-from typing import Callable, Dict, Optional, Tuple, Type
+from typing import Callable, Dict, Optional, Tuple, Type, Union
 
 import jax
 
@@ -42,7 +42,11 @@ class Match:
         return True
 
 
-def register_divergence(name: str, type_p: Type, type_q: Type):
+def register_divergence(
+    name: str,
+    type_p: Union[Type[rv_generic], rv_generic],
+    type_q: Union[Type[rv_generic], rv_generic],
+) -> Callable:
     """
     Decorator to register a pairwise function with :meth:`divergence`.
     Usage::

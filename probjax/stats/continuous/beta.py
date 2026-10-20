@@ -5,7 +5,7 @@ Beta Distribution (:mod:`probjax.stats.beta`)
 This module contains the Beta distribution.
 """
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -16,6 +16,7 @@ from jax.scipy.stats import beta as _beta
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import strict_positive, unit_interval
 from probjax.stats.utils import clip_prob, flatten_samples, weighted_mean
+from probjax.utils.jaxutils import where
 from probjax.utils.special import betainccinv, betaincinv
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
@@ -44,24 +45,48 @@ class beta_gen(rv_continuous, rv_exponential_family):
         return unit_interval
 
     @classmethod
-    def logpdf(cls, x, alpha=1.0, beta=1.0, **kwargs):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        alpha: ArrayLike = 1.0,
+        beta: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the probability density function of the beta distribution."""
         # Numerical stability clip values to avoid log(0)
         x = clip_prob(x)
         return _beta.logpdf(x, alpha, beta)
 
     @classmethod
-    def cdf(cls, x, alpha=1.0, beta=1.0, **kwargs):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        alpha: ArrayLike = 1.0,
+        beta: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Cumulative distribution function of the beta distribution."""
         return _beta.cdf(x, alpha, beta)
 
     @classmethod
-    def logcdf(cls, x, alpha=1.0, beta=1.0, **kwargs):
+    def logcdf(
+        cls,
+        x: ArrayLike,
+        alpha: ArrayLike = 1.0,
+        beta: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the cumulative distribution function of the beta distribution."""
         return jnp.log(_beta.cdf(x, alpha, beta))
 
     @classmethod
-    def ppf(cls, q, alpha=1.0, beta=1.0, **kwargs):
+    def ppf(
+        cls,
+        q: ArrayLike,
+        alpha: ArrayLike = 1.0,
+        beta: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Percent point function (inverse of cdf) of the beta distribution."""
         return betaincinv(alpha, beta, q)
 
@@ -81,26 +106,50 @@ class beta_gen(rv_continuous, rv_exponential_family):
         return random.beta(rng, alpha, beta, shape=shape + event_shape)
 
     @classmethod
-    def sf(cls, x, alpha=1.0, beta=1.0, **kwargs):
+    def sf(
+        cls,
+        x: ArrayLike,
+        alpha: ArrayLike = 1.0,
+        beta: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Survival function (1 - cdf) of the beta distribution."""
         return _beta.sf(x, alpha, beta)
 
     @classmethod
-    def isf(cls, q, alpha=1.0, beta=1.0, **kwargs):
+    def isf(
+        cls,
+        q: ArrayLike,
+        alpha: ArrayLike = 1.0,
+        beta: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Inverse survival function (inverse of sf) of the beta distribution."""
         q = jnp.asarray(q)
         return betainccinv(alpha, beta, q)
 
     @classmethod
-    def mean(cls, alpha=1.0, beta=1.0, **kwargs):
+    def mean(
+        cls,
+        alpha: ArrayLike = 1.0,
+        beta: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mean of the beta distribution."""
         return alpha / (alpha + beta)
 
     @classmethod
-    def mode(cls, alpha=1.0, beta=1.0, **kwargs):
+    def mode(
+        cls,
+        alpha: ArrayLike = 1.0,
+        beta: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mode of the beta distribution."""
         # Mode is (alpha-1)/(alpha+beta-2) for alpha,beta > 1
         # For alpha,beta <= 1, the mode is at the boundary
+        alpha = jnp.asarray(alpha)
+        beta = jnp.asarray(beta)
         valid = (alpha > 1) & (beta > 1)
         mode_interior = (alpha - 1) / (alpha + beta - 2)
 
@@ -114,23 +163,33 @@ class beta_gen(rv_continuous, rv_exponential_family):
         # conventionally, we return the average
         mode_bimodal = (alpha < 1) & (beta < 1)
 
-        return jnp.where(
+        return where(
             valid,
             mode_interior,
-            jnp.where(
+            where(
                 mode_at_0,
                 0.0,
-                jnp.where(mode_at_1, 1.0, jnp.where(mode_bimodal, 0.5, 0.5)),
+                where(mode_at_1, 1.0, where(mode_bimodal, 0.5, 0.5)),
             ),  # 0.5 for uniform case
         )
 
     @classmethod
-    def var(cls, alpha=1.0, beta=1.0, **kwargs):
+    def var(
+        cls,
+        alpha: ArrayLike = 1.0,
+        beta: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Variance of the beta distribution."""
         return (alpha * beta) / ((alpha + beta) ** 2 * (alpha + beta + 1))
 
     @classmethod
-    def entropy(cls, alpha=1.0, beta=1.0, **kwargs):
+    def entropy(
+        cls,
+        alpha: ArrayLike = 1.0,
+        beta: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Entropy of the beta distribution."""
         return (
             gammaln(alpha + beta)
@@ -142,9 +201,14 @@ class beta_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def moment(cls, n, alpha=1.0, beta=1.0, **kwargs):
+    def moment(
+        cls,
+        n: int,
+        alpha: ArrayLike = 1.0,
+        beta: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """n-th non-central moment of the beta distribution."""
-        n = jnp.asarray(n)
         return jnp.exp(
             gammaln(alpha + n)
             + gammaln(alpha + beta)
@@ -153,8 +217,15 @@ class beta_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def skew(cls, alpha=1.0, beta=1.0, **kwargs):
+    def skew(
+        cls,
+        alpha: ArrayLike = 1.0,
+        beta: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Skewness of the beta distribution."""
+        alpha = jnp.asarray(alpha)
+        beta = jnp.asarray(beta)
         return (
             2
             * (beta - alpha)
@@ -163,25 +234,42 @@ class beta_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def kurtosis(cls, alpha=1.0, beta=1.0, **kwargs):
+    def kurtosis(
+        cls,
+        alpha: ArrayLike = 1.0,
+        beta: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Excess kurtosis of the beta distribution."""
+        alpha = jnp.asarray(alpha)
+        beta = jnp.asarray(beta)
         ab = alpha + beta
         num = 6 * ((alpha - beta) ** 2 * (ab + 1) - alpha * beta * (ab + 2))
         den = alpha * beta * (ab + 2) * (ab + 3)
         return num / den
 
     @classmethod
-    def natural_parameters(cls, alpha=1.0, beta=1.0, **kwargs):
+    def natural_parameters(
+        cls,
+        alpha: ArrayLike = 1.0,
+        beta: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Natural parameters of the beta distribution."""
         return jnp.array([alpha - 1, beta - 1])
 
     @classmethod
-    def sufficient_statistics(cls, x, **kwargs):
+    def sufficient_statistics(cls, x: ArrayLike, **kwargs: Any) -> ArrayLike:
         """Sufficient statistics of the beta distribution."""
         return jnp.array([jnp.log(x), jnp.log(1 - x)])
 
     @classmethod
-    def log_partition(cls, alpha=1.0, beta=1.0, **kwargs):
+    def log_partition(
+        cls,
+        alpha: ArrayLike = 1.0,
+        beta: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log partition function of the beta distribution."""
         return gammaln(alpha) + gammaln(beta) - gammaln(alpha + beta)
 

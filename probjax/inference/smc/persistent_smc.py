@@ -1,4 +1,6 @@
-from typing import Callable, Dict, Optional
+from __future__ import annotations
+
+from typing import Any, Callable
 
 import blackjax
 from blackjax.smc import persistent_sampling as bj_persistent
@@ -9,19 +11,20 @@ from probjax.inference.smc.base import (
     make_mcmc_adapter,
 )
 from probjax.inference.smc.resampling import systematic
+from probjax.utils.typing import Array, RngKey
 
 
 def build_step(
-    logprior_fn: Optional[Callable],
-    loglikelihood_fn: Optional[Callable],
+    logprior_fn: Callable | None,
+    loglikelihood_fn: Callable | None,
     *,
-    mcmc_kernel,
+    mcmc_kernel: Any,
     num_mcmc_steps: int = 10,
     resampling_fn: Callable = systematic,
     update_strategy: Callable = blackjax.smc.base.update_and_take_last,
     batch_size: int = 0,
-    **mcmc_kernel_kwargs,
-):
+    **mcmc_kernel_kwargs: Any,
+) -> Callable:
     if mcmc_kernel is None:
         raise ValueError("mcmc_kernel must be provided for persistent SMC.")
     if logprior_fn is None or loglikelihood_fn is None:
@@ -40,7 +43,9 @@ def build_step(
         batch_size=batch_size,
     )
 
-    def step(rng_key, state, tempering_param, mcmc_parameters):
+    def step(
+        rng_key: RngKey, state: Any, tempering_param: Any, mcmc_parameters: Any
+    ) -> Any:
         return delegate(
             rng_key, state, num_mcmc_steps, tempering_param, mcmc_parameters
         )
@@ -49,17 +54,22 @@ def build_step(
 
 
 def init_params(
-    particles,
+    particles: Any,
     *,
-    logprior_fn: Optional[Callable],
-    loglikelihood_fn: Optional[Callable],
-    mcmc_kernel,
-    rng_key=None,
+    logprior_fn: Callable | None,
+    loglikelihood_fn: Callable | None,
+    mcmc_kernel: Any,
+    rng_key: RngKey | None = None,
     lmbda: float = 0.0,
-    mcmc_kernel_kwargs: Optional[Dict] = None,
-    **mcmc_param_kwargs,
-) -> Dict:
-    def tempered_logposterior_fn(position):
+    mcmc_kernel_kwargs: dict[str, Any] | None = None,
+    **mcmc_param_kwargs: Any,
+) -> dict[str, Array]:
+    if logprior_fn is None or loglikelihood_fn is None:
+        raise ValueError(
+            "persistent SMC requires both logprior_fn and loglikelihood_fn."
+        )
+
+    def tempered_logposterior_fn(position: Any) -> Array:
         return logprior_fn(position) + lmbda * loglikelihood_fn(position)
 
     return init_mcmc_params_from_logdensity(
@@ -73,13 +83,13 @@ def init_params(
 
 
 def init(
-    particles,
+    particles: Any,
     *,
-    logprior_fn=None,
-    loglikelihood_fn=None,
+    logprior_fn: Callable | None = None,
+    loglikelihood_fn: Callable | None = None,
     n_schedule: int = 100,
-    batch_size=0,
-):
+    batch_size: int = 0,
+) -> Any:
     if loglikelihood_fn is None:
         raise ValueError(
             "loglikelihood_fn must be supplied explicitly or bound by the constructor."

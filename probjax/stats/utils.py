@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Callable, Optional, Tuple
 
 import jax.numpy as jnp
 
-from probjax.utils.typing import Array, ArrayLike
+from probjax.utils.jaxutils import where
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = [
     "clip_prob",
@@ -27,7 +28,14 @@ def clip_prob(q: ArrayLike) -> Array:
     return jnp.clip(q_arr, eps, 1.0 - eps)
 
 
-def loc_scale_sample(rng, sampler, *params, shape=(), loc=0.0, scale=1.0):
+def loc_scale_sample(
+    rng: RngKey,
+    sampler: Callable,
+    *params: Any,
+    shape: Tuple[int, ...] = (),
+    loc: ArrayLike = 0.0,
+    scale: ArrayLike = 1.0,
+) -> Array:
     """Sample ``sampler(rng, *params) * scale + loc`` with broadcast shape.
 
     Broadcasts ``params``/``loc``/``scale`` to a common event shape and draws
@@ -36,11 +44,11 @@ def loc_scale_sample(rng, sampler, *params, shape=(), loc=0.0, scale=1.0):
     """
     loc = jnp.asarray(loc)
     scale = jnp.asarray(scale)
-    params = [jnp.asarray(p) for p in params]
+    param_arrays = [jnp.asarray(p) for p in params]
     event_shape = jnp.broadcast_shapes(
-        *[p.shape for p in params], loc.shape, scale.shape
+        *[p.shape for p in param_arrays], loc.shape, scale.shape
     )
-    return sampler(rng, *params, shape=shape + event_shape) * scale + loc
+    return sampler(rng, *param_arrays, shape=shape + event_shape) * scale + loc
 
 
 def flatten_samples(data: ArrayLike) -> Array:
@@ -67,7 +75,7 @@ def normalize_sample_weights(
 
     normalized = jnp.clip(normalized, 0)
     total = jnp.sum(normalized)
-    total = jnp.where(total > 0, total, jnp.asarray(n_samples, dtype=dtype))
+    total = where(total > 0, total, jnp.asarray(n_samples, dtype=dtype))
     return normalized / total
 
 
@@ -100,6 +108,7 @@ def weighted_mean(data: ArrayLike, weights: Optional[ArrayLike] = None) -> Array
     weights_arr = normalize_sample_weights(
         weights, n_samples=data_arr.shape[0], dtype=data_arr.dtype
     )
+    assert weights_arr is not None
     return jnp.sum(weights_arr * data_arr)
 
 

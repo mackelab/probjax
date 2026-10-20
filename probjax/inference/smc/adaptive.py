@@ -1,7 +1,10 @@
-from typing import Callable, Dict, Optional
+from __future__ import annotations
+
+from typing import Any, Callable
 
 import blackjax
 from blackjax.smc import adaptive_tempered as bj_adaptive_tempered
+from blackjax.smc import solver as bj_solver
 
 from probjax.inference.smc.base import (
     SMCKernelAPI,
@@ -9,29 +12,36 @@ from probjax.inference.smc.base import (
     make_mcmc_adapter,
 )
 from probjax.inference.smc.resampling import systematic
+from probjax.utils.typing import Array, RngKey
 
 
 def build_step(
-    logprior_fn: Optional[Callable],
-    loglikelihood_fn: Optional[Callable],
+    logprior_fn: Callable | None,
+    loglikelihood_fn: Callable | None,
     *,
-    path,
-    mcmc_kernel,
+    path: Any,
+    mcmc_kernel: Any,
     num_mcmc_steps: int = 10,
     resampling_fn: Callable = systematic,
     target_ess: float = 0.8,
-    root_solver: Callable = blackjax.smc.solver.dichotomy,
+    root_solver: Callable = bj_solver.dichotomy,
     update_strategy: Callable = blackjax.smc.base.update_and_take_last,
     batch_size: int = 0,
-    **mcmc_kernel_kwargs,
-):
+    **mcmc_kernel_kwargs: Any,
+) -> Callable:
     if not hasattr(path, "logdensity_fn") or not hasattr(path, "initial_param"):
         raise TypeError("path must define logdensity_fn and initial_param")
     # Only geometric path is supported by BlackJAX adaptive_tempered.
     if getattr(path, "is_geometric", False) is not True:
         raise ValueError("adaptive SMC is only supported for the geometric path.")
 
+    if logprior_fn is None or loglikelihood_fn is None:
+        raise ValueError("adaptive SMC requires both logprior_fn and loglikelihood_fn.")
+
     mcmc_init_fn, mcmc_step_fn = make_mcmc_adapter(mcmc_kernel, **mcmc_kernel_kwargs)
+    # BlackJAX forwards unknown keywords as a plain dict, so the update
+    # strategy travels through ``extra_parameters``.
+    extra_parameters: dict[str, Any] = {"update_strategy": update_strategy}
     kernel = bj_adaptive_tempered.build_kernel(
         logprior_fn,
         loglikelihood_fn,
@@ -40,28 +50,28 @@ def build_step(
         resampling_fn,
         target_ess,
         root_solver=root_solver,
-        update_strategy=update_strategy,
         batch_size=batch_size,
+        **extra_parameters,
     )
 
-    def step(rng_key, state, mcmc_parameters):
+    def step(rng_key: Any, state: Any, mcmc_parameters: Any) -> Any:
         return kernel(rng_key, state, num_mcmc_steps, mcmc_parameters)
 
     return step
 
 
 def init_params(
-    particles,
+    particles: Any,
     *,
-    path,
-    logprior_fn: Optional[Callable],
-    loglikelihood_fn: Optional[Callable],
-    mcmc_kernel,
-    rng_key=None,
-    mcmc_kernel_kwargs: Optional[Dict] = None,
-    path_kwargs: Optional[Dict] = None,
-    **mcmc_param_kwargs,
-) -> Dict:
+    path: Any,
+    logprior_fn: Callable | None,
+    loglikelihood_fn: Callable | None,
+    mcmc_kernel: Any,
+    rng_key: RngKey | None = None,
+    mcmc_kernel_kwargs: dict[str, Any] | None = None,
+    path_kwargs: dict[str, Any] | None = None,
+    **mcmc_param_kwargs: Any,
+) -> dict[str, Array]:
     if getattr(path, "is_geometric", False) is not True:
         raise ValueError("adaptive SMC is only supported for the geometric path.")
     path_kwargs = path_kwargs or {}
@@ -80,7 +90,7 @@ def init_params(
     )
 
 
-def init(particles, **_):
+def init(particles: Any, **_: Any) -> Any:
     return bj_adaptive_tempered.init(particles)
 
 

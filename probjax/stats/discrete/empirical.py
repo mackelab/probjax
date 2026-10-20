@@ -6,14 +6,15 @@ This module implements the Empirical distribution, which puts probability
 mass on observed data points.
 """
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax.numpy as jnp
+import numpy as np
 from jax import random
 
 from probjax.stats.base import rv_discrete, rv_discrete_frozen
 from probjax.stats.constraints import simplex
-from probjax.utils.typing import ArrayLike, RngKey
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["empirical", "empirical_frozen"]
 
@@ -54,33 +55,61 @@ class empirical(rv_discrete):
         return cls._get_support(values, weights, **kwds)
 
     @classmethod
-    def pmf(cls, x: ArrayLike, values, weights=None, **kwds):
+    def pmf(
+        cls,
+        x: ArrayLike,
+        values: ArrayLike,
+        weights: Optional[ArrayLike] = None,
+        **kwds: Any,
+    ) -> ArrayLike:
         """Probability mass function of the Empirical distribution."""
         x = jnp.asarray(x)
+        values = jnp.asarray(values)
         if weights is None:
             weights = _default_weights(values, weights)
         return jnp.sum(weights * (x == values), axis=0)
 
     @classmethod
-    def logpmf(cls, x: ArrayLike, values, weights=None, **kwds):
+    def logpmf(
+        cls,
+        x: ArrayLike,
+        values: ArrayLike,
+        weights: Optional[ArrayLike] = None,
+        **kwds: Any,
+    ) -> ArrayLike:
         """Log probability mass function of the Empirical distribution."""
         x = jnp.asarray(x)
         return jnp.log(cls.pmf(x, values, weights, **kwds))
 
     @classmethod
-    def cdf(cls, x: ArrayLike, values, weights=None, **kwds):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        values: ArrayLike,
+        weights: Optional[ArrayLike] = None,
+        **kwds: Any,
+    ) -> ArrayLike:
         """Cumulative distribution function of the Empirical distribution."""
         x = jnp.asarray(x)
+        values = jnp.asarray(values)
         if weights is None:
             weights = _default_weights(values, weights)
         return jnp.sum(weights * (values <= x), axis=0)
 
     @classmethod
-    def ppf(cls, q: ArrayLike, values, weights=None, **kwds):
+    def ppf(
+        cls,
+        q: ArrayLike,
+        values: ArrayLike,
+        weights: Optional[ArrayLike] = None,
+        **kwds: Any,
+    ) -> ArrayLike:
         """Percent point function of the Empirical distribution."""
         q = jnp.asarray(q)
+        values = jnp.asarray(values)
         if weights is None:
             weights = _default_weights(values, weights)
+        weights = jnp.asarray(weights)
         sorted_idx = jnp.argsort(values)
         sorted_values = values[sorted_idx]
         sorted_weights = weights[sorted_idx]
@@ -99,34 +128,51 @@ class empirical(rv_discrete):
         """Random variates of the Empirical distribution."""
         if weights is None:
             weights = _default_weights(values, weights)
-        idx = random.categorical(rng, weights, shape)
+        weights = jnp.asarray(weights)
+        values = jnp.asarray(values)
+        idx = random.categorical(rng, weights, int(np.prod(shape)))
         return values[idx]
 
     @classmethod
-    def mean(cls, values, weights=None, **kwds):
+    def mean(
+        cls, values: ArrayLike, weights: Optional[ArrayLike] = None, **kwds: Any
+    ) -> ArrayLike:
         """Mean of the Empirical distribution."""
+        values = jnp.asarray(values)
         if weights is None:
             weights = _default_weights(values, weights)
         return jnp.sum(weights * values, axis=0)
 
     @classmethod
-    def var(cls, values, weights=None, **kwds):
+    def var(
+        cls, values: ArrayLike, weights: Optional[ArrayLike] = None, **kwds: Any
+    ) -> ArrayLike:
         """Variance of the Empirical distribution."""
+        values = jnp.asarray(values)
         if weights is None:
             weights = _default_weights(values, weights)
         mean = cls.mean(values, weights, **kwds)
         return jnp.sum(weights * (values - mean) ** 2, axis=0)
 
     @classmethod
-    def entropy(cls, values, weights=None, **kwds):
+    def entropy(
+        cls,
+        values: ArrayLike,
+        weights: Optional[ArrayLike] = None,
+        **kwds: Any,
+    ) -> ArrayLike:
         """Entropy of the Empirical distribution."""
         if weights is None:
             weights = _default_weights(values, weights)
+        weights = jnp.asarray(weights)
         return -jnp.sum(weights * jnp.log(weights))
 
     @classmethod
-    def mode(cls, values, weights=None, **kwds):
+    def mode(
+        cls, values: ArrayLike, weights: Optional[ArrayLike] = None, **kwds: Any
+    ) -> ArrayLike:
         """Mode of the Empirical distribution."""
+        values = jnp.asarray(values)
         if weights is None:
             weights = _default_weights(values, weights)
         return values[jnp.argmax(weights)]
@@ -165,10 +211,10 @@ class empirical_frozen(rv_discrete_frozen):
         rng: RngKey,
         shape: Tuple[int, ...] = (),
         name: Optional[str] = None,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> Array:
         """Random variates of the frozen Empirical distribution."""
-        return self._bind_rvs(rng, shape=shape, name=name, **kwargs)
+        return jnp.asarray(self._bind_rvs(rng, shape=shape, name=name, **kwargs))
 
     def mean(self):
         """Mean of the frozen Empirical distribution."""

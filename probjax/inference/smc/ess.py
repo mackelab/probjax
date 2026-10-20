@@ -13,13 +13,14 @@ containing those fixes.
 import jax
 import jax.numpy as jnp
 from blackjax.smc.ess import ess_solver
-from blackjax.types import Array
 from jax.scipy.special import logsumexp
+
+from probjax.utils.typing import Array
 
 __all__ = ["ess", "log_ess", "ess_solver"]
 
 
-def ess(log_weights: Array) -> float | Array:
+def ess(log_weights: Array) -> Array:
     """Compute the effective sample size.
 
     Parameters
@@ -35,7 +36,7 @@ def ess(log_weights: Array) -> float | Array:
     return jnp.exp(log_ess(log_weights))
 
 
-def log_ess(log_weights: Array) -> float | Array:
+def log_ess(log_weights: Array) -> Array:
     """Compute the logarithm of the effective sample size.
 
     Parameters

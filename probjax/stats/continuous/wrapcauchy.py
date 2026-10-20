@@ -5,7 +5,7 @@ Wrapped Cauchy Distribution (:mod:`probjax.stats.wrapcauchy`)
 This module contains the Wrapped Cauchy distribution.
 """
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
@@ -46,16 +46,34 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
     parameters = {'loc': real, 'gamma': strict_positive}
 
     @classmethod
-    def pdf(cls, x, loc=0.0, gamma=0.5, **kwargs):
+    def pdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        gamma: ArrayLike = 0.5,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Probability density function of the wrapped Cauchy distribution."""
+        x = jnp.asarray(x)
+        loc = jnp.asarray(loc)
+        gamma = jnp.asarray(gamma)
         return (1 - gamma**2) / (
             2 * jnp.pi * (1 + gamma**2 - 2 * gamma * jnp.cos(x - loc))
         )
 
     @classmethod
-    def logpdf(cls, x, loc=0.0, gamma=0.5, **kwargs):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        gamma: ArrayLike = 0.5,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the probability density function of the wrapped Cauchy
         distribution."""
+        x = jnp.asarray(x)
+        loc = jnp.asarray(loc)
+        gamma = jnp.asarray(gamma)
         return (
             jnp.log(1 - gamma**2)
             - jnp.log(2 * jnp.pi)
@@ -63,8 +81,17 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def cdf(cls, x, loc=0.0, gamma=0.5, **kwargs):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        gamma: ArrayLike = 0.5,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Cumulative distribution function of the wrapped Cauchy distribution."""
+        x = jnp.asarray(x)
+        loc = jnp.asarray(loc)
+        gamma = jnp.asarray(gamma)
         z = (x - loc) % (2 * jnp.pi)
         return (
             jnp.arctan2((1 + gamma) * jnp.sin(z), (1 + gamma) * jnp.cos(z) - 2 * gamma)
@@ -72,7 +99,13 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
         ) / (2 * jnp.pi)
 
     @classmethod
-    def ppf(cls, q, loc=0.0, gamma=0.5, **kwargs):
+    def ppf(
+        cls,
+        q: ArrayLike,
+        loc: ArrayLike = 0.0,
+        gamma: ArrayLike = 0.5,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Percent point function (inverse of cdf) of the wrapped Cauchy
         distribution."""
         z = 2 * jnp.pi * q
@@ -99,27 +132,50 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def mean(cls, loc=0.0, gamma=0.5, **kwargs):
+    def mean(
+        cls,
+        loc: ArrayLike = 0.0,
+        gamma: ArrayLike = 0.5,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mean of the wrapped Cauchy distribution."""
         return jnp.asarray(loc)
 
     @classmethod
-    def mode(cls, loc=0.0, gamma=0.5, **kwargs):
+    def mode(
+        cls,
+        loc: ArrayLike = 0.0,
+        gamma: ArrayLike = 0.5,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mode of the wrapped Cauchy distribution."""
         return jnp.asarray(loc)
 
     @classmethod
-    def var(cls, loc=0.0, gamma=0.5, **kwargs):
+    def var(
+        cls, loc: ArrayLike = 0.0, gamma: ArrayLike = 0.5, **kwargs: Any
+    ) -> ArrayLike:
         """Variance of the wrapped Cauchy distribution."""
         return 2 * jnp.pi**2 * gamma / (1 - gamma**2)
 
     @classmethod
-    def entropy(cls, loc=0.0, gamma=0.5, **kwargs):
+    def entropy(
+        cls,
+        loc: ArrayLike = 0.0,
+        gamma: ArrayLike = 0.5,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Entropy of the wrapped Cauchy distribution."""
         return jnp.log(2 * jnp.pi * (1 - gamma**2))
 
     @classmethod
-    def moment(cls, n, loc=0.0, gamma=0.5, **kwargs):
+    def moment(
+        cls,
+        n: int,
+        loc: ArrayLike = 0.0,
+        gamma: ArrayLike = 0.5,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """n-th non-central moment of the wrapped Cauchy distribution."""
         if n == 0:
             return jnp.ones_like(loc)
@@ -129,27 +185,47 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
             raise NotImplementedError(f"Moment of order {n} not implemented")
 
     @classmethod
-    def skew(cls, loc=0.0, gamma=0.5, **kwargs):
+    def skew(
+        cls,
+        loc: ArrayLike = 0.0,
+        gamma: ArrayLike = 0.5,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Skewness of the wrapped Cauchy distribution."""
         return jnp.zeros_like(loc)
 
     @classmethod
-    def kurtosis(cls, loc=0.0, gamma=0.5, **kwargs):
+    def kurtosis(
+        cls,
+        loc: ArrayLike = 0.0,
+        gamma: ArrayLike = 0.5,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Excess kurtosis of the wrapped Cauchy distribution."""
         return jnp.ones_like(loc) * 2
 
     @classmethod
-    def natural_parameters(cls, loc=0.0, gamma=0.5, **kwargs):
+    def natural_parameters(
+        cls,
+        loc: ArrayLike = 0.0,
+        gamma: ArrayLike = 0.5,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Natural parameters of the wrapped Cauchy distribution."""
         return jnp.array([gamma * jnp.cos(loc), gamma * jnp.sin(loc)])
 
     @classmethod
-    def sufficient_statistics(cls, x, **kwargs):
+    def sufficient_statistics(cls, x: ArrayLike, **kwargs: Any) -> ArrayLike:
         """Sufficient statistics of the wrapped Cauchy distribution."""
         return jnp.array([jnp.cos(x), jnp.sin(x)])
 
     @classmethod
-    def log_partition(cls, loc=0.0, gamma=0.5, **kwargs):
+    def log_partition(
+        cls,
+        loc: ArrayLike = 0.0,
+        gamma: ArrayLike = 0.5,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log partition function of the wrapped Cauchy distribution."""
         return jnp.log(2 * jnp.pi * (1 - gamma**2))
 

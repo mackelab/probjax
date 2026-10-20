@@ -1,6 +1,8 @@
 """Joint posterior draws of parameters and latent paths after temporal SMC."""
 
-from typing import NamedTuple
+from __future__ import annotations
+
+from typing import Any, NamedTuple
 
 import jax
 from blackjax.smc.base import map_fn
@@ -9,27 +11,28 @@ from probjax.inference.filtering.observations import validate_observations
 from probjax.inference.filtering.temporal import run_temporal_filter
 from probjax.inference.filtering.trajectory import sample_paths
 from probjax.utils.guards import is_tracing
+from probjax.utils.typing import Array, RngKey
 
 
 class JointPathSamples(NamedTuple):
-    parameters: object
-    paths: object
-    parameter_indices: object
+    parameters: Any
+    paths: Any
+    parameter_indices: Array
 
 
 def sample_joint_paths(
-    key,
-    state,
-    model,
-    ts,
-    observations,
+    key: RngKey,
+    state: Any,
+    model: Any,
+    ts: Any,
+    observations: Any,
     *,
-    observed=None,
-    num_samples=100,
-    num_particles=None,
-    method=None,
-    batch_size=0,
-):
+    observed: Any = None,
+    num_samples: int = 100,
+    num_particles: int | None = None,
+    method: str | None = None,
+    batch_size: int = 0,
+) -> JointPathSamples:
     """Draw parameters from a temporal SMC state, then a path for each.
 
     Pass the same data as to :func:`run_temporal_smc`; only the observations
@@ -52,7 +55,7 @@ def sample_joint_paths(
     )
     parameters = jax.tree.map(lambda x: x[indices], state.parameters)
 
-    def draw(args):
+    def draw(args: Any) -> Any:
         key, theta = args
         filter_key, sample_key = jax.random.split(key)
         result = run_temporal_filter(

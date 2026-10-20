@@ -90,8 +90,13 @@ from probjax.utils.special import (
 from probjax.utils.typing import (
     Array,
     ArrayLike,
+    ArrayLikeTree,
+    ArrayTree,
     PyTree,
     RngKey,
+    Scalar,
+    ScalarLike,
+    Shape,
 )
 
 __all__ = [
@@ -125,6 +130,11 @@ __all__ = [
     # Typing
     "Array",
     "ArrayLike",
+    "ArrayTree",
+    "ArrayLikeTree",
     "PyTree",
     "RngKey",
+    "Scalar",
+    "ScalarLike",
+    "Shape",
 ]

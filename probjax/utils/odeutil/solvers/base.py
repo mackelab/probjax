@@ -8,7 +8,7 @@ import jax.numpy as jnp
 
 from probjax.utils._solver_common import ConfiguredSolver, resolve_solver
 from probjax.utils.jaxutils import API
-from probjax.utils.typing import ArrayLike, Callable
+from probjax.utils.typing import Array, ArrayLike, Callable
 
 METHOD_STEP_FN: dict[str, Any] = {}
 METHOD_INFO: dict[str, dict] = {}
@@ -32,7 +32,7 @@ class ODESolver(NamedTuple):
 
 class ODESolverAPI(metaclass=API):
     @staticmethod
-    def init(position: ArrayLike, **kwargs) -> ODEState:
+    def init(*args: Any, **kwargs: Any) -> Any:
         """Initialize ODE solver state.
 
         Args:
@@ -45,9 +45,7 @@ class ODESolverAPI(metaclass=API):
         raise NotImplementedError("init method must be implemented")
 
     @staticmethod
-    def build_step(
-        *args, **kwargs
-    ) -> Callable[[ODEState, ArrayLike], tuple[ODEState, ODEInfo]]:
+    def build_step(*args: Any, **kwargs: Any) -> Any:
         """Build the step function for the ODE solver.
 
         Returns:
@@ -91,7 +89,9 @@ class ODESolverAPI(metaclass=API):
         )
 
 
-def register_method(name: str, step_fn: ODESolverAPI, info: Optional[dict] = None):  # noqa: F821
+def register_method(
+    name: str, step_fn: type[ODESolverAPI], info: Optional[dict] = None
+) -> type[ODESolverAPI]:
     """General method to register a step_fn for an ODE solver, thereby creating a
     new method.
 
@@ -121,15 +121,22 @@ def get_methods():
     return list(METHOD_STEP_FN.keys())
 
 
-def rk_combine(dt, y0, k, b_sol, b_error, b_mid):
+def rk_combine(
+    dt: ArrayLike,
+    y0: Array,
+    k: Array,
+    b_sol: Any,
+    b_error: Any,
+    b_mid: Any,
+) -> tuple[Array, Array | None, Array | None]:
     """Shared explicit/implicit Runge-Kutta tail.
 
     Returns ``(y1, y1_error, y1_mid)`` from the stage matrix ``k``; callers
     reshape and attach solver-specific state/info.
     """
-    y1 = y0 + dt * jnp.dot(b_sol, k)
-    y1_error = None if b_error is None else dt * jnp.dot(b_error, k)
-    y1_mid = None if b_mid is None else dt * jnp.dot(b_mid, k) + y0
+    y1 = jnp.asarray(y0 + dt * jnp.dot(b_sol, k))
+    y1_error = None if b_error is None else jnp.asarray(dt * jnp.dot(b_error, k))
+    y1_mid = None if b_mid is None else jnp.asarray(dt * jnp.dot(b_mid, k) + y0)
     return y1, y1_error, y1_mid
 
 
@@ -155,12 +162,12 @@ def make_method_init(last_equals_next, init_fn, *, always_bind_drift=False):
 
     if last_equals_next or always_bind_drift:
 
-        def init_method(t0, y0, *args, drift=None, **kwargs):
+        def init_with_drift(t0, y0, *args, drift=None, **kwargs):
             return init_fn(t0, y0, *args, drift=drift)
 
-    else:
+        return init_with_drift
 
-        def init_method(t0, y0, *args, **kwargs):
-            return init_fn(t0, y0, *args)
+    def init_without_drift(t0, y0, *args, **kwargs):
+        return init_fn(t0, y0, *args)
 
-    return init_method
+    return init_without_drift

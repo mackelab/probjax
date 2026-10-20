@@ -1,5 +1,7 @@
 """Parameter SMC over physical time: SMC² with particle filters, exact with Kalman."""
 
+from __future__ import annotations
+
 from typing import Any, Callable, NamedTuple
 
 import jax
@@ -16,6 +18,7 @@ from probjax.inference.filtering.state_space import TemporalResult
 from probjax.inference.filtering.temporal import scan_history, temporal_filter
 from probjax.inference.smc.temporal_utils import population_covariance, replay_filter
 from probjax.utils.guards import ensure_int
+from probjax.utils.typing import Array, RngKey
 
 # Optimal-scaling constants for the default Gaussian random-walk proposal.
 _TARGET_ACCEPTANCE = 0.234
@@ -33,7 +36,7 @@ class TemporalSMCState(NamedTuple):
     num_observations: Any
     proposal_scale: Any
 
-    def posterior_samples(self, key, num_samples):
+    def posterior_samples(self, key: RngKey, num_samples: int) -> Any:
         """Draw ``num_samples`` parameters from the weighted population."""
         idx = jax.random.categorical(key, self.log_weights, shape=(num_samples,))
         return jax.tree.map(lambda x: x[idx], self.parameters)
@@ -55,15 +58,15 @@ class TemporalSMC(NamedTuple):
 
 
 def temporal_smc(
-    model,
-    logprior_fn,
+    model: Any,
+    logprior_fn: Callable,
     *,
-    num_particles=None,
-    ess_threshold=0.5,
-    num_moves=1,
-    proposal_fn=None,
-    batch_size=0,
-):
+    num_particles: int | None = None,
+    ess_threshold: float = 0.5,
+    num_moves: int = 1,
+    proposal_fn: Callable | None = None,
+    batch_size: int = 0,
+) -> TemporalSMC:
     """SMC over parameters that assimilates one observation per step.
 
     Each parameter particle carries its own filter: a particle filter for a
@@ -96,7 +99,7 @@ def temporal_smc(
     ensure_int("num_moves", num_moves, min_value=0)
     adaptive = proposal_fn is None
 
-    def init(key, parameters, t0=0.0):
+    def init(key: RngKey, parameters: Any, t0: Any = 0.0) -> TemporalSMCState:
         leaves = jax.tree.leaves(parameters)
         if not leaves or any(x.ndim < 1 for x in leaves):
             raise ValueError("Parameter leaves must have a leading particle axis.")
@@ -124,21 +127,32 @@ def temporal_smc(
             jnp.ones((), zeros.dtype),
         )
 
-    def rejuvenate(key, state, parameters, filter_states, log_likelihoods, data):
+    def rejuvenate(
+        key: RngKey,
+        state: TemporalSMCState,
+        parameters: Any,
+        filter_states: Any,
+        log_likelihoods: Any,
+        data: Any,
+    ) -> tuple[Any, Any, Any, Array]:
         count = state.num_observations + 1  # includes the new observation
+        # Only the adaptive proposal uses the factor; the placeholder keeps
+        # its type concrete.
+        factor: Array = jnp.zeros((0, 0))
         if adaptive:
             covariance = population_covariance(state.parameters, state.log_weights)
             factor = jnp.linalg.cholesky(covariance)
 
-        def propose(key, theta):
+        def propose(key: RngKey, theta: Any) -> tuple[Any, float]:
             if not adaptive:
+                assert proposal_fn is not None
                 return proposal_fn(key, theta)
             flat, unravel = ravel_pytree(theta)
             noise = factor @ jax.random.normal(key, flat.shape)
             scale = state.proposal_scale * _SCALE_FACTOR / jnp.sqrt(flat.size)
             return unravel(flat + scale * noise), 0.0
 
-        def move(_, carry):
+        def move(_, carry: Any) -> Any:
             key, theta, filter_state, log_likelihood, accepted = carry
             key, proposal_key, replay_key, accept_key = jax.random.split(key, 4)
             proposed, correction = propose(proposal_key, theta)
@@ -154,15 +168,20 @@ def temporal_smc(
             )
             # The current estimate is kept on rejection: refreshing it would
             # change the pseudo-marginal target.
+            # BlackJAX annotates the log acceptance ratio as a float, but it
+            # is a traced array.
+            log_p_accept: Any = jnp.asarray(
+                jnp.where(jnp.isnan(log_ratio), -jnp.inf, log_ratio)
+            )
             current, (accept, _, _) = static_binomial_sampling(
                 accept_key,
-                jnp.where(jnp.isnan(log_ratio), -jnp.inf, log_ratio),
+                log_p_accept,
                 (theta, filter_state, log_likelihood),
                 (proposed, proposed_state, proposed_ll),
             )
             return (key, *current, accepted + accept)
 
-        def moves(args):
+        def moves(args: Any) -> tuple[Any, Any, Any, Array]:
             key, theta, filter_state, log_likelihood = args
             carry = (key, theta, filter_state, log_likelihood, jnp.array(0.0))
             _, theta, filter_state, log_likelihood, accepted = jax.lax.fori_loop(
@@ -179,7 +198,13 @@ def temporal_smc(
         ))
         return parameters, filter_states, log_likelihoods, rates.mean()
 
-    def step(key, state, ts, observations, observed=None):
+    def step(
+        key: RngKey,
+        state: TemporalSMCState,
+        ts: Any,
+        observations: Any,
+        observed: Any = None,
+    ) -> tuple[TemporalSMCState, TemporalSMCInfo]:
         """Assimilate observation ``state.num_observations`` of the full data.
 
         Pass the whole dataset seen so far: the new observation is read at
@@ -229,7 +254,7 @@ def temporal_smc(
             lambda x: x[ancestors], (state.parameters, filter_states, log_likelihoods)
         )
         weighted = state._replace(log_weights=log_weights)
-        log_weights = jnp.where(resampled, -jnp.log(n), log_weights)
+        log_weights = jnp.asarray(jnp.where(resampled, -jnp.log(n), log_weights))
         acceptance_rate = jnp.zeros((), log_weights.dtype)
         if num_moves > 0:
             parameters, filter_states, log_likelihoods, acceptance_rate = jax.lax.cond(
@@ -287,8 +312,15 @@ def temporal_smc(
 
 
 def run_temporal_smc(
-    kernel, key, state, ts, observations, *, observed=None, history="none"
-):
+    kernel: Any,
+    key: RngKey,
+    state: Any,
+    ts: Any,
+    observations: Any,
+    *,
+    observed: Any = None,
+    history: Any = "none",
+) -> TemporalResult:
     """Assimilate every observation at ``ts`` that ``state`` has not seen yet.
 
     To continue a run, call again with the longer dataset: entries already
@@ -312,7 +344,7 @@ def run_temporal_smc(
         jnp.array(True),
     )
 
-    def step(key, state, i):
+    def step(key: RngKey, state: Any, i: Any) -> Any:
         return jax.lax.cond(
             i < state.num_observations,
             lambda: (state, skip_info),

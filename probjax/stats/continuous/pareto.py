@@ -5,7 +5,7 @@ Pareto Distribution (:mod:`probjax.stats.pareto`)
 This module contains the Pareto distribution.
 """
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
@@ -14,6 +14,7 @@ from jax.scipy.stats import pareto as _pareto
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import interval, strict_positive
 from probjax.stats.utils import _require_unweighted_fit
+from probjax.utils.jaxutils import where
 from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["pareto"]
@@ -48,22 +49,46 @@ class pareto_gen(rv_continuous, rv_exponential_family):
         return interval(b, jnp.inf)
 
     @classmethod
-    def pdf(cls, x, b=1.0, alpha=1.0, **kwargs):
+    def pdf(
+        cls,
+        x: ArrayLike,
+        b: ArrayLike = 1.0,
+        alpha: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Probability density function of the Pareto distribution."""
         return _pareto.pdf(x, b=alpha, scale=b)
 
     @classmethod
-    def logpdf(cls, x, b=1.0, alpha=1.0, **kwargs):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        b: ArrayLike = 1.0,
+        alpha: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the probability density function of the Pareto distribution."""
         return _pareto.logpdf(x, b=alpha, scale=b)
 
     @classmethod
-    def cdf(cls, x, b=1.0, alpha=1.0, **kwargs):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        b: ArrayLike = 1.0,
+        alpha: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Cumulative distribution function of the Pareto distribution."""
         return _pareto.cdf(x, b=alpha, scale=b)
 
     @classmethod
-    def ppf(cls, q, b=1.0, alpha=1.0, **kwargs):
+    def ppf(
+        cls,
+        q: ArrayLike,
+        b: ArrayLike = 1.0,
+        alpha: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Percent point function (inverse of cdf) of the Pareto distribution."""
         return _pareto.ppf(q, b=alpha, scale=b)
 
@@ -88,44 +113,83 @@ class pareto_gen(rv_continuous, rv_exponential_family):
         return samples * b
 
     @classmethod
-    def sf(cls, x, b=1.0, alpha=1.0, **kwargs):
+    def sf(
+        cls,
+        x: ArrayLike,
+        b: ArrayLike = 1.0,
+        alpha: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Survival function (1 - cdf) of the Pareto distribution."""
         return _pareto.sf(x, b=alpha, scale=b)
 
     @classmethod
-    def isf(cls, q, b=1.0, alpha=1.0, **kwargs):
+    def isf(
+        cls,
+        q: ArrayLike,
+        b: ArrayLike = 1.0,
+        alpha: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Inverse survival function (inverse of sf) of the Pareto distribution."""
-        return _pareto.isf(q, b=alpha, scale=b)
+        return _pareto.ppf(1.0 - q, b=alpha, scale=b)
 
     @classmethod
-    def logcdf(cls, x, b=1.0, alpha=1.0, **kwargs):
+    def logcdf(
+        cls,
+        x: ArrayLike,
+        b: ArrayLike = 1.0,
+        alpha: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the cumulative distribution function of the Pareto distribution."""
         return _pareto.logcdf(x, b=alpha, scale=b)
 
     @classmethod
-    def mean(cls, b=1.0, alpha=1.0, **kwargs):
+    def mean(
+        cls, b: ArrayLike = 1.0, alpha: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Mean of the Pareto distribution."""
-        return jnp.where(alpha > 1, alpha * b / (alpha - 1), jnp.inf)
+        b = jnp.asarray(b)
+        alpha = jnp.asarray(alpha)
+        return where(alpha > 1, alpha * b / (alpha - 1), jnp.inf)
 
     @classmethod
-    def mode(cls, b=1.0, alpha=1.0, **kwargs):
+    def mode(
+        cls, b: ArrayLike = 1.0, alpha: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Mode of the Pareto distribution."""
         return jnp.asarray(b)
 
     @classmethod
-    def var(cls, b=1.0, alpha=1.0, **kwargs):
+    def var(
+        cls, b: ArrayLike = 1.0, alpha: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Variance of the Pareto distribution."""
-        return jnp.where(
+        b = jnp.asarray(b)
+        alpha = jnp.asarray(alpha)
+        return where(
             alpha > 2, b**2 * alpha / ((alpha - 1) ** 2 * (alpha - 2)), jnp.inf
         )
 
     @classmethod
-    def entropy(cls, b=1.0, alpha=1.0, **kwargs):
+    def entropy(
+        cls,
+        b: ArrayLike = 1.0,
+        alpha: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Entropy of the Pareto distribution."""
         return jnp.log(b / alpha) + 1 + 1 / alpha
 
     @classmethod
-    def moment(cls, n, b=1.0, alpha=1.0, **kwargs):
+    def moment(
+        cls,
+        n: int,
+        b: ArrayLike = 1.0,
+        alpha: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """n-th non-central moment of the Pareto distribution."""
         if n == 0:
             return jnp.ones_like(b)
@@ -137,18 +201,29 @@ class pareto_gen(rv_continuous, rv_exponential_family):
             raise NotImplementedError(f"Moment of order {n} not implemented")
 
     @classmethod
-    def skew(cls, b=1.0, alpha=1.0, **kwargs):
+    def skew(
+        cls, b: ArrayLike = 1.0, alpha: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Skewness of the Pareto distribution."""
-        return jnp.where(
+        b = jnp.asarray(b)
+        alpha = jnp.asarray(alpha)
+        return where(
             alpha > 3,
             2 * (1 + alpha) / (alpha - 3) * jnp.sqrt((alpha - 2) / alpha),
             jnp.inf,
         )
 
     @classmethod
-    def kurtosis(cls, b=1.0, alpha=1.0, **kwargs):
+    def kurtosis(
+        cls,
+        b: ArrayLike = 1.0,
+        alpha: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Excess kurtosis of the Pareto distribution."""
-        return jnp.where(
+        b = jnp.asarray(b)
+        alpha = jnp.asarray(alpha)
+        return where(
             alpha > 4,
             6
             * (alpha**3 + alpha**2 - 6 * alpha - 2)
@@ -157,17 +232,29 @@ class pareto_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def natural_parameters(cls, b=1.0, alpha=1.0, **kwargs):
+    def natural_parameters(
+        cls,
+        b: ArrayLike = 1.0,
+        alpha: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Natural parameters of the Pareto distribution."""
+        b = jnp.asarray(b)
+        alpha = jnp.asarray(alpha)
         return jnp.array([-alpha - 1, alpha * jnp.log(b)])
 
     @classmethod
-    def sufficient_statistics(cls, x, **kwargs):
+    def sufficient_statistics(cls, x: ArrayLike, **kwargs: Any) -> ArrayLike:
         """Sufficient statistics of the Pareto distribution."""
         return jnp.array([jnp.log(x), 1])
 
     @classmethod
-    def log_partition(cls, b=1.0, alpha=1.0, **kwargs):
+    def log_partition(
+        cls,
+        b: ArrayLike = 1.0,
+        alpha: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log partition function of the Pareto distribution."""
         return jnp.log(alpha * b**alpha)
 

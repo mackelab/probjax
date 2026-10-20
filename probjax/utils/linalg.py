@@ -84,7 +84,7 @@ def is_matrix(A: Array) -> bool:
     return len(A.shape) >= 2
 
 
-def is_diagonal_matrix(A: Array, axis1=-2, axis2=-1) -> bool:
+def is_diagonal_matrix(A: Array, axis1: int = -2, axis2: int = -1) -> bool | Array:
     """Check if input is a diagonal matrix
 
     Args:
@@ -100,7 +100,7 @@ def is_diagonal_matrix(A: Array, axis1=-2, axis2=-1) -> bool:
     return jnp.all(jnp.where(mask, 0, matrix) == 0, axis=(-2, -1))
 
 
-def is_triangular_matrix(A: Array, lower: bool = True) -> bool:
+def is_triangular_matrix(A: Array, lower: bool = True) -> bool | Array:
     """Check if input is a triangular matrix
 
     Args:
@@ -426,14 +426,20 @@ def _log_quadratic_form_jvp(primals, tangents):
     left, right = values[:, None], values[None, :]
     difference = left - right
     equal = difference == 0
-    safe_difference = jnp.where(equal, 1, difference)
+    safe_difference = jnp.asarray(jnp.where(equal, 1, difference))
     relative = difference / right
     # Use log1p near equal eigenvalues to avoid cancellation.
     close = jnp.abs(relative) < 0.5
-    numerator = jnp.where(
-        close, jnp.log1p(jnp.where(close, relative, 0)), jnp.log(left) - jnp.log(right)
+    numerator = jnp.asarray(
+        jnp.where(
+            close,
+            jnp.log1p(jnp.asarray(jnp.where(close, relative, 0))),
+            jnp.log(left) - jnp.log(right),
+        )
     )
-    divided_difference = jnp.where(equal, 1 / right, numerator / safe_difference)
+    divided_difference = jnp.asarray(
+        jnp.where(equal, 1 / right, numerator / safe_difference)
+    )
     weights = vectors[0]
     derivative = jnp.sum(
         weights[:, None]
@@ -459,9 +465,10 @@ def lanczos_logdet(S, num_steps=20, key=None, *, num_probes=16):
     if hasattr(S, "mv"):
         matvec, dim = S.mv, S.shape[0]
     elif callable(S):
-        if not hasattr(S, "shape"):
+        shape = getattr(S, "shape", None)
+        if shape is None:
             raise ValueError("Callable S must have a shape attribute")
-        matvec, dim = S, S.shape[0]
+        matvec, dim = S, shape[0]
     else:
         S = jnp.asarray(S)
         # The estimator is defined on symmetric positive-definite matrices.
@@ -586,8 +593,8 @@ def _solve_rhs_block_pcg(
 
     # Zero-RHS columns are already converged
     active = jnp.sum(R * R, axis=0) > tol2
-    R = jnp.where(active[None, :], R, 0.0)
-    Z = jnp.where(active[None, :], Z, 0.0)
+    R = jnp.asarray(jnp.where(active[None, :], R, 0.0))
+    Z = jnp.asarray(jnp.where(active[None, :], Z, 0.0))
     P = Z
     rho = jnp.sum(R * Z, axis=0)
 
@@ -600,9 +607,9 @@ def _solve_rhs_block_pcg(
 
         Q = _matmat_from_matvec(matvec, P)
         denom = jnp.sum(P * Q, axis=0)
-        denom = jnp.where(denom > 0, denom, 1.0)
+        denom = jnp.asarray(jnp.where(denom > 0, denom, 1.0))
 
-        alpha = jnp.where(active, rho / denom, 0.0)
+        alpha = jnp.asarray(jnp.where(active, rho / denom, 0.0))
         X = X + P * alpha[None, :]
         R = R - Q * alpha[None, :]
 
@@ -610,16 +617,16 @@ def _solve_rhs_block_pcg(
         active_new = r2 > tol2
 
         # Freeze converged columns
-        R = jnp.where(active_new[None, :], R, 0.0)
+        R = jnp.asarray(jnp.where(active_new[None, :], R, 0.0))
         Z = M(R)
-        Z = jnp.where(active_new[None, :], Z, 0.0)
+        Z = jnp.asarray(jnp.where(active_new[None, :], Z, 0.0))
 
         rho_new = jnp.sum(R * Z, axis=0)
-        rho_safe = jnp.where(rho > 0, rho, 1.0)
+        rho_safe = jnp.asarray(jnp.where(rho > 0, rho, 1.0))
         beta = jnp.where(active_new, rho_new / rho_safe, 0.0)
 
         P = Z + P * beta[None, :]
-        P = jnp.where(active_new[None, :], P, 0.0)
+        P = jnp.asarray(jnp.where(active_new[None, :], P, 0.0))
         return (k + 1, X, R, Z, P, rho_new, active_new)
 
     init_state = (jnp.array(0, dtype=jnp.int32), X, R, Z, P, rho, active)

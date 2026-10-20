@@ -6,11 +6,10 @@ This module implements mixture distributions that combine multiple component
 distributions with mixing probabilities.
 """
 
-from typing import Optional, Sequence, Tuple
+from typing import Any, Optional, Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
-import jax.scipy.optimize
 from jax import lax, random
 
 from probjax.stats.base import (
@@ -19,8 +18,10 @@ from probjax.stats.base import (
     rv_frozen,
     rv_generic,
 )
+from probjax.stats.bijective.monotone import _solve_increasing
 from probjax.stats.constraints import distribution, simplex
 from probjax.stats.continuous.norm import norm
+from probjax.utils.jaxutils import where
 from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["mixture"]
@@ -32,7 +33,9 @@ class mixture_frozen(rv_continuous_frozen, rv_discrete_frozen):
     def __init__(self, dist, mixing_probs, components, **kwds):
         super().__init__(dist, mixing_probs=mixing_probs, components=components, **kwds)
 
-    def _compute_batch_and_event_shape(self, mixing_probs, components, **kwds):
+    def _compute_batch_and_event_shape(
+        self, mixing_probs: Any, components: Any, **kwds: Any
+    ) -> tuple[Tuple[int, ...], Any]:
         """Compute the batch and event shape of the distribution."""
         batch_shape1 = mixing_probs.shape[:-1]
         num_components = mixing_probs.shape[-1]
@@ -48,7 +51,7 @@ class mixture_frozen(rv_continuous_frozen, rv_discrete_frozen):
             "All components must have the same batch shape"
         )
         batch_shape = jnp.broadcast_shapes(batch_shape1, batch_shape2)
-        return batch_shape, event_shape
+        return tuple(int(dim) for dim in batch_shape), event_shape
 
 
 class mixture_gen(rv_generic):
@@ -83,28 +86,55 @@ class mixture_gen(rv_generic):
         )
 
     @classmethod
-    def logpdf(cls, x: ArrayLike, mixing_probs, components, **kwds):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        mixing_probs: Any,
+        components: Any,
+        **kwds: Any,
+    ) -> ArrayLike:
         """Log probability density function of the mixture distribution."""
         x = jnp.asarray(x)
         log_pdfs = jnp.stack([comp.logpdf(x) for comp in components], axis=-1)
         return jax.scipy.special.logsumexp(jnp.log(mixing_probs) + log_pdfs, axis=-1)
 
     @classmethod
-    def cdf(cls, x: ArrayLike, mixing_probs, components, **kwds):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        mixing_probs: Any,
+        components: Any,
+        **kwds: Any,
+    ) -> ArrayLike:
         """Cumulative distribution function of the mixture distribution."""
         x = jnp.asarray(x)
         cdfs = jnp.stack([comp.cdf(x) for comp in components], axis=-1)
         return jnp.sum(mixing_probs * cdfs, axis=-1)
 
     @classmethod
-    def ppf(cls, q: ArrayLike, mixing_probs, components, **kwds):
-        """Percent point function of the mixture distribution."""
+    def ppf(
+        cls,
+        q: ArrayLike,
+        mixing_probs: Any,
+        components: Any,
+        **kwds: Any,
+    ) -> ArrayLike:
+        """Percent point function of the mixture distribution.
+
+        A mixture CDF has no closed-form inverse, so the quantile is found by
+        bisection on the (monotone) CDF -- the same solver the parametric
+        mixture kernel uses.
+        """
         q = jnp.asarray(q)
-        x0 = jnp.mean([comp.ppf(q) for comp in components], axis=0)
-        return jax.scipy.optimize.root(
-            lambda x: cls.cdf(x, mixing_probs, components) - q,
-            x0,
-        ).x
+
+        def cdf_at(t):
+            return cls.cdf(t, mixing_probs, components, **kwds)
+
+        root = _solve_increasing(cdf_at, jnp.clip(q, 1e-7, 1.0 - 1e-7))
+        # The 0/1 quantiles have no finite root; answer them directly rather
+        # than letting the clip above pass off an interior point.
+        root = where(q <= 0.0, -jnp.inf, root)
+        return where(q >= 1.0, jnp.inf, root)
 
     @classmethod
     def _rvs_impl(
@@ -116,6 +146,8 @@ class mixture_gen(rv_generic):
         **kwargs,
     ):
         """Random variates of the mixture distribution."""
+        if mixing_probs is None or components is None:
+            raise ValueError("mixture sampling needs mixing_probs and components.")
         key_sample, key_cluster_membership = random.split(rng, 2)
 
         # Sample from all components at once
@@ -137,13 +169,18 @@ class mixture_gen(rv_generic):
         return jnp.squeeze(samples, axis=-1)
 
     @classmethod
-    def mean(cls, mixing_probs, components, **kwds):
+    def mean(
+        cls,
+        mixing_probs: Any,
+        components: Any,
+        **kwds: Any,
+    ) -> ArrayLike:
         """Mean of the mixture distribution."""
         means = jnp.stack([jnp.asarray(comp.mean()) for comp in components], axis=-1)
         return jnp.sum(mixing_probs * means, axis=-1)
 
     @classmethod
-    def var(cls, mixing_probs, components, **kwds):
+    def var(cls, mixing_probs: Any, components: Any, **kwds: Any) -> ArrayLike:
         """Variance of the mixture distribution."""
         means = jnp.stack([jnp.asarray(comp.mean()) for comp in components], axis=-1)
         vars = jnp.stack([jnp.asarray(comp.var()) for comp in components], axis=-1)
@@ -151,7 +188,12 @@ class mixture_gen(rv_generic):
         return jnp.sum(mixing_probs * (vars + (means - mean[..., None]) ** 2), axis=-1)
 
     @classmethod
-    def mode(cls, mixing_probs, components, **kwds):
+    def mode(
+        cls,
+        mixing_probs: Any,
+        components: Any,
+        **kwds: Any,
+    ) -> ArrayLike:
         """Mode of the mixture distribution (supports univariate mixtures)."""
         if not components:
             raise ValueError("At least one component is required to compute the mode.")
@@ -261,19 +303,25 @@ class mixture_gen(rv_generic):
         return fine_best
 
     @classmethod
-    def entropy(cls, mixing_probs, components, **kwds):
+    def entropy(
+        cls,
+        mixing_probs: Any,
+        components: Any,
+        **kwds: Any,
+    ) -> ArrayLike:
         """Entropy of the mixture distribution."""
         raise NotImplementedError("Entropy not implemented for mixture distribution")
 
     @classmethod
     def fit(
         cls,
-        x: ArrayLike,
+        data: ArrayLike,
         components: Sequence[rv_frozen],
         mixing_probs_init: Optional[ArrayLike] = None,
         max_iter: int = 100,
         tol: float = 1e-4,
         rng_key: Optional[RngKey] = None,
+        **kwds: Any,
     ):
         """Fit a finite mixture model with analytic weighted M-steps."""
         if not components:
@@ -286,7 +334,7 @@ class mixture_gen(rv_generic):
 
         del rng_key
 
-        data = jnp.asarray(x)
+        data = jnp.asarray(data)
         event_shape = components[0].event_shape
         if any(comp.event_shape != event_shape for comp in components[1:]):
             raise ValueError("All components must share the same event shape.")
@@ -383,7 +431,7 @@ class mixture_gen(rv_generic):
                     )
 
                 log_likelihood = jnp.mean(log_norm)
-                difference = jnp.where(
+                difference = where(
                     jnp.isfinite(previous_ll_state),
                     jnp.abs(log_likelihood - previous_ll_state),
                     jnp.asarray(jnp.inf, dtype=numeric_dtype),
@@ -414,7 +462,7 @@ class mixture_gen(rv_generic):
             dist.from_params(params)
             for dist, params in zip(component_dists, params_final, strict=False)
         ]
-        return mixing_probs_final, fitted_components
+        return mixing_probs_final, tuple(fitted_components)
 
 
 mixture = mixture_gen(name="mixture")

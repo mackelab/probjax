@@ -22,6 +22,7 @@ from jax.scipy.special import gammaln
 from probjax.stats.base import rv_exponential_family, rv_spherical
 from probjax.stats.constraints import real, spherical, stiefel
 from probjax.stats.utils import normalize_sample_weights
+from probjax.utils.jaxutils import where
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["bingham"]
@@ -164,7 +165,7 @@ def sample_quad_exp_distribution(
         accept_prob = jnp.exp(exponent - max_val)
         uniform = random.uniform(sk_acc, dtype=dtype)
         accepted = uniform < accept_prob
-        new_sample = jnp.where(accepted, candidate, sample_val)
+        new_sample = where(accepted, candidate, sample_val)
         return i + 1, done | accepted, rng, new_sample
 
     init = (0, False, key, mu)
@@ -224,7 +225,7 @@ def _sample_bingham_direction_mc(
         quad = jnp.dot(candidate, parameter_matrix @ candidate)
         log_u = jnp.log(random.uniform(key_u) + _EPS)
         accept = log_u <= quad - lambda_max
-        sample = jnp.where(accept, candidate, sample)
+        sample = where(accept, candidate, sample)
         return accept, sample, key
 
     state0 = (False, jnp.zeros((dim,), dtype=parameter_matrix.dtype), key)
@@ -575,7 +576,7 @@ class bingham_gen(rv_spherical, rv_exponential_family):
                     theta_candidate = theta_curr - step_vec
                     res_norm = jnp.max(jnp.abs(res))
                     converged_next = jnp.logical_or(converged_curr, res_norm < tol)
-                    theta_next = jnp.where(converged_curr, theta_curr, theta_candidate)
+                    theta_next = where(converged_curr, theta_curr, theta_candidate)
                     return (theta_next, converged_next), None
 
                 max_iter_newton = 50

@@ -491,6 +491,7 @@ re-exported for convenience and documented there.
 ::: probjax.nn.LRUCell
 ::: probjax.nn.LRUModel
 ::: probjax.nn.LearnablePosEncode
+::: probjax.nn.LowRankLinear
 ::: probjax.nn.LpNorm
 ::: probjax.nn.LpNormClip
 ::: probjax.nn.MambaCell
@@ -499,6 +500,7 @@ re-exported for convenience and documented there.
 ::: probjax.nn.MoEAux
 ::: probjax.nn.MoELayer
 ::: probjax.nn.MultiHeadAttention
+::: probjax.nn.MultiHeadLatentAttention
 ::: probjax.nn.OneHot
 ::: probjax.nn.PosEncode
 ::: probjax.nn.RecurrentCell

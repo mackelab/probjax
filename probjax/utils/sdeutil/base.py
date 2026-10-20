@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Callable, NamedTuple, Optional, Tuple
+from typing import Any, Callable, NamedTuple, Optional, Tuple
 
 from jax.typing import ArrayLike
 
@@ -28,11 +28,11 @@ class SDESolver(NamedTuple):
 
 class SDESolverAPI(metaclass=API):
     @staticmethod
-    def init(position, **kwargs) -> SDEState:
+    def init(*args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("init method must be implemented")
 
     @staticmethod
-    def build_step(*args, **kwargs) -> Callable:
+    def build_step(*args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("build_step method must be implemented")
 
     info: dict = {}  # set by register_method
@@ -53,7 +53,9 @@ class SDESolverAPI(metaclass=API):
         )
 
 
-def register_method(name: str, step_fn: SDESolverAPI, info: Optional[dict] = None):  # noqa: F821
+def register_method(
+    name: str, step_fn: type[SDESolverAPI], info: Optional[dict] = None
+) -> type[SDESolverAPI]:
     """General method to register a step_fn for an ODE solver, thereby creating a
     new method.
 

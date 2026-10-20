@@ -7,13 +7,14 @@ from jax.typing import ArrayLike
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.stats.bijective._spline_common import linear_tail, merge3, select_bin
+from probjax.utils.jaxutils import where
 
 
 def _rational_quadratic_spline_fwd(
     x: ArrayLike,
-    x_pos: ArrayLike,
-    y_pos: ArrayLike,
-    knot_slopes: ArrayLike,
+    x_pos: Array,
+    y_pos: Array,
+    knot_slopes: Array,
     x_min: Optional[float] = None,
     x_max: Optional[float] = None,
     y_min: Optional[float] = None,
@@ -112,7 +113,7 @@ def _safe_quadratic_root(a: Array, b: Array, c: Array) -> Array:
     sqrt_diff = b**2 - 4.0 * a * c
     safe_sqrt = jnp.sqrt(jnp.clip(sqrt_diff, jnp.finfo(sqrt_diff.dtype).tiny))
     # If sqrt_diff is non-positive, we set sqrt to 0. as it should be positive.
-    safe_sqrt = jnp.where(sqrt_diff > 0.0, safe_sqrt, 0.0)
+    safe_sqrt = where(sqrt_diff > 0.0, safe_sqrt, 0.0)
     # (b) When 4. * a * c -> 0. We use the more stable quadratic solution
     # depending on the sign of b.
     # See https://people.csail.mit.edu/bkph/articles/Quadratics.pdf (eq 7 and 8).
@@ -123,21 +124,21 @@ def _safe_quadratic_root(a: Array, b: Array, c: Array) -> Array:
     numerator_2 = -b + safe_sqrt
     denominator_2 = 2 * a
     # Choose the numerically stable solution.
-    numerator = jnp.where(b >= 0, numerator_1, numerator_2)
-    denominator = jnp.where(b >= 0, denominator_1, denominator_2)
+    numerator = where(b >= 0, numerator_1, numerator_2)
+    denominator = where(b >= 0, denominator_1, denominator_2)
     # (c) Both branches degenerate to 0 / 0 when b == 0 and the discriminant
     # vanishes, which forces c == 0 as well -- and then z = 0 is the root we
     # want. Left unguarded this returns NaN and poisons the whole inverse.
     degenerate = denominator == 0.0
-    safe_denominator = jnp.where(degenerate, 1.0, denominator)
-    return jnp.where(degenerate, 0.0, numerator / safe_denominator)
+    safe_denominator = where(degenerate, 1.0, denominator)
+    return where(degenerate, 0.0, numerator / safe_denominator)
 
 
 def _rational_quadratic_spline_inv(
     y: ArrayLike,
-    x_pos: ArrayLike,
-    y_pos: ArrayLike,
-    knot_slopes: ArrayLike,
+    x_pos: Array,
+    y_pos: Array,
+    knot_slopes: Array,
     x_min: Optional[float] = None,
     x_max: Optional[float] = None,
     y_min: Optional[float] = None,
@@ -255,9 +256,9 @@ def _rational_quadratic_spline_inv(
 @partial(custom_inverse, inv_argnum=0)
 def rational_quadratic_spline(
     x: ArrayLike,
-    x_pos: ArrayLike,
-    y_pos: ArrayLike,
-    knot_slopes: ArrayLike,
+    x_pos: Array,
+    y_pos: Array,
+    knot_slopes: Array,
     x_min: Optional[float] = None,
     x_max: Optional[float] = None,
     y_min: Optional[float] = None,
@@ -278,9 +279,9 @@ def rational_quadratic_spline(
 
 def inv_rational_quadratic_spline(
     y: ArrayLike,
-    x_pos: ArrayLike,
-    y_pos: ArrayLike,
-    knot_slopes: ArrayLike,
+    x_pos: Array,
+    y_pos: Array,
+    knot_slopes: Array,
     x_min: Optional[float] = None,
     x_max: Optional[float] = None,
     y_min: Optional[float] = None,
@@ -303,9 +304,9 @@ rational_quadratic_spline.definv_and_logdet(inv_rational_quadratic_spline)
 
 def rational_quadratic_spline_and_logdet(
     x: ArrayLike,
-    x_pos: ArrayLike,
-    y_pos: ArrayLike,
-    knot_slopes: ArrayLike,
+    x_pos: Array,
+    y_pos: Array,
+    knot_slopes: Array,
     x_min: Optional[float] = None,
     x_max: Optional[float] = None,
     y_min: Optional[float] = None,

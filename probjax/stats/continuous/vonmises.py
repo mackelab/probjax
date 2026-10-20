@@ -5,7 +5,7 @@ Von Mises Distribution (:mod:`probjax.stats.vonmises`)
 This module contains the Von Mises distribution.
 """
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
@@ -15,6 +15,7 @@ from jax.scipy.special import i0, i1
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
 from probjax.stats.utils import flatten_samples, normalize_sample_weights
+from probjax.utils.jaxutils import where
 from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["vonmises"]
@@ -46,25 +47,58 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
     parameters = {'loc': real, 'kappa': strict_positive}
 
     @classmethod
-    def pdf(cls, x, loc=0.0, kappa=1.0, **kwargs):
+    def pdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        kappa: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Probability density function of the von Mises distribution."""
+        x = jnp.asarray(x)
+        loc = jnp.asarray(loc)
+        kappa = jnp.asarray(kappa)
         return jnp.exp(kappa * jnp.cos(x - loc)) / (2 * jnp.pi * i0(kappa))
 
     @classmethod
-    def logpdf(cls, x, loc=0.0, kappa=1.0, **kwargs):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        kappa: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the probability density function of the von Mises distribution."""
+        x = jnp.asarray(x)
+        loc = jnp.asarray(loc)
+        kappa = jnp.asarray(kappa)
         return kappa * jnp.cos(x - loc) - jnp.log(2 * jnp.pi * i0(kappa))
 
     @classmethod
-    def cdf(cls, x, loc=0.0, kappa=1.0, **kwargs):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        kappa: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Cumulative distribution function of the von Mises distribution."""
         # The CDF is not available in closed form
         # We use a numerical approximation
+        x = jnp.asarray(x)
+        loc = jnp.asarray(loc)
+        kappa = jnp.asarray(kappa)
         z = (x - loc) % (2 * jnp.pi)
         return z / (2 * jnp.pi) + jnp.sin(z) * i1(kappa) / (2 * jnp.pi * i0(kappa))
 
     @classmethod
-    def ppf(cls, q, loc=0.0, kappa=1.0, **kwargs):
+    def ppf(
+        cls,
+        q: ArrayLike,
+        loc: ArrayLike = 0.0,
+        kappa: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Percent point function (inverse of cdf) of the von Mises distribution."""
         # The PPF is not available in closed form
         # We use a numerical approximation
@@ -90,32 +124,57 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
             z = jnp.cos(jnp.pi * u)
             f = (1 + kappa * z) / (kappa + z)
             c = kappa * jnp.sqrt((1 - f) / (1 + f))
-            return jnp.where(v < c, jnp.arccos(f), jnp.pi - jnp.arccos(f)) + loc
+            return where(v < c, jnp.arccos(f), jnp.pi - jnp.arccos(f)) + loc
 
         return _rejection_sampling(rng)
 
     @classmethod
-    def mean(cls, loc=0.0, kappa=1.0, **kwargs):
+    def mean(
+        cls,
+        loc: ArrayLike = 0.0,
+        kappa: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mean of the von Mises distribution."""
         return jnp.asarray(loc)
 
     @classmethod
-    def mode(cls, loc=0.0, kappa=1.0, **kwargs):
+    def mode(
+        cls,
+        loc: ArrayLike = 0.0,
+        kappa: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mode of the von Mises distribution."""
         return jnp.asarray(loc)
 
     @classmethod
-    def var(cls, loc=0.0, kappa=1.0, **kwargs):
+    def var(
+        cls, loc: ArrayLike = 0.0, kappa: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Variance of the von Mises distribution."""
         return 1 - i1(kappa) / i0(kappa)
 
     @classmethod
-    def entropy(cls, loc=0.0, kappa=1.0, **kwargs):
+    def entropy(
+        cls,
+        loc: ArrayLike = 0.0,
+        kappa: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Entropy of the von Mises distribution."""
+        loc = jnp.asarray(loc)
+        kappa = jnp.asarray(kappa)
         return -kappa * i1(kappa) / i0(kappa) + jnp.log(2 * jnp.pi * i0(kappa))
 
     @classmethod
-    def moment(cls, n, loc=0.0, kappa=1.0, **kwargs):
+    def moment(
+        cls,
+        n: int,
+        loc: ArrayLike = 0.0,
+        kappa: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """n-th non-central moment of the von Mises distribution."""
         if n == 0:
             return jnp.ones_like(loc)
@@ -125,27 +184,47 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
             raise NotImplementedError(f"Moment of order {n} not implemented")
 
     @classmethod
-    def skew(cls, loc=0.0, kappa=1.0, **kwargs):
+    def skew(
+        cls,
+        loc: ArrayLike = 0.0,
+        kappa: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Skewness of the von Mises distribution."""
         return jnp.zeros_like(loc)
 
     @classmethod
-    def kurtosis(cls, loc=0.0, kappa=1.0, **kwargs):
+    def kurtosis(
+        cls,
+        loc: ArrayLike = 0.0,
+        kappa: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Excess kurtosis of the von Mises distribution."""
         return -2 * (i1(kappa) / i0(kappa)) ** 2
 
     @classmethod
-    def natural_parameters(cls, loc=0.0, kappa=1.0, **kwargs):
+    def natural_parameters(
+        cls,
+        loc: ArrayLike = 0.0,
+        kappa: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Natural parameters of the von Mises distribution."""
         return jnp.array([kappa * jnp.cos(loc), kappa * jnp.sin(loc)])
 
     @classmethod
-    def sufficient_statistics(cls, x, **kwargs):
+    def sufficient_statistics(cls, x: ArrayLike, **kwargs: Any) -> ArrayLike:
         """Sufficient statistics of the von Mises distribution."""
         return jnp.array([jnp.cos(x), jnp.sin(x)])
 
     @classmethod
-    def log_partition(cls, loc=0.0, kappa=1.0, **kwargs):
+    def log_partition(
+        cls,
+        loc: ArrayLike = 0.0,
+        kappa: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log partition function of the von Mises distribution."""
         return jnp.log(2 * jnp.pi * i0(kappa))
 
@@ -175,13 +254,13 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
 
         def approx_kappa(r):
             r = jnp.clip(r, 0.0, 0.999999)
-            kappa = jnp.where(
+            kappa = where(
                 r < 0.53,
                 2 * r + r**3 + 5 * r**5 / 6,
-                jnp.where(
+                where(
                     r < 0.85,
                     -0.4 + 1.39 * r + 0.43 / (1 - r),
-                    jnp.where(
+                    where(
                         r < 0.999999,
                         1.0 / (r**3 - 4 * r**2 + 3 * r + 1),
                         1e6,
@@ -190,7 +269,7 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
             )
             return jnp.maximum(kappa, tiny)
 
-        kappa_init = jnp.where(tiny > R, tiny, approx_kappa(R))
+        kappa_init = where(tiny > R, tiny, approx_kappa(R))
 
         # Refine kappa via BFGS (loc MLE is the circular mean, keep it fixed)
         if weights_arr is not None:

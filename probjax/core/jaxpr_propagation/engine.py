@@ -71,11 +71,11 @@ StallRecovery = Callable[
 
 def naive_cost_fn(
     eqn: JaxprEqn,
-    is_known_invars: Sequence[bool],
-    is_known_outvars: Sequence[bool],
+    known_invars: Sequence[bool],
+    known_outvars: Sequence[bool],
 ) -> float:
-    del eqn, is_known_outvars
-    if all(is_known_invars):
+    del eqn, known_outvars
+    if all(known_invars):
         return 0.0
     return math.inf
 
@@ -234,7 +234,7 @@ def _can_use_eval_jaxpr_fast_path(
     )
 
 
-def _get_closed_sub_jaxpr(eqn: Any):
+def _get_closed_sub_jaxpr(eqn: Any) -> Any:
     primitive_name = getattr(getattr(eqn, "primitive", None), "name", None)
     if primitive_name == "scan":
         return None
@@ -444,8 +444,8 @@ class _EquationQueue:
         env: Environment,
         equations: Sequence[ExtendedEquation],
         cost_fn: CostFn,
-        replay=None,
-    ):
+        replay: Any = None,
+    ) -> None:
         self.neighbors = neighbors
         self.env = env
         self.cost_fn = cost_fn
@@ -459,11 +459,24 @@ class _EquationQueue:
         self.replay = replay
         self.cursor = 0
         self.recorded = []
-        self.queue = None if replay is not None else PriorityQueue()
+        self._queue: PriorityQueue | None = (
+            None if replay is not None else PriorityQueue()
+        )
         if replay is None:
             self._initialize()
 
-    def _initialize(self):
+    @property
+    def queue(self) -> PriorityQueue:
+        """The queue of pending equations.
+
+        Replaying a recorded run drives the equations from the recording
+        instead, so there is no queue then; asking for one is a bug.
+        """
+        if self._queue is None:
+            raise RuntimeError("No equation queue while replaying a recorded run.")
+        return self._queue
+
+    def _initialize(self) -> None:
         seed_eqn_ids: set[EqnId] = set()
         for var in self.env:
             seed_eqn_ids.update(self.neighbors.get(var, ()))
@@ -481,7 +494,7 @@ class _EquationQueue:
         known_outvars = map(self.env.known, extended_eqn.outvars)
         return self.cost_fn(extended_eqn.eqn, known_invars, known_outvars)
 
-    def push(self, eqn_id: EqnId):
+    def push(self, eqn_id: EqnId) -> None:
         if eqn_id in self.processed_eqns:
             # Fully processed equations cannot be re-added
             return
@@ -503,12 +516,12 @@ class _EquationQueue:
         # Don't mark as processed yet - caller will call mark_processed or mark_deferred
         return self.equation_by_id[eqn_id]
 
-    def mark_processed(self, eqn_id: EqnId):
+    def mark_processed(self, eqn_id: EqnId) -> None:
         """Mark equation as fully processed (cannot be re-added)."""
         self.processed_eqns.add(eqn_id)
         self.deferred_eqns.discard(eqn_id)
 
-    def mark_deferred(self, eqn_id: EqnId):
+    def mark_deferred(self, eqn_id: EqnId) -> None:
         """Mark equation as deferred (can be re-added when new info available)."""
         self.deferred_eqns.add(eqn_id)
 
@@ -519,7 +532,12 @@ class _EquationQueue:
             )
         return self.queue.is_empty()
 
-    def record_step(self, eqn_id, written_vars, consumed=()):
+    def record_step(
+        self,
+        eqn_id: EqnId | None,
+        written_vars: Sequence[Any],
+        consumed: Sequence[Any] = (),
+    ) -> None:
         """Replay decisions, never values; fall back if rule knownness changes."""
         step = (
             eqn_id,
@@ -533,7 +551,7 @@ class _EquationQueue:
             # Rebuild from the current environment. Already consumed or
             # completed equations stay retired, including their state.
             self.replay = None
-            self.queue = PriorityQueue()
+            self._queue = PriorityQueue()
             self._initialize()
         self.cursor += 1
 
@@ -570,7 +588,7 @@ def _format_return(
     *,
     return_state: bool,
     return_env: bool,
-):
+) -> Any:
     if return_state and return_env:
         return outputs, state, env
     if return_state:
@@ -602,7 +620,7 @@ def run_jaxpr(
     extended_jaxpr: ExtendedJaxpr | None = None,
     stall_recovery: StallRecovery | None = None,
     schedule_cache: dict | None = None,
-):
+) -> Any:
     if stall_recovery is not None and scheduler != "priority":
         raise ValueError("stall_recovery requires the priority scheduler")
     if _can_use_eval_jaxpr_fast_path(
@@ -718,10 +736,14 @@ def run_jaxpr(
         env,
         extended.equations,
         cost_fn,
-        replay=schedule_cache.get(schedule_key) if schedule_key is not None else None,
+        replay=(
+            schedule_cache.get(schedule_key)
+            if schedule_key is not None and schedule_cache is not None
+            else None
+        ),
     )
 
-    changed_since_recovery = set(env) if stall_recovery is not None else None
+    changed_since_recovery: set[Var] = set(env) if stall_recovery is not None else set()
     while True:
         if equation_queue.is_empty():
             if stall_recovery is None or all(
@@ -839,7 +861,7 @@ def run_jaxpr(
         if not process_all_eqns and all(map(env.known, outvars)):
             break
 
-    if schedule_key is not None:
+    if schedule_key is not None and schedule_cache is not None:
         schedule_cache[schedule_key] = tuple(equation_queue.recorded)
     outputs = map(env.read, outvars)
     return _format_return(
@@ -863,7 +885,7 @@ def interpret(
     return_state: bool = False,
     return_env: bool = False,
     state_namespace: str = "default",
-):
+) -> Any:
     """
     Interpret a JAXPR with topological scheduling and automatic recursion.
 
@@ -906,7 +928,7 @@ def propagate(
     state_namespace: str = "default",
     stall_recovery: StallRecovery | None = None,
     schedule_cache: dict | None = None,
-):
+) -> Any:
     """
     Propagate values through a JAXPR with priority-based scheduling.
 

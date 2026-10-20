@@ -25,16 +25,17 @@ Usage::
     state = mcmc.run(key, state, num_steps, params=params, args=(batches,))
 """
 
+from __future__ import annotations
+
 from functools import partial
-from typing import Callable, NamedTuple
+from typing import Any, Callable, NamedTuple
 
 import blackjax
 from blackjax.sgmcmc.sgnht import SGNHTState
-from blackjax.types import ArrayTree
 from blackjax.util import generate_gaussian_noise
 
 from probjax.inference.mcmc.base import MarkovKernel
-from probjax.utils.typing import RngKey
+from probjax.utils.typing import ArrayTree, RngKey, Scalar
 
 # ---------------------------------------------------------------------------
 # Shared state / info types
@@ -88,8 +89,8 @@ def grad_estimator(
 class SGMCMCParams(NamedTuple):
     """Shared step_size/temperature params for SGLD / SGHMC / SGNHT."""
 
-    step_size: float = 1e-3
-    temperature: float = 1.0
+    step_size: Scalar = 1e-3
+    temperature: Scalar = 1.0
 
 
 SGLDParams = SGMCMCParams
@@ -98,12 +99,12 @@ SGNHTParams = SGMCMCParams
 
 
 def _make_sgmcmc_kernel(
-    grad_estimator_fn,
-    build_kernel_fn,
-    blackjax_init=None,
-    state_init=None,
-    extra_step_kwargs=None,
-):
+    grad_estimator_fn: Callable,
+    build_kernel_fn: Callable,
+    blackjax_init: Callable | None = None,
+    state_init: Callable | None = None,
+    extra_step_kwargs: dict[str, Any] | None = None,
+) -> MarkovKernel:
     """Shared constructor for the SGLD/SGHMC/SGNHT MarkovKernels.
 
     ``state_init(key, position, rng_key)`` defaults to wrapping
@@ -115,11 +116,15 @@ def _make_sgmcmc_kernel(
     extra_step_kwargs = extra_step_kwargs or {}
 
     if state_init is None:
+        if blackjax_init is None:
+            raise ValueError("Either blackjax_init or state_init is required.")
 
-        def state_init(key, position, rng_key):
+        def default_state_init(key, position, rng_key):
             if position is None:
                 position = key
             return SGMCMCState(position=blackjax_init(position))
+
+        state_init = default_state_init
 
     def init(key, position=None, rng_key=None):
         return state_init(key, position, rng_key)
@@ -199,7 +204,7 @@ def sghmc(
 # ---------------------------------------------------------------------------
 
 
-def _sgnht_init(position, rng_key=None, alpha: float = 0.01):
+def _sgnht_init(position, rng_key: RngKey, alpha: float = 0.01) -> SGNHTState:
 
     momentum = generate_gaussian_noise(rng_key, position)
     return SGNHTState(position, momentum, alpha)

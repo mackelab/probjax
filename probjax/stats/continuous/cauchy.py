@@ -5,7 +5,7 @@ Cauchy Distribution (:mod:`probjax.stats.cauchy`)
 This module contains the Cauchy distribution.
 """
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax.numpy as jnp
 import jax.scipy.stats.cauchy as _cauchy
@@ -37,22 +37,46 @@ class cauchy_gen(rv_continuous):
     parameters = {'loc': real, 'scale': strict_positive}
 
     @classmethod
-    def pdf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def pdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Probability density function of the Cauchy distribution."""
         return _cauchy.pdf(x, loc, scale)
 
     @classmethod
-    def logpdf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the probability density function of the Cauchy distribution."""
         return _cauchy.logpdf(x, loc, scale)
 
     @classmethod
-    def cdf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Cumulative distribution function of the Cauchy distribution."""
         return _cauchy.cdf(x, loc, scale)
 
     @classmethod
-    def ppf(cls, q, loc=0.0, scale=1.0, **kwargs):
+    def ppf(
+        cls,
+        q: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Percent point function (inverse of cdf) of the Cauchy distribution."""
         return _cauchy.ppf(q, loc, scale)
 
@@ -69,59 +93,115 @@ class cauchy_gen(rv_continuous):
         return loc_scale_sample(rng, random.cauchy, shape=shape, loc=loc, scale=scale)
 
     @classmethod
-    def sf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def sf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Survival function (1 - cdf) of the Cauchy distribution."""
         return _cauchy.sf(x, loc, scale)
 
     @classmethod
-    def isf(cls, q, loc=0.0, scale=1.0, **kwargs):
+    def isf(
+        cls,
+        q: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Inverse survival function (inverse of sf) of the Cauchy distribution."""
         return _cauchy.isf(q, loc, scale)
 
     @classmethod
-    def logcdf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def logcdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the cumulative distribution function of the Cauchy distribution."""
         return _cauchy.logcdf(x, loc, scale)
 
     @classmethod
-    def mean(cls, loc=0.0, scale=1.0, **kwargs):
+    def mean(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mean of the Cauchy distribution."""
         return jnp.full_like(loc, jnp.nan)
 
     @classmethod
-    def mode(cls, loc=0.0, scale=1.0, **kwargs):
+    def mode(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mode of the Cauchy distribution."""
         return jnp.asarray(loc)
 
     @classmethod
-    def median(cls, loc=0.0, scale=1.0, **kwargs):
+    def median(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Median of the Cauchy distribution."""
         return jnp.asarray(loc)
 
     @classmethod
-    def var(cls, loc=0.0, scale=1.0, **kwargs):
+    def var(
+        cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Variance of the Cauchy distribution."""
         return jnp.full_like(loc, jnp.inf)
 
     @classmethod
-    def entropy(cls, loc=0.0, scale=1.0, **kwargs):
+    def entropy(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Entropy of the Cauchy distribution."""
         return jnp.log(4 * jnp.pi * scale)
 
     @classmethod
-    def moment(cls, n, loc=0.0, scale=1.0, **kwargs):
+    def moment(
+        cls,
+        n: int,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """n-th non-central moment of the Cauchy distribution."""
         if n == 0:
             return jnp.ones_like(loc)
         return jnp.full_like(loc, jnp.inf)
 
     @classmethod
-    def skew(cls, loc=0.0, scale=1.0, **kwargs):
+    def skew(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Skewness of the Cauchy distribution."""
         return jnp.full_like(loc, jnp.nan)
 
     @classmethod
-    def kurtosis(cls, loc=0.0, scale=1.0, **kwargs):
+    def kurtosis(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Excess kurtosis of the Cauchy distribution."""
         return jnp.full_like(loc, jnp.nan)
 

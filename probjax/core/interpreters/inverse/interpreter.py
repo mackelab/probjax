@@ -6,6 +6,10 @@ equations to compute inverse values using rules registered in the global
 REGISTRY.
 """
 
+from __future__ import annotations
+
+from typing import Any, Callable
+
 import jax.numpy as jnp
 from jax._src import core as jax_core
 
@@ -23,11 +27,11 @@ from probjax.core.registry import REGISTRY, Context, ProcessedResult
 
 
 def maybe_inverse_custom_inverse(
-    fun,
+    fun: Callable,
     *,
-    static_argnums=(),
-    invertible_arg=None,
-):
+    static_argnums: int | tuple[int, ...] = (),
+    invertible_arg: int | tuple[int, ...] | None = None,
+) -> Any:
     """
     Create an inverse wrapper for a custom_inverse function.
 
@@ -44,7 +48,8 @@ def maybe_inverse_custom_inverse(
         return None
 
     configured_static = tuple(fun.static_argnums or ())
-    requested_static = tuple(sorted(static_argnums or ()))
+    requested = (static_argnums,) if isinstance(static_argnums, int) else static_argnums
+    requested_static = tuple(sorted(requested or ()))
     if requested_static and requested_static != configured_static:
         raise ValueError(
             "For custom_inverse inputs, static_argnums must match the "
@@ -70,7 +75,7 @@ def maybe_inverse_custom_inverse(
     )
     inverse_wrapper.definv(fun.fun)
 
-    def inverse_inverse_and_logdet(*args, **kwargs):
+    def inverse_inverse_and_logdet(*args: Any, **kwargs: Any) -> Any:
         # Prefer a direct forward value/logdet if available.
         if fun.value_and_logdet_fun is not None:
             return fun.value_and_logdet(*args, **kwargs)

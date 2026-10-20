@@ -1,9 +1,10 @@
 import warnings
 from functools import wraps
-from typing import Any, Callable, Iterable, Mapping, Optional, cast
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, cast
 
 import jax
 from jax import numpy as jnp
+from jax.extend.core import Var
 from jaxtyping import Array
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
@@ -35,12 +36,15 @@ from probjax.core.interpreters.inverse.recovery import (
     make_affine_recovery,
 )
 from probjax.core.jaxpr_propagation import interpret, propagate
-from probjax.core.jaxpr_propagation.utils import KnownessLevel
+from probjax.core.jaxpr_propagation.utils import KnownessLevel, shaped_aval
 from probjax.core.registry import (
     invalid_inverse_value,
     sum_logdet_terms,
 )
 from probjax.utils.guards import is_array_like
+
+#: Name of the attribute carrying a jaxpr getter's "trace these inputs" variant.
+_FOR_INPUTS_ATTR = "for_inputs"
 
 # Live canonical-name table. Each deprecated spelling maps to the canonical
 # name preferred by the probabilistic vocabulary used by ``trace``. Shims read
@@ -105,13 +109,13 @@ def _resolve_invertible_indices(args, invertible_arg) -> tuple[int, ...]:
 
 
 def _prepare_inverse_problem(
-    jaxpr_invars,
-    args,
-    kwargs,
-    invertible_arg,
-    static_argnums,
-    input_template=None,
-):
+    jaxpr_invars: Sequence[Var],
+    args: Sequence[Any],
+    kwargs: Mapping[str, Any],
+    invertible_arg: int | tuple[int, ...] | None,
+    static_argnums: int | tuple[int, ...],
+    input_template: Any = None,
+) -> tuple[Any, ...]:
     """Split a traced inverse call into known inputs, targets, and outputs.
 
     ``args`` carries the outputs at the target positions (and the known
@@ -195,7 +199,9 @@ def _sum_log_dets_for_vars(log_dets: dict, vars_) -> jax.Array:
     return total
 
 
-def _resolve_templates(target_arg_indices, input_template):
+def _resolve_templates(
+    target_arg_indices: Sequence[int], input_template: Any
+) -> tuple[Any, ...]:
     """Align one template per invertible argument."""
     if len(target_arg_indices) == 1:
         return (input_template,)
@@ -214,7 +220,9 @@ def _resolve_templates(target_arg_indices, input_template):
     return templates
 
 
-def _trace_args_with_template(args, target_arg_indices, input_template):
+def _trace_args_with_template(
+    args: Sequence[Any], target_arg_indices: Sequence[int], input_template: Any
+) -> tuple[Any, ...]:
     """Call args with the invertible slots replaced by template values."""
     trace_args = list(args)
     for index, template in zip(
@@ -226,7 +234,9 @@ def _trace_args_with_template(args, target_arg_indices, input_template):
     return tuple(trace_args)
 
 
-def _outputs_match_program(output_values, outvars) -> bool:
+def _outputs_match_program(
+    output_values: Sequence[Any], outvars: Sequence[Var]
+) -> bool:
     """Whether supplied outputs fit the traced program's output avals.
 
     Only meaningful with ``input_template``, where the trace is the true
@@ -237,12 +247,12 @@ def _outputs_match_program(output_values, outvars) -> bool:
     if len(output_values) != len(outvars):
         return False
     return all(
-        tuple(jnp.shape(value)) == tuple(var.aval.shape)
+        tuple(jnp.shape(value)) == tuple(shaped_aval(var.aval).shape)
         for value, var in zip(output_values, outvars, strict=False)
     )
 
 
-def _unflatten_targets(target_trees, out):
+def _unflatten_targets(target_trees: Sequence[Any], out: Any) -> Any:
     """Rebuild target pytree(s) from flat inverse values in leaf order."""
     parts, offset = [], 0
     for tree in target_trees:
@@ -255,8 +265,13 @@ def _unflatten_targets(target_trees, out):
 
 
 def _trace_inverse_program(
-    get_jaxpr, args, kwargs, invertible_arg, static_argnums, input_template
-):
+    get_jaxpr: Callable,
+    args: Sequence[Any],
+    kwargs: Mapping[str, Any],
+    invertible_arg: int | tuple[int, ...] | None,
+    static_argnums: int | tuple[int, ...],
+    input_template: Any,
+) -> tuple[Any, ...]:
     """Trace the forward program and split the inverse problem.
 
     Returns ``(jaxpr, known_invars, target_invars, args_for_propagate,
@@ -268,7 +283,7 @@ def _trace_inverse_program(
         jaxpr, output_shape = get_jaxpr(*args, **kwargs)
     else:
         trace_args = _trace_args_with_template(args, target_arg_indices, input_template)
-        jaxpr, output_shape = get_jaxpr.for_inputs(trace_args, kwargs)
+        jaxpr, output_shape = getattr(get_jaxpr, _FOR_INPUTS_ATTR)(trace_args, kwargs)
     (
         known_invars,
         target_invars,
@@ -306,7 +321,7 @@ def _trace_inverse_program(
     return jaxpr, known_invars, target_invars, args_for_propagate, target_trees
 
 
-def _unresolvable_targets(target_invars):
+def _unresolvable_targets(target_invars: Sequence[Var]) -> list[Any]:
     return [
         invalid_inverse_value(
             var.aval, message="supplied outputs do not match the inverse program"
@@ -315,7 +330,9 @@ def _unresolvable_targets(target_invars):
     ]
 
 
-def _materialize_inverse_targets(values, target_vars, env):
+def _materialize_inverse_targets(
+    values: Sequence[Any], target_vars: Sequence[Var], env: Any
+) -> tuple[list[Any], bool]:
     materialized = []
     complete = True
     for value, var in zip(values, target_vars, strict=False):
@@ -333,8 +350,13 @@ def _materialize_inverse_targets(values, target_vars, env):
 
 
 def _affine_fallback(
-    jaxpr, known_invars, args_for_propagate, target_invars, *, need_logdet=True
-):
+    jaxpr: Any,
+    known_invars: Sequence[Any],
+    args_for_propagate: Sequence[Any],
+    target_invars: Sequence[Any],
+    *,
+    need_logdet: bool = True,
+) -> Any:
     """Try a linear solve where equation-by-equation propagation gave up.
 
     Only reached when propagation could not reconstruct the target, so this can
@@ -354,7 +376,7 @@ def _affine_fallback(
     )
 
 
-def _validate_inverse_shapes(value, forward_output):
+def _validate_inverse_shapes(value: Any, forward_output: Any) -> None:
     """The output is also the presumed input signature for automatic inversion."""
     leaves, tree = jax.tree_util.tree_flatten_with_path(value)
     expected, expected_tree = jax.tree_util.tree_flatten(forward_output)
@@ -373,7 +395,7 @@ def _validate_inverse_shapes(value, forward_output):
             )
 
 
-def _leaf_signature(leaf):
+def _leaf_signature(leaf: Any) -> Any:
     """Create a hashable signature for a pytree leaf for caching."""
     # Fast path for JAX arrays (most common case)
     if isinstance(leaf, jax.Array):
@@ -389,7 +411,9 @@ def _leaf_signature(leaf):
         return ("obj", type(leaf).__name__, repr(leaf))
 
 
-def _flatten_and_signature(args, kwargs):
+def _flatten_and_signature(
+    args: Sequence[Any], kwargs: Mapping[str, Any]
+) -> tuple[tuple[Any, ...], Any]:
     """Flatten args/kwargs and compute cache signature in one pass.
 
     Returns:
@@ -401,7 +425,9 @@ def _flatten_and_signature(args, kwargs):
     return tuple(flat), sig
 
 
-def _cached_jaxpr_and_tree_getter(fun: Callable, static_argnums=()):
+def _cached_jaxpr_and_tree_getter(
+    fun: Callable, static_argnums: int | tuple[int, ...] = ()
+) -> Callable:
     """Create a cached getter for both JAXPR and output tree structure.
 
     This avoids re-tracing and re-computing eval_shape on every call.
@@ -415,7 +441,7 @@ def _cached_jaxpr_and_tree_getter(fun: Callable, static_argnums=()):
     semantics).
     """
 
-    def fun_snapshot(*args, **kwargs):
+    def fun_snapshot(*args: Any, **kwargs: Any) -> Any:
         return fun(*args, **kwargs)
 
     jaxpr_maker = jax.make_jaxpr(
@@ -423,7 +449,7 @@ def _cached_jaxpr_and_tree_getter(fun: Callable, static_argnums=()):
     )
     cache: dict = {}
 
-    def get_jaxpr_and_tree(cache_key, args, kwargs):
+    def get_jaxpr_and_tree(cache_key: Any, args: Any, kwargs: Any) -> Any:
         """Get cached JAXPR and output tree, tracing if needed."""
         if cache_key not in cache:
             jaxpr, out_shape = jaxpr_maker(*args, **kwargs)
@@ -434,10 +460,15 @@ def _cached_jaxpr_and_tree_getter(fun: Callable, static_argnums=()):
     return get_jaxpr_and_tree
 
 
-def _cached_jaxpr_getter(fun: Callable, static_argnums=(), *, return_shape=False):
+def _cached_jaxpr_getter(
+    fun: Callable,
+    static_argnums: int | tuple[int, ...] = (),
+    *,
+    return_shape: bool = False,
+) -> Callable:
     """Create a cached getter for JAXPR only (backward compatible)."""
 
-    def fun_snapshot(*args, **kwargs):
+    def fun_snapshot(*args: Any, **kwargs: Any) -> Any:
         return fun(*args, **kwargs)
 
     jaxpr_maker = jax.make_jaxpr(
@@ -445,31 +476,41 @@ def _cached_jaxpr_getter(fun: Callable, static_argnums=(), *, return_shape=False
     )
     cache: dict = {}
 
-    def get_jaxpr_for(args, kwargs):
+    def get_jaxpr_for(args: Any, kwargs: Any) -> Any:
         """Get cached JAXPR for explicit trace inputs (see input_template)."""
         _, cache_key = _flatten_and_signature(args, kwargs)
         if cache_key not in cache:
             cache[cache_key] = jaxpr_maker(*args, **kwargs)
         return cache[cache_key]
 
-    def get_jaxpr(*args, **kwargs):
+    def get_jaxpr(*args: Any, **kwargs: Any) -> Any:
         return get_jaxpr_for(args, kwargs)
 
-    get_jaxpr.for_inputs = get_jaxpr_for  # type: ignore[attr-defined]
+    setattr(get_jaxpr, _FOR_INPUTS_ATTR, get_jaxpr_for)
     return get_jaxpr
 
 
 _INTERVENTIONS_ATTR = "_probjax_interventions_map"
 _OBSERVATIONS_ATTR = "_probjax_observations_map"
 _REPLAY_ATTR = "_probjax_replay_map"
+#: Legacy attribute holding just the names of the intervened sites.
+_LEGACY_INTERVENTIONS_ATTR = "_probjax_interventions"
+#: Attribute holding the function a stochastic wrapper delegates to.
+_BASE_FUN_ATTR = "_probjax_base_fun"
+#: Method a custom-inverse function exposes for the inverse with its log-det.
+_INV_AND_LOGDET_ATTR = "inv_and_logdet"
 
 
-def _flatten_call_inputs(args, kwargs):
+def _flatten_call_inputs(
+    args: Sequence[Any], kwargs: Mapping[str, Any]
+) -> tuple[Any, ...]:
     flat_inputs, _ = jax.tree_util.tree_flatten((args, kwargs))
     return tuple(flat_inputs)
 
 
-def _collect_stochastic_maps(fun: Callable):
+def _collect_stochastic_maps(
+    fun: Callable,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     interventions = dict(getattr(fun, _INTERVENTIONS_ATTR, {}))
     observations = dict(getattr(fun, _OBSERVATIONS_ATTR, {}))
     replay = dict(getattr(fun, _REPLAY_ATTR, {}))
@@ -477,7 +518,7 @@ def _collect_stochastic_maps(fun: Callable):
 
 
 def _get_base_fun(fun: Callable) -> Callable:
-    return cast(Callable, getattr(fun, "_probjax_base_fun", fun))
+    return cast(Callable, getattr(fun, _BASE_FUN_ATTR, fun))
 
 
 def _set_stochastic_maps(
@@ -490,7 +531,7 @@ def _set_stochastic_maps(
     setattr(wrapped, _INTERVENTIONS_ATTR, dict(interventions))
     setattr(wrapped, _OBSERVATIONS_ATTR, dict(observations))
     setattr(wrapped, _REPLAY_ATTR, dict(replay))
-    wrapped._probjax_interventions = frozenset(interventions.keys())
+    setattr(wrapped, _LEGACY_INTERVENTIONS_ATTR, frozenset(interventions.keys()))
     return wrapped
 
 
@@ -531,7 +572,7 @@ def _apply_stochastic_substitution(
     substitutions = {**merged_replay, **merged_obs, **merged_int}
 
     wrapped = _make_substitution_wrapper(base_fun, substitutions)
-    wrapped._probjax_base_fun = base_fun
+    setattr(wrapped, _BASE_FUN_ATTR, base_fun)
     return _set_stochastic_maps(
         wrapped,
         interventions=merged_int,
@@ -548,7 +589,7 @@ def _make_substitution_wrapper(
     get_jaxpr_and_tree = _cached_jaxpr_and_tree_getter(base_fun)
 
     @wraps(fun)
-    def wrapped(*args, **kwargs):
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
         # Single flatten pass for both cache key and inputs
         flat_inputs, cache_key = _flatten_and_signature(args, kwargs)
         with enable_rv_tracing():
@@ -585,9 +626,9 @@ def joint_sample(fun: Callable, rvs: Optional[Iterable] = None) -> Callable:
     fixed_values.update(replay)
     fixed_values.update(observations)
     fixed_values.update(interventions)
-    legacy_fixed = getattr(fun, "_probjax_interventions", None)
+    legacy_fixed = getattr(fun, _LEGACY_INTERVENTIONS_ATTR, None)
 
-    def wrapped(*args, **kwargs):
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
         processing_rule = JointSampleProcessingRule(
             rvs=rvs,
             fixed_values=fixed_values,
@@ -720,18 +761,18 @@ def substitute(
     raise AssertionError("unreachable")
 
 
-def scope(name: str):
+def scope(name: str) -> Any:
     """Create a naming scope for stochastic sites."""
     return name_stack.scope(name)
 
 
 def log_joint_fn(
     fun: Callable,
-    *args,
+    *args: Any,
     strict: bool = True,
     allow_partial: bool = False,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> Callable:
     """Compute the model log-joint (up to a constant).
 
     This is the canonical name. It computes the model log-joint up to a
@@ -751,7 +792,7 @@ def log_joint_fn(
         jaxpr = jax.make_jaxpr(base_fun)(jax.random.PRNGKey(0), *args, **kwargs)
     model_inputs = _flatten_call_inputs((jax.random.PRNGKey(0),) + args, kwargs)
 
-    def log_joint(**joint_samples):
+    def log_joint(**joint_samples: Any) -> Any:
         intervention_config = interventions if interventions else legacy_interventions
         processing_rule = LogPotentialProcessingRule(
             joint_samples=joint_samples,
@@ -785,11 +826,11 @@ def log_joint_fn(
 
 def log_potential_fn(
     fun: Callable,
-    *args,
+    *args: Any,
     strict: bool = True,
     allow_partial: bool = False,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> Callable:
     """Compute the unnormalized log density of a probabilistic function.
 
     .. deprecated::
@@ -816,11 +857,11 @@ def log_potential_fn(
 
 def log_prob_fn(
     fun: Callable,
-    *args,
+    *args: Any,
     strict: bool = True,
     allow_partial: bool = False,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> Callable:
     """Backward-compatible alias for :func:`log_joint_fn`.
 
     .. deprecated::
@@ -839,11 +880,11 @@ def log_prob_fn(
 
 def trace(
     fun: Callable,
-    traced_vars=None,
+    traced_vars: Iterable[str] | None = None,
     *,
     sites: bool = False,
     kind_labels: str = "probabilistic",
-):
+) -> Callable:
     if kind_labels == "legacy":
         warnings.warn(
             "probjax.core.trace(kind_labels='legacy') is deprecated; "
@@ -857,7 +898,7 @@ def trace(
     interventions, observations, replay = _collect_stochastic_maps(fun)
 
     @wraps(fun)
-    def wrapped(*args, **kwargs):
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
         processing_rule = TraceProcessingRule(
             traced_vars=traced_vars,
             sites=sites,
@@ -889,7 +930,12 @@ def trace(
     return wrapped
 
 
-def inverse(fun: Callable, static_argnums=(), invertible_arg=None, input_template=None):
+def inverse(
+    fun: Callable,
+    static_argnums: int | tuple[int, ...] = (),
+    invertible_arg: int | tuple[int, ...] | None = None,
+    input_template: Any = None,
+) -> Callable:
     """Return a function computing the inverse of ``fun``.
 
     Traces ``fun`` to a jaxpr and walks it backwards, replacing each primitive
@@ -973,7 +1019,7 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None, input_templat
     schedule_cache = {}
 
     @wraps(fun)
-    def wrapped(*args, **kwargs):
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
         processing_rule = InverseProcessingRule()
         (
             jaxpr,
@@ -1036,8 +1082,11 @@ def inverse(fun: Callable, static_argnums=(), invertible_arg=None, input_templat
 
 
 def inverse_and_logabsdet(
-    fun: Callable, static_argnums=(), invertible_arg=None, input_template=None
-):
+    fun: Callable,
+    static_argnums: int | tuple[int, ...] = (),
+    invertible_arg: int | tuple[int, ...] | None = None,
+    input_template: Any = None,
+) -> Callable:
     """Return a function computing the inverse of ``fun`` and its log-det.
 
     The log-determinant is that of the **inverse** map -- ``log|d(inv)/dy|``,
@@ -1090,8 +1139,8 @@ def inverse_and_logabsdet(
     if maybe_custom is not None:
 
         @wraps(fun)
-        def custom_wrapped(*args, **kwargs):
-            value, logdet = fun.inv_and_logdet(*args, **kwargs)
+        def custom_wrapped(*args: Any, **kwargs: Any) -> Any:
+            value, logdet = getattr(fun, _INV_AND_LOGDET_ATTR)(*args, **kwargs)
             total_logdet = sum(
                 (jnp.sum(leaf) for leaf in jax.tree_util.tree_leaves(logdet)),
                 jnp.asarray(0.0),
@@ -1107,7 +1156,7 @@ def inverse_and_logabsdet(
     schedule_cache = {}
 
     @wraps(fun)
-    def wrapped(*args, **kwargs):
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
         processing_rule = InverseAndLogAbsDetProcessingRule(
             state_namespace=INVERSE_AND_LOGABSDET_STATE_NAMESPACE
         )

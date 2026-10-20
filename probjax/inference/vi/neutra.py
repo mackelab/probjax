@@ -28,10 +28,14 @@ unchanged:
 >>> draws = transform.forward(result.samples)  # back in the target's space
 """
 
-from typing import Callable, NamedTuple
+from __future__ import annotations
+
+from typing import Any, Callable, NamedTuple
 
 import jax
 import jax.numpy as jnp
+
+from probjax.utils.typing import Array
 
 __all__ = ["NeuTraTransform", "neutra"]
 
@@ -49,7 +53,7 @@ class NeuTraTransform(NamedTuple):
     forward: Callable
 
 
-def neutra(logdensity_fn: Callable, flow) -> NeuTraTransform:
+def neutra(logdensity_fn: Callable, flow: Any) -> NeuTraTransform:
     """Reparameterise ``logdensity_fn`` through ``flow``.
 
     Args:
@@ -63,7 +67,7 @@ def neutra(logdensity_fn: Callable, flow) -> NeuTraTransform:
     """
     log_q = flow._logpdf
 
-    def transformed_logdensity(position):
+    def transformed_logdensity(position: Array) -> Array:
         target_position = flow.transform(position)
         # log|det J_T(z)| is not exposed by the flow, but it does not need to be:
         #     log q(T(z)) = log N(z) - log|det J_T(z)|
@@ -74,7 +78,7 @@ def neutra(logdensity_fn: Callable, flow) -> NeuTraTransform:
         log_jacobian = log_base - jnp.squeeze(log_q(target_position))
         return logdensity_fn(target_position) + log_jacobian
 
-    def forward(positions):
+    def forward(positions: Array) -> Array:
         positions = jnp.asarray(positions)
         if positions.ndim == 1:
             return flow.transform(positions)

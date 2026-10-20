@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import inspect
 from dataclasses import asdict, is_dataclass
 from functools import partial
-from typing import Callable, Dict, Optional
+from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
@@ -29,15 +31,15 @@ class SMCKernelAPI(metaclass=API):
     """
 
     @staticmethod
-    def init(particles, rng_key: Optional[RngKey] = None, **kwargs) -> SMCState:
+    def init(*args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("init method must be implemented")
 
     @staticmethod
-    def init_params(particles, rng_key: Optional[RngKey] = None, **kwargs) -> Dict:
+    def init_params(*args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("init_params method must be implemented")
 
     @staticmethod
-    def build_step(*args, **kwargs) -> Callable:
+    def build_step(*args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("build_step method must be implemented")
 
     def __init_subclass__(cls, **kwargs):
@@ -52,7 +54,7 @@ class SMCKernelAPI(metaclass=API):
             {"__doc__": cls.__doc__, "__module__": cls.__module__, "__slots__": ()},
         )
 
-    def __new__(cls, logprior_fn: Callable, loglikelihood_fn: Callable, **kwargs):
+    def __new__(cls, logprior_fn: Callable, loglikelihood_fn: Callable, **kwargs: Any):
         init = partial(
             cls.init,
             logprior_fn=logprior_fn,
@@ -67,8 +69,8 @@ class SMCKernelAPI(metaclass=API):
 
 
 def filter_kwargs(
-    fn: Callable, kwargs: Dict[str, ArrayLike], *, allow_kwargs: bool = True
-) -> Dict[str, ArrayLike]:
+    fn: Callable, kwargs: dict[str, Any], *, allow_kwargs: bool = True
+) -> dict[str, Any]:
     sig = inspect.signature(fn)
     accepts_kwargs = any(
         param.kind == inspect.Parameter.VAR_KEYWORD for param in sig.parameters.values()
@@ -78,7 +80,7 @@ def filter_kwargs(
     return {k: v for k, v in kwargs.items() if k in sig.parameters}
 
 
-def _ensure_param_batch(params, *, shared: bool) -> Dict[str, Array]:
+def _ensure_param_batch(params: Any, *, shared: bool) -> dict[str, Array]:
     params = _params_to_dict(params)
     batched = {}
     for k, v in params.items():
@@ -98,22 +100,22 @@ def _ensure_param_batch(params, *, shared: bool) -> Dict[str, Array]:
     return batched
 
 
-def _params_to_dict(params) -> Dict[str, ArrayLike]:
+def _params_to_dict(params: Any) -> dict[str, ArrayLike]:
     """Back-compat alias for :func:`params_to_dict`."""
     return params_to_dict(params)
 
 
 class _ParamsProxy:
-    def __init__(self, params: Dict[str, ArrayLike]):
+    def __init__(self, params: dict[str, ArrayLike]):
         self._params = params
         for k, v in params.items():
             setattr(self, k, v)
 
-    def _asdict(self) -> Dict[str, ArrayLike]:
+    def _asdict(self) -> dict[str, ArrayLike]:
         return self._params
 
 
-def _wrap_params(params: Dict[str, ArrayLike]):
+def _wrap_params(params: dict[str, ArrayLike]) -> Any:
     if params is None:
         return _ParamsProxy({})
     if has_attrs(params, "_asdict"):
@@ -123,16 +125,24 @@ def _wrap_params(params: Dict[str, ArrayLike]):
     return _ParamsProxy(params)
 
 
-def make_mcmc_adapter(mcmc_kernel, **kernel_kwargs):
+def make_mcmc_adapter(
+    mcmc_kernel: Any, **kernel_kwargs: Any
+) -> tuple[Callable, Callable]:
     """Adapt a probjax MCMC API into BlackJAX SMC mcmc_init_fn/mcmc_step_fn."""
     if not has_attrs(mcmc_kernel, "build_step", "init"):
         raise TypeError("mcmc_kernel must be a probjax MCMC API (not an instance).")
 
-    def mcmc_init_fn(position, logdensity_fn, rng_key: Optional[RngKey] = None):
+    def mcmc_init_fn(
+        position: Any,
+        logdensity_fn: Callable,
+        rng_key: RngKey | None = None,
+    ) -> Any:
         init_kwargs = filter_kwargs(mcmc_kernel.init, kernel_kwargs, allow_kwargs=False)
         return mcmc_kernel.init(position, logdensity_fn, rng_key=rng_key, **init_kwargs)
 
-    def mcmc_step_fn(rng_key, state, logdensity_fn, **step_parameters):
+    def mcmc_step_fn(
+        rng_key: RngKey, state: Any, logdensity_fn: Callable, **step_parameters: Any
+    ) -> Any:
         build_kwargs = filter_kwargs(mcmc_kernel.build_step, kernel_kwargs)
         step = mcmc_kernel.build_step(logdensity_fn, **build_kwargs)
         return step(rng_key, state, _wrap_params(step_parameters))
@@ -143,12 +153,12 @@ def make_mcmc_adapter(mcmc_kernel, **kernel_kwargs):
 def init_mcmc_params_from_logdensity(
     particles: PyTree,
     logdensity_fn: Callable,
-    mcmc_kernel,
-    rng_key: Optional[RngKey] = None,
-    mcmc_kernel_kwargs: Optional[Dict[str, ArrayLike]] = None,
+    mcmc_kernel: Any,
+    rng_key: RngKey | None = None,
+    mcmc_kernel_kwargs: dict[str, Any] | None = None,
     allow_kwargs: bool = False,
-    **mcmc_param_kwargs,
-) -> Dict[str, Array]:
+    **mcmc_param_kwargs: Any,
+) -> dict[str, Array]:
     """Initialize MCMC params from the first particle under ``logdensity_fn``.
 
     Shared body of the ``init_params`` functions in ``adaptive``,

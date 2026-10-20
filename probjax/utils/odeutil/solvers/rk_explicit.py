@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 import jax
 import jax.numpy as jnp
@@ -47,7 +47,7 @@ def build_euler_step(
 ) -> Callable[[ODEState, ArrayLike], tuple[ODEState, ODEInfo]]:
     """Build Euler step function."""
 
-    def step_fn(state: ODEState, dt: ArrayLike, *args) -> tuple[ODEState, ODEInfo]:
+    def step_fn(state: Any, dt: ArrayLike, *args: Any) -> tuple[ODEState, ODEInfo]:
         y0 = state.y0
         t0 = state.t0
         y1 = y0 + drift(t0, y0, *args) * dt
@@ -95,7 +95,7 @@ def build_rk_step(
     """Build a Runge-Kutta step function."""
     stages = c.shape[0]
 
-    def rk_step_fn(state: RKState, dt: ArrayLike, *args) -> tuple[RKState, RKInfo]:
+    def rk_step_fn(state: Any, dt: ArrayLike, *args: Any) -> tuple[RKState, RKInfo]:
         t0 = state.t0
         y0 = state.y0
         f0 = state.f0 if not last_equals_next else drift(t0, y0, *args)
@@ -627,7 +627,15 @@ def build_rk6_tablau(dtype: jnp.dtype):
         dtype=dtype,
     )
     b_sol = jnp.array(
-        [11.0 / 120.0, 0.0, 27.0 / 40.0, 27.0 / 40.0, -4.0 / 15.0, -4.0 / 15.0, 11.0 / 120.0],
+        [
+            11.0 / 120.0,
+            0.0,
+            27.0 / 40.0,
+            27.0 / 40.0,
+            -4.0 / 15.0,
+            -4.0 / 15.0,
+            11.0 / 120.0,
+        ],
         dtype=dtype,
     )
     b_error = None  # Non-adaptive

@@ -116,7 +116,7 @@ def root(
 
     # Dtype constraints on tolerance
     dtype = x0.dtype
-    tol = max(tol, jnp.finfo(dtype).eps)
+    tol = float(max(tol, jnp.finfo(dtype).eps))
 
     _f = lambda x: fun(x, *args)
 

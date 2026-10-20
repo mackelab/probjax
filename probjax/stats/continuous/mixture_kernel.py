@@ -15,7 +15,7 @@ Because the components are a fixed location-scale family the density, CDF and
 sampler are all closed form; only the quantile function needs a solve.
 """
 
-from typing import Tuple
+from typing import Any, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -24,7 +24,8 @@ from jax import random
 from probjax.stats.base import rv_continuous
 from probjax.stats.bijective.monotone import _solve_increasing
 from probjax.stats.constraints import real, strict_positive
-from probjax.utils.typing import Array, RngKey
+from probjax.utils.jaxutils import where
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["mixture_kernel", "logistic_mixture_kernel"]
 
@@ -111,7 +112,14 @@ class mixture_kernel_gen(rv_continuous):
         return kwargs.get("kernel", cls.kernel)
 
     @classmethod
-    def logpdf(cls, x, log_weights=None, locs=None, scales=None, **kwargs):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        log_weights: Optional[ArrayLike] = None,
+        locs: Optional[ArrayLike] = None,
+        scales: Optional[ArrayLike] = None,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log-density of the mixture at ``x``."""
         kind = cls._kernel_kind(kwargs)
         z = cls._standardise(x, locs, scales)
@@ -119,7 +127,14 @@ class mixture_kernel_gen(rv_continuous):
         return jax.nn.logsumexp(cls._log_mixing(log_weights) + log_comp, axis=-1)
 
     @classmethod
-    def cdf(cls, x, log_weights=None, locs=None, scales=None, **kwargs):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        log_weights: Optional[ArrayLike] = None,
+        locs: Optional[ArrayLike] = None,
+        scales: Optional[ArrayLike] = None,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mixture CDF: the weighted sum of the component CDFs."""
         kind = cls._kernel_kind(kwargs)
         z = cls._standardise(x, locs, scales)
@@ -127,7 +142,14 @@ class mixture_kernel_gen(rv_continuous):
         return jnp.exp(jax.nn.logsumexp(log_cdf, axis=-1))
 
     @classmethod
-    def logcdf(cls, x, log_weights=None, locs=None, scales=None, **kwargs):
+    def logcdf(
+        cls,
+        x: ArrayLike,
+        log_weights: Optional[ArrayLike] = None,
+        locs: Optional[ArrayLike] = None,
+        scales: Optional[ArrayLike] = None,
+        **kwargs: Any,
+    ) -> ArrayLike:
         kind = cls._kernel_kind(kwargs)
         z = cls._standardise(x, locs, scales)
         return jax.nn.logsumexp(
@@ -135,7 +157,14 @@ class mixture_kernel_gen(rv_continuous):
         )
 
     @classmethod
-    def ppf(cls, q, log_weights=None, locs=None, scales=None, **kwargs):
+    def ppf(
+        cls,
+        q: ArrayLike,
+        log_weights: Optional[ArrayLike] = None,
+        locs: Optional[ArrayLike] = None,
+        scales: Optional[ArrayLike] = None,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Quantile function, by bisection on the (strictly increasing) CDF.
 
         A mixture CDF has no closed-form inverse. The solver is the same one the
@@ -151,8 +180,8 @@ class mixture_kernel_gen(rv_continuous):
         # The solver reports failure as NaN; the boundaries genuinely have no
         # finite root, so answer them directly rather than letting the clip
         # above pass off an interior point as the true quantile.
-        root = jnp.where(q <= 0.0, -jnp.inf, root)
-        return jnp.where(q >= 1.0, jnp.inf, root)
+        root = where(q <= 0.0, -jnp.inf, root)
+        return where(q >= 1.0, jnp.inf, root)
 
     @classmethod
     def _rvs_impl(
@@ -192,14 +221,26 @@ class mixture_kernel_gen(rv_continuous):
         return _kernel_standard_rvs(kind, key_draw, out_shape) * scale + loc
 
     @classmethod
-    def mean(cls, log_weights=None, locs=None, scales=None, **kwargs):
+    def mean(
+        cls,
+        log_weights: Optional[ArrayLike] = None,
+        locs: Optional[ArrayLike] = None,
+        scales: Optional[ArrayLike] = None,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mixture mean; both kernels have a zero-mean standardised form."""
         del kwargs
         weights = jnp.exp(cls._log_mixing(log_weights))
         return jnp.sum(weights * jnp.asarray(locs), axis=-1)
 
     @classmethod
-    def var(cls, log_weights=None, locs=None, scales=None, **kwargs):
+    def var(
+        cls,
+        log_weights: Optional[ArrayLike] = None,
+        locs: Optional[ArrayLike] = None,
+        scales: Optional[ArrayLike] = None,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Law of total variance over the component indicator."""
         kind = cls._kernel_kind(kwargs)
         weights = jnp.exp(cls._log_mixing(log_weights))

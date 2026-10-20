@@ -6,6 +6,7 @@ classic Hairer–Wanner controller used by Dormand–Prince / Cash–Karp.
 """
 
 import copy
+from typing import Self
 
 import jax.numpy as jnp
 
@@ -55,7 +56,7 @@ class StepSizeAdaptor:
         self,
         rtol: float = 1e-4,
         atol: float = 1e-5,
-        mxstep: int = jnp.inf,
+        mxstep: int | float = jnp.inf,
         dtmin: float = 0.0,
         dtmax: float = jnp.inf,
         maxerror: float = 1.2,
@@ -77,7 +78,7 @@ class StepSizeAdaptor:
         self.error_norm = error_norm
         self.order = order
 
-    def with_order(self, order: int) -> "StepSizeAdaptor":
+    def with_order(self, order: int) -> Self:
         """Return a shallow copy with the local-error ``order`` set.
 
         The adaptive integrator calls this once after resolving the method's

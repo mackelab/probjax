@@ -79,7 +79,7 @@ def must_emit_primitive(tree) -> bool:
     return has_tracer(tree) or not jax_core.trace_state_clean()
 
 
-def ensure_hashable(x, where: str):
+def ensure_hashable(x: Any, where: str) -> Any:
     if isinstance(x, jax_core.Tracer):
         raise TypeError(
             f"{where} is a traced value, so it cannot be held as a static "
@@ -96,7 +96,7 @@ def ensure_hashable(x, where: str):
     return x
 
 
-def fail_on_tracer_constants(consts, where: str):
+def fail_on_tracer_constants(consts: Any, where: str) -> None:
     if has_tracer(consts):
         raise TypeError(
             f"{where} closed over traced JAX values. "
@@ -122,7 +122,7 @@ def trace_to_closed_jaxpr(
     return ClosedJaxpr(jaxpr, consts), tuple(out_avals), out_tree_thunk()
 
 
-def normalize_axis_data(axis_data):
+def normalize_axis_data(axis_data: Any) -> Any:
     if isinstance(axis_data, batching_src.AxisData):
         return axis_data
     return batching_src.AxisData(
@@ -135,14 +135,16 @@ def normalize_axis_data(axis_data):
 
 def batch_closed_jaxpr(
     closed_jaxpr: ClosedJaxpr,
-    axis_data,
+    axis_data: Any,
     in_axes: Sequence[int | None],
-):
+) -> tuple[Any, tuple[int | None, ...]]:
     axis_data = normalize_axis_data(axis_data)
     return batching_src.batch_jaxpr2(closed_jaxpr, axis_data, tuple(in_axes))
 
 
-def move_mapped_axes_to_front(args, in_dims):
+def move_mapped_axes_to_front(
+    args: Sequence[Any], in_dims: Sequence[int | None]
+) -> tuple[list[Any], list[int | None], bool]:
     new_args = []
     in_axes = []
     for x, d in zip(args, in_dims, strict=False):

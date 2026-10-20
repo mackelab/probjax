@@ -5,7 +5,7 @@ Skew Normal Distribution (:mod:`probjax.stats.skewnorm`)
 This module contains the Skew Normal distribution.
 """
 
-from typing import Tuple
+from typing import Any, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -14,7 +14,8 @@ from jax.scipy.special import erf
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
-from probjax.utils.typing import RngKey
+from probjax.utils.jaxutils import where
+from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["skewnorm"]
 
@@ -48,8 +49,19 @@ class skewnorm_gen(rv_continuous, rv_exponential_family):
     parameters = {'a': real, 'loc': real, 'scale': strict_positive}
 
     @classmethod
-    def pdf(cls, x, a=0.0, loc=0.0, scale=1.0, **kwargs):
+    def pdf(
+        cls,
+        x: ArrayLike,
+        a: ArrayLike = 0.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Probability density function of the skew normal distribution."""
+        x = jnp.asarray(x)
+        a = jnp.asarray(a)
+        loc = jnp.asarray(loc)
+        scale = jnp.asarray(scale)
         z = (x - loc) / scale
         return (
             (2 / scale)
@@ -59,8 +71,19 @@ class skewnorm_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def logpdf(cls, x, a=0.0, loc=0.0, scale=1.0, **kwargs):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        a: ArrayLike = 0.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the probability density function of the skew normal distribution."""
+        x = jnp.asarray(x)
+        a = jnp.asarray(a)
+        loc = jnp.asarray(loc)
+        scale = jnp.asarray(scale)
         z = (x - loc) / scale
         return (
             jnp.log(2 / scale)
@@ -70,23 +93,45 @@ class skewnorm_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def cdf(cls, x, a=0.0, loc=0.0, scale=1.0, **kwargs):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        a: ArrayLike = 0.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Cumulative distribution function of the skew normal distribution."""
+        x = jnp.asarray(x)
+        a = jnp.asarray(a)
+        loc = jnp.asarray(loc)
+        scale = jnp.asarray(scale)
         z = (x - loc) / scale
         return 0.5 * (1 + erf(z / jnp.sqrt(2))) - 2 * jax.scipy.stats.norm.pdf(
             z
         ) * jax.scipy.stats.norm.cdf(a * z)
 
     @classmethod
-    def ppf(cls, q, a=0.0, loc=0.0, scale=1.0, **kwargs):
+    def ppf(
+        cls,
+        q: ArrayLike,
+        a: ArrayLike = 0.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Percent point function (inverse of cdf) of the skew normal distribution."""
         # For a=0, this is the normal distribution
+        q = jnp.asarray(q)
+        a = jnp.asarray(a)
+        loc = jnp.asarray(loc)
+        scale = jnp.asarray(scale)
         if a == 0.0:
             return loc + scale * jnp.sqrt(2) * jax.scipy.special.erfinv(2 * q - 1)
 
         # For other values, we need to use numerical methods
         # This is a simplified version that works for most cases
-        z = jnp.where(q < 0.5, -1, 1) * jnp.sqrt(-2 * jnp.log(2 * jnp.abs(q - 0.5)))
+        z = where(q < 0.5, -1, 1) * jnp.sqrt(-2 * jnp.log(2 * jnp.abs(q - 0.5)))
         return loc + scale * z
 
     @classmethod
@@ -109,36 +154,67 @@ class skewnorm_gen(rv_continuous, rv_exponential_family):
             # Generate uniform random numbers
             u = random.uniform(key, shape=shape)
             # Transform to skew normal
-            z = jnp.where(u < 0.5, -1, 1) * jnp.sqrt(-2 * jnp.log(2 * jnp.abs(u - 0.5)))
+            z = where(u < 0.5, -1, 1) * jnp.sqrt(-2 * jnp.log(2 * jnp.abs(u - 0.5)))
             return z * scale + loc
 
         return _rejection_sampling(rng)
 
     @classmethod
-    def mean(cls, a=0.0, loc=0.0, scale=1.0, **kwargs):
+    def mean(
+        cls,
+        a: ArrayLike = 0.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mean of the skew normal distribution."""
         delta = a / jnp.sqrt(1 + a**2)
         return loc + scale * delta * jnp.sqrt(2 / jnp.pi)
 
     @classmethod
-    def mode(cls, a=0.0, loc=0.0, scale=1.0, **kwargs):
+    def mode(
+        cls,
+        a: ArrayLike = 0.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mode of the skew normal distribution."""
         delta = a / jnp.sqrt(1 + a**2)
         return loc + scale * delta * jnp.sqrt(2 / jnp.pi)
 
     @classmethod
-    def var(cls, a=0.0, loc=0.0, scale=1.0, **kwargs):
+    def var(
+        cls,
+        a: ArrayLike = 0.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Variance of the skew normal distribution."""
         delta = a / jnp.sqrt(1 + a**2)
         return scale**2 * (1 - 2 * delta**2 / jnp.pi)
 
     @classmethod
-    def entropy(cls, a=0.0, loc=0.0, scale=1.0, **kwargs):
+    def entropy(
+        cls,
+        a: ArrayLike = 0.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Entropy of the skew normal distribution."""
         return 0.5 * jnp.log(2 * jnp.pi * jnp.e * scale**2)
 
     @classmethod
-    def moment(cls, n, a=0.0, loc=0.0, scale=1.0, **kwargs):
+    def moment(
+        cls,
+        n: int,
+        a: ArrayLike = 0.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """n-th non-central moment of the skew normal distribution."""
         if n == 0:
             return jnp.ones_like(loc)
@@ -150,7 +226,13 @@ class skewnorm_gen(rv_continuous, rv_exponential_family):
             raise NotImplementedError(f"Moment of order {n} not implemented")
 
     @classmethod
-    def skew(cls, a=0.0, loc=0.0, scale=1.0, **kwargs):
+    def skew(
+        cls,
+        a: ArrayLike = 0.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Skewness of the skew normal distribution."""
         delta = a / jnp.sqrt(1 + a**2)
         return (
@@ -161,7 +243,13 @@ class skewnorm_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def kurtosis(cls, a=0.0, loc=0.0, scale=1.0, **kwargs):
+    def kurtosis(
+        cls,
+        a: ArrayLike = 0.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Excess kurtosis of the skew normal distribution."""
         delta = a / jnp.sqrt(1 + a**2)
         return (
@@ -172,17 +260,29 @@ class skewnorm_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def natural_parameters(cls, a=0.0, loc=0.0, scale=1.0, **kwargs):
+    def natural_parameters(
+        cls,
+        a: ArrayLike = 0.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Natural parameters of the skew normal distribution."""
         return jnp.array([loc / (scale**2), -1 / (2 * scale**2), a / scale])
 
     @classmethod
-    def sufficient_statistics(cls, x, **kwargs):
+    def sufficient_statistics(cls, x: ArrayLike, **kwargs: Any) -> ArrayLike:
         """Sufficient statistics of the skew normal distribution."""
         return jnp.array([x, x**2, jnp.sign(x)])
 
     @classmethod
-    def log_partition(cls, a=0.0, loc=0.0, scale=1.0, **kwargs):
+    def log_partition(
+        cls,
+        a: ArrayLike = 0.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log partition function of the skew normal distribution."""
         return 0.5 * jnp.log(2 * jnp.pi * scale**2) + (loc / scale) ** 2 / 2
 

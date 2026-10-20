@@ -1,11 +1,30 @@
-from typing import Any, Callable, Generic, NamedTuple, Optional, TypeVar
+"""Shared types for the inference stack.
 
-from probjax.utils.jaxutils import print_scan
+Kernels are pure transitions, adaptors fit their parameters and runners provide
+the compiled execution paths. The aliases below describe those three roles so
+that kernels, runners and user code agree on what a "state", an "info" or an
+"adaptation policy" is.
+"""
 
-S = TypeVar("S")
-P = TypeVar("P")
-I = TypeVar("I")
-T = TypeVar("T")
+from __future__ import annotations
+
+from typing import Any, Callable, Generic, NamedTuple, TypeAlias, TypeVar
+
+from probjax.utils.jaxutils import WithProgressBarAPI, print_scan
+from probjax.utils.typing import Array, ArrayTree, PyTree, RngKey
+
+StateT = TypeVar("StateT")
+ParamsT = TypeVar("ParamsT")
+InfoT = TypeVar("InfoT")
+
+# ---------------- Domain aliases ----------------
+#: The chain position: any pytree of arrays.
+Position: TypeAlias = ArrayTree
+#: An unnormalized log density over a position. Extra arguments are allowed
+#: (e.g. the pseudo-marginal estimator takes a random key).
+LogDensityFn: TypeAlias = Callable[..., Array]
+#: A single transition: ``(key, state, params, *args) -> (state, info)``.
+StepFn: TypeAlias = Callable[..., tuple[Any, Any]]
 
 
 class Kernel(NamedTuple):
@@ -17,13 +36,38 @@ class Kernel(NamedTuple):
     passed policy always wins.
     """
 
-    init: Callable
-    step: Callable
-    init_params: Callable
-    default_adaptation: Optional[Callable[..., Any]] = None
+    init: Callable[..., Any]
+    step: StepFn
+    init_params: Callable[..., Any]
+    default_adaptation: Callable[..., Any] | None = None
 
-    def __call__(self, key, state, params=None, *args, **kwargs):
+    def __call__(
+        self,
+        key: RngKey,
+        state: Any,
+        params: Any = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> tuple[Any, Any]:
         return self.step(key, state, params, *args, **kwargs)
+
+
+class AdaptationTrace(NamedTuple):
+    kernel: Any = None
+    adaptor: Any = None
+
+
+class AdaptationResult(NamedTuple, Generic[StateT, ParamsT, InfoT]):
+    state: StateT
+    params: ParamsT
+    trace: PyTree | None = None
+    final_info: InfoT | None = None
+
+
+class WarmupResult(NamedTuple, Generic[StateT, ParamsT, InfoT]):
+    state: StateT
+    params: ParamsT
+    info: InfoT | None = None
 
 
 class Adaptor(NamedTuple):
@@ -33,62 +77,58 @@ class Adaptor(NamedTuple):
     transition and can therefore be used during warmup or regular sampling.
     """
 
-    init: Callable
-    update: Callable
-    finalize: Callable
-
-
-class AdaptationResult(NamedTuple, Generic[S, P, I]):
-    state: S
-    params: P
-    trace: Optional[Any] = None
-    final_info: Optional[I] = None
-
-
-class AdaptationTrace(NamedTuple):
-    kernel: Optional[Any] = None
-    adaptor: Optional[Any] = None
+    init: Callable[[Any, Any], Any]
+    update: Callable[[Any, Any, Any, Any], tuple[Any, Any, Any]]
+    finalize: Callable[[Any, Any], tuple[Any, Any]]
 
 
 class Warmup(NamedTuple):
     """A finite initialization policy for a kernel and its parameters."""
 
-    run: Callable
+    run: Callable[..., "WarmupOutcome"]
 
 
-class WarmupResult(NamedTuple, Generic[S, P, I]):
-    state: S
-    params: P
-    info: Optional[I] = None
+#: Either kind of adaptation policy: a local ``Adaptor`` or a ``Warmup``.
+AdaptationPolicy: TypeAlias = Adaptor | Warmup
+#: What a warmup policy returns: a local adaptor yields an
+#: ``AdaptationResult``, a specialized procedure a ``WarmupResult``.
+WarmupOutcome: TypeAlias = AdaptationResult | WarmupResult
 
 
-class MCMCResult(NamedTuple, Generic[S, I]):
-    state: S
-    samples: Optional[Any] = None
-    info: Optional[I] = None
+class MCMCResult(NamedTuple, Generic[StateT, InfoT]):
+    state: StateT
+    samples: PyTree | None = None
+    info: InfoT | None = None
 
 
-class SMCResult(NamedTuple, Generic[S, P, I]):
-    state: S
-    params: P
-    info: Optional[I] = None
-    log_evidence: Optional[Any] = None
-    final_info: Optional[I] = None
-    num_steps: Optional[Any] = None
-    completed: Optional[Any] = None
-    key: Optional[Any] = None
+class SMCResult(NamedTuple, Generic[StateT, ParamsT, InfoT]):
+    state: StateT
+    params: ParamsT
+    info: InfoT | None = None
+    log_evidence: Array | None = None
+    final_info: InfoT | None = None
+    num_steps: int | Array | None = None
+    completed: bool | Array | None = None
+    key: RngKey | None = None
 
 
-class FilteringResult(NamedTuple, Generic[S, I]):
-    initial_state: S
-    states: Any
-    info: Optional[I] = None
+class FilteringResult(NamedTuple, Generic[StateT, InfoT]):
+    initial_state: StateT
+    states: PyTree
+    info: InfoT | None = None
 
 
-class RunnerMixin:
+class RunnerMixin(WithProgressBarAPI):
     """Shared progress reporting for compiled inference scans."""
 
-    def _verbose_scan(self, f, init, xs, length, stats_fn):
+    def _verbose_scan(
+        self,
+        f: Callable[[Any, Any], tuple[Any, Any]],
+        init: Any,
+        xs: Any,
+        length: int,
+        stats_fn: Callable[[Any, Any], Any],
+    ) -> tuple[Any, Any]:
         """Run a scan with a rate-limited progress bar.
 
         ``print_scan`` requires a tuple carry, so we wrap the kernel state.
@@ -108,7 +148,7 @@ class RunnerMixin:
             xs=xs,
             length=length,
             update_stats=update_stats,
-            print_rate=print_rate,
             print_fn=print_fn,
+            print_rate=print_rate,
         )
         return state, y

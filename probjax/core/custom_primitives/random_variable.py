@@ -1,12 +1,15 @@
+from __future__ import annotations
+
 import os
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
 from threading import local
-from typing import Any, cast
+from typing import Any, Callable, Literal, cast
 
 from jax._src.core import shaped_abstractify
 from jax._src.interpreters import ad as ad_src
-from jax.extend.core import Primitive
+from jax.extend.core import ClosedJaxpr, Primitive
 from jax.interpreters import ad, batching, mlir
 from jax.tree_util import tree_flatten, tree_unflatten
 
@@ -23,20 +26,22 @@ from probjax.core.custom_primitives.common import (
     must_emit_primitive,
     trace_to_closed_jaxpr,
 )
-from probjax.core.custom_primitives.contracts import parse_random_variable_call_params
+from probjax.core.custom_primitives.contracts import (
+    parse_random_variable_call_params,
+)
 
 
 class NameStack(local):
-    def __init__(self):
-        self.counts = {}
-        self.scopes = []
+    def __init__(self) -> None:
+        self.counts: dict[str, int] = {}
+        self.scopes: list[str] = []
 
-    def _scoped_prefix(self, prefix="rv"):
+    def _scoped_prefix(self, prefix: str = "rv") -> str:
         if not self.scopes:
             return prefix
         return "__".join(tuple(self.scopes) + (prefix,))
 
-    def get_name(self, prefix="rv"):
+    def get_name(self, prefix: str = "rv") -> str:
         scoped_prefix = self._scoped_prefix(prefix)
         if scoped_prefix not in self.counts:
             self.counts[scoped_prefix] = 0
@@ -46,7 +51,7 @@ class NameStack(local):
         return name
 
     @contextmanager
-    def scope(self, name: str):
+    def scope(self, name: str) -> Iterator[None]:
         self.scopes.append(str(name))
         try:
             yield
@@ -70,7 +75,7 @@ _ALWAYS_TRACE_RV = os.environ.get(_RV_TRACING_ENV_VAR, "").strip().lower() in {
 
 
 class _RvTracingState(local):
-    def __init__(self):
+    def __init__(self) -> None:
         self.depth = 0
 
 
@@ -104,22 +109,25 @@ class enable_rv_tracing(ContextDecorator):
         _rv_tracing_state.depth += 1
         return self
 
-    def __exit__(self, *exc) -> bool:
+    def __exit__(self, *exc: Any) -> Literal[False]:
+        # ``Literal[False]`` (rather than ``bool``) tells type checkers that
+        # the block never swallows an exception, so names bound inside it are
+        # definitely bound afterwards.
         _rv_tracing_state.depth -= 1
         return False
 
 
 @lru_cache(maxsize=4096)
 def _trace_random_variable_jaxpr(
-    rvs_fn,
-    in_tree,
-    in_avals,
-    shape,
-    kwds_items,
-):
+    rvs_fn: Callable,
+    in_tree: Any,
+    in_avals: Sequence[Any],
+    shape: Any,
+    kwds_items: tuple[tuple[str, Any], ...],
+) -> ClosedJaxpr:
     kwds = dict(kwds_items)
 
-    def f_dyn(*flat_inputs):
+    def f_dyn(*flat_inputs: Any) -> Any:
         inputs = tree_unflatten(in_tree, flat_inputs)
         key, *args = inputs
         return rvs_fn(key, *args, shape=shape, **kwds)
@@ -136,15 +144,15 @@ def _trace_random_variable_jaxpr(
 
 
 def _validated_rv_params(
-    forward_jaxpr,
-    in_tree,
-    shape,
-    dist,
-    name,
-    rvs_fn,
-    logpdf_fn,
-    kwds_items,
-):
+    forward_jaxpr: ClosedJaxpr,
+    in_tree: Any,
+    shape: Any,
+    dist: Any,
+    name: str | None,
+    rvs_fn: Callable,
+    logpdf_fn: Callable,
+    kwds_items: tuple[tuple[str, Any], ...],
+) -> None:
     """Validate random-variable call params (shared impl/abstract preamble)."""
     _ = parse_random_variable_call_params({
         "forward_jaxpr": forward_jaxpr,
@@ -159,16 +167,16 @@ def _validated_rv_params(
 
 
 def _rv_impl(
-    *flat_inputs,
-    forward_jaxpr,
-    in_tree,
-    shape,
-    dist,
-    name,
-    rvs_fn,
-    logpdf_fn,
-    kwds_items,
-):
+    *flat_inputs: Any,
+    forward_jaxpr: ClosedJaxpr,
+    in_tree: Any,
+    shape: Any,
+    dist: Any,
+    name: str | None,
+    rvs_fn: Callable,
+    logpdf_fn: Callable,
+    kwds_items: tuple[tuple[str, Any], ...],
+) -> Any:
     _validated_rv_params(
         forward_jaxpr, in_tree, shape, dist, name, rvs_fn, logpdf_fn, kwds_items
     )
@@ -187,16 +195,16 @@ def _rv_impl(
 
 
 def _rv_abstract_eval(
-    *flat_avals,
-    forward_jaxpr,
-    in_tree,
-    shape,
-    dist,
-    name,
-    rvs_fn,
-    logpdf_fn,
-    kwds_items,
-):
+    *flat_avals: Any,
+    forward_jaxpr: ClosedJaxpr,
+    in_tree: Any,
+    shape: Any,
+    dist: Any,
+    name: str | None,
+    rvs_fn: Callable,
+    logpdf_fn: Callable,
+    kwds_items: tuple[tuple[str, Any], ...],
+) -> Any:
     _validated_rv_params(
         forward_jaxpr, in_tree, shape, dist, name, rvs_fn, logpdf_fn, kwds_items
     )
@@ -214,7 +222,7 @@ def _rv_abstract_eval(
     )
 
 
-def _rv_lowering(ctx, *mlir_args, **params):
+def _rv_lowering(ctx: Any, *mlir_args: Any, **params: Any) -> Any:
     params = dict(params)
     forward_jaxpr = params.pop("forward_jaxpr")
     lowering_name = params.pop("name", "random_variable")
@@ -227,7 +235,12 @@ def _rv_lowering(ctx, *mlir_args, **params):
     )
 
 
-def _rv_batching_rule(axis_data, batched_args, batch_dims, **params):
+def _rv_batching_rule(
+    axis_data: Any,
+    batched_args: Sequence[Any],
+    batch_dims: Sequence[int | None],
+    **params: Any,
+) -> tuple[Any, int | None]:
     params = dict(params)
     forward_jaxpr = params["forward_jaxpr"]
 
@@ -246,7 +259,9 @@ def _rv_batching_rule(axis_data, batched_args, batch_dims, **params):
     return out, out_axis
 
 
-def _rv_jvp(primals, tangents, **params):
+def _rv_jvp(
+    primals: Sequence[Any], tangents: Sequence[Any], **params: Any
+) -> tuple[Any, ...]:
     primal_outs, tangent_outs = jvp_from_forward_jaxpr(
         params["forward_jaxpr"],
         primals,
@@ -255,30 +270,30 @@ def _rv_jvp(primals, tangents, **params):
     return primal_outs[0], tangent_outs[0]
 
 
-def _rv_transpose_rule(*args, **kwargs):
+def _rv_transpose_rule(*args: Any, **kwargs: Any) -> Any:
     call_transpose = ad_src.call_transpose
     return call_transpose(rv_p, *args, **kwargs)
 
 
 class RandomVariableCallPrimitive(Primitive):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("random_variable")
 
     def bind(
         self,
-        key,
-        *args,
-        shape=(),
-        dist=None,
-        name=None,
-        rvs_fn=None,
-        logpdf_fn=None,
-        kwds=None,
-        forward_jaxpr=None,
-        in_tree=None,
-        kwds_items=None,
-        **params,
-    ):
+        key: Any,
+        *args: Any,
+        shape: Any = (),
+        dist: Any = None,
+        name: str | None = None,
+        rvs_fn: Callable | None = None,
+        logpdf_fn: Callable | None = None,
+        kwds: Mapping[str, Any] | None = None,
+        forward_jaxpr: ClosedJaxpr | None = None,
+        in_tree: Any = None,
+        kwds_items: tuple[tuple[str, Any], ...] | None = None,
+        **params: Any,
+    ) -> Any:
         if dist is None and (rvs_fn is None or logpdf_fn is None):
             raise ValueError("dist must be provided when rvs_fn/logpdf_fn are not set")
 
@@ -287,6 +302,8 @@ class RandomVariableCallPrimitive(Primitive):
             rvs_fn = getattr(dist_obj, "_rvs_impl", None)
             if rvs_fn is None:
                 rvs_fn = dist_obj.rvs
+        if rvs_fn is None:
+            raise ValueError("The distribution must provide an `rvs` implementation.")
         if logpdf_fn is None:
             logpdf_fn = dist_obj.logpdf
 

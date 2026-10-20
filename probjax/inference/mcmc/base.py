@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import inspect
 from functools import partial, wraps
-from typing import Callable, NamedTuple, Optional, Tuple
+from typing import Any, Callable, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -9,7 +11,7 @@ from jax.flatten_util import ravel_pytree
 
 from probjax.inference.base import Kernel, MCMCResult
 from probjax.utils.jaxutils import API
-from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
+from probjax.utils.typing import Array, RngKey, Scalar
 
 
 class Params(NamedTuple):
@@ -37,18 +39,18 @@ class MarkovKernelAPI(metaclass=API):
     #: Optional factory returning this kernel's recommended adaptation
     #: policy (an Adaptor or a Warmup). Attached to built kernels;
     #: wrappers (e.g. pseudo-marginal) inherit it.
-    default_adaptation_fn: Optional[Callable[..., object]] = None
+    default_adaptation_fn: Callable[..., Any] | None = None
 
     @staticmethod
-    def init(position, rng_key: Optional[RngKey] = None, **kwargs) -> State:
+    def init(*args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("init method must be implemented")
 
     @staticmethod
-    def init_params(state, *args, **kwargs) -> Params:
+    def init_params(*args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("init_params method must be implemented")
 
     @staticmethod
-    def build_step(*args, **kwargs) -> Callable:
+    def build_step(*args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("build_kernel method must be implemented")
 
     def __init_subclass__(cls, **kwargs):
@@ -100,12 +102,12 @@ def make_step_from_kernel(
     logdensity_fn: Callable,
     kernel_builder: Callable,
     *,
-    call_defaults: Optional[dict] = None,
+    call_defaults: dict[str, Any] | None = None,
 ) -> Callable:
     """Build a step function from a BlackJAX-style kernel builder."""
     kernel = kernel_builder()
 
-    def step(key: RngKey, state: State, params: Params, *args):
+    def step(key: RngKey, state: State, params: Params, *args: Any):
         params_kwargs = params._asdict() if hasattr(params, "_asdict") else {}
         call_kwargs = {}
         if call_defaults:
@@ -116,11 +118,11 @@ def make_step_from_kernel(
     return step
 
 
-def _select(value, fields):
+def _select(value: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     return {field: getattr(value, field) for field in fields}
 
 
-def init_hmc_like_params(state: PyTree, inverse_mass_matrix: Optional[Array]) -> Array:
+def init_hmc_like_params(state: Any, inverse_mass_matrix: Array | None) -> Array:
     """Default inverse mass matrix: identity of matching dimension."""
     position = state.position if hasattr(state, "position") else state
     flat_position, _ = ravel_pytree(position)
@@ -136,8 +138,8 @@ def init_hmc_like_params(state: PyTree, inverse_mass_matrix: Optional[Array]) ->
 
 
 def scale_step_size_by_grad(
-    state: PyTree, step_size: float, inverse_mass_matrix: Optional[Array] = None
-) -> ArrayLike:
+    state: Any, step_size: float, inverse_mass_matrix: Array | None = None
+) -> Scalar:
     """Scale ``step_size`` by the gradient norm so first steps stay sane."""
     grad = getattr(state, "logdensity_grad", None)
     if grad is None:
@@ -158,7 +160,7 @@ def scale_step_size_by_grad(
     return step_size / jnp.where(grad_norm == 0, 1.0, grad_norm)
 
 
-def _reshape_thin_args(args, num_samples, thin):
+def _reshape_thin_args(args: Any, num_samples: int, thin: int) -> Any:
     """Reshape leading axes of ``args`` to ``(num_samples, thin, ...)``."""
     if args is None:
         return None
@@ -168,8 +170,18 @@ def _reshape_thin_args(args, num_samples, thin):
     )
 
 
-def _mcmc_collect_body(kernel, params, step_args, collect_info, stats_fn=None):
-    """Two-level scan body shared by silent and verbose ``sample``."""
+def _mcmc_collect_body(
+    kernel: MarkovKernel,
+    params: Params,
+    step_args: Any,
+    collect_info: tuple[str, ...],
+    stats_fn: Callable[[Any, Any], Any] | None = None,
+) -> Callable[[Any, Any], tuple[Any, tuple[Any, ...]]]:
+    """Two-level scan body shared by silent and verbose ``sample``.
+
+    Yields ``(stats, position, diagnostics)`` per collected sample, where
+    ``stats`` is ``None`` when no ``stats_fn`` is supplied.
+    """
 
     def transition(state, inner_xs):
         if step_args is None:
@@ -188,10 +200,11 @@ def _mcmc_collect_body(kernel, params, step_args, collect_info, stats_fn=None):
 
         state, (step_info, selected_info) = jax.lax.scan(transition, state, inner_xs)
         diagnostics = jax.tree.map(lambda value: value[-1], selected_info)
-        if stats_fn is None:
-            return state, (state.position, diagnostics)
-        last_info = jax.tree.map(lambda value: value[-1], step_info)
-        return state, (stats_fn(state, last_info), state.position, diagnostics)
+        stats = None
+        if stats_fn is not None:
+            last_info = jax.tree.map(lambda value: value[-1], step_info)
+            stats = stats_fn(state, last_info)
+        return state, (stats, state.position, diagnostics)
 
     return collect_one
 
@@ -211,10 +224,10 @@ def sample_kernel(
     state: State,
     num_samples: int,
     params: Params,
-    args: Optional[Tuple] = None,
+    args: Any = None,
     *,
     thin: int = 1,
-    collect_info: Tuple[str, ...] = (),
+    collect_info: tuple[str, ...] = (),
 ) -> MCMCResult:
     """Collect positions from a compiled kernel scan."""
     keys = jax.random.split(key, (num_samples, thin))
@@ -223,5 +236,5 @@ def sample_kernel(
 
     collect_one = _mcmc_collect_body(kernel, params, step_args, collect_info)
 
-    state, (samples, info) = jax.lax.scan(collect_one, state, xs)
+    state, (_, samples, info) = jax.lax.scan(collect_one, state, xs)
     return MCMCResult(state, samples, info if collect_info else None)

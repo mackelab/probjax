@@ -2,6 +2,7 @@ from functools import partial
 from typing import Optional, Tuple
 
 import jax.numpy as jnp
+from jax import Array
 from jax.typing import ArrayLike
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
@@ -10,8 +11,8 @@ from probjax.stats.bijective._spline_common import linear_tail, merge3, select_b
 
 def _piecewise_affine_spline_fwd(
     x: ArrayLike,
-    x_pos: ArrayLike,
-    y_pos: ArrayLike,
+    x_pos: Array,
+    y_pos: Array,
     x_min: Optional[float] = None,
     x_max: Optional[float] = None,
     y_min: Optional[float] = None,
@@ -54,8 +55,8 @@ def _piecewise_affine_spline_fwd(
 
 def _piecewise_affine_spline_inv(
     y: ArrayLike,
-    x_pos: ArrayLike,
-    y_pos: ArrayLike,
+    x_pos: Array,
+    y_pos: Array,
     x_min: Optional[float] = None,
     x_max: Optional[float] = None,
     y_min: Optional[float] = None,
@@ -98,8 +99,8 @@ def _piecewise_affine_spline_inv(
 @partial(custom_inverse, inv_argnum=0)
 def piecewise_affine_spline(
     x: ArrayLike,
-    x_pos: ArrayLike,
-    y_pos: ArrayLike,
+    x_pos: Array,
+    y_pos: Array,
     x_min: Optional[float] = None,
     x_max: Optional[float] = None,
     y_min: Optional[float] = None,
@@ -119,8 +120,8 @@ def piecewise_affine_spline(
 
 def inv_piecewise_affine_spline(
     y: ArrayLike,
-    x_pos: ArrayLike,
-    y_pos: ArrayLike,
+    x_pos: Array,
+    y_pos: Array,
     x_min: Optional[float] = None,
     x_max: Optional[float] = None,
     y_min: Optional[float] = None,
@@ -142,8 +143,8 @@ piecewise_affine_spline.definv_and_logdet(inv_piecewise_affine_spline)
 
 def piecewise_affine_spline_and_logdet(
     x: ArrayLike,
-    x_pos: ArrayLike,
-    y_pos: ArrayLike,
+    x_pos: Array,
+    y_pos: Array,
     x_min: Optional[float] = None,
     x_max: Optional[float] = None,
     y_min: Optional[float] = None,

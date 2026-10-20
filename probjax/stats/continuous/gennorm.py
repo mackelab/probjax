@@ -5,7 +5,7 @@ Generalized Normal Distribution (:mod:`probjax.stats.gennorm`)
 This module contains the Generalized Normal distribution.
 """
 
-from typing import Tuple
+from typing import Any, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -15,7 +15,8 @@ from jax.scipy.special import gamma, gammainc
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
 from probjax.stats.utils import loc_scale_sample
-from probjax.utils.typing import RngKey
+from probjax.utils.jaxutils import where
+from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["gennorm"]
 
@@ -47,35 +48,79 @@ class gennorm_gen(rv_continuous, rv_exponential_family):
     parameters = {'loc': real, 'scale': strict_positive, 'beta': strict_positive}
 
     @classmethod
-    def pdf(cls, x, loc=0.0, scale=1.0, beta=2.0, **kwargs):
+    def pdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        beta: ArrayLike = 2.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Probability density function of the generalized normal distribution."""
+        x = jnp.asarray(x)
+        loc = jnp.asarray(loc)
+        scale = jnp.asarray(scale)
+        beta = jnp.asarray(beta)
         z = jnp.abs(x - loc) / scale
         return (beta / (2 * scale * gamma(1 / beta))) * jnp.exp(-(z**beta))
 
     @classmethod
-    def logpdf(cls, x, loc=0.0, scale=1.0, beta=2.0, **kwargs):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        beta: ArrayLike = 2.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the probability density function of the generalized normal
         distribution."""
+        x = jnp.asarray(x)
+        loc = jnp.asarray(loc)
+        scale = jnp.asarray(scale)
+        beta = jnp.asarray(beta)
         z = jnp.abs(x - loc) / scale
         return jnp.log(beta / (2 * scale * gamma(1 / beta))) - (z**beta)
 
     @classmethod
-    def cdf(cls, x, loc=0.0, scale=1.0, beta=2.0, **kwargs):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        beta: ArrayLike = 2.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Cumulative distribution function of the generalized normal distribution."""
+        x = jnp.asarray(x)
+        loc = jnp.asarray(loc)
+        scale = jnp.asarray(scale)
+        beta = jnp.asarray(beta)
         z = (x - loc) / scale
         return 0.5 * (1 + jnp.sign(z) * gammainc(1 / beta, jnp.abs(z) ** beta))
 
     @classmethod
-    def ppf(cls, q, loc=0.0, scale=1.0, beta=2.0, **kwargs):
+    def ppf(
+        cls,
+        q: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        beta: ArrayLike = 2.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Percent point function (inverse of cdf) of the generalized normal
         distribution."""
         # For beta=2, this is the normal distribution
+        q = jnp.asarray(q)
+        loc = jnp.asarray(loc)
+        scale = jnp.asarray(scale)
+        beta = jnp.asarray(beta)
         if beta == 2.0:
             return loc + scale * jnp.sqrt(2) * jax.scipy.special.erfinv(2 * q - 1)
 
         # For other values, we need to use numerical methods
         # This is a simplified version that works for most cases
-        z = jnp.where(q < 0.5, -1, 1) * jnp.power(
+        z = where(q < 0.5, -1, 1) * jnp.power(
             gamma(1 / beta) * (1 - 2 * jnp.abs(q - 0.5)), 1 / beta
         )
         return loc + scale * z
@@ -102,7 +147,7 @@ class gennorm_gen(rv_continuous, rv_exponential_family):
             # Generate uniform random numbers
             u = random.uniform(key, shape=shape)
             # Transform to generalized normal
-            z = jnp.where(u < 0.5, -1, 1) * jnp.power(
+            z = where(u < 0.5, -1, 1) * jnp.power(
                 gamma(1 / beta) * (1 - 2 * jnp.abs(u - 0.5)), 1 / beta
             )
             return z * scale + loc
@@ -110,27 +155,58 @@ class gennorm_gen(rv_continuous, rv_exponential_family):
         return _rejection_sampling(rng)
 
     @classmethod
-    def mean(cls, loc=0.0, scale=1.0, beta=2.0, **kwargs):
+    def mean(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        beta: ArrayLike = 2.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mean of the generalized normal distribution."""
         return jnp.asarray(loc)
 
     @classmethod
-    def mode(cls, loc=0.0, scale=1.0, beta=2.0, **kwargs):
+    def mode(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        beta: ArrayLike = 2.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mode of the generalized normal distribution."""
         return jnp.asarray(loc)
 
     @classmethod
-    def var(cls, loc=0.0, scale=1.0, beta=2.0, **kwargs):
+    def var(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        beta: ArrayLike = 2.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Variance of the generalized normal distribution."""
         return scale**2 * gamma(3 / beta) / gamma(1 / beta)
 
     @classmethod
-    def entropy(cls, loc=0.0, scale=1.0, beta=2.0, **kwargs):
+    def entropy(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        beta: ArrayLike = 2.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Entropy of the generalized normal distribution."""
         return 1 / beta - jnp.log(beta / (2 * scale * gamma(1 / beta)))
 
     @classmethod
-    def moment(cls, n, loc=0.0, scale=1.0, beta=2.0, **kwargs):
+    def moment(
+        cls,
+        n: int,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        beta: ArrayLike = 2.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """n-th non-central moment of the generalized normal distribution."""
         if n == 0:
             return jnp.ones_like(loc)
@@ -142,27 +218,51 @@ class gennorm_gen(rv_continuous, rv_exponential_family):
             raise NotImplementedError(f"Moment of order {n} not implemented")
 
     @classmethod
-    def skew(cls, loc=0.0, scale=1.0, beta=2.0, **kwargs):
+    def skew(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        beta: ArrayLike = 2.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Skewness of the generalized normal distribution."""
         return jnp.zeros_like(loc)
 
     @classmethod
-    def kurtosis(cls, loc=0.0, scale=1.0, beta=2.0, **kwargs):
+    def kurtosis(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        beta: ArrayLike = 2.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Excess kurtosis of the generalized normal distribution."""
         return gamma(5 / beta) * gamma(1 / beta) / (gamma(3 / beta) ** 2) - 3
 
     @classmethod
-    def natural_parameters(cls, loc=0.0, scale=1.0, beta=2.0, **kwargs):
+    def natural_parameters(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        beta: ArrayLike = 2.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Natural parameters of the generalized normal distribution."""
         return jnp.array([loc / (scale**beta), -1 / (scale**beta)])
 
     @classmethod
-    def sufficient_statistics(cls, x, **kwargs):
+    def sufficient_statistics(cls, x: ArrayLike, **kwargs: Any) -> ArrayLike:
         """Sufficient statistics of the generalized normal distribution."""
         return jnp.array([x, jnp.abs(x)])
 
     @classmethod
-    def log_partition(cls, loc=0.0, scale=1.0, beta=2.0, **kwargs):
+    def log_partition(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        beta: ArrayLike = 2.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log partition function of the generalized normal distribution."""
         return jnp.log(2 * scale * gamma(1 / beta) / beta) + (loc / scale) ** beta
 

@@ -21,6 +21,7 @@ from probjax.stats.utils import (
     normalize_sample_weights,
     row_mean_and_var,
 )
+from probjax.utils.jaxutils import where
 from probjax.utils.stats import mle_dirichlet
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
@@ -97,7 +98,7 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
         """Mode of the Dirichlet distribution."""
         alpha_sum = jnp.sum(alpha, axis=-1, keepdims=True)
         valid = alpha > 1
-        mode = jnp.where(valid, (alpha - 1) / (alpha_sum - alpha.shape[-1]), 1e-20)
+        mode = where(valid, (alpha - 1) / (alpha_sum - alpha.shape[-1]), 1e-20)
         # Mode must sum to 1
         return mode / jnp.sum(mode, axis=-1, keepdims=True)
 

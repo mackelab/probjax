@@ -51,6 +51,7 @@ import numpy as np
 from jax.typing import ArrayLike
 
 from probjax.core import custom_inverse
+from probjax.utils.jaxutils import where
 
 __all__ = [
     "bernstein",
@@ -102,9 +103,9 @@ def _solve_increasing(
         lo, hi = carry
         width = 2.0**i
         g_lo, g_hi = g(lo), g(hi)
-        push_lo = jnp.where(jnp.isfinite(g_lo), g_lo > target, False)
-        push_hi = jnp.where(jnp.isfinite(g_hi), g_hi < target, False)
-        return jnp.where(push_lo, lo - width, lo), jnp.where(push_hi, hi + width, hi)
+        push_lo = where(jnp.isfinite(g_lo), g_lo > target, False)
+        push_hi = where(jnp.isfinite(g_hi), g_hi < target, False)
+        return where(push_lo, lo - width, lo), where(push_hi, hi + width, hi)
 
     lo, hi = jax.lax.fori_loop(0, num_expansions, expand, (lo, hi))
 
@@ -114,15 +115,15 @@ def _solve_increasing(
         g_mid = g(mid)
         # A non-finite midpoint cannot be trusted to pick a side; keep the
         # bracket and let the residual check below flag the failure.
-        go_left = jnp.where(jnp.isfinite(g_mid), g_mid > target, False)
-        return jnp.where(go_left, lo, mid), jnp.where(go_left, mid, hi)
+        go_left = where(jnp.isfinite(g_mid), g_mid > target, False)
+        return where(go_left, lo, mid), where(go_left, mid, hi)
 
     lo, hi = jax.lax.fori_loop(0, num_bisections, bisect, (lo, hi))
     root = 0.5 * (lo + hi)
 
     residual = jnp.abs(g(root) - target)
     converged = residual <= atol + rtol * jnp.abs(target)
-    return jnp.where(converged, root, jnp.nan)
+    return where(converged, root, jnp.nan)
 
 
 # ---------------------------------------------------------------------------
@@ -395,8 +396,8 @@ def _bernstein_value_and_logdet(t, theta, bound=_BERNSTEIN_BOUND):
     inside_grad = m * jnp.sum(weights * basis_d, axis=-1)  # d value / dt
 
     inside = jnp.abs(t) < bound
-    value = jnp.where(inside, inside_value, t)
-    log_grad = jnp.where(inside, jnp.log(inside_grad + _EPS), 0.0)
+    value = where(inside, inside_value, t)
+    log_grad = where(inside, jnp.log(inside_grad + _EPS), 0.0)
     return value, log_grad
 
 

@@ -13,7 +13,8 @@ from jax import random
 from probjax.stats.base import rv_discrete, rv_exponential_family
 from probjax.stats.constraints import unit_interval
 from probjax.stats.utils import weighted_mean
-from probjax.utils.typing import Array, ArrayLike, RngKey
+from probjax.utils.jaxutils import where
+from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["bernoulli"]
 
@@ -34,19 +35,19 @@ class bernoulli_gen(rv_discrete, rv_exponential_family):
     def pmf(cls, x: ArrayLike, p: ArrayLike, **kwds: Any) -> ArrayLike:
         """Probability mass function of the Bernoulli distribution."""
         x = jnp.asarray(x)
-        return jnp.where(x == 1, p, 1 - p)
+        return where(x == 1, p, 1 - p)
 
     @classmethod
     def logpmf(cls, x: ArrayLike, p: ArrayLike, **kwds: Any) -> ArrayLike:
         """Log probability mass function of the Bernoulli distribution."""
         x = jnp.asarray(x)
-        return jnp.where(x == 1, jnp.log(p), jnp.log(1 - p))
+        return where(x == 1, jnp.log(p), jnp.log(1 - p))
 
     @classmethod
     def cdf(cls, x: ArrayLike, p: ArrayLike, **kwds: Any) -> ArrayLike:
         """Cumulative distribution function of the Bernoulli distribution."""
         x = jnp.asarray(x)
-        return jnp.where(x < 0, 0, jnp.where(x < 1, 1 - p, 1))
+        return where(x < 0, 0, where(x < 1, 1 - p, 1))
 
     @classmethod
     def ppf(cls, q: ArrayLike, p: ArrayLike, **kwds: Any) -> ArrayLike:
@@ -56,7 +57,7 @@ class bernoulli_gen(rv_discrete, rv_exponential_family):
         # For q < 1-p, return 0
         # For q >= 1-p, return 1
         # Handle edge cases where q is exactly 1-p
-        return jnp.where(q <= 1 - p, 0, 1)
+        return where(q <= 1 - p, 0, 1)
 
     @classmethod
     def _rvs_impl(
@@ -84,20 +85,22 @@ class bernoulli_gen(rv_discrete, rv_exponential_family):
     @classmethod
     def entropy(cls, p: ArrayLike, **kwds: Any) -> ArrayLike:
         """Entropy of the Bernoulli distribution."""
+        p = jnp.asarray(p)
         return -p * jnp.log(p) - (1 - p) * jnp.log(1 - p)
 
     @classmethod
     def mode(cls, p: ArrayLike, **kwds: Any) -> ArrayLike:
         """Mode of the Bernoulli distribution."""
-        return jnp.where(p > 0.5, 1, 0)
+        p = jnp.asarray(p)
+        return where(p > 0.5, 1, 0)
 
     @classmethod
-    def natural_parameters(cls, p: ArrayLike, **kwds: Any) -> Array:
+    def natural_parameters(cls, p: ArrayLike, **kwds: Any) -> ArrayLike:
         """Natural parameters of the Bernoulli distribution."""
         return jnp.array([jnp.log(p / (1 - p))])
 
     @classmethod
-    def sufficient_statistics(cls, x: ArrayLike, **kwds: Any) -> Array:
+    def sufficient_statistics(cls, x: ArrayLike, **kwds: Any) -> ArrayLike:
         """Sufficient statistics of the Bernoulli distribution."""
         return jnp.array([x])
 

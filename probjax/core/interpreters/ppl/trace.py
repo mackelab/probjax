@@ -123,5 +123,7 @@ class TraceProcessingRule(ForwardProcessingRule):
         return ProcessedResult(outvars, outvals, eqn_state)
 
 
-def trace_state_reducer(env, eqn, state, eqn_state, context=None):
+def trace_state_reducer(
+    env: Any, eqn: Any, state: Any, eqn_state: Any, context: Any = None
+) -> Any:
     return merge_dict_state(env, eqn, state, eqn_state, context)

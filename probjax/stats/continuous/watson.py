@@ -9,7 +9,7 @@ and is parameterised by a mean direction and a concentration parameter.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -21,6 +21,7 @@ from jax.scipy.special import gammaln, hyp1f1
 from probjax.stats.base import rv_exponential_family, rv_spherical
 from probjax.stats.constraints import real, spherical
 from probjax.stats.utils import normalize_sample_weights
+from probjax.utils.jaxutils import where
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["watson"]
@@ -42,7 +43,7 @@ def _orthogonal_unit_vector(mu: Array) -> Array:
     v = basis[idx]
     v = v - jnp.dot(v, mu) * mu
     norm_v = jnp.linalg.norm(v)
-    return jnp.where(norm_v > _EPS, v / (norm_v + _EPS), basis[(idx + 1) % dim])
+    return where(norm_v > _EPS, v / (norm_v + _EPS), basis[(idx + 1) % dim])
 
 
 def _log_hyp1f1_half(kappa: Array, dim: int) -> Array:
@@ -165,12 +166,12 @@ def _watson_moment_ratio(kappa, dim: int, dtype):
         k = kappa_arr
         dim_val = jnp.asarray(dim, dtype=calc_dtype)
         base = jnp.full_like(k, 1.0 / dim_val, dtype=calc_dtype)
-        term2 = jnp.where(
+        term2 = where(
             dim > 2,
             k / (dim_val * (dim_val + jnp.asarray(2.0, dtype=calc_dtype))),
             jnp.zeros_like(k),
         )
-        term4 = jnp.where(
+        term4 = where(
             dim > 4,
             (k**2)
             / (
@@ -204,7 +205,7 @@ def _watson_moment_ratio(kappa, dim: int, dtype):
         dim_val = jnp.asarray(dim, dtype=calc_dtype)
         ones = jnp.ones_like(kappa_arr, dtype=calc_dtype)
         iso = ones / dim_val
-        approx = jnp.where(
+        approx = where(
             sign >= 0,
             ones
             - (dim_val - jnp.asarray(1.0, dtype=calc_dtype))
@@ -220,10 +221,10 @@ def _watson_moment_ratio(kappa, dim: int, dtype):
     result_mid = hyp1f1_ratio()
     result_large = asymptotic()
 
-    result = jnp.where(
+    result = where(
         small_mask,
         result_series,
-        jnp.where(large_mask, result_large, result_mid),
+        where(large_mask, result_large, result_mid),
     )
     return result
 
@@ -277,10 +278,10 @@ def _solve_watson_kappa(target: ArrayLike, dim: int, dtype) -> jnp.ndarray:
                 mid = jnp.asarray(0.5, dtype=dtype) * (lo_ + hi_)
                 ratio_mid = _watson_moment_ratio(mid, dim, dtype)
                 choose_hi = ratio_mid > target
-                hi_new = jnp.where(choose_hi, mid, hi_)
-                lo_new = jnp.where(choose_hi, lo_, mid)
-                ratio_hi_new = jnp.where(choose_hi, ratio_mid, ratio_hi_)
-                ratio_lo_new = jnp.where(choose_hi, ratio_lo_, ratio_mid)
+                hi_new = where(choose_hi, mid, hi_)
+                lo_new = where(choose_hi, lo_, mid)
+                ratio_hi_new = where(choose_hi, ratio_mid, ratio_hi_)
+                ratio_lo_new = where(choose_hi, ratio_lo_, ratio_mid)
                 return (lo_new, hi_new, ratio_lo_new, ratio_hi_new, count_ + 1)
 
             lo, hi, ratio_lo, ratio_hi, _ = lax.while_loop(
@@ -329,10 +330,10 @@ def _solve_watson_kappa(target: ArrayLike, dim: int, dtype) -> jnp.ndarray:
                 mid = jnp.asarray(0.5, dtype=dtype) * (lo_ + hi_)
                 ratio_mid = _watson_moment_ratio(mid, dim, dtype)
                 choose_hi = ratio_mid > target
-                hi_new = jnp.where(choose_hi, mid, hi_)
-                lo_new = jnp.where(choose_hi, lo_, mid)
-                ratio_hi_new = jnp.where(choose_hi, ratio_mid, ratio_hi_)
-                ratio_lo_new = jnp.where(choose_hi, ratio_lo_, ratio_mid)
+                hi_new = where(choose_hi, mid, hi_)
+                lo_new = where(choose_hi, lo_, mid)
+                ratio_hi_new = where(choose_hi, ratio_mid, ratio_hi_)
+                ratio_lo_new = where(choose_hi, ratio_lo_, ratio_mid)
                 return (lo_new, hi_new, ratio_lo_new, ratio_hi_new, count_ + 1)
 
             lo, hi, ratio_lo, ratio_hi, _ = lax.while_loop(
@@ -371,21 +372,21 @@ def _sample_watson_direction(
         key, key_beta, key_u, key_sign, key_noise = random.split(key, 5)
         t = random.beta(key_beta, beta_a, beta_b)
 
-        log_accept = jnp.where(kappa >= 0, kappa * (t - 1.0), kappa * t)
+        log_accept = where(kappa >= 0, kappa * (t - 1.0), kappa * t)
         u = random.uniform(key_u, dtype=mu.dtype)
         accept = jnp.log(u + _EPS) <= log_accept
 
-        sign = jnp.where(random.bernoulli(key_sign, 0.5), 1.0, -1.0).astype(mu.dtype)
+        sign = where(random.bernoulli(key_sign, 0.5), 1.0, -1.0).astype(mu.dtype)
         w = sign * jnp.sqrt(jnp.clip(t, 0.0, 1.0))
 
         y = random.normal(key_noise, shape=(dim,), dtype=mu.dtype)
         v = y - jnp.dot(y, mu) * mu
         norm_v = jnp.linalg.norm(v)
         fallback = _orthogonal_unit_vector(mu)
-        v = jnp.where(norm_v > _EPS, v / (norm_v + _EPS), fallback)
+        v = where(norm_v > _EPS, v / (norm_v + _EPS), fallback)
 
         candidate = w * mu + jnp.sqrt(jnp.maximum(0.0, 1.0 - t)) * v
-        sample = jnp.where(accept, candidate, sample)
+        sample = where(accept, candidate, sample)
         return accept, sample, key
 
     state0 = (False, mu, key)
@@ -410,11 +411,17 @@ class watson_gen(rv_spherical, rv_exponential_family):
     multivariate = True
 
     @classmethod
-    def support(cls, mean_direction=None, **kwargs):
+    def support(cls, mean_direction: ArrayLike | None = None, **kwargs: Any) -> Any:
         return spherical
 
     @classmethod
-    def logpdf(cls, x: Array, mean_direction: Array, kappa: Array = 0.0, **kwargs):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        mean_direction: ArrayLike,
+        kappa: ArrayLike = 0.0,
+        **kwargs: Any,
+    ) -> Array:
         x = _normalize_vector(jnp.asarray(x))
         mean_direction = _normalize_vector(jnp.asarray(mean_direction))
         kappa = jnp.asarray(kappa)
@@ -428,10 +435,10 @@ class watson_gen(rv_spherical, rv_exponential_family):
     @classmethod
     def _multivariate_batch_event_shape(
         cls,
-        mean_direction: Array,
-        kappa: Array = 0.0,
-        **kwargs,
-    ):
+        mean_direction: ArrayLike,
+        kappa: ArrayLike = 0.0,
+        **kwargs: Any,
+    ) -> tuple[Tuple[int, ...], Tuple[int, ...]]:
         """Infer batch/event shapes for frozen Watson distributions."""
         mean_direction_arr = jnp.asarray(mean_direction)
         if mean_direction_arr.ndim < 1:
@@ -447,10 +454,10 @@ class watson_gen(rv_spherical, rv_exponential_family):
     def _rvs_impl(
         cls,
         rng: RngKey,
-        mean_direction: Array,
-        kappa: Array = 0.0,
+        mean_direction: ArrayLike,
+        kappa: ArrayLike = 0.0,
         shape: Tuple[int, ...] = (),
-        **kwargs,
+        **kwargs: Any,
     ):
         mean_direction = _normalize_vector(jnp.asarray(mean_direction))
         kappa = jnp.asarray(kappa)
@@ -486,12 +493,17 @@ class watson_gen(rv_spherical, rv_exponential_family):
         return jnp.zeros_like(mean_direction)
 
     @classmethod
-    def mode(cls, mean_direction: Array, **kwargs):
+    def mode(cls, mean_direction: ArrayLike, **kwargs: Any) -> Array:
         mean_direction = _normalize_vector(jnp.asarray(mean_direction))
         return mean_direction
 
     @classmethod
-    def mean_direction_vector(cls, mean_direction: Array, kappa: Array = 0.0, **kwargs):
+    def mean_direction_vector(
+        cls,
+        mean_direction: ArrayLike,
+        kappa: ArrayLike = 0.0,
+        **kwargs: Any,
+    ) -> Array:
         """Representative mean direction (principal axis)."""
         mean_direction = _normalize_vector(jnp.asarray(mean_direction))
         kappa = jnp.asarray(kappa)
@@ -499,7 +511,12 @@ class watson_gen(rv_spherical, rv_exponential_family):
         return jnp.broadcast_to(mean_direction, batch_shape + mean_direction.shape[-1:])
 
     @classmethod
-    def log_partition(cls, mean_direction: Array, kappa: Array = 0.0, **kwargs):
+    def log_partition(
+        cls,
+        mean_direction: ArrayLike,
+        kappa: ArrayLike = 0.0,
+        **kwargs: Any,
+    ) -> Array:
         mean_direction = _normalize_vector(jnp.asarray(mean_direction))
         kappa = jnp.asarray(kappa)
         dim = mean_direction.shape[-1]
@@ -507,7 +524,12 @@ class watson_gen(rv_spherical, rv_exponential_family):
         return -log_norm
 
     @classmethod
-    def natural_parameters(cls, mean_direction: Array, kappa: Array = 0.0, **kwargs):
+    def natural_parameters(
+        cls,
+        mean_direction: ArrayLike,
+        kappa: ArrayLike = 0.0,
+        **kwargs: Any,
+    ) -> Array:
         mean_direction = _normalize_vector(jnp.asarray(mean_direction))
         kappa = jnp.asarray(kappa)
         batch_shape = jax.lax.broadcast_shapes(mean_direction.shape[:-1], kappa.shape)
@@ -518,12 +540,17 @@ class watson_gen(rv_spherical, rv_exponential_family):
         return kappa[..., None] * mean_direction
 
     @classmethod
-    def sufficient_statistics(cls, x: Array, **kwargs):
+    def sufficient_statistics(cls, x: ArrayLike, **kwargs: Any) -> Array:
         x = _normalize_vector(jnp.asarray(x))
         return jnp.square(x)
 
     @classmethod
-    def mean_direction_dyad(cls, mean_direction: Array, kappa: Array = 0.0, **kwargs):
+    def mean_direction_dyad(
+        cls,
+        mean_direction: ArrayLike,
+        kappa: ArrayLike = 0.0,
+        **kwargs: Any,
+    ) -> Array:
         """Expected dyadic product :math:`E[XX^T]` for the Watson distribution."""
         mean_direction = _normalize_vector(jnp.asarray(mean_direction))
         kappa = jnp.asarray(kappa, dtype=mean_direction.dtype)
@@ -600,7 +627,7 @@ class watson_gen(rv_spherical, rv_exponential_family):
         mu_max = eigvecs[:, idx_max]
         mu_min = eigvecs[:, idx_min]
         choose_max = jnp.abs(rho_max - iso) >= jnp.abs(rho_min - iso)
-        mu_init = jnp.where(choose_max, mu_max, mu_min)
+        mu_init = where(choose_max, mu_max, mu_min)
         mu_init = _normalize_vector(mu_init)
 
         axial_moment = jnp.sum(weights_arr * jnp.square(data @ mu_init))

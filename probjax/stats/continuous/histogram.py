@@ -16,7 +16,7 @@ Two variants:
   in advance.
 """
 
-from typing import Tuple
+from typing import Any, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -24,14 +24,15 @@ from jax import random
 
 from probjax.stats.base import rv_continuous
 from probjax.stats.constraints import Interval, real, strict_positive
-from probjax.utils.typing import Array, RngKey
+from probjax.utils.jaxutils import where
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["histogram", "tailed_histogram"]
 
 _EPS = 1e-12
 
 
-def _bin_probs(logits: Array) -> Array:
+def _bin_probs(logits: Optional[ArrayLike]) -> Array:
     return jax.nn.softmax(jnp.asarray(logits), axis=-1)
 
 
@@ -104,12 +105,25 @@ class histogram_gen(rv_continuous):
         return {"logits": num_bins, "low": 1, "high": 1}
 
     @classmethod
-    def support(cls, logits=None, low=0.0, high=1.0, **kwargs):
+    def support(
+        cls,
+        logits: Optional[ArrayLike] = None,
+        low: ArrayLike = 0.0,
+        high: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> Any:
         """Support is the closed domain ``[low, high]``."""
         return Interval(low, high)
 
     @classmethod
-    def logpdf(cls, x, logits=None, low=0.0, high=1.0, **kwargs):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        logits: Optional[ArrayLike] = None,
+        low: ArrayLike = 0.0,
+        high: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log-density; ``-inf`` outside ``[low, high]``."""
         del kwargs
         x, logits, num_bins = _align(x, logits)
@@ -120,10 +134,17 @@ class histogram_gen(rv_continuous):
         log_mass_at = jnp.take_along_axis(log_mass, idx[..., None], axis=-1)[..., 0]
 
         inside = (x >= jnp.asarray(low)) & (x <= jnp.asarray(high))
-        return jnp.where(inside, log_mass_at - jnp.log(width), -jnp.inf)
+        return where(inside, log_mass_at - jnp.log(width), -jnp.inf)
 
     @classmethod
-    def cdf(cls, x, logits=None, low=0.0, high=1.0, **kwargs):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        logits: Optional[ArrayLike] = None,
+        low: ArrayLike = 0.0,
+        high: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Piecewise-linear CDF."""
         del kwargs
         x, logits, num_bins = _align(x, logits)
@@ -140,12 +161,19 @@ class histogram_gen(rv_continuous):
         edge = jnp.asarray(low) + width * idx
         frac = jnp.clip((x - edge) / width, 0.0, 1.0)
         inner = cum_below + mass_at * frac
-        return jnp.where(
-            x <= jnp.asarray(low), 0.0, jnp.where(x >= jnp.asarray(high), 1.0, inner)
+        return where(
+            x <= jnp.asarray(low), 0.0, where(x >= jnp.asarray(high), 1.0, inner)
         )
 
     @classmethod
-    def ppf(cls, q, logits=None, low=0.0, high=1.0, **kwargs):
+    def ppf(
+        cls,
+        q: ArrayLike,
+        logits: Optional[ArrayLike] = None,
+        low: ArrayLike = 0.0,
+        high: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Inverse of the piecewise-linear CDF."""
         del kwargs
         q, logits, num_bins = _align(q, logits)
@@ -195,7 +223,13 @@ class histogram_gen(rv_continuous):
         return jnp.asarray(low) + width * (idx + u)
 
     @classmethod
-    def mean(cls, logits=None, low=0.0, high=1.0, **kwargs):
+    def mean(
+        cls,
+        logits: Optional[ArrayLike] = None,
+        low: ArrayLike = 0.0,
+        high: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         del kwargs
         probs = _bin_probs(logits)
         num_bins = probs.shape[-1]
@@ -237,7 +271,13 @@ class tailed_histogram_gen(histogram_gen):
     }
 
     @classmethod
-    def support(cls, **kwargs):
+    def support(
+        cls,
+        logits: Optional[ArrayLike] = None,
+        low: ArrayLike = 0.0,
+        high: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> Any:
         """The tails extend the support to all of R (not ``[low, high]``)."""
         return real
 
@@ -264,13 +304,13 @@ class tailed_histogram_gen(histogram_gen):
     @classmethod
     def logpdf(
         cls,
-        x,
-        logits=None,
-        low=0.0,
-        high=1.0,
-        tail_logit=-5.0,
-        left_rate=1.0,
-        right_rate=1.0,
+        x: ArrayLike,
+        logits: Optional[ArrayLike] = None,
+        low: ArrayLike = 0.0,
+        high: ArrayLike = 1.0,
+        tail_logit: ArrayLike = -5.0,
+        left_rate: ArrayLike = 1.0,
+        right_rate: ArrayLike = 1.0,
         **kwargs,
     ):
         x = jnp.asarray(x)
@@ -291,19 +331,19 @@ class tailed_histogram_gen(histogram_gen):
         left = log_half + jnp.log(left_rate) - left_rate * (low - x)
         right = log_half + jnp.log(right_rate) - right_rate * (x - high)
 
-        out = jnp.where(x < low, left, inside)
-        return jnp.where(x > high, right, out)
+        out = where(x < low, left, inside)
+        return where(x > high, right, out)
 
     @classmethod
     def cdf(
         cls,
-        x,
-        logits=None,
-        low=0.0,
-        high=1.0,
-        tail_logit=-5.0,
-        left_rate=1.0,
-        right_rate=1.0,
+        x: ArrayLike,
+        logits: Optional[ArrayLike] = None,
+        low: ArrayLike = 0.0,
+        high: ArrayLike = 1.0,
+        tail_logit: ArrayLike = -5.0,
+        left_rate: ArrayLike = 1.0,
+        right_rate: ArrayLike = 1.0,
         **kwargs,
     ):
         x = jnp.asarray(x)
@@ -318,19 +358,19 @@ class tailed_histogram_gen(histogram_gen):
         left = half_tail * jnp.exp(-jnp.asarray(left_rate) * (low - x))
         right = 1.0 - half_tail * jnp.exp(-jnp.asarray(right_rate) * (x - high))
 
-        out = jnp.where(x < low, left, inside)
-        return jnp.where(x > high, right, out)
+        out = where(x < low, left, inside)
+        return where(x > high, right, out)
 
     @classmethod
     def ppf(
         cls,
-        q,
-        logits=None,
-        low=0.0,
-        high=1.0,
-        tail_logit=-5.0,
-        left_rate=1.0,
-        right_rate=1.0,
+        q: ArrayLike,
+        logits: Optional[ArrayLike] = None,
+        low: ArrayLike = 0.0,
+        high: ArrayLike = 1.0,
+        tail_logit: ArrayLike = -5.0,
+        left_rate: ArrayLike = 1.0,
+        right_rate: ArrayLike = 1.0,
         **kwargs,
     ):
         q = jnp.clip(jnp.asarray(q), 0.0, 1.0)
@@ -348,19 +388,19 @@ class tailed_histogram_gen(histogram_gen):
         inner_q = jnp.clip((q - half_tail) / jnp.maximum(body, _EPS), 0.0, 1.0)
         x_mid = histogram_gen.ppf(inner_q, logits=logits, low=low, high=high)
 
-        out = jnp.where(q < half_tail, x_left, x_mid)
-        return jnp.where(q > 1.0 - half_tail, x_right, out)
+        out = where(q < half_tail, x_left, x_mid)
+        return where(q > 1.0 - half_tail, x_right, out)
 
     @classmethod
-    def _rvs_impl(
+    def _rvs_impl(  # pyright: ignore[reportIncompatibleMethodOverride]
         cls,
         rng: RngKey,
-        logits=None,
-        low=0.0,
-        high=1.0,
-        tail_logit=-5.0,
-        left_rate=1.0,
-        right_rate=1.0,
+        logits: Optional[ArrayLike] = None,
+        low: ArrayLike = 0.0,
+        high: ArrayLike = 1.0,
+        tail_logit: ArrayLike = -5.0,
+        left_rate: ArrayLike = 1.0,
+        right_rate: ArrayLike = 1.0,
         shape: Tuple[int, ...] = (),
         **kwargs,
     ) -> Array:
@@ -384,7 +424,13 @@ class tailed_histogram_gen(histogram_gen):
         )
 
     @classmethod
-    def mean(cls, **kwargs):
+    def mean(
+        cls,
+        logits: Optional[ArrayLike] = None,
+        low: ArrayLike = 0.0,
+        high: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         raise NotImplementedError(
             "tailed_histogram.mean is not implemented; use sample estimates."
         )

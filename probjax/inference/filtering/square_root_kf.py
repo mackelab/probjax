@@ -1,46 +1,52 @@
-from typing import Callable, NamedTuple, Optional, Tuple
+from __future__ import annotations
+
+from typing import Any, Callable, NamedTuple, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-from jax.typing import ArrayLike
 
 from probjax.inference.filtering.base import FilterAPI
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 
 class SqKalmanFilterState(NamedTuple):
-    mean: ArrayLike
-    std: ArrayLike
-    t: Optional[ArrayLike]
+    mean: Array
+    std: Array
+    t: Optional[Array]
 
 
 class SqKalmanFilterInfo(NamedTuple):
-    mean_pred: ArrayLike
-    std_pred: ArrayLike
-    log_likelihood: Optional[ArrayLike] = None
+    mean_pred: Array
+    std_pred: Array
+    log_likelihood: Optional[Array] = None
 
 
 def init(
     mean: ArrayLike, std: ArrayLike, t: Optional[ArrayLike] = None
 ) -> SqKalmanFilterState:
-    return SqKalmanFilterState(mean, std, t)
+    return SqKalmanFilterState(
+        jnp.asarray(mean), jnp.asarray(std), None if t is None else jnp.asarray(t)
+    )
 
 
-def unpack_matrix(A: ArrayLike, t_old: ArrayLike, t: Optional[ArrayLike] = None):
+def unpack_matrix(
+    A: Any, t_old: Optional[ArrayLike], t: Optional[ArrayLike] = None
+) -> Array:
     if callable(A):
         if t is not None:
-            return A(t_old, t)
+            return jnp.asarray(A(t_old, t))
         else:
-            return A(t_old)
+            return jnp.asarray(A(t_old))
     else:
-        return A
+        return jnp.asarray(A)
 
 
 def sqrt_kf_predict(
-    m: ArrayLike,
-    CL: ArrayLike,
-    A: ArrayLike,
-    QL: ArrayLike,
-) -> Tuple[jax.Array, jax.Array]:
+    m: Array,
+    CL: Array,
+    A: Array,
+    QL: Array,
+) -> Tuple[Array, Array]:
     """
     Predict step of the square root Kalman filter.
     """
@@ -52,13 +58,13 @@ def sqrt_kf_predict(
 
 
 def sqrt_kf_correct(
-    m: ArrayLike,
-    CL: ArrayLike,
-    H: ArrayLike,
-    RL: ArrayLike,
-    y: ArrayLike,
+    m: Array,
+    CL: Array,
+    H: Array,
+    RL: Array,
+    y: Array,
     compute_likelihood: bool = False,
-) -> Tuple[ArrayLike, ArrayLike, float]:
+) -> Tuple[Array, Array, Array]:
     """
     Correction step of the square root Kalman filter.
     """
@@ -100,17 +106,16 @@ def sqrt_kf_correct(
 
 
 def build_kernel(
-    transition_matrix: Callable[[float | ArrayLike], ArrayLike] | ArrayLike,
-    transition_covariance_matrix_sqrt: Callable[[float | ArrayLike], ArrayLike]
-    | ArrayLike,
-    observation_matrix: Callable[[float | ArrayLike], ArrayLike] | ArrayLike,
-    observation_covariance: Callable[[float | ArrayLike], ArrayLike] | ArrayLike,
+    transition_matrix: Callable[[ArrayLike], ArrayLike] | ArrayLike,
+    transition_covariance_matrix_sqrt: Callable[[ArrayLike], ArrayLike] | ArrayLike,
+    observation_matrix: Callable[[ArrayLike], ArrayLike] | ArrayLike,
+    observation_covariance: Callable[[ArrayLike], ArrayLike] | ArrayLike,
 ) -> Callable:
     def kernel(
         state: SqKalmanFilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng_key: Optional[jnp.ndarray] = None,
+        rng_key: Optional[RngKey] = None,
     ) -> Tuple[SqKalmanFilterState, SqKalmanFilterInfo]:
         mu0 = state.mean
         std = state.std
@@ -118,8 +123,8 @@ def build_kernel(
         is_observed = observed is not None
 
         # Predict step
-        Phi = unpack_matrix(transition_matrix, t_old, t)
-        Q_sqrt = unpack_matrix(transition_covariance_matrix_sqrt, t_old, t)
+        Phi = jnp.asarray(unpack_matrix(transition_matrix, t_old, t))
+        Q_sqrt = jnp.asarray(unpack_matrix(transition_covariance_matrix_sqrt, t_old, t))
 
         # Predicted mean
         mu1_, std1_ = sqrt_kf_predict(mu0, std, Phi, Q_sqrt)
@@ -133,7 +138,12 @@ def build_kernel(
             H = C @ std1_
             R_sqrt = jax.scipy.linalg.cholesky(R, lower=True)
             mu1, std1, log_likelihood = sqrt_kf_correct(
-                mu1_, std1_, H, R_sqrt, observed, compute_likelihood=True
+                mu1_,
+                std1_,
+                H,
+                R_sqrt,
+                jnp.asarray(observed),
+                compute_likelihood=True,
             )
 
         else:
@@ -143,7 +153,9 @@ def build_kernel(
             log_likelihood = jnp.array(0.0)
 
         # Construct the new state and info
-        new_state = SqKalmanFilterState(mu1, std1, t)
+        new_state = SqKalmanFilterState(
+            mu1, std1, None if t is None else jnp.asarray(t)
+        )
         info = SqKalmanFilterInfo(
             mean_pred=mu1_, std_pred=std1_, log_likelihood=log_likelihood
         )
@@ -180,5 +192,5 @@ class sq_kalman_filter(FilterAPI):
     build_kernel = build_kernel
 
     @staticmethod
-    def default_unpack(state, info):
+    def default_unpack(state: SqKalmanFilterState, info: SqKalmanFilterInfo):
         return (state.mean, state.std)

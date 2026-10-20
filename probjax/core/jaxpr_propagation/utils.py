@@ -2,8 +2,18 @@ import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Protocol, Sequence
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    cast,
+)
 
+from jax._src import core as jax_core
 from jax.extend.core import JaxprEqn, Literal
 from jaxtyping import Array
 
@@ -11,7 +21,30 @@ if TYPE_CHECKING:
     from probjax.core.registry import ProcessedResult
 
 
-def primitive_bind_params(primitive: Any, params: Any) -> tuple[tuple[Any, ...], dict[str, Any]]:
+def shaped_aval(aval: Any) -> jax_core.ShapedArray:
+    """The aval as a shaped one.
+
+    Rules that reason about shapes and dtypes only apply to shaped values.
+    The cast states that assumption for type checkers without adding a
+    runtime cost; an unshaped aval would fail on the attribute access
+    anyway.
+    """
+    return cast(jax_core.ShapedArray, aval)
+
+
+def shaped_dtype(aval: Any) -> Any:
+    """The dtype of a shaped aval.
+
+    JAX types ``ShapedArray.dtype`` as a union that includes the extended
+    dtypes (float8 and friends), which ``jnp`` does not accept as a
+    ``dtype``; the cast keeps the call sites readable.
+    """
+    return cast(Any, shaped_aval(aval).dtype)
+
+
+def primitive_bind_params(
+    primitive: Any, params: Any
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
     bind_params = primitive.get_bind_params(params)
     if (
         isinstance(bind_params, tuple)
@@ -38,7 +71,12 @@ def sanitize_bind_params(params: Any) -> dict[str, Any]:
     return {k: v for k, v in params.items() if not (k == "out_dtype" and v is None)}
 
 
-def bind_primitive(primitive, params, *args, params_from=None):
+def bind_primitive(
+    primitive: Any,
+    params: Any,
+    *args: Any,
+    params_from: Any = None,
+) -> Any:
     """Bind ``primitive`` with params that may belong to another primitive.
 
     ``params_from`` identifies the primitive that supplied ``params``. Params
@@ -51,7 +89,7 @@ def bind_primitive(primitive, params, *args, params_from=None):
     return primitive.bind(*subfuns, *args, **bind_params)
 
 
-def rebind_primitive(primitive, params, *args):
+def rebind_primitive(primitive: Any, params: Any, *args: Any) -> Any:
     """Re-bind an eqn's primitive with its own params, unmodified.
 
     Used for forward re-execution of an eqn (all inputs known): the eqn's
@@ -103,7 +141,7 @@ class Knowness:
     level: KnownessLevel
     value: Optional[Any] = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.level == KnownessLevel.UNKNOWN and self.value is not None:
             raise ValueError("UNKNOWN knowness must have value=None")
         if self.level != KnownessLevel.UNKNOWN and self.value is None:
@@ -173,7 +211,7 @@ class Environment(dict):
     to COMPLETE knowness), or with explicit Knowness objects for finer control.
     """
 
-    def __init__(self):
+    def __init__(self, propagator: Callable | None = None) -> None:
         super().__init__()
         self.eqn_states: dict[Any, Any] = {}
         self.eqn_states_by_namespace: dict[Any, dict[str, Any]] = {}
@@ -286,7 +324,15 @@ class Environment(dict):
 
 
 class ProcessingRuleFactory(Protocol):
-    def __call__(self) -> "ProcessingRule | Callable[..., ProcessedResult | None]": ...
+    """Builds a processing rule.
+
+    The rule may take a state namespace (``InverseAndLogAbsDetProcessingRule``)
+    or not (``InverseProcessingRule``), so the call signature is open.
+    """
+
+    def __call__(
+        self, *args: Any, **kwargs: Any
+    ) -> "ProcessingRule | Callable[..., ProcessedResult | None]": ...
 
 
 class CostFunction(Protocol):
@@ -328,7 +374,7 @@ class ProcessingRule(ABC):
     ProcessedResult contains resolved_vars, resolved_vals, and optional state.
     """
 
-    def __init__(self, propagator: Callable | None = None):
+    def __init__(self, propagator: Callable | None = None) -> None:
         self.propagator = propagator
 
     @abstractmethod
@@ -364,7 +410,9 @@ class ForwardProcessingRule(ProcessingRule):
 # in `extended.py` and execution logic lives in `engine.py`.
 
 
-def merge_dict_state(env, eqn, state, eqn_state, context=None):
+def merge_dict_state(
+    env: Any, eqn: Any, state: Any, eqn_state: Any, context: Any = None
+) -> dict[str, Any]:
     """Merge equation metadata into an independent propagation state mapping."""
     del env, eqn, context
     merged = {} if state is None else dict(state)

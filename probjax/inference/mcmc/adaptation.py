@@ -1,4 +1,6 @@
-from typing import NamedTuple
+from __future__ import annotations
+
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -9,9 +11,11 @@ from blackjax.adaptation.mass_matrix import (
 from blackjax.adaptation.step_size import dual_averaging_adaptation
 from blackjax.adaptation.window_adaptation import base as window_adaptation_base
 from blackjax.adaptation.window_adaptation import build_schedule
+from jax.flatten_util import ravel_pytree
 
 from probjax.inference.adaptation import get_param, replace_params
-from probjax.inference.base import Adaptor, Warmup, WarmupResult
+from probjax.inference.base import Adaptor, Kernel, Warmup, WarmupResult
+from probjax.utils.typing import RngKey
 
 
 def step_size_adaptor(
@@ -27,15 +31,17 @@ def step_size_adaptor(
         target, t0=t0, gamma=gamma, kappa=kappa
     )
 
-    def init(_state, params):
+    def init(_state: Any, params: Any) -> Any:
         return init_da(get_param(params, "step_size"))
 
-    def update(_state, info, adaptor_state, params):
+    def update(
+        _state: Any, info: Any, adaptor_state: Any, params: Any
+    ) -> tuple[Any, Any, None]:
         adaptor_state = update_da(adaptor_state, target_from_info_fn(info))
         params = replace_params(params, step_size=jnp.exp(adaptor_state.log_step_size))
         return adaptor_state, params, None
 
-    def finalize(adaptor_state, params):
+    def finalize(adaptor_state: Any, params: Any) -> tuple[Any, None]:
         return replace_params(params, step_size=final_da(adaptor_state)), None
 
     return Adaptor(init, update, finalize)
@@ -45,15 +51,17 @@ def mass_matrix_adaptor(*, diagonal: bool = True) -> Adaptor:
     """Local mass-matrix estimator backed by BlackJAX Welford adaptation."""
     init_mm, update_mm, final_mm = mass_matrix_adaptation(diagonal)
 
-    def init(state, params):
-        position, _ = jax.flatten_util.ravel_pytree(state.position)
+    def init(state: Any, params: Any) -> Any:
+        position, _ = ravel_pytree(state.position)
         get_param(params, "inverse_mass_matrix")
         return init_mm(position.size)
 
-    def update(state, _info, adaptor_state, params):
+    def update(
+        state: Any, _info: Any, adaptor_state: Any, params: Any
+    ) -> tuple[Any, Any, None]:
         return update_mm(adaptor_state, state.position), params, None
 
-    def finalize(adaptor_state, params):
+    def finalize(adaptor_state: Any, params: Any) -> tuple[Any, None]:
         adaptor_state = final_mm(adaptor_state)
         return replace_params(
             params, inverse_mass_matrix=adaptor_state.inverse_mass_matrix
@@ -77,17 +85,21 @@ def covariance_adaptor(
     if output not in {"variance", "covariance", "standard_deviation", "cholesky"}:
         raise ValueError(f"Unsupported covariance output: {output}")
 
-    def init(state, params):
-        position, _ = jax.flatten_util.ravel_pytree(state.position)
+    def init(state: Any, params: Any) -> CovarianceAdaptorState:
+        position, _ = ravel_pytree(state.position)
         get_param(params, field)
         return CovarianceAdaptorState(init_cov(position.size))
 
-    def update(state, _info, adaptor_state, params):
-        position, _ = jax.flatten_util.ravel_pytree(state.position)
+    def update(
+        state: Any, _info: Any, adaptor_state: CovarianceAdaptorState, params: Any
+    ) -> tuple[CovarianceAdaptorState, Any, None]:
+        position, _ = ravel_pytree(state.position)
         state_out = update_cov(adaptor_state.welford_state, position)
         return CovarianceAdaptorState(state_out), params, None
 
-    def finalize(adaptor_state, params):
+    def finalize(
+        adaptor_state: CovarianceAdaptorState, params: Any
+    ) -> tuple[Any, None]:
         covariance, _, _ = final_cov(adaptor_state.welford_state)
         if output == "standard_deviation":
             value = jnp.sqrt(covariance)
@@ -108,17 +120,21 @@ def mean_adaptor(
     """Local proposal-mean estimator backed by BlackJAX Welford updates."""
     init_mean, update_mean, final_mean = welford_algorithm(diagonal)
 
-    def init(state, params):
-        position, _ = jax.flatten_util.ravel_pytree(state.position)
+    def init(state: Any, params: Any) -> CovarianceAdaptorState:
+        position, _ = ravel_pytree(state.position)
         get_param(params, field)
         return CovarianceAdaptorState(init_mean(position.size))
 
-    def update(state, _info, adaptor_state, params):
-        position, _ = jax.flatten_util.ravel_pytree(state.position)
+    def update(
+        state: Any, _info: Any, adaptor_state: CovarianceAdaptorState, params: Any
+    ) -> tuple[CovarianceAdaptorState, Any, None]:
+        position, _ = ravel_pytree(state.position)
         state_out = update_mean(adaptor_state.welford_state, position)
         return CovarianceAdaptorState(state_out), params, None
 
-    def finalize(adaptor_state, params):
+    def finalize(
+        adaptor_state: CovarianceAdaptorState, params: Any
+    ) -> tuple[Any, None]:
         _, _, mean = final_mean(adaptor_state.welford_state)
         return replace_params(params, **{field: mean}), None
 
@@ -128,7 +144,7 @@ def mean_adaptor(
 def slice_step_size_adaptor(
     target_num_evaluations: float,
     max_evaluations: int,
-    **kwargs,
+    **kwargs: Any,
 ) -> Adaptor:
     """Local dual-averaging rule for slice-width adaptation."""
     return step_size_adaptor(
@@ -162,7 +178,14 @@ def window_warmup(
             diagonal, target_acceptance_rate
         )
 
-    def run(key, kernel, state, params, num_steps, args=None):
+    def run(
+        key: RngKey,
+        kernel: Kernel,
+        state: Any,
+        params: Any,
+        num_steps: int,
+        args: Any = None,
+    ) -> WarmupResult:
         if args is not None:
             raise ValueError("window_warmup does not support per-step arguments")
         schedule = build_schedule(

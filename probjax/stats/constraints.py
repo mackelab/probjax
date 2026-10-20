@@ -14,7 +14,7 @@ from typing import Any, Union
 import jax.numpy as jnp
 from jax.tree_util import tree_flatten
 
-from probjax.utils.typing import Array, PyTree
+from probjax.utils.typing import Array, ArrayLike, PyTree
 
 ConstraintLike = Union[Array, "Constraint"]
 
@@ -100,8 +100,8 @@ class Interval(Real):
 
     def __init__(
         self,
-        lower: float,
-        upper: float,
+        lower: float | ArrayLike,
+        upper: float | ArrayLike,
         closed_left: bool = True,
         closed_right: bool = True,
     ) -> None:
@@ -120,9 +120,11 @@ class Interval(Real):
     def _check_constraint(self, x: Constraint) -> bool:
         if not isinstance(x, Interval):
             return False
-        term1 = x.lower >= self.lower if self.closed_left else x.lower > self.lower
-        term2 = x.upper <= self.upper if self.closed_right else x.upper < self.upper
-        return term1 and term2
+        lower = jnp.asarray(self.lower)
+        upper = jnp.asarray(self.upper)
+        term1 = x.lower >= lower if self.closed_left else x.lower > lower
+        term2 = x.upper <= upper if self.closed_right else x.upper < upper
+        return bool(term1) and bool(term2)
 
 
 class UnitInterval(Interval):
@@ -241,7 +243,9 @@ class FiniteSet(Constraint):
         if isinstance(x, Interval):
             min_val = float(jnp.min(values))
             max_val = float(jnp.max(values))
-            return x.lower >= min_val and x.upper <= max_val
+            lower = jnp.asarray(x.lower)
+            upper = jnp.asarray(x.upper)
+            return bool(lower >= min_val) and bool(upper <= max_val)
         return False
 
 

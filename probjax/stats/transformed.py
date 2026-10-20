@@ -7,7 +7,7 @@ to a base distribution.
 """
 
 import functools
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -16,6 +16,7 @@ from probjax.core import inverse_and_logabsdet
 from probjax.core.custom_primitives.sharded_primitive import batch_shard
 from probjax.stats.base import rv_continuous, rv_continuous_frozen
 from probjax.stats.constraints import distribution, real
+from probjax.utils.jaxutils import where
 from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["transformed"]
@@ -172,7 +173,14 @@ class transformed_gen(rv_continuous):
         )
 
     @classmethod
-    def logpdf(cls, x: ArrayLike, base_dist, bijector, inverse_and_logdet=None, **kwds):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        base_dist: Any,
+        bijector: Any,
+        inverse_and_logdet: Any = None,
+        **kwds: Any,
+    ) -> ArrayLike:
         """Log probability density function of the transformed distribution."""
         event_shape = tuple(base_dist.event_shape)
         _, x_flat, leading_shape = cls._flatten_by_event_shape(x, event_shape)
@@ -189,7 +197,13 @@ class transformed_gen(rv_continuous):
         return base_dist.logpdf(inv_value) + log_det
 
     @classmethod
-    def pdf(cls, x: ArrayLike, base_dist, bijector, **kwds):
+    def pdf(
+        cls,
+        x: ArrayLike,
+        base_dist: Any,
+        bijector: Any,
+        **kwds: Any,
+    ) -> ArrayLike:
         """Probability density function of the transformed distribution."""
         return jnp.exp(cls.logpdf(x, base_dist, bijector, **kwds))
 
@@ -204,7 +218,14 @@ class transformed_gen(rv_continuous):
         return cls._unflatten_by_event_shape(apply(high) > apply(low), leading, shape)
 
     @classmethod
-    def cdf(cls, x: ArrayLike, base_dist, bijector, inverse_and_logdet=None, **kwds):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        base_dist: Any,
+        bijector: Any,
+        inverse_and_logdet: Any = None,
+        **kwds: Any,
+    ) -> ArrayLike:
         """Cumulative distribution function of the transformed distribution."""
         event_shape = tuple(base_dist.event_shape)
         cls._ensure_univariate_event(event_shape)
@@ -216,20 +237,27 @@ class transformed_gen(rv_continuous):
 
         inv_flat, _ = vmapped_inverse_and_logdet(x_flat)
         inv_value = cls._unflatten_by_event_shape(inv_flat, leading_shape, event_shape)
-        return jnp.where(
+        return where(
             cls._is_increasing(base_dist, bijector),
             base_dist.cdf(inv_value),
             base_dist.sf(inv_value),
         )
 
     @classmethod
-    def ppf(cls, q: ArrayLike, base_dist, bijector, inverse_and_logdet=None, **kwds):
+    def ppf(
+        cls,
+        q: ArrayLike,
+        base_dist: Any,
+        bijector: Any,
+        inverse_and_logdet: Any = None,
+        **kwds: Any,
+    ) -> ArrayLike:
         """Percent point function of the transformed distribution."""
         del inverse_and_logdet, kwds
         event_shape = tuple(base_dist.event_shape)
         cls._ensure_univariate_event(event_shape)
 
-        base_ppf = jnp.where(
+        base_ppf = where(
             cls._is_increasing(base_dist, bijector), base_dist.ppf(q), base_dist.isf(q)
         )
         _, base_ppf_flat, leading_shape = cls._flatten_by_event_shape(
@@ -257,26 +285,32 @@ class transformed_gen(rv_continuous):
         return cls._forward_flat(bijector, samples_flat, leading_shape, event_shape)
 
     @classmethod
-    def mean(cls, base_dist, bijector, **kwds):
+    def mean(cls, base_dist: Any, bijector: Any, **kwds: Any) -> ArrayLike:
         """Mean of the transformed distribution."""
         raise NotImplementedError("Mean not implemented for transformed distribution")
 
     @classmethod
-    def var(cls, base_dist, bijector, **kwds):
+    def var(cls, base_dist: Any, bijector: Any, **kwds: Any) -> ArrayLike:
         """Variance of the transformed distribution."""
         raise NotImplementedError(
             "Variance not implemented for transformed distribution"
         )
 
     @classmethod
-    def entropy(cls, base_dist, bijector, inverse_and_logdet=None, **kwds):
+    def entropy(
+        cls,
+        base_dist: Any,
+        bijector: Any,
+        inverse_and_logdet: Any = None,
+        **kwds: Any,
+    ) -> ArrayLike:
         """Entropy of the transformed distribution."""
         raise NotImplementedError(
             "Entropy not implemented for transformed distribution"
         )
 
     @classmethod
-    def mode(cls, base_dist, bijector, **kwds):
+    def mode(cls, base_dist: Any, bijector: Any, **kwds: Any) -> ArrayLike:
         """Mode of the transformed distribution."""
         raise NotImplementedError("Mode not implemented for transformed distribution")
 

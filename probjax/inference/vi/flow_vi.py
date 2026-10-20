@@ -25,7 +25,9 @@ flow only has to be *helpful*, not correct.
 >>> draws = algorithm.sample(key, state, 1000)
 """
 
-from typing import Callable, NamedTuple
+from __future__ import annotations
+
+from typing import Any, Callable, NamedTuple, cast
 
 import jax
 import jax.numpy as jnp
@@ -33,6 +35,8 @@ import optax
 from blackjax.base import VIAlgorithm
 from flax import nnx
 from optax import GradientTransformation, OptState
+
+from probjax.utils.typing import Array, RngKey
 
 __all__ = [
     "FlowVIState",
@@ -62,10 +66,10 @@ class FlowVIInfo(NamedTuple):
             during a run. Its absolute value is not interpretable; its trend is.
     """
 
-    elbo: float
+    elbo: Array
 
 
-def _split(flow):
+def _split(flow: Any) -> tuple[Any, ...]:
     """Separate a flow into (static graph, trainable params, everything else).
 
     The same boundary ``probjax.nn.training`` uses, so a flow can be handed to
@@ -74,19 +78,26 @@ def _split(flow):
     return nnx.split(flow, nnx.Param, ...)
 
 
-def _draw(graphdef, flow_params, rest, rng_key, event_dim, num_samples):
+def _draw(
+    graphdef: Any,
+    flow_params: Any,
+    rest: Any,
+    rng_key: RngKey,
+    event_dim: int,
+    num_samples: int,
+) -> Array:
     """Reparameterised draws: push standard normal noise through the flow."""
     flow = nnx.merge(graphdef, flow_params, rest)
     noise = jax.random.normal(rng_key, (num_samples, event_dim))
     return jax.vmap(flow.transform)(noise)
 
 
-def _log_q(graphdef, flow_params, rest, samples):
+def _log_q(graphdef: Any, flow_params: Any, rest: Any, samples: Array) -> Array:
     flow = nnx.merge(graphdef, flow_params, rest)
     return flow._logpdf(samples)
 
 
-def init(flow, optimizer: GradientTransformation) -> FlowVIState:
+def init(flow: Any, optimizer: GradientTransformation) -> FlowVIState:
     """Initialise from a flow, which supplies the variational family.
 
     Unlike ``blackjax.vi.meanfield_vi.init`` there is no ``position`` argument:
@@ -98,12 +109,12 @@ def init(flow, optimizer: GradientTransformation) -> FlowVIState:
 
 
 def step(
-    rng_key,
+    rng_key: RngKey,
     state: FlowVIState,
     logdensity_fn: Callable,
     optimizer: GradientTransformation,
-    graphdef,
-    rest,
+    graphdef: Any,
+    rest: Any,
     event_dim: int,
     num_samples: int = 100,
     stl_estimator: bool = True,
@@ -116,7 +127,7 @@ def step(
     explicitly.
     """
 
-    def objective(flow_params):
+    def objective(flow_params: Any) -> Array:
         samples = _draw(graphdef, flow_params, rest, rng_key, event_dim, num_samples)
         # Sticking the landing: with the entropy term's parameters detached the
         # score-function part of the gradient drops out, and it is exactly zero
@@ -130,25 +141,27 @@ def step(
 
     value, gradient = jax.value_and_grad(objective)(state.flow_params)
     updates, opt_state = optimizer.update(gradient, state.opt_state, state.flow_params)
-    flow_params = optax.apply_updates(state.flow_params, updates)
+    # ``apply_updates`` preserves the parameter tree, so the result is still
+    # an ``nnx.State``.
+    flow_params = cast(nnx.State, optax.apply_updates(state.flow_params, updates))
     return FlowVIState(flow_params, opt_state), FlowVIInfo(value)
 
 
 def sample(
-    rng_key,
+    rng_key: RngKey,
     state: FlowVIState,
-    graphdef,
-    rest,
+    graphdef: Any,
+    rest: Any,
     event_dim: int,
     num_samples: int = 1,
-):
+) -> Array:
     """Draw from the fitted approximation."""
     return _draw(graphdef, state.flow_params, rest, rng_key, event_dim, num_samples)
 
 
 def as_top_level_api(
     logdensity_fn: Callable,
-    flow,
+    flow: Any,
     optimizer: GradientTransformation,
     num_samples: int = 100,
     stl_estimator: bool = True,
@@ -173,10 +186,10 @@ def as_top_level_api(
     graphdef, _, rest = _split(flow)
     event_dim = flow.input_dim
 
-    def init_fn():
+    def init_fn() -> FlowVIState:
         return init(flow, optimizer)
 
-    def step_fn(rng_key, state: FlowVIState) -> tuple[FlowVIState, FlowVIInfo]:
+    def step_fn(rng_key: RngKey, state: FlowVIState) -> tuple[FlowVIState, FlowVIInfo]:
         return step(
             rng_key,
             state,
@@ -189,13 +202,13 @@ def as_top_level_api(
             stl_estimator,
         )
 
-    def sample_fn(rng_key, state: FlowVIState, num_samples: int = 1):
+    def sample_fn(rng_key: RngKey, state: FlowVIState, num_samples: int = 1) -> Array:
         return sample(rng_key, state, graphdef, rest, event_dim, num_samples)
 
     return VIAlgorithm(init_fn, step_fn, sample_fn)
 
 
-def rebuild(flow, state: FlowVIState):
+def rebuild(flow: Any, state: FlowVIState) -> Any:
     """Return a flow carrying the fitted variational parameters.
 
     The bridge to :func:`probjax.inference.neutra`, which wants a flow rather
