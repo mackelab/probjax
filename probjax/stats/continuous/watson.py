@@ -20,6 +20,7 @@ from jax.scipy.special import gammaln, hyp1f1
 
 from probjax.stats.base import rv_exponential_family, rv_spherical
 from probjax.stats.constraints import real, spherical
+from probjax.stats.spherical import normalize_vector
 from probjax.stats.utils import normalize_sample_weights
 from probjax.utils.jaxutils import where
 from probjax.utils.linalg import symmetrize_matrix
@@ -28,12 +29,6 @@ from probjax.utils.typing import Array, ArrayLike, RngKey
 __all__ = ["watson"]
 
 _EPS = 1e-8
-
-
-def _normalize_vector(x: ArrayLike) -> Array:
-    """Project vectors onto the unit sphere."""
-    norm = jnp.linalg.norm(x, axis=-1, keepdims=True)
-    return x / (norm + _EPS)
 
 
 def _orthogonal_unit_vector(mu: Array) -> Array:
@@ -392,7 +387,7 @@ def _sample_watson_direction(
 
     state0 = (False, mu, key)
     _, sample, _ = lax.while_loop(cond_fn, body_fn, state0)
-    return _normalize_vector(sample)
+    return normalize_vector(sample)
 
 
 class watson_gen(rv_spherical, rv_exponential_family):
@@ -423,8 +418,8 @@ class watson_gen(rv_spherical, rv_exponential_family):
         kappa: ArrayLike = 0.0,
         **kwargs: Any,
     ) -> Array:
-        x = _normalize_vector(jnp.asarray(x))
-        mean_direction = _normalize_vector(jnp.asarray(mean_direction))
+        x = normalize_vector(jnp.asarray(x))
+        mean_direction = normalize_vector(jnp.asarray(mean_direction))
         kappa = jnp.asarray(kappa)
 
         dot_prod = jnp.sum(x * mean_direction, axis=-1)
@@ -460,7 +455,7 @@ class watson_gen(rv_spherical, rv_exponential_family):
         shape: Tuple[int, ...] = (),
         **kwargs: Any,
     ):
-        mean_direction = _normalize_vector(jnp.asarray(mean_direction))
+        mean_direction = normalize_vector(jnp.asarray(mean_direction))
         kappa = jnp.asarray(kappa)
 
         if mean_direction.ndim < 1:
@@ -490,12 +485,12 @@ class watson_gen(rv_spherical, rv_exponential_family):
 
     @classmethod
     def mean(cls, mean_direction: Array, **kwargs):
-        mean_direction = _normalize_vector(jnp.asarray(mean_direction))
+        mean_direction = normalize_vector(jnp.asarray(mean_direction))
         return jnp.zeros_like(mean_direction)
 
     @classmethod
     def mode(cls, mean_direction: ArrayLike, **kwargs: Any) -> Array:
-        mean_direction = _normalize_vector(jnp.asarray(mean_direction))
+        mean_direction = normalize_vector(jnp.asarray(mean_direction))
         return mean_direction
 
     @classmethod
@@ -506,7 +501,7 @@ class watson_gen(rv_spherical, rv_exponential_family):
         **kwargs: Any,
     ) -> Array:
         """Representative mean direction (principal axis)."""
-        mean_direction = _normalize_vector(jnp.asarray(mean_direction))
+        mean_direction = normalize_vector(jnp.asarray(mean_direction))
         kappa = jnp.asarray(kappa)
         batch_shape = jax.lax.broadcast_shapes(mean_direction.shape[:-1], kappa.shape)
         return jnp.broadcast_to(mean_direction, batch_shape + mean_direction.shape[-1:])
@@ -518,7 +513,7 @@ class watson_gen(rv_spherical, rv_exponential_family):
         kappa: ArrayLike = 0.0,
         **kwargs: Any,
     ) -> Array:
-        mean_direction = _normalize_vector(jnp.asarray(mean_direction))
+        mean_direction = normalize_vector(jnp.asarray(mean_direction))
         kappa = jnp.asarray(kappa)
         dim = mean_direction.shape[-1]
         log_norm = _log_normalization(kappa, dim)
@@ -531,7 +526,7 @@ class watson_gen(rv_spherical, rv_exponential_family):
         kappa: ArrayLike = 0.0,
         **kwargs: Any,
     ) -> Array:
-        mean_direction = _normalize_vector(jnp.asarray(mean_direction))
+        mean_direction = normalize_vector(jnp.asarray(mean_direction))
         kappa = jnp.asarray(kappa)
         batch_shape = jax.lax.broadcast_shapes(mean_direction.shape[:-1], kappa.shape)
         mean_direction = jnp.broadcast_to(
@@ -542,7 +537,7 @@ class watson_gen(rv_spherical, rv_exponential_family):
 
     @classmethod
     def sufficient_statistics(cls, x: ArrayLike, **kwargs: Any) -> Array:
-        x = _normalize_vector(jnp.asarray(x))
+        x = normalize_vector(jnp.asarray(x))
         return jnp.square(x)
 
     @classmethod
@@ -553,7 +548,7 @@ class watson_gen(rv_spherical, rv_exponential_family):
         **kwargs: Any,
     ) -> Array:
         """Expected dyadic product :math:`E[XX^T]` for the Watson distribution."""
-        mean_direction = _normalize_vector(jnp.asarray(mean_direction))
+        mean_direction = normalize_vector(jnp.asarray(mean_direction))
         kappa = jnp.asarray(kappa, dtype=mean_direction.dtype)
 
         dim = mean_direction.shape[-1]
@@ -599,7 +594,7 @@ class watson_gen(rv_spherical, rv_exponential_family):
         Uses PCA and axial moment for the initial estimate, then refines
         via BFGS optimization of the negative log-likelihood.
         """
-        data = _normalize_vector(jnp.asarray(data))
+        data = normalize_vector(jnp.asarray(data))
         if data.ndim == 1:
             data = data[None, :]
         n = data.shape[0]
@@ -628,7 +623,7 @@ class watson_gen(rv_spherical, rv_exponential_family):
         mu_min = eigvecs[:, idx_min]
         choose_max = jnp.abs(rho_max - iso) >= jnp.abs(rho_min - iso)
         mu_init = where(choose_max, mu_max, mu_min)
-        mu_init = _normalize_vector(mu_init)
+        mu_init = normalize_vector(mu_init)
 
         axial_moment = jnp.sum(weights_arr * jnp.square(data @ mu_init))
         kappa_init = _solve_watson_kappa(axial_moment, dim, dtype)
@@ -645,7 +640,7 @@ class watson_gen(rv_spherical, rv_exponential_family):
             return -jnp.sum(w * cls.logpdf(data, mean_direction=mu_raw, kappa=kappa))
 
         result = jax_minimize(neg_log_lik, init_flat, method="BFGS")
-        mu = _normalize_vector(result.x[:-1])
+        mu = normalize_vector(result.x[:-1])
         kappa = result.x[-1]
         return mu, kappa
 

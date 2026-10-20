@@ -11,14 +11,71 @@ from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = [
     "clip_prob",
+    "circular_mean_and_resultant",
+    "flatten_by_event_shape",
     "flatten_samples",
     "loc_scale_sample",
     "normalize_sample_weights",
     "mean_and_var_1d",
     "row_mean_and_var",
     "row_mean_and_cov",
+    "unflatten_by_event_shape",
     "weighted_mean",
 ]
+
+
+def flatten_by_event_shape(
+    x: ArrayLike, event_shape: Tuple[int, ...]
+) -> Tuple[Array, Tuple[int, ...]]:
+    """Flatten the leading dims of ``x`` into one axis, keeping the event dims.
+
+    Returns the flattened array and the leading shape it was flattened from.
+    """
+    x_arr = jnp.asarray(x)
+    event_shape = tuple(event_shape)
+    event_ndim = len(event_shape)
+
+    if event_ndim:
+        if x_arr.ndim < event_ndim:
+            raise ValueError(
+                "Input has fewer dimensions than the distribution event shape."
+            )
+        if tuple(x_arr.shape[-event_ndim:]) != event_shape:
+            raise ValueError(
+                "Trailing dimensions of the input must match the distribution "
+                "event shape."
+            )
+        leading_shape = tuple(x_arr.shape[:-event_ndim])
+    else:
+        leading_shape = tuple(x_arr.shape)
+
+    return jnp.reshape(x_arr, (-1,) + event_shape), leading_shape
+
+
+def unflatten_by_event_shape(
+    x_flat: ArrayLike, leading_shape: Tuple[int, ...], event_shape: Tuple[int, ...]
+) -> Array:
+    """Restore a flattened array to its leading and event dimensions."""
+    return jnp.reshape(x_flat, tuple(leading_shape) + tuple(event_shape))
+
+
+def circular_mean_and_resultant(
+    data: ArrayLike, weights: Optional[Array] = None
+) -> Tuple[Array, Array]:
+    """Circular mean and mean resultant length of ``data``.
+
+    Both the von Mises and the wrapped Cauchy fits need these; the
+    ``atan2(sin, cos)`` mean and its ``sqrt(c^2 + s^2)`` resultant.
+    ``weights`` must already be normalized (or ``None`` for equal weights).
+    """
+    data_arr = jnp.asarray(data)
+    if weights is None:
+        s = jnp.mean(jnp.sin(data_arr))
+        c = jnp.mean(jnp.cos(data_arr))
+    else:
+        s = jnp.sum(weights * jnp.sin(data_arr))
+        c = jnp.sum(weights * jnp.cos(data_arr))
+    return jnp.arctan2(s, c), jnp.sqrt(c**2 + s**2)
 
 
 def clip_prob(q: ArrayLike) -> Array:

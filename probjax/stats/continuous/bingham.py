@@ -17,10 +17,14 @@ import jax.numpy as jnp
 import numpy as np
 from jax import lax, random
 from jax.numpy.linalg import eigh
-from jax.scipy.special import gammaln
 
 from probjax.stats.base import rv_exponential_family, rv_spherical
 from probjax.stats.constraints import real, spherical, stiefel
+from probjax.stats.spherical import (
+    normalize_vector,
+    sample_uniform_sphere,
+    sphere_area,
+)
 from probjax.stats.utils import normalize_sample_weights
 from probjax.utils.jaxutils import where
 from probjax.utils.linalg import symmetrize_matrix
@@ -38,13 +42,6 @@ def _cached_sphere_samples(dim: int, num_samples: int) -> jnp.ndarray:
     samples = rng.normal(size=(num_samples, dim))
     samples /= np.linalg.norm(samples, axis=1, keepdims=True)
     return jnp.asarray(samples)
-
-
-def _sphere_area(dim: int) -> jnp.ndarray:
-    dim_arr = jnp.asarray(dim, dtype=jnp.float32)
-    return jnp.exp(
-        jnp.log(2.0) + 0.5 * dim_arr * jnp.log(jnp.pi) - gammaln(0.5 * dim_arr)
-    )
 
 
 def _build_parameter_matrix(orientation: Array, concentration: Array) -> Array:
@@ -199,13 +196,8 @@ def _approximate_log_partition_mc(parameter_matrix: Array) -> Array:
     samples = _cached_sphere_samples(dim, _DEFAULT_SAMPLES)
     quad = jnp.einsum("bi,...ij,bj->...b", samples, parameter_matrix, samples)
     logmeanexp = jax.nn.logsumexp(quad, axis=-1) - jnp.log(samples.shape[0])
-    log_area = jnp.log(_sphere_area(dim))
+    log_area = jnp.log(sphere_area(dim))
     return log_area + logmeanexp
-
-
-def _sample_uniform_sphere(key: RngKey, dim: int) -> Array:
-    vec = random.normal(key, shape=(dim,))
-    return vec / (jnp.linalg.norm(vec) + _EPS)
 
 
 def _sample_bingham_direction_mc(
@@ -222,7 +214,7 @@ def _sample_bingham_direction_mc(
     def body_fn(state):
         done, sample, key = state
         key, key_vec, key_u = random.split(key, 3)
-        candidate = _sample_uniform_sphere(key_vec, dim)
+        candidate = sample_uniform_sphere(key_vec, dim)
         quad = jnp.dot(candidate, parameter_matrix @ candidate)
         log_u = jnp.log(random.uniform(key_u) + _EPS)
         accept = log_u <= quad - lambda_max
@@ -231,7 +223,7 @@ def _sample_bingham_direction_mc(
 
     state0 = (False, jnp.zeros((dim,), dtype=parameter_matrix.dtype), key)
     accepted, sample, key_out = lax.while_loop(cond_fn, body_fn, state0)
-    fallback = _sample_uniform_sphere(key_out, dim)
+    fallback = sample_uniform_sphere(key_out, dim)
     return lax.cond(accepted, lambda _: sample, lambda _: fallback, operand=None)
 
 
@@ -270,7 +262,7 @@ class bingham_gen(rv_spherical, rv_exponential_family):
 
         event_dim = orientation.shape[-1]
 
-        x = x / (jnp.linalg.norm(x, axis=-1, keepdims=True) + _EPS)
+        x = normalize_vector(x)
 
         if event_dim == 3:
             batch_shape = jax.lax.broadcast_shapes(
@@ -402,9 +394,7 @@ class bingham_gen(rv_spherical, rv_exponential_family):
         idx = jnp.argmax(concentration, axis=-1)
         idx_exp = idx[..., None, None]
         vector = jnp.take_along_axis(orientation, idx_exp, axis=-1)[..., 0]
-        norm = jnp.linalg.norm(vector, axis=-1, keepdims=True)
-        vector = vector / (norm + _EPS)
-        return vector
+        return normalize_vector(vector)
 
     @classmethod
     def log_partition(cls, orientation: Array, concentration: Array, **kwargs):

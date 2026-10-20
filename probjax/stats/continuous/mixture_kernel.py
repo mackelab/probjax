@@ -22,9 +22,8 @@ import jax.numpy as jnp
 from jax import random
 
 from probjax.stats.base import rv_continuous
-from probjax.stats.bijective.monotone import _solve_increasing
+from probjax.stats.bijective.monotone import ppf_by_cdf_bisection
 from probjax.stats.constraints import real, strict_positive
-from probjax.utils.jaxutils import where
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["mixture_kernel", "logistic_mixture_kernel"]
@@ -176,12 +175,7 @@ class mixture_kernel_gen(rv_continuous):
         def cdf_at(t):
             return cls.cdf(t, log_weights, locs, scales, **kwargs)
 
-        root = _solve_increasing(cdf_at, jnp.clip(q, 1e-7, 1.0 - 1e-7))
-        # The solver reports failure as NaN; the boundaries genuinely have no
-        # finite root, so answer them directly rather than letting the clip
-        # above pass off an interior point as the true quantile.
-        root = where(q <= 0.0, -jnp.inf, root)
-        return where(q >= 1.0, jnp.inf, root)
+        return ppf_by_cdf_bisection(q, cdf_at)
 
     @classmethod
     def _rvs_impl(

@@ -16,6 +16,7 @@ from probjax.core import inverse_and_logabsdet
 from probjax.core.custom_primitives.sharded_primitive import batch_shard
 from probjax.stats.base import rv_continuous, rv_continuous_frozen
 from probjax.stats.constraints import distribution, real
+from probjax.stats.utils import flatten_by_event_shape, unflatten_by_event_shape
 from probjax.utils.jaxutils import where
 from probjax.utils.typing import ArrayLike, RngKey
 
@@ -114,36 +115,13 @@ class transformed_gen(rv_continuous):
     @staticmethod
     def _flatten_by_event_shape(x: ArrayLike, event_shape: Tuple[int, ...]):
         """Flatten all leading dimensions into one axis while preserving event dims."""
-        x_arr = jnp.asarray(x)
-        event_shape = tuple(event_shape)
-
-        if event_shape:
-            event_ndim = len(event_shape)
-            if x_arr.ndim < event_ndim:
-                raise ValueError(
-                    "Input has fewer dimensions than the distribution event shape."
-                )
-            trailing_shape = tuple(x_arr.shape[-event_ndim:])
-            if trailing_shape != event_shape:
-                raise ValueError(
-                    "Trailing dimensions of the input must match the "
-                    "distribution event shape."
-                )
-            leading_shape = tuple(x_arr.shape[:-event_ndim])
-            x_flat = jnp.reshape(x_arr, (-1,) + event_shape)
-        else:
-            leading_shape = tuple(x_arr.shape)
-            x_flat = jnp.reshape(x_arr, (-1,))
-
-        return x_arr, x_flat, leading_shape
+        x_flat, leading_shape = flatten_by_event_shape(x, event_shape)
+        return jnp.asarray(x), x_flat, leading_shape
 
     @staticmethod
     def _unflatten_by_event_shape(x_flat, leading_shape: Tuple[int, ...], event_shape):
         """Restore flattened values back to leading and event dimensions."""
-        event_shape = tuple(event_shape)
-        if event_shape:
-            return jnp.reshape(x_flat, leading_shape + event_shape)
-        return jnp.reshape(x_flat, leading_shape)
+        return unflatten_by_event_shape(x_flat, leading_shape, event_shape)
 
     @staticmethod
     def _ensure_univariate_event(event_shape: Tuple[int, ...]):
