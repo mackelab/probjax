@@ -60,6 +60,10 @@ class TemporalFilter(NamedTuple):
     step: Callable
     likelihood_kind: str
 
+    def __call__(self, key, state, *args, **kwargs):
+        """One step: the same as ``filter.step(key, state, ...)``."""
+        return self.step(key, state, *args, **kwargs)
+
 
 class TemporalTrace(NamedTuple):
     """Stored states at ``ts``, with their immediately preceding initial state.

@@ -136,6 +136,49 @@ of 601 against 168 for NUTS on the target directly, at the same budget.
 Because `neutra` returns a plain log-density and a map, it composes with every
 kernel, warmup and runner above without any special integration.
 
+## How a kernel is built
+
+Every algorithm in `probjax` — MCMC kernels, SMC kernels, filters, ODE and SDE
+solvers — follows the same three steps, so the same habits work everywhere.
+
+| Role | What it is | Example |
+| --- | --- | --- |
+| **API class** | a namespace holding `init`, `init_params` and `build_step` | `hmc`, `kalman_filter`, `dopri5` |
+| **kernel** | a pure, callable `(init, step, ...)` container | `hmc(logdensity)` |
+| **runner** | the compiled loop that drives a kernel | `MCMC(kernel)`, `SMC(kernel)` |
+
+An API class is turned into a kernel by calling it with the model's functions.
+Options that are known earlier can be bound first with `configure`, which
+returns a value you can pass around, store, or hand to another kernel:
+
+```python
+import jax.numpy as jnp
+from probjax.inference import hmc, path_smc
+from probjax.inference.smc.path import GeometricPath
+
+# Bound now, applied to the model later.
+fast_hmc = hmc.configure(num_integration_steps=10)
+kernel = fast_hmc(lambda x: -0.5 * jnp.sum(x**2))
+
+# The same value works wherever a kernel API is expected.
+smc_kernel = path_smc(
+    logprior_fn=lambda x: -0.5 * jnp.sum(x**2),
+    loglikelihood_fn=lambda x: -0.5 * jnp.sum((x - 1.0) ** 2),
+    path=GeometricPath(),
+    mcmc_kernel=fast_hmc,
+)
+```
+
+Bound options are routed to whichever of `init`, `init_params` and `build_step`
+accepts them, so one set of options can describe a kernel's whole
+configuration. A configured value is hashable and compares by value, so it can
+be a static `jit` argument without retracing.
+
+Where the model's function is a single required argument, the shorthand
+`hmc(num_integration_steps=10)` returns the same configured value. Filters and
+SMC kernels take more than one model function, so they use `configure`
+explicitly.
+
 ## Tutorials
 
 Worked examples live in [Tutorials](../tutorials/smc.md): start with

@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 import optax
 
+from probjax.inference.base import RunnerMixin
 from probjax.inference.filtering.base import (
     FilterInfo,
     FilterKernel,
@@ -24,9 +25,7 @@ from probjax.inference.filtering.smoothing import (
 )
 from probjax.utils.guards import has_attrs
 from probjax.utils.jaxutils import (
-    WithProgressBarAPI,
     nested_checkpoint_scan,
-    print_scan,
 )
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
@@ -145,7 +144,7 @@ def _unpack_log_likelihood(state: FilterState, info: FilterInfo) -> Array:
     return log_likelihood
 
 
-class Filter(WithProgressBarAPI):
+class Filter(RunnerMixin):
     """Run a filter kernel, optionally displaying a progress bar.
 
     Supports two API styles:
@@ -327,20 +326,15 @@ class Filter(WithProgressBarAPI):
         num_steps = ts[1:].shape[0]
 
         if self.verbose:
-            update_stats, print_fn, init_stats, print_rate = self._make_verbose_fns(
+            # The progress bar needs a tuple carry, so the filter's
+            # ``(state, key)`` carry is wrapped in a one-element tuple.
+            _, (states, infos, output) = self._verbose_scan(
+                lambda carry, x: scan_fn(carry, x),
+                carry,
+                scan_in,
                 num_steps,
                 stats_fn=lambda _carry, y: self._extract_stats(y[0], y[1]),
-            )
-            _, (states, infos, output) = print_scan(
-                scan_fn,
-                carry,
-                init_stats,
-                xs=scan_in,
-                length=num_steps,
                 unroll=unroll,
-                update_stats=update_stats,
-                print_fn=print_fn,
-                print_rate=print_rate,
             )
         elif checkpoint_lengths is None:
             _, (states, infos, output) = jax.lax.scan(

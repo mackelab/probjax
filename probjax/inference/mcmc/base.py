@@ -10,7 +10,7 @@ from blackjax.base import State
 from jax.flatten_util import ravel_pytree
 
 from probjax.inference.base import Kernel, MCMCResult
-from probjax.utils.jaxutils import API
+from probjax.utils.jaxutils import Configured, KernelAPI
 from probjax.utils.typing import Array, RngKey, Scalar
 
 
@@ -27,31 +27,23 @@ class Params(NamedTuple):
 MarkovKernel = Kernel
 
 
-class MarkovKernelAPI(metaclass=API):
+class MarkovKernelAPI(KernelAPI):
     """Base class for MCMC kernels.
 
     Subclass it and set ``init``, ``init_params`` and ``build_step`` as static
     methods. Document the kernel in the subclass docstring: ``cls(logdensity_fn,
     **options)`` forwards ``options`` to ``build_step`` and returns a
-    :class:`Kernel`.
+    :class:`Kernel`. Calling the class with options only --
+    ``hmc(num_integration_steps=10)`` -- returns a
+    :class:`~probjax.utils.jaxutils.Configured` kernel instead.
     """
+
+    _kernel_type = MarkovKernel
 
     #: Optional factory returning this kernel's recommended adaptation
     #: policy (an Adaptor or a Warmup). Attached to built kernels;
     #: wrappers (e.g. pseudo-marginal) inherit it.
     default_adaptation_fn: Callable[..., Any] | None = None
-
-    @staticmethod
-    def init(*args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError("init method must be implemented")
-
-    @staticmethod
-    def init_params(*args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError("init_params method must be implemented")
-
-    @staticmethod
-    def build_step(*args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError("build_kernel method must be implemented")
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -68,17 +60,13 @@ class MarkovKernelAPI(metaclass=API):
                 return init(*args, **kw)
 
             cls.init = staticmethod(init_with_rng)
-        # Built kernels are instances of a per-algorithm Kernel subclass, so
-        # help(kernel) and repr(kernel) show this algorithm, not Kernel.
-        # The subclass is display-only: dispatch on Kernel, not on it, and
-        # do not pickle kernels (they close over jit-compiled steps).
-        cls.kernel_type = type(
-            cls.__name__,
-            (MarkovKernel,),
-            {"__doc__": cls.__doc__, "__module__": cls.__module__, "__slots__": ()},
-        )
 
-    def __new__(cls, logdensity_fn: Callable, **kwargs) -> MarkovKernel:
+    def __new__(
+        cls, logdensity_fn: Callable | None = None, **kwargs
+    ) -> MarkovKernel | Configured:
+        if logdensity_fn is None:
+            return Configured(cls, tuple(sorted(kwargs.items())))
+
         def init_fn(key, position=None, **init_kwargs):
             # Accept the old position-first form while internal SMC composition
             # is migrated to constructed kernel values.

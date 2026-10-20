@@ -5,7 +5,7 @@ from typing import Any, Callable, NamedTuple, Optional, Tuple
 import jax
 
 from probjax.utils.guards import has_attrs
-from probjax.utils.jaxutils import API
+from probjax.utils.jaxutils import KernelAPI
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 
@@ -51,20 +51,47 @@ class FilterKernel(NamedTuple):
         return self.step(state, t, observed, rng_key)
 
 
-class FilterAPI(metaclass=API):
+class FilterAPI(KernelAPI):
+    """Base class for filters.
+
+    Subclass it and set ``init`` and ``build_step`` as static methods.
+    ``cls(**model_functions)`` builds a :class:`FilterKernel`;
+    ``cls.configure(**options)`` binds options before the model's functions
+    are known.
+    """
+
+    _kernel_type = FilterKernel
+
     @staticmethod
     def init(*args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("init method must be implemented")
 
     @staticmethod
+    def init_params(*args: Any, **kwargs: Any) -> Any:
+        """Filters have no tunable parameters."""
+        return None
+
+    @staticmethod
+    def build_step(*args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError("build_step method must be implemented")
+
+    @staticmethod
     def build_kernel(*args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError("build_kernel method must be implemented")
+        """The original name of :meth:`build_step`; still accepted."""
+        raise NotImplementedError("build_step method must be implemented")
 
     default_unpack = staticmethod(_default_unpack)
 
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # ``build_kernel`` was the original name; ``build_step`` is the name
+        # every other kernel API uses. Accept both, and prefer ``build_step``.
+        if "build_kernel" in cls.__dict__ and "build_step" not in cls.__dict__:
+            cls.build_step = cls.__dict__["build_kernel"]
+
     def __new__(cls, *args: Any, **kwargs: Any) -> FilterKernel:
-        return FilterKernel(
-            cls.init, cls.build_kernel(*args, **kwargs), cls.default_unpack
+        return cls.kernel_type(
+            cls.init, cls.build_step(*args, **kwargs), cls.default_unpack
         )
 
 
@@ -86,6 +113,7 @@ def make_filter_api(
     """
     attrs = {
         "init": staticmethod(init_fn),
+        "build_step": staticmethod(build_kernel_fn),
         "build_kernel": staticmethod(build_kernel_fn),
     }
     if default_unpack_fn is not None:

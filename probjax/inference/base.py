@@ -4,6 +4,20 @@ Kernels are pure transitions, adaptors fit their parameters and runners provide
 the compiled execution paths. The aliases below describe those three roles so
 that kernels, runners and user code agree on what a "state", an "info" or an
 "adaptation policy" is.
+
+Every algorithm API follows the same three steps:
+
+1. an **API class** (:class:`~probjax.utils.jaxutils.KernelAPI`) holds
+   ``init``, ``init_params`` and ``build_step``;
+2. calling it with the model's functions builds a **kernel** -- a pure
+   ``(init, step, ...)`` container that is callable and hashable;
+3. a **runner** (:class:`MCMC`, :class:`SMC`) drives the kernel in a compiled
+   scan.
+
+Options that are known before the model is can be bound with
+``api.configure(**options)``, which returns a
+:class:`~probjax.utils.jaxutils.Configured` value; calling that with the
+model's functions builds the kernel.
 """
 
 from __future__ import annotations
@@ -128,10 +142,13 @@ class RunnerMixin(WithProgressBarAPI):
         xs: Any,
         length: int,
         stats_fn: Callable[[Any, Any], Any],
+        unroll: int = 1,
     ) -> tuple[Any, Any]:
         """Run a scan with a rate-limited progress bar.
 
-        ``print_scan`` requires a tuple carry, so we wrap the kernel state.
+        ``print_scan`` requires a tuple carry, so the kernel state is wrapped
+        in a one-element tuple. ``f`` receives the state itself and returns
+        the new state together with the scan output.
         """
 
         def wrapped(carry, x):
@@ -147,6 +164,7 @@ class RunnerMixin(WithProgressBarAPI):
             init_stats,
             xs=xs,
             length=length,
+            unroll=unroll,
             update_stats=update_stats,
             print_fn=print_fn,
             print_rate=print_rate,

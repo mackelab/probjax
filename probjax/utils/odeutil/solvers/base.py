@@ -7,7 +7,7 @@ from typing import Any, NamedTuple, Optional
 import jax.numpy as jnp
 
 from probjax.utils._solver_common import ConfiguredSolver, resolve_solver
-from probjax.utils.jaxutils import API
+from probjax.utils.jaxutils import KernelAPI
 from probjax.utils.typing import Array, ArrayLike, Callable
 
 METHOD_STEP_FN: dict[str, Any] = {}
@@ -30,7 +30,17 @@ class ODESolver(NamedTuple):
         return self.step(state, dt)
 
 
-class ODESolverAPI(metaclass=API):
+class ODESolverAPI(KernelAPI):
+    """Base class for ODE solvers.
+
+    Subclass it and set ``init`` and ``build_step`` as static methods.
+    ``cls(drift, **options)`` builds the solver; ``cls(**options)`` returns a
+    :class:`~probjax.utils.jaxutils.Configured` solver to pass as
+    ``odeint(..., solver=...)``.
+    """
+
+    _kernel_type = ODESolver
+
     @staticmethod
     def init(*args: Any, **kwargs: Any) -> Any:
         """Initialize ODE solver state.
@@ -43,6 +53,11 @@ class ODESolverAPI(metaclass=API):
             Initial ODEState
         """
         raise NotImplementedError("init method must be implemented")
+
+    @staticmethod
+    def init_params(*args: Any, **kwargs: Any) -> Any:
+        """ODE solvers have no tunable parameters."""
+        return None
 
     @staticmethod
     def build_step(*args: Any, **kwargs: Any) -> Any:
@@ -77,13 +92,15 @@ class ODESolverAPI(metaclass=API):
             step functions
         """
         if drift is None:
+            if dtype is not None:
+                kwargs["dtype"] = dtype
             return ConfiguredSolver(cls, tuple(sorted(kwargs.items())))
         if (
             dtype is not None
             and "dtype" in inspect.signature(cls.build_step).parameters
         ):
             kwargs["dtype"] = dtype
-        return ODESolver(
+        return cls.kernel_type(
             init=partial(cls.init, drift=drift),
             step=cls.build_step(drift, **kwargs),
         )

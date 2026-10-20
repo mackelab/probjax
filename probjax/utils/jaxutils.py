@@ -3,8 +3,9 @@ import importlib
 import inspect
 import math
 import sys
+from dataclasses import dataclass
 from functools import lru_cache, partial
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple
+from typing import Any, Callable, ClassVar, Dict, Optional, Sequence, Tuple, cast
 
 import jax
 import jax.experimental
@@ -48,13 +49,162 @@ _progress_executor = concurrent.futures.ThreadPoolExecutor(
 
 
 class API(type):
-    """API class for algorithms"""
+    """API class for algorithms.
+
+    An API class is a namespace, not an instance: it holds the functions that
+    build a kernel (``init``, ``init_params``, ``build_step``) and is turned
+    into a kernel by calling it with the model's functions.
+    """
 
     def __str__(self):
         return self.__doc__ or ""
 
     def __repr__(self):
         return self.__doc__ or self.__name__
+
+    def configure(cls, **options: Any) -> "Configured":
+        """Bind options now; the model's functions can be supplied later.
+
+        ``hmc.configure(num_integration_steps=10)`` returns a
+        :class:`Configured`; calling that with the log-density builds the
+        kernel. The result is hashable and compares by value, so it can be a
+        static ``jit`` argument without retracing.
+        """
+        return Configured(cls, tuple(sorted(options.items())))
+
+
+@dataclass(frozen=True)
+class Configured:
+    """An API class with its options bound, waiting for the model.
+
+    Produced by :meth:`API.configure`, and by calling an API class with
+    options only where the model's function is unambiguous::
+
+        kernel = hmc.configure(num_integration_steps=10)(logdensity)
+
+    The bound options are routed to whichever of ``init``, ``init_params``
+    and ``build_step`` accepts them, so one set of options can describe a
+    kernel's whole configuration.
+    """
+
+    api: type
+    options: Tuple[Tuple[str, Any], ...] = ()
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """Build the kernel, with the bound options that apply to building."""
+        options = self._routed("build_step", allow_kwargs=True)
+        options.update(kwargs)
+        return self.api(*args, **options)
+
+    @property
+    def info(self) -> Dict[str, Any]:
+        """The API's metadata (a solver's order and adaptivity, say)."""
+        return getattr(self.api, "info", {})
+
+    @property
+    def default_adaptation_fn(self) -> Any:
+        """The API's recommended adaptation policy, if it has one."""
+        return getattr(self.api, "default_adaptation_fn", None)
+
+    def _routed(self, name: str, *, allow_kwargs: bool) -> Dict[str, Any]:
+        """The bound options that ``api.<name>`` accepts."""
+        return filter_kwargs(
+            getattr(self.api, name), dict(self.options), allow_kwargs=allow_kwargs
+        )
+
+    def init(self, *args: Any, **kwargs: Any) -> Any:
+        """``api.init`` with the options it accepts."""
+        options = self._routed("init", allow_kwargs=False)
+        options.update(kwargs)
+        return self.api.init(*args, **options)
+
+    def init_params(self, *args: Any, **kwargs: Any) -> Any:
+        """``api.init_params`` with the options it accepts."""
+        options = self._routed("init_params", allow_kwargs=False)
+        options.update(kwargs)
+        return self.api.init_params(*args, **options)
+
+    def build_step(self, *args: Any, **kwargs: Any) -> Any:
+        """``api.build_step`` with the options it accepts."""
+        options = self._routed("build_step", allow_kwargs=True)
+        options.update(kwargs)
+        return self.api.build_step(*args, **options)
+
+
+def as_configured(api_or_configured: Any, **options: Any) -> Configured:
+    """Normalize an API class or a :class:`Configured` into a ``Configured``.
+
+    Extra options are merged in; the ones already bound to a ``Configured``
+    win, since they were the more explicit binding.
+    """
+    if isinstance(api_or_configured, Configured):
+        base = api_or_configured
+    else:
+        base = Configured(api_or_configured, ())
+    if not options:
+        return base
+    merged = dict(base.options) | options
+    return Configured(base.api, tuple(sorted(merged.items())))
+
+
+def filter_kwargs(
+    fn: Callable, kwargs: Dict[str, Any], *, allow_kwargs: bool = True
+) -> Dict[str, Any]:
+    """The subset of ``kwargs`` that ``fn`` accepts.
+
+    A function that takes ``**kwargs`` takes everything, unless
+    ``allow_kwargs`` is false -- then only the options it names are kept.
+    """
+    sig = inspect.signature(fn)
+    accepts_kwargs = any(
+        param.kind == inspect.Parameter.VAR_KEYWORD for param in sig.parameters.values()
+    )
+    if accepts_kwargs and allow_kwargs:
+        return dict(kwargs)
+    return {k: v for k, v in kwargs.items() if k in sig.parameters}
+
+
+class KernelAPI(metaclass=API):
+    """Base class for algorithms that build a callable kernel.
+
+    A subclass sets ``_kernel_type`` -- the container describing a built
+    kernel -- and implements ``init`` and ``build_step``. The built kernel
+    gets a per-algorithm type, so ``repr(kernel)`` and ``help(kernel)`` show
+    the algorithm rather than the generic container.
+    """
+
+    #: The container describing a built kernel; set by each subclass.
+    _kernel_type: ClassVar[Optional[type]] = None
+    #: The per-algorithm kernel type, created for each subclass. Typed
+    #: loosely because it is a subclass of a container the subclass chooses.
+    kernel_type: ClassVar[Any] = None
+
+    @staticmethod
+    def init(*args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError("init method must be implemented")
+
+    @staticmethod
+    def init_params(*args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError("init_params method must be implemented")
+
+    @staticmethod
+    def build_step(*args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError("build_step method must be implemented")
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        kernel_type = cls._kernel_type
+        if kernel_type is None:
+            return
+        # Built kernels are instances of a per-algorithm type, so
+        # help(kernel) and repr(kernel) show this algorithm. The subclass is
+        # display-only: dispatch on the base type, and do not pickle kernels
+        # (they close over jit-compiled steps).
+        cls.kernel_type = type(
+            cls.__name__,
+            (cast(type, kernel_type),),
+            {"__doc__": cls.__doc__, "__module__": cls.__module__, "__slots__": ()},
+        )
 
 
 _MISSING = object()

@@ -56,6 +56,10 @@ class TemporalSMC(NamedTuple):
     init: Callable
     step: Callable
 
+    def __call__(self, key, state, *args, **kwargs):
+        """One step: the same as ``kernel.step(key, state, ...)``."""
+        return self.step(key, state, *args, **kwargs)
+
 
 def temporal_smc(
     model: Any,

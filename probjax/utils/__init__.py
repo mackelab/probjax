@@ -58,6 +58,8 @@ from probjax.utils.interpolation import (
 
 # JAX utilities
 from probjax.utils.jaxutils import (
+    Configured,
+    KernelAPI,
     ravel_args,
 )
 
@@ -127,6 +129,9 @@ __all__ = [
     "split_drift",
     # JAX utilities
     "ravel_args",
+    # Kernel API
+    "Configured",
+    "KernelAPI",
     # Typing
     "Array",
     "ArrayLike",
