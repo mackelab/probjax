@@ -5,7 +5,7 @@ from typing import Any, Callable, NamedTuple, Optional
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.filtering.base import FilterAPI
+from probjax.inference.filtering.base import FilterAPI, as_time
 from probjax.inference.particles import normalize_log_weights
 from probjax.inference.smc.ess import ess
 from probjax.inference.smc.resampling import (
@@ -43,9 +43,7 @@ def init(
             "The number of particles and log weights must be the same."
         )
         weights = normalize_log_weights(weights)
-    return ParticleFilterState(
-        particles, weights, None if t is None else jnp.asarray(t)
-    )
+    return ParticleFilterState(particles, weights, as_time(t))
 
 
 def resample_when_ess_below(ess: float, ess_threshold: float = 0.5) -> bool:
@@ -166,9 +164,7 @@ def build_kernel(
             new_particles,
         )
 
-        new_state = ParticleFilterState(
-            new_particles, new_log_weights, None if t is None else jnp.asarray(t)
-        )
+        new_state = ParticleFilterState(new_particles, new_log_weights, as_time(t))
         info = ParticleFilterInfo(
             ancestors, log_likelihood, effective_samples_size, is_observed
         )

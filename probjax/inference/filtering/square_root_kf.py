@@ -5,7 +5,7 @@ from typing import Any, Callable, NamedTuple, Optional, Tuple
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.filtering.base import FilterAPI
+from probjax.inference.filtering.base import FilterAPI, as_time
 from probjax.utils.guards import call_if_callable
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
@@ -25,9 +25,7 @@ class SqKalmanFilterInfo(NamedTuple):
 def init(
     mean: ArrayLike, std: ArrayLike, t: Optional[ArrayLike] = None
 ) -> SqKalmanFilterState:
-    return SqKalmanFilterState(
-        jnp.asarray(mean), jnp.asarray(std), None if t is None else jnp.asarray(t)
-    )
+    return SqKalmanFilterState(jnp.asarray(mean), jnp.asarray(std), as_time(t))
 
 
 def unpack_matrix(
@@ -150,9 +148,7 @@ def build_kernel(
             log_likelihood = jnp.array(0.0)
 
         # Construct the new state and info
-        new_state = SqKalmanFilterState(
-            mu1, std1, None if t is None else jnp.asarray(t)
-        )
+        new_state = SqKalmanFilterState(mu1, std1, as_time(t))
         info = SqKalmanFilterInfo(
             mean_pred=mu1_, std_pred=std1_, log_likelihood=log_likelihood
         )

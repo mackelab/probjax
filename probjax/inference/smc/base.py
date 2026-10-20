@@ -163,3 +163,37 @@ def init_mcmc_params_from_logdensity(
     )
     params = configured.init_params(mcmc_state, **init_param_kwargs)
     return _ensure_param_batch(_params_to_dict(params), shared=True)
+
+
+def init_tempered_mcmc_params(
+    particles: PyTree,
+    *,
+    logprior_fn: Callable | None,
+    loglikelihood_fn: Callable | None,
+    mcmc_kernel: Any,
+    rng_key: RngKey | None = None,
+    lmbda: float = 0.0,
+    mcmc_kernel_kwargs: dict[str, Any] | None = None,
+    kind: str = "persistent SMC",
+    **mcmc_param_kwargs: Any,
+) -> dict[str, Array]:
+    """Initialize MCMC params under the tempered log-posterior.
+
+    The tempered density is ``logprior_fn(position) + lmbda *
+    loglikelihood_fn(position)``. Shared body of the ``init_params``
+    functions of ``persistent_smc`` and ``adaptive_persistent_smc``.
+    """
+    if logprior_fn is None or loglikelihood_fn is None:
+        raise ValueError(f"{kind} requires both logprior_fn and loglikelihood_fn.")
+
+    def tempered_logposterior_fn(position: Any) -> Array:
+        return logprior_fn(position) + lmbda * loglikelihood_fn(position)
+
+    return init_mcmc_params_from_logdensity(
+        particles,
+        tempered_logposterior_fn,
+        mcmc_kernel,
+        rng_key=rng_key,
+        mcmc_kernel_kwargs=mcmc_kernel_kwargs,
+        **mcmc_param_kwargs,
+    )

@@ -8,7 +8,7 @@ from blackjax.smc import solver as bj_solver
 
 from probjax.inference.smc.base import (
     SMCKernelAPI,
-    init_mcmc_params_from_logdensity,
+    init_tempered_mcmc_params,
     make_mcmc_adapter,
 )
 from probjax.inference.smc.resampling import systematic
@@ -66,20 +66,15 @@ def init_params(
     mcmc_kernel_kwargs: dict[str, Any] | None = None,
     **mcmc_param_kwargs: Any,
 ) -> dict[str, Array]:
-    if logprior_fn is None or loglikelihood_fn is None:
-        raise ValueError(
-            "adaptive persistent SMC requires both logprior_fn and loglikelihood_fn."
-        )
-
-    def tempered_logposterior_fn(position: Any) -> Array:
-        return logprior_fn(position) + lmbda * loglikelihood_fn(position)
-
-    return init_mcmc_params_from_logdensity(
+    return init_tempered_mcmc_params(
         particles,
-        tempered_logposterior_fn,
-        mcmc_kernel,
+        logprior_fn=logprior_fn,
+        loglikelihood_fn=loglikelihood_fn,
+        mcmc_kernel=mcmc_kernel,
         rng_key=rng_key,
+        lmbda=lmbda,
         mcmc_kernel_kwargs=mcmc_kernel_kwargs,
+        kind="adaptive persistent SMC",
         **mcmc_param_kwargs,
     )
 

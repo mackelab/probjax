@@ -40,7 +40,7 @@ from typing import Callable
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.mcmc.base import MarkovKernel
+from probjax.inference.mcmc.base import MarkovKernel, normalize_init_args
 from probjax.utils.jaxutils import as_configured
 from probjax.utils.typing import RngKey
 
@@ -107,8 +107,7 @@ def pseudo_marginal(
     # init: evaluate the stochastic logdensity once to populate state
     # ------------------------------------------------------------------
     def init(key, position=None, rng_key=None):
-        if position is None:
-            position, key = key, rng_key
+        key, position = normalize_init_args(key, position, rng_key)
         if key is None:
             key = jax.random.PRNGKey(0)
         key_init, key_logdensity = jax.random.split(key)

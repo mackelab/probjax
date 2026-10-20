@@ -13,7 +13,7 @@ from typing import Any, Callable, NamedTuple, Optional, Tuple
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.filtering.base import FilterInfo
+from probjax.inference.filtering.base import FilterInfo, as_time
 from probjax.utils.linalg import symmetrize_matrix
 from probjax.utils.linear_operator import as_array, densify_if_small, is_operator
 from probjax.utils.typing import Array, ArrayLike
@@ -31,17 +31,10 @@ class GaussianFilterInfo(NamedTuple):
     log_likelihood: Optional[Array] = None
 
 
-def _as_time(t: Optional[ArrayLike]) -> Optional[Array]:
-    """Normalize a filter time stamp to an array (or ``None``)."""
-    return None if t is None else jnp.asarray(t)
-
-
 def gaussian_init(
     mean: ArrayLike, cov: ArrayLike, t: Optional[ArrayLike] = None
 ) -> GaussianFilterState:
-    return GaussianFilterState(
-        jnp.asarray(mean), jnp.asarray(cov), None if t is None else jnp.asarray(t)
-    )
+    return GaussianFilterState(jnp.asarray(mean), jnp.asarray(cov), as_time(t))
 
 
 def gaussian_unpack(
@@ -210,10 +203,10 @@ def gaussian_filter_template(
         if symmetrize:
             cov1 = symmetrize_matrix(cov1)
 
-        return GaussianFilterState(mu1, cov1, _as_time(t)), GaussianFilterInfo(
+        return GaussianFilterState(mu1, cov1, as_time(t)), GaussianFilterInfo(
             mu1_, cov1_, log_likelihood
         )
     else:
-        return GaussianFilterState(mu1_, cov1_, _as_time(t)), GaussianFilterInfo(
+        return GaussianFilterState(mu1_, cov1_, as_time(t)), GaussianFilterInfo(
             mu1_, cov1_, jnp.array(0.0)
         )

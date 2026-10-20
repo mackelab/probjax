@@ -11,7 +11,7 @@ from jax.flatten_util import ravel_pytree
 
 from probjax.inference.adaptation import compose_adaptors
 from probjax.inference.mcmc.adaptation import covariance_adaptor, step_size_adaptor
-from probjax.inference.mcmc.base import MarkovKernelAPI
+from probjax.inference.mcmc.base import MarkovKernelAPI, ravel_position
 from probjax.utils.typing import Array, RngKey, Scalar
 
 
@@ -81,9 +81,7 @@ class RWParamsGauss(NamedTuple):
 def init_params_gaussian_rw(
     state: Any, step_size: float = 0.5, scale: Array | None = None
 ) -> RWParamsGauss:
-    position = state.position if hasattr(state, "position") else state
-    flat_position, _ = ravel_pytree(position)
-    dim = flat_position.shape[0]
+    dim = ravel_position(state).shape[0]
     if scale is None:
         scale = jnp.ones((dim,))
     return RWParamsGauss(step_size=step_size, scale=scale)
