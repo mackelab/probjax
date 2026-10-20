@@ -97,8 +97,13 @@ UNDOCUMENTED = {
         # Type aliases, documented where they are used.
         "Array",
         "ArrayLike",
+        "ArrayTree",
+        "ArrayLikeTree",
         "PyTree",
         "RngKey",
+        "Scalar",
+        "ScalarLike",
+        "Shape",
         # Internal helpers.
         "find_ancestors_jax",
         "faithfull_mask",
