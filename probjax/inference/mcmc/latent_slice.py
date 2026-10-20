@@ -1,21 +1,23 @@
-from typing import Callable, NamedTuple
+from __future__ import annotations
+
+from typing import Any, Callable, NamedTuple
 
 import jax
 import jax.numpy as jnp
 
 from probjax.inference.mcmc.adaptation import slice_step_size_adaptor
 from probjax.inference.mcmc.base import MarkovKernelAPI, make_step_from_kernel
-from probjax.utils.typing import Array, PyTree, RngKey
+from probjax.utils.typing import Array, RngKey, Scalar
 
 
 class LatentSliceParams(NamedTuple):
-    step_size: float
+    step_size: Scalar
 
 
 class LatentSliceState(NamedTuple):
-    position: PyTree
-    logdensity: float
-    latent_bracket_width: PyTree
+    position: Array
+    logdensity: Scalar
+    latent_bracket_width: Array
 
 
 class LatentSliceInfo(NamedTuple):
@@ -23,11 +25,13 @@ class LatentSliceInfo(NamedTuple):
     proposal: LatentSliceState
 
 
-def init_params(state: PyTree, step_size: float = 0.5) -> LatentSliceParams:
+def init_params(state: Any, step_size: float = 0.5) -> LatentSliceParams:
     return LatentSliceParams(step_size=step_size)
 
 
-def init(position: PyTree, logdensity_fn: Callable, rng_key=None) -> LatentSliceState:
+def init(
+    position: Array, logdensity_fn: Callable, rng_key: RngKey | None = None
+) -> LatentSliceState:
     log_density = logdensity_fn(position)
     latent_bracket_width = jnp.zeros_like(position)
     return LatentSliceState(position, log_density, latent_bracket_width)
@@ -40,7 +44,7 @@ def build_kernel():
         logdensity_fn: Callable,
         step_size: float = 0.5,
         max_evals: int = 100,
-    ):
+    ) -> tuple[LatentSliceState, LatentSliceInfo]:
         rng_key, rng_slice, rng_bound, rng_update = jax.random.split(rng_key, 4)
         position = state.position
         logdensity = state.logdensity
@@ -84,7 +88,7 @@ def build_step(logdensity_fn: Callable, max_evals: int = 100) -> Callable:
 
 
 def _latent_slice_adaptation(
-    *, target_num_evaluations=5, max_evaluations=100, **kwargs
+    *, target_num_evaluations: float = 5, max_evaluations: int = 100, **kwargs: Any
 ):
     """Default adaptation; ``max_evaluations`` must match the kernel's ``max_evals``."""
     return slice_step_size_adaptor(target_num_evaluations, max_evaluations, **kwargs)
@@ -116,9 +120,9 @@ def accept_reject_proposal(
     lower: Array,
     upper: Array,
     state: Array,
-    y: float,
+    y: Scalar,
     max_evals: int,
-):
+) -> tuple[Array, Scalar, int]:
     def cond_fn(carry):
         i, is_accepted, *_ = carry
         return ~is_accepted & (i < max_evals)

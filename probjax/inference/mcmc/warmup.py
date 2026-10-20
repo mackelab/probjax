@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from functools import partial
+from typing import Any
 
 import blackjax
 import jax
@@ -20,7 +23,9 @@ def pathfinder_warmup(
 ) -> Warmup:
     """Create a BlackJAX Pathfinder warmup procedure."""
     info_fn = return_all_adapt_info if collect else lambda *_: None
-    procedure = blackjax.pathfinder_adaptation(
+    # BlackJAX types the adaptation procedure's ``run`` with two arguments,
+    # but the Pathfinder procedure also takes ``num_steps``.
+    procedure: Any = blackjax.pathfinder_adaptation(
         algorithm,
         logdensity_fn,
         initial_step_size=initial_step_size,

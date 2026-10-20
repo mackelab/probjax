@@ -1,6 +1,6 @@
-from typing import Callable, Optional, Tuple
+from __future__ import annotations
 
-from jax.typing import ArrayLike
+from typing import Callable, Optional, Tuple
 
 from probjax.inference.filtering.base import FilterAPI
 from probjax.inference.filtering.gaussian import (
@@ -14,6 +14,7 @@ from probjax.utils.linear_operator import (
     as_array,
     is_array_or_operator,
 )
+from probjax.utils.typing import ArrayLike, RngKey
 
 # Public state/info names for this filter. They share the Gaussian layout
 # defined in gaussian.py; the aliases keep existing imports working
@@ -35,7 +36,7 @@ def build_kernel(
         state: KalmanFilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng_key: Optional[ArrayLike] = None,
+        rng_key: Optional[RngKey] = None,
     ) -> Tuple[KalmanFilterState, KalmanFilterInfo]:
         def predict(mu0, cov0, t_old, t):
             # Phi - promised to be a linear mapping

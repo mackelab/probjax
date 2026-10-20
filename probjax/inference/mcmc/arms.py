@@ -76,8 +76,8 @@ def _arms_step(logdensity_fn: Callable, *, control: bool) -> Callable:
         log_alpha = log_xt - state.logdensity + log_q_x - log_q_xt
         accept = jnp.log(jax.random.uniform(accept_key)) < log_alpha
 
-        x_next = jnp.where(accept, xt, state.position)
-        log_next = jnp.where(accept, log_xt, state.logdensity)
+        x_next = jnp.asarray(jnp.where(accept, xt, state.position))
+        log_next = jnp.asarray(jnp.where(accept, log_xt, state.logdensity))
 
         if control:
             gap = log_q_xt - log_xt

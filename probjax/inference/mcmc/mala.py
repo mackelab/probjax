@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Callable, NamedTuple
 
 import blackjax
@@ -8,11 +10,11 @@ from probjax.inference.mcmc.base import (
     make_step_from_kernel,
     scale_step_size_by_grad,
 )
-from probjax.utils.typing import PyTree
+from probjax.utils.typing import PyTree, Scalar
 
 
 class MALAParams(NamedTuple):
-    step_size: float
+    step_size: Scalar
 
 
 def build_step(logdensity_fn: Callable) -> Callable:
@@ -23,8 +25,8 @@ def build_step(logdensity_fn: Callable) -> Callable:
 
 
 def init_params(state: PyTree, step_size: float = 1e-2) -> MALAParams:
-    step_size = scale_step_size_by_grad(state, step_size)
-    return MALAParams(step_size=step_size)
+    scaled_step_size = scale_step_size_by_grad(state, step_size)
+    return MALAParams(step_size=scaled_step_size)
 
 
 class mala(MarkovKernelAPI):

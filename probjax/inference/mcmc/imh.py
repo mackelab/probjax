@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from functools import partial
-from typing import Callable, NamedTuple, Optional, Tuple
+from typing import Any, Callable, NamedTuple
 
 import blackjax
 import jax
@@ -7,6 +9,7 @@ import jax.numpy as jnp
 import optax
 from blackjax.mcmc.random_walk import RWInfo, RWState
 from flax import nnx
+from jax.flatten_util import ravel_pytree
 
 from probjax.inference.adaptation import compose_adaptors
 from probjax.inference.base import Kernel, Warmup, WarmupResult
@@ -42,10 +45,22 @@ class NeuralIMHWarmupInfo(NamedTuple):
     acceptance_rate: Array
 
 
+class NeuralIMHInfo(NamedTuple):
+    """Per-step diagnostics of the neural IMH kernel.
+
+    Mirrors BlackJAX's ``RWInfo`` but keeps the proposal state of probjax's
+    own ``NeuralIMHState`` and the array-valued acceptance statistics.
+    """
+
+    acceptance_rate: Array
+    is_accepted: Array
+    proposal: NeuralIMHState
+
+
 def wrap_logpdf(logpdf: Callable) -> Callable:
     """Wrap the logpdf function to work with the IMH kernel."""
 
-    def wrapped_logpdf(x: ArrayLike, y: ArrayLike, *args, **kwargs) -> Array:
+    def wrapped_logpdf(x: ArrayLike, y: ArrayLike, *args: Any, **kwargs: Any) -> Array:
         return logpdf(y, *args, **kwargs)
 
     return wrapped_logpdf
@@ -59,8 +74,8 @@ def build_imh_step(
     kernel = blackjax.irmh.build_kernel()
 
     def step(
-        key: RngKey, state: RWState, params: Optional[IMHParams] = None
-    ) -> Tuple[RWState, RWInfo]:
+        key: RngKey, state: RWState, params: IMHParams | None = None
+    ) -> tuple[RWState, RWInfo]:
         _proposal_fn = partial(proposal_fn, params=params)
         _proposal_logpdf = partial(wrap_logpdf(proposal_logpdf), params=params)
         return kernel(
@@ -74,7 +89,7 @@ def build_imh_step(
     return step
 
 
-def init_imh_params(state: PyTree, rng_key=None) -> IMHParams:
+def init_imh_params(state: Any, rng_key: RngKey | None = None) -> IMHParams:
     """Generally, there are no parameters to initialize for the IMH kernel."""
     return IMHParams()
 
@@ -175,14 +190,12 @@ def neural_imh(logdensity_fn: Callable, proposal, *, event_spec=None) -> Kernel:
         next_state = jax.lax.cond(
             is_accepted, lambda: proposed_state, lambda: current_state
         )
-        return next_state, RWInfo(acceptance_rate, is_accepted, proposed_state)
+        return next_state, NeuralIMHInfo(acceptance_rate, is_accepted, proposed_state)
 
-    return Kernel(
-        init, step, init_params, lambda: neural_imh_warmup(proposal)
-    )
+    return Kernel(init, step, init_params, lambda: neural_imh_warmup(proposal))
 
 
-def _concatenate_data(left, right):
+def _concatenate_data(left: Any, right: Any) -> Any:
     if left is None:
         return right
     if jax.tree.structure(left) != jax.tree.structure(right):
@@ -192,15 +205,18 @@ def _concatenate_data(left, right):
     return jax.tree.map(lambda x, y: jnp.concatenate((x, y), axis=0), left, right)
 
 
-def _limit_data(data, max_size):
+def _limit_data(data: Any, max_size: int | None) -> Any:
     if max_size is None:
         return data
     return jax.tree.map(lambda value: value[-max_size:], data)
 
 
 def _rao_blackwellized_data(
-    initial_position, samples, proposed_positions, acceptance_rate
-):
+    initial_position: Any,
+    samples: Any,
+    proposed_positions: Any,
+    acceptance_rate: Array,
+) -> tuple[Any, Array]:
     current_positions = jax.tree.map(
         lambda initial, values: jnp.concatenate((initial[None], values[:-1])),
         initial_position,
@@ -220,14 +236,14 @@ def _rao_blackwellized_data(
 def neural_imh_warmup(
     proposal,
     *,
-    data=None,
+    data: Any = None,
     num_adaptations: int = 5,
     fit_steps: int = 100,
-    batch_size: Optional[int] = 256,
-    max_buffer_size: Optional[int] = 10_000,
+    batch_size: int | None = 256,
+    max_buffer_size: int | None = 10_000,
     rao_blackwellize: bool = True,
     learning_rate: float = 1e-3,
-    optimizer=None,
+    optimizer: Any = None,
 ) -> Warmup:
     """Adapt a neural IMH proposal on chain positions and optional seed data.
 
@@ -247,7 +263,9 @@ def neural_imh_warmup(
     if fit_optimizer is None:
         fit_optimizer = optax.adam(learning_rate)
 
-    def run(key, kernel, state, params, num_steps):
+    def run(
+        key: RngKey, kernel: Kernel, state: Any, params: Any, num_steps: int
+    ) -> WarmupResult:
         if not isinstance(params, NeuralIMHParams):
             raise TypeError("neural_imh_warmup requires a neural_imh kernel.")
         if num_steps < num_adaptations:
@@ -336,11 +354,11 @@ class GaussianIMHParams(NamedTuple):
 
 
 def init_gaussian_imh_params(
-    state: PyTree, mean: Optional[Array] = None, cov: Optional[Array] = None
+    state: Any, mean: Array | None = None, cov: Array | None = None
 ) -> GaussianIMHParams:
     """Initialize the parameters for the Gaussian IMH kernel."""
     position = state.position if hasattr(state, "position") else state
-    flat_position, _ = jax.flatten_util.ravel_pytree(position)
+    flat_position, _ = ravel_pytree(position)
     if mean is None:
         mean = flat_position
     if cov is None:
@@ -348,7 +366,9 @@ def init_gaussian_imh_params(
     return GaussianIMHParams(mean=mean, cov=cov)
 
 
-def proposal_gaussian(key: RngKey, *, params: GaussianIMHParams, unflatten: Callable):
+def proposal_gaussian(
+    key: RngKey, *, params: GaussianIMHParams, unflatten: Callable
+) -> Any:
     """Generate a new position from a Gaussian proposal."""
     mean = params.mean
     cov = params.cov
@@ -370,8 +390,8 @@ def build_gaussian_imh_step(logdensity_fn: Callable) -> Callable:
 
     def step(
         key: RngKey, state: RWState, params: GaussianIMHParams
-    ) -> Tuple[RWState, RWInfo]:
-        _, unflatten = jax.flatten_util.ravel_pytree(state.position)
+    ) -> tuple[RWState, RWInfo]:
+        _, unflatten = ravel_pytree(state.position)
         _proposal_fn = partial(proposal_gaussian, params=params, unflatten=unflatten)
         _proposal_logpdf = partial(wrap_logpdf(proposal_gaussian_logpdf), params=params)
         return kernel(
@@ -385,16 +405,18 @@ def build_gaussian_imh_step(logdensity_fn: Callable) -> Callable:
     return step
 
 
-def proposal_gaussian_logpdf(state, *, params: GaussianIMHParams):
+def proposal_gaussian_logpdf(state: Any, *, params: GaussianIMHParams) -> Array:
     """Log pdf of the Gaussian proposal."""
     x = state.position
-    flat_position, _ = jax.flatten_util.ravel_pytree(x)
+    flat_position, _ = ravel_pytree(x)
     mean = params.mean
     cov = params.cov
     if cov.ndim == 1:
         return jax.scipy.stats.norm.logpdf(flat_position, mean, jnp.sqrt(cov)).sum()
     else:
-        return jax.scipy.stats.multivariate_normal.logpdf(flat_position, mean, cov)
+        return jnp.asarray(
+            jax.scipy.stats.multivariate_normal.logpdf(flat_position, mean, cov)
+        )
 
 
 def _gaussian_imh_adaptation():

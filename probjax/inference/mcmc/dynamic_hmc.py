@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 from typing import Callable
 
 import blackjax
+from blackjax.mcmc import integrators
 from blackjax.mcmc.dynamic_hmc import halton_trajectory_length
 
 from probjax.inference.mcmc._dynamic_stepping import (
@@ -28,7 +31,7 @@ def build_dynamic_hmc_step(
     average_integration_steps: int = 10,
     integration_steps_sequence: str = "halton",
     divergence_threshold: float = 1000.0,
-    integrator: Callable = blackjax.mcmc.integrators.velocity_verlet,
+    integrator: Callable = integrators.velocity_verlet,
 ) -> Callable:
     random_arg_next_fn, integration_steps_fn = get_dynamic_stepping(
         integration_steps_sequence,

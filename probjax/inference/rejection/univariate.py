@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from functools import partial
-from typing import Callable, NamedTuple
+from typing import Any, Callable, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -17,7 +19,9 @@ class ARSState(NamedTuple):
     num_points: int  # Number of points used to define the piecewise linear function
 
 
-def _build_envelope(x: Array, h: Array, hprime: Array, lb: ArrayLike, ub: ArrayLike):
+def _build_envelope(
+    x: Array, h: Array, hprime: Array, lb: ArrayLike, ub: ArrayLike
+) -> tuple[Array, Array, Array]:
     z = (jnp.diff(h) + x[:-1] * hprime[:-1] - x[1:] * hprime[1:]) / -(
         jnp.diff(hprime) + 1e-8
     )
@@ -42,7 +46,7 @@ def init_ars_state(
     lb: ArrayLike = -jnp.inf,
     ub: ArrayLike = jnp.inf,
     max_points: int = 50,
-):
+) -> ARSState:
     num_initial_points = len(xi)
     # Cheap ARS with fixed nodes better https://arxiv.org/pdf/1509.07985
 
@@ -66,11 +70,11 @@ def init_ars_state(
     return ARSState(x, h, hprime, z, u, s, num_initial_points)
 
 
-def update_ars_state(state: ARSState, x: Array, h: Array, hprime: Array):
+def update_ars_state(state: ARSState, x: Array, h: Array, hprime: Array) -> ARSState:
     # TODO improve this
     new_index = state.num_points
 
-    def update(state, x, h, hprime):
+    def update(state: ARSState, x: Array, h: Array, hprime: Array) -> ARSState:
         xs = state.x.at[new_index].set(x)
         h = state.h.at[new_index].set(h)
         hprime = state.hprime.at[new_index].set(hprime)
@@ -83,7 +87,7 @@ def update_ars_state(state: ARSState, x: Array, h: Array, hprime: Array):
 
         return ARSState(xs, h, hprime, z, u, s, state.num_points + 1)
 
-    def do_nothing(state, x, h, hprime):
+    def do_nothing(state: ARSState, x: Array, h: Array, hprime: Array) -> ARSState:
         return ARSState(
             state.x, state.h, state.hprime, state.z, state.u, state.s, state.num_points
         )
@@ -96,13 +100,13 @@ def update_ars_state(state: ARSState, x: Array, h: Array, hprime: Array):
     return state
 
 
-def eval_upper(state: ARSState, x: Array, i: int):
+def eval_upper(state: ARSState, x: Array, i: int | Array) -> Array:
     # Evaluate the upper piecewise linear function at x using the i-th segment.
     # NOTE: This will upper bound the log density function (if it is concave).
     return state.h[i] + state.hprime[i] * (x - state.x[i])
 
 
-def eval_lower(state: ARSState, x: Array):
+def eval_lower(state: ARSState, x: Array) -> Array:
     # Evaluate a lower piecewise linear function at x.
     # NOTE: This will lower bound the log density function (if it is concave).
     i = jnp.searchsorted(state.x, x) - 1
@@ -114,7 +118,7 @@ def eval_lower(state: ARSState, x: Array):
     )
 
 
-def sample_upper(state: ARSState, key: RngKey):
+def sample_upper(state: ARSState, key: RngKey) -> tuple[Array, Array]:
     u = jax.random.uniform(key)
     max_index = state.num_points
     # Choose a bin with probability proportional to its contained probability mass.
@@ -122,7 +126,7 @@ def sample_upper(state: ARSState, key: RngKey):
 
     i = jnp.searchsorted(state.s / s_max, u) - 1
 
-    def sample_nonzero_grad(state, u):
+    def sample_nonzero_grad(state: ARSState, u: Array) -> Array:
         # Piecewise linear function with non-zero gradient
         # -> Piecewise exponential distribution
         # -> Inverse CDF is a piecewise linear function
@@ -138,7 +142,7 @@ def sample_upper(state: ARSState, key: RngKey):
         )
         return xt
 
-    def sample_zero_grad(state, u):
+    def sample_zero_grad(state: ARSState, u: Array) -> Array:
         # Piecewise linear function with zero gradient
         # -> Piecewise uniform distribution
         # -> Inverse CDF is a piecewise linear function
@@ -157,13 +161,13 @@ def sample_upper(state: ARSState, key: RngKey):
     return xt, i
 
 
-def _segment_index(state: ARSState, x: Array):
+def _segment_index(state: ARSState, x: Array) -> Array:
     xs = state.x[: state.num_points]
     idx = jnp.searchsorted(xs, x) - 1
     return jnp.clip(idx, 0, state.num_points - 1)
 
 
-def _log_proposal(state: ARSState, x: Array):
+def _log_proposal(state: ARSState, x: Array) -> Array:
     i = _segment_index(state, x)
     u = eval_upper(state, x, i)
     s_max = state.s[state.num_points]
@@ -171,15 +175,17 @@ def _log_proposal(state: ARSState, x: Array):
 
 
 @partial(jax.jit, static_argnums=(2, 3))
-def ars(state: ARSState, key: RngKey, num_samples: int, log_density_fn: Callable):
+def ars(
+    state: ARSState, key: RngKey, num_samples: int, log_density_fn: Callable
+) -> tuple[Array, ARSState, Array]:
     samples = jnp.zeros(num_samples)
     n = 0
 
-    def cond_fn(carry):
+    def cond_fn(carry: Any) -> Array:
         _, n, _, _, _ = carry
         return n < num_samples
 
-    def body_fn(carry):
+    def body_fn(carry: Any) -> Any:
         key, n, state, samples, iteration = carry
         key, sample_key, rejection_key = jax.random.split(key, 3)
 
@@ -190,15 +196,17 @@ def ars(state: ARSState, key: RngKey, num_samples: int, log_density_fn: Callable
 
         u = jax.random.uniform(rejection_key)
 
-        def accept(xt, n, state, samples):
+        def accept(xt: Array, n: Array, state: ARSState, samples: Array) -> Any:
             samples = samples.at[n].set(xt)
             n += 1
             return samples, n, state
 
-        def reject(xt, n, state, samples):
+        def reject(xt: Array, n: Array, state: ARSState, samples: Array) -> Any:
             return samples, n, state
 
-        def reject_maybe_accept_update(xt, n, state, samples):
+        def reject_maybe_accept_update(
+            xt: Array, n: Array, state: ARSState, samples: Array
+        ) -> Any:
             h = log_density_fn(xt)
             hprime = jax.grad(log_density_fn)(xt)
 

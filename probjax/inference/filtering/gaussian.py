@@ -6,42 +6,51 @@ imports from here instead of reaching into ``kalman_filter``, so the concrete
 Kalman filter is no longer a hub dependency.
 """
 
-from typing import Callable, NamedTuple, Optional, Tuple
+from __future__ import annotations
+
+from typing import Any, Callable, NamedTuple, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-from jax.typing import ArrayLike
 
-from probjax.inference.filtering.base import FilterInfo, FilterState
+from probjax.inference.filtering.base import FilterInfo
 from probjax.utils.linear_operator import as_array, densify_if_small, is_operator
+from probjax.utils.typing import Array, ArrayLike
 
 
 class GaussianFilterState(NamedTuple):
-    mean: ArrayLike
-    cov: ArrayLike
-    t: Optional[ArrayLike]
+    mean: Array
+    cov: Array
+    t: Optional[Array]
 
 
 class GaussianFilterInfo(NamedTuple):
-    mean_pred: ArrayLike
-    cov_pred: ArrayLike
-    log_likelihood: Optional[ArrayLike] = None
+    mean_pred: Array
+    cov_pred: Array
+    log_likelihood: Optional[Array] = None
+
+
+def _as_time(t: Optional[ArrayLike]) -> Optional[Array]:
+    """Normalize a filter time stamp to an array (or ``None``)."""
+    return None if t is None else jnp.asarray(t)
 
 
 def gaussian_init(
     mean: ArrayLike, cov: ArrayLike, t: Optional[ArrayLike] = None
 ) -> GaussianFilterState:
-    return GaussianFilterState(mean, cov, t)
+    return GaussianFilterState(
+        jnp.asarray(mean), jnp.asarray(cov), None if t is None else jnp.asarray(t)
+    )
 
 
 def gaussian_unpack(
-    state: FilterState, info: FilterInfo
-) -> Tuple[ArrayLike, ArrayLike]:
+    state: GaussianFilterState, info: FilterInfo
+) -> Tuple[Array, Array]:
     """Return the posterior mean and covariance from a Gaussian filter state."""
     return state.mean, state.cov
 
 
-def default_solve(S, res, dense_mem_limit=200):
+def default_solve(S: Any, res: Any, dense_mem_limit: int = 200) -> Array:
     """Solve S @ x = res for the Kalman gain and residual.
 
     Chooses between dense Cholesky and matrix-free CG based on the memory
@@ -69,7 +78,7 @@ def default_solve(S, res, dense_mem_limit=200):
     return jax.scipy.linalg.solve(S, res.T, assume_a="pos").T
 
 
-def default_logdet(S, dense_mem_limit=200):
+def default_logdet(S: Any, dense_mem_limit: int = 200) -> Array:
     """Compute the logdet with Lanczos for large operators, otherwise slogdet.
 
     Uses the same memory-based decision as default_solve: if materializing S
@@ -85,7 +94,12 @@ def default_logdet(S, dense_mem_limit=200):
     return jnp.linalg.slogdet(jnp.asarray(S)).logabsdet
 
 
-def innovation_loglik(residual, S, solve_fn=default_solve, logdet_fn=default_logdet):
+def innovation_loglik(
+    residual: Array,
+    S: Any,
+    solve_fn: Callable = default_solve,
+    logdet_fn: Callable = default_logdet,
+) -> Array:
     """Normalized Gaussian innovation log-likelihood, including ``n*log(2*pi)``.
 
     Shared by the KF/EKF update, the UKF and the rank-reduced KF so the
@@ -101,15 +115,15 @@ def innovation_loglik(residual, S, solve_fn=default_solve, logdet_fn=default_log
 
 
 def kalman_update(
-    mu1_: ArrayLike,
-    cov1_: ArrayLike,
-    y_: ArrayLike,
-    observed: ArrayLike,
-    C,
-    R,
+    mu1_: Array,
+    cov1_: Array,
+    y_: Array,
+    observed: Array,
+    C: Any,
+    R: Any,
     solve_fn: Callable,
     logdet_fn_: Callable,
-) -> Tuple[ArrayLike, ArrayLike, ArrayLike]:
+) -> Tuple[Array, Array, Array]:
     """Kalman observation update: innovation, gain, covariance update, log-likelihood.
 
     Shared by the standard KF and the EKF. Everything before this (predict step,
@@ -154,15 +168,15 @@ def kalman_update(
 
 
 def gaussian_filter_template(
-    state,
-    t,
-    observed,
-    predict_fn,
-    observe_fn,
-    linear_solve=None,
-    logdet_fn=None,
-    symmetrize=False,
-):
+    state: GaussianFilterState,
+    t: Optional[ArrayLike],
+    observed: Optional[ArrayLike],
+    predict_fn: Callable,
+    observe_fn: Callable,
+    linear_solve: Callable | None = None,
+    logdet_fn: Callable | None = None,
+    symmetrize: bool = False,
+) -> tuple[GaussianFilterState, GaussianFilterInfo]:
     """Shared predict/update skeleton for Gaussian (EKF-family) filters.
 
     ``predict_fn(mu0, cov0, t_old, t)`` returns ``(mu1_, cov1_)``;
@@ -183,15 +197,22 @@ def gaussian_filter_template(
         _logdet_fn = logdet_fn if logdet_fn is not None else default_logdet
 
         mu1, cov1, log_likelihood = kalman_update(
-            mu1_, cov1_, y_, observed, C, R, solve, _logdet_fn
+            jnp.asarray(mu1_),
+            jnp.asarray(cov1_),
+            jnp.asarray(y_),
+            jnp.asarray(observed),
+            C,
+            R,
+            solve,
+            _logdet_fn,
         )
         if symmetrize:
             cov1 = 0.5 * (cov1 + cov1.T)
 
-        return GaussianFilterState(mu1, cov1, t), GaussianFilterInfo(
+        return GaussianFilterState(mu1, cov1, _as_time(t)), GaussianFilterInfo(
             mu1_, cov1_, log_likelihood
         )
     else:
-        return GaussianFilterState(mu1_, cov1_, t), GaussianFilterInfo(
+        return GaussianFilterState(mu1_, cov1_, _as_time(t)), GaussianFilterInfo(
             mu1_, cov1_, jnp.array(0.0)
         )

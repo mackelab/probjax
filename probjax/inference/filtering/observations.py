@@ -5,10 +5,16 @@ validate their ``(ts, observations, observed)`` triples here instead of
 reaching into each other's privates.
 """
 
+from __future__ import annotations
+
+from typing import Any
+
 import jax.numpy as jnp
 
 
-def validate_observations(ts, observations, observed):
+def validate_observations(
+    ts: Any, observations: Any, observed: Any
+) -> tuple[Any, Any, Any]:
     """Coerce and validate ``(ts, observations, observed)``.
 
     Returns ``(ts, observations, observed)`` with ``ts`` a float 1-D array,

@@ -6,6 +6,10 @@ are AFTER the initial time ``t0``; condition the initial law on any observation 
 ``t0`` yourself.
 """
 
+from __future__ import annotations
+
+from typing import Any, Callable
+
 import jax
 import jax.numpy as jnp
 
@@ -19,6 +23,7 @@ from probjax.inference.filtering.state_space import (
     TemporalResult,
     TemporalTrace,
 )
+from probjax.utils.typing import Array, RngKey
 
 __all__ = [
     "StateSpaceModel",
@@ -32,7 +37,9 @@ __all__ = [
 ]
 
 
-def temporal_filter(model, num_particles=None, ess_threshold=0.5):
+def temporal_filter(
+    model: Any, num_particles: int | None = None, ess_threshold: float = 0.5
+) -> TemporalFilter:
     """Build the filter for ``model``: Kalman for linear-Gaussian, else particles.
 
     A :class:`TemporalFilter` is returned unchanged.
@@ -46,13 +53,20 @@ def temporal_filter(model, num_particles=None, ess_threshold=0.5):
     return _particle_filter(model, num_particles, ess_threshold)
 
 
-def _kalman_filter(model):
-    def init(key, theta, t0):
+def _kalman_filter(model: Any) -> TemporalFilter:
+    def init(key: RngKey, theta: Any, t0: Any):
         t0 = jnp.asarray(t0, dtype=jnp.result_type(t0, 0.0))
         mean, cov = model.initial(theta)
         return kalman_filter.init(mean, cov, t0)
 
-    def step(key, state, theta, t, observation, observed=True):
+    def step(
+        key: RngKey,
+        state: Any,
+        theta: Any,
+        t: Any,
+        observation: Any,
+        observed: bool = True,
+    ) -> Any:
         t = jnp.asarray(t, dtype=state.t.dtype)
         kernel = kalman_filter(
             lambda old, new: model.transition(theta, old, new),
@@ -67,25 +81,32 @@ def _kalman_filter(model):
     return TemporalFilter(init, step, "exact")
 
 
-def _particle_filter(model, num_particles, ess_threshold):
+def _particle_filter(model: Any, num_particles: int, ess_threshold: float):
     if not 0 <= ess_threshold <= 1:
         raise ValueError("ess_threshold must lie in [0, 1].")
 
-    def init(key, theta, t0):
+    def init(key: RngKey, theta: Any, t0: Any):
         t0 = jnp.asarray(t0, dtype=jnp.result_type(t0, 0.0))
         keys = jax.random.split(key, num_particles)
         particles = jax.vmap(model.init, (0, None))(keys, theta)
         return ParticleFilter.init(particles, t0)
 
-    def step(key, state, theta, t, observation, observed=True):
+    def step(
+        key: RngKey,
+        state: Any,
+        theta: Any,
+        t: Any,
+        observation: Any,
+        observed: bool = True,
+    ) -> Any:
         t = jnp.asarray(t, dtype=state.t.dtype)
 
-        def transition(key, particles, t):
+        def transition(key: RngKey, particles: Any, t: Any) -> Any:
             keys = jax.random.split(key, num_particles)
             step = jax.vmap(model.step, (0, None, 0, None, None))
             return step(keys, theta, particles, state.t, t)
 
-        def likelihood(particles, y, t):
+        def likelihood(particles: Any, y: Any, t: Any) -> Any:
             return jax.vmap(model.log_likelihood, (None, 0, None, None))(
                 theta, particles, y, t
             )
@@ -103,17 +124,17 @@ def _particle_filter(model, num_particles, ess_threshold):
 
 
 def run_temporal_filter(
-    key,
-    model,
-    theta,
-    ts,
-    observations,
+    key: RngKey,
+    model: Any,
+    theta: Any,
+    ts: Any,
+    observations: Any,
     *,
-    t0=0.0,
-    num_particles=None,
-    observed=None,
-    history="full",
-):
+    t0: Any = 0.0,
+    num_particles: int | None = None,
+    observed: Any = None,
+    history: Any = "full",
+) -> TemporalResult:
     """Filter ``model`` at fixed ``theta`` over observations at ``ts`` after ``t0``.
 
     ``model`` is a :class:`StateSpaceModel` (needs ``num_particles``), a
@@ -127,14 +148,21 @@ def run_temporal_filter(
     key, init_key = jax.random.split(key)
     state = filt.init(init_key, theta, t0)
 
-    def step(key, state, data):
+    def step(key: RngKey, state: Any, data: Any) -> Any:
         t, y, mask = data
         return filt.step(key, state, theta, t, y, mask)
 
     return scan_history(step, key, state, ts, (ts, observations, observed), history)
 
 
-def scan_history(step, key, state, ts, xs, history):
+def scan_history(
+    step: Callable,
+    key: RngKey,
+    state: Any,
+    ts: Array,
+    xs: Any,
+    history: Any,
+) -> TemporalResult:
     """Scan ``step(key, state, x) -> (state, info)`` over ``xs``, keeping ``history``.
 
     Steps returning ``info.skipped`` neither consume a key nor add likelihood, so
@@ -146,7 +174,7 @@ def scan_history(step, key, state, ts, xs, history):
     ):
         raise ValueError("history must be 'full', 'none', or a positive integer.")
 
-    def advance(carry, x):
+    def advance(carry: Any, x: Any) -> Any:
         key, state, logz = carry
         next_key, step_key = jax.random.split(key)
         state, info = step(step_key, state, x)
@@ -172,7 +200,7 @@ def scan_history(step, key, state, ts, xs, history):
     states = jax.tree.map(allocate, state)
     infos = jax.tree.map(allocate, info_shape)
 
-    def window_step(carry, data):
+    def window_step(carry: Any, data: Any) -> Any:
         running, boundary, states, infos = carry
         i, x = data
         slot = i % capacity

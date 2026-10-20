@@ -1,9 +1,10 @@
-from typing import Callable
+from __future__ import annotations
+
+from typing import Callable, Protocol, runtime_checkable
 
 import jax
 import jax.numpy as jnp
 from jax.scipy.optimize import minimize
-from jaxtyping import Array
 
 from probjax.inference.rejection.univariate import (
     ARSState,
@@ -11,11 +12,27 @@ from probjax.inference.rejection.univariate import (
     init_ars_state,
     update_ars_state,
 )
-from probjax.stats.base import rv_generic as Distribution
+from probjax.utils.typing import Array, RngKey
+
+
+@runtime_checkable
+class ProposalDistribution(Protocol):
+    """The proposal interface the rejection sampler needs.
+
+    A proposal must be able to evaluate its log density, draw samples and
+    report the shape of a single event.
+    """
+
+    def log_prob(self, x: Array) -> Array: ...
+
+    def sample(self, rng: RngKey, shape: tuple[int, ...] = ()) -> Array: ...
+
+    @property
+    def event_shape(self) -> tuple[int, ...]: ...
 
 
 def estimate_ratio_bound(
-    log_ratio_fn: Callable, trial_samples: Array, tol=1e-4
+    log_ratio_fn: Callable, trial_samples: Array, tol: float = 1e-4
 ) -> Array:
     """
     Estimate the bound for the log density ratio function.
@@ -46,7 +63,7 @@ class RejectionSampler:
     def __init__(
         self,
         potential_fn: Callable,
-        proposal: Distribution,
+        proposal: ProposalDistribution,
         trial_samples_logM: int = 1000,
         batch_size: int = 100,
     ) -> None:
@@ -61,16 +78,16 @@ class RejectionSampler:
         )
         self._batch_size = batch_size
 
-    def run(self, key, num_samples: int = 1, **kwargs) -> Array:
+    def run(self, key: RngKey, num_samples: int = 1, **kwargs) -> Array:
         key, subkey = jax.random.split(key)
         batch_size = self._batch_size
         samples = jnp.empty((num_samples,) + self._proposal.event_shape)
 
-        def cond_fn(state):
+        def cond_fn(state: tuple) -> Array:
             i, key, samples = state
             return i < num_samples
 
-        def body_fn(state):
+        def body_fn(state: tuple) -> tuple:
             i, key, samples = state
             key, key_propose, key_accept = jax.random.split(key, 3)
             proposed_samples = self._proposal.sample(

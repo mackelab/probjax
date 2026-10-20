@@ -1,6 +1,9 @@
-from typing import Callable, NamedTuple, Optional
+from __future__ import annotations
+
+from typing import Callable, NamedTuple
 
 import blackjax
+from blackjax.mcmc import integrators
 
 from probjax.inference.mcmc.adaptation import window_warmup
 from probjax.inference.mcmc.base import (
@@ -9,18 +12,18 @@ from probjax.inference.mcmc.base import (
     make_step_from_kernel,
     scale_step_size_by_grad,
 )
-from probjax.utils.typing import Array, ArrayLike, PyTree
+from probjax.utils.typing import Array, ArrayLike, PyTree, Scalar
 
 
 class HMCParams(NamedTuple):
-    step_size: ArrayLike
+    step_size: Scalar
     inverse_mass_matrix: ArrayLike
 
 
 def init_params(
     state: PyTree,
     step_size: float = 0.5,
-    inverse_mass_matrix: Optional[Array] = None,
+    inverse_mass_matrix: Array | None = None,
 ) -> HMCParams:
     """Initialize the parameters for the HMC kernel.
 
@@ -38,9 +41,9 @@ def init_params(
         HMCParams: Parameters for the HMC kernel.
     """
     inverse_mass_matrix = init_hmc_like_params(state, inverse_mass_matrix)
-    step_size = scale_step_size_by_grad(state, step_size, inverse_mass_matrix)
+    scaled_step_size = scale_step_size_by_grad(state, step_size, inverse_mass_matrix)
     return HMCParams(
-        step_size=step_size,
+        step_size=scaled_step_size,
         inverse_mass_matrix=inverse_mass_matrix,
     )
 
@@ -48,9 +51,9 @@ def init_params(
 def build_step(
     logdensity_fn: Callable,
     num_integration_steps: int = 10,
-    integrator: Callable = blackjax.mcmc.integrators.velocity_verlet,
+    integrator: Callable = integrators.velocity_verlet,
     divergence_threshold: float = 1000.0,
-):
+) -> Callable:
     kernel_builder = lambda: blackjax.hmc.build_kernel(integrator, divergence_threshold)
     return make_step_from_kernel(
         logdensity_fn,
@@ -85,8 +88,8 @@ def build_kernel_nuts(
     logdensity_fn: Callable,
     max_num_doublings: int = 10,
     divergence_threshold: float = 1000.0,
-    integrator: Callable = blackjax.mcmc.integrators.velocity_verlet,
-):
+    integrator: Callable = integrators.velocity_verlet,
+) -> Callable:
     kernel_builder = lambda: blackjax.nuts.build_kernel(
         divergence_threshold=divergence_threshold, integrator=integrator
     )

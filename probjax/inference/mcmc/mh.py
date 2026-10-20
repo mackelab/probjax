@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from functools import partial
-from typing import Callable, NamedTuple, Optional, Tuple
+from typing import Any, Callable, NamedTuple
 
 import blackjax
 import jax
@@ -10,7 +12,7 @@ from jax.flatten_util import ravel_pytree
 from probjax.inference.adaptation import compose_adaptors
 from probjax.inference.mcmc.adaptation import covariance_adaptor, step_size_adaptor
 from probjax.inference.mcmc.base import MarkovKernelAPI
-from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
+from probjax.utils.typing import Array, RngKey, Scalar
 
 
 class RWParams(NamedTuple):
@@ -20,7 +22,7 @@ class RWParams(NamedTuple):
 def build_mh_step(
     logdensity_fn: Callable,
     transition_proposal_fn: Callable,
-    transition_proposal_logpdf: Optional[Callable] = None,
+    transition_proposal_logpdf: Callable | None = None,
 ) -> Callable:
     kernel = blackjax.rmh.build_kernel()
 
@@ -28,7 +30,7 @@ def build_mh_step(
         key: RngKey,
         state: RWState,
         params: RWParams,
-    ) -> Tuple[RWState, RWInfo]:
+    ) -> tuple[RWState, RWInfo]:
         _transition_proposal_fn = partial(transition_proposal_fn, params=params)
         if transition_proposal_logpdf is not None:
             _transition_proposal_logpdf = partial(
@@ -48,7 +50,7 @@ def build_mh_step(
     return step
 
 
-def init_params_mh(state: PyTree) -> RWParams:
+def init_params_mh(state: Any) -> RWParams:
     return RWParams()
 
 
@@ -72,12 +74,12 @@ class mh(MarkovKernelAPI):
 
 
 class RWParamsGauss(NamedTuple):
-    step_size: float
-    scale: Optional[ArrayLike]
+    step_size: Scalar
+    scale: Array | None
 
 
 def init_params_gaussian_rw(
-    state: PyTree, step_size: float = 0.5, scale: Optional[Array] = None
+    state: Any, step_size: float = 0.5, scale: Array | None = None
 ) -> RWParamsGauss:
     position = state.position if hasattr(state, "position") else state
     flat_position, _ = ravel_pytree(position)
@@ -87,7 +89,9 @@ def init_params_gaussian_rw(
     return RWParamsGauss(step_size=step_size, scale=scale)
 
 
-def gaussian_transition_proposal(key, position, params: RWParamsGauss):
+def gaussian_transition_proposal(
+    key: RngKey, position: Any, params: RWParamsGauss
+) -> Any:
     flat_position, unflatten = ravel_pytree(position)
     eps = jax.random.normal(key, flat_position.shape)
     if params.scale is None:

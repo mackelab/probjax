@@ -1,33 +1,35 @@
+from __future__ import annotations
+
 from typing import Callable, NamedTuple, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-from jax.typing import ArrayLike
 
 from probjax.inference.filtering.base import FilterAPI
 from probjax.inference.filtering.gaussian import gaussian_unpack, innovation_loglik
 from probjax.utils.guards import call_if_callable
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 
 class UnscentedKalmanFilterState(NamedTuple):
-    mean: ArrayLike
-    cov: ArrayLike
-    t: Optional[ArrayLike]
+    mean: Array
+    cov: Array
+    t: Optional[Array]
 
 
 class UnscentedKalmanFilterInfo(NamedTuple):
-    mean_pred: ArrayLike
-    cov_pred: ArrayLike
-    log_likelihood: Optional[ArrayLike]
+    mean_pred: Array
+    cov_pred: Array
+    log_likelihood: Optional[Array]
 
 
 def merwe_sigma_point(
-    mu0: ArrayLike,
-    cov0: ArrayLike,
+    mu0: Array,
+    cov0: Array,
     alpha: ArrayLike = 1.0,
     beta: ArrayLike = 2.0,
     kappa: ArrayLike = 0.0,
-) -> Tuple[ArrayLike, ArrayLike, ArrayLike]:
+) -> Tuple[Array, Array, Array]:
     """Generate sigma points for unscented Kalman filter, see [1].
 
     Args:
@@ -72,10 +74,10 @@ def merwe_sigma_point(
 
 
 def julier_uhlmann_sigma_points(
-    mu0: jnp.ndarray,
-    cov0: jnp.ndarray,
+    mu0: Array,
+    cov0: Array,
     kappa: float = 0.0,
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+) -> Tuple[Array, Array, Array]:
     """Generate Julier-Uhlmann sigma points.
 
     Args:
@@ -113,8 +115,8 @@ def julier_uhlmann_sigma_points(
 
 
 def spherical_simplex_sigma_points(
-    mu0: jnp.ndarray, cov0: jnp.ndarray
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    mu0: Array, cov0: Array
+) -> Tuple[Array, Array, Array]:
     """
     Generate spherical simplex sigma points without explicit Python loops.
 
@@ -152,13 +154,13 @@ def spherical_simplex_sigma_points(
 
 
 def unscented_transform(
-    sigma_points: ArrayLike,
-    weights_mean: ArrayLike,
-    weights_cov: ArrayLike,
+    sigma_points: Array,
+    weights_mean: Array,
+    weights_cov: Array,
     noise_cov: Optional[ArrayLike] = None,
     mean_fn: Optional[Callable] = None,
     cov_fn: Optional[Callable] = None,
-) -> Tuple[ArrayLike, ArrayLike]:
+) -> Tuple[Array, Array]:
     """Unscented transform
 
     Args:
@@ -192,8 +194,13 @@ def unscented_transform(
     return mean, cov
 
 
+def _as_time(t: Optional[ArrayLike]) -> Optional[Array]:
+    """Normalize a filter time stamp to an array (or ``None``)."""
+    return None if t is None else jnp.asarray(t)
+
+
 def init(
-    mu0: ArrayLike, cov0: ArrayLike, t: Optional[float | int] = None
+    mu0: ArrayLike, cov0: ArrayLike, t: Optional[ArrayLike] = None
 ) -> UnscentedKalmanFilterState:
     """Initialize the unscented Kalman filter.
 
@@ -205,7 +212,9 @@ def init(
     Returns:
         UnscentedKalmanFilterState: Initial state of the unscented Kalman filter
     """
-    return UnscentedKalmanFilterState(mu0, cov0, t)
+    return UnscentedKalmanFilterState(
+        jnp.asarray(mu0), jnp.asarray(cov0), None if t is None else jnp.asarray(t)
+    )
 
 
 def build_kernel(
@@ -232,9 +241,9 @@ def build_kernel(
 
     def kernel(
         state: UnscentedKalmanFilterState,
-        t: Optional[float | int] = None,
+        t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng_key: Optional[jnp.ndarray] = None,
+        rng_key: Optional[RngKey] = None,
     ) -> Tuple[UnscentedKalmanFilterState, UnscentedKalmanFilterInfo]:
         """One step of the unscented Kalman filter.
 
@@ -291,7 +300,7 @@ def build_kernel(
             K = jnp.linalg.solve(cov_y.T, cross_cov.T).T
 
             # Compute the updated mean and covariance
-            r = observed - mu_y
+            r = jnp.asarray(observed) - mu_y
             mu1 = mu1_ + jnp.dot(K, r)
             cov1 = cov1_ - jnp.dot(K, jnp.dot(cov_y, K.T))
 
@@ -303,13 +312,13 @@ def build_kernel(
                 logdet_fn=lambda S: jnp.linalg.slogdet(S)[1],
             )
 
-            return UnscentedKalmanFilterState(mu1, cov1, t), UnscentedKalmanFilterInfo(
-                mu1_, cov1_, log_likelihood
-            )
+            return UnscentedKalmanFilterState(
+                mu1, cov1, _as_time(t)
+            ), UnscentedKalmanFilterInfo(mu1_, cov1_, log_likelihood)
         else:
             log_likelihood = jnp.array(0.0)
             return UnscentedKalmanFilterState(
-                mu1_, cov1_, t
+                mu1_, cov1_, _as_time(t)
             ), UnscentedKalmanFilterInfo(mu1_, cov1_, log_likelihood)
 
     return kernel

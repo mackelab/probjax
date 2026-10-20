@@ -1,16 +1,19 @@
+from __future__ import annotations
+
 from functools import partial
-from typing import Optional, Tuple, Union
+from typing import Any, Callable
 
 import jax
 
 from probjax.inference.adaptation import adapt_step, adaptor_warmup, as_warmup
 from probjax.inference.base import (
+    AdaptationPolicy,
     AdaptationResult,
     Adaptor,
     MCMCResult,
     RunnerMixin,
     Warmup,
-    WarmupResult,
+    WarmupOutcome,
 )
 from probjax.inference.mcmc.base import (
     MarkovKernel,
@@ -21,15 +24,21 @@ from probjax.inference.mcmc.base import (
     _select,
     sample_kernel,
 )
-from probjax.utils.jaxutils import WithProgressBarAPI
 from probjax.utils.typing import RngKey
 
 
-def _mcmc_run_body(kernel, params, args, collect_state, collect_info, stats_fn=None):
+def _mcmc_run_body(
+    kernel: MarkovKernel,
+    params: Params,
+    args: Any,
+    collect_state: tuple[str, ...],
+    collect_info: tuple[str, ...],
+    stats_fn: Callable[[Any, Any], Any] | None = None,
+) -> Callable[[Any, Any], tuple[Any, tuple[Any, ...]]]:
     """Single-transition scan body shared by silent and verbose ``run``.
 
-    With ``stats_fn=None`` yields ``(selects)``; otherwise yields
-    ``(stats, *selects)`` where ``stats`` comes from ``stats_fn``.
+    Yields ``(stats, state_select, info_select)`` per transition, where
+    ``stats`` is ``None`` when no ``stats_fn`` is supplied.
     """
 
     def one_step(state, xs):
@@ -42,14 +51,13 @@ def _mcmc_run_body(kernel, params, args, collect_state, collect_info, stats_fn=N
             _select(state, collect_state),
             _select(info, collect_info),
         )
-        if stats_fn is None:
-            return state, selects
-        return state, (stats_fn(state, info), *selects)
+        stats = None if stats_fn is None else stats_fn(state, info)
+        return state, (stats, *selects)
 
     return one_step
 
 
-class MCMC(WithProgressBarAPI, RunnerMixin):
+class MCMC(RunnerMixin):
     """Compiled standard execution for an MCMC kernel.
 
     The static methods are standalone compiled primitives. Instance methods
@@ -63,9 +71,9 @@ class MCMC(WithProgressBarAPI, RunnerMixin):
         self,
         kernel: MarkovKernel,
         verbose: bool = False,
-        tracked_stats: Optional[Tuple[str, ...]] = None,
-        collect_state: Tuple[str, ...] = (),
-        collect_info: Tuple[str, ...] = (),
+        tracked_stats: tuple[str, ...] | None = None,
+        collect_state: tuple[str, ...] = (),
+        collect_info: tuple[str, ...] = (),
     ) -> None:
         self.kernel = kernel
         self.verbose = verbose
@@ -91,10 +99,10 @@ class MCMC(WithProgressBarAPI, RunnerMixin):
         state: State,
         num_steps: int,
         params: Params,
-        args: Optional[Tuple] = None,
+        args: Any = None,
         *,
-        collect_state: Tuple[str, ...] = (),
-        collect_info: Tuple[str, ...] = (),
+        collect_state: tuple[str, ...] = (),
+        collect_info: tuple[str, ...] = (),
     ) -> MCMCResult:
         """Run a compiled kernel scan without constructing a runner."""
         keys = jax.random.split(key, num_steps)
@@ -102,7 +110,7 @@ class MCMC(WithProgressBarAPI, RunnerMixin):
 
         one_step = _mcmc_run_body(kernel, params, args, collect_state, collect_info)
 
-        state, (states, info) = jax.lax.scan(one_step, state, xs)
+        state, (_, states, info) = jax.lax.scan(one_step, state, xs)
         trace = states if collect_state else None
         diagnostics = info if collect_info else None
         return MCMCResult(state, trace, diagnostics)
@@ -113,7 +121,7 @@ class MCMC(WithProgressBarAPI, RunnerMixin):
     adaptor_warmup = staticmethod(adaptor_warmup)
     adapt_step = staticmethod(adapt_step)
 
-    def _prepare_params(self, state: State, params: Optional[Params]) -> Params:
+    def _prepare_params(self, state: State, params: Params | None) -> Params:
         return self.kernel.init_params(state) if params is None else params
 
     def run(
@@ -121,8 +129,8 @@ class MCMC(WithProgressBarAPI, RunnerMixin):
         key: RngKey,
         state: State,
         num_steps: int,
-        params: Optional[Params] = None,
-        args: Optional[Tuple] = None,
+        params: Params | None = None,
+        args: Any = None,
     ) -> MCMCResult:
         """Run ``num_steps`` transitions with this runner's configuration."""
         params = self._prepare_params(state, params)
@@ -166,9 +174,9 @@ class MCMC(WithProgressBarAPI, RunnerMixin):
         key: RngKey,
         state: State,
         num_samples: int,
-        params: Optional[Params] = None,
+        params: Params | None = None,
         thin: int = 1,
-        args: Optional[Tuple] = None,
+        args: Any = None,
     ) -> MCMCResult:
         """Collect positions after every ``thin`` transitions."""
         params = self._prepare_params(state, params)
@@ -212,7 +220,7 @@ class MCMC(WithProgressBarAPI, RunnerMixin):
         state: State,
         params: Params,
         num_steps: int,
-        args: Optional[Tuple] = None,
+        args: Any = None,
         *,
         collect: bool = False,
     ) -> AdaptationResult:
@@ -229,7 +237,7 @@ class MCMC(WithProgressBarAPI, RunnerMixin):
         )
 
     @staticmethod
-    def _resolve_policy(policy: Union[Adaptor, Warmup]) -> Warmup:
+    def _resolve_policy(policy: AdaptationPolicy) -> Warmup:
         """Accept a bare adaptor (auto-wrapped) or a warmup policy."""
         if isinstance(policy, Adaptor):
             return as_warmup(policy)
@@ -243,11 +251,11 @@ class MCMC(WithProgressBarAPI, RunnerMixin):
     def warmup_kernel(
         key: RngKey,
         kernel: MarkovKernel,
-        adaptation: Union[Adaptor, Warmup],
+        adaptation: AdaptationPolicy,
         state: State,
         params: Params,
         num_steps: int,
-    ) -> WarmupResult:
+    ) -> WarmupOutcome:
         return MCMC._resolve_policy(adaptation).run(
             key, kernel, state, params, num_steps
         )
@@ -255,12 +263,12 @@ class MCMC(WithProgressBarAPI, RunnerMixin):
     def warmup(
         self,
         key: RngKey,
-        adaptation: Union[Adaptor, Warmup, None] = None,
-        state: Optional[State] = None,
-        params: Optional[Params] = None,
-        num_steps: Optional[int] = None,
-        **adaptation_kwargs,
-    ) -> WarmupResult:
+        adaptation: AdaptationPolicy | None = None,
+        state: State | None = None,
+        params: Params | None = None,
+        num_steps: int | None = None,
+        **adaptation_kwargs: Any,
+    ) -> WarmupOutcome:
         """Run a specialized state-producing warmup procedure.
 
         An explicitly passed ``adaptation`` (an ``Adaptor`` or a ``Warmup``)
@@ -272,6 +280,7 @@ class MCMC(WithProgressBarAPI, RunnerMixin):
             raise TypeError(
                 "warmup() missing required arguments: state, params, num_steps"
             )
+        policy: AdaptationPolicy
         if adaptation is None:
             default = self.kernel.default_adaptation
             if default is None:
@@ -279,11 +288,11 @@ class MCMC(WithProgressBarAPI, RunnerMixin):
                     "This kernel has no default adaptation; "
                     "pass adaptation= explicitly."
                 )
-            adaptation = default(**adaptation_kwargs)
-        elif adaptation_kwargs:
-            raise ValueError(
-                "adaptation_kwargs need adaptation=None (they configure the default)."
-            )
-        return self.warmup_kernel(
-            key, self.kernel, adaptation, state, params, num_steps
-        )
+            policy = default(**adaptation_kwargs)
+        else:
+            if adaptation_kwargs:
+                raise ValueError(
+                    "adaptation_kwargs need adaptation=None (they configure the default)."
+                )
+            policy = adaptation
+        return self.warmup_kernel(key, self.kernel, policy, state, params, num_steps)

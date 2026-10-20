@@ -1,8 +1,11 @@
-from typing import Callable, Optional, Tuple
+from __future__ import annotations
+
+from typing import Any, Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-from jax import Array
+
+from probjax.utils.typing import Array
 
 
 def rauch_tung_stribel_smoother(
@@ -74,7 +77,7 @@ def _ffbsi_backward_step(
 
     # For each smoothed particle x_{t+1}^j, compute weights over all
     # filter particles x_t^i: w_i|j = w_t^i * p(x_{t+1}^j | x_t^i)
-    def compute_ancestor_for_one(key_j, x_tp1_j):
+    def compute_ancestor_for_one(key_j: Array, x_tp1_j: Array) -> Array:
         # log p(x_{t+1}^j | x_t^i) for all i
         log_transition = jax.vmap(
             lambda x_t_i: transition_logdensity_fn(x_tp1_j, x_t_i, t, tp1)
@@ -145,7 +148,7 @@ def particle_smoother(
     )
 
     # Backward scan from T-1 down to 0
-    def backward_step(carry, data):
+    def backward_step(carry: Any, data: Any) -> Any:
         key, smoothed_indices_tp1 = carry
         filter_particles_t, filter_log_weights_t, filter_particles_tp1, t, tp1 = data
         key, subkey = jax.random.split(key)
@@ -218,7 +221,7 @@ def smooth(
     covs_needed = jnp.flip(covs[:idx_last])
     ts_needed = jnp.flip(ts[:idx_last])
 
-    def scan_fun(carry, data):
+    def scan_fun(carry: Any, data: Any) -> Any:
         (mu0_s, cov0_s, t1) = carry
         t0, mu0, cov0, mu0_, cov0_ = data
         mu1, cov1 = smooth(t0, t1, mu0_s, cov0_s, mu0, cov0, mu0_, cov0_)

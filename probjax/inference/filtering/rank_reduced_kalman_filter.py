@@ -1,42 +1,49 @@
-from typing import Callable, NamedTuple, Optional, Tuple
+from __future__ import annotations
+
+from typing import Any, Callable, NamedTuple, Optional, Tuple
 
 import jax.numpy as jnp
-from jax.typing import ArrayLike
 
 from probjax.inference.filtering.base import FilterAPI
 from probjax.inference.filtering.gaussian import default_solve, innovation_loglik
 from probjax.utils.linalg import symmetrize_matrix
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 
 class RankReducedKalmanFilterState(NamedTuple):
-    mean: ArrayLike
-    cov_factor: ArrayLike
-    cov_core: ArrayLike
-    t: Optional[ArrayLike]
+    mean: Array
+    cov_factor: Array
+    cov_core: Array
+    t: Optional[Array]
 
 
 class RankReducedKalmanFilterInfo(NamedTuple):
-    mean_pred: ArrayLike
-    cov_factor_pred: ArrayLike
-    cov_core_pred: ArrayLike
-    log_likelihood: Optional[ArrayLike] = None
+    mean_pred: Array
+    cov_factor_pred: Array
+    cov_core_pred: Array
+    log_likelihood: Optional[Array] = None
 
 
-def _factor_to_cov(cov_factor: ArrayLike, cov_core: ArrayLike) -> ArrayLike:
+def _as_time(t: Optional[ArrayLike]) -> Optional[Array]:
+    """Normalize a filter time stamp to an array (or ``None``)."""
+    return None if t is None else jnp.asarray(t)
+
+
+def _factor_to_cov(cov_factor: Array, cov_core: Array) -> Array:
     return cov_factor @ cov_core @ cov_factor.T
 
 
-def _eigh_clip(cov: ArrayLike, min_eig: float) -> Tuple[ArrayLike, ArrayLike]:
+def _eigh_clip(cov: Array, min_eig: float) -> Tuple[Array, Array]:
     vals, vecs = jnp.linalg.eigh(symmetrize_matrix(jnp.asarray(cov)))
     vals = jnp.clip(vals, min=min_eig)
     return vals, vecs
 
 
 def _matrix_to_lowrank(
-    cov: ArrayLike,
+    cov: Array,
     rank: Optional[int],
     min_eig: float,
-) -> Tuple[ArrayLike, ArrayLike]:
+) -> Tuple[Array, Array]:
     vals, vecs = _eigh_clip(cov, min_eig=min_eig)
     k = vals.shape[0] if rank is None else min(rank, vals.shape[0])
     vals = vals[-k:]
@@ -44,16 +51,16 @@ def _matrix_to_lowrank(
     return vecs, jnp.diag(vals)
 
 
-def _core_sqrt(core: ArrayLike, min_eig: float) -> ArrayLike:
+def _core_sqrt(core: Array, min_eig: float) -> Array:
     vals, vecs = _eigh_clip(core, min_eig=min_eig)
     return vecs @ jnp.diag(jnp.sqrt(vals))
 
 
 def _compress_from_chol_like(
-    L: ArrayLike,
+    L: Array,
     rank: int,
     min_eig: float,
-) -> Tuple[ArrayLike, ArrayLike]:
+) -> Tuple[Array, Array]:
     # P = L L^T; use SVD of L to get low-rank eigendecomposition.
     U, sing, _ = jnp.linalg.svd(L, full_matrices=False)
     k = min(rank, sing.shape[0])
@@ -63,10 +70,10 @@ def _compress_from_chol_like(
 
 
 def _effective_rank_from_energy(
-    vals_desc: ArrayLike,
+    vals_desc: Array,
     energy_threshold: float,
     min_rank: int,
-) -> int:
+) -> Array:
     total = jnp.sum(vals_desc)
     total = jnp.where(total <= 0.0, 1.0, total)
     cumsum = jnp.cumsum(vals_desc)
@@ -78,11 +85,11 @@ def _effective_rank_from_energy(
 
 
 def _apply_energy_threshold(
-    vals_desc: ArrayLike,
+    vals_desc: Array,
     min_eig: float,
     energy_threshold: Optional[float],
     min_rank: int,
-) -> ArrayLike:
+) -> Array:
     vals_desc = jnp.clip(vals_desc, min=min_eig)
     if energy_threshold is None:
         return vals_desc
@@ -93,13 +100,13 @@ def _apply_energy_threshold(
 
 
 def _sum_lowrank_terms(
-    factor_a: ArrayLike,
-    core_a: ArrayLike,
-    factor_b: ArrayLike,
-    core_b: ArrayLike,
+    factor_a: Array,
+    core_a: Array,
+    factor_b: Array,
+    core_b: Array,
     rank: int,
     min_eig: float,
-) -> Tuple[ArrayLike, ArrayLike]:
+) -> Tuple[Array, Array]:
     # A + B = (La La^T) + (Lb Lb^T) with
     # La = factor_a @ sqrt(core_a), Lb = factor_b @ sqrt(core_b)
     La = factor_a @ _core_sqrt(core_a, min_eig=min_eig)
@@ -109,10 +116,10 @@ def _sum_lowrank_terms(
 
 
 def _parse_process_noise(
-    Q: ArrayLike | Tuple[ArrayLike, ArrayLike],
+    Q: Any,
     process_noise_rank: int,
     min_eig: float,
-) -> Tuple[ArrayLike, ArrayLike]:
+) -> Tuple[Array, Array]:
     """Parse process noise specification into low-rank (Uq, Sq).
 
     Supported forms:
@@ -144,20 +151,23 @@ def _parse_process_noise(
 
 def init(
     mean: ArrayLike,
-    cov: ArrayLike | Tuple[ArrayLike, ArrayLike],
+    cov: Any,
     t: Optional[ArrayLike] = None,
     rank: Optional[int] = None,
     min_eig: float = 1e-9,
 ) -> RankReducedKalmanFilterState:
+    mean = jnp.asarray(mean)
     if rank is None:
-        rank = jnp.asarray(mean).shape[0]
+        rank = mean.shape[0]
 
     cov_factor, cov_core = _parse_process_noise(
         cov,
         process_noise_rank=rank,
         min_eig=min_eig,
     )
-    return RankReducedKalmanFilterState(mean, cov_factor, cov_core, t)
+    return RankReducedKalmanFilterState(
+        mean, cov_factor, cov_core, None if t is None else jnp.asarray(t)
+    )
 
 
 def build_kernel(
@@ -189,7 +199,7 @@ def build_kernel(
         state: RankReducedKalmanFilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng_key: Optional[jnp.ndarray] = None,
+        rng_key: Optional[RngKey] = None,
     ) -> Tuple[RankReducedKalmanFilterState, RankReducedKalmanFilterInfo]:
         del rng_key
 
@@ -281,7 +291,7 @@ def build_kernel(
             )
 
             return RankReducedKalmanFilterState(
-                mu, U, S, t
+                mu, U, S, _as_time(t)
             ), RankReducedKalmanFilterInfo(
                 mu_pred,
                 U_pred,
@@ -290,7 +300,7 @@ def build_kernel(
             )
 
         return RankReducedKalmanFilterState(
-            mu_pred, U_pred, S_pred, t
+            mu_pred, U_pred, S_pred, _as_time(t)
         ), RankReducedKalmanFilterInfo(mu_pred, U_pred, S_pred, jnp.array(0.0))
 
     return kernel
@@ -306,5 +316,7 @@ class rank_reduced_kalman_filter(FilterAPI):
     build_kernel = build_kernel
 
     @staticmethod
-    def default_unpack(state, info):
+    def default_unpack(
+        state: RankReducedKalmanFilterState, info: RankReducedKalmanFilterInfo
+    ):
         return (state.mean, _factor_to_cov(state.cov_factor, state.cov_core))

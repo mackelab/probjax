@@ -1,10 +1,11 @@
-from typing import Any, Callable, NamedTuple, Optional, Sequence, Tuple, Union
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
 import optax
-from jax.random import PRNGKey
-from jax.typing import ArrayLike
 
 from probjax.inference.filtering.base import (
     FilterInfo,
@@ -27,7 +28,7 @@ from probjax.utils.jaxutils import (
     nested_checkpoint_scan,
     print_scan,
 )
-from probjax.utils.typing import PyTree
+from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 
 class FilteringTrace(NamedTuple):
@@ -42,14 +43,14 @@ class FilteringTrace(NamedTuple):
         obs_mask: Boolean mask indicating which times had observations.
     """
 
-    ts: ArrayLike
+    ts: Array
     initial_state: FilterState
     states: Any
     infos: Any
     outputs: Any
-    obs_mask: ArrayLike
+    obs_mask: Array
 
-    def get_mean(self) -> ArrayLike:
+    def get_mean(self) -> Array:
         """Extract state means from the trace.
 
         Returns:
@@ -58,7 +59,7 @@ class FilteringTrace(NamedTuple):
         """
         return extract_mean(self.states)
 
-    def get_cov(self) -> ArrayLike:
+    def get_cov(self) -> Array:
         """Extract state covariances from the trace.
 
         Returns:
@@ -86,7 +87,7 @@ class FilteringTrace(NamedTuple):
         else:
             raise ValueError("Cannot extract covariance from trace states.")
 
-    def get_var(self) -> ArrayLike:
+    def get_var(self) -> Array:
         """Extract state variances (diagonal of covariance) from the trace.
 
         Returns:
@@ -100,7 +101,7 @@ class FilteringTrace(NamedTuple):
             # Batch of states - extract diagonal of each covariance matrix
             return jax.vmap(jnp.diagonal)(cov)
 
-    def get_std(self) -> ArrayLike:
+    def get_std(self) -> Array:
         """Extract state standard deviations from the trace.
 
         Returns:
@@ -108,40 +109,40 @@ class FilteringTrace(NamedTuple):
         """
         return jnp.sqrt(self.get_var())
 
-    def get_log_likelihood(self) -> ArrayLike:
+    def get_log_likelihood(self) -> Array:
         """Extract total log-likelihood from the trace.
 
         Returns:
             Scalar sum of log-likelihoods from all observation steps.
         """
-        if hasattr(self.infos, "log_likelihood"):
-            return jnp.sum(self.infos.log_likelihood)
-        else:
+        log_likelihood = getattr(self.infos, "log_likelihood", None)
+        if log_likelihood is None:
             raise ValueError("Trace infos have no 'log_likelihood' attribute.")
+        return jnp.sum(log_likelihood)
 
 
-def _extract_covariance(states):
+def _extract_covariance(states: Any) -> Array:
     """Back-compat alias for :func:`extract_covariance`."""
     return extract_covariance(states)
 
 
-def _extract_pred_covariance(infos):
+def _extract_pred_covariance(infos: Any) -> Array:
     """Back-compat alias for :func:`extract_pred_covariance`."""
     return extract_pred_covariance(infos)
 
 
-def _trace_ts(trace: FilteringTrace):
+def _trace_ts(trace: FilteringTrace) -> Array:
     num_states = jax.tree_util.tree_leaves(trace.states)[0].shape[0]
     if trace.ts.shape[0] == num_states + 1:
         return trace.ts[1:]
     return trace.ts
 
 
-def _unpack_log_likelihood(state: FilterState, info: FilterInfo):
-    if info is not None and hasattr(info, "log_likelihood"):
-        return info.log_likelihood
-    else:
+def _unpack_log_likelihood(state: FilterState, info: FilterInfo) -> Array:
+    log_likelihood = getattr(info, "log_likelihood", None)
+    if log_likelihood is None:
         return jnp.array(0.0)
+    return log_likelihood
 
 
 class Filter(WithProgressBarAPI):
@@ -171,18 +172,18 @@ class Filter(WithProgressBarAPI):
 
     def __init__(
         self,
-        kernel: Union[FilterKernel, Callable[[Any], FilterKernel]],
+        kernel: FilterKernel | Callable[[Any], FilterKernel],
         verbose: bool = False,
         frozen: bool = True,
-        tracked_stats: Optional[Tuple[str, ...]] = None,
+        tracked_stats: tuple[str, ...] | None = None,
     ) -> None:
         self.kernel = kernel
         self.verbose = verbose
         self.frozen = frozen
-        self._stored_params = {}
+        self._stored_params: dict[str, Any] = {}
         self.tracked_stats = tracked_stats or self._default_tracked_stats
 
-    def set_params(self, **kwargs) -> "Filter":
+    def set_params(self, **kwargs: Any) -> Filter:
         """Store parameters for the OO API (when frozen=False).
 
         Returns self for method chaining.
@@ -193,13 +194,26 @@ class Filter(WithProgressBarAPI):
         self._stored_params.update(kwargs)
         return self
 
+    def _kernel(self) -> FilterKernel:
+        """The filter kernel.
+
+        ``fit`` accepts a kernel *factory* instead of a kernel, so the two
+        roles are told apart here rather than at every call site.
+        """
+        kernel = self.kernel
+        if not isinstance(kernel, FilterKernel):
+            raise TypeError(
+                "This Filter holds a kernel factory; use fit() to optimize it."
+            )
+        return kernel
+
     def step(
         self,
         state: FilterState,
         t: ArrayLike,
-        observed: Optional[ArrayLike] = None,
-        rng_key: Optional[PRNGKey] = None,
-    ) -> Tuple[FilterState, FilterInfo]:
+        observed: ArrayLike | None = None,
+        rng_key: RngKey | None = None,
+    ) -> tuple[FilterState, FilterInfo]:
         """Execute a single filter step.
 
         This is a pure function that runs one step of the filter kernel.
@@ -214,19 +228,19 @@ class Filter(WithProgressBarAPI):
         Returns:
             Tuple of (next_state, info).
         """
-        return self.kernel(state, t=t, observed=observed, rng_key=rng_key)
+        return self._kernel()(state, t=t, observed=observed, rng_key=rng_key)
 
     def filter(
         self,
-        key: PRNGKey,
+        key: RngKey,
         ts: ArrayLike,
         observations: ArrayLike,
-        *args,
-        obs_mask: Optional[ArrayLike] = None,
-        unpack_fn: Optional[Callable] = None,
-        checkpoint_lengths: Optional[Sequence[int]] = None,
+        *args: Any,
+        obs_mask: ArrayLike | None = None,
+        unpack_fn: Callable[[Any, Any], Any] | None = None,
+        checkpoint_lengths: Sequence[int] | None = None,
         unroll: int = 1,
-        **kwargs,
+        **kwargs: Any,
     ) -> FilteringTrace:
         """Run filtering over the time grid.
 
@@ -275,11 +289,12 @@ class Filter(WithProgressBarAPI):
                 stored_args.append(self._stored_params["cov0"])
             args = tuple(stored_args)
 
-        kernel = self.kernel
+        kernel = self._kernel()
+        ts = jnp.asarray(ts)
+        observations = jnp.asarray(observations)
         initial_state = kernel.init(*args, t=ts[0], **kwargs)
 
-        if unpack_fn is None:
-            unpack_fn = kernel.default_unpack
+        unpack = unpack_fn if unpack_fn is not None else kernel.default_unpack
 
         # Default: all times have observations
         if obs_mask is None:
@@ -304,7 +319,7 @@ class Filter(WithProgressBarAPI):
             state, info = jax.lax.cond(
                 has_obs, update_fn, predict_fn, subkey, state, obs
             )
-            out = unpack_fn(state, info)
+            out = unpack(state, info)
             return (state, key), (state, info, out)
 
         carry = (initial_state, key)
@@ -352,10 +367,10 @@ class Filter(WithProgressBarAPI):
     def smooth(
         self,
         trace: FilteringTrace,
-        smoother: Optional[Callable] = None,
-        key: Optional[PRNGKey] = None,
-        transition_logdensity_fn: Optional[Callable] = None,
-    ) -> Union[Tuple[ArrayLike, ArrayLike], Tuple[PyTree, ArrayLike]]:
+        smoother: Callable[..., Any] | None = None,
+        key: RngKey | None = None,
+        transition_logdensity_fn: Callable[..., Any] | None = None,
+    ) -> tuple[Array, Array] | tuple[PyTree, Array]:
         """Smooth a filtering trace.
 
         Auto-detects the appropriate smoothing algorithm based on trace content:
@@ -426,15 +441,15 @@ class Filter(WithProgressBarAPI):
 
     def log_likelihood(
         self,
-        key: PRNGKey,
+        key: RngKey,
         ts: ArrayLike,
         observations: ArrayLike,
-        *args,
-        obs_mask: Optional[ArrayLike] = None,
-        checkpoint_lengths: Optional[Sequence[int]] = None,
+        *args: Any,
+        obs_mask: ArrayLike | None = None,
+        checkpoint_lengths: Sequence[int] | None = None,
         unroll: int = 1,
-        **kwargs,
-    ) -> ArrayLike:
+        **kwargs: Any,
+    ) -> Array:
         """Run filtering and return the summed log-likelihood.
 
         Args:
@@ -466,18 +481,18 @@ class Filter(WithProgressBarAPI):
 
     def fit(
         self,
-        key: PRNGKey,
+        key: RngKey,
         ts: ArrayLike,
         observations: ArrayLike,
-        *args,
-        obs_mask: Optional[ArrayLike] = None,
-        params_init: Optional[dict] = None,
+        *args: Any,
+        obs_mask: ArrayLike | None = None,
+        params_init: dict[str, Any] | None = None,
         num_steps: int = 100,
         learning_rate: float = 0.01,
-        checkpoint_lengths: Optional[Sequence[int]] = None,
+        checkpoint_lengths: Sequence[int] | None = None,
         unroll: int = 1,
-        **kwargs,
-    ) -> Tuple[dict, ArrayLike]:
+        **kwargs: Any,
+    ) -> tuple[Any, Array]:
         """Estimate parameters by maximizing the log-likelihood.
 
         This method optimizes model parameters (e.g., noise covariances,
@@ -522,6 +537,11 @@ class Filter(WithProgressBarAPI):
 
         # The kernel must be a factory function
         kernel_factory = self.kernel
+        if isinstance(kernel_factory, FilterKernel):
+            raise TypeError(
+                "fit() needs a kernel factory that takes the parameter dict, "
+                "not an already built kernel."
+            )
 
         def objective(params):
             """Negative log-likelihood (to minimize)."""

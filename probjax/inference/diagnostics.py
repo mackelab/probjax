@@ -30,8 +30,9 @@ from blackjax.diagnostics import (
     potential_scale_reduction,
     rhat,
 )
-from blackjax.types import Array, ArrayLikeTree
 from jax.flatten_util import ravel_pytree
+
+from probjax.utils.typing import Array, ArrayLikeTree
 
 __all__ = [
     "DivergenceConcentrationReport",

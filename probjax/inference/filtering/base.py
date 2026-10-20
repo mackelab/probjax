@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 from typing import Any, Callable, NamedTuple, Optional, Tuple
 
 import jax
-from jax.typing import ArrayLike
 
 from probjax.utils.guards import has_attrs
 from probjax.utils.jaxutils import API
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 
 class FilterState(NamedTuple):
@@ -44,23 +46,23 @@ class FilterKernel(NamedTuple):
         state: FilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng_key: Optional[ArrayLike] = None,
+        rng_key: Optional[RngKey] = None,
     ) -> Tuple[FilterState, FilterInfo]:
         return self.step(state, t, observed, rng_key)
 
 
 class FilterAPI(metaclass=API):
     @staticmethod
-    def init(*args, **kwargs) -> FilterState:
+    def init(*args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("init method must be implemented")
 
     @staticmethod
-    def build_kernel(*args, **kwargs) -> FilterKernel:
+    def build_kernel(*args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("build_kernel method must be implemented")
 
     default_unpack = staticmethod(_default_unpack)
 
-    def __new__(cls, *args, **kwargs) -> FilterKernel:
+    def __new__(cls, *args: Any, **kwargs: Any) -> FilterKernel:
         return FilterKernel(
             cls.init, cls.build_kernel(*args, **kwargs), cls.default_unpack
         )
@@ -72,7 +74,7 @@ def make_filter_api(
     init_fn: Callable,
     build_kernel_fn: Callable,
     default_unpack_fn: Optional[Callable] = None,
-):
+) -> type:
     """Create a FilterAPI subclass with minimal boilerplate.
 
     Args:
@@ -97,7 +99,7 @@ def is_particle_state(states: Any) -> bool:
     return has_attrs(states, "particles", "log_weights")
 
 
-def extract_mean(states: Any) -> ArrayLike:
+def extract_mean(states: Any) -> Array:
     """Mean for Gaussian states, particles for particle states."""
     if hasattr(states, "mean"):
         return states.mean
@@ -106,7 +108,7 @@ def extract_mean(states: Any) -> ArrayLike:
     raise ValueError("Trace states have no 'mean' or 'particles' attribute.")
 
 
-def extract_covariance(states: Any) -> ArrayLike:
+def extract_covariance(states: Any) -> Array:
     """Covariance for Gaussian states (``cov`` / ``std`` / factor-core)."""
     if hasattr(states, "cov"):
         return states.cov
@@ -119,7 +121,7 @@ def extract_covariance(states: Any) -> ArrayLike:
     )
 
 
-def extract_pred_covariance(infos: Any) -> ArrayLike:
+def extract_pred_covariance(infos: Any) -> Array:
     """Predicted covariance for Gaussian infos."""
     if hasattr(infos, "cov_pred"):
         return infos.cov_pred

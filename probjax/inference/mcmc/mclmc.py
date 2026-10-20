@@ -1,7 +1,10 @@
-from typing import Callable, NamedTuple, Optional, Tuple
+from __future__ import annotations
+
+from typing import Callable, NamedTuple
 
 import blackjax
 import jax.numpy as jnp
+from blackjax.mcmc import integrators
 from blackjax.mcmc.adjusted_mclmc_dynamic import trajectory_length
 from blackjax.mcmc.dynamic_hmc import DynamicHMCState
 from blackjax.mcmc.hmc import HMCInfo, HMCState
@@ -18,7 +21,7 @@ from probjax.inference.mcmc.base import (
     scale_step_size_by_grad,
 )
 from probjax.inference.mcmc.warmup import mclmc_warmup
-from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
+from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey, Scalar
 
 
 class MCLMCParams(NamedTuple):
@@ -34,8 +37,8 @@ class MCLMCParams(NamedTuple):
         Inverse mass matrix used to precondition the dynamics.
     """
 
-    step_size: float
-    L: float
+    step_size: Scalar
+    L: Scalar
     inverse_mass_matrix: ArrayLike
 
 
@@ -43,7 +46,7 @@ def init_mclmc_params(
     state: PyTree,
     step_size: float = 0.1,
     L: float = 1.0,
-    inverse_mass_matrix: Optional[Array] = None,
+    inverse_mass_matrix: Array | None = None,
 ) -> MCLMCParams:
     """Initialize the parameters of the unadjusted MCLMC sampler.
 
@@ -65,15 +68,15 @@ def init_mclmc_params(
         Resolved sampler parameters.
     """
     inverse_mass_matrix = init_hmc_like_params(state, inverse_mass_matrix)
-    step_size = scale_step_size_by_grad(state, step_size)
+    scaled_step_size = scale_step_size_by_grad(state, step_size)
     return MCLMCParams(
-        step_size=step_size, L=L, inverse_mass_matrix=inverse_mass_matrix
+        step_size=scaled_step_size, L=L, inverse_mass_matrix=inverse_mass_matrix
     )
 
 
 def build_mclmc_step(
     logdensity_fn: Callable,
-    integrator: Callable = blackjax.mcmc.integrators.isokinetic_mclachlan,
+    integrator: Callable = integrators.isokinetic_mclachlan,
 ) -> Callable:
     """Build the step; see :class:`mclmc` for the arguments."""
     # blackjax >= 1.6 takes logdensity_fn and inverse_mass_matrix on the kernel
@@ -85,7 +88,7 @@ def build_mclmc_step(
         key: RngKey,
         state: IntegratorState,
         params: MCLMCParams,
-    ) -> Tuple[IntegratorState, MCLMCInfo]:
+    ) -> tuple[IntegratorState, MCLMCInfo]:
         return kernel(
             key,
             state,
@@ -98,7 +101,7 @@ def build_mclmc_step(
     return step
 
 
-def _mclmc_adaptation(*, mclmc_kernel=None, adjusted=False, **kwargs):
+def _mclmc_adaptation(*, mclmc_kernel=None, adjusted: bool = False, **kwargs):
     # Defaults to a standard blackjax MCLMC kernel; pass mclmc_kernel=
     # explicitly to match custom integrator settings.
     if mclmc_kernel is None:
@@ -145,17 +148,17 @@ class AdjustedMCLMCParams(NamedTuple):
         Factor controlling the proposal trajectory length.
     """
 
-    step_size: float
+    step_size: Scalar
     num_integration_steps: int
     inverse_mass_matrix: ArrayLike
-    L_proposal_factor: float
+    L_proposal_factor: Scalar
 
 
 def init_params(
     state: PyTree,
     step_size: float = 0.5,
     num_integration_steps: int = 10,
-    inverse_mass_matrix: Optional[Array] = None,
+    inverse_mass_matrix: Array | None = None,
     L_proposal_factor: float = jnp.inf,
 ) -> AdjustedMCLMCParams:
     """Initialize the parameters of the adjusted MCLMC sampler.
@@ -180,9 +183,9 @@ def init_params(
         Resolved sampler parameters.
     """
     inverse_mass_matrix = init_hmc_like_params(state, inverse_mass_matrix)
-    step_size = scale_step_size_by_grad(state, step_size)
+    scaled_step_size = scale_step_size_by_grad(state, step_size)
     return AdjustedMCLMCParams(
-        step_size=step_size,
+        step_size=scaled_step_size,
         num_integration_steps=num_integration_steps,
         inverse_mass_matrix=inverse_mass_matrix,
         L_proposal_factor=L_proposal_factor,
@@ -191,7 +194,7 @@ def init_params(
 
 def build_step(
     logdensity_fn: Callable,
-    integrator: Callable = blackjax.mcmc.integrators.isokinetic_mclachlan,
+    integrator: Callable = integrators.isokinetic_mclachlan,
     divergence_threshold: float = 1000.0,
 ) -> Callable:
     """Build the step; see :class:`adjusted_mclmc` for the arguments."""
@@ -204,7 +207,7 @@ def build_step(
         key: RngKey,
         state: HMCState,
         params: AdjustedMCLMCParams,
-    ) -> Tuple[HMCState, HMCInfo]:
+    ) -> tuple[HMCState, HMCInfo]:
         return kernel(
             key,
             state,
@@ -254,15 +257,15 @@ class AdjustedMCLMCDynamicParams(NamedTuple):
         Factor controlling the proposal trajectory length.
     """
 
-    step_size: float
+    step_size: Scalar
     inverse_mass_matrix: ArrayLike
-    L_proposal_factor: float
+    L_proposal_factor: Scalar
 
 
 def init_dynamic_params(
     state: PyTree,
     step_size: float = 0.5,
-    inverse_mass_matrix: Optional[Array] = None,
+    inverse_mass_matrix: Array | None = None,
     L_proposal_factor: float = jnp.inf,
 ) -> AdjustedMCLMCDynamicParams:
     """Initialize the parameters of the adjusted MCLMC dynamic sampler.
@@ -285,9 +288,9 @@ def init_dynamic_params(
         Resolved sampler parameters.
     """
     inverse_mass_matrix = init_hmc_like_params(state, inverse_mass_matrix)
-    step_size = scale_step_size_by_grad(state, step_size)
+    scaled_step_size = scale_step_size_by_grad(state, step_size)
     return AdjustedMCLMCDynamicParams(
-        step_size=step_size,
+        step_size=scaled_step_size,
         inverse_mass_matrix=inverse_mass_matrix,
         L_proposal_factor=L_proposal_factor,
     )
@@ -298,9 +301,9 @@ def build_dynamic_step(
     average_integration_steps: int = 10,
     integration_steps_sequence: str = "halton",
     divergence_threshold: float = 1000.0,
-    integrator: Callable = blackjax.mcmc.integrators.isokinetic_mclachlan,
-    next_random_arg_fn: Optional[Callable] = None,
-    integration_steps_fn: Optional[Callable] = None,
+    integrator: Callable = integrators.isokinetic_mclachlan,
+    next_random_arg_fn: Callable | None = None,
+    integration_steps_fn: Callable | None = None,
 ) -> Callable:
     """Build the step; see :class:`adjusted_mclmc_dynamic` for the arguments."""
     if integration_steps_fn is None:
@@ -328,7 +331,7 @@ def build_dynamic_step(
         key: RngKey,
         state: DynamicHMCState,
         params: AdjustedMCLMCDynamicParams,
-    ) -> Tuple[DynamicHMCState, HMCInfo]:
+    ) -> tuple[DynamicHMCState, HMCInfo]:
         return kernel(
             key,
             state,

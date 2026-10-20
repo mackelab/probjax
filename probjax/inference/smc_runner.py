@@ -1,21 +1,23 @@
 """Compiled fixed and adaptive SMC execution with constant-memory summaries."""
 
+from __future__ import annotations
+
 from functools import partial
-from typing import Optional, Tuple
+from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.base import RunnerMixin, SMCResult
+from probjax.inference.base import Adaptor, RunnerMixin, SMCResult
 from probjax.utils.guards import ensure_int
-from probjax.utils.jaxutils import WithProgressBarAPI
+from probjax.utils.typing import Array, PyTree, RngKey
 
 
-def _sampler_state(state):
+def _sampler_state(state: Any) -> Any:
     return getattr(state, "sampler_state", state)
 
 
-def _ess_from_weights(state, _info):
+def _ess_from_weights(state: Any, _info: Any) -> Array:
     state = _sampler_state(state)
     if hasattr(state, "weights"):
         return 1.0 / jnp.sum(state.weights**2)
@@ -23,7 +25,7 @@ def _ess_from_weights(state, _info):
     return weights.sum() ** 2 / jnp.sum(weights**2)
 
 
-def _increment(previous, state, info):
+def _increment(previous: Any, state: Any, info: Any) -> Array:
     if hasattr(info, "log_likelihood_increment"):
         return info.log_likelihood_increment
     previous, state = _sampler_state(previous), _sampler_state(state)
@@ -32,29 +34,29 @@ def _increment(previous, state, info):
     return jnp.array(jnp.nan)  # A custom kernel did not supply evidence information.
 
 
-def _zero_info(fn, *args, **kwargs):
+def _zero_info(fn: Callable, *args: Any, **kwargs: Any) -> PyTree:
     shape = jax.eval_shape(fn, *args, **kwargs)[1]
     return jax.tree.map(lambda x: jnp.zeros(x.shape, x.dtype), shape)
 
 
-def _initial_evidence(state, supplied):
+def _initial_evidence(state: Any, supplied: Any) -> Array:
     if supplied is not None:
         return jnp.asarray(supplied)
     return jnp.asarray(getattr(_sampler_state(state), "log_Z", 0.0))
 
 
 def _run_fixed(
-    key,
-    kernel,
-    state,
-    schedule,
-    params,
+    key: RngKey,
+    kernel: Any,
+    state: Any,
+    schedule: Any,
+    params: Any,
     *,
-    collect=False,
-    adaptor=None,
-    verbose=None,
-    initial_log_evidence=None,
-):
+    collect: bool = False,
+    adaptor: Adaptor | None = None,
+    verbose: RunnerMixin | None = None,
+    initial_log_evidence: Any = None,
+) -> SMCResult:
     schedule = jnp.asarray(schedule)
     if schedule.ndim < 1:
         raise ValueError("A schedule needs a leading step axis.")
@@ -113,7 +115,7 @@ def _run_fixed(
     )
 
 
-class SMC(WithProgressBarAPI, RunnerMixin):
+class SMC(RunnerMixin):
     """Compiled SMC runners, retaining evidence and final diagnostics by default.
 
     ``info`` remains the optional legacy trace. ``final_info`` is the last kernel
@@ -128,31 +130,31 @@ class SMC(WithProgressBarAPI, RunnerMixin):
 
     def __init__(
         self,
-        kernel,
-        verbose=False,
-        tracked_stats: Optional[Tuple[str, ...]] = None,
-        collect=False,
-    ):
+        kernel: Any,
+        verbose: bool = False,
+        tracked_stats: tuple[str, ...] | None = None,
+        collect: bool = False,
+    ) -> None:
         self.kernel, self.verbose, self.collect = kernel, verbose, collect
         self.tracked_stats = (
             self._default_tracked_stats if tracked_stats is None else tracked_stats
         )
 
-    def _stat_objects(self, state, info):
+    def _stat_objects(self, state: Any, info: Any) -> tuple[Any, ...]:
         return (_sampler_state(state), info, getattr(info, "update_info", None))
 
     @staticmethod
     @partial(jax.jit, static_argnames=("kernel", "collect"))
     def run_kernel(
-        key,
-        kernel,
-        state,
-        tempering_params,
-        params,
+        key: RngKey,
+        kernel: Any,
+        state: Any,
+        tempering_params: Any,
+        params: Any,
         *,
-        collect=False,
-        initial_log_evidence=None,
-    ):
+        collect: bool = False,
+        initial_log_evidence: Any = None,
+    ) -> SMCResult:
         return _run_fixed(
             key,
             kernel,
@@ -166,16 +168,16 @@ class SMC(WithProgressBarAPI, RunnerMixin):
     @staticmethod
     @partial(jax.jit, static_argnames=("kernel", "adaptor", "collect"))
     def adapt_kernel(
-        key,
-        kernel,
-        adaptor,
-        state,
-        tempering_params,
-        params,
+        key: RngKey,
+        kernel: Any,
+        adaptor: Adaptor,
+        state: Any,
+        tempering_params: Any,
+        params: Any,
         *,
-        collect=False,
-        initial_log_evidence=None,
-    ):
+        collect: bool = False,
+        initial_log_evidence: Any = None,
+    ) -> SMCResult:
         return _run_fixed(
             key,
             kernel,
@@ -190,15 +192,15 @@ class SMC(WithProgressBarAPI, RunnerMixin):
     @staticmethod
     @partial(jax.jit, static_argnames=("kernel", "max_steps", "adaptor"))
     def run_adaptive_kernel(
-        key,
-        kernel,
-        state,
-        params,
+        key: RngKey,
+        kernel: Any,
+        state: Any,
+        params: Any,
         *,
-        max_steps=200,
-        adaptor=None,
-        initial_log_evidence=None,
-    ):
+        max_steps: int = 200,
+        adaptor: Adaptor | None = None,
+        initial_log_evidence: Any = None,
+    ) -> SMCResult:
         """Advance an adaptive kernel to temperature 1, with a fixed iteration cap.
 
         No history is allocated. completed=False signals the cap, exhausted
@@ -259,7 +261,15 @@ class SMC(WithProgressBarAPI, RunnerMixin):
             key,
         )
 
-    def run(self, key, state, tempering_params, params, *, initial_log_evidence=None):
+    def run(
+        self,
+        key: RngKey,
+        state: Any,
+        tempering_params: Any,
+        params: Any,
+        *,
+        initial_log_evidence: Any = None,
+    ) -> SMCResult:
         if self.verbose:
             return _run_fixed(
                 key,
@@ -282,8 +292,14 @@ class SMC(WithProgressBarAPI, RunnerMixin):
         )
 
     def sample(
-        self, key, state, tempering_params, params, *, initial_log_evidence=None
-    ):
+        self,
+        key: RngKey,
+        state: Any,
+        tempering_params: Any,
+        params: Any,
+        *,
+        initial_log_evidence: Any = None,
+    ) -> SMCResult:
         if not self.verbose:
             return self.run_kernel(
                 key,
@@ -307,14 +323,14 @@ class SMC(WithProgressBarAPI, RunnerMixin):
 
     def adapt(
         self,
-        key,
-        adaptor,
-        state,
-        tempering_params,
-        params,
+        key: RngKey,
+        adaptor: Adaptor,
+        state: Any,
+        tempering_params: Any,
+        params: Any,
         *,
-        initial_log_evidence=None,
-    ):
+        initial_log_evidence: Any = None,
+    ) -> SMCResult:
         if not self.verbose:
             return self.adapt_kernel(
                 key,
@@ -340,14 +356,14 @@ class SMC(WithProgressBarAPI, RunnerMixin):
 
     def run_adaptive(
         self,
-        key,
-        state,
-        params,
+        key: RngKey,
+        state: Any,
+        params: Any,
         *,
-        max_steps=200,
-        adaptor=None,
-        initial_log_evidence=None,
-    ):
+        max_steps: int = 200,
+        adaptor: Adaptor | None = None,
+        initial_log_evidence: Any = None,
+    ) -> SMCResult:
         return self.run_adaptive_kernel(
             key,
             self.kernel,

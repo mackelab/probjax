@@ -1,8 +1,9 @@
+from __future__ import annotations
+
 from typing import Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-from jax.typing import ArrayLike
 
 from probjax.inference.filtering.base import FilterAPI
 from probjax.inference.filtering.gaussian import (
@@ -15,6 +16,7 @@ from probjax.inference.filtering.gaussian import (
 from probjax.utils.guards import call_if_callable
 from probjax.utils.linalg import matrix_fraction_decomposition
 from probjax.utils.linear_operator import Jacobian, as_array
+from probjax.utils.typing import ArrayLike, RngKey
 
 # ---------------------------------------------------------------------------
 # EKF kernel
@@ -44,7 +46,7 @@ def build_kernel(
         state: GaussianFilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng_key: Optional[jnp.ndarray] = None,
+        rng_key: Optional[RngKey] = None,
     ) -> Tuple[GaussianFilterState, GaussianFilterInfo]:
         def predict(mu0, cov0, t_old, t):
             # Predict: nonlinear mean + linearized covariance
@@ -76,8 +78,12 @@ def build_kernel(
 
 
 def make_linearized_transition(
-    transition_fn, Q_fn, in_dim, out_dim=None, materialize=False
-):
+    transition_fn: Callable,
+    Q_fn: Callable | ArrayLike,
+    in_dim: int,
+    out_dim: int | None = None,
+    materialize: bool = False,
+) -> Callable:
     """Build an EKF transition model.
 
     By default the Jacobian Phi = df/dx is returned as a matrix-free
@@ -111,8 +117,12 @@ def make_linearized_transition(
 
 
 def make_linearized_observation(
-    observation_fn, R_fn, in_dim, out_dim, materialize=False
-):
+    observation_fn: Callable,
+    R_fn: Callable | ArrayLike,
+    in_dim: int,
+    out_dim: int,
+    materialize: bool = False,
+) -> Callable:
     """Build an EKF observation model.
 
     By default the Jacobian C = dh/dx is returned as a matrix-free
@@ -145,7 +155,12 @@ def make_linearized_observation(
     return observation_model_fn
 
 
-def make_continuous_transition(drift_fn, diffusion_matrix, in_dim, materialize=False):
+def make_continuous_transition(
+    drift_fn: Callable,
+    diffusion_matrix: ArrayLike,
+    in_dim: int,
+    materialize: bool = False,
+) -> Callable:
     """Build an EKF transition model from continuous SDE.
 
     For an SDE  dx = f(x,t) dt + B dw,  this computes:
@@ -167,7 +182,7 @@ def make_continuous_transition(drift_fn, diffusion_matrix, in_dim, materialize=F
     Returns:
         transition_model_fn: (x, cov, t_old, t) -> (x_pred, Phi, Q)
     """
-    B = diffusion_matrix
+    B = jnp.asarray(diffusion_matrix)
 
     def transition_model_fn(x, cov, t_old, t):
         dt = t - t_old

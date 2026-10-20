@@ -1,21 +1,32 @@
 """Joint trajectory sampling and particle Gibbs with ancestor sampling."""
 
+from __future__ import annotations
+
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 
 from probjax.inference.filtering.observations import validate_observations
 from probjax.inference.filtering.smoothing import particle_smoother
 from probjax.inference.filtering.state_space import LinearGaussianModel
+from probjax.utils.typing import Array, RngKey
 
 
-def _prepend(initial, history):
+def _prepend(initial: Any, history: Any) -> Any:
     return jax.tree.map(lambda x, xs: jnp.concatenate((x[None], xs)), initial, history)
 
 
-def _genealogies(key, particles, log_weights, ancestors, num_samples):
+def _genealogies(
+    key: RngKey,
+    particles: Array,
+    log_weights: Array,
+    ancestors: Array,
+    num_samples: int,
+) -> Array:
     final = jax.random.categorical(key, log_weights, shape=(num_samples,))
 
-    def backward(indices, data):
+    def backward(indices: Array, data: Any) -> Any:
         population, parents = data
         indices = parents[indices]
         return indices, population[indices]
@@ -24,7 +35,15 @@ def _genealogies(key, particles, log_weights, ancestors, num_samples):
     return jnp.concatenate((paths, particles[-1, final][None]))
 
 
-def sample_paths(key, trace, model, theta, *, num_samples=1, method=None):
+def sample_paths(
+    key: RngKey,
+    trace: Any,
+    model: Any,
+    theta: Any,
+    *,
+    num_samples: int = 1,
+    method: str | None = None,
+) -> Array:
     """Draw joint latent paths from a filter trace at fixed ``theta``.
 
     Paths have shape ``(len(trace.ts) + 1, num_samples, D)``, including the
@@ -63,7 +82,7 @@ def sample_paths(key, trace, model, theta, *, num_samples=1, method=None):
     return paths
 
 
-def _gaussian_backward_data(trace, model, theta):
+def _gaussian_backward_data(trace: Any, model: Any, theta: Any) -> tuple[Any, Any]:
     states = _prepend(trace.initial_state, trace.states)
     times = jnp.concatenate((jnp.asarray(trace.initial_state.t)[None], trace.ts))
     phis = jax.vmap(lambda a, b: model.transition(theta, a, b)[0])(
@@ -75,14 +94,14 @@ def _gaussian_backward_data(trace, model, theta):
     return states, gains
 
 
-def smooth_gaussian_path(trace, model, theta):
+def smooth_gaussian_path(trace: Any, model: Any, theta: Any) -> tuple[Array, Array]:
     """RTS smoothed means and covariances of a :class:`LinearGaussianModel` trace.
 
     Both include the initial state, so they have ``len(trace.ts) + 1`` entries.
     """
     states, gains = _gaussian_backward_data(trace, model, theta)
 
-    def backward(carry, data):
+    def backward(carry: Any, data: Any) -> Any:
         next_mean, next_cov = carry
         mean, cov, pred_mean, pred_cov, gain = data
         mean = mean + gain @ (next_mean - pred_mean)
@@ -108,20 +127,22 @@ def smooth_gaussian_path(trace, model, theta):
     )
 
 
-def _normal(key, mean, cov, num_samples):
+def _normal(key: RngKey, mean: Array, cov: Array, num_samples: int) -> Array:
     # Backward conditional covariance can be semidefinite. Clip roundoff at zero.
     values, vectors = jnp.linalg.eigh((cov + cov.T) / 2)
     factor = vectors * jnp.sqrt(jnp.maximum(values, 0))
     return mean + jax.random.normal(key, (num_samples, cov.shape[-1])) @ factor.T
 
 
-def _sample_gaussian_paths(key, trace, model, theta, num_samples):
+def _sample_gaussian_paths(
+    key: RngKey, trace: Any, model: Any, theta: Any, num_samples: int
+) -> Array:
     # Backward conditionals keep the cross-time dependence of the joint law.
     states, gains = _gaussian_backward_data(trace, model, theta)
     key, final_key = jax.random.split(key)
     final = _normal(final_key, states.mean[-1], states.cov[-1], num_samples)
 
-    def backward(carry, data):
+    def backward(carry: Any, data: Any) -> Any:
         key, next_x = carry
         key, draw_key = jax.random.split(key)
         mean, cov, pred_mean, pred_cov, gain = data
@@ -146,18 +167,18 @@ def _sample_gaussian_paths(key, trace, model, theta, num_samples):
 
 
 def particle_gibbs(
-    key,
-    reference_path,
-    model,
-    theta,
-    ts,
-    observations,
+    key: RngKey,
+    reference_path: Array,
+    model: Any,
+    theta: Any,
+    ts: Any,
+    observations: Any,
     *,
-    t0=0.0,
-    num_particles=32,
-    observed=None,
-    ancestor_sampling=True,
-):
+    t0: Any = 0.0,
+    num_particles: int = 32,
+    observed: Any = None,
+    ancestor_sampling: bool = True,
+) -> Array:
     """One conditional-SMC update (PGAS by default), returning a new joint path.
 
     ``reference_path`` has shape ``(len(ts) + 1, D)``, including ``x(t0)``, and
@@ -186,7 +207,7 @@ def particle_gibbs(
     transition = jax.vmap(model.step, (0, None, 0, None, None))
     likelihood = jax.vmap(model.log_likelihood, (None, 0, None, None))
 
-    def step(carry, data):
+    def step(carry: Any, data: Any) -> Any:
         key, particles, weights, previous = carry
         key, resample_key, ancestor_key, predict_key = jax.random.split(key, 4)
         t, y, mask, reference = data

@@ -1,31 +1,33 @@
-from typing import Callable, NamedTuple, Optional
+from __future__ import annotations
+
+from typing import Any, Callable, NamedTuple, Optional
 
 import jax
 import jax.numpy as jnp
-from jax.typing import ArrayLike
 
 from probjax.inference.filtering.base import FilterAPI
 from probjax.inference.smc.ess import ess
 from probjax.inference.smc.resampling import (
     resample_systematic,
 )
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 
 class ParticleFilterState(NamedTuple):
-    particles: ArrayLike
-    log_weights: ArrayLike
-    t: Optional[ArrayLike]
+    particles: Any
+    log_weights: Array
+    t: Optional[Array]
 
 
 class ParticleFilterInfo(NamedTuple):
-    ancestors: ArrayLike
-    log_likelihood: ArrayLike
-    ess: ArrayLike
+    ancestors: Array
+    log_likelihood: Array
+    ess: Array
     is_observed: bool
 
 
 def init(
-    particles: ArrayLike,
+    particles: Any,
     t: Optional[ArrayLike] = None,
     log_weights: Optional[ArrayLike] = None,
 ) -> ParticleFilterState:
@@ -34,14 +36,17 @@ def init(
     if log_weights is None:
         log_weights = jnp.full((num_particles,), fill_value=-jnp.log(num_particles))
     else:
+        log_weights = jnp.asarray(log_weights)
         assert log_weights.shape[0] == num_particles, (
             "The number of particles and log weights must be the same."
         )
         log_weights = log_weights - jax.scipy.special.logsumexp(log_weights)
-    return ParticleFilterState(particles, log_weights, t)
+    return ParticleFilterState(
+        particles, log_weights, None if t is None else jnp.asarray(t)
+    )
 
 
-def resample_when_ess_below(ess: float, ess_threshold: float = 0.5):
+def resample_when_ess_below(ess: float, ess_threshold: float = 0.5) -> bool:
     return ess < ess_threshold
 
 
@@ -75,10 +80,10 @@ def build_kernel(
 
     def kernel(
         state: ParticleFilterState,
-        t: Optional[float | int] = None,
+        t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng_key: Optional[ArrayLike] = None,
-    ):
+        rng_key: Optional[RngKey] = None,
+    ) -> tuple[ParticleFilterState, ParticleFilterInfo]:
         assert rng_key is not None, (
             "You must provide a random key for the particle filter kernel."
         )
@@ -91,6 +96,9 @@ def build_kernel(
         if proposal_logdensity_fn is None:
             new_particles = transition_fn(rng_key_predict, particles, t)
         else:
+            assert proposal_transition_fn is not None, (
+                "A proposal transition is required alongside the proposal density."
+            )
             new_particles = proposal_transition_fn(rng_key_predict, particles, t)
 
         # Update weights
@@ -123,7 +131,7 @@ def build_kernel(
                 log_weights = log_weights - log_normalizer
                 log_likelihood = log_normalizer
             else:
-                log_likelihood = 0.0
+                log_likelihood = jnp.array(0.0)
 
         # Resample if necessary
         effective_samples_size = ess(log_weights)
@@ -156,7 +164,9 @@ def build_kernel(
             new_particles,
         )
 
-        new_state = ParticleFilterState(new_particles, new_log_weights, t)
+        new_state = ParticleFilterState(
+            new_particles, new_log_weights, None if t is None else jnp.asarray(t)
+        )
         info = ParticleFilterInfo(
             ancestors, log_likelihood, effective_samples_size, is_observed
         )
@@ -195,5 +205,5 @@ class ParticleFilter(FilterAPI):
     build_kernel = build_kernel
 
     @staticmethod
-    def default_unpack(state, info):
+    def default_unpack(state: ParticleFilterState, info: ParticleFilterInfo) -> Any:
         return state.particles

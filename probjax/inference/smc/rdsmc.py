@@ -66,13 +66,15 @@ class RDSMCInfo(NamedTuple):
 
 def _standard_normal_logpdf(batch: PyTree[Array]) -> Array:
     """Summed log ``N(0, I)`` over event dims, result ``(num_particles,)``."""
-    total = None
+    total: Array | None = None
     for leaf in jax.tree.leaves(batch):
         term = -0.5 * leaf**2 - 0.5 * _LOG_2PI
         reduced = (
             jnp.sum(term, axis=tuple(range(1, term.ndim))) if term.ndim > 1 else term
         )
         total = reduced if total is None else total + reduced
+    if total is None:
+        raise ValueError("A particle batch must have at least one leaf.")
     return total
 
 
