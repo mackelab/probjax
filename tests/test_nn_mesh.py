@@ -247,7 +247,7 @@ def test_flow_logpdf_per_shard_no_allgather():
     with jax.set_mesh(mesh):
         fn = jax.jit(distribution.logpdf)
         lp = fn(xs)
-        assert jnp.allclose(lp_ref, jax.device_get(lp), atol=1e-5)
+        assert jnp.allclose(jax.device_get(lp_ref), jax.device_get(lp), atol=1e-5)
         assert lp.sharding.spec[0] == "data"
         hlo = fn.lower(xs).compile().as_text()
         assert "all-gather" not in hlo
