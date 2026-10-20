@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Optional, Union, cast
 
 import jax
 import jax.numpy as jnp
@@ -168,10 +168,10 @@ class Drift:
       :meth:`_bind_args_impl` to preserve it.
     """
 
-    def __call__(self, t: ArrayLike, y: PyTree, *args: Any) -> PyTree:
+    def __call__(self, t: ArrayLike, y: Any, *args: Any) -> Any:
         raise NotImplementedError
 
-    def ravel_arg(self, unravel: Callable[[Array], PyTree], index: int = 1):
+    def ravel_arg(self, unravel: Callable[[Array], PyTree], index: int = 1) -> Any:
         if index != 1:
             return _ravel_callable(self, unravel, index)
         return RaveledDrift(self, unravel, index=index)
@@ -361,7 +361,7 @@ class linear_drift(Drift):
     b: Optional[Callable[..., Array]] = None
 
     def __call__(self, t: ArrayLike, y: PyTree, *args: Any) -> PyTree:
-        A_t = self.A if self.is_constant else self.A(t)
+        A_t = self.A if self.is_constant else cast(Callable[..., Any], self.A)(t)
         if isinstance(A_t, LinearOperator):
             linear_part = jax.tree_util.tree_map(lambda yi: A_t @ yi, y)
         else:
@@ -387,8 +387,8 @@ class linear_drift(Drift):
         Exact solvers need a flattened square system, so dense drifts
         require vector states; see :func:`as_operator` for the rules.
         """
-        A_t = self.A if self.is_constant else self.A(t)
-        return as_operator(A_t, shape)
+        A_t = self.A if self.is_constant else cast(Callable[..., Any], self.A)(t)
+        return as_operator(cast(Any, A_t), shape)
 
     def _bind_args_impl(self, args: tuple[Any, ...]) -> "linear_drift":
         if self.b is None:

@@ -1,19 +1,20 @@
-from typing import Callable
+from __future__ import annotations
+
+from typing import Any, Callable
 
 import jax.numpy as jnp
-from jax import Array
-from jax.typing import ArrayLike
 
 # Re-exported for existing ``odeutil.util`` importers.
 from probjax.utils.special.phi1 import phi1_scalar  # noqa: F401
+from probjax.utils.typing import Array
 
 
 def initial_step_size(
     drift: Callable,
-    args,
-    t0: ArrayLike,
-    y0: ArrayLike,
-    f0: ArrayLike,
+    args: Any,
+    t0: Array,
+    y0: Array,
+    f0: Array,
     order: int,
     rtol: float,
     atol: float,
@@ -23,56 +24,62 @@ def initial_step_size(
     # Solving Ordinary Differential Equations I: Nonstiff Problems, Sec. II.4.
     dtype = y0.dtype
 
-    scale = atol + jnp.abs(y0) * rtol
+    scale = jnp.asarray(atol + jnp.abs(y0) * rtol)
     d0 = jnp.linalg.norm(y0 / scale.astype(dtype))
     d1 = jnp.linalg.norm(f0 / scale.astype(dtype))
 
-    h0 = jnp.where((d0 < 1e-5) | (d1 < 1e-5), 1e-6, 0.01 * d0 / d1)
+    h0 = jnp.asarray(jnp.where((d0 < 1e-5) | (d1 < 1e-5), 1e-6, 0.01 * d0 / d1))
     y1 = y0 + h0.astype(dtype) * f0
     f1 = drift(t0 + h0, y1, *args)
     d2 = jnp.linalg.norm((f1 - f0) / scale.astype(dtype)) / h0
 
-    h1 = jnp.where(
-        (d1 <= 1e-15) & (d2 <= 1e-15),
-        jnp.maximum(1e-6, h0 * 1e-3),
-        (0.01 / jnp.maximum(d1, d2)) ** (1.0 / (order + 1.0)),
+    h1 = jnp.asarray(
+        jnp.where(
+            (d1 <= 1e-15) & (d2 <= 1e-15),
+            jnp.maximum(1e-6, h0 * 1e-3),
+            (0.01 / jnp.maximum(d1, d2)) ** (1.0 / (order + 1.0)),
+        )
     )
 
     return jnp.minimum(100.0 * h0, h1)
 
 
 def mean_error_ratio(
-    error_estimate: ArrayLike,
-    y0: ArrayLike,
-    y1: ArrayLike,
+    error_estimate: Array,
+    y0: Array,
+    y1: Array,
     rtol: float,
     atol: float,
     norm: float | int = 2,
-):
-    err_tol = atol + rtol * jnp.maximum(jnp.abs(y0), jnp.abs(y1))
+) -> Array:
+    err_tol = jnp.asarray(atol + rtol * jnp.maximum(jnp.abs(y0), jnp.abs(y1)))
     err_ratio = error_estimate / err_tol.astype(error_estimate.dtype)
     return jnp.linalg.norm(err_ratio, ord=norm) / jnp.sqrt(len(err_ratio))
 
 
 def optimal_step_size(
-    last_step: ArrayLike,
-    mean_error_ratio: ArrayLike,
+    last_step: Array,
+    mean_error_ratio: Array,
     maxerror: float = 1.0,
     safety: float = 0.9,
     ifactor: float = 10.0,
     dfactor: float = 0.2,
-    order: int = 5.0,
-):
+    order: float = 5.0,
+) -> Array:
     """Compute optimal Runge-Kutta stepsize."""
-    dfactor = jnp.where(mean_error_ratio < maxerror, 1.0, dfactor)
+    shrink = jnp.asarray(jnp.where(mean_error_ratio < maxerror, 1.0, dfactor))
 
     factor = jnp.minimum(
-        ifactor, jnp.maximum(mean_error_ratio ** (-1.0 / order) * safety, dfactor)
+        ifactor, jnp.maximum(mean_error_ratio ** (-1.0 / order) * safety, shrink)
     )
-    return jnp.where(mean_error_ratio == 0, last_step * ifactor, last_step * factor)
+    return jnp.asarray(
+        jnp.where(mean_error_ratio == 0, last_step * ifactor, last_step * factor)
+    )
 
 
-def fit_4th_order_polynomial(y0, y1, y_mid, dy0, dy1, dt):
+def fit_4th_order_polynomial(
+    y0: Array, y1: Array, y_mid: Array, dy0: Array, dy1: Array, dt: Array
+) -> tuple[Array, Array, Array, Array, Array]:
     """Quartic Hermite polynomial in normalized time ``t ∈ [0, 1]``.
 
     Returns coefficients ``(a, b, c, d, e)`` for ``f(t) = a t^4 + b t^3 +
@@ -98,7 +105,9 @@ def fit_4th_order_polynomial(y0, y1, y_mid, dy0, dy1, dt):
     return a, b, c, d, e
 
 
-def fit_3rd_order_polynomial(y0, y1, dy0, dy1, dt):
+def fit_3rd_order_polynomial(
+    y0: Array, y1: Array, dy0: Array, dy1: Array, dt: Array
+) -> tuple[Array, Array, Array, Array]:
     """Cubic Hermite polynomial in normalized time ``t ∈ [0, 1]``.
 
     Returns coefficients ``(a, b, c, d)`` such that ``f(t) = a t^3 + b t^2 +
@@ -115,7 +124,9 @@ def fit_3rd_order_polynomial(y0, y1, dy0, dy1, dt):
     return a, b, c, d
 
 
-def interp_fit(y0, y1, f0, f1, dt, y_mid=None):
+def interp_fit(
+    y0: Array, y1: Array, f0: Array, f1: Array, dt: Array, y_mid: Array | None = None
+) -> Array:
     if y_mid is not None:
         # We can use a 4th order polynomial (3 points and 2 gradients)
         return jnp.asarray(fit_4th_order_polynomial(y0, y1, y_mid, f0, f1, dt))

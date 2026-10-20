@@ -14,7 +14,9 @@ map = safe_map
 zip = safe_zip
 
 
-def _extract_step_size_adaptor(kwargs: dict) -> tuple[StepSizeAdaptor, dict]:
+def _extract_step_size_adaptor(
+    kwargs: dict[str, Any],
+) -> tuple[StepSizeAdaptor, dict[str, Any]]:
     """Pop ``step_size_adaptor`` out of ``kwargs``, defaulting to a fresh one."""
     kwargs = dict(kwargs)
     adaptor = kwargs.pop("step_size_adaptor", None)
@@ -29,8 +31,8 @@ def odeint_adaptive(
     kwargs: dict,
     y0: Array,
     ts: Array,
-    *args,
-):
+    *args: Any,
+) -> tuple[Any, Any]:
     """Adaptive ODE integrator with custom VJP.
 
     ``drift`` is a pytree-registered callable (see
@@ -60,18 +62,18 @@ def _odeint_adaptive_cvjp(
 
 
 def _odeint_adaptive(
-    method,
-    drift,
+    method: Callable,
+    drift: Callable,
     y0: Array,
     ts: Array,
-    *args,
+    *args: Any,
     step_size_adaptor: StepSizeAdaptor,
     dtinit: Optional[float] = None,
     interpolation_order: int = 3,
     filter_output: Optional[Callable] = None,
     collect_trace: bool = True,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> tuple[Any, Any]:
     y0 = jnp.asarray(y0)
     solver = method(drift, dtype=y0.dtype)
     adaptor = step_size_adaptor
@@ -106,13 +108,15 @@ def _odeint_adaptive(
         i, *carry = jax.lax.while_loop(cond_fun, body_fun, [0] + carry)
         new_state, dt, last_t, interp_coeff = carry
         denom = new_state.t0 - last_t
-        relative_output_time = jnp.where(
-            denom == 0,
-            jnp.zeros_like(denom),
-            (target_t - last_t) / denom,
+        relative_output_time = jnp.asarray(
+            jnp.where(
+                denom == 0,
+                jnp.zeros_like(denom),
+                (target_t - last_t) / denom,
+            )
         )
 
-        y_target = jnp.polyval(interp_coeff, relative_output_time)
+        y_target = jnp.polyval(jnp.asarray(interp_coeff), relative_output_time)
 
         trace_value = (
             y_target if filter_output is None else filter_output(y_target, new_state)
@@ -132,6 +136,7 @@ def _odeint_adaptive(
     init_carry = [state, dt, t0, interp_coeff]
     targets = ts[1:]
 
+    y_last = y0
     if collect_trace:
         final_carry, ys = jax.lax.scan(scan_fun, init_carry, targets)
     else:
@@ -182,11 +187,11 @@ def _odeint_adaptive_wrapper(
 def _odeint_fwd(
     method,
     drift_treedef,
-    kwargs,
+    kwargs: dict[str, Any],
     drift_leaves,
     y0: Array,
     ts: Array,
-    *args,
+    *args: Any,
 ):
     drift = jax.tree_util.tree_unflatten(drift_treedef, list(drift_leaves))
     step_size_adaptor, kwargs = _extract_step_size_adaptor(kwargs)
@@ -216,7 +221,7 @@ def _odeint_fwd(
 def _odeint_rev(
     method,
     drift_treedef,
-    kwargs,
+    kwargs: dict[str, Any],
     res,
     g,
 ):
@@ -244,7 +249,8 @@ def _odeint_rev(
         gk = g_ys[k]
         if filter_output is None:
             return gk
-        _, vjpfun = jax.vjp(lambda z: filter_output(z, None), ys_raw[k])
+        out_filter = filter_output
+        _, vjpfun = jax.vjp(lambda z: out_filter(z, None), ys_raw[k])
         return vjpfun(gk)[0]
 
     def aug_dynamics(tau, aug):

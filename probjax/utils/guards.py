@@ -8,12 +8,15 @@ can import it without cycles.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, is_dataclass, replace
-from typing import Any, TypeGuard
+from typing import Any, TypeGuard, cast
 
 import jax
 import jax.numpy as jnp
+from jax._src import core as jax_core
+
+from probjax.utils.typing import Array, Device
 
 
 def is_array_like(x: Any) -> bool:
@@ -44,7 +47,7 @@ def get_field(params: Any, name: str) -> Any:
 def replace_field(params: Any, **updates: Any) -> Any:
     """Replace fields in a mapping, NamedTuple, or dataclass."""
     if isinstance(params, Mapping):
-        return type(params)(params, **updates)
+        return cast(Any, type(params))(params, **updates)
     if hasattr(params, "_replace"):
         return params._replace(**updates)
     try:
@@ -53,15 +56,15 @@ def replace_field(params: Any, **updates: Any) -> Any:
         raise TypeError("params must be a mapping, NamedTuple, or dataclass") from error
 
 
-def params_to_dict(params: Any) -> dict:
+def params_to_dict(params: Any) -> dict[str, Any]:
     """Normalize mapping / NamedTuple / dataclass params to a plain dict."""
     if params is None:
         return {}
     if hasattr(params, "_asdict"):
-        return params._asdict()
+        return dict(params._asdict())
     if isinstance(params, Mapping):
         return dict(params)
-    if is_dataclass(params):
+    if is_dataclass(params) and not isinstance(params, type):
         return asdict(params)
     raise TypeError("params must be a mapping, NamedTuple, or dataclass")
 
@@ -75,13 +78,13 @@ def ensure_int(name: str, value: Any, *, min_value: int | None = None) -> int:
     return value
 
 
-def ensure_tuple(name: str, value: int | Any, *, positive: bool = False) -> tuple:
+def ensure_tuple(name: str, value: Any, *, positive: bool = False) -> tuple[int, ...]:
     """Normalize ``int`` or iterable-of-ints to a ``tuple[int, ...]``."""
     if isinstance(value, int) and not isinstance(value, bool):
         if positive and value <= 0:
             raise ValueError(f"{name} must be positive.")
         return (value,)
-    items = tuple(int(v) for v in value)
+    items = tuple(int(v) for v in cast(Iterable[Any], value))
     if not items:
         raise ValueError(f"{name} must be non-empty.")
     if positive and any(v <= 0 for v in items):
@@ -89,7 +92,7 @@ def ensure_tuple(name: str, value: int | Any, *, positive: bool = False) -> tupl
     return items
 
 
-def ensure_array(name: str, value: Any) -> jax.Array:
+def ensure_array(name: str, value: Any) -> Array:
     """Require a non-None param and return it as an array."""
     if value is None:
         raise ValueError(f"{name} must be provided.")
@@ -103,7 +106,7 @@ def call_if_callable(fn: Any, *args: Any, **kwargs: Any) -> Any:
 
 def is_tracing(x: Any) -> bool:
     """True if ``x`` is a JAX tracer (staged value inside jit/vmap/grad)."""
-    return isinstance(x, jax.core.Tracer)
+    return isinstance(x, jax_core.Tracer)
 
 
 def as_concrete_bool(x: Any) -> bool:
@@ -113,14 +116,14 @@ def as_concrete_bool(x: Any) -> bool:
     return bool(x)
 
 
-def normalize_rng(rng: Any) -> jax.Array:
+def normalize_rng(rng: Any) -> Array:
     """Accept an int seed or key array; always return a PRNG key."""
     if isinstance(rng, int) and not isinstance(rng, bool):
         return jax.random.PRNGKey(int(rng))
-    return rng
+    return cast(Array, rng)
 
 
-def normalize_devices(devices: Any) -> list:
+def normalize_devices(devices: Any) -> list[Device]:
     """Accept None / single device / list-or-tuple; always return a list."""
     if devices is None:
         try:

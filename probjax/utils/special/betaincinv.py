@@ -6,35 +6,37 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.special import betainc, betaln, ndtri, xlog1py, xlogy
 
+from probjax.utils.jaxutils import where
+
 
 def _solve(a, b, p, budget, upper):
     p = jnp.clip(p, 0.0, 1.0)
     valid = (a > 0) & (b > 0) & jnp.isfinite(a) & jnp.isfinite(b)
     interior = valid & (p > 0) & (p < 1)
-    aa, bb = jnp.where(interior, a, 1.0), jnp.where(interior, b, 1.0)
-    probability = jnp.where(interior, p, 0.5)
+    aa, bb = where(interior, a, 1.0), where(interior, b, 1.0)
+    probability = where(interior, p, 0.5)
     # Solve in the smaller coordinate, rather than reflecting solely by p.
     midpoint = betainc(bb, aa, 0.5) if upper else betainc(aa, bb, 0.5)
     reflect = probability < midpoint if upper else probability > midpoint
-    ar, br = jnp.where(reflect, bb, aa), jnp.where(reflect, aa, bb)
+    ar, br = where(reflect, bb, aa), where(reflect, aa, bb)
     complemented = jnp.logical_xor(reflect, upper)
-    q = jnp.where(complemented, probability, 1 - probability)
+    q = where(complemented, probability, 1 - probability)
     direct_upper = q < 0.01
-    lower_target = jnp.where(complemented, 1 - probability, probability)
-    target = jnp.where(direct_upper, q, lower_target)
+    lower_target = where(complemented, 1 - probability, probability)
+    target = where(direct_upper, q, lower_target)
     log_beta = betaln(ar, br)
     lower_guess = jnp.exp((jnp.log(ar) + log_beta + jnp.log(lower_target)) / ar)
     mean = ar / (ar + br)
     std = jnp.sqrt(ar * br / ((ar + br) ** 2 * (ar + br + 1)))
     normal = mean + std * ndtri(lower_target)
-    lower_guess = jnp.where((ar >= 2) & (br >= 2) & (normal > 0), normal, lower_guess)
+    lower_guess = where((ar >= 2) & (br >= 2) & (normal > 0), normal, lower_guess)
     upper_guess = -jnp.expm1((jnp.log(br) + log_beta + jnp.log(target)) / br)
-    upper_guess = jnp.where(
+    upper_guess = where(
         (ar >= 2) & (br >= 2),
         jnp.minimum(mean - std * ndtri(target), upper_guess),
         upper_guess,
     )
-    guess = jnp.where(direct_upper & (upper_guess > 0), upper_guess, lower_guess)
+    guess = where(direct_upper & (upper_guess > 0), upper_guess, lower_guess)
     tiny, eps = jnp.finfo(p.dtype).tiny, jnp.finfo(p.dtype).eps
     guess = jnp.clip(guess, tiny, 0.5)
 
@@ -42,22 +44,22 @@ def _solve(a, b, p, budget, upper):
         i, x, lo, hi, done = state
         error = jax.lax.cond(
             jnp.any(direct_upper),
-            lambda: jnp.where(
+            lambda: where(
                 direct_upper,
                 target - betainc(br, ar, 1 - x),
                 betainc(ar, br, x) - target,
             ),
             lambda: betainc(ar, br, x) - target,
         )
-        lo = jnp.where(error < 0, x, lo)
-        hi = jnp.where(error >= 0, x, hi)
+        lo = where(error < 0, x, lo)
+        hi = where(error >= 0, x, hi)
         pdf = jnp.exp(xlogy(ar - 1, x) + xlog1py(br - 1, -x) - log_beta)
         delta = error / pdf
         correction = jnp.clip(
             0.5 * delta * ((ar - 1) / x - (br - 1) / (1 - x)), -0.5, 0.5
         )
         candidate = x - delta / (1 - correction)
-        candidate = jnp.where(
+        candidate = where(
             jnp.isfinite(candidate) & (candidate > lo) & (candidate < hi),
             candidate,
             lo + (hi - lo) / 2,
@@ -67,16 +69,16 @@ def _solve(a, b, p, budget, upper):
             | (jnp.abs(error) <= 4 * eps * target)
             | (jnp.abs(delta) <= 4 * eps * x)
         )
-        return i + 1, jnp.where(done, x, candidate), lo, hi, done
+        return i + 1, where(done, x, candidate), lo, hi, done
 
     _, x, _, _, _ = jax.lax.while_loop(
         lambda s: (s[0] < budget) & jnp.any(~s[4]),
         step,
         (0, guess, jnp.zeros_like(p), jnp.full_like(p, 0.5), ~interior),
     )
-    x = jnp.where(reflect, 1 - x, x)
-    boundary = jnp.where(p == 0, 1.0 if upper else 0.0, 0.0 if upper else 1.0)
-    return jnp.where(valid & ~jnp.isnan(p), jnp.where(interior, x, boundary), jnp.nan)
+    x = where(reflect, 1 - x, x)
+    boundary = where(p == 0, 1.0 if upper else 0.0, 0.0 if upper else 1.0)
+    return where(valid & ~jnp.isnan(p), where(interior, x, boundary), jnp.nan)
 
 
 @lru_cache(maxsize=32)
@@ -94,7 +96,7 @@ def _make_betaincinv_core(max_halley_steps, max_bisection_steps, upper=False):
     def backward(residuals, g):
         a, b, p, x = residuals
         boundary = (p <= 0) | (p >= 1)
-        safe_x = jnp.where(boundary, 0.5, x)
+        safe_x = where(boundary, 0.5, x)
         inverse_pdf = jnp.exp(
             betaln(a, b) - xlogy(a - 1, safe_x) - xlog1py(b - 1, -safe_x)
         )
@@ -108,11 +110,11 @@ def _make_betaincinv_core(max_halley_steps, max_bisection_steps, upper=False):
         ca = sign * (cdf(a + da, b) - cdf(a - da, b)) / (2 * da)
         cb = sign * (cdf(a, b + db) - cdf(a, b - db)) / (2 * db)
         endpoint_pdf = jnp.exp(betaln(a, b) - xlogy(a - 1, x) - xlog1py(b - 1, -x))
-        gp = sign * jnp.where(boundary, endpoint_pdf, inverse_pdf)
-        gp = jnp.where((p < 0) | (p > 1), 0.0, gp)
+        gp = sign * where(boundary, endpoint_pdf, inverse_pdf)
+        gp = where((p < 0) | (p > 1), 0.0, gp)
         return (
-            jnp.where(boundary, 0.0, -ca * inverse_pdf) * g,
-            jnp.where(boundary, 0.0, -cb * inverse_pdf) * g,
+            where(boundary, 0.0, -ca * inverse_pdf) * g,
+            where(boundary, 0.0, -cb * inverse_pdf) * g,
             gp * g,
         )
 

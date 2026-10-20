@@ -11,7 +11,7 @@ from probjax.utils.sdeutil.base import (
     register_method,
 )
 from probjax.utils.sdeutil.brownian import get_iterated_integrals_fn
-from probjax.utils.typing import Array, ArrayLike, Callable, RngKey
+from probjax.utils.typing import Array, ArrayLike, Callable, DTypeLike, RngKey
 
 
 class SRKInfo(SDEInfo):
@@ -30,8 +30,8 @@ init_state = make_trivial_init(SRKState)
 
 
 def build_sri1_coefficients(
-    dtype: ArrayLike = jnp.float32,
-) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array]:
+    dtype: DTypeLike = jnp.float32,
+) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array | None]:
     """Build the Butcher tableau coefficients for the SRI1 method.
 
     Args:
@@ -56,8 +56,8 @@ def build_sri1_coefficients(
 
 
 def build_sri2_coefficients(
-    dtype: ArrayLike = jnp.float32,
-) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array]:
+    dtype: DTypeLike = jnp.float32,
+) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array | None]:
     """Build the Butcher tableau coefficients for the SRI2 method.
 
     Args:
@@ -203,7 +203,7 @@ def build_srk_step(
     sde_type="ito",
     iterated_integrals_fn=get_iterated_integrals_fn,
     stages: int = 3,
-    build_coefficients: Callable = None,
+    build_coefficients: Callable | None = None,
 ):
     """Build a step function for the explicit stochastic Runge-Kutta method.
 
@@ -225,9 +225,10 @@ def build_srk_step(
     is_diagonal = noise_type == "diagonal"
 
     # Get coefficients from builder function
+    assert build_coefficients is not None
     c0, c1, A0, A1, B0, B1, b_sol, gamma0, gamma1, b_error = build_coefficients()
 
-    def step_fn(rng: RngKey, state: SRKState, dt: float):
+    def step_fn(rng: RngKey, state: SRKState, dt: ArrayLike):
         dt = jnp.asarray(dt)
         t0, y0 = state.t0, state.y0
         rng1, rng2 = jax.random.split(rng, 2)

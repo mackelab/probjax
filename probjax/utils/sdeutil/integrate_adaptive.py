@@ -23,6 +23,7 @@ import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Key
 
+from probjax.utils.jaxutils import where
 from probjax.utils.sdeutil.adaptive import SDEStepSizeAdaptor
 
 
@@ -150,9 +151,9 @@ def _adaptive_to_target(
         accept = adaptor.accept_step(ratio, controller_dt)
 
         was_clipped = dt_eff < dt_free
-        next_dt_free = jnp.where(accept & was_clipped, dt_free, controller_dt)
-        next_t = jnp.where(accept, t + dt_eff, t)
-        next_y = jnp.where(accept, y_new, y)
+        next_dt_free = where(accept & was_clipped, dt_free, controller_dt)
+        next_t = where(accept, t + dt_eff, t)
+        next_y = where(accept, y_new, y)
         next_bs = jax.lax.cond(
             accept,
             lambda: committed,
@@ -176,7 +177,7 @@ def _adaptive_to_target(
     # integration. ``n_used == max_inner_steps`` means every iteration
     # was a real step and we never short-circuited via no-op — i.e.
     # we genuinely ran out of budget.
-    boundary_hit = (n_used >= adaptor.max_inner_steps).astype(jnp.int32)
+    boundary_hit = jnp.asarray(n_used >= adaptor.max_inner_steps, dtype=jnp.int32)
     return (t, y, dt_free, bs), boundary_hit
 
 

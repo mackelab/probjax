@@ -135,7 +135,9 @@ def _odeint(
         }
         state, ys = odeint_adaptive(solver, drift, kwargs, flat_y0, ts, *args)
 
-    state_y0 = state.y0 if state is not None else flat_y0
+    state_y0 = getattr(state, "y0", None) if state is not None else None
+    if state_y0 is None:
+        state_y0 = flat_y0
     final_state = unravel(state_y0)
     final_filtered = _apply_filter(final_state)
 

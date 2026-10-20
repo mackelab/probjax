@@ -72,6 +72,6 @@ def polynomial_interpolation(
         data_x = ts[indices]
         data_y = ys[indices, :]
         p = jnp.polyfit(data_x, data_y, degree)
-        return jnp.polyval(p, t).reshape(event_shape)
+        return jnp.polyval(jnp.asarray(p), t).reshape(event_shape)
 
     return interpolate
