@@ -5,7 +5,7 @@ Student's t-Distribution (:mod:`probjax.stats.t`)
 This module contains the Student's t-distribution.
 """
 
-from typing import Tuple
+from typing import Any, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -15,7 +15,8 @@ from jax.scipy.special import gammaln
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive, strict_positive_integer
 from probjax.stats.utils import loc_scale_sample
-from probjax.utils.typing import Array, RngKey
+from probjax.utils.jaxutils import where
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["t"]
 
@@ -44,22 +45,50 @@ class t_gen(rv_continuous, rv_exponential_family):
     }
 
     @classmethod
-    def pdf(cls, x, df=1.0, loc=0.0, scale=1.0, **kwargs):
+    def pdf(
+        cls,
+        x: ArrayLike,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Probability density function of the Student's t-distribution."""
         return jax.scipy.stats.t.pdf(x, df, loc, scale)
 
     @classmethod
-    def logpdf(cls, x, df=1.0, loc=0.0, scale=1.0, **kwargs):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the probability density function of the Student's t-distribution."""
         return jax.scipy.stats.t.logpdf(x, df, loc, scale)
 
     @classmethod
-    def cdf(cls, x, df=1.0, loc=0.0, scale=1.0, **kwargs):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Cumulative distribution function of the Student's t-distribution."""
         raise NotImplementedError("CDF not implemented for t distribution")
 
     @classmethod
-    def ppf(cls, q, df=1.0, loc=0.0, scale=1.0, **kwargs):
+    def ppf(
+        cls,
+        q: ArrayLike,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Percent point function (inverse of cdf) of the Student's t-distribution."""
         raise NotImplementedError("PPF not implemented for t distribution")
 
@@ -77,44 +106,95 @@ class t_gen(rv_continuous, rv_exponential_family):
         return loc_scale_sample(rng, random.t, df, shape=shape, loc=loc, scale=scale)
 
     @classmethod
-    def sf(cls, x, df=1.0, loc=0.0, scale=1.0, **kwargs):
+    def sf(
+        cls,
+        x: ArrayLike,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Survival function (1 - cdf) of the Student's t-distribution."""
-        return jax.scipy.stats.t.sf(x, df, loc, scale)
+        raise NotImplementedError("SF not implemented for t distribution")
 
     @classmethod
-    def isf(cls, q, df=1.0, loc=0.0, scale=1.0, **kwargs):
+    def isf(
+        cls,
+        q: ArrayLike,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Inverse survival function (inverse of sf) of the Student's t-distribution."""
-        return jax.scipy.stats.t.isf(q, df, loc, scale)
+        raise NotImplementedError("ISF not implemented for t distribution")
 
     @classmethod
-    def logcdf(cls, x, df=1.0, loc=0.0, scale=1.0, **kwargs):
+    def logcdf(
+        cls,
+        x: ArrayLike,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the cumulative distribution function of the Student's
         t-distribution."""
-        return jax.scipy.stats.t.logcdf(x, df, loc, scale)
+        raise NotImplementedError("LogCDF not implemented for t distribution")
 
     @classmethod
-    def mean(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
+    def mean(
+        cls,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mean of the Student's t-distribution."""
-        return jnp.where(df > 1, loc, jnp.nan)
+        df = jnp.asarray(df)
+        loc = jnp.asarray(loc)
+        scale = jnp.asarray(scale)
+        return where(df > 1, loc, jnp.nan)
 
     @classmethod
-    def mode(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
+    def mode(
+        cls,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mode of the Student's t-distribution."""
         # The mode of a t-distribution is always at its location parameter
         # This is because the PDF is symmetric around loc and has a single maximum
         return jnp.asarray(loc)
 
     @classmethod
-    def var(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
+    def var(
+        cls,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Variance of the Student's t-distribution."""
-        return jnp.where(
+        df = jnp.asarray(df)
+        loc = jnp.asarray(loc)
+        scale = jnp.asarray(scale)
+        return where(
             df > 2,
             scale**2 * df / (df - 2),
-            jnp.where(df > 1, jnp.inf, jnp.nan),
+            where(df > 1, jnp.inf, jnp.nan),
         )
 
     @classmethod
-    def entropy(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
+    def entropy(
+        cls,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Entropy of the Student's t-distribution."""
         return (
             jnp.log(scale)
@@ -124,7 +204,14 @@ class t_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def moment(cls, n, df=1.0, loc=0.0, scale=1.0, **kwargs):
+    def moment(
+        cls,
+        n: int,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """n-th non-central moment of the Student's t-distribution."""
         if n == 0:
             return jnp.ones_like(loc)
@@ -139,31 +226,61 @@ class t_gen(rv_continuous, rv_exponential_family):
             return jnp.nan
 
     @classmethod
-    def skew(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
+    def skew(
+        cls,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Skewness of the Student's t-distribution."""
-        return jnp.where(df > 3, 0.0, jnp.nan)
+        df = jnp.asarray(df)
+        loc = jnp.asarray(loc)
+        scale = jnp.asarray(scale)
+        return where(df > 3, 0.0, jnp.nan)
 
     @classmethod
-    def kurtosis(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
+    def kurtosis(
+        cls,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Excess kurtosis of the Student's t-distribution."""
-        return jnp.where(df > 4, 6.0 / (df - 4), jnp.nan)
+        df = jnp.asarray(df)
+        loc = jnp.asarray(loc)
+        scale = jnp.asarray(scale)
+        return where(df > 4, 6.0 / (df - 4), jnp.nan)
 
     @classmethod
-    def natural_parameters(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
+    def natural_parameters(
+        cls,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike | None:
         """Natural parameters of the Student's t-distribution."""
         # The t-distribution is not a member of the exponential family
         # This is a placeholder that returns None
         return None
 
     @classmethod
-    def sufficient_statistics(cls, x, **kwargs):
+    def sufficient_statistics(cls, x: ArrayLike, **kwargs: Any) -> ArrayLike | None:
         """Sufficient statistics of the Student's t-distribution."""
         # The t-distribution is not a member of the exponential family
         # This is a placeholder that returns None
         return None
 
     @classmethod
-    def log_partition(cls, df=1.0, loc=0.0, scale=1.0, **kwargs):
+    def log_partition(
+        cls,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike | None:
         """Log partition function of the Student's t-distribution."""
         # The t-distribution is not a member of the exponential family
         # This is a placeholder that returns None

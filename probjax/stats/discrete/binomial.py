@@ -5,7 +5,7 @@ Binomial Distribution (:mod:`probjax.stats.binomial`)
 This module implements the Binomial distribution.
 """
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -16,6 +16,7 @@ from probjax.stats.base import rv_discrete, rv_exponential_family
 from probjax.stats.constraints import strict_positive_integer, unit_interval
 from probjax.stats.discrete._ppf_search import ppf_by_cdf_search
 from probjax.stats.utils import weighted_mean
+from probjax.utils.jaxutils import where
 from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["binomial"]
@@ -35,12 +36,20 @@ class binomial_gen(rv_discrete, rv_exponential_family):
         return (0, n)
 
     @classmethod
-    def logpmf(cls, k: ArrayLike, n, probs, **kwds):
+    def logpmf(
+        cls,
+        k: int,
+        n: int,
+        probs: ArrayLike,
+        **kwds: Any,
+    ) -> ArrayLike:
         """Log probability mass function of the Binomial distribution."""
         return binom.logpmf(k, n, probs)
 
     @classmethod
-    def cdf(cls, k: ArrayLike, n, probs, **kwds):
+    def cdf(
+        cls, k: ArrayLike, n: ArrayLike, probs: ArrayLike, **kwds: Any
+    ) -> ArrayLike:
         """Cumulative distribution function of the Binomial distribution.
 
         The CDF is computed using the regularized incomplete beta function:
@@ -51,10 +60,10 @@ class binomial_gen(rv_discrete, rv_exponential_family):
         probs = jnp.asarray(probs)
 
         # Handle edge cases
-        cdf = jnp.where(
+        cdf = where(
             k < 0,
             0,
-            jnp.where(
+            where(
                 k >= n,
                 1,
                 # For 0 <= k < n, use the regularized incomplete beta function
@@ -64,7 +73,9 @@ class binomial_gen(rv_discrete, rv_exponential_family):
         return cdf
 
     @classmethod
-    def ppf(cls, q: ArrayLike, n, probs, **kwds):
+    def ppf(
+        cls, q: ArrayLike, n: ArrayLike, probs: ArrayLike, **kwds: Any
+    ) -> ArrayLike:
         """Percent point function of the Binomial distribution."""
         q = jnp.asarray(q)
         n = jnp.asarray(n, dtype=jnp.int32)  # Ensure n is an integer
@@ -88,27 +99,27 @@ class binomial_gen(rv_discrete, rv_exponential_family):
         return random.binomial(rng, n, probs, shape=shape + event_shape)
 
     @classmethod
-    def mean(cls, n, probs, **kwds):
+    def mean(cls, n: ArrayLike, probs: ArrayLike, **kwds: Any) -> ArrayLike:
         """Mean of the Binomial distribution."""
         return n * probs
 
     @classmethod
-    def median(cls, n, probs, **kwds):
+    def median(cls, n: ArrayLike, probs: ArrayLike, **kwds: Any) -> ArrayLike:
         """Median of the Binomial distribution."""
         return jnp.floor(n * probs)
 
     @classmethod
-    def mode(cls, n, probs, **kwds):
+    def mode(cls, n: ArrayLike, probs: ArrayLike, **kwds: Any) -> ArrayLike:
         """Mode of the Binomial distribution."""
         return jnp.floor((n + 1) * probs)
 
     @classmethod
-    def var(cls, n, probs, **kwds):
+    def var(cls, n: ArrayLike, probs: ArrayLike, **kwds: Any) -> ArrayLike:
         """Variance of the Binomial distribution."""
         return n * probs * (1 - probs)
 
     @classmethod
-    def entropy(cls, n, probs, **kwds):
+    def entropy(cls, n: ArrayLike, probs: ArrayLike, **kwds: Any) -> ArrayLike:
         """Entropy in nats, using a normalized central sum for variance <= 256.
 
         Larger variances use the normal asymptotic expansion with its leading
@@ -125,14 +136,14 @@ class binomial_gen(rv_discrete, rv_exponential_family):
         offset = jnp.arange(512)
         p, q = probs[..., None], (1 - probs)[..., None]
         upper_k, lower_k = mode + offset, mode - offset
-        up = jnp.where(
+        up = where(
             upper_k < n[..., None],
-            (n[..., None] - upper_k) / (upper_k + 1) * p / jnp.where(q > 0, q, 1),
+            (n[..., None] - upper_k) / (upper_k + 1) * p / where(q > 0, q, 1),
             0,
         )
-        down = jnp.where(
+        down = where(
             lower_k > 0,
-            lower_k / (n[..., None] - lower_k + 1) * q / jnp.where(p > 0, p, 1),
+            lower_k / (n[..., None] - lower_k + 1) * q / where(p > 0, p, 1),
             0,
         )
         weights = jnp.concatenate(
@@ -140,25 +151,27 @@ class binomial_gen(rv_discrete, rv_exponential_family):
             axis=-1,
         )
         mass = weights / jnp.sum(weights, axis=-1, keepdims=True)
-        exact = -jnp.sum(mass * jnp.log(jnp.where(mass > 0, mass, 1)), axis=-1)
+        exact = -jnp.sum(mass * jnp.log(where(mass > 0, mass, 1)), axis=-1)
         v = jnp.maximum(variance, 1)
         approx = 0.5 * jnp.log(2 * jnp.pi * jnp.e * v) + (
             4 * probs * (1 - probs) - 1
         ) / (12 * v)
-        return jnp.where(variance > 256, approx, exact)
+        return where(variance > 256, approx, exact)
 
     @classmethod
-    def natural_parameters(cls, n, probs, **kwds):
+    def natural_parameters(
+        cls, n: ArrayLike, probs: ArrayLike, **kwds: Any
+    ) -> ArrayLike:
         """Natural parameters of the Binomial distribution."""
         return jnp.array([jnp.log(probs / (1 - probs))])
 
     @classmethod
-    def sufficient_statistics(cls, x, **kwds):
+    def sufficient_statistics(cls, x: ArrayLike, **kwds: Any) -> ArrayLike:
         """Sufficient statistics of the Binomial distribution."""
         return jnp.array([x])
 
     @classmethod
-    def log_partition(cls, n, probs, **kwds):
+    def log_partition(cls, n: ArrayLike, probs: ArrayLike, **kwds: Any) -> ArrayLike:
         """Log partition function of the Binomial distribution."""
         return n * jnp.log(1 + jnp.exp(jnp.log(probs / (1 - probs))))
 

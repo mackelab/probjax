@@ -3,10 +3,12 @@ from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
+from jax import Array
 from jax.typing import ArrayLike
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.stats.bijective._spline_common import linear_tail, merge3, select_bin
+from probjax.utils.jaxutils import where
 
 
 def _hermite_basis(z):
@@ -36,20 +38,20 @@ def _fc_monotone_normalize(bin_slope, m0, m1):
     eps = 1e-12
     s = bin_slope
     # If s <= 0 (shouldn't happen for increasing y_pos), make it flat
-    a = jnp.where(s > 0.0, m0 / (s + eps), 0.0)
-    b = jnp.where(s > 0.0, m1 / (s + eps), 0.0)
+    a = where(s > 0.0, m0 / (s + eps), 0.0)
+    b = where(s > 0.0, m1 / (s + eps), 0.0)
 
     # Non-negativity
     a = jnp.maximum(a, 0.0)
     b = jnp.maximum(b, 0.0)
 
     # If the bin is flat, force a=b=0
-    a = jnp.where(s <= 0.0, 0.0, a)
-    b = jnp.where(s <= 0.0, 0.0, b)
+    a = where(s <= 0.0, 0.0, a)
+    b = where(s <= 0.0, 0.0, b)
 
     # Fritsch–Carlson scaling: ensure a^2 + b^2 <= 9
     sumsq = a * a + b * b
-    scale = jnp.where(sumsq > 9.0, 3.0 / jnp.sqrt(sumsq + eps), 1.0)
+    scale = where(sumsq > 9.0, 3.0 / jnp.sqrt(sumsq + eps), 1.0)
     a = a * scale
     b = b * scale
     return a, b
@@ -57,9 +59,9 @@ def _fc_monotone_normalize(bin_slope, m0, m1):
 
 def _monotone_hermite_cubic_spline_fwd(
     x: ArrayLike,
-    x_pos: ArrayLike,
-    y_pos: ArrayLike,
-    knot_slopes: ArrayLike,
+    x_pos: Array,
+    y_pos: Array,
+    knot_slopes: Array,
     x_min: Optional[float] = None,
     x_max: Optional[float] = None,
     y_min: Optional[float] = None,
@@ -120,9 +122,9 @@ def _monotone_hermite_cubic_spline_fwd(
 
 def _monotone_hermite_cubic_spline_inv(
     y: ArrayLike,
-    x_pos: ArrayLike,
-    y_pos: ArrayLike,
-    knot_slopes: ArrayLike,
+    x_pos: Array,
+    y_pos: Array,
+    knot_slopes: Array,
     x_min: Optional[float] = None,
     x_max: Optional[float] = None,
     y_min: Optional[float] = None,
@@ -180,12 +182,12 @@ def _monotone_hermite_cubic_spline_inv(
             z_nt = z - f / (Rp + 1e-12)
             # If step leaves bracket, bisect
             out = (z_nt < lo) | (z_nt > hi)
-            z_nt = jnp.where(out, 0.5 * (lo + hi), z_nt)
+            z_nt = where(out, 0.5 * (lo + hi), z_nt)
             # Update bracket using sign of f at new z
             R_nt, _ = H_and_dH(z_nt)
             f_nt = R_nt - w
-            lo = jnp.where(f_nt < 0.0, z_nt, lo)
-            hi = jnp.where(f_nt > 0.0, z_nt, hi)
+            lo = where(f_nt < 0.0, z_nt, lo)
+            hi = where(f_nt > 0.0, z_nt, hi)
             return (z_nt, lo, hi), None
 
         z_init = jnp.clip(w, 0.0, 1.0)  # linear guess
@@ -201,7 +203,7 @@ def _monotone_hermite_cubic_spline_inv(
         mid = 0.5 * (lo + hi)
         err_final = jnp.abs(H_and_dH(z_final)[0] - w)
         err_mid = jnp.abs(H_and_dH(mid)[0] - w)
-        return jnp.where(err_mid < err_final, mid, z_final)
+        return where(err_mid < err_final, mid, z_final)
 
     z = newton()
     x_mid = x_l + z * dx
@@ -227,9 +229,9 @@ def _monotone_hermite_cubic_spline_inv(
 @partial(custom_inverse, inv_argnum=0)
 def monotone_hermite_cubic_spline(
     x: ArrayLike,
-    x_pos: ArrayLike,
-    y_pos: ArrayLike,
-    knot_slopes: ArrayLike,
+    x_pos: Array,
+    y_pos: Array,
+    knot_slopes: Array,
     x_min: Optional[float] = None,
     x_max: Optional[float] = None,
     y_min: Optional[float] = None,
@@ -250,9 +252,9 @@ def monotone_hermite_cubic_spline(
 
 def inv_monotone_hermite_cubic_spline(
     y: ArrayLike,
-    x_pos: ArrayLike,
-    y_pos: ArrayLike,
-    knot_slopes: ArrayLike,
+    x_pos: Array,
+    y_pos: Array,
+    knot_slopes: Array,
     x_min: Optional[float] = None,
     x_max: Optional[float] = None,
     y_min: Optional[float] = None,
@@ -277,9 +279,9 @@ monotone_hermite_cubic_spline.definv_and_logdet(inv_monotone_hermite_cubic_splin
 
 def monotone_hermite_cubic_spline_and_logdet(
     x: ArrayLike,
-    x_pos: ArrayLike,
-    y_pos: ArrayLike,
-    knot_slopes: ArrayLike,
+    x_pos: Array,
+    y_pos: Array,
+    knot_slopes: Array,
     x_min: Optional[float] = None,
     x_max: Optional[float] = None,
     y_min: Optional[float] = None,

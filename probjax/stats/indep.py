@@ -6,12 +6,12 @@ This module contains the Independent distribution, which treats a distribution a
 batch of independent distributions.
 """
 
-from typing import Optional, Sequence, Tuple, Union
+from typing import Any, Optional, Sequence, Tuple, Union
 
 import jax.numpy as jnp
 from jax import random
 
-from probjax.utils.typing import RngKey
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 from .base import rv_continuous_frozen, rv_generic
 from .constraints import distribution, non_negative_integer
@@ -162,7 +162,13 @@ class indep_gen(rv_generic):
             return tuple(d.support() for d in base_dists)
 
     @classmethod
-    def pdf(cls, x, base_dists, reinterpreted_batch_ndims=1, **kwargs):
+    def pdf(
+        cls,
+        x: ArrayLike,
+        base_dists: Any,
+        reinterpreted_batch_ndims: int = 1,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Probability density function of the independent distribution."""
         return jnp.exp(cls.logpdf(x, base_dists, reinterpreted_batch_ndims, **kwargs))
 
@@ -191,8 +197,16 @@ class indep_gen(rv_generic):
         return stats.reshape(batch_shape + event_shape)
 
     @classmethod
-    def logpdf(cls, x, base_dists, reinterpreted_batch_ndims=1, **kwargs):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        base_dists: Any,
+        reinterpreted_batch_ndims: int = 1,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the probability density function of the independent distribution."""
+        x = jnp.asarray(x)
+        reinterpreted_batch_ndims = int(reinterpreted_batch_ndims)
         split_value = cls._split_inputs(x, base_dists, reinterpreted_batch_ndims)
 
         # Compute logpdf for each base distribution
@@ -201,14 +215,21 @@ class indep_gen(rv_generic):
         return cls._collapse(logpdf, reinterpreted_batch_ndims, jnp.sum)
 
     @classmethod
-    def cdf(cls, x, base_dists, reinterpreted_batch_ndims=1, **kwargs):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        base_dists: Any,
+        reinterpreted_batch_ndims: int = 1,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Cumulative distribution function of the independent distribution."""
+        x = jnp.asarray(x)
         split_value = cls._split_inputs(x, base_dists, reinterpreted_batch_ndims)
 
         # Compute CDF for each base distribution
-        cdf = jnp.prod([
-            d.cdf(v) for d, v in zip(base_dists, split_value, strict=False)
-        ])
+        cdf = jnp.prod(
+            jnp.stack([d.cdf(v) for d, v in zip(base_dists, split_value, strict=False)])
+        )
 
         # Product up to be of shape reinterpreted_batch_ndims
         return cls._collapse(cdf, reinterpreted_batch_ndims, jnp.prod)
@@ -217,12 +238,14 @@ class indep_gen(rv_generic):
     def _rvs_impl(
         cls,
         rng: RngKey,
-        base_dists=None,
-        reinterpreted_batch_ndims=1,
+        base_dists: Any = None,
+        reinterpreted_batch_ndims: int = 1,
         shape: Tuple[int, ...] = (),
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> Array:
         """Random variates of the independent distribution."""
+        if base_dists is None:
+            raise ValueError("The independent distribution needs base_dists.")
         batch_shape, event_shape, split_dims, split_indices = determine_shapes(
             base_dists, reinterpreted_batch_ndims
         )
@@ -239,27 +262,53 @@ class indep_gen(rv_generic):
         return samples
 
     @classmethod
-    def mean(cls, base_dists, reinterpreted_batch_ndims=1, **kwargs):
+    def mean(
+        cls,
+        base_dists: Any,
+        reinterpreted_batch_ndims: ArrayLike = 1,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mean of the independent distribution."""
         return cls._stack_stat(base_dists, reinterpreted_batch_ndims, "mean", kwargs)
 
     @classmethod
-    def var(cls, base_dists, reinterpreted_batch_ndims=1, **kwargs):
+    def var(
+        cls,
+        base_dists: Any,
+        reinterpreted_batch_ndims: ArrayLike = 1,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Variance of the independent distribution."""
         return cls._stack_stat(base_dists, reinterpreted_batch_ndims, "var", kwargs)
 
     @classmethod
-    def entropy(cls, base_dists, reinterpreted_batch_ndims=1, **kwargs):
+    def entropy(
+        cls,
+        base_dists: Any,
+        reinterpreted_batch_ndims: ArrayLike = 1,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Entropy of the independent distribution."""
         return cls._stack_stat(base_dists, reinterpreted_batch_ndims, "entropy", kwargs)
 
     @classmethod
-    def mode(cls, base_dists, reinterpreted_batch_ndims=1, **kwargs):
+    def mode(
+        cls,
+        base_dists: Any,
+        reinterpreted_batch_ndims: ArrayLike = 1,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mode of the independent distribution."""
         return cls._stack_stat(base_dists, reinterpreted_batch_ndims, "mode", kwargs)
 
     @classmethod
-    def fit(cls, data, base_dists, reinterpreted_batch_ndims=1, **kwargs):
+    def fit(
+        cls,
+        data: ArrayLike,
+        base_dists: Any,
+        reinterpreted_batch_ndims: int = 1,
+        **kwargs: Any,
+    ) -> tuple[ArrayLike, ...]:
         """Fit the independent distribution to data.
 
         Parameters
@@ -292,7 +341,7 @@ class indep_gen(rv_generic):
             d.fit(dat, **kwargs) for d, dat in zip(base_dists, split_data, strict=False)
         ]
 
-        return fitted_dists
+        return tuple(fitted_dists)
 
 
 indep = indep_gen(name="indep")

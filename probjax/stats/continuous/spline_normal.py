@@ -19,7 +19,7 @@ linearly, so the support is the whole real line and the tails are Gaussian
 rescaled by the boundary slope.
 """
 
-from typing import Tuple
+from typing import Any, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -31,7 +31,7 @@ from probjax.stats.bijective.rational_quadratic import (
     rational_quadratic_spline,
 )
 from probjax.stats.constraints import real, strict_positive
-from probjax.utils.typing import Array, RngKey
+from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["spline_normal"]
 
@@ -99,21 +99,42 @@ class spline_normal_gen(rv_continuous):
         return fn(jnp.asarray(z), x_pos, y_pos, knot_slopes)
 
     @classmethod
-    def logpdf(cls, x, x_pos=None, y_pos=None, knot_slopes=None, **kwargs):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        x_pos: Optional[ArrayLike] = None,
+        y_pos: Optional[ArrayLike] = None,
+        knot_slopes: Optional[ArrayLike] = None,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Change of variables through the spline."""
         del kwargs
         z, logdet = cls._to_latent(x, x_pos, y_pos, knot_slopes)
         return jax.scipy.stats.norm.logpdf(z) + logdet
 
     @classmethod
-    def cdf(cls, x, x_pos=None, y_pos=None, knot_slopes=None, **kwargs):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        x_pos: Optional[ArrayLike] = None,
+        y_pos: Optional[ArrayLike] = None,
+        knot_slopes: Optional[ArrayLike] = None,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """The spline is increasing, so the CDF is the normal CDF of the latent."""
         del kwargs
         z, _ = cls._to_latent(x, x_pos, y_pos, knot_slopes)
         return jax.scipy.stats.norm.cdf(z)
 
     @classmethod
-    def ppf(cls, q, x_pos=None, y_pos=None, knot_slopes=None, **kwargs):
+    def ppf(
+        cls,
+        q: ArrayLike,
+        x_pos: Optional[ArrayLike] = None,
+        y_pos: Optional[ArrayLike] = None,
+        knot_slopes: Optional[ArrayLike] = None,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Push the normal quantile through the spline."""
         del kwargs
         z = jax.scipy.stats.norm.ppf(jnp.asarray(q))
@@ -123,14 +144,16 @@ class spline_normal_gen(rv_continuous):
     def _rvs_impl(
         cls,
         rng: RngKey,
-        x_pos=None,
-        y_pos=None,
-        knot_slopes=None,
+        x_pos: Optional[ArrayLike] = None,
+        y_pos: Optional[ArrayLike] = None,
+        knot_slopes: Optional[ArrayLike] = None,
         shape: Tuple[int, ...] = (),
-        **kwargs,
+        **kwargs: Any,
     ) -> Array:
         """Sample the latent normal and warp it."""
         del kwargs
+        if x_pos is None or y_pos is None or knot_slopes is None:
+            raise ValueError("x_pos, y_pos and knot_slopes are required.")
         batch_shape = jnp.broadcast_shapes(
             jnp.shape(x_pos)[:-1], jnp.shape(y_pos)[:-1], jnp.shape(knot_slopes)[:-1]
         )

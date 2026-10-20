@@ -13,12 +13,18 @@ families. Unbounded tail slopes are preserved per family
 (e.g. edge knot-slopes, or 1.0 for piecewise-affine).
 """
 
+from collections.abc import Sequence
+
 import jax.numpy as jnp
 from jax import Array
 from jax.typing import ArrayLike
 
+from probjax.utils.jaxutils import where
 
-def select_bin(v: ArrayLike, mask_pos: ArrayLike, stack):
+
+def select_bin(
+    v: ArrayLike, mask_pos: Array, stack: Sequence[Array]
+) -> tuple[Array, Array, Array, Array]:
     """Select the bin containing ``v`` and return edge values.
 
     Args:
@@ -33,6 +39,7 @@ def select_bin(v: ArrayLike, mask_pos: ArrayLike, stack):
         gather the stacked rows at the selected bin edges. Values outside all
         bins default to the first bin (avoids NaNs).
     """
+    v = jnp.asarray(v)
     below_range = v <= mask_pos[0]
     above_range = v >= mask_pos[-1]
 
@@ -42,7 +49,7 @@ def select_bin(v: ArrayLike, mask_pos: ArrayLike, stack):
         jnp.array([True]),
         jnp.zeros(len(correct_bin) - 1, dtype=bool),
     ])
-    correct_bin = jnp.where(any_bin_in_range, correct_bin, first_bin)
+    correct_bin = where(any_bin_in_range, correct_bin, first_bin)
 
     stacked = jnp.stack(tuple(stack), axis=1)
     left = jnp.sum(correct_bin[:, None] * stacked[:-1], axis=0)
@@ -79,6 +86,10 @@ def linear_tail(
     Returns:
         ``(value, logdet)`` of the tail branch.
     """
+    v = jnp.asarray(v)
+    anchor_v = jnp.asarray(anchor_v)
+    anchor_o = jnp.asarray(anchor_o)
+    unbounded_slope = jnp.asarray(unbounded_slope)
     v_unbounded = anchor_o + unbounded_slope * (v - anchor_v)
     if unbounded_logdet is None:
         unbounded_logdet = jnp.log(jnp.abs(unbounded_slope))
@@ -86,23 +97,23 @@ def linear_tail(
 
     if bound_v is not None and bound_o is not None:
         denom = anchor_v - bound_v
-        denom = jnp.where(denom == 0.0, 1e-6, denom)
+        denom = where(denom == 0.0, 1e-6, denom)
         slope_bounded = (anchor_o - bound_o) / denom
         if side == "below":
             v_bounded = bound_o + slope_bounded * (v - bound_v)
-            v_bounded = jnp.where(v <= bound_v, bound_o, v_bounded)
+            v_bounded = where(v <= bound_v, bound_o, v_bounded)
         else:
             v_bounded = anchor_o + slope_bounded * (v - anchor_v)
-            v_bounded = jnp.where(v >= bound_v, bound_o, v_bounded)
+            v_bounded = where(v >= bound_v, bound_o, v_bounded)
         logdet_bounded = jnp.log(jnp.abs(slope_bounded))
-        v_tail = jnp.where(jnp.isnan(slope_bounded), v_unbounded, v_bounded)
-        logdet_tail = jnp.where(
-            jnp.isnan(slope_bounded), logdet_unbounded, logdet_bounded
+        v_tail = jnp.asarray(where(jnp.isnan(slope_bounded), v_unbounded, v_bounded))
+        logdet_tail = jnp.asarray(
+            where(jnp.isnan(slope_bounded), logdet_unbounded, logdet_bounded)
         )
     else:
         v_tail = v_unbounded
         logdet_tail = logdet_unbounded
-    return v_tail, logdet_tail
+    return jnp.asarray(v_tail), jnp.asarray(logdet_tail)
 
 
 def merge3(
@@ -113,5 +124,5 @@ def merge3(
     v_above: ArrayLike,
 ):
     """Merge below/inside/above region values."""
-    v = jnp.where(below_range, v_below, v_mid)
-    return jnp.where(above_range, v_above, v)
+    v = where(below_range, v_below, v_mid)
+    return where(above_range, v_above, v)

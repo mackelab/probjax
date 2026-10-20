@@ -42,27 +42,64 @@ class chi2_gen(rv_continuous):
     parameters = {"df": strict_positive_integer, "loc": real, "scale": strict_positive}
 
     @classmethod
-    def support(cls, df: ArrayLike = 1.0, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def support(
+        cls,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> Any:
         """Support of the chi-squared distribution."""
+        df = jnp.asarray(df)
+        loc = jnp.asarray(loc)
+        scale = jnp.asarray(scale)
         return interval(loc, jnp.inf)
 
     @classmethod
-    def pdf(cls, x: ArrayLike, df: ArrayLike = 1.0, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def pdf(
+        cls,
+        x: ArrayLike,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Probability density function of the chi-squared distribution."""
         return _chi2.pdf(x, df, loc, scale)
 
     @classmethod
-    def logpdf(cls, x: ArrayLike, df: ArrayLike = 1.0, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the probability density function of the chi-squared distribution."""
         return _chi2.logpdf(x, df, loc, scale)
 
     @classmethod
-    def cdf(cls, x: ArrayLike, df: ArrayLike = 1.0, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def cdf(
+        cls,
+        x: ArrayLike,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Cumulative distribution function of the chi-squared distribution."""
         raise NotImplementedError("CDF not implemented for chi2 distribution")
 
     @classmethod
-    def ppf(cls, q: ArrayLike, df: ArrayLike = 1.0, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def ppf(
+        cls,
+        q: ArrayLike,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Percent point function (inverse of cdf) of the chi-squared distribution."""
         raise NotImplementedError("PPF not implemented for chi2 distribution")
 
@@ -82,17 +119,35 @@ class chi2_gen(rv_continuous):
         )
 
     @classmethod
-    def mean(cls, df: ArrayLike = 1.0, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def mean(
+        cls,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mean of the chi-squared distribution."""
         return jnp.asarray(df) * jnp.asarray(scale) + jnp.asarray(loc)
 
     @classmethod
-    def var(cls, df: ArrayLike = 1.0, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def var(
+        cls,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Variance of the chi-squared distribution."""
         return 2 * jnp.asarray(df) * jnp.asarray(scale) ** 2
 
     @classmethod
-    def entropy(cls, df: ArrayLike = 1.0, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def entropy(
+        cls,
+        df: ArrayLike = 1.0,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Entropy of the chi-squared distribution."""
         # See scipy.stats.chi2.entropy for formula
         df = jnp.asarray(df)

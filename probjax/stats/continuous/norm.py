@@ -5,6 +5,7 @@ Normal Distribution (:mod:`probjax.stats.norm`)
 This module contains the Normal (Gaussian) distribution.
 """
 
+import math
 from typing import Any, Optional, Tuple
 
 import jax.numpy as jnp
@@ -19,6 +20,7 @@ from probjax.stats.utils import (
     mean_and_var_1d,
     normalize_sample_weights,
 )
+from probjax.utils.jaxutils import where
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["norm"]
@@ -41,22 +43,30 @@ class norm_gen(rv_continuous, rv_exponential_family):
     parameters = {'loc': real, 'scale': strict_positive}
 
     @classmethod
-    def pdf(cls, x: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def pdf(
+        cls, x: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Probability density function of the normal distribution."""
         return _norm.pdf(x, loc, scale)
 
     @classmethod
-    def logpdf(cls, x: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def logpdf(
+        cls, x: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Log of the probability density function of the normal distribution."""
         return _norm.logpdf(x, loc, scale)
 
     @classmethod
-    def cdf(cls, x: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def cdf(
+        cls, x: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Cumulative distribution function of the normal distribution."""
         return _norm.cdf(x, loc, scale)
 
     @classmethod
-    def ppf(cls, q: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def ppf(
+        cls, q: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Percent point function (inverse of cdf) of the normal distribution."""
         return _norm.ppf(q, loc, scale)
 
@@ -73,42 +83,58 @@ class norm_gen(rv_continuous, rv_exponential_family):
         return loc_scale_sample(rng, random.normal, shape=shape, loc=loc, scale=scale)
 
     @classmethod
-    def sf(cls, x: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def sf(
+        cls, x: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Survival function (1 - cdf) of the normal distribution."""
         return _norm.sf(x, loc, scale)
 
     @classmethod
-    def isf(cls, q: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def isf(
+        cls, q: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Inverse survival function (inverse of sf) of the normal distribution."""
         return _norm.isf(q, loc, scale)
 
     @classmethod
-    def logcdf(cls, x: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def logcdf(
+        cls, x: ArrayLike, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Log of the cumulative distribution function of the normal distribution."""
         return _norm.logcdf(x, loc, scale)
 
     @classmethod
-    def mean(cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def mean(
+        cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Mean of the normal distribution."""
         return jnp.asarray(loc)
 
     @classmethod
-    def mode(cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def mode(
+        cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Mode of the normal distribution."""
         return jnp.asarray(loc)
 
     @classmethod
-    def var(cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def var(
+        cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Variance of the normal distribution."""
         return jnp.asarray(scale) ** 2
 
     @classmethod
-    def entropy(cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def entropy(
+        cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Entropy of the normal distribution."""
         return 0.5 * jnp.log(2 * jnp.pi * jnp.e * scale**2)
 
     @classmethod
-    def moment(cls, n: int, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def moment(
+        cls, n: int, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """n-th non-central moment of the normal distribution."""
         # Use Hermite polynomials to compute moments efficiently
         if n == 0:
@@ -132,48 +158,55 @@ class norm_gen(rv_continuous, rv_exponential_family):
             # Expected value of Hermite polynomial with normal distribution
             # For standard normal (0, 1), E[H_n(X)] = 0 if n is odd, and n! if n is even
             # For non-standard normal, transform using E[(X-μ)/σ]
-            standardized_moment = jnp.where(
+            standardized_moment = where(
                 n % 2 == 0, jnp.prod(jnp.arange(1, n + 1, 2)), 0.0
             )
 
-            return jnp.sum([
-                jnp.array(
-                    jnp.math.comb(n, k)
-                    * loc ** (n - k)
-                    * scale**k
-                    * standardized_moment
-                )
-                for k in range(n + 1)
-            ])
+            return jnp.sum(
+                jnp.array([
+                    math.comb(n, k) * loc ** (n - k) * scale**k * standardized_moment
+                    for k in range(n + 1)
+                ])
+            )
 
     @classmethod
-    def skew(cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def skew(
+        cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Skewness of the normal distribution."""
         return jnp.zeros_like(loc)
 
     @classmethod
-    def kurtosis(cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def kurtosis(
+        cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Excess kurtosis of the normal distribution."""
         return jnp.zeros_like(loc)
 
     @classmethod
-    def natural_parameters(cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> Array:
+    def natural_parameters(
+        cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Natural parameters of the normal distribution."""
         var = scale**2
         return jnp.array([loc / var, -1.0 / (2.0 * var)])
 
     @classmethod
-    def sufficient_statistics(cls, x: ArrayLike, **kwargs: Any) -> Array:
+    def sufficient_statistics(cls, x: ArrayLike, **kwargs: Any) -> ArrayLike:
         """Sufficient statistics of the normal distribution."""
         return jnp.array([x, x**2])
 
     @classmethod
-    def log_partition(cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any) -> ArrayLike:
+    def log_partition(
+        cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Log partition function of the normal distribution."""
         return 0.5 * (loc**2 / scale**2 + jnp.log(2 * jnp.pi * scale**2))
 
     @classmethod
-    def fit(cls, data: ArrayLike, weights: Optional[ArrayLike] = None, **kwds: Any) -> Tuple[ArrayLike, ArrayLike]:
+    def fit(
+        cls, data: ArrayLike, weights: Optional[ArrayLike] = None, **kwds: Any
+    ) -> Tuple[ArrayLike, ArrayLike]:
         """Maximum likelihood estimation of normal distribution parameters.
 
         The MLE for the normal distribution has a closed-form solution:

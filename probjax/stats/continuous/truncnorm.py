@@ -6,7 +6,7 @@ This module contains the Truncated Normal distribution.
 """
 
 import math
-from typing import Tuple
+from typing import Any, Tuple, cast
 
 import jax
 import jax.numpy as jnp
@@ -18,8 +18,9 @@ from jax.scipy.stats import truncnorm as _truncnorm
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import interval, real, strict_positive
 from probjax.utils.guards import ensure_int
+from probjax.utils.jaxutils import where
 from probjax.utils.special.logspace import logdiffexp
-from probjax.utils.typing import RngKey
+from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["truncnorm"]
 
@@ -28,25 +29,25 @@ def _standardize_bound(bound, loc, scale):
     # Keep infinite endpoints constant under differentiation of loc/scale.
     bound = jnp.asarray(bound)
     finite = jnp.isfinite(bound)
-    return jnp.where(finite, (jnp.where(finite, bound, 0) - loc) / scale, bound)
+    return where(finite, (where(finite, bound, 0) - loc) / scale, bound)
 
 
 def _log_normal_mass(alpha, beta):
     left = logdiffexp(log_ndtr(beta), log_ndtr(alpha))
     right = logdiffexp(log_ndtr(-alpha), log_ndtr(-beta))
-    return jnp.where(alpha > 0, right, left)
+    return where(alpha > 0, right, left)
 
 
 @jax.custom_jvp
 def _standard_ppf(q, alpha, beta):
     """Bracketed quantile with implicit derivatives of every order."""
-    safe_q = jnp.where((q > 0) & (q < 1), q, 0.5)
-    lo = jnp.where(
+    safe_q = where((q > 0) & (q < 1), q, 0.5)
+    lo = where(
         jnp.isfinite(alpha),
         alpha,
         jnp.minimum(-jnp.sqrt(-2 * jnp.log(safe_q)) - 2, beta - 1),
     )
-    hi = jnp.where(
+    hi = where(
         jnp.isfinite(beta),
         beta,
         jnp.maximum(jnp.sqrt(-2 * jnp.log1p(-safe_q)) + 2, alpha + 1),
@@ -57,11 +58,11 @@ def _standard_ppf(q, alpha, beta):
         lo, hi = bounds
         mid = lo + 0.5 * (hi - lo)
         below = _truncnorm.logcdf(mid, alpha, beta) < logq
-        return jnp.where(below, mid, lo), jnp.where(below, hi, mid)
+        return where(below, mid, lo), where(below, hi, mid)
 
     lo, hi = jax.lax.fori_loop(0, 64, step, (lo, hi))
     root = lo + 0.5 * (hi - lo)
-    return jnp.where(q == 0, alpha, jnp.where(q == 1, beta, root))
+    return where(q == 0, alpha, where(q == 1, beta, root))
 
 
 @_standard_ppf.defjvp
@@ -74,8 +75,8 @@ def _standard_ppf_jvp(primals, tangents):
 
     def boundary_ratio(bound):
         finite = jnp.isfinite(bound)
-        safe_bound = jnp.where(finite, bound, 0.0)
-        return jnp.where(finite, jnp.exp(0.5 * (x * x - safe_bound * safe_bound)), 0.0)
+        safe_bound = where(finite, bound, 0.0)
+        return where(finite, jnp.exp(0.5 * (x * x - safe_bound * safe_bound)), 0.0)
 
     dx = (
         inverse_pdf * dq
@@ -97,13 +98,13 @@ def _interval_quadrature(alpha, beta, order):
     """
     right_tail = jnp.isfinite(alpha) & (alpha >= 5) & jnp.isposinf(beta)
     left_tail = jnp.isfinite(beta) & (beta <= -5) & jnp.isneginf(alpha)
-    safe_alpha = jnp.where(right_tail, alpha, 5.0)
-    safe_beta = jnp.where(left_tail, beta, -5.0)
-    effective_alpha = jnp.where(left_tail, safe_beta + 48 / safe_beta, alpha)
-    effective_beta = jnp.where(right_tail, safe_alpha + 48 / safe_alpha, beta)
+    safe_alpha = where(right_tail, alpha, 5.0)
+    safe_beta = where(left_tail, beta, -5.0)
+    effective_alpha = where(left_tail, safe_beta + 48 / safe_beta, alpha)
+    effective_beta = where(right_tail, safe_alpha + 48 / safe_alpha, beta)
     finite = jnp.isfinite(effective_alpha) & jnp.isfinite(effective_beta)
-    a = jnp.where(finite, effective_alpha, 0.0)
-    b = jnp.where(finite, effective_beta, 1.0)
+    a = where(finite, effective_alpha, 0.0)
+    b = where(finite, effective_beta, 1.0)
     use = (
         right_tail
         | left_tail
@@ -113,7 +114,7 @@ def _interval_quadrature(alpha, beta, order):
             & ((b - a) * (1 + jnp.maximum(jnp.abs(a), jnp.abs(b))) < 64)
         )
     )
-    a, b = jnp.where(use, a, 0.0), jnp.where(use, b, 1.0)
+    a, b = where(use, a, 0.0), where(use, b, 1.0)
     half, mid = (b - a) / 2, a + (b - a) / 2
     nodes = jnp.asarray(_QUADRATURE_NODES, dtype=alpha.dtype)
     weights = jnp.asarray(_QUADRATURE_WEIGHTS, dtype=alpha.dtype)
@@ -138,12 +139,12 @@ def _interval_quadrature(alpha, beta, order):
 def _standard_moments(alpha, beta, order):
     left = logdiffexp(log_ndtr(beta), log_ndtr(alpha))
     right = logdiffexp(log_ndtr(-alpha), log_ndtr(-beta))
-    log_z = jnp.where(alpha > 0, right, left)
+    log_z = where(alpha > 0, right, left)
     pa = jnp.exp(-(alpha**2) / 2 - 0.5 * jnp.log(2 * jnp.pi) - log_z)
     pb = jnp.exp(-(beta**2) / 2 - 0.5 * jnp.log(2 * jnp.pi) - log_z)
     a, b = (
-        jnp.where(jnp.isfinite(alpha), alpha, 0),
-        jnp.where(jnp.isfinite(beta), beta, 0),
+        where(jnp.isfinite(alpha), alpha, 0),
+        where(jnp.isfinite(beta), beta, 0),
     )
     moments = [jnp.ones_like(log_z)]
     if order:
@@ -151,9 +152,9 @@ def _standard_moments(alpha, beta, order):
     for k in range(2, order + 1):
         moments.append((k - 1) * moments[k - 2] + a ** (k - 1) * pa - b ** (k - 1) * pb)
     use, raw, _, quad_log_z, _ = _interval_quadrature(alpha, beta, order)
-    return [
-        jnp.where(use, q, m) for q, m in zip(raw, moments, strict=False)
-    ], jnp.where(use, quad_log_z, log_z)
+    return [where(use, q, m) for q, m in zip(raw, moments, strict=False)], where(
+        use, quad_log_z, log_z
+    )
 
 
 class truncnorm_gen(rv_continuous, rv_exponential_family):
@@ -190,9 +191,22 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
         return interval(a, b)
 
     @classmethod
-    def pdf(cls, x, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
+    def pdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        a: ArrayLike = -jnp.inf,
+        b: ArrayLike = jnp.inf,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Probability density function of the truncated normal distribution."""
-        return _truncnorm.pdf(
+        x = jnp.asarray(x)
+        loc = jnp.asarray(loc)
+        scale = jnp.asarray(scale)
+        a = jnp.asarray(a)
+        b = jnp.asarray(b)
+        return cast(Any, _truncnorm.pdf)(
             x,
             a=_standardize_bound(a, loc, scale),
             b=_standardize_bound(b, loc, scale),
@@ -201,7 +215,15 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def logpdf(cls, x, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        a: ArrayLike = -jnp.inf,
+        b: ArrayLike = jnp.inf,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the probability density function of the truncated normal distribution."""
         return _truncnorm.logpdf(
             x,
@@ -212,7 +234,15 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def cdf(cls, x, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        a: ArrayLike = -jnp.inf,
+        b: ArrayLike = jnp.inf,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Cumulative distribution function of the truncated normal distribution."""
         return _truncnorm.cdf(
             x,
@@ -223,7 +253,15 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def ppf(cls, q, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
+    def ppf(
+        cls,
+        q: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        a: ArrayLike = -jnp.inf,
+        b: ArrayLike = jnp.inf,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Percent point function (inverse of cdf) of the truncated normal distribution."""
         q, loc, scale, a, b = jnp.broadcast_arrays(q, loc, scale, a, b)
         alpha, beta = (
@@ -231,8 +269,8 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
             _standardize_bound(b, loc, scale),
         )
         value = loc + scale * _standard_ppf(q, alpha, beta)
-        value = jnp.where(q == 0, a, jnp.where(q == 1, b, value))
-        return jnp.where((q >= 0) & (q <= 1) & (a < b) & (scale > 0), value, jnp.nan)
+        value = where(q == 0, a, where(q == 1, b, value))
+        return where((q >= 0) & (q <= 1) & (a < b) & (scale > 0), value, jnp.nan)
 
     @classmethod
     def _rvs_impl(
@@ -265,7 +303,15 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
         return samples * scale + loc
 
     @classmethod
-    def sf(cls, x, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
+    def sf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        a: ArrayLike = -jnp.inf,
+        b: ArrayLike = jnp.inf,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Survival function (1 - cdf) of the truncated normal distribution."""
         return _truncnorm.sf(
             x,
@@ -276,14 +322,36 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def isf(cls, q, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
+    def isf(
+        cls,
+        q: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        a: ArrayLike = -jnp.inf,
+        b: ArrayLike = jnp.inf,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Inverse survival function (inverse of sf) of the truncated normal distribution."""
-        return -cls.ppf(
-            q, loc=-jnp.asarray(loc), scale=scale, a=-jnp.asarray(b), b=-jnp.asarray(a)
+        return -jnp.asarray(
+            cls.ppf(
+                q,
+                loc=-jnp.asarray(loc),
+                scale=scale,
+                a=-jnp.asarray(b),
+                b=-jnp.asarray(a),
+            )
         )
 
     @classmethod
-    def logcdf(cls, x, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
+    def logcdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        a: ArrayLike = -jnp.inf,
+        b: ArrayLike = jnp.inf,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the cumulative distribution function of the truncated normal distribution."""
         return _truncnorm.logcdf(
             x,
@@ -294,7 +362,14 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def mean(cls, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
+    def mean(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        a: ArrayLike = -jnp.inf,
+        b: ArrayLike = jnp.inf,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mean of the truncated normal distribution."""
         loc, scale, a, b = jnp.broadcast_arrays(loc, scale, a, b)
         moments, _ = _standard_moments(
@@ -303,12 +378,26 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
         return loc + scale * moments[1]
 
     @classmethod
-    def mode(cls, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
+    def mode(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        a: ArrayLike = -jnp.inf,
+        b: ArrayLike = jnp.inf,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mode of the truncated normal distribution."""
         return jnp.clip(loc, a, b)
 
     @classmethod
-    def var(cls, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
+    def var(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        a: ArrayLike = -jnp.inf,
+        b: ArrayLike = jnp.inf,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Variance of the truncated normal distribution."""
         loc, scale, a, b = jnp.broadcast_arrays(loc, scale, a, b)
         moments, _ = _standard_moments(
@@ -317,11 +406,18 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
         use, _, central, _, _ = _interval_quadrature(
             _standardize_bound(a, loc, scale), _standardize_bound(b, loc, scale), 2
         )
-        variance = jnp.where(use, central[2], moments[2] - moments[1] ** 2)
+        variance = where(use, central[2], moments[2] - moments[1] ** 2)
         return scale**2 * jnp.maximum(variance, 0)
 
     @classmethod
-    def entropy(cls, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
+    def entropy(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        a: ArrayLike = -jnp.inf,
+        b: ArrayLike = jnp.inf,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Entropy of the truncated normal distribution."""
         loc, scale, a, b = jnp.broadcast_arrays(loc, scale, a, b)
         moments, log_z = _standard_moments(
@@ -331,11 +427,23 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
             _standardize_bound(a, loc, scale), _standardize_bound(b, loc, scale), 2
         )
         entropy = log_z + 0.5 * jnp.log(2 * jnp.pi) + 0.5 * moments[2]
-        return jnp.log(scale) + jnp.where(use, quad_entropy, entropy)
+        return jnp.log(scale) + where(use, quad_entropy, entropy)
 
     @classmethod
-    def moment(cls, n, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
+    def moment(
+        cls,
+        n: int,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        a: ArrayLike = -jnp.inf,
+        b: ArrayLike = jnp.inf,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """n-th non-central moment of the truncated normal distribution."""
+        loc = jnp.asarray(loc)
+        scale = jnp.asarray(scale)
+        a = jnp.asarray(a)
+        b = jnp.asarray(b)
         loc, scale, a, b = jnp.broadcast_arrays(loc, scale, a, b)
         ensure_int("n", n, min_value=0)
         moments, _ = _standard_moments(
@@ -347,7 +455,14 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
         )
 
     @classmethod
-    def skew(cls, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
+    def skew(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        a: ArrayLike = -jnp.inf,
+        b: ArrayLike = jnp.inf,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Skewness of the truncated normal distribution."""
         loc, scale, a, b = jnp.broadcast_arrays(loc, scale, a, b)
         m, _ = _standard_moments(
@@ -356,12 +471,19 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
         use, _, central, _, _ = _interval_quadrature(
             _standardize_bound(a, loc, scale), _standardize_bound(b, loc, scale), 3
         )
-        numerator = jnp.where(use, central[3], m[3] - 3 * m[1] * m[2] + 2 * m[1] ** 3)
-        variance = jnp.where(use, central[2], m[2] - m[1] ** 2)
+        numerator = where(use, central[3], m[3] - 3 * m[1] * m[2] + 2 * m[1] ** 3)
+        variance = where(use, central[2], m[2] - m[1] ** 2)
         return numerator / variance**1.5
 
     @classmethod
-    def kurtosis(cls, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
+    def kurtosis(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        a: ArrayLike = -jnp.inf,
+        b: ArrayLike = jnp.inf,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Excess kurtosis of the truncated normal distribution."""
         loc, scale, a, b = jnp.broadcast_arrays(loc, scale, a, b)
         m, _ = _standard_moments(
@@ -370,27 +492,41 @@ class truncnorm_gen(rv_continuous, rv_exponential_family):
         use, _, central, _, _ = _interval_quadrature(
             _standardize_bound(a, loc, scale), _standardize_bound(b, loc, scale), 4
         )
-        numerator = jnp.where(
+        numerator = where(
             use,
             central[4],
             m[4] - 4 * m[1] * m[3] + 6 * m[1] ** 2 * m[2] - 3 * m[1] ** 4,
         )
-        variance = jnp.where(use, central[2], m[2] - m[1] ** 2)
+        variance = where(use, central[2], m[2] - m[1] ** 2)
         return numerator / variance**2 - 3
 
     @classmethod
-    def natural_parameters(cls, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
+    def natural_parameters(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        a: ArrayLike = -jnp.inf,
+        b: ArrayLike = jnp.inf,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Natural parameters of the truncated normal distribution."""
         var = scale**2
         return jnp.array([loc / var, -1.0 / (2.0 * var)])
 
     @classmethod
-    def sufficient_statistics(cls, x, **kwargs):
+    def sufficient_statistics(cls, x: ArrayLike, **kwargs: Any) -> ArrayLike:
         """Sufficient statistics of the truncated normal distribution."""
         return jnp.array([x, x**2])
 
     @classmethod
-    def log_partition(cls, loc=0.0, scale=1.0, a=-jnp.inf, b=jnp.inf, **kwargs):
+    def log_partition(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        a: ArrayLike = -jnp.inf,
+        b: ArrayLike = jnp.inf,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log partition function of the truncated normal distribution."""
         var = scale**2
         return 0.5 * jnp.log(2 * jnp.pi * var) + (loc**2) / (2 * var)

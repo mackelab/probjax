@@ -173,7 +173,7 @@ class TransformedDistribution(DistributionAPI):
         transformed_flat = batch_shard(jax.vmap(self.transform))(flat)
         return jnp.reshape(transformed_flat, leading_shape + self._event_shape)
 
-    def logpdf(self, x: ArrayLike) -> Array:
+    def logpdf(self, x: ArrayLike) -> ArrayLike:
         x_flat, leading_shape = self._flatten(x)
         inv_flat, logdet_flat = batch_shard(
             jax.vmap(self._invertible.inverse_and_logdet)

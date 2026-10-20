@@ -104,7 +104,7 @@ class rv_generic(ABC):
     """Generic random variable class for common functionality."""
 
     name: ClassVar[Optional[str]] = None
-    parameters: ClassVar[Mapping[str, stats_constraints.Constraint]] = {}
+    parameters: ClassVar[Mapping[str, Optional[stats_constraints.Constraint]]] = {}
     parameter_aliases: ClassVar[Mapping[str, str]] = {}
     extra_frozen_kwds: ClassVar[frozenset[str]] = frozenset()
 
@@ -281,7 +281,7 @@ class rv_generic(ABC):
         shape: Tuple[int, ...] = (),
         name: Optional[str] = None,
         **kwargs: Any,
-    ) -> Array:
+    ) -> ArrayLike:
         """Random variates of given shape.
 
         Calls through the `rv_p` primitive so traced execution records a random
@@ -300,15 +300,20 @@ class rv_generic(ABC):
 
     @classmethod
     @abstractmethod
-    def support(cls, *args, **kwds) -> stats_constraints.Constraint:
-        """Support of the distribution."""
+    def support(cls, *args, **kwds) -> Any:
+        """Support of the distribution.
+
+        Either a :class:`~probjax.stats.constraints.Constraint` or a plain
+        ``(lower, upper)`` pair; which one a distribution returns is up to
+        it, so the base type stays open.
+        """
         ...
 
     @classmethod
     @abstractmethod
     def _rvs_impl(
         cls, rng: RngKey, *args: Any, shape: Tuple[int, ...] = (), **kwargs: Any
-    ) -> Array:
+    ) -> ArrayLike:
         """Implementation for random variate sampling.
 
         Parameters
@@ -359,23 +364,23 @@ class rv_generic(ABC):
 
     @classmethod
     @abstractmethod
-    def logpdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
+    def logpdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> ArrayLike:
         """Log probability of the distribution at the given value."""
         ...
 
     @classmethod
-    def logcdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
+    def logcdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> ArrayLike:
         """Log of the cumulative distribution function at x of the given RV."""
         return jnp.log(cls.cdf(x, *args, **kwds))
 
     @classmethod
-    def sf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
+    def sf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> ArrayLike:
         """Survival function (1 - cdf) at x of the given RV."""
         cdf_val = jnp.asarray(cls.cdf(x, *args, **kwds))
         return jnp.ones_like(cdf_val) - cdf_val
 
     @classmethod
-    def logsf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
+    def logsf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> ArrayLike:
         """Log of the survival function at x of the given RV."""
         return jnp.log(cls.sf(x, *args, **kwds))
 
@@ -471,7 +476,7 @@ class rv_generic(ABC):
         raise NotImplementedError("Kurtosis is not implemented for this distribution.")
 
     @classmethod
-    def fit(cls, data: ArrayLike, **kwds: Any) -> tuple[Array, ...]:
+    def fit(cls, data: ArrayLike, *args: Any, **kwds: Any) -> tuple[Any, ...]:
         """Maximum likelihood estimation of distribution parameters.
 
         Parameters
@@ -496,7 +501,7 @@ class rv_generic(ABC):
         return dict(zip(cls.parameters, values, strict=False))
 
     @classmethod
-    def _fit_mle(cls, data: ArrayLike, **kwds: Any) -> tuple[Array, ...]:
+    def _fit_mle(cls, data: ArrayLike, **kwds: Any) -> tuple[ArrayLike, ...]:
         """Fit by optimizing the likelihood in unconstrained parameter space."""
         init_params = {}
         for name in cls.parameters:
@@ -523,28 +528,30 @@ class rv_exponential_family(rv_generic):
     """Base class for exponential family random variables."""
 
     @classmethod
-    def natural_parameters(cls, *args: Any, **kwds: Any) -> Array:
+    def natural_parameters(cls, *args: Any, **kwds: Any) -> ArrayLike | None:
         """Natural parameters of the distribution."""
         raise NotImplementedError(
             "Natural parameters are not implemented for this distribution."
         )
 
     @classmethod
-    def sufficient_statistics(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
+    def sufficient_statistics(
+        cls, x: ArrayLike, *args: Any, **kwds: Any
+    ) -> ArrayLike | None:
         """Sufficient statistics of the distribution."""
         raise NotImplementedError(
             "Sufficient statistics are not implemented for this distribution."
         )
 
     @classmethod
-    def log_partition(cls, *args: Any, **kwds: Any) -> Array:
+    def log_partition(cls, *args: Any, **kwds: Any) -> ArrayLike | None:
         """Log partition function of the distribution."""
         raise NotImplementedError(
             "Log partition function is not implemented for this distribution."
         )
 
     @classmethod
-    def fit(cls, data: ArrayLike, **kwds: Any) -> tuple[Array, ...]:
+    def fit(cls, data: ArrayLike, *args: Any, **kwds: Any) -> tuple[Any, ...]:
         """Maximum likelihood estimation in unconstrained parameter space."""
         return cls._fit_mle(data, **kwds)
 
@@ -553,7 +560,7 @@ class rv_continuous(rv_generic):
     """Base class for continuous random variables."""
 
     @classmethod
-    def support(cls, *args: Any, **kwds: Any) -> stats_constraints.Constraint:
+    def support(cls, *args: Any, **kwds: Any) -> Any:
         """Support of the distribution; the whole real line unless overridden."""
         return stats_constraints.real
 
@@ -565,18 +572,18 @@ class rv_continuous(rv_generic):
         )
 
     @classmethod
-    def pdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
+    def pdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> ArrayLike:
         """Probability density function at x of the given RV."""
         args, kwds = cls._parse_args(*args, **kwds)
         return jnp.exp(cls.logpdf(x, *args, **kwds))
 
     @classmethod
-    def logpdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
+    def logpdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> ArrayLike:
         """Log of the probability density function at x of the given RV."""
         raise NotImplementedError("Logpdf is not implemented for this distribution.")
 
     @classmethod
-    def fit(cls, data: ArrayLike, **kwds: Any) -> tuple[Array, ...]:
+    def fit(cls, data: ArrayLike, **kwds: Any) -> tuple[Any, ...]:
         """Maximum likelihood estimation in unconstrained parameter space."""
         return cls._fit_mle(data, **kwds)
 
@@ -620,12 +627,12 @@ class rv_spherical(rv_multivariate):
 
     @classmethod
     @abstractmethod
-    def mean_direction_dyad(cls, *args: Any, **kwds: Any) -> Array:
+    def mean_direction_dyad(cls, *args: Any, **kwds: Any) -> ArrayLike:
         """Expected dyadic product :math:`E[XX^T]` for spherical random vectors."""
         ...
 
     @classmethod
-    def dispersion(cls, *args: Any, **kwds: Any) -> Array:
+    def dispersion(cls, *args: Any, **kwds: Any) -> ArrayLike:
         """Dispersion matrix defined as :math:`E[XX^T] - I/d`."""
         dyad = jnp.asarray(cls.mean_direction_dyad(*args, **kwds))
         dim = dyad.shape[-1]
@@ -634,7 +641,7 @@ class rv_spherical(rv_multivariate):
         return dyad - identity
 
     @classmethod
-    def axial_dispersion(cls, *args: Any, **kwds: Any) -> Array:
+    def axial_dispersion(cls, *args: Any, **kwds: Any) -> ArrayLike:
         """Dispersion along the principal axis :math:`1 - mu^T E[XX^T] mu`."""
         mean_vec = jnp.asarray(cls.mean_direction_vector(*args, **kwds))
         dyad = jnp.asarray(cls.mean_direction_dyad(*args, **kwds))
@@ -655,22 +662,22 @@ class rv_discrete(rv_generic):
         )
 
     @classmethod
-    def pmf(cls, k: ArrayLike, *args: Any, **kwds: Any) -> Array:
+    def pmf(cls, k: ArrayLike, *args: Any, **kwds: Any) -> ArrayLike:
         """Probability mass function at k of the given RV."""
         return jnp.exp(cls.logpmf(k, *args, **kwds))
 
     @classmethod
-    def logpmf(cls, k: ArrayLike, *args: Any, **kwds: Any) -> Array:
+    def logpmf(cls, k: ArrayLike, *args: Any, **kwds: Any) -> ArrayLike:
         """Log of the probability mass function at k of the given RV."""
         return jnp.log(cls.pmf(k, *args, **kwds))
 
     @classmethod
-    def logpdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
+    def logpdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> ArrayLike:
         """Log of the probability density function at x of the given RV."""
         return cls.logpmf(x, *args, **kwds)
 
     @classmethod
-    def pdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> Array:
+    def pdf(cls, x: ArrayLike, *args: Any, **kwds: Any) -> ArrayLike:
         """Probability density function at x of the given RV."""
         return jnp.exp(cls.logpdf(x, *args, **kwds))
 
@@ -703,7 +710,7 @@ class DistributionAPI(ABC):
         ...
 
     @abstractmethod
-    def logpdf(self, x: ArrayLike) -> Array:
+    def logpdf(self, x: ArrayLike) -> ArrayLike:
         """Log probability density (or mass) function.
 
         Parameters
@@ -776,7 +783,7 @@ class DistributionAPI(ABC):
         """
         raise NotImplementedError("CDF not implemented for this distribution")
 
-    def logcdf(self, x: ArrayLike) -> Array:
+    def logcdf(self, x: ArrayLike) -> ArrayLike:
         """Log of the cumulative distribution function, ``log P(X <= x)``.
 
         Parameters
@@ -806,7 +813,7 @@ class DistributionAPI(ABC):
         """
         raise NotImplementedError("PPF not implemented for this distribution")
 
-    def sf(self, x: ArrayLike) -> Array:
+    def sf(self, x: ArrayLike) -> ArrayLike:
         """Survival function, ``1 - cdf(x)``.
 
         Parameters
@@ -821,7 +828,7 @@ class DistributionAPI(ABC):
         """
         return 1.0 - self.cdf(x)
 
-    def logsf(self, x: ArrayLike) -> Array:
+    def logsf(self, x: ArrayLike) -> ArrayLike:
         """Log of the survival function, ``log(1 - cdf(x))``.
 
         Parameters
@@ -996,7 +1003,7 @@ class DistributionAPI(ABC):
             return ()
         return values[0] if len(values) == 1 else tuple(values)
 
-    def sample(self, rng: RngKey, shape: Tuple[int, ...] = ()) -> Array:
+    def sample(self, rng: RngKey, shape: Tuple[int, ...] = ()) -> ArrayLike:
         """Draw random samples from the distribution.
 
         Alias of :meth:`rvs` that omits the optional ``name`` argument.
@@ -1106,7 +1113,7 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
         shape: Tuple[int, ...],
         name: Optional[str] = None,
         **kwargs: Any,
-    ) -> Array:
+    ) -> ArrayLike:
         call_kwds = dict(self._call_kwds)
         call_kwds.update(kwargs)
 
@@ -1122,7 +1129,7 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
 
     def _compute_batch_and_event_shape(
         self, *args: Any, **kwds: Any
-    ) -> tuple[Tuple[int, ...], Tuple[int, ...]]:
+    ) -> tuple[Tuple[int, ...], Any]:
         """Compute the batch and event shape of the distribution."""
         # Get shapes from the distribution arguments
         batch_shapes = []
@@ -1292,8 +1299,8 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
         rng: RngKey,
         shape: Tuple[int, ...] = (),
         name: Optional[str] = None,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> Array:
         """Random variates of the frozen distribution.
 
         Parameters
@@ -1310,7 +1317,7 @@ class rv_frozen(DistributionAPI, metaclass=FrozenDistributionMeta):
         rvs : ndarray or scalar
             Random variates of given shape
         """
-        return self._bind_rvs(rng, shape=shape, name=name, **kwargs)
+        return jnp.asarray(self._bind_rvs(rng, shape=shape, name=name, **kwargs))
 
     def sf(self, x: ArrayLike):
         """Survival function (1 - cdf)."""
@@ -1477,11 +1484,11 @@ class rv_continuous_frozen(rv_frozen):
     def rvs(
         self,
         rng: RngKey,
-        *args,
+        *args: Any,
         shape: Tuple[int, ...] = (),
         name: Optional[str] = None,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> Array:
         """Random variates of the distribution.
 
         Parameters
@@ -1498,7 +1505,7 @@ class rv_continuous_frozen(rv_frozen):
         rvs : ndarray or scalar
             Random variates of given shape
         """
-        return self._bind_rvs(rng, shape=shape, name=name, **kwargs)
+        return jnp.asarray(self._bind_rvs(rng, shape=shape, name=name, **kwargs))
 
 
 class rv_multivariate_frozen(rv_continuous_frozen):

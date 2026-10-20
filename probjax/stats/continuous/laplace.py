@@ -5,7 +5,7 @@ Laplace Distribution (:mod:`probjax.stats.laplace`)
 This module contains the Laplace distribution.
 """
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax.numpy as jnp
 from jax import random
@@ -15,6 +15,7 @@ from jax.scipy.stats import laplace as _laplace
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
 from probjax.stats.utils import _require_unweighted_fit, clip_prob, loc_scale_sample
+from probjax.utils.jaxutils import where
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["laplace"]
@@ -37,28 +38,52 @@ class laplace_gen(rv_continuous, rv_exponential_family):
     parameters = {'loc': real, 'scale': strict_positive}
 
     @classmethod
-    def logpdf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def logpdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the probability density function of the Laplace distribution."""
         return _laplace.logpdf(x, loc, scale)
 
     @classmethod
-    def cdf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def cdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Cumulative distribution function of the Laplace distribution."""
         return _laplace.cdf(x, loc, scale)
 
     @classmethod
-    def logcdf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def logcdf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log of the cumulative distribution function of the Laplace distribution."""
         return jnp.log(_laplace.cdf(x, loc, scale))
 
     @classmethod
-    def ppf(cls, q, loc=0.0, scale=1.0, **kwargs):
+    def ppf(
+        cls,
+        q: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Percent point function (inverse of cdf) of the Laplace distribution."""
         # For Laplace distribution, ppf(q) = loc + scale * sign(q-0.5) * ln(1-2|q-0.5|)
         q = jnp.asarray(q)
         # For q <= 0.5: loc + scale * log(2q)
         # For q > 0.5: loc - scale * log(2(1-q))
-        return jnp.where(
+        return where(
             q <= 0.5,
             loc + scale * jnp.log(2.0 * q),
             loc - scale * jnp.log(2.0 * (1.0 - q)),
@@ -77,7 +102,13 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         return loc_scale_sample(rng, random.laplace, shape=shape, loc=loc, scale=scale)
 
     @classmethod
-    def sf(cls, x, loc=0.0, scale=1.0, **kwargs):
+    def sf(
+        cls,
+        x: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Survival function (1 - cdf) of the Laplace distribution."""
         x_arr = jnp.asarray(x)
         loc_arr = jnp.asarray(loc)
@@ -85,10 +116,16 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         z = (x_arr - loc_arr) / scale_arr
         upper_branch = 1.0 - 0.5 * jnp.exp(z)
         lower_branch = 0.5 * jnp.exp(-z)
-        return jnp.where(x_arr < loc_arr, upper_branch, lower_branch)
+        return where(x_arr < loc_arr, upper_branch, lower_branch)
 
     @classmethod
-    def isf(cls, q, loc=0.0, scale=1.0, **kwargs):
+    def isf(
+        cls,
+        q: ArrayLike,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Inverse survival function (inverse of sf) of the Laplace distribution."""
         q_arr = jnp.asarray(q)
         loc_arr = jnp.asarray(loc)
@@ -96,32 +133,55 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         q_clipped = clip_prob(q_arr)
         upper_branch = loc_arr + scale_arr * jnp.log(2.0 * (1.0 - q_clipped))
         lower_branch = loc_arr - scale_arr * jnp.log(2.0 * q_clipped)
-        return jnp.where(q_clipped > 0.5, upper_branch, lower_branch)
+        return where(q_clipped > 0.5, upper_branch, lower_branch)
 
     @classmethod
-    def mean(cls, loc=0.0, scale=1.0, **kwargs):
+    def mean(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mean of the Laplace distribution."""
         return jnp.asarray(loc)
 
     @classmethod
-    def mode(cls, loc=0.0, scale=1.0, **kwargs):
+    def mode(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Mode of the Laplace distribution."""
         return jnp.asarray(loc)
 
     @classmethod
-    def var(cls, loc=0.0, scale=1.0, **kwargs):
+    def var(
+        cls, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
+    ) -> ArrayLike:
         """Variance of the Laplace distribution."""
         scale_arr = jnp.asarray(scale)
         return jnp.asarray(2.0) * (scale_arr**2)
 
     @classmethod
-    def entropy(cls, loc=0.0, scale=1.0, **kwargs):
+    def entropy(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Entropy of the Laplace distribution."""
         scale_arr = jnp.asarray(scale)
         return jnp.asarray(1.0) + jnp.log(2.0 * scale_arr)
 
     @classmethod
-    def moment(cls, n, loc=0.0, scale=1.0, **kwargs):
+    def moment(
+        cls,
+        n: int,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """n-th non-central moment of the Laplace distribution."""
         n_int = int(jnp.asarray(n))
         scale_arr = jnp.asarray(scale)
@@ -146,7 +206,7 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         central_even = jnp.exp(gammaln(k_float + 1.0)).reshape(expand_shape) * (
             scale_reshaped ** k_float.reshape(expand_shape)
         )
-        central = jnp.where(
+        central = where(
             even_mask, central_even, jnp.zeros_like(central_even, dtype=scale_arr.dtype)
         )
 
@@ -154,33 +214,53 @@ class laplace_gen(rv_continuous, rv_exponential_family):
         return jnp.sum(moment_terms, axis=0)
 
     @classmethod
-    def skew(cls, loc=0.0, scale=1.0, **kwargs):
+    def skew(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Skewness of the Laplace distribution."""
         return jnp.zeros_like(
             jnp.asarray(loc)
         )  # Skewness is always 0 (symmetric distribution)
 
     @classmethod
-    def kurtosis(cls, loc=0.0, scale=1.0, **kwargs):
+    def kurtosis(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Excess kurtosis of the Laplace distribution."""
         loc_arr = jnp.asarray(loc)
         return jnp.asarray(3.0) * jnp.ones_like(loc_arr)
 
     @classmethod
-    def natural_parameters(cls, loc=0.0, scale=1.0, **kwargs):
+    def natural_parameters(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Natural parameters of the Laplace distribution."""
         loc_arr = jnp.asarray(loc)
         scale_arr = jnp.asarray(scale)
         return jnp.stack((loc_arr, -1.0 / scale_arr))
 
     @classmethod
-    def sufficient_statistics(cls, x, **kwargs):
+    def sufficient_statistics(cls, x: ArrayLike, **kwargs: Any) -> ArrayLike:
         """Sufficient statistics of the Laplace distribution."""
         x_arr = jnp.asarray(x)
         return jnp.stack((x_arr, jnp.abs(x_arr)))
 
     @classmethod
-    def log_partition(cls, loc=0.0, scale=1.0, **kwargs):
+    def log_partition(
+        cls,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        **kwargs: Any,
+    ) -> ArrayLike:
         """Log partition function of the Laplace distribution."""
         loc_arr = jnp.asarray(loc)
         scale_arr = jnp.asarray(scale)
