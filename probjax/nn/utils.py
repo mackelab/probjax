@@ -6,6 +6,7 @@ from typing import Any, Optional, Sequence, Tuple
 import flax.nnx as nnx
 import jax.numpy as jnp
 
+from probjax.utils.jaxutils import filter_kwargs
 from probjax.utils.typing import (
     Array,
     ArrayLike,
@@ -111,17 +112,9 @@ def filter_supported_kwargs(ctor, **kwargs) -> dict:
     remaining compatible with custom layer classes that don't.
     """
     try:
-        parameters = inspect.signature(ctor).parameters
+        return filter_kwargs(ctor, kwargs, exclude_positional_only=True)
     except (ValueError, TypeError):
         return {}
-    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
-        return kwargs
-    return {
-        key: value
-        for key, value in kwargs.items()
-        if key in parameters
-        and parameters[key].kind != inspect.Parameter.POSITIONAL_ONLY
-    }
 
 
 def filter_precision_kwargs(cls: ModuleLikeType, **kwargs) -> dict:

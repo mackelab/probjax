@@ -1,4 +1,8 @@
-"""Shared particle helpers for reverse-time twisted SMC runners."""
+"""Shared particle helpers for reverse-time twisted SMC runners.
+
+The generic particle helpers (``take_batch``, ``normalize_log_weights``) live
+in :mod:`probjax.inference.particles`, which the filtering stack also uses.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +10,6 @@ import jax
 import jax.numpy as jnp
 
 from probjax.utils.typing import Array, PyTree, RngKey
-
-
-def take_batch(particles: PyTree[Array], idx: Array) -> PyTree[Array]:
-    """Gather particle batch rows (pytree-safe)."""
-    return jax.tree.map(lambda leaf: leaf[idx], particles)
 
 
 def random_like(key: RngKey, template: PyTree[Array]) -> PyTree[Array]:
@@ -29,14 +28,7 @@ def log_weighted_mean_exp(log_weights: Array, log_increments: Array) -> Array:
     return jax.scipy.special.logsumexp(log_weights + log_increments)
 
 
-def normalize_log_weights(log_unnorm: Array) -> Array:
-    """Normalize unnormalized log-weights (single ``logsumexp``)."""
-    return log_unnorm - jax.scipy.special.logsumexp(log_unnorm)
-
-
 __all__ = [
-    "take_batch",
     "random_like",
     "log_weighted_mean_exp",
-    "normalize_log_weights",
 ]

@@ -39,7 +39,6 @@ from typing import (
 
 import jax.numpy as jnp
 import numpy as np
-from jax._src import core as jax_core
 from jax.experimental import checkify
 from jax.extend.core import ClosedJaxpr, JaxprEqn, Literal, Primitive, Var
 
@@ -48,6 +47,7 @@ from probjax.core.jaxpr_propagation.utils import (
     rebind_primitive,
     sanitize_bind_params,
 )
+from probjax.utils.guards import is_tracing
 from probjax.utils.typing import PyTree
 
 # Atom is Var | Literal but not directly exported
@@ -371,7 +371,7 @@ def guard_is_statically_satisfied(valid: Any) -> bool:
     for it would put the per-primitive cost right back into every inverse, which
     is what this module exists to remove.
     """
-    if isinstance(valid, jax_core.Tracer):
+    if is_tracing(valid):
         return False
     # numpy, not jnp: inside an active trace even ``jnp.all(True)`` is staged
     # out, and the whole point here is to decide without emitting anything.

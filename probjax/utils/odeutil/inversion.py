@@ -29,7 +29,7 @@ from jax import Array
 from jaxtyping import PyTree
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
-from probjax.utils.functions import generic_drift
+from probjax.utils.functions import generic_drift, ravel_callable
 from probjax.utils.jaxutils import ravel_pytree
 from probjax.utils.odeutil.adaptive import StepSizeAdaptor
 from probjax.utils.odeutil.core import _odeint
@@ -169,14 +169,7 @@ def _sample_trace_vectors(
 def _flat_drift_pair(drift: Callable, x_example: PyTree[Array]):
     """Flattened drift and its unravel fn for a pytree state example."""
     _, unravel = ravel_pytree(x_example)
-
-    def drift_flat(t, x_flat, *args):
-        x = unravel(x_flat)
-        dx = drift(t, x, *args)
-        dx_flat, _ = ravel_pytree(dx)
-        return dx_flat
-
-    return drift_flat, unravel
+    return ravel_callable(drift, unravel, index=1), unravel
 
 
 def _make_exact_aug_drift(

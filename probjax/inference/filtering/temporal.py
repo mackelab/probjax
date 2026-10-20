@@ -23,6 +23,8 @@ from probjax.inference.filtering.state_space import (
     TemporalResult,
     TemporalTrace,
 )
+from probjax.inference.particles import take_batch
+from probjax.utils.guards import ensure_int
 from probjax.utils.typing import Array, RngKey
 
 __all__ = [
@@ -169,10 +171,13 @@ def scan_history(
     resuming a run over a longer data array reproduces a single run.
     """
     n = ts.shape[0]
-    if history not in ("full", "none") and (
-        not isinstance(history, int) or isinstance(history, bool) or history < 1
-    ):
-        raise ValueError("history must be 'full', 'none', or a positive integer.")
+    if history not in ("full", "none"):
+        ensure_int(
+            "history",
+            history,
+            min_value=1,
+            message="history must be 'full', 'none', or a positive integer.",
+        )
 
     def advance(carry: Any, x: Any) -> Any:
         key, state, logz = carry
@@ -215,7 +220,7 @@ def scan_history(
         window_step, (carry, state, states, infos), (jnp.arange(n), xs)
     )
     order = (jnp.arange(capacity) + n) % capacity
-    states, infos = jax.tree.map(lambda x: x[order], (states, infos))
+    states, infos = take_batch((states, infos), order)
     return TemporalResult(
         final, logz, key, TemporalTrace(boundary, ts[-capacity:], states, infos)
     )

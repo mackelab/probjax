@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
+from probjax.nn.losses._common import _pop_axis, _sample_eps
 from probjax.utils.jaxutils import where
 from probjax.utils.protocols import (
     LossFn,
@@ -200,10 +201,10 @@ def build_denoising_loss(
                 "loss_fn requires an RNG key. Pass it via the 'rng' keyword."
             )
         model_kwargs = dict(kwargs)
-        axis_override = model_kwargs.pop("axis", axis)
+        axis_override = _pop_axis(model_kwargs, axis)
 
         x0 = args[argnums]
-        eps = jax.random.normal(rng, shape=x0.shape)
+        eps = _sample_eps(rng, x0.shape)
 
         alpha = jnp.sqrt(1.0 - std_array**2)
         x_noisy = alpha * x0 + std_array * eps
@@ -288,12 +289,12 @@ def build_time_dependent_denoising_loss(
                 "loss_fn requires an RNG key. Pass it via the 'rng' keyword."
             )
         model_kwargs = dict(kwargs)
-        axis = model_kwargs.pop("axis", -1)
+        axis = _pop_axis(model_kwargs, -1)
 
         x0 = args[argnums]
         alpha_t = jnp.asarray(scale_fn(t))
         sigma_t = jnp.asarray(std_fn(t))
-        eps = jax.random.normal(rng, shape=x0.shape)
+        eps = _sample_eps(rng, x0.shape)
 
         x_noisy = alpha_t * x0 + sigma_t * eps
         effective_noise_mask = _resolve_noise_mask(

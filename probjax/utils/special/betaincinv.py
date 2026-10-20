@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.special import betainc, betaln, ndtri, xlog1py, xlogy
 
+from probjax.utils.guards import ensure_int
 from probjax.utils.jaxutils import where
 
 
@@ -124,8 +125,12 @@ def _make_betaincinv_core(max_halley_steps, max_bisection_steps, upper=False):
 
 def _inverse(a, b, p, max_halley_steps, max_bisection_steps, upper):
     for steps in (max_halley_steps, max_bisection_steps):
-        if not isinstance(steps, int) or isinstance(steps, bool) or steps < 0:
-            raise ValueError("Solver step budgets must be nonnegative integers")
+        ensure_int(
+            "Solver step budgets",
+            steps,
+            min_value=0,
+            message="Solver step budgets must be nonnegative integers",
+        )
     dtype = jnp.result_type(a, b, p, 1.0)
     a, b, p = jnp.broadcast_arrays(*(jnp.asarray(v, dtype) for v in (a, b, p)))
     return _make_betaincinv_core(max_halley_steps, max_bisection_steps, upper)(a, b, p)

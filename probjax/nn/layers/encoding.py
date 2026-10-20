@@ -1,6 +1,6 @@
 import math
 import numbers
-from typing import Optional, Sequence, cast
+from typing import Optional, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -8,6 +8,7 @@ from flax import nnx
 from flax.typing import Initializer
 
 from probjax.nn.sharding import BATCH, constrain
+from probjax.utils.guards import ensure_tuple
 from probjax.utils.typing import (
     Array,
     ArrayLike,
@@ -143,14 +144,11 @@ class RotaryPosEncode(nnx.Module):
         if self.rotary_dim > token_dim:
             raise ValueError("rotary_dim cannot exceed token_dim")
         if spatial_shape is not None:
-            if isinstance(spatial_shape, numbers.Integral):
-                parsed_shape = (int(spatial_shape),)
-            else:
-                parsed_shape = tuple(
-                    int(dim) for dim in cast(Sequence[int], spatial_shape)
-                )
-            if not parsed_shape:
-                raise ValueError("spatial_shape must contain at least one dimension")
+            parsed_shape = ensure_tuple(
+                "spatial_shape",
+                spatial_shape,
+                message="spatial_shape must contain at least one dimension",
+            )
             if spatial_ndims is not None and int(spatial_ndims) != len(parsed_shape):
                 raise ValueError(
                     "spatial_shape length must match spatial_ndims when both are provided"
@@ -347,12 +345,12 @@ class RotaryPosEncode(nnx.Module):
                 raise ValueError(
                     "spatial_shape must be provided for rotary encodings with more than one dimension"
                 )
-        elif isinstance(spatial_shape, numbers.Integral):
-            dims = (int(spatial_shape),)
         else:
-            dims = tuple(int(d) for d in cast(Sequence[int], spatial_shape))
-        if not dims:
-            raise ValueError("spatial_shape must contain at least one dimension")
+            dims = ensure_tuple(
+                "spatial_shape",
+                spatial_shape,
+                message="spatial_shape must contain at least one dimension",
+            )
         if len(dims) != self.spatial_ndims:
             raise ValueError(
                 f"Expected spatial_shape with {self.spatial_ndims} dims but received {len(dims)}"

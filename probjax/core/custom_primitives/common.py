@@ -11,6 +11,8 @@ from jax._src.interpreters import partial_eval as pe
 from jax.extend.core import ClosedJaxpr
 from jax.tree_util import tree_leaves
 
+from probjax.utils.guards import is_tracing
+
 T = TypeVar("T")
 
 
@@ -59,7 +61,7 @@ class LazyClosedJaxpr(Lazy[ClosedJaxpr]):
 
 
 def has_tracer(tree) -> bool:
-    return any(isinstance(x, jax_core.Tracer) for x in tree_leaves(tree))
+    return any(is_tracing(x) for x in tree_leaves(tree))
 
 
 def must_emit_primitive(tree) -> bool:
@@ -80,7 +82,7 @@ def must_emit_primitive(tree) -> bool:
 
 
 def ensure_hashable(x: Any, where: str) -> Any:
-    if isinstance(x, jax_core.Tracer):
+    if is_tracing(x):
         raise TypeError(
             f"{where} is a traced value, so it cannot be held as a static "
             "parameter. Pass it as a dynamic positional argument instead, or "

@@ -1,7 +1,6 @@
 from typing import Callable, Mapping, Optional
 
 import jax
-import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.layers.ssm import LRUCell
@@ -9,6 +8,7 @@ from probjax.nn.nets.simple import MLP
 from probjax.nn.utils import (
     DEFAULT_MODULE,
     filter_precision_kwargs,
+    flatten_to_btd,
 )
 from probjax.utils.typing import (
     Array,
@@ -246,10 +246,8 @@ class SSMModel(nnx.Module):
         Returns:
             Output array of shape [..., seq_len, output_dim].
         """
-        inputs = jnp.asarray(inputs)
-        shape = inputs.shape
         # Flatten leading batch dims to [-1, T, D]
-        x = inputs.reshape(-1, inputs.shape[-2], inputs.shape[-1])
+        x, shape = flatten_to_btd(inputs)
         h = self.in_layer(x)
 
         for i, mlp_layer in enumerate(self.mlp_layers):

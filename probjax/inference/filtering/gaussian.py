@@ -14,6 +14,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.inference.filtering.base import FilterInfo
+from probjax.utils.linalg import symmetrize_matrix
 from probjax.utils.linear_operator import as_array, densify_if_small, is_operator
 from probjax.utils.typing import Array, ArrayLike
 
@@ -207,7 +208,7 @@ def gaussian_filter_template(
             _logdet_fn,
         )
         if symmetrize:
-            cov1 = 0.5 * (cov1 + cov1.T)
+            cov1 = symmetrize_matrix(cov1)
 
         return GaussianFilterState(mu1, cov1, _as_time(t)), GaussianFilterInfo(
             mu1_, cov1_, log_likelihood

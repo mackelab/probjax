@@ -10,6 +10,7 @@ from blackjax.base import State
 from jax.flatten_util import ravel_pytree
 
 from probjax.inference.base import Kernel, MCMCResult
+from probjax.utils.guards import has_attrs, params_to_dict
 from probjax.utils.jaxutils import Configured, KernelAPI
 from probjax.utils.typing import Array, RngKey, Scalar
 
@@ -96,7 +97,7 @@ def make_step_from_kernel(
     kernel = kernel_builder()
 
     def step(key: RngKey, state: State, params: Params, *args: Any):
-        params_kwargs = params._asdict() if hasattr(params, "_asdict") else {}
+        params_kwargs = params_to_dict(params) if has_attrs(params, "_asdict") else {}
         call_kwargs = {}
         if call_defaults:
             call_kwargs.update(call_defaults)

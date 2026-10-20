@@ -36,6 +36,7 @@ from probjax.core.custom_primitives.contracts import (
     parse_custom_inverse_call_params,
 )
 from probjax.core.jaxpr_propagation.utils import shaped_aval
+from probjax.utils.guards import call_if_callable
 
 map = safe_map
 zip = safe_zip
@@ -752,11 +753,7 @@ def batch_custom_inverse_call(
 
     # Lazily batch the inverse jaxpr only if someone actually asks for it.
     def batched_inverse_thunk() -> Any:
-        inv_cj = (
-            inverse_jaxpr_thunk()
-            if callable(inverse_jaxpr_thunk)
-            else inverse_jaxpr_thunk
-        )
+        inv_cj = call_if_callable(inverse_jaxpr_thunk)
         if inv_cj is None:
             raise ValueError("No inverse defined for batched custom_inverse call.")
         inv_cj = cast(ClosedJaxpr, inv_cj)

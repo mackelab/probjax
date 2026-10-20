@@ -18,6 +18,8 @@ import jax
 import jax.numpy as jnp
 from blackjax.types import Array, PRNGKey
 
+from probjax.inference.particles import take_batch
+
 __all__ = ["systematic", "resample_systematic"]
 
 
@@ -45,7 +47,7 @@ def resample_systematic(key, log_weights, particles):
     weights = jnp.exp(log_weights)
     idx = systematic(key, weights, log_weights.shape[0])
     new_log_weights = jnp.zeros_like(log_weights) - jnp.log(log_weights.shape[0])
-    return jax.tree.map(lambda x: x[idx], particles), new_log_weights, idx
+    return take_batch(particles, idx), new_log_weights, idx
 
 
 def _systematic_or_stratified(

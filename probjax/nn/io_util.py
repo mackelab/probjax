@@ -353,9 +353,7 @@ def unchunkify(
     tokens = jnp.asarray(tokens)
     chunk_shape = _normalize_chunk_shape(chunk_shape)
 
-    spatial_shape = tuple(int(s) for s in spatial_shape)
-    if any(s <= 0 for s in spatial_shape):
-        raise ValueError("All entries in spatial_shape must be positive.")
+    spatial_shape = ensure_tuple("spatial_shape", spatial_shape, positive=True)
 
     spatial_ndim = len(chunk_shape)
     if len(spatial_shape) != spatial_ndim:
@@ -1004,11 +1002,7 @@ class DataLoader:
         self._devices = list(devices) if devices else jax.local_devices()
         self._n_dev = len(self._devices)
         if host_device is None:
-            try:
-                cpu_devices = jax.devices("cpu")
-            except RuntimeError:
-                cpu_devices = []
-            host_device = cpu_devices[0] if cpu_devices else jax.devices()[0]
+            host_device = normalize_devices(None)[0]
         self._host_device = host_device
 
         self._sharding = self._resolve_sharding(sharding, mesh, batch_spec)

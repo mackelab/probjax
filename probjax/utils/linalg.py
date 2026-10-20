@@ -205,13 +205,16 @@ def tsvd(A: Array, r: int) -> Tuple[Array, Array, Array]:
 def symmetrize_matrix(A: Array) -> Array:
     """Return the symmetrized version of a matrix
 
+    Transposes the last two axes, so a batch of matrices is symmetrized
+    correctly (``A.T`` would reverse *all* axes for a 3-D array).
+
     Args:
         A (Array): Input matrix
 
     Returns:
         Array: Symmetrized matrix
     """
-    return 0.5 * (A + A.T)
+    return 0.5 * (A + jnp.swapaxes(A, -1, -2))
 
 
 def K_step_lyapunov(
@@ -474,7 +477,7 @@ def lanczos_logdet(S, num_steps=20, key=None, *, num_probes=16):
         # The estimator is defined on symmetric positive-definite matrices.
         # Use the symmetric extension so dense entrywise gradients agree with
         # slogdet, rather than depending on off-domain asymmetric perturbations.
-        S = (S + S.T) / 2
+        S = symmetrize_matrix(S)
         matvec, dim = lambda v: S @ v, S.shape[0]
     if dim < 1:
         raise ValueError("S must have positive dimension")

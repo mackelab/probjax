@@ -21,7 +21,7 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from probjax.utils.linalg import lanczos_logdet
+from probjax.utils.linalg import lanczos_logdet, symmetrize_matrix
 from probjax.utils.optional import require_lineax
 from probjax.utils.special.phi1 import phi1_scalar
 
@@ -561,7 +561,7 @@ def _compose(a: LinearOperator, b: LinearOperator) -> LinearOperator:
 def _symmetric_part(matrix: jax.Array) -> jax.Array:
     # Cholesky reads one triangle only; factoring the symmetric part keeps the
     # gradient symmetric instead of concentrating it in that triangle.
-    return (matrix + matrix.T) / 2
+    return symmetrize_matrix(matrix)
 
 
 def _check_square(op: LinearOperator):

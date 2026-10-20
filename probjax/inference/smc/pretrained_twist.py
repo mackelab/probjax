@@ -37,11 +37,10 @@ from blackjax.smc.ess import ess
 from blackjax.smc.resampling import systematic
 
 from probjax.inference.base import SMCResult
+from probjax.inference.particles import normalize_log_weights, take_batch
 from probjax.inference.smc._utils import (
     log_weighted_mean_exp,
-    normalize_log_weights,
     random_like,
-    take_batch,
 )
 from probjax.nn.export import normalize_spec
 from probjax.nn.generative.diffusion.twists import (

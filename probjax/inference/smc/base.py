@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
+from dataclasses import is_dataclass
 from functools import partial
 from typing import Any, Callable
 
@@ -103,7 +103,7 @@ def _wrap_params(params: dict[str, ArrayLike]) -> Any:
     if has_attrs(params, "_asdict"):
         return params
     if is_dataclass(params):
-        return _ParamsProxy(asdict(params))
+        return _ParamsProxy(params_to_dict(params))
     return _ParamsProxy(params)
 
 

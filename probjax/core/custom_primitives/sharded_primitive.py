@@ -53,6 +53,7 @@ from jax._src.interpreters import batching
 from jax.extend.core import ClosedJaxpr, Primitive
 from jax.interpreters import mlir
 
+from probjax.utils.guards import is_tracing
 from probjax.utils.jaxutils import def_partition_compat
 
 __all__ = [
@@ -556,7 +557,7 @@ def shardable_kernel(prim: Primitive, arrays: Mapping[str, Any], **static) -> An
     spec = _SPEC_BY_PRIM[prim]
     present, args = _split_present(spec, arrays)
     wrapped = _wrap_statics(static)
-    if not any(isinstance(arg, jax_core.Tracer) for arg in args):
+    if not any(is_tracing(arg) for arg in args):
         return prim.bind(*args, present=present, **wrapped)
     cp = _cp_for(prim, present, tuple(sorted(wrapped.items())))
     return cp(*args)
@@ -622,7 +623,7 @@ def batch_shard(fn: Callable) -> Callable:
         from jax.sharding import AxisType
 
         mesh = jax.sharding.get_abstract_mesh()
-        has_tracer = any(isinstance(a, jax_core.Tracer) for a in args)
+        has_tracer = any(is_tracing(a) for a in args)
         if mesh.empty or not has_tracer:
             return fn(*args)
         if AxisType.Explicit in set(mesh.axis_types):

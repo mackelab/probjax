@@ -22,6 +22,7 @@ from probjax.stats.base import rv_exponential_family, rv_spherical
 from probjax.stats.constraints import real, spherical
 from probjax.stats.utils import normalize_sample_weights
 from probjax.utils.jaxutils import where
+from probjax.utils.linalg import symmetrize_matrix
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["watson"]
@@ -613,8 +614,7 @@ class watson_gen(rv_spherical, rv_exponential_family):
         if weights_arr is None:
             weights_arr = jnp.ones((n,), dtype=dtype) / jnp.asarray(n, dtype=dtype)
 
-        scatter = (data * weights_arr[:, None]).T @ data
-        scatter = 0.5 * (scatter + jnp.swapaxes(scatter, -1, -2))
+        scatter = symmetrize_matrix((data * weights_arr[:, None]).T @ data)
         eigvals, eigvecs = jnp.linalg.eigh(scatter)
         dim = data.shape[-1]
         iso = jnp.asarray(1.0 / dim, dtype=dtype)

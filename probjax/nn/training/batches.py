@@ -11,7 +11,8 @@ import jax
 import jax.numpy as jnp
 from jax.experimental import io_callback
 
-from probjax.utils.guards import is_array_like
+from probjax.nn.export import spec_from_value
+from probjax.utils.guards import ensure_int, is_array_like
 
 __all__ = [
     "is_batch_stream",
@@ -40,13 +41,12 @@ def _resolve_batch_size(batch_size, num_examples: int) -> Optional[int]:
 def _resolve_num_steps(num_steps, num_examples: int, batch_size) -> int:
     """``"auto"`` -> enough steps for a fixed number of passes over the data."""
     if num_steps != "auto":
-        if (
-            not isinstance(num_steps, int)
-            or isinstance(num_steps, bool)
-            or num_steps < 0
-        ):
-            raise ValueError("num_steps must be a nonnegative integer or 'auto'.")
-        return num_steps
+        return ensure_int(
+            "num_steps",
+            num_steps,
+            min_value=0,
+            message="num_steps must be a nonnegative integer or 'auto'.",
+        )
     per_epoch = max(1, num_examples // (batch_size or num_examples))
     return int(min(max(_AUTO_EPOCHS * per_epoch, _AUTO_MIN_STEPS), _AUTO_MAX_STEPS))
 
@@ -140,9 +140,7 @@ def _as_device_batch(batch):
 
 
 def _batch_spec(batch):
-    return jax.tree.map(
-        lambda a: jax.ShapeDtypeStruct(jnp.shape(a), jnp.asarray(a).dtype), batch
-    )
+    return spec_from_value(batch)
 
 
 def _check_same_spec(spec, batch, step: int) -> None:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, is_dataclass, replace
+from numbers import Integral
 from typing import Any, TypeGuard, cast
 
 import jax
@@ -69,26 +70,47 @@ def params_to_dict(params: Any) -> dict[str, Any]:
     raise TypeError("params must be a mapping, NamedTuple, or dataclass")
 
 
-def ensure_int(name: str, value: Any, *, min_value: int | None = None) -> int:
-    """Validate an integer argument, rejecting bools (since ``bool < int``)."""
+def ensure_int(
+    name: str,
+    value: Any,
+    *,
+    min_value: int | None = None,
+    message: str | None = None,
+) -> int:
+    """Validate an integer argument, rejecting bools (since ``bool < int``).
+
+    ``message`` overrides the error text, for callers whose message mentions
+    alternatives this check does not cover (e.g. ``None`` or ``"auto"``).
+    """
     if not isinstance(value, int) or isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer, got {value!r}.")
+        raise ValueError(message or f"{name} must be an integer, got {value!r}.")
     if min_value is not None and value < min_value:
-        raise ValueError(f"{name} must be >= {min_value}, got {value}.")
+        raise ValueError(message or f"{name} must be >= {min_value}, got {value}.")
     return value
 
 
-def ensure_tuple(name: str, value: Any, *, positive: bool = False) -> tuple[int, ...]:
-    """Normalize ``int`` or iterable-of-ints to a ``tuple[int, ...]``."""
-    if isinstance(value, int) and not isinstance(value, bool):
+def ensure_tuple(
+    name: str,
+    value: Any,
+    *,
+    positive: bool = False,
+    message: str | None = None,
+) -> tuple[int, ...]:
+    """Normalize ``int`` or iterable-of-ints to a ``tuple[int, ...]``.
+
+    Accepts any ``numbers.Integral`` (so numpy integers work) and rejects
+    ``bool``, which is an ``int`` subclass but never a meaningful size.
+    ``message`` overrides the error text.
+    """
+    if isinstance(value, Integral) and not isinstance(value, bool):
         if positive and value <= 0:
-            raise ValueError(f"{name} must be positive.")
-        return (value,)
+            raise ValueError(message or f"{name} must be positive.")
+        return (int(value),)
     items = tuple(int(v) for v in cast(Iterable[Any], value))
     if not items:
-        raise ValueError(f"{name} must be non-empty.")
+        raise ValueError(message or f"{name} must be non-empty.")
     if positive and any(v <= 0 for v in items):
-        raise ValueError(f"All entries in {name} must be positive.")
+        raise ValueError(message or f"All entries in {name} must be positive.")
     return items
 
 

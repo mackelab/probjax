@@ -39,6 +39,7 @@ from probjax.core.jaxpr_propagation.utils import (
 )
 from probjax.core.registry import ProcessedResult, parse_processed_result
 from probjax.utils.containers import PriorityQueue
+from probjax.utils.guards import has_attrs
 
 Scheduler = TypingLiteral["topological", "priority"]
 RecursePolicy = TypingLiteral["always", "missing_inputs", "never"]
@@ -240,19 +241,11 @@ def _get_closed_sub_jaxpr(eqn: Any) -> Any:
         return None
 
     candidate = eqn.params.get("jaxpr")
-    if (
-        candidate is not None
-        and hasattr(candidate, "jaxpr")
-        and hasattr(candidate, "consts")
-    ):
+    if candidate is not None and has_attrs(candidate, "jaxpr", "consts"):
         return candidate
 
     candidate = eqn.params.get("call_jaxpr")
-    if (
-        candidate is not None
-        and hasattr(candidate, "jaxpr")
-        and hasattr(candidate, "consts")
-    ):
+    if candidate is not None and has_attrs(candidate, "jaxpr", "consts"):
         return candidate
 
     return None

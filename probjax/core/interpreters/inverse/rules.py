@@ -34,6 +34,7 @@ from probjax.core.registry import (
     register_bivariate_inverse,
     register_univariate_inverse,
 )
+from probjax.utils.guards import is_tracing
 
 # =============================================================================
 # pjit primitive import (varies by JAX version)
@@ -165,7 +166,7 @@ def _in_image(lo: float | None = None, hi: float | None = None) -> Callable[...,
 
     def guard(out_val: Any, params: Any) -> Any:
         del params
-        xp = jnp if isinstance(out_val, jax_core.Tracer) else np
+        xp = jnp if is_tracing(out_val) else np
         value = xp.asarray(out_val)
         valid = xp.asarray(True)
         if lo is not None:
@@ -543,7 +544,7 @@ def _compare(value: Any, op: Callable[[Any], Callable[[Any], Any]]) -> Any:
     select for every literal-scaled multiply. Numpy keeps it a compile-time
     fact so ``apply_inverse_guard`` can drop the guard entirely.
     """
-    if isinstance(value, jax_core.Tracer):
+    if is_tracing(value):
         return op(jnp)(jnp.asarray(value))
     return op(np)(np.asarray(value))
 
@@ -575,7 +576,7 @@ def _extremum_valid(out_val: Any, other: Any, params: Any, *, side: str) -> Any:
     comparisons stay compile-time facts via the tracer check.
     """
     del params
-    if isinstance(out_val, jax_core.Tracer) or isinstance(other, jax_core.Tracer):
+    if is_tracing(out_val) or is_tracing(other):
         out_arr, other_arr = jnp.asarray(out_val), jnp.asarray(other)
     else:
         out_arr, other_arr = np.asarray(out_val), np.asarray(other)

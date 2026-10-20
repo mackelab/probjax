@@ -12,7 +12,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-from probjax.utils.jaxutils import Configured, nested_checkpoint_scan
+from probjax.utils.jaxutils import Configured, nested_checkpoint_scan, prepend_to_trace
 
 #: A solver class with its options bound. The name predates the generalization
 #: of :class:`~probjax.utils.jaxutils.Configured` to every kernel API, and is
@@ -131,10 +131,4 @@ def make_filter_wrapper(filter_state):
 
 def stack_trace(init_filtered, ys):
     """Prepend the filtered initial state to a per-step trace."""
-
-    def _stack(init_leaf, trace_leaf):
-        return jnp.concatenate(
-            [jnp.asarray(init_leaf)[None], jnp.asarray(trace_leaf)], axis=0
-        )
-
-    return jax.tree_util.tree_map(_stack, init_filtered, ys)
+    return prepend_to_trace(init_filtered, ys)

@@ -50,6 +50,7 @@ from jax.scipy.sparse.linalg import gmres as _gmres
 from probjax.core.interpreters.inverse.diagonal import DiagonalAffineSystem
 from probjax.core.jaxpr_propagation.utils import shaped_aval
 from probjax.core.registry import apply_inverse_guard, inverse_roundtrip_valid
+from probjax.utils.guards import has_attrs
 from probjax.utils.typing import Array
 
 __all__ = ["is_affine_in", "is_volume_preserving", "solve_affine_inverse"]
@@ -120,11 +121,7 @@ def _closed_sub_jaxpr(eqn: Any) -> Any:
         return None
     for key in ("jaxpr", "call_jaxpr"):
         candidate = eqn.params.get(key)
-        if (
-            candidate is not None
-            and hasattr(candidate, "jaxpr")
-            and hasattr(candidate, "consts")
-        ):
+        if candidate is not None and has_attrs(candidate, "jaxpr", "consts"):
             return candidate
     return None
 

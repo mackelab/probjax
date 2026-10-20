@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.inference.filtering.base import FilterAPI
+from probjax.utils.guards import call_if_callable
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 
@@ -32,13 +33,9 @@ def init(
 def unpack_matrix(
     A: Any, t_old: Optional[ArrayLike], t: Optional[ArrayLike] = None
 ) -> Array:
-    if callable(A):
-        if t is not None:
-            return jnp.asarray(A(t_old, t))
-        else:
-            return jnp.asarray(A(t_old))
-    else:
-        return jnp.asarray(A)
+    if t is not None:
+        return jnp.asarray(call_if_callable(A, t_old, t))
+    return jnp.asarray(call_if_callable(A, t_old))
 
 
 def sqrt_kf_predict(

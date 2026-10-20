@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.inference.filtering.base import FilterAPI
+from probjax.inference.particles import normalize_log_weights
 from probjax.inference.smc.ess import ess
 from probjax.inference.smc.resampling import (
     resample_systematic,
@@ -34,15 +35,15 @@ def init(
     # Particles may be a pytree with a leading particle axis.
     num_particles = jax.tree.leaves(particles)[0].shape[0]
     if log_weights is None:
-        log_weights = jnp.full((num_particles,), fill_value=-jnp.log(num_particles))
+        weights = jnp.full((num_particles,), fill_value=-jnp.log(num_particles))
     else:
-        log_weights = jnp.asarray(log_weights)
-        assert log_weights.shape[0] == num_particles, (
+        weights = jnp.asarray(log_weights)
+        assert weights.shape[0] == num_particles, (
             "The number of particles and log weights must be the same."
         )
-        log_weights = log_weights - jax.scipy.special.logsumexp(log_weights)
+        weights = normalize_log_weights(weights)
     return ParticleFilterState(
-        particles, log_weights, None if t is None else jnp.asarray(t)
+        particles, weights, None if t is None else jnp.asarray(t)
     )
 
 

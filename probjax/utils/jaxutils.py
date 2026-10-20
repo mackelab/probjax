@@ -5,7 +5,17 @@ import math
 import sys
 from dataclasses import dataclass
 from functools import lru_cache, partial
-from typing import Any, Callable, ClassVar, Dict, Optional, Sequence, Tuple, cast
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Dict,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    cast,
+)
 
 import jax
 import jax.experimental
@@ -148,12 +158,19 @@ def as_configured(api_or_configured: Any, **options: Any) -> Configured:
 
 
 def filter_kwargs(
-    fn: Callable, kwargs: Dict[str, Any], *, allow_kwargs: bool = True
+    fn: Callable,
+    kwargs: Mapping[str, Any],
+    *,
+    allow_kwargs: bool = True,
+    exclude_positional_only: bool = False,
 ) -> Dict[str, Any]:
     """The subset of ``kwargs`` that ``fn`` accepts.
 
     A function that takes ``**kwargs`` takes everything, unless
     ``allow_kwargs`` is false -- then only the options it names are kept.
+
+    ``exclude_positional_only`` drops parameters that can only be passed
+    positionally, which cannot be forwarded as a keyword.
     """
     sig = inspect.signature(fn)
     accepts_kwargs = any(
@@ -161,7 +178,15 @@ def filter_kwargs(
     )
     if accepts_kwargs and allow_kwargs:
         return dict(kwargs)
-    return {k: v for k, v in kwargs.items() if k in sig.parameters}
+    return {
+        k: v
+        for k, v in kwargs.items()
+        if k in sig.parameters
+        and not (
+            exclude_positional_only
+            and sig.parameters[k].kind == inspect.Parameter.POSITIONAL_ONLY
+        )
+    }
 
 
 class KernelAPI(metaclass=API):
@@ -323,6 +348,21 @@ def where(condition: ArrayLike, x: ArrayLike, y: ArrayLike) -> Array:
     form, and the union otherwise poisons every downstream expression.
     """
     return jnp.where(condition, x, y)
+
+
+def prepend_to_trace(initial: PyTree, trace: PyTree) -> PyTree:
+    """Prepend ``initial`` to a per-step ``trace`` along the leading axis.
+
+    ``initial`` and ``trace`` must have the same tree structure, and each
+    corresponding leaf must have the same shape apart from the leading axis.
+    """
+    return jax.tree_util.tree_map(
+        lambda init_leaf, trace_leaf: jnp.concatenate(
+            [jnp.asarray(init_leaf)[None], jnp.asarray(trace_leaf)], axis=0
+        ),
+        initial,
+        trace,
+    )
 
 
 @lu.transformation
