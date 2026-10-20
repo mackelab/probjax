@@ -188,6 +188,8 @@ def _stream_fetch(stream, spec):
             raise
         return batch
 
-    fetch = lambda key: io_callback(pull, spec, ordered=True)  # noqa: E731
-    fetch.stream_state = state
+    def fetch(key):
+        return io_callback(pull, spec, ordered=True)
+
+    fetch.stream_state = state  # type: ignore[attr-defined]
     return fetch

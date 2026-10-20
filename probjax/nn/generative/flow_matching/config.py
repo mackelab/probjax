@@ -58,13 +58,14 @@ class GeneralInterpolationSchedule(InterpolationScheduleProtocol):
     def interpolation_noise_velocity_fn(
         self, t: ArrayLike, x0: Array, x1: Array
     ) -> Array | None:
-        if self.noise_fn is None:
+        noise_fn = self.noise_fn
+        if noise_fn is None:
             return None
 
         def grad_fn(time, x_s, x_t):
             if self.noise_velocity_fn is not None:
                 return self.noise_velocity_fn(time, x_s, x_t)
-            return _autodiff_time_gradient(self.noise_fn, time, x_s, x_t)
+            return _autodiff_time_gradient(noise_fn, time, x_s, x_t)
 
         return grad_fn(t, x0, x1)
 

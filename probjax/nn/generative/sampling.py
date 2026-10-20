@@ -9,7 +9,7 @@ a flat array does.
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -26,7 +26,22 @@ from probjax.nn.export import (
 from probjax.utils.functions import generic_drift, split_drift
 from probjax.utils.odeint import odeint
 from probjax.utils.sdeint import sdeint
-from probjax.utils.typing import Array, PyTree, RngKey
+from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
+
+
+@runtime_checkable
+class SamplerLike(Protocol):
+    """Callable sampling operation bound to a generative model.
+
+    Every family provides its own sampler (an exported program, an eager
+    callable, ...); the distribution view only needs to call it and to know
+    whether its cached export is still valid.
+    """
+
+    @property
+    def invalidated(self) -> bool: ...
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
 def sample_normal(
@@ -34,8 +49,8 @@ def sample_normal(
     sample_shape: tuple[int, ...],
     spec: PyTree[jax.ShapeDtypeStruct],
     *,
-    loc=0,
-    scale=1,
+    loc: ArrayLike = 0,
+    scale: ArrayLike = 1,
 ) -> PyTree[Array]:
     """Draw a normal pytree matching ``sample_shape + spec``."""
     spec_leaves, treedef = jax.tree.flatten(spec)
@@ -149,7 +164,7 @@ class _ExportedSampler(NNXExportedFunction):
             noise_key, sample_key = jax.random.split(rng)
         else:
             noise_key, sample_key = rng, None
-        eps = model._sample_base(
+        eps = model._sample_base(  # type: ignore
             noise_key, sample_shape, self.spec, **self.base_sample_kwargs
         )
         return self.from_noise(eps, rng=sample_key, inputs=inputs)
@@ -171,7 +186,7 @@ class _ExportedSampler(NNXExportedFunction):
             noise_key, sample_key = jax.random.split(rng)
         else:
             noise_key, sample_key = rng, None
-        eps = model._sample_base(
+        eps = model._sample_base(  # type: ignore
             noise_key, sample_shape, self.spec, **self.base_sample_kwargs
         )
         return self.from_noise_with_state(state, eps, rng=sample_key, inputs=inputs)

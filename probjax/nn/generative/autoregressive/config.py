@@ -68,6 +68,7 @@ from probjax.stats import (
 )
 from probjax.stats.base import rv_generic
 from probjax.stats.constraint_registry import biject_to
+from probjax.utils.jaxutils import where
 
 __all__ = [
     "ARConditionerConfig",
@@ -275,11 +276,11 @@ class ARFamily:
     # -- density and sampling, straight from the distribution ---------------
 
     def logpdf(self, x: Array, natural: Mapping[str, Array]) -> Array:
-        return self.dist.logpdf(x, **natural)
+        return jnp.asarray(self.dist.logpdf(x, **natural))
 
     def rvs(self, rng, natural: Mapping[str, Array]) -> Array:
         """One draw per batch element, using the family's own sampler."""
-        return self.dist._rvs_impl(rng, **natural, shape=())
+        return jnp.asarray(self.dist._rvs_impl(rng, **natural, shape=()))
 
     # -- data plumbing ------------------------------------------------------
 
@@ -551,7 +552,11 @@ class _TokenConditioner(nnx.Module):
     """
 
     def __init__(
-        self, inner: nnx.Module, input_dim: int, params_dim: int, feature_width=1
+        self,
+        inner: AutoregressiveTransformer,
+        input_dim: int,
+        params_dim: int,
+        feature_width=1,
     ):
         self.inner = inner
         self.input_dim = input_dim
@@ -585,7 +590,7 @@ class _TokenConditioner(nnx.Module):
             ),
             prev_feat.shape[:-1] + (1, inner.transformer.model_dim),
         )
-        token = jnp.where(
+        token = where(
             jnp.asarray(pos) == 0,
             start,
             inner.encoder(prev_feat[..., None, :]),
@@ -657,7 +662,7 @@ class _SSMConditioner(nnx.Module):
 
     def __init__(
         self,
-        model: nnx.Module,
+        model: SSMModel,
         input_dim: int,
         params_dim: int,
         feature_width: int,

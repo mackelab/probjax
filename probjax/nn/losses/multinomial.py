@@ -6,7 +6,8 @@ import numpy as np
 from jax.typing import ArrayLike
 from jaxtyping import Array
 
-from probjax.utils.protocols import ReductionFn
+from probjax.utils.jaxutils import where
+from probjax.utils.protocols import ReductionFn, mean_reduction
 
 __all__ = ["build_time_dependent_multinomial_diffusion_loss"]
 
@@ -30,7 +31,7 @@ def build_time_dependent_multinomial_diffusion_loss(
     rao_blackwellize_xt_num_features: Optional[int] = None,
     num_classes: Optional[int] = None,
     weight_fn: Optional[Callable[[Array], Array]] = None,
-    reduction_fn: ReductionFn = jnp.mean,
+    reduction_fn: ReductionFn = mean_reduction,
 ) -> Callable[..., Array]:
     """Build CE loss for multinomial diffusion with x0-prediction parameterization.
 
@@ -259,7 +260,7 @@ def build_time_dependent_multinomial_diffusion_loss(
             mask = jnp.asarray(loss_mask, dtype=bool)
             if mask.shape != ce.shape:
                 mask = jnp.broadcast_to(mask, ce.shape)
-            ce = jnp.where(~mask, ce, jnp.zeros_like(ce))
+            ce = where(~mask, ce, jnp.zeros_like(ce))
 
         return reduction_fn(ce)
 

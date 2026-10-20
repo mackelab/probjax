@@ -3,14 +3,15 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.experimental import pallas as pl
 
-from probjax.utils.typing import Array
+from probjax.utils.jaxutils import where
+from probjax.utils.typing import Array, ArrayLike
 
 from .kernel_utils import (
     ceil_div,
@@ -20,7 +21,7 @@ from .kernel_utils import (
 )
 
 
-def _aux_field(aux, key, index=0):
+def _aux_field(aux: Any, key: str, index: int = 0) -> Any:
     """Read pytree aux data stored as a dict (current) or tuple/scalar (legacy)."""
     if isinstance(aux, dict):
         return aux.get(key)
@@ -108,7 +109,7 @@ class AttentionMask(ABC):
         kv_len: int | None = None,
         block_q: int | None = None,
         block_k: int | None = None,
-    ):
+    ) -> tuple[Any, Any]:
         return (None, None)
 
     def get_data_block_spec_backward_pass(
@@ -121,7 +122,7 @@ class AttentionMask(ABC):
         block_kv_dkv: int | None = None,
         block_q_dq: int | None = None,
         block_kv_dq: int | None = None,
-    ) -> tuple[None, None]:
+    ) -> tuple[Any, Any]:
         return self.get_data_block_spec(q_len, kv_len, block_q, block_k)
 
     # Logical combinators return composed masks.
@@ -164,7 +165,7 @@ class AttentionMask(ABC):
         kv_len: int,
         block_q: int,
         block_k: int,
-    ) -> Array:
+    ) -> ArrayLike | None:
         """Build block map where True means the block is not fully masked.
 
         Uses a separate thread to avoid inheriting sharding contexts during compile-time eval.
@@ -178,8 +179,8 @@ class AttentionMask(ABC):
             )
             for i in range(0, q_len, block_q):
                 for j in range(0, kv_len, block_k):
-                    rows = np.arange(i, i + block_q, dtype=np.int32)
-                    cols = np.arange(j, j + block_k, dtype=np.int32)
+                    rows = jnp.arange(i, i + block_q, dtype=jnp.int32)
+                    cols = jnp.arange(j, j + block_k, dtype=jnp.int32)
                     with jax.ensure_compile_time_eval():
                         if not self.__call__(rows, cols).any():
                             block_mask_map[i // block_q, j // block_k] = False
@@ -196,7 +197,7 @@ class AttentionMask(ABC):
         block_k: int,
         seg_q: Optional[Array] = None,
         seg_k: Optional[Array] = None,
-    ) -> tuple[Array, Array]:
+    ) -> tuple[Array | None, Array | None]:
         """Per-(b,h,q_block) iterators over non-empty KV blocks.
 
         Returns (kv_block_offset [nQB,nKB], kv_block_offset_size [nQB]).
@@ -215,7 +216,7 @@ class AttentionMask(ABC):
         kv_len: int,
         block_q: int,
         block_k: int,
-    ) -> tuple[Array, Array]:
+    ) -> tuple[Array | None, Array | None]:
         """Per-(b,h,kv_block) iterators over non-empty Q blocks.
 
         Returns (q_block_offset [nKB,nQB], q_block_offset_size [nKB]).
@@ -224,7 +225,7 @@ class AttentionMask(ABC):
             q_len=q_len, kv_len=kv_len, block_q=block_q, block_k=block_k
         )
         if bm is not None:
-            return query_iterator_indices(bm.T)
+            return query_iterator_indices(np.asarray(bm).T)
         else:
             return None, None
 
@@ -250,14 +251,14 @@ class AttentionBias(ABC):
     # Optional: Pallas bias spec for dense tensor bias.
     def get_block_spec(
         self, *, q_len: int, kv_len: int, block_q: int, block_kv: int
-    ):  # pragma: no cover - API
+    ) -> Any:  # pragma: no cover - API
         return None
 
     # Optional: backward-specific Pallas bias spec for dense tensor bias.
     # Default to forward mapping for compatibility.
     def get_block_spec_backward(
         self, *, q_len: int, kv_len: int, block_q: int, block_kv: int
-    ):  # pragma: no cover - API
+    ) -> Any:  # pragma: no cover - API
         return self.get_block_spec(
             q_len=q_len,
             kv_len=kv_len,
@@ -400,7 +401,7 @@ class ComposeMask(AttentionMask):
         kv_len: int | None = None,
         block_q: int | None = None,
         block_k: int | None = None,
-    ):
+    ) -> tuple[Any, Any]:
         if self.lhs.stateful and self.rhs.stateful:
             raise ValueError(
                 "Cannot compose two stateful masks: dense/block-sparse composition "
@@ -427,7 +428,7 @@ class ComposeMask(AttentionMask):
         block_kv_dkv: int | None = None,
         block_q_dq: int | None = None,
         block_kv_dq: int | None = None,
-    ):
+    ) -> tuple[Any, Any]:
         if self.lhs.stateful and self.rhs.stateful:
             raise ValueError(
                 "Cannot compose two stateful masks: dense/block-sparse composition "
@@ -464,7 +465,7 @@ class ComposeMask(AttentionMask):
         kv_len: int,
         block_q: int,
         block_k: int,
-    ) -> Array | None:
+    ) -> ArrayLike | None:
         """Combine children's block masks without evaluating stateful children.
 
         Block-mask computation is allowed to be an over-approximation of
@@ -487,7 +488,7 @@ class ComposeMask(AttentionMask):
                pruning is disabled unless both children are known.
         """
 
-        def _safe_child_block_mask(child: AttentionMask) -> Array | None:
+        def _safe_child_block_mask(child: AttentionMask) -> ArrayLike | None:
             if child.stateful:
                 return None
             return child.block_mask(q_len, kv_len, block_q, block_k)
@@ -497,7 +498,7 @@ class ComposeMask(AttentionMask):
 
         if self.op == "and":
             if lhs_bm is not None and rhs_bm is not None:
-                return lhs_bm & rhs_bm
+                return np.asarray(lhs_bm) & np.asarray(rhs_bm)
             if lhs_bm is not None:
                 return lhs_bm
             if rhs_bm is not None:
@@ -506,9 +507,9 @@ class ComposeMask(AttentionMask):
         elif self.op == "or" or self.op == "xor":
             if lhs_bm is not None and rhs_bm is not None:
                 if self.op == "or":
-                    return lhs_bm | rhs_bm
+                    return np.asarray(lhs_bm) | np.asarray(rhs_bm)
                 else:
-                    return lhs_bm ^ rhs_bm
+                    return np.asarray(lhs_bm) ^ np.asarray(rhs_bm)
             return None
         raise ValueError(f"Unknown op for ComposeMask: {self.op}")
 
@@ -632,7 +633,7 @@ class CausalMask(AttentionMask):
         kv_len: int,
         block_q: int,
         block_k: int,
-    ) -> Array:
+    ) -> ArrayLike:
         return fast_blockmask_causal(
             q_len=q_len, kv_len=kv_len, block_q=block_q, block_k=block_k
         )
@@ -676,7 +677,7 @@ class LocalWindowMask(AttentionMask):
         kv_len: int,
         block_q: int,
         block_k: int,
-    ) -> Array:
+    ) -> ArrayLike:
         rw = 0 if self.right_window is None else int(self.right_window)
         return fast_blockmask_local_window(
             q_len=q_len,
@@ -728,7 +729,7 @@ class CausalLocalWindowMask(AttentionMask):
         kv_len: int,
         block_q: int,
         block_k: int,
-    ) -> Array:
+    ) -> ArrayLike:
         return fast_blockmask_local_window(
             q_len=q_len,
             kv_len=kv_len,
@@ -813,7 +814,7 @@ class PrefixLMMask(AttentionMask):
         kv_len: int | None = None,
         block_q: int | None = None,
         block_k: int | None = None,
-    ):
+    ) -> tuple[Any, Any]:
         del kv_len, block_q, block_k
         if getattr(self.prefix_lengths, "ndim", 0) == 0:
             return (None, None)
@@ -849,7 +850,7 @@ class PrefixLMMask(AttentionMask):
         block_kv_dkv: int | None = None,
         block_q_dq: int | None = None,
         block_kv_dq: int | None = None,
-    ):
+    ) -> tuple[Any, Any]:
         # Backward grid is (batch, head, tile) -> i is batch.
         if getattr(self.prefix_lengths, "ndim", 0) == 0:
             return (None, None)
@@ -897,7 +898,7 @@ class BlockDiagonalMask(AttentionMask):
         kv_len: int | None = None,
         block_q: int | None = None,
         block_k: int | None = None,
-    ):
+    ) -> tuple[Any, Any]:
         if self.query_block_ids is None:
             q_spec = None
         elif self.query_block_ids.ndim == 2:
@@ -949,7 +950,7 @@ class BlockDiagonalMask(AttentionMask):
         block_kv_dkv: int | None = None,
         block_q_dq: int | None = None,
         block_kv_dq: int | None = None,
-    ):
+    ) -> tuple[Any, Any]:
         # Backward grid is (batch, head, tile) -> i is batch.
         if self.query_block_ids is None:
             q_spec = None
@@ -1012,7 +1013,7 @@ class BlockDiagonalCausalMask(AttentionMask):
         kv_len: int | None = None,
         block_q: int | None = None,
         block_k: int | None = None,
-    ):
+    ) -> tuple[Any, Any]:
         return BlockDiagonalMask(
             self.query_block_ids, self.key_block_ids
         ).get_data_block_spec(q_len, kv_len, block_q, block_k)
@@ -1050,7 +1051,7 @@ class BlockDiagonalCausalMask(AttentionMask):
         block_kv_dkv: int | None = None,
         block_q_dq: int | None = None,
         block_kv_dq: int | None = None,
-    ):
+    ) -> tuple[Any, Any]:
         return BlockDiagonalMask(
             self.query_block_ids, self.key_block_ids
         ).get_data_block_spec_backward_pass(
@@ -1107,7 +1108,7 @@ class QKVLengthMask(AttentionMask):
         kv_len: int,
         block_q: int,
         block_k: int,
-    ) -> Array:
+    ) -> ArrayLike | None:
         if not self.block_sparse:
             return None
         nQB = ceil_div(q_len, block_q)
@@ -1177,7 +1178,7 @@ class KeyPaddingMask(AttentionMask):
         kv_len: int | None = None,
         block_q: int | None = None,
         block_k: int | None = None,
-    ):
+    ) -> tuple[Any, Any]:
         if self.key_lengths.ndim == 2:
             # Stored as (B,K) → 4D (B,K,1,1).  Page batch via None.
             q_spec = pl.BlockSpec((None, q_len, 1, 1), lambda _, j, k: (j, 0, 0, 0))
@@ -1193,7 +1194,7 @@ class KeyPaddingMask(AttentionMask):
         *,
         q_seq_len: Optional[int] = None,
         kv_seq_len: Optional[int] = None,
-    ) -> tuple[None, Optional[Array]]:
+    ) -> tuple[Optional[Array], Optional[Array]]:
         del q_seq_len, kv_seq_len
         kl = jnp.asarray(self.key_lengths)
         if kl.ndim == 1:
@@ -1212,7 +1213,7 @@ class KeyPaddingMask(AttentionMask):
         block_kv_dkv: int | None = None,
         block_q_dq: int | None = None,
         block_kv_dq: int | None = None,
-    ):
+    ) -> tuple[Any, Any]:
         # Backward grid is (batch, head, tile) -> i is batch.
         if self.key_lengths.ndim == 2:
             q_spec = pl.BlockSpec((None, q_len, 1, 1), lambda i, j, k: (i, 0, 0, 0))
@@ -1350,7 +1351,7 @@ class SeqLenMask(AttentionMask):
         kv_len: int | None = None,
         block_q: int | None = None,
         block_k: int | None = None,
-    ):
+    ) -> tuple[Any, Any]:
         # Data is (B,1,1,1).  Select one element per batch.
         # Forward grid is (q_tile, batch, head) -> j is batch.
         q_spec = pl.BlockSpec((1, 1, 1, 1), lambda _, j, k_: (j, 0, 0, 0))
@@ -1367,7 +1368,7 @@ class SeqLenMask(AttentionMask):
         block_kv_dkv: int | None = None,
         block_q_dq: int | None = None,
         block_kv_dq: int | None = None,
-    ) -> tuple[None, None]:
+    ) -> tuple[Any, Any]:
         # Data is (B,1,1,1).  Select one element per batch.
         # Backward grid is (batch, head, tile) -> i is batch.
         q_spec = pl.BlockSpec((1, 1, 1, 1), lambda i, j, k_: (i, 0, 0, 0))
@@ -1489,7 +1490,7 @@ class KVLenMask(AttentionMask):
         kv_len: int | None = None,
         block_q: int | None = None,
         block_k: int | None = None,
-    ):
+    ) -> tuple[Any, Any]:
         # Data is (B,1,1,1). Select one element per batch.
         # Forward grid is (q_tile, batch, head) -> j is batch.
         q_spec = pl.BlockSpec((1, 1, 1, 1), lambda _, j, k_: (j, 0, 0, 0))
@@ -1505,7 +1506,7 @@ class KVLenMask(AttentionMask):
         block_kv_dkv: int | None = None,
         block_q_dq: int | None = None,
         block_kv_dq: int | None = None,
-    ) -> tuple[None, None]:
+    ) -> tuple[Any, Any]:
         # Data is (B,1,1,1). Select one element per batch.
         # Backward grid is (batch, head, tile) -> i is batch.
         q_spec = pl.BlockSpec((1, 1, 1, 1), lambda i, j, k_: (i, 0, 0, 0))
@@ -1567,7 +1568,7 @@ class SameSegmentMask(AttentionMask):
         kv_len: int | None = None,
         block_q: int | None = None,
         block_k: int | None = None,
-    ):
+    ) -> tuple[Any, Any]:
         if self.query_segment_ids is None:
             q_spec = None
         elif self.query_segment_ids.ndim == 2:
@@ -1621,7 +1622,7 @@ class SameSegmentMask(AttentionMask):
         block_kv_dkv: int | None = None,
         block_q_dq: int | None = None,
         block_kv_dq: int | None = None,
-    ):
+    ) -> tuple[Any, Any]:
         # Backward grid is (batch, head, tile) -> i is batch.
         if self.query_segment_ids is None:
             q_spec = None
@@ -1701,7 +1702,7 @@ class MarginalizationMask(AttentionMask):
         kv_len: int | None = None,
         block_q: int | None = None,
         block_k: int | None = None,
-    ):
+    ) -> tuple[Any, Any]:
         if self.mask is None:
             q_spec = None
         elif self.mask.ndim == 2:
@@ -1739,7 +1740,7 @@ class MarginalizationMask(AttentionMask):
         block_kv_dkv: int | None = None,
         block_q_dq: int | None = None,
         block_kv_dq: int | None = None,
-    ):
+    ) -> tuple[Any, Any]:
         # Backward grid is (batch, head, tile) -> i is batch.
         if self.mask is None:
             q_spec = None
@@ -1856,7 +1857,7 @@ class DenseBias(AttentionBias):
 
     def get_block_spec_backward(
         self, *, q_len: int, kv_len: int, block_q: int, block_kv: int
-    ):
+    ) -> Any:
         # Backward kernels use grid ordering (batch, head, tile), unlike forward
         # (q_tile, batch, head). Map B/H from the first two program IDs.
         return pl.BlockSpec(
@@ -2427,7 +2428,7 @@ def _relative_position_bucket(
         * (nb_f - max_exact_f)
     )
     val_large = jnp.minimum(nb - 1, val_large.astype(jnp.int32))
-    bucket = jnp.where(is_small, rp.astype(jnp.int32), val_large)
+    bucket = where(is_small, rp.astype(jnp.int32), val_large)
     return bucket + sign_bucket
 
 

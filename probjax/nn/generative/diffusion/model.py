@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import Callable, Mapping
+from typing import Callable, Mapping, cast
 
 import jax
 import jax.numpy as jnp
@@ -34,6 +34,7 @@ from probjax.nn.generative.sampling import (
 )
 from probjax.nn.losses.denoising import build_time_dependent_denoising_loss
 from probjax.nn.utils import module_accepts_rng
+from probjax.utils.protocols import TimeDependentModelFn
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
 
 
@@ -98,8 +99,10 @@ class DiffusionDenoiser(GenerativeModel):
         self.precond = precond
         self.train_cfg = train_cfg
         self.solver_cfg = solver_cfg
-        if self.solver_cfg is not None and hasattr(self.solver_cfg, "set_schedule"):
-            self.solver_cfg.set_schedule(self.schedule)
+        if self.solver_cfg is not None:
+            set_schedule = getattr(self.solver_cfg, "set_schedule", None)
+            if set_schedule is not None:
+                set_schedule(self.schedule)
         self.std0 = nnx.Variable(std0)
         self.last_layer = last_layer
 
@@ -116,8 +119,9 @@ class DiffusionDenoiser(GenerativeModel):
         if not isinstance(solver_cfg, SolverConfigProtocol):
             raise TypeError("solver_cfg must implement SolverConfigProtocol")
         self.solver_cfg = solver_cfg
-        if hasattr(self.solver_cfg, "set_schedule"):
-            self.solver_cfg.set_schedule(self.schedule)
+        set_schedule = getattr(self.solver_cfg, "set_schedule", None)
+        if set_schedule is not None:
+            set_schedule(self.schedule)
         self._clear_distribution_cache()
 
     # ---- physical schedule adapters ----
@@ -210,7 +214,7 @@ class DiffusionDenoiser(GenerativeModel):
             raise ValueError(f"Unsupported loss type: {loss_type}")
 
         return build_time_dependent_denoising_loss(
-            pred_fn,
+            cast("TimeDependentModelFn", pred_fn),
             scale_fn=self.scale_fn,
             std_fn=self.std_fn,
             weight_fn=weight_fn,
@@ -384,9 +388,17 @@ class DiffusionDenoiser(GenerativeModel):
     # ---- sampling (delegates to solver_cfg) ----
 
     def _build_ode_drift(self, inputs=None):
+        if self.solver_cfg is None:
+            raise ValueError(
+                "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
+            )
         return self.solver_cfg.build_ode_drift(self, **(inputs or {}))
 
     def _build_sde_drift_and_diffusion(self, inputs=None):
+        if self.solver_cfg is None:
+            raise ValueError(
+                "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
+            )
         return self.solver_cfg.build_sde_drift_and_diffusion(self, **(inputs or {}))
 
     def _distribution_sampler(
@@ -400,6 +412,7 @@ class DiffusionDenoiser(GenerativeModel):
         collect_trace: bool = False,
         dtype=jnp.float32,
         inputs_spec=None,
+        **kwargs,
     ) -> _ExportedSampler:
         """Build and cache a shape-polymorphic diffusion sampler.
 

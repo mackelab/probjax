@@ -43,6 +43,7 @@ from probjax.utils.typing import (
     Array,
     ArrayLike,
     DTypeLike,
+    ModuleLike,
     ModuleLikeType,
     PrecisionLike,
 )
@@ -872,7 +873,7 @@ class InducedSelfAttention(nnx.Module):
         self.inducing_points = nnx.Param(inducing_init)
 
     @staticmethod
-    def _maybe_norm(norm: nnx.Module | None, x: Array) -> Array:
+    def _maybe_norm(norm: ModuleLike | None, x: Array) -> Array:
         return x if norm is None else norm(x)
 
     def _mab(
@@ -1329,6 +1330,6 @@ def flex_attention(
         diff_mode=diff_mode,
     )
 
-    output = output[:, :l_q, :h, :output_dim]
+    output = cast(Array, output)[:, :l_q, :h, :output_dim]
 
     return output

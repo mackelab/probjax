@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -91,8 +92,13 @@ def _gmm_fwd(x, w, block_group, block_start, block_end, block_m, interpret):
 
 def _gmm_bwd(block_m, interpret, res, dy):
     x, w, block_group, block_start, block_end = res
-    dx = gmm(block_group, dy.astype(x.dtype), jnp.swapaxes(w, 1, 2),
-             block_m=block_m, interpret=interpret)
+    dx = gmm(
+        block_group,
+        dy.astype(x.dtype),
+        jnp.swapaxes(w, 1, 2),
+        block_m=block_m,
+        interpret=interpret,
+    )
     dw = tgmm(block_start, block_end, x, dy, block_m=block_m, interpret=interpret)
     return dx, dw.astype(w.dtype), None, None, None
 
@@ -100,8 +106,14 @@ def _gmm_bwd(block_m, interpret, res, dy):
 _gmm.defvjp(_gmm_fwd, _gmm_bwd)
 
 
-def grouped_matmul(x: Array, w: Array, layout: GroupLayout, *, block_m: int = 64,
-                   interpret: bool | None = None) -> Array:
+def grouped_matmul(
+    x: Array,
+    w: Array,
+    layout: GroupLayout,
+    *,
+    block_m: int = 64,
+    interpret: bool | None = None,
+) -> Array:
     """``[P, K] @ w[e] -> [P, N]`` on the padded block-aligned buffer.
 
     ``x`` must already be in the layout's padded order with zero padding rows
@@ -111,8 +123,15 @@ def grouped_matmul(x: Array, w: Array, layout: GroupLayout, *, block_m: int = 64
         interpret = use_interpret_mode()
     if x.shape[0] != layout.n_padded:
         raise ValueError(f"x has {x.shape[0]} rows, layout expects {layout.n_padded}")
-    return _gmm(x, w.astype(x.dtype), layout.block_expert, layout.block_start,
-                layout.block_end, block_m, interpret)
+    return _gmm(
+        x,
+        w.astype(x.dtype),
+        layout.block_expert,
+        layout.block_start,
+        layout.block_end,
+        block_m,
+        interpret,
+    )
 
 
 def scatter_to_layout(x_sorted: Array, layout: GroupLayout) -> Array:
@@ -158,8 +177,8 @@ def ragged_matmul_hopper(x_sorted: Array, w: Array, group_sizes: Array) -> Array
     return _ragged_mosaic(x_sorted, w, group_sizes)
 
 
-def grouped_backend() -> str:
-    """"mosaic" on Hopper, "triton" on other GPUs (and in interpret mode)."""
+def grouped_backend() -> Literal["mosaic", "triton"]:
+    """ "mosaic" on Hopper, "triton" on other GPUs (and in interpret mode)."""
     return "mosaic" if is_hopper() else "triton"
 
 
@@ -171,7 +190,15 @@ def _swiglu_layout(group_sizes, n_rows, block_m):
 
 
 @functools.partial(jax.custom_vjp, nondiff_argnums=(5, 6))
-def grouped_swiglu(x, w_gate, w_up, w_down, group_sizes, block_m=64, interpret=None):
+def grouped_swiglu(
+    x: Array,
+    w_gate: Array,
+    w_up: Array,
+    w_down: Array,
+    group_sizes: Array,
+    block_m: int = 64,
+    interpret: bool | None = None,
+) -> Array:
     """``(silu(x Wg_e) * (x Wu_e)) Wd_e`` for sorted rows ``x`` of group ``e``.
 
     One custom VJP for the whole expert block that saves only its INPUTS and
@@ -191,11 +218,21 @@ def _resolve_interpret(interpret):
     return use_interpret_mode() if interpret is None else interpret
 
 
-def _gmm_l(xp, w, layout, block_m, interpret):
+def _gmm_l(
+    xp: Array, w: Array, layout: GroupLayout, block_m: int, interpret: bool
+) -> Array:
     return gmm(layout.block_expert, xp, w, block_m=block_m, interpret=interpret)
 
 
-def _grouped_swiglu_fwd(x, w_gate, w_up, w_down, group_sizes, block_m, interpret):
+def _grouped_swiglu_fwd(
+    x: Array,
+    w_gate: Array,
+    w_up: Array,
+    w_down: Array,
+    group_sizes: Array,
+    block_m: int,
+    interpret: bool | None,
+) -> tuple[Array, tuple[Array, ...]]:
     interpret = _resolve_interpret(interpret)
     layout = _swiglu_layout(group_sizes, x.shape[0], block_m)
     xp = scatter_to_layout(x, layout)
@@ -220,20 +257,32 @@ def _grouped_swiglu_bwd(block_m, interpret, res, dy):
     h = (silu * up.astype(jnp.float32)).astype(x.dtype)
 
     dyp = scatter_to_layout(dy, layout)
-    t = functools.partial(tgmm, layout.block_start, layout.block_end,
-                          block_m=block_m, interpret=interpret)
+    t = functools.partial(
+        tgmm, layout.block_start, layout.block_end, block_m=block_m, interpret=interpret
+    )
     dw_down = t(h, dyp)
     dh = _gmm_l(dyp, jnp.swapaxes(w_down, 1, 2), layout, block_m, interpret)
     dh = dh.astype(jnp.float32)
-    dgate = (dh * up.astype(jnp.float32) * sig * (1.0 + gate.astype(jnp.float32) * (1.0 - sig))).astype(x.dtype)
+    dgate = (
+        dh
+        * up.astype(jnp.float32)
+        * sig
+        * (1.0 + gate.astype(jnp.float32) * (1.0 - sig))
+    ).astype(x.dtype)
     dup = (dh * silu).astype(x.dtype)
     dw_gate = t(xp, dgate)
     dw_up = t(xp, dup)
-    dxp = (_gmm_l(dgate, jnp.swapaxes(w_gate, 1, 2), layout, block_m, interpret)
-           + _gmm_l(dup, jnp.swapaxes(w_up, 1, 2), layout, block_m, interpret))
+    dxp = _gmm_l(
+        dgate, jnp.swapaxes(w_gate, 1, 2), layout, block_m, interpret
+    ) + _gmm_l(dup, jnp.swapaxes(w_up, 1, 2), layout, block_m, interpret)
     dx = gather_from_layout(dxp, layout)
-    return (dx, dw_gate.astype(w_gate.dtype), dw_up.astype(w_up.dtype),
-            dw_down.astype(w_down.dtype), None)
+    return (
+        dx,
+        dw_gate.astype(w_gate.dtype),
+        dw_up.astype(w_up.dtype),
+        dw_down.astype(w_down.dtype),
+        None,
+    )
 
 
 grouped_swiglu.defvjp(_grouped_swiglu_fwd, _grouped_swiglu_bwd)

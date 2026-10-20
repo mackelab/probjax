@@ -1,11 +1,13 @@
 """The pure training step: optimizer construction and the init/step kernel."""
 
-from typing import Callable, Literal, NamedTuple, Union
+from typing import Any, Callable, Literal, NamedTuple, Union, cast
 
 import jax
 import jax.numpy as jnp
 import optax
 from jaxtyping import Array
+
+from probjax.utils.typing import PyTree
 
 __all__ = [
     "Schedule",
@@ -62,13 +64,13 @@ class FitState(NamedTuple):
     optimizer parameters, even when EMA is selected for the returned model.
     """
 
-    params: object
-    opt_state: object
-    rng: object
-    step: object
-    ema_params: object = None
-    model_state: object = None
-    stopped: object = False
+    params: PyTree[Array]
+    opt_state: Any
+    rng: Array
+    step: Array
+    ema_params: PyTree[Array] | None = None
+    model_state: Any = None
+    stopped: Array | bool = False
 
 
 class FitInfo(NamedTuple):
@@ -79,7 +81,7 @@ class FitInfo(NamedTuple):
     """
 
     loss: Array
-    metrics: object = None
+    metrics: Any = None
 
 
 class FitKernel(NamedTuple):
@@ -139,18 +141,15 @@ def build_fit_kernel(loss_fn, optimizer, *, ema_decay=None, has_aux=False):
             loss, grads = jax.value_and_grad(loss_fn)(*args)
             model_state, metrics = None, None
         updates, opt_state = optimizer.update(grads, state.opt_state, state.params)
-        params = optax.apply_updates(state.params, updates)
-        ema = (
-            None
-            if ema_decay is None
-            else jax.tree.map(
-                lambda old, new: (ema_decay * old + (1 - ema_decay) * new).astype(
-                    new.dtype
-                ),
+        params = cast(PyTree[Array], optax.apply_updates(state.params, updates))
+        ema = None
+        if ema_decay is not None:
+            decay = float(ema_decay)
+            ema = jax.tree.map(
+                lambda old, new: (decay * old + (1 - decay) * new).astype(new.dtype),
                 state.ema_params,
                 params,
             )
-        )
         return FitState(
             params, opt_state, next_key, state.step + 1, ema, model_state, state.stopped
         ), FitInfo(loss, metrics)

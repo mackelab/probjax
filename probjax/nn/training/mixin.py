@@ -5,6 +5,7 @@ itself works on plain parameter pytrees.
 """
 
 import inspect
+from typing import Any, Callable
 
 from flax import nnx
 from jaxtyping import Array
@@ -41,6 +42,9 @@ class FitMixin:
     * ``_fit_param_filter()``: which variables are trained (default: ``nnx.Param``).
     * ``_fit_callbacks()``: callbacks run in addition to the caller's.
     """
+
+    #: Provided by the model: the per-batch loss the loop minimises.
+    loss: Callable[..., Any]
 
     def _default_fit_kwargs(self) -> dict:
         """Model-family defaults for :func:`fit`, overridable per subclass.
@@ -123,5 +127,6 @@ class FitMixin:
             return_result=True,
             **fit_kwargs,
         )
+        assert isinstance(result, FitResult)
         nnx.update(self, result.params, result.state.model_state)
         return result if want_result else result.losses

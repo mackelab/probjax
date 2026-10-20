@@ -30,6 +30,7 @@ from jax.experimental.pallas import triton as plgpu
 from jax.interpreters import ad
 
 from probjax.utils.guards import is_tracing
+from probjax.utils.jaxutils import where
 
 from ..attention_mask_bias import (
     AttentionBias,
@@ -458,7 +459,7 @@ def mha_forward_kernel(
             else:
                 id_k = None
             mask = mask_fn(span_q, span_k, id_q, id_k)
-            qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
+            qk = where(mask, qk, DEFAULT_MASK_VALUE)
 
         # Scale logits to convert from base-2 to the natural log domain.
         # This is based on the identity: e^x = 2^(x * log2(e)).
@@ -482,7 +483,7 @@ def mha_forward_kernel(
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
-            s_curr = jnp.where(dmask, 0, s_curr / (1 - dropout_rate))
+            s_curr = where(dmask, 0, s_curr / (1 - dropout_rate))
         o_curr = dot(s_curr.astype(v.dtype), v, precision=precision)
         o_next = o_prev_corr + o_curr
         return o_next, m_next, l_next
@@ -501,7 +502,7 @@ def mha_forward_kernel(
     # We keep an unscaled version of o during the scan over seq_len. Scaling it
     # by the last l_i gives us the correct final output. See section 3.1.1 in the
     # FlashAttention-2 paper: https://arxiv.org/pdf/2307.08691.
-    l_i = jnp.where(l_i == 0.0, 1, l_i)
+    l_i = where(l_i == 0.0, 1, l_i)
     o /= l_i[:, None]
 
     if residual_refs:
@@ -591,11 +592,11 @@ def mha_jvp_from_lse_kernel(
             else:
                 id_k = None
             mask = mask_fn(span_q, span_k, id_q, id_k)
-            qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
-            dqk = jnp.where(mask, dqk, 0.0)
+            qk = where(mask, qk, DEFAULT_MASK_VALUE)
+            dqk = where(mask, dqk, 0.0)
 
         if bias_fn_grad is not None:
-            grad_mod = jnp.where(
+            grad_mod = where(
                 qk != DEFAULT_MASK_VALUE,
                 bias_fn_grad(qk_pre_mod, start_b, start_h, span_q, span_k),
                 0.0,
@@ -612,7 +613,7 @@ def mha_jvp_from_lse_kernel(
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
-            p_drop = jnp.where(dmask, 0, p / (1 - dropout_rate))
+            p_drop = where(dmask, 0, p / (1 - dropout_rate))
         else:
             p_drop = p
 
@@ -712,7 +713,7 @@ def mha_forward_jvp_kernel(
             else:
                 id_k = None
             mask = mask_fn(span_q, span_k, id_q, id_k)
-            qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
+            qk = where(mask, qk, DEFAULT_MASK_VALUE)
 
         qk *= LOG2E
         m_curr = qk.max(axis=-1)
@@ -733,7 +734,7 @@ def mha_forward_jvp_kernel(
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
-            s_curr = jnp.where(dmask, 0, s_curr / (1 - dropout_rate))
+            s_curr = where(dmask, 0, s_curr / (1 - dropout_rate))
         o_curr = dot(s_curr.astype(v.dtype), v, precision=precision)
         o_next = o_prev_corr + o_curr
         return o_next, m_next, l_next
@@ -746,7 +747,7 @@ def mha_forward_jvp_kernel(
     else:
         o, m_i, l_i = lax.fori_loop(lower_bound, upper_bound, body_fwd, (o, m_i, l_i))
 
-    l_i = jnp.where(l_i == 0.0, 1, l_i)
+    l_i = where(l_i == 0.0, 1, l_i)
     o /= l_i[:, None]
     lse = m_i + jnp.log2(l_i)
 
@@ -784,11 +785,11 @@ def mha_forward_jvp_kernel(
             else:
                 id_k = None
             mask = mask_fn(span_q, span_k, id_q, id_k)
-            qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
-            dqk = jnp.where(mask, dqk, 0.0)
+            qk = where(mask, qk, DEFAULT_MASK_VALUE)
+            dqk = where(mask, dqk, 0.0)
 
         if bias_fn_grad is not None:
-            grad_mod = jnp.where(
+            grad_mod = where(
                 qk != DEFAULT_MASK_VALUE,
                 bias_fn_grad(qk_pre_mod, start_b, start_h, span_q, span_k),
                 0.0,
@@ -797,6 +798,8 @@ def mha_forward_jvp_kernel(
 
         qk *= LOG2E
         p = jnp.exp2(qk - lse[:, None])
+        row_sum = jnp.sum(dqk * p, axis=-1)
+        dP = p * (dqk - row_sum[:, None])
         if dropout_rate > 0:
             if dropout_mask_ref is not None:
                 dmask = pallas_load(dropout_mask_ref, (slice(None), curr_k_slice))
@@ -805,14 +808,10 @@ def mha_forward_jvp_kernel(
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
-            p_drop = jnp.where(dmask, 0, p / (1 - dropout_rate))
+            p_drop = where(dmask, 0, p / (1 - dropout_rate))
+            dP = where(dmask, 0, dP / (1 - dropout_rate))
         else:
             p_drop = p
-
-        row_sum = jnp.sum(dqk * p, axis=-1)
-        dP = p * (dqk - row_sum[:, None])
-        if dropout_rate > 0:
-            dP = jnp.where(dmask, 0, dP / (1 - dropout_rate))
 
         do_acc = do_acc + dot(dP.astype(v.dtype), v, precision=precision)
         do_acc = do_acc + dot(p_drop.astype(v.dtype), dv, precision=precision)
@@ -1000,7 +999,7 @@ def mha_backward_kernel(
             if mask_fn is not None:
                 id_q = _load_mask_data(id_q_ref, curr_q_slice)
                 mask = mask_fn(span_q, span_k, id_q, id_k)
-                qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
+                qk = where(mask, qk, DEFAULT_MASK_VALUE)
         qk *= LOG2E
         lse = pallas_load(lse_ref, (curr_q_slice,))
         di = pallas_load(delta_ref, (curr_q_slice,))
@@ -1017,8 +1016,8 @@ def mha_backward_kernel(
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
-            p_drop = jnp.where(dmask, 0, p / (1 - dropout_rate))
-            g_drop = jnp.where(dmask, 0, dp_dropped / (1 - dropout_rate))
+            p_drop = where(dmask, 0, p / (1 - dropout_rate))
+            g_drop = where(dmask, 0, dp_dropped / (1 - dropout_rate))
             dp = jnp.zeros((block_q_dkv, block_kv_dkv), dtype=jnp.float32) - di[:, None]
             dp = dp + g_drop
         else:
@@ -1031,7 +1030,7 @@ def mha_backward_kernel(
         if sm_scale != 1.0:
             ds = ds * sm_scale
         if bias_fn_grad:
-            grad_score_mod = jnp.where(
+            grad_score_mod = where(
                 qk != DEFAULT_MASK_VALUE,
                 bias_fn_grad(qk_pre_mod, start_b, start_h, span_q, span_k),
                 0.0,
@@ -1112,7 +1111,7 @@ def mha_backward_kernel(
                     id_k = None
 
                 mask = mask_fn(span_q, span_k, id_q, id_k)
-                qk = jnp.where(mask, qk, DEFAULT_MASK_VALUE)
+                qk = where(mask, qk, DEFAULT_MASK_VALUE)
         qk *= LOG2E
         p = jnp.exp2(qk - lse[:, None])
         dp_dropped = dot(do, v.T)
@@ -1125,7 +1124,7 @@ def mha_backward_kernel(
                 dmask = _dropout_mask_counter(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
-            g_drop = jnp.where(dmask, 0, dp_dropped / (1 - dropout_rate))
+            g_drop = where(dmask, 0, dp_dropped / (1 - dropout_rate))
             dp = jnp.zeros((block_q_dq, block_kv_dq), dtype=jnp.float32) - di[:, None]
             dp = dp + g_drop
         else:
@@ -1137,7 +1136,7 @@ def mha_backward_kernel(
             ds = ds * sm_scale
 
         if bias_fn_grad:
-            grad_score_mod = jnp.where(
+            grad_score_mod = where(
                 qk != DEFAULT_MASK_VALUE,
                 bias_fn_grad(qk_pre_mod, start_b, start_h, span_q, span_k),
                 0.0,
@@ -1243,7 +1242,7 @@ def mha_backward_kernel_split_dkdv(
             if mask_fn is not None:
                 id_q = _load_mask_data(id_q_ref, curr_q_slice)
                 m = mask_fn(span_q, span_k, id_q, id_k)
-                qk = jnp.where(m, qk, DEFAULT_MASK_VALUE)
+                qk = where(m, qk, DEFAULT_MASK_VALUE)
 
         qk *= LOG2E
         lse = pallas_load(lse_ref, (curr_q_slice,))
@@ -1262,9 +1261,9 @@ def mha_backward_kernel_split_dkdv(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
             # p_drop for dV accumulation (forward consistency)
-            p_drop = jnp.where(dmask, 0, p / (1 - dropout_rate))
+            p_drop = where(dmask, 0, p / (1 - dropout_rate))
             # g_drop for softmax Jacobian computation
-            g_drop = jnp.where(dmask, 0, dp_dropped / (1 - dropout_rate))
+            g_drop = where(dmask, 0, dp_dropped / (1 - dropout_rate))
             dp = jnp.zeros((block_q_dkv, block_kv_dkv), dtype=jnp.float32) - di[:, None]
             dp = dp + g_drop
         else:
@@ -1280,7 +1279,7 @@ def mha_backward_kernel_split_dkdv(
         if sm_scale != 1.0:
             ds = ds * sm_scale
         if bias_fn_grad is not None:
-            grad_mod = jnp.where(
+            grad_mod = where(
                 qk != DEFAULT_MASK_VALUE,
                 bias_fn_grad(qk_pre, start_b, start_h, span_q, span_k),
                 0.0,
@@ -1376,7 +1375,7 @@ def mha_backward_kernel_split_dq(
                 else:
                     id_k = None
                 m = mask_fn(span_q, span_k, id_q, id_k)
-                qk = jnp.where(m, qk, DEFAULT_MASK_VALUE)
+                qk = where(m, qk, DEFAULT_MASK_VALUE)
 
         qk *= LOG2E
         p = jnp.exp2(qk - lse[:, None])
@@ -1391,7 +1390,7 @@ def mha_backward_kernel_split_dq(
                     rng_seed, start_b, start_h, span_q, span_k, dropout_rate
                 )
             # g_drop for softmax Jacobian computation
-            g_drop = jnp.where(dmask, 0, dp_dropped / (1 - dropout_rate))
+            g_drop = where(dmask, 0, dp_dropped / (1 - dropout_rate))
             dp = jnp.zeros((block_q_dq, block_kv_dq), dtype=jnp.float32) - di[:, None]
             dp = dp + g_drop
         else:
@@ -1404,7 +1403,7 @@ def mha_backward_kernel_split_dq(
         if sm_scale != 1.0:
             ds = ds * sm_scale
         if bias_fn_grad is not None:
-            grad_mod = jnp.where(
+            grad_mod = where(
                 qk != DEFAULT_MASK_VALUE,
                 bias_fn_grad(qk_pre, start_b, start_h, span_q, span_k),
                 0.0,
@@ -1475,12 +1474,12 @@ def _extract_fwd_data(
 
     # BlockSpecs (not arrays — safe for closures)
     b_spec = None
-    if b_data is not None:
+    if bias is not None and b_data is not None:
         b_spec = bias.get_block_spec(
             q_len=q_seq_len, kv_len=kv_seq_len, block_q=block_q, block_kv=block_k
         )
     q_id_spec = k_id_spec = None
-    if q_id is not None or k_id is not None:
+    if mask is not None and (q_id is not None or k_id is not None):
         q_id_spec, k_id_spec = mask.get_data_block_spec(
             q_seq_len, kv_seq_len, block_q, block_k
         )
@@ -1803,7 +1802,7 @@ def _mha_impl_raw(
         dropout_rate=dropout_rate,
     )
 
-    in_specs = [
+    in_specs: list[pl.BlockSpec | None] = [
         pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
         pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
         pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
@@ -1950,7 +1949,7 @@ def _mha_impl_jvp_from_lse_raw(
         dropout_rate=dropout_rate,
     )
 
-    in_specs = [
+    in_specs: list[pl.BlockSpec | None] = [
         pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
         pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
         pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
@@ -2772,7 +2771,7 @@ def _extract_bwd_data(
 
     # BlockSpecs (not arrays)
     q_data_spec = k_data_spec = None
-    if q_data is not None:
+    if mask is not None and q_data is not None:
         q_data_spec, k_data_spec = mask.get_data_block_spec_backward_pass(
             q_seq_len,
             kv_seq_len,
@@ -2785,7 +2784,7 @@ def _extract_bwd_data(
         )
 
     b_spec_bwd = None
-    if b_data is not None:
+    if bias is not None and b_data is not None:
         b_spec_bwd = bias.get_block_spec_backward(
             q_len=q_seq_len,
             kv_len=kv_seq_len,

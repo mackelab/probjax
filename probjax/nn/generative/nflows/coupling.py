@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Callable, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -59,6 +59,15 @@ class _CouplingMixin:
     unnormalized density for any bijector whose Jacobian is not 1 (RealNVP,
     spline coupling); NICE is unaffected only because its log-det is zero.
     """
+
+    # Provided by the concrete coupling layers.
+    split_index: int
+    split_fn: Callable[[Array], tuple[Array, Array]] | None
+    merge_fn: Callable[[Array, Array], Array] | None
+    context_dim: int | None
+    predict_bij_params: Callable[..., Array]
+    bijector: Callable[..., Any]
+    bijector_inv: Callable[..., tuple[Array, Array]]
 
     def _split(self, x: Array) -> tuple[Array, Array]:
         if x.shape[-1] <= self.split_index:
@@ -234,12 +243,13 @@ class CouplingMLP(_CouplingMixin, nnx.Module):
         )
 
         if init_last_layer_to_zero:
-            if not hasattr(self.conditioner, "layers"):
+            layers = getattr(self.conditioner, "layers", None)
+            if layers is None:
                 raise ValueError(
                     'mlp_cls must expose a "layers" attribute to zero-init its '
                     "last layer; pass init_last_layer_to_zero=False otherwise."
                 )
-            last_kernel = self.conditioner.layers[-1].kernel
+            last_kernel = layers[-1].kernel
             last_kernel[...] = jnp.zeros_like(last_kernel[...])
 
         self._conditioner_accepts_rng = module_accepts_rng(self.conditioner)

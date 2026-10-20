@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental import pallas as pl
 
-from probjax.utils.typing import Array
+from probjax.utils.typing import ArrayLike
 
 # A very negative value used to mask logits safely in float32.
 # Keep consistent with kernels/attention.py
@@ -165,7 +165,7 @@ def fast_blockmask_local_window(
     block_k: int,
     left_window: int,
     right_window: int,
-) -> Array:
+) -> np.ndarray:
     """Fast block mask construction for local window masks.
 
     A (q_block, kv_block) pair is non-empty iff the intervals intersect:
@@ -187,7 +187,7 @@ def fast_blockmask_local_window(
 
 def fast_blockmask_causal(
     *, q_len: int, kv_len: int, block_q: int, block_k: int
-) -> Array:
+) -> np.ndarray:
     """Fast block mask for causal mask (allow k <= q)."""
     num_q_blocks = ceil_div(q_len, block_q)
     num_kv_blocks = ceil_div(kv_len, block_k)
@@ -250,9 +250,10 @@ class KVOffsetInfo(NamedTuple):
 
 
 def query_iterator_indices(
-    block_mask_map: np.ndarray, *, padding: int = 0
+    block_mask_map: ArrayLike, *, padding: int = 0
 ) -> KVOffsetInfo:
     """Per-QBlock iterators over non-empty KV blocks for forward pass."""
+    block_mask_map = np.asarray(block_mask_map)
     num_q_blocks, num_kv_blocks = block_mask_map.shape
     index_offset = np.full((num_q_blocks, num_kv_blocks), padding, dtype=np.int32)
     index_offset_size = np.zeros(shape=(num_q_blocks), dtype=np.int32)

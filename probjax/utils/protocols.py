@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
+import jax.numpy as jnp
 from jaxtyping import Array, ArrayLike
 
 from probjax.utils.typing import RngKey
@@ -12,6 +13,7 @@ __all__ = [
     "TimeDependentFn",
     "WeightFn",
     "ReductionFn",
+    "mean_reduction",
     "LossFn",
     "InterpolationScheduleProtocol",
     "InterpolationFn",
@@ -106,6 +108,11 @@ class ReductionFn(Protocol):
             Reduced array
         """
         ...
+
+
+def mean_reduction(x: Array, *args: Any, **kwargs: Any) -> Array:
+    """Default reduction: the mean of the array."""
+    return jnp.mean(x, *args, **kwargs)
 
 
 class LossFn(Protocol):

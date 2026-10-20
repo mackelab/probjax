@@ -16,6 +16,7 @@ row block's group comes from a global sort.
 from __future__ import annotations
 
 import functools
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -147,7 +148,9 @@ def _tgmm_primitive():
     return make_kernel_primitive(spec, impl=_tgmm_impl)
 
 
-def gmm(block_group: Array, x: Array, w: Array, *, block_m: int, interpret: bool) -> Array:
+def gmm(
+    block_group: Array, x: Array, w: Array, *, block_m: int, interpret: bool
+) -> Array:
     """``[P, K] x [G, K, N] -> [P, N]``, row block ``i`` against ``w[block_group[i]]``.
 
     K and N are zero-padded to a multiple of 16 so every tile is a power of two.
@@ -155,22 +158,36 @@ def gmm(block_group: Array, x: Array, w: Array, *, block_m: int, interpret: bool
     n = w.shape[-1]
     out = shardable_kernel(
         _gmm_primitive(),
-        {"block_group": block_group, "x": _pad_to(x, 1),
-         "w": _pad_to(_pad_to(w.astype(x.dtype), 1), 2)},
+        {
+            "block_group": block_group,
+            "x": _pad_to(x, 1),
+            "w": _pad_to(_pad_to(w.astype(x.dtype), 1), 2),
+        },
         block_m=block_m,
         interpret=interpret,
     )
     return out[:, :n]
 
 
-def tgmm(block_start: Array, block_end: Array, x: Array, dy: Array, *,
-         block_m: int, interpret: bool) -> Array:
+def tgmm(
+    block_start: Array,
+    block_end: Array,
+    x: Array,
+    dy: Array,
+    *,
+    block_m: int,
+    interpret: bool,
+) -> Array:
     """``dw[g] = x[g's blocks]^T @ dy[g's blocks]``: ``[G, K, N]``."""
     k, n = x.shape[1], dy.shape[1]
     out = shardable_kernel(
         _tgmm_primitive(),
-        {"block_start": block_start, "block_end": block_end, "x": _pad_to(x, 1),
-         "dy": _pad_to(dy.astype(x.dtype), 1)},
+        {
+            "block_start": block_start,
+            "block_end": block_end,
+            "x": _pad_to(x, 1),
+            "dy": _pad_to(dy.astype(x.dtype), 1),
+        },
         block_m=block_m,
         interpret=interpret,
     )
@@ -184,8 +201,9 @@ def tgmm(block_start: Array, block_end: Array, x: Array, dy: Array, *,
 # Hopper).  Blackwell has its own kernel in jax and is not wired here.
 # --------------------------------------------------------------------------
 
-_MOSAIC_BLOCK = dict(block_m=128, block_n=128, block_k=64,
-                     max_concurrent_steps=2, grid_block_n=1)
+_MOSAIC_BLOCK: dict[str, Any] = dict(
+    block_m=128, block_n=128, block_k=64, max_concurrent_steps=2, grid_block_n=1
+)
 _MOSAIC_ALIGN = 128
 
 
@@ -200,8 +218,9 @@ def is_hopper() -> bool:
 def _mosaic_ragged_impl(group_sizes, x, w, *, transpose_rhs):
     from jax.experimental.pallas.ops.gpu.ragged_dot_mgpu import ragged_dot
 
-    return ragged_dot(x, w, group_sizes=group_sizes, transpose_rhs=transpose_rhs,
-                      **_MOSAIC_BLOCK)
+    return ragged_dot(
+        x, w, group_sizes=group_sizes, transpose_rhs=transpose_rhs, **_MOSAIC_BLOCK
+    )
 
 
 def _mosaic_transposed_impl(group_sizes, x, dy):
@@ -243,17 +262,23 @@ def _mosaic_transposed_primitive():
     return make_kernel_primitive(spec, impl=_mosaic_transposed_impl)
 
 
-def mosaic_ragged_matmul(group_sizes: Array, x: Array, w: Array, *,
-                         transpose_rhs: bool = False) -> Array:
+def mosaic_ragged_matmul(
+    group_sizes: Array, x: Array, w: Array, *, transpose_rhs: bool = False
+) -> Array:
     """Sorted rows ``[M, K]`` times ``w[g]`` (``[G, K, N]``, or ``[G, N, K]``
     with ``transpose_rhs``) -> ``[M, N]``.  Hopper only."""
     k_axis, n_axis = (2, 1) if transpose_rhs else (1, 2)
     n = w.shape[n_axis]
-    w = _pad_to(_pad_to(w.astype(x.dtype), k_axis, _MOSAIC_ALIGN), n_axis, _MOSAIC_ALIGN)
+    w = _pad_to(
+        _pad_to(w.astype(x.dtype), k_axis, _MOSAIC_ALIGN), n_axis, _MOSAIC_ALIGN
+    )
     out = shardable_kernel(
         _mosaic_ragged_primitive(transpose_rhs),
-        {"group_sizes": group_sizes.astype(jnp.int32),
-         "x": _pad_to(x, 1, _MOSAIC_ALIGN), "w": w},
+        {
+            "group_sizes": group_sizes.astype(jnp.int32),
+            "x": _pad_to(x, 1, _MOSAIC_ALIGN),
+            "w": w,
+        },
         transpose_rhs=transpose_rhs,
     )
     return out[:, :n]
@@ -264,8 +289,10 @@ def mosaic_transposed_matmul(group_sizes: Array, x: Array, dy: Array) -> Array:
     k, n = x.shape[1], dy.shape[1]
     out = shardable_kernel(
         _mosaic_transposed_primitive(),
-        {"group_sizes": group_sizes.astype(jnp.int32),
-         "x": _pad_to(x, 1, _MOSAIC_ALIGN),
-         "dy": _pad_to(dy.astype(x.dtype), 1, _MOSAIC_ALIGN)},
+        {
+            "group_sizes": group_sizes.astype(jnp.int32),
+            "x": _pad_to(x, 1, _MOSAIC_ALIGN),
+            "dy": _pad_to(dy.astype(x.dtype), 1, _MOSAIC_ALIGN),
+        },
     )
     return out[:, :k, :n]

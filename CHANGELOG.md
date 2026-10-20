@@ -119,13 +119,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `SMC`, and the temporal filter/SMC and training kernels are callable
   like every other kernel
 - The packages below are now fully annotated and pass `pyright` cleanly:
-  `probjax.utils`, `probjax.core`, `probjax.inference` and `probjax.stats`
-  (368 pyright errors before, 0 after). The shared `PyTree` alias is no
+  `probjax.utils`, `probjax.core`, `probjax.inference`, `probjax.stats` and
+  `probjax.nn` (368 pyright errors before in the first four, 362 in
+  `probjax.nn`, 0 after). The shared `PyTree` alias is no
   longer a recursive generic (which no type checker could resolve, so
   `PyTree[Array]` rejected every pytree at every call site); it now names
   the leaf type and keeps the containers permissive. `probjax.utils` also
   gains the `Scalar`, `ScalarLike`, `Shape`, `ArrayTree` and `ArrayLikeTree`
   aliases
+- The normalizing-flow bijector configs (`ShiftBijectorConfig`,
+  `AffineBijectorConfig`, the spline, monotone and CDF families) take their
+  natural parameters positionally, matching the `BijectorConfigProtocol`
+  contract they always implemented: `apply(x, loc)` still works, but
+  `apply(x, loc=...)` is no longer accepted
+- `probjax.utils.protocols` gains `mean_reduction`, the default reduction
+  used by the loss builders; `probjax.nn.generative` gains the `SamplerLike`
+  protocol every family's sampler implements
 - **Breaking:** filtering internals re-layered to remove circular imports
   (no aliases): model types live in `filtering.state_space`, observation
   validation in `filtering.observations` (`validate_observations`), and shared

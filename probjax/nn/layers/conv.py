@@ -67,6 +67,11 @@ def _make_conv(
 class _BaseResizeConv(nnx.Module):
     """Shared input checks + resize-then-convolve tail for resize convs."""
 
+    # Provided by the concrete resize convs.
+    conv: nnx.Conv
+    resize_method: str
+    preferred_element_type: DTypeLike | None
+
     def _check_spatial_input(self, shape, num_spatial, spatial_desc):
         if shape[-1] != self.conv.in_features:
             raise ValueError(

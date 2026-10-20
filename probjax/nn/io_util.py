@@ -10,7 +10,7 @@ import time
 import traceback
 import weakref
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Optional, Sequence, Union
+from typing import Any, Callable, Optional, Sequence, Union, cast
 
 import jax
 import jax.numpy as jnp
@@ -38,12 +38,10 @@ def _tree_to_jnp(batch: PyTree[Array], host_device: Device) -> PyTree[Array]:
     return jax.tree_util.tree_map(to_host, batch)
 
 
-
 def _tree_to_host(batch: PyTree[Array]) -> PyTree[Array]:
     """Normalize batch leaves to host-backed arrays."""
 
     return jax.tree_util.tree_map(np.asarray, batch)
-
 
 
 def _shard(batch: PyTree[Array], n_dev: int) -> PyTree[Array]:
@@ -188,7 +186,7 @@ def _prefetch_sharding(iterator, size, sharding, min_fill: float = 0.5):
                 getattr(leaf_sharding, "partition_spec", PartitionSpec()),
             )
             return multihost_utils.host_local_array_to_global_array(
-                np.asarray(x), leaf_sharding.mesh, spec
+                np.asarray(x), cast(Mesh, leaf_sharding.mesh), spec
             )
         return jax.device_put(x, leaf_sharding)
 
@@ -791,8 +789,8 @@ class SimulationDataset:
         return batch, duration
 
     def _build_batched_simulator(self, jit_simulator: bool) -> Callable[[Any], Any]:
-        def single_call(key: RngKey) -> Any:
-            return self._simulator_fn(key)
+        def single_call(keys: RngKey) -> Any:
+            return self._simulator_fn(keys)
 
         if self._simulation_batch_mode == "map":
 
@@ -980,15 +978,15 @@ class DataLoader:
         self._rng = np.random.default_rng(seed) if shuffle else None
 
         # -------- transforms ---------- #
-        self._host_tfns = (
-            list(host_transforms)
-            if isinstance(host_transforms, (list, tuple))
-            else ([host_transforms] if host_transforms else [])
+        self._host_tfns: list[Callable[[Any], Any]] = (
+            [host_transforms]
+            if callable(host_transforms)
+            else (list(host_transforms) if host_transforms else [])
         )
-        self._device_tfns = (
-            list(device_transforms)
-            if isinstance(device_transforms, (list, tuple))
-            else ([device_transforms] if device_transforms else [])
+        self._device_tfns: list[Callable[[Any], Any]] = (
+            [device_transforms]
+            if callable(device_transforms)
+            else (list(device_transforms) if device_transforms else [])
         )
 
         # -------- queues / buffers ----- #
@@ -1314,7 +1312,10 @@ class DataLoader:
                 f"DataLoader worker failed:\n{err.traceback_text()}"
             ) from err.exc
         self._ensure_iter()
-        return next(self._iter_ref)
+        iter_ref = self._iter_ref
+        if iter_ref is None:
+            raise RuntimeError("The data loader is closed.")
+        return next(iter_ref)
 
     def _iter_gen(self, token):
         host_it = self._host_iter()

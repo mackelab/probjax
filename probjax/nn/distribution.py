@@ -120,7 +120,10 @@ class _ModelDistribution(DistributionAPI):
 
     @property
     def context_spec(self):
-        return (self._inputs_spec or {}).get("context")
+        spec = self._inputs_spec
+        if isinstance(spec, dict):
+            return spec.get("context")
+        return None
 
     @property
     def event_shape(self):
@@ -225,7 +228,7 @@ class _ModelDistribution(DistributionAPI):
             inputs=self._resolve_inputs(context, inputs),
         )
 
-    def sample(
+    def sample(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         rng: RngKey,
         shape: tuple[int, ...] = (),
@@ -281,7 +284,7 @@ class _ModelDistribution(DistributionAPI):
             inputs=self._resolve_inputs(context, inputs),
         )
 
-    def rvs(
+    def rvs(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         rng: RngKey,
         shape: tuple[int, ...] = (),
@@ -293,7 +296,7 @@ class _ModelDistribution(DistributionAPI):
         del name
         return self.sample(rng, shape, context=context, **inputs)
 
-    def logpdf(
+    def logpdf(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         value: PyTree[Array],
         *,
@@ -305,7 +308,7 @@ class _ModelDistribution(DistributionAPI):
             inputs=self._resolve_inputs(context, inputs),
         )
 
-    def pdf(
+    def pdf(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         value: PyTree[Array],
         *,

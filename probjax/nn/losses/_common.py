@@ -1,10 +1,13 @@
 """Shared preamble helpers for the score-matching loss builders."""
 
 import jax
+from jaxtyping import Array
 
 
-def _require_rng(rng):
+def _require_rng(rng: Array | None) -> Array:
+    """Return the key, or fail loudly when the loss was called without one."""
     assert rng is not None, "loss_fn does require rngs, pass them to function kwargs."
+    return rng
 
 
 def _sample_eps(rng, shape):

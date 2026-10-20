@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Mapping, Protocol, Tuple, runtime_checkable
+from typing import Any, Callable, Mapping, Protocol, Tuple, cast, runtime_checkable
 
 import jax
 import jax.numpy as jnp
 
 from probjax.utils.functions import split_drift
+from probjax.utils.jaxutils import where
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 # =============================================================================
@@ -114,7 +115,7 @@ class TrainingConfigProtocol(Protocol):
     """
 
     loss_type: str
-    loss_kwargs: Mapping[str, object]
+    loss_kwargs: Mapping[str, Any]
     t_min: float
     t_max: float
 
@@ -144,15 +145,15 @@ class ScheduleAwareModelProtocol(Protocol):
 
     # score / prediction heads
     def score(
-        self, t: ArrayLike, x: PyTree[Array], *args, **kwargs
+        self, t: ArrayLike, x_t: PyTree[Array], *args, **kwargs
     ) -> PyTree[Array]: ...
     def epsilon(
-        self, t: ArrayLike, x: PyTree[Array], *args, **kwargs
+        self, t: ArrayLike, x_t: PyTree[Array], *args, **kwargs
     ) -> PyTree[Array]: ...
     def denoise(
-        self, t: ArrayLike, x: PyTree[Array], *args, **kwargs
+        self, t: ArrayLike, x_t: PyTree[Array], *args, **kwargs
     ) -> PyTree[Array]: ...
-    def v(self, t: ArrayLike, x: PyTree[Array], *args, **kwargs) -> PyTree[Array]: ...
+    def v(self, t: ArrayLike, x_t: PyTree[Array], *args, **kwargs) -> PyTree[Array]: ...
 
 
 @runtime_checkable
@@ -174,7 +175,6 @@ class SolverConfigProtocol(Protocol):
         t_min: float,
         t_max: float,
         num_steps: int | None = None,
-        model: ScheduleAwareModelProtocol | None = None,
     ) -> Array: ...
 
     def build_ode_drift(
@@ -249,7 +249,7 @@ def _apply_state_mask(
     if state_mask is None:
         return tree
     return jax.tree_util.tree_map(
-        lambda leaf: jnp.where(
+        lambda leaf: where(
             _broadcast_mask_to_leaf(state_mask, leaf),
             leaf,
             jnp.zeros_like(leaf),
@@ -309,8 +309,8 @@ class BaseNoiseSchedule(NoiseScheduleProtocol):
             mid = 0.5 * (lo + hi)
             sigma_mid = self.sigma_eff(mid)
             cond = sigma_mid < sigma_target
-            lo = jnp.where(cond, mid, lo)
-            hi = jnp.where(cond, hi, mid)
+            lo = where(cond, mid, lo)
+            hi = where(cond, hi, mid)
             return (lo, hi)
 
         lo, hi = jax.lax.fori_loop(0, self._num_bisect_steps, body_fn, (t_lo, t_hi))
@@ -562,7 +562,7 @@ class CosineNoiseSchedule(BaseNoiseSchedule):
         return (self.s + u) / (1.0 + self.s) * (jnp.pi / 2.0)
 
     def _theta0(self) -> Array:
-        return (self.s / (1.0 + self.s)) * (jnp.pi / 2.0)
+        return jnp.asarray((self.s / (1.0 + self.s)) * (jnp.pi / 2.0))
 
     def _cos_norm(self) -> Array:
         return jnp.maximum(jnp.cos(self._theta0()), self.eps)
@@ -607,7 +607,7 @@ class CosineNoiseSchedule(BaseNoiseSchedule):
         cosine = jnp.cos(theta)
         rate = jnp.pi / ((1.0 + self.s) * span)
         beta = rate * jnp.sin(theta) / jnp.maximum(cosine, jnp.sqrt(self.eps))
-        return jnp.where(cosine > jnp.sqrt(self.eps) * self._cos_norm(), beta, 0.0)
+        return where(cosine > jnp.sqrt(self.eps) * self._cos_norm(), beta, 0.0)
 
     def drift(self, t: ArrayLike, x: PyTree[Array]) -> PyTree[Array]:
         beta_t = self._beta(t)
@@ -656,11 +656,12 @@ class EDMPreconditioning(PreconditioningProtocol):
         self,
         t: ArrayLike,
         *,
-        std0: float,
+        std0: ArrayLike,
         scale_fn: Callable[[ArrayLike], Array],
         std_fn: Callable[[ArrayLike], Array],
     ) -> Array:
         sigma_eff = self._sigma_eff(t, scale_fn, std_fn)
+        std0 = jnp.asarray(std0)
         denom = jnp.sqrt(std0**2 + sigma_eff**2)
         scale = jnp.maximum(jnp.abs(scale_fn(t)), self.eps)
         return 1.0 / (scale * jnp.maximum(denom, self.eps))
@@ -669,11 +670,12 @@ class EDMPreconditioning(PreconditioningProtocol):
         self,
         t: ArrayLike,
         *,
-        std0: float,
+        std0: ArrayLike,
         scale_fn: Callable[[ArrayLike], Array],
         std_fn: Callable[[ArrayLike], Array],
     ) -> Array:
         sigma_eff = self._sigma_eff(t, scale_fn, std_fn)
+        std0 = jnp.asarray(std0)
         denom = jnp.sqrt(std0**2 + sigma_eff**2)
         return (sigma_eff * std0) / jnp.maximum(denom, self.eps)
 
@@ -692,11 +694,12 @@ class EDMPreconditioning(PreconditioningProtocol):
         self,
         t: ArrayLike,
         *,
-        std0: float,
+        std0: ArrayLike,
         scale_fn: Callable[[ArrayLike], Array],
         std_fn: Callable[[ArrayLike], Array],
     ) -> Array | None:
         sigma_eff = self._sigma_eff(t, scale_fn, std_fn)
+        std0 = jnp.asarray(std0)
         denom = std0**2 + sigma_eff**2
         scale = jnp.maximum(jnp.abs(scale_fn(t)), self.eps)
         return std0**2 / (scale * jnp.maximum(denom, self.eps))
@@ -705,7 +708,7 @@ class EDMPreconditioning(PreconditioningProtocol):
         self,
         t: ArrayLike,
         *,
-        std0: float,
+        std0: ArrayLike,
         scale_fn: Callable[[ArrayLike], Array],
         std_fn: Callable[[ArrayLike], Array],
     ) -> Array:
@@ -716,7 +719,7 @@ class EDMPreconditioning(PreconditioningProtocol):
         self,
         t: ArrayLike,
         *,
-        std0: float,
+        std0: ArrayLike,
         scale_fn: Callable[[ArrayLike], Array],
         std_fn: Callable[[ArrayLike], Array],
     ) -> Array:
@@ -730,7 +733,7 @@ class EDMPreconditioning(PreconditioningProtocol):
         self,
         t: ArrayLike,
         *,
-        std0: float,
+        std0: ArrayLike,
         scale_fn: Callable[[ArrayLike], Array],
         std_fn: Callable[[ArrayLike], Array],
     ) -> Array:
@@ -752,7 +755,7 @@ class EDMTrainingConfig(TrainingConfigProtocol):
     """
 
     loss_type: str = "x0"
-    loss_kwargs: Mapping[str, object] = field(default_factory=dict)
+    loss_kwargs: Mapping[str, Any] = field(default_factory=dict)
 
     lognoise_mean: float = -1.2
     lognoise_scale: float = 1.2
@@ -781,7 +784,7 @@ class SigmaEffEDMTrainingConfig(TrainingConfigProtocol):
     schedule: NoiseScheduleProtocol
 
     loss_type: str = "x0"
-    loss_kwargs: Mapping[str, object] = field(default_factory=dict)
+    loss_kwargs: Mapping[str, Any] = field(default_factory=dict)
 
     logsigma_mean: float = -1.2
     logsigma_std: float = 1.2
@@ -816,7 +819,7 @@ class LogSNRTrainingConfig(TrainingConfigProtocol):
     schedule: NoiseScheduleProtocol
 
     loss_type: str = "x0"
-    loss_kwargs: Mapping[str, object] = field(default_factory=dict)
+    loss_kwargs: Mapping[str, Any] = field(default_factory=dict)
 
     t_min: float = 0.0
     t_max: float = 1.0
@@ -853,7 +856,7 @@ class UniformTTrainingConfig(TrainingConfigProtocol):
     """
 
     loss_type: str = "x0"
-    loss_kwargs: Mapping[str, object] = field(default_factory=dict)
+    loss_kwargs: Mapping[str, Any] = field(default_factory=dict)
 
     t_min: float = 1e-3
     t_max: float = 1.0
@@ -933,7 +936,7 @@ class BaseSolverConfig(SolverConfigProtocol):
 
         def linear_coeff(t: ArrayLike) -> Array:
             t_arr = jnp.atleast_1d(t)
-            return model.drift(t_arr, jnp.ones_like(t_arr))
+            return cast(Array, model.drift(t_arr, jnp.ones_like(t_arr)))
 
         def nonlin(t: ArrayLike, x: PyTree[Array]):
             t = jnp.atleast_1d(t)
@@ -948,9 +951,10 @@ class BaseSolverConfig(SolverConfigProtocol):
                 return drift_nonlin
 
             coeff = jnp.asarray(linear_coeff(t))
+            mask_value = state_mask
 
             def _masked_nonlin(xi: Array, ni: Array) -> Array:
-                mask = _broadcast_mask_to_leaf(state_mask, xi)
+                mask = _broadcast_mask_to_leaf(mask_value, xi)
                 mask_f = mask.astype(xi.dtype)
                 coeff_i = coeff.astype(xi.dtype)
                 # split_drift evaluates coeff * x + nonlin; correction removes
@@ -1059,10 +1063,8 @@ class DDIMSolverConfig(BaseSolverConfig):
             t = jnp.atleast_1d(t)
             alpha_t = model.scale_fn(t)
             sigma_t = model.std_fn(t)
-            sign_alpha = jnp.where(alpha_t >= 0, 1.0, -1.0)
-            alpha_safe = jnp.where(
-                jnp.abs(alpha_t) < 1e-12, sign_alpha * 1e-12, alpha_t
-            )
+            sign_alpha = where(alpha_t >= 0, 1.0, -1.0)
+            alpha_safe = where(jnp.abs(alpha_t) < 1e-12, sign_alpha * 1e-12, alpha_t)
             eps_hat = model.epsilon(t, x_t, *args, **kwargs)
 
             x0_hat = jax.tree_util.tree_map(
@@ -1071,8 +1073,8 @@ class DDIMSolverConfig(BaseSolverConfig):
                 eps_hat,
             )
 
-            f = model.drift(t, jnp.ones_like(t))
-            g2 = model.diffusion(t, jnp.ones_like(t)) ** 2
+            f = cast(Array, model.drift(t, jnp.ones_like(t)))
+            g2 = cast(Array, model.diffusion(t, jnp.ones_like(t))) ** 2
             alpha_p = f * alpha_t
             sigma_p = f * sigma_t + g2 / (2 * jnp.maximum(sigma_t, 1e-12))
 
@@ -1139,8 +1141,8 @@ class VSolverConfig(BaseSolverConfig):
             a = model.scale_fn(t)
             s = model.std_fn(t)
             variance = jnp.maximum(a**2 + s**2, 1e-12)
-            f = model.drift(t, jnp.ones_like(t))
-            g2 = model.diffusion(t, jnp.ones_like(t)) ** 2
+            f = cast(Array, model.drift(t, jnp.ones_like(t)))
+            g2 = cast(Array, model.diffusion(t, jnp.ones_like(t))) ** 2
             return f + g2 / (2 * variance), a * g2 / (
                 2 * jnp.maximum(s, 1e-12) * jnp.sqrt(variance)
             )
@@ -1170,8 +1172,10 @@ class VSolverConfig(BaseSolverConfig):
             if state_mask is None:
                 return jax.tree_util.tree_map(lambda v_i: Av * v_i, v_pred)
 
+            mask_value = state_mask
+
             def _masked_nonlin(xi: Array, vi: Array) -> Array:
-                mask = _broadcast_mask_to_leaf(state_mask, xi)
+                mask = _broadcast_mask_to_leaf(mask_value, xi)
                 mask_f = mask.astype(xi.dtype)
                 ax_i = jnp.asarray(Ax, dtype=xi.dtype)
                 av_i = jnp.asarray(Av, dtype=xi.dtype)

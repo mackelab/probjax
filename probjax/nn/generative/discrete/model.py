@@ -162,7 +162,8 @@ class MultinomialDiffusion(GenerativeModel):
         return _one_hot(jnp.asarray(x_t, dtype=jnp.int32), self.num_classes)
 
     def _base_probs_for(self, x_onehot: Array) -> Array:
-        return self.schedule.base_probs.reshape((1,) * (x_onehot.ndim - 1) + (-1,))
+        pi = jnp.asarray(self.schedule.base_probs)
+        return pi.reshape((1,) * (x_onehot.ndim - 1) + (-1,))
 
     def _net_input(self, x_t: Array) -> Array:
         x_onehot = self._as_onehot(x_t)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import typing as tp
+from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
@@ -71,6 +72,14 @@ def _apply_scale_bias(
 
 class _LpNormBase(Module):
     """Shared scale/bias params and input preparation for Lp norm layers."""
+
+    # Provided by the concrete Lp norm layers.
+    p: float
+    epsilon: float
+    dtype: tp.Optional[Dtype]
+    reduction_axes: Axes
+    feature_axes: Axes
+    promote_dtype: Callable[..., Any]
 
     def _init_scale_bias(
         self,

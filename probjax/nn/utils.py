@@ -1,7 +1,7 @@
 import inspect
 import warnings
 from functools import partial
-from typing import Optional, Sequence, Tuple
+from typing import Any, Optional, Sequence, Tuple
 
 import flax.nnx as nnx
 import jax.numpy as jnp
@@ -14,7 +14,7 @@ from probjax.utils.typing import (
 )
 
 # Distinguish an omitted builder from explicit None (which may disable it).
-DEFAULT_MODULE = object()
+DEFAULT_MODULE: Any = object()
 
 
 _RNG_SUPPORT_BY_TYPE: dict[type, bool] = {
@@ -176,7 +176,9 @@ def filter_precision_kwargs(cls: ModuleLikeType, **kwargs) -> dict:
 
 def cast_output(x: ArrayLike, dtype: DTypeLike | None) -> Array:
     """Cast ``x`` to ``dtype`` (a layer's ``preferred_element_type``); no-op for None."""
-    return x if dtype is None else x.astype(dtype)
+    if dtype is None:
+        return jnp.asarray(x)
+    return jnp.asarray(x).astype(dtype)
 
 
 def module_accepts_rng(module) -> bool:

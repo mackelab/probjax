@@ -31,7 +31,7 @@ from probjax.nn.training.kernel import (
     build_fit_kernel,
 )
 from probjax.utils.guards import ensure_int, is_tracing
-from probjax.utils.typing import RngKey
+from probjax.utils.typing import PyTree, RngKey
 
 __all__ = [
     "fit",
@@ -58,7 +58,7 @@ class FitResult:
     losses: Array
     use_ema: bool = False
     info: FitInfo | None = None
-    valid_steps: object = None
+    valid_steps: int | Array | None = None
 
     @property
     def valid(self):
@@ -193,7 +193,7 @@ def _io_callbacks(callbacks, method, *args):
     leaves, tree = jax.tree.flatten(args)
     impls = [
         jax.random.key_impl(x)
-        if hasattr(x, "dtype") and jax.dtypes.issubdtype(x.dtype, jax.dtypes.prng_key)
+        if hasattr(x, "dtype") and jnp.issubdtype(x.dtype, jax.dtypes.prng_key)
         else None
         for x in leaves
     ]
@@ -272,7 +272,7 @@ def fit(
     has_aux: bool = False,
     initial_state: FitState | None = None,
     kernel: FitKernel | None = None,
-) -> Tuple[object, Array] | FitResult:
+) -> Tuple[PyTree[Array], Array] | FitResult:
     """Minimize ``loss_fn`` over ``params`` with minibatch gradient descent.
 
     Args:
@@ -410,7 +410,7 @@ def fit(
                 "instead, or drop batch_size."
             )
         stream = _BatchStream(batch, "batch")
-        first = _as_device_batch(stream.peek())
+        first: object = _as_device_batch(stream.peek())
         spec = _batch_spec(first)
         leaves = jax.tree.leaves(first)
         if not leaves:
@@ -430,6 +430,7 @@ def fit(
         )
         fetch = _stream_fetch(stream, spec)
     else:
+        first = None
         batch = _as_device_batch(batch)
         leaves = jax.tree.leaves(batch)
         if not leaves:
@@ -488,7 +489,7 @@ def fit(
         raise ValueError(
             "Use callback_mode='io' for explicit Python callbacks inside JIT."
         )
-    example = first if is_batch_stream(batch) else batch
+    example = first if first is not None else batch
     info_spec = jax.eval_shape(kernel.step, state.rng, state, example)[1]
     if not isinstance(info_spec, FitInfo) or info_spec.loss.shape != ():
         raise ValueError("kernel.step must return FitInfo with a scalar loss.")

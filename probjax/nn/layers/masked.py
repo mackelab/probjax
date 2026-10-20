@@ -3,6 +3,8 @@ import jax.numpy as jnp
 from flax import nnx
 from jax.typing import ArrayLike
 
+from probjax.utils.jaxutils import where
+
 
 class MaskedLinear(nnx.Linear):
     def __init__(
@@ -22,7 +24,7 @@ class MaskedLinear(nnx.Linear):
 
     def __call__(self, inputs, rng: jax.Array | None = None):
         del rng
-        kernel = jnp.where(self.mask[...], self.kernel[...], 0.0)
+        kernel = where(self.mask[...], self.kernel[...], 0.0)
         bias = self.bias[...] if self.bias else None
 
         inputs, kernel, bias = self.promote_dtype(

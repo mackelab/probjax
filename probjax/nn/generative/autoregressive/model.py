@@ -25,6 +25,7 @@ from probjax.nn.generative.base import GenerativeModel
 from probjax.nn.generative.standardize import StandardizingMixin
 from probjax.nn.inputs import context_only
 from probjax.utils.guards import is_tracing
+from probjax.utils.jaxutils import where
 
 __all__ = [
     "Autoregressive",
@@ -119,7 +120,7 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
         self,
         input_dim: int,
         family: Any = None,
-        rngs: nnx.Rngs = None,
+        rngs: Optional[nnx.Rngs] = None,
         *,
         conditioner: Optional[ARConditionerConfig] = None,
         context_features: Optional[int] = None,
@@ -289,11 +290,11 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
             new = draw[..., None]
             if prefix_z is not None:
                 given = prefix_z[..., i][..., None]
-                new = jnp.where(i < prefix_len, given, new)
+                new = where(i < prefix_len, given, new)
             # Only dimension i is written; the mask guarantees the parameters
             # used here depended on x_<i alone.
             onehot = jnp.arange(self.input_dim) == i
-            return jnp.where(onehot, new, carry), None
+            return where(onehot, new, carry), None
 
         x, _ = jax.lax.scan(step, x, (jnp.arange(self.input_dim), keys))
         return self._unstandardize(x) if self.standardize else x
@@ -309,9 +310,9 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
         """
         dtype = self.family.event_dtype
         family = self.family
-        feature_width = self.conditioner.feature_width
+        feature_width = self.conditioner.feature_width  # type: ignore
         input_dim = self.input_dim
-        self.conditioner.init_decode(sample_shape, dtype=jnp.float32)
+        self.conditioner.init_decode(sample_shape, dtype=jnp.float32)  # type: ignore
         carry0 = (
             jnp.zeros(sample_shape + (input_dim,), dtype=dtype),
             # Encoder input space is floating point (one-hot for discrete).
@@ -336,7 +337,7 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
             draw = family.rvs(keys[i], natural).astype(dtype)
             value = draw
             if prefix_z is not None:
-                value = jnp.where(i < prefix_len, prefix_z[..., i], value)
+                value = where(i < prefix_len, prefix_z[..., i], value)
             x = x.at[..., i].set(value)
             encoded = family.encode(value)
             prev_feat = encoded[..., None] if feature_width == 1 else encoded
@@ -356,6 +357,7 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
         *,
         dtype=None,
         inputs_spec=None,
+        **kwargs,
     ):
         if event_spec is None:
             event_spec = (self.input_dim,)
@@ -398,20 +400,14 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
             event_spec = (self.input_dim,)
 
         def make_logpdf_fn(graphdef):
-            if inputs_spec is None:
-
-                def logpdf_fn(current_state, value):
-                    model = nnx.merge(graphdef, current_state)
+            def logpdf_fn(current_state, value, inputs=None):
+                model = nnx.merge(graphdef, current_state)
+                if inputs is None:
                     return jax.vmap(model._logpdf)(value)
-
-            else:
-
-                def logpdf_fn(current_state, value, inputs):
-                    model = nnx.merge(graphdef, current_state)
-                    context = context_only(inputs, "Autoregressive")
-                    return jax.vmap(
-                        lambda item, cond: model._logpdf(item, context=cond)
-                    )(value, context)
+                context = context_only(inputs, "Autoregressive")
+                return jax.vmap(lambda item, cond: model._logpdf(item, context=cond))(
+                    value, context
+                )
 
             return logpdf_fn
 

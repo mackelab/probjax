@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import functools
-from typing import Callable
+from typing import Callable, cast
 
 import jax
 import jax.numpy as jnp
@@ -611,17 +611,20 @@ def kde_density(
     """
     query_b, data_b, w = _prepare_kde_inputs(query, data, weights)
     v = w[..., None]
-    density = kernel_mv(
-        query_b,
-        data_b,
-        v,
-        params,
-        kernel_fn,
-        kernel_vjp_fn,
-        block_q=block_q,
-        block_k=block_k,
-        block_o=1,
-        interpret=interpret,
+    density = cast(
+        Array,
+        kernel_mv(
+            query_b,
+            data_b,
+            v,
+            params,
+            kernel_fn,
+            kernel_vjp_fn,
+            block_q=block_q,
+            block_k=block_k,
+            block_o=1,
+            interpret=interpret,
+        ),
     )[..., 0]
 
     density = density * jnp.asarray(normalizer, dtype=density.dtype)

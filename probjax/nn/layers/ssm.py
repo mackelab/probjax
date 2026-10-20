@@ -10,7 +10,7 @@ from probjax.nn.sharding import BATCH, constrain, replicate
 from probjax.nn.utils import (
     filter_precision_kwargs,
 )
-from probjax.utils.typing import DTypeLike, PrecisionLike
+from probjax.utils.typing import ArrayLike, DTypeLike, PrecisionLike
 
 
 @jax.vmap
@@ -21,7 +21,7 @@ def binary_operator_diag(q_i, q_j):
     return A_j * A_i, A_j * b_i + b_j
 
 
-def matrix_init(key, shape, dtype=jnp.float32, normalization=1):
+def matrix_init(key, shape, dtype=jnp.float32, normalization: ArrayLike = 1.0):
     return jax.random.normal(key=key, shape=shape, dtype=dtype) / normalization
 
 
@@ -256,7 +256,9 @@ class MambaCell(RecurrentCell):
             + jnp.log(dt_min)
         )
         dt = jnp.maximum(dt, dt_init_floor)
-        self.to_delta.bias[...] = dt + jnp.log(-jnp.expm1(-dt))
+        bias = self.to_delta.bias
+        assert bias is not None, "to_delta must be built with a bias."
+        bias[...] = dt + jnp.log(-jnp.expm1(-dt))
 
     def __call__(self, inputs: jax.Array, *, rng: jax.Array | None = None) -> jax.Array:
         del rng
