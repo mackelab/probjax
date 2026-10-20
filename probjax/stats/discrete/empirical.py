@@ -9,12 +9,11 @@ mass on observed data points.
 from typing import Any, Optional, Tuple
 
 import jax.numpy as jnp
-import numpy as np
 from jax import random
 
 from probjax.stats.base import rv_discrete, rv_discrete_frozen
 from probjax.stats.constraints import simplex
-from probjax.utils.typing import Array, ArrayLike, RngKey
+from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["empirical", "empirical_frozen"]
 
@@ -130,7 +129,7 @@ class empirical(rv_discrete):
             weights = _default_weights(values, weights)
         weights = jnp.asarray(weights)
         values = jnp.asarray(values)
-        idx = random.categorical(rng, weights, int(np.prod(shape)))
+        idx = random.categorical(rng, weights, shape=shape)
         return values[idx]
 
     @classmethod
@@ -183,55 +182,9 @@ class empirical(rv_discrete):
 
 
 class empirical_frozen(rv_discrete_frozen):
-    """Frozen Empirical distribution."""
+    """Frozen Empirical distribution.
 
-    def __init__(self, dist, values, weights=None, **kwds):
-        super().__init__(dist, values=values, weights=weights, **kwds)
-        self.values = values
-        self.weights = weights
-
-    def pmf(self, x: ArrayLike):
-        """Probability mass function of the frozen Empirical distribution."""
-        return self.dist.pmf(x, self.values, self.weights, **self.kwds)
-
-    def logpmf(self, x: ArrayLike):
-        """Log probability mass function of the frozen Empirical distribution."""
-        return self.dist.logpmf(x, self.values, self.weights, **self.kwds)
-
-    def cdf(self, x: ArrayLike):
-        """Cumulative distribution function of the frozen Empirical distribution."""
-        return self.dist.cdf(x, self.values, self.weights, **self.kwds)
-
-    def ppf(self, q: ArrayLike):
-        """Percent point function of the frozen Empirical distribution."""
-        return self.dist.ppf(q, self.values, self.weights, **self.kwds)
-
-    def rvs(
-        self,
-        rng: RngKey,
-        shape: Tuple[int, ...] = (),
-        name: Optional[str] = None,
-        **kwargs: Any,
-    ) -> Array:
-        """Random variates of the frozen Empirical distribution."""
-        return jnp.asarray(self._bind_rvs(rng, shape=shape, name=name, **kwargs))
-
-    def mean(self):
-        """Mean of the frozen Empirical distribution."""
-        return self.dist.mean(self.values, self.weights, **self.kwds)
-
-    def var(self):
-        """Variance of the frozen Empirical distribution."""
-        return self.dist.var(self.values, self.weights, **self.kwds)
-
-    def entropy(self):
-        """Entropy of the frozen Empirical distribution."""
-        return self.dist.entropy(self.values, self.weights, **self.kwds)
-
-    def mode(self):
-        """Mode of the frozen Empirical distribution."""
-        return self.dist.mode(self.values, self.weights, **self.kwds)
-
-    def support(self):
-        """Get the support of the frozen Empirical distribution."""
-        return self.dist.support(self.values, self.weights, **self.kwds)
+    The methods come from :class:`~probjax.stats.base.rv_discrete_frozen`,
+    which calls back into :class:`empirical` with the frozen ``values`` and
+    ``weights``.
+    """

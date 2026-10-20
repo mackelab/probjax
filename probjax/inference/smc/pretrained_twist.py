@@ -33,8 +33,6 @@ from typing import Any, Callable, NamedTuple, Optional
 
 import jax
 import jax.numpy as jnp
-from blackjax.smc.ess import ess
-from blackjax.smc.resampling import systematic
 
 from probjax.inference.base import SMCResult
 from probjax.inference.particles import normalize_log_weights, take_batch
@@ -42,6 +40,8 @@ from probjax.inference.smc._utils import (
     log_weighted_mean_exp,
     random_like,
 )
+from probjax.inference.smc.ess import ess
+from probjax.inference.smc.resampling import systematic
 from probjax.nn.export import normalize_spec
 from probjax.nn.generative.diffusion.twists import (
     DenoisedPotentialTwist,
