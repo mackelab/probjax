@@ -25,6 +25,7 @@ from probjax.inference.filtering.smoothing import (
 )
 from probjax.utils.guards import has_attrs
 from probjax.utils.jaxutils import (
+    leading_dim,
     nested_checkpoint_scan,
 )
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
@@ -131,7 +132,7 @@ def _extract_pred_covariance(infos: Any) -> Array:
 
 
 def _trace_ts(trace: FilteringTrace) -> Array:
-    num_states = jax.tree_util.tree_leaves(trace.states)[0].shape[0]
+    num_states = leading_dim(trace.states)
     if trace.ts.shape[0] == num_states + 1:
         return trace.ts[1:]
     return trace.ts

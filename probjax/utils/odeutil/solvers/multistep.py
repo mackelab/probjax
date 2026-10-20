@@ -13,40 +13,46 @@ from probjax.utils.odeutil.solvers.base import (
 from probjax.utils.solver import newton_raphson
 from probjax.utils.typing import Array, ArrayLike, Callable
 
+# Coefficient tables (not initialized at import).
+_AB_COEFFS: dict[int, list[float]] = {
+    1: [1.0],  # Euler
+    2: [3 / 2, -1 / 2],
+    3: [23 / 12, -16 / 12, 5 / 12],
+    4: [55 / 24, -59 / 24, 37 / 24, -9 / 24],
+}
+
+# Adams–Moulton (implicit) predictor-corrector coefficients
+_AM_COEFFS: dict[int, list[float]] = {
+    1: [1.0],  # Implicit Euler (trapezoid has k=2)
+    2: [1 / 2, 1 / 2],  # Trapezoid: 0.5*f_{n+1} + 0.5*f_n
+    3: [5 / 12, 2 / 3, -1 / 12],
+    4: [3 / 8, 19 / 24, -5 / 24, 1 / 24],
+}
+
+# Backward Differentiation (BDF) coefficients for y_{n+1} - sum a_j y_{n-j} = h * b * f_{n+1}
+_BDF_A: dict[int, list[float]] = {
+    1: [1.0],  # y_{n+1} - y_n = h f_{n+1}
+    2: [1.0, -4 / 3, 1 / 3],
+    3: [1.0, -18 / 11, 9 / 11, -2 / 11],
+}
+_BDF_B: dict[int, float] = {1: 1.0, 2: 2 / 3, 3: 6 / 11}
+
 
 # Coefficient functions (not initialized at import)
 def get_ab_coeffs(order: int, dtype) -> Array:
-    coeffs = {
-        1: [1.0],
-        2: [3 / 2, -1 / 2],
-        3: [23 / 12, -16 / 12, 5 / 12],
-        4: [55 / 24, -59 / 24, 37 / 24, -9 / 24],
-    }
-    return jnp.array(coeffs[order], dtype=dtype)
+    return jnp.array(_AB_COEFFS[order], dtype=dtype)
 
 
 def get_am_coeffs(order: int, dtype) -> Array:
-    coeffs = {
-        1: [1.0],
-        2: [1 / 2, 1 / 2],
-        3: [5 / 12, 2 / 3, -1 / 12],
-        4: [3 / 8, 19 / 24, -5 / 24, 1 / 24],
-    }
-    return jnp.array(coeffs[order], dtype=dtype)
+    return jnp.array(_AM_COEFFS[order], dtype=dtype)
 
 
 def get_bdf_a(order: int, dtype) -> Array:
-    coeffs = {
-        1: [1.0],
-        2: [1.0, -4 / 3, 1 / 3],
-        3: [1.0, -18 / 11, 9 / 11, -2 / 11],
-    }
-    return jnp.array(coeffs[order], dtype=dtype)
+    return jnp.array(_BDF_A[order], dtype=dtype)
 
 
 def get_bdf_b(order: int) -> float:
-    coeffs = {1: 1.0, 2: 2 / 3, 3: 6 / 11}
-    return coeffs[order]
+    return _BDF_B[order]
 
 
 # ============================================================================
@@ -67,43 +73,12 @@ class LMSInfo(ODEInfo):
 
 
 # ============================================================================
-# Adams–Bashforth coefficients (constant step) - templates (will be cast to dtype)
-# ============================================================================
-_AB_COEFFS_TEMPLATE: dict[int, list[float]] = {
-    1: [1.0],  # Euler
-    2: [3 / 2, -1 / 2],
-    3: [23 / 12, -16 / 12, 5 / 12],
-    4: [55 / 24, -59 / 24, 37 / 24, -9 / 24],
-}
-
-# Adams–Moulton (implicit) predictor-corrector coefficients
-_AM_COEFFS_TEMPLATE: dict[int, list[float]] = {
-    1: [1.0],  # Implicit Euler (trapezoid has k=2)
-    2: [1 / 2, 1 / 2],  # Trapezoid: 0.5*f_{n+1} + 0.5*f_n
-    3: [5 / 12, 2 / 3, -1 / 12],
-    4: [3 / 8, 19 / 24, -5 / 24, 1 / 24],
-}
-
-# Backward Differentiation (BDF) coefficients for y_{n+1} - sum a_j y_{n-j} = h * b * f_{n+1}
-_BDF_A_TEMPLATE: dict[int, list[float]] = {
-    1: [1.0],  # y_{n+1} - y_n = h f_{n+1}
-    2: [1.0, -4 / 3, 1 / 3],
-    3: [1.0, -18 / 11, 9 / 11, -2 / 11],
-}
-_BDF_B: dict[int, float] = {1: 1.0, 2: 2 / 3, 3: 6 / 11}
-
-
-# ============================================================================
 # Utilities
 # ============================================================================
-def _ensure_array(x: ArrayLike) -> Array:
-    return jnp.asarray(x)
-
-
 def init_lms(t0: ArrayLike, y0: ArrayLike, *args, drift: Callable) -> LMSState:
     """Initialize Linear Multistep state."""
-    t0_arr = _ensure_array(t0)
-    y0_arr = _ensure_array(y0)
+    t0_arr = jnp.asarray(t0)
+    y0_arr = jnp.asarray(y0)
     f0 = drift(t0_arr, y0_arr, *args)
     return LMSState(
         t0=t0_arr, y0=y0_arr, f0=f0, hist_t=[t0_arr], hist_f=[f0], hist_y=[y0_arr]

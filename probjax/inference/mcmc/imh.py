@@ -15,6 +15,7 @@ from probjax.inference.adaptation import compose_adaptors
 from probjax.inference.base import Kernel, Warmup, WarmupResult
 from probjax.inference.mcmc.adaptation import covariance_adaptor, mean_adaptor
 from probjax.inference.mcmc.base import MarkovKernelAPI, sample_kernel
+from probjax.utils.jaxutils import leading_dim
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 
@@ -320,7 +321,7 @@ def neural_imh_warmup(
             fit_data = _concatenate_data(data, collected)
             fit_weights = collected_weights
             if data is not None:
-                num_seed = jax.tree.leaves(data)[0].shape[0]
+                num_seed = leading_dim(data)
                 fit_weights = jnp.concatenate((jnp.ones(num_seed), fit_weights))
             round_losses = proposal.fit(
                 fit_key,

@@ -11,6 +11,7 @@ from probjax.inference.smc.ess import ess
 from probjax.inference.smc.resampling import (
     resample_systematic,
 )
+from probjax.utils.jaxutils import leading_dim
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 
@@ -33,7 +34,7 @@ def init(
     log_weights: Optional[ArrayLike] = None,
 ) -> ParticleFilterState:
     # Particles may be a pytree with a leading particle axis.
-    num_particles = jax.tree.leaves(particles)[0].shape[0]
+    num_particles = leading_dim(particles)
     if log_weights is None:
         weights = jnp.full((num_particles,), fill_value=-jnp.log(num_particles))
     else:

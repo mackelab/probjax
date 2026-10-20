@@ -13,6 +13,7 @@ from blackjax.smc.waste_free import waste_free_smc as _waste_free_strategy
 from probjax.inference.base import Kernel
 from probjax.inference.smc.base import make_mcmc_adapter
 from probjax.inference.smc.resampling import systematic
+from probjax.utils.jaxutils import leading_dim
 from probjax.utils.typing import RngKey
 
 
@@ -143,7 +144,7 @@ def pretuned_smc(
         kwargs["target_ess"] = target_ess
 
     def init(particles: Any) -> Any:
-        if jax.tree.leaves(particles)[0].shape[0] != num_particles:
+        if leading_dim(particles) != num_particles:
             raise ValueError("num_particles must match the initial population.")
         return inner_kernel_tuning.StateWithParameterOverride(
             blackjax.tempered_smc.init(particles), dict(mcmc_parameters)

@@ -53,6 +53,26 @@ def _resolve_partial_eval_jaxpr_nounits() -> Callable:
 partial_eval_jaxpr_nounits = _resolve_partial_eval_jaxpr_nounits()
 
 
+def _resolve_pjit_p() -> Any:
+    """Find the pjit primitive; it moved between JAX releases."""
+    try:
+        pjit_mod = importlib.import_module("jax.experimental.pjit")
+    except ImportError:
+        pjit_mod = None
+
+    primitive = getattr(pjit_mod, "pjit_p", None)
+    if primitive is not None:
+        return primitive
+    # JAX 0.7+
+    from jax._src.pjit import jit_p
+
+    return jit_p
+
+
+#: The ``pjit`` primitive, wherever the installed JAX keeps it.
+pjit_p = _resolve_pjit_p()
+
+
 _progress_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="progress"
 )
@@ -348,6 +368,16 @@ def where(condition: ArrayLike, x: ArrayLike, y: ArrayLike) -> Array:
     form, and the union otherwise poisons every downstream expression.
     """
     return jnp.where(condition, x, y)
+
+
+def leading_dim(tree: PyTree) -> Any:
+    """The size of the leading axis of a pytree's first leaf.
+
+    For a batch of particles, samples or states, the first leaf carries the
+    batch axis. The value is returned unconverted, so it stays usable under
+    JAX's symbolic shapes.
+    """
+    return jax.tree_util.tree_leaves(tree)[0].shape[0]
 
 
 def prepend_to_trace(initial: PyTree, trace: PyTree) -> PyTree:

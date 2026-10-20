@@ -1,7 +1,6 @@
-import importlib
 import io
 import re
-from typing import Any, Callable, Sequence, cast
+from typing import Any, Callable, Sequence
 
 import jax.numpy as jnp
 import networkx as nx
@@ -12,20 +11,10 @@ except ImportError:  # IPython is optional
     SVG = None
     display = None
 
-# The pjit primitive moved between JAX versions.
-try:
-    pjit_mod = importlib.import_module("jax.experimental.pjit")
-except ImportError:
-    pjit_mod = None
+from jax.extend.core import Jaxpr, Literal
 
-pjit_p = getattr(cast(Any, pjit_mod), "pjit_p", None)
-if pjit_p is None:
-    # JAX 0.7+
-    from jax._src.pjit import jit_p as pjit_p
-
-from jax.extend.core import Jaxpr, Literal  # noqa: E402
-
-from probjax.core.custom_primitives.random_variable import rv_p  # noqa: E402
+from probjax.core.custom_primitives.random_variable import rv_p
+from probjax.utils.jaxutils import pjit_p
 
 COMPUTE_GRAPH_NODE_STYLES = {
     "const": dict(

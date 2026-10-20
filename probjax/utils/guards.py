@@ -14,7 +14,6 @@ from numbers import Integral
 from typing import Any, TypeGuard, cast
 
 import jax
-import jax.numpy as jnp
 from jax._src import core as jax_core
 
 from probjax.utils.typing import Array, Device
@@ -114,13 +113,6 @@ def ensure_tuple(
     return items
 
 
-def ensure_array(name: str, value: Any) -> Array:
-    """Require a non-None param and return it as an array."""
-    if value is None:
-        raise ValueError(f"{name} must be provided.")
-    return jnp.asarray(value)
-
-
 def call_if_callable(fn: Any, *args: Any, **kwargs: Any) -> Any:
     """Call ``fn(*args, **kwargs)`` if callable, else return ``fn``."""
     return fn(*args, **kwargs) if callable(fn) else fn
@@ -129,13 +121,6 @@ def call_if_callable(fn: Any, *args: Any, **kwargs: Any) -> Any:
 def is_tracing(x: Any) -> bool:
     """True if ``x`` is a JAX tracer (staged value inside jit/vmap/grad)."""
     return isinstance(x, jax_core.Tracer)
-
-
-def as_concrete_bool(x: Any) -> bool:
-    """``bool(x)`` guarded against tracers; raises a clear error if staged."""
-    if is_tracing(x):
-        raise ValueError(f"Expected a concrete value, got tracer {x!r}.")
-    return bool(x)
 
 
 def normalize_rng(rng: Any) -> Array:

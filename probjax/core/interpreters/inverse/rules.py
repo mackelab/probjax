@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import importlib
 from typing import Any, Callable, Sequence, cast
 
 import jax
@@ -35,20 +34,6 @@ from probjax.core.registry import (
     register_univariate_inverse,
 )
 from probjax.utils.guards import is_tracing
-
-# =============================================================================
-# pjit primitive import (varies by JAX version)
-# =============================================================================
-
-try:
-    pjit_mod = importlib.import_module("jax.experimental.pjit")
-except ImportError:
-    pjit_mod = None
-
-pjit_p = getattr(cast(Any, pjit_mod), "pjit_p", None)
-if pjit_p is None:
-    # JAX 0.7+
-    from jax._src.pjit import jit_p as pjit_p
 
 # =============================================================================
 # Helper functions for inverse computation

@@ -344,25 +344,6 @@ def build_rk4_tablau(dtype: jnp.dtype):
     return c, A, b_sol, b_error, None
 
 
-# RK4(3) adaptive method
-def build_rk43_tablau(dtype: jnp.dtype):
-    c = jnp.array([0.0, 0.5, 0.75, 1.0], dtype=dtype)
-    A = jnp.array(
-        [
-            [0.0, 0.0, 0.0, 0.0],
-            [0.5, 0.0, 0.0, 0.0],
-            [0.0, 0.75, 0.0, 0.0],
-            [2.0 / 9.0, 1.0 / 3.0, 4.0 / 9.0, 0.0],
-        ],
-        dtype=dtype,
-    )
-    b_sol = jnp.array([2.0 / 9.0, 1.0 / 3.0, 4.0 / 9.0, 0.0], dtype=dtype)
-    b_error = jnp.array([7.0 / 24.0, 0.25, 1.0 / 3.0, 1.0 / 8.0], dtype=dtype)
-    b_mid = None
-
-    return c, A, b_sol, b_error, b_mid
-
-
 def build_ssprk4_tablau(dtype: jnp.dtype):
     c = jnp.array([0.0, 0.5, 0.5, 1.0], dtype=dtype)
     A = jnp.array(
@@ -418,7 +399,6 @@ def build_rk38_tablau(dtype: jnp.dtype):
 
 
 rk4 = build_rk_method("rk4", build_rk4_tablau, last_equals_next=True)
-rk43 = build_rk_method("rk43", build_rk43_tablau, last_equals_next=True)
 ssprk4 = build_rk_method("ssprk4", build_ssprk4_tablau, last_equals_next=True)
 ralston4 = build_rk_method("ralston4", build_ralston4_tablau, last_equals_next=True)
 rk38 = build_rk_method("rk38", build_rk38_tablau, last_equals_next=True)

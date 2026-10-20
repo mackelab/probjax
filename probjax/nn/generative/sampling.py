@@ -24,6 +24,7 @@ from probjax.nn.export import (
     zeros_from_spec,
 )
 from probjax.utils.functions import generic_drift, split_drift
+from probjax.utils.jaxutils import leading_dim
 from probjax.utils.odeint import odeint
 from probjax.utils.sdeint import sdeint
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
@@ -320,7 +321,7 @@ def make_sde_sample_fn(
         )
 
     def sample_fn(current_state, rng, initial, *rest):
-        batch_size = jax.tree.leaves(initial)[0].shape[0]
+        batch_size = leading_dim(initial)
         keys = jax.random.split(rng, batch_size)
         in_axes = (None, 0, 0, 0) if with_inputs else (None, 0, 0)
         result = jax.vmap(one_sample, in_axes=in_axes)(
