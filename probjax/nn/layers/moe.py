@@ -10,7 +10,7 @@ from typing import Literal
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from flax.typing import Dtype, Initializer
+from flax.typing import Initializer
 
 from probjax.nn.layers.grouped_matmul import (
     grouped_backend,
