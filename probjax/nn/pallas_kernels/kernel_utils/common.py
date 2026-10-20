@@ -157,6 +157,18 @@ def ceil_div(a: int, b: int) -> int:
     return -(-int(a) // int(b))
 
 
+def pad_to_multiple(x: jax.Array, axis: int, multiple: int) -> jax.Array:
+    """Zero-pad ``x`` along ``axis`` up to a multiple of ``multiple``."""
+    if multiple <= 0:
+        raise ValueError(f"multiple must be > 0, got {multiple}.")
+    rem = -x.shape[axis] % multiple
+    if rem == 0:
+        return x
+    pads = [(0, 0)] * x.ndim
+    pads[axis] = (0, rem)
+    return jnp.pad(x, pads)
+
+
 def fast_blockmask_local_window(
     *,
     q_len: int,

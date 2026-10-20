@@ -43,6 +43,7 @@ from probjax.nn.generative.nflows.autoregressive import AutoregressiveTransforme
 from probjax.nn.generative.nflows.config import (
     WidthRule,
     _bin_positions,
+    _component_offsets,
     _knot_slopes,
     _positive,
     _resolved_model_dim,
@@ -340,7 +341,7 @@ class ARFamily:
         the first step, at no cost to the neutral density being sensible.
         """
         dist = mixture_kernel if kernel == "norm" else logistic_mixture_kernel
-        offsets = jnp.linspace(-spread, spread, num_components)
+        offsets = _component_offsets(num_components, spread)
         return cls(
             dist,
             hyper={"num_components": num_components},

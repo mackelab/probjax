@@ -20,6 +20,7 @@ from jax.experimental import pallas as pl
 
 from ..kernel_utils import (
     get_dot_precision,
+    pad_to_multiple,
     pallas_call_compat,
     use_interpret_mode,
 )
@@ -917,13 +918,7 @@ _mamba_scan_op.defvjp(_mamba_scan_op_fwd, _mamba_scan_op_bwd)
 
 def _pad_to_multiple(x: jax.Array, *, divisor: int, axis: int) -> jax.Array:
     """Pads the variable `x` to have size along `axis` divisible by `divisor`."""
-    if x.shape[axis] % divisor == 0:
-        return x
-    n = divisor - x.shape[axis] % divisor
-    pad_shape = list(x.shape)
-    pad_shape[axis] = n
-    zeros = jnp.zeros(pad_shape, dtype=x.dtype)
-    return jnp.concatenate([x, zeros], axis=axis)
+    return pad_to_multiple(x, axis, divisor)
 
 
 def _mamba_scan_reference(

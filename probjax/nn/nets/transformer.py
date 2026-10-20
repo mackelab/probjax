@@ -20,6 +20,7 @@ from probjax.nn.utils import (
     flatten_to_btd,
     normalize_attn_bias,
     normalize_attn_mask,
+    resolve_default_module,
     restore_from_btd,
 )
 from probjax.utils.typing import DTypeLike, ModuleLikeType, PrecisionLike
@@ -125,28 +126,16 @@ class Transformer(nnx.Module):
         }.items():
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
-        norm_cls = type(self).norm_cls if norm_cls is DEFAULT_MODULE else norm_cls
-        context_fusion_cls = (
-            type(self).context_fusion_cls
-            if context_fusion_cls is DEFAULT_MODULE
-            else context_fusion_cls
+        norm_cls = resolve_default_module(self, "norm_cls", norm_cls)
+        context_fusion_cls = resolve_default_module(
+            self, "context_fusion_cls", context_fusion_cls
         )
-        attn_fuse_cls = (
-            type(self).attn_fuse_cls
-            if attn_fuse_cls is DEFAULT_MODULE
-            else attn_fuse_cls
-        )
-        mlp_fuse_cls = (
-            type(self).mlp_fuse_cls if mlp_fuse_cls is DEFAULT_MODULE else mlp_fuse_cls
-        )
-        mlp_cls = type(self).mlp_cls if mlp_cls is DEFAULT_MODULE else mlp_cls
-        linear_cls = (
-            type(self).linear_cls if linear_cls is DEFAULT_MODULE else linear_cls
-        )
-        dropout_cls = (
-            type(self).dropout_cls if dropout_cls is DEFAULT_MODULE else dropout_cls
-        )
-        mha_cls = type(self).mha_cls if mha_cls is DEFAULT_MODULE else mha_cls
+        attn_fuse_cls = resolve_default_module(self, "attn_fuse_cls", attn_fuse_cls)
+        mlp_fuse_cls = resolve_default_module(self, "mlp_fuse_cls", mlp_fuse_cls)
+        mlp_cls = resolve_default_module(self, "mlp_cls", mlp_cls)
+        linear_cls = resolve_default_module(self, "linear_cls", linear_cls)
+        dropout_cls = resolve_default_module(self, "dropout_cls", dropout_cls)
+        mha_cls = resolve_default_module(self, "mha_cls", mha_cls)
 
         precision_kwargs = dict(
             dtype=dtype,

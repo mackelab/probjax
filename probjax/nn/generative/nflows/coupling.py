@@ -10,6 +10,7 @@ from probjax.core.transformation import inverse_and_logabsdet
 from probjax.nn.nets.simple import MLP
 from probjax.nn.nets.transformer import Transformer
 from probjax.nn.utils import (
+    call_module,
     filter_precision_kwargs,
     module_accepts_rng,
 )
@@ -261,9 +262,12 @@ class CouplingMLP(_CouplingMixin, nnx.Module):
         if context is not None:
             ctx = _broadcast_context_to_x1(context, x1)
             conditioner_input = jnp.concatenate([x1, ctx], axis=-1)
-        if self._conditioner_accepts_rng:
-            return self.conditioner(conditioner_input, rng=rng)
-        return self.conditioner(conditioner_input)
+        return call_module(
+            self.conditioner,
+            conditioner_input,
+            accepts_rng=self._conditioner_accepts_rng,
+            rng=rng,
+        )
 
     def __call__(
         self,

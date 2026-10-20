@@ -8,7 +8,11 @@ from probjax.nn.layers.encoding import GaussianFourierEmbedding, PosEncode
 from probjax.nn.layers.fuse import validate_local_context
 from probjax.nn.nets.simple import MLP
 from probjax.nn.nets.transformer import Transformer
-from probjax.nn.utils import DEFAULT_MODULE, filter_precision_kwargs
+from probjax.nn.utils import (
+    DEFAULT_MODULE,
+    filter_precision_kwargs,
+    resolve_default_module,
+)
 
 
 class DiffusionTransformer(Transformer):
@@ -76,7 +80,7 @@ class DiffusionTransformer(Transformer):
             position_cls=position_cls,
         )
         factories = {
-            name: getattr(type(self), name) if cls is DEFAULT_MODULE else cls
+            name: resolve_default_module(self, name, cls)
             for name, cls in factories.items()
         }
         projection_cls = factories['projection_cls']

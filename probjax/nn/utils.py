@@ -18,6 +18,33 @@ from probjax.utils.typing import (
 DEFAULT_MODULE: Any = object()
 
 
+def resolve_default_module(owner: Any, name: str, value: Any) -> Any:
+    """Resolve a pluggable module class against its owner's default.
+
+    A builder argument left as ``DEFAULT_MODULE`` takes the class attribute of
+    the same name; an explicitly passed class (or ``None``) is kept as given.
+    """
+    return getattr(type(owner), name) if value is DEFAULT_MODULE else value
+
+
+def call_module(
+    module: Any,
+    *args: Any,
+    accepts_rng: bool = False,
+    rng: Any = None,
+    **kwargs: Any,
+) -> Any:
+    """Call ``module``, forwarding ``rng`` only when it accepts one.
+
+    ``accepts_rng`` is the result of :func:`module_accepts_rng` for this
+    module. Pass it in rather than recomputing it, so the signature is
+    inspected once at construction rather than on every call.
+    """
+    if accepts_rng:
+        return module(*args, rng=rng, **kwargs)
+    return module(*args, **kwargs)
+
+
 _RNG_SUPPORT_BY_TYPE: dict[type, bool] = {
     nnx.Linear: False,
 }

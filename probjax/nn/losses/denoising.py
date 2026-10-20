@@ -151,6 +151,32 @@ def _resolve_noise_mask(
     return jnp.asarray(noise_mask, dtype=bool) & contributing
 
 
+def _perturb_and_mask(
+    *,
+    x0: Array,
+    alpha: Array,
+    std: Array,
+    eps: Array,
+    loss_mask: Optional[ArrayLike],
+    noise_mask: Optional[ArrayLike],
+) -> tuple[Array, Array]:
+    """Noisy the clean sample and apply the noise mask.
+
+    Returns the noisy sample and the (masked) noise.
+    """
+    x_noisy = alpha * x0 + std * eps
+    effective_noise_mask = _resolve_noise_mask(
+        loss_mask=loss_mask,
+        noise_mask=noise_mask,
+    )
+    return _apply_noise_mask(
+        x0=x0,
+        x_noisy=x_noisy,
+        eps=eps,
+        noise_mask=effective_noise_mask,
+    )
+
+
 def build_denoising_loss(
     model_fn: ModelFn,
     scale: ArrayLike,
@@ -207,16 +233,13 @@ def build_denoising_loss(
         eps = _sample_eps(rng, x0.shape)
 
         alpha = jnp.sqrt(1.0 - std_array**2)
-        x_noisy = alpha * x0 + std_array * eps
-        effective_noise_mask = _resolve_noise_mask(
+        x_noisy, eps = _perturb_and_mask(
+            x0=x0,
+            alpha=alpha,
+            std=std_array,
+            eps=eps,
             loss_mask=loss_mask,
             noise_mask=noise_mask,
-        )
-        x_noisy, eps = _apply_noise_mask(
-            x0=x0,
-            x_noisy=x_noisy,
-            eps=eps,
-            noise_mask=effective_noise_mask,
         )
 
         args_with_noisy = args[:argnums] + (x_noisy,) + args[argnums + 1 :]
@@ -296,16 +319,13 @@ def build_time_dependent_denoising_loss(
         sigma_t = jnp.asarray(std_fn(t))
         eps = _sample_eps(rng, x0.shape)
 
-        x_noisy = alpha_t * x0 + sigma_t * eps
-        effective_noise_mask = _resolve_noise_mask(
+        x_noisy, eps = _perturb_and_mask(
+            x0=x0,
+            alpha=alpha_t,
+            std=sigma_t,
+            eps=eps,
             loss_mask=loss_mask,
             noise_mask=noise_mask,
-        )
-        x_noisy, eps = _apply_noise_mask(
-            x0=x0,
-            x_noisy=x_noisy,
-            eps=eps,
-            noise_mask=effective_noise_mask,
         )
 
         args_with_noisy = (t,) + args[:argnums] + (x_noisy,) + args[argnums + 1 :]

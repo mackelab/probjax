@@ -15,9 +15,10 @@ are pytree specs, so structured data works like a single flat array.
 from __future__ import annotations
 
 from numbers import Integral
-from typing import Callable
+from typing import Callable, Optional
 
 import jax
+import jax.numpy as jnp
 from flax import nnx
 
 from probjax.nn.distribution import _ExportedLogPDF, _ModelDistribution, _export_logpdf
@@ -91,6 +92,9 @@ class GenerativeModel(nnx.Module, FitMixin):
     """Shared base for generative families with cached exported samplers."""
 
     _event_dtype = jax.numpy.float32
+    #: Set by the continuous-time models, whose event dtypes must be floating
+    #: point; ``None`` accepts any dtype.
+    _floating_event_dtype_error: Optional[str] = None
 
     def _normalize_event_spec(self, event_spec, dtype=None):
         """Normalize shape shorthand without tying the network to that shape."""
@@ -137,6 +141,11 @@ class GenerativeModel(nnx.Module, FitMixin):
         )
         if not jax.tree.leaves(spec):
             raise ValueError("event_spec must contain at least one array event.")
+        if self._floating_event_dtype_error is not None and any(
+            not jnp.issubdtype(leaf.dtype, jnp.floating)
+            for leaf in jax.tree.leaves(spec)
+        ):
+            raise TypeError(self._floating_event_dtype_error)
         return spec
 
     @property

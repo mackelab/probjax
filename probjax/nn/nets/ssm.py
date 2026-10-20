@@ -9,6 +9,7 @@ from probjax.nn.utils import (
     DEFAULT_MODULE,
     filter_precision_kwargs,
     flatten_to_btd,
+    resolve_default_module,
 )
 from probjax.utils.typing import (
     Array,
@@ -106,19 +107,11 @@ class SSMModel(nnx.Module):
                 ValueError: If any dimension is not positive or if num_layers is
                     negative.
         """
-        norm_cls = type(self).norm_cls if norm_cls is DEFAULT_MODULE else norm_cls
-        mlp_cls = type(self).mlp_cls if mlp_cls is DEFAULT_MODULE else mlp_cls
-        linear_cls = (
-            type(self).linear_cls if linear_cls is DEFAULT_MODULE else linear_cls
-        )
-        dropout_cls = (
-            type(self).dropout_cls if dropout_cls is DEFAULT_MODULE else dropout_cls
-        )
-        recurrent_cls = (
-            type(self).recurrent_cls
-            if recurrent_cls is DEFAULT_MODULE
-            else recurrent_cls
-        )
+        norm_cls = resolve_default_module(self, "norm_cls", norm_cls)
+        mlp_cls = resolve_default_module(self, "mlp_cls", mlp_cls)
+        linear_cls = resolve_default_module(self, "linear_cls", linear_cls)
+        dropout_cls = resolve_default_module(self, "dropout_cls", dropout_cls)
+        recurrent_cls = resolve_default_module(self, "recurrent_cls", recurrent_cls)
 
         if input_dim <= 0:
             raise ValueError(f"input_dim must be positive, got {input_dim}")
