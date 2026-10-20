@@ -795,10 +795,6 @@ batching.fancy_primitive_batchers[custom_inverse_call_p] = batch_custom_inverse_
 # ---------------------------------------------------------------------------
 
 
-#: Name of the JAX-internal transpose helper used by the transpose rule.
-_CALL_TRANSPOSE_ATTR = "call_transpose"
-
-
 def custom_inverse_transpose(
     cts: Any,
     *args: Any,
@@ -809,27 +805,23 @@ def custom_inverse_transpose(
     inv_argnum: int,
     target_in_indices: tuple[int, ...],
 ) -> Any:
-    forward_jaxpr = _resolve_forward_jaxpr(lazy_forward)
+    """Transpose by running the backward pass over the forward jaxpr.
 
-    # Transposed primitive has no sensible inverse; install failing thunk.
-    del inverse_jaxpr_thunk
-    err_thunk = _error_inverse_thunk(
-        "Inverse of a transposed custom_inverse call is not supported."
+    The transposed call has no inverse, so the primitive is not re-emitted;
+    the forward ops are transposed inline (as ``custom_inverse_jvp`` does).
+    JAX 0.9 removed ``ad.call_transpose``, hence ``backward_pass`` directly.
+    """
+    del inverse_jaxpr_thunk, in_tree, out_tree, inv_argnum, target_in_indices
+
+    forward_jaxpr = _resolve_forward_jaxpr(lazy_forward)
+    # ``ad`` is JAX-internal; ``backward_pass`` is not public API.
+    arg_cts = ad.backward_pass(
+        forward_jaxpr.jaxpr, False, forward_jaxpr.consts, args, cts
     )
-    # ``call_transpose`` is not part of JAX's public ``jax.interpreters.ad``
-    # surface (and its signature changed in JAX 0.9), so it is looked up
-    # dynamically rather than imported.
-    return getattr(ad, _CALL_TRANSPOSE_ATTR)(
-        custom_inverse_call_p,
-        cts,
-        *args,
-        lazy_forward=forward_jaxpr,
-        inverse_jaxpr_thunk=err_thunk,
-        in_tree=in_tree,
-        out_tree=out_tree,
-        inv_argnum=inv_argnum,
-        target_in_indices=target_in_indices,
-    )
+    return [
+        ct if ad.is_undefined_primal(arg) else None
+        for arg, ct in zip(args, arg_cts)
+    ]
 
 
 ad.primitive_transposes[custom_inverse_call_p] = custom_inverse_transpose
