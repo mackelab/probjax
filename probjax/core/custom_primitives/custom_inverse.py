@@ -803,8 +803,7 @@ def custom_inverse_transpose(
         forward_jaxpr.jaxpr, False, forward_jaxpr.consts, args, cts
     )
     return [
-        ct if ad.is_undefined_primal(arg) else None
-        for arg, ct in zip(args, arg_cts)
+        ct if ad.is_undefined_primal(arg) else None for arg, ct in zip(args, arg_cts)
     ]
 
 

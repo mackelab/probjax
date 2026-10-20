@@ -54,7 +54,6 @@ class ThreadLocalDepth(ContextDecorator):
         return False
 
 
-
 class Lazy(Generic[T]):
     """Lazy thunk that caches its result after first evaluation.
 
