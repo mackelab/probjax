@@ -48,7 +48,7 @@ def kl_divergence(p, q, mc_samples=0, rng=None):
     Returns:
         jax.Array: A batch of KL divergences of shape `batch_shape`.
     """
-    return divergence(NAME, p, q, mc_samples=mc_samples, key=rng)
+    return divergence(NAME, p, q, mc_samples=mc_samples, rng=rng)
 
 
 @register_divergence(NAME, rv_generic, rv_generic)

@@ -43,7 +43,9 @@ def wasserstein_distance(p, q, mc_samples=0, rng=None, order=2, **kwargs):
     Returns:
         jax.Array: The Wasserstein distance between the two distributions
     """
-    return divergence(NAME, p, q, mc_samples=mc_samples, key=rng, order=order, **kwargs)
+    return divergence(
+        NAME, p, q, mc_samples=mc_samples, rng=rng, order=order, **kwargs
+    )
 
 
 def sliced_wasserstein_distance(

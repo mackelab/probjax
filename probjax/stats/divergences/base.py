@@ -133,7 +133,7 @@ def divergence(
         q (rv_generic): Second distribution
         mc_samples (int): Number of samples to use for Monte Carlo approximation.
             Defaults to 0. Then only analytic expressions.
-        key (jax.Array): Key for random number generation.
+        rng (jax.Array): Key for random number generation.
             Defaults to None. Only required if mc_samples > 0.
         **kwargs: Additional keyword arguments passed to the divergence function.
 
