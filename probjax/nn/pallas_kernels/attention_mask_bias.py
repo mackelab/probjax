@@ -2065,12 +2065,13 @@ class BatchedLowRankBias(AttentionBias):
         self.scale = float(scale)
 
     @classmethod
-    def from_key_bias(cls, key_bias: Array, q_len: int) -> "BatchedLowRankBias":
+    def from_key_bias(cls, key_bias: Array, q_len: int = 1) -> "BatchedLowRankBias":
         """Rank-1 bias that adds ``key_bias[b, j]`` to every logit of key ``j``.
 
         ``key_bias`` has shape ``[B, kv_len]``.  The query factor is all ones,
         so the outer product is constant along the query axis -- which is what
-        "per-key" means.
+        "per-key" means.  ``q_len`` defaults to ``1`` (broadcast to any query
+        length at evaluation time).
         """
         key_bias = jnp.asarray(key_bias)
         if key_bias.ndim != 2:
@@ -2096,7 +2097,12 @@ class BatchedLowRankBias(AttentionBias):
         That is precisely ``query.shape[:-1] + (rank,)``, so flex_attention's
         existing broadcast-and-concatenate path accepts these unchanged.
         """
-        if q_len > self.query_factors.shape[1]:
+        batch = self.query_factors.shape[0]
+        if self.query_factors.shape[1] == 1:
+            query_factors = self.query_factors[:, :, None, :]
+        elif q_len <= self.query_factors.shape[1]:
+            query_factors = self.query_factors[:, :q_len, None, :]
+        else:
             raise ValueError(
                 f"q_len={q_len} exceeds maximum {self.query_factors.shape[1]}"
             )
@@ -2104,13 +2110,12 @@ class BatchedLowRankBias(AttentionBias):
             raise ValueError(
                 f"kv_len={kv_len} exceeds maximum {self.key_factors.shape[1]}"
             )
-        query_factors = self.query_factors[:, :q_len, None, :]
         key_factors = self.key_factors[:, :kv_len, None, :]
         query_factors = jnp.broadcast_to(
-            query_factors, query_factors.shape[:2] + (num_heads, self.rank)
+            query_factors, (batch, q_len, num_heads, self.rank)
         )
         key_factors = jnp.broadcast_to(
-            key_factors, key_factors.shape[:2] + (num_heads, self.rank)
+            key_factors, (batch, kv_len, num_heads, self.rank)
         )
         if dtype is not None:
             query_factors = query_factors.astype(dtype)
@@ -2140,7 +2145,12 @@ class BatchedLowRankBias(AttentionBias):
                 "into Q/K via `factors()`."
             )
         del h_idx  # factors are shared across heads
-        query_factors = jnp.take(self.query_factors[0], q_idx, axis=0)
+        if self.query_factors.shape[1] == 1:
+            query_factors = jnp.broadcast_to(
+                self.query_factors[0], (q_idx.shape[0], self.rank)
+            )
+        else:
+            query_factors = jnp.take(self.query_factors[0], q_idx, axis=0)
         key_factors = jnp.take(self.key_factors[0], k_idx, axis=0)
         return scores + self.scale * (query_factors @ key_factors.T)
 
@@ -2158,7 +2168,12 @@ class BatchedLowRankBias(AttentionBias):
         into Q/K.  Provided so the bias still works on the dense attention
         implementation rather than failing there.
         """
-        qf = self.query_factors[:, :q_len]
+        if self.query_factors.shape[1] == 1:
+            qf = jnp.broadcast_to(
+                self.query_factors, (self.query_factors.shape[0], q_len, self.rank)
+            )
+        else:
+            qf = self.query_factors[:, :q_len]
         kf = self.key_factors[:, :kv_len]
         per_b = self.scale * jnp.einsum("bqr,bkr->bqk", qf, kf)
         return jnp.broadcast_to(
