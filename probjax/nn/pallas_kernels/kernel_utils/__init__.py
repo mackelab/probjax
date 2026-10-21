@@ -13,6 +13,7 @@ from .common import (
     fast_blockmask_local_window,
     get_dot_precision,
     get_dropout_mask,
+    pad_to_multiple,
     pallas_call_compat,
     pallas_call_supports_backend,
     query_iterator_indices,
@@ -48,6 +49,7 @@ __all__ = [
     "get_dropout_mask",
     "pallas_call_compat",
     "pallas_call_supports_backend",
+    "pad_to_multiple",
     "query_iterator_indices",
     "use_interpret_mode",
     # kernel primitives

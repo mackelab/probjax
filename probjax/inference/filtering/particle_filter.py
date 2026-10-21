@@ -5,11 +5,13 @@ from typing import Any, Callable, NamedTuple, Optional
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.filtering.base import FilterAPI
+from probjax.inference.filtering.base import FilterAPI, as_time
+from probjax.inference.particles import normalize_log_weights
 from probjax.inference.smc.ess import ess
 from probjax.inference.smc.resampling import (
     resample_systematic,
 )
+from probjax.utils.jaxutils import leading_dim
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 
@@ -32,18 +34,16 @@ def init(
     log_weights: Optional[ArrayLike] = None,
 ) -> ParticleFilterState:
     # Particles may be a pytree with a leading particle axis.
-    num_particles = jax.tree.leaves(particles)[0].shape[0]
+    num_particles = leading_dim(particles)
     if log_weights is None:
-        log_weights = jnp.full((num_particles,), fill_value=-jnp.log(num_particles))
+        weights = jnp.full((num_particles,), fill_value=-jnp.log(num_particles))
     else:
-        log_weights = jnp.asarray(log_weights)
-        assert log_weights.shape[0] == num_particles, (
+        weights = jnp.asarray(log_weights)
+        assert weights.shape[0] == num_particles, (
             "The number of particles and log weights must be the same."
         )
-        log_weights = log_weights - jax.scipy.special.logsumexp(log_weights)
-    return ParticleFilterState(
-        particles, log_weights, None if t is None else jnp.asarray(t)
-    )
+        weights = normalize_log_weights(weights)
+    return ParticleFilterState(particles, weights, as_time(t))
 
 
 def resample_when_ess_below(ess: float, ess_threshold: float = 0.5) -> bool:
@@ -164,9 +164,7 @@ def build_kernel(
             new_particles,
         )
 
-        new_state = ParticleFilterState(
-            new_particles, new_log_weights, None if t is None else jnp.asarray(t)
-        )
+        new_state = ParticleFilterState(new_particles, new_log_weights, as_time(t))
         info = ParticleFilterInfo(
             ancestors, log_likelihood, effective_samples_size, is_observed
         )

@@ -23,7 +23,7 @@ from probjax.nn.generative.discrete.config import (
 from probjax.nn.losses.multinomial import (
     build_time_dependent_multinomial_diffusion_loss,
 )
-from probjax.nn.utils import module_accepts_rng
+from probjax.nn.utils import call_module, module_accepts_rng
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, RngKey
 
 
@@ -181,9 +181,15 @@ class MultinomialDiffusion(GenerativeModel):
         t_cont = self._to_continuous_time(t)
         t_embed = self.c_t(t_cont)
         x_embed = self.c_in(t_cont)[..., None] * x_features
-        if self._net_accepts_rng:
-            return self.net(t_embed, x_embed, *args, rng=rng, **kwargs)
-        return self.net(t_embed, x_embed, *args, **kwargs)
+        return call_module(
+            self.net,
+            t_embed,
+            x_embed,
+            *args,
+            accepts_rng=self._net_accepts_rng,
+            rng=rng,
+            **kwargs,
+        )
 
     def __call__(
         self,

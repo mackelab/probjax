@@ -26,6 +26,7 @@ from probjax.nn.generative.standardize import StandardizingMixin
 from probjax.nn.inputs import context_only
 from probjax.utils.guards import is_tracing
 from probjax.utils.jaxutils import where
+from probjax.utils.typing import is_typed_key
 
 __all__ = [
     "Autoregressive",
@@ -87,7 +88,7 @@ class _KeyNormalizingSampler:
 
     @staticmethod
     def _as_typed(rng):
-        if jnp.issubdtype(jnp.asarray(rng).dtype, jax.dtypes.prng_key):
+        if is_typed_key(rng):
             return rng
         return jax.random.wrap_key_data(jnp.asarray(rng, dtype=jnp.uint32))
 

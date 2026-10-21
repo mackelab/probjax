@@ -1,7 +1,6 @@
-import importlib
 import io
 import re
-from typing import Any, Callable, Sequence, cast
+from typing import Any, Callable, Sequence
 
 import jax.numpy as jnp
 import networkx as nx
@@ -12,20 +11,10 @@ except ImportError:  # IPython is optional
     SVG = None
     display = None
 
-# The pjit primitive moved between JAX versions.
-try:
-    pjit_mod = importlib.import_module("jax.experimental.pjit")
-except ImportError:
-    pjit_mod = None
+from jax.extend.core import Jaxpr, Literal
 
-pjit_p = getattr(cast(Any, pjit_mod), "pjit_p", None)
-if pjit_p is None:
-    # JAX 0.7+
-    from jax._src.pjit import jit_p as pjit_p
-
-from jax.extend.core import Jaxpr, Literal  # noqa: E402
-
-from probjax.core.custom_primitives.random_variable import rv_p  # noqa: E402
+from probjax.core.custom_primitives.random_variable import rv_p
+from probjax.utils.jaxutils import pjit_p
 
 COMPUTE_GRAPH_NODE_STYLES = {
     "const": dict(
@@ -91,6 +80,16 @@ COMPUTE_GRAPH_NODE_STYLES = {
 }
 
 
+def _add_var_node(graph: nx.DiGraph, var: Any, name: str, level: int) -> None:
+    """Add ``var`` to the graph as a constant or an intermediate node."""
+    if name in graph.nodes and graph.nodes[name] != {}:
+        return
+    if isinstance(var, Literal):
+        graph.add_node(name, tag="const", val=var.val, level=level)
+    else:
+        graph.add_node(name, tag="intermediate", level=level, val=var)
+
+
 def to_networkx(
     jaxpr: Jaxpr,
     var_name_fn: Callable,
@@ -154,18 +153,7 @@ def to_networkx(
 
             for n in outvars:
                 name = var_name_fn(n, level=level)
-
-                if name not in graph.nodes or graph.nodes[name] == {}:
-                    if isinstance(n, Literal):
-                        val = n.val
-                        graph.add_node(name, tag="const", val=val, level=level)
-                    else:
-                        graph.add_node(
-                            name,
-                            tag="intermediate",
-                            level=level,
-                            val=n,
-                        )
+                _add_var_node(graph, n, name, level)
 
             sub_jaxpr = eqn.params["jaxpr"].jaxpr
 
@@ -209,18 +197,7 @@ def to_networkx(
         in_vars = eqn.invars
         for n in in_vars:
             name = var_name_fn(n, level=level)
-
-            if name not in graph.nodes or graph.nodes[name] == {}:
-                if isinstance(n, Literal):
-                    val = n.val
-                    graph.add_node(name, tag="const", val=val, level=level)
-                else:
-                    graph.add_node(
-                        name,
-                        tag="intermediate",
-                        level=level,
-                        val=n,
-                    )
+            _add_var_node(graph, n, name, level)
 
             graph.add_edge(name, eqn_name_fn(i, level=level), level=level)
 
@@ -228,18 +205,7 @@ def to_networkx(
         out_vars = eqn.outvars
         for n in out_vars:
             name = var_name_fn(n, level=level)
-
-            if name not in graph.nodes or graph.nodes[name] == {}:
-                if isinstance(n, Literal):
-                    val = n.val
-                    graph.add_node(name, tag="const", val=val, level=level)
-                else:
-                    graph.add_node(
-                        name,
-                        tag="intermediate",
-                        level=level,
-                        val=n,
-                    )
+            _add_var_node(graph, n, name, level)
 
             graph.add_edge(
                 eqn_name_fn(i, level=level), var_name_fn(n, level=level), level=level
@@ -248,17 +214,6 @@ def to_networkx(
                 graph.nodes[var_name_fn(n, level=level)]["tag"] = "random_variable"
 
     return graph
-
-
-def moralize_dag(dag: nx.DiGraph) -> nx.Graph:
-    # Moralize DAG
-    moral_graph = dag.to_undirected()
-    for node in dag.nodes():
-        parents = list(dag.predecessors(node))
-        for i in range(len(parents)):
-            for j in range(i + 1, len(parents)):
-                moral_graph.add_edge(parents[i], parents[j])
-    return moral_graph
 
 
 def subgraph(
@@ -358,7 +313,7 @@ class DirectedVariableGraph(JaxprGraph):
 class UndirectedVariableGraph(DirectedVariableGraph):
     def __init__(self, jaxpr, maxlevel=jnp.inf, graph=None) -> None:
         super(UndirectedVariableGraph, self).__init__(jaxpr, maxlevel, graph)
-        self._graph = moralize_dag(self._graph.to_directed())
+        self._graph = nx.moral_graph(self._graph.to_directed())
 
 
 class DirectedGraphicalModel(DirectedVariableGraph):

@@ -3,10 +3,16 @@ from __future__ import annotations
 from typing import Any, Callable, NamedTuple, Optional, Tuple
 
 import jax
+import jax.numpy as jnp
 
 from probjax.utils.guards import has_attrs
 from probjax.utils.jaxutils import KernelAPI
 from probjax.utils.typing import Array, ArrayLike, RngKey
+
+
+def as_time(t: Optional[ArrayLike]) -> Optional[Array]:
+    """Normalize an optional time argument to an array, keeping ``None`` as ``None``."""
+    return None if t is None else jnp.asarray(t)
 
 
 class FilterState(NamedTuple):
@@ -136,30 +142,29 @@ def extract_mean(states: Any) -> Array:
     raise ValueError("Trace states have no 'mean' or 'particles' attribute.")
 
 
-def extract_covariance(states: Any) -> Array:
-    """Covariance for Gaussian states (``cov`` / ``std`` / factor-core)."""
-    if hasattr(states, "cov"):
-        return states.cov
-    if hasattr(states, "std"):
-        return jax.vmap(lambda s: s @ s.T)(states.std)
-    if has_attrs(states, "cov_factor", "cov_core"):
-        return jax.vmap(lambda u, s: u @ s @ u.T)(states.cov_factor, states.cov_core)
+def extract_covariance(states: Any, pred: bool = False) -> Array:
+    """Covariance for Gaussian states (``cov`` / ``std`` / factor-core).
+
+    With ``pred=True`` the predicted fields (``cov_pred`` / ``std_pred`` /
+    ``cov_factor_pred`` / ``cov_core_pred``) are read instead.
+    """
+    suffix = "_pred" if pred else ""
+    if hasattr(states, f"cov{suffix}"):
+        return getattr(states, f"cov{suffix}")
+    if hasattr(states, f"std{suffix}"):
+        return jax.vmap(lambda s: s @ s.T)(getattr(states, f"std{suffix}"))
+    if has_attrs(states, f"cov_factor{suffix}", f"cov_core{suffix}"):
+        return jax.vmap(lambda u, s: u @ s @ u.T)(
+            getattr(states, f"cov_factor{suffix}"),
+            getattr(states, f"cov_core{suffix}"),
+        )
+    kind = "infos" if pred else "states"
     raise ValueError(
-        "Filtering states must have either `cov`, `std`, or (`cov_factor`, `cov_core`)."
+        f"Filtering {kind} must have either `cov{suffix}`, `std{suffix}`, "
+        f"or (`cov_factor{suffix}`, `cov_core{suffix}`)."
     )
 
 
 def extract_pred_covariance(infos: Any) -> Array:
     """Predicted covariance for Gaussian infos."""
-    if hasattr(infos, "cov_pred"):
-        return infos.cov_pred
-    if hasattr(infos, "std_pred"):
-        return jax.vmap(lambda s: s @ s.T)(infos.std_pred)
-    if has_attrs(infos, "cov_factor_pred", "cov_core_pred"):
-        return jax.vmap(lambda u, s: u @ s @ u.T)(
-            infos.cov_factor_pred, infos.cov_core_pred
-        )
-    raise ValueError(
-        "Filtering infos must have either `cov_pred`, `std_pred`, "
-        "or (`cov_factor_pred`, `cov_core_pred`)."
-    )
+    return extract_covariance(infos, pred=True)

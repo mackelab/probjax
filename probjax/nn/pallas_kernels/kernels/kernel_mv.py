@@ -11,7 +11,12 @@ from jax.experimental.pallas import triton as plgpu
 
 from probjax.utils.typing import Array
 
-from ..kernel_utils import dot, get_dot_precision, use_interpret_mode
+from ..kernel_utils import (
+    dot,
+    get_dot_precision,
+    pad_to_multiple,
+    use_interpret_mode,
+)
 from ..kernel_utils.kernel_primitive import (
     KernelSpec,
     Operand,
@@ -30,15 +35,7 @@ def _broadcast_block_spec(shape: tuple[int, ...]) -> pl.BlockSpec:
 
 def _pad_axis_to_multiple(x: Array, axis: int, multiple: int) -> tuple[Array, int]:
     size = x.shape[axis]
-    if multiple <= 0:
-        raise ValueError(f"multiple must be > 0, got {multiple}.")
-    rem = size % multiple
-    if rem == 0:
-        return x, size
-    pad = multiple - rem
-    pads = [(0, 0)] * x.ndim
-    pads[axis] = (0, pad)
-    return jnp.pad(x, pads), size
+    return pad_to_multiple(x, axis, multiple), size
 
 
 def _validate_inputs(q: Array, k: Array, v: Array) -> None:

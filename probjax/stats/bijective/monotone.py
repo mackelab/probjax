@@ -126,6 +126,24 @@ def _solve_increasing(
     return where(converged, root, jnp.nan)
 
 
+def ppf_by_cdf_bisection(q, cdf):
+    """Quantile of a distribution whose CDF is ``cdf``, by bisection.
+
+    A mixture CDF has no closed-form inverse, so the quantile is found by
+    bisection on the (monotone) CDF -- the same solver the parametric
+    bijectors use, so it inherits their NaN-safety and residual check
+    rather than silently returning a bracket edge.
+
+    The 0 and 1 quantiles have no finite root, so they are answered
+    directly rather than letting the clip below pass off an interior point
+    as the true quantile.
+    """
+    q = jnp.asarray(q)
+    root = _solve_increasing(cdf, jnp.clip(q, 1e-7, 1.0 - 1e-7))
+    root = where(q <= 0.0, -jnp.inf, root)
+    return where(q >= 1.0, jnp.inf, root)
+
+
 # ---------------------------------------------------------------------------
 # NAF — deep sigmoidal flow
 # ---------------------------------------------------------------------------

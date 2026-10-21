@@ -6,6 +6,8 @@ import jax.numpy as jnp
 import jax.scipy.linalg as jsp_linalg
 from jax import lax
 
+from probjax.utils.typing import Array
+
 from .constraints import (
     Constraint,
     integer,
@@ -153,11 +155,6 @@ def generate_matrix(x):
     return m
 
 
-def generate_pdm(x):
-    m = jnp.broadcast_to(jnp.eye(x.shape[-1]), x.shape + (x.shape[-1],))
-    return m
-
-
 biject_to.register(real, identity, inverse=identity)
 transform_to.register(real)(identity)
 
@@ -201,7 +198,6 @@ transform_to.register(simplex)(jax.nn.softmax)
 biject_to.register(simplex, jax.nn.softmax, inverse=jnp.log)
 transform_to.register(matrix)(generate_matrix)
 transform_to.register(square_matrix)(generate_matrix)
-transform_to.register(symmetric_positive_definite_matrix)(generate_pdm)
 
 
 # Spherical manifold transformations
@@ -291,7 +287,7 @@ def lorentz_exp_map(x, v):
     ])
 
 
-def lorentz_log_map(x, y):
+def lorentz_log_map(x: Array, y: Array) -> Array:
     """Logarithmic map for Lorentz manifold."""
     dot_xy = x[0] * y[0] - jnp.sum(x[1:] * y[1:], axis=-1)
     dot_xy = jnp.clip(dot_xy, 1.0, None)  # Ensure numerical stability
@@ -299,7 +295,7 @@ def lorentz_log_map(x, y):
     return theta * (y - x * dot_xy) / (jnp.sqrt(dot_xy**2 - 1) + 1e-8)
 
 
-def lorentz_transform(x):
+def lorentz_transform(x: Array) -> Array:
     """Transform to Lorentz manifold."""
     norm = jnp.sqrt(jnp.sum(x[1:] ** 2, axis=-1))
     return jnp.concatenate([jnp.sqrt(1 + norm**2), x[1:]])
@@ -331,12 +327,16 @@ class ManifoldRegistry:
         self._exp_maps = {}
         self._log_maps = {}
 
-    def register_exp_map(self, constraint, exp_map):
+    def register_exp_map(
+        self, constraint: Constraint, exp_map: Callable[..., Array]
+    ) -> Callable[..., Array]:
         """Register an exponential map for a constraint."""
         self._exp_maps[type(constraint)] = exp_map
         return exp_map
 
-    def register_log_map(self, constraint, log_map):
+    def register_log_map(
+        self, constraint: Constraint, log_map: Callable[..., Array]
+    ) -> Callable[..., Array]:
         """Register a logarithmic map for a constraint."""
         self._log_maps[type(constraint)] = log_map
         return log_map

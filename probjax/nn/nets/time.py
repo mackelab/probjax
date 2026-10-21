@@ -10,6 +10,7 @@ from probjax.nn.nets.simple import MLP, ResNet
 from probjax.nn.utils import (
     DEFAULT_MODULE,
     filter_precision_kwargs,
+    resolve_default_module,
 )
 from probjax.utils.typing import (
     Array,
@@ -96,18 +97,12 @@ class TimeMLP(nnx.Module):
         Raises:
             ValueError: If any dimension argument is not positive.
         """
-        norm_cls = type(self).norm_cls if norm_cls is DEFAULT_MODULE else norm_cls
-        fourier_cls = (
-            type(self).fourier_cls if fourier_cls is DEFAULT_MODULE else fourier_cls
-        )
-        time_mlp_cls = (
-            type(self).time_mlp_cls if time_mlp_cls is DEFAULT_MODULE else time_mlp_cls
-        )
-        body_cls = type(self).body_cls if body_cls is DEFAULT_MODULE else body_cls
-        context_fuse_cls = (
-            type(self).context_fuse_cls
-            if context_fuse_cls is DEFAULT_MODULE
-            else context_fuse_cls
+        norm_cls = resolve_default_module(self, "norm_cls", norm_cls)
+        fourier_cls = resolve_default_module(self, "fourier_cls", fourier_cls)
+        time_mlp_cls = resolve_default_module(self, "time_mlp_cls", time_mlp_cls)
+        body_cls = resolve_default_module(self, "body_cls", body_cls)
+        context_fuse_cls = resolve_default_module(
+            self, "context_fuse_cls", context_fuse_cls
         )
 
         if features <= 0:

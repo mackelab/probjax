@@ -10,6 +10,7 @@ from blackjax.smc.base import map_fn
 from probjax.inference.filtering.observations import validate_observations
 from probjax.inference.filtering.temporal import run_temporal_filter
 from probjax.inference.filtering.trajectory import sample_paths
+from probjax.inference.particles import take_batch
 from probjax.utils.guards import is_tracing
 from probjax.utils.typing import Array, RngKey
 
@@ -53,7 +54,7 @@ def sample_joint_paths(
     indices = jax.random.categorical(
         select_key, state.log_weights, shape=(num_samples,)
     )
-    parameters = jax.tree.map(lambda x: x[indices], state.parameters)
+    parameters = take_batch(state.parameters, indices)
 
     def draw(args: Any) -> Any:
         key, theta = args

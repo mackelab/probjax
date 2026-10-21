@@ -6,6 +6,7 @@ from typing import Any, Optional, Sequence, Tuple
 import flax.nnx as nnx
 import jax.numpy as jnp
 
+from probjax.utils.jaxutils import filter_kwargs
 from probjax.utils.typing import (
     Array,
     ArrayLike,
@@ -15,6 +16,33 @@ from probjax.utils.typing import (
 
 # Distinguish an omitted builder from explicit None (which may disable it).
 DEFAULT_MODULE: Any = object()
+
+
+def resolve_default_module(owner: Any, name: str, value: Any) -> Any:
+    """Resolve a pluggable module class against its owner's default.
+
+    A builder argument left as ``DEFAULT_MODULE`` takes the class attribute of
+    the same name; an explicitly passed class (or ``None``) is kept as given.
+    """
+    return getattr(type(owner), name) if value is DEFAULT_MODULE else value
+
+
+def call_module(
+    module: Any,
+    *args: Any,
+    accepts_rng: bool = False,
+    rng: Any = None,
+    **kwargs: Any,
+) -> Any:
+    """Call ``module``, forwarding ``rng`` only when it accepts one.
+
+    ``accepts_rng`` is the result of :func:`module_accepts_rng` for this
+    module. Pass it in rather than recomputing it, so the signature is
+    inspected once at construction rather than on every call.
+    """
+    if accepts_rng:
+        return module(*args, rng=rng, **kwargs)
+    return module(*args, **kwargs)
 
 
 _RNG_SUPPORT_BY_TYPE: dict[type, bool] = {
@@ -111,17 +139,9 @@ def filter_supported_kwargs(ctor, **kwargs) -> dict:
     remaining compatible with custom layer classes that don't.
     """
     try:
-        parameters = inspect.signature(ctor).parameters
+        return filter_kwargs(ctor, kwargs, exclude_positional_only=True)
     except (ValueError, TypeError):
         return {}
-    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
-        return kwargs
-    return {
-        key: value
-        for key, value in kwargs.items()
-        if key in parameters
-        and parameters[key].kind != inspect.Parameter.POSITIONAL_ONLY
-    }
 
 
 def filter_precision_kwargs(cls: ModuleLikeType, **kwargs) -> dict:

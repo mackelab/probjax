@@ -78,7 +78,7 @@ def _ravel_state_arg(
 ) -> Array:
     """Evaluate ``inner`` on the unraveled flat state; ravel the output.
 
-    Shared core behind :func:`_ravel_callable` and
+    Shared core behind :func:`ravel_callable` and
     :meth:`RaveledDrift.__call__`: replaces the flat-state argument at
     positional ``index`` of ``(t, y_flat, *args)`` with the unraveled tree,
     calls ``inner``, and ravels the result back to a flat array.
@@ -89,8 +89,12 @@ def _ravel_state_arg(
     return value_flat
 
 
-def _ravel_callable(fn: Callable, unravel: Callable[[Array], PyTree], index: int):
-    """Wrap ``fn`` to accept a flat array at positional ``index``."""
+def ravel_callable(fn: Callable, unravel: Callable[[Array], PyTree], index: int):
+    """Wrap ``fn`` to accept a flat array at positional ``index``.
+
+    The flat argument is unraveled before the call and the result is raveled
+    back, so ``fn`` keeps working on pytrees.
+    """
 
     def raveled(*args):
         return _ravel_state_arg(fn, unravel, index, *args)
@@ -173,7 +177,7 @@ class Drift:
 
     def ravel_arg(self, unravel: Callable[[Array], PyTree], index: int = 1) -> Any:
         if index != 1:
-            return _ravel_callable(self, unravel, index)
+            return ravel_callable(self, unravel, index)
         return RaveledDrift(self, unravel, index=index)
 
     def bind_args(self, *args: Any) -> "Drift":
@@ -197,7 +201,7 @@ class Drift:
 class RaveledDrift(Drift):
     """Drift adapter that accepts a flat-array state, preserving array leaves.
 
-    Unlike the plain closure built by :func:`_ravel_callable`, this is a
+    Unlike the plain closure built by :func:`ravel_callable`, this is a
     proper JAX pytree node whose children are the wrapped drift's array
     leaves. Parameters therefore stay explicit differentiable arguments
     instead of being closed over, which is required for ``custom_vjp``
@@ -283,7 +287,7 @@ class split_drift(Drift):
     ) -> "split_drift":
         return split_drift(
             lin_coeff=self.lin_coeff,
-            nonlin=_ravel_callable(self.nonlin, unravel, index),
+            nonlin=ravel_callable(self.nonlin, unravel, index),
         )
 
 

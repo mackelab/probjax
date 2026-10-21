@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+from contextlib import ContextDecorator
+from threading import local
 from typing import Any, Callable, Generic, Sequence, TypeVar
 
 import jax.numpy as jnp
@@ -11,7 +14,44 @@ from jax._src.interpreters import partial_eval as pe
 from jax.extend.core import ClosedJaxpr
 from jax.tree_util import tree_leaves
 
+from probjax.utils.guards import is_tracing
+
 T = TypeVar("T")
+
+#: The environment-variable values that count as "true".
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def parse_env_flag(name: str) -> bool:
+    """Whether the environment variable ``name`` is set to a truthy value.
+
+    Read once at import: the flag is a process-wide switch, and tests can
+    monkeypatch the module attribute that holds the result.
+    """
+    return os.environ.get(name, "").strip().lower() in _TRUTHY_ENV_VALUES
+
+
+class ThreadLocalDepth(ContextDecorator):
+    """A reentrant, thread-local depth counter usable as a context manager.
+
+    The depth is per thread, so a context entered on one thread does not
+    affect another, and nesting the same context is safe.
+    """
+
+    def __init__(self) -> None:
+        self._state = local()
+
+    @property
+    def depth(self) -> int:
+        return getattr(self._state, "depth", 0)
+
+    def __enter__(self) -> "ThreadLocalDepth":
+        self._state.depth = self.depth + 1
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        self._state.depth = self.depth - 1
+        return False
 
 
 class Lazy(Generic[T]):
@@ -59,7 +99,7 @@ class LazyClosedJaxpr(Lazy[ClosedJaxpr]):
 
 
 def has_tracer(tree) -> bool:
-    return any(isinstance(x, jax_core.Tracer) for x in tree_leaves(tree))
+    return any(is_tracing(x) for x in tree_leaves(tree))
 
 
 def must_emit_primitive(tree) -> bool:
@@ -80,7 +120,7 @@ def must_emit_primitive(tree) -> bool:
 
 
 def ensure_hashable(x: Any, where: str) -> Any:
-    if isinstance(x, jax_core.Tracer):
+    if is_tracing(x):
         raise TypeError(
             f"{where} is a traced value, so it cannot be held as a static "
             "parameter. Pass it as a dynamic positional argument instead, or "

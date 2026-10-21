@@ -22,6 +22,7 @@ from typing import Callable, Protocol, runtime_checkable
 import jax
 import jax.numpy as jnp
 
+from probjax.utils.jaxutils import leading_dim
 from probjax.utils.typing import Array, PyTree
 
 
@@ -35,7 +36,7 @@ class TwistFn(Protocol):
 
 
 def _batch_size(particles: PyTree[Array]) -> int:
-    return int(jax.tree.leaves(particles)[0].shape[0])
+    return int(leading_dim(particles))
 
 
 @dataclass(frozen=True)

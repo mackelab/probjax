@@ -18,9 +18,10 @@ from probjax.stats.base import (
     rv_frozen,
     rv_generic,
 )
-from probjax.stats.bijective.monotone import _solve_increasing
+from probjax.stats.bijective.monotone import ppf_by_cdf_bisection
 from probjax.stats.constraints import distribution, simplex
 from probjax.stats.continuous.norm import norm
+from probjax.stats.utils import flatten_by_event_shape
 from probjax.utils.jaxutils import where
 from probjax.utils.typing import ArrayLike, RngKey
 
@@ -130,11 +131,7 @@ class mixture_gen(rv_generic):
         def cdf_at(t):
             return cls.cdf(t, mixing_probs, components, **kwds)
 
-        root = _solve_increasing(cdf_at, jnp.clip(q, 1e-7, 1.0 - 1e-7))
-        # The 0/1 quantiles have no finite root; answer them directly rather
-        # than letting the clip above pass off an interior point.
-        root = where(q <= 0.0, -jnp.inf, root)
-        return where(q >= 1.0, jnp.inf, root)
+        return ppf_by_cdf_bisection(q, cdf_at)
 
     @classmethod
     def _rvs_impl(
@@ -343,25 +340,12 @@ class mixture_gen(rv_generic):
                 "mixture.fit does not currently support batched component parameters."
             )
 
-        if event_shape:
-            if data.ndim < len(event_shape):
-                raise ValueError(
-                    "Observations must have enough trailing dimensions to match the "
-                    "component event shape."
-                )
-            if tuple(data.shape[-len(event_shape) :]) != event_shape:
-                raise ValueError(
-                    "Trailing dimensions of the observations must match the component "
-                    "event shape."
-                )
-            data = jnp.reshape(data, (-1,) + event_shape)
-        else:
-            data = jnp.reshape(jnp.asarray(data), (-1,))
+        flat_data, _ = flatten_by_event_shape(data, event_shape)
 
-        if data.shape[0] == 0:
+        if flat_data.shape[0] == 0:
             raise ValueError("mixture.fit requires at least one observation.")
 
-        numeric_dtype = jnp.result_type(data.dtype, jnp.float32)
+        numeric_dtype = jnp.result_type(flat_data.dtype, jnp.float32)
         n_components = len(components)
 
         if mixing_probs_init is None:
@@ -378,7 +362,7 @@ class mixture_gen(rv_generic):
         component_dists = tuple(comp.dist for comp in components)
         component_params = tuple(comp.params for comp in components)
         tol_value = jnp.asarray(tol, dtype=numeric_dtype)
-        data = data.astype(numeric_dtype)
+        data = flat_data.astype(numeric_dtype)
 
         def em_step(carry, _):
             mixing_curr, params_curr, previous_ll, done = carry

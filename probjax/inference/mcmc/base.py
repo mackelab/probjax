@@ -10,6 +10,7 @@ from blackjax.base import State
 from jax.flatten_util import ravel_pytree
 
 from probjax.inference.base import Kernel, MCMCResult
+from probjax.utils.guards import has_attrs, params_to_dict
 from probjax.utils.jaxutils import Configured, KernelAPI
 from probjax.utils.typing import Array, RngKey, Scalar
 
@@ -70,8 +71,9 @@ class MarkovKernelAPI(KernelAPI):
         def init_fn(key, position=None, **init_kwargs):
             # Accept the old position-first form while internal SMC composition
             # is migrated to constructed kernel values.
-            if position is None:
-                position, key = key, init_kwargs.pop("rng_key", None)
+            key, position = normalize_init_args(
+                key, position, init_kwargs.pop("rng_key", None)
+            )
             return cls.init(
                 position, logdensity_fn=logdensity_fn, rng_key=key, **init_kwargs
             )
@@ -96,7 +98,7 @@ def make_step_from_kernel(
     kernel = kernel_builder()
 
     def step(key: RngKey, state: State, params: Params, *args: Any):
-        params_kwargs = params._asdict() if hasattr(params, "_asdict") else {}
+        params_kwargs = params_to_dict(params) if has_attrs(params, "_asdict") else {}
         call_kwargs = {}
         if call_defaults:
             call_kwargs.update(call_defaults)
@@ -110,11 +112,35 @@ def _select(value: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     return {field: getattr(value, field) for field in fields}
 
 
-def init_hmc_like_params(state: Any, inverse_mass_matrix: Array | None) -> Array:
-    """Default inverse mass matrix: identity of matching dimension."""
+def ravel_position(state: Any) -> Array:
+    """Flatten the position of ``state`` (or of a bare position) into one vector.
+
+    Accepts either a kernel state carrying a ``position`` attribute or the
+    position itself, and returns the flat vector of its leaves.
+    """
     position = state.position if hasattr(state, "position") else state
     flat_position, _ = ravel_pytree(position)
-    dim = flat_position.shape[0]
+    return flat_position
+
+
+def normalize_init_args(
+    key: Any, position: Any = None, rng_key: Any = None
+) -> tuple[Any, Any]:
+    """Resolve the ``(key, position)`` / ``(position, rng_key=key)`` init forms.
+
+    Kernels accept both ``init(key, position)`` and the older
+    ``init(position, rng_key=key)`` calling convention. Returns the
+    ``(key, position)`` pair, where ``position`` falls back to the first
+    argument and the key to ``rng_key``.
+    """
+    if position is None:
+        position, key = key, rng_key
+    return key, position
+
+
+def init_hmc_like_params(state: Any, inverse_mass_matrix: Array | None) -> Array:
+    """Default inverse mass matrix: identity of matching dimension."""
+    dim = ravel_position(state).shape[0]
     if inverse_mass_matrix is None:
         return jnp.ones((dim,))
     if inverse_mass_matrix.shape[0] != dim:

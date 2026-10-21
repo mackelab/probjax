@@ -10,11 +10,14 @@ import jax.numpy as jnp
 from probjax.inference.filtering.observations import validate_observations
 from probjax.inference.filtering.smoothing import particle_smoother
 from probjax.inference.filtering.state_space import LinearGaussianModel
+from probjax.inference.particles import normalize_log_weights
+from probjax.utils.jaxutils import prepend_to_trace
+from probjax.utils.linalg import symmetrize_matrix
 from probjax.utils.typing import Array, RngKey
 
 
 def _prepend(initial: Any, history: Any) -> Any:
-    return jax.tree.map(lambda x, xs: jnp.concatenate((x[None], xs)), initial, history)
+    return prepend_to_trace(initial, history)
 
 
 def _genealogies(
@@ -106,7 +109,7 @@ def smooth_gaussian_path(trace: Any, model: Any, theta: Any) -> tuple[Array, Arr
         mean, cov, pred_mean, pred_cov, gain = data
         mean = mean + gain @ (next_mean - pred_mean)
         cov = cov + gain @ (next_cov - pred_cov) @ gain.T
-        cov = (cov + cov.T) / 2
+        cov = symmetrize_matrix(cov)
         return (mean, cov), (mean, cov)
 
     _, (means, covs) = jax.lax.scan(
@@ -129,7 +132,7 @@ def smooth_gaussian_path(trace: Any, model: Any, theta: Any) -> tuple[Array, Arr
 
 def _normal(key: RngKey, mean: Array, cov: Array, num_samples: int) -> Array:
     # Backward conditional covariance can be semidefinite. Clip roundoff at zero.
-    values, vectors = jnp.linalg.eigh((cov + cov.T) / 2)
+    values, vectors = jnp.linalg.eigh(symmetrize_matrix(cov))
     factor = vectors * jnp.sqrt(jnp.maximum(values, 0))
     return mean + jax.random.normal(key, (num_samples, cov.shape[-1])) @ factor.T
 
@@ -228,7 +231,7 @@ def particle_gibbs(
             lambda: likelihood(theta, particles, y, t),
             lambda: jnp.zeros_like(weights),
         )
-        weights = weights - jax.scipy.special.logsumexp(weights)
+        weights = normalize_log_weights(weights)
         return (key, particles, weights, t), (particles, parents)
 
     (key, _, weights, _), (populations, ancestors) = jax.lax.scan(

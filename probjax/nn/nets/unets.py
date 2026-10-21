@@ -12,9 +12,11 @@ from probjax.nn.layers.conv import (
 from probjax.nn.sharding import BATCH, constrain
 from probjax.nn.utils import (
     DEFAULT_MODULE,
+    call_module,
     cast_output,
     filter_precision_kwargs,
     module_accepts_rng,
+    resolve_default_module,
 )
 from probjax.utils.typing import Array, ModuleLikeType, PrecisionLike
 
@@ -105,21 +107,13 @@ class UNet(nnx.Module):
             preferred_element_type=preferred_element_type,
         )
         self.preferred_element_type = preferred_element_type
-        resnet_block_cls = (
-            type(self).resnet_block_cls
-            if resnet_block_cls is DEFAULT_MODULE
-            else resnet_block_cls
+        resnet_block_cls = resolve_default_module(
+            self, "resnet_block_cls", resnet_block_cls
         )
-        conv_down_cls = (
-            type(self).conv_down_cls
-            if conv_down_cls is DEFAULT_MODULE
-            else conv_down_cls
-        )
-        conv_up_cls = (
-            type(self).conv_up_cls if conv_up_cls is DEFAULT_MODULE else conv_up_cls
-        )
-        attn_cls = type(self).attn_cls if attn_cls is DEFAULT_MODULE else attn_cls
-        conv_cls = type(self).conv_cls if conv_cls is DEFAULT_MODULE else conv_cls
+        conv_down_cls = resolve_default_module(self, "conv_down_cls", conv_down_cls)
+        conv_up_cls = resolve_default_module(self, "conv_up_cls", conv_up_cls)
+        attn_cls = resolve_default_module(self, "attn_cls", attn_cls)
+        conv_cls = resolve_default_module(self, "conv_cls", conv_cls)
 
         assert len(out_features) >= 2, "Must have at least 2 output channels"
 
@@ -326,10 +320,11 @@ class UNet(nnx.Module):
             return constrain(x, BATCH)
 
         # 1) Initial projection
-        x = (
-            self.conv_initial(inputs, rng=rng)
-            if self._conv_initial_accepts_rng
-            else self.conv_initial(inputs)
+        x = call_module(
+            self.conv_initial,
+            inputs,
+            accepts_rng=self._conv_initial_accepts_rng,
+            rng=rng,
         )
         x = _constrain(x)
 
@@ -351,7 +346,9 @@ class UNet(nnx.Module):
                 if verbose:
                     print("Down:", x.shape)
                 layer = self.downsampling_layers[i]
-                x = layer(x, rng=rng) if self._downsampling_accepts_rng[i] else layer(x)
+                x = call_module(
+                    layer, x, accepts_rng=self._downsampling_accepts_rng[i], rng=rng
+                )
                 x = cast_output(x, self.preferred_element_type)
                 x = _constrain(x)
 
@@ -383,7 +380,9 @@ class UNet(nnx.Module):
 
             if idx < self.num_stages - 1:
                 layer = self.upsampling_layers[idx]
-                x = layer(x, rng=rng) if self._upsampling_accepts_rng[idx] else layer(x)
+                x = call_module(
+                    layer, x, accepts_rng=self._upsampling_accepts_rng[idx], rng=rng
+                )
                 x = cast_output(x, self.preferred_element_type)
                 x = _constrain(x)
                 if verbose:
@@ -392,10 +391,8 @@ class UNet(nnx.Module):
         # 5) Final projection (+ last skip from very beginning)
         pre_in = pre_downsampling.pop()
         x = jnp.concatenate([pre_in, x], axis=-1)
-        x = (
-            self.conv_final(x, rng=rng)
-            if self._conv_final_accepts_rng
-            else self.conv_final(x)
+        x = call_module(
+            self.conv_final, x, accepts_rng=self._conv_final_accepts_rng, rng=rng
         )
         x = _constrain(x)
 

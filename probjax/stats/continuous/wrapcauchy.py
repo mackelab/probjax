@@ -13,7 +13,11 @@ from jax.scipy.optimize import minimize as jax_minimize
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
-from probjax.stats.utils import flatten_samples, normalize_sample_weights
+from probjax.stats.utils import (
+    circular_mean_and_resultant,
+    flatten_samples,
+    normalize_sample_weights,
+)
 from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = ["wrapcauchy"]
@@ -245,23 +249,12 @@ class wrapcauchy_gen(rv_continuous, rv_exponential_family):
         data = flatten_samples(data)
         dtype = data.dtype
 
-        cos_vals = jnp.cos(data)
-        sin_vals = jnp.sin(data)
-
         weights_arr = normalize_sample_weights(
             weights,
             n_samples=data.shape[0],
             dtype=dtype,
         )
-        if weights_arr is not None:
-            mean_cos = jnp.sum(weights_arr * cos_vals)
-            mean_sin = jnp.sum(weights_arr * sin_vals)
-        else:
-            mean_cos = jnp.mean(cos_vals)
-            mean_sin = jnp.mean(sin_vals)
-
-        loc_init = jnp.arctan2(mean_sin, mean_cos)
-        gamma_init = jnp.sqrt(mean_cos**2 + mean_sin**2)
+        loc_init, gamma_init = circular_mean_and_resultant(data, weights_arr)
         gamma_init = jnp.clip(gamma_init, jnp.asarray(1e-6, dtype=dtype), 1 - 1e-6)
 
         # Optimize log-likelihood via BFGS in unconstrained space

@@ -97,14 +97,7 @@ class FlowMatcher(GenerativeModel):
 
         self._loss_kwargs: dict[str, Any] = dict(loss_kwargs or {})
 
-    def _normalize_event_spec(self, event_spec, dtype=None):
-        spec = super()._normalize_event_spec(event_spec, dtype)
-        if any(
-            not jnp.issubdtype(leaf.dtype, jnp.floating)
-            for leaf in jax.tree.leaves(spec)
-        ):
-            raise TypeError("Flow matching event dtypes must be floating point.")
-        return spec
+    _floating_event_dtype_error = "Flow matching event dtypes must be floating point."
 
     def set_solver_cfg(self, solver_cfg: FlowSolverConfigProtocol) -> None:
         if not isinstance(solver_cfg, FlowSolverConfigProtocol):

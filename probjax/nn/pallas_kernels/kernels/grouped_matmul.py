@@ -26,6 +26,7 @@ from jax.experimental.pallas import triton as plgpu
 
 from probjax.utils.typing import Array
 
+from ..kernel_utils import pad_to_multiple
 from ..kernel_utils.kernel_primitive import (
     KernelSpec,
     Operand,
@@ -46,12 +47,7 @@ def _tile(dim: int, pref: int) -> int:
 
 
 def _pad_to(x: Array, axis: int, multiple: int = _ALIGN) -> Array:
-    rem = -x.shape[axis] % multiple
-    if not rem:
-        return x
-    pads = [(0, 0)] * x.ndim
-    pads[axis] = (0, rem)
-    return jnp.pad(x, pads)
+    return pad_to_multiple(x, axis, multiple)
 
 
 def _gmm_kernel(bg_ref, x_ref, w_ref, o_ref, *, block_m, block_n, block_k):

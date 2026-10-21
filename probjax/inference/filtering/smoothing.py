@@ -5,6 +5,7 @@ from typing import Any, Callable, Optional, Tuple
 import jax
 import jax.numpy as jnp
 
+from probjax.inference.particles import normalize_log_weights
 from probjax.utils.typing import Array
 
 
@@ -85,9 +86,7 @@ def _ffbsi_backward_step(
         # Backward smoothing weights (unnormalized): log w_t^i + log p(x_{t+1}^j | x_t^i)
         log_backward_weights = filter_log_weights_t + log_transition
         # Normalize
-        log_backward_weights = log_backward_weights - jax.scipy.special.logsumexp(
-            log_backward_weights
-        )
+        log_backward_weights = normalize_log_weights(log_backward_weights)
         # Sample ancestor index
         ancestor = jax.random.categorical(key_j, log_backward_weights)
         return ancestor

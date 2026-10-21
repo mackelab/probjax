@@ -14,7 +14,13 @@ from jax.flatten_util import ravel_pytree
 from probjax.inference.adaptation import compose_adaptors
 from probjax.inference.base import Kernel, Warmup, WarmupResult
 from probjax.inference.mcmc.adaptation import covariance_adaptor, mean_adaptor
-from probjax.inference.mcmc.base import MarkovKernelAPI, sample_kernel
+from probjax.inference.mcmc.base import (
+    MarkovKernelAPI,
+    normalize_init_args,
+    ravel_position,
+    sample_kernel,
+)
+from probjax.utils.jaxutils import leading_dim
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
 
@@ -134,8 +140,7 @@ def neural_imh(logdensity_fn: Callable, proposal, *, event_spec=None) -> Kernel:
     distribution.compile("sample", "logpdf")
 
     def init(key, position=None, **kwargs):
-        if position is None:
-            position, key = key, kwargs.pop("rng_key", None)
+        key, position = normalize_init_args(key, position, kwargs.pop("rng_key", None))
         proposal_state = distribution.model_state()
         return NeuralIMHState(
             position,
@@ -320,7 +325,7 @@ def neural_imh_warmup(
             fit_data = _concatenate_data(data, collected)
             fit_weights = collected_weights
             if data is not None:
-                num_seed = jax.tree.leaves(data)[0].shape[0]
+                num_seed = leading_dim(data)
                 fit_weights = jnp.concatenate((jnp.ones(num_seed), fit_weights))
             round_losses = proposal.fit(
                 fit_key,
@@ -357,8 +362,7 @@ def init_gaussian_imh_params(
     state: Any, mean: Array | None = None, cov: Array | None = None
 ) -> GaussianIMHParams:
     """Initialize the parameters for the Gaussian IMH kernel."""
-    position = state.position if hasattr(state, "position") else state
-    flat_position, _ = ravel_pytree(position)
+    flat_position = ravel_position(state)
     if mean is None:
         mean = flat_position
     if cov is None:

@@ -34,7 +34,7 @@ import blackjax
 from blackjax.sgmcmc.sgnht import SGNHTState
 from blackjax.util import generate_gaussian_noise
 
-from probjax.inference.mcmc.base import MarkovKernel
+from probjax.inference.mcmc.base import MarkovKernel, normalize_init_args
 from probjax.utils.typing import ArrayTree, RngKey, Scalar
 
 # ---------------------------------------------------------------------------
@@ -120,8 +120,7 @@ def _make_sgmcmc_kernel(
             raise ValueError("Either blackjax_init or state_init is required.")
 
         def default_state_init(key, position, rng_key):
-            if position is None:
-                position = key
+            _, position = normalize_init_args(key, position, rng_key)
             return SGMCMCState(position=blackjax_init(position))
 
         state_init = default_state_init
@@ -236,8 +235,7 @@ def sgnht(
     kernel = blackjax.sgnht.build_kernel(alpha=alpha, beta=beta)
 
     def sgnht_state_init(key, position, rng_key):
-        if position is None:
-            position, key = key, rng_key
+        key, position = normalize_init_args(key, position, rng_key)
         return _sgnht_init(position, rng_key=key, alpha=alpha)
 
     return _make_sgmcmc_kernel(

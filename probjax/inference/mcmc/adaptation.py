@@ -11,10 +11,10 @@ from blackjax.adaptation.mass_matrix import (
 from blackjax.adaptation.step_size import dual_averaging_adaptation
 from blackjax.adaptation.window_adaptation import base as window_adaptation_base
 from blackjax.adaptation.window_adaptation import build_schedule
-from jax.flatten_util import ravel_pytree
 
 from probjax.inference.adaptation import get_param, replace_params
 from probjax.inference.base import Adaptor, Kernel, Warmup, WarmupResult
+from probjax.inference.mcmc.base import ravel_position
 from probjax.utils.typing import RngKey
 
 
@@ -52,7 +52,7 @@ def mass_matrix_adaptor(*, diagonal: bool = True) -> Adaptor:
     init_mm, update_mm, final_mm = mass_matrix_adaptation(diagonal)
 
     def init(state: Any, params: Any) -> Any:
-        position, _ = ravel_pytree(state.position)
+        position = ravel_position(state)
         get_param(params, "inverse_mass_matrix")
         return init_mm(position.size)
 
@@ -86,14 +86,14 @@ def covariance_adaptor(
         raise ValueError(f"Unsupported covariance output: {output}")
 
     def init(state: Any, params: Any) -> CovarianceAdaptorState:
-        position, _ = ravel_pytree(state.position)
+        position = ravel_position(state)
         get_param(params, field)
         return CovarianceAdaptorState(init_cov(position.size))
 
     def update(
         state: Any, _info: Any, adaptor_state: CovarianceAdaptorState, params: Any
     ) -> tuple[CovarianceAdaptorState, Any, None]:
-        position, _ = ravel_pytree(state.position)
+        position = ravel_position(state)
         state_out = update_cov(adaptor_state.welford_state, position)
         return CovarianceAdaptorState(state_out), params, None
 
@@ -121,14 +121,14 @@ def mean_adaptor(
     init_mean, update_mean, final_mean = welford_algorithm(diagonal)
 
     def init(state: Any, params: Any) -> CovarianceAdaptorState:
-        position, _ = ravel_pytree(state.position)
+        position = ravel_position(state)
         get_param(params, field)
         return CovarianceAdaptorState(init_mean(position.size))
 
     def update(
         state: Any, _info: Any, adaptor_state: CovarianceAdaptorState, params: Any
     ) -> tuple[CovarianceAdaptorState, Any, None]:
-        position, _ = ravel_pytree(state.position)
+        position = ravel_position(state)
         state_out = update_mean(adaptor_state.welford_state, position)
         return CovarianceAdaptorState(state_out), params, None
 

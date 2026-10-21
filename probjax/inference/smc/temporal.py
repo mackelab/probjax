@@ -8,14 +8,15 @@ import jax
 import jax.numpy as jnp
 from blackjax.mcmc.proposal import static_binomial_sampling
 from blackjax.smc.base import map_fn
-from blackjax.smc.ess import ess as effective_sample_size
-from blackjax.smc.resampling import systematic
 from blackjax.smc.tuning.from_kernel_info import update_scale_from_acceptance_rate
 from jax.flatten_util import ravel_pytree
 
 from probjax.inference.filtering.observations import validate_observations
 from probjax.inference.filtering.state_space import TemporalResult
 from probjax.inference.filtering.temporal import scan_history, temporal_filter
+from probjax.inference.particles import take_batch
+from probjax.inference.smc.ess import ess as effective_sample_size
+from probjax.inference.smc.resampling import systematic
 from probjax.inference.smc.temporal_utils import population_covariance, replay_filter
 from probjax.utils.guards import ensure_int
 from probjax.utils.typing import Array, RngKey
@@ -39,7 +40,7 @@ class TemporalSMCState(NamedTuple):
     def posterior_samples(self, key: RngKey, num_samples: int) -> Any:
         """Draw ``num_samples`` parameters from the weighted population."""
         idx = jax.random.categorical(key, self.log_weights, shape=(num_samples,))
-        return jax.tree.map(lambda x: x[idx], self.parameters)
+        return take_batch(self.parameters, idx)
 
 
 class TemporalSMCInfo(NamedTuple):
@@ -254,8 +255,8 @@ def temporal_smc(
             lambda: systematic(resample_key, jnp.exp(log_weights), n),
             lambda: jnp.arange(n),
         ).astype(jnp.int32)
-        parameters, filter_states, log_likelihoods = jax.tree.map(
-            lambda x: x[ancestors], (state.parameters, filter_states, log_likelihoods)
+        parameters, filter_states, log_likelihoods = take_batch(
+            (state.parameters, filter_states, log_likelihoods), ancestors
         )
         weighted = state._replace(log_weights=log_weights)
         log_weights = jnp.asarray(jnp.where(resampled, -jnp.log(n), log_weights))

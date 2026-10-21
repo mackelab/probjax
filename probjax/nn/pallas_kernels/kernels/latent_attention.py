@@ -44,6 +44,7 @@ from ..kernel_utils import (
     NEG_INF,
     dot,
     get_dot_precision,
+    pad_to_multiple,
 )
 from ..kernel_utils.kernel_primitive import (
     KernelSpec,
@@ -68,12 +69,7 @@ from .attention import (
 
 def _pad_to_multiple(x: jax.Array, axis: int, multiple: int) -> jax.Array:
     """Zero-pad ``x`` along ``axis`` up to a multiple of ``multiple``."""
-    rem = -x.shape[axis] % multiple
-    if rem == 0:
-        return x
-    pads = [(0, 0)] * x.ndim
-    pads[axis] = (0, rem)
-    return jnp.pad(x, pads)
+    return pad_to_multiple(x, axis, multiple)
 
 
 def _mla_forward_kernel(

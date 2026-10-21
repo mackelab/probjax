@@ -31,6 +31,7 @@ from jaxtyping import Array
 from probjax.core import inverse_and_logabsdet
 from probjax.core.custom_primitives.sharded_primitive import batch_shard
 from probjax.stats.base import DistributionAPI
+from probjax.stats.utils import flatten_by_event_shape
 from probjax.utils.typing import ArrayLike, RngKey
 
 __all__ = [
@@ -145,17 +146,7 @@ class TransformedDistribution(DistributionAPI):
 
     def _flatten(self, x):
         """Flatten leading dims to a single vmap axis, keeping event dims."""
-        x = jnp.asarray(x)
-        event_ndim = len(self._event_shape)
-        if event_ndim:
-            if tuple(x.shape[-event_ndim:]) != self._event_shape:
-                raise ValueError(
-                    "Trailing dimensions of the input must match the event shape."
-                )
-            leading_shape = tuple(x.shape[:-event_ndim])
-        else:
-            leading_shape = tuple(x.shape)
-        return jnp.reshape(x, (-1,) + self._event_shape), leading_shape
+        return flatten_by_event_shape(x, self._event_shape)
 
     def rvs(
         self,

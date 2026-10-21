@@ -4,7 +4,7 @@ from typing import Any, Callable, NamedTuple, Optional, Tuple
 
 import jax.numpy as jnp
 
-from probjax.inference.filtering.base import FilterAPI
+from probjax.inference.filtering.base import FilterAPI, as_time
 from probjax.inference.filtering.gaussian import default_solve, innovation_loglik
 from probjax.utils.linalg import symmetrize_matrix
 from probjax.utils.typing import Array, ArrayLike, RngKey
@@ -22,11 +22,6 @@ class RankReducedKalmanFilterInfo(NamedTuple):
     cov_factor_pred: Array
     cov_core_pred: Array
     log_likelihood: Optional[Array] = None
-
-
-def _as_time(t: Optional[ArrayLike]) -> Optional[Array]:
-    """Normalize a filter time stamp to an array (or ``None``)."""
-    return None if t is None else jnp.asarray(t)
 
 
 def _factor_to_cov(cov_factor: Array, cov_core: Array) -> Array:
@@ -165,9 +160,7 @@ def init(
         process_noise_rank=rank,
         min_eig=min_eig,
     )
-    return RankReducedKalmanFilterState(
-        mean, cov_factor, cov_core, None if t is None else jnp.asarray(t)
-    )
+    return RankReducedKalmanFilterState(mean, cov_factor, cov_core, as_time(t))
 
 
 def build_kernel(
@@ -291,7 +284,7 @@ def build_kernel(
             )
 
             return RankReducedKalmanFilterState(
-                mu, U, S, _as_time(t)
+                mu, U, S, as_time(t)
             ), RankReducedKalmanFilterInfo(
                 mu_pred,
                 U_pred,
@@ -300,7 +293,7 @@ def build_kernel(
             )
 
         return RankReducedKalmanFilterState(
-            mu_pred, U_pred, S_pred, _as_time(t)
+            mu_pred, U_pred, S_pred, as_time(t)
         ), RankReducedKalmanFilterInfo(mu_pred, U_pred, S_pred, jnp.array(0.0))
 
     return kernel

@@ -10,9 +10,11 @@ from probjax.nn.layers.masked import MaskedLinear
 from probjax.nn.sharding import EMBED, HIDDEN, param_metadata
 from probjax.nn.utils import (
     DEFAULT_MODULE,
+    call_module,
     filter_precision_kwargs,
     filter_supported_kwargs,
     module_accepts_rng,
+    resolve_default_module,
 )
 from probjax.utils.typing import (
     Array,
@@ -95,14 +97,10 @@ class MLP(nnx.Module):
             param_dtype=param_dtype,
             preferred_element_type=preferred_element_type,
         )
-        norm_cls = type(self).norm_cls if norm_cls is DEFAULT_MODULE else norm_cls
-        linear_cls = (
-            type(self).linear_cls if linear_cls is DEFAULT_MODULE else linear_cls
-        )
-        context_fuse_cls = (
-            type(self).context_fuse_cls
-            if context_fuse_cls is DEFAULT_MODULE
-            else context_fuse_cls
+        norm_cls = resolve_default_module(self, "norm_cls", norm_cls)
+        linear_cls = resolve_default_module(self, "linear_cls", linear_cls)
+        context_fuse_cls = resolve_default_module(
+            self, "context_fuse_cls", context_fuse_cls
         )
 
         if len(feature_dims) < 2:
@@ -176,10 +174,8 @@ class MLP(nnx.Module):
         )
         self.norm_layers = nnx.List(norm_layers) if norm_cls is not None else None
         self.context_fuses = nnx.List(context_fuses) if _ctx_dim is not None else None
-        self._context_fuse_accepts_rng = (
-            tuple(module_accepts_rng(fuse) for fuse in self.context_fuses)
-            if self.context_fuses is not None
-            else None
+        self._context_fuse_accepts_rng = tuple(
+            module_accepts_rng(fuse) for fuse in self.context_fuses or ()
         )
         self.activation = activation
         self.activate_final = activate_final
@@ -195,35 +191,29 @@ class MLP(nnx.Module):
         Returns:
             Output array of shape [..., output_dim].
         """
-        h = (
-            self.layers[0](x, rng=rng)
-            if self._layer_accepts_rng[0]
-            else self.layers[0](x)
+        h = call_module(
+            self.layers[0], x, accepts_rng=self._layer_accepts_rng[0], rng=rng
         )
         h = self.activation(h)
         for i in range(1, len(self.layers) - 1):
-            h = (
-                self.layers[i](h, rng=rng)
-                if self._layer_accepts_rng[i]
-                else self.layers[i](h)
+            h = call_module(
+                self.layers[i], h, accepts_rng=self._layer_accepts_rng[i], rng=rng
             )
             if self.norm_layers is not None:
                 h = self.norm_layers[i - 1](h)
             h = self.activation(h)
             if self.context_fuses is not None:
-                if (
-                    self._context_fuse_accepts_rng is not None
-                    and self._context_fuse_accepts_rng[i - 1]
-                ):
-                    h = self.context_fuses[i - 1](h, context, rng=rng)
-                else:
-                    h = self.context_fuses[i - 1](h, context)
+                h = call_module(
+                    self.context_fuses[i - 1],
+                    h,
+                    context,
+                    accepts_rng=self._context_fuse_accepts_rng[i - 1],
+                    rng=rng,
+                )
 
         if len(self.layers) > 1:
-            out = (
-                self.layers[-1](h, rng=rng)
-                if self._layer_accepts_rng[-1]
-                else self.layers[-1](h)
+            out = call_module(
+                self.layers[-1], h, accepts_rng=self._layer_accepts_rng[-1], rng=rng
             )
         else:
             out = h
@@ -311,15 +301,11 @@ class ResNet(nnx.Module):
             param_dtype=param_dtype,
             preferred_element_type=preferred_element_type,
         )
-        context_fuse_cls = (
-            type(self).context_fuse_cls
-            if context_fuse_cls is DEFAULT_MODULE
-            else context_fuse_cls
+        context_fuse_cls = resolve_default_module(
+            self, "context_fuse_cls", context_fuse_cls
         )
-        norm_cls = type(self).norm_cls if norm_cls is DEFAULT_MODULE else norm_cls
-        linear_cls = (
-            type(self).linear_cls if linear_cls is DEFAULT_MODULE else linear_cls
-        )
+        norm_cls = resolve_default_module(self, "norm_cls", norm_cls)
+        linear_cls = resolve_default_module(self, "linear_cls", linear_cls)
 
         if in_features <= 0:
             raise ValueError(f"in_dim must be positive, got {in_features}")
@@ -400,10 +386,8 @@ class ResNet(nnx.Module):
         self.context_layers = (
             nnx.List(context_layers) if context_dim is not None else None
         )
-        self._context_layer_accepts_rng = (
-            tuple(module_accepts_rng(layer) for layer in self.context_layers)
-            if self.context_layers is not None
-            else None
+        self._context_layer_accepts_rng = tuple(
+            module_accepts_rng(layer) for layer in self.context_layers or ()
         )
 
     def __call__(
@@ -430,38 +414,35 @@ class ResNet(nnx.Module):
         if self.context_dim is None and context is not None:
             raise ValueError("context provided but context_dim is None")
 
-        h = (
-            self.in_layer(x, rng=rng)
-            if self._in_layer_accepts_rng
-            else self.in_layer(x)
+        h = call_module(
+            self.in_layer, x, accepts_rng=self._in_layer_accepts_rng, rng=rng
         )
         h = self.activation(h)
         for i in range(len(self.hidden_layers)):
             h_old = h
             if self.norm_layers is not None:
                 h = self.norm_layers[i](h)
-            h = (
-                self.hidden_layers[i](h, rng=rng)
-                if self._hidden_layer_accepts_rng[i]
-                else self.hidden_layers[i](h)
+            h = call_module(
+                self.hidden_layers[i],
+                h,
+                accepts_rng=self._hidden_layer_accepts_rng[i],
+                rng=rng,
             )
             h = self.activation(h)
             if self.context_layers is not None:
-                if (
-                    self._context_layer_accepts_rng is not None
-                    and self._context_layer_accepts_rng[i]
-                ):
-                    h = self.context_layers[i](h, context, rng=rng)
-                else:
-                    h = self.context_layers[i](h, context)
+                h = call_module(
+                    self.context_layers[i],
+                    h,
+                    context,
+                    accepts_rng=self._context_layer_accepts_rng[i],
+                    rng=rng,
+                )
 
             h = h + h_old
 
         if len(self.hidden_layers) > 0:
-            out = (
-                self.out_layer(h, rng=rng)
-                if self._out_layer_accepts_rng
-                else self.out_layer(h)
+            out = call_module(
+                self.out_layer, h, accepts_rng=self._out_layer_accepts_rng, rng=rng
             )
         else:
             out = h
@@ -512,9 +493,7 @@ class DeepSet(nnx.Module):
         Raises:
             ValueError: If phi or rho are None, or if dropout_rate is invalid.
         """
-        dropout_cls = (
-            type(self).dropout_cls if dropout_cls is DEFAULT_MODULE else dropout_cls
-        )
+        dropout_cls = resolve_default_module(self, "dropout_cls", dropout_cls)
 
         if not (0.0 <= dropout_rate <= 1.0):
             raise ValueError(

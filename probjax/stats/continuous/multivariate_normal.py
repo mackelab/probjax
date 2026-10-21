@@ -17,14 +17,6 @@ def _asarray_optional(value: Optional[Array]) -> Optional[Array]:
     return jnp.asarray(value)
 
 
-def _ensure_array(name: str, value: Optional[Array]) -> Array:
-    if value is None:
-        raise ValueError(
-            f"Parameter '{name}' must be provided for multivariate normal distribution."
-        )
-    return jnp.asarray(value)
-
-
 def _resolve_scale_tril(
     loc: Array,
     cov: Optional[Array],

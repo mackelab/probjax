@@ -5,7 +5,7 @@ from typing import Callable, NamedTuple, Optional, Tuple
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.filtering.base import FilterAPI
+from probjax.inference.filtering.base import FilterAPI, as_time
 from probjax.inference.filtering.gaussian import gaussian_unpack, innovation_loglik
 from probjax.utils.guards import call_if_callable
 from probjax.utils.typing import Array, ArrayLike, RngKey
@@ -194,11 +194,6 @@ def unscented_transform(
     return mean, cov
 
 
-def _as_time(t: Optional[ArrayLike]) -> Optional[Array]:
-    """Normalize a filter time stamp to an array (or ``None``)."""
-    return None if t is None else jnp.asarray(t)
-
-
 def init(
     mu0: ArrayLike, cov0: ArrayLike, t: Optional[ArrayLike] = None
 ) -> UnscentedKalmanFilterState:
@@ -212,9 +207,7 @@ def init(
     Returns:
         UnscentedKalmanFilterState: Initial state of the unscented Kalman filter
     """
-    return UnscentedKalmanFilterState(
-        jnp.asarray(mu0), jnp.asarray(cov0), None if t is None else jnp.asarray(t)
-    )
+    return UnscentedKalmanFilterState(jnp.asarray(mu0), jnp.asarray(cov0), as_time(t))
 
 
 def build_kernel(
@@ -313,12 +306,12 @@ def build_kernel(
             )
 
             return UnscentedKalmanFilterState(
-                mu1, cov1, _as_time(t)
+                mu1, cov1, as_time(t)
             ), UnscentedKalmanFilterInfo(mu1_, cov1_, log_likelihood)
         else:
             log_likelihood = jnp.array(0.0)
             return UnscentedKalmanFilterState(
-                mu1_, cov1_, _as_time(t)
+                mu1_, cov1_, as_time(t)
             ), UnscentedKalmanFilterInfo(mu1_, cov1_, log_likelihood)
 
     return kernel

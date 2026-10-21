@@ -31,7 +31,7 @@ from probjax.nn.training.kernel import (
     build_fit_kernel,
 )
 from probjax.utils.guards import ensure_int, is_tracing
-from probjax.utils.typing import PyTree, RngKey
+from probjax.utils.typing import PyTree, RngKey, is_typed_key
 
 __all__ = [
     "fit",
@@ -191,12 +191,7 @@ def _io_callbacks(callbacks, method, *args):
     if not selected:
         return jnp.asarray(False)
     leaves, tree = jax.tree.flatten(args)
-    impls = [
-        jax.random.key_impl(x)
-        if hasattr(x, "dtype") and jnp.issubdtype(x.dtype, jax.dtypes.prng_key)
-        else None
-        for x in leaves
-    ]
+    impls = [jax.random.key_impl(x) if is_typed_key(x) else None for x in leaves]
     buffers = [
         jax.random.key_data(x) if impl is not None else x
         for x, impl in zip(leaves, impls, strict=True)
@@ -440,12 +435,13 @@ def fit(
         num_examples = leaves[0].shape[0]
         if num_examples == 0 or any(a.shape[0] != num_examples for a in leaves):
             raise ValueError("batch leaves must share a nonempty leading example axis.")
-        if batch_size not in (None, "auto") and (
-            not isinstance(batch_size, int)
-            or isinstance(batch_size, bool)
-            or batch_size < 1
-        ):
-            raise ValueError("batch_size must be positive, None, or 'auto'.")
+        if batch_size not in (None, "auto"):
+            ensure_int(
+                "batch_size",
+                batch_size,
+                min_value=1,
+                message="batch_size must be positive, None, or 'auto'.",
+            )
         batch_size = _resolve_batch_size(batch_size, num_examples)
         num_steps = _resolve_num_steps(num_steps, num_examples, batch_size)
         fetch = _array_fetch(batch, batch_size, num_examples)

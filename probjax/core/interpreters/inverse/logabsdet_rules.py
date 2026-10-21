@@ -178,11 +178,8 @@ def value_and_log_det_diagonal(f: Any) -> Any:
     return log_det_fn
 
 
-def inverse_and_logabsdet_state_reducer(
-    env: Any, eqn: Any, state: Any, eqn_state: Any, context: Any = None
-) -> Any:
-    """State reducer for accumulating log-determinants."""
-    return merge_dict_state(env, eqn, state, eqn_state, context)
+#: State reducer for accumulating log-determinants.
+inverse_and_logabsdet_state_reducer = merge_dict_state
 
 
 # =============================================================================
@@ -713,14 +710,9 @@ register_univariate_inverse_logdet(
 # mul: z = x * y. Solving for x: x = z/y, dx/dz = 1/y => log|det| = -sum(log|y|)
 # The known operand may have been broadcast (e.g. scalar * vector); its logdet
 # contribution counts once per output element.
-def _mul_left_logdet(out_val: Any, result: Any, other: Any, params: Any) -> Any:
-    # Solving for left: left = out/right, d(left)/d(out) = 1/right
-    other = jnp.broadcast_to(other, jnp.shape(out_val))
-    return -jnp.sum(jnp.log(jnp.abs(other) + 1e-10))
-
-
-def _mul_right_logdet(out_val: Any, result: Any, other: Any, params: Any) -> Any:
-    # Solving for right: right = out/left, d(right)/d(out) = 1/left
+def _mul_logdet(out_val: Any, result: Any, other: Any, params: Any) -> Any:
+    # Solving for either side: the recovered factor is out/other, so
+    # d(factor)/d(out) = 1/other.
     other = jnp.broadcast_to(other, jnp.shape(out_val))
     return -jnp.sum(jnp.log(jnp.abs(other) + 1e-10))
 
@@ -729,8 +721,8 @@ register_bivariate_inverse_logdet(
     jax.lax.mul_p,
     jax.lax.div_p,
     jax.lax.div_p,
-    _mul_left_logdet,
-    _mul_right_logdet,
+    _mul_logdet,
+    _mul_logdet,
 )
 
 

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import (
     Any,
     Callable,
@@ -39,15 +39,15 @@ from typing import (
 
 import jax.numpy as jnp
 import numpy as np
-from jax._src import core as jax_core
 from jax.experimental import checkify
-from jax.extend.core import ClosedJaxpr, JaxprEqn, Literal, Primitive, Var
+from jax.extend.core import JaxprEqn, Literal, Primitive, Var
 
 from probjax.core.jaxpr_propagation.utils import (
     bind_primitive,
     rebind_primitive,
     sanitize_bind_params,
 )
+from probjax.utils.guards import is_tracing
 from probjax.utils.typing import PyTree
 
 # Atom is Var | Literal but not directly exported
@@ -371,7 +371,7 @@ def guard_is_statically_satisfied(valid: Any) -> bool:
     for it would put the per-primitive cost right back into every inverse, which
     is what this module exists to remove.
     """
-    if isinstance(valid, jax_core.Tracer):
+    if is_tracing(valid):
         return False
     # numpy, not jnp: inside an active trace even ``jnp.all(True)`` is staged
     # out, and the whole point here is to decide without emitting anything.
@@ -798,46 +798,3 @@ def forward_rule(
 
 # Register forward as the fallback for forward context
 REGISTRY.register_fallback(Context.FORWARD, forward_rule)
-
-
-# =============================================================================
-# Lazy JAXPR Construction
-# =============================================================================
-
-
-@dataclass
-class LazyJaxpr:
-    """
-    A lazily-constructed JAXPR that only traces when needed.
-
-    This avoids the eager tracing overhead in rv_p.bind() and custom_inverse()
-    when the JAXPR is not actually needed (e.g., in pure eager execution).
-
-    Usage:
-        # Instead of tracing immediately:
-        jaxpr = trace_fn(...)  # Always traces
-
-        # Use a thunk that only traces when needed:
-        lazy = LazyJaxpr(lambda: trace_fn(...))
-        ...
-        # Later, when actually needed:
-        jaxpr = lazy.get()  # Only traces now
-    """
-
-    _thunk: Callable[[], ClosedJaxpr]
-    _cached: Optional[ClosedJaxpr] = field(default=None, repr=False)
-
-    def get(self) -> ClosedJaxpr:
-        """Materialize the JAXPR, caching the result."""
-        if self._cached is None:
-            self._cached = self._thunk()
-        return self._cached
-
-    @property
-    def is_materialized(self) -> bool:
-        """Check if the JAXPR has been materialized."""
-        return self._cached is not None
-
-    def __repr__(self) -> str:
-        status = "materialized" if self.is_materialized else "lazy"
-        return f"LazyJaxpr({status})"

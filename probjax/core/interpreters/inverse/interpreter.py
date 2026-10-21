@@ -11,14 +11,13 @@ from __future__ import annotations
 from typing import Any, Callable
 
 import jax.numpy as jnp
-from jax._src import core as jax_core
 
-from probjax.core.custom_primitives.contracts import parse_custom_inverse_call_params
 from probjax.core.custom_primitives.custom_inverse import (
     custom_inverse,
     custom_inverse_call_p,
     custom_inverse_enabled,
 )
+from probjax.core.interpreters.inverse.utils import eval_custom_inverse_jaxpr
 from probjax.core.jaxpr_propagation.utils import (
     KnownessLevel,
     ProcessingRule,
@@ -181,31 +180,22 @@ class InverseProcessingRule(ProcessingRule):
         # Cannot process this equation
         return None
 
-    def _get_input_knowness_levels(self, eqn, context) -> list[KnownessLevel]:
-        """Get the knowness levels for input variables."""
+    def _get_knowness_levels(self, vars_, context) -> list[KnownessLevel]:
+        """Get the knowness levels for the given variables."""
         if context is None or not hasattr(context, "env"):
             # Fallback: assume all known values are COMPLETE
-            return [KnownessLevel.COMPLETE] * len(eqn.invars)
+            return [KnownessLevel.COMPLETE] * len(vars_)
 
         env = context.env
-        levels = []
-        for var in eqn.invars:
-            level = env.get_knowness_level(var)
-            levels.append(level)
-        return levels
+        return [env.get_knowness_level(var) for var in vars_]
+
+    def _get_input_knowness_levels(self, eqn, context) -> list[KnownessLevel]:
+        """Get the knowness levels for input variables."""
+        return self._get_knowness_levels(eqn.invars, context)
 
     def _get_output_knowness_levels(self, eqn, context) -> list[KnownessLevel]:
         """Get the knowness levels for output variables."""
-        if context is None or not hasattr(context, "env"):
-            # Fallback: assume all known values are COMPLETE
-            return [KnownessLevel.COMPLETE] * len(eqn.outvars)
-
-        env = context.env
-        levels = []
-        for var in eqn.outvars:
-            level = env.get_knowness_level(var)
-            levels.append(level)
-        return levels
+        return self._get_knowness_levels(eqn.outvars, context)
 
     def _process_custom_inverse_call(
         self, eqn, known_invars, known_outvars
@@ -224,28 +214,10 @@ class InverseProcessingRule(ProcessingRule):
                     return result
             return None
 
-        custom_params = parse_custom_inverse_call_params(eqn.params)
-        inverse_jaxpr = custom_params.inverse_jaxpr_thunk()
-
-        jaxpr = inverse_jaxpr.jaxpr
-        consts = inverse_jaxpr.literals
-
-        target_indices = set(custom_params.target_in_indices)
-        inputs = []
-        outputs_inserted = False
-        for index, value in enumerate(known_invars):
-            if index in target_indices:
-                if not outputs_inserted:
-                    inputs.extend(known_outvars)
-                    outputs_inserted = True
-                continue
-            if value is None:
-                return None
-            inputs.append(value)
-
-        out = jax_core.eval_jaxpr(jaxpr, consts, *inputs)
-
-        invars = [eqn.invars[index] for index in custom_params.target_in_indices]
+        evaluated = eval_custom_inverse_jaxpr(eqn, known_invars, known_outvars)
+        if evaluated is None:
+            return None
+        invars, out = evaluated
         vals = list(out[: len(invars)])
 
         return ProcessedResult(invars, vals)

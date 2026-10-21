@@ -15,6 +15,7 @@ from probjax.stats import (
     chi2,
     dirac,
     dirichlet,
+    empirical,
     expon,
     gamma,
     geometric,
@@ -794,6 +795,39 @@ def test_geometric_rvs_and_logpdf_alignment(seed: int = 0):
     assert jnp.allclose(observed_logpdf, expected_logpdf, atol=1e-6, rtol=1e-6)
 
     assert dist.logpdf(jnp.array(-1.0)) == -jnp.inf
+
+
+def test_empirical_frozen_methods_match_the_distribution():
+    """The frozen Empirical distribution must reproduce the unfrozen methods."""
+    values = jnp.array([1.0, 2.0, 3.0])
+    weights = jnp.array([0.2, 0.3, 0.5])
+    dist = empirical()
+    frozen = dist.freeze(values=values, weights=weights)
+
+    assert jnp.allclose(frozen.pmf(2.0), dist.pmf(2.0, values, weights))
+    assert jnp.allclose(frozen.logpmf(2.0), dist.logpmf(2.0, values, weights))
+    assert jnp.allclose(frozen.cdf(2.5), dist.cdf(2.5, values, weights))
+    assert jnp.allclose(frozen.ppf(0.4), dist.ppf(0.4, values, weights))
+    assert jnp.allclose(frozen.mean(), dist.mean(values, weights))
+    assert jnp.allclose(frozen.var(), dist.var(values, weights))
+    assert jnp.allclose(frozen.entropy(), dist.entropy(values, weights))
+    assert jnp.allclose(frozen.mode(), dist.mode(values, weights))
+    assert jnp.allclose(frozen.support()[0], dist.support(values, weights)[0])
+    assert jnp.allclose(frozen.support()[1], dist.support(values, weights)[1])
+
+
+def test_empirical_rvs_respects_the_requested_shape():
+    """Sampling from the Empirical distribution must honour ``shape``."""
+    values = jnp.array([1.0, 2.0, 3.0])
+    dist = empirical().freeze(values=values)
+
+    sample = dist.rvs(jax.random.PRNGKey(0))
+    assert sample.shape == ()
+    assert jnp.any(jnp.isin(sample, values))
+
+    samples = dist.rvs(jax.random.PRNGKey(0), shape=(64,))
+    assert samples.shape == (64,)
+    assert jnp.all(jnp.isin(samples, values))
 
 
 @pytest.mark.parametrize("dist", CONTINUOUS_DIST)

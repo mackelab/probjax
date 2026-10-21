@@ -14,7 +14,11 @@ from jax.scipy.special import i0, i1
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive
-from probjax.stats.utils import flatten_samples, normalize_sample_weights
+from probjax.stats.utils import (
+    circular_mean_and_resultant,
+    flatten_samples,
+    normalize_sample_weights,
+)
 from probjax.utils.jaxutils import where
 from probjax.utils.typing import ArrayLike, RngKey
 
@@ -242,14 +246,7 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
             n_samples=data.shape[0],
             dtype=data.dtype,
         )
-        if weights_arr is not None:
-            s = jnp.sum(weights_arr * jnp.sin(data))
-            c = jnp.sum(weights_arr * jnp.cos(data))
-        else:
-            s = jnp.mean(jnp.sin(data))
-            c = jnp.mean(jnp.cos(data))
-        loc = jnp.arctan2(s, c)
-        R = jnp.sqrt(c**2 + s**2)
+        loc, R = circular_mean_and_resultant(data, weights_arr)
         tiny = jnp.asarray(1e-6, dtype=data.dtype)
 
         def approx_kappa(r):

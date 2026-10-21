@@ -6,8 +6,7 @@ interpreter. Rule registration lives in the unified REGISTRY from
 probjax.core.registry.
 """
 
-import importlib
-from typing import Any, Sequence, cast
+from typing import Any, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -15,18 +14,7 @@ import jax.numpy as jnp
 from probjax.core.custom_primitives.custom_inverse import custom_inverse_call_p
 from probjax.core.interpreters.inverse.utils import scan_arity
 from probjax.core.registry import REGISTRY, Context
-
-# pjit primitive import (varies by JAX version)
-try:
-    pjit_mod = importlib.import_module("jax.experimental.pjit")
-except ImportError:
-    pjit_mod = None
-
-pjit_p = getattr(cast(Any, pjit_mod), "pjit_p", None)
-if pjit_p is None:
-    # JAX 0.7+
-    from jax._src.pjit import jit_p as pjit_p
-
+from probjax.utils.jaxutils import pjit_p
 
 # =============================================================================
 # Utility Functions

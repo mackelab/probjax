@@ -33,7 +33,7 @@ from probjax.nn.generative.sampling import (
     sample_normal,
 )
 from probjax.nn.losses.denoising import build_time_dependent_denoising_loss
-from probjax.nn.utils import module_accepts_rng
+from probjax.nn.utils import call_module, module_accepts_rng
 from probjax.utils.protocols import TimeDependentModelFn
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
 
@@ -106,14 +106,9 @@ class DiffusionDenoiser(GenerativeModel):
         self.std0 = nnx.Variable(std0)
         self.last_layer = last_layer
 
-    def _normalize_event_spec(self, event_spec, dtype=None):
-        spec = super()._normalize_event_spec(event_spec, dtype)
-        if any(
-            not jnp.issubdtype(leaf.dtype, jnp.floating)
-            for leaf in jax.tree.leaves(spec)
-        ):
-            raise TypeError("Continuous diffusion event dtypes must be floating point.")
-        return spec
+    _floating_event_dtype_error = (
+        "Continuous diffusion event dtypes must be floating point."
+    )
 
     def set_solver_cfg(self, solver_cfg: SolverConfigProtocol) -> None:
         if not isinstance(solver_cfg, SolverConfigProtocol):
@@ -243,10 +238,15 @@ class DiffusionDenoiser(GenerativeModel):
     ) -> PyTree[Array]:
         noise_embed = self.c_t(t)
         x_embed = jax.tree_util.tree_map(lambda x: self.c_in(t) * x, x_t)
-        if self._net_accepts_rng:
-            out = self.net(noise_embed, x_embed, *args, rng=rng, **kwargs)
-        else:
-            out = self.net(noise_embed, x_embed, *args, **kwargs)
+        out = call_module(
+            self.net,
+            noise_embed,
+            x_embed,
+            *args,
+            accepts_rng=self._net_accepts_rng,
+            rng=rng,
+            **kwargs,
+        )
         if self.last_layer is not None:
             out = jax.tree_util.tree_map(self.last_layer, out)
         return out

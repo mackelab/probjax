@@ -286,6 +286,12 @@ class BaseNoiseSchedule(NoiseScheduleProtocol):
     def std(self, t: ArrayLike) -> Array:
         raise NotImplementedError
 
+    def _u(self, t: ArrayLike) -> Array:
+        """Raw normalized time in [0, 1]."""
+        span = self.t_max - self.t_min
+        u = (jnp.asarray(t) - self.t_min) / span
+        return jnp.clip(u, 0.0, 1.0)
+
     # ---- sigma_eff & inverse ----
 
     def sigma_eff(self, t: ArrayLike) -> Array:
@@ -396,11 +402,6 @@ class VENoiseSchedule(BaseNoiseSchedule):
         if self.t_max <= self.t_min:
             raise ValueError("t_max must be greater than t_min for VE.")
 
-    def _u(self, t: ArrayLike) -> Array:
-        span = self.t_max - self.t_min
-        u = (jnp.asarray(t) - self.t_min) / span
-        return jnp.clip(u, 0.0, 1.0)
-
     def scale(self, t: ArrayLike) -> Array:
         return jnp.asarray(1.0)
 
@@ -458,12 +459,6 @@ class VPNoiseSchedule(BaseNoiseSchedule):
             raise ValueError("min_tau must be in [0,1) for VP.")
 
     # ---- helpers ----
-
-    def _u(self, t: ArrayLike) -> Array:
-        """Raw normalized time in [0,1]."""
-        span = self.t_max - self.t_min
-        u = (jnp.asarray(t) - self.t_min) / span
-        return jnp.clip(u, 0.0, 1.0)
 
     def _tau(self, t: ArrayLike) -> Array:
         """Beta parameterization time."""
@@ -551,11 +546,6 @@ class CosineNoiseSchedule(BaseNoiseSchedule):
             raise ValueError("t_max must be greater than t_min for cosine schedule.")
         if self.s < 0.0:
             raise ValueError("offset s must be non-negative for cosine schedule.")
-
-    def _u(self, t: ArrayLike) -> Array:
-        span = self.t_max - self.t_min
-        u = (jnp.asarray(t) - self.t_min) / span
-        return jnp.clip(u, 0.0, 1.0)
 
     def _theta(self, t: ArrayLike) -> Array:
         u = self._u(t)
