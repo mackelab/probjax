@@ -5,7 +5,7 @@ from flax import nnx
 
 from probjax.inference import MCMC, neural_imh, neural_imh_warmup
 from probjax.inference.mcmc.imh import _limit_data, _rao_blackwellized_data
-from probjax.nn import LinearFlow, maf
+from probjax.nn import FitConfig, LinearFlow, maf
 
 
 def _normal_logdensity(position):
@@ -15,7 +15,7 @@ def _normal_logdensity(position):
 def test_neural_imh_runs_in_compiled_mcmc():
     proposal = maf(1, 1, rngs=nnx.Rngs(0))
     kernel = neural_imh(_normal_logdensity, proposal)
-    state = kernel.init(jnp.zeros(1))
+    state = kernel.init(None, jnp.zeros(1))
     params = kernel.init_params(state)
 
     result = MCMC(kernel, collect_info=("acceptance_rate",)).sample(
@@ -30,7 +30,7 @@ def test_neural_imh_runs_in_compiled_mcmc():
 def test_neural_imh_warmup_fits_chain_positions_without_data():
     proposal = maf(1, 1, rngs=nnx.Rngs(0))
     kernel = neural_imh(_normal_logdensity, proposal)
-    state = kernel.init(jnp.array([1.5]))
+    state = kernel.init(None, jnp.array([1.5]))
     params = kernel.init_params(state)
     warmup = neural_imh_warmup(
         proposal,
@@ -57,7 +57,7 @@ def test_neural_imh_warmup_augments_chain_with_data():
     seed_data = jax.random.normal(jax.random.key(0), (128, 1)) * 0.4 + 2.0
     density_before = distribution.logpdf(seed_data).mean()
     kernel = neural_imh(_normal_logdensity, proposal)
-    state = kernel.init(jnp.array([1.5]))
+    state = kernel.init(None, jnp.array([1.5]))
     params = kernel.init_params(state)
 
     result = MCMC(kernel).warmup(
@@ -83,13 +83,12 @@ def test_neural_imh_warmup_resumes_from_kernel_params():
     proposal = maf(1, 1, rngs=nnx.Rngs(0))
     proposal.fit_standardization(jnp.zeros((32, 1)))
     kernel = neural_imh(_normal_logdensity, proposal)
-    state = kernel.init(jnp.array([1.5]))
+    state = kernel.init(None, jnp.array([1.5]))
     params = kernel.init_params(state)
     proposal.fit(
         jax.random.key(0),
         jnp.full((32, 1), 8.0),
-        num_steps=10,
-        learning_rate=1e-2,
+        config=FitConfig(max_steps=10, learning_rate=1e-2),
     )
 
     result = MCMC(kernel).warmup(

@@ -37,7 +37,7 @@ def test_built_kernels_keep_default_adaptation():
 def test_kernel_init_tolerates_missing_rng_key():
     # BlackJAX inits take no rng_key; the subclass shim absorbs it.
     built = hmc(_gaussian_logdensity)
-    state = built.init(jnp.zeros(2), rng_key=jax.random.key(0))
+    state = built.init(jax.random.key(0), jnp.zeros(2))
     assert state is not None
 
 

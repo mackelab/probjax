@@ -1,7 +1,7 @@
 """Pseudo-Marginal MCMC.
 
 Wraps any probjax MCMC kernel to work with a stochastic (unbiased)
-log-density estimator ``stochastic_logdensity_fn(position, rng_key) -> float``.
+log-density estimator ``stochastic_logdensity_fn(position, rng) -> float``.
 
 At each step a fresh PRNG key is drawn and held fixed for the duration of
 the inner kernel step, making the noisy log-density deterministic within
@@ -24,23 +24,23 @@ Usage::
     from probjax.inference.mcmc.pmmcmc import pseudo_marginal
 
 
-    def stochastic_logdensity(position, rng_key):
+    def stochastic_logdensity(position, rng):
         # e.g. run a particle filter / importance sampler
         return unbiased_log_marginal_likelihood_estimate
 
 
     kernel = pseudo_marginal(hmc, stochastic_logdensity, num_integration_steps=10)
-    state = kernel.init(position, rng_key=key)
+    state = kernel.init(key, position)
     params = kernel.init_params(state)
     new_state, info = kernel.step(key, state, params)
 """
 
-from typing import Callable
+from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.mcmc.base import MarkovKernel, normalize_init_args
+from probjax.inference.mcmc.base import MarkovKernel
 from probjax.utils.jaxutils import as_configured
 from probjax.utils.typing import RngKey
 
@@ -84,9 +84,9 @@ def pseudo_marginal(
             ``hmc.configure(num_integration_steps=10)``) that exposes
             ``build_step``, ``init`` and ``init_params``.
         stochastic_logdensity_fn: A callable
-            ``(position, rng_key) -> float`` that returns an unbiased
+            ``(position, rng) -> float`` that returns an unbiased
             estimate of the log-density (or log-marginal-likelihood)
-            given auxiliary randomness from *rng_key*.
+            given auxiliary randomness from *rng*.
         num_samples: Number of independent keys to evaluate and average
             for variance reduction (default 1).
         **inner_kernel_kwargs: Options for the inner kernel. They are routed
@@ -106,25 +106,22 @@ def pseudo_marginal(
     # ------------------------------------------------------------------
     # init: evaluate the stochastic logdensity once to populate state
     # ------------------------------------------------------------------
-    def init(key, position=None, rng_key=None):
-        key, position = normalize_init_args(key, position, rng_key)
-        if key is None:
-            key = jax.random.PRNGKey(0)
-        key_init, key_logdensity = jax.random.split(key)
+    def init(rng: RngKey, position: Any):
+        key_init, key_logdensity = jax.random.split(rng)
         fixed_logdensity = _make_fixed_logdensity(
             stochastic_logdensity_fn, key_logdensity, num_samples
         )
         # The inner kernel's underlying init (e.g. blackjax.hmc.init)
         # takes (position, logdensity_fn) and evaluates at position.
         return configured.init(
-            position, logdensity_fn=fixed_logdensity, rng_key=key_init
+            position, logdensity_fn=fixed_logdensity, rng=key_init
         )
 
     # ------------------------------------------------------------------
     # step: fix randomness for this transition, delegate to inner kernel
     # ------------------------------------------------------------------
-    def step(key: RngKey, state, params, *args):
-        key_kernel, key_logdensity = jax.random.split(key)
+    def step(rng, state, params, *args):
+        key_kernel, key_logdensity = jax.random.split(rng)
         fixed_logdensity = _make_fixed_logdensity(
             stochastic_logdensity_fn, key_logdensity, num_samples
         )

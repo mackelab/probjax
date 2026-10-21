@@ -34,17 +34,6 @@ def normalize_spec(value, dtype=jnp.float32) -> PyTree[jax.ShapeDtypeStruct]:
     return jax.tree.map(to_struct, value, is_leaf=is_leaf)
 
 
-def spec_from_value(value) -> PyTree[jax.ShapeDtypeStruct]:
-    """Build a shape/dtype spec matching a concrete pytree value."""
-    return jax.tree.map(
-        lambda leaf: jax.ShapeDtypeStruct(
-            jnp.asarray(leaf).shape,
-            jnp.asarray(leaf).dtype,
-        ),
-        value,
-    )
-
-
 def spec_cache_key(spec) -> tuple:
     """Return a hashable cache-key component for a spec."""
     if spec is None:

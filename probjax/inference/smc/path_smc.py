@@ -14,7 +14,7 @@ from probjax.inference.smc.base import (
     make_mcmc_adapter,
 )
 from probjax.inference.smc.resampling import systematic
-from probjax.utils.typing import Array, RngKey
+from probjax.utils.typing import Array
 
 
 class PathSMCState(NamedTuple):
@@ -83,7 +83,7 @@ def build_step(
         path_kwargs = path_kwargs
 
     def step(
-        rng_key: RngKey, state: Any, tempering_param: Any, mcmc_parameters: Any
+        rng, state: Any, tempering_param: Any, mcmc_parameters: Any
     ) -> Any:
         log_weights_fn, logposterior_fn = _log_weights_fn(
             path,
@@ -94,7 +94,7 @@ def build_step(
             **path_kwargs,
         )
         smc_state, info = delegate(
-            rng_key,
+            rng,
             state,
             num_mcmc_steps,
             mcmc_parameters,
@@ -116,7 +116,7 @@ def init_params(
     logprior_fn: Callable | None,
     loglikelihood_fn: Callable | None,
     mcmc_kernel: Any,
-    rng_key: RngKey | None = None,
+    rng = None,
     initial_path_param: Any = None,
     mcmc_kernel_kwargs: dict[str, Any] | None = None,
     path_kwargs: dict[str, Any] | None = None,
@@ -144,7 +144,7 @@ def init_params(
         particles,
         logposterior_fn,
         mcmc_kernel,
-        rng_key=rng_key,
+        rng=rng,
         mcmc_kernel_kwargs=mcmc_kernel_kwargs,
         allow_kwargs=True,
         **mcmc_param_kwargs,

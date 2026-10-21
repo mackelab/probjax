@@ -125,30 +125,28 @@ axis) or an iterable of batches:
 import jax
 import jax.numpy as jnp
 
+from probjax.nn import DataSpec, FitConfig
 from probjax.nn.training import fit
 
 
-def loss_fn(params, rng, batch):
+def loss_fn(params, rng, primary):
     del rng
-    return jnp.mean((batch["data"] - params["w"]) ** 2)
+    return jnp.mean((primary - params["w"]) ** 2)
 
 
 data = jax.random.normal(jax.random.key(0), (64, 2))
-params, losses = fit(
-    loss_fn, {"w": jnp.zeros(2)}, jax.random.key(1), {"data": data},
-    num_steps=20, learning_rate=1e-2,
-)
-assert losses.shape == (20,)
-```
-
-Pass `return_result=True` to get a `FitResult` carrying `params`, `losses` and a
-resumable `state` (`FitState`), along with `FitInfo` and early-stopping fields:
-
-```python
 result = fit(
     loss_fn, {"w": jnp.zeros(2)}, jax.random.key(1), {"data": data},
-    num_steps=20, return_result=True,
+    config=FitConfig(data=DataSpec(primary="data"), max_steps=20,
+                      learning_rate=1e-2),
 )
+assert result.losses.shape == (20,)
+```
+
+A `FitResult` carries the trained `params`, the `losses` and a resumable
+`state` (`FitState`):
+
+```python
 assert result.params["w"].shape == (2,)
 ```
 

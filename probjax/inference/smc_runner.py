@@ -10,7 +10,7 @@ import jax.numpy as jnp
 
 from probjax.inference.base import Adaptor, RunnerMixin, SMCResult
 from probjax.utils.guards import ensure_int
-from probjax.utils.typing import Array, PyTree, RngKey
+from probjax.utils.typing import Array, PyTree
 
 
 def _sampler_state(state: Any) -> Any:
@@ -46,7 +46,7 @@ def _initial_evidence(state: Any, supplied: Any) -> Array:
 
 
 def _run_fixed(
-    key: RngKey,
+    rng,
     kernel: Any,
     state: Any,
     schedule: Any,
@@ -63,7 +63,7 @@ def _run_fixed(
     n = schedule.shape[0]
     prototype = jnp.zeros(schedule.shape[1:], schedule.dtype)
     info = _zero_info(
-        kernel.step, key, state, tempering_param=prototype, mcmc_parameters=params
+        kernel.step, rng, state, tempering_param=prototype, mcmc_parameters=params
     )
     adaptation = () if adaptor is None else adaptor.init(state, params)
     evidence = _initial_evidence(state, initial_log_evidence)
@@ -88,7 +88,7 @@ def _run_fixed(
             return carry, (verbose._extract_stats(state, info), trace)
         return carry, trace
 
-    carry = (key, state, params, adaptation, evidence, info)
+    carry = (rng, state, params, adaptation, evidence, info)
     if verbose is None:
         (key, state, params, adaptation, logz, info), trace = jax.lax.scan(
             step, carry, schedule
@@ -146,7 +146,7 @@ class SMC(RunnerMixin):
     @staticmethod
     @partial(jax.jit, static_argnames=("kernel", "collect"))
     def run_kernel(
-        key: RngKey,
+        rng,
         kernel: Any,
         state: Any,
         tempering_params: Any,
@@ -156,7 +156,7 @@ class SMC(RunnerMixin):
         initial_log_evidence: Any = None,
     ) -> SMCResult:
         return _run_fixed(
-            key,
+            rng,
             kernel,
             state,
             tempering_params,
@@ -168,7 +168,7 @@ class SMC(RunnerMixin):
     @staticmethod
     @partial(jax.jit, static_argnames=("kernel", "adaptor", "collect"))
     def adapt_kernel(
-        key: RngKey,
+        rng,
         kernel: Any,
         adaptor: Adaptor,
         state: Any,
@@ -179,7 +179,7 @@ class SMC(RunnerMixin):
         initial_log_evidence: Any = None,
     ) -> SMCResult:
         return _run_fixed(
-            key,
+            rng,
             kernel,
             state,
             tempering_params,
@@ -192,7 +192,7 @@ class SMC(RunnerMixin):
     @staticmethod
     @partial(jax.jit, static_argnames=("kernel", "max_steps", "adaptor"))
     def run_adaptive_kernel(
-        key: RngKey,
+        rng,
         kernel: Any,
         state: Any,
         params: Any,
@@ -208,7 +208,7 @@ class SMC(RunnerMixin):
         Key/state/params can be passed back to resume a capped run.
         """
         ensure_int("max_steps", max_steps, min_value=1)
-        info = _zero_info(kernel.step, key, state, mcmc_parameters=params)
+        info = _zero_info(kernel.step, rng, state, mcmc_parameters=params)
         adaptation = () if adaptor is None else adaptor.init(state, params)
         evidence = _initial_evidence(state, initial_log_evidence)
 
@@ -237,7 +237,7 @@ class SMC(RunnerMixin):
             cond,
             body,
             (
-                key,
+                rng,
                 state,
                 params,
                 adaptation,
@@ -263,7 +263,7 @@ class SMC(RunnerMixin):
 
     def run(
         self,
-        key: RngKey,
+        rng,
         state: Any,
         tempering_params: Any,
         params: Any,
@@ -272,7 +272,7 @@ class SMC(RunnerMixin):
     ) -> SMCResult:
         if self.verbose:
             return _run_fixed(
-                key,
+                rng,
                 self.kernel,
                 state,
                 tempering_params,
@@ -282,7 +282,7 @@ class SMC(RunnerMixin):
                 initial_log_evidence=initial_log_evidence,
             )
         return self.run_kernel(
-            key,
+            rng,
             self.kernel,
             state,
             tempering_params,
@@ -293,7 +293,7 @@ class SMC(RunnerMixin):
 
     def sample(
         self,
-        key: RngKey,
+        rng,
         state: Any,
         tempering_params: Any,
         params: Any,
@@ -302,7 +302,7 @@ class SMC(RunnerMixin):
     ) -> SMCResult:
         if not self.verbose:
             return self.run_kernel(
-                key,
+                rng,
                 self.kernel,
                 state,
                 tempering_params,
@@ -311,7 +311,7 @@ class SMC(RunnerMixin):
                 initial_log_evidence=initial_log_evidence,
             )
         return _run_fixed(
-            key,
+            rng,
             self.kernel,
             state,
             tempering_params,
@@ -323,7 +323,7 @@ class SMC(RunnerMixin):
 
     def adapt(
         self,
-        key: RngKey,
+        rng,
         adaptor: Adaptor,
         state: Any,
         tempering_params: Any,
@@ -333,7 +333,7 @@ class SMC(RunnerMixin):
     ) -> SMCResult:
         if not self.verbose:
             return self.adapt_kernel(
-                key,
+                rng,
                 self.kernel,
                 adaptor,
                 state,
@@ -343,7 +343,7 @@ class SMC(RunnerMixin):
                 initial_log_evidence=initial_log_evidence,
             )
         return _run_fixed(
-            key,
+            rng,
             self.kernel,
             state,
             tempering_params,
@@ -356,7 +356,7 @@ class SMC(RunnerMixin):
 
     def run_adaptive(
         self,
-        key: RngKey,
+        rng,
         state: Any,
         params: Any,
         *,
@@ -365,7 +365,7 @@ class SMC(RunnerMixin):
         initial_log_evidence: Any = None,
     ) -> SMCResult:
         return self.run_adaptive_kernel(
-            key,
+            rng,
             self.kernel,
             state,
             params,

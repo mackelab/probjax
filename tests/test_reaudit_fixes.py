@@ -103,7 +103,7 @@ def test_logdet_dense_gradient_and_truncated_directional_derivative():
         )
         direction = jnp.diag(jnp.arange(1.0, 6.0))
         objective = lambda t: lanczos_logdet(
-            a + t * direction, num_steps=2, num_probes=2, key=jax.random.key(2)
+            a + t * direction, num_steps=2, num_probes=2, rng=jax.random.key(2)
         )
         difference = (objective(1e-5) - objective(-1e-5)) / 2e-5
         np.testing.assert_allclose(jax.grad(objective)(0.0), difference, rtol=1e-7)

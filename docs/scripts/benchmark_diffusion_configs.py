@@ -23,7 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
-from probjax.nn import MLP, TimeMLP
+from probjax.nn import MLP, TimeMLP, FitConfig
 from probjax.nn.generative.diffusion import EDM, VE, VP, CosineDM, DiffusionDenoiser
 from probjax.nn.generative.diffusion import config as C
 from probjax.nn.generative.discrete import config as D
@@ -356,11 +356,13 @@ def run_case(case, args):
         losses = model.fit(
             jax.random.key(case["seed"] + 101),
             data,
-            num_steps=args.train_steps,
-            batch_size=128,
-            learning_rate=1e-3,
-            clip_norm=10.0,
-        )
+            config=FitConfig(
+                max_steps=args.train_steps,
+                batch_size=128,
+                learning_rate=1e-3,
+                clip_norm=10.0,
+            ),
+        ).losses
         jax.block_until_ready(losses)
         training_time = time.perf_counter() - start
         model.set_solver_cfg(
@@ -420,11 +422,13 @@ def run_case(case, args):
         losses = model.fit(
             jax.random.key(seed + 101),
             data,
-            num_steps=args.train_steps,
-            batch_size=128,
-            learning_rate=1e-3,
-            clip_norm=10.0,
-        )
+            config=FitConfig(
+                max_steps=args.train_steps,
+                batch_size=128,
+                learning_rate=1e-3,
+                clip_norm=10.0,
+            ),
+        ).losses
         jax.block_until_ready(losses)
         metrics.update({
             "training_seconds": time.perf_counter() - start,

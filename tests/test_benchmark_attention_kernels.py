@@ -18,6 +18,9 @@ from probjax.nn.pallas_kernels import (
 )
 from probjax.nn.pallas_kernels.kernels.mamba import _mamba_scan_reference
 
+#: The benchmark suite is long-running; skip it with ``-m 'not slow'``.
+pytestmark = pytest.mark.slow
+
 BATCH_SIZE = 32
 SEQ_LEN = 1024
 NUM_HEADS = 8

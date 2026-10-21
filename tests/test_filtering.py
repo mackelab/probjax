@@ -116,7 +116,7 @@ class TestFilterKernel:
         """FilterKernel should be callable via __call__."""
         kernel = kalman_filter(transition_model, observation_model)
         state = kernel.init(mu0, cov0, t=0.0)
-        new_state, info = kernel(state, t=1.0, observed=None, rng_key=None)
+        new_state, info = kernel(state, t=1.0, observed=None, rng=None)
         assert new_state.mean.shape == mu0.shape
 
     def test_kalman_default_unpack(self):
@@ -138,7 +138,7 @@ class TestKalmanFilter:
         """Test a single predict step (no observation)."""
         kernel = kalman_filter(transition_model, observation_model)
         state = kernel.init(mu0, cov0, t=0.0)
-        new_state, info = kernel(state, t=1.0, observed=None, rng_key=None)
+        new_state, info = kernel(state, t=1.0, observed=None, rng=None)
 
         expected_mean = A @ mu0
         expected_cov = A @ cov0 @ A.T + Q
@@ -152,7 +152,7 @@ class TestKalmanFilter:
         state = kernel.init(mu0, cov0, t=0.0)
 
         y = jnp.array([1.0])
-        new_state, info = kernel(state, t=1.0, observed=y, rng_key=None)
+        new_state, info = kernel(state, t=1.0, observed=y, rng=None)
 
         # After predict + update, covariance should be smaller than predict-only
         predict_cov = A @ cov0 @ A.T + Q
@@ -295,7 +295,7 @@ class TestSquareRootKalmanFilter:
         """Test predict step of square root KF."""
         kernel = sq_kalman_filter(A, jnp.linalg.cholesky(Q), C, R)
         state = kernel.init(mu0, std0, t=0.0)
-        new_state, info = kernel(state, t=1.0, observed=None, rng_key=None)
+        new_state, info = kernel(state, t=1.0, observed=None, rng=None)
 
         # Mean should match standard KF predict
         expected_mean = A @ mu0
@@ -306,7 +306,7 @@ class TestSquareRootKalmanFilter:
         kernel = sq_kalman_filter(A, jnp.linalg.cholesky(Q), C, R)
         state = kernel.init(mu0, std0, t=0.0)
         y = jnp.array([1.0])
-        new_state, info = kernel(state, t=1.0, observed=y, rng_key=None)
+        new_state, info = kernel(state, t=1.0, observed=y, rng=None)
 
         assert jnp.all(jnp.isfinite(new_state.mean))
         assert jnp.all(jnp.isfinite(new_state.std))
@@ -474,7 +474,7 @@ class TestParticleFilter:
         state = kernel.init(particles, t=0.0)
 
         key, subkey = jax.random.split(key)
-        new_state, info = kernel(state, t=1.0, observed=None, rng_key=subkey)
+        new_state, info = kernel(state, t=1.0, observed=None, rng=subkey)
         assert new_state.particles.shape == (num_particles, 1)
 
     def test_update_step(self):
@@ -498,7 +498,7 @@ class TestParticleFilter:
 
         y = jnp.array([1.0])
         key, subkey = jax.random.split(key)
-        new_state, info = kernel(state, t=1.0, observed=y, rng_key=subkey)
+        new_state, info = kernel(state, t=1.0, observed=y, rng=subkey)
 
         assert new_state.particles.shape == (num_particles, 1)
         assert jnp.isfinite(info.log_likelihood)
@@ -537,7 +537,7 @@ class TestMakeFilterApi:
             return KalmanFilterState(mean, jnp.eye(1), t)
 
         def my_build_kernel():
-            def step(state, t=None, observed=None, rng_key=None):
+            def step(state, t=None, observed=None, rng=None):
                 return state, None
 
             return step
@@ -559,7 +559,7 @@ class TestMakeFilterApi:
             return KalmanFilterState(mean, jnp.eye(1), t)
 
         def my_build_kernel():
-            def step(state, t=None, observed=None, rng_key=None):
+            def step(state, t=None, observed=None, rng=None):
                 return state, None
 
             return step
@@ -649,7 +649,7 @@ class TestParticleSmoother:
         for i in range(num_steps):
             key, subkey = jax.random.split(key)
             state, info = kernel(
-                state, t=ts[i + 1], observed=observations[i], rng_key=subkey
+                state, t=ts[i + 1], observed=observations[i], rng=subkey
             )
             all_particles.append(state.particles)
             all_log_weights.append(state.log_weights)
@@ -880,7 +880,7 @@ class TestUnifiedFilterSmoothingAPI:
 
         smoothed_particles, smoothed_log_weights = filt.smooth(
             trace,
-            key=jax.random.PRNGKey(1),
+            rng=jax.random.PRNGKey(1),
             transition_logdensity_fn=transition_logdensity,
         )
 
@@ -949,7 +949,7 @@ class TestUnifiedFilterSmoothingAPI:
         )
         smoothed_particles, smoothed_log_weights = filt.smooth(
             trace,
-            key=jax.random.PRNGKey(4),
+            rng=jax.random.PRNGKey(4),
             transition_logdensity_fn=transition_logdensity,
         )
 
@@ -1061,7 +1061,7 @@ class TestFilterClass:
 
         smoothed_particles, smoothed_log_weights = filt.smooth(
             trace,
-            key=jax.random.PRNGKey(1),
+            rng=jax.random.PRNGKey(1),
             transition_logdensity_fn=transition_logdensity,
         )
 
@@ -1116,7 +1116,7 @@ class TestFilterClass:
         trace = filt.filter(key, ts, observations, init_particles, obs_mask=obs_mask)
         smoothed_particles, smoothed_log_weights = filt.smooth(
             trace,
-            key=jax.random.PRNGKey(1),
+            rng=jax.random.PRNGKey(1),
             transition_logdensity_fn=transition_logdensity,
         )
 
@@ -1171,14 +1171,14 @@ class TestFilterClass:
 
         # Step 1: predict only (no observation)
         state, info = filt.step(
-            state, t=1.0, observed=None, rng_key=jax.random.PRNGKey(0)
+            state, t=1.0, observed=None, rng=jax.random.PRNGKey(0)
         )
         assert hasattr(state, "mean")
         assert hasattr(state, "cov")
 
         # Step 2: update with observation
         state, info = filt.step(
-            state, t=2.0, observed=jnp.array([[0.1]]), rng_key=jax.random.PRNGKey(1)
+            state, t=2.0, observed=jnp.array([[0.1]]), rng=jax.random.PRNGKey(1)
         )
         assert hasattr(state, "mean")
         assert hasattr(state, "cov")
@@ -1243,7 +1243,7 @@ class TestFilterClass:
 
         # Should raise error without transition_logdensity_fn
         with pytest.raises(ValueError, match="transition_logdensity_fn"):
-            filt.smooth(trace, key=jax.random.PRNGKey(1))
+            filt.smooth(trace, rng=jax.random.PRNGKey(1))
 
     def test_frozen_api_functional(self):
         """Test functional API (frozen=True, default) with explicit args."""

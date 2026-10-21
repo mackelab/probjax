@@ -8,12 +8,12 @@ import jax.numpy as jnp
 
 from probjax.inference.mcmc.adaptation import slice_step_size_adaptor
 from probjax.inference.mcmc.base import MarkovKernelAPI, make_step_from_kernel
-from probjax.utils.typing import Array, ArrayLike, RngKey, Scalar
+from probjax.utils.typing import Array, ArrayLike, Scalar
 
 # Some utility functions for creating 1D slices through an N-dimensional space
 
 
-def sample_random_direction(key: RngKey, position: Array) -> Array:
+def sample_random_direction(rng, position: Array) -> Array:
     """Sample a random unit direction in the space of ``position``.
 
     Parameters
@@ -29,7 +29,7 @@ def sample_random_direction(key: RngKey, position: Array) -> Array:
         Unit vector with the same shape as ``position``.
     """
     # Sample a random direction
-    direction = jax.random.normal(key, shape=position.shape)
+    direction = jax.random.normal(rng, shape=position.shape)
     direction = direction / jnp.linalg.norm(direction, axis=-1, keepdims=True)
     return direction
 
@@ -59,7 +59,7 @@ def linear_slice_fn(
     return linear_slice
 
 
-def sample_random_polynomial(key: RngKey, position: Array, degree: int = 3) -> Array:
+def sample_random_polynomial(rng, position: Array, degree: int = 3) -> Array:
     """Sample random polynomial directions with the shape of ``position``.
 
     Parameters
@@ -77,7 +77,7 @@ def sample_random_polynomial(key: RngKey, position: Array, degree: int = 3) -> A
         Array of normalized directions with leading dimension ``degree``.
     """
     # Sample a random polynomial directions
-    a = jax.random.normal(key, (degree,) + position.shape)
+    a = jax.random.normal(rng, (degree,) + position.shape)
     a = a / jnp.linalg.norm(a, axis=-1, keepdims=True)
     return a
 
@@ -115,7 +115,7 @@ def polynomial_slice_fn(
     return polynomial_slice_fn
 
 
-def sample_random_index(key: RngKey, position: Array) -> Array:
+def sample_random_index(rng, position: Array) -> Array:
     """Sample a random coordinate index in the first axis of ``position``.
 
     Parameters
@@ -130,7 +130,7 @@ def sample_random_index(key: RngKey, position: Array) -> Array:
     Array
         Scalar integer index in ``[0, position.shape[0])``.
     """
-    idx = jax.random.randint(key, (), minval=0, maxval=position.shape[0])
+    idx = jax.random.randint(rng, (), minval=0, maxval=position.shape[0])
     return idx
 
 
@@ -206,7 +206,7 @@ class SliceInfo(NamedTuple):
     proposal: SliceState
 
 
-def init(position: Array, logdensity_fn: Callable, rng_key: RngKey) -> SliceState:
+def init(position: Array, logdensity_fn: Callable, rng) -> SliceState:
     """Initialize the slice sampler state.
 
     Parameters
@@ -215,7 +215,7 @@ def init(position: Array, logdensity_fn: Callable, rng_key: RngKey) -> SliceStat
         Initial position of the chain.
     logdensity_fn : callable
         Function returning the (unnormalized) log density at a position.
-    rng_key : jax.random.PRNGKey
+    rng : jax.random.PRNGKey
         Random key stored for the initial slice argument.
 
     Returns
@@ -224,7 +224,7 @@ def init(position: Array, logdensity_fn: Callable, rng_key: RngKey) -> SliceStat
         Initial sampler state.
     """
     log_density = logdensity_fn(position)
-    return SliceState(position, log_density, rng_key)
+    return SliceState(position, log_density, rng)
 
 
 def init_params(state: Any, step_size: float = 0.5) -> SliceParams:
@@ -263,22 +263,22 @@ def build_kernel(
     Returns
     -------
     callable
-        Kernel mapping ``(rng_key, state, log_density_fn, ...)`` to a new
+        Kernel mapping ``(rng, state, log_density_fn, ...)`` to a new
         ``(SliceState, SliceInfo)`` pair.
     """
 
     def kernel(
-        rng_key: RngKey,
+        rng,
         state: SliceState,
         log_density_fn: Callable,
         max_evals: int = 100,
         step_size: float = 0.5,
         **kwargs: Any,
     ) -> tuple[SliceState, SliceInfo]:
-        rng_key, key_slice, key_rejections = jax.random.split(rng_key, 3)
-        direction = slice_fn_arg(key_slice, state.position, **kwargs)
+        rng_state, rng_slice, rng_rejections = jax.random.split(rng, 3)
+        direction = slice_fn_arg(rng_slice, state.position, **kwargs)
         log_density = state.logdensity
-        u = jax.random.uniform(key_rejections, shape=())
+        u = jax.random.uniform(rng_rejections, shape=())
         y = jnp.squeeze(jnp.log(u) + log_density)
 
         slice_fn = slice_fn_builder(state.position, direction)
@@ -288,10 +288,10 @@ def build_kernel(
         )
 
         x_new, log_density, evals_reject = accept_reject_slice(
-            log_density_fn, slice_fn, key_rejections, t_lower, t_upper, y, max_evals
+            log_density_fn, slice_fn, rng_rejections, t_lower, t_upper, y, max_evals
         )
 
-        new_state = SliceState(x_new, log_density, rng_key)
+        new_state = SliceState(x_new, log_density, rng_state)
         info = SliceInfo(evals + evals_reject, state)
         return new_state, info
 
@@ -424,7 +424,7 @@ def lower_upper_bracket(
 def accept_reject_slice(
     log_density_fn: Callable,
     slice_fn: Callable,
-    key: RngKey,
+    rng,
     t_lower: ArrayLike,
     t_upper: ArrayLike,
     log_density_bound: ArrayLike,
@@ -475,7 +475,7 @@ def accept_reject_slice(
 
         return (i + 1, key, new_t_lower, new_t_upper, x_new, h, mask_reject)
 
-    key, key_reject = jax.random.split(key)
+    key, key_reject = jax.random.split(rng)
     t_new = jax.random.uniform(key_reject, shape=(), minval=t_lower, maxval=t_upper)
     x_new = slice_fn(t_new)
     h = log_density_fn(x_new)

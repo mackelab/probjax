@@ -28,7 +28,7 @@ from probjax.utils.jaxutils import (
     leading_dim,
     nested_checkpoint_scan,
 )
-from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
+from probjax.utils.typing import Array, ArrayLike, PyTree
 
 
 class FilteringTrace(NamedTuple):
@@ -212,7 +212,7 @@ class Filter(RunnerMixin):
         state: FilterState,
         t: ArrayLike,
         observed: ArrayLike | None = None,
-        rng_key: RngKey | None = None,
+        rng = None,
     ) -> tuple[FilterState, FilterInfo]:
         """Execute a single filter step.
 
@@ -223,16 +223,16 @@ class Filter(RunnerMixin):
             state: Current filter state.
             t: Current time.
             observed: Observation at this time (None for predict-only steps).
-            rng_key: Random key (required for particle filters).
+            rng: Random key (required for particle filters).
 
         Returns:
             Tuple of (next_state, info).
         """
-        return self._kernel()(state, t=t, observed=observed, rng_key=rng_key)
+        return self._kernel()(state, t=t, observed=observed, rng=rng)
 
     def filter(
         self,
-        key: RngKey,
+        rng,
         ts: ArrayLike,
         observations: ArrayLike,
         *args: Any,
@@ -308,12 +308,12 @@ class Filter(RunnerMixin):
             t, has_obs, obs = scan_in
             key, subkey = jax.random.split(key)
 
-            def update_fn(subkey, state, obs):
-                state, info = kernel(state, t=t, observed=obs, rng_key=subkey)
+            def update_fn(rng, state, obs):
+                state, info = kernel(state, t=t, observed=obs, rng=rng)
                 return state, info
 
-            def predict_fn(subkey, state, obs):
-                state, info = kernel(state, t=t, rng_key=subkey)
+            def predict_fn(rng, state, obs):
+                state, info = kernel(state, t=t, rng=rng)
                 return state, info
 
             state, info = jax.lax.cond(
@@ -322,7 +322,7 @@ class Filter(RunnerMixin):
             out = unpack(state, info)
             return (state, key), (state, info, out)
 
-        carry = (initial_state, key)
+        carry = (initial_state, rng)
         scan_in = (ts[1:], obs_mask[1:], observations[1:])
         num_steps = ts[1:].shape[0]
 
@@ -363,7 +363,7 @@ class Filter(RunnerMixin):
         self,
         trace: FilteringTrace,
         smoother: Callable[..., Any] | None = None,
-        key: RngKey | None = None,
+        rng = None,
         transition_logdensity_fn: Callable[..., Any] | None = None,
     ) -> tuple[Array, Array] | tuple[PyTree, Array]:
         """Smooth a filtering trace.
@@ -396,7 +396,7 @@ class Filter(RunnerMixin):
         # Auto-detect: check if this is a particle filter trace
         if is_particle_state(states):
             # Particle filter: use FFBSi
-            if key is None:
+            if rng is None:
                 raise ValueError(
                     "Particle filter trace detected. "
                     "Please provide `key` for FFBSi smoothing."
@@ -412,7 +412,7 @@ class Filter(RunnerMixin):
                 trace.infos.ancestors if has_attrs(trace.infos, "ancestors") else None
             )
             return particle_smoother(
-                key,
+                rng,
                 ts,
                 states.particles,
                 states.log_weights,
@@ -436,7 +436,7 @@ class Filter(RunnerMixin):
 
     def log_likelihood(
         self,
-        key: RngKey,
+        rng,
         ts: ArrayLike,
         observations: ArrayLike,
         *args: Any,
@@ -462,7 +462,7 @@ class Filter(RunnerMixin):
             Scalar log-likelihood (sum of log-likelihoods at observation times).
         """
         trace = self.filter(
-            key,
+            rng,
             ts,
             observations,
             *args,
@@ -476,7 +476,7 @@ class Filter(RunnerMixin):
 
     def fit(
         self,
-        key: RngKey,
+        rng,
         ts: ArrayLike,
         observations: ArrayLike,
         *args: Any,
@@ -543,7 +543,7 @@ class Filter(RunnerMixin):
             kernel = kernel_factory(params)
             filt = Filter(kernel, verbose=False)
             ll = filt.log_likelihood(
-                key,
+                rng,
                 ts,
                 observations,
                 *args,

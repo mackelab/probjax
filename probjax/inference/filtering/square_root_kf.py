@@ -7,7 +7,7 @@ import jax.numpy as jnp
 
 from probjax.inference.filtering.base import FilterAPI, as_time
 from probjax.utils.guards import call_if_callable
-from probjax.utils.typing import Array, ArrayLike, RngKey
+from probjax.utils.typing import Array, ArrayLike
 
 
 class SqKalmanFilterState(NamedTuple):
@@ -110,7 +110,7 @@ def build_kernel(
         state: SqKalmanFilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng_key: Optional[RngKey] = None,
+        rng = None,
     ) -> Tuple[SqKalmanFilterState, SqKalmanFilterInfo]:
         mu0 = state.mean
         std = state.std

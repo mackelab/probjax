@@ -453,7 +453,7 @@ def _log_quadratic_form_jvp(primals, tangents):
     return _log_quadratic_form(matrix), derivative
 
 
-def lanczos_logdet(S, num_steps=20, key=None, *, num_probes=16):
+def lanczos_logdet(S, num_steps=20, rng=None, *, num_probes=16):
     """Estimate an SPD log determinant using multi-probe Lanczos quadrature.
 
     ``num_steps`` controls quadrature depth, not trace-estimation accuracy.
@@ -486,8 +486,8 @@ def lanczos_logdet(S, num_steps=20, key=None, *, num_probes=16):
     if num_probes >= dim:
         probes = jnp.eye(dim, dtype=dtype)
     else:
-        key = jax.random.key(0) if key is None else key
-        probes = jax.random.rademacher(key, (num_probes, dim), dtype=dtype) / jnp.sqrt(
+        rng = jax.random.key(0) if rng is None else rng
+        probes = jax.random.rademacher(rng, (num_probes, dim), dtype=dtype) / jnp.sqrt(
             dim
         )
 

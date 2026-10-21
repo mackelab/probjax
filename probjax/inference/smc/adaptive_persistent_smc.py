@@ -12,7 +12,7 @@ from probjax.inference.smc.base import (
     make_mcmc_adapter,
 )
 from probjax.inference.smc.resampling import systematic
-from probjax.utils.typing import Array, RngKey
+from probjax.utils.typing import Array
 
 
 def build_step(
@@ -49,8 +49,8 @@ def build_step(
         batch_size=batch_size,
     )
 
-    def step(rng_key: RngKey, state: Any, mcmc_parameters: Any) -> Any:
-        return delegate(rng_key, state, num_mcmc_steps, mcmc_parameters)
+    def step(rng, state: Any, mcmc_parameters: Any) -> Any:
+        return delegate(rng, state, num_mcmc_steps, mcmc_parameters)
 
     return step
 
@@ -61,7 +61,7 @@ def init_params(
     logprior_fn: Callable | None,
     loglikelihood_fn: Callable | None,
     mcmc_kernel: Any,
-    rng_key: RngKey | None = None,
+    rng = None,
     lmbda: float = 0.0,
     mcmc_kernel_kwargs: dict[str, Any] | None = None,
     **mcmc_param_kwargs: Any,
@@ -71,7 +71,7 @@ def init_params(
         logprior_fn=logprior_fn,
         loglikelihood_fn=loglikelihood_fn,
         mcmc_kernel=mcmc_kernel,
-        rng_key=rng_key,
+        rng=rng,
         lmbda=lmbda,
         mcmc_kernel_kwargs=mcmc_kernel_kwargs,
         kind="adaptive persistent SMC",

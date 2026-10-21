@@ -48,16 +48,16 @@ class MarkovKernelAPI(KernelAPI):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        # Callers always pass rng_key, but many BlackJAX inits take none.
+        # Callers always pass the rng, but many BlackJAX inits take none.
         init = cls.init
         params = inspect.signature(init).parameters.values()
         if not any(
-            p.name == "rng_key" or p.kind == inspect.Parameter.VAR_KEYWORD
+            p.name in ("rng", "rng_key") or p.kind == inspect.Parameter.VAR_KEYWORD
             for p in params
         ):
 
             @wraps(init)
-            def init_with_rng(*args, rng_key=None, **kw):
+            def init_with_rng(*args, rng=None, **kw):
                 return init(*args, **kw)
 
             cls.init = staticmethod(init_with_rng)
@@ -68,20 +68,19 @@ class MarkovKernelAPI(KernelAPI):
         if logdensity_fn is None:
             return Configured(cls, tuple(sorted(kwargs.items())))
 
-        def init_fn(key, position=None, **init_kwargs):
-            # Accept the old position-first form while internal SMC composition
-            # is migrated to constructed kernel values.
-            key, position = normalize_init_args(
-                key, position, init_kwargs.pop("rng_key", None)
+        def init_fn(rng: RngKey, position: Any, **init_kwargs):
+            # The API's init may be BlackJAX's (``rng_key``) or ours (``rng``).
+            rng_kwarg = (
+                "rng_key" if "rng_key" in inspect.signature(cls.init).parameters else "rng"
             )
             return cls.init(
-                position, logdensity_fn=logdensity_fn, rng_key=key, **init_kwargs
+                position, logdensity_fn=logdensity_fn, **{rng_kwarg: rng}, **init_kwargs
             )
 
         raw_step = cls.build_step(logdensity_fn, **kwargs)
 
-        def step(key, state, params, *args):
-            return raw_step(key, state, params)
+        def step(rng: RngKey, state, params, *args):
+            return raw_step(rng, state, params)
 
         return cls.kernel_type(
             init_fn, step, cls.init_params, cls.default_adaptation_fn
@@ -97,13 +96,13 @@ def make_step_from_kernel(
     """Build a step function from a BlackJAX-style kernel builder."""
     kernel = kernel_builder()
 
-    def step(key: RngKey, state: State, params: Params, *args: Any):
+    def step(rng, state: State, params: Params, *args: Any):
         params_kwargs = params_to_dict(params) if has_attrs(params, "_asdict") else {}
         call_kwargs = {}
         if call_defaults:
             call_kwargs.update(call_defaults)
         call_kwargs.update(params_kwargs)
-        return kernel(key, state, logdensity_fn, **call_kwargs)
+        return kernel(rng, state, logdensity_fn, **call_kwargs)
 
     return step
 
@@ -121,21 +120,6 @@ def ravel_position(state: Any) -> Array:
     position = state.position if hasattr(state, "position") else state
     flat_position, _ = ravel_pytree(position)
     return flat_position
-
-
-def normalize_init_args(
-    key: Any, position: Any = None, rng_key: Any = None
-) -> tuple[Any, Any]:
-    """Resolve the ``(key, position)`` / ``(position, rng_key=key)`` init forms.
-
-    Kernels accept both ``init(key, position)`` and the older
-    ``init(position, rng_key=key)`` calling convention. Returns the
-    ``(key, position)`` pair, where ``position`` falls back to the first
-    argument and the key to ``rng_key``.
-    """
-    if position is None:
-        position, key = key, rng_key
-    return key, position
 
 
 def init_hmc_like_params(state: Any, inverse_mass_matrix: Array | None) -> Array:
@@ -233,7 +217,7 @@ def _mcmc_collect_body(
     ),
 )
 def sample_kernel(
-    key: RngKey,
+    rng,
     kernel: MarkovKernel,
     state: State,
     num_samples: int,
@@ -244,7 +228,7 @@ def sample_kernel(
     collect_info: tuple[str, ...] = (),
 ) -> MCMCResult:
     """Collect positions from a compiled kernel scan."""
-    keys = jax.random.split(key, (num_samples, thin))
+    keys = jax.random.split(rng, (num_samples, thin))
     step_args = _reshape_thin_args(args, num_samples, thin)
     xs = keys if step_args is None else (keys, step_args)
 

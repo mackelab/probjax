@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from probjax.inference.filtering.base import FilterAPI, as_time
 from probjax.inference.filtering.gaussian import default_solve, innovation_loglik
 from probjax.utils.linalg import symmetrize_matrix
-from probjax.utils.typing import Array, ArrayLike, RngKey
+from probjax.utils.typing import Array, ArrayLike
 
 
 class RankReducedKalmanFilterState(NamedTuple):
@@ -192,9 +192,9 @@ def build_kernel(
         state: RankReducedKalmanFilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng_key: Optional[RngKey] = None,
+        rng = None,
     ) -> Tuple[RankReducedKalmanFilterState, RankReducedKalmanFilterInfo]:
-        del rng_key
+        del rng
 
         mu0 = state.mean
         U0 = state.cov_factor

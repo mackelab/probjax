@@ -22,10 +22,10 @@ from probjax.core import inverse_and_logabsdet
 from probjax.nn import (
     CirculantDiagonal,
     FitCallback,
+    FitConfig,
     FlipMixingConfig,
     RationalQuadraticSplineConfig,
 )
-from probjax.nn.training.kernel import _build_optimizer
 
 
 @nnx.jit
@@ -73,7 +73,7 @@ class Snapshots(FitCallback):
         self.entries.append((
             int(state.step),
             jax.tree.map(lambda value: value.copy(), state.params),
-            jax.tree.map(lambda value: value.copy(), state.model_state),
+            jax.tree.map(lambda value: value.copy(), state.aux),
             float(info.loss),
             np.asarray(state.opt_state[0]).tolist(),
         ))
@@ -188,17 +188,25 @@ def run_case(
             layer.bijector_inv = inverse_and_logabsdet(spline, invertible_arg=1)
     history = Snapshots()
     optimizer = optax.chain(
-        track_gradients(clip), _build_optimizer(rate, steps, "warmup_cosine", clip)
+        track_gradients(clip),
+        FitConfig(
+            max_steps=steps,
+            learning_rate=rate,
+            schedule="warmup_cosine",
+            clip_norm=clip,
+        ).default_optimizer(),
     )
     losses = flow.fit(
         fit_key,
         train,
-        num_steps=steps,
-        batch_size=256,
-        optimizer=optimizer,
+        config=FitConfig(
+            max_steps=steps,
+            batch_size=256,
+            optimizer=optimizer,
+            callback_every=interval,
+        ),
         callbacks=[history],
-        callback_every=interval,
-    )
+    ).losses
     trajectory = []
     for step, params, model_state, batch_loss, gradient_stats in history.entries:
         nnx.update(flow, params, model_state)

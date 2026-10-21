@@ -317,7 +317,7 @@ class mixture_gen(rv_generic):
         mixing_probs_init: Optional[ArrayLike] = None,
         max_iter: int = 100,
         tol: float = 1e-4,
-        rng_key: Optional[RngKey] = None,
+        rng = None,
         **kwds: Any,
     ):
         """Fit a finite mixture model with analytic weighted M-steps."""
@@ -329,7 +329,7 @@ class mixture_gen(rv_generic):
                 "(e.g. ``norm(loc, scale)``)."
             )
 
-        del rng_key
+        del rng
 
         data = jnp.asarray(data)
         event_shape = components[0].event_shape

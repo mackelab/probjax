@@ -19,7 +19,7 @@ from probjax.inference.smc.ess import ess as effective_sample_size
 from probjax.inference.smc.resampling import systematic
 from probjax.inference.smc.temporal_utils import population_covariance, replay_filter
 from probjax.utils.guards import ensure_int
-from probjax.utils.typing import Array, RngKey
+from probjax.utils.typing import Array
 
 # Optimal-scaling constants for the default Gaussian random-walk proposal.
 _TARGET_ACCEPTANCE = 0.234
@@ -37,9 +37,9 @@ class TemporalSMCState(NamedTuple):
     num_observations: Any
     proposal_scale: Any
 
-    def posterior_samples(self, key: RngKey, num_samples: int) -> Any:
+    def posterior_samples(self, rng, num_samples: int) -> Any:
         """Draw ``num_samples`` parameters from the weighted population."""
-        idx = jax.random.categorical(key, self.log_weights, shape=(num_samples,))
+        idx = jax.random.categorical(rng, self.log_weights, shape=(num_samples,))
         return take_batch(self.parameters, idx)
 
 
@@ -57,9 +57,9 @@ class TemporalSMC(NamedTuple):
     init: Callable
     step: Callable
 
-    def __call__(self, key, state, *args, **kwargs):
+    def __call__(self, rng, state, *args, **kwargs):
         """One step: the same as ``kernel.step(key, state, ...)``."""
-        return self.step(key, state, *args, **kwargs)
+        return self.step(rng, state, *args, **kwargs)
 
 
 def temporal_smc(
@@ -104,7 +104,7 @@ def temporal_smc(
     ensure_int("num_moves", num_moves, min_value=0)
     adaptive = proposal_fn is None
 
-    def init(key: RngKey, parameters: Any, t0: Any = 0.0) -> TemporalSMCState:
+    def init(rng, parameters: Any, t0: Any = 0.0) -> TemporalSMCState:
         leaves = jax.tree.leaves(parameters)
         if not leaves or any(x.ndim < 1 for x in leaves):
             raise ValueError("Parameter leaves must have a leading particle axis.")
@@ -113,7 +113,7 @@ def temporal_smc(
             raise ValueError("All parameter leaves must have the same nonempty batch.")
         t0 = jnp.asarray(t0, dtype=jnp.result_type(t0, 0.0))
         filter_states = map_fn(lambda a: filt.init(a[0], a[1], t0), batch_size)((
-            jax.random.split(key, n),
+            jax.random.split(rng, n),
             parameters,
         ))
         log_priors = map_fn(logprior_fn, batch_size)(parameters)
@@ -133,7 +133,7 @@ def temporal_smc(
         )
 
     def rejuvenate(
-        key: RngKey,
+        rng,
         state: TemporalSMCState,
         parameters: Any,
         filter_states: Any,
@@ -148,12 +148,12 @@ def temporal_smc(
             covariance = population_covariance(state.parameters, state.log_weights)
             factor = jnp.linalg.cholesky(covariance)
 
-        def propose(key: RngKey, theta: Any) -> tuple[Any, float]:
+        def propose(rng, theta: Any) -> tuple[Any, float]:
             if not adaptive:
                 assert proposal_fn is not None
-                return proposal_fn(key, theta)
+                return proposal_fn(rng, theta)
             flat, unravel = ravel_pytree(theta)
-            noise = factor @ jax.random.normal(key, flat.shape)
+            noise = factor @ jax.random.normal(rng, flat.shape)
             scale = state.proposal_scale * _SCALE_FACTOR / jnp.sqrt(flat.size)
             return unravel(flat + scale * noise), 0.0
 
@@ -196,7 +196,7 @@ def temporal_smc(
 
         n = state.log_weights.shape[0]
         parameters, filter_states, log_likelihoods, rates = map_fn(moves, batch_size)((
-            jax.random.split(key, n),
+            jax.random.split(rng, n),
             parameters,
             filter_states,
             log_likelihoods,
@@ -204,7 +204,7 @@ def temporal_smc(
         return parameters, filter_states, log_likelihoods, rates.mean()
 
     def step(
-        key: RngKey,
+        rng,
         state: TemporalSMCState,
         ts: Any,
         observations: Any,
@@ -221,7 +221,7 @@ def temporal_smc(
         n = state.log_weights.shape[0]
         index = jnp.minimum(count, ts.shape[0] - 1)
         t = ts[index]
-        filter_key, resample_key, move_key = jax.random.split(key, 3)
+        filter_key, resample_key, move_key = jax.random.split(rng, 3)
 
         filter_states, infos = map_fn(
             lambda a: filt.step(
@@ -318,7 +318,7 @@ def temporal_smc(
 
 def run_temporal_smc(
     kernel: Any,
-    key: RngKey,
+    rng,
     state: Any,
     ts: Any,
     observations: Any,
@@ -337,7 +337,7 @@ def run_temporal_smc(
     ts = data[0]
     zero = jnp.zeros((), state.log_weights.dtype)
     if ts.shape[0] == 0:
-        return TemporalResult(state, zero, key, None)
+        return TemporalResult(state, zero, rng, None)
     n = state.log_weights.shape[0]
     skip_info = TemporalSMCInfo(
         zero,
@@ -349,11 +349,11 @@ def run_temporal_smc(
         jnp.array(True),
     )
 
-    def step(key: RngKey, state: Any, i: Any) -> Any:
+    def step(rng, state: Any, i: Any) -> Any:
         return jax.lax.cond(
             i < state.num_observations,
             lambda: (state, skip_info),
-            lambda: kernel.step(key, state, *data),
+            lambda: kernel.step(rng, state, *data),
         )
 
-    return scan_history(step, key, state, ts, jnp.arange(ts.shape[0]), history)
+    return scan_history(step, rng, state, ts, jnp.arange(ts.shape[0]), history)

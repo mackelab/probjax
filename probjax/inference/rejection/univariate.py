@@ -6,7 +6,7 @@ from typing import Any, Callable, NamedTuple
 import jax
 import jax.numpy as jnp
 
-from probjax.utils.typing import Array, ArrayLike, RngKey
+from probjax.utils.typing import Array, ArrayLike
 
 
 class ARSState(NamedTuple):
@@ -118,8 +118,8 @@ def eval_lower(state: ARSState, x: Array) -> Array:
     )
 
 
-def sample_upper(state: ARSState, key: RngKey) -> tuple[Array, Array]:
-    u = jax.random.uniform(key)
+def sample_upper(state: ARSState, rng) -> tuple[Array, Array]:
+    u = jax.random.uniform(rng)
     max_index = state.num_points
     # Choose a bin with probability proportional to its contained probability mass.
     s_max = state.s[max_index]
@@ -176,7 +176,7 @@ def _log_proposal(state: ARSState, x: Array) -> Array:
 
 @partial(jax.jit, static_argnums=(2, 3))
 def ars(
-    state: ARSState, key: RngKey, num_samples: int, log_density_fn: Callable
+    state: ARSState, rng, num_samples: int, log_density_fn: Callable
 ) -> tuple[Array, ARSState, Array]:
     samples = jnp.zeros(num_samples)
     n = 0
@@ -228,7 +228,7 @@ def ars(
 
         return (key, n, state, samples, iteration + 1)
 
-    carry = (key, n, state, samples, 0)
+    carry = (rng, n, state, samples, 0)
     _, _, state, samples, iterations = jax.lax.while_loop(cond_fn, body_fn, carry)
 
     return samples, state, num_samples / iterations

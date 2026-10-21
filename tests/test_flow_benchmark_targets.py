@@ -15,6 +15,9 @@ from docs.scripts.benchmark_flow_mixing import (
     rotation8,
 )
 
+#: The benchmark suite is long-running; skip it with ``-m 'not slow'``.
+pytestmark = pytest.mark.slow
+
 
 @pytest.mark.parametrize("name", REALISTIC_TARGETS)
 def test_reference_densities_match_scipy(name):

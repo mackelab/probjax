@@ -27,11 +27,11 @@ from probjax.nn.export import (
     flatten_spec_batch,
     normalize_spec,
     restore_batch,
-    spec_from_value,
     zeros_from_spec,
 )
 from probjax.nn.inputs import as_inputs, merge_inputs
 from probjax.stats.base import DistributionAPI
+from probjax.utils.jaxutils import spec_from_value
 from probjax.utils.typing import Array, PyTree, RngKey
 
 

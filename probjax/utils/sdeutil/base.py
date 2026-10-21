@@ -22,8 +22,8 @@ class SDESolver(NamedTuple):
     init: Callable
     step: Callable
 
-    def __call__(self, key, state: SDEState, dt: ArrayLike) -> Tuple[SDEState, SDEInfo]:
-        return self.step(key, state, dt)
+    def __call__(self, rng, state: SDEState, dt: ArrayLike) -> Tuple[SDEState, SDEInfo]:
+        return self.step(rng, state, dt)
 
 
 class SDESolverAPI(KernelAPI):
@@ -98,6 +98,12 @@ def get_method(solver):
 
 def get_methods():
     return list(METHOD_STEP_FN.keys())
+
+
+def is_adaptive_solver(solver) -> bool:
+    """Whether ``solver`` selects the adaptive integrator."""
+    _, info = get_method(solver)
+    return bool(info.get("adaptive", False))
 
 
 def infer_noise_dim(g0, default_dim: int, configured_dim: int | None = None) -> int:

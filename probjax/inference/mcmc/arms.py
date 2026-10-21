@@ -5,7 +5,7 @@ import jax.numpy as jnp
 
 from probjax.inference.mcmc.base import MarkovKernelAPI
 from probjax.inference.rejection import univariate as uni
-from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
+from probjax.utils.typing import Array, ArrayLike, PyTree
 
 
 class ARMSParams(NamedTuple):
@@ -32,15 +32,15 @@ def _ensure_scalar(x: ArrayLike) -> Array:
     raise ValueError("ARMS/A2RMS only support scalar targets")
 
 
-def _init_points(position: Array, rng_key: RngKey):
-    eps = jax.random.normal(rng_key, (3,)) * 0.1
+def _init_points(position: Array, rng):
+    eps = jax.random.normal(rng, (3,)) * 0.1
     return position + eps
 
 
 def init(
     position: ArrayLike,
     logdensity_fn: Callable,
-    rng_key: RngKey | None = None,
+    rng = None,
     init_points: ArrayLike | None = None,
     lb: ArrayLike = -jnp.inf,
     ub: ArrayLike = jnp.inf,
@@ -48,9 +48,9 @@ def init(
 ) -> ARMSState:
     position = _ensure_scalar(position)
     if init_points is None:
-        if rng_key is None:
-            raise ValueError("Provide rng_key or init_points for ARMS initialization")
-        init_points = _init_points(position, rng_key)
+        if rng is None:
+            raise ValueError("Provide rng or init_points for ARMS initialization")
+        init_points = _init_points(position, rng)
     init_points = jnp.asarray(init_points)
     env = uni.init_ars_state(
         logdensity_fn, init_points, lb=lb, ub=ub, max_points=max_points
@@ -65,9 +65,9 @@ def init_params(state: PyTree) -> ARMSParams:
 
 def _arms_step(logdensity_fn: Callable, *, control: bool) -> Callable:
     def step(
-        key: RngKey, state: ARMSState, params: ARMSParams
+        rng, state: ARMSState, params: ARMSParams
     ) -> Tuple[ARMSState, ARMSInfo]:
-        key, sample_key, accept_key, control_key = jax.random.split(key, 4)
+        key, sample_key, accept_key, control_key = jax.random.split(rng, 4)
         xt, _ = uni.sample_upper(state.envelope, sample_key)
         log_xt, grad_xt = jax.value_and_grad(logdensity_fn)(xt)
         log_q_xt = uni._log_proposal(state.envelope, xt)

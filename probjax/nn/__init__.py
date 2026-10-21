@@ -275,12 +275,12 @@ from probjax.nn.pallas_kernels import (
 
 # Shared training API for neural modules and functional parameter pytrees.
 from probjax.nn.training import (
+    DataSpec,
     FitCallback,
+    FitConfig,
     FitInfo,
-    FitKernel,
     FitMixin,
     FitResult,
     FitState,
-    build_fit_kernel,
     fit,
 )

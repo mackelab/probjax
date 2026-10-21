@@ -35,7 +35,7 @@ from probjax.nn.generative.sampling import (
     sample_normal,
 )
 from probjax.nn.inputs import as_inputs
-from probjax.nn.training import FitMixin, FitResult, is_batch_stream
+from probjax.nn.training import DataSpec, FitConfig, FitMixin, FitResult
 from probjax.utils.guards import is_mapping
 from probjax.utils.typing import Array, PyTree, RngKey
 
@@ -71,8 +71,8 @@ def _as_batch(item):
 class _Batches:
     """Normalises what a loader yields into batch dicts (see ``_as_batch``).
 
-    Re-iterable and length-preserving, so restarting and ``num_steps="auto"``
-    keep working through the wrapper.
+    Re-iterable and length-preserving, so restarting the stream keeps working
+    through the wrapper.
     """
 
     def __init__(self, source):
@@ -80,7 +80,7 @@ class _Batches:
 
     def __len__(self):
         # Deliberately propagates the source's TypeError: reporting a length
-        # the source does not have would make num_steps="auto" invent one.
+        # the source does not have would invent one.
         return len(self._source)
 
     def __iter__(self):
@@ -179,9 +179,7 @@ class GenerativeModel(nnx.Module, FitMixin):
         """Monte-Carlo training loss for a batch of data."""
         raise NotImplementedError
 
-    def fit(
-        self, rng: RngKey, data, *, weights=None, **fit_kwargs
-    ) -> Array | FitResult:
+    def fit(self, rng: RngKey, data, *, weights=None, **fit_kwargs) -> FitResult:
         """Train in place on ``data``.
 
         ``data`` is an array pytree, a dict with a ``"data"`` entry plus any
@@ -195,13 +193,17 @@ class GenerativeModel(nnx.Module, FitMixin):
             fit_kwargs["weights"] = weights
         return super().fit(rng, data, **fit_kwargs)
 
-    def _fit_batch(self, data, *, weights=None, **extras):
+    def default_config(self) -> FitConfig:
+        """A batch is a mapping whose ``"data"`` entry is what the model learns."""
+        return FitConfig(data=DataSpec(primary="data"))
+
+    def _fit_batch(self, data, config: FitConfig, *, weights=None, **extras):
         if extras:
             raise ValueError(
                 f"unexpected fit arguments {sorted(extras)}; pass named model "
                 "inputs inside data, e.g. fit(rng, {'data': x, 'context': c})."
             )
-        if is_batch_stream(data):
+        if config.data.stream:
             if weights is not None:
                 raise ValueError(
                     "weights cannot be passed alongside an iterable data source; "
@@ -211,11 +213,8 @@ class GenerativeModel(nnx.Module, FitMixin):
         batch = _as_batch(data)
         return batch if weights is None else {**batch, "weights": weights}
 
-    def _fit_loss(self, rng, batch):
-        if is_mapping(batch):
-            extras = {k: v for k, v in batch.items() if k != "data"}
-            return self.loss(rng, batch["data"], **extras)
-        return self.loss(rng, batch)
+    def _fit_loss(self, rng, primary, **context):
+        return self.loss(rng, primary, **context)
 
     def _distribution_sampler(self, event_spec, **kwargs) -> SamplerLike:
         """Build the family-specific sampling operation.

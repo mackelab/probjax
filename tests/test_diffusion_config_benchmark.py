@@ -22,6 +22,9 @@ from docs.scripts.benchmark_diffusion_configs import (
 )
 from probjax.nn.generative.discrete.config import MultinomialDiffusionSchedule
 
+#: The benchmark suite is long-running; skip it with ``-m 'not slow'``.
+pytestmark = pytest.mark.slow
+
 
 @pytest.mark.parametrize("target", ["gaussian", "mixture"])
 def test_oracle_is_identity_at_zero_noise(target):

@@ -1,29 +1,108 @@
+"""The functional fit: what it minimises, and what it returns."""
+
+import itertools
+
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 import pytest
 from flax import nnx
 
-from probjax.nn import LinearFlow, maf
+from probjax.nn import DataSpec, FitConfig, LinearFlow, maf
 from probjax.nn.training import fit
 
 
-def test_fit_functional_dict_batch():
-    def loss_fn(params, rng, batch):
-        del rng
-        return jnp.mean((batch["data"] - params["w"]) ** 2)
+def _quadratic_loss(params, rng, primary):
+    del rng
+    return jnp.mean((primary - params["w"]) ** 2)
 
+
+def _config(**overrides):
+    """A configuration for a batch that is a mapping with a ``"data"`` entry."""
+    return FitConfig(data=DataSpec(primary="data"), **overrides)
+
+
+def test_fit_minimises_the_loss_over_the_primary_entry():
     data = jax.random.normal(jax.random.key(0), (256, 2)) + jnp.array([2.0, -1.0])
-    params, losses = fit(
-        loss_fn,
+    result = fit(
+        _quadratic_loss,
         {"w": jnp.zeros(2)},
         jax.random.key(1),
         {"data": data},
-        num_steps=300,
-        learning_rate=1e-2,
+        config=_config(max_steps=300, learning_rate=1e-2, schedule="constant"),
     )
-    assert losses.shape == (300,)
-    assert jnp.allclose(params["w"], jnp.array([2.0, -1.0]), atol=0.2)
+    assert result.losses.shape == (300,)
+    assert jnp.allclose(result.params["w"], jnp.array([2.0, -1.0]), atol=0.2)
+
+
+def test_fit_hands_the_other_entries_to_the_loss_as_keywords():
+    # The loss is traced once per run, not once per step: the whole run is a
+    # single scan. What matters is what it is handed, not how often.
+    seen = []
+
+    def loss(params, rng, primary, **context):
+        del rng
+        seen.append((primary.shape, sorted(context)))
+        return jnp.mean((primary - params["w"]) ** 2)
+
+    data = jax.random.normal(jax.random.key(0), (64, 2))
+    fit(
+        loss,
+        {"w": jnp.zeros(2)},
+        jax.random.key(1),
+        {"data": data, "context": data, "weights": jnp.ones(64)},
+        config=_config(max_steps=2),
+    )
+    assert seen == [((64, 2), ["context", "weights"])]
+
+
+def test_a_batch_without_a_primary_is_handed_over_whole():
+    seen = []
+
+    def loss(params, rng, batch):
+        del rng, params
+        seen.append(batch.shape)
+        return jnp.mean(batch**2)
+
+    data = jnp.ones((8, 2))
+    fit(
+        loss,
+        {"w": jnp.zeros(2)},
+        jax.random.key(1),
+        data,
+        config=FitConfig(data=DataSpec(), max_steps=2),
+    )
+    assert seen == [(8, 2)]
+
+
+def test_fit_rejects_a_batch_that_does_not_match_the_spec():
+    with pytest.raises(ValueError, match="must be a mapping"):
+        fit(
+            _quadratic_loss,
+            {"w": jnp.zeros(2)},
+            jax.random.key(1),
+            jnp.ones((8, 2)),
+            config=_config(max_steps=2),
+        )
+    with pytest.raises(ValueError, match="must have a 'data' entry"):
+        fit(
+            _quadratic_loss,
+            {"w": jnp.zeros(2)},
+            jax.random.key(1),
+            {"x": jnp.ones((8, 2))},
+            config=_config(max_steps=2),
+        )
+
+
+def test_fit_needs_a_data_spec():
+    with pytest.raises(ValueError, match="DataSpec"):
+        fit(
+            _quadratic_loss,
+            {"w": jnp.zeros(2)},
+            jax.random.key(1),
+            {"data": jnp.ones((8, 2))},
+        )
 
 
 def test_flow_fit_trains_in_place_and_stays_normalized():
@@ -36,12 +115,16 @@ def test_flow_fit_trains_in_place_and_stays_normalized():
         1.5,
         0.5,
     ]) + jnp.array([2.0, -1.0])
-    losses = flow.fit(jax.random.key(1), data, num_steps=150, batch_size=128)
+    result = flow.fit(
+        jax.random.key(1),
+        {"data": data},
+        config=FitConfig(max_steps=150, batch_size=128),
+    )
 
     # `fit` standardises the data, so on this near-Gaussian target the flow
     # starts at the optimum and the loss has nowhere to fall; requiring a
     # strict decrease would be testing noise rather than training.
-    assert losses[-1] <= losses[0] + 0.05
+    assert result.losses[-1] <= result.losses[0] + 0.05
     assert not jnp.allclose(lp_before, distribution.logpdf(x_test))
 
     # logpdf must agree with brute-force change of variables at the trained
@@ -62,17 +145,16 @@ def test_flow_fit_conditional():
     flow = maf(2, 2, rngs=nnx.Rngs(1), context_features=1)
     context = jax.random.normal(jax.random.key(3), (256, 1))
     data = jax.random.normal(jax.random.key(4), (256, 2)) + context
-    losses = flow.fit(
+    result = flow.fit(
         jax.random.key(5),
         {"data": data, "context": context},
-        num_steps=60,
-        batch_size=64,
+        config=FitConfig(max_steps=60, batch_size=64),
     )
-    assert losses[-1] < losses[0]
-    assert jnp.all(jnp.isfinite(losses))
+    assert result.losses[-1] < result.losses[0]
+    assert jnp.all(jnp.isfinite(result.losses))
 
 
-def test_flow_matcher_fit():
+def test_fit_matcher_fit():
     class TinyNet(nnx.Module):
         def __init__(self, rngs):
             self.proj = nnx.Linear(3, 3, rngs=rngs)
@@ -82,45 +164,29 @@ def test_flow_matcher_fit():
 
     model = LinearFlow(TinyNet(nnx.Rngs(0)), event_spec=3)
     data = jax.random.normal(jax.random.key(1), (256, 3))
-    losses = model.fit(jax.random.key(2), data, num_steps=30)
-    assert losses.shape == (30,)
-    assert jnp.all(jnp.isfinite(losses))
+    result = model.fit(
+        jax.random.key(2), {"data": data}, config=FitConfig(max_steps=30)
+    )
+    assert result.losses.shape == (30,)
+    assert jnp.all(jnp.isfinite(result.losses))
 
 
-def _quadratic_loss(params, rng, batch):
-    del rng
-    return jnp.mean((batch["data"] - params["w"]) ** 2)
-
-
-def test_fit_does_not_unroll_over_num_steps():
-    """The program `fit` builds must not grow with num_steps.
+def test_fit_does_not_unroll_over_max_steps():
+    """The program `fit` builds must not grow with max_steps.
 
     This is the whole reason the loop is a scan rather than Python: a long run
     should cost one compile, not one per step. Lowering the scan `fit` builds
-    (rather than `fit` itself, which finishes with a host-side finiteness
-    check) is what pins the property down.
+    is what pins the property down.
     """
-    from probjax.nn.training.batches import _array_fetch
-    from probjax.nn.training.kernel import _build_optimizer
-    from probjax.nn.training.loop import _make_step
-
     data = jnp.zeros((128, 2))
     params = {"w": jnp.zeros(2)}
 
-    def program_size(num_steps):
-        tx = _build_optimizer(1e-2, num_steps, "constant", 10.0)
-        body = _make_step(
-            _quadratic_loss, tx, _array_fetch({"data": data}, 32, 128), None, 1
+    def program_size(max_steps):
+        config = FitConfig(
+            data=DataSpec(primary="data"), max_steps=max_steps, batch_size=32
         )
-        init = (
-            params,
-            tx.init(params),
-            jax.random.key(0),
-            jnp.asarray(False),
-            jnp.asarray(0, jnp.int32),
-        )
-        run = jax.jit(lambda c: jax.lax.scan(body, c, None, length=num_steps))
-        return len(run.lower(init).as_text())
+        run = jax.jit(lambda p, k, x: fit(_quadratic_loss, p, k, x, config=config))
+        return len(run.lower(params, jax.random.key(0), {"data": data}).as_text())
 
     small, large = program_size(100), program_size(10_000)
     # Not exactly equal: the trip count appears as a literal in the HLO, so a
@@ -134,11 +200,9 @@ def test_fit_reproduces_the_reference_update_sequence():
     Any change to how keys are drawn silently changes every trained model, so
     the sequence is spelled out here rather than left to the implementation.
     """
-    from probjax.nn.training.kernel import _build_optimizer
-
     data = jax.random.normal(jax.random.key(0), (256, 2)) + jnp.array([2.0, -1.0])
     key, params = jax.random.key(1), {"w": jnp.zeros(2)}
-    tx = _build_optimizer(1e-2, 300, "constant", 10.0)
+    tx = optax.adam(1e-2)
 
     # The step is jitted, as the Python loop this replaced had it: an eager
     # step fuses differently and drifts by an ulp, which would make the
@@ -154,22 +218,24 @@ def test_fit_reproduces_the_reference_update_sequence():
     for _ in range(300):
         rng, rng_batch, rng_loss = jax.random.split(rng, 3)
         idx = jax.random.randint(rng_batch, (64,), 0, 256)
-        reference, opt_state, loss = step(
-            reference, opt_state, rng_loss, {"data": data[idx]}
-        )
+        reference, opt_state, loss = step(reference, opt_state, rng_loss, data[idx])
         expected.append(loss)
 
-    got_params, got_losses = fit(
+    result = fit(
         _quadratic_loss,
         params,
         key,
         {"data": data},
-        num_steps=300,
-        batch_size=64,
-        learning_rate=1e-2,
+        config=_config(
+            max_steps=300,
+            batch_size=64,
+            learning_rate=1e-2,
+            schedule="constant",
+            clip_norm=None,
+        ),
     )
-    assert jnp.array_equal(jnp.stack(expected), got_losses)
-    assert jnp.array_equal(reference["w"], got_params["w"])
+    assert jnp.array_equal(jnp.stack(expected), result.losses)
+    assert jnp.array_equal(reference["w"], result.params["w"])
 
 
 # ---------------------------------------------------------------------------
@@ -196,43 +262,50 @@ def test_fit_array_and_iterable_agree_on_identical_batches():
     key, p0 = jax.random.key(1), {"w": jnp.zeros(2)}
     batches = _reference_batches(data, key, 120, 64)
 
-    array_params, array_losses = fit(
+    array_result = fit(
         _quadratic_loss,
         p0,
         key,
         {"data": data},
-        num_steps=120,
-        batch_size=64,
-        learning_rate=1e-2,
+        config=_config(
+            max_steps=120, batch_size=64, learning_rate=1e-2, schedule="constant"
+        ),
     )
-    stream_params, stream_losses = fit(
+    stream_result = fit(
         _quadratic_loss,
         p0,
         key,
         batches,
-        num_steps=120,
-        learning_rate=1e-2,
+        config=FitConfig(
+            data=DataSpec(primary="data", stream=True),
+            max_steps=120,
+            learning_rate=1e-2,
+            schedule="constant",
+        ),
     )
     # Same batches, same seed, same update rule -- these must not merely be
     # close, and a drift here means one path is consuming randomness the other
     # is not.
-    assert jnp.array_equal(array_losses, stream_losses)
-    assert jnp.array_equal(array_params["w"], stream_params["w"])
+    assert jnp.array_equal(array_result.losses, stream_result.losses)
+    assert jnp.array_equal(array_result.params["w"], stream_result.params["w"])
 
 
-def test_fit_restarts_a_short_iterable():
+def test_fit_does_not_restart_a_short_iterable():
+    """A stream is the caller's iterator; it is not restarted when it runs out."""
     data = jax.random.normal(jax.random.key(0), (128, 2))
     batches = [{"data": data[i : i + 32]} for i in range(0, 128, 32)]  # 4 batches
-    _, losses = fit(
-        _quadratic_loss,
-        {"w": jnp.zeros(2)},
-        jax.random.key(1),
-        batches,
-        num_steps=20,
-        learning_rate=1e-2,
-    )
-    assert losses.shape == (20,)
-    assert jnp.all(jnp.isfinite(losses))
+    with pytest.raises(RuntimeError, match="ran out of batches"):
+        fit(
+            _quadratic_loss,
+            {"w": jnp.zeros(2)},
+            jax.random.key(1),
+            batches,
+            config=FitConfig(
+                data=DataSpec(primary="data", stream=True),
+                max_steps=20,
+                learning_rate=1e-2,
+            ),
+        )
 
 
 def test_fit_accepts_an_endless_generator():
@@ -244,19 +317,20 @@ def test_fit_accepts_an_endless_generator():
             key, sub = jax.random.split(key)
             yield {"data": data[jax.random.randint(sub, (32,), 0, 128)]}
 
-    _, losses = fit(
+    result = fit(
         _quadratic_loss,
         {"w": jnp.zeros(2)},
         jax.random.key(1),
         stream(),
-        num_steps=30,
-        learning_rate=1e-2,
+        config=FitConfig(
+            data=DataSpec(primary="data", stream=True), max_steps=30, learning_rate=1e-2
+        ),
     )
-    assert losses.shape == (30,)
-    assert jnp.all(jnp.isfinite(losses))
+    assert result.losses.shape == (30,)
+    assert jnp.all(jnp.isfinite(result.losses))
 
 
-def test_fit_rejects_batch_size_for_an_iterable():
+def test_fit_rejects_batch_size_for_a_stream():
     batches = [{"data": jnp.zeros((8, 2))}] * 4
     with pytest.raises(ValueError, match="batch_size cannot be set"):
         fit(
@@ -264,53 +338,63 @@ def test_fit_rejects_batch_size_for_an_iterable():
             {"w": jnp.zeros(2)},
             jax.random.key(0),
             batches,
-            num_steps=4,
-            batch_size=4,
+            config=FitConfig(
+                data=DataSpec(primary="data", stream=True),
+                max_steps=4,
+                batch_size=4,
+            ),
         )
 
 
-def test_fit_reports_a_ragged_batch_clearly():
-    batches = [{"data": jnp.zeros((8, 2))}, {"data": jnp.zeros((3, 2))}]
-    # The failure happens inside an io_callback, where JAX would otherwise
-    # bury it under a JaxRuntimeError; fit is expected to surface the original.
-    with pytest.raises(ValueError, match="different shape or dtype"):
+def test_fit_checks_the_batch_format_once_at_the_start():
+    """The first batch says what a batch looks like; the rest are taken as they come."""
+    batches = [{"data": jnp.zeros((8, 2)), "other": jnp.zeros((3, 2))}]
+    with pytest.raises(ValueError, match="share a nonempty leading example axis"):
         fit(
             _quadratic_loss,
             {"w": jnp.zeros(2)},
             jax.random.key(0),
             batches,
-            num_steps=2,
+            config=FitConfig(data=DataSpec(primary="data", stream=True), max_steps=1),
         )
 
 
 def test_fit_reports_an_exhausted_iterator_clearly():
-    with pytest.raises(RuntimeError, match="could not be restarted"):
+    with pytest.raises(RuntimeError, match="ran out of batches"):
         fit(
             _quadratic_loss,
             {"w": jnp.zeros(2)},
             jax.random.key(0),
             iter([{"data": jnp.zeros((8, 2))}]),
-            num_steps=5,
+            config=FitConfig(data=DataSpec(primary="data", stream=True), max_steps=5),
         )
 
 
-def test_batch_stream_classification_is_fixed_not_inferred():
-    """A list of arrays streams; a dict of arrays does not.
+def test_the_config_decides_whether_the_source_is_a_stream():
+    """A list of arrays streams; a mapping does not.
 
     Both readings are pytrees of arrays, so this cannot be inferred from
     structure. Guessing it silently trained a flow on a stacked
-    ``(num_batches, batch, features)`` array once, which is why the rule is
-    pinned here rather than left to shape heuristics.
+    ``(num_batches, batch, features)`` array once, which is why the source
+    kind is stated in the configuration rather than guessed.
     """
-    from probjax.nn.training import is_batch_stream
-
-    arr = jnp.zeros((4, 2))
-    assert not is_batch_stream(arr)
-    assert not is_batch_stream({"data": arr, "context": arr})
-    assert is_batch_stream([arr, arr])
-    assert is_batch_stream((arr, arr))
-    assert is_batch_stream([{"data": arr}])
-    assert is_batch_stream(iter([arr]))
+    array = jnp.zeros((4, 2))
+    with pytest.raises(ValueError, match="must be a mapping"):
+        fit(
+            lambda params, rng, primary: jnp.mean(primary**2),
+            {"w": jnp.zeros(2)},
+            jax.random.key(0),
+            [array, array],
+            config=FitConfig(data=DataSpec(primary="data"), max_steps=1),
+        )
+    result = fit(
+        lambda params, rng, primary: jnp.mean(primary**2),
+        {"w": jnp.zeros(2)},
+        jax.random.key(0),
+        [array, array, array],
+        config=FitConfig(data=DataSpec(stream=True), max_steps=3),
+    )
+    assert result.losses.shape == (3,)
 
 
 def test_flow_fit_from_an_iterable_matches_an_array_run():
@@ -318,9 +402,17 @@ def test_flow_fit_from_an_iterable_matches_an_array_run():
     batches = [raw[i : i + 128] for i in range(0, 512, 128)]
 
     from_array = maf(2, 3, rngs=nnx.Rngs(0))
-    losses_array = from_array.fit(jax.random.key(1), raw, num_steps=100, batch_size=128)
+    losses_array = from_array.fit(
+        jax.random.key(1),
+        {"data": raw},
+        config=FitConfig(max_steps=100, batch_size=128),
+    ).losses
     from_stream = maf(2, 3, rngs=nnx.Rngs(0))
-    losses_stream = from_stream.fit(jax.random.key(1), batches, num_steps=100)
+    losses_stream = from_stream.fit(
+        jax.random.key(1),
+        itertools.cycle([{"data": batch} for batch in batches]),
+        config=FitConfig(data=DataSpec(primary="data", stream=True), max_steps=100),
+    ).losses
 
     # The same 512 examples either way, so the standardising transform fitted
     # from a handful of batches must be the one fitted from the whole array.
@@ -341,12 +433,21 @@ def test_flow_fit_from_an_iterable_of_batch_dicts():
     ]
 
     flow = maf(2, 2, rngs=nnx.Rngs(1), context_features=1)
-    losses = flow.fit(jax.random.key(5), pairs, num_steps=80)
-    assert jnp.all(jnp.isfinite(losses))
-    assert losses[-1] < losses[0]
+    result = flow.fit(
+        jax.random.key(5),
+        itertools.cycle(pairs),
+        config=FitConfig(data=DataSpec(primary="data", stream=True), max_steps=80),
+    )
+    assert jnp.all(jnp.isfinite(result.losses))
+    assert result.losses[-1] < result.losses[0]
 
     with pytest.raises(ValueError, match="pass named model inputs inside data"):
-        flow.fit(jax.random.key(5), pairs, context=context, num_steps=5)
+        flow.fit(
+            jax.random.key(5),
+            pairs,
+            config=FitConfig(data=DataSpec(primary="data", stream=True), max_steps=5),
+            context=context,
+        )
 
 
 def test_flow_fit_streams_a_list_of_arrays_rather_than_stacking_it():
@@ -354,54 +455,30 @@ def test_flow_fit_streams_a_list_of_arrays_rather_than_stacking_it():
     batches = [raw[i : i + 64] for i in range(0, 256, 64)]
 
     flow = maf(2, 3, rngs=nnx.Rngs(0))
-    losses = flow.fit(jax.random.key(1), batches, num_steps=30)
+    result = flow.fit(
+        jax.random.key(1),
+        itertools.cycle(batches),
+        config=FitConfig(data=DataSpec(primary="data", stream=True), max_steps=30),
+    )
 
     # Were the list stacked into (4, 64, 2), the loss would be computed over a
     # 3-D "batch" and the standardisation would still look plausible -- so
     # check the model actually sees 2-D examples by evaluating it on one.
-    assert jnp.all(jnp.isfinite(losses))
+    assert jnp.all(jnp.isfinite(result.losses))
     assert jnp.isfinite(flow.as_dist().logpdf(jnp.zeros(2)))
 
 
-def test_fit_on_step_callback_fires_and_stops():
-    data = jax.random.normal(jax.random.key(0), (128, 2))
-    seen = []
+def test_fit_warns_when_the_loss_becomes_non_finite():
+    def nonfinite(params, rng, primary):
+        del rng, primary
+        return params["w"] * jnp.nan
 
-    def on_step(step, loss):
-        seen.append((step, loss))
-        return False if step >= 30 else None
-
-    _, losses = fit(
-        _quadratic_loss,
-        {"w": jnp.zeros(2)},
-        jax.random.key(1),
-        {"data": data},
-        num_steps=200,
-        batch_size=32,
-        learning_rate=1e-2,
-        on_step=on_step,
-        log_every=10,
-    )
-    assert [s for s, _ in seen] == [0, 10, 20, 30]
-    assert all(isinstance(loss, float) for _, loss in seen)
-    # Steps after the stop are no-ops and must not be reported as losses.
-    assert losses.shape == (31,)
-    assert jnp.all(jnp.isfinite(losses))
-
-
-def test_fit_on_step_runs_to_the_end_when_it_never_stops():
-    data = jax.random.normal(jax.random.key(0), (128, 2))
-    seen = []
-    _, losses = fit(
-        _quadratic_loss,
-        {"w": jnp.zeros(2)},
-        jax.random.key(1),
-        {"data": data},
-        num_steps=25,
-        batch_size=32,
-        learning_rate=1e-2,
-        on_step=lambda s, _: seen.append(s),
-        log_every=5,
-    )
-    assert seen == [0, 5, 10, 15, 20]
-    assert losses.shape == (25,)
+    with pytest.warns(RuntimeWarning, match="non-finite"):
+        result = fit(
+            nonfinite,
+            {"w": jnp.array(0.0)},
+            jax.random.key(1),
+            {"data": jnp.ones((4, 2))},
+            config=_config(max_steps=3),
+        )
+    assert np.all(jnp.isnan(result.losses))

@@ -73,7 +73,7 @@ def test_markov_kernel_vector_input(kernel_type, in_shape):
         )
     else:
         kernel = kernel_type(logdensity)
-    state = kernel.init(xs, rng_key=jax.random.PRNGKey(i))
+    state = kernel.init(jax.random.PRNGKey(i), xs)
     params = kernel.init_params(state)
 
     assert hasattr(state, "position"), "State must have a position attribute"
@@ -101,7 +101,7 @@ def test_markov_kernel_adaptation_sanity(kernel_type):
         kernel = kernel_type(logdensity, max_num_doublings=5)
     else:
         kernel = kernel_type(logdensity)
-    state = kernel.init(x0)
+    state = kernel.init(None, x0)
     params = kernel.init_params(state)
 
     result = adapt(key, kernel, step_size_adaptor(), state, params, num_steps=10)
@@ -144,7 +144,7 @@ def test_markov_kernel_invariance(kernel_type, in_shape):
             return jax.scipy.stats.norm.logpdf(x).sum()
 
         kernel = kernel_type(logdensity)
-    states = jax.vmap(lambda x: kernel.init(x, rng_key=key))(positions)
+    states = jax.vmap(lambda x: kernel.init(key, x))(positions)
     state0 = jax.tree_util.tree_map(lambda x: x[0], states)
     if kernel_type is gaussian_imh:
         flat_position, _ = jax.flatten_util.ravel_pytree(state0.position)
@@ -523,7 +523,7 @@ class _KeyRecordingSMCInfo(NamedTuple):
 def test_smc_runner_sample_advances_key_past_kernel_step():
     """SMC.sample must not reuse a key consumed inside the previous step."""
 
-    def init(particles, rng_key=None):
+    def init(particles):
         return _KeyRecordingSMCState(particles, jnp.ones((1,)))
 
     def step(key, state, tempering_param, mcmc_parameters):
@@ -605,13 +605,13 @@ def test_sgmcmc_step_with_args(kernel_fn):
 
     if kernel_fn is sgnht:
         sampler = kernel_fn(ge)
-        state = sampler.init(position, rng_key=key)
+        state = sampler.init(key, position)
     elif kernel_fn is sghmc:
         sampler = kernel_fn(ge, num_integration_steps=2)
-        state = sampler.init(position)
+        state = sampler.init(None, position)
     else:
         sampler = kernel_fn(ge)
-        state = sampler.init(position)
+        state = sampler.init(None, position)
 
     params = sampler.init_params(state)
 
@@ -635,13 +635,13 @@ def test_sgmcmc_mcmc_runner_run(kernel_fn):
 
     if kernel_fn is sgnht:
         sampler = kernel_fn(ge)
-        state = sampler.init(position, rng_key=key)
+        state = sampler.init(key, position)
     elif kernel_fn is sghmc:
         sampler = kernel_fn(ge, num_integration_steps=2)
-        state = sampler.init(position)
+        state = sampler.init(None, position)
     else:
         sampler = kernel_fn(ge)
-        state = sampler.init(position)
+        state = sampler.init(None, position)
 
     params = sampler.init_params(state)
     num_steps = batches[0][0].shape[0]  # 10
@@ -665,7 +665,7 @@ def test_mcmc_runner_run_without_args_unchanged():
         return -0.5 * jnp.sum(x**2)
 
     kernel = mala(logdensity)
-    state = kernel.init(position)
+    state = kernel.init(None, position)
     params = kernel.init_params(state)
 
     runner = MCMC(kernel)
@@ -685,12 +685,12 @@ class _KeyRecordingInfo(NamedTuple):
 def test_mcmc_runner_sample_advances_key_past_inner_scan():
     """Thinned sampling must not reuse keys consumed by the previous sample."""
 
-    def init(position, rng_key=None):
+    def init(rng, position):
         return _KeyRecordingState(position)
 
-    def step(key, state, params, *args):
+    def step(rng, state, params, *args):
         return (
-            _KeyRecordingState(jnp.stack([state.position[1], key])),
+            _KeyRecordingState(jnp.stack([state.position[1], rng])),
             _KeyRecordingInfo(),
         )
 
@@ -701,7 +701,7 @@ def test_mcmc_runner_sample_advances_key_past_inner_scan():
     )
 
     initial_position = jnp.zeros((2, 2), dtype=jnp.uint32)
-    state = kernel.init(initial_position)
+    state = kernel.init(None, initial_position)
     runner = MCMC(kernel, tracked_stats=())
 
     result = runner.sample(
@@ -727,10 +727,10 @@ def test_sgmcmc_mcmc_runner_sample(kernel_fn):
 
     if kernel_fn is sgnht:
         sampler = kernel_fn(ge)
-        state = sampler.init(position, rng_key=key)
+        state = sampler.init(key, position)
     else:
         sampler = kernel_fn(ge)
-        state = sampler.init(position)
+        state = sampler.init(None, position)
     params = sampler.init_params(state)
 
     num_samples = 5
@@ -766,7 +766,7 @@ def test_pseudo_marginal_step(inner_cls):
     position = jnp.zeros(2)
 
     kernel = pseudo_marginal(inner_cls, _stochastic_logdensity)
-    state = kernel.init(position, rng_key=key)
+    state = kernel.init(key, position)
     params = kernel.init_params(state)
 
     new_state, info = kernel.step(key, state, params)
@@ -782,7 +782,7 @@ def test_pseudo_marginal_hmc():
     position = jnp.zeros(3)
 
     kernel = pseudo_marginal(hmc, _stochastic_logdensity, num_integration_steps=5)
-    state = kernel.init(position, rng_key=key)
+    state = kernel.init(key, position)
     params = kernel.init_params(state)
 
     new_state, info = kernel.step(key, state, params)
@@ -799,8 +799,8 @@ def test_pseudo_marginal_num_samples():
     kernel_1 = pseudo_marginal(gauss_rwmh, _stochastic_logdensity, num_samples=1)
     kernel_10 = pseudo_marginal(gauss_rwmh, _stochastic_logdensity, num_samples=10)
 
-    state_1 = kernel_1.init(position, rng_key=key)
-    state_10 = kernel_10.init(position, rng_key=key)
+    state_1 = kernel_1.init(key, position)
+    state_10 = kernel_10.init(key, position)
 
     # With num_samples=10, the log-density estimate should be closer to truth
     true_logd = -0.5 * jnp.sum(position**2)
@@ -820,7 +820,7 @@ def test_pseudo_marginal_mcmc_runner():
     position = jnp.zeros(2)
 
     kernel = pseudo_marginal(gauss_rwmh, _stochastic_logdensity)
-    state = kernel.init(position, rng_key=key)
+    state = kernel.init(key, position)
     params = kernel.init_params(state)
 
     runner = MCMC(kernel)
@@ -838,7 +838,7 @@ def test_pseudo_marginal_mcmc_runner_hmc():
     position = jnp.zeros(2)
 
     kernel = pseudo_marginal(hmc, _stochastic_logdensity, num_integration_steps=3)
-    state = kernel.init(position, rng_key=key)
+    state = kernel.init(key, position)
     params = kernel.init_params(state)
 
     runner = MCMC(kernel)
@@ -862,7 +862,7 @@ def test_mcmc_runner_custom_tracked_stats():
         return -0.5 * jnp.sum(x**2)
 
     kernel = hmc(logdensity, num_integration_steps=3)
-    state = kernel.init(position)
+    state = kernel.init(None, position)
     params = kernel.init_params(state)
 
     # Only track logdensity (skip acceptance_rate)
@@ -881,7 +881,7 @@ def test_mcmc_runner_logdensity_tracked():
         return -0.5 * jnp.sum(x**2)
 
     kernel = mala(logdensity)
-    state = kernel.init(position)
+    state = kernel.init(None, position)
     params = kernel.init_params(state)
 
     runner = MCMC(kernel)

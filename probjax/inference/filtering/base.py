@@ -7,7 +7,7 @@ import jax.numpy as jnp
 
 from probjax.utils.guards import has_attrs
 from probjax.utils.jaxutils import KernelAPI
-from probjax.utils.typing import Array, ArrayLike, RngKey
+from probjax.utils.typing import Array, ArrayLike
 
 
 def as_time(t: Optional[ArrayLike]) -> Optional[Array]:
@@ -52,9 +52,9 @@ class FilterKernel(NamedTuple):
         state: FilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng_key: Optional[RngKey] = None,
+        rng = None,
     ) -> Tuple[FilterState, FilterInfo]:
-        return self.step(state, t, observed, rng_key)
+        return self.step(state, t, observed, rng)
 
 
 class FilterAPI(KernelAPI):

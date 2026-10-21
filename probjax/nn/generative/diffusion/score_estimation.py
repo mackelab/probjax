@@ -28,7 +28,7 @@ from typing import Callable, NamedTuple
 import jax
 import jax.numpy as jnp
 
-from probjax.utils.typing import Array, PyTree, RngKey
+from probjax.utils.typing import Array, PyTree
 
 _LOG_2PI = jnp.log(2.0 * jnp.pi)
 
@@ -55,7 +55,7 @@ def _gaussian_logpdf_sum(x: PyTree[Array], mean: PyTree[Array], std: Array) -> A
 
 
 def is_score_and_marginal(
-    key: RngKey,
+    rng,
     x_t: PyTree[Array],
     t: Array,
     *,
@@ -93,7 +93,7 @@ def is_score_and_marginal(
     prop_std = sigma / alpha
     prop_loc = treedef.unflatten([leaf / alpha for leaf in x_leaves])
 
-    eps_keys = jax.random.split(key, len(x_leaves))
+    eps_keys = jax.random.split(rng, len(x_leaves))
     eps = [
         jax.random.normal(k, (num_inner,) + leaf.shape, jnp.float32)
         for k, leaf in zip(eps_keys, x_leaves, strict=True)

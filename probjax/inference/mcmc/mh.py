@@ -12,7 +12,7 @@ from jax.flatten_util import ravel_pytree
 from probjax.inference.adaptation import compose_adaptors
 from probjax.inference.mcmc.adaptation import covariance_adaptor, step_size_adaptor
 from probjax.inference.mcmc.base import MarkovKernelAPI, ravel_position
-from probjax.utils.typing import Array, RngKey, Scalar
+from probjax.utils.typing import Array, Scalar
 
 
 class RWParams(NamedTuple):
@@ -27,7 +27,7 @@ def build_mh_step(
     kernel = blackjax.rmh.build_kernel()
 
     def step(
-        key: RngKey,
+        rng,
         state: RWState,
         params: RWParams,
     ) -> tuple[RWState, RWInfo]:
@@ -40,7 +40,7 @@ def build_mh_step(
             _transition_proposal_logpdf = None
 
         return kernel(
-            key,
+            rng,
             state,
             logdensity_fn,
             _transition_proposal_fn,
@@ -88,10 +88,10 @@ def init_params_gaussian_rw(
 
 
 def gaussian_transition_proposal(
-    key: RngKey, position: Any, params: RWParamsGauss
+    rng, position: Any, params: RWParamsGauss
 ) -> Any:
     flat_position, unflatten = ravel_pytree(position)
-    eps = jax.random.normal(key, flat_position.shape)
+    eps = jax.random.normal(rng, flat_position.shape)
     if params.scale is None:
         new_position = flat_position + params.step_size * eps
     elif len(params.scale.shape) == 1:

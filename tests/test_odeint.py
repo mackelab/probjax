@@ -8,7 +8,7 @@ from scipy.linalg import expm
 
 from probjax.utils.functions import const_diffusion, linear_drift, split_drift
 from probjax.utils.odeint import odeint
-from probjax.utils.odeutil import StepSizeAdaptor, TraceNothing
+from probjax.utils.odeutil import StepSizeAdaptor, get_method
 from probjax.utils.sdeint import sdeint
 
 pytest_plugins = [
@@ -49,20 +49,31 @@ def single_linear_ode_problem(request):
     return x0, drift, true_f
 
 
+def _adaptor_kwargs(method):
+    """A step-size adaptor for adaptive solvers only.
+
+    ``step_size_adaptor`` configures the adaptive integrators; handing one
+    to a fixed-step solver is an error.
+    """
+    _, info = get_method(method)
+    if not info.get("adaptive", False):
+        return {}
+    return {"step_size_adaptor": StepSizeAdaptor(atol=1e-2, rtol=1e-2)}
+
+
 def _check_basic_linear_ode(problem, method):
     """Shared body for the basic linear ODE tests."""
     if method in KNOWN_ERROR:
         pytest.xfail(f"{method} method has known error")
 
     x0, drift, f_true = problem
-    step_size_adaptor = StepSizeAdaptor(atol=1e-2, rtol=1e-2)
     f_approx = odeint(
         drift,
         x0,
         ts_dense,
         solver=method,
-        step_size_adaptor=step_size_adaptor,
         collect_trace=True,
+        **_adaptor_kwargs(method),
     )
     f_true = f_true(ts_dense, x0)
     error = jnp.mean((f_approx - f_true) ** 2)
@@ -85,14 +96,13 @@ def test_odeint_basic_linear_ode_all_methods(
 def test_odeint_split_drift_ode(split_drift_ode_problem, split_drift_ode_method):
     """Test exponential methods that require split_drift."""
     x0, drift, f_true = split_drift_ode_problem
-    step_size_adaptor = StepSizeAdaptor(atol=1e-2, rtol=1e-2)
     f_approx = odeint(
         drift,
         x0,
         ts_dense,
         solver=split_drift_ode_method,
-        step_size_adaptor=step_size_adaptor,
         collect_trace=True,
+        **_adaptor_kwargs(split_drift_ode_method),
     )
     f_true = f_true(ts_dense, x0)
     error = jnp.mean((f_approx - f_true) ** 2)
@@ -105,14 +115,13 @@ def test_odeint_nonlienar_ode(nonlinear_ode_problem, plain_ode_method):
         pytest.xfail(f"{plain_ode_method} method has known error")
 
     x0, drift, f_true = nonlinear_ode_problem
-    step_size_adaptor = StepSizeAdaptor(atol=1e-2, rtol=1e-2)
     f_approx = odeint(
         drift,
         x0,
         ts_dense,
         solver=plain_ode_method,
-        step_size_adaptor=step_size_adaptor,
         collect_trace=True,
+        **_adaptor_kwargs(plain_ode_method),
     )
     f_true = f_true(ts_dense, x0)
     error = jnp.mean((f_approx - f_true) ** 2)
@@ -178,8 +187,8 @@ def test_odeint_with_pytree_filter_state(plain_ode_method):
     assert final_filtered.shape == (1,)
 
 
-def test_odeint_trace_nothing(plain_ode_method):
-    """Test ODE solvers with TraceNothing filter."""
+def test_odeint_collect_trace_false_returns_terminal_state(plain_ode_method):
+    """``collect_trace=False`` is the single way to record nothing."""
     if plain_ode_method in KNOWN_ERROR:
         pytest.xfail(f"{plain_ode_method} method has known error")
 
@@ -190,25 +199,23 @@ def test_odeint_trace_nothing(plain_ode_method):
         del t
         return -x
 
-    traced = odeint(
+    terminal = odeint(
         drift,
         x0,
         ts,
         solver=plain_ode_method,
-        filter_state=TraceNothing(),
-        collect_trace=True,
-    )
-
-    assert traced is None
-    final_none = odeint(
-        drift,
-        x0,
-        ts,
-        solver=plain_ode_method,
-        filter_state=TraceNothing(),
         collect_trace=False,
     )
-    assert final_none is None
+    assert terminal.shape == (2,)
+
+    trace = odeint(
+        drift,
+        x0,
+        ts,
+        solver=plain_ode_method,
+        collect_trace=True,
+    )
+    assert trace.shape == (10, 2)
 
 
 def test_odeint_supports_drift_args(plain_ode_method):
@@ -441,12 +448,9 @@ def _sde_trace(*args: Any, **kwargs: Any) -> jax.Array:
 
 
 def _sde_trace_and_brownian(*args: Any, **kwargs: Any) -> tuple[jax.Array, jax.Array]:
-    result = sdeint(*args, **kwargs)
-    assert isinstance(result, tuple)
-    trace, brownian = result
-    assert trace is not None
-    assert brownian is not None
-    return cast(jax.Array, trace), cast(jax.Array, brownian)
+    value, aux = sdeint(*args, return_aux=True, **kwargs)
+    assert aux.brownian is not None
+    return cast(jax.Array, value), cast(jax.Array, aux.brownian)
 
 
 def test_sdeint_scalar(sde_method, scalar_sde_problem, rng):
@@ -460,7 +464,7 @@ def test_sdeint_scalar(sde_method, scalar_sde_problem, rng):
 
     x0, f, g, f_true = scalar_sde_problem
     f_approx, dWt = _sde_trace_and_brownian(
-        rng, f, g, x0, t, solver=sde_method, return_brownian=True
+        rng, f, g, x0, t, solver=sde_method
     )
     Wt = jnp.cumsum(dWt, axis=0)
     f_sol = f_true(Wt, t, x0)
@@ -474,7 +478,7 @@ def test_sdeint_split_drift(split_drift_sde_method, split_drift_sde_problem, rng
     x0, f, g, f_true = split_drift_sde_problem
     key = rng
     f_approx, dWt = _sde_trace_and_brownian(
-        key, f, g, x0, t, solver=split_drift_sde_method, return_brownian=True
+        key, f, g, x0, t, solver=split_drift_sde_method
     )
     Wt = jnp.cumsum(dWt, axis=0)
     f_sol = f_true(Wt, t, x0)
@@ -495,24 +499,25 @@ def test_sdeint_collect_trace_false(generic_sde_method, scalar_sde_problem):
         t,
         solver=generic_sde_method,
         collect_trace=False,
-        return_brownian=False,
     )
     assert final.shape == x0.shape
 
 
-def test_sdeint_return_brownian_requires_trace(scalar_sde_problem):
+def test_sdeint_return_aux_without_trace_has_no_brownian(scalar_sde_problem):
+    """Without a trace there is no Brownian path to hand back."""
     x0, f, g, _ = scalar_sde_problem
     key = jax.random.PRNGKey(2)
-    with pytest.raises(ValueError):
-        sdeint(
-            key,
-            f,
-            g,
-            x0,
-            t,
-            return_brownian=True,
-            collect_trace=False,
-        )
+    value, aux = sdeint(
+        key,
+        f,
+        g,
+        x0,
+        t,
+        return_aux=True,
+        collect_trace=False,
+    )
+    assert value.shape == x0.shape
+    assert aux.brownian is None
 
 
 def test_sdeint_2d(generic_sde_method, two_dimensional_sde_problem, rng):
@@ -521,7 +526,7 @@ def test_sdeint_2d(generic_sde_method, two_dimensional_sde_problem, rng):
     x0, f, g, f_true = two_dimensional_sde_problem
     key = rng
     f_approx, dWt = _sde_trace_and_brownian(
-        key, f, g, x0, t, solver=generic_sde_method, return_brownian=True
+        key, f, g, x0, t, solver=generic_sde_method
     )
     Wt = jnp.cumsum(dWt, axis=0)
     f_sol = f_true(Wt, t, x0)
@@ -638,7 +643,6 @@ def test_exp_euler_maruyama_weights_diffusion_with_linear_coeff():
         x0,
         ts,
         solver="exp_euler_maruyama",
-        return_brownian=True,
     )
 
     dt = ts[1] - ts[0]
@@ -680,7 +684,6 @@ def test_sdeint_rectangular_diffusion_is_supported(generic_sde_method):
         ts,
         0.8,
         solver=generic_sde_method,
-        return_brownian=True,
     )
 
     assert state_trace.shape == (ts.shape[0], x0.shape[0])

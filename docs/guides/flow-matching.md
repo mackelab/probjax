@@ -11,7 +11,7 @@ it at construction.
 ```python
 import jax
 from flax import nnx
-from probjax.nn import MLP, LinearFlow
+from probjax.nn import MLP, FitConfig, LinearFlow
 
 
 class Velocity(nnx.Module):
@@ -24,7 +24,9 @@ class Velocity(nnx.Module):
 
 data = jax.random.normal(jax.random.key(0), (256, 3))
 matcher = LinearFlow(Velocity(nnx.Rngs(0)), event_spec=3)
-losses = matcher.fit(jax.random.key(1), data, num_steps=50)
+losses = matcher.fit(
+    jax.random.key(1), data, config=FitConfig(max_steps=50)
+).losses
 
 view = matcher.as_dist()
 samples = view.sample(jax.random.key(2), (4,))

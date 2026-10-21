@@ -14,7 +14,6 @@ from probjax.inference.base import Kernel
 from probjax.inference.smc.base import make_mcmc_adapter
 from probjax.inference.smc.resampling import systematic
 from probjax.utils.jaxutils import leading_dim
-from probjax.utils.typing import RngKey
 
 
 def tuned_smc(
@@ -64,14 +63,14 @@ def tuned_smc(
     )
 
     def step(
-        key: RngKey,
+        rng,
         state: Any,
         mcmc_parameters: Any = None,
         tempering_param: Any = None,
     ) -> Any:
         if adaptive:
-            return delegate.step(key, state)
-        return delegate.step(key, state, tempering_param=tempering_param)
+            return delegate.step(rng, state)
+        return delegate.step(rng, state, tempering_param=tempering_param)
 
     return Kernel(delegate.init, step, lambda *a, **kw: parameters)
 
@@ -120,14 +119,14 @@ def pretuned_smc(
     )
 
     def update(
-        key: RngKey,
+        rng,
         state: Any,
         num_steps: int,
         parameters: Any,
         logdensity: Callable,
         logweights: Callable,
     ) -> Any:
-        pilot_key, move_key = jax.random.split(key)
+        pilot_key, move_key = jax.random.split(rng)
         parameters = pilot(
             pilot_key,
             inner_kernel_tuning.StateWithParameterOverride(state, dict(parameters)),
@@ -151,7 +150,7 @@ def pretuned_smc(
         )
 
     def step(
-        key: RngKey,
+        rng,
         state: Any,
         mcmc_parameters: Any = None,
         tempering_param: Any = None,
@@ -167,7 +166,7 @@ def pretuned_smc(
             **kwargs,
         )
         step_kwargs = {} if adaptive else dict(tempering_param=tempering_param)
-        sampler, info = delegate.step(key, state.sampler_state, **step_kwargs)
+        sampler, info = delegate.step(rng, state.sampler_state, **step_kwargs)
         return inner_kernel_tuning.StateWithParameterOverride(
             sampler, info.parameter_override
         ), info.smc_info

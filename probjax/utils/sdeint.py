@@ -1,15 +1,69 @@
-from typing import Any, Callable, Optional, Sequence, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Literal,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    overload,
+)
 
 import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Key, PyTree
 
-from probjax.utils._solver_common import ConfiguredSolver, solver_or_legacy_method
+from probjax.utils._solver_common import (
+    ConfiguredSolver,
+    SDEIntAux,
+    solver_or_legacy_method,
+)
 from probjax.utils.functions import wrap_if_plain_callable
 from probjax.utils.guards import is_tracing
 from probjax.utils.sdeutil.adaptive import SDEStepSizeAdaptor
+from probjax.utils.sdeutil.base import is_adaptive_solver
 from probjax.utils.sdeutil.core import _sdeint
 from probjax.utils.sdeutil.integrate_adaptive import warn_boundary_hits
+
+
+@overload
+def sdeint(
+    rng: Key,
+    drift: Callable[..., PyTree[Array]],
+    diffusion: Callable[..., PyTree[Array]],
+    y0: PyTree[Array],
+    ts: Array,
+    *args: Any,
+    solver: Union[str, type, ConfiguredSolver] = "euler_maruyama",
+    method: Optional[str] = None,
+    dtype: Optional[jnp.dtype] = jnp.float32,
+    sde_type: str = "ito",
+    filter_state: Optional[Callable[[PyTree[Array]], PyTree[Array]]] = None,
+    collect_trace: bool = True,
+    check_points: Optional[Sequence[int]] = None,
+    step_size_adaptor: Optional[SDEStepSizeAdaptor] = None,
+    return_aux: Literal[False] = False,
+) -> PyTree[Array]: ...
+
+
+@overload
+def sdeint(
+    rng: Key,
+    drift: Callable[..., PyTree[Array]],
+    diffusion: Callable[..., PyTree[Array]],
+    y0: PyTree[Array],
+    ts: Array,
+    *args: Any,
+    solver: Union[str, type, ConfiguredSolver] = "euler_maruyama",
+    method: Optional[str] = None,
+    dtype: Optional[jnp.dtype] = jnp.float32,
+    sde_type: str = "ito",
+    filter_state: Optional[Callable[[PyTree[Array]], PyTree[Array]]] = None,
+    collect_trace: bool = True,
+    check_points: Optional[Sequence[int]] = None,
+    step_size_adaptor: Optional[SDEStepSizeAdaptor] = None,
+    return_aux: Literal[True],
+) -> Tuple[PyTree[Array], SDEIntAux]: ...
 
 
 def sdeint(
@@ -23,24 +77,12 @@ def sdeint(
     method: Optional[str] = None,
     dtype: Optional[jnp.dtype] = jnp.float32,
     sde_type: str = "ito",
-    return_brownian: bool = False,
-    return_state: bool = False,
-    filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
+    filter_state: Optional[Callable[[PyTree[Array]], PyTree[Array]]] = None,
     collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
     step_size_adaptor: Optional[SDEStepSizeAdaptor] = None,
-) -> Union[
-    Optional[PyTree[Array]],
-    Tuple[Any, Optional[PyTree[Array]]],
-    Tuple[
-        Optional[PyTree[Array]],
-        Optional[PyTree[Array]],
-    ],
-    Tuple[
-        Any,
-        Tuple[Optional[PyTree[Array]], Optional[PyTree[Array]]],
-    ],
-]:
+    return_aux: bool = False,
+) -> Union[PyTree[Array], Tuple[PyTree[Array], SDEIntAux]]:
     """Solve a stochastic differential equation
     ``dy = drift(t, y, *args) dt + diffusion(t, y, *args) dW``.
 
@@ -73,25 +115,24 @@ def sdeint(
             - ``"linear_exact_sde"``: exact transition sampling for linear SDEs
               (requires :class:`~probjax.utils.functions.linear_drift` and
               :class:`~probjax.utils.functions.const_diffusion`)
+            - ``"adaptive"``: step-doubling Euler-Maruyama driven by
+              ``step_size_adaptor``
         method: Deprecated alias of ``solver``.
         dtype: Computation dtype (default ``float32``).
         sde_type: ``"ito"`` (default) or ``"stratonovich"``. Noise layout
             is inferred from the diffusion output shape — scalar/vector
             outputs are diagonal, matrix outputs are full (including
             rectangular).
-        return_brownian: Whether to return Brownian paths (requires
-            ``collect_trace=True``).
-        return_state: Whether to return solver state.
-        filter_state: Optional state filter; returning ``None`` disables
-            tracing entirely.
+        filter_state: Optional function selecting the state components to
+            record. It must return a value; use ``collect_trace=False`` to
+            record nothing at all.
         collect_trace: Record the filtered quantity at every time step
             (``True``, default) or return only the filtered terminal state
-            (``False``). Must be ``True`` when returning Brownian paths.
+            (``False``).
         check_points: Optional index sequence for checkpointed grid
             integration.
-        step_size_adaptor: When provided, switches integration to an
-            adaptive step-doubling Euler-Maruyama scheme driven by the
-            given controller. Pass
+        step_size_adaptor: Step-size controller for the adaptive integrator
+            (``solver="adaptive"``). Pass
             :class:`~probjax.utils.sdeutil.adaptive.WeakStepSizeAdaptor`
             for distributional / weak quantities (fresh noise from the key)
             or :class:`~probjax.utils.sdeutil.adaptive.StrongStepSizeAdaptor`
@@ -99,15 +140,17 @@ def sdeint(
             Brownian tree, so runs at different tolerances are comparable
             per path). Steps are never rejected on their own noise; the
             local error only sets the next step size. Currently restricted to
-            **diagonal noise** and ignores ``solver`` (always uses Euler-Maruyama with
-            step-doubling error estimation). Defaults to ``None``
-            (fixed-step integration via ``solver``).
+            **diagonal noise**. Defaults to ``None`` (fixed-step integration
+            via ``solver``).
+        return_aux: Return ``(value, aux)`` instead of the bare value, where
+            ``aux`` is an :class:`~probjax.utils._solver_common.SDEIntAux`
+            holding the Brownian path and the solver's final state. The
+            Brownian path is ``None`` on the adaptive path and for
+            non-diagonal noise.
 
     Returns:
-        When ``return_brownian=False``: the filtered trajectory (if
-        ``collect_trace=True``) or the filtered terminal state. When
-        ``return_brownian=True``: ``(state_trace, brownian_trace)``. If
-        ``return_state=True``, the solver state is prepended.
+        The filtered trajectory (when ``collect_trace=True``) or the filtered
+        terminal state, or ``(value, aux)`` when ``return_aux=True``.
 
     Example:
         >>> import jax.numpy as jnp
@@ -125,36 +168,26 @@ def sdeint(
         >>> ys = sdeint(rng, drift, diffusion, y0, ts, 0.1, 0.2)
     """
     solver = solver_or_legacy_method(solver, method, "sdeint", default="euler_maruyama")
+    if step_size_adaptor is None and is_adaptive_solver(solver):
+        step_size_adaptor = SDEStepSizeAdaptor()
     drift = wrap_if_plain_callable(drift)
     diffusion = wrap_if_plain_callable(diffusion)
-    result = _sdeint(
+    value, aux, diag_hits = _sdeint(
         rng,
         drift,
         diffusion,
         y0,
         ts,
-        tuple(args),
+        *args,
         method=solver,
         dtype=dtype,
         sde_type=sde_type,
-        return_brownian=return_brownian,
-        return_state=return_state,
+        return_aux=return_aux,
         filter_state=filter_state,
         collect_trace=collect_trace,
         check_points=check_points,
         step_size_adaptor=step_size_adaptor,
     )
-    # ``_sdeint`` appends an adaptive-diagnostic hit count as the last
-    # element of its return so we can warn host-side (no per-vmap-element
-    # callback overhead). Strip it before returning to the user; warn iff
-    # the controller ran out of budget on a meaningful fraction of the
-    # output segments.
-    if return_state:
-        state_obj, payload, diag_hits = result
-        out = (state_obj, payload)
-    else:
-        payload, diag_hits = result
-        out = payload
     # Host-side boundary warning. Skip when a tracer flows through (under
     # ``jax.vmap`` / ``jax.jit`` of ``sdeint`` itself); the warning will
     # surface from the outermost concrete invocation. ``jax.core.Tracer``
@@ -163,4 +196,6 @@ def sdeint(
     if step_size_adaptor is not None and not is_tracing(diag_hits):
         n_segments = int(jnp.atleast_1d(jnp.asarray(ts)).shape[0]) - 1
         warn_boundary_hits(step_size_adaptor, diag_hits, n_segments)
-    return out
+    if return_aux:
+        return value, aux
+    return value

@@ -15,7 +15,7 @@ from probjax.utils.jaxutils import (
     as_configured,
     filter_kwargs,
 )
-from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
+from probjax.utils.typing import Array, ArrayLike, PyTree
 
 SMCState = bj_smc_base.SMCState
 
@@ -123,15 +123,15 @@ def make_mcmc_adapter(
     def mcmc_init_fn(
         position: Any,
         logdensity_fn: Callable,
-        rng_key: RngKey | None = None,
+        rng = None,
     ) -> Any:
-        return configured.init(position, logdensity_fn, rng_key=rng_key)
+        return configured.init(position, logdensity_fn, rng=rng)
 
     def mcmc_step_fn(
-        rng_key: RngKey, state: Any, logdensity_fn: Callable, **step_parameters: Any
+        rng, state: Any, logdensity_fn: Callable, **step_parameters: Any
     ) -> Any:
         step = configured.build_step(logdensity_fn)
-        return step(rng_key, state, _wrap_params(step_parameters))
+        return step(rng, state, _wrap_params(step_parameters))
 
     return mcmc_init_fn, mcmc_step_fn
 
@@ -140,7 +140,7 @@ def init_mcmc_params_from_logdensity(
     particles: PyTree,
     logdensity_fn: Callable,
     mcmc_kernel: Any,
-    rng_key: RngKey | None = None,
+    rng = None,
     mcmc_kernel_kwargs: dict[str, Any] | None = None,
     allow_kwargs: bool = False,
     **mcmc_param_kwargs: Any,
@@ -156,7 +156,7 @@ def init_mcmc_params_from_logdensity(
     mcmc_kernel_kwargs = mcmc_kernel_kwargs or {}
     mcmc_init_fn, _ = make_mcmc_adapter(mcmc_kernel, **mcmc_kernel_kwargs)
     particle0 = jax.tree_util.tree_map(lambda x: x[0], particles)
-    mcmc_state = mcmc_init_fn(particle0, logdensity_fn, rng_key=rng_key)
+    mcmc_state = mcmc_init_fn(particle0, logdensity_fn, rng=rng)
     configured = as_configured(mcmc_kernel)
     init_param_kwargs = filter_kwargs(
         configured.api.init_params, mcmc_param_kwargs, allow_kwargs=allow_kwargs
@@ -171,7 +171,7 @@ def init_tempered_mcmc_params(
     logprior_fn: Callable | None,
     loglikelihood_fn: Callable | None,
     mcmc_kernel: Any,
-    rng_key: RngKey | None = None,
+    rng = None,
     lmbda: float = 0.0,
     mcmc_kernel_kwargs: dict[str, Any] | None = None,
     kind: str = "persistent SMC",
@@ -193,7 +193,7 @@ def init_tempered_mcmc_params(
         particles,
         tempered_logposterior_fn,
         mcmc_kernel,
-        rng_key=rng_key,
+        rng=rng,
         mcmc_kernel_kwargs=mcmc_kernel_kwargs,
         **mcmc_param_kwargs,
     )

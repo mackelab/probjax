@@ -35,8 +35,8 @@ def pathfinder_warmup(
     )
 
     @partial(jax.jit, static_argnames=("num_steps",))
-    def run(key, _kernel, state, params, num_steps):
-        result, info = procedure.run(key, state.position, num_steps)
+    def run(rng, _kernel, state, params, num_steps):
+        result, info = procedure.run(rng, state.position, num_steps)
         params = replace_params(params, **result.parameters)
         return WarmupResult(result.state, params, info if collect else None)
 
@@ -64,7 +64,7 @@ def mclmc_warmup(
     )
 
     @partial(jax.jit, static_argnames=("num_steps",))
-    def run(key, _kernel, state, params, num_steps):
+    def run(rng, _kernel, state, params, num_steps):
         adaptation_params = MCLMCAdaptationState(
             get_param(params, "L"),
             get_param(params, "step_size"),
@@ -77,7 +77,7 @@ def mclmc_warmup(
             mclmc_kernel=mclmc_kernel,
             num_steps=num_steps,
             state=state,
-            rng_key=key,
+            rng_key=rng,
             params=adaptation_params,
             **kwargs,
         )

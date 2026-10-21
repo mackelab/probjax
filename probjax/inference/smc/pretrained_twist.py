@@ -47,7 +47,7 @@ from probjax.nn.generative.diffusion.twists import (
     DenoisedPotentialTwist,
     TwistFn,
 )
-from probjax.utils.typing import Array, PyTree, RngKey
+from probjax.utils.typing import Array, PyTree
 
 
 class PretrainedTwistState(NamedTuple):
@@ -63,7 +63,7 @@ class PretrainedTwistInfo(NamedTuple):
 
 
 def run_pretrained_diffusion_smc(
-    key: RngKey,
+    rng,
     *,
     model,
     event_spec=None,
@@ -151,7 +151,7 @@ def run_pretrained_diffusion_smc(
             )
     spec = normalize_spec(event_spec)
 
-    key, key_init = jax.random.split(key)
+    key, key_init = jax.random.split(rng)
     particles = model._sample_base(key_init, (num_particles,), spec, t_max=t_max)
 
     log_psi = jnp.asarray(twist.log_twist(ts[0], particles), dtype=jnp.float32)

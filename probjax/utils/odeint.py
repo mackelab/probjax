@@ -1,13 +1,68 @@
-from typing import Any, Callable, Optional, Sequence, Union
+from typing import (
+    Any,
+    Callable,
+    Literal,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    overload,
+)
 
 import jax.numpy as jnp
 from jax import Array
 from jaxtyping import PyTree
 
-from probjax.utils._solver_common import ConfiguredSolver, solver_or_legacy_method
+from probjax.utils._solver_common import (
+    ConfiguredSolver,
+    ODEIntAux,
+    solver_or_legacy_method,
+)
 from probjax.utils.functions import wrap_if_plain_callable
 from probjax.utils.odeutil import StepSizeAdaptor, _odeint_custom
 from probjax.utils.odeutil.inversion import SampleDist, TraceEstimator
+
+
+@overload
+def odeint(
+    drift: Callable[..., PyTree[Array]],
+    y0: PyTree[Array],
+    ts: Array,
+    *args: Any,
+    solver: Union[str, type, ConfiguredSolver] = "rk4",
+    method: Optional[str] = None,
+    dtype: Optional[jnp.dtype] = jnp.float32,
+    filter_state: Optional[Callable[[PyTree[Array]], PyTree[Array]]] = None,
+    collect_trace: bool = True,
+    check_points: Optional[Sequence[int]] = None,
+    step_size_adaptor: Optional[StepSizeAdaptor] = None,
+    logdet_rng: Optional[Array] = None,
+    trace_estimator: TraceEstimator = "exact",
+    num_samples: int = 1,
+    sample_dist: SampleDist = "rademacher",
+    return_aux: Literal[False] = False,
+) -> PyTree[Array]: ...
+
+
+@overload
+def odeint(
+    drift: Callable[..., PyTree[Array]],
+    y0: PyTree[Array],
+    ts: Array,
+    *args: Any,
+    solver: Union[str, type, ConfiguredSolver] = "rk4",
+    method: Optional[str] = None,
+    dtype: Optional[jnp.dtype] = jnp.float32,
+    filter_state: Optional[Callable[[PyTree[Array]], PyTree[Array]]] = None,
+    collect_trace: bool = True,
+    check_points: Optional[Sequence[int]] = None,
+    step_size_adaptor: Optional[StepSizeAdaptor] = None,
+    logdet_rng: Optional[Array] = None,
+    trace_estimator: TraceEstimator = "exact",
+    num_samples: int = 1,
+    sample_dist: SampleDist = "rademacher",
+    return_aux: Literal[True],
+) -> Tuple[PyTree[Array], ODEIntAux]: ...
 
 
 def odeint(
@@ -18,7 +73,7 @@ def odeint(
     solver: Union[str, type, ConfiguredSolver] = "rk4",
     method: Optional[str] = None,
     dtype: Optional[jnp.dtype] = jnp.float32,
-    filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
+    filter_state: Optional[Callable[[PyTree[Array]], PyTree[Array]]] = None,
     collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
     step_size_adaptor: Optional[StepSizeAdaptor] = None,
@@ -26,7 +81,8 @@ def odeint(
     trace_estimator: TraceEstimator = "exact",
     num_samples: int = 1,
     sample_dist: SampleDist = "rademacher",
-) -> Optional[PyTree[Array]]:
+    return_aux: bool = False,
+) -> Union[PyTree[Array], Tuple[PyTree[Array], ODEIntAux]]:
     """Solve an ordinary differential equation ``dy/dt = drift(t, y, *args)``.
 
     ``drift`` may be any of:
@@ -53,9 +109,12 @@ def odeint(
             solver such as ``bdf2(newton_iters=3, jacobian="matrix_free")``.
         method: Deprecated alias of ``solver``.
         dtype: Computation dtype (default ``float32``).
-        filter_state: Optional function to filter the state during integration.
-        collect_trace: If ``True`` (default) return the filtered state at
-            every time point; otherwise return only the filtered terminal state.
+        filter_state: Optional function selecting the state components to
+            record. It must return a value; use ``collect_trace=False`` to
+            record nothing at all.
+        collect_trace: If ``True`` (default) the returned value is the
+            filtered state at every time point; otherwise it is the filtered
+            terminal state.
         check_points: Optional index sequence for checkpointed grid integration.
         step_size_adaptor: Step-size controller for **adaptive** solver
             methods (``"dopri5"``, ``"dopri8"``, ``"bosh3"``, …). Pass an
@@ -84,10 +143,14 @@ def odeint(
         sample_dist: Hutchinson probe distribution — ``"rademacher"``
             (default, minimum-variance for general matrices) or
             ``"normal"``.
+        return_aux: Return ``(value, aux)`` instead of the bare value, where
+            ``aux`` is an :class:`~probjax.utils._solver_common.ODEIntAux`
+            holding the solver's final state. A call with ``return_aux=True``
+            is not invertible — invert a call that returns the bare value.
 
     Returns:
-        Pytree containing either the time-series trace (when
-        ``collect_trace=True``) or the filtered terminal state.
+        The filtered trajectory (when ``collect_trace=True``) or the filtered
+        terminal state, or ``(value, aux)`` when ``return_aux=True``.
 
     Example:
         >>> import jax.numpy as jnp
@@ -120,4 +183,5 @@ def odeint(
         trace_estimator=trace_estimator,
         num_samples=num_samples,
         sample_dist=sample_dist,
+        return_aux=return_aux,
     )

@@ -14,6 +14,7 @@ import pytest
 from flax import nnx
 
 import probjax.nn.generative.nflows as N
+from probjax.nn import FitConfig
 
 # Analytic differential entropies, in nats, where they are known.
 #   checkerboard: uniform on half of [-4, 4]^2  ->  log(32)
@@ -118,7 +119,11 @@ def trained():
         test = sampler(jax.random.key(1), 2000)
         for aname, build in ARCHITECTURES.items():
             flow = build(nnx.Rngs(0))
-            losses = flow.fit(jax.random.key(2), train, num_steps=600, batch_size=512)
+            losses = flow.fit(
+                jax.random.key(2),
+                train,
+                config=FitConfig(max_steps=600, batch_size=512),
+            ).losses
             out[(aname, dname)] = (flow, test, losses)
     return out
 
@@ -148,7 +153,9 @@ def test_reaches_reasonable_likelihood(trained, arch, density):
     # noisy enough that a last-step spike fails the comparison even when the
     # run was fine -- and the spike itself depends on the platform's float
     # arithmetic, so the failure is not reproducible off the CI machine.
-    assert _final_loss(losses) < _initial_loss(losses), "training did not reduce the loss"
+    assert _final_loss(losses) < _initial_loss(losses), (
+        "training did not reduce the loss"
+    )
 
     nll = float(-jnp.mean(jax.vmap(flow._logpdf)(test)))
     assert jnp.isfinite(nll)
