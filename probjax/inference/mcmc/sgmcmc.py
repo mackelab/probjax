@@ -34,7 +34,7 @@ import blackjax
 from blackjax.sgmcmc.sgnht import SGNHTState
 from blackjax.util import generate_gaussian_noise
 
-from probjax.inference.mcmc.base import MarkovKernel, normalize_init_args
+from probjax.inference.mcmc.base import MarkovKernel
 from probjax.utils.typing import ArrayTree, RngKey, Scalar
 
 # ---------------------------------------------------------------------------
@@ -107,7 +107,7 @@ def _make_sgmcmc_kernel(
 ) -> MarkovKernel:
     """Shared constructor for the SGLD/SGHMC/SGNHT MarkovKernels.
 
-    ``state_init(key, position, rng_key)`` defaults to wrapping
+    ``state_init(rng, position)`` defaults to wrapping
     ``blackjax_init(position)`` in :class:`SGMCMCState`; SGNHT supplies its
     own (momentum-carrying) version. Raw (non-``SGMCMCState``) states pass
     through ``step`` unwrapped, preserving SGNHT behavior.
@@ -119,19 +119,18 @@ def _make_sgmcmc_kernel(
         if blackjax_init is None:
             raise ValueError("Either blackjax_init or state_init is required.")
 
-        def default_state_init(key, position, rng_key):
-            _, position = normalize_init_args(key, position, rng_key)
+        def default_state_init(rng, position):
             return SGMCMCState(position=blackjax_init(position))
 
         state_init = default_state_init
 
-    def init(key, position=None, rng_key=None):
-        return state_init(key, position, rng_key)
+    def init(rng: RngKey, position: Any):
+        return state_init(rng, position)
 
-    def step(key: RngKey, state, params, *args):
+    def step(rng, state, params, *args):
         position = state.position if isinstance(state, SGMCMCState) else state
         new_position = kernel(
-            key,
+            rng,
             position,
             grad_estimator_fn,
             minibatch=args[0] if args else None,
@@ -203,9 +202,9 @@ def sghmc(
 # ---------------------------------------------------------------------------
 
 
-def _sgnht_init(position, rng_key: RngKey, alpha: float = 0.01) -> SGNHTState:
+def _sgnht_init(position, rng, alpha: float = 0.01) -> SGNHTState:
 
-    momentum = generate_gaussian_noise(rng_key, position)
+    momentum = generate_gaussian_noise(rng, position)
     return SGNHTState(position, momentum, alpha)
 
 
@@ -228,15 +227,14 @@ def sgnht(
         temperature: Temperature parameter.
 
     Note:
-        ``init`` requires ``rng_key`` to initialise momentum::
+        ``init`` requires the rng to initialise momentum::
 
-            state = sampler.init(position, rng_key=key)
+            state = sampler.init(key, position)
     """
     kernel = blackjax.sgnht.build_kernel(alpha=alpha, beta=beta)
 
-    def sgnht_state_init(key, position, rng_key):
-        key, position = normalize_init_args(key, position, rng_key)
-        return _sgnht_init(position, rng_key=key, alpha=alpha)
+    def sgnht_state_init(rng: RngKey, position: Any):
+        return _sgnht_init(position, rng=rng, alpha=alpha)
 
     return _make_sgmcmc_kernel(
         grad_estimator,

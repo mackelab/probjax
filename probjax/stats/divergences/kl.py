@@ -30,7 +30,7 @@ __all__ = ["kl_divergence"]
 NAME = "kl"
 
 
-def kl_divergence(p, q, mc_samples=0, key=None):
+def kl_divergence(p, q, mc_samples=0, rng=None):
     """Compute Kullback-Leibler divergence :math:`KL(p \\| q)` between two distributions.
 
     .. math::
@@ -48,7 +48,7 @@ def kl_divergence(p, q, mc_samples=0, key=None):
     Returns:
         jax.Array: A batch of KL divergences of shape `batch_shape`.
     """
-    return divergence(NAME, p, q, mc_samples=mc_samples, key=key)
+    return divergence(NAME, p, q, mc_samples=mc_samples, key=rng)
 
 
 @register_divergence(NAME, rv_generic, rv_generic)

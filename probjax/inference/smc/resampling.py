@@ -16,19 +16,19 @@ containing those fixes.
 
 import jax
 import jax.numpy as jnp
-from blackjax.types import Array, PRNGKey
+from blackjax.types import Array
 
 from probjax.inference.particles import take_batch
 
 __all__ = ["systematic", "resample_systematic"]
 
 
-def systematic(rng_key: PRNGKey, weights: Array, num_samples: int) -> Array:
+def systematic(rng, weights: Array, num_samples: int) -> Array:
     """Systematic resampling.
 
     Parameters
     ----------
-    rng_key: PRNGKey
+    rng: PRNGKey
         PRNGKey to use in resampling.
     weights: Array
         Weights to resample.
@@ -40,7 +40,7 @@ def systematic(rng_key: PRNGKey, weights: Array, num_samples: int) -> Array:
     idx: Array
         Array of size `num_samples` to use for resampling.
     """
-    return _systematic_or_stratified(rng_key, weights, num_samples, True)
+    return _systematic_or_stratified(rng, weights, num_samples, True)
 
 
 def resample_systematic(key, log_weights, particles):
@@ -51,13 +51,13 @@ def resample_systematic(key, log_weights, particles):
 
 
 def _systematic_or_stratified(
-    rng_key: PRNGKey, weights: Array, num_samples: int, is_systematic: bool
+    rng, weights: Array, num_samples: int, is_systematic: bool
 ) -> Array:
     """Helper function for systematic and stratified resampling."""
     if is_systematic:
-        u = jax.random.uniform(rng_key, ())
+        u = jax.random.uniform(rng, ())
     else:
-        u = jax.random.uniform(rng_key, (num_samples,))
+        u = jax.random.uniform(rng, (num_samples,))
     return _inverse_cdf_indices(weights, u, num_samples)
 
 

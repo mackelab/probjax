@@ -70,17 +70,20 @@ behavior, including when reconstructing a flow for an older checkpoint.
 `SplineAutoregressive` and `ARFamily.spline` expose the same damping option for
 their distribution-head boundary slopes.
 
-Existing module `fit` calls still return losses; functional `fit` returns
-`(params, losses)`. Request `return_result=True` for `FitState`, `FitInfo`,
-metrics and resume state. EMA is opt-in with `ema_decay`; `use_ema=True` installs
-averaged parameters after fitting while the result retains the raw parameters.
-Resume with `initial_state=result.state` and the same optimizer/kernel setup.
-The snapshot does not include a data-loader position or optimizer configuration.
+Both module and functional `fit` now return a `FitResult` carrying `params`,
+`losses`, any `metrics` and a resumable `state` (`FitState`). EMA is opt-in with
+`ema_decay`; `use_ema=True` installs averaged parameters after fitting while the
+result retains the raw parameters. Resume with `state=result.state` and the same
+optimizer setup. The snapshot does not include a data-loader position or
+optimizer configuration.
 
-General callbacks run between compiled chunks. Under JIT they require explicit
-`callback_mode="io"`; ordered IO effects cannot be differentiated or vmapped.
-Use `result.valid` or `valid_steps` to ignore padded histories after stopping
-inside JIT. See [training and EMA](../reference/nn.md#training-and-ema).
+Training options moved into a `FitConfig`, and the data contract is stated
+rather than guessed: `FitConfig(data=DataSpec(primary="data"))` says which
+batch entry the loss receives, and `DataSpec(stream=True)` says the source
+yields batches. A configuration overrides only the fields it names, so a
+model's own recipe survives. The `on_step`/`log_every` pair is gone: use a
+`FitCallback` instead. Callbacks run on the host between compiled chunks and
+cannot be used inside JIT. See [training and EMA](../reference/nn.md#training-and-ema).
 
 ## Changes that affect numerical results
 

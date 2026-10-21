@@ -8,14 +8,16 @@ distribution with `logpdf` and `sample`.
 ```python
 import jax
 from flax import nnx
-from probjax.nn import MADE, MixtureAutoregressive
+from probjax.nn import MADE, FitConfig, MixtureAutoregressive
 
 data = jax.random.normal(jax.random.key(0), (256, 3))
 
 gaussian_head = MADE(3, rngs=nnx.Rngs(0))
 flexible_head = MixtureAutoregressive(3, rngs=nnx.Rngs(0))
 
-losses = flexible_head.fit(jax.random.key(1), data, num_steps=100)
+losses = flexible_head.fit(
+    jax.random.key(1), data, config=FitConfig(max_steps=100)
+).losses
 ```
 
 `SplineAutoregressive`, `HistogramAutoregressive` and

@@ -812,8 +812,8 @@ class SimulationDataset:
             return jax.jit(batched, device=self._simulation_device)
         return batched
 
-    def _pin_sim_key(self, key: RngKey) -> RngKey:
-        return jax.device_put(key, self._simulation_device)
+    def _pin_sim_key(self, rng) -> RngKey:
+        return jax.device_put(rng, self._simulation_device)
 
     def _to_host(self, batch: Any) -> Any:
         return jax.tree_util.tree_map(lambda x: np.asarray(jax.device_get(x)), batch)

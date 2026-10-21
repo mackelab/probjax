@@ -13,16 +13,15 @@ from probjax.inference.mcmc._dynamic_stepping import (
 from probjax.inference.mcmc.adaptation import window_warmup
 from probjax.inference.mcmc.base import MarkovKernelAPI, make_step_from_kernel
 from probjax.inference.mcmc.hmc import init_params
-from probjax.utils.typing import RngKey
 
 
 def init(
     position,
     logdensity_fn,
-    rng_key: RngKey,
+    rng,
     integration_steps_sequence: str = "halton",
 ):
-    random_generator_arg = init_dynamic_arg(rng_key, integration_steps_sequence)
+    random_generator_arg = init_dynamic_arg(rng, integration_steps_sequence)
     return blackjax.dynamic_hmc.init(position, logdensity_fn, random_generator_arg)
 
 

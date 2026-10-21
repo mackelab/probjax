@@ -24,7 +24,6 @@ from probjax.inference.mcmc.base import (
     _select,
     sample_kernel,
 )
-from probjax.utils.typing import RngKey
 
 
 def _mcmc_run_body(
@@ -94,7 +93,7 @@ class MCMC(RunnerMixin):
         ),
     )
     def run_kernel(
-        key: RngKey,
+        rng,
         kernel: MarkovKernel,
         state: State,
         num_steps: int,
@@ -105,7 +104,7 @@ class MCMC(RunnerMixin):
         collect_info: tuple[str, ...] = (),
     ) -> MCMCResult:
         """Run a compiled kernel scan without constructing a runner."""
-        keys = jax.random.split(key, num_steps)
+        keys = jax.random.split(rng, num_steps)
         xs = keys if args is None else (keys, args)
 
         one_step = _mcmc_run_body(kernel, params, args, collect_state, collect_info)
@@ -126,7 +125,7 @@ class MCMC(RunnerMixin):
 
     def run(
         self,
-        key: RngKey,
+        rng,
         state: State,
         num_steps: int,
         params: Params | None = None,
@@ -136,7 +135,7 @@ class MCMC(RunnerMixin):
         params = self._prepare_params(state, params)
         if not self.verbose:
             return self.run_kernel(
-                key,
+                rng,
                 self.kernel,
                 state,
                 num_steps,
@@ -146,7 +145,7 @@ class MCMC(RunnerMixin):
                 collect_info=self.collect_info,
             )
 
-        keys = jax.random.split(key, num_steps)
+        keys = jax.random.split(rng, num_steps)
         xs = keys if args is None else (keys, args)
 
         one_step = _mcmc_run_body(
@@ -171,7 +170,7 @@ class MCMC(RunnerMixin):
 
     def sample(
         self,
-        key: RngKey,
+        rng,
         state: State,
         num_samples: int,
         params: Params | None = None,
@@ -182,7 +181,7 @@ class MCMC(RunnerMixin):
         params = self._prepare_params(state, params)
         if not self.verbose:
             return self.sample_kernel(
-                key,
+                rng,
                 self.kernel,
                 state,
                 num_samples,
@@ -192,7 +191,7 @@ class MCMC(RunnerMixin):
                 collect_info=self.collect_info,
             )
 
-        keys = jax.random.split(key, (num_samples, thin))
+        keys = jax.random.split(rng, (num_samples, thin))
         step_args = _reshape_thin_args(args, num_samples, thin)
         xs = keys if step_args is None else (keys, step_args)
 
@@ -215,7 +214,7 @@ class MCMC(RunnerMixin):
 
     def adapt(
         self,
-        key: RngKey,
+        rng,
         adaptor: Adaptor,
         state: State,
         params: Params,
@@ -226,7 +225,7 @@ class MCMC(RunnerMixin):
     ) -> AdaptationResult:
         """Fit kernel parameters with a composable adaptor."""
         return self.adaptor_warmup(
-            key,
+            rng,
             self.kernel,
             adaptor,
             state,
@@ -249,7 +248,7 @@ class MCMC(RunnerMixin):
 
     @staticmethod
     def warmup_kernel(
-        key: RngKey,
+        rng,
         kernel: MarkovKernel,
         adaptation: AdaptationPolicy,
         state: State,
@@ -257,12 +256,12 @@ class MCMC(RunnerMixin):
         num_steps: int,
     ) -> WarmupOutcome:
         return MCMC._resolve_policy(adaptation).run(
-            key, kernel, state, params, num_steps
+            rng, kernel, state, params, num_steps
         )
 
     def warmup(
         self,
-        key: RngKey,
+        rng,
         adaptation: AdaptationPolicy | None = None,
         state: State | None = None,
         params: Params | None = None,
@@ -295,4 +294,4 @@ class MCMC(RunnerMixin):
                     "adaptation_kwargs need adaptation=None (they configure the default)."
                 )
             policy = adaptation
-        return self.warmup_kernel(key, self.kernel, policy, state, params, num_steps)
+        return self.warmup_kernel(rng, self.kernel, policy, state, params, num_steps)

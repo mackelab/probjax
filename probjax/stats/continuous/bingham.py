@@ -125,15 +125,15 @@ def deterministic_sphere_integration(
     return log_integral
 
 
-def sample_sphere(key: RngKey, n_samples: int, dtype=jnp.float32) -> Array:
+def sample_sphere(rng, n_samples: int, dtype=jnp.float32) -> Array:
     """Sample `n_samples` random unit vectors on S^2."""
-    xyz = random.normal(key, shape=(n_samples, 3), dtype=dtype)
+    xyz = random.normal(rng, shape=(n_samples, 3), dtype=dtype)
     norms = jnp.linalg.norm(xyz, axis=-1, keepdims=True)
     return xyz / (norms + _EPS)
 
 
 def sample_quad_exp_distribution(
-    key: RngKey,
+    rng,
     kappa: Array,
     beta: Array,
     mu: Array,
@@ -166,7 +166,7 @@ def sample_quad_exp_distribution(
         new_sample = where(accepted, candidate, sample_val)
         return i + 1, done | accepted, rng, new_sample
 
-    init = (0, False, key, mu)
+    init = (0, False, rng, mu)
     _, done, key_out, final_sample = lax.while_loop(cond_fun, body_fun, init)
     return lax.cond(done, lambda _: final_sample, lambda _: mu, operand=None)
 
@@ -201,7 +201,7 @@ def _approximate_log_partition_mc(parameter_matrix: Array) -> Array:
 
 
 def _sample_bingham_direction_mc(
-    key: RngKey,
+    rng,
     parameter_matrix: Array,
     lambda_max: Array,
 ) -> Array:
@@ -221,7 +221,7 @@ def _sample_bingham_direction_mc(
         sample = where(accept, candidate, sample)
         return accept, sample, key
 
-    state0 = (False, jnp.zeros((dim,), dtype=parameter_matrix.dtype), key)
+    state0 = (False, jnp.zeros((dim,), dtype=parameter_matrix.dtype), rng)
     accepted, sample, key_out = lax.while_loop(cond_fn, body_fn, state0)
     fallback = sample_uniform_sphere(key_out, dim)
     return lax.cond(accepted, lambda _: sample, lambda _: fallback, operand=None)

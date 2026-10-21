@@ -9,8 +9,8 @@ configuration. Keep method names and controller configuration static under JIT.
 
 Fixed-step methods such as `rk4` step on the supplied grid. Adaptive methods such
 as `dopri5` choose internal steps and return values at the requested times.
-`StepSizeAdaptor` controls tolerances for adaptive methods; fixed-step methods
-ignore it.
+`StepSizeAdaptor` controls tolerances for adaptive methods; handing one to a
+fixed-step method raises, because it would otherwise be silently ignored.
 
 ```python
 import jax
@@ -117,9 +117,8 @@ instead of silently solving the Itô equation; for additive noise
 (`additive_diffusion`, `const_diffusion`) both conventions agree and every
 solver works.
 
-Supplying an SDE adaptor enables adaptive Euler–Maruyama step doubling,
-regardless of `method`. This adaptive path currently supports diagonal noise
-only.
+`solver="adaptive"` selects adaptive Euler–Maruyama step doubling, driven by
+an SDE adaptor. This adaptive path currently supports diagonal noise only.
 
 Steps are never rejected on their own noise: the error estimate of a step
 depends on that step's Brownian increment, so keeping only low-error steps
@@ -140,6 +139,7 @@ def noise(t, y, rate):
 
 paths = sdeint(
     jax.random.key(0), decay, noise, y0, ts, 0.5,
+    solver="adaptive",
     step_size_adaptor=StrongStepSizeAdaptor(rtol=1e-2, atol=1e-3),
 )
 assert paths.shape == (17, 2)
@@ -154,8 +154,18 @@ are skipped while tracing under `jit`/`vmap`. The strong controller never steps
 below `64` leaf widths of its Brownian tree (`tree_depth`, default `20`), since
 the path inside a leaf is interpolated smoothly and carries no noise.
 
-Use `return_brownian=True` with `collect_trace=True` to also return the Brownian
-trace. Low-level Brownian paths and iterated stochastic integrals live in
+Use `return_aux=True` to also get the Brownian trace and the solver's final
+state. The value is returned unchanged; the auxiliary data arrives in a
+separate `SDEIntAux` record.
+
+```python
+paths, aux = sdeint(
+    jax.random.key(0), decay, noise, y0, ts, 0.5, return_aux=True,
+)
+assert aux.brownian.shape == (17, 2)
+```
+
+Low-level Brownian paths and iterated stochastic integrals live in
 `probjax.utils.sdeutil.brownian`; their layout and Itô/Stratonovich conventions
 must agree with the solver.
 

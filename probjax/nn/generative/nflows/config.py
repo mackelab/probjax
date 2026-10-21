@@ -741,10 +741,10 @@ class MixtureCDFBijectorConfig(BaseBijectorConfig):
         """
         k = self.num_components
 
-        def init(key, shape, dtype=None):
+        def init(rng, shape, dtype=None):
             dtype = dtype or jnp.float32
             params = jnp.zeros(shape, dtype)
-            locs = jax.random.normal(key, shape[:-1] + (k,), dtype)
+            locs = jax.random.normal(rng, shape[:-1] + (k,), dtype)
             return params.at[..., k : 2 * k].set(locs)
 
         return init

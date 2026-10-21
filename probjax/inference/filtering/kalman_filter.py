@@ -14,7 +14,7 @@ from probjax.utils.linear_operator import (
     as_array,
     is_array_or_operator,
 )
-from probjax.utils.typing import ArrayLike, RngKey
+from probjax.utils.typing import ArrayLike
 
 # Public state/info names for this filter. They share the Gaussian layout
 # defined in gaussian.py; the aliases keep existing imports working
@@ -36,7 +36,7 @@ def build_kernel(
         state: KalmanFilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng_key: Optional[RngKey] = None,
+        rng = None,
     ) -> Tuple[KalmanFilterState, KalmanFilterInfo]:
         def predict(mu0, cov0, t_old, t):
             # Phi - promised to be a linear mapping

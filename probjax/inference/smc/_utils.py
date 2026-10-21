@@ -9,13 +9,13 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
-from probjax.utils.typing import Array, PyTree, RngKey
+from probjax.utils.typing import Array, PyTree
 
 
-def random_like(key: RngKey, template: PyTree[Array]) -> PyTree[Array]:
+def random_like(rng, template: PyTree[Array]) -> PyTree[Array]:
     """Standard-normal noise matching a particle batch pytree."""
     leaves, treedef = jax.tree.flatten(template)
-    keys = jax.random.split(key, len(leaves))
+    keys = jax.random.split(rng, len(leaves))
     noise = [
         jax.random.normal(k, leaf.shape, getattr(leaf, "dtype", jnp.float32))
         for k, leaf in zip(keys, leaves, strict=True)

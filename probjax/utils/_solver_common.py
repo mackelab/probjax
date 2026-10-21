@@ -7,7 +7,9 @@ existing ``odeutil.solvers.base`` / ``sdeutil.base`` modules are unchanged.
 """
 
 import warnings
+from dataclasses import dataclass
 from functools import partial
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -18,6 +20,49 @@ from probjax.utils.jaxutils import Configured, nested_checkpoint_scan, prepend_t
 #: of :class:`~probjax.utils.jaxutils.Configured` to every kernel API, and is
 #: kept so existing imports keep working.
 ConfiguredSolver = Configured
+
+
+@partial(
+    jax.tree_util.register_dataclass,
+    data_fields=("solver_state",),
+    meta_fields=(),
+)
+@dataclass(frozen=True)
+class ODEIntAux:
+    """Auxiliary data of an ODE integration.
+
+    Returned by :func:`probjax.utils.odeint.odeint` when ``return_aux=True``.
+
+    Attributes:
+        solver_state: The solver's final state (e.g. the accepted-step count
+            of an adaptive method), or ``None`` when the solver does not
+            expose one.
+    """
+
+    solver_state: Any = None
+
+
+@partial(
+    jax.tree_util.register_dataclass,
+    data_fields=("brownian", "solver_state"),
+    meta_fields=(),
+)
+@dataclass(frozen=True)
+class SDEIntAux:
+    """Auxiliary data of an SDE integration.
+
+    Returned by :func:`probjax.utils.sdeint.sdeint` when ``return_aux=True``.
+
+    Attributes:
+        brownian: The Brownian path, stacked over the time grid, or ``None``
+            when it was not collected (the adaptive integrator does not
+            expose one) or when the noise layout is not diagonal.
+        solver_state: The solver's final state, or ``None`` when the solver
+            does not expose one.
+    """
+
+    brownian: Any = None
+    solver_state: Any = None
 
 
 def resolve_solver(solver, registry: dict, infos: dict):

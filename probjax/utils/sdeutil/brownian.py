@@ -10,13 +10,11 @@ import jax.random as jrandom
 from jax import lax
 from jaxtyping import Array, Float
 
-from probjax.utils.typing import RngKey
-
 # Iterated integrals
 
 
 @jax.jit
-def iterated_ito_integral_general(key: RngKey, dW: Array, dt: Array, n: int = 5):
+def iterated_ito_integral_general(rng, dW: Array, dt: Array, n: int = 5):
     """Matrix I approximating repeated Ito integrals based on the method of Kloeden,
     Platen and Wright (1992).
 
@@ -51,7 +49,7 @@ def iterated_ito_integral_general(key: RngKey, dW: Array, dt: Array, n: int = 5)
 
     A0 = jnp.zeros((m, m))
     n = jax.lax.cond(m == 1, lambda _: 0, lambda _: n, None)  # No iteration for 1D
-    init_val = (key, A0)
+    init_val = (rng, A0)
     _, A1 = jax.lax.fori_loop(1, n + 1, body_fun, init_val)
 
     A1 = (dt / (2.0 * jnp.pi)) * A1
@@ -60,34 +58,34 @@ def iterated_ito_integral_general(key: RngKey, dW: Array, dt: Array, n: int = 5)
     return I, A1
 
 
-def iterated_stratowich_integral_general(key: RngKey, dW: Array, dt: Array, n: int = 5):
+def iterated_stratowich_integral_general(rng, dW: Array, dt: Array, n: int = 5):
     """Matrix I approximating repeated Stratonovich integrals based on the method of
     Kloeden, Platen and Wright (1992)."""
-    I, A = iterated_ito_integral_general(key, dW, dt, n)  # noqa: E741
+    I, A = iterated_ito_integral_general(rng, dW, dt, n)  # noqa: E741
     J = I + 0.5 * dt * jnp.eye(dW.shape[0])
     return J, A
 
 
-def iterated_stochastic_integral_diagonal(key: RngKey, dW: Array, dt: Array, **kwargs):
+def iterated_stochastic_integral_diagonal(rng, dW: Array, dt: Array, **kwargs):
     I_diag = 0.5 * (jnp.square(dW) - dt)
     return I_diag
 
 
 def iterated_stratonovich_integral_diagonal(
-    key: RngKey, dW: Array, dt: Array, **kwargs
+    rng, dW: Array, dt: Array, **kwargs
 ):
     return 0.5 * jnp.square(dW)
 
 
 def iterated_stochastic_integral_commutative_noise(
-    key: RngKey, dW: Array, dt: Array, **kwargs
+    rng, dW: Array, dt: Array, **kwargs
 ):
     """Ito iterated integrals ``I_ij = (dW_i dW_j - delta_ij dt) / 2``."""
     return 0.5 * (jnp.outer(dW, dW) - dt * jnp.eye(dW.shape[0]))
 
 
 def iterated_stratonovich_integral_commutative_noise(
-    key: RngKey, dW: Array, dt: Array, **kwargs
+    rng, dW: Array, dt: Array, **kwargs
 ):
     """Stratonovich iterated integrals ``J_ij = dW_i dW_j / 2``."""
     return 0.5 * jnp.outer(dW, dW)
@@ -120,17 +118,17 @@ def get_iterated_integrals_fn(noise_type: str, sde_type: str):
 # Brownian bridge and tree
 
 
-def brownian_path(key, x0, ts):
+def brownian_path(rng, x0, ts):
     shape = (ts.shape[0] - 1,) + x0.shape
     xs = x0[None, :] + jnp.cumsum(
-        jnp.sqrt(ts[1] - ts[0]) * jax.random.normal(key, shape), axis=0
+        jnp.sqrt(ts[1] - ts[0]) * jax.random.normal(rng, shape), axis=0
     )
     return jnp.concatenate([x0[None, :], xs], axis=0)
 
 
 @jax.jit
 def brownian_bridge(
-    key: RngKey, t: Float, t0: Float, t1: Float, w0: Array, w1: Array
+    rng, t: Float, t0: Float, t1: Float, w0: Array, w1: Array
 ) -> Array:
     """Brownian bridge between two points.
 
@@ -152,7 +150,7 @@ def brownian_bridge(
     std = jnp.sqrt(dist_end * dist_start / length)
     shape = mean.shape
 
-    return mean + std * jrandom.normal(key, shape)
+    return mean + std * jrandom.normal(rng, shape)
 
 
 def _depth_from_tol(tol: float) -> int:
@@ -162,7 +160,7 @@ def _depth_from_tol(tol: float) -> int:
 
 @partial(jax.jit, static_argnames=("tol", "depth"))
 def brownian_tree(
-    key: RngKey,
+    rng,
     t: Float,
     t0: Float,
     t1: Float,
@@ -197,7 +195,7 @@ def brownian_tree(
     if depth is None:
         depth = _depth_from_tol(tol) if tol is not None else 16
 
-    key, init_key = jrandom.split(key, 2)
+    key, init_key = jrandom.split(rng, 2)
     shape = w0.shape
 
     # Every tree interval owns a key; its midpoint noise and its two children's

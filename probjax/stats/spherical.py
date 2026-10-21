@@ -11,7 +11,7 @@ import jax.numpy as jnp
 from jax import random
 from jax.scipy.special import gammaln
 
-from probjax.utils.typing import Array, ArrayLike, RngKey
+from probjax.utils.typing import Array, ArrayLike
 
 __all__ = [
     "normalize_vector",
@@ -39,14 +39,14 @@ def sphere_area(dim: int) -> Array:
     )
 
 
-def sample_sphere(key: RngKey, n_samples: int, dtype=jnp.float32) -> Array:
+def sample_sphere(rng, n_samples: int, dtype=jnp.float32) -> Array:
     """Sample ``n_samples`` random unit vectors on the 2-sphere."""
-    xyz = random.normal(key, shape=(n_samples, 3), dtype=dtype)
+    xyz = random.normal(rng, shape=(n_samples, 3), dtype=dtype)
     norms = jnp.linalg.norm(xyz, axis=-1, keepdims=True)
     return xyz / (norms + EPS)
 
 
-def sample_uniform_sphere(key: RngKey, dim: int) -> Array:
+def sample_uniform_sphere(rng, dim: int) -> Array:
     """Sample one uniformly distributed unit vector in ``dim`` dimensions."""
-    vec = random.normal(key, shape=(dim,))
+    vec = random.normal(rng, shape=(dim,))
     return vec / (jnp.linalg.norm(vec) + EPS)

@@ -21,7 +21,7 @@ from probjax.inference.mcmc.base import (
     scale_step_size_by_grad,
 )
 from probjax.inference.mcmc.warmup import mclmc_warmup
-from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey, Scalar
+from probjax.utils.typing import Array, ArrayLike, PyTree, Scalar
 
 
 class MCLMCParams(NamedTuple):
@@ -85,12 +85,12 @@ def build_mclmc_step(
     kernel = blackjax.mclmc.build_kernel(integrator=integrator)
 
     def step(
-        key: RngKey,
+        rng,
         state: IntegratorState,
         params: MCLMCParams,
     ) -> tuple[IntegratorState, MCLMCInfo]:
         return kernel(
-            key,
+            rng,
             state,
             logdensity_fn,
             inverse_mass_matrix=params.inverse_mass_matrix,
@@ -204,12 +204,12 @@ def build_step(
     )
 
     def step(
-        key: RngKey,
+        rng,
         state: HMCState,
         params: AdjustedMCLMCParams,
     ) -> tuple[HMCState, HMCInfo]:
         return kernel(
-            key,
+            rng,
             state,
             logdensity_fn,
             step_size=params.step_size,
@@ -328,12 +328,12 @@ def build_dynamic_step(
     )
 
     def step(
-        key: RngKey,
+        rng,
         state: DynamicHMCState,
         params: AdjustedMCLMCDynamicParams,
     ) -> tuple[DynamicHMCState, HMCInfo]:
         return kernel(
-            key,
+            rng,
             state,
             logdensity_fn,
             step_size=params.step_size,
@@ -347,7 +347,7 @@ def build_dynamic_step(
 def init_dynamic(
     position,
     logdensity_fn,
-    rng_key: RngKey,
+    rng,
     integration_steps_sequence: str = "halton",
 ):
     """Initialize the state of the adjusted MCLMC dynamic sampler.
@@ -358,7 +358,7 @@ def init_dynamic(
         Initial position of the chain.
     logdensity_fn : callable
         Function returning the (unnormalized) log density at a position.
-    rng_key : jax.random.PRNGKey
+    rng : jax.random.PRNGKey
         Random key used to initialize the random generator argument.
     integration_steps_sequence : str, optional
         Name of the integration-step sequence (e.g. ``"halton"``). Default is
@@ -369,7 +369,7 @@ def init_dynamic(
     DynamicHMCState
         Initial sampler state.
     """
-    random_generator_arg = init_dynamic_arg(rng_key, integration_steps_sequence)
+    random_generator_arg = init_dynamic_arg(rng, integration_steps_sequence)
     return blackjax.adjusted_mclmc_dynamic.init(
         position, logdensity_fn, random_generator_arg=random_generator_arg
     )

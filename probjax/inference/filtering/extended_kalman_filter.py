@@ -16,7 +16,7 @@ from probjax.inference.filtering.gaussian import (
 from probjax.utils.guards import call_if_callable
 from probjax.utils.linalg import matrix_fraction_decomposition
 from probjax.utils.linear_operator import Jacobian, as_array
-from probjax.utils.typing import ArrayLike, RngKey
+from probjax.utils.typing import ArrayLike
 
 # ---------------------------------------------------------------------------
 # EKF kernel
@@ -46,7 +46,7 @@ def build_kernel(
         state: GaussianFilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng_key: Optional[RngKey] = None,
+        rng = None,
     ) -> Tuple[GaussianFilterState, GaussianFilterInfo]:
         def predict(mu0, cov0, t_old, t):
             # Predict: nonlinear mean + linearized covariance

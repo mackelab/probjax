@@ -40,7 +40,7 @@ RULES = [
     ),
     (
         "the training loop is flax-free and independent of the model libraries",
-        ("nn/training/batches.py", "nn/training/kernel.py", "nn/training/loop.py"),
+        ("nn/training/config.py", "nn/training/state.py", "nn/training/trainer.py"),
         (
             "flax",
             "probjax.core",

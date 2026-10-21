@@ -122,9 +122,9 @@ class vonmises_gen(rv_continuous, rv_exponential_family):
     ):
         """Random variates of the von Mises distribution."""
 
-        def _rejection_sampling(key):
-            u = random.uniform(key, shape=shape)
-            v = random.uniform(key, shape=shape)
+        def _rejection_sampling(rng):
+            u = random.uniform(rng, shape=shape)
+            v = random.uniform(rng, shape=shape)
             z = jnp.cos(jnp.pi * u)
             f = (1 + kappa * z) / (kappa + z)
             c = kappa * jnp.sqrt((1 - f) / (1 + f))

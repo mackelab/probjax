@@ -4,7 +4,7 @@ Base classes and utilities for statistical divergences.
 
 import warnings
 from functools import total_ordering
-from typing import Callable, Dict, Optional, Tuple, Type, Union
+from typing import Callable, Dict, Tuple, Type, Union
 
 import jax
 
@@ -122,7 +122,7 @@ def divergence(
     p: rv_generic,
     q: rv_generic,
     mc_samples: int = 0,
-    key: Optional[jax.Array] = None,
+    rng = None,
     **kwargs,
 ) -> jax.Array:
     """Compute divergence between two distributions.
@@ -155,4 +155,4 @@ def divergence(
                 p.__class__.__name__, q.__class__.__name__
             )
         )
-    return fun(p, q, mc_samples=mc_samples, key=key, **kwargs)
+    return fun(p, q, mc_samples=mc_samples, key=rng, **kwargs)

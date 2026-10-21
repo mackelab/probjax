@@ -350,7 +350,7 @@ def _solve_watson_kappa(target: ArrayLike, dim: int, dtype) -> jnp.ndarray:
 
 
 def _sample_watson_direction(
-    key: RngKey,
+    rng,
     mu: Array,
     kappa: Array,
 ) -> Array:
@@ -385,7 +385,7 @@ def _sample_watson_direction(
         sample = where(accept, candidate, sample)
         return accept, sample, key
 
-    state0 = (False, mu, key)
+    state0 = (False, mu, rng)
     _, sample, _ = lax.while_loop(cond_fn, body_fn, state0)
     return normalize_vector(sample)
 

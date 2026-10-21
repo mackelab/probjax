@@ -29,7 +29,7 @@ NAME_SLICED = "sliced_wasserstein"
 NAME_MAX_SLICE = "max_slice_wasserstein"
 
 
-def wasserstein_distance(p, q, mc_samples=0, key=None, order=2, **kwargs):
+def wasserstein_distance(p, q, mc_samples=0, rng=None, order=2, **kwargs):
     """Compute the Wasserstein distance between two distributions.
 
     Args:
@@ -43,11 +43,11 @@ def wasserstein_distance(p, q, mc_samples=0, key=None, order=2, **kwargs):
     Returns:
         jax.Array: The Wasserstein distance between the two distributions
     """
-    return divergence(NAME, p, q, mc_samples=mc_samples, key=key, order=order, **kwargs)
+    return divergence(NAME, p, q, mc_samples=mc_samples, key=rng, order=order, **kwargs)
 
 
 def sliced_wasserstein_distance(
-    p, q, num_slices=100, mc_samples=0, key=None, order=2, **kwargs
+    p, q, num_slices=100, mc_samples=0, rng=None, order=2, **kwargs
 ):
     """Compute the Sliced Wasserstein distance between two distributions.
 
@@ -69,14 +69,14 @@ def sliced_wasserstein_distance(
         q,
         mc_samples=mc_samples,
         num_slices=num_slices,
-        key=key,
+        rng=rng,
         order=order,
         **kwargs,
     )
 
 
 def max_slice_wasserstein_distance(
-    p, q, num_slices=100, mc_samples=0, key=None, order=2, **kwargs
+    p, q, num_slices=100, mc_samples=0, rng=None, order=2, **kwargs
 ):
     """Compute the Max Sliced Wasserstein distance between two distributions.
 
@@ -98,7 +98,7 @@ def max_slice_wasserstein_distance(
         q,
         mc_samples=mc_samples,
         num_slices=num_slices,
-        key=key,
+        rng=rng,
         order=order,
         **kwargs,
     )
@@ -130,12 +130,12 @@ def _ot_cost(x, y, order: int = 2, epsilon: float = 0.1):
 
 
 def __sliced_wasserstein_generic(
-    samples_p, samples_q, num_slices, order=1, key=None, **kwargs
+    samples_p, samples_q, num_slices, order=1, rng=None, **kwargs
 ):
-    assert key is not None, "A key is required for the sliced Wasserstein estimate."
-    assert key is not None, "A key is required for the sliced Wasserstein estimate."
-    assert key is not None, "A key is required for the sliced Wasserstein estimate."
-    slices = jax.random.normal(key, (num_slices, samples_p.shape[-1]))
+    assert rng is not None, "A key is required for the sliced Wasserstein estimate."
+    assert rng is not None, "A key is required for the sliced Wasserstein estimate."
+    assert rng is not None, "A key is required for the sliced Wasserstein estimate."
+    slices = jax.random.normal(rng, (num_slices, samples_p.shape[-1]))
     slices = slices / jnp.linalg.norm(slices, axis=-1, keepdims=True)
     sliced_samples_p = jnp.dot(samples_p, slices.T).T
     sliced_samples_q = jnp.dot(samples_q, slices.T).T
@@ -147,7 +147,7 @@ def __sliced_wasserstein_generic(
 
 @partial(jax.jit, static_argnums=(2, 3, 4))
 def __max_slice_wasserstein_generic(
-    samples_p, samples_q, order=1, tol=1e-8, num_init=10, key=None, **kwargs
+    samples_p, samples_q, order=1, tol=1e-8, num_init=10, rng=None, **kwargs
 ):
     def loss_fn(theta):
         theta = theta / jnp.linalg.norm(theta)
@@ -156,10 +156,10 @@ def __max_slice_wasserstein_generic(
         return -_1d_wasserstein_without_cdf(samples1_slice, samples2_slice, order=order)
 
     @jax.vmap
-    def optimal_fn(key):
+    def optimal_fn(rng):
         theta_opt_result = minimize(
             loss_fn,
-            jax.random.normal(key, shape=(samples_p.shape[-1],)),
+            jax.random.normal(rng, shape=(samples_p.shape[-1],)),
             method="BFGS",
             tol=tol,
         )
@@ -167,18 +167,18 @@ def __max_slice_wasserstein_generic(
         opt_value = -theta_opt_result.fun
         return opt_value
 
-    assert key is not None, "A key is required for the Wasserstein estimate."
-    keys = jax.random.split(key, (num_init,))
+    assert rng is not None, "A key is required for the Wasserstein estimate."
+    keys = jax.random.split(rng, (num_init,))
     opt_values = optimal_fn(keys)
 
     return jnp.max(opt_values)
 
 
-def __wasserstein_generic(p, q, mc_samples=0, key=None, order=2, **kwargs):
-    assert key is not None, "A key is required for the Wasserstein estimate."
-    assert key is not None, "A key is required for the Wasserstein estimate."
-    assert key is not None, "A key is required for the Wasserstein estimate."
-    key1, key2 = jax.random.split(key, 2)
+def __wasserstein_generic(p, q, mc_samples=0, rng=None, order=2, **kwargs):
+    assert rng is not None, "A key is required for the Wasserstein estimate."
+    assert rng is not None, "A key is required for the Wasserstein estimate."
+    assert rng is not None, "A key is required for the Wasserstein estimate."
+    key1, key2 = jax.random.split(rng, 2)
     samples1 = p.rvs(key1, (mc_samples,))
     samples2 = q.rvs(key2, (mc_samples,))
 
@@ -189,26 +189,26 @@ def __wasserstein_generic(p, q, mc_samples=0, key=None, order=2, **kwargs):
 
 @register_divergence(NAME_SLICED, rv_generic, rv_generic)
 def _sliced_wasserstein_generic(
-    p, q, num_slices=100, mc_samples=0, key=None, order=2, **kwargs
+    p, q, num_slices=100, mc_samples=0, rng=None, order=2, **kwargs
 ):
-    assert key is not None, "A key is required for the Wasserstein estimate."
-    assert key is not None, "A key is required for the Wasserstein estimate."
-    assert key is not None, "A key is required for the Wasserstein estimate."
-    key1, key2 = jax.random.split(key, 2)
+    assert rng is not None, "A key is required for the Wasserstein estimate."
+    assert rng is not None, "A key is required for the Wasserstein estimate."
+    assert rng is not None, "A key is required for the Wasserstein estimate."
+    key1, key2 = jax.random.split(rng, 2)
     samples1 = p.rvs(key1, (mc_samples,))
     samples2 = q.rvs(key2, (mc_samples,))
 
     return __sliced_wasserstein_generic(
-        samples1, samples2, num_slices, order=order, key=key, **kwargs
+        samples1, samples2, num_slices, order=order, key=rng, **kwargs
     )
 
 
 @register_divergence(NAME_MAX_SLICE, rv_generic, rv_generic)
-def _max_sliced_wasserstein(p, q, mc_samples=0, key=None, order=2, **kwargs):
-    assert key is not None, "A key is required for the Wasserstein estimate."
-    assert key is not None, "A key is required for the Wasserstein estimate."
-    assert key is not None, "A key is required for the Wasserstein estimate."
-    key1, key2, key3 = jax.random.split(key, 3)
+def _max_sliced_wasserstein(p, q, mc_samples=0, rng=None, order=2, **kwargs):
+    assert rng is not None, "A key is required for the Wasserstein estimate."
+    assert rng is not None, "A key is required for the Wasserstein estimate."
+    assert rng is not None, "A key is required for the Wasserstein estimate."
+    key1, key2, key3 = jax.random.split(rng, 3)
     samples1 = p.rvs(key1, (mc_samples,))
     samples2 = q.rvs(key2, (mc_samples,))
 

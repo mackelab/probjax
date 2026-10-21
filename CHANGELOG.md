@@ -110,6 +110,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the newest release in it
 
 ### Changed
+- **Breaking:** the training options moved into a `FitConfig`, and the data
+  contract is stated instead of guessed. `FitConfig` holds `max_steps`,
+  `batch_size`, `learning_rate`, `schedule`, `clip_norm`, `ema_decay`,
+  `use_ema`, `callback_every` and `optimizer`, plus a `DataSpec` that says how
+  the data reaches the loss: `DataSpec(primary="data")` names the batch entry
+  handed to the loss positionally (every other entry arrives as a keyword
+  argument) and `DataSpec(stream=True)` says the source yields batches rather
+  than being one. Both readings are pytrees of arrays, so the structure cannot
+  tell them apart and guessing it silently trained a flow on a stacked array.
+  A configuration overrides only the fields it names, so a model's own recipe
+  in `default_config()` survives
+- **Breaking:** the loss is called as `loss_fn(params, rng, primary, **context)`
+  and may return `(loss, metrics)`. Both `fit` and `model.fit` return a
+  `FitResult` carrying the trained `params`, the `losses`, any `metrics` and a
+  resumable `state`; training is resumed with `state=result.state`
+- **Breaking:** callbacks run on the host between compiled chunks and cannot be
+  used inside JIT. The explicit `callback_mode="io"` path, the legacy
+  `on_step`/`log_every` pair and the `on_step` history padding are gone
+- **Breaking:** `num_steps="auto"` and `batch_size="auto"` are gone. The step
+  count and the batch size are the caller's to choose, so the same call trains
+  the same model on different data
+- The training configuration owns the optimizer recipe. `FitConfig.optimizer`
+  takes a built `optax.GradientTransformation`; without one, the configuration
+  builds the default from its own `learning_rate`, `schedule` and `clip_norm`
+  (`FitConfig.default_optimizer()` builds it explicitly, and the training loop
+  expects a built optimizer rather than making one). The defaults are a
+  learning rate of `1e-3` and a one-cycle cosine schedule
+  (`schedule="onecycle_cosine"`); `schedule` also accepts any optax schedule
+  or `None` for a constant rate
+- A training stream is the caller's iterator and is not restarted: `fit` looks
+  at the first batch to check the format and then takes batches one at a time.
+  A stream that runs out raises instead of silently repeating, and a ragged
+  later batch is no longer checked against the first one
+- `odeint` and `sdeint` return one shape: the filtered trajectory
+  (`collect_trace=True`) or the filtered terminal state. `sdeint` takes the
+  auxiliary data (Brownian path, solver state) through a single `return_aux`
+  flag that hands back a separate `SDEIntAux` record, replacing the
+  `return_brownian`/`return_state` pair
+- `step_size_adaptor` configures the adaptive integrators and is rejected for
+  a fixed-step solver instead of being silently ignored. The adaptive SDE
+  integrator is selected with `solver="adaptive"`
 - One kernel API for every algorithm family. `probjax.utils.KernelAPI` is the
   shared base of the MCMC, SMC, filtering, ODE and SDE API classes, and
   `probjax.utils.Configured` is the value that binds an API's options before
@@ -284,6 +325,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is shared across CI runs
 
 ### Removed
+- The custom-kernel extension point of the training loop: `FitKernel`,
+  `build_fit_kernel` and `fit(..., kernel=)`. The loop owned the update and
+  only had to reverse-engineer a custom kernel's contract at runtime; the
+  optimizer is now chosen with `FitConfig.optimizer`
+- `has_aux` and `model_state` as a fourth loss argument. A loss returns
+  `(loss, metrics)`, and the module's non-parameter state travels through the
+  loop in the state itself
+- `return_result=True` (both entry points return a `FitResult`),
+  `initial_state=` (use `state=`) and `is_batch_stream` (the source kind is
+  stated in `DataSpec`)
 - The unused, misnamed `linear_operator()` factory function (zero call
   sites repo-wide; pre-1.0 API cleanup)
 - Dead ravel/flatten helpers in `probjax.utils.jaxutils`

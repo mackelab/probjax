@@ -25,7 +25,7 @@ from probjax.inference.filtering.state_space import (
 )
 from probjax.inference.particles import take_batch
 from probjax.utils.guards import ensure_int
-from probjax.utils.typing import Array, RngKey
+from probjax.utils.typing import Array
 
 __all__ = [
     "StateSpaceModel",
@@ -56,13 +56,13 @@ def temporal_filter(
 
 
 def _kalman_filter(model: Any) -> TemporalFilter:
-    def init(key: RngKey, theta: Any, t0: Any):
+    def init(rng, theta: Any, t0: Any):
         t0 = jnp.asarray(t0, dtype=jnp.result_type(t0, 0.0))
         mean, cov = model.initial(theta)
         return kalman_filter.init(mean, cov, t0)
 
     def step(
-        key: RngKey,
+        rng,
         state: Any,
         theta: Any,
         t: Any,
@@ -76,8 +76,8 @@ def _kalman_filter(model: Any) -> TemporalFilter:
         )
         return jax.lax.cond(
             observed,
-            lambda: kernel(state, t, observation, key),
-            lambda: kernel(state, t, None, key),
+            lambda: kernel(state, t, observation, rng),
+            lambda: kernel(state, t, None, rng),
         )
 
     return TemporalFilter(init, step, "exact")
@@ -87,14 +87,14 @@ def _particle_filter(model: Any, num_particles: int, ess_threshold: float):
     if not 0 <= ess_threshold <= 1:
         raise ValueError("ess_threshold must lie in [0, 1].")
 
-    def init(key: RngKey, theta: Any, t0: Any):
+    def init(rng, theta: Any, t0: Any):
         t0 = jnp.asarray(t0, dtype=jnp.result_type(t0, 0.0))
-        keys = jax.random.split(key, num_particles)
+        keys = jax.random.split(rng, num_particles)
         particles = jax.vmap(model.init, (0, None))(keys, theta)
         return ParticleFilter.init(particles, t0)
 
     def step(
-        key: RngKey,
+        rng,
         state: Any,
         theta: Any,
         t: Any,
@@ -103,8 +103,8 @@ def _particle_filter(model: Any, num_particles: int, ess_threshold: float):
     ) -> Any:
         t = jnp.asarray(t, dtype=state.t.dtype)
 
-        def transition(key: RngKey, particles: Any, t: Any) -> Any:
-            keys = jax.random.split(key, num_particles)
+        def transition(rng, particles: Any, t: Any) -> Any:
+            keys = jax.random.split(rng, num_particles)
             step = jax.vmap(model.step, (0, None, 0, None, None))
             return step(keys, theta, particles, state.t, t)
 
@@ -118,15 +118,15 @@ def _particle_filter(model: Any, num_particles: int, ess_threshold: float):
         )
         return jax.lax.cond(
             observed,
-            lambda: kernel(state, t, observation, key),
-            lambda: kernel(state, t, None, key),
+            lambda: kernel(state, t, observation, rng),
+            lambda: kernel(state, t, None, rng),
         )
 
     return TemporalFilter(init, step, "unbiased")
 
 
 def run_temporal_filter(
-    key: RngKey,
+    rng,
     model: Any,
     theta: Any,
     ts: Any,
@@ -147,19 +147,19 @@ def run_temporal_filter(
     """
     ts, observations, observed = validate_observations(ts, observations, observed)
     filt = temporal_filter(model, num_particles)
-    key, init_key = jax.random.split(key)
+    key, init_key = jax.random.split(rng)
     state = filt.init(init_key, theta, t0)
 
-    def step(key: RngKey, state: Any, data: Any) -> Any:
+    def step(rng, state: Any, data: Any) -> Any:
         t, y, mask = data
-        return filt.step(key, state, theta, t, y, mask)
+        return filt.step(rng, state, theta, t, y, mask)
 
     return scan_history(step, key, state, ts, (ts, observations, observed), history)
 
 
 def scan_history(
     step: Callable,
-    key: RngKey,
+    rng,
     state: Any,
     ts: Array,
     xs: Any,
@@ -188,7 +188,7 @@ def scan_history(
         return (next_key, state, logz + info.log_likelihood), (state, info)
 
     zero = jnp.asarray(0.0, dtype=jnp.result_type(jax.tree.leaves(state)[0], 0.0))
-    carry = (key, state, zero)
+    carry = (rng, state, zero)
     if history == "none":
         (key, final, logz), _ = jax.lax.scan(
             lambda c, x: (advance(c, x)[0], None), carry, xs
@@ -200,7 +200,7 @@ def scan_history(
 
     capacity = min(history, n)
     first = jax.tree.map(lambda x: x[0], xs)
-    info_shape = jax.eval_shape(step, key, state, first)[1]
+    info_shape = jax.eval_shape(step, rng, state, first)[1]
     allocate = lambda x: jnp.zeros((capacity,) + x.shape, x.dtype)
     states = jax.tree.map(allocate, state)
     infos = jax.tree.map(allocate, info_shape)

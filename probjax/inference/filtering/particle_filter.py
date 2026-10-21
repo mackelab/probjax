@@ -12,7 +12,7 @@ from probjax.inference.smc.resampling import (
     resample_systematic,
 )
 from probjax.utils.jaxutils import leading_dim
-from probjax.utils.typing import Array, ArrayLike, RngKey
+from probjax.utils.typing import Array, ArrayLike
 
 
 class ParticleFilterState(NamedTuple):
@@ -82,24 +82,24 @@ def build_kernel(
         state: ParticleFilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng_key: Optional[RngKey] = None,
+        rng = None,
     ) -> tuple[ParticleFilterState, ParticleFilterInfo]:
-        assert rng_key is not None, (
+        assert rng is not None, (
             "You must provide a random key for the particle filter kernel."
         )
         # Unpack state
         particles = state.particles
         log_weights = state.log_weights
-        rng_key, rng_key_predict, rng_key_resample = jax.random.split(rng_key, 3)
+        _, rng_predict, rng_resample = jax.random.split(rng, 3)
 
         # Predict new particles
         if proposal_logdensity_fn is None:
-            new_particles = transition_fn(rng_key_predict, particles, t)
+            new_particles = transition_fn(rng_predict, particles, t)
         else:
             assert proposal_transition_fn is not None, (
                 "A proposal transition is required alongside the proposal density."
             )
-            new_particles = proposal_transition_fn(rng_key_predict, particles, t)
+            new_particles = proposal_transition_fn(rng_predict, particles, t)
 
         # Update weights
         is_observed = observed is not None
@@ -159,7 +159,7 @@ def build_kernel(
             do_resample,
             resample,
             no_resample,
-            rng_key_resample,
+            rng_resample,
             log_weights,
             new_particles,
         )

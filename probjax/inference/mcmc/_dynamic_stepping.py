@@ -59,10 +59,10 @@ def get_dynamic_stepping(integration_steps_sequence, average, *, length_fn):
     return random_arg_next_fn, integration_steps_fn
 
 
-def init_dynamic_arg(rng_key, integration_steps_sequence):
+def init_dynamic_arg(rng, integration_steps_sequence):
     """Initial random-generator argument for dynamic stepping."""
     if integration_steps_sequence == "random":
-        return rng_key
+        return rng
     return jax.random.randint(
-        rng_key, shape=(), minval=0, maxval=2**31 - 1, dtype=jnp.int32
+        rng, shape=(), minval=0, maxval=2**31 - 1, dtype=jnp.int32
     )

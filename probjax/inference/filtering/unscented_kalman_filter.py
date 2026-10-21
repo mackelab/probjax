@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from probjax.inference.filtering.base import FilterAPI, as_time
 from probjax.inference.filtering.gaussian import gaussian_unpack, innovation_loglik
 from probjax.utils.guards import call_if_callable
-from probjax.utils.typing import Array, ArrayLike, RngKey
+from probjax.utils.typing import Array, ArrayLike
 
 
 class UnscentedKalmanFilterState(NamedTuple):
@@ -236,7 +236,7 @@ def build_kernel(
         state: UnscentedKalmanFilterState,
         t: Optional[ArrayLike] = None,
         observed: Optional[ArrayLike] = None,
-        rng_key: Optional[RngKey] = None,
+        rng = None,
     ) -> Tuple[UnscentedKalmanFilterState, UnscentedKalmanFilterInfo]:
         """One step of the unscented Kalman filter.
 
@@ -244,7 +244,7 @@ def build_kernel(
             state (UnscentedKalmanFilterState): Mean and covariance of the state
             t (Optional[float  |  int], optional): Time. Defaults to None.
             observed (Optional[ArrayLike], optional): Observation. Defaults to None.
-            rng_key (Optional[jnp.ndarray], optional): Random generator key.
+            rng (Optional[jnp.ndarray], optional): Random generator key.
                 Defaults to None.
 
         Returns:

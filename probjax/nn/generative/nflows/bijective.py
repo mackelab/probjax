@@ -12,7 +12,6 @@ from probjax.utils.typing import (
     Array,
     ArrayLike,
     DTypeLike,
-    RngKeyLike,
 )
 
 
@@ -52,7 +51,7 @@ def skew_symmetric_to_rotation_matrix(skew_params: Array, n: int) -> Array:
     return jax.scipy.linalg.expm(skew_matrix)
 
 
-def identity_init(key: RngKeyLike, shape: tuple, dtype: DTypeLike = jnp.float32):
+def identity_init(rng, shape: tuple, dtype: DTypeLike = jnp.float32):
     """Initializer that returns an identity matrix.
 
     Args:
@@ -66,7 +65,7 @@ def identity_init(key: RngKeyLike, shape: tuple, dtype: DTypeLike = jnp.float32)
     Raises:
         ValueError: If shape is not 2D and square.
     """
-    del key  # Unused but kept for compatibility
+    del rng  # Unused but kept for compatibility
     if len(shape) != 2 or shape[0] != shape[1]:
         raise ValueError(
             f"Identity initializer requires a square 2D shape, got {shape}"

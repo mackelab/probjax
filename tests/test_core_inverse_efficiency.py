@@ -21,6 +21,9 @@ import pytest
 
 from probjax.core import inverse, inverse_and_logabsdet
 
+#: The benchmark suite is long-running; skip it with ``-m 'not slow'``.
+pytestmark = pytest.mark.slow
+
 DEPTH = 8
 
 

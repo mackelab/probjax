@@ -335,7 +335,7 @@ def test_lanczos_stochastic_probes():
     # Diagonal matrices have zero Rademacher trace variance, even with one probe.
     a = jnp.diag(jnp.linspace(1.0, 2.0, 20))
     estimate = jax.jit(
-        lambda a: lanczos_logdet(a, num_steps=20, num_probes=2, key=jax.random.key(42))
+        lambda a: lanczos_logdet(a, num_steps=20, num_probes=2, rng=jax.random.key(42))
     )(a)
     np.testing.assert_allclose(estimate, jnp.linalg.slogdet(a)[1], rtol=2e-6)
 

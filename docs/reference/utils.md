@@ -60,7 +60,6 @@ controllers, gradients and inverse log-determinants.
 ::: probjax.utils.odeutil.implicit_euler
 ::: probjax.utils.odeutil.TraceFilter
 ::: probjax.utils.odeutil.TraceEverything
-::: probjax.utils.odeutil.TraceNothing
 
 ## SDE integration internals
 

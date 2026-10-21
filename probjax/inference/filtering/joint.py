@@ -12,7 +12,7 @@ from probjax.inference.filtering.temporal import run_temporal_filter
 from probjax.inference.filtering.trajectory import sample_paths
 from probjax.inference.particles import take_batch
 from probjax.utils.guards import is_tracing
-from probjax.utils.typing import Array, RngKey
+from probjax.utils.typing import Array
 
 
 class JointPathSamples(NamedTuple):
@@ -22,7 +22,7 @@ class JointPathSamples(NamedTuple):
 
 
 def sample_joint_paths(
-    key: RngKey,
+    rng,
     state: Any,
     model: Any,
     ts: Any,
@@ -50,7 +50,7 @@ def sample_joint_paths(
     count = int(state.num_observations)
     ts, observations, observed = validate_observations(ts, observations, observed)
     data = (ts[:count], observations[:count], observed[:count])
-    select_key, path_key = jax.random.split(key)
+    select_key, path_key = jax.random.split(rng)
     indices = jax.random.categorical(
         select_key, state.log_weights, shape=(num_samples,)
     )

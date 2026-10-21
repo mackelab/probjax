@@ -205,7 +205,7 @@ def test_pseudo_marginal_accepts_a_configured_kernel():
     assert type(kernel).__name__ == "pseudo_marginal"
     assert kernel.default_adaptation is not None
 
-    state = kernel.init(jnp.zeros(2), rng_key=jax.random.key(0))
+    state = kernel.init(jax.random.key(0), jnp.zeros(2))
     params = kernel.init_params(state)
     assert state.position.shape == (2,)
     assert jnp.isfinite(params.step_size)
@@ -285,17 +285,3 @@ def test_temporal_smc_is_callable():
     kernel = TemporalSMC(lambda *a: None, step)
     kernel(jax.random.key(0), "state")
     assert calls == ["state"]
-
-
-def test_fit_kernel_is_callable():
-    from probjax.nn.training.kernel import FitKernel
-
-    calls = []
-
-    def step(key, state, batch):
-        calls.append((key, state, batch))
-        return state, None
-
-    kernel = FitKernel(lambda *a: None, step)
-    kernel("key", "state", "batch")
-    assert calls == [("key", "state", "batch")]

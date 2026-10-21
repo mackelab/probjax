@@ -6,6 +6,9 @@ from probjax.core.custom_primitives.custom_inverse import custom_inverse
 from probjax.core.custom_primitives.random_variable import enable_rv_tracing, rv_p
 from probjax.stats import norm
 
+#: The benchmark suite is long-running; skip it with ``-m 'not slow'``.
+pytestmark = pytest.mark.slow
+
 
 def _build_custom_inverse():
     ci = custom_inverse(lambda x: x + 1.0)

@@ -16,10 +16,10 @@ from probjax.inference.base import Kernel, Warmup, WarmupResult
 from probjax.inference.mcmc.adaptation import covariance_adaptor, mean_adaptor
 from probjax.inference.mcmc.base import (
     MarkovKernelAPI,
-    normalize_init_args,
     ravel_position,
     sample_kernel,
 )
+from probjax.nn.training import FitConfig
 from probjax.utils.jaxutils import leading_dim
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
 
@@ -80,12 +80,12 @@ def build_imh_step(
     kernel = blackjax.irmh.build_kernel()
 
     def step(
-        key: RngKey, state: RWState, params: IMHParams | None = None
+        rng, state: RWState, params: IMHParams | None = None
     ) -> tuple[RWState, RWInfo]:
         _proposal_fn = partial(proposal_fn, params=params)
         _proposal_logpdf = partial(wrap_logpdf(proposal_logpdf), params=params)
         return kernel(
-            key,
+            rng,
             state,
             logdensity_fn,
             proposal_distribution=_proposal_fn,
@@ -95,7 +95,7 @@ def build_imh_step(
     return step
 
 
-def init_imh_params(state: Any, rng_key: RngKey | None = None) -> IMHParams:
+def init_imh_params(state: Any, rng = None) -> IMHParams:
     """Generally, there are no parameters to initialize for the IMH kernel."""
     return IMHParams()
 
@@ -139,8 +139,7 @@ def neural_imh(logdensity_fn: Callable, proposal, *, event_spec=None) -> Kernel:
         raise ValueError("The proposal model must expose a tractable logpdf.")
     distribution.compile("sample", "logpdf")
 
-    def init(key, position=None, **kwargs):
-        key, position = normalize_init_args(key, position, kwargs.pop("rng_key", None))
+    def init(rng: RngKey, position: Any):
         proposal_state = distribution.model_state()
         return NeuralIMHState(
             position,
@@ -155,8 +154,8 @@ def neural_imh(logdensity_fn: Callable, proposal, *, event_spec=None) -> Kernel:
             distribution.model_state(), jnp.array(0, dtype=jnp.uint32)
         )
 
-    def step(key, state, params):
-        key_proposal, key_accept = jax.random.split(key)
+    def step(rng, state, params):
+        key_proposal, key_accept = jax.random.split(rng)
         proposed_position = distribution.sample_with_state(
             params.proposal_state, key_proposal
         )
@@ -269,7 +268,7 @@ def neural_imh_warmup(
         fit_optimizer = optax.adam(learning_rate)
 
     def run(
-        key: RngKey, kernel: Kernel, state: Any, params: Any, num_steps: int
+        rng, kernel: Kernel, state: Any, params: Any, num_steps: int
     ) -> WarmupResult:
         if not isinstance(params, NeuralIMHParams):
             raise TypeError("neural_imh_warmup requires a neural_imh kernel.")
@@ -289,7 +288,7 @@ def neural_imh_warmup(
         acceptance_rates = []
 
         for block_size in block_sizes:
-            key, sample_key, fit_key = jax.random.split(key, 3)
+            key, sample_key, fit_key = jax.random.split(rng, 3)
             initial_position = state.position
             collect_info = (
                 ("acceptance_rate", "proposal")
@@ -327,15 +326,19 @@ def neural_imh_warmup(
             if data is not None:
                 num_seed = leading_dim(data)
                 fit_weights = jnp.concatenate((jnp.ones(num_seed), fit_weights))
-            round_losses = proposal.fit(
+            round_result = proposal.fit(
                 fit_key,
                 fit_data,
                 weights=fit_weights,
-                num_steps=fit_steps,
-                batch_size=batch_size,
-                learning_rate=learning_rate,
-                optimizer=fit_optimizer,
+                config=FitConfig(
+                    max_steps=fit_steps,
+                    batch_size=batch_size,
+                    # The optimizer carries the learning rate; the config's
+                    # own field only matters when it builds one.
+                    optimizer=fit_optimizer,
+                ),
             )
+            round_losses = round_result.losses
             _, proposal_state = nnx.split(proposal)
             proposal_state = jax.tree.map(lambda value: value.copy(), proposal_state)
             params = NeuralIMHParams(proposal_state, params.iteration + 1)
@@ -371,12 +374,12 @@ def init_gaussian_imh_params(
 
 
 def proposal_gaussian(
-    key: RngKey, *, params: GaussianIMHParams, unflatten: Callable
+    rng, *, params: GaussianIMHParams, unflatten: Callable
 ) -> Any:
     """Generate a new position from a Gaussian proposal."""
     mean = params.mean
     cov = params.cov
-    eps = jax.random.normal(key, mean.shape)
+    eps = jax.random.normal(rng, mean.shape)
     if cov.ndim == 1:
         new_position = mean + jnp.sqrt(cov) * eps
     else:
@@ -393,13 +396,13 @@ def build_gaussian_imh_step(logdensity_fn: Callable) -> Callable:
     kernel = blackjax.irmh.build_kernel()
 
     def step(
-        key: RngKey, state: RWState, params: GaussianIMHParams
+        rng, state: RWState, params: GaussianIMHParams
     ) -> tuple[RWState, RWInfo]:
         _, unflatten = ravel_pytree(state.position)
         _proposal_fn = partial(proposal_gaussian, params=params, unflatten=unflatten)
         _proposal_logpdf = partial(wrap_logpdf(proposal_gaussian_logpdf), params=params)
         return kernel(
-            key,
+            rng,
             state,
             logdensity_fn,
             proposal_distribution=_proposal_fn,

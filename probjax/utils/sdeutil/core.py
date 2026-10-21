@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, Callable, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Callable, Optional, Sequence, cast
 
 import jax
 import jax.numpy as jnp
@@ -7,6 +7,7 @@ from jax import Array
 from jaxtyping import Key, PyTree
 
 from probjax.utils._solver_common import (
+    SDEIntAux,
     ensure_dtype,
     make_filter_wrapper,
     stack_trace,
@@ -27,8 +28,7 @@ STATIC_NAMES = [
     "method",
     "dtype",
     "sde_type",
-    "return_brownian",
-    "return_state",
+    "return_aux",
     "filter_state",
     "collect_trace",
     "check_points",
@@ -134,19 +134,16 @@ def _sdeint(
     diffusion: Callable,
     y0: PyTree[Array],
     ts: Array,
-    sde_args: Sequence[Any] = (),
+    *args: Any,
     method: str = "euler_maruyama",
     dtype: Optional[jnp.dtype] = jnp.float32,
     sde_type: str = "ito",
-    return_brownian: bool = False,
-    return_state: bool = False,
+    return_aux: bool = False,
     filter_state: Optional[TraceFilter] = None,
     collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
     step_size_adaptor: Optional[SDEStepSizeAdaptor] = None,
-) -> Union[
-    PyTree[Array], Tuple[Any, PyTree[Array]], Tuple[Any, PyTree[Array], PyTree[Array]]
-]:
+) -> tuple[PyTree[Array], SDEIntAux, Array]:
     """Core implementation of SDE integration.
 
     This is the internal implementation that handles the actual SDE integration.
@@ -159,38 +156,29 @@ def _sdeint(
         diffusion: Diffusion function g(t, y, *args)
         y0: Initial state
         ts: Time points
-        sde_args: Additional positional arguments passed to drift and diffusion.
+        *args: Additional positional arguments passed to drift and diffusion.
         method: Integration method
         dtype: Data type for computation
         sde_type: Type of SDE ("ito" or "stratonovich")
-        return_brownian: Whether to return Brownian motion paths (requires
-            `collect_trace=True`)
-        return_state: Whether to return solver state
+        return_aux: Collect the auxiliary data (Brownian path, solver state)
         filter_state: Optional filter applied to the state (and Brownian
             paths when requested)
         collect_trace: Whether to record the filtered quantity at every time
             point (`True`)
-            or return only the filtered terminal state (`False`). Must be `True` if
-            `return_brownian` is requested.
+            or return only the filtered terminal state (`False`).
         check_points: Optional sequence of indices for grid integration
+        step_size_adaptor: Step-size controller for the adaptive integrator.
 
     Returns:
-        Depending on `return_brownian` and `collect_trace`:
-        - If `return_brownian=False`: filtered trajectory when `collect_trace=True`
-          or filtered terminal state when `collect_trace=False`.
-        - If `return_brownian=True`: tuple of (state trace, Brownian trace),
-          both stacked
-          over all time points.
-        If `return_state=True`, the solver state is returned as the leading element of
-        the tuple.
+        ``(value, aux, diag_hits)``. ``value`` is the filtered trajectory when
+        `collect_trace` is true and the filtered terminal state otherwise.
+        ``aux`` holds the Brownian path and the solver state.
+        ``diag_hits`` counts adaptive budget exhaustions.
     """
-    if not collect_trace and return_brownian:
-        raise ValueError("collect_trace must be True when returning Brownian paths.")
-
     ts, y0 = ensure_dtype(ts, y0, dtype)
     y0 = jax.tree_util.tree_map(jnp.atleast_1d, y0)
 
-    drift, diffusion = _bind_sde_function_args(drift, diffusion, sde_args)
+    drift, diffusion = _bind_sde_function_args(drift, diffusion, args)
 
     flat_y0, unravel = ravel_args(y0)
     flat_state_dim = int(flat_y0.shape[0])
@@ -217,6 +205,15 @@ def _sdeint(
     # Only Milstein implements Stratonovich integrals. For additive noise the
     # Ito and Stratonovich interpretations coincide, so any solver is fine.
     solver_api, solver_info = get_method(method)
+    is_adaptive = solver_info.get("adaptive", False)
+    if is_adaptive:
+        if step_size_adaptor is None:
+            step_size_adaptor = SDEStepSizeAdaptor()
+    elif step_size_adaptor is not None:
+        raise ValueError(
+            f"step_size_adaptor is only supported by adaptive solvers, but "
+            f"solver={method!r} is fixed-step. Use solver='adaptive'."
+        )
     if (
         sde_type == "stratonovich"
         and not solver_info.get("stratonovich", False)
@@ -255,13 +252,7 @@ def _sdeint(
 
     apply_filter = make_filter_wrapper(filter_state)
     init_filtered = apply_filter(y0)
-    trace_enabled = collect_trace and (init_filtered is not None)
-
-    if return_brownian and not trace_enabled:
-        raise ValueError(
-            "filter_state must return a value when collect_trace=True and "
-            "return_brownian=True."
-        )
+    trace_enabled = collect_trace
 
     solver_method = partial(
         solver_api,
@@ -272,11 +263,15 @@ def _sdeint(
 
     can_unravel_brownian = noise_type == "diagonal" and noise_dim == flat_state_dim
 
+    # The Brownian path is recorded alongside the state trace, so it needs the
+    # trace machinery. The adaptive integrator does not expose one.
+    collect_brownian = return_aux and trace_enabled and not is_adaptive
+
     if trace_enabled:
 
         def trace_filter(state, info):
             filtered_state = apply_filter(unravel(state.y0))
-            if return_brownian:
+            if collect_brownian:
                 if can_unravel_brownian:
                     filtered_bm = apply_filter(unravel(info.dWt))
                 else:
@@ -289,20 +284,16 @@ def _sdeint(
         trace_fn = None
 
     _adaptive_total_hits = jnp.int32(0)
-    if step_size_adaptor is not None:
+    if is_adaptive:
         if noise_type != "diagonal":
             raise NotImplementedError(
                 "Adaptive SDE integration currently supports only diagonal "
                 "noise. Got noise_type=" + noise_type + "."
             )
-        if return_brownian:
-            raise NotImplementedError(
-                "return_brownian is not yet supported on the adaptive path."
-            )
         # Lock the controller's local-error order to the underlying
         # step-doubled Euler-Maruyama (strong order 0.5 → effective order 1
         # for the doubled-difference estimator).
-        adaptor = step_size_adaptor.with_order(1)
+        adaptor = cast(SDEStepSizeAdaptor, step_size_adaptor).with_order(1)
         terminal_state, ys, _adaptive_total_hits = _sdeint_adaptive(
             drift_raveled,
             diffusion_solver,
@@ -350,11 +341,11 @@ def _sdeint(
         state_y0 = flat_y0
     final_state = apply_filter(unravel(state_y0))
 
-    trace_output: Optional[PyTree[Array]]
+    trace_output: PyTree[Array]
     brownian_output: Optional[PyTree[Array]] = None
 
     if trace_enabled and traced is not None:
-        if return_brownian:
+        if collect_brownian:
             state_traced, brownian_traced = traced
             trace_output = stack_trace(init_filtered, state_traced)
             brownian_init = jax.tree_util.tree_map(
@@ -364,20 +355,14 @@ def _sdeint(
         else:
             trace_output = stack_trace(init_filtered, traced)
     else:
-        trace_output = final_state if not collect_trace else None
-
-    payload: Union[
-        Optional[PyTree[Array]], Tuple[Optional[PyTree[Array]], Optional[PyTree[Array]]]
-    ]
-    payload = (trace_output, brownian_output) if return_brownian else trace_output
+        trace_output = final_state
 
     # Diagnostic for the adaptive path: total budget exhaustions across
     # output segments. Always returned as the last element so the public
     # ``sdeint`` wrapper can warn host-side without paying per-vmap-element
     # callback overhead. Zero on the fixed-step path.
-    diag_hits = _adaptive_total_hits if step_size_adaptor is not None else jnp.int32(0)
+    diag_hits = _adaptive_total_hits if is_adaptive else jnp.int32(0)
 
-    if return_state:
-        frozen_state = jax.tree_util.tree_map(jax.lax.stop_gradient, state)
-        return frozen_state, payload, diag_hits
-    return payload, diag_hits
+    frozen_state = jax.tree_util.tree_map(jax.lax.stop_gradient, state)
+    aux = SDEIntAux(brownian=brownian_output, solver_state=frozen_state)
+    return trace_output, aux, diag_hits

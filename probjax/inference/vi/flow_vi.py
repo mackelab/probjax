@@ -36,7 +36,7 @@ from blackjax.base import VIAlgorithm
 from flax import nnx
 from optax import GradientTransformation, OptState
 
-from probjax.utils.typing import Array, RngKey
+from probjax.utils.typing import Array
 
 __all__ = [
     "FlowVIState",
@@ -82,13 +82,13 @@ def _draw(
     graphdef: Any,
     flow_params: Any,
     rest: Any,
-    rng_key: RngKey,
+    rng,
     event_dim: int,
     num_samples: int,
 ) -> Array:
     """Reparameterised draws: push standard normal noise through the flow."""
     flow = nnx.merge(graphdef, flow_params, rest)
-    noise = jax.random.normal(rng_key, (num_samples, event_dim))
+    noise = jax.random.normal(rng, (num_samples, event_dim))
     return jax.vmap(flow.transform)(noise)
 
 
@@ -109,7 +109,7 @@ def init(flow: Any, optimizer: GradientTransformation) -> FlowVIState:
 
 
 def step(
-    rng_key: RngKey,
+    rng,
     state: FlowVIState,
     logdensity_fn: Callable,
     optimizer: GradientTransformation,
@@ -128,7 +128,7 @@ def step(
     """
 
     def objective(flow_params: Any) -> Array:
-        samples = _draw(graphdef, flow_params, rest, rng_key, event_dim, num_samples)
+        samples = _draw(graphdef, flow_params, rest, rng, event_dim, num_samples)
         # Sticking the landing: with the entropy term's parameters detached the
         # score-function part of the gradient drops out, and it is exactly zero
         # in expectation -- so this removes variance without adding bias.
@@ -148,7 +148,7 @@ def step(
 
 
 def sample(
-    rng_key: RngKey,
+    rng,
     state: FlowVIState,
     graphdef: Any,
     rest: Any,
@@ -156,7 +156,7 @@ def sample(
     num_samples: int = 1,
 ) -> Array:
     """Draw from the fitted approximation."""
-    return _draw(graphdef, state.flow_params, rest, rng_key, event_dim, num_samples)
+    return _draw(graphdef, state.flow_params, rest, rng, event_dim, num_samples)
 
 
 def as_top_level_api(
@@ -189,9 +189,9 @@ def as_top_level_api(
     def init_fn() -> FlowVIState:
         return init(flow, optimizer)
 
-    def step_fn(rng_key: RngKey, state: FlowVIState) -> tuple[FlowVIState, FlowVIInfo]:
+    def step_fn(rng, state: FlowVIState) -> tuple[FlowVIState, FlowVIInfo]:
         return step(
-            rng_key,
+            rng,
             state,
             logdensity_fn,
             optimizer,
@@ -202,8 +202,8 @@ def as_top_level_api(
             stl_estimator,
         )
 
-    def sample_fn(rng_key: RngKey, state: FlowVIState, num_samples: int = 1) -> Array:
-        return sample(rng_key, state, graphdef, rest, event_dim, num_samples)
+    def sample_fn(rng, state: FlowVIState, num_samples: int = 1) -> Array:
+        return sample(rng, state, graphdef, rest, event_dim, num_samples)
 
     return VIAlgorithm(init_fn, step_fn, sample_fn)
 

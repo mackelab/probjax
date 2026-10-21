@@ -10,6 +10,7 @@ from probjax.utils.sdeutil.base import (
     get_method,
     get_methods,
 )
+from probjax.utils.sdeutil.solver.adaptive import adaptive
 from probjax.utils.sdeutil.solver.em import euler_maruyama
 from probjax.utils.sdeutil.solver.exponential import exp_euler_maruyama
 from probjax.utils.sdeutil.solver.linear_exact import linear_exact_sde

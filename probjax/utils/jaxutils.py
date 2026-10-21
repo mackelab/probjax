@@ -443,6 +443,17 @@ def precompute(func: Callable, arg_list: list, known_argnums: list) -> Callable:
     return inner
 
 
+def spec_from_value(value) -> PyTree[jax.ShapeDtypeStruct]:
+    """Build a shape/dtype spec matching a concrete pytree value."""
+    return jax.tree.map(
+        lambda leaf: jax.ShapeDtypeStruct(
+            jnp.asarray(leaf).shape,
+            jnp.asarray(leaf).dtype,
+        ),
+        value,
+    )
+
+
 def ravel_args(in_vals: PyTree) -> Tuple[Array, Callable]:
     """_summary_
 

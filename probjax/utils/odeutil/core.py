@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Callable, Optional, Sequence, cast
+from typing import Any, Callable, Optional, Sequence, cast
 
 import jax
 import jax.numpy as jnp
@@ -43,7 +43,7 @@ def _odeint(
     collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
     step_size_adaptor: Optional[StepSizeAdaptor] = None,
-):
+) -> tuple[PyTree[Array], Any]:
     """Solve an ordinary differential equation.
 
     Args:
@@ -54,8 +54,6 @@ def _odeint(
         method: Integration method
         dtype: Data type for computation
         filter_state: Trace filter describing which quantity to store or return.
-            If the filter returns ``None`` (e.g. :class:`TraceNothing`), the
-            output is ``None`` regardless of `collect_trace`.
         collect_trace: Whether to record the filtered quantity for each time
             point (`True`) or return only the filtered terminal state (`False`).
         check_points: Optional check points for grid integration
@@ -63,13 +61,10 @@ def _odeint(
             Ignored by fixed-step methods. Defaults to ``StepSizeAdaptor()``.
 
     Returns:
-        PyTree with either the stacked trajectory (when `collect_trace` is True)
-        or the filtered terminal state (when `collect_trace` is False). If the
-        filter returns ``None`` the result is ``None``.
+        ``(value, solver_state)``. ``value`` is the stacked trajectory when
+        `collect_trace` is true and the filtered terminal state otherwise;
+        ``solver_state`` is the solver's final state.
     """
-    if step_size_adaptor is None:
-        step_size_adaptor = StepSizeAdaptor()
-
     ts, y0 = ensure_dtype(ts, y0, dtype)
 
     flat_y0, unravel = ravel_args(y0)
@@ -99,7 +94,7 @@ def _odeint(
 
     _apply_filter = make_filter_wrapper(filter_state)
     init_filtered = _apply_filter(y0)
-    trace_enabled = collect_trace and init_filtered is not None
+    trace_enabled = collect_trace
 
     def raveled_filter(yi, info):
         del info
@@ -109,7 +104,15 @@ def _odeint(
 
     solver, info = get_method(method)
 
-    is_adaptive = info["adaptive"]
+    is_adaptive = info.get("adaptive", False)
+    if is_adaptive:
+        if step_size_adaptor is None:
+            step_size_adaptor = StepSizeAdaptor()
+    elif step_size_adaptor is not None:
+        raise ValueError(
+            f"step_size_adaptor is only supported by adaptive solvers, but "
+            f"solver={method!r} is fixed-step."
+        )
 
     if not is_adaptive:
         state, ys = _odeint_on_grid(
@@ -126,9 +129,9 @@ def _odeint(
         order = info["order"]
         interpolation_order = info.get("interpolation_order", 3)
         # Lock the adaptor's local-error order to the method's.
-        step_size_adaptor = step_size_adaptor.with_order(order)
+        adaptor = cast(StepSizeAdaptor, step_size_adaptor).with_order(order)
         kwargs = {
-            "step_size_adaptor": step_size_adaptor,
+            "step_size_adaptor": adaptor,
             "interpolation_order": interpolation_order,
             "filter_output": trace_filter_fn,
             "collect_trace": trace_enabled,
@@ -142,6 +145,6 @@ def _odeint(
     final_filtered = _apply_filter(final_state)
 
     if trace_enabled and ys is not None:
-        return stack_trace(init_filtered, ys)
+        return stack_trace(init_filtered, ys), state
 
-    return final_filtered
+    return final_filtered, state

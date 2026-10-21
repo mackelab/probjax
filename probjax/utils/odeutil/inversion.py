@@ -21,7 +21,7 @@ position. To keep that invariant, ``y0`` sits at position 0 and the drift
 """
 
 from functools import partial
-from typing import Any, Callable, Literal, Optional, Sequence, Union
+from typing import Any, Callable, Literal, Optional, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -29,6 +29,7 @@ from jax import Array
 from jaxtyping import PyTree
 
 from probjax.core.custom_primitives.custom_inverse import custom_inverse
+from probjax.utils._solver_common import ODEIntAux
 from probjax.utils.functions import generic_drift, ravel_callable
 from probjax.utils.jaxutils import ravel_pytree
 from probjax.utils.odeutil.adaptive import StepSizeAdaptor
@@ -47,12 +48,8 @@ def _extract_final_state(
     if not collect_trace:
         return trace_or_state
 
-    def select_last(x):
-        if hasattr(x, "shape") and x.shape and x.shape[0] == ts_len:
-            return x[-1]
-        return x
-
-    return jax.tree_util.tree_map(select_last, trace_or_state)
+    del ts_len
+    return jax.tree_util.tree_map(lambda x: x[-1], trace_or_state)
 
 
 @partial(custom_inverse, inv_argnum=0)
@@ -65,14 +62,15 @@ def _odeint_custom(
     *,
     method: str = "rk4",
     dtype: Optional[jnp.dtype] = jnp.float32,
-    filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
+    filter_state: Optional[Callable[[PyTree[Array]], PyTree[Array]]] = None,
     collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
     step_size_adaptor: Optional[StepSizeAdaptor] = None,
     trace_estimator: TraceEstimator = "exact",
     num_samples: int = 1,
     sample_dist: SampleDist = "rademacher",
-) -> Optional[PyTree[Array]]:
+    return_aux: bool = False,
+) -> Union[PyTree[Array], Tuple[PyTree[Array], ODEIntAux]]:
     """``custom_inverse``-wrapped ODE solver.
 
     ``drift`` flows as a dynamic pytree argument so its array leaves (e.g.
@@ -85,9 +83,13 @@ def _odeint_custom(
     path; forward integration ignores them. They are exposed here because
     ``custom_inverse`` threads call-site kwargs into both forward and
     inverse rules.
+
+    With ``return_aux=True`` the forward output is ``(value, aux)`` instead of
+    the bare value. Such a call is not invertible: the inverse rules only
+    accept the bare value.
     """
     del logdet_rng, trace_estimator, num_samples, sample_dist
-    return _odeint(
+    value, solver_state = _odeint(
         drift,
         y0,
         ts,
@@ -99,6 +101,9 @@ def _odeint_custom(
         check_points=check_points,
         step_size_adaptor=step_size_adaptor,
     )
+    if return_aux:
+        return value, ODEIntAux(solver_state=solver_state)
+    return value
 
 
 def _inv_odeint(
@@ -110,13 +115,14 @@ def _inv_odeint(
     *,
     method: str = "rk4",
     dtype: Optional[jnp.dtype] = jnp.float32,
-    filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
+    filter_state: Optional[Callable[[PyTree[Array]], PyTree[Array]]] = None,
     collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
     step_size_adaptor: Optional[StepSizeAdaptor] = None,
     trace_estimator: TraceEstimator = "exact",
     num_samples: int = 1,
     sample_dist: SampleDist = "rademacher",
+    return_aux: bool = False,
 ) -> PyTree[Array]:
     """Inverse ODE integration (no log-det).
 
@@ -131,9 +137,14 @@ def _inv_odeint(
     del logdet_rng, trace_estimator, num_samples, sample_dist
     if filter_state is not None:
         raise ValueError("odeint inversion is undefined when filter_state is provided.")
+    if return_aux:
+        raise ValueError(
+            "odeint inversion is undefined when return_aux=True; invert a call "
+            "that returns the bare value."
+        )
 
     final_state = _extract_final_state(ys, ts.shape[0], collect_trace)
-    return _odeint(
+    value, _ = _odeint(
         drift,
         final_state,
         ts[::-1],
@@ -145,6 +156,7 @@ def _inv_odeint(
         check_points=check_points,
         step_size_adaptor=step_size_adaptor,
     )
+    return value
 
 
 def _sample_trace_vectors(
@@ -298,13 +310,14 @@ def _inv_logdet_odeint(
     *,
     method: str = "rk4",
     dtype: Optional[jnp.dtype] = jnp.float32,
-    filter_state: Optional[Callable[[PyTree[Array]], Optional[PyTree[Array]]]] = None,
+    filter_state: Optional[Callable[[PyTree[Array]], PyTree[Array]]] = None,
     collect_trace: bool = True,
     check_points: Optional[Sequence[int]] = None,
     step_size_adaptor: Optional[StepSizeAdaptor] = None,
     trace_estimator: TraceEstimator = "exact",
     num_samples: int = 1,
     sample_dist: SampleDist = "rademacher",
+    return_aux: bool = False,
 ):
     """Inverse ODE integration with log-determinant.
 
@@ -327,6 +340,11 @@ def _inv_logdet_odeint(
     """
     if filter_state is not None:
         raise ValueError("odeint inversion is undefined when filter_state is provided.")
+    if return_aux:
+        raise ValueError(
+            "odeint inversion is undefined when return_aux=True; invert a call "
+            "that returns the bare value."
+        )
 
     final_state = _extract_final_state(ys, ts.shape[0], collect_trace)
 
@@ -353,7 +371,7 @@ def _inv_logdet_odeint(
         v_samples=v_samples,
     )
     logdet0 = jnp.zeros((1,))
-    yT, logdetsT = _odeint(
+    value, _ = _odeint(
         drift_aug,
         (final_state, logdet0),
         ts[::-1],
@@ -365,6 +383,7 @@ def _inv_logdet_odeint(
         check_points=check_points,
         step_size_adaptor=step_size_adaptor,
     )
+    yT, logdetsT = value
     return yT, logdetsT
 
 

@@ -23,6 +23,7 @@ from probjax.nn.generative.autoregressive import (
     TransformerARConditionerConfig,
 )
 from probjax.stats import gennorm, laplace, logistic, norm, t
+from probjax.nn import FitConfig
 
 FAMILIES = [
     pytest.param(ARFamily.normal(), id="normal"),
@@ -179,7 +180,10 @@ def _perturb(model, key, scale=0.4):
         model,
         jax.tree_util.tree_unflatten(
             tree,
-            [l + scale * jax.random.normal(k, jnp.shape(l)) for l, k in zip(leaves, keys)],
+            [
+                l + scale * jax.random.normal(k, jnp.shape(l))
+                for l, k in zip(leaves, keys)
+            ],
         ),
     )
 
@@ -210,9 +214,13 @@ def test_logpdf_and_sampling_are_finite(family):
     "build",
     [
         pytest.param(lambda r: MADE(2, r), id="made"),
-        pytest.param(lambda r: MixtureAutoregressive(2, r, num_components=6), id="mixture"),
+        pytest.param(
+            lambda r: MixtureAutoregressive(2, r, num_components=6), id="mixture"
+        ),
         pytest.param(lambda r: SplineAutoregressive(2, r, num_bins=6), id="spline"),
-        pytest.param(lambda r: HistogramAutoregressive(2, r, num_bins=16), id="histogram"),
+        pytest.param(
+            lambda r: HistogramAutoregressive(2, r, num_bins=16), id="histogram"
+        ),
     ],
 )
 def test_trained_density_is_normalised(build):
@@ -221,7 +229,9 @@ def test_trained_density_is_normalised(build):
 
     model = build(nnx.Rngs(0))
     train = crescent(jax.random.PRNGKey(0), 4000)
-    losses = model.fit(jax.random.PRNGKey(1), train, num_steps=400, batch_size=512)
+    losses = model.fit(
+        jax.random.PRNGKey(1), train, config=FitConfig(max_steps=400, batch_size=512)
+    ).losses
     assert jnp.all(jnp.isfinite(losses))
     assert losses[-1] < losses[0]
 
@@ -239,8 +249,13 @@ def test_reaches_the_analytic_optimum_on_a_gaussian_target():
     from tests.test_nflow_density_estimation import OPTIMAL_NLL, crescent
 
     model = MixtureAutoregressive(2, nnx.Rngs(0), num_components=8)
-    train, test = crescent(jax.random.PRNGKey(0), 8000), crescent(jax.random.PRNGKey(1), 2000)
-    model.fit(jax.random.PRNGKey(2), train, num_steps=800, batch_size=512)
+    train, test = (
+        crescent(jax.random.PRNGKey(0), 8000),
+        crescent(jax.random.PRNGKey(1), 2000),
+    )
+    model.fit(
+        jax.random.PRNGKey(2), train, config=FitConfig(max_steps=800, batch_size=512)
+    )
 
     nll = float(-jnp.mean(jax.vmap(model._logpdf)(test)))
     optimum = OPTIMAL_NLL["crescent"]
@@ -325,7 +340,9 @@ def test_categorical_model_recovers_a_known_joint():
     data = jnp.stack([x0, x1], -1)
 
     model = CategoricalAutoregressive(2, nnx.Rngs(0), num_categories=num_categories)
-    losses = model.fit(jax.random.PRNGKey(2), data, num_steps=800, batch_size=512)
+    losses = model.fit(
+        jax.random.PRNGKey(2), data, config=FitConfig(max_steps=800, batch_size=512)
+    ).losses
     assert jnp.all(jnp.isfinite(losses))
 
     # the learned p(x1 | x0) should concentrate on (x0 + 1) % K
@@ -352,7 +369,9 @@ def test_marginal_of_the_first_dimension_matches_the_data():
         -1,
     )
     model = MADE(2, nnx.Rngs(0), standardize=False)
-    model.fit(jax.random.PRNGKey(2), data, num_steps=600, batch_size=512)
+    model.fit(
+        jax.random.PRNGKey(2), data, config=FitConfig(max_steps=600, batch_size=512)
+    )
 
     params = model.predict_params(jnp.zeros(2))
     natural = model.family.unpack(params[0])
@@ -420,7 +439,9 @@ def test_ssm_conditioner_supports_categorical():
     assert model._logpdf(x).shape == (2,)
     assert jnp.all(jnp.isfinite(model._logpdf(x)))
     data = (jax.random.uniform(jax.random.key(0), (256, 4)) > 0.5).astype(jnp.int32)
-    losses = model.fit(jax.random.key(1), data, num_steps=10, batch_size=64)
+    losses = model.fit(
+        jax.random.key(1), data, config=FitConfig(max_steps=10, batch_size=64)
+    ).losses
     assert jnp.all(jnp.isfinite(losses))
     samples = model.sample(jax.random.key(0), (5,))
     assert samples.shape == (5, 4)
@@ -461,7 +482,9 @@ def test_trained_cached_matches_naive_up_to_float_dust():
         4, ARFamily.categorical(3), nnx.Rngs(1), conditioner=_tiny_transformer()
     )
     data = (jax.random.uniform(jax.random.key(0), (256, 4)) > 0.5).astype(jnp.int32)
-    model.fit(jax.random.key(1), data, num_steps=10, batch_size=64)
+    model.fit(
+        jax.random.key(1), data, config=FitConfig(max_steps=10, batch_size=64)
+    )
     x = (jax.random.uniform(jax.random.key(2), (3, 4)) > 0.5).astype(jnp.int32)
     full = model.predict_params(x)
     model.conditioner.init_decode((3,))

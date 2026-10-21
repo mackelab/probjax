@@ -57,13 +57,13 @@ class Kernel(NamedTuple):
 
     def __call__(
         self,
-        key: RngKey,
+        rng,
         state: Any,
         params: Any = None,
         *args: Any,
         **kwargs: Any,
     ) -> tuple[Any, Any]:
-        return self.step(key, state, params, *args, **kwargs)
+        return self.step(rng, state, params, *args, **kwargs)
 
 
 class AdaptationTrace(NamedTuple):

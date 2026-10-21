@@ -606,7 +606,7 @@ def test_mixture_em_gaussian(seed: int = 0):
         init_components,
         max_iter=150,
         tol=1e-5,
-        rng_key=rng,
+        rng=rng,
     )
 
     est_means = jnp.array([comp.mean() for comp in est_components])
@@ -663,7 +663,7 @@ def test_mixture_em_vonmises(seed: int = 0):
         mixing_probs_init=true_probs,
         max_iter=300,
         tol=1e-5,
-        rng_key=rng,
+        rng=rng,
     )
 
     est_locs = jnp.array([comp.args[0] for comp in est_components])
@@ -715,7 +715,7 @@ def test_mixture_em_multivariate_gaussian(seed: int = 0):
         init_components,
         max_iter=150,
         tol=1e-4,
-        rng_key=rng,
+        rng=rng,
     )
 
     est_means = jnp.stack([comp.args[0] for comp in est_components])
@@ -861,7 +861,7 @@ def test_kl_divergence(dist1, dist2, shape=(1,), seed=0):
     q = init_dist(dist2, key2)
 
     try:
-        dist = kl_divergence(p, q, mc_samples=10000, key=key1)
+        dist = kl_divergence(p, q, mc_samples=10000, rng=key1)
     except (AssertionError, ValueError, NotImplementedError):
         pytest.skip("unsupported distribution pair")
 
@@ -886,7 +886,7 @@ def test_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
     q = init_dist(dist2, key2)
 
     try:
-        dist = wasserstein_distance(p, q, mc_samples=1000, key=key1)
+        dist = wasserstein_distance(p, q, mc_samples=1000, rng=key1)
     except (AssertionError, ValueError, NotImplementedError):
         pytest.skip("unsupported distribution pair")
 
@@ -911,7 +911,7 @@ def test_sliced_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
     q = init_dist(dist2, key2)
 
     try:
-        dist = sliced_wasserstein_distance(p, q, mc_samples=1000, key=key1)
+        dist = sliced_wasserstein_distance(p, q, mc_samples=1000, rng=key1)
     except (AssertionError, ValueError, NotImplementedError):
         pytest.skip("unsupported distribution pair")
 
@@ -938,14 +938,14 @@ def test_max_slice_wasserstein_distance(dist1, dist2, shape=(1,), seed=0):
     q = init_dist(dist2, key2)
 
     try:
-        dist = max_slice_wasserstein_distance(p, q, mc_samples=1000, key=key1)
+        dist = max_slice_wasserstein_distance(p, q, mc_samples=1000, rng=key1)
     except (AssertionError, ValueError, NotImplementedError):
         pytest.skip("unsupported distribution pair")
 
     # Monte Carlo estimation of Max Sliced Wasserstein distance
     samples_p = p.rvs(key1, shape=(1000,))
     samples_q = q.rvs(key2, shape=(1000,))
-    dist_mc = __max_slice_wasserstein_generic(samples_p, samples_q, key=key1)
+    dist_mc = __max_slice_wasserstein_generic(samples_p, samples_q, rng=key1)
 
     assert dist.shape == p.batch_shape, "Max Sliced Wasserstein distance shape mismatch"
     assert jnp.allclose(dist, dist_mc, atol=0.1, rtol=0.1), (

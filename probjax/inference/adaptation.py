@@ -14,7 +14,6 @@ from probjax.inference.base import (
 )
 from probjax.inference.smc.base import _ensure_param_batch, _params_to_dict
 from probjax.utils import guards as _guards
-from probjax.utils.typing import RngKey
 
 __all__ = ["get_param", "replace_params"]
 
@@ -92,7 +91,7 @@ def _stateless_adaptor(tune_fn: Callable[..., dict[str, Any]]) -> Adaptor:
 
 @partial(jax.jit, static_argnames=("kernel", "adaptor"))
 def adapt_step(
-    key: RngKey,
+    rng,
     kernel: Kernel,
     adaptor: Adaptor,
     state: Any,
@@ -101,7 +100,7 @@ def adapt_step(
     *args: Any,
 ) -> tuple[Any, Any, Any, Any, Any]:
     """Advance a kernel once and apply one local parameter-adaptation update."""
-    state, kernel_info = kernel.step(key, state, params, *args)
+    state, kernel_info = kernel.step(rng, state, params, *args)
     adaptor_state, params, adaptor_info = adaptor.update(
         state, kernel_info, adaptor_state, params
     )
@@ -113,7 +112,7 @@ def adapt_step(
     static_argnames=("kernel", "adaptor", "num_steps", "collect"),
 )
 def adaptor_warmup(
-    key: RngKey,
+    rng,
     kernel: Kernel,
     adaptor: Adaptor,
     state: Any,
@@ -125,7 +124,7 @@ def adaptor_warmup(
 ) -> AdaptationResult:
     """Run a kernel while updating its parameters with an adaptor."""
     adaptor_state = adaptor.init(state, params)
-    keys = jax.random.split(key, num_steps)
+    keys = jax.random.split(rng, num_steps)
     xs = keys if args is None else (keys, args)
 
     def one_step(carry, xs):
@@ -158,7 +157,7 @@ def as_warmup(adaptor: Adaptor, *, collect: bool = False) -> Warmup:
     """Create the standard fixed-length warmup policy from a local adaptor."""
 
     def run(
-        key: RngKey,
+        rng,
         kernel: Kernel,
         state: Any,
         params: Any,
@@ -166,7 +165,7 @@ def as_warmup(adaptor: Adaptor, *, collect: bool = False) -> Warmup:
         args: Any = None,
     ) -> AdaptationResult:
         return adaptor_warmup(
-            key,
+            rng,
             kernel,
             adaptor,
             state,

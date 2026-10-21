@@ -96,7 +96,7 @@ def _gbm_strong_error(n_steps, sde_type, n_paths=200):
     y0 = jnp.ones(1)
 
     def one_path(key):
-        ys, dW = sdeint(
+        ys, aux = sdeint(
             key,
             lambda t, y: mu * y,
             lambda t, y: sigma * y,
@@ -104,9 +104,10 @@ def _gbm_strong_error(n_steps, sde_type, n_paths=200):
             ts,
             solver="milstein",
             sde_type=sde_type,
-            return_brownian=True,
             dtype=jnp.float64,
+            return_aux=True,
         )
+        dW = aux.brownian
         drift_correction = -(sigma**2) / 2 if sde_type == "ito" else 0.0
         exact = jnp.exp((mu + drift_correction) + sigma * dW.sum(0))
         return jnp.abs(ys[-1] - exact)[0]
@@ -137,7 +138,10 @@ def test_stratonovich_requires_milstein_for_multiplicative_noise():
         sdeint(*args, sde_type="stratonovich", solver="sri1")
     with pytest.raises(NotImplementedError):
         sdeint(
-            *args, sde_type="stratonovich", step_size_adaptor=WeakStepSizeAdaptor()
+            *args,
+            sde_type="stratonovich",
+            solver="adaptive",
+            step_size_adaptor=WeakStepSizeAdaptor(),
         )
 
 
@@ -169,9 +173,9 @@ def test_brownian_tree_has_brownian_statistics():
 _GBM = dict(mu=0.5, sigma=0.8)  # E[y_1] = 1.649, Var[y_1] = 2.437
 
 
-def _gbm_terminal(adaptor, n_paths, key=1):
+def _gbm_terminal(adaptor, n_paths, rng=1):
     mu, sigma = _GBM["mu"], _GBM["sigma"]
-    keys = jax.random.split(jax.random.key(key), n_paths)
+    keys = jax.random.split(jax.random.key(rng), n_paths)
     return jax.vmap(
         lambda k: sdeint(
             k,
@@ -179,6 +183,7 @@ def _gbm_terminal(adaptor, n_paths, key=1):
             lambda t, y: sigma * y,
             jnp.ones(1),
             jnp.linspace(0.0, 1.0, 3),
+            solver="adaptive",
             step_size_adaptor=adaptor,
             collect_trace=False,
         )
@@ -212,6 +217,7 @@ def test_strong_adaptor_converges_pathwise():
             lambda t, y: sigma * y,
             jnp.ones(1),
             jnp.linspace(0.0, 1.0, 3),
+            solver="adaptive",
             step_size_adaptor=adaptor,
             collect_trace=False,
         )

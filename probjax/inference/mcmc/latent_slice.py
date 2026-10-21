@@ -7,7 +7,7 @@ import jax.numpy as jnp
 
 from probjax.inference.mcmc.adaptation import slice_step_size_adaptor
 from probjax.inference.mcmc.base import MarkovKernelAPI, make_step_from_kernel
-from probjax.utils.typing import Array, RngKey, Scalar
+from probjax.utils.typing import Array, Scalar
 
 
 class LatentSliceParams(NamedTuple):
@@ -30,7 +30,7 @@ def init_params(state: Any, step_size: float = 0.5) -> LatentSliceParams:
 
 
 def init(
-    position: Array, logdensity_fn: Callable, rng_key: RngKey | None = None
+    position: Array, logdensity_fn: Callable, rng = None
 ) -> LatentSliceState:
     log_density = logdensity_fn(position)
     latent_bracket_width = jnp.zeros_like(position)
@@ -39,13 +39,13 @@ def init(
 
 def build_kernel():
     def kernel(
-        rng_key: RngKey,
+        rng,
         state: LatentSliceState,
         logdensity_fn: Callable,
         step_size: float = 0.5,
         max_evals: int = 100,
     ) -> tuple[LatentSliceState, LatentSliceInfo]:
-        rng_key, rng_slice, rng_bound, rng_update = jax.random.split(rng_key, 4)
+        rng_accept, rng_slice, rng_bound, rng_update = jax.random.split(rng, 4)
         position = state.position
         logdensity = state.logdensity
         width = state.latent_bracket_width
@@ -67,7 +67,7 @@ def build_kernel():
 
         # Sample new position
         x_new, log_density, evals = accept_reject_proposal(
-            logdensity_fn, rng_key, left, right, position, y, max_evals
+            logdensity_fn, rng_accept, left, right, position, y, max_evals
         )
 
         new_state = LatentSliceState(x_new, log_density, width_update)
@@ -116,7 +116,7 @@ class latent_slice(MarkovKernelAPI):
 
 def accept_reject_proposal(
     logdensity_fn: Callable,
-    key: RngKey,
+    rng,
     lower: Array,
     upper: Array,
     state: Array,
@@ -157,7 +157,7 @@ def accept_reject_proposal(
 
         return i + 1, is_accepted, rng, lower, upper, x_new, log_density
 
-    init_carry = (0, jnp.array(False), key, lower, upper, state, y)
+    init_carry = (0, jnp.array(False), rng, lower, upper, state, y)
     final_carry = jax.lax.while_loop(cond_fn, body_fn, init_carry)
     i, is_accepted, _, _, _, x, logdensity = final_carry
 

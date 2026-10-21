@@ -122,12 +122,17 @@ def invertible_function_1d(request):
 # SDE problems fixtures ---------------------------------------------------------
 
 
-SDE_METHODS = get_methods_sde()
+# The adaptive integrator is selected with ``solver="adaptive"`` and driven
+# by a step-size adaptor; it has its own tests.
+SDE_METHODS = [m for m in get_methods_sde() if m != "adaptive"]
 # Methods that require split_drift-wrapped drift (dedicated tests only).
 SPLIT_DRIFT_SDE_METHODS = ["exp_euler_maruyama"]
 # linear_exact_sde requires linear_drift + const_diffusion; covered by its own tests.
+# The adaptive integrator is driven by a step-size adaptor and has its own tests.
 GENERIC_SDE_METHODS = [
-    m for m in SDE_METHODS if m not in SPLIT_DRIFT_SDE_METHODS + ["linear_exact_sde"]
+    m
+    for m in SDE_METHODS
+    if m not in SPLIT_DRIFT_SDE_METHODS + ["linear_exact_sde", "adaptive"]
 ]
 
 

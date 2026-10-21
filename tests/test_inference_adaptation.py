@@ -153,7 +153,7 @@ def test_warmup_uses_kernel_default_when_omitted():
 
 def test_warmup_without_default_raises_informatively():
     kernel = arms(lambda x: -0.5 * x**2)
-    state = kernel.init(jnp.array(0.0), rng_key=jax.random.key(0))
+    state = kernel.init(jax.random.key(0), jnp.array(0.0))
     params = kernel.init_params(state)
 
     assert kernel.default_adaptation is None

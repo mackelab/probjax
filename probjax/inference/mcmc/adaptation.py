@@ -15,7 +15,6 @@ from blackjax.adaptation.window_adaptation import build_schedule
 from probjax.inference.adaptation import get_param, replace_params
 from probjax.inference.base import Adaptor, Kernel, Warmup, WarmupResult
 from probjax.inference.mcmc.base import ravel_position
-from probjax.utils.typing import RngKey
 
 
 def step_size_adaptor(
@@ -179,7 +178,7 @@ def window_warmup(
         )
 
     def run(
-        key: RngKey,
+        rng,
         kernel: Kernel,
         state: Any,
         params: Any,
@@ -196,7 +195,7 @@ def window_warmup(
         )
         get_param(params, "inverse_mass_matrix")
         warmup_state = init_window(state.position, get_param(params, "step_size"))
-        keys = jax.random.split(key, num_steps)
+        keys = jax.random.split(rng, num_steps)
 
         def one_step(carry, xs):
             state, params, warmup_state = carry

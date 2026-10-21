@@ -44,7 +44,7 @@ from probjax.nn.generative.diffusion.config import (
 )
 from probjax.nn.generative.diffusion.score_estimation import is_score_and_marginal
 from probjax.nn.generative.sampling import sample_normal
-from probjax.utils.typing import Array, PyTree, RngKey
+from probjax.utils.typing import Array, PyTree
 
 _LOG_2PI = jnp.log(2.0 * jnp.pi)
 
@@ -78,7 +78,7 @@ def _standard_normal_logpdf(batch: PyTree[Array]) -> Array:
 
 
 def run_rdsmc(
-    key: RngKey,
+    rng,
     *,
     log_target_fn: Callable[[PyTree[Array]], Array],
     event_spec,
@@ -150,7 +150,7 @@ def run_rdsmc(
 
         return jax.vmap(_single)(est_keys, batch)
 
-    key, key_init, key_est = jax.random.split(key, 3)
+    key, key_init, key_est = jax.random.split(rng, 3)
     particles = sample_normal(key_init, (num_particles,), spec)
     est_keys = jax.random.split(key_est, num_particles)
     scores, log_psi, est_info = estimate_batch(est_keys, ts[0], particles)

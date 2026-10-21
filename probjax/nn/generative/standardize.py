@@ -12,13 +12,14 @@ training history: they serialise with the model, travel through
 :meth:`StandardizingMixin.standardization`.
 """
 
+import itertools
 from typing import Callable, Tuple
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.nn.training import is_batch_stream, take_batches
+from probjax.nn.training import DataSpec, take_batches
 from probjax.utils.guards import is_mapping, is_tracing
 from probjax.utils.jaxutils import where
 
@@ -29,17 +30,24 @@ __all__ = ["StandardizingMixin"]
 _STD_BATCHES = 8
 
 
-def _standardization_sample(data, num_features: int):
-    """Examples to estimate shift and scale from an array, a dict or a stream."""
-    if is_batch_stream(data):
-        batches = take_batches(data, _STD_BATCHES)
-        parts = [b["data"] if is_mapping(b) else b for b in batches]
-        data = jnp.concatenate([
+def _standardization_sample(data, num_features: int, spec: DataSpec):
+    """Examples to estimate shift and scale from an array, a dict or a stream.
+
+    Returns the sample and the source to train on: a stream is advanced to
+    look at it, so the batches that were looked at are put back in front.
+    """
+    primary = spec.primary or "data"
+    if spec.stream:
+        source = iter(data)
+        batches = take_batches(source, _STD_BATCHES)
+        rest = itertools.chain(batches, source)
+        parts = [b[primary] if is_mapping(b) else b for b in batches]
+        sample = jnp.concatenate([
             jnp.asarray(p).reshape(-1, num_features) for p in parts
         ])
-    elif is_mapping(data):
-        data = data["data"]
-    return jnp.asarray(data, jnp.float32).reshape(-1, num_features)
+        return sample, rest
+    examples = data[primary] if is_mapping(data) else data
+    return jnp.asarray(examples, jnp.float32).reshape(-1, num_features), data
 
 
 class StandardizingMixin:
@@ -85,31 +93,34 @@ class StandardizingMixin:
         self._std_fitted[...] = jnp.asarray(True)
         self._clear_distribution_cache()
 
-    def fit_standardization(self, data) -> None:
+    def fit_standardization(self, data, spec: DataSpec = DataSpec()):
         """Fit the transform from data. A no-op once already fitted.
 
         Idempotent on purpose: a second ``fit`` call must not silently move the
         model's coordinate system out from under an already-trained density.
 
-        ``data`` may be an iterable of batches, in which case the shift and
-        scale are estimated from the first :data:`_STD_BATCHES` of them -- the
-        whole point of streaming is that the full dataset does not fit, and an
+        ``spec`` says how the data is laid out: a stream of batches is
+        summarised from the first :data:`_STD_BATCHES` of them -- the whole
+        point of streaming is that the full dataset does not fit, and an
         estimate from a few thousand examples is accurate enough for what this
         transform is for.
+
+        Returns the data to train on, which for a stream is the same batches
+        again: looking at them must not take them away from the run.
         """
         if not self.standardize:
-            return
+            return data
         fitted = self._std_fitted.get_value()
         traced = is_tracing(fitted)
         if not traced and bool(fitted):
-            return
-        if traced and is_batch_stream(data):
+            return data
+        if traced and spec.stream:
             raise ValueError("Jitted standardization requires an array batch.")
-        data = _standardization_sample(data, self._std_shift.shape[0])
+        sample, data = _standardization_sample(data, self._std_shift.shape[0], spec)
 
         def estimate():
-            shift = jnp.mean(data, axis=0)
-            scale = jnp.std(data, axis=0)
+            shift = jnp.mean(sample, axis=0)
+            scale = jnp.std(sample, axis=0)
             # Constant columns keep unit scale so the map remains invertible.
             scale = where(scale > 1e-6, scale, 1.0)
             return (
@@ -123,6 +134,7 @@ class StandardizingMixin:
         self._std_fitted[...] = jnp.asarray(True)
         if not traced:
             self._clear_distribution_cache()
+        return data
 
     # -- the transform --------------------------------------------------------
 

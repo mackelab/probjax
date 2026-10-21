@@ -78,8 +78,8 @@ class RejectionSampler:
         )
         self._batch_size = batch_size
 
-    def run(self, key: RngKey, num_samples: int = 1, **kwargs) -> Array:
-        key, subkey = jax.random.split(key)
+    def run(self, rng, num_samples: int = 1, **kwargs) -> Array:
+        key, subkey = jax.random.split(rng)
         batch_size = self._batch_size
         samples = jnp.empty((num_samples,) + self._proposal.event_shape)
 

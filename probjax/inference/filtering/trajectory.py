@@ -13,7 +13,7 @@ from probjax.inference.filtering.state_space import LinearGaussianModel
 from probjax.inference.particles import normalize_log_weights
 from probjax.utils.jaxutils import prepend_to_trace
 from probjax.utils.linalg import symmetrize_matrix
-from probjax.utils.typing import Array, RngKey
+from probjax.utils.typing import Array
 
 
 def _prepend(initial: Any, history: Any) -> Any:
@@ -21,13 +21,13 @@ def _prepend(initial: Any, history: Any) -> Any:
 
 
 def _genealogies(
-    key: RngKey,
+    rng,
     particles: Array,
     log_weights: Array,
     ancestors: Array,
     num_samples: int,
 ) -> Array:
-    final = jax.random.categorical(key, log_weights, shape=(num_samples,))
+    final = jax.random.categorical(rng, log_weights, shape=(num_samples,))
 
     def backward(indices: Array, data: Any) -> Any:
         population, parents = data
@@ -39,7 +39,7 @@ def _genealogies(
 
 
 def sample_paths(
-    key: RngKey,
+    rng,
     trace: Any,
     model: Any,
     theta: Any,
@@ -59,13 +59,13 @@ def sample_paths(
     if num_samples < 1:
         raise ValueError("num_samples must be positive.")
     if isinstance(model, LinearGaussianModel):
-        return _sample_gaussian_paths(key, trace, model, theta, num_samples)
+        return _sample_gaussian_paths(rng, trace, model, theta, num_samples)
     if method is None:
         method = "ancestry" if model.transition_logdensity is None else "backward"
     states = _prepend(trace.initial_state, trace.states)
     if method == "ancestry":
         return _genealogies(
-            key,
+            rng,
             states.particles,
             states.log_weights[-1],
             trace.infos.ancestors,
@@ -75,7 +75,7 @@ def sample_paths(
         raise ValueError("Choose 'ancestry', or 'backward' with a transition density.")
     times = jnp.concatenate((jnp.asarray(trace.initial_state.t)[None], trace.ts))
     paths, _ = particle_smoother(
-        key,
+        rng,
         times,
         states.particles,
         states.log_weights,
@@ -130,19 +130,19 @@ def smooth_gaussian_path(trace: Any, model: Any, theta: Any) -> tuple[Array, Arr
     )
 
 
-def _normal(key: RngKey, mean: Array, cov: Array, num_samples: int) -> Array:
+def _normal(rng, mean: Array, cov: Array, num_samples: int) -> Array:
     # Backward conditional covariance can be semidefinite. Clip roundoff at zero.
     values, vectors = jnp.linalg.eigh(symmetrize_matrix(cov))
     factor = vectors * jnp.sqrt(jnp.maximum(values, 0))
-    return mean + jax.random.normal(key, (num_samples, cov.shape[-1])) @ factor.T
+    return mean + jax.random.normal(rng, (num_samples, cov.shape[-1])) @ factor.T
 
 
 def _sample_gaussian_paths(
-    key: RngKey, trace: Any, model: Any, theta: Any, num_samples: int
+    rng, trace: Any, model: Any, theta: Any, num_samples: int
 ) -> Array:
     # Backward conditionals keep the cross-time dependence of the joint law.
     states, gains = _gaussian_backward_data(trace, model, theta)
-    key, final_key = jax.random.split(key)
+    key, final_key = jax.random.split(rng)
     final = _normal(final_key, states.mean[-1], states.cov[-1], num_samples)
 
     def backward(carry: Any, data: Any) -> Any:
@@ -170,7 +170,7 @@ def _sample_gaussian_paths(
 
 
 def particle_gibbs(
-    key: RngKey,
+    rng,
     reference_path: Array,
     model: Any,
     theta: Any,
@@ -200,7 +200,7 @@ def particle_gibbs(
         raise ValueError("reference_path must have shape (len(ts)+1, D).")
     if ancestor_sampling and model.transition_logdensity is None:
         raise ValueError("Ancestor sampling needs model.transition_logdensity.")
-    key, initial_key = jax.random.split(key)
+    key, initial_key = jax.random.split(rng)
     particles = jax.vmap(model.init, (0, None))(
         jax.random.split(initial_key, num_particles), theta
     )

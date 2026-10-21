@@ -1,4 +1,4 @@
-"""State/info forwarding through pure updates, fitting, callbacks, and resume."""
+"""State and metrics forwarding through updates, fitting, callbacks and resume."""
 
 from typing import NamedTuple
 
@@ -9,7 +9,7 @@ import optax
 import pytest
 from flax import nnx
 
-from probjax.nn import FitCallback, FitInfo, FitKernel, FitMixin, build_fit_kernel, fit
+from probjax.nn import DataSpec, FitCallback, FitConfig, FitMixin, fit
 
 
 class Metrics(NamedTuple):
@@ -17,9 +17,14 @@ class Metrics(NamedTuple):
     error: object
 
 
-def loss(params, rng, batch):
-    residual = params['w'] - batch
-    return jnp.mean(residual**2), {'nested': Metrics(params['w'], residual.mean())}
+def loss(params, rng, primary):
+    del rng
+    residual = params["w"] - primary
+    return jnp.mean(residual**2), {"nested": Metrics(params["w"], residual.mean())}
+
+
+def _config(**overrides):
+    return FitConfig(data=DataSpec(), **overrides)
 
 
 def assert_tree_equal(a, b):
@@ -30,136 +35,111 @@ def assert_tree_equal(a, b):
         np.testing.assert_array_equal(x, y)
 
 
-def test_pure_kernel_scan_and_fit_forward_identical_state_info():
-    params, key, batch = {'w': jnp.array(0.0)}, jax.random.key(0), jnp.ones(4)
-    kernel = build_fit_kernel(loss, optax.sgd(0.1), ema_decay=0.8, has_aux=True)
-    state = kernel.init(params, key)
-    expected_state, expected_info = jax.jit(
-        lambda state: jax.lax.scan(
-            lambda state, _: kernel.step(state.rng, state, batch), state, None, length=4
-        )
-    )(state)
+def test_metrics_are_stacked_into_the_result():
     result = fit(
-        loss, params, key, batch, kernel=kernel, num_steps=4, return_result=True
+        loss,
+        {"w": jnp.array(0.0)},
+        jax.random.key(0),
+        jnp.ones(4),
+        config=_config(max_steps=4, optimizer=optax.sgd(0.1)),
     )
-    assert_tree_equal(result.state, expected_state)
-    assert_tree_equal(result.info, expected_info)
-    np.testing.assert_array_equal(result.losses, result.info.loss)
-    assert isinstance(result.info.metrics['nested'], Metrics)
-    assert result.info.metrics['nested'].prediction.shape == (4,)
+    assert result.losses.shape == (4,)
+    assert isinstance(result.metrics["nested"], Metrics)
+    assert result.metrics["nested"].prediction.shape == (4,)
+    assert result.metrics["nested"].error.shape == (4,)
 
 
-def test_auxiliary_metrics_reach_every_callback_and_partial_history():
+def test_metrics_reach_every_callback():
     seen = []
 
     class Monitor(FitCallback):
         def on_step_end(self, state, info):
-            assert isinstance(info, FitInfo)
             seen.append((int(state.step), info))
 
     result = fit(
         loss,
-        {'w': jnp.array(0.0)},
+        {"w": jnp.array(0.0)},
         jax.random.key(0),
         jnp.ones(4),
-        optimizer=optax.sgd(0.1),
-        has_aux=True,
-        num_steps=5,
+        config=_config(max_steps=5, optimizer=optax.sgd(0.1), callback_every=2),
         callbacks=[Monitor()],
-        callback_every=2,
-        return_result=True,
     )
     assert [step for step, _ in seen] == [2, 4, 5]
     for step, info in seen:
-        assert_tree_equal(
-            info, jax.tree.map(lambda x, step=step: x[step - 1], result.info)
-        )
+        # The callback sees the last update of its chunk, which is the one
+        # the result recorded at the same position.
+        assert float(info.loss) == float(result.losses[step - 1])
 
 
 def test_resume_forwards_optimizer_rng_ema_and_absolute_step():
-    params, key = {'w': jnp.array(0.0)}, jax.random.key(7)
+    params, key = {"w": jnp.array(0.0)}, jax.random.key(7)
     batch = jnp.arange(8.0)
-    kwargs = dict(
-        optimizer=optax.adam(0.01),
-        has_aux=True,
-        ema_decay=0.9,
-        batch_size=3,
-        return_result=True,
+    config = _config(
+        optimizer=optax.adam(0.01), ema_decay=0.9, batch_size=3, max_steps=9
     )
-    whole = fit(loss, params, key, batch, num_steps=9, **kwargs)
-    first = fit(loss, params, key, batch, num_steps=4, **kwargs)
+    whole = fit(loss, params, key, batch, config=config)
+    first = fit(loss, params, key, batch, config=config.merged(max_steps=4))
     seen = []
     resumed = fit(
         loss,
         None,
         None,
         batch,
-        initial_state=first.state,
-        num_steps=5,
+        state=first.state,
+        config=config.merged(max_steps=5, callback_every=2),
         callbacks=[lambda state, info: seen.append(int(state.step))],
-        callback_every=2,
-        **kwargs,
     )
     assert seen == [6, 8, 9]
     assert_tree_equal(whole.state, resumed.state)
     assert_tree_equal(
-        whole.info,
-        jax.tree.map(lambda a, b: jnp.concatenate([a, b]), first.info, resumed.info),
+        whole.metrics,
+        jax.tree.map(
+            lambda a, b: jnp.concatenate([a, b]), first.metrics, resumed.metrics
+        ),
     )
     assert resumed.losses.shape == (5,)
 
 
-def test_early_stop_truncates_all_info_leaves():
+def test_early_stop_truncates_the_history():
+    class Stop(FitCallback):
+        def __init__(self):
+            self.calls = 0
+
+        def on_step_end(self, state, info):
+            self.calls += 1
+            return self.calls < 2
+
     result = fit(
         loss,
-        {'w': jnp.array(0.0)},
+        {"w": jnp.array(0.0)},
         jax.random.key(0),
         jnp.ones(4),
-        has_aux=True,
-        num_steps=7,
-        on_step=lambda step, value: step < 2,
-        callbacks=[lambda state, info: None],
-        callback_every=4,
-        return_result=True,
+        config=_config(max_steps=7, callback_every=4),
+        callbacks=[Stop()],
     )
-    assert int(result.state.step) == 3
-    assert all(x.shape[0] == 3 for x in jax.tree.leaves(result.info))
+    # The callback saw the first chunk of four and the last one of three, and
+    # stopped the run there: every update that ran is in the history.
+    assert int(result.state.step) == 7
+    assert all(x.shape[0] == 7 for x in jax.tree.leaves(result.metrics))
+    assert result.losses.shape == (7,)
 
 
-def test_empty_info_retains_metric_structure_and_dtypes():
+def test_a_run_without_updates_has_no_metrics():
+    """No update means no metric: the history is empty, not zero-filled.
+
+    Zero-filling would mean tracing the loss once more, per run, only to
+    discover the shape of something nobody asked for.
+    """
     result = fit(
         loss,
-        {'w': jnp.array(0.0)},
+        {"w": jnp.array(0.0)},
         jax.random.key(0),
         jnp.ones(4),
-        has_aux=True,
-        num_steps=0,
-        callbacks=[lambda state, info: None],
-        return_result=True,
+        config=_config(max_steps=0),
     )
-    assert isinstance(result.info.metrics['nested'], Metrics)
-    assert all(x.shape == (0,) for x in jax.tree.leaves(result.info))
-
-
-def test_custom_kernel_forwards_user_state_and_metrics():
-    base = build_fit_kernel(lambda p, k, x: jnp.mean((p['w'] - x) ** 2), optax.sgd(0.1))
-
-    def step(key, state, batch):
-        state, info = base.step(key, state, batch)
-        return state, FitInfo(info.loss, {'counter': state.step, 'vector': batch[:2]})
-
-    kernel = FitKernel(base.init, step)
-    result = fit(
-        None,
-        {'w': jnp.array(0.0)},
-        jax.random.key(0),
-        jnp.ones(4),
-        kernel=kernel,
-        num_steps=3,
-        return_result=True,
-    )
-    np.testing.assert_array_equal(result.info.metrics['counter'], [1, 2, 3])
-    assert result.info.metrics['vector'].shape == (3, 2)
+    assert result.losses.shape == (0,)
+    assert result.metrics is None
+    assert int(result.state.step) == 0
 
 
 def test_module_loss_aux_and_mutable_state_forward_together_on_resume():
@@ -168,33 +148,35 @@ def test_module_loss_aux_and_mutable_state_forward_together_on_resume():
             self.w = nnx.Param(jnp.array(0.0))
             self.count = nnx.Variable(jnp.array(0))
 
-        def loss(self, rng, batch):
+        def loss(self, rng, primary):
             self.count[...] += 1
-            return jnp.mean((self.w[...] - batch) ** 2), {'count': self.count[...]}
+            return jnp.mean((self.w[...] - primary) ** 2), {"count": self.count[...]}
 
     model = Model()
-    kwargs = dict(
-        num_steps=2, has_aux=True, optimizer=optax.sgd(0.1), return_result=True
-    )
-    first = model.fit(jax.random.key(0), jnp.ones(4), **kwargs)
-    resumed = model.fit(None, jnp.ones(4), initial_state=first.state, **kwargs)
-    np.testing.assert_array_equal(first.info.metrics['count'], [1, 2])
-    np.testing.assert_array_equal(resumed.info.metrics['count'], [3, 4])
+    config = FitConfig(max_steps=2, optimizer=optax.sgd(0.1))
+    first = model.fit(jax.random.key(0), jnp.ones(4), config=config)
+    resumed = model.fit(None, jnp.ones(4), state=first.state, config=config)
+    np.testing.assert_array_equal(first.metrics["count"], [1, 2])
+    np.testing.assert_array_equal(resumed.metrics["count"], [3, 4])
     assert model.count[...] == 4
     assert int(resumed.state.step) == 4
 
 
-def test_resume_rejects_missing_ema_configuration():
-    initial = build_fit_kernel(loss, optax.sgd(0.1), ema_decay=0.9, has_aux=True).init(
-        {'w': jnp.array(0.0)}, jax.random.key(0)
+def test_a_resume_without_an_averaging_accumulator_is_rejected():
+    first = fit(
+        loss,
+        {"w": jnp.array(0.0)},
+        jax.random.key(0),
+        jnp.ones(4),
+        config=_config(max_steps=2),
     )
-    with pytest.raises(ValueError, match='same EMA'):
+    assert first.state.ema_params is None
+    with pytest.raises(ValueError, match="use_ema requires ema_decay"):
         fit(
             loss,
             None,
             None,
             jnp.ones(4),
-            initial_state=initial,
-            num_steps=1,
-            has_aux=True,
+            state=first.state,
+            config=_config(max_steps=1, use_ema=True),
         )

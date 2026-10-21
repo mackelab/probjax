@@ -143,9 +143,9 @@ class gennorm_gen(rv_continuous, rv_exponential_family):
             )
 
         # For other values, use rejection sampling
-        def _rejection_sampling(key):
+        def _rejection_sampling(rng):
             # Generate uniform random numbers
-            u = random.uniform(key, shape=shape)
+            u = random.uniform(rng, shape=shape)
             # Transform to generalized normal
             z = where(u < 0.5, -1, 1) * jnp.power(
                 gamma(1 / beta) * (1 - 2 * jnp.abs(u - 0.5)), 1 / beta
