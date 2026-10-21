@@ -138,7 +138,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--benchmark-sort=name"
+addopts = "--testmon --benchmark-sort=name"
 markers = [
     "slow: long-running tests (training loops, full ODE/SDE grids, docs build)",
     "gpu: requires GPU to run",

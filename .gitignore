@@ -59,6 +59,8 @@ htmlcov/
 .benchmarks/
 .pytest_cache/
 .testmondata
+.testmondata-shm
+.testmondata-wal
 .coverage
 .coverage.*
 .cache
