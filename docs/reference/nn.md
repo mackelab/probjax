@@ -502,7 +502,9 @@ re-exported for convenience and documented there.
 ::: probjax.nn.MultiHeadAttention
 ::: probjax.nn.MultiHeadLatentAttention
 ::: probjax.nn.OneHot
+::: probjax.nn.PerHeadQueryScale
 ::: probjax.nn.PosEncode
+::: probjax.nn.QASSMaxQueryScale
 ::: probjax.nn.RecurrentCell
 ::: probjax.nn.RescaleConv
 ::: probjax.nn.ResizeConv
@@ -510,6 +512,7 @@ re-exported for convenience and documented there.
 ::: probjax.nn.RotaryPosEncode
 ::: probjax.nn.SSDCell
 ::: probjax.nn.SSMModel
+::: probjax.nn.SSMaxQueryScale
 ::: probjax.nn.Sequential
 ::: probjax.nn.SpatialSelfAttention
 ::: probjax.nn.TimeMLP

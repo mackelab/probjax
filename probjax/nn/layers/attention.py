@@ -19,10 +19,12 @@ from probjax.nn.pallas_kernels import (
     AttentionMask,
     BatchedLowRankBias,
     BlockSizes,
+    KVLenMask,
     KeyPaddingMask,
     LearnedAlibiBias,
     LowRankBias,
     QKVLengthMask,
+    SeqLenMask,
     SumBias,
     mha,
 )
@@ -37,7 +39,10 @@ from probjax.nn.sharding import (
 from probjax.nn.utils import (
     cast_output,
     filter_precision_kwargs,
+    filter_supported_kwargs,
+    flatten_to_btd,
     pad_to_power_of_2,
+    restore_from_btd,
 )
 from probjax.utils.typing import (
     Array,
@@ -110,15 +115,16 @@ class SSMaxQueryScale(nnx.Module):
         Returns:
             Scaled queries (same shape).
         """
+        q_dtype = query.dtype
         kv_len = jnp.asarray(kv_len, dtype=jnp.float32)
-        log_n = jnp.log(kv_len + 1.0)
-        # Reshape log_n so it broadcasts with query [B, L, H, D].
+        log_n = jnp.log(kv_len + 1.0).astype(q_dtype)
+        # Reshape log_n so it broadcasts with query [..., L, H, D].
         # scalar → works as-is; [B] → [B, 1, 1, 1]; [B, 1] → [B, 1, 1, 1]
         if log_n.ndim >= 1:
             log_n = log_n.reshape(-1, *([1] * (query.ndim - 1)))
-        # s: [H] → [1, 1, H, 1]
-        s = jnp.clip(self.s[...], self.min_scale, self.max_scale)
-        scale = s[None, None, :, None] * log_n
+        # s: [H] → [H, 1], broadcasts with [..., L, H, D] of any rank >= 3.
+        s = jnp.clip(self.s[...], self.min_scale, self.max_scale).astype(q_dtype)
+        scale = s[:, None] * log_n
         return query * scale
 
 
@@ -162,8 +168,8 @@ class PerHeadQueryScale(nnx.Module):
 
     def __call__(self, query: Array, *, kv_len: int | Array) -> Array:
         del kv_len
-        s = jnp.clip(self.s[...], self.min_scale, self.max_scale)
-        return query * s[None, None, :, None]
+        s = jnp.clip(self.s[...], self.min_scale, self.max_scale).astype(query.dtype)
+        return query * s[:, None]
 
 
 class QASSMaxQueryScale(nnx.Module):
@@ -255,10 +261,11 @@ class QASSMaxQueryScale(nnx.Module):
         # Input: scalar -> [1, 1] or per-batch [B] -> [B, 1].
         log_n_flat = log_n.reshape(-1, 1)  # [B, 1] or [1, 1]
         base_flat = self.base_mlp(log_n_flat)  # [B, H*D] or [1, H*D]
-        # Reshape to [B, 1, H, D] (or [1, 1, H, D] for scalar kv_len)
-        # so it broadcasts with query [B, L, H, D].
+        # Reshape so it broadcasts with query [..., L, H, D] without
+        # promoting rank-3 queries to rank-4.
+        lead_shape = () if query.ndim == 3 else (-1, *([1] * (query.ndim - 4)))
         base = jnp.asarray(base_flat, dtype=q_dtype).reshape(
-            -1, 1, self.num_heads, self.head_dim
+            *lead_shape, 1, self.num_heads, self.head_dim
         )
 
         scaled = query * base
@@ -352,6 +359,24 @@ def _build_q_scale(
     )
 
 
+def _resolve_kv_len(
+    kv_len: int | Array | None,
+    mask: Any,
+    default_len: int | Array,
+) -> int | Array:
+    """Resolve effective KV length for query scaling (SSMax / QASSMax)."""
+    if kv_len is not None:
+        return kv_len
+    if isinstance(mask, KVLenMask) and mask.kv_lengths is not None:
+        return mask.kv_lengths
+    if isinstance(mask, SeqLenMask) and mask.seq_lengths is not None:
+        return mask.seq_lengths
+    if isinstance(mask, KeyPaddingMask) and mask.key_lengths is not None:
+        kl = jnp.asarray(mask.key_lengths)
+        return jnp.sum(kl, axis=-1) if kl.dtype == jnp.bool_ else kl
+    return default_len
+
+
 class MultiHeadAttention(FlaxMultiHeadAttention):
     """Multi-head attention with optional QK normalization and query scaling.
 
@@ -432,6 +457,7 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         rngs: rnglib.Rngs = kwargs["rngs"]
         query_ln_scale_metadata = kwargs.get("query_ln_scale_metadata", {})
         key_ln_scale_metadata = kwargs.get("key_ln_scale_metadata", {})
+        kwargs.setdefault("attention_fn", dot_product_attention)
 
         super().__init__(*args, normalize_qk=False, **kwargs)
 
@@ -541,8 +567,8 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
                     'value to `inputs_k` and leave `inputs_v` as None.'
                 )
             inputs_k = inputs_q
-            if inputs_v is None:
-                inputs_v = inputs_k
+        if inputs_v is None:
+            inputs_v = inputs_k
 
         if inputs_q.shape[-1] != self.in_features:
             raise ValueError(
@@ -642,16 +668,12 @@ class MultiHeadAttention(FlaxMultiHeadAttention):
         # Because logits = Q @ K^T, scaling Q is equivalent to scaling
         # the logits — this is the "pre-kernel" trick from the SSMax paper.
         if self._query_scale is not None:
-            if kv_len is not None:
-                # Caller provided an explicit kv_len (scalar or [batch]).
-                effective_kv_len = kv_len
-            elif decode and self.cache_index is not None:
-                # During autoregressive decoding, use the number of keys
-                # actually filled in the cache (cur_index was incremented
-                # above, so cache_index already equals the count).
-                effective_kv_len = self.cache_index[...]
-            else:
-                effective_kv_len = key.shape[-3]
+            default_kv_len: int | Array = (
+                self.cache_index[...]
+                if (decode and self.cache_index is not None)
+                else key.shape[-3]
+            )
+            effective_kv_len = _resolve_kv_len(kv_len, mask, default_kv_len)
             query = self._query_scale(query, kv_len=effective_kv_len)
 
         if self.dropout_rate > 0.0:  # Require `deterministic` only if using dropout.
@@ -734,6 +756,11 @@ class InducedSelfAttention(nnx.Module):
             feedforward branch during backward.
         checkpoint_output_ff: if True, rematerialize only the output MAB
             feedforward branch during backward.
+        zero_init: zero-initialise each MAB's attention output projection and
+            the last layer of the default feedforward, so every residual
+            branch starts as a no-op (as in TabICL).  Applies only to
+            ``mha_cls`` / the default feedforward when they accept
+            ``out_kernel_init``; a custom ``mlp_cls`` is left untouched.
     """
 
     def __init__(
@@ -758,6 +785,7 @@ class InducedSelfAttention(nnx.Module):
         preferred_element_type: DTypeLike | None = None,
         checkpoint_inducing_ff: bool = False,
         checkpoint_output_ff: bool = False,
+        zero_init: bool = True,
     ):
         precision_kwargs = dict(
             dtype=dtype,
@@ -776,6 +804,8 @@ class InducedSelfAttention(nnx.Module):
         self.in_features = in_features
         self.num_heads = num_heads
         self.num_inducing_points = num_inducing_points
+        self.dtype = dtype
+        self.param_dtype = param_dtype
         self.checkpoint_inducing_ff = bool(checkpoint_inducing_ff)
         self.checkpoint_output_ff = bool(checkpoint_output_ff)
 
@@ -791,10 +821,20 @@ class InducedSelfAttention(nnx.Module):
         # matters most here, since MAB 1 attends m inducing queries over the
         # full row axis.
         attn_fn_kwargs = {} if attention_fn is None else {"attention_fn": attention_fn}
+        qkv_kwargs = filter_supported_kwargs(mha_cls, qkv_features=qkv_features)
+        zeros = nnx.initializers.zeros
+        attn_zero_kwargs = (
+            filter_supported_kwargs(
+                mha_cls, out_kernel_init=zeros, out_bias_init=zeros
+            )
+            if zero_init
+            else {}
+        )
         self.inducing_attn = mha_cls(
             num_heads=num_heads,
             in_features=in_features,
-            qkv_features=qkv_features,
+            **qkv_kwargs,
+            **attn_zero_kwargs,
             **attn_fn_kwargs,
             out_features=in_features,
             dropout_rate=dropout_rate,
@@ -806,7 +846,8 @@ class InducedSelfAttention(nnx.Module):
             num_heads=num_heads,
             in_features=in_features,
             **attn_fn_kwargs,
-            qkv_features=qkv_features,
+            **qkv_kwargs,
+            **attn_zero_kwargs,
             out_features=in_features,
             dropout_rate=dropout_rate,
             q_scale_cls=output_q_scale_cls,
@@ -817,6 +858,10 @@ class InducedSelfAttention(nnx.Module):
         # --- Row-wise feedforward (rFF) sub-layers ---
         hidden_features = widening_factor * in_features
 
+        ff_zero_kwargs = (
+            dict(out_kernel_init=zeros, out_bias_init=zeros) if zero_init else {}
+        )
+
         def make_ff():
             if mlp_cls is None:
                 return FeedForward(
@@ -824,6 +869,7 @@ class InducedSelfAttention(nnx.Module):
                     in_features,
                     hidden_features=hidden_features,
                     rngs=rngs,
+                    **ff_zero_kwargs,
                     **filter_precision_kwargs(FeedForward, **precision_kwargs),
                 )
             return mlp_cls(
@@ -836,11 +882,8 @@ class InducedSelfAttention(nnx.Module):
         self.output_ff = make_ff()
 
         # --- Normalization layers ---
-        # Each MAB needs: pre-attn norm (on Q), pre-attn norm (on KV),
-        # post-attn norm (on H before rFF).
-        # MAB1 (inducing): inducing_norm (Q), input_norm (KV), inducing_ff_norm (pre-FF)
-        # MAB2 (output):   output_norm (Q), hidden_norm (KV), output_ff_norm (pre-FF)
-
+        # Each MAB has one norm shared by its query and key/value inputs
+        # (as in TabICL), plus one pre-feedforward norm.
         if norm_cls is not None:
             # Build the norms with the layer's dtype too.  A norm defaulting to
             # ``dtype=None`` promotes bf16 activations (+ fp32 scale) back to
@@ -850,18 +893,14 @@ class InducedSelfAttention(nnx.Module):
             norm_kwargs = filter_precision_kwargs(
                 norm_cls, dtype=dtype, param_dtype=param_dtype
             )
-            self.inducing_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
-            self.input_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
+            self.inducing_attn_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
             self.inducing_ff_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
-            self.output_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
-            self.hidden_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
+            self.output_attn_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
             self.output_ff_norm = norm_cls(in_features, rngs=rngs, **norm_kwargs)
         else:
-            self.inducing_norm = None
-            self.input_norm = None
+            self.inducing_attn_norm = None
             self.inducing_ff_norm = None
-            self.output_norm = None
-            self.hidden_norm = None
+            self.output_attn_norm = None
             self.output_ff_norm = None
 
         init_dtype = jnp.float32 if param_dtype is None else param_dtype
@@ -883,8 +922,7 @@ class InducedSelfAttention(nnx.Module):
         *,
         x_attn: Array | None,
         attn: Any,
-        x_norm: Any,
-        y_norm: Any,
+        attn_norm: Any,
         ff: Any,
         ff_norm: Any,
         checkpoint_ff: bool,
@@ -913,11 +951,10 @@ class InducedSelfAttention(nnx.Module):
         """
         # Attention sub-block (pre-norm residual).
         with jax.named_scope("attn_residual"):
-            y_n = self._maybe_norm(y_norm, y)
-            x_q = x_attn if x_attn is not None else self._maybe_norm(x_norm, x)
+            y_n = self._maybe_norm(attn_norm, y)
+            x_q = x_attn if x_attn is not None else self._maybe_norm(attn_norm, x)
             h = x + attn(
                 x_q,
-                y_n,
                 y_n,
                 mask=mask,
                 bias=bias,
@@ -1005,35 +1042,83 @@ class InducedSelfAttention(nnx.Module):
                 f"but module expects {self.in_features}."
             )
 
-        x if x_kv is None else jnp.asarray(x_kv)
+        if x_kv is None:
+            kv_input = x
+        else:
+            kv_input = jnp.asarray(x_kv)
+            if kv_input.ndim != x.ndim or kv_input.shape[:-2] != x.shape[:-2]:
+                raise ValueError(
+                    f"`x_kv` must have matching batch dimensions {x.shape[:-2]}, "
+                    f"got shape {kv_input.shape}."
+                )
+            if kv_input.shape[-1] != self.in_features:
+                raise ValueError(
+                    f"Incompatible `x_kv` dimension, got {kv_input.shape[-1]} "
+                    f"but module expects {self.in_features}."
+                )
 
-        inducing_points = self.inducing_points[...]
+        orig_shape: tuple[int, ...] | None = None
+        if x.ndim != 3:
+            x, orig_shape = flatten_to_btd(x)
+            kv_input, _ = flatten_to_btd(kv_input)
 
-        # MAB 1: inducing points attend to input  ->  H = MAB(I, X)
+        batch_size, kv_seq_len = kv_input.shape[0], kv_input.shape[1]
+        if mask is not None and not isinstance(mask, AttentionMask):
+            mask = jnp.asarray(mask)
+            if mask.ndim == 1:
+                mask = mask[None, None, None, :]
+            elif mask.ndim == 2:
+                if mask.shape == (batch_size, kv_seq_len):
+                    mask = mask[:, None, None, :]
+                else:
+                    mask = mask[None, None, :, :]
+            elif mask.ndim == 3:
+                mask = mask[:, None, :, :]
+
+        if bias is not None and not isinstance(bias, AttentionBias):
+            bias = jnp.asarray(bias)
+            if bias.ndim == 1:
+                bias = bias[None, None, None, :]
+            elif bias.ndim == 2:
+                if bias.shape == (batch_size, kv_seq_len):
+                    bias = bias[:, None, None, :]
+                else:
+                    bias = bias[None, None, :, :]
+            elif bias.ndim == 3:
+                bias = bias[:, None, :, :]
+
+        if rng is None:
+            rng_inducing = rng_output = None
+        else:
+            rng_inducing, rng_output = jax.random.split(rng)
+
+        compute_dtype = self.dtype if self.dtype is not None else x.dtype
+        inducing_points = jnp.asarray(self.inducing_points[...], dtype=compute_dtype)
+
+        # MAB 1: inducing points attend to kv_input  ->  H = MAB(I, X_kv)
         with jax.named_scope("inducing_mab"):
             # Normalize inducing points before broadcasting. This avoids
             # broadcast-then-reduce normalization work on the expanded tensor.
-            inducing_query = self._maybe_norm(self.inducing_norm, inducing_points)
+            inducing_query = self._maybe_norm(self.inducing_attn_norm, inducing_points)
             inducing_points = jnp.broadcast_to(
                 inducing_points,
-                x.shape[:-2] + inducing_points.shape,
+                kv_input.shape[:-2] + inducing_points.shape,
             )
             inducing_query = jnp.broadcast_to(
                 inducing_query,
-                x.shape[:-2] + inducing_query.shape,
+                kv_input.shape[:-2] + inducing_query.shape,
             )
             inducing_hidden = self._mab(
                 inducing_points,
-                x,
+                kv_input,
                 x_attn=inducing_query,
                 attn=self.inducing_attn,
-                x_norm=None,
-                y_norm=self.input_norm,
+                attn_norm=self.inducing_attn_norm,
                 ff=self.inducing_ff,
                 ff_norm=self.inducing_ff_norm,
                 checkpoint_ff=self.checkpoint_inducing_ff,
                 deterministic=deterministic,
-                rng=rng,
+                rng=rng_inducing,
                 kv_len=kv_len,
                 mask=mask,
                 bias=bias,
@@ -1046,16 +1131,15 @@ class InducedSelfAttention(nnx.Module):
                 inducing_hidden,
                 x_attn=None,
                 attn=self.output_attn,
-                x_norm=self.output_norm,
-                y_norm=self.hidden_norm,
+                attn_norm=self.output_attn_norm,
                 ff=self.output_ff,
                 ff_norm=self.output_ff_norm,
                 checkpoint_ff=self.checkpoint_output_ff,
                 deterministic=deterministic,
-                rng=rng,
-                kv_len=kv_len,
+                rng=rng_output,
             )
 
+        out = restore_from_btd(out, orig_shape)
         out = cast_output(out, self.preferred_element_type)
         return out
 
@@ -1076,12 +1160,14 @@ def dot_product_attention(
     sm_scale: Optional[float] = None,
     enable_gqa: bool = False,
 ):
-    batch_size, q_len, num_heads, _ = query.shape
-    kv_len = key.shape[-3]
-    if isinstance(mask, AttentionMask):
-        mask = mask.dense(q_len, kv_len, batch_size=batch_size, num_heads=num_heads)
-    if isinstance(bias, AttentionBias):
-        bias = bias.dense(q_len, kv_len, batch_size=batch_size, num_heads=num_heads)
+    if isinstance(mask, AttentionMask) or isinstance(bias, AttentionBias):
+        q_len, num_heads = query.shape[-3], query.shape[-2]
+        kv_len = key.shape[-3]
+        batch_size = math.prod(query.shape[:-3]) if query.ndim > 3 else 1
+        if isinstance(mask, AttentionMask):
+            mask = mask.dense(q_len, kv_len, batch_size=batch_size, num_heads=num_heads)
+        if isinstance(bias, AttentionBias):
+            bias = bias.dense(q_len, kv_len, batch_size=batch_size, num_heads=num_heads)
     return flax_dot_product_attention(
         query,
         key,

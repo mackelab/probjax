@@ -56,7 +56,11 @@ from flax import nnx
 from flax.nnx import rnglib
 from flax.nnx.module import first_from
 
-from probjax.nn.layers.attention import _build_q_scale, flex_attention
+from probjax.nn.layers.attention import (
+    _build_q_scale,
+    _resolve_kv_len,
+    flex_attention,
+)
 from probjax.nn.layers.lowrank import LowRankLinear
 from probjax.nn.pallas_kernels.kernels.attention import BlockSizes
 from probjax.nn.pallas_kernels.kernels.latent_attention import mla
@@ -207,6 +211,7 @@ class MultiHeadLatentAttention(nnx.Module):
         fold_heads: bool = True,
         value_projection: bool = True,
         query_scale_cls: ModuleLikeType | None = None,
+        q_scale_cls: ModuleLikeType | None = None,
         dropout_rate: float = 0.0,
         deterministic: bool | None = None,
         keep_rngs: bool = True,
@@ -215,6 +220,9 @@ class MultiHeadLatentAttention(nnx.Module):
         precision: PrecisionLike | None = None,
         rngs: rnglib.Rngs,
     ):
+        if query_scale_cls is not None and q_scale_cls is not None:
+            raise ValueError("Pass either `query_scale_cls` or `q_scale_cls`, not both")
+        query_scale_cls = query_scale_cls if query_scale_cls is not None else q_scale_cls
         if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
         if num_heads <= 0 or kv_lora_rank <= 0:
@@ -590,7 +598,7 @@ class MultiHeadLatentAttention(nnx.Module):
 
         query = self._project_queries(inputs_q)
         if self._query_scale is not None:
-            effective_kv_len = latent.shape[-2] if kv_len is None else kv_len
+            effective_kv_len = _resolve_kv_len(kv_len, mask, latent.shape[-2])
             query = self._query_scale(query, kv_len=effective_kv_len)
 
         # Resolve dropout once, before either branch: the fused kernel path also

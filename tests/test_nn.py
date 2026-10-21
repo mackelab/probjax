@@ -27,8 +27,11 @@ from probjax.nn import (
 from probjax.nn.layers.attention import (
     PerHeadQueryScale,
     QASSMaxQueryScale,
+    SSMaxQueryScale,
     dot_product_attention,
+    flex_attention,
 )
+from probjax.nn.pallas_kernels import BatchedLowRankBias, KVLenMask
 
 pytest_plugins = ["tests.test_problems.nns"]
 
@@ -201,6 +204,147 @@ def test_induced_self_attention():
 
     _ = jax.grad(loss_fn)
     _, _ = jax.tree_util.tree_flatten(model)
+
+
+def test_induced_self_attention_x_kv_mask_bias_and_shapes():
+    isab = InducedSelfAttention(
+        16,
+        num_inducing_points=4,
+        num_heads=4,
+        attn_size=4,
+        q_scale_cls=SSMaxQueryScale,
+        output_q_scale_cls=SSMaxQueryScale,
+        zero_init=False,
+        rngs=nnx.Rngs(0),
+    )
+    x = jax.random.normal(jax.random.key(0), (2, 8, 16))
+
+    # 1. Permutation equivariance
+    perm = jnp.array([3, 0, 7, 2, 5, 1, 6, 4])
+    np.testing.assert_allclose(
+        np.asarray(isab(x)[:, perm, :]),
+        np.asarray(isab(x[:, perm, :])),
+        atol=1e-5,
+    )
+
+    # 2. Separate x_kv context isolation: perturbing query-only rows leaves context unchanged
+    x_perturbed = x.at[:, 5:, :].add(20.0)
+    y_ctx_1 = isab(x, x_kv=x[:, :5, :])
+    y_ctx_2 = isab(x_perturbed, x_kv=x_perturbed[:, :5, :])
+    np.testing.assert_allclose(
+        np.asarray(y_ctx_1[:, :5, :]),
+        np.asarray(y_ctx_2[:, :5, :]),
+        atol=1e-6,
+    )
+
+    # 3. KVLenMask padding isolation + unpadded vs padded equivalence (with SSMax on both MABs)
+    lengths = jnp.array([5, 5], dtype=jnp.int32)
+    y_unpadded = isab(x[:, :5, :])
+    y_padded = isab(x_perturbed, mask=KVLenMask(lengths))[:, :5, :]
+    np.testing.assert_allclose(
+        np.asarray(y_unpadded),
+        np.asarray(y_padded),
+        atol=1e-5,
+    )
+
+    # 4. Proportional attention (token merging) via BatchedLowRankBias on dense and flex
+    x_unique = x[:, :3, :]
+    counts = jnp.array([[2.0, 1.0, 3.0], [1.0, 3.0, 2.0]])
+    x_expanded = jnp.stack([
+        jnp.concatenate(
+            [
+                jnp.repeat(x_unique[0, 0:1], 2, axis=0),
+                jnp.repeat(x_unique[0, 1:2], 1, axis=0),
+                jnp.repeat(x_unique[0, 2:3], 3, axis=0),
+            ],
+            axis=0,
+        ),
+        jnp.concatenate(
+            [
+                jnp.repeat(x_unique[1, 0:1], 1, axis=0),
+                jnp.repeat(x_unique[1, 1:2], 3, axis=0),
+                jnp.repeat(x_unique[1, 2:3], 2, axis=0),
+            ],
+            axis=0,
+        ),
+    ])
+    bias = BatchedLowRankBias.from_key_bias(jnp.log(counts))
+    total_len = jnp.sum(counts, axis=-1)
+    y_exp = isab(x_expanded)
+    y_uniq_dense = isab(x_unique, bias=bias, kv_len=total_len)
+    isab_flex = InducedSelfAttention(
+        16,
+        num_inducing_points=4,
+        num_heads=4,
+        attn_size=4,
+        q_scale_cls=SSMaxQueryScale,
+        output_q_scale_cls=SSMaxQueryScale,
+        attention_fn=flex_attention,
+        zero_init=False,
+        rngs=nnx.Rngs(0),
+    )
+    y_uniq_flex = isab_flex(x_unique, bias=bias, kv_len=total_len)
+    expected_unique = jnp.stack([
+        y_exp[0, jnp.array([0, 2, 3])],
+        y_exp[1, jnp.array([0, 1, 4])],
+    ])
+    np.testing.assert_allclose(
+        np.asarray(y_uniq_dense), np.asarray(expected_unique), atol=1e-5
+    )
+    np.testing.assert_allclose(
+        np.asarray(y_uniq_flex), np.asarray(expected_unique), atol=1e-5
+    )
+
+    # 5. Rank-2 (unbatched) and rank-4 (multi-batch) inputs preserve shape
+    assert isab(x[0]).shape == (8, 16)
+    x4d = jnp.broadcast_to(x[None, ...], (3, 2, 8, 16))
+    assert isab(x4d).shape == (3, 2, 8, 16)
+
+
+def test_induced_self_attention_zero_init_is_identity_and_shares_norms():
+    isab = InducedSelfAttention(
+        16, num_inducing_points=4, num_heads=4, rngs=nnx.Rngs(0)
+    )
+    x = jax.random.normal(jax.random.key(0), (2, 8, 16))
+    np.testing.assert_array_equal(np.asarray(isab(x)), np.asarray(x))
+
+    # One norm per attention stage, shared by its query and key/value.
+    assert isab.inducing_attn_norm is not isab.output_attn_norm
+    assert not hasattr(isab, "input_norm") and not hasattr(isab, "hidden_norm")
+
+    # Opting out gives a non-trivial block.
+    plain = InducedSelfAttention(
+        16, num_inducing_points=4, num_heads=4, zero_init=False, rngs=nnx.Rngs(0)
+    )
+    assert not np.allclose(np.asarray(plain(x)), np.asarray(x))
+
+
+def test_set_transformer_benchmark_audit_and_smoke():
+    from docs.scripts.benchmark_set_transformers import (
+        evaluate_task_arm,
+        run_isab_audit,
+    )
+
+    audit = run_isab_audit()
+    assert audit["permutation_equivariance_max_err"] < 1e-5
+    assert audit["padding_perturbation_max_err"] == 0.0
+    assert audit["unpadded_vs_padded_max_err"] < 1e-5
+    assert audit["x_kv_query_perturbation_max_err"] == 0.0
+    assert audit["proportional_attention_merge_dense_max_err"] < 1e-5
+    assert audit["proportional_attention_merge_flex_max_err"] < 1e-5
+    assert audit["bfloat16_output_is_bf16"] is True
+
+    rows = evaluate_task_arm(
+        "cluster_denoise",
+        "isab_ssmax",
+        steps=2,
+        batch_size=8,
+        eval_batch_size=16,
+        learning_rate=3e-3,
+        seeds=1,
+    )
+    assert len(rows) == 1
+    assert rows[0]["finite"] is True
 
 
 def test_qassmax_query_scale_checkpointing_matches_eager():

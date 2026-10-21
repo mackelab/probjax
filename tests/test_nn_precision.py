@@ -82,19 +82,23 @@ def test_induced_self_attention_runs_in_requested_dtype():
     and therefore every Q/K/V and feedforward input -- was fp32 even for a bf16
     block.  Pin the attention operands and the block output dtype.
     """
-    from probjax.nn.layers.attention import MultiHeadAttention
+    from probjax.nn.layers.attention import MultiHeadAttention, SSMaxQueryScale
 
     seen = []
     original = MultiHeadAttention.__call__
 
-    def spy(self, inputs_q, *args, **kwargs):
+    def spy(self, inputs_q, inputs_k=None, *args, **kwargs):
         seen.append(jnp.asarray(inputs_q).dtype)
-        return original(self, inputs_q, *args, **kwargs)
+        if inputs_k is not None:
+            seen.append(jnp.asarray(inputs_k).dtype)
+        return original(self, inputs_q, inputs_k, *args, **kwargs)
 
     block = InducedSelfAttention(
         32,
         num_inducing_points=4,
         num_heads=4,
+        q_scale_cls=SSMaxQueryScale,
+        output_q_scale_cls=SSMaxQueryScale,
         dtype=jnp.bfloat16,
         param_dtype=jnp.float32,
         rngs=nnx.Rngs(0),
@@ -107,12 +111,24 @@ def test_induced_self_attention_runs_in_requested_dtype():
     finally:
         MultiHeadAttention.__call__ = original
 
-    assert seen, "the induced and output MHAs must both be called"
+    assert len(seen) == 4, "both Q and K in both MABs must be inspected"
     assert all(d == jnp.bfloat16 for d in seen), seen
     assert y.dtype == jnp.bfloat16
     # Norms carry the compute dtype but keep fp32 parameters.
-    assert block.inducing_norm.dtype == jnp.bfloat16
-    assert block.inducing_norm.param_dtype == jnp.float32
+    assert block.inducing_attn_norm.dtype == jnp.bfloat16
+    assert block.inducing_attn_norm.param_dtype == jnp.float32
+
+    # Also verify norm_cls=None does not promote via fp32 inducing_points.
+    block_no_norm = InducedSelfAttention(
+        32,
+        num_inducing_points=4,
+        num_heads=4,
+        norm_cls=None,
+        dtype=jnp.bfloat16,
+        param_dtype=jnp.float32,
+        rngs=nnx.Rngs(1),
+    )
+    assert block_no_norm(x).dtype == jnp.bfloat16
 
 
 def test_subclass_forwards_precision_kwargs():

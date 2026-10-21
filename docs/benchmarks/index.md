@@ -13,6 +13,7 @@ pages. Historical JSON retains the settings used when it was measured.
 | Continuous diffusion schedules, training targets and solvers | [Diffusion config matrix](diffusion_configs.md) | `benchmark_diffusion_configs.py` |
 | Categorical schedules and training configs | [Categorical controls and updated defaults](diffusion_configs.md#updated-categorical-defaults) | `benchmark_diffusion_configs.py --phase categorical` |
 | Earlier numerical/precision regression measurements | [Diffusion and token-scaling audit](diffusion_audit.md) | `benchmark_diffusion_audit.py`, `benchmark_transformer_audit.py` |
+| DeepSet, induced (ISAB), latent (MLA) and full self-attention on set tasks | [Set transformer benchmark](set_transformers.md) | `benchmark_set_transformers.py` |
 
 ## Quick smoke checks
 
@@ -39,6 +40,11 @@ JAX_PLATFORMS=cpu python -m docs.scripts.benchmark_diffusion_configs \
 JAX_PLATFORMS=cpu python -m docs.scripts.benchmark_diffusion_configs \
   --phase categorical --sample-steps 16 --samples 256 --train-steps 50 --seeds 1 \
   --output docs/benchmarks/categorical_smoke.json
+
+# Set-learning tasks and ISAB invariance audit, reduced budget.
+JAX_PLATFORMS=cpu python -m docs.scripts.benchmark_set_transformers \
+  --steps 50 --seeds 1 --batch-size 16 --set-size 32 --num-inducing 8 \
+  --model-dim 32 --tokens 32 128 --output docs/benchmarks/set_smoke.json
 ```
 
 The runners synchronize device work and separate first-call compilation from
