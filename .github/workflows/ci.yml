@@ -97,10 +97,10 @@ jobs:
         python docs/scripts/convert_notebooks.py
 
     - name: Run full test suite with coverage
-      # No --testmon here: coverage must see the full suite, otherwise
-      # Codecov project/patch gates compare partial numbers.
+      # --no-testmon overrides the pyproject default: coverage must see the
+      # full suite, otherwise Codecov project/patch gates compare partial numbers.
       run: |
-        pytest tests/ -q -n auto --benchmark-disable --durations=25 --junitxml=coverage-test-results.xml --cov=probjax --cov-report=xml --cov-report=term-missing
+        pytest tests/ -q -n auto --no-testmon --benchmark-disable --durations=25 --junitxml=coverage-test-results.xml --cov=probjax --cov-report=xml --cov-report=term-missing
 
     - name: Preserve coverage report
       if: always() && hashFiles('coverage.xml') != ''

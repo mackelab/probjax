@@ -60,6 +60,11 @@ pytest -n auto
 pytest tests/test_specific.py
 ```
 
+`pytest-testmon` is enabled by default, so `pytest` runs only the tests affected
+by your changes. The first run records a dependency database (`.testmondata`,
+git-ignored) and runs the full suite; later runs select affected tests. Pass
+`--no-testmon` to force the full suite.
+
 `docs/scripts/convert_notebooks.py` renders the curated `examples/` notebooks
 (`examples/core/ppl.ipynb`, `examples/inference/kalman_filter.ipynb` and
 `examples/inference/smc.ipynb`) to `docs/tutorials/` with

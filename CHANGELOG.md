@@ -282,6 +282,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the 3-Python version matrix runs on `main` only (PRs use 3.12), the
   coverage job runs on `main` only, and a persistent JAX compilation cache
   is shared across CI runs
+- `pytest` runs affected tests by default via `pytest-testmon` (`--testmon` in
+  `addopts`); the CI coverage job opts out with `--no-testmon`
 
 ### Removed
 - The unused, misnamed `linear_operator()` factory function (zero call
