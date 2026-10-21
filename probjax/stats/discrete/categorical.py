@@ -16,7 +16,20 @@ from probjax.stats.constraints import simplex
 from probjax.stats.utils import flatten_samples, normalize_sample_weights
 from probjax.utils.typing import ArrayLike, RngKey
 
-__all__ = ["categorical"]
+__all__ = ["categorical", "categorical_frozen"]
+
+
+class categorical_frozen(rv_discrete_frozen):
+    """Frozen Categorical distribution.
+
+    The trailing axis of ``probs`` indexes the categories: it is neither a
+    batch nor an event dimension, so both are inferred explicitly here.
+    """
+
+    def _compute_batch_and_event_shape(self, probs, **kwds):
+        del kwds
+        probs = jnp.asarray(probs)
+        return tuple(int(dim) for dim in probs.shape[:-1]), ()
 
 
 class categorical_gen(rv_discrete, rv_exponential_family):
@@ -133,13 +146,9 @@ class categorical_gen(rv_discrete, rv_exponential_family):
         probs = probs / jnp.sum(probs)
         return (probs,)
 
-    @classmethod
-    def freeze(cls, probs, **kwds):
+    def freeze(self, probs, **kwds):
         """Freeze the Categorical distribution."""
-        rv = rv_discrete_frozen(cls, probs, **kwds)
-        rv._batch_shape = probs.shape[:-1]
-        rv._event_shape = ()
-        return rv
+        return categorical_frozen(self, probs, **kwds)
 
 
 categorical = categorical_gen(name="categorical")

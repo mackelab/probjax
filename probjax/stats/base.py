@@ -1481,32 +1481,6 @@ class rv_continuous_frozen(rv_frozen):
         """
         return self._call_dist("mode")
 
-    def rvs(
-        self,
-        rng: RngKey,
-        *args: Any,
-        shape: Tuple[int, ...] = (),
-        name: Optional[str] = None,
-        **kwargs: Any,
-    ) -> Array:
-        """Random variates of the distribution.
-
-        Parameters
-        ----------
-        rng : jax.random.PRNGKey
-            The random key used for sampling
-        shape : tuple of ints, optional
-            The shape of the samples to draw. Default is ().
-        name : str, optional
-            Optional site name used when tracing probabilistic programs.
-
-        Returns
-        -------
-        rvs : ndarray or scalar
-            Random variates of given shape
-        """
-        return jnp.asarray(self._bind_rvs(rng, shape=shape, name=name, **kwargs))
-
 
 class rv_multivariate_frozen(rv_continuous_frozen):
     """Frozen multivariate distribution with explicit shape inference."""
