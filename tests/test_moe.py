@@ -291,3 +291,32 @@ def test_token_mask_broadcasts_over_leading_axes():
     # 1e-4: the router matmul runs at default (TF32) precision on GPU, and a
     # different token count changes its tiling (measured 2e-5).
     np.testing.assert_allclose(a.load_balance_loss, b.load_balance_loss, rtol=1e-4)
+
+
+def test_shared_expert_adds_a_dense_swiglu_to_the_routed_output():
+    moe = MoELayer(
+        8, 4, 16, top_k=4, shared_hidden=32, routing="dense", rngs=nnx.Rngs(0)
+    )
+    x = jax.random.normal(jax.random.key(6), (2, 5, 8))
+    routed = moe(x)
+    shared = moe.shared
+    moe.shared = None
+    assert jnp.allclose(routed - moe(x), shared(x), atol=1e-5)
+
+
+def test_fine_grained_dropless_with_shared_expert_matches_dense():
+    """DeepSeekMoE shape: many narrow experts, top_k > 2, one wide shared MLP."""
+    kw = dict(top_k=6, shared_hidden=32)
+    moe = MoELayer(8, 4, 32, routing="dropless", rngs=nnx.Rngs(0), **kw)
+    ref = MoELayer(8, 4, 32, routing="dense", rngs=nnx.Rngs(0), **kw)
+    x = jax.random.normal(jax.random.key(7), (40, 8))
+
+    assert jnp.allclose(moe(x), ref(x), atol=1e-5)
+
+    def loss(m):
+        return jnp.sum(m(x) ** 2)
+
+    ga, gb = nnx.grad(loss)(moe), nnx.grad(loss)(ref)
+    assert jnp.any(ga["shared"]["down"]["kernel"][...] != 0)
+    for la, lb in zip(jax.tree.leaves(ga), jax.tree.leaves(gb), strict=True):
+        assert jnp.allclose(la, lb, atol=1e-4)
