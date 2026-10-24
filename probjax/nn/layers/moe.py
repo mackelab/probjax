@@ -13,9 +13,12 @@ from flax import nnx
 from flax.typing import Initializer
 
 from probjax.nn.layers.grouped_matmul import (
+    gather_from_layout,
     grouped_backend,
     grouped_swiglu,
+    make_group_layout,
     ragged_matmul_hopper,
+    scatter_to_layout,
 )
 from probjax.nn.sharding import (
     BATCH,
@@ -207,6 +210,31 @@ class ExpertSwiGLU(nnx.Module):
         y = jax.lax.ragged_dot(jax.nn.silu(gate) * up, w_down.astype(cdt), group_sizes)
         return y if self.dtype is None else y.astype(self.dtype)
 
+    def blocked_forward(
+        self, x: Array, group_sizes: Array, *, block_m: int = 128
+    ) -> Array:
+        """:meth:`ragged_forward` as one batched matmul over row blocks.
+
+        Each expert's rows are padded to whole ``block_m`` blocks (the Pallas
+        kernel's layout), and every block is multiplied by its own expert's
+        gathered weights.  XLA's CPU ``ragged_dot`` instead runs every group
+        over all rows and masks, so its cost grows with ``E``: at 49k rows and
+        64 experts a fwd+bwd matmul took 2.5 s against 35 ms here.  The cost
+        here is the routed rows plus at most ``E`` partial blocks.
+        """
+        self._check_rows(x)
+        w_gate, w_up, w_down = (m.kernel[...] for m in (self.gate, self.up, self.down))
+        cdt = jnp.result_type(x.dtype, w_gate.dtype)
+        layout = make_group_layout(group_sizes, x.shape[0], block_m)
+        xb = scatter_to_layout(x.astype(cdt), layout).reshape(-1, block_m, x.shape[1])
+
+        def mm(rows: Array, w: Array) -> Array:
+            return jnp.einsum("bmk,bkn->bmn", rows, w.astype(cdt)[layout.block_expert])
+
+        y = mm(jax.nn.silu(mm(xb, w_gate)) * mm(xb, w_up), w_down)
+        y = gather_from_layout(y.reshape(layout.n_padded, -1), layout)
+        return y if self.dtype is None else y.astype(self.dtype)
+
     def grouped_forward(
         self,
         x: Array,
@@ -306,7 +334,8 @@ class MoELayer(nnx.Module):
       ``E / top_k`` times the compute, often fastest for small ``E``.
     * ``"dropless"``: rows sorted by expert and one grouped matmul — exact
       like dense at ``top_k`` experts per token. ``dropless_impl="auto"``
-      uses the Pallas grouped-GEMM kernel on GPU and ``ragged_dot``
+      uses the Pallas grouped-GEMM kernel on GPU, ``"blocked"`` (a batched
+      matmul over expert-aligned row blocks) on CPU and ``ragged_dot``
       elsewhere; ``"pallas"`` is that kernel with its per-GPU choice (Mosaic
       on Hopper, Triton otherwise), ``"triton"`` / ``"mosaic"`` force one (on an A100 ``ragged_dot`` took 134 ms fwd+bwd per layer at
       65k tokens, slower than dense at 74 ms; see
@@ -336,7 +365,7 @@ class MoELayer(nnx.Module):
         sparse: bool = True,
         routing: Literal["capacity", "dense", "dropless"] | None = None,
         dropless_impl: Literal[
-            "auto", "pallas", "triton", "mosaic", "ragged_dot"
+            "auto", "pallas", "triton", "mosaic", "blocked", "ragged_dot"
         ] = "auto",
         shared_hidden: int | None = None,
         kernel_init: Initializer = _expert_init,
@@ -359,7 +388,14 @@ class MoELayer(nnx.Module):
             raise ValueError(
                 f"routing must be 'capacity', 'dense' or 'dropless', got {routing!r}"
             )
-        if dropless_impl not in ("auto", "pallas", "triton", "mosaic", "ragged_dot"):
+        if dropless_impl not in (
+            "auto",
+            "pallas",
+            "triton",
+            "mosaic",
+            "blocked",
+            "ragged_dot",
+        ):
             raise ValueError(f"unknown dropless_impl {dropless_impl!r}")
         self.routing = routing
         self.dropless_impl = dropless_impl
@@ -433,10 +469,14 @@ class MoELayer(nnx.Module):
         x_sorted = _permute(x_rep.reshape(-1, d_model), order, inverse)
         impl = self.dropless_impl
         if impl == "auto":
-            impl = "pallas" if jax.default_backend() == "gpu" else "ragged_dot"
+            impl = {"gpu": "pallas", "cpu": "blocked"}.get(
+                jax.default_backend(), "ragged_dot"
+            )
         if impl in ("pallas", "triton", "mosaic"):
             backend = None if impl == "pallas" else impl
             y_sorted = self.experts.grouped_forward(x_sorted, counts, backend=backend)
+        elif impl == "blocked":
+            y_sorted = self.experts.blocked_forward(x_sorted, counts)
         else:
             y_sorted = self.experts.ragged_forward(x_sorted, counts)
         y = _permute(y_sorted, inverse, order).reshape(n_tokens, self.top_k, -1)

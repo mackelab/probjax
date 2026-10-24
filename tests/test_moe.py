@@ -192,7 +192,7 @@ def test_dropless_gradients_match_dense():
         assert jnp.allclose(la, lb, atol=1e-4)
 
 
-@pytest.mark.parametrize("impl", ["triton", "ragged_dot", "pallas"])
+@pytest.mark.parametrize("impl", ["triton", "blocked", "ragged_dot", "pallas"])
 def test_dropless_impls_match_dense(impl):
     """Every dropless backend computes the dense reference; "triton" forces the
     Triton grouped GEMM (interpret mode off-GPU), on Hopper too."""
@@ -203,8 +203,9 @@ def test_dropless_impls_match_dense(impl):
     assert jnp.allclose(moe(x), ref(x), atol=1e-4)
 
 
-def test_dropless_triton_gradients_match_dense():
-    moe, ref = _routing_pair("dropless", dropless_impl="triton")
+@pytest.mark.parametrize("impl", ["triton", "blocked"])
+def test_dropless_gradients_match_dense_per_impl(impl):
+    moe, ref = _routing_pair("dropless", dropless_impl=impl)
     x = jax.random.normal(jax.random.key(6), (12, 8))
 
     def loss(m):
