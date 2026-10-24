@@ -33,11 +33,14 @@ import jax.numpy as jnp
 
 from probjax.nn.pallas_kernels.kernel_utils import use_interpret_mode
 from probjax.nn.pallas_kernels.kernels.grouped_matmul import (
+    gather_gmm,
     gmm,
+    gmm_scatter_add,
     is_hopper,
     mosaic_ragged_matmul,
     mosaic_transposed_matmul,
     tgmm,
+    tgmm_gather,
 )
 from probjax.utils.typing import Array
 
@@ -286,3 +289,152 @@ def _grouped_swiglu_bwd(block_m, interpret, res, dy):
 
 
 grouped_swiglu.defvjp(_grouped_swiglu_fwd, _grouped_swiglu_bwd)
+
+
+# ------------------------------------------------- gather/scatter dispatch
+
+
+@dataclass(frozen=True)
+class _Routing:
+    layout: GroupLayout
+    order: Array  # [N*K] routed row (token * K + k) of each sorted row
+    src: Array  # [P] token of each padded-layout row (0 on padding)
+    valid: Array  # [P] False on padding rows
+    gate: Array  # [P] float32 routing weight of each layout row (0 on padding)
+
+
+def _routing(expert_ids: Array, gates: Array, counts: Array, block_m: int) -> _Routing:
+    n_tokens, top_k = expert_ids.shape
+    m = n_tokens * top_k
+    order = jnp.argsort(expert_ids.reshape(-1), stable=True).astype(jnp.int32)
+    layout = make_group_layout(counts, m, block_m)
+    p = layout.padded_rows
+    src = jnp.zeros((layout.n_padded,), jnp.int32).at[p].set(order // top_k)
+    valid = jnp.zeros((layout.n_padded,), bool).at[p].set(True)
+    gate = jnp.zeros((layout.n_padded,), jnp.float32).at[p].set(
+        gates.reshape(-1).astype(jnp.float32)[order]
+    )
+    return _Routing(layout, order, src, valid, gate)
+
+
+class _GatherOps:
+    """Reference implementation: plain JAX gathers / scatter-adds around the
+    padded-layout kernels.  Materialises ``[P, D]`` buffers, but only inside
+    the custom VJP (nothing at model width is saved for the backward)."""
+
+    def __init__(self, block_m, interpret):
+        self.bm, self.interpret = block_m, interpret
+
+    def gather_gmm(self, r, x, w):
+        xp = jnp.where(r.valid[:, None], x[r.src], jnp.zeros((), x.dtype))
+        return gmm(r.layout.block_expert, xp, w, block_m=self.bm, interpret=self.interpret)
+
+    def gmm_scatter_add(self, r, scale, h, w, n_tokens):
+        y = gmm(r.layout.block_expert, h, w, block_m=self.bm, interpret=self.interpret)
+        y = y.astype(jnp.float32) * scale[:, None]
+        return jnp.zeros((n_tokens, y.shape[1]), jnp.float32).at[r.src].add(y)
+
+    def tgmm_gather_a(self, r, x, d):
+        xp = jnp.where(r.valid[:, None], x[r.src], jnp.zeros((), x.dtype))
+        return tgmm(r.layout.block_start, r.layout.block_end, xp, d, block_m=self.bm, interpret=self.interpret)
+
+    def tgmm_gather_b(self, r, h, dout, scale):
+        d = jnp.where(r.valid[:, None], dout[r.src].astype(jnp.float32) * scale[:, None], 0.0)
+        return tgmm(r.layout.block_start, r.layout.block_end, h, d.astype(h.dtype), block_m=self.bm, interpret=self.interpret)
+
+
+class _FusedOps(_GatherOps):
+    """The same four operations with the gather / scatter inside the kernels:
+    no ``[P, D]`` buffer is ever materialised."""
+
+    def gather_gmm(self, r, x, w):
+        return gather_gmm(r.layout.block_expert, r.src, r.valid, x, w, block_m=self.bm, interpret=self.interpret)
+
+    def gmm_scatter_add(self, r, scale, h, w, n_tokens):
+        return gmm_scatter_add(r.layout.block_expert, r.src, r.valid, scale, h, w, n_tokens, block_m=self.bm, interpret=self.interpret)
+
+    def tgmm_gather_a(self, r, x, d):
+        ones = jnp.ones_like(r.gate)
+        return tgmm_gather(r.layout.block_start, r.layout.block_end, r.src, r.valid, ones, x, d,
+                           gather_a=True, gather_b=False, block_m=self.bm, interpret=self.interpret)
+
+    def tgmm_gather_b(self, r, h, dout, scale):
+        return tgmm_gather(r.layout.block_start, r.layout.block_end, r.src, r.valid, scale, h, dout,
+                           gather_a=False, gather_b=True, block_m=self.bm, interpret=self.interpret)
+
+
+def _ops(impl, block_m, interpret):
+    return (_FusedOps if impl == "fused" else _GatherOps)(block_m, _resolve_interpret(interpret))
+
+
+def _dispatch_hidden(ops, r, x, w_gate, w_up):
+    gate = ops.gather_gmm(r, x, w_gate)
+    up = ops.gather_gmm(r, x, w_up)
+    return gate, up
+
+
+@functools.partial(jax.custom_vjp, nondiff_argnums=(7, 8, 9))
+def moe_swiglu_dispatch(x, gates, w_gate, w_up, w_down, expert_ids, counts,
+                        block_m=64, impl="fused", interpret=None):
+    """Routed SwiGLU experts AND the combine, without top-k copies of ``x``.
+
+    ``x`` [N, D] tokens, ``expert_ids`` / ``gates`` [N, K] (top-k choice and
+    weight), ``counts`` [E] rows per expert.  Returns
+    ``sum_k gates[n, k] * SwiGLU_{expert_ids[n, k]}(x[n])`` as [N, D].
+    ``impl="fused"`` gathers / scatters inside the Pallas kernels;
+    ``impl="gather"`` does the same math with JAX gathers (reference).
+    Differentiable in ``x``, ``gates`` and the three weight stacks; saves only
+    its inputs and recomputes once the cotangent exists.
+    """
+    y, _ = _moe_dispatch_fwd(x, gates, w_gate, w_up, w_down, expert_ids, counts, block_m, impl, interpret)
+    return y
+
+
+def _moe_dispatch_fwd(x, gates, w_gate, w_up, w_down, expert_ids, counts, block_m, impl, interpret):
+    ops = _ops(impl, block_m, interpret)
+    r = _routing(expert_ids, gates, counts, block_m)
+    gate, up = _dispatch_hidden(ops, r, x, w_gate, w_up)
+    h = jax.nn.silu(gate) * up
+    y = ops.gmm_scatter_add(r, r.gate, h, w_down, x.shape[0]).astype(x.dtype)
+    return y, (x, gates, w_gate, w_up, w_down, expert_ids, counts)
+
+
+def _moe_dispatch_bwd(block_m, impl, interpret, res, dy):
+    ops = _ops(impl, block_m, interpret)
+    x, gates, w_gate, w_up, w_down, expert_ids, counts = res
+    x, dy = jax.lax.optimization_barrier((x, dy.astype(x.dtype)))
+    r = _routing(expert_ids, gates, counts, block_m)
+    gate, up = _dispatch_hidden(ops, r, x, w_gate, w_up)
+    g32, u32 = gate.astype(jnp.float32), up.astype(jnp.float32)
+    sig = jax.nn.sigmoid(g32)
+    silu = g32 * sig
+    h = (silu * u32).astype(x.dtype)
+    # dy[src] @ Wd^T, unscaled: <y_p, dy[src_p]> = <h_p, (dy[src_p] Wd^T)> gives the
+    # gate-weight gradient at hidden width; scaling by the gate gives dh.
+    g_un = ops.gather_gmm(r, dy, jnp.swapaxes(w_down, 1, 2)).astype(jnp.float32)
+    d_gate_row = jnp.sum(h.astype(jnp.float32) * g_un, axis=-1)
+    dh = g_un * r.gate[:, None]
+    dgate = (dh * u32 * sig * (1.0 + g32 * (1.0 - sig))).astype(x.dtype)
+    dup = (dh * silu).astype(x.dtype)
+    dw_down = ops.tgmm_gather_b(r, h, dy, r.gate)
+    dw_gate = ops.tgmm_gather_a(r, x, dgate)
+    dw_up = ops.tgmm_gather_a(r, x, dup)
+    ones = r.valid.astype(jnp.float32)
+    dx = (ops.gmm_scatter_add(r, ones, dgate, jnp.swapaxes(w_gate, 1, 2), x.shape[0])
+          + ops.gmm_scatter_add(r, ones, dup, jnp.swapaxes(w_up, 1, 2), x.shape[0]))
+    n_tokens, top_k = expert_ids.shape
+    d_gates = (jnp.zeros((n_tokens * top_k,), jnp.float32)
+               .at[r.order].set(d_gate_row[r.layout.padded_rows])
+               .reshape(n_tokens, top_k))
+    return (
+        dx.astype(x.dtype),
+        d_gates.astype(gates.dtype),
+        dw_gate.astype(w_gate.dtype),
+        dw_up.astype(w_up.dtype),
+        dw_down.astype(w_down.dtype),
+        None,
+        None,
+    )
+
+
+moe_swiglu_dispatch.defvjp(_moe_dispatch_fwd, _moe_dispatch_bwd)
