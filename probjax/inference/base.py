@@ -61,6 +61,24 @@ class Kernel(NamedTuple):
         return self.step(rng, state, params, *args, **kwargs)
 
 
+class Density(NamedTuple):
+    """A parameterised distribution, as inference needs it.
+
+    The parameters are an explicit argument, never closure state, so a kernel
+    can carry them in its ``params`` and an adaptor can train them inside a
+    compiled scan. :mod:`probjax.inference.neural` builds one from a
+    :mod:`probjax.nn` model.
+
+    Attributes:
+        sample: ``(key, params) -> x``, one draw. Differentiable in ``params``
+            when the model is reparameterisable (flows are).
+        logpdf: ``(x, params) -> log q(x)`` for one point.
+    """
+
+    sample: Callable[[Any, Any], Any]
+    logpdf: Callable[[Any, Any], Any]
+
+
 class Adaptor(NamedTuple):
     """A local parameter-adaptation state machine.
 

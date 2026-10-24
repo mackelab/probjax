@@ -1,178 +1,178 @@
-import sys
+"""Learned proposals: the Density bridge, imh on a flow, and fit_adaptor."""
 
 import jax
 import jax.numpy as jnp
+import optax
 import pytest
 from flax import nnx
 
-from probjax.inference import neural_imh, neural_imh_warmup, run, warmup
-from probjax.inference.mcmc.imh import _limit_data, _rao_blackwellized_data
-from probjax.nn import FitConfig, LinearFlow, maf
+from probjax.inference import (
+    fit_adaptor,
+    imh,
+    maximum_likelihood,
+    mclmc,
+    pseudo_marginal,
+    run,
+    warmup,
+)
+from probjax.inference.mcmc.imh import IMHInfo, imh_data
+from probjax.inference.neural import density
+from probjax.nn import LinearFlow, maf
 
 
 def _normal_logdensity(position):
     return jax.scipy.stats.norm.logpdf(position, 1.5, 0.7).sum()
 
 
-def test_neural_imh_runs_in_compiled_mcmc():
-    proposal = maf(1, 1, rngs=nnx.Rngs(0))
-    kernel = neural_imh(_normal_logdensity, proposal)
-    state = kernel.init(None, jnp.zeros(1))
-    params = kernel.init_params(state)
+def _flow_imh():
+    proposal, params = density(maf(1, 1, rngs=nnx.Rngs(0)))
+    return proposal, params, imh(_normal_logdensity, proposal=proposal)
 
-    result = run(
-        jax.random.key(1),
-        kernel,
-        state,
-        params,
-        8,
-        collect=("position", "acceptance_rate"),
-    )
 
-    assert result.trace["position"].shape == (8, 1)
-    assert result.trace["acceptance_rate"].shape == (8,)
+def test_imh_on_a_flow_runs_under_jit_and_vmap():
+    _, params, kernel = _flow_imh()
+    keys = jax.random.split(jax.random.key(0), 3)
+    states = jax.vmap(lambda key: kernel.init(key, jnp.zeros(1)))(keys)
+
+    result = jax.vmap(
+        lambda key, state: run(
+            key, kernel, state, params, 8, collect=("position", "acceptance_rate")
+        )
+    )(keys, states)
+
+    assert result.trace["position"].shape == (3, 8, 1)
     assert jnp.all(jnp.isfinite(result.trace["position"]))
 
 
-def test_neural_imh_warmup_fits_chain_positions_without_data():
-    proposal = maf(1, 1, rngs=nnx.Rngs(0))
-    kernel = neural_imh(_normal_logdensity, proposal)
-    state = kernel.init(None, jnp.array([1.5]))
-    params = kernel.init_params(state)
-    policy = neural_imh_warmup(
-        proposal,
-        num_adaptations=2,
-        fit_steps=3,
-        batch_size=8,
+def test_default_adaptation_trains_the_proposal_towards_the_target():
+    proposal, params, kernel = _flow_imh()
+    state = kernel.init(jax.random.key(0), jnp.array([1.5]))
+
+    warm = warmup(jax.random.key(1), kernel, state, params, 2000)
+
+    def mean_acceptance(params):
+        trace = run(
+            jax.random.key(2),
+            kernel,
+            warm.state,
+            params,
+            500,
+            collect=("acceptance_rate",),
+        ).trace
+        return float(trace["acceptance_rate"].mean())
+
+    assert mean_acceptance(warm.params) > mean_acceptance(params) + 0.2
+    draws = jax.vmap(proposal.sample, (0, None))(
+        jax.random.split(jax.random.key(3), 4000), warm.params
+    )
+    assert float(draws.mean()) == pytest.approx(1.5, abs=0.25)
+    assert float(draws.std()) == pytest.approx(0.7, abs=0.25)
+
+
+def test_block_fitting_waits_for_every_transitions():
+    proposal, params, kernel = _flow_imh()
+    state = kernel.init(jax.random.key(0), jnp.array([1.5]))
+    policy = fit_adaptor(
+        maximum_likelihood(proposal),
+        optax.adam(1e-2),
+        data_fn=imh_data,
+        batch_size=4,
+        every=10,
+        num_fit_steps=5,
     )
 
-    result = warmup(jax.random.key(1), kernel, state, params, 12, policy)
+    before = warmup(jax.random.key(1), kernel, state, params, 9, policy).params
+    after = warmup(jax.random.key(1), kernel, state, params, 10, policy).params
 
-    assert result.trace.losses.shape == (2, 3)
-    assert result.trace.acceptance_rate.shape == (2,)
-    assert jnp.all(jnp.isfinite(result.trace.losses))
-
-    samples = run(jax.random.key(2), kernel, result.state, result.params, 8).trace[
-        "position"
-    ]
-    assert samples.shape == (8, 1)
+    unchanged = jax.tree.map(jnp.array_equal, before, params)
+    changed = jax.tree.map(jnp.array_equal, after, params)
+    assert all(jax.tree.leaves(unchanged))
+    assert not all(jax.tree.leaves(changed))
 
 
-def test_neural_imh_warmup_augments_chain_with_data():
-    proposal = maf(1, 1, rngs=nnx.Rngs(0))
-    distribution = proposal.as_dist()
-    seed_data = jax.random.normal(jax.random.key(0), (128, 1)) * 0.4 + 2.0
-    density_before = distribution.logpdf(seed_data).mean()
-    kernel = neural_imh(_normal_logdensity, proposal)
-    state = kernel.init(None, jnp.array([1.5]))
-    params = kernel.init_params(state)
+def test_fit_adaptor_ring_buffer_keeps_the_most_recent_points():
+    class State:
+        def __init__(self, position):
+            self.position = position
 
-    result = warmup(
-        jax.random.key(1),
-        kernel,
-        state,
-        params,
-        8,
-        neural_imh_warmup(
-            proposal,
-            data=seed_data,
-            num_adaptations=1,
-            fit_steps=30,
-            batch_size=64,
-            learning_rate=1e-2,
-        ),
+    def loss(params, points, weights):
+        return jnp.sum(params * 0.0)
+
+    adaptor = fit_adaptor(loss, optax.sgd(0.0), buffer_size=4, batch_size=None)
+    fit_state = adaptor.init(State(jnp.zeros(1)), jnp.zeros(()))
+    for value in range(6):
+        fit_state, _, _ = adaptor.update(
+            State(jnp.array([float(value)])), None, fit_state, jnp.zeros(())
+        )
+
+    assert sorted(fit_state.points[:, 0].tolist()) == [2.0, 3.0, 4.0, 5.0]
+    assert int(fit_state.num_seen) == 6
+
+
+def test_imh_data_rao_blackwellizes_the_accept_reject_outcome():
+    info = IMHInfo(
+        acceptance_rate=jnp.array(0.25),
+        is_accepted=jnp.array(False),
+        proposal=jnp.array([2.0]),
+        previous_position=jnp.array([1.0]),
     )
 
-    assert distribution.logpdf(seed_data).mean() > density_before
-    assert result.trace.losses[-1, -1] < result.trace.losses[0, 0]
+    points, weights = imh_data(None, info)
+
+    assert jnp.array_equal(points[:, 0], jnp.array([1.0, 2.0]))
+    assert jnp.allclose(weights, jnp.array([0.75, 0.25]))
 
 
-def test_neural_imh_warmup_resumes_from_kernel_params():
-    proposal = maf(1, 1, rngs=nnx.Rngs(0))
-    proposal.fit_standardization(jnp.zeros((32, 1)))
-    kernel = neural_imh(_normal_logdensity, proposal)
-    state = kernel.init(None, jnp.array([1.5]))
-    params = kernel.init_params(state)
-    proposal.fit(
-        jax.random.key(0),
-        jnp.full((32, 1), 8.0),
-        config=FitConfig(max_steps=10, learning_rate=1e-2),
+def test_axis_name_trains_one_proposal_shared_by_all_chains():
+    proposal, params, kernel = _flow_imh()
+    policy = fit_adaptor(
+        maximum_likelihood(proposal),
+        optax.adam(1e-2),
+        data_fn=imh_data,
+        batch_size=16,
+        axis_name="chain",
     )
+    keys = jax.random.split(jax.random.key(0), 4)
+    states = jax.vmap(lambda key: kernel.init(key, jax.random.normal(key, (1,))))(keys)
 
-    result = warmup(
-        jax.random.key(1),
-        kernel,
-        state,
-        params,
-        2,
-        neural_imh_warmup(
-            proposal,
-            num_adaptations=1,
-            fit_steps=1,
-            learning_rate=0.0,
-        ),
+    result = jax.vmap(
+        lambda key, state: warmup(key, kernel, state, params, 50, policy),
+        axis_name="chain",
+    )(keys, states)
+
+    pairs = list(
+        zip(jax.tree.leaves(result.params), jax.tree.leaves(params), strict=True)
     )
-
-    for expected, actual in zip(
-        jax.tree.leaves(params.proposal_state),
-        jax.tree.leaves(result.params.proposal_state),
-        strict=True,
-    ):
-        assert jnp.array_equal(expected, actual)
+    assert all(jnp.allclose(leaf, leaf[0]) for leaf, _ in pairs)
+    assert not all(jnp.array_equal(leaf[0], initial) for leaf, initial in pairs)
 
 
-def test_neural_imh_replay_buffer_keeps_recent_positions():
-    data = {"x": jnp.arange(10), "y": jnp.arange(10) + 10}
-
-    limited = _limit_data(data, 4)
-
-    assert jnp.array_equal(limited["x"], jnp.arange(6, 10))
-    assert jnp.array_equal(limited["y"], jnp.arange(16, 20))
-
-
-def test_neural_imh_rao_blackwellizes_accept_reject_outcomes():
-    positions, weights = _rao_blackwellized_data(
-        jnp.array([0.0]),
-        jnp.array([[1.0], [1.0]]),
-        jnp.array([[1.0], [2.0]]),
-        jnp.array([0.25, 0.75]),
-    )
-
-    assert jnp.array_equal(positions[:, 0], jnp.array([0.0, 1.0, 1.0, 2.0]))
-    assert jnp.allclose(weights, jnp.array([0.75, 0.25, 0.25, 0.75]))
-
-
-def test_neural_imh_rejects_sample_only_model():
+def test_density_rejects_a_sample_only_model():
     class ZeroNet(nnx.Module):
         def __call__(self, _time, value, **_kwargs):
             return jnp.zeros_like(value)
 
-    with pytest.raises(ValueError, match="tractable logpdf"):
-        neural_imh(
-            _normal_logdensity,
-            LinearFlow(ZeroNet(), event_spec=1),
-            event_spec=(1,),
-        )
+    with pytest.raises(TypeError, match="tractable log-density"):
+        density(LinearFlow(ZeroNet(), event_spec=1))
 
 
-def test_neural_imh_warmup_draws_fresh_keys_per_block(monkeypatch):
-    # ``probjax.inference.mcmc.imh`` names the exported class, not the module.
-    imh_module = sys.modules["probjax.inference.mcmc.imh"]
-    block_keys = []
-    original = imh_module.run_kernel
+def test_pseudo_marginal_drops_a_default_that_needs_the_target():
+    def noisy_logdensity(position, key):
+        return -0.5 * jnp.sum(position**2) + 0.01 * jax.random.normal(key)
 
-    def recording_run_kernel(rng, *args, **kwargs):
-        block_keys.append(jax.random.key_data(rng))
-        return original(rng, *args, **kwargs)
+    # MCLMC's tuning needs one fixed log-density; a stochastic one has none.
+    assert pseudo_marginal(mclmc, noisy_logdensity).default_adaptation is None
 
-    monkeypatch.setattr(imh_module, "run_kernel", recording_run_kernel)
-    proposal = maf(1, 1, rngs=nnx.Rngs(0))
-    kernel = neural_imh(_normal_logdensity, proposal)
-    state = kernel.init(None, jnp.array([1.5]))
-    warmup = neural_imh_warmup(proposal, num_adaptations=3, fit_steps=2, batch_size=8)
 
-    warmup.run(jax.random.key(1), kernel, state, kernel.init_params(state), 9)
+def test_pseudo_marginal_binds_the_imh_proposal_into_its_default():
+    proposal, params = density(maf(1, 1, rngs=nnx.Rngs(0)))
 
-    assert len(block_keys) == 3
-    assert not jnp.array_equal(block_keys[0], block_keys[1])
-    assert not jnp.array_equal(block_keys[1], block_keys[2])
+    def noisy_logdensity(position, key):
+        return _normal_logdensity(position) + 0.01 * jax.random.normal(key)
+
+    kernel = pseudo_marginal(imh, noisy_logdensity, proposal=proposal)
+    state = kernel.init(jax.random.key(0), jnp.array([1.5]))
+
+    result = warmup(jax.random.key(1), kernel, state, params, 300)
+
+    assert jax.tree.structure(result.params) == jax.tree.structure(params)

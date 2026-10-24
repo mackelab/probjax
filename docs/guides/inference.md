@@ -93,44 +93,81 @@ The `SMC` runner drives particle methods (`smc`, `adaptive_smc`,
 `sq_kalman_filter`, `rank_reduced_kalman_filter` and `ParticleFilter`, with
 `rauch_tung_stribel_smoother` and `particle_smoother`.
 
-## Variational inference
+## Learned components
 
-`flow_vi` fits a normalizing flow to an unnormalized target by reparameterised
-reverse KL. It follows the shape of `blackjax.vi.meanfield_vi` — `init`, `step`,
-`sample` — and the loop is yours:
+A neural proposal, variational family or transport map is a pure function plus
+a parameter pytree. `probjax.inference.neural` splits a `probjax.nn` flow into
+exactly that, so its weights can sit in a kernel's `params`, inside a compiled
+scan, `vmap`-ed over chains:
+
+```python
+from flax import nnx
+from probjax.inference.neural import bijection, density
+from probjax.nn import maf
+
+flow = maf(2, 3, rngs=nnx.Rngs(0))
+family, flow_params = density(flow)    # Density(sample, logpdf), weights
+forward, flow_params = bijection(flow)  # (z, params) -> (x, log|det J|), weights
+```
+
+`Density(sample, logpdf)` takes the parameters explicitly:
+`sample(key, params)` and `logpdf(x, params)`. Any pair of functions with those
+signatures works, not just flows.
+
+Training is an adaptor. `fit_adaptor(loss_fn, optimizer, ...)` keeps a ring
+buffer of what the chain produces and takes optimizer steps on `params` (or one
+field of it) inside the scan. `every=1, num_fit_steps=1` trains a little after
+each transition; `every=250, num_fit_steps=250` alternates sampling and fitting
+blocks. With `axis_name=`, chains run under `jax.vmap` average their gradients
+and train one shared set of parameters.
+
+### Neural independent Metropolis-Hastings
+
+`imh(logdensity, proposal=family)` proposes from any `Density`. Its default
+adaptation trains the proposal by maximum likelihood on the chain's output:
 
 ```python
 import jax
 import jax.numpy as jnp
-import optax
 from flax import nnx
-from probjax.inference import flow_vi
+from probjax.inference import imh, run, warmup
+from probjax.inference.neural import density
 from probjax.nn import maf
 
-mean = jnp.array([2.0, -1.0])
 def logdensity(x):
-    return -0.5 * jnp.sum((x - mean) ** 2)
+    return -0.5 * jnp.sum((x - jnp.array([2.0, -1.0])) ** 2)
 
-algorithm = flow_vi(logdensity, maf(2, 3, rngs=nnx.Rngs(0)), optax.adam(1e-3))
-
-def one(state, key):
-    state, info = algorithm.step(key, state)
-    return state, info.elbo
-
-state, objective = jax.lax.scan(
-    jax.jit(one), algorithm.init(), jax.random.split(jax.random.key(0), 300)
-)
-draws = algorithm.sample(jax.random.key(1), state, 256)
+proposal, proposal_params = density(maf(2, 3, rngs=nnx.Rngs(0)))
+kernel = imh(logdensity, proposal=proposal)
+state = kernel.init(jax.random.key(0), jnp.zeros(2))
+warm = warmup(jax.random.key(1), kernel, state, proposal_params, 2000)
+result = run(jax.random.key(2), kernel, warm.state, warm.params, 1000)
 ```
 
-`info.elbo` holds `mean(log q - log p)` — the quantity being minimised, so it
-goes **down**. The name matches blackjax's `MFVIInfo` field; the sign is the
-opposite of what it suggests.
+Stop adapting before collecting the draws you report: with a fixed proposal
+the chain is an exact MCMC kernel.
 
-Reverse KL is mode-seeking, so a flow fitted this way tends to under-cover. That
-is what the next section is for.
+### Variational inference
 
-## NeuTra: better geometry for the samplers
+`flow_vi` fits a `Density` to an unnormalized target by reparameterised
+reverse KL. It is a kernel whose step is one optimizer step, so `run` drives
+it like any sampler:
+
+```python
+import optax
+from probjax.inference import flow_vi
+
+family, flow_params = density(flow)
+vi = flow_vi(logdensity, family, optax.adam(1e-3))
+fit = run(jax.random.key(0), vi, vi.init(flow_params), None, 2000, collect=("loss",))
+fitted_params = fit.state.params
+```
+
+`loss` is `mean(log q - log p)`, the negative ELBO up to the target's unknown
+log-normaliser, so it goes **down**. Reverse KL is mode-seeking, so a flow
+fitted this way tends to under-cover. That is what NeuTra is for.
+
+### NeuTra: better geometry for the samplers
 
 A posterior with strong curvature is hard for HMC because no single step size
 suits every direction. `neutra` reparameterises the target through a flow so the
@@ -138,17 +175,11 @@ geometry becomes close to isotropic, then any kernel samples the transformed
 target:
 
 ```python
-import jax
-import jax.numpy as jnp
-from flax import nnx
-from probjax.inference import neutra, nuts, run
-from probjax.nn import maf
+from probjax.inference import neutra, nuts
 
-def logdensity(x):
-    return -0.5 * jnp.sum((x - jnp.array([2.0, -1.0])) ** 2)
-
-flow = maf(2, 3, rngs=nnx.Rngs(0))        # normally fitted with flow_vi first
-transform = neutra(logdensity, flow)
+forward, _ = bijection(flow)
+# fitted_params come from the flow_vi run above, which used the same flow
+transform = neutra(logdensity, forward, fitted_params)
 
 kernel = nuts(transform.logdensity)
 state = kernel.init(jax.random.key(0), jnp.zeros(2))
@@ -158,12 +189,9 @@ draws = transform.forward(result.trace["position"])   # back in the target's spa
 
 This is a change of variables, not an approximation: **MCMC stays asymptotically
 exact however poor the flow is.** A bad flow costs efficiency, never
-correctness — which is what makes it safe to pair with a mode-seeking VI fit. On
-Neal's funnel, NUTS on the transformed target reached an effective sample size
-of 601 against 168 for NUTS on the target directly, at the same budget.
-
-Because `neutra` returns a plain log-density and a map, it composes with every
-kernel, warmup and runner above without any special integration.
+correctness, which is what makes it safe to pair with a mode-seeking VI fit.
+The [neural MCMC tutorial](../tutorials/neural_mcmc.md) runs both methods on a
+funnel and a multimodal ring.
 
 ## How a kernel is built
 

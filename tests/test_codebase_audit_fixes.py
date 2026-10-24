@@ -109,13 +109,14 @@ def test_ukf_linear_gaussian_update(callable_r):
 
 
 def test_gaussian_imh_covariance_density():
-    from probjax.inference.mcmc.imh import gaussian_imh, proposal_gaussian_logpdf
+    from probjax.inference.mcmc.imh import gaussian_imh, gaussian_proposal
 
     kernel = gaussian_imh(lambda x: -0.5 * jnp.sum(x * x))
     state = kernel.init(jax.random.key(0), jnp.array([1.0, -2.0]))
     params = kernel.init_params(state, mean=jnp.zeros(2), cov=jnp.array([4.0, 9.0]))
+    proposal = gaussian_proposal(lambda flat: flat)
     np.testing.assert_allclose(
-        proposal_gaussian_logpdf(state, params=params),
+        proposal.logpdf(state.position, params),
         sp.multivariate_normal.logpdf([1.0, -2.0], cov=np.diag([4.0, 9.0])),
         atol=1e-6,
     )

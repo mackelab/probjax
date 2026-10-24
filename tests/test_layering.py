@@ -19,6 +19,17 @@ ROOT = pathlib.Path(__file__).resolve().parents[1] / "probjax"
 # (name, files it covers, import prefixes those files must not use, exceptions)
 RULES = [
     (
+        "inference reaches flax and nn only through the neural bridge",
+        "inference/",
+        ("flax", "probjax.nn"),
+        (
+            "inference/neural.py",
+            # Learned SMC twists; they move onto the bridge with the SMC rewrite.
+            "inference/smc/rdsmc.py",
+            "inference/smc/pretrained_twist.py",
+        ),
+    ),
+    (
         "stats is plain JAX: no flax, optax, nn or inference",
         "stats/",
         ("flax", "optax", "probjax.nn", "probjax.inference"),
