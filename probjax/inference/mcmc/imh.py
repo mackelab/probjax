@@ -288,7 +288,7 @@ def neural_imh_warmup(
         acceptance_rates = []
 
         for block_size in block_sizes:
-            key, sample_key, fit_key = jax.random.split(rng, 3)
+            rng, sample_key, fit_key = jax.random.split(rng, 3)
             initial_position = state.position
             collect_info = (
                 ("acceptance_rate", "proposal")
