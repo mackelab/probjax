@@ -301,6 +301,7 @@ class _Routing:
     src: Array  # [P] token of each padded-layout row (0 on padding)
     valid: Array  # [P] False on padding rows
     gate: Array  # [P] float32 routing weight of each layout row (0 on padding)
+    token_rows: Array  # [N, K] layout row of each (token, k) assignment
 
 
 def _routing(expert_ids: Array, gates: Array, counts: Array, block_m: int) -> _Routing:
@@ -317,7 +318,9 @@ def _routing(expert_ids: Array, gates: Array, counts: Array, block_m: int) -> _R
         .at[p]
         .set(gates.reshape(-1).astype(jnp.float32)[order])
     )
-    return _Routing(layout, order, src, valid, gate)
+    inverse = jnp.argsort(order).astype(jnp.int32)
+    token_rows = p[inverse].reshape(n_tokens, top_k)
+    return _Routing(layout, order, src, valid, gate, token_rows)
 
 
 class _GatherOps:
@@ -424,10 +427,21 @@ class _FusedOps(_GatherOps):
         )
 
 
+class _FusedGsumOps(_FusedOps):
+    """Fused gathers, but a non-atomic combine: the down projection writes its
+    rows in layout order ([P, D]) and each token sums its own top-k rows
+    (an XLA gather-reduce).  Deterministic; one transient layout buffer."""
+
+    def gmm_scatter_add(self, r, scale, h, w, n_tokens):
+        y = gmm(r.layout.block_expert, h, w, block_m=self.bm, interpret=self.interpret)
+        y = y.astype(jnp.float32) * scale[:, None]
+        pos = r.token_rows  # [N, K] layout row of each (token, k)
+        return jnp.sum(y[pos], axis=1)
+
+
 def _ops(impl, block_m, interpret):
-    return (_FusedOps if impl == "fused" else _GatherOps)(
-        block_m, _resolve_interpret(interpret)
-    )
+    cls = {"fused": _FusedOps, "fused_gsum": _FusedGsumOps}.get(impl, _GatherOps)
+    return cls(block_m, _resolve_interpret(interpret))
 
 
 def _dispatch_hidden(ops, r, x, w_gate, w_up):
@@ -455,6 +469,9 @@ def moe_swiglu_dispatch(
     weight), ``counts`` [E] rows per expert.  Returns
     ``sum_k gates[n, k] * SwiGLU_{expert_ids[n, k]}(x[n])`` as [N, D].
     ``impl="fused"`` gathers / scatters inside the Pallas kernels;
+    ``impl="fused_gsum"`` gathers inside them but combines without atomics
+    (each token sums its top-k rows of the layout-order output: faster at
+    large top-k, deterministic, one transient [N*K, D] float32 buffer);
     ``impl="gather"`` does the same math with JAX gathers (reference).
     Differentiable in ``x``, ``gates`` and the three weight stacks; saves only
     its inputs and recomputes once the cotangent exists.

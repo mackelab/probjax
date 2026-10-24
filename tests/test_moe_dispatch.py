@@ -55,7 +55,7 @@ def _fwd_grads(m, x):
     return y, grads
 
 
-@pytest.mark.parametrize("dispatch", ["gather", "fused"])
+@pytest.mark.parametrize("dispatch", ["gather", "fused", "fused_gsum"])
 @pytest.mark.parametrize(
     "cfg", [dict(e=8, k=2), dict(e=16, k=4, h=8, shared=24), dict(e=4, k=4)]
 )
@@ -80,7 +80,7 @@ def test_fused_matches_gather_tightly(cfg):
         _close(a, b, TIGHT)
 
 
-@pytest.mark.parametrize("impl", ["gather", "fused"])
+@pytest.mark.parametrize("impl", ["gather", "fused", "fused_gsum"])
 def test_dispatch_function_against_dense_reference(impl):
     """Direct check against the definition, with empty experts and one expert
     taking most rows."""
