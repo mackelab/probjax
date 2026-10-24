@@ -368,7 +368,7 @@ class MoELayer(nnx.Module):
             "auto", "pallas", "triton", "mosaic", "blocked", "ragged_dot"
         ] = "auto",
         shared_hidden: int | None = None,
-        dropless_dispatch: Literal["sorted", "gather", "fused"] = "sorted",
+        dropless_dispatch: Literal["sorted", "gather", "fused", "fused_gsum"] = "sorted",
         kernel_init: Initializer = _expert_init,
         router_init: Initializer = nnx.initializers.lecun_normal(),
         dtype: DTypeLike | None = None,
@@ -399,7 +399,7 @@ class MoELayer(nnx.Module):
         ):
             raise ValueError(f"unknown dropless_impl {dropless_impl!r}")
         self.routing = routing
-        if dropless_dispatch not in ("sorted", "gather", "fused"):
+        if dropless_dispatch not in ("sorted", "gather", "fused", "fused_gsum"):
             raise ValueError(f"unknown dropless_dispatch {dropless_dispatch!r}")
         # gather / fused are Triton-kernel paths (Hopper included; interpret mode
         # on CPU).  "auto" / "pallas" / "triton" resolve to them; an explicit
@@ -417,6 +417,9 @@ class MoELayer(nnx.Module):
         #             with JAX gathers / scatter-adds (reference);
         #   "fused":  the same with the gather / scatter-add inside the
         #             kernels: no N*K x D buffer at all.
+        #   "fused_gsum": fused gathers, but the combine writes the down
+        #             projection in layout order and sums each token's top-k
+        #             rows (no atomics; one transient N*K x D float32 buffer).
         self.dropless_dispatch = dropless_dispatch
         self.dropless_impl = dropless_impl
 

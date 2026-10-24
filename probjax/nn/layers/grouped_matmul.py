@@ -301,6 +301,7 @@ class _Routing:
     src: Array  # [P] token of each padded-layout row (0 on padding)
     valid: Array  # [P] False on padding rows
     gate: Array  # [P] float32 routing weight of each layout row (0 on padding)
+    token_rows: Array  # [N, K] layout row of each (token, k) assignment
 
 
 def _routing(expert_ids: Array, gates: Array, counts: Array, block_m: int) -> _Routing:
@@ -314,7 +315,9 @@ def _routing(expert_ids: Array, gates: Array, counts: Array, block_m: int) -> _R
     gate = jnp.zeros((layout.n_padded,), jnp.float32).at[p].set(
         gates.reshape(-1).astype(jnp.float32)[order]
     )
-    return _Routing(layout, order, src, valid, gate)
+    inverse = jnp.argsort(order).astype(jnp.int32)
+    token_rows = p[inverse].reshape(n_tokens, top_k)
+    return _Routing(layout, order, src, valid, gate, token_rows)
 
 
 class _GatherOps:
@@ -363,14 +366,28 @@ class _FusedOps(_GatherOps):
                            gather_a=False, gather_b=True, block_m=self.bm, interpret=self.interpret)
 
 
+class _FusedGsumOps(_FusedOps):
+    """Fused gathers, but a non-atomic combine: the down projection writes its
+    rows in layout order ([P, D]) and each token sums its own top-k rows
+    (an XLA gather-reduce).  Deterministic; one transient layout buffer."""
+
+    def gmm_scatter_add(self, r, scale, h, w, n_tokens):
+        y = gmm(r.layout.block_expert, h, w, block_m=self.bm, interpret=self.interpret)
+        y = y.astype(jnp.float32) * scale[:, None]
+        pos = r.token_rows  # [N, K] layout row of each (token, k)
+        return jnp.sum(y[pos], axis=1)
+
+
 def _ops(impl, block_m, interpret):
-    return (_FusedOps if impl == "fused" else _GatherOps)(block_m, _resolve_interpret(interpret))
+    cls = {"fused": _FusedOps, "fused_gsum": _FusedGsumOps}.get(impl, _GatherOps)
+    return cls(block_m, _resolve_interpret(interpret))
 
 
 def _dispatch_hidden(ops, r, x, w_gate, w_up):
-    gate = ops.gather_gmm(r, x, w_gate)
-    up = ops.gather_gmm(r, x, w_up)
-    return gate, up
+    # One gathered GEMM against [W_gate | W_up]: x is read once, not twice.
+    hidden = w_gate.shape[-1]
+    gu = ops.gather_gmm(r, x, jnp.concatenate([w_gate, w_up], axis=-1))
+    return gu[:, :hidden], gu[:, hidden:]
 
 
 @functools.partial(jax.custom_vjp, nondiff_argnums=(7, 8, 9))
@@ -382,6 +399,9 @@ def moe_swiglu_dispatch(x, gates, w_gate, w_up, w_down, expert_ids, counts,
     weight), ``counts`` [E] rows per expert.  Returns
     ``sum_k gates[n, k] * SwiGLU_{expert_ids[n, k]}(x[n])`` as [N, D].
     ``impl="fused"`` gathers / scatters inside the Pallas kernels;
+    ``impl="fused_gsum"`` gathers inside them but combines without atomics
+    (each token sums its top-k rows of the layout-order output: faster at
+    large top-k, deterministic, one transient [N*K, D] float32 buffer);
     ``impl="gather"`` does the same math with JAX gathers (reference).
     Differentiable in ``x``, ``gates`` and the three weight stacks; saves only
     its inputs and recomputes once the cotangent exists.
@@ -417,11 +437,16 @@ def _moe_dispatch_bwd(block_m, impl, interpret, res, dy):
     dgate = (dh * u32 * sig * (1.0 + g32 * (1.0 - sig))).astype(x.dtype)
     dup = (dh * silu).astype(x.dtype)
     dw_down = ops.tgmm_gather_b(r, h, dy, r.gate)
-    dw_gate = ops.tgmm_gather_a(r, x, dgate)
-    dw_up = ops.tgmm_gather_a(r, x, dup)
+    # gate and up halves in one kernel each: [dgate | dup] against
+    # [W_gate | W_up] (K = 2 * hidden) for dx, and x^T [dgate | dup] for the
+    # two weight gradients.
+    hidden = w_gate.shape[-1]
+    d_gu = jnp.concatenate([dgate, dup], axis=-1)
+    dw_gu = ops.tgmm_gather_a(r, x, d_gu)
+    dw_gate, dw_up = dw_gu[..., :hidden], dw_gu[..., hidden:]
     ones = r.valid.astype(jnp.float32)
-    dx = (ops.gmm_scatter_add(r, ones, dgate, jnp.swapaxes(w_gate, 1, 2), x.shape[0])
-          + ops.gmm_scatter_add(r, ones, dup, jnp.swapaxes(w_up, 1, 2), x.shape[0]))
+    w_gu_t = jnp.swapaxes(jnp.concatenate([w_gate, w_up], axis=-1), 1, 2)
+    dx = ops.gmm_scatter_add(r, ones, d_gu, w_gu_t, x.shape[0])
     n_tokens, top_k = expert_ids.shape
     d_gates = (jnp.zeros((n_tokens * top_k,), jnp.float32)
                .at[r.order].set(d_gate_row[r.layout.padded_rows])
