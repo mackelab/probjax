@@ -23,7 +23,7 @@ from probjax.utils.typing import ArrayLike
 # ---------------------------------------------------------------------------
 
 
-def build_kernel(
+def build_step(
     transition_model_fn: Callable,
     observation_model_fn: Callable,
     linear_solve: Optional[Callable] = None,
@@ -80,8 +80,6 @@ def build_kernel(
 def make_linearized_transition(
     transition_fn: Callable,
     Q_fn: Callable | ArrayLike,
-    in_dim: int,
-    out_dim: int | None = None,
     materialize: bool = False,
 ) -> Callable:
     """Build an EKF transition model.
@@ -94,9 +92,6 @@ def make_linearized_transition(
         transition_fn: f(x, t_old, t) -> x_new.  Nonlinear transition.
         Q_fn: Either a callable (t_old, t) -> Q returning the process noise
             covariance, or a fixed array / LinearOperator.
-        in_dim: State dimension. Unused (shapes are inferred from the state);
-            kept for backward compatibility.
-        out_dim: Output dimension. Unused; kept for backward compatibility.
         materialize: If True, return Phi as a dense array via jax.jacfwd.
             If False (default), return Phi as a matrix-free LinearOperator.
 
@@ -119,8 +114,6 @@ def make_linearized_transition(
 def make_linearized_observation(
     observation_fn: Callable,
     R_fn: Callable | ArrayLike,
-    in_dim: int,
-    out_dim: int,
     materialize: bool = False,
 ) -> Callable:
     """Build an EKF observation model.
@@ -132,10 +125,6 @@ def make_linearized_observation(
         observation_fn: h(x, t) -> y.  Nonlinear observation.
         R_fn: Either a callable (t,) -> R returning the observation noise
             covariance, or a fixed array / LinearOperator.
-        in_dim: State (input) dimension. Unused; kept for backward
-            compatibility.
-        out_dim: Observation (output) dimension. Unused; kept for backward
-            compatibility.
         materialize: If True, return C as a dense array via jax.jacfwd.
             If False (default), return C as a matrix-free LinearOperator.
 
@@ -158,8 +147,6 @@ def make_linearized_observation(
 def make_continuous_transition(
     drift_fn: Callable,
     diffusion_matrix: ArrayLike,
-    in_dim: int,
-    materialize: bool = False,
 ) -> Callable:
     """Build an EKF transition model from continuous SDE.
 
@@ -167,17 +154,12 @@ def make_continuous_transition(
       - x_pred = x + f(x, t_old) * (t - t_old)   (Euler step)
       - Phi, Q via matrix_fraction_decomposition
 
-    Since matrix_fraction_decomposition must materialize the 2d x 2d block
-    matrix for expm, Phi is always dense regardless of the materialize flag.
-    The flag only controls whether the separate Jacobian A is kept dense
-    or discarded (it's computed regardless for the decomposition).
+    Phi is always dense: matrix_fraction_decomposition materializes the
+    2d x 2d block matrix for expm.
 
     Args:
         drift_fn: f(x, t) -> dx/dt.  The drift function of the SDE.
         diffusion_matrix: B, the diffusion matrix (constant). Shape (d, m).
-        in_dim: State dimension.
-        materialize: Kept for API consistency — Phi is always dense here
-            because expm requires dense matrices.
 
     Returns:
         transition_model_fn: (x, cov, t_old, t) -> (x_pred, Phi, Q)
@@ -226,6 +208,6 @@ class extended_kalman_filter(FilterAPI):
     """
 
     init = gaussian_init
-    build_kernel = build_kernel
+    build_step = build_step
 
     default_unpack = staticmethod(gaussian_unpack)

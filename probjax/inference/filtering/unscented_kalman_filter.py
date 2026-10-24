@@ -210,7 +210,7 @@ def init(
     return UnscentedKalmanFilterState(jnp.asarray(mu0), jnp.asarray(cov0), as_time(t))
 
 
-def build_kernel(
+def build_step(
     transition_fn: Callable,
     transition_covariance_matrix: Callable | ArrayLike,
     observation_fn: Callable,
@@ -335,6 +335,6 @@ class ukf(FilterAPI):
     """
 
     init = init
-    build_kernel = build_kernel
+    build_step = build_step
 
     default_unpack = staticmethod(gaussian_unpack)

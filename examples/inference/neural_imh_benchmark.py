@@ -19,7 +19,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.inference import MCMC, imh, neural_imh, neural_imh_warmup
+from probjax.inference import imh, neural_imh, neural_imh_warmup, run, warmup
 from probjax.nn import nsf
 
 
@@ -160,20 +160,25 @@ def run_case(name, args):
 
     started = time.perf_counter()
     kernel = neural_imh(case.logdensity, flow)
-    state = kernel.init(case.sample(key_initial, (1,))[0])
+    state = kernel.init(None, case.sample(key_initial, (1,))[0])
     params = kernel.init_params(state)
     build_seconds = time.perf_counter() - started
 
-    baseline = MCMC(kernel, collect_info=("acceptance_rate",)).sample(
-        key_baseline, state, args.baseline_steps, params
+    collect = ("position", "acceptance_rate")
+    baseline = run(
+        key_baseline, kernel, state, params, args.baseline_steps, collect=collect
     )
     _ready(baseline)
-    baseline_acceptance = jnp.mean(baseline.info["acceptance_rate"])
+    baseline_acceptance = jnp.mean(baseline.trace["acceptance_rate"])
 
     seed_data = case.sample(key_seed, (args.seed_data,)) if args.seed_data > 0 else None
     started = time.perf_counter()
-    adapted = MCMC(kernel).warmup(
+    adapted = warmup(
         key_warmup,
+        kernel,
+        state,
+        params,
+        args.warmup_steps,
         neural_imh_warmup(
             flow,
             data=seed_data,
@@ -184,27 +189,30 @@ def run_case(name, args):
             rao_blackwellize=not args.no_rao_blackwellize,
             learning_rate=args.learning_rate,
         ),
-        state,
-        params,
-        args.warmup_steps,
     )
     _ready(adapted)
     warmup_seconds = time.perf_counter() - started
 
-    runner = MCMC(kernel, collect_info=("acceptance_rate",))
     started = time.perf_counter()
-    compiled_result = runner.sample(
-        key_compile_sample, adapted.state, args.samples, adapted.params
+    compiled_result = run(
+        key_compile_sample,
+        kernel,
+        adapted.state,
+        adapted.params,
+        args.samples,
+        collect=collect,
     )
     _ready(compiled_result)
     sampling_compile_seconds = time.perf_counter() - started
 
     started = time.perf_counter()
-    result = runner.sample(key_sample, adapted.state, args.samples, adapted.params)
+    result = run(
+        key_sample, kernel, adapted.state, adapted.params, args.samples, collect=collect
+    )
     _ready(result)
     sampling_seconds = time.perf_counter() - started
 
-    metrics = case.metrics(result.samples)
+    metrics = case.metrics(result.trace["position"])
     proposal_samples = flow.as_dist().sample_with_state(
         adapted.params.proposal_state, key_proposal, (args.samples,)
     )
@@ -223,8 +231,8 @@ def run_case(name, args):
         "sampling_seconds": sampling_seconds,
         "samples_per_second": args.samples / sampling_seconds,
         "baseline_acceptance": baseline_acceptance,
-        "warmup_acceptance": adapted.info.acceptance_rate,
-        "final_acceptance": jnp.mean(result.info["acceptance_rate"]),
+        "warmup_acceptance": adapted.trace.acceptance_rate,
+        "final_acceptance": jnp.mean(result.trace["acceptance_rate"]),
         **metrics,
         **proposal_metrics,
     }
@@ -242,15 +250,22 @@ def run_case(name, args):
             proposal_fn=proposal_fn,
             proposal_logpdf=proposal_logpdf,
         )
-        uncached_state = uncached_kernel.init(adapted.state.position)
-        uncached_runner = MCMC(uncached_kernel)
-        uncached_result = uncached_runner.sample(
-            key_uncached_compile, uncached_state, args.samples, adapted.params
+        uncached_state = uncached_kernel.init(None, adapted.state.position)
+        uncached_result = run(
+            key_uncached_compile,
+            uncached_kernel,
+            uncached_state,
+            adapted.params,
+            args.samples,
         )
         _ready(uncached_result)
         started = time.perf_counter()
-        uncached_result = uncached_runner.sample(
-            key_uncached_sample, uncached_state, args.samples, adapted.params
+        uncached_result = run(
+            key_uncached_sample,
+            uncached_kernel,
+            uncached_state,
+            adapted.params,
+            args.samples,
         )
         _ready(uncached_result)
         uncached_seconds = time.perf_counter() - started

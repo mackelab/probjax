@@ -40,7 +40,7 @@ from typing import Any, Callable
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.mcmc.base import MarkovKernel
+from probjax.inference.base import Kernel
 from probjax.utils.jaxutils import as_configured
 from probjax.utils.typing import RngKey
 
@@ -75,7 +75,7 @@ def pseudo_marginal(
     stochastic_logdensity_fn: Callable,
     num_samples: int = 1,
     **inner_kernel_kwargs,
-) -> MarkovKernel:
+) -> Kernel:
     """Wrap a probjax MCMC kernel for pseudo-marginal inference.
 
     Args:
@@ -94,7 +94,7 @@ def pseudo_marginal(
             accepts them.
 
     Returns:
-        A :class:`MarkovKernel` whose ``step`` splits the PRNG key,
+        A :class:`Kernel` whose ``step`` splits the PRNG key,
         fixes one sub-key for the stochastic log-density, and delegates
         the transition to the inner kernel.
     """
@@ -141,6 +141,6 @@ def pseudo_marginal(
 #: The built kernel carries this type, so repr(kernel) names the algorithm.
 pseudo_marginal_type = type(
     "pseudo_marginal",
-    (MarkovKernel,),
+    (Kernel,),
     {"__doc__": pseudo_marginal.__doc__, "__module__": __name__, "__slots__": ()},
 )

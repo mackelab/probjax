@@ -24,8 +24,8 @@ unchanged:
 >>> transform = neutra(logdensity_fn, flow)
 >>> kernel = nuts(transform.logdensity)  # or mala, hmc, mclmc, slice...
 >>> state = kernel.init(key, jnp.zeros(dim))
->>> result = MCMC(kernel).sample(key, state, 4000, kernel.init_params(state))
->>> draws = transform.forward(result.samples)  # back in the target's space
+>>> result = run(key, kernel, state, kernel.init_params(state), 4000)
+>>> draws = transform.forward(result.trace["position"])  # back in target space
 """
 
 from __future__ import annotations

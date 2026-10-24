@@ -11,8 +11,8 @@ Every algorithm API follows the same three steps:
    ``init``, ``init_params`` and ``build_step``;
 2. calling it with the model's functions builds a **kernel** -- a pure
    ``(init, step, ...)`` container that is callable and hashable;
-3. a **runner** (:class:`MCMC`, :class:`SMC`) drives the kernel in a compiled
-   scan.
+3. a **runner** (:func:`~probjax.inference.run`, :class:`SMC`) drives the
+   kernel in a compiled scan.
 
 Options that are known before the model is can be bound with
 ``api.configure(**options)``, which returns a
@@ -25,18 +25,13 @@ from __future__ import annotations
 from typing import Any, Callable, Generic, NamedTuple, TypeAlias, TypeVar
 
 from probjax.utils.jaxutils import WithProgressBarAPI, print_scan
-from probjax.utils.typing import Array, ArrayTree, PyTree, RngKey
+from probjax.utils.typing import Array, RngKey
 
 StateT = TypeVar("StateT")
 ParamsT = TypeVar("ParamsT")
 InfoT = TypeVar("InfoT")
 
 # ---------------- Domain aliases ----------------
-#: The chain position: any pytree of arrays.
-Position: TypeAlias = ArrayTree
-#: An unnormalized log density over a position. Extra arguments are allowed
-#: (e.g. the pseudo-marginal estimator takes a random key).
-LogDensityFn: TypeAlias = Callable[..., Array]
 #: A single transition: ``(key, state, params, *args) -> (state, info)``.
 StepFn: TypeAlias = Callable[..., tuple[Any, Any]]
 
@@ -66,24 +61,6 @@ class Kernel(NamedTuple):
         return self.step(rng, state, params, *args, **kwargs)
 
 
-class AdaptationTrace(NamedTuple):
-    kernel: Any = None
-    adaptor: Any = None
-
-
-class AdaptationResult(NamedTuple, Generic[StateT, ParamsT, InfoT]):
-    state: StateT
-    params: ParamsT
-    trace: PyTree | None = None
-    final_info: InfoT | None = None
-
-
-class WarmupResult(NamedTuple, Generic[StateT, ParamsT, InfoT]):
-    state: StateT
-    params: ParamsT
-    info: InfoT | None = None
-
-
 class Adaptor(NamedTuple):
     """A local parameter-adaptation state machine.
 
@@ -97,22 +74,25 @@ class Adaptor(NamedTuple):
 
 
 class Warmup(NamedTuple):
-    """A finite initialization policy for a kernel and its parameters."""
+    """A finite initialization policy for a kernel and its parameters.
 
-    run: Callable[..., "WarmupOutcome"]
+    ``run(key, kernel, state, params, num_steps)`` returns a
+    :class:`RunResult` whose ``trace`` holds the policy's diagnostics.
+    """
 
-
-#: Either kind of adaptation policy: a local ``Adaptor`` or a ``Warmup``.
-AdaptationPolicy: TypeAlias = Adaptor | Warmup
-#: What a warmup policy returns: a local adaptor yields an
-#: ``AdaptationResult``, a specialized procedure a ``WarmupResult``.
-WarmupOutcome: TypeAlias = AdaptationResult | WarmupResult
+    run: Callable[..., "RunResult"]
 
 
-class MCMCResult(NamedTuple, Generic[StateT, InfoT]):
-    state: StateT
-    samples: PyTree | None = None
-    info: InfoT | None = None
+class RunResult(NamedTuple):
+    """The outcome of :func:`~probjax.inference.run` or a warmup.
+
+    ``trace`` maps each collected name to its values stacked over the kept
+    steps. A warmup policy stores its own diagnostics there instead.
+    """
+
+    state: Any
+    params: Any
+    trace: Any = None
 
 
 class SMCResult(NamedTuple, Generic[StateT, ParamsT, InfoT]):
@@ -124,12 +104,6 @@ class SMCResult(NamedTuple, Generic[StateT, ParamsT, InfoT]):
     num_steps: int | Array | None = None
     completed: bool | Array | None = None
     key: RngKey | None = None
-
-
-class FilteringResult(NamedTuple, Generic[StateT, InfoT]):
-    initial_state: StateT
-    states: PyTree
-    info: InfoT | None = None
 
 
 class RunnerMixin(WithProgressBarAPI):

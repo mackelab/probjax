@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import Any, NamedTuple
 
 import jax
@@ -13,7 +14,7 @@ from blackjax.adaptation.window_adaptation import base as window_adaptation_base
 from blackjax.adaptation.window_adaptation import build_schedule
 
 from probjax.inference.adaptation import get_param, replace_params
-from probjax.inference.base import Adaptor, Kernel, Warmup, WarmupResult
+from probjax.inference.base import Adaptor, Kernel, RunResult, Warmup
 from probjax.inference.mcmc.base import ravel_position
 
 
@@ -140,15 +141,18 @@ def mean_adaptor(
     return Adaptor(init, update, finalize)
 
 
-def slice_step_size_adaptor(
-    target_num_evaluations: float,
-    max_evaluations: int,
-    **kwargs: Any,
-) -> Adaptor:
-    """Local dual-averaging rule for slice-width adaptation."""
+def slice_step_size_adaptor(target: float = 0.5, **kwargs: Any) -> Adaptor:
+    """Dual averaging of the slice width on the share of bracket expansions.
+
+    A step size that is too small spends its evaluations stepping out, one
+    that is too large spends them shrinking the bracket. The expanding share
+    falls monotonically with the step size, so driving it to ``target``
+    (expansions as many as contractions by default, as in Karamanis & Beutler,
+    2021) is stable, unlike targeting the total number of evaluations.
+    """
     return step_size_adaptor(
-        target=target_num_evaluations / max_evaluations,
-        target_from_info_fn=lambda info: info.num_evals / max_evaluations,
+        target=target,
+        target_from_info_fn=lambda info: info.num_expansions / info.num_evals,
         **kwargs,
     )
 
@@ -177,16 +181,8 @@ def window_warmup(
             diagonal, target_acceptance_rate
         )
 
-    def run(
-        rng,
-        kernel: Kernel,
-        state: Any,
-        params: Any,
-        num_steps: int,
-        args: Any = None,
-    ) -> WarmupResult:
-        if args is not None:
-            raise ValueError("window_warmup does not support per-step arguments")
+    @partial(jax.jit, static_argnames=("kernel", "num_steps"))
+    def run(rng, kernel: Kernel, state: Any, params: Any, num_steps: int) -> RunResult:
         schedule = build_schedule(
             num_steps,
             initial_buffer_size=initial_buffer_size,
@@ -220,6 +216,6 @@ def window_warmup(
             step_size=step_size,
             inverse_mass_matrix=inverse_mass_matrix,
         )
-        return WarmupResult(state, params)
+        return RunResult(state, params)
 
     return Warmup(run)

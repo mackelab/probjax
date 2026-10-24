@@ -81,19 +81,7 @@ class FilterAPI(KernelAPI):
     def build_step(*args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("build_step method must be implemented")
 
-    @staticmethod
-    def build_kernel(*args: Any, **kwargs: Any) -> Any:
-        """The original name of :meth:`build_step`; still accepted."""
-        raise NotImplementedError("build_step method must be implemented")
-
     default_unpack = staticmethod(_default_unpack)
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        super().__init_subclass__(**kwargs)
-        # ``build_kernel`` was the original name; ``build_step`` is the name
-        # every other kernel API uses. Accept both, and prefer ``build_step``.
-        if "build_kernel" in cls.__dict__ and "build_step" not in cls.__dict__:
-            cls.build_step = cls.__dict__["build_kernel"]
 
     def __new__(cls, *args: Any, **kwargs: Any) -> FilterKernel:
         return cls.kernel_type(
@@ -105,7 +93,7 @@ def make_filter_api(
     *,
     name: str,
     init_fn: Callable,
-    build_kernel_fn: Callable,
+    build_step_fn: Callable,
     default_unpack_fn: Optional[Callable] = None,
 ) -> type:
     """Create a FilterAPI subclass with minimal boilerplate.
@@ -113,14 +101,13 @@ def make_filter_api(
     Args:
         name: Name for the new class.
         init_fn: Function to initialize filter state.
-        build_kernel_fn: Function that builds the filter step function.
+        build_step_fn: Function that builds the filter step function.
         default_unpack_fn: Optional function to extract output from (state, info).
             Defaults to returning (state, info).
     """
     attrs = {
         "init": staticmethod(init_fn),
-        "build_step": staticmethod(build_kernel_fn),
-        "build_kernel": staticmethod(build_kernel_fn),
+        "build_step": staticmethod(build_step_fn),
     }
     if default_unpack_fn is not None:
         attrs["default_unpack"] = staticmethod(default_unpack_fn)

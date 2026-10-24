@@ -11,17 +11,13 @@ Kernels are pure transitions. Adaptors fit their parameters and runners provide
 the standard compiled execution paths.
 """
 
-from probjax.inference.adaptation import adapt, adapt_step, as_warmup, compose_adaptors
+from probjax.inference.adaptation import compose_adaptors, pooled
 from probjax.inference.base import (
-    AdaptationResult,
-    AdaptationTrace,
     Adaptor,
-    FilteringResult,
     Kernel,
-    MCMCResult,
+    RunResult,
     SMCResult,
     Warmup,
-    WarmupResult,
 )
 
 # Filtering imports
@@ -78,8 +74,6 @@ from probjax.inference.mcmc import (
     step_size_adaptor,
     window_warmup,
 )
-from probjax.inference.mcmc.base import MarkovKernel, Params, State
-from probjax.inference.mcmc_runner import MCMC
 
 # Rejection sampling
 from probjax.inference.rejection import (
@@ -89,6 +83,7 @@ from probjax.inference.rejection import (
     init_ars_state,
     update_ars_state,
 )
+from probjax.inference.runner import run, step, warmup
 
 # SMC imports
 from probjax.inference.smc import (
@@ -100,13 +95,10 @@ from probjax.inference.smc import (
     RDSMCState,
     acceptance_rate_adaptor,
     adaptive_persistent_smc,
-    adaptive_persistent_smc_kernel,
     adaptive_smc,
-    adaptive_smc_kernel,
     particle_adaptor,
     path_smc,
     persistent_smc,
-    persistent_smc_kernel,
     run_pretrained_diffusion_smc,
     run_rdsmc,
     smc,
@@ -124,17 +116,14 @@ from probjax.inference.vi import (
 __all__ = [
     "Kernel",
     "Adaptor",
-    "AdaptationResult",
-    "AdaptationTrace",
     "Warmup",
-    "WarmupResult",
-    "adapt",
-    "adapt_step",
-    "as_warmup",
+    "RunResult",
+    "run",
+    "step",
+    "warmup",
     "compose_adaptors",
-    "MCMCResult",
+    "pooled",
     "SMCResult",
-    "FilteringResult",
     "step_size_adaptor",
     "mass_matrix_adaptor",
     "mean_adaptor",
@@ -171,20 +160,11 @@ __all__ = [
     "sgld",
     "sghmc",
     "sgnht",
-    # MCMC base classes
-    "MarkovKernel",
-    "Params",
-    "State",
-    # MCMC runner
-    "MCMC",
     # SMC
     "smc",
     "adaptive_smc",
-    "adaptive_smc_kernel",
     "persistent_smc",
-    "persistent_smc_kernel",
     "adaptive_persistent_smc",
-    "adaptive_persistent_smc_kernel",
     "run_pretrained_diffusion_smc",
     "run_rdsmc",
     "PretrainedTwistInfo",
