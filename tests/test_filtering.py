@@ -536,7 +536,7 @@ class TestMakeFilterApi:
         def my_init(mean, t=None):
             return KalmanFilterState(mean, jnp.eye(1), t)
 
-        def my_build_kernel():
+        def my_build_step():
             def step(state, t=None, observed=None, rng=None):
                 return state, None
 
@@ -545,7 +545,7 @@ class TestMakeFilterApi:
         MyFilter = make_filter_api(
             name="my_filter",
             init_fn=my_init,
-            build_kernel_fn=my_build_kernel,
+            build_step_fn=my_build_step,
         )
         kernel = MyFilter()
         assert isinstance(kernel, FilterKernel)
@@ -558,7 +558,7 @@ class TestMakeFilterApi:
         def my_init(mean, t=None):
             return KalmanFilterState(mean, jnp.eye(1), t)
 
-        def my_build_kernel():
+        def my_build_step():
             def step(state, t=None, observed=None, rng=None):
                 return state, None
 
@@ -570,7 +570,7 @@ class TestMakeFilterApi:
         MyFilter = make_filter_api(
             name="my_filter",
             init_fn=my_init,
-            build_kernel_fn=my_build_kernel,
+            build_step_fn=my_build_step,
             default_unpack_fn=my_unpack,
         )
         kernel = MyFilter()
@@ -1209,7 +1209,7 @@ class TestFilterClass:
         assert mus_s.shape[0] == trace.states.mean.shape[0]
 
     def test_smooth_auto_detect_particle(self):
-        """Test that smooth() auto-detects particle filter and requires key and transition_logdensity_fn."""
+        """Test that smooth() auto-detects particle filter and requires rng and transition_logdensity_fn."""
         from probjax.inference.filter_smooth import Filter
 
         def log_likelihood(particles, obs, t):
@@ -1237,8 +1237,8 @@ class TestFilterClass:
             diff = x_tp1 - mean
             return -0.5 * jnp.sum(diff**2 / Q[0, 0])
 
-        # Should raise error without key
-        with pytest.raises(ValueError, match="key"):
+        # Should raise error without rng
+        with pytest.raises(ValueError, match="rng"):
             filt.smooth(trace, transition_logdensity_fn=transition_logdensity)
 
         # Should raise error without transition_logdensity_fn

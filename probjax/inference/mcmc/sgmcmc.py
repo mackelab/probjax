@@ -1,6 +1,6 @@
 """Stochastic Gradient Markov Chain Monte Carlo (SGMCMC) samplers.
 
-Wraps BlackJAX's SGLD, SGHMC, and SGNHT into the probjax MarkovKernel API.
+Wraps BlackJAX's SGLD, SGHMC, and SGNHT into the probjax Kernel API.
 
 Extra positional arguments passed to ``step`` (or ``__call__``) are forwarded
 to the ``grad_estimator``/``logdensity_fn``.  For SG-MCMC the first extra arg
@@ -19,10 +19,9 @@ Usage::
     for minibatch in data_loader:
         state, info = sampler.step(key, state, params, minibatch)
 
-    # Or with the MCMC runner (stack batches along leading axis)
+    # Or with the runner (stack batches along leading axis)
     batches = jnp.stack([next(data_loader) for _ in range(num_steps)])
-    mcmc = MCMC(sampler)
-    result = mcmc.run(key, state, num_steps, params=params, args=(batches,))
+    result = run(key, sampler, state, params, num_steps, args=(batches,))
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ import blackjax
 from blackjax.sgmcmc.sgnht import SGNHTState
 from blackjax.util import generate_gaussian_noise
 
-from probjax.inference.mcmc.base import MarkovKernel
+from probjax.inference.base import Kernel
 from probjax.utils.typing import ArrayTree, RngKey, Scalar
 
 # ---------------------------------------------------------------------------
@@ -93,9 +92,6 @@ class SGMCMCParams(NamedTuple):
     temperature: Scalar = 1.0
 
 
-SGLDParams = SGMCMCParams
-SGHMCParams = SGMCMCParams
-SGNHTParams = SGMCMCParams
 
 
 def _make_sgmcmc_kernel(
@@ -105,8 +101,8 @@ def _make_sgmcmc_kernel(
     state_init: Callable | None = None,
     extra_step_kwargs: dict[str, Any] | None = None,
     temperature: float = 1.0,
-) -> MarkovKernel:
-    """Shared constructor for the SGLD/SGHMC/SGNHT MarkovKernels.
+) -> Kernel:
+    """Shared constructor for the SGLD/SGHMC/SGNHT kernels.
 
     ``state_init(rng, position)`` defaults to wrapping
     ``blackjax_init(position)`` in :class:`SGMCMCState`; SGNHT supplies its
@@ -143,7 +139,7 @@ def _make_sgmcmc_kernel(
             return SGMCMCState(position=new_position), SGMCMCInfo()
         return new_position, SGMCMCInfo()
 
-    return MarkovKernel(
+    return Kernel(
         init,
         step,
         # The constructor's temperature is the default; params can override it.
@@ -153,7 +149,7 @@ def _make_sgmcmc_kernel(
     )
 
 
-def sgld(grad_estimator: Callable, temperature: float = 1.0) -> MarkovKernel:
+def sgld(grad_estimator: Callable, temperature: float = 1.0) -> Kernel:
     """Stochastic Gradient Langevin Dynamics.
 
     Args:
@@ -181,7 +177,7 @@ def sghmc(
     alpha: float = 0.01,
     beta: float = 0.0,
     temperature: float = 1.0,
-) -> MarkovKernel:
+) -> Kernel:
     """Stochastic Gradient Hamiltonian Monte Carlo.
 
     Args:
@@ -217,7 +213,7 @@ def sgnht(
     alpha: float = 0.01,
     beta: float = 0.0,
     temperature: float = 1.0,
-) -> MarkovKernel:
+) -> Kernel:
     """Stochastic Gradient Nosé-Hoover Thermostat.
 
     SGNHT extends SGHMC with a thermostat variable that automatically

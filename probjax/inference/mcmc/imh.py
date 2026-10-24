@@ -12,13 +12,10 @@ from flax import nnx
 from jax.flatten_util import ravel_pytree
 
 from probjax.inference.adaptation import compose_adaptors
-from probjax.inference.base import Kernel, Warmup, WarmupResult
+from probjax.inference.base import Kernel, RunResult, Warmup
 from probjax.inference.mcmc.adaptation import covariance_adaptor, mean_adaptor
-from probjax.inference.mcmc.base import (
-    MarkovKernelAPI,
-    ravel_position,
-    sample_kernel,
-)
+from probjax.inference.mcmc.base import MarkovKernelAPI, ravel_position
+from probjax.inference.runner import run as run_kernel
 from probjax.nn.training import FitConfig
 from probjax.utils.jaxutils import leading_dim
 from probjax.utils.typing import Array, ArrayLike, PyTree, RngKey
@@ -269,7 +266,7 @@ def neural_imh_warmup(
 
     def run(
         rng, kernel: Kernel, state: Any, params: Any, num_steps: int
-    ) -> WarmupResult:
+    ) -> RunResult:
         if not isinstance(params, NeuralIMHParams):
             raise TypeError("neural_imh_warmup requires a neural_imh kernel.")
         if num_steps < num_adaptations:
@@ -290,29 +287,22 @@ def neural_imh_warmup(
         for block_size in block_sizes:
             rng, sample_key, fit_key = jax.random.split(rng, 3)
             initial_position = state.position
-            collect_info = (
-                ("acceptance_rate", "proposal")
-                if rao_blackwellize
-                else ("acceptance_rate",)
+            collect = ("position", "acceptance_rate")
+            if rao_blackwellize:
+                collect += ("proposal",)
+            result = run_kernel(
+                sample_key, kernel, state, params, block_size, collect=collect
             )
-            result = sample_kernel(
-                sample_key,
-                kernel,
-                state,
-                block_size,
-                params,
-                collect_info=collect_info,
-            )
-            state = result.state
+            state, trace = result.state, result.trace
             if rao_blackwellize:
                 round_data, round_weights = _rao_blackwellized_data(
                     initial_position,
-                    result.samples,
-                    result.info["proposal"].position,
-                    result.info["acceptance_rate"],
+                    trace["position"],
+                    trace["proposal"].position,
+                    trace["acceptance_rate"],
                 )
             else:
-                round_data = result.samples
+                round_data = trace["position"]
                 round_weights = jnp.ones((block_size,))
             collected = _limit_data(
                 _concatenate_data(collected, round_data), max_buffer_size
@@ -343,13 +333,13 @@ def neural_imh_warmup(
             proposal_state = jax.tree.map(lambda value: value.copy(), proposal_state)
             params = NeuralIMHParams(proposal_state, params.iteration + 1)
             losses.append(round_losses)
-            acceptance_rates.append(jnp.mean(result.info["acceptance_rate"]))
+            acceptance_rates.append(jnp.mean(trace["acceptance_rate"]))
 
         info = NeuralIMHWarmupInfo(
             losses=jnp.stack(losses),
             acceptance_rate=jnp.stack(acceptance_rates),
         )
-        return WarmupResult(state, params, info)
+        return RunResult(state, params, info)
 
     return Warmup(run)
 

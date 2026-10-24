@@ -3,9 +3,9 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.adaptation import as_warmup, compose_adaptors
+from probjax.inference.adaptation import compose_adaptors
 from probjax.inference.base import Adaptor, Warmup
-from probjax.inference.mcmc import arms, gaussian_imh, gauss_rwmh, hmc, mala
+from probjax.inference.mcmc import arms, gauss_rwmh, gaussian_imh, hmc, mala
 from probjax.inference.mcmc.adaptation import (
     covariance_adaptor,
     mass_matrix_adaptor,
@@ -13,7 +13,7 @@ from probjax.inference.mcmc.adaptation import (
     step_size_adaptor,
     window_warmup,
 )
-from probjax.inference.mcmc_runner import MCMC
+from probjax.inference.runner import run, step, warmup
 from probjax.inference.smc.tuning import acceptance_rate_adaptor
 
 
@@ -44,14 +44,18 @@ def test_local_adaptor_step_updates_the_next_transition_parameters():
     adaptor = step_size_adaptor()
     adaptor_state = adaptor.init(state, params)
 
-    state, params, adaptor_state, kernel_info, adaptor_info = MCMC.adapt_step(
-        jax.random.key(1), kernel, adaptor, state, params, adaptor_state
+    state, params, adaptor_state, kernel_info = step(
+        jax.random.key(1),
+        kernel,
+        state,
+        params,
+        adaptor=adaptor,
+        adaptor_state=adaptor_state,
     )
 
     assert state.position.shape == (2,)
     assert jnp.isfinite(params.step_size)
     assert kernel_info.acceptance_rate.shape == ()
-    assert adaptor_info is None
 
 
 def test_composed_adaptors_update_step_size_and_scale():
@@ -63,13 +67,12 @@ def test_composed_adaptors_update_step_size_and_scale():
         scale=covariance_adaptor(),
     )
 
-    result = MCMC(kernel).adapt(jax.random.key(1), adaptor, state, params, 25)
+    result = warmup(jax.random.key(1), kernel, state, params, 25, adaptor)
 
     assert jnp.isfinite(result.params.step_size)
     assert result.params.scale.shape == (2,)
     assert jnp.all(jnp.isfinite(result.params.scale))
     assert result.trace is None
-    assert result.final_info is None
 
 
 def test_mass_matrix_adaptor_diagonal_and_dense_shapes():
@@ -97,7 +100,7 @@ def test_window_warmup_ports_blackjax_window_state_machine():
     state = kernel.init(jax.random.key(0), jnp.ones(2))
     params = kernel.init_params(state, step_size=0.1)
 
-    result = MCMC(kernel).warmup(jax.random.key(1), window_warmup(), state, params, 30)
+    result = warmup(jax.random.key(1), kernel, state, params, 30, window_warmup())
 
     assert jnp.isfinite(result.params.step_size)
     assert result.params.inverse_mass_matrix.shape == (2,)
@@ -121,32 +124,28 @@ def test_mean_adaptor_tracks_running_mean():
     assert jnp.allclose(params["mean"], jnp.array([2.0, 3.0]))
 
 
-def test_warmup_accepts_bare_adaptor_like_as_warmup():
+def test_warmup_with_adaptor_matches_adaptive_run():
     kernel = mala(_logdensity)
     state = kernel.init(jax.random.key(0), jnp.zeros(2))
     params = kernel.init_params(state)
-    runner = MCMC(kernel, verbose=False)
 
-    auto = runner.warmup(jax.random.key(1), step_size_adaptor(), state, params, 10)
-    explicit = runner.warmup(
-        jax.random.key(1), as_warmup(step_size_adaptor()), state, params, 10
+    warm = warmup(jax.random.key(1), kernel, state, params, 10, step_size_adaptor())
+    adapted = run(
+        jax.random.key(1), kernel, state, params, 10, adaptor=step_size_adaptor()
     )
 
     assert isinstance(kernel.default_adaptation(), Adaptor)
-    assert float(auto.params.step_size) == float(explicit.params.step_size)
+    assert float(warm.params.step_size) == float(adapted.params.step_size)
 
 
 def test_warmup_uses_kernel_default_when_omitted():
     kernel = hmc(_logdensity, num_integration_steps=3)
     state = kernel.init(jax.random.key(0), jnp.ones(2))
     params = kernel.init_params(state, step_size=0.1)
-    runner = MCMC(kernel, verbose=False)
 
     assert isinstance(kernel.default_adaptation(), Warmup)
-    defaulted = runner.warmup(jax.random.key(1), state=state, params=params, num_steps=30)
-    explicit = runner.warmup(
-        jax.random.key(1), window_warmup(), state, params, 30
-    )
+    defaulted = warmup(jax.random.key(1), kernel, state, params, 30)
+    explicit = warmup(jax.random.key(1), kernel, state, params, 30, window_warmup())
 
     assert float(defaulted.params.step_size) == float(explicit.params.step_size)
 
@@ -158,9 +157,7 @@ def test_warmup_without_default_raises_informatively():
 
     assert kernel.default_adaptation is None
     try:
-        MCMC(kernel, verbose=False).warmup(
-            jax.random.key(1), state=state, params=params, num_steps=5
-        )
+        warmup(jax.random.key(1), kernel, state, params, 5)
     except ValueError as error:
         assert "no default adaptation" in str(error)
     else:
@@ -172,9 +169,7 @@ def test_gaussian_imh_default_adaptation_tunes_mean_and_cov():
     state = kernel.init(jax.random.key(0), jnp.zeros(2))
     params = kernel.init_params(state, cov=50.0 * jnp.ones(2))
 
-    result = MCMC(kernel, verbose=False).warmup(
-        jax.random.key(1), state=state, params=params, num_steps=10
-    )
+    result = warmup(jax.random.key(1), kernel, state, params, 10)
 
     assert result.params.mean.shape == (2,)
     assert result.params.cov.shape == (2,)
@@ -200,3 +195,118 @@ def test_smc_acceptance_adaptor_preserves_shared_shape():
     )
 
     assert params["step_size"].shape == (1, 1)
+
+
+def test_pathfinder_warmup_runs_through_warmup():
+    import blackjax
+
+    from probjax.inference import nuts, pathfinder_warmup
+
+    kernel = nuts(_logdensity)
+    state = kernel.init(jax.random.key(0), jnp.ones(2))
+    params = kernel.init_params(state)
+
+    result = warmup(
+        jax.random.key(1),
+        kernel,
+        state,
+        params,
+        50,
+        pathfinder_warmup(blackjax.nuts, _logdensity),
+    )
+
+    assert jnp.isfinite(result.params.step_size)
+    assert result.params.inverse_mass_matrix.shape == (2, 2)
+
+
+def test_mclmc_default_warmups_recover_the_target_scale():
+    from probjax.inference import adjusted_mclmc, adjusted_mclmc_dynamic, mclmc
+
+    scales = jnp.array([1.0, 3.0])
+
+    def logdensity(x):
+        return -0.5 * jnp.sum((x / scales) ** 2)
+
+    for api in (mclmc, adjusted_mclmc, adjusted_mclmc_dynamic):
+        kernel = api(logdensity)
+        state = kernel.init(jax.random.key(0), jnp.ones(2))
+        warm = warmup(jax.random.key(1), kernel, state, kernel.init_params(state), 500)
+        draws = run(jax.random.key(2), kernel, warm.state, warm.params, 2000)
+        std = draws.trace["position"].std(0)
+        assert jnp.allclose(std, scales, rtol=0.25), (api.__name__, std)
+
+
+def _banana(z):
+    return jax.scipy.stats.norm.logpdf(z[0], 0.0, 2.0) + jax.scipy.stats.norm.logpdf(
+        z[1], 0.25 * z[0] ** 2 - 1.0, 0.5
+    )
+
+
+def test_slice_default_adaptation_settles_on_a_finite_width():
+    from probjax.inference import slice
+
+    kernel = slice(_banana)
+    state = kernel.init(jax.random.key(0), jnp.array([0.0, -1.0]))
+    warm = warmup(jax.random.key(1), kernel, state, kernel.init_params(state), 1000)
+    out = run(
+        jax.random.key(2),
+        kernel,
+        warm.state,
+        warm.params,
+        1000,
+        collect=("position", "num_evals", "num_expansions"),
+    )
+
+    assert 0.1 < warm.params.step_size < 20.0
+    assert jnp.all(jnp.isfinite(out.trace["position"]))
+    expanding = out.trace["num_expansions"].sum() / out.trace["num_evals"].sum()
+    assert 0.35 < expanding < 0.65
+
+
+def test_slice_rejects_nan_densities_and_accepts_integer_step_sizes():
+    from probjax.inference import slice
+
+    # NaN outside the unit disc, like an overflowing density would produce.
+    def logdensity(x):
+        return jnp.where(jnp.sum(x**2) < 1.0, 0.0, jnp.nan)
+
+    kernel = slice(logdensity)
+    state = kernel.init(jax.random.key(0), jnp.zeros(2))
+    params = kernel.init_params(state, step_size=2)
+    out = run(jax.random.key(1), kernel, state, params, 500)
+
+    assert jnp.all(jnp.sum(out.trace["position"] ** 2, -1) < 1.0)
+
+
+def test_latent_slice_keeps_its_log_density_when_shrinking_runs_out():
+    from probjax.inference.mcmc.latent_slice import latent_slice
+
+    kernel = latent_slice(_banana, max_evals=1)
+    state = kernel.init(None, jnp.array([0.0, -1.0]))
+    out = run(
+        jax.random.key(1),
+        kernel,
+        state,
+        kernel.init_params(state),
+        200,
+        collect=("position", "logdensity"),
+    )
+
+    recomputed = jax.vmap(_banana)(out.trace["position"])
+    assert jnp.allclose(out.trace["logdensity"], recomputed, atol=1e-5)
+
+
+def test_gauss_rwmh_default_warmup_hits_its_acceptance_target():
+    kernel = gauss_rwmh(_banana)
+    state = kernel.init(None, jnp.array([0.0, -1.0]))
+    warm = warmup(jax.random.key(1), kernel, state, kernel.init_params(state), 4000)
+    out = run(
+        jax.random.key(2),
+        kernel,
+        warm.state,
+        warm.params,
+        4000,
+        collect=("acceptance_rate",),
+    )
+
+    assert abs(float(out.trace["acceptance_rate"].mean()) - 0.234) < 0.06

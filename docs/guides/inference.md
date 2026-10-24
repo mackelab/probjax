@@ -1,12 +1,12 @@
 # Inference
 
 Kernels are pure and separate from the loops that drive them. A kernel is built
-from a log-density, initialised at a position, and then run by `MCMC` or `SMC`:
+from a log-density, initialised at a position, and then run by `run`:
 
 ```python
 import jax
 import jax.numpy as jnp
-from probjax.inference import MCMC, nuts
+from probjax.inference import nuts, run
 
 def logdensity(x):
     return -0.5 * jnp.sum(x**2)
@@ -15,12 +15,21 @@ kernel = nuts(logdensity)
 state = kernel.init(jax.random.key(0), jnp.zeros(3))
 params = kernel.init_params(state)
 
-result = MCMC(kernel).sample(jax.random.key(1), state, 500, params)
-draws = result.samples
+result = run(jax.random.key(1), kernel, state, params, 500)
+draws = result.trace["position"]
 ```
 
-`MCMC(...).run` keeps the full state and info; `.sample` keeps positions and
-supports `thin`. Both are compiled scans.
+`run` is one compiled scan. `collect=` names the state or info fields to keep
+(default `("position",)`), `thin=` keeps every n-th transition, `args=` feeds
+per-step arguments such as minibatches, and `progress=True` shows a progress
+bar. `step` takes a single transition, for writing your own loop.
+
+The tutorials show all of this on real problems:
+[MCMC in probjax](../tutorials/mcmc.md) (a kernel gallery, every adaptation
+mode, many chains, pseudo-marginal MCMC),
+[Neural aids for MCMC](../tutorials/neural_mcmc.md) (NeuTra and neural IMH)
+and [Bayesian neural networks](../tutorials/bnn.md) (HMC versus stochastic
+gradient MCMC).
 
 ## Kernels
 
@@ -36,13 +45,13 @@ Warmup is a separate object, so the same kernel can be tuned different ways:
 ```python
 import jax
 import jax.numpy as jnp
-from probjax.inference import MCMC, mala, step_size_adaptor
+from probjax.inference import mala, step_size_adaptor, warmup
 
 kernel = mala(lambda x: -0.5 * jnp.sum(x**2))
 state = kernel.init(jax.random.key(0), jnp.zeros(2))
 params = kernel.init_params(state)
 
-tuned = MCMC(kernel).adapt(jax.random.key(1), step_size_adaptor(), state, params, 50)
+tuned = warmup(jax.random.key(1), kernel, state, params, 50, step_size_adaptor())
 ```
 
 `window_warmup`, `pathfinder_warmup` and `mclmc_warmup` cover the usual
@@ -50,13 +59,35 @@ strategies; `step_size_adaptor`, `mass_matrix_adaptor` and `covariance_adaptor`
 compose for custom ones. Each kernel also carries its recommended policy as
 `kernel.default_adaptation` — either an `Adaptor` or a `Warmup`
 (`None` when there is nothing to tune), so
-`MCMC(kernel).warmup(key, state=state, params=params, num_steps=n)` just works.
-`warmup()` accepts a bare adaptor (auto-wrapped) or a full warmup policy;
-pass `adaptation=` explicitly to override the default.
+`warmup(key, kernel, state, params, n)` just works. Pass `policy=` (an
+`Adaptor` or a `Warmup`) to override the default.
+
+An adaptor can also keep adapting while you sample:
+`run(..., adaptor=step_size_adaptor())` updates the parameters after every
+transition and returns the finalized ones in `result.params`. To adapt several
+chains as one, vmap with an axis name and wrap the adaptor in `pooled`:
+
+```python
+import jax
+import jax.numpy as jnp
+from probjax.inference import mala, pooled, run, step_size_adaptor
+
+kernel = mala(lambda x: -0.5 * jnp.sum(x**2))
+states = jax.vmap(lambda x: kernel.init(None, x))(jnp.zeros((4, 2)))
+params = jax.vmap(kernel.init_params)(states)
+keys = jax.random.split(jax.random.key(0), 4)
+
+chains = jax.vmap(
+    lambda key, state, params: run(
+        key, kernel, state, params, 100, adaptor=pooled(step_size_adaptor())
+    ),
+    axis_name="chain",
+)(keys, states, params)
+```
 
 ## Sequential Monte Carlo and filtering
 
-`SMC` mirrors `MCMC` for particle methods (`smc`, `adaptive_smc`,
+The `SMC` runner drives particle methods (`smc`, `adaptive_smc`,
 `persistent_smc`, `path_smc`). `probjax.inference.filtering` covers
 `kalman_filter`, `extended_kalman_filter`, `unscented_kalman_filter`,
 `sq_kalman_filter`, `rank_reduced_kalman_filter` and `ParticleFilter`, with
@@ -110,7 +141,7 @@ target:
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from probjax.inference import MCMC, neutra, nuts
+from probjax.inference import neutra, nuts, run
 from probjax.nn import maf
 
 def logdensity(x):
@@ -121,10 +152,8 @@ transform = neutra(logdensity, flow)
 
 kernel = nuts(transform.logdensity)
 state = kernel.init(jax.random.key(0), jnp.zeros(2))
-result = MCMC(kernel).sample(
-    jax.random.key(1), state, 200, kernel.init_params(state)
-)
-draws = transform.forward(result.samples)   # back in the target's space
+result = run(jax.random.key(1), kernel, state, kernel.init_params(state), 200)
+draws = transform.forward(result.trace["position"])   # back in the target's space
 ```
 
 This is a change of variables, not an approximation: **MCMC stays asymptotically
@@ -145,7 +174,7 @@ solvers — follows the same three steps, so the same habits work everywhere.
 | --- | --- | --- |
 | **API class** | a namespace holding `init`, `init_params` and `build_step` | `hmc`, `kalman_filter`, `dopri5` |
 | **kernel** | a pure, callable `(init, step, ...)` container | `hmc(logdensity)` |
-| **runner** | the compiled loop that drives a kernel | `MCMC(kernel)`, `SMC(kernel)` |
+| **runner** | the compiled loop that drives a kernel | `run(key, kernel, ...)`, `SMC(kernel)` |
 
 An API class is turned into a kernel by calling it with the model's functions.
 Options that are known earlier can be bound first with `configure`, which

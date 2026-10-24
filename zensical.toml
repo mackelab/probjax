@@ -33,6 +33,9 @@ nav = [
     "tutorials/ppl.md",
     "tutorials/kalman_filter.md",
     "tutorials/smc.md",
+    "tutorials/mcmc.md",
+    "tutorials/neural_mcmc.md",
+    "tutorials/bnn.md",
   ] },
   { "Reference" = [
     "reference/core.md",

@@ -163,7 +163,7 @@ def init(
     return RankReducedKalmanFilterState(mean, cov_factor, cov_core, as_time(t))
 
 
-def build_kernel(
+def build_step(
     transition_model_fns: Callable,
     observation_model_fns: Callable,
     rank: int,
@@ -306,7 +306,7 @@ class rank_reduced_kalman_filter(FilterAPI):
     """
 
     init = init
-    build_kernel = build_kernel
+    build_step = build_step
 
     @staticmethod
     def default_unpack(

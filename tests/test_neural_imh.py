@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import pytest
 from flax import nnx
 
-from probjax.inference import MCMC, neural_imh, neural_imh_warmup
+from probjax.inference import neural_imh, neural_imh_warmup, run, warmup
 from probjax.inference.mcmc.imh import _limit_data, _rao_blackwellized_data
 from probjax.nn import FitConfig, LinearFlow, maf
 
@@ -20,13 +20,18 @@ def test_neural_imh_runs_in_compiled_mcmc():
     state = kernel.init(None, jnp.zeros(1))
     params = kernel.init_params(state)
 
-    result = MCMC(kernel, collect_info=("acceptance_rate",)).sample(
-        jax.random.key(1), state, 8, params
+    result = run(
+        jax.random.key(1),
+        kernel,
+        state,
+        params,
+        8,
+        collect=("position", "acceptance_rate"),
     )
 
-    assert result.samples.shape == (8, 1)
-    assert result.info["acceptance_rate"].shape == (8,)
-    assert jnp.all(jnp.isfinite(result.samples))
+    assert result.trace["position"].shape == (8, 1)
+    assert result.trace["acceptance_rate"].shape == (8,)
+    assert jnp.all(jnp.isfinite(result.trace["position"]))
 
 
 def test_neural_imh_warmup_fits_chain_positions_without_data():
@@ -34,22 +39,22 @@ def test_neural_imh_warmup_fits_chain_positions_without_data():
     kernel = neural_imh(_normal_logdensity, proposal)
     state = kernel.init(None, jnp.array([1.5]))
     params = kernel.init_params(state)
-    warmup = neural_imh_warmup(
+    policy = neural_imh_warmup(
         proposal,
         num_adaptations=2,
         fit_steps=3,
         batch_size=8,
     )
 
-    result = MCMC(kernel).warmup(jax.random.key(1), warmup, state, params, num_steps=12)
+    result = warmup(jax.random.key(1), kernel, state, params, 12, policy)
 
-    assert result.info.losses.shape == (2, 3)
-    assert result.info.acceptance_rate.shape == (2,)
-    assert jnp.all(jnp.isfinite(result.info.losses))
+    assert result.trace.losses.shape == (2, 3)
+    assert result.trace.acceptance_rate.shape == (2,)
+    assert jnp.all(jnp.isfinite(result.trace.losses))
 
-    samples = (
-        MCMC(kernel).sample(jax.random.key(2), result.state, 8, result.params).samples
-    )
+    samples = run(jax.random.key(2), kernel, result.state, result.params, 8).trace[
+        "position"
+    ]
     assert samples.shape == (8, 1)
 
 
@@ -62,8 +67,12 @@ def test_neural_imh_warmup_augments_chain_with_data():
     state = kernel.init(None, jnp.array([1.5]))
     params = kernel.init_params(state)
 
-    result = MCMC(kernel).warmup(
+    result = warmup(
         jax.random.key(1),
+        kernel,
+        state,
+        params,
+        8,
         neural_imh_warmup(
             proposal,
             data=seed_data,
@@ -72,13 +81,10 @@ def test_neural_imh_warmup_augments_chain_with_data():
             batch_size=64,
             learning_rate=1e-2,
         ),
-        state,
-        params,
-        num_steps=8,
     )
 
     assert distribution.logpdf(seed_data).mean() > density_before
-    assert result.info.losses[-1, -1] < result.info.losses[0, 0]
+    assert result.trace.losses[-1, -1] < result.trace.losses[0, 0]
 
 
 def test_neural_imh_warmup_resumes_from_kernel_params():
@@ -93,17 +99,18 @@ def test_neural_imh_warmup_resumes_from_kernel_params():
         config=FitConfig(max_steps=10, learning_rate=1e-2),
     )
 
-    result = MCMC(kernel).warmup(
+    result = warmup(
         jax.random.key(1),
+        kernel,
+        state,
+        params,
+        2,
         neural_imh_warmup(
             proposal,
             num_adaptations=1,
             fit_steps=1,
             learning_rate=0.0,
         ),
-        state,
-        params,
-        num_steps=2,
     )
 
     for expected, actual in zip(
@@ -152,13 +159,13 @@ def test_neural_imh_warmup_draws_fresh_keys_per_block(monkeypatch):
     # ``probjax.inference.mcmc.imh`` names the exported class, not the module.
     imh_module = sys.modules["probjax.inference.mcmc.imh"]
     block_keys = []
-    original = imh_module.sample_kernel
+    original = imh_module.run_kernel
 
-    def recording_sample_kernel(rng, *args, **kwargs):
+    def recording_run_kernel(rng, *args, **kwargs):
         block_keys.append(jax.random.key_data(rng))
         return original(rng, *args, **kwargs)
 
-    monkeypatch.setattr(imh_module, "sample_kernel", recording_sample_kernel)
+    monkeypatch.setattr(imh_module, "run_kernel", recording_run_kernel)
     proposal = maf(1, 1, rngs=nnx.Rngs(0))
     kernel = neural_imh(_normal_logdensity, proposal)
     state = kernel.init(None, jnp.array([1.5]))

@@ -2,30 +2,15 @@ from __future__ import annotations
 
 import inspect
 from functools import partial, wraps
-from typing import Any, Callable, NamedTuple
+from typing import Any, Callable
 
-import jax
 import jax.numpy as jnp
-from blackjax.base import State
 from jax.flatten_util import ravel_pytree
 
-from probjax.inference.base import Kernel, MCMCResult
+from probjax.inference.base import Kernel
 from probjax.utils.guards import has_attrs, params_to_dict
 from probjax.utils.jaxutils import Configured, KernelAPI
 from probjax.utils.typing import Array, RngKey, Scalar
-
-
-class Params(NamedTuple):
-    """BlackJAX only distinguishes between State and Info, but we will add Params for
-    convenience.
-
-    This should contain all the parameters that can be optimized in the kernel.
-    """
-
-    pass
-
-
-MarkovKernel = Kernel
 
 
 class MarkovKernelAPI(KernelAPI):
@@ -39,7 +24,7 @@ class MarkovKernelAPI(KernelAPI):
     :class:`~probjax.utils.jaxutils.Configured` kernel instead.
     """
 
-    _kernel_type = MarkovKernel
+    _kernel_type = Kernel
 
     #: Optional factory returning this kernel's recommended adaptation
     #: policy (an Adaptor or a Warmup). Attached to built kernels;
@@ -64,14 +49,16 @@ class MarkovKernelAPI(KernelAPI):
 
     def __new__(
         cls, logdensity_fn: Callable | None = None, **kwargs
-    ) -> MarkovKernel | Configured:
+    ) -> Kernel | Configured:
         if logdensity_fn is None:
             return Configured(cls, tuple(sorted(kwargs.items())))
 
         def init_fn(rng: RngKey, position: Any, **init_kwargs):
             # The API's init may be BlackJAX's (``rng_key``) or ours (``rng``).
             rng_kwarg = (
-                "rng_key" if "rng_key" in inspect.signature(cls.init).parameters else "rng"
+                "rng_key"
+                if "rng_key" in inspect.signature(cls.init).parameters
+                else "rng"
             )
             return cls.init(
                 position, logdensity_fn=logdensity_fn, **{rng_kwarg: rng}, **init_kwargs
@@ -82,9 +69,13 @@ class MarkovKernelAPI(KernelAPI):
         def step(rng: RngKey, state, params, *args):
             return raw_step(rng, state, params)
 
-        return cls.kernel_type(
-            init_fn, step, cls.init_params, cls.default_adaptation_fn
-        )
+        default_adaptation = cls.default_adaptation_fn
+        # Policies that need the target (e.g. MCLMC's) get it bound here.
+        if default_adaptation is not None and (
+            "logdensity_fn" in inspect.signature(default_adaptation).parameters
+        ):
+            default_adaptation = partial(default_adaptation, logdensity_fn)
+        return cls.kernel_type(init_fn, step, cls.init_params, default_adaptation)
 
 
 def make_step_from_kernel(
@@ -96,7 +87,7 @@ def make_step_from_kernel(
     """Build a step function from a BlackJAX-style kernel builder."""
     kernel = kernel_builder()
 
-    def step(rng, state: State, params: Params, *args: Any):
+    def step(rng, state: Any, params: Any, *args: Any):
         params_kwargs = params_to_dict(params) if has_attrs(params, "_asdict") else {}
         call_kwargs = {}
         if call_defaults:
@@ -105,10 +96,6 @@ def make_step_from_kernel(
         return kernel(rng, state, logdensity_fn, **call_kwargs)
 
     return step
-
-
-def _select(value: Any, fields: tuple[str, ...]) -> dict[str, Any]:
-    return {field: getattr(value, field) for field in fields}
 
 
 def ravel_position(state: Any) -> Array:
@@ -156,83 +143,3 @@ def scale_step_size_by_grad(
     else:
         grad_norm = jnp.linalg.norm(flat_grad)
     return step_size / jnp.where(grad_norm == 0, 1.0, grad_norm)
-
-
-def _reshape_thin_args(args: Any, num_samples: int, thin: int) -> Any:
-    """Reshape leading axes of ``args`` to ``(num_samples, thin, ...)``."""
-    if args is None:
-        return None
-    return jax.tree.map(
-        lambda value: value.reshape((num_samples, thin) + value.shape[1:]),
-        args,
-    )
-
-
-def _mcmc_collect_body(
-    kernel: MarkovKernel,
-    params: Params,
-    step_args: Any,
-    collect_info: tuple[str, ...],
-    stats_fn: Callable[[Any, Any], Any] | None = None,
-) -> Callable[[Any, Any], tuple[Any, tuple[Any, ...]]]:
-    """Two-level scan body shared by silent and verbose ``sample``.
-
-    Yields ``(stats, position, diagnostics)`` per collected sample, where
-    ``stats`` is ``None`` when no ``stats_fn`` is supplied.
-    """
-
-    def transition(state, inner_xs):
-        if step_args is None:
-            step_key, current_args = inner_xs, ()
-        else:
-            step_key, current_args = inner_xs
-        state, info = kernel(step_key, state, params, *current_args)
-        return state, (info, _select(info, collect_info))
-
-    def collect_one(state, xs):
-        if step_args is None:
-            sample_keys, sample_args = xs, None
-        else:
-            sample_keys, sample_args = xs
-        inner_xs = sample_keys if sample_args is None else (sample_keys, sample_args)
-
-        state, (step_info, selected_info) = jax.lax.scan(transition, state, inner_xs)
-        diagnostics = jax.tree.map(lambda value: value[-1], selected_info)
-        stats = None
-        if stats_fn is not None:
-            last_info = jax.tree.map(lambda value: value[-1], step_info)
-            stats = stats_fn(state, last_info)
-        return state, (stats, state.position, diagnostics)
-
-    return collect_one
-
-
-@partial(
-    jax.jit,
-    static_argnames=(
-        "kernel",
-        "num_samples",
-        "thin",
-        "collect_info",
-    ),
-)
-def sample_kernel(
-    rng,
-    kernel: MarkovKernel,
-    state: State,
-    num_samples: int,
-    params: Params,
-    args: Any = None,
-    *,
-    thin: int = 1,
-    collect_info: tuple[str, ...] = (),
-) -> MCMCResult:
-    """Collect positions from a compiled kernel scan."""
-    keys = jax.random.split(rng, (num_samples, thin))
-    step_args = _reshape_thin_args(args, num_samples, thin)
-    xs = keys if step_args is None else (keys, step_args)
-
-    collect_one = _mcmc_collect_body(kernel, params, step_args, collect_info)
-
-    state, (_, samples, info) = jax.lax.scan(collect_one, state, xs)
-    return MCMCResult(state, samples, info if collect_info else None)
