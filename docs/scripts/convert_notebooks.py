@@ -37,6 +37,7 @@ CURATED_NOTEBOOKS = [
     "examples/inference/smc.ipynb",
     "examples/inference/mcmc.ipynb",
     "examples/inference/neural_mcmc.ipynb",
+    "examples/inference/rejection.ipynb",
     "examples/inference/bnn.ipynb",
 ]
 

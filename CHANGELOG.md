@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] — preparing 0.2.0
 
 ### Added
+- `rejection(logdensity_fn, proposal=density)`: rejection sampling as a
+  kernel whose every step is one exact, independent draw. Params are the
+  proposal's params and `log_bound`; `bound_adaptor` (the default adaptation)
+  learns the bound, and a learned proposal trains with `fit_adaptor`
 - Learned components in `probjax.inference`: `Density(sample, logpdf)` takes
   its parameters explicitly, so a proposal's or variational family's weights
   live in a kernel's `params`, inside the compiled scan, `vmap`-able over
@@ -128,6 +132,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the newest release in it
 
 ### Changed
+- **Breaking:** `ars` is a kernel: `ars(logdensity_fn).init(key, position,
+  init_points=None, lower=-inf, upper=inf)`, then `run` collects exact iid
+  draws while the envelope refines in the state. The old
+  `ars(state, rng, num_samples, log_density_fn)` function is gone. Initial
+  points on one side of the mode are now moved outwards automatically
 - **Breaking:** `imh(logdensity_fn, proposal=density)` takes a `Density`; the
   kernel's params are the proposal's params, and its default adaptation trains
   them with `fit_adaptor` on Rao-Blackwellised chain output (`imh_data`). It
@@ -368,6 +377,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `addopts`); the CI coverage job opts out with `--no-testmon`
 
 ### Removed
+- `RejectionSampler`, `ProposalDistribution` and `estimate_ratio_bound` (use
+  `rejection`), and the envelope internals `ARSState`/`init_ars_state`/
+  `update_ars_state` (now `rejection.univariate.Envelope`/`envelope`/`refine`)
 - `neural_imh`, `neural_imh_warmup` (its `data=` seed data: fit the flow on
   the draws before `neural.density`), `NeuralIMHParams`/`NeuralIMHState`/
   `NeuralIMHInfo`/`NeuralIMHWarmupInfo`, `IMHParams`, `wrap_logpdf`,
@@ -411,6 +423,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `probjax.utils.guards.ensure_array`/`as_concrete_bool`
 
 ### Fixed
+- `RejectionSampler.run` indexed with a boolean mask inside `while_loop` and
+  so could never run under JAX
+- ARS/ARMS envelope refinement dropped the support bounds `lb`/`ub` and
+  computed segment masses with padding points, which could break
+  sampling after a refinement
 - `pseudo_marginal` inherited default adaptations that need a fixed target
   (MCLMC's) unbound, so they failed when called; it now has none for them
 - `pathfinder_warmup` and `mclmc_warmup` passed the kernel to `jax.jit` as a

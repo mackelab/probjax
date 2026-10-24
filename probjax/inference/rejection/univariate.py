@@ -1,234 +1,188 @@
+"""Piecewise-exponential envelopes of a univariate log-concave density.
+
+The tangents of a concave log density at a set of points lie above it, so their
+lower hull is an upper bound and the chords between neighbouring points are a
+lower bound (the squeeze). The envelope ``exp(upper)`` is a mixture of
+truncated exponentials that can be sampled exactly. :class:`ars` uses it as an
+exact rejection sampler and :class:`~probjax.inference.arms` as a Metropolis
+proposal; both refine it with the points they evaluate.
+
+Arrays have a fixed length ``max_points`` so refinement compiles; slots past
+``num_points`` are padding (``x = inf``) and carry no mass.
+"""
+
 from __future__ import annotations
 
-from functools import partial
-from typing import Any, Callable, NamedTuple
+from typing import Callable, NamedTuple
 
 import jax
 import jax.numpy as jnp
 
 from probjax.utils.typing import Array, ArrayLike
 
-
-class ARSState(NamedTuple):
-    x: Array  # Evaluation points used to define the piecewise linear function
-    h: Array  # Function values at the evaluation points
-    hprime: Array  # Derivative values at the evaluation points
-    z: Array  # Intersection points of the piecewise linear function (tangent lines)
-    u: Array  # Proposal log density values at the intersection points
-    s: Array  # Cumulative distribution function values at the intersection points
-    num_points: int  # Number of points used to define the piecewise linear function
+# Below this |slope| a segment is treated as flat, avoiding 0/0 in its mass.
+_FLAT = 1e-6
 
 
-def _build_envelope(
-    x: Array, h: Array, hprime: Array, lb: ArrayLike, ub: ArrayLike
-) -> tuple[Array, Array, Array]:
-    z = (jnp.diff(h) + x[:-1] * hprime[:-1] - x[1:] * hprime[1:]) / -(
-        jnp.diff(hprime) + 1e-8
+class Envelope(NamedTuple):
+    """Tangent points of a log-concave density and the hull they define.
+
+    Attributes:
+        x: tangent points, sorted, padded with ``inf``.
+        h: log density at ``x``.
+        grad: its derivative at ``x``.
+        z: segment boundaries; segment ``j`` covers ``[z[j], z[j + 1]]``.
+        log_mass: log of the envelope's mass on each segment.
+        num_points: number of real tangent points.
+        lower, upper: the support ``[lower, upper]``.
+    """
+
+    x: Array
+    h: Array
+    grad: Array
+    z: Array
+    log_mass: Array
+    num_points: Array
+    lower: Array
+    upper: Array
+
+
+def _segment_log_mass(h, grad, x, start, end):
+    """``log ∫_start^end exp(h + grad (t - x)) dt``, stable for infinite ends."""
+    width = end - start
+    safe_grad = jnp.where(jnp.abs(grad) < _FLAT, 1.0, grad)
+    # Factor out the larger endpoint so the remaining log1p term is <= 0.
+    rising = h + safe_grad * (end - x) + jnp.log1p(-jnp.exp(-safe_grad * width))
+    falling = h + safe_grad * (start - x) + jnp.log1p(-jnp.exp(safe_grad * width))
+    curved = jnp.where(safe_grad > 0, rising, falling) - jnp.log(jnp.abs(safe_grad))
+    flat = h + jnp.log(width)
+    return jnp.where(jnp.abs(grad) < _FLAT, flat, curved)
+
+
+def _hull(x, h, grad, num_points, lower, upper) -> Envelope:
+    max_points = x.shape[0]
+    valid = jnp.arange(max_points) < num_points
+    # Where neighbouring tangents cross; padding gives NaN, replaced below.
+    crossing = (h[1:] - h[:-1] - x[1:] * grad[1:] + x[:-1] * grad[:-1]) / (
+        grad[:-1] - grad[1:]
     )
-    z = jnp.concatenate([jnp.array([lb]), z, jnp.array([ub])])
+    inner = jnp.where(valid[1:], crossing, upper)
+    z = jnp.clip(jnp.concatenate([lower[None], inner, upper[None]]), lower, upper)
+    log_mass = _segment_log_mass(h, grad, x, z[:-1], z[1:])
+    log_mass = jnp.where(valid, log_mass, -jnp.inf)
+    return Envelope(x, h, grad, z, log_mass, num_points, lower, upper)
 
-    u = jnp.empty_like(z)
-    u = u.at[0].set(hprime[0] * (z[0] - x[0]) + h[0])
-    u = u.at[1:].set(hprime * (z[1:] - x) + h)
 
-    s = jnp.zeros_like(u)
-    s_sub = jnp.where(
-        jnp.abs(hprime) > 1e-5, jnp.diff(jnp.exp(u)) / hprime, z[1:] - z[:-1]
+def _outwards(value_and_grad, point, step, direction, max_doublings=60):
+    """Move ``point`` along ``direction`` until the log density decreases."""
+
+    def climbing(carry):
+        point, _, doublings = carry
+        slope = value_and_grad(point)[1]
+        return (direction * slope >= 0) & (doublings < max_doublings)
+
+    def further(carry):
+        point, step, doublings = carry
+        return point + direction * step, 2.0 * step, doublings + 1
+
+    point, _, _ = jax.lax.while_loop(
+        climbing, further, (point, jnp.maximum(step, 1.0), 0)
     )
-    s = s.at[1:].set(jnp.cumsum(s_sub))
-    s = s.at[-1].set(jnp.clip(s[-1], 0, 1e8))
-    return z, u, s
+    return point
 
 
-def init_ars_state(
-    log_density_fn: Callable,
-    xi: Array,
-    lb: ArrayLike = -jnp.inf,
-    ub: ArrayLike = jnp.inf,
+def envelope(
+    logdensity_fn: Callable,
+    points: ArrayLike,
+    lower: ArrayLike = -jnp.inf,
+    upper: ArrayLike = jnp.inf,
     max_points: int = 50,
-) -> ARSState:
-    num_initial_points = len(xi)
-    # Cheap ARS with fixed nodes better https://arxiv.org/pdf/1509.07985
+) -> Envelope:
+    """Build the envelope from tangents at ``points`` (at least two).
 
-    x = jnp.sort(xi)
-    h, hprime = jax.vmap(jax.value_and_grad(log_density_fn))(x)
+    On an unbounded side the outermost tangent must slope towards the mode, or
+    the envelope has infinite mass; the outermost points are moved outwards,
+    with doubling steps, until it does.
+    """
+    points = jnp.sort(jnp.asarray(points, dtype=float))
+    num_points = points.shape[0]
+    if not 2 <= num_points <= max_points:
+        raise ValueError("need between two and max_points initial points")
+    value_and_grad = jax.value_and_grad(logdensity_fn)
+    spread = points[-1] - points[0]
+    # A finite bound closes that side, so only unbounded sides are searched.
+    right = _outwards(value_and_grad, points[-1], spread, direction=1.0)
+    left = _outwards(value_and_grad, points[0], spread, direction=-1.0)
+    points = points.at[-1].set(jnp.where(jnp.isinf(upper), right, points[-1]))
+    points = points.at[0].set(jnp.where(jnp.isinf(lower), left, points[0]))
+    h, grad = jax.vmap(value_and_grad)(points)
+    padding = jnp.full(max_points - num_points, jnp.inf)
+    return _hull(
+        jnp.concatenate([points, padding]),
+        jnp.concatenate([h, padding]),
+        jnp.concatenate([grad, padding]),
+        jnp.asarray(num_points),
+        jnp.asarray(lower, dtype=float),
+        jnp.asarray(upper, dtype=float),
+    )
 
-    z, u, s = _build_envelope(x, h, hprime, lb, ub)
 
-    # Add infinities to the end of the arrays
-    x = jnp.concatenate([x, jnp.full(max_points - num_initial_points, jnp.inf)])
-    h = jnp.concatenate([h, jnp.full(max_points - num_initial_points, jnp.inf)])
-    hprime = jnp.concatenate([
-        hprime,
-        jnp.full(max_points - num_initial_points, jnp.inf),
-    ])
+def refine(env: Envelope, x: Array, h: Array, grad: Array) -> Envelope:
+    """Add a tangent at ``x``; a full envelope is returned unchanged."""
 
-    z = jnp.concatenate([z, jnp.full(max_points - num_initial_points, jnp.inf)])
-    u = jnp.concatenate([u, jnp.full(max_points - num_initial_points, jnp.inf)])
-    s = jnp.concatenate([s, jnp.full(max_points - num_initial_points, jnp.inf)])
-
-    return ARSState(x, h, hprime, z, u, s, num_initial_points)
-
-
-def update_ars_state(state: ARSState, x: Array, h: Array, hprime: Array) -> ARSState:
-    # TODO improve this
-    new_index = state.num_points
-
-    def update(state: ARSState, x: Array, h: Array, hprime: Array) -> ARSState:
-        xs = state.x.at[new_index].set(x)
-        h = state.h.at[new_index].set(h)
-        hprime = state.hprime.at[new_index].set(hprime)
-        idx = jnp.argsort(xs)
-        xs = xs[idx]
-        h = h[idx]
-        hprime = hprime[idx]
-        z, u, s = _build_envelope(xs, h, hprime, -jnp.inf, jnp.inf)
-        s = s.at[new_index + 1].set(jnp.clip(s[new_index + 1], 0, 1e8))
-
-        return ARSState(xs, h, hprime, z, u, s, state.num_points + 1)
-
-    def do_nothing(state: ARSState, x: Array, h: Array, hprime: Array) -> ARSState:
-        return ARSState(
-            state.x, state.h, state.hprime, state.z, state.u, state.s, state.num_points
+    def add(env: Envelope) -> Envelope:
+        # The padding slot is +inf, so sorting puts the new point in place.
+        xs = env.x.at[env.num_points].set(x)
+        order = jnp.argsort(xs)
+        return _hull(
+            xs[order],
+            env.h.at[env.num_points].set(h)[order],
+            env.grad.at[env.num_points].set(grad)[order],
+            env.num_points + 1,
+            env.lower,
+            env.upper,
         )
 
-    max_points = len(state.x)
-    state = jax.lax.cond(
-        new_index < max_points, update, do_nothing, state, x, h, hprime
-    )
-
-    return state
+    return jax.lax.cond(env.num_points < env.x.shape[0], add, lambda env: env, env)
 
 
-def eval_upper(state: ARSState, x: Array, i: int | Array) -> Array:
-    # Evaluate the upper piecewise linear function at x using the i-th segment.
-    # NOTE: This will upper bound the log density function (if it is concave).
-    return state.h[i] + state.hprime[i] * (x - state.x[i])
+def _segment(env: Envelope, x: Array) -> Array:
+    index = jnp.searchsorted(env.z, x, side="right") - 1
+    return jnp.clip(index, 0, env.num_points - 1)
 
 
-def eval_lower(state: ARSState, x: Array) -> Array:
-    # Evaluate a lower piecewise linear function at x.
-    # NOTE: This will lower bound the log density function (if it is concave).
-    i = jnp.searchsorted(state.x, x) - 1
-    out = ((state.x[i + 1] - x) * state.h[i] + (x - state.x[i]) * state.h[i + 1]) / (
-        state.x[i + 1] - state.x[i]
-    )
-    return jax.lax.cond(
-        (i < 0) | (i == len(state.x) - 1), lambda x: -jnp.inf, lambda x: out, x
-    )
+def upper_hull(env: Envelope, x: Array) -> Array:
+    """The envelope's (unnormalised) log density at ``x``."""
+    j = _segment(env, x)
+    return env.h[j] + env.grad[j] * (x - env.x[j])
 
 
-def sample_upper(state: ARSState, rng) -> tuple[Array, Array]:
-    u = jax.random.uniform(rng)
-    max_index = state.num_points
-    # Choose a bin with probability proportional to its contained probability mass.
-    s_max = state.s[max_index]
-
-    i = jnp.searchsorted(state.s / s_max, u) - 1
-
-    def sample_nonzero_grad(state: ARSState, u: Array) -> Array:
-        # Piecewise linear function with non-zero gradient
-        # -> Piecewise exponential distribution
-        # -> Inverse CDF is a piecewise linear function
-        xt = (
-            state.x[i]
-            + (
-                -state.h[i]
-                + jnp.log(
-                    state.hprime[i] * (s_max * u - state.s[i]) + jnp.exp(state.u[i])
-                )
-            )
-            / state.hprime[i]
-        )
-        return xt
-
-    def sample_zero_grad(state: ARSState, u: Array) -> Array:
-        # Piecewise linear function with zero gradient
-        # -> Piecewise uniform distribution
-        # -> Inverse CDF is a piecewise linear function
-        lower = state.z[i]
-        upper = state.z[i + 1]
-        lower_s = state.s[i] / s_max
-        upper_s = state.s[i + 1] / s_max
-        eps = (u - lower_s) / (upper_s - lower_s)
-
-        return lower + (upper - lower) * eps
-
-    xt = jax.lax.cond(
-        jnp.abs(state.hprime[i]) > 1e-6, sample_nonzero_grad, sample_zero_grad, state, u
-    )
-
-    return xt, i
+def squeeze(env: Envelope, x: Array) -> Array:
+    """The chord lower bound at ``x``; ``-inf`` outside the tangent points."""
+    i = jnp.searchsorted(env.x, x, side="right") - 1
+    inside = (i >= 0) & (i < env.num_points - 1)
+    i = jnp.clip(i, 0, env.x.shape[0] - 2)
+    left, right = env.x[i], env.x[i + 1]
+    chord = ((right - x) * env.h[i] + (x - left) * env.h[i + 1]) / (right - left)
+    return jnp.where(inside, chord, -jnp.inf)
 
 
-def _segment_index(state: ARSState, x: Array) -> Array:
-    xs = state.x[: state.num_points]
-    idx = jnp.searchsorted(xs, x) - 1
-    return jnp.clip(idx, 0, state.num_points - 1)
+def envelope_logpdf(env: Envelope, x: Array) -> Array:
+    """Log density of the normalised envelope, i.e. of :func:`sample`."""
+    return upper_hull(env, x) - jax.scipy.special.logsumexp(env.log_mass)
 
 
-def _log_proposal(state: ARSState, x: Array) -> Array:
-    i = _segment_index(state, x)
-    u = eval_upper(state, x, i)
-    s_max = state.s[state.num_points]
-    return u - jnp.log(s_max)
-
-
-@partial(jax.jit, static_argnums=(2, 3))
-def ars(
-    state: ARSState, rng, num_samples: int, log_density_fn: Callable
-) -> tuple[Array, ARSState, Array]:
-    samples = jnp.zeros(num_samples)
-    n = 0
-
-    def cond_fn(carry: Any) -> Array:
-        _, n, _, _, _ = carry
-        return n < num_samples
-
-    def body_fn(carry: Any) -> Any:
-        key, n, state, samples, iteration = carry
-        key, sample_key, rejection_key = jax.random.split(key, 3)
-
-        [xt, i] = sample_upper(state, sample_key)
-
-        lh = eval_lower(state, xt)
-        uh = eval_upper(state, xt, i)
-
-        u = jax.random.uniform(rejection_key)
-
-        def accept(xt: Array, n: Array, state: ARSState, samples: Array) -> Any:
-            samples = samples.at[n].set(xt)
-            n += 1
-            return samples, n, state
-
-        def reject(xt: Array, n: Array, state: ARSState, samples: Array) -> Any:
-            return samples, n, state
-
-        def reject_maybe_accept_update(
-            xt: Array, n: Array, state: ARSState, samples: Array
-        ) -> Any:
-            h = log_density_fn(xt)
-            hprime = jax.grad(log_density_fn)(xt)
-
-            samples, n, state = jax.lax.cond(
-                u <= jnp.exp(h - uh), accept, reject, xt, n, state, samples
-            )
-            state = update_ars_state(state, xt, h, hprime)
-            return samples, n, state
-
-        samples, n, state = jax.lax.cond(
-            (u <= jnp.exp(lh - uh)) & (lh <= uh),
-            accept,
-            reject_maybe_accept_update,
-            xt,
-            n,
-            state,
-            samples,
-        )
-
-        return (key, n, state, samples, iteration + 1)
-
-    carry = (rng, n, state, samples, 0)
-    _, _, state, samples, iterations = jax.lax.while_loop(cond_fn, body_fn, carry)
-
-    return samples, state, num_samples / iterations
+def sample(env: Envelope, rng) -> Array:
+    """One exact draw from the normalised envelope."""
+    segment_key, position_key = jax.random.split(rng)
+    j = jax.random.categorical(segment_key, env.log_mass)
+    start, end, slope = env.z[j], env.z[j + 1], env.grad[j]
+    u = jax.random.uniform(position_key)
+    # Inverse CDF of exp(slope * t) on [start, end], anchored at the heavier
+    # end so an infinite other end contributes exp(-inf) = 0.
+    safe = jnp.where(jnp.abs(slope) < _FLAT, 1.0, slope)
+    width = end - start
+    rising = end + jnp.log(u + (1.0 - u) * jnp.exp(-safe * width)) / safe
+    falling = start + jnp.log((1.0 - u) + u * jnp.exp(safe * width)) / safe
+    curved = jnp.where(safe > 0, rising, falling)
+    return jnp.where(jnp.abs(slope) < _FLAT, start + u * width, curved)

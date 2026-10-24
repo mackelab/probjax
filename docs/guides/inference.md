@@ -27,8 +27,9 @@ bar. `step` takes a single transition, for writing your own loop.
 The tutorials show all of this on real problems:
 [MCMC in probjax](../tutorials/mcmc.md) (a kernel gallery, every adaptation
 mode, many chains, pseudo-marginal MCMC),
-[Neural aids for MCMC](../tutorials/neural_mcmc.md) (NeuTra and neural IMH)
-and [Bayesian neural networks](../tutorials/bnn.md) (HMC versus stochastic
+[Neural aids for MCMC](../tutorials/neural_mcmc.md) (NeuTra and neural IMH),
+[Exact sampling](../tutorials/rejection.md) (adaptive rejection and learned
+proposals) and [Bayesian neural networks](../tutorials/bnn.md) (HMC versus stochastic
 gradient MCMC).
 
 ## Kernels
@@ -39,6 +40,7 @@ gradient MCMC).
 | Gradient-free | `mh`, `gauss_rwmh`, `imh`, `gaussian_imh`, `slice`, `latent_slice`, `elliptical_slice`, `arms`, `a2rms` |
 | Stochastic gradient | `sgld`, `sghmc`, `sgnht` |
 | Composite | `pseudo_marginal` |
+| Exact (iid draws) | `ars`, `rejection` |
 
 Warmup is a separate object, so the same kernel can be tuned different ways:
 
@@ -84,6 +86,39 @@ chains = jax.vmap(
     axis_name="chain",
 )(keys, states, params)
 ```
+
+## Exact samplers
+
+`ars` and `rejection` are kernels too, but every step returns one
+*independent, exact* draw, so `run` collects iid samples. What improves with
+time follows the same rules as MCMC. The `ars` envelope tightens inside the
+state with every target evaluation, which costs nothing in exactness. The
+`rejection` bound `log M` is a parameter, which its default adaptation
+(`bound_adaptor`) learns during warmup:
+
+```python
+import jax
+import jax.numpy as jnp
+from probjax.inference import Density, ars, rejection, run, warmup
+
+normal = ars(lambda x: -0.5 * x**2)
+draws = run(jax.random.key(0), normal, normal.init(jax.random.key(1), 0.0), None, 1000)
+
+wide = Density(
+    sample=lambda key, scale: scale * jax.random.normal(key, (2,)),
+    logpdf=lambda x, scale: jax.scipy.stats.norm.logpdf(x, 0.0, scale).sum(),
+)
+kernel = rejection(lambda x: -0.5 * jnp.sum(x**2 / 0.5), proposal=wide)
+state = kernel.init(jax.random.key(0), jnp.zeros(2))
+tuned = warmup(jax.random.key(1), kernel, state, kernel.init_params(state, 2.0), 500)
+exact = run(jax.random.key(2), kernel, tuned.state, tuned.params, 1000)
+```
+
+A learned proposal (a flow from `neural.density`) trains on the accepted
+draws with `fit_adaptor(..., field="proposal")` composed with the bound
+adaptor. The accepted draws are exact target samples, so they are the right
+training data. The [exact sampling tutorial](../tutorials/rejection.md) shows
+both samplers, including a trained flow proposal.
 
 ## Sequential Monte Carlo and filtering
 

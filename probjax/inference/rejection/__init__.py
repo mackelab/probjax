@@ -1,107 +1,28 @@
-from __future__ import annotations
+"""Exact samplers built on rejection.
 
-from typing import Callable, Protocol, runtime_checkable
+Each step of these kernels returns one independent, exact draw from the
+target, so :func:`~probjax.inference.run` collects iid samples. They share the
+kernel contract with MCMC: what tightens over time lives in the state (the
+:class:`ars` envelope) or in params tuned by an adaptor (the
+:class:`rejection` bound and learned proposal).
+"""
 
-import jax
-import jax.numpy as jnp
-from jax.scipy.optimize import minimize
-
-from probjax.inference.rejection.univariate import (
-    ARSState,
-    ars,
-    init_ars_state,
-    update_ars_state,
+from probjax.inference.rejection.adaptive import ARSInfo, ARSState, ars
+from probjax.inference.rejection.proposal import (
+    RejectionInfo,
+    RejectionParams,
+    RejectionState,
+    bound_adaptor,
+    rejection,
 )
-from probjax.utils.typing import Array, RngKey
 
-
-@runtime_checkable
-class ProposalDistribution(Protocol):
-    """The proposal interface the rejection sampler needs.
-
-    A proposal must be able to evaluate its log density, draw samples and
-    report the shape of a single event.
-    """
-
-    def log_prob(self, x: Array) -> Array: ...
-
-    def sample(self, rng: RngKey, shape: tuple[int, ...] = ()) -> Array: ...
-
-    @property
-    def event_shape(self) -> tuple[int, ...]: ...
-
-
-def estimate_ratio_bound(
-    log_ratio_fn: Callable, trial_samples: Array, tol: float = 1e-4
-) -> Array:
-    """
-    Estimate the bound for the log density ratio function.
-
-    Args:
-        log_ratio_fn: A function that takes in a sample
-
-    Returns:
-        The estimated bound.
-    """
-
-    @jax.vmap
-    def f_min(x):
-        return minimize(lambda x: -jnp.sum(log_ratio_fn(x)), x, method="BFGS", tol=tol)
-
-    result = f_min(trial_samples)
-    succes = jnp.any(result.success)
-    if not succes:
-        raise ValueError(
-            "Minimization failed, density ratio seems to be unbounded! Please choose a"
-            "proposal with a larger support i.e. increase variance."
-        )
-    else:
-        return jnp.max(-result.fun).squeeze()
-
-
-class RejectionSampler:
-    def __init__(
-        self,
-        potential_fn: Callable,
-        proposal: ProposalDistribution,
-        trial_samples_logM: int = 1000,
-        batch_size: int = 100,
-    ) -> None:
-        self._potential_fn = potential_fn
-        self._proposal = proposal
-        self._log_density_ratio_fn = lambda x: (
-            self._potential_fn(x) - self._proposal.log_prob(x)
-        )
-        self._log_M = estimate_ratio_bound(
-            self._log_density_ratio_fn,
-            proposal.sample(jax.random.PRNGKey(42), (trial_samples_logM,)),
-        )
-        self._batch_size = batch_size
-
-    def run(self, rng, num_samples: int = 1, **kwargs) -> Array:
-        key, subkey = jax.random.split(rng)
-        batch_size = self._batch_size
-        samples = jnp.empty((num_samples,) + self._proposal.event_shape)
-
-        def cond_fn(state: tuple) -> Array:
-            i, key, samples = state
-            return i < num_samples
-
-        def body_fn(state: tuple) -> tuple:
-            i, key, samples = state
-            key, key_propose, key_accept = jax.random.split(key, 3)
-            proposed_samples = self._proposal.sample(
-                key_propose, (batch_size,), **kwargs
-            )
-            log_ratio = self._log_density_ratio_fn(proposed_samples)
-            log_acceptance = log_ratio - self._log_M
-            accept = log_acceptance > jax.random.uniform(
-                key_accept, shape=log_acceptance.shape
-            )
-            num_accepted = jnp.sum(accept)
-            samples = samples[accept].set(proposed_samples[accept])
-            i = i + num_accepted
-            return i, key, samples
-
-        _, _, samples = jax.lax.while_loop(cond_fn, body_fn, (0, key, samples))
-        return samples
+__all__ = [
+    "ARSInfo",
+    "ARSState",
+    "RejectionInfo",
+    "RejectionParams",
+    "RejectionState",
+    "ars",
+    "bound_adaptor",
+    "rejection",
+]

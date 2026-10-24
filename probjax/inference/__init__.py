@@ -81,11 +81,9 @@ from probjax.inference.mcmc import (
 
 # Rejection sampling
 from probjax.inference.rejection import (
-    ARSState,
-    RejectionSampler,
     ars,
-    init_ars_state,
-    update_ars_state,
+    bound_adaptor,
+    rejection,
 )
 from probjax.inference.runner import run, step, warmup
 
@@ -204,10 +202,8 @@ __all__ = [
     "FilterState",
     # Rejection sampling
     "ars",
-    "ARSState",
-    "init_ars_state",
-    "update_ars_state",
-    "RejectionSampler",
+    "bound_adaptor",
+    "rejection",
 ]
 
 from probjax.inference.filtering.state_space import (
