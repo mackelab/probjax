@@ -30,6 +30,9 @@ GENERATED_PAGES = {
     "tutorials/ppl.md": "examples/core/ppl.ipynb",
     "tutorials/kalman_filter.md": "examples/inference/kalman_filter.ipynb",
     "tutorials/smc.md": "examples/inference/smc.ipynb",
+    "tutorials/mcmc.md": "examples/inference/mcmc.ipynb",
+    "tutorials/neural_mcmc.md": "examples/inference/neural_mcmc.ipynb",
+    "tutorials/bnn.md": "examples/inference/bnn.ipynb",
 }
 
 #: Public names that are deliberately absent from the reference, with a reason.
@@ -128,10 +131,6 @@ UNDOCUMENTED = {
         # things a user of the existing ones calls.
         "FilterAPI",
         "make_filter_api",
-        "AdaptationTrace",
-        "adaptive_persistent_smc_kernel",
-        "adaptive_smc_kernel",
-        "persistent_smc_kernel",
         # EKF model builders, used when defining a state-space model.
         "make_continuous_transition",
         "make_linearized_observation",

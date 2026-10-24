@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] — preparing 0.2.0
 
 ### Added
+- `probjax.inference.run`, `warmup` and `step`: three compiled functions that
+  drive any kernel. `run(key, kernel, state, params, num_steps, *, args,
+  adaptor, collect, thin, progress)` returns a `RunResult(state, params,
+  trace)`, where `trace` maps each collected state or info field to its values
+- Adaptation while sampling: `run(..., adaptor=...)` updates the parameters
+  after every transition and returns the finalized ones
+- `pooled(adaptor, axis_name="chain")` shares one adaptation across chains run
+  under `jax.vmap(..., axis_name=...)`
 - `linear_drift(A=...)` accepts structured linear operators (or a function of
   time returning one) for `odeint`/`sdeint`; `linear_exact` and
   `linear_exact_sde` dispatch `expm`/`phi_1` on the operator, and
@@ -110,6 +118,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the newest release in it
 
 ### Changed
+- **Breaking:** the `MCMC` runner class is replaced by `run`/`warmup`/`step`.
+  `MCMC(kernel).sample(key, state, n, params, thin=t)` becomes
+  `run(key, kernel, state, params, n * t, thin=t).trace["position"]`;
+  `MCMC(kernel, collect_info=(...)).run(...)` becomes `run(..., collect=(...))`;
+  `MCMC(kernel).warmup(key, policy, state, params, n)` and `.adapt(...)` become
+  `warmup(key, kernel, state, params, n, policy)`. Warmup policies return a
+  `RunResult` whose `trace` holds their diagnostics (formerly `info`)
 - **Breaking:** the training options moved into a `FitConfig`, and the data
   contract is stated instead of guessed. `FitConfig` holds `max_steps`,
   `batch_size`, `learning_rate`, `schedule`, `clip_norm`, `ema_decay`,
@@ -327,6 +342,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `addopts`); the CI coverage job opts out with `--no-testmon`
 
 ### Removed
+- `MCMC`, `MCMCResult`, `AdaptationResult`, `AdaptationTrace`, `WarmupResult`,
+  `adapt`, `adapt_step`, `as_warmup` and `mcmc.base.sample_kernel`; use `run`,
+  `warmup`, `step` and `RunResult`
+- Compatibility aliases and dead code in `probjax.inference`: `MarkovKernel`
+  (use `Kernel`), the empty `Params` type and the `Params`/`State`
+  re-exports, `SGLDParams`/`SGHMCParams`/`SGNHTParams` (use `SGMCMCParams`),
+  the unused `FilteringResult`, `Position` and `LogDensityFn`, the filters'
+  `build_kernel` name (use `build_step`; `make_filter_api` takes
+  `build_step_fn=`), and the pass-throughs `adaptive_smc_kernel`,
+  `persistent_smc_kernel` and `adaptive_persistent_smc_kernel` (use
+  `adaptive_smc`, whose `path` now defaults to `GeometricPath()`,
+  `persistent_smc` and `adaptive_persistent_smc`)
+- The unused `in_dim`/`out_dim` arguments of `make_linearized_transition` and
+  `make_linearized_observation`, and `in_dim`/`materialize` of
+  `make_continuous_transition`
 - The custom-kernel extension point of the training loop: `FitKernel`,
   `build_fit_kernel` and `fit(..., kernel=)`. The loop owned the update and
   only had to reverse-engineer a custom kernel's contract at runtime; the
@@ -350,6 +380,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `probjax.utils.guards.ensure_array`/`as_concrete_bool`
 
 ### Fixed
+- `pathfinder_warmup` and `mclmc_warmup` passed the kernel to `jax.jit` as a
+  traced argument, so they failed whenever they ran
+- The default warmups of `mclmc`, `adjusted_mclmc` and `adjusted_mclmc_dynamic`
+  never ran. **Breaking:** `mclmc_warmup(logdensity_fn, **options)` now tunes
+  the kernel it runs with (so a custom integrator is respected) and loses its
+  `mclmc_kernel` and `adjusted` arguments; the adjusted variants default to
+  step-size dual averaging towards a 0.9 acceptance rate. Default-adaptation
+  factories that take `logdensity_fn` receive the kernel's target
+- `slice` accepted points with a NaN log density, kept the last *rejected*
+  point when shrinking ran out of evaluations, and failed for an integer
+  `step_size`. Its default adaptation targeted the total number of
+  evaluations, which is not monotone in the step size and drove it to
+  infinity; **breaking:** `slice_step_size_adaptor(target=0.5)` now balances
+  bracket expansions and contractions (`SliceInfo` gains `num_expansions`)
+- `latent_slice` carried the log density of a rejected point (or the slice
+  level) when shrinking ran out of evaluations
+- `gauss_rwmh`'s default warmup tuned the step size for the initial proposal
+  scale and then replaced the scale, ending far below its 0.234 acceptance
+  target; it now estimates the scale first and tunes the step size for it
 - Two tests were sensitive to the platform's float arithmetic and failed on
   CI (x86_64) while passing locally (arm64), because a 600-step training run
   amplifies small differences and a single loss step or a single chain seed

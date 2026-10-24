@@ -13,7 +13,7 @@ import pytest
 from blackjax.base import VIAlgorithm
 from flax import nnx
 
-from probjax.inference import MCMC, flow_vi, hmc, mala, neutra, nuts
+from probjax.inference import flow_vi, hmc, mala, neutra, nuts, run, warmup
 from probjax.inference.vi import rebuild
 from probjax.nn import FitConfig, maf, nsf
 
@@ -78,11 +78,12 @@ def run_chain(
     kernel = kernel_fn(logdensity)
     state = kernel.init(jax.random.key(seed), initial)
     params = kernel.init_params(state)
-    mcmc = MCMC(kernel)
     if warmup_steps:
-        warm = mcmc.warmup(jax.random.key(seed + 2), None, state, params, warmup_steps)
+        warm = warmup(jax.random.key(seed + 2), kernel, state, params, warmup_steps)
         state, params = warm.state, warm.params
-    return mcmc.sample(jax.random.key(seed + 1), state, num_steps, params)
+    return run(jax.random.key(seed + 1), kernel, state, params, num_steps).trace[
+        "position"
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -229,12 +230,12 @@ def test_neutra_improves_mixing_on_the_funnel():
 
     plain = run_chain(funnel_logdensity, jnp.zeros(dim), seed=3, warmup_steps=500)
     latent = run_chain(transform.logdensity, jnp.zeros(dim), seed=3, warmup_steps=500)
-    mapped = transform.forward(latent.samples)
+    mapped = transform.forward(latent)
 
     assert jnp.all(jnp.isfinite(mapped))
     # The funnel's log-scale coordinate is the first one; a chain that stays
     # in a slice of it has not explored.
-    plain_samples = jnp.asarray(plain.samples)
+    plain_samples = jnp.asarray(plain)
     mapped_samples = jnp.asarray(mapped)
     plain_range = float(jnp.ptp(plain_samples[:, 0]))
     neutra_range = float(jnp.ptp(mapped_samples[:, 0]))
@@ -271,10 +272,10 @@ def test_neutra_improves_mixing_on_a_correlated_ridge():
 
     plain = run_chain(logdensity, jnp.zeros(dim), seed=3, warmup_steps=500)
     latent = run_chain(transform.logdensity, jnp.zeros(dim), seed=3, warmup_steps=500)
-    mapped = transform.forward(latent.samples)
+    mapped = transform.forward(latent)
 
     assert jnp.all(jnp.isfinite(mapped))
-    plain_ess = float(effective_sample_size(plain.samples)[0])
+    plain_ess = float(effective_sample_size(plain)[0])
     neutra_ess = float(effective_sample_size(mapped)[0])
     assert neutra_ess > 1.5 * plain_ess, f"{neutra_ess:.0f} against {plain_ess:.0f}"
 
@@ -289,7 +290,7 @@ def test_the_transformed_target_drives_every_kernel(kernel_fn):
     result = run_chain(
         transform.logdensity, jnp.zeros(DIM), num_steps=200, kernel_fn=kernel_fn
     )
-    draws = transform.forward(result.samples)
+    draws = transform.forward(result)
     assert draws.shape == (200, DIM)
     assert jnp.all(jnp.isfinite(draws))
 
@@ -316,5 +317,5 @@ def test_an_untrained_flow_still_gives_a_valid_target():
     transform = neutra(logdensity, flow)
 
     result = run_chain(transform.logdensity, jnp.zeros(DIM), num_steps=4000, seed=5)
-    draws = transform.forward(result.samples)
+    draws = transform.forward(result)
     assert float(jnp.max(jnp.abs(draws.mean(0) - mean))) < 0.3

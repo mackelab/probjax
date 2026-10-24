@@ -92,9 +92,6 @@ if TYPE_CHECKING:  # lets static tools (docs, type checkers) resolve the lazy na
 __all__ = sorted([
     *_LAZY_SYMBOLS,
     "smc",
-    "adaptive_smc_kernel",
-    "persistent_smc_kernel",
-    "adaptive_persistent_smc_kernel",
 ])
 
 
@@ -125,31 +122,6 @@ def smc(*, path=None, **kwargs):
         kwargs["logprior_fn"] = None
     if "loglikelihood_fn" not in kwargs:
         kwargs["loglikelihood_fn"] = None
-    if hasattr(path, "logdensity_fn"):
-        return path_smc(path=path, **kwargs)
-    if callable(path):
+    if hasattr(path, "logdensity_fn") or callable(path):
         return path_smc(path=path, **kwargs)
     raise TypeError("path must define logdensity_fn or be callable.")
-
-
-def adaptive_smc_kernel(*, path=None, **kwargs):
-    from probjax.inference.smc.adaptive import adaptive_smc
-    from probjax.inference.smc.path import GeometricPath
-
-    if path is None:
-        path = GeometricPath()
-    return adaptive_smc(path=path, **kwargs)
-
-
-def persistent_smc_kernel(**kwargs):
-    """Build a persistent SMC kernel (geometric path only)."""
-    from probjax.inference.smc.persistent_smc import persistent_smc
-
-    return persistent_smc(**kwargs)
-
-
-def adaptive_persistent_smc_kernel(**kwargs):
-    """Build an adaptive persistent SMC kernel (geometric path only)."""
-    from probjax.inference.smc.adaptive_persistent_smc import adaptive_persistent_smc
-
-    return adaptive_persistent_smc(**kwargs)

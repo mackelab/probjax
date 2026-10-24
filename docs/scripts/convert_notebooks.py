@@ -35,6 +35,9 @@ CURATED_NOTEBOOKS = [
     "examples/core/ppl.ipynb",
     "examples/inference/kalman_filter.ipynb",
     "examples/inference/smc.ipynb",
+    "examples/inference/mcmc.ipynb",
+    "examples/inference/neural_mcmc.ipynb",
+    "examples/inference/bnn.ipynb",
 ]
 
 OUTPUT_DIR = REPO_ROOT / "docs" / "tutorials"

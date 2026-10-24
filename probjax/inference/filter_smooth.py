@@ -121,16 +121,6 @@ class FilteringTrace(NamedTuple):
         return jnp.sum(log_likelihood)
 
 
-def _extract_covariance(states: Any) -> Array:
-    """Back-compat alias for :func:`extract_covariance`."""
-    return extract_covariance(states)
-
-
-def _extract_pred_covariance(infos: Any) -> Array:
-    """Back-compat alias for :func:`extract_pred_covariance`."""
-    return extract_pred_covariance(infos)
-
-
 def _trace_ts(trace: FilteringTrace) -> Array:
     num_states = leading_dim(trace.states)
     if trace.ts.shape[0] == num_states + 1:
@@ -373,13 +363,13 @@ class Filter(RunnerMixin):
         - Particle filters: Uses FFBSi (Forward Filter-Backward Simulator)
 
         For Gaussian filters, provide ``smoother`` callback.
-        For particle filters, provide ``key`` and ``transition_logdensity_fn``.
+        For particle filters, provide ``rng`` and ``transition_logdensity_fn``.
 
         Args:
             trace: FilteringTrace from :meth:`filter`.
             smoother: RTS-style smoothing callback (Gaussian filters).
                 Signature: ``(t0, t1, mu0_s, cov0_s, mu0, cov0, mu0_, cov0_) -> (mu1, cov1)``.
-            key: PRNG key for backward simulation (particle filters).
+            rng: PRNG key for backward simulation (particle filters).
             transition_logdensity_fn: Log-transition density for particle filters.
                 Signature: ``(x_tp1, x_t, t, tp1) -> scalar``.
 
@@ -399,7 +389,7 @@ class Filter(RunnerMixin):
             if rng is None:
                 raise ValueError(
                     "Particle filter trace detected. "
-                    "Please provide `key` for FFBSi smoothing."
+                    "Please provide `rng` for FFBSi smoothing."
                 )
             if transition_logdensity_fn is None:
                 raise ValueError(
@@ -429,9 +419,9 @@ class Filter(RunnerMixin):
                 )
             ts = _trace_ts(trace)
             mus = states.mean
-            covs = _extract_covariance(states)
+            covs = extract_covariance(states)
             mus_pred = trace.infos.mean_pred
-            covs_pred = _extract_pred_covariance(trace.infos)
+            covs_pred = extract_pred_covariance(trace.infos)
             return smooth_gaussian(ts, mus, covs, mus_pred, covs_pred, smoother)
 
     def log_likelihood(

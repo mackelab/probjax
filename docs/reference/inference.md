@@ -5,7 +5,9 @@ Pure kernels, adaptation utilities and compiled runners. See
 
 ## Runners
 
-::: probjax.inference.MCMC
+::: probjax.inference.run
+::: probjax.inference.warmup
+::: probjax.inference.step
 ::: probjax.inference.SMC
 
 ## MCMC kernels
@@ -83,9 +85,7 @@ Pure kernels, adaptation utilities and compiled runners. See
 ::: probjax.inference.acceptance_rate_adaptor
 ::: probjax.inference.slice_step_size_adaptor
 ::: probjax.inference.particle_adaptor
-::: probjax.inference.adapt
-::: probjax.inference.adapt_step
-::: probjax.inference.as_warmup
+::: probjax.inference.pooled
 
 ## Convergence diagnostics
 
@@ -199,12 +199,8 @@ Temporal inference advances through physical observation times. See the
 The types returned by the runners and kernels. Kernel `State` and `Params` are
 blackjax's own types, re-exported for convenience and documented there.
 
-::: probjax.inference.MCMCResult
+::: probjax.inference.RunResult
 ::: probjax.inference.SMCResult
-::: probjax.inference.FilteringResult
-::: probjax.inference.AdaptationResult
-::: probjax.inference.WarmupResult
-::: probjax.inference.MarkovKernel
 ::: probjax.inference.Kernel
 ::: probjax.inference.Warmup
 ::: probjax.inference.Adaptor

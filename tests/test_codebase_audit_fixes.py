@@ -97,7 +97,7 @@ def test_sigma_point_covariance(rule, dimension):
 def test_ukf_linear_gaussian_update(callable_r):
     uk = importlib.import_module('probjax.inference.filtering.unscented_kalman_filter')
     r = (lambda t: jnp.eye(2)) if callable_r else jnp.eye(2)
-    step = jax.jit(uk.build_kernel(lambda x, t0, t1: x, jnp.eye(2), lambda x, t: x, r))
+    step = jax.jit(uk.build_step(lambda x, t0, t1: x, jnp.eye(2), lambda x, t: x, r))
     state, info = step(uk.init(jnp.zeros(2), jnp.eye(2), 0), 1, jnp.ones(2))
     np.testing.assert_allclose(state.mean, jnp.full(2, 2 / 3), atol=1e-6)
     np.testing.assert_allclose(state.cov, jnp.eye(2) * 2 / 3, atol=1e-6)

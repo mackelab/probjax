@@ -50,7 +50,7 @@ def resample_when_ess_below(ess: float, ess_threshold: float = 0.5) -> bool:
     return ess < ess_threshold
 
 
-def build_kernel(
+def build_step(
     log_likelihood_fn: Callable,
     transition_fn: Callable,
     transition_logdensity_fn: Optional[Callable] = None,
@@ -200,7 +200,7 @@ class ParticleFilter(FilterAPI):
     """
 
     init = init
-    build_kernel = build_kernel
+    build_step = build_step
 
     @staticmethod
     def default_unpack(state: ParticleFilterState, info: ParticleFilterInfo) -> Any:
