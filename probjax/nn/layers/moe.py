@@ -1,4 +1,4 @@
-"""Top-k Mixture-of-Experts MLP with SwiGLU experts."""
+"""Top-k Mixture-of-Experts MLP with SwiGLU experts and an optional shared expert."""
 
 from __future__ import annotations
 
@@ -17,7 +17,14 @@ from probjax.nn.layers.grouped_matmul import (
     grouped_swiglu,
     ragged_matmul_hopper,
 )
-from probjax.nn.sharding import BATCH, EXPERT, constrain, param_metadata
+from probjax.nn.sharding import (
+    BATCH,
+    EMBED,
+    EXPERT,
+    HIDDEN,
+    constrain,
+    param_metadata,
+)
 from probjax.utils.typing import Array, DTypeLike
 
 # Fan-in over the per-expert input dim only; without ``batch_axis`` the expert
@@ -248,6 +255,42 @@ class ExpertSwiGLU(nnx.Module):
         return y.astype(cdt)
 
 
+class SwiGLU(nnx.Module):
+    """Dense SwiGLU MLP ``down(silu(gate(x)) * up(x))``: the always-active
+    shared expert of :class:`MoELayer`.
+
+    Tensor-parallel under a mesh (column-parallel ``gate``/``up``,
+    row-parallel ``down``), unlike the expert-parallel routed experts.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        d_hidden: int,
+        *,
+        dtype: DTypeLike | None = None,
+        param_dtype: DTypeLike = jnp.float32,
+        rngs: nnx.Rngs,
+    ):
+        def linear(d_in: int, d_out: int, axes: tuple[str, str]) -> nnx.Linear:
+            return nnx.Linear(
+                d_in,
+                d_out,
+                use_bias=False,
+                kernel_metadata=param_metadata(*axes),
+                dtype=dtype,
+                param_dtype=param_dtype,
+                rngs=rngs,
+            )
+
+        self.gate = linear(d_model, d_hidden, (EMBED, HIDDEN))
+        self.up = linear(d_model, d_hidden, (EMBED, HIDDEN))
+        self.down = linear(d_hidden, d_model, (HIDDEN, EMBED))
+
+    def __call__(self, x: Array) -> Array:
+        return self.down(jax.nn.silu(self.gate(x)) * self.up(x))
+
+
 class MoELayer(nnx.Module):
     """Top-k MoE layer: linear router + :class:`ExpertSwiGLU` experts.
 
@@ -269,8 +312,17 @@ class MoELayer(nnx.Module):
       65k tokens, slower than dense at 74 ms; see
       :mod:`probjax.nn.layers.grouped_matmul`).
 
+    ``shared_hidden`` adds a DeepSeekMoE-style shared expert: a dense
+    :class:`SwiGLU` of that width which every token passes through, added to
+    the routed output.  It carries the common knowledge so the routed experts
+    can be many and narrow, e.g. ``num_experts=64, d_hidden=d_model // 4,
+    top_k=6, shared_hidden=2 * d_model``.  Route such fine-grained experts
+    with ``"dropless"``: ``"dense"`` computes all ``E`` experts per token and
+    ``"capacity"`` drops more as ``C = N * K / E`` per expert shrinks.
+
     Under a mesh, expert kernels shard over the ``EXPERT`` logical axis, the
-    router stays replicated, and the output is constrained to ``BATCH``.
+    router stays replicated, the shared expert is tensor-parallel, and the
+    output is constrained to ``BATCH``.
     """
 
     def __init__(
@@ -286,6 +338,7 @@ class MoELayer(nnx.Module):
         dropless_impl: Literal[
             "auto", "pallas", "triton", "mosaic", "ragged_dot"
         ] = "auto",
+        shared_hidden: int | None = None,
         kernel_init: Initializer = _expert_init,
         router_init: Initializer = nnx.initializers.lecun_normal(),
         dtype: DTypeLike | None = None,
@@ -328,6 +381,17 @@ class MoELayer(nnx.Module):
             dtype=dtype,
             param_dtype=param_dtype,
             rngs=rngs,
+        )
+        self.shared = (
+            None
+            if shared_hidden is None
+            else SwiGLU(
+                d_model,
+                shared_hidden,
+                dtype=dtype,
+                param_dtype=param_dtype,
+                rngs=rngs,
+            )
         )
 
     def _dense(self, x: Array, expert_ids: Array, weights: Array) -> Array:
@@ -416,6 +480,8 @@ class MoELayer(nnx.Module):
             y = self._dropless(x_flat, expert_ids, weights, counts)
             # No capacity: an expert may take every token, none are dropped.
             capacity, kept = n_tokens, counts
+        if self.shared is not None:
+            y = y + self.shared(x_flat).astype(y.dtype)
         # Keep the leading batch axis on "data" (no-op without a mesh); the
         # sparse path's sort/scatter otherwise leaves it replicated.
         y = constrain(y.reshape(x.shape), BATCH)

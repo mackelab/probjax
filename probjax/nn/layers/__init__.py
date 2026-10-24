@@ -36,6 +36,7 @@ from probjax.nn.layers.moe import (
     ExpertSwiGLU,
     MoEAux,
     MoELayer,
+    SwiGLU,
     load_balance_loss,
 )
 from probjax.nn.layers.norm import LpNorm, LpNormClip
