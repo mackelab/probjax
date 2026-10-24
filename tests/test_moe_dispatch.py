@@ -106,3 +106,26 @@ def test_dispatch_function_against_dense_reference(impl):
 def test_invalid_dispatch_rejected():
     with pytest.raises(ValueError, match="dropless_dispatch"):
         _layer("scatter")
+
+
+@pytest.mark.parametrize("impl", ["mosaic", "ragged_dot", "blocked"])
+def test_dispatch_with_incompatible_backend_is_rejected(impl):
+    """No silent fallback to the sorted path."""
+    with pytest.raises(ValueError, match="Triton kernels"):
+        MoELayer(32, 16, 8, top_k=2, routing="dropless", dropless_impl=impl,
+                 dropless_dispatch="fused", rngs=nnx.Rngs(0))
+
+
+@pytest.mark.parametrize("impl", ["auto", "pallas"])
+def test_auto_and_pallas_use_the_dispatch_path(impl, monkeypatch):
+    """On Hopper "auto"/"pallas" resolve to Mosaic for the sorted path; with a
+    dispatch mode set they must still run moe_swiglu_dispatch."""
+    import probjax.nn.layers.grouped_matmul as gm
+    calls = []
+    real = gm.moe_swiglu_dispatch
+    monkeypatch.setattr(gm, "moe_swiglu_dispatch", lambda *a, **k: calls.append(1) or real(*a, **k))
+    monkeypatch.setattr(gm, "grouped_backend", lambda: "mosaic")
+    m = MoELayer(32, 16, 8, top_k=2, routing="dropless", dropless_impl=impl,
+                 dropless_dispatch="fused", rngs=nnx.Rngs(0))
+    m(jax.random.normal(jax.random.key(0), (20, 32)))
+    assert calls
