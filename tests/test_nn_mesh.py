@@ -17,7 +17,7 @@ from flax import nnx
 from jax.sharding import AxisType, NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from probjax.nn import FitConfig, MLP, MoELayer, SSMModel, Transformer, UNet, maf
+from probjax.nn import MLP, FitConfig, MoELayer, SSMModel, Transformer, UNet, maf
 from probjax.nn import sharding as shd
 
 
@@ -111,6 +111,38 @@ def test_moe_sharded_matches_unsharded(sparse):
     for leaf in jax.tree_util.tree_leaves(grads):
         if isinstance(leaf, jax.Array):
             assert jnp.all(jnp.isfinite(jax.device_get(leaf)))
+
+
+@pytest.mark.mesh
+@pytest.mark.parametrize("dispatch", ["sorted", "gather", "fused"])
+def test_moe_triton_dispatch_sharded_matches_unsharded(dispatch):
+    """The Triton grouped-GEMM kernels (interpret mode on CPU) run per shard
+    with the experts split over "model"."""
+    mesh = _auto_mesh((2, 2))
+    x = jax.random.normal(jax.random.key(0), (4, 6, 8))
+    kwargs = dict(
+        d_model=8,
+        d_hidden=16,
+        num_experts=4,
+        top_k=2,
+        routing="dropless",
+        dropless_impl="triton",
+        dropless_dispatch=dispatch,
+    )
+
+    def loss_fn(model, x):
+        return jnp.sum(model(x) ** 2)
+
+    reference = MoELayer(**kwargs, rngs=nnx.Rngs(42))
+    loss_ref, grads_ref = nnx.value_and_grad(loss_fn)(reference, x)
+
+    xs = jax.device_put(x, NamedSharding(mesh, P("data", None, None)))
+    with jax.set_mesh(mesh):
+        sharded = MoELayer(**kwargs, rngs=nnx.Rngs(42))
+        loss, grads = nnx.jit(nnx.value_and_grad(loss_fn))(sharded, xs)
+    assert jnp.allclose(loss_ref, jax.device_get(loss), rtol=1e-5)
+    for a, b in zip(jax.tree.leaves(grads_ref), jax.tree.leaves(grads), strict=True):
+        assert jnp.allclose(a, jax.device_get(b), atol=1e-4)
 
 
 @pytest.mark.mesh
