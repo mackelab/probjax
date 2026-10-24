@@ -401,6 +401,15 @@ class MoELayer(nnx.Module):
         self.routing = routing
         if dropless_dispatch not in ("sorted", "gather", "fused"):
             raise ValueError(f"unknown dropless_dispatch {dropless_dispatch!r}")
+        # gather / fused are Triton-kernel paths (Hopper included; interpret mode
+        # on CPU).  "auto" / "pallas" / "triton" resolve to them; an explicit
+        # other backend would otherwise silently run the sorted path instead.
+        if dropless_dispatch != "sorted" and dropless_impl not in ("auto", "pallas", "triton"):
+            raise ValueError(
+                f"dropless_dispatch={dropless_dispatch!r} runs on the Triton kernels; "
+                f"it cannot be combined with dropless_impl={dropless_impl!r} "
+                "(use 'auto', 'pallas' or 'triton')"
+            )
         # How routed rows reach the Triton grouped GEMM (dropless only):
         #   "sorted": top-k copies of each token, permuted into expert order
         #             (N*K x D buffers, several per layer);
@@ -475,9 +484,9 @@ class MoELayer(nnx.Module):
         impl = self.dropless_impl
         if impl == "auto":
             impl = {"gpu": "pallas", "cpu": "blocked"}.get(jax.default_backend(), "ragged_dot")
-        backend_pick = None if impl not in ("pallas", "triton", "mosaic") else (
-            grouped_backend() if impl == "pallas" else impl)
-        if self.dropless_dispatch != "sorted" and backend_pick == "triton":
+        if self.dropless_dispatch != "sorted":
+            # Always the Triton kernels (see __init__): on Hopper "auto"/"pallas"
+            # would otherwise pick Mosaic and fall back to the sorted path.
             from probjax.nn.layers.grouped_matmul import moe_swiglu_dispatch
 
             e = self.experts
