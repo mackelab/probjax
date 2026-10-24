@@ -368,6 +368,7 @@ class MoELayer(nnx.Module):
             "auto", "pallas", "triton", "mosaic", "blocked", "ragged_dot"
         ] = "auto",
         shared_hidden: int | None = None,
+        dropless_dispatch: Literal["sorted", "gather", "fused"] = "sorted",
         kernel_init: Initializer = _expert_init,
         router_init: Initializer = nnx.initializers.lecun_normal(),
         dtype: DTypeLike | None = None,
@@ -398,6 +399,16 @@ class MoELayer(nnx.Module):
         ):
             raise ValueError(f"unknown dropless_impl {dropless_impl!r}")
         self.routing = routing
+        if dropless_dispatch not in ("sorted", "gather", "fused"):
+            raise ValueError(f"unknown dropless_dispatch {dropless_dispatch!r}")
+        # How routed rows reach the Triton grouped GEMM (dropless only):
+        #   "sorted": top-k copies of each token, permuted into expert order
+        #             (N*K x D buffers, several per layer);
+        #   "gather": one fused custom VJP over gather -> SwiGLU -> combine,
+        #             with JAX gathers / scatter-adds (reference);
+        #   "fused":  the same with the gather / scatter-add inside the
+        #             kernels: no N*K x D buffer at all.
+        self.dropless_dispatch = dropless_dispatch
         self.dropless_impl = dropless_impl
 
         self.router = nnx.Linear(
@@ -461,6 +472,23 @@ class MoELayer(nnx.Module):
     def _dropless(
         self, x: Array, expert_ids: Array, weights: Array, counts: Array
     ) -> Array:
+        impl = self.dropless_impl
+        if impl == "auto":
+            impl = {"gpu": "pallas", "cpu": "blocked"}.get(jax.default_backend(), "ragged_dot")
+        backend_pick = None if impl not in ("pallas", "triton", "mosaic") else (
+            grouped_backend() if impl == "pallas" else impl)
+        if self.dropless_dispatch != "sorted" and backend_pick == "triton":
+            from probjax.nn.layers.grouped_matmul import moe_swiglu_dispatch
+
+            e = self.experts
+            cdt = e.dtype if e.dtype is not None else x.dtype
+            return moe_swiglu_dispatch(
+                x.astype(cdt), weights,
+                e.gate.kernel[...].astype(cdt), e.up.kernel[...].astype(cdt),
+                e.down.kernel[...].astype(cdt),
+                expert_ids.astype(jnp.int32), counts.astype(jnp.int32),
+                64, self.dropless_dispatch, None,
+            ).astype(x.dtype)
         n_tokens, d_model = x.shape
         order = jnp.argsort(expert_ids.reshape(-1), stable=True)
         inverse = jnp.argsort(order)
