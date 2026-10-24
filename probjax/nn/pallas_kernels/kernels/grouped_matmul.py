@@ -305,7 +305,9 @@ def mosaic_transposed_matmul(group_sizes: Array, x: Array, dy: Array) -> Array:
 # --------------------------------------------------------------------------
 
 
-def _gather_gmm_kernel(bg_ref, src_ref, ok_ref, x_ref, w_ref, o_ref, *, block_m, block_n, block_k):
+def _gather_gmm_kernel(
+    bg_ref, src_ref, ok_ref, x_ref, w_ref, o_ref, *, block_m, block_n, block_k
+):
     i, j = pl.program_id(0), pl.program_id(1)
     g = bg_ref[i]
     rows = pl.dslice(i * block_m, block_m)
@@ -329,7 +331,20 @@ def _gather_gmm_kernel(bg_ref, src_ref, ok_ref, x_ref, w_ref, o_ref, *, block_m,
     plgpu.store(o_ref.at[rows, cols], acc.astype(o_ref.dtype))
 
 
-def _gmm_scatter_kernel(bg_ref, src_ref, ok_ref, scale_ref, h_ref, w_ref, acc_in_ref, o_ref, *, block_m, block_n, block_k):
+def _gmm_scatter_kernel(
+    bg_ref,
+    src_ref,
+    ok_ref,
+    scale_ref,
+    h_ref,
+    w_ref,
+    acc_in_ref,
+    o_ref,
+    *,
+    block_m,
+    block_n,
+    block_k,
+):
     del acc_in_ref  # aliased with o_ref
     i, j = pl.program_id(0), pl.program_id(1)
     g = bg_ref[i]
@@ -354,8 +369,22 @@ def _gmm_scatter_kernel(bg_ref, src_ref, ok_ref, scale_ref, h_ref, w_ref, acc_in
     plgpu.atomic_add(o_ref, (idx[:, None], ncols[None, :]), acc * s[:, None])
 
 
-def _tgmm_gather_kernel(bs_ref, be_ref, src_ref, ok_ref, scale_ref, a_ref, b_ref, o_ref, *,
-                        gather_a, gather_b, block_m, block_k, block_n):
+def _tgmm_gather_kernel(
+    bs_ref,
+    be_ref,
+    src_ref,
+    ok_ref,
+    scale_ref,
+    a_ref,
+    b_ref,
+    o_ref,
+    *,
+    gather_a,
+    gather_b,
+    block_m,
+    block_k,
+    block_n,
+):
     g, ki, nj = pl.program_id(0), pl.program_id(1), pl.program_id(2)
     ks = pl.dslice(ki * block_k, block_k)
     ns = pl.dslice(nj * block_n, block_n)
@@ -373,7 +402,10 @@ def _tgmm_gather_kernel(bs_ref, be_ref, src_ref, ok_ref, scale_ref, a_ref, b_ref
         if gather_b:
             s = plgpu.load(scale_ref.at[rows])
             ncols = nj * block_n + jnp.arange(block_n, dtype=jnp.int32)
-            d = plgpu.load(b_ref.at[idx[:, None], ncols[None, :]]).astype(jnp.float32) * s[:, None]
+            d = (
+                plgpu.load(b_ref.at[idx[:, None], ncols[None, :]]).astype(jnp.float32)
+                * s[:, None]
+            )
             d = jnp.where(ok[:, None], d, 0.0).astype(a.dtype)
         else:
             d = plgpu.load(b_ref.at[rows, ns])
@@ -385,7 +417,9 @@ def _tgmm_gather_kernel(bs_ref, be_ref, src_ref, ok_ref, scale_ref, a_ref, b_ref
     plgpu.store(o_ref.at[g, ks, ns], acc.astype(o_ref.dtype))
 
 
-def gather_gmm(block_group, src, valid, x, w, *, block_m: int, interpret: bool) -> Array:
+def gather_gmm(
+    block_group, src, valid, x, w, *, block_m: int, interpret: bool
+) -> Array:
     """``out[p] = x[src[p]] @ w[block_group[p // block_m]]`` (zero where not valid).
 
     ``x`` is ``[T, K]`` (token rows, NOT in the padded layout); ``out`` is
@@ -408,11 +442,23 @@ def gather_gmm(block_group, src, valid, x, w, *, block_m: int, interpret: bool) 
 
 
 # Tile choice of gmm_scatter_add: (preferred block_n, block_k, num_warps, num_stages).
-SCATTER_TILE = (64, 64, 4, 3)  # H100, 64x128 top-8: 13.0 vs 14.9 ms (128/32) per layer fwd+bwd
+# H100, 64 experts x 128, top-8: 13.0 ms per layer fwd+bwd vs 14.9 at 128/32.
+SCATTER_TILE = (64, 64, 4, 3)
 
 
-def gmm_scatter_add(block_group, src, valid, scale, h, w, n_tokens: int, *, block_m: int, interpret: bool,
-                    tile: tuple | None = None) -> Array:
+def gmm_scatter_add(
+    block_group,
+    src,
+    valid,
+    scale,
+    h,
+    w,
+    n_tokens: int,
+    *,
+    block_m: int,
+    interpret: bool,
+    tile: tuple | None = None,
+) -> Array:
     """``out[t] = sum over rows p with src[p] = t of scale[p] * (h[p] @ w[e(p)])``.
 
     ``h`` is ``[P, K]`` in the padded layout; ``out`` is ``[T, N]`` float32,
@@ -438,8 +484,20 @@ def gmm_scatter_add(block_group, src, valid, scale, h, w, n_tokens: int, *, bloc
     return out[:n_tokens, :n]
 
 
-def tgmm_gather(block_start, block_end, src, valid, scale, a, b, *, gather_a: bool, gather_b: bool,
-                block_m: int, interpret: bool) -> Array:
+def tgmm_gather(
+    block_start,
+    block_end,
+    src,
+    valid,
+    scale,
+    a,
+    b,
+    *,
+    gather_a: bool,
+    gather_b: bool,
+    block_m: int,
+    interpret: bool,
+) -> Array:
     """``dw[g] = sum over g's rows p of a'[p]^T b'[p]``: ``[G, K, N]``.
 
     ``a' = a[src]`` if ``gather_a`` else ``a`` (layout rows); likewise ``b'``,
@@ -453,12 +511,26 @@ def tgmm_gather(block_start, block_end, src, valid, scale, a, b, *, gather_a: bo
     kp, npad = a.shape[1], b.shape[1]
     bk, bn = _tile(kp, 64), _tile(npad, 64)
     out = pl.pallas_call(
-        functools.partial(_tgmm_gather_kernel, gather_a=gather_a, gather_b=gather_b,
-                          block_m=block_m, block_k=bk, block_n=bn),
+        functools.partial(
+            _tgmm_gather_kernel,
+            gather_a=gather_a,
+            gather_b=gather_b,
+            block_m=block_m,
+            block_k=bk,
+            block_n=bn,
+        ),
         grid=(groups, kp // bk, npad // bn),
         out_shape=jax.ShapeDtypeStruct((groups, kp, npad), a.dtype),
         compiler_params=plgpu.CompilerParams(num_warps=4, num_stages=3),
         interpret=interpret,
         name="grouped_matmul_tgmm_gather",
-    )(block_start, block_end, src, valid.astype(jnp.int32), scale.astype(jnp.float32), a, b)
+    )(
+        block_start,
+        block_end,
+        src,
+        valid.astype(jnp.int32),
+        scale.astype(jnp.float32),
+        a,
+        b,
+    )
     return out[:, :k, :n]

@@ -312,8 +312,11 @@ def _routing(expert_ids: Array, gates: Array, counts: Array, block_m: int) -> _R
     p = layout.padded_rows
     src = jnp.zeros((layout.n_padded,), jnp.int32).at[p].set(order // top_k)
     valid = jnp.zeros((layout.n_padded,), bool).at[p].set(True)
-    gate = jnp.zeros((layout.n_padded,), jnp.float32).at[p].set(
-        gates.reshape(-1).astype(jnp.float32)[order]
+    gate = (
+        jnp
+        .zeros((layout.n_padded,), jnp.float32)
+        .at[p]
+        .set(gates.reshape(-1).astype(jnp.float32)[order])
     )
     inverse = jnp.argsort(order).astype(jnp.int32)
     token_rows = p[inverse].reshape(n_tokens, top_k)
@@ -330,7 +333,9 @@ class _GatherOps:
 
     def gather_gmm(self, r, x, w):
         xp = jnp.where(r.valid[:, None], x[r.src], jnp.zeros((), x.dtype))
-        return gmm(r.layout.block_expert, xp, w, block_m=self.bm, interpret=self.interpret)
+        return gmm(
+            r.layout.block_expert, xp, w, block_m=self.bm, interpret=self.interpret
+        )
 
     def gmm_scatter_add(self, r, scale, h, w, n_tokens):
         y = gmm(r.layout.block_expert, h, w, block_m=self.bm, interpret=self.interpret)
@@ -339,11 +344,27 @@ class _GatherOps:
 
     def tgmm_gather_a(self, r, x, d):
         xp = jnp.where(r.valid[:, None], x[r.src], jnp.zeros((), x.dtype))
-        return tgmm(r.layout.block_start, r.layout.block_end, xp, d, block_m=self.bm, interpret=self.interpret)
+        return tgmm(
+            r.layout.block_start,
+            r.layout.block_end,
+            xp,
+            d,
+            block_m=self.bm,
+            interpret=self.interpret,
+        )
 
     def tgmm_gather_b(self, r, h, dout, scale):
-        d = jnp.where(r.valid[:, None], dout[r.src].astype(jnp.float32) * scale[:, None], 0.0)
-        return tgmm(r.layout.block_start, r.layout.block_end, h, d.astype(h.dtype), block_m=self.bm, interpret=self.interpret)
+        d = jnp.where(
+            r.valid[:, None], dout[r.src].astype(jnp.float32) * scale[:, None], 0.0
+        )
+        return tgmm(
+            r.layout.block_start,
+            r.layout.block_end,
+            h,
+            d.astype(h.dtype),
+            block_m=self.bm,
+            interpret=self.interpret,
+        )
 
 
 class _FusedOps(_GatherOps):
@@ -351,19 +372,59 @@ class _FusedOps(_GatherOps):
     no ``[P, D]`` buffer is ever materialised."""
 
     def gather_gmm(self, r, x, w):
-        return gather_gmm(r.layout.block_expert, r.src, r.valid, x, w, block_m=self.bm, interpret=self.interpret)
+        return gather_gmm(
+            r.layout.block_expert,
+            r.src,
+            r.valid,
+            x,
+            w,
+            block_m=self.bm,
+            interpret=self.interpret,
+        )
 
     def gmm_scatter_add(self, r, scale, h, w, n_tokens):
-        return gmm_scatter_add(r.layout.block_expert, r.src, r.valid, scale, h, w, n_tokens, block_m=self.bm, interpret=self.interpret)
+        return gmm_scatter_add(
+            r.layout.block_expert,
+            r.src,
+            r.valid,
+            scale,
+            h,
+            w,
+            n_tokens,
+            block_m=self.bm,
+            interpret=self.interpret,
+        )
 
     def tgmm_gather_a(self, r, x, d):
         ones = jnp.ones_like(r.gate)
-        return tgmm_gather(r.layout.block_start, r.layout.block_end, r.src, r.valid, ones, x, d,
-                           gather_a=True, gather_b=False, block_m=self.bm, interpret=self.interpret)
+        return tgmm_gather(
+            r.layout.block_start,
+            r.layout.block_end,
+            r.src,
+            r.valid,
+            ones,
+            x,
+            d,
+            gather_a=True,
+            gather_b=False,
+            block_m=self.bm,
+            interpret=self.interpret,
+        )
 
     def tgmm_gather_b(self, r, h, dout, scale):
-        return tgmm_gather(r.layout.block_start, r.layout.block_end, r.src, r.valid, scale, h, dout,
-                           gather_a=False, gather_b=True, block_m=self.bm, interpret=self.interpret)
+        return tgmm_gather(
+            r.layout.block_start,
+            r.layout.block_end,
+            r.src,
+            r.valid,
+            scale,
+            h,
+            dout,
+            gather_a=False,
+            gather_b=True,
+            block_m=self.bm,
+            interpret=self.interpret,
+        )
 
 
 class _FusedGsumOps(_FusedOps):
@@ -384,15 +445,24 @@ def _ops(impl, block_m, interpret):
 
 
 def _dispatch_hidden(ops, r, x, w_gate, w_up):
-    # One gathered GEMM against [W_gate | W_up]: x is read once, not twice.
-    hidden = w_gate.shape[-1]
-    gu = ops.gather_gmm(r, x, jnp.concatenate([w_gate, w_up], axis=-1))
-    return gu[:, :hidden], gu[:, hidden:]
+    # One gather of x for both projections: [W_gate | W_up] along the hidden axis.
+    gate_up = ops.gather_gmm(r, x, jnp.concatenate([w_gate, w_up], axis=2))
+    return jnp.split(gate_up, 2, axis=1)
 
 
 @functools.partial(jax.custom_vjp, nondiff_argnums=(7, 8, 9))
-def moe_swiglu_dispatch(x, gates, w_gate, w_up, w_down, expert_ids, counts,
-                        block_m=64, impl="fused", interpret=None):
+def moe_swiglu_dispatch(
+    x,
+    gates,
+    w_gate,
+    w_up,
+    w_down,
+    expert_ids,
+    counts,
+    block_m=64,
+    impl="fused",
+    interpret=None,
+):
     """Routed SwiGLU experts AND the combine, without top-k copies of ``x``.
 
     ``x`` [N, D] tokens, ``expert_ids`` / ``gates`` [N, K] (top-k choice and
@@ -406,11 +476,15 @@ def moe_swiglu_dispatch(x, gates, w_gate, w_up, w_down, expert_ids, counts,
     Differentiable in ``x``, ``gates`` and the three weight stacks; saves only
     its inputs and recomputes once the cotangent exists.
     """
-    y, _ = _moe_dispatch_fwd(x, gates, w_gate, w_up, w_down, expert_ids, counts, block_m, impl, interpret)
+    y, _ = _moe_dispatch_fwd(
+        x, gates, w_gate, w_up, w_down, expert_ids, counts, block_m, impl, interpret
+    )
     return y
 
 
-def _moe_dispatch_fwd(x, gates, w_gate, w_up, w_down, expert_ids, counts, block_m, impl, interpret):
+def _moe_dispatch_fwd(
+    x, gates, w_gate, w_up, w_down, expert_ids, counts, block_m, impl, interpret
+):
     ops = _ops(impl, block_m, interpret)
     r = _routing(expert_ids, gates, counts, block_m)
     gate, up = _dispatch_hidden(ops, r, x, w_gate, w_up)
@@ -437,20 +511,21 @@ def _moe_dispatch_bwd(block_m, impl, interpret, res, dy):
     dgate = (dh * u32 * sig * (1.0 + g32 * (1.0 - sig))).astype(x.dtype)
     dup = (dh * silu).astype(x.dtype)
     dw_down = ops.tgmm_gather_b(r, h, dy, r.gate)
-    # gate and up halves in one kernel each: [dgate | dup] against
-    # [W_gate | W_up] (K = 2 * hidden) for dx, and x^T [dgate | dup] for the
-    # two weight gradients.
-    hidden = w_gate.shape[-1]
-    d_gu = jnp.concatenate([dgate, dup], axis=-1)
-    dw_gu = ops.tgmm_gather_a(r, x, d_gu)
-    dw_gate, dw_up = dw_gu[..., :hidden], dw_gu[..., hidden:]
+    # Gate and up stacked again: one gather of x for both weight gradients and
+    # one scatter-add for dx = dgate Wg^T + dup Wu^T.
+    d_gate_up = jnp.concatenate([dgate, dup], axis=1)
+    dw_gate, dw_up = jnp.split(ops.tgmm_gather_a(r, x, d_gate_up), 2, axis=2)
+    w_gate_up_t = jnp.swapaxes(jnp.concatenate([w_gate, w_up], axis=2), 1, 2)
     ones = r.valid.astype(jnp.float32)
-    w_gu_t = jnp.swapaxes(jnp.concatenate([w_gate, w_up], axis=-1), 1, 2)
-    dx = ops.gmm_scatter_add(r, ones, d_gu, w_gu_t, x.shape[0])
+    dx = ops.gmm_scatter_add(r, ones, d_gate_up, w_gate_up_t, x.shape[0])
     n_tokens, top_k = expert_ids.shape
-    d_gates = (jnp.zeros((n_tokens * top_k,), jnp.float32)
-               .at[r.order].set(d_gate_row[r.layout.padded_rows])
-               .reshape(n_tokens, top_k))
+    d_gates = (
+        jnp
+        .zeros((n_tokens * top_k,), jnp.float32)
+        .at[r.order]
+        .set(d_gate_row[r.layout.padded_rows])
+        .reshape(n_tokens, top_k)
+    )
     return (
         dx.astype(x.dtype),
         d_gates.astype(gates.dtype),

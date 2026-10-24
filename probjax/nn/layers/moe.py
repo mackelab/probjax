@@ -17,6 +17,7 @@ from probjax.nn.layers.grouped_matmul import (
     grouped_backend,
     grouped_swiglu,
     make_group_layout,
+    moe_swiglu_dispatch,
     ragged_matmul_hopper,
     scatter_to_layout,
 )
@@ -27,6 +28,7 @@ from probjax.nn.sharding import (
     HIDDEN,
     constrain,
     param_metadata,
+    replicate,
 )
 from probjax.utils.typing import Array, DTypeLike
 
@@ -253,7 +255,7 @@ class ExpertSwiGLU(nnx.Module):
         a bf16 model runs bf16 tensor-core matmuls.
         """
         self._check_rows(x)
-        w_gate, w_up, w_down = (m.kernel[...] for m in (self.gate, self.up, self.down))
+        w_gate, w_up, w_down = self._replicated_kernels()
         cdt = self.dtype if self.dtype is not None else x.dtype
         if backend is None:
             backend = grouped_backend()
@@ -281,6 +283,48 @@ class ExpertSwiGLU(nnx.Module):
             ),
         )
         return y.astype(cdt)
+
+    def dispatch_forward(
+        self,
+        x: Array,
+        expert_ids: Array,
+        weights: Array,
+        group_sizes: Array,
+        *,
+        dispatch: str,
+        block_m: int = 64,
+    ) -> Array:
+        """Routed experts and the weighted combine on the Triton kernels:
+        ``[N, D] -> [N, D]``, ``sum_k weights[n, k] * SwiGLU_{expert_ids[n, k]}(x[n])``.
+
+        Unlike :meth:`grouped_forward` the rows are never copied ``top_k``
+        times; see :func:`~probjax.nn.layers.grouped_matmul.moe_swiglu_dispatch`.
+        """
+        self._check_rows(x)
+        cdt = self.dtype if self.dtype is not None else x.dtype
+        w_gate, w_up, w_down = (w.astype(cdt) for w in self._replicated_kernels())
+        return moe_swiglu_dispatch(
+            x.astype(cdt),
+            weights,
+            w_gate,
+            w_up,
+            w_down,
+            expert_ids.astype(jnp.int32),
+            group_sizes.astype(jnp.int32),
+            block_m,
+            dispatch,
+            None,
+        )
+
+    def _replicated_kernels(self) -> tuple[Array, Array, Array]:
+        # The Pallas kernels pick each row block's expert from a global sort,
+        # so they cannot run on expert-sharded weights: gather them first
+        # (without this the sharding rule rejects the "model"-sharded expert
+        # axis).  No-op without a mesh.
+        gate, up, down = (
+            replicate(m.kernel[...]) for m in (self.gate, self.up, self.down)
+        )
+        return gate, up, down
 
 
 class SwiGLU(nnx.Module):
@@ -351,7 +395,10 @@ class MoELayer(nnx.Module):
 
     Under a mesh, expert kernels shard over the ``EXPERT`` logical axis, the
     router stays replicated, the shared expert is tensor-parallel, and the
-    output is constrained to ``BATCH``.
+    output is constrained to ``BATCH``.  The Pallas paths (``"pallas"``,
+    ``"triton"``, ``"mosaic"``, and the gather/fused dispatch) gather the
+    expert weights onto every device first: their kernels take each row
+    block's expert from a global sort, so they are not expert-parallel.
     """
 
     def __init__(
@@ -404,7 +451,11 @@ class MoELayer(nnx.Module):
         # gather / fused are Triton-kernel paths (Hopper included; interpret mode
         # on CPU).  "auto" / "pallas" / "triton" resolve to them; an explicit
         # other backend would otherwise silently run the sorted path instead.
-        if dropless_dispatch != "sorted" and dropless_impl not in ("auto", "pallas", "triton"):
+        if dropless_dispatch != "sorted" and dropless_impl not in (
+            "auto",
+            "pallas",
+            "triton",
+        ):
             raise ValueError(
                 f"dropless_dispatch={dropless_dispatch!r} runs on the Triton kernels; "
                 f"it cannot be combined with dropless_impl={dropless_impl!r} "
@@ -484,23 +535,12 @@ class MoELayer(nnx.Module):
     def _dropless(
         self, x: Array, expert_ids: Array, weights: Array, counts: Array
     ) -> Array:
-        impl = self.dropless_impl
-        if impl == "auto":
-            impl = {"gpu": "pallas", "cpu": "blocked"}.get(jax.default_backend(), "ragged_dot")
         if self.dropless_dispatch != "sorted":
             # Always the Triton kernels (see __init__): on Hopper "auto"/"pallas"
-            # would otherwise pick Mosaic and fall back to the sorted path.
-            from probjax.nn.layers.grouped_matmul import moe_swiglu_dispatch
-
-            e = self.experts
-            cdt = e.dtype if e.dtype is not None else x.dtype
-            return moe_swiglu_dispatch(
-                x.astype(cdt), weights,
-                e.gate.kernel[...].astype(cdt), e.up.kernel[...].astype(cdt),
-                e.down.kernel[...].astype(cdt),
-                expert_ids.astype(jnp.int32), counts.astype(jnp.int32),
-                64, self.dropless_dispatch, None,
-            ).astype(x.dtype)
+            # would pick Mosaic, which has no gather/scatter variant.
+            return self.experts.dispatch_forward(
+                x, expert_ids, weights, counts, dispatch=self.dropless_dispatch
+            )
         n_tokens, d_model = x.shape
         order = jnp.argsort(expert_ids.reshape(-1), stable=True)
         inverse = jnp.argsort(order)
