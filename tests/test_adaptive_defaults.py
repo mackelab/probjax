@@ -8,7 +8,6 @@ import pytest
 from flax import nnx
 
 import probjax.nn.generative.nflows as N
-from probjax.nn import FitConfig
 from probjax.nn.generative.autoregressive import MADE, MixtureAutoregressive
 from probjax.nn.generative.autoregressive.config import MLPARConditionerConfig
 from probjax.nn.generative.nflows.config import (
@@ -100,24 +99,24 @@ def test_the_hint_reaches_the_built_ar_model():
 
 
 def test_the_fit_defaults_are_explicit():
-    """Nothing about a run is inferred: the configuration states it.
+    """Nothing about a run is inferred from the data: the defaults are fixed.
 
     The old defaults scaled the step count with the dataset and capped the
     batch at 512, which meant the same call trained different models on
     different data. Now the numbers are the caller's to choose.
     """
-    from probjax.nn import DataSpec, FitConfig
+    import inspect
 
-    config = FitConfig(data=DataSpec())
-    assert config.max_steps == 1000
-    assert config.batch_size == 512
-    assert config.learning_rate == 1e-3
-    assert config.schedule == "onecycle_cosine"
+    from probjax.nn.training.loop import _fit
 
-    # An explicit full batch is one setting away.
-    assert FitConfig(data=DataSpec(), batch_size=None).batch_size is None
-    with pytest.raises(ValueError, match="batch_size"):
-        FitConfig(data=DataSpec(), batch_size=0)
+    defaults = {
+        name: parameter.default
+        for name, parameter in inspect.signature(_fit).parameters.items()
+    }
+    assert defaults["num_steps"] == 1000
+    assert defaults["batch_size"] == 512
+    assert defaults["learning_rate"] == 1e-3
+    assert defaults["schedule"] == "onecycle_cosine"
 
 
 # ---------------------------------------------------------------------------
@@ -153,13 +152,19 @@ def test_standardisation_rescues_badly_scaled_data(build):
 
     on = build(standardize=True)
     on.fit(
-        jax.random.PRNGKey(2), train, config=FitConfig(max_steps=800, batch_size=512)
+        jax.random.PRNGKey(2),
+        train,
+        num_steps=800,
+        batch_size=512,
     )
     nll_on = float(-jnp.mean(jax.vmap(on._logpdf)(test)))
 
     off = build(standardize=False)
     off.fit(
-        jax.random.PRNGKey(2), train, config=FitConfig(max_steps=800, batch_size=512)
+        jax.random.PRNGKey(2),
+        train,
+        num_steps=800,
+        batch_size=512,
     )
     nll_off = float(-jnp.mean(jax.vmap(off._logpdf)(test)))
 
@@ -172,7 +177,10 @@ def test_standardised_logpdf_is_a_density_in_the_original_space():
     train = _badly_scaled(jax.random.PRNGKey(0))
     model = N.nsf(2, 4, nnx.Rngs(0))
     model.fit(
-        jax.random.PRNGKey(1), train, config=FitConfig(max_steps=600, batch_size=512)
+        jax.random.PRNGKey(1),
+        train,
+        num_steps=600,
+        batch_size=512,
     )
 
     proposal_scale = 4.0 * _SCALE
@@ -188,7 +196,10 @@ def test_samples_come_back_in_the_original_units():
     train = _badly_scaled(jax.random.PRNGKey(0))
     model = N.nsf(2, 4, nnx.Rngs(0))
     model.fit(
-        jax.random.PRNGKey(1), train, config=FitConfig(max_steps=600, batch_size=512)
+        jax.random.PRNGKey(1),
+        train,
+        num_steps=600,
+        batch_size=512,
     )
 
     samples = model.as_dist().rvs(jax.random.PRNGKey(2), (4000,))
@@ -204,7 +215,7 @@ def test_standardisation_is_fitted_once_and_only_once():
     model.fit(
         jax.random.PRNGKey(0),
         _badly_scaled(jax.random.PRNGKey(0)),
-        config=FitConfig(max_steps=50),
+        num_steps=50,
     )
     shift, scale = model.standardization
     assert model.is_standardized
@@ -213,7 +224,7 @@ def test_standardisation_is_fitted_once_and_only_once():
     model.fit(
         jax.random.PRNGKey(1),
         jnp.zeros((100, 2)) + 999.0,
-        config=FitConfig(max_steps=50),
+        num_steps=50,
     )
     assert jnp.allclose(model.standardization[0], shift)
     assert jnp.allclose(model.standardization[1], scale)
@@ -233,7 +244,7 @@ def test_disabled_standardisation_leaves_the_model_untouched():
     model.fit(
         jax.random.PRNGKey(0),
         _badly_scaled(jax.random.PRNGKey(0)),
-        config=FitConfig(max_steps=50),
+        num_steps=50,
     )
     assert not model.is_standardized
     assert jnp.allclose(model.standardization[0], 0.0)
@@ -245,7 +256,11 @@ def test_constant_columns_do_not_divide_by_zero():
         [jax.random.normal(jax.random.PRNGKey(0), (500,)), jnp.full((500,), 7.0)], -1
     )
     model = N.nsf(2, 2, nnx.Rngs(0))
-    model.fit(jax.random.PRNGKey(1), data, config=FitConfig(max_steps=50))
+    model.fit(
+        jax.random.PRNGKey(1),
+        data,
+        num_steps=50,
+    )
     assert jnp.all(jnp.isfinite(model.standardization[1]))
     assert jnp.all(model.standardization[1] > 0)
     assert jnp.all(jnp.isfinite(model._logpdf(data[:16])))
@@ -258,5 +273,9 @@ def test_discrete_heads_do_not_standardise():
     model = CategoricalAutoregressive(3, nnx.Rngs(0), num_categories=4)
     assert not model.standardize
     tokens = jax.random.randint(jax.random.PRNGKey(0), (64, 3), 0, 4)
-    model.fit(jax.random.PRNGKey(1), tokens, config=FitConfig(max_steps=50))
+    model.fit(
+        jax.random.PRNGKey(1),
+        tokens,
+        num_steps=50,
+    )
     assert not model.is_standardized

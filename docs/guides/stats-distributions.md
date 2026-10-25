@@ -125,20 +125,18 @@ axis) or an iterable of batches:
 import jax
 import jax.numpy as jnp
 
-from probjax.nn import DataSpec, FitConfig
 from probjax.nn.training import fit
 
 
-def loss_fn(params, rng, primary):
+def loss_fn(params, rng, batch):
     del rng
-    return jnp.mean((primary - params["w"]) ** 2)
+    return jnp.mean((batch["data"] - params["w"]) ** 2)
 
 
 data = jax.random.normal(jax.random.key(0), (64, 2))
 result = fit(
     loss_fn, {"w": jnp.zeros(2)}, jax.random.key(1), {"data": data},
-    config=FitConfig(data=DataSpec(primary="data"), max_steps=20,
-                      learning_rate=1e-2),
+    num_steps=20, learning_rate=1e-2,
 )
 assert result.losses.shape == (20,)
 ```
@@ -150,8 +148,8 @@ A `FitResult` carries the trained `params`, the `losses` and a resumable
 assert result.params["w"].shape == (2,)
 ```
 
-The object-layer counterpart is `FitMixin.fit(rng, data, **fit_kwargs)`, which
-the `nn` generative models use so a fitted module can train in place
+The object-layer counterpart is `fit_module(model, rng, data, **options)`,
+which the `nn` generative models wrap as `model.fit` so a fitted module can train in place
 (`flow.fit(key, samples)`); `data` may be a dict (`{"data": x, "context": c}`) whose other entries are named
 model inputs, batched together and forwarded to the network; `weights=` weight
 the examples in the loss and are not part of the data.

@@ -4,7 +4,7 @@ import pytest
 from flax import nnx
 
 from probjax.core import inverse_and_logabsdet
-from probjax.nn import FitConfig, bpf, gf, naf, sospf, unaf
+from probjax.nn import bpf, gf, naf, sospf, unaf
 from probjax.nn.generative.nflows import (
     BernsteinBijectorConfig,
     DeepSigmoidBijectorConfig,
@@ -74,7 +74,10 @@ def test_flow_trains_and_normalizes(ctor):
 
     flow = ctor(2, 2, rngs=nnx.Rngs(0))
     losses = flow.fit(
-        jax.random.key(1), data, config=FitConfig(max_steps=150, batch_size=128)
+        jax.random.key(1),
+        data,
+        num_steps=150,
+        batch_size=128,
     ).losses
     distribution = flow.as_dist()
     assert jnp.all(jnp.isfinite(losses))
@@ -110,7 +113,8 @@ def test_autoregressive_monotone_flow_conditional(ctor):
     losses = flow.fit(
         jax.random.key(3),
         {"data": data, "context": context},
-        config=FitConfig(max_steps=40, batch_size=64),
+        num_steps=40,
+        batch_size=64,
     ).losses
     assert jnp.all(jnp.isfinite(losses))
     assert losses[-1] < losses[0]

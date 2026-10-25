@@ -9,7 +9,7 @@ import optax
 import pytest
 from flax import nnx
 
-from probjax.nn import DataSpec, FitCallback, FitConfig, FitMixin, fit
+from probjax.nn import fit, fit_module
 
 
 class Metrics(NamedTuple):
@@ -21,10 +21,6 @@ def loss(params, rng, primary):
     del rng
     residual = params["w"] - primary
     return jnp.mean(residual**2), {"nested": Metrics(params["w"], residual.mean())}
-
-
-def _config(**overrides):
-    return FitConfig(data=DataSpec(), **overrides)
 
 
 def assert_tree_equal(a, b):
@@ -41,7 +37,8 @@ def test_metrics_are_stacked_into_the_result():
         {"w": jnp.array(0.0)},
         jax.random.key(0),
         jnp.ones(4),
-        config=_config(max_steps=4, optimizer=optax.sgd(0.1)),
+        num_steps=4,
+        optimizer=optax.sgd(0.1),
     )
     assert result.losses.shape == (4,)
     assert isinstance(result.metrics["nested"], Metrics)
@@ -52,17 +49,18 @@ def test_metrics_are_stacked_into_the_result():
 def test_metrics_reach_every_callback():
     seen = []
 
-    class Monitor(FitCallback):
-        def on_step_end(self, state, info):
-            seen.append((int(state.step), info))
+    def monitor(state, info):
+        seen.append((int(state.step), info))
 
     result = fit(
         loss,
         {"w": jnp.array(0.0)},
         jax.random.key(0),
         jnp.ones(4),
-        config=_config(max_steps=5, optimizer=optax.sgd(0.1), callback_every=2),
-        callbacks=[Monitor()],
+        num_steps=5,
+        optimizer=optax.sgd(0.1),
+        every=2,
+        callback=monitor,
     )
     assert [step for step, _ in seen] == [2, 4, 5]
     for step, info in seen:
@@ -74,11 +72,9 @@ def test_metrics_reach_every_callback():
 def test_resume_forwards_optimizer_rng_ema_and_absolute_step():
     params, key = {"w": jnp.array(0.0)}, jax.random.key(7)
     batch = jnp.arange(8.0)
-    config = _config(
-        optimizer=optax.adam(0.01), ema_decay=0.9, batch_size=3, max_steps=9
-    )
-    whole = fit(loss, params, key, batch, config=config)
-    first = fit(loss, params, key, batch, config=config.merged(max_steps=4))
+    options = dict(optimizer=optax.adam(0.01), ema_decay=0.9, batch_size=3)
+    whole = fit(loss, params, key, batch, num_steps=9, **options)
+    first = fit(loss, params, key, batch, num_steps=4, **options)
     seen = []
     resumed = fit(
         loss,
@@ -86,8 +82,10 @@ def test_resume_forwards_optimizer_rng_ema_and_absolute_step():
         None,
         batch,
         state=first.state,
-        config=config.merged(max_steps=5, callback_every=2),
-        callbacks=[lambda state, info: seen.append(int(state.step))],
+        num_steps=5,
+        every=2,
+        callback=lambda state, info: seen.append(int(state.step)),
+        **options,
     )
     assert seen == [6, 8, 9]
     assert_tree_equal(whole.state, resumed.state)
@@ -101,27 +99,27 @@ def test_resume_forwards_optimizer_rng_ema_and_absolute_step():
 
 
 def test_early_stop_truncates_the_history():
-    class Stop(FitCallback):
-        def __init__(self):
-            self.calls = 0
+    calls = []
 
-        def on_step_end(self, state, info):
-            self.calls += 1
-            return self.calls < 2
+    def stop(state, info):
+        calls.append(int(state.step))
+        return False
 
     result = fit(
         loss,
         {"w": jnp.array(0.0)},
         jax.random.key(0),
         jnp.ones(4),
-        config=_config(max_steps=7, callback_every=4),
-        callbacks=[Stop()],
+        num_steps=12,
+        every=4,
+        callback=stop,
     )
-    # The callback saw the first chunk of four and the last one of three, and
-    # stopped the run there: every update that ran is in the history.
-    assert int(result.state.step) == 7
-    assert all(x.shape[0] == 7 for x in jax.tree.leaves(result.metrics))
-    assert result.losses.shape == (7,)
+    # The callback saw the first chunk of four and stopped the run there:
+    # every update that ran is in the history, and none that did not.
+    assert calls == [4]
+    assert int(result.state.step) == 4
+    assert all(x.shape[0] == 4 for x in jax.tree.leaves(result.metrics))
+    assert result.losses.shape == (4,)
 
 
 def test_a_run_without_updates_has_no_metrics():
@@ -135,7 +133,7 @@ def test_a_run_without_updates_has_no_metrics():
         {"w": jnp.array(0.0)},
         jax.random.key(0),
         jnp.ones(4),
-        config=_config(max_steps=0),
+        num_steps=0,
     )
     assert result.losses.shape == (0,)
     assert result.metrics is None
@@ -143,7 +141,7 @@ def test_a_run_without_updates_has_no_metrics():
 
 
 def test_module_loss_aux_and_mutable_state_forward_together_on_resume():
-    class Model(nnx.Module, FitMixin):
+    class Model(nnx.Module):
         def __init__(self):
             self.w = nnx.Param(jnp.array(0.0))
             self.count = nnx.Variable(jnp.array(0))
@@ -153,9 +151,9 @@ def test_module_loss_aux_and_mutable_state_forward_together_on_resume():
             return jnp.mean((self.w[...] - primary) ** 2), {"count": self.count[...]}
 
     model = Model()
-    config = FitConfig(max_steps=2, optimizer=optax.sgd(0.1))
-    first = model.fit(jax.random.key(0), jnp.ones(4), config=config)
-    resumed = model.fit(None, jnp.ones(4), state=first.state, config=config)
+    options = dict(num_steps=2, optimizer=optax.sgd(0.1))
+    first = fit_module(model, jax.random.key(0), jnp.ones(4), **options)
+    resumed = fit_module(model, None, jnp.ones(4), state=first.state, **options)
     np.testing.assert_array_equal(first.metrics["count"], [1, 2])
     np.testing.assert_array_equal(resumed.metrics["count"], [3, 4])
     assert model.count[...] == 4
@@ -168,15 +166,16 @@ def test_a_resume_without_an_averaging_accumulator_is_rejected():
         {"w": jnp.array(0.0)},
         jax.random.key(0),
         jnp.ones(4),
-        config=_config(max_steps=2),
+        num_steps=2,
     )
     assert first.state.ema_params is None
-    with pytest.raises(ValueError, match="use_ema requires ema_decay"):
+    with pytest.raises(ValueError, match="no averaged parameters"):
         fit(
             loss,
             None,
             None,
             jnp.ones(4),
             state=first.state,
-            config=_config(max_steps=1, use_ema=True),
+            num_steps=1,
+            ema_decay=0.9,
         )

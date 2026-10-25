@@ -1,4 +1,4 @@
-"""Training extensions, mutable module state, and subclass customization."""
+"""Callbacks, averaging, option checks and module state in the training loop."""
 
 import jax
 import jax.numpy as jnp
@@ -7,12 +7,12 @@ import optax
 import pytest
 from flax import nnx
 
-from probjax.nn import DataSpec, FitCallback, FitConfig, FitMixin, fit
+from probjax.nn import fit, fit_module
 
 
-def loss(params, rng, primary):
+def loss(params, rng, batch):
     del rng
-    return jnp.mean((params["w"] - primary) ** 2)
+    return jnp.mean((params["w"] - batch) ** 2)
 
 
 def test_ema_matches_manual_updates_and_keeps_raw_parameters():
@@ -26,13 +26,10 @@ def test_ema_matches_manual_updates_and_keeps_raw_parameters():
         initial,
         jax.random.key(0),
         jnp.full((4,), 2.0),
-        config=FitConfig(
-            data=DataSpec(),
-            max_steps=5,
-            optimizer=optax.sgd(0.1),
-            ema_decay=0.8,
-            use_ema=True,
-        ),
+        num_steps=5,
+        optimizer=optax.sgd(0.1),
+        ema_decay=0.8,
+        use_ema=True,
     )
     np.testing.assert_allclose(result.state.params["w"], raw, rtol=1e-6)
     np.testing.assert_allclose(result.params["w"], ema, rtol=1e-6)
@@ -40,45 +37,39 @@ def test_ema_matches_manual_updates_and_keeps_raw_parameters():
     assert initial["w"] == 0
 
 
-def test_callback_lifecycle_and_early_stop_use_device_snapshots():
+def test_callback_sees_device_snapshots_and_can_stop_early():
     events = []
 
-    class Monitor(FitCallback):
-        def on_fit_begin(self, state):
-            events.append(("begin", int(state.step)))
-
-        def on_step_end(self, state, info):
-            assert isinstance(state.params["w"], jax.Array)
-            assert jnp.isfinite(info.loss)
-            events.append(("step", int(state.step)))
-            return np.bool_(state.step < 6)
-
-        def on_fit_end(self, result):
-            events.append(("end", int(result.state.step)))
+    def monitor(state, info):
+        assert isinstance(state.params["w"], jax.Array)
+        assert jnp.isfinite(info.loss)
+        events.append(int(state.step))
+        return bool(state.step < 6)
 
     result = fit(
         loss,
         {"w": jnp.array(0.0)},
         jax.random.key(0),
         jnp.ones(8),
-        config=FitConfig(
-            data=DataSpec(), max_steps=20, callback_every=3, ema_decay=0.9
-        ),
-        callbacks=[Monitor()],
+        num_steps=20,
+        every=3,
+        ema_decay=0.9,
+        callback=monitor,
     )
-    assert events == [("begin", 0), ("step", 3), ("step", 6), ("end", 6)]
+    assert events == [3, 6]
     assert result.losses.shape == (6,)
 
 
 def test_callback_chunks_preserve_randomness_and_final_partial_chunk():
     seen = []
-    config = FitConfig(data=DataSpec(), max_steps=13, batch_size=3, ema_decay=0.8)
+    options = dict(num_steps=13, batch_size=3, ema_decay=0.8)
     args = (loss, {"w": jnp.array(0.0)}, jax.random.key(5), jnp.arange(9.0))
-    single = fit(*args, config=config)
+    single = fit(*args, **options)
     chunked = fit(
         *args,
-        config=config.merged(callback_every=5),
-        callbacks=[lambda state, info: seen.append(int(state.step))],
+        every=5,
+        callback=lambda state, info: seen.append(int(state.step)),
+        **options,
     )
     assert seen == [5, 10, 13]
     np.testing.assert_array_equal(single.losses, chunked.losses)
@@ -105,15 +96,15 @@ def test_callback_can_validate_with_jit_and_exception_propagates():
             {"w": jnp.array(0.0)},
             jax.random.key(0),
             jnp.ones(4),
-            config=FitConfig(data=DataSpec(), max_steps=3),
-            callbacks=[callback],
+            num_steps=3,
+            callback=callback,
         )
     assert len(values) == 1
 
 
 def test_a_non_finite_loss_still_counts_as_an_update():
-    def nonfinite(params, rng, primary):
-        del rng, primary
+    def nonfinite(params, rng, batch):
+        del rng, batch
         return params["w"] * jnp.nan
 
     with pytest.warns(RuntimeWarning, match="non-finite"):
@@ -122,86 +113,84 @@ def test_a_non_finite_loss_still_counts_as_an_update():
             {"w": jnp.array(0.0)},
             jax.random.key(0),
             jnp.ones(4),
-            config=FitConfig(data=DataSpec(), max_steps=5),
+            num_steps=5,
         )
     assert result.losses.shape == (5,)
     assert jnp.isnan(result.losses[0])
     assert int(result.state.step) == 5
 
 
-def test_stop_before_training_and_zero_steps():
-    class Stop(FitCallback):
-        def on_fit_begin(self, state):
-            return False
-
-    for config in (
-        FitConfig(data=DataSpec(), max_steps=0),
-        FitConfig(data=DataSpec(), max_steps=5, ema_decay=0.9, use_ema=True),
-    ):
-        result = fit(
-            loss,
-            {"w": jnp.array(2.0)},
-            jax.random.key(0),
-            jnp.ones(4),
-            config=config,
-            callbacks=[Stop()] if config.max_steps else (),
-        )
-        assert result.losses.shape == (0,)
-        assert result.params["w"] == 2
+def test_zero_steps_leave_the_params_alone():
+    result = fit(
+        loss,
+        {"w": jnp.array(2.0)},
+        jax.random.key(0),
+        jnp.ones(4),
+        num_steps=0,
+        ema_decay=0.9,
+        use_ema=True,
+    )
+    assert result.losses.shape == (0,)
+    assert result.params["w"] == 2
 
 
-class TinyModel(nnx.Module, FitMixin):
+#: Train only ``w``: ``fixed`` is a Param, but frozen.
+ONLY_W = nnx.All(nnx.Param, lambda path, value: path[-1] == "w")
+
+
+class TinyModel(nnx.Module):
     def __init__(self):
         self.w = nnx.Param(jnp.array(0.0))
         self.fixed = nnx.Param(jnp.array(1.0))
         self.count = nnx.Variable(jnp.array(0))
         self.offset = nnx.Variable(jnp.array(0.0))
 
-    def _fit_param_filter(self):
-        return nnx.All(nnx.Param, lambda path, value: path[-1] == "w")
-
-    def loss(self, rng, primary):
+    def loss(self, rng, batch):
         self.count[...] += 1
-        return jnp.mean(
-            (self.w[...] + self.fixed[...] + self.offset[...] - primary) ** 2
-        )
+        return jnp.mean((self.w[...] + self.fixed[...] + self.offset[...] - batch) ** 2)
 
 
 def test_module_frozen_params_state_updates_and_repeated_fit():
     model = TinyModel()
-    result = model.fit(
+    result = fit_module(
+        model,
         jax.random.key(0),
         jnp.full((8,), 3.0),
-        config=FitConfig(
-            max_steps=2, optimizer=optax.sgd(0.1), ema_decay=0.8, use_ema=True
-        ),
+        trainable=ONLY_W,
+        num_steps=2,
+        optimizer=optax.sgd(0.1),
+        ema_decay=0.8,
+        use_ema=True,
     )
     assert model.count[...] == 2
     assert model.fixed[...] == 1
     np.testing.assert_allclose(model.w[...], result.params["w"][...])
     model.offset[...] = jnp.array(10.0)
     before = float(model.w[...])
-    model.fit(
+    fit_module(
+        model,
         jax.random.key(1),
         jnp.full((8,), 3.0),
-        config=FitConfig(max_steps=1, optimizer=optax.sgd(0.1)),
+        trainable=ONLY_W,
+        num_steps=1,
+        optimizer=optax.sgd(0.1),
     )
     assert model.count[...] == 3
     assert model.w[...] < before  # sees the changed non-Param state
 
 
 def test_module_batchnorm_statistics_survive_fit():
-    class Model(nnx.Module, FitMixin):
+    class Model(nnx.Module):
         def __init__(self):
             self.norm = nnx.BatchNorm(2, momentum=0.5, rngs=nnx.Rngs(0))
 
-        def loss(self, rng, primary):
+        def loss(self, rng, batch):
             del rng
-            return jnp.mean(self.norm(primary) ** 2)
+            return jnp.mean(self.norm(batch) ** 2)
 
     model = Model()
     model.train()
-    model.fit(jax.random.key(0), jnp.full((8, 2), 4.0), config=FitConfig(max_steps=2))
+    fit_module(model, jax.random.key(0), jnp.full((8, 2), 4.0), num_steps=2)
     np.testing.assert_allclose(model.norm.mean[...], [3.0, 3.0])
 
 
@@ -210,15 +199,18 @@ def test_module_batchnorm_statistics_survive_fit():
     [
         {"ema_decay": 1.0},
         {"ema_decay": -0.1},
-        {"callback_every": 0},
-        {"callback_every": 1.5},
-        {"max_steps": 2.5},
+        {"every": 0},
+        {"every": 1.5},
+        {"num_steps": 2.5},
         {"batch_size": 0},
+        {"learning_rate": 0.0},
+        {"clip_norm": -1.0},
+        {"schedule": "cosine"},
     ],
 )
 def test_fit_invalid_options(overrides):
     with pytest.raises((ValueError, TypeError)):
-        FitConfig(data=DataSpec(), **overrides)
+        fit(loss, {"w": jnp.array(0.0)}, jax.random.key(0), jnp.ones(4), **overrides)
 
 
 def test_use_ema_without_an_averaging_rate_is_rejected():
@@ -228,63 +220,34 @@ def test_use_ema_without_an_averaging_rate_is_rejected():
             {"w": jnp.array(0.0)},
             jax.random.key(0),
             jnp.ones(4),
-            config=FitConfig(data=DataSpec(), max_steps=1, use_ema=True),
+            num_steps=1,
+            use_ema=True,
         )
 
 
-def test_a_callback_that_is_neither_a_hook_nor_callable_is_rejected():
-    with pytest.raises(TypeError, match="callbacks must be"):
+def test_a_callback_that_is_not_callable_is_rejected():
+    with pytest.raises(TypeError, match="callback must be callable"):
         fit(
             loss,
             {"w": jnp.array(0.0)},
             jax.random.key(0),
             jnp.ones(4),
-            config=FitConfig(data=DataSpec(), max_steps=1),
-            callbacks=[object()],
+            num_steps=1,
+            callback=object(),
         )
-
-
-def test_model_training_hooks_compose_with_caller_options():
-    seen = []
-
-    class Model(TinyModel):
-        def _prepare_fit(self, data, config):
-            self.offset[...] = jnp.array(2.0)
-            return data + 1
-
-        def default_config(self):
-            return (
-                super().default_config().merged(max_steps=5, optimizer=optax.sgd(0.1))
-            )
-
-        def _fit_callbacks(self):
-            return (lambda state, info: seen.append(("model", int(state.step))),)
-
-        def _fit_loss(self, rng, primary, **context):
-            return super()._fit_loss(rng, primary, **context) * 2
-
-    model = Model()
-    result = model.fit(
-        jax.random.key(0),
-        jnp.full((4,), 3.0),
-        config=FitConfig(max_steps=1),
-        callbacks=[lambda state, info: seen.append(("caller", int(state.step)))],
-    )
-    np.testing.assert_allclose(result.losses, [2.0])
-    np.testing.assert_allclose(model.w[...], 0.4)
-    assert seen == [("model", 1), ("caller", 1)]
 
 
 def test_stream_ema_and_callbacks_match_full_batch():
     args = (loss, {"w": jnp.array(0.0)}, jax.random.key(0))
     batch = jnp.ones(8)
-    config = FitConfig(data=DataSpec(), max_steps=5, ema_decay=0.5)
-    array = fit(*args, batch, config=config)
+    array = fit(*args, batch, num_steps=5, ema_decay=0.5)
     stream = fit(
         *args,
-        [batch] * config.max_steps,
-        config=config.merged(data=DataSpec(stream=True), callback_every=2),
-        callbacks=[lambda state, info: None],
+        [batch] * 5,
+        num_steps=5,
+        ema_decay=0.5,
+        every=2,
+        callback=lambda state, info: None,
     )
     # Constant-folded array data and streamed data can differ by one FP32 ulp.
     np.testing.assert_allclose(array.losses, stream.losses, rtol=2e-7)

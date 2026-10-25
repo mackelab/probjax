@@ -44,7 +44,6 @@ from probjax.nn.generative.sampling import (
 from probjax.nn.generative.standardize import StandardizingMixin
 from probjax.nn.inputs import context_only
 from probjax.nn.nets.simple import Sequential
-from probjax.nn.training import FitConfig
 from probjax.stats.continuous import norm
 from probjax.stats.indep import indep
 from probjax.stats.transformed import transformed
@@ -205,26 +204,22 @@ class NormalizingFlow(StandardizingMixin, GenerativeModel):
             inputs_spec=inputs_spec,
         )
 
-    def _prepare_fit(self, data, config):
+    def _before_fit(self, data):
         """Fit the standardising transform once, then train as usual."""
         if self.standardize:
-            data = self.fit_standardization(data, config.data)
+            data = self.fit_standardization(data)
         # `loss` goes through `_logpdf`, which standardises internally -- do not
         # pre-transform the data here or it would be applied twice.
-        return super()._prepare_fit(data, config)
+        return super()._before_fit(data)
 
-    def default_config(self) -> FitConfig:
+    def fit_defaults(self) -> dict:
         """Flows train better on a warm-started, decaying rate than a flat one.
 
         Measured over the 2-D benchmark sweep: at equal step count this reaches
         3.501 nats on the checkerboard against 3.520 for constant-rate Adam at
         1e-3, and it was the only setting in the sweep that never diverged.
         """
-        return (
-            super()
-            .default_config()
-            .merged(schedule="warmup_cosine", learning_rate=3e-3)
-        )
+        return {"schedule": "warmup_cosine", "learning_rate": 3e-3}
 
     def _logpdf(self, value, context=None):
         # Density of the *original* variable, so the standardising Jacobian has

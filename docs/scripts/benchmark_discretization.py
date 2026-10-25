@@ -39,7 +39,7 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
-from probjax.nn import EDM, MLP, FitConfig, GaussianFourierEmbedding
+from probjax.nn import EDM, MLP, GaussianFourierEmbedding
 from probjax.nn.generative.discrete.model import (
     MultinomialDiffusion,
     MultinomialDiffusionSchedule,
@@ -392,13 +392,15 @@ def run_cell(target_name, scheme, N, arm, steps, batch, seed, holdout_size=2000)
         model.fit(
             jax.random.key(seed + 1),
             jnp.asarray(idx),
-            config=FitConfig(max_steps=steps, batch_size=batch),
+            num_steps=steps,
+            batch_size=batch,
         )
     elif arm == "continuous":
         model.fit(
             jax.random.key(seed + 1),
             jnp.asarray(data),
-            config=FitConfig(max_steps=steps, batch_size=batch),
+            num_steps=steps,
+            batch_size=batch,
         )
     else:  # dequant: sample uniformly inside each bin, then fit continuously
         rng = jax.random.key(seed + 12345)
@@ -406,7 +408,8 @@ def run_cell(target_name, scheme, N, arm, steps, batch, seed, holdout_size=2000)
         model.fit(
             jax.random.key(seed + 1),
             jnp.asarray(deq),
-            config=FitConfig(max_steps=steps, batch_size=batch),
+            num_steps=steps,
+            batch_size=batch,
         )
     train_s = time.time() - t0
 

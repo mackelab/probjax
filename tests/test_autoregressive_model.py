@@ -23,7 +23,6 @@ from probjax.nn.generative.autoregressive import (
     TransformerARConditionerConfig,
 )
 from probjax.stats import gennorm, laplace, logistic, norm, t
-from probjax.nn import FitConfig
 
 FAMILIES = [
     pytest.param(ARFamily.normal(), id="normal"),
@@ -230,7 +229,10 @@ def test_trained_density_is_normalised(build):
     model = build(nnx.Rngs(0))
     train = crescent(jax.random.PRNGKey(0), 4000)
     losses = model.fit(
-        jax.random.PRNGKey(1), train, config=FitConfig(max_steps=400, batch_size=512)
+        jax.random.PRNGKey(1),
+        train,
+        num_steps=400,
+        batch_size=512,
     ).losses
     assert jnp.all(jnp.isfinite(losses))
     assert losses[-1] < losses[0]
@@ -254,7 +256,10 @@ def test_reaches_the_analytic_optimum_on_a_gaussian_target():
         crescent(jax.random.PRNGKey(1), 2000),
     )
     model.fit(
-        jax.random.PRNGKey(2), train, config=FitConfig(max_steps=800, batch_size=512)
+        jax.random.PRNGKey(2),
+        train,
+        num_steps=800,
+        batch_size=512,
     )
 
     nll = float(-jnp.mean(jax.vmap(model._logpdf)(test)))
@@ -341,7 +346,10 @@ def test_categorical_model_recovers_a_known_joint():
 
     model = CategoricalAutoregressive(2, nnx.Rngs(0), num_categories=num_categories)
     losses = model.fit(
-        jax.random.PRNGKey(2), data, config=FitConfig(max_steps=800, batch_size=512)
+        jax.random.PRNGKey(2),
+        data,
+        num_steps=800,
+        batch_size=512,
     ).losses
     assert jnp.all(jnp.isfinite(losses))
 
@@ -370,7 +378,10 @@ def test_marginal_of_the_first_dimension_matches_the_data():
     )
     model = MADE(2, nnx.Rngs(0), standardize=False)
     model.fit(
-        jax.random.PRNGKey(2), data, config=FitConfig(max_steps=600, batch_size=512)
+        jax.random.PRNGKey(2),
+        data,
+        num_steps=600,
+        batch_size=512,
     )
 
     params = model.predict_params(jnp.zeros(2))
@@ -440,7 +451,10 @@ def test_ssm_conditioner_supports_categorical():
     assert jnp.all(jnp.isfinite(model._logpdf(x)))
     data = (jax.random.uniform(jax.random.key(0), (256, 4)) > 0.5).astype(jnp.int32)
     losses = model.fit(
-        jax.random.key(1), data, config=FitConfig(max_steps=10, batch_size=64)
+        jax.random.key(1),
+        data,
+        num_steps=10,
+        batch_size=64,
     ).losses
     assert jnp.all(jnp.isfinite(losses))
     samples = model.sample(jax.random.key(0), (5,))
@@ -483,7 +497,10 @@ def test_trained_cached_matches_naive_up_to_float_dust():
     )
     data = (jax.random.uniform(jax.random.key(0), (256, 4)) > 0.5).astype(jnp.int32)
     model.fit(
-        jax.random.key(1), data, config=FitConfig(max_steps=10, batch_size=64)
+        jax.random.key(1),
+        data,
+        num_steps=10,
+        batch_size=64,
     )
     x = (jax.random.uniform(jax.random.key(2), (3, 4)) > 0.5).astype(jnp.int32)
     full = model.predict_params(x)

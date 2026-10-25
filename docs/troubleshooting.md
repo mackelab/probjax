@@ -76,18 +76,16 @@ explicitly. Restart from a finite snapshot after correcting the cause:
 ```python
 import jax
 import jax.numpy as jnp
-from probjax.nn import DataSpec, FitConfig
 from probjax.nn.training import fit
 
-def loss_fn(params, rng, primary):
+def loss_fn(params, rng, batch):
     del rng
-    return jnp.mean((primary - params["w"]) ** 2)
+    return jnp.mean((batch["data"] - params["w"]) ** 2)
 
 data = jax.random.normal(jax.random.key(0), (64, 2))
 result = fit(
     loss_fn, {"w": jnp.zeros(2)}, jax.random.key(1), {"data": data},
-    config=FitConfig(data=DataSpec(primary="data"), max_steps=20,
-                      learning_rate=1e-2),
+    num_steps=20, learning_rate=1e-2,
 )
 assert jnp.all(jnp.isfinite(result.losses))
 ```
@@ -98,30 +96,16 @@ this, so a NaN from a stock flow is worth reporting.
 
 ## Losses only arrive at the end of `fit`
 
-The returned history is available after `fit` finishes. Pass `callbacks` for
-state/info snapshots between compiled chunks, and return `False` from a hook to
-stop early. Callbacks run on the host, so they cannot be used inside JIT; see
-[the training reference](reference/nn.md#jit).
+The returned history is available after `fit` finishes. Pass
+`callback=fn` (with `every=N`) for state/info snapshots during the run, and
+return `False` from it to stop early. Callbacks run on the host, so they
+cannot be used inside JIT; see [the training reference](reference/nn.md#jit).
 
-## A list of arrays was treated as one batch
+## A list of arrays was treated as a stream
 
-Whether the source is one batch or a stream of them is stated in the
-configuration, not guessed: both readings are pytrees of arrays, so the
-structure cannot tell them apart.
-
-```python
-import jax.numpy as jnp
-from probjax.nn import DataSpec
-
-array = jnp.zeros((4, 2))
-one_batch = DataSpec(primary="data")               # a mapping with a "data" entry
-a_stream = DataSpec(primary="data", stream=True)   # an iterable of such mappings
-```
-
-## "batch N has a different shape or dtype than the first one"
-
-One compiled step serves every batch from an iterable, so they must agree. Pass
-`drop_last=True` to the loader, or pad the final batch.
+`fit` decides by container type, never by looking at the leaves: a list,
+generator or data loader is a stream of batches, while a dict, array or tuple
+is one batch. Pass one batch as a dict or tuple, e.g. `{"data": x}`.
 
 ## JAX picks the wrong backend
 

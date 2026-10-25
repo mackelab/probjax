@@ -35,7 +35,7 @@ from probjax.nn.generative.sampling import (
     sample_normal,
 )
 from probjax.nn.inputs import as_inputs
-from probjax.nn.training import DataSpec, FitConfig, FitMixin, FitResult
+from probjax.nn.training import FitResult, fit_module, is_stream
 from probjax.utils.guards import is_mapping
 from probjax.utils.typing import Array, PyTree, RngKey
 
@@ -68,27 +68,13 @@ def _as_batch(item):
     return {"data": item}
 
 
-class _Batches:
-    """Normalises what a loader yields into batch dicts (see ``_as_batch``).
-
-    Re-iterable and length-preserving, so restarting the stream keeps working
-    through the wrapper.
-    """
-
-    def __init__(self, source):
-        self._source = source
-
-    def __len__(self):
-        # Deliberately propagates the source's TypeError: reporting a length
-        # the source does not have would invent one.
-        return len(self._source)
-
-    def __iter__(self):
-        for item in self._source:
-            yield _as_batch(item)
+def _batch_loss(model, rng, batch):
+    """``model.loss(rng, data, **inputs)`` for one batch dict."""
+    inputs = dict(batch)
+    return model.loss(rng, inputs.pop("data"), **inputs)
 
 
-class GenerativeModel(nnx.Module, FitMixin):
+class GenerativeModel(nnx.Module):
     """Shared base for generative families with cached exported samplers."""
 
     _event_dtype = jax.numpy.float32
@@ -179,42 +165,38 @@ class GenerativeModel(nnx.Module, FitMixin):
         """Monte-Carlo training loss for a batch of data."""
         raise NotImplementedError
 
-    def fit(self, rng: RngKey, data, *, weights=None, **fit_kwargs) -> FitResult:
+    def fit(self, rng: RngKey, data, *, weights=None, **options) -> FitResult:
         """Train in place on ``data``.
 
         ``data`` is an array pytree, a dict with a ``"data"`` entry plus any
         named model inputs (``{"data": x, "context": c}``), or a stream of
         either. The inputs reach :meth:`loss`, and so the network, as keyword
-        arguments. ``weights`` weight the examples in the loss; they are not
-        data. The remaining keywords are the training options of
-        :func:`probjax.nn.training.fit`.
+        arguments. ``weights`` weight the examples in the loss. The remaining
+        keywords are the options of :func:`probjax.nn.training.fit`, on top of
+        this model's :meth:`fit_defaults`.
         """
-        if weights is not None:
-            fit_kwargs["weights"] = weights
-        return super().fit(rng, data, **fit_kwargs)
-
-    def default_config(self) -> FitConfig:
-        """A batch is a mapping whose ``"data"`` entry is what the model learns."""
-        return FitConfig(data=DataSpec(primary="data"))
-
-    def _fit_batch(self, data, config: FitConfig, *, weights=None, **extras):
-        if extras:
-            raise ValueError(
-                f"unexpected fit arguments {sorted(extras)}; pass named model "
-                "inputs inside data, e.g. fit(rng, {'data': x, 'context': c})."
-            )
-        if config.data.stream:
+        if is_stream(data):
             if weights is not None:
                 raise ValueError(
-                    "weights cannot be passed alongside an iterable data source; "
-                    "give each batch dict a 'weights' entry instead."
+                    "weights cannot be passed alongside a stream; give each "
+                    "batch dict a 'weights' entry instead."
                 )
-            return _Batches(data)
-        batch = _as_batch(data)
-        return batch if weights is None else {**batch, "weights": weights}
+            data = (_as_batch(item) for item in data)
+        else:
+            data = _as_batch(data)
+            if weights is not None:
+                data = {**data, "weights": weights}
+        data = self._before_fit(data)
+        options = {**self.fit_defaults(), **options}
+        return fit_module(self, rng, data, loss=_batch_loss, **options)
 
-    def _fit_loss(self, rng, primary, **context):
-        return self.loss(rng, primary, **context)
+    def fit_defaults(self) -> dict:
+        """This family's training recipe; ``fit`` keywords override it."""
+        return {}
+
+    def _before_fit(self, data):
+        """Set up state from the training data (e.g. standardisation)."""
+        return data
 
     def _distribution_sampler(self, event_spec, **kwargs) -> SamplerLike:
         """Build the family-specific sampling operation.

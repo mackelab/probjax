@@ -24,7 +24,6 @@ from probjax.nn.generative.autoregressive.config import (
 from probjax.nn.generative.base import GenerativeModel
 from probjax.nn.generative.standardize import StandardizingMixin
 from probjax.nn.inputs import context_only
-from probjax.nn.training import FitConfig
 from probjax.utils.guards import is_tracing
 from probjax.utils.jaxutils import where
 from probjax.utils.typing import is_typed_key
@@ -428,15 +427,15 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
             )
         return super().as_dist(event_spec, **kwargs)
 
-    def _prepare_fit(self, data, config):
+    def _before_fit(self, data):
         """Fit the standardising transform once, then train as usual."""
-        data = self.fit_standardization(data, config.data)
+        data = self.fit_standardization(data)
         # `loss` goes through `_logpdf`, which standardises internally.
-        return super()._prepare_fit(data, config)
+        return super()._before_fit(data)
 
-    def default_config(self) -> FitConfig:
+    def fit_defaults(self) -> dict:
         """Autoregressive models train better on a warm-started, decaying rate."""
-        return super().default_config().merged(schedule="warmup_cosine")
+        return {"schedule": "warmup_cosine"}
 
 
 # ---------------------------------------------------------------------------

@@ -77,13 +77,17 @@ result retains the raw parameters. Resume with `state=result.state` and the same
 optimizer setup. The snapshot does not include a data-loader position or
 optimizer configuration.
 
-Training options moved into a `FitConfig`, and the data contract is stated
-rather than guessed: `FitConfig(data=DataSpec(primary="data"))` says which
-batch entry the loss receives, and `DataSpec(stream=True)` says the source
-yields batches. A configuration overrides only the fields it names, so a
-model's own recipe survives. The `on_step`/`log_every` pair is gone: use a
-`FitCallback` instead. Callbacks run on the host between compiled chunks and
-cannot be used inside JIT. See [training and EMA](../reference/nn.md#training-and-ema).
+Training options are plain keywords (`num_steps`, `batch_size`,
+`learning_rate`, `schedule`, `clip_norm`, `optimizer`, `ema_decay`, `use_ema`,
+`callback`, `every`, `state`); `FitConfig`, `DataSpec`, `FitCallback` and
+`FitMixin` are gone. `max_steps` is now `num_steps`. The loss receives the
+whole batch (`loss_fn(params, rng, batch)`), and whether the source is a stream
+follows from its type: a list, generator or loader streams, a dict, array or
+tuple is one batch. A generative model's recipe is `fit_defaults()`, and
+`model.fit` keywords override only what they name. Other NNX modules train with
+`fit_module(model, rng, data, loss=..., trainable=...)`; a plain
+`callback(state, info)` replaces the hook class. See
+[training and EMA](../reference/nn.md#training-and-ema).
 
 ## Changes that affect numerical results
 

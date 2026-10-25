@@ -46,7 +46,7 @@ from docs.scripts.benchmark_discretization import (
     CategoricalMLP,
     MaskedDiffusion,
 )
-from probjax.nn import EDM, FitConfig
+from probjax.nn import EDM
 from probjax.nn.generative.discrete.model import (
     MultinomialDiffusion,
     MultinomialDiffusionSchedule,
@@ -255,7 +255,8 @@ def run_cell(target, arm, steps, batch, seed, holdout=4000):
     model.fit(
         jax.random.key(seed + 1),
         train_x,
-        config=FitConfig(max_steps=steps, batch_size=batch),
+        num_steps=steps,
+        batch_size=batch,
     )
     train_s = time.time() - t0
 

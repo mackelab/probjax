@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import pytest
 from flax import nnx
 
-from probjax.nn import DiffusionTransformer, EDM, FitConfig, LinearFlow, maf
+from probjax.nn import DiffusionTransformer, EDM, LinearFlow, maf
 
 TOKENS, FEATURES, LOCAL = 5, 3, 2
 
@@ -38,7 +38,8 @@ def test_fit_forwards_any_named_input(data):
     losses = model.fit(
         jax.random.key(2),
         {"data": x, "local_context": local},
-        config=FitConfig(max_steps=2, batch_size=8),
+        num_steps=2,
+        batch_size=8,
     ).losses
     assert jnp.all(jnp.isfinite(losses))
 
@@ -46,7 +47,7 @@ def test_fit_forwards_any_named_input(data):
 def test_fit_rejects_loose_inputs(data):
     x, local = data
     model = EDM(make_net(), event_spec=(TOKENS, FEATURES), num_steps=2)
-    with pytest.raises(ValueError, match="pass named model inputs inside data"):
+    with pytest.raises(TypeError, match="local_context"):
         model.fit(jax.random.key(2), x, local_context=local)
 
 
