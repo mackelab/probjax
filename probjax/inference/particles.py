@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TypeVar
 
 import jax
+import jax.numpy as jnp
 
 from probjax.utils.typing import Array
 
@@ -24,3 +25,12 @@ def take_batch(particles: T, idx: Array) -> T:
 def normalize_log_weights(log_unnorm: Array) -> Array:
     """Normalize unnormalized log-weights (single ``logsumexp``)."""
     return log_unnorm - jax.scipy.special.logsumexp(log_unnorm)
+
+
+def nan_to_neg_inf(log_weights: Array) -> Array:
+    """Treat NaN log weights as zero weight.
+
+    ``jnp.nan_to_num(x, nan=-inf)`` would also clip ``-inf`` to the most
+    negative float, which leaves an impossible particle a finite log weight.
+    """
+    return jnp.where(jnp.isnan(log_weights), -jnp.inf, log_weights)

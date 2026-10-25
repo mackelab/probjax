@@ -6,27 +6,28 @@ import numpy as np
 import pytest
 from jax.scipy.stats import norm
 
+from probjax.inference import run, temporal_smc
 from probjax.inference.filtering.joint import sample_joint_paths
-from probjax.inference.smc.temporal import run_temporal_smc, temporal_smc
 from probjax.inference.smc.temporal_utils import (
     population_diagnostics,
     summarize_replicates,
 )
 from tests.test_temporal_smc import (
-    MODELS,
+    FILTERS,
     THETA,
     TS,
     YS,
     exact_joint,
     gaussian_model,
+    kalman,
     kalman_log_likelihood,
 )
 
 KEY = jax.random.key(31)
 
 
-@pytest.mark.parametrize('factory,num_particles', MODELS)
-def test_default_random_walk_recovers_reference_posterior(factory, num_particles):
+@pytest.mark.parametrize('factory', FILTERS)
+def test_default_random_walk_recovers_reference_posterior(factory):
     grid = jnp.linspace(-5.0, 3.0, 801)
     log_post = norm.logpdf(grid) + jax.vmap(kalman_log_likelihood)(grid)
     weights = jax.nn.softmax(log_post)
@@ -35,33 +36,38 @@ def test_default_random_walk_recovers_reference_posterior(factory, num_particles
     kernel = temporal_smc(
         factory(),
         norm.logpdf,
-        num_particles=num_particles,
+        max_observations=len(TS),
         ess_threshold=1.0,
         num_moves=3,
         batch_size=64,
     )
-    init_key, run_key = jax.random.split(KEY)
-    state = kernel.init(init_key, jax.random.normal(init_key, (512,)))
-    result = jax.jit(
-        lambda key: run_temporal_smc(kernel, key, state, TS, YS, history='full')
-    )(run_key)
-    assert result.trace.infos.valid.all()
-    assert (result.trace.infos.acceptance_rate > 0).any()
-    w = jnp.exp(result.state.log_weights)
-    smc_mean = jnp.sum(w * result.state.parameters)
-    smc_sd = jnp.sqrt(jnp.sum(w * (result.state.parameters - smc_mean) ** 2))
-    np.testing.assert_allclose(smc_mean, mean, atol=0.1)
-    np.testing.assert_allclose(smc_sd, sd, atol=0.1)
-    assert result.state.proposal_scale > 0.0
+
+    def one_run(key):
+        init_key, run_key = jax.random.split(key)
+        state = kernel.init(init_key, jax.random.normal(init_key, (512,)), YS[0])
+        result = run(
+            run_key, kernel, state, None, len(TS), args=(TS, YS), collect=('info',)
+        )
+        w = jnp.exp(result.state.log_weights)
+        smc_mean = jnp.sum(w * result.state.parameters)
+        smc_sd = jnp.sqrt(jnp.sum(w * (result.state.parameters - smc_mean) ** 2))
+        return smc_mean, smc_sd, result.trace['info'], result.state.proposal_scale
+
+    # One run's mean scatters by about 0.04; average a few.
+    smc_mean, smc_sd, info, scale = jax.jit(jax.vmap(one_run))(jax.random.split(KEY, 8))
+    assert info.valid.all()
+    assert (info.acceptance_rate > 0).any()
+    np.testing.assert_allclose(smc_mean.mean(), mean, atol=0.05)
+    np.testing.assert_allclose(smc_sd.mean(), sd, atol=0.05)
+    assert (scale > 0.0).all()
 
 
 def test_joint_sampler_matches_gaussian_conditional_moments():
-    model = gaussian_model()
-    kernel = temporal_smc(model, norm.logpdf)
-    state = kernel.init(KEY, jnp.full((4,), THETA))
-    state = run_temporal_smc(kernel, KEY, state, TS, YS).state
+    kernel = temporal_smc(kalman(), norm.logpdf, max_observations=len(TS))
+    state = kernel.init(KEY, jnp.full((4,), THETA), YS[0])
+    state = run(KEY, kernel, state, None, len(TS), args=(TS, YS)).state
     sample = sample_joint_paths(
-        KEY, state, model, TS, YS, num_samples=4000, batch_size=64
+        KEY, state, kalman(), gaussian_model(), num_samples=4000, batch_size=64
     )
     mean, cov, _ = exact_joint()
     np.testing.assert_allclose(sample.paths[:, :, 0].mean(0), mean, atol=0.025)

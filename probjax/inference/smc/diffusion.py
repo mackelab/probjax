@@ -33,7 +33,7 @@ import jax.numpy as jnp
 from jax.scipy.special import logsumexp
 
 from probjax.inference.base import Kernel
-from probjax.inference.particles import take_batch
+from probjax.inference.particles import nan_to_neg_inf, take_batch
 from probjax.inference.smc.ess import log_ess
 from probjax.inference.smc.resampling import systematic
 from probjax.utils.typing import Array, PyTree
@@ -242,8 +242,8 @@ def diffusion_smc(guide: Guide, times: Array, *, ess_threshold: float = 0.5) -> 
             index + 1 == last, terminal, intermediate, evaluate_key
         )
 
-        log_increments = jnp.nan_to_num(
-            log_twist - state.log_twist + log_transition_ratio, nan=-jnp.inf
+        log_increments = nan_to_neg_inf(
+            log_twist - state.log_twist + log_transition_ratio
         )
         increment = logsumexp(state.log_weights + log_increments)
         log_weights = state.log_weights + log_increments - increment

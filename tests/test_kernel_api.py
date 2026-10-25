@@ -9,9 +9,6 @@ import jax.numpy as jnp
 import pytest
 
 from probjax.inference.base import Kernel
-from probjax.inference.filtering.base import FilterKernel
-from probjax.inference.filtering.kalman_filter import kalman_filter
-from probjax.inference.filtering.particle_filter import ParticleFilter
 from probjax.inference.mcmc.hmc import hmc
 from probjax.inference.mcmc.mala import mala
 from probjax.inference.mcmc.pmmcmc import pseudo_marginal
@@ -27,14 +24,6 @@ def _gaussian_logdensity(x):
     return -0.5 * jnp.sum(x**2)
 
 
-def _identity_transition(t_old, t):
-    return jnp.eye(2), jnp.eye(2)
-
-
-def _identity_observation(t):
-    return jnp.eye(2), jnp.eye(2)
-
-
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -42,15 +31,8 @@ def _identity_observation(t):
 
 @pytest.mark.parametrize(
     "api",
-    [hmc, mala, kalman_filter, ParticleFilter, implicit_euler, milstein],
-    ids=[
-        "hmc",
-        "mala",
-        "kalman_filter",
-        "ParticleFilter",
-        "implicit_euler",
-        "milstein",
-    ],
+    [hmc, mala, implicit_euler, milstein],
+    ids=["hmc", "mala", "implicit_euler", "milstein"],
 )
 def test_every_api_class_can_configure_options(api):
     configured = api.configure(num_integration_steps=3)
@@ -108,13 +90,6 @@ def test_built_mcmc_kernel_carries_its_algorithm_type():
     assert type(kernel).__doc__ == hmc.__doc__
 
 
-def test_built_filter_kernel_carries_its_algorithm_type():
-    kernel = kalman_filter(_identity_transition, _identity_observation)
-    assert type(kernel).__name__ == "kalman_filter"
-    assert isinstance(kernel, FilterKernel)
-    assert type(kernel).__doc__ == kalman_filter.__doc__
-
-
 def test_built_ode_solver_carries_its_algorithm_type():
     solver = implicit_euler(lambda t, y: -y)
     assert type(solver).__name__ == "implicit_euler"
@@ -132,21 +107,13 @@ def test_built_sde_solver_carries_its_algorithm_type():
 # ---------------------------------------------------------------------------
 
 
-def test_filters_expose_build_step():
-    assert not hasattr(kalman_filter, "build_kernel")
-    kernel = kalman_filter.build_step(_identity_transition, _identity_observation)
-    assert callable(kernel)
-
-
 def test_the_api_base_class_is_shared():
-    from probjax.inference.filtering.base import FilterAPI
     from probjax.inference.mcmc.base import MarkovKernelAPI
     from probjax.utils.odeutil.solvers.base import ODESolverAPI
     from probjax.utils.sdeutil.base import SDESolverAPI
 
     for api in (
         MarkovKernelAPI,
-        FilterAPI,
         ODESolverAPI,
         SDESolverAPI,
     ):
@@ -190,30 +157,6 @@ def test_pseudo_marginal_accepts_a_configured_kernel():
 # ---------------------------------------------------------------------------
 
 
-def test_verbose_and_quiet_filters_agree():
-    import numpy as np
-
-    from probjax.inference.filter_smooth import Filter
-
-    transition = jnp.array([[1.0, 0.1], [0.0, 0.9]])
-    observation = jnp.array([[1.0, 0.0]])
-    kernel = kalman_filter(
-        lambda t_old, t: (transition, jnp.eye(2) * 0.1),
-        lambda t: (observation, jnp.eye(1) * 0.5),
-    )
-    ts = jnp.arange(6, dtype=float)
-    ys = jnp.array([[0.1], [0.3], [0.2], [0.4], [0.35], [0.5]])
-
-    quiet = Filter(kernel, verbose=False).filter(
-        jax.random.key(0), ts, ys, jnp.zeros(2), jnp.eye(2)
-    )
-    loud = Filter(kernel, verbose=True).filter(
-        jax.random.key(0), ts, ys, jnp.zeros(2), jnp.eye(2)
-    )
-    assert np.allclose(quiet.states.mean, loud.states.mean)
-    assert np.allclose(quiet.get_log_likelihood(), loud.get_log_likelihood())
-
-
 def test_verbose_and_quiet_mcmc_agree():
     import numpy as np
 
@@ -231,31 +174,3 @@ def test_verbose_and_quiet_mcmc_agree():
 # ---------------------------------------------------------------------------
 # Kernels are callable
 # ---------------------------------------------------------------------------
-
-
-def test_temporal_filter_is_callable():
-    from probjax.inference.filtering.state_space import TemporalFilter
-
-    calls = []
-
-    def step(key, state, theta, t, y, observed=True):
-        calls.append(t)
-        return state, None
-
-    filt = TemporalFilter(lambda *a: None, step, "exact")
-    filt(jax.random.key(0), "state", None, 1.0, None)
-    assert calls == [1.0]
-
-
-def test_temporal_smc_is_callable():
-    from probjax.inference.smc.temporal import TemporalSMC
-
-    calls = []
-
-    def step(key, state, *args, **kwargs):
-        calls.append(state)
-        return state, None
-
-    kernel = TemporalSMC(lambda *a: None, step)
-    kernel(jax.random.key(0), "state")
-    assert calls == ["state"]

@@ -1,47 +1,57 @@
-"""Shared Gaussian-filter math and state types.
+"""Shared Gaussian-filter math, state types and step.
 
-Leaf module: imports only ``base`` (for ``FilterAPI`` unpack types) and
-``utils``. Every Gaussian filter (KF, EKF, UKF likelihood, rank-reduced KF)
-imports from here instead of reaching into ``kalman_filter``, so the concrete
-Kalman filter is no longer a hub dependency.
+Every Gaussian filter (KF, EKF, UKF, square-root and rank-reduced KF) is a
+:class:`~probjax.inference.Kernel` with ``init(key, theta, t0=0.0)`` and
+``step(key, state, theta, t, y, observed=True)``. This module holds what they
+share: the innovation likelihood, the Kalman update, and the predict/update
+skeleton of the KF and the EKF.
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable, NamedTuple, Optional, Tuple
+from typing import Any, Callable, NamedTuple, Tuple
 
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.filtering.base import FilterInfo, as_time
+from probjax.inference.base import Kernel
 from probjax.utils.linalg import symmetrize_matrix
 from probjax.utils.linear_operator import as_array, densify_if_small, is_operator
 from probjax.utils.typing import Array, ArrayLike
 
 
 class GaussianFilterState(NamedTuple):
+    """The filtering distribution ``N(mean, cov)`` at time ``t``.
+
+    ``log_likelihood`` accumulates ``log p(y_1:t | theta)`` over the steps.
+    """
+
     mean: Array
     cov: Array
-    t: Optional[Array]
+    t: Array
+    log_likelihood: Array
 
 
 class GaussianFilterInfo(NamedTuple):
+    """The one-step prediction and this step's log-likelihood term."""
+
     mean_pred: Array
     cov_pred: Array
-    log_likelihood: Optional[Array] = None
+    log_likelihood_increment: Array
 
 
-def gaussian_init(
-    mean: ArrayLike, cov: ArrayLike, t: Optional[ArrayLike] = None
-) -> GaussianFilterState:
-    return GaussianFilterState(jnp.asarray(mean), jnp.asarray(cov), as_time(t))
+def as_time(t: ArrayLike) -> Array:
+    return jnp.asarray(t, dtype=jnp.result_type(t, float))
 
 
-def gaussian_unpack(
-    state: GaussianFilterState, info: FilterInfo
-) -> Tuple[Array, Array]:
-    """Return the posterior mean and covariance from a Gaussian filter state."""
-    return state.mean, state.cov
+def unobserved(observed: Any, y: Any) -> Any:
+    """Zero the observation of a step that has none.
+
+    A missing observation may be NaN. Under ``vmap`` both branches of the
+    observed/unobserved ``cond`` run, and a NaN in the discarded one would
+    still poison gradients.
+    """
+    return jnp.where(observed, y, jnp.zeros_like(y))
 
 
 def default_solve(S: Any, res: Any, dense_mem_limit: int = 200) -> Array:
@@ -161,52 +171,63 @@ def kalman_update(
     return jnp.asarray(mu1), jnp.asarray(cov1), log_likelihood
 
 
-def gaussian_filter_template(
-    state: GaussianFilterState,
-    t: Optional[ArrayLike],
-    observed: Optional[ArrayLike],
-    predict_fn: Callable,
-    observe_fn: Callable,
+def gaussian_filter(
+    initial: Callable,
+    predict: Callable,
+    observe: Callable,
     linear_solve: Callable | None = None,
     logdet_fn: Callable | None = None,
     symmetrize: bool = False,
-) -> tuple[GaussianFilterState, GaussianFilterInfo]:
-    """Shared predict/update skeleton for Gaussian (EKF-family) filters.
+) -> Kernel:
+    """The predict/update kernel shared by the KF and the EKF.
 
-    ``predict_fn(mu0, cov0, t_old, t)`` returns ``(mu1_, cov1_)``;
-    ``observe_fn(mu1_, cov1_, t)`` returns ``(y_, C, R)``. Everything else
-    (observed fork, solver defaulting, state/info construction) is shared.
+    Args:
+        initial: ``theta -> (mean, cov)`` at ``t0``.
+        predict: ``(theta, mean, cov, t_previous, t) -> (mean_pred, cov_pred)``.
+        observe: ``(theta, mean_pred, cov_pred, t) -> (y_pred, C, R)``.
+        linear_solve, logdet_fn: Override how the innovation covariance is
+            solved and its log-determinant computed.
+        symmetrize: Symmetrize the updated covariance.
     """
-    mu0 = state.mean
-    cov0 = state.cov
-    t_old = state.t
-    is_observed = observed is not None
+    solve = default_solve if linear_solve is None else linear_solve
+    logdet = default_logdet if logdet_fn is None else logdet_fn
 
-    mu1_, cov1_ = predict_fn(mu0, cov0, t_old, t)
-
-    if is_observed:
-        y_, C, R = observe_fn(mu1_, cov1_, t)
-
-        solve = default_solve if linear_solve is None else linear_solve
-        _logdet_fn = logdet_fn if logdet_fn is not None else default_logdet
-
-        mu1, cov1, log_likelihood = kalman_update(
-            jnp.asarray(mu1_),
-            jnp.asarray(cov1_),
-            jnp.asarray(y_),
-            jnp.asarray(observed),
-            C,
-            R,
-            solve,
-            _logdet_fn,
+    def init(key: Any, theta: Any, t0: ArrayLike = 0.0) -> GaussianFilterState:
+        del key
+        mean, cov = initial(theta)
+        mean = jnp.asarray(mean)
+        return GaussianFilterState(
+            mean, as_array(cov), as_time(t0), jnp.zeros((), mean.dtype)
         )
-        if symmetrize:
-            cov1 = symmetrize_matrix(cov1)
 
-        return GaussianFilterState(mu1, cov1, as_time(t)), GaussianFilterInfo(
-            mu1_, cov1_, log_likelihood
-        )
-    else:
-        return GaussianFilterState(mu1_, cov1_, as_time(t)), GaussianFilterInfo(
-            mu1_, cov1_, jnp.array(0.0)
-        )
+    def step(
+        key: Any,
+        state: GaussianFilterState,
+        theta: Any,
+        t: ArrayLike,
+        y: ArrayLike,
+        observed: Any = True,
+    ) -> Tuple[GaussianFilterState, GaussianFilterInfo]:
+        del key
+        t = jnp.asarray(t, state.t.dtype)
+        mean_pred, cov_pred = predict(theta, state.mean, state.cov, state.t, t)
+        mean_pred, cov_pred = jnp.asarray(mean_pred), as_array(cov_pred)
+        y = unobserved(observed, jnp.asarray(y))
+
+        def update(_):
+            y_pred, C, R = observe(theta, mean_pred, cov_pred, t)
+            mean, cov, increment = kalman_update(
+                mean_pred, cov_pred, jnp.asarray(y_pred), y, C, R, solve, logdet
+            )
+            if symmetrize:
+                cov = symmetrize_matrix(cov)
+            return mean, cov, increment.astype(state.log_likelihood.dtype)
+
+        def predict_only(_):
+            return mean_pred, cov_pred, jnp.zeros_like(state.log_likelihood)
+
+        mean, cov, increment = jax.lax.cond(observed, update, predict_only, None)
+        new_state = GaussianFilterState(mean, cov, t, state.log_likelihood + increment)
+        return new_state, GaussianFilterInfo(mean_pred, cov_pred, increment)
+
+    return Kernel(init, step, lambda state, theta=None: theta)

@@ -32,7 +32,12 @@ DEFAULT_PROGRESS_STATS = ("logdensity", "acceptance_rate", "loss", "temperature"
 
 
 def _field(name: str, state: Any, info: Any) -> Any:
-    """Read ``name`` from the state, else from the transition info."""
+    """Read ``name`` from the state, else from the transition info.
+
+    ``"state"`` and ``"info"`` name the whole state and info.
+    """
+    if name in ("state", "info"):
+        return state if name == "state" else info
     for source in (state, info):
         if hasattr(source, name):
             return getattr(source, name)
@@ -118,7 +123,8 @@ def run(
             leaves have a leading axis of length ``num_steps``.
         adaptor: Adapts ``params`` after every transition. The returned
             params are the adaptor's finalized ones.
-        collect: State or info fields to record at every kept step. The
+        collect: State or info fields to record at every kept step;
+            ``"state"`` and ``"info"`` record them whole. The
             default records the position of MCMC-style states and nothing
             for population states such as SMC's.
         thin: Keep every ``thin``-th transition.

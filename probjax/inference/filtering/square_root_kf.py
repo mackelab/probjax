@@ -1,189 +1,134 @@
+"""The square-root Kalman filter: a Kalman filter on covariance factors.
+
+The covariance is carried as a factor ``S`` with ``P = S S^T`` and updated by QR
+decompositions, which keeps it positive semi-definite in finite precision where
+the plain Kalman update can lose symmetry or definiteness.
+"""
+
 from __future__ import annotations
 
-from typing import Any, Callable, NamedTuple, Optional, Tuple
+from typing import Any, NamedTuple, Tuple
 
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.filtering.base import FilterAPI, as_time
-from probjax.utils.guards import call_if_callable
+from probjax.inference.base import Kernel
+from probjax.inference.filtering.gaussian import as_time, unobserved
+from probjax.inference.filtering.state_space import LinearGaussianModel
+from probjax.utils.linear_operator import as_array
 from probjax.utils.typing import Array, ArrayLike
 
 
-class SqKalmanFilterState(NamedTuple):
+class SquareRootFilterState(NamedTuple):
+    """The filtering distribution ``N(mean, std std^T)`` at time ``t``."""
+
     mean: Array
     std: Array
-    t: Optional[Array]
+    t: Array
+    log_likelihood: Array
 
 
-class SqKalmanFilterInfo(NamedTuple):
+class SquareRootFilterInfo(NamedTuple):
     mean_pred: Array
     std_pred: Array
-    log_likelihood: Optional[Array] = None
+    log_likelihood_increment: Array
 
 
-def init(
-    mean: ArrayLike, std: ArrayLike, t: Optional[ArrayLike] = None
-) -> SqKalmanFilterState:
-    return SqKalmanFilterState(jnp.asarray(mean), jnp.asarray(std), as_time(t))
+def _lower_factor(blocks: Array) -> Array:
+    """A lower-triangular ``L`` with ``L L^T = blocks blocks^T``."""
+    return jnp.linalg.qr(blocks.T, mode="r").T
 
 
-def unpack_matrix(
-    A: Any, t_old: Optional[ArrayLike], t: Optional[ArrayLike] = None
-) -> Array:
-    if t is not None:
-        return jnp.asarray(call_if_callable(A, t_old, t))
-    return jnp.asarray(call_if_callable(A, t_old))
-
-
-def sqrt_kf_predict(
-    m: Array,
-    CL: Array,
-    A: Array,
-    QL: Array,
-) -> Tuple[Array, Array]:
-    """
-    Predict step of the square root Kalman filter.
-    """
-    m_new = A @ m
-    block = jnp.vstack((A @ CL, QL))
-    _, R = jnp.linalg.qr(block, mode="reduced")
-    CL_new = R.T
-    return m_new, CL_new
+def sqrt_kf_predict(mean: Array, std: Array, Phi: Array, Q_std: Array):
+    """Predict: ``P = Phi S S^T Phi^T + Lq Lq^T`` without forming ``P``."""
+    return Phi @ mean, _lower_factor(jnp.concatenate([Phi @ std, Q_std], axis=1))
 
 
 def sqrt_kf_correct(
-    m: Array,
-    CL: Array,
-    H: Array,
-    RL: Array,
-    y: Array,
-    compute_likelihood: bool = False,
+    mean: Array, std: Array, C: Array, R_std: Array, y: Array
 ) -> Tuple[Array, Array, Array]:
+    """Update by one QR of the array ``[[Lr, C S], [0, S]]``.
+
+    The factor's blocks are the innovation factor ``Ls``, the scaled gain
+    ``K Ls`` and the updated state factor.
     """
-    Correction step of the square root Kalman filter.
+    num_obs, num_states = C.shape
+    pre = jnp.block([
+        [R_std, C @ std],
+        [jnp.zeros((num_states, num_obs)), std],
+    ])
+    post = _lower_factor(pre)
+    innovation_std = post[:num_obs, :num_obs]
+    scaled_gain = post[num_obs:, :num_obs]
+    std_new = post[num_obs:, num_obs:]
+    residual = y - C @ mean
+    whitened = jax.scipy.linalg.solve_triangular(innovation_std, residual, lower=True)
+    log_likelihood = -0.5 * (
+        whitened @ whitened
+        + 2 * jnp.sum(jnp.log(jnp.abs(jnp.diag(innovation_std))))
+        + num_obs * jnp.log(2 * jnp.pi)
+    )
+    return mean + scaled_gain @ whitened, std_new, log_likelihood
+
+
+def square_root_kalman_filter(model: LinearGaussianModel) -> Kernel:
+    """Square-root Kalman filter for a linear-Gaussian model.
+
+    Takes the same model as :func:`kalman_filter`, with covariances; it factors
+    them itself. The state carries ``std`` with ``cov = std @ std.T``.
+
+    Returns:
+        A :class:`~probjax.inference.Kernel` like :func:`kalman_filter`'s.
     """
-    d, D = H.shape
 
-    y_hat = H @ m
-
-    # QR decomposition
-    RL_padded = jnp.hstack((RL, jnp.zeros((d, D - d))))
-
-    # Construct QR decomposition block
-    block = jnp.vstack((RL_padded, H @ CL))
-    _, R = jnp.linalg.qr(block, mode="reduced")
-
-    # Extract submatrices
-    SL = jnp.tril(R[:d, :d].T)  # Observation covariance sqrt
-    CL_new_factor = jnp.tril(R[d:, d:].T)  # Updated state covariance sqrt
-
-    # Make SL a valid Cholesky factor
-    signs = jnp.sign(jnp.diag(SL))
-    SL = SL * signs[:, None]
-    SL_chol = jax.scipy.linalg.cholesky(SL @ SL.T, lower=True)
-
-    residual = y - y_hat
-    Sinv_residual = jnp.linalg.solve(SL, residual)
-
-    m_new = m + jnp.dot(R[:d, d:].T, Sinv_residual)
-    CL_new = CL_new_factor
-
-    if compute_likelihood:
-        log_likelihood = -0.5 * (
-            jnp.dot(residual.T, jnp.linalg.solve(SL_chol, residual))
-            + jnp.log(jnp.linalg.det(SL_chol))
+    def init(key: Any, theta: Any, t0: ArrayLike = 0.0) -> SquareRootFilterState:
+        del key
+        mean, cov = model.initial(theta)
+        mean = jnp.asarray(mean)
+        return SquareRootFilterState(
+            mean,
+            jnp.linalg.cholesky(as_array(cov)),
+            as_time(t0),
+            jnp.zeros((), mean.dtype),
         )
-    else:
-        log_likelihood = jnp.array(0.0)
 
-    return m_new, CL_new, log_likelihood
+    def step(
+        key: Any,
+        state: SquareRootFilterState,
+        theta: Any,
+        t: ArrayLike,
+        y: ArrayLike,
+        observed: Any = True,
+    ) -> Tuple[SquareRootFilterState, SquareRootFilterInfo]:
+        del key
+        t = jnp.asarray(t, state.t.dtype)
+        Phi, Q = model.transition(theta, state.t, t)
+        mean_pred, std_pred = sqrt_kf_predict(
+            state.mean,
+            state.std,
+            as_array(Phi),
+            jnp.linalg.cholesky(as_array(Q)),
+        )
+        y = unobserved(observed, jnp.asarray(y))
 
-
-def build_step(
-    transition_matrix: Callable[[ArrayLike], ArrayLike] | ArrayLike,
-    transition_covariance_matrix_sqrt: Callable[[ArrayLike], ArrayLike] | ArrayLike,
-    observation_matrix: Callable[[ArrayLike], ArrayLike] | ArrayLike,
-    observation_covariance: Callable[[ArrayLike], ArrayLike] | ArrayLike,
-) -> Callable:
-    def kernel(
-        state: SqKalmanFilterState,
-        t: Optional[ArrayLike] = None,
-        observed: Optional[ArrayLike] = None,
-        rng = None,
-    ) -> Tuple[SqKalmanFilterState, SqKalmanFilterInfo]:
-        mu0 = state.mean
-        std = state.std
-        t_old = state.t
-        is_observed = observed is not None
-
-        # Predict step
-        Phi = jnp.asarray(unpack_matrix(transition_matrix, t_old, t))
-        Q_sqrt = jnp.asarray(unpack_matrix(transition_covariance_matrix_sqrt, t_old, t))
-
-        # Predicted mean
-        mu1_, std1_ = sqrt_kf_predict(mu0, std, Phi, Q_sqrt)
-
-        # If observation is available, perform update step
-        if is_observed:
-            C = unpack_matrix(observation_matrix, t)
-            R = unpack_matrix(observation_covariance, t)
-
-            # Correct step
-            H = C @ std1_
-            R_sqrt = jax.scipy.linalg.cholesky(R, lower=True)
-            mu1, std1, log_likelihood = sqrt_kf_correct(
-                mu1_,
-                std1_,
-                H,
-                R_sqrt,
-                jnp.asarray(observed),
-                compute_likelihood=True,
+        def update(_):
+            C, R = model.observation(theta, t)
+            mean, std, increment = sqrt_kf_correct(
+                mean_pred,
+                std_pred,
+                as_array(C),
+                jnp.linalg.cholesky(as_array(R)),
+                y,
             )
+            return mean, std, increment.astype(state.log_likelihood.dtype)
 
-        else:
-            # If no observation, no update step
-            mu1 = mu1_
-            std1 = std1_
-            log_likelihood = jnp.array(0.0)
+        def predict_only(_):
+            return mean_pred, std_pred, jnp.zeros_like(state.log_likelihood)
 
-        # Construct the new state and info
-        new_state = SqKalmanFilterState(mu1, std1, as_time(t))
-        info = SqKalmanFilterInfo(
-            mean_pred=mu1_, std_pred=std1_, log_likelihood=log_likelihood
+        mean, std, increment = jax.lax.cond(observed, update, predict_only, None)
+        new_state = SquareRootFilterState(
+            mean, std, t, state.log_likelihood + increment
         )
+        return new_state, SquareRootFilterInfo(mean_pred, std_pred, increment)
 
-        return new_state, info
-
-    return kernel
-
-
-# API
-class sq_kalman_filter(FilterAPI):
-    r"""
-    Square root Kalman filter for a linear Gaussian state space model.
-
-    $$dx_t = A_t x_t + B_t dw_t \qquad y_t = \mathcal{N}(y_t; C x_t, R_t)$$
-
-    To build a Kalman filter kernel, we require the following components:
-
-    Args:
-        transition_matrix (Callable[[float | ArrayLike], ArrayLike] | ArrayLike):
-            Transition matrix A_t
-        transition_covariance_matrix_sqrt
-            (Callable[[float | ArrayLike], ArrayLike] | ArrayLike): Transition
-                covariance matrix Q_t
-        observation_matrix
-            (Callable[[float | ArrayLike], ArrayLike] | ArrayLike): Observation matrix
-            C_t
-        observation_covariance
-            (Callable[[float | ArrayLike], ArrayLike] | ArrayLike): Observation
-            covariance matrix R_t
-    """
-
-    init = init
-    build_step = build_step
-
-    @staticmethod
-    def default_unpack(state: SqKalmanFilterState, info: SqKalmanFilterInfo):
-        return (state.mean, state.std)
+    return Kernel(init, step, lambda state, theta=None: theta)

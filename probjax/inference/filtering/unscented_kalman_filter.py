@@ -1,26 +1,22 @@
+"""The unscented Kalman filter and its sigma-point rules."""
+
 from __future__ import annotations
 
-from typing import Callable, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.filtering.base import FilterAPI, as_time
-from probjax.inference.filtering.gaussian import gaussian_unpack, innovation_loglik
-from probjax.utils.guards import call_if_callable
+from probjax.inference.base import Kernel
+from probjax.inference.filtering.gaussian import (
+    GaussianFilterInfo,
+    GaussianFilterState,
+    as_time,
+    innovation_loglik,
+    unobserved,
+)
+from probjax.inference.filtering.state_space import GaussianModel
 from probjax.utils.typing import Array, ArrayLike
-
-
-class UnscentedKalmanFilterState(NamedTuple):
-    mean: Array
-    cov: Array
-    t: Optional[Array]
-
-
-class UnscentedKalmanFilterInfo(NamedTuple):
-    mean_pred: Array
-    cov_pred: Array
-    log_likelihood: Optional[Array]
 
 
 def merwe_sigma_point(
@@ -194,147 +190,82 @@ def unscented_transform(
     return mean, cov
 
 
-def init(
-    mu0: ArrayLike, cov0: ArrayLike, t: Optional[ArrayLike] = None
-) -> UnscentedKalmanFilterState:
-    """Initialize the unscented Kalman filter.
+def unscented_kalman_filter(
+    model: GaussianModel, *, sigma_points: Callable = merwe_sigma_point
+) -> Kernel:
+    """Unscented Kalman filter for a nonlinear model with Gaussian noise.
+
+    Propagates sigma points through the transition and the observation
+    instead of linearising them, so it needs no Jacobians.
 
     Args:
-        mu0 (ArrayLike): Initial mean of the state
-        cov0 (ArrayLike): Initial covariance of the state
-        t (Optional[float | int], optional): Time. Defaults to None.
+        model: The model, as functions of the parameters ``theta``.
+        sigma_points: ``(mean, cov) -> (points, weights_mean, weights_cov)``,
+            e.g. :func:`merwe_sigma_point`, :func:`julier_uhlmann_sigma_points`
+            or :func:`spherical_simplex_sigma_points`.
 
     Returns:
-        UnscentedKalmanFilterState: Initial state of the unscented Kalman filter
-    """
-    return UnscentedKalmanFilterState(jnp.asarray(mu0), jnp.asarray(cov0), as_time(t))
-
-
-def build_step(
-    transition_fn: Callable,
-    transition_covariance_matrix: Callable | ArrayLike,
-    observation_fn: Callable,
-    observation_covariance: Callable | ArrayLike,
-    sigma_point_fn: Callable = merwe_sigma_point,
-) -> Callable:
-    """Build an unscented Kalman filter kernel.
-
-    Args:
-        transition_fn (Callable): General transition function f(x_t, t, t+1) -> x_{t+1}
-        transition_covariance_matrix (Callable | ArrayLike): Transition covariance
-        matrix Q(t, t+1) or Q observation_fn (Callable): General observation function
-        h(x_t, t) -> y_t  observation_covariance (Callable | ArrayLike): Observation
-        covariance matrix R(t) or R
-        sigma_point_fn (Callable, optional): How to generate sigma points. Defaults to
-        merwe_sigma_point.
-
-    Returns:
-        Callable: Unscented Kalman filter step
+        A :class:`~probjax.inference.Kernel` like :func:`kalman_filter`'s.
     """
 
-    def kernel(
-        state: UnscentedKalmanFilterState,
-        t: Optional[ArrayLike] = None,
-        observed: Optional[ArrayLike] = None,
-        rng = None,
-    ) -> Tuple[UnscentedKalmanFilterState, UnscentedKalmanFilterInfo]:
-        """One step of the unscented Kalman filter.
-
-        Args:
-            state (UnscentedKalmanFilterState): Mean and covariance of the state
-            t (Optional[float  |  int], optional): Time. Defaults to None.
-            observed (Optional[ArrayLike], optional): Observation. Defaults to None.
-            rng (Optional[jnp.ndarray], optional): Random generator key.
-                Defaults to None.
-
-        Returns:
-            Tuple[UnscentedKalmanFilterState, UnscentedKalmanFilterInfo]: _description_
-        """
-
-        mu0 = state.mean
-        cov0 = state.cov
-        t_old = state.t
-        is_observed = observed is not None
-
-        sigma_points, weights_mean, weights_cov = sigma_point_fn(mu0, cov0)
-        predicted_sigma_points = jax.vmap(transition_fn, in_axes=(0, None, None))(
-            sigma_points, t_old, t
-        )
-        Q = call_if_callable(transition_covariance_matrix, t_old, t)
-
-        # Prediction step
-        mu1_, cov1_ = unscented_transform(
-            predicted_sigma_points, weights_mean, weights_cov, noise_cov=Q
+    def init(key: Any, theta: Any, t0: ArrayLike = 0.0) -> GaussianFilterState:
+        del key
+        mean, cov = model.initial(theta)
+        mean = jnp.asarray(mean)
+        return GaussianFilterState(
+            mean, jnp.asarray(cov), as_time(t0), jnp.zeros((), mean.dtype)
         )
 
-        if is_observed:
-            # Include process noise in the observation and cross-covariance.
-            predicted_sigma_points, weights_mean, weights_cov = sigma_point_fn(
-                mu1_, cov1_
+    def step(
+        key: Any,
+        state: GaussianFilterState,
+        theta: Any,
+        t: ArrayLike,
+        y: ArrayLike,
+        observed: Any = True,
+    ) -> Tuple[GaussianFilterState, GaussianFilterInfo]:
+        del key
+        t = jnp.asarray(t, state.t.dtype)
+        points, weights_mean, weights_cov = sigma_points(state.mean, state.cov)
+        moved = jax.vmap(lambda x: model.transition(theta, x, state.t, t)[0])(points)
+        Q = model.transition(theta, state.mean, state.t, t)[1]
+        mean_pred, cov_pred = unscented_transform(
+            moved, weights_mean, weights_cov, noise_cov=Q
+        )
+        y = unobserved(observed, jnp.asarray(y))
+
+        def update(_):
+            # Fresh sigma points carry the process noise into the observation.
+            points, weights_mean, weights_cov = sigma_points(mean_pred, cov_pred)
+            observed_points = jax.vmap(lambda x: model.observation(theta, x, t)[0])(
+                points
             )
-            R = call_if_callable(observation_covariance, t)
-            # Observed steps
-            y_sigma_points = jax.vmap(observation_fn, in_axes=(0, None))(
-                predicted_sigma_points, t
+            R = model.observation(theta, mean_pred, t)[1]
+            mean_y, cov_y = unscented_transform(
+                observed_points, weights_mean, weights_cov, noise_cov=R
             )
-            mu_y, cov_y = unscented_transform(
-                y_sigma_points,
-                weights_mean,
-                weights_cov,
-                noise_cov=R,
+            cross_cov = jnp.dot(
+                weights_cov * (points - mean_pred).T, observed_points - mean_y
             )
-
-            # Compute the cross-covariance
-            r_state = predicted_sigma_points - mu1_[None, :]
-            r_obs = y_sigma_points - mu_y[None, :]
-            cross_cov = jnp.dot(weights_cov * r_state.T, r_obs)
-
-            # Compute the Kalman gain
-            K = jnp.linalg.solve(cov_y.T, cross_cov.T).T
-
-            # Compute the updated mean and covariance
-            r = jnp.asarray(observed) - mu_y
-            mu1 = mu1_ + jnp.dot(K, r)
-            cov1 = cov1_ - jnp.dot(K, jnp.dot(cov_y, K.T))
-
-            # Compute the log-likelihood
-            log_likelihood = innovation_loglik(
-                r,
+            gain = jnp.linalg.solve(cov_y.T, cross_cov.T).T
+            residual = y - mean_y
+            increment = innovation_loglik(
+                residual,
                 cov_y,
                 solve_fn=lambda S, res: jnp.linalg.solve(S, res),
                 logdet_fn=lambda S: jnp.linalg.slogdet(S)[1],
             )
+            return (
+                mean_pred + gain @ residual,
+                cov_pred - gain @ cov_y @ gain.T,
+                increment.astype(state.log_likelihood.dtype),
+            )
 
-            return UnscentedKalmanFilterState(
-                mu1, cov1, as_time(t)
-            ), UnscentedKalmanFilterInfo(mu1_, cov1_, log_likelihood)
-        else:
-            log_likelihood = jnp.array(0.0)
-            return UnscentedKalmanFilterState(
-                mu1_, cov1_, as_time(t)
-            ), UnscentedKalmanFilterInfo(mu1_, cov1_, log_likelihood)
+        def predict_only(_):
+            return mean_pred, cov_pred, jnp.zeros_like(state.log_likelihood)
 
-    return kernel
+        mean, cov, increment = jax.lax.cond(observed, update, predict_only, None)
+        new_state = GaussianFilterState(mean, cov, t, state.log_likelihood + increment)
+        return new_state, GaussianFilterInfo(mean_pred, cov_pred, increment)
 
-
-class ukf(FilterAPI):
-    """Unscented Kalman filter inference algorithm.
-
-    This class implements the unscented Kalman filter algorithm. The unscented Kalman
-    filter is a generalization of the Kalman filter to non-linear and non-Gaussian
-    models.
-
-    To build an unscented Kalman filter, you need to provide the following functions:
-    Args:
-        transition_fn (Callable): Transition function f(x_t, t) -> x_{t+1}
-        transition_covariance_matrix (Callable | ArrayLike): Transition covariance
-            matrix Q(t) or Q
-        observation_fn (Callable): Observation function h(x_t, t) -> y_t
-        observation_covariance (Callable | ArrayLike): Observation covariance matrix
-            R(t) or R
-    """
-
-    init = init
-    build_step = build_step
-
-    default_unpack = staticmethod(gaussian_unpack)
+    return Kernel(init, step, lambda state, theta=None: theta)

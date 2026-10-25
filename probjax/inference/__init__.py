@@ -27,23 +27,19 @@ from probjax.inference.base import (
 
 # Filtering imports
 from probjax.inference.filtering import (
-    FilterAPI,
-    FilterInfo,
-    FilterKernel,
-    FilterState,
-    ParticleFilter,
+    GaussianModel,
+    LinearGaussianModel,
+    StateSpaceModel,
     extended_kalman_filter,
     kalman_filter,
-    make_continuous_transition,
-    make_filter_api,
-    make_linearized_observation,
-    make_linearized_transition,
-    particle_smoother,
+    particle_filter,
+    particle_gibbs,
     rank_reduced_kalman_filter,
-    rauch_tung_stribel_smoother,
+    sample_joint_paths,
+    sample_paths,
     smooth,
-    sq_kalman_filter,
-    ukf,
+    square_root_kalman_filter,
+    unscented_kalman_filter,
 )
 
 # MCMC imports
@@ -166,68 +162,34 @@ __all__ = [
     "Guide",
     "score_guide",
     # Filtering
+    "LinearGaussianModel",
+    "GaussianModel",
+    "StateSpaceModel",
     "kalman_filter",
     "extended_kalman_filter",
-    "ukf",
-    "sq_kalman_filter",
+    "unscented_kalman_filter",
+    "square_root_kalman_filter",
     "rank_reduced_kalman_filter",
-    "ParticleFilter",
-    "particle_smoother",
-    "rauch_tung_stribel_smoother",
+    "particle_filter",
     "smooth",
-    "make_filter_api",
-    "make_linearized_transition",
-    "make_linearized_observation",
-    "make_continuous_transition",
-    "FilterAPI",
-    "FilterInfo",
-    "FilterKernel",
-    "FilterState",
+    "sample_paths",
+    "particle_gibbs",
+    "sample_joint_paths",
     # Rejection sampling
     "ars",
     "bound_adaptor",
     "rejection",
 ]
 
-from probjax.inference.filtering.state_space import (
-    LinearGaussianModel,
-    StateSpaceModel,
-    TemporalFilter,
-    TemporalResult,
-    TemporalTrace,
-)
-from probjax.inference.filtering.temporal import (
-    run_temporal_filter,
-    temporal_filter,
-)
-from probjax.inference.filtering.trajectory import (
-    particle_gibbs,
-    sample_paths,
-    smooth_gaussian_path,
-)
 from probjax.inference.smc.temporal import (
-    TemporalSMC,
     TemporalSMCInfo,
     TemporalSMCState,
-    run_temporal_smc,
     temporal_smc,
 )
 
 __all__ += [
-    "LinearGaussianModel",
-    "StateSpaceModel",
-    "TemporalFilter",
-    "TemporalResult",
-    "TemporalTrace",
-    "run_temporal_filter",
-    "temporal_filter",
-    "particle_gibbs",
-    "sample_paths",
-    "smooth_gaussian_path",
-    "TemporalSMC",
     "TemporalSMCInfo",
     "TemporalSMCState",
-    "run_temporal_smc",
     "temporal_smc",
 ]
 
@@ -245,9 +207,6 @@ from probjax.inference.diagnostics import (
     potential_scale_reduction,
     rhat,
 )
-from probjax.inference.filtering.joint import (
-    sample_joint_paths,
-)
 from probjax.inference.smc.temporal_utils import (
     population_diagnostics,
     summarize_replicates,
@@ -256,7 +215,6 @@ from probjax.inference.smc.temporal_utils import (
 __all__ += [
     'population_diagnostics',
     'summarize_replicates',
-    'sample_joint_paths',
     'effective_sample_size',
     'potential_scale_reduction',
     'rhat',

@@ -1,207 +1,151 @@
+"""The bootstrap particle filter and its guided variant."""
+
 from __future__ import annotations
 
-from typing import Any, Callable, NamedTuple, Optional
+from typing import Any, Callable, NamedTuple, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
+from jax.scipy.special import logsumexp
 
-from probjax.inference.filtering.base import FilterAPI, as_time
-from probjax.inference.particles import normalize_log_weights
+from probjax.inference.base import Kernel
+from probjax.inference.filtering.gaussian import as_time, unobserved
+from probjax.inference.filtering.state_space import StateSpaceModel
+from probjax.inference.particles import take_batch
 from probjax.inference.smc.ess import ess
-from probjax.inference.smc.resampling import (
-    resample_systematic,
-)
-from probjax.utils.jaxutils import leading_dim
+from probjax.inference.smc.resampling import systematic
 from probjax.utils.typing import Array, ArrayLike
 
 
 class ParticleFilterState(NamedTuple):
+    """A weighted particle approximation of the filtering distribution.
+
+    ``log_likelihood`` accumulates an unbiased estimate of ``p(y_1:t | theta)``
+    on the log scale.
+    """
+
     particles: Any
     log_weights: Array
-    t: Optional[Array]
+    t: Array
+    log_likelihood: Array
 
 
 class ParticleFilterInfo(NamedTuple):
     ancestors: Array
-    log_likelihood: Array
+    log_likelihood_increment: Array
     ess: Array
-    is_observed: bool
 
 
-def init(
-    particles: Any,
-    t: Optional[ArrayLike] = None,
-    log_weights: Optional[ArrayLike] = None,
-) -> ParticleFilterState:
-    # Particles may be a pytree with a leading particle axis.
-    num_particles = leading_dim(particles)
-    if log_weights is None:
-        weights = jnp.full((num_particles,), fill_value=-jnp.log(num_particles))
-    else:
-        weights = jnp.asarray(log_weights)
-        assert weights.shape[0] == num_particles, (
-            "The number of particles and log weights must be the same."
-        )
-        weights = normalize_log_weights(weights)
-    return ParticleFilterState(particles, weights, as_time(t))
-
-
-def resample_when_ess_below(ess: float, ess_threshold: float = 0.5) -> bool:
-    return ess < ess_threshold
-
-
-def build_step(
-    log_likelihood_fn: Callable,
-    transition_fn: Callable,
-    transition_logdensity_fn: Optional[Callable] = None,
-    proposal_transition_fn: Optional[Callable] = None,
-    proposal_logdensity_fn: Optional[Callable] = None,
-    resample_criterion: Callable = resample_when_ess_below,
-    resample_fn: Callable = resample_systematic,
+def particle_filter(
+    model: StateSpaceModel,
+    num_particles: int,
+    *,
+    ess_threshold: float = 0.5,
+    proposal: Optional[Callable] = None,
     unbiased_gradients: bool = False,
-):
-    """Build a particle filter kernel.
+) -> Kernel:
+    """Particle filter for a state-space model.
+
+    Each step moves the particles through the transition (or ``proposal``),
+    weights them by the observation likelihood and resamples when the ESS
+    falls below ``ess_threshold``. ``state.log_likelihood`` is an unbiased
+    estimate of the likelihood (on the log scale), so the filter can drive a
+    pseudo-marginal sampler over ``theta``.
 
     Args:
-        log_likelihood_fn (Callable): Log likelihood function of the model.
-        transition_fn (Callable): Transition function p(x_t|x_{t-1}) of the model.
-        transition_logdensity_fn (Optional[Callable]): Computes logdensity function of
-            the transition function. Defaults to None.
-        proposal_transition_fn (Optional[Callable]): Transition based on a proposal.
-            Defaults to None.
-        proposal_logdensity_fn (Optional[Callable]): Proposal density function.
-            Defaults to None.
-        resample_criterion (Callable): Criterion to decide when to resample. Defaults
-            to resample_when_ess_below.
-        resample_fn (Callable): Resampling function. Defaults to resample_systematic.
-        unbiased_gradients (bool): Whether to use unbiased gradients. Defaults to
-            False.
-    """
+        model: The model, written for one particle.
+        num_particles: Number of particles.
+        ess_threshold: Resample when the ESS falls below this fraction.
+        proposal: ``(key, theta, x, y, t_previous, t) -> (x_next, log_q)``,
+            a proposal that can look at the observation; needs
+            ``model.transition_logdensity``. On steps without an observation
+            the transition is used.
+        unbiased_gradients: Pass gradients of the weights through resampling
+            (a stop-gradient correction), for fitting ``theta`` by gradient.
 
-    def kernel(
+    Returns:
+        A :class:`~probjax.inference.Kernel` with ``init(key, theta, t0=0.0)``
+        and ``step(key, state, theta, t, y, observed=True)``.
+    """
+    if not 0 <= ess_threshold <= 1:
+        raise ValueError("ess_threshold must lie in [0, 1].")
+    if proposal is not None and model.transition_logdensity is None:
+        raise ValueError("A proposal needs model.transition_logdensity.")
+    transition = jax.vmap(model.step, (0, None, 0, None, None))
+    likelihood = jax.vmap(model.log_likelihood, (None, 0, None, None))
+
+    def init(key: Any, theta: Any, t0: ArrayLike = 0.0) -> ParticleFilterState:
+        keys = jax.random.split(key, num_particles)
+        particles = jax.vmap(model.init, (0, None))(keys, theta)
+        dtype = jnp.result_type(jax.tree.leaves(particles)[0], float)
+        return ParticleFilterState(
+            particles,
+            jnp.full((num_particles,), -jnp.log(num_particles), dtype),
+            as_time(t0),
+            jnp.zeros((), dtype),
+        )
+
+    def propose(key, theta, particles, y, t_previous, t, observed):
+        keys = jax.random.split(key, num_particles)
+        moved = transition(keys, theta, particles, t_previous, t)
+        if proposal is None:
+            return moved, jnp.zeros(num_particles)
+        guided, log_q = jax.vmap(proposal, (0, None, 0, None, None, None))(
+            keys, theta, particles, y, t_previous, t
+        )
+        log_p = jax.vmap(model.transition_logdensity, (None, 0, 0, None, None))(
+            theta, guided, particles, t_previous, t
+        )
+        particles = jax.tree.map(
+            lambda a, b: jnp.where(observed, a, b), guided, moved
+        )
+        return particles, jnp.where(observed, log_p - log_q, 0.0)
+
+    def step(
+        key: Any,
         state: ParticleFilterState,
-        t: Optional[ArrayLike] = None,
-        observed: Optional[ArrayLike] = None,
-        rng = None,
-    ) -> tuple[ParticleFilterState, ParticleFilterInfo]:
-        assert rng is not None, (
-            "You must provide a random key for the particle filter kernel."
+        theta: Any,
+        t: ArrayLike,
+        y: ArrayLike,
+        observed: Any = True,
+    ) -> Tuple[ParticleFilterState, ParticleFilterInfo]:
+        move_key, resample_key = jax.random.split(key)
+        t = jnp.asarray(t, state.t.dtype)
+        y = unobserved(observed, jnp.asarray(y))
+        particles, log_correction = propose(
+            move_key, theta, state.particles, y, state.t, t, observed
         )
-        # Unpack state
-        particles = state.particles
-        log_weights = state.log_weights
-        _, rng_predict, rng_resample = jax.random.split(rng, 3)
+        log_increments = log_correction + jnp.where(
+            observed, likelihood(theta, particles, y, t), 0.0
+        )
+        log_weights = state.log_weights + log_increments
+        # The incoming weights are normalised, so this estimates p(y_t | y_<t).
+        increment = logsumexp(log_weights)
+        log_weights = log_weights - increment
+        effective = ess(log_weights)
 
-        # Predict new particles
-        if proposal_logdensity_fn is None:
-            new_particles = transition_fn(rng_predict, particles, t)
-        else:
-            assert proposal_transition_fn is not None, (
-                "A proposal transition is required alongside the proposal density."
-            )
-            new_particles = proposal_transition_fn(rng_predict, particles, t)
-
-        # Update weights
-        is_observed = observed is not None
-        if is_observed:
-            # Update step
-            log_weights = log_likelihood_fn(new_particles, observed, t) + log_weights
-            if (
-                transition_logdensity_fn is not None
-                and proposal_logdensity_fn is not None
-            ):
-                log_weights = log_weights + (
-                    transition_logdensity_fn(new_particles, particles, t)
-                    - proposal_logdensity_fn(new_particles, particles, t)
-                )
-            log_normalizer = jax.scipy.special.logsumexp(log_weights)
-            log_weights = log_weights - log_normalizer
-            # Incoming weights sum to one: logsumexp already estimates p(y_t|y_<t).
-            log_likelihood = log_normalizer
-
-        else:
-            if (
-                transition_logdensity_fn is not None
-                and proposal_logdensity_fn is not None
-            ):
-                log_weights += transition_logdensity_fn(
-                    new_particles, particles, t
-                ) - proposal_logdensity_fn(new_particles, particles, t)
-                log_normalizer = jax.scipy.special.logsumexp(log_weights)
-                log_weights = log_weights - log_normalizer
-                log_likelihood = log_normalizer
-            else:
-                log_likelihood = jnp.array(0.0)
-
-        # Resample if necessary
-        effective_samples_size = ess(log_weights)
-        do_resample = resample_criterion(effective_samples_size / log_weights.shape[0])
-
-        def resample(key, log_weights, particles):
-            new_particles, new_log_weights, idx = resample_fn(
-                key, log_weights, particles
-            )
+        def resample(_):
+            ancestors = systematic(resample_key, jnp.exp(log_weights), num_particles)
+            new_log_weights = jnp.full_like(log_weights, -jnp.log(num_particles))
             if unbiased_gradients:
-                new_log_weights += log_weights[idx] - jax.lax.stop_gradient(
-                    log_weights[idx]
-                )
+                kept = log_weights[ancestors]
+                new_log_weights = new_log_weights + kept - jax.lax.stop_gradient(kept)
+            return ancestors, new_log_weights
 
-            return new_particles, new_log_weights, idx
+        def keep(_):
+            return jnp.arange(num_particles, dtype=jnp.int32), log_weights
 
-        def no_resample(key, log_weights, particles):
-            return (
-                particles,
-                log_weights,
-                jnp.arange(log_weights.shape[0], dtype=jnp.int32),
-            )
-
-        new_particles, new_log_weights, ancestors = jax.lax.cond(
-            do_resample,
-            resample,
-            no_resample,
-            rng_resample,
-            log_weights,
-            new_particles,
+        ancestors, log_weights = jax.lax.cond(
+            effective < ess_threshold * num_particles, resample, keep, None
         )
-
-        new_state = ParticleFilterState(new_particles, new_log_weights, as_time(t))
-        info = ParticleFilterInfo(
-            ancestors, log_likelihood, effective_samples_size, is_observed
+        particles = take_batch(particles, ancestors)
+        increment = increment.astype(state.log_likelihood.dtype)
+        new_state = ParticleFilterState(
+            particles,
+            log_weights.astype(state.log_weights.dtype),
+            t,
+            state.log_likelihood + increment,
         )
+        return new_state, ParticleFilterInfo(ancestors, increment, effective)
 
-        return new_state, info
-
-    return kernel
-
-
-class ParticleFilter(FilterAPI):
-    """Particle filter inference algorithm.
-
-    This class implements the particle filter algorithm. The particle filter is a
-    sequential Monte Carlo method that approximates the filtering distribution of a
-    state-space model. The particle filter is a generalization of the Kalman filter
-    to non-linear and non-Gaussian models.
-
-    To build a particle filter, you need to provide the following functions:
-    Args:
-        log_likelihood_fn (Callable): Log likelihood function of the model p(y_t|x_t).
-        transition_fn (Callable): Transition function p(x_t|x_{t-1}) of the model.
-        transition_logdensity_fn (Optional[Callable]): Computes logdensity function of
-            the transition function. Defaults to None.
-        proposal_transition_fn (Optional[Callable]): Transition based on a proposal.
-            Defaults to None.
-        proposal_logdensity_fn (Optional[Callable]): Proposal density function.
-            Defaults to None.
-        resample_criterion (Callable): Criterion to decide when to resample. Defaults
-            to resample_when_ess_below.
-        resample_fn (Callable): Resampling function. Defaults to resample_systematic.
-        unbiased_gradients (bool): Whether to use unbiased gradients. Defaults to
-            False.
-    """
-
-    init = init
-    build_step = build_step
-
-    @staticmethod
-    def default_unpack(state: ParticleFilterState, info: ParticleFilterInfo) -> Any:
-        return state.particles
+    return Kernel(init, step, lambda state, theta=None: theta)

@@ -1,95 +1,48 @@
+"""The Kalman filter: exact filtering of a linear-Gaussian model."""
+
 from __future__ import annotations
 
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional
 
-from probjax.inference.filtering.base import FilterAPI
-from probjax.inference.filtering.gaussian import (
-    GaussianFilterInfo,
-    GaussianFilterState,
-    gaussian_filter_template,
-    gaussian_init,
-    gaussian_unpack,
-)
-from probjax.utils.linear_operator import (
-    as_array,
-    is_array_or_operator,
-)
-from probjax.utils.typing import ArrayLike
-
-# Public state/info names for this filter. They share the Gaussian layout
-# defined in gaussian.py; the aliases keep existing imports working
-# (tests construct KalmanFilterState directly).
-KalmanFilterState = GaussianFilterState
-KalmanFilterInfo = GaussianFilterInfo
-init = gaussian_init
+from probjax.inference.base import Kernel
+from probjax.inference.filtering.gaussian import gaussian_filter
+from probjax.inference.filtering.state_space import LinearGaussianModel
 
 
-# This is the discrete time Kalman filter for a linear Gaussian model of the form:
-# x_t = A_t x_{t-1} + C**1/2 @ w_t
-def build_step(
-    transition_model_fns: Callable,
-    observation_model_fns: Callable,
+def kalman_filter(
+    model: LinearGaussianModel,
+    *,
     linear_solve: Optional[Callable] = None,
     logdet_fn: Optional[Callable] = None,
-) -> Callable:
-    def kernel(
-        state: KalmanFilterState,
-        t: Optional[ArrayLike] = None,
-        observed: Optional[ArrayLike] = None,
-        rng = None,
-    ) -> Tuple[KalmanFilterState, KalmanFilterInfo]:
-        def predict(mu0, cov0, t_old, t):
-            # Phi - promised to be a linear mapping
-            # Q a positive definite matrix
-            Phi, Q = transition_model_fns(t_old, t)
+) -> Kernel:
+    r"""Kalman filter for a linear-Gaussian state-space model.
 
-            assert is_array_or_operator(Q), "Q must be an Array or LinearOperator"
-            assert is_array_or_operator(Phi), "Phi must be an Array or LinearOperator"
+    $$x_t = \Phi x_{t-1} + w_t,\ w_t \sim \mathcal N(0, Q) \qquad
+    y_t = C x_t + v_t,\ v_t \sim \mathcal N(0, R)$$
 
-            # Predict
-            mu1_ = Phi @ mu0
-            cov1_ = Phi @ cov0 @ Phi.T + Q
-            # Materialize predicted covariance — needed for update and info
-            return as_array(mu1_), as_array(cov1_)
-
-        def observe(mu1_, cov1_, t):
-            C, R = observation_model_fns(t)
-
-            assert R is None or is_array_or_operator(R), "R must be an Array or None"
-            assert is_array_or_operator(C), "C must be an Array or LinearOperator"
-
-            return C @ mu1_, C, R
-
-        return gaussian_filter_template(
-            state, t, observed, predict, observe, linear_solve, logdet_fn
-        )
-
-    return kernel
-
-
-# API
-
-
-class kalman_filter(FilterAPI):
-    r"""
-    Kalman filter for a linear Gaussian state space model.
-
-    $$dx_t = A_t x_t + B_t dw_t \qquad y_t = \mathcal{N}(y_t; C x_t, R_t)$$
-
-    To build a Kalman filter kernel, we require the following components:
+    The transition and observation matrices may be
+    :mod:`~probjax.utils.linear_operator` operators: large innovation systems
+    are then solved with CG and their log-determinant estimated by Lanczos.
 
     Args:
-        transition_matrix (Callable[[float | ArrayLike], ArrayLike] | ArrayLike):
-            Transition matrix A_t
-        transition_covariance_matrix (Callable[[float | ArrayLike], ArrayLike] |
-            ArrayLike): Transition covariance matrix Q_t
-        observation_matrix (Callable[[float | ArrayLike], ArrayLike] | ArrayLike):
-            Observation matrix C_t
-        observation_covariance (Callable[[float | ArrayLike], ArrayLike] | ArrayLike):
-            Observation covariance matrix R_t
+        model: The model, as functions of the parameters ``theta``.
+        linear_solve: ``(S, rhs) -> S^{-1} rhs`` for the innovation covariance;
+            defaults to dense Cholesky or CG by size.
+        logdet_fn: ``S -> log det S``; defaults to ``slogdet`` or Lanczos.
+
+    Returns:
+        A :class:`~probjax.inference.Kernel` with ``init(key, theta, t0=0.0)``
+        and ``step(key, state, theta, t, y, observed=True)``; ``theta`` is its
+        params. ``state.log_likelihood`` is the exact log-likelihood of the
+        observations so far.
     """
 
-    init = init
-    build_step = build_step
+    def predict(theta, mean, cov, t_previous, t):
+        Phi, Q = model.transition(theta, t_previous, t)
+        return Phi @ mean, Phi @ cov @ Phi.T + Q
 
-    default_unpack = staticmethod(gaussian_unpack)
+    def observe(theta, mean_pred, cov_pred, t):
+        C, R = model.observation(theta, t)
+        return C @ mean_pred, C, R
+
+    return gaussian_filter(model.initial, predict, observe, linear_solve, logdet_fn)

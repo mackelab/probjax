@@ -5,12 +5,10 @@ from __future__ import annotations
 from typing import Any, NamedTuple
 
 import jax
-from blackjax.smc.base import map_fn
 
-from probjax.inference.filtering.observations import validate_observations
-from probjax.inference.filtering.temporal import run_temporal_filter
 from probjax.inference.filtering.trajectory import sample_paths
 from probjax.inference.particles import take_batch
+from probjax.inference.runner import run
 from probjax.utils.guards import is_tracing
 from probjax.utils.typing import Array
 
@@ -24,32 +22,29 @@ class JointPathSamples(NamedTuple):
 def sample_joint_paths(
     rng,
     state: Any,
+    filter: Any,
     model: Any,
-    ts: Any,
-    observations: Any,
     *,
-    observed: Any = None,
     num_samples: int = 100,
-    num_particles: int | None = None,
     method: str | None = None,
     batch_size: int = 0,
 ) -> JointPathSamples:
     """Draw parameters from a temporal SMC state, then a path for each.
 
-    Pass the same data as to :func:`run_temporal_smc`; only the observations
-    the state has assimilated are used. Paths have shape
-    ``(num_samples, num_assimilated + 1, D)``. Gaussian paths are exact given
-    each drawn parameter; particle paths re-run a filter with
-    ``num_particles`` and so add a finite-particle approximation. Must be
-    called outside ``jit``, since the assimilated count sets array shapes.
+    Each drawn ``theta`` re-runs ``filter`` over the observations the state
+    has assimilated (it keeps them), then draws one path with
+    :func:`sample_paths`. Paths have shape ``(num_samples,
+    num_observations + 1, D)``. Gaussian paths are exact given each
+    parameter; particle paths carry the filter's finite-particle error. Must
+    be called outside ``jit``, since the number of observations sets the
+    shapes.
     """
     if num_samples < 1:
         raise ValueError("num_samples must be positive.")
     if is_tracing(state.num_observations):
         raise ValueError("sample_joint_paths must be called outside jit.")
     count = int(state.num_observations)
-    ts, observations, observed = validate_observations(ts, observations, observed)
-    data = (ts[:count], observations[:count], observed[:count])
+    data = jax.tree.map(lambda buffer: buffer[:count], state.data)
     select_key, path_key = jax.random.split(rng)
     indices = jax.random.categorical(
         select_key, state.log_weights, shape=(num_samples,)
@@ -58,21 +53,31 @@ def sample_joint_paths(
 
     def draw(args: Any) -> Any:
         key, theta = args
-        filter_key, sample_key = jax.random.split(key)
-        result = run_temporal_filter(
+        init_key, filter_key, sample_key = jax.random.split(key, 3)
+        initial = filter.init(init_key, theta, state.t0)
+        trace = run(
             filter_key,
+            filter,
+            initial,
+            theta,
+            count,
+            args=data,
+            collect=("state", "info"),
+        ).trace
+        paths = sample_paths(
+            sample_key,
             model,
             theta,
-            data[0],
-            data[1],
-            t0=state.t0,
-            num_particles=num_particles,
-            observed=data[2],
+            initial,
+            trace["state"],
+            trace["info"],
+            method=method,
         )
-        return sample_paths(sample_key, result.trace, model, theta, method=method)[:, 0]
+        return paths[:, 0]
 
-    paths = map_fn(draw, batch_size)((
-        jax.random.split(path_key, num_samples),
-        parameters,
-    ))
+    keys = jax.random.split(path_key, num_samples)
+    if batch_size:
+        paths = jax.lax.map(draw, (keys, parameters), batch_size=batch_size)
+    else:
+        paths = jax.vmap(draw)((keys, parameters))
     return JointPathSamples(parameters, paths, indices)

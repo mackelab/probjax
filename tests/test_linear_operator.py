@@ -10,6 +10,7 @@ from probjax.inference.filtering.gaussian import (
     default_solve,
 )
 from probjax.inference.filtering.kalman_filter import kalman_filter
+from probjax.inference.filtering.state_space import LinearGaussianModel
 from probjax.utils.linear_operator import (
     Dense,
     Diagonal,
@@ -423,14 +424,18 @@ def test_compiled_operator_filter_matches_dense(observed):
     r = jnp.array([[0.3]])
     mean = jnp.array([1.0, -0.5])
     cov = jnp.array([[0.7, 0.2], [0.2, 1.3]])
-    y = jnp.array([0.8]) if observed else None
+    y = jnp.array([0.8])
 
     def run(a, convert):
         kernel = kalman_filter(
-            lambda t0, t: (convert(a), convert(q)),
-            lambda t: (convert(c), r),
+            LinearGaussianModel(
+                lambda theta: (mean, cov),
+                lambda theta, t0, t: (convert(a), convert(q)),
+                lambda theta, t: (convert(c), r),
+            )
         )
-        return kernel.step(kernel.init(mean, cov, t=0.0), t=1.0, observed=y)
+        key = jax.random.key(0)
+        return kernel.step(key, kernel.init(key, None), None, 1.0, y, observed)
 
     as_function = lambda m: _as_function(Dense(m))
     dense = jax.jit(lambda a: run(a, lambda m: m))(a)
