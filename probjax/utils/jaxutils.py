@@ -252,112 +252,19 @@ class KernelAPI(metaclass=API):
         )
 
 
-_MISSING = object()
-
-
-def _resolve_attr(obj, dotted: str):
-    """Walk a dotted attribute path, returning ``_MISSING`` if any link is absent."""
-    if obj is None:
-        return _MISSING
-    for part in dotted.split("."):
-        obj = getattr(obj, part, _MISSING)
-        if obj is _MISSING or obj is None:
-            return _MISSING
-    return obj
-
-
-class WithProgressBarAPI:
-    """Mixin providing a JIT-friendly progress bar driven by tracked diagnostics.
-
-    Subclasses set ``_default_tracked_stats`` to a tuple of names. Each name is
-    looked up — at trace time — first on the per-step **state**, then on
-    **info**, then in the class-level ``_computed_stats`` registry, falling back
-    to ``NaN``. Subclasses with extra inspection sources (e.g. SMC's nested
-    ``info.update_info``) override :meth:`_stat_objects`. Names may be dotted
-    paths (``"update_info.acceptance_rate"``); array values are reduced to a
-    scalar via mean.
-    """
-
-    _print_rate: int = 1000
-    _print_length: int = 50
-    _ema_gamma: float = 0.9
-    _default_tracked_stats: Tuple[str, ...] = ()
-    _computed_stats: Dict[str, Callable] = {}
-    #: Names of the diagnostics to display; set per instance by the runners.
-    tracked_stats: Tuple[str, ...] = ()
-
-    @staticmethod
-    def _write_progress(owner, iteration, total, stats, stat_names=()):
-        try:
-            i, t = int(iteration), int(total)
-        except Exception:
-            return
-
-        print_len = owner._print_length
-        pct = min(100.0, 100 * (i + 1) / t)
-        filled = int(print_len * (i + 1) // t)
-        bar = "█" * filled + "-" * (print_len - filled)
-        s = f"Progress: |{bar}| {pct:.2f}%"
-        for name, val in zip(stat_names, stats, strict=False):
-            s += f" {name}: {float(val):.2f}"
-
-        _progress_executor.submit(sys.stdout.write, f"\r{s}")
-
-    # ------------------------------------------------------------------
-    # Stat extraction — resolved at JAX trace time, no probe call.
-    # ------------------------------------------------------------------
-
-    def _stat_objects(self, state: Any, info: Any) -> tuple[Any, ...]:
-        """Return the tuple of objects to search, in order, for tracked stats."""
-        return (state, info)
-
-    def _resolve_stat(self, name: str, state, info):
-        """Resolve a single tracked-stat name to a scalar float32 value."""
-        for obj in self._stat_objects(state, info):
-            val = _resolve_attr(obj, name)
-            if val is not _MISSING:
-                arr = jnp.asarray(val, dtype=jnp.float32)
-                return jnp.mean(arr) if arr.ndim > 0 else arr
-        fn = type(self)._computed_stats.get(name)
-        if fn is not None:
-            val = fn(state, info)
-            if val is not None:
-                arr = jnp.asarray(val, dtype=jnp.float32)
-                return jnp.mean(arr) if arr.ndim > 0 else arr
-        return jnp.float32(jnp.nan)
-
-    def _extract_stats(self, state, info) -> Tuple:
-        return tuple(self._resolve_stat(n, state, info) for n in self.tracked_stats)
-
-    def _make_verbose_fns(
-        self,
-        num_steps: int,
-        stats_fn: Optional[Callable] = None,
-    ):
-        """Build (update_stats, print_fn, init_stats, print_rate) for ``print_scan``.
-
-        ``stats_fn(carry, y) -> tuple`` extracts the per-step stats tuple from
-        the scan output. Defaults to ``lambda _, y: y`` (the scan's ``y``
-        already is the stats tuple, as in :class:`MCMC`/:class:`SMC`).
-        """
-        gamma = self._ema_gamma
-        names = self.tracked_stats
-        n = len(names)
-        if stats_fn is None:
-            stats_fn = lambda _carry, y: y
-
-        def update_stats(stats, carry, y):
-            step_stats = stats_fn(carry, y)
-            return tuple(
-                gamma * stats[i] + (1 - gamma) * step_stats[i] for i in range(n)
-            )
-
-        def print_fn(i, total, stats):
-            type(self)._write_progress(type(self), i, total, stats, names)
-
-        init_stats = tuple(0.0 for _ in names)
-        print_rate = num_steps // self._print_rate + 1
-        return update_stats, print_fn, init_stats, print_rate
+def write_progress(iteration, total, stats=(), stat_names=(), length: int = 50):
+    """Print a progress bar with the named stats; a ``print_scan`` callback."""
+    try:
+        i, t = int(iteration), int(total)
+    except Exception:
+        return
+    pct = min(100.0, 100 * (i + 1) / t)
+    filled = int(length * (i + 1) // t)
+    bar = "█" * filled + "-" * (length - filled)
+    s = f"Progress: |{bar}| {pct:.2f}%"
+    for name, val in zip(stat_names, stats, strict=False):
+        s += f" {name}: {float(val):.2f}"
+    _progress_executor.submit(sys.stdout.write, f"\r{s}")
 
 
 def where(condition: ArrayLike, x: ArrayLike, y: ArrayLike) -> Array:

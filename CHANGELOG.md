@@ -428,6 +428,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `addopts`); the CI coverage job opts out with `--no-testmon`
 
 ### Removed
+- `RunnerMixin` and `probjax.utils.jaxutils.WithProgressBarAPI`, the progress
+  machinery of the deleted runner classes; `run(..., progress=True)` uses the
+  plain `write_progress` callback
 - The `Filter` runner class (with its `fit`, object-oriented mode and
   progress bar), `FilteringTrace`, `FilterAPI`, `FilterKernel`,
   `FilterState`, `FilterInfo` and `make_filter_api`: filters run with `run`,

@@ -22,7 +22,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.inference.base import Adaptor, Kernel, RunResult, Warmup
-from probjax.utils.jaxutils import WithProgressBarAPI, print_scan
+from probjax.utils.jaxutils import print_scan, write_progress
 from probjax.utils.typing import RngKey
 
 __all__ = ["run", "step", "warmup"]
@@ -80,7 +80,7 @@ def _progress_scan(body, carry, xs, length, names):
         )
 
     def print_fn(i, total, stats):
-        WithProgressBarAPI._write_progress(WithProgressBarAPI, i, total, stats, names)
+        write_progress(i, total, stats, names)
 
     return print_scan(
         body,

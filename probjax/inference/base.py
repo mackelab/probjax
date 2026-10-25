@@ -24,8 +24,6 @@ from __future__ import annotations
 
 from typing import Any, Callable, NamedTuple, TypeAlias
 
-from probjax.utils.jaxutils import WithProgressBarAPI, print_scan
-
 # ---------------- Domain aliases ----------------
 #: A single transition: ``(key, state, params, *args) -> (state, info)``.
 StepFn: TypeAlias = Callable[..., tuple[Any, Any]]
@@ -106,43 +104,3 @@ class RunResult(NamedTuple):
     state: Any
     params: Any
     trace: Any = None
-
-
-class RunnerMixin(WithProgressBarAPI):
-    """Shared progress reporting for compiled inference scans."""
-
-    def _verbose_scan(
-        self,
-        f: Callable[[Any, Any], tuple[Any, Any]],
-        init: Any,
-        xs: Any,
-        length: int,
-        stats_fn: Callable[[Any, Any], Any],
-        unroll: int = 1,
-    ) -> tuple[Any, Any]:
-        """Run a scan with a rate-limited progress bar.
-
-        ``print_scan`` requires a tuple carry, so the kernel state is wrapped
-        in a one-element tuple. ``f`` receives the state itself and returns
-        the new state together with the scan output.
-        """
-
-        def wrapped(carry, x):
-            state, y = f(carry[0], x)
-            return (state,), y
-
-        update_stats, print_fn, init_stats, print_rate = self._make_verbose_fns(
-            length, stats_fn=lambda carry, y: stats_fn(carry[0], y)
-        )
-        (state,), y = print_scan(
-            wrapped,
-            (init,),
-            init_stats,
-            xs=xs,
-            length=length,
-            unroll=unroll,
-            update_stats=update_stats,
-            print_fn=print_fn,
-            print_rate=print_rate,
-        )
-        return state, y
