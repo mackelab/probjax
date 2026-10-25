@@ -22,12 +22,7 @@ RULES = [
         "inference reaches flax and nn only through the neural bridge",
         "inference/",
         ("flax", "probjax.nn"),
-        (
-            "inference/neural.py",
-            # Learned SMC twists; they move onto the bridge with the SMC rewrite.
-            "inference/smc/rdsmc.py",
-            "inference/smc/pretrained_twist.py",
-        ),
+        ("inference/neural.py",),
     ),
     (
         "stats is plain JAX: no flax, optax, nn or inference",
@@ -111,20 +106,19 @@ RULES = [
         (),
     ),
     (
-        "smc/adaptation edges stay acyclic and public",
-        (
-            "inference/adaptation.py",
-            "inference/smc/tuning.py",
-            "inference/smc/base.py",
-            "inference/smc/path_smc.py",
-        ),
-        ("probjax.inference.smc.temporal", "probjax.inference.smc.ports"),
+        "the generic adaptors sit below every kernel family",
+        "inference/adaptation.py",
+        ("probjax.inference.mcmc", "probjax.inference.smc"),
         (),
     ),
     (
-        "kernels stay runner-free",
-        "inference/mcmc/",
-        ("probjax.inference.mcmc_runner", "probjax.inference.smc_runner"),
+        "static SMC does not reach temporal SMC",
+        (
+            "inference/smc/tempering.py",
+            "inference/smc/adaptation.py",
+            "inference/smc/diffusion.py",
+        ),
+        ("probjax.inference.smc.temporal",),
         (),
     ),
 ]

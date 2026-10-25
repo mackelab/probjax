@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] — preparing 0.2.0
 
 ### Added
+- `smc(logprior_fn, loglikelihood_fn, move=...)`: one tempered-SMC kernel on
+  the shared kernel contract, driven by `run`. A fixed schedule passes each
+  temperature as a step argument; `target_ess=` picks them adaptively and
+  further steps after temperature 1 are no-ops. `waste_free=p` keeps every
+  move state (Dau and Chopin), `batch_size=` bounds memory, and a vector
+  temperature with a per-observation likelihood tempers data in one by one.
+  The state carries `log_evidence`; params are the move's params
+- `default_adaptation` for `smc`: `particle_adaptor` (inverse mass matrix from
+  the population) and `acceptance_rate_adaptor` (step size from the move's
+  acceptance), plain adaptors usable on their own
+- `diffusion_smc(guide, times)`: twisted SMC along a reverse diffusion. A
+  `Guide` supplies the reverse SDE, the twist and optional gradient guidance;
+  `neural.diffusion_guide(model, V)` steers a pretrained diffusion model
+  towards `p_phi(x) exp(V(x))` (the twist fades in with the signal and its
+  gradient steers the proposal, with the matching weight correction), and
+  `score_guide(log_target, schedule, shape)` is training-free reverse
+  diffusion SMC
+- `run(..., collect=None)` (the new default) records the position of
+  MCMC-style states and nothing for population states
 - `rejection(logdensity_fn, proposal=density)`: rejection sampling as a
   kernel whose every step is one exact, independent draw. Params are the
   proposal's params and `log_bound`; `bound_adaptor` (the default adaptation)
@@ -132,6 +151,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the newest release in it
 
 ### Changed
+- **Breaking:** `run_rdsmc` and `run_pretrained_diffusion_smc` are one kernel,
+  `diffusion_smc`, with `score_guide` and `neural.diffusion_guide`; its
+  results come from `run` (`state.log_evidence`, `trace`), not `SMCResult`.
+  `diffusion_guide` takes the potential at full strength (scale it to temper)
+- **Breaking:** Data tempering uses a vector temperature with a per-observation likelihood
+  instead of `PartialPosteriorsPath`; geometric annealing from a reference
+  uses `logprior_fn=reference`, `loglikelihood_fn=target - reference`
 - **Breaking:** `ars` is a kernel: `ars(logdensity_fn).init(key, position,
   init_points=None, lower=-inf, upper=inf)`, then `run` collects exact iid
   draws while the envelope refines in the state. The old
@@ -377,6 +403,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `addopts`); the CI coverage job opts out with `--no-testmon`
 
 ### Removed
+- The `SMC` runner class, `SMCResult`, `SMCKernelAPI`, `make_mcmc_adapter`
+  and BlackJAX's SMC state types: SMC kernels run with `run`
+- `adaptive_smc`, `path_smc`, `GeometricPath`, `PartialPosteriorsPath`,
+  `waste_free_smc` and `waste_free_strategy` (all `smc` options now),
+  `tuned_smc` (use an adaptor) and `pretuned_smc`
+- `persistent_smc` and `adaptive_persistent_smc`
+- `DenoisedPotentialTwist`, `NullTwist`, `TwistFn` and
+  `is_score_and_marginal` from `probjax.nn` (the guides replace them),
+  `RDSMCState`/`Info` and `PretrainedTwistState`/`Info`
 - `RejectionSampler`, `ProposalDistribution` and `estimate_ratio_bound` (use
   `rejection`), and the envelope internals `ARSState`/`init_ars_state`/
   `update_ars_state` (now `rejection.univariate.Envelope`/`envelope`/`refine`)
@@ -423,6 +458,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `probjax.utils.guards.ensure_array`/`as_concrete_bool`
 
 ### Fixed
+- Reverse diffusion SMC weighted particles by the twist ratio alone, omitting
+  the forward noising kernel over the proposal density; on a unit Gaussian
+  target it halved the variance and biased `log Z` by about +0.5
+- The pretrained-diffusion twist used the full potential at the denoised point
+  from the first step, which collapsed the weights for sharp potentials
+  (`log Z` off by several nats); it now fades in and steers the proposal
 - `RejectionSampler.run` indexed with a boolean mask inside `while_loop` and
   so could never run under JAX
 - ARS/ARMS envelope refinement dropped the support bounds `lb`/`ub` and

@@ -9,7 +9,8 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.inference import run_pretrained_diffusion_smc
+from probjax.inference import diffusion_smc, run
+from probjax.inference.neural import diffusion_guide
 from probjax.nn.generative.diffusion import VP
 
 
@@ -29,17 +30,20 @@ def main() -> None:
     prior = model.as_dist(mode="sde").sample(key, (2000,))
     print(f"prior mean:            {prior.mean(axis=0)}")
 
-    result = run_pretrained_diffusion_smc(
-        jax.random.key(1),
-        model=model,
-        log_potential_fn=log_potential,
-        num_particles=2000,
+    guide, params = diffusion_guide(model, log_potential)
+    times = model.solver_cfg.solve_schedule(
+        model.train_cfg.t_min, model.train_cfg.t_max, 16
+    )
+    kernel = diffusion_smc(guide, times)
+    state = kernel.init(jax.random.key(1), 2000, params)
+    result = run(
+        jax.random.key(2), kernel, state, params, len(times) - 1, collect=("resampled",)
     )
     weights = jnp.exp(result.state.log_weights)
     mean = jnp.sum(weights[:, None] * result.state.particles, axis=0)
     print(f"twisted SMC mean:      {mean}")
-    print(f"log evidence:          {float(result.log_evidence):.4f}")
-    print(f"resample steps:        {int(jnp.sum(result.info.resampled))}")
+    print(f"log evidence:          {float(result.state.log_evidence):.4f}")
+    print(f"resample steps:        {int(jnp.sum(result.trace['resampled']))}")
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ Every algorithm API follows the same three steps:
    ``init``, ``init_params`` and ``build_step``;
 2. calling it with the model's functions builds a **kernel** -- a pure
    ``(init, step, ...)`` container that is callable and hashable;
-3. a **runner** (:func:`~probjax.inference.run`, :class:`SMC`) drives the
+3. a **runner** (:func:`~probjax.inference.run`) drives the
    kernel in a compiled scan.
 
 Options that are known before the model is can be bound with
@@ -22,14 +22,9 @@ model's functions builds the kernel.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Generic, NamedTuple, TypeAlias, TypeVar
+from typing import Any, Callable, NamedTuple, TypeAlias
 
 from probjax.utils.jaxutils import WithProgressBarAPI, print_scan
-from probjax.utils.typing import Array, RngKey
-
-StateT = TypeVar("StateT")
-ParamsT = TypeVar("ParamsT")
-InfoT = TypeVar("InfoT")
 
 # ---------------- Domain aliases ----------------
 #: A single transition: ``(key, state, params, *args) -> (state, info)``.
@@ -111,17 +106,6 @@ class RunResult(NamedTuple):
     state: Any
     params: Any
     trace: Any = None
-
-
-class SMCResult(NamedTuple, Generic[StateT, ParamsT, InfoT]):
-    state: StateT
-    params: ParamsT
-    info: InfoT | None = None
-    log_evidence: Array | None = None
-    final_info: InfoT | None = None
-    num_steps: int | Array | None = None
-    completed: bool | Array | None = None
-    key: RngKey | None = None
 
 
 class RunnerMixin(WithProgressBarAPI):

@@ -22,7 +22,6 @@ from probjax.inference.base import (
     Density,
     Kernel,
     RunResult,
-    SMCResult,
     Warmup,
 )
 
@@ -89,24 +88,17 @@ from probjax.inference.runner import run, step, warmup
 
 # SMC imports
 from probjax.inference.smc import (
-    GeometricPath,
-    PartialPosteriorsPath,
-    PretrainedTwistInfo,
-    PretrainedTwistState,
-    RDSMCInfo,
-    RDSMCState,
+    DiffusionSMCInfo,
+    DiffusionSMCState,
+    Guide,
+    SMCInfo,
+    SMCState,
     acceptance_rate_adaptor,
-    adaptive_persistent_smc,
-    adaptive_smc,
+    diffusion_smc,
     particle_adaptor,
-    path_smc,
-    persistent_smc,
-    run_pretrained_diffusion_smc,
-    run_rdsmc,
+    score_guide,
     smc,
-    tuning,
 )
-from probjax.inference.smc_runner import SMC
 from probjax.inference.vi import (
     FlowVIInfo,
     FlowVIState,
@@ -128,7 +120,6 @@ __all__ = [
     "fit_adaptor",
     "maximum_likelihood",
     "pooled",
-    "SMCResult",
     "step_size_adaptor",
     "mass_matrix_adaptor",
     "mean_adaptor",
@@ -165,23 +156,15 @@ __all__ = [
     "sgnht",
     # SMC
     "smc",
-    "adaptive_smc",
-    "persistent_smc",
-    "adaptive_persistent_smc",
-    "run_pretrained_diffusion_smc",
-    "run_rdsmc",
-    "PretrainedTwistInfo",
-    "PretrainedTwistState",
-    "RDSMCInfo",
-    "RDSMCState",
-    "path_smc",
-    "GeometricPath",
-    "PartialPosteriorsPath",
-    "tuning",
+    "SMCState",
+    "SMCInfo",
     "particle_adaptor",
     "acceptance_rate_adaptor",
-    # SMC runner
-    "SMC",
+    "diffusion_smc",
+    "DiffusionSMCState",
+    "DiffusionSMCInfo",
+    "Guide",
+    "score_guide",
     # Filtering
     "kalman_filter",
     "extended_kalman_filter",
@@ -265,22 +248,12 @@ from probjax.inference.diagnostics import (
 from probjax.inference.filtering.joint import (
     sample_joint_paths,
 )
-from probjax.inference.smc.ports import (
-    pretuned_smc,
-    tuned_smc,
-    waste_free_smc,
-    waste_free_strategy,
-)
 from probjax.inference.smc.temporal_utils import (
     population_diagnostics,
     summarize_replicates,
 )
 
 __all__ += [
-    'waste_free_strategy',
-    'waste_free_smc',
-    'tuned_smc',
-    'pretuned_smc',
     'population_diagnostics',
     'summarize_replicates',
     'sample_joint_paths',

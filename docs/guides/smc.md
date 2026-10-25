@@ -1,109 +1,144 @@
-# SMC presets, adaptation, and diagnostics
+# Sequential Monte Carlo
 
-The library reuses BlackJAX 1.7.1 for stationary SMC updates, resampling, ESS,
-root finding, waste-free updates, MCMC tuning, and Metropolis acceptance. The
-additional probjax code supplies runner/result conventions and temporal composition.
+SMC moves a population of particles through a sequence of distributions that
+ends at the target. Each step reweights the particles towards the next
+distribution, resamples them and moves them. In return for the larger state
+you get a sample that copes with several modes, and an estimate of the
+normalising constant (the evidence) for free.
 
-## Batching and waste-free updates
+Both SMC kernels follow the [kernel contract](inference.md): the state is the
+whole population, `run` drives them, and an adaptor can tune them as they go.
 
-All stationary constructors accept `batch_size`. Zero maps the entire population
-at once; a positive value uses BlackJAX's sequential particle batches to reduce
-peak memory. Persistent initialization also forwards this option.
+## Tempering from the prior to the posterior
 
-`waste_free_smc` retains intermediate MCMC states. Its `p` argument specifies the
-number of retained states per chain, and must divide the population size. It
-resamples `N/p` seeds and returns `N` particles. These samples are correlated;
-population size alone does not measure effective independent information.
+`smc(logprior, loglikelihood, move=...)` targets
+`prior(x) * exp(t * loglikelihood(x))` and raises the temperature `t` from 0 to
+1. After every reweighting it resamples and runs `num_mcmc_steps` steps of the
+`move` kernel, which can be any MCMC kernel. Its params are the SMC kernel's
+params, shared by all particles.
+
+On a fixed schedule each step takes the next temperature as its argument:
 
 ```python
 import jax
 import jax.numpy as jnp
 from jax.scipy.stats import norm
-from probjax.inference import SMC, hmc, waste_free_smc
+from probjax.inference import hmc, run, smc
 
 logprior = lambda x: norm.logpdf(x).sum()
-loglikelihood = lambda x: norm.logpdf(x, 1., 0.7).sum()
-key = jax.random.key(0)
-initial_key, run_key = jax.random.split(key)
-particles = jax.random.normal(initial_key, (128, 2))
-params = {'step_size': jnp.array([0.15]), 'inverse_mass_matrix': jnp.ones((1, 2))}
-kernel = waste_free_smc(
-    logprior, loglikelihood, num_particles=128, p=4,
-    adaptive=True, mcmc_kernel=hmc, num_integration_steps=3, batch_size=32,
-)
-result = SMC(kernel).run_adaptive(run_key, kernel.init(particles), params)
-assert result.completed
-assert result.state.particles.shape == particles.shape
+loglikelihood = lambda x: norm.logpdf(x, 1.0, 0.7).sum()
+
+kernel = smc(logprior, loglikelihood, move=hmc(num_integration_steps=4))
+key, init_key = jax.random.split(jax.random.key(0))
+state = kernel.init(init_key, jax.random.normal(init_key, (512, 2)))
+params = kernel.init_params(state, step_size=0.3)
+
+schedule = jnp.linspace(0.0, 1.0, 11)[1:]
+result = run(key, kernel, state, params, 10, args=(schedule,), collect=("ess",))
+print(result.state.log_evidence, result.trace["ess"])
 ```
 
-For custom compositions, use `waste_free_strategy(N, p)` as `update_strategy`, and
-set `num_mcmc_steps=None`. The preset does this automatically. This strategy also
-works with the existing `PartialPosteriorsPath`; data tempering is already supported.
-The adaptive geometric kernel explicitly rejects non-geometric paths.
+The particles end equally weighted, and `state.log_evidence` estimates the log
+evidence.
 
-## Adaptive runs and constant-memory summaries
+## Adaptive temperatures and adaptive moves
 
-`SMC.run_adaptive` delegates temperature selection to the existing adaptive kernel
-and advances until temperature reaches one. `max_steps` bounds execution;
-`completed=False` reports a cap, stalled/nonfinite progress, or exhausted persistent
-storage. Persistent samplers need enough `max_iterations` storage at initialization.
-Adaptive runs retain no population history. An optional existing `Adaptor` updates
-move parameters between stages.
+With `target_ess` each step picks the largest temperature that keeps that
+fraction of effective particles, so the schedule follows the difficulty of the
+problem. Once the temperature reaches 1 further steps change nothing, so
+`num_steps` is a cap rather than a length.
 
-`SMCResult` keeps the original `state`, `params`, and optional `info` trace and adds:
-
-- `log_evidence`: accumulated normalizing-constant estimate, even without a trace.
-- `final_info`: the final kernel diagnostics (zero prototype for an adaptive run
-  taking no steps; None for an empty fixed schedule).
-- `num_steps`, `completed`, and a continuation `key`.
-
-For fixed schedules, `completed` means the supplied schedule was executed; it does
-not assert that its last temperature equals one. To resume ordinary SMC, pass the
-previous result's `log_evidence` as `initial_log_evidence`; persistent states already
-store it. Continuation keys use sequential splitting so chunked runs match batch
-runs. This changes the random stream relative to older versions that split all
-schedule keys at once. `SMCResult` has additional tuple fields, so prefer named
-attributes over positional tuple unpacking. Custom kernels without evidence
-diagnostics report NaN evidence instead of a misleading zero.
-
-Persistent sampler constructors bind their own likelihood. Building a second model
-cannot overwrite a first model's likelihood; direct low-level initialization must
-supply it explicitly.
-
-## BlackJAX tuning adapters
-
-`tuned_smc` wraps BlackJAX `inner_kernel_tuning` using our existing MCMC adapter.
-It accepts initial **unbatched shared** MCMC parameter values and a callback
-`parameter_update_fn(key, new_smc_state, info)`. The callback returns parameters
-with BlackJAX's leading shared (1) or per-particle (N) axis. Tuning happens after
-each SMC stage and is stored in `state.parameter_override`.
+The kernel's `default_adaptation` refits the move to the population after
+every step. A population sampled from the current target is a good estimate of
+the next one's shape, so it sets HMC's inverse mass matrix to the particle
+variances (`particle_adaptor`). It also scales the step size by
+`exp(acceptance_rate - 0.65)` (`acceptance_rate_adaptor`). Both are ordinary
+[adaptors](inference.md); compose your own with `compose_adaptors`.
 
 ```python
-from probjax.inference import tuned_smc
-
-def update_geometry(key, state, info):
-    covariance = jnp.cov(state.particles.T) + 1e-3*jnp.eye(2)
-    return {'step_size': jnp.array([0.15]), 'inverse_mass_matrix': covariance[None]}
-
-tuned = tuned_smc(
-    logprior, loglikelihood, mcmc_kernel=hmc,
-    mcmc_parameters={'step_size': 0.15, 'inverse_mass_matrix': jnp.eye(2)},
-    parameter_update_fn=update_geometry, num_mcmc_steps=2,
-    num_integration_steps=3, batch_size=32,
+adaptive = smc(
+    logprior, loglikelihood, move=hmc(num_integration_steps=4), target_ess=0.7
 )
-tuned_result = SMC(tuned).run_adaptive(run_key, tuned.init(particles), {})
-assert tuned_result.completed
+result = run(
+    key,
+    adaptive,
+    state,
+    params,
+    50,
+    adaptor=adaptive.default_adaptation(),
+    collect=("temperature",),
+)
+assert result.state.temperature == 1.0
+print(result.trace["temperature"][:6], result.params.inverse_mass_matrix)
 ```
 
-`pretuned_smc` reuses BlackJAX `build_pretune` to take pilot moves, measure movement,
-and perturb/reweight a distribution of move parameters before production moves.
-Supply `num_particles`, `sigma_parameters`, and initial parameters with explicit
-leading batch axes. The default ESJD measure requires a full shared inverse mass
-matrix shaped `(1,D,D)`. `positive_parameters` and `natural_parameters` constrain
-the perturbed parameters. Our adapter gives pilot and production moves independent
-keys and forwards production `batch_size`. BlackJAX's pilot itself currently maps
-the population together. It incurs additional computation and should be benchmarked
-against the simpler existing geometry/acceptance adaptors.
+## Waste-free moves, data tempering and batching
+
+`waste_free=p` keeps every state of the move chains instead of only the last
+(Dau and Chopin, 2022). Each step resamples `N / p` particles and runs `p - 1`
+moves from each, so all `N` particles come from the same number of target
+evaluations as `N / p` long chains. The kept states are correlated, so the
+population size overstates the information.
+
+Data tempering adds observations one at a time instead of raising a common
+temperature. Let the log-likelihood return one term per observation and use a
+vector temperature: `exp(sum(t * loglikelihood(x)))`. A schedule of masks then
+switches observations on in turn.
+
+`batch_size` moves the particles in batches of that size, which bounds the
+memory of large populations without changing the result.
+
+```python
+data = jnp.array([1.0, -0.5]) + 0.7 * jax.random.normal(key, (8, 2))
+per_observation = lambda x: norm.logpdf(data, x, 0.7).sum(axis=1)
+
+streaming = smc(
+    logprior,
+    per_observation,
+    move=hmc(num_integration_steps=4),
+    waste_free=4,
+    batch_size=128,
+)
+state = streaming.init(init_key, jax.random.normal(init_key, (512, 2)), jnp.zeros(8))
+masks = jnp.tril(jnp.ones((8, 8)))  # step i sees the first i + 1 observations
+result = run(key, streaming, state, params, 8, args=(masks,))
+print(result.state.particles.mean(0))
+```
+
+## Diffusion models as proposals
+
+`diffusion_smc(guide, times)` starts particles from the noise of a diffusion
+model and follows its reverse SDE down the time grid. A twist looks ahead to
+the target and weights the particles; at the last time it is the target
+itself, so the sampler is consistent whatever the twist, and a better twist
+only needs fewer particles. A `Guide` supplies the reverse SDE and the twist.
+
+- `neural.diffusion_guide(model, V)` steers a pretrained diffusion model
+  towards `prior(x) * exp(V(x))`, with `V` evaluated at the model's denoised
+  estimate as the twist. This conditions a generative prior on a reward or an
+  observation without retraining it. The guide's params are the model's
+  weights.
+- `score_guide(log_target, schedule, shape)` needs no model. It estimates the
+  score and the noised marginal of an unnormalised target by importance
+  sampling, at a cost of `num_inner` target evaluations per particle and step.
+
+```python
+from probjax.inference import diffusion_smc, score_guide
+from probjax.nn.generative.diffusion.config import VPNoiseSchedule
+
+bimodal = lambda x: jnp.logaddexp(
+    norm.logpdf(x, -2.0, 0.5).sum(), norm.logpdf(x, 2.0, 0.5).sum()
+)
+noise = VPNoiseSchedule(t_min=1e-3, t_max=1.0)
+guide = score_guide(bimodal, noise, (1,), num_inner=32)
+sampler = diffusion_smc(guide, jnp.linspace(1.0, 1e-3, 21))
+state = sampler.init(init_key, 256)
+result = run(key, sampler, state, None, 20, collect=("ess", "resampled"))
+weights = jnp.exp(result.state.log_weights)
+print(jnp.sum(weights * (result.state.particles[:, 0] > 0)))  # about one half
+```
+
+The [SMC tutorial](../tutorials/smc.md) runs both kernels on harder targets.
 
 ## Diagnostics beyond weight ESS
 
