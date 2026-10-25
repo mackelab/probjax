@@ -67,8 +67,16 @@ Spline flow boundary-slope logits now use `tail_logit_scale=0.1` by default.
 The tails remain learnable and start at unit slope; interior knot slopes are
 unchanged. Pass `tail_logit_scale=1.0` to reproduce the previous undamped
 behavior, including when reconstructing a flow for an older checkpoint.
-`SplineAutoregressive` and `ARFamily.spline` expose the same damping option for
-their distribution-head boundary slopes.
+`SplineHead` exposes the same damping option for its boundary slopes.
+
+Autoregressive models take an explicit head: `Autoregressive(d, head, rngs=...)`
+with `NormalHead`, `LocScaleHead`, `MixtureHead`, `HistogramHead`, `SplineHead`
+or `CategoricalHead`. `ARFamily` and the presets `MADE`, `made`,
+`MixtureAutoregressive`, `SplineAutoregressive`, `HistogramAutoregressive` and
+`CategoricalAutoregressive` are gone: `MADE(d, rngs)` is `Autoregressive(d,
+rngs=rngs)`, `MixtureAutoregressive(d, rngs, num_components=k)` is
+`Autoregressive(d, MixtureHead(k), rngs)`. Conditioner configs now build
+networks mapping tokens `(..., d, width)` to `(..., d, num_params)`.
 
 Both module and functional `fit` now return a `FitResult` carrying `params`,
 `losses`, any `metrics` and a resumable `state` (`FitState`). EMA is opt-in with

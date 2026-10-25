@@ -8,8 +8,13 @@ import pytest
 from flax import nnx
 
 import probjax.nn.generative.nflows as N
-from probjax.nn.generative.autoregressive import MADE, MixtureAutoregressive
-from probjax.nn.generative.autoregressive.config import MLPARConditionerConfig
+from probjax.nn.generative.autoregressive import (
+    Autoregressive,
+    CategoricalHead,
+    MLPARConditionerConfig,
+    MixtureHead,
+    SplineHead,
+)
 from probjax.nn.generative.nflows.config import (
     _DEFAULT_WIDTH,
     _WIDTH_MAX,
@@ -82,11 +87,12 @@ def test_the_hint_reaches_the_built_flow():
 
 
 def test_the_hint_reaches_the_built_ar_model():
-    from probjax.nn.generative.autoregressive import SplineAutoregressive
-
     def width(n):
-        m = SplineAutoregressive(
-            20, nnx.Rngs(0), conditioner=MLPARConditionerConfig(num_examples=n)
+        m = Autoregressive(
+            20,
+            SplineHead(),
+            nnx.Rngs(0),
+            conditioner=MLPARConditionerConfig(num_examples=n),
         )
         return m.conditioner.net.layers[0].kernel.shape[1]
 
@@ -138,7 +144,7 @@ def _badly_scaled(key, n=4000):
     [
         pytest.param(lambda **k: N.nsf(2, 4, nnx.Rngs(0), **k), id="flow"),
         pytest.param(
-            lambda **k: MixtureAutoregressive(2, nnx.Rngs(0), num_components=8, **k),
+            lambda **k: Autoregressive(2, MixtureHead(8), nnx.Rngs(0), **k),
             id="ar",
         ),
     ],
@@ -268,9 +274,7 @@ def test_constant_columns_do_not_divide_by_zero():
 
 def test_discrete_heads_do_not_standardise():
     """Shifting integer labels would destroy them."""
-    from probjax.nn.generative.autoregressive import CategoricalAutoregressive
-
-    model = CategoricalAutoregressive(3, nnx.Rngs(0), num_categories=4)
+    model = Autoregressive(3, CategoricalHead(4), nnx.Rngs(0))
     assert not model.standardize
     tokens = jax.random.randint(jax.random.PRNGKey(0), (64, 3), 0, 4)
     model.fit(

@@ -130,8 +130,8 @@ losses = flow.fit(jax.random.key(2), batch, num_steps=100,).losses
 Every family below shares the `fit` / `as_dist` interface above; they differ in
 the model class and the density they represent:
 
-- [Autoregressive models](autoregressive-models.md) — `MADE`, `MixtureAutoregressive`,
-  `SplineAutoregressive`, `HistogramAutoregressive`, `CategoricalAutoregressive`
+- [Autoregressive models](autoregressive-models.md) — `Autoregressive` with
+  `NormalHead`, `MixtureHead`, `SplineHead`, `HistogramHead`, `CategoricalHead`
 - [Diffusion models](diffusion-models.md) — `EDM`, `VP`, `VE`, `CosineDM`,
   `MultinomialDiffusion`
 - [Flow matching](flow-matching.md) — `FlowMatcher`, `MeanFlowMatcher`,

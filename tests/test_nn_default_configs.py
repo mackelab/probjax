@@ -7,11 +7,12 @@ import pytest
 from flax import nnx
 
 from probjax.nn import (
-    ARFamily,
     Autoregressive,
     DiffusionTransformer,
     InducedSelfAttention,
+    NormalHead,
     SpatialSelfAttention,
+    SplineHead,
     Transformer,
     TransformerARConditionerConfig,
     TransformerConditionerConfig,
@@ -68,7 +69,7 @@ def test_conditioner_configs_and_direct_layers_agree():
 
 def test_default_ar_transformer_is_causal_with_nonzero_head():
     config = TransformerARConditionerConfig(attention_fn=dot_product_attention)
-    model = Autoregressive(4, ARFamily.normal(), nnx.Rngs(0), conditioner=config)
+    model = Autoregressive(4, NormalHead(), nnx.Rngs(0), conditioner=config)
     decoder = model.conditioner.inner.decoder
     decoder.kernel[...] = 0.01 * jax.random.normal(
         jax.random.key(1), decoder.kernel.shape
@@ -124,9 +125,9 @@ def test_cosine_beta_is_a_continuous_rate():
 
 
 def test_ar_spline_tails_are_damped_but_learnable():
-    damped, undamped = ARFamily.spline(), ARFamily.spline(tail_logit_scale=1.0)
-    params = jnp.full((damped.params_dim(),), 0.3)
-    a, b = damped.unpack(params), undamped.unpack(params)
+    damped, undamped = SplineHead(), SplineHead(tail_logit_scale=1.0)
+    params = jnp.full((damped.num_params,), 0.3)
+    a, b = damped.params(params), undamped.params(params)
     np.testing.assert_allclose(a["knot_slopes"][1:-1], b["knot_slopes"][1:-1])
     endpoints = jnp.array([0, -1])
     assert jnp.all(

@@ -1,50 +1,46 @@
-"""Autoregressive density models over univariate ``probjax.stats`` families.
+"""Autoregressive density models: ``p(x) = prod_i p(x_i | x_<i)``.
 
-``p(x) = prod_i p(x_i | x_<i)`` with each conditional a univariate distribution
-whose parameters a masked network predicts. Hand the model a distribution class
-and everything else follows from it -- ``dist.parameters`` gives the parameter
-names, order and constraints, and ``logpdf`` / ``_rvs_impl`` give the density
-and the sampler:
+Two choices make a model -- the *head* (what each conditional is) and the
+*conditioner* (the causal network predicting the head's parameters):
 
-    >>> from probjax.stats import norm
-    >>> model = Autoregressive(4, norm, rngs=nnx.Rngs(0))
-
-For heads flexible enough to model arbitrary conditionals, the same mechanism
-takes the distributions added for the purpose -- ``mixture_kernel`` (KDE-like),
-``histogram`` / ``tailed_histogram``, and ``spline_normal`` -- via the
-convenience constructors on :class:`ARFamily`, or the named presets below.
+    >>> Autoregressive(4, rngs=nnx.Rngs(0))                       # MADE
+    >>> Autoregressive(4, MixtureHead(10), rngs=nnx.Rngs(0))      # KDE-like
+    >>> Autoregressive(
+    ...     196, CategoricalHead(256), rngs=nnx.Rngs(0),
+    ...     conditioner=TransformerARConditionerConfig(),
+    ... )
 """
 
-from probjax.nn.generative.autoregressive.config import (
+from probjax.nn.generative.autoregressive.conditioners import (
     ARConditionerConfig,
-    ARFamily,
     MLPARConditionerConfig,
     SSMARConditionerConfig,
     TransformerARConditionerConfig,
 )
-from probjax.nn.generative.autoregressive.model import (
-    MADE,
-    Autoregressive,
-    CategoricalAutoregressive,
-    HistogramAutoregressive,
-    MixtureAutoregressive,
-    SplineAutoregressive,
-    made,
+from probjax.nn.generative.autoregressive.heads import (
+    CategoricalHead,
+    Head,
+    HistogramHead,
+    LocScaleHead,
+    MixtureHead,
+    NormalHead,
+    SplineHead,
 )
+from probjax.nn.generative.autoregressive.model import Autoregressive
 
 __all__ = [
-    # family + conditioner configs
-    "ARFamily",
+    "Autoregressive",
+    # heads
+    "Head",
+    "CategoricalHead",
+    "HistogramHead",
+    "LocScaleHead",
+    "MixtureHead",
+    "NormalHead",
+    "SplineHead",
+    # conditioners
     "ARConditionerConfig",
     "MLPARConditionerConfig",
     "SSMARConditionerConfig",
     "TransformerARConditionerConfig",
-    # models
-    "Autoregressive",
-    "MADE",
-    "MixtureAutoregressive",
-    "SplineAutoregressive",
-    "HistogramAutoregressive",
-    "CategoricalAutoregressive",
-    "made",
 ]

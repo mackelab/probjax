@@ -197,13 +197,14 @@ layers) remain supported.
 
 ## Autoregressive models
 
-::: probjax.nn.MADE
-::: probjax.nn.MixtureAutoregressive
-::: probjax.nn.SplineAutoregressive
-::: probjax.nn.HistogramAutoregressive
-::: probjax.nn.CategoricalAutoregressive
 ::: probjax.nn.Autoregressive
-::: probjax.nn.ARFamily
+::: probjax.nn.Head
+::: probjax.nn.NormalHead
+::: probjax.nn.LocScaleHead
+::: probjax.nn.MixtureHead
+::: probjax.nn.HistogramHead
+::: probjax.nn.SplineHead
+::: probjax.nn.CategoricalHead
 
 ## Diffusion and flow matching
 
@@ -538,7 +539,6 @@ re-exported for convenience and documented there.
 ::: probjax.nn.TransformerARConditionerConfig
 ::: probjax.nn.UniformContinuousTimeTrainingConfig
 ::: probjax.nn.UniformFlowTrainingConfig
-::: probjax.nn.made
 
 ## Loss builders and data utilities
 

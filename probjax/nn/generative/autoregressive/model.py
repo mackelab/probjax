@@ -1,124 +1,118 @@
 """Autoregressive density models.
 
-``p(x) = prod_i p(x_i | x_<i)``, where each conditional is a univariate family
-from :mod:`probjax.stats` whose parameters a masked network predicts.
+``p(x) = prod_i p(x_i | x_<i)``: a causal conditioner predicts raw parameters
+for every dimension, and a :class:`~probjax.nn.generative.autoregressive.heads.Head`
+turns them into a univariate distribution:
+
+>>> model = Autoregressive(4, MixtureHead(10), rngs=nnx.Rngs(0))
 
 Unlike a normalizing flow there is no bijection: the density is read straight
-off the family, so evaluating ``logpdf`` costs a single masked forward pass no
-matter which family is used. Sampling is the sequential part -- one pass per
-dimension, drawing ``x_i`` from the family before moving on.
+off the head, so ``logpdf`` costs one conditioner pass whatever the head.
+Sampling is the sequential part -- one pass per dimension.
 """
 
-from typing import Any, Optional
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.nn.generative.autoregressive.config import (
+from probjax.nn.generative.autoregressive.conditioners import (
     ARConditionerConfig,
-    ARFamily,
     MLPARConditionerConfig,
 )
+from probjax.nn.generative.autoregressive.heads import Head, NormalHead
 from probjax.nn.generative.base import GenerativeModel
 from probjax.nn.generative.standardize import StandardizingMixin
 from probjax.nn.inputs import context_only
+from probjax.nn.training import is_stream
 from probjax.utils.guards import is_tracing
 from probjax.utils.jaxutils import leading_dim, where
 
-__all__ = [
-    "Autoregressive",
-    "MADE",
-    "MixtureAutoregressive",
-    "SplineAutoregressive",
-    "HistogramAutoregressive",
-    "CategoricalAutoregressive",
-    "made",
-]
+__all__ = ["Autoregressive"]
 
 
 class Autoregressive(StandardizingMixin, GenerativeModel):
     """Autoregressive density over ``input_dim`` variables.
 
-    Parameters
-    ----------
-    input_dim :
-        Number of variables in the joint.
-    family :
-        The univariate conditional, as an :class:`ARFamily`. A bare
-        ``probjax.stats`` generator is accepted and wrapped.
-    conditioner :
-        Config for the masked network. Defaults to a MADE-style masked MLP.
-    context_features :
-        Width of an optional conditioning vector.
+    Args:
+        input_dim: Number of variables in the joint.
+        head: The conditional family (default :class:`NormalHead`, i.e. MADE).
+        rngs: Parameter initialisation.
+        conditioner: Config of the causal network (default: masked MLP).
+        context_features: Width of an optional conditioning vector.
+        standardize: Fit a per-dimension affine map to the training data
+            (continuous heads only).
     """
 
     def __init__(
         self,
         input_dim: int,
-        family: Any = None,
+        head: Optional[Head] = None,
         rngs: Optional[nnx.Rngs] = None,
         *,
         conditioner: Optional[ARConditionerConfig] = None,
         context_features: Optional[int] = None,
-        name: Optional[str] = None,
         standardize: bool = True,
+        name: Optional[str] = None,
     ) -> None:
         if input_dim < 1:
             raise ValueError(f"input_dim must be positive; got {input_dim}.")
         if rngs is None:
             raise ValueError("rngs is required.")
-
-        if family is None:
-            family = ARFamily.normal()
-        elif not isinstance(family, ARFamily):
-            # A bare stats generator: wrap it with default packing.
-            family = ARFamily(family)
+        head = NormalHead() if head is None else head
+        if not isinstance(head, Head):
+            raise TypeError(f"head must be a Head; got {type(head).__name__}.")
         conditioner = conditioner or MLPARConditionerConfig()
         if not isinstance(conditioner, ARConditionerConfig):
             raise TypeError("conditioner must implement ARConditionerConfig")
 
         self.input_dim = input_dim
-        self.family = family
-        self.conditioner_config = conditioner
+        self.head = head
         self.context_features = context_features
         self.name = name
-
-        params_dim = family.params_dim()
-        # A discrete head one-hots its input, widening the network's first layer
-        # without changing the number of autoregressive variables.
-        in_features = input_dim
-        if family.discrete:
-            in_features = input_dim * family._natural_sizes[family._predicted[0]]
         self.conditioner = conditioner.build(
             input_dim,
-            params_dim,
-            in_features=in_features,
+            self._width,
+            head.num_params,
             context_features=context_features,
             rngs=rngs,
         )
-        # A discrete family has no meaningful mean/std, and shifting integer
-        # labels would destroy them.
-        self._init_standardization(input_dim, standardize and not family.discrete)
+        # Integer labels have no meaningful mean/std to standardise with.
+        self._init_standardization(input_dim, standardize and not self._discrete)
         super().__init__()
 
-    # -- parameters and density ---------------------------------------------
+    # -- tokens --------------------------------------------------------------
+
+    @property
+    def _discrete(self) -> bool:
+        return self.head.num_classes is not None
+
+    @property
+    def _width(self) -> int:
+        """Token width: 1 per value, or a one-hot vector per class label."""
+        return self.head.num_classes if self._discrete else 1
+
+    @property
+    def event_dtype(self):
+        return jnp.int32 if self._discrete else jnp.float32
+
+    def _tokens(self, x):
+        """``(..., input_dim)`` values -> ``(..., input_dim, width)`` tokens."""
+        x = jnp.asarray(x)
+        if self._discrete:
+            return jax.nn.one_hot(x.astype(jnp.int32), self.head.num_classes)
+        return x[..., None].astype(jnp.float32)
+
+    # -- density -------------------------------------------------------------
 
     def predict_params(self, x, context=None, *, rng=None):
-        """Per-dimension parameter blocks, shape ``(..., input_dim, params_dim)``."""
-        encoded = self.family.encode(x)
-        if self.family.discrete:
-            encoded = encoded.reshape(encoded.shape[:-2] + (-1,))
-        flat = self.conditioner(encoded, context, rng=rng)
-        return flat.reshape(
-            flat.shape[:-1] + (self.input_dim, self.family.params_dim())
-        )
+        """Raw head parameters for every dimension, ``(..., input_dim, num_params)``."""
+        return self.conditioner(self._tokens(x), context, rng=rng)
 
     def conditional_logpdfs(self, x, context=None):
         """``log p(x_i | x_<i)`` for every ``i``, shape ``(..., input_dim)``."""
-        params = self.predict_params(x, context)
-        natural = self.family.unpack(params)
-        return self.family.logpdf(jnp.asarray(x), natural)
+        return self.head.logpdf(self.predict_params(x, context), jnp.asarray(x))
 
     def _logpdf(self, value, context=None):
         # Density of the original variable: standardise, then carry the
@@ -127,31 +121,32 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
         inner = jnp.sum(self.conditional_logpdfs(z, context), axis=-1)
         return inner - self._log_scale_correction()
 
-    def __call__(self, x, context=None, *, rng=None):
-        return self._logpdf(x, context)
+    def logpdf(self, x, inputs=None):
+        """Joint log density of a batch ``x`` in data space."""
+        context = context_only(inputs, "Autoregressive")
+        if context is None:
+            return jax.vmap(self._logpdf)(x)
+        return jax.vmap(lambda item, c: self._logpdf(item, context=c))(x, context)
 
     def _check_support(self, data) -> None:
-        """Reject data the family cannot represent, instead of returning -inf."""
-        bounds = self.family.bounded_support()
-        if bounds is None:
+        """Reject data a bounded head cannot represent, instead of scoring -inf."""
+        if self.head.support is None:
             return
-        low, high = bounds
-        # The family sees standardised values, so that is what must be in range.
+        low, high = self.head.support
+        # The head sees standardised values, so that is what must be in range.
         data = self._standardize(data) if self.standardize else data
         lo, hi = float(jnp.min(data)), float(jnp.max(data))
         if lo < low or hi > high:
             raise ValueError(
-                f"{self.family.dist.name!r} has bounded support [{low}, {high}] "
+                f"{type(self.head).__name__} has bounded support [{low}, {high}] "
                 f"but the data spans [{lo:.4g}, {hi:.4g}], so those points have "
-                "zero density. Widen the bounds, or use a family with tails "
-                "(e.g. ARFamily.histogram(..., tails=True))."
+                "zero density. Widen the bounds, or use a head with tails "
+                "(e.g. HistogramHead(tails=True))."
             )
 
     def loss(self, rng, data, *args, context=None, **kwargs):
         """Negative mean joint log-likelihood."""
         del rng, args, kwargs
-        if not is_tracing(jnp.asarray(data)):
-            self._check_support(jnp.asarray(data))
         if context is None:
             return -jnp.mean(self._logpdf(data))
         pair = jax.vmap(lambda x, c: self._logpdf(x, context=c))
@@ -171,27 +166,15 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
     ):
         """Ancestral sampling: one conditioner pass per dimension.
 
-        The naive loop scans over the *event* dimension, which is static,
-        so it traces once per batch size.
-
         ``prefix`` conditions the draw on known leading values: with
         ``prefix`` of shape ``(..., input_dim)`` and ``prefix_len=k`` the
         first ``k`` positions are clamped to ``prefix`` and only the rest
         are sampled -- image completion from a top half, for example.
-        ``prefix_len`` may be any value in ``[0, input_dim]``.
 
-        With a transformer conditioner, ``use_cache=True`` (the default)
-        decodes with the attention KV cache instead of re-reading the whole
-        prefix at every step; ``False`` selects the naive loop, which is
-        also what non-transformer conditioners always use. Both paths draw
-        from the same per-dimension keys, so they agree up to the
-        floating-point dust between the two compiled scans.
-
-        The cached loop is compiled to a single program and does
-        asymptotically less attention work (one growing prefix row per step
-        instead of a full matrix). Time both paths with
-        ``block_until_ready`` -- JAX dispatches asynchronously, so bare
-        ``time.time`` differences only measure enqueueing.
+        A conditioner with a KV cache (the transformer) decodes one position
+        at a time when ``use_cache`` is set; otherwise every step re-reads the
+        whole prefix. Both paths draw from the same per-dimension keys, so
+        they agree up to floating-point dust.
         """
         sample_shape = tuple(sample_shape)
         if not 0 <= prefix_len <= self.input_dim:
@@ -208,52 +191,40 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
             )
             prefix_z = jnp.broadcast_to(prefix_z, sample_shape + (self.input_dim,))
         keys = jax.random.split(rng, self.input_dim)
-        if use_cache and hasattr(self.conditioner, "predict_next_params"):
-            return self._sample_cached(
-                keys, sample_shape, context, prefix_z, prefix_len
-            )
-        return self._sample_naive(keys, sample_shape, context, prefix_z, prefix_len)
-
-    def _sample_naive(self, keys, sample_shape, context, prefix_z, prefix_len):
-        dtype = self.family.event_dtype
-        x = jnp.zeros(sample_shape + (self.input_dim,), dtype=dtype)
-
-        def step(carry, inputs):
-            i, key = inputs
-            params = self.predict_params(carry, context)
-            params_i = jnp.take(params, i, axis=-2)
-            natural = self.family.unpack(params_i)
-            draw = self.family.rvs(key, natural).astype(dtype)
-            new = draw[..., None]
-            if prefix_z is not None:
-                given = prefix_z[..., i][..., None]
-                new = where(i < prefix_len, given, new)
-            # Only dimension i is written; the mask guarantees the parameters
-            # used here depended on x_<i alone.
-            onehot = jnp.arange(self.input_dim) == i
-            return where(onehot, new, carry), None
-
-        x, _ = jax.lax.scan(step, x, (jnp.arange(self.input_dim), keys))
+        if use_cache and hasattr(self.conditioner, "predict_next"):
+            x = self._sample_cached(keys, sample_shape, context, prefix_z, prefix_len)
+        else:
+            x = self._sample_naive(keys, sample_shape, context, prefix_z, prefix_len)
         return self._unstandardize(x) if self.standardize else x
 
-    def _sample_cached(self, keys, sample_shape, context, prefix_z, prefix_len):
-        """KV-cached ancestral sampling for transformer conditioners.
+    def _sample_naive(self, keys, sample_shape, context, prefix_z, prefix_len):
+        x = jnp.zeros(sample_shape + (self.input_dim,), dtype=self.event_dtype)
 
-        Compiled to a single program with :func:`flax.nnx.scan`: the
-        attention caches are threaded through as scan carry (the model is
+        def step(x, inputs):
+            i, key = inputs
+            raw_i = jnp.take(self.predict_params(x, context), i, axis=-2)
+            value = self.head.sample(key, raw_i).astype(x.dtype)
+            if prefix_z is not None:
+                value = where(i < prefix_len, prefix_z[..., i], value)
+            # Only dimension i is written; the conditioner guarantees its
+            # parameters depended on x_<i alone.
+            return x.at[..., i].set(value), None
+
+        x, _ = jax.lax.scan(step, x, (jnp.arange(self.input_dim), keys))
+        return x
+
+    def _sample_cached(self, keys, sample_shape, context, prefix_z, prefix_len):
+        """KV-cached ancestral sampling, compiled to one :func:`flax.nnx.scan`.
+
+        The attention caches are threaded through as scan carry (the model is
         passed explicitly so its ``Cache`` state is lifted) while the
-        parameters stay put. Cache updates apply to this model in place,
-        so every call starts with a fresh :meth:`init_decode`.
+        parameters stay put; every call starts from a fresh ``init_decode``.
         """
-        dtype = self.family.event_dtype
-        family = self.family
-        feature_width = self.conditioner.feature_width  # type: ignore
-        input_dim = self.input_dim
+        head, dtype = self.head, self.event_dtype
         self.conditioner.init_decode(sample_shape, dtype=jnp.float32)  # type: ignore
         carry0 = (
-            jnp.zeros(sample_shape + (input_dim,), dtype=dtype),
-            # Encoder input space is floating point (one-hot for discrete).
-            jnp.zeros(sample_shape + (feature_width,), jnp.float32),
+            jnp.zeros(sample_shape + (self.input_dim,), dtype=dtype),
+            jnp.zeros(sample_shape + (self._width,), jnp.float32),
         )
 
         @nnx.scan(
@@ -265,23 +236,21 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
                 nnx.StateAxes({nnx.Cache: nnx.Carry, ...: None}),
             ),
             out_axes=(nnx.Carry, 0),
-            length=input_dim,
+            length=self.input_dim,
         )
         def step(carry, i, model):
-            x, prev_feat = carry
-            params_i = model.conditioner.predict_next_params(prev_feat, i, context)
-            natural = family.unpack(params_i)
-            draw = family.rvs(keys[i], natural).astype(dtype)
-            value = draw
+            x, prev_token = carry
+            raw_i = model.conditioner.predict_next(prev_token, i, context)
+            value = head.sample(keys[i], raw_i).astype(dtype)
             if prefix_z is not None:
                 value = where(i < prefix_len, prefix_z[..., i], value)
-            x = x.at[..., i].set(value)
-            encoded = family.encode(value)
-            prev_feat = encoded[..., None] if feature_width == 1 else encoded
-            return (x, prev_feat), draw
+            token = model._tokens(value[..., None])[..., 0, :]
+            return (x.at[..., i].set(value), token), None
 
-        (x, _), _ = step(carry0, jnp.arange(input_dim), self)
-        return self._unstandardize(x) if self.standardize else x
+        (x, _), _ = step(carry0, jnp.arange(self.input_dim), self)
+        return x
+
+    # -- generative-model contract --------------------------------------------
 
     def sample_base(self, rng, sample_shape, spec, **options):
         """Placeholder noise: only its batch size is used, the draws come from ``rng``."""
@@ -295,101 +264,19 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
         context = context_only(inputs, "Autoregressive")
         return self.sample(rng, (leading_dim(noise),), context=context)
 
-    def logpdf(self, x, inputs=None):
-        """Joint log density of a batch ``x`` in data space."""
-        context = context_only(inputs, "Autoregressive")
-        if context is None:
-            return jax.vmap(self._logpdf)(x)
-        return jax.vmap(lambda item, c: self._logpdf(item, context=c))(x, context)
-
-    def as_dist(self, event_spec=None, **kwargs):
+    def as_dist(self, event_spec=None, **options):
         if event_spec is None:
-            event_spec = jax.ShapeDtypeStruct(
-                (self.input_dim,), self.family.event_dtype
-            )
-        return super().as_dist(event_spec, **kwargs)
+            event_spec = jax.ShapeDtypeStruct((self.input_dim,), self.event_dtype)
+        return super().as_dist(event_spec, **options)
 
     def _before_fit(self, data):
-        """Fit the standardising transform once, then train as usual."""
+        """Fit the standardising transform, and check the data fits the head."""
         data = self.fit_standardization(data)
+        if not is_stream(data) and not is_tracing(jnp.asarray(data["data"])):
+            self._check_support(jnp.asarray(data["data"]))
         # `loss` goes through `_logpdf`, which standardises internally.
         return super()._before_fit(data)
 
     def fit_defaults(self) -> dict:
         """Autoregressive models train better on a warm-started, decaying rate."""
         return {"schedule": "warmup_cosine"}
-
-
-# ---------------------------------------------------------------------------
-# Presets
-# ---------------------------------------------------------------------------
-
-
-class MADE(Autoregressive):
-    """Gaussian conditionals over a masked MLP (Germain et al., 2015)."""
-
-    def __init__(self, input_dim, rngs, **kwargs):
-        super().__init__(input_dim, ARFamily.normal(), rngs, **kwargs)
-
-
-class MixtureAutoregressive(Autoregressive):
-    """Mixture-density conditionals: the KDE-like flexible head."""
-
-    def __init__(self, input_dim, rngs, *, num_components: int = 10, **kwargs):
-        super().__init__(input_dim, ARFamily.mixture(num_components), rngs, **kwargs)
-
-
-class SplineAutoregressive(Autoregressive):
-    """Spline-warped normal conditionals.
-
-    Distinct from ``SplineAutoregressiveFlow``: that composes spline bijections,
-    this predicts a spline-warped *distribution* per dimension.
-    """
-
-    def __init__(
-        self,
-        input_dim,
-        rngs,
-        *,
-        num_bins: int = 8,
-        bound: float = 5.0,
-        tail_logit_scale: float = 0.1,
-        **kwargs,
-    ):
-        super().__init__(
-            input_dim,
-            ARFamily.spline(num_bins, bound, tail_logit_scale=tail_logit_scale),
-            rngs,
-            **kwargs,
-        )
-
-
-class HistogramAutoregressive(Autoregressive):
-    """Piecewise-constant conditionals with exponential tails."""
-
-    def __init__(
-        self,
-        input_dim,
-        rngs,
-        *,
-        num_bins: int = 32,
-        low: float = -5.0,
-        high: float = 5.0,
-        tails: bool = True,
-        **kwargs,
-    ):
-        super().__init__(
-            input_dim, ARFamily.histogram(num_bins, low, high, tails), rngs, **kwargs
-        )
-
-
-class CategoricalAutoregressive(Autoregressive):
-    """Categorical conditionals over integer-valued data."""
-
-    def __init__(self, input_dim, rngs, *, num_categories: int, **kwargs):
-        super().__init__(
-            input_dim, ARFamily.categorical(num_categories), rngs, **kwargs
-        )
-
-
-made = MADE

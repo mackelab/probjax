@@ -92,18 +92,18 @@ from probjax.nn.generative import (
     UniformFlowTrainingConfig,
 )
 from probjax.nn.generative.autoregressive import (
-    MADE,
     ARConditionerConfig,
-    ARFamily,
     Autoregressive,
-    CategoricalAutoregressive,
-    HistogramAutoregressive,
+    CategoricalHead,
+    Head,
+    HistogramHead,
+    LocScaleHead,
     MLPARConditionerConfig,
-    MixtureAutoregressive,
+    MixtureHead,
+    NormalHead,
     SSMARConditionerConfig,
-    SplineAutoregressive,
+    SplineHead,
     TransformerARConditionerConfig,
-    made,
 )
 
 # Override specific imports with probjax implementations

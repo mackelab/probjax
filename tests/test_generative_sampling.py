@@ -426,7 +426,12 @@ def test_mean_flow_original_objective_still_available():
 
 def test_attention_conditioners_sample_through_as_dist():
     """Attention conditioners sample through as_dist like any other."""
-    from probjax.nn import ARFamily, Autoregressive, TransformerARConditionerConfig, maf
+    from probjax.nn import (
+        Autoregressive,
+        NormalHead,
+        TransformerARConditionerConfig,
+        maf,
+    )
     from probjax.nn.generative.nflows.config import TransformerConditionerConfig
     from probjax.nn.layers.attention import dot_product_attention
 
@@ -436,7 +441,7 @@ def test_attention_conditioners_sample_through_as_dist():
     )
     ar = Autoregressive(
         3,
-        ARFamily.normal(),
+        NormalHead(),
         nnx.Rngs(0),
         conditioner=TransformerARConditionerConfig(
             attention_fn=dot_product_attention, **small

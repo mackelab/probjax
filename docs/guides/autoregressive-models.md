@@ -1,28 +1,37 @@
 # Autoregressive models
 
-An autoregressive model factorises `p(x) = prod_i p(x_i | x_<i)` and takes any
-univariate family from `probjax.stats` as its conditional. Like every generative
-family in `probjax.nn`, it trains with `fit` and exposes `as_dist()` for a frozen
-distribution with `logpdf` and `sample`.
+An autoregressive model factorises `p(x) = prod_i p(x_i | x_<i)`. Two choices
+make one: the *head*, which says what each conditional is, and the
+*conditioner*, the causal network that predicts the head's parameters. Like
+every generative family in `probjax.nn`, it trains with `fit` and exposes
+`as_dist()` for a distribution with `logpdf` and `sample`.
 
 ```python
 import jax
 from flax import nnx
-from probjax.nn import MADE, MixtureAutoregressive
+from probjax.nn import Autoregressive, MixtureHead
 
 data = jax.random.normal(jax.random.key(0), (256, 3))
 
-gaussian_head = MADE(3, rngs=nnx.Rngs(0))
-flexible_head = MixtureAutoregressive(3, rngs=nnx.Rngs(0))
+made = Autoregressive(3, rngs=nnx.Rngs(0))  # NormalHead: MADE
+flexible = Autoregressive(3, MixtureHead(10), rngs=nnx.Rngs(0))
 
-losses = flexible_head.fit(
-    jax.random.key(1), data, num_steps=100,
-).losses
+losses = flexible.fit(jax.random.key(1), data, num_steps=100).losses
 ```
 
-`SplineAutoregressive`, `HistogramAutoregressive` and
-`CategoricalAutoregressive` cover flexible continuous and discrete conditionals,
-while `Autoregressive` accepts an `ARFamily` head directly.
+The heads are small explicit classes:
+
+| Head | Conditional |
+| --- | --- |
+| `NormalHead()` | Gaussian (the default, i.e. MADE) |
+| `LocScaleHead(dist, fixed)` | any location-scale family, e.g. `LocScaleHead(laplace)` or `LocScaleHead(t, {"df": 5.0})` |
+| `MixtureHead(num_components, kernel)` | Gaussian or logistic mixture, the flexible KDE-like head |
+| `HistogramHead(num_bins, low, high, tails)` | piecewise constant, with optional exponential tails |
+| `SplineHead(num_bins, bound)` | spline-warped normal |
+| `CategoricalHead(num_classes)` | integer data, one-hot encoded for the conditioner |
+
+A new family is a `Head` subclass that sets `dist` and `num_params` and maps
+the raw outputs to the family's parameters in `params(raw)`.
 
 ## Transformer conditioner defaults
 
@@ -37,4 +46,4 @@ Spline distribution heads also damp boundary logits with
 are one and remain learnable. This matches the spline-flow tail convention.
 
 - [Density estimation](density-estimation.md) — the shared `fit` / `as_dist` interface
-- [Reference](../reference/nn.md) — every autoregressive family
+- [Reference](../reference/nn.md) — every head and conditioner

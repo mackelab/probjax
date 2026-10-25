@@ -3,7 +3,7 @@
 Each subpackage bundles its model class and configuration in one place:
 
 * :mod:`probjax.nn.generative.autoregressive` — autoregressive density
-  models over univariate ``probjax.stats`` families (``MADE``, ``ARFamily``).
+  models with explicit conditional heads (``Autoregressive``, ``MixtureHead``, ...).
 * :mod:`probjax.nn.generative.nflows` — normalizing flows
   (``NormalizingFlow``, ``realnvp``, ``maf``, ``nsf``, …) plus the
   bijective primitives and conditioner networks they're built from.
@@ -24,17 +24,18 @@ builders live in :mod:`probjax.nn.losses`.
 """
 
 from probjax.nn.generative.autoregressive import (
-    MADE,
     ARConditionerConfig,
-    ARFamily,
     Autoregressive,
-    CategoricalAutoregressive,
-    HistogramAutoregressive,
+    CategoricalHead,
+    Head,
+    HistogramHead,
+    LocScaleHead,
     MLPARConditionerConfig,
-    MixtureAutoregressive,
-    SplineAutoregressive,
+    MixtureHead,
+    NormalHead,
+    SSMARConditionerConfig,
+    SplineHead,
     TransformerARConditionerConfig,
-    made,
 )
 from probjax.nn.generative.base import GenerativeModel
 from probjax.nn.generative.diffusion import (
