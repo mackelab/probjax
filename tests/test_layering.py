@@ -6,7 +6,7 @@ import statements can, and it also sees imports inside functions, which is how
 a dependency would otherwise be hidden.
 
 The intended order is ``utils`` <- ``core`` <- ``stats`` <- ``nn``, with the
-flax-free part of ``nn.training`` (batches, kernel, loop) alongside ``stats``.
+flax-free part of ``nn.training`` (``loop``) alongside ``stats``.
 """
 
 import ast
@@ -46,7 +46,7 @@ RULES = [
     ),
     (
         "the training loop is flax-free and independent of the model libraries",
-        ("nn/training/config.py", "nn/training/state.py", "nn/training/trainer.py"),
+        ("nn/training/loop.py",),
         (
             "flax",
             "probjax.core",

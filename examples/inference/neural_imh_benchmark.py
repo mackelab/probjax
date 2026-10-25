@@ -25,7 +25,7 @@ from flax import nnx
 from probjax.inference import fit_adaptor, imh, maximum_likelihood, run
 from probjax.inference.mcmc.imh import imh_data
 from probjax.inference.neural import density
-from probjax.nn import FitConfig, nsf
+from probjax.nn import nsf
 
 
 @dataclass(frozen=True)
@@ -164,7 +164,7 @@ def run_case(name, args):
         flow.fit(
             key_fit,
             case.sample(key_seed, (args.seed_data,)),
-            config=FitConfig(max_steps=args.fit_steps, batch_size=args.batch_size),
+            num_steps=args.fit_steps, batch_size=args.batch_size,
         )
 
     started = time.perf_counter()

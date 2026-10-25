@@ -28,12 +28,17 @@ def test_overridden_endpoint_controls_initial_noise(mode):
 def test_explicit_state_controls_initial_noise_and_is_jittable():
     model = EDM(Zero(), event_spec=2, num_steps=8)
     dist = model.as_dist(t_max=2.0)
-    state = dist.model_state()
     expected = dist.sample(jax.random.key(0), (4,))
+    graphdef, state = nnx.split(nnx.clone(model))  # a snapshot, not a view
+
+    def sample(state, key):
+        merged = nnx.merge(graphdef, state)
+        noise_key, sample_key = jax.random.split(key)
+        noise = merged.sample_base(noise_key, (4,), dist.event_spec, t_max=2.0)
+        return merged.sample_from_noise(noise, sample_key, t_max=2.0)
+
     model.std0.set_value(3.0)
-    actual = jax.jit(lambda state, key: dist.sample_with_state(state, key, (4,)))(
-        state, jax.random.key(0)
-    )
+    actual = jax.jit(sample)(state, jax.random.key(0))
     np.testing.assert_allclose(actual, expected, rtol=2e-6)
     assert model.std0.get_value() == 3.0
 

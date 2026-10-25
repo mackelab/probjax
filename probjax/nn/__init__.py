@@ -92,18 +92,18 @@ from probjax.nn.generative import (
     UniformFlowTrainingConfig,
 )
 from probjax.nn.generative.autoregressive import (
-    MADE,
     ARConditionerConfig,
-    ARFamily,
     Autoregressive,
-    CategoricalAutoregressive,
-    HistogramAutoregressive,
+    CategoricalHead,
+    Head,
+    HistogramHead,
+    LocScaleHead,
     MLPARConditionerConfig,
-    MixtureAutoregressive,
+    MixtureHead,
+    NormalHead,
     SSMARConditionerConfig,
-    SplineAutoregressive,
+    SplineHead,
     TransformerARConditionerConfig,
-    made,
 )
 
 # Override specific imports with probjax implementations
@@ -273,12 +273,11 @@ from probjax.nn.pallas_kernels import (
 
 # Shared training API for neural modules and functional parameter pytrees.
 from probjax.nn.training import (
-    DataSpec,
-    FitCallback,
-    FitConfig,
     FitInfo,
-    FitMixin,
     FitResult,
     FitState,
+    default_optimizer,
     fit,
+    fit_module,
+    train_step,
 )

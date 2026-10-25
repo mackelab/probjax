@@ -21,10 +21,9 @@ from docs.scripts.benchmark_flow_mixing import MIXERS, build_flow, rotated_banan
 from probjax.core import inverse_and_logabsdet
 from probjax.nn import (
     CirculantDiagonal,
-    FitCallback,
-    FitConfig,
     FlipMixingConfig,
     RationalQuadraticSplineConfig,
+    default_optimizer,
 )
 
 
@@ -65,11 +64,11 @@ def track_gradients(clip_norm):
     return optax.GradientTransformation(lambda _: jnp.zeros(4), update)
 
 
-class Snapshots(FitCallback):
+class Snapshots:
     def __init__(self):
         self.entries = []
 
-    def on_step_end(self, state, info):
+    def __call__(self, state, info):
         self.entries.append((
             int(state.step),
             jax.tree.map(lambda value: value.copy(), state.params),
@@ -189,23 +188,16 @@ def run_case(
     history = Snapshots()
     optimizer = optax.chain(
         track_gradients(clip),
-        FitConfig(
-            max_steps=steps,
-            learning_rate=rate,
-            schedule="warmup_cosine",
-            clip_norm=clip,
-        ).default_optimizer(),
+        default_optimizer(rate, steps, "warmup_cosine", clip),
     )
     losses = flow.fit(
         fit_key,
         train,
-        config=FitConfig(
-            max_steps=steps,
-            batch_size=256,
-            optimizer=optimizer,
-            callback_every=interval,
-        ),
-        callbacks=[history],
+        num_steps=steps,
+        batch_size=256,
+        optimizer=optimizer,
+        every=interval,
+        callback=history,
     ).losses
     trajectory = []
     for step, params, model_state, batch_loss, gradient_stats in history.entries:

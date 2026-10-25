@@ -1,4 +1,3 @@
-from functools import partial
 from typing import Any, Mapping
 
 import jax
@@ -18,10 +17,6 @@ from probjax.nn.generative.flow_matching.config import (
 from probjax.nn.generative.mean_flow.config import (
     FlowPairTrainingConfigProtocol,
     SigmoidPairFlowTrainingConfig,
-)
-from probjax.nn.generative.sampling import (
-    _ExportedSampler,
-    make_scan_sample_fn,
 )
 from probjax.nn.losses.mean_flow import build_mean_flow_matching_loss
 from probjax.utils.jaxutils import where
@@ -94,7 +89,6 @@ class MeanFlowMatcher(GenerativeModel):
         if not isinstance(solver_cfg, FlowSolverConfigProtocol):
             raise TypeError("solver_cfg must implement FlowSolverConfigProtocol")
         self.solver_cfg = solver_cfg
-        self._clear_distribution_cache()
 
     def __call__(
         self,
@@ -239,43 +233,29 @@ class MeanFlowMatcher(GenerativeModel):
             t_min=t_min, t_max=t_max, num_steps=num_steps
         )
 
-    _sample_base = _affine_sample_base
+    sample_base = _affine_sample_base
 
-    def _distribution_sampler(
-        self,
-        event_spec,
-        *,
-        num_steps: int | None = None,
-        dtype=jnp.float32,
-        inputs_spec=None,
-        **kwargs,
-    ) -> _ExportedSampler:
-        """Build and cache a mean-flow sampler with symbolic batch size.
-
-        ``event_spec`` may be a plain shape tuple or a pytree of shapes /
-        ``jax.ShapeDtypeStruct`` for structured data. ``inputs_spec`` maps each
-        named model input (``context``, ...) to a spec in the same format and
-        enables a required, batch-aligned input of that name.
-        """
+    def sample_from_noise(
+        self, noise, rng=None, inputs=None, *, num_steps: int | None = None
+    ):
+        """Jump along the mean flow from ``noise`` in ``num_steps`` steps."""
+        del rng
         if self.solver_cfg is None:
             raise ValueError(
                 "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
             )
         steps = self.solver_cfg.num_steps if num_steps is None else int(num_steps)
         ts = self.solve_schedule(num_steps=steps)
-        make_sample_fn = partial(
-            make_scan_sample_fn,
-            xs=(ts[:-1], ts[1:]),
-            step=_mean_flow_step,
-        )
+        # Merge per step: a module mutated inside the scan (RNG counters)
+        # must not leak its state out of the scan body.
+        graphdef, state = nnx.split(self)
 
-        return self._build_exported_sampler(
-            ("mean-flow", steps),
-            event_spec,
-            make_sample_fn,
-            dtype=dtype,
-            inputs_spec=inputs_spec,
-        )
+        def step(value, times):
+            model = nnx.merge(graphdef, state)
+            return _mean_flow_step(model, value, times, inputs), None
+
+        final, _ = jax.lax.scan(step, noise, (ts[:-1], ts[1:]))
+        return final
 
 
 class LinearMeanFlow(MeanFlowMatcher):

@@ -741,17 +741,15 @@ def test_conditional_flows_with_context(flow_ctor):
     y_inv = model_inv(y)
     assert jnp.allclose(x, y_inv, atol=1e-2, rtol=1e-1), "Inverse is not correct"
 
-    distribution = model.as_dist(context_spec=(3,))
-    samples = distribution.sample(
-        rng=jax.random.PRNGKey(0), shape=(8,), context=context
-    )
+    distribution = model.as_dist().condition(context=context)
+    samples = distribution.sample(rng=jax.random.PRNGKey(0), shape=(8,))
     assert samples.shape == (8, 4)
 
-    logprob = distribution.logpdf(samples, context=context)
+    logprob = distribution.logpdf(samples)
     assert logprob.shape == (8,)
 
-    context_2 = jnp.array([-0.5, 0.7, -0.9])
-    logprob_2 = distribution.logpdf(samples, context=context_2)
+    contexts = jnp.tile(jnp.array([-0.5, 0.7, -0.9]), (8, 1))
+    logprob_2 = model.as_dist().logpdf(samples, context=contexts)
     assert logprob_2.shape == (8,)
 
 

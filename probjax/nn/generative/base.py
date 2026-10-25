@@ -1,49 +1,45 @@
 """Base class for generative-model families.
 
-:class:`GenerativeModel` packs the cached, shape-polymorphic distribution
-machinery from :mod:`probjax.nn.generative.sampling` so downstream families
-(diffusion, flow matching, mean flow, normalizing flows, ...) only supply
-what is genuinely theirs: how to turn base noise into data. The expensive,
-shared parts — ``nnx.split``, ``jax.export`` with a symbolic batch axis,
-and per-model caching / invalidation — live here.
+A family implements plain methods, each batched over one leading axis:
 
-A family implements ``loss`` and delegates its family-specific sampling
-kernel to :meth:`GenerativeModel._build_exported_sampler`. Event descriptions
-are pytree specs, so structured data works like a single flat array.
+* ``loss(rng, data, **inputs)`` -- the training objective;
+* ``sample_base(rng, sample_shape, spec, **options)`` -- the starting noise;
+* ``sample_from_noise(noise, rng=None, inputs=None, **options)`` -- noise to
+  samples (the solver loop lives here);
+* ``logpdf(x, inputs=None)`` -- only where the density is tractable.
+
+They are ordinary JAX functions: jit, vmap and differentiate them freely.
+:meth:`GenerativeModel.as_dist` serves them through :meth:`_compiled`, one
+cached ``jax.jit`` per method and options. Event descriptions are pytree
+specs, so structured data works like a single flat array.
 """
 
 from __future__ import annotations
 
+import weakref
 from numbers import Integral
-from typing import Callable, Optional
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from probjax.nn.distribution import _ExportedLogPDF, _ModelDistribution, _export_logpdf
-from probjax.nn.export import (
-    clear_export_cache,
-    get_cached_export,
-    normalize_spec,
-    spec_cache_key,
-)
-from probjax.nn.generative.sampling import (
-    SamplerLike,
-    _ExportedSampler,
-    _export_sampler,
-    sample_normal,
-)
-from probjax.nn.inputs import as_inputs
-from probjax.nn.training import DataSpec, FitConfig, FitMixin, FitResult
+from probjax.nn.distribution import ModelDistribution
+from probjax.nn.generative.sampling import sample_normal
+from probjax.nn.training import FitResult, fit_module, is_stream
 from probjax.utils.guards import is_mapping
 from probjax.utils.typing import Array, PyTree, RngKey
 
 __all__ = ["GenerativeModel"]
 
+#: model -> {(method, options): (graphdef, compiled)}. Weak, so a cache entry
+#: never keeps its model alive; entries only close over the graphdef.
+_COMPILED: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
-def _affine_sample_base(self, rng, sample_shape, spec):
-    """Gaussian base ``N(mu0, std0**2)``; flow models assign this as ``_sample_base``."""
+
+def _affine_sample_base(self, rng, sample_shape, spec, **options):
+    """Gaussian base ``N(mu0, std0**2)``; flow models assign this as ``sample_base``."""
+    del options
     return sample_normal(
         rng,
         sample_shape,
@@ -68,28 +64,14 @@ def _as_batch(item):
     return {"data": item}
 
 
-class _Batches:
-    """Normalises what a loader yields into batch dicts (see ``_as_batch``).
-
-    Re-iterable and length-preserving, so restarting the stream keeps working
-    through the wrapper.
-    """
-
-    def __init__(self, source):
-        self._source = source
-
-    def __len__(self):
-        # Deliberately propagates the source's TypeError: reporting a length
-        # the source does not have would invent one.
-        return len(self._source)
-
-    def __iter__(self):
-        for item in self._source:
-            yield _as_batch(item)
+def _batch_loss(model, rng, batch):
+    """``model.loss(rng, data, **inputs)`` for one batch dict."""
+    inputs = dict(batch)
+    return model.loss(rng, inputs.pop("data"), **inputs)
 
 
-class GenerativeModel(nnx.Module, FitMixin):
-    """Shared base for generative families with cached exported samplers."""
+class GenerativeModel(nnx.Module):
+    """Shared base for generative families: training and compiled distribution views."""
 
     _event_dtype = jax.numpy.float32
     #: Set by the continuous-time models, whose event dtypes must be floating
@@ -167,182 +149,92 @@ class GenerativeModel(nnx.Module, FitMixin):
     def set_event_spec(self, event_spec):
         """Change the default for future views without resizing network params.
 
-        Existing distribution views keep their bound event specs. Cached exports
-        are invalidated because this changes static model metadata.
+        Existing distribution views keep their bound event specs.
         """
         spec = self._normalize_event_spec(event_spec)
         leaves, tree = jax.tree.flatten(spec)
         self._default_event_spec = nnx.static((tree, tuple(leaves)))
-        self._clear_distribution_cache()
 
     def loss(self, rng: RngKey, data: PyTree[Array], *args, **kwargs) -> Array:
         """Monte-Carlo training loss for a batch of data."""
         raise NotImplementedError
 
-    def fit(self, rng: RngKey, data, *, weights=None, **fit_kwargs) -> FitResult:
+    def fit(self, rng: RngKey, data, *, weights=None, **options) -> FitResult:
         """Train in place on ``data``.
 
         ``data`` is an array pytree, a dict with a ``"data"`` entry plus any
         named model inputs (``{"data": x, "context": c}``), or a stream of
         either. The inputs reach :meth:`loss`, and so the network, as keyword
-        arguments. ``weights`` weight the examples in the loss; they are not
-        data. The remaining keywords are the training options of
-        :func:`probjax.nn.training.fit`.
+        arguments. ``weights`` weight the examples in the loss. The remaining
+        keywords are the options of :func:`probjax.nn.training.fit`, on top of
+        this model's :meth:`fit_defaults`.
         """
-        if weights is not None:
-            fit_kwargs["weights"] = weights
-        return super().fit(rng, data, **fit_kwargs)
-
-    def default_config(self) -> FitConfig:
-        """A batch is a mapping whose ``"data"`` entry is what the model learns."""
-        return FitConfig(data=DataSpec(primary="data"))
-
-    def _fit_batch(self, data, config: FitConfig, *, weights=None, **extras):
-        if extras:
-            raise ValueError(
-                f"unexpected fit arguments {sorted(extras)}; pass named model "
-                "inputs inside data, e.g. fit(rng, {'data': x, 'context': c})."
-            )
-        if config.data.stream:
+        if is_stream(data):
             if weights is not None:
                 raise ValueError(
-                    "weights cannot be passed alongside an iterable data source; "
-                    "give each batch dict a 'weights' entry instead."
+                    "weights cannot be passed alongside a stream; give each "
+                    "batch dict a 'weights' entry instead."
                 )
-            return _Batches(data)
-        batch = _as_batch(data)
-        return batch if weights is None else {**batch, "weights": weights}
+            data = (_as_batch(item) for item in data)
+        else:
+            data = _as_batch(data)
+            if weights is not None:
+                data = {**data, "weights": weights}
+        data = self._before_fit(data)
+        options = {**self.fit_defaults(), **options}
+        return fit_module(self, rng, data, loss=_batch_loss, **options)
 
-    def _fit_loss(self, rng, primary, **context):
-        return self.loss(rng, primary, **context)
+    def fit_defaults(self) -> dict:
+        """This family's training recipe; ``fit`` keywords override it."""
+        return {}
 
-    def _distribution_sampler(self, event_spec, **kwargs) -> SamplerLike:
-        """Build the family-specific sampling operation.
+    def _before_fit(self, data):
+        """Set up state from the training data (e.g. standardisation)."""
+        return data
 
-        Each family returns its own sampler type; ``SamplerLike`` is the
-        common contract the distribution view relies on.
-        """
-        raise NotImplementedError
-
-    def _clear_distribution_cache(self) -> None:
-        """Invalidate every compiled distribution operation for this model."""
-        clear_export_cache(self)
-
-    def _sample_base(self, rng, sample_shape, spec):
-        """Draw this model family's initial sampling state."""
+    def sample_base(self, rng: RngKey, sample_shape, spec, **options):
+        """Draw this family's starting noise; ``options`` are the view's."""
+        del options
         return sample_normal(rng, sample_shape, spec)
 
-    def _build_exported_sampler(
-        self,
-        key: tuple,
-        event_spec,
-        make_sample_fn: Callable[[nnx.GraphDef, bool], Callable],
-        *,
-        dtype=jax.numpy.float32,
-        stochastic: bool = False,
-        inputs_spec=None,
-        trace: bool = False,
-        base_sample_kwargs=None,
-    ) -> _ExportedSampler:
-        """Normalize shapes and export a specialized sampler once per key.
+    def sample_from_noise(self, noise, rng=None, inputs=None, **options):
+        """Map a batch of noise to a batch of samples."""
+        raise NotImplementedError
 
-        ``make_sample_fn`` receives the model graphdef and whether named inputs
-        are present, then returns the function
-        ``(state, [rng,] eps, [inputs]) -> samples`` to export, where data
-        and the inputs dict may both be pytrees.
+    def _compiled(self, method: str, **options):
+        """``(fn, state)``: jitted ``fn(state, *args)`` runs ``self.<method>(*args, **options)``.
+
+        Cached per ``(method, options)``, so views with the same options share
+        compilations. A model whose structure changed -- a new solver config,
+        a replaced submodule -- has a new graphdef and is compiled again; new
+        weights are just a new ``state``.
         """
-        spec = normalize_spec(event_spec, dtype)
-        inputs_spec = (
-            None if inputs_spec is None else normalize_spec(inputs_spec, dtype)
-        )
-        key = key + (
-            spec_cache_key(spec),
-            spec_cache_key(inputs_spec),
-            stochastic,
-            trace,
-            tuple(sorted((base_sample_kwargs or {}).items())),
-        )
+        graphdef, state = nnx.split(self)
+        key = (method, tuple(sorted(options.items())))
+        cache = _COMPILED.setdefault(self, {})
+        entry = cache.get(key)
+        if entry is None or entry[0] != graphdef:
 
-        def build():
-            graphdef, state = nnx.split(self)
-            exported = _export_sampler(
-                state,
-                spec,
-                make_sample_fn(graphdef, inputs_spec is not None),
-                stochastic=stochastic,
-                inputs_spec=inputs_spec,
-            )
-            return _ExportedSampler(
-                self,
-                graphdef,
-                exported,
-                spec,
-                stochastic=stochastic,
-                inputs_spec=inputs_spec,
-                trace=trace,
-                base_sample_kwargs=base_sample_kwargs,
-            )
+            def call(state, *args):
+                model = nnx.merge(graphdef, state)
+                return getattr(model, method)(*args, **options)
 
-        return get_cached_export(self, key, build)
+            entry = (graphdef, jax.jit(call))
+            cache[key] = entry
+        return entry[1], state
 
-    def _build_exported_logpdf(
-        self,
-        key: tuple,
-        event_spec,
-        make_logpdf_fn: Callable[[nnx.GraphDef], Callable],
-        *,
-        dtype=jax.numpy.float32,
-        inputs_spec=None,
-    ) -> _ExportedLogPDF:
-        """Export ``make_logpdf_fn(graphdef)`` once per ``key`` and cache it."""
-        spec = normalize_spec(event_spec, dtype)
-        inputs_spec = (
-            None if inputs_spec is None else normalize_spec(inputs_spec, dtype)
-        )
-        key = key + (spec_cache_key(spec), spec_cache_key(inputs_spec))
-
-        def build():
-            graphdef, state = nnx.split(self)
-            exported = _export_logpdf(
-                state,
-                spec,
-                make_logpdf_fn(graphdef),
-                inputs_spec=inputs_spec,
-            )
-            return _ExportedLogPDF(
-                self,
-                graphdef,
-                exported,
-                spec,
-                inputs_spec=inputs_spec,
-            )
-
-        return get_cached_export(self, key, build)
-
-    def as_dist(
-        self,
-        event_spec=None,
-        *,
-        context_spec=None,
-        context=None,
-        inputs_spec=None,
-        inputs=None,
-        **kwargs,
-    ):
-        """Create a lazy compiled distribution view of this model.
+    def as_dist(self, event_spec=None, **options) -> ModelDistribution:
+        """View this model as a distribution over one event.
 
         Args:
             event_spec: Shape or pytree specification for one event. Omit to
-                use the model's default. Overrides only this distribution view.
-            context_spec: Specification of ``context`` including optional
-                per-leaf dtypes.
-            context: Optional context to bind to the returned distribution.
-            inputs_spec: ``{name: spec}`` for any further named model inputs
-                (e.g. ``local_context``); they are forwarded to the network as
-                keyword arguments. ``context`` is sugar for ``inputs["context"]``.
-            inputs: ``{name: value}`` to bind to the returned distribution.
-            **kwargs: Static sampling options such as ``num_steps`` or ``mode``.
+                use the model's default. Overrides only this view.
+            **options: Static sampling options such as ``num_steps`` or
+                ``mode``; ``dtype`` sets the event dtype.
+
+        Bind named inputs shared by every sample with ``.condition(...)``.
         """
+        dtype = options.pop("dtype", None)
         if event_spec is None:
             event_spec = self.event_spec
             if event_spec is None:
@@ -350,17 +242,9 @@ class GenerativeModel(nnx.Module, FitMixin):
                     "event_spec is required: pass it to as_dist() or set a "
                     "default at construction / via set_event_spec()."
                 )
-            if kwargs.get("dtype") is not None:
+            if dtype is not None:
                 event_spec = jax.tree.map(
-                    lambda leaf: jax.ShapeDtypeStruct(leaf.shape, kwargs["dtype"]),
-                    event_spec,
+                    lambda leaf: jax.ShapeDtypeStruct(leaf.shape, dtype), event_spec
                 )
-        event_spec = self._normalize_event_spec(event_spec, kwargs.get("dtype"))
-        return _ModelDistribution(
-            self,
-            event_spec,
-            inputs_spec=as_inputs(context_spec, inputs_spec),
-            inputs=as_inputs(context, inputs),
-            sampler_options=kwargs,
-            name=type(self).__name__,
-        )
+        spec = self._normalize_event_spec(event_spec, dtype)
+        return ModelDistribution(self, spec, options=options)

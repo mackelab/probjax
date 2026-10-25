@@ -67,8 +67,16 @@ Spline flow boundary-slope logits now use `tail_logit_scale=0.1` by default.
 The tails remain learnable and start at unit slope; interior knot slopes are
 unchanged. Pass `tail_logit_scale=1.0` to reproduce the previous undamped
 behavior, including when reconstructing a flow for an older checkpoint.
-`SplineAutoregressive` and `ARFamily.spline` expose the same damping option for
-their distribution-head boundary slopes.
+`SplineHead` exposes the same damping option for its boundary slopes.
+
+Autoregressive models take an explicit head: `Autoregressive(d, head, rngs=...)`
+with `NormalHead`, `LocScaleHead`, `MixtureHead`, `HistogramHead`, `SplineHead`
+or `CategoricalHead`. `ARFamily` and the presets `MADE`, `made`,
+`MixtureAutoregressive`, `SplineAutoregressive`, `HistogramAutoregressive` and
+`CategoricalAutoregressive` are gone: `MADE(d, rngs)` is `Autoregressive(d,
+rngs=rngs)`, `MixtureAutoregressive(d, rngs, num_components=k)` is
+`Autoregressive(d, MixtureHead(k), rngs)`. Conditioner configs now build
+networks mapping tokens `(..., d, width)` to `(..., d, num_params)`.
 
 Both module and functional `fit` now return a `FitResult` carrying `params`,
 `losses`, any `metrics` and a resumable `state` (`FitState`). EMA is opt-in with
@@ -77,13 +85,30 @@ result retains the raw parameters. Resume with `state=result.state` and the same
 optimizer setup. The snapshot does not include a data-loader position or
 optimizer configuration.
 
-Training options moved into a `FitConfig`, and the data contract is stated
-rather than guessed: `FitConfig(data=DataSpec(primary="data"))` says which
-batch entry the loss receives, and `DataSpec(stream=True)` says the source
-yields batches. A configuration overrides only the fields it names, so a
-model's own recipe survives. The `on_step`/`log_every` pair is gone: use a
-`FitCallback` instead. Callbacks run on the host between compiled chunks and
-cannot be used inside JIT. See [training and EMA](../reference/nn.md#training-and-ema).
+Training options are plain keywords (`num_steps`, `batch_size`,
+`learning_rate`, `schedule`, `clip_norm`, `optimizer`, `ema_decay`, `use_ema`,
+`callback`, `every`, `state`); `FitConfig`, `DataSpec`, `FitCallback` and
+`FitMixin` are gone. `max_steps` is now `num_steps`. The loss receives the
+whole batch (`loss_fn(params, rng, batch)`), and whether the source is a stream
+follows from its type: a list, generator or loader streams, a dict, array or
+tuple is one batch. A generative model's recipe is `fit_defaults()`, and
+`model.fit` keywords override only what they name. Other NNX modules train with
+`fit_module(model, rng, data, loss=..., trainable=...)`; a plain
+`callback(state, info)` replaces the hook class. See
+[training and EMA](../reference/nn.md#training-and-ema).
+
+Generative models sample through plain methods, batched over one leading
+axis: `sample_base(rng, shape, spec, **options)`, `sample_from_noise(noise,
+rng, inputs, **options)` and, where tractable, `logpdf(x, inputs)`. They are
+ordinary JAX functions, so `jit`, `vmap` and `grad` them directly. `as_dist()`
+serves them through one cached `jax.jit` per method and options; the view keeps
+`sample`, `rvs`, `sample_path`, `logpdf`, `pdf` and `condition`. Removed:
+`sample_from`/`path_from` (call `model.sample_from_noise`),
+`sample_with_state`/`logpdf_with_state`/`model_state` (merge your own state with
+`nnx.merge` and call the model methods), `compile()`, `has_logpdf`,
+`context_spec`/`inputs_spec` and `as_dist(context=..., inputs=...)`. Inputs
+bound with `condition(...)` are one example shared by every sample; inputs
+passed to a call carry the call's batch. `probjax.nn.export` is gone.
 
 ## Changes that affect numerical results
 
@@ -193,10 +218,7 @@ signal at terminal time; choose stronger rates when a nearly independent base
 prior is required. Their probability checks alone do not establish mixing.
 
 Further sampling fixes: an overridden `t_max` now also selects the base-noise
-scale. `sample_with_state` uses the supplied state for both initialization and
-integration, and `model_state()` handles Python scalar leaves. Call
-`dist.compile()` before wrapping sampling in an outer `jax.jit`; constructing
-an export lazily during tracing is currently unsupported.
+scale.
 
 Exponential AB2 now handles nonuniform step sizes and uses the correct
 phi-function weights and midpoint linear coefficient. Gaussian and nonlinear

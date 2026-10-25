@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] — preparing 0.2.0
 
 ### Added
+- `probjax.nn.training`: `train_step(loss_fn, optimizer)` (one pure update
+  `(state, batch) -> (state, info)` for custom loops), `fit(loss_fn, params,
+  rng, data, **options)` and `fit_module(model, rng, data, loss=, trainable=)`;
+  options are plain keywords (`num_steps`, `batch_size`, `optimizer` or
+  `learning_rate`/`schedule`/`clip_norm`, `ema_decay`, `use_ema`, `callback`,
+  `every`, `state`), and `default_optimizer` builds the default Adam
+- Generative models expose plain, batched methods -- `sample_base`,
+  `sample_from_noise` and (flows, autoregressive) `logpdf` -- that can be
+  jitted, vmapped and differentiated; `as_dist()` serves them through one
+  cached `jax.jit` per method and options, so views also work inside an outer
+  `jit`, `vmap` or `grad`
+- Autoregressive heads: `NormalHead`, `LocScaleHead(dist, fixed)`,
+  `MixtureHead`, `HistogramHead`, `SplineHead`, `CategoricalHead`; a custom
+  family is a `Head` subclass
 - Filters on the kernel contract: `kalman_filter(model)`,
   `square_root_kalman_filter`, `rank_reduced_kalman_filter`,
   `extended_kalman_filter`, `unscented_kalman_filter` and
@@ -166,6 +180,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the newest release in it
 
 ### Changed
+- **Breaking:** `max_steps` is `num_steps`, `callback_every` is `every`, and a
+  single `callback(state, info)` replaces `FitCallback`. Losses passed to `fit`
+  receive the whole batch, `loss_fn(params, rng, batch)`; a list, generator or
+  loader is a stream and a dict, array or tuple is one batch. A generative
+  family's recipe is `fit_defaults()`
+- **Breaking:** distribution views keep `sample`, `rvs`, `sample_path`,
+  `logpdf`, `pdf` and `condition`. Inputs bound with `condition(...)` are one
+  example shared by every sample; inputs passed to a call carry its batch
+- **Breaking:** `Autoregressive(input_dim, head, rngs, *, conditioner=...)`
+  takes an explicit head; conditioner configs build networks mapping tokens
+  `(..., d, width)` to `(..., d, num_params)`
 - **Breaking:** `temporal_smc(filter, logprior_fn, max_observations=...)`
   takes a filter kernel and steps one observation at a time,
   `step(key, state, None, t, y, observed)`; it keeps the assimilated data for
@@ -428,6 +453,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `addopts`); the CI coverage job opts out with `--no-testmon`
 
 ### Removed
+- `FitConfig`, `DataSpec`, `FitCallback`, `FitMixin` and their hooks
+- `probjax.nn.export`, `sample_from`/`path_from`, `sample_with_state`,
+  `logpdf_with_state`, `model_state`, `compile`, `has_logpdf`,
+  `context_spec`/`inputs_spec` and `as_dist(context=, inputs=)`; the views no
+  longer use `jax.export`, which still XLA-compiled every new batch size
+- `ARFamily` and the presets `MADE`, `made`, `MixtureAutoregressive`,
+  `SplineAutoregressive`, `HistogramAutoregressive`,
+  `CategoricalAutoregressive` (`MADE(d, rngs)` is `Autoregressive(d, rngs=rngs)`)
 - `RunnerMixin` and `probjax.utils.jaxutils.WithProgressBarAPI`, the progress
   machinery of the deleted runner classes; `run(..., progress=True)` uses the
   plain `write_progress` callback
@@ -497,6 +530,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `probjax.utils.guards.ensure_array`/`as_concrete_bool`
 
 ### Fixed
+- Sharded kernel primitives accept symbolic (shape-polymorphic) dimensions;
+  attention-conditioned flows and autoregressive models now sample through
+  `as_dist`
+- An autoregressive model's bounded-support check runs on the training data
+  before fitting instead of crashing inside the compiled loss
 - The square-root Kalman filter failed with a shape error whenever the state
   and observation dimensions differed, and its log-likelihood dropped the
   `2 pi` term and half the log-determinant; it is now exact

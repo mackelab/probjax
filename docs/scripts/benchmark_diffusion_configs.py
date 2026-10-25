@@ -23,7 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
-from probjax.nn import MLP, TimeMLP, FitConfig
+from probjax.nn import MLP, TimeMLP
 from probjax.nn.generative.diffusion import EDM, VE, VP, CosineDM, DiffusionDenoiser
 from probjax.nn.generative.diffusion import config as C
 from probjax.nn.generative.discrete import config as D
@@ -166,7 +166,6 @@ def measure_sampler(model, mode, key, count, repeats):
     distribution = model.as_dist(mode=mode)
     call = jax.jit(partial(distribution.sample, shape=(count,)))
     start = time.perf_counter()
-    distribution.compile()
     values = jax.block_until_ready(call(key))
     cold = time.perf_counter() - start
     durations = []
@@ -356,12 +355,10 @@ def run_case(case, args):
         losses = model.fit(
             jax.random.key(case["seed"] + 101),
             data,
-            config=FitConfig(
-                max_steps=args.train_steps,
-                batch_size=128,
-                learning_rate=1e-3,
-                clip_norm=10.0,
-            ),
+            num_steps=args.train_steps,
+            batch_size=128,
+            learning_rate=1e-3,
+            clip_norm=10.0,
         ).losses
         jax.block_until_ready(losses)
         training_time = time.perf_counter() - start
@@ -422,12 +419,10 @@ def run_case(case, args):
         losses = model.fit(
             jax.random.key(seed + 101),
             data,
-            config=FitConfig(
-                max_steps=args.train_steps,
-                batch_size=128,
-                learning_rate=1e-3,
-                clip_norm=10.0,
-            ),
+            num_steps=args.train_steps,
+            batch_size=128,
+            learning_rate=1e-3,
+            clip_norm=10.0,
         ).losses
         jax.block_until_ready(losses)
         metrics.update({

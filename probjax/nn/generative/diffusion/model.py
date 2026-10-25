@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from functools import partial
 from typing import Callable, Mapping, cast
 
 import jax
@@ -27,9 +26,8 @@ from probjax.nn.generative.diffusion.config import (
     VSolverConfig,
 )
 from probjax.nn.generative.sampling import (
-    _ExportedSampler,
-    make_ode_sample_fn,
-    make_sde_sample_fn,
+    integrate_ode,
+    integrate_sde,
     sample_normal,
 )
 from probjax.nn.losses.denoising import build_time_dependent_denoising_loss
@@ -38,12 +36,12 @@ from probjax.utils.protocols import TimeDependentModelFn
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
 
 
-def _diffusion_ode_drift(model, context):
-    return model._build_ode_drift(context)
+def _diffusion_ode_drift(model, inputs):
+    return model._build_ode_drift(inputs)
 
 
-def _diffusion_sde_terms(model, context):
-    return model._build_sde_drift_and_diffusion(context)
+def _diffusion_sde_terms(model, inputs):
+    return model._build_sde_drift_and_diffusion(inputs)
 
 
 class DiffusionDenoiser(GenerativeModel):
@@ -117,7 +115,6 @@ class DiffusionDenoiser(GenerativeModel):
         set_schedule = getattr(self.solver_cfg, "set_schedule", None)
         if set_schedule is not None:
             set_schedule(self.schedule)
-        self._clear_distribution_cache()
 
     # ---- physical schedule adapters ----
 
@@ -335,7 +332,7 @@ class DiffusionDenoiser(GenerativeModel):
     def marginal_std(self, t: ArrayLike) -> Array:
         return self.schedule.marginal_std(t, self.std0.get_value())
 
-    def _sample_base(self, rng, sample_shape, spec, *, t_max=None):
+    def sample_base(self, rng, sample_shape, spec, *, t_max=None, **options):
         """Draw the reverse process's starting noise, N(0, marginal_std(t_max)^2).
 
         Overrides the base class's fixed unit-variance default: the reverse
@@ -343,6 +340,7 @@ class DiffusionDenoiser(GenerativeModel):
         ``marginal_std(t_max)`` (e.g. ``~sigma_max`` for EDM), not to unit
         variance.
         """
+        del options
         t_max = self.train_cfg.t_max if t_max is None else t_max
         scale = self.marginal_std(t_max)
         return sample_normal(rng, sample_shape, spec, scale=scale)
@@ -401,25 +399,24 @@ class DiffusionDenoiser(GenerativeModel):
             )
         return self.solver_cfg.build_sde_drift_and_diffusion(self, **(inputs or {}))
 
-    def _distribution_sampler(
+    def sample_from_noise(
         self,
-        event_spec,
+        noise,
+        rng=None,
+        inputs=None,
         *,
         mode: str = "ode",
         num_steps: int | None = None,
         t_min: float | None = None,
         t_max: float | None = None,
-        collect_trace: bool = False,
-        dtype=jnp.float32,
-        inputs_spec=None,
-        **kwargs,
-    ) -> _ExportedSampler:
-        """Build and cache a shape-polymorphic diffusion sampler.
+        trace: bool = False,
+    ):
+        """Integrate the reverse ODE (``mode="ode"``) or SDE from ``noise``.
 
-        ``event_spec`` may be a plain shape tuple or a pytree of shapes /
-        ``jax.ShapeDtypeStruct`` for structured data. ``inputs_spec`` maps each
-        named model input (``context``, ...) to a spec in the same format and
-        enables a required, batch-aligned input of that name.
+        ``noise`` is a batch drawn by :meth:`sample_base` (with the same
+        ``t_max``); ``rng`` drives the SDE. ``inputs`` are named model inputs
+        batched like ``noise``. With ``trace`` the solver path comes back
+        time-first, ``(num_steps, batch, ...)``.
         """
         if mode not in ("ode", "sde"):
             raise ValueError(f"mode must be 'ode' or 'sde', got {mode!r}")
@@ -428,44 +425,32 @@ class DiffusionDenoiser(GenerativeModel):
                 "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
             )
         steps = self.solver_cfg.num_steps if num_steps is None else int(num_steps)
-        t_min = self.train_cfg.t_min if t_min is None else t_min
-        t_max = self.train_cfg.t_max if t_max is None else t_max
-        method = (
-            self.solver_cfg.ode_method if mode == "ode" else self.solver_cfg.sde_method
-        )
-
         ts = self.solver_cfg.solve_schedule(
-            t_min=t_min,
-            t_max=t_max,
+            t_min=self.train_cfg.t_min if t_min is None else t_min,
+            t_max=self.train_cfg.t_max if t_max is None else t_max,
             num_steps=steps,
         )
         if mode == "ode":
-            make_sample_fn = partial(
-                make_ode_sample_fn,
-                ts=ts,
-                prototype=self._build_ode_drift(),
-                build_drift=_diffusion_ode_drift,
-                method=method,
-                collect_trace=collect_trace,
+            return integrate_ode(
+                self,
+                _diffusion_ode_drift,
+                noise,
+                ts,
+                inputs=inputs,
+                method=self.solver_cfg.ode_method,
+                trace=trace,
             )
-        else:
-            make_sample_fn = partial(
-                make_sde_sample_fn,
-                ts=ts,
-                build_drift_and_diffusion=_diffusion_sde_terms,
-                method=method,
-                collect_trace=collect_trace,
-            )
-
-        return self._build_exported_sampler(
-            ("diffusion", mode, steps, method, t_min, t_max, collect_trace),
-            event_spec,
-            make_sample_fn,
-            dtype=dtype,
-            stochastic=mode == "sde",
-            base_sample_kwargs={"t_max": t_max},
-            inputs_spec=inputs_spec,
-            trace=collect_trace,
+        if rng is None:
+            raise ValueError("rng is required for SDE sampling.")
+        return integrate_sde(
+            self,
+            _diffusion_sde_terms,
+            rng,
+            noise,
+            ts,
+            inputs=inputs,
+            method=self.solver_cfg.sde_method,
+            trace=trace,
         )
 
 

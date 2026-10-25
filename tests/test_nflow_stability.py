@@ -26,8 +26,7 @@ from probjax.nn.generative.nflows.config import (
     SumOfSquaresBijectorConfig,
     UMNNBijectorConfig,
 )
-from probjax.nn import DataSpec, FitConfig
-from probjax.nn.training import fit
+from probjax.nn.training import default_optimizer, fit
 from probjax.stats.bijective.monotone import _solve_increasing
 from probjax.stats.bijective.rational_quadratic import _safe_quadratic_root
 
@@ -214,8 +213,8 @@ def _quadratic_loss(params, rng, primary):
 
 
 def test_fit_warns_when_the_loss_goes_non_finite():
-    def nan_loss(params, rng, primary):
-        del rng, primary
+    def nan_loss(params, rng, batch):
+        del rng, batch
         return jnp.sum(params["w"]) * jnp.nan
 
     with pytest.warns(RuntimeWarning, match="non-finite at step"):
@@ -224,7 +223,7 @@ def test_fit_warns_when_the_loss_goes_non_finite():
             {"w": jnp.ones(3)},
             jax.random.PRNGKey(0),
             jnp.zeros((4, 1)),
-            config=FitConfig(data=DataSpec(), max_steps=3),
+            num_steps=3,
         )
 
 
@@ -236,7 +235,7 @@ def test_fit_does_not_warn_on_healthy_training():
             {"w": jnp.ones(3)},
             jax.random.PRNGKey(0),
             jnp.zeros((4, 1)),
-            config=FitConfig(data=DataSpec(), max_steps=20),
+            num_steps=20,
         )
     assert result.losses[-1] < result.losses[0]
 
@@ -244,8 +243,8 @@ def test_fit_does_not_warn_on_healthy_training():
 def test_fit_clips_gradients_by_default():
     """A gigantic gradient must not translate into a gigantic step."""
 
-    def steep_loss(params, rng, primary):
-        del rng, primary
+    def steep_loss(params, rng, batch):
+        del rng, batch
         return jnp.sum(params["w"]) * 1e9
 
     start = {"w": jnp.zeros(3)}
@@ -254,16 +253,17 @@ def test_fit_clips_gradients_by_default():
         start,
         jax.random.PRNGKey(0),
         jnp.zeros((2, 1)),
-        config=FitConfig(data=DataSpec(), max_steps=1, learning_rate=1.0),
+        num_steps=1,
+        learning_rate=1.0,
     )
     unclipped = fit(
         steep_loss,
         start,
         jax.random.PRNGKey(0),
         jnp.zeros((2, 1)),
-        config=FitConfig(
-            data=DataSpec(), max_steps=1, learning_rate=1.0, clip_norm=None
-        ),
+        num_steps=1,
+        learning_rate=1.0,
+        clip_norm=None,
     )
     # Adam normalises step size, so both move ~lr; the point is that clipping is
     # wired in and does not change a well-scaled step's direction.
@@ -274,13 +274,9 @@ def test_fit_clips_gradients_by_default():
 
 def test_fit_schedule_decays_the_learning_rate():
     """warmup_cosine must actually end below where it started."""
-    tx = FitConfig(
-        data=DataSpec(),
-        max_steps=100,
-        learning_rate=1e-2,
-        schedule="warmup_cosine",
-        clip_norm=None,
-    ).default_optimizer()
+    tx = default_optimizer(
+        learning_rate=1e-2, num_steps=100, schedule="warmup_cosine", clip_norm=None
+    )
     params = {"w": jnp.zeros(1)}
     state = tx.init(params)
     grad = {"w": jnp.ones(1)}
@@ -294,4 +290,4 @@ def test_fit_schedule_decays_the_learning_rate():
 
 def test_fit_rejects_an_unknown_schedule():
     with pytest.raises(ValueError, match="schedule"):
-        FitConfig(data=DataSpec(), schedule="cosine")  # type: ignore[arg-type]
+        default_optimizer(schedule="cosine")

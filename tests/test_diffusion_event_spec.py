@@ -48,22 +48,18 @@ def test_composable_diffusion_spec_is_optional():
 
 
 @pytest.mark.parametrize('mode', ['ode', 'sde'])
-def test_default_batch_polymorphism_reuses_export(mode):
+def test_default_spec_takes_any_sample_shape(mode):
     model = EDM(Net(), event_spec=(3,), num_steps=3)
     dist = model.as_dist(mode=mode)
     assert dist.sample(jax.random.key(0), (2,)).shape == (2, 3)
-    exported = dist._get_sampler().exported
     assert dist.sample(jax.random.key(1), (2, 4)).shape == (2, 4, 3)
-    assert dist._get_sampler().exported is exported
 
 
-def test_default_change_invalidates_export_but_preserves_bound_views():
+def test_default_change_preserves_bound_views():
     model = EDM(Net(), event_spec=2, num_steps=3)
     bound = model.as_dist()
     bound.sample(jax.random.key(0), (1,))
-    sampler = bound._get_sampler()
     model.event_spec = (4,)
-    assert sampler.invalidated
     assert model.event_shape == (4,)
     assert bound.event_shape == (2,)
     assert model.as_dist().sample(jax.random.key(1), (1,)).shape == (1, 4)

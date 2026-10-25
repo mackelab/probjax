@@ -1,6 +1,4 @@
-"""Extension points of ``probjax.nn.training``: no assumption about batch layout."""
-
-from typing import cast
+"""Extension points of ``probjax.nn.training``: losses, optimizers and recipes."""
 
 import jax
 import jax.numpy as jnp
@@ -8,167 +6,138 @@ import optax
 import pytest
 from flax import nnx
 
-from probjax.nn import DataSpec, FitConfig, FitMixin, fit
-from probjax.nn.training.config import Schedule
+from probjax.nn import fit, fit_module
+from probjax.nn.generative import maf
 
 KEY = jax.random.key(0)
 X = jnp.linspace(0.5, 1.5, 32)
 
 
-def _line_loss(params, rng, primary, **context):
+def _line_loss(params, rng, batch):
     del rng
-    return jnp.mean((primary * params["w"] - context["y"]) ** 2)
+    return jnp.mean((batch["x"] * params["w"] - batch["y"]) ** 2)
 
 
 def test_loop_trains_on_any_batch_pytree():
     batch = {"x": X, "y": 3.0 * X}  # keys are arbitrary: nothing is called "data"
-    config = FitConfig(data=DataSpec(primary="x"), max_steps=400, learning_rate=0.05)
-    result = fit(_line_loss, {"w": jnp.array(0.0)}, KEY, batch, config=config)
+    result = fit(
+        _line_loss, {"w": jnp.array(0.0)}, KEY, batch, num_steps=400, learning_rate=0.05
+    )
     assert abs(float(result.params["w"]) - 3.0) < 0.1
     assert result.losses[-1] < result.losses[0]
 
 
+def test_a_tuple_batch_is_one_batch():
+    def loss(params, rng, batch):
+        x, y = batch
+        return jnp.mean((x * params["w"] - y) ** 2)
+
+    result = fit(
+        loss,
+        {"w": jnp.array(0.0)},
+        KEY,
+        (X, 3.0 * X),
+        num_steps=400,
+        learning_rate=0.05,
+    )
+    assert abs(float(result.params["w"]) - 3.0) < 0.1
+
+
 def test_schedule_accepts_an_optax_schedule():
-    def loss(params, rng, primary):
+    def loss(params, rng, batch):
         del rng
-        return jnp.mean((params["w"] - primary) ** 2)
+        return jnp.mean((params["w"] - batch) ** 2)
 
     data = jnp.full((8,), 2.0)
+    common = dict(num_steps=5, clip_norm=None)
     frozen = fit(
         loss,
         {"w": jnp.array(0.0)},
         KEY,
         data,
-        config=FitConfig(
-            data=DataSpec(),
-            max_steps=5,
-            clip_norm=None,
-            schedule=optax.constant_schedule(0.0),
-        ),
+        schedule=optax.constant_schedule(0.0),
+        **common,
     )
-    moving = fit(
-        loss,
-        {"w": jnp.array(0.0)},
-        KEY,
-        data,
-        config=FitConfig(
-            data=DataSpec(), max_steps=5, clip_norm=None, schedule="constant"
-        ),
-    )
-    assert (
-        float(frozen.params["w"]) == 0.0
-    )  # the supplied schedule, not learning_rate, ran
+    moving = fit(loss, {"w": jnp.array(0.0)}, KEY, data, schedule="constant", **common)
+    # The supplied schedule, not learning_rate, ran.
+    assert float(frozen.params["w"]) == 0.0
     assert float(moving.params["w"]) > 0.0
 
 
-def test_unknown_schedule_name_is_still_rejected():
-    with pytest.raises(ValueError, match="schedule"):
-        FitConfig(data=DataSpec(), schedule=cast(Schedule, "cosine"))
+def test_an_explicit_optimizer_wins_over_the_rate_options():
+    def loss(params, rng, batch):
+        del rng
+        return jnp.mean((params["w"] - batch) ** 2)
+
+    result = fit(
+        loss,
+        {"w": jnp.array(0.0)},
+        KEY,
+        jnp.full((8,), 2.0),
+        num_steps=3,
+        optimizer=optax.sgd(0.0),
+        learning_rate=1.0,
+    )
+    assert float(result.params["w"]) == 0.0
 
 
-class Regression(nnx.Module, FitMixin):
+class Regression(nnx.Module):
     def __init__(self):
         self.w = nnx.Param(jnp.array(0.0))
 
-    def loss(self, rng, primary, **context):
-        del rng
-        return jnp.mean((primary * self.w[...] - context["y"]) ** 2)
 
-
-def test_fitmixin_hands_the_data_pytree_to_loss_unchanged():
-    model = Regression()
-    result = model.fit(
-        KEY,
-        {"x": X, "y": 3.0 * X},
-        config=FitConfig(data=DataSpec(primary="x"), max_steps=400, learning_rate=0.05),
-    )
-    assert abs(float(model.w[...]) - 3.0) < 0.1
-    assert result.losses[-1] < result.losses[0]
-
-
-def test_fitmixin_rejects_unknown_keywords_by_default():
-    with pytest.raises(TypeError, match=r"unexpected keyword arguments.*'mask'"):
-        Regression().fit(
-            KEY,
-            {"x": X, "y": X},
-            config=FitConfig(data=DataSpec(primary="x"), max_steps=2),
-            mask=jnp.ones_like(X),
-        )
-
-
-class MaskedRegression(Regression):
-    """A model that defines its own batch layout through ``_fit_batch``."""
-
-    def _fit_batch(self, data, config, *, mask, **extras):
-        x, y = data
-        return {"x": x, "y": y, "mask": mask}
-
-    def loss(self, rng, primary, **context):
-        del rng
-        residual = (primary * self.w[...] - context["y"]) ** 2
-        return jnp.sum(context["mask"] * residual) / jnp.sum(context["mask"])
-
-
-def test_fitmixin_forwards_extra_keywords_to_the_fit_batch_hook():
+def test_fit_module_takes_a_custom_loss():
     mask = (jnp.arange(32) < 16).astype(jnp.float32)
     y = jnp.where(mask > 0, 3.0 * X, -100.0)  # the masked half is garbage
-    model = MaskedRegression()
-    model.fit(
+
+    def masked_loss(model, rng, batch):
+        residual = (batch["x"] * model.w[...] - batch["y"]) ** 2
+        return jnp.sum(batch["mask"] * residual) / jnp.sum(batch["mask"])
+
+    model = Regression()
+    fit_module(
+        model,
         KEY,
-        (X, y),
-        config=FitConfig(data=DataSpec(primary="x"), max_steps=400, learning_rate=0.05),
-        mask=mask,
+        {"x": X, "y": y, "mask": mask},
+        loss=masked_loss,
+        num_steps=400,
+        learning_rate=0.05,
     )
     assert abs(float(model.w[...]) - 3.0) < 0.1
 
 
-def test_a_configuration_overrides_only_the_fields_it_names():
-    """A model's own recipe survives a configuration that changes one thing."""
+def test_a_model_recipe_survives_a_call_that_changes_one_option(monkeypatch):
+    """``model.fit`` keywords override the recipe; the rest of it is kept."""
+    seen = {}
+    import probjax.nn.generative.base as base
 
-    class Model(nnx.Module, FitMixin):
-        def __init__(self):
-            self.w = nnx.Param(jnp.array(0.0))
+    def record(model, rng, data, **options):
+        seen.update(options)
 
-        def default_config(self):
-            return (
-                super()
-                .default_config()
-                .merged(learning_rate=3e-3, schedule="warmup_cosine")
-            )
-
-        def loss(self, rng, primary):
-            del rng
-            return jnp.mean((self.w[...] - primary) ** 2)
-
-    model = Model()
-    model.fit(KEY, jnp.ones((8,)), config=FitConfig(max_steps=2))
-    recipe = model.default_config()
-    assert recipe.learning_rate == 3e-3
-    assert recipe.schedule == "warmup_cosine"
-
-    # A configuration that names one field keeps the other from the recipe.
-    merged = recipe.merged(max_steps=7)
-    assert merged.max_steps == 7
-    assert merged.learning_rate == 3e-3
-    assert merged.schedule == "warmup_cosine"
+    monkeypatch.setattr(base, "fit_module", record)
+    model = maf(2, 2, rngs=nnx.Rngs(0))
+    model.fit(KEY, jnp.zeros((8, 2)), num_steps=7)
+    assert seen["num_steps"] == 7
+    assert seen["learning_rate"] == 3e-3
+    assert seen["schedule"] == "warmup_cosine"
 
 
-def test_generative_models_take_one_data_dict_of_named_inputs():
-    from probjax.nn.generative import maf
+def test_generative_models_take_one_data_dict_of_named_inputs(monkeypatch):
+    batches = []
+    import probjax.nn.generative.base as base
 
+    monkeypatch.setattr(
+        base, "fit_module", lambda model, rng, data, **options: batches.append(data)
+    )
     model = maf(2, 2, rngs=nnx.Rngs(0))
     x = jnp.zeros((4, 2))
-    config = model.default_config()
-    batch = model._fit_batch({"data": x, "context": x}, config, weights=jnp.ones(4))
-    assert set(batch) == {"data", "context", "weights"}
-    with pytest.raises(ValueError, match="alongside an iterable"):
-        model._fit_batch(
-            [x],
-            config.merged(data=DataSpec(primary="data", stream=True)),
-            weights=jnp.ones(4),
-        )
-    assert set(model._fit_batch(x, config)) == {"data"}
-    with pytest.raises(ValueError, match="inside data"):
-        model._fit_batch(x, config, context=x)
+    model.fit(KEY, {"data": x, "context": x}, weights=jnp.ones(4))
+    assert set(batches[-1]) == {"data", "context", "weights"}
+    model.fit(KEY, x)
+    assert set(batches[-1]) == {"data"}
+    model.fit(KEY, [x, x])
+    assert [set(b) for b in batches[-1]] == [{"data"}, {"data"}]
+    with pytest.raises(ValueError, match="alongside a stream"):
+        model.fit(KEY, [x], weights=jnp.ones(4))
     with pytest.raises(ValueError, match="'data' key"):
-        model._fit_batch({"context": x}, config)
+        model.fit(KEY, {"context": x})

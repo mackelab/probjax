@@ -12,106 +12,90 @@ import pytest
 from flax import nnx
 
 from probjax.nn.generative.autoregressive import (
-    MADE,
-    ARFamily,
     Autoregressive,
-    CategoricalAutoregressive,
-    HistogramAutoregressive,
+    CategoricalHead,
+    HistogramHead,
+    LocScaleHead,
     MLPARConditionerConfig,
-    MixtureAutoregressive,
-    SplineAutoregressive,
+    MixtureHead,
+    NormalHead,
+    SplineHead,
     TransformerARConditionerConfig,
 )
 from probjax.stats import gennorm, laplace, logistic, norm, t
-from probjax.nn import FitConfig
 
-FAMILIES = [
-    pytest.param(ARFamily.normal(), id="normal"),
-    pytest.param(ARFamily(laplace), id="laplace"),
-    pytest.param(ARFamily(logistic), id="logistic"),
-    pytest.param(ARFamily.mixture(6), id="mixture"),
-    pytest.param(ARFamily.mixture(6, kernel="logistic"), id="logistic-mixture"),
-    pytest.param(ARFamily.spline(6), id="spline"),
-    pytest.param(ARFamily.histogram(12, tails=True), id="histogram-tails"),
-    pytest.param(ARFamily.histogram(12, tails=False), id="histogram-bounded"),
+HEADS = [
+    pytest.param(NormalHead(), id="normal"),
+    pytest.param(LocScaleHead(laplace), id="laplace"),
+    pytest.param(LocScaleHead(logistic), id="logistic"),
+    pytest.param(MixtureHead(6), id="mixture"),
+    pytest.param(MixtureHead(6, kernel="logistic"), id="logistic-mixture"),
+    pytest.param(SplineHead(6), id="spline"),
+    pytest.param(HistogramHead(12, tails=True), id="histogram-tails"),
+    pytest.param(HistogramHead(12, tails=False), id="histogram-bounded"),
 ]
 
 
 # ---------------------------------------------------------------------------
-# The family adapter
+# Heads
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("family", FAMILIES)
-def test_params_dim_matches_what_unpack_consumes(family):
-    params = jnp.zeros((3, family.params_dim()))
-    natural = family.unpack(params)
-    assert set(natural) == set(family.dist.parameters)
+@pytest.mark.parametrize("head", HEADS)
+def test_params_cover_the_family_and_check_the_width(head):
+    params = head.params(jnp.zeros((3, head.num_params)))
+    assert set(params) == set(head.dist.parameters)
 
-    with pytest.raises(ValueError, match="trailing dimension"):
-        family.unpack(jnp.zeros((3, family.params_dim() + 1)))
+    with pytest.raises(ValueError, match="raw parameters"):
+        head.params(jnp.zeros((3, head.num_params + 1)))
 
 
-@pytest.mark.parametrize("family", FAMILIES)
-def test_zero_parameters_give_a_usable_density(family):
+@pytest.mark.parametrize("head", HEADS)
+def test_zero_parameters_give_a_usable_density(head):
     """A zero-initialised head must already be a sane distribution."""
     x = jnp.array([-1.0, 0.0, 0.8])
-    natural = family.unpack(jnp.zeros((3, family.params_dim())))
-    lp = family.logpdf(x, natural)
+    lp = head.logpdf(jnp.zeros((3, head.num_params)), x)
     assert jnp.all(jnp.isfinite(lp))
     # a sane density over standardised data, not a spike or a near-zero
     assert jnp.all(lp > -8.0) and jnp.all(lp < 2.0)
 
 
-@pytest.mark.parametrize("family", FAMILIES)
-def test_unpack_is_differentiable(family):
-    def total(p):
-        return jnp.sum(family.logpdf(jnp.array([0.2, -0.4]), family.unpack(p)))
+@pytest.mark.parametrize("head", HEADS)
+def test_head_logpdf_is_differentiable(head):
+    def total(raw):
+        return jnp.sum(head.logpdf(raw, jnp.array([0.2, -0.4])))
 
-    g = jax.grad(total)(jnp.zeros((2, family.params_dim())))
+    g = jax.grad(total)(jnp.zeros((2, head.num_params)))
     assert jnp.all(jnp.isfinite(g))
     assert jnp.any(g != 0)
 
 
-def test_any_univariate_stats_family_can_be_used_for_the_density():
-    """The point of the adapter: no per-family code, just the distribution.
-
-    ``gennorm`` is here for ``logpdf`` only -- its ``_rvs_impl`` branches on
-    ``if beta == 2.0``, which raises for array-valued parameters, so it cannot
-    be sampled per-dimension. That is an upstream limitation of the family, not
-    of this adapter.
-    """
+def test_location_scale_head_takes_any_such_family():
+    """``gennorm`` is here for ``logpdf`` only -- its ``_rvs_impl`` branches on
+    ``if beta == 2.0``, which raises for array-valued parameters."""
     x = jax.random.normal(jax.random.PRNGKey(0), (8, 3))
-    for dist in (norm, laplace, logistic, gennorm):
-        model = Autoregressive(3, ARFamily(dist), nnx.Rngs(0))
-        lp = model._logpdf(x)
+    heads = [
+        LocScaleHead(norm),
+        LocScaleHead(laplace),
+        LocScaleHead(logistic),
+        LocScaleHead(gennorm, {"beta": 1.5}),
+        # integer-constrained parameters are fixed, not predicted
+        LocScaleHead(t, {"df": 5.0}),
+    ]
+    for head in heads:
+        assert head.num_params == 2
+        lp = Autoregressive(3, head, nnx.Rngs(0))._logpdf(x)
         assert lp.shape == (8,)
         assert jnp.all(jnp.isfinite(lp))
 
 
-def test_integer_constrained_parameters_are_rejected_with_a_clear_error():
-    """`t.df` cannot be predicted; the error must say so and name it."""
-    with pytest.raises(TypeError, match="df"):
-        ARFamily(t).params_dim()
-    # pinning it is the documented way out
-    family = ARFamily(t, fixed={"df": 5.0})
-    assert family.params_dim() == 2
-
-
-def test_fixed_names_are_validated():
-    with pytest.raises(ValueError, match="not parameters"):
-        ARFamily(norm, fixed={"nonsense": 1.0})
-    with pytest.raises(ValueError, match="nothing for the conditioner"):
-        ARFamily(norm, fixed={"loc": 0.0, "scale": 1.0})
-
-
-def test_spline_family_reports_the_same_width_as_the_flow_config():
+def test_spline_head_has_the_same_width_as_the_flow_config():
     """Both pack the same spline, so both must need the same parameter count."""
     from probjax.nn.generative.nflows.config import RationalQuadraticSplineConfig
 
     for num_bins in (4, 8, 16):
         assert (
-            ARFamily.spline(num_bins).params_dim()
+            SplineHead(num_bins).num_params
             == RationalQuadraticSplineConfig(num_bins=num_bins).params_dim()
         )
 
@@ -123,10 +107,10 @@ def test_spline_family_reports_the_same_width_as_the_flow_config():
 
 @pytest.mark.parametrize("input_dim", [2, 4, 6])
 def test_parameters_of_dimension_i_depend_only_on_earlier_inputs(input_dim):
-    model = MADE(input_dim, nnx.Rngs(0))
+    model = Autoregressive(input_dim, rngs=nnx.Rngs(0))
     _perturb(model, jax.random.PRNGKey(1))
 
-    params_dim = model.family.params_dim()
+    params_dim = model.head.num_params
     jac = jax.jacrev(lambda v: model.predict_params(v).reshape(-1))(
         jnp.zeros(input_dim)
     )  # (input_dim * params_dim, input_dim)
@@ -146,9 +130,7 @@ def test_categorical_masking_is_autoregressive():
     """Probed discretely: a one-hot of an integer has zero gradient everywhere,
     so the jacobian test above cannot see a discrete head."""
     input_dim, num_categories = 4, 3
-    model = CategoricalAutoregressive(
-        input_dim, nnx.Rngs(0), num_categories=num_categories
-    )
+    model = Autoregressive(input_dim, CategoricalHead(num_categories), nnx.Rngs(0))
     _perturb(model, jax.random.PRNGKey(1))
 
     base = model.predict_params(jnp.zeros(input_dim, dtype=jnp.int32))
@@ -163,9 +145,9 @@ def test_categorical_masking_is_autoregressive():
 
 def test_later_dimensions_actually_use_the_earlier_ones():
     """The complement of the masking test: the model must not ignore its input."""
-    model = MADE(4, nnx.Rngs(0))
+    model = Autoregressive(4, rngs=nnx.Rngs(0))
     _perturb(model, jax.random.PRNGKey(2))
-    params_dim = model.family.params_dim()
+    params_dim = model.head.num_params
     jac = jax.jacrev(lambda v: model.predict_params(v).reshape(-1))(jnp.zeros(4))
     for i in range(1, 4):
         block = jac[i * params_dim : (i + 1) * params_dim]
@@ -193,9 +175,9 @@ def _perturb(model, key, scale=0.4):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("family", FAMILIES)
-def test_logpdf_and_sampling_are_finite(family):
-    model = Autoregressive(3, family, nnx.Rngs(0))
+@pytest.mark.parametrize("head", HEADS)
+def test_logpdf_and_sampling_are_finite(head):
+    model = Autoregressive(3, head, nnx.Rngs(0))
     x = jax.random.normal(jax.random.PRNGKey(0), (8, 3))
 
     lp = model._logpdf(x)
@@ -211,26 +193,25 @@ def test_logpdf_and_sampling_are_finite(family):
 
 
 @pytest.mark.parametrize(
-    "build",
+    "head",
     [
-        pytest.param(lambda r: MADE(2, r), id="made"),
-        pytest.param(
-            lambda r: MixtureAutoregressive(2, r, num_components=6), id="mixture"
-        ),
-        pytest.param(lambda r: SplineAutoregressive(2, r, num_bins=6), id="spline"),
-        pytest.param(
-            lambda r: HistogramAutoregressive(2, r, num_bins=16), id="histogram"
-        ),
+        pytest.param(NormalHead(), id="normal"),
+        pytest.param(MixtureHead(6), id="mixture"),
+        pytest.param(SplineHead(6), id="spline"),
+        pytest.param(HistogramHead(16), id="histogram"),
     ],
 )
-def test_trained_density_is_normalised(build):
+def test_trained_density_is_normalised(head):
     """A wrong conditional or a leaky mask shows up as mass != 1."""
     from tests.test_nflow_density_estimation import crescent
 
-    model = build(nnx.Rngs(0))
+    model = Autoregressive(2, head, nnx.Rngs(0))
     train = crescent(jax.random.PRNGKey(0), 4000)
     losses = model.fit(
-        jax.random.PRNGKey(1), train, config=FitConfig(max_steps=400, batch_size=512)
+        jax.random.PRNGKey(1),
+        train,
+        num_steps=400,
+        batch_size=512,
     ).losses
     assert jnp.all(jnp.isfinite(losses))
     assert losses[-1] < losses[0]
@@ -248,13 +229,16 @@ def test_reaches_the_analytic_optimum_on_a_gaussian_target():
     """A curved Gaussian target whose entropy is known in closed form."""
     from tests.test_nflow_density_estimation import OPTIMAL_NLL, crescent
 
-    model = MixtureAutoregressive(2, nnx.Rngs(0), num_components=8)
+    model = Autoregressive(2, MixtureHead(8), nnx.Rngs(0))
     train, test = (
         crescent(jax.random.PRNGKey(0), 8000),
         crescent(jax.random.PRNGKey(1), 2000),
     )
     model.fit(
-        jax.random.PRNGKey(2), train, config=FitConfig(max_steps=800, batch_size=512)
+        jax.random.PRNGKey(2),
+        train,
+        num_steps=800,
+        batch_size=512,
     )
 
     nll = float(-jnp.mean(jax.vmap(model._logpdf)(test)))
@@ -263,7 +247,7 @@ def test_reaches_the_analytic_optimum_on_a_gaussian_target():
 
 
 def test_context_conditioning_changes_the_density():
-    model = MADE(3, nnx.Rngs(0), context_features=2)
+    model = Autoregressive(3, rngs=nnx.Rngs(0), context_features=2)
     _perturb(model, jax.random.PRNGKey(3))
     x = jax.random.normal(jax.random.PRNGKey(4), (8, 3))
     c1 = jnp.zeros((8, 2))
@@ -278,29 +262,27 @@ def test_context_conditioning_changes_the_density():
     assert jnp.isfinite(loss)
 
 
-def test_as_dist_round_trips_through_the_exported_sampler():
-    model = MADE(3, nnx.Rngs(0))
+def test_as_dist_samples_and_scores():
+    model = Autoregressive(3, rngs=nnx.Rngs(0))
     dist = model.as_dist()
 
     samples = dist.rvs(jax.random.PRNGKey(0), (16,))
     assert samples.shape == (16, 3)
     assert jnp.all(jnp.isfinite(samples))
     assert jnp.all(jnp.isfinite(dist.logpdf(samples)))
-    # a second, different batch size must reuse the same export
     assert dist.rvs(jax.random.PRNGKey(1), (5,)).shape == (5, 3)
 
 
-def test_bounded_family_rejects_out_of_range_data():
-    model = HistogramAutoregressive(
-        2, nnx.Rngs(0), num_bins=8, low=-1.0, high=1.0, tails=False
-    )
+def test_bounded_head_rejects_out_of_range_training_data():
+    head = HistogramHead(8, low=-1.0, high=1.0, tails=False)
+    model = Autoregressive(2, head, nnx.Rngs(0), standardize=False)
     with pytest.raises(ValueError, match="bounded support"):
-        model.loss(None, jnp.array([[0.0, 5.0]]))
-    assert jnp.isfinite(model.loss(None, jnp.array([[0.0, 0.5]])))
+        model.fit(jax.random.key(0), jnp.array([[0.0, 5.0]]), num_steps=1)
+    model.fit(jax.random.key(0), jnp.array([[0.0, 0.5]]), num_steps=1)
 
 
-def test_tailed_family_accepts_any_range():
-    model = HistogramAutoregressive(2, nnx.Rngs(0), num_bins=8, low=-1.0, high=1.0)
+def test_tailed_head_accepts_any_range():
+    model = Autoregressive(2, HistogramHead(8, low=-1.0, high=1.0), nnx.Rngs(0))
     assert jnp.isfinite(model.loss(None, jnp.array([[0.0, 50.0]])))
 
 
@@ -311,10 +293,8 @@ def test_tailed_family_accepts_any_range():
 
 def test_categorical_head_starts_uniform_and_samples_in_range():
     num_categories, input_dim = 4, 3
-    model = CategoricalAutoregressive(
-        input_dim, nnx.Rngs(0), num_categories=num_categories
-    )
-    assert model.family.params_dim() == num_categories
+    model = Autoregressive(input_dim, CategoricalHead(num_categories), nnx.Rngs(0))
+    assert model.head.num_params == num_categories
 
     tokens = jax.random.randint(
         jax.random.PRNGKey(0), (32, input_dim), 0, num_categories
@@ -339,9 +319,12 @@ def test_categorical_model_recovers_a_known_joint():
     x1 = jnp.where(noise, (x0 + 2) % num_categories, (x0 + 1) % num_categories)
     data = jnp.stack([x0, x1], -1)
 
-    model = CategoricalAutoregressive(2, nnx.Rngs(0), num_categories=num_categories)
+    model = Autoregressive(2, CategoricalHead(num_categories), nnx.Rngs(0))
     losses = model.fit(
-        jax.random.PRNGKey(2), data, config=FitConfig(max_steps=800, batch_size=512)
+        jax.random.PRNGKey(2),
+        data,
+        num_steps=800,
+        batch_size=512,
     ).losses
     assert jnp.all(jnp.isfinite(losses))
 
@@ -349,7 +332,7 @@ def test_categorical_model_recovers_a_known_joint():
     for value in range(num_categories):
         probe = jnp.array([[value, 0]])
         params = model.predict_params(probe)
-        probs = model.family.unpack(params[:, 1, :])["probs"][0]
+        probs = model.head.params(params[:, 1, :])["probs"][0]
         assert jnp.argmax(probs) == (value + 1) % num_categories
         assert probs[(value + 1) % num_categories] > 0.6
 
@@ -368,30 +351,32 @@ def test_marginal_of_the_first_dimension_matches_the_data():
         ],
         -1,
     )
-    model = MADE(2, nnx.Rngs(0), standardize=False)
+    model = Autoregressive(2, rngs=nnx.Rngs(0), standardize=False)
     model.fit(
-        jax.random.PRNGKey(2), data, config=FitConfig(max_steps=600, batch_size=512)
+        jax.random.PRNGKey(2),
+        data,
+        num_steps=600,
+        batch_size=512,
     )
 
     params = model.predict_params(jnp.zeros(2))
-    natural = model.family.unpack(params[0])
+    natural = model.head.params(params[0])
     assert jnp.allclose(natural["loc"], 2.0, atol=0.15)
     assert jnp.allclose(natural["scale"], 0.5, atol=0.15)
 
 
-def test_conditioner_output_width_matches_the_family():
-    """Regression guard: the head must emit exactly input_dim * params_dim."""
-    for family in (ARFamily.normal(), ARFamily.mixture(7), ARFamily.spline(5)):
-        model = Autoregressive(4, family, nnx.Rngs(0))
-        flat = model.conditioner(jnp.zeros(4))
-        assert flat.shape == (4 * family.params_dim(),)
-        assert model.predict_params(jnp.zeros(4)).shape == (4, family.params_dim())
+def test_conditioner_output_width_matches_the_head():
+    """Regression guard: every conditioner emits (..., input_dim, num_params)."""
+    for head in (NormalHead(), MixtureHead(7), SplineHead(5)):
+        model = Autoregressive(4, head, nnx.Rngs(0))
+        out = model.conditioner(model._tokens(jnp.zeros((2, 4))))
+        assert out.shape == (2, 4, head.num_params)
 
 
 def test_custom_conditioner_depth_is_respected():
     model = Autoregressive(
         3,
-        ARFamily.normal(),
+        NormalHead(),
         nnx.Rngs(0),
         conditioner=MLPARConditionerConfig(hidden_dims=(16, 16, 16)),
     )
@@ -413,7 +398,7 @@ def test_transformer_conditioner_supports_categorical():
     """One-hot inputs must stay one token per position, not widen into
     one token per class."""
     model = Autoregressive(
-        4, ARFamily.categorical(3), nnx.Rngs(1), conditioner=_tiny_transformer()
+        4, CategoricalHead(3), nnx.Rngs(1), conditioner=_tiny_transformer()
     )
     x = jnp.zeros((2, 4), jnp.int32)
     assert model.predict_params(x).shape == (2, 4, 3)
@@ -430,7 +415,7 @@ def test_ssm_conditioner_supports_categorical():
 
     model = Autoregressive(
         4,
-        ARFamily.categorical(3),
+        CategoricalHead(3),
         nnx.Rngs(1),
         conditioner=SSMARConditionerConfig(model_dim=16, num_layers=1),
     )
@@ -440,7 +425,10 @@ def test_ssm_conditioner_supports_categorical():
     assert jnp.all(jnp.isfinite(model._logpdf(x)))
     data = (jax.random.uniform(jax.random.key(0), (256, 4)) > 0.5).astype(jnp.int32)
     losses = model.fit(
-        jax.random.key(1), data, config=FitConfig(max_steps=10, batch_size=64)
+        jax.random.key(1),
+        data,
+        num_steps=10,
+        batch_size=64,
     ).losses
     assert jnp.all(jnp.isfinite(losses))
     samples = model.sample(jax.random.key(0), (5,))
@@ -449,18 +437,16 @@ def test_ssm_conditioner_supports_categorical():
 
 
 @pytest.mark.parametrize(
-    "family",
+    "head",
     [
-        pytest.param(ARFamily.normal(), id="normal"),
-        pytest.param(ARFamily.categorical(3), id="categorical"),
+        pytest.param(NormalHead(), id="normal"),
+        pytest.param(CategoricalHead(3), id="categorical"),
     ],
 )
-def test_cached_sampling_matches_naive(family):
+def test_cached_sampling_matches_naive(head):
     """The compiled scan carries its KV cache and matches naive decoding."""
     input_dim = 4
-    model = Autoregressive(
-        input_dim, family, nnx.Rngs(0), conditioner=_tiny_transformer()
-    )
+    model = Autoregressive(input_dim, head, nnx.Rngs(0), conditioner=_tiny_transformer())
     decoder = model.conditioner.inner.decoder
     decoder.kernel[...] = 0.1 * jax.random.normal(
         jax.random.key(1), decoder.kernel.shape
@@ -479,25 +465,28 @@ def test_trained_cached_matches_naive_up_to_float_dust():
     so train briefly and compare parameters with tolerance: the compiled
     scan and the eager loop order operations differently."""
     model = Autoregressive(
-        4, ARFamily.categorical(3), nnx.Rngs(1), conditioner=_tiny_transformer()
+        4, CategoricalHead(3), nnx.Rngs(1), conditioner=_tiny_transformer()
     )
     data = (jax.random.uniform(jax.random.key(0), (256, 4)) > 0.5).astype(jnp.int32)
     model.fit(
-        jax.random.key(1), data, config=FitConfig(max_steps=10, batch_size=64)
+        jax.random.key(1),
+        data,
+        num_steps=10,
+        batch_size=64,
     )
     x = (jax.random.uniform(jax.random.key(2), (3, 4)) > 0.5).astype(jnp.int32)
     full = model.predict_params(x)
     model.conditioner.init_decode((3,))
-    prev = jnp.zeros((3, 3), jnp.int32)
+    prev = jnp.zeros((3, 3))
     for i in range(4):
-        stepwise = model.conditioner.predict_next_params(prev, i, None)
+        stepwise = model.conditioner.predict_next(prev, i, None)
         assert jnp.allclose(stepwise, full[:, i, :], atol=1e-5)
-        prev = model.family.encode(x[:, i])
+        prev = model._tokens(x[:, i : i + 1])[:, 0, :]
 
 
 def test_prefix_completion_clamps_and_matches_naive():
     model = Autoregressive(
-        4, ARFamily.categorical(3), nnx.Rngs(1), conditioner=_tiny_transformer()
+        4, CategoricalHead(3), nnx.Rngs(1), conditioner=_tiny_transformer()
     )
     key = jax.random.key(0)
     prefix = jnp.arange(12).reshape(3, 4) % 3
@@ -514,7 +503,7 @@ def test_prefix_completion_clamps_and_matches_naive():
 
 def test_prefix_arguments_are_validated():
     model = Autoregressive(
-        4, ARFamily.normal(), nnx.Rngs(0), conditioner=_tiny_transformer()
+        4, NormalHead(), nnx.Rngs(0), conditioner=_tiny_transformer()
     )
     key = jax.random.key(0)
     with pytest.raises(ValueError, match="prefix_len"):

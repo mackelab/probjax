@@ -14,7 +14,6 @@ import pytest
 from flax import nnx
 
 import probjax.nn.generative.nflows as N
-from probjax.nn import FitConfig
 
 # Analytic differential entropies, in nats, where they are known.
 #   checkerboard: uniform on half of [-4, 4]^2  ->  log(32)
@@ -122,7 +121,8 @@ def trained():
             losses = flow.fit(
                 jax.random.key(2),
                 train,
-                config=FitConfig(max_steps=600, batch_size=512),
+                num_steps=600,
+                batch_size=512,
             ).losses
             out[(aname, dname)] = (flow, test, losses)
     return out

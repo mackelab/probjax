@@ -86,7 +86,7 @@ def test_flow_distribution_supports_pytree_events():
     )
 
     initial = {"a": jnp.ones((5, 2)), "b": jnp.ones((5, 3))}
-    from_noise = distribution.sample_from(initial)
+    from_noise = distribution.model.sample_from_noise(initial, num_steps=4)
     samples = distribution.sample(jax.random.key(0), (2, 4))
 
     assert from_noise["a"].shape == (5, 2)
@@ -105,10 +105,10 @@ def test_flow_distribution_supports_pytree_events():
 )
 def test_distribution_supports_pytree_events_and_context(model):
     event_spec = {"a": (2,), "b": (3,)}
-    distribution = model.as_dist(event_spec, context_spec=event_spec, num_steps=3)
+    distribution = model.as_dist(event_spec, num_steps=3)
     context = {"a": jnp.ones((2,)), "b": jnp.ones((3,))}
 
-    samples = distribution.sample(jax.random.key(0), (2, 4), context=context)
+    samples = distribution.condition(context=context).sample(jax.random.key(0), (2, 4))
 
     assert samples["a"].shape == (2, 4, 2)
     assert samples["b"].shape == (2, 4, 3)
@@ -119,13 +119,9 @@ def test_distribution_supports_pytree_events_and_context(model):
 def test_diffusion_sde_distribution_supports_pytree_context():
     model = EDM(TinyConditionalPyTreeNet(), event_spec={"a": (2,), "b": (3,)}, num_steps=3)
     event_spec = {"a": (2,), "b": (3,)}
-    distribution = model.as_dist(
-        event_spec,
-        context_spec=event_spec,
-        mode="sde",
-        num_steps=3,
-    )
-    context = {"a": jnp.ones((2,)), "b": jnp.ones((3,))}
+    distribution = model.as_dist(event_spec, mode="sde", num_steps=3)
+    # Per-call inputs carry the sample batch.
+    context = {"a": jnp.ones((2, 2)), "b": jnp.ones((2, 3))}
 
     samples = distribution.sample(jax.random.key(0), (2,), context=context)
 
@@ -138,67 +134,62 @@ def test_diffusion_sde_distribution_supports_pytree_context():
 def test_diffusion_sde_trace_is_time_first_with_pytree_context():
     model = EDM(TinyConditionalPyTreeNet(), event_spec={"a": (2,), "b": (3,)}, num_steps=3)
     event_spec = {"a": (2,), "b": (3,)}
-    distribution = model.as_dist(
-        event_spec,
-        context_spec=event_spec,
-        mode="sde",
-        num_steps=3,
-    )
+    distribution = model.as_dist(event_spec, mode="sde", num_steps=3)
     context = {"a": jnp.ones((2,)), "b": jnp.ones((3,))}
 
-    samples = distribution.sample_path(jax.random.key(0), (2, 4), context=context)
+    samples = distribution.condition(context=context).sample_path(
+        jax.random.key(0), (2, 4)
+    )
 
     assert samples["a"].shape == (3, 2, 4, 2)
     assert samples["b"].shape == (3, 2, 4, 3)
 
 
-def test_flow_distribution_is_batch_polymorphic():
-    distribution = LinearFlow(TinyFlowNet(), event_spec=3).as_dist((3,), num_steps=4)
+@pytest.mark.parametrize(
+    "model",
+    [
+        pytest.param(LinearFlow(TinyFlowNet(), event_spec=3), id="flow"),
+        pytest.param(LinearMeanFlow(TinyFlowNet(), event_spec=3), id="mean-flow"),
+    ],
+)
+def test_continuous_distribution_takes_any_sample_shape(model):
+    distribution = model.as_dist((3,), num_steps=4)
 
-    assert distribution.sample_from(jnp.ones((2, 3))).shape == (2, 3)
-    assert distribution.sample_from(jnp.ones((5, 3))).shape == (5, 3)
-    assert distribution.sample_from(jnp.ones((3,))).shape == (3,)
+    assert model.sample_from_noise(jnp.ones((5, 3)), num_steps=4).shape == (5, 3)
     assert distribution.sample(jax.random.key(0), (2, 4)).shape == (2, 4, 3)
+    assert distribution.sample(jax.random.key(0)).shape == (3,)
 
 
-def test_mean_flow_distribution_is_batch_polymorphic():
-    distribution = LinearMeanFlow(TinyFlowNet(), event_spec=3).as_dist((3,), num_steps=4)
-
-    assert distribution.sample_from(jnp.ones((2, 3))).shape == (2, 3)
-    assert distribution.sample_from(jnp.ones((5, 3))).shape == (5, 3)
-    assert distribution.sample(jax.random.key(0), (2, 4)).shape == (2, 4, 3)
-
-
-def test_normalizing_flow_distribution_is_batch_polymorphic():
+def test_normalizing_flow_distribution_takes_any_sample_shape():
     base_dist = indep(norm(jnp.zeros(2), jnp.ones(2)))
-    distribution = NormalizingFlow(base_dist, ShiftTransform()).as_dist()
+    model = NormalizingFlow(base_dist, ShiftTransform())
+    distribution = model.as_dist()
 
-    assert distribution.sample_from(jnp.zeros((2, 2))).shape == (2, 2)
-    assert distribution.sample_from(jnp.zeros((5, 2))).shape == (5, 2)
+    assert model.sample_from_noise(jnp.zeros((5, 2))).shape == (5, 2)
     assert distribution.sample(jax.random.key(0), (3,)).shape == (3, 2)
     assert distribution.logpdf(jnp.ones((4, 2))).shape == (4,)
+    assert distribution.logpdf(jnp.ones((2, 4, 2))).shape == (2, 4)
 
 
-def test_normalizing_flow_distribution_supports_context():
+def test_normalizing_flow_sample_from_noise_supports_context():
     base_dist = indep(norm(jnp.zeros(2), jnp.ones(2)))
-    distribution = NormalizingFlow(base_dist, ShiftTransform()).as_dist(
-        context_spec=(2,)
-    )
+    model = NormalizingFlow(base_dist, ShiftTransform())
+    context = jnp.tile(jnp.array([1.0, 2.0]), (3, 1))
 
-    sample = distribution.sample_from(jnp.zeros((3, 2)), context=jnp.array([1.0, 2.0]))
+    sample = model.sample_from_noise(jnp.zeros((3, 2)), inputs={"context": context})
 
     assert sample.shape == (3, 2)
-    assert jnp.allclose(sample, jnp.array([[1.0, 2.0]] * 3))
+    assert jnp.allclose(sample, context)
 
 
 def test_normalizing_flow_distribution_supports_pytree_events_and_context():
     event_spec = {"a": (2,), "b": (3,)}
     distribution = NormalizingFlow(PyTreeBase(), PyTreeShiftTransform()).as_dist(
-        event_spec, context_spec=event_spec
+        event_spec
     )
     context = {"a": jnp.ones((2,)), "b": jnp.ones((3,))}
 
-    samples = distribution.sample(jax.random.key(0), (2, 4), context=context)
+    samples = distribution.condition(context=context).sample(jax.random.key(0), (2, 4))
 
     assert samples["a"].shape == (2, 4, 2)
     assert samples["b"].shape == (2, 4, 3)
@@ -207,11 +198,10 @@ def test_normalizing_flow_distribution_supports_pytree_events_and_context():
 def test_distribution_reads_current_model_state():
     model = LinearFlow(TinyFlowNet(), event_spec=3)
     distribution = model.as_dist((3,), num_steps=4)
-    eps = jnp.ones((2, 3))
 
-    before = distribution.sample_from(eps)
+    before = distribution.sample(jax.random.key(0), (2,))
     model.net.proj.bias.set_value(model.net.proj.bias.get_value() + 1.0)
-    after = distribution.sample_from(eps)
+    after = distribution.sample(jax.random.key(0), (2,))
 
     assert not jnp.allclose(before, after)
 
@@ -243,7 +233,7 @@ def test_diffusion_ode_sampler_preserves_specialized_drift(model_type):
 def test_flow_distribution_exposes_paths_separately():
     distribution = LinearFlow(TinyFlowNet(), event_spec=3).as_dist((3,), num_steps=4)
 
-    out = distribution.path_from(jnp.ones((2, 3)))
+    out = distribution.model.sample_from_noise(jnp.ones((2, 3)), num_steps=4, trace=True)
     assert out.shape == (4, 2, 3)
     assert jnp.all(jnp.isfinite(out))
 
@@ -254,7 +244,7 @@ def test_flow_distribution_exposes_paths_separately():
 def test_diffusion_distribution_exposes_paths_separately():
     distribution = EDM(TinyDiffusionNet(), event_spec=3, num_steps=4).as_dist((3,), num_steps=4)
 
-    out = distribution.path_from(jnp.ones((2, 3)))
+    out = distribution.sample_path(jax.random.key(0), (2,))
     assert out.shape == (4, 2, 3)
     assert jnp.all(jnp.isfinite(out))
 
@@ -281,11 +271,7 @@ def test_distribution_binds_pytree_context():
     model = LinearFlow(TinyConditionalPyTreeNet(), event_spec={"a": (2,), "b": (3,)})
     event_spec = {"a": (2,), "b": (3,)}
     context = {"a": jnp.ones((2,)), "b": jnp.ones((3,))}
-    distribution = model.as_dist(
-        event_spec,
-        context_spec=event_spec,
-        num_steps=3,
-    ).condition(context)
+    distribution = model.as_dist(event_spec, num_steps=3).condition(context=context)
 
     samples = distribution.sample(jax.random.key(0), (2, 4))
 
@@ -300,17 +286,16 @@ def test_distribution_exposes_flow_logpdf():
     distribution = flow.as_dist()
     values = jnp.ones((4, 2))
 
-    assert distribution.has_logpdf
     assert distribution.logpdf(values).shape == (4,)
     assert jnp.allclose(distribution.logpdf(values), base_dist.logpdf(values - 1.0))
-    assert not hasattr(flow, "logpdf")
+    assert jnp.allclose(flow.logpdf(values), distribution.logpdf(values))
 
 
 def test_distribution_binds_context_for_sample_and_logpdf():
     base_dist = indep(norm(jnp.zeros(2), jnp.ones(2)))
     flow = NormalizingFlow(base_dist, ShiftTransform())
     context = jnp.array([1.0, 2.0])
-    distribution = flow.as_dist(context_spec=(2,)).condition(context)
+    distribution = flow.as_dist().condition(context=context)
     values = jnp.array([[1.0, 2.0], [2.0, 3.0]])
 
     samples = distribution.sample(jax.random.key(0), (3,))
@@ -325,20 +310,21 @@ def test_distribution_reports_missing_logpdf():
     model = LinearFlow(TinyFlowNet(), event_spec=3)
     distribution = model.as_dist((3,), num_steps=3)
 
-    assert not distribution.has_logpdf
-    with pytest.raises(NotImplementedError, match="tractable logpdf"):
+    with pytest.raises(NotImplementedError, match="tractable log-density"):
         distribution.logpdf(jnp.ones((2, 3)))
 
 
-def test_distribution_rebuilds_after_cache_invalidation():
+def test_distribution_picks_up_a_new_solver_config():
+    """A structural change is a new graphdef, so the view compiles again."""
     model = LinearFlow(TinyFlowNet(), event_spec=3)
-    distribution = model.as_dist((3,), num_steps=4)
-    distribution.compile("sample")
+    distribution = model.as_dist((3,))
+    before = distribution.sample_path(jax.random.key(0), (2,))
 
     model.set_solver_cfg(LinearFlowSolverConfig(num_steps=8))
-    samples = distribution.sample(jax.random.key(0), (2,))
+    after = distribution.sample_path(jax.random.key(0), (2,))
 
-    assert samples.shape == (2, 3)
+    assert after.shape == (8, 2, 3)
+    assert before.shape[0] != 8
 
 
 def test_sigmoid_pair_config_produces_interior_pairs():
@@ -436,3 +422,34 @@ def test_mean_flow_original_objective_still_available():
     got_imf = float(model.loss(jax.random.key(0), data))
     assert jnp.isfinite(got_imf)
     assert got_imf != pytest.approx(expected[0], rel=1e-3)
+
+
+def test_attention_conditioners_sample_through_as_dist():
+    """Attention conditioners sample through as_dist like any other."""
+    from probjax.nn import (
+        Autoregressive,
+        NormalHead,
+        TransformerARConditionerConfig,
+        maf,
+    )
+    from probjax.nn.generative.nflows.config import TransformerConditionerConfig
+    from probjax.nn.layers.attention import dot_product_attention
+
+    small = dict(model_dim=16, num_heads=2, num_layers=1, attn_size=8)
+    flow = maf(
+        3, 2, rngs=nnx.Rngs(0), conditioner=TransformerConditionerConfig(**small)
+    )
+    ar = Autoregressive(
+        3,
+        NormalHead(),
+        nnx.Rngs(0),
+        conditioner=TransformerARConditionerConfig(
+            attention_fn=dot_product_attention, **small
+        ),
+    )
+    for model in (flow, ar):
+        dist = model.as_dist()
+        samples = dist.sample(jax.random.key(0), (4,))
+        assert samples.shape == (4, 3)
+        assert jnp.all(jnp.isfinite(dist.logpdf(samples)))
+        assert dist.sample(jax.random.key(1), (7,)).shape == (7, 3)

@@ -8,7 +8,6 @@ sub-configs for a named architecture (RealNVP, MAF, NSF, NAF, ...) while still
 accepting explicit ``bijector`` / ``conditioner`` / ``mixing`` overrides.
 """
 
-from functools import partial
 from typing import Any, Callable, ClassVar, Literal, Optional
 
 import jax
@@ -37,14 +36,9 @@ from probjax.nn.generative.nflows.config import (
     SumOfSquaresBijectorConfig,
     UMNNBijectorConfig,
 )
-from probjax.nn.generative.sampling import (
-    _ExportedSampler,
-    make_map_sample_fn,
-)
 from probjax.nn.generative.standardize import StandardizingMixin
 from probjax.nn.inputs import context_only
 from probjax.nn.nets.simple import Sequential
-from probjax.nn.training import FitConfig
 from probjax.stats.continuous import norm
 from probjax.stats.indep import indep
 from probjax.stats.transformed import transformed
@@ -79,11 +73,6 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # NormalizingFlow base class
 # ---------------------------------------------------------------------------
-
-
-def _flow_transform(model, value, inputs):
-    # `transform` already returns data-space samples.
-    return model.transform(value, context=context_only(inputs, "Normalizing flow"))
 
 
 class NormalizingFlow(StandardizingMixin, GenerativeModel):
@@ -139,92 +128,46 @@ class NormalizingFlow(StandardizingMixin, GenerativeModel):
     def __call__(self, x, context=None, *, rng: jax.Array | None = None):
         return self.transform(x, context=context, rng=rng)
 
-    def _distribution_sampler(
-        self,
-        event_spec=None,
-        *,
-        dtype=jnp.float32,
-        inputs_spec=None,
-        **kwargs,
-    ) -> _ExportedSampler:
-        """Build and cache a shape-polymorphic flow sampler.
-
-        ``event_spec`` defaults to the base distribution's intrinsic event
-        shape, but may be a pytree spec for structured base distributions.
-        ``inputs_spec`` may be a plain shape tuple or a pytree of shapes /
-        ``jax.ShapeDtypeStruct``.
-        """
-        if event_spec is None:
-            event_spec = tuple(int(size) for size in self.base_dist.event_shape)
-        make_sample_fn = partial(make_map_sample_fn, transform=_flow_transform)
-
-        return self._build_exported_sampler(
-            ("normalizing-flow-sampler",),
-            event_spec,
-            make_sample_fn,
-            dtype=dtype,
-            inputs_spec=inputs_spec,
-        )
-
-    def _sample_base(self, rng, sample_shape, spec):
-        del spec
+    def sample_base(self, rng, sample_shape, spec, **options):
+        """Draw from the base distribution; the flow fixes the event shape."""
+        del spec, options
         if hasattr(self.base_dist, "dist") and hasattr(self.base_dist, "_call_kwds"):
             return self.base_dist.dist._rvs_impl(
                 rng, shape=sample_shape, **self.base_dist._call_kwds
             )
         return self.base_dist.rvs(rng, shape=sample_shape)
 
-    def _distribution_logpdf(
-        self,
-        event_spec=None,
-        *,
-        dtype=jnp.float32,
-        inputs_spec=None,
-    ):
-        """Build and cache a shape-polymorphic flow log-density evaluator."""
-        if event_spec is None:
-            event_spec = tuple(int(size) for size in self.base_dist.event_shape)
+    def sample_from_noise(self, noise, rng=None, inputs=None):
+        """Push a batch of base samples through the flow to data space."""
+        del rng
+        context = context_only(inputs, "Normalizing flow")
+        if context is None:
+            return jax.vmap(self.transform)(noise)
+        return jax.vmap(lambda z, c: self.transform(z, context=c))(noise, context)
 
-        def make_logpdf_fn(graphdef):
-            def logpdf_fn(current_state, value, inputs=None):
-                model = nnx.merge(graphdef, current_state)
-                if inputs is None:
-                    return jax.vmap(model._logpdf)(value)
-                context = context_only(inputs, "Normalizing flow")
-                return jax.vmap(
-                    lambda item, condition: model._logpdf(item, context=condition)
-                )(value, context)
+    def logpdf(self, x, inputs=None):
+        """Log density of a batch ``x`` in data space."""
+        context = context_only(inputs, "Normalizing flow")
+        if context is None:
+            return jax.vmap(self._logpdf)(x)
+        return jax.vmap(lambda item, c: self._logpdf(item, context=c))(x, context)
 
-            return logpdf_fn
-
-        return self._build_exported_logpdf(
-            ("normalizing-flow-logpdf",),
-            event_spec,
-            make_logpdf_fn,
-            dtype=dtype,
-            inputs_spec=inputs_spec,
-        )
-
-    def _prepare_fit(self, data, config):
+    def _before_fit(self, data):
         """Fit the standardising transform once, then train as usual."""
         if self.standardize:
-            data = self.fit_standardization(data, config.data)
+            data = self.fit_standardization(data)
         # `loss` goes through `_logpdf`, which standardises internally -- do not
         # pre-transform the data here or it would be applied twice.
-        return super()._prepare_fit(data, config)
+        return super()._before_fit(data)
 
-    def default_config(self) -> FitConfig:
+    def fit_defaults(self) -> dict:
         """Flows train better on a warm-started, decaying rate than a flat one.
 
         Measured over the 2-D benchmark sweep: at equal step count this reaches
         3.501 nats on the checkerboard against 3.520 for constant-rate Adam at
         1e-3, and it was the only setting in the sweep that never diverged.
         """
-        return (
-            super()
-            .default_config()
-            .merged(schedule="warmup_cosine", learning_rate=3e-3)
-        )
+        return {"schedule": "warmup_cosine", "learning_rate": 3e-3}
 
     def _logpdf(self, value, context=None):
         # Density of the *original* variable, so the standardising Jacobian has

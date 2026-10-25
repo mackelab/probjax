@@ -17,7 +17,7 @@ from flax import nnx
 from jax.sharding import AxisType, NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from probjax.nn import MLP, FitConfig, MoELayer, SSMModel, Transformer, UNet, maf
+from probjax.nn import MLP, MoELayer, SSMModel, Transformer, UNet, maf
 from probjax.nn import sharding as shd
 
 
@@ -249,7 +249,9 @@ def test_fit_under_mesh():
         flow = maf(2, 2, rngs=nnx.Rngs(0))
         sharded_data = jax.device_put(data, NamedSharding(mesh, P("data", None)))
         losses = flow.fit(
-            jax.random.key(1), sharded_data, config=FitConfig(max_steps=5)
+            jax.random.key(1),
+            sharded_data,
+            num_steps=5,
         ).losses
         assert jnp.all(jnp.isfinite(losses))
 

@@ -14,7 +14,7 @@ from flax import nnx
 
 from probjax.inference import flow_vi, hmc, mala, neutra, nuts, run, warmup
 from probjax.inference.neural import bijection, density
-from probjax.nn import FitConfig, maf, nsf
+from probjax.nn import maf, nsf
 
 DIM = 3
 
@@ -115,7 +115,8 @@ def test_transformed_logdensity_matches_a_brute_force_jacobian(ctor):
     flow.fit(
         jax.random.key(1),
         jax.random.normal(jax.random.key(2), (256, DIM)) * 2.0 + 1.0,
-        config=FitConfig(max_steps=60, batch_size=64),
+        num_steps=60,
+        batch_size=64,
     )
     transform = neutra_from(logdensity, flow)
 

@@ -15,61 +15,59 @@ For measured configuration comparisons and short runnable scripts, see
 
 ## Training and EMA
 
-Generative models share `FitMixin`; other NNX modules can inherit it alongside
-`nnx.Module` and implement `loss(rng, primary, **context)`. The functional
-`probjax.nn.fit` does the same for plain parameter pytrees.
+Training has three levels, each built on the one before:
 
-A run is described by a `FitConfig`, which says how to train *and* how the data
-reaches the loss. Its `DataSpec` names the batch entry handed to the loss
-positionally — every other entry of the batch arrives as a keyword argument —
-and says whether the source is one batch or a stream of them. Nothing is
-guessed: a list of arrays and a mapping of arrays are both pytrees, and the
-configuration is what tells them apart.
+* `train_step(loss_fn, optimizer)` is one pure update `(state, batch) -> (state,
+  info)` for your own loop (sharding, buffer donation, custom logging).
+* `fit(loss_fn, params, rng, data, **options)` minimises
+  `loss_fn(params, rng, batch)` over a parameter pytree.
+* `fit_module(model, rng, data, **options)` does the same for an NNX module,
+  trained in place. It calls `model.loss(rng, batch)` unless you pass
+  `loss=lambda model, rng, batch: ...`, and trains the variables selected by
+  `trainable=` (default `nnx.Param`). Generative models wrap it as
+  `model.fit(rng, data, **options)`.
 
-Both entry points return a `FitResult` carrying the trained parameters, the
-losses and the final state.
+The loss receives the whole batch. A mapping, an array or a tuple is one batch,
+minibatched on the device; any other iterable (a list, a generator, a
+`DataLoader`) is a stream, pulled one batch per update and never restarted.
+Every level returns a `FitResult` with the trained parameters, the losses and
+the final state.
 
 ```python
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from probjax.nn import DataSpec, FitCallback, FitConfig, FitMixin, MLP
+from probjax.nn import MLP, fit_module
 
-class Autoencoder(MLP, FitMixin):
-    def loss(self, rng, primary):
-        return jnp.mean((self(primary) - primary) ** 2)
-
-model = Autoencoder([2, 16, 2], rngs=nnx.Rngs(0))
+model = MLP([2, 16, 2], rngs=nnx.Rngs(0))
 key = jax.random.key(1)
 data = jax.random.normal(jax.random.key(2), (128, 2))
 
-class Monitor(FitCallback):
-    def on_step_end(self, state, info):
-        print(int(state.step), float(info.loss))
-        # state.params and state.ema_params are device arrays. Evaluate
-        # validation metrics or save a snapshot here.
-        # Return False to stop before the next chunk.
+def reconstruction(model, rng, batch):
+    return jnp.mean((model(batch) - batch) ** 2)
 
-result = model.fit(
-    key, data,
-    config=FitConfig(max_steps=1000, ema_decay=0.999, use_ema=True,
-                      callback_every=100),
-    callbacks=[Monitor()],
+def monitor(state, info):
+    print(int(state.step), float(info.loss))
+    # state.params and state.ema_params are device arrays: evaluate validation
+    # metrics or save a snapshot here. Return False to stop.
+
+result = fit_module(
+    model, key, data, loss=reconstruction,
+    num_steps=1000, ema_decay=0.999, use_ema=True,
+    callback=monitor, every=100,
 )
-print(result.losses.shape, result.params)
+print(result.losses.shape)
 ```
 
-A configuration overrides only the fields it names. A model has its own recipe
-in `default_config()`, and a configuration passed to `fit` changes what it
-names and leaves the rest alone — so `FitConfig(max_steps=10)` keeps the
-model's schedule and learning rate. `model.default_config()` returns the recipe
-as it stands.
-
-The defaults are a one-cycle cosine schedule that warms up to a peak learning
-rate of 1e-3 and decays again, with gradients clipped to a global norm of 10. `schedule` also
-accepts `"warmup_cosine"`, `"constant"` or `None` for a flat rate, and any
-optax schedule; `optimizer=` replaces the whole thing with your own
-`optax.GradientTransformation`.
+The options are plain keywords. `num_steps` (1000) and `batch_size` (512;
+`None` for the full batch; ignored for a stream) set the run. The optimizer
+defaults to `default_optimizer(learning_rate, num_steps, schedule, clip_norm)`:
+Adam with a one-cycle cosine schedule peaking at 1e-3 and gradients clipped to
+a global norm of 10. `schedule` also accepts `"warmup_cosine"`, `"constant"`
+or `None`, and any optax schedule; `optimizer=` replaces the whole thing with
+your own `optax.GradientTransformation`. A generative family's
+`fit_defaults()` is its recipe, and the keywords passed to `model.fit`
+override only the entries they name.
 
 EMA starts from the initial parameters and updates after every optimizer step:
 `ema = decay * ema + (1 - decay) * params`. It is disabled by default.
@@ -78,113 +76,78 @@ EMA starts from the initial parameters and updates after every optimizer step:
 `result.state.ema_params` holds the average. Non-parameter state, including
 BatchNorm statistics and RNG counters, follows the training updates and is not
 averaged. Existing train/eval flags are respected; use `model.train()` when
-needed. By default each `fit` starts a fresh optimizer and EMA. Passing
-`state=previous_result.state` preserves raw parameters, optimizer state, RNG,
-EMA and module state; `max_steps` then requests additional updates. Reuse the
-same optimizer and EMA configuration: a snapshot does not serialize those
-settings or a data-loader position.
+needed. Each call starts a fresh optimizer; `state=previous_result.state`
+continues raw parameters, optimizer state, RNG, EMA and module state, and
+`num_steps` then counts additional updates. Pass the same optimizer settings
+again: a snapshot does not store them or a data-loader position.
 
-A stream is the caller's iterator: it is advanced once per step and never
-restarted, so it has to hold at least as many batches as the run takes steps.
-
-Callbacks can override `on_fit_begin(state)`, `on_step_end(state, info)`, and
-`on_fit_end(result)`. A plain callable `(state, info)` is also accepted for
-step events. Begin and step hooks may return `False` to stop. Hooks run in
-registration order, including when an earlier hook requests stopping; exceptions
-propagate to the caller. End hooks run after successful completion, including
-early stopping, but not after an exception. Snapshots are read-only; change the
-update rule through an Optax optimizer rather than by mutating callback state.
-The model itself receives final params only after training; evaluate snapshots
-rather than the original model inside callbacks.
-
-`state.step` counts completed updates. Step callbacks receive post-update
-parameters and the last pre-update `FitInfo` in their chunk. `info.loss` is the
-training loss and `info.metrics` contains any auxiliary diagnostics. They run
-every `callback_every` updates and after a final partial chunk. Larger chunks
-reduce Python dispatch overhead. Without general callbacks, training remains a
-single compiled scan.
+`callback(state, info)` runs on the host every `every` updates and after the
+last one; returning `False` stops the run, and the history then holds exactly
+the updates that ran. `info.loss` is the loss before the latest update and
+`info.metrics` any auxiliary diagnostics. Without a callback, array data trains
+in one compiled scan.
 
 ### Loss and metrics
 
 A loss returns a scalar, or `(loss, metrics)` to have the metrics stacked into
-`result.metrics` and handed to every callback.
+`result.metrics` and handed to the callback.
 
 ```python
-from probjax.nn import DataSpec, FitConfig, fit
+from probjax.nn import fit
 
-def objective(params, key, primary):
-    error = params["mean"] - primary
+def objective(params, key, batch):
+    error = params["mean"] - batch["x"]
     return jnp.mean(error ** 2), {"mean_error": jnp.mean(error, axis=0)}
 
-config = FitConfig(data=DataSpec(primary="x"), max_steps=10)
-result = fit(
-    objective, {"mean": jnp.zeros(2)}, key, {"x": data},
-    config=config,
-)
+result = fit(objective, {"mean": jnp.zeros(2)}, key, {"x": data}, num_steps=10)
 assert result.metrics["mean_error"].shape == (10, 2)
 ```
 
-The default update preserves the three-way key split (next key, batch key, loss
-key), and records the next key in the state. Resumed history contains only the
-new updates; callback step counts remain absolute.
+Every update splits its key three ways (next key, batch key, loss key) and
+records the next key in the state, so array and stream runs over the same
+batches agree exactly. Resumed history contains only the new updates.
 
 ### JIT
 
-The complete functional `fit` is JIT-compatible for array batches, including
-metrics and resume. Keep the configuration static, for example by closing over
-it. `FitResult` is a pytree:
+`fit` on array data without a callback is JIT-compatible, including metrics
+and resume, and can be differentiated. `FitResult` is a pytree:
 
 ```python
 @jax.jit
 def train(params, key, batch):
-    return fit(
-        objective, params, key, batch,
-        config=FitConfig(data=DataSpec(primary="x"), max_steps=10),
-    )
+    return fit(objective, params, key, batch, num_steps=10)
 
 compiled = train({"mean": jnp.zeros(2)}, key, {"x": data})
 assert compiled.losses.shape == (10,)
 ```
 
-No callbacks means no host effects, so the functional fit can also be
-differentiated. Module fitting can run under `nnx.jit` when its preprocessing
-hooks are traceable. Flow standardization supports this and only fits once.
-Python data loaders and arbitrary host preprocessing belong outside JIT.
+Module fitting runs under `nnx.jit` too; flow standardization supports this
+and only fits once. Callbacks need the host and are rejected inside JIT, and
+the JIT path skips the non-finite-loss warning: inspect the losses yourself.
 
-Callbacks run on the host between compiled chunks, so they cannot be used
-inside JIT: a jitted scan has no way to reach the host.
+For full control, drive `train_step` yourself:
 
-Under JIT the run always performs every requested update, so the history has
-the requested length. The JIT path does not issue Python warnings or perform
-host value checks; inspect the losses for non-finite values.
+```python
+import optax
+from probjax.nn.training import init_state, train_step
 
-Subclass hooks let families customize training without overriding `fit`:
-
-| Hook | Purpose |
-| --- | --- |
-| `default_config()` | The recipe this model trains with; a caller's configuration overrides the fields it names |
-| `_prepare_fit(data, config)` | Prepare model state and return the data to train on |
-| `_fit_batch(data, config, **extras)` | Build the batch from `fit`'s data; extra `fit` keywords arrive as `extras` (default: `data` unchanged, extras rejected) |
-| `_fit_loss(rng, primary, **context)` | Customize batch-to-loss dispatch (default: `loss(rng, primary, **context)`) |
-| `_fit_param_filter()` | Select trainable NNX variables; defaults to `nnx.Param` |
-| `_fit_callbacks()` | Prepend model-specific callbacks |
-
-Non-selected variables remain available to the model, and non-parameter updates
-are carried between steps. Normalizing flows and autoregressive models use
-`_prepare_fit` for their standardization step. Every fit snapshots the current
-module graph, so replacing a submodule or changing non-parameter state between
-calls is reflected in the next fit.
+optimizer = optax.adam(1e-3)
+step = jax.jit(train_step(objective, optimizer))
+state = init_state({"mean": jnp.zeros(2)}, optimizer, key)
+for _ in range(10):
+    state, info = step(state, {"x": data})
+```
 
 ::: probjax.nn.training
 ::: probjax.nn.fit
-::: probjax.nn.FitMixin
-::: probjax.nn.FitCallback
-::: probjax.nn.FitConfig
-::: probjax.nn.DataSpec
+::: probjax.nn.fit_module
+::: probjax.nn.train_step
+::: probjax.nn.default_optimizer
 ::: probjax.nn.FitState
 ::: probjax.nn.FitInfo
 ::: probjax.nn.FitResult
-::: probjax.nn.training.take_batches
+::: probjax.nn.training.init_state
+::: probjax.nn.training.is_stream
 
 ## Overriding architecture components
 
@@ -234,13 +197,14 @@ layers) remain supported.
 
 ## Autoregressive models
 
-::: probjax.nn.MADE
-::: probjax.nn.MixtureAutoregressive
-::: probjax.nn.SplineAutoregressive
-::: probjax.nn.HistogramAutoregressive
-::: probjax.nn.CategoricalAutoregressive
 ::: probjax.nn.Autoregressive
-::: probjax.nn.ARFamily
+::: probjax.nn.Head
+::: probjax.nn.NormalHead
+::: probjax.nn.LocScaleHead
+::: probjax.nn.MixtureHead
+::: probjax.nn.HistogramHead
+::: probjax.nn.SplineHead
+::: probjax.nn.CategoricalHead
 
 ## Diffusion and flow matching
 
@@ -280,12 +244,11 @@ assert default_view.event_shape == (3,)
 ```
 
 Defaults are static metadata, not a restriction on training or forward inputs.
-Changing a default invalidates cached exports. Per-view overrides use separate
-exports; each continuous sampler retains a polymorphic batch axis, so one export
-handles different sample-batch sizes. Event dimensions themselves remain
-concrete: changing them selects another export, rather than introducing symbolic
-event axes. The backbone must already support the requested shape; changing
-metadata does not resize learned projections or embeddings.
+Views with the same sampling options share one jitted operation per model; it
+compiles once per sample shape, and a structural change to the model (a new
+solver config, a replaced submodule) compiles it again. The backbone must
+already support the requested shape; changing metadata does not resize learned
+projections or embeddings.
 
 Categorical event shapes count token positions and exclude the one-hot class
 axis: for example, `MultinomialCosineDM(net, num_classes=10, event_spec=(32,))`.
@@ -576,7 +539,6 @@ re-exported for convenience and documented there.
 ::: probjax.nn.TransformerARConditionerConfig
 ::: probjax.nn.UniformContinuousTimeTrainingConfig
 ::: probjax.nn.UniformFlowTrainingConfig
-::: probjax.nn.made
 
 ## Loss builders and data utilities
 

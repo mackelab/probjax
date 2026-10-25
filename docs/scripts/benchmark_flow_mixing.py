@@ -23,7 +23,6 @@ import optax
 from flax import nnx
 
 from probjax.nn import (
-    FitConfig,
     CirculantDiagonalMixingConfig,
     CompositeMixingConfig,
     FlipMixingConfig,
@@ -354,12 +353,10 @@ def run(args):
                 losses = flow.fit(
                     fit_key,
                     train,
-                    config=FitConfig(
-                        max_steps=args.steps,
-                        batch_size=args.batch_size,
-                        learning_rate=args.learning_rate,
-                        clip_norm=10.0,
-                    ),
+                    num_steps=args.steps,
+                    batch_size=args.batch_size,
+                    learning_rate=args.learning_rate,
+                    clip_norm=10.0,
                 ).losses
                 jax.block_until_ready(losses)
                 fit_seconds = time.perf_counter() - start
@@ -370,7 +367,6 @@ def run(args):
                 training_nll = float(-jnp.mean(logpdf(train)))
                 logpdf_ms = timed(partial(logpdf, test))
                 distribution = flow.as_dist()
-                distribution.compile()
                 sample = jax.jit(partial(distribution.sample, shape=(args.test_size,)))
                 samples = sample(test_key)
                 sample_ms = timed(partial(sample, test_key))
