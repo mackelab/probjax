@@ -20,35 +20,10 @@ import jax.experimental
 import jax.numpy as jnp
 from jax._src import linear_util as lu
 from jax._src.api_util import debug_info
-from jax._src.core import eval_jaxpr
 from jax._src.flatten_util import ravel_pytree
 from jaxtyping import Array, PyTree
 
 from probjax.utils.typing import ArrayLike
-
-
-def _resolve_partial_eval_jaxpr_nounits() -> Callable:
-    """Find the partial-evaluation helper; its name moved across JAX releases."""
-    for module_name in (
-        "jax.interpreters.partial_eval",
-        "jax._src.interpreters.partial_eval",
-    ):
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError:
-            continue
-        nounits = getattr(module, "partial_eval_jaxpr_nounits", None)
-        if nounits is not None:
-            return nounits
-        legacy = getattr(module, "partial_eval_jaxpr", None)
-        if legacy is not None:
-            return lambda jaxpr, unknowns, instantiate: legacy(
-                jaxpr, unknowns, instantiate
-            )
-    raise ImportError("JAX exposes no usable partial-evaluation helper.")
-
-
-partial_eval_jaxpr_nounits = _resolve_partial_eval_jaxpr_nounits()
 
 
 def _resolve_pjit_p() -> Any:
@@ -288,44 +263,6 @@ def ravel_arg_(unravel, index, *args):
     ans = yield args, {}
     ans_flat, _ = ravel_pytree(ans)
     yield ans_flat
-
-
-def precompute(func: Callable, arg_list: list, known_argnums: list) -> Callable:
-    """Precomputes all computations that can be done with all known arguments.
-
-    Args:
-        func (Callable): Function to be precomputed
-        arg_list (list): List of arguments to be precomputed (with dummies for unknowns)
-        known_argnums (list): List of indices of known arguments
-
-    Returns:
-        Callable: Function that inputs all unknown arguments and returns the result of
-        the function
-    """
-    jaxpr = jax.make_jaxpr(func)(*arg_list)
-    unknowns = [k not in known_argnums for k in range(len(arg_list))]
-    instantiate = False
-
-    (known_jaxpr, unknown_jaxpr, _, _) = partial_eval_jaxpr_nounits(
-        jaxpr, unknowns, instantiate
-    )
-
-    known_values = [arg_k for (k, arg_k) in enumerate(arg_list) if k in known_argnums]
-    precomputed_values = eval_jaxpr(
-        known_jaxpr.jaxpr, known_jaxpr.consts, *known_values
-    )
-
-    def inner(*args):
-        values = eval_jaxpr(
-            unknown_jaxpr.jaxpr,
-            unknown_jaxpr.consts,
-            *precomputed_values,
-            *args,
-            propagate_source_info=False,
-        )
-        return values if len(values) > 1 else values[0]
-
-    return inner
 
 
 def spec_from_value(value) -> PyTree[jax.ShapeDtypeStruct]:

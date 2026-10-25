@@ -1,6 +1,6 @@
 """SMC effective sample size, vendored from unreleased BlackJAX main.
 
-Re-exports the ``blackjax.smc.ess`` API with the numerical fixes from
+The ``ess``/``log_ess`` of ``blackjax.smc.ess`` with the numerical fixes from
 ``6482e5e4`` (subtract the max log-weight before the log-sum-exp difference;
 ESS is invariant to a common offset, without this large negative offsets
 underflow and corrupt the result) and ``e06d8ec8`` (stop the gradient through
@@ -12,12 +12,11 @@ containing those fixes.
 
 import jax
 import jax.numpy as jnp
-from blackjax.smc.ess import ess_solver
 from jax.scipy.special import logsumexp
 
 from probjax.utils.typing import Array
 
-__all__ = ["ess", "log_ess", "ess_solver"]
+__all__ = ["ess", "log_ess"]
 
 
 def ess(log_weights: Array) -> Array:

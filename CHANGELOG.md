@@ -472,6 +472,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RunnerMixin` and `probjax.utils.jaxutils.WithProgressBarAPI`, the progress
   machinery of the deleted runner classes; `run(..., progress=True)` uses the
   plain `write_progress` callback
+- Dead helpers: `probjax.inference.smc.resampling.resample_systematic` (only
+  the old particle filter used it), the unused `ess_solver` re-export, and
+  `probjax.utils.jaxutils.precompute` with its JAX-version shim
 - `RunnerMixin`, `probjax.utils.jaxutils.WithProgressBarAPI` and `print_scan`,
   the progress machinery of the deleted runner classes; see
   `probjax.utils.progress`

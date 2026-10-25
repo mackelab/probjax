@@ -10,15 +10,13 @@ import numpy as np
 from blackjax.smc.resampling import systematic as bj_systematic
 
 from probjax.inference.smc.ess import ess, log_ess
-from probjax.inference.smc.resampling import resample_systematic, systematic
+from probjax.inference.smc.resampling import systematic
 
 
 def test_ess_offset_invariance():
     log_weights = jnp.array([-0.5, -1.0, -0.2, -2.0])
     assert float(ess(log_weights)) > 0
-    np.testing.assert_allclose(
-        ess(log_weights), ess(log_weights - 1000.0), rtol=1e-5
-    )
+    np.testing.assert_allclose(ess(log_weights), ess(log_weights - 1000.0), rtol=1e-5)
     np.testing.assert_allclose(
         log_ess(log_weights), log_ess(log_weights - 1000.0), rtol=1e-5
     )
@@ -60,17 +58,3 @@ def test_systematic_uniform_endpoints():
     for seed, u in enumerate((0.0, np.nextafter(1.0, 0.0))):
         idx = systematic(jax.random.key(100 + seed), weights, weights.shape[0])
         assert bool(jnp.all(weights[idx] > 0)), f"u={u}: {idx}"
-
-
-def test_resample_systematic_api():
-    key = jax.random.key(0)
-    particles = jnp.arange(4.0)
-    log_weights = jnp.log(jnp.array([0.1, 0.2, 0.3, 0.4]))
-    new_particles, new_log_weights, idx = resample_systematic(
-        key, log_weights, particles
-    )
-    assert new_particles.shape == (4,)
-    np.testing.assert_allclose(new_particles, particles[idx])
-    np.testing.assert_allclose(
-        new_log_weights, jnp.zeros(4) - jnp.log(4.0), rtol=1e-6
-    )
