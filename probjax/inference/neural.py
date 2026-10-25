@@ -9,9 +9,9 @@ train them inside a compiled scan:
 >>> kernel = imh(logdensity_fn, proposal=proposal)
 >>> result = warmup(key, kernel, kernel.init(key, x0), proposal_params, 2000)
 
-It calls the model's own methods rather than ``model.as_dist()``: the
-distribution view runs through ``jax.export``, which cannot be ``vmap``-ed,
-and chains are.
+It calls the model's plain methods (``logpdf``, ``sample_base``,
+``sample_from_noise``) with the params passed explicitly, so kernels can
+train them inside a compiled scan and ``vmap`` over chains.
 """
 
 from __future__ import annotations
@@ -34,6 +34,14 @@ def _split(model: Any) -> tuple[Any, Any, Any]:
     return nnx.split(model, nnx.Param, ...)
 
 
+def _batch_of_one(tree: Any) -> Any:
+    return jax.tree.map(lambda leaf: leaf[None], tree)
+
+
+def _first(tree: Any) -> Any:
+    return jax.tree.map(lambda leaf: leaf[0], tree)
+
+
 def density(model: Any) -> tuple[Density, Any]:
     """Split a tractable-density model into a :class:`Density` and its params.
 
@@ -45,18 +53,21 @@ def density(model: Any) -> tuple[Density, Any]:
         ``(density, params)``. Flow samples are reparameterised, so
         ``density.sample`` is differentiable in ``params``.
     """
-    if not hasattr(model, "_logpdf"):
+    if not hasattr(model, "logpdf"):
         raise TypeError(f"{type(model).__name__} has no tractable log-density.")
+    spec = model.as_dist().event_spec
     graphdef, params, rest = _split(model)
 
     def logpdf(x: Any, params: Any) -> Any:
-        return jnp.squeeze(nnx.merge(graphdef, params, rest)._logpdf(x))
+        merged = nnx.merge(graphdef, params, rest)
+        return merged.logpdf(_batch_of_one(x))[0]
 
     def sample(key: Any, params: Any) -> Any:
         merged = nnx.merge(graphdef, params, rest)
-        if hasattr(merged, "transform"):
-            return merged.transform(merged._sample_base(key, (), None))
-        return merged.sample(key)
+        # One key for both: a flow draws from the noise and ignores the key,
+        # an autoregressive model draws from the key and ignores the noise.
+        noise = merged.sample_base(key, (1,), spec)
+        return _first(merged.sample_from_noise(noise, key))
 
     return Density(sample, logpdf), params
 
@@ -74,7 +85,8 @@ def bijection(flow: Any) -> tuple[Callable[[Any, Any], tuple[Any, Any]], Any]:
         # The flow does not expose its Jacobian, but it does not have to:
         # log q(T(z)) = log base(z) - log|det J_T(z)|, which is exact and costs
         # one density call.
-        log_det = jnp.sum(merged.base_dist.logpdf(z)) - jnp.squeeze(merged._logpdf(x))
+        log_q = merged.logpdf(_batch_of_one(x))[0]
+        log_det = jnp.sum(merged.base_dist.logpdf(z)) - log_q
         return x, log_det
 
     return forward, params
@@ -119,7 +131,7 @@ def diffusion_guide(
 
     def sample_base(key: Any, t: Any, num_particles: int, params: Any) -> Any:
         merged = nnx.merge(graphdef, params, rest)
-        particles = merged._sample_base(key, (num_particles,), spec, t_max=t)
+        particles = merged.sample_base(key, (num_particles,), spec, t_max=t)
         return particles, jnp.zeros(num_particles)
 
     def evaluate(key: Any, t: Any, particles: Any, params: Any) -> Any:

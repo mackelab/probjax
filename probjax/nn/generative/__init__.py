@@ -17,9 +17,9 @@ Each subpackage bundles its model class and configuration in one place:
 
 All families inherit :class:`GenerativeModel` (and hence satisfy
 :class:`GenerativeModelProtocol`): they train via ``loss(rng, data)``,
-expose themselves as distributions via ``as_dist()``, and share
-the cached shape-polymorphic sampler machinery from
-:mod:`probjax.nn.generative.base`. The functional ``build_*`` loss
+sample through ``sample_base`` / ``sample_from_noise``, and expose
+themselves as distributions via ``as_dist()`` (see
+:mod:`probjax.nn.generative.base`). The functional ``build_*`` loss
 builders live in :mod:`probjax.nn.losses`.
 """
 

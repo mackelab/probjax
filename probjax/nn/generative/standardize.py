@@ -13,7 +13,7 @@ training history: they serialise with the model, travel through
 """
 
 import itertools
-from typing import Callable, Tuple
+from typing import Tuple
 
 import jax
 import jax.numpy as jnp
@@ -64,9 +64,6 @@ class StandardizingMixin:
     the standardised variable.
     """
 
-    # Provided by the generative model base class.
-    _clear_distribution_cache: Callable[[], None]
-
     def _init_standardization(self, input_dim: int, standardize: bool = True) -> None:
         self.standardize = bool(standardize)
         self._std_shift = nnx.Variable(jnp.zeros((input_dim,)))
@@ -93,7 +90,6 @@ class StandardizingMixin:
         self._std_shift[...] = shift
         self._std_scale[...] = scale
         self._std_fitted[...] = jnp.asarray(True)
-        self._clear_distribution_cache()
 
     def fit_standardization(self, data):
         """Fit the transform from data. A no-op once already fitted.
@@ -135,8 +131,6 @@ class StandardizingMixin:
         self._std_shift[...] = shift
         self._std_scale[...] = scale
         self._std_fitted[...] = jnp.asarray(True)
-        if not traced:
-            self._clear_distribution_cache()
         return data
 
     # -- the transform --------------------------------------------------------

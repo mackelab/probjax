@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import weakref
 from typing import Optional
 
 import jax
@@ -25,34 +24,6 @@ from probjax.nn.losses.multinomial import (
 )
 from probjax.nn.utils import call_module, module_accepts_rng
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, RngKey
-
-
-class _DiscreteSampler:
-    def __init__(self, model, event_shape, num_sample_steps):
-        self._model_ref = weakref.ref(model)
-        self.event_shape = event_shape
-        self.num_sample_steps = num_sample_steps
-
-    @property
-    def invalidated(self):
-        return False
-
-    def __call__(self, rng, shape=(), *, inputs=None):
-        if inputs is not None:
-            raise ValueError("Multinomial diffusion does not accept model inputs.")
-        model = self._model_ref()
-        if model is None:
-            raise RuntimeError("The model backing this distribution no longer exists.")
-        return model._sample_reverse_process(
-            rng,
-            tuple(shape) + self.event_shape,
-            num_sample_steps=self.num_sample_steps,
-        )
-
-    def from_noise(self, *args, **kwargs):
-        raise NotImplementedError(
-            "Multinomial diffusion does not support sampling from supplied noise."
-        )
 
 
 class MultinomialDiffusion(GenerativeModel):
@@ -396,17 +367,24 @@ class MultinomialDiffusion(GenerativeModel):
             **model_kwargs,
         )
 
-    def _sample_reverse_process(
-        self,
-        rng: RngKey,
-        shape: tuple[int, ...],
-        *args,
-        num_sample_steps: Optional[int] = None,
-        **kwargs,
-    ) -> Array:
-        rng_prior, rng_loop = jax.random.split(rng, 2)
-        x_init = self.schedule.prior_sample(rng_prior, shape)
+    def sample_base(self, rng: RngKey, sample_shape, spec, **options) -> Array:
+        """Draw tokens from the prior at ``t_max``."""
+        del options
+        return self.schedule.prior_sample(rng, tuple(sample_shape) + spec.shape)
 
+    def sample_from_noise(
+        self,
+        noise: Array,
+        rng: RngKey | None = None,
+        inputs=None,
+        *,
+        num_sample_steps: Optional[int] = None,
+    ) -> Array:
+        """Run the reverse process from prior tokens ``noise``."""
+        if inputs:
+            raise ValueError("Multinomial diffusion does not accept model inputs.")
+        if rng is None:
+            raise ValueError("rng is required: the reverse process is stochastic.")
         steps = self.num_steps if num_sample_steps is None else int(num_sample_steps)
         if steps <= 0:
             raise ValueError("num_sample_steps must be a positive integer.")
@@ -417,46 +395,18 @@ class MultinomialDiffusion(GenerativeModel):
             steps + 1,
             dtype=jnp.float32,
         )
-        step_keys = jax.random.split(rng_loop, steps)
+        step_keys = jax.random.split(rng, steps)
 
         def scan_body(x_curr, inp):
             step_key, t_curr, t_prev = inp
-            x_prev = self.p_sample(
-                step_key,
-                t_curr,
-                x_curr,
-                *args,
-                t_prev=t_prev,
-                **kwargs,
-            )
-            return x_prev, None
+            return self.p_sample(step_key, t_curr, x_curr, t_prev=t_prev), None
 
         x_final, _ = jax.lax.scan(
             scan_body,
-            x_init,
+            noise,
             (step_keys, times[:-1], times[1:]),
         )
         return x_final
-
-    def _distribution_sampler(
-        self,
-        event_spec,
-        *,
-        num_sample_steps: Optional[int] = None,
-        inputs_spec=None,
-        **kwargs,
-    ):
-        del kwargs
-        if inputs_spec is not None:
-            raise ValueError("Multinomial diffusion does not accept model inputs.")
-        leaves = jax.tree.leaves(event_spec)
-        if len(leaves) != 1:
-            raise TypeError("Multinomial diffusion requires a single-array event spec.")
-        return _DiscreteSampler(
-            self,
-            tuple(leaves[0].shape),
-            num_sample_steps,
-        )
 
 
 class MultinomialCosineDM(MultinomialDiffusion):

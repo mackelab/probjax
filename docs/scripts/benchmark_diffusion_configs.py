@@ -166,7 +166,6 @@ def measure_sampler(model, mode, key, count, repeats):
     distribution = model.as_dist(mode=mode)
     call = jax.jit(partial(distribution.sample, shape=(count,)))
     start = time.perf_counter()
-    distribution.compile()
     values = jax.block_until_ready(call(key))
     cold = time.perf_counter() - start
     durations = []

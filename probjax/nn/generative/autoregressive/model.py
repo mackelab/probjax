@@ -24,8 +24,7 @@ from probjax.nn.generative.base import GenerativeModel
 from probjax.nn.generative.standardize import StandardizingMixin
 from probjax.nn.inputs import context_only
 from probjax.utils.guards import is_tracing
-from probjax.utils.jaxutils import where
-from probjax.utils.typing import is_typed_key
+from probjax.utils.jaxutils import leading_dim, where
 
 __all__ = [
     "Autoregressive",
@@ -36,37 +35,6 @@ __all__ = [
     "CategoricalAutoregressive",
     "made",
 ]
-
-
-class _KeyNormalizingSampler:
-    """Accept both typed and legacy PRNG keys.
-
-    The exported sampler takes the rng as a real argument (sampling is
-    stochastic, unlike a flow's), and an export is traced for one key
-    representation. Normalising here keeps ``rvs`` callable with either
-    ``jax.random.key`` or ``jax.random.PRNGKey``, as every other family is.
-    """
-
-    def __init__(self, inner):
-        self._inner = inner
-
-    @property
-    def invalidated(self):
-        return self._inner.invalidated
-
-    @staticmethod
-    def _as_typed(rng):
-        if is_typed_key(rng):
-            return rng
-        return jax.random.wrap_key_data(jnp.asarray(rng, dtype=jnp.uint32))
-
-    def __call__(self, rng, shape=(), *, inputs=None):
-        return self._inner(self._as_typed(rng), shape, inputs=inputs)
-
-    def from_noise(self, eps, *, rng=None, inputs=None):
-        if rng is not None:
-            rng = self._as_typed(rng)
-        return self._inner.from_noise(eps, rng=rng, inputs=inputs)
 
 
 class Autoregressive(StandardizingMixin, GenerativeModel):
@@ -204,7 +172,7 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
         """Ancestral sampling: one conditioner pass per dimension.
 
         The naive loop scans over the *event* dimension, which is static,
-        so it survives export with a symbolic batch size.
+        so it traces once per batch size.
 
         ``prefix`` conditions the draw on known leading values: with
         ``prefix`` of shape ``(..., input_dim)`` and ``prefix_len=k`` the
@@ -315,75 +283,24 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
         (x, _), _ = step(carry0, jnp.arange(input_dim), self)
         return self._unstandardize(x) if self.standardize else x
 
-    def _sample_base(self, rng, sample_shape, spec):
-        """Unused noise; the per-dimension draws carry the randomness."""
-        del spec
+    def sample_base(self, rng, sample_shape, spec, **options):
+        """Placeholder noise: only its batch size is used, the draws come from ``rng``."""
+        del rng, spec, options
         return jnp.zeros(tuple(sample_shape) + (self.input_dim,))
 
-    def _distribution_sampler(
-        self,
-        event_spec=None,
-        *,
-        dtype=None,
-        inputs_spec=None,
-        **kwargs,
-    ):
-        if event_spec is None:
-            event_spec = (self.input_dim,)
-        if dtype is None:
-            dtype = self.family.event_dtype
+    def sample_from_noise(self, noise, rng=None, inputs=None):
+        """Ancestral samples, one per row of ``noise``; ``rng`` supplies the draws."""
+        if rng is None:
+            raise ValueError("rng is required: autoregressive sampling is stochastic.")
+        context = context_only(inputs, "Autoregressive")
+        return self.sample(rng, (leading_dim(noise),), context=context)
 
-        def make_sample_fn(graphdef, with_inputs):
-            def sample_fn(state, rng, eps, *rest):
-                model = nnx.merge(graphdef, state)
-                context = (
-                    context_only(rest[0], "Autoregressive") if with_inputs else None
-                )
-                batch = eps.shape[0]
-                return model.sample(rng, (batch,), context=context)
-
-            return sample_fn
-
-        return _KeyNormalizingSampler(
-            self._build_exported_sampler(
-                ("autoregressive-sampler",),
-                event_spec,
-                make_sample_fn,
-                dtype=dtype,
-                stochastic=True,
-                inputs_spec=inputs_spec,
-            )
-        )
-
-    def _distribution_logpdf(
-        self,
-        event_spec=None,
-        *,
-        dtype=jnp.float32,
-        inputs_spec=None,
-    ):
-        if event_spec is None:
-            event_spec = (self.input_dim,)
-
-        def make_logpdf_fn(graphdef):
-            def logpdf_fn(current_state, value, inputs=None):
-                model = nnx.merge(graphdef, current_state)
-                if inputs is None:
-                    return jax.vmap(model._logpdf)(value)
-                context = context_only(inputs, "Autoregressive")
-                return jax.vmap(lambda item, cond: model._logpdf(item, context=cond))(
-                    value, context
-                )
-
-            return logpdf_fn
-
-        return self._build_exported_logpdf(
-            ("autoregressive-logpdf",),
-            event_spec,
-            make_logpdf_fn,
-            dtype=dtype,
-            inputs_spec=inputs_spec,
-        )
+    def logpdf(self, x, inputs=None):
+        """Joint log density of a batch ``x`` in data space."""
+        context = context_only(inputs, "Autoregressive")
+        if context is None:
+            return jax.vmap(self._logpdf)(x)
+        return jax.vmap(lambda item, c: self._logpdf(item, context=c))(x, context)
 
     def as_dist(self, event_spec=None, **kwargs):
         if event_spec is None:

@@ -57,7 +57,6 @@ def run():
                 call = jax.jit(partial(dist.sample, shape=(4096,)))
                 key = jax.random.key(42)
                 begin = time.perf_counter()
-                dist.compile()
                 values = call(key).block_until_ready()
                 cold = time.perf_counter() - begin
                 durations = []

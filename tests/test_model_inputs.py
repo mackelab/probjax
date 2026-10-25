@@ -54,12 +54,13 @@ def test_fit_rejects_loose_inputs(data):
 def test_sampling_and_conditioning_with_named_inputs(data):
     _, local = data
     model = LinearFlow(make_net(), event_spec=(TOKENS, FEATURES))
-    dist = model.as_dist(inputs_spec={"local_context": (TOKENS, LOCAL)})
-    out = dist.sample(jax.random.key(3), (4,), local_context=local[:4])
+    dist = model.as_dist()
+    # Per-call inputs carry the sample batch...
+    shared = jnp.broadcast_to(local[0], (4,) + local[0].shape)
+    out = dist.sample(jax.random.key(3), (4,), local_context=shared)
     assert out.shape == (4, TOKENS, FEATURES)
-    # Bound inputs are used by default and can be overridden per call.
-    bound = dist.condition(local_context=local[:4])
-    assert bound.sample(jax.random.key(3), (4,)).shape == out.shape
+    # ...bound inputs are one example shared by every sample.
+    bound = dist.condition(local_context=local[0])
     assert jnp.allclose(bound.sample(jax.random.key(3), (4,)), out)
     other = bound.sample(jax.random.key(3), (4,), local_context=local[4:8])
     # A freshly initialised net barely reacts to its input (~1e-6), which
@@ -67,27 +68,15 @@ def test_sampling_and_conditioning_with_named_inputs(data):
     assert not jnp.array_equal(other, out)
 
 
-def test_bound_inputs_without_a_spec_describe_a_single_example(data):
+def test_per_call_inputs_must_carry_the_batch(data):
     _, local = data
-    model = LinearFlow(make_net(), event_spec=(TOKENS, FEATURES))
-    dist = model.as_dist(inputs={"local_context": local[0]})
-    assert dist.sample(jax.random.key(3), (4,)).shape == (4, TOKENS, FEATURES)
-
-
-def test_context_stays_sugar_for_the_context_input():
-    flow = maf(2, 2, context_features=3, rngs=nnx.Rngs(0))
-    context = jnp.ones((4, 3))
-    via_context = flow.as_dist(context_spec=(3,)).logpdf(
-        jnp.ones((4, 2)), context=context
-    )
-    via_inputs = flow.as_dist(inputs_spec={"context": (3,)}).logpdf(
-        jnp.ones((4, 2)), context=context
-    )
-    assert jnp.allclose(via_context, via_inputs)
+    dist = LinearFlow(make_net(), event_spec=(TOKENS, FEATURES)).as_dist()
+    with pytest.raises(ValueError, match="condition"):
+        dist.sample(jax.random.key(3), (4,), local_context=local[0])
 
 
 def test_context_only_families_reject_other_inputs():
     flow = maf(2, 2, context_features=3, rngs=nnx.Rngs(0))
-    dist = flow.as_dist(inputs_spec={"extra": (3,)})
+    dist = flow.as_dist()
     with pytest.raises(ValueError, match="only accepts a context input"):
         dist.logpdf(jnp.ones((4, 2)), extra=jnp.ones((4, 3)))

@@ -58,7 +58,6 @@ Exact posterior denoiser for an equal mixture of N(-3, 0.5²) and N(3, 0.5²). T
 - Full self-attention grows quadratically in token count. bfloat16 does not guarantee a CPU speedup. These checks establish finite forward/gradient outputs, not low-precision training equivalence.
 - The categorical linear/sigmoid defaults retain about 95% signal at the endpoint; the previous audit documented this without changing defaults. Categorical mixing quality remains unaudited here.
 - The exponential AB3 method was regression-tested for shared-state compatibility, but its convergence/order on nonuniform grids was not established by this audit.
-- Precompile a distribution with `dist.compile()` before placing its calls inside an outer `jax.jit`; lazy export during tracing currently fails.
 - No GPU benchmark or end-to-end trained diffusion comparison was run in this audit.
 
 ## Reproduce

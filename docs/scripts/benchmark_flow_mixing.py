@@ -367,7 +367,6 @@ def run(args):
                 training_nll = float(-jnp.mean(logpdf(train)))
                 logpdf_ms = timed(partial(logpdf, test))
                 distribution = flow.as_dist()
-                distribution.compile()
                 sample = jax.jit(partial(distribution.sample, shape=(args.test_size,)))
                 samples = sample(test_key)
                 sample_ms = timed(partial(sample, test_key))

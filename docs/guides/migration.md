@@ -89,6 +89,19 @@ tuple is one batch. A generative model's recipe is `fit_defaults()`, and
 `callback(state, info)` replaces the hook class. See
 [training and EMA](../reference/nn.md#training-and-ema).
 
+Generative models sample through plain methods, batched over one leading
+axis: `sample_base(rng, shape, spec, **options)`, `sample_from_noise(noise,
+rng, inputs, **options)` and, where tractable, `logpdf(x, inputs)`. They are
+ordinary JAX functions, so `jit`, `vmap` and `grad` them directly. `as_dist()`
+serves them through one cached `jax.jit` per method and options; the view keeps
+`sample`, `rvs`, `sample_path`, `logpdf`, `pdf` and `condition`. Removed:
+`sample_from`/`path_from` (call `model.sample_from_noise`),
+`sample_with_state`/`logpdf_with_state`/`model_state` (merge your own state with
+`nnx.merge` and call the model methods), `compile()`, `has_logpdf`,
+`context_spec`/`inputs_spec` and `as_dist(context=..., inputs=...)`. Inputs
+bound with `condition(...)` are one example shared by every sample; inputs
+passed to a call carry the call's batch. `probjax.nn.export` is gone.
+
 ## Changes that affect numerical results
 
 - Mean-flow training defaults to Improved MeanFlow (`imf=True`) and uses corrected
@@ -197,10 +210,7 @@ signal at terminal time; choose stronger rates when a nearly independent base
 prior is required. Their probability checks alone do not establish mixing.
 
 Further sampling fixes: an overridden `t_max` now also selects the base-noise
-scale. `sample_with_state` uses the supplied state for both initialization and
-integration, and `model_state()` handles Python scalar leaves. Call
-`dist.compile()` before wrapping sampling in an outer `jax.jit`; constructing
-an export lazily during tracing is currently unsupported.
+scale.
 
 Exponential AB2 now handles nonuniform step sizes and uses the correct
 phi-function weights and midpoint linear coefficient. Gaussian and nonlinear

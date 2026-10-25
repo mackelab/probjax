@@ -1,4 +1,3 @@
-from functools import partial
 from typing import Any, Mapping, Tuple
 
 import jax
@@ -17,17 +16,14 @@ from probjax.nn.generative.flow_matching.config import (
     LinearInterpolationSchedule,
     LogitNormalFlowTrainingConfig,
 )
-from probjax.nn.generative.sampling import (
-    _ExportedSampler,
-    make_ode_sample_fn,
-)
+from probjax.nn.generative.sampling import integrate_ode
 from probjax.nn.losses.flow_matching import build_flow_matching_loss
 from probjax.utils.functions import generic_drift
 from probjax.utils.typing import Array, ArrayLike, ModuleLike, PyTree, RngKey
 
 
-def _flow_ode_drift(model, context):
-    return model._build_ode_drift(context)
+def _flow_ode_drift(model, inputs):
+    return model._build_ode_drift(inputs)
 
 
 class FlowMatcher(GenerativeModel):
@@ -103,7 +99,6 @@ class FlowMatcher(GenerativeModel):
         if not isinstance(solver_cfg, FlowSolverConfigProtocol):
             raise TypeError("solver_cfg must implement FlowSolverConfigProtocol")
         self.solver_cfg = solver_cfg
-        self._clear_distribution_cache()
 
     def __call__(
         self,
@@ -218,7 +213,7 @@ class FlowMatcher(GenerativeModel):
             t_min=t_min, t_max=t_max, num_steps=num_steps
         )
 
-    _sample_base = _affine_sample_base
+    sample_base = _affine_sample_base
 
     def _build_ode_drift(self, inputs=None):
         def drift(t, value):
@@ -226,48 +221,32 @@ class FlowMatcher(GenerativeModel):
 
         return generic_drift(drift)
 
-    def _distribution_sampler(
+    def sample_from_noise(
         self,
-        event_spec,
+        noise,
+        rng=None,
+        inputs=None,
         *,
         num_steps: int | None = None,
         method: str = "rk4",
         t_min: float = 0.0,
         t_max: float = 1.0,
-        collect_trace: bool = False,
-        dtype=jnp.float32,
-        inputs_spec=None,
-        **kwargs,
-    ) -> _ExportedSampler:
-        """Build and cache an ODE sampler with symbolic batch size.
+        trace: bool = False,
+    ):
+        """Integrate the learned velocity field from ``noise`` (deterministic).
 
-        ``event_spec`` may be a plain shape tuple or a pytree of shapes /
-        ``jax.ShapeDtypeStruct`` for structured data. ``inputs_spec`` maps each
-        named model input (``context``, ...) to a spec in the same format and
-        enables a required, batch-aligned input of that name.
+        ``inputs`` are named model inputs batched like ``noise``; with
+        ``trace`` the path comes back time-first, ``(num_steps, batch, ...)``.
         """
+        del rng
         if self.solver_cfg is None:
             raise ValueError(
                 "solver_cfg is not set. Provide one at init or via set_solver_cfg()."
             )
         steps = self.solver_cfg.num_steps if num_steps is None else int(num_steps)
         ts = self.solve_schedule(t_min=t_min, t_max=t_max, num_steps=steps)
-        make_sample_fn = partial(
-            make_ode_sample_fn,
-            ts=ts,
-            prototype=self._build_ode_drift(),
-            build_drift=_flow_ode_drift,
-            method=method,
-            collect_trace=collect_trace,
-        )
-
-        return self._build_exported_sampler(
-            ("flow", steps, method, t_min, t_max, collect_trace),
-            event_spec,
-            make_sample_fn,
-            dtype=dtype,
-            inputs_spec=inputs_spec,
-            trace=collect_trace,
+        return integrate_ode(
+            self, _flow_ode_drift, noise, ts, inputs=inputs, method=method, trace=trace
         )
 
 

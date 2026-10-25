@@ -14,7 +14,7 @@ class Net(nnx.Module):
 
 
 @pytest.mark.parametrize("cls", [LinearFlow, LinearMeanFlow])
-def test_default_and_polymorphic_sampling(cls):
+def test_default_and_overridden_sampling(cls):
     if cls is LinearMeanFlow:
         with pytest.raises(TypeError, match="event_spec"):
             cls(Net())
@@ -24,9 +24,7 @@ def test_default_and_polymorphic_sampling(cls):
     model = cls(Net(), event_spec=3)
     dist = model.as_dist(num_steps=3)
     assert dist.sample(jax.random.key(0), (2,)).shape == (2, 3)
-    exported = dist._get_sampler().exported
     assert dist.sample(jax.random.key(1), (5,)).shape == (5, 3)
-    assert dist._get_sampler().exported is exported
     override = model.as_dist((2, 4), num_steps=3)
     assert override.sample(jax.random.key(2), (2,)).shape == (2, 2, 4)
     assert model.event_shape == (3,)
@@ -46,13 +44,11 @@ def test_invalid_defaults(cls, spec):
 
 
 @pytest.mark.parametrize('cls', [LinearFlow, LinearMeanFlow])
-def test_default_change_invalidates_export_but_preserves_bound_views(cls):
+def test_default_change_preserves_bound_views(cls):
     model = cls(Net(), event_spec=2)
     bound = model.as_dist(num_steps=3)
     bound.sample(jax.random.key(0), (1,))
-    sampler = bound._get_sampler()
     model.event_spec = (4,)
-    assert sampler.invalidated
     assert model.event_shape == (4,)
     assert bound.event_shape == (2,)
     assert model.as_dist(num_steps=3).sample(jax.random.key(1), (1,)).shape == (1, 4)

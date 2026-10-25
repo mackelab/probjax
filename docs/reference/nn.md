@@ -243,12 +243,11 @@ assert default_view.event_shape == (3,)
 ```
 
 Defaults are static metadata, not a restriction on training or forward inputs.
-Changing a default invalidates cached exports. Per-view overrides use separate
-exports; each continuous sampler retains a polymorphic batch axis, so one export
-handles different sample-batch sizes. Event dimensions themselves remain
-concrete: changing them selects another export, rather than introducing symbolic
-event axes. The backbone must already support the requested shape; changing
-metadata does not resize learned projections or embeddings.
+Views with the same sampling options share one jitted operation per model; it
+compiles once per sample shape, and a structural change to the model (a new
+solver config, a replaced submodule) compiles it again. The backbone must
+already support the requested shape; changing metadata does not resize learned
+projections or embeddings.
 
 Categorical event shapes count token positions and exclude the one-hot class
 axis: for example, `MultinomialCosineDM(net, num_classes=10, event_spec=(32,))`.
