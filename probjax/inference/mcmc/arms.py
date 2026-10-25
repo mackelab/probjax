@@ -15,7 +15,7 @@ class ARMSParams(NamedTuple):
 class ARMSState(NamedTuple):
     position: Array
     logdensity: Array
-    envelope: uni.ARSState
+    envelope: uni.Envelope
 
 
 class ARMSInfo(NamedTuple):
@@ -52,9 +52,7 @@ def init(
             raise ValueError("Provide rng or init_points for ARMS initialization")
         init_points = _init_points(position, rng)
     init_points = jnp.asarray(init_points)
-    env = uni.init_ars_state(
-        logdensity_fn, init_points, lb=lb, ub=ub, max_points=max_points
-    )
+    env = uni.envelope(logdensity_fn, init_points, lb, ub, max_points)
     logdensity = logdensity_fn(position)
     return ARMSState(position, logdensity, env)
 
@@ -68,10 +66,10 @@ def _arms_step(logdensity_fn: Callable, *, control: bool) -> Callable:
         rng, state: ARMSState, params: ARMSParams
     ) -> Tuple[ARMSState, ARMSInfo]:
         key, sample_key, accept_key, control_key = jax.random.split(rng, 4)
-        xt, _ = uni.sample_upper(state.envelope, sample_key)
+        xt = uni.sample(state.envelope, sample_key)
         log_xt, grad_xt = jax.value_and_grad(logdensity_fn)(xt)
-        log_q_xt = uni._log_proposal(state.envelope, xt)
-        log_q_x = uni._log_proposal(state.envelope, state.position)
+        log_q_xt = uni.envelope_logpdf(state.envelope, xt)
+        log_q_x = uni.envelope_logpdf(state.envelope, state.position)
 
         log_alpha = log_xt - state.logdensity + log_q_x - log_q_xt
         accept = jnp.log(jax.random.uniform(accept_key)) < log_alpha
@@ -89,7 +87,7 @@ def _arms_step(logdensity_fn: Callable, *, control: bool) -> Callable:
 
         env_next = jax.lax.cond(
             do_update,
-            lambda s: uni.update_ars_state(s, xt, log_xt, grad_xt),
+            lambda s: uni.refine(s, xt, log_xt, grad_xt),
             lambda s: s,
             state.envelope,
         )

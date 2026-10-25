@@ -32,6 +32,7 @@ GENERATED_PAGES = {
     "tutorials/smc.md": "examples/inference/smc.ipynb",
     "tutorials/mcmc.md": "examples/inference/mcmc.ipynb",
     "tutorials/neural_mcmc.md": "examples/inference/neural_mcmc.ipynb",
+    "tutorials/rejection.md": "examples/inference/rejection.ipynb",
     "tutorials/bnn.md": "examples/inference/bnn.ipynb",
 }
 
@@ -135,10 +136,6 @@ UNDOCUMENTED = {
         "make_continuous_transition",
         "make_linearized_observation",
         "make_linearized_transition",
-        # Adaptive rejection sampling internals; the sampler is `ars`.
-        "ARSState",
-        "init_ars_state",
-        "update_ars_state",
         # Submodules re-exported for convenience.
         "tuning",
         "ukf",

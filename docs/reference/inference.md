@@ -54,15 +54,25 @@ Pure kernels, adaptation utilities and compiled runners. See
 ::: probjax.inference.mcmc.arms.a2rms
     options:
       heading: probjax.inference.a2rms
-::: probjax.inference.ars
 ::: probjax.inference.mcmc.imh.gaussian_imh
     options:
       heading: probjax.inference.gaussian_imh
 ::: probjax.inference.mcmc.mclmc.adjusted_mclmc_dynamic
     options:
       heading: probjax.inference.adjusted_mclmc_dynamic
-::: probjax.inference.RejectionSampler
 ::: probjax.inference.pseudo_marginal
+
+## Exact samplers
+
+Each step returns one independent, exact draw.
+
+::: probjax.inference.rejection.adaptive.ars
+    options:
+      heading: probjax.inference.ars
+::: probjax.inference.rejection.proposal.rejection
+    options:
+      heading: probjax.inference.rejection
+::: probjax.inference.bound_adaptor
 
 ## Stochastic-gradient MCMC
 

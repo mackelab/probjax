@@ -35,6 +35,7 @@ nav = [
     "tutorials/smc.md",
     "tutorials/mcmc.md",
     "tutorials/neural_mcmc.md",
+    "tutorials/rejection.md",
     "tutorials/bnn.md",
   ] },
   { "Reference" = [
