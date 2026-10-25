@@ -79,8 +79,6 @@ def build_step(
         path_kwargs = filter_kwargs(
             path.logdensity_fn, mcmc_kernel_kwargs, allow_kwargs=False
         )
-    else:
-        path_kwargs = path_kwargs
 
     def step(
         rng, state: Any, tempering_param: Any, mcmc_parameters: Any
@@ -127,8 +125,6 @@ def init_params(
         path_kwargs = filter_kwargs(
             path.initial_param, mcmc_param_kwargs, allow_kwargs=False
         )
-    else:
-        path_kwargs = path_kwargs
     if initial_path_param is None:
         initial_path_param = path.initial_param(**path_kwargs)
     logdensity_kwargs = filter_kwargs(

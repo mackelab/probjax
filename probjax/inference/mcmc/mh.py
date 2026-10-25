@@ -10,8 +10,10 @@ from blackjax.mcmc.random_walk import RWInfo, RWState
 from jax.flatten_util import ravel_pytree
 
 from probjax.inference.adaptation import compose_adaptors
+from probjax.inference.base import RunResult, Warmup
 from probjax.inference.mcmc.adaptation import covariance_adaptor, step_size_adaptor
 from probjax.inference.mcmc.base import MarkovKernelAPI, ravel_position
+from probjax.inference.runner import run
 from probjax.utils.typing import Array, Scalar
 
 
@@ -87,9 +89,7 @@ def init_params_gaussian_rw(
     return RWParamsGauss(step_size=step_size, scale=scale)
 
 
-def gaussian_transition_proposal(
-    rng, position: Any, params: RWParamsGauss
-) -> Any:
+def gaussian_transition_proposal(rng, position: Any, params: RWParamsGauss) -> Any:
     flat_position, unflatten = ravel_pytree(position)
     eps = jax.random.normal(rng, flat_position.shape)
     if params.scale is None:
@@ -104,11 +104,34 @@ def gaussian_transition_proposal(
     return unflatten(new_position)
 
 
-def _gauss_rwmh_adaptation():
-    return compose_adaptors(
-        step=step_size_adaptor(target=0.234),
+def _gauss_rwmh_adaptation(target: float = 0.234) -> Warmup:
+    """Estimate the proposal scale, then tune the step size for that scale.
+
+    The covariance estimate only enters the parameters when its adaptor is
+    finalized, so a step size tuned alongside it would fit the old scale.
+    """
+    scale_phase = compose_adaptors(
+        step=step_size_adaptor(target=target),
         scale=covariance_adaptor(field="scale", output="standard_deviation"),
     )
+
+    def warmup(rng, kernel, state, params, num_steps: int) -> RunResult:
+        key_scale, key_step = jax.random.split(rng)
+        half = num_steps // 2
+        first = run(
+            key_scale, kernel, state, params, half, adaptor=scale_phase, collect=()
+        )
+        return run(
+            key_step,
+            kernel,
+            first.state,
+            first.params,
+            num_steps - half,
+            adaptor=step_size_adaptor(target=target),
+            collect=(),
+        )
+
+    return Warmup(warmup)
 
 
 class gauss_rwmh(MarkovKernelAPI):
@@ -118,8 +141,8 @@ class gauss_rwmh(MarkovKernelAPI):
     Tunable parameters come from ``kernel.init_params(state, step_size=0.5,
     scale=None)`` (see :class:`RWParamsGauss`); ``scale`` is a diagonal
     (vector) or a dense matrix square root and defaults to the identity.
-    Default adaptation: step size towards a 0.234 acceptance rate plus a
-    covariance estimate for ``scale``.
+    Default adaptation: a covariance estimate for ``scale`` over the first half
+    of the warmup, then the step size towards a 0.234 acceptance rate.
 
     Args:
         logdensity_fn: Log density of the target.

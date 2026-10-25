@@ -63,7 +63,7 @@ class SMCKernelAPI(KernelAPI):
 
 
 def _ensure_param_batch(params: Any, *, shared: bool) -> dict[str, Array]:
-    params = _params_to_dict(params)
+    params = params_to_dict(params)
     batched = {}
     for k, v in params.items():
         arr = jnp.asarray(v)
@@ -80,11 +80,6 @@ def _ensure_param_batch(params: Any, *, shared: bool) -> dict[str, Array]:
                 arr = arr[None]
         batched[k] = arr
     return batched
-
-
-def _params_to_dict(params: Any) -> dict[str, ArrayLike]:
-    """Back-compat alias for :func:`params_to_dict`."""
-    return params_to_dict(params)
 
 
 class _ParamsProxy:
@@ -162,7 +157,7 @@ def init_mcmc_params_from_logdensity(
         configured.api.init_params, mcmc_param_kwargs, allow_kwargs=allow_kwargs
     )
     params = configured.init_params(mcmc_state, **init_param_kwargs)
-    return _ensure_param_batch(_params_to_dict(params), shared=True)
+    return _ensure_param_batch(params_to_dict(params), shared=True)
 
 
 def init_tempered_mcmc_params(

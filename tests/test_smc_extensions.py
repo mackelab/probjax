@@ -8,7 +8,7 @@ import pytest
 from blackjax.smc.inner_kernel_tuning import StateWithParameterOverride
 from jax.scipy.stats import norm
 
-from probjax.inference import SMC, adaptive_smc_kernel, hmc, persistent_smc_kernel, smc
+from probjax.inference import SMC, adaptive_smc, hmc, persistent_smc, smc
 from probjax.inference.filtering.joint import sample_joint_paths
 from probjax.inference.smc import PartialPosteriorsPath
 from probjax.inference.smc.base import make_mcmc_adapter
@@ -59,7 +59,7 @@ def test_batching_matches_upstream_and_full_population():
 
 def test_adaptive_path_guard():
     with pytest.raises(ValueError, match='geometric'):
-        adaptive_smc_kernel(
+        adaptive_smc(
             path=PartialPosteriorsPath(),
             logprior_fn=PRIOR,
             loglikelihood_fn=LIKELIHOOD,
@@ -68,10 +68,10 @@ def test_adaptive_path_guard():
 
 
 def test_persistent_likelihoods_are_bound_to_instances():
-    a = persistent_smc_kernel(
+    a = persistent_smc(
         logprior_fn=PRIOR, loglikelihood_fn=lambda x: jnp.array(-2.0), mcmc_kernel=hmc
     )
-    b = persistent_smc_kernel(
+    b = persistent_smc(
         logprior_fn=PRIOR, loglikelihood_fn=lambda x: jnp.array(-7.0), mcmc_kernel=hmc
     )
     first, second = a.init(PARTICLES, n_schedule=3), b.init(PARTICLES, n_schedule=3)
@@ -129,7 +129,7 @@ def test_runner_evidence_without_history_and_chunk_continuation():
 
 
 def test_adaptive_runner_reaches_target_and_reports_cap():
-    kernel = adaptive_smc_kernel(
+    kernel = adaptive_smc(
         logprior_fn=PRIOR,
         loglikelihood_fn=LIKELIHOOD,
         mcmc_kernel=hmc,

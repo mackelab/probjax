@@ -198,11 +198,14 @@ class SliceInfo(NamedTuple):
     ----------
     num_evals : int
         Number of density evaluations used by the step.
+    num_expansions : int
+        How many of them stepped the bracket out.
     proposal : SliceState
         State before the step, kept for diagnostics.
     """
 
     num_evals: int
+    num_expansions: int
     proposal: SliceState
 
 
@@ -287,12 +290,17 @@ def build_kernel(
             log_density_fn, slice_fn, y, step_size, max_evals
         )
 
-        x_new, log_density, evals_reject = accept_reject_slice(
+        x_new, log_density, evals_reject, accepted = accept_reject_slice(
             log_density_fn, slice_fn, rng_rejections, t_lower, t_upper, y, max_evals
         )
+        # Out of evaluations without an accepted point: stay put.
+        x_new = jax.tree.map(
+            lambda new, old: jnp.where(accepted, new, old), x_new, state.position
+        )
+        log_density = jnp.where(accepted, log_density, state.logdensity)
 
         new_state = SliceState(x_new, log_density, rng_state)
-        info = SliceInfo(evals + evals_reject, state)
+        info = SliceInfo(evals + evals_reject, evals, state)
         return new_state, info
 
     return kernel
@@ -332,21 +340,14 @@ def build_step(
     )
 
 
-def _slice_adaptation(
-    *, target_num_evaluations: float = 5, max_evaluations: int = 100, **kwargs: Any
-):
-    """Default adaptation; ``max_evaluations`` must match the kernel's ``max_evals``."""
-    return slice_step_size_adaptor(target_num_evaluations, max_evaluations, **kwargs)
-
-
 class slice(MarkovKernelAPI):
     """Slice sampling along random one-dimensional slices.
 
     Each step brackets the slice by stepping out with ``step_size`` and then
     shrinks it until a point is accepted. Tunable parameters come from
     ``kernel.init_params(state, step_size=0.5)`` (see :class:`SliceParams`).
-    Default adaptation: step size towards a target number of density
-    evaluations.
+    Default adaptation: :func:`slice_step_size_adaptor`, balancing bracket
+    expansions and contractions.
 
     Args:
         logdensity_fn: Log density of the target.
@@ -363,7 +364,7 @@ class slice(MarkovKernelAPI):
     init = staticmethod(init)
     init_params = staticmethod(init_params)
     build_step = staticmethod(build_step)
-    default_adaptation_fn = staticmethod(_slice_adaptation)
+    default_adaptation_fn = staticmethod(slice_step_size_adaptor)
 
 
 def lower_upper_bracket(
@@ -410,11 +411,12 @@ def lower_upper_bracket(
 
         return (i + 1, t, step_size, mask)
 
+    step_size = jnp.asarray(step_size, dtype=float)
     evals1, t_upper, _, _ = jax.lax.while_loop(
-        cond_fn, body_fn, (0, jnp.array(step_size), step_size, True)
+        cond_fn, body_fn, (0, step_size, step_size, True)
     )
     evals2, t_lower, _, _ = jax.lax.while_loop(
-        cond_fn, body_fn, (0, jnp.array(-step_size), -step_size, True)
+        cond_fn, body_fn, (0, -step_size, -step_size, True)
     )
     total_evals = evals1 + evals2
 
@@ -429,7 +431,7 @@ def accept_reject_slice(
     t_upper: ArrayLike,
     log_density_bound: ArrayLike,
     max_steps: int,
-) -> tuple[Array, Array, int]:
+) -> tuple[Array, Array, int, Array]:
     """Draw a slice sample by rejection within a bracket.
 
     Parameters
@@ -452,8 +454,9 @@ def accept_reject_slice(
     Returns
     -------
     tuple
-        ``(x_new, h, evals)`` giving the accepted position, its log density,
-        and the number of evaluations performed.
+        ``(x_new, h, evals, accepted)``: the last candidate, its log density,
+        the number of evaluations and whether the candidate lies in the slice
+        (``False`` when ``max_steps`` ran out).
     """
 
     def cond_fn_reject(carry):
@@ -468,7 +471,8 @@ def accept_reject_slice(
         x_new = slice_fn(t_new)
         h = log_density_fn(x_new)
 
-        mask_reject = h <= log_density_bound
+        # Written so that a NaN density is rejected.
+        mask_reject = ~(h > log_density_bound)
 
         new_t_lower = jax.lax.cond(t_new < 0, lambda: t_new, lambda: t_lower)
         new_t_upper = jax.lax.cond(t_new > 0, lambda: t_new, lambda: t_upper)
@@ -479,14 +483,14 @@ def accept_reject_slice(
     t_new = jax.random.uniform(key_reject, shape=(), minval=t_lower, maxval=t_upper)
     x_new = slice_fn(t_new)
     h = log_density_fn(x_new)
-    mask_reject = h <= log_density_bound
+    mask_reject = ~(h > log_density_bound)
     new_t_lower = jax.lax.cond(t_new <= 0, lambda: t_new, lambda: t_lower)
     new_t_upper = jax.lax.cond(t_new >= 0, lambda: t_new, lambda: t_upper)
 
-    evals, _, _, _, x_new, h, _ = jax.lax.while_loop(
+    evals, _, _, _, x_new, h, mask_reject = jax.lax.while_loop(
         cond_fn_reject,
         body_fn_reject,
         (1, key, new_t_lower, new_t_upper, x_new, h, mask_reject),
     )
 
-    return x_new, h, evals
+    return x_new, h, evals, ~mask_reject

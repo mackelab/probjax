@@ -133,8 +133,8 @@ def test_built_sde_solver_carries_its_algorithm_type():
 # ---------------------------------------------------------------------------
 
 
-def test_filters_expose_build_step_and_keep_build_kernel():
-    assert kalman_filter.build_step is kalman_filter.build_kernel
+def test_filters_expose_build_step():
+    assert not hasattr(kalman_filter, "build_kernel")
     kernel = kalman_filter.build_step(_identity_transition, _identity_observation)
     assert callable(kernel)
 
@@ -243,14 +243,14 @@ def test_verbose_and_quiet_filters_agree():
 def test_verbose_and_quiet_mcmc_agree():
     import numpy as np
 
-    from probjax.inference.mcmc_runner import MCMC
+    from probjax.inference import run
 
     kernel = mala(_gaussian_logdensity)
     state = kernel.init(jax.random.key(0), jnp.zeros(2))
     params = kernel.init_params(state)
 
-    quiet = MCMC(kernel, verbose=False).run(jax.random.key(1), state, 5, params)
-    loud = MCMC(kernel, verbose=True).run(jax.random.key(1), state, 5, params)
+    quiet = run(jax.random.key(1), kernel, state, params, 5)
+    loud = run(jax.random.key(1), kernel, state, params, 5, progress=True)
     assert np.allclose(quiet.state.position, loud.state.position)
 
 

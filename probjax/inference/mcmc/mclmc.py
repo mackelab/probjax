@@ -15,6 +15,7 @@ from probjax.inference.mcmc._dynamic_stepping import (
     get_dynamic_stepping,
     init_dynamic_arg,
 )
+from probjax.inference.mcmc.adaptation import step_size_adaptor
 from probjax.inference.mcmc.base import (
     MarkovKernelAPI,
     init_hmc_like_params,
@@ -101,16 +102,8 @@ def build_mclmc_step(
     return step
 
 
-def _mclmc_adaptation(*, mclmc_kernel=None, adjusted: bool = False, **kwargs):
-    # Defaults to a standard blackjax MCLMC kernel; pass mclmc_kernel=
-    # explicitly to match custom integrator settings.
-    if mclmc_kernel is None:
-        mclmc_kernel = blackjax.mclmc.build_kernel()
-    return mclmc_warmup(mclmc_kernel, adjusted=adjusted, **kwargs)
-
-
-def _adjusted_mclmc_adaptation(**kwargs):
-    return _mclmc_adaptation(adjusted=True, **kwargs)
+def _adjusted_mclmc_adaptation(target: float = 0.9):
+    return step_size_adaptor(target=target)
 
 
 class mclmc(MarkovKernelAPI):
@@ -130,7 +123,7 @@ class mclmc(MarkovKernelAPI):
     init = staticmethod(blackjax.mclmc.init)
     init_params = staticmethod(init_mclmc_params)
     build_step = staticmethod(build_mclmc_step)
-    default_adaptation_fn = staticmethod(_mclmc_adaptation)
+    default_adaptation_fn = staticmethod(mclmc_warmup)
 
 
 class AdjustedMCLMCParams(NamedTuple):
@@ -229,7 +222,7 @@ class adjusted_mclmc(MarkovKernelAPI):
     Tunable parameters come from ``kernel.init_params(state, step_size=0.5,
     num_integration_steps=10, inverse_mass_matrix=None,
     L_proposal_factor=inf)`` (see :class:`AdjustedMCLMCParams`). Default
-    adaptation: :func:`mclmc_warmup` with ``adjusted=True``.
+    adaptation: step-size dual averaging towards a 0.9 acceptance rate.
 
     Args:
         logdensity_fn: Log density of the target.
@@ -381,7 +374,7 @@ class adjusted_mclmc_dynamic(MarkovKernelAPI):
     Tunable parameters come from ``kernel.init_params(state, step_size=0.5,
     inverse_mass_matrix=None, L_proposal_factor=inf)`` (see
     :class:`AdjustedMCLMCDynamicParams`). Default adaptation:
-    :func:`mclmc_warmup` with ``adjusted=True``.
+    step-size dual averaging towards a 0.9 acceptance rate.
 
     Args:
         logdensity_fn: Log density of the target.

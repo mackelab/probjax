@@ -11,6 +11,7 @@ from probjax.inference.smc.base import (
     init_mcmc_params_from_logdensity,
     make_mcmc_adapter,
 )
+from probjax.inference.smc.path import GeometricPath
 from probjax.inference.smc.resampling import systematic
 from probjax.utils.typing import Array
 
@@ -19,8 +20,8 @@ def build_step(
     logprior_fn: Callable | None,
     loglikelihood_fn: Callable | None,
     *,
-    path: Any,
     mcmc_kernel: Any,
+    path: Any = GeometricPath(),
     num_mcmc_steps: int = 10,
     resampling_fn: Callable = systematic,
     target_ess: float = 0.8,
@@ -63,10 +64,10 @@ def build_step(
 def init_params(
     particles: Any,
     *,
-    path: Any,
     logprior_fn: Callable | None,
     loglikelihood_fn: Callable | None,
     mcmc_kernel: Any,
+    path: Any = GeometricPath(),
     rng = None,
     mcmc_kernel_kwargs: dict[str, Any] | None = None,
     path_kwargs: dict[str, Any] | None = None,
@@ -105,7 +106,7 @@ class adaptive_smc(SMCKernelAPI):
     Args:
         logprior_fn: Log prior.
         loglikelihood_fn: Log likelihood.
-        path: Tempering path; must be :class:`GeometricPath`.
+        path: Tempering path; must be :class:`GeometricPath` (the default).
         mcmc_kernel: MCMC kernel class used to move the particles, e.g.
             :class:`hmc` (the class, not a built kernel).
         target_ess: Target effective sample size as a fraction of the

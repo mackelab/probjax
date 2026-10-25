@@ -200,11 +200,12 @@ def waste_free_smc(
     """Convenient waste-free preset for fixed or adaptive geometric/path SMC."""
     # Deferred: this module is re-exported by smc/__init__, so importing the
     # package-level factories at top level would be a self-parent cycle.
-    from probjax.inference.smc import adaptive_smc_kernel, smc
+    from probjax.inference.smc import smc
+    from probjax.inference.smc.adaptive import adaptive_smc
 
     if "num_mcmc_steps" in kwargs or "update_strategy" in kwargs:
         raise ValueError("Use p to configure waste-free chain length.")
-    constructor = adaptive_smc_kernel if adaptive else smc
+    constructor = adaptive_smc if adaptive else smc
     return constructor(
         logprior_fn=logprior_fn,
         loglikelihood_fn=loglikelihood_fn,

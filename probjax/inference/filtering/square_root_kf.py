@@ -100,7 +100,7 @@ def sqrt_kf_correct(
     return m_new, CL_new, log_likelihood
 
 
-def build_kernel(
+def build_step(
     transition_matrix: Callable[[ArrayLike], ArrayLike] | ArrayLike,
     transition_covariance_matrix_sqrt: Callable[[ArrayLike], ArrayLike] | ArrayLike,
     observation_matrix: Callable[[ArrayLike], ArrayLike] | ArrayLike,
@@ -182,7 +182,7 @@ class sq_kalman_filter(FilterAPI):
     """
 
     init = init
-    build_kernel = build_kernel
+    build_step = build_step
 
     @staticmethod
     def default_unpack(state: SqKalmanFilterState, info: SqKalmanFilterInfo):

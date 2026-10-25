@@ -5,7 +5,7 @@ from typing import Any, Callable, NamedTuple
 import jax
 import jax.numpy as jnp
 
-from probjax.inference.mcmc.adaptation import slice_step_size_adaptor
+from probjax.inference.mcmc.adaptation import step_size_adaptor
 from probjax.inference.mcmc.base import MarkovKernelAPI, make_step_from_kernel
 from probjax.utils.typing import Array, Scalar
 
@@ -29,9 +29,7 @@ def init_params(state: Any, step_size: float = 0.5) -> LatentSliceParams:
     return LatentSliceParams(step_size=step_size)
 
 
-def init(
-    position: Array, logdensity_fn: Callable, rng = None
-) -> LatentSliceState:
+def init(position: Array, logdensity_fn: Callable, rng=None) -> LatentSliceState:
     log_density = logdensity_fn(position)
     latent_bracket_width = jnp.zeros_like(position)
     return LatentSliceState(position, log_density, latent_bracket_width)
@@ -67,7 +65,7 @@ def build_kernel():
 
         # Sample new position
         x_new, log_density, evals = accept_reject_proposal(
-            logdensity_fn, rng_accept, left, right, position, y, max_evals
+            logdensity_fn, rng_accept, left, right, position, logdensity, y, max_evals
         )
 
         new_state = LatentSliceState(x_new, log_density, width_update)
@@ -90,8 +88,16 @@ def build_step(logdensity_fn: Callable, max_evals: int = 100) -> Callable:
 def _latent_slice_adaptation(
     *, target_num_evaluations: float = 5, max_evaluations: int = 100, **kwargs: Any
 ):
-    """Default adaptation; ``max_evaluations`` must match the kernel's ``max_evals``."""
-    return slice_step_size_adaptor(target_num_evaluations, max_evaluations, **kwargs)
+    """Default adaptation; ``max_evaluations`` must match the kernel's ``max_evals``.
+
+    A larger ``step_size`` draws narrower brackets and so needs fewer
+    evaluations, which makes the evaluation count a stable signal.
+    """
+    return step_size_adaptor(
+        target=target_num_evaluations / max_evaluations,
+        target_from_info_fn=lambda info: info.num_evals / max_evaluations,
+        **kwargs,
+    )
 
 
 class latent_slice(MarkovKernelAPI):
@@ -120,9 +126,15 @@ def accept_reject_proposal(
     lower: Array,
     upper: Array,
     state: Array,
+    logdensity: Scalar,
     y: Scalar,
     max_evals: int,
 ) -> tuple[Array, Scalar, int]:
+    """Shrink ``[lower, upper]`` towards ``state`` until a point lies above ``y``.
+
+    If no point is accepted within ``max_evals``, the chain stays at ``state``.
+    """
+
     def cond_fn(carry):
         i, is_accepted, *_ = carry
         return ~is_accepted & (i < max_evals)
@@ -132,8 +144,9 @@ def accept_reject_proposal(
         rng, key = jax.random.split(rng)
         u = jax.random.uniform(key, shape=x.shape)
         x_new = lower + u * (upper - lower)
-        log_density = logdensity_fn(x_new)
-        is_accepted = y < log_density
+        new_log_density = logdensity_fn(x_new)
+        is_accepted = y < new_log_density
+        log_density = jnp.where(is_accepted, new_log_density, log_density)
 
         def accept(x, x_new, lower, upper):
             return x_new, lower, upper
@@ -157,7 +170,7 @@ def accept_reject_proposal(
 
         return i + 1, is_accepted, rng, lower, upper, x_new, log_density
 
-    init_carry = (0, jnp.array(False), rng, lower, upper, state, y)
+    init_carry = (0, jnp.array(False), rng, lower, upper, state, logdensity)
     final_carry = jax.lax.while_loop(cond_fn, body_fn, init_carry)
     i, is_accepted, _, _, _, x, logdensity = final_carry
 
