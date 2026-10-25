@@ -1,8 +1,6 @@
-import concurrent.futures
 import importlib
 import inspect
 import math
-import sys
 from dataclasses import dataclass
 from functools import lru_cache, partial
 from typing import (
@@ -71,11 +69,6 @@ def _resolve_pjit_p() -> Any:
 
 #: The ``pjit`` primitive, wherever the installed JAX keeps it.
 pjit_p = _resolve_pjit_p()
-
-
-_progress_executor = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix="progress"
-)
 
 
 class API(type):
@@ -250,21 +243,6 @@ class KernelAPI(metaclass=API):
             (cast(type, kernel_type),),
             {"__doc__": cls.__doc__, "__module__": cls.__module__, "__slots__": ()},
         )
-
-
-def write_progress(iteration, total, stats=(), stat_names=(), length: int = 50):
-    """Print a progress bar with the named stats; a ``print_scan`` callback."""
-    try:
-        i, t = int(iteration), int(total)
-    except Exception:
-        return
-    pct = min(100.0, 100 * (i + 1) / t)
-    filled = int(length * (i + 1) // t)
-    bar = "█" * filled + "-" * (length - filled)
-    s = f"Progress: |{bar}| {pct:.2f}%"
-    for name, val in zip(stat_names, stats, strict=False):
-        s += f" {name}: {float(val):.2f}"
-    _progress_executor.submit(sys.stdout.write, f"\r{s}")
 
 
 def where(condition: ArrayLike, x: ArrayLike, y: ArrayLike) -> Array:
@@ -445,55 +423,6 @@ def _inner_nested_scan(f, init, xs, lengths, scan_fn, checkpoint_fn):
     carry, out = scan_fn(sub_scans, init, xs, lengths[0])
     stacked_out = jax.tree_util.tree_map(jnp.concatenate, out)
     return carry, stacked_out
-
-
-def print_scan(
-    f,
-    init,
-    init_stats,
-    xs: Any = None,
-    length: Optional[int] = None,
-    *,
-    unroll: int = 1,
-    update_stats: Callable,
-    print_rate: Optional[int] = None,
-    print_fn: Callable = print,
-):
-    """A version of lax.scan that supports printing the progress of the scan.
-
-    The interface of `print_scan` exactly matches lax.scan, except for
-    the print_rate argument.
-
-    """
-    if length is None:
-        # xs may be a pytree (e.g. tuple of arrays); grab the first leaf.
-        leaves = jax.tree_util.tree_leaves(xs)
-        length = int(leaves[0].shape[0])
-
-    if print_rate is None:
-        print_rate = length // 50 + 1
-
-    num_stats = len(init_stats)
-
-    def scan_fn(carry, x):
-        i, *carry = carry
-        stats, carry = carry[:num_stats], carry[num_stats:]
-        carry, y = f(carry, x)
-        stats = update_stats(stats, carry, y)
-
-        jax.lax.cond(
-            i % print_rate == 0,
-            lambda: jax.debug.callback(print_fn, i, length, stats),
-            lambda: None,
-        )
-        i += 1
-        return (i,) + stats + carry, y
-
-    carry, y = jax.lax.scan(
-        scan_fn, (0,) + init_stats + init, xs, length, unroll=unroll
-    )
-    carry = carry[1 + num_stats :]
-    return carry, y
 
 
 @lru_cache(maxsize=1)

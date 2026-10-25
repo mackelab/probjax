@@ -22,7 +22,7 @@ import jax
 import jax.numpy as jnp
 
 from probjax.inference.base import Adaptor, Kernel, RunResult, Warmup
-from probjax.utils.jaxutils import print_scan, write_progress
+from probjax.utils.progress import progress_scan
 from probjax.utils.typing import RngKey
 
 __all__ = ["run", "step", "warmup"]
@@ -68,29 +68,6 @@ def step(
     """
     return _step(
         key, kernel, state, params, *args, adaptor=adaptor, adaptor_state=adaptor_state
-    )
-
-
-def _progress_scan(body, carry, xs, length, names):
-    """``lax.scan`` with a progress bar showing a moving average of ``names``."""
-
-    def update_stats(stats, _carry, output):
-        return tuple(
-            0.9 * old + 0.1 * new for old, new in zip(stats, output[1], strict=True)
-        )
-
-    def print_fn(i, total, stats):
-        write_progress(i, total, stats, names)
-
-    return print_scan(
-        body,
-        carry,
-        tuple(0.0 for _ in names),
-        xs=xs,
-        length=length,
-        update_stats=update_stats,
-        print_rate=length // 50 + 1,
-        print_fn=print_fn,
     )
 
 
@@ -185,8 +162,13 @@ def run(
 
     carry = (state, params, adaptor_state)
     if names:
-        carry, (trace, _) = _progress_scan(
-            keep_one, carry, (keys, args), num_kept, names
+        carry, (trace, _) = progress_scan(
+            keep_one,
+            carry,
+            (keys, args),
+            num_kept,
+            names=names,
+            stats_fn=lambda output: output[1],
         )
     else:
         carry, (trace, _) = jax.lax.scan(keep_one, carry, (keys, args))

@@ -191,6 +191,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `Autoregressive(input_dim, head, rngs, *, conditioner=...)`
   takes an explicit head; conditioner configs build networks mapping tokens
   `(..., d, width)` to `(..., d, num_params)`
+- `run(..., progress=True)` has a new progress bar
+  (`probjax.utils.progress.progress_scan`). The scan runs in chunks with one
+  unordered host report per chunk (about 50 per run), so steps carry no extra
+  work. The host only moves the bar forward, so late and per-chain (`vmap`)
+  reports cannot make it jump back or print several bars. It always finishes
+  at 100% with a newline, restarts cleanly on cached reruns, shows it/s and
+  ETA excluding compilation, and averages each stat over the last chunk.
+  The thread pool that wrote it asynchronously is gone.
 - **Breaking:** `temporal_smc(filter, logprior_fn, max_observations=...)`
   takes a filter kernel and steps one observation at a time,
   `step(key, state, None, t, y, observed)`; it keeps the assimilated data for
@@ -464,6 +472,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RunnerMixin` and `probjax.utils.jaxutils.WithProgressBarAPI`, the progress
   machinery of the deleted runner classes; `run(..., progress=True)` uses the
   plain `write_progress` callback
+- `RunnerMixin`, `probjax.utils.jaxutils.WithProgressBarAPI` and `print_scan`,
+  the progress machinery of the deleted runner classes; see
+  `probjax.utils.progress`
 - The `Filter` runner class (with its `fit`, object-oriented mode and
   progress bar), `FilteringTrace`, `FilterAPI`, `FilterKernel`,
   `FilterState`, `FilterInfo` and `make_filter_api`: filters run with `run`,
