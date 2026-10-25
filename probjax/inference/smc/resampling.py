@@ -18,9 +18,7 @@ import jax
 import jax.numpy as jnp
 from blackjax.types import Array
 
-from probjax.inference.particles import take_batch
-
-__all__ = ["systematic", "resample_systematic"]
+__all__ = ["systematic"]
 
 
 def systematic(rng, weights: Array, num_samples: int) -> Array:
@@ -44,13 +42,6 @@ def systematic(rng, weights: Array, num_samples: int) -> Array:
     # here also avoids differentiating ``nextafter``, which has no rule.
     weights = jax.lax.stop_gradient(weights)
     return _systematic_or_stratified(rng, weights, num_samples, True)
-
-
-def resample_systematic(key, log_weights, particles):
-    weights = jnp.exp(log_weights)
-    idx = systematic(key, weights, log_weights.shape[0])
-    new_log_weights = jnp.zeros_like(log_weights) - jnp.log(log_weights.shape[0])
-    return take_batch(particles, idx), new_log_weights, idx
 
 
 def _systematic_or_stratified(

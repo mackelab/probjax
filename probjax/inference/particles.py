@@ -34,3 +34,14 @@ def nan_to_neg_inf(log_weights: Array) -> Array:
     negative float, which leaves an impossible particle a finite log weight.
     """
     return jnp.where(jnp.isnan(log_weights), -jnp.inf, log_weights)
+
+
+def unique_fraction(ancestors: Array) -> Array:
+    """Fraction of distinct parents among the resampled particles.
+
+    The ESS measures the weights before resampling, so it cannot see the
+    population collapse onto a few parents; this can. ``1 / N`` means every
+    particle descends from one.
+    """
+    ordered = jnp.sort(ancestors)
+    return (1 + jnp.sum(ordered[1:] != ordered[:-1])) / ancestors.shape[0]

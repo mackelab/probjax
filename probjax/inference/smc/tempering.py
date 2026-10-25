@@ -20,7 +20,7 @@ from jax.scipy.special import logsumexp
 
 from probjax.inference.adaptation import compose_adaptors
 from probjax.inference.base import Kernel
-from probjax.inference.particles import nan_to_neg_inf, take_batch
+from probjax.inference.particles import nan_to_neg_inf, take_batch, unique_fraction
 from probjax.inference.smc.adaptation import acceptance_rate_adaptor, particle_adaptor
 from probjax.inference.smc.ess import log_ess
 from probjax.inference.smc.resampling import systematic
@@ -52,6 +52,8 @@ class SMCInfo(NamedTuple):
             of the particles.
         log_evidence_increment: this step's factor of the evidence estimate.
         ancestors: index of each particle's parent.
+        unique_fraction: fraction of distinct parents among the resampled
+            particles; ``1 / N`` means the population collapsed onto one.
         acceptance_rate: mean acceptance rate of the MCMC moves (NaN if the
             move reports none).
     """
@@ -59,6 +61,7 @@ class SMCInfo(NamedTuple):
     ess: Array
     log_evidence_increment: Array
     ancestors: Array
+    unique_fraction: Array
     acceptance_rate: Array
 
 
@@ -187,6 +190,7 @@ def smc(
         weights = jnp.exp(log_weights)
         if waste_free is None:
             ancestors = systematic(resample_key, weights, num_particles)
+            parents = ancestors
             seeds = take_batch(state.particles, ancestors)
             positions, rates = move_all(
                 move_key, seeds, params, temperature, num_mcmc_steps
@@ -219,6 +223,8 @@ def smc(
             jnp.exp(log_ess(log_weights)) / num_particles,
             log_evidence_increment,
             ancestors,
+            # Waste-free keeps several states per parent; count parents once.
+            unique_fraction(parents),
             jnp.mean(rates),
         )
         return state, info
@@ -238,6 +244,7 @@ def smc(
                 jnp.ones(()),
                 jnp.zeros(()),
                 jnp.arange(loglik.shape[0]),
+                jnp.ones(()),
                 jnp.full((), jnp.nan),
             )
             return state, info

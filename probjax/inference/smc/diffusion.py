@@ -33,7 +33,7 @@ import jax.numpy as jnp
 from jax.scipy.special import logsumexp
 
 from probjax.inference.base import Kernel
-from probjax.inference.particles import nan_to_neg_inf, take_batch
+from probjax.inference.particles import nan_to_neg_inf, take_batch, unique_fraction
 from probjax.inference.smc.ess import log_ess
 from probjax.inference.smc.resampling import systematic
 from probjax.utils.typing import Array, PyTree
@@ -109,12 +109,15 @@ class DiffusionSMCInfo(NamedTuple):
         ess: effective sample size after reweighting, as a fraction.
         resampled: whether the population was resampled.
         ancestors: index of each particle's parent.
+        unique_fraction: fraction of distinct parents; ``1 / N`` means the
+            population collapsed onto one.
         log_evidence_increment: this step's factor of the evidence estimate.
     """
 
     ess: Array
     resampled: Array
     ancestors: Array
+    unique_fraction: Array
     log_evidence_increment: Array
 
 
@@ -269,7 +272,10 @@ def diffusion_smc(guide: Guide, times: Array, *, ess_threshold: float = 0.5) -> 
             index + 1,
             state.log_evidence + increment,
         )
-        return state, DiffusionSMCInfo(ess, resampled, ancestors, increment)
+        info = DiffusionSMCInfo(
+            ess, resampled, ancestors, unique_fraction(ancestors), increment
+        )
+        return state, info
 
     def step(key, state: DiffusionSMCState, params: Any, *args: Any):
         def finished(_):
@@ -278,6 +284,7 @@ def diffusion_smc(guide: Guide, times: Array, *, ess_threshold: float = 0.5) -> 
                 jnp.exp(log_ess(state.log_weights)) / num_particles,
                 jnp.zeros((), bool),
                 jnp.arange(num_particles),
+                jnp.ones(()),
                 jnp.zeros(()),
             )
             return state, info

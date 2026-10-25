@@ -1,8 +1,6 @@
-import concurrent.futures
 import importlib
 import inspect
 import math
-import sys
 from dataclasses import dataclass
 from functools import lru_cache, partial
 from typing import (
@@ -22,35 +20,10 @@ import jax.experimental
 import jax.numpy as jnp
 from jax._src import linear_util as lu
 from jax._src.api_util import debug_info
-from jax._src.core import eval_jaxpr
 from jax._src.flatten_util import ravel_pytree
 from jaxtyping import Array, PyTree
 
 from probjax.utils.typing import ArrayLike
-
-
-def _resolve_partial_eval_jaxpr_nounits() -> Callable:
-    """Find the partial-evaluation helper; its name moved across JAX releases."""
-    for module_name in (
-        "jax.interpreters.partial_eval",
-        "jax._src.interpreters.partial_eval",
-    ):
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError:
-            continue
-        nounits = getattr(module, "partial_eval_jaxpr_nounits", None)
-        if nounits is not None:
-            return nounits
-        legacy = getattr(module, "partial_eval_jaxpr", None)
-        if legacy is not None:
-            return lambda jaxpr, unknowns, instantiate: legacy(
-                jaxpr, unknowns, instantiate
-            )
-    raise ImportError("JAX exposes no usable partial-evaluation helper.")
-
-
-partial_eval_jaxpr_nounits = _resolve_partial_eval_jaxpr_nounits()
 
 
 def _resolve_pjit_p() -> Any:
@@ -71,11 +44,6 @@ def _resolve_pjit_p() -> Any:
 
 #: The ``pjit`` primitive, wherever the installed JAX keeps it.
 pjit_p = _resolve_pjit_p()
-
-
-_progress_executor = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix="progress"
-)
 
 
 class API(type):
@@ -252,21 +220,6 @@ class KernelAPI(metaclass=API):
         )
 
 
-def write_progress(iteration, total, stats=(), stat_names=(), length: int = 50):
-    """Print a progress bar with the named stats; a ``print_scan`` callback."""
-    try:
-        i, t = int(iteration), int(total)
-    except Exception:
-        return
-    pct = min(100.0, 100 * (i + 1) / t)
-    filled = int(length * (i + 1) // t)
-    bar = "█" * filled + "-" * (length - filled)
-    s = f"Progress: |{bar}| {pct:.2f}%"
-    for name, val in zip(stat_names, stats, strict=False):
-        s += f" {name}: {float(val):.2f}"
-    _progress_executor.submit(sys.stdout.write, f"\r{s}")
-
-
 def where(condition: ArrayLike, x: ArrayLike, y: ArrayLike) -> Array:
     """``jnp.where`` with a precise return type.
 
@@ -310,44 +263,6 @@ def ravel_arg_(unravel, index, *args):
     ans = yield args, {}
     ans_flat, _ = ravel_pytree(ans)
     yield ans_flat
-
-
-def precompute(func: Callable, arg_list: list, known_argnums: list) -> Callable:
-    """Precomputes all computations that can be done with all known arguments.
-
-    Args:
-        func (Callable): Function to be precomputed
-        arg_list (list): List of arguments to be precomputed (with dummies for unknowns)
-        known_argnums (list): List of indices of known arguments
-
-    Returns:
-        Callable: Function that inputs all unknown arguments and returns the result of
-        the function
-    """
-    jaxpr = jax.make_jaxpr(func)(*arg_list)
-    unknowns = [k not in known_argnums for k in range(len(arg_list))]
-    instantiate = False
-
-    (known_jaxpr, unknown_jaxpr, _, _) = partial_eval_jaxpr_nounits(
-        jaxpr, unknowns, instantiate
-    )
-
-    known_values = [arg_k for (k, arg_k) in enumerate(arg_list) if k in known_argnums]
-    precomputed_values = eval_jaxpr(
-        known_jaxpr.jaxpr, known_jaxpr.consts, *known_values
-    )
-
-    def inner(*args):
-        values = eval_jaxpr(
-            unknown_jaxpr.jaxpr,
-            unknown_jaxpr.consts,
-            *precomputed_values,
-            *args,
-            propagate_source_info=False,
-        )
-        return values if len(values) > 1 else values[0]
-
-    return inner
 
 
 def spec_from_value(value) -> PyTree[jax.ShapeDtypeStruct]:
@@ -445,55 +360,6 @@ def _inner_nested_scan(f, init, xs, lengths, scan_fn, checkpoint_fn):
     carry, out = scan_fn(sub_scans, init, xs, lengths[0])
     stacked_out = jax.tree_util.tree_map(jnp.concatenate, out)
     return carry, stacked_out
-
-
-def print_scan(
-    f,
-    init,
-    init_stats,
-    xs: Any = None,
-    length: Optional[int] = None,
-    *,
-    unroll: int = 1,
-    update_stats: Callable,
-    print_rate: Optional[int] = None,
-    print_fn: Callable = print,
-):
-    """A version of lax.scan that supports printing the progress of the scan.
-
-    The interface of `print_scan` exactly matches lax.scan, except for
-    the print_rate argument.
-
-    """
-    if length is None:
-        # xs may be a pytree (e.g. tuple of arrays); grab the first leaf.
-        leaves = jax.tree_util.tree_leaves(xs)
-        length = int(leaves[0].shape[0])
-
-    if print_rate is None:
-        print_rate = length // 50 + 1
-
-    num_stats = len(init_stats)
-
-    def scan_fn(carry, x):
-        i, *carry = carry
-        stats, carry = carry[:num_stats], carry[num_stats:]
-        carry, y = f(carry, x)
-        stats = update_stats(stats, carry, y)
-
-        jax.lax.cond(
-            i % print_rate == 0,
-            lambda: jax.debug.callback(print_fn, i, length, stats),
-            lambda: None,
-        )
-        i += 1
-        return (i,) + stats + carry, y
-
-    carry, y = jax.lax.scan(
-        scan_fn, (0,) + init_stats + init, xs, length, unroll=unroll
-    )
-    carry = carry[1 + num_stats :]
-    return carry, y
 
 
 @lru_cache(maxsize=1)

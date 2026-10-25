@@ -10,7 +10,7 @@ from blackjax.mcmc.proposal import static_binomial_sampling
 from jax.flatten_util import ravel_pytree
 
 from probjax.inference.base import Kernel
-from probjax.inference.particles import nan_to_neg_inf, take_batch
+from probjax.inference.particles import nan_to_neg_inf, take_batch, unique_fraction
 from probjax.inference.smc.ess import ess as effective_sample_size
 from probjax.inference.smc.resampling import systematic
 from probjax.inference.smc.temporal_utils import population_covariance, replay_filter
@@ -55,10 +55,24 @@ class TemporalSMCState(NamedTuple):
 
 
 class TemporalSMCInfo(NamedTuple):
+    """Diagnostics of one assimilated observation.
+
+    Attributes:
+        log_evidence_increment: this observation's term of the evidence.
+        ess: effective sample size before resampling, as a fraction.
+        resampled: whether the parameters were resampled.
+        ancestors: index of each particle's parent.
+        unique_fraction: fraction of distinct parents; ``1 / N`` means the
+            population collapsed onto one, which the ESS does not show.
+        acceptance_rate: mean acceptance of the moves (0 without moves).
+        valid: false if the step was rejected and the state left unchanged.
+    """
+
     log_evidence_increment: Any
     ess: Any
     resampled: Any
     ancestors: Any
+    unique_fraction: Any
     acceptance_rate: Any
     valid: Any
 
@@ -243,8 +257,8 @@ def temporal_smc(
         increment = jax.scipy.special.logsumexp(log_weights)
         valid = (count < max_observations) & (t > state.t) & jnp.isfinite(increment)
         log_weights = log_weights - increment
-        ess = effective_sample_size(log_weights)
-        resampled = valid & (ess < ess_threshold * n)
+        ess = effective_sample_size(log_weights) / n
+        resampled = valid & (ess < ess_threshold)
 
         ancestors = jax.lax.cond(
             resampled,
@@ -290,6 +304,7 @@ def temporal_smc(
             jnp.where(valid, ess, 0.0),
             resampled,
             ancestors,
+            unique_fraction(ancestors),
             acceptance_rate,
             valid,
         )
