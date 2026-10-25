@@ -1,4 +1,4 @@
-"""Prefix replay, population statistics and diagnostics for temporal SMC."""
+"""Prefix replay, population statistics and diagnostics for SMC populations."""
 
 from __future__ import annotations
 
@@ -12,29 +12,24 @@ from probjax.inference.smc.ess import ess
 from probjax.utils.typing import Array
 
 
-def replay_filter(
-    filt: Any, key: Any, theta: Any, t0: Any, data: Any, count: int
-) -> tuple[Any, Array]:
+def replay_filter(filt: Any, key: Any, theta: Any, t0: Any, data: Any, count: Any):
     """Filter the first ``count`` observations of ``data = (ts, ys, observed)``.
 
-    Returns the final filter state and the log likelihood. The loop stops at
-    ``count``, so later observations in ``data`` are never read.
+    Returns the final filter state, whose ``log_likelihood`` covers those
+    observations. The loop stops at ``count``, so later entries are never read.
     """
     ts, observations, observed = data
     key, init_key = jax.random.split(key)
-    initial = filt.init(init_key, theta, t0)
-    zero = jnp.array(0.0, dtype=jnp.result_type(jax.tree.leaves(initial)[0], 0.0))
 
     def step(i, carry):
-        key, state, logz = carry
+        key, state = carry
         key, step_key = jax.random.split(key)
-        state, info = filt.step(
+        state, _ = filt.step(
             step_key, state, theta, ts[i], observations[i], observed[i]
         )
-        return key, state, logz + info.log_likelihood
+        return key, state
 
-    _, state, logz = jax.lax.fori_loop(0, count, step, (key, initial, zero))
-    return state, logz
+    return jax.lax.fori_loop(0, count, step, (key, filt.init(init_key, theta, t0)))[1]
 
 
 def population_matrix(particles: Any) -> Array:

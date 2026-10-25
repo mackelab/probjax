@@ -20,7 +20,7 @@ from jax.scipy.special import logsumexp
 
 from probjax.inference.adaptation import compose_adaptors
 from probjax.inference.base import Kernel
-from probjax.inference.particles import take_batch
+from probjax.inference.particles import nan_to_neg_inf, take_batch
 from probjax.inference.smc.adaptation import acceptance_rate_adaptor, particle_adaptor
 from probjax.inference.smc.ess import log_ess
 from probjax.inference.smc.resampling import systematic
@@ -70,7 +70,7 @@ def _solve_temperature(loglik: Array, temperature: Array, target_ess: float) -> 
     """
 
     def relative_ess(delta):
-        log_weights = jnp.nan_to_num(delta * loglik, nan=-jnp.inf)
+        log_weights = nan_to_neg_inf(delta * loglik)
         return jnp.exp(log_ess(log_weights)) / loglik.shape[0]
 
     def bisect(_, bounds):
@@ -176,7 +176,7 @@ def smc(
         event_axes = tuple(range(1, loglik.ndim))
         delta = temperature - state.temperature
         log_increments = jnp.sum(delta * loglik, axis=event_axes)
-        log_increments = jnp.nan_to_num(log_increments, nan=-jnp.inf)
+        log_increments = nan_to_neg_inf(log_increments)
         # The population is equally weighted, so the evidence factor is the
         # mean incremental weight.
         log_norm = logsumexp(log_increments)

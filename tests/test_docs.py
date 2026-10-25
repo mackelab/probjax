@@ -128,17 +128,6 @@ UNDOCUMENTED = {
         "rv_spherical_frozen",
     },
     "probjax.inference": {
-        # Extension points for writing new kernels and filters, rather than
-        # things a user of the existing ones calls.
-        "FilterAPI",
-        "make_filter_api",
-        # EKF model builders, used when defining a state-space model.
-        "make_continuous_transition",
-        "make_linearized_observation",
-        "make_linearized_transition",
-        # Submodules re-exported for convenience.
-        "tuning",
-        "ukf",
         # blackjax's own types, re-exported here; griffe cannot follow the
         # alias into blackjax, and their reference lives with blackjax.
         "State",

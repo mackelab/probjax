@@ -1,10 +1,9 @@
 """Sequential Monte Carlo methods (lazy re-exports).
 
 Lazy (PEP 562): importing this package does not import any SMC implementation.
-This matters because ``filtering.particle_filter`` imports the ``smc.ess`` and
-``smc.resampling`` leaves; an eager ``smc/__init__`` would pull
-``smc.temporal`` -> ``filtering.temporal`` during that import and recreate the
-cycle the filtering refactor removed. Submodules remain directly importable.
+``filtering.particle_filter`` imports the ``smc.ess`` and ``smc.resampling``
+leaves, which must not pull in the SMC kernels with them. Submodules remain
+directly importable.
 """
 
 import importlib
@@ -21,10 +20,8 @@ _LAZY_SYMBOLS = {
     "Guide": "probjax.inference.smc.diffusion",
     "diffusion_smc": "probjax.inference.smc.diffusion",
     "score_guide": "probjax.inference.smc.diffusion",
-    "TemporalSMC": "probjax.inference.smc.temporal",
     "TemporalSMCInfo": "probjax.inference.smc.temporal",
     "TemporalSMCState": "probjax.inference.smc.temporal",
-    "run_temporal_smc": "probjax.inference.smc.temporal",
     "temporal_smc": "probjax.inference.smc.temporal",
     "population_diagnostics": "probjax.inference.smc.temporal_utils",
     "summarize_replicates": "probjax.inference.smc.temporal_utils",
@@ -44,10 +41,8 @@ if TYPE_CHECKING:  # lets static tools (docs, type checkers) resolve the lazy na
     )
     from probjax.inference.smc.tempering import SMCInfo, SMCState, smc
     from probjax.inference.smc.temporal import (
-        TemporalSMC,
         TemporalSMCInfo,
         TemporalSMCState,
-        run_temporal_smc,
         temporal_smc,
     )
     from probjax.inference.smc.temporal_utils import (

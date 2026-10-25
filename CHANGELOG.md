@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] — preparing 0.2.0
 
 ### Added
+- Filters on the kernel contract: `kalman_filter(model)`,
+  `square_root_kalman_filter`, `rank_reduced_kalman_filter`,
+  `extended_kalman_filter`, `unscented_kalman_filter` and
+  `particle_filter(model, num_particles)` return a `Kernel` with
+  `init(key, theta, t0)` and `step(key, state, theta, t, y, observed=True)`.
+  The model parameters are the params, `run(..., args=(ts, ys))` filters a
+  series in one scan and `state.log_likelihood` accumulates the likelihood,
+  so `jax.grad`, `vmap`, NUTS or pseudo-marginal MCMC work on it directly
+- `GaussianModel` (nonlinear transition and observation with Gaussian noise)
+  for the EKF and the UKF; the particle filter takes a guided
+  `proposal=(key, theta, x, y, t0, t1) -> (x', log q)`
+- `smooth(model, theta, initial, states, infos)` (RTS, extended RTS for a
+  `GaussianModel`, any Gaussian filter's output) and `sample_paths` take the
+  output of `run(..., collect=("state", "info"))`
+- `run(..., collect=("state", "info"))` records whole states and infos
 - `smc(logprior_fn, loglikelihood_fn, move=...)`: one tempered-SMC kernel on
   the shared kernel contract, driven by `run`. A fixed schedule passes each
   temperature as a step argument; `target_ess=` picks them adaptively and
@@ -151,6 +166,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the newest release in it
 
 ### Changed
+- **Breaking:** `temporal_smc(filter, logprior_fn, max_observations=...)`
+  takes a filter kernel and steps one observation at a time,
+  `step(key, state, None, t, y, observed)`; it keeps the assimilated data for
+  its moves, so `run` drives it and continuing a run is running more steps.
+  `init(key, parameters, observation_like, t0)`. Each filter state carries its
+  own `log_likelihood` (the `log_likelihoods` field is gone);
+  `sample_joint_paths(key, state, filter, model)` reads the data from the state
+- **Breaking:** `ukf` is `unscented_kalman_filter(model, sigma_points=...)` and
+  `sq_kalman_filter` is `square_root_kalman_filter(model)`, which factors the
+  covariances itself; filter infos call the step term `log_likelihood_increment`
 - **Breaking:** `run_rdsmc` and `run_pretrained_diffusion_smc` are one kernel,
   `diffusion_smc`, with `score_guide` and `neural.diffusion_guide`; its
   results come from `run` (`state.log_evidence`, `trace`), not `SMCResult`.
@@ -403,6 +428,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `addopts`); the CI coverage job opts out with `--no-testmon`
 
 ### Removed
+- `RunnerMixin` and `probjax.utils.jaxutils.WithProgressBarAPI`, the progress
+  machinery of the deleted runner classes; `run(..., progress=True)` uses the
+  plain `write_progress` callback
+- The `Filter` runner class (with its `fit`, object-oriented mode and
+  progress bar), `FilteringTrace`, `FilterAPI`, `FilterKernel`,
+  `FilterState`, `FilterInfo` and `make_filter_api`: filters run with `run`,
+  and fitting is `jax.grad` of `state.log_likelihood`
+- `TemporalFilter`, `temporal_filter`, `run_temporal_filter`, `run_temporal_smc`,
+  `scan_history`, `TemporalResult`, `TemporalTrace` and windowed (`history=L`)
+  traces; `ParticleFilter` (now `particle_filter`), `particle_smoother`,
+  `rauch_tung_stribel_smoother` and `smooth_gaussian_path` (now `smooth` and
+  `sample_paths`), and the EKF helpers `make_linearized_transition`,
+  `make_linearized_observation` and `make_continuous_transition` (the EKF
+  linearises the model itself)
 - The `SMC` runner class, `SMCResult`, `SMCKernelAPI`, `make_mcmc_adapter`
   and BlackJAX's SMC state types: SMC kernels run with `run`
 - `adaptive_smc`, `path_smc`, `GeometricPath`, `PartialPosteriorsPath`,
@@ -458,6 +497,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `probjax.utils.guards.ensure_array`/`as_concrete_bool`
 
 ### Fixed
+- The square-root Kalman filter failed with a shape error whenever the state
+  and observation dimensions differed, and its log-likelihood dropped the
+  `2 pi` term and half the log-determinant; it is now exact
+- NaN log weights in SMC were mapped with `nan_to_num`, which also turned
+  `-inf` into the most negative float, so an impossible particle kept a finite
+  weight and evidence estimates stayed finite
+- Gradients through systematic resampling failed (`nextafter` has no
+  derivative); resampling now stops the gradient of the weights it reads
 - Reverse diffusion SMC weighted particles by the twist ratio alone, omitting
   the forward noising kernel over the proposal density; on a unit Gaussian
   target it halved the variance and biased `log Z` by about +0.5

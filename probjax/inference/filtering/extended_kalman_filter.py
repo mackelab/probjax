@@ -1,213 +1,77 @@
+"""The extended Kalman filter: a Kalman filter on a linearised model."""
+
 from __future__ import annotations
 
-from typing import Callable, Optional, Tuple
+from functools import partial
+from typing import Callable, Optional
 
 import jax
-import jax.numpy as jnp
 
-from probjax.inference.filtering.base import FilterAPI
-from probjax.inference.filtering.gaussian import (
-    GaussianFilterInfo,
-    GaussianFilterState,
-    gaussian_filter_template,
-    gaussian_init,
-    gaussian_unpack,
-)
-from probjax.utils.guards import call_if_callable
-from probjax.utils.linalg import matrix_fraction_decomposition
-from probjax.utils.linear_operator import Jacobian, as_array
-from probjax.utils.typing import ArrayLike
-
-# ---------------------------------------------------------------------------
-# EKF kernel
-# ---------------------------------------------------------------------------
+from probjax.inference.base import Kernel
+from probjax.inference.filtering.gaussian import gaussian_filter
+from probjax.inference.filtering.state_space import GaussianModel
+from probjax.utils.linear_operator import Jacobian
 
 
-def build_step(
-    transition_model_fn: Callable,
-    observation_model_fn: Callable,
+def _linearize(fn, x, args, matrix_free):
+    """``fn(x, *args)`` and its Jacobian in ``x``, dense or as an operator."""
+    if matrix_free:
+        # The operator keeps fn static and args as leaves, so passing theta
+        # through args keeps traced values out of the static field.
+        return fn(x, *args), Jacobian(fn, x, args)
+    return fn(x, *args), jax.jacfwd(fn)(x, *args)
+
+
+def _transition_mean(model, x, theta, t_previous, t):
+    return model.transition(theta, x, t_previous, t)[0]
+
+
+def _observation_mean(model, x, theta, t):
+    return model.observation(theta, x, t)[0]
+
+
+def extended_kalman_filter(
+    model: GaussianModel,
+    *,
+    matrix_free: bool = False,
     linear_solve: Optional[Callable] = None,
     logdet_fn: Optional[Callable] = None,
-) -> Callable:
-    """Build an Extended Kalman filter kernel.
+) -> Kernel:
+    r"""Extended Kalman filter for a nonlinear model with Gaussian noise.
+
+    $$x_t = f(x_{t-1}) + w_t \qquad y_t = h(x_t) + v_t$$
+
+    Each step linearises ``f`` at the filtered mean and ``h`` at the predicted
+    mean, then applies the Kalman update. Its log-likelihood is that of the
+    linearised model, an approximation.
 
     Args:
-        transition_model_fn: (x, cov, t_old, t) -> (x_pred, Phi, Q)
-            Returns the nonlinear predicted state, the Jacobian of the
-            transition, and the process noise covariance.
-        observation_model_fn: (x, cov, t) -> (y_pred, C, R)
-            Returns the nonlinear predicted observation, the Jacobian of the
-            observation function, and the observation noise covariance.
-        linear_solve: Optional custom solve function (see kalman_filter).
-        logdet_fn: Optional custom logdet function (see kalman_filter).
+        model: The model, as functions of the parameters ``theta``.
+        matrix_free: Use the Jacobians as matrix-free operators instead of
+            materialising them; pays off for large states.
+        linear_solve, logdet_fn: As for :func:`kalman_filter`.
+
+    Returns:
+        A :class:`~probjax.inference.Kernel` like :func:`kalman_filter`'s.
     """
 
-    def kernel(
-        state: GaussianFilterState,
-        t: Optional[ArrayLike] = None,
-        observed: Optional[ArrayLike] = None,
-        rng = None,
-    ) -> Tuple[GaussianFilterState, GaussianFilterInfo]:
-        def predict(mu0, cov0, t_old, t):
-            # Predict: nonlinear mean + linearized covariance
-            mu1_, Phi, Q = transition_model_fn(mu0, cov0, t_old, t)
-            cov1_ = Phi @ cov0 @ Phi.T + Q
-            # Materialize predicted covariance — needed for update step
-            return mu1_, as_array(cov1_)
+    transition_mean = partial(_transition_mean, model)
+    observation_mean = partial(_observation_mean, model)
 
-        def observe(mu1_, cov1_, t):
-            return observation_model_fn(mu1_, cov1_, t)
-
-        return gaussian_filter_template(
-            state,
-            t,
-            observed,
-            predict,
-            observe,
-            linear_solve,
-            logdet_fn,
-            symmetrize=True,
+    def predict(theta, mean, cov, t_previous, t):
+        mean_pred, Phi = _linearize(
+            transition_mean, mean, (theta, t_previous, t), matrix_free
         )
+        Q = model.transition(theta, mean, t_previous, t)[1]
+        return mean_pred, Phi @ cov @ Phi.T + Q
 
-    return kernel
-
-
-# ---------------------------------------------------------------------------
-# Helpers for building transition / observation model functions
-# ---------------------------------------------------------------------------
-
-
-def make_linearized_transition(
-    transition_fn: Callable,
-    Q_fn: Callable | ArrayLike,
-    materialize: bool = False,
-) -> Callable:
-    """Build an EKF transition model.
-
-    By default the Jacobian Phi = df/dx is returned as a matrix-free
-    LinearOperator. Set materialize=True to return a dense array instead
-    (faster for small state dimensions, but O(n^2) memory).
-
-    Args:
-        transition_fn: f(x, t_old, t) -> x_new.  Nonlinear transition.
-        Q_fn: Either a callable (t_old, t) -> Q returning the process noise
-            covariance, or a fixed array / LinearOperator.
-        materialize: If True, return Phi as a dense array via jax.jacfwd.
-            If False (default), return Phi as a matrix-free LinearOperator.
-
-    Returns:
-        transition_model_fn: (x, cov, t_old, t) -> (x_pred, Phi, Q)
-    """
-
-    def transition_model_fn(x, cov, t_old, t):
-        x_pred = transition_fn(x, t_old, t)
-        if materialize:
-            Phi = jax.jacfwd(transition_fn)(x, t_old, t)
-        else:
-            Phi = Jacobian(transition_fn, x, (t_old, t))
-        Q = call_if_callable(Q_fn, t_old, t)
-        return x_pred, Phi, Q
-
-    return transition_model_fn
-
-
-def make_linearized_observation(
-    observation_fn: Callable,
-    R_fn: Callable | ArrayLike,
-    materialize: bool = False,
-) -> Callable:
-    """Build an EKF observation model.
-
-    By default the Jacobian C = dh/dx is returned as a matrix-free
-    LinearOperator. Set materialize=True to return a dense array instead.
-
-    Args:
-        observation_fn: h(x, t) -> y.  Nonlinear observation.
-        R_fn: Either a callable (t,) -> R returning the observation noise
-            covariance, or a fixed array / LinearOperator.
-        materialize: If True, return C as a dense array via jax.jacfwd.
-            If False (default), return C as a matrix-free LinearOperator.
-
-    Returns:
-        observation_model_fn: (x, cov, t) -> (y_pred, C, R)
-    """
-
-    def observation_model_fn(x, cov, t):
-        y_pred = observation_fn(x, t)
-        if materialize:
-            C = jax.jacfwd(observation_fn)(x, t)
-        else:
-            C = Jacobian(observation_fn, x, (t,))
-        R = call_if_callable(R_fn, t)
+    def observe(theta, mean_pred, cov_pred, t):
+        y_pred, C = _linearize(
+            observation_mean, mean_pred, (theta, t), matrix_free
+        )
+        R = model.observation(theta, mean_pred, t)[1]
         return y_pred, C, R
 
-    return observation_model_fn
-
-
-def make_continuous_transition(
-    drift_fn: Callable,
-    diffusion_matrix: ArrayLike,
-) -> Callable:
-    """Build an EKF transition model from continuous SDE.
-
-    For an SDE  dx = f(x,t) dt + B dw,  this computes:
-      - x_pred = x + f(x, t_old) * (t - t_old)   (Euler step)
-      - Phi, Q via matrix_fraction_decomposition
-
-    Phi is always dense: matrix_fraction_decomposition materializes the
-    2d x 2d block matrix for expm.
-
-    Args:
-        drift_fn: f(x, t) -> dx/dt.  The drift function of the SDE.
-        diffusion_matrix: B, the diffusion matrix (constant). Shape (d, m).
-
-    Returns:
-        transition_model_fn: (x, cov, t_old, t) -> (x_pred, Phi, Q)
-    """
-    B = jnp.asarray(diffusion_matrix)
-
-    def transition_model_fn(x, cov, t_old, t):
-        dt = t - t_old
-        x_pred = x + drift_fn(x, t_old) * dt
-
-        # Dense Jacobian required for matrix_fraction_decomposition
-        A = jax.jacfwd(lambda x: drift_fn(x, t_old))(x)
-        Phi, Q = matrix_fraction_decomposition(t_old, t, A, B)
-        return x_pred, Phi, Q
-
-    return transition_model_fn
-
-
-# ---------------------------------------------------------------------------
-# API
-# ---------------------------------------------------------------------------
-
-
-class extended_kalman_filter(FilterAPI):
-    r"""
-    Extended Kalman filter for a nonlinear state space model.
-
-    $$x_{t+1} = f(x_t, t) + w_t \qquad y_t = \mathcal{N}(y_t; h(x_t, t), R_t)$$
-
-    The EKF linearizes the transition and observation functions around the current
-    state estimate to apply the standard Kalman filter update equations.
-
-    Args:
-        transition_model_fn: (x, cov, t_old, t) -> (x_pred, Phi, Q)
-            Returns the nonlinear predicted state, the Jacobian of the
-            transition, and the process noise covariance.
-        observation_model_fn: (x, cov, t) -> (y_pred, C, R)
-            Returns the nonlinear predicted observation, the Jacobian of the
-            observation function, and the observation noise covariance.
-
-    Helpers for building these callables:
-        - `make_linearized_transition(f, Q)`: wraps f(x,t_old,t)->x with auto-Jacobian
-        - `make_linearized_observation(h, R)`: wraps h(x,t)->y with auto-Jacobian
-        - `make_continuous_transition(drift, B)`: continuous SDE via matrix
-          fraction decomposition
-    """
-
-    init = gaussian_init
-    build_step = build_step
-
-    default_unpack = staticmethod(gaussian_unpack)
+    return gaussian_filter(
+        model.initial, predict, observe, linear_solve, logdet_fn, symmetrize=True
+    )

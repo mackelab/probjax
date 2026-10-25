@@ -1,8 +1,7 @@
 """Observation-grid validation for temporal filtering.
 
-Leaf module: only jax imports. Both ``filtering.temporal`` and ``smc.temporal``
-validate their ``(ts, observations, observed)`` triples here instead of
-reaching into each other's privates.
+Leaf module: only jax imports. :func:`particle_gibbs` validates its
+``(ts, observations, observed)`` triple here.
 """
 
 from __future__ import annotations

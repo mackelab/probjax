@@ -93,16 +93,24 @@ def test_sigma_point_covariance(rule, dimension):
     np.testing.assert_allclose(actual_cov, cov, atol=2e-6)
 
 
-@pytest.mark.parametrize('callable_r', [False, True])
-def test_ukf_linear_gaussian_update(callable_r):
+def test_ukf_linear_gaussian_update():
     uk = importlib.import_module('probjax.inference.filtering.unscented_kalman_filter')
-    r = (lambda t: jnp.eye(2)) if callable_r else jnp.eye(2)
-    step = jax.jit(uk.build_step(lambda x, t0, t1: x, jnp.eye(2), lambda x, t: x, r))
-    state, info = step(uk.init(jnp.zeros(2), jnp.eye(2), 0), 1, jnp.ones(2))
+    from probjax.inference.filtering.state_space import GaussianModel
+
+    model = GaussianModel(
+        lambda theta: (jnp.zeros(2), jnp.eye(2)),
+        lambda theta, x, t0, t1: (x, jnp.eye(2)),
+        lambda theta, x, t: (x, jnp.eye(2)),
+    )
+    kernel = uk.unscented_kalman_filter(model)
+    key = jax.random.key(0)
+    state, info = jax.jit(kernel.step)(
+        key, kernel.init(key, None, 0), None, 1, jnp.ones(2)
+    )
     np.testing.assert_allclose(state.mean, jnp.full(2, 2 / 3), atol=1e-6)
     np.testing.assert_allclose(state.cov, jnp.eye(2) * 2 / 3, atol=1e-6)
     np.testing.assert_allclose(
-        info.log_likelihood,
+        info.log_likelihood_increment,
         sp.multivariate_normal.logpdf(np.ones(2), cov=3 * np.eye(2)),
         atol=1e-6,
     )

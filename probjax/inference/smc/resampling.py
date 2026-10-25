@@ -40,6 +40,9 @@ def systematic(rng, weights: Array, num_samples: int) -> Array:
     idx: Array
         Array of size `num_samples` to use for resampling.
     """
+    # The indices are discrete, so no gradient flows through them; stopping it
+    # here also avoids differentiating ``nextafter``, which has no rule.
+    weights = jax.lax.stop_gradient(weights)
     return _systematic_or_stratified(rng, weights, num_samples, True)
 
 

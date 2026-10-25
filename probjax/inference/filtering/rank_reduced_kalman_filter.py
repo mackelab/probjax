@@ -1,31 +1,39 @@
+"""The rank-reduced Kalman filter, for states too large for a dense covariance."""
+
 from __future__ import annotations
 
 from typing import Any, Callable, NamedTuple, Optional, Tuple
 
+import jax
 import jax.numpy as jnp
 
-from probjax.inference.filtering.base import FilterAPI, as_time
-from probjax.inference.filtering.gaussian import default_solve, innovation_loglik
+from probjax.inference.base import Kernel
+from probjax.inference.filtering.gaussian import (
+    as_time,
+    default_solve,
+    innovation_loglik,
+    unobserved,
+)
+from probjax.inference.filtering.state_space import LinearGaussianModel
 from probjax.utils.linalg import symmetrize_matrix
 from probjax.utils.typing import Array, ArrayLike
 
 
 class RankReducedKalmanFilterState(NamedTuple):
+    """The filtering distribution with ``cov = cov_factor cov_core cov_factor^T``."""
+
     mean: Array
     cov_factor: Array
     cov_core: Array
-    t: Optional[Array]
+    t: Array
+    log_likelihood: Array
 
 
 class RankReducedKalmanFilterInfo(NamedTuple):
     mean_pred: Array
     cov_factor_pred: Array
     cov_core_pred: Array
-    log_likelihood: Optional[Array] = None
-
-
-def _factor_to_cov(cov_factor: Array, cov_core: Array) -> Array:
-    return cov_factor @ cov_core @ cov_factor.T
+    log_likelihood_increment: Array
 
 
 def _eigh_clip(cov: Array, min_eig: float) -> Tuple[Array, Array]:
@@ -144,172 +152,123 @@ def _parse_process_noise(
     return _matrix_to_lowrank(Q, rank=process_noise_rank, min_eig=min_eig)
 
 
-def init(
-    mean: ArrayLike,
-    cov: Any,
-    t: Optional[ArrayLike] = None,
-    rank: Optional[int] = None,
-    min_eig: float = 1e-9,
-) -> RankReducedKalmanFilterState:
-    mean = jnp.asarray(mean)
-    if rank is None:
-        rank = mean.shape[0]
-
-    cov_factor, cov_core = _parse_process_noise(
-        cov,
-        process_noise_rank=rank,
-        min_eig=min_eig,
-    )
-    return RankReducedKalmanFilterState(mean, cov_factor, cov_core, as_time(t))
-
-
-def build_step(
-    transition_model_fns: Callable,
-    observation_model_fns: Callable,
+def rank_reduced_kalman_filter(
+    model: LinearGaussianModel,
     rank: int,
+    *,
     linear_solve: Optional[Callable] = None,
     min_eig: float = 1e-9,
     process_noise_rank: Optional[int] = None,
     energy_threshold: Optional[float] = None,
     min_rank: int = 1,
-) -> Callable:
-    """Build a rank-reduced Kalman filter kernel.
+) -> Kernel:
+    """Kalman filter with the covariance kept at low rank, ``P ~= U S U^T``.
 
-    Covariance is represented as P ~= U S U^T with U in R^{d x r}, S in R^{r x r}.
-    Predict step is performed in low-rank form by combining propagated state
-    covariance and process covariance through a compressed factorization.
-    Update step uses low-rank algebra in the current subspace.
+    The predict step combines the propagated covariance and the process noise
+    in factored form and truncates to ``rank``; the update works in the
+    current subspace. Costs scale with ``rank`` instead of the state size.
+
+    Args:
+        model: As for :func:`kalman_filter`. The initial covariance and ``Q``
+            may also be given as a factor ``L`` (``L L^T``) or a pair
+            ``(U, S)`` (``U S U^T``, ``S`` a matrix or its diagonal).
+        rank: Rank ``r`` of the covariance factor.
+        linear_solve: Solver for the innovation covariance.
+        min_eig: Floor for the kept eigenvalues.
+        process_noise_rank: Rank kept of ``Q``; defaults to ``rank``.
+        energy_threshold: Keep only the leading directions holding this
+            fraction of the variance (at least ``min_rank``).
+        min_rank: Smallest effective rank under ``energy_threshold``.
+
+    Returns:
+        A :class:`~probjax.inference.Kernel` like :func:`kalman_filter`'s;
+        its state carries ``cov_factor`` and ``cov_core``.
     """
-
     if process_noise_rank is None:
         process_noise_rank = rank
-
     if energy_threshold is not None and not (0.0 < energy_threshold <= 1.0):
         raise ValueError("energy_threshold must be in (0, 1].")
     min_rank = max(1, min(min_rank, rank))
+    solve = default_solve if linear_solve is None else linear_solve
 
-    def kernel(
-        state: RankReducedKalmanFilterState,
-        t: Optional[ArrayLike] = None,
-        observed: Optional[ArrayLike] = None,
-        rng = None,
-    ) -> Tuple[RankReducedKalmanFilterState, RankReducedKalmanFilterInfo]:
-        del rng
-
-        mu0 = state.mean
-        U0 = state.cov_factor
-        S0 = state.cov_core
-        t_old = state.t
-        is_observed = observed is not None
-
-        transition = transition_model_fns(t_old, t)
-        if isinstance(transition, tuple) and len(transition) == 3:
-            Phi, Uq, Sq = transition
-            Uq, Sq = _parse_process_noise(
-                (Uq, Sq),
-                process_noise_rank=process_noise_rank,
-                min_eig=min_eig,
-            )
-        else:
-            Phi, Q = transition
-            Uq, Sq = _parse_process_noise(
-                Q,
-                process_noise_rank=process_noise_rank,
-                min_eig=min_eig,
-            )
-
-        # Predict in low-rank form: P_pred = Phi U0 S0 U0^T Phi^T + Uq Sq Uq^T
-        Up = Phi @ U0
-        U_pred, S_pred = _sum_lowrank_terms(
-            Up,
-            S0,
-            Uq,
-            Sq,
-            rank=rank,
-            min_eig=min_eig,
-        )
-        pred_vals = jnp.diag(S_pred)
-        pred_vals = _apply_energy_threshold(
-            pred_vals,
+    def truncate(vals_desc):
+        return _apply_energy_threshold(
+            vals_desc,
             min_eig=min_eig,
             energy_threshold=energy_threshold,
             min_rank=min_rank,
         )
-        S_pred = jnp.diag(pred_vals)
-        mu_pred = Phi @ mu0
 
-        if is_observed:
-            C, R = observation_model_fns(t)
-            y = observed
-            y_pred = C @ mu_pred
-            residual = y - y_pred
+    def init(
+        key: Any, theta: Any, t0: ArrayLike = 0.0
+    ) -> RankReducedKalmanFilterState:
+        del key
+        mean, cov = model.initial(theta)
+        mean = jnp.asarray(mean)
+        factor, core = _parse_process_noise(
+            cov, process_noise_rank=rank, min_eig=min_eig
+        )
+        return RankReducedKalmanFilterState(
+            mean, factor, core, as_time(t0), jnp.zeros((), mean.dtype)
+        )
 
-            # Innovation: S_y = C U S U^T C^T + R
+    def step(
+        key: Any,
+        state: RankReducedKalmanFilterState,
+        theta: Any,
+        t: ArrayLike,
+        y: ArrayLike,
+        observed: Any = True,
+    ) -> Tuple[RankReducedKalmanFilterState, RankReducedKalmanFilterInfo]:
+        del key
+        t = jnp.asarray(t, state.t.dtype)
+        Phi, Q = model.transition(theta, state.t, t)
+        Uq, Sq = _parse_process_noise(
+            Q, process_noise_rank=process_noise_rank, min_eig=min_eig
+        )
+        # P_pred = Phi U S U^T Phi^T + Uq Sq Uq^T, compressed to the rank.
+        U_pred, S_pred = _sum_lowrank_terms(
+            Phi @ state.cov_factor, state.cov_core, Uq, Sq, rank=rank, min_eig=min_eig
+        )
+        S_pred = jnp.diag(truncate(jnp.diag(S_pred)))
+        mean_pred = Phi @ state.mean
+        y = unobserved(observed, jnp.asarray(y))
+
+        def update(_):
+            C, R = model.observation(theta, t)
+            residual = y - C @ mean_pred
+            # Innovation S_y = C U S U^T C^T + R and gain K = U S M^T S_y^-1.
             M = C @ U_pred
             innovation = M @ S_pred @ M.T + R
-
-            # K = U S M^T S_y^{-1}
-            B = S_pred @ M.T
-            solve = default_solve if linear_solve is None else linear_solve
-            B_Sinv = solve(innovation, B)
-            K = U_pred @ B_Sinv
-
-            mu = mu_pred + K @ residual
-
-            # Covariance update in reduced coordinates:
-            # S_post = S - S M^T S_y^{-1} M S
+            B_Sinv = solve(innovation, S_pred @ M.T)
+            mean = mean_pred + U_pred @ B_Sinv @ residual
             S_post = symmetrize_matrix(S_pred - B_Sinv @ (M @ S_pred))
-
-            # Re-orthogonalize/truncate in-subspace if needed
+            # Re-diagonalise in the subspace and truncate again.
             vals, vecs = _eigh_clip(S_post, min_eig=min_eig)
             k = min(rank, vals.shape[0])
-            vals = vals[-k:]
-            vecs = vecs[:, -k:]
-            vals_desc = vals[::-1]
-            vals_desc = _apply_energy_threshold(
-                vals_desc,
-                min_eig=min_eig,
-                energy_threshold=energy_threshold,
-                min_rank=min_rank,
-            )
-            vals = vals_desc[::-1]
-            U = U_pred @ vecs
-            S = jnp.diag(vals)
-
-            log_likelihood = innovation_loglik(
+            vals, vecs = vals[-k:], vecs[:, -k:]
+            vals = truncate(vals[::-1])[::-1]
+            increment = innovation_loglik(
                 residual,
                 innovation,
                 solve_fn=solve,
                 logdet_fn=lambda S: jnp.linalg.slogdet(jnp.asarray(S))[1],
             )
-
-            return RankReducedKalmanFilterState(
-                mu, U, S, as_time(t)
-            ), RankReducedKalmanFilterInfo(
-                mu_pred,
-                U_pred,
-                S_pred,
-                log_likelihood,
+            return (
+                mean,
+                U_pred @ vecs,
+                jnp.diag(vals),
+                increment.astype(state.log_likelihood.dtype),
             )
 
-        return RankReducedKalmanFilterState(
-            mu_pred, U_pred, S_pred, as_time(t)
-        ), RankReducedKalmanFilterInfo(mu_pred, U_pred, S_pred, jnp.array(0.0))
+        def predict_only(_):
+            return mean_pred, U_pred, S_pred, jnp.zeros_like(state.log_likelihood)
 
-    return kernel
+        mean, U, S, increment = jax.lax.cond(observed, update, predict_only, None)
+        new_state = RankReducedKalmanFilterState(
+            mean, U, S, t, state.log_likelihood + increment
+        )
+        info = RankReducedKalmanFilterInfo(mean_pred, U_pred, S_pred, increment)
+        return new_state, info
 
-
-class rank_reduced_kalman_filter(FilterAPI):
-    """Rank-reduced Kalman filter.
-
-    Stores covariance in low-rank form P ~= U S U^T and truncates to a fixed rank.
-    """
-
-    init = init
-    build_step = build_step
-
-    @staticmethod
-    def default_unpack(
-        state: RankReducedKalmanFilterState, info: RankReducedKalmanFilterInfo
-    ):
-        return (state.mean, _factor_to_cov(state.cov_factor, state.cov_core))
+    return Kernel(init, step, lambda state, theta=None: theta)

@@ -130,9 +130,14 @@ after every step. `diffusion_smc` follows a reverse diffusion, steered by a
 pretrained model (`neural.diffusion_guide`) or by Monte Carlo score estimates
 of the target (`score_guide`). The [SMC guide](smc.md) covers both.
 
-`probjax.inference.filtering` covers `kalman_filter`, `extended_kalman_filter`,
-`unscented_kalman_filter`, `sq_kalman_filter`, `rank_reduced_kalman_filter` and
-`ParticleFilter`, with `rauch_tung_stribel_smoother` and `particle_smoother`.
+Filters are kernels too. `kalman_filter`, `square_root_kalman_filter` and
+`rank_reduced_kalman_filter` filter a `LinearGaussianModel` exactly,
+`extended_kalman_filter` and `unscented_kalman_filter` a nonlinear
+`GaussianModel`, and `particle_filter` any `StateSpaceModel`. The model
+parameters `theta` are the filter's params, so `run` filters a series and
+`jax.grad` of `state.log_likelihood` differentiates the likelihood of `theta`.
+`smooth`, `sample_paths` and `temporal_smc` (SMC²) build on them; the
+[filtering guide](temporal-smc.md) covers them.
 
 ## Learned components
 
