@@ -11,9 +11,15 @@ Kernels are pure transitions. Adaptors fit their parameters and runners provide
 the standard compiled execution paths.
 """
 
-from probjax.inference.adaptation import compose_adaptors, pooled
+from probjax.inference.adaptation import (
+    compose_adaptors,
+    fit_adaptor,
+    maximum_likelihood,
+    pooled,
+)
 from probjax.inference.base import (
     Adaptor,
+    Density,
     Kernel,
     RunResult,
     SMCResult,
@@ -61,8 +67,6 @@ from probjax.inference.mcmc import (
     mclmc_warmup,
     mean_adaptor,
     mh,
-    neural_imh,
-    neural_imh_warmup,
     nuts,
     pathfinder_warmup,
     pseudo_marginal,
@@ -121,7 +125,10 @@ __all__ = [
     "run",
     "step",
     "warmup",
+    "Density",
     "compose_adaptors",
+    "fit_adaptor",
+    "maximum_likelihood",
     "pooled",
     "SMCResult",
     "step_size_adaptor",
@@ -137,7 +144,6 @@ __all__ = [
     "FlowVIInfo",
     "NeuTraTransform",
     "mclmc_warmup",
-    "neural_imh_warmup",
     # MCMC kernels
     "hmc",
     "nuts",
@@ -146,7 +152,6 @@ __all__ = [
     "gauss_rwmh",
     "imh",
     "gaussian_imh",
-    "neural_imh",
     "slice",
     "elliptical_slice",
     "latent_slice",

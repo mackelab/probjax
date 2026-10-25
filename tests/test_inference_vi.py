@@ -10,11 +10,10 @@ import jax
 import jax.numpy as jnp
 import optax
 import pytest
-from blackjax.base import VIAlgorithm
 from flax import nnx
 
 from probjax.inference import flow_vi, hmc, mala, neutra, nuts, run, warmup
-from probjax.inference.vi import rebuild
+from probjax.inference.neural import bijection, density
 from probjax.nn import FitConfig, maf, nsf
 
 DIM = 3
@@ -41,19 +40,31 @@ def funnel_logdensity(position):
     )
 
 
-def fit_flow(logdensity, flow, num_steps=1200, seed=0, num_samples=128):
-    algorithm = flow_vi(logdensity, flow, optax.adam(1e-3), num_samples=num_samples)
-
-    def one(state, key):
-        state, info = algorithm.step(key, state)
-        return state, info.elbo
-
-    state, objective = jax.lax.scan(
-        jax.jit(one),
-        algorithm.init(),
-        jax.random.split(jax.random.key(seed), num_steps),
+def fit_flow(logdensity, flow, num_steps=1200, seed=0, num_samples=128, **options):
+    """Fit ``flow`` by reverse KL; returns ``(family, fitted params, losses)``."""
+    family, params = density(flow)
+    kernel = flow_vi(
+        logdensity, family, optax.adam(1e-3), num_samples=num_samples, **options
     )
-    return algorithm, state, objective
+    result = run(
+        jax.random.key(seed),
+        kernel,
+        kernel.init(params),
+        None,
+        num_steps,
+        collect=("loss",),
+    )
+    return family, result.state.params, result.trace["loss"]
+
+
+def draw(family, params, num_draws, seed=7):
+    keys = jax.random.split(jax.random.key(seed), num_draws)
+    return jax.vmap(family.sample, (0, None))(keys, params)
+
+
+def neutra_from(logdensity, flow, params=None):
+    forward, initial = bijection(flow)
+    return neutra(logdensity, forward, initial if params is None else params)
 
 
 def effective_sample_size(chain):
@@ -106,7 +117,7 @@ def test_transformed_logdensity_matches_a_brute_force_jacobian(ctor):
         jax.random.normal(jax.random.key(2), (256, DIM)) * 2.0 + 1.0,
         config=FitConfig(max_steps=60, batch_size=64),
     )
-    transform = neutra(logdensity, flow)
+    transform = neutra_from(logdensity, flow)
 
     forward = flow.transform
     for seed in range(3):
@@ -122,9 +133,8 @@ def test_a_well_fitted_flow_turns_the_target_into_a_standard_normal():
     """The defining property: if q == p then log p~(z) == log N(z) + const."""
     logdensity, mean, cov = correlated_gaussian()
     flow = nsf(DIM, 4, rngs=nnx.Rngs(0))
-    _, state, _ = fit_flow(logdensity, flow)
-    fitted = rebuild(flow, state)
-    transform = neutra(logdensity, fitted)
+    _, fitted, _ = fit_flow(logdensity, flow)
+    transform = neutra_from(logdensity, flow, fitted)
 
     zs = jax.random.normal(jax.random.key(9), (64, DIM))
     transformed = jax.vmap(transform.logdensity)(zs)
@@ -136,8 +146,7 @@ def test_a_well_fitted_flow_turns_the_target_into_a_standard_normal():
 
 def test_forward_accepts_a_single_position_and_a_batch():
     logdensity, *_ = correlated_gaussian()
-    flow = maf(DIM, 2, rngs=nnx.Rngs(0))
-    transform = neutra(logdensity, flow)
+    transform = neutra_from(logdensity, maf(DIM, 2, rngs=nnx.Rngs(0)))
 
     assert transform.forward(jnp.zeros(DIM)).shape == (DIM,)
     assert transform.forward(jnp.zeros((7, DIM))).shape == (7, DIM)
@@ -148,58 +157,39 @@ def test_forward_accepts_a_single_position_and_a_batch():
 # ---------------------------------------------------------------------------
 
 
-def test_flow_vi_is_a_blackjax_vi_algorithm():
+def test_flow_vi_is_a_kernel_driven_by_the_runner():
     logdensity, *_ = correlated_gaussian()
-    algorithm = flow_vi(logdensity, maf(DIM, 2, rngs=nnx.Rngs(0)), optax.adam(1e-3))
-    assert isinstance(algorithm, VIAlgorithm)
+    family, params = density(maf(DIM, 2, rngs=nnx.Rngs(0)))
+    kernel = flow_vi(logdensity, family, optax.adam(1e-3))
 
-    state = algorithm.init()
-    state, info = algorithm.step(jax.random.key(0), state)
-    assert jnp.isfinite(info.elbo)
-    assert algorithm.sample(jax.random.key(1), state, 5).shape == (5, DIM)
+    state, info = kernel.step(jax.random.key(0), kernel.init(params))
+    assert jnp.isfinite(info.loss)
+    assert kernel.init_params(state) is None
+    assert draw(family, state.params, 5).shape == (5, DIM)
 
 
 def test_flow_vi_recovers_a_correlated_gaussian():
     logdensity, mean, cov = correlated_gaussian()
-    flow = maf(DIM, 4, rngs=nnx.Rngs(0))
-    algorithm, state, objective = fit_flow(logdensity, flow)
+    family, fitted, loss = fit_flow(logdensity, maf(DIM, 4, rngs=nnx.Rngs(0)))
 
-    assert float(objective[-1]) < float(objective[0])
-
-    draws = algorithm.sample(jax.random.key(7), state, 4000)
+    assert float(jnp.mean(loss[-50:])) < float(jnp.mean(loss[:50]))
+    draws = draw(family, fitted, 4000)
     assert float(jnp.max(jnp.abs(draws.mean(0) - mean))) < 0.15
     assert float(jnp.max(jnp.abs(jnp.cov(draws.T) - cov))) < 0.25
-
-
-def test_the_objective_goes_down_and_is_the_negative_elbo():
-    """`info.elbo` holds mean(log q - log p), matching blackjax's field name.
-
-    It is the quantity being minimised, so it must decrease -- the name is
-    kept for parity with ``MFVIInfo`` but the sign is the opposite of what it
-    suggests.
-    """
-    logdensity, *_ = correlated_gaussian()
-    _, _, objective = fit_flow(logdensity, maf(DIM, 3, rngs=nnx.Rngs(0)), num_steps=400)
-    assert float(jnp.mean(objective[-50:])) < float(jnp.mean(objective[:50]))
 
 
 @pytest.mark.parametrize("stl", [True, False], ids=["stl", "no_stl"])
 def test_both_gradient_estimators_train(stl):
     logdensity, *_ = correlated_gaussian()
-    flow = maf(DIM, 3, rngs=nnx.Rngs(0))
-    algorithm = flow_vi(
-        logdensity, flow, optax.adam(1e-3), num_samples=64, stl_estimator=stl
+    _, _, loss = fit_flow(
+        logdensity,
+        maf(DIM, 3, rngs=nnx.Rngs(0)),
+        num_steps=300,
+        num_samples=64,
+        stl_estimator=stl,
     )
-
-    def one(state, key):
-        state, info = algorithm.step(key, state)
-        return state, info.elbo
-
-    _, objective = jax.lax.scan(
-        jax.jit(one), algorithm.init(), jax.random.split(jax.random.key(0), 300)
-    )
-    assert jnp.all(jnp.isfinite(objective))
-    assert float(jnp.mean(objective[-50:])) < float(jnp.mean(objective[:50]))
+    assert jnp.all(jnp.isfinite(loss))
+    assert float(jnp.mean(loss[-50:])) < float(jnp.mean(loss[:50]))
 
 
 # ---------------------------------------------------------------------------
@@ -224,9 +214,8 @@ def test_neutra_improves_mixing_on_the_funnel():
     """
     dim = 5
     flow = nsf(dim, 5, rngs=nnx.Rngs(0))
-    _, state, _ = fit_flow(funnel_logdensity, flow, num_steps=1200)
-    fitted = rebuild(flow, state)
-    transform = neutra(funnel_logdensity, fitted)
+    _, fitted, _ = fit_flow(funnel_logdensity, flow, num_steps=1200)
+    transform = neutra_from(funnel_logdensity, flow, fitted)
 
     plain = run_chain(funnel_logdensity, jnp.zeros(dim), seed=3, warmup_steps=500)
     latent = run_chain(transform.logdensity, jnp.zeros(dim), seed=3, warmup_steps=500)
@@ -267,8 +256,8 @@ def test_neutra_improves_mixing_on_a_correlated_ridge():
         return -0.5 * x @ precision @ x
 
     flow = nsf(dim, 5, rngs=nnx.Rngs(0))
-    _, state, _ = fit_flow(logdensity, flow, num_steps=1200)
-    transform = neutra(logdensity, rebuild(flow, state))
+    _, fitted, _ = fit_flow(logdensity, flow, num_steps=1200)
+    transform = neutra_from(logdensity, flow, fitted)
 
     plain = run_chain(logdensity, jnp.zeros(dim), seed=3, warmup_steps=500)
     latent = run_chain(transform.logdensity, jnp.zeros(dim), seed=3, warmup_steps=500)
@@ -284,8 +273,7 @@ def test_neutra_improves_mixing_on_a_correlated_ridge():
 def test_the_transformed_target_drives_every_kernel(kernel_fn):
     """NeuTra adds no kernel, so all of them must work unchanged."""
     logdensity, *_ = correlated_gaussian()
-    flow = maf(DIM, 3, rngs=nnx.Rngs(0))
-    transform = neutra(logdensity, flow)
+    transform = neutra_from(logdensity, maf(DIM, 3, rngs=nnx.Rngs(0)))
 
     result = run_chain(
         transform.logdensity, jnp.zeros(DIM), num_steps=200, kernel_fn=kernel_fn
@@ -297,8 +285,7 @@ def test_the_transformed_target_drives_every_kernel(kernel_fn):
 
 def test_the_transformed_target_survives_jit_and_vmap_over_chains():
     logdensity, *_ = correlated_gaussian()
-    flow = maf(DIM, 2, rngs=nnx.Rngs(0))
-    transform = neutra(logdensity, flow)
+    transform = neutra_from(logdensity, maf(DIM, 2, rngs=nnx.Rngs(0)))
 
     assert jnp.isfinite(jax.jit(transform.logdensity)(jnp.zeros(DIM)))
     starts = jax.random.normal(jax.random.key(0), (4, DIM))
@@ -313,8 +300,8 @@ def test_an_untrained_flow_still_gives_a_valid_target():
     target's moments.
     """
     logdensity, mean, cov = correlated_gaussian()
-    flow = maf(DIM, 2, rngs=nnx.Rngs(0))  # never fitted
-    transform = neutra(logdensity, flow)
+    # never fitted
+    transform = neutra_from(logdensity, maf(DIM, 2, rngs=nnx.Rngs(0)))
 
     result = run_chain(transform.logdensity, jnp.zeros(DIM), num_steps=4000, seed=5)
     draws = transform.forward(result)

@@ -69,13 +69,25 @@ class MarkovKernelAPI(KernelAPI):
         def step(rng: RngKey, state, params, *args):
             return raw_step(rng, state, params)
 
-        default_adaptation = cls.default_adaptation_fn
-        # Policies that need the target (e.g. MCLMC's) get it bound here.
-        if default_adaptation is not None and (
-            "logdensity_fn" in inspect.signature(default_adaptation).parameters
-        ):
-            default_adaptation = partial(default_adaptation, logdensity_fn)
+        default_adaptation = bind_default_adaptation(
+            cls.default_adaptation_fn, logdensity_fn=logdensity_fn, **kwargs
+        )
         return cls.kernel_type(init_fn, step, cls.init_params, default_adaptation)
+
+
+def bind_default_adaptation(
+    factory: Callable[..., Any] | None, **options: Any
+) -> Callable[..., Any] | None:
+    """Bind the construction options a kernel's adaptation factory asks for.
+
+    Policies that need the target (MCLMC's tuning) take ``logdensity_fn``;
+    policies that need a build option (IMH's proposal) take that option.
+    """
+    if factory is None:
+        return None
+    parameters = inspect.signature(factory).parameters
+    bound = {name: value for name, value in options.items() if name in parameters}
+    return partial(factory, **bound) if bound else factory
 
 
 def make_step_from_kernel(

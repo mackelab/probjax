@@ -1,16 +1,25 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 import jax
 import jax.numpy as jnp
+import optax
 
-from probjax.inference.base import Adaptor
+from probjax.inference.base import Adaptor, Density
 from probjax.inference.smc.base import _ensure_param_batch
 from probjax.utils import guards as _guards
 from probjax.utils.guards import params_to_dict
 
-__all__ = ["compose_adaptors", "get_param", "pooled", "replace_params"]
+__all__ = [
+    "FitState",
+    "compose_adaptors",
+    "fit_adaptor",
+    "get_param",
+    "maximum_likelihood",
+    "pooled",
+    "replace_params",
+]
 
 
 def get_param(params: Any, name: str) -> Any:
@@ -94,6 +103,9 @@ def pooled(adaptor: Adaptor, axis_name: str = "chain") -> Adaptor:
     estimates measure deviations from the pooled mean, so they include the
     spread between chains; they start slightly low (the bias shrinks like
     ``log(n) / n`` after ``n`` updates).
+
+    Do not pool a :func:`fit_adaptor`: averaging would mix the chains'
+    buffered points. Give it ``axis_name`` instead, which averages gradients.
     """
 
     def mean_over_chains(tree: Any) -> Any:
@@ -113,3 +125,148 @@ def pooled(adaptor: Adaptor, axis_name: str = "chain") -> Adaptor:
         return mean_over_chains(adaptor_state), mean_over_chains(params), adaptor_info
 
     return Adaptor(adaptor.init, update, adaptor.finalize)
+
+
+class FitState(NamedTuple):
+    """State of :func:`fit_adaptor`: a ring buffer and the optimizer."""
+
+    points: Any
+    weights: Any
+    num_seen: Any
+    num_updates: Any
+    opt_state: Any
+    loss: Any
+
+
+def _position_data(state: Any, info: Any) -> tuple[Any, Any]:
+    del info
+    points = jax.tree.map(lambda leaf: leaf[None], state.position)
+    return points, jnp.ones((1,))
+
+
+def fit_adaptor(
+    loss_fn: Callable[[Any, Any, Any], Any],
+    optimizer: optax.GradientTransformation,
+    *,
+    field: str | None = None,
+    data_fn: Callable[[Any, Any], tuple[Any, Any]] | None = None,
+    buffer_size: int = 4096,
+    batch_size: int | None = 256,
+    every: int = 1,
+    num_fit_steps: int = 1,
+    axis_name: str | None = None,
+    seed: int = 0,
+) -> Adaptor:
+    """Train learned parameters on the chain's own output, inside the scan.
+
+    Each transition appends ``data_fn(state, info) -> (points, weights)`` to a
+    ring buffer of ``buffer_size`` points shaped like ``state.position``.
+    Every ``every`` transitions the adaptor takes ``num_fit_steps`` optimizer
+    steps on ``loss_fn(params, points, weights)`` over minibatches of
+    ``batch_size`` buffered points (``None``: the whole buffer). ``every=1,
+    num_fit_steps=1`` trains a little after every transition;
+    ``every=200, num_fit_steps=200`` alternates sampling and fitting blocks.
+    Both run fully compiled.
+
+    Args:
+        loss_fn: the training loss, e.g. :func:`maximum_likelihood`.
+        optimizer: an optax transformation.
+        field: the parameter field to train; ``None`` trains all of ``params``.
+        data_fn: what to store per transition; defaults to the new position
+            with weight one.
+        axis_name: average gradients over this ``jax.vmap`` axis, so chains
+            run in parallel train one shared set of parameters.
+        seed: seeds the minibatch draws (adaptors receive no key).
+    """
+    if data_fn is None:
+        data_fn = _position_data
+
+    def read(params: Any) -> Any:
+        return params if field is None else get_param(params, field)
+
+    def write(params: Any, value: Any) -> Any:
+        return value if field is None else replace_params(params, **{field: value})
+
+    def init(state: Any, params: Any) -> FitState:
+        points = jax.tree.map(
+            lambda leaf: jnp.zeros(
+                (buffer_size,) + jnp.shape(leaf), jnp.result_type(leaf)
+            ),
+            state.position,
+        )
+        return FitState(
+            points,
+            jnp.zeros((buffer_size,)),
+            jnp.zeros((), jnp.int32),
+            jnp.zeros((), jnp.int32),
+            optimizer.init(read(params)),
+            jnp.full((), jnp.nan),
+        )
+
+    def fit(key: Any, fit_state: FitState, trained: Any) -> tuple[Any, Any, Any]:
+        num_filled = jnp.minimum(fit_state.num_seen, buffer_size)
+
+        def one_step(carry, step_key):
+            trained, opt_state = carry
+            if batch_size is None:
+                points, weights = fit_state.points, fit_state.weights
+            else:
+                index = jax.random.randint(step_key, (batch_size,), 0, num_filled)
+                points = jax.tree.map(lambda leaf: leaf[index], fit_state.points)
+                weights = fit_state.weights[index]
+            loss, grads = jax.value_and_grad(loss_fn)(trained, points, weights)
+            if axis_name is not None:
+                loss, grads = jax.lax.pmean((loss, grads), axis_name)
+            updates, opt_state = optimizer.update(grads, opt_state, trained)
+            return (optax.apply_updates(trained, updates), opt_state), loss
+
+        (trained, opt_state), losses = jax.lax.scan(
+            one_step,
+            (trained, fit_state.opt_state),
+            jax.random.split(key, num_fit_steps),
+        )
+        return trained, opt_state, losses[-1]
+
+    def update(
+        state: Any, info: Any, fit_state: FitState, params: Any
+    ) -> tuple[FitState, Any, Any]:
+        points, weights = data_fn(state, info)
+        slots = (fit_state.num_seen + jnp.arange(weights.shape[0])) % buffer_size
+        fit_state = fit_state._replace(
+            points=jax.tree.map(
+                lambda buffer, new: buffer.at[slots].set(new), fit_state.points, points
+            ),
+            weights=fit_state.weights.at[slots].set(weights),
+            num_seen=fit_state.num_seen + weights.shape[0],
+            num_updates=fit_state.num_updates + 1,
+        )
+        # Wait for a full batch: fitting a flow to a few copies of the
+        # starting point collapses it onto that point.
+        do_fit = (fit_state.num_updates % every == 0) & (
+            fit_state.num_seen >= (batch_size or 1)
+        )
+        key = jax.random.fold_in(jax.random.key(seed), fit_state.num_updates)
+        trained, opt_state, loss = jax.lax.cond(
+            do_fit,
+            lambda: fit(key, fit_state, read(params)),
+            lambda: (read(params), fit_state.opt_state, fit_state.loss),
+        )
+        fit_state = fit_state._replace(opt_state=opt_state, loss=loss)
+        return fit_state, write(params, trained), loss
+
+    def finalize(fit_state: FitState, params: Any) -> tuple[Any, Any]:
+        return params, fit_state.loss
+
+    return Adaptor(init, update, finalize)
+
+
+def maximum_likelihood(density: Density) -> Callable[[Any, Any, Any], Any]:
+    """Weighted negative log-likelihood of ``density``, for :func:`fit_adaptor`."""
+
+    def loss(params: Any, points: Any, weights: Any) -> Any:
+        log_q = jax.vmap(density.logpdf, in_axes=(0, None))(points, params)
+        # Empty buffer slots carry weight zero; keep their -inf out of the sum.
+        weighted = jnp.where(weights > 0, weights * log_q, 0.0)
+        return -jnp.sum(weighted) / jnp.maximum(jnp.sum(weights), 1e-12)
+
+    return loss

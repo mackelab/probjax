@@ -39,7 +39,6 @@ Pure kernels, adaptation utilities and compiled runners. See
 ::: probjax.inference.mcmc.imh.imh
     options:
       heading: probjax.inference.imh
-::: probjax.inference.neural_imh
 ::: probjax.inference.mcmc.slice.slice
     options:
       heading: probjax.inference.slice
@@ -76,7 +75,6 @@ Pure kernels, adaptation utilities and compiled runners. See
 ::: probjax.inference.window_warmup
 ::: probjax.inference.pathfinder_warmup
 ::: probjax.inference.mclmc_warmup
-::: probjax.inference.neural_imh_warmup
 ::: probjax.inference.step_size_adaptor
 ::: probjax.inference.mass_matrix_adaptor
 ::: probjax.inference.covariance_adaptor
@@ -86,6 +84,8 @@ Pure kernels, adaptation utilities and compiled runners. See
 ::: probjax.inference.slice_step_size_adaptor
 ::: probjax.inference.particle_adaptor
 ::: probjax.inference.pooled
+::: probjax.inference.fit_adaptor
+::: probjax.inference.maximum_likelihood
 
 ## Convergence diagnostics
 
@@ -183,6 +183,13 @@ Temporal inference advances through physical observation times. See the
 ::: probjax.inference.particle_smoother
 ::: probjax.inference.rauch_tung_stribel_smoother
 ::: probjax.inference.smooth
+
+## Learned components
+
+::: probjax.inference.Density
+::: probjax.inference.neural.density
+::: probjax.inference.neural.bijection
+::: probjax.inference.mcmc.imh.imh_data
 
 ## Variational inference
 

@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] — preparing 0.2.0
 
 ### Added
+- Learned components in `probjax.inference`: `Density(sample, logpdf)` takes
+  its parameters explicitly, so a proposal's or variational family's weights
+  live in a kernel's `params`, inside the compiled scan, `vmap`-able over
+  chains. `probjax.inference.neural.density(model)` and `bijection(flow)` split
+  a `probjax.nn` model into such pure functions and their `nnx.Param`s
+- `fit_adaptor(loss_fn, optimizer, ...)` trains learned parameters on the
+  chain's own output inside the scan: a ring buffer, `every`/`num_fit_steps`
+  for in-scan or block-wise fitting, and `axis_name=` to train one set of
+  parameters shared by chains run under `jax.vmap`.
+  `maximum_likelihood(density)` is the matching weighted-NLL loss
 - `probjax.inference.run`, `warmup` and `step`: three compiled functions that
   drive any kernel. `run(key, kernel, state, params, num_steps, *, args,
   adaptor, collect, thin, progress)` returns a `RunResult(state, params,
@@ -118,6 +128,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the newest release in it
 
 ### Changed
+- **Breaking:** `imh(logdensity_fn, proposal=density)` takes a `Density`; the
+  kernel's params are the proposal's params, and its default adaptation trains
+  them with `fit_adaptor` on Rao-Blackwellised chain output (`imh_data`). It
+  replaces both the old `imh(proposal_fn=, proposal_logpdf=)` and
+  `neural_imh(logdensity_fn, model)`: use
+  `proposal, params = neural.density(model)` and
+  `imh(logdensity_fn, proposal=proposal)`. IMH info is now `IMHInfo` with the
+  proposed and previous positions
+- **Breaking:** `flow_vi(logdensity_fn, family, optimizer)` takes a `Density`
+  and returns a `Kernel` whose step is one optimizer step, so `run` drives it:
+  `run(key, kernel, kernel.init(params), None, n, collect=("loss",))`. The
+  per-step objective is `FlowVIInfo.loss` (was `elbo`, which held the negative
+  ELBO) and `FlowVIState` holds `params` (was `flow_params`)
+- **Breaking:** `neutra(logdensity_fn, bijection, params)` takes a map
+  `(z, params) -> (x, log|det J|)`, e.g. from `neural.bijection(flow)`, instead
+  of a flow
 - **Breaking:** the `MCMC` runner class is replaced by `run`/`warmup`/`step`.
   `MCMC(kernel).sample(key, state, n, params, thin=t)` becomes
   `run(key, kernel, state, params, n * t, thin=t).trace["position"]`;
@@ -342,6 +368,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `addopts`); the CI coverage job opts out with `--no-testmon`
 
 ### Removed
+- `neural_imh`, `neural_imh_warmup` (its `data=` seed data: fit the flow on
+  the draws before `neural.density`), `NeuralIMHParams`/`NeuralIMHState`/
+  `NeuralIMHInfo`/`NeuralIMHWarmupInfo`, `IMHParams`, `wrap_logpdf`,
+  `proposal_gaussian`/`proposal_gaussian_logpdf` (use `gaussian_proposal`), and
+  `probjax.inference.vi.rebuild` (the fitted params are `state.params`)
 - `MCMC`, `MCMCResult`, `AdaptationResult`, `AdaptationTrace`, `WarmupResult`,
   `adapt`, `adapt_step`, `as_warmup` and `mcmc.base.sample_kernel`; use `run`,
   `warmup`, `step` and `RunResult`
@@ -380,6 +411,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `probjax.utils.guards.ensure_array`/`as_concrete_bool`
 
 ### Fixed
+- `pseudo_marginal` inherited default adaptations that need a fixed target
+  (MCLMC's) unbound, so they failed when called; it now has none for them
 - `pathfinder_warmup` and `mclmc_warmup` passed the kernel to `jax.jit` as a
   traced argument, so they failed whenever they ran
 - The default warmups of `mclmc`, `adjusted_mclmc` and `adjusted_mclmc_dynamic`

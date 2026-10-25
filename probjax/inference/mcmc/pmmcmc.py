@@ -35,12 +35,14 @@ Usage::
     new_state, info = kernel.step(key, state, params)
 """
 
+import inspect
 from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
 
 from probjax.inference.base import Kernel
+from probjax.inference.mcmc.base import bind_default_adaptation
 from probjax.utils.jaxutils import as_configured
 from probjax.utils.typing import RngKey
 
@@ -132,10 +134,17 @@ def pseudo_marginal(
     def init_params(state, *args, **kwargs):
         return configured.init_params(state, *args, **kwargs)
 
-    # Inherit the inner kernel's recommended warmup (None if it has none).
-    return pseudo_marginal_type(
-        init, step, init_params, configured.default_adaptation_fn
+    # Inherit the inner kernel's recommended warmup, unless it needs the
+    # target: a stochastic log-density has no single one to bind.
+    default_adaptation = configured.default_adaptation_fn
+    if default_adaptation is not None and (
+        "logdensity_fn" in inspect.signature(default_adaptation).parameters
+    ):
+        default_adaptation = None
+    default_adaptation = bind_default_adaptation(
+        default_adaptation, **inner_kernel_kwargs
     )
+    return pseudo_marginal_type(init, step, init_params, default_adaptation)
 
 
 #: The built kernel carries this type, so repr(kernel) names the algorithm.

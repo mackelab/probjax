@@ -5,6 +5,8 @@ Run, for example::
     uv run python examples/inference/neural_imh_benchmark.py --case all
     uv run python examples/inference/neural_imh_benchmark.py \
         --case mixture --seed-data 500
+    uv run python examples/inference/neural_imh_benchmark.py \
+        --case correlated --every 250 --fit-steps 250
 """
 
 from __future__ import annotations
@@ -17,10 +19,13 @@ from typing import Callable
 
 import jax
 import jax.numpy as jnp
+import optax
 from flax import nnx
 
-from probjax.inference import imh, neural_imh, neural_imh_warmup, run, warmup
-from probjax.nn import nsf
+from probjax.inference import fit_adaptor, imh, maximum_likelihood, run
+from probjax.inference.mcmc.imh import imh_data
+from probjax.inference.neural import density
+from probjax.nn import FitConfig, nsf
 
 
 @dataclass(frozen=True)
@@ -139,29 +144,33 @@ def _ready(value):
 def run_case(name, args):
     case = CASES[name]()
     (
-        key_model,
         key_initial,
         key_seed,
+        key_fit,
         key_baseline,
         key_warmup,
         key_compile_sample,
         key_sample,
         key_proposal,
-        key_uncached_compile,
-        key_uncached_sample,
-    ) = jax.random.split(jax.random.key(args.seed), 10)
-    del key_model
+    ) = jax.random.split(jax.random.key(args.seed), 8)
     flow = nsf(
         case.dimension,
         args.transforms,
         rngs=nnx.Rngs(args.seed),
         num_bins=args.bins,
     )
+    if args.seed_data > 0:
+        # Pilot draws seed the proposal with modes the chain may never find.
+        flow.fit(
+            key_fit,
+            case.sample(key_seed, (args.seed_data,)),
+            config=FitConfig(max_steps=args.fit_steps, batch_size=args.batch_size),
+        )
 
     started = time.perf_counter()
-    kernel = neural_imh(case.logdensity, flow)
-    state = kernel.init(None, case.sample(key_initial, (1,))[0])
-    params = kernel.init_params(state)
+    proposal, params = density(flow)
+    kernel = imh(case.logdensity, proposal=proposal)
+    state = kernel.init(key_initial, case.sample(key_initial, (1,))[0])
     build_seconds = time.perf_counter() - started
 
     collect = ("position", "acceptance_rate")
@@ -171,24 +180,24 @@ def run_case(name, args):
     _ready(baseline)
     baseline_acceptance = jnp.mean(baseline.trace["acceptance_rate"])
 
-    seed_data = case.sample(key_seed, (args.seed_data,)) if args.seed_data > 0 else None
+    policy = fit_adaptor(
+        maximum_likelihood(proposal),
+        optax.adam(args.learning_rate),
+        data_fn=None if args.no_rao_blackwellize else imh_data,
+        buffer_size=args.buffer_size,
+        batch_size=args.batch_size,
+        every=args.every,
+        num_fit_steps=args.fit_steps,
+    )
     started = time.perf_counter()
-    adapted = warmup(
+    adapted = run(
         key_warmup,
         kernel,
         state,
         params,
         args.warmup_steps,
-        neural_imh_warmup(
-            flow,
-            data=seed_data,
-            num_adaptations=args.adaptations,
-            fit_steps=args.fit_steps,
-            batch_size=args.batch_size,
-            max_buffer_size=args.max_buffer_size,
-            rao_blackwellize=not args.no_rao_blackwellize,
-            learning_rate=args.learning_rate,
-        ),
+        adaptor=policy,
+        collect=("acceptance_rate",),
     )
     _ready(adapted)
     warmup_seconds = time.perf_counter() - started
@@ -213,13 +222,14 @@ def run_case(name, args):
     sampling_seconds = time.perf_counter() - started
 
     metrics = case.metrics(result.trace["position"])
-    proposal_samples = flow.as_dist().sample_with_state(
-        adapted.params.proposal_state, key_proposal, (args.samples,)
+    proposal_samples = jax.vmap(proposal.sample, (0, None))(
+        jax.random.split(key_proposal, args.samples), adapted.params
     )
     proposal_metrics = {
         f"proposal_{key}": value
         for key, value in case.metrics(proposal_samples).items()
     }
+    warmup_acceptance = adapted.trace["acceptance_rate"]
     output = {
         "case": name,
         "dimension": case.dimension,
@@ -231,46 +241,15 @@ def run_case(name, args):
         "sampling_seconds": sampling_seconds,
         "samples_per_second": args.samples / sampling_seconds,
         "baseline_acceptance": baseline_acceptance,
-        "warmup_acceptance": adapted.trace.acceptance_rate,
+        # Mean acceptance over each tenth of the adaptation run.
+        "warmup_acceptance": jnp.mean(
+            warmup_acceptance[: len(warmup_acceptance) // 10 * 10].reshape(10, -1),
+            axis=1,
+        ),
         "final_acceptance": jnp.mean(result.trace["acceptance_rate"]),
         **metrics,
         **proposal_metrics,
     }
-    if args.compare_uncached:
-        distribution = flow.as_dist()
-
-        def proposal_fn(key, *, params):
-            return distribution.sample_with_state(params.proposal_state, key)
-
-        def proposal_logpdf(state, *, params):
-            return distribution.logpdf_with_state(params.proposal_state, state.position)
-
-        uncached_kernel = imh(
-            case.logdensity,
-            proposal_fn=proposal_fn,
-            proposal_logpdf=proposal_logpdf,
-        )
-        uncached_state = uncached_kernel.init(None, adapted.state.position)
-        uncached_result = run(
-            key_uncached_compile,
-            uncached_kernel,
-            uncached_state,
-            adapted.params,
-            args.samples,
-        )
-        _ready(uncached_result)
-        started = time.perf_counter()
-        uncached_result = run(
-            key_uncached_sample,
-            uncached_kernel,
-            uncached_state,
-            adapted.params,
-            args.samples,
-        )
-        _ready(uncached_result)
-        uncached_seconds = time.perf_counter() - started
-        output["uncached_samples_per_second"] = args.samples / uncached_seconds
-
     return jax.tree.map(
         lambda value: value.tolist() if hasattr(value, "tolist") else value,
         output,
@@ -285,14 +264,13 @@ def main():
     parser.add_argument("--transforms", type=int, default=3)
     parser.add_argument("--bins", type=int, default=8)
     parser.add_argument("--baseline-steps", type=int, default=200)
-    parser.add_argument("--warmup-steps", type=int, default=1_000)
-    parser.add_argument("--adaptations", type=int, default=5)
-    parser.add_argument("--fit-steps", type=int, default=100)
+    parser.add_argument("--warmup-steps", type=int, default=2_000)
+    parser.add_argument("--every", type=int, default=1)
+    parser.add_argument("--fit-steps", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--max-buffer-size", type=int, default=10_000)
-    parser.add_argument("--learning-rate", type=float, default=1e-3)
+    parser.add_argument("--buffer-size", type=int, default=4096)
+    parser.add_argument("--learning-rate", type=float, default=3e-3)
     parser.add_argument("--samples", type=int, default=5_000)
-    parser.add_argument("--compare-uncached", action="store_true")
     parser.add_argument("--no-rao-blackwellize", action="store_true")
     args = parser.parse_args()
 
