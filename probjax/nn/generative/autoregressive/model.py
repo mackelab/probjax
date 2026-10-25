@@ -9,7 +9,6 @@ matter which family is used. Sampling is the sequential part -- one pass per
 dimension, drawing ``x_i`` from the family before moving on.
 """
 
-import weakref
 from typing import Any, Optional
 
 import jax
@@ -37,37 +36,6 @@ __all__ = [
     "CategoricalAutoregressive",
     "made",
 ]
-
-
-class _EagerARSampler:
-    """Sampler for conditioners that cannot go through ``jax.export``.
-
-    Mirrors the escape hatch the discrete diffusion model uses: a weak
-    reference to the model plus a direct call, accepted by ``as_dist`` without
-    a compiled export.
-    """
-
-    def __init__(self, model, event_shape):
-        self._model_ref = weakref.ref(model)
-        self.event_shape = event_shape
-
-    @property
-    def invalidated(self) -> bool:
-        return False
-
-    def __call__(self, rng, shape=(), *, inputs=None):
-        model = self._model_ref()
-        if model is None:
-            raise RuntimeError("The model backing this distribution no longer exists.")
-        return model.sample(
-            rng, tuple(shape), context=context_only(inputs, "Autoregressive")
-        )
-
-    def from_noise(self, *args, **kwargs):
-        raise NotImplementedError(
-            "This autoregressive conditioner does not support sampling from "
-            "supplied noise; its sampler is not exported."
-        )
 
 
 class _KeyNormalizingSampler:
@@ -364,9 +332,6 @@ class Autoregressive(StandardizingMixin, GenerativeModel):
             event_spec = (self.input_dim,)
         if dtype is None:
             dtype = self.family.event_dtype
-
-        if not self.conditioner_config.exportable:
-            return _EagerARSampler(self, (self.input_dim,))
 
         def make_sample_fn(graphdef, with_inputs):
             def sample_fn(state, rng, eps, *rest):

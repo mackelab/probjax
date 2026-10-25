@@ -198,6 +198,28 @@ def test_toy_abstract_eval_shapes(toy_inputs):
     assert out_shape.dtype == x.dtype
 
 
+def test_factor_sizes_may_be_symbolic(toy_inputs):
+    """Abstract eval must not int() a dim: under jax.export it is symbolic."""
+    from jax import export as jax_export
+
+    spec = KernelSpec(
+        name="test_plain_mul",
+        operands=(Operand("x", ("batch", "feat")), Operand("y", ("batch", "feat"))),
+        outputs=(Output(("batch", "feat"), dtype_like="x"),),
+        shardable=frozenset({"batch"}),
+    )
+    prim = make_kernel_primitive(spec, impl=lambda x, y: x * y)
+
+    def mul(x, y):
+        return shardable_kernel(prim, {"x": x, "y": y})
+
+    x, y, _ = toy_inputs
+    specs = jax_export.symbolic_args_specs((x, y), ("b, ...", "b, ..."))
+    exported = jax_export.export(jax.jit(mul))(*specs)
+    for n in (3, 8):
+        assert jnp.allclose(exported.call(x[:n], y[:n]), x[:n] * y[:n])
+
+
 def test_toy_vmap(toy_inputs):
     x, y, bias = toy_inputs
     xs = jnp.stack([x, x + 1.0, x + 2.0])

@@ -427,10 +427,6 @@ class ARConditionerConfig(Protocol):
         rngs: nnx.Rngs,
     ) -> nnx.Module: ...
 
-    @property
-    def exportable(self) -> bool:
-        """Whether the resulting sampler can go through ``jax.export``."""
-        ...
 
 
 def _autoregressive_masks(dims: Sequence[int], num_vars: int) -> list:
@@ -506,9 +502,6 @@ class MLPARConditionerConfig(ARConditionerConfig):
     #: Training-set size, when known; the width rule scales with it.
     num_examples: Optional[int] = None
 
-    @property
-    def exportable(self) -> bool:
-        return True
 
     def build(self, input_dim, params_dim, *, in_features, context_features, rngs):
         out_features = input_dim * params_dim
@@ -606,10 +599,6 @@ class TransformerARConditionerConfig(ARConditionerConfig):
     Wraps :class:`AutoregressiveTransformer` purely for its
     ``predict_bij_params`` path; it is built conditioner-only
     (``bijector=None``), so the bijection is unavailable by construction.
-
-    Not exportable: attention's sharded primitive needs concrete shapes, so
-    ``as_dist`` falls back to an eager sampler (the same limitation the flow
-    transformer conditioner carries).
     """
 
     model_dim: "int | WidthRule" = 256
@@ -623,9 +612,6 @@ class TransformerARConditionerConfig(ARConditionerConfig):
     #: softmax on CPU, where the fused kernel runs in slow interpret mode.
     attention_fn: Optional[Callable] = None
 
-    @property
-    def exportable(self) -> bool:
-        return False
 
     def build(self, input_dim, params_dim, *, in_features, context_features, rngs):
         # One token per dimension; each token carries one scalar feature for
@@ -711,9 +697,6 @@ class SSMARConditionerConfig(ARConditionerConfig):
     recurrent_cls: Optional[Callable] = None
     recurrent_kwargs: Mapping = field(default_factory=dict)
 
-    @property
-    def exportable(self) -> bool:
-        return True
 
     def build(self, input_dim, params_dim, *, in_features, context_features, rngs):
         if context_features is not None:

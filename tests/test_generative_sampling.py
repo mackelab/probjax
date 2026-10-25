@@ -436,3 +436,29 @@ def test_mean_flow_original_objective_still_available():
     got_imf = float(model.loss(jax.random.key(0), data))
     assert jnp.isfinite(got_imf)
     assert got_imf != pytest.approx(expected[0], rel=1e-3)
+
+
+def test_attention_conditioners_sample_through_as_dist():
+    """Attention conditioners export with a symbolic batch like any other."""
+    from probjax.nn import ARFamily, Autoregressive, TransformerARConditionerConfig, maf
+    from probjax.nn.generative.nflows.config import TransformerConditionerConfig
+    from probjax.nn.layers.attention import dot_product_attention
+
+    small = dict(model_dim=16, num_heads=2, num_layers=1, attn_size=8)
+    flow = maf(
+        3, 2, rngs=nnx.Rngs(0), conditioner=TransformerConditionerConfig(**small)
+    )
+    ar = Autoregressive(
+        3,
+        ARFamily.normal(),
+        nnx.Rngs(0),
+        conditioner=TransformerARConditionerConfig(
+            attention_fn=dot_product_attention, **small
+        ),
+    )
+    for model in (flow, ar):
+        dist = model.as_dist()
+        samples = dist.sample(jax.random.key(0), (4,))
+        assert samples.shape == (4, 3)
+        assert jnp.all(jnp.isfinite(dist.logpdf(samples)))
+        assert dist.sample(jax.random.key(1), (7,)).shape == (7, 3)

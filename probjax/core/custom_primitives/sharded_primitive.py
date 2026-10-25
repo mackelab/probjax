@@ -286,7 +286,7 @@ def _validate_shardings(spec: KernelSpec, present: tuple[str, ...], arg_shapes) 
 
 def _resolve_factors(
     spec: KernelSpec, present: tuple[str, ...], shapes: Sequence[tuple[int, ...]]
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Resolve factor sizes from the *required* operands.
 
     Optional aux operands (mask/bias data, iota ids, ...) are skipped: their
@@ -304,8 +304,10 @@ def _resolve_factors(
                 f"({dims}), got shape {tuple(shape)}."
             )
         for factor, size in zip(dims, shape, strict=False):
-            previous = sizes.setdefault(factor, int(size))
-            if previous != int(size):
+            # No int(): under shape polymorphism (jax.export) a dim is
+            # symbolic, and the sizes only flow into output shapes.
+            previous = sizes.setdefault(factor, size)
+            if not jax_core.definitely_equal(previous, size):
                 raise ValueError(
                     f"{spec.name}: inconsistent size for factor '{factor}': "
                     f"{previous} vs {size} (operand '{op.name}')."

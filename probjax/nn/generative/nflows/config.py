@@ -894,15 +894,7 @@ class _ScalarTokenConditioner(nnx.Module):
 
 @dataclass
 class TransformerConditionerConfig(ConditionerConfigProtocol):
-    """Attention conditioner: causal for autoregressive, full for coupling.
-
-    Known limitation: the autoregressive variant trains and evaluates ``logpdf``
-    fine, but cannot yet be sampled through :meth:`~probjax.nn.generative.base.
-    GenerativeModel.as_dist` — exporting that sampler batches the layer's
-    ``custom_inverse`` under symbolic shapes, and attention's sharded primitive
-    requires concrete ones. Use :class:`MLPConditionerConfig`, or a coupling
-    flow, when you need the exported sampler.
-    """
+    """Attention conditioner: causal for autoregressive, full for coupling."""
 
     model_dim: "int | WidthRule" = 256
     num_heads: int = 8
