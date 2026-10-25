@@ -15,8 +15,7 @@ from probjax.inference.filtering.particle_filter import ParticleFilter
 from probjax.inference.mcmc.hmc import hmc
 from probjax.inference.mcmc.mala import mala
 from probjax.inference.mcmc.pmmcmc import pseudo_marginal
-from probjax.inference.smc.path import GeometricPath
-from probjax.inference.smc.path_smc import path_smc
+from probjax.inference.smc import smc
 from probjax.utils.jaxutils import Configured, KernelAPI
 from probjax.utils.odeutil.solvers.base import ODESolver
 from probjax.utils.odeutil.solvers.rk_implicit import implicit_euler
@@ -142,13 +141,11 @@ def test_filters_expose_build_step():
 def test_the_api_base_class_is_shared():
     from probjax.inference.filtering.base import FilterAPI
     from probjax.inference.mcmc.base import MarkovKernelAPI
-    from probjax.inference.smc.base import SMCKernelAPI
     from probjax.utils.odeutil.solvers.base import ODESolverAPI
     from probjax.utils.sdeutil.base import SDESolverAPI
 
     for api in (
         MarkovKernelAPI,
-        SMCKernelAPI,
         FilterAPI,
         ODESolverAPI,
         SDESolverAPI,
@@ -162,39 +159,16 @@ def test_the_api_base_class_is_shared():
 
 
 def test_a_configured_kernel_can_drive_an_smc_kernel():
-    configured = hmc.configure(num_integration_steps=3)
-    kernel = path_smc(
-        logprior_fn=_gaussian_logdensity,
-        loglikelihood_fn=lambda x: -0.5 * jnp.sum((x - 1.0) ** 2),
-        path=GeometricPath(),
-        mcmc_kernel=configured,
+    kernel = smc(
+        _gaussian_logdensity,
+        lambda x: -0.5 * jnp.sum((x - 1.0) ** 2),
+        move=hmc.configure(num_integration_steps=3),
     )
-    assert type(kernel).__name__ == "path_smc"
-
-    particles = jnp.zeros((8, 2))
-    params = kernel.init_params(particles, path=GeometricPath(), mcmc_kernel=configured)
-    assert set(params) == {"step_size", "inverse_mass_matrix"}
-
-
-def test_configured_and_bare_kernel_agree():
-    configured = hmc.configure(num_integration_steps=3)
-    particles = jnp.zeros((8, 2))
-    from_configured = path_smc(
-        logprior_fn=_gaussian_logdensity,
-        loglikelihood_fn=lambda x: -0.5 * jnp.sum((x - 1.0) ** 2),
-        path=GeometricPath(),
-        mcmc_kernel=configured,
-    ).init_params(particles, path=GeometricPath(), mcmc_kernel=configured)
-    from_kwargs = path_smc(
-        logprior_fn=_gaussian_logdensity,
-        loglikelihood_fn=lambda x: -0.5 * jnp.sum((x - 1.0) ** 2),
-        path=GeometricPath(),
-        mcmc_kernel=hmc,
-        num_integration_steps=3,
-    ).init_params(particles, path=GeometricPath(), mcmc_kernel=hmc)
-
-    for name in from_configured:
-        assert jnp.allclose(from_configured[name], from_kwargs[name])
+    state = kernel.init(jax.random.key(0), jnp.zeros((8, 2)))
+    params = kernel.init_params(state, step_size=0.1)
+    assert set(params._fields) == {"step_size", "inverse_mass_matrix"}
+    state, info = kernel.step(jax.random.key(1), state, params, 0.5)
+    assert state.particles.shape == (8, 2)
 
 
 def test_pseudo_marginal_accepts_a_configured_kernel():

@@ -7,9 +7,7 @@ import jax.numpy as jnp
 import optax
 
 from probjax.inference.base import Adaptor, Density
-from probjax.inference.smc.base import _ensure_param_batch
 from probjax.utils import guards as _guards
-from probjax.utils.guards import params_to_dict
 
 __all__ = [
     "FitState",
@@ -67,28 +65,6 @@ def compose_adaptors(**adaptors: Adaptor) -> Adaptor:
             params, info_out = child.finalize(child_state, params)
             child_info[name] = info_out
         return params, child_info
-
-    return Adaptor(init, update, finalize)
-
-
-def _stateless_adaptor(tune_fn: Callable[..., dict[str, Any]]) -> Adaptor:
-    """Adaptor that retunes shared-batched params from each transition.
-
-    ``tune_fn(params_dict, state, info)`` computes the tuned parameter dict;
-    init/finalize are no-ops. Used by the SMC tuning adaptors.
-    """
-
-    def init(_state: Any, _params: Any) -> tuple[Any, ...]:
-        return ()
-
-    def update(
-        state: Any, info: Any, adaptor_state: Any, params: Any
-    ) -> tuple[Any, Any, None]:
-        tuned = tune_fn(params_to_dict(params), state, info)
-        return adaptor_state, _ensure_param_batch(tuned, shared=True), None
-
-    def finalize(_adaptor_state: Any, params: Any) -> tuple[Any, None]:
-        return params, None
 
     return Adaptor(init, update, finalize)
 

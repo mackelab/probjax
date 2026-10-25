@@ -122,11 +122,17 @@ both samplers, including a trained flow proposal.
 
 ## Sequential Monte Carlo and filtering
 
-The `SMC` runner drives particle methods (`smc`, `adaptive_smc`,
-`persistent_smc`, `path_smc`). `probjax.inference.filtering` covers
-`kalman_filter`, `extended_kalman_filter`, `unscented_kalman_filter`,
-`sq_kalman_filter`, `rank_reduced_kalman_filter` and `ParticleFilter`, with
-`rauch_tung_stribel_smoother` and `particle_smoother`.
+SMC kernels follow the same contract, with a whole particle population as the
+state, so `run` drives them too. `smc` tempers from the prior to the posterior
+with MCMC moves, on a fixed or an adaptive schedule, and estimates the
+evidence on the way; its default adaptation fits the move to the population
+after every step. `diffusion_smc` follows a reverse diffusion, steered by a
+pretrained model (`neural.diffusion_guide`) or by Monte Carlo score estimates
+of the target (`score_guide`). The [SMC guide](smc.md) covers both.
+
+`probjax.inference.filtering` covers `kalman_filter`, `extended_kalman_filter`,
+`unscented_kalman_filter`, `sq_kalman_filter`, `rank_reduced_kalman_filter` and
+`ParticleFilter`, with `rauch_tung_stribel_smoother` and `particle_smoother`.
 
 ## Learned components
 
@@ -237,7 +243,7 @@ solvers — follows the same three steps, so the same habits work everywhere.
 | --- | --- | --- |
 | **API class** | a namespace holding `init`, `init_params` and `build_step` | `hmc`, `kalman_filter`, `dopri5` |
 | **kernel** | a pure, callable `(init, step, ...)` container | `hmc(logdensity)` |
-| **runner** | the compiled loop that drives a kernel | `run(key, kernel, ...)`, `SMC(kernel)` |
+| **runner** | the compiled loop that drives a kernel | `run(key, kernel, ...)` |
 
 An API class is turned into a kernel by calling it with the model's functions.
 Options that are known earlier can be bound first with `configure`, which
@@ -245,19 +251,17 @@ returns a value you can pass around, store, or hand to another kernel:
 
 ```python
 import jax.numpy as jnp
-from probjax.inference import hmc, path_smc
-from probjax.inference.smc.path import GeometricPath
+from probjax.inference import hmc, smc
 
 # Bound now, applied to the model later.
 fast_hmc = hmc.configure(num_integration_steps=10)
 kernel = fast_hmc(lambda x: -0.5 * jnp.sum(x**2))
 
 # The same value works wherever a kernel API is expected.
-smc_kernel = path_smc(
-    logprior_fn=lambda x: -0.5 * jnp.sum(x**2),
-    loglikelihood_fn=lambda x: -0.5 * jnp.sum((x - 1.0) ** 2),
-    path=GeometricPath(),
-    mcmc_kernel=fast_hmc,
+smc_kernel = smc(
+    lambda x: -0.5 * jnp.sum(x**2),
+    lambda x: -0.5 * jnp.sum((x - 1.0) ** 2),
+    move=fast_hmc,
 )
 ```
 
@@ -267,9 +271,8 @@ configuration. A configured value is hashable and compares by value, so it can
 be a static `jit` argument without retracing.
 
 Where the model's function is a single required argument, the shorthand
-`hmc(num_integration_steps=10)` returns the same configured value. Filters and
-SMC kernels take more than one model function, so they use `configure`
-explicitly.
+`hmc(num_integration_steps=10)` returns the same configured value. Filters
+take more than one model function, so they use `configure` explicitly.
 
 ## Tutorials
 

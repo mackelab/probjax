@@ -8,7 +8,6 @@ Pure kernels, adaptation utilities and compiled runners. See
 ::: probjax.inference.run
 ::: probjax.inference.warmup
 ::: probjax.inference.step
-::: probjax.inference.SMC
 
 ## MCMC kernels
 
@@ -114,43 +113,26 @@ Each step returns one independent, exact draw.
 
 ## Sequential Monte Carlo
 
-::: probjax.inference.smc.smc
+See the [SMC guide](../guides/smc.md).
+
+::: probjax.inference.smc.tempering.smc
     options:
       heading: probjax.inference.smc
-::: probjax.inference.smc.adaptive.adaptive_smc
-    options:
-      heading: probjax.inference.adaptive_smc
-::: probjax.inference.smc.persistent_smc.persistent_smc
-    options:
-      heading: probjax.inference.persistent_smc
-::: probjax.inference.smc.adaptive_persistent_smc.adaptive_persistent_smc
-    options:
-      heading: probjax.inference.adaptive_persistent_smc
-::: probjax.inference.smc.path_smc.path_smc
-    options:
-      heading: probjax.inference.path_smc
-::: probjax.inference.GeometricPath
-::: probjax.inference.PartialPosteriorsPath
-
-## SMC extensions
-
-See the [SMC guide](../guides/smc.md) for BlackJAX presets and adaptive execution.
-
-::: probjax.inference.waste_free_strategy
-::: probjax.inference.waste_free_smc
-::: probjax.inference.tuned_smc
-::: probjax.inference.pretuned_smc
+::: probjax.inference.SMCState
+::: probjax.inference.SMCInfo
+::: probjax.inference.particle_adaptor
+::: probjax.inference.acceptance_rate_adaptor
 ::: probjax.inference.population_diagnostics
 ::: probjax.inference.summarize_replicates
 
 ## Twisted SMC for diffusion models
 
-::: probjax.inference.run_pretrained_diffusion_smc
-::: probjax.inference.PretrainedTwistState
-::: probjax.inference.PretrainedTwistInfo
-::: probjax.inference.run_rdsmc
-::: probjax.inference.RDSMCState
-::: probjax.inference.RDSMCInfo
+::: probjax.inference.diffusion_smc
+::: probjax.inference.Guide
+::: probjax.inference.score_guide
+::: probjax.inference.neural.diffusion_guide
+::: probjax.inference.DiffusionSMCState
+::: probjax.inference.DiffusionSMCInfo
 
 ## Temporal SMC and trajectory inference
 
@@ -217,7 +199,6 @@ The types returned by the runners and kernels. Kernel `State` and `Params` are
 blackjax's own types, re-exported for convenience and documented there.
 
 ::: probjax.inference.RunResult
-::: probjax.inference.SMCResult
 ::: probjax.inference.Kernel
 ::: probjax.inference.Warmup
 ::: probjax.inference.Adaptor

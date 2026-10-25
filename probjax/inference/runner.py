@@ -28,7 +28,7 @@ from probjax.utils.typing import RngKey
 __all__ = ["run", "step", "warmup"]
 
 #: Stats shown by ``run(..., progress=True)`` when the kernel provides them.
-DEFAULT_PROGRESS_STATS = ("logdensity", "acceptance_rate", "loss")
+DEFAULT_PROGRESS_STATS = ("logdensity", "acceptance_rate", "loss", "temperature", "ess")
 
 
 def _field(name: str, state: Any, info: Any) -> Any:
@@ -102,7 +102,7 @@ def run(
     *,
     args: tuple[Any, ...] | None = None,
     adaptor: Adaptor | None = None,
-    collect: tuple[str, ...] = ("position",),
+    collect: tuple[str, ...] | None = None,
     thin: int = 1,
     progress: bool | tuple[str, ...] = False,
 ) -> RunResult:
@@ -118,7 +118,9 @@ def run(
             leaves have a leading axis of length ``num_steps``.
         adaptor: Adapts ``params`` after every transition. The returned
             params are the adaptor's finalized ones.
-        collect: State or info fields to record at every kept step.
+        collect: State or info fields to record at every kept step. The
+            default records the position of MCMC-style states and nothing
+            for population states such as SMC's.
         thin: Keep every ``thin``-th transition.
         progress: Show a progress bar. ``True`` shows the log density and
             acceptance rate; a tuple of names shows those state/info fields.
@@ -135,6 +137,8 @@ def run(
         args = ()
     args = jax.tree.map(lambda a: a.reshape((num_kept, thin) + a.shape[1:]), args)
     adaptor_state = None if adaptor is None else adaptor.init(state, params)
+    if collect is None:
+        collect = ("position",) if hasattr(state, "position") else ()
 
     names = DEFAULT_PROGRESS_STATS if progress is True else progress or ()
     if names:

@@ -3,7 +3,7 @@
 Temporal inference moves forward through physical time, one observation at a
 time. With fixed parameters `theta` a filter tracks the latent state
 `p(x_t | y_1:t)`; with unknown parameters temporal SMC also targets
-`p(theta | y_1:t)`. The fixed-space `path_smc` API stays the tool for annealing a
+`p(theta | y_1:t)`. The static `smc` kernel stays the tool for annealing a
 stationary target.
 
 ## Writing a model

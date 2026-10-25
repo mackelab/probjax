@@ -6,9 +6,7 @@ import jax.numpy as jnp
 from probjax.inference.base import Kernel
 from probjax.inference.mcmc.hmc import hmc
 from probjax.inference.mcmc.mala import mala
-from probjax.inference.mcmc.mh import mh
 from probjax.inference.mcmc.slice import slice
-from probjax.inference.smc.path_smc import path_smc
 
 
 def _gaussian_logdensity(x):
@@ -39,16 +37,3 @@ def test_kernel_init_tolerates_missing_rng_key():
     built = hmc(_gaussian_logdensity)
     state = built.init(jax.random.key(0), jnp.zeros(2))
     assert state is not None
-
-
-def test_smc_built_kernel_carries_algorithm_type():
-    from probjax.inference.smc.path import GeometricPath
-
-    kernel = path_smc(
-        logprior_fn=lambda x: -0.5 * jnp.sum(x**2),
-        loglikelihood_fn=lambda x: -0.5 * jnp.sum((x - 1.0) ** 2),
-        path=GeometricPath(),
-        mcmc_kernel=mh,
-    )
-    assert type(kernel).__name__ == "path_smc"
-    assert isinstance(kernel, Kernel)

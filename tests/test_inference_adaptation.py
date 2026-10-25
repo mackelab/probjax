@@ -14,7 +14,6 @@ from probjax.inference.mcmc.adaptation import (
     window_warmup,
 )
 from probjax.inference.runner import run, step, warmup
-from probjax.inference.smc.tuning import acceptance_rate_adaptor
 
 
 def _logdensity(position):
@@ -175,26 +174,6 @@ def test_gaussian_imh_default_adaptation_tunes_mean_and_cov():
     assert result.params.cov.shape == (2,)
     assert jnp.all(jnp.isfinite(result.params.mean))
     assert jnp.all(jnp.isfinite(result.params.cov))
-
-
-def test_smc_acceptance_adaptor_preserves_shared_shape():
-    class UpdateInfo(NamedTuple):
-        acceptance_rate: jax.Array
-
-    class Info(NamedTuple):
-        update_info: UpdateInfo
-
-    adaptor = acceptance_rate_adaptor()
-    params = {"step_size": jnp.array([[0.1]])}
-    state = adaptor.init(None, params)
-    state, params, _ = adaptor.update(
-        None,
-        Info(UpdateInfo(jnp.array([0.5, 0.6]))),
-        state,
-        params,
-    )
-
-    assert params["step_size"].shape == (1, 1)
 
 
 def test_pathfinder_warmup_runs_through_warmup():

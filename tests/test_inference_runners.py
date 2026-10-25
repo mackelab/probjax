@@ -1,12 +1,8 @@
-from typing import NamedTuple
-
 import jax
 import jax.numpy as jnp
 import pytest
 
 from probjax.inference import (
-    SMC,
-    Kernel,
     gauss_rwmh,
     mala,
     pooled,
@@ -158,37 +154,3 @@ def test_pooled_covariance_sees_spread_between_chains():
 
     assert jnp.allclose(result.params.scale[:, 0], 4.0, rtol=0.05)
     assert jnp.allclose(result.params.scale[:, 1], 0.0, atol=1e-6)
-
-
-class _SMCState(NamedTuple):
-    particles: jax.Array
-    weights: jax.Array
-
-
-class _SMCInfo(NamedTuple):
-    increment: jax.Array
-
-
-def test_smc_static_runner_primitive():
-    def step(key, state, tempering_param, mcmc_parameters):
-        del key
-        increment = tempering_param * mcmc_parameters["scale"]
-        state = _SMCState(state.particles + increment, state.weights)
-        return state, _SMCInfo(increment)
-
-    kernel = Kernel(lambda particles: particles, step, lambda state: {})
-    state = _SMCState(jnp.zeros((4, 1)), jnp.full(4, 0.25))
-    schedule = jnp.array([0.25, 0.5, 1.0])
-
-    result = SMC.run_kernel(
-        jax.random.key(0),
-        kernel,
-        state,
-        schedule,
-        {"scale": jnp.array(2.0)},
-        collect=True,
-    )
-
-    states, info = result.info
-    assert states.particles.shape == (3, 4, 1)
-    assert jnp.array_equal(info.increment, schedule * 2.0)
