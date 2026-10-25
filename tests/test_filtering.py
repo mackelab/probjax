@@ -281,3 +281,21 @@ def test_particle_paths_match_the_smoothed_means():
     )
     assert paths.shape == (len(TS) + 1, 1000, 2)
     np.testing.assert_allclose(paths.mean(1), means, atol=0.15)
+
+
+def test_unique_fraction_sees_a_collapse():
+    # One particle sits at the observation and every other one is impossible:
+    # resampling copies that one particle everywhere.
+    model = StateSpaceModel(
+        init=lambda key, theta: jax.random.normal(key, (1,)),
+        step=lambda key, theta, x, t0, t1: x,
+        log_likelihood=lambda theta, x, y, t: -1e4 * jnp.sum((x - y) ** 2),
+    )
+    kernel = particle_filter(model, 64)
+    state = kernel.init(KEY, None)
+    y = state.particles[3]
+    _, info = kernel.step(KEY, state, None, 1.0, y)
+    assert info.unique_fraction == 1 / 64
+    np.testing.assert_allclose(info.ess, 1 / 64, rtol=0.02)
+    _, calm = kernel.step(KEY, state, None, 1.0, y, False)
+    assert calm.unique_fraction == 1.0 and calm.ess == 1.0

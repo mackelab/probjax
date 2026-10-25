@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Autoregressive heads: `NormalHead`, `LocScaleHead(dist, fixed)`,
   `MixtureHead`, `HistogramHead`, `SplineHead`, `CategoricalHead`; a custom
   family is a `Head` subclass
+- `unique_fraction` in the infos of `particle_filter`, `smc`, `diffusion_smc`
+  and `temporal_smc`: the fraction of distinct parents after resampling. The
+  ESS measures the weights before resampling and cannot see a collapse onto a
+  few particles; this can. `run(..., progress=True)` shows it by default
 - Filters on the kernel contract: `kalman_filter(model)`,
   `square_root_kalman_filter`, `rank_reduced_kalman_filter`,
   `extended_kalman_filter`, `unscented_kalman_filter` and
@@ -191,6 +195,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `Autoregressive(input_dim, head, rngs, *, conditioner=...)`
   takes an explicit head; conditioner configs build networks mapping tokens
   `(..., d, width)` to `(..., d, num_params)`
+- **Breaking:** `ess` in the infos of `particle_filter` and `temporal_smc` is
+  a fraction of the particles, as it already was for `smc` and `diffusion_smc`
 - `run(..., progress=True)` has a new progress bar
   (`probjax.utils.progress.progress_scan`). The scan runs in chunks with one
   unordered host report per chunk (about 50 per run), so steps carry no extra

@@ -28,7 +28,14 @@ from probjax.utils.typing import RngKey
 __all__ = ["run", "step", "warmup"]
 
 #: Stats shown by ``run(..., progress=True)`` when the kernel provides them.
-DEFAULT_PROGRESS_STATS = ("logdensity", "acceptance_rate", "loss", "temperature", "ess")
+DEFAULT_PROGRESS_STATS = (
+    "logdensity",
+    "acceptance_rate",
+    "loss",
+    "temperature",
+    "ess",
+    "unique_fraction",
+)
 
 
 def _field(name: str, state: Any, info: Any) -> Any:

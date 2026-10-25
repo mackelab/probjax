@@ -11,7 +11,7 @@ from jax.scipy.special import logsumexp
 from probjax.inference.base import Kernel
 from probjax.inference.filtering.gaussian import as_time, unobserved
 from probjax.inference.filtering.state_space import StateSpaceModel
-from probjax.inference.particles import take_batch
+from probjax.inference.particles import take_batch, unique_fraction
 from probjax.inference.smc.ess import ess
 from probjax.inference.smc.resampling import systematic
 from probjax.utils.typing import Array, ArrayLike
@@ -31,9 +31,20 @@ class ParticleFilterState(NamedTuple):
 
 
 class ParticleFilterInfo(NamedTuple):
+    """Diagnostics of one filter step.
+
+    Attributes:
+        ancestors: index of each particle's parent (itself without resampling).
+        log_likelihood_increment: this step's term of the log-likelihood.
+        ess: effective sample size of the weights, as a fraction.
+        unique_fraction: fraction of distinct parents; ``1 / N`` means the
+            population collapsed onto one, which the ESS does not show.
+    """
+
     ancestors: Array
     log_likelihood_increment: Array
     ess: Array
+    unique_fraction: Array
 
 
 def particle_filter(
@@ -96,9 +107,7 @@ def particle_filter(
         log_p = jax.vmap(model.transition_logdensity, (None, 0, 0, None, None))(
             theta, guided, particles, t_previous, t
         )
-        particles = jax.tree.map(
-            lambda a, b: jnp.where(observed, a, b), guided, moved
-        )
+        particles = jax.tree.map(lambda a, b: jnp.where(observed, a, b), guided, moved)
         return particles, jnp.where(observed, log_p - log_q, 0.0)
 
     def step(
@@ -122,7 +131,7 @@ def particle_filter(
         # The incoming weights are normalised, so this estimates p(y_t | y_<t).
         increment = logsumexp(log_weights)
         log_weights = log_weights - increment
-        effective = ess(log_weights)
+        effective = ess(log_weights) / num_particles
 
         def resample(_):
             ancestors = systematic(resample_key, jnp.exp(log_weights), num_particles)
@@ -136,7 +145,7 @@ def particle_filter(
             return jnp.arange(num_particles, dtype=jnp.int32), log_weights
 
         ancestors, log_weights = jax.lax.cond(
-            effective < ess_threshold * num_particles, resample, keep, None
+            effective < ess_threshold, resample, keep, None
         )
         particles = take_batch(particles, ancestors)
         increment = increment.astype(state.log_likelihood.dtype)
@@ -146,6 +155,9 @@ def particle_filter(
             t,
             state.log_likelihood + increment,
         )
-        return new_state, ParticleFilterInfo(ancestors, increment, effective)
+        info = ParticleFilterInfo(
+            ancestors, increment, effective, unique_fraction(ancestors)
+        )
+        return new_state, info
 
     return Kernel(init, step, lambda state, theta=None: theta)
