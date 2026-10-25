@@ -12,7 +12,7 @@ Usage::
 
     ge = grad_estimator(logprior_fn, loglikelihood_fn, data_size)
     sampler = sgld(ge, temperature=0.5)
-    state = sampler.init(position)
+    state = sampler.init(key, position)
     params = sampler.init_params(state)
 
     # Manual loop
@@ -22,7 +22,7 @@ Usage::
     # Or with the MCMC runner (stack batches along leading axis)
     batches = jnp.stack([next(data_loader) for _ in range(num_steps)])
     mcmc = MCMC(sampler)
-    state = mcmc.run(key, state, num_steps, params=params, args=(batches,))
+    result = mcmc.run(key, state, num_steps, params=params, args=(batches,))
 """
 
 from __future__ import annotations
@@ -104,6 +104,7 @@ def _make_sgmcmc_kernel(
     blackjax_init: Callable | None = None,
     state_init: Callable | None = None,
     extra_step_kwargs: dict[str, Any] | None = None,
+    temperature: float = 1.0,
 ) -> MarkovKernel:
     """Shared constructor for the SGLD/SGHMC/SGNHT MarkovKernels.
 
@@ -145,7 +146,8 @@ def _make_sgmcmc_kernel(
     return MarkovKernel(
         init,
         step,
-        lambda state, step_size=1e-3, temperature=1.0: SGMCMCParams(
+        # The constructor's temperature is the default; params can override it.
+        lambda state, step_size=1e-3, temperature=temperature: SGMCMCParams(
             step_size=step_size, temperature=temperature
         ),
     )
@@ -163,6 +165,7 @@ def sgld(grad_estimator: Callable, temperature: float = 1.0) -> MarkovKernel:
         grad_estimator,
         blackjax.sgld.build_kernel,
         blackjax_init=blackjax.sgld.init,
+        temperature=temperature,
     )
     return kernel
 
@@ -194,6 +197,7 @@ def sghmc(
         partial(blackjax.sghmc.build_kernel, alpha=alpha, beta=beta),
         blackjax_init=blackjax.sghmc.init,
         extra_step_kwargs={"num_integration_steps": num_integration_steps},
+        temperature=temperature,
     )
 
 
@@ -240,4 +244,5 @@ def sgnht(
         grad_estimator,
         lambda: kernel,
         state_init=sgnht_state_init,
+        temperature=temperature,
     )

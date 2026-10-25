@@ -1,3 +1,5 @@
+import sys
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -144,3 +146,26 @@ def test_neural_imh_rejects_sample_only_model():
             LinearFlow(ZeroNet(), event_spec=1),
             event_spec=(1,),
         )
+
+
+def test_neural_imh_warmup_draws_fresh_keys_per_block(monkeypatch):
+    # ``probjax.inference.mcmc.imh`` names the exported class, not the module.
+    imh_module = sys.modules["probjax.inference.mcmc.imh"]
+    block_keys = []
+    original = imh_module.sample_kernel
+
+    def recording_sample_kernel(rng, *args, **kwargs):
+        block_keys.append(jax.random.key_data(rng))
+        return original(rng, *args, **kwargs)
+
+    monkeypatch.setattr(imh_module, "sample_kernel", recording_sample_kernel)
+    proposal = maf(1, 1, rngs=nnx.Rngs(0))
+    kernel = neural_imh(_normal_logdensity, proposal)
+    state = kernel.init(None, jnp.array([1.5]))
+    warmup = neural_imh_warmup(proposal, num_adaptations=3, fit_steps=2, batch_size=8)
+
+    warmup.run(jax.random.key(1), kernel, state, kernel.init_params(state), 9)
+
+    assert len(block_keys) == 3
+    assert not jnp.array_equal(block_keys[0], block_keys[1])
+    assert not jnp.array_equal(block_keys[1], block_keys[2])

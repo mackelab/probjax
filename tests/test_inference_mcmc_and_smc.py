@@ -626,6 +626,16 @@ def test_sgmcmc_step_with_args(kernel_fn):
 
 
 @pytest.mark.parametrize("kernel_fn", [sgld, sghmc, sgnht])
+def test_sgmcmc_constructor_temperature_sets_default_params(kernel_fn):
+    ge, _, _ = _make_sgmcmc_problem()
+    sampler = kernel_fn(ge, temperature=0.5)
+    state = sampler.init(jax.random.PRNGKey(0), jnp.zeros(2))
+
+    assert sampler.init_params(state).temperature == 0.5
+    assert sampler.init_params(state, temperature=2.0).temperature == 2.0
+
+
+@pytest.mark.parametrize("kernel_fn", [sgld, sghmc, sgnht])
 def test_sgmcmc_mcmc_runner_run(kernel_fn):
     """MCMC.run works with SG-MCMC kernels when args= is provided."""
     ge, batches, _ = _make_sgmcmc_problem()
