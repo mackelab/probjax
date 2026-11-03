@@ -771,14 +771,18 @@ _klse.defvjp(_klse_fwd, _klse_bwd)
 
 _DEFAULT_BLOCKS = {
     "pallas": (64, 64),
-    "xla": (512, 2048),
+    "xla": (2048, 2048),
 }
 
 
-def _default_precision(dtype):
-    # fp32: exact (IEEE) products. TF32 rounding of the x.y cross term costs
-    # ~1e-3 * |x||y| / epsilon in the logits, which wrecks small-epsilon OT.
+def _default_precision(dtype, impl):
+    # fp32 needs ~fp32-exact products: plain TF32 rounding of the x.y cross
+    # term costs ~1e-3 * |x||y| / epsilon in the logits, which wrecks
+    # small-epsilon OT. In the Triton kernel 3xTF32 is as accurate as IEEE fp32
+    # here and 1.2-1.7x faster (RTX 3090, N=16k, D in {2, 8, 32}).
     if jnp.dtype(dtype) == jnp.float32:
+        if impl == "pallas":
+            return lax.DotAlgorithmPreset.TF32_TF32_F32_X3
         return lax.DotAlgorithmPreset.F32_F32_F32
     if jnp.dtype(dtype) == jnp.float64:
         return lax.Precision.HIGHEST
@@ -852,14 +856,14 @@ def kernel_logsumexp(
             raise ValueError(f"values must have shape ({m}, O), got {values.shape}")
     if not (cost == "sqeuclidean" or callable(cost)):
         raise ValueError(f"Unknown cost {cost!r}")
-    if precision is None:
-        precision = _default_precision(dtype)
     if impl is None:
         impl = "xla" if jax.default_backend() == "cpu" and not interpret else "pallas"
         if impl == "pallas" and callable(cost) and x.shape[1] < 16:
             # Triton dots need a contraction dim >= 16 and silently misbehave
             # below it; zero-padding features is only safe for sqeuclidean.
             impl = "xla"
+    if precision is None:
+        precision = _default_precision(dtype, impl)
     if impl == "dense":
         return kernel_logsumexp_dense(
             x,

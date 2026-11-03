@@ -498,6 +498,7 @@ def main():
     p.add_argument("--repeats", type=int, default=3)
     p.add_argument("--cfm-steps", type=int, default=3000)
     p.add_argument("--cfm-seeds", type=int, nargs="+", default=[0, 1])
+    p.add_argument("--cfm-eval-n", type=int, default=4096)
     p.add_argument("--peak-child", nargs=4, default=None, help=argparse.SUPPRESS)
     a = p.parse_args()
     if a.peak_child:
@@ -529,7 +530,7 @@ def main():
         elif suite == "peak":
             rows += peak_rows()
         elif suite == "cfm":
-            rows += cfm_rows(a.cfm_steps, 256, [1, 2, 4, 8, 32], a.cfm_seeds, 4096)
+            rows += cfm_rows(a.cfm_steps, 256, [1, 2, 4, 8, 32], a.cfm_seeds, a.cfm_eval_n)
     if a.append and out.exists():
         old = json.loads(out.read_text())["results"]
         new_keys = {_row_key(r) for r in rows}
